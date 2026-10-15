@@ -123,6 +123,129 @@ impl FavoritesStore {
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// Finding a favorite by a name typed from memory (`run_favorite`)
+
+/// What a typed name finds among the favorites' names (indices into the names given).
+#[derive(Clone, Debug, PartialEq)]
+pub enum NameMatch {
+    /// One clear best match.
+    One(usize),
+    /// Several close matches, best first: nobody can tell which one was meant.
+    Ambiguous(Vec<usize>),
+    /// Nothing close enough; the nearest names, best first (possibly none).
+    Nothing(Vec<usize>),
+}
+
+/// The lowest score a name needs to be a match at all.
+pub const MATCH_MIN: u32 = 45;
+/// How far ahead of the next one the best match must be to be the one meant.
+pub const MATCH_GAP: u32 = 8;
+/// Candidates listed when the name is ambiguous or matches nothing.
+pub const MATCH_LIST: usize = 5;
+
+/// Lower case, accents dropped (`Crème` → `creme`), anything but letters and digits a space,
+/// spaces collapsed.
+pub fn fold_name(s: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    let mut out = String::with_capacity(s.len());
+    let mut space = false;
+    for c in s.nfd().filter(|c| !unicode_normalization::char::is_combining_mark(*c)) {
+        if c.is_alphanumeric() {
+            if space && !out.is_empty() {
+                out.push(' ');
+            }
+            space = false;
+            out.extend(c.to_lowercase());
+        } else {
+            space = true;
+        }
+    }
+    out
+}
+
+/// Edit distance with adjacent transpositions (`dya` is one edit from `day`).
+fn distance(a: &str, b: &str) -> usize {
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    let mut d = vec![vec![0usize; b.len() + 1]; a.len() + 1];
+    for (i, row) in d.iter_mut().enumerate() {
+        row[0] = i;
+    }
+    for j in 0..=b.len() {
+        d[0][j] = j;
+    }
+    for i in 1..=a.len() {
+        for j in 1..=b.len() {
+            let cost = usize::from(a[i - 1] != b[j - 1]);
+            d[i][j] = (d[i - 1][j] + 1).min(d[i][j - 1] + 1).min(d[i - 1][j - 1] + cost);
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                d[i][j] = d[i][j].min(d[i - 2][j - 2] + 1);
+            }
+        }
+    }
+    d[a.len()][b.len()]
+}
+
+/// How alike two words are, 0 to 1: 1 when equal, 0.9 when one starts the other (three
+/// letters at least), else what the edit distance leaves of the longer one.
+fn word_like(a: &str, b: &str) -> f32 {
+    if a == b {
+        return 1.;
+    }
+    let (short, long) = if a.len() <= b.len() { (a, b) } else { (b, a) };
+    if short.chars().count() >= 3 && long.starts_with(short) {
+        return 0.9;
+    }
+    let n = a.chars().count().max(b.chars().count()).max(1);
+    (1. - distance(a, b) as f32 / n as f32).max(0.)
+}
+
+/// How well `query` names `name`, both folded ([`fold_name`]), 0 to 100: 100 the same name,
+/// 95 the same words in another order, 90 a prefix of it, 80 inside it; otherwise up to 70 by
+/// its words: how alike each typed word is to the closest word of the name (three quarters)
+/// and how many of the name's words were typed (a quarter).
+pub fn name_score(query: &str, name: &str) -> u32 {
+    if query.is_empty() || name.is_empty() {
+        return 0;
+    }
+    if query == name {
+        return 100;
+    }
+    let (qw, nw): (Vec<&str>, Vec<&str>) = (query.split(' ').collect(), name.split(' ').collect());
+    let (mut qs, mut ns) = (qw.clone(), nw.clone());
+    qs.sort_unstable();
+    ns.sort_unstable();
+    if qs == ns {
+        return 95;
+    }
+    if name.starts_with(query) {
+        return 90;
+    }
+    if name.contains(query) {
+        return 80;
+    }
+    let best = |w: &str, among: &[&str]| among.iter().map(|x| word_like(w, x)).fold(0f32, f32::max);
+    let typed = qw.iter().map(|w| best(w, &nw)).sum::<f32>() / qw.len() as f32;
+    let covered = nw.iter().filter(|w| best(w, &qw) >= 0.6).count() as f32 / nw.len() as f32;
+    (70. * (0.75 * typed + 0.25 * covered)).round() as u32
+}
+
+/// Finds the name `query` means among `names`: the exact name (case and accents aside), the
+/// same words in any order, a prefix, a part, or the closest by its words despite typos. One
+/// match when the best scores at least [`MATCH_MIN`] and [`MATCH_GAP`] ahead of the next
+/// (two favorites of the same name are ambiguous); else the closest names to choose from.
+pub fn match_name(names: &[&str], query: &str) -> NameMatch {
+    let q = fold_name(query);
+    let mut scored: Vec<(u32, usize)> = names.iter().enumerate().map(|(i, n)| (name_score(&q, &fold_name(n)), i)).collect();
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    let Some(&(best, ix)) = scored.first() else { return NameMatch::Nothing(Vec::new()) };
+    if best < MATCH_MIN {
+        return NameMatch::Nothing(scored.iter().filter(|s| s.0 > 0).take(MATCH_LIST).map(|s| s.1).collect());
+    }
+    let close: Vec<usize> = scored.iter().take_while(|s| s.0 + MATCH_GAP > best && s.0 >= MATCH_MIN).take(MATCH_LIST).map(|s| s.1).collect();
+    if close.len() == 1 { NameMatch::One(ix) } else { NameMatch::Ambiguous(close) }
+}
+
 /// Writes atomically: a temporary file in the same directory, then `rename`.
 fn save(path: &Path, items: &[Favorite]) -> Result<()> {
     let dir = path.parent().context("favorites path has no parent")?;
@@ -177,6 +300,40 @@ mod tests {
         assert_eq!((renamed.sql.as_str(), renamed.connection_id.as_deref(), renamed.database.as_deref()), ("select 1", Some("c1"), Some("db1")));
         assert_eq!(store.list(), vec![renamed]);
         assert!(store.rename("nope", "x").unwrap().is_none());
+    }
+
+    /// `run_favorite`'s matcher: a name typed from memory finds its favorite; an unclear one
+    /// finds the candidates.
+    #[test]
+    fn names_typed_from_memory() {
+        let names = ["Orders by day", "Orders by month", "Top customers", "Crème brûlée sales", "Slow queries (pg_stat_statements)", "orders"];
+        let m = |q: &str| match_name(&names, q);
+        // Exact, case and accents aside.
+        assert_eq!(m("orders"), NameMatch::One(5));
+        assert_eq!(m("TOP CUSTOMERS"), NameMatch::One(2));
+        assert_eq!(m("creme brulee sales"), NameMatch::One(3));
+        assert_eq!(m("Crème Brûlée Sales"), NameMatch::One(3));
+        // Word order, punctuation.
+        assert_eq!(m("customers top"), NameMatch::One(2));
+        assert_eq!(m("slow queries pg stat statements"), NameMatch::One(4));
+        // A prefix or a part that only one has.
+        assert_eq!(m("slow"), NameMatch::One(4));
+        assert_eq!(m("brulee"), NameMatch::One(3));
+        // Typos.
+        assert_eq!(m("ordrs by dya"), NameMatch::One(0));
+        assert_eq!(m("orders by mnth"), NameMatch::One(1));
+        assert_eq!(m("top custmers"), NameMatch::One(2));
+        assert_eq!(m("cremme brule"), NameMatch::One(3));
+        assert_eq!(m("customer top"), NameMatch::One(2));
+        // Two equally close: ambiguous, the close ones listed, best first.
+        assert_eq!(m("orders by"), NameMatch::Ambiguous(vec![0, 1]));
+        assert_eq!(m("order"), NameMatch::Ambiguous(vec![0, 1, 5]));
+        // Nothing near: the nearest names, but no match.
+        assert!(matches!(m("inventory forecast"), NameMatch::Nothing(_)));
+        assert_eq!(match_name(&[], "x"), NameMatch::Nothing(vec![]));
+        // Two favorites with the same name cannot be told apart.
+        assert_eq!(match_name(&["daily", "Daily"], "daily"), NameMatch::Ambiguous(vec![0, 1]));
+        assert_eq!(fold_name("  Crème-Brûlée  (v2) "), "creme brulee v2");
     }
 
     #[test]

@@ -2,7 +2,8 @@
 //! "Agent queries in tabs" is on) runs in one tab per connection and client, reused while it is
 //! free: its SQL goes into the editor, a read runs in that tab's own session (a read-only
 //! transaction of its own, never the user's tabs or transactions) and the agent gets the bounded
-//! view of the result while the whole result stays in the tab; a write runs on the agent's own
+//! view of the result while the whole result stays in the tab (several reads: a result tab each,
+//! every one in the agent's answer); a write runs on the agent's own
 //! backend (held for an approval when it needs one) and the tab shows it running, then its
 //! counts, its RETURNING rows and what became of it. A tab the user is busy in (an edited text,
 //! a run of their own, an open transaction, pending edits) is left alone: the agent gets another.
@@ -101,9 +102,12 @@ pub(crate) fn arrived(m: TabMsg, cx: &mut App) {
 
 /// What a read waits for.
 enum Wait {
-    Ready,
+    /// The results are ready (the run's statement count).
+    Ready(usize),
     Timeout,
     Cancelled,
+    /// The tab was closed.
+    Gone,
 }
 
 /// A JSON value as the grid's text (`None`: NULL).
@@ -195,64 +199,56 @@ impl Workspace {
                     return;
                 }
             };
+            let limits = req.limits;
             let started = w.update_in(cx, |w, window, cx| {
                 let tab = w.agent_tab(conn, &req.client, &req.database, false, window, cx);
-                let rs = tab.update(cx, |t, cx| t.run_agent(req.sql.clone(), req.params.clone(), &req.client, req.title.clone(), cx));
-                rs.map(|rs| (tab.downgrade(), rs))
+                let rs = tab.update(cx, |t, cx| t.run_agent(req.sql.clone(), req.params.clone(), &req.client, req.title.clone(), limits.max_rows + 1, cx));
+                rs.map(|_| tab.downgrade())
             });
-            let Ok(Some((tab, rs))) = started else {
+            let Ok(Some(tab)) = started else {
                 let _ = reply.send(Err(Stop::Refused("the agent tab did not start the statement".into())));
                 return;
             };
-            let limits = req.limits;
-            rs.request_rows(limits.max_rows + 1);
-            // Enough rows, the end, a pause, the agent's time limit or its cancel.
-            let max_rows = limits.max_rows;
-            let ready = move |rs: &ResultSet| {
-                let p = rs.phase();
-                p.is_finished() || p == Phase::Paused || rs.rows() > max_rows
+            // Every statement's result ready (enough rows, the end, a pause, a failure that
+            // stops the script), the agent's time limit, or its cancel.
+            let deadline = Instant::now() + limits.timeout;
+            let (what, results) = loop {
+                if req.cancel.is_cancelled() {
+                    break (Wait::Cancelled, Vec::new());
+                }
+                if Instant::now() >= deadline {
+                    break (Wait::Timeout, Vec::new());
+                }
+                match tab.read_with(cx, |t, _| t.agent_results(limits.max_rows).map(|r| (r, t.run_statements()))) {
+                    Ok(Some((r, n))) => break (Wait::Ready(n), r),
+                    Ok(None) => {}
+                    Err(_) => break (Wait::Gone, Vec::new()),
+                }
+                cx.background_executor().timer(Duration::from_millis(20)).await;
             };
-            let waits: Vec<BoxFuture<'static, Wait>> = vec![
-                {
-                    let rs = rs.clone();
-                    Box::pin(async move {
-                        let mut rx = rs.subscribe();
-                        while !ready(&rs) {
-                            if rx.changed().await.is_err() {
-                                break;
-                            }
-                        }
-                        Wait::Ready
-                    })
-                },
-                {
-                    let ex = cx.background_executor().clone();
-                    Box::pin(async move {
-                        ex.timer(limits.timeout).await;
-                        Wait::Timeout
-                    })
-                },
-                {
-                    let ct = req.cancel.clone();
-                    Box::pin(async move {
-                        ct.cancelled().await;
-                        Wait::Cancelled
-                    })
-                },
-            ];
-            let (what, _, _) = futures_util::future::select_all(waits).await;
             let answer = match what {
                 Wait::Timeout | Wait::Cancelled => {
                     let _ = tab.update(cx, |t, cx| t.cancel(cx));
                     Err(if matches!(what, Wait::Timeout) { Stop::Timeout(limits.timeout) } else { Stop::Cancelled })
                 }
-                Wait::Ready => match rs.phase() {
-                    Phase::Failed => Err(Stop::Server(rs.status().error.unwrap_or_default())),
-                    Phase::Cancelled => Err(Stop::Cancelled),
-                    _ => Ok(bounded::outcome_of(&rs, &limits)),
-                },
+                Wait::Gone => Err(Stop::Refused("the agent tab went away".into())),
+                Wait::Ready(statements) => {
+                    let failed = results.iter().find(|(_, _, rs)| rs.phase() == Phase::Failed);
+                    if let Some((k, _, rs)) = failed {
+                        let mut e = rs.status().error.unwrap_or_default();
+                        if statements > 1 {
+                            e.message = format!("statement {}: {}", k + 1, e.message);
+                        }
+                        Err(Stop::Server(e))
+                    } else if results.iter().any(|(_, _, rs)| rs.phase() == Phase::Cancelled) {
+                        Err(Stop::Cancelled)
+                    } else {
+                        Ok(bounded::outcome_of_parts(&results, &limits))
+                    }
+                }
             };
             let _ = reply.send(answer);
+            let Some(rs) = results.last().map(|(_, _, rs)| rs.clone()) else { return };
             // A result past what the tab loads ahead pauses inside its read-only transaction:
             // the rows loaded stay, the rest is read and dropped, and the transaction ends.
             let mut rx = rs.subscribe();

@@ -212,7 +212,9 @@ pub fn start(mode: Mode, ws: Entity<Workspace>, window: &mut Window, cx: &mut Ap
 /// `DISKMAN_SHOT_STAGE` picks the screen: `welcome` (first run, nothing connected), `main`,
 /// `light` (main in the light theme), `completion`, `dialog`, `dialog-url` (and
 /// `dialog-url-bad`: the connection string mode), `dialog-fail` (a real
-/// password failure), `sort`, `history` (with the explorer filter), `error` (a batch that
+/// password failure), `sort`, `history` (with the explorer filter), `marks`, `marks-history`
+/// and `marks-search` (the neutral highlights: the filter's matches, the history's selection,
+/// a favorite renamed, the history's search focused), `copied` (the result bar's Copy after ⌘C), `error` (a batch that
 /// stops at statement 2), `cancelling`, `viewer`, `empty` (connected, nothing run),
 /// `shortcuts`, `focus` (the grid with the keyboard focus ring), `dialog-password`,
 /// `error-pop` and `tree-pop` (the find indicator; `DISKMAN_POP_FREEZE_MS=n` holds every pop
@@ -447,6 +449,28 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                         ws.update(cx, |w, cx| w.toggle_history_for_demo(cx));
                         let tree = ws.read(cx).tree.clone();
                         tree.update(cx, |t, cx| t.set_filter("ord", cx));
+                    }
+                    // The neutral highlights: the explorer filter focused, its matches gray
+                    // beside the tree's blue selection, the history's entry selected; with
+                    // `-history` the history focused, a favorite being renamed.
+                    "marks" | "marks-history" | "marks-search" => {
+                        ws.update(cx, |w, cx| w.toggle_history_for_demo(cx));
+                        let tree = ws.read(cx).tree.clone();
+                        tree.update(cx, |t, cx| t.set_filter("ord", cx));
+                        let history = ws.read(cx).history.clone();
+                        let favorites = stage == "marks-history";
+                        history.update(cx, |h, cx| h.demo_marks(favorites, window, cx));
+                        match stage.as_str() {
+                            "marks" => tree.update(cx, |t, cx| t.demo_focus_filter(window, cx)),
+                            "marks-search" => history.update(cx, |h, cx| h.demo_search("orders", window, cx)),
+                            _ => {}
+                        }
+                    }
+                    // ⌘C in the grid: "Copied" in place of the Copy button.
+                    "copied" => {
+                        grid.update(cx, |g, cx| g.select_cells(2..=6, 2, cx));
+                        window.focus(&grid.focus_handle(cx), cx);
+                        grid.update(cx, |g, cx| g.copy(diskman_core::result::CopyFormat::Tsv, false, cx));
                     }
                     // The find indicator (hold it mid-pop with DISKMAN_POP_FREEZE_MS): ⌘' on the
                     // error, the explorer filter's first match.

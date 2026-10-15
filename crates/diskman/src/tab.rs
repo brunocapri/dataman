@@ -201,8 +201,11 @@ pub struct QueryTab {
     pub(crate) saved_results: Option<(u64, String)>,
     /// An agent's tab (`agent`): the client and connection it works for.
     pub agent: Option<crate::agent::AgentTab>,
-    /// The agent the next statement runs for (`run_agent`).
-    agent_next: Option<String>,
+    /// The agent the next run is for, and the rows it reads of each result (`run_agent`).
+    agent_next: Option<(String, usize)>,
+    /// The agent the current run's statements run for (taken from `agent_next` as it starts;
+    /// `None`: the user's run).
+    agent_run: Option<(String, usize)>,
     /// An agent's write shown here while it runs elsewhere (`show_agent`).
     pub(crate) agent_pending: Option<Arc<ResultSet>>,
     /// The editor holds an agent's draft the user has not run yet (`draft_agent`).
@@ -283,6 +286,7 @@ impl QueryTab {
             saved_results: None,
             agent: None,
             agent_next: None,
+            agent_run: None,
             agent_pending: None,
             agent_draft: false,
         };
@@ -818,17 +822,58 @@ impl QueryTab {
         self.run_stmts(stmts, cx);
     }
 
-    /// An agent's read (`agent`): its SQL in the editor, run in this tab's own session as a
-    /// read-only transaction of its own (the guard and the tiers checked it already; no prompt,
-    /// no confirmation). The result runs and stays here like any other.
-    pub fn run_agent(&mut self, sql: String, params: Vec<Option<String>>, client: &str, title: Option<String>, cx: &mut Context<Self>) -> Option<Arc<ResultSet>> {
+    /// An agent's read (`agent`): its SQL in the editor, run in this tab's own session, each
+    /// statement a read-only transaction of its own (the guard and the tiers checked them
+    /// already; no prompt, no confirmation), `rows` of each result loaded ahead. Several
+    /// statements run as a script: a result tab each. The results run and stay here like any
+    /// other; [`QueryTab::agent_results`] says when the agent's view of them is ready.
+    pub fn run_agent(&mut self, sql: String, params: Vec<Option<String>>, client: &str, title: Option<String>, rows: usize, cx: &mut Context<Self>) -> Option<Arc<ResultSet>> {
         self.put_agent_text(&sql, title, cx);
-        self.agent_next = Some(client.to_string());
+        self.agent_next = Some((client.to_string(), rows));
         self.agent_pending = None;
         self.agent_draft = false;
-        self.start_run(vec![Stmt { at: 0, sql, params, rollback: false }], cx);
-        self.agent_next = None;
+        let split = diskman_core::sql::split_in(&sql, self.dialect());
+        let stmts = if split.len() > 1 {
+            split.into_iter().map(|s| Stmt { at: s.range.start, sql: sql[s.range].to_string(), params: Vec::new(), rollback: false }).collect()
+        } else {
+            vec![Stmt { at: 0, sql, params, rollback: false }]
+        };
+        self.start_run(stmts, cx);
         self.current.as_ref().map(|(rs, _)| rs.clone())
+    }
+
+    /// The results of the agent's read [`QueryTab::run_agent`] started, once the agent's view
+    /// of them is ready: every statement done (or the run stopped at a failure), the last
+    /// result finished, paused or past `max_rows` (and no later result set of a T-SQL batch to
+    /// wait for). Each with its statement's index and SQL (a later result set's statement).
+    pub(crate) fn agent_results(&self, max_rows: usize) -> Option<Vec<(usize, String, Arc<ResultSet>)>> {
+        let (rs, ix) = self.current.as_ref()?;
+        if !self.queue.is_empty() {
+            return None;
+        }
+        let p = rs.phase();
+        let ready = if p.is_finished() { rs.next_result().is_none() } else { (p == Phase::Paused || rs.rows() > max_rows) && !self.more_may_follow(*ix) };
+        if !ready {
+            return None;
+        }
+        let mut out = Vec::new();
+        let (mut statement, mut at) = (0, None);
+        for b in &self.batch {
+            let Some(rs) = &b.rs else { continue };
+            if at.is_some_and(|a| a != b.at) {
+                statement += 1;
+            }
+            at = Some(b.at);
+            out.push((statement, b.label.clone().unwrap_or_else(|| b.sql.clone()), rs.clone()));
+        }
+        Some(out)
+    }
+
+    /// Statements in the current run (a T-SQL batch's later result sets are not more).
+    pub(crate) fn run_statements(&self) -> usize {
+        let mut ats: Vec<usize> = self.batch.iter().map(|b| b.at).collect();
+        ats.dedup();
+        ats.len()
     }
 
     /// An agent's write that runs on the agent's own backend: its SQL in the editor and `rs` (a
@@ -1070,6 +1115,8 @@ impl QueryTab {
         self.has_run = true;
         // A draft run (by the user) is no longer one waiting for them.
         self.agent_draft = false;
+        // Whose run this is: the agent's when `run_agent` started it, else the user's.
+        self.agent_run = self.agent_next.take();
         let db = self.database.clone();
         self.session.get_or_insert_with(|| conn.session(db.as_deref()));
         // Re-run replaces the whole set. The result on screen stays until the first statement
@@ -1106,8 +1153,8 @@ impl QueryTab {
     }
 
     fn next(&mut self, cx: &mut Context<Self>) {
-        // Only the statement `run_agent` starts is the agent's.
-        let agent = self.agent_next.take();
+        // Only the statements `run_agent` starts are the agent's.
+        let agent = self.agent_run.clone();
         let (Some(ix), Some(session)) = (self.queue.pop_front(), self.session.clone()) else { return };
         let sql = self.batch[ix].sql.clone();
         // A read-only database refuses writes before they reach the server (LAR accepts READ
@@ -1149,7 +1196,11 @@ impl QueryTab {
             self.editor.update(cx, |e, cx| e.set_known(known, cx));
         }
         let rs = match &agent {
-            Some(client) => session.execute_agent(sql, self.batch[ix].params.clone(), client),
+            Some((client, rows)) => {
+                let rs = session.execute_agent(sql, self.batch[ix].params.clone(), client);
+                rs.request_rows(*rows);
+                rs
+            }
             None => session.execute_opts(sql, self.batch[ix].params.clone(), self.batch[ix].rollback),
         };
         // A table's page is bounded by its LIMIT, a plan is one cell (or a few lines): read

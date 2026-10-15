@@ -439,6 +439,130 @@ fn postgres_tools() {
     leak(e);
 }
 
+/// Several reads in one call (run_query, open_query headless): every result comes back, in
+/// order, the row cap for each and the byte cap for all; a write anywhere refuses them all. One
+/// statement keeps its own shape.
+#[test]
+fn several_reads() {
+    let e = env();
+    let (h, p) = addr("DISKMAN_PG", "127.0.0.1:55432");
+    if up(&h, p) {
+        let pg = |x: Value| with("pg", x);
+        let r = e.ok("run_query", pg(json!({"sql": "SELECT 1 AS a;\nSELECT 'x' AS b, 2 AS c;\n-- five rows\nSELECT generate_series(1, 5) AS n;\nVALUES (true)", "max_rows": 3})));
+        assert_eq!(r["statements"], json!(4), "{r}");
+        let res = r["results"].as_array().unwrap();
+        let shape: Vec<(Value, Value, Value)> = res.iter().map(|x| (x["statement"].clone(), x["sql"].clone(), x["rows"].clone())).collect();
+        assert_eq!(
+            shape,
+            vec![
+                (json!(1), json!("SELECT 1 AS a"), json!([[1]])),
+                (json!(2), json!("SELECT 'x' AS b, 2 AS c"), json!([["x", 2]])),
+                (json!(3), json!("SELECT generate_series(1, 5) AS n"), json!([[1], [2], [3]])),
+                (json!(4), json!("VALUES (true)"), json!([[true]])),
+            ]
+        );
+        assert_eq!((res[2]["truncated"].as_str(), res[1]["columns"].clone()), (Some("rows"), json!([["b", "text"], ["c", "int4"]])));
+        assert!(r.get("truncated").is_none() && r["ms"].is_number());
+        // One statement: the shape it always had.
+        let r = e.ok("run_query", pg(json!({"sql": "SELECT 1 AS a;"})));
+        assert_eq!((r["rows"].clone(), r.get("results")), (json!([[1]]), None));
+        // open_query without the app: the same, headless.
+        let r = e.ok("open_query", pg(json!({"sql": "SELECT 1 AS a; SELECT 2 AS b"})));
+        assert_eq!((r["results"][1]["rows"].clone(), r["in_tab"].clone()), (json!([[2]]), json!(false)));
+        // A write anywhere: refused before anything runs.
+        let err = e.err("run_query", pg(json!({"sql": "SELECT 1; DELETE FROM pg_class WHERE false; SELECT 2"})));
+        assert!(err.contains("statement 2") && err.contains("not a read"), "{err}");
+        assert!(e.err("open_query", pg(json!({"sql": "SELECT 1; DELETE FROM pg_class WHERE false"}))).contains("reads only"));
+        assert!(e.err("run_query", pg(json!({"sql": "SELECT $1::int; SELECT 2", "params": [1]}))).contains("single statement"));
+        // ~256 KB in all: the second result is cut there, the third does not run.
+        let big = "SELECT repeat('x', 1000) AS t FROM generate_series(1, 150)";
+        let r = e.ok("run_query", pg(json!({"sql": format!("{big}; {big}; SELECT 3"), "max_rows": 1000})));
+        let res = r["results"].as_array().unwrap();
+        assert_eq!((res.len(), res[0]["row_count"].clone(), res[1]["truncated"].clone()), (2, json!(150), json!("bytes")), "{}", r["note"]);
+        assert!(res[1]["row_count"].as_u64().unwrap() < 150);
+        assert_eq!(r["truncated"], json!("bytes"));
+        assert!(r["note"].as_str().unwrap().contains("statement 3 not returned"), "{}", r["note"]);
+    } else {
+        eprintln!("skipping PostgreSQL: none at {h}:{p}");
+    }
+    let (h, p) = addr("DISKMAN_MYSQL", "127.0.0.1:33306");
+    if up(&h, p) {
+        let r = e.ok("run_query", json!({"connection": "myw", "sql": "SELECT * FROM (SELECT 1 AS n UNION SELECT 2 UNION SELECT 3) x ORDER BY n; SELECT 'b' AS b; SHOW DATABASES LIKE 'mysql'", "max_rows": 2}));
+        let res = r["results"].as_array().unwrap();
+        assert_eq!(res.len(), 3, "{r}");
+        assert_eq!((res[0]["rows"].clone(), res[0]["truncated"].clone()), (json!([[1], [2]]), json!("rows")));
+        assert_eq!((res[1]["rows"].clone(), res[2]["rows"].clone()), (json!([["b"]]), json!([["mysql"]])));
+        assert!(e.err("run_query", json!({"connection": "myw", "sql": "SELECT 1; UPDATE mysql.user SET x = 1 WHERE 0"})).contains("statement 2"));
+    } else {
+        eprintln!("skipping MySQL: none at {h}:{p}");
+    }
+    let (h, p) = addr("DISKMAN_MSSQL", "127.0.0.1:14330");
+    if up(&h, p) {
+        // Statements separated by ;, the row cap on the first.
+        let r = e.ok("run_query", json!({"connection": "msw", "sql": "SELECT TOP 10 object_id FROM sys.objects ORDER BY object_id; SELECT 'b' AS b", "max_rows": 3}));
+        let res = r["results"].as_array().unwrap();
+        assert_eq!((res.len(), res[0]["row_count"].clone(), res[0]["truncated"].clone(), res[1]["rows"].clone()), (2, json!(3), json!("rows"), json!([["b"]])), "{r}");
+        // One batch, three SELECTs without ;: three result sets of statement 1.
+        let r = e.ok("run_query", json!({"connection": "msw", "sql": "SELECT 1 AS a\nSELECT 2 AS b\nSELECT 3 AS c"}));
+        let res = r["results"].as_array().unwrap();
+        let shape: Vec<(Value, Value, Value)> = res.iter().map(|x| (x["statement"].clone(), x["sql"].clone(), x["rows"].clone())).collect();
+        assert_eq!(shape, vec![(json!(1), json!("SELECT 1 AS a"), json!([[1]])), (json!(1), json!("SELECT 2 AS b"), json!([[2]])), (json!(1), json!("SELECT 3 AS c"), json!([[3]]))], "{r}");
+        // GO batches.
+        let r = e.ok("run_query", json!({"connection": "msw", "sql": "SELECT 1 AS a\nGO\nSELECT 2 AS b\nGO"}));
+        assert_eq!((r["statements"].clone(), r["results"][1]["rows"].clone()), (json!(2), json!([[2]])), "{r}");
+        assert!(e.err("run_query", json!({"connection": "msw", "sql": "SELECT 1 AS a\nDELETE FROM sys.objects WHERE 1 = 0"})).contains("not a read"));
+    } else {
+        eprintln!("skipping SQL Server: none at {h}:{p}");
+    }
+    leak(e);
+}
+
+/// run_favorite: a favorite found by a name typed from memory runs as open_query would; an
+/// unclear name lists the candidates and runs nothing.
+#[test]
+fn run_favorite_by_name() {
+    let (h, p) = addr("DISKMAN_PG", "127.0.0.1:55432");
+    if !up(&h, p) {
+        eprintln!("skipping: no PostgreSQL at {h}:{p}");
+        return;
+    }
+    let e = env();
+    for (name, sql, conn) in [("Orders by day", "SELECT 1 AS day", Some("pg")), ("Orders by month", "SELECT 2 AS month", Some("pg")), ("Top customers", "SELECT 3 AS top;\nSELECT 4 AS more", Some("pg")), ("Loose one", "SELECT 5", None)] {
+        let mut a = json!({"name": name, "sql": sql});
+        if let Some(c) = conn {
+            a["connection"] = json!(c);
+        }
+        e.ok("add_favorite", a);
+    }
+    assert!(e.ok("list_favorites", json!({}))["rows"].as_array().unwrap().len() == 4);
+    // A typo, on the favorite's own connection: it runs, and says which favorite.
+    let r = e.ok("run_favorite", json!({"name": "ordrs by dya"}));
+    assert_eq!((r["favorite"]["name"].clone(), r["rows"].clone()), (json!("Orders by day"), json!([[1]])), "{r}");
+    // Word order and case; several statements come back as results.
+    let r = e.ok("run_favorite", json!({"name": "CUSTOMERS TOP"}));
+    assert_eq!((r["favorite"]["name"].clone(), r["results"][1]["rows"].clone()), (json!("Top customers"), json!([[4]])), "{r}");
+    // Ambiguous: the candidates, nothing run.
+    let before = e.audit().len();
+    let r = e.ok("run_favorite", json!({"name": "orders by"}));
+    let names: Vec<&str> = r["candidates"].as_array().unwrap().iter().filter_map(|c| c["name"].as_str()).collect();
+    assert_eq!((r["matched"].clone(), names), (json!(false), vec!["Orders by day", "Orders by month"]), "{r}");
+    assert_eq!((r["candidates"][0]["connection"].clone(), r["candidates"][0]["sql"].clone()), (json!("pg"), json!("SELECT 1 AS day")));
+    let r = e.ok("run_favorite", json!({"name": "inventory forecast"}));
+    assert_eq!(r["matched"], json!(false));
+    let log = e.audit();
+    assert!(log[before..].iter().all(|l| l["sql"].is_null() && l["favorite"].is_null()), "nothing ran: {:?}", &log[before..]);
+    // Another connection given; a favorite saved without one needs it.
+    let r = e.ok("run_favorite", json!({"name": "Orders by month", "connection": "pgw"}));
+    assert_eq!(r["rows"], json!([[2]]));
+    assert!(e.err("run_favorite", json!({"name": "loose one"})).contains("pass connection"));
+    assert_eq!(e.ok("run_favorite", json!({"name": "loose one", "connection": "pg"}))["rows"], json!([[5]]));
+    // The audit names the tool and the favorite.
+    let log = e.audit();
+    let line = log.iter().find(|l| l["tool"] == "run_favorite" && l["favorite"] == "Orders by day").unwrap();
+    assert_eq!((line["connection"].as_str(), line["sql"].as_str(), line["outcome"].as_str()), (Some("pg"), Some("SELECT ? AS day"), Some("ok")));
+    leak(e);
+}
+
 #[test]
 fn lar_tools() {
     let (h, p) = addr("DISKMAN_LAR", "127.0.0.1:5490");

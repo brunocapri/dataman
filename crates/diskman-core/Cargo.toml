@@ -31,6 +31,8 @@ log = "0.4"
 socket2 = "0.6"
 # Find and replace (editor and grid); already in the tree through GPUI.
 regex = "1"
+# Favorites found by a name typed without its accents (`run_favorite`); already in the tree.
+unicode-normalization = "0.1"
 # Parquet export only: the Arrow writer, Snappy compression, nothing else.
 parquet = { version = "=58.4.0", default-features = false, features = ["arrow", "snap"] }
 arrow-array = "=58.4.0"

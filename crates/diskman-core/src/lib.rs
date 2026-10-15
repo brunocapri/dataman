@@ -69,7 +69,7 @@ pub use conn::TxEnd;
 pub use tx::{TxState, TxStatus};
 pub use ssh::{HostKeyPrompt, SshError};
 pub use conn::{Connection, Session};
-pub use favorites::{Favorite, FavoritesStore};
+pub use favorites::{Favorite, FavoritesStore, NameMatch};
 pub use history::{History, HistoryEntry, Outcome};
 pub use result::{Phase, ResultSet};
 pub use secret::{Keychain, MemorySecrets, SecretStore};

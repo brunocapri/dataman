@@ -922,6 +922,7 @@ pub fn demo_seed(core: &Arc<Core>, approval: bool, cx: &mut App) {
             error: err.map(str::to_string),
             approval,
             draft: false,
+            favorite: None,
         });
     }
     if approval {

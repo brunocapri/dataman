@@ -284,6 +284,8 @@ pub struct Note {
     pub approval: Option<ApprovalNote>,
     /// A draft: placed in an agent tab, not run.
     pub draft: bool,
+    /// The favorite query `run_favorite` resolved.
+    pub favorite: Option<String>,
 }
 
 /// An agent's write as [`Call::write`] runs it.
@@ -345,6 +347,10 @@ impl Call {
 
     pub fn note_rows(&self, n: usize) {
         self.note.lock().rows = Some(n as u64);
+    }
+
+    pub fn note_favorite(&self, name: &str) {
+        self.note.lock().favorite = Some(name.to_string());
     }
 
     /// The profile named by `connection`, if the policy lets this tool use it for `need`.

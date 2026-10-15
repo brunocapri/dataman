@@ -1132,6 +1132,11 @@ impl SchemaTree {
     }
 
     /// Types a filter (demo screenshots).
+    /// The filter field takes the keyboard focus (screenshots).
+    pub fn demo_focus_filter(&self, window: &mut Window, cx: &mut Context<Self>) {
+        window.focus(&self.filter.focus_handle(cx), cx);
+    }
+
     pub fn set_filter(&mut self, text: &str, cx: &mut Context<Self>) {
         self.filter.update(cx, |f, cx| f.set_text(text, cx));
         self.rebuild(cx);
@@ -1964,12 +1969,13 @@ impl SchemaTree {
                         .flex_row()
                         .child(l[..h.start].to_string())
                         .child(
+                            // Neutral: blue is the selection's.
                             div()
                                 .relative()
-                                .bg(t.acc_s)
+                                .bg(t.mark)
                                 .text_color(t.tx)
                                 .border_b_1()
-                                .border_color(t.acc)
+                                .border_color(t.mark_b)
                                 .child(hit.clone())
                                 .children(pop.map(|f| pop_overlay(hit, f, t))),
                         )
@@ -2500,8 +2506,9 @@ impl Render for SchemaTree {
             // desktop.
             .bg(if filter_focused || filtering { t.panel } else { t.hov })
             .border_1()
-            .border_color(if filter_focused { t.acc } else { t.field_b })
-            .when(filter_focused, |d| d.shadow(t.halo()))
+            // A search field's focus is neutral (blue is the tree's selection).
+            .border_color(if filter_focused { t.mark_b } else { t.field_b })
+            .when(filter_focused, |d| d.shadow(t.halo_mark()))
             .child(icon(Icon::Filter).size(px(13.)).text_color(t.tx3))
             .child(div().flex_1().min_w_0().text_color(t.tx).child(self.filter.clone()))
             .child(div().flex_none().text_size(px(10.5)).text_color(t.tx3).whitespace_nowrap().child(filter_meta));

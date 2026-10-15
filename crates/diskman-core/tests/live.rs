@@ -246,9 +246,10 @@ fn introspection_postgres() {
     let Some(c) = pg(&e) else { return };
     let dbs = e.core.block_on(c.databases()).unwrap();
     assert!(dbs.contains(&"diskman".to_string()), "{dbs:?}");
+    // The user's schemas first (the demo stages add some beside public), the system ones last.
     let schemas = e.core.block_on(c.schemas("diskman")).unwrap();
-    assert_eq!(schemas[0], "public");
-    assert!(schemas.contains(&"pg_catalog".to_string()));
+    let at = |name: &str| schemas.iter().position(|s| s == name);
+    assert!(at("public").is_some() && at("public") < at("pg_catalog"), "{schemas:?}");
     let rels = e.core.block_on(c.relations("diskman", "public")).unwrap();
     assert!(rels.iter().any(|r| r.name == "orders"), "{rels:?}");
     let cols = e.core.block_on(c.columns("diskman", "public", "orders")).unwrap();

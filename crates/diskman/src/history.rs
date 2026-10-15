@@ -381,7 +381,8 @@ impl HistoryPanel {
                             .flex()
                             .flex_col()
                             .gap(px(4.))
-                            .when(sel && focused, |d| d.bg(t.acc_s).border_1().border_color(t.acc))
+                            // Neutral: blue is the explorer's selection.
+                            .when(sel && focused, |d| d.bg(t.mark).border_1().border_color(t.edge))
                             .when(sel && !focused, |d| d.bg(t.prs))
                             .when(!sel, |d| d.hover(move |s| s.bg(hov)))
                             .on_click(cx.listener(move |h, ev: &gpui::ClickEvent, window, cx| {
@@ -436,8 +437,23 @@ impl HistoryPanel {
                 let flat: String = f.sql.split_whitespace().collect::<Vec<_>>().join(" ");
                 let hov = t.hov;
                 let renaming = self.renaming.as_ref().filter(|(i, _)| *i == fav_i).map(|(_, input)| input.clone());
+                // Renaming: the field in the accent, ↩ at its end (it confirms).
                 let name: gpui::AnyElement = match renaming {
-                    Some(input) => div().flex_1().min_w_0().border_1().border_color(t.acc).px(px(4.)).text_color(t.tx).child(input).into_any_element(),
+                    Some(input) => div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(4.))
+                        .border_1()
+                        .border_color(t.acc)
+                        .pl(px(4.))
+                        .pr(px(2.))
+                        .text_color(t.tx)
+                        .child(div().flex_1().min_w_0().child(input))
+                        .child(ui::keycap_sm(t.key, t.tx2, "↩").h(px(14.)).line_height(px(12.)).text_size(px(10.)))
+                        .into_any_element(),
                     None => div().text_color(t.tx).child(f.name.clone()).into_any_element(),
                 };
                 div()
@@ -450,7 +466,7 @@ impl HistoryPanel {
                             .flex()
                             .flex_col()
                             .gap(px(4.))
-                            .when(sel && focused, |d| d.bg(t.acc_s).border_1().border_color(t.acc))
+                            .when(sel && focused, |d| d.bg(t.mark).border_1().border_color(t.edge))
                             .when(sel && !focused, |d| d.bg(t.prs))
                             .when(!sel, |d| d.hover(move |s| s.bg(hov)))
                             .on_click(cx.listener(move |h, ev: &gpui::ClickEvent, window, cx| {
@@ -652,6 +668,37 @@ impl HistoryPanel {
         self.toggle_favorite(entry_ix, cx);
     }
 
+    /// Screenshots (`marks`, `marks-history`): the history (`favorites` false) with its first
+    /// entry selected, or two favorites with the first selected and the second being renamed
+    /// (the panel focused).
+    pub(crate) fn demo_marks(&mut self, favorites: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if favorites {
+            let core = self.store.read(cx).core.clone();
+            for (name, sql) in [("Orders by day", "SELECT date_trunc('day', p.created) AS day, count(*) FROM orders p GROUP BY 1 ORDER BY 1;"), ("Top customers", "SELECT c.name, count(*) FROM orders p JOIN customer c ON c.id = p.customer GROUP BY 1 ORDER BY 2 DESC LIMIT 10;")] {
+                let mut f = diskman_core::Favorite::new(name, sql);
+                f.connection_id = self.conn_id.clone();
+                let _ = core.favorites.add(f);
+            }
+            self.reload_favorites(cx);
+            self.show_favorites = true;
+            self.apply_filter(cx);
+        }
+        self.selected = self.items.iter().position(|i| matches!(i, Item::Entry(_) | Item::Fav(_)));
+        if favorites && let Some(second) = self.items.iter().filter_map(|i| if let Item::Fav(f) = i { Some(*f) } else { None }).nth(1) {
+            self.start_rename(second, window, cx);
+        } else if favorites {
+            window.focus(&self.focus, cx);
+        }
+        cx.notify();
+    }
+
+    /// Screenshots (`marks-search`): the search field focused, holding `text`.
+    pub(crate) fn demo_search(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.filter.update(cx, |f, cx| f.set_text(text, cx));
+        self.apply_filter(cx);
+        window.focus(&self.filter.focus_handle(cx), cx);
+    }
+
     pub(crate) fn demo_favorites(&self) -> Vec<(String, String)> {
         self.favorites.iter().map(|f| (f.id.clone(), f.name.clone())).collect()
     }
@@ -813,8 +860,9 @@ impl Render for HistoryPanel {
                             .items_center()
                             .gap(px(8.))
                             .border_1()
-                            .border_color(if filter_focused { t.acc } else { t.field_b })
-                            .when(filter_focused, |d| d.shadow(t.halo()))
+                            // A search field's focus is neutral, like the explorer filter's.
+                            .border_color(if filter_focused { t.mark_b } else { t.field_b })
+                            .when(filter_focused, |d| d.shadow(t.halo_mark()))
                             .child(icon(Icon::Search).size(px(13.)).text_color(t.tx3))
                             .child(div().flex_1().min_w_0().text_color(t.tx).child(self.filter.clone()))
                             .child(div().text_size(px(11.)).text_color(t.tx3).child(format!("{} of {}", ui_count(self.shown), ui_count(total)))),

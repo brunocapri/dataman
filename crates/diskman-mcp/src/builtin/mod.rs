@@ -70,6 +70,54 @@ pub fn result_json(o: &bounded::Outcome, max_rows: usize) -> Value {
     Value::Object(m)
 }
 
+/// A read's answer: one statement with one result set as [`result_json`] (the shape single
+/// statements always had); several statements, or a T-SQL batch's several result sets, as
+/// `{results: [{statement, sql, columns, rows, row_count, truncated?, note?, cut_cells?, ms}],
+/// statements, ms}`. The row cap is for each result, the ~256 KB byte cap for all of them: the
+/// statements after the one that reaches it are not run (or, in an agent tab, not returned),
+/// which `truncated: "bytes"` and a note say at the top level.
+pub fn read_json(o: &bounded::Outcome, max_rows: usize, statements: &[String]) -> Value {
+    if o.parts.len() <= 1 && statements.len() <= 1 {
+        return result_json(o, max_rows);
+    }
+    let results: Vec<Value> = o
+        .parts
+        .iter()
+        .map(|p| {
+            let part = bounded::Outcome { columns: p.columns.clone(), rows: p.rows.clone(), truncated: p.truncated, cut_cells: p.cut_cells, elapsed: p.elapsed, ..Default::default() };
+            let mut v = result_json(&part, max_rows);
+            if let Some(m) = v.as_object_mut() {
+                let mut head = Map::new();
+                head.insert("statement".into(), json!(p.statement + 1));
+                head.insert("sql".into(), json!(first_line(&p.sql)));
+                head.extend(std::mem::take(m));
+                *m = head;
+            }
+            v
+        })
+        .collect();
+    let mut m = Map::new();
+    m.insert("results".into(), Value::Array(results));
+    m.insert("statements".into(), json!(statements.len()));
+    let reached = o.parts.last().map_or(0, |p| p.statement + 1);
+    if o.parts.last().is_some_and(|p| p.truncated == Some(bounded::Truncation::Bytes)) && reached < statements.len() {
+        m.insert("truncated".into(), json!("bytes"));
+        let rest = if reached + 1 == statements.len() { format!("statement {}", statements.len()) } else { format!("statements {}–{}", reached + 1, statements.len()) };
+        m.insert("note".into(), json!(format!("the results passed ~256 KB in all at statement {reached}: {rest} not returned; run them on their own or select less")));
+    }
+    m.insert("ms".into(), json!(ms(o.elapsed)));
+    Value::Object(m)
+}
+
+/// A statement's first line that is not a comment, up to 120 characters.
+fn first_line(sql: &str) -> String {
+    let line = sql.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with("--")).unwrap_or("");
+    match line.char_indices().nth(120) {
+        Some((at, _)) => format!("{}…", &line[..at]),
+        None => line.to_string(),
+    }
+}
+
 pub fn ms(d: std::time::Duration) -> f64 {
     (d.as_secs_f64() * 1e4).round() / 10.0
 }
@@ -146,6 +194,7 @@ mod tests {
         for want in [
             "list_connections", "list_schemas", "list_tables", "search_objects", "describe_table", "get_ddl", "sample_rows", "run_query",
             "open_query", "explain", "explain_analyze", "execute", "activity_sessions", "activity_locks", "cancel_backend", "terminate_backend",
+            "list_favorites", "run_favorite",
         ] {
             assert!(names.contains(&want), "{want} missing from {names:?}");
         }

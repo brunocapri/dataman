@@ -1,20 +1,35 @@
 //! list_favorites, add_favorite, remove_favorite, import_favorites: the favorite queries saved
 //! in `favorites.toml`, shared with the app (`crate::history` panel, ⌘Y).
 
-use diskman_core::Favorite;
-use serde_json::{Value, json};
+use diskman_core::{Favorite, NameMatch};
+use serde_json::{Map, Value, json};
 
-use super::{Builtin, table};
-use crate::tool::{Args, BoxFut, Call, ToolError};
+use super::{Builtin, limits_props, table};
+use crate::tool::{Args, BoxFut, Call, ToolError, params_schema};
 
 pub fn tools() -> Vec<Builtin> {
     vec![
         Builtin {
             name: "list_favorites",
-            description: "Lists Diskman's favorite queries: statements saved across history pruning and \"clear history\" (only remove_favorite drops one). Rows: [id, name, connection, database, sql], connection and database null when the favorite is not pinned to one.",
+            description: "Lists Diskman's favorite queries: statements saved across history pruning and \"clear history\" (only remove_favorite drops one). Rows: [id, name, connection, database, sql], connection and database null when the favorite is not pinned to one. Run one with run_favorite by its name (an approximate name is enough).",
             schema: crate::tool::Schema::new(),
             need: None,
             run: list_favorites,
+        },
+        Builtin {
+            name: "run_favorite",
+            description: "Runs one of the user's favorite queries by its name, as open_query runs SQL: visibly in the user's agent tab while Diskman is open, reads as run_query (results: […] for several statements), writes through the connection's MCP tier and its approvals; run: false only places it in the tab. The name may be approximate (case, accents, word order, typos): one clear match runs, and the answer names it (favorite). When several are close, or none is, nothing runs: {matched: false, reason, candidates: [{name, connection, database, sql}]} to choose from (ask the user if unsure, then call again with the exact name). Runs on the favorite's own connection and database unless connection is given.",
+            schema: limits_props(
+                crate::tool::Schema::new()
+                    .prop("name", true, json!({"type": "string", "maxLength": 200, "description": "The favorite's name, or close to it (list_favorites)."}))
+                    .prop("connection", false, json!({"type": "string", "description": "Connection name or id (list_connections); default: the favorite's own."}))
+                    .prop("database", false, json!({"type": "string", "description": "Database on that connection; default: the favorite's own (with its connection), else the connection's."}))
+                    .prop("params", false, params_schema())
+                    .prop("run", false, json!({"type": "boolean", "description": "false: put the favorite's SQL in the user's agent tab without running it. Default true."})),
+                200,
+            ),
+            need: None,
+            run: run_favorite,
         },
         Builtin {
             name: "add_favorite",
@@ -77,6 +92,73 @@ fn list_favorites(cx: &Call, _a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
             })
             .collect();
         Ok(table(&["id", "name", "connection", "database", "sql"], rows))
+    })
+}
+
+/// A statement's first line that is not a comment (a candidate's preview).
+fn first_line(sql: &str) -> String {
+    let line = sql.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with("--")).unwrap_or("");
+    match line.char_indices().nth(120) {
+        Some((at, _)) => format!("{}…", &line[..at]),
+        None => line.to_string(),
+    }
+}
+
+fn run_favorite(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
+    Box::pin(async move {
+        cx.enabled()?;
+        let query = a.str("name")?;
+        let favorites = cx.hub.core.favorites.list();
+        let profiles = cx.hub.profiles();
+        let conn_name = |f: &Favorite| f.connection_id.as_ref().map(|id| profiles.iter().find(|p| p.id == *id).map(|p| p.name.clone()).unwrap_or_else(|| id.clone()));
+        let names: Vec<&str> = favorites.iter().map(|f| f.name.as_str()).collect();
+        // Its id names it too (from list_favorites).
+        let found = match favorites.iter().position(|f| f.id == query) {
+            Some(i) => NameMatch::One(i),
+            None => diskman_core::favorites::match_name(&names, query),
+        };
+        let listed = |ix: &[usize]| -> Vec<Value> {
+            ix.iter()
+                .map(|&i| {
+                    let f = &favorites[i];
+                    json!({"name": f.name, "connection": conn_name(f), "database": f.database, "sql": first_line(&f.sql)})
+                })
+                .collect()
+        };
+        let f = match found {
+            NameMatch::One(i) => &favorites[i],
+            NameMatch::Ambiguous(ix) => {
+                return Ok(json!({"matched": false, "reason": format!("{} favorites match {query:?} about as well; nothing ran", ix.len()), "candidates": listed(&ix)}));
+            }
+            NameMatch::Nothing(ix) => {
+                let reason = if favorites.is_empty() { "there are no favorite queries".to_string() } else { format!("no favorite is named like {query:?}; nothing ran") };
+                return Ok(json!({"matched": false, "reason": reason, "candidates": listed(&ix)}));
+            }
+        };
+        cx.note_favorite(&f.name);
+        let mut args: Map<String, Value> = a.0.clone();
+        args.remove("name");
+        args.insert("sql".into(), json!(f.sql));
+        args.insert("title".into(), json!(f.name));
+        if a.opt_str("connection").is_none() {
+            let Some(c) = conn_name(f) else {
+                return Err(ToolError::Invalid(format!("the favorite {:?} is not saved with a connection: pass connection (list_connections)", f.name)));
+            };
+            args.insert("connection".into(), json!(c));
+            if a.opt_str("database").is_none()
+                && let Some(d) = &f.database
+            {
+                args.insert("database".into(), json!(d));
+            }
+        }
+        let mut v = super::query::open(cx, Args(args)).await?;
+        if let Some(m) = v.as_object_mut() {
+            let mut head = Map::new();
+            head.insert("favorite".into(), json!({"id": f.id, "name": f.name}));
+            head.extend(std::mem::take(m));
+            *m = head;
+        }
+        Ok(v)
     })
 }
 

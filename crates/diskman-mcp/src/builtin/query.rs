@@ -5,7 +5,7 @@ use diskman_core::explain::{self, Plan};
 use diskman_core::guard::{self, WriteClass};
 use serde_json::{Map, Value, json};
 
-use super::{Builtin, confirm_prop, conn_schema, limits_props, ms, result_json};
+use super::{Builtin, confirm_prop, conn_schema, limits_props, ms, read_json, result_json};
 use crate::policy::Need;
 use crate::tool::{Args, BoxFut, Call, Opened, ToolError, Write, params_schema};
 
@@ -17,17 +17,17 @@ pub fn tools() -> Vec<Builtin> {
     vec![
         Builtin {
             name: "run_query",
-            description: "Runs one read-only SQL statement (SELECT, WITH … SELECT, TABLE, VALUES, SHOW, EXPLAIN) inside a read-only transaction that is rolled back. Writes, row locks, transaction control and functions with side effects are refused before reaching the server (also on LAR, which does not enforce READ ONLY). Returns {columns: [[name, type]], rows: [[…]], row_count, truncated?, ms}: JSON values, null is SQL NULL (distinct from \"\"), numeric/dates/times as text, json embedded. At most max_rows rows (default 200) and ~256 KB; text over 2000 chars is cut with …. Select the columns you need, filter with WHERE, and pass values as params ($1, $2, …).",
-            schema: limits_props(conn_schema().prop("sql", true, sql_prop("One read-only statement.")).prop("params", false, params_schema()), 200),
+            description: "Runs read-only SQL (SELECT, WITH … SELECT, TABLE, VALUES, SHOW, EXPLAIN) inside a read-only transaction that is rolled back. Writes, row locks, transaction control and functions with side effects are refused before reaching the server (also on LAR, which does not enforce READ ONLY). One statement returns {columns: [[name, type]], rows: [[…]], row_count, truncated?, ms}: JSON values, null is SQL NULL (distinct from \"\"), numeric/dates/times as text, json embedded. Several reads separated by ; (or a T-SQL batch returning several result sets) return {results: [{statement, sql, columns, rows, row_count, truncated?, ms}], statements, ms}. At most max_rows rows (default 200) per result and ~256 KB in all; text over 2000 chars is cut with …. Pass values as params ($1, $2, …; one statement only).",
+            schema: limits_props(conn_schema().prop("sql", true, sql_prop("Read-only statements, separated by ;.")).prop("params", false, params_schema()), 200),
             need: Some(Need::Read),
             run: run_query,
         },
         Builtin {
             name: "open_query",
-            description: "Runs SQL visibly in Diskman: while the app is open, the statement goes into this client's agent tab for the connection (one per connection and client, reused), runs there, and the full result stays there for the user; you get the same bounded result as run_query. A read runs as run_query does; a write follows the connection's MCP tier as execute does (write: non-destructive DML within the row limit; full: destructive statements and writes over the limit wait for the user's Allow). Without the app it runs headless; writes that need approval are then refused. Set run: false to only place the statement in the user's tab for them to review and run themselves (nothing runs; any tier but off; needs the app open); use this for writes the user wants to run personally.",
+            description: "Runs SQL visibly in Diskman: while the app is open, the statement goes into this client's agent tab for the connection (one per connection and client, reused), runs there, and the full result stays there for the user (one result tab per statement); you get the same bounded result as run_query (results: […] for several reads). Reads run as run_query does; a write follows the connection's MCP tier as execute does (write: non-destructive DML within the row limit; full: destructive statements and writes over the limit wait for the user's Allow). Without the app it runs headless; writes that need approval are then refused. Set run: false to only place the statement in the user's tab for them to review and run themselves (nothing runs; any tier but off; needs the app open); use this for writes the user wants to run personally.",
             schema: limits_props(
                 conn_schema()
-                    .prop("sql", true, sql_prop("The statement (a read), or the statements of a write, separated by ;."))
+                    .prop("sql", true, sql_prop("The statements (reads, or a write's), separated by ;."))
                     .prop("params", false, params_schema())
                     .prop("title", false, json!({"type": "string", "maxLength": 80, "description": "A name for what this does, shown in the agent tab's history (optional)."}))
                     .prop("run", false, json!({"type": "boolean", "description": "false: put the SQL in the user's agent tab without running it (a draft the user reviews and runs). Default true."})),
@@ -82,15 +82,16 @@ async fn read(cx: &Call, a: &Args, open: bool) -> Result<Value, ToolError> {
     cx.note_sql(sql);
     let target = cx.target(a, Need::Read)?;
     let d = target.engine.dialect();
-    if let Some(r) = bounded::refusal_in(&bounded::statements_in(sql, d), params.len(), Mode::Read, cx.read_only(a, &target), d) {
+    let stmts = bounded::statements_in(sql, d);
+    if let Some(r) = bounded::refusal_in(&stmts, params.len(), Mode::Read, cx.read_only(a, &target), d) {
         return Err(ToolError::Refused(r));
     }
     let limits = cx.limits(a, 200);
     let front = cx.tab_front(open);
     let shown = front.is_some();
     let out = cx.read(a, sql, params, limits, front, a.opt_str("title").map(str::to_string)).await?;
-    cx.note_rows(out.rows.len());
-    let mut v = result_json(&out, limits.max_rows);
+    cx.note_rows(out.total_rows());
+    let mut v = read_json(&out, limits.max_rows, &stmts);
     if open && let Some(m) = v.as_object_mut() {
         m.insert("in_tab".into(), json!(shown));
     }
@@ -98,22 +99,29 @@ async fn read(cx: &Call, a: &Args, open: bool) -> Result<Value, ToolError> {
 }
 
 fn open_query(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
-    Box::pin(async move {
-        let sql = a.str("sql")?;
-        if a.get("run").and_then(Value::as_bool) == Some(false) {
-            return draft(cx, &a, sql).await;
-        }
-        let target = cx.target(&a, Need::Read)?;
-        // What it is decides the path: a read as run_query, anything else as execute.
-        if guard::agent_write_class(sql, target.engine.dialect()) == WriteClass::Read && bounded::statements_in(sql, target.engine.dialect()).len() == 1 {
-            return read(cx, &a, true).await;
-        }
-        let mut v = write(cx, &a, true).await?;
-        if let Some(m) = v.as_object_mut() {
-            m.insert("in_tab".into(), json!(cx.tab_front(true).is_some()));
-        }
-        Ok(v)
-    })
+    Box::pin(open(cx, a))
+}
+
+/// `open_query` (and `run_favorite`, with the favorite's SQL in `sql`).
+pub(super) async fn open(cx: &Call, a: Args) -> Result<Value, ToolError> {
+    let sql = a.str("sql")?;
+    if a.get("run").and_then(Value::as_bool) == Some(false) {
+        return draft(cx, &a, sql).await;
+    }
+    let target = cx.target(&a, Need::Read)?;
+    // What it is decides the path: reads (every statement one) as run_query, anything else as
+    // execute. (A script that also sets something, `SET …; SELECT …`, runs as a write does.)
+    let d = target.engine.dialect();
+    let stmts = bounded::statements_in(sql, d);
+    let reads = guard::agent_write_class(sql, d) == WriteClass::Read && (stmts.len() == 1 || stmts.iter().all(|s| guard::agent_read_refusal_in(s, d).is_none()));
+    if reads {
+        return read(cx, &a, true).await;
+    }
+    let mut v = write(cx, &a, true).await?;
+    if let Some(m) = v.as_object_mut() {
+        m.insert("in_tab".into(), json!(cx.tab_front(true).is_some()));
+    }
+    Ok(v)
 }
 
 /// `open_query` with `run: false`: the SQL in the user's agent tab, nothing run ([`Call::draft`]).

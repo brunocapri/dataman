@@ -333,6 +333,10 @@ pub struct ResultGrid {
     /// Pop on this column (by name) of the first row once rows arrive: the key of the row an FK
     /// "Go to" opened this tab on. Survives `set_result` (the tab may run after this is set).
     land: Option<String>,
+    /// When cells last went to the clipboard: the result bar's Copy button says "Copied" for a
+    /// moment (`crate::motion::copied`).
+    pub(crate) copied_at: Option<Instant>,
+    _copied: Option<Task<()>>,
     /// ⌘F: the find bar and the matching cells of the loaded rows.
     find: Option<GridFind>,
     /// Hidden and moved columns (display ↔ result column).
@@ -528,6 +532,8 @@ impl ResultGrid {
             _menu_blur: None,
             pop: None,
             land: None,
+            copied_at: None,
+            _copied: None,
             find: None,
             layout: ColLayout::default(),
             kept: None,
@@ -1817,6 +1823,24 @@ impl ResultGrid {
         let real = rs.rows();
         let text = rs.copy(sel.rows().filter(|r| *r < real), &cols, fmt, header);
         cx.write_to_clipboard(ClipboardItem::new_string(text));
+        self.mark_copied(cx);
+    }
+
+    /// Something of this result went to the clipboard: "Copied" in the result bar for a
+    /// moment, then the Copy button again (redrawn through its fades and at its end only).
+    pub fn mark_copied(&mut self, cx: &mut Context<Self>) {
+        let start = Instant::now();
+        self.copied_at = Some(start);
+        let redraws = crate::motion::copied_redraws(cx.reduce_motion());
+        self._copied = Some(cx.spawn(async move |g, cx| {
+            for at in redraws {
+                cx.background_executor().timer(at.saturating_sub(start.elapsed())).await;
+                if g.update(cx, |_, cx| cx.notify()).is_err() {
+                    return;
+                }
+            }
+        }));
+        cx.notify();
     }
 
     fn select_all(&mut self, cx: &mut Context<Self>) {

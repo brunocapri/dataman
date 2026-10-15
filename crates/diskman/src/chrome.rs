@@ -640,8 +640,9 @@ impl Workspace {
                 .w(px(w))
                 .flex_none()
                 .h_full()
+                // The seam's hairline, like the explorer's and the bars'.
                 .border_l_1()
-                .border_color(t.line2)
+                .border_color(t.line)
                 .when(history && sliding, |d| d.overflow_hidden())
                 .child(div().absolute().top_0().bottom_0().right_0().w(px(self.side_w)).child(content))
                 .children((region == Some(Region::Side)).then(|| focus_ring(&t)))
@@ -1160,6 +1161,8 @@ impl Workspace {
             if tr.shown_key() == Some(Key::Messages) { tr.batch_items().iter().any(|b| b.rs.as_ref().is_some_and(|r| r.has_messages())) } else { rs.as_ref().is_some_and(|r| r.has_messages()) }
         };
         let viewer_on = matches!(self.side, Some(Side::Viewer));
+        // A copy a moment ago: "Copied", fading in and out (`motion::copied`).
+        let copied = grid.read(cx).copied_at.and_then(|at| crate::motion::copied(at, std::time::Instant::now(), cx.reduce_motion()));
         // Under the Copy button, its right edge on the button's (a zero-width point at the
         // button's bottom-right corner anchors it; it flips above when there is no room).
         let copy_menu = self.copy_menu.then(|| {
@@ -1172,9 +1175,11 @@ impl Workspace {
                             cx.notify();
                         }))
                         .child(ui::menu_item(t, "cp-tsv", "Copy as TSV", crate::keymap::key("copy_tsv").as_deref(), has_rows).on_click(cx.listener(|w, _, _, cx| w.copy_selection(CopyFormat::Tsv, false, cx))))
+                        // ⇧⌘C ("Copy with headers") is this one: TSV with its header row.
+                        .child(ui::menu_item(t, "cp-tsv-hdr", "Copy as TSV with Headers", crate::keymap::key("copy_with_headers").as_deref(), has_rows).on_click(cx.listener(|w, _, _, cx| w.copy_selection(CopyFormat::Tsv, true, cx))))
                         .child(ui::menu_item(t, "cp-csv", "Copy as CSV", crate::keymap::key("copy_csv").as_deref(), has_rows).on_click(cx.listener(|w, _, _, cx| w.copy_selection(CopyFormat::Csv, false, cx))))
-                        .child(ui::menu_item(t, "cp-hdr", "Copy with headers", crate::keymap::key("copy_with_headers").as_deref(), has_rows).on_click(cx.listener(|w, _, _, cx| w.copy_selection(CopyFormat::Tsv, true, cx))))
-                        .when(printed, |d| d.child(ui::menu_item(t, "cp-msg", "Copy messages", None, true).on_click(cx.listener(|w, _, _, cx| w.copy_messages(cx))))),
+                        .child(ui::menu_item(t, "cp-csv-hdr", "Copy as CSV with Headers", None, has_rows).on_click(cx.listener(|w, _, _, cx| w.copy_selection(CopyFormat::Csv, true, cx))))
+                        .when(printed, |d| d.child(ui::menu_sep(t)).child(ui::menu_item(t, "cp-msg", "Copy Messages", None, true).on_click(cx.listener(|w, _, _, cx| w.copy_messages(cx))))),
                 ),
             )
             .priority(3))
@@ -1226,6 +1231,9 @@ impl Workspace {
                     .relative()
                     .child(
                         ghost("rb-copy")
+                            // "Copied" takes the button's place for a moment: the button keeps
+                            // its room (invisible), so nothing moves.
+                            .when(copied.is_some(), |d| d.invisible())
                             .child(icon(Icon::Copy).size(px(13.)).text_color(t.tx2))
                             .child("Copy")
                             .child(icon(Icon::ChevronDown).size(px(9.)).text_color(t.tx2))
@@ -1234,6 +1242,26 @@ impl Workspace {
                                 cx.notify();
                             })),
                     )
+                    .children(copied.map(|a| {
+                        div()
+                            .id("rb-copied")
+                            .absolute()
+                            .inset_0()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .justify_center()
+                            .gap(px(4.))
+                            .text_size(px(11.5))
+                            .text_color(t.ok)
+                            .opacity(a)
+                            .child(icon(Icon::Check).size(px(12.)).text_color(t.ok))
+                            .child("Copied")
+                            .on_click(cx.listener(|w, _, _, cx| {
+                                w.copy_menu = !w.copy_menu;
+                                cx.notify();
+                            }))
+                    }))
                     .children(copy_menu),
             )
             .child(
@@ -1442,6 +1470,8 @@ impl Workspace {
             let text = shown_messages(tab.read(cx));
             if !text.is_empty() {
                 cx.write_to_clipboard(ClipboardItem::new_string(text));
+                let grid = tab.read(cx).grid.clone();
+                grid.update(cx, |g, cx| g.mark_copied(cx));
             }
         }
         cx.notify();

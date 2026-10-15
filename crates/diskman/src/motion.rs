@@ -242,6 +242,48 @@ pub fn paint_pop(
     }
 }
 
+/// How long the result bar's Copy button says "Copied" after a copy.
+pub const COPIED_FOR: Duration = Duration::from_millis(2000);
+/// When "Copied" starts to fade back into the Copy button.
+pub const COPIED_FADE_AT: Duration = Duration::from_millis(1750);
+/// Its fade in.
+pub const COPIED_IN: Duration = Duration::from_millis(120);
+
+/// The "Copied" state's opacity `since` a copy: fading in, held, fading out (always 1 with
+/// "Reduce motion": it is simply there, then gone); `None` once it is over.
+pub fn copied(since: Instant, now: Instant, reduced: bool) -> Option<f32> {
+    let e = now.saturating_duration_since(since);
+    if e >= COPIED_FOR {
+        return None;
+    }
+    if reduced {
+        return Some(1.);
+    }
+    let fade_in = (e.as_secs_f32() / COPIED_IN.as_secs_f32()).min(1.);
+    let fade_out = if e >= COPIED_FADE_AT { (COPIED_FOR - e).as_secs_f32() / (COPIED_FOR - COPIED_FADE_AT).as_secs_f32() } else { 1. };
+    Some(EASE.eval(fade_in.min(fade_out)))
+}
+
+/// When the "Copied" state must be drawn again after a copy: every frame of its fades, and its
+/// end (with "Reduce motion" only the end).
+pub fn copied_redraws(reduced: bool) -> Vec<Duration> {
+    let frame = Duration::from_millis(16);
+    let mut at = Vec::new();
+    let fade = |from: Duration, to: Duration, at: &mut Vec<Duration>| {
+        let mut t = from;
+        while t < to {
+            at.push(t);
+            t += frame;
+        }
+    };
+    if !reduced {
+        fade(frame, COPIED_IN + frame, &mut at);
+        fade(COPIED_FADE_AT, COPIED_FOR, &mut at);
+    }
+    at.push(COPIED_FOR);
+    at
+}
+
 /// The "Reduce motion" setting (Settings ▸ Appearance), kept so the system's switch can be
 /// combined with it again later.
 pub struct ReduceMotionPref(pub bool);
@@ -290,6 +332,23 @@ pub fn system_reduce_motion() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// "Copied": in, held, out, gone after 2 s; without motion simply there, then gone, drawn
+    /// again only at its end.
+    #[test]
+    fn copied_fades() {
+        let t0 = Instant::now();
+        let at = |ms: u64, reduced: bool| copied(t0, t0 + Duration::from_millis(ms), reduced);
+        assert!(at(0, false).is_some_and(|a| a < 0.05));
+        assert_eq!(at(500, false), Some(1.));
+        assert!(at(1900, false).is_some_and(|a| a > 0. && a < 1.));
+        assert_eq!((at(2000, false), at(2000, true)), (None, None));
+        assert_eq!((at(0, true), at(1900, true)), (Some(1.), Some(1.)));
+        assert_eq!(copied_redraws(true), vec![COPIED_FOR]);
+        let r = copied_redraws(false);
+        assert!(r.len() > 20 && r.last() == Some(&COPIED_FOR) && r.windows(2).all(|w| w[0] < w[1]));
+        assert!(!r.iter().any(|d| *d > COPIED_IN + Duration::from_millis(16) && *d < COPIED_FADE_AT), "no frames while it holds");
+    }
 
     #[test]
     fn ease_matches_css() {

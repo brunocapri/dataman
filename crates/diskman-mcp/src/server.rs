@@ -21,8 +21,11 @@ use crate::tool::{Args, Call, Registry, Tool, ToolError};
 
 pub const INSTRUCTIONS: &str = "Databases through Diskman's saved connections. Start with list_connections, then list_tables / \
 search_objects / describe_table (or the diskman:// schema resources). run_query is read-only and bounded (rows, bytes, time); \
-pass values as params. open_query runs SQL visibly in the user's Diskman (an agent tab); set run: false to only place the \
-statement in the user's tab for them to review and run themselves (use this for writes the user wants to run personally). Writes (execute, open_query) follow \
+pass values as params; several reads separated by ; come back as results: [...], one per statement. open_query runs SQL \
+visibly in the user's Diskman (an agent tab); set run: false to only place the statement in the user's tab for them to \
+review and run themselves (use this for writes the user wants to run personally). The user's favorite queries: \
+list_favorites, and run_favorite runs one by its name (close is enough; an unclear name returns the candidates to choose \
+from and runs nothing). Writes (execute, open_query, run_favorite) follow \
 each connection's MCP tier, set by the user: read refuses them; write runs non-destructive DML (INSERT, UPDATE/DELETE with a real \
 WHERE) within a row limit; full also allows destructive statements, which wait for the user's Allow in the app, as do writes over \
 the row limit and every write on production. You cannot approve anything yourself. Results: columns as [name, type], rows as \
@@ -70,6 +73,7 @@ impl Server {
             error,
             approval: n.approval,
             draft: n.draft,
+            favorite: n.favorite,
         });
     }
 

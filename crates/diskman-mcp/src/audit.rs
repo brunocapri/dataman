@@ -67,6 +67,9 @@ pub struct Entry {
     /// `open_query` with `run: false`: the SQL was placed in an agent tab, nothing ran.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub draft: bool,
+    /// `run_favorite`: the name of the favorite query it ran (or drafted).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub favorite: Option<String>,
 }
 
 /// What became of a write that needed a human's Allow.
@@ -251,6 +254,7 @@ mod tests {
                     rows: Some(1204),
                 }),
                 draft: i == 3,
+                favorite: None,
             });
         }
         let text = std::fs::read_to_string(a.path()).unwrap();
@@ -293,6 +297,7 @@ mod tests {
             error: None,
             approval: None,
             draft: false,
+            favorite: None,
         };
         let line = serde_json::to_string(&e).unwrap();
         let back: Entry = serde_json::from_str(&line).unwrap();

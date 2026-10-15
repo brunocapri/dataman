@@ -12,7 +12,8 @@
 //!   resolve; a live switch re-measures the grid and scales its columns), a middle click on a
 //!   query tab and on a result tab (they close like ⌘W and the ×), the zoom, Settings ▸
 //!   Keyboard (a command remapped, removed and reset with clicks and keys; ⇧⌘C copies with
-//!   headers), printed as PASS/FAIL lines; exit code 1 on a failure.
+//!   headers), "Copied" in the Copy button's place for 2 s after a copy, the Copy menu's CSV
+//!   and TSV with headers, printed as PASS/FAIL lines; exit code 1 on a failure.
 
 use std::time::Duration;
 
@@ -943,10 +944,34 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     let with = cx.update(|_, cx| cx.read_from_clipboard().and_then(|c| c.text())).ok().flatten();
     press(cx, "cmd-alt-c");
     let csv = cx.update(|_, cx| cx.read_from_clipboard().and_then(|c| c.text())).ok().flatten();
-    if let Some(c) = clip {
+    if let Some(c) = clip.clone() {
         let _ = cx.update(|_, cx| cx.write_to_clipboard(c));
     }
     report("⇧⌘C in the grid copies with headers, ⌥⌘C as CSV", with.as_deref().map(str::trim_end) == Some("answer\n7") && csv.as_deref().map(str::trim_end) == Some("7"), format!("{with:?} {csv:?}"));
+    // The copy just made: "Copied" in the Copy button's place, for 2 s.
+    let shown = |cx: &mut AsyncWindowContext| cx.update(|_, cx| grid.read(cx).copied_at.and_then(|at| crate::motion::copied(at, std::time::Instant::now(), cx.reduce_motion())).is_some()).unwrap_or(false);
+    let copied_now = shown(cx);
+    pause(cx, 2100).await;
+    draw(cx);
+    report("a copy shows Copied, then the Copy button again after 2 s", copied_now && !shown(cx), String::new());
+    // The Copy menu's CSV and TSV with headers: RFC 4180 quoting, TSV's escapes.
+    let quoted = run_sql(ws, "SELECT 'a,b' AS \"x y\", 'say \"hi\"' AS z, NULL AS n", cx).await;
+    let qgrid = cx.update(|_, cx| quoted.read(cx).grid.clone()).unwrap();
+    let _ = cx.update(|window, cx| window.focus(&qgrid.focus_handle(cx), cx));
+    press(cx, "cmd-a");
+    let mut copies = Vec::new();
+    for (fmt, header) in [(diskman_core::result::CopyFormat::Csv, true), (diskman_core::result::CopyFormat::Tsv, true)] {
+        let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.copy_selection(fmt, header, cx)));
+        copies.push(cx.update(|_, cx| cx.read_from_clipboard().and_then(|c| c.text())).ok().flatten().unwrap_or_default());
+    }
+    report(
+        "Copy as CSV with Headers quotes as RFC 4180; Copy as TSV with Headers escapes as TSV",
+        copies == ["x y,z,n\n\"a,b\",\"say \"\"hi\"\"\",\n", "x y\tz\tn\na,b\tsay \"hi\"\t\\N\n"],
+        format!("{copies:?}"),
+    );
+    if let Some(c) = clip {
+        let _ = cx.update(|_, cx| cx.write_to_clipboard(c));
+    }
     ok
 }
 

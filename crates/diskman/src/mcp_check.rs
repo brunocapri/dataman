@@ -5,7 +5,10 @@
 //! - `mcp-check`: an `open_query` lands in an agent tab (the SQL in its editor, the whole result
 //!   in its grid, the bounded rows for the agent, the agent's mark in the history), the next
 //!   calls reuse that tab, a tab the user edited is left alone (a new agent tab, behind the
-//!   one in front), "Agent queries in tabs" off keeps `run_query` headless; writes on a
+//!   one in front), "Agent queries in tabs" off keeps `run_query` headless; several reads in
+//!   one call (every result for the agent, a result tab each); favorites listed and run by a
+//!   name typed with a typo (in the agent tab), an unclear name (the candidates, nothing run);
+//!   writes on a
 //!   connection of tier full: DDL waits for Allow (clicked) before it runs, a safe INSERT
 //!   commits without a question, a DELETE without WHERE is held with its row count over its
 //!   agent tab and Deny rolls it back, an UPDATE without WHERE is allowed and commits, ⌘↩
@@ -270,6 +273,50 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     let (err, out) = call(&agent_ipc,"run_query", json!({"connection": conn, "database": db, "sql": "SELECT 2 AS headless"})).await;
     check("Agent queries in tabs off: run_query stays headless", !err && out.contains("headless") && text(&second, cx) == before && agent_tabs(ws, cx).len() == 2, out);
     let _ = core.settings.update(|s| s.mcp_show_in_tabs = true);
+
+    // Several reads in one open_query: every result for the agent, a result tab each in the
+    // agent tab.
+    let several = "SELECT 1 AS one;\nSELECT 'two' AS two;\nSELECT generate_series(1, 4) AS n";
+    let (err, out) = call(&agent_ipc, "open_query", json!({"connection": conn, "database": db, "sql": several, "max_rows": 2})).await;
+    let v: Value = serde_json::from_str(&out).unwrap_or(Value::Null);
+    let rows: Vec<Value> = v["results"].as_array().map(|r| r.iter().map(|x| x["rows"].clone()).collect()).unwrap_or_default();
+    check(
+        "several reads: the agent gets every result, in order",
+        !err && v["statements"] == json!(3) && rows == [json!([[1]]), json!([["two"]]), json!([[1], [2]])] && v["results"][2]["truncated"] == json!("rows") && v["in_tab"] == json!(true),
+        out.clone(),
+    );
+    let shown = agent_tabs(ws, cx).into_iter().find(|t| text(t, cx) == several);
+    let tabs_of_run = shown.as_ref().and_then(|t| cx.update(|_, cx| t.read(cx).batch_items().iter().filter(|b| b.rs.as_ref().is_some_and(|r| r.phase().is_finished())).count()).ok());
+    check("the agent tab shows them as three result tabs", tabs_of_run == Some(3), format!("{tabs_of_run:?}"));
+    let n_rows = shown.as_ref().and_then(|t| cx.update(|_, cx| t.read(cx).batch_items().last().and_then(|b| b.rs.as_ref().map(|r| r.rows()))).ok().flatten());
+    check("the whole last result stays in the tab", n_rows == Some(4), format!("{n_rows:?}"));
+
+    // Favorites by name: listed, then run by a name typed from memory, in the agent tab; an
+    // unclear name runs nothing and lists the candidates.
+    let favs = [("Orders by day", "SELECT 'day' AS per;"), ("Orders by month", "SELECT 'month' AS per;"), ("Top customers", "SELECT c.name FROM customer c ORDER BY c.id LIMIT 3;")];
+    for (name, sql) in favs {
+        let mut f = diskman_core::Favorite::new(name, sql);
+        f.connection_id = Some(id.to_string());
+        f.database = Some(db.to_string());
+        let _ = core.favorites.add(f);
+    }
+    let (err, out) = call(&agent_ipc, "list_favorites", json!({})).await;
+    check("list_favorites has them", !err && favs.iter().all(|(n, _)| out.contains(n)), out);
+    let (err, out) = call(&agent_ipc, "run_favorite", json!({"name": "top custmers", "max_rows": 2})).await;
+    let v: Value = serde_json::from_str(&out).unwrap_or(Value::Null);
+    check("run_favorite runs \"top custmers\" as Top customers", !err && v["favorite"]["name"] == json!("Top customers") && v["row_count"] == json!(2) && v["in_tab"] == json!(true), out.clone());
+    let fav_tab = agent_tabs(ws, cx).into_iter().find(|t| text(t, cx) == favs[2].1);
+    let fav_rows = fav_tab.as_ref().and_then(|t| cx.update(|_, cx| t.read(cx).result().map(|r| r.rows())).ok().flatten());
+    check("its SQL and whole result are in the agent tab", fav_rows == Some(3), format!("{fav_rows:?}"));
+    let (err, out) = call(&agent_ipc, "run_favorite", json!({"name": "orders by"})).await;
+    let v: Value = serde_json::from_str(&out).unwrap_or(Value::Null);
+    let names: Vec<&str> = v["candidates"].as_array().map(|c| c.iter().filter_map(|x| x["name"].as_str()).collect()).unwrap_or_default();
+    pause(cx, 100).await;
+    let ran = core.history.load(id, 50).unwrap_or_default().iter().any(|h| h.sql.contains("AS per")) || agent_tabs(ws, cx).iter().any(|t| text(t, cx).contains("AS per"));
+    check("an unclear name: the candidates, nothing run", !err && v["matched"] == json!(false) && names == ["Orders by day", "Orders by month"] && !ran, out);
+    for f in core.favorites.list().into_iter().filter(|f| favs.iter().any(|(n, _)| *n == f.name)) {
+        let _ = core.favorites.remove(&f.id);
+    }
 
     // Writes on tier full. DDL: asked before it runs, Allow clicked.
     let s = format!("mcp_check_{}", std::process::id());

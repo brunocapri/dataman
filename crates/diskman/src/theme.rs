@@ -472,6 +472,11 @@ pub struct Theme {
     pub find_tx: Hsla,
     /// Every match of an open find bar (editor ranges, grid cells): the yellow, faint.
     pub find_s: Hsla,
+    /// Neutral highlight (no hue): the explorer filter's matched letters, the selected row of
+    /// the history and favorites, the search fields' focus halo.
+    pub mark: Hsla,
+    /// Its line: the matched letters' underline, a focused search field's border.
+    pub mark_b: Hsla,
     /// Every other row.
     pub alt: Hsla,
     /// The rows between them, where the surface still lets the desktop through (dark, on the
@@ -598,6 +603,8 @@ impl Theme {
             find: c(0xf5d33f),
             find_tx: c(0x1c1600),
             find_s: ca(0xf5d33f, 0.16),
+            mark: ca(W, 0.12),
+            mark_b: c(0x8c8c8c),
             alt: ca(W, ALT_GLASS.0),
             alt_base: ca(0x000000, ALT_GLASS.0),
             key: ca(W, 0.06),
@@ -688,6 +695,8 @@ impl Theme {
             find: c(0xffe14a),
             find_tx: c(0x1c1600),
             find_s: ca(0xf2c200, 0.24),
+            mark: ca(0x000000, 0.08),
+            mark_b: c(0x7c7c7c),
             alt: ca(K, ALT_GLASS.1),
             alt_base: gpui::transparent_black(),
             key: ca(K, 0.04),
@@ -763,6 +772,12 @@ impl Theme {
     /// Focus halo (3 pt of `acc_s` around a focused field or region).
     pub fn halo(&self) -> Vec<BoxShadow> {
         vec![BoxShadow { color: self.acc_s, offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(3.), inset: false }]
+    }
+
+    /// [`Theme::halo`] in the neutral `mark`: a focused search field (the explorer filter, the
+    /// history's search), gray where focus elsewhere is blue.
+    pub fn halo_mark(&self) -> Vec<BoxShadow> {
+        vec![BoxShadow { color: self.mark, offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(3.), inset: false }]
     }
 }
 
