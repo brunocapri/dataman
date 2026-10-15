@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened runtime, no App Sandbox: both binaries (diskman, diskman-mcp) are signed with this.
+  Network client and server (database servers, SSH tunnels) are listed
+  for a sandboxed build; outside the sandbox they are not enforced. Keychain: the passwords live
+  in the login keychain (generic passwords, kSecClass), which needs no entitlement; its access
+  list trusts the signer's designated requirement, so a stable Developer ID keeps "Always Allow"
+  across updates. keychain-access-groups would need a provisioning profile and is left out.
+  No JIT, no unsigned memory, no DYLD variables, no disabled library validation.
+-->
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.network.client</key>
+	<true/>
+	<key>com.apple.security.network.server</key>
+	<true/>
+</dict>
+</plist>

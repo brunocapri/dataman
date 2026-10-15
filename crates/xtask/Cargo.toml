@@ -1,0 +1,15 @@
+[package]
+name = "xtask"
+description = "Diskman's release tooling: the app icon, the update signing key and DMG signatures"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde_json.workspace = true
+# The same versions (and resvg's features) GPUI already builds.
+resvg = "0.46"
+ring = "0.17"
+data-encoding = "2"

@@ -1,0 +1,49 @@
+# Diskman: a native database client for PostgreSQL, MySQL/MariaDB and SQL Server (with extra
+# panels for LAR servers).
+[workspace]
+resolver = "3"
+members = ["crates/diskman-core", "crates/diskman-mcp", "crates/diskman", "crates/xtask"]
+exclude = ["vendor"]
+# The release tooling (icon, update keys and signatures) builds only when asked for:
+# `cargo run --release -p xtask -- …` (scripts/ call it).
+default-members = ["crates/diskman-core", "crates/diskman-mcp", "crates/diskman"]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+license = "MIT"
+publish = false
+
+[workspace.dependencies]
+anyhow = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "macros"] }
+tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-serde_json-1", "with-uuid-1"] }
+futures-util = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.9"
+chrono = "0.4"
+uuid = "1"
+parking_lot = "0.12"
+diskman-core = { path = "crates/diskman-core" }
+diskman-mcp = { path = "crates/diskman-mcp" }
+# GPUI's API is not stable: pinned to the commit of Zed's v1.23.2 release tag.
+gpui = { git = "https://github.com/zed-industries/zed", rev = "c0199504b9cce79bc27524950022ed701bc3ebd5" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "c0199504b9cce79bc27524950022ed701bc3ebd5", features = ["font-kit"] }
+
+# Zed's own workspace patches this crate; GPUI relies on the patched revision.
+[patch.crates-io]
+async-task = { git = "https://github.com/smol-rs/async-task.git", rev = "b4486cd71e4e94fbda54ce6302444de14f4d190e" }
+# tiberius 0.13.0 from crates.io, patched so SQL Server's informational messages (PRINT,
+# RAISERROR at severity 10 or less) reach the caller as QueryItem::Info (search for `Info` in
+# vendor/tiberius/src/tds/stream/query.rs, src/tds/stream/token.rs,
+# src/tds/codec/token/token_info.rs and src/lib.rs; upgrading means applying that again).
+tiberius = { path = "vendor/tiberius" }
+
+# One build tree only (the disk is tight): everything, tests included, builds with
+# --release; incremental keeps the edit-build loop usable.
+[profile.release]
+incremental = true
+codegen-units = 16
+debug = false

@@ -1,0 +1,2899 @@
+//! The main window (UiWindow), laid out like Zeron's shell: the glass painted once behind
+//! everything; two full-height columns, the explorer on the glass and the flush work column
+//! (tabs, toolbar, editor, divider, result bar, grid, side panel) with its translucent fill,
+//! split by one straight hairline; the title bar laid over both; the status bar under them.
+//! Overlays: the connection sheet, toasts, the shortcuts sheet.
+//!
+//! The chrome pieces are drawn in `chrome.rs`; this file holds the state, the actions and
+//! the layout.
+
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use gpui::{
+    AnyView, App, Context, Entity, EntityId, FocusHandle, Focusable, KeyBinding, MouseButton, MouseMoveEvent, Window,
+    actions, div, prelude::*,
+};
+use crate::theme::{Pt, px};
+use diskman_core::{Connection, ConnectionProfile, Core, Favorite, Translucency};
+
+use crate::conn_dialog::{ConnDialog, DialogEvent};
+use crate::conns::{ConnEvent, ConnState, ConnStore};
+use crate::grid::GridEvent;
+use crate::history::{HistoryEvent, HistoryPanel};
+use crate::panels::PanelRegistry;
+use crate::tab::{QueryTab, TabEvent};
+use crate::theme::{self, ActiveTheme, metrics, mono};
+use crate::tree::{SchemaTree, TreeEvent};
+use crate::welcome::{Welcome, WelcomeEvent};
+
+actions!(
+    workspace,
+    [
+        NewTab,
+        CloseTab,
+        NextTab,
+        PrevTab,
+        Tab1,
+        Tab2,
+        Tab3,
+        Tab4,
+        Tab5,
+        Tab6,
+        Tab7,
+        Tab8,
+        Tab9,
+        NewConnection,
+        /// A new connection from the postgres:// URL or libpq string on the clipboard.
+        NewConnectionFromClipboard,
+        /// The pg_service.conf / .pgpass import sheet.
+        ImportConnections,
+        EditConnection,
+        ToggleHistory,
+        /// Favorites the statement under the cursor of the active tab.
+        FavoriteQuery,
+        /// Adds each selected .sql file as a favorite.
+        ImportFavorites,
+        Cancel,
+        Refresh,
+        ToggleExplorer,
+        ToggleSidePanel,
+        FocusExplorer,
+        FocusGrid,
+        FocusEditor,
+        CycleFocus,
+        CycleFocusBack,
+        JumpToError,
+        UseExplorerConnection,
+        ShowShortcuts,
+        CommandPalette,
+        GoTo,
+        OpenSettings,
+        ExportResult,
+        /// A file into the explorer's table (or a new table in its schema).
+        ImportData,
+        ReviewChanges,
+        DiscardChanges,
+        OpenSqlFile,
+        ToggleTheme,
+        ThemeDark,
+        ThemeLight,
+        ThemeSystem,
+        /// View ▸ Transparency: the blurred desktop shows through the window, or not.
+        TranslucencyOn,
+        TranslucencyOff,
+        /// View ▸ Font: the UI's monospace family.
+        FontGeistMono,
+        FontLilex,
+        FontZedMono,
+        FontJetBrainsMono,
+        /// View ▸ Zoom In / Zoom Out / Actual Size (⌘= ⌘- ⌘0): the whole UI's scale.
+        ZoomIn,
+        ZoomOut,
+        ZoomReset,
+        /// ⌥1: the first LAR panel (live queries).
+        LarPanel1,
+        Quit,
+        /// The "discard pending edits?" sheet: keep them, run nothing.
+        CancelPendingRun,
+        /// The "discard pending edits?" sheet: discard them and run.
+        DiscardAndRun,
+        /// ⌥⌘] / ⌥⌘[: the next / previous result tab of a script.
+        NextResult,
+        PrevResult,
+        /// ⌥⌘→ / ⌥⌘←: the next / previous page of a table's data view.
+        NextPage,
+        PrevPage,
+        /// ⌃⌘↩ / ⌃⌘⌫: COMMIT / ROLLBACK a transaction opened with BEGIN.
+        CommitTx,
+        RollbackTx,
+        /// The confirmation sheets (dangerous statements, failed transaction, open transactions
+        /// on close or quit): ⌘↩ the main answer, ⌘⌫ roll back, esc cancel.
+        SheetConfirm,
+        SheetRollback,
+        SheetCancel,
+        /// ⌘L: the plan of the statement under the cursor (EXPLAIN, JSON).
+        Explain,
+        /// ⌥⌘L: EXPLAIN ANALYZE (runs it; on PostgreSQL inside a transaction rolled back).
+        ExplainAnalyze,
+        /// The plan on screen as PostgreSQL's text format, to the clipboard.
+        CopyPlanText,
+        /// The plan view: tree ⇄ flame.
+        TogglePlanFlame,
+        /// The activity monitor of the active tab's connection (or the explorer's).
+        OpenActivity,
+        /// The MCP server's log of tool calls, in the side panel.
+        ToggleMcpLog,
+        /// Reads the update feed now.
+        CheckForUpdates,
+        /// Replaces the app with the downloaded update and relaunches it.
+        InstallUpdate,
+        /// Back / forward through the places visited (`nav`).
+        GoBack,
+        GoForward,
+    ]
+);
+
+/// Frames the workspace has rendered (the idle checks: a window that does nothing renders
+/// none).
+pub static RENDERS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The key context of the confirmation sheets.
+pub const SHEET_CONTEXT: &str = "TxSheet";
+
+/// The workspace's bindings: off while a modal (palette, Settings, export, connection sheet,
+/// a confirmation) has the keys, so ⌘W, ⌘T… cannot act behind it.
+pub const WORKSPACE_KEYS: &str = "Workspace && !Modal";
+
+/// The workspace's fixed keys; its commands (⌘T, ⌘W, ⌘Y…) are remappable (`keymap`).
+pub fn bind_keys(cx: &mut App) {
+    let w = Some(WORKSPACE_KEYS);
+    cx.bind_keys([
+        KeyBinding::new("escape", FocusEditor, w),
+        // The discard sheet: ↩ and esc keep the edits (the safe answer), ⌘⌫ discards.
+        KeyBinding::new("escape", CancelPendingRun, Some("ConfirmDiscard")),
+        KeyBinding::new("enter", CancelPendingRun, Some("ConfirmDiscard")),
+        KeyBinding::new("cmd-backspace", DiscardAndRun, Some("ConfirmDiscard")),
+        KeyBinding::new("cmd-enter", SheetConfirm, Some(SHEET_CONTEXT)),
+        KeyBinding::new("cmd-backspace", SheetRollback, Some(SHEET_CONTEXT)),
+        KeyBinding::new("escape", SheetCancel, Some(SHEET_CONTEXT)),
+    ]);
+}
+
+/// What waits for the open transactions it would end.
+#[derive(Clone)]
+pub(crate) enum AfterTx {
+    CloseTab(Entity<QueryTab>),
+    CloseTabs(Vec<Entity<QueryTab>>),
+    Disconnect(String),
+    Reconnect(String),
+    /// The tab moves to another connection or database (and runs `run` there).
+    Retarget { tab: Entity<QueryTab>, conn: Arc<Connection>, db: Option<String>, run: Option<String> },
+    /// The connection sheet saves over the connection: its sessions are rebuilt.
+    SaveConnection(Entity<ConnDialog>),
+    DeleteConnection(String),
+    Quit,
+}
+
+impl AfterTx {
+    /// The word on the sheet's buttons: "Commit & {verb}".
+    pub(crate) fn verb(&self) -> &'static str {
+        match self {
+            AfterTx::CloseTab(_) | AfterTx::CloseTabs(_) => "close",
+            AfterTx::Disconnect(_) => "disconnect",
+            AfterTx::Reconnect(_) => "reconnect",
+            AfterTx::Retarget { .. } => "switch",
+            AfterTx::SaveConnection(_) => "save",
+            AfterTx::DeleteConnection(_) => "delete",
+            AfterTx::Quit => "quit",
+        }
+    }
+}
+
+/// A change that may end sessions, and so the transactions open in them.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Change<'a, K> {
+    CloseTab(K),
+    /// Tab `tab` moves to another connection (`same_conn` false) or database.
+    Retarget { tab: K, same_conn: bool, from_db: &'a str, to_db: &'a str },
+    Disconnect(&'a str),
+    /// The connection sheet saves; a new connection has no sessions yet.
+    Edit { id: &'a str, is_new: bool },
+    Delete(&'a str),
+    Quit,
+}
+
+/// The sessions `change` ends, if any.
+pub(crate) fn ends_of<K: Copy>(change: Change<'_, K>) -> Option<Ends<'_, K>> {
+    match change {
+        Change::CloseTab(k) => Some(Ends::Tab(k)),
+        Change::Retarget { tab, same_conn, from_db, to_db } => (!same_conn || from_db != to_db).then_some(Ends::Tab(tab)),
+        Change::Disconnect(id) | Change::Delete(id) => Some(Ends::Conn(id)),
+        Change::Edit { id, is_new } => (!is_new).then_some(Ends::Conn(id)),
+        Change::Quit => Some(Ends::All),
+    }
+}
+
+/// "Commit / Rollback / Cancel" for tabs with an open transaction, asked once.
+pub(crate) struct TxPrompt {
+    pub tabs: Vec<Entity<QueryTab>>,
+    pub then: AfterTx,
+    pub busy: bool,
+    /// A COMMIT that failed (the tabs left are the ones it failed in).
+    pub error: Option<String>,
+}
+
+/// What a close, a disconnect or a quit ends.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Ends<'a, K> {
+    Tab(K),
+    /// Close Others, Close to the Right.
+    Tabs(&'a [K]),
+    Conn(&'a str),
+    All,
+}
+
+/// The tabs that must be asked about first: among `tabs` (key, connection id, transaction
+/// open), the ones `what` ends that have a transaction open.
+pub(crate) fn tabs_holding<K: PartialEq + Copy>(tabs: &[(K, Option<&str>, bool)], what: Ends<K>) -> Vec<K> {
+    tabs.iter()
+        .filter(|(k, conn, open)| {
+            *open
+                && match what {
+                    Ends::Tab(t) => t == *k,
+                    Ends::Tabs(ts) => ts.contains(k),
+                    Ends::Conn(id) => *conn == Some(id),
+                    Ends::All => true,
+                }
+        })
+        .map(|(k, _, _)| *k)
+        .collect()
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum Drag {
+    Explorer,
+    Side,
+    Split,
+}
+
+/// A query tab on the move (GPUI's drag; `dnd`).
+pub(crate) struct DraggedTab(pub EntityId);
+
+/// What a side view belongs to. A view built for one connection or one tab must
+/// never act on another: when the active tab changes, `sync_bound_views` rebuilds it for the
+/// new tab's connection or hides it.
+#[derive(Clone)]
+pub(crate) enum Bound {
+    /// Built for one connection (LAR's panels): rebuilt or hidden when the active tab is on
+    /// another connection.
+    Conn(Arc<Connection>),
+    /// Belongs to one tab (the grid-edit review): closes when another tab becomes active (or
+    /// that tab closes).
+    Tab(EntityId),
+    /// About an explorer row (the privileges panel): stays whatever tab is active.
+    Explorer,
+}
+
+impl Bound {
+    /// Whether the view may stay for a tab (`tab`, on `conn`).
+    pub(crate) fn fits(&self, tab: Option<EntityId>, conn: Option<&Arc<Connection>>) -> bool {
+        match self {
+            Bound::Conn(c) => conn.is_some_and(|x| Arc::ptr_eq(x, c)),
+            Bound::Tab(id) => tab == Some(*id),
+            Bound::Explorer => true,
+        }
+    }
+}
+
+/// What the right side panel shows.
+#[derive(Clone)]
+pub(crate) enum Side {
+    History,
+    /// The cell viewer (⇧Space).
+    Viewer,
+    /// A registered server panel (LAR's live queries).
+    Server(&'static str, AnyView, Bound),
+    /// A feature's sheet (the grid-edit review), by id.
+    Feature(&'static str, AnyView, Bound),
+}
+
+impl Side {
+    fn same_kind(&self, other: &Side) -> bool {
+        match (self, other) {
+            (Side::History, Side::History) | (Side::Viewer, Side::Viewer) => true,
+            (Side::Server(a, ..), Side::Server(b, ..)) | (Side::Feature(a, ..), Side::Feature(b, ..)) => a == b,
+            _ => false,
+        }
+    }
+
+    fn bound(&self) -> Option<&Bound> {
+        match self {
+            Side::Server(_, _, b) | Side::Feature(_, _, b) => Some(b),
+            _ => None,
+        }
+    }
+}
+
+/// The focusable regions, in F6 order.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Region {
+    Explorer,
+    Editor,
+    Grid,
+    Side,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ViewerMode {
+    Json,
+    Text,
+    Hex,
+}
+
+pub struct Workspace {
+    pub store: Entity<ConnStore>,
+    pub tree: Entity<SchemaTree>,
+    pub tabs: Vec<Entity<QueryTab>>,
+    pub active: usize,
+    next_id: usize,
+    pub(crate) dialog: Option<Entity<ConnDialog>>,
+    /// The import sheet (pg_service.conf, .pgpass).
+    pub(crate) import: Option<Entity<crate::import_ui::ImportView>>,
+    pub(crate) history: Entity<HistoryPanel>,
+    pub(crate) welcome: Entity<Welcome>,
+    pub(crate) side: Option<Side>,
+    /// What ⌥⌘B reopens.
+    last_side: Option<Side>,
+    /// The connection new tabs use: the last one selected or connected.
+    pub(crate) current_conn: Option<String>,
+    pub(crate) explorer_open: bool,
+    pub(crate) explorer_w: f32,
+    /// The explorer column sliding open or shut (⌘B, the title-bar button).
+    explorer_tween: Option<crate::motion::WidthTween>,
+    pub(crate) side_w: f32,
+    /// The history panel sliding open or shut, like the explorer.
+    history_tween: Option<crate::motion::WidthTween>,
+    /// What the side panel showed last frame (`Some(true)`: the history), to see it open or shut.
+    side_was: Option<bool>,
+    /// Editor height as a share of the work column (kept when the window resizes).
+    pub(crate) editor_frac: Option<f32>,
+    pub(crate) drag: Option<Drag>,
+    /// The query tabs' bounds as last laid out (the checks).
+    pub(crate) tab_bounds: std::rc::Rc<std::cell::RefCell<Vec<gpui::Bounds<gpui::Pixels>>>>,
+    /// The gap a dragged tab would drop into (`order::slot`), while it is over the tabs.
+    pub(crate) tab_drop: Option<usize>,
+    /// A tab's right-click menu: the tab and where the pointer was.
+    pub(crate) tab_menu: Option<(EntityId, gpui::Point<gpui::Pixels>)>,
+    /// The result tabs' bounds as last laid out (the checks).
+    pub(crate) result_tab_bounds: std::rc::Rc<std::cell::RefCell<Vec<gpui::Bounds<gpui::Pixels>>>>,
+    /// The messages tab, or the log of a result without rows, on screen.
+    pub(crate) messages: crate::messages::Messages,
+    /// The toolbar's connection picker: its popup is open; where the button is (the checks).
+    pub(crate) conn_menu: bool,
+    /// When a click outside shut the popup (the click on the button that follows must not
+    /// open it again).
+    pub(crate) conn_menu_shut: Option<Instant>,
+    pub(crate) picker_bounds: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
+    /// A drag started on the empty title bar: the next move drags the window.
+    pub(crate) title_drag: bool,
+    /// Show the focus ring (after keyboard navigation; a click hides it).
+    pub(crate) focus_visible: bool,
+    pub(crate) shortcuts_open: bool,
+    pub(crate) copy_menu: bool,
+    pub(crate) viewer_mode: ViewerMode,
+    pub(crate) viewer_wrap: bool,
+    /// The cancel toast was hidden for this request.
+    pub(crate) cancel_toast_hidden: Option<Instant>,
+    /// "LAR detected on …" (connection name, when it appeared).
+    pub(crate) lar_toast: Option<(String, Instant)>,
+    /// A short notice in the status bar (the command palette stub…).
+    pub(crate) flash_notice: Option<(String, Instant)>,
+    /// The command palette (⌘K / ⌘P), the Settings sheet (⌘,) and the focus they give back.
+    pub(crate) palette: Option<Entity<crate::palette::Palette>>,
+    pub(crate) settings_view: Option<Entity<crate::settings_view::SettingsView>>,
+    pub(crate) modal_return: Option<FocusHandle>,
+    /// The export dialog; kept while an export runs in the background.
+    pub(crate) export: Option<Entity<crate::export_ui::ExportView>>,
+    /// The data import sheet; kept while an import runs in the background.
+    pub(crate) data_import: Option<Entity<crate::data_import::DataImportView>>,
+    /// The "discard pending edits?" sheet (shown while the active tab has a `pending_run`).
+    pub(crate) confirm_focus: FocusHandle,
+    /// The "Delete connection?" sheet: the connection it asks about.
+    pub(crate) confirm_delete: Option<String>,
+    pub(crate) confirm_delete_focus: FocusHandle,
+    /// The connection the history panel shows when the explorer asked for one ("Query
+    /// history" on a connection), whatever the active tab is on; cleared on a tab switch.
+    pub(crate) history_pin: Option<String>,
+    /// A table's filter popover and where it opens (window coordinates).
+    pub(crate) filter_pop: Option<(Entity<crate::table_view::FilterPopover>, (f32, f32))>,
+    /// Open transactions in the way of a close, a disconnect or a quit.
+    pub(crate) tx_prompt: Option<TxPrompt>,
+    /// The confirmation sheets' keys (guard, failed transaction, open transactions), and when
+    /// the sheet came up (a ⌘↩ still held from the run does not confirm it).
+    pub(crate) sheet_focus: FocusHandle,
+    sheet_at: Option<Instant>,
+    /// Wakes the toolbar when the open transaction's age shown changes (a minute boundary),
+    /// only while one is open: no ticking otherwise.
+    tx_tick: Option<(Instant, gpui::Task<()>)>,
+    /// Stands in for the window's active state when the activity monitors decide whether they
+    /// are on screen (the checks); `None`: the window's own.
+    pub(crate) assume_active: Option<bool>,
+    focus: FocusHandle,
+    /// The MCP approval sheet's keys, and the focus it gives back.
+    pub(crate) mcp_focus: FocusHandle,
+    pub(crate) mcp_return: Option<FocusHandle>,
+    /// The sheet's Deny and Allow buttons as last laid out (the checks).
+    pub(crate) mcp_buttons: std::rc::Rc<std::cell::RefCell<Vec<gpui::Bounds<gpui::Pixels>>>>,
+    /// The crash the last session left (its toast), and what its buttons last did.
+    pub(crate) crash: Option<diskman_core::crash::Pending>,
+    pub(crate) crash_note: Option<&'static str>,
+    /// The quit under way installs the update and relaunches.
+    update_on_quit: bool,
+    /// The saved session: the save waiting for the workspace to settle, and what it last saw
+    /// (`restore`).
+    pub(crate) session_task: Option<gpui::Task<()>>,
+    session_fp: u64,
+    /// A workspace replaced in its window (the session checks): it saves nothing any more.
+    pub(crate) session_off: bool,
+    /// Back / forward (`nav`).
+    pub(crate) nav: crate::nav::Nav,
+}
+
+impl Focusable for Workspace {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus.clone()
+    }
+}
+
+impl Workspace {
+    pub fn new(core: Arc<Core>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let store = cx.new(|_| ConnStore::new(core));
+        let tree = cx.new(|cx| SchemaTree::new(store.clone(), cx));
+        let history = cx.new(|cx| HistoryPanel::new(store.clone(), cx));
+        let welcome = cx.new(Welcome::new);
+        cx.subscribe_in(&tree, window, Self::on_tree).detach();
+        cx.subscribe_in(&store, window, Self::on_conn).detach();
+        cx.subscribe_in(&welcome, window, Self::on_welcome).detach();
+        cx.subscribe_in(&history, window, |w, _, ev: &HistoryEvent, window, cx| match ev {
+            HistoryEvent::Insert(sql) => {
+                if let Some(tab) = w.tabs.get(w.active).cloned() {
+                    let editor = tab.read(cx).editor.clone();
+                    editor.update(cx, |e, cx| e.insert_at_cursor(&format!("{};", sql.trim_end().trim_end_matches(';')), cx));
+                    window.focus(&editor.focus_handle(cx), cx);
+                }
+            }
+            HistoryEvent::OpenInTab(sql, database) => {
+                // Always on the connection whose history is listed: a statement from staging's
+                // history must never run on whatever tab happens to be active. A new tab always.
+                let listed = w.history.read(cx).conn_id().map(str::to_string);
+                let (sql, database) = (sql.clone(), database.clone());
+                let Some(tab) = w.tab_for_history(listed, database, false, window, cx) else { return };
+                tab.update(cx, |t, cx| {
+                    t.editor.update(cx, |e, cx| e.set_text(&format!("{};", sql.trim_end().trim_end_matches(';')), cx));
+                });
+            }
+            HistoryEvent::Run(sql) => {
+                let sql = sql.clone();
+                let listed = w.history.read(cx).conn_id().map(str::to_string);
+                let Some(tab) = w.tab_for_history(listed, None, true, window, cx) else { return };
+                tab.update(cx, |t, cx| {
+                    t.editor.update(cx, |e, cx| e.set_text(&format!("{};", sql.trim_end().trim_end_matches(';')), cx));
+                    t.run(vec![sql.trim_end().trim_end_matches(';').to_string()], cx);
+                });
+            }
+            HistoryEvent::OpenFavorite(fav, run) => {
+                let (fav, run) = (fav.clone(), *run);
+                let Some(tab) = w.tab_for_history(fav.connection_id.clone(), fav.database.clone(), false, window, cx) else { return };
+                tab.update(cx, |t, cx| {
+                    let text = format!("{};", fav.sql.trim_end().trim_end_matches(';'));
+                    t.editor.update(cx, |e, cx| e.set_text(&text, cx));
+                    // A favorite with a name of its own (renamed, or imported from a file) names
+                    // the tab; one still on its default (the statement's first line) does not.
+                    if fav.name != crate::history::fav_name(&fav.sql) {
+                        t.set_title(fav.name.clone(), text, cx);
+                    }
+                    if run {
+                        t.run(vec![fav.sql.trim_end().trim_end_matches(';').to_string()], cx);
+                    }
+                });
+            }
+            HistoryEvent::ImportFavorites => w.import_favorites(cx),
+            HistoryEvent::Close => {
+                w.side = None;
+                w.history_pin = None;
+                w.focus_editor(window, cx);
+                cx.notify();
+            }
+        })
+        .detach();
+        // The system appearance only matters with the "system" theme.
+        cx.observe_window_appearance(window, |_, window, cx| theme::on_system_appearance(window, cx)).detach();
+        // macOS's "Reduce motion" may have been flipped while the app was in the background;
+        // an activity monitor reads only while the window is active.
+        cx.observe_window_activation(window, |w: &mut Workspace, window, cx| {
+            if window.is_window_active() {
+                crate::motion::apply_reduce_motion(cx);
+                crate::updates::on_activate(cx);
+            }
+            w.sync_monitors(window, cx);
+        })
+        .detach();
+        let first = store.read(cx).profiles.first().map(|p| p.id.clone());
+        // Compact layout (Spec): at 1280 x 800 or less the explorer opens narrower.
+        let compact = window.viewport_size().width.pt() <= 1280.;
+        let mut w = Workspace {
+            store,
+            tree,
+            tabs: vec![],
+            active: 0,
+            next_id: 1,
+            dialog: None,
+            import: None,
+            history,
+            welcome,
+            side: None,
+            last_side: None,
+            current_conn: first,
+            explorer_open: true,
+            explorer_w: if compact { metrics::EXPLORER_COMPACT } else { metrics::EXPLORER_W },
+            explorer_tween: None,
+            side_w: metrics::SIDE_W,
+            history_tween: None,
+            side_was: None,
+            editor_frac: None,
+            drag: None,
+            tab_bounds: Default::default(),
+            tab_drop: None,
+            tab_menu: None,
+            result_tab_bounds: Default::default(),
+            messages: crate::messages::Messages::new(),
+            conn_menu: false,
+            conn_menu_shut: None,
+            picker_bounds: Default::default(),
+            title_drag: false,
+            focus_visible: false,
+            shortcuts_open: false,
+            copy_menu: false,
+            viewer_mode: ViewerMode::Json,
+            viewer_wrap: true,
+            cancel_toast_hidden: None,
+            lar_toast: None,
+            flash_notice: None,
+            palette: None,
+            settings_view: None,
+            modal_return: None,
+            export: None,
+            data_import: None,
+            confirm_focus: cx.focus_handle(),
+            confirm_delete: None,
+            confirm_delete_focus: cx.focus_handle(),
+            history_pin: None,
+            filter_pop: None,
+            tx_prompt: None,
+            sheet_focus: cx.focus_handle(),
+            sheet_at: None,
+            tx_tick: None,
+            assume_active: None,
+            focus: cx.focus_handle(),
+            mcp_focus: cx.focus_handle(),
+            mcp_return: None,
+            mcp_buttons: Default::default(),
+            crash: None,
+            crash_note: None,
+            update_on_quit: false,
+            session_task: None,
+            session_fp: 0,
+            session_off: false,
+            nav: Default::default(),
+        };
+        // Agents' writes over the app's MCP server ask in this window.
+        crate::mcp::register(cx.weak_entity(), window.window_handle(), cx);
+        // The window's close button with transactions open asks first, like ⌘Q; closing saves
+        // the session, and so does any quit.
+        let this = cx.weak_entity();
+        window.on_window_should_close(cx, move |window, cx| {
+            this.update(cx, |w, cx| {
+                let close = w.request_quit(window, cx);
+                if close {
+                    w.save_session(true, cx);
+                }
+                close
+            })
+            .unwrap_or(true)
+        });
+        cx.on_app_quit(|w, cx| {
+            w.save_session(true, cx);
+            async {}
+        })
+        .detach();
+        // Last session's tabs and results, or one empty tab.
+        if !w.restore_session(window, cx) {
+            w.new_tab(window, cx);
+        }
+        w.nav.history.clear();
+        w.session_fp = w.session_fingerprint(cx);
+        if w.first_run(cx) {
+            w.focus_editor(window, cx);
+        }
+        w
+    }
+
+    pub fn active_tab(&self) -> Option<&Entity<QueryTab>> {
+        self.tabs.get(self.active)
+    }
+
+    pub fn new_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Entity<QueryTab> {
+        let conn = self.current_conn.as_ref().and_then(|id| self.store.read(cx).connection(id));
+        let id = self.next_id;
+        self.next_id += 1;
+        let tab = cx.new(|cx| QueryTab::new(id, conn, window, cx));
+        cx.subscribe_in(&tab, window, |w, tab, ev: &TabEvent, window, cx| match ev {
+            TabEvent::Finished => {
+                if matches!(w.side, Some(Side::History)) {
+                    let c = w.active_tab().and_then(|t| t.read(cx).connection().map(|c| c.profile.id.clone()));
+                    w.history.update(cx, |h, cx| h.show(c, cx));
+                }
+                cx.notify();
+            }
+            // The sheet takes the keys now if the tab is in front, else when it comes back.
+            TabEvent::ConfirmDiscard => {
+                if w.active_tab() == Some(tab) {
+                    w.focus_confirm(window, cx);
+                }
+                cx.notify();
+            }
+            TabEvent::Confirm => {
+                if w.active_tab() == Some(tab) {
+                    w.focus_sheet(window, cx);
+                }
+                cx.notify();
+            }
+            TabEvent::Params => {
+                if w.active_tab() == Some(tab) {
+                    w.focus_params(window, cx);
+                }
+                cx.notify();
+            }
+            TabEvent::ParamsClosed => {
+                if w.active_tab() == Some(tab) {
+                    w.unfocus_sheet(window, cx);
+                }
+                cx.notify();
+            }
+            TabEvent::Definition { def, peek } => {
+                let (def, peek) = (def.clone(), *peek);
+                w.go_to_definition(tab.clone(), def, peek, window, cx);
+            }
+            // A restored tab's first run: its connection connects (`on_conn` hands it over).
+            TabEvent::Connect(id) => match w.store.read(cx).connection(id) {
+                Some(conn) => tab.update(cx, |t, cx| t.adopt(conn, cx)),
+                None => {
+                    let id = id.clone();
+                    w.store.update(cx, |s, cx| s.connect(&id, None, cx));
+                }
+            },
+            TabEvent::TxEnded { result, statements } => {
+                let n = *statements;
+                let what = |verb: &str| format!("{verb} · {n} statement{}", if n == 1 { "" } else { "s" });
+                let msg = match result {
+                    Ok(diskman_core::TxEnd::Committed) => what("Committed"),
+                    Ok(diskman_core::TxEnd::RolledBack) => what("Rolled back"),
+                    Ok(diskman_core::TxEnd::NoTransaction) => "No transaction open".to_string(),
+                    Err(e) => format!("COMMIT failed: {e}"),
+                };
+                w.notice(msg, cx);
+            }
+        })
+        .detach();
+        cx.observe(&tab, |_, _, cx| cx.notify()).detach();
+        let grid = tab.read(cx).grid.clone();
+        let from = tab.downgrade();
+        cx.subscribe_in(&grid, window, move |w, _, ev: &GridEvent, window, cx| match ev {
+            GridEvent::ToggleViewer => w.toggle_side(Side::Viewer, cx),
+            GridEvent::FollowFk(j) => {
+                if let Some(from) = from.upgrade() {
+                    w.follow_reference(&from, j, window, cx);
+                }
+            }
+            // A table's data view (`table_view`).
+            GridEvent::ServerSort { col, dir } => {
+                if let Some(from) = from.upgrade() {
+                    let (col, dir) = (*col, *dir);
+                    from.update(cx, |t, cx| t.table_sort(col, dir, cx));
+                }
+            }
+            GridEvent::Filter { col, at } => w.open_filter(*col, None, *at, window, cx),
+            GridEvent::FilterValue { col, value } => {
+                if let Some(from) = from.upgrade() {
+                    let (col, value) = (*col, value.clone());
+                    from.update(cx, |t, cx| t.filter_value(col, value, cx));
+                }
+            }
+            // Edits are the tab's (`edit_ui`).
+            _ => {}
+        })
+        .detach();
+        cx.observe(&grid, |_, _, cx| cx.notify()).detach();
+        let editor = tab.read(cx).editor.clone();
+        cx.observe(&editor, |_, _, cx| cx.notify()).detach();
+        let edit = tab.read(cx).edit.clone();
+        cx.subscribe_in(&edit, window, Self::on_edit).detach();
+        self.nav_record(Some(window), cx);
+        self.tabs.push(tab.clone());
+        self.active = self.tabs.len() - 1;
+        self.sync_bound_views(window, cx);
+        window.focus(&editor.focus_handle(cx), cx);
+        cx.notify();
+        tab
+    }
+
+    /// Closes tab `ix`; with a transaction open, asks Commit / Rollback / Cancel first.
+    pub(crate) fn close_tab(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tab) = self.tabs.get(ix).cloned() else { return };
+        if let Some(what) = ends_of(Change::CloseTab(tab.entity_id()))
+            && self.ask_about_tx(what, AfterTx::CloseTab(tab), window, cx)
+        {
+            return;
+        }
+        self.close_tab_now(ix, window, cx);
+    }
+
+    fn close_tab_now(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if ix >= self.tabs.len() {
+            return;
+        }
+        self.tabs.remove(ix);
+        let open: Vec<_> = self.tabs.iter().map(|t| t.entity_id()).collect();
+        self.nav.history.retain(|p| open.contains(&p.tab));
+        if self.tabs.is_empty() {
+            self.new_tab(window, cx);
+        }
+        if self.active >= ix && self.active > 0 {
+            self.active -= 1;
+        }
+        self.active = self.active.min(self.tabs.len() - 1);
+        // The closed tab's review sheet goes with it.
+        self.sync_bound_views(window, cx);
+        self.focus_editor(window, cx);
+        cx.notify();
+    }
+
+    pub(crate) fn activate(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if ix < self.tabs.len() {
+            if ix != self.active {
+                self.nav_record(Some(window), cx);
+            }
+            self.active = ix;
+            self.history_pin = None;
+            self.sync_bound_views(window, cx);
+            self.focus_editor(window, cx);
+            if self.tabs[ix].read(cx).pending_run.is_some() {
+                self.focus_confirm(window, cx);
+            }
+            if self.tabs[ix].read(cx).confirm.is_some() {
+                self.focus_sheet(window, cx);
+            }
+            if self.tabs[ix].read(cx).params.is_some() {
+                self.focus_params(window, cx);
+            }
+            cx.notify();
+        }
+    }
+
+    /// The discard sheet takes the keys (esc / ↩ keep the edits); they go back after.
+    fn focus_confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.confirm_focus.is_focused(window) {
+            self.modal_return = window.focused(cx).filter(|f| *f != self.confirm_focus);
+            window.focus(&self.confirm_focus, cx);
+        }
+    }
+
+    /// "Discard & run" (`discard`) or "Cancel" on the active tab's pending run.
+    pub(crate) fn resolve_pending_run(&mut self, discard: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tab) = self.active_tab().cloned() else { return };
+        tab.update(cx, |t, cx| t.resolve_pending_run(discard, cx));
+        match self.modal_return.take() {
+            Some(f) => window.focus(&f, cx),
+            None => self.focus_editor(window, cx),
+        }
+        cx.notify();
+    }
+
+    /// Whether a modal (palette, Settings, export, connection sheet, discard sheet) is up: a
+    /// second one does not open over it (they share `modal_return`).
+    pub(crate) fn modal_open(&self, cx: &App) -> bool {
+        self.palette.is_some()
+            || self.settings_view.is_some()
+            || self.dialog.is_some()
+            || self.import.is_some()
+            || self.export.as_ref().is_some_and(|e| e.read(cx).visible)
+            || self.data_import.as_ref().is_some_and(|e| e.read(cx).visible)
+            || self.active_tab().is_some_and(|t| t.read(cx).pending_run.is_some() || t.read(cx).confirm.is_some() || t.read(cx).params.is_some())
+            || self.confirm_delete.is_some()
+            || self.tx_prompt.is_some()
+            || cx.try_global::<crate::mcp::McpHost>().is_some_and(|h| !h.pending.is_empty())
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Transactions and the confirmation sheets.
+
+    /// A sheet takes the keys (esc cancels); they go back after.
+    pub(crate) fn focus_sheet(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.sheet_focus.is_focused(window) {
+            self.modal_return = window.focused(cx).filter(|f| *f != self.sheet_focus);
+            window.focus(&self.sheet_focus, cx);
+        }
+        self.sheet_at = Some(Instant::now());
+    }
+
+    /// The active tab's parameter prompt takes the keys (its first field).
+    pub(crate) fn focus_params(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(prompt) = self.active_tab().and_then(|t| t.read(cx).params.as_ref().map(|p| p.prompt.clone())) else { return };
+        if self.modal_return.is_none() {
+            self.modal_return = window.focused(cx);
+        }
+        prompt.update(cx, |p, cx| p.focus_field(0, window, cx));
+    }
+
+    /// The parameter prompt of the active tab, as a sheet over the window.
+    pub(crate) fn render_param_sheet(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let prompt = self.active_tab()?.read(cx).params.as_ref()?.prompt.clone();
+        let t = cx.theme();
+        let tab = self.active_tab()?.clone();
+        Some(
+            div()
+                .id("param-sheet")
+                .absolute()
+                .inset_0()
+                .bg(t.scrim)
+                .occlude()
+                .flex()
+                .items_center()
+                .justify_center()
+                .on_mouse_down(gpui::MouseButton::Left, move |_, _, cx| tab.update(cx, |t, cx| t.resolve_params(false, cx)))
+                .child(prompt)
+                .into_any_element(),
+        )
+    }
+
+    /// F12 / ⌘-click: the object in the explorer (shown, expanded to it, selected); ⌥F12
+    /// (`peek`) also opens its definition in a new tab.
+    pub(crate) fn go_to_definition(&mut self, tab: Entity<QueryTab>, def: diskman_core::complete::Definition, peek: bool, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::tree_menu::{Act, Gen, Obj, Target};
+        use diskman_core::complete::Definition;
+        let (conn, db) = {
+            let t = tab.read(cx);
+            let Some(c) = t.connection() else { return };
+            (c.clone(), t.database().to_string())
+        };
+        let id = conn.profile.id.clone();
+        let snap = conn.schema.snapshot(&db);
+        self.set_explorer_open(true, cx);
+        let lar = conn.info.is_lar;
+        let ro = conn.read_only_for(&db);
+        match def {
+            Definition::Relation { schema, name, column } => {
+                let kind = snap.resolve(Some(&schema), &name).map(|i| snap.relations[i].kind).unwrap_or(diskman_core::schema::RelKind::Table);
+                self.tree.update(cx, |t, cx| t.reveal_relation(&id, &db, &schema, &name, kind, column.as_deref(), cx));
+                if peek {
+                    let target = Target::Rel { conn: id, db, schema, name, kind, lar, ro };
+                    let act = if kind.is_view() { Act::ShowDefinition } else { Act::Generate(Gen::CreateTable) };
+                    self.on_row_action(act, target, false, window, cx);
+                }
+            }
+            Definition::Function { schema, name, oid } => {
+                self.tree.update(cx, |t, cx| t.reveal_function(&id, &db, &schema, oid, cx));
+                if peek {
+                    let procedure = snap.catalog.as_ref().and_then(|c| c.functions.iter().find(|f| f.oid == oid)).is_some_and(|f| f.kind == 'p');
+                    let target = Target::Object { conn: id, db, schema, name, what: Obj::Function { oid, procedure } };
+                    self.on_row_action(Act::ShowDefinition, target, false, window, cx);
+                }
+            }
+            Definition::Local(_) => {}
+        }
+        cx.notify();
+    }
+
+    fn unfocus_sheet(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.modal_return.take() {
+            Some(f) => window.focus(&f, cx),
+            None => self.focus_editor(window, cx),
+        }
+    }
+
+    /// When `what` would end open transactions, asks first (and does `then` after): true when
+    /// the prompt is up.
+    fn ask_about_tx(&mut self, what: Ends<gpui::EntityId>, then: AfterTx, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let rows: Vec<(gpui::EntityId, Option<String>, bool)> = self
+            .tabs
+            .iter()
+            .map(|t| {
+                let r = t.read(cx);
+                (t.entity_id(), r.connection().map(|c| c.profile.id.clone()), r.tx_open())
+            })
+            .collect();
+        let keys: Vec<(gpui::EntityId, Option<&str>, bool)> = rows.iter().map(|(k, c, o)| (*k, c.as_deref(), *o)).collect();
+        let held = tabs_holding(&keys, what);
+        if held.is_empty() {
+            return false;
+        }
+        if self.tx_prompt.is_some() {
+            return true;
+        }
+        let tabs = self.tabs.iter().filter(|t| held.contains(&t.entity_id())).cloned().collect();
+        self.tx_prompt = Some(TxPrompt { tabs, then, busy: false, error: None });
+        self.focus_sheet(window, cx);
+        cx.notify();
+        true
+    }
+
+    /// ⌘Q, Quit in the menu, the window's close button: false when open transactions must be
+    /// answered for first (the prompt is up).
+    pub(crate) fn request_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        !ends_of::<EntityId>(Change::Quit).is_some_and(|what| self.ask_about_tx(what, AfterTx::Quit, window, cx))
+    }
+
+    fn quit_now(&mut self, cx: &mut Context<Self>) {
+        if std::mem::take(&mut self.update_on_quit)
+            && let Some(install) = crate::updates::install(cx)
+        {
+            // The swap first (a second or two, off the UI thread); the app quits and reopens
+            // only once the new copy is in place, and stays open if it failed.
+            cx.spawn(async move |this, cx| match install.await {
+                Ok(app) => {
+                    if let Err(e) = diskman_core::update::relaunch_after_exit(&app) {
+                        log::warn!("relaunch: {e:#}");
+                    }
+                    let _ = this.update(cx, |w, cx| {
+                        w.store.read(cx).close_all();
+                        cx.quit();
+                    });
+                }
+                Err(e) => {
+                    let _ = this.update(cx, |w, cx| w.notice(format!("Update failed: {e}"), cx));
+                }
+            })
+            .detach();
+            return;
+        }
+        // SSH tunnels end with the app (the sockets would close anyway).
+        self.store.read(cx).close_all();
+        cx.quit();
+    }
+
+    /// "Update to x.y.z and Restart": quits like ⌘Q (open transactions are asked about), then
+    /// swaps the app and opens the new one.
+    pub(crate) fn install_update(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(why) = crate::updates::blocked(cx) {
+            self.notice(format!("Cannot update: {why}"), cx);
+            return;
+        }
+        self.update_on_quit = true;
+        if self.request_quit(window, cx) {
+            self.quit_now(cx);
+        }
+    }
+
+    /// Opens .sql files handed over by Finder (`file://` URLs), each in a new tab.
+    pub(crate) fn open_urls(&mut self, urls: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {
+        for url in urls {
+            let Some(path) = file_url_path(&url) else { continue };
+            match std::fs::read_to_string(&path) {
+                Ok(text) => {
+                    let tab = self.new_tab(window, cx);
+                    tab.update(cx, |t, cx| t.editor.update(cx, |e, cx| e.set_text(&text, cx)));
+                }
+                Err(e) => self.notice(format!("cannot read {}: {e}", path.display()), cx),
+            }
+        }
+    }
+
+    /// Disconnect from the explorer: open transactions on that connection are asked about
+    /// first.
+    pub(crate) fn request_disconnect(&mut self, id: String, reconnect: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let then = if reconnect { AfterTx::Reconnect(id.clone()) } else { AfterTx::Disconnect(id.clone()) };
+        if let Some(what) = ends_of::<EntityId>(Change::Disconnect(&id))
+            && self.ask_about_tx(what, then.clone(), window, cx)
+        {
+            return;
+        }
+        self.after_tx(then, window, cx);
+    }
+
+    fn after_tx(&mut self, then: AfterTx, window: &mut Window, cx: &mut Context<Self>) {
+        match then {
+            AfterTx::CloseTab(tab) => {
+                if let Some(ix) = self.tabs.iter().position(|t| *t == tab) {
+                    self.close_tab_now(ix, window, cx);
+                }
+            }
+            AfterTx::CloseTabs(tabs) => self.close_tabs_now(tabs, window, cx),
+            AfterTx::Disconnect(id) => self.disconnect(id, cx),
+            AfterTx::Reconnect(id) => {
+                self.disconnect(id.clone(), cx);
+                self.store.update(cx, |s, cx| s.connect(&id, None, cx));
+            }
+            AfterTx::Retarget { tab, conn, db, run } => self.retarget_now(&tab, conn, db, run, window, cx),
+            AfterTx::SaveConnection(d) => d.update(cx, |d, cx| d.save_now(cx)),
+            AfterTx::DeleteConnection(id) => self.delete_connection_now(&id, window, cx),
+            AfterTx::Quit => self.quit_now(cx),
+        }
+    }
+
+    /// Points `tab` at `conn` and `db` (and runs `run` there). Another connection or database
+    /// means another session: an open transaction is asked about first.
+    pub(crate) fn retarget(
+        &mut self,
+        tab: &Entity<QueryTab>,
+        conn: Arc<Connection>,
+        db: Option<String>,
+        run: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let t = tab.read(cx);
+        let same_conn = t.connection().is_some_and(|c| Arc::ptr_eq(c, &conn));
+        let from_db = t.database().to_string();
+        let to_db = db.clone().unwrap_or_else(|| if same_conn { from_db.clone() } else { conn.database().to_string() });
+        let change = Change::Retarget { tab: tab.entity_id(), same_conn, from_db: &from_db, to_db: &to_db };
+        if let Some(what) = ends_of(change) {
+            let then = AfterTx::Retarget { tab: tab.clone(), conn: conn.clone(), db: db.clone(), run: run.clone() };
+            if self.ask_about_tx(what, then, window, cx) {
+                return;
+            }
+        }
+        self.retarget_now(tab, conn, db, run, window, cx);
+    }
+
+    fn retarget_now(
+        &mut self,
+        tab: &Entity<QueryTab>,
+        conn: Arc<Connection>,
+        db: Option<String>,
+        run: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        tab.update(cx, |t, cx| {
+            t.set_connection(Some(conn), cx);
+            if let Some(db) = db {
+                t.set_database(db, cx);
+            }
+            if let Some(sql) = run {
+                t.editor.update(cx, |e, cx| e.set_text(&sql, cx));
+                t.run(vec![sql.trim_end_matches(';').to_string()], cx);
+            }
+        });
+        if self.active_tab() == Some(tab) {
+            self.focus_editor(window, cx);
+        }
+        cx.notify();
+    }
+
+    /// The connection sheet's Save over an existing connection: its sessions are rebuilt, so
+    /// their open transactions are asked about first.
+    fn request_save_connection(&mut self, d: Entity<ConnDialog>, window: &mut Window, cx: &mut Context<Self>) {
+        let (id, is_new) = {
+            let d = d.read(cx);
+            (d.profile_id().to_string(), d.is_new())
+        };
+        if let Some(what) = ends_of::<EntityId>(Change::Edit { id: &id, is_new })
+            && self.ask_about_tx(what, AfterTx::SaveConnection(d.clone()), window, cx)
+        {
+            return;
+        }
+        d.update(cx, |d, cx| d.save_now(cx));
+    }
+
+    /// Deleting a connection (the explorer, the connection sheet): the transactions open on it
+    /// are asked about first, the sheet listing their tabs; else the plain confirmation (from
+    /// the explorer) or none (the sheet asked already).
+    pub(crate) fn request_delete_connection(&mut self, id: String, confirmed: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if !confirmed && self.modal_open(cx) {
+            return;
+        }
+        if let Some(what) = ends_of::<EntityId>(Change::Delete(&id))
+            && self.ask_about_tx(what, AfterTx::DeleteConnection(id.clone()), window, cx)
+        {
+            return;
+        }
+        if confirmed {
+            self.delete_connection_now(&id, window, cx);
+        } else {
+            self.ask_delete_connection(id, window, cx);
+        }
+    }
+
+    fn delete_connection_now(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.delete_connection(id, cx);
+        if self.dialog.as_ref().is_some_and(|d| d.read(cx).profile_id() == id) {
+            self.dialog = None;
+            self.focus_editor(window, cx);
+        }
+        cx.notify();
+    }
+
+    /// The prompt's answer: commit (`Run`) or roll back every listed transaction, then go on;
+    /// a COMMIT that fails keeps the prompt up with its error (that tab's transaction is gone,
+    /// the others went through).
+    pub(crate) fn resolve_tx_prompt(&mut self, choice: crate::tab::ConfirmChoice, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::tab::ConfirmChoice;
+        let Some(p) = &mut self.tx_prompt else { return };
+        if choice == ConfirmChoice::Cancel {
+            self.tx_prompt = None;
+            self.update_on_quit = false;
+            self.unfocus_sheet(window, cx);
+            cx.notify();
+            return;
+        }
+        if p.busy {
+            return;
+        }
+        p.busy = true;
+        p.error = None;
+        let commit = choice == ConfirmChoice::Run;
+        let tabs = p.tabs.clone();
+        let tasks: Vec<_> = tabs.iter().map(|t| (t.clone(), t.update(cx, |t, cx| t.end_tx(commit, cx)))).collect();
+        cx.spawn_in(window, async move |this, cx| {
+            let mut failed = Vec::new();
+            for (tab, task) in tasks {
+                if let Err(e) = task.await {
+                    failed.push((tab, e));
+                }
+            }
+            let _ = this.update_in(cx, |w, window, cx| {
+                let Some(p) = &mut w.tx_prompt else { return };
+                p.busy = false;
+                // A failed ROLLBACK leaves nothing to keep: the transaction is gone anyway.
+                if !commit || failed.is_empty() {
+                    let then = p.then.clone();
+                    w.tx_prompt = None;
+                    w.unfocus_sheet(window, cx);
+                    w.after_tx(then, window, cx);
+                } else {
+                    p.error = failed.first().map(|(_, e)| e.clone());
+                    p.tabs = failed.into_iter().map(|(t, _)| t).collect();
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// The sheets' keys: the tab's run waiting for an answer, or the open-transactions prompt.
+    pub(crate) fn sheet_answer(&mut self, choice: crate::tab::ConfirmChoice, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::tab::ConfirmChoice;
+        // A ⌘↩ held from the run that raised the sheet does not confirm it.
+        if choice != ConfirmChoice::Cancel && self.sheet_at.is_some_and(|t| t.elapsed() < Duration::from_millis(350)) {
+            return;
+        }
+        if self.tx_prompt.is_some() {
+            return self.resolve_tx_prompt(choice, window, cx);
+        }
+        let Some(tab) = self.active_tab().cloned() else { return };
+        if tab.update(cx, |t, cx| t.resolve_confirm(choice, cx)) {
+            self.unfocus_sheet(window, cx);
+        }
+        cx.notify();
+    }
+
+    /// ⌃⌘↩ / ⌃⌘⌫ and the toolbar's buttons.
+    pub(crate) fn end_active_tx(&mut self, commit: bool, cx: &mut Context<Self>) {
+        let Some(tab) = self.active_tab().cloned() else { return };
+        let (open, busy) = {
+            let t = tab.read(cx);
+            (t.tx_open(), t.is_running() || t.ending_tx())
+        };
+        if !open || busy {
+            return;
+        }
+        tab.update(cx, |t, cx| t.end_tx(commit, cx)).detach();
+    }
+
+    /// Asks for a redraw when the age of the active tab's open transaction shown in the toolbar
+    /// next changes (minute boundaries); nothing while none is open.
+    pub(crate) fn schedule_tx_tick(&mut self, since: Option<Instant>, cx: &mut Context<Self>) {
+        let Some(since) = since else {
+            self.tx_tick = None;
+            return;
+        };
+        let age = since.elapsed();
+        let next = since + Duration::from_secs((age.as_secs() / 60 + 1) * 60);
+        if self.tx_tick.as_ref().is_some_and(|(at, _)| *at == next) {
+            return;
+        }
+        let wait = next.saturating_duration_since(Instant::now());
+        let task = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(wait).await;
+            let _ = this.update(cx, |_, cx| cx.notify());
+        });
+        self.tx_tick = Some((next, task));
+    }
+
+    /// Activates a tab by identity (indices go stale when tabs close).
+    pub(crate) fn activate_tab(&mut self, tab: &Entity<QueryTab>, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(ix) = self.tabs.iter().position(|t| t == tab) {
+            self.activate(ix, window, cx);
+        }
+    }
+
+    pub(crate) fn focus_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // First run: the welcome screen stands where the editor will be.
+        if self.first_run(cx) {
+            let f = self.welcome.focus_handle(cx);
+            window.focus(&f, cx);
+            return;
+        }
+        if let Some(t) = self.active_tab() {
+            // A monitor tab has no editor on screen: its list takes the keys.
+            let f = match &t.read(cx).monitor {
+                Some(m) => m.read(cx).focus_target(cx),
+                None => t.read(cx).editor.focus_handle(cx),
+            };
+            window.focus(&f, cx);
+        }
+    }
+
+    /// The tab a history entry goes to: for Run, the active tab when it is on the listed
+    /// connection, else another tab on it, else a new one; Open in tab: a new tab on it.
+    /// `None` (with a notice) when that connection is not connected.
+    /// `database`, when given, only applies to a freshly opened tab (not a reused one).
+    fn tab_for_history(
+        &mut self, listed: Option<String>, database: Option<String>, run: bool, window: &mut Window, cx: &mut Context<Self>,
+    ) -> Option<Entity<QueryTab>> {
+        let on = |t: &Entity<QueryTab>, cx: &App| t.read(cx).connection().map(|c| c.profile.id.clone()) == listed;
+        if run {
+            if let Some(t) = self.active_tab().filter(|t| on(t, cx)).cloned() {
+                return Some(t);
+            }
+            if let Some(t) = self.tabs.iter().find(|t| on(t, cx)).cloned() {
+                self.activate_tab(&t, window, cx);
+                return Some(t);
+            }
+        }
+        let conn = match &listed {
+            Some(id) => match self.store.read(cx).connection(id) {
+                Some(c) => Some(c),
+                None => {
+                    let name = self.store.read(cx).profile(id).map(|p| p.name.clone()).unwrap_or_else(|| id.clone());
+                    self.notice(format!("Connect to {name} first: this is its history"), cx);
+                    return None;
+                }
+            },
+            None => None,
+        };
+        let has_conn = conn.is_some();
+        let tab = self.new_tab(window, cx);
+        tab.update(cx, |t, cx| {
+            t.set_connection(conn, cx);
+            if has_conn {
+                if let Some(db) = database {
+                    t.set_database(db, cx);
+                }
+            }
+        });
+        Some(tab)
+    }
+
+    pub fn close_dialog(&mut self, cx: &mut Context<Self>) {
+        self.dialog = None;
+        cx.notify();
+    }
+
+    pub fn open_dialog(&mut self, id: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        let profile = id.and_then(|id| self.store.read(cx).profile(&id).cloned());
+        self.open_dialog_with(profile, false, None, window, cx);
+    }
+
+    /// Opens the connection sheet: editing `profile`, or a new one prefilled with it.
+    pub fn open_dialog_with(
+        &mut self,
+        profile: Option<ConnectionProfile>,
+        is_new: bool,
+        password: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.modal_open(cx) {
+            return;
+        }
+        let store = self.store.clone();
+        let d = cx.new(|cx| {
+            let mut d = ConnDialog::new(store, profile, is_new, window, cx);
+            if let Some(pw) = &password {
+                d.set_password(pw, cx);
+            }
+            d
+        });
+        cx.subscribe_in(&d, window, |w, d, ev: &DialogEvent, window, cx| {
+            match ev {
+                DialogEvent::Close => {}
+                DialogEvent::Saved { id, password } => {
+                    w.current_conn = Some(id.clone());
+                    let (id, pw) = (id.clone(), password.clone());
+                    w.store.update(cx, |s, cx| s.connect(&id, pw, cx));
+                }
+                // The sheet stays up while open transactions are asked about.
+                DialogEvent::Save => return w.request_save_connection(d.clone(), window, cx),
+                DialogEvent::Delete(id) => return w.request_delete_connection(id.clone(), true, window, cx),
+            }
+            w.dialog = None;
+            w.focus_editor(window, cx);
+            cx.notify();
+        })
+        .detach();
+        self.dialog = Some(d);
+        cx.notify();
+    }
+
+    /// A new connection prefilled from the clipboard's connection string (URL or key=value).
+    pub(crate) fn new_connection_from_clipboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let text = cx.read_from_clipboard().and_then(|c| c.text()).unwrap_or_default();
+        match diskman_core::connstr::parse_profile(&text) {
+            Some((p, pw)) => self.open_dialog_with(Some(p), true, pw, window, cx),
+            None => self.notice("No connection string on the clipboard", cx),
+        }
+    }
+
+    /// The import sheet: services and pgpass lines to pick from.
+    pub(crate) fn open_import(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.modal_open(cx) {
+            return;
+        }
+        self.modal_return = window.focused(cx);
+        let store = self.store.clone();
+        let v = cx.new(|cx| crate::import_ui::ImportView::new(store, window, cx));
+        cx.subscribe_in(&v, window, |w, _, ev: &crate::import_ui::ImportEvent, window, cx| {
+            if let crate::import_ui::ImportEvent::Imported(ids) = ev
+                && let Some(first) = ids.first()
+            {
+                w.current_conn = Some(first.clone());
+            }
+            w.import = None;
+            match w.modal_return.take() {
+                Some(f) => window.focus(&f, cx),
+                None => w.focus_editor(window, cx),
+            }
+            cx.notify();
+        })
+        .detach();
+        self.import = Some(v);
+        cx.notify();
+    }
+
+    fn on_welcome(&mut self, _: &Entity<Welcome>, ev: &WelcomeEvent, window: &mut Window, cx: &mut Context<Self>) {
+        match ev {
+            WelcomeEvent::NewConnection => self.open_dialog(None, window, cx),
+            WelcomeEvent::Prefill(p, pw) => self.open_dialog_with(Some(p.clone()), true, pw.clone(), window, cx),
+            WelcomeEvent::OpenFile => self.open_sql_file(window, cx),
+            WelcomeEvent::Shortcuts => {
+                self.shortcuts_open = true;
+                cx.notify();
+            }
+        }
+    }
+
+    fn on_tree(&mut self, _: &Entity<SchemaTree>, ev: &TreeEvent, window: &mut Window, cx: &mut Context<Self>) {
+        match ev {
+            TreeEvent::Selected(id) => {
+                self.current_conn = Some(id.clone());
+                // A tab without a connection follows the explorer.
+                let conn = self.store.read(cx).connection(id);
+                if let (Some(tab), Some(conn)) = (self.active_tab().cloned(), conn) {
+                    tab.update(cx, |t, cx| {
+                        if t.connection().is_none() {
+                            t.set_connection(Some(conn), cx)
+                        }
+                    });
+                }
+            }
+            TreeEvent::OpenRelation { conn, db, schema, name } => self.open_relation(conn, db, schema, name, window, cx),
+            TreeEvent::EditConnection(id) => self.open_dialog(Some(id.clone()), window, cx),
+            TreeEvent::NewConnection => self.open_dialog(None, window, cx),
+            TreeEvent::Disconnect(id) => self.request_disconnect(id.clone(), false, window, cx),
+            TreeEvent::FocusEditor => self.focus_editor(window, cx),
+            TreeEvent::RowAction { act, target, alt } => self.on_row_action(*act, target.clone(), *alt, window, cx),
+            TreeEvent::Notice(msg) => self.notice(msg.clone(), cx),
+        }
+        cx.notify();
+    }
+
+    /// The default action on a table or view — explorer ↩ and double-click, the menu's bold
+    /// "View data", the palette: the relation's data view (`table_view`) in a new tab on that
+    /// connection and database: its first page, filters, a server-side sort, the total.
+    pub(crate) fn open_relation(&mut self, conn: &str, db: &str, schema: &str, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(c) = self.store.read(cx).connection(conn) else {
+            self.notice("Connect first", cx);
+            return;
+        };
+        self.current_conn = Some(conn.to_string());
+        let tab = self.new_tab(window, cx);
+        tab.update(cx, |t, cx| {
+            t.set_connection(Some(c.clone()), cx);
+            t.set_database(db.to_string(), cx);
+        });
+        let page = self.store.read(cx).core.settings.get().page_size.max(1) as u64;
+        // The primary key orders the pages.
+        let task = c.primary_key(db, schema, name);
+        let (schema, name) = (schema.to_string(), name.to_string());
+        cx.spawn_in(window, async move |_, cx| {
+            let key: Vec<String> = task.await.unwrap_or_default();
+            let _ = tab.update(cx, |t, cx| t.open_table(diskman_core::dataview::TableView::new(schema, name, key, page), cx));
+        })
+        .detach();
+    }
+
+    /// "Go to …" on a reference in `from`'s grid: the referenced row in a new tab on the same
+    /// connection and database, run at once in that tab's own session (the source tab, its
+    /// result and its pending edits stay as they are).
+    pub(crate) fn follow_reference(&mut self, from: &Entity<QueryTab>, j: &diskman_core::fknav::FkJump, window: &mut Window, cx: &mut Context<Self>) {
+        let (conn, db) = {
+            let t = from.read(cx);
+            (t.connection().map(|c| c.profile.id.clone()), t.database().to_string())
+        };
+        let Some(conn) = conn else { return };
+        if let Some(tab) = self.open_sql_tab(&conn, Some(&db), &j.sql, true, window, cx) {
+            tab.update(cx, |t, cx| t.set_title(j.title.clone(), j.sql.clone(), cx));
+            // Where it landed: the key of the first row pops (yellow) when the row arrives.
+            let grid = tab.read(cx).grid.clone();
+            grid.update(cx, |g, _| g.land_on(Some(j.key.clone()).filter(|k| !k.is_empty())));
+        }
+    }
+
+    /// Grid edits of a tab: the review sheet opens and closes in the side panel.
+    fn on_edit(&mut self, edit: &Entity<crate::edit_ui::GridEdit>, ev: &crate::edit_ui::EditEvent, _: &mut Window, cx: &mut Context<Self>) {
+        use crate::edit_ui::EditEvent;
+        match ev {
+            EditEvent::OpenReview => {
+                // Only for the active tab: a commit that failed in a background tab waits there
+                // (its result bar says "N PENDING"; ⌘S opens the review).
+                let tab = self.active_tab().filter(|t| t.read(cx).edit == *edit).map(|t| t.entity_id());
+                match tab {
+                    Some(id) => {
+                        let view = cx.new(|cx| crate::edit_ui::ReviewPanel::new(edit.clone(), cx));
+                        edit.update(cx, |e, _| e.review_open = true);
+                        self.side_w = self.side_w.max(420.);
+                        self.side = Some(Side::Feature("review", view.into(), Bound::Tab(id)));
+                    }
+                    None => edit.update(cx, |e, _| e.review_open = false),
+                }
+            }
+            EditEvent::CloseReview => {
+                edit.update(cx, |e, _| e.review_open = false);
+                if let Some(Side::Feature("review", v, _)) = &self.side
+                    && v.clone().downcast::<crate::edit_ui::ReviewPanel>().is_ok_and(|r| r.read(cx).edit == *edit)
+                {
+                    self.side = None;
+                }
+            }
+            EditEvent::Committed { rows } => {
+                self.notice(format!("Committed {rows} statement{} · reloading the result", if *rows == 1 { "" } else { "s" }), cx)
+            }
+            EditEvent::Changed => {}
+        }
+        cx.notify();
+    }
+
+    fn active_edit(&self, cx: &App) -> Option<Entity<crate::edit_ui::GridEdit>> {
+        self.active_tab().map(|t| t.read(cx).edit.clone())
+    }
+
+    /// ⌘, opens (or closes) the Settings sheet.
+    pub(crate) fn toggle_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.settings_view.take().is_some() {
+            match self.modal_return.take() {
+                Some(f) => window.focus(&f, cx),
+                None => self.focus_editor(window, cx),
+            }
+            cx.notify();
+            return;
+        }
+        if self.modal_open(cx) {
+            return;
+        }
+        self.modal_return = window.focused(cx);
+        let core = self.store.read(cx).core.clone();
+        let v = cx.new(|cx| crate::settings_view::SettingsView::new(core, window, cx));
+        cx.subscribe_in(&v, window, |w, _, ev: &crate::settings_view::SettingsEvent, window, cx| match ev {
+            crate::settings_view::SettingsEvent::Close => {
+                if w.settings_view.is_some() {
+                    w.toggle_settings(window, cx);
+                }
+            }
+            crate::settings_view::SettingsEvent::ConnectionsChanged => w.store.update(cx, |s, cx| s.reload(cx)),
+        })
+        .detach();
+        self.settings_view = Some(v);
+        cx.notify();
+    }
+
+    pub(crate) fn disconnect(&mut self, id: String, cx: &mut Context<Self>) {
+        self.store.update(cx, |s, cx| s.disconnect(&id, cx));
+        for t in self.tabs.clone() {
+            t.update(cx, |t, cx| {
+                if t.connection().is_some_and(|c| c.profile.id == id) {
+                    t.set_connection(None, cx);
+                }
+            });
+        }
+    }
+
+    fn on_conn(&mut self, _: &Entity<ConnStore>, ev: &ConnEvent, window: &mut Window, cx: &mut Context<Self>) {
+        match ev {
+            ConnEvent::Connected(id) => {
+                self.current_conn = Some(id.clone());
+                let conn = self.store.read(cx).connection(id);
+                // Tabs without a connection adopt the new one, and so do tabs left on this
+                // profile's previous connection (edited: the new settings apply) unless they
+                // opened a transaction since.
+                for tab in self.tabs.clone() {
+                    let conn = conn.clone();
+                    tab.update(cx, |t, cx| {
+                        // A restored tab waits for its own connection.
+                        if let Some((want, _)) = &t.want {
+                            if want == id
+                                && let Some(c) = conn
+                            {
+                                t.adopt(c, cx);
+                            }
+                            return;
+                        }
+                        let stale = !t.tx_open()
+                            && t.connection().is_some_and(|c| c.profile.id == *id && conn.as_ref().is_some_and(|n| !Arc::ptr_eq(c, n)));
+                        if t.connection().is_none() || stale {
+                            t.set_connection(conn, cx);
+                        }
+                    });
+                }
+                if let Some(c) = &conn
+                    && c.info.is_lar
+                {
+                    self.show_lar_toast(c.profile.name.clone(), cx);
+                }
+                let cid = format!("c:{id}");
+                self.tree.update(cx, |t, cx| {
+                    t.expand_id(&cid, cx);
+                });
+            }
+            ConnEvent::Failed { id, ssh: Some(err), .. } => {
+                // The tunnel needs the user: the sheet opens on the host key or the secret.
+                if self.dialog.is_none() {
+                    self.open_dialog(Some(id.clone()), window, cx);
+                    if let Some(d) = self.dialog.clone() {
+                        d.update(cx, |d, cx| match err {
+                            diskman_core::SshError::UnknownHostKey(p) => d.set_host_key(p.clone(), cx),
+                            e => d.set_ssh_failed(e.to_string(), true, window, cx),
+                        });
+                    }
+                }
+            }
+            ConnEvent::Failed { id, needs_password, .. } => {
+                if *needs_password && self.dialog.is_none() {
+                    self.open_dialog(Some(id.clone()), window, cx);
+                    if let Some(d) = self.dialog.clone() {
+                        d.update(cx, |d, cx| d.set_password_needed(cx));
+                        let f = d.read(cx).password_focus(cx);
+                        window.focus(&f, cx);
+                    }
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    /// The "LAR detected" toast, for a few seconds.
+    fn show_lar_toast(&mut self, name: String, cx: &mut Context<Self>) {
+        let at = Instant::now();
+        self.lar_toast = Some((name, at));
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(Duration::from_secs(6)).await;
+            let _ = this.update(cx, |w, cx| {
+                if w.lar_toast.as_ref().is_some_and(|(_, t)| *t == at) {
+                    w.lar_toast = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// A short message in the status bar (4 s).
+    pub(crate) fn notice(&mut self, msg: impl Into<String>, cx: &mut Context<Self>) {
+        let at = Instant::now();
+        self.flash_notice = Some((msg.into(), at));
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(Duration::from_secs(4)).await;
+            let _ = this.update(cx, |w, cx| {
+                if w.flash_notice.as_ref().is_some_and(|(_, t)| *t == at) {
+                    w.flash_notice = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    pub fn toggle_history_for_demo(&mut self, cx: &mut Context<Self>) {
+        self.toggle_history(cx);
+    }
+
+    fn toggle_history(&mut self, cx: &mut Context<Self>) {
+        self.history_pin = None;
+        let c = self
+            .active_tab()
+            .and_then(|t| t.read(cx).connection().map(|c| c.profile.id.clone()))
+            .or(self.current_conn.clone());
+        self.history.update(cx, |h, cx| h.show(c, cx));
+        self.toggle_side(Side::History, cx);
+    }
+
+    pub(crate) fn toggle_side(&mut self, which: Side, cx: &mut Context<Self>) {
+        if self.side.as_ref().is_some_and(|s| s.same_kind(&which)) {
+            self.last_side = self.side.take();
+        } else {
+            self.side = Some(which);
+        }
+        cx.notify();
+    }
+
+    /// Opens or closes a registered server panel in the side panel (LAR's, from the toolbar or
+    /// ⌥1), at the panel's width when it gives one, bound to the tab's connection.
+    pub(crate) fn toggle_server_panel(&mut self, id: &'static str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(conn) = self.active_tab().and_then(|t| t.read(cx).connection().cloned()) else { return };
+        let Some(panel) = cx.try_global::<PanelRegistry>().and_then(|r| r.find(&conn.info, id)) else { return };
+        // Open for this connection: close it. Open for another one: rebuild.
+        if matches!(&self.side, Some(Side::Server(pid, _, b)) if *pid == id && b.fits(None, Some(&conn))) {
+            self.last_side = self.side.take();
+        } else {
+            if let Some(w) = panel.width() {
+                self.side_w = w.clamp(metrics::SIDE_MIN, metrics::SIDE_MAX);
+            }
+            let view = panel.build(conn.clone(), window, cx);
+            self.side = Some(Side::Server(id, view, Bound::Conn(conn)));
+        }
+        cx.notify();
+    }
+
+    /// Keeps the side panel in line with the active tab (called on every tab
+    /// switch, close and connection change, and before each frame): a view built for another
+    /// connection is rebuilt for this tab's connection when it has that panel, or hidden; a
+    /// view that belongs to another tab closes; the history lists this tab's connection.
+    pub(crate) fn sync_bound_views(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let tab = self.active_tab().cloned();
+        let tab_id = tab.as_ref().map(|t| t.entity_id());
+        let conn = tab.as_ref().and_then(|t| t.read(cx).connection().cloned());
+        let fits = |b: &Bound| b.fits(tab_id, conn.as_ref());
+        if let Some(side) = self.side.clone()
+            && let Some(b) = side.bound()
+            && !fits(b)
+        {
+            let rebuilt = match (&side, b, &conn) {
+                (Side::Server(id, ..), Bound::Conn(_), Some(c)) => cx
+                    .try_global::<PanelRegistry>()
+                    .and_then(|r| r.find(&c.info, id))
+                    .map(|p| (*id, p.build(c.clone(), window, cx), c.clone())),
+                _ => None,
+            };
+            if let Side::Feature("review", v, _) = &side
+                && let Ok(r) = v.clone().downcast::<crate::edit_ui::ReviewPanel>()
+            {
+                let edit = r.read(cx).edit.clone();
+                edit.update(cx, |e, _| e.review_open = false);
+            }
+            self.side = rebuilt.map(|(id, v, c)| Side::Server(id, v, Bound::Conn(c)));
+        }
+        // ⌥⌘B must not bring back a view of another tab or connection.
+        if self.last_side.as_ref().and_then(|s| s.bound()).is_some_and(|b| !fits(b)) {
+            self.last_side = None;
+        }
+        if matches!(self.side, Some(Side::History)) {
+            let want = self.history_pin.clone().or(conn.as_ref().map(|c| c.profile.id.clone())).or(self.current_conn.clone());
+            if self.history.read(cx).conn_id() != want.as_deref() {
+                self.history.update(cx, |h, cx| h.show(want, cx));
+            }
+        }
+    }
+
+    /// ⌘O: one or more `.sql` files (the panel shows only those), each in a tab of its own on the
+    /// current connection and database, named after its file.
+    pub(crate) fn open_sql_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let paths = crate::sql_picker::pick_sql_files(true, cx);
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(paths) = paths.await else { return };
+            let _ = this.update_in(cx, |w, window, cx| w.open_sql_paths(&paths, window, cx));
+        })
+        .detach();
+    }
+
+    /// Opens each file in a new tab (title = its file name); one that cannot be read says so.
+    pub(crate) fn open_sql_paths(&mut self, paths: &[std::path::PathBuf], window: &mut Window, cx: &mut Context<Self>) {
+        for path in paths {
+            let text = match std::fs::read_to_string(path) {
+                Ok(t) => t,
+                Err(e) => {
+                    self.notice(format!("cannot read {}: {e}", path.display()), cx);
+                    continue;
+                }
+            };
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("query.sql").to_string();
+            let tab = self.new_tab(window, cx);
+            tab.update(cx, |t, cx| {
+                t.editor.update(cx, |e, cx| e.set_text(&text, cx));
+                let sql = t.editor.read(cx).text().to_string();
+                t.set_title(name, sql, cx);
+            });
+        }
+    }
+
+    /// The region that holds the focus.
+    pub(crate) fn focused_region(&self, window: &Window, cx: &App) -> Option<Region> {
+        if self.tree.read(cx).contains_focus(window, cx) {
+            return Some(Region::Explorer);
+        }
+        if let Some(t) = self.active_tab() {
+            let t = t.read(cx);
+            // A find bar sits beside its region's focus handle, and counts as that region.
+            if t.editor.focus_handle(cx).contains_focused(window, cx) || t.editor.read(cx).find_has_focus(window, cx) {
+                return Some(Region::Editor);
+            }
+            if t.grid.focus_handle(cx).contains_focused(window, cx) || t.grid.read(cx).find_has_focus(window, cx) || t.plan.focus_handle(cx).contains_focused(window, cx) {
+                return Some(Region::Grid);
+            }
+        }
+        if self.side.is_some() && self.history.focus_handle(cx).contains_focused(window, cx) {
+            return Some(Region::Side);
+        }
+        None
+    }
+
+    /// Opens or shuts the explorer, sliding it like Zeron's sidebar (from wherever it is now,
+    /// so a toggle mid-flight turns around smoothly).
+    pub(crate) fn set_explorer_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        if open == self.explorer_open {
+            return;
+        }
+        let from = self.explorer_now();
+        self.explorer_open = open;
+        let to = self.explorer_target();
+        // Reduce motion: the column is simply there (or gone).
+        self.explorer_tween = (!cx.reduce_motion()).then(|| crate::motion::WidthTween::panel(from, to, metrics::EXPLORER_W));
+        cx.notify();
+    }
+
+    /// The history panel's width this frame: it slides in from the window's right edge when it
+    /// opens on its own, and out when it shuts with nothing in its place (the explorer's tween,
+    /// mirrored). `None` while there is no history panel to draw. Called once per frame.
+    pub(crate) fn history_slide(&mut self, window: &mut Window, cx: &App) -> Option<f32> {
+        let now_kind = self.side.as_ref().map(|s| matches!(s, Side::History));
+        let open = now_kind == Some(true);
+        if now_kind != self.side_was {
+            let from = self.history_tween.and_then(|t| t.at(if self.side_was == Some(true) { self.side_w } else { 0. }, Instant::now()));
+            let slide = match (self.side_was, now_kind) {
+                (None, Some(true)) => Some((from.unwrap_or(0.), self.side_w)),
+                (Some(true), None) => Some((from.unwrap_or(self.side_w), 0.)),
+                _ => None,
+            };
+            self.history_tween = slide.filter(|_| !cx.reduce_motion()).map(|(a, b)| crate::motion::WidthTween::panel(a, b, metrics::SIDE_W));
+            self.side_was = now_kind;
+        }
+        let target = if open { self.side_w } else { 0. };
+        match self.history_tween.and_then(|t| t.at(target, Instant::now())) {
+            Some(w) => {
+                window.request_animation_frame();
+                Some(w)
+            }
+            None => {
+                self.history_tween = None;
+                open.then_some(self.side_w)
+            }
+        }
+    }
+
+    fn explorer_target(&self) -> f32 {
+        if self.explorer_open { self.explorer_w } else { 0. }
+    }
+
+    /// The explorer column's width this frame.
+    pub(crate) fn explorer_now(&self) -> f32 {
+        let target = self.explorer_target();
+        self.explorer_tween.and_then(|t| t.at(target, std::time::Instant::now())).unwrap_or(target)
+    }
+
+    pub(crate) fn focus_region(&mut self, r: Region, window: &mut Window, cx: &mut Context<Self>) {
+        match r {
+            Region::Explorer => {
+                self.set_explorer_open(true, cx);
+                let f = self.tree.focus_handle(cx);
+                window.focus(&f, cx);
+            }
+            Region::Editor => self.focus_editor(window, cx),
+            Region::Grid => {
+                // ⌘⇧G before the first run: the grid is not on screen, the focus stays.
+                if !self.results_shown(cx) {
+                    return;
+                }
+                if let Some(t) = self.active_tab() {
+                    // The plan view stands where the grid does.
+                    let f = if t.read(cx).shows_plan(cx) { t.read(cx).plan.focus_handle(cx) } else { t.read(cx).grid.focus_handle(cx) };
+                    window.focus(&f, cx);
+                }
+            }
+            Region::Side => match &self.side {
+                Some(Side::History) => {
+                    let f = self.history.read(cx).filter_focus(cx);
+                    window.focus(&f, cx);
+                }
+                Some(Side::Server(..)) => {}
+                _ => {}
+            },
+        }
+        self.focus_visible = true;
+        cx.notify();
+    }
+
+    fn cycle_focus(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let mut order = vec![];
+        if self.explorer_open {
+            order.push(Region::Explorer);
+        }
+        order.push(Region::Editor);
+        // No result panel before the tab's first run: nothing to focus there.
+        if self.results_shown(cx) {
+            order.push(Region::Grid);
+        }
+        if matches!(self.side, Some(Side::History)) {
+            order.push(Region::Side);
+        }
+        let cur = self.focused_region(window, cx).and_then(|r| order.iter().position(|x| *x == r));
+        let n = order.len();
+        let next = match cur {
+            Some(i) if forward => (i + 1) % n,
+            Some(i) => (i + n - 1) % n,
+            None => order.iter().position(|r| *r == Region::Editor).unwrap_or(0),
+        };
+        self.focus_region(order[next], window, cx);
+    }
+
+    fn jump_to_error(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tab) = self.active_tab().cloned() else { return };
+        let editor = tab.read(cx).editor.clone();
+        if editor.update(cx, |e, cx| e.jump_to_error(cx)) {
+            window.focus(&editor.focus_handle(cx), cx);
+            self.focus_visible = true;
+        }
+    }
+
+    fn find_in_editor(&mut self, replace: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.first_run(cx) {
+            return;
+        }
+        let Some(tab) = self.active_tab().cloned() else { return };
+        let editor = tab.read(cx).editor.clone();
+        editor.update(cx, |e, cx| e.open_find(replace, window, cx));
+    }
+
+    fn find_step_in_editor(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.first_run(cx) {
+            return;
+        }
+        let Some(tab) = self.active_tab().cloned() else { return };
+        let editor = tab.read(cx).editor.clone();
+        editor.update(cx, |e, cx| e.find_step(forward, window, cx));
+    }
+
+    pub(crate) fn use_explorer_connection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let conn = self.current_conn.as_ref().and_then(|id| self.store.read(cx).connection(id));
+        if let (Some(t), Some(conn)) = (self.active_tab().cloned(), conn) {
+            self.retarget(&t, conn, None, None, window, cx);
+        }
+    }
+
+    pub(crate) fn run_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(t) = self.active_tab() {
+            let e = t.read(cx).editor.clone();
+            window.focus(&e.focus_handle(cx), cx);
+            e.update(cx, |e, cx| e.run_script(cx));
+        }
+    }
+
+    /// The menu bar follows the engine of the active tab's connection (else the explorer's):
+    /// what it cannot do is left out of the menus.
+    fn sync_menu_caps(&mut self, cx: &mut Context<Self>) {
+        let conn = self.active_tab().and_then(|t| t.read(cx).connection().cloned());
+        let engine = match conn {
+            Some(c) => c.engine(),
+            None => self.current_conn.as_ref().and_then(|id| self.store.read(cx).profile(id)).map(|p| p.engine).unwrap_or_default(),
+        };
+        let caps = diskman_core::Caps::of(engine);
+        // The menus were built for PostgreSQL's (everything) until told otherwise.
+        let shown = cx.try_global::<crate::MenuCaps>().map_or(diskman_core::Caps::POSTGRES, |m| m.0);
+        if shown != caps {
+            cx.set_global(crate::MenuCaps(caps));
+            cx.defer(crate::refresh_menus);
+        }
+    }
+
+    /// ⌘D: favorites the statement under the cursor of the active tab, on its connection.
+    pub(crate) fn favorite_current_query(&mut self, cx: &mut Context<Self>) {
+        let Some(t) = self.active_tab().cloned() else { return };
+        let Some(stmt) = t.update(cx, |t, cx| t.editor.update(cx, |e, cx| e.current_statement(cx))) else { return };
+        let sql = stmt.sql.trim().to_string();
+        if sql.is_empty() {
+            return;
+        }
+        let (connection_id, database) = match t.read(cx).connection() {
+            Some(c) => (Some(c.profile.id.clone()), Some(t.read(cx).database().to_string())),
+            None => (None, None),
+        };
+        let mut fav = Favorite::new(crate::history::fav_name(&sql), sql);
+        fav.connection_id = connection_id;
+        fav.database = database;
+        if self.store.read(cx).core.favorites.add(fav).is_ok() {
+            self.notice("Added to favorites", cx);
+        }
+    }
+
+    /// Import Favorites…: each selected `.sql` file (the panel shows only those, several at
+    /// once) as a favorite named after the file, its content the SQL; one already there (the
+    /// same SQL) is skipped.
+    pub(crate) fn import_favorites(&mut self, cx: &mut Context<Self>) {
+        let rx = crate::sql_picker::pick_sql_files(true, cx);
+        cx.spawn(async move |this, cx| {
+            let Ok(paths) = rx.await else { return };
+            let _ = this.update(cx, |w, cx| w.import_favorite_paths(&paths, cx));
+        })
+        .detach();
+    }
+
+    pub(crate) fn import_favorite_paths(&mut self, paths: &[std::path::PathBuf], cx: &mut Context<Self>) {
+        let store = self.store.read(cx).core.favorites.clone();
+        let mut added = 0usize;
+        for path in paths {
+            if crate::sql_picker::is_sql(path)
+                && let Ok(sql) = std::fs::read_to_string(path)
+            {
+                let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("favorite").to_string();
+                let known = store.find_by_sql(&sql).is_some();
+                if !known && store.add(Favorite::new(name, sql)).is_ok() {
+                    added += 1;
+                }
+            }
+        }
+        if added > 0 {
+            self.notice(format!("Added {added} to favorites"), cx);
+        }
+        self.history.update(cx, |h, cx| h.reload_favorites(cx));
+    }
+
+    /// ⌘L / ⌥⌘L: Explain (Analyze) of the active tab's statement under the cursor.
+    pub(crate) fn explain_active(&mut self, analyze: bool, cx: &mut Context<Self>) {
+        if let Some(t) = self.active_tab().cloned() {
+            // Engines without a plan view (MySQL) leave the key alone.
+            if t.read(cx).connection().is_some_and(|c| !c.caps().explain) {
+                return;
+            }
+            t.update(cx, |t, cx| t.explain(analyze, cx));
+        }
+    }
+
+    /// "Copy as text": the plan on screen, as PostgreSQL prints it.
+    pub(crate) fn copy_plan_text(&mut self, cx: &mut Context<Self>) {
+        let Some(t) = self.active_tab().cloned() else { return };
+        if !t.read(cx).shows_plan(cx) {
+            return;
+        }
+        let task = t.update(cx, |t, cx| t.plan_text(cx));
+        cx.spawn(async move |this, cx| {
+            if let Some(text) = task.await {
+                let _ = this.update(cx, |w, cx| {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+                    w.notice("Plan copied as text", cx);
+                });
+            }
+        })
+        .detach();
+    }
+
+    /// The plan view's tree ⇄ flame.
+    pub(crate) fn toggle_plan_flame(&mut self, cx: &mut Context<Self>) {
+        let Some(t) = self.active_tab().cloned() else { return };
+        if !t.read(cx).shows_plan(cx) {
+            return;
+        }
+        let plan = t.read(cx).plan.clone();
+        plan.update(cx, |p, cx| {
+            let m = if p.mode == crate::plan::Mode::Tree { crate::plan::Mode::Flame } else { crate::plan::Mode::Tree };
+            p.set_mode(m, cx);
+        });
+        cx.notify();
+    }
+
+    /// A click on a result tab.
+    pub(crate) fn select_result(&mut self, key: diskman_core::batch::Key, cx: &mut Context<Self>) {
+        if let Some(t) = self.active_tab().cloned() {
+            if t.read(cx).shown_key() != Some(key) {
+                self.nav_record(None, cx);
+            }
+            t.update(cx, |t, cx| t.select_result(key, cx));
+        }
+    }
+
+    /// The toolbar's connection picker: opens (loading the databases not listed yet) or shuts.
+    pub(crate) fn toggle_conn_menu(&mut self, cx: &mut Context<Self>) {
+        if self.conn_menu_shut.take().is_some_and(|at| at.elapsed() < Duration::from_millis(300)) {
+            return;
+        }
+        self.conn_menu = !self.conn_menu;
+        if self.conn_menu {
+            let conns: Vec<Arc<Connection>> = self.store.read(cx).profiles.iter().filter_map(|p| self.store.read(cx).connection(&p.id)).collect();
+            for c in conns.into_iter().filter(|c| c.schema.cached_databases().is_none()) {
+                let task = c.databases();
+                cx.spawn(async move |this, cx| {
+                    let _ = task.await;
+                    let _ = this.update(cx, |_, cx| cx.notify());
+                })
+                .detach();
+            }
+        }
+        cx.notify();
+    }
+
+    /// A database picked in the connection picker: the active tab moves there (its session
+    /// ends: an open transaction is asked about first, like any switch).
+    pub(crate) fn pick_target(&mut self, id: &str, db: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.conn_menu = false;
+        cx.notify();
+        let (Some(tab), Some(conn)) = (self.active_tab().cloned(), self.store.read(cx).connection(id)) else { return };
+        {
+            let t = tab.read(cx);
+            if t.connection().is_some_and(|c| Arc::ptr_eq(c, &conn)) && t.database() == db {
+                return;
+            }
+        }
+        self.current_conn = Some(id.to_string());
+        self.retarget(&tab, conn, Some(db.to_string()), None, window, cx);
+    }
+
+    /// The × of a result tab.
+    pub(crate) fn close_result(&mut self, key: diskman_core::batch::Key, cx: &mut Context<Self>) {
+        if let Some(t) = self.active_tab().cloned() {
+            t.update(cx, |t, cx| t.close_result(key, cx));
+        }
+    }
+
+    /// ⌥⌘] / ⌥⌘[.
+    fn cycle_result(&mut self, forward: bool, cx: &mut Context<Self>) {
+        if let Some(t) = self.active_tab().cloned() {
+            if t.read(cx).result_tabs().len() > 1 {
+                self.nav_record(None, cx);
+            }
+            t.update(cx, |t, cx| t.cycle_result(forward, cx));
+        }
+    }
+
+    pub(crate) fn cancel_active(&mut self, cx: &mut Context<Self>) {
+        self.cancel_toast_hidden = None;
+        if let Some(t) = self.active_tab().cloned() {
+            t.update(cx, |t, cx| t.cancel(cx));
+            let grid = t.read(cx).grid.clone();
+            grid.update(cx, |g, cx| {
+                g.cancelling = true;
+                cx.notify();
+            });
+        }
+    }
+
+    fn on_drag_move(&mut self, ev: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(d) = self.drag else { return };
+        if ev.pressed_button != Some(MouseButton::Left) {
+            self.drag = None;
+            return;
+        }
+        let size = window.viewport_size();
+        match d {
+            Drag::Explorer => {
+                self.explorer_w = ev.position.x.pt().clamp(metrics::EXPLORER_MIN, metrics::EXPLORER_MAX);
+            }
+            Drag::Side => {
+                let w = size.width.pt() - ev.position.x.pt();
+                self.side_w = w.clamp(metrics::SIDE_MIN, metrics::SIDE_MAX);
+            }
+            Drag::Split => {
+                let top = metrics::TITLE_H + metrics::TOOLBAR_H;
+                let column = self.work_column_h(window);
+                let max = (column - metrics::DIVIDER - metrics::RESULT_BAR_H - metrics::GRID_MIN).max(metrics::EDITOR_MIN);
+                let h = (ev.position.y.pt() - top - metrics::DIVIDER / 2.).clamp(metrics::EDITOR_MIN, max);
+                self.editor_frac = Some(h / column);
+            }
+        }
+        cx.notify();
+    }
+
+    /// A dragged tab dropped at the gap `slot` (`tab_drop`) moves there and is the active one.
+    pub(crate) fn drop_tab(&mut self, id: EntityId, window: &mut Window, cx: &mut Context<Self>) {
+        let slot = self.tab_drop.take();
+        let Some(i) = self.tabs.iter().position(|t| t.entity_id() == id) else { return };
+        if let Some(s) = slot {
+            diskman_core::order::move_to(&mut self.tabs, i, s);
+        }
+        if let Some(ix) = self.tabs.iter().position(|t| t.entity_id() == id) {
+            self.activate(ix, window, cx);
+        }
+        cx.notify();
+    }
+
+    /// Closes the tabs in `close` together; with transactions open in any, asks once first.
+    pub(crate) fn close_tabs(&mut self, close: Vec<Entity<QueryTab>>, window: &mut Window, cx: &mut Context<Self>) {
+        if close.is_empty() {
+            return;
+        }
+        let ids: Vec<EntityId> = close.iter().map(|t| t.entity_id()).collect();
+        if self.ask_about_tx(Ends::Tabs(&ids), AfterTx::CloseTabs(close.clone()), window, cx) {
+            return;
+        }
+        self.close_tabs_now(close, window, cx);
+    }
+
+    fn close_tabs_now(&mut self, close: Vec<Entity<QueryTab>>, window: &mut Window, cx: &mut Context<Self>) {
+        let active = self.active_tab().cloned();
+        for tab in &close {
+            if let Some(ix) = self.tabs.iter().position(|t| t == tab) {
+                self.close_tab_now(ix, window, cx);
+            }
+        }
+        // The active tab stays active when it is left.
+        if let Some(ix) = active.and_then(|a| self.tabs.iter().position(|t| *t == a)) {
+            self.activate(ix, window, cx);
+        }
+    }
+
+    /// Height of the work column below the toolbar (editor + divider + result bar + grid).
+    pub(crate) fn work_column_h(&self, window: &Window) -> f32 {
+        let h = window.viewport_size().height.pt();
+        h - metrics::TITLE_H - metrics::STATUS_H - metrics::TOOLBAR_H
+    }
+
+    /// `below`: the extra chrome under the divider (the result tabs strip, when shown).
+    pub(crate) fn editor_h(&self, window: &Window, below: f32) -> f32 {
+        let column = self.work_column_h(window);
+        let compact = window.viewport_size().height.pt() <= 800.;
+        let default = if compact { metrics::EDITOR_COMPACT } else { metrics::EDITOR_H };
+        let h = self.editor_frac.map(|f| f * column).unwrap_or(default);
+        let max = (column - below - metrics::DIVIDER - metrics::RESULT_BAR_H - metrics::GRID_MIN).max(metrics::EDITOR_MIN);
+        h.clamp(metrics::EDITOR_MIN, max)
+    }
+
+    /// Connection state for the benchmarks.
+    pub fn connection_state(&self, id: &str, cx: &App) -> Option<ConnState> {
+        self.store.read(cx).states.get(id).cloned()
+    }
+
+    /// Whether the active tab shows its result panel (from its first run on).
+    pub(crate) fn results_shown(&self, cx: &App) -> bool {
+        self.active_tab().is_some_and(|t| t.read(cx).has_run)
+    }
+
+    /// Whether there is anything to show but the welcome screen.
+    pub(crate) fn first_run(&self, cx: &App) -> bool {
+        self.store.read(cx).profiles.is_empty()
+    }
+}
+
+/// The path of a `file://` URL (percent-decoded); a bare path passes through.
+pub(crate) fn file_url_path(url: &str) -> Option<std::path::PathBuf> {
+    let rest = match url.strip_prefix("file://") {
+        Some(r) => r.strip_prefix("localhost").unwrap_or(r),
+        None if url.starts_with('/') => url,
+        None => return None,
+    };
+    let b = rest.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%'
+            && i + 2 < b.len()
+            && let Some(v) = std::str::from_utf8(&b[i + 1..i + 3]).ok().and_then(|h| u8::from_str_radix(h, 16).ok())
+        {
+            out.push(v);
+            i += 3;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    use std::os::unix::ffi::OsStringExt as _;
+    Some(std::ffi::OsString::from_vec(out).into())
+}
+
+pub fn fmt_dur(d: Duration) -> String {
+    let ms = d.as_secs_f64() * 1e3;
+    if ms < 1. {
+        format!("{:.0} µs", ms * 1e3)
+    } else if ms < 100. {
+        format!("{ms:.1} ms")
+    } else if ms < 1000. {
+        format!("{ms:.0} ms")
+    } else {
+        format!("{:.2} s", ms / 1e3)
+    }
+}
+
+impl Render for Workspace {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _trace = TraceRender::new("workspace render");
+        RENDERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // A connection change of the active tab (explorer, ⌥↩, palette, disconnect) lands
+        // here before anything can act on a panel of the old connection.
+        self.sync_bound_views(window, cx);
+        // An activity monitor reads only while its tab is in front.
+        self.sync_monitors(window, cx);
+        self.sync_menu_caps(cx);
+        // Anything the session keeps changed: save it once things settle (nothing to watch with
+        // sessions off: the checks and benchmarks).
+        let fp = if crate::restore::store(cx).is_some() && !self.session_off { self.session_fingerprint(cx) } else { 0 };
+        if fp != self.session_fp {
+            self.session_fp = fp;
+            self.schedule_session_save(cx);
+        }
+        let t = cx.theme();
+        let first_run = self.first_run(cx);
+        let surface = if first_run { self.welcome.clone().into_any_element() } else { self.render_work(window, cx).into_any_element() };
+        // Zeron's shell: the explorer column and the work column both run from the window's
+        // top edge to the status bar, with the title bar laid over them (transparent). The
+        // explorer sits on the glass; the work column paints its `panel` fill once, flush (no
+        // radius, no margin) to the window's right edge, and its left hairline is the seam.
+        // ⌘B slides the column (Zeron's sidebar tween): its content keeps the full width and is
+        // clipped, so the tree never reflows mid-flight. Frames are requested only while it moves.
+        if let Some(tw) = self.explorer_tween {
+            if tw.at(self.explorer_target(), std::time::Instant::now()).is_some() {
+                window.request_animation_frame();
+            } else {
+                self.explorer_tween = None;
+            }
+        }
+        // A production connection: a thin red accent across the top of the work column.
+        let production = !first_run && self.active_tab().and_then(|t| t.read(cx).connection().map(|c| c.profile.env.is_production())).unwrap_or(false);
+        let explorer_w = self.explorer_now();
+        let sliding = self.explorer_tween.is_some();
+        let explorer_shown = explorer_w > 0.5;
+        let explorer = explorer_shown.then(|| {
+            div()
+                .w(px(explorer_w))
+                .flex_none()
+                .h_full()
+                .overflow_hidden()
+                .child(div().w(px(self.explorer_w)).h_full().pt(px(metrics::TITLE_H)).child(self.tree.clone()))
+        });
+        let work = div()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .flex()
+            .flex_col()
+            // The work column's fill (`bg` at 10 % over the glass, solid white in the light
+            // theme), painted here and only here: every region inside is transparent, so no
+            // overlap darkens. Under the title bar it carries the query tabs.
+            .bg(t.panel)
+            .when(explorer_shown, |d| d.border_l_1().border_color(t.line))
+            .overflow_hidden()
+            .child(div().h(px(metrics::TITLE_H)).flex_none())
+            // The title band ends on a hairline over the work column (the toolbar, the
+            // editor and the side panel start under it).
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .when(!production, |d| d.border_t_1().border_color(t.line))
+                    .when(production, |d| d.border_t_2().border_color(t.err))
+                    .child(surface),
+            );
+        // The explorer's resize grabber, on the seam: 8 pt straddling the hairline, from under
+        // the title bar down (the bar keeps its drag area), painted over both columns.
+        let seam = (self.explorer_open && !sliding).then(|| {
+            div()
+                .id("explorer-resize")
+                .absolute()
+                .top(px(metrics::TITLE_H))
+                .bottom_0()
+                .left(px(self.explorer_w - 4.))
+                .w(px(8.))
+                .cursor_col_resize()
+                .on_mouse_down(MouseButton::Left, cx.listener(|w, _, _, cx| {
+                    w.drag = Some(Drag::Explorer);
+                    cx.stop_propagation();
+                }))
+        });
+        div()
+            .id("workspace")
+            .size_full()
+            .relative()
+            .flex()
+            .flex_col()
+            // The glass, once, behind the whole window: the work column's translucent fill sits
+            // on it too.
+            .bg(t.glass)
+            .text_color(t.tx)
+            .font_family(mono())
+            .text_size(px(12.))
+            .key_context("Workspace")
+            .track_focus(&self.focus)
+            .on_action(cx.listener(|w, _: &GoBack, window, cx| w.go(false, window, cx)))
+            .on_action(cx.listener(|w, _: &GoForward, window, cx| w.go(true, window, cx)))
+            // The mouse's side buttons, anywhere in the window.
+            .capture_any_mouse_down(cx.listener(|w, ev: &gpui::MouseDownEvent, window, cx| {
+                if let MouseButton::Navigate(d) = ev.button {
+                    w.go(d == gpui::NavigationDirection::Forward, window, cx);
+                    cx.stop_propagation();
+                }
+            }))
+            .on_action(cx.listener(|w, _: &NewTab, window, cx| {
+                w.new_tab(window, cx);
+            }))
+            .on_action(cx.listener(|w, _: &CloseTab, window, cx| {
+                let a = w.active;
+                w.close_tab(a, window, cx)
+            }))
+            .on_action(cx.listener(|w, _: &NextTab, window, cx| {
+                let n = w.tabs.len().max(1);
+                w.activate((w.active + 1) % n, window, cx);
+            }))
+            .on_action(cx.listener(|w, _: &PrevTab, window, cx| {
+                let n = w.tabs.len().max(1);
+                w.activate((w.active + n - 1) % n, window, cx);
+            }))
+            .on_action(cx.listener(|w, _: &Tab1, window, cx| w.activate(0, window, cx)))
+            .on_action(cx.listener(|w, _: &Tab2, window, cx| w.activate(1, window, cx)))
+            .on_action(cx.listener(|w, _: &Tab3, window, cx| w.activate(2, window, cx)))
+            .on_action(cx.listener(|w, _: &Tab4, window, cx| w.activate(3, window, cx)))
+            .on_action(cx.listener(|w, _: &Tab5, window, cx| w.activate(4, window, cx)))
+            .on_action(cx.listener(|w, _: &Tab6, window, cx| w.activate(5, window, cx)))
+            .on_action(cx.listener(|w, _: &Tab7, window, cx| w.activate(6, window, cx)))
+            .on_action(cx.listener(|w, _: &Tab8, window, cx| w.activate(7, window, cx)))
+            .on_action(cx.listener(|w, _: &Tab9, window, cx| {
+                // ⌘9 is the last tab, as in browsers.
+                let last = w.tabs.len().saturating_sub(1);
+                w.activate(last, window, cx)
+            }))
+            .on_action(cx.listener(|w, _: &NewConnection, window, cx| w.open_dialog(None, window, cx)))
+            .on_action(cx.listener(|w, _: &EditConnection, window, cx| {
+                let id = w.current_conn.clone();
+                w.open_dialog(id, window, cx)
+            }))
+            .on_action(cx.listener(|w, _: &ToggleHistory, window, cx| {
+                w.toggle_history(cx);
+                // Opening the panel from the keyboard moves the focus into it (esc gives it back).
+                if matches!(w.side, Some(Side::History)) {
+                    w.focus_region(Region::Side, window, cx);
+                } else if w.focused_region(window, cx).is_none() {
+                    w.focus_editor(window, cx);
+                }
+            }))
+            .on_action(cx.listener(|w, _: &FavoriteQuery, _, cx| w.favorite_current_query(cx)))
+            .on_action(cx.listener(|w, _: &ImportFavorites, _, cx| w.import_favorites(cx)))
+            .on_action(cx.listener(|w, _: &Cancel, _, cx| w.cancel_active(cx)))
+            .on_action(cx.listener(|w, _: &NextResult, _, cx| w.cycle_result(true, cx)))
+            .on_action(cx.listener(|w, _: &PrevResult, _, cx| w.cycle_result(false, cx)))
+            .on_action(cx.listener(|w, _: &NextPage, _, cx| {
+                if let Some(t) = w.active_tab().cloned() {
+                    t.update(cx, |t, cx| t.table_step(true, cx));
+                }
+            }))
+            .on_action(cx.listener(|w, _: &PrevPage, _, cx| {
+                if let Some(t) = w.active_tab().cloned() {
+                    t.update(cx, |t, cx| t.table_step(false, cx));
+                }
+            }))
+            .on_action(cx.listener(|w, _: &Explain, _, cx| w.explain_active(false, cx)))
+            .on_action(cx.listener(|w, _: &ExplainAnalyze, _, cx| w.explain_active(true, cx)))
+            .on_action(cx.listener(|w, _: &CopyPlanText, _, cx| w.copy_plan_text(cx)))
+            .on_action(cx.listener(|w, _: &TogglePlanFlame, _, cx| w.toggle_plan_flame(cx)))
+            .on_action(cx.listener(|w, _: &ToggleMcpLog, window, cx| w.toggle_mcp_log(window, cx)))
+            .on_action(cx.listener(|_, _: &CheckForUpdates, _, cx| crate::updates::check(true, cx)))
+            .on_action(cx.listener(|w, _: &InstallUpdate, window, cx| w.install_update(window, cx)))
+            .on_action(cx.listener(|w, _: &OpenActivity, window, cx| {
+                let id = w.active_tab().and_then(|t| t.read(cx).connection().map(|c| c.profile.id.clone())).or(w.current_conn.clone());
+                match id {
+                    Some(id) => w.open_activity(&id, window, cx),
+                    None => w.notice("Connect first", cx),
+                }
+            }))
+            .on_action(cx.listener(|w, _: &Refresh, _, cx| w.tree.update(cx, |t, cx| t.refresh_selected(cx))))
+            .on_action(cx.listener(|w, _: &ToggleExplorer, window, cx| {
+                w.set_explorer_open(!w.explorer_open, cx);
+                if !w.explorer_open && w.tree.read(cx).contains_focus(window, cx) {
+                    w.focus_editor(window, cx);
+                }
+            }))
+            .on_action(cx.listener(|w, _: &ToggleSidePanel, _, cx| {
+                if w.side.is_some() {
+                    w.last_side = w.side.take();
+                } else {
+                    w.side = Some(w.last_side.clone().unwrap_or(Side::History));
+                }
+                cx.notify();
+            }))
+            .on_action(cx.listener(|w, _: &FocusExplorer, window, cx| w.focus_region(Region::Explorer, window, cx)))
+            .on_action(cx.listener(|w, _: &FocusGrid, window, cx| w.focus_region(Region::Grid, window, cx)))
+            .on_action(cx.listener(|w, _: &FocusEditor, window, cx| {
+                if w.shortcuts_open {
+                    w.shortcuts_open = false;
+                    cx.notify();
+                    return;
+                }
+                // esc in the side panel closes it and gives the focus back.
+                if w.focused_region(window, cx) == Some(Region::Side) {
+                    w.last_side = w.side.take();
+                }
+                if w.copy_menu {
+                    w.copy_menu = false;
+                }
+                if w.conn_menu {
+                    w.conn_menu = false;
+                    cx.notify();
+                    return;
+                }
+                // esc on the grid closes an edit card first.
+                if w.focused_region(window, cx) == Some(Region::Grid)
+                    && let Some(e) = w.active_edit(cx)
+                    && e.update(cx, |e, cx| e.dismiss_card(cx))
+                {
+                    return;
+                }
+                w.focus_region(Region::Editor, window, cx)
+            }))
+            .on_action(cx.listener(|w, _: &CycleFocus, window, cx| w.cycle_focus(true, window, cx)))
+            .on_action(cx.listener(|w, _: &CycleFocusBack, window, cx| w.cycle_focus(false, window, cx)))
+            .on_action(cx.listener(|w, _: &JumpToError, window, cx| w.jump_to_error(window, cx)))
+            // Find… / Replace… from the menu or the palette with the focus outside the editor and
+            // the grid (they handle it themselves): the editor's bar.
+            .on_action(cx.listener(|w, _: &crate::find::Find, window, cx| w.find_in_editor(false, window, cx)))
+            .on_action(cx.listener(|w, _: &crate::find::FindReplace, window, cx| w.find_in_editor(true, window, cx)))
+            .on_action(cx.listener(|w, _: &crate::find::FindNext, window, cx| w.find_step_in_editor(true, window, cx)))
+            .on_action(cx.listener(|w, _: &crate::find::FindPrevious, window, cx| w.find_step_in_editor(false, window, cx)))
+            .on_action(cx.listener(|w, _: &UseExplorerConnection, window, cx| w.use_explorer_connection(window, cx)))
+            .on_action(cx.listener(|w, _: &ShowShortcuts, _, cx| {
+                w.shortcuts_open = !w.shortcuts_open;
+                cx.notify();
+            }))
+            .on_action(cx.listener(|w, _: &CommandPalette, window, cx| w.open_palette(crate::palette::Scope::All, window, cx)))
+            .on_action(cx.listener(|w, _: &GoTo, window, cx| w.open_palette(crate::palette::Scope::Goto, window, cx)))
+            .on_action(cx.listener(|w, _: &OpenSettings, window, cx| w.toggle_settings(window, cx)))
+            .on_action(cx.listener(|w, _: &ExportResult, window, cx| w.open_export(window, cx)))
+            .on_action(cx.listener(|w, _: &ImportData, window, cx| w.import_data(None, None, window, cx)))
+            .on_drop(cx.listener(|w, paths: &gpui::ExternalPaths, window, cx| w.drop_files(paths, window, cx)))
+            .on_action(cx.listener(|w, _: &ReviewChanges, window, cx| {
+                // On production the edits are writes like any other: always reviewed first.
+                let production = w.active_tab().and_then(|t| t.read(cx).connection().map(|c| c.profile.env.is_production())).unwrap_or(false);
+                let confirm = w.store.read(cx).core.settings.get().confirm_commit || production;
+                // Never commit edits that are not on screen (a live grid hides the result they
+                // were made on).
+                if let Some(tab) = w.active_tab()
+                    && crate::lar::hides_result(tab.read(cx))
+                {
+                    if tab.read(cx).edit.read(cx).pending_count() > 0 {
+                        w.notice("The pending edits belong to a result that is not shown: nothing was committed", cx);
+                    }
+                    return;
+                }
+                if let Some(e) = w.active_edit(cx) {
+                    e.update(cx, |e, cx| e.review(confirm, window, cx));
+                }
+            }))
+            .on_action(cx.listener(|w, _: &DiscardChanges, window, cx| {
+                if let Some(e) = w.active_edit(cx) {
+                    e.update(cx, |e, cx| e.discard(window, cx));
+                }
+            }))
+            .on_action(cx.listener(|w, a: &crate::edit_ui::OpenSqlInTab, window, cx| {
+                let sql = a.0.clone();
+                let conn = w.active_tab().and_then(|t| t.read(cx).connection().cloned());
+                let tab = w.new_tab(window, cx);
+                tab.update(cx, |t, cx| {
+                    t.set_connection(conn, cx);
+                    t.editor.update(cx, |e, cx| e.set_text(&sql, cx));
+                });
+            }))
+            .on_action(cx.listener(|w, _: &OpenSqlFile, window, cx| w.open_sql_file(window, cx)))
+            // The palette's "Show row actions" (in the explorer ⇧F10 is the tree's own).
+            .on_action(cx.listener(|w, _: &crate::tree::ShowRowActions, window, cx| {
+                let was_open = w.explorer_open;
+                w.focus_region(Region::Explorer, window, cx);
+                let tree = w.tree.clone();
+                if was_open {
+                    tree.update(cx, |t, cx| t.show_row_actions(None, window, cx));
+                } else {
+                    // The explorer lays out first, so the menu finds its row.
+                    window.on_next_frame(move |window, cx| tree.update(cx, |t, cx| t.show_row_actions(None, window, cx)));
+                }
+            }))
+            .on_action(cx.listener(|w, _: &crate::row_actions::DuplicateConnection, window, cx| {
+                w.row_actions_on_current(crate::tree_menu::Act::DuplicateConnection, window, cx)
+            }))
+            .on_action(cx.listener(|w, _: &crate::row_actions::DeleteConnection, window, cx| {
+                w.row_actions_on_current(crate::tree_menu::Act::DeleteConnection, window, cx)
+            }))
+            .on_action(cx.listener(|w, _: &crate::row_actions::CopyConnectionString, _, cx| w.copy_connection_string(cx)))
+            .on_action(cx.listener(|_, _: &ToggleTheme, _, cx| theme::set_pref(theme::next_pref(theme::pref(cx)), cx)))
+            .on_action(cx.listener(|_, _: &ThemeDark, _, cx| theme::set_pref(diskman_core::ThemePref::Dark, cx)))
+            .on_action(cx.listener(|_, _: &ThemeLight, _, cx| theme::set_pref(diskman_core::ThemePref::Light, cx)))
+            .on_action(cx.listener(|_, _: &ThemeSystem, _, cx| theme::set_pref(diskman_core::ThemePref::System, cx)))
+            .on_action(cx.listener(|_, _: &TranslucencyOn, w, cx| theme::set_translucency(Translucency::On, w, cx)))
+            .on_action(cx.listener(|_, _: &TranslucencyOff, w, cx| theme::set_translucency(Translucency::Off, w, cx)))
+            .on_action(cx.listener(|_, _: &FontGeistMono, _, cx| theme::set_font(diskman_core::UiFont::GeistMono, cx)))
+            .on_action(cx.listener(|_, _: &FontLilex, _, cx| theme::set_font(diskman_core::UiFont::Lilex, cx)))
+            .on_action(cx.listener(|_, _: &FontZedMono, _, cx| theme::set_font(diskman_core::UiFont::ZedMono, cx)))
+            .on_action(cx.listener(|_, _: &FontJetBrainsMono, _, cx| theme::set_font(diskman_core::UiFont::JetBrainsMono, cx)))
+            .on_action(cx.listener(|_, _: &ZoomIn, w, cx| theme::set_zoom(theme::zoom_step(theme::zoom(), 1), w, cx)))
+            .on_action(cx.listener(|_, _: &ZoomOut, w, cx| theme::set_zoom(theme::zoom_step(theme::zoom(), -1), w, cx)))
+            .on_action(cx.listener(|_, _: &ZoomReset, w, cx| theme::set_zoom(1.0, w, cx)))
+            .on_action(cx.listener(|w, _: &LarPanel1, window, cx| w.toggle_server_panel(crate::panels::LAR_BUTTONS[0].0, window, cx)))
+            .on_action(cx.listener(|w, _: &Quit, window, cx| {
+                if w.request_quit(window, cx) {
+                    w.quit_now(cx);
+                }
+            }))
+            .on_action(cx.listener(|w, _: &CommitTx, _, cx| w.end_active_tx(true, cx)))
+            .on_action(cx.listener(|w, _: &RollbackTx, _, cx| w.end_active_tx(false, cx)))
+            .on_action(cx.listener(|w, _: &SheetConfirm, window, cx| w.sheet_answer(crate::tab::ConfirmChoice::Run, window, cx)))
+            .on_action(cx.listener(|w, _: &SheetRollback, window, cx| w.sheet_answer(crate::tab::ConfirmChoice::Rollback, window, cx)))
+            .on_action(cx.listener(|w, _: &SheetCancel, window, cx| w.sheet_answer(crate::tab::ConfirmChoice::Cancel, window, cx)))
+            .on_action(cx.listener(|w, _: &NewConnectionFromClipboard, window, cx| w.new_connection_from_clipboard(window, cx)))
+            .on_action(cx.listener(|w, _: &ImportConnections, window, cx| w.open_import(window, cx)))
+            .on_action(cx.listener(|w, _: &CancelPendingRun, window, cx| w.resolve_pending_run(false, window, cx)))
+            .on_action(cx.listener(|w, _: &DiscardAndRun, window, cx| w.resolve_pending_run(true, window, cx)))
+            .map(|d| crate::lar::workspace_actions(d, cx))
+            .on_mouse_move(cx.listener(Self::on_drag_move))
+            .on_mouse_up(MouseButton::Left, cx.listener(|w, _, _, _| w.drag = None))
+            .capture_any_mouse_down(cx.listener(|w, _, _, _| w.focus_visible = false))
+            .child(div().flex_1().min_h_0().relative().flex().flex_row().children(explorer).child(work).children(seam))
+            // A pane being resized keeps its cursor wherever the pointer goes.
+            .children(self.drag.map(|d| {
+                let style = if d == Drag::Split { gpui::CursorStyle::ResizeRow } else { gpui::CursorStyle::ResizeColumn };
+                gpui::canvas(|_, _, _| {}, move |_, _, window, _| window.set_window_cursor_style(style)).absolute().size_0()
+            }))
+            .child(self.render_status(window, cx))
+            // The title bar over the top of both columns (it paints nothing but its tabs).
+            .child(self.render_titlebar(window, cx))
+            // A 1 pt highlight along the top edge (dark theme), across the whole window.
+            .when(t.is_dark(), |d| d.child(div().absolute().top_0().left_0().right_0().h(px(1.)).bg(gpui::hsla(0., 0., 1., 0.08))))
+            .children(self.render_toasts(window, cx))
+            .children(self.render_crash_toast(cx))
+            .children(self.dialog.clone())
+            .children(self.import.clone())
+            .children(self.shortcuts_open.then(|| self.render_shortcuts(cx)))
+            .children(self.settings_view.clone())
+            .children(self.export.clone().filter(|e| e.read(cx).visible))
+            .children(self.data_import.clone().filter(|e| e.read(cx).visible))
+            .children(self.palette.clone())
+            .children(self.render_filter_popover(cx))
+            .children(self.render_confirm_discard(cx))
+            .children(self.render_confirm_delete(cx))
+            .children(self.render_tx_sheet(cx))
+            .children(self.render_param_sheet(cx))
+            .children(self.render_mcp_sheet(cx))
+    }
+}
+
+/// `DISKMAN_TRACE_FRAMES=1`: prints renders slower than 1 ms (debugging frame budgets).
+pub(crate) struct TraceRender(&'static str, Instant);
+
+impl TraceRender {
+    pub(crate) fn new(what: &'static str) -> Option<TraceRender> {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        ON.get_or_init(|| std::env::var_os("DISKMAN_TRACE_FRAMES").is_some()).then(|| TraceRender(what, Instant::now()))
+    }
+}
+
+impl Drop for TraceRender {
+    fn drop(&mut self) {
+        let ms = self.1.elapsed().as_secs_f64() * 1e3;
+        if ms > 1. {
+            eprintln!("trace: {} {ms:.2} ms", self.0);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{KeyContext, Keymap, Keystroke};
+
+    #[test]
+    fn file_urls() {
+        assert_eq!(file_url_path("file:///Users/b/a%20b.sql"), Some("/Users/b/a b.sql".into()));
+        assert_eq!(file_url_path("file://localhost/tmp/x.sql"), Some("/tmp/x.sql".into()));
+        assert_eq!(file_url_path("file:///tmp/caf%C3%A9.sql"), Some("/tmp/café.sql".into()));
+        assert_eq!(file_url_path("file:///tmp/100%"), Some("/tmp/100%".into()));
+        assert_eq!(file_url_path("/tmp/plain.sql"), Some("/tmp/plain.sql".into()));
+        assert_eq!(file_url_path("https://example.com/x.sql"), None);
+    }
+
+    fn stack(s: &[&str]) -> Vec<KeyContext> {
+        s.iter().map(|c| KeyContext::parse(c).unwrap()).collect()
+    }
+
+    /// The real keymap resolution: keys that are bindings elsewhere type inside fields, and the
+    /// workspace's shortcuts are off behind a modal.
+    #[test]
+    fn fields_and_modals_keep_their_keys() {
+        let keymap = Keymap::new(vec![
+            KeyBinding::new("backspace", crate::grid::DeleteRows, Some(crate::grid::GRID_KEYS)),
+            KeyBinding::new("/", crate::tree::FocusFilter, Some("Explorer && !TextInput")),
+            KeyBinding::new("cmd-w", CloseTab, Some(WORKSPACE_KEYS)),
+            KeyBinding::new("cmd-i", crate::grid::InsertRow, Some("ResultGrid")),
+        ]);
+        let hits = |k: &str, s: &[&str]| !keymap.bindings_for_input(&[Keystroke::parse(k).unwrap()], &stack(s)).0.is_empty();
+        assert!(hits("backspace", &["Workspace", "ResultGrid"]), "on the grid ⌫ marks rows for deletion");
+        assert!(!hits("backspace", &["Workspace", "ResultGrid", "GridCellEditor", "TextInput"]), "in the cell editor ⌫ deletes a character");
+        assert!(hits("/", &["Workspace", "Explorer"]));
+        assert!(!hits("/", &["Workspace", "Explorer", "TextInput"]), "in the explorer filter `/` types");
+        assert!(hits("cmd-w", &["Workspace", "Editor"]));
+        assert!(!hits("cmd-w", &["Workspace", "Palette Modal", "TextInput"]), "⌘W does nothing behind the palette");
+        assert!(!hits("cmd-w", &["Workspace", "ConfirmDiscard Modal"]));
+        assert!(hits("cmd-i", &["Workspace", "ResultGrid", "GridCellEditor", "TextInput"]), "⌘I still adds a row from the cell editor");
+    }
+
+    /// ⌥⌘[ / ⌥⌘] cycle the result tabs from the editor, the grid and the cell editor, apart from
+    /// ⇧⌘[ / ⇧⌘] (query tabs), and not behind a modal.
+    #[test]
+    fn result_tab_keys() {
+        let w = Some(WORKSPACE_KEYS);
+        let keymap = Keymap::new(vec![
+            KeyBinding::new("cmd-shift-]", NextTab, w),
+            KeyBinding::new("cmd-shift-[", PrevTab, w),
+            KeyBinding::new("cmd-alt-]", NextResult, w),
+            KeyBinding::new("cmd-alt-[", PrevResult, w),
+        ]);
+        let first = |k: &str, s: &[&str]| {
+            keymap.bindings_for_input(&[Keystroke::parse(k).unwrap()], &stack(s)).0.first().map(|b| b.action().name().to_string())
+        };
+        for ctx in [&["Workspace", "CodeEditor"][..], &["Workspace", "ResultGrid"], &["Workspace", "ResultGrid", "GridCellEditor", "TextInput"]] {
+            assert_eq!(first("cmd-alt-]", ctx).as_deref(), Some("workspace::NextResult"), "{ctx:?}");
+            assert_eq!(first("cmd-alt-[", ctx).as_deref(), Some("workspace::PrevResult"), "{ctx:?}");
+            assert_eq!(first("cmd-shift-]", ctx).as_deref(), Some("workspace::NextTab"), "{ctx:?}");
+        }
+        assert_eq!(first("cmd-alt-]", &["Workspace", "ConfirmDiscard Modal"]), None);
+    }
+
+    /// ⌘L / ⌥⌘L explain from the editor, the grid and the plan view, not behind a modal; the
+    /// welcome screen keeps ⌘L for localhost; the plan view's arrows are its own.
+    #[test]
+    fn explain_keys() {
+        let w = Some(WORKSPACE_KEYS);
+        let keymap = Keymap::new(vec![
+            KeyBinding::new("cmd-l", Explain, w),
+            KeyBinding::new("cmd-alt-l", ExplainAnalyze, w),
+            KeyBinding::new("cmd-l", crate::welcome::Localhost, Some("Welcome")),
+            KeyBinding::new("up", crate::grid::MoveUp, Some(crate::grid::GRID_KEYS)),
+            KeyBinding::new("up", crate::plan::SelectPrev, Some(crate::plan::CONTEXT)),
+            KeyBinding::new("escape", FocusEditor, w),
+        ]);
+        let first = |k: &str, s: &[&str]| {
+            keymap.bindings_for_input(&[Keystroke::parse(k).unwrap()], &stack(s)).0.first().map(|b| b.action().name().to_string())
+        };
+        for ctx in [&["Workspace", "CodeEditor"][..], &["Workspace", "ResultGrid"], &["Workspace", "PlanView"]] {
+            assert_eq!(first("cmd-l", ctx).as_deref(), Some("workspace::Explain"), "{ctx:?}");
+            assert_eq!(first("cmd-alt-l", ctx).as_deref(), Some("workspace::ExplainAnalyze"), "{ctx:?}");
+        }
+        assert_eq!(first("cmd-l", &["Workspace", "Welcome"]).as_deref(), Some("welcome::Localhost"));
+        assert_eq!(first("cmd-l", &["Workspace", "TxSheet Modal"]), None);
+        assert_eq!(first("up", &["Workspace", "PlanView"]).as_deref(), Some("plan::SelectPrev"));
+        assert_eq!(first("escape", &["Workspace", "PlanView"]).as_deref(), Some("workspace::FocusEditor"));
+    }
+
+    /// A table's pages (⌥⌘← →) work from the editor and the grid, not behind a modal; inside the
+    /// editor ⌥← → still move by word, and ⇧Space stays the viewer. The value editor's keys
+    /// belong to it.
+    #[test]
+    fn table_keys() {
+        let w = Some(WORKSPACE_KEYS);
+        let keymap = Keymap::new(vec![
+            KeyBinding::new("cmd-alt-right", NextPage, w),
+            KeyBinding::new("cmd-alt-left", PrevPage, w),
+            KeyBinding::new("alt-right", crate::editor::MoveWordRight, Some("CodeEditor")),
+            KeyBinding::new("shift-space", crate::grid::ToggleViewer, Some(crate::grid::GRID_KEYS)),
+            KeyBinding::new("down", crate::grid::MoveDown, Some(crate::grid::GRID_KEYS)),
+            KeyBinding::new("escape", FocusEditor, w),
+            KeyBinding::new("escape", crate::value_edit::CancelValue, Some(crate::value_edit::CONTEXT)),
+            KeyBinding::new("escape", crate::table_view::CloseFilter, Some(crate::table_view::POPOVER_CONTEXT)),
+        ]);
+        let first = |k: &str, s: &[&str]| {
+            keymap.bindings_for_input(&[Keystroke::parse(k).unwrap()], &stack(s)).0.first().map(|b| b.action().name().to_string())
+        };
+        for ctx in [&["Workspace", "CodeEditor"][..], &["Workspace", "ResultGrid"]] {
+            assert_eq!(first("cmd-alt-right", ctx).as_deref(), Some("workspace::NextPage"), "{ctx:?}");
+            assert_eq!(first("cmd-alt-left", ctx).as_deref(), Some("workspace::PrevPage"), "{ctx:?}");
+        }
+        assert_eq!(first("alt-right", &["Workspace", "CodeEditor"]).as_deref(), Some("code_editor::MoveWordRight"));
+        assert_eq!(first("shift-space", &["Workspace", "ResultGrid"]).as_deref(), Some("grid::ToggleViewer"));
+        assert_eq!(first("cmd-alt-right", &["Workspace", "Palette Modal"]), None);
+        assert_eq!(first("down", &["Workspace", "ResultGrid"]).as_deref(), Some("grid::MoveDown"));
+        assert_eq!(first("escape", &["Workspace", "ResultGrid", crate::value_edit::CONTEXT]).as_deref(), Some("value_editor::CancelValue"));
+        assert_eq!(first("escape", &["Workspace", crate::table_view::POPOVER_CONTEXT, "TextInput"]).as_deref(), Some("table_filter::CloseFilter"));
+    }
+
+    /// ⌃⌘↩ / ⌃⌘⌫ commit and roll back from the editor, the grid and the cell editor, apart from
+    /// ⌘↩ (run) and ⌘⌫ (the grid's discard); behind a sheet the sheet has ⌘↩ ⌘⌫ esc and the
+    /// workspace's keys are off.
+    #[test]
+    fn transaction_keys() {
+        let w = Some(WORKSPACE_KEYS);
+        let keymap = Keymap::new(vec![
+            KeyBinding::new("cmd-enter", crate::editor::RunScript, Some("CodeEditor")),
+            KeyBinding::new("cmd-backspace", DiscardChanges, Some(crate::grid::GRID_KEYS)),
+            KeyBinding::new("escape", FocusEditor, w),
+            KeyBinding::new("ctrl-cmd-enter", CommitTx, w),
+            KeyBinding::new("ctrl-cmd-backspace", RollbackTx, w),
+            KeyBinding::new("cmd-enter", SheetConfirm, Some(SHEET_CONTEXT)),
+            KeyBinding::new("cmd-backspace", SheetRollback, Some(SHEET_CONTEXT)),
+            KeyBinding::new("escape", SheetCancel, Some(SHEET_CONTEXT)),
+        ]);
+        let first = |k: &str, s: &[&str]| {
+            keymap.bindings_for_input(&[Keystroke::parse(k).unwrap()], &stack(s)).0.first().map(|b| b.action().name().to_string())
+        };
+        for ctx in [&["Workspace", "CodeEditor"][..], &["Workspace", "ResultGrid"], &["Workspace", "ResultGrid", "GridCellEditor", "TextInput"]] {
+            assert_eq!(first("ctrl-cmd-enter", ctx).as_deref(), Some("workspace::CommitTx"), "{ctx:?}");
+            assert_eq!(first("ctrl-cmd-backspace", ctx).as_deref(), Some("workspace::RollbackTx"), "{ctx:?}");
+        }
+        assert_eq!(first("cmd-enter", &["Workspace", "CodeEditor"]).as_deref(), Some("code_editor::RunScript"));
+        assert_eq!(first("cmd-backspace", &["Workspace", "ResultGrid"]).as_deref(), Some("workspace::DiscardChanges"));
+        let sheet = ["Workspace", "TxSheet Modal"];
+        assert_eq!(first("cmd-enter", &sheet).as_deref(), Some("workspace::SheetConfirm"));
+        assert_eq!(first("cmd-backspace", &sheet).as_deref(), Some("workspace::SheetRollback"));
+        assert_eq!(first("escape", &sheet).as_deref(), Some("workspace::SheetCancel"));
+        assert_eq!(first("ctrl-cmd-enter", &sheet), None, "no commit behind a sheet");
+    }
+
+    /// Which tabs a close, a disconnect or a quit must ask about: only those with a transaction
+    /// open, and only the ones it ends.
+    #[test]
+    fn close_prompt_asks_about_open_transactions() {
+        // (tab, connection, transaction open)
+        let tabs = [(1, Some("prod"), true), (2, Some("prod"), false), (3, Some("dev"), true), (4, None, false)];
+        assert_eq!(tabs_holding(&tabs, Ends::Tab(1)), [1]);
+        assert!(tabs_holding(&tabs, Ends::Tab(2)).is_empty(), "no transaction: closes at once");
+        assert!(tabs_holding(&tabs, Ends::Tab(4)).is_empty());
+        // Close Others / to the Right: the ones closed that hold a transaction.
+        assert_eq!(tabs_holding(&tabs, Ends::Tabs(&[2, 3, 4])), [3]);
+        assert!(tabs_holding(&tabs, Ends::Tabs(&[2, 4])).is_empty());
+        assert_eq!(tabs_holding(&tabs, Ends::Conn("prod")), [1]);
+        assert_eq!(tabs_holding(&tabs, Ends::Conn("dev")), [3]);
+        assert!(tabs_holding(&tabs, Ends::Conn("staging")).is_empty());
+        assert_eq!(tabs_holding(&tabs, Ends::All), [1, 3], "a quit asks once, listing them all");
+        assert!(tabs_holding(&[(1, Some("a"), false)], Ends::All).is_empty());
+    }
+
+    /// A switch of database or connection, a save over a connection and a delete ask about the
+    /// transactions they would end, and only those; the sheet's verb names what follows.
+    #[test]
+    fn switch_save_and_delete_ask_about_open_transactions() {
+        let tabs = [(1, Some("prod"), true), (2, Some("prod"), false), (3, Some("dev"), true), (4, Some("prod"), true)];
+        let asked = |c: Change<'_, i32>| ends_of(c).map(|e| tabs_holding(&tabs, e)).unwrap_or_default();
+        // Another database or connection: a new session, so the open transaction is asked about.
+        assert_eq!(asked(Change::Retarget { tab: 1, same_conn: true, from_db: "app", to_db: "audit" }), [1]);
+        assert_eq!(asked(Change::Retarget { tab: 1, same_conn: false, from_db: "app", to_db: "app" }), [1]);
+        // The same connection and database keep the session (the statement runs in the transaction).
+        assert!(asked(Change::Retarget { tab: 1, same_conn: true, from_db: "app", to_db: "app" }).is_empty());
+        assert!(asked(Change::Retarget { tab: 2, same_conn: true, from_db: "app", to_db: "audit" }).is_empty(), "none open");
+        // Saving over a connection rebuilds its sessions; a new one has none.
+        assert_eq!(asked(Change::Edit { id: "prod", is_new: false }), [1, 4]);
+        assert!(asked(Change::Edit { id: "prod", is_new: true }).is_empty());
+        assert_eq!(asked(Change::Edit { id: "dev", is_new: false }), [3]);
+        // A delete lists every tab whose transaction it ends.
+        assert_eq!(asked(Change::Delete("prod")), [1, 4]);
+        assert!(asked(Change::Delete("staging")).is_empty());
+        assert_eq!(asked(Change::Disconnect("dev")), [3]);
+        assert_eq!(asked(Change::CloseTab(4)), [4]);
+        assert_eq!(asked(Change::Quit), [1, 3, 4]);
+        assert_eq!(AfterTx::DeleteConnection("prod".into()).verb(), "delete");
+        assert_eq!(AfterTx::Disconnect("prod".into()).verb(), "disconnect");
+    }
+
+    /// The TX chip's age changes once a minute (so a minute tick is enough).
+    #[test]
+    fn transaction_age_is_coarse() {
+        use crate::chrome::fmt_tx_age;
+        let s = Duration::from_secs;
+        assert_eq!(fmt_tx_age(s(0)), "<1m");
+        assert_eq!(fmt_tx_age(s(59)), "<1m");
+        assert_eq!(fmt_tx_age(s(60)), "1m");
+        assert_eq!(fmt_tx_age(s(59 * 60 + 59)), "59m");
+        assert_eq!(fmt_tx_age(s(3600 + 5 * 60)), "1h 05m");
+    }
+
+    /// The explorer's context menu holds the keys while open: ↑↓ ↩ esc go to the menu, not to
+    /// the tree under it nor to the workspace (esc would jump to the editor).
+    #[test]
+    fn the_open_menu_takes_the_keys() {
+        use crate::tree;
+        let keymap = Keymap::new(vec![
+            KeyBinding::new("up", tree::SelectPrev, Some("Explorer")),
+            KeyBinding::new("escape", tree::Escape, Some("Explorer")),
+            KeyBinding::new("enter", tree::Open, Some("Explorer")),
+            KeyBinding::new("shift-f10", tree::ShowRowActions, Some("Explorer")),
+            KeyBinding::new("escape", FocusEditor, Some(WORKSPACE_KEYS)),
+            KeyBinding::new("up", tree::MenuUp, Some("ExplorerMenu")),
+            KeyBinding::new("escape", tree::MenuClose, Some("ExplorerMenu")),
+            KeyBinding::new("enter", tree::MenuConfirm, Some("ExplorerMenu")),
+        ]);
+        let first = |k: &str, s: &[&str]| {
+            let (b, _) = keymap.bindings_for_input(&[Keystroke::parse(k).unwrap()], &stack(s));
+            b.first().map(|b| b.action().name().to_string())
+        };
+        let menu = ["Workspace", "Explorer", "ExplorerMenu"];
+        assert_eq!(first("up", &menu).as_deref(), Some("explorer::MenuUp"));
+        assert_eq!(first("escape", &menu).as_deref(), Some("explorer::MenuClose"));
+        assert_eq!(first("enter", &menu).as_deref(), Some("explorer::MenuConfirm"));
+        assert_eq!(first("shift-f10", &["Workspace", "Explorer"]).as_deref(), Some("explorer::ShowRowActions"));
+        assert_eq!(first("escape", &["Workspace", "Explorer"]).as_deref(), Some("explorer::Escape"));
+    }
+
+    /// The find keys: ⇧⌘G and esc belong to an open bar only (else "focus the grid" and "back to
+    /// the editor"); inside the bar's field ↩ stays the field's (next match) and ⇧↩ is "previous".
+    #[test]
+    fn find_keys_resolve_by_context() {
+        use crate::find;
+        let keymap = Keymap::new(vec![
+            KeyBinding::new("cmd-shift-g", FocusGrid, Some(WORKSPACE_KEYS)),
+            KeyBinding::new("escape", FocusEditor, Some(WORKSPACE_KEYS)),
+            KeyBinding::new("cmd-f", find::Find, Some("CodeEditor")),
+            KeyBinding::new("cmd-shift-g", find::FindPrevious, Some("CodeEditor && find")),
+            KeyBinding::new("cmd-f", find::Find, Some(crate::grid::GRID_KEYS)),
+            KeyBinding::new("cmd-shift-g", find::FindPrevious, Some("ResultGrid && find && !GridCellEditor")),
+            KeyBinding::new("escape", find::CloseFind, Some("ResultGrid && find && !GridCellEditor")),
+            KeyBinding::new("escape", find::CloseFind, Some(find::CONTEXT)),
+            KeyBinding::new("shift-enter", find::FindPrevious, Some(find::CONTEXT)),
+            KeyBinding::new("enter", crate::input::Submit, Some("TextInput")),
+        ]);
+        let first = |k: &str, s: &[&str]| {
+            let (b, _) = keymap.bindings_for_input(&[Keystroke::parse(k).unwrap()], &stack(s));
+            b.first().map(|b| b.action().name().to_string())
+        };
+        assert_eq!(first("cmd-shift-g", &["Workspace", "CodeEditor"]).as_deref(), Some("workspace::FocusGrid"));
+        assert_eq!(first("cmd-shift-g", &["Workspace", "CodeEditor find"]).as_deref(), Some("find::FindPrevious"));
+        assert_eq!(first("cmd-f", &["Workspace", "ResultGrid"]).as_deref(), Some("find::Find"));
+        assert_eq!(first("escape", &["Workspace", "ResultGrid"]).as_deref(), Some("workspace::FocusEditor"));
+        assert_eq!(first("escape", &["Workspace", "ResultGrid find"]).as_deref(), Some("find::CloseFind"));
+        assert_eq!(first("cmd-shift-g", &["Workspace", "ResultGrid find"]).as_deref(), Some("find::FindPrevious"));
+        let field = ["Workspace", find::CONTEXT, "TextInput"];
+        assert_eq!(first("escape", &field).as_deref(), Some("find::CloseFind"));
+        assert_eq!(first("enter", &field).as_deref(), Some("text_input::Submit"));
+        assert_eq!(first("shift-enter", &field).as_deref(), Some("find::FindPrevious"));
+    }
+
+    /// The grid's cell menu (foreign-key "Go to …") the same way: ↑↓ ↩ esc ⌥↓ are the menu's
+    /// while it is open; other grid keys (←→, ⌘C) still reach the grid through it.
+    #[test]
+    fn the_cell_menu_takes_the_keys() {
+        use crate::grid::{self, GRID_KEYS, MENU_CONTEXT};
+        let keymap = Keymap::new(vec![
+            KeyBinding::new("up", grid::MoveUp, Some(GRID_KEYS)),
+            KeyBinding::new("left", grid::MoveLeft, Some(GRID_KEYS)),
+            KeyBinding::new("enter", grid::EditCell, Some(GRID_KEYS)),
+            KeyBinding::new("cmd-c", grid::CopyTsv, Some(GRID_KEYS)),
+            KeyBinding::new("alt-down", grid::OpenCellMenu, Some(GRID_KEYS)),
+            KeyBinding::new("escape", FocusEditor, Some(WORKSPACE_KEYS)),
+            KeyBinding::new("up", grid::MenuUp, Some(MENU_CONTEXT)),
+            KeyBinding::new("enter", grid::MenuConfirm, Some(MENU_CONTEXT)),
+            KeyBinding::new("escape", grid::MenuClose, Some(MENU_CONTEXT)),
+            KeyBinding::new("alt-down", grid::MenuClose, Some(MENU_CONTEXT)),
+        ]);
+        let first = |k: &str, s: &[&str]| {
+            let (b, _) = keymap.bindings_for_input(&[Keystroke::parse(k).unwrap()], &stack(s));
+            b.first().map(|b| b.action().name().to_string())
+        };
+        let menu = ["Workspace", "ResultGrid", MENU_CONTEXT];
+        assert_eq!(first("up", &menu).as_deref(), Some("grid::MenuUp"));
+        assert_eq!(first("enter", &menu).as_deref(), Some("grid::MenuConfirm"));
+        assert_eq!(first("escape", &menu).as_deref(), Some("grid::MenuClose"));
+        assert_eq!(first("alt-down", &menu).as_deref(), Some("grid::MenuClose"));
+        assert_eq!(first("left", &menu).as_deref(), Some("grid::MoveLeft"));
+        assert_eq!(first("cmd-c", &menu).as_deref(), Some("grid::CopyTsv"));
+        assert_eq!(first("alt-down", &["Workspace", "ResultGrid"]).as_deref(), Some("grid::OpenCellMenu"));
+        assert_eq!(first("enter", &["Workspace", "ResultGrid"]).as_deref(), Some("grid::EditCell"));
+    }
+}

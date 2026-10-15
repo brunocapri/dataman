@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Diskman app icon</title>
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; overflow: hidden; }
+</style>
+</head>
+<body>
+<div id="icon"></div>
+<script>
+// Diskman's macOS app icon, the "night" variant: the disc on a black squircle.
+// A standalone port of the AppIcon and UiDisc design components (no template engine).
+// The size comes from the query (?size=1024, default 1024) and every value follows from it,
+// so each icon size renders natively: small sizes use the reduced grain and shake.
+// ?pad=P moves the icon P px from the top-left corner (default 0), for a render in a larger
+// window that is center-cropped back to the icon's size.
+//
+// macOS icon grid: 1024 canvas, 824 squircle inset 100, corner 185; the disc is 640 of it.
+//
+// Disc proportions follow a real 120 mm disc, as a share of the radius:
+// hole 12.5%, hub to 27.5%, mirror band to 38%, data area to the rim.
+// The look is lo-fi on purpose: one SVG filter warps it a little, adds a faint
+// offset ghost (the shake), softens every edge and multiplies in coarse grain.
+(function () {
+  const q = new URLSearchParams(location.search);
+  const s = Math.max(1, Math.round(+(q.get('size') || 1024)) || 1024);
+  const pad = Math.max(0, Math.round(+(q.get('pad') || 0)) || 0);
+
+  // --- AppIcon (night) ---
+  const night = { bg: '#050506', glow: 0.6, edge: 'inset 0 0 0 1px rgba(255,255,255,0.08)' };
+  const k = s / 1024;
+  const sqW = Math.round(824 * k);
+  const dW = Math.round(640 * k);
+  const sq = {
+    x: Math.round(100 * k), w: sqW, r: Math.round(185 * k),
+    shadow: '0 ' + Math.max(1, Math.round(10 * k)) + 'px ' + Math.max(2, Math.round(24 * k)) + 'px rgba(0,0,0,0.30), 0 '
+      + Math.max(1, Math.round(2 * k)) + 'px ' + Math.max(1, Math.round(5 * k)) + 'px rgba(0,0,0,0.18)'
+  };
+  const d = { w: dW, x: Math.round((sqW - dW) / 2) };
+
+  // --- UiDisc (size = d.w, glow = 0.6, spin = 0) ---
+  const ds = d.w;
+  const g = night.glow;
+  const spin = 0;
+  const big = ds >= 400, mid = ds >= 120;
+  const r1 = (x) => Math.round(x * 10) / 10;
+  const iris = 'conic-gradient(from -91deg at 50% 50%, '
+    + '#132070 0deg, #2440C8 16deg, #6F8AE6 32deg, #C4D3EC 42deg, #E2EAE0 46deg, #B9E2EC 52deg, #D69AD6 60deg, #7464E0 72deg, #2238B8 90deg, #0D1758 128deg, #080E40 156deg, '
+    + '#132070 180deg, #2440C8 196deg, #6F8AE6 212deg, #C4D3EC 221deg, #E4E8D4 226deg, #E2D29C 231deg, #D69AD6 239deg, #7464E0 252deg, #2238B8 270deg, #0D1758 308deg, #080E40 336deg, #132070 360deg)';
+  const sheen = 'conic-gradient(from -91deg at 50% 50%, '
+    + 'transparent 0deg, transparent 105deg, rgba(150,180,255,0.10) 125deg, rgba(200,215,255,0.14) 136deg, rgba(150,180,255,0.08) 150deg, transparent 168deg, '
+    + 'transparent 285deg, rgba(150,180,255,0.09) 305deg, rgba(200,215,255,0.12) 316deg, rgba(150,180,255,0.06) 330deg, transparent 348deg)';
+  const hub = 'radial-gradient(circle closest-side at 50% 50%, '
+    + 'transparent 12.5%, rgba(200,214,245,0.55) 12.8%, rgba(16,24,72,0.80) 15%, rgba(24,36,104,0.74) 20%, '
+    + 'rgba(70,92,180,0.58) 23.5%, rgba(20,30,88,0.70) 27.5%, rgba(12,18,60,0.40) 30%, rgba(12,20,70,0.20) 36%, rgba(0,0,0,0) 40%, rgba(0,0,0,0) 100%)';
+  const rim = 'radial-gradient(circle closest-side at 50% 50%, rgba(0,0,0,0) 88%, rgba(6,10,40,0.25) 96.5%, rgba(210,222,250,0.42) 98.6%, rgba(0,0,0,0) 100%)';
+  const mask = 'radial-gradient(circle closest-side at 50% 50%, transparent 12.2%, #000 12.6%, #000 99.4%, transparent 100%)';
+  const glowCss = g > 0
+    ? '0 0 ' + Math.round(ds * 0.03) + 'px rgba(76,125,255,' + (0.30 * g).toFixed(2) + '), 0 0 ' + Math.round(ds * 0.07) + 'px rgba(110,120,255,' + (0.12 * g).toFixed(2) + ')'
+    : 'none';
+  // Grain multiplies color by (1 - k1·(1 - noise)) with k1 + k2 = 1, so alpha is left
+  // exactly as it was; the lift brings the average brightness back.
+  const k1 = big ? 0.8 : (mid ? 0.6 : 0.3);
+  const fx = {
+    wf: r1(4 / ds * 1000) / 1000,
+    warp: r1(ds * (big ? 0.008 : 0.005)),
+    dx: r1(ds * 0.007), dy: r1(-ds * 0.0035),
+    blur: Math.max(0.3, r1(ds * 0.0035)),
+    gf: big ? 0.42 : (mid ? 0.6 : 0.9),
+    k1, k2: r1((1 - k1) * 10) / 10,
+    lift: (1 / (1 - k1 / 2)).toFixed(3)
+  };
+  const fid = 'diskman-lofi-' + ds + '-' + Math.round(g * 100) + '-' + spin;
+  const n = (v) => String(v); // String(-0) is "0", as the template prints it
+
+  const disc =
+    '<div style="width: ' + ds + 'px; height: ' + ds + 'px; position: relative">'
+    + '<svg width="0" height="0" style="position: absolute" aria-hidden="true">'
+    + '<filter id="' + fid + '" x="-15%" y="-15%" width="130%" height="130%" color-interpolation-filters="sRGB">'
+    + '<feTurbulence type="fractalNoise" baseFrequency="' + n(fx.wf) + '" numOctaves="2" seed="4" result="warp"></feTurbulence>'
+    + '<feDisplacementMap in="SourceGraphic" in2="warp" scale="' + n(fx.warp) + '" xChannelSelector="R" yChannelSelector="G" result="moved"></feDisplacementMap>'
+    + '<feOffset in="moved" dx="' + n(fx.dx) + '" dy="' + n(fx.dy) + '" result="off"></feOffset>'
+    + '<feComponentTransfer in="off" result="ghost"><feFuncA type="linear" slope="0.38"></feFuncA></feComponentTransfer>'
+    + '<feMerge result="shaken"><feMergeNode in="moved"></feMergeNode><feMergeNode in="ghost"></feMergeNode></feMerge>'
+    + '<feGaussianBlur in="shaken" stdDeviation="' + n(fx.blur) + '" result="soft"></feGaussianBlur>'
+    + '<feTurbulence type="fractalNoise" baseFrequency="' + n(fx.gf) + '" numOctaves="1" seed="11" result="noise"></feTurbulence>'
+    + '<feColorMatrix in="noise" type="matrix" values="1 0 0 0 0  1 0 0 0 0  1 0 0 0 0  0 0 0 0 1" result="gray"></feColorMatrix>'
+    + '<feComposite in="soft" in2="gray" operator="arithmetic" k1="' + n(fx.k1) + '" k2="' + n(fx.k2) + '" k3="0" k4="0" result="grained"></feComposite>'
+    + '<feComponentTransfer in="grained"><feFuncR type="linear" slope="' + fx.lift + '"></feFuncR><feFuncG type="linear" slope="' + fx.lift + '"></feFuncG><feFuncB type="linear" slope="' + fx.lift + '"></feFuncB></feComponentTransfer>'
+    + '</filter>'
+    + '</svg>'
+    + '<div style="position: absolute; inset: 0; filter: url(#' + fid + ')">'
+    + '<div style="position: absolute; inset: 0; border-radius: 50%; box-shadow: ' + glowCss + '"></div>'
+    + '<div style="position: absolute; inset: 0; border-radius: 50%; overflow: hidden; -webkit-mask: ' + mask + '; mask: ' + mask + '">'
+    + '<div style="position: absolute; inset: 0; background: ' + iris + '; transform: rotate(' + spin + 'deg)"></div>'
+    + '<div style="position: absolute; inset: 0; background: ' + sheen + '; mix-blend-mode: screen; transform: rotate(' + spin + 'deg)"></div>'
+    + '<div style="position: absolute; inset: 0; background: ' + hub + '"></div>'
+    + '<div style="position: absolute; inset: 0; border-radius: 50%; background: ' + rim + '"></div>'
+    + '</div>'
+    + '</div>'
+    + '</div>';
+
+  document.getElementById('icon').innerHTML =
+    '<div style="width: ' + s + 'px; height: ' + s + 'px; position: relative; margin: ' + pad + 'px 0 0 ' + pad + 'px">'
+    + '<div style="position: absolute; left: ' + sq.x + 'px; top: ' + sq.x + 'px; width: ' + sq.w + 'px; height: ' + sq.w + 'px; border-radius: ' + sq.r + 'px; overflow: hidden; background: ' + night.bg + '; box-shadow: ' + sq.shadow + '">'
+    + '<div style="position: absolute; left: ' + d.x + 'px; top: ' + d.x + 'px">' + disc + '</div>'
+    + '<div style="position: absolute; inset: 0; border-radius: ' + sq.r + 'px; box-shadow: ' + night.edge + '; pointer-events: none"></div>'
+    + '</div>'
+    + '</div>';
+})();
+</script>
+</body>
+</html>

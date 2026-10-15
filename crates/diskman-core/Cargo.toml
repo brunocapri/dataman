@@ -1,0 +1,61 @@
+[package]
+name = "diskman-core"
+description = "Diskman without the UI: connections, execution, schema cache, autocomplete, history"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["io-util"] }
+tokio-postgres.workspace = true
+postgres-protocol = "0.6"
+futures-util.workspace = true
+bytes = "1"
+fallible-iterator = "0.2"
+serde.workspace = true
+# EXPLAIN's properties keep the server's order (the plan's details panel).
+serde_json = { workspace = true, features = ["preserve_order"] }
+toml.workspace = true
+chrono = { workspace = true, features = ["serde"] }
+parking_lot.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+keyring = { version = "3", features = ["apple-native"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-native-certs = "0.8"
+tokio-postgres-rustls = "0.13"
+log = "0.4"
+# TCP keepalive on the sockets editor sessions open themselves (already in tokio-postgres' tree).
+socket2 = "0.6"
+# Find and replace (editor and grid); already in the tree through GPUI.
+regex = "1"
+# Parquet export only: the Arrow writer, Snappy compression, nothing else.
+parquet = { version = "=58.4.0", default-features = false, features = ["arrow", "snap"] }
+arrow-array = "=58.4.0"
+arrow-schema = "=58.4.0"
+# SSH tunnels: a pure-Rust client. `ring` (already here through rustls) instead of the default
+# aws-lc-rs; RSA keys and host keys stay supported, compression is left out.
+russh = { version = "0.64", default-features = false, features = ["ring", "rsa"] }
+# known_hosts' hashed names (`|1|salt|hash`): HMAC-SHA1, both already in russh's tree.
+hmac = "0.13"
+sha1 = "0.11"
+data-encoding = "2"
+# Self-update: ed25519 signatures (ring is already here through rustls), versions, and the
+# atomic folder swap (renamex_np) and sysctl from libc; all three already in the tree.
+ring = "0.17"
+semver = "1"
+libc = "0.2"
+# MySQL and MariaDB: a pure-Rust client on tokio, TLS through the same rustls on ring (no
+# OpenSSL, no aws-lc), compression with the Rust backend of flate2.
+mysql_async = { version = "0.37", default-features = false, features = ["minimal-rust", "rustls-tls", "ring", "tls12"] }
+# SQL Server: a pure-Rust TDS client on the same rustls 0.23 / tokio-rustls 0.26. Its TLS code
+# names aws-lc-rs as the fallback provider, so that one is compiled in, but the process-wide
+# provider (ring, installed before any connection) is the one it uses. Named instances resolve
+# through the SQL Browser (UDP 1434).
+tiberius = { version = "0.13", default-features = false, features = ["tds80", "rustls", "sql-browser-tokio"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,14 @@
+Hash Join  (cost=1253.20..35708.89 rows=9700 width=21)
+  Output: c.name, p.total
+  Inner Unique: true
+  Hash Cond: (p.customer = c.id)
+  ->  Seq Scan on public.orders p  (cost=0.00..31830.46 rows=1000046 width=16)
+        Output: p.id, p.customer, p.status, p.created_at, p.total, p.address
+  ->  Hash  (cost=1241.08..1241.08 rows=970 width=21)
+        Output: c.name, c.id
+        ->  Bitmap Heap Scan on public.customer c  (cost=11.81..1241.08 rows=970 width=21)
+              Output: c.name, c.id
+              Recheck Cond: (c.country = 'DE'::text)
+              ->  Bitmap Index Scan on customer_country  (cost=0.00..11.57 rows=970 width=0)
+                    Index Cond: (c.country = 'DE'::text)
+Settings: effective_cache_size = '5GB', work_mem = '64MB', max_parallel_workers_per_gather = '0'
