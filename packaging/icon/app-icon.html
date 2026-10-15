@@ -10,7 +10,8 @@
 <body>
 <div id="icon"></div>
 <script>
-// Diskman's macOS app icon, the "night" variant: the disc on a black squircle.
+// Diskman's macOS app icon: the disc on a black squircle ("night", the default), or on a
+// white one (?variant=day: the Dock icon while the app is light).
 // A standalone port of the AppIcon and UiDisc design components (no template engine).
 // The size comes from the query (?size=1024, default 1024) and every value follows from it,
 // so each icon size renders natively: small sizes use the reduced grain and shake.
@@ -28,8 +29,13 @@
   const s = Math.max(1, Math.round(+(q.get('size') || 1024)) || 1024);
   const pad = Math.max(0, Math.round(+(q.get('pad') || 0)) || 0);
 
-  // --- AppIcon (night) ---
-  const night = { bg: '#050506', glow: 0.6, edge: 'inset 0 0 0 1px rgba(255,255,255,0.08)' };
+  // --- AppIcon (night, or day) ---
+  // Day: a white squircle with a faint dark edge; the glow is softer (blue haze on white reads
+  // as a smudge) and a thin dark line closes the rim, whose light highlight would melt into it.
+  const day = q.get('variant') === 'day';
+  const night = day
+    ? { bg: '#ffffff', glow: 0.3, edge: 'inset 0 0 0 1px rgba(0,0,0,0.10)', outline: 'rgba(8,14,64,0.45)' }
+    : { bg: '#050506', glow: 0.6, edge: 'inset 0 0 0 1px rgba(255,255,255,0.08)', outline: null };
   const k = s / 1024;
   const sqW = Math.round(824 * k);
   const dW = Math.round(640 * k);
@@ -55,7 +61,9 @@
   const hub = 'radial-gradient(circle closest-side at 50% 50%, '
     + 'transparent 12.5%, rgba(200,214,245,0.55) 12.8%, rgba(16,24,72,0.80) 15%, rgba(24,36,104,0.74) 20%, '
     + 'rgba(70,92,180,0.58) 23.5%, rgba(20,30,88,0.70) 27.5%, rgba(12,18,60,0.40) 30%, rgba(12,20,70,0.20) 36%, rgba(0,0,0,0) 40%, rgba(0,0,0,0) 100%)';
-  const rim = 'radial-gradient(circle closest-side at 50% 50%, rgba(0,0,0,0) 88%, rgba(6,10,40,0.25) 96.5%, rgba(210,222,250,0.42) 98.6%, rgba(0,0,0,0) 100%)';
+  const rim = night.outline
+    ? 'radial-gradient(circle closest-side at 50% 50%, rgba(0,0,0,0) 88%, rgba(6,10,40,0.25) 96.5%, rgba(210,222,250,0.42) 98%, ' + night.outline + ' 99.2%, ' + night.outline + ' 100%)'
+    : 'radial-gradient(circle closest-side at 50% 50%, rgba(0,0,0,0) 88%, rgba(6,10,40,0.25) 96.5%, rgba(210,222,250,0.42) 98.6%, rgba(0,0,0,0) 100%)';
   const mask = 'radial-gradient(circle closest-side at 50% 50%, transparent 12.2%, #000 12.6%, #000 99.4%, transparent 100%)';
   const glowCss = g > 0
     ? '0 0 ' + Math.round(ds * 0.03) + 'px rgba(76,125,255,' + (0.30 * g).toFixed(2) + '), 0 0 ' + Math.round(ds * 0.07) + 'px rgba(110,120,255,' + (0.12 * g).toFixed(2) + ')'

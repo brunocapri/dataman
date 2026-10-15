@@ -48,17 +48,21 @@ impl Workspace {
             return false;
         }
         let known: HashSet<String> = self.store.read(cx).profiles.iter().map(|p| p.id.clone()).collect();
+        let favorites = self.store.read(cx).core.favorites.list();
         let mut files = Vec::new();
         for st in &s.tabs {
             let tab = self.new_tab(window, cx);
             // A tab whose connection is gone keeps its SQL and takes the next one, as new tabs do.
             let want = st.conn.clone().filter(|id| known.contains(id)).map(|id| (id, st.database.clone()));
             let conn = want.as_ref().and_then(|(id, _)| self.store.read(cx).connection(id));
+            // Still linked to its favorite, unless that favorite was removed meanwhile.
+            let favorite = st.favorite.as_ref().and_then(|id| favorites.iter().find(|f| &f.id == id)).map(|f| (f.id.clone(), f.name.clone().into()));
             tab.update(cx, |t, cx| {
                 if want.is_some() {
                     t.set_connection(None, cx);
                 }
                 t.restore(st, cx);
+                t.favorite = favorite;
                 t.want = want;
                 if let Some(c) = conn {
                     t.adopt(c, cx);
@@ -157,6 +161,7 @@ impl Workspace {
             let (sx, sy) = e.scroll_points();
             (sx.to_bits(), sy.to_bits()).hash(&mut h);
             (t.connection().map(|c| c.profile.id.clone()), t.database().to_string(), t.want.clone()).hash(&mut h);
+            t.favorite.as_ref().map(|(id, _)| id.clone()).hash(&mut h);
         }
         (self.active, self.explorer_open, self.explorer_w.to_bits(), self.side_w.to_bits(), matches!(self.side, Some(Side::History))).hash(&mut h);
         self.editor_frac.map(f32::to_bits).hash(&mut h);

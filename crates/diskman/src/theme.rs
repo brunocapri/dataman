@@ -477,6 +477,10 @@ pub struct Theme {
     pub mark: Hsla,
     /// Its line: the matched letters' underline, a focused search field's border.
     pub mark_b: Hsla,
+    /// The ring of the region holding the keyboard focus (editor, grid, side panel): a soft
+    /// neutral line, and the faint band inside it.
+    pub focus: Hsla,
+    pub focus_s: Hsla,
     /// Every other row.
     pub alt: Hsla,
     /// The rows between them, where the surface still lets the desktop through (dark, on the
@@ -605,6 +609,8 @@ impl Theme {
             find_s: ca(0xf5d33f, 0.16),
             mark: ca(W, 0.12),
             mark_b: c(0x8c8c8c),
+            focus: c(0x6e6e6e),
+            focus_s: ca(W, 0.05),
             alt: ca(W, ALT_GLASS.0),
             alt_base: ca(0x000000, ALT_GLASS.0),
             key: ca(W, 0.06),
@@ -697,6 +703,8 @@ impl Theme {
             find_s: ca(0xf2c200, 0.24),
             mark: ca(0x000000, 0.08),
             mark_b: c(0x7c7c7c),
+            focus: c(0x8a8a8a),
+            focus_s: ca(0x000000, 0.04),
             alt: ca(K, ALT_GLASS.1),
             alt_base: gpui::transparent_black(),
             key: ca(K, 0.04),
@@ -769,15 +777,10 @@ impl Theme {
         vec![BoxShadow { color: self.line2, offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: gpui::px(1.), inset: false }]
     }
 
-    /// Focus halo (3 pt of `acc_s` around a focused field or region).
+    /// Focus halo (3 pt of `acc_s` around a focused field with an opaque fill: GPUI paints a
+    /// shadow under the whole box, so a translucent one takes `ui::halo_ring` instead).
     pub fn halo(&self) -> Vec<BoxShadow> {
         vec![BoxShadow { color: self.acc_s, offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(3.), inset: false }]
-    }
-
-    /// [`Theme::halo`] in the neutral `mark`: a focused search field (the explorer filter, the
-    /// history's search), gray where focus elsewhere is blue.
-    pub fn halo_mark(&self) -> Vec<BoxShadow> {
-        vec![BoxShadow { color: self.mark, offset: point(px(0.), px(0.)), blur_radius: px(0.), spread_radius: px(3.), inset: false }]
     }
 }
 
@@ -832,6 +835,7 @@ pub fn init(pref: ThemePref, cx: &mut App) {
     let theme = Arc::new(theme_for(mode, cx));
     cx.set_global(ThemeState { pref, theme });
     apply_window_appearance(pref, mode, cx);
+    crate::dock_icon::follow(mode == Mode::Light);
 }
 
 fn theme_for(mode: Mode, cx: &App) -> Theme {
@@ -896,6 +900,7 @@ pub fn set_pref(pref: ThemePref, cx: &mut App) {
     let theme = Arc::new(theme_for(mode, cx));
     cx.set_global(ThemeState { pref, theme });
     apply_window_appearance(pref, mode, cx);
+    crate::dock_icon::follow(mode == Mode::Light);
     if let Some(save) = cx.try_global::<SavePref>() {
         (save.0)(pref);
     }
@@ -921,6 +926,7 @@ pub fn on_system_appearance(window: &Window, cx: &mut App) {
     if state.theme.mode != mode {
         let theme = Arc::new(theme_for(mode, cx));
         cx.set_global(ThemeState { pref: ThemePref::System, theme });
+        crate::dock_icon::follow(mode == Mode::Light);
         cx.refresh_windows();
     }
 }

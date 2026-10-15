@@ -13,7 +13,9 @@
 //!   query tab and on a result tab (they close like ⌘W and the ×), the zoom, Settings ▸
 //!   Keyboard (a command remapped, removed and reset with clicks and keys; ⇧⌘C copies with
 //!   headers), "Copied" in the Copy button's place for 2 s after a copy, the Copy menu's CSV
-//!   and TSV with headers, printed as PASS/FAIL lines; exit code 1 on a failure.
+//!   and TSV with headers, a connection that is not connected drawn gray and regular, the cell
+//!   viewer's slide and the explorer toggle's fill, printed as PASS/FAIL lines; exit code 1 on
+//!   a failure.
 
 use std::time::Duration;
 
@@ -361,8 +363,8 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
         })
         .unwrap_or_default();
     // It is first; the others keep their order after it.
-    let ok = order.0.first() == Some(&second) && order.0.get(1) == Some(&top) && order.1 == order.0;
-    report("dropped, it is first in the explorer and in connections.toml", ok, format!("{order:?}"));
+    let dropped = order.0.first() == Some(&second) && order.0.get(1) == Some(&top) && order.1 == order.0;
+    report("dropped, it is first in the explorer and in connections.toml", dropped, format!("{order:?}"));
 
     // 4. The connection picker beside Run: a click opens it; a database picked moves the tab;
     //    a click outside shuts it.
@@ -972,6 +974,101 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     if let Some(c) = clip {
         let _ = cx.update(|_, cx| cx.write_to_clipboard(c));
     }
+    ok &= motion_checks(ws, id, cx).await;
+    ok
+}
+
+/// The explorer's connection labels (one not connected gray and regular), the cell viewer's
+/// slide, and the explorer toggle's fill sweeping with the explorer.
+async fn motion_checks(ws: &Entity<Workspace>, id: &str, cx: &mut AsyncWindowContext) -> bool {
+    let mut ok = true;
+    let mut report = |name: &str, pass: bool, detail: String| {
+        println!("{} {name}{}", if pass { "PASS" } else { "FAIL" }, if pass { String::new() } else { format!(" — {detail}") });
+        ok &= pass;
+    };
+    let off = cx
+        .update(|_, cx| {
+            ws.update(cx, |w, cx| {
+                let mut p = diskman_core::ConnectionProfile::new("offline");
+                (p.host, p.port) = ("127.0.0.1".into(), 9);
+                let id = p.id.clone();
+                let core = w.store.read(cx).core.clone();
+                let _ = core.save_connection(p, None, None);
+                w.store.update(cx, |s, cx| s.reload(cx));
+                id
+            })
+        })
+        .unwrap();
+    pause(cx, 100).await;
+    draw(cx);
+    let (on, offl, tx, tx3) = cx
+        .update(|_, cx| {
+            let tree = ws.read(cx).tree.clone();
+            let t = crate::theme::ActiveTheme::theme(&*cx);
+            (tree.read(cx).demo_conn_label(id, cx), tree.read(cx).demo_conn_label(&off, cx), t.tx, t.tx3)
+        })
+        .unwrap();
+    report(
+        "a connection that is not connected is gray and regular; a connected one keeps its look",
+        on == Some((tx, true)) && offl == Some((tx3, false)),
+        format!("{on:?} {offl:?}"),
+    );
+
+    let motion = !cx.update(|_, cx| cx.reduce_motion()).unwrap_or(false);
+    let sliding = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).demo_side_sliding()).unwrap_or(false);
+    let viewer = |cx: &mut AsyncWindowContext| cx.update(|_, cx| matches!(ws.read(cx).side, Some(crate::app::Side::Viewer))).unwrap_or(false);
+    let _ = cx.update(|_, cx| ws.update(cx, |w, _| w.side = None));
+    draw(cx);
+    pause(cx, 300).await;
+    draw(cx);
+    let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.toggle_side(crate::app::Side::Viewer, cx)));
+    draw(cx);
+    let opening = sliding(cx);
+    pause(cx, 320).await;
+    draw(cx);
+    let landed = !sliding(cx) && viewer(cx);
+    let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.toggle_side(crate::app::Side::Viewer, cx)));
+    draw(cx);
+    let closing = sliding(cx);
+    pause(cx, 320).await;
+    draw(cx);
+    let gone = !sliding(cx) && !viewer(cx);
+    report(
+        "the cell viewer slides in and out like the history",
+        opening == motion && closing == motion && landed && gone,
+        format!("opening {opening} landed {landed} closing {closing} gone {gone} (motion {motion})"),
+    );
+
+    // The toggle's fill is the explorer's open share, frame by frame.
+    let fill = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).explorer_now() / ws.read(cx).explorer_w).unwrap_or(-1.);
+    let editor = cx.update(|_, cx| ws.read(cx).active_tab().unwrap().read(cx).editor.clone()).unwrap();
+    let _ = cx.update(|window, cx| window.focus(&editor.focus_handle(cx), cx));
+    let before = fill(cx);
+    key(cx, "cmd-b");
+    pause(cx, 70).await;
+    draw(cx);
+    let mid = fill(cx);
+    pause(cx, 300).await;
+    draw(cx);
+    let shut = fill(cx);
+    key(cx, "cmd-b");
+    pause(cx, 320).await;
+    draw(cx);
+    let back = fill(cx);
+    report(
+        "the explorer toggle's left part fills and empties with the explorer's slide",
+        (before - 1.).abs() < 1e-3 && (!motion || (mid > 0.01 && mid < 0.99)) && shut.abs() < 1e-3 && (back - 1.).abs() < 1e-3,
+        format!("{before} → {mid} → {shut} → {back}"),
+    );
+
+    // The Dock icon follows the theme: the light one while the app is light.
+    let pref = cx.update(|_, cx| crate::theme::pref(cx)).unwrap_or_default();
+    let _ = cx.update(|_, cx| crate::theme::set_pref(diskman_core::ThemePref::Light, cx));
+    let light = crate::dock_icon::shown_light();
+    let _ = cx.update(|_, cx| crate::theme::set_pref(diskman_core::ThemePref::Dark, cx));
+    let dark = crate::dock_icon::shown_light();
+    let _ = cx.update(|_, cx| crate::theme::set_pref(pref, cx));
+    report("the Dock icon is the light one in the light theme, the dark one in the dark theme", light == Some(true) && dark == Some(false), format!("{light:?} {dark:?}"));
     ok
 }
 

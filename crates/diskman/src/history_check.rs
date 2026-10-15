@@ -1,7 +1,10 @@
 //! `history-check` (`--demo`): a favorite's context menu (right-click, ⌃-click) with Rename
 //! (inline, ↩ confirms, esc cancels, an empty name reverts) and Remove, the status dropdown
-//! (All / OK / Error / Cancelled) and the separate favorites toggle beside it. Driven with
-//! real mouse and key events through the window. PASS/FAIL lines like `find-check`.
+//! (All / OK / Error / Cancelled) and the separate favorites toggle beside it; ⌘S (a new
+//! favorite, then saving into it, the toolbar's feedback and its click), ⇧⌘S (Save As…, the
+//! panel's answer injected), and ⌘K among ~500 favorites (scrolling, finding one by name and by
+//! SQL, ↩ showing it in the favorites). Driven with real mouse and key events through the
+//! window. PASS/FAIL lines like `find-check`.
 
 use std::time::Duration;
 
@@ -269,6 +272,213 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     );
     let _ = std::fs::remove_dir_all(&dir);
 
+    ok &= save_checks(ws, &history, cx).await;
+    ok &= palette_checks(ws, &history, cx).await;
     println!("{}", if ok { "ALL PASS" } else { "SOME CHECKS FAILED" });
+    ok
+}
+
+fn report(ok: &mut bool, name: &str, pass: bool, detail: String) {
+    println!("{} {name}{}", if pass { "PASS" } else { "FAIL" }, if pass { String::new() } else { format!(" — {detail}") });
+    *ok &= pass;
+}
+
+/// A new tab holding `sql`, the editor focused.
+fn tab_with(ws: &Entity<Workspace>, sql: &str, cx: &mut AsyncWindowContext) -> Entity<crate::tab::QueryTab> {
+    let tab = cx.update(|window, cx| ws.update(cx, |w, cx| w.new_tab(window, cx))).unwrap();
+    let _ = cx.update(|window, cx| {
+        let editor = tab.read(cx).editor.clone();
+        editor.update(cx, |e, cx| e.set_text(sql, cx));
+        window.focus(&gpui::Focusable::focus_handle(&editor, cx), cx);
+    });
+    draw(cx);
+    tab
+}
+
+fn favorite(ws: &Entity<Workspace>, id: &str, cx: &mut AsyncWindowContext) -> Option<diskman_core::Favorite> {
+    cx.update(|_, cx| ws.read(cx).store.read(cx).core.favorites.list().into_iter().find(|f| f.id == id)).ok().flatten()
+}
+
+fn linked(tab: &Entity<crate::tab::QueryTab>, cx: &mut AsyncWindowContext) -> (Option<String>, String) {
+    cx.update(|_, cx| (tab.read(cx).favorite.as_ref().map(|(id, _)| id.clone()), tab.read(cx).title(cx).to_string())).unwrap()
+}
+
+/// ⌘S in a tab without a favorite saves its script as a new one (named after its first line,
+/// made unique) and links the tab; "Saved as favorite →" shows by the History button and its
+/// click shows the favorite; ⌘S in a linked tab saves into the favorite ("Saved"); ⇧⌘S writes
+/// the script to the file the save panel answers (injected).
+async fn save_checks(ws: &Entity<Workspace>, history: &Entity<HistoryPanel>, cx: &mut AsyncWindowContext) -> bool {
+    let mut ok = true;
+    let flash = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).saved_flash.as_ref().map(|f| (f.id.clone(), f.label))).unwrap();
+
+    let a = tab_with(ws, "-- the answer\nSELECT 42 AS answer;", cx);
+    key(cx, "cmd-s");
+    pause(cx, 30).await;
+    draw(cx);
+    let (id_a, title_a) = linked(&a, cx);
+    let fav_a = id_a.as_deref().and_then(|id| favorite(ws, id, cx));
+    let shown = flash(cx);
+    report(
+        &mut ok,
+        "⌘S in a tab without a favorite saves its script as one, named after its first line; the tab takes its name",
+        fav_a.as_ref().is_some_and(|f| f.name == "SELECT 42 AS answer" && f.sql == "-- the answer\nSELECT 42 AS answer;") && title_a == "SELECT 42 AS answer",
+        format!("{fav_a:?} title {title_a:?}"),
+    );
+    report(&mut ok, "\"Saved as favorite\" shows by the History button", shown.as_ref().is_some_and(|(id, l)| Some(id) == id_a.as_ref() && *l == "Saved as favorite"), format!("{shown:?}"));
+
+    // Another tab, the same first line: the name is made unique.
+    let b = tab_with(ws, "SELECT 42 AS answer;\nSELECT 1;", cx);
+    key(cx, "cmd-s");
+    pause(cx, 30).await;
+    draw(cx);
+    let (id_b, title_b) = linked(&b, cx);
+    let fav_b = id_b.as_deref().and_then(|id| favorite(ws, id, cx));
+    report(&mut ok, "a name already taken gets a number", fav_b.as_ref().is_some_and(|f| f.name == "SELECT 42 AS answer 2") && title_b == "SELECT 42 AS answer 2" && id_b != id_a, format!("{fav_b:?} {title_b:?}"));
+
+    // Its click: the favorites, that favorite selected and focused.
+    let at = cx.update(|_, cx| ws.read(cx).saved_bounds.get()).unwrap();
+    match at {
+        Some(b) => {
+            click(cx, point(b.left() + b.size.width / 2., b.top() + b.size.height / 2.), MouseButton::Left, Modifiers::default());
+            pause(cx, 400).await;
+            draw(cx);
+            draw(cx);
+            let (side, favs, sel, focus, gone) = cx
+                .update(|window, cx| {
+                    let h = history.read(cx);
+                    (matches!(ws.read(cx).side, Some(Side::History)), h.demo_showing_favorites(), h.demo_selected_favorite(), h.demo_has_focus(window), ws.read(cx).saved_flash.is_none())
+                })
+                .unwrap();
+            report(
+                &mut ok,
+                "a click on it shows the favorite in the favorites, selected and focused",
+                side && favs && sel.as_ref().is_some_and(|(id, _, inside)| Some(id) == id_b.as_ref() && *inside) && focus && gone,
+                format!("side {side} favorites {favs} {sel:?} focus {focus} gone {gone}"),
+            );
+        }
+        None => report(&mut ok, "a click on it shows the favorite in the favorites, selected and focused", false, "no bounds".into()),
+    }
+
+    // ⌘S in a linked tab saves into its favorite: the name stays.
+    let _ = cx.update(|window, cx| {
+        let editor = b.read(cx).editor.clone();
+        editor.update(cx, |e, cx| e.set_text("SELECT 43 AS answer;", cx));
+        window.focus(&gpui::Focusable::focus_handle(&editor, cx), cx);
+    });
+    draw(cx);
+    key(cx, "cmd-s");
+    pause(cx, 30).await;
+    let after = id_b.as_deref().and_then(|id| favorite(ws, id, cx));
+    let (still, title) = linked(&b, cx);
+    let shown = flash(cx);
+    report(
+        &mut ok,
+        "⌘S in a favorite's tab saves its script into it, keeping its name (\"Saved\")",
+        after.as_ref().is_some_and(|f| f.sql == "SELECT 43 AS answer;" && f.name == "SELECT 42 AS answer 2") && still == id_b && title == "SELECT 42 AS answer 2" && shown.is_some_and(|(_, l)| l == "Saved"),
+        format!("{after:?} {title:?}"),
+    );
+
+    // Renamed in the panel: the tab follows.
+    if let Some(id) = id_b.clone() {
+        let ix = cx.update(|_, cx| history.read(cx).demo_favorites().iter().position(|f| f.0 == id)).unwrap();
+        if let Some(ix) = ix {
+            let _ = cx.update(|window, cx| history.update(cx, |h, cx| h.demo_rename(ix, "Answers", window, cx)));
+            draw(cx);
+            let (_, title) = linked(&b, cx);
+            report(&mut ok, "a favorite renamed in the panel renames its tab", title == "Answers", title);
+        }
+    }
+
+    // ⇧⌘S: Save As… (the panel's answer injected).
+    let dir = std::env::temp_dir().join(format!("diskman-save-as-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("report.sql");
+    let c = tab_with(ws, "SELECT 'saved' AS file;\n", cx);
+    crate::sql_picker::set_test_save_path(path.clone());
+    key(cx, "cmd-shift-s");
+    pause(cx, 200).await;
+    draw(cx);
+    let written = std::fs::read_to_string(&path).ok();
+    let (_, title) = linked(&c, cx);
+    report(&mut ok, "⇧⌘S writes the script to the .sql file picked, and names the tab after it", written.as_deref() == Some("SELECT 'saved' AS file;\n") && title == "report.sql", format!("{written:?} {title:?}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    ok
+}
+
+/// ⌘K finds favorites among ~500 by name and by SQL; the Favorites scope lists them and
+/// scrolls with the keys and the wheel; ↩ slides the favorites in with the one picked
+/// selected, scrolled into view and focused, even near the bottom of the list.
+async fn palette_checks(ws: &Entity<Workspace>, history: &Entity<HistoryPanel>, cx: &mut AsyncWindowContext) -> bool {
+    let mut ok = true;
+    let words = ["orders", "customers", "revenue", "churn", "latency"];
+    let ids = cx
+        .update(|_, cx| {
+            let core = ws.read(cx).store.read(cx).core.clone();
+            (0..500).filter_map(|i| core.favorites.add(diskman_core::Favorite::new(format!("Report {i:03} {}", words[i % 5]), format!("SELECT {i} AS n, 'marker_{i:03}' AS tag FROM orders"))).ok().map(|f| f.id)).collect::<Vec<_>>()
+        })
+        .unwrap();
+    report(&mut ok, "500 favorites saved", ids.len() == 500, format!("{}", ids.len()));
+    // The history shut, so the pick slides it in.
+    if cx.update(|_, cx| matches!(ws.read(cx).side, Some(Side::History))).unwrap() {
+        let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.toggle_history_for_demo(cx)));
+    }
+    pause(cx, 400).await;
+    draw(cx);
+    key(cx, "cmd-k");
+    pause(cx, 30).await;
+    let Some(palette) = cx.update(|_, cx| ws.read(cx).palette.clone()).unwrap() else {
+        report(&mut ok, "⌘K opens the palette", false, String::new());
+        return ok;
+    };
+    let state = |cx: &mut AsyncWindowContext| cx.update(|_, cx| palette.read(cx).demo_state()).unwrap();
+    let _ = cx.update(|_, cx| palette.update(cx, |p, cx| p.set_query("*", cx)));
+    draw(cx);
+    for _ in 0..40 {
+        key(cx, "down");
+    }
+    draw(cx);
+    let (_, sel, count, offset, inside, list) = state(cx);
+    report(&mut ok, "the Favorites scope lists them and ↓ scrolls the selection along", sel == 40 && count == 80 && offset > 100. && inside, format!("sel {sel} of {count}, offset {offset}, inside {inside}"));
+    let at = point(list.left() + list.size.width / 2., list.top() + list.size.height / 2.);
+    input(cx, PlatformInput::MouseMove(MouseMoveEvent { position: at, pressed_button: None, modifiers: Modifiers::default() }));
+    input(cx, PlatformInput::ScrollWheel(gpui::ScrollWheelEvent { position: at, delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-300.))), modifiers: Modifiers::default(), touch_phase: gpui::TouchPhase::Moved }));
+    draw(cx);
+    let (_, _, _, wheeled, _, _) = state(cx);
+    report(&mut ok, "the wheel scrolls the list", wheeled > offset + 100., format!("{offset} → {wheeled}"));
+
+    // By name (fuzzy) and by a piece of the SQL.
+    let _ = cx.update(|_, cx| palette.update(cx, |p, cx| p.set_query("marker_123", cx)));
+    let (label, ..) = state(cx);
+    report(&mut ok, "a piece of a favorite's SQL finds it", label == "Report 123 churn", label);
+    let _ = cx.update(|_, cx| palette.update(cx, |p, cx| p.set_query("report 497 rev", cx)));
+    draw(cx);
+    let (label, ..) = state(cx);
+    report(&mut ok, "its name finds it (fuzzy), among the other kinds", label == "Report 497 revenue", label);
+    key(cx, "enter");
+    draw(cx);
+    let (closed, opening) = cx.update(|_, cx| (ws.read(cx).palette.is_none(), ws.read(cx).demo_side_sliding() || cx.reduce_motion())).unwrap();
+    pause(cx, 400).await;
+    for _ in 0..3 {
+        draw(cx);
+        pause(cx, 20).await;
+    }
+    let (side, favs, sel, focus) = cx
+        .update(|window, cx| {
+            let h = history.read(cx);
+            (matches!(ws.read(cx).side, Some(Side::History)), h.demo_showing_favorites(), h.demo_selected_favorite(), h.demo_has_focus(window))
+        })
+        .unwrap();
+    let want = ids.get(497).cloned();
+    report(
+        &mut ok,
+        "↩ slides the favorites in, the one picked selected, scrolled into view (near the bottom) and focused",
+        closed && opening && side && favs && focus && sel.as_ref().is_some_and(|(id, ix, inside)| Some(id) == want.as_ref() && *ix > 400 && *inside),
+        format!("closed {closed} opening {opening} side {side} favorites {favs} focus {focus} {sel:?}"),
+    );
+    // ↓ moves on from it.
+    key(cx, "down");
+    draw(cx);
+    let next = cx.update(|_, cx| history.read(cx).demo_selected_favorite()).unwrap();
+    report(&mut ok, "↓ in the list moves on from it", next.as_ref().is_some_and(|(id, _, inside)| Some(id) == ids.get(498) && *inside), format!("{next:?}"));
     ok
 }

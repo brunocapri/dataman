@@ -1,9 +1,10 @@
-//! The `.sql` file picker (Open .sql file, Import favorites): the system open panel showing
-//! only `.sql` files, one or several at once. GPUI's `prompt_for_paths` has no file type
-//! filter at this revision, so on macOS the panel is AppKit's own `NSOpenPanel`
-//! (`allowedContentTypes` = the `sql` extension's type), begun as a sheet-less panel with a
-//! completion handler: the UI keeps running while it is open. Checks hand it their paths
-//! instead ([`set_test_paths`]).
+//! The `.sql` file pickers: the system open panel showing only `.sql` files, one or several at
+//! once (Open .sql file, Import favorites), and the save panel (Save As…). GPUI's
+//! `prompt_for_paths` has no file type filter at this revision, so on macOS the panels are
+//! AppKit's own `NSOpenPanel` / `NSSavePanel` (`allowedContentTypes` = the `sql` extension's
+//! type), begun as sheet-less panels with a completion handler: the UI keeps running while
+//! they are open. Checks hand them their paths instead ([`set_test_paths`],
+//! [`set_test_save_path`]).
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -12,11 +13,56 @@ use gpui::App;
 use tokio::sync::oneshot;
 
 static TEST_PATHS: Mutex<Option<Vec<PathBuf>>> = Mutex::new(None);
+static TEST_SAVE: Mutex<Option<PathBuf>> = Mutex::new(None);
 
 /// Checks: the next pick answers with these paths, without a panel.
 #[allow(dead_code)]
 pub fn set_test_paths(paths: Vec<PathBuf>) {
     *TEST_PATHS.lock().unwrap() = Some(paths);
+}
+
+/// Checks: the next save panel answers with this path, without a panel.
+#[allow(dead_code)]
+pub fn set_test_save_path(path: PathBuf) {
+    *TEST_SAVE.lock().unwrap() = Some(path);
+}
+
+/// A file name for `title` (a tab's): what a file name cannot hold dropped, `.sql` at the end.
+pub fn file_name_for(title: &str) -> String {
+    let clean: String = title.chars().map(|c| if matches!(c, '/' | ':' | '\\') || c.is_control() { ' ' } else { c }).collect();
+    let stem = clean.split_whitespace().collect::<Vec<_>>().join(" ");
+    let stem = stem.trim_end_matches('.');
+    let stem = if stem.is_empty() { "query" } else { stem };
+    if is_sql(std::path::Path::new(stem)) { stem.to_string() } else { format!("{stem}.sql") }
+}
+
+/// Asks where to save a `.sql` file, proposing `name`: the chosen path (ending in `.sql`),
+/// `None` when cancelled.
+pub fn pick_save_path(name: &str, cx: &App) -> oneshot::Receiver<Option<PathBuf>> {
+    let (tx, rx) = oneshot::channel();
+    if let Some(path) = TEST_SAVE.lock().unwrap().take() {
+        let _ = tx.send(Some(path));
+        return rx;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = cx;
+        imp::save_panel(name, tx);
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let dir = std::env::current_dir().unwrap_or_default();
+        let path = cx.prompt_for_new_path(&dir, Some(name));
+        cx.spawn(async move |_| {
+            let picked = match path.await {
+                Ok(Ok(Some(p))) => Some(if is_sql(&p) { p } else { p.with_extension("sql") }),
+                _ => None,
+            };
+            let _ = tx.send(picked);
+        })
+        .detach();
+    }
+    rx
 }
 
 /// Whether `p` is a `.sql` file (any case).
@@ -109,6 +155,65 @@ mod imp {
         n
     }
 
+    /// Only `.sql` files: the extension's content type (macOS 11+), else the extension itself.
+    ///
+    /// SAFETY: `panel` is an `NSSavePanel` (or `NSOpenPanel`), on the main thread.
+    unsafe fn allow_sql(panel: &AnyObject) {
+        let ext = ns_string("sql");
+        unsafe {
+            match AnyClass::get(c"UTType") {
+                Some(ut) => {
+                    let ty: Option<Retained<AnyObject>> = msg_send![ut, typeWithFilenameExtension: &*ext];
+                    if let Some(ty) = ty {
+                        let types: Retained<AnyObject> = msg_send![class!(NSArray), arrayWithObject: &*ty];
+                        let _: () = msg_send![panel, setAllowedContentTypes: &*types];
+                    }
+                }
+                None => {
+                    let types: Retained<AnyObject> = msg_send![class!(NSArray), arrayWithObject: &*ext];
+                    let _: () = msg_send![panel, setAllowedFileTypes: &*types];
+                }
+            }
+        }
+    }
+
+    /// The path of an `NSURL`, if it has one.
+    ///
+    /// SAFETY: `url` is an `NSURL`.
+    unsafe fn url_path(url: &AnyObject) -> Option<PathBuf> {
+        unsafe {
+            let path: Option<Retained<AnyObject>> = msg_send![url, path];
+            let path = path?;
+            let c: *const std::ffi::c_char = msg_send![&*path, UTF8String];
+            (!c.is_null()).then(|| PathBuf::from(CStr::from_ptr(c).to_string_lossy().into_owned()))
+        }
+    }
+
+    /// Save As…: AppKit's save panel on `.sql` files, proposing `name`.
+    pub fn save_panel(name: &str, tx: oneshot::Sender<Option<PathBuf>>) {
+        // SAFETY: AppKit on the main thread (GPUI's UI thread calls this), with retained
+        // objects only; the block is kept alive by the panel until it has run.
+        unsafe {
+            let panel: Retained<AnyObject> = msg_send![class!(NSSavePanel), savePanel];
+            let _: () = msg_send![&*panel, setCanCreateDirectories: Bool::YES];
+            allow_sql(&panel);
+            let n = ns_string(name);
+            let _: () = msg_send![&*panel, setNameFieldStringValue: &*n];
+            let tx = Cell::new(Some(tx));
+            let p = panel.clone();
+            let handler = RcBlock::new(move |response: isize| {
+                let Some(tx) = tx.take() else { return };
+                let mut out = None;
+                if response == OK {
+                    let url: Option<Retained<AnyObject>> = msg_send![&*p, URL];
+                    out = url.and_then(|u| url_path(&u));
+                }
+                let _ = tx.send(out);
+            });
+            let _: () = msg_send![&*panel, beginWithCompletionHandler: &*handler];
+        }
+    }
+
     pub fn open_panel(multiple: bool, tx: oneshot::Sender<Vec<PathBuf>>) {
         // SAFETY: AppKit on the main thread (GPUI's UI thread calls this), with retained
         // objects only; the block is kept alive by the panel until it has run.
@@ -118,21 +223,7 @@ mod imp {
             let _: () = msg_send![&*panel, setCanChooseDirectories: Bool::NO];
             let _: () = msg_send![&*panel, setAllowsMultipleSelection: Bool::new(multiple)];
             let _: () = msg_send![&*panel, setResolvesAliases: Bool::YES];
-            let ext = ns_string("sql");
-            // macOS 11+: the extension's content type; older systems: the extension itself.
-            match AnyClass::get(c"UTType") {
-                Some(ut) => {
-                    let ty: Option<Retained<AnyObject>> = msg_send![ut, typeWithFilenameExtension: &*ext];
-                    if let Some(ty) = ty {
-                        let types: Retained<AnyObject> = msg_send![class!(NSArray), arrayWithObject: &*ty];
-                        let _: () = msg_send![&*panel, setAllowedContentTypes: &*types];
-                    }
-                }
-                None => {
-                    let types: Retained<AnyObject> = msg_send![class!(NSArray), arrayWithObject: &*ext];
-                    let _: () = msg_send![&*panel, setAllowedFileTypes: &*types];
-                }
-            }
+            allow_sql(&panel);
             let tx = Cell::new(Some(tx));
             let p = panel.clone();
             let handler = RcBlock::new(move |response: isize| {
@@ -143,17 +234,26 @@ mod imp {
                     let n: usize = msg_send![&*urls, count];
                     for i in 0..n {
                         let url: Retained<AnyObject> = msg_send![&*urls, objectAtIndex: i];
-                        let path: Option<Retained<AnyObject>> = msg_send![&*url, path];
-                        let Some(path) = path else { continue };
-                        let c: *const std::ffi::c_char = msg_send![&*path, UTF8String];
-                        if !c.is_null() {
-                            out.push(PathBuf::from(CStr::from_ptr(c).to_string_lossy().into_owned()));
-                        }
+                        out.extend(url_path(&url));
                     }
                 }
                 let _ = tx.send(out.into_iter().filter(|p| super::is_sql(p)).collect());
             });
             let _: () = msg_send![&*panel, beginWithCompletionHandler: &*handler];
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn file_names_from_titles() {
+        assert_eq!(file_name_for("Orders by day"), "Orders by day.sql");
+        assert_eq!(file_name_for("report.sql"), "report.sql");
+        assert_eq!(file_name_for("a/b: c"), "a b c.sql");
+        assert_eq!(file_name_for("SELECT * FROM t…"), "SELECT * FROM t….sql");
+        assert_eq!(file_name_for("  "), "query.sql");
     }
 }

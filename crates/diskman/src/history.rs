@@ -43,6 +43,8 @@ pub enum HistoryEvent {
     OpenFavorite(Favorite, bool),
     /// Import Favorites…: `.sql` files picked in the panel, a favorite each.
     ImportFavorites,
+    /// A favorite was added, renamed or removed here (the tabs linked to one follow).
+    FavoritesChanged,
     Close,
 }
 
@@ -183,12 +185,37 @@ impl HistoryPanel {
             let _ = store.add(fav);
         }
         self.reload_favorites(cx);
+        cx.emit(HistoryEvent::FavoritesChanged);
     }
 
     fn remove_favorite(&mut self, fav_ix: usize, cx: &mut Context<Self>) {
         let id = self.favorites[fav_ix].id.clone();
         let _ = self.store.read(cx).core.favorites.remove(&id);
         self.reload_favorites(cx);
+        cx.emit(HistoryEvent::FavoritesChanged);
+    }
+
+    /// The favorites view, with favorite `id` selected and scrolled into view, the panel
+    /// focused (↑↓ ↩ work at once): the palette's pick, the "Saved as favorite" link. The
+    /// search is cleared so the favorite is listed. False when it is not saved (any more).
+    pub fn focus_favorite(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        self.favorites = self.store.read(cx).core.favorites.list();
+        self.show_favorites = true;
+        self.chip_menu = false;
+        self.fav_menu = None;
+        self.renaming = None;
+        self.filter.update(cx, |f, cx| f.set_text("", cx));
+        self.apply_filter(cx);
+        let Some(ix) = self.items.iter().position(|it| matches!(it, Item::Fav(i) if self.favorites[*i].id == id)) else { return false };
+        self.selected = Some(ix);
+        // Item heights are not measured yet after the reset: put the favorite near the top (the
+        // list itself keeps the last page full), then reveal it exactly once it is laid out.
+        self.list.scroll_to(gpui::ListOffset { item_ix: ix.saturating_sub(2), offset_in_item: px(0.) });
+        let list = self.list.clone();
+        window.on_next_frame(move |_, _| list.scroll_to_reveal_item(ix));
+        window.focus(&self.focus, cx);
+        cx.notify();
+        true
     }
 
     /// Starts editing a favorite's name in place: ↩ confirms (`commit_rename`), esc cancels
@@ -224,6 +251,7 @@ impl HistoryPanel {
             let _ = self.store.read(cx).core.favorites.rename(&f.id, &name);
         }
         self.reload_favorites(cx);
+        cx.emit(HistoryEvent::FavoritesChanged);
     }
 
     fn matches(&self, e: &HistoryEntry, q: &str) -> bool {
@@ -529,8 +557,9 @@ impl HistoryPanel {
         }
     }
 
-    /// A favorite's context menu (right-click, ⌃-click): Rename, Remove, Import Favorites…; on
-    /// the star toggle, Import Favorites… alone.
+    /// A favorite's context menu (right-click, ⌃-click): Rename, Remove, Import favorites…; on
+    /// the star toggle, Import favorites… alone (sentence case here; the menu bar's File ▸
+    /// Import Favorites… keeps the macOS title case).
     fn render_fav_menu(&self, t: &Theme, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
         let (fav_ix, at) = self.fav_menu?;
         let item = |key: &'static str, label: &'static str, f: fn(&mut Self, usize, &mut Window, &mut Context<Self>)| {
@@ -552,7 +581,7 @@ impl HistoryPanel {
                     .child(item("fm-remove", "Remove", |h, ix, _, cx| h.remove_favorite(ix, cx)))
                     .child(ui::menu_sep(t))
             })
-            .child(item("fm-import", "Import Favorites…", |_, _, _, cx| cx.emit(HistoryEvent::ImportFavorites)));
+            .child(item("fm-import", "Import favorites…", |_, _, _, cx| cx.emit(HistoryEvent::ImportFavorites)));
         Some(gpui::deferred(gpui::anchored().position(at).snap_to_window_with_margin(px(8.)).child(menu)).priority(3))
     }
 
@@ -707,6 +736,46 @@ impl HistoryPanel {
         self.show_favorites
     }
 
+    /// The selected favorite's id, its index among the listed items, and whether its row is
+    /// painted whole inside the list's viewport.
+    pub(crate) fn demo_selected_favorite(&self) -> Option<(String, usize, bool)> {
+        let ix = self.selected?;
+        let Item::Fav(i) = self.items.get(ix)? else { return None };
+        let view = self.list.viewport_bounds();
+        let inside = self.list.bounds_for_item(ix).is_some_and(|b| b.top() >= view.top() - px(0.5) && b.bottom() <= view.bottom() + px(0.5));
+        Some((self.favorites[*i].id.clone(), ix, inside))
+    }
+
+    /// Screenshots (`fav-menu`): the favorites listed.
+    pub(crate) fn demo_show_favorites(&mut self, cx: &mut Context<Self>) {
+        self.favorites = self.store.read(cx).core.favorites.list();
+        self.show_favorites = true;
+        self.apply_filter(cx);
+    }
+
+    /// Screenshots (`fav-menu`): the context menu of listed item `item_ix`, as a right-click in
+    /// its row opens it.
+    pub(crate) fn demo_open_fav_menu(&mut self, item_ix: usize, cx: &mut Context<Self>) {
+        if let (Some(Item::Fav(i)), Some(p)) = (self.items.get(item_ix), self.demo_item_point(item_ix)) {
+            self.selected = Some(item_ix);
+            self.fav_menu = Some((*i, gpui::point(p.x + px(60.), p.y)));
+            cx.notify();
+        }
+    }
+
+    /// Renames favorite `fav_ix` the way the inline field does (Rename, the text, ↩).
+    pub(crate) fn demo_rename(&mut self, fav_ix: usize, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.start_rename(fav_ix, window, cx);
+        if let Some((_, input)) = &self.renaming {
+            input.update(cx, |i, cx| i.set_text(name, cx));
+        }
+        self.commit_rename(cx);
+    }
+
+    pub(crate) fn demo_has_focus(&self, window: &Window) -> bool {
+        self.focus.is_focused(window)
+    }
+
     pub(crate) fn demo_dropdown_open(&self) -> bool {
         self.chip_menu
     }
@@ -859,10 +928,12 @@ impl Render for HistoryPanel {
                             .flex_row()
                             .items_center()
                             .gap(px(8.))
+                            .relative()
                             .border_1()
-                            // A search field's focus is neutral, like the explorer filter's.
+                            // A search field's focus is neutral, like the explorer filter's: the
+                            // border and its halo, the fill unchanged.
                             .border_color(if filter_focused { t.mark_b } else { t.field_b })
-                            .when(filter_focused, |d| d.shadow(t.halo_mark()))
+                            .when(filter_focused, |d| d.child(ui::halo_ring(t.mark)))
                             .child(icon(Icon::Search).size(px(13.)).text_color(t.tx3))
                             .child(div().flex_1().min_w_0().text_color(t.tx).child(self.filter.clone()))
                             .child(div().text_size(px(11.)).text_color(t.tx3).child(format!("{} of {}", ui_count(self.shown), ui_count(total)))),

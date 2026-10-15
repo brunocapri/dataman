@@ -121,6 +121,30 @@ impl FavoritesStore {
         g.stamp = self.mtime();
         Ok(Some(updated))
     }
+
+    /// Replaces a favorite's statement (its name, connection and database stay); `None` when
+    /// `id` is not found.
+    pub fn update_sql(&self, id: &str, sql: &str) -> Result<Option<Favorite>> {
+        let _ = self.refresh();
+        let mut g = self.state.lock();
+        let Some(f) = g.items.iter_mut().find(|f| f.id == id) else { return Ok(None) };
+        f.sql = sql.to_string();
+        let updated = f.clone();
+        save(&self.path, &g.items)?;
+        g.stamp = self.mtime();
+        Ok(Some(updated))
+    }
+}
+
+/// `base`, or `base 2`, `base 3`… : the first one no name in `taken` has (case aside).
+pub fn unique_name(base: &str, taken: &[&str]) -> String {
+    let base = base.trim();
+    let base = if base.is_empty() { "query" } else { base };
+    let used = |n: &str| taken.iter().any(|t| t.trim().eq_ignore_ascii_case(n));
+    if !used(base) {
+        return base.to_string();
+    }
+    (2..).map(|i| format!("{base} {i}")).find(|n| !used(n)).unwrap_or_default()
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -300,6 +324,28 @@ mod tests {
         assert_eq!((renamed.sql.as_str(), renamed.connection_id.as_deref(), renamed.database.as_deref()), ("select 1", Some("c1"), Some("db1")));
         assert_eq!(store.list(), vec![renamed]);
         assert!(store.rename("nope", "x").unwrap().is_none());
+    }
+
+    #[test]
+    fn update_sql_keeps_the_name_and_where_it_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = Dirs::at(dir.path().join("diskman"));
+        let store = FavoritesStore::open(&dirs).unwrap();
+        let mut f = Favorite::new("daily", "select 1");
+        f.connection_id = Some("c1".into());
+        let f = store.add(f).unwrap();
+        let u = store.update_sql(&f.id, "select 2").unwrap().unwrap();
+        assert_eq!((u.id.as_str(), u.name.as_str(), u.sql.as_str(), u.connection_id.as_deref()), (f.id.as_str(), "daily", "select 2", Some("c1")));
+        assert_eq!(FavoritesStore::open(&dirs).unwrap().list(), vec![u]);
+        assert!(store.update_sql("nope", "x").unwrap().is_none());
+    }
+
+    #[test]
+    fn unique_names() {
+        assert_eq!(unique_name("orders", &[]), "orders");
+        assert_eq!(unique_name("orders", &["Orders"]), "orders 2");
+        assert_eq!(unique_name("orders", &["orders", "orders 2", "x"]), "orders 3");
+        assert_eq!(unique_name("  ", &["query"]), "query 2");
     }
 
     /// `run_favorite`'s matcher: a name typed from memory finds its favorite; an unclear one

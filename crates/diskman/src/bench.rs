@@ -214,7 +214,9 @@ pub fn start(mode: Mode, ws: Entity<Workspace>, window: &mut Window, cx: &mut Ap
 /// `dialog-url-bad`: the connection string mode), `dialog-fail` (a real
 /// password failure), `sort`, `history` (with the explorer filter), `marks`, `marks-history`
 /// and `marks-search` (the neutral highlights: the filter's matches, the history's selection,
-/// a favorite renamed, the history's search focused), `copied` (the result bar's Copy after ⌘C), `error` (a batch that
+/// a favorite renamed, the history's search focused), `copied` (the result bar's Copy after ⌘C),
+/// `saved` (⌘S's "Saved as favorite →"), `palette-favorites` (the palette's Favorites scope),
+/// `fav-menu` (a favorite's context menu), `error` (a batch that
 /// stops at statement 2), `cancelling`, `viewer`, `empty` (connected, nothing run),
 /// `shortcuts`, `focus` (the grid with the keyboard focus ring), `dialog-password`,
 /// `error-pop` and `tree-pop` (the find indicator; `DISKMAN_POP_FREEZE_MS=n` holds every pop
@@ -500,6 +502,29 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                     "shortcuts" => ws.update(cx, |w, cx| {
                         w.shortcuts_open = true;
                         cx.notify();
+                    }),
+                    // ⌘S: "Saved as favorite →" by the History button.
+                    "saved" => ws.update(cx, |w, cx| w.save_favorite(cx)),
+                    // The palette's Favorites scope over a few dozen favorites; the favorites'
+                    // context menu.
+                    "palette-favorites" | "fav-menu" => ws.update(cx, |w, cx| {
+                        let core = w.store.read(cx).core.clone();
+                        let words = ["Orders by day", "Top customers", "Revenue by month", "Churned accounts", "Slow queries", "Open carts"];
+                        for i in 0..36 {
+                            let mut f = diskman_core::Favorite::new(format!("{} {}", words[i % words.len()], i / words.len() + 1), format!("SELECT {i} AS n, count(*) FROM orders WHERE customer % 36 = {i};"));
+                            f.connection_id = Some(id.clone());
+                            let _ = core.favorites.add(f);
+                        }
+                        if stage == "fav-menu" {
+                            w.toggle_history_for_demo(cx);
+                            let history = w.history.clone();
+                            history.update(cx, |h, cx| h.demo_show_favorites(cx));
+                        } else {
+                            w.open_palette(crate::palette::Scope::All, window, cx);
+                            if let Some(p) = w.palette.clone() {
+                                p.update(cx, |p, cx| p.set_query("*", cx));
+                            }
+                        }
                     }),
                     "palette" | "palette-nomatch" | "goto" => ws.update(cx, |w, cx| {
                         let scope = if stage == "goto" { crate::palette::Scope::Goto } else { crate::palette::Scope::All };
@@ -827,6 +852,14 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                     }
                     return;
                 }
+            }
+            if stage == "fav-menu" {
+                // The second favorite's context menu, once the list is painted.
+                sleep(cx, 600).await;
+                let _ = cx.update(|_, cx| {
+                    let history = ws.read(cx).history.clone();
+                    history.update(cx, |h, cx| h.demo_open_fav_menu(1, cx));
+                });
             }
             if stage == "mcp-log-menu" {
                 // A row's context menu, once the list is painted (the UPDATE, 3rd from the top).

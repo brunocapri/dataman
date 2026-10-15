@@ -33,6 +33,8 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp target/release/diskman "$app/Contents/MacOS/diskman"
 cp target/release/diskman-mcp "$app/Contents/MacOS/diskman-mcp"
 cp packaging/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"
+# The Dock icon while the app is light (`dock_icon`).
+cp packaging/AppIconLight.icns "$app/Contents/Resources/AppIconLight.icns"
 cp packaging/Info.plist "$app/Contents/Info.plist"
 
 # The binary must say the same version the bundle does (the updater compares them).

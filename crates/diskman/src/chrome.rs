@@ -14,7 +14,7 @@ use diskman_core::batch::{self, Key};
 use diskman_core::result::{CopyFormat, Phase};
 use diskman_core::{Connection, TxState, TxStatus};
 
-use crate::app::{Drag, Region, Side, ViewerMode, Workspace, fmt_dur};
+use crate::app::{Drag, Region, Side, Slide, ViewerMode, Workspace, fmt_dur};
 use crate::assets::{Icon, icon};
 use crate::grid::{fmt_clock, statement_verb, ui_count};
 use crate::messages::{self, Of, Row as MessageRow};
@@ -207,7 +207,7 @@ impl Workspace {
                     // on the bar's middle line like this button (`metrics::LIGHTS_AT`).
                     .child(div().w(px(lights)).flex_none())
                     .child(
-                        ui::icon_button(&t, "toggle-explorer", Icon::Sidebar, 26., 16.)
+                        explorer_toggle(&t, open)
                             .ml(px(14.))
                             .on_mouse_down(MouseButton::Left, stop)
                             .on_click(cx.listener(|w, _, _, cx| w.set_explorer_open(!w.explorer_open, cx))),
@@ -622,19 +622,20 @@ impl Workspace {
                         .children((region == Some(Region::Grid)).then(|| focus_ring(&t))),
                 );
         }
-        // The history slides in and out like the explorer (its content keeps its width and is
-        // clipped); the other panels just appear.
-        let history_w = self.history_slide(window, cx);
-        let sliding = history_w.is_some_and(|w| (w - self.side_w).abs() > 0.5);
-        let shown = self.side.clone().or_else(|| history_w.map(|_| Side::History));
+        // The history and the cell viewer slide in and out like the explorer (the content keeps
+        // its width and is clipped); the other panels just appear.
+        let slide = self.side_slide(window, cx);
+        let sliding = slide.is_some_and(|(_, w)| (w - self.side_w).abs() > 0.5);
+        let shown = self.side.clone().or_else(|| slide.map(|(k, _)| k.side()));
         let side = shown.map(|s| {
-            let history = matches!(s, Side::History);
+            let slides = slide.filter(|(k, _)| Slide::of(&s) == Some(*k));
             let content: AnyElement = match s {
                 Side::History => self.history.clone().into_any_element(),
                 Side::Viewer => self.render_viewer(&tab, &t, cx).into_any_element(),
                 Side::Server(_, v, _) | Side::Feature(_, v, _) => v.into_any_element(),
             };
-            let w = if history { history_w.unwrap_or(self.side_w) } else { self.side_w };
+            let w = slides.map_or(self.side_w, |(_, w)| w);
+            let moving = slides.is_some() && sliding;
             div()
                 .relative()
                 .w(px(w))
@@ -643,10 +644,10 @@ impl Workspace {
                 // The seam's hairline, like the explorer's and the bars'.
                 .border_l_1()
                 .border_color(t.line)
-                .when(history && sliding, |d| d.overflow_hidden())
+                .when(moving, |d| d.overflow_hidden())
                 .child(div().absolute().top_0().bottom_0().right_0().w(px(self.side_w)).child(content))
                 .children((region == Some(Region::Side)).then(|| focus_ring(&t)))
-                .when(!(history && sliding), |d| d.child(
+                .when(!moving, |d| d.child(
                     div()
                         .id("side-resize")
                         .absolute()
@@ -744,6 +745,38 @@ impl Workspace {
             .child(icon(Icon::History).size(px(14.)).text_color(if history_on { t.tx } else { t.tx2 }))
             .when_some(crate::keymap::key("history"), |d, k| d.child(ui::keycap_sm(t.key, t.tx2, k)))
             .on_click(cx.listener(|w, _, _, cx| w.toggle_history_for_demo(cx)));
+        // ⌘S's "Saved as favorite →", fading in and out at the History button's left. Hung from
+        // a zero-width anchor: nothing else in the toolbar moves.
+        let saved = self.saved_flash.as_ref().and_then(|f| {
+            let a = crate::motion::SAVED.at(f.at, std::time::Instant::now(), cx.reduce_motion())?;
+            let (id, label, hov) = (f.id.clone(), f.label, t.hov);
+            let bounds = self.saved_bounds.clone();
+            Some(
+                div().relative().w(px(0.)).h(px(24.)).on_children_prepainted(move |b, _, _| bounds.set(b.first().copied())).child(
+                    div()
+                        .id("tb-saved")
+                        .absolute()
+                        .right(px(2.))
+                        .top_0()
+                        .h(px(24.))
+                        .px(px(7.))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(5.))
+                        .whitespace_nowrap()
+                        .text_size(px(11.5))
+                        .text_color(t.tx2)
+                        .opacity(a)
+                        .cursor_pointer()
+                        .hover(move |s| s.bg(hov))
+                        .child(icon(Icon::StarFill).size(px(11.)).text_color(t.warn))
+                        .child(label)
+                        .child(div().text_color(t.tx3).child("→"))
+                        .on_click(cx.listener(move |w, _, window, cx| w.show_favorite(&id, window, cx))),
+                ),
+            )
+        });
         let lar = v.conn.as_ref().filter(|c| c.info.is_lar).map(|c| self.render_lar_buttons(c, t, cx));
         div()
             .h(px(metrics::TOOLBAR_H))
@@ -763,6 +796,7 @@ impl Workspace {
             .children(tx_controls)
             .children(cancel)
             .child(div().flex_1())
+            .children(saved)
             .child(history)
             .children(lar)
     }
@@ -2310,16 +2344,36 @@ impl Workspace {
     }
 }
 
-/// The focus ring of a region: 1 pt accent and a 3 pt halo, drawn inside it (square: the
-/// regions are flush with each other and with the window's edges, so a ring outside would be
-/// cut off).
+/// The title bar's explorer toggle (`icon_button`'s look): the sidebar glyph, its left part
+/// filled as far as the explorer is open (`open`, 0 to 1), so the fill sweeps in and out with
+/// the explorer's own slide (same tween, same easing; at once with "Reduce motion").
+fn explorer_toggle(t: &Theme, open: f32) -> gpui::Stateful<Div> {
+    let (hov, prs, ink) = (t.hov, t.prs, t.tx3);
+    // The glyph's left pane in its 16 pt box (`sidebar.svg`: the frame from x 2.5 to 13.5 and y
+    // 3 to 13, its divider at x 6.5).
+    let pane = div().absolute().left(px(2.5)).top(px(3.)).h(px(10.)).w(px(4. * open.clamp(0., 1.))).bg(ink);
+    div()
+        .id("toggle-explorer")
+        .flex_none()
+        .size(px(26.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .hover(move |s| s.bg(hov))
+        .active(move |s| s.bg(prs))
+        .child(div().relative().size(px(16.)).child(icon(Icon::Sidebar).size(px(16.)).text_color(ink)).child(pane))
+}
+
+/// The focus ring of a region: a 1 pt neutral line and a faint 2 pt band inside it (square:
+/// the regions are flush with each other and with the window's edges, so a ring outside would
+/// be cut off). Neutral, not the accent: blue is the selection's.
 fn focus_ring(t: &Theme) -> Div {
     div()
         .absolute()
         .inset_0()
         .border_1()
-        .border_color(t.acc)
-        .child(div().absolute().inset_0().border_2().border_color(t.acc_s))
+        .border_color(t.focus)
+        .child(div().absolute().inset_0().border_2().border_color(t.focus_s))
 }
 
 /// A statement on a sheet: its first lines in a card (an ellipsis when there are more), and

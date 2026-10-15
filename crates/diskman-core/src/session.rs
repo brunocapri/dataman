@@ -78,6 +78,8 @@ pub struct TabState {
     /// The result tab on screen and the ones the user closed.
     pub shown: Option<Key>,
     pub closed: Vec<Key>,
+    /// The favorite the tab is linked to (its id): ⌘S saves the editor's text into it.
+    pub favorite: Option<String>,
 }
 
 /// How a statement of the last run ended.

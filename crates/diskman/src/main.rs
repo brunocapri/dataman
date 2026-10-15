@@ -12,6 +12,7 @@ mod conns;
 mod crash_ui;
 mod data_import;
 mod dnd;
+mod dock_icon;
 mod edit_ui;
 mod editor;
 mod explorer_demo;
@@ -129,6 +130,8 @@ fn menus(cx: &App) -> Vec<Menu> {
             .chain(when(caps.import, vec![MenuItem::action("Import Data…", ImportData)]))
             .chain([
                 MenuItem::action("Open .sql File…", OpenSqlFile),
+                MenuItem::action("Save as Favorite", SaveFavorite),
+                MenuItem::action("Save As…", SaveAs),
                 MenuItem::action("Import Favorites…", ImportFavorites),
                 MenuItem::separator(),
                 MenuItem::action("Close Tab", CloseTab),

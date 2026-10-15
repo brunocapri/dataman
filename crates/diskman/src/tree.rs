@@ -204,8 +204,11 @@ enum Kind {
 #[derive(Clone, Copy, PartialEq)]
 enum Tone {
     Normal,
+    /// A connected connection's name (semibold).
     Conn,
     ConnLar,
+    /// A connection that is not connected (off, connecting, failed): gray, regular weight.
+    ConnOff,
     Muted,
     Italic,
     Error,
@@ -609,7 +612,11 @@ impl SchemaTree {
             None => ("○", Meta::Off),
         };
         let mut r = Row::new(cid(&p.id), 0, p.name.clone(), Kind::Conn { id: p.id.clone() })
-            .tone(if lar { Tone::ConnLar } else { Tone::Conn })
+            .tone(match state {
+                Some(ConnState::Connected(_)) if lar => Tone::ConnLar,
+                Some(ConnState::Connected(_)) => Tone::Conn,
+                _ => Tone::ConnOff,
+            })
             .meta(glyph, meta)
             .expandable(open);
         r.chip = Some(t.profile_color(p));
@@ -1165,6 +1172,13 @@ impl SchemaTree {
         self.popped = Some(hit);
         self.scroll.scroll_to_item(ix, gpui::ScrollStrategy::Nearest);
         cx.notify();
+    }
+
+    /// Checks: a connection row's name as drawn (its color, semibold or not), unselected.
+    pub fn demo_conn_label(&self, conn_id: &str, cx: &App) -> Option<(Hsla, bool)> {
+        let id = cid(conn_id);
+        let r = self.rows.iter().find(|r| r.id.as_ref() == id)?;
+        Some(label_style(r.tone, false, &cx.theme()))
     }
 
     /// Demo and live checks: the row whose match is popping now.
@@ -1945,14 +1959,7 @@ impl SchemaTree {
             }
         });
         let sel = self.selected.as_ref() == Some(&r.id);
-        let label_color = match r.tone {
-            _ if sel => t.tx,
-            Tone::Conn => t.tx,
-            Tone::ConnLar => t.lar_t,
-            Tone::Muted | Tone::Italic => t.tx3,
-            Tone::Error => t.err,
-            Tone::Normal => t.tx2,
-        };
+        let (label_color, bold) = label_style(r.tone, sel, t);
         let hov = t.hov;
         let has_menu = !matches!(r.kind, Kind::Leaf);
         let menu_here = self.menu.as_ref().is_some_and(|m| m.row.as_ref() == Some(&r.id));
@@ -2118,7 +2125,7 @@ impl SchemaTree {
                     .whitespace_nowrap()
                     .text_ellipsis()
                     .text_color(label_color)
-                    .when(matches!(r.tone, Tone::Conn | Tone::ConnLar), |d| d.font_weight(FontWeight::SEMIBOLD))
+                    .when(bold, |d| d.font_weight(FontWeight::SEMIBOLD))
                     .when(r.tone == Tone::Italic, |d| d.italic())
                     .child(label),
             )
@@ -2131,6 +2138,23 @@ impl SchemaTree {
             .children(more)
             .children(line.map(|after| crate::dnd::drop_line(t, false, after))))
     }
+}
+
+/// A row's name: its color and whether it is semibold. Connected connections stand out; one
+/// that is not connected is gray and regular, a step lighter when selected.
+fn label_style(tone: Tone, sel: bool, t: &Theme) -> (Hsla, bool) {
+    let bold = matches!(tone, Tone::Conn | Tone::ConnLar);
+    let color = match tone {
+        Tone::ConnOff if sel => t.tx2,
+        Tone::ConnOff => t.tx3,
+        _ if sel => t.tx,
+        Tone::Conn => t.tx,
+        Tone::ConnLar => t.lar_t,
+        Tone::Muted | Tone::Italic => t.tx3,
+        Tone::Error => t.err,
+        Tone::Normal => t.tx2,
+    };
+    (color, bold)
 }
 
 /// The find indicator over a matched name: Xcode's yellow box (2 pt wider than the text each
@@ -2502,13 +2526,14 @@ impl Render for SchemaTree {
             .flex_row()
             .items_center()
             .gap(px(7.))
-            // The glass's own translucent wash; only the border is opaque, so it holds over any
-            // desktop.
-            .bg(if filter_focused || filtering { t.panel } else { t.hov })
+            // The glass's own translucent wash, the same focused or not (the border and its
+            // halo show the focus); only the border is opaque, so it holds over any desktop.
+            .relative()
+            .bg(t.hov)
             .border_1()
             // A search field's focus is neutral (blue is the tree's selection).
             .border_color(if filter_focused { t.mark_b } else { t.field_b })
-            .when(filter_focused, |d| d.shadow(t.halo_mark()))
+            .when(filter_focused, |d| d.child(ui::halo_ring(t.mark)))
             .child(icon(Icon::Filter).size(px(13.)).text_color(t.tx3))
             .child(div().flex_1().min_w_0().text_color(t.tx).child(self.filter.clone()))
             .child(div().flex_none().text_size(px(10.5)).text_color(t.tx3).whitespace_nowrap().child(filter_meta));

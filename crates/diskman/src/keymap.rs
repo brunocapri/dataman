@@ -106,6 +106,10 @@ pub const COMMANDS: &[Command] = &[
     c("use_explorer_connection", "Use explorer connection", "EDITOR", Scope::Workspace, &["alt-enter"], || Box::new(UseExplorerConnection)),
     c("history", "History", "EDITOR", Scope::Workspace, &["cmd-y"], || Box::new(ToggleHistory)),
     c("favorite_query", "Favorite query", "EDITOR", Scope::Workspace, &["cmd-d"], || Box::new(FavoriteQuery)),
+    // ⌘S in the editor saves the script as (or into) the tab's favorite; on the grid it stays
+    // Review & commit (below): the editor and the grid never meet.
+    c("save_favorite", "Save as favorite", "EDITOR", Scope::Editor, &["cmd-s"], || Box::new(SaveFavorite)),
+    c("save_as", "Save as…", "EDITOR", Scope::Workspace, &["cmd-shift-s"], || Box::new(SaveAs)),
     c("copy_tsv", "Copy TSV", "GRID", Scope::Grid, &["cmd-c"], || Box::new(crate::grid::CopyTsv)),
     c("copy_with_headers", "Copy with headers", "GRID", Scope::Grid, &["cmd-shift-c"], || Box::new(crate::grid::CopyTsvWithHeader)),
     c("copy_csv", "Copy CSV", "GRID", Scope::Grid, &["cmd-alt-c"], || Box::new(crate::grid::CopyCsv)),
@@ -116,7 +120,9 @@ pub const COMMANDS: &[Command] = &[
     c("fetch_all", "Fetch all", "GRID", Scope::Grid, &["cmd-shift-down"], || Box::new(crate::grid::FetchAll)),
     // ⌘I also works from the cell editor (it keeps the typed value, then adds a row).
     Command { context: Some("ResultGrid"), ..c("insert_row", "Insert row", "GRID", Scope::Grid, &["cmd-i"], || Box::new(crate::grid::InsertRow)) },
-    c("review_changes", "Review & commit", "GRID", Scope::Workspace, &["cmd-s"], || Box::new(ReviewChanges)),
+    // On the grid and in its cell editor (it keeps the typed value), not from the editor any more:
+    // there ⌘S is Save as favorite.
+    Command { context: Some("ResultGrid"), ..c("review_changes", "Review & commit", "GRID", Scope::Grid, &["cmd-s"], || Box::new(ReviewChanges)) },
     c("discard_changes", "Discard edits", "GRID", Scope::Grid, &["cmd-backspace"], || Box::new(DiscardChanges)),
     c("export", "Export", "GRID", Scope::Workspace, &["cmd-e"], || Box::new(ExportResult)),
     c("cycle_focus", "Next region", "FOCUS", Scope::Workspace, &["f6"], || Box::new(CycleFocus)),

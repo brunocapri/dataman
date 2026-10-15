@@ -209,6 +209,16 @@ pub fn icon_button(t: &Theme, id: impl Into<ElementId>, i: Icon, box_size: f32, 
         .child(icon(i).size(px(icon_size)).text_color(t.tx3))
 }
 
+/// A focused field's halo: a 3 pt band of `color` just outside its 1 pt border, drawn as a
+/// border of its own (the field must be `relative`). Not a spread `BoxShadow`: GPUI paints a
+/// shadow under the whole box, which would also tint a translucent field's inside.
+pub fn halo_ring(color: Hsla) -> Div {
+    // Absolute insets count from inside the field's border (1 pt at any zoom, like every
+    // hairline); the band itself scales with the UI.
+    let o = px(-3.) - gpui::px(1.);
+    div().absolute().top(o).left(o).right(o).bottom(o).border(px(3.)).border_color(color)
+}
+
 /// A vertical separator (1 x 18, line2).
 pub fn vsep(t: &Theme, h: f32) -> Div {
     div().flex_none().w(px(1.)).h(px(h)).bg(t.line2)

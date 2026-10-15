@@ -210,6 +210,9 @@ pub struct QueryTab {
     pub(crate) agent_pending: Option<Arc<ResultSet>>,
     /// The editor holds an agent's draft the user has not run yet (`draft_agent`).
     pub(crate) agent_draft: bool,
+    /// The favorite this tab was opened from (or saved as): its id and name. The tab is titled
+    /// with the name, and ⌘S saves the editor's text into it.
+    pub favorite: Option<(String, SharedString)>,
 }
 
 impl EventEmitter<TabEvent> for QueryTab {}
@@ -289,6 +292,7 @@ impl QueryTab {
             agent_run: None,
             agent_pending: None,
             agent_draft: false,
+            favorite: None,
         };
         t.set_connection(conn, cx);
         t
@@ -570,6 +574,9 @@ impl QueryTab {
     pub fn title(&self, cx: &gpui::App) -> SharedString {
         if let Some(m) = &self.monitor {
             return m.read(cx).title();
+        }
+        if let Some((_, name)) = &self.favorite {
+            return name.clone();
         }
         let text = self.editor.read(cx).text();
         if let Some((title, sql)) = &self.fixed_title
@@ -1699,7 +1706,22 @@ impl QueryTab {
             results: None,
             shown: self.shown,
             closed: self.closed.iter().copied().collect(),
+            favorite: self.favorite.as_ref().map(|(id, _)| id.clone()),
         }
+    }
+
+    /// The title a favorite saved from this tab gets: the name it was given (a file's, a
+    /// followed reference's) or its first line of SQL (comments aside), flattened and capped.
+    pub fn favorite_name(&self, cx: &gpui::App) -> String {
+        let text = self.editor.read(cx).text();
+        if let Some((title, sql)) = &self.fixed_title
+            && text == sql.as_str()
+        {
+            let t = title.to_string();
+            return t.strip_suffix(".sql").or_else(|| t.strip_suffix(".SQL")).map(str::to_string).unwrap_or(t);
+        }
+        let first = text.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with("--")).unwrap_or("");
+        crate::history::fav_name(first)
     }
 
     /// The run as it stands (statements, states, results): a new run, rows arriving, a sort

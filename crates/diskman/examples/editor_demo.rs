@@ -8,6 +8,9 @@
 #[path = "../src/assets.rs"]
 #[allow(dead_code)]
 mod assets;
+#[path = "../src/dock_icon.rs"]
+#[allow(dead_code)]
+mod dock_icon;
 #[path = "../src/editor.rs"]
 #[allow(dead_code)]
 mod editor;

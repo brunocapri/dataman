@@ -15,8 +15,9 @@ rustc-ice-*.txt
 notarization*.json
 notarize-*.log
 
-# Generated from packaging/icon/app-icon.html by scripts/icon.sh (the .icns is committed)
+# Generated from packaging/icon/app-icon.html by scripts/icon.sh (the .icns are committed)
 /packaging/AppIcon.png
+/packaging/AppIconLight.png
 *.iconset
 
 # Keys, certificates and secrets

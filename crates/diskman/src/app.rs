@@ -52,6 +52,11 @@ actions!(
         ToggleHistory,
         /// Favorites the statement under the cursor of the active tab.
         FavoriteQuery,
+        /// ⌘S: the editor's script into the tab's favorite (a new one, named after the tab, when
+        /// the tab has none yet).
+        SaveFavorite,
+        /// ⇧⌘S: the editor's script to a `.sql` file (the save panel).
+        SaveAs,
         /// Adds each selected .sql file as a favorite.
         ImportFavorites,
         Cancel,
@@ -298,6 +303,39 @@ pub(crate) enum Side {
     Feature(&'static str, AnyView, Bound),
 }
 
+/// The side views that slide in and out like the explorer (the others just appear).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Slide {
+    History,
+    Viewer,
+}
+
+impl Slide {
+    pub(crate) fn of(side: &Side) -> Option<Slide> {
+        match side {
+            Side::History => Some(Slide::History),
+            Side::Viewer => Some(Slide::Viewer),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn side(self) -> Side {
+        match self {
+            Slide::History => Side::History,
+            Slide::Viewer => Side::Viewer,
+        }
+    }
+}
+
+/// The "Saved as favorite" feedback next to the History button: the favorite it is about (a
+/// click opens it in the favorites), what it says, when it started (`motion::SAVED`).
+#[derive(Clone)]
+pub(crate) struct SavedFlash {
+    pub id: String,
+    pub label: &'static str,
+    pub at: Instant,
+}
+
 impl Side {
     fn same_kind(&self, other: &Side) -> bool {
         match (self, other) {
@@ -352,10 +390,16 @@ pub struct Workspace {
     /// The explorer column sliding open or shut (⌘B, the title-bar button).
     explorer_tween: Option<crate::motion::WidthTween>,
     pub(crate) side_w: f32,
-    /// The history panel sliding open or shut, like the explorer.
-    history_tween: Option<crate::motion::WidthTween>,
-    /// What the side panel showed last frame (`Some(true)`: the history), to see it open or shut.
-    side_was: Option<bool>,
+    /// The history or the cell viewer sliding open or shut, like the explorer.
+    side_tween: Option<(Slide, crate::motion::WidthTween)>,
+    /// What the side panel showed last frame (`None`: nothing; `Some(None)`: a panel that does
+    /// not slide), to see a sliding one open or shut.
+    side_was: Option<Option<Slide>>,
+    /// ⌘S's feedback in the toolbar, and the redraws of its fades.
+    pub(crate) saved_flash: Option<SavedFlash>,
+    saved_flash_task: Option<gpui::Task<()>>,
+    /// Where it was last laid out (the checks click it).
+    pub(crate) saved_bounds: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
     /// Editor height as a share of the work column (kept when the window resizes).
     pub(crate) editor_frac: Option<f32>,
     pub(crate) drag: Option<Drag>,
@@ -482,23 +526,9 @@ impl Workspace {
                     t.run(vec![sql.trim_end().trim_end_matches(';').to_string()], cx);
                 });
             }
-            HistoryEvent::OpenFavorite(fav, run) => {
-                let (fav, run) = (fav.clone(), *run);
-                let Some(tab) = w.tab_for_history(fav.connection_id.clone(), fav.database.clone(), false, window, cx) else { return };
-                tab.update(cx, |t, cx| {
-                    let text = format!("{};", fav.sql.trim_end().trim_end_matches(';'));
-                    t.editor.update(cx, |e, cx| e.set_text(&text, cx));
-                    // A favorite with a name of its own (renamed, or imported from a file) names
-                    // the tab; one still on its default (the statement's first line) does not.
-                    if fav.name != crate::history::fav_name(&fav.sql) {
-                        t.set_title(fav.name.clone(), text, cx);
-                    }
-                    if run {
-                        t.run(vec![fav.sql.trim_end().trim_end_matches(';').to_string()], cx);
-                    }
-                });
-            }
+            HistoryEvent::OpenFavorite(fav, run) => w.open_favorite(fav.clone(), *run, window, cx),
             HistoryEvent::ImportFavorites => w.import_favorites(cx),
+            HistoryEvent::FavoritesChanged => w.sync_favorite_tabs(cx),
             HistoryEvent::Close => {
                 w.side = None;
                 w.history_pin = None;
@@ -539,8 +569,11 @@ impl Workspace {
             explorer_w: if compact { metrics::EXPLORER_COMPACT } else { metrics::EXPLORER_W },
             explorer_tween: None,
             side_w: metrics::SIDE_W,
-            history_tween: None,
+            side_tween: None,
             side_was: None,
+            saved_flash: None,
+            saved_flash_task: None,
+            saved_bounds: Default::default(),
             editor_frac: None,
             drag: None,
             tab_bounds: Default::default(),
@@ -1763,33 +1796,40 @@ impl Workspace {
         cx.notify();
     }
 
-    /// The history panel's width this frame: it slides in from the window's right edge when it
-    /// opens on its own, and out when it shuts with nothing in its place (the explorer's tween,
-    /// mirrored). `None` while there is no history panel to draw. Called once per frame.
-    pub(crate) fn history_slide(&mut self, window: &mut Window, cx: &App) -> Option<f32> {
-        let now_kind = self.side.as_ref().map(|s| matches!(s, Side::History));
-        let open = now_kind == Some(true);
+    /// The sliding side view this frame (the history, the cell viewer) and its width: it slides
+    /// in from the window's right edge when it opens on its own, and out when it shuts with
+    /// nothing in its place (the explorer's tween, mirrored); one view replacing another just
+    /// appears. `None` while there is no sliding view to draw. Called once per frame.
+    pub(crate) fn side_slide(&mut self, window: &mut Window, cx: &App) -> Option<(Slide, f32)> {
+        let now_kind = self.side.as_ref().map(Slide::of);
+        let open = now_kind.flatten();
         if now_kind != self.side_was {
-            let from = self.history_tween.and_then(|t| t.at(if self.side_was == Some(true) { self.side_w } else { 0. }, Instant::now()));
+            let was = self.side_was.flatten();
+            let from = self.side_tween.and_then(|(_, t)| t.at(if was.is_some() { self.side_w } else { 0. }, Instant::now()));
             let slide = match (self.side_was, now_kind) {
-                (None, Some(true)) => Some((from.unwrap_or(0.), self.side_w)),
-                (Some(true), None) => Some((from.unwrap_or(self.side_w), 0.)),
+                (None, Some(Some(k))) => Some((k, from.unwrap_or(0.), self.side_w)),
+                (Some(Some(k)), None) => Some((k, from.unwrap_or(self.side_w), 0.)),
                 _ => None,
             };
-            self.history_tween = slide.filter(|_| !cx.reduce_motion()).map(|(a, b)| crate::motion::WidthTween::panel(a, b, metrics::SIDE_W));
+            self.side_tween = slide.filter(|_| !cx.reduce_motion()).map(|(k, a, b)| (k, crate::motion::WidthTween::panel(a, b, metrics::SIDE_W)));
             self.side_was = now_kind;
         }
-        let target = if open { self.side_w } else { 0. };
-        match self.history_tween.and_then(|t| t.at(target, Instant::now())) {
-            Some(w) => {
+        let target = if open.is_some() { self.side_w } else { 0. };
+        match self.side_tween.and_then(|(k, t)| t.at(target, Instant::now()).map(|w| (k, w))) {
+            Some(kw) => {
                 window.request_animation_frame();
-                Some(w)
+                Some(kw)
             }
             None => {
-                self.history_tween = None;
-                open.then_some(self.side_w)
+                self.side_tween = None;
+                open.map(|k| (k, self.side_w))
             }
         }
+    }
+
+    /// Checks: a side view is sliding now.
+    pub(crate) fn demo_side_sliding(&self) -> bool {
+        self.side_tween.is_some_and(|(_, t)| t.at(0., Instant::now()).is_some())
     }
 
     fn explorer_target(&self) -> f32 {
@@ -1966,6 +2006,155 @@ impl Workspace {
             self.notice(format!("Added {added} to favorites"), cx);
         }
         self.history.update(cx, |h, cx| h.reload_favorites(cx));
+    }
+
+    /// A favorite in a tab (on its own connection and database; `run` also runs it), the tab
+    /// linked to it: titled with its name, ⌘S saves into it.
+    pub(crate) fn open_favorite(&mut self, fav: Favorite, run: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tab) = self.tab_for_history(fav.connection_id.clone(), fav.database.clone(), false, window, cx) else { return };
+        tab.update(cx, |t, cx| {
+            let text = format!("{};", fav.sql.trim_end().trim_end_matches(';'));
+            t.editor.update(cx, |e, cx| e.set_text(&text, cx));
+            t.favorite = Some((fav.id.clone(), fav.name.clone().into()));
+            if run {
+                t.run(vec![fav.sql.trim_end().trim_end_matches(';').to_string()], cx);
+            }
+            cx.notify();
+        });
+    }
+
+    /// ⌘S: the active tab's script into its favorite (name, connection and database kept), or,
+    /// when the tab has none, into a new favorite named after the tab (made unique), which the
+    /// tab is linked to from then on. "Saved as favorite →" / "Saved →" next to the History
+    /// button says so; a click there shows it in the favorites.
+    pub(crate) fn save_favorite(&mut self, cx: &mut Context<Self>) {
+        let Some(tab) = self.active_tab().cloned() else { return };
+        if tab.read(cx).monitor.is_some() {
+            return;
+        }
+        let sql = tab.read(cx).editor.read(cx).text().trim().to_string();
+        if sql.is_empty() {
+            return;
+        }
+        let store = self.store.read(cx).core.favorites.clone();
+        let updated = match tab.read(cx).favorite.clone() {
+            Some((id, _)) => match store.update_sql(&id, &sql) {
+                Ok(f) => f,
+                Err(e) => {
+                    self.notice(format!("cannot save the favorite: {e:#}"), cx);
+                    return;
+                }
+            },
+            None => None,
+        };
+        // Not linked, or its favorite was removed meanwhile: a new one.
+        let (fav, label) = match updated {
+            Some(f) => (f, "Saved"),
+            None => {
+                let names: Vec<String> = store.list().into_iter().map(|f| f.name).collect();
+                let taken: Vec<&str> = names.iter().map(String::as_str).collect();
+                let name = diskman_core::favorites::unique_name(&tab.read(cx).favorite_name(cx), &taken);
+                let mut fav = Favorite::new(name, sql);
+                if let Some(c) = tab.read(cx).connection() {
+                    fav.connection_id = Some(c.profile.id.clone());
+                    fav.database = Some(tab.read(cx).database().to_string());
+                }
+                match store.add(fav) {
+                    Ok(f) => (f, "Saved as favorite"),
+                    Err(e) => {
+                        self.notice(format!("cannot save the favorite: {e:#}"), cx);
+                        return;
+                    }
+                }
+            }
+        };
+        tab.update(cx, |t, cx| {
+            t.favorite = Some((fav.id.clone(), fav.name.clone().into()));
+            cx.notify();
+        });
+        self.history.update(cx, |h, cx| h.reload_favorites(cx));
+        self.flash_saved(fav.id, label, cx);
+    }
+
+    /// The toolbar's feedback for ⌘S, fading in and out (`motion::SAVED`), redrawn only while it
+    /// changes.
+    fn flash_saved(&mut self, id: String, label: &'static str, cx: &mut Context<Self>) {
+        let at = Instant::now();
+        self.saved_flash = Some(SavedFlash { id, label, at });
+        let redraws = crate::motion::SAVED.redraws(cx.reduce_motion());
+        self.saved_flash_task = Some(cx.spawn(async move |w, cx| {
+            for d in redraws {
+                cx.background_executor().timer(d.saturating_sub(at.elapsed())).await;
+                if w.update(cx, |_, cx| cx.notify()).is_err() {
+                    return;
+                }
+            }
+            let _ = w.update(cx, |w, cx| {
+                if w.saved_flash.as_ref().is_some_and(|f| f.at == at) {
+                    w.saved_flash = None;
+                    cx.notify();
+                }
+            });
+        }));
+        cx.notify();
+    }
+
+    /// The history panel on its favorites, favorite `id` selected, scrolled into view and
+    /// focused (the panel slides in if it was shut): a palette pick, a click on "Saved as
+    /// favorite →".
+    pub(crate) fn show_favorite(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if !matches!(self.side, Some(Side::History)) {
+            self.toggle_history(cx);
+        }
+        self.saved_flash = None;
+        if !self.history.update(cx, |h, cx| h.focus_favorite(id, window, cx)) {
+            self.notice("That favorite was removed", cx);
+        }
+        cx.notify();
+    }
+
+    /// The tabs linked to a favorite follow its rename, and let go of it once it is removed.
+    fn sync_favorite_tabs(&mut self, cx: &mut Context<Self>) {
+        let favorites = self.store.read(cx).core.favorites.list();
+        for tab in self.tabs.clone() {
+            let Some((id, name)) = tab.read(cx).favorite.clone() else { continue };
+            let now: Option<gpui::SharedString> = favorites.iter().find(|f| f.id == id).map(|f| f.name.clone().into());
+            if now.as_ref() != Some(&name) {
+                tab.update(cx, |t, cx| {
+                    t.favorite = now.map(|n| (id, n));
+                    cx.notify();
+                });
+            }
+        }
+    }
+
+    /// ⇧⌘S, Save As…: the active tab's script to a `.sql` file picked in the save panel
+    /// (proposed: the tab's title); the tab is named after the file (a favorite's tab keeps its
+    /// favorite's name).
+    pub(crate) fn save_as(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tab) = self.active_tab().cloned() else { return };
+        if tab.read(cx).monitor.is_some() {
+            return;
+        }
+        let name = crate::sql_picker::file_name_for(&tab.read(cx).title(cx));
+        let rx = crate::sql_picker::pick_save_path(&name, cx);
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Some(path)) = rx.await else { return };
+            let _ = this.update(cx, |w, cx| w.write_sql_file(&tab, &path, cx));
+        })
+        .detach();
+    }
+
+    pub(crate) fn write_sql_file(&mut self, tab: &Entity<QueryTab>, path: &std::path::Path, cx: &mut Context<Self>) {
+        let text = tab.read(cx).editor.read(cx).text().to_string();
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("query.sql").to_string();
+        match std::fs::write(path, &text) {
+            Ok(()) => {
+                tab.update(cx, |t, cx| t.set_title(name.clone(), text, cx));
+                self.notice(format!("Saved {name}"), cx);
+            }
+            Err(e) => self.notice(format!("cannot write {}: {e}", path.display()), cx),
+        }
     }
 
     /// ⌘L / ⌥⌘L: Explain (Analyze) of the active tab's statement under the cursor.
@@ -2373,6 +2562,8 @@ impl Render for Workspace {
                 }
             }))
             .on_action(cx.listener(|w, _: &FavoriteQuery, _, cx| w.favorite_current_query(cx)))
+            .on_action(cx.listener(|w, _: &SaveFavorite, _, cx| w.save_favorite(cx)))
+            .on_action(cx.listener(|w, _: &SaveAs, window, cx| w.save_as(window, cx)))
             .on_action(cx.listener(|w, _: &ImportFavorites, _, cx| w.import_favorites(cx)))
             .on_action(cx.listener(|w, _: &Cancel, _, cx| w.cancel_active(cx)))
             .on_action(cx.listener(|w, _: &NextResult, _, cx| w.cycle_result(true, cx)))
@@ -2803,6 +2994,33 @@ mod tests {
         assert_eq!(fmt_tx_age(s(60)), "1m");
         assert_eq!(fmt_tx_age(s(59 * 60 + 59)), "59m");
         assert_eq!(fmt_tx_age(s(3600 + 5 * 60)), "1h 05m");
+    }
+
+    /// ⌘S is Save as favorite in the editor and Review & commit on the grid and in its cell
+    /// editor; ⇧⌘S (Save As…) works from both; neither behind a modal.
+    #[test]
+    fn save_keys() {
+        let w = Some(WORKSPACE_KEYS);
+        let keymap = Keymap::new(vec![
+            KeyBinding::new("cmd-s", SaveFavorite, Some("CodeEditor")),
+            KeyBinding::new("cmd-s", ReviewChanges, Some("ResultGrid")),
+            KeyBinding::new("cmd-shift-s", SaveAs, w),
+        ]);
+        let first = |k: &str, s: &[&str]| {
+            keymap.bindings_for_input(&[Keystroke::parse(k).unwrap()], &stack(s)).0.first().map(|b| b.action().name().to_string())
+        };
+        assert_eq!(first("cmd-s", &["Workspace", "CodeEditor"]).as_deref(), Some("workspace::SaveFavorite"));
+        assert_eq!(first("cmd-s", &["Workspace", "ResultGrid"]).as_deref(), Some("workspace::ReviewChanges"));
+        assert_eq!(first("cmd-s", &["Workspace", "ResultGrid", "GridCellEditor", "TextInput"]).as_deref(), Some("workspace::ReviewChanges"));
+        for ctx in [&["Workspace", "CodeEditor"][..], &["Workspace", "ResultGrid"]] {
+            assert_eq!(first("cmd-shift-s", ctx).as_deref(), Some("workspace::SaveAs"), "{ctx:?}");
+        }
+        assert_eq!(first("cmd-shift-s", &["Workspace", "Palette Modal", "TextInput"]), None);
+        // The registry binds them so.
+        let save = crate::keymap::find("save_favorite").unwrap();
+        let review = crate::keymap::find("review_changes").unwrap();
+        assert_eq!((save.keys, review.keys), (&["cmd-s"][..], &["cmd-s"][..]));
+        assert!(!save.scope.overlaps(review.scope), "the editor and the grid never meet");
     }
 
     /// The explorer's context menu holds the keys while open: ↑↓ ↩ esc go to the menu, not to

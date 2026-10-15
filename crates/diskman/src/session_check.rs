@@ -4,9 +4,9 @@
 //! - `session`: two tabs saved and the window's workspace rebuilt from them (screenshot);
 //! - `session-check`: the same, checked — a tab with rows, a script that stopped at an error,
 //!   the tab in front, the SQL, selection, rows, the error and its tab come back without
-//!   connecting; the restored result refuses grid edits; the tab connects on its first run and
-//!   runs there; a damaged session file opens a fresh workspace. PASS/FAIL lines, exit code 1
-//!   on a failure.
+//!   connecting, a tab's link to its favorite too; the restored result refuses grid edits; the
+//!   tab connects on its first run and runs there; a damaged session file opens a fresh
+//!   workspace. PASS/FAIL lines, exit code 1 on a failure.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -95,6 +95,16 @@ pub async fn run_stage(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindow
     wait(cx, |cx| cx.update(|_, cx| first.read(cx).run_phase().is_some_and(|p| p != Phase::Running)).unwrap_or(true)).await;
     let script = cx.update(|window, cx| ws.update(cx, |w, cx| w.new_tab(window, cx))).unwrap();
     run(ws, &script, "SELECT g AS n, 'line ' || g AS label FROM generate_series(1, 25) g;\nSELECT * FROM no_such_table_here;\nSELECT 3;", true, cx).await;
+    // The script's tab is linked to a favorite (⌘S saves into it): the link comes back.
+    let fav = cx
+        .update(|_, cx| {
+            let core = ws.read(cx).store.read(cx).core.clone();
+            let f = core.favorites.add(diskman_core::Favorite::new("Session favorite", "SELECT 'linked'")).ok()?;
+            script.update(cx, |t, _| t.favorite = Some((f.id.clone(), f.name.clone().into())));
+            Some(f.id)
+        })
+        .ok()
+        .flatten();
     // The first tab in front, with a selection in its editor.
     let _ = cx.update(|window, cx| {
         ws.update(cx, |w, cx| {
@@ -152,6 +162,8 @@ pub async fn run_stage(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindow
     let (ew, history) = cx.update(|_, cx| (ws2.read(cx).explorer_w, matches!(ws2.read(cx).side, Some(crate::app::Side::History)))).unwrap_or_default();
     report("the explorer's width and the open history come back", ew == 300. && history, format!("explorer {ew}, history {history}"));
     let (t1, t2) = cx.update(|_, cx| (ws2.read(cx).tabs[0].clone(), ws2.read(cx).tabs[1].clone())).unwrap();
+    let link = cx.update(|_, cx| (t2.read(cx).favorite.as_ref().map(|(id, _)| id.clone()), t2.read(cx).title(cx).to_string())).unwrap();
+    report("a tab linked to a favorite comes back linked, titled with its name", fav.is_some() && link.0 == fav && link.1 == "Session favorite", format!("{link:?}"));
     let (rows, cell, restored, partial, connected) = cx
         .update(|_, cx| {
             let t = t1.read(cx);

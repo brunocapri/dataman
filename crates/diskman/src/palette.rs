@@ -1,13 +1,14 @@
 //! The command palette (⌘K; ⌘P opens it on tables and tabs), from the CommandPalette board.
 //!
-//! One field, five scopes (All, Commands `>`, Tables `@`, Tabs `#`, Connections `:`; ⇥ cycles,
-//! a leading prefix picks one), results in sections with the matched letters underlined; ↑↓
-//! move, ↩ opens, ⌘↩ in a new tab, ⌥↩ `SELECT *` in place.
+//! One field, six scopes (All, Commands `>`, Tables `@`, Tabs `#`, Favorites `*`, Connections
+//! `:`; ⇥ cycles, a leading prefix picks one), results in sections with the matched letters
+//! underlined; ↑↓ move, ↩ opens, ⌘↩ in a new tab, ⌥↩ `SELECT *` in place. A favorite is found
+//! by its name (fuzzy) or by a piece of its SQL; ↩ shows it in the favorites, ⌘↩ opens it.
 //!
-//! Opening does no I/O: the index is built from what is already in memory (the schema caches
-//! of the connected servers, the open tabs, the saved connections, the command list), and
-//! every keystroke ranks it again with [`fuzzy`], a pure function (< 1 ms for thousands of
-//! tables).
+//! Opening does next to no I/O: the index is built from what is already in memory (the schema
+//! caches of the connected servers, the open tabs, the saved connections, the command list)
+//! and the favorites (re-read only if their file changed), and every keystroke ranks it again
+//! with [`fuzzy`], a pure function (< 1 ms for thousands of tables).
 
 use gpui::{
     Action, App, Context, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, KeyBinding, MouseButton,
@@ -95,17 +96,24 @@ pub fn fuzzy(query: &str, text: &str) -> Option<Match> {
         return Some(Match { score: score - len_penalty, positions: (start..start + q.len()).map(|i| chars[i].0).collect() });
     }
     // Subsequence: each query letter at the next word start if there is one, else the next
-    // occurrence. Gaps cost; word starts earn.
+    // occurrence; when jumping to word starts skips letters the rest needs ("report 497 rev"
+    // in "Report 497 revenue": the second r is not the one of revenue), the next occurrence
+    // every time. Gaps cost; word starts earn.
+    subsequence(&q, &chars, &lower, true).or_else(|| subsequence(&q, &chars, &lower, false)).map(|(score, positions)| Match { score: score - len_penalty, positions })
+}
+
+fn subsequence(q: &[char], chars: &[(usize, char)], lower: &[char], words: bool) -> Option<(i32, Vec<usize>)> {
+    let n = lower.len();
     let mut positions = Vec::with_capacity(q.len());
     let mut at = 0usize;
     let mut score = 300i32;
     let mut last: Option<usize> = None;
     let mut gaps = 0usize;
-    for &qc in &q {
+    for &qc in q {
         let next_any = (at..n).find(|&i| lower[i] == qc)?;
         let next_word = (at..n).find(|&i| lower[i] == qc && is_boundary(if i == 0 { None } else { Some(chars[i - 1].1) }, chars[i].1));
         let i = match next_word {
-            Some(w) if w - next_any <= 8 => w,
+            Some(w) if words && w - next_any <= 8 => w,
             _ => next_any,
         };
         if is_boundary(if i == 0 { None } else { Some(chars[i - 1].1) }, chars[i].1) {
@@ -125,7 +133,14 @@ pub fn fuzzy(query: &str, text: &str) -> Option<Match> {
     if gaps > 3 * q.len() {
         return None;
     }
-    Some(Match { score: score - len_penalty, positions })
+    Some((score, positions))
+}
+
+/// `query` (case and runs of spaces aside) somewhere in a statement: a weak match, below any
+/// match on a name.
+fn sql_match(query: &str, sql: &str) -> Option<Match> {
+    let q = query.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+    (!q.is_empty() && sql.to_lowercase().contains(&q)).then(|| Match { score: 100, positions: vec![] })
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -137,13 +152,20 @@ pub enum Scope {
     Commands,
     Tables,
     Tabs,
+    Favorites,
     Connections,
     /// ⌘P: tables and tabs.
     Goto,
 }
 
-const SCOPES: [(Scope, &str, &str); 5] =
-    [(Scope::All, "All", ""), (Scope::Commands, "Commands", ">"), (Scope::Tables, "Tables", "@"), (Scope::Tabs, "Tabs", "#"), (Scope::Connections, "Connections", ":")];
+const SCOPES: [(Scope, &str, &str); 6] = [
+    (Scope::All, "All", ""),
+    (Scope::Commands, "Commands", ">"),
+    (Scope::Tables, "Tables", "@"),
+    (Scope::Tabs, "Tabs", "#"),
+    (Scope::Favorites, "Favorites", "*"),
+    (Scope::Connections, "Connections", ":"),
+];
 
 impl Scope {
     fn from_prefix(c: char) -> Option<Scope> {
@@ -155,6 +177,7 @@ impl Scope {
             Scope::Commands => s == Section::Commands,
             Scope::Tables => matches!(s, Section::Tables | Section::Offline),
             Scope::Tabs => s == Section::Tabs,
+            Scope::Favorites => s == Section::Favorites,
             Scope::Connections => s == Section::Connections,
             Scope::Goto => matches!(s, Section::Tables | Section::Tabs | Section::Offline),
         }
@@ -165,6 +188,7 @@ impl Scope {
 pub enum Section {
     Tables,
     Tabs,
+    Favorites,
     Commands,
     Connections,
     /// Disconnected servers: their tables are not indexed.
@@ -176,6 +200,7 @@ impl Section {
         match self {
             Section::Tables => "TABLES",
             Section::Tabs => "TABS",
+            Section::Favorites => "FAVORITES",
             Section::Commands => "COMMANDS",
             Section::Connections => "CONNECTIONS",
             Section::Offline => "NOT CONNECTED",
@@ -186,6 +211,7 @@ impl Section {
         match self {
             Section::Tables => 6,
             Section::Tabs => 4,
+            Section::Favorites => 6,
             Section::Commands => 6,
             Section::Connections => 4,
             Section::Offline => 3,
@@ -206,6 +232,8 @@ pub enum Target {
 pub enum ItemKind {
     Table { conn: String, db: String, schema: String, name: String },
     Tab(usize),
+    /// A favorite query, by id.
+    Favorite { id: String },
     Command { action: Box<dyn Action>, target: Target },
     Connection { id: String },
 }
@@ -215,6 +243,7 @@ impl Clone for ItemKind {
         match self {
             ItemKind::Table { conn, db, schema, name } => ItemKind::Table { conn: conn.clone(), db: db.clone(), schema: schema.clone(), name: name.clone() },
             ItemKind::Tab(i) => ItemKind::Tab(*i),
+            ItemKind::Favorite { id } => ItemKind::Favorite { id: id.clone() },
             ItemKind::Command { action, target } => ItemKind::Command { action: action.boxed_clone(), target: *target },
             ItemKind::Connection { id } => ItemKind::Connection { id: id.clone() },
         }
@@ -240,6 +269,7 @@ pub enum PaletteIcon {
     Table,
     View,
     Tab,
+    Favorite,
     Command,
     Connection,
     Lar(Icon),
@@ -293,12 +323,13 @@ struct Hit {
 fn rank(items: &[Item], query: &str, scope: Scope) -> (Vec<(Section, Vec<Hit>)>, usize) {
     let mut groups: Vec<(Section, Vec<Hit>)> = Vec::new();
     let mut hidden = 0;
-    for section in [Section::Tables, Section::Tabs, Section::Commands, Section::Connections, Section::Offline] {
+    for section in [Section::Tables, Section::Tabs, Section::Favorites, Section::Commands, Section::Connections, Section::Offline] {
         if !scope.shows(section) {
             continue;
         }
-        // An empty query in All lists tabs, commands and connections, not every table.
-        if query.is_empty() && scope == Scope::All && matches!(section, Section::Tables | Section::Offline) {
+        // An empty query in All lists tabs, commands and connections, not every table or
+        // favorite.
+        if query.is_empty() && scope == Scope::All && matches!(section, Section::Tables | Section::Favorites | Section::Offline) {
             continue;
         }
         let mut hits: Vec<Hit> = items
@@ -311,6 +342,10 @@ fn rank(items: &[Item], query: &str, scope: Scope) -> (Vec<(Section, Vec<Hit>)>,
                     return Some(Hit { item: i, m: Match { score: 0, positions: vec![] } });
                 }
                 let m = fuzzy(query, &it.label).or_else(|| {
+                    // A favorite's subtitle is its SQL: a piece of it, anywhere, ranked lower.
+                    if section == Section::Favorites {
+                        return sql_match(query, &it.sub);
+                    }
                     // `schema.table`, `conn db`: also match on the subtitle, ranked lower.
                     fuzzy(query, &it.sub).filter(|m| m.score >= 500 || query.is_empty()).map(|m| Match { score: m.score - 400, positions: vec![] })
                 })?;
@@ -416,20 +451,35 @@ impl Palette {
             return;
         }
         self.sel = (self.sel as isize + d).clamp(0, n as isize - 1) as usize;
-        // Children of the list: one header per group before its rows.
+        self.scroll.scroll_to_item(self.row_of(self.sel));
+        cx.notify();
+    }
+
+    /// The list child of hit `flat`: one header per group before its rows.
+    fn row_of(&self, flat: usize) -> usize {
         let mut row = 0;
         let mut seen = 0;
         for (_, hits) in &self.groups {
             row += 1;
-            if self.sel < seen + hits.len() {
-                row += self.sel - seen;
-                break;
+            if flat < seen + hits.len() {
+                return row + flat - seen;
             }
             seen += hits.len();
             row += hits.len();
         }
-        self.scroll.scroll_to_item(row);
-        cx.notify();
+        row
+    }
+
+    /// Checks: the selected hit's label, its index, how many hits are listed, how far the
+    /// list is scrolled, whether the selected row is inside the list's viewport, and the list's
+    /// bounds (window coordinates).
+    pub(crate) fn demo_state(&self) -> (String, usize, usize, f32, bool, gpui::Bounds<gpui::Pixels>) {
+        let label = self.selected().map(|h| self.items[h.item].label.clone()).unwrap_or_default();
+        let view = self.scroll.bounds();
+        // Child bounds are laid out unscrolled: the offset (negative) moves them up.
+        let dy = self.scroll.offset().y;
+        let inside = self.scroll.bounds_for_item(self.row_of(self.sel)).is_some_and(|b| b.top() + dy >= view.top() - px(0.5) && b.bottom() + dy <= view.bottom() + px(0.5));
+        (label, self.sel, self.count(), -self.scroll.offset().y.as_f32(), inside, view)
     }
 
     fn cycle_scope(&mut self, d: isize, cx: &mut Context<Self>) {
@@ -464,6 +514,7 @@ impl Palette {
                 PaletteIcon::Table => (Icon::Table, None),
                 PaletteIcon::View => (Icon::View, None),
                 PaletteIcon::Tab => (Icon::Tab, None),
+                PaletteIcon::Favorite => (Icon::Star, None),
                 PaletteIcon::Command => (Icon::Command, None),
                 PaletteIcon::Connection => (Icon::Database, None),
                 PaletteIcon::Lar(i) => (i, Some(t.lar)),
@@ -761,6 +812,25 @@ mod tests {
     }
 
     #[test]
+    fn favorites_by_name_and_by_sql() {
+        let fav = |label: &str, sql: &str| Item { kind: ItemKind::Favorite { id: label.into() }, section: Section::Favorites, sub: sql.into(), icon: PaletteIcon::Favorite, ..item(Section::Favorites, label) };
+        let items = vec![
+            fav("Report 497 revenue", "SELECT 497 AS n, 'marker_497' AS tag FROM orders"),
+            fav("Report 123 churn", "SELECT 123 AS n, 'marker_123' AS tag FROM orders"),
+            item(Section::Commands, "Run"),
+        ];
+        let top = |q: &str, s: Scope| rank(&items, q, s).0.first().and_then(|g| g.1.first()).map(|h| items[h.item].label.clone());
+        assert_eq!(top("report 497 rev", Scope::All).as_deref(), Some("Report 497 revenue"));
+        assert_eq!(top("marker_123", Scope::All).as_deref(), Some("Report 123 churn"), "a piece of the SQL");
+        assert_eq!(top("Marker_123  AS", Scope::Favorites), None, "contiguous in the SQL, or nothing");
+        assert_eq!(top("'marker_123' as", Scope::Favorites).as_deref(), Some("Report 123 churn"));
+        // An empty query lists them in their scope only.
+        assert!(rank(&items, "", Scope::All).0.iter().all(|g| g.0 != Section::Favorites));
+        assert_eq!(rank(&items, "", Scope::Favorites).0[0].1.len(), 2);
+        assert_eq!(Scope::from_prefix('*'), Some(Scope::Favorites));
+    }
+
+    #[test]
     fn prefixes_pick_scopes() {
         assert_eq!(Scope::from_prefix('>'), Some(Scope::Commands));
         assert_eq!(Scope::from_prefix('@'), Some(Scope::Tables));
@@ -841,6 +911,17 @@ impl Workspace {
                 }
             }
             ItemKind::Tab(i) => self.activate(i, window, cx),
+            // ↩ shows it in the favorites (selected, focused); ⌘↩ opens it in a tab.
+            ItemKind::Favorite { id } => {
+                let fav = self.store.read(cx).core.favorites.list().into_iter().find(|f| f.id == id);
+                match (mode, fav) {
+                    (OpenMode::NewTab, Some(f)) => self.open_favorite(f, false, window, cx),
+                    _ => {
+                        self.show_favorite(&id, window, cx);
+                        self.focus_visible = true;
+                    }
+                }
+            }
             ItemKind::Command { action, target } => {
                 match target {
                     Target::Workspace => {}
@@ -938,6 +1019,24 @@ impl Workspace {
                 disabled: false,
             });
         }
+        // Favorite queries: the name, then the statement (flattened) and where it runs.
+        for f in store.core.favorites.list() {
+            let flat = f.sql.split_whitespace().collect::<Vec<_>>().join(" ");
+            let conn = f.connection_id.as_ref().and_then(|id| store.profile(id)).map(|p| p.name.clone());
+            items.push(Item {
+                kind: ItemKind::Favorite { id: f.id.clone() },
+                section: Section::Favorites,
+                label: f.name.clone(),
+                sub: match conn {
+                    Some(c) => format!("{flat} · {c}"),
+                    None => flat,
+                },
+                key: String::new(),
+                icon: PaletteIcon::Favorite,
+                lar: false,
+                disabled: false,
+            });
+        }
         // Commands.
         items.extend(commands(active_conn.as_ref(), cx));
         // Connections; the disconnected ones also say their tables are not indexed.
@@ -1028,6 +1127,8 @@ fn commands(conn: Option<&std::sync::Arc<diskman_core::Connection>>, cx: &App) -
         c("Use explorer connection", "for this tab", "⌥↩", Box::new(UseExplorerConnection), Workspace),
         c("History", "of this connection", "⌘Y", Box::new(ToggleHistory), Workspace),
         c("Favorite query", "the statement under the cursor", "⌘D", Box::new(FavoriteQuery), Workspace),
+        c("Save as favorite", "the script, into the tab's favorite", "⌘S", Box::new(SaveFavorite), Workspace),
+        c("Save as…", "the script, to a .sql file", "⇧⌘S", Box::new(SaveAs), Workspace),
         c("Import favorites…", ".sql files, one favorite each", "", Box::new(ImportFavorites), Workspace),
         c("Activity monitor", "sessions, locks, tables, statements", "", Box::new(OpenActivity), Workspace),
         c("MCP log", "agents' tool calls", "", Box::new(ToggleMcpLog), Workspace),

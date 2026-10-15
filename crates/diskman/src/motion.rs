@@ -3,7 +3,9 @@
 //! moving, so an idle window still draws nothing. No `with_animation` wrapper: the element tree
 //! keeps its shape, and a finished tween is exactly the steady state.
 //!
-//! - [`WidthTween`]: the explorer sliding open and shut.
+//! - [`WidthTween`]: the explorer, the history and the cell viewer sliding open and shut (the
+//!   title bar's explorer toggle fills its left part along with the explorer).
+//! - [`Flash`]: a feedback that fades in and out ("Copied", "Saved as favorite").
 //! - [`FindPop`]: Xcode's find indicator (AppKit's `showFindIndicatorForRange:`): a box (rounded
 //!   on a grid cell, square elsewhere) with the text drawn on top pops in enlarged, springs back to the text's size and fades.
 //!   Blue on a clicked grid value ([`PopStyle::Select`]), yellow on something found
@@ -249,39 +251,67 @@ pub const COPIED_FADE_AT: Duration = Duration::from_millis(1750);
 /// Its fade in.
 pub const COPIED_IN: Duration = Duration::from_millis(120);
 
-/// The "Copied" state's opacity `since` a copy: fading in, held, fading out (always 1 with
-/// "Reduce motion": it is simply there, then gone); `None` once it is over.
-pub fn copied(since: Instant, now: Instant, reduced: bool) -> Option<f32> {
-    let e = now.saturating_duration_since(since);
-    if e >= COPIED_FOR {
-        return None;
-    }
-    if reduced {
-        return Some(1.);
-    }
-    let fade_in = (e.as_secs_f32() / COPIED_IN.as_secs_f32()).min(1.);
-    let fade_out = if e >= COPIED_FADE_AT { (COPIED_FOR - e).as_secs_f32() / (COPIED_FOR - COPIED_FADE_AT).as_secs_f32() } else { 1. };
-    Some(EASE.eval(fade_in.min(fade_out)))
+/// How long the toolbar's "Saved as favorite" (⌘S) stays next to the History button.
+pub const SAVED_FOR: Duration = Duration::from_millis(2500);
+/// When it starts to fade out.
+pub const SAVED_FADE_AT: Duration = Duration::from_millis(2150);
+
+/// A short feedback that comes and goes ("Copied", "Saved as favorite"): how long it shows and
+/// when it starts to fade out; it fades in over [`COPIED_IN`].
+#[derive(Clone, Copy, Debug)]
+pub struct Flash {
+    pub total: Duration,
+    pub fade_at: Duration,
 }
 
-/// When the "Copied" state must be drawn again after a copy: every frame of its fades, and its
-/// end (with "Reduce motion" only the end).
-pub fn copied_redraws(reduced: bool) -> Vec<Duration> {
-    let frame = Duration::from_millis(16);
-    let mut at = Vec::new();
-    let fade = |from: Duration, to: Duration, at: &mut Vec<Duration>| {
-        let mut t = from;
-        while t < to {
-            at.push(t);
-            t += frame;
+pub const COPIED: Flash = Flash { total: COPIED_FOR, fade_at: COPIED_FADE_AT };
+pub const SAVED: Flash = Flash { total: SAVED_FOR, fade_at: SAVED_FADE_AT };
+
+impl Flash {
+    /// Its opacity `since` it started: fading in, held, fading out (always 1 with "Reduce
+    /// motion": it is simply there, then gone); `None` once it is over.
+    pub fn at(self, since: Instant, now: Instant, reduced: bool) -> Option<f32> {
+        let e = now.saturating_duration_since(since);
+        if e >= self.total {
+            return None;
         }
-    };
-    if !reduced {
-        fade(frame, COPIED_IN + frame, &mut at);
-        fade(COPIED_FADE_AT, COPIED_FOR, &mut at);
+        if reduced {
+            return Some(1.);
+        }
+        let fade_in = (e.as_secs_f32() / COPIED_IN.as_secs_f32()).min(1.);
+        let fade_out = if e >= self.fade_at { (self.total - e).as_secs_f32() / (self.total - self.fade_at).as_secs_f32() } else { 1. };
+        Some(EASE.eval(fade_in.min(fade_out)))
     }
-    at.push(COPIED_FOR);
-    at
+
+    /// When it must be drawn again after it started: every frame of its fades, and its end
+    /// (with "Reduce motion" only the end).
+    pub fn redraws(self, reduced: bool) -> Vec<Duration> {
+        let frame = Duration::from_millis(16);
+        let mut at = Vec::new();
+        let fade = |from: Duration, to: Duration, at: &mut Vec<Duration>| {
+            let mut t = from;
+            while t < to {
+                at.push(t);
+                t += frame;
+            }
+        };
+        if !reduced {
+            fade(frame, COPIED_IN + frame, &mut at);
+            fade(self.fade_at, self.total, &mut at);
+        }
+        at.push(self.total);
+        at
+    }
+}
+
+/// The "Copied" state's opacity `since` a copy ([`Flash::at`]).
+pub fn copied(since: Instant, now: Instant, reduced: bool) -> Option<f32> {
+    COPIED.at(since, now, reduced)
+}
+
+/// When the "Copied" state must be drawn again after a copy ([`Flash::redraws`]).
+pub fn copied_redraws(reduced: bool) -> Vec<Duration> {
+    COPIED.redraws(reduced)
 }
 
 /// The "Reduce motion" setting (Settings ▸ Appearance), kept so the system's switch can be
@@ -348,6 +378,18 @@ mod tests {
         let r = copied_redraws(false);
         assert!(r.len() > 20 && r.last() == Some(&COPIED_FOR) && r.windows(2).all(|w| w[0] < w[1]));
         assert!(!r.iter().any(|d| *d > COPIED_IN + Duration::from_millis(16) && *d < COPIED_FADE_AT), "no frames while it holds");
+    }
+
+    /// "Saved as favorite": the same fades, held for 2.5 s.
+    #[test]
+    fn saved_fades() {
+        let t0 = Instant::now();
+        let at = |ms: u64, reduced: bool| SAVED.at(t0, t0 + Duration::from_millis(ms), reduced);
+        assert_eq!(at(1000, false), Some(1.));
+        assert!(at(2400, false).is_some_and(|a| a > 0. && a < 1.));
+        assert_eq!((at(2500, false), at(2500, true), at(2400, true)), (None, None, Some(1.)));
+        assert_eq!(SAVED.redraws(true), vec![SAVED_FOR]);
+        assert_eq!(SAVED.redraws(false).last(), Some(&SAVED_FOR));
     }
 
     #[test]

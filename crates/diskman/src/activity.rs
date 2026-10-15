@@ -1149,9 +1149,10 @@ impl ActivityView {
                         .flex_row()
                         .items_center()
                         .gap(px(7.))
+                        .relative()
                         .border_1()
                         .border_color(if focused { t.acc } else { t.field_b })
-                        .when(focused, |d| d.shadow(t.halo()))
+                        .when(focused, |d| d.child(crate::ui::halo_ring(t.acc_s)))
                         .child(icon(Icon::Search).size(px(13.)).text_color(t.tx3))
                         .child(div().flex_1().min_w_0().text_color(t.tx).child(self.filter.clone())),
                 )
