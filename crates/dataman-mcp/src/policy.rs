@@ -1,18 +1,30 @@
 //! Who may do what: the permission tiers, pure functions of the global switch, the
-//! connection's MCP tier (`off | read | write | full`), its environment, the database's
-//! read-only setting and what the statements are (`dataman_core::guard::agent_write_class`).
+//! connection's MCP tier (`off | read | write | full`), its advanced options (allowed queries,
+//! YOLO), its environment, the database's read-only setting and what the statements are
+//! (`dataman_core::guard::agent_write_class`).
 //!
-//! | statements | off | read | write | full |
-//! |---|---|---|---|---|
-//! | read | refused | runs | runs | runs |
-//! | safe write | refused | refused | runs | runs |
-//! | destructive | refused | refused | refused | asks |
-//! | more rows than the limit | — | — | asks | asks |
+//! | statements | off | read | write | full | allowed query¹ | YOLO¹ |
+//! |---|---|---|---|---|---|---|
+//! | read | refused | runs | runs | runs | runs | runs |
+//! | safe write | refused | refused | runs | runs | runs | runs |
+//! | destructive | refused | refused | refused | asks | runs | runs |
+//! | more rows than the limit | — | — | asks | asks | runs | runs |
+//! | a write on production | refused | refused | asks | asks | runs | runs |
 //!
 //! "Asks": the write waits for a human's Allow in Dataman (held in its transaction when it
 //! can be, else asked about before it runs); without the app it is refused. On a production
-//! connection every write asks. A read-only database refuses every write in every tier. Nothing
-//! the agent sends (the old `confirm`) changes any of this.
+//! connection every write the tier allows asks.
+//!
+//! ¹ The connection's MCP › Advanced, hidden by default, in any tier but off: an allowed query
+//! is a statement matching one of its entries (`guard::allowlist_match`: token for token, `?`
+//! for one value); YOLO lets anything through. Neither asks, about anything. A script whose
+//! statements are only partly allowed is judged by the tier on the rest (and the row limit
+//! applies to it). What let a write through goes to the audit line ([`By`]).
+//!
+//! What always wins: the global switch, the tier off (the connection is invisible to agents)
+//! and a read-only database, which refuses every write in every tier, allowed queries and YOLO
+//! included (read-only is the user's own safety switch, set apart from agents). Nothing the
+//! agent sends (the old `confirm`) changes any of this.
 
 use dataman_core::guard::WriteClass;
 use dataman_core::sql::Dialect;
@@ -42,11 +54,13 @@ pub struct Target {
     pub read_only: bool,
     /// What its statements are read as.
     pub dialect: Dialect,
+    /// YOLO is set (in effect in any tier but off).
+    pub yolo: bool,
 }
 
 impl Target {
     pub fn of(p: &ConnectionProfile) -> Target {
-        Target { access: p.mcp_access(), env: p.env, read_only: p.read_only, dialect: p.engine.dialect() }
+        Target { access: p.mcp_access(), env: p.env, read_only: p.read_only, dialect: p.engine.dialect(), yolo: p.mcp_yolo }
     }
 
     /// [`Target::of`] for one of its databases: read-only as that database is (its own
@@ -58,15 +72,18 @@ impl Target {
 
 pub const SWITCHED_OFF: &str = "MCP access is turned off in Dataman (Settings › MCP)";
 
-/// Whether a tool needing `need` may touch the connection at all.
+/// Why a read-only database refuses a write.
+pub const READ_ONLY: &str = "the database is read-only in Dataman";
+
+/// Whether a tool needing `need` may touch the connection at all (YOLO lets a read tier write).
 pub fn allow(enabled: bool, t: Target, need: Need) -> Result<(), String> {
     if !enabled {
         return Err(SWITCHED_OFF.into());
     }
     match (t.access, need) {
         (McpAccess::Off, _) => Err("MCP access to this connection is off (connection settings › MCP)".into()),
-        (McpAccess::Read, Need::Write) => Err("this connection allows reads only; writes need its MCP tier set to write (non-destructive) or full in Dataman".into()),
-        (McpAccess::Write | McpAccess::Full, Need::Write) if t.read_only => Err("the database is read-only in Dataman".into()),
+        (McpAccess::Read, Need::Write) if !t.yolo => Err("this connection allows reads only; writes need its MCP tier set to write (non-destructive) or full in Dataman".into()),
+        (_, Need::Write) if t.read_only => Err(READ_ONLY.into()),
         _ => Ok(()),
     }
 }
@@ -91,10 +108,13 @@ pub enum Verdict {
 /// Why a production connection asks.
 pub const PRODUCTION: &str = "production";
 
-/// The tier's answer to statements of `class` on `t`.
+/// The tier's answer to statements of `class` on `t` (YOLO's too: anything runs).
 pub fn write_verdict(enabled: bool, t: Target, class: &WriteClass) -> Verdict {
     if let Err(e) = allow(enabled, t, Need::Write) {
         return Verdict::Refuse(e);
+    }
+    if t.yolo {
+        return Verdict::Run;
     }
     let prod = t.env.is_production();
     match (class, t.access) {
@@ -115,6 +135,70 @@ pub fn write_verdict(enabled: bool, t: Target, class: &WriteClass) -> Verdict {
     }
 }
 
+/// What let a write run that the tier alone would have refused or asked about.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum By {
+    /// Statements of the script matched these entries of the connection's allowed queries.
+    Allowlist(Vec<String>),
+    Yolo,
+}
+
+impl By {
+    /// For the audit line (its entries redacted, as the log shows SQL).
+    pub fn audit(&self) -> crate::audit::AllowedBy {
+        match self {
+            By::Allowlist(e) => crate::audit::AllowedBy::Allowlist { entries: e.iter().map(|s| crate::audit::redact(s)).collect() },
+            By::Yolo => crate::audit::AllowedBy::Yolo,
+        }
+    }
+}
+
+/// The matrix's answer to a script, the connection's advanced options included.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Judged {
+    pub verdict: Verdict,
+    /// What let it through beyond the tier, when something did.
+    pub by: Option<By>,
+    /// The row limit applies (a write past it asks): not when an allowed query or YOLO
+    /// decided.
+    pub row_limit: bool,
+}
+
+/// A whole script on `t` with the connection's allowed queries: YOLO runs anything; statements
+/// matching an entry run; the rest (if any) is judged by the tier. The switch, the tier off and
+/// a read-only database refuse first, whatever is allowed.
+pub fn judge(enabled: bool, t: Target, sql: &str, allowed: &[String]) -> Judged {
+    let class = dataman_core::guard::agent_write_class(sql, t.dialect);
+    let tier = |class: &WriteClass| Judged { verdict: write_verdict(enabled, t, class), by: None, row_limit: true };
+    if t.yolo {
+        let mut j = tier(&class);
+        if j.verdict == Verdict::Run {
+            j.row_limit = false;
+            j.by = class.is_write().then_some(By::Yolo);
+        }
+        return j;
+    }
+    let (used, rest) = dataman_core::guard::allowlisted(sql, t.dialect, allowed);
+    if used.is_empty() {
+        return tier(&class);
+    }
+    if let Err(e) = allow(enabled, t, Need::Read) {
+        return Judged { verdict: Verdict::Refuse(e), by: None, row_limit: true };
+    }
+    if t.read_only && class.is_write() {
+        return Judged { verdict: Verdict::Refuse(READ_ONLY.into()), by: None, row_limit: true };
+    }
+    let rest = dataman_core::guard::agent_write_class(&rest.join(";\n"), t.dialect);
+    if !rest.is_write() {
+        return Judged { verdict: Verdict::Run, by: Some(By::Allowlist(used)), row_limit: false };
+    }
+    let mut j = tier(&rest);
+    if !matches!(j.verdict, Verdict::Refuse(_)) {
+        j.by = Some(By::Allowlist(used));
+    }
+    j
+}
+
 /// The question a write that changed `affected` rows raises against `limit`, if any.
 pub fn over_limit(affected: u64, limit: u64) -> Option<String> {
     (affected > limit).then(|| format!("{affected} rows (limit {limit})"))
@@ -130,7 +214,7 @@ mod tests {
     use super::*;
 
     fn t(access: McpAccess, env: Environment, read_only: bool) -> Target {
-        Target { access, env, read_only, dialect: Dialect::Postgres }
+        Target { access, env, read_only, dialect: Dialect::Postgres, yolo: false }
     }
 
     fn safe() -> WriteClass {
@@ -262,5 +346,113 @@ mod tests {
         assert_eq!(v(McpAccess::Full, Production, "DROP TABLE t"), Verdict::Ask(vec!["DROP TABLE".into(), "production".into()]));
         assert!(matches!(v(McpAccess::Read, Dev, "INSERT INTO t VALUES (1)"), Verdict::Refuse(_)));
         assert!(matches!(v(McpAccess::Off, Dev, "SELECT 1"), Verdict::Refuse(_)));
+    }
+
+    fn yolo(access: McpAccess, env: Environment, read_only: bool) -> Target {
+        Target { yolo: true, ..t(access, env, read_only) }
+    }
+
+    /// YOLO: anything runs, nothing asks (destructive, production, the row limit), in every
+    /// tier but off; the switch, off and read-only still refuse.
+    #[test]
+    fn yolo_matrix() {
+        use McpAccess::*;
+        for env in Environment::ALL {
+            for ro in [false, true] {
+                for (class, sql) in [(WriteClass::Read, "SELECT 1"), (safe(), "INSERT INTO t VALUES (1)"), (bad(), "DELETE FROM t")] {
+                    for access in McpAccess::ALL {
+                        let tg = yolo(access, env, ro);
+                        let v = write_verdict(true, tg, &class);
+                        let j = judge(true, tg, sql, &[]);
+                        assert_eq!(j.verdict, v, "{access:?} {env:?} ro={ro} {sql}");
+                        match (access, ro) {
+                            (Off, _) => assert!(matches!(&v, Verdict::Refuse(e) if e.contains("off")), "{v:?}"),
+                            (_, true) => assert_eq!(v, Verdict::Refuse(READ_ONLY.into()), "{access:?} {env:?} {sql}"),
+                            _ => {
+                                assert_eq!(v, Verdict::Run, "{access:?} {env:?} {sql}");
+                                assert!(!j.row_limit, "no row limit under YOLO");
+                                assert_eq!(j.by, class.is_write().then_some(By::Yolo));
+                            }
+                        }
+                        assert!(matches!(judge(false, tg, sql, &[]).verdict, Verdict::Refuse(e) if e.contains("turned off")));
+                    }
+                }
+            }
+        }
+        // A read tier with YOLO may write at all (the tools' first check); read-only still wins.
+        assert!(allow(true, yolo(Read, Environment::Production, false), Need::Write).is_ok());
+        assert_eq!(allow(true, yolo(Read, Environment::Dev, true), Need::Write).unwrap_err(), READ_ONLY);
+        assert!(allow(true, yolo(Off, Environment::Dev, false), Need::Read).is_err());
+        // From the profile: set and off is not in effect; the database's read-only is.
+        let mut p = ConnectionProfile::new("x");
+        (p.mcp, p.mcp_yolo, p.env) = (Some(Write), true, Environment::Production);
+        assert_eq!(judge(true, Target::of(&p), "DROP TABLE t", &[]).verdict, Verdict::Run);
+        p.set_read_only_for("shop", true);
+        assert!(matches!(judge(true, Target::of_in(&p, "shop"), "DROP TABLE t", &[]).verdict, Verdict::Refuse(_)));
+        p.mcp = Some(Off);
+        assert!(matches!(judge(true, Target::of(&p), "DROP TABLE t", &[]).verdict, Verdict::Refuse(_)));
+    }
+
+    /// Allowed queries: a statement matching an entry runs without asking in every tier but
+    /// off, in every environment; read-only, off and the switch refuse it; anything else in
+    /// the script is the tier's to judge (and keeps the row limit).
+    #[test]
+    fn allowed_queries() {
+        use McpAccess::*;
+        let allowed = vec!["TRUNCATE audit_tmp".to_string(), "DELETE FROM sessions WHERE expires_at < ?".to_string()];
+        for env in Environment::ALL {
+            let prod = env.is_production();
+            for ro in [false, true] {
+                for access in McpAccess::ALL {
+                    let tg = t(access, env, ro);
+                    for sql in ["truncate audit_tmp;", "DELETE FROM sessions WHERE expires_at < '2026-01-01'", "TRUNCATE audit_tmp; delete from sessions where expires_at < 3; SELECT 1"] {
+                        let j = judge(true, tg, sql, &allowed);
+                        match (access, ro) {
+                            (Off, _) => assert!(matches!(&j.verdict, Verdict::Refuse(e) if e.contains("off")), "{j:?}"),
+                            (_, true) => assert_eq!(j.verdict, Verdict::Refuse(READ_ONLY.into())),
+                            _ => {
+                                assert_eq!(j.verdict, Verdict::Run, "{access:?} {env:?} {sql}");
+                                assert!(!j.row_limit && matches!(&j.by, Some(By::Allowlist(e)) if !e.is_empty()), "{j:?}");
+                            }
+                        }
+                        assert!(matches!(judge(false, tg, sql, &allowed).verdict, Verdict::Refuse(e) if e.contains("turned off")));
+                    }
+                    // Not an entry: the tier, as without the list.
+                    for sql in ["TRUNCATE audit", "DELETE FROM sessions WHERE expires_at < now()", "DELETE FROM sessions"] {
+                        let j = judge(true, tg, sql, &allowed);
+                        assert_eq!(j, Judged { verdict: write_verdict(true, tg, &dataman_core::guard::agent_write_class(sql, Dialect::Postgres)), by: None, row_limit: true }, "{sql}");
+                    }
+                    // Partly allowed: the rest is the tier's (only its reasons), the row limit stays.
+                    if !ro && access != Off {
+                        let j = judge(true, tg, "TRUNCATE audit_tmp; INSERT INTO t VALUES (1)", &allowed);
+                        let want = match access {
+                            Read => "refuse",
+                            _ if prod => "ask",
+                            _ => "run",
+                        };
+                        let got = match &j.verdict {
+                            Verdict::Run => "run",
+                            Verdict::Ask(r) => {
+                                assert_eq!(r, &vec![PRODUCTION.to_string()]);
+                                "ask"
+                            }
+                            Verdict::Refuse(_) => "refuse",
+                        };
+                        assert_eq!(got, want, "{access:?} {env:?}");
+                        assert!(j.row_limit);
+                        assert_eq!(j.by.is_some(), want != "refuse", "{j:?}");
+                        let j = judge(true, tg, "TRUNCATE audit_tmp; DROP TABLE users", &allowed);
+                        match access {
+                            Full => assert!(matches!(&j.verdict, Verdict::Ask(r) if r[0] == "DROP TABLE" && !r.iter().any(|x| x.contains("TRUNCATE"))), "{j:?}"),
+                            _ => assert!(matches!(&j.verdict, Verdict::Refuse(_)), "{j:?}"),
+                        }
+                    }
+                }
+            }
+        }
+        // The entries used, once each, in the list's order.
+        let j = judge(true, t(Read, Environment::Dev, false), "DELETE FROM sessions WHERE expires_at < 1; TRUNCATE audit_tmp; DELETE FROM sessions WHERE expires_at < 2", &allowed);
+        assert_eq!(j.by, Some(By::Allowlist(allowed.clone())));
+        assert_eq!(By::Allowlist(vec!["DELETE FROM t WHERE id = 5".into()]).audit(), crate::audit::AllowedBy::Allowlist { entries: vec!["DELETE FROM t WHERE id = ?".into()] });
     }
 }

@@ -61,7 +61,7 @@ pub fn tools() -> Vec<Builtin> {
         },
         Builtin {
             name: "execute",
-            description: "Runs writes (one or more statements, separated by ;) in one transaction, committed only if all succeed, as the connection's MCP tier allows (set by the user in Dataman; the default is read). Tier write: INSERT, and UPDATE/DELETE/MERGE with a real WHERE (not 1=1 and the like), changing at most the connection's row limit (100 by default); anything destructive (no WHERE, TRUNCATE, DROP, ALTER, CREATE, GRANT, procedures, SELECT INTO, COPY…) is refused. Tier full: destructive statements and writes over the row limit wait for the user's Allow in the Dataman app (up to 120 s; denied or unanswered: rolled back). On production every write waits for the user. BEGIN/COMMIT are refused: each call is its own transaction. Returns each statement's command and affected rows, and the RETURNING rows of the last one (at most max_rows, default 50).",
+            description: "Runs writes (one or more statements, separated by ;) in one transaction, committed only if all succeed, as the connection's MCP tier allows (set by the user in Dataman; the default is read). Tier write: INSERT, and UPDATE/DELETE/MERGE with a real WHERE (not 1=1 and the like), changing at most the connection's row limit (100 by default); anything destructive (no WHERE, TRUNCATE, DROP, ALTER, CREATE, GRANT, procedures, SELECT INTO, COPY…) is refused. Tier full: destructive statements and writes over the row limit wait for the user's Allow in the Dataman app (up to 120 s; denied or unanswered: rolled back). On production every write waits for the user. list_connections' allowed and yolo never wait. BEGIN/COMMIT are refused: each call is its own transaction. Returns each statement's command and affected rows, and the RETURNING rows of the last one (at most max_rows, default 50).",
             schema: confirm_prop(limits_props(conn_schema().prop("sql", true, sql_prop("The statements, separated by ;.")).prop("params", false, params_schema()), 50)),
             need: Some(Need::Write),
             run: execute,
@@ -238,17 +238,16 @@ fn explain_analyze(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
             return Ok(plan_json(&out, a.opt_str("format").unwrap_or("text"), false));
         }
         // A write: the tiers read the statement it runs (refused before connecting when they
-        // refuse it); always rolled back.
-        let target = cx.target(&a, Need::Write)?;
-        let class = guard::agent_write_class(&inner, target.engine.dialect());
+        // refuse it; the connection's allowed queries and YOLO count); always rolled back.
+        let target = cx.target(&a, Need::Read)?;
         let t = crate::policy::Target { read_only: cx.read_only(&a, &target), ..crate::policy::Target::of(&target) };
-        if let crate::policy::Verdict::Refuse(e) = crate::policy::write_verdict(cx.hub.settings().mcp_enabled, t, &class) {
+        if let crate::policy::Verdict::Refuse(e) = crate::policy::judge(cx.hub.settings().mcp_enabled, t, &inner, &target.mcp_allowed).verdict {
             return Err(ToolError::Refused(e));
         }
-        let o: Opened = cx.open(&a, Need::Write).await?;
+        let o: Opened = cx.open(&a, Need::Read).await?;
         plans(&o)?;
         let sql = explain::sql(&stmt, true, explain::Target::of(&o.conn.info));
-        let w = cx.write(&a, Write { sql: &sql, params: a.params()?, limits, rollback: true, visible: false, title: None }).await?;
+        let w = cx.write(&a, Write { sql: &sql, judged: Some(&inner), params: a.params()?, limits, rollback: true, visible: false, title: None }).await?;
         Ok(plan_json(&w.outcome, a.opt_str("format").unwrap_or("text"), true))
     })
 }
@@ -266,7 +265,7 @@ async fn write(cx: &Call, a: &Args, open: bool) -> Result<Value, ToolError> {
     let limits = cx.limits(a, 50);
     let visible = cx.tab_front(open).is_some();
     let title = a.opt_str("title").map(str::to_string);
-    let r = cx.write(a, Write { sql, params, limits, rollback: false, visible, title }).await;
+    let r = cx.write(a, Write { sql, judged: None, params, limits, rollback: false, visible, title }).await;
     // DDL changes what the catalog tools see (even when it failed half-way on LAR, whose DDL is
     // not transactional).
     if let Ok(p) = cx.hub.profile(a.str("connection")?) {

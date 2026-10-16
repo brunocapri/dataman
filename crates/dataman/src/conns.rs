@@ -130,8 +130,10 @@ impl ConnStore {
 /// What became of a saved connection between two reads of the file.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Edited {
+    /// Unchanged, or only what agents may do (the MCP settings, read by no session).
     Same,
-    /// Only per-database read-only settings: the live connection follows without reconnecting.
+    /// Only per-database read-only settings (and maybe the MCP ones): the live connection
+    /// follows without reconnecting.
     ReadOnlyDatabases,
     /// Anything else: a live connection reconnects with the new settings.
     Settings,
@@ -141,8 +143,8 @@ pub(crate) enum Edited {
 pub(crate) fn edited(old: &ConnectionProfile, new: Option<&ConnectionProfile>) -> Edited {
     match new {
         None => Edited::Removed,
-        Some(n) if n == old => Edited::Same,
-        Some(n) if (ConnectionProfile { read_only_databases: n.read_only_databases.clone(), ..old.clone() }) == *n => Edited::ReadOnlyDatabases,
+        Some(n) if n.same_but_agents(old) => Edited::Same,
+        Some(n) if (ConnectionProfile { read_only_databases: n.read_only_databases.clone(), ..old.clone() }).same_but_agents(n) => Edited::ReadOnlyDatabases,
         Some(_) => Edited::Settings,
     }
 }
@@ -237,7 +239,11 @@ mod tests {
         let p = ConnectionProfile::new("a");
         assert_eq!(edited(&p, Some(&p)), Edited::Same);
         assert_eq!(edited(&p, None), Edited::Removed);
+        // What agents may do: no reconnect (a write held for an "Always allow" goes on).
         let mut q = p.clone();
+        (q.mcp, q.mcp_yolo) = (Some(dataman_core::McpAccess::Full), true);
+        q.mcp_allow(&["TRUNCATE t"]);
+        assert_eq!(edited(&p, Some(&q)), Edited::Same);
         q.set_read_only_for("shop", true);
         assert_eq!(edited(&p, Some(&q)), Edited::ReadOnlyDatabases);
         q.name = "b".into();

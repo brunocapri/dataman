@@ -342,7 +342,7 @@ impl Tool for UserTool {
                 // The same tiers as execute: what the template is decides, not the file.
                 UserMode::Write => {
                     let visible = cx.tab_front(false).is_some();
-                    let w = Write { sql: &self.def.sql, params, limits, rollback: false, visible, title: Some(self.def.name.clone()) };
+                    let w = Write { sql: &self.def.sql, judged: None, params, limits, rollback: false, visible, title: Some(self.def.name.clone()) };
                     cx.write(&a, w).await?.outcome
                 }
             };

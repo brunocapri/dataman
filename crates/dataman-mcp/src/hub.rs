@@ -44,6 +44,9 @@ pub struct Approval {
     pub preview: Option<(Vec<String>, Vec<Vec<String>>)>,
     /// The agent tab showing it, if any ([`Front::show_write`]).
     pub tab: Option<u64>,
+    /// Its statements an "Always allow" adds to the connection's allowed queries (those that
+    /// are not plain reads; empty: not offered).
+    pub allowable: Vec<String>,
 }
 
 /// A read for the agent tab: the app runs it in that tab's own session (a read-only
@@ -282,11 +285,12 @@ impl Hub {
     pub async fn connect(&self, p: &ConnectionProfile) -> Result<Arc<Connection>, String> {
         let stale = {
             let mut g = self.open.lock();
-            // Only a database's Read Only changed (the explorer's toggle): the live connection
+            // Only a database's Read Only changed (the explorer's toggle), or what agents may do
+            // (an "Always allow" while a write is held on this connection): the live connection
             // follows, without reconnecting.
             if let Some((saved, c)) = g.get_mut(&p.id)
                 && saved != p
-                && (ConnectionProfile { read_only_databases: p.read_only_databases.clone(), ..saved.clone() }) == *p
+                && (ConnectionProfile { read_only_databases: p.read_only_databases.clone(), ..saved.clone() }).same_but_agents(p)
             {
                 for db in saved.read_only_databases.keys().chain(p.read_only_databases.keys()) {
                     c.set_read_only_for(db, p.read_only_for(db));

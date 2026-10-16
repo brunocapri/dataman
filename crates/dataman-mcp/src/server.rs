@@ -28,7 +28,9 @@ list_favorites, and run_favorite runs one by its name (close is enough; an uncle
 from and runs nothing). Writes (execute, open_query, run_favorite) follow \
 each connection's MCP tier, set by the user: read refuses them; write runs non-destructive DML (INSERT, UPDATE/DELETE with a real \
 WHERE) within a row limit; full also allows destructive statements, which wait for the user's Allow in the app, as do writes over \
-the row limit and every write on production. You cannot approve anything yourself. Results: columns as [name, type], rows as \
+the row limit and every write on production. A connection may also list statements the user allows without asking (allowed \
+in list_connections; ? stands for one value) or let anything run (yolo); a read-only database still refuses writes. You \
+cannot approve or allow anything yourself. Results: columns as [name, type], rows as \
 arrays, null is SQL NULL. create_connection and update_connection save connections; passwords are write-only (never returned).";
 
 /// The handler for one transport. Clones share the hub and the registry.
@@ -74,6 +76,7 @@ impl Server {
             approval: n.approval,
             draft: n.draft,
             favorite: n.favorite,
+            allowed_by: n.allowed_by,
         });
     }
 

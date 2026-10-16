@@ -119,6 +119,17 @@ pub struct ConnectionProfile {
     /// setting `mcp_write_row_limit`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp_row_limit: Option<u64>,
+    /// Statements agents may run here without a human, whatever the tier would say (one
+    /// statement each; `?` stands for one value: [`crate::guard::allowlist_match`]). The switch,
+    /// the tier off and the database's read-only still refuse them. Set in the connection's
+    /// MCP › Advanced, or by "Always allow" on an approval.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp_allowed: Vec<String>,
+    /// YOLO: agents run anything here without a human (destructive statements, writes past the
+    /// row limit, production), in any tier but off. The switch and the database's read-only
+    /// still refuse writes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub mcp_yolo: bool,
 }
 
 /// The override of `database` in `overrides`: by its exact name (SQL Server's names, compared
@@ -283,6 +294,8 @@ impl ConnectionProfile {
             read_only_databases: BTreeMap::new(),
             mcp: None,
             mcp_row_limit: None,
+            mcp_allowed: Vec::new(),
+            mcp_yolo: false,
         }
     }
 
@@ -306,6 +319,39 @@ impl ConnectionProfile {
     /// What agents may do here: the explicit setting, or the environment's default.
     pub fn mcp_access(&self) -> McpAccess {
         self.mcp.unwrap_or_else(|| McpAccess::default_for(self.env))
+    }
+
+    /// The same connection but for what agents may do on it (the MCP tier, row limit, allowed
+    /// queries, YOLO): no session reads those, so a live connection stays as it is.
+    pub fn same_but_agents(&self, other: &ConnectionProfile) -> bool {
+        let strip = |p: &ConnectionProfile| ConnectionProfile { mcp: None, mcp_row_limit: None, mcp_allowed: Vec::new(), mcp_yolo: false, ..p.clone() };
+        strip(self) == strip(other)
+    }
+
+    /// YOLO in effect: set, and the tier is not off (an off connection stays invisible).
+    pub fn mcp_yolo_on(&self) -> bool {
+        self.mcp_yolo && self.mcp_access() != McpAccess::Off
+    }
+
+    /// The tier as shown wherever it is: `full`, or `full · YOLO`.
+    pub fn mcp_label(&self) -> String {
+        let a = self.mcp_access().label();
+        if self.mcp_yolo_on() { format!("{a} · YOLO") } else { a.to_string() }
+    }
+
+    /// Adds statements to the allowed queries (each checked as an entry, those already allowed
+    /// by an entry left out); the ones added.
+    pub fn mcp_allow<S: AsRef<str>>(&mut self, stmts: &[S]) -> Vec<String> {
+        let d = self.engine.dialect();
+        let mut added = Vec::new();
+        for s in stmts {
+            let Ok(e) = crate::guard::allowlist_entry(s.as_ref(), d) else { continue };
+            if !self.mcp_allowed.iter().any(|a| crate::guard::allowlist_match(a, &e, d)) {
+                self.mcp_allowed.push(e.clone());
+                added.push(e);
+            }
+        }
+        added
     }
 
     pub fn summary(&self) -> String {
@@ -779,6 +825,37 @@ mod tests {
         assert!(McpAccess::Off < McpAccess::Read && McpAccess::Read < McpAccess::Write && McpAccess::Write < McpAccess::Full);
         std::fs::write(dirs.connections_file(), conn("x", "mcp = \"admin\"")).unwrap();
         assert!(ConfigStore::open(&dirs).is_err() || ConfigStore::open(&dirs).unwrap().connections().iter().all(|p| p.mcp_access() <= McpAccess::Read));
+    }
+
+    /// The advanced MCP options: allowed queries and YOLO round-trip, stay out of the file when
+    /// unset (older files load without them), and YOLO is not in effect on an off connection.
+    #[test]
+    fn mcp_allowed_and_yolo_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = Dirs::at(dir.path().join("dataman"));
+        let store = ConfigStore::open(&dirs).unwrap();
+        let mut p = ConnectionProfile::new("staging");
+        p.env = Environment::Staging;
+        assert_eq!(p.mcp_allow(&["TRUNCATE audit_tmp;", "DELETE FROM sessions WHERE expires_at < ?", "BEGIN", "a; b"]), ["TRUNCATE audit_tmp", "DELETE FROM sessions WHERE expires_at < ?"]);
+        // Already allowed (by the pattern, or the same statement written otherwise): not added again.
+        assert!(p.mcp_allow(&["delete from sessions where expires_at < 5", "truncate AUDIT_TMP"]).is_empty());
+        p.mcp_yolo = true;
+        assert!(p.mcp_yolo_on());
+        assert_eq!(p.mcp_label(), "read · YOLO");
+        let q = ConnectionProfile::new("plain");
+        store.upsert(p.clone()).unwrap();
+        store.upsert(q.clone()).unwrap();
+        let text = std::fs::read_to_string(dirs.connections_file()).unwrap();
+        assert!(text.contains("mcp_yolo = true") && text.contains("TRUNCATE audit_tmp"), "{text}");
+        assert_eq!((text.matches("mcp_yolo").count(), text.matches("mcp_allowed").count()), (1, 1), "unset stays out of the file: {text}");
+        assert_eq!(ConfigStore::open(&dirs).unwrap().connections(), vec![p.clone(), q]);
+        std::fs::write(dirs.connections_file(), "[[connection]]\nid = \"a\"\nname = \"n\"\nhost = \"h\"\nport = 1\nuser = \"u\"\ndatabase = \"d\"\n").unwrap();
+        let old = &ConfigStore::open(&dirs).unwrap().connections()[0];
+        assert!(old.mcp_allowed.is_empty() && !old.mcp_yolo && old.mcp_label() == "read");
+        // Off wins: YOLO stays set but is not in effect.
+        p.mcp = Some(McpAccess::Off);
+        assert!(p.mcp_yolo && !p.mcp_yolo_on());
+        assert_eq!(p.mcp_label(), "off");
     }
 
     /// The engine: PostgreSQL stays out of the file (older files load as PostgreSQL), the others

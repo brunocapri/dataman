@@ -1266,9 +1266,179 @@ pub fn agent_preview(sql: &str, dialect: Dialect) -> Preview {
     out
 }
 
+// ---------------------------------------------------------------------------------------------
+// Agents' allowed queries (a connection's MCP › Advanced)
+
+/// One token of a statement as the allowed queries compare it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum AllowTok {
+    /// A `?` of an entry: one value.
+    Value,
+    /// A keyword or plain name (upper case), or anything else as written.
+    Text(TokenKind, String),
+}
+
+/// A value [`AllowTok::Value`] stands for: a string, a number, a `$n` (or MySQL `?`) parameter.
+fn is_value(k: TokenKind) -> bool {
+    matches!(k, TokenKind::String | TokenKind::DollarString | TokenKind::Number | TokenKind::Param)
+}
+
+/// The tokens of one statement for the comparison: comments and whitespace go, a trailing `;`
+/// goes, keywords and plain names are upper case; quoted names, strings and numbers stay as
+/// written. In an entry (`entry`) a `?` is a value (PostgreSQL lexes `=?` as one operator: its
+/// `?` is split off).
+fn allow_tokens(sql: &str, dialect: Dialect, entry: bool) -> Vec<AllowTok> {
+    let mut out = Vec::new();
+    for t in tokenize_in(sql, dialect).into_iter().filter(|t| !t.kind.is_trivia()) {
+        let text = t.text(sql);
+        match t.kind {
+            _ if entry && text == "?" => out.push(AllowTok::Value),
+            TokenKind::Operator if entry && text.len() > 1 && text.ends_with('?') => {
+                out.push(AllowTok::Text(TokenKind::Operator, text[..text.len() - 1].to_string()));
+                out.push(AllowTok::Value);
+            }
+            TokenKind::Keyword | TokenKind::Ident => out.push(AllowTok::Text(TokenKind::Ident, text.to_ascii_uppercase())),
+            k => out.push(AllowTok::Text(k, text.to_string())),
+        }
+    }
+    while matches!(out.last(), Some(AllowTok::Text(TokenKind::Punct, p)) if p == ";") {
+        out.pop();
+    }
+    out
+}
+
+/// Whether `stmt` (one statement) is the one an allowed-queries `entry` names: the same tokens
+/// in the same order, case, spacing, comments and a trailing `;` aside; a `?` of the entry
+/// stands for exactly one value (a string, a number or a `$n` parameter, signed or not), never
+/// for a name, an expression or more SQL. So `DELETE FROM sessions WHERE expires < ?` allows
+/// `delete from sessions where expires < '2026-01-01'` and not `… < now() OR true`.
+pub fn allowlist_match(entry: &str, stmt: &str, dialect: Dialect) -> bool {
+    let e = allow_tokens(entry, dialect, true);
+    let s = allow_tokens(stmt, dialect, false);
+    if e.is_empty() {
+        return false;
+    }
+    let mut j = 0;
+    for t in &e {
+        match t {
+            AllowTok::Value => {
+                // `-5`, `+1`: a sign and its number are one value.
+                if matches!(s.get(j), Some(AllowTok::Text(TokenKind::Operator, op)) if op == "-" || op == "+")
+                    && matches!(s.get(j + 1), Some(AllowTok::Text(TokenKind::Number, _)))
+                {
+                    j += 1;
+                }
+                if !matches!(s.get(j), Some(AllowTok::Text(k, _)) if is_value(*k)) {
+                    return false;
+                }
+            }
+            t => {
+                if s.get(j) != Some(t) {
+                    return false;
+                }
+            }
+        }
+        j += 1;
+    }
+    j == s.len()
+}
+
+/// An allowed-queries entry as typed, checked: exactly one statement (as written, the trailing
+/// `;` dropped), not transaction control (every agent call is its own transaction).
+pub fn allowlist_entry(text: &str, dialect: Dialect) -> Result<String, String> {
+    let pieces = agent_pieces(text, dialect);
+    let stmt = match pieces.as_slice() {
+        [] => return Err("type a statement".into()),
+        [one] => one.trim().trim_end_matches(';').trim_end().to_string(),
+        _ => return Err("one statement per entry".into()),
+    };
+    if allow_tokens(&stmt, dialect, true).is_empty() {
+        return Err("type a statement".into());
+    }
+    let f = classify_in(&stmt, dialect);
+    if f.tx.is_some() {
+        return Err(format!("{} is transaction control: every agent call is its own transaction", f.verb));
+    }
+    Ok(stmt)
+}
+
+/// A script against the allowed queries: the entries its statements matched (each once, in
+/// the list's order), and the statements no entry allows.
+pub fn allowlisted(sql: &str, dialect: Dialect, allowed: &[String]) -> (Vec<String>, Vec<String>) {
+    let mut used: Vec<usize> = Vec::new();
+    let mut rest = Vec::new();
+    for p in agent_pieces(sql, dialect) {
+        match allowed.iter().position(|e| allowlist_match(e, &p, dialect)) {
+            Some(i) if !used.contains(&i) => used.push(i),
+            Some(_) => {}
+            None => rest.push(p),
+        }
+    }
+    used.sort_unstable();
+    (used.into_iter().map(|i| allowed[i].clone()).collect(), rest)
+}
+
+/// The statements of a script an "Always allow" adds to the allowed queries: those that are not
+/// plain reads (reads run in every tier already), each as written.
+pub fn allowlist_candidates(sql: &str, dialect: Dialect) -> Vec<String> {
+    agent_pieces(sql, dialect)
+        .into_iter()
+        .filter(|p| agent_write_class(p, dialect).is_write())
+        .filter_map(|p| allowlist_entry(&p, dialect).ok())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Allowed queries: token for token, case, spacing, comments and the `;` aside; `?` is one
+    /// value and nothing else; quoted names and strings as written.
+    #[test]
+    fn allowlist_matching() {
+        use Dialect::{MySql as My, Postgres as Pg, TSql as Ms};
+        let e = "DELETE FROM sessions WHERE expires_at < ?";
+        for (d, ok) in [
+            (Pg, "delete from sessions where expires_at < '2026-01-01'"),
+            (Pg, "DELETE  FROM sessions\n WHERE expires_at < 42; "),
+            (Pg, "DELETE FROM sessions /* old */ WHERE expires_at < $1 -- bound"),
+            (Pg, "DELETE FROM sessions WHERE expires_at < -5"),
+            (Pg, "DELETE FROM sessions WHERE expires_at < $$x$$"),
+            (My, "delete from sessions where expires_at < ?"),
+            (Ms, "DELETE FROM sessions WHERE expires_at < N'2026'"),
+        ] {
+            assert!(allowlist_match(e, ok, d), "{d:?} {ok}");
+        }
+        for bad in [
+            "DELETE FROM sessions",
+            "DELETE FROM sessions WHERE expires_at < now()",
+            "DELETE FROM sessions WHERE expires_at < 1 OR true",
+            "DELETE FROM sessions WHERE expires_at < 1; DROP TABLE users",
+            "DELETE FROM sessions WHERE expires_at < expires_at",
+            "DELETE FROM \"sessions\" WHERE expires_at < 1",
+            "DELETE FROM sessions2 WHERE expires_at < 1",
+        ] {
+            assert!(!allowlist_match(e, bad, Pg), "{bad}");
+        }
+        // `=?` lexes as one operator: its `?` is still a value.
+        assert!(allowlist_match("UPDATE t SET a=? WHERE id=?", "update t set a = 'x' where id = 7", Pg));
+        // Exact entries; strings and quoted names keep their case.
+        assert!(allowlist_match("TRUNCATE audit_tmp;", "truncate AUDIT_TMP", Pg));
+        assert!(!allowlist_match("UPDATE t SET s = 'Paid' WHERE id = 1", "UPDATE t SET s = 'paid' WHERE id = 1", Pg));
+        assert!(!allowlist_match("DELETE FROM \"Users\" WHERE id = 1", "DELETE FROM \"users\" WHERE id = 1", Pg));
+        assert!(!allowlist_match("", "SELECT 1", Pg) && !allowlist_match("  ;", "", Pg));
+        // Entries: one statement, never transaction control.
+        assert_eq!(allowlist_entry("  TRUNCATE audit_tmp ; ", Pg).as_deref(), Ok("TRUNCATE audit_tmp"));
+        assert!(allowlist_entry("DELETE FROM a; DELETE FROM b", Pg).unwrap_err().contains("one statement"));
+        assert!(allowlist_entry("COMMIT", Pg).unwrap_err().contains("transaction control"));
+        assert!(allowlist_entry(" -- nothing", Pg).is_err());
+        // Scripts: each statement on its own; reads are not candidates.
+        let allowed = vec!["TRUNCATE audit_tmp".to_string(), e.to_string()];
+        let (used, rest) = allowlisted("delete from sessions where expires_at < 9; SELECT 1; INSERT INTO t VALUES (1)", Pg, &allowed);
+        assert_eq!(used, vec![e.to_string()]);
+        assert_eq!(rest.iter().map(|s| s.trim()).collect::<Vec<_>>(), ["SELECT 1", "INSERT INTO t VALUES (1)"]);
+        assert_eq!(allowlist_candidates("SELECT 1; DROP TABLE t; UPDATE t SET a = 1;", Pg), ["DROP TABLE t", "UPDATE t SET a = 1"]);
+    }
 
     #[test]
     fn agent_reads() {

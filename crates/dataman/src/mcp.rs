@@ -18,7 +18,7 @@ use gpui::{
 };
 use crate::theme::px;
 use dataman_core::{Core, Dirs, SecretStore};
-use dataman_mcp::audit::{Decision, Entry, Outcome};
+use dataman_mcp::audit::{AllowedBy, Decision, Entry, Outcome};
 use dataman_mcp::{Approval, Front, Hub, Registry};
 use tokio::sync::{mpsc, oneshot};
 
@@ -27,7 +27,7 @@ use crate::assets::Icon;
 use crate::theme::{ActiveTheme, Theme};
 use crate::ui::{self, Btn};
 
-actions!(mcp, [Allow, Deny, ReloadLog, CloseLog]);
+actions!(mcp, [Allow, AlwaysAllow, Deny, ReloadLog, CloseLog]);
 
 const SHEET: &str = "McpSheet";
 const LOG: &str = "McpLog";
@@ -39,6 +39,7 @@ const MENU: [&str; 2] = ["Copy Query", "Open in Tab"];
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("cmd-enter", Allow, Some(SHEET)),
+        KeyBinding::new("cmd-alt-enter", AlwaysAllow, Some(SHEET)),
         KeyBinding::new("escape", Deny, Some(SHEET)),
         KeyBinding::new("cmd-r", ReloadLog, Some(LOG)),
         KeyBinding::new("escape", CloseLog, Some(LOG)),
@@ -408,9 +409,29 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Allows the oldest waiting write and adds its statements to the connection's allowed
+    /// queries (MCP › Advanced in its sheet): the same statements run without asking from now
+    /// on. Saved without reconnecting (the write held in its transaction goes on).
+    pub(crate) fn mcp_always_allow(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((id, stmts)) = cx.try_global::<McpHost>().and_then(|h| h.pending.front()).map(|p| (p.req.connection_id.clone(), p.req.allowable.clone())) else { return };
+        if !stmts.is_empty() {
+            let core = self.store.read(cx).core.clone();
+            core.config.refresh();
+            if let Some(mut p) = core.config.get(&id)
+                && !p.mcp_allow(&stmts).is_empty()
+                && let Err(e) = core.config.upsert(p)
+            {
+                log::warn!("saving the allowed queries: {e:#}");
+            }
+            self.connections_on_disk(window, cx);
+        }
+        self.mcp_answer(true, window, cx);
+    }
+
     /// The approval sheet for the oldest waiting write: where (the connection's color, its
     /// database and environment), who asks, the exact SQL, why it asks, what it changed in the
-    /// transaction held for the answer, Deny / Allow.
+    /// transaction held for the answer, Deny / Allow, and Always Allow (its statements into the
+    /// connection's allowed queries).
     pub(crate) fn render_mcp_sheet(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         let host = cx.try_global::<McpHost>()?;
         let p = host.pending.front()?;
@@ -473,6 +494,7 @@ impl Workspace {
                 .key_context(format!("{SHEET} Modal").as_str())
                 .track_focus(&self.mcp_focus)
                 .on_action(cx.listener(|w, _: &Allow, window, cx| w.mcp_answer(true, window, cx)))
+                .when(!req.allowable.is_empty(), |d| d.on_action(cx.listener(|w, _: &AlwaysAllow, window, cx| w.mcp_always_allow(window, cx))))
                 .on_action(cx.listener(|w, _: &Deny, window, cx| w.mcp_answer(false, window, cx)))
                 .flex()
                 .items_center()
@@ -516,6 +538,16 @@ impl Workspace {
                                 .child(div().text_color(t.tx3).child(req.tool.clone()))
                                 .when(more > 0, |d| d.child(div().text_color(t.tx3).child(format!("+{more}"))))
                                 .child(div().flex_1())
+                                // Always Allow: a quieter button, apart from Deny / Allow.
+                                .when(!req.allowable.is_empty(), |d| {
+                                    let what = if req.allowable.len() == 1 { "this statement" } else { "these statements" };
+                                    let tip = format!("Allow, and from now on let agents run {what} on {} without asking (connection › MCP › Advanced › Allowed queries)", req.connection);
+                                    d.child(
+                                        btn("mcp-always", Btn::Ghost, "Always Allow", "⌥⌘↩")
+                                            .tooltip(ui::text_tooltip(tip))
+                                            .on_click(cx.listener(|w, _, window, cx| w.mcp_always_allow(window, cx))),
+                                    )
+                                })
                                 .child({
                                     let bounds = self.mcp_buttons.clone();
                                     div()
@@ -737,6 +769,11 @@ impl McpLog {
                     .children(e.connection.clone().map(|c| div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx2).child(c)))
                     .child(div().flex_1())
                     .child(div().text_color(t.tx3).child(dataman_core::activity::fmt_ms(e.ms)))
+                    // Let through without a human: by an allowed query (amber) or YOLO (red).
+                    .children(e.allowed_by.as_ref().map(|b| {
+                        let c = if matches!(b, AllowedBy::Yolo) { t.err } else { t.warn };
+                        div().h(px(15.)).px(px(4.)).flex().items_center().border_1().border_color(c).text_color(c).text_size(px(9.5)).child(b.label())
+                    }))
                     .child(div().text_color(if e.outcome == Outcome::Ok { t.tx3 } else { color }).child(what)),
             )
             .child(div().pl(px(14.)).text_size(px(11.)).text_color(t.tx3).whitespace_nowrap().overflow_hidden().text_ellipsis().child(line))
@@ -819,6 +856,10 @@ impl McpLog {
             parts.extend(a.reasons.iter().cloned());
             parts.join(" · ")
         });
+        let allowed = e.allowed_by.as_ref().map(|b| match b {
+            AllowedBy::Yolo => "ran without asking: YOLO".to_string(),
+            AllowedBy::Allowlist { entries } => format!("ran without asking: allowed {}", entries.join(" · ")),
+        });
         Some(
             div()
                 .flex_none()
@@ -831,6 +872,7 @@ impl McpLog {
                 .border_color(t.line)
                 .child(div().text_size(px(11.)).text_color(t.tx3).child(facts.join(" · ")))
                 .children(approval.map(|a| div().text_size(px(11.)).text_color(t.tx2).child(a)))
+                .children(allowed.map(|a| div().text_size(px(11.)).text_color(if matches!(e.allowed_by, Some(AllowedBy::Yolo)) { t.err } else { t.warn }).child(a)))
                 .children(e.sql.as_ref().map(|s| crate::chrome::code_block(t, s, None)))
                 .children(e.error.as_ref().map(|err| div().text_size(px(11.5)).line_height(px(17.)).text_color(t.err).child(err.clone())))
                 .into_any_element(),
@@ -910,6 +952,9 @@ pub fn demo_seed(core: &Arc<Core>, approval: bool, cx: &mut App) {
         if !core.config.connections().iter().any(|p| p.name == name) {
             let mut p = dataman_core::ConnectionProfile::new(name);
             (p.host, p.database, p.env, p.mcp) = (format!("{}.db.internal", env.label()), "shop".into(), env, mcp);
+            if name == "shop" {
+                p.mcp_allow(&["UPDATE orders SET status = ? WHERE id = ?", "TRUNCATE cart_items_tmp"]);
+            }
             let _ = core.config.upsert(p);
         }
     }
@@ -958,6 +1003,7 @@ pub fn demo_seed(core: &Arc<Core>, approval: bool, cx: &mut App) {
             approval,
             draft: false,
             favorite: None,
+            allowed_by: (i == 7).then(|| AllowedBy::Allowlist { entries: vec!["UPDATE orders SET status = ? WHERE id = ?".into()] }),
         });
     }
     if approval {
@@ -987,6 +1033,7 @@ pub fn demo_seed(core: &Arc<Core>, approval: bool, cx: &mut App) {
                     ],
                 )),
                 tab: None,
+                allowable: vec!["DELETE FROM orders\n RETURNING id, status, total".into()],
             },
             reply: None,
         });

@@ -11,7 +11,10 @@
 //!   writes on a
 //!   connection of tier full: DDL waits for Allow (clicked) before it runs, a safe INSERT
 //!   commits without a question, a DELETE without WHERE is held with its row count over its
-//!   agent tab and Deny rolls it back, an UPDATE without WHERE is allowed and commits, ⌘↩
+//!   agent tab and Deny rolls it back, an UPDATE without WHERE is allowed and commits; the
+//!   connection's advanced options (an allowed query runs in tier read unasked, its shape only,
+//!   and read-only still refuses it; Always Allow, ⌥⌘↩, saves a DDL so the next one runs
+//!   unasked; YOLO runs an UPDATE without WHERE unasked; the audit says why); ⌘↩
 //!   allows; drafts (`run: false`) on tier read: the SQL in the agent tab, nothing run, no
 //!   question, a run of the agent's leaves the draft alone, the user's own run meets the app's
 //!   guard (cancelled: nothing deleted) and a write of theirs commits as theirs; the MCP log's
@@ -265,6 +268,118 @@ async fn set_tier(ws: &Entity<Workspace>, id: &str, tier: dataman_core::McpAcces
     true
 }
 
+/// Changes the connection's profile as its sheet would (saved, the explorer reloaded).
+async fn edit_profile(ws: &Entity<Workspace>, id: &str, f: impl FnOnce(&mut dataman_core::ConnectionProfile), cx: &mut AsyncWindowContext) -> bool {
+    let Ok(core) = cx.update(|_, cx| ws.read(cx).store.read(cx).core.clone()) else { return false };
+    let Some(mut p) = core.config.get(id) else { return false };
+    f(&mut p);
+    if core.config.upsert(p).is_err() {
+        return false;
+    }
+    let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.store.update(cx, |s, cx| s.reload(cx))));
+    pause(cx, 50).await;
+    true
+}
+
+/// The connection's advanced MCP options against the live database, in a schema of their own
+/// that YOLO makes and drops unasked: an allowed query runs in tier read without a question,
+/// its shape only (`?` is one value); the database's read-only still refuses it; Always Allow
+/// (⌥⌘↩) allows a DDL and saves it, so the next one runs unasked; YOLO runs an UPDATE without
+/// WHERE unasked; the audit says why; the sheet's entries and YOLO's production confirmation.
+/// Leaves the connection on tier full, with neither option set.
+async fn advanced_options(ws: &Entity<Workspace>, ipc: &Arc<Ipc>, id: &str, conn: &str, db: &str, cx: &mut AsyncWindowContext) -> bool {
+    let mut ok = true;
+    let mut check = |name: &str, pass: bool, detail: String| {
+        println!("{} {name}{}", if pass { "PASS" } else { "FAIL" }, if pass || detail.is_empty() { String::new() } else { format!(": {detail}") });
+        ok &= pass;
+    };
+    let Ok(core) = cx.update(|_, cx| ws.read(cx).store.read(cx).core.clone()) else { return false };
+    let s = format!("mcp_adv_{}", std::process::id());
+    let yolo = edit_profile(ws, id, |p| (p.mcp, p.mcp_yolo) = (Some(dataman_core::McpAccess::Full), true), cx).await;
+    let make = format!("CREATE SCHEMA {s}; CREATE TABLE {s}.t (id int PRIMARY KEY, note text); INSERT INTO {s}.t VALUES (1, 'a'), (2, 'b'), (3, NULL)");
+    let (err, out) = call(ipc, "execute", json!({"connection": conn, "database": db, "sql": make})).await;
+    check("YOLO: DDL runs unasked", yolo && !err && !sheet_open(cx) && out.contains("\"committed\":true"), out);
+    edit_profile(ws, id, |p| p.mcp_yolo = false, cx).await;
+    let update = |note: &str, id: u32| format!("UPDATE {s}.t SET note = '{note}' WHERE id = {id}");
+    let entry = format!("update {s}.t set note = ? where id = ?");
+    let tier_read = edit_profile(ws, id, |p| p.mcp = Some(dataman_core::McpAccess::Read), cx).await;
+    let (err, out) = call(ipc, "execute", json!({"connection": conn, "database": db, "sql": update("r", 1)})).await;
+    check("tier read refuses the UPDATE", tier_read && err && out.contains("reads only"), out);
+    let allowed = edit_profile(ws, id, |p| _ = p.mcp_allow(&[entry.as_str()]), cx).await;
+    let (err, out) = call(ipc, "execute", json!({"connection": conn, "database": db, "sql": update("r", 1)})).await;
+    check("an allowed query runs in tier read, unasked", allowed && !err && out.contains("[\"UPDATE\",1]") && !sheet_open(cx), out);
+    let (err, out) = call(ipc, "execute", json!({"connection": conn, "database": db, "sql": format!("UPDATE {s}.t SET note = 'r' WHERE id = 1 OR true")})).await;
+    check("… its shape only: one value for each ?, not more SQL", err && out.contains("reads only"), out);
+    let ro = edit_profile(ws, id, |p| p.set_read_only_for(db, true), cx).await;
+    let (err, out) = call(ipc, "execute", json!({"connection": conn, "database": db, "sql": update("ro", 2)})).await;
+    check("a read-only database still refuses it", ro && err && out.contains("read-only"), out);
+    edit_profile(ws, id, |p| p.set_read_only_for(db, false), cx).await;
+    let log = std::fs::read_to_string(core.dirs.mcp_audit_file()).unwrap_or_default();
+    check("the audit says an allowed query let it through", log.contains(&format!("\"allowed_by\":{{\"by\":\"allowlist\",\"entries\":[\"{entry}\"]}}")), String::new());
+
+    // Always Allow: the DDL asks, ⌥⌘↩ allows it and saves it; the next one runs unasked.
+    edit_profile(ws, id, |p| p.mcp = Some(dataman_core::McpAccess::Full), cx).await;
+    let ddl = format!("ALTER TABLE {s}.t ADD COLUMN IF NOT EXISTS extra int");
+    let rx = start(ipc, "execute", json!({"connection": conn, "database": db, "sql": ddl}));
+    let q = sheet(cx).await;
+    check("the sheet offers Always Allow for the statement", q.as_ref().is_some_and(|q| q.allowable == [ddl.clone()]), format!("{q:?}"));
+    key(cx, "cmd-alt-enter");
+    let (err, out) = rx.await.unwrap_or((true, String::new()));
+    let saved = core.config.get(id).map(|p| p.mcp_allowed).unwrap_or_default();
+    check("⌥⌘↩ allows it and adds it to the allowed queries", !err && out.contains("approved") && saved.contains(&ddl), format!("{out} {saved:?}"));
+    let (err, out) = call(ipc, "execute", json!({"connection": conn, "database": db, "sql": ddl.to_lowercase()})).await;
+    check("the same statement next time: unasked", !err && !sheet_open(cx) && out.contains("\"committed\":true"), out);
+
+    // YOLO: an UPDATE without WHERE runs unasked.
+    edit_profile(ws, id, |p| p.mcp_yolo = true, cx).await;
+    let (err, out) = call(ipc, "execute", json!({"connection": conn, "database": db, "sql": format!("UPDATE {s}.t SET note = 'yolo'")})).await;
+    check("YOLO: an UPDATE without WHERE runs unasked", !err && !sheet_open(cx) && out.contains("[\"UPDATE\",3]"), out);
+    let log = std::fs::read_to_string(core.dirs.mcp_audit_file()).unwrap_or_default();
+    check("the audit says YOLO let it through", log.lines().last().is_some_and(|l| l.contains("\"allowed_by\":{\"by\":\"yolo\"}")), String::new());
+    let (_, out) = call(ipc, "list_connections", json!({})).await;
+    check("list_connections shows yolo and the allowed queries", out.contains("\"yolo\"") && out.contains(&ddl), String::new());
+    let (err, out) = call(ipc, "execute", json!({"connection": conn, "database": db, "sql": format!("DROP SCHEMA {s} CASCADE")})).await;
+    check("YOLO: DROP SCHEMA runs unasked", !err && !sheet_open(cx), out);
+    let back = edit_profile(
+        ws,
+        id,
+        |p| {
+            p.mcp_yolo = false;
+            p.mcp_allowed.clear();
+        },
+        cx,
+    )
+    .await;
+    check("the connection stayed connected through the edits", back && cx.update(|_, cx| ws.read(cx).store.read(cx).connection(id).is_some()).unwrap_or(false), String::new());
+
+    // The sheet's MCP › Advanced: entries checked as they are added; YOLO on production waits
+    // for its confirmation (closed unsaved).
+    let Some(mut p) = core.config.get(id) else { return false };
+    p.env = dataman_core::Environment::Production;
+    let state = cx
+        .update(|window, cx| {
+            ws.update(cx, |w, cx| {
+                w.open_dialog_with(Some(p), true, None, window, cx);
+                let d = w.dialog.clone()?;
+                Some(d.update(cx, |d, cx| {
+                    d.demo_advanced(Some("BEGIN"), false, cx);
+                    let refused = d.demo_advanced_state();
+                    d.demo_advanced(Some("DELETE FROM sessions WHERE expires_at < ?;"), true, cx);
+                    (refused, d.demo_advanced_state())
+                }))
+            })
+        })
+        .ok()
+        .flatten();
+    check(
+        "the sheet takes one statement per entry; YOLO on production waits for a confirmation",
+        state.as_ref().is_some_and(|(r, s)| r.0.is_empty() && s.0 == ["DELETE FROM sessions WHERE expires_at < ?"] && !s.1 && s.2),
+        format!("{state:?}"),
+    );
+    let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.close_dialog(cx)));
+    ok
+}
+
 /// Opens the app's socket with the connection on tier full; the client.
 async fn serve(ws: &Entity<Workspace>, id: &str, cx: &mut AsyncWindowContext) -> Option<Arc<Ipc>> {
     let core = cx.update(|_, cx| ws.read(cx).store.read(cx).core.clone()).ok()?;
@@ -408,6 +523,10 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     check("an unclear name: the candidates, nothing run", !err && v["matched"] == json!(false) && names == ["Orders by day", "Orders by month"] && !ran, out);
     for f in core.favorites.list().into_iter().filter(|f| favs.iter().any(|(n, _)| *n == f.name)) {
         let _ = core.favorites.remove(&f.id);
+    }
+
+    if !advanced_options(ws, &agent_ipc, id, &conn, db, cx).await {
+        check("the advanced MCP options", false, String::new());
     }
 
     // Writes on tier full. DDL: asked before it runs, Allow clicked.

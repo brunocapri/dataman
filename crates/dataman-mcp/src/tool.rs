@@ -30,7 +30,7 @@ use parking_lot::Mutex;
 use serde_json::{Map, Value, json};
 use tokio_util::sync::CancellationToken;
 
-use crate::audit::{ApprovalNote, Decision};
+use crate::audit::{AllowedBy, ApprovalNote, Decision};
 use crate::hub::{Approval, DRAFTS_NEED_APP, Drafted, Front, Hub, TabDraft, TabRead, TabWrite, WriteShown};
 use crate::policy::{self, Need, Target, Verdict};
 
@@ -286,11 +286,15 @@ pub struct Note {
     pub draft: bool,
     /// The favorite query `run_favorite` resolved.
     pub favorite: Option<String>,
+    /// What let a write through beyond the tier (allowed queries, YOLO).
+    pub allowed_by: Option<AllowedBy>,
 }
 
 /// An agent's write as [`Call::write`] runs it.
 pub struct Write<'a> {
     pub sql: &'a str,
+    /// The statement the tiers judge in place of `sql` (EXPLAIN ANALYZE's: the one it runs).
+    pub judged: Option<&'a str>,
     pub params: Vec<Option<String>>,
     pub limits: Limits,
     /// Rolled back whatever happens (EXPLAIN ANALYZE): no row limit, but the tiers still apply.
@@ -466,6 +470,7 @@ impl Call {
             affected,
             preview,
             tab,
+            allowable: Vec::new(),
         }
     }
 
@@ -490,7 +495,12 @@ impl Call {
         let t = Target::of_in(&o.profile, &o.database);
         match policy::write_verdict(self.hub.settings().mcp_enabled, t, class) {
             Verdict::Refuse(e) => Err(ToolError::Refused(e)),
-            Verdict::Run => Ok(()),
+            Verdict::Run => {
+                if t.yolo && class.is_write() {
+                    self.note.lock().allowed_by = Some(AllowedBy::Yolo);
+                }
+                Ok(())
+            }
             Verdict::Ask(r) => {
                 let a = Approval { destructive: class.is_destructive(), ..self.approval(o, sql, r.clone(), None, None, tab) };
                 let d = self.ask(a).await?;
@@ -504,8 +514,10 @@ impl Call {
     /// anything connects when its tier says so (or when it needs a human and no app runs), else
     /// run. A write that must be asked about runs in a transaction held open for the answer
     /// (its rows counted, its RETURNING read) when it can be, else is asked about first; one that
-    /// changes more rows than the connection's limit asks too. Committed only when allowed;
-    /// shown in the agent tab when `w.visible`; the decision goes to the audit line.
+    /// changes more rows than the connection's limit asks too. The connection's allowed queries
+    /// and YOLO run without a question and without the limit ([`policy::judge`]). Committed only
+    /// when allowed; shown in the agent tab when `w.visible`; the decision (or what let it
+    /// through) goes to the audit line.
     pub async fn write(&self, args: &Args, w: Write<'_>) -> Result<Written, ToolError> {
         self.note_sql(w.sql);
         let p = self.hub.profile(args.str("connection")?).map_err(ToolError::Invalid)?;
@@ -516,10 +528,11 @@ impl Call {
             return Err(ToolError::Invalid("empty statement".into()));
         }
         let ro = self.read_only(args, &p);
-        let class = guard::agent_write_class(w.sql, d);
+        let judged_sql = w.judged.unwrap_or(w.sql);
+        let class = guard::agent_write_class(judged_sql, d);
         let preview = guard::agent_preview(w.sql, d);
-        let verdict = policy::write_verdict(self.hub.settings().mcp_enabled, Target { read_only: ro, ..Target::of(&p) }, &class);
-        let ask: Option<Vec<String>> = match verdict {
+        let judged = policy::judge(self.hub.settings().mcp_enabled, Target { read_only: ro, ..Target::of(&p) }, judged_sql, &p.mcp_allowed);
+        let ask: Option<Vec<String>> = match judged.verdict {
             Verdict::Refuse(e) => return Err(ToolError::Refused(e)),
             Verdict::Ask(r) => Some(r),
             Verdict::Run => None,
@@ -532,6 +545,9 @@ impl Call {
         if let Some(r) = bounded::refusal_in(&stmts, w.params.len(), mode, ro, d) {
             return Err(ToolError::Refused(r));
         }
+        self.note.lock().allowed_by = judged.by.as_ref().map(policy::By::audit);
+        // What "Always allow" in the app would add to the connection's allowed queries.
+        let allowable = guard::allowlist_candidates(judged_sql, d);
         let front = self.hub.front();
         if let Some(r) = &ask
             && front.is_none()
@@ -539,7 +555,8 @@ impl Call {
             self.note_decision(Decision::Unavailable, r.clone(), None);
             return Err(ToolError::Refused(policy::needs_app(r)));
         }
-        let o = self.open(args, Need::Write).await?;
+        // The matrix has judged the write already (an allowed query runs in a read tier too).
+        let o = self.open(args, Need::Read).await?;
         let tab = match front.as_ref().filter(|f| w.visible && f.tabs()) {
             Some(f) => {
                 let req = TabWrite { client: self.client.clone(), connection_id: p.id.clone(), database: o.database.clone(), sql: w.sql.to_string(), title: w.title.clone() };
@@ -556,7 +573,7 @@ impl Call {
         if let Some(r) = ask.clone()
             && (preview != Preview::Held || mode == Mode::Rollback)
         {
-            let a = Approval { destructive: class.is_destructive(), ..self.approval(&o, w.sql, r.clone(), None, None, tab) };
+            let a = Approval { destructive: class.is_destructive(), allowable: allowable.clone(), ..self.approval(&o, w.sql, r.clone(), None, None, tab) };
             let dec = match self.ask(a).await {
                 Ok(d) => d,
                 Err(e) => {
@@ -582,11 +599,11 @@ impl Call {
             };
         }
         // Held: the statements run, then the decision commits or rolls back.
-        let limit = if mode == Mode::Rollback { u64::MAX } else { self.hub.row_limit(&p) };
+        let limit = if mode == Mode::Rollback || !judged.row_limit { u64::MAX } else { self.hub.row_limit(&p) };
         let held: Arc<Mutex<Option<Held>>> = Arc::new(Mutex::new(None));
         let decide: bounded::Decide = {
             let (held, front, ask) = (held.clone(), front.clone(), ask.clone());
-            let base = Approval { destructive: class.is_destructive(), ..self.approval(&o, w.sql, Vec::new(), None, None, tab) };
+            let base = Approval { destructive: class.is_destructive(), allowable: allowable.clone(), ..self.approval(&o, w.sql, Vec::new(), None, None, tab) };
             let timeout = self.hub.approval_timeout();
             Box::new(move |out: &bounded::Outcome| {
                 let affected = out.affected();

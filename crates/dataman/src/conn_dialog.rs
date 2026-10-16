@@ -2,7 +2,8 @@
 //! Keychain), delete. States: not tested, testing, connected (Postgres or LAR), failed with
 //! the server's message verbatim, "password needed" when the server asked for one, and an
 //! unknown SSH host key to trust. A connection URL or libpq string pasted into the name or host
-//! field fills the fields; the SSH section (collapsed unless used) sets the tunnel. `Fields |
+//! field fills the fields; the SSH section (collapsed unless used) sets the tunnel; MCP ›
+//! Advanced (collapsed) holds the statements agents may run without asking and YOLO. `Fields |
 //! URL` in the header swaps the server fields for one connection string (any engine's: a
 //! URL, libpq's keywords, JDBC, ADO.NET), read as it is typed into the same fields; its
 //! password goes where a typed one goes (the Keychain), never into connections.toml.
@@ -21,6 +22,7 @@ use dataman_core::{ConnectionProfile, Environment, HostKeyPrompt, McpAccess, Ser
 const ENGINES: [Engine; 3] = [Engine::Postgres, Engine::MySql, Engine::SqlServer];
 
 use crate::conns::ConnStore;
+use crate::assets::{Icon, icon};
 use crate::input::{InputEvent, TextInput};
 use crate::theme::{ActiveTheme, SWATCHES, Theme};
 use crate::ui::{self, Btn};
@@ -78,6 +80,22 @@ struct SshFields {
     secret: Entity<TextInput>,
 }
 
+/// The MCP section's advanced options, hidden behind a disclosure: statements agents may run
+/// without asking, and YOLO.
+struct Advanced {
+    open: bool,
+    /// `ConnectionProfile::mcp_allowed` as edited.
+    allowed: Vec<String>,
+    /// The next entry, and why it was not taken.
+    input: Entity<TextInput>,
+    error: Option<String>,
+    yolo: bool,
+    /// Turning YOLO on for a production connection waits for this confirmation.
+    confirm: bool,
+    /// Confirmed in this sheet (a save does not ask again).
+    confirmed: bool,
+}
+
 pub struct ConnDialog {
     store: Entity<ConnStore>,
     focus: FocusHandle,
@@ -97,6 +115,8 @@ pub struct ConnDialog {
     read_only: bool,
     /// The MCP permission set here (`None`: the environment's default).
     mcp: Option<McpAccess>,
+    /// MCP › Advanced (collapsed until opened): the allowed queries and YOLO.
+    advanced: Advanced,
     ssh: SshFields,
     entry: Entry,
     /// The connection string (`Entry::Url`).
@@ -202,6 +222,26 @@ impl ConnDialog {
             }
         })
         .detach();
+        let allow_input = cx.new(|cx| TextInput::new(cx, "DELETE FROM sessions WHERE expires_at < ?"));
+        cx.subscribe(&allow_input, |d: &mut ConnDialog, _, ev: &InputEvent, cx| match ev {
+            InputEvent::Submit => d.add_allowed(cx),
+            InputEvent::Changed => {
+                if d.advanced.error.take().is_some() {
+                    d.advanced.input.update(cx, |i, _| i.error = false);
+                    cx.notify();
+                }
+            }
+        })
+        .detach();
+        let advanced = Advanced {
+            open: false,
+            allowed: profile.mcp_allowed.clone(),
+            input: allow_input,
+            error: None,
+            yolo: profile.mcp_yolo,
+            confirm: false,
+            confirmed: false,
+        };
         let conn_str = cx.new(|cx| TextInput::new(cx, "postgresql://user@host:5432/database"));
         cx.subscribe(&conn_str, |d: &mut ConnDialog, _, ev: &InputEvent, cx| match ev {
             InputEvent::Submit => d.save(cx),
@@ -224,6 +264,7 @@ impl ConnDialog {
             env: profile.env,
             read_only: profile.read_only,
             mcp: profile.mcp,
+            advanced,
             engine: profile.engine,
             profile,
             is_new,
@@ -447,6 +488,8 @@ impl ConnDialog {
         p.env = self.env;
         p.read_only = self.read_only;
         p.mcp = self.mcp;
+        p.mcp_allowed = self.advanced.allowed.clone();
+        p.mcp_yolo = self.advanced.yolo;
         p.ssh = self.ssh.on.then(|| SshSettings {
             host: text(&self.ssh.host),
             port: text(&self.ssh.port).parse().ok(),
@@ -604,7 +647,88 @@ impl ConnDialog {
         if let Err(e) = self.collect(cx) {
             return self.invalid(e, cx);
         }
+        // YOLO that became production's in this sheet (tagged production after YOLO was on):
+        // confirmed first, as turning it on there is.
+        if self.yolo_needs_confirm() {
+            self.advanced.open = true;
+            self.advanced.confirm = true;
+            cx.notify();
+            return;
+        }
         cx.emit(DialogEvent::Save);
+    }
+
+    /// YOLO on production that nobody confirmed: not as saved, not in this sheet.
+    fn yolo_needs_confirm(&self) -> bool {
+        let saved = self.profile.mcp_yolo && self.profile.env.is_production() && !self.is_new;
+        self.advanced.yolo && self.env.is_production() && !self.advanced.confirmed && !saved
+    }
+
+    /// The YOLO switch: on production, turning it on asks first ([`Advanced::confirm`]).
+    fn toggle_yolo(&mut self, cx: &mut Context<Self>) {
+        let a = &mut self.advanced;
+        if a.yolo || a.confirm {
+            (a.yolo, a.confirm) = (false, false);
+        } else {
+            a.yolo = true;
+            if self.yolo_needs_confirm() {
+                self.advanced.yolo = false;
+                self.advanced.confirm = true;
+            }
+        }
+        cx.notify();
+    }
+
+    /// The production confirmation's answer.
+    fn confirm_yolo(&mut self, on: bool, cx: &mut Context<Self>) {
+        let a = &mut self.advanced;
+        a.confirm = false;
+        a.yolo = on;
+        a.confirmed |= on;
+        cx.notify();
+    }
+
+    /// The typed statement into the allowed queries (one statement; one already allowed is not
+    /// added twice); else why not, under the field.
+    fn add_allowed(&mut self, cx: &mut Context<Self>) {
+        let d = self.engine.dialect();
+        let text = self.advanced.input.read(cx).text().to_string();
+        let r = dataman_core::guard::allowlist_entry(&text, d).and_then(|e| {
+            if self.advanced.allowed.iter().any(|a| dataman_core::guard::allowlist_match(a, &e, d)) { Err("already allowed".to_string()) } else { Ok(e) }
+        });
+        match r {
+            Ok(e) => {
+                self.advanced.allowed.push(e);
+                self.advanced.error = None;
+                self.advanced.input.update(cx, |i, cx| {
+                    i.set_text("", cx);
+                    i.error = false;
+                });
+            }
+            Err(e) => {
+                self.advanced.error = Some(e);
+                self.advanced.input.update(cx, |i, _| i.error = true);
+            }
+        }
+        cx.notify();
+    }
+
+    /// Demos and checks: MCP › Advanced opened, with `stmt` typed into its field and added.
+    pub fn demo_advanced(&mut self, stmt: Option<&str>, yolo: bool, cx: &mut Context<Self>) {
+        self.advanced.open = true;
+        if let Some(s) = stmt {
+            self.advanced.input.update(cx, |i, cx| i.set_text(s, cx));
+            self.add_allowed(cx);
+        }
+        if yolo != (self.advanced.yolo || self.advanced.confirm) {
+            self.toggle_yolo(cx);
+        }
+        cx.notify();
+    }
+
+    /// Checks: the advanced options as they stand (allowed queries, YOLO, confirmation showing).
+    pub fn demo_advanced_state(&self) -> (Vec<String>, bool, bool) {
+        (self.advanced.allowed.clone(), self.advanced.yolo, self.advanced.confirm)
     }
 
     /// Saves the connection and reconnects it with the new settings.
@@ -798,6 +922,157 @@ impl ConnDialog {
     }
 }
 
+impl ConnDialog {
+    /// MCP › Advanced: a disclosure, collapsed by default (its summary says what is set). Open:
+    /// the allowed queries (listed, removable, one added per line, how they match), then YOLO
+    /// in red with what it does, and the confirmation it needs on production.
+    fn mcp_advanced(&self, t: &Theme, cx: &mut Context<Self>) -> gpui::Div {
+        let a = &self.advanced;
+        let off = self.mcp.unwrap_or_else(|| McpAccess::default_for(self.env)) == McpAccess::Off;
+        let n = a.allowed.len();
+        let summary = match n {
+            0 => None,
+            1 => Some("1 allowed query".to_string()),
+            n => Some(format!("{n} allowed queries")),
+        };
+        let head = div()
+            .id("mcp-advanced")
+            .h(px(18.))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(6.))
+            .cursor_pointer()
+            .child(icon(if a.open { Icon::ChevronDown } else { Icon::ChevronRight }).size(px(11.)).text_color(t.tx3))
+            .child(div().text_size(px(10.)).text_color(if a.open { t.tx2 } else { t.tx3 }).child("MCP · ADVANCED"))
+            .when(!a.open, |d| d.children(summary.map(|s| div().text_size(px(10.5)).text_color(t.tx3).child(s))))
+            .when(!a.open && a.yolo && !off, |d| d.child(yolo_badge(t)))
+            .on_click(cx.listener(|d, _, window, cx| {
+                d.advanced.open = !d.advanced.open;
+                if d.advanced.open {
+                    window.focus(&d.advanced.input.focus_handle(cx), cx);
+                }
+                cx.notify();
+            }));
+        let mut col = div().flex().flex_col().gap(px(10.)).child(head);
+        if !a.open {
+            return col;
+        }
+        let note = |text: &'static str| div().text_size(px(11.)).line_height(px(16.)).text_color(t.tx3).child(text);
+        let rows = a.allowed.iter().enumerate().map(|(i, s)| {
+            div()
+                .min_h(px(26.))
+                .pl(px(10.))
+                .pr(px(2.))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(8.))
+                .bg(t.card)
+                .border_1()
+                .border_color(t.line)
+                .child(div().flex_1().min_w_0().py(px(4.)).text_size(px(11.5)).text_color(t.tx2).child(s.clone()))
+                .child(ui::icon_button(t, ("allowed-rm", i), Icon::Close, 22., 11.).tooltip(ui::text_tooltip("Remove")).on_click(cx.listener(move |d, _, _, cx| {
+                    if i < d.advanced.allowed.len() {
+                        d.advanced.allowed.remove(i);
+                    }
+                    cx.notify();
+                })))
+        });
+        let add = div()
+            .flex()
+            .flex_row()
+            .items_end()
+            .gap(px(8.))
+            .child(div().flex_1().child(a.input.clone()))
+            .child(ui::button(t, "allowed-add", Btn::Secondary).h(px(28.)).px(px(10.)).child("Add").on_click(cx.listener(|d, _, _, cx| d.add_allowed(cx))));
+        let allowed = div()
+            .flex()
+            .flex_col()
+            .gap(px(6.))
+            .child(div().text_size(px(10.)).text_color(t.tx3).child("ALLOWED QUERIES"))
+            .child(note("Agents run these without asking, whatever the tier above (never while it is off or the database is read-only). Each is one statement, matched statement by statement: the same words in the same order, case, spacing and comments aside; a ? stands for exactly one value (a string, a number or $1), never for more SQL."))
+            .children(rows)
+            .child(add)
+            .children(a.error.clone().map(|e| div().text_size(px(11.)).text_color(t.err).child(e)));
+        // A red switch: the only one of its kind.
+        let switch = div()
+            .flex_none()
+            .w(px(26.))
+            .h(px(14.))
+            .relative()
+            .bg(if a.yolo { t.err } else { t.line2 })
+            .child(div().absolute().top(px(2.)).when(a.yolo, |d| d.right(px(2.))).when(!a.yolo, |d| d.left(px(2.))).size(px(10.)).rounded(px(5.)).bg(if a.yolo { gpui::white() } else { t.tx3 }));
+        let yolo = div()
+            .id("yolo")
+            .px(px(12.))
+            .py(px(10.))
+            .flex()
+            .flex_row()
+            .gap(px(10.))
+            .border_1()
+            .border_color(if a.yolo || a.confirm { t.err } else { t.line2 })
+            .when(a.yolo, |d| d.bg(t.err_s))
+            .cursor_pointer()
+            .on_click(cx.listener(|d, _, _, cx| d.toggle_yolo(cx)))
+            .child(div().pt(px(2.)).child(switch))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap(px(3.))
+                    .child(div().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(t.err).child("YOLO · agents run anything"))
+                    .child(div().text_size(px(11.)).line_height(px(16.)).text_color(t.tx2).child(
+                        "Every statement an agent sends runs here at once, with nobody asked: DROP, TRUNCATE, DELETE without WHERE, any number of rows, on production too. Read-only still refuses writes; MCP off still hides the connection.",
+                    ))
+                    .when(a.yolo && off, |d| d.child(div().text_size(px(11.)).text_color(t.tx3).child("No effect while MCP is off."))),
+            );
+        let confirm = a.confirm.then(|| {
+            div()
+                .px(px(12.))
+                .py(px(10.))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(10.))
+                .bg(t.err_s)
+                .border_1()
+                .border_color(t.err)
+                .child(div().flex_none().text_size(px(12.)).text_color(t.err).child("!"))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_size(px(11.5))
+                        .line_height(px(17.))
+                        .text_color(t.tx)
+                        .child("This connection is production: with YOLO, an agent can change or destroy its data and nobody is asked first."),
+                )
+                .child(ui::button(t, "yolo-cancel", Btn::Ghost).h(px(26.)).child("Cancel").on_click(cx.listener(|d, _, _, cx| d.confirm_yolo(false, cx))))
+                .child(ui::button(t, "yolo-confirm", Btn::Danger).h(px(26.)).font_weight(FontWeight::SEMIBOLD).child("Turn On YOLO").on_click(cx.listener(|d, _, _, cx| d.confirm_yolo(true, cx))))
+        });
+        col = col.child(div().pl(px(17.)).flex().flex_col().gap(px(12.)).child(allowed).child(yolo).children(confirm));
+        col
+    }
+}
+
+/// The `YOLO` badge wherever a connection's MCP tier shows: agents run anything there.
+pub(crate) fn yolo_badge(t: &Theme) -> gpui::Div {
+    div()
+        .flex_none()
+        .h(px(17.))
+        .px(px(6.))
+        .flex()
+        .items_center()
+        .bg(t.err)
+        .text_color(t.on_err)
+        .text_size(px(10.5))
+        .font_weight(FontWeight::SEMIBOLD)
+        .child("YOLO")
+}
+
 /// The SSH error behind a failure, if the tunnel is what failed.
 pub fn ssh_error(e: &anyhow::Error) -> Option<SshError> {
     e.chain().find_map(|c| c.downcast_ref::<SshError>()).cloned()
@@ -901,6 +1176,7 @@ impl Render for ConnDialog {
                 }))
         }));
         let mcp_cur = self.mcp.unwrap_or_else(|| McpAccess::default_for(self.env));
+        let yolo_on = self.advanced.yolo && mcp_cur != McpAccess::Off;
         let mcp = ui::segmented(&t).children(McpAccess::ALL.iter().map(|a| {
             let a = *a;
             ui::segment(&t, ("mcp", a as usize), a.label(), a == mcp_cur)
@@ -1004,7 +1280,14 @@ impl Render for ConnDialog {
                             .items_end()
                             .gap(px(16.))
                             .when(!by_url, |d| d.child(div().flex().flex_col().gap(px(6.)).child(caption("SSL")).child(ssl)))
-                            .child(div().flex().flex_col().gap(px(6.)).child(caption("MCP")).child(mcp)),
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(6.))
+                                    .child(div().h(px(12.)).flex().flex_row().items_center().gap(px(6.)).child(caption("MCP")).when(yolo_on, |d| d.child(yolo_badge(&t).h(px(12.)).px(px(4.)).text_size(px(9.)))))
+                                    .child(mcp),
+                            ),
                     )
                     .child(
                         div()
@@ -1015,6 +1298,7 @@ impl Render for ConnDialog {
                             .child(div().flex().flex_col().gap(px(6.)).child(div().text_size(px(10.)).text_color(t.tx3).child("ENVIRONMENT")).child(env))
                             .child(read_only),
                     )
+                    .child(self.mcp_advanced(&t, cx))
                     .child(self.ssh_section(&t, cx))
                     // The fields' URL (the string is on screen already in URL mode).
                     .when(!by_url, |d| {

@@ -1,7 +1,8 @@
 //! The audit log: one JSON object per tool call in `mcp-audit.jsonl` (config directory), with
 //! the time, the client, the tool, the connection, the SQL with its literals replaced by `?`
-//! (shown) and as sent (to reopen it), the rows, the duration and the outcome. Never a password
-//! or a bound parameter value. The file is 0600 and rotated to `mcp-audit.1.jsonl` past 8 MiB.
+//! (shown) and as sent (to reopen it), the rows, the duration and the outcome, a human's
+//! decision, and what let a write through without one (an allowed query, YOLO). Never a
+//! password or a bound parameter value. The file is 0600 and rotated to `mcp-audit.1.jsonl` past 8 MiB.
 
 use std::io::{BufRead, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -70,6 +71,30 @@ pub struct Entry {
     /// `run_favorite`: the name of the favorite query it ran (or drafted).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub favorite: Option<String>,
+    /// A write the connection's advanced options let through without a human: its allowed
+    /// queries, or YOLO.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_by: Option<AllowedBy>,
+}
+
+/// What let a write run that the tier alone would have refused or asked about
+/// ([`crate::policy::By`]): `{"by": "allowlist", "entries": […]}` or `{"by": "yolo"}`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "by", rename_all = "lowercase")]
+pub enum AllowedBy {
+    /// The entries of the connection's allowed queries its statements matched (redacted, as
+    /// the log shows SQL).
+    Allowlist { entries: Vec<String> },
+    Yolo,
+}
+
+impl AllowedBy {
+    pub fn label(&self) -> &'static str {
+        match self {
+            AllowedBy::Allowlist { .. } => "allowlist",
+            AllowedBy::Yolo => "YOLO",
+        }
+    }
 }
 
 /// What became of a write that needed a human's Allow.
@@ -255,6 +280,11 @@ mod tests {
                 }),
                 draft: i == 3,
                 favorite: None,
+                allowed_by: match i {
+                    1 => Some(AllowedBy::Allowlist { entries: vec![redact("TRUNCATE audit_tmp")] }),
+                    2 => Some(AllowedBy::Yolo),
+                    _ => None,
+                },
             });
         }
         let text = std::fs::read_to_string(a.path()).unwrap();
@@ -267,6 +297,11 @@ mod tests {
             first.get("database").is_none() && first.get("error").is_none() && first.get("approval").is_none() && first.get("query").is_none() && first.get("draft").is_none(),
             "absent fields stay out: {first}"
         );
+        assert!(first.get("allowed_by").is_none(), "{first}");
+        let line = |i: usize| serde_json::from_str::<serde_json::Value>(text.lines().nth(i).unwrap()).unwrap();
+        assert_eq!(line(1)["allowed_by"], serde_json::json!({"by": "allowlist", "entries": ["TRUNCATE audit_tmp"]}));
+        assert_eq!(line(2)["allowed_by"], serde_json::json!({"by": "yolo"}));
+        assert_eq!(tail(a.path(), 3)[0].allowed_by, Some(AllowedBy::Yolo));
         let draft: serde_json::Value = serde_json::from_str(text.lines().nth(3).unwrap()).unwrap();
         assert_eq!(draft["draft"], true);
         let last: serde_json::Value = serde_json::from_str(text.lines().last().unwrap()).unwrap();
@@ -298,6 +333,7 @@ mod tests {
             approval: None,
             draft: false,
             favorite: None,
+            allowed_by: None,
         };
         let line = serde_json::to_string(&e).unwrap();
         let back: Entry = serde_json::from_str(&line).unwrap();

@@ -17,7 +17,7 @@ pub fn tools() -> Vec<Builtin> {
     vec![
         Builtin {
             name: "list_connections",
-            description: "Lists Dataman's saved database connections. Each row: name (pass it as `connection` to the other tools), env (none/dev/staging/production), mcp tier (off: unusable; read: reads only; write: non-destructive writes; full: destructive writes too, each after the user's Allow in the app), read_only, host, port, database, user, ssh (tunnelled), is_lar and version (known once connected; probe: true connects first), row_limit (rows a write may change before it waits for the user). LAR servers have no EXPLAIN and no declared keys, and do not enforce READ ONLY (Dataman does). Never returns passwords.",
+            description: "Lists Dataman's saved database connections. Each row: name (pass it as `connection` to the other tools), env (none/dev/staging/production), mcp tier (off: unusable; read: reads only; write: non-destructive writes; full: destructive writes too, each after the user's Allow in the app), read_only, host, port, database, user, ssh (tunnelled), is_lar and version (known once connected; probe: true connects first), row_limit (rows a write may change before it waits for the user), allowed (statements the user lets run without asking in any tier, matched token for token with ? for one value; null: none), yolo (anything runs without asking; read-only still refuses writes). LAR servers have no EXPLAIN and no declared keys, and do not enforce READ ONLY (Dataman does). Never returns passwords.",
             schema: crate::tool::Schema::new().prop("probe", false, json!({"type": "boolean", "description": "Connect to each usable connection first to fill is_lar and version."})),
             need: None,
             run: list_connections,
@@ -107,7 +107,9 @@ fn list_connections(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> 
         for p in profiles.iter() {
             let access = p.mcp_access();
             if access == McpAccess::Off {
-                rows.push(vec![json!(p.name), json!(p.env.label()), json!("off"), Value::Null, Value::Null, Value::Null, Value::Null, Value::Null, Value::Null, Value::Null, Value::Null, Value::Null]);
+                let mut row = vec![json!(p.name), json!(p.env.label()), json!("off")];
+                row.resize(14, Value::Null);
+                rows.push(row);
                 continue;
             }
             let usable = policy::allow(true, Target::of(p), Need::Read).is_ok();
@@ -131,10 +133,12 @@ fn list_connections(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> 
                 json!(p.ssh.is_some()),
                 is_lar,
                 version,
-                if access >= McpAccess::Write { json!(cx.hub.row_limit(p)) } else { Value::Null },
+                if access >= McpAccess::Write && !p.mcp_yolo { json!(cx.hub.row_limit(p)) } else { Value::Null },
+                if p.mcp_allowed.is_empty() { Value::Null } else { json!(p.mcp_allowed) },
+                json!(p.mcp_yolo),
             ]);
         }
-        Ok(table(&["name", "env", "mcp", "read_only", "host", "port", "database", "user", "ssh", "is_lar", "version", "row_limit"], rows))
+        Ok(table(&["name", "env", "mcp", "read_only", "host", "port", "database", "user", "ssh", "is_lar", "version", "row_limit", "allowed", "yolo"], rows))
     })
 }
 

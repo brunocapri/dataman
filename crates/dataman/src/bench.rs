@@ -210,7 +210,8 @@ pub fn start(mode: Mode, ws: Entity<Workspace>, window: &mut Window, cx: &mut Ap
 /// before a capture.
 ///
 /// `DATAMAN_SHOT_STAGE` picks the screen: `welcome` (first run, nothing connected), `main`,
-/// `light` (main in the light theme), `completion`, `dialog`, `dialog-url` (and
+/// `light` (main in the light theme), `completion`, `dialog`, `dialog-advanced` and
+/// `dialog-advanced-prod` (MCP › Advanced open; YOLO confirming on production), `dialog-url` (and
 /// `dialog-url-bad`: the connection string mode), `dialog-fail` (a real
 /// password failure), `sort`, `history` (with the explorer filter), `marks`, `marks-history`
 /// and `marks-search` (the neutral highlights: the filter's matches, the history's selection,
@@ -320,6 +321,8 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                 "export-empty"
                     | "empty"
                     | "dialog"
+                    | "dialog-advanced"
+                    | "dialog-advanced-prod"
                     | "dialog-url"
                     | "dialog-url-bad"
                     | "dialog-fail"
@@ -375,6 +378,20 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                         window.focus(&editor.focus_handle(cx), cx);
                     }
                     "dialog" => ws.update(cx, |w, cx| w.open_dialog(None, window, cx)),
+                    // MCP › Advanced open: the allowed queries and YOLO on (staging); `-prod`:
+                    // YOLO waiting for its confirmation on production.
+                    "dialog-advanced" | "dialog-advanced-prod" => ws.update(cx, |w, cx| {
+                        let core = w.store.read(cx).core.clone();
+                        crate::mcp::demo_seed(&core, false, cx);
+                        w.store.update(cx, |s, cx| s.reload(cx));
+                        let prod = stage == "dialog-advanced-prod";
+                        let name = if prod { "shop-live" } else { "shop" };
+                        let id = core.config.connections().into_iter().find(|p| p.name == name).map(|p| p.id);
+                        w.open_dialog(id, window, cx);
+                        if let Some(d) = w.dialog.clone() {
+                            d.update(cx, |d, cx| d.demo_advanced(prod.then_some("DELETE FROM sessions WHERE expires_at < ?"), true, cx));
+                        }
+                    }),
                     // A new connection by its connection string; `-bad`: one that is not, left.
                     "dialog-url" | "dialog-url-bad" => ws.update(cx, |w, cx| {
                         w.open_dialog(None, window, cx);
