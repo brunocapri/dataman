@@ -1,10 +1,12 @@
 //! Reordering by drag, shared by the query tabs and the explorer's connections: GPUI's own drag
 //! (`on_drag` makes the ghost, `on_drag_move` follows it, `on_drop` lands it). While it moves, a
 //! light copy of the label rides the pointer and a 1 pt line marks the gap it would drop into;
-//! nothing moves until the drop (`dataman_core::order`).
+//! nothing moves until the drop (`dataman_core::order`). Esc lets go of any drag, the panels'
+//! and the favorites' too ([`cancel_on_escape`]).
 
-use gpui::{App, AppContext, Bounds, Context, Div, Entity, Hsla, IntoElement, ParentElement, Pixels, Point, Render, SharedString, Styled, Window, div, prelude::FluentBuilder};
+use gpui::{App, AppContext, Bounds, Context, Div, Entity, Hsla, IntoElement, ParentElement, Pixels, Point, Render, SharedString, Styled, WeakEntity, Window, div, prelude::FluentBuilder};
 
+use crate::app::Workspace;
 use crate::theme::{ActiveTheme, Theme, px};
 use crate::ui;
 
@@ -44,6 +46,22 @@ impl Render for Ghost {
 pub fn ghost(label: impl Into<SharedString>, chip: Option<Hsla>, cx: &mut App) -> Entity<Ghost> {
     let label = label.into();
     cx.new(|_| Ghost { label, chip })
+}
+
+/// Esc while anything is dragged (a tab, a panel, a favorite, a connection): the drag ends
+/// where it is, nothing dropped, its previews gone, and the key does nothing else (no sheet
+/// closes, no filter clears, Settings stays). A keystroke interceptor runs before any binding
+/// and any key handler, in every window.
+pub(crate) fn cancel_on_escape(ws: WeakEntity<Workspace>, cx: &mut App) {
+    cx.intercept_keystrokes(move |ev, window, cx| {
+        if ev.keystroke.key != "escape" || !cx.has_active_drag() {
+            return;
+        }
+        cx.stop_active_drag(window);
+        cx.stop_propagation();
+        let _ = ws.update(cx, |w, cx| w.drag_cancelled(cx));
+    })
+    .detach();
 }
 
 /// Which side of an item the pointer is on, along the axis the list runs: the gap before it

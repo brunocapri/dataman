@@ -522,7 +522,7 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                     "viewer" => {
                         grid.update(cx, |g, cx| g.select_cells(4..=4, 3, cx));
                         window.focus(&grid.focus_handle(cx), cx);
-                        ws.update(cx, |w, cx| w.toggle_side(crate::app::Side::Viewer, cx));
+                        ws.update(cx, |w, cx| w.toggle_viewer(cx));
                     }
                     "focus" => ws.update(cx, |w, cx| w.focus_region(crate::app::Region::Grid, window, cx)),
                     // A selection over three lines, mid-line to mid-line.

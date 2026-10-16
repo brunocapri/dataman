@@ -269,8 +269,10 @@ pub(crate) fn tabs_holding<K: PartialEq + Copy>(tabs: &[(K, Option<&str>, bool)]
 
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum Drag {
-    /// A dock's seam (`dock`): its width, or the bottom dock's height.
-    Dock(dataman_core::layout::Dock),
+    /// A dock column's inner seam (`dock`): its width.
+    Dock(dataman_core::layout::Dock, usize),
+    /// The seam between a dock column's stacked panels: their split.
+    Stack(dataman_core::layout::Dock, usize),
     Split,
     /// The seam between two editor groups (`split`).
     Groups,
@@ -305,12 +307,10 @@ impl Bound {
     }
 }
 
-/// What the right side panel shows.
+/// What the history's panel shows (`dock`: it may sit in either dock).
 #[derive(Clone)]
 pub(crate) enum Side {
     History,
-    /// The cell viewer (⇧Space).
-    Viewer,
     /// A registered server panel (LAR's live queries).
     Server(&'static str, AnyView, Bound),
     /// A feature's sheet (the grid-edit review), by id.
@@ -322,32 +322,7 @@ pub(crate) fn side_id(s: &Option<Side>) -> Option<&'static str> {
     match s {
         None => None,
         Some(Side::History) => Some("history"),
-        Some(Side::Viewer) => Some("viewer"),
         Some(Side::Server(n, ..) | Side::Feature(n, ..)) => Some(n),
-    }
-}
-
-/// The side views that slide in and out like the explorer (the others just appear).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum Slide {
-    History,
-    Viewer,
-}
-
-impl Slide {
-    pub(crate) fn of(side: &Side) -> Option<Slide> {
-        match side {
-            Side::History => Some(Slide::History),
-            Side::Viewer => Some(Slide::Viewer),
-            _ => None,
-        }
-    }
-
-    pub(crate) fn side(self) -> Side {
-        match self {
-            Slide::History => Side::History,
-            Slide::Viewer => Side::Viewer,
-        }
     }
 }
 
@@ -363,7 +338,7 @@ pub(crate) struct SavedFlash {
 impl Side {
     fn same_kind(&self, other: &Side) -> bool {
         match (self, other) {
-            (Side::History, Side::History) | (Side::Viewer, Side::Viewer) => true,
+            (Side::History, Side::History) => true,
             (Side::Server(a, ..), Side::Server(b, ..)) | (Side::Feature(a, ..), Side::Feature(b, ..)) => a == b,
             _ => false,
         }
@@ -414,20 +389,24 @@ pub struct Workspace {
     /// The explorer column sliding open or shut (⌘B, the title-bar button).
     explorer_tween: Option<crate::motion::WidthTween>,
     pub(crate) side_w: f32,
-    /// The history or the cell viewer sliding open or shut, like the explorer.
-    side_tween: Option<(Slide, crate::motion::WidthTween)>,
-    /// What the side panel showed last frame (`None`: nothing; `Some(None)`: a panel that does
-    /// not slide), to see a sliding one open or shut.
-    side_was: Option<Option<Slide>>,
-    /// Which dock each panel sits in (`dock`), the bottom dock's height, the panels settling
-    /// into a new place, a panel being dragged, and the docks as laid out this frame.
+    /// The history sliding open or shut, like the explorer.
+    side_tween: Option<crate::motion::WidthTween>,
+    /// What the history's panel showed last frame (`None`: nothing; `Some(false)`: a view that
+    /// does not slide), to see the history open or shut.
+    side_was: Option<bool>,
+    /// The cell viewer (⇧Space), beside the result; not a dock's panel.
+    pub(crate) viewer_open: bool,
+    /// Where each panel sits (`dock`), the panels settling into a new place, a panel being
+    /// dragged, the docks as laid out this frame, and a panel's right-click menu (the panel,
+    /// where the pointer was).
     pub(crate) layout: dataman_core::layout::PanelLayout,
-    pub(crate) bottom_h: f32,
     pub(crate) dock_moves: Vec<crate::dock::DockMove>,
     pub(crate) panel_drag: Option<crate::dock::PanelDrag>,
     pub(crate) frame_now: crate::dock::Frame,
-    /// The docks' slots as last laid out, per dock (the checks hold them to `frame_now`).
-    pub(crate) slot_bounds: std::rc::Rc<std::cell::RefCell<[Vec<gpui::Bounds<gpui::Pixels>>; 3]>>,
+    pub(crate) panel_menu: Option<(dataman_core::layout::PanelId, gpui::Point<gpui::Pixels>)>,
+    /// The docks' slots as last laid out, per dock and column (the checks hold them to
+    /// `frame_now`).
+    pub(crate) slot_bounds: std::rc::Rc<std::cell::RefCell<[Vec<Vec<gpui::Bounds<gpui::Pixels>>>; 2]>>,
     /// ⌘S's feedback in the toolbar, and the redraws of its fades.
     pub(crate) saved_flash: Option<SavedFlash>,
     saved_flash_task: Option<gpui::Task<()>>,
@@ -635,11 +614,12 @@ impl Workspace {
             side_w: metrics::SIDE_W,
             side_tween: None,
             side_was: None,
+            viewer_open: false,
             layout: Default::default(),
-            bottom_h: crate::dock::BOTTOM_H,
             dock_moves: Vec::new(),
             panel_drag: None,
             frame_now: Default::default(),
+            panel_menu: None,
             slot_bounds: Default::default(),
             saved_flash: None,
             saved_flash_task: None,
@@ -707,6 +687,8 @@ impl Workspace {
         };
         // Agents' writes over the app's MCP server ask in this window.
         crate::mcp::register(cx.weak_entity(), window.window_handle(), cx);
+        // Esc lets go of any drag (`dnd`), before anything else hears it.
+        crate::dnd::cancel_on_escape(cx.weak_entity(), cx);
         // The window's close button with transactions open asks first, like ⌘Q; closing saves
         // the session, and so does any quit.
         let this = cx.weak_entity();
@@ -810,7 +792,7 @@ impl Workspace {
         let grid = tab.read(cx).grid.clone();
         let from = tab.downgrade();
         cx.subscribe_in(&grid, window, move |w, _, ev: &GridEvent, window, cx| match ev {
-            GridEvent::ToggleViewer => w.toggle_side(Side::Viewer, cx),
+            GridEvent::ToggleViewer => w.toggle_viewer(cx),
             GridEvent::FollowFk(j) => {
                 if let Some(from) = from.upgrade() {
                     w.follow_reference(&from, j, window, cx);
@@ -1817,6 +1799,12 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Shows or hides the cell viewer (⇧Space).
+    pub(crate) fn toggle_viewer(&mut self, cx: &mut Context<Self>) {
+        self.viewer_open = !self.viewer_open;
+        cx.notify();
+    }
+
     /// Opens or closes a registered server panel in the side panel (LAR's, from the toolbar or
     /// ⌥1), at the panel's width when it gives one, bound to the tab's connection.
     pub(crate) fn toggle_server_panel(&mut self, id: &'static str, window: &mut Window, cx: &mut Context<Self>) {
@@ -1990,40 +1978,40 @@ impl Workspace {
         target
     }
 
-    /// The sliding side view this frame (the history, the cell viewer) and its width: it slides
-    /// in from the window's right edge when it opens on its own, and out when it shuts with
-    /// nothing in its place (the explorer's tween, mirrored); one view replacing another just
-    /// appears. `None` while there is no sliding view to draw. Called once per frame.
-    pub(crate) fn side_slide(&mut self, window: &mut Window, cx: &App) -> Option<(Slide, f32)> {
-        let now_kind = self.side.as_ref().map(Slide::of);
-        let open = now_kind.flatten();
+    /// The history's width this frame while it slides: in from its dock's edge when it opens
+    /// on its own, out when it shuts with nothing in its place (the explorer's tween); another
+    /// view replacing it just appears. `None` while the history is not there to draw. Called
+    /// once per frame.
+    pub(crate) fn side_slide(&mut self, window: &mut Window, cx: &App) -> Option<f32> {
+        let now_kind = self.side.as_ref().map(|s| matches!(s, Side::History));
+        let open = now_kind == Some(true);
         if now_kind != self.side_was {
-            let was = self.side_was.flatten();
-            let from = self.side_tween.and_then(|(_, t)| t.at(if was.is_some() { self.side_w } else { 0. }, Instant::now()));
+            let was = self.side_was == Some(true);
+            let from = self.side_tween.and_then(|t| t.at(if was { self.side_w } else { 0. }, Instant::now()));
             let slide = match (self.side_was, now_kind) {
-                (None, Some(Some(k))) => Some((k, from.unwrap_or(0.), self.side_w)),
-                (Some(Some(k)), None) => Some((k, from.unwrap_or(self.side_w), 0.)),
+                (None, Some(true)) => Some((from.unwrap_or(0.), self.side_w)),
+                (Some(true), None) => Some((from.unwrap_or(self.side_w), 0.)),
                 _ => None,
             };
-            self.side_tween = slide.filter(|_| !cx.reduce_motion()).map(|(k, a, b)| (k, crate::motion::WidthTween::panel(a, b, metrics::SIDE_W)));
+            self.side_tween = slide.filter(|_| !cx.reduce_motion()).map(|(a, b)| crate::motion::WidthTween::panel(a, b, metrics::SIDE_W));
             self.side_was = now_kind;
         }
-        let target = if open.is_some() { self.side_w } else { 0. };
-        match self.side_tween.and_then(|(k, t)| t.at(target, Instant::now()).map(|w| (k, w))) {
-            Some(kw) => {
+        let target = if open { self.side_w } else { 0. };
+        match self.side_tween.and_then(|t| t.at(target, Instant::now())) {
+            Some(w) => {
                 window.request_animation_frame();
-                Some(kw)
+                Some(w)
             }
             None => {
                 self.side_tween = None;
-                open.map(|k| (k, self.side_w))
+                open.then_some(self.side_w)
             }
         }
     }
 
-    /// Checks: a side view is sliding now.
+    /// Checks: the history is sliding now.
     pub(crate) fn demo_side_sliding(&self) -> bool {
-        self.side_tween.is_some_and(|(_, t)| t.at(0., Instant::now()).is_some())
+        self.side_tween.is_some_and(|t| t.at(0., Instant::now()).is_some())
     }
 
     fn explorer_target(&self) -> f32 {
@@ -2497,7 +2485,8 @@ impl Workspace {
             return;
         }
         match d {
-            Drag::Dock(dock) => self.resize_dock(dock, (ev.position.x.pt(), ev.position.y.pt()), window),
+            Drag::Dock(dock, col) => self.resize_column(dock, col, ev.position.x.pt()),
+            Drag::Stack(dock, col) => self.resize_stack(dock, col, ev.position.y.pt()),
             Drag::Groups => self.resize_groups(ev.position.x.pt()),
             Drag::Split => {
                 let top = metrics::TITLE_H + metrics::TOOLBAR_H;
@@ -2549,11 +2538,10 @@ impl Workspace {
         }
     }
 
-    /// Height of the work column below the toolbar (editor + divider + result bar + grid), over
-    /// the bottom dock.
+    /// Height of the work column below the toolbar (editor + divider + result bar + grid).
     pub(crate) fn work_column_h(&self, window: &Window) -> f32 {
         let h = window.viewport_size().height.pt();
-        h - metrics::TITLE_H - metrics::STATUS_H - metrics::TOOLBAR_H - self.frame_now.dock(dataman_core::layout::Dock::Bottom).rect.h
+        h - metrics::TITLE_H - metrics::STATUS_H - metrics::TOOLBAR_H
     }
 
     /// `below`: the extra chrome under the divider (the result tabs strip, when shown).
@@ -2651,7 +2639,7 @@ impl Render for Workspace {
         // window's top edge to the status bar, with the title bar laid over them (transparent).
         // The left dock sits on the glass; the work column paints its `panel` fill once, flush (no
         // radius, no margin) to the window's right edge, and its left hairline is the seam; the
-        // right and bottom docks sit inside it.
+        // right dock sits inside it.
         // ⌘B slides the explorer (Zeron's sidebar tween): its content keeps the full width and is
         // clipped, so the tree never reflows mid-flight. Frames are requested only while it moves.
         if let Some(tw) = self.explorer_tween {
@@ -2690,34 +2678,12 @@ impl Render for Workspace {
                     .flex_row()
                     .when(!production, |d| d.border_t_1().border_color(t.line))
                     .when(production, |d| d.border_t_2().border_color(t.err))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .h_full()
-                            .flex()
-                            .flex_col()
-                            .child(div().flex_1().min_h_0().flex().child(surface))
-                            .children(docks.bottom),
-                    )
+                    .child(div().flex_1().min_w_0().h_full().flex().child(surface))
                     .children(docks.right),
             );
-        // The left dock's resize grabber, on the seam: 8 pt straddling the hairline, from under
-        // the title bar down (the bar keeps its drag area), painted over both columns.
-        let seam = (left_shown && !moving).then(|| {
-            div()
-                .id("explorer-resize")
-                .absolute()
-                .top(px(metrics::TITLE_H))
-                .bottom_0()
-                .left(px(left_w - 4.))
-                .w(px(8.))
-                .cursor_col_resize()
-                .on_mouse_down(MouseButton::Left, cx.listener(|w, _, _, cx| {
-                    w.drag = Some(Drag::Dock(dataman_core::layout::Dock::Left));
-                    cx.stop_propagation();
-                }))
-        });
+        // The docks' resize grabbers on their seams, from under the title bar down (the bar
+        // keeps its drag area), painted over the columns; not while a panel moves.
+        let seams = if moving { Vec::new() } else { self.render_seams(&pass.frame, cx) };
         div()
             .id("workspace")
             .size_full()
@@ -2974,10 +2940,10 @@ impl Render for Workspace {
                 w.alt_press = ev.modifiers.alt;
             }))
             .capture_key_down(cx.listener(|w, _, _, _| w.alt_press = false))
-            .child(div().flex_1().min_h_0().relative().flex().flex_row().children(docks.left).child(work).children(seam))
+            .child(div().flex_1().min_h_0().relative().flex().flex_row().children(docks.left).child(work).children(seams))
             // A pane being resized keeps its cursor wherever the pointer goes.
             .children(self.drag.map(|d| {
-                let rows = matches!(d, Drag::Split | Drag::Dock(dataman_core::layout::Dock::Bottom));
+                let rows = matches!(d, Drag::Split | Drag::Stack(..));
                 let style = if rows { gpui::CursorStyle::ResizeRow } else { gpui::CursorStyle::ResizeColumn };
                 gpui::canvas(|_, _, _| {}, move |_, _, window, _| window.set_window_cursor_style(style)).absolute().size_0()
             }))
@@ -2988,6 +2954,7 @@ impl Render for Workspace {
             .when(t.is_dark(), |d| d.child(div().absolute().top_0().left_0().right_0().h(px(1.)).bg(gpui::hsla(0., 0., 1., 0.08))))
             // A panel being dragged: where it would land.
             .children(self.render_drop_preview(window, cx))
+            .children(self.render_panel_menu(cx))
             .children(self.render_toasts(window, cx))
             .children(self.render_crash_toast(cx))
             .children(self.dialog.clone())

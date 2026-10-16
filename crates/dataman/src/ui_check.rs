@@ -14,8 +14,8 @@
 //!   Keyboard (a command remapped, removed and reset with clicks and keys; the search by
 //!   shortcut, which only searches; ⇧⌘C copies with
 //!   headers), "Copied" in the Copy button's place for 2 s after a copy, the Copy menu's CSV
-//!   and TSV with headers, a connection that is not connected drawn gray and regular, the cell
-//!   viewer's slide and the explorer toggle's fill, printed as PASS/FAIL lines; exit code 1 on
+//!   and TSV with headers, a connection that is not connected drawn gray and regular, the
+//!   history's slide and the explorer toggle's fill, printed as PASS/FAIL lines; exit code 1 on
 //!   a failure.
 
 use std::time::Duration;
@@ -1202,11 +1202,13 @@ async fn zoom_checks(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> boo
     draw(cx);
     let restored = bounds(cx);
     report("esc on the zoomed grid closes it; the layout is back", zoom(cx) == 0. && restored.is_some_and(|r| (r.top() - before.top()).abs() < px(1.) && (r.right() - before.right()).abs() < px(1.)), format!("{before:?} → {restored:?}"));
-    // The button: zoom, then another side view (the cell viewer) opening ends it.
+    // The button: zoom, then another side view (the history) opening ends it.
+    let _ = cx.update(|_, cx| ws.update(cx, |w, _| w.side = None));
+    draw(cx);
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.toggle_result_zoom(window, cx)));
     pause(cx, 340).await;
     draw(cx);
-    let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.toggle_side(crate::app::Side::Viewer, cx)));
+    let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.toggle_history_for_demo(cx)));
     draw(cx);
     pause(cx, 340).await;
     draw(cx);
@@ -1216,7 +1218,7 @@ async fn zoom_checks(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> boo
     ok
 }
 
-/// The explorer's connection labels (one not connected gray and regular), the cell viewer's
+/// The explorer's connection labels (one not connected gray and regular), the history's
 /// slide, and the explorer toggle's fill sweeping with the explorer.
 async fn motion_checks(ws: &Entity<Workspace>, id: &str, cx: &mut AsyncWindowContext) -> bool {
     let mut ok = true;
@@ -1302,25 +1304,25 @@ async fn motion_checks(ws: &Entity<Workspace>, id: &str, cx: &mut AsyncWindowCon
 
     let motion = !cx.update(|_, cx| cx.reduce_motion()).unwrap_or(false);
     let sliding = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).demo_side_sliding()).unwrap_or(false);
-    let viewer = |cx: &mut AsyncWindowContext| cx.update(|_, cx| matches!(ws.read(cx).side, Some(crate::app::Side::Viewer))).unwrap_or(false);
+    let history = |cx: &mut AsyncWindowContext| cx.update(|_, cx| matches!(ws.read(cx).side, Some(crate::app::Side::History))).unwrap_or(false);
     let _ = cx.update(|_, cx| ws.update(cx, |w, _| w.side = None));
     draw(cx);
     pause(cx, 300).await;
     draw(cx);
-    let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.toggle_side(crate::app::Side::Viewer, cx)));
+    let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.toggle_history_for_demo(cx)));
     draw(cx);
     let opening = sliding(cx);
     pause(cx, 320).await;
     draw(cx);
-    let landed = !sliding(cx) && viewer(cx);
-    let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.toggle_side(crate::app::Side::Viewer, cx)));
+    let landed = !sliding(cx) && history(cx);
+    let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.toggle_history_for_demo(cx)));
     draw(cx);
     let closing = sliding(cx);
     pause(cx, 320).await;
     draw(cx);
-    let gone = !sliding(cx) && !viewer(cx);
+    let gone = !sliding(cx) && !history(cx);
     report(
-        "the cell viewer slides in and out like the history",
+        "the history slides in and out like the explorer",
         opening == motion && closing == motion && landed && gone,
         format!("opening {opening} landed {landed} closing {closing} gone {gone} (motion {motion})"),
     );

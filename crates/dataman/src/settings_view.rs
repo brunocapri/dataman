@@ -91,6 +91,7 @@ enum Row {
     Translucency,
     FontSize,
     ReduceMotion,
+    Panels,
     Prefetch,
     PageSize,
     ConfirmCommit,
@@ -110,12 +111,13 @@ enum Row {
     CrashReports,
 }
 
-const ROWS: [(Row, Section, &str, &str); 22] = [
+const ROWS: [(Row, Section, &str, &str); 23] = [
     (Row::Theme, Section::Appearance, "Theme", "dark light system"),
     (Row::Font, Section::Appearance, "Font", "typeface family monospace geist lilex zed jetbrains"),
     (Row::Translucency, Section::Appearance, "Window translucency", "transparency blur opaque"),
     (Row::FontSize, Section::Appearance, "Code font size", "editor text"),
     (Row::ReduceMotion, Section::Appearance, "Reduce motion", "animation accessibility"),
+    (Row::Panels, Section::Appearance, "Panels", "panel layout dock explorer history favorites move reset"),
     (Row::KeywordCase, Section::Editor, "Keyword case", "format formatter sql upper lower"),
     (Row::Indent, Section::Editor, "Indent", "format formatter spaces tab"),
     (Row::Prefetch, Section::Grid, "Rows fetched ahead", "prefetch fetch"),
@@ -726,6 +728,12 @@ impl SettingsView {
                     )
                     .into_any_element()
             }
+            // Every panel back in its home dock (`dock`): the explorer left, the history right.
+            Row::Panels => ui::button(t, "reset-panels", ui::Btn::Secondary)
+                .h(px(28.))
+                .child("Reset panels")
+                .on_click(|_, window, cx| window.dispatch_action(Box::new(crate::dock::ResetPanelLayout), cx))
+                .into_any_element(),
             Row::KeywordCase => {
                 let cur = s.keyword_case;
                 ui::segmented(t)

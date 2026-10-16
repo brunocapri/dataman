@@ -48,15 +48,14 @@ pub struct Session {
     pub active: usize,
     pub explorer_open: bool,
     pub explorer_w: f32,
-    /// The history panel is open on the right.
+    /// The history panel is open (in its dock).
     pub history_open: bool,
     pub side_w: f32,
     /// The editor's share of the work column (`None`: the default height).
     pub editor_frac: Option<f32>,
-    /// Which dock each panel sits in (`layout`); missing in older files: the default.
+    /// Where each panel sits (`layout`: its dock, column and share of it); missing in older
+    /// files: the default. (Older files also kept a bottom dock's height, now ignored.)
     pub layout: crate::layout::PanelLayout,
-    /// The bottom dock's height in points (0: the default).
-    pub bottom_h: f32,
     /// Two editor groups side by side (`groups`): which tabs are in the right one, its focus
     /// and width; missing in older files: one group.
     pub split: Option<crate::groups::SplitState>,

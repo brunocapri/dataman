@@ -217,6 +217,8 @@ pub struct HistoryPanel {
     folder_drop: Option<usize>,
     filter: Entity<TextInput>,
     list: ListState,
+    /// The panel shares its dock with another (`dock`): its × shows on the header's hover.
+    pub(crate) shares_dock: bool,
 }
 
 impl EventEmitter<HistoryEvent> for HistoryPanel {}
@@ -262,6 +264,7 @@ impl HistoryPanel {
             folder_drop: None,
             filter,
             list: ListState::new(0, ListAlignment::Top, px(200.)),
+            shares_dock: false,
         }
     }
 
@@ -1753,12 +1756,14 @@ impl Render for HistoryPanel {
                     .gap(px(8.))
                     .border_b_1()
                     .border_color(t.line)
+                    .group("history-head")
                     .child(ui::caps(&t, if favs { "FAVORITES" } else { "HISTORY" }))
                     .children(color.filter(|_| !favs).map(|c| ui::chip(c, 8.)))
                     .child(div().flex_1().text_color(t.tx).overflow_hidden().whitespace_nowrap().text_ellipsis().when(!favs, |d| d.child(name)))
                     .when(favs, |d| d.child(self.render_new_folder(&t, cx)))
                     .child(
                         ui::icon_button(&t, "close-history", Icon::Close, 24., 13.)
+                            .when(self.shares_dock, |b| b.invisible().group_hover("history-head", |s| s.visible()))
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(HistoryEvent::Close))),
                     ),
             )

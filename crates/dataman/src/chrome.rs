@@ -178,7 +178,7 @@ impl Workspace {
         let side = left_w.max(lights + 92.);
         // The toggle fills with the explorer, wherever it is; the tabs line up past the seam.
         let open = (self.explorer_now() / self.explorer_w.max(1.)).clamp(0., 1.);
-        let seam = (left_w / left.full.max(1.)).clamp(0., 1.);
+        let seam = (left_w / left.full().max(1.)).clamp(0., 1.);
         let show_logo = left_w >= 230.;
         // First run: no query tabs until there is a connection.
         let first_run = self.first_run(cx);
@@ -818,8 +818,12 @@ impl Workspace {
                 ),
             );
         }
-        // The side panel is a dock's (`dock`): the zoom folds it there.
-        div().size_full().flex().flex_row().child(main)
+        // The history's panel is a dock's (`dock`): the zoom folds it there. The cell viewer is
+        // not a dock's panel: it stands beside the focused group.
+        let viewer = (focused && self.viewer_open).then(|| {
+            div().w(px(metrics::SIDE_W)).flex_none().h_full().overflow_hidden().border_l_1().border_color(t.line).child(self.render_viewer(&tab, &t, cx))
+        });
+        div().size_full().flex().flex_row().child(main).children(viewer)
     }
 
     // -----------------------------------------------------------------------------------------
@@ -1381,7 +1385,7 @@ impl Workspace {
             let tr = tab.read(cx);
             if tr.shown_key() == Some(Key::Messages) { tr.batch_items().iter().any(|b| b.rs.as_ref().is_some_and(|r| r.has_messages())) } else { rs.as_ref().is_some_and(|r| r.has_messages()) }
         };
-        let viewer_on = matches!(self.side, Some(Side::Viewer));
+        let viewer_on = self.viewer_open;
         // A copy a moment ago: "Copied", fading in and out (`motion::copied`).
         let copied = grid.read(cx).copied_at.and_then(|at| crate::motion::copied(at, std::time::Instant::now(), cx.reduce_motion()));
         // Under the Copy button, its right edge on the button's (a zero-width point at the
@@ -1513,7 +1517,7 @@ impl Workspace {
                     .justify_center()
                     .when(viewer_on, |d| d.bg(t.acc_s).text_color(t.acc_t).border_1().border_color(t.acc))
                     .child(icon(Icon::PanelRight).size(px(14.)).text_color(if viewer_on { t.acc_t } else { t.tx2 }))
-                    .on_click(cx.listener(|w, _, _, cx| w.toggle_side(Side::Viewer, cx))),
+                    .on_click(cx.listener(|w, _, _, cx| w.toggle_viewer(cx))),
             )
     }
 
@@ -2094,7 +2098,7 @@ impl Workspace {
             )
             .child(
                 ui::icon_button(t, "viewer-close", Icon::Close, 24., 13.)
-                    .on_click(cx.listener(|w, _, _, cx| w.toggle_side(Side::Viewer, cx))),
+                    .on_click(cx.listener(|w, _, _, cx| w.toggle_viewer(cx))),
             );
         let modes = div()
             .h(px(36.))
