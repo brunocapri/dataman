@@ -6,29 +6,27 @@
 //! there, then stacked under the explorer with the seam between them dragged and double-clicked
 //! back to even, the history's header menu moving it home, ⌘B still shutting the explorer where
 //! it now is, the session noticing, and "Reset panel layout" bringing every panel home. PASS/FAIL
-//! lines like `fk-check`. Along the way: a cell viewer (⇧Space in the grid) folding the right dock
-//! away and back without touching the arrangement or the session, the history's toggle (⌘Y) and
-//! ⌘B showing it again meanwhile, and the title bar's "DATAMAN" staying over the explorer's column
-//! (beside the history, either side, stacked with it; gone with the explorer in the right dock).
+//! lines like `fk-check`. Along the way: a JSON cell's value sheet (⇧Space in the grid) opening
+//! over the window without moving a dock, the arrangement or the session, and the title bar's
+//! "DATAMAN" staying over the explorer's column (beside the history, either side, stacked with it;
+//! gone with the explorer in the right dock).
 //!
 //! Captures (`DATAMAN_SHOT`): `dock-drag` holds the history mid-drag over the explorer's right
 //! edge (the preview), `dock-moved` shows it settled beside the explorer, `dock-moving` the same
 //! move caught on its way (`DATAMAN_DOCK_FREEZE=0.5`), `dock-stacked` the two stacked at a moved
 //! split, `dock-menu` the history's header menu. `DATAMAN_SHOT_DIR=dir` also captures
 //! `dock-esc.png` (a drag let go of), `dock-stacked-hover.png` (the history's × on its header's
-//! hover), `dock-viewer-folding.png` / `dock-viewer.png` (the right dock folding away for a cell
-//! viewer, and gone), `dock-beside.png` / `dock-history-left.png` (the history in a column right or
+//! hover), `dock-value.png` (a value sheet over the docks, which stay), `dock-beside.png` / `dock-history-left.png` (the history in a column right or
 //! left of the explorer: its own fill, "DATAMAN" over the explorer).
 
 use std::time::Duration;
 
-use dataman_core::groups::Pane;
 use dataman_core::layout::{Column, Dock, EVEN, PanelId, PanelLayout, Place};
 use gpui::{AsyncWindowContext, Entity, KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, Pixels, Point, point};
 
 use crate::app::{Side, Workspace};
 use crate::dock::Rect;
-use crate::theme::{Pt, metrics, px};
+use crate::theme::{Pt, px};
 
 pub fn is_stage(s: &str) -> bool {
     matches!(s, "dock-check" | "dock-drag" | "dock-moved" | "dock-moving" | "dock-stacked" | "dock-menu")
@@ -176,15 +174,16 @@ fn explorer_col(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> Option<R
     cx.update(|_, cx| ws.read(cx).frame_now.dock(Dock::Left).cols.iter().find(|c| c.slots.iter().any(|(s, _)| s.panel == PanelId::Explorer && !s.ghost)).map(|c| c.rect)).ok().flatten()
 }
 
-fn viewer_open(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
-    cx.update(|_, cx| ws.read(cx).viewer_open(Pane::Left)).unwrap_or(false)
+fn value_open(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
+    cx.update(|_, cx| ws.read(cx).value_view.is_some()).unwrap_or(false)
 }
 
-/// A click in the result grid (it takes the focus), then ⇧Space: the group's cell viewer opens
-/// or shuts.
-fn toggle_viewer(cx: &mut AsyncWindowContext, ws: &Entity<Workspace>) {
-    if let Some(r) = cx.update(|_, cx| ws.read(cx).result_bounds.get()).ok().flatten() {
-        let p = (r.left().pt() + 60., r.top().pt() + metrics::RESULT_BAR_H + 50.);
+/// A click on a jsonb cell of the result (`orders.address`, the demo query's fourth column; the
+/// grid takes the focus), then ⇧Space: its value sheet.
+fn open_value(cx: &mut AsyncWindowContext, ws: &Entity<Workspace>) {
+    let p = cx.update(|_, cx| ws.read(cx).active_tab().map(|t| t.read(cx).grid.read(cx).demo_cell_point(1, 3))).ok().flatten();
+    if let Some(p) = p {
+        let p = (p.x.pt(), p.y.pt());
         down(cx, p, MouseButton::Left, 1);
         up(cx, p, MouseButton::Left, 1);
     }
@@ -286,45 +285,21 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
         });
         settle(cx).await;
 
-        // A cell viewer (⇧Space in the grid) folds the right dock away, sliding; the
+        // A JSON cell's value sheet (⇧Space in the grid) sits over the window: the docks, the
         // arrangement, the history's state and the session stay as they were.
-        let reduced = cx.update(|_, cx| cx.reduce_motion()).unwrap();
         let fp1 = cx.update(|_, cx| ws.read(cx).session_fingerprint(cx)).unwrap();
-        toggle_viewer(cx, ws);
-        pause(cx, 60).await;
-        draw(cx);
-        let (folding, mid) = (cx.update(|_, cx| ws.read(cx).demo_right_folding()).unwrap(), right_w(ws, cx));
-        snap("viewer-folding", cx);
+        open_value(cx, ws);
         settle(cx).await;
-        let (open, gone, w0) = (viewer_open(ws, cx), panel(ws, PanelId::History, cx), right_w(ws, cx));
-        report(
-            "a cell viewer folds the right dock away (sliding)",
-            open && gone.is_none() && w0 == 0. && (reduced || (folding && mid > 0. && mid < history.w)),
-            format!("viewer {open} {gone:?} right {w0}, mid {mid} folding {folding}"),
-        );
-        snap("viewer", cx);
+        let (open, kept, w0) = (value_open(ws, cx), panel(ws, PanelId::History, cx), right_w(ws, cx));
+        report("⇧Space on a JSON cell opens its value sheet; the right dock stays", open && kept == Some(history) && w0 > 0., format!("sheet {open} {kept:?} right {w0}"));
+        snap("value", cx);
+        press(cx, "escape");
+        settle(cx).await;
         let same = cx.update(|_, cx| (ws.read(cx).layout.is_default(), matches!(ws.read(cx).side, Some(Side::History)), ws.read(cx).session_fingerprint(cx) == fp1)).unwrap();
-        report("…for the moment: the arrangement, the history and the session unchanged", same == (true, true, true), format!("{same:?}"));
-        // The history's toggle while it is folded away shows it again, over the viewer.
-        press(cx, "cmd-y");
-        settle(cx).await;
-        let shown = (panel(ws, PanelId::History, cx), viewer_open(ws, cx), cx.update(|_, cx| matches!(ws.read(cx).side, Some(Side::History))).unwrap());
-        report("⌘Y then shows the history again (not shut out of sight), the viewer open", shown.0 == Some(history) && shown.1 && shown.2, format!("{shown:?}"));
-        // The viewer shut: nothing moves. Opened again, it folds the dock again; shut, the dock
-        // comes back exactly as it was.
-        toggle_viewer(cx, ws);
-        settle(cx).await;
-        let kept = (viewer_open(ws, cx), panel(ws, PanelId::History, cx));
-        toggle_viewer(cx, ws);
-        settle(cx).await;
-        let refold = (viewer_open(ws, cx), panel(ws, PanelId::History, cx));
-        toggle_viewer(cx, ws);
-        settle(cx).await;
-        let back = (viewer_open(ws, cx), panel(ws, PanelId::History, cx));
         report(
-            "another viewer folds it again; the last one shut, it is back as it was",
-            !kept.0 && kept.1 == Some(history) && refold.0 && refold.1.is_none() && !back.0 && back.1 == Some(history) && layout(ws, cx).is_default(),
-            format!("{kept:?} {refold:?} {back:?}"),
+            "esc closes it; the arrangement, the history and the session unchanged",
+            !value_open(ws, cx) && panel(ws, PanelId::History, cx) == Some(history) && same == (true, true, true),
+            format!("{same:?}"),
         );
     }
 
@@ -519,19 +494,13 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
     );
     report("in the right dock the explorer leaves the title bar without \"DATAMAN\"", logo(ws, cx).is_none(), format!("{:?}", logo(ws, cx)));
     if full_stage {
-        // A cell viewer folds the whole right dock (the explorer too); ⌘B shows it again rather
-        // than shutting the explorer out of sight.
-        toggle_viewer(cx, ws);
+        // A value sheet leaves the right dock, explorer and all, where it is.
+        open_value(cx, ws);
         settle(cx).await;
-        let folded = (viewer_open(ws, cx), panel(ws, PanelId::Explorer, cx), panel(ws, PanelId::History, cx), right_w(ws, cx));
-        report("a viewer folds the right dock, explorer and all", folded.0 && folded.1.is_none() && folded.2.is_none() && folded.3 == 0., format!("{folded:?}"));
-        press(cx, "cmd-b");
+        let both = (value_open(ws, cx), panel(ws, PanelId::Explorer, cx), panel(ws, PanelId::History, cx));
+        report("a value sheet leaves the right dock as it is, explorer and all", both.0 && both.1 == e5 && both.2 == h5, format!("{both:?}"));
+        press(cx, "escape");
         settle(cx).await;
-        let shown = (cx.update(|_, cx| ws.read(cx).explorer_open).unwrap(), panel(ws, PanelId::Explorer, cx), panel(ws, PanelId::History, cx));
-        report("⌘B shows it again, the explorer still open", shown.0 && shown.1 == e5 && shown.2 == h5, format!("{shown:?}"));
-        toggle_viewer(cx, ws);
-        settle(cx).await;
-        report("the viewer shut, both stay", !viewer_open(ws, cx) && panel(ws, PanelId::Explorer, cx) == e5 && panel(ws, PanelId::History, cx) == h5, String::new());
     }
     command(ws, Box::new(crate::dock::ResetPanelLayout), cx);
     settle(cx).await;

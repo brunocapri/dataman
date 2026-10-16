@@ -204,7 +204,7 @@ impl ActivityView {
         for g in [&sessions_grid, &tables_grid, &statements_grid] {
             cx.observe(g, |m, _, cx| m.on_grid(cx)).detach();
             cx.subscribe(g, |_, _, ev: &GridEvent, cx| {
-                if matches!(ev, GridEvent::EditCell { .. } | GridEvent::ToggleViewer) {
+                if matches!(ev, GridEvent::EditCell { .. } | GridEvent::ViewValue { .. }) {
                     cx.emit(ActivityEvent::Details { toggle: false });
                 }
             })

@@ -61,7 +61,8 @@ actions!(
         CopyTsvWithHeader,
         FetchMore,
         FetchAll,
-        ToggleViewer,
+        /// ⇧Space: the selected JSON or array cell's value sheet (`value_view`).
+        ViewValue,
         EditCell,
         InsertRow,
         DeleteRows,
@@ -104,7 +105,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("home", Top, c),
         KeyBinding::new("end", Bottom, c),
         KeyBinding::new("cmd-a", SelectAll, c),
-        // Copy, fetch, the viewer and ⌘I are remappable commands (`keymap`).
+        // Copy, fetch, the value sheet and ⌘I are remappable commands (`keymap`).
         KeyBinding::new("enter", EditCell, c),
         KeyBinding::new("backspace", DeleteRows, c),
         KeyBinding::new("delete", DeleteRows, c),
@@ -129,8 +130,9 @@ pub fn bind_keys(cx: &mut App) {
 }
 
 pub enum GridEvent {
-    /// ⇧Space: open or close the cell viewer.
-    ToggleViewer,
+    /// The eye of a JSON or array cell, or ⇧Space on the selected one: its value sheet (display
+    /// row, result column; `value_at` says what it shows).
+    ViewValue { row: usize, col: usize },
     /// ↩ or a double click on a cell: edit it (display row, result column).
     EditCell { row: usize, col: usize },
     /// ⌘I: a new row at the end.
@@ -226,6 +228,9 @@ const BAR: f32 = 10.;
 const MIN_W: f32 = 48.;
 const MAX_AUTO_W: f32 = 420.;
 const GUTTER_MIN: f32 = 60.;
+/// The room an eye (`value_view`) takes at its cell's right edge, and the icon in it.
+const EYE_W: f32 = 22.;
+const EYE_ICON: f32 = 13.;
 
 /// One width for a query tab's two gutters, the editor's line numbers and the grid's row
 /// numbers, so their dividers read as one line down the tab: each side says what its digits
@@ -427,6 +432,12 @@ pub struct ResultGrid {
     /// (window coordinates, also outside the grid and the window), and the timer that keeps
     /// scrolling while it stays there.
     auto: Option<AutoScroll>,
+    /// The cell under the pointer, when its column can show an eye (JSON, arrays), and whether
+    /// the pointer is on the eye itself.
+    hover: Option<CellPos>,
+    hover_eye: bool,
+    /// The eyes of the last frame: their cell and box (window coordinates).
+    eyes: Vec<(CellPos, Bounds<Pixels>)>,
 }
 
 /// Drag-select autoscroll (Excel, Numbers): the grid scrolls towards the pointer while a
@@ -615,6 +626,9 @@ impl ResultGrid {
             table: None,
             preferred: None,
             gutter: None,
+            hover: None,
+            hover_eye: false,
+            eyes: Vec::new(),
         }
     }
 
@@ -1190,6 +1204,8 @@ impl ResultGrid {
         self.scroll.0 -= dx;
         self.scroll.1 -= dy as f64;
         self.clamp_scroll();
+        // Another cell is under the pointer now: the eye follows it.
+        self.track_hover(ev.position, true, cx);
         cx.notify();
     }
 
@@ -1253,6 +1269,20 @@ impl ResultGrid {
             if let Some(d) = self.hit_col(bx) {
                 self.drag = Some(Drag::Header { col: d, x });
             }
+            return;
+        }
+        // The eye of a JSON or array cell: its value sheet. The cell becomes the selected one,
+        // quietly (no pop, no drag, no cell menu); a second click is not an edit.
+        if !ev.modifiers.control
+            && let Some(cell) = self.eye_at(ev.position)
+        {
+            if self.pop.as_ref().is_some_and(|p| p.style == PopStyle::Select) {
+                self.pop = None;
+            }
+            self.sel = Some(Selection { anchor: cell, head: cell, rows: false });
+            self.drag = None;
+            cx.emit(GridEvent::ViewValue { row: cell.row, col: self.rc(cell.col) });
+            cx.notify();
             return;
         }
         let Some(cell) = self.hit_cell(ev.position) else { return };
@@ -1962,10 +1992,83 @@ impl ResultGrid {
         cx.notify();
     }
 
-    /// The cell the viewer shows (the head of a cell selection): display row, result column.
+    /// The active cell (the head of a cell selection): display row, result column.
     pub fn active_cell(&self) -> Option<(usize, usize)> {
         let s = self.sel?;
         (!s.rows || s.anchor.row == s.head.row).then_some((s.head.row, self.rc(s.head.col)))
+    }
+
+    /// The value of a cell (display row, result column) as drawn: a pending edit's text over the
+    /// stored one, a row being inserted's own; `None` for NULL. Outer `None`: no such cell.
+    fn shown_value(&self, snap: &Snapshot, row: usize, col: usize) -> Option<Option<String>> {
+        let data_rows = snap.rows();
+        let decor = self.decor.as_ref().filter(|d| !d.is_empty());
+        if row >= data_rows {
+            return decor?.virtual_rows.get(row - data_rows)?.cells.get(col)?.text.clone();
+        }
+        if col >= snap.columns.len() {
+            return None;
+        }
+        let over = decor.and_then(|d| d.cells.get(&(snap.source_row(row), col))).and_then(|d| d.text.clone());
+        Some(over.unwrap_or_else(|| snap.text(row, col).map(|v| v.into_owned())))
+    }
+
+    /// What the value sheet shows for a cell (display row, result column): `None` unless it is
+    /// a JSON object or array, or an array (`value_view::viewable`), not NULL.
+    pub fn value_at(&self, row: usize, col: usize) -> Option<crate::value_view::ValueCell> {
+        let snap = self.rs.as_ref()?.snapshot();
+        let c = snap.columns.get(col)?;
+        crate::value_view::shape_of(c.kind, &c.type_name)?;
+        let value = self.shown_value(&snap, row, col)??;
+        crate::value_view::viewable(c.kind, &c.type_name, &value).then(|| crate::value_view::ValueCell {
+            column: c.name.clone(),
+            type_name: c.type_name.clone(),
+            kind: c.kind,
+            row,
+            value,
+        })
+    }
+
+    /// Whether a cell (display row, result column) of `snap` shows an eye when hovered or
+    /// selected (see `value_at`).
+    fn has_eye(&self, snap: &Snapshot, row: usize, col: usize) -> bool {
+        let Some(c) = snap.columns.get(col).filter(|c| crate::value_view::shape_of(c.kind, &c.type_name).is_some()) else { return false };
+        self.shown_value(snap, row, col).flatten().is_some_and(|v| crate::value_view::viewable(c.kind, &c.type_name, &v))
+    }
+
+    /// The pointer moved (window position; `inside`: over the cells, nothing on top): the
+    /// cell under it when its column can show an eye, and whether it is on the eye. Redraws
+    /// only when that changes (an eye appears, goes, or lights up).
+    fn track_hover(&mut self, p: Point<Pixels>, inside: bool, cx: &mut Context<Self>) {
+        let g = self.geo;
+        let (x, y) = self.local(p);
+        let over = inside
+            && self.drag.is_none()
+            && x >= g.gutter
+            && x < g.gutter + g.body_w.min(g.content_w - self.scroll.0)
+            && y >= HEADER_H
+            && ((y - HEADER_H) as f64 + self.scroll.1) < (self.rows() as f64 * ROW_H as f64);
+        let cols = self.rs.as_ref().and_then(|r| r.columns());
+        let cell = over
+            .then(|| self.hit_cell(p))
+            .flatten()
+            .filter(|c| cols.as_ref().and_then(|cs| cs.get(self.rc(c.col))).is_some_and(|col| crate::value_view::shape_of(col.kind, &col.type_name).is_some()));
+        let on_eye = cell.is_some() && self.eye_at(p).is_some();
+        if (cell, on_eye) != (self.hover, self.hover_eye) {
+            self.hover = cell;
+            self.hover_eye = on_eye;
+            cx.notify();
+        }
+    }
+
+    /// The cell whose eye (as last drawn) is at window position `p`.
+    fn eye_at(&self, p: Point<Pixels>) -> Option<CellPos> {
+        self.eyes.iter().find(|(_, b)| b.contains(&p)).map(|(c, _)| *c)
+    }
+
+    /// Checks: the eyes on screen (display row, result column) and their centres (window).
+    pub fn demo_eyes(&self) -> Vec<((usize, usize), Point<Pixels>)> {
+        self.eyes.iter().map(|(c, b)| ((c.row, self.rc(c.col)), b.center())).collect()
     }
 
     pub fn result(&self) -> Option<&Arc<ResultSet>> {
@@ -2433,6 +2536,15 @@ impl ResultGrid {
             }
         }
         let active = self.active_cell();
+        // The eyes (`value_view`): on the hovered cell and the selected one, when it holds a JSON
+        // object or array, or an array. The value stops short of them.
+        let mut eye_cells: Vec<CellPos> = Vec::with_capacity(2);
+        for c in [self.hover, self.sel.filter(|s| !s.rows).map(|s| s.head)].into_iter().flatten() {
+            if !eye_cells.contains(&c) && (first..last).contains(&c.row) && cols.iter().any(|fc| fc.d == c.col) && self.has_eye(&snap, c.row, self.rc(c.col)) {
+                eye_cells.push(c);
+            }
+        }
+        let room = |r: usize, fc: &FCol| if eye_cells.contains(&CellPos { row: r, col: fc.d }) { fc.w - EYE_W } else { fc.w };
         // References are drawn in the accent's text color (one flag per column, no extra paint).
         let fk_cols = self.fk_cols.clone();
         let mut cells = Vec::with_capacity((last - first) * cols.len());
@@ -2492,7 +2604,7 @@ impl ResultGrid {
                         cdec.is_some_and(|d| d.ghost),
                         cdec.and_then(|d| d.color).map(|c| tone_strong(t, c)),
                         rdec.and_then(|d| d.opacity).unwrap_or(1.),
-                        max_chars(wd),
+                        max_chars(room(r, fc)),
                     );
                     let right = value.is_some() && kind.is_numeric() && cdec.and_then(|d| d.old.as_ref()).is_none();
                     // (A pop on a decorated cell scales its box only.)
@@ -2520,7 +2632,7 @@ impl ResultGrid {
                             Kind::Bool => t.tx3,
                             _ => t.tx,
                         };
-                        (fit(&v, max_chars(wd)), &normal, color, kind.is_numeric())
+                        (fit(&v, max_chars(room(r, fc))), &normal, color, kind.is_numeric())
                     }
                 };
                 let mut scale = 1.;
@@ -2598,7 +2710,27 @@ impl ResultGrid {
         } else {
             Vec::new()
         };
+        // The cells area (it tells the pointer over the cells from one over a sheet or a
+        // popover on top), and each eye's box: drawn whole, hit only where it shows.
+        let body = Bounds::new(point(bounds.origin.x + px(self.geo.gutter), bounds.origin.y + px(HEADER_H)), size(px(self.geo.body_w), px(self.geo.body_h)));
+        let body_hit = window.insert_hitbox(body, gpui::HitboxBehavior::Normal);
+        self.eyes.clear();
+        let mut eyes = Vec::new();
+        for c in &eye_cells {
+            let Some(fc) = cols.iter().find(|fc| fc.d == c.col) else { continue };
+            let right = bounds.origin.x.pt() + self.geo.gutter + fc.x + fc.w - 1.;
+            let b = Bounds::new(point(px(right - EYE_W + 1.), bounds.origin.y + px(HEADER_H + ry(c.row) + 2.)), size(px(EYE_W - 4.), px(ROW_H - 4.)));
+            let hit = b.intersect(&body);
+            if hit.size.width <= px(0.) || hit.size.height <= px(0.) {
+                continue;
+            }
+            self.eyes.push((*c, hit));
+            let hot = self.hover_eye && self.hover == Some(*c);
+            eyes.push(Eye { bounds: b, hot, hit: window.insert_hitbox(hit, gpui::HitboxBehavior::Normal) });
+        }
         Some(Frame {
+            body_hit,
+            eyes,
             resize_hits,
             cells,
             nulls,
@@ -2657,7 +2789,18 @@ struct Header {
     right: bool,
 }
 
+/// The eye of a JSON or array cell (`value_view`): its box, whether the pointer is on it, and
+/// its hitbox (the pointing hand).
+struct Eye {
+    bounds: Bounds<Pixels>,
+    hot: bool,
+    hit: gpui::Hitbox,
+}
+
 struct Frame {
+    /// The cells area, for the pointer's hover (`ResultGrid::track_hover`).
+    body_hit: gpui::Hitbox,
+    eyes: Vec<Eye>,
     cells: Vec<CellText>,
     /// NULL cells: (x, y, width), painted on `null_b`.
     nulls: Vec<(f32, f32, f32)>,
@@ -2697,6 +2840,25 @@ struct CellPaint {
 fn paint_frame(grid: &Entity<ResultGrid>, frame: Frame, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App) {
     for hb in &frame.resize_hits {
         window.set_cursor_style(CursorStyle::ResizeColumn, hb);
+    }
+    for e in &frame.eyes {
+        window.set_cursor_style(CursorStyle::PointingHand, &e.hit);
+    }
+    // The pointer over the cells (anywhere in the window: leaving the grid takes the eye away).
+    {
+        let grid = grid.clone();
+        let body = frame.body_hit.clone();
+        window.on_mouse_event(move |ev: &MouseMoveEvent, phase, window, cx| {
+            if phase != gpui::DispatchPhase::Bubble {
+                return;
+            }
+            let inside = body.is_hovered(window);
+            grid.update(cx, |g, cx| {
+                if inside || g.hover.is_some() {
+                    g.track_hover(ev.position, inside, cx);
+                }
+            });
+        });
     }
     // A column being resized keeps the cursor wherever the pointer goes.
     if matches!(grid.read(cx).drag, Some(Drag::Resize { .. })) {
@@ -2837,6 +2999,16 @@ fn paint_frame(grid: &Entity<ResultGrid>, frame: Frame, bounds: Bounds<Pixels>, 
             window.with_content_mask(Some(gpui::ContentMask { bounds: cell }), |window| {
                 let _ = c.line.paint(at(geo.gutter + x, HEADER_H + c.y), lh, TextAlign::Left, None, window, cx);
             });
+        }
+        // The eyes, in the room the values left them; the one under the pointer lights up.
+        for e in &frame.eyes {
+            if e.hot {
+                window.paint_quad(gpui::quad(e.bounds, px(3.), t.hov, px(0.), gpui::transparent_black(), gpui::BorderStyle::Solid));
+            }
+            let (c, s) = (e.bounds.center(), px(EYE_ICON));
+            let icon = Bounds::new(point(c.x - s / 2., c.y - s / 2.), size(s, s));
+            let color = if e.hot { t.acc_t } else { t.tx3 };
+            let _ = window.paint_svg(icon, SharedString::from(Icon::View.path()), None, gpui::TransformationMatrix::unit(), color, cx);
         }
         if let Some(s) = sel
             && focused
@@ -3060,7 +3232,13 @@ impl Render for ResultGrid {
                     rs.fetch_all();
                 }
             }))
-            .on_action(key::<ToggleViewer>(cx, |_, cx| cx.emit(GridEvent::ToggleViewer)))
+            // (The owner decides: a query tab opens the sheet for a JSON or array cell, the
+            // activity monitor its details.)
+            .on_action(key::<ViewValue>(cx, |g, cx| {
+                if let Some((row, col)) = g.active_cell() {
+                    cx.emit(GridEvent::ViewValue { row, col });
+                }
+            }))
             .on_action(key::<EditCell>(cx, |g, cx| {
                 g.follow_now();
                 if let Some((row, col)) = g.sel.map(|s| (s.head.row, g.rc(s.head.col))) {

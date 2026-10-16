@@ -560,6 +560,112 @@ impl Doc {
         self.collapsed.remove(path);
         Some(out)
     }
+
+    /// Every container open.
+    pub fn expand_all(&mut self) {
+        self.collapsed.clear();
+    }
+
+    /// Every container below the root shut: the root's own members stay listed.
+    pub fn collapse_all(&mut self) {
+        fn walk(n: &Node, path: &mut Path, out: &mut HashSet<Path>) {
+            let kids: Vec<&Node> = match n {
+                Node::Array(a) => a.iter().collect(),
+                Node::Object(o) => o.iter().map(|(_, v)| v).collect(),
+                _ => return,
+            };
+            if !path.is_empty() {
+                out.insert(path.clone());
+            }
+            for (i, k) in kids.into_iter().enumerate() {
+                path.push(i);
+                walk(k, path, out);
+                path.pop();
+            }
+        }
+        self.collapsed.clear();
+        walk(&self.root, &mut Vec::new(), &mut self.collapsed);
+    }
+}
+
+/// A PostgreSQL array as text (`{1,2,"a b",NULL}`, nested `{{1,2},{3,4}}`, with or without a
+/// `[1:2]=` bounds prefix) as a tree of arrays: unquoted numbers become numbers, an unquoted
+/// `NULL` null, anything else a string (quotes and backslashes undone). `None`: not an array.
+pub fn from_pg_array(text: &str) -> Option<Node> {
+    let mut t = text.trim();
+    if t.starts_with('[') {
+        t = t[t.find('=')? + 1..].trim_start();
+    }
+    let s: Vec<char> = t.chars().collect();
+    let mut i = 0;
+    let node = pg_level(&s, &mut i)?;
+    while i < s.len() && s[i].is_whitespace() {
+        i += 1;
+    }
+    (i == s.len()).then_some(node)
+}
+
+fn pg_level(s: &[char], i: &mut usize) -> Option<Node> {
+    let ws = |i: &mut usize| {
+        while *i < s.len() && s[*i].is_whitespace() {
+            *i += 1;
+        }
+    };
+    ws(i);
+    if s.get(*i) != Some(&'{') {
+        return None;
+    }
+    *i += 1;
+    let mut items = Vec::new();
+    ws(i);
+    if s.get(*i) == Some(&'}') {
+        *i += 1;
+        return Some(Node::Array(items));
+    }
+    loop {
+        ws(i);
+        match s.get(*i)? {
+            '{' => items.push(pg_level(s, i)?),
+            '"' => {
+                *i += 1;
+                let mut out = String::new();
+                loop {
+                    match s.get(*i)? {
+                        '\\' => {
+                            *i += 1;
+                            out.push(*s.get(*i)?);
+                        }
+                        '"' => break,
+                        c => out.push(*c),
+                    }
+                    *i += 1;
+                }
+                *i += 1;
+                items.push(Node::String(out));
+            }
+            _ => {
+                let start = *i;
+                while *i < s.len() && !matches!(s[*i], ',' | '}') {
+                    *i += 1;
+                }
+                let word = s[start..*i].iter().collect::<String>().trim_end().to_string();
+                items.push(match parse(&word) {
+                    _ if word.eq_ignore_ascii_case("null") => Node::Null,
+                    Ok(n @ Node::Number(_)) => n,
+                    _ => Node::String(word),
+                });
+            }
+        }
+        ws(i);
+        match s.get(*i)? {
+            ',' => *i += 1,
+            '}' => {
+                *i += 1;
+                return Some(Node::Array(items));
+            }
+            _ => return None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -632,5 +738,41 @@ mod tests {
         assert_eq!(leaf_from_text(" null "), Node::Null);
         assert_eq!(Node::String("x".into()).edit_text(), "x");
         assert_eq!(Node::Number("3".into()).edit_text(), "3");
+    }
+
+    #[test]
+    fn pg_arrays() {
+        let n = from_pg_array(r#"{1,2.5,"a b",NULL,"NULL","q\"x\\y",plain}"#).unwrap();
+        assert_eq!(
+            n,
+            Node::Array(vec![
+                Node::Number("1".into()),
+                Node::Number("2.5".into()),
+                Node::String("a b".into()),
+                Node::Null,
+                Node::String("NULL".into()),
+                Node::String(r#"q"x\y"#.into()),
+                Node::String("plain".into()),
+            ])
+        );
+        let nested = from_pg_array("{{1,2},{3,4}}").unwrap();
+        assert_eq!(nested.len(), 2);
+        assert_eq!(nested.get(&[1, 0]), Some(&Node::Number("3".into())));
+        assert_eq!(from_pg_array("{}"), Some(Node::Array(vec![])));
+        assert_eq!(from_pg_array("[0:1]={a,b}").map(|n| n.len()), Some(2));
+        assert_eq!(from_pg_array(r#"{"{\"a\": 1}"}"#), Some(Node::Array(vec![Node::String(r#"{"a": 1}"#.into())])));
+        for bad in ["", "1,2", "{1,2", "{1,2} x", r#"{"a}"#] {
+            assert_eq!(from_pg_array(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn expand_and_collapse_all() {
+        let mut d = Doc::parse(r#"{"a": {"b": [1, {"c": 2}]}, "d": 3}"#).unwrap();
+        let all = d.rows().len();
+        d.collapse_all();
+        assert_eq!(d.rows().len(), 3, "the root and its members");
+        d.expand_all();
+        assert_eq!(d.rows().len(), all);
     }
 }

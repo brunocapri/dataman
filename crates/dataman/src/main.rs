@@ -6,7 +6,6 @@ mod agent;
 mod app;
 mod assets;
 mod bench;
-mod cell_viewer;
 mod chrome;
 mod conn_dialog;
 mod conns;
@@ -73,7 +72,9 @@ mod ui_check;
 mod update_check;
 mod update_ui;
 mod updates;
+mod value_check;
 mod value_edit;
+mod value_view;
 mod welcome;
 
 use std::sync::Arc;

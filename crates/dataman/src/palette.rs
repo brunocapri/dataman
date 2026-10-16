@@ -1126,7 +1126,7 @@ fn commands(conn: Option<&std::sync::Arc<dataman_core::Connection>>, cx: &App) -
         c("Copy with headers", "the grid selection", "⇧⌘C", Box::new(crate::grid::CopyTsvWithHeader), Grid),
         c("Fetch next rows", "of a paused result", "⌘↓", Box::new(crate::grid::FetchMore), Grid),
         c("Fetch all rows", "of a paused result", "⇧⌘↓", Box::new(crate::grid::FetchAll), Grid),
-        c("Cell viewer", "JSON, full text, bytea as hex", "⇧Space", Box::new(crate::grid::ToggleViewer), Grid),
+        c("View value", "a JSON or array cell, as a tree", "⇧Space", Box::new(crate::grid::ViewValue), Grid),
         c("Jump to error", "in the editor", "⌘'", Box::new(JumpToError), Workspace),
         c("Use explorer connection", "for this tab", "⌥↩", Box::new(UseExplorerConnection), Workspace),
         c("History", "of this connection", "⌘Y", Box::new(ToggleHistory), Workspace),

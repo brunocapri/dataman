@@ -218,7 +218,8 @@ pub fn start(mode: Mode, ws: Entity<Workspace>, window: &mut Window, cx: &mut Ap
 /// a favorite renamed, the history's search focused), `copied` (the result bar's Copy after ⌘C),
 /// `saved` (⌘S's "Saved as favorite →"), `palette-favorites` (the palette's Favorites scope),
 /// `fav-menu` (a favorite's context menu), `error` (a batch that
-/// stops at statement 2), `cancelling`, `viewer`, `empty` (connected, nothing run),
+/// stops at statement 2), `cancelling`, `value` (a nested jsonb cell's value sheet; `value-check`
+/// in `value_check`), `empty` (connected, nothing run),
 /// `shortcuts`, `focus` (the grid with the keyboard focus ring), `dialog-password`,
 /// `error-pop` and `tree-pop` (the find indicator; `DATAMAN_POP_FREEZE_MS=n` holds every pop
 /// n ms in, for a capture mid-flight; `fk-pop` and `fk-land` are in `fk_check`; the find bars'
@@ -301,6 +302,7 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
         }
         s if s.starts_with("fk-") => crate::fk_check::SQL.to_string(),
         s if s.starts_with("results") => crate::results_check::SQL.to_string(),
+        s if s.starts_with("value") => crate::value_check::SQL.to_string(),
         "edit-readonly" => "SELECT p.id, p.status, c.name FROM orders p JOIN customer c ON c.id = p.customer LIMIT 50;".to_string(),
         "cancelling" => "-- full scan, then a long wait\nSELECT p.customer, count(*), sum(p.total)\nFROM   orders p\nGROUP  BY p.customer\nORDER  BY sum(p.total) DESC;".to_string(),
         _ => "-- orders with their customer, newest first\nSELECT p.id, p.status, p.total, p.address, c.name, NULL AS nothing, '' AS empty\nFROM   orders p\nJOIN   customer c ON c.id = p.customer\nORDER  BY p.id;".to_string(),
@@ -518,10 +520,12 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                         });
                     }
                     "cancelling" => tab.update(cx, |t, cx| t.demo_pretend_cancel(cx)),
-                    "viewer" => {
-                        grid.update(cx, |g, cx| g.select_cells(4..=4, 3, cx));
+                    "value" => {
+                        grid.update(cx, |g, cx| g.select_cells(4..=4, 5, cx));
                         window.focus(&grid.focus_handle(cx), cx);
-                        ws.update(cx, |w, cx| w.toggle_viewer(dataman_core::groups::Pane::Left, cx));
+                        if let Some(cell) = grid.read(cx).value_at(4, 5) {
+                            ws.update(cx, |w, cx| w.open_value(cell, window, cx));
+                        }
                     }
                     "focus" => ws.update(cx, |w, cx| w.focus_region(crate::app::Region::Grid, window, cx)),
                     // A selection over three lines, mid-line to mid-line.
@@ -839,6 +843,14 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                     }
                     return;
                 }
+            }
+            if crate::value_check::is_stage(&stage) {
+                let ok = crate::value_check::run(&ws, cx).await;
+                let _ = cx.update(|_, cx| cx.quit());
+                if !ok {
+                    std::process::exit(1);
+                }
+                return;
             }
             if crate::split_check::is_stage(&stage) {
                 let ok = crate::split_check::run(&ws, &stage, cx).await;

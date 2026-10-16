@@ -7,7 +7,7 @@
 //! group's tab in front is a wash over the strip; the other group's a lighter one (never a
 //! line: the focus is not underlined). Each strip scrolls sideways on its own when its tabs
 //! overflow (a trackpad, or the wheel turned into a sideways scroll), keeping the tab in front in
-//! view; each group has its own cell viewer at its right (`cell_viewer`).
+//! view.
 //!
 //! Opening a tab to the side (its menu, ⌘\, the palette) copies it into the other group. A query
 //! tab is a session (a connection, a transaction, results), not a view of a document that two
@@ -99,13 +99,12 @@ impl Split {
 
 /// The split opening or folding away: the group that grows in or folds (the right one when it
 /// opens), the left share it moves with, the motion, and the tab the folding group showed (drawn
-/// while it folds; gone when it was closed) with its cell viewer's width then (0: shut).
+/// while it folds; gone when it was closed).
 pub(crate) struct SplitMove {
     pub leaving: Pane,
     pub ratio: f32,
     pub tween: SplitTween,
     pub ghost: Option<WeakEntity<QueryTab>>,
-    pub viewer: f32,
 }
 
 /// Where a tab dragged over a group's editor or results would land.
@@ -275,15 +274,14 @@ impl Workspace {
         self.split_move.as_ref().and_then(|m| m.tween.at(target, Instant::now())).unwrap_or(target)
     }
 
-    fn move_split(&mut self, from: f32, leaving: Pane, ratio: f32, ghost: Option<WeakEntity<QueryTab>>, viewer: f32, cx: &App) {
+    fn move_split(&mut self, from: f32, leaving: Pane, ratio: f32, ghost: Option<WeakEntity<QueryTab>>, cx: &App) {
         // Reduce motion: the groups are simply there (or gone).
-        self.split_move = (!cx.reduce_motion()).then(|| SplitMove { leaving, ratio, tween: SplitTween::new(from), ghost, viewer });
+        self.split_move = (!cx.reduce_motion()).then(|| SplitMove { leaving, ratio, tween: SplitTween::new(from), ghost });
     }
 
-    /// One group from now on, `survivor` the one that stays: what is the group's own (its cell
-    /// viewer, its strip's scroll) is the left group's from now on.
+    /// One group from now on, `survivor` the one that stays: what is the group's own (its
+    /// strip's scroll) is the left group's from now on.
     fn group_survives(&mut self, survivor: Pane) {
-        self.viewer_survives(survivor);
         if survivor == Pane::Right {
             self.strip_scroll[0] = self.strip_scroll[1].clone();
         }
@@ -298,7 +296,7 @@ impl Workspace {
         let from = self.split_progress();
         let ratio = s.ratio;
         self.split = Some(s);
-        self.move_split(from, Pane::Right, ratio, None, 0., cx);
+        self.move_split(from, Pane::Right, ratio, None, cx);
     }
 
     /// Group `pane` has no tab left (its last one closed, or dragged out): one group from now on,
@@ -307,8 +305,7 @@ impl Workspace {
         self.close_arm = None;
         let from = self.split_progress();
         let Some(s) = self.split.take() else { return };
-        let viewer = self.viewers[pane.index()].now();
-        self.move_split(from, pane, s.ratio, ghost, viewer, cx);
+        self.move_split(from, pane, s.ratio, ghost, cx);
         self.group_survives(pane.other());
     }
 
@@ -559,7 +556,7 @@ impl Workspace {
         let from = self.split_progress();
         let right = ids.into_iter().filter(|k| *k != id).collect();
         self.split = Some(Split { right, focus: Pane::Left, other, ratio: groups::RATIO });
-        self.move_split(from, Pane::Left, groups::RATIO, None, 0., cx);
+        self.move_split(from, Pane::Left, groups::RATIO, None, cx);
         self.active = 0;
         self.activate(0, window, cx);
         cx.notify();

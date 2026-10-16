@@ -3,7 +3,7 @@
 //! moving, so an idle window still draws nothing. No `with_animation` wrapper: the element tree
 //! keeps its shape, and a finished tween is exactly the steady state.
 //!
-//! - [`WidthTween`]: the explorer, the history and the cell viewer sliding open and shut (the
+//! - [`WidthTween`]: the explorer and the history sliding open and shut (the
 //!   title bar's explorer toggle fills its left part along with the explorer).
 //! - [`Flash`]: a feedback that fades in and out ("Copied", "Saved as favorite").
 //! - [`Progress`] and [`RectTween`]: a panel dropped in another dock settling into its place

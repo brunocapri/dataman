@@ -13,15 +13,14 @@
 //! `line2` from the window's top through the strips down to the bottom, the same device pixels
 //! at every height (measured in the rendered image); no Open to the Side button on the strip; each strip scrolls its tabs sideways on
 //! its own (the wheel, the tab in front kept in view); the connection picker of a narrow group
-//! gives way instead of running over the History button; each group has its own cell viewer
-//! (⇧Space in its grid, inside the group, resized by its edge, kept by the group that stays);
-//! a tab dragged over a group's editor previews where it lands and dropped there moves into that
+//! gives way instead of running over the History button; a group's results reach its right edge
+//! (no cell panel) and ⇧Space on a plain cell opens nothing; a tab dragged over a group's editor previews where it lands and dropped there moves into that
 //! group or opens a group of its own at either side. PASS/FAIL lines like `dock-check`.
 //!
 //! Captures: `split` shows two groups with results in both, the right one focused;
 //! `split-opening` catches ⌘\ on its way (`DATAMAN_SPLIT_FREEZE=0.5`). With `DATAMAN_SHOT_DIR`,
 //! the check also captures `split-seam`, `split-sure`, `split-scrolled`, `split-narrow`,
-//! `split-viewers`, `split-drop-side` and `split-drop-whole` there.
+//! `split-drop-side` and `split-drop-whole` there.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -216,10 +215,6 @@ fn drop_now(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> Option<(Pane
     cx.update(|_, cx| ws.read(cx).editor_drop).ok().flatten()
 }
 
-fn viewer_open(ws: &Entity<Workspace>, pane: Pane, cx: &mut AsyncWindowContext) -> bool {
-    cx.update(|_, cx| ws.read(cx).viewer_open(pane)).unwrap_or(false)
-}
-
 /// The group whose × asks "Sure?".
 fn asking(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> Option<Pane> {
     draw(cx);
@@ -372,8 +367,8 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
         format!("rows {rows:?} left {left_rows:?} focus {:?}", focused(ws, cx)),
     );
 
-    // Each group has its own cell viewer: ⇧Space in the right group's grid opens the right
-    // one, inside the group, about that grid's cell; the left group's stays shut.
+    // No cell panel beside a group's results: the right group's reach its right edge, and
+    // ⇧Space on a plain cell (not JSON, not an array) opens nothing.
     pause(cx, 300).await;
     let result = cx.update(|_, cx| ws.read(cx).result_bounds.get()).ok().flatten();
     if let Some(r) = result {
@@ -381,55 +376,21 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
     }
     let grid_focused = cx.update(|window, cx| copy.read(cx).grid.focus_handle(cx).contains_focused(window, cx)).unwrap_or(false);
     key(cx, "shift-space");
-    pause(cx, 320).await;
+    pause(cx, 100).await;
     draw(cx);
     let right_pane = panes(ws, cx).map(|(_, r)| r);
-    // Its width, leaving the group its least room for the editor and results.
-    let vw = cx.update(|_, cx| ws.read(cx).viewers[1].w).unwrap().min(right_pane.map_or(0., |(_, rw)| rw - crate::cell_viewer::MAIN_MIN));
     let result = cx.update(|_, cx| ws.read(cx).result_bounds.get()).ok().flatten();
+    let sheet = cx.update(|_, cx| ws.read(cx).value_view.is_some()).unwrap_or(true);
     report(
-        "⇧Space in the right group's grid opens the right group's cell viewer, not the left's",
-        grid_focused && viewer_open(ws, Pane::Right, cx) && !viewer_open(ws, Pane::Left, cx) && cx.update(|_, cx| ws.read(cx).side.is_none()).unwrap(),
-        format!("grid focused {grid_focused}, right {} left {}", viewer_open(ws, Pane::Right, cx), viewer_open(ws, Pane::Left, cx)),
+        "⇧Space on a plain cell of the right group's grid opens nothing",
+        grid_focused && !sheet && cx.update(|_, cx| ws.read(cx).side.is_none()).unwrap(),
+        format!("grid focused {grid_focused}, sheet {sheet}"),
     );
     report(
-        "the viewer sits inside its group, at its right: the results end where it starts",
-        right_pane.zip(result).is_some_and(|((rx, rw), r)| near(r.right().pt(), rx + rw - vw, 2.)),
-        format!("{right_pane:?} {result:?} viewer {vw}"),
+        "the right group's results reach its right edge",
+        right_pane.zip(result).is_some_and(|((rx, rw), r)| near(r.right().pt(), rx + rw, 2.)),
+        format!("{right_pane:?} {result:?}"),
     );
-    // Its left edge resizes it, with a real drag (narrower: wider it would take the group's
-    // least room).
-    if let Some((rx, rw)) = right_pane {
-        let edge = at(rx + rw - vw, c.y + c.h / 2.);
-        drag_along(cx, edge, &[at(edge.x.pt() + 20., edge.y.pt()), at(edge.x.pt() + 60., edge.y.pt())]);
-        up(cx, at(edge.x.pt() + 60., edge.y.pt()), 1);
-    }
-    pause(cx, 50).await;
-    let vw2 = cx.update(|_, cx| ws.read(cx).viewers[1].w).unwrap();
-    let result2 = cx.update(|_, cx| ws.read(cx).result_bounds.get()).ok().flatten();
-    report(
-        "dragging the viewer's edge resizes it (the results take the room it gives)",
-        near(vw2, vw - 60., 1.5) && result.zip(result2).is_some_and(|(a, b)| near(b.right().pt(), a.right().pt() + 60., 2.)),
-        format!("{vw} → {vw2}"),
-    );
-    // The left group's own: opened from its grid, the right one stays as it is.
-    let l = panes(ws, cx).map(|(l, _)| l);
-    if let Some((lx, _)) = l {
-        click(cx, at(lx + 60., c.y + c.h - 120.));
-    }
-    key(cx, "shift-space");
-    pause(cx, 320).await;
-    snap("viewers", cx);
-    report(
-        "the left group opens its own viewer; both are open, each in its group",
-        viewer_open(ws, Pane::Left, cx) && viewer_open(ws, Pane::Right, cx) && focused(ws, cx) == Some(Pane::Left),
-        format!("left {} right {} focus {:?}", viewer_open(ws, Pane::Left, cx), viewer_open(ws, Pane::Right, cx), focused(ws, cx)),
-    );
-    key(cx, "shift-space");
-    report("⇧Space again shuts the left one only", !viewer_open(ws, Pane::Left, cx) && viewer_open(ws, Pane::Right, cx), String::new());
-    // The right one shut again for what follows.
-    let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.toggle_viewer(Pane::Right, cx)));
-    pause(cx, 320).await;
 
     // The keyboard focus landing in the other group moves the focus there.
     let _ = cx.update(|window, cx| {
@@ -699,7 +660,7 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
     report("then one group has the whole surface", one && full.is_none_or(|w| near(w, c.w, 1.5)), format!("{full:?} vs {}", c.w));
 
     // The left group's ×, confirmed: the LEFT group closes with its tabs (whichever group has
-    // the focus); the right one's tab stays in front, with its cell viewer.
+    // the focus); the right one's tab stays in front.
     let _ = cx.update(|_, cx| ws.update(cx, |w, _| w.focus_visible = false));
     key(cx, "cmd-\\");
     pause(cx, 300).await;
@@ -707,7 +668,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
     let copy = active(ws, cx).unwrap();
     report("⌘\\ again: two groups", right(ws, cx) == [copy.clone()], format!("{}", right(ws, cx).len()));
     let left_n = cx.update(|_, cx| ws.read(cx).group(Pane::Left).len()).unwrap();
-    let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.toggle_viewer(Pane::Right, cx)));
     pause(cx, 300).await;
     let seam = panes(ws, cx).map_or(0., |((lx, lw), _)| lx + lw);
     let left_x = parts(ws, Pane::Left, cx).last().copied();
@@ -733,8 +693,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
             active(ws, cx).as_ref() == Some(&copy)
         ),
     );
-    report("the group that stays keeps its cell viewer", viewer_open(ws, Pane::Left, cx) && !viewer_open(ws, Pane::Right, cx), String::new());
-    let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.toggle_viewer(Pane::Left, cx)));
     pause(cx, 400).await;
     draw(cx);
 

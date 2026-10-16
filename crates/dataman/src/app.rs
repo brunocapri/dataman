@@ -276,9 +276,6 @@ pub(crate) enum Drag {
     Split,
     /// The seam between two editor groups (`split`).
     Groups,
-    /// A group's cell viewer's left edge (`cell_viewer`): where the press was, and the width
-    /// then.
-    Viewer { pane: Pane, x0: f32, w0: f32 },
 }
 
 /// A query tab on the move (GPUI's drag; `dnd`).
@@ -364,13 +361,6 @@ pub(crate) enum Region {
     Side,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ViewerMode {
-    Json,
-    Text,
-    Hex,
-}
-
 pub struct Workspace {
     pub store: Entity<ConnStore>,
     pub tree: Entity<SchemaTree>,
@@ -404,8 +394,6 @@ pub struct Workspace {
     pub(crate) dock_moves: Vec<crate::dock::DockMove>,
     pub(crate) panel_drag: Option<crate::dock::PanelDrag>,
     pub(crate) frame_now: crate::dock::Frame,
-    /// The right dock folded away while a cell viewer is open (never saved).
-    pub(crate) viewer_fold: crate::dock::ViewerFold,
     pub(crate) panel_menu: Option<(dataman_core::layout::PanelId, gpui::Point<gpui::Pixels>)>,
     /// The docks' slots as last laid out, per dock and column (the checks hold them to
     /// `frame_now`).
@@ -434,8 +422,6 @@ pub struct Workspace {
     pub(crate) strip_scroll: [gpui::ScrollHandle; 2],
     pub(crate) strip_front: [std::cell::Cell<Option<EntityId>>; 2],
     pub(crate) strip_parts: std::rc::Rc<std::cell::RefCell<[Vec<gpui::Bounds<gpui::Pixels>>; 2]>>,
-    /// Each group's cell viewer (`cell_viewer`), by `Pane::index`.
-    pub(crate) viewers: [crate::cell_viewer::CellViewer; 2],
     /// A tab dragged over a group's editor or results: the group and where it would land
     /// (`split`), and its preview gliding between the zones.
     pub(crate) editor_drop: Option<(Pane, crate::split::DropZone)>,
@@ -476,8 +462,6 @@ pub struct Workspace {
     pub(crate) focus_visible: bool,
     pub(crate) shortcuts_open: bool,
     pub(crate) copy_menu: bool,
-    pub(crate) viewer_mode: ViewerMode,
-    pub(crate) viewer_wrap: bool,
     /// The cancel toast was hidden for this request.
     pub(crate) cancel_toast_hidden: Option<Instant>,
     /// "LAR detected on …" (connection name, when it appeared).
@@ -492,6 +476,8 @@ pub struct Workspace {
     pub(crate) export: Option<Entity<crate::export_ui::ExportView>>,
     /// The data import sheet; kept while an import runs in the background.
     pub(crate) data_import: Option<Entity<crate::data_import::DataImportView>>,
+    /// The value sheet of a JSON or array cell (`value_view`).
+    pub(crate) value_view: Option<Entity<crate::value_view::ValueView>>,
     /// The "discard pending edits?" sheet (shown while the active tab has a `pending_run`).
     pub(crate) confirm_focus: FocusHandle,
     /// The "Delete connection?" sheet: the connection it asks about.
@@ -641,7 +627,6 @@ impl Workspace {
             dock_moves: Vec::new(),
             panel_drag: None,
             frame_now: Default::default(),
-            viewer_fold: Default::default(),
             panel_menu: None,
             slot_bounds: Default::default(),
             saved_flash: None,
@@ -657,7 +642,6 @@ impl Workspace {
             strip_scroll: Default::default(),
             strip_front: Default::default(),
             strip_parts: Default::default(),
-            viewers: Default::default(),
             editor_drop: None,
             editor_drop_glide: None,
             split: None,
@@ -680,8 +664,6 @@ impl Workspace {
             focus_visible: false,
             shortcuts_open: false,
             copy_menu: false,
-            viewer_mode: ViewerMode::Json,
-            viewer_wrap: true,
             cancel_toast_hidden: None,
             lar_toast: None,
             flash_notice: None,
@@ -689,6 +671,7 @@ impl Workspace {
             settings_view: None,
             modal_return: None,
             export: None,
+            value_view: None,
             data_import: None,
             confirm_focus: cx.focus_handle(),
             confirm_delete: None,
@@ -825,11 +808,10 @@ impl Workspace {
         let grid = tab.read(cx).grid.clone();
         let from = tab.downgrade();
         cx.subscribe_in(&grid, window, move |w, _, ev: &GridEvent, window, cx| match ev {
-            // The cell viewer of the group the tab is in.
-            GridEvent::ToggleViewer => {
-                if let Some(from) = from.upgrade() {
-                    let pane = w.pane_of(from.entity_id());
-                    w.toggle_viewer(pane, cx);
+            // The eye of a JSON or array cell, or ⇧Space: its value sheet.
+            GridEvent::ViewValue { row, col } => {
+                if let Some(cell) = from.upgrade().and_then(|t| t.read(cx).grid.read(cx).value_at(*row, *col)) {
+                    w.open_value(cell, window, cx);
                 }
             }
             GridEvent::FollowFk(j) => {
@@ -977,6 +959,7 @@ impl Workspace {
             || self.import.is_some()
             || self.export.as_ref().is_some_and(|e| e.read(cx).visible)
             || self.data_import.as_ref().is_some_and(|e| e.read(cx).visible)
+            || self.value_view.is_some()
             || self.active_tab().is_some_and(|t| t.read(cx).pending_run.is_some() || t.read(cx).confirm.is_some() || t.read(cx).params.is_some())
             || self.confirm_delete.is_some()
             || self.tx_prompt.is_some()
@@ -1545,6 +1528,29 @@ impl Workspace {
         cx.notify();
     }
 
+    /// The value sheet of a JSON or array cell (the grid's eye, ⇧Space); the keys go back to the
+    /// grid when it closes.
+    pub(crate) fn open_value(&mut self, cell: crate::value_view::ValueCell, window: &mut Window, cx: &mut Context<Self>) {
+        if self.modal_open(cx) {
+            return;
+        }
+        self.modal_return = window.focused(cx);
+        let v = cx.new(|cx| crate::value_view::ValueView::new(cell, window, cx));
+        cx.subscribe_in(&v, window, |w, _, ev: &crate::value_view::ValueEvent, window, cx| match ev {
+            crate::value_view::ValueEvent::Close => {
+                w.value_view = None;
+                match w.modal_return.take() {
+                    Some(f) => window.focus(&f, cx),
+                    None => w.focus_editor(window, cx),
+                }
+                cx.notify();
+            }
+        })
+        .detach();
+        self.value_view = Some(v);
+        cx.notify();
+    }
+
     fn on_welcome(&mut self, _: &Entity<Welcome>, ev: &WelcomeEvent, window: &mut Window, cx: &mut Context<Self>) {
         match ev {
             WelcomeEvent::NewConnection => self.open_dialog(None, window, cx),
@@ -1831,10 +1837,6 @@ impl Workspace {
 
     pub(crate) fn toggle_side(&mut self, which: Side, cx: &mut Context<Self>) {
         if self.side.as_ref().is_some_and(|s| s.same_kind(&which)) {
-            // Folded away for a cell viewer: shown again, not shut out of sight.
-            if self.reveal_folded(dataman_core::layout::PanelId::History, cx) {
-                return;
-            }
             self.last_side = self.side.take();
         } else {
             self.side = Some(which);
@@ -1849,9 +1851,6 @@ impl Workspace {
         let Some(panel) = cx.try_global::<PanelRegistry>().and_then(|r| r.find(&conn.info, id)) else { return };
         // Open for this connection: close it. Open for another one: rebuild.
         if matches!(&self.side, Some(Side::Server(pid, _, b)) if *pid == id && b.fits(None, Some(&conn))) {
-            if self.reveal_folded(dataman_core::layout::PanelId::History, cx) {
-                return;
-            }
             self.last_side = self.side.take();
         } else {
             if let Some(w) = panel.width() {
@@ -1961,10 +1960,6 @@ impl Workspace {
         if open == self.explorer_open {
             return;
         }
-        // Folded away in the right dock for a cell viewer: shown again, not shut out of sight.
-        if !open && self.reveal_folded(dataman_core::layout::PanelId::Explorer, cx) {
-            return;
-        }
         let from = self.explorer_now();
         self.explorer_open = open;
         let to = self.explorer_target();
@@ -2071,7 +2066,6 @@ impl Workspace {
     pub(crate) fn focus_region(&mut self, r: Region, window: &mut Window, cx: &mut Context<Self>) {
         match r {
             Region::Explorer => {
-                self.reveal_folded(dataman_core::layout::PanelId::Explorer, cx);
                 self.set_explorer_open(true, cx);
                 let f = self.tree.focus_handle(cx);
                 window.focus(&f, cx);
@@ -2090,7 +2084,6 @@ impl Workspace {
             }
             Region::Side => match &self.side {
                 Some(Side::History) => {
-                    self.reveal_folded(dataman_core::layout::PanelId::History, cx);
                     let f = self.history.read(cx).filter_focus(cx);
                     window.focus(&f, cx);
                 }
@@ -2534,7 +2527,6 @@ impl Workspace {
             Drag::Dock(dock, col) => self.resize_column(dock, col, ev.position.x.pt()),
             Drag::Stack(dock, col) => self.resize_stack(dock, col, ev.position.y.pt()),
             Drag::Groups => self.resize_groups(ev.position.x.pt()),
-            Drag::Viewer { pane, x0, w0 } => self.resize_viewer(pane, w0 + x0 - ev.position.x.pt()),
             Drag::Split => {
                 let top = metrics::TITLE_H + metrics::TOOLBAR_H;
                 let column = self.work_column_h(window);
@@ -2838,9 +2830,6 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(|w, _: &ToggleSidePanel, _, cx| {
                 if w.side.is_some() {
-                    if w.reveal_folded(dataman_core::layout::PanelId::History, cx) {
-                        return;
-                    }
                     w.last_side = w.side.take();
                 } else {
                     w.side = Some(w.last_side.clone().unwrap_or(Side::History));
@@ -3013,6 +3002,7 @@ impl Render for Workspace {
             .children(self.settings_view.clone())
             .children(self.export.clone().filter(|e| e.read(cx).visible))
             .children(self.data_import.clone().filter(|e| e.read(cx).visible))
+            .children(self.value_view.clone())
             .children(self.palette.clone())
             .children(self.render_filter_popover(cx))
             .children(self.render_confirm_discard(cx))
@@ -3132,7 +3122,7 @@ mod tests {
     }
 
     /// A table's pages (⌥⌘← →) work from the editor and the grid, not behind a modal; inside the
-    /// editor ⌥← → still move by word, and ⇧Space stays the viewer. The value editor's keys
+    /// editor ⌥← → still move by word, and ⇧Space stays the value sheet's. The value editor's keys
     /// belong to it.
     #[test]
     fn table_keys() {
@@ -3141,7 +3131,7 @@ mod tests {
             KeyBinding::new("cmd-alt-right", NextPage, w),
             KeyBinding::new("cmd-alt-left", PrevPage, w),
             KeyBinding::new("alt-right", crate::editor::MoveWordRight, Some("CodeEditor")),
-            KeyBinding::new("shift-space", crate::grid::ToggleViewer, Some(crate::grid::GRID_KEYS)),
+            KeyBinding::new("shift-space", crate::grid::ViewValue, Some(crate::grid::GRID_KEYS)),
             KeyBinding::new("down", crate::grid::MoveDown, Some(crate::grid::GRID_KEYS)),
             KeyBinding::new("escape", FocusEditor, w),
             KeyBinding::new("escape", crate::value_edit::CancelValue, Some(crate::value_edit::CONTEXT)),
@@ -3155,7 +3145,7 @@ mod tests {
             assert_eq!(first("cmd-alt-left", ctx).as_deref(), Some("workspace::PrevPage"), "{ctx:?}");
         }
         assert_eq!(first("alt-right", &["Workspace", "CodeEditor"]).as_deref(), Some("code_editor::MoveWordRight"));
-        assert_eq!(first("shift-space", &["Workspace", "ResultGrid"]).as_deref(), Some("grid::ToggleViewer"));
+        assert_eq!(first("shift-space", &["Workspace", "ResultGrid"]).as_deref(), Some("grid::ViewValue"));
         assert_eq!(first("cmd-alt-right", &["Workspace", "Palette Modal"]), None);
         assert_eq!(first("down", &["Workspace", "ResultGrid"]).as_deref(), Some("grid::MoveDown"));
         assert_eq!(first("escape", &["Workspace", "ResultGrid", crate::value_edit::CONTEXT]).as_deref(), Some("value_editor::CancelValue"));

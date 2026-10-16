@@ -1,7 +1,7 @@
 //! The window chrome, drawn from the design boards: title bar with the query tabs
 //! (UiTitlebar), toolbar (UiToolbar), result bar (UiResultBar), status bar (UiStatusBar), the
-//! work surface layout, the side panel container, the error view (EditorError), the cell
-//! viewer (ResultComplete), toasts and the shortcuts sheet.
+//! work surface layout, the side panel container, the error view (EditorError), toasts and the
+//! shortcuts sheet.
 
 use std::sync::Arc;
 
@@ -15,7 +15,7 @@ use dataman_core::groups::Pane;
 use dataman_core::result::{CopyFormat, Phase};
 use dataman_core::{Connection, TxState, TxStatus};
 
-use crate::app::{Drag, Region, Side, ViewerMode, Workspace, fmt_dur};
+use crate::app::{Drag, Region, Side, Workspace, fmt_dur};
 use crate::assets::{Icon, icon};
 use crate::grid::{fmt_clock, statement_verb, ui_count};
 use crate::messages::{self, Of, Row as MessageRow};
@@ -702,7 +702,7 @@ impl Workspace {
         let c = self.frame_now.center;
         let Some(f) = self.split_now else {
             let Some(tab) = self.active_tab().cloned() else { return div().size_full() };
-            let body = self.render_group(tab, Pane::Left, true, c.w, false, window, cx);
+            let body = self.render_group(tab, Pane::Left, true, c.w, window, cx);
             let preview = self.render_editor_drop(Pane::Left, window, cx);
             let group = div().id(("group", 0usize)).size_full().relative().child(body).children(preview);
             return div().size_full().child(self.editor_drop_target(group, Pane::Left, cx));
@@ -717,11 +717,11 @@ impl Workspace {
         for pane in [Pane::Left, Pane::Right] {
             let (tab, focused) = self.pane_view(pane);
             let full = if pane == Pane::Left { full_l } else { full_r };
-            // Folding away, the group that stays is the only one already: its state (its cell
-            // viewer, its strip) is the left group's; the folding one shows what it showed.
+            // Folding away, the group that stays is the only one already: its state (its strip)
+            // is the left group's; the folding one shows what it showed.
             let ghost = self.split.is_none() && pane == f.leaving;
             let state = if self.split.is_none() && !ghost { Pane::Left } else { pane };
-            let body = tab.map(|tab| self.render_group(tab, state, focused, full, ghost, window, cx));
+            let body = tab.map(|tab| self.render_group(tab, state, focused, full, window, cx));
             let clip = moving && pane == f.leaving;
             let preview = self.render_editor_drop(pane, window, cx);
             let group = div()
@@ -760,11 +760,9 @@ impl Workspace {
         if pane == Pane::Left { &self.messages } else { &self.messages_right }
     }
 
-    /// An editor group: `tab`'s Run row, editor and results (or its activity monitor), and the
-    /// group's cell viewer at its right; `focused`: the group has the focus; `group_w`: its
-    /// width; `ghost`: it is folding away (its viewer as it was then).
-    #[allow(clippy::too_many_arguments)]
-    fn render_group(&mut self, tab: gpui::Entity<QueryTab>, pane: Pane, focused: bool, group_w: f32, ghost: bool, window: &mut Window, cx: &mut Context<Self>) -> Div {
+    /// An editor group: `tab`'s Run row, editor and results (or its activity monitor);
+    /// `focused`: the group has the focus; `group_w`: its width.
+    fn render_group(&mut self, tab: gpui::Entity<QueryTab>, pane: Pane, focused: bool, group_w: f32, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let t = cx.theme();
         let (editor, grid, has_run) = {
             let t = tab.read(cx);
@@ -774,20 +772,7 @@ impl Workspace {
         // The work column paints the translucent fill once (app.rs); the regions here are
         // transparent, separated by straight hairlines, and flush: no corner to keep clear.
         let monitor = tab.read(cx).monitor.clone();
-        // The group's cell viewer (not beside an activity monitor: it has the whole group).
-        let viewer = if monitor.is_some() {
-            None
-        } else {
-            let (w, full) = if ghost {
-                let w = self.split_move.as_ref().map_or(0., |m| m.viewer);
-                (w, w)
-            } else {
-                self.viewer_width(pane, group_w, window)
-            };
-            (w > 0.5).then(|| (w, self.render_group_viewer(&tab, pane, w, full, cx)))
-        };
-        let view = tab_view(tab.read(cx), pane, focused, group_w - viewer.as_ref().map_or(0., |v| v.0) < COMPACT_W);
-        let viewer = viewer.map(|v| v.1);
+        let view = tab_view(tab.read(cx), pane, focused, group_w < COMPACT_W);
         // The TX chip's age changes once a minute: one wake-up per minute while a transaction is
         // open, none otherwise.
         if focused {
@@ -920,9 +905,8 @@ impl Workspace {
                 ),
             );
         }
-        // The history's panel is a dock's (`dock`): the zoom folds it there. The cell viewer is
-        // the group's own (`cell_viewer`).
-        div().size_full().flex().flex_row().child(main).children(viewer)
+        // The history's panel is a dock's (`dock`): the zoom folds it there.
+        div().size_full().flex().flex_row().child(main)
     }
 
     // -----------------------------------------------------------------------------------------
@@ -1495,8 +1479,6 @@ impl Workspace {
             let tr = tab.read(cx);
             if tr.shown_key() == Some(Key::Messages) { tr.batch_items().iter().any(|b| b.rs.as_ref().is_some_and(|r| r.has_messages())) } else { rs.as_ref().is_some_and(|r| r.has_messages()) }
         };
-        let viewer_on = self.viewer_open(v.pane);
-        let pane = v.pane;
         // A copy a moment ago: "Copied", fading in and out (`motion::copied`).
         let copied = grid.read(cx).copied_at.and_then(|at| crate::motion::copied(at, std::time::Instant::now(), cx.reduce_motion()));
         // Under the Copy button, its right edge on the button's (a zero-width point at the
@@ -1620,17 +1602,6 @@ impl Workspace {
                     .tooltip(ui::tooltip(if zoomed { "Exit zoom" } else { "Zoom result" }, None, key.as_deref()))
                     .on_click(cx.listener(|w, _, window, cx| w.toggle_result_zoom(window, cx)))
             })
-            .child(
-                ui::button(t, "rb-viewer", Btn::Ghost)
-                    .h(px(24.))
-                    .w(px(26.))
-                    .px(px(0.))
-                    .justify_center()
-                    .when(viewer_on, |d| d.bg(t.acc_s).text_color(t.acc_t).border_1().border_color(t.acc))
-                    .child(icon(Icon::PanelRight).size(px(14.)).text_color(if viewer_on { t.acc_t } else { t.tx2 }))
-                    .tooltip(ui::tooltip("Cell viewer", None, crate::keymap::key("cell_viewer").as_deref()))
-                    .on_click(cx.listener(move |w, _, _, cx| w.toggle_viewer(pane, cx))),
-            )
     }
 
     // -----------------------------------------------------------------------------------------
@@ -2168,139 +2139,6 @@ impl Workspace {
     }
 
     // -----------------------------------------------------------------------------------------
-    // Cell viewer (⇧Space): JSON pretty-printed, full text, bytes as hex; one in each editor
-    // group (`cell_viewer`), about the cell selected in that group's grid.
-
-    pub(crate) fn render_viewer(&self, tab: &gpui::Entity<QueryTab>, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let pane = self.pane_of(tab.entity_id());
-        let grid = tab.read(cx).grid.read(cx);
-        let cell = grid.active_cell();
-        let rs = grid.result().cloned();
-        let snap = rs.as_ref().map(|r| r.snapshot());
-        let info = match (&snap, cell) {
-            (Some(s), Some((r, c))) if r < s.rows() && c < s.columns.len() => {
-                let col = &s.columns[c];
-                Some((col.name.clone(), col.type_name.clone(), col.kind, r, s.rows(), s.text(r, c).map(|v| v.into_owned())))
-            }
-            _ => None,
-        };
-        let mode = self.viewer_mode;
-        let header = div()
-            .h(px(40.))
-            .flex_none()
-            .pl(px(14.))
-            .pr(px(8.))
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(8.))
-            .border_b_1()
-            .border_color(t.line)
-            .child(ui::caps(t, "CELL"))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .text_ellipsis()
-                    .flex()
-                    .flex_row()
-                    .gap(px(6.))
-                    .child(div().text_color(t.tx).child(info.as_ref().map(|i| i.0.clone()).unwrap_or_else(|| "no cell".into())))
-                    .children(info.as_ref().map(|i| div().text_color(t.tx3).child(format!("· row {} · {}", ui_count(i.3 + 1), i.1)))),
-            )
-            .child(
-                ui::icon_button(t, "viewer-close", Icon::Close, 24., 13.)
-                    .on_click(cx.listener(move |w, _, _, cx| w.toggle_viewer(pane, cx))),
-            );
-        let modes = div()
-            .h(px(36.))
-            .flex_none()
-            .px(px(10.))
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(4.))
-            .children([(ViewerMode::Json, "JSON"), (ViewerMode::Text, "Text"), (ViewerMode::Hex, "Hex")].into_iter().map(|(m, label)| {
-                let on = m == mode;
-                let hov = t.hov;
-                div()
-                    .id(label)
-                    .h(px(24.))
-                    .px(px(9.))
-                    .flex()
-                    .items_center()
-                    .text_size(px(11.5))
-                    .when(on, |d| d.bg(t.acc_s).text_color(t.tx).border_1().border_color(t.acc))
-                    .when(!on, |d| d.text_color(t.tx3).hover(move |s| s.bg(hov)))
-                    .child(label)
-                    .on_click(cx.listener(move |w, _, _, cx| {
-                        w.viewer_mode = m;
-                        cx.notify();
-                    }))
-            }))
-            .child(div().flex_1())
-            .child(div().text_size(px(11.)).text_color(t.tx3).child("wrap"))
-            .child(div().id("wrap").child(ui::toggle(t, self.viewer_wrap)).on_click(cx.listener(|w, _, _, cx| {
-                w.viewer_wrap = !w.viewer_wrap;
-                cx.notify();
-            })));
-        let (body, meta): (AnyElement, String) = match &info {
-            None => (
-                div()
-                    .size_full()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(ui::empty_state(t, "[ NO CELL ]", 18., None))
-                    .into_any_element(),
-                String::new(),
-            ),
-            Some((_, _, _, _, _, None)) => (
-                div().p(px(12.)).text_color(t.null).italic().child("NULL").into_any_element(),
-                "NULL".into(),
-            ),
-            Some((_, _, kind, _, _, Some(value))) => viewer_body(t, value, *kind, mode, self.viewer_wrap),
-        };
-        let total = info.as_ref().map(|i| format!("row {} of {}", ui_count(i.3 + 1), ui_count(i.4))).unwrap_or_default();
-        div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .child(header)
-            .child(modes)
-            .child(
-                div()
-                    .id("viewer-body")
-                    .flex_1()
-                    .min_h_0()
-                    .mx(px(10.))
-                    .bg(t.card)
-                    .border_1()
-                    .border_color(t.line)
-                    .py(px(8.))
-                    .text_size(px(12.))
-                    .line_height(px(19.))
-                    .overflow_y_scroll()
-                    .child(body),
-            )
-            .child(
-                div()
-                    .px(px(14.))
-                    .py(px(10.))
-                    .flex_none()
-                    .flex()
-                    .flex_row()
-                    .justify_between()
-                    .text_size(px(11.))
-                    .text_color(t.tx3)
-                    .child(meta)
-                    .child(total),
-            )
-    }
-
-    // -----------------------------------------------------------------------------------------
     // Toasts (bottom-right, 4–6 s unless they need you) and the shortcuts sheet.
 
     pub(crate) fn render_toasts(&self, _window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
@@ -2794,131 +2632,4 @@ fn condition_name(code: &str) -> &'static str {
         "0A000" => "feature_not_supported",
         _ => "",
     }
-}
-
-/// Lines shown at most in the viewer (huge values stay responsive).
-const VIEWER_LINES: usize = 600;
-
-fn viewer_body(t: &Theme, value: &str, kind: dataman_core::value::Kind, mode: ViewerMode, wrap: bool) -> (AnyElement, String) {
-    use dataman_core::value::Kind;
-    let bytes = value.len();
-    let size = if bytes >= 10_000 { format!("{:.1} KB", bytes as f64 / 1024.) } else { format!("{bytes} B") };
-    let numbered = |lines: Vec<AnyElement>| div().flex().flex_col().children(lines).into_any_element();
-    let line_el = |n: usize, content: AnyElement| {
-        div()
-            .flex()
-            .flex_row()
-            .child(div().w(px(36.)).flex_none().pr(px(12.)).text_right().text_color(t.tx4).child(n.to_string()))
-            .child(div().flex_1().min_w_0().when(!wrap, |d| d.whitespace_nowrap()).child(content))
-            .into_any_element()
-    };
-    match mode {
-        ViewerMode::Json => {
-            let parsed = serde_json::from_str::<serde_json::Value>(value);
-            match parsed {
-                Ok(v) => {
-                    let pretty = serde_json::to_string_pretty(&v).unwrap_or_default();
-                    let total = pretty.lines().count();
-                    let lines = pretty
-                        .lines()
-                        .take(VIEWER_LINES)
-                        .enumerate()
-                        .map(|(i, l)| line_el(i + 1, json_line(t, l)))
-                        .collect();
-                    (numbered(lines), format!("{size} · {total} lines · valid JSON"))
-                }
-                Err(_) => {
-                    let (el, _) = viewer_body(t, value, kind, ViewerMode::Text, wrap);
-                    (el, format!("{size} · not JSON{}", if kind == Kind::Json { "" } else { " (text shown)" }))
-                }
-            }
-        }
-        ViewerMode::Text => {
-            let total = value.lines().count().max(1);
-            let lines = value
-                .lines()
-                .take(VIEWER_LINES)
-                .enumerate()
-                .map(|(i, l)| line_el(i + 1, div().text_color(t.tx).child(l.to_string()).into_any_element()))
-                .collect();
-            (numbered(lines), format!("{size} · {total} lines · {} chars", value.chars().count()))
-        }
-        ViewerMode::Hex => {
-            // bytea arrives as `\x…`: show its bytes; anything else shows its UTF-8 bytes.
-            let raw: Vec<u8> = match value.strip_prefix("\\x") {
-                Some(h) if kind == Kind::Bytes => (0..h.len() / 2).filter_map(|i| u8::from_str_radix(&h[2 * i..2 * i + 2], 16).ok()).collect(),
-                _ => value.as_bytes().to_vec(),
-            };
-            let total = raw.len().div_ceil(16);
-            let lines = raw
-                .chunks(16)
-                .take(VIEWER_LINES)
-                .enumerate()
-                .map(|(i, chunk)| {
-                    let hex: String = chunk.iter().map(|b| format!("{b:02x} ")).collect();
-                    let ascii: String = chunk.iter().map(|&b| if (0x20..0x7f).contains(&b) { b as char } else { '·' }).collect();
-                    div()
-                        .flex()
-                        .flex_row()
-                        .gap(px(10.))
-                        .whitespace_nowrap()
-                        .child(div().pl(px(12.)).text_color(t.tx4).child(format!("{:06x}", i * 16)))
-                        .child(div().text_color(t.tx).child(format!("{hex:<48}")))
-                        .child(div().text_color(t.tx3).child(ascii))
-                        .into_any_element()
-                })
-                .collect();
-            (numbered(lines), format!("{} bytes · {total} lines", raw.len()))
-        }
-    }
-}
-
-/// One line of pretty JSON with keys, strings, numbers and literals colored.
-fn json_line(t: &Theme, line: &str) -> AnyElement {
-    let mut parts: Vec<(String, Hsla)> = Vec::new();
-    let chars: Vec<char> = line.chars().collect();
-    let mut i = 0;
-    while i < chars.len() {
-        let c = chars[i];
-        if c == '"' {
-            let start = i;
-            i += 1;
-            while i < chars.len() && chars[i] != '"' {
-                if chars[i] == '\\' {
-                    i += 1;
-                }
-                i += 1;
-            }
-            i = (i + 1).min(chars.len());
-            let s: String = chars[start..i].iter().collect();
-            let is_key = chars[i..].iter().find(|c| !c.is_whitespace()) == Some(&':');
-            parts.push((s, if is_key { t.typ } else { t.str }));
-        } else if c == '-' || c.is_ascii_digit() {
-            let start = i;
-            while i < chars.len() && (chars[i].is_ascii_digit() || "+-.eE".contains(chars[i])) {
-                i += 1;
-            }
-            parts.push((chars[start..i].iter().collect(), t.num));
-        } else if c.is_ascii_alphabetic() {
-            let start = i;
-            while i < chars.len() && chars[i].is_ascii_alphabetic() {
-                i += 1;
-            }
-            let w: String = chars[start..i].iter().collect();
-            let color = if w == "null" { t.tx3 } else { t.kw };
-            parts.push((w, color));
-        } else {
-            let start = i;
-            while i < chars.len() && !(chars[i] == '"' || chars[i] == '-' || chars[i].is_ascii_alphanumeric()) {
-                i += 1;
-            }
-            parts.push((chars[start..i].iter().collect(), t.tx3));
-        }
-    }
-    div()
-        .flex()
-        .flex_row()
-        .whitespace_nowrap()
-        .children(parts.into_iter().map(|(s, c)| div().text_color(c).child(s.replace(' ', "\u{a0}"))))
-        .into_any_element()
 }

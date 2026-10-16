@@ -57,7 +57,7 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
             ("{copy_tsv}", "copy TSV"),
             ("{copy_with_headers}", "copy with headers"),
             ("{copy_csv}", "copy CSV"),
-            ("{cell_viewer}", "cell viewer"),
+            ("{cell_viewer}", "view JSON / array value"),
             ("{prev_page} {next_page}", "previous · next page"),
             ("{fetch_more}", "fetch next rows"),
             ("{fetch_all}", "fetch all"),

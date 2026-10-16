@@ -15,7 +15,7 @@
 //!   shortcut, which only searches; ⇧⌘C copies with
 //!   headers), "Copied" in the Copy button's place for 2 s after a copy, the Copy menu's CSV
 //!   and TSV with headers, a connection that is not connected drawn gray and regular, the
-//!   history's and the group's cell viewer's slides and the explorer toggle's fill, printed as
+//!   history's slide and the explorer toggle's fill, printed as
 //!   PASS/FAIL lines; exit code 1 on a failure.
 
 use std::time::Duration;
@@ -1323,27 +1323,6 @@ async fn motion_checks(ws: &Entity<Workspace>, id: &str, cx: &mut AsyncWindowCon
     let gone = !sliding(cx) && !history(cx);
     report(
         "the history slides in and out like the explorer",
-        opening == motion && closing == motion && landed && gone,
-        format!("opening {opening} landed {landed} closing {closing} gone {gone} (motion {motion})"),
-    );
-    // Each editor group's own cell viewer slides too.
-    let left = dataman_core::groups::Pane::Left;
-    let sliding = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).viewers[0].sliding()).unwrap_or(false);
-    let viewer = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).viewer_open(left)).unwrap_or(false);
-    let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.toggle_viewer(left, cx)));
-    draw(cx);
-    let opening = sliding(cx);
-    pause(cx, 320).await;
-    draw(cx);
-    let landed = !sliding(cx) && viewer(cx);
-    let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.toggle_viewer(left, cx)));
-    draw(cx);
-    let closing = sliding(cx);
-    pause(cx, 320).await;
-    draw(cx);
-    let gone = !sliding(cx) && !viewer(cx);
-    report(
-        "the group's cell viewer slides in and out",
         opening == motion && closing == motion && landed && gone,
         format!("opening {opening} landed {landed} closing {closing} gone {gone} (motion {motion})"),
     );

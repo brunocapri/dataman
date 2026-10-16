@@ -224,26 +224,6 @@ pub fn vsep(t: &Theme, h: f32) -> Div {
     div().flex_none().w(px(1.)).h(px(h)).bg(t.line2)
 }
 
-/// The switch (26 x 14, a square track, a round knob).
-pub fn toggle(t: &Theme, on: bool) -> Div {
-    div()
-        .flex_none()
-        .w(px(26.))
-        .h(px(14.))
-        .relative()
-        .bg(if on { t.acc } else { t.line2 })
-        .child(
-            div()
-                .absolute()
-                .top(px(2.))
-                .when(on, |d| d.right(px(2.)))
-                .when(!on, |d| d.left(px(2.)))
-                .size(px(10.))
-                .rounded(px(5.))
-                .bg(if on { gpui::white() } else { t.tx3 }),
-        )
-}
-
 /// A 14 pt checkbox.
 pub fn checkbox(t: &Theme, on: bool) -> Div {
     div()

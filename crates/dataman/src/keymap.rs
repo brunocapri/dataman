@@ -115,7 +115,8 @@ pub const COMMANDS: &[Command] = &[
     c("copy_tsv", "Copy TSV", "GRID", Scope::Grid, &["cmd-c"], || Box::new(crate::grid::CopyTsv)),
     c("copy_with_headers", "Copy with headers", "GRID", Scope::Grid, &["cmd-shift-c"], || Box::new(crate::grid::CopyTsvWithHeader)),
     c("copy_csv", "Copy CSV", "GRID", Scope::Grid, &["cmd-alt-c"], || Box::new(crate::grid::CopyCsv)),
-    c("cell_viewer", "Cell viewer", "GRID", Scope::Grid, &["shift-space"], || Box::new(crate::grid::ToggleViewer)),
+    // (The id is the cell viewer's: a key set for it in settings.toml keeps working.)
+    c("cell_viewer", "View value", "GRID", Scope::Grid, &["shift-space"], || Box::new(crate::grid::ViewValue)),
     c("next_page", "Next page", "GRID", Scope::Workspace, &["cmd-alt-right"], || Box::new(NextPage)),
     c("prev_page", "Previous page", "GRID", Scope::Workspace, &["cmd-alt-left"], || Box::new(PrevPage)),
     c("fetch_more", "Fetch next rows", "GRID", Scope::Grid, &["cmd-down"], || Box::new(crate::grid::FetchMore)),
@@ -333,6 +334,7 @@ pub fn bind_all(cx: &mut App) {
     crate::palette::bind_keys(cx);
     crate::edit_ui::bind_keys(cx);
     crate::value_edit::bind_keys(cx);
+    crate::value_view::bind_keys(cx);
     crate::table_view::bind_keys(cx);
     crate::export_ui::bind_keys(cx);
     crate::data_import::bind_keys(cx);
