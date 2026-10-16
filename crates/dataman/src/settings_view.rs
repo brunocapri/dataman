@@ -4,13 +4,18 @@
 //!
 //! Sections: Appearance (theme, the UI font, window translucency, code font size, reduce motion), Editor
 //! (the formatter's keyword case and indent), Results grid
-//! (rows fetched ahead, review before commit), Export (default folder), MCP (agents' access,
+//! (rows fetched ahead, review before commit, several results as tabs or stacked), Export
+//! (default folder), MCP (agents' access,
 //! agent queries in tabs, rows per write and per call, the `claude mcp add` command, the log,
 //! each connection's permission), Keyboard (the remappable commands: a click
 //! on a key records the next one, esc cancels, ⌫ removes it; a key two commands share where
 //! both work is red; `[keys]` in settings.toml, bound again at once) and About (the
 //! version and the update check, both only with an update feed, and the crash reports folder).
-//! The search field filters every row of every section.
+//! The search field filters every row of every section; a shortcut typed in it (`⌘K`,
+//! `cmd-shift-p`) finds the commands on that key. The keyboard button beside it searches by
+//! shortcut instead: the next keystroke (taken before any binding, so it does nothing else) shows
+//! in the field and the page lists the commands bound to it; ⌫ clears it, esc or the button
+//! again ends it. The page's title and × stay on top while it scrolls.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -18,12 +23,12 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    App, Bounds, Context, EventEmitter, FocusHandle, Focusable, FontWeight, KeyBinding, MouseButton, Pixels, SharedString, Window,
-    actions, div, prelude::*,
+    App, Bounds, Context, EventEmitter, FocusHandle, Focusable, FontWeight, KeyBinding, MouseButton, Pixels, ScrollHandle, SharedString,
+    Window, actions, div, prelude::*,
 };
 use crate::theme::px;
 use dataman_core::format::KeywordCase;
-use dataman_core::{Core, Settings, ThemePref, Translucency, UiFont};
+use dataman_core::{Core, ResultLayout, Settings, ThemePref, Translucency, UiFont};
 
 use crate::assets::{Icon, icon};
 use crate::input::{InputEvent, TextInput};
@@ -88,6 +93,7 @@ enum Row {
     Prefetch,
     PageSize,
     ConfirmCommit,
+    ResultLayout,
     ExportDir,
     KeywordCase,
     Indent,
@@ -103,7 +109,7 @@ enum Row {
     CrashReports,
 }
 
-const ROWS: [(Row, Section, &str, &str); 21] = [
+const ROWS: [(Row, Section, &str, &str); 22] = [
     (Row::Theme, Section::Appearance, "Theme", "dark light system"),
     (Row::Font, Section::Appearance, "Font", "typeface family monospace geist lilex zed jetbrains"),
     (Row::Translucency, Section::Appearance, "Window translucency", "transparency blur opaque"),
@@ -114,6 +120,7 @@ const ROWS: [(Row, Section, &str, &str); 21] = [
     (Row::Prefetch, Section::Grid, "Rows fetched ahead", "prefetch fetch"),
     (Row::PageSize, Section::Grid, "Rows per table page", "page paging table data view"),
     (Row::ConfirmCommit, Section::Grid, "Review edits before commit", "commit edit sql"),
+    (Row::ResultLayout, Section::Grid, "Several results", "multiple result sets select statements script stacked tabs layout"),
     (Row::ExportDir, Section::Export, "Default export folder", "downloads directory"),
     (Row::McpAccess, Section::Mcp, "Agent access", "mcp ai agents claude"),
     (Row::McpTabs, Section::Mcp, "Agent queries in tabs", "mcp visible open query tab agent"),
@@ -136,6 +143,7 @@ impl Row {
             Row::McpWriteLimit => "An agent's write changing more rows than this waits for your Allow before it commits.",
             Row::McpRows => "The most rows an agent receives per query. The full result stays in its tab.",
             Row::McpClaude => "Copies the command that adds Dataman to Claude Code.",
+            Row::ResultLayout => "A run that returns several result sets: one at a time in tabs, or every grid one under the other.",
             _ => return None,
         })
     }
@@ -189,7 +197,15 @@ pub struct SettingsView {
     /// Each command row's controls as last laid out: [reset,] key (the checks click them).
     key_bounds: Rc<RefCell<BTreeMap<&'static str, Vec<Bounds<Pixels>>>>>,
     reset_all_bounds: Rc<RefCell<Vec<Bounds<Pixels>>>>,
-    /// Takes the keystroke before any binding while recording.
+    /// Search by shortcut (the keyboard button): on, and the keystroke pressed since (GPUI's
+    /// canonical spelling), whose commands the page lists.
+    key_search: bool,
+    key_query: Option<String>,
+    /// The keyboard button as last laid out (the checks click it).
+    key_button_bounds: Rc<RefCell<Vec<Bounds<Pixels>>>>,
+    /// The page under the pinned header: its hairline shows once this has scrolled.
+    page_scroll: ScrollHandle,
+    /// Takes the keystroke before any binding while recording or searching by shortcut.
     _intercept: gpui::Subscription,
 }
 
@@ -204,8 +220,9 @@ impl Focusable for SettingsView {
 impl SettingsView {
     pub fn new(core: Arc<Core>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let search = cx.new(|cx| TextInput::new(cx, "Search settings").bare());
-        cx.subscribe(&search, |_, _, ev: &InputEvent, cx| {
+        cx.subscribe(&search, |v: &mut Self, _, ev: &InputEvent, cx| {
             if matches!(ev, InputEvent::Changed) {
+                v.scroll_to_top();
                 cx.notify();
             }
         })
@@ -223,10 +240,15 @@ impl SettingsView {
         theme::ensure_fonts(&UiFont::ALL, cx);
         let settings = core.settings.get();
         let weak = cx.weak_entity();
-        let intercept = cx.intercept_keystrokes(move |ev, _, cx| {
+        let intercept = cx.intercept_keystrokes(move |ev, window, cx| {
             let Some(v) = weak.upgrade() else { return };
-            if v.read(cx).recording.is_some() {
+            let (recording, key_search) = (v.read(cx).recording.is_some(), v.read(cx).key_search);
+            if recording {
                 v.update(cx, |v, cx| v.record(&ev.keystroke, cx));
+                cx.stop_propagation();
+            } else if key_search {
+                // Taken here, before any binding: the keystroke only searches.
+                v.update(cx, |v, cx| v.search_keystroke(&ev.keystroke, window, cx));
                 cx.stop_propagation();
             }
         });
@@ -244,8 +266,50 @@ impl SettingsView {
             recording: None,
             key_bounds: Default::default(),
             reset_all_bounds: Default::default(),
+            key_search: false,
+            key_query: None,
+            key_button_bounds: Default::default(),
+            page_scroll: ScrollHandle::new(),
             _intercept: intercept,
         }
+    }
+
+    fn scroll_to_top(&self) {
+        self.page_scroll.set_offset(gpui::point(px(0.), px(0.)));
+    }
+
+    /// The keyboard button: search by shortcut (the field waits for a keystroke) or back to
+    /// searching by text. Either way the field starts empty.
+    fn set_key_search(&mut self, on: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.key_search = on;
+        self.key_query = None;
+        self.recording = None;
+        self.search.update(cx, |i, cx| i.set_text("", cx));
+        // Recording: the sheet has focus, so no keystroke reaches the text field.
+        let target = if on { self.focus.clone() } else { self.search.focus_handle(cx) };
+        window.focus(&target, cx);
+        self.scroll_to_top();
+        cx.notify();
+    }
+
+    /// A keystroke while searching by shortcut: esc ends the search, ⌫ clears the key, a
+    /// modifier alone waits for the rest; anything else (⌘⇧P, F6, ⌥1) is the key searched for.
+    fn search_keystroke(&mut self, k: &gpui::Keystroke, window: &mut Window, cx: &mut Context<Self>) {
+        let m = k.modifiers;
+        let bare = !(m.control || m.alt || m.platform || m.shift);
+        match k.key.as_str() {
+            "escape" if bare => return self.set_key_search(false, window, cx),
+            "backspace" | "delete" if bare => self.key_query = None,
+            _ => {
+                let mods = gpui::Modifiers { function: false, ..m };
+                match crate::keymap::parse(&gpui::Keystroke { modifiers: mods, key: k.key.clone(), key_char: None }.unparse()) {
+                    Some(s) => self.key_query = Some(s),
+                    None => return,
+                }
+            }
+        }
+        self.scroll_to_top();
+        cx.notify();
     }
 
     fn start_recording(&mut self, id: &'static str, window: &mut Window, cx: &mut Context<Self>) {
@@ -474,6 +538,13 @@ impl SettingsView {
         crate::updates::set_auto(on, cx);
     }
 
+    /// Open tabs change at once (`result_stack`).
+    fn set_result_layout(&mut self, layout: ResultLayout, cx: &mut Context<Self>) {
+        self.save(|s| s.result_layout = layout, cx);
+        crate::result_stack::set_layout(layout);
+        cx.refresh_windows();
+    }
+
     fn set_prefetch(&mut self, rows: usize, cx: &mut Context<Self>) {
         self.save(|s| s.prefetch_rows = rows, cx);
         dataman_core::result::set_prefetch(rows);
@@ -502,6 +573,7 @@ impl SettingsView {
         let i = SECTIONS.iter().position(|s| *s == self.section).unwrap_or(0) as isize;
         let n = SECTIONS.len() as isize;
         self.section = SECTIONS[((i + d).rem_euclid(n)) as usize];
+        self.scroll_to_top();
         cx.notify();
     }
 
@@ -650,6 +722,14 @@ impl SettingsView {
                 ui::segmented(t)
                     .child(ui::segment(t, "cc-on", "Review first", on).on_click(cx.listener(|v, _, _, cx| v.save(|s| s.confirm_commit = true, cx))))
                     .child(ui::segment(t, "cc-off", "Commit at once", !on).on_click(cx.listener(|v, _, _, cx| v.save(|s| s.confirm_commit = false, cx))))
+                    .into_any_element()
+            }
+            Row::ResultLayout => {
+                let cur = s.result_layout;
+                ui::segmented(t)
+                    .children([(ResultLayout::Tabs, "Tabs"), (ResultLayout::Stacked, "Stacked")].into_iter().enumerate().map(|(i, (l, label))| {
+                        ui::segment(t, ("rl", i), label, cur == l).on_click(cx.listener(move |v, _, _, cx| v.set_result_layout(l, cx)))
+                    }))
                     .into_any_element()
             }
             Row::ExportDir => {
@@ -866,8 +946,10 @@ impl SettingsView {
             )
     }
 
-    /// The commands `q` finds (by name, group or current key); all of them for an empty `q`.
+    /// The commands `q` finds (by name, group or current key, or bound to the shortcut `q`
+    /// spells: `⌘⇧P` finds ⇧⌘P); all of them for an empty `q`.
     fn matching_commands(q: &str) -> Vec<&'static crate::keymap::Command> {
+        let typed = crate::keymap::parse_typed(q);
         crate::keymap::COMMANDS
             .iter()
             .filter(|c| {
@@ -875,8 +957,24 @@ impl SettingsView {
                     || c.label.to_lowercase().contains(q)
                     || c.group.to_lowercase().contains(q)
                     || crate::keymap::key_label(c.id).to_lowercase().contains(q)
+                    || typed.as_ref().is_some_and(|k| crate::keymap::effective(c.id).contains(k))
             })
             .collect()
+    }
+
+    /// The commands bound to `key` (any of their keys, not only the one shown); all of them
+    /// before a key is pressed.
+    fn commands_on(key: Option<&str>) -> Vec<&'static crate::keymap::Command> {
+        crate::keymap::COMMANDS.iter().filter(|c| key.is_none_or(|k| crate::keymap::effective(c.id).iter().any(|e| e == k))).collect()
+    }
+
+    /// The search field while searching by shortcut: the key pressed as a keycap, or what to
+    /// do.
+    fn render_key_query(&self, t: &Theme) -> gpui::AnyElement {
+        match &self.key_query {
+            Some(k) => div().flex().flex_row().child(ui::keycap(t, crate::keymap::label(k)).text_color(t.acc_t).border_color(t.acc)).into_any_element(),
+            None => div().whitespace_nowrap().overflow_hidden().text_color(t.tx3).child("Press a shortcut").into_any_element(),
+        }
     }
 
     /// The remappable commands by group: name, a reset when changed, the key (a click records).
@@ -909,12 +1007,14 @@ impl SettingsView {
         for (title, cmds) in groups {
             let lar = title.starts_with('◆');
             let mut rows: Vec<gpui::AnyElement> = Vec::new();
+            let also = self.key_query.as_deref().filter(|_| self.key_search).map(crate::keymap::label);
             for c in cmds {
                 ix += 1;
                 let id = c.id;
                 let rec = self.recording == Some(id);
                 let changed = overrides.contains_key(id);
                 let shown = crate::keymap::key_label(id);
+                let shown_label = shown.clone();
                 let text: SharedString = if rec { "…".into() } else if shown.is_empty() { "—".into() } else { shown.into() };
                 let bounds = self.key_bounds.clone();
                 let cap = ui::keycap(t, text)
@@ -949,6 +1049,8 @@ impl SettingsView {
                         .border_b_1()
                         .border_color(t.line)
                         .child(div().flex_1().min_w_0().text_size(px(12.)).text_color(t.tx2).child(c.label))
+                        // Found by another of its keys than the one shown: that one too.
+                        .children(also.as_ref().filter(|k| **k != shown_label).map(|k| div().flex_none().text_size(px(11.)).text_color(t.tx3).child(format!("also {k}"))))
                         .child(
                             div()
                                 .flex_none()
@@ -1003,15 +1105,38 @@ impl SettingsView {
         self.search.update(cx, |i, cx| i.set_text(q, cx));
         cx.notify();
     }
+
+    /// Checks: where the keyboard button is (as last laid out), whether the search is by
+    /// shortcut, the key searched for and the commands the page lists for it.
+    pub fn demo_key_search_point(&self) -> Option<gpui::Point<Pixels>> {
+        self.key_button_bounds.borrow().first().map(|b| b.center())
+    }
+
+    pub fn demo_key_search(&self) -> (bool, Option<String>, Vec<&'static str>) {
+        let ids = if self.key_search { Self::commands_on(self.key_query.as_deref()).iter().map(|c| c.id).collect() } else { Vec::new() };
+        (self.key_search, self.key_query.clone(), ids)
+    }
+
+    /// Screenshots: searching by shortcut, with `key` (GPUI syntax) pressed.
+    pub fn demo_key_search_with(&mut self, key: Option<&str>, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_key_search(true, window, cx);
+        self.key_query = key.and_then(crate::keymap::parse);
+    }
+
+    /// Screenshots: the page scrolled down by `y`.
+    pub fn demo_scroll(&mut self, y: f32) {
+        self.page_scroll.set_offset(gpui::point(px(0.), px(-y)));
+    }
 }
 
 impl Render for SettingsView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme();
         let q = self.query(cx);
-        let searching = !q.is_empty();
+        let keys = self.key_search;
+        let searching = !q.is_empty() && !keys;
         let nav = SECTIONS.iter().map(|&s| {
-            let on = !searching && s == self.section;
+            let on = if keys { s == Section::Keyboard } else { !searching && s == self.section };
             let hov = t.hov;
             div()
                 .id(s.label())
@@ -1025,31 +1150,70 @@ impl Render for SettingsView {
                 .when(on, |d| d.bg(t.acc_s).text_color(t.tx).border_1().border_color(t.acc))
                 .when(!on, |d| d.text_color(t.tx2).hover(move |st| st.bg(hov)))
                 .child(div().flex_1().child(s.label()))
-                .on_click(cx.listener(move |v, _, _, cx| {
+                .on_click(cx.listener(move |v, _, window, cx| {
+                    if v.key_search {
+                        v.set_key_search(false, window, cx);
+                    }
                     v.section = s;
                     v.search.update(cx, |i, cx| i.set_text("", cx));
+                    v.scroll_to_top();
                     cx.notify();
                 }))
         }).collect::<Vec<_>>();
         let mut page: Vec<gpui::AnyElement> = Vec::new();
-        let title: SharedString = if searching { format!("Results for \"{q}\"").into() } else { self.section.label().into() };
-        for (row, section, label, words) in ROWS {
-            let hit = if searching { label.to_lowercase().contains(&q) || words.contains(q.as_str()) } else { section == self.section };
-            if hit && self.row_visible(row, cx) {
-                page.push(self.render_row(row, label, &t, cx));
+        let key_label = self.key_query.as_deref().map(crate::keymap::label);
+        let title: SharedString = match &key_label {
+            _ if !keys && searching => format!("Results for \"{q}\"").into(),
+            _ if !keys => self.section.label().into(),
+            Some(k) => format!("Commands on {k}").into(),
+            None => "Keyboard".into(),
+        };
+        if keys {
+            // Only the commands on the key pressed (all of them until one is).
+            let cmds = Self::commands_on(self.key_query.as_deref());
+            if !cmds.is_empty() {
+                page.push(self.render_commands(cmds, true, &t, cx));
             }
-        }
-        let cmds = Self::matching_commands(&q);
-        let show_keys = (!searching && self.section == Section::Keyboard) || (searching && !cmds.is_empty());
-        if show_keys {
-            if searching {
-                page.push(ui::caps(&t, "KEYBOARD").into_any_element());
+        } else {
+            for (row, section, label, words) in ROWS {
+                let hit = if searching { label.to_lowercase().contains(&q) || words.contains(q.as_str()) } else { section == self.section };
+                if hit && self.row_visible(row, cx) {
+                    page.push(self.render_row(row, label, &t, cx));
+                }
             }
-            page.push(self.render_commands(cmds, searching, &t, cx));
+            let cmds = Self::matching_commands(&q);
+            let show_keys = (!searching && self.section == Section::Keyboard) || (searching && !cmds.is_empty());
+            if show_keys {
+                if searching {
+                    page.push(ui::caps(&t, "KEYBOARD").into_any_element());
+                }
+                page.push(self.render_commands(cmds, searching, &t, cx));
+            }
         }
         if page.is_empty() {
-            page.push(div().pt(px(80.)).flex().justify_center().child(ui::empty_state(&t, "[ NO MATCH ]", 20., None)).into_any_element());
+            let free = key_label.map(|k| SharedString::from(format!("No command uses {k}.")));
+            page.push(div().pt(px(80.)).flex().justify_center().child(ui::empty_state(&t, "[ NO MATCH ]", 20., free)).into_any_element());
         }
+        // The keyboard button: search by shortcut, or back to text.
+        let key_button = {
+            let hov = t.hov;
+            let bounds = self.key_button_bounds.clone();
+            div().flex_none().on_children_prepainted(move |b, _, _| *bounds.borrow_mut() = b).child(
+                div()
+                    .id("settings-key-search")
+                    .size(px(20.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .when(keys, |d| d.bg(t.acc_s))
+                    .when(!keys, move |d| d.hover(move |s| s.bg(hov)))
+                    .child(icon(Icon::Keyboard).size(px(14.)).text_color(if keys { t.acc } else { t.tx3 }))
+                    .tooltip(ui::text_tooltip(if keys { "Search by text" } else { "Search by shortcut" }))
+                    .on_click(cx.listener(|v, _, window, cx| v.set_key_search(!v.key_search, window, cx))),
+            )
+        };
+        let scrolled = self.page_scroll.offset().y < px(0.);
         let glass = t.glass;
         let sheet = ui::modal(&t, "settings-sheet")
             .w(px(900.))
@@ -1073,42 +1237,75 @@ impl Render for SettingsView {
                             .mb(px(10.))
                             .mt(px(4.))
                             .h(px(28.))
-                            .px(px(8.))
+                            .pl(px(8.))
+                            .pr(px(3.))
                             .flex()
                             .flex_row()
                             .items_center()
                             .gap(px(8.))
                             .bg(t.hov)
                             .border_1()
-                            .border_color(t.field_b)
+                            .border_color(if keys { t.acc } else { t.field_b })
                             .text_color(t.tx)
                             .child(icon(Icon::Search).size(px(13.)).text_color(t.tx3))
-                            .child(div().flex_1().min_w_0().child(self.search.clone())),
+                            .child(div().flex_1().min_w_0().map(|d| if keys { d.child(self.render_key_query(&t)) } else { d.child(self.search.clone()) }))
+                            .child(key_button),
                     )
                     .children(nav),
             )
             .child(
                 div()
-                    .id("settings-page")
                     .flex_1()
                     .min_w_0()
                     .h_full()
-                    .px(px(30.))
-                    .py(px(26.))
                     .flex()
                     .flex_col()
-                    .gap(px(20.))
-                    .overflow_y_scroll()
-                    .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child(title))
-                    .children(page),
-            )
-            // The connection sheet's ×, 16 pt from the right, centred on the page's title.
-            .child(
-                div()
-                    .absolute()
-                    .top(px(23.))
-                    .right(px(16.))
-                    .child(ui::modal_close(&t, "settings-close").on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::Close)))),
+                    // Pinned: the title and the connection sheet's × (16 pt from the right, centred
+                    // on the title); the page scrolls under it, past a hairline once it has.
+                    .child(
+                        div()
+                            .flex_none()
+                            .h(px(60.))
+                            .pl(px(30.))
+                            .pr(px(16.))
+                            .pt(px(23.))
+                            .flex()
+                            .flex_row()
+                            .items_start()
+                            .gap(px(12.))
+                            .border_b_1()
+                            .border_color(if scrolled { t.line } else { gpui::transparent_black() })
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .h(px(26.))
+                                    .flex()
+                                    .items_center()
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .text_size(px(15.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(title),
+                            )
+                            .child(ui::modal_close(&t, "settings-close").on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::Close)))),
+                    )
+                    .child(
+                        div()
+                            .id("settings-page")
+                            .flex_1()
+                            .min_h_0()
+                            .px(px(30.))
+                            .pt(px(6.))
+                            .pb(px(26.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(20.))
+                            .overflow_y_scroll()
+                            .track_scroll(&self.page_scroll)
+                            .children(page),
+                    ),
             );
         div()
             .id("settings-scrim")
@@ -1124,7 +1321,7 @@ impl Render for SettingsView {
             .key_context("SettingsSheet Modal")
             .track_focus(&self.focus)
             .on_action(cx.listener(|v, _: &Close, window, cx| {
-                // esc clears the search first.
+                // esc clears the search first (searching by shortcut, esc never gets here).
                 if !v.search.read(cx).text().is_empty() {
                     v.search.update(cx, |i, cx| i.set_text("", cx));
                     window.focus(&v.search.focus_handle(cx), cx);

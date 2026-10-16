@@ -530,9 +530,6 @@ impl Workspace {
                     .children((region == Some(Region::Editor)).then(|| focus_ring(&t))),
             );
         } else {
-            let strip = (view.results.len() > 1).then(|| self.render_result_strip(&view, &t, cx));
-            let below = if strip.is_some() { metrics::STRIP_H } else { 0. };
-            let editor_h = self.editor_h(window, below);
             let failed_view = self.error_view_needed(&tab, cx);
             let live = crate::lar::grid_override(&tab, cx);
             let shows_plan = !failed_view && tab.read(cx).shows_plan(cx);
@@ -541,6 +538,12 @@ impl Workspace {
                 Some(Key::Stmt(i)) => tab.read(cx).result().filter(|r| crate::messages::shows_log(r)).map(|r| (i, r.clone())),
                 _ => None,
             };
+            // Several results stacked (a setting): every grid in the grid's place.
+            let plain = view.shown != Some(Key::Messages) && !failed_view && live.is_none() && !shows_plan && log.is_none();
+            let stack = if plain { crate::result_stack::render(&tab, &t, cx) } else { None };
+            let strip = (view.results.len() > 1 && !stack.as_ref().is_some_and(|s| s.alone)).then(|| self.render_result_strip(&view, &t, cx));
+            let below = if strip.is_some() { metrics::STRIP_H } else { 0. };
+            let editor_h = self.editor_h(window, below);
             let grid_area: AnyElement = if view.shown == Some(Key::Messages) {
                 self.render_messages(&tab, &view, &t, cx).into_any_element()
             } else if failed_view {
@@ -553,6 +556,8 @@ impl Workspace {
                 tab.read(cx).plan.clone().into_any_element()
             } else if let Some((i, rs)) = log {
                 self.render_log(i, &rs, &t, cx).into_any_element()
+            } else if let Some(s) = stack {
+                s.element
             } else {
                 grid.clone().into_any_element()
             };

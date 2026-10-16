@@ -52,6 +52,7 @@ mod plan;
 mod plan_demo;
 mod privileges;
 mod result_bar;
+mod result_stack;
 mod row_actions;
 mod settings_view;
 mod shortcuts;
@@ -344,6 +345,7 @@ fn main() {
         editor::set_code_size(prefs.editor_font_size);
         editor::set_format_options(prefs.format_options());
         dataman_core::result::set_prefetch(prefs.prefetch_rows);
+        result_stack::set_layout(prefs.result_layout);
         // Reduce motion: the setting, or macOS's accessibility switch (re-read on activation).
         motion::set_reduce_motion_pref(prefs.reduce_motion, cx);
         cx.set_global(panels::PanelRegistry::default());

@@ -4,7 +4,8 @@
 //! statement that returned rows, a row count, an error or a cancel, and one "messages" tab for
 //! the commands without rows (`dataman_core::batch`). The grid, the result bar, find, export and
 //! grid edits work on the tab on screen; each result keeps its own grid state (selection,
-//! scroll, widths; the sort is in the result) while another is shown.
+//! scroll, widths; the sort is in the result) while another is shown. Stacked (a setting), the
+//! results with rows show one under the other instead (`result_stack`).
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -155,6 +156,8 @@ pub struct QueryTab {
     views: Views<GridView>,
     /// Result tabs of this run the user closed (their × in the strip).
     closed: HashSet<Key>,
+    /// Several results stacked (Settings › Results grid): the grids of the ones not on screen.
+    pub(crate) stack: crate::result_stack::Stack,
     /// When the current statement started (the timer in the tab and the toolbar).
     started: Option<Instant>,
     /// When the user asked to cancel (cleared once the server confirms).
@@ -270,6 +273,7 @@ impl QueryTab {
             pick: None,
             views: Views::default(),
             closed: HashSet::new(),
+            stack: Default::default(),
             started: None,
             cancel_at: None,
             notice: None,
@@ -318,6 +322,11 @@ impl QueryTab {
         self.shown
     }
 
+    /// The result tab the user picked (`None`: the result on screen follows the run).
+    pub fn picked(&self) -> Option<Key> {
+        self.pick
+    }
+
     /// The result on screen is the statement running now (or the last one that ran).
     pub fn shows_current(&self) -> bool {
         match (&self.shown_rs, &self.current) {
@@ -355,6 +364,23 @@ impl QueryTab {
         }
     }
 
+    /// A copy of the grid state `key` keeps while another result is on screen (its result if
+    /// it was never shown): a stacked result's grid starts from it.
+    pub(crate) fn kept_view(&mut self, key: Key) -> Option<GridView> {
+        let rs = self.result_of(key)?;
+        let v = self.views.take(key, &rs).unwrap_or_else(|| GridView::fresh(rs.clone()));
+        self.views.put(key, rs, v.clone());
+        Some(v)
+    }
+
+    /// What a stacked result's grid made of it (scroll, selection, widths), kept for when it
+    /// comes on screen.
+    pub(crate) fn keep_view(&mut self, key: Key, v: GridView) {
+        if let Some(rs) = self.result_of(key) {
+            self.views.put(key, rs, v);
+        }
+    }
+
     fn key_of(&self, rs: &Arc<ResultSet>) -> Option<Key> {
         self.batch.iter().position(|b| b.rs.as_ref().is_some_and(|r| Arc::ptr_eq(r, rs))).map(Key::Stmt)
     }
@@ -381,13 +407,18 @@ impl QueryTab {
         let mut views = std::mem::take(&mut self.views);
         let (old_key, old_rs) = (self.shown, self.shown_rs.clone());
         let rt = self.conn.as_ref().map(|c| c.handle().clone());
+        // Stacked, its own grid there has the latest of it.
+        let stacked = rs.as_ref().and_then(|rs| self.stack.take(key, rs, cx));
         self.grid.update(cx, |g, cx| {
             let old = g.take_view();
             if let (Some(k), Some(r)) = (old_key, old_rs) {
                 views.put(k, r, old);
             }
             let v = match &rs {
-                Some(rs) => views.take(key, rs).unwrap_or_else(|| GridView::fresh(rs.clone())),
+                Some(rs) => {
+                    let kept = views.take(key, rs);
+                    stacked.or(kept).unwrap_or_else(|| GridView::fresh(rs.clone()))
+                }
                 None => GridView::empty(),
             };
             g.show_view(v, rt, cx);
@@ -519,6 +550,8 @@ impl QueryTab {
             self.grid.update(cx, |g, cx| g.set_foreign_keys(rs, fk, cx));
             return;
         }
+        // On a stacked grid showing it too.
+        self.stack.set_foreign_keys(rs, &fk, cx);
         if let Some(v) = self.views.of_result(rs) {
             v.set_foreign_keys(fk);
         } else if let Some(key) = self.key_of(rs) {

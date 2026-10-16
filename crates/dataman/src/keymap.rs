@@ -197,6 +197,54 @@ pub fn clean(overrides: &BTreeMap<String, String>) -> BTreeMap<String, String> {
         .collect()
 }
 
+/// A shortcut typed as text, as a keystroke in the canonical spelling: the symbols as the app
+/// shows them in any order (`⌘⇧p`, `⇧⌘P`, `⌃⌘↩`), or GPUI's names joined by `-` or `+`
+/// (`cmd-shift-p`, `cmd+k`). `None` for anything else, a bare word included: the settings
+/// search tries it beside the commands' names.
+pub fn parse_typed(s: &str) -> Option<String> {
+    let s = s.trim().to_lowercase();
+    let mut mods: Vec<&str> = Vec::new();
+    let mut rest = s.as_str();
+    while let Some(c) = rest.chars().next() {
+        let m = match c {
+            '⌃' => "ctrl",
+            '⌥' => "alt",
+            '⇧' => "shift",
+            '⌘' => "cmd",
+            _ => break,
+        };
+        mods.push(m);
+        rest = rest[c.len_utf8()..].trim_start();
+    }
+    if mods.is_empty() {
+        // GPUI's syntax needs a modifier name before a key: a bare word is not a shortcut.
+        let gpui = match s.strip_suffix("++") {
+            Some(head) => format!("{}-+", head.replace('+', "-")),
+            None => s.replace('+', "-"),
+        };
+        return gpui.contains('-').then(|| parse(&gpui)).flatten().filter(|k| k.contains('-'));
+    }
+    let key = match rest {
+        "↩" => "enter",
+        "⌫" => "backspace",
+        "⌦" => "delete",
+        "↑" => "up",
+        "↓" => "down",
+        "←" => "left",
+        "→" => "right",
+        "⇞" => "pageup",
+        "⇟" => "pagedown",
+        "↖" => "home",
+        "↘" => "end",
+        k => k,
+    };
+    if key.is_empty() {
+        return None;
+    }
+    mods.push(key);
+    parse(&mods.join("-"))
+}
+
 /// "cmd-shift-c" → "⇧⌘C".
 pub fn label(keystroke: &str) -> String {
     let Ok(k) = Keystroke::parse(keystroke) else { return keystroke.to_string() };
@@ -395,6 +443,38 @@ mod tests {
         assert_eq!(conflicts_in(&map(&[("copy_csv", "cmd-c")])), BTreeSet::from(["copy_csv", "copy_tsv"]));
         // Moving the other one away clears it.
         assert!(conflicts_in(&map(&[("copy_csv", "cmd-c"), ("copy_tsv", "cmd-alt-c")])).is_empty());
+    }
+
+    #[test]
+    fn typed_shortcuts() {
+        // The shown symbols, in any order and case, and GPUI's names with - or +.
+        for (typed, want) in [
+            ("⌘k", "cmd-k"),
+            ("⇧⌘P", "cmd-shift-p"),
+            ("⌘⇧p", "cmd-shift-p"),
+            ("⌃⌘↩", "ctrl-cmd-enter"),
+            ("⌥⌘[", "alt-cmd-["),
+            ("⌥F12", "alt-f12"),
+            ("⌘ ⇧ p", "cmd-shift-p"),
+            ("cmd-shift-p", "cmd-shift-p"),
+            ("Shift+Cmd+P", "cmd-shift-p"),
+            ("cmd+=", "cmd-="),
+            ("cmd++", "cmd-+"),
+            ("cmd--", "cmd--"),
+        ] {
+            assert_eq!(parse_typed(typed).as_deref(), Some(want), "{typed}");
+        }
+        // Words, a lone symbol and broken spellings are not shortcuts.
+        for typed in ["", "run", "copy csv", "⌘", "⇧⌘", "cmd-", "foo-bar"] {
+            assert_eq!(parse_typed(typed), None, "{typed}");
+        }
+        // Every shown label with a modifier reads back as its keystroke (a bare F6 is found by
+        // its label's text).
+        for c in COMMANDS {
+            for k in defaults(c).into_iter().filter(|k| k.contains('-')) {
+                assert_eq!(parse_typed(&label(&k)).as_deref(), Some(k.as_str()), "{} {k}", c.id);
+            }
+        }
     }
 
     #[test]

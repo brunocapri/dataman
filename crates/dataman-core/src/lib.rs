@@ -75,7 +75,7 @@ pub use history::{History, HistoryEntry, Outcome};
 pub use result::{Phase, ResultSet};
 pub use secret::{Keychain, MemorySecrets, SecretStore};
 pub use server::{ServerExtension, ServerInfo};
-pub use settings::{Settings, SettingsStore, ThemePref, Translucency, UiFont};
+pub use settings::{ResultLayout, Settings, SettingsStore, ThemePref, Translucency, UiFont};
 
 /// The result of a background operation, delivered over a one-shot channel.
 #[must_use]

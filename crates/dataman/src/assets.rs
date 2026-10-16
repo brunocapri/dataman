@@ -47,6 +47,7 @@ assets!(
     "icons/index.svg",
     "icons/info.svg",
     "icons/key.svg",
+    "icons/keyboard.svg",
     "icons/label.svg",
     "icons/link.svg",
     "icons/live.svg",
@@ -119,6 +120,8 @@ pub enum Icon {
     Table,
     View,
     Key,
+    /// Search by shortcut (Settings › Keyboard).
+    Keyboard,
     Index,
     Search,
     Filter,
@@ -203,6 +206,7 @@ impl Icon {
             Icon::Table => "icons/table.svg",
             Icon::View => "icons/view.svg",
             Icon::Key => "icons/key.svg",
+            Icon::Keyboard => "icons/keyboard.svg",
             Icon::Index => "icons/index.svg",
             Icon::Search => "icons/search.svg",
             Icon::Filter => "icons/filter.svg",
@@ -265,7 +269,7 @@ mod tests {
         use Icon::*;
         let all = [
             Run, Stop, Pause, Cancel, History, Plus, Reload, ChevronRight, ChevronDown, ChevronUp, ChevronLeft, Database, Schema,
-            SchemaFilled, Group, Table, View, Key, Index, Search, Filter, Close, Check, Copy, Export, Import, Edit, Trash,
+            SchemaFilled, Group, Table, View, Key, Keyboard, Index, Search, Filter, Close, Check, Copy, Export, Import, Edit, Trash,
             Sidebar, PanelRight, Expand, Collapse, Lock, Warning, Info, Server, Archive, More, Tab, Command, Code, Hash, Plug,
             Cursor, Tunnel, MatView, Function, Procedure, Sequence, Type, Label, Trigger, Extension, Role,
             Constraint, Link, Partition, Activity, Star, StarFill, Agent, Live,

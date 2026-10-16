@@ -11,7 +11,8 @@
 //!   fields, a bad one is red and does not save), the UI font (each family's five faces
 //!   resolve; a live switch re-measures the grid and scales its columns), a middle click on a
 //!   query tab and on a result tab (they close like ⌘W and the ×), the zoom, Settings ▸
-//!   Keyboard (a command remapped, removed and reset with clicks and keys; ⇧⌘C copies with
+//!   Keyboard (a command remapped, removed and reset with clicks and keys; the search by
+//!   shortcut, which only searches; ⇧⌘C copies with
 //!   headers), "Copied" in the Copy button's place for 2 s after a copy, the Copy menu's CSV
 //!   and TSV with headers, a connection that is not connected drawn gray and regular, the cell
 //!   viewer's slide and the explorer toggle's fill, printed as PASS/FAIL lines; exit code 1 on
@@ -985,6 +986,37 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
                 "⌫ removes History's key; Reset all restores ⌘Y and empties [keys]",
                 removed && keymap::effective("history") == ["cmd-y"] && saved_keys(cx).is_empty(),
                 format!("removed {removed}, {:?} {:?}", keymap::effective("history"), saved_keys(cx)),
+            );
+            // Search by shortcut: the keyboard button takes the next keystroke, which lists the
+            // commands on it and does nothing else (⌘T opens no tab, ⌘+ does not zoom); ⌫
+            // clears it, esc ends the search and leaves Settings open.
+            let key_search = |sv: &Entity<crate::settings_view::SettingsView>, cx: &mut AsyncWindowContext| cx.update(|_, cx| sv.read(cx).demo_key_search()).unwrap_or_default();
+            let n0 = tabs(ws, cx).len();
+            draw(cx);
+            if let Some(p) = cx.update(|_, cx| sv.read(cx).demo_key_search_point()).ok().flatten() {
+                click(cx, p);
+            }
+            press(cx, "cmd-t");
+            let (on, key, ids) = key_search(&sv, cx);
+            press(cx, "cmd-shift-=");
+            let (_, plus, zoom_ids) = key_search(&sv, cx);
+            press(cx, "backspace");
+            let (_, cleared, all) = key_search(&sv, cx);
+            press(cx, "escape");
+            let (still, _, _) = key_search(&sv, cx);
+            report(
+                "search by shortcut: ⌘T lists New tab and opens none, ⇧⌘= finds Zoom in by its second key; ⌫ clears, esc ends it",
+                on && key.as_deref() == Some("cmd-t")
+                    && ids == ["new_tab"]
+                    && tabs(ws, cx).len() == n0
+                    && plus.as_deref() == Some("cmd-shift-=")
+                    && zoom_ids == ["zoom_in"]
+                    && crate::theme::zoom() == 1.0
+                    && cleared.is_none()
+                    && all.len() == keymap::COMMANDS.len()
+                    && !still
+                    && settings(cx).is_some(),
+                format!("{on} {key:?} {ids:?} {plus:?} {zoom_ids:?} {cleared:?} {} still {still}, {n0} → {} tabs", all.len(), tabs(ws, cx).len()),
             );
             press(cx, "escape");
         }

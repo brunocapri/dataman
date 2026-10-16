@@ -401,7 +401,14 @@ pub(crate) fn axis_speed(p: f32, lo: f32, hi: f32) -> f32 {
     }
 }
 
-/// What a result tab keeps of the grid while another result is on screen.
+/// The height of a grid showing `rows` rows whole: the header, the rows, the horizontal bar.
+pub fn fit_rows(rows: usize) -> f32 {
+    HEADER_H + rows as f32 * ROW_H + BAR
+}
+
+/// What a result tab keeps of the grid while another result is on screen (a stacked result's
+/// grid shows a copy, `result_stack`).
+#[derive(Clone)]
 pub struct GridView {
     rs: Option<Arc<ResultSet>>,
     widths: Vec<f32>,
@@ -1109,9 +1116,15 @@ impl ResultGrid {
             dx = dy;
             dy = 0.;
         }
+        let before = self.scroll;
         self.scroll.0 -= dx;
         self.scroll.1 -= dy as f64;
         self.clamp_scroll();
+        // Past its last row (or its first) the wheel goes on to what scrolls around the grid
+        // (stacked results, `result_stack`); until then it is the grid's alone.
+        if self.scroll != before {
+            cx.stop_propagation();
+        }
         cx.notify();
     }
 
@@ -1886,6 +1899,22 @@ impl ResultGrid {
 
     pub fn result(&self) -> Option<&Arc<ResultSet>> {
         self.rs.as_ref()
+    }
+
+    /// The height that shows the header, every row loaded (and the paused, cancelled or error
+    /// row after them) and the horizontal scrollbar: a stacked result's grid is never taller.
+    pub fn fit_height(&self) -> f32 {
+        let (rows, extra) = self.rs.as_ref().map_or((0, false), |rs| {
+            let n = rs.rows();
+            let extra = match rs.phase() {
+                Phase::Paused => true,
+                Phase::Cancelled | Phase::Failed => n > 0,
+                _ => false,
+            };
+            (n, extra)
+        });
+        // An empty result shows its tag in the cells: two rows' room for it.
+        fit_rows(if rows == 0 { 2 } else { rows + extra as usize })
     }
 
     pub fn is_sorting(&self) -> bool {
