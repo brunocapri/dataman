@@ -720,8 +720,8 @@ impl Workspace {
             let tip = format!("Made by {}", cut_chars(&name, 48));
             div()
                 .id("tb-agent")
-                .flex_shrink_1()
-                .min_w(px(24.))
+                // Its whole name (up to the cap): the picker beside it gives way first.
+                .flex_none()
                 .max_w(px(140.))
                 .h(px(18.))
                 .px(px(6.))
@@ -2386,9 +2386,6 @@ impl Workspace {
     }
 }
 
-/// The title bar's explorer toggle (`icon_button`'s look): the sidebar glyph, its left part
-/// filled as far as the explorer is open (`open`, 0 to 1), so the fill sweeps in and out with
-/// the explorer's own slide (same tween, same easing; at once with "Reduce motion").
 /// An MCP client's name as the app shows it: its own words, control characters out, never
 /// empty (the client chooses it: it is shown, never trusted).
 pub(crate) fn agent_name(client: &str) -> String {
@@ -2405,6 +2402,9 @@ pub(crate) fn cut_chars(s: &str, n: usize) -> String {
     }
 }
 
+/// The title bar's explorer toggle (`icon_button`'s look): the sidebar glyph, its left part
+/// filled as far as the explorer is open (`open`, 0 to 1), so the fill sweeps in and out with
+/// the explorer's own slide (same tween, same easing; at once with "Reduce motion").
 fn explorer_toggle(t: &Theme, open: f32) -> gpui::Stateful<Div> {
     let (hov, prs, ink) = (t.hov, t.prs, t.tx3);
     // The glyph's left pane in its 16 pt box (`sidebar.svg`: the frame from x 2.5 to 13.5 and y
