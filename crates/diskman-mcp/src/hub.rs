@@ -125,6 +125,14 @@ pub trait Front: Send + Sync {
     fn draft(&self, _d: TabDraft) -> BoxFuture<'static, Result<Drafted, String>> {
         Box::pin(async { Err(DRAFTS_NEED_APP.to_string()) })
     }
+    /// The app's tabs with a transaction open on the connection (their titles): an edit of the
+    /// connection would end them, so it waits until they are committed or rolled back.
+    fn open_transactions(&self, _connection_id: &str) -> BoxFuture<'static, Vec<String>> {
+        Box::pin(async { Vec::new() })
+    }
+    /// The saved connections changed (`create_connection`, `update_connection`): the app shows
+    /// them at once (it also follows the file on its own).
+    fn connections_changed(&self) {}
 }
 
 /// How long a write waits for a human before it is denied (rolled back).

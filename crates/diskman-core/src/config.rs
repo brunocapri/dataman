@@ -437,52 +437,101 @@ impl Dirs {
     }
 }
 
+/// The saved connections. Other processes write the file too (`diskman-mcp` without the app, a
+/// hand edit): [`ConfigStore::refresh`] reads it again when its modification time moved, and
+/// every change here starts from the file as it is on disk, so nobody's write is lost.
 pub struct ConfigStore {
     path: PathBuf,
-    connections: Mutex<Vec<ConnectionProfile>>,
+    inner: Mutex<Inner>,
+}
+
+struct Inner {
+    connections: Vec<ConnectionProfile>,
+    /// The file's modification time as last read or written (`None`: no file).
+    stamp: Option<std::time::SystemTime>,
+}
+
+fn mtime(p: &Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(p).and_then(|m| m.modified()).ok()
+}
+
+fn read(path: &Path) -> Result<Vec<ConnectionProfile>> {
+    match std::fs::read_to_string(path) {
+        Ok(s) => Ok(toml::from_str::<File>(&s).with_context(|| format!("reading {}", path.display()))?.connections),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
+    }
 }
 
 impl ConfigStore {
     pub fn open(dirs: &Dirs) -> Result<ConfigStore> {
         let path = dirs.connections_file();
-        let connections = match std::fs::read_to_string(&path) {
-            Ok(s) => toml::from_str::<File>(&s).with_context(|| format!("reading {}", path.display()))?.connections,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-            Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
-        };
-        Ok(ConfigStore { path, connections: Mutex::new(connections) })
+        let stamp = mtime(&path);
+        let connections = read(&path)?;
+        Ok(ConfigStore { path, inner: Mutex::new(Inner { connections, stamp }) })
     }
 
     pub fn connections(&self) -> Vec<ConnectionProfile> {
-        self.connections.lock().clone()
+        self.inner.lock().connections.clone()
     }
 
     pub fn get(&self, id: &str) -> Option<ConnectionProfile> {
-        self.connections.lock().iter().find(|c| c.id == id).cloned()
+        self.inner.lock().connections.iter().find(|c| c.id == id).cloned()
+    }
+
+    /// Reads the file again when it changed on disk since it was last read or written here;
+    /// true when the connections differ from before. A file that does not parse (a hand edit
+    /// half done) keeps the connections as they were.
+    pub fn refresh(&self) -> bool {
+        let mut g = self.inner.lock();
+        Self::sync(&self.path, &mut g)
+    }
+
+    fn sync(path: &Path, g: &mut Inner) -> bool {
+        let stamp = mtime(path);
+        if stamp == g.stamp {
+            return false;
+        }
+        g.stamp = stamp;
+        match read(path) {
+            Ok(c) if c != g.connections => {
+                g.connections = c;
+                true
+            }
+            Ok(_) => false,
+            Err(e) => {
+                log::warn!("{e:#}");
+                false
+            }
+        }
+    }
+
+    /// A change made on the file as it is now, saved.
+    fn change(&self, f: impl FnOnce(&mut Vec<ConnectionProfile>)) -> Result<()> {
+        let mut g = self.inner.lock();
+        Self::sync(&self.path, &mut g);
+        f(&mut g.connections);
+        save(&self.path, &g.connections)?;
+        g.stamp = mtime(&self.path);
+        Ok(())
     }
 
     /// Adds or replaces (by id) a connection and saves the file.
     pub fn upsert(&self, profile: ConnectionProfile) -> Result<()> {
-        let mut g = self.connections.lock();
-        match g.iter_mut().find(|c| c.id == profile.id) {
+        self.change(|g| match g.iter_mut().find(|c| c.id == profile.id) {
             Some(c) => *c = profile,
             None => g.push(profile),
-        }
-        save(&self.path, &g)
+        })
     }
 
     pub fn remove(&self, id: &str) -> Result<()> {
-        let mut g = self.connections.lock();
-        g.retain(|c| c.id != id);
-        save(&self.path, &g)
+        self.change(|g| g.retain(|c| c.id != id))
     }
 
     /// Puts the connections in the order of `ids` (the explorer's, the file's); any it does not
     /// name keep their order after them.
     pub fn reorder(&self, ids: &[String]) -> Result<()> {
-        let mut g = self.connections.lock();
-        g.sort_by_key(|c| ids.iter().position(|i| *i == c.id).unwrap_or(usize::MAX));
-        save(&self.path, &g)
+        self.change(|g| g.sort_by_key(|c| ids.iter().position(|i| *i == c.id).unwrap_or(usize::MAX)))
     }
 }
 
@@ -523,6 +572,39 @@ mod tests {
         assert_eq!(again.connections(), vec![p.clone(), q.clone()]);
         again.remove(&p.id).unwrap();
         assert_eq!(ConfigStore::open(&dirs).unwrap().connections(), vec![q]);
+    }
+
+    /// Another process writes the file (`diskman-mcp` without the app): `refresh` picks it up,
+    /// once; a change made here afterwards keeps it; a broken file keeps what was there.
+    #[test]
+    fn refresh_follows_other_writers() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = Dirs::at(dir.path().join("diskman"));
+        let app = ConfigStore::open(&dirs).unwrap();
+        assert!(!app.refresh(), "no file, nothing changed");
+        let a = ConnectionProfile::new("a");
+        app.upsert(a.clone()).unwrap();
+        assert!(!app.refresh(), "its own write is not a change");
+        // The other writer, with a store of its own.
+        let other = ConfigStore::open(&dirs).unwrap();
+        let b = ConnectionProfile::new("b");
+        other.upsert(b.clone()).unwrap();
+        assert!(app.refresh());
+        assert_eq!(app.connections(), vec![a.clone(), b.clone()]);
+        assert!(!app.refresh());
+        // A write the app has not read yet survives the app's next change.
+        let mut b2 = b.clone();
+        b2.name = "b renamed".into();
+        other.upsert(b2.clone()).unwrap();
+        let c = ConnectionProfile::new("c");
+        app.upsert(c.clone()).unwrap();
+        assert_eq!(ConfigStore::open(&dirs).unwrap().connections(), vec![a.clone(), b2.clone(), c.clone()]);
+        assert_eq!(app.connections(), vec![a.clone(), b2.clone(), c.clone()]);
+        // Half a hand edit: the connections stay.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        std::fs::write(dirs.connections_file(), "[[connection]]\nid = ").unwrap();
+        assert!(!app.refresh());
+        assert_eq!(app.connections(), vec![a, b2, c]);
     }
 
     #[test]

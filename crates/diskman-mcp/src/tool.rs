@@ -353,6 +353,11 @@ impl Call {
         self.note.lock().favorite = Some(name.to_string());
     }
 
+    /// The connection the audit line is about (tools that resolve it themselves).
+    pub fn note_connection(&self, name: &str) {
+        self.note.lock().connection = Some(name.to_string());
+    }
+
     /// The profile named by `connection`, if the policy lets this tool use it for `need`.
     pub fn target(&self, args: &Args, need: Need) -> Result<ConnectionProfile, ToolError> {
         let name = args.str("connection")?;

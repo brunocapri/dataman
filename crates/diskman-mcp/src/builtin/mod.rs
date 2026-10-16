@@ -194,7 +194,7 @@ mod tests {
         for want in [
             "list_connections", "list_schemas", "list_tables", "search_objects", "describe_table", "get_ddl", "sample_rows", "run_query",
             "open_query", "explain", "explain_analyze", "execute", "activity_sessions", "activity_locks", "cancel_backend", "terminate_backend",
-            "list_favorites", "run_favorite",
+            "list_favorites", "run_favorite", "create_connection", "update_connection",
         ] {
             assert!(names.contains(&want), "{want} missing from {names:?}");
         }
@@ -204,7 +204,8 @@ mod tests {
             assert_eq!(s.0["additionalProperties"], false, "{}", t.name());
             assert!(t.description().len() > 40 && t.description().len() < 900, "{}: {} chars", t.name(), t.description().len());
             assert!(t.name().chars().all(|c| c.is_ascii_lowercase() || c == '_'), "{}", t.name());
-            assert_eq!(t.need().is_some(), s.required().contains(&"connection"), "{}", t.name());
+            // update_connection names the connection it edits, but runs nothing on it.
+            assert_eq!(t.need().is_some(), s.required().contains(&"connection") && t.name() != "update_connection", "{}", t.name());
             for (k, v) in s.properties() {
                 assert!(v.get("type").is_some(), "{}.{k}", t.name());
                 assert!(v.get("description").is_some_and(|d| d.as_str().is_some_and(|d| !d.is_empty())), "{}.{k} has no description", t.name());

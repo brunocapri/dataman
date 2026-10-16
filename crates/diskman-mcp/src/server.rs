@@ -29,7 +29,7 @@ from and runs nothing). Writes (execute, open_query, run_favorite) follow \
 each connection's MCP tier, set by the user: read refuses them; write runs non-destructive DML (INSERT, UPDATE/DELETE with a real \
 WHERE) within a row limit; full also allows destructive statements, which wait for the user's Allow in the app, as do writes over \
 the row limit and every write on production. You cannot approve anything yourself. Results: columns as [name, type], rows as \
-arrays, null is SQL NULL.";
+arrays, null is SQL NULL. create_connection and update_connection save connections; passwords are write-only (never returned).";
 
 /// The handler for one transport. Clones share the hub and the registry.
 #[derive(Clone)]
@@ -105,6 +105,8 @@ impl Server {
 pub fn describe(t: &dyn Tool) -> rmcp::model::Tool {
     let ann = match t.need() {
         Some(Need::Write) => ToolAnnotations::new().read_only(false).destructive(true).idempotent(false).open_world(false),
+        // They change the saved connections (not a database).
+        None if matches!(t.name(), "create_connection" | "update_connection") => ToolAnnotations::new().read_only(false).destructive(false).idempotent(true).open_world(false),
         _ => ToolAnnotations::new().read_only(true).destructive(false).idempotent(true).open_world(false),
     };
     rmcp::model::Tool::new(t.name().to_string(), t.description().to_string(), Arc::new(t.schema().0.clone())).with_annotations(ann)

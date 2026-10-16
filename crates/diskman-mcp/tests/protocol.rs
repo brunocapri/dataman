@@ -419,6 +419,67 @@ fn stdio_create_connection_drops_the_secret_when_the_target_changes() {
     assert!(block_for(&toml_of(cfg.path()), "secret2").contains("save_password = true"));
 }
 
+/// update_connection, headless (the app is not running): only the given fields change, the
+/// password is write-only, nothing loosens, a move to another server drops the saved password,
+/// an off connection is not the agent's to edit, names stay unique.
+#[test]
+fn stdio_update_connection() {
+    let cfg = config();
+    let mut m = Mcp::spawn(cfg.path());
+    m.call("initialize", json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}));
+    m.send(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
+    let toml_of = |cfg: &std::path::Path| std::fs::read_to_string(cfg.join("diskman/connections.toml")).unwrap();
+    let list = m.call("tools/list", json!({}));
+    let uc = list["result"]["tools"].as_array().unwrap().iter().find(|t| t["name"] == "update_connection").cloned().unwrap();
+    assert_eq!(uc["inputSchema"]["required"], json!(["connection"]));
+    assert_eq!(uc["annotations"]["readOnlyHint"], false, "{uc}");
+
+    // A password and a database: saved, the password never echoed nor in the file.
+    let (err, text) = m.tool("update_connection", json!({"connection": "local pg", "password": "hunter2", "database": "other"}));
+    assert!(!err, "{text}");
+    let v: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!((v["id"].as_str(), &v["changed"], v["password"].as_str()), (Some("pg1"), &json!(["database"]), Some("set")), "{text}");
+    assert!(!text.contains("hunter2") && !toml_of(cfg.path()).contains("hunter2"));
+    let block = block_for(&toml_of(cfg.path()), "local pg").to_string();
+    assert!(block.contains("database = \"other\"") && block.contains("save_password = true") && block.contains("port = 55432"), "{block}");
+    // By id, renamed and recolored; the password stays (same server).
+    let (err, text) = m.tool("update_connection", json!({"connection": "pg1", "name": "local", "color": "violet"}));
+    let v: Value = serde_json::from_str(&text).unwrap();
+    assert!(!err && v["changed"] == json!(["name", "color"]) && v["password"] == "kept", "{text}");
+    // Nothing given: nothing changes.
+    let (err, text) = m.tool("update_connection", json!({"connection": "local"}));
+    assert!(!err && serde_json::from_str::<Value>(&text).unwrap()["changed"] == json!([]), "{text}");
+    // Another host: the saved password is dropped, not carried there.
+    let (err, text) = m.tool("update_connection", json!({"connection": "local", "host": "10.0.0.9"}));
+    assert!(!err && serde_json::from_str::<Value>(&text).unwrap()["password"] == "dropped", "{text}");
+    assert!(block_for(&toml_of(cfg.path()), "local").contains("save_password = false"));
+    // Nothing loosens.
+    let (err, text) = m.tool("update_connection", json!({"connection": "writable", "mcp": "full"}));
+    assert!(err && text.contains("widen"), "{text}");
+    let (err, text) = m.tool("update_connection", json!({"connection": "writable", "env": "production"}));
+    assert!(!err, "{text}");
+    let (err, text) = m.tool("update_connection", json!({"connection": "writable", "env": "dev"}));
+    assert!(err && text.contains("loosen"), "{text}");
+    let (err, text) = m.tool("update_connection", json!({"connection": "full", "read_only": true}));
+    assert!(!err, "{text}");
+    let (err, text) = m.tool("update_connection", json!({"connection": "full", "read_only": false}));
+    assert!(err && text.contains("turn off"), "{text}");
+    let (err, text) = m.tool("update_connection", json!({"connection": "full", "mcp": "write"}));
+    assert!(!err && text.contains("\"mcp\""), "narrowing is fine: {text}");
+    // Off (prod) is edited in the app only; names stay unique; unknown names are invalid.
+    let (err, text) = m.tool("update_connection", json!({"connection": "prod", "host": "x"}));
+    assert!(err && text.contains("off"), "{text}");
+    let (err, text) = m.tool("update_connection", json!({"connection": "full", "name": "WRITABLE"}));
+    assert!(err && text.contains("another connection"), "{text}");
+    let (err, text) = m.tool("update_connection", json!({"connection": "nope", "host": "x"}));
+    assert!(err && text.contains("no connection named"), "{text}");
+    // list_connections still never says anything about passwords.
+    let (_, text) = m.tool("list_connections", json!({}));
+    assert!(!text.to_lowercase().contains("password") && !text.contains("hunter2"), "{text}");
+    let log = std::fs::read_to_string(cfg.path().join("diskman/mcp-audit.jsonl")).unwrap();
+    assert!(!log.contains("hunter2") && log.contains("\"tool\":\"update_connection\""), "{log}");
+}
+
 /// The user tools file is read again when it changes, and the new tools are listed.
 #[test]
 fn stdio_user_tools_reload() {
