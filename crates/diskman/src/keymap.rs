@@ -125,6 +125,8 @@ pub const COMMANDS: &[Command] = &[
     Command { context: Some("ResultGrid"), ..c("review_changes", "Review & commit", "GRID", Scope::Grid, &["cmd-s"], || Box::new(ReviewChanges)) },
     c("discard_changes", "Discard edits", "GRID", Scope::Grid, &["cmd-backspace"], || Box::new(DiscardChanges)),
     c("export", "Export", "GRID", Scope::Workspace, &["cmd-e"], || Box::new(ExportResult)),
+    // On the grid only: in the editor ⇧⌘↩ runs the statement.
+    c("zoom_result", "Zoom result", "GRID", Scope::Grid, &["cmd-shift-enter"], || Box::new(ToggleResultZoom)),
     c("cycle_focus", "Next region", "FOCUS", Scope::Workspace, &["f6"], || Box::new(CycleFocus)),
     c("cycle_focus_back", "Previous region", "FOCUS", Scope::Workspace, &["shift-f6"], || Box::new(CycleFocusBack)),
     c("focus_explorer", "Explorer", "FOCUS", Scope::Workspace, &["cmd-shift-e"], || Box::new(FocusExplorer)),

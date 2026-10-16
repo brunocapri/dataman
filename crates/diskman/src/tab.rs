@@ -210,6 +210,10 @@ pub struct QueryTab {
     pub(crate) agent_pending: Option<Arc<ResultSet>>,
     /// The editor holds an agent's draft the user has not run yet (`draft_agent`).
     pub(crate) agent_draft: bool,
+    /// The result panel is zoomed over the editor and the side panel (each tab its own), and
+    /// the side panel it covered (another one opening ends the zoom: it shows).
+    pub(crate) zoomed: bool,
+    pub(crate) zoom_side: Option<&'static str>,
     /// The favorite this tab was opened from (or saved as): its id and name. The tab is titled
     /// with the name, and ⌘S saves the editor's text into it.
     pub favorite: Option<(String, SharedString)>,
@@ -292,6 +296,8 @@ impl QueryTab {
             agent_run: None,
             agent_pending: None,
             agent_draft: false,
+            zoomed: false,
+            zoom_side: None,
             favorite: None,
         };
         t.set_connection(conn, cx);

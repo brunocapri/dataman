@@ -241,6 +241,19 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
         });
     }
     let stage = raw.trim_end_matches("-light").to_string();
+    // Connections made live while the welcome screen shows (nothing connected first).
+    if stage == "conns-check" {
+        window
+            .spawn(cx, async move |cx| {
+                let ok = crate::mcp_check::run_conns(&ws, cx).await;
+                let _ = cx.update(|_, cx| cx.quit());
+                if !ok {
+                    std::process::exit(1);
+                }
+            })
+            .detach();
+        return;
+    }
     if stage.starts_with("welcome") {
         window
             .spawn(cx, async move |cx| {
@@ -894,13 +907,16 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
             sleep(cx, if stage.starts_with("dialog-") { 1500 } else { 500 } + crate::lar::demo::wait_ms(&stage)).await;
             // `DISKMAN_SHOT_HOVER=x,y`: the pointer rests there (hover states) for the capture.
             if let Some((x, y)) = std::env::var("DISKMAN_SHOT_HOVER").ok().and_then(|v| v.split_once(',').and_then(|(x, y)| Some((x.parse::<f32>().ok()?, y.parse::<f32>().ok()?)))) {
-                let _ = cx.update(|window, cx| {
-                    let ev = gpui::MouseMoveEvent { position: gpui::point(gpui::px(x), gpui::px(y)), pressed_button: None, modifiers: Default::default() };
-                    window.dispatch_event(gpui::PlatformInput::MouseMove(ev), cx);
-                    window.refresh();
-                    window.draw(cx).clear(cx);
-                });
-                sleep(cx, 200).await;
+                // Moved there, then again once a tooltip's delay has passed (it shows then).
+                for wait in [900, 300] {
+                    let _ = cx.update(|window, cx| {
+                        let ev = gpui::MouseMoveEvent { position: gpui::point(gpui::px(x), gpui::px(y)), pressed_button: None, modifiers: Default::default() };
+                        window.dispatch_event(gpui::PlatformInput::MouseMove(ev), cx);
+                        window.refresh();
+                        window.draw(cx).clear(cx);
+                    });
+                    sleep(cx, wait).await;
+                }
             }
             if let Some(path) = shot_path {
                 let _ = cx.update(|window, cx| {

@@ -207,8 +207,10 @@ enum Tone {
     /// A connected connection's name (semibold).
     Conn,
     ConnLar,
-    /// A connection that is not connected (off, connecting, failed): gray, regular weight.
+    /// A connection that is not connected (off, failed): dim, regular weight.
     ConnOff,
+    /// A connection on its way up: gray, between off and connected.
+    ConnWait,
     Muted,
     Italic,
     Error,
@@ -238,6 +240,10 @@ struct Row {
     /// No icon, but its room kept: a plain column's name lines up with a key column's.
     blank_icon: bool,
     chip: Option<Hsla>,
+    /// The chip faded (a connection that is not connected).
+    chip_dim: bool,
+    /// The whole text on hover (a connection's error, a failed load's).
+    tip: Option<SharedString>,
     lar: bool,
     /// A connection through an SSH tunnel (a small glyph after the name).
     tunnel: bool,
@@ -264,6 +270,8 @@ impl Row {
             icon: None,
             blank_icon: false,
             chip: None,
+            chip_dim: false,
+            tip: None,
             lar: false,
             tunnel: false,
             lock: false,
@@ -615,11 +623,16 @@ impl SchemaTree {
             .tone(match state {
                 Some(ConnState::Connected(_)) if lar => Tone::ConnLar,
                 Some(ConnState::Connected(_)) => Tone::Conn,
+                Some(ConnState::Connecting) => Tone::ConnWait,
                 _ => Tone::ConnOff,
             })
             .meta(glyph, meta)
             .expandable(open);
         r.chip = Some(t.profile_color(p));
+        r.chip_dim = r.tone == Tone::ConnOff;
+        if let Some(ConnState::Failed(e)) = state {
+            r.tip = Some(e.clone().into());
+        }
         r.lar = lar;
         r.tunnel = p.ssh.is_some();
         r
@@ -1179,6 +1192,20 @@ impl SchemaTree {
         let id = cid(conn_id);
         let r = self.rows.iter().find(|r| r.id.as_ref() == id)?;
         Some(label_style(r.tone, false, &cx.theme()))
+    }
+
+    /// Checks: a connection row's label (as shown), whether its chip is faded, its hover text;
+    /// and the error row under it (its label and hover text), when there is one.
+    pub fn demo_conn_row(&self, conn_id: &str) -> Option<(String, bool, Option<String>, Option<(String, Option<String>)>)> {
+        let id = cid(conn_id);
+        let r = self.rows.iter().find(|r| r.id.as_ref() == id)?;
+        let err = self.rows.iter().find(|r| r.id.as_ref() == format!("{id}/err")).map(|e| (e.label.to_string(), e.tip.as_ref().map(|t| t.to_string())));
+        Some((r.label.to_string(), r.chip_dim, r.tip.as_ref().map(|t| t.to_string()), err))
+    }
+
+    /// Checks: where a connection's row is (window coordinates), once painted.
+    pub fn demo_conn_bounds(&self, conn_id: &str) -> Option<gpui::Bounds<gpui::Pixels>> {
+        self.conn_bounds.borrow().get(cid(conn_id).as_str()).copied()
     }
 
     /// Demo and live checks: the row whose match is popping now.
@@ -2110,7 +2137,8 @@ impl SchemaTree {
                 }))
             })
             .child(div().w(px(10.)).flex_none().flex().justify_center().children(chevron))
-            .children(r.chip.map(|c| div().mx(px(3.)).child(ui::chip(c, 8.))))
+            .when_some(r.tip.clone(), |d, tip| d.tooltip(ui::text_tooltip(tip)))
+            .children(r.chip.map(|c| div().mx(px(3.)).when(r.chip_dim, |d| d.opacity(0.45)).child(ui::chip(c, 8.))))
             .children(r.icon.filter(|_| r.chip.is_none()).map(|(i, c)| {
                 // A folder is filled while shut and outlined while open.
                 let i = if i == Icon::Schema && !r.expanded { Icon::SchemaFilled } else { i };
@@ -2145,8 +2173,10 @@ impl SchemaTree {
 fn label_style(tone: Tone, sel: bool, t: &Theme) -> (Hsla, bool) {
     let bold = matches!(tone, Tone::Conn | Tone::ConnLar);
     let color = match tone {
-        Tone::ConnOff if sel => t.tx2,
-        Tone::ConnOff => t.tx3,
+        Tone::ConnOff if sel => t.tx3,
+        Tone::ConnOff => t.tx4,
+        Tone::ConnWait if sel => t.tx2,
+        Tone::ConnWait => t.tx3,
         _ if sel => t.tx,
         Tone::Conn => t.tx,
         Tone::ConnLar => t.lar_t,
@@ -2391,10 +2421,12 @@ fn loading_row(id: &str, depth: usize) -> Row {
 /// A failed load: the server's message, and "retry".
 fn error_row(id: &str, depth: usize, e: &str, retry: &str, t: &Theme) -> Row {
     let first = e.lines().next().unwrap_or(e);
-    Row::new(format!("{id}/err"), depth, first.to_string(), Kind::Error { retry: retry.to_string() })
+    let mut r = Row::new(format!("{id}/err"), depth, first.to_string(), Kind::Error { retry: retry.to_string() })
         .tone(Tone::Error)
         .icon_colored(Icon::Warning, t.err)
-        .meta("retry", Meta::Link)
+        .meta("retry", Meta::Link);
+    r.tip = Some(e.to_string().into());
+    r
 }
 
 /// `timestamp with time zone` → `timestamptz`: the short names the explorer shows on

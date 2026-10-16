@@ -362,6 +362,86 @@ pub fn tooltip(
     }
 }
 
+/// The widest a text tooltip gets, and the most lines it shows.
+pub const TIP_MAX_W: f32 = 360.;
+pub const TIP_LINES: usize = 14;
+/// The tooltip's mono 11.5 pt: an advance of about 0.6 em; its padding.
+const TIP_CHAR: f32 = 6.9;
+const TIP_PAD_X: f32 = 11.;
+const TIP_LINE_H: f32 = 17.;
+
+/// A long text cut to fit a tooltip: at most [`TIP_LINES`] lines of what fits in
+/// [`TIP_MAX_W`] (wrapped lines counted a little short, words wrap before the edge), the rest
+/// replaced by an ellipsis; and the width it needs (narrow texts get a narrow box).
+pub fn fit_tip(text: &str) -> (String, f32) {
+    let per_line = ((TIP_MAX_W - 2. * TIP_PAD_X) / TIP_CHAR).floor() as usize;
+    let wraps = (per_line * 17 / 20).max(1);
+    let width = |longest: usize| (longest as f32 * TIP_CHAR + 2. * TIP_PAD_X + 2.).clamp(60., TIP_MAX_W);
+    let mut out = String::new();
+    let (mut lines, mut longest) = (0usize, 0usize);
+    for line in text.trim().lines() {
+        let line = line.trim_end();
+        let n = line.chars().count();
+        let rows = n.div_ceil(wraps).max(1);
+        if lines + rows > TIP_LINES {
+            let room = (TIP_LINES - lines) * wraps;
+            if room == 0 {
+                // No line left: the ellipsis ends the last one.
+                out.pop();
+            } else {
+                let cut: String = line.chars().take(room.saturating_sub(1)).collect();
+                out.push_str(cut.trim_end());
+            }
+            out.push('…');
+            return (out, width(per_line.max(longest)));
+        }
+        lines += rows;
+        longest = longest.max(n.min(per_line));
+        out.push_str(line);
+        out.push('\n');
+    }
+    out.pop();
+    (out, width(longest))
+}
+
+/// A tooltip for a long text (a connection's error): wrapped, at most [`TIP_MAX_W`] wide and
+/// [`TIP_LINES`] lines high, so it always fits the window (GPUI moves it left or above the
+/// pointer near the edges).
+pub struct TextTip {
+    text: SharedString,
+    width: f32,
+}
+
+impl Render for TextTip {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = cx.theme();
+        div()
+            .w(px(self.width))
+            .max_h(px(TIP_LINES as f32 * TIP_LINE_H + 20.))
+            .overflow_hidden()
+            .px(px(TIP_PAD_X))
+            .py(px(9.))
+            .bg(t.pop)
+            .shadow(t.ring())
+            .font_family(crate::theme::mono())
+            .text_size(px(11.5))
+            .line_height(px(TIP_LINE_H))
+            .text_color(t.tx)
+            .whitespace_normal()
+            .child(div().w_full().line_clamp(TIP_LINES).text_ellipsis().child(self.text.clone()))
+    }
+}
+
+/// Builds a [`TextTip`] callback for `.tooltip(…)`.
+pub fn text_tooltip(text: impl Into<SharedString>) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
+    let (text, width) = fit_tip(&text.into());
+    let text = SharedString::from(text);
+    move |_, cx| {
+        let text = text.clone();
+        cx.new(|_| TextTip { text, width }).into()
+    }
+}
+
 /// A modal card (connection sheet, export, import, settings, confirmations): `pop`, square,
 /// the 1 pt ring, and clicks stop here (the scrim behind closes it).
 pub fn modal(t: &Theme, id: impl Into<ElementId>) -> Stateful<Div> {
@@ -440,4 +520,25 @@ pub fn empty_state(t: &Theme, tag: &str, size: f32, msg: Option<SharedString>) -
         .text_center()
         .child(pixel(SharedString::from(tag.to_string()), size, t.tx4))
         .children(msg.map(|m| div().text_color(t.tx2).line_height(px(18.)).child(m)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A short text gets a narrow box and stays whole; a huge one is cut to the line budget,
+    /// ends with an ellipsis and never asks for more than the widest box.
+    #[test]
+    fn text_tips_fit() {
+        let (t, w) = fit_tip("connection refused");
+        assert_eq!(t, "connection refused");
+        assert!(w < 200. && w >= 60., "{w}");
+        let huge = format!("FATAL: {}\nDETAIL: {}\n{}", "x".repeat(900), "y ".repeat(300), "z\n".repeat(50));
+        let (t, w) = fit_tip(&huge);
+        assert!(w > 340. && w <= TIP_MAX_W, "{w}");
+        assert!(t.ends_with('…') && t.chars().count() < 900, "{}", t.len());
+        let (t, _) = fit_tip(&"line\n".repeat(40));
+        assert_eq!(t.lines().count(), TIP_LINES);
+        assert!(t.ends_with('…'));
+    }
 }

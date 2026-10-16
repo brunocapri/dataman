@@ -994,6 +994,11 @@ impl SettingsView {
     }
 
     /// The search field's text (the checks; typing goes through the IME, which they skip).
+    /// Checks: the section shown.
+    pub fn demo_section(&self) -> &'static str {
+        self.section.label()
+    }
+
     pub fn demo_search(&mut self, q: &str, cx: &mut Context<Self>) {
         self.search.update(cx, |i, cx| i.set_text(q, cx));
         cx.notify();

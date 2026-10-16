@@ -502,6 +502,15 @@ impl Workspace {
         // The work column paints the translucent fill once (app.rs); the regions here are
         // transparent, separated by straight hairlines, and flush: no corner to keep clear.
         let monitor = tab.read(cx).monitor.clone();
+        // The result zoom: another side view opening ends it (that view shows).
+        let side_now = crate::app::side_id(&self.side);
+        if tab.read(cx).zoomed && side_now.is_some() && side_now != tab.read(cx).zoom_side {
+            self.toggle_result_zoom(window, cx);
+        }
+        // 0: in place; 1: the result covers the Run row, the editor and the side panel.
+        let zoom = if has_run && monitor.is_none() { self.zoom_frame(&tab, window, cx) } else { 0. };
+        let rest = 1. - zoom;
+        let covered = zoom >= 0.999;
         let mut main = div().flex_1().min_w_0().h_full().flex().flex_col();
         if let Some(m) = monitor {
             // The activity monitor has the whole work surface (its own header and bar).
@@ -545,63 +554,82 @@ impl Workspace {
                 grid.clone().into_any_element()
             };
             let bar = if shows_plan { self.render_plan_bar(&tab, &t, cx).into_any_element() } else { self.render_result_bar(&tab, &view, &t, cx).into_any_element() };
-            main = main
-                .child(self.render_toolbar(&view, &t, cx))
-                .child(
+            // Zooming, the Run row, the editor and the divider fold up under the rising result
+            // (each keeps its height inside and is clipped from below); zoomed, they are gone.
+            if !covered {
+                main = main
+                    // The Run row fades first (it is the thinnest), the editor with the fold.
+                    .child(div().h(px(metrics::TOOLBAR_H * rest)).flex_none().overflow_hidden().when(zoom > 0., |d| d.opacity(rest * rest)).child(self.render_toolbar(&view, &t, cx)))
+                    .child(
+                        div()
+                            .h(px(editor_h * rest))
+                            .flex_none()
+                            .relative()
+                            .overflow_hidden()
+                            .when(zoom > 0., |d| d.opacity(rest))
+                            .child(div().h(px(editor_h)).flex_none().child(editor))
+                            .children((region == Some(Region::Editor) && zoom == 0.).then(|| focus_ring(&t))),
+                    )
+                    .child(
+                        div()
+                            .h(px(metrics::DIVIDER * rest))
+                            .flex_none()
+                            .relative()
+                            .overflow_hidden()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .border_t_1()
+                            .border_b_1()
+                            .border_color(t.line)
+                            .child(div().w(px(32.)).h(px(3.)).bg(t.line2))
+                            .when(zoom == 0., |d| {
+                                d.child(
+                                    div()
+                                        .id("splitter")
+                                        .absolute()
+                                        .left_0()
+                                        .right_0()
+                                        .top(px(-3.))
+                                        .h(px(metrics::DIVIDER_HIT))
+                                        .cursor_row_resize()
+                                        .on_mouse_down(MouseButton::Left, cx.listener(|w, _, _, cx| {
+                                            w.drag = Some(Drag::Split);
+                                            cx.stop_propagation();
+                                        })),
+                                )
+                            }),
+                    );
+            }
+            let bounds = self.result_bounds.clone();
+            main = main.child(
+                div().flex_1().min_h_0().flex().flex_col().on_children_prepainted(move |b, _, _| bounds.set(b.first().copied())).child(
                     div()
-                        .h(px(editor_h))
-                        .flex_none()
-                        .relative()
-                        .overflow_hidden()
-                        .child(editor)
-                        .children((region == Some(Region::Editor)).then(|| focus_ring(&t))),
-                )
-                .child(
-                    div()
-                        .h(px(metrics::DIVIDER))
-                        .flex_none()
-                        .relative()
+                        .size_full()
                         .flex()
-                        .items_center()
-                        .justify_center()
-                        .border_t_1()
-                        .border_b_1()
-                        .border_color(t.line)
-                        .child(div().w(px(32.)).h(px(3.)).bg(t.line2))
+                        .flex_col()
+                        .children(strip)
+                        .child(bar)
                         .child(
                             div()
-                                .id("splitter")
-                                .absolute()
-                                .left_0()
-                                .right_0()
-                                .top(px(-3.))
-                                .h(px(metrics::DIVIDER_HIT))
-                                .cursor_row_resize()
-                                .on_mouse_down(MouseButton::Left, cx.listener(|w, _, _, cx| {
-                                    w.drag = Some(Drag::Split);
-                                    cx.stop_propagation();
-                                })),
+                                .flex_1()
+                                .min_h(px(metrics::GRID_MIN))
+                                .relative()
+                                .overflow_hidden()
+                                .child(grid_area)
+                                // Grid-edit cards (read-only reason, key picker) float over the grid.
+                                .child(tab.read(cx).edit.clone())
+                                .children((region == Some(Region::Grid)).then(|| focus_ring(&t))),
                         ),
-                )
-                .children(strip)
-                .child(bar)
-                .child(
-                    div()
-                        .flex_1()
-                        .min_h(px(metrics::GRID_MIN))
-                        .relative()
-                        .overflow_hidden()
-                        .child(grid_area)
-                        // Grid-edit cards (read-only reason, key picker) float over the grid.
-                        .child(tab.read(cx).edit.clone())
-                        .children((region == Some(Region::Grid)).then(|| focus_ring(&t))),
-                );
+                ),
+            );
         }
         // The history and the cell viewer slide in and out like the explorer (the content keeps
         // its width and is clipped); the other panels just appear.
         let slide = self.side_slide(window, cx);
         let sliding = slide.is_some_and(|(_, w)| (w - self.side_w).abs() > 0.5);
-        let shown = self.side.clone().or_else(|| slide.map(|(k, _)| k.side()));
+        // The zoomed result covers the side panel too: it folds away with the editor.
+        let shown = self.side.clone().or_else(|| slide.map(|(k, _)| k.side())).filter(|_| !covered);
         let side = shown.map(|s| {
             let slides = slide.filter(|(k, _)| Slide::of(&s) == Some(*k));
             let content: AnyElement = match s {
@@ -609,8 +637,8 @@ impl Workspace {
                 Side::Viewer => self.render_viewer(&tab, &t, cx).into_any_element(),
                 Side::Server(_, v, _) | Side::Feature(_, v, _) => v.into_any_element(),
             };
-            let w = slides.map_or(self.side_w, |(_, w)| w);
-            let moving = slides.is_some() && sliding;
+            let w = slides.map_or(self.side_w, |(_, w)| w) * rest;
+            let moving = (slides.is_some() && sliding) || zoom > 0.;
             div()
                 .relative()
                 .w(px(w))
@@ -620,6 +648,7 @@ impl Workspace {
                 .border_l_1()
                 .border_color(t.line)
                 .when(moving, |d| d.overflow_hidden())
+                .when(zoom > 0., |d| d.opacity(rest))
                 .child(div().absolute().top_0().bottom_0().right_0().w(px(self.side_w)).child(content))
                 .children((region == Some(Region::Side)).then(|| focus_ring(&t)))
                 .when(!moving, |d| d.child(
@@ -686,6 +715,26 @@ impl Workspace {
                 .on_click(cx.listener(|w, _, _, cx| w.cancel_active(cx)))
         });
         let picker = self.render_conn_picker(v, t, cx);
+        // An agent's tab: the agent's name (as its MCP client introduced itself) by the picker.
+        let agent = self.active_tab().and_then(|tab| tab.read(cx).agent.as_ref().map(|a| agent_name(&a.client))).map(|name| {
+            let tip = format!("Made by {}", cut_chars(&name, 48));
+            div()
+                .id("tb-agent")
+                .flex_shrink_1()
+                .min_w(px(24.))
+                .max_w(px(140.))
+                .h(px(18.))
+                .px(px(6.))
+                .flex()
+                .items_center()
+                .bg(t.hov)
+                .border_1()
+                .border_color(t.line2)
+                .text_size(px(10.5))
+                .text_color(t.tx3)
+                .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(name))
+                .tooltip(ui::tooltip(tip, None, None))
+        });
         // Statements autocommit. A transaction opened with a typed BEGIN holds locks until it
         // ends: while it is open, the TX chip with COMMIT and ROLLBACK.
         let tx_open = v.tx.status.is_open();
@@ -767,6 +816,7 @@ impl Workspace {
             .text_color(t.tx2)
             .child(run)
             .child(picker)
+            .children(agent)
             .when(tx_controls.is_some(), |d| d.child(ui::vsep(t, 18.).mx(px(4.))))
             .children(tx_controls)
             .children(cancel)
@@ -1050,6 +1100,10 @@ impl Workspace {
                 let label = if state == ResultState::Error { "Show in editor" } else { "Show error" };
                 actions.push(action("rb-show", label.into(), "jump_to_error").on_click(cx.listener(|w, _, window, cx| {
                     if let Some(tab) = w.active_tab().cloned() {
+                        // The editor must be in sight.
+                        if tab.read(cx).zoomed {
+                            w.toggle_result_zoom(window, cx);
+                        }
                         let e = tab.read(cx).editor.clone();
                         e.update(cx, |e, cx| e.jump_to_error(cx));
                         window.focus(&e.focus_handle(cx), cx);
@@ -1280,6 +1334,19 @@ impl Workspace {
                     .child("Export")
                     .on_click(cx.listener(|w, _, window, cx| w.open_export(window, cx))),
             )
+            .child({
+                let zoomed = tab.read(cx).zoomed;
+                let key = if zoomed { Some("esc".to_string()) } else { crate::keymap::key("zoom_result") };
+                ui::button(t, "rb-zoom", Btn::Ghost)
+                    .h(px(24.))
+                    .w(px(26.))
+                    .px(px(0.))
+                    .justify_center()
+                    .when(zoomed, |d| d.bg(t.acc_s).text_color(t.acc_t).border_1().border_color(t.acc))
+                    .child(icon(if zoomed { Icon::Collapse } else { Icon::Expand }).size(px(13.)).text_color(if zoomed { t.acc_t } else { t.tx2 }))
+                    .tooltip(ui::tooltip(if zoomed { "Exit zoom" } else { "Zoom result" }, None, key.as_deref()))
+                    .on_click(cx.listener(|w, _, window, cx| w.toggle_result_zoom(window, cx)))
+            })
             .child(
                 ui::button(t, "rb-viewer", Btn::Ghost)
                     .h(px(24.))
@@ -2322,6 +2389,22 @@ impl Workspace {
 /// The title bar's explorer toggle (`icon_button`'s look): the sidebar glyph, its left part
 /// filled as far as the explorer is open (`open`, 0 to 1), so the fill sweeps in and out with
 /// the explorer's own slide (same tween, same easing; at once with "Reduce motion").
+/// An MCP client's name as the app shows it: its own words, control characters out, never
+/// empty (the client chooses it: it is shown, never trusted).
+pub(crate) fn agent_name(client: &str) -> String {
+    let s: String = client.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if s.is_empty() { "agent".into() } else { cut_chars(&s, 64) }
+}
+
+/// At most `n` characters, an ellipsis for the rest.
+pub(crate) fn cut_chars(s: &str, n: usize) -> String {
+    match s.char_indices().nth(n) {
+        Some((at, _)) => format!("{}…", &s[..at]),
+        None => s.to_string(),
+    }
+}
+
 fn explorer_toggle(t: &Theme, open: f32) -> gpui::Stateful<Div> {
     let (hov, prs, ink) = (t.hov, t.prs, t.tx3);
     // The glyph's left pane in its 16 pt box (`sidebar.svg`: the frame from x 2.5 to 13.5 and y

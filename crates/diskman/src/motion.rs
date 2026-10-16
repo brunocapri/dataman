@@ -104,6 +104,52 @@ impl WidthTween {
     }
 }
 
+/// An ease-out with a long, soft landing (`easeOutQuint`): the result zoom starts quick and
+/// settles gently, so it feels immediate without snapping.
+pub const EASE_OUT: CubicBezier = CubicBezier { x1: 0.22, y1: 1.0, x2: 0.36, y2: 1.0 };
+
+/// The result zoom's length, either way.
+pub const ZOOM: Duration = Duration::from_millis(250);
+
+/// The result panel's zoom (0 = in its place, 1 = over the editor and the side panel), moving
+/// from where it was toward the tab's current goal.
+#[derive(Clone, Copy, Debug)]
+pub struct ZoomTween {
+    from: f32,
+    started: Instant,
+}
+
+impl ZoomTween {
+    pub fn new(from: f32) -> ZoomTween {
+        ZoomTween { from, started: Instant::now() }
+    }
+
+    /// The zoom now, heading for `target` (0 or 1); `None` once it has landed. A turn mid-way
+    /// takes the time that is left of the way back.
+    pub fn at(&self, target: f32, now: Instant) -> Option<f32> {
+        if let Some(p) = zoom_freeze() {
+            return Some(p);
+        }
+        let span = ZOOM.as_secs_f32() * (target - self.from).abs().max(0.25);
+        let raw = now.saturating_duration_since(self.started).as_secs_f32() / span;
+        if raw >= 1. {
+            return None;
+        }
+        Some(self.from + (target - self.from) * EASE_OUT.eval(raw))
+    }
+}
+
+/// Screenshots (`--features screenshots`): `DISKMAN_ZOOM_FREEZE=0.5` holds a zoom half-way.
+fn zoom_freeze() -> Option<f32> {
+    #[cfg(feature = "screenshots")]
+    {
+        static FREEZE: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
+        *FREEZE.get_or_init(|| std::env::var("DISKMAN_ZOOM_FREEZE").ok().and_then(|v| v.parse().ok()))
+    }
+    #[cfg(not(feature = "screenshots"))]
+    None
+}
+
 /// What a pop looks like.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PopStyle {
@@ -417,6 +463,27 @@ mod tests {
         // Closing: from the width down to zero.
         let c = WidthTween::panel(260., 0., 260.);
         assert!(c.at(0., c.started + Duration::from_millis(60)).unwrap() < 260.);
+    }
+
+    /// The zoom: quick out of the gate, landing exactly on its goal in 250 ms; a turn half-way
+    /// back takes half the time.
+    #[test]
+    fn zoom_lands() {
+        let z = ZoomTween::new(0.);
+        let t0 = z.started;
+        let early = z.at(1., t0 + Duration::from_millis(60)).unwrap();
+        assert!(early > 0.5 && early < 1., "{early}");
+        assert!(z.at(1., t0 + Duration::from_millis(249)).unwrap() > 0.99);
+        assert_eq!(z.at(1., t0 + ZOOM), None);
+        let back = ZoomTween::new(0.5);
+        assert!(back.at(0., back.started + Duration::from_millis(100)).is_some());
+        assert_eq!(back.at(0., back.started + Duration::from_millis(126)), None);
+        let mut last = 0.;
+        for ms in 0..250 {
+            let v = z.at(1., t0 + Duration::from_millis(ms)).unwrap();
+            assert!(v + 1e-4 >= last);
+            last = v;
+        }
     }
 
     fn pop(style: PopStyle, reduced: bool) -> FindPop<()> {

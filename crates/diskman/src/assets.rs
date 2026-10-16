@@ -28,6 +28,8 @@ assets!(
     "icons/chevron-u.svg",
     "icons/close.svg",
     "icons/code.svg",
+    "icons/collapse.svg",
+    "icons/expand.svg",
     "icons/command.svg",
     "icons/constraint.svg",
     "icons/copy.svg",
@@ -130,6 +132,9 @@ pub enum Icon {
     Trash,
     Sidebar,
     PanelRight,
+    /// The result panel zoomed over the editor, and back.
+    Expand,
+    Collapse,
     Lock,
     Warning,
     Info,
@@ -210,6 +215,8 @@ impl Icon {
             Icon::Trash => "icons/trash.svg",
             Icon::Sidebar => "icons/sidebar.svg",
             Icon::PanelRight => "icons/panel-right.svg",
+            Icon::Expand => "icons/expand.svg",
+            Icon::Collapse => "icons/collapse.svg",
             Icon::Lock => "icons/lock.svg",
             Icon::Warning => "icons/warning.svg",
             Icon::Info => "icons/info.svg",
@@ -259,7 +266,7 @@ mod tests {
         let all = [
             Run, Stop, Pause, Cancel, History, Plus, Reload, ChevronRight, ChevronDown, ChevronUp, ChevronLeft, Database, Schema,
             SchemaFilled, Group, Table, View, Key, Index, Search, Filter, Close, Check, Copy, Export, Import, Edit, Trash,
-            Sidebar, PanelRight, Lock, Warning, Info, Server, Archive, More, Tab, Command, Code, Hash, Plug,
+            Sidebar, PanelRight, Expand, Collapse, Lock, Warning, Info, Server, Archive, More, Tab, Command, Code, Hash, Plug,
             Cursor, Tunnel, MatView, Function, Procedure, Sequence, Type, Label, Trigger, Extension, Role,
             Constraint, Link, Partition, Activity, Star, StarFill, Agent, Live,
         ];

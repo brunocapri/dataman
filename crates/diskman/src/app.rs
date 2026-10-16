@@ -138,6 +138,11 @@ actions!(
         /// Back / forward through the places visited (`nav`).
         GoBack,
         GoForward,
+        /// The result panel over the editor and the side panel, and back (the result bar's
+        /// zoom button; ⇧⌘↩ on the grid).
+        ToggleResultZoom,
+        /// ⌘↩ on the grid of a zoomed result: the tab's script again (its editor is hidden).
+        RunZoomed,
     ]
 );
 
@@ -165,6 +170,10 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-backspace", SheetRollback, Some(SHEET_CONTEXT)),
         KeyBinding::new("escape", SheetCancel, Some(SHEET_CONTEXT)),
     ]);
+    // Run's keys (⌘↩, or its override) on the grid re-run a zoomed tab's script.
+    let grid = Some(crate::grid::GRID_KEYS);
+    let run: Vec<KeyBinding> = crate::keymap::effective("run_all").iter().filter_map(|k| KeyBinding::load(k, Box::new(RunZoomed), grid.map(|c| gpui::KeyBindingContextPredicate::parse(c).unwrap().into()), false, None, &gpui::DummyKeyboardMapper).ok()).collect();
+    cx.bind_keys(run);
 }
 
 /// What waits for the open transactions it would end.
@@ -303,6 +312,16 @@ pub(crate) enum Side {
     Server(&'static str, AnyView, Bound),
     /// A feature's sheet (the grid-edit review), by id.
     Feature(&'static str, AnyView, Bound),
+}
+
+/// Which side view is open, by name (what the result zoom remembers it covered).
+pub(crate) fn side_id(s: &Option<Side>) -> Option<&'static str> {
+    match s {
+        None => None,
+        Some(Side::History) => Some("history"),
+        Some(Side::Viewer) => Some("viewer"),
+        Some(Side::Server(n, ..) | Side::Feature(n, ..)) => Some(n),
+    }
 }
 
 /// The side views that slide in and out like the explorer (the others just appear).
@@ -490,6 +509,10 @@ pub struct Workspace {
     pub(crate) session_off: bool,
     /// Back / forward (`nav`).
     pub(crate) nav: crate::nav::Nav,
+    /// The result zoom moving (its tab), and the result panel's bounds as last painted (the
+    /// checks measure the zoom with them).
+    pub(crate) zoom_tween: Option<(EntityId, crate::motion::ZoomTween)>,
+    pub(crate) result_bounds: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
 }
 
 impl Focusable for Workspace {
@@ -631,6 +654,8 @@ impl Workspace {
             session_fp: 0,
             session_off: false,
             nav: Default::default(),
+            zoom_tween: None,
+            result_bounds: Default::default(),
         };
         // Agents' writes over the app's MCP server ask in this window.
         crate::mcp::register(cx.weak_entity(), window.window_handle(), cx);
@@ -652,6 +677,8 @@ impl Workspace {
             async {}
         })
         .detach();
+        // Connections saved elsewhere (an agent through MCP, a hand edit) show up live.
+        w.watch_connections(window, cx);
         // Last session's tabs and results, or one empty tab.
         if !w.restore_session(window, cx) {
             w.new_tab(window, cx);
@@ -1284,9 +1311,11 @@ impl Workspace {
             return;
         }
         if let Some(t) = self.active_tab() {
-            // A monitor tab has no editor on screen: its list takes the keys.
+            // A monitor tab has no editor on screen: its list takes the keys; nor has a zoomed
+            // result: its grid takes them.
             let f = match &t.read(cx).monitor {
                 Some(m) => m.read(cx).focus_target(cx),
+                None if t.read(cx).zoomed && t.read(cx).has_run => t.read(cx).grid.focus_handle(cx),
                 None => t.read(cx).editor.focus_handle(cx),
             };
             window.focus(&f, cx);
@@ -1423,6 +1452,7 @@ impl Workspace {
     fn on_welcome(&mut self, _: &Entity<Welcome>, ev: &WelcomeEvent, window: &mut Window, cx: &mut Context<Self>) {
         match ev {
             WelcomeEvent::NewConnection => self.open_dialog(None, window, cx),
+            WelcomeEvent::AgentSetup => self.open_settings_at("mcp", window, cx),
             WelcomeEvent::Prefill(p, pw) => self.open_dialog_with(Some(p.clone()), true, pw.clone(), window, cx),
             WelcomeEvent::OpenFile => self.open_sql_file(window, cx),
             WelcomeEvent::Shortcuts => {
@@ -1566,6 +1596,16 @@ impl Workspace {
         cx.notify();
     }
 
+    /// The Settings sheet open on one of its sections (`mcp`, `keyboard`…).
+    pub(crate) fn open_settings_at(&mut self, section: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.settings_view.is_none() {
+            self.toggle_settings(window, cx);
+        }
+        if let Some(v) = self.settings_view.clone() {
+            v.update(cx, |v, cx| v.show_section(section, cx));
+        }
+    }
+
     pub(crate) fn disconnect(&mut self, id: String, cx: &mut Context<Self>) {
         self.store.update(cx, |s, cx| s.disconnect(&id, cx));
         for t in self.tabs.clone() {
@@ -1584,7 +1624,7 @@ impl Workspace {
                 let conn = self.store.read(cx).connection(id);
                 // Tabs without a connection adopt the new one, and so do tabs left on this
                 // profile's previous connection (edited: the new settings apply) unless they
-                // opened a transaction since.
+                // opened a transaction since or are running a statement on it.
                 for tab in self.tabs.clone() {
                     let conn = conn.clone();
                     tab.update(cx, |t, cx| {
@@ -1598,6 +1638,7 @@ impl Workspace {
                             return;
                         }
                         let stale = !t.tx_open()
+                            && !t.is_running()
                             && t.connection().is_some_and(|c| c.profile.id == *id && conn.as_ref().is_some_and(|n| !Arc::ptr_eq(c, n)));
                         if t.connection().is_none() || stale {
                             t.set_connection(conn, cx);
@@ -1820,6 +1861,55 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Zooms the active tab's result panel over the editor (the Run row included) and the side
+    /// panel, or back; the explorer and the tabs stay. Animated from wherever it is now (a
+    /// toggle mid-flight turns around), at once with "Reduce motion".
+    pub(crate) fn toggle_result_zoom(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tab) = self.active_tab().cloned() else { return };
+        if !tab.read(cx).has_run || tab.read(cx).monitor.is_some() {
+            return;
+        }
+        let from = self.zoom_now(&tab, cx);
+        let on = !tab.read(cx).zoomed;
+        let side = side_id(&self.side);
+        tab.update(cx, |t, _| {
+            t.zoomed = on;
+            t.zoom_side = side;
+        });
+        self.zoom_tween = (!cx.reduce_motion()).then(|| (tab.entity_id(), crate::motion::ZoomTween::new(from)));
+        if on {
+            // The editor goes out of sight: the keys go to the grid.
+            let g = tab.read(cx).grid.focus_handle(cx);
+            window.focus(&g, cx);
+        }
+        cx.notify();
+    }
+
+    /// How far the tab's result is zoomed this frame (0 in place … 1 zoomed).
+    pub(crate) fn zoom_now(&self, tab: &Entity<QueryTab>, cx: &App) -> f32 {
+        let target = if tab.read(cx).zoomed { 1. } else { 0. };
+        match self.zoom_tween {
+            Some((id, z)) if id == tab.entity_id() => z.at(target, Instant::now()).unwrap_or(target),
+            _ => target,
+        }
+    }
+
+    /// [`Workspace::zoom_now`] for drawing: asks for the next frame while it moves.
+    pub(crate) fn zoom_frame(&mut self, tab: &Entity<QueryTab>, window: &mut Window, cx: &App) -> f32 {
+        let target = if tab.read(cx).zoomed { 1. } else { 0. };
+        if let Some((id, z)) = self.zoom_tween {
+            match z.at(target, Instant::now()) {
+                Some(p) if id == tab.entity_id() => {
+                    window.request_animation_frame();
+                    return p;
+                }
+                Some(_) => {}
+                None => self.zoom_tween = None,
+            }
+        }
+        target
+    }
+
     /// The sliding side view this frame (the history, the cell viewer) and its width: it slides
     /// in from the window's right edge when it opens on its own, and out when it shuts with
     /// nothing in its place (the explorer's tween, mirrored); one view replacing another just
@@ -1925,6 +2015,9 @@ impl Workspace {
         let Some(tab) = self.active_tab().cloned() else { return };
         let editor = tab.read(cx).editor.clone();
         if editor.update(cx, |e, cx| e.jump_to_error(cx)) {
+            if tab.read(cx).zoomed {
+                self.toggle_result_zoom(window, cx);
+            }
             window.focus(&editor.focus_handle(cx), cx);
             self.focus_visible = true;
         }
@@ -2625,6 +2718,15 @@ impl Render for Workspace {
             .on_action(cx.listener(|w, _: &CopyPlanText, _, cx| w.copy_plan_text(cx)))
             .on_action(cx.listener(|w, _: &TogglePlanFlame, _, cx| w.toggle_plan_flame(cx)))
             .on_action(cx.listener(|w, _: &ToggleMcpLog, window, cx| w.toggle_mcp_log(window, cx)))
+            .on_action(cx.listener(|w, _: &ToggleResultZoom, window, cx| w.toggle_result_zoom(window, cx)))
+            .on_action(cx.listener(|w, _: &RunZoomed, window, cx| {
+                // Only a zoomed tab: its editor is out of sight, ⌘↩ runs its script again.
+                if w.active_tab().is_some_and(|t| t.read(cx).zoomed) {
+                    w.run_active(window, cx);
+                } else {
+                    cx.propagate();
+                }
+            }))
             .on_action(cx.listener(|_, _: &CheckForUpdates, _, cx| crate::updates::check(true, cx)))
             .on_action(cx.listener(|w, _: &ShowUpdate, window, cx| w.open_update_sheet(window, cx)))
             .on_action(cx.listener(|w, _: &InstallUpdate, window, cx| w.update_primary(window, cx)))
@@ -2676,6 +2778,10 @@ impl Render for Workspace {
                     && e.update(cx, |e, cx| e.dismiss_card(cx))
                 {
                     return;
+                }
+                // esc on a zoomed result: back in place (the editor shows again).
+                if w.focused_region(window, cx) == Some(Region::Grid) && w.active_tab().is_some_and(|t| t.read(cx).zoomed) {
+                    return w.toggle_result_zoom(window, cx);
                 }
                 w.focus_region(Region::Editor, window, cx)
             }))

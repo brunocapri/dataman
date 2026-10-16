@@ -30,7 +30,50 @@ use crate::tab::QueryTab;
 
 /// The stages this module drives.
 pub fn is_stage(s: &str) -> bool {
-    s == "ui-check" || s == "picker" || s == "copy-menu"
+    s == "ui-check" || s == "picker" || s == "copy-menu" || s == "tip-error" || s == "zoom"
+}
+
+/// `tip-error`: many connections not connected (dim) under the connected one, the last one
+/// failed with a long error, the pointer on it: its tooltip near the window's bottom edge.
+async fn tip_error(ws: &Entity<Workspace>, id: &str, cx: &mut AsyncWindowContext) {
+    // The connected one shut: the failed one lands near the window's bottom.
+    let _ = cx.update(|_, cx| {
+        let tree = ws.read(cx).tree.clone();
+        tree.update(cx, |t, cx| t.collapse_id(&format!("c:{id}"), cx));
+    });
+    let long = "could not connect to server: Connection refused\n\tIs the server running on host \"replica-eu-west-1.db.internal\" (10.20.30.40) and accepting TCP/IP connections on port 5432?\nDETAIL: the replica has been unreachable since the last failover; the cluster manager reported the node as fenced, and every retry since then ended the same way, after the full connect timeout, without a single byte from the server.\nHINT: check the host, the port, the VPN and the firewall rules of the subnet. ".repeat(3);
+    let failed = cx
+        .update(|_, cx| {
+            ws.update(cx, |w, cx| {
+                let core = w.store.read(cx).core.clone();
+                let swatches = ["rose", "amber", "teal", "violet", "sky", "lime"];
+                for i in 0..30 {
+                    let mut p = diskman_core::ConnectionProfile::new(format!("{}-{:02}", ["staging", "analytics", "billing", "search", "ledger"][i % 5], i + 1));
+                    (p.host, p.port, p.color) = ("127.0.0.1".into(), 9, Some(swatches[i % swatches.len()].into()));
+                    let _ = core.save_connection(p, None, None);
+                }
+                let mut p = diskman_core::ConnectionProfile::new("replica-eu-west-1");
+                (p.host, p.port) = ("127.0.0.1".into(), 9);
+                let id = p.id.clone();
+                let _ = core.save_connection(p, None, None);
+                w.store.update(cx, |s, cx| {
+                    s.reload(cx);
+                    s.states.insert(id.clone(), crate::conns::ConnState::Failed(long.clone()));
+                });
+                id
+            })
+        })
+        .unwrap();
+    pause(cx, 400).await;
+    draw(cx);
+    let b = cx.update(|_, cx| ws.read(cx).tree.read(cx).demo_conn_bounds(&failed)).ok().flatten();
+    if let Some(b) = b {
+        let p = point(b.left() + px(60.), b.top() + b.size.height / 2.);
+        mouse_move(cx, p, false);
+        pause(cx, 900).await;
+        mouse_move(cx, p, false);
+        pause(cx, 300).await;
+    }
 }
 
 fn draw(cx: &mut AsyncWindowContext) {
@@ -120,6 +163,20 @@ fn new_tab(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> Entity<QueryT
 
 /// Runs a stage; `false` when a check failed.
 pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &mut AsyncWindowContext) -> bool {
+    if stage == "tip-error" {
+        tip_error(ws, id, cx).await;
+        return true;
+    }
+    if stage == "zoom" {
+        // The history open, the result zoomed over it and the editor (DISKMAN_ZOOM_FREEZE=0.5
+        // holds it half-way).
+        pause(cx, 600).await;
+        let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.toggle_side(crate::app::Side::History, cx)));
+        pause(cx, 400).await;
+        let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.toggle_result_zoom(window, cx)));
+        pause(cx, 400).await;
+        return true;
+    }
     if stage == "copy-menu" {
         pause(cx, 600).await;
         let _ = cx.update(|_, cx| {
@@ -975,6 +1032,154 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
         let _ = cx.update(|_, cx| cx.write_to_clipboard(c));
     }
     ok &= motion_checks(ws, id, cx).await;
+    ok &= zoom_checks(ws, cx).await;
+    ok
+}
+
+/// ⌘← ⌘→ on the grid: the row's first and last column (scrolled into view), ⇧ extends; ⌃⌘←
+/// is Back.
+async fn grid_row_keys(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
+    let mut ok = true;
+    let mut report = |name: &str, pass: bool, detail: String| {
+        println!("{} {name}{}", if pass { "PASS" } else { "FAIL" }, if pass { String::new() } else { format!(" — {detail}") });
+        ok &= pass;
+    };
+    let cols: Vec<String> = (1..=40).map(|i| format!("'value number {i}' AS column_{i}")).collect();
+    let wide = run_sql(ws, &format!("SELECT {} FROM generate_series(1, 5)", cols.join(", ")), cx).await;
+    let grid = cx.update(|_, cx| wide.read(cx).grid.clone()).unwrap();
+    let _ = cx.update(|window, cx| {
+        grid.update(cx, |g, cx| g.select_cell(2, 3, cx));
+        window.focus(&grid.focus_handle(cx), cx);
+    });
+    draw(cx);
+    let state = |cx: &mut AsyncWindowContext| cx.update(|_, cx| (grid.read(cx).demo_selection(), grid.read(cx).demo_scroll().0)).unwrap();
+    let active = cx.update(|_, cx| ws.read(cx).active).unwrap();
+    press(cx, "cmd-right");
+    let (sel, x) = state(cx);
+    report("⌘→ on the grid: the row's last column, scrolled into view", sel == Some(((2, 39), (2, 39))) && x > 100., format!("{sel:?} x {x}"));
+    press(cx, "cmd-left");
+    let (sel, x) = state(cx);
+    report("⌘← on the grid: the row's first column, scrolled back", sel == Some(((2, 0), (2, 0))) && x == 0., format!("{sel:?} x {x}"));
+    report("… and neither is Back or Forward", cx.update(|_, cx| ws.read(cx).active).unwrap() == active, String::new());
+    press(cx, "cmd-shift-right");
+    let (sel, _) = state(cx);
+    report("⇧⌘→ extends the selection to the row's last column", sel == Some(((2, 0), (2, 39))), format!("{sel:?}"));
+    press(cx, "cmd-shift-left");
+    let (sel, _) = state(cx);
+    report("⇧⌘← back to its first", sel == Some(((2, 0), (2, 0))), format!("{sel:?}"));
+    report("Back and Forward are ⌃⌘← ⌃⌘→", crate::keymap::effective("go_back") == ["ctrl-cmd-left"] && crate::keymap::effective("go_forward") == ["ctrl-cmd-right"], format!("{:?}", crate::keymap::effective("go_back")));
+    // ⌃⌘← steps back: another tab activated (a jump), then back to this one.
+    let ix = cx.update(|_, cx| ws.read(cx).tabs.iter().position(|t| *t == wide)).ok().flatten().unwrap_or(0);
+    let other = if ix == 0 { 1 } else { 0 };
+    if cx.update(|_, cx| ws.read(cx).tabs.len()).unwrap_or(0) < 2 {
+        new_tab(ws, cx);
+    }
+    let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.activate(other, window, cx)));
+    draw(cx);
+    let can_back = cx.update(|_, cx| ws.read(cx).can_go(false)).unwrap_or(false);
+    let _ = cx.update(|window, cx| window.focus(&grid.focus_handle(cx), cx));
+    let _ = cx.update(|window, cx| {
+        let f = ws.read(cx).active_tab().map(|t| t.read(cx).grid.focus_handle(cx));
+        if let Some(f) = f {
+            window.focus(&f, cx);
+        }
+    });
+    press(cx, "ctrl-cmd-left");
+    let now = cx.update(|_, cx| ws.read(cx).active).unwrap();
+    report("⌃⌘← goes back", can_back && now == ix, format!("back {can_back}: tab {now}, want {ix}"));
+    ok
+}
+
+/// The result zoom: over the Run row, the editor and the side panel, not the explorer or the
+/// tabs; animated; ⌘↩ re-runs; per tab; esc and the button close it; another side view opening
+/// ends it.
+async fn zoom_checks(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
+    let mut ok = true;
+    let mut report = |name: &str, pass: bool, detail: String| {
+        println!("{} {name}{}", if pass { "PASS" } else { "FAIL" }, if pass { String::new() } else { format!(" — {detail}") });
+        ok &= pass;
+    };
+    let tab = run_sql(ws, "SELECT n, n * 2 AS twice FROM generate_series(1, 40) n", cx).await;
+    let grid = cx.update(|_, cx| tab.read(cx).grid.clone()).unwrap();
+    let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.toggle_side(crate::app::Side::History, cx)));
+    pause(cx, 350).await;
+    draw(cx);
+    let bounds = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).result_bounds.get()).ok().flatten();
+    let zoom = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).zoom_now(&tab, cx)).unwrap_or(-1.);
+    let Some(before) = bounds(cx) else {
+        report("the result panel is painted", false, String::new());
+        return false;
+    };
+    let win = cx.update(|window, _| window.viewport_size()).unwrap();
+    let explorer = cx.update(|_, cx| ws.read(cx).explorer_now()).unwrap_or(0.);
+    let _ = cx.update(|window, cx| window.focus(&grid.focus_handle(cx), cx));
+    press(cx, "cmd-shift-enter");
+    let motion = !cx.update(|_, cx| cx.reduce_motion()).unwrap_or(false);
+    pause(cx, 60).await;
+    draw(cx);
+    let mid = zoom(cx);
+    let mid_b = bounds(cx);
+    pause(cx, 320).await;
+    draw(cx);
+    let after = bounds(cx);
+    let landed = cx.update(|_, cx| ws.read(cx).zoom_tween.is_none() || ws.read(cx).zoom_now(&tab, cx) == 1.).unwrap_or(false);
+    report("⇧⌘↩ on the grid zooms the result, animated", (!motion || (mid > 0.05 && mid < 0.999)) && zoom(cx) == 1. && landed, format!("mid {mid} end {}", zoom(cx)));
+    report(
+        "mid-way the result has grown part of the way",
+        !motion || mid_b.zip(after).is_some_and(|(m, a)| m.top() < before.top() && m.top() > a.top()),
+        format!("{:?} {:?} {:?}", before.top(), mid_b.map(|b| b.top()), after.map(|b| b.top())),
+    );
+    let title = crate::theme::metrics::TITLE_H;
+    report(
+        "zoomed: it covers the Run row, the editor and the side panel",
+        after.is_some_and(|a| a.top() < before.top() && (a.top().as_f32() - title).abs() < 4. && (a.right() - win.width).abs() < px(2.) && a.right() > before.right()),
+        format!("{before:?} → {after:?} (window {win:?})"),
+    );
+    report(
+        "… but not the explorer nor the tabs (the title band)",
+        after.is_some_and(|a| (a.left() - before.left()).abs() < px(1.) && a.left().as_f32() >= explorer - 1. && a.top().as_f32() >= title - 1.),
+        format!("{after:?} explorer {explorer}"),
+    );
+    let side_kept = cx.update(|_, cx| matches!(ws.read(cx).side, Some(crate::app::Side::History))).unwrap_or(false);
+    report("the side panel stays open underneath (it comes back)", side_kept, String::new());
+    let zoomed_icon = cx.update(|_, cx| tab.read(cx).zoomed).unwrap_or(false);
+    report("the zoom button turns into its collapse control", zoomed_icon, String::new());
+    // ⌘↩ on the zoomed grid runs the tab's script again.
+    let first = cx.update(|_, cx| tab.read(cx).result().map(|r| std::sync::Arc::as_ptr(r) as usize)).ok().flatten();
+    press(cx, "cmd-enter");
+    for _ in 0..100 {
+        pause(cx, 50).await;
+        let again = cx.update(|_, cx| tab.read(cx).result().map(|r| std::sync::Arc::as_ptr(r) as usize)).ok().flatten();
+        if again != first && cx.update(|_, cx| tab.read(cx).run_phase().is_some_and(|p| p.is_finished())).unwrap_or(false) {
+            break;
+        }
+    }
+    let again = cx.update(|_, cx| tab.read(cx).result().map(|r| (std::sync::Arc::as_ptr(r) as usize, r.rows()))).ok().flatten();
+    report("⌘↩ on the zoomed grid re-runs the tab's script", again.is_some_and(|(p, n)| Some(p) != first && n == 40) && zoom(cx) == 1., format!("{first:?} → {again:?}"));
+    // Per tab: another tab is not zoomed; back, this one still is.
+    let other = new_tab(ws, cx);
+    let other_zoomed = cx.update(|_, cx| other.read(cx).zoomed).unwrap_or(true);
+    let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.activate_tab(&tab, window, cx)));
+    draw(cx);
+    report("zoom is per tab", !other_zoomed && cx.update(|_, cx| tab.read(cx).zoomed).unwrap_or(false), String::new());
+    // esc on the grid: back in place.
+    let _ = cx.update(|window, cx| window.focus(&grid.focus_handle(cx), cx));
+    press(cx, "escape");
+    pause(cx, 340).await;
+    draw(cx);
+    let restored = bounds(cx);
+    report("esc on the zoomed grid closes it; the layout is back", zoom(cx) == 0. && restored.is_some_and(|r| (r.top() - before.top()).abs() < px(1.) && (r.right() - before.right()).abs() < px(1.)), format!("{before:?} → {restored:?}"));
+    // The button: zoom, then another side view (the cell viewer) opening ends it.
+    let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.toggle_result_zoom(window, cx)));
+    pause(cx, 340).await;
+    draw(cx);
+    let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.toggle_side(crate::app::Side::Viewer, cx)));
+    draw(cx);
+    pause(cx, 340).await;
+    draw(cx);
+    report("another side view opening ends the zoom", !cx.update(|_, cx| tab.read(cx).zoomed).unwrap_or(true), String::new());
+    let _ = cx.update(|_, cx| ws.update(cx, |w, _| w.side = None));
+    draw(cx);
     ok
 }
 
@@ -1008,11 +1213,59 @@ async fn motion_checks(ws: &Entity<Workspace>, id: &str, cx: &mut AsyncWindowCon
             (tree.read(cx).demo_conn_label(id, cx), tree.read(cx).demo_conn_label(&off, cx), t.tx, t.tx3)
         })
         .unwrap();
+    let _ = tx3;
+    let tx4 = cx.update(|_, cx| crate::theme::ActiveTheme::theme(&*cx).tx4).unwrap();
     report(
-        "a connection that is not connected is gray and regular; a connected one keeps its look",
-        on == Some((tx, true)) && offl == Some((tx3, false)),
+        "a connection that is not connected is dim (tx4) and regular; a connected one keeps its look",
+        on == Some((tx, true)) && offl == Some((tx4, false)),
         format!("{on:?} {offl:?}"),
     );
+    let chips = cx.update(|_, cx| {
+        let tree = ws.read(cx).tree.clone();
+        (tree.read(cx).demo_conn_row(id).map(|r| r.1), tree.read(cx).demo_conn_row(&off).map(|r| r.1))
+    });
+    report("its colour chip is faded; a connected one's is not", chips.as_ref().ok() == Some(&(Some(false), Some(true))), format!("{chips:?}"));
+
+    // A failed connection: its whole error on hover, on its row and on its error row, cut to
+    // fit (wrapped, at most 360 pt wide and 14 lines).
+    let long = format!(
+        "could not connect to server: Connection refused\n\tIs the server running on host \"offline.db.internal\" (10.20.30.40) and accepting TCP/IP connections on port 9?\nDETAIL: {}\nHINT: check the host, the port and the firewall.",
+        "a very long detail that goes on and on ".repeat(30)
+    );
+    // Expanding connects it (and fails at once: nothing listens on port 9); then the long error.
+    let _ = cx.update(|_, cx| {
+        let tree = ws.read(cx).tree.clone();
+        tree.update(cx, |t, cx| t.expand_id(&format!("c:{off}"), cx));
+    });
+    for _ in 0..100 {
+        pause(cx, 50).await;
+        if cx.update(|_, cx| matches!(ws.read(cx).store.read(cx).states.get(&off), Some(crate::conns::ConnState::Failed(_)))).unwrap_or(true) {
+            break;
+        }
+    }
+    let _ = cx.update(|_, cx| {
+        ws.update(cx, |w, cx| {
+            w.store.update(cx, |s, cx| {
+                s.states.insert(off.clone(), crate::conns::ConnState::Failed(long.clone()));
+                cx.notify();
+            })
+        })
+    });
+    pause(cx, 100).await;
+    draw(cx);
+    let row = cx.update(|_, cx| ws.read(cx).tree.read(cx).demo_conn_row(&off)).ok().flatten();
+    report(
+        "a failed connection's row and its error row carry the whole error on hover",
+        row.as_ref().is_some_and(|(_, dim, tip, err)| *dim && tip.as_deref() == Some(long.as_str()) && err.as_ref().is_some_and(|(l, t)| !l.contains('\n') && t.as_deref() == Some(long.as_str()))),
+        format!("{:?}", row.as_ref().map(|r| (r.0.clone(), r.1, r.2.as_ref().map(|t| t.len()), r.3.as_ref().map(|e| e.0.clone())))),
+    );
+    let (fit, w) = crate::ui::fit_tip(&long);
+    report(
+        "its tooltip is cut to fit: at most 360 pt wide, 14 lines, an ellipsis at the end",
+        w <= crate::ui::TIP_MAX_W && fit.ends_with('…') && fit.lines().count() <= crate::ui::TIP_LINES && fit.starts_with("could not connect"),
+        format!("{w} {} lines", fit.lines().count()),
+    );
+    let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.store.update(cx, |s, cx| s.forget(&off, cx))));
 
     let motion = !cx.update(|_, cx| cx.reduce_motion()).unwrap_or(false);
     let sliding = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).demo_side_sliding()).unwrap_or(false);

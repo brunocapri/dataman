@@ -33,6 +33,98 @@ pub fn is_stage(s: &str) -> bool {
     matches!(s, "mcp-check" | "mcp-tab" | "mcp-sheet")
 }
 
+/// `conns-check`: the welcome screen, no connection saved. Its "Add with an agent" opens
+/// Settings › MCP; a connection an agent creates through the app shows at once (the welcome
+/// screen gives way), one `diskman-mcp` writes while the app is not its server (straight to
+/// the file) shows within the file watch's second, and edits of either kind relabel the
+/// explorer. Run before anything connects.
+pub async fn run_conns(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
+    let mut ok = true;
+    let mut check = |name: &str, pass: bool, detail: String| {
+        println!("{} {name}{}", if pass { "PASS" } else { "FAIL" }, if pass || detail.is_empty() { String::new() } else { format!(": {detail}") });
+        ok &= pass;
+    };
+    pause(cx, 300).await;
+    let first_run = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).first_run(cx)).unwrap_or(false);
+    check("no connection saved: the welcome screen", first_run(cx), String::new());
+    let label = cx.update(|_, cx| ws.read(cx).welcome.clone().update(cx, |w, cx| w.demo_choose(1, cx))).unwrap_or_default();
+    draw(cx);
+    let section = cx.update(|_, cx| ws.read(cx).settings_view.as_ref().map(|v| v.read(cx).demo_section())).ok().flatten();
+    check("\"Add with an agent\" opens Settings › MCP", label == "Add with an agent" && section == Some("MCP"), format!("{label} {section:?}"));
+    let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.toggle_settings(window, cx)));
+    let Ok(core) = cx.update(|_, cx| ws.read(cx).store.read(cx).core.clone()) else { return false };
+    let _ = core.settings.update(|s| s.mcp_enabled = true);
+    let _ = cx.update(|_, cx| crate::mcp::apply(&core, cx));
+    let ipc = Arc::new(Ipc { dirs: core.dirs.clone() });
+    let mut up = false;
+    for _ in 0..200 {
+        pause(cx, 50).await;
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let probe = ipc.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(probe.ping());
+        });
+        if rx.await.unwrap_or(false) {
+            up = true;
+            break;
+        }
+    }
+    check("the app's socket answers", up, String::new());
+    // Through the app: at once.
+    let (err, out) = call(&ipc, "create_connection", json!({"name": "first by agent", "host": "127.0.0.1", "port": 9, "user": "x", "password": "hidden-1"})).await;
+    let made = serde_json::from_str::<Value>(&out).ok().and_then(|v| v["id"].as_str().map(str::to_string)).unwrap_or_default();
+    pause(cx, 150).await;
+    draw(cx);
+    let row = cx.update(|_, cx| ws.read(cx).tree.read(cx).demo_conn_row(&made).map(|r| r.0)).ok().flatten();
+    check("an agent's connection shows at once: the welcome screen gives way to it", !err && !first_run(cx) && row.as_deref() == Some("first by agent"), format!("{out} {row:?}"));
+    // Straight to the file (diskman-mcp on its own): within the watch's second.
+    let mut p = diskman_core::ConnectionProfile::new("written elsewhere");
+    (p.host, p.port) = ("127.0.0.1".into(), 9);
+    let other = p.id.clone();
+    let written = diskman_core::ConfigStore::open(&core.dirs).and_then(|s| s.upsert(p.clone()));
+    let mut seen = false;
+    let t0 = std::time::Instant::now();
+    for _ in 0..60 {
+        pause(cx, 50).await;
+        if cx.update(|_, cx| ws.read(cx).store.read(cx).profile(&other).is_some()).unwrap_or(false) {
+            seen = true;
+            break;
+        }
+    }
+    draw(cx);
+    check("one written to the file by another process shows within ~1 s", written.is_ok() && seen, format!("{:?} after {:?}", written.err(), t0.elapsed()));
+    // Edits of both kinds relabel the explorer.
+    let (err, out) = call(&ipc, "update_connection", json!({"connection": "first by agent", "name": "renamed by agent"})).await;
+    pause(cx, 150).await;
+    draw(cx);
+    let row = cx.update(|_, cx| ws.read(cx).tree.read(cx).demo_conn_row(&made).map(|r| r.0)).ok().flatten();
+    check("an agent's edit relabels the explorer at once", !err && row.as_deref() == Some("renamed by agent") && !out.contains("hidden-1"), format!("{out} {row:?}"));
+    p.name = "renamed elsewhere".into();
+    let _ = diskman_core::ConfigStore::open(&core.dirs).and_then(|s| s.upsert(p));
+    let mut row = None;
+    for _ in 0..60 {
+        pause(cx, 50).await;
+        draw(cx);
+        row = cx.update(|_, cx| ws.read(cx).tree.read(cx).demo_conn_row(&other).map(|r| r.0)).ok().flatten();
+        if row.as_deref() == Some("renamed elsewhere") {
+            break;
+        }
+    }
+    check("an edit in the file relabels it within ~1 s", row.as_deref() == Some("renamed elsewhere"), format!("{row:?}"));
+    // Removed in the file: gone from the explorer.
+    let _ = diskman_core::ConfigStore::open(&core.dirs).and_then(|s| s.remove(&other));
+    let mut gone = false;
+    for _ in 0..60 {
+        pause(cx, 50).await;
+        if cx.update(|_, cx| ws.read(cx).store.read(cx).profile(&other).is_none()).unwrap_or(false) {
+            gone = true;
+            break;
+        }
+    }
+    check("one removed from the file goes", gone, String::new());
+    ok
+}
+
 // ---------------------------------------------------------------------------------------------
 // The stdio helper's side of the socket
 
@@ -524,6 +616,87 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
         after == before + 1 && facts.as_ref().is_some_and(|(text, conn, database, ran)| *text == format!("{update};") && conn.as_deref() == Some(id) && database == db && !ran),
         format!("{before} → {after} tabs, {facts:?}"),
     );
+    let edits = connection_edits(ws, &agent_ipc, id, &conn, db, cx).await;
+    ok && edits
+}
+
+/// Connections made and edited by an agent through the app: they show at once (no restart),
+/// passwords never come back, a live connection reconnects with its new settings (its idle tabs
+/// follow), and an edit waits while a transaction is open on it.
+async fn connection_edits(ws: &Entity<Workspace>, ipc: &Arc<Ipc>, id: &str, conn: &str, db: &str, cx: &mut AsyncWindowContext) -> bool {
+    let mut ok = true;
+    let mut check = |name: &str, pass: bool, detail: String| {
+        println!("{} {name}{}", if pass { "PASS" } else { "FAIL" }, if pass || detail.is_empty() { String::new() } else { format!(": {detail}") });
+        ok &= pass;
+    };
+    let secret = "pw-never-echoed-42";
+    let (err, out) = call(ipc, "create_connection", json!({"name": "agent made", "host": "127.0.0.1", "port": 9, "user": "x", "password": secret})).await;
+    let made = serde_json::from_str::<Value>(&out).ok().and_then(|v| v["id"].as_str().map(str::to_string)).unwrap_or_default();
+    pause(cx, 150).await;
+    draw(cx);
+    let shown = cx.update(|_, cx| ws.read(cx).store.read(cx).profile(&made).map(|p| p.name.clone())).ok().flatten();
+    let row = cx.update(|_, cx| ws.read(cx).tree.read(cx).demo_conn_row(&made).map(|r| r.0)).ok().flatten();
+    check("create_connection: the new connection shows at once (explorer too), no restart", !err && shown.as_deref() == Some("agent made") && row.as_deref() == Some("agent made"), format!("{out} {shown:?} {row:?}"));
+    check("… its password is not in the answer", !out.contains(secret), out.clone());
+    let (err, out) = call(ipc, "update_connection", json!({"connection": "agent made", "name": "agent renamed", "color": "violet", "password": "another-secret"})).await;
+    pause(cx, 150).await;
+    draw(cx);
+    let row = cx.update(|_, cx| ws.read(cx).tree.read(cx).demo_conn_row(&made).map(|r| r.0)).ok().flatten();
+    let v: Value = serde_json::from_str(&out).unwrap_or(Value::Null);
+    check(
+        "update_connection: the explorer's label follows at once",
+        !err && row.as_deref() == Some("agent renamed") && v["changed"] == json!(["name", "color"]) && v["password"] == json!("set"),
+        format!("{out} {row:?}"),
+    );
+    check("… and the password stays out of every answer", !out.contains("another-secret") && !out.contains(secret), out.clone());
+    let (_, list) = call(ipc, "list_connections", json!({})).await;
+    check("list_connections never shows a password", !list.to_lowercase().contains("password") && !list.contains(secret), String::new());
+
+    // A live connection edited: it reconnects with the new settings, its idle tabs move to it.
+    let old = cx.update(|_, cx| ws.read(cx).store.read(cx).connection(id)).ok().flatten();
+    let tab = cx.update(|_, cx| ws.read(cx).tabs.iter().find(|t| t.read(cx).connection().is_some_and(|c| c.profile.id == id) && !t.read(cx).tx_open()).cloned()).ok().flatten();
+    let (err, out) = call(ipc, "update_connection", json!({"connection": conn, "color": "amber"})).await;
+    let mut fresh = None;
+    for _ in 0..200 {
+        pause(cx, 50).await;
+        fresh = cx.update(|_, cx| ws.read(cx).store.read(cx).connection(id)).ok().flatten();
+        if fresh.as_ref().zip(old.as_ref()).is_some_and(|(a, b)| !Arc::ptr_eq(a, b)) {
+            break;
+        }
+    }
+    draw(cx);
+    let reconnected = fresh.as_ref().zip(old.as_ref()).is_some_and(|(a, b)| !Arc::ptr_eq(a, b) && a.profile.color.as_deref() == Some("amber"));
+    check("a live connection edited reconnects with its new settings", !err && reconnected, out);
+    let moved = tab.as_ref().and_then(|t| cx.update(|_, cx| t.read(cx).connection().cloned()).ok().flatten()).zip(fresh.clone()).is_some_and(|(a, b)| Arc::ptr_eq(&a, &b));
+    check("… and its idle tabs move to the new connection", moved, String::new());
+
+    // A transaction open in a tab on it: the edit is refused until it ends.
+    let user_tab = cx.update(|window, cx| ws.update(cx, |w, cx| w.new_tab(window, cx))).unwrap();
+    let editor = cx.update(|_, cx| user_tab.read(cx).editor.clone()).unwrap();
+    let _ = cx.update(|window, cx| {
+        user_tab.update(cx, |t, cx| {
+            t.set_connection(fresh.clone(), cx);
+            t.set_database(db.to_string(), cx);
+        });
+        editor.update(cx, |e, cx| e.set_text("BEGIN", cx));
+        window.focus(&editor.focus_handle(cx), cx);
+    });
+    key(cx, "cmd-enter");
+    settled(&user_tab, cx).await;
+    let open = cx.update(|_, cx| user_tab.read(cx).tx_open()).unwrap_or(false);
+    let (err, out) = call(ipc, "update_connection", json!({"connection": conn, "color": "teal"})).await;
+    check("an edit while a transaction is open on it is refused, with the tab named", open && err && out.contains("transaction open") && out.contains("roll back"), format!("open {open}: {out}"));
+    let still = cx.update(|_, cx| ws.read(cx).store.read(cx).profile(id).and_then(|p| p.color.clone())).ok().flatten();
+    check("… nothing changed", still.as_deref() == Some("amber") && cx.update(|_, cx| user_tab.read(cx).tx_open()).unwrap_or(false), format!("{still:?}"));
+    let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.end_active_tx(false, cx)));
+    for _ in 0..100 {
+        pause(cx, 50).await;
+        if !cx.update(|_, cx| user_tab.read(cx).tx_open()).unwrap_or(true) {
+            break;
+        }
+    }
+    let (err, out) = call(ipc, "update_connection", json!({"connection": conn, "color": "teal"})).await;
+    check("rolled back: the edit goes through", !err && out.contains("color"), out);
     ok
 }
 

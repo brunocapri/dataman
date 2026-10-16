@@ -59,6 +59,10 @@ pub(crate) enum FrontMsg {
     Withdraw(u64),
     /// Agent tabs (`agent`).
     Tab(crate::agent::TabMsg),
+    /// The titles of the tabs with a transaction open on a connection.
+    OpenTx { connection_id: String, reply: oneshot::Sender<Vec<String>> },
+    /// The saved connections changed: show them now.
+    ConnectionsChanged,
 }
 
 /// The app's side of the tools: messages to the UI, answered there.
@@ -121,6 +125,16 @@ impl Front for AppFront {
 
     fn draft(&self, d: diskman_mcp::TabDraft) -> futures_util::future::BoxFuture<'static, Result<diskman_mcp::Drafted, String>> {
         crate::agent::draft(self, d)
+    }
+
+    fn open_transactions(&self, connection_id: &str) -> futures_util::future::BoxFuture<'static, Vec<String>> {
+        let (reply, rx) = oneshot::channel();
+        let sent = self.tx.send(FrontMsg::OpenTx { connection_id: connection_id.to_string(), reply }).is_ok();
+        Box::pin(async move { if sent { rx.await.unwrap_or_default() } else { Vec::new() } })
+    }
+
+    fn connections_changed(&self) {
+        let _ = self.tx.send(FrontMsg::ConnectionsChanged);
     }
 }
 
@@ -320,6 +334,27 @@ fn arrived(m: FrontMsg, cx: &mut App) {
             cx.refresh_windows();
         }
         FrontMsg::Tab(t) => crate::agent::arrived(t, cx),
+        FrontMsg::OpenTx { connection_id, reply } => {
+            let titles = workspace(cx)
+                .and_then(|(ws, _)| ws.upgrade())
+                .map(|ws| {
+                    ws.read(cx)
+                        .tabs
+                        .iter()
+                        .filter(|t| t.read(cx).tx_open() && t.read(cx).connection().is_some_and(|c| c.profile.id == connection_id))
+                        .map(|t| t.read(cx).title(cx).to_string())
+                        .collect()
+                })
+                .unwrap_or_default();
+            let _ = reply.send(titles);
+        }
+        FrontMsg::ConnectionsChanged => {
+            if let Some((ws, window)) = workspace(cx) {
+                let _ = window.update(cx, |_, window, cx| {
+                    let _ = ws.update(cx, |w, cx| w.connections_on_disk(window, cx));
+                });
+            }
+        }
     }
 }
 

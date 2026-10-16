@@ -110,6 +110,13 @@ impl ConnStore {
         cx.notify();
     }
 
+    /// Forgets the connection's state without closing it: tabs holding it (a transaction open)
+    /// keep working on it; the next connect opens a new one.
+    pub fn forget(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.states.remove(id);
+        cx.notify();
+    }
+
     /// Ends every SSH tunnel (quitting).
     pub fn close_all(&self) {
         for s in self.states.values() {
@@ -117,5 +124,123 @@ impl ConnStore {
                 c.close();
             }
         }
+    }
+}
+
+/// What became of a saved connection between two reads of the file.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Edited {
+    Same,
+    /// Only per-database read-only settings: the live connection follows without reconnecting.
+    ReadOnlyDatabases,
+    /// Anything else: a live connection reconnects with the new settings.
+    Settings,
+    Removed,
+}
+
+pub(crate) fn edited(old: &ConnectionProfile, new: Option<&ConnectionProfile>) -> Edited {
+    match new {
+        None => Edited::Removed,
+        Some(n) if n == old => Edited::Same,
+        Some(n) if (ConnectionProfile { read_only_databases: n.read_only_databases.clone(), ..old.clone() }) == *n => Edited::ReadOnlyDatabases,
+        Some(_) => Edited::Settings,
+    }
+}
+
+impl crate::app::Workspace {
+    /// Follows `connections.toml` written by others (`diskman-mcp` running without the app, a
+    /// hand edit): its modification time once a second, read off the UI thread; the app's own
+    /// MCP calls also say so at once ([`crate::mcp::FrontMsg::ConnectionsChanged`]).
+    pub(crate) fn watch_connections(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) {
+        let core = self.store.read(cx).core.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor().timer(std::time::Duration::from_secs(1)).await;
+                let c = core.clone();
+                let changed = cx.background_executor().spawn(async move { c.config.refresh() }).await;
+                let alive = if changed { this.update_in(cx, |w, window, cx| w.connections_reloaded(window, cx)).is_ok() } else { this.upgrade().is_some() };
+                if !alive {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// The file changed through this app's MCP server: read it now.
+    pub(crate) fn connections_on_disk(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) {
+        self.store.read(cx).core.config.refresh();
+        self.connections_reloaded(window, cx);
+    }
+
+    /// The saved connections as the file has them now: new ones show (the welcome screen
+    /// gives way to the workspace), removed ones go, and a live connection whose settings
+    /// changed reconnects with them, never ending a transaction: a tab with one open keeps
+    /// the old connection until it is done, the others move to the new one.
+    pub(crate) fn connections_reloaded(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) {
+        let old = self.store.read(cx).profiles.clone();
+        let new = self.store.read(cx).core.config.connections();
+        if old == new {
+            return;
+        }
+        let was_empty = old.is_empty();
+        self.store.update(cx, |s, cx| s.reload(cx));
+        for p in &old {
+            let change = edited(p, new.iter().find(|n| n.id == p.id));
+            let state = self.store.read(cx).states.get(&p.id).cloned();
+            let held = self.tabs.iter().any(|t| t.read(cx).tx_open() && t.read(cx).connection().is_some_and(|c| c.profile.id == p.id));
+            match (change, state) {
+                (Edited::Same, _) => {}
+                (Edited::ReadOnlyDatabases, Some(ConnState::Connected(c))) => {
+                    if let Some(n) = new.iter().find(|n| n.id == p.id) {
+                        for db in p.read_only_databases.keys().chain(n.read_only_databases.keys()) {
+                            c.set_read_only_for(db, n.read_only_for(db));
+                        }
+                    }
+                }
+                (Edited::Settings, Some(ConnState::Connected(_))) => {
+                    let id = p.id.clone();
+                    self.store.update(cx, |s, cx| {
+                        if held {
+                            s.forget(&id, cx);
+                        } else {
+                            s.disconnect(&id, cx);
+                        }
+                        s.connect(&id, None, cx);
+                    });
+                }
+                (Edited::Removed, Some(ConnState::Connected(_))) if !held => self.disconnect(p.id.clone(), cx),
+                // A failed attempt was with the old settings.
+                (Edited::Settings | Edited::Removed, Some(ConnState::Failed(_))) => self.store.update(cx, |s, cx| s.forget(&p.id, cx)),
+                _ => {}
+            }
+        }
+        if self.current_conn.as_ref().is_none_or(|id| !new.iter().any(|p| p.id == *id)) {
+            self.current_conn = new.first().map(|p| p.id.clone());
+        }
+        if was_empty && !new.is_empty() {
+            self.focus_editor(window, cx);
+        }
+        if let Some(v) = self.settings_view.clone() {
+            v.update(cx, |_, cx| cx.notify());
+        }
+        cx.notify();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn what_an_edit_is() {
+        let p = ConnectionProfile::new("a");
+        assert_eq!(edited(&p, Some(&p)), Edited::Same);
+        assert_eq!(edited(&p, None), Edited::Removed);
+        let mut q = p.clone();
+        q.set_read_only_for("shop", true);
+        assert_eq!(edited(&p, Some(&q)), Edited::ReadOnlyDatabases);
+        q.name = "b".into();
+        assert_eq!(edited(&p, Some(&q)), Edited::Settings);
     }
 }
