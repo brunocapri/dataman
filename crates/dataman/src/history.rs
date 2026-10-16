@@ -5,10 +5,12 @@
 //!
 //! Favorites can be filed in folders, drawn as the explorer draws its tree (disclosure
 //! chevrons, a folder filled while shut, children indented under it): the header's "+ folder"
-//! makes one and names it in place, a favorite dragged onto a folder (or a favorite in it) is
-//! filed there, and dragged anywhere else in the list it goes back to the top level. A search
-//! opens the folders holding a match. Deleting a folder keeps its favorites: they move to the
-//! top level.
+//! makes one (after the others) and names it in place, its menu's Rename names it again. A
+//! favorite dragged onto a folder (or a favorite in it) is filed there, the folder tinted on
+//! the way, and dragged anywhere else in the list it goes back to the top level; a folder
+//! dragged moves among the folders, as the explorer's connections do (a line marks the gap),
+//! and the store keeps that order. A search opens the folders holding a match. Deleting a
+//! folder keeps its favorites: they move to the top level.
 
 use std::cell::Cell;
 use std::collections::HashSet;
@@ -88,15 +90,18 @@ enum Chip {
 enum Item {
     Day(SharedString),
     Entry(usize),
-    /// A folder of favorites: its index into `folders`, whether its favorites are listed under
-    /// it (open, or a search found some), and how many it holds.
-    Folder { ix: usize, open: bool, count: usize },
+    /// A folder of favorites: its index into `folders`, and whether its favorites are listed
+    /// under it (open, or a search found some).
+    Folder { ix: usize, open: bool },
     /// A favorite (index into `favorites`): indented under its folder when it is in one.
     Fav(usize),
 }
 
 /// A favorite on the move (dragged onto a folder, or out to the top level): its id.
 pub(crate) struct DraggedFav(pub(crate) String);
+
+/// A folder on the move among the folders: its id.
+pub(crate) struct DraggedFolder(pub(crate) String);
 
 /// Where a dragged favorite would land.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -177,7 +182,7 @@ pub struct HistoryPanel {
     conn_id: Option<String>,
     entries: Vec<HistoryEntry>,
     favorites: Vec<Favorite>,
-    /// The favorites' folders, by name.
+    /// The favorites' folders, in the user's order (the store's).
     folders: Vec<Folder>,
     /// The folders open (by id); a folder starts shut, like the explorer's.
     open_folders: HashSet<String>,
@@ -206,6 +211,10 @@ pub struct HistoryPanel {
     /// While a favorite is dragged: its id, and where it would land.
     dragging: Option<String>,
     drop_at: Option<DropAt>,
+    /// While a folder is dragged: its id, and the gap among the folders it would drop into
+    /// (`dataman_core::order`'s slot: 0 before the first, `folders.len()` after the last).
+    dragging_folder: Option<String>,
+    folder_drop: Option<usize>,
     filter: Entity<TextInput>,
     list: ListState,
 }
@@ -249,6 +258,8 @@ impl HistoryPanel {
             renaming: None,
             dragging: None,
             drop_at: None,
+            dragging_folder: None,
+            folder_drop: None,
             filter,
             list: ListState::new(0, ListAlignment::Top, px(200.)),
         }
@@ -286,13 +297,11 @@ impl HistoryPanel {
         self.apply_filter(cx);
     }
 
-    /// The favorites and their folders from the store, the folders by name.
+    /// The favorites and their folders from the store, the folders in the user's order.
     fn read_favorites(&mut self, cx: &App) {
         let core = &self.store.read(cx).core;
         self.favorites = core.favorites.list();
-        let mut folders = core.favorites.folders();
-        folders.sort_by_key(|d| d.name.to_lowercase());
-        self.folders = folders;
+        self.folders = core.favorites.folders();
     }
 
     fn is_favorited(&self, sql: &str) -> bool {
@@ -510,6 +519,61 @@ impl HistoryPanel {
         }
     }
 
+    /// Folders are reordered only while every one is listed (no search narrowing them).
+    fn can_reorder(&self, cx: &App) -> bool {
+        self.show_favorites && self.filter.read(cx).text().is_empty()
+    }
+
+    /// The gap among the folders folder `id` dragged to `pos` points at, the explorer's way:
+    /// before or after a folder's row by its middle, after the folder anywhere over its
+    /// favorites, after the last folder over the top level; `None` where it would not move.
+    fn folder_slot(&self, id: &str, pos: Point<Pixels>) -> Option<usize> {
+        let from = self.folders.iter().position(|d| d.id == id)?;
+        let at = |id: &str| self.folders.iter().position(|d| d.id == id);
+        let mut slot = self.folders.len();
+        for (ix, it) in self.items.iter().enumerate() {
+            let Some(b) = self.list.bounds_for_item(ix).filter(|b| b.contains(&pos)) else { continue };
+            slot = match it {
+                Item::Folder { ix: k, .. } => crate::dnd::slot_at(*k, &b, pos, false)?,
+                Item::Fav(i) => match &self.favorites[*i].folder {
+                    Some(d) => at(d)? + 1,
+                    None => self.folders.len(),
+                },
+                Item::Day(_) | Item::Entry(_) => return None,
+            };
+            break;
+        }
+        dataman_core::order::moves(from, slot).then_some(slot)
+    }
+
+    /// A folder dropped moves to the gap the line marks (and the store keeps the order).
+    fn drop_folder(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.dragging_folder = None;
+        let Some(slot) = self.folder_drop.take() else { return cx.notify() };
+        let mut ids: Vec<String> = self.folders.iter().map(|d| d.id.clone()).collect();
+        let Some(from) = ids.iter().position(|d| d == id) else { return };
+        if dataman_core::order::move_to(&mut ids, from, slot).is_some() {
+            let _ = self.store.read(cx).core.favorites.reorder_folders(&ids);
+        }
+        self.refresh_keeping(cx);
+    }
+
+    /// The drop line on listed item `ix` while a folder is dragged: before a folder's row
+    /// (`false`), or after the last row of the last folder (`true`, its favorites included).
+    fn folder_line(&self, ix: usize) -> Option<bool> {
+        let slot = self.folder_drop?;
+        let in_folders = |it: &Item| match it {
+            Item::Folder { .. } => true,
+            Item::Fav(i) => self.favorites[*i].folder.is_some(),
+            _ => false,
+        };
+        match self.items.get(ix)? {
+            Item::Folder { ix: k, .. } if *k == slot => Some(false),
+            it if slot == self.folders.len() && in_folders(it) && !self.items.get(ix + 1).is_some_and(in_folders) => Some(true),
+            _ => None,
+        }
+    }
+
     // ---------------------------------------------------------------------------------------
     // The list
 
@@ -534,13 +598,13 @@ impl HistoryPanel {
             // match (or named like it), open.
             for (ix, d) in self.folders.iter().enumerate() {
                 let named = !q.is_empty() && d.name.to_lowercase().contains(&q);
-                let inside: Vec<usize> = (0..self.favorites.len()).filter(|&i| self.favorites[i].folder.as_deref() == Some(d.id.as_str())).collect();
-                let found: Vec<usize> = inside.iter().copied().filter(|&i| named || hit(&self.favorites[i])).collect();
+                let found: Vec<usize> =
+                    (0..self.favorites.len()).filter(|&i| self.favorites[i].folder.as_deref() == Some(d.id.as_str()) && (named || hit(&self.favorites[i]))).collect();
                 if !q.is_empty() && !named && found.is_empty() {
                     continue;
                 }
                 let open = !q.is_empty() || self.open_folders.contains(&d.id);
-                items.push(Item::Folder { ix, open, count: inside.len() });
+                items.push(Item::Folder { ix, open });
                 shown += found.len();
                 if open {
                     items.extend(found.into_iter().map(Item::Fav));
@@ -691,7 +755,7 @@ impl HistoryPanel {
                 .child(label.clone())
                 .into_any_element(),
             Item::Entry(i) => self.render_entry(ix, *i, t, focused, cx),
-            &Item::Folder { ix: folder_ix, open, count } => self.render_folder(ix, folder_ix, open, count, t, focused, cx),
+            &Item::Folder { ix: folder_ix, open } => self.render_folder(ix, folder_ix, open, t, focused, cx),
             Item::Fav(i) => self.render_fav(ix, *i, t, focused, cx),
         }
     }
@@ -811,14 +875,16 @@ impl HistoryPanel {
     }
 
     /// A folder's row, the explorer's way: the chevron, the folder (filled while shut), the
-    /// name, how many favorites it holds; tinted in the accent while a favorite dragged over
-    /// it would drop in.
-    #[allow(clippy::too_many_arguments)]
-    fn render_folder(&self, ix: usize, folder_ix: usize, open: bool, count: usize, t: &Theme, focused: bool, cx: &mut Context<Self>) -> AnyElement {
+    /// name; tinted in the accent while a favorite dragged over it would drop in. Dragged
+    /// itself, it moves among the folders (a line marks the gap, as among the connections).
+    fn render_folder(&self, ix: usize, folder_ix: usize, open: bool, t: &Theme, focused: bool, cx: &mut Context<Self>) -> AnyElement {
         let d = &self.folders[folder_ix];
         let id = d.id.clone();
         let sel = self.selected == Some(ix);
         let dropping = cx.has_active_drag() && self.drop_at.as_ref() == Some(&DropAt::Folder(id.clone()));
+        let dragged = cx.has_active_drag() && self.dragging_folder.as_deref() == Some(id.as_str());
+        let line = self.folder_line(ix).filter(|_| cx.has_active_drag());
+        let reorder = self.can_reorder(cx);
         let renaming = match &self.renaming {
             Some((Naming::Folder(r), input)) if *r == id => Some(input.clone()),
             _ => None,
@@ -830,12 +896,13 @@ impl HistoryPanel {
         };
         let hov = t.hov;
         let chevron = icon(if open { Icon::ChevronDown } else { Icon::ChevronRight }).size(px(10.)).text_color(t.tx4);
-        let (click_id, menu_id, ctrl_id) = (id.clone(), id.clone(), id);
+        let (click_id, menu_id, ctrl_id, ghost) = (id.clone(), id.clone(), id.clone(), d.name.clone());
         div()
             .px(px(6.))
             .child(
                 div()
                     .id(("fav-folder", ix))
+                    .relative()
                     .h(px(28.))
                     .pl(px(8.))
                     .pr(px(8.))
@@ -848,6 +915,7 @@ impl HistoryPanel {
                     .when(!dropping && sel && focused, |d| d.bg(t.mark).border_1().border_color(t.edge))
                     .when(!dropping && sel && !focused, |d| d.bg(t.prs))
                     .when(!dropping && !sel, |d| d.hover(move |s| s.bg(hov)))
+                    .when(dragged, |d| d.opacity(0.45))
                     .on_click(cx.listener(move |h, ev: &gpui::ClickEvent, window, cx| {
                         // The rename field's clicks are its own; ⌃-click opened the menu.
                         if is_renaming || ev.modifiers().control {
@@ -855,13 +923,16 @@ impl HistoryPanel {
                         }
                         h.selected = Some(ix);
                         window.focus(&h.focus, cx);
-                        // A click opens or shuts it (the explorer's way); a double-click renames
-                        // it, the first click's toggle undone.
-                        h.toggle_folder(&click_id, cx);
+                        // A click opens or shuts it (the explorer's way); a double-click is
+                        // nothing more than its first click (Rename is in its menu).
                         if ev.click_count() >= 2 {
-                            h.start_naming(Naming::Folder(click_id.clone()), window, cx);
+                            return cx.notify();
                         }
+                        h.toggle_folder(&click_id, cx);
                     }))
+                    // Among the folders; not while its name is edited, nor while a search
+                    // lists only some of them.
+                    .when(!is_renaming && reorder, |d| d.on_drag(DraggedFolder(id), move |_, _, _, cx| crate::dnd::ghost(ghost.clone(), None, cx)))
                     .on_mouse_down(gpui::MouseButton::Right, cx.listener(move |h, ev: &gpui::MouseDownEvent, _, cx| {
                         cx.stop_propagation();
                         h.selected = Some(ix);
@@ -877,7 +948,7 @@ impl HistoryPanel {
                     .child(div().w(px(10.)).flex_none().flex().justify_center().child(chevron))
                     .child(icon(if open { Icon::Schema } else { Icon::SchemaFilled }).size(px(14.)).text_color(if dropping { t.acc_t } else { t.tx3 }))
                     .child(name)
-                    .when(!is_renaming, |d| d.child(div().flex_none().text_size(px(11.)).text_color(t.tx3).child(ui_count(count)))),
+                    .children(line.map(|after| crate::dnd::drop_line(t, false, after))),
             )
             .into_any_element()
     }
@@ -902,6 +973,9 @@ impl HistoryPanel {
             None => div().text_color(t.tx).child(f.name.clone()).into_any_element(),
         };
         let (fav_id, ghost) = (f.id.clone(), f.name.clone());
+        // A folder dragged after the last one: the line under its last favorite, as wide as a
+        // folder's row.
+        let line = self.folder_line(ix).filter(|_| cx.has_active_drag());
         div()
             .relative()
             .pl(px(if nested { 6. + NEST } else { 6. }))
@@ -980,6 +1054,7 @@ impl HistoryPanel {
                             .child(flat),
                     ),
             )
+            .children(line.map(|after| crate::dnd::drop_line(t, false, after).mx(px(6.))))
             .into_any_element()
     }
 
@@ -1318,7 +1393,6 @@ impl HistoryPanel {
             .gap(px(1.))
             .hover(move |s| s.bg(hov))
             .active(move |s| s.bg(prs))
-            .tooltip(ui::tooltip("New folder", Some("Drag favorites onto it to file them"), None))
             .child(icon(Icon::Plus).size(px(10.)).text_color(t.tx3))
             .child(icon(Icon::Schema).size(px(14.)).text_color(t.tx3))
             .on_click(cx.listener(|h, _: &gpui::ClickEvent, window, cx| h.new_folder(window, cx)));
@@ -1390,15 +1464,15 @@ impl HistoryPanel {
         self.folders.iter().map(|d| (d.id.clone(), d.name.clone())).collect()
     }
 
-    /// The listed rows, as `▸ name (n)` / `▾ name (n)` for a folder, `name` for a favorite
-    /// (indented two spaces in a folder), `entry` for the history.
+    /// The listed rows, as `▸ name` / `▾ name` for a folder, `name` for a favorite (indented
+    /// two spaces in a folder), `entry` for the history.
     pub(crate) fn demo_rows(&self) -> Vec<String> {
         self.items
             .iter()
             .map(|it| match it {
                 Item::Day(d) => d.to_string(),
                 Item::Entry(_) => "entry".into(),
-                Item::Folder { ix, open, count } => format!("{} {} ({count})", if *open { "▾" } else { "▸" }, self.folders[*ix].name),
+                Item::Folder { ix, open } => format!("{} {}", if *open { "▾" } else { "▸" }, self.folders[*ix].name),
                 Item::Fav(i) => format!("{}{}", if self.favorites[*i].folder.is_some() { "  " } else { "" }, self.favorites[*i].name),
             })
             .collect()
@@ -1503,6 +1577,13 @@ impl HistoryPanel {
         }
     }
 
+    /// The gap among the folders a folder being dragged would drop into, and the listed items
+    /// drawing the line that marks it (with `true` for a line under the item).
+    pub(crate) fn demo_folder_drop(&self) -> Option<(usize, Vec<(usize, bool)>)> {
+        let slot = self.folder_drop?;
+        Some((slot, (0..self.items.len()).filter_map(|ix| self.folder_line(ix).map(|after| (ix, after))).collect()))
+    }
+
     pub(crate) fn demo_renaming_index(&self) -> Option<usize> {
         match &self.renaming {
             Some((Naming::Fav(i), _)) => Some(*i),
@@ -1585,6 +1666,8 @@ impl Render for HistoryPanel {
         if !cx.has_active_drag() {
             self.drop_at = None;
             self.dragging = None;
+            self.folder_drop = None;
+            self.dragging_folder = None;
         }
         let top_drop = self.drop_at == Some(DropAt::Top);
         let body: AnyElement = if self.items.is_empty() {
@@ -1617,6 +1700,18 @@ impl Render for HistoryPanel {
                     }
                 }))
                 .on_drop(cx.listener(|h, d: &DraggedFav, _, cx| h.drop_favorite(&d.0, cx)))
+                // A folder dragged over the list: the gap among the folders it would drop into.
+                .on_drag_move(cx.listener(|h, ev: &gpui::DragMoveEvent<DraggedFolder>, _, cx| {
+                    let pos = ev.event.position;
+                    let id = ev.drag(cx).0.clone();
+                    let slot = if ev.bounds.contains(&pos) && h.can_reorder(cx) { h.folder_slot(&id, pos) } else { None };
+                    if slot != h.folder_drop || h.dragging_folder.as_ref() != Some(&id) {
+                        h.folder_drop = slot;
+                        h.dragging_folder = Some(id);
+                        cx.notify();
+                    }
+                }))
+                .on_drop(cx.listener(|h, d: &DraggedFolder, _, cx| h.drop_folder(&d.0, cx)))
                 .child(list(self.list.clone(), cx.processor(move |h, ix: usize, _window, cx| h.render_item(ix, &theme, focused, cx))).flex_1())
                 // Out of its folder: the whole list is the drop target.
                 .when(top_drop, |d| d.child(div().absolute().inset_0().mx(px(6.)).border_1().border_color(t.acc.opacity(0.45))))

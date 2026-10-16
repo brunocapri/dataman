@@ -7,11 +7,14 @@
 //! window. PASS/FAIL lines like `find-check`.
 //!
 //! `folders-check`: the panel opening on the favorites, and their folders: "+ folder" named in
-//! place, favorites dragged into a folder and back out (the drop target tinted on the way),
-//! opening and shutting (click, ← →), a search opening the folder of a match, Move to folder ▸
-//! and Run from a favorite's menu, a folder renamed by double-click and deleted (its favorites
-//! kept, at the top level). `DATAMAN_SHOT_DIR=dir` also captures `folders-drag.png`,
-//! `folders-menu.png` and `folders-tree.png` there (build with `--features screenshots`).
+//! place (after the others), folders reordered by drag (a line marks the gap, no folder is
+//! tinted, the store keeps the order), favorites dragged into a folder and back out (the drop
+//! target tinted on the way, no line), opening and shutting (click, ← →), a search opening the
+//! folder of a match, Move to folder ▸ and Run from a favorite's menu, a double-click only
+//! opening or shutting a folder, a folder renamed from its menu and deleted (its favorites
+//! kept, at the top level). `DATAMAN_SHOT_DIR=dir` also captures `folders-reorder.png`,
+//! `folders-drag.png`, `folders-menu.png` and `folders-tree.png` there (build with
+//! `--features screenshots`).
 
 use std::time::Duration;
 
@@ -654,9 +657,49 @@ async fn folders(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let r = rows(&history, cx);
     report(
         &mut ok,
-        "typed over, the names stick; the folders come first, by name, then the top level",
-        r == ["▾ Archive (0)", "▾ Reports (0)", "Orders by day", "Top customers", "Run marker"],
+        "typed over, the names stick; the folders come first, a new one last, then the top level (no counts)",
+        r == ["▾ Reports", "▾ Archive", "Orders by day", "Top customers", "Run marker"],
         format!("{r:?}"),
+    );
+
+    // A folder dragged above another: the line marks the gap (no folder tinted as a favorite's
+    // target would be), and the drop moves it there, in the store too.
+    let store_folders = |cx: &mut AsyncWindowContext| -> Vec<String> {
+        cx.update(|_, cx| ws.read(cx).store.read(cx).core.favorites.folders().into_iter().map(|d| d.name).collect()).unwrap_or_default()
+    };
+    let (Some(from), Some(to)) = (named_point(&history, "Archive", cx).await, named_point(&history, "Reports", cx).await) else {
+        report(&mut ok, "the folders have bounds", false, String::new());
+        return ok;
+    };
+    let mut during = (None, None);
+    drag(cx, from, point(to.x, to.y - px(8.)), |cx| {
+        during = cx.update(|_, cx| (history.read(cx).demo_folder_drop(), history.read(cx).demo_drop_at())).unwrap_or_default();
+        snap("reorder", cx);
+    })
+    .await;
+    let (r, stored) = (rows(&history, cx), store_folders(cx));
+    report(
+        &mut ok,
+        "a folder dragged over the top half of another: a line above that one, no folder tinted",
+        during == (Some((0, vec![(0, false)])), None),
+        format!("{during:?}"),
+    );
+    report(
+        &mut ok,
+        "dropped, the folder moves there, and the store keeps the order",
+        r == ["▾ Archive", "▾ Reports", "Orders by day", "Top customers", "Run marker"] && stored == ["Archive", "Reports"],
+        format!("{r:?} stored {stored:?}"),
+    );
+    // Over the top level: after the last folder (the line under it).
+    let (Some(from), Some(to)) = (named_point(&history, "Archive", cx).await, named_point(&history, "Top customers", cx).await) else { return false };
+    let mut during = None;
+    drag(cx, from, to, |cx| during = cx.update(|_, cx| history.read(cx).demo_folder_drop()).ok().flatten()).await;
+    let (r, stored) = (rows(&history, cx), store_folders(cx));
+    report(
+        &mut ok,
+        "dragged over the top level, it goes after the last folder (the line under it)",
+        during == Some((2, vec![(1, true)])) && r == ["▾ Reports", "▾ Archive", "Orders by day", "Top customers", "Run marker"] && stored == ["Reports", "Archive"],
+        format!("{during:?} {r:?} stored {stored:?}"),
     );
 
     // Dragged onto a folder: the folder is the drop target on the way, the favorite is filed
@@ -665,18 +708,18 @@ async fn folders(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
         report(&mut ok, "the rows have bounds", false, String::new());
         return ok;
     };
-    let mut target = None;
+    let (mut target, mut line) = (None, None);
     drag(cx, from, to, |cx| {
-        target = cx.update(|_, cx| history.read(cx).demo_drop_at()).ok().flatten();
+        (target, line) = cx.update(|_, cx| (history.read(cx).demo_drop_at(), history.read(cx).demo_folder_drop())).unwrap_or_default();
         snap("drag", cx);
     })
     .await;
-    report(&mut ok, "a favorite dragged over a folder targets it", target.as_deref() == Some("Reports"), format!("{target:?}"));
+    report(&mut ok, "a favorite dragged over a folder targets it (no line between folders)", target.as_deref() == Some("Reports") && line.is_none(), format!("{target:?} {line:?}"));
     let r = rows(&history, cx);
     report(
         &mut ok,
         "dropped there, it is filed in it and listed under it",
-        filed(&history, "Orders by day", cx) == Some(Some("Reports".into())) && r == ["▾ Archive (0)", "▾ Reports (1)", "  Orders by day", "Top customers", "Run marker"],
+        filed(&history, "Orders by day", cx) == Some(Some("Reports".into())) && r == ["▾ Reports", "  Orders by day", "▾ Archive", "Top customers", "Run marker"],
         format!("{r:?}"),
     );
 
@@ -692,7 +735,7 @@ async fn folders(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     report(
         &mut ok,
         "a click shuts a folder; → opens it, ← shuts it",
-        shut.contains(&"▸ Reports (1)".to_string()) && !shut.contains(&"  Orders by day".to_string()) && opened.contains(&"  Orders by day".to_string()) && shut_again == shut,
+        shut.contains(&"▸ Reports".to_string()) && !shut.contains(&"  Orders by day".to_string()) && opened.contains(&"  Orders by day".to_string()) && shut_again == shut,
         format!("{shut:?} / {opened:?} / {shut_again:?}"),
     );
 
@@ -704,7 +747,7 @@ async fn folders(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     report(
         &mut ok,
         "a search opens the folder holding a match; cleared, it is shut again",
-        found == ["▾ Reports (1)", "  Orders by day"] && cleared.contains(&"▸ Reports (1)".to_string()),
+        found == ["▾ Reports", "  Orders by day"] && cleared.contains(&"▸ Reports".to_string()),
         format!("{found:?} / {cleared:?}"),
     );
 
@@ -760,22 +803,35 @@ async fn folders(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let title = cx.update(|_, cx| ws.read(cx).active_tab().map(|t| t.read(cx).title(cx).to_string())).unwrap();
     report(&mut ok, "Run (the favorite's menu) runs it in a tab of its own", clicked && ran && title.as_deref() == Some("Run marker"), format!("clicked {clicked} ran {ran} title {title:?}"));
 
-    // A folder renamed by double-click (its open state as it was), ↩ confirms.
+    // A double-click is no rename: only its first click counts (the folder shut, once).
     let before = rows(&history, cx);
     let Some(p) = named_point(&history, "Archive", cx).await else { return false };
     double_click(cx, p);
     pause(cx, 30).await;
     let naming = cx.update(|_, cx| history.read(cx).demo_renaming_folder()).unwrap();
-    let unchanged = rows(&history, cx) == before;
+    let after = rows(&history, cx);
+    report(
+        &mut ok,
+        "a double-click on a folder renames nothing, it only opens or shuts it",
+        naming.is_none() && before.contains(&"▾ Archive".to_string()) && after.contains(&"▸ Archive".to_string()),
+        format!("naming {naming:?} {before:?} → {after:?}"),
+    );
+
+    // Rename (the folder's menu) names it in place, ↩ confirms; its place stays.
+    click(cx, p, MouseButton::Right, Modifiers::default());
+    pause(cx, 30).await;
+    let clicked = menu_click(&history, "Rename", cx);
+    pause(cx, 30).await;
+    let (naming, focused) = cx.update(|window, cx| (history.read(cx).demo_renaming_folder(), history.read(cx).demo_renaming_focused(window, cx))).unwrap();
     key(cx, "cmd-a");
     typ(cx, "Old stuff");
     key(cx, "enter");
     let names: Vec<String> = cx.update(|_, cx| history.read(cx).demo_folders().into_iter().map(|d| d.1).collect()).unwrap();
     report(
         &mut ok,
-        "a double-click renames a folder in place (its open state kept)",
-        naming.as_deref() == Some("Archive") && unchanged && names == ["Old stuff", "Reports"],
-        format!("naming {naming:?} unchanged {unchanged} {names:?}"),
+        "Rename in a folder's menu names it in place, and it keeps its place",
+        clicked && naming.as_deref() == Some("Archive") && focused && names == ["Reports", "Old stuff"],
+        format!("clicked {clicked} naming {naming:?} focused {focused} {names:?}"),
     );
 
     // Delete folder: its favorites are kept, at the top level.

@@ -7,6 +7,11 @@
 //! favorite's `folder` naming one by id. Both are optional, so a file written before folders
 //! existed loads as is (everything at the top level), and one without folders is written the
 //! same way as before.
+//!
+//! The folders are in the user's order: the file's order of its `[[folder]]` tables (new ones
+//! at the end, [`FavoritesStore::reorder_folders`] moves them). A file written before folders
+//! could be reordered has no `folders_ordered` flag: its folders load by name, as the panel
+//! listed them then, and the next write keeps that order (and sets the flag).
 
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -48,6 +53,10 @@ pub struct Folder {
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct File {
+    /// The `[[folder]]` tables are in the user's order (written with any folder); without it
+    /// they load by name.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    folders_ordered: bool,
     #[serde(default, rename = "folder", skip_serializing_if = "Vec::is_empty")]
     folders: Vec<Folder>,
     #[serde(default, rename = "favorite")]
@@ -96,6 +105,9 @@ impl FavoritesStore {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => File::default(),
             Err(e) => return Err(e).with_context(|| format!("reading {}", self.path.display())),
         };
+        if !file.folders_ordered {
+            file.folders.sort_by_key(|d| d.name.to_lowercase());
+        }
         // Filed in a folder that is gone (the file edited by hand): the top level.
         for f in &mut file.favorites {
             if f.folder.as_ref().is_some_and(|id| !file.folders.iter().any(|d| d.id == *id)) {
@@ -166,7 +178,7 @@ impl FavoritesStore {
         Ok(Some(updated))
     }
 
-    /// Every folder, in the order they were made.
+    /// Every folder, in the user's order (new ones at the end).
     pub fn folders(&self) -> Vec<Folder> {
         let _ = self.refresh();
         self.state.lock().folders.clone()
@@ -194,6 +206,15 @@ impl FavoritesStore {
         let updated = d.clone();
         g.save(&self.path)?;
         Ok(Some(updated))
+    }
+
+    /// Puts the folders in the order of `ids` (the panel's, after a drag); any it does not name
+    /// keep their order after them.
+    pub fn reorder_folders(&self, ids: &[String]) -> Result<()> {
+        let _ = self.refresh();
+        let mut g = self.state.lock();
+        g.folders.sort_by_key(|d| ids.iter().position(|i| *i == d.id).unwrap_or(usize::MAX));
+        g.save(&self.path)
     }
 
     /// Removes a folder, never its favorites: they move to the top level. Returns how many
@@ -367,7 +388,7 @@ pub fn match_name(names: &[&str], query: &str) -> NameMatch {
 fn save(path: &Path, items: &[Favorite], folders: &[Folder]) -> Result<()> {
     let dir = path.parent().context("favorites path has no parent")?;
     std::fs::create_dir_all(dir)?;
-    let text = toml::to_string_pretty(&File { folders: folders.to_vec(), favorites: items.to_vec() })?;
+    let text = toml::to_string_pretty(&File { folders_ordered: !folders.is_empty(), folders: folders.to_vec(), favorites: items.to_vec() })?;
     let tmp = dir.join(format!(".favorites.toml.{}", std::process::id()));
     std::fs::write(&tmp, text)?;
     std::fs::rename(&tmp, path)?;
@@ -560,6 +581,56 @@ mod tests {
         .unwrap();
         let list = FavoritesStore::open(&dirs).unwrap().list();
         assert_eq!(list.iter().map(|f| f.folder.as_deref()).collect::<Vec<_>>(), vec![Some("d1"), None]);
+    }
+
+    fn folder_names(store: &FavoritesStore) -> Vec<String> {
+        store.folders().into_iter().map(|d| d.name).collect()
+    }
+
+    /// The folders keep the user's order, not their names': new ones at the end, a reorder
+    /// written to the file, a rename or a delete moving no other.
+    #[test]
+    fn folders_keep_the_users_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = Dirs::at(dir.path().join("dataman"));
+        let store = FavoritesStore::open(&dirs).unwrap();
+        let (c, a, b) = (store.add_folder("Charts").unwrap(), store.add_folder("Archive").unwrap(), store.add_folder("Billing").unwrap());
+        assert_eq!(folder_names(&store), ["Charts", "Archive", "Billing"], "made last, listed last");
+        // `c` is not named: it keeps its place after the ones that are.
+        store.reorder_folders(&[b.id.clone(), a.id.clone()]).unwrap();
+        assert_eq!(folder_names(&store), ["Billing", "Archive", "Charts"]);
+        let other = FavoritesStore::open(&dirs).unwrap();
+        assert_eq!(folder_names(&other), ["Billing", "Archive", "Charts"], "the file keeps the order");
+        store.rename_folder(&a.id, "Zzz").unwrap();
+        store.add_folder("Aaa").unwrap();
+        assert_eq!(folder_names(&other), ["Billing", "Zzz", "Charts", "Aaa"]);
+        store.remove_folder(&b.id).unwrap();
+        store.reorder_folders(&[c.id.clone()]).unwrap();
+        assert_eq!(folder_names(&FavoritesStore::open(&dirs).unwrap()), ["Charts", "Zzz", "Aaa"]);
+    }
+
+    /// A file from before folders could be reordered (no `folders_ordered`): its folders load
+    /// by name, as the panel listed them, and the next write keeps that order for good.
+    #[test]
+    fn an_older_file_keeps_its_folders_by_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = Dirs::at(dir.path().join("dataman"));
+        std::fs::create_dir_all(dirs.favorites_file().parent().unwrap()).unwrap();
+        let folders = "[[folder]]\nid = \"z\"\nname = \"Zeta\"\n\n[[folder]]\nid = \"a\"\nname = \"alpha\"\n\n[[folder]]\nid = \"m\"\nname = \"Mid\"\n";
+        std::fs::write(dirs.favorites_file(), format!("{folders}\n[[favorite]]\nid = \"f1\"\nname = \"in\"\nsql = \"select 1\"\nfolder = \"z\"\n")).unwrap();
+        let store = FavoritesStore::open(&dirs).unwrap();
+        assert_eq!(folder_names(&store), ["alpha", "Mid", "Zeta"]);
+        assert_eq!(store.list()[0].folder.as_deref(), Some("z"));
+        // Any write: the order it had is the file's now, flagged.
+        store.add(Favorite::new("x", "select 2")).unwrap();
+        let text = std::fs::read_to_string(dirs.favorites_file()).unwrap();
+        assert!(text.contains("folders_ordered = true"), "{text}");
+        store.reorder_folders(&["z".into()]).unwrap();
+        assert_eq!(folder_names(&FavoritesStore::open(&dirs).unwrap()), ["Zeta", "alpha", "Mid"], "reordered, not by name again");
+
+        // Flagged by hand: the file's order as is.
+        std::fs::write(dirs.favorites_file(), format!("folders_ordered = true\n\n{folders}")).unwrap();
+        assert_eq!(folder_names(&FavoritesStore::open(&dirs).unwrap()), ["Zeta", "alpha", "Mid"]);
     }
 
     #[test]
