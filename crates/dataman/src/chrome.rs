@@ -217,6 +217,8 @@ impl Workspace {
             .flex_row()
             .items_center()
             .text_color(t.tx2)
+            // The editor groups' seam, from the window's top edge down (under the bar's own).
+            .children(self.render_seam_line(cx))
             .on_mouse_down(MouseButton::Left, cx.listener(|w, _, _, _| w.title_drag = true))
             .on_mouse_up(MouseButton::Left, cx.listener(|w, _, _, _| w.title_drag = false))
             .on_mouse_move(cx.listener(|w, _, window, _| {
@@ -298,11 +300,6 @@ impl Workspace {
                     .when_some(crate::keymap::key("command_palette"), |d, k| d.child(ui::keycap(&t, k))),
             )
             .children(tab_menu)
-            // Between the editor groups' strips, the groups' seam runs up through the band.
-            .children(self.split_now.filter(|f| f.open > 0.).map(|f| {
-                let c = self.frame_now.center;
-                self.render_title_seam(c.x + f.widths(c.w).0.0, cx)
-            }))
     }
 
     /// Where the title bar's "DATAMAN" goes: it is the explorer's header, at the right edge of
@@ -316,8 +313,8 @@ impl Workspace {
     }
 
     /// The tab strips: one, or one over each editor group (`split`), the left one ending at the
-    /// groups' seam. `side`: the room the title bar keeps on the left (the traffic lights, the
-    /// explorer toggle), `seam`: how open the left dock is (the first tab lines up past it).
+    /// groups' seam (`render_seam_line` paints its hairline between them). `side`: the room the
+    /// title bar keeps on the left (the traffic lights, the explorer toggle), `seam`: how open the left dock is (the first tab lines up past it).
     fn render_strips(&self, side: f32, seam: f32, t: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
         // Past the seam the first tab lines up with the toolbar's Run button (the hairline + its
         // 10 pt padding).
@@ -326,7 +323,7 @@ impl Workspace {
             return vec![self.render_strip(Pane::Left, self.group(Pane::Left), None, pad, t, cx)];
         };
         let c = self.frame_now.center;
-        let x = c.x + f.widths(c.w).0.0;
+        let x = self.surface_x() + f.widths(c.w).0.0;
         let left_w = (x - side).max(0.);
         let (left, right) = match &self.split {
             Some(_) => (self.group(Pane::Left), self.group(Pane::Right)),
@@ -369,11 +366,17 @@ impl Workspace {
                 scroll.scroll_to_item(gi);
             }
         }
+        // Pressed once, the × asks "Sure?" in its place.
         let control = self.split.is_some().then(|| {
-            ui::icon_button(t, "close-group", Icon::Close, 22., 12.)
-                .tooltip(ui::tooltip("Close group", Some("its tabs join the other group"), None))
-                .on_mouse_down(MouseButton::Left, stop)
-                .on_click(cx.listener(move |w, _, window, cx| w.close_group(pane, window, cx)))
+            if self.close_arm.as_ref().is_some_and(|a| a.pane == pane) {
+                self.render_close_ask(pane, cx).into_any_element()
+            } else {
+                ui::icon_button(t, "close-group", Icon::Close, 22., 12.)
+                    .tooltip(ui::tooltip("Close group", Some("closes its tabs"), None))
+                    .on_mouse_down(MouseButton::Left, stop)
+                    .on_click(cx.listener(move |w, _, window, cx| w.ask_close_group(pane, window, cx)))
+                    .into_any_element()
+            }
         });
         let parts = self.strip_parts.clone();
         let offset = scroll.clone();
@@ -707,7 +710,6 @@ impl Workspace {
         // Two editor groups (`split`) side by side, a hairline between them. While the split
         // opens or folds, the moving group keeps its full width inside, clipped, and rides the
         // seam; the other one narrows or widens.
-        let t = cx.theme();
         let ((lw, _), (full_l, full_r)) = f.widths(c.w);
         let moving = f.open < 1.;
         let bounds = self.pane_bounds.clone();
@@ -741,7 +743,9 @@ impl Workspace {
                 .children(preview);
             row = row.child(self.editor_drop_target(group, pane, cx));
             if pane == Pane::Left {
-                row = row.child(div().w(px(crate::split::SEAM)).h_full().flex_none().bg(t.line));
+                // Room for the seam; the title bar paints its hairline over it, from the window's
+                // top edge (`render_seam_line`).
+                row = row.child(div().w(px(crate::split::SEAM)).h_full().flex_none());
             }
         }
         // The seam's grabber, over both groups (not while they move).

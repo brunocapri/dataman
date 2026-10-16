@@ -5,9 +5,13 @@
 //! other group moves the focus there, ⌃Tab and ⌘1 stay within the focused group, the seam
 //! resizes the groups (a double-click evens them), a tab dragged onto the other strip moves
 //! there, ⌥ held while a table opens from the explorer sends it to the other group, the session
-//! keeps the groups across a relaunch, a group's × folds it away with its tabs joining the
-//! other (the left one's as well as the right one's), and closing a group's last tab closes the
-//! split. Also: no Open to the Side button on the strip; each strip scrolls its tabs sideways on
+//! keeps the groups across a relaunch, a group's × asks "Sure?" in its place (the pointer
+//! leaving, Esc, a press elsewhere and a few seconds let it go) and, confirmed, closes the group
+//! with its tabs and folds it away (the left one's as well as the right one's), a group holding
+//! an open transaction goes straight to the transaction sheet (Cancel keeps it all, Rollback
+//! closes), and closing a group's last tab closes the split. Also: the seam is one hairline in
+//! `line2` from the window's top through the strips down to the bottom, the same device pixels
+//! at every height (measured in the rendered image); no Open to the Side button on the strip; each strip scrolls its tabs sideways on
 //! its own (the wheel, the tab in front kept in view); the connection picker of a narrow group
 //! gives way instead of running over the History button; each group has its own cell viewer
 //! (⇧Space in its grid, inside the group, resized by its edge, kept by the group that stays);
@@ -16,8 +20,8 @@
 //!
 //! Captures: `split` shows two groups with results in both, the right one focused;
 //! `split-opening` catches ⌘\ on its way (`DATAMAN_SPLIT_FREEZE=0.5`). With `DATAMAN_SHOT_DIR`,
-//! the check also captures `split-scrolled`, `split-narrow`, `split-viewers`, `split-drop-side`
-//! and `split-drop-whole` there.
+//! the check also captures `split-seam`, `split-sure`, `split-scrolled`, `split-narrow`,
+//! `split-viewers`, `split-drop-side` and `split-drop-whole` there.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -32,7 +36,7 @@ use gpui::{
 use crate::app::Workspace;
 use crate::split::DropZone;
 use crate::restore::Sessions;
-use crate::tab::QueryTab;
+use crate::tab::{ConfirmChoice, QueryTab};
 use crate::theme::{Pt, metrics, px};
 
 pub fn is_stage(s: &str) -> bool {
@@ -216,6 +220,53 @@ fn viewer_open(ws: &Entity<Workspace>, pane: Pane, cx: &mut AsyncWindowContext) 
     cx.update(|_, cx| ws.read(cx).viewer_open(pane)).unwrap_or(false)
 }
 
+/// The group whose × asks "Sure?".
+fn asking(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> Option<Pane> {
+    draw(cx);
+    cx.update(|_, cx| ws.read(cx).close_arm.as_ref().map(|a| a.pane)).ok().flatten()
+}
+
+fn split_open(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
+    cx.update(|_, cx| ws.read(cx).split.is_some()).unwrap_or(false)
+}
+
+/// The surface's parts as GPUI laid them out: the left group, the room for the seam, the right
+/// group (then the seam's grabber).
+fn surface_parts(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> Vec<Bounds<Pixels>> {
+    draw(cx);
+    cx.update(|_, cx| ws.read(cx).pane_bounds.borrow().clone()).unwrap_or_default()
+}
+
+/// The seam as painted: at each height `ys` (window points), the device-pixel columns within
+/// 8 pt of `x` that are exactly `line2` (the image as rendered, before any desktop under it),
+/// and the scale (device pixels per point).
+#[cfg(feature = "screenshots")]
+fn seam_columns(x: f32, ys: &[f32], cx: &mut AsyncWindowContext) -> Option<(Vec<Vec<u32>>, f32)> {
+    cx.update(|window, cx| {
+        window.refresh();
+        window.draw(cx).clear(cx);
+        let img = window.render_to_image().ok()?;
+        let k = img.width() as f32 / window.viewport_size().width.as_f32() * crate::theme::zoom();
+        let c = gpui::Rgba::from(crate::theme::ActiveTheme::theme(&*cx).line2);
+        let want = [c.r, c.g, c.b].map(|v| (v * 255.).round() as i32);
+        let cols = ys
+            .iter()
+            .map(|y| {
+                let py = ((y * k) as u32).min(img.height() - 1);
+                (((x - 8.) * k).max(0.) as u32..((x + 8.) * k) as u32)
+                    .filter(|&px| {
+                        let p = img.get_pixel(px.min(img.width() - 1), py).0;
+                        (0..3).all(|i| (p[i] as i32 - want[i]).abs() <= 1) && p[3] == 255
+                    })
+                    .collect()
+            })
+            .collect();
+        Some((cols, k))
+    })
+    .ok()
+    .flatten()
+}
+
 pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContext) -> bool {
     let mut ok = true;
     let mut report = |name: &str, pass: bool, detail: String| {
@@ -278,6 +329,32 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
         l0.zip(r0).is_some_and(|(l, r)| l.x.pt() < seam_x && r.x.pt() > seam_x),
         format!("{l0:?} {r0:?} seam {seam_x}"),
     );
+    // The seam is one hairline over the room kept for it, from the window's top edge (through
+    // the title band, between the strips) to the bottom: the band's part cannot stray.
+    let room = surface_parts(ws, cx).get(1).copied();
+    let line = cx.update(|_, cx| ws.read(cx).seam_line.get()).ok().flatten();
+    let (lx_end, rx_start) = (parts(ws, Pane::Left, cx).last().map(|b| b.right().pt()), parts(ws, Pane::Right, cx).first().map(|b| b.left().pt()));
+    report(
+        "the seam's hairline: over its room, from the window's top edge to the bottom, between the strips",
+        room.zip(line).is_some_and(|(r, l)| l.left() == r.left() && l.size.width == r.size.width && l.top().pt() <= 0. && l.bottom() == r.bottom())
+            && line.zip(lx_end).zip(rx_start).is_some_and(|((l, a), b)| a <= l.left().pt() && b >= l.right().pt()),
+        format!("room {room:?} line {line:?} strips end {lx_end:?} start {rx_start:?}"),
+    );
+    #[cfg(feature = "screenshots")]
+    {
+        // Painted: the same device pixels in the title band, across the band's hairline, in the
+        // toolbar, the editor and the results; exactly `line2` (a step brighter than the other
+        // hairlines), SEAM wide.
+        let ys = [metrics::TITLE_H / 2., metrics::TITLE_H + 0.25, c.y + metrics::TOOLBAR_H / 2., c.y + metrics::TOOLBAR_H + 80., c.y + c.h - 40.];
+        let cols = seam_columns(seam_x, &ys, cx);
+        let want = line.zip(cols.as_ref()).map(|(l, (_, k))| ((l.left().pt() * k).round() as u32, (crate::split::SEAM * k).round() as usize));
+        report(
+            "the seam is painted in the same device pixels at every height, the title band's part included, in line2",
+            cols.as_ref().zip(want).is_some_and(|((cols, _), (x0, n))| cols.iter().all(|c| c.len() == n && c.first() == Some(&x0))),
+            format!("{cols:?} want {want:?}"),
+        );
+    }
+    snap("seam", cx);
 
     // A press in the left group gives it the focus; the right group's Run runs its own tab.
     let editor_y = c.y + metrics::TOOLBAR_H + 60.;
@@ -549,22 +626,66 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
     let ws = &ws2;
     pause(cx, 300).await;
 
-    // The right group's ×: its tabs join the left group, none is closed, the left keeps the
-    // focus.
+    // The right group's ×: pressed once it asks "Sure?" in its place, nothing closed; the
+    // pointer leaving it, Esc, a press elsewhere and a few seconds each let it go.
     let n = tabs(ws, cx).len();
+    let right_tabs = right(ws, cx);
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.focus_pane(Pane::Left, window, cx)));
     let left_front = active(ws, cx);
-    let open = panes(ws, cx);
     // The × is the strip's last part (22 pt), at its end.
-    let strip_end = parts(ws, Pane::Right, cx).last().copied();
-    if let Some(b) = strip_end {
+    let Some(xb) = parts(ws, Pane::Right, cx).last().copied() else {
+        report("the right group's ×", false, String::new());
+        return ok;
+    };
+    click(cx, middle(xb));
+    let ask = parts(ws, Pane::Right, cx).last().copied();
+    snap("sure", cx);
+    report(
+        "a group's × asks \"Sure?\" in its place (same row, same end, wider): nothing closes yet",
+        asking(ws, cx) == Some(Pane::Right)
+            && split_open(ws, cx)
+            && tabs(ws, cx).len() == n
+            && ask.is_some_and(|b| near(b.right().pt(), xb.right().pt(), 1.) && near(middle(b).y.pt(), middle(xb).y.pt(), 1.) && b.size.width > xb.size.width),
+        format!("asking {:?}, × {xb:?} ask {ask:?}", asking(ws, cx)),
+    );
+    let away = at(middle(xb).x.pt() - 240., middle(xb).y.pt());
+    mouse_move(cx, away, false);
+    let back = parts(ws, Pane::Right, cx).last().copied();
+    report(
+        "the pointer leaving it lets it go: the × is back",
+        asking(ws, cx).is_none() && tabs(ws, cx).len() == n && back.is_some_and(|b| near(b.size.width.pt(), xb.size.width.pt(), 0.5)),
+        format!("asking {:?} {back:?}", asking(ws, cx)),
+    );
+    click(cx, middle(xb));
+    let asked = asking(ws, cx) == Some(Pane::Right);
+    key(cx, "escape");
+    report("Esc lets it go", asked && asking(ws, cx).is_none() && tabs(ws, cx).len() == n, format!("asked {asked}, asking {:?}", asking(ws, cx)));
+    click(cx, middle(xb));
+    let asked = asking(ws, cx) == Some(Pane::Right);
+    // A press elsewhere, the pointer not moved there first.
+    down(cx, at(c.x + 120., editor_y), 1);
+    up(cx, at(c.x + 120., editor_y), 1);
+    report(
+        "a press elsewhere lets it go",
+        asked && asking(ws, cx).is_none() && tabs(ws, cx).len() == n && split_open(ws, cx),
+        format!("asked {asked}, asking {:?}", asking(ws, cx)),
+    );
+    let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.focus_pane(Pane::Left, window, cx)));
+    click(cx, middle(xb));
+    let asked = asking(ws, cx) == Some(Pane::Right);
+    pause(cx, 3400).await;
+    report("left alone, it gives way after a few seconds", asked && asking(ws, cx).is_none() && tabs(ws, cx).len() == n, format!("asked {asked}, asking {:?}", asking(ws, cx)));
+    // Confirmed: the right group closes with its tabs; the left group's stay, its tab in front.
+    click(cx, middle(xb));
+    if let Some(b) = parts(ws, Pane::Right, cx).last().copied() {
         click(cx, middle(b));
     }
     let folding = cx.update(|_, cx| ws.read(cx).split.is_none() && (ws.read(cx).split_move.is_some() || cx.reduce_motion())).unwrap();
+    let left_now = tabs(ws, cx);
     report(
-        "a group's × closes the split; its tabs join the other group, none closed",
-        folding && tabs(ws, cx).len() == n && active(ws, cx) == left_front,
-        format!("{} of {n} tabs, split {:?}", tabs(ws, cx).len(), cx.update(|_, cx| ws.read(cx).split.is_some()).unwrap()),
+        "\"Sure?\" closes the group with its tabs (the other group's stay, its tab in front); the split folds",
+        folding && left_now.len() == n - right_tabs.len() && right_tabs.iter().all(|t| !left_now.contains(t)) && active(ws, cx) == left_front,
+        format!("{} of {n} tabs ({} on the right), split {:?}", left_now.len(), right_tabs.len(), split_open(ws, cx)),
     );
     pause(cx, 60).await;
     draw(cx);
@@ -576,16 +697,16 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
     let full = cx.update(|_, cx| ws.read(cx).result_bounds.get().map(|b| b.size.width.pt())).ok().flatten();
     let c = center(ws, cx);
     report("then one group has the whole surface", one && full.is_none_or(|w| near(w, c.w, 1.5)), format!("{full:?} vs {}", c.w));
-    let _ = open;
 
-    // The left group's ×: the LEFT group closes (whichever group has the focus), its tabs join
-    // the right one, whose tab stays in front, with its cell viewer.
+    // The left group's ×, confirmed: the LEFT group closes with its tabs (whichever group has
+    // the focus); the right one's tab stays in front, with its cell viewer.
     let _ = cx.update(|_, cx| ws.update(cx, |w, _| w.focus_visible = false));
     key(cx, "cmd-\\");
     pause(cx, 300).await;
     let n = tabs(ws, cx).len();
     let copy = active(ws, cx).unwrap();
     report("⌘\\ again: two groups", right(ws, cx) == [copy.clone()], format!("{}", right(ws, cx).len()));
+    let left_n = cx.update(|_, cx| ws.read(cx).group(Pane::Left).len()).unwrap();
     let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.toggle_viewer(Pane::Right, cx)));
     pause(cx, 300).await;
     let seam = panes(ws, cx).map_or(0., |((lx, lw), _)| lx + lw);
@@ -593,40 +714,64 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
     if let Some(b) = left_x {
         click(cx, middle(b));
     }
+    let asked = asking(ws, cx);
+    if let Some(b) = parts(ws, Pane::Left, cx).last().copied() {
+        click(cx, middle(b));
+    }
     let leaving = cx.update(|_, cx| ws.read(cx).split_move.as_ref().map(|m| m.leaving)).ok().flatten();
     report(
-        "the left group's × (left of the seam) closes the left group; the right group's tab stays in front",
+        "the left group's × (left of the seam), confirmed, closes the left group with its tabs; the right group's tab stays in front",
         left_x.is_some_and(|b| b.right().pt() <= seam)
-            && cx.update(|_, cx| ws.read(cx).split.is_none()).unwrap()
-            && tabs(ws, cx).len() == n
+            && asked == Some(Pane::Left)
+            && !split_open(ws, cx)
+            && tabs(ws, cx).len() == n - left_n
             && active(ws, cx).as_ref() == Some(&copy)
             && (reduced || leaving == Some(Pane::Left)),
-        format!("× {left_x:?} seam {seam}, leaving {leaving:?}, active is the copy: {}", active(ws, cx).as_ref() == Some(&copy)),
+        format!(
+            "× {left_x:?} seam {seam}, asked {asked:?}, {} of {n} tabs, leaving {leaving:?}, active is the copy: {}",
+            tabs(ws, cx).len(),
+            active(ws, cx).as_ref() == Some(&copy)
+        ),
     );
     report("the group that stays keeps its cell viewer", viewer_open(ws, Pane::Left, cx) && !viewer_open(ws, Pane::Right, cx), String::new());
     let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.toggle_viewer(Pane::Left, cx)));
     pause(cx, 400).await;
     draw(cx);
-    // The focused group's × closes it too (the right one, focused).
+
+    // A group holding an open transaction is not asked twice: its × opens the transaction sheet
+    // at once; Cancel keeps the group, its tab and the transaction; Rollback closes them.
     key(cx, "cmd-\\");
     pause(cx, 300).await;
     let copy2 = active(ws, cx).unwrap();
-    let left_front = cx.update(|_, cx| ws.read(cx).front_of(Pane::Left).cloned()).ok().flatten();
+    let _ = cx.update(|_, cx| copy2.update(cx, |t, cx| t.run(vec!["BEGIN".into()], cx)));
+    let began = wait(cx, |cx| finished(&copy2, cx) && cx.update(|_, cx| copy2.read(cx).tx_open()).unwrap_or(false)).await;
     if let Some(b) = parts(ws, Pane::Right, cx).last().copied() {
         click(cx, middle(b));
     }
+    let prompt = cx.update(|_, cx| ws.read(cx).tx_prompt.as_ref().map(|p| p.tabs.len())).ok().flatten();
     report(
-        "the focused right group's × closes the right group; the left group's tab is in front",
-        cx.update(|_, cx| ws.read(cx).split.is_none()).unwrap() && tabs(ws, cx).len() == n + 1 && active(ws, cx) == left_front && tabs(ws, cx).contains(&copy2),
-        format!("{} tabs", tabs(ws, cx).len()),
+        "a group holding an open transaction skips \"Sure?\": the transaction sheet asks at once",
+        began && prompt == Some(1) && asking(ws, cx).is_none() && split_open(ws, cx) && tabs(ws, cx).contains(&copy2),
+        format!("began {began}, prompt {prompt:?}, asking {:?}", asking(ws, cx)),
+    );
+    let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.resolve_tx_prompt(ConfirmChoice::Cancel, window, cx)));
+    draw(cx);
+    report(
+        "Cancel keeps the group, its tab and the transaction",
+        split_open(ws, cx) && tabs(ws, cx).contains(&copy2) && cx.update(|_, cx| copy2.read(cx).tx_open()).unwrap_or(false),
+        String::new(),
+    );
+    if let Some(b) = parts(ws, Pane::Right, cx).last().copied() {
+        click(cx, middle(b));
+    }
+    let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.resolve_tx_prompt(ConfirmChoice::Rollback, window, cx)));
+    wait(cx, |cx| !tabs(ws, cx).contains(&copy2)).await;
+    report(
+        "Rollback: the group closes with its tab; the other group's tab is in front",
+        !split_open(ws, cx) && !tabs(ws, cx).contains(&copy2) && active(ws, cx).as_ref() == Some(&copy),
+        format!("{} tabs, split {}", tabs(ws, cx).len(), split_open(ws, cx)),
     );
     pause(cx, 400).await;
-    if let Some(ix) = tabs(ws, cx).iter().position(|t| *t == copy2) {
-        let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.close_tab(ix, window, cx)));
-    }
-    if let Some(ix) = tabs(ws, cx).iter().position(|t| *t == copy) {
-        let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.activate(ix, window, cx)));
-    }
     draw(cx);
 
     // Closing a group's last tab closes the split.
@@ -642,6 +787,10 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
         format!("{} tabs", tabs(ws, cx).len()),
     );
     pause(cx, 400).await;
+    // Tabs enough to drag about.
+    while tabs(ws, cx).len() < 4 {
+        key(cx, "cmd-t");
+    }
     ok &= drop_checks(ws, reduced, cx).await;
     ok
 }
@@ -714,10 +863,12 @@ async fn drop_checks(ws: &Entity<Workspace>, reduced: bool, cx: &mut AsyncWindow
     drag_along(cx, from, &[point(from.x + px(10.), from.y + px(10.)), at(rx + rw / 2., y)]);
     report("over its own group beside another: no preview", drop_now(ws, cx).is_none(), format!("{:?}", drop_now(ws, cx)));
     up(cx, at(rx + rw / 2., y), 1);
-    // The right group's × gives one group again; a tab dropped on the left third opens a group
-    // of its own at the left, the others staying on the right.
-    if let Some(b) = parts(ws, Pane::Right, cx).last().copied() {
-        click(cx, middle(b));
+    // The right group's ×, confirmed, gives one group again (its tabs closed); a tab dropped on
+    // the left third opens a group of its own at the left, the others staying on the right.
+    for _ in 0..2 {
+        if let Some(b) = parts(ws, Pane::Right, cx).last().copied() {
+            click(cx, middle(b));
+        }
     }
     pause(cx, 400).await;
     let n = tabs(ws, cx).len();

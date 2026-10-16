@@ -127,14 +127,6 @@ pub fn place<K: Copy + PartialEq>(order: &mut Vec<K>, item: K, slot: usize, in_g
     true
 }
 
-/// The one list when the split closes: the left group's tabs, then the right's, each in its
-/// order (the strip reads as the two did side by side).
-pub fn merged<K: Clone>(order: &[K], is_right: impl Fn(&K) -> bool) -> Vec<K> {
-    let (mut left, right): (Vec<K>, Vec<K>) = order.iter().cloned().partition(|k| !is_right(k));
-    left.extend(right);
-    left
-}
-
 /// The widths of the left and the right group in `total` points (the seam's `seam` points
 /// between them), the right group taking `1 - ratio` once open. `open` is how far the split is
 /// open (0 … 1); `leaving` is the group that grows in or folds away while it moves (the other one
@@ -199,11 +191,6 @@ mod tests {
         let mut v = vec!['a', 'b'];
         assert!(place(&mut v, 'a', 0, |k: &char| k.is_uppercase()));
         assert_eq!(v, ['b', 'a']);
-    }
-
-    #[test]
-    fn merging_puts_the_left_group_first() {
-        assert_eq!(merged(&['a', 'X', 'b', 'Y', 'c'], |k| k.is_uppercase()), ['a', 'b', 'c', 'X', 'Y']);
     }
 
     #[test]

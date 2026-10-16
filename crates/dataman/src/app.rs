@@ -450,6 +450,10 @@ pub struct Workspace {
     pub(crate) open_in: Option<Pane>,
     pub(crate) alt_press: bool,
     pub(crate) pane_bounds: std::rc::Rc<std::cell::RefCell<Vec<gpui::Bounds<gpui::Pixels>>>>,
+    /// A group's × pressed once: it asks "Sure?" in its place until confirmed or let go.
+    pub(crate) close_arm: Option<crate::split::CloseArm>,
+    /// The groups' seam as last painted (the checks).
+    pub(crate) seam_line: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
     /// A tab's right-click menu: the tab and where the pointer was.
     pub(crate) tab_menu: Option<(EntityId, gpui::Point<gpui::Pixels>)>,
     /// The result tabs' bounds as last laid out (the checks).
@@ -662,6 +666,8 @@ impl Workspace {
             open_in: None,
             alt_press: false,
             pane_bounds: Default::default(),
+            close_arm: None,
+            seam_line: Default::default(),
             tab_menu: None,
             result_tab_bounds: Default::default(),
             messages: crate::messages::Messages::new(),

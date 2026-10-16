@@ -26,16 +26,20 @@
 //!
 //! The split opens with the new group growing in from the right while the first narrows
 //! (`motion::SPLIT`), and folds away the same way; with Reduce Motion it is simply there. A
-//! group's × closes that group: its tabs join the other group (none is closed), whose tab stays
-//! in front, whichever group had the focus. Closing a group's
-//! last tab, or dragging it out, closes the split too. The seam between the groups resizes them;
-//! a double-click on it shares the width evenly again.
+//! group's × closes that group with its tabs: pressed once, it turns into a red "Sure?" in its
+//! place, which closes them; the pointer leaving it, Esc, a press elsewhere or a few seconds let
+//! it go. The tabs close as ⌘W closes them, so tabs holding an open transaction are asked about
+//! (Commit / Rollback / Cancel, once for all of them): such a group skips the "Sure?" and goes
+//! straight to that sheet, which asks already. The other group's tab is in front after. Closing a
+//! group's last tab, or dragging it out, closes the split too. The seam between the groups is one
+//! hairline from the window's top edge through the strips down to the bottom, a step brighter
+//! than the others; it resizes them, and a double-click on it shares the width evenly again.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use dataman_core::groups::{self, Pane};
 use gpui::{
-    AnyElement, App, Context, Div, Entity, EntityId, Focusable, InteractiveElement, IntoElement, MouseButton, Stateful, Styled, WeakEntity, Window, actions, div,
+    AnyElement, App, Context, Div, Entity, EntityId, Focusable, InteractiveElement, IntoElement, MouseButton, ParentElement, Stateful, StatefulInteractiveElement, Styled, WeakEntity, Window, actions, div,
     relative,
 };
 
@@ -53,7 +57,7 @@ actions!(
         MoveToOtherGroup,
         /// The other group takes the focus.
         FocusOtherGroup,
-        /// The focused group closes: its tabs join the other one.
+        /// The focused group closes with its tabs (its × asks "Sure?" first; again, it closes).
         CloseGroup,
     ]
 );
@@ -63,6 +67,16 @@ pub const PANE_MIN: f32 = 260.;
 /// The hairline between the groups, and its grabber (centred on it).
 pub const SEAM: f32 = 1.;
 const SEAM_HIT: f32 = 8.;
+/// How long a group's "Sure?" waits before it gives way to the × again.
+const CLOSE_ASK: Duration = Duration::from_secs(3);
+
+/// A group's × pressed once: the group it closes, the wait after which it lets go and its Esc
+/// (both dropped with it).
+pub(crate) struct CloseArm {
+    pub pane: Pane,
+    _timeout: gpui::Task<()>,
+    _esc: gpui::Subscription,
+}
 
 /// The second group (the right one) and the focus between the two.
 #[derive(Clone, Debug, PartialEq)]
@@ -290,6 +304,7 @@ impl Workspace {
     /// Group `pane` has no tab left (its last one closed, or dragged out): one group from now on,
     /// the empty one folding away (`ghost`: the tab it showed, gone or now in the other group).
     pub(crate) fn split_emptied(&mut self, pane: Pane, ghost: Option<WeakEntity<QueryTab>>, cx: &App) {
+        self.close_arm = None;
         let from = self.split_progress();
         let Some(s) = self.split.take() else { return };
         let viewer = self.viewers[pane.index()].now();
@@ -297,31 +312,54 @@ impl Workspace {
         self.group_survives(pane.other());
     }
 
-    /// A group's ×: group `pane` closes, one group from now on, its tabs joining the other's
-    /// (after them, as they sat side by side). The other group's tab stays in front; it takes
-    /// the focus when the closing group had it (else the keys stay where they are).
+    /// A group's × (or Close Editor Group): "Sure?" in its place for a few seconds; asked again
+    /// meanwhile (the "Sure?" itself, the command again), group `pane` closes. A group whose tabs
+    /// hold an open transaction is not asked twice: the transaction sheet asks at once.
+    pub(crate) fn ask_close_group(&mut self, pane: Pane, window: &mut Window, cx: &mut Context<Self>) {
+        if self.split.is_none() {
+            return;
+        }
+        let held = self.group(pane).into_iter().any(|i| self.tabs[i].read(cx).tx_open());
+        if held || self.close_arm.as_ref().is_some_and(|a| a.pane == pane) {
+            return self.close_group(pane, window, cx);
+        }
+        let timeout = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(CLOSE_ASK).await;
+            let _ = this.update(cx, |w, cx| w.let_go_close(cx));
+        });
+        // Esc lets it go and does nothing else (no sheet closes, no find bar): an interceptor
+        // runs before any binding and key handler, wherever the keys are.
+        let ws = cx.entity().downgrade();
+        let esc = cx.intercept_keystrokes(move |ev, _, cx| {
+            if ev.keystroke.key == "escape" {
+                cx.stop_propagation();
+                let _ = ws.update(cx, |w, cx| w.let_go_close(cx));
+            }
+        });
+        self.close_arm = Some(CloseArm { pane, _timeout: timeout, _esc: esc });
+        cx.notify();
+    }
+
+    /// The "Sure?" gives way to the × again.
+    pub(crate) fn let_go_close(&mut self, cx: &mut Context<Self>) {
+        if self.close_arm.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// A group's × confirmed: group `pane` closes with its tabs, through the tabs' own close (open
+    /// transactions are asked about first, once for all; Cancel keeps every tab). Its tab in front
+    /// closes last; the last one gone, the split folds away and the other group's tab is in front
+    /// (with the focus when the closing group had it).
     pub(crate) fn close_group(&mut self, pane: Pane, window: &mut Window, cx: &mut Context<Self>) {
-        let from = self.split_progress();
-        let Some(s) = self.split.clone() else { return };
-        // Each group's tab in front, by group (whichever has the focus).
-        let Some(stay) = self.front_of(pane.other()).map(|t| t.entity_id()) else { return };
-        let ghost = self.front_of(pane).map(|t| t.downgrade());
-        let front = self.active_tab().map(|t| t.entity_id());
-        let viewer = self.viewers[pane.index()].now();
-        self.tabs = groups::merged(&self.tabs, |t| s.right.contains(&t.entity_id()));
-        // `active` follows its tab through the merge.
-        if let Some(ix) = front.and_then(|f| self.index_of(f)) {
-            self.active = ix;
+        self.close_arm = None;
+        if self.split.is_none() {
+            return;
         }
-        self.split = None;
-        self.move_split(from, pane, s.ratio, ghost, viewer, cx);
-        self.group_survives(pane.other());
-        let Some(ix) = self.index_of(stay) else { return };
-        if s.focus == pane {
-            self.activate(ix, window, cx);
-        } else {
-            self.active = ix;
-        }
+        let front = self.front_of(pane).cloned();
+        let mut close: Vec<Entity<QueryTab>> = self.group(pane).into_iter().map(|i| self.tabs[i].clone()).filter(|t| Some(t) != front.as_ref()).collect();
+        close.extend(front);
+        self.close_tabs(close, window, cx);
         cx.notify();
     }
 
@@ -567,7 +605,7 @@ impl Workspace {
         let c = self.frame_now.center;
         let room = (c.w - SEAM).max(1.);
         let lo = (PANE_MIN / room).max(groups::RATIO_MIN);
-        let r = if lo >= 0.5 { 0.5 } else { ((x - c.x - SEAM / 2.) / room).clamp(lo, 1. - lo) };
+        let r = if lo >= 0.5 { 0.5 } else { ((x - self.surface_x() - SEAM / 2.) / room).clamp(lo, 1. - lo) };
         if let Some(s) = &mut self.split {
             s.ratio = r;
         }
@@ -640,11 +678,74 @@ impl Workspace {
             }))
     }
 
-    /// The hairline between the groups through the title band (the strips' seam), `x` from the
-    /// window's left edge.
-    pub(crate) fn render_title_seam(&self, x: f32, cx: &App) -> impl IntoElement + use<> {
+    /// The hairline between the groups: ONE line from the window's top edge, between the strips
+    /// and across the band's hairline under them, down through the editors and results. The title
+    /// bar paints it (after the work column, so over the band's hairline; before the sheets) over
+    /// the room the surface keeps for it as laid out this very frame (`pane_bounds`, recorded at
+    /// prepaint): the band's part cannot stray from the rest by a pixel. A step brighter than the
+    /// other hairlines (`line2`).
+    pub(crate) fn render_seam_line(&self, cx: &App) -> Option<impl IntoElement + use<>> {
+        self.split_now?;
+        let color = cx.theme().line2;
+        let parts = self.pane_bounds.clone();
+        let painted = self.seam_line.clone();
+        Some(
+            gpui::canvas(
+                |_, _, _| {},
+                move |_, _, window, _| {
+                    // The left group, the room for the seam, the right group, (its grabber).
+                    let Some(room) = parts.borrow().get(1).copied() else { return };
+                    let b = gpui::Bounds::from_corners(gpui::point(room.left(), gpui::px(0.)), room.bottom_right());
+                    window.paint_quad(gpui::fill(b, color));
+                    painted.set(Some(b));
+                },
+            )
+            .absolute()
+            .size_0(),
+        )
+    }
+
+    /// The work surface's left edge in window points: the center's, past the work column's left
+    /// hairline (a 1 px border, app.rs) while the explorer is beside it.
+    pub(crate) fn surface_x(&self) -> f32 {
+        let c = self.frame_now.center;
+        let beside = self.frame_now.dock(dataman_core::layout::Dock::Left).rect.w > 0.5;
+        c.x + if beside { 1. / crate::theme::zoom() } else { 0. }
+    }
+
+    /// A group's "Sure?" in place of its × (pressed once): red, it closes the group with its
+    /// tabs; the pointer leaving it or a press elsewhere lets it go (Esc and a few seconds too).
+    pub(crate) fn render_close_ask(&self, pane: Pane, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let t = cx.theme();
-        div().absolute().top_0().bottom_0().left(px(x)).w(px(SEAM)).bg(t.line)
+        let (hov, prs) = (t.err.opacity(0.85), t.err.opacity(0.7));
+        let parts = self.strip_parts.clone();
+        div()
+            .id("close-group-ask")
+            .flex_none()
+            .h(px(20.))
+            .px(px(7.))
+            .flex()
+            .items_center()
+            .bg(t.err)
+            .text_color(t.on_err)
+            .text_size(px(11.))
+            .font_weight(gpui::FontWeight::SEMIBOLD)
+            .whitespace_nowrap()
+            .cursor_pointer()
+            .hover(move |s| s.bg(hov))
+            .active(move |s| s.bg(prs))
+            .child("Sure?")
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(cx.listener(move |w, _, window, cx| w.close_group(pane, window, cx)))
+            .on_hover(cx.listener(move |w, hovered: &bool, window, cx| {
+                // GPUI reports a press held on it as the pointer leaving: only a pointer really
+                // outside (the strip's last part, this) lets it go.
+                let inside = parts.borrow()[pane.index()].last().is_some_and(|b| b.contains(&window.mouse_position()));
+                if !*hovered && !inside {
+                    w.let_go_close(cx);
+                }
+            }))
+            .on_mouse_down_out(cx.listener(|w, _, _, cx| w.let_go_close(cx)))
     }
 }
 
@@ -667,6 +768,6 @@ pub(crate) fn workspace_actions(d: gpui::Stateful<gpui::Div>, cx: &mut Context<W
     }))
     .on_action(cx.listener(|w, _: &CloseGroup, window, cx| {
         let pane = w.focused_pane();
-        w.close_group(pane, window, cx);
+        w.ask_close_group(pane, window, cx);
     }))
 }
