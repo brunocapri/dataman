@@ -226,6 +226,68 @@ const BAR: f32 = 10.;
 const MIN_W: f32 = 48.;
 const MAX_AUTO_W: f32 = 420.;
 const GUTTER_MIN: f32 = 60.;
+
+/// One width for a query tab's two gutters, the editor's line numbers and the grid's row
+/// numbers, so their dividers read as one line down the tab: each side says what its digits
+/// need (points) and both draw the larger. A tab hands the same share to its editor and its
+/// grid; a side that is not on screen keeps its last need (the result zoom, a plan in the
+/// grid's place), so nothing moves when it comes back. The grid starts at its minimum, so the
+/// editor does not widen on the first run.
+///
+/// In a frame the grid renders (and says its rows' need) before the editor lays out, and the
+/// editor lays out before the grid: both draw the same width. Only a need the grid learns while
+/// laying out (rows that arrived since it rendered, a font switch) reaches the editor a frame
+/// later, with one more frame asked for.
+#[derive(Clone)]
+pub struct GutterShare(std::rc::Rc<std::cell::Cell<Gutters>>);
+
+#[derive(Clone, Copy)]
+struct Gutters {
+    editor: f32,
+    grid: f32,
+    /// The width the editor drew last, and the one a frame was last asked for it.
+    drawn: f32,
+    asked: f32,
+}
+
+impl Default for GutterShare {
+    fn default() -> Self {
+        GutterShare(std::rc::Rc::new(std::cell::Cell::new(Gutters { editor: 0., grid: GUTTER_MIN, drawn: 0., asked: 0. })))
+    }
+}
+
+impl GutterShare {
+    /// The editor's need, in points; returns the width it draws.
+    pub fn editor(&self, need: f32) -> f32 {
+        let mut g = self.0.get();
+        g.editor = need;
+        g.drawn = g.editor.max(g.grid);
+        self.0.set(g);
+        g.drawn
+    }
+
+    /// The grid's need, said early (render), when it knows its rows.
+    fn say_grid(&self, need: f32) {
+        let mut g = self.0.get();
+        g.grid = need;
+        self.0.set(g);
+    }
+
+    /// The grid's need while laying out; returns the width it draws. The editor drew another
+    /// this frame: one more frame, once per width (a hidden editor would never catch up).
+    fn grid(&self, need: f32, window: &mut Window) -> f32 {
+        let mut g = self.0.get();
+        g.grid = need;
+        let w = g.editor.max(g.grid);
+        if (w - g.drawn).abs() > 1e-3 && (w - g.asked).abs() > 1e-3 {
+            g.asked = w;
+            window.on_next_frame(|window, _| window.refresh());
+        }
+        self.0.set(g);
+        w
+    }
+}
+
 /// Grab zone on each side of a header border for resizing.
 const RESIZE_GRAB: f32 = 4.;
 /// Selections up to this many cells get a sum and an average in the result bar.
@@ -359,6 +421,8 @@ pub struct ResultGrid {
     table: Option<TableMode>,
     /// Widths the owner wants for a fresh result (`prefer_widths`).
     preferred: Option<Vec<f32>>,
+    /// The row-number gutter's width, shared with the tab's editor (`GutterShare`).
+    gutter: Option<GutterShare>,
     /// A cell or row selection dragged near or past an edge: where the pointer was last seen
     /// (window coordinates, also outside the grid and the window), and the timer that keeps
     /// scrolling while it stays there.
@@ -550,7 +614,21 @@ impl ResultGrid {
             kept: None,
             table: None,
             preferred: None,
+            gutter: None,
         }
+    }
+
+    /// Draws the row-number gutter as wide as the editor's line numbers (`GutterShare`).
+    pub fn share_gutter(&mut self, share: GutterShare) {
+        self.gutter = Some(share);
+    }
+
+    /// Width the row numbers of `rows` rows need (a table's page counts from its offset).
+    fn gutter_need(&self, rows: usize) -> f32 {
+        let offset = self.table.as_ref().map_or(0, |t| t.offset);
+        let num_w = self.char_w * 11. / 12.;
+        let digits = ((rows + offset).max(1) as f64).log10().floor() as usize + 1;
+        (digits as f32 * num_w + 26.).max(GUTTER_MIN)
     }
 
     /// A table's data view (or not): header clicks sort on the server, rows count from the
@@ -1369,6 +1447,12 @@ impl ResultGrid {
 
     /// Demo and checks: a row's height on screen (window points, zoomed) and the measured
     /// advance in the UI's points (the same at any zoom).
+    /// Demo and checks: the left edge of the row-number gutter's divider (window pixels), as
+    /// last laid out.
+    pub fn demo_gutter_divider(&self) -> f32 {
+        (self.geo.bounds.origin.x + px(self.geo.gutter - 1.)).as_f32()
+    }
+
     pub fn demo_row_metrics(&self) -> (f32, f32) {
         (px(ROW_H).as_f32(), self.char_w)
     }
@@ -2272,9 +2356,8 @@ impl ResultGrid {
         };
         // A table's page numbers its rows from the page's first one.
         let offset = self.table.as_ref().map_or(0, |t| t.offset);
-        let num_w = self.char_w * 11. / 12.;
-        let digits = ((rows + offset).max(1) as f64).log10().floor() as usize + 1;
-        let gutter = (digits as f32 * num_w + 26.).max(GUTTER_MIN);
+        let need = self.gutter_need(rows);
+        let gutter = self.gutter.as_ref().map_or(need, |g| g.grid(need, window));
         let w = bounds.size.width.pt();
         let h = bounds.size.height.pt();
         let content_w: f32 = (0..self.dcols()).map(|d| self.dwidth(d)).sum();
@@ -2929,6 +3012,11 @@ impl Render for ResultGrid {
         let entity2 = entity.clone();
         let rs = self.rs.clone();
         let find_open = self.find.as_ref().is_some_and(|f| f.open);
+        // The rows' gutter need, before the editor above lays out (`GutterShare`).
+        if let (Some(g), Some(rs)) = (&self.gutter, &rs) {
+            let virtual_rows = self.decor.as_ref().map_or(0, |d| d.virtual_rows.len());
+            g.say_grid(self.gutter_need(rs.rows() + virtual_rows));
+        }
         let mut root = div()
             .size_full()
             .relative()

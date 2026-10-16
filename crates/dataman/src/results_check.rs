@@ -6,7 +6,10 @@
 //! - `results-messages`: the messages tab (screenshot);
 //! - `results-check`: the rules with real key events (tabs, folding, the error shown, partial
 //!   rows, ⌥⌘[ ⌥⌘], per-result selection and sort, find on the active result, closing tabs, a single
-//!   statement without strip), printed as PASS/FAIL lines; exit code 1 on a failure.
+//!   statement without strip), printed as PASS/FAIL lines; exit code 1 on a failure. It ends
+//!   with the gutters: the editor's line-number divider and the grid's row-number divider at
+//!   one x (short and long scripts, 9 and 100,000 rows, the code font and the UI zoom, the
+//!   result zoom, a table's data view, two editor groups).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -110,7 +113,7 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
             select(&tab, Key::Messages, cx);
             true
         }
-        _ => check(&tab, cx).await,
+        _ => check(&tab, cx).await & gutters(ws, cx).await,
     }
 }
 
@@ -403,4 +406,161 @@ fn draw(cx: &mut AsyncWindowContext) {
         window.refresh();
         window.draw(cx).clear(cx);
     });
+}
+
+/// The dividers of the editor's line numbers and of the grid's row numbers (window pixels), as
+/// laid out by the last frame.
+fn divider_xs(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> (f32, f32) {
+    cx.update(|_, cx| {
+        let t = tab.read(cx);
+        (t.editor.read(cx).demo_gutter_divider().unwrap_or(f32::NAN), t.grid.read(cx).demo_gutter_divider())
+    })
+    .unwrap()
+}
+
+/// The same after two frames (a need the grid learns while laying out reaches the editor a
+/// frame later).
+fn dividers(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> (f32, f32) {
+    draw(cx);
+    draw(cx);
+    divider_xs(tab, cx)
+}
+
+fn aligned((e, g): (f32, f32)) -> bool {
+    (e - g).abs() <= 0.5
+}
+
+/// Runs `sql` in `tab` (its editor holding `script`) and waits for its end.
+async fn run_in(tab: &Entity<QueryTab>, script: &str, sql: &str, cx: &mut AsyncWindowContext) {
+    let _ = cx.update(|_, cx| {
+        tab.update(cx, |t, cx| {
+            t.editor.update(cx, |e, cx| e.set_text(script, cx));
+            t.run(vec![sql.to_string()], cx);
+        })
+    });
+    finished(tab, cx).await;
+}
+
+/// Reads the rest of `tab`'s result, with each frame's dividers on the way.
+async fn fetch_rest(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> Vec<(f32, f32)> {
+    let _ = cx.update(|_, cx| tab.update(cx, |t, cx| t.fetch_all(cx)));
+    let mut frames = Vec::new();
+    for _ in 0..1000 {
+        draw(cx);
+        frames.push(divider_xs(tab, cx));
+        if cx.update(|_, cx| tab.read(cx).result().is_some_and(|r| r.phase().is_finished())).unwrap() {
+            break;
+        }
+        pause(cx, 10).await;
+    }
+    frames
+}
+
+/// The editor's line-number divider and the grid's row-number divider read as one line down a
+/// tab, whichever side's width changes.
+async fn gutters(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
+    let mut ok = true;
+    let mut report = |name: &str, pass: bool, detail: String| {
+        println!("{} {name}{}", if pass { "PASS" } else { "FAIL" }, if pass { String::new() } else { format!(" — {detail}") });
+        ok &= pass;
+    };
+    let short = "SELECT g FROM generate_series(1, 9) g;";
+    let mut long = String::from("-- a long script\n");
+    for i in 0..1500 {
+        long.push_str(&format!("SELECT {i};\n"));
+    }
+    long.push_str(short);
+    let nine = "SELECT g FROM generate_series(1, 9) g";
+    let many = "SELECT g FROM generate_series(1, 100000) g";
+
+    // A fresh tab: its editor's gutter does not move on the first run.
+    let tab = cx.update(|window, cx| ws.update(cx, |w, cx| w.new_tab(window, cx))).unwrap();
+    let _ = cx.update(|_, cx| tab.update(cx, |t, cx| t.editor.update(cx, |e, cx| e.set_text(short, cx))));
+    let before = dividers(&tab, cx).0;
+    run_in(&tab, short, nine, cx).await;
+    let base = dividers(&tab, cx);
+    report("gutters: short script, 9 rows: one divider", aligned(base), format!("{base:?}"));
+    report("gutters: the editor's stays put on the first run", (base.0 - before).abs() <= 0.5, format!("{before} → {}", base.0));
+
+    // A long script widens the editor's gutter: the grid's follows.
+    run_in(&tab, &long, nine, cx).await;
+    let wide = dividers(&tab, cx);
+    report("gutters: 1,500-line script, 9 rows: one divider, wider", aligned(wide) && wide.1 > base.1 + 1., format!("{wide:?} (short {base:?})"));
+
+    // 100,000 rows streaming in widen the grid's: the editor's follows, and neither moves back
+    // on the way.
+    run_in(&tab, short, many, cx).await;
+    let frames = fetch_rest(&tab, cx).await;
+    let rows = cx.update(|_, cx| tab.read(cx).result().map(|r| r.rows())).ok().flatten();
+    let all = dividers(&tab, cx);
+    report("gutters: short script, 100,000 rows: one divider, wider", rows == Some(100_000) && aligned(all) && all.1 > base.1 + 1., format!("{rows:?} rows, {all:?}"));
+    let steady = frames.windows(2).all(|w| w[1].0 >= w[0].0 - 0.01 && w[1].1 >= w[0].1 - 0.01);
+    let apart = frames.iter().filter(|f| !aligned(**f)).count();
+    report(
+        "gutters: while rows stream in, the dividers only grow, together in every frame",
+        steady && apart == 0,
+        format!("{apart} of {} frames apart: {frames:?}", frames.len()),
+    );
+
+    // The code font and the UI zoom.
+    for (code, zoom) in [(16u8, 1.0f32), (12, 1.0), (13, 0.8), (13, 1.5), (16, 2.0)] {
+        let _ = cx.update(|window, cx| {
+            crate::editor::set_code_size(code);
+            crate::theme::set_zoom(zoom, window, cx);
+        });
+        for (script, label) in [(short, "short"), (long.as_str(), "long")] {
+            let _ = cx.update(|_, cx| tab.update(cx, |t, cx| t.editor.update(cx, |e, cx| e.set_text(script, cx))));
+            let d = dividers(&tab, cx);
+            report(&format!("gutters: code {code} pt, zoom {zoom}, {label} script, 100,000 rows: one divider"), aligned(d), format!("{d:?}"));
+        }
+    }
+    let _ = cx.update(|window, cx| {
+        crate::editor::set_code_size(crate::theme::text::CODE as u8);
+        crate::theme::set_zoom(1.0, window, cx);
+    });
+
+    // The result zoomed over the editor: the grid's gutter keeps its width.
+    run_in(&tab, &long, nine, cx).await;
+    let shown = dividers(&tab, cx);
+    let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.toggle_result_zoom(window, cx)));
+    pause(cx, 500).await;
+    let zoomed = dividers(&tab, cx);
+    let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.toggle_result_zoom(window, cx)));
+    pause(cx, 500).await;
+    let back = dividers(&tab, cx);
+    report(
+        "gutters: the result zoomed keeps the grid's width; back, one divider",
+        aligned(shown) && (zoomed.1 - shown.1).abs() <= 0.5 && aligned(back) && (back.1 - shown.1).abs() <= 0.5,
+        format!("{shown:?} → {zoomed:?} → {back:?}"),
+    );
+
+    // A table's data view.
+    let (conn, db) = cx
+        .update(|_, cx| {
+            let t = tab.read(cx);
+            t.connection().map(|c| (c.profile.id.clone(), t.database().to_string()))
+        })
+        .unwrap()
+        .unwrap();
+    let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.open_relation(&conn, &db, "public", "orders", window, cx)));
+    let data = self::tab(ws, cx);
+    finished(&data, cx).await;
+    let d = dividers(&data, cx);
+    report("gutters: a table's data view: one divider", data != tab && aligned(d), format!("{d:?}"));
+
+    // Two editor groups: each tab's dividers meet, the long script's at the left, 100,000 rows
+    // at the right.
+    let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.activate_tab(&tab, window, cx)));
+    let _ = cx.update(|window, cx| window.dispatch_keystroke(Keystroke::parse("cmd-\\").unwrap(), cx));
+    pause(cx, 500).await;
+    let copy = self::tab(ws, cx);
+    run_in(&copy, short, many, cx).await;
+    fetch_rest(&copy, cx).await;
+    let (l, r) = (dividers(&tab, cx), dividers(&copy, cx));
+    report(
+        "gutters: two editor groups: one divider in each",
+        copy != tab && aligned(l) && aligned(r) && r.0 > l.0 + 100.,
+        format!("left {l:?}, right {r:?}"),
+    );
+    ok
 }

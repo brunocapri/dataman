@@ -776,6 +776,8 @@ struct Geometry {
     bounds: Bounds<Pixels>,
     /// x of column 0 when not scrolled.
     origin_x: Pixels,
+    /// Width of the line-number gutter (its divider is its last point).
+    gutter_w: Pixels,
     text_width: Pixels,
     char_width: Pixels,
 }
@@ -831,6 +833,8 @@ pub struct CodeEditor {
     lar: bool,
     /// Relations the tab's session created (temp tables), lower case.
     known: Arc<HashSet<String>>,
+    /// A query tab's: the gutter as wide as its grid's row numbers (`grid::GutterShare`).
+    gutter: Option<crate::grid::GutterShare>,
     _blur: Subscription,
     _focus: Subscription,
 }
@@ -1042,6 +1046,7 @@ impl CodeEditor {
             hover: None,
             lar: false,
             known: Arc::default(),
+            gutter: None,
             _blur: blur,
             _focus: on_focus,
         }
@@ -1051,6 +1056,11 @@ impl CodeEditor {
     pub fn plain(mut self) -> Self {
         self.plain = true;
         self
+    }
+
+    /// Draws the line-number gutter as wide as the tab's grid's row numbers.
+    pub fn share_gutter(&mut self, share: crate::grid::GutterShare) {
+        self.gutter = Some(share);
     }
 
     pub fn text(&self) -> &str {
@@ -2187,6 +2197,11 @@ impl CodeEditor {
         self.sel.clone()
     }
 
+    /// Demo and checks: the left edge of the gutter's divider (window pixels), as last laid out.
+    pub fn demo_gutter_divider(&self) -> Option<f32> {
+        self.geo.map(|g| (g.bounds.left() + g.gutter_w - px(1.)).as_f32())
+    }
+
     /// The selection as (anchor, head) byte offsets (the saved session).
     pub fn selection_ends(&self) -> (usize, usize) {
         if self.reversed { (self.sel.end, self.sel.start) } else { (self.sel.start, self.sel.end) }
@@ -2804,10 +2819,11 @@ impl CodeEditor {
         };
         let cw = ts.shape_line("0".into(), fs, &[run(1, t.tx)], None).width();
         let digits = self.buf.line_count().to_string().len();
-        let gutter_w = px(GUTTER_MIN).max(cw * digits as f32 + px(32.));
+        let need = px(GUTTER_MIN).max(cw * digits as f32 + px(32.));
+        let gutter_w = self.gutter.as_ref().map_or(need, |g| px(g.editor(need.pt())));
         let text_bounds = Bounds::from_corners(point(bounds.left() + gutter_w, bounds.top()), bounds.bottom_right());
         let origin_x = text_bounds.left() + px(12.);
-        let g = Geometry { bounds, origin_x, text_width: text_bounds.size.width - px(12.), char_width: cw };
+        let g = Geometry { bounds, origin_x, gutter_w, text_width: text_bounds.size.width - px(12.), char_width: cw };
         // The scroll is in window points: a zoom keeps the same lines in view.
         let z = crate::theme::zoom();
         if (z - self.zoom_at).abs() > 1e-4 {

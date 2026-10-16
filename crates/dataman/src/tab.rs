@@ -232,8 +232,18 @@ impl Drop for QueryTab {
 
 impl QueryTab {
     pub fn new(id: usize, conn: Option<Arc<Connection>>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let editor = cx.new(|cx| CodeEditor::new(window, cx));
-        let grid = cx.new(ResultGrid::new);
+        // One gutter width for the editor's line numbers and the grid's row numbers.
+        let gutter = crate::grid::GutterShare::default();
+        let editor = cx.new(|cx| {
+            let mut e = CodeEditor::new(window, cx);
+            e.share_gutter(gutter.clone());
+            e
+        });
+        let grid = cx.new(|cx| {
+            let mut g = ResultGrid::new(cx);
+            g.share_gutter(gutter);
+            g
+        });
         let plan = cx.new(PlanView::new);
         let edit = cx.new(|cx| GridEdit::new(grid.clone(), window, cx));
         cx.subscribe(&edit, |t, _, ev: &EditEvent, cx| {
