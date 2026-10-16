@@ -1795,7 +1795,7 @@ dependencies = [
 
 [[package]]
 name = "diskman"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "block2 0.6.2",
@@ -1817,7 +1817,7 @@ dependencies = [
 
 [[package]]
 name = "diskman-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "arrow-array",
@@ -1859,7 +1859,7 @@ dependencies = [
 
 [[package]]
 name = "diskman-mcp"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -8655,7 +8655,7 @@ checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
 
 [[package]]
 name = "xtask"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "data-encoding",

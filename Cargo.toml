@@ -10,7 +10,7 @@ default-members = ["crates/diskman-core", "crates/diskman-mcp", "crates/diskman"
 
 [workspace.package]
 edition = "2024"
-version = "0.2.0"
+version = "0.2.1"
 license = "MIT"
 publish = false
 
