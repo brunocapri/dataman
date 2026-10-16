@@ -51,27 +51,10 @@ impl Workspace {
         if s.tabs.is_empty() {
             return false;
         }
-        let known: HashSet<String> = self.store.read(cx).profiles.iter().map(|p| p.id.clone()).collect();
-        let favorites = self.store.read(cx).core.favorites.list();
         let mut files = Vec::new();
         for st in &s.tabs {
             let tab = self.new_tab(window, cx);
-            // A tab whose connection is gone keeps its SQL and takes the next one, as new tabs do.
-            let want = st.conn.clone().filter(|id| known.contains(id)).map(|id| (id, st.database.clone()));
-            let conn = want.as_ref().and_then(|(id, _)| self.store.read(cx).connection(id));
-            // Still linked to its favorite, unless that favorite was removed meanwhile.
-            let favorite = st.favorite.as_ref().and_then(|id| favorites.iter().find(|f| &f.id == id)).map(|f| (f.id.clone(), f.name.clone().into()));
-            tab.update(cx, |t, cx| {
-                if want.is_some() {
-                    t.set_connection(None, cx);
-                }
-                t.restore(st, cx);
-                t.favorite = favorite;
-                t.want = want;
-                if let Some(c) = conn {
-                    t.adopt(c, cx);
-                }
-            });
+            self.fill_tab(&tab, st, cx);
             if let Some(f) = &st.results {
                 files.push((self.tabs.len() - 1, f.clone(), st.shown, st.closed.clone()));
             }
@@ -117,6 +100,29 @@ impl Workspace {
         })
         .detach();
         true
+    }
+
+    /// A new tab given a saved tab's script, title, table view, connection and database, and
+    /// favorite (a restored session's, a closed tab reopened by the undo): the connection is
+    /// taken at once when it is connected, else when the tab first runs; one that is gone leaves
+    /// the tab on the next one, as new tabs are; a favorite removed meanwhile is let go of.
+    pub(crate) fn fill_tab(&mut self, tab: &gpui::Entity<crate::tab::QueryTab>, st: &dataman_core::session::TabState, cx: &mut Context<Self>) {
+        let store = self.store.read(cx);
+        let known: HashSet<&str> = store.profiles.iter().map(|p| p.id.as_str()).collect();
+        let want = st.conn.clone().filter(|id| known.contains(id.as_str())).map(|id| (id, st.database.clone()));
+        let conn = want.as_ref().and_then(|(id, _)| store.connection(id));
+        let favorite = st.favorite.as_ref().and_then(|id| store.core.favorites.list().into_iter().find(|f| &f.id == id)).map(|f| (f.id, f.name.into()));
+        tab.update(cx, |t, cx| {
+            if want.is_some() {
+                t.set_connection(None, cx);
+            }
+            t.restore(st, cx);
+            t.favorite = favorite;
+            t.want = want;
+            if let Some(c) = conn {
+                t.adopt(c, cx);
+            }
+        });
     }
 
     /// The workspace as the session keeps it, and the results files to write (tab, file name,

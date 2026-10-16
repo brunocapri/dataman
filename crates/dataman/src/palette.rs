@@ -1037,7 +1037,8 @@ impl Workspace {
                 disabled: false,
             });
         }
-        // Commands.
+        // Commands, Undo and Redo first (they say what they would take back).
+        items.extend(crate::undo::palette_items(self));
         items.extend(commands(active_conn.as_ref(), cx));
         // The history stacked with the explorer goes with it (⌘B): its own toggles are off.
         if self.history_with_explorer() {

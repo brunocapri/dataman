@@ -81,6 +81,37 @@ impl History {
         Ok(all.into_iter().rev().collect())
     }
 
+    /// Clears a connection's history and hands back what it held (`None`: it had none), for
+    /// [`Self::put_back`].
+    pub fn take(&self, connection_id: &str) -> Result<Option<Vec<u8>>> {
+        let _g = self.lock.lock();
+        let file = self.file(connection_id);
+        let bytes = match std::fs::read(&file) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        std::fs::remove_file(&file)?;
+        Ok(Some(bytes))
+    }
+
+    /// A history [`Self::take`] took, back: before anything appended since.
+    pub fn put_back(&self, connection_id: &str, bytes: &[u8]) -> Result<()> {
+        let _g = self.lock.lock();
+        std::fs::create_dir_all(&self.dir)?;
+        let file = self.file(connection_id);
+        let mut all = bytes.to_vec();
+        match std::fs::read(&file) {
+            Ok(since) => all.extend(since),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+        let tmp = file.with_extension("jsonl.tmp");
+        std::fs::write(&tmp, all)?;
+        std::fs::rename(&tmp, &file)?;
+        Ok(())
+    }
+
     pub fn clear(&self, connection_id: &str) -> Result<()> {
         let _g = self.lock.lock();
         match std::fs::remove_file(self.file(connection_id)) {
@@ -123,5 +154,22 @@ mod tests {
         let text = std::fs::read_to_string(h.file("abc")).unwrap();
         assert_eq!(text.matches("\"source\"").count(), 1, "absent stays out of the file");
         assert!(h.load("other", 3).unwrap().is_empty());
+    }
+
+    /// A history taken (a connection deleted) comes back whole, before what was added since.
+    #[test]
+    fn take_and_put_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let h = History::new(dir.path().join("history"));
+        let entry = |sql: &str| HistoryEntry { ts: Utc::now(), database: "db".into(), sql: sql.into(), duration_ms: 1., rows: None, outcome: Outcome::Ok, error: None, source: None };
+        assert!(h.take("abc").unwrap().is_none());
+        h.append("abc", &entry("select 1")).unwrap();
+        h.append("abc", &entry("select 2")).unwrap();
+        let bytes = h.take("abc").unwrap().unwrap();
+        assert!(h.load("abc", 10).unwrap().is_empty());
+        h.append("abc", &entry("select 3")).unwrap();
+        h.put_back("abc", &bytes).unwrap();
+        let got = h.load("abc", 10).unwrap();
+        assert_eq!(got.iter().map(|e| e.sql.as_str()).collect::<Vec<_>>(), ["select 3", "select 2", "select 1"]);
     }
 }

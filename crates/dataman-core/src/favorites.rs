@@ -6,7 +6,8 @@
 //! Favorites can be filed in folders (one level, no nesting): a `[[folder]]` table each, and a
 //! favorite's `folder` naming one by id. Both are optional, so a file written before folders
 //! existed loads as is (everything at the top level), and one without folders is written the
-//! same way as before.
+//! same way as before. Deleting a folder deletes the favorites in it; what a removal took
+//! ([`FavoritesStore::take`], [`RemovedFolder`]) can be put back where it was (the app's undo).
 //!
 //! The folders are in the user's order: the file's order of its `[[folder]]` tables (new ones
 //! at the end, [`FavoritesStore::reorder_folders`] moves them). A file written before folders
@@ -49,6 +50,15 @@ impl Favorite {
 pub struct Folder {
     pub id: String,
     pub name: String,
+}
+
+/// What [`FavoritesStore::remove_folder`] took: the folder and its place among the folders,
+/// its favorites and their places in the list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RemovedFolder {
+    pub index: usize,
+    pub folder: Folder,
+    pub favorites: Vec<(usize, Favorite)>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -141,11 +151,34 @@ impl FavoritesStore {
 
     /// Only an explicit call removes a favorite: history pruning and "clear history" never do.
     pub fn remove(&self, id: &str) -> Result<()> {
+        self.take(id).map(|_| ())
+    }
+
+    /// Removes a favorite and hands it back with its place in the list (for [`Self::restore`]);
+    /// `None` when `id` is not found.
+    pub fn take(&self, id: &str) -> Result<Option<(usize, Favorite)>> {
         let _ = self.refresh();
         let mut g = self.state.lock();
-        g.items.retain(|f| f.id != id);
+        let Some(ix) = g.items.iter().position(|f| f.id == id) else { return Ok(None) };
+        let fav = g.items.remove(ix);
         g.save(&self.path)?;
-        Ok(())
+        Ok(Some((ix, fav)))
+    }
+
+    /// Puts a removed favorite back at its place (`ix`, or the end when the list is shorter
+    /// now), its id and folder kept; false when one with its id is saved already, or its
+    /// folder is gone.
+    pub fn restore(&self, ix: usize, fav: Favorite) -> Result<bool> {
+        let _ = self.refresh();
+        let mut g = self.state.lock();
+        let homeless = fav.folder.as_ref().is_some_and(|d| !g.folders.iter().any(|f| f.id == *d));
+        if homeless || g.items.iter().any(|f| f.id == fav.id) {
+            return Ok(false);
+        }
+        let ix = ix.min(g.items.len());
+        g.items.insert(ix, fav);
+        g.save(&self.path)?;
+        Ok(true)
     }
 
     /// The favorite whose statement matches `sql` (trimmed), if any.
@@ -217,19 +250,47 @@ impl FavoritesStore {
         g.save(&self.path)
     }
 
-    /// Removes a folder, never its favorites: they move to the top level. Returns how many
-    /// moved.
-    pub fn remove_folder(&self, id: &str) -> Result<usize> {
+    /// Deletes a folder and the favorites filed in it; what went is handed back (for
+    /// [`Self::restore_folder`]), `None` when `id` is not found.
+    pub fn remove_folder(&self, id: &str) -> Result<Option<RemovedFolder>> {
         let _ = self.refresh();
         let mut g = self.state.lock();
-        g.folders.retain(|d| d.id != id);
-        let mut moved = 0;
-        for f in g.items.iter_mut().filter(|f| f.folder.as_deref() == Some(id)) {
-            f.folder = None;
-            moved += 1;
+        let Some(index) = g.folders.iter().position(|d| d.id == id) else { return Ok(None) };
+        let folder = g.folders.remove(index);
+        let mut favorites = Vec::new();
+        let mut i = 0;
+        // Their places as they were, first to last: put back in that order, each lands where
+        // it was.
+        g.items.retain(|f| {
+            let gone = f.folder.as_deref() == Some(id);
+            if gone {
+                favorites.push((i, f.clone()));
+            }
+            i += 1;
+            !gone
+        });
+        g.save(&self.path)?;
+        Ok(Some(RemovedFolder { index, folder, favorites }))
+    }
+
+    /// A deleted folder back at its place, with its favorites at theirs; false when a folder
+    /// with its id exists already (nothing changes then).
+    pub fn restore_folder(&self, r: &RemovedFolder) -> Result<bool> {
+        let _ = self.refresh();
+        let mut g = self.state.lock();
+        if g.folders.iter().any(|d| d.id == r.folder.id) {
+            return Ok(false);
+        }
+        let ix = r.index.min(g.folders.len());
+        g.folders.insert(ix, r.folder.clone());
+        for (i, f) in &r.favorites {
+            if !g.items.iter().any(|x| x.id == f.id) {
+                let i = (*i).min(g.items.len());
+                g.items.insert(i, f.clone());
+            }
         }
         g.save(&self.path)?;
-        Ok(moved)
+        Ok(true)
     }
 
     /// Files a favorite in a folder (`None`: the top level); `None` when the favorite is not
@@ -548,24 +609,59 @@ mod tests {
         assert_eq!(FavoritesStore::open(&dirs).unwrap().list()[0].folder, None);
     }
 
-    /// Deleting a folder never deletes a favorite: they move to the top level.
+    /// Deleting a folder deletes the favorites in it (only those), and hands back what it
+    /// took: restored, the folder and its favorites are where they were.
     #[test]
-    fn removing_a_folder_keeps_its_favorites() {
+    fn removing_a_folder_removes_its_favorites_and_restores_them() {
         let dir = tempfile::tempdir().unwrap();
         let dirs = Dirs::at(dir.path().join("dataman"));
         let store = FavoritesStore::open(&dirs).unwrap();
+        let first = store.add_folder("First").unwrap();
         let d = store.add_folder("Old").unwrap();
         let keep = store.add_folder("Keep").unwrap();
-        for (i, folder) in [Some(&d.id), Some(&d.id), Some(&keep.id), None].into_iter().enumerate() {
+        for (i, folder) in [Some(&d.id), None, Some(&d.id), Some(&keep.id), None].into_iter().enumerate() {
             let f = store.add(Favorite::new(format!("f{i}"), format!("select {i}"))).unwrap();
             store.move_to_folder(&f.id, folder.map(String::as_str)).unwrap();
         }
-        assert_eq!(store.remove_folder(&d.id).unwrap(), 2);
+        let before = (store.folders(), store.list());
+        let gone = store.remove_folder(&d.id).unwrap().unwrap();
+        assert_eq!((gone.index, gone.folder.name.as_str()), (1, "Old"));
+        assert_eq!(gone.favorites.iter().map(|(i, f)| (*i, f.name.as_str())).collect::<Vec<_>>(), vec![(0, "f0"), (2, "f2")]);
+        assert!(store.remove_folder(&d.id).unwrap().is_none(), "gone already");
         let again = FavoritesStore::open(&dirs).unwrap();
-        assert_eq!(again.list().len(), 4);
-        assert_eq!(again.folders(), vec![keep.clone()]);
-        assert_eq!(again.list().iter().filter(|f| f.folder.is_none()).count(), 3);
-        assert_eq!(again.list().iter().filter(|f| f.folder.as_deref() == Some(keep.id.as_str())).count(), 1);
+        assert_eq!(again.folders(), vec![first.clone(), keep.clone()]);
+        assert_eq!(again.list().iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["f1", "f3", "f4"], "its favorites went with it, the others stay");
+
+        // Put back: the same folders and favorites, in the same places, filed as they were.
+        assert!(store.restore_folder(&gone).unwrap());
+        assert!(!store.restore_folder(&gone).unwrap(), "there already");
+        let again = FavoritesStore::open(&dirs).unwrap();
+        assert_eq!((again.folders(), again.list()), before);
+    }
+
+    /// A favorite taken out goes back to its place, once; not into a folder that is gone.
+    #[test]
+    fn a_removed_favorite_is_restored_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = Dirs::at(dir.path().join("dataman"));
+        let store = FavoritesStore::open(&dirs).unwrap();
+        for i in 0..3 {
+            store.add(Favorite::new(format!("f{i}"), format!("select {i}"))).unwrap();
+        }
+        let before = store.list();
+        let (ix, f) = store.take(&before[1].id).unwrap().unwrap();
+        assert_eq!((ix, f.name.as_str()), (1, "f1"));
+        assert!(store.take(&f.id).unwrap().is_none());
+        assert!(store.restore(ix, f.clone()).unwrap());
+        assert!(!store.restore(ix, f.clone()).unwrap(), "no duplicate");
+        assert_eq!(FavoritesStore::open(&dirs).unwrap().list(), before);
+        // Filed in a folder deleted since: not restored.
+        let d = store.add_folder("D").unwrap();
+        store.move_to_folder(&f.id, Some(&d.id)).unwrap();
+        let (ix, f) = store.take(&f.id).unwrap().unwrap();
+        store.remove_folder(&d.id).unwrap();
+        assert!(!store.restore(ix, f).unwrap());
+        assert_eq!(store.list().len(), 2);
     }
 
     /// A favorite filed in a folder the file no longer has (edited by hand) is at the top level.

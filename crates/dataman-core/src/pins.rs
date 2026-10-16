@@ -97,6 +97,21 @@ impl PinStore {
         save(&self.path, &g)
     }
 
+    /// A connection's pins replaced by `pins` (in that order), the others' kept: what the app's
+    /// undo puts back.
+    pub fn set_of(&self, connection: &str, pins: &[Pin]) -> Result<()> {
+        let mut g = self.pins.lock();
+        let at = g.iter().position(|p| p.connection == connection).unwrap_or(g.len());
+        let mut next: Vec<Pin> = g.iter().filter(|p| p.connection != connection).cloned().collect();
+        let at = at.min(next.len());
+        next.splice(at..at, pins.iter().filter(|p| p.connection == connection).cloned());
+        if next == *g {
+            return Ok(());
+        }
+        *g = next;
+        save(&self.path, &g)
+    }
+
     /// Drops every pin of a connection (deleted).
     pub fn forget(&self, connection: &str) -> Result<()> {
         let mut g = self.pins.lock();
@@ -190,6 +205,25 @@ mod tests {
         s.forget("c1").unwrap();
         assert!(s.of("c1").is_empty() && s.of("c2").len() == 1);
         assert!(PinStore::open(&dirs).of("c1").is_empty());
+    }
+
+    /// A connection's pins put back as they were (the undo), the other connections' untouched;
+    /// none left, no file.
+    #[test]
+    fn setting_a_connections_pins() {
+        let (_d, dirs, s) = store();
+        s.pin(Pin::new("c1", "app", "public", "a", RelKind::Table)).unwrap();
+        s.pin(Pin::new("c2", "app", "public", "x", RelKind::Table)).unwrap();
+        s.pin(Pin::new("c1", "app", "public", "b", RelKind::Table)).unwrap();
+        let before = s.of("c1");
+        s.unpin("c1", "app", "public", "a").unwrap();
+        s.set_of("c1", &before).unwrap();
+        let names = |v: Vec<Pin>| v.into_iter().map(|p| p.name).collect::<Vec<_>>();
+        assert_eq!(names(PinStore::open(&dirs).of("c1")), ["a", "b"]);
+        assert_eq!(names(s.of("c2")), ["x"]);
+        s.set_of("c1", &[]).unwrap();
+        s.set_of("c2", &[]).unwrap();
+        assert!(!dirs.pins_file().exists());
     }
 
     /// The kind is optional (a hand-written pin is a table) and an unknown one reads as a

@@ -889,6 +889,9 @@ impl Render for TextInput {
             }))
             .on_action(cx.listener(|t, _: &Undo, _, cx| t.undo(cx)))
             .on_action(cx.listener(|t, _: &Redo, _, cx| t.redo(cx)))
+            // Edit ▸ Undo / Redo (the menu dispatches the editor's actions): the field's text.
+            .on_action(cx.listener(|t, _: &crate::editor::Undo, _, cx| t.undo(cx)))
+            .on_action(cx.listener(|t, _: &crate::editor::Redo, _, cx| t.redo(cx)))
             .on_action(cx.listener(|t, _: &Paste, _, cx| {
                 if let Some(s) = cx.read_from_clipboard().and_then(|i| i.text()) {
                     let r = t.clamp(t.selected.clone());

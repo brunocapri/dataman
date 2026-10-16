@@ -122,6 +122,8 @@ pub enum TreeEvent {
     RowAction { act: Act, target: Target, alt: bool },
     /// A short message for the status bar ("Copied …").
     Notice(String),
+    /// Something undoable was done (a connection moved, a table pinned): the workspace's undo.
+    Did(crate::undo::Entry),
 }
 
 /// The groups under a schema, in the order they are shown.
@@ -1842,10 +1844,16 @@ impl SchemaTree {
         let core = self.store.read(cx).core.clone();
         let engine = self.store.read(cx).profile(&pin.connection).map(|p| p.engine).unwrap_or_default();
         let what = engine.dialect().qualified(Some(&pin.schema), &pin.name);
+        let before = core.pins.of(&pin.connection);
         let saved = if on { core.pins.pin(pin.clone()) } else { core.pins.unpin(&pin.connection, &pin.database, &pin.schema, &pin.name) };
         if let Err(e) = saved {
             cx.emit(TreeEvent::Notice(format!("Could not save the pinned tables: {e:#}")));
             return;
+        }
+        let after = core.pins.of(&pin.connection);
+        if after != before {
+            let op = crate::undo::Op::Pins { conn: pin.connection.clone(), from: before, to: after };
+            cx.emit(TreeEvent::Did(crate::undo::Entry::new(format!("{} {what}", if on { "Pin" } else { "Unpin" }), op)));
         }
         if on {
             self.expanded.remove(&pinned_id(&pin.connection));
@@ -2105,8 +2113,15 @@ impl SchemaTree {
     /// keeps the order).
     fn drop_conn(&mut self, id: &str, cx: &mut Context<Self>) {
         let Some(slot) = self.conn_drop.take() else { return };
-        let Some(from) = self.store.read(cx).profiles.iter().position(|p| p.id == id) else { return };
+        let ids = |cx: &App| -> Vec<String> { self.store.read(cx).profiles.iter().map(|p| p.id.clone()).collect() };
+        let before = ids(cx);
+        let Some(from) = before.iter().position(|p| p == id) else { return };
+        let name = self.store.read(cx).profiles[from].name.clone();
         self.store.update(cx, |s, cx| s.reorder(from, slot, cx));
+        let after = ids(cx);
+        if after != before {
+            cx.emit(TreeEvent::Did(crate::undo::Entry::new(format!("Move connection '{name}'"), crate::undo::Op::ConnOrder { from: before, to: after })));
+        }
         cx.notify();
     }
 

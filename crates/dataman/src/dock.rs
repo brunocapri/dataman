@@ -858,13 +858,19 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Panel `p` to place `to`: an undo step.
     pub(crate) fn move_panel(&mut self, p: PanelId, to: Place, cx: &mut Context<Self>) {
         let next = self.layout.moved(p, to);
         // The history stacked onto the explorer goes with it: a shut explorer opens.
         if next.stacked_with(PanelId::History, PanelId::Explorer) && !self.explorer_open {
             self.set_explorer_open(true, cx);
         }
+        let from = self.layout.clone();
         self.set_layout(next, Some(p), cx);
+        if self.layout != from {
+            let to = self.layout.clone();
+            self.did(format!("Move {}", self.panel_name(p).to_lowercase()), crate::undo::Op::Layout { from, to });
+        }
     }
 
     /// A new arrangement: each panel that changes dock (and `moved`, when it changes place in
@@ -907,7 +913,11 @@ impl Workspace {
     /// Every panel back in its home dock, evenly split.
     pub(crate) fn reset_panel_layout(&mut self, cx: &mut Context<Self>) {
         self.panel_menu = None;
+        let from = self.layout.clone();
         self.set_layout(PanelLayout::default(), None, cx);
+        if self.layout != from {
+            self.did("Reset panel layout", crate::undo::Op::Layout { from, to: self.layout.clone() });
+        }
         self.notice("Panel layout reset", cx);
     }
 

@@ -542,7 +542,7 @@ impl Workspace {
 
     /// Tab `id` in a group of its own at the left of the only one, which becomes the right group
     /// (its tab in front stays there): the left group grows in from the window's side.
-    fn split_off_left(&mut self, id: EntityId, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn split_off_left(&mut self, id: EntityId, window: &mut Window, cx: &mut Context<Self>) {
         if self.split.is_some() {
             return;
         }

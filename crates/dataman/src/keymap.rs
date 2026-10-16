@@ -60,6 +60,10 @@ pub const COMMANDS: &[Command] = &[
     c("new_connection", "New connection", "GLOBAL", Scope::Workspace, &["cmd-n"], || Box::new(NewConnection)),
     c("new_tab", "New query tab", "GLOBAL", Scope::Workspace, &["cmd-t"], || Box::new(NewTab)),
     c("close_tab", "Close tab", "GLOBAL", Scope::Workspace, &["cmd-w"], || Box::new(CloseTab)),
+    // The app's own undo (`undo`): outside text, where fields and the editor keep theirs. ⌘Z is
+    // the Mac's; ⌃Z too, as asked for.
+    Command { context: Some(crate::undo::KEYS), ..c("undo", "Undo", "GLOBAL", Scope::Workspace, &["cmd-z", "ctrl-z"], || Box::new(crate::undo::Undo)) },
+    Command { context: Some(crate::undo::KEYS), ..c("redo", "Redo", "GLOBAL", Scope::Workspace, &["cmd-shift-z", "ctrl-shift-z"], || Box::new(crate::undo::Redo)) },
     // VS Code's: a copy of the tab in a second editor group (`split`).
     c("open_to_side", "Open to the side", "GLOBAL", Scope::Workspace, &["cmd-\\"], || Box::new(crate::split::OpenToSide)),
     c("next_tab", "Next tab", "GLOBAL", Scope::Workspace, &["ctrl-tab", "cmd-shift-]"], || Box::new(NextTab)),

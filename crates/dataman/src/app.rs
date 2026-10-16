@@ -535,6 +535,10 @@ pub struct Workspace {
     /// checks measure the zoom with them).
     pub(crate) zoom_tween: Option<(EntityId, crate::motion::ZoomTween)>,
     pub(crate) result_bounds: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
+    /// Undo and redo of what was done to the app's own things (`undo`), and the sizes a seam
+    /// drag started from (its step, once let go).
+    pub(crate) undo: crate::undo::UndoStack,
+    pub(crate) seam_from: Option<crate::undo::Sizes>,
 }
 
 impl Focusable for Workspace {
@@ -587,6 +591,7 @@ impl Workspace {
             }
             HistoryEvent::ImportFavorites => w.import_favorites(cx),
             HistoryEvent::FavoritesChanged => w.sync_favorite_tabs(cx),
+            HistoryEvent::Did(e) => w.undo.push(e.clone()),
             HistoryEvent::Close => {
                 w.side = None;
                 w.history_pin = None;
@@ -709,6 +714,8 @@ impl Workspace {
             nav: Default::default(),
             zoom_tween: None,
             result_bounds: Default::default(),
+            undo: Default::default(),
+            seam_from: None,
         };
         // Agents' writes over the app's MCP server ask in this window.
         crate::mcp::register(cx.weak_entity(), window.window_handle(), cx);
@@ -873,10 +880,21 @@ impl Workspace {
         self.close_tab_now(ix, window, cx);
     }
 
+    /// Closes tab `ix` at once, an undo step (Undo reopens it).
     fn close_tab_now(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if ix >= self.tabs.len() {
-            return;
+        let title = self.tabs.get(ix).map(|t| t.read(cx).title(cx).to_string());
+        if let (Some(c), Some(title)) = (self.close_tab_quietly(ix, window, cx), title) {
+            self.did(format!("Close tab '{title}'"), crate::undo::Op::Tabs { closed: vec![c], reopened: vec![] });
         }
+    }
+
+    /// Closes tab `ix` at once, no step recorded: what it was, to reopen it (`None` for an
+    /// activity monitor).
+    pub(crate) fn close_tab_quietly(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) -> Option<crate::undo::ClosedTab> {
+        if ix >= self.tabs.len() {
+            return None;
+        }
+        let reopen = self.closing(ix, cx);
         let id = self.tabs[ix].entity_id();
         let pane = self.pane_of(id);
         // In front of its group, the tab before it takes its place (else the one after it).
@@ -915,6 +933,7 @@ impl Workspace {
         self.sync_bound_views(window, cx);
         self.focus_editor(window, cx);
         cx.notify();
+        reopen
     }
 
     pub(crate) fn activate(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -1599,6 +1618,7 @@ impl Workspace {
             TreeEvent::FocusEditor => self.focus_editor(window, cx),
             TreeEvent::RowAction { act, target, alt } => self.on_row_action(*act, target.clone(), *alt, window, cx),
             TreeEvent::Notice(msg) => self.notice(msg.clone(), cx),
+            TreeEvent::Did(e) => self.undo.push(e.clone()),
         }
         cx.notify();
     }
@@ -2204,8 +2224,16 @@ impl Workspace {
         let mut fav = Favorite::new(crate::history::fav_name(&sql), sql);
         fav.connection_id = connection_id;
         fav.database = database;
-        if self.store.read(cx).core.favorites.add(fav).is_ok() {
+        let store = self.store.read(cx).core.favorites.clone();
+        let new = fav.id.clone();
+        if let Ok(saved) = store.add(fav) {
+            // Saved already (the same statement): nothing to undo.
+            if saved.id == new {
+                let ix = store.list().iter().position(|f| f.id == saved.id).unwrap_or(0);
+                self.did(format!("Add favorite '{}'", saved.name), crate::undo::Op::Favorite { fav: saved, ix, added: true });
+            }
             self.notice("Added to favorites", cx);
+            self.history.update(cx, |h, cx| h.reload_favorites(cx));
         }
     }
 
@@ -2223,20 +2251,23 @@ impl Workspace {
 
     pub(crate) fn import_favorite_paths(&mut self, paths: &[std::path::PathBuf], cx: &mut Context<Self>) {
         let store = self.store.read(cx).core.favorites.clone();
-        let mut added = 0usize;
+        let mut added = Vec::new();
         for path in paths {
             if crate::sql_picker::is_sql(path)
                 && let Ok(sql) = std::fs::read_to_string(path)
             {
                 let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("favorite").to_string();
                 let known = store.find_by_sql(&sql).is_some();
-                if !known && store.add(Favorite::new(name, sql)).is_ok() {
-                    added += 1;
+                if !known && let Ok(fav) = store.add(Favorite::new(name, sql)) {
+                    let ix = store.list().iter().position(|f| f.id == fav.id).unwrap_or(0);
+                    added.push(crate::undo::Op::Favorite { fav, ix, added: true });
                 }
             }
         }
-        if added > 0 {
-            self.notice(format!("Added {added} to favorites"), cx);
+        if !added.is_empty() {
+            let n = added.len();
+            self.notice(format!("Added {n} to favorites"), cx);
+            self.did(format!("Import {n} favorite{}", if n == 1 { "" } else { "s" }), crate::undo::Op::Many(added));
         }
         self.history.update(cx, |h, cx| h.reload_favorites(cx));
     }
@@ -2311,7 +2342,11 @@ impl Workspace {
                     fav.database = Some(tab.read(cx).database().to_string());
                 }
                 match store.add(fav) {
-                    Ok(f) => (f, "Saved as favorite"),
+                    Ok(f) => {
+                        let ix = store.list().iter().position(|x| x.id == f.id).unwrap_or(0);
+                        self.did(format!("Add favorite '{}'", f.name), crate::undo::Op::Favorite { fav: f.clone(), ix, added: true });
+                        (f, "Saved as favorite")
+                    }
                     Err(e) => {
                         self.notice(format!("cannot save the favorite: {e:#}"), cx);
                         return;
@@ -2365,7 +2400,7 @@ impl Workspace {
     }
 
     /// The tabs linked to a favorite follow its rename, and let go of it once it is removed.
-    fn sync_favorite_tabs(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn sync_favorite_tabs(&mut self, cx: &mut Context<Self>) {
         let favorites = self.store.read(cx).core.favorites.list();
         for tab in self.tabs.clone() {
             let Some((id, name)) = tab.read(cx).favorite.clone() else { continue };
@@ -2529,8 +2564,11 @@ impl Workspace {
     fn on_drag_move(&mut self, ev: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
         let Some(d) = self.drag else { return };
         if ev.pressed_button != Some(MouseButton::Left) {
-            self.drag = None;
+            self.end_seam_drag();
             return;
+        }
+        if self.seam_from.is_none() {
+            self.seam_from = Some(self.sizes_now());
         }
         match d {
             Drag::Dock(dock, col) => self.resize_column(dock, col, ev.position.x.pt()),
@@ -2545,6 +2583,22 @@ impl Workspace {
             }
         }
         cx.notify();
+    }
+
+    /// A seam let go: what it resized is one undo step.
+    fn end_seam_drag(&mut self) {
+        let Some(d) = self.drag.take() else { return };
+        let Some(from) = self.seam_from.take() else { return };
+        let to = self.sizes_now();
+        if from != to {
+            let label = match d {
+                Drag::Dock(..) => "Resize panel",
+                Drag::Stack(..) => "Resize stacked panels",
+                Drag::Split => "Resize editor",
+                Drag::Groups => "Resize editor groups",
+            };
+            self.did(label, crate::undo::Op::Sizes { from, to });
+        }
     }
 
     /// A dragged tab dropped at the gap `slot` (`tab_drop`) of a group's strip moves there (into
@@ -2573,17 +2627,38 @@ impl Workspace {
         self.close_tabs_now(close, window, cx);
     }
 
+    /// Closes the tabs in `close` at once, one undo step for all of them (Undo reopens them; an
+    /// editor group closed comes back as a group).
     fn close_tabs_now(&mut self, close: Vec<Entity<QueryTab>>, window: &mut Window, cx: &mut Context<Self>) {
+        let first = close.first().map(|t| t.read(cx).title(cx).to_string()).unwrap_or_default();
+        let closed = self.close_tabs_quietly(close, window, cx);
+        let label = match closed.as_slice() {
+            [] => return,
+            [head, .., last] | [head @ last] if last.emptied && closed.iter().all(|c| c.pane == head.pane) => match closed.len() {
+                1 => "Close editor group".to_string(),
+                n => format!("Close editor group ({n} tabs)"),
+            },
+            [_] => format!("Close tab '{first}'"),
+            _ => format!("Close {} tabs", closed.len()),
+        };
+        self.did(label, crate::undo::Op::Tabs { closed, reopened: vec![] });
+    }
+
+    /// Closes the tabs in `close` at once, no step recorded: what they were, in the order they
+    /// closed.
+    pub(crate) fn close_tabs_quietly(&mut self, close: Vec<Entity<QueryTab>>, window: &mut Window, cx: &mut Context<Self>) -> Vec<crate::undo::ClosedTab> {
         let active = self.active_tab().cloned();
+        let mut closed = Vec::new();
         for tab in &close {
             if let Some(ix) = self.tabs.iter().position(|t| t == tab) {
-                self.close_tab_now(ix, window, cx);
+                closed.extend(self.close_tab_quietly(ix, window, cx));
             }
         }
         // The active tab stays active when it is left.
         if let Some(ix) = active.and_then(|a| self.tabs.iter().position(|t| *t == a)) {
             self.activate(ix, window, cx);
         }
+        closed
     }
 
     /// Height of the work column below the toolbar (editor + divider + result bar + grid).
@@ -2995,8 +3070,9 @@ impl Render for Workspace {
             .map(|d| crate::lar::workspace_actions(d, cx))
             .map(|d| crate::dock::workspace_actions(d, cx))
             .map(|d| crate::split::workspace_actions(d, cx))
+            .map(|d| crate::undo::workspace_actions(d, cx))
             .on_mouse_move(cx.listener(Self::on_drag_move))
-            .on_mouse_up(MouseButton::Left, cx.listener(|w, _, _, _| w.drag = None))
+            .on_mouse_up(MouseButton::Left, cx.listener(|w, _, _, _| w.end_seam_drag()))
             .capture_any_mouse_down(cx.listener(|w, ev: &gpui::MouseDownEvent, _, _| {
                 w.focus_visible = false;
                 w.alt_press = ev.modifiers.alt;

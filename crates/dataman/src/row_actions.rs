@@ -499,26 +499,19 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Removes a connection: from `connections.toml`, its password from the keychain and its
-    /// history. Its tabs stay, without a connection (their sessions end: running statements
-    /// get a CancelRequest).
+    /// Removes a connection: from `connections.toml`, its password from the keychain, its
+    /// history and its pinned tables (`undo::remove_connection`; Undo brings all of it back).
+    /// Its tabs stay, without a connection (their sessions end: running statements get a
+    /// CancelRequest).
     pub(crate) fn delete_connection(&mut self, id: &str, cx: &mut Context<Self>) {
-        let core = self.store.read(cx).core.clone();
         let name = self.store.read(cx).profile(id).map(|p| p.name.clone()).unwrap_or_else(|| id.to_string());
-        if let Err(e) = core.remove_connection(id) {
-            self.notice(format!("Could not delete {name}: {e:#}"), cx);
-            return;
+        match self.remove_connection(id, cx) {
+            Ok(d) => {
+                self.notice(format!("Deleted the connection {name}"), cx);
+                self.did(format!("Delete connection '{name}'"), crate::undo::Op::ConnDeleted(Box::new(d)));
+            }
+            Err(e) => self.notice(format!("Could not delete {name}: {e:#}"), cx),
         }
-        let _ = core.history.clear(id);
-        self.disconnect(id.to_string(), cx);
-        self.store.update(cx, |s, cx| s.reload(cx));
-        if self.current_conn.as_deref() == Some(id) {
-            self.current_conn = self.store.read(cx).profiles.first().map(|p| p.id.clone());
-        }
-        if self.history_pin.as_deref() == Some(id) {
-            self.history_pin = None;
-        }
-        self.notice(format!("Deleted the connection {name}"), cx);
     }
 
     /// "Delete connection "name"?": esc / ↩ keep it, ⌘⌫ deletes.

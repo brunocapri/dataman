@@ -10,11 +10,17 @@
 //! the way, and dragged anywhere else in the list it goes back to the top level; a folder
 //! dragged moves among the folders, as the explorer's connections do (a line marks the gap),
 //! and the store keeps that order. A search opens the folders holding a match. Deleting a
-//! folder keeps its favorites: they move to the top level.
+//! folder deletes it with the queries in it: its menu row turns into a red "Sure? (deletes N
+//! queries)" that must be clicked again (an empty folder asks too, for one way of deleting);
+//! the pointer leaving that row, esc, a click elsewhere or a few seconds let it go.
+//!
+//! What is done to the favorites here (added, removed, renamed, filed, a folder made, renamed,
+//! moved or deleted) is reported to the workspace's undo (`undo`, `HistoryEvent::Did`).
 
 use std::cell::Cell;
 use std::collections::HashSet;
 use std::rc::Rc;
+use std::time::Duration;
 
 use chrono::{Datelike, Local};
 use gpui::{
@@ -22,7 +28,7 @@ use gpui::{
     Pixels, Point, SharedString, Window, actions, div, list, point, prelude::*,
 };
 use crate::theme::px;
-use dataman_core::favorites::Folder;
+use dataman_core::favorites::{Folder, RemovedFolder};
 use dataman_core::{Favorite, HistoryEntry, Outcome};
 
 use crate::assets::{Icon, icon};
@@ -32,6 +38,7 @@ use crate::input::{InputEvent, TextInput};
 use crate::theme::{ActiveTheme, Theme};
 use crate::tree_menu::{ITEM_H, PAD, SEP_H};
 use crate::ui;
+use crate::undo::{Entry, Op};
 
 actions!(history_panel, [Prev, Next, Insert, OpenInTab, RunEntry, Close, Collapse, Expand]);
 
@@ -63,6 +70,8 @@ pub enum HistoryEvent {
     ImportFavorites,
     /// A favorite was added, renamed or removed here (the tabs linked to one follow).
     FavoritesChanged,
+    /// Something undoable was done to the favorites or their folders (the workspace's undo).
+    Did(Entry),
     Close,
 }
 
@@ -78,6 +87,9 @@ const NEST: f32 = 15.;
 /// The favorites' context menu, and its Move to folder submenu.
 const MENU_W: f32 = 220.;
 const SUB_W: f32 = 200.;
+/// How long a folder's "Sure?" waits before it gives way to Delete folder again (as a group's
+/// "Sure?" does, `split`).
+const DELETE_ASK: Duration = Duration::from_secs(3);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Chip {
@@ -164,14 +176,23 @@ impl MenuEntry {
     }
 }
 
-/// A context menu (right-click, ⌃-click) open at `at`: the row under the pointer (`hi`), and
-/// the submenu shown (the index of its entry) with its own highlighted row.
+/// A context menu (right-click, ⌃-click) open at `at`: the row under the pointer (`hi`), the
+/// submenu shown (the index of its entry) with its own highlighted row, and Delete folder
+/// pressed once (`ask`: it asks "Sure?" in its row until clicked again or let go).
 struct Menu {
     on: MenuOn,
     at: Point<Pixels>,
     hi: Option<usize>,
     sub: Option<usize>,
     sub_hi: Option<usize>,
+    ask: Option<DeleteAsk>,
+}
+
+/// A folder's Delete pressed once: the wait after which it lets go, and its esc (both dropped
+/// with it, and with the menu).
+struct DeleteAsk {
+    _timeout: gpui::Task<()>,
+    _esc: gpui::Subscription,
 }
 
 type BoundsCell = Rc<Cell<Option<Bounds<Pixels>>>>;
@@ -317,12 +338,17 @@ impl HistoryPanel {
         let (sql, database, conn_id) = (e.sql.clone(), e.database.clone(), self.conn_id.clone());
         let store = self.store.read(cx).core.favorites.clone();
         if let Some(existing) = store.find_by_sql(&sql) {
-            let _ = store.remove(&existing.id);
+            if let Ok(Some((ix, fav))) = store.take(&existing.id) {
+                cx.emit(HistoryEvent::Did(Entry::new(format!("Remove favorite '{}'", fav.name), Op::Favorite { fav, ix, added: false })));
+            }
         } else {
             let mut fav = Favorite::new(fav_name(&sql), sql);
             fav.connection_id = conn_id;
             fav.database = Some(database);
-            let _ = store.add(fav);
+            if let Ok(fav) = store.add(fav) {
+                let ix = store.list().iter().position(|f| f.id == fav.id).unwrap_or(0);
+                cx.emit(HistoryEvent::Did(Entry::new(format!("Add favorite '{}'", fav.name), Op::Favorite { fav, ix, added: true })));
+            }
         }
         self.reload_favorites(cx);
         cx.emit(HistoryEvent::FavoritesChanged);
@@ -330,7 +356,9 @@ impl HistoryPanel {
 
     fn remove_favorite(&mut self, fav_ix: usize, cx: &mut Context<Self>) {
         let id = self.favorites[fav_ix].id.clone();
-        let _ = self.store.read(cx).core.favorites.remove(&id);
+        if let Ok(Some((ix, fav))) = self.store.read(cx).core.favorites.take(&id) {
+            cx.emit(HistoryEvent::Did(Entry::new(format!("Remove favorite '{}'", fav.name), Op::Favorite { fav, ix, added: false })));
+        }
         self.refresh_keeping(cx);
         cx.emit(HistoryEvent::FavoritesChanged);
     }
@@ -417,12 +445,24 @@ impl HistoryPanel {
         if !name.is_empty() {
             match &naming {
                 Naming::Fav(i) => {
-                    if let Some(f) = self.favorites.get(*i) {
-                        let _ = favorites.rename(&f.id, &name);
+                    if let Some(f) = self.favorites.get(*i)
+                        && f.name != name
+                        && let Ok(Some(_)) = favorites.rename(&f.id, &name)
+                    {
+                        let op = Op::FavoriteName { id: f.id.clone(), from: f.name.clone(), to: name.clone() };
+                        cx.emit(HistoryEvent::Did(Entry::new(format!("Rename favorite '{}'", f.name), op)));
                     }
                 }
                 Naming::Folder(id) => {
-                    let _ = favorites.rename_folder(id, &name);
+                    let from = self.folders.iter().find(|d| d.id == *id).map(|d| d.name.clone());
+                    if let Some(from) = from.filter(|f| *f != name)
+                        && let Ok(Some(_)) = favorites.rename_folder(id, &name)
+                    {
+                        // Right after "+ folder" this is the new folder's name: one step with it
+                        // (`undo::UndoStack::push`).
+                        let op = Op::FolderName { id: id.clone(), from: from.clone(), to: name.clone() };
+                        cx.emit(HistoryEvent::Did(Entry::new(format!("Rename folder '{from}'"), op)));
+                    }
                 }
             }
         }
@@ -440,6 +480,9 @@ impl HistoryPanel {
     /// cleared, the favorites shown), selected, and its name in an inline field to type over.
     fn new_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Ok(d) = self.store.read(cx).core.favorites.add_folder("New folder") else { return };
+        let index = self.store.read(cx).core.favorites.folders().iter().position(|f| f.id == d.id).unwrap_or(0);
+        let removed = RemovedFolder { index, folder: d.clone(), favorites: Vec::new() };
+        cx.emit(HistoryEvent::Did(Entry::new(format!("New folder '{}'", d.name), Op::Folder { removed, added: true })));
         self.show_favorites = true;
         self.chip_menu = false;
         self.menu = None;
@@ -467,17 +510,55 @@ impl HistoryPanel {
         self.refresh_keeping(cx);
     }
 
-    /// Deletes a folder, never its favorites: they move to the top level.
+    /// Deletes a folder and the favorites in it (asked first: `ask_delete`).
     fn delete_folder(&mut self, id: &str, cx: &mut Context<Self>) {
-        let _ = self.store.read(cx).core.favorites.remove_folder(id);
+        if let Ok(Some(removed)) = self.store.read(cx).core.favorites.remove_folder(id) {
+            let label = format!("Delete folder '{}'", removed.folder.name);
+            cx.emit(HistoryEvent::Did(Entry::new(label, Op::Folder { removed, added: false })));
+            cx.emit(HistoryEvent::FavoritesChanged);
+        }
         self.open_folders.remove(id);
         self.refresh_keeping(cx);
+    }
+
+    /// Delete folder pressed once: its row asks "Sure?" until clicked again; esc or a few seconds
+    /// let it go (the pointer leaving the row and a click elsewhere too, `render_menu`).
+    fn ask_delete(&mut self, cx: &mut Context<Self>) -> DeleteAsk {
+        let timeout = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(DELETE_ASK).await;
+            let _ = this.update(cx, |h, cx| h.let_go_delete(cx));
+        });
+        // Esc lets it go and does nothing else (the menu stays): an interceptor runs before
+        // any binding, wherever the keys are.
+        let panel = cx.entity().downgrade();
+        let esc = cx.intercept_keystrokes(move |ev, _, cx| {
+            if ev.keystroke.key == "escape" {
+                cx.stop_propagation();
+                let _ = panel.update(cx, |h, cx| h.let_go_delete(cx));
+            }
+        });
+        DeleteAsk { _timeout: timeout, _esc: esc }
+    }
+
+    /// The "Sure?" gives way to Delete folder again.
+    fn let_go_delete(&mut self, cx: &mut Context<Self>) {
+        if self.menu.as_mut().and_then(|m| m.ask.take()).is_some() {
+            cx.notify();
+        }
     }
 
     /// Files favorite `id` in a folder (`None`: the top level), opens that folder and selects
     /// the favorite where it now is.
     fn move_favorite(&mut self, id: &str, to: Option<String>, cx: &mut Context<Self>) {
-        let _ = self.store.read(cx).core.favorites.move_to_folder(id, to.as_deref());
+        let from = self.favorites.iter().find(|f| f.id == id).map(|f| (f.name.clone(), f.folder.clone()));
+        if let (Some((name, from)), Ok(Some(_))) = (from, self.store.read(cx).core.favorites.move_to_folder(id, to.as_deref())) {
+            let place = match to.as_ref().and_then(|d| self.folders.iter().find(|f| f.id == *d)) {
+                Some(d) => format!("'{}'", d.name),
+                None => "the top level".into(),
+            };
+            let op = Op::FavoriteFolder { id: id.to_string(), from, to: to.clone() };
+            cx.emit(HistoryEvent::Did(Entry::new(format!("Move '{name}' to {place}"), op)));
+        }
         if let Some(d) = &to {
             self.open_folders.insert(d.clone());
         }
@@ -555,9 +636,11 @@ impl HistoryPanel {
         self.dragging_folder = None;
         let Some(slot) = self.folder_drop.take() else { return cx.notify() };
         let mut ids: Vec<String> = self.folders.iter().map(|d| d.id.clone()).collect();
+        let before = ids.clone();
         let Some(from) = ids.iter().position(|d| d == id) else { return };
-        if dataman_core::order::move_to(&mut ids, from, slot).is_some() {
-            let _ = self.store.read(cx).core.favorites.reorder_folders(&ids);
+        if dataman_core::order::move_to(&mut ids, from, slot).is_some() && self.store.read(cx).core.favorites.reorder_folders(&ids).is_ok() {
+            let name = self.folders[from].name.clone();
+            cx.emit(HistoryEvent::Did(Entry::new(format!("Move folder '{name}'"), Op::FolderOrder { from: before, to: ids })));
         }
         self.refresh_keeping(cx);
     }
@@ -1068,15 +1151,16 @@ impl HistoryPanel {
     fn open_menu(&mut self, on: MenuOn, at: Point<Pixels>, cx: &mut Context<Self>) {
         self.chip_menu = false;
         self.sub_bounds.set(None);
-        self.menu = Some(Menu { on, at, hi: None, sub: None, sub_hi: None });
+        self.menu = Some(Menu { on, at, hi: None, sub: None, sub_hi: None, ask: None });
         cx.notify();
     }
 
     /// What a menu offers. A favorite: Run, Open in new tab, Insert at cursor (their keys on
     /// the selected row), Rename, Move to folder ▸ (once there are folders), Remove, Import
-    /// favorites…; a folder: Rename, New folder, Delete folder (it says where its favorites
-    /// go); the star toggle: New folder, Import favorites…. Sentence case here; the menu bar's
-    /// File ▸ Import Favorites… keeps the macOS title case.
+    /// favorites…; a folder: Rename, New folder, Delete folder (it says how many queries go
+    /// with it; pressed once, "Sure? (deletes N queries)" in its place); the star toggle: New
+    /// folder, Import favorites…. Sentence case here; the menu bar's File ▸ Import Favorites…
+    /// keeps the macOS title case.
     fn menu_entries(&self, on: &MenuOn) -> Vec<MenuEntry> {
         use MenuEntry as E;
         let import = E::item(Act::Import, Icon::Import, "Import favorites…", None);
@@ -1107,12 +1191,18 @@ impl HistoryPanel {
             }
             MenuOn::Folder(id) => {
                 let n = self.favorites.iter().filter(|f| f.folder.as_deref() == Some(id.as_str())).count();
+                let queries = if n == 1 { "1 query".to_string() } else { format!("{n} queries") };
+                let asking = self.menu.as_ref().is_some_and(|m| m.ask.is_some());
                 let delete = E::Item {
                     act: Act::DeleteFolder,
                     icon: Icon::Trash,
-                    label: "Delete folder".into(),
-                    // Its favorites are kept: say where they go.
-                    detail: (n > 0).then(|| if n == 1 { "1 favorite to top level".into() } else { format!("{n} favorites to top level").into() }),
+                    // Its queries go with it: say how many.
+                    label: match (asking, n) {
+                        (false, _) => "Delete folder".into(),
+                        (true, 0) => "Sure?".into(),
+                        (true, _) => format!("Sure? (deletes {queries})").into(),
+                    },
+                    detail: (n > 0 && !asking).then(|| format!("with {queries}").into()),
                     key: None,
                 };
                 vec![E::item(Act::Rename, Icon::Edit, "Rename", None), new_folder, E::Sep, delete]
@@ -1122,7 +1212,7 @@ impl HistoryPanel {
     }
 
     fn run_menu(&mut self, act: Act, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(m) = self.menu.take() else { return };
+        let Some(mut m) = self.menu.take() else { return };
         let fav = match m.on {
             MenuOn::Fav(i) => self.favorites.get(i).cloned().map(|f| (i, f)),
             _ => None,
@@ -1140,9 +1230,16 @@ impl HistoryPanel {
             (Act::Move(to), Some((_, f))) => self.move_favorite(&f.id, to, cx),
             (Act::Remove, Some((i, _))) => self.remove_favorite(i, cx),
             (Act::NewFolder, _) => self.new_folder(window, cx),
+            // Pressed once it asks (the menu stays, its row red); again, the folder goes.
             (Act::DeleteFolder, _) => {
-                if let MenuOn::Folder(id) = m.on {
-                    self.delete_folder(&id, cx);
+                if let MenuOn::Folder(id) = &m.on {
+                    if m.ask.is_some() {
+                        let id = id.clone();
+                        self.delete_folder(&id, cx);
+                    } else {
+                        m.ask = Some(self.ask_delete(cx));
+                        self.menu = Some(m);
+                    }
                 }
             }
             (Act::Import, _) => cx.emit(HistoryEvent::ImportFavorites),
@@ -1162,6 +1259,9 @@ impl HistoryPanel {
         for (i, e) in entries.iter().enumerate() {
             match e {
                 MenuEntry::Sep => rows.push(ui::menu_sep(t).into_any_element()),
+                MenuEntry::Item { act, label, .. } if *act == Act::DeleteFolder && m.ask.is_some() => {
+                    rows.push(self.render_delete_ask(i, &entries, label.clone(), t, cx).into_any_element());
+                }
                 MenuEntry::Item { act, icon: ic, label, detail, key } => {
                     let act = act.clone();
                     let row = crate::grid_menu::row(t, ("fav-menu-item", i), *ic, label.clone(), detail.clone(), key.map(SharedString::from), m.hi == Some(i))
@@ -1282,6 +1382,42 @@ impl HistoryPanel {
             );
         }
         out
+    }
+
+    /// Delete folder pressed once: its row (entry `i`), red, says "Sure? (deletes N queries)"
+    /// (the app's "Sure?", as a group's ×); clicked, the folder goes with them. The pointer
+    /// leaving the row lets it go.
+    fn render_delete_ask(&self, i: usize, entries: &[MenuEntry], label: SharedString, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let (hov, prs) = (t.err.opacity(0.85), t.err.opacity(0.7));
+        let top = PAD + entries[..i].iter().map(MenuEntry::h).sum::<f32>();
+        let menu = self.menu_bounds.clone();
+        div()
+            .id(("fav-menu-item", i))
+            .h(px(ITEM_H))
+            .px(px(10.))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(10.))
+            .whitespace_nowrap()
+            .bg(t.err)
+            .text_color(t.on_err)
+            .font_weight(gpui::FontWeight::SEMIBOLD)
+            .cursor_pointer()
+            .hover(move |s| s.bg(hov))
+            .active(move |s| s.bg(prs))
+            .child(icon(Icon::Trash).size(px(14.)).text_color(t.on_err))
+            .child(label)
+            .on_click(cx.listener(|h, _: &gpui::ClickEvent, window, cx| h.run_menu(Act::DeleteFolder, window, cx)))
+            .on_hover(cx.listener(move |h, hovered: &bool, window, cx| {
+                // GPUI reports a press held on it as the pointer leaving: only a pointer really
+                // outside the row lets it go.
+                let pos = window.mouse_position();
+                let inside = menu.get().is_some_and(|b| b.contains(&pos) && pos.y >= b.top() + px(top) && pos.y < b.top() + px(top + ITEM_H));
+                if !*hovered && !inside {
+                    h.let_go_delete(cx);
+                }
+            }))
     }
 
     // ---------------------------------------------------------------------------------------
@@ -1621,6 +1757,13 @@ impl HistoryPanel {
         let b = self.list.bounds_for_item(item_ix)?;
         // Past a nested favorite's indent.
         Some(point(b.origin.x + px(40.), b.origin.y + b.size.height * 0.5))
+    }
+
+    /// The middle of the star of listed favorite `item_ix` (its Remove), as last painted.
+    pub(crate) fn demo_star_point(&self, item_ix: usize) -> Option<Point<Pixels>> {
+        let b = self.list.bounds_for_item(item_ix)?;
+        // Past the row's 6 pt margin and 8 pt padding, the 20 pt star ends its first line.
+        Some(point(b.right() - px(6. + 8. + 10.), b.top() + px(7. + 10.)))
     }
 
     /// The list's own bounds (the checks drop below its last row).

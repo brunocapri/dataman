@@ -11,10 +11,12 @@
 //! tinted, the store keeps the order), favorites dragged into a folder and back out (the drop
 //! target tinted on the way, no line), opening and shutting (click, ← →), a search opening the
 //! folder of a match, Move to folder ▸ and Run from a favorite's menu, a double-click only
-//! opening or shutting a folder, a folder renamed from its menu and deleted (its favorites
-//! kept, at the top level). `DATAMAN_SHOT_DIR=dir` also captures `folders-reorder.png`,
-//! `folders-drag.png`, `folders-menu.png` and `folders-tree.png` there (build with
-//! `--features screenshots`).
+//! opening or shutting a folder, a folder renamed from its menu and deleted with its queries
+//! (Delete folder asks first: a red "Sure? (deletes N queries)" in its row, let go by the
+//! pointer leaving it, esc or a few seconds; clicked, the folder and its queries go).
+//! `DATAMAN_SHOT_DIR=dir` also captures `folders-reorder.png`, `folders-drag.png`,
+//! `folders-sure.png`, `folders-menu.png` and `folders-tree.png` there (build with
+//! `--features screenshots`). The helpers are `undo-check`'s too.
 
 use std::time::Duration;
 
@@ -27,14 +29,14 @@ pub fn is_stage(s: &str) -> bool {
     s == "history-check" || s == "folders-check"
 }
 
-fn draw(cx: &mut AsyncWindowContext) {
+pub(crate) fn draw(cx: &mut AsyncWindowContext) {
     let _ = cx.update(|window, cx| {
         window.refresh();
         window.draw(cx).clear(cx);
     });
 }
 
-fn input(cx: &mut AsyncWindowContext, e: PlatformInput) {
+pub(crate) fn input(cx: &mut AsyncWindowContext, e: PlatformInput) {
     let _ = cx.update(|window, cx| {
         window.dispatch_event(e, cx);
         window.refresh();
@@ -43,13 +45,13 @@ fn input(cx: &mut AsyncWindowContext, e: PlatformInput) {
 }
 
 /// A move first: GPUI's hit-test for the down/up pair follows the latest hovered element.
-fn click(cx: &mut AsyncWindowContext, p: Point<Pixels>, button: MouseButton, modifiers: Modifiers) {
+pub(crate) fn click(cx: &mut AsyncWindowContext, p: Point<Pixels>, button: MouseButton, modifiers: Modifiers) {
     input(cx, PlatformInput::MouseMove(MouseMoveEvent { position: p, pressed_button: None, modifiers }));
     input(cx, PlatformInput::MouseDown(MouseDownEvent { button, position: p, modifiers, click_count: 1, first_mouse: false }));
     input(cx, PlatformInput::MouseUp(MouseUpEvent { button, position: p, modifiers, click_count: 1 }));
 }
 
-fn key(cx: &mut AsyncWindowContext, k: &str) {
+pub(crate) fn key(cx: &mut AsyncWindowContext, k: &str) {
     let _ = cx.update(|window, cx| {
         window.dispatch_keystroke(Keystroke::parse(k).unwrap(), cx);
         window.refresh();
@@ -57,20 +59,20 @@ fn key(cx: &mut AsyncWindowContext, k: &str) {
     });
 }
 
-fn typ(cx: &mut AsyncWindowContext, s: &str) {
+pub(crate) fn typ(cx: &mut AsyncWindowContext, s: &str) {
     for c in s.chars() {
         key(cx, &c.to_string());
     }
 }
 
-async fn pause(cx: &mut AsyncWindowContext, ms: u64) {
+pub(crate) async fn pause(cx: &mut AsyncWindowContext, ms: u64) {
     cx.background_executor().timer(Duration::from_millis(ms)).await;
 }
 
 /// A point inside the favorite row at `item_ix` (row 0, once the dropdown shows only
 /// favorites): drawn fresh first, retried briefly (the list measures items as it repaints
 /// after a change, not necessarily in the very next frame).
-async fn row_point(history: &Entity<HistoryPanel>, item_ix: usize, cx: &mut AsyncWindowContext) -> Option<Point<Pixels>> {
+pub(crate) async fn row_point(history: &Entity<HistoryPanel>, item_ix: usize, cx: &mut AsyncWindowContext) -> Option<Point<Pixels>> {
     for _ in 0..20 {
         draw(cx);
         if let Some(p) = cx.update(|_, cx| history.read(cx).demo_item_point(item_ix)).ok().flatten() {
@@ -82,13 +84,13 @@ async fn row_point(history: &Entity<HistoryPanel>, item_ix: usize, cx: &mut Asyn
 }
 
 /// The open context menu's row labelled `label` (`sub`: in the submenu), as last painted.
-fn menu_at(history: &Entity<HistoryPanel>, label: &str, sub: bool, cx: &mut AsyncWindowContext) -> Option<Point<Pixels>> {
+pub(crate) fn menu_at(history: &Entity<HistoryPanel>, label: &str, sub: bool, cx: &mut AsyncWindowContext) -> Option<Point<Pixels>> {
     draw(cx);
     cx.update(|_, cx| history.read(cx).demo_menu_point(label, sub)).ok().flatten()
 }
 
 /// Clicks the open menu's row labelled `label`; false when the menu has no such row.
-fn menu_click(history: &Entity<HistoryPanel>, label: &str, cx: &mut AsyncWindowContext) -> bool {
+pub(crate) fn menu_click(history: &Entity<HistoryPanel>, label: &str, cx: &mut AsyncWindowContext) -> bool {
     match menu_at(history, label, false, cx) {
         Some(p) => {
             click(cx, p, MouseButton::Left, Modifiers::default());
@@ -551,7 +553,7 @@ async fn palette_checks(ws: &Entity<Workspace>, history: &Entity<HistoryPanel>, 
 
 /// A press at `from`, the pointer dragged to `to` in a few steps (button held), `before_up`
 /// run there while the drag is still on, then the release.
-async fn drag(cx: &mut AsyncWindowContext, from: Point<Pixels>, to: Point<Pixels>, before_up: impl FnOnce(&mut AsyncWindowContext)) {
+pub(crate) async fn drag(cx: &mut AsyncWindowContext, from: Point<Pixels>, to: Point<Pixels>, before_up: impl FnOnce(&mut AsyncWindowContext)) {
     let none = Modifiers::default();
     input(cx, PlatformInput::MouseMove(MouseMoveEvent { position: from, pressed_button: None, modifiers: none }));
     input(cx, PlatformInput::MouseDown(MouseDownEvent { button: MouseButton::Left, position: from, modifiers: none, click_count: 1, first_mouse: false }));
@@ -579,17 +581,17 @@ fn double_click(cx: &mut AsyncWindowContext, p: Point<Pixels>) {
 }
 
 /// The point of the row named `name` (a folder or a favorite), drawn fresh first.
-async fn named_point(history: &Entity<HistoryPanel>, name: &str, cx: &mut AsyncWindowContext) -> Option<Point<Pixels>> {
+pub(crate) async fn named_point(history: &Entity<HistoryPanel>, name: &str, cx: &mut AsyncWindowContext) -> Option<Point<Pixels>> {
     let ix = cx.update(|_, cx| history.read(cx).demo_item_named(name)).ok().flatten()?;
     row_point(history, ix, cx).await
 }
 
-fn rows(history: &Entity<HistoryPanel>, cx: &mut AsyncWindowContext) -> Vec<String> {
+pub(crate) fn rows(history: &Entity<HistoryPanel>, cx: &mut AsyncWindowContext) -> Vec<String> {
     cx.update(|_, cx| history.read(cx).demo_rows()).unwrap_or_default()
 }
 
 /// The folder favorite `name` is filed in (`Some(None)`: the top level).
-fn filed(history: &Entity<HistoryPanel>, name: &str, cx: &mut AsyncWindowContext) -> Option<Option<String>> {
+pub(crate) fn filed(history: &Entity<HistoryPanel>, name: &str, cx: &mut AsyncWindowContext) -> Option<Option<String>> {
     cx.update(|_, cx| history.read(cx).demo_filed().into_iter().find(|f| f.0 == name).map(|f| f.1)).ok().flatten()
 }
 
@@ -834,18 +836,62 @@ async fn folders(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
         format!("clicked {clicked} naming {naming:?} focused {focused} {names:?}"),
     );
 
-    // Delete folder: its favorites are kept, at the top level.
+    // Delete folder asks first: its row turns into a red "Sure? (deletes 1 query)" (nothing
+    // deleted yet); the pointer leaving it, esc, a few seconds let it go.
+    let state = |cx: &mut AsyncWindowContext| -> (Vec<String>, usize, bool) {
+        cx.update(|_, cx| {
+            let h = history.read(cx);
+            (h.demo_folders().into_iter().map(|d| d.1).collect(), h.demo_favorites().len(), h.demo_fav_menu_open())
+        })
+        .unwrap_or_default()
+    };
+    let sure = "Sure? (deletes 1 query)";
     let Some(p) = named_point(&history, "Old stuff", cx).await else { return false };
     click(cx, p, MouseButton::Right, Modifiers::default());
     pause(cx, 30).await;
     let clicked = menu_click(&history, "Delete folder", cx);
     pause(cx, 30).await;
-    let (names, count): (Vec<String>, usize) = cx.update(|_, cx| (history.read(cx).demo_folders().into_iter().map(|d| d.1).collect(), history.read(cx).demo_favorites().len())).unwrap();
+    let asking = menu_at(&history, sure, false, cx).is_some() && menu_at(&history, "Delete folder", false, cx).is_none();
+    snap("sure", cx);
+    let (names, count, open) = state(cx);
     report(
         &mut ok,
-        "Delete folder keeps its favorites, at the top level",
-        clicked && names == ["Reports"] && count == 3 && filed(&history, "Top customers", cx) == Some(None),
-        format!("clicked {clicked} {names:?} count {count} {:?}", filed(&history, "Top customers", cx)),
+        "Delete folder asks first: its row says \"Sure? (deletes 1 query)\", the menu stays, nothing is deleted",
+        clicked && asking && open && names == ["Reports", "Old stuff"] && count == 3,
+        format!("clicked {clicked} asking {asking} open {open} {names:?} count {count}"),
+    );
+    if let Some(r) = menu_at(&history, "Rename", false, cx) {
+        input(cx, PlatformInput::MouseMove(MouseMoveEvent { position: r, pressed_button: None, modifiers: Modifiers::default() }));
+    }
+    draw(cx);
+    let left = menu_at(&history, "Delete folder", false, cx).is_some();
+    let _ = menu_click(&history, "Delete folder", cx);
+    pause(cx, 30).await;
+    let again = menu_at(&history, sure, false, cx).is_some();
+    key(cx, "escape");
+    let esc = (menu_at(&history, "Delete folder", false, cx).is_some(), state(cx).2);
+    let _ = menu_click(&history, "Delete folder", cx);
+    pause(cx, 3300).await;
+    draw(cx);
+    let waited = menu_at(&history, "Delete folder", false, cx).is_some();
+    report(
+        &mut ok,
+        "the \"Sure?\" gives way to Delete folder when the pointer leaves it, on esc (the menu stays) and after a few seconds",
+        left && again && esc == (true, true) && waited && state(cx).0 == ["Reports", "Old stuff"],
+        format!("left {left} again {again} esc {esc:?} waited {waited}"),
+    );
+
+    // Clicked once more after asking: the folder goes, its query with it.
+    let _ = menu_click(&history, "Delete folder", cx);
+    pause(cx, 30).await;
+    let confirmed = menu_click(&history, sure, cx);
+    pause(cx, 30).await;
+    let (names, count, open) = state(cx);
+    report(
+        &mut ok,
+        "\"Sure?\" clicked: the folder is deleted with the query in it, the others stay",
+        confirmed && !open && names == ["Reports"] && count == 2 && filed(&history, "Top customers", cx).is_none(),
+        format!("confirmed {confirmed} open {open} {names:?} count {count} {:?}", filed(&history, "Top customers", cx)),
     );
 
     // The captures: a tree with folders open and shut, then the menu with its submenu.
@@ -871,7 +917,7 @@ async fn folders(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
         }
         pause(cx, 50).await;
         snap("tree", cx);
-        if let Some(p) = named_point(&history, "Top customers", cx).await {
+        if let Some(p) = named_point(&history, "Run marker", cx).await {
             click(cx, p, MouseButton::Right, Modifiers::default());
             if let Some(m) = menu_at(&history, "Move to folder", false, cx) {
                 input(cx, PlatformInput::MouseMove(MouseMoveEvent { position: m, pressed_button: None, modifiers: Modifiers::default() }));

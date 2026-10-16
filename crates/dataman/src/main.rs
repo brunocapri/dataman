@@ -69,6 +69,8 @@ mod tree_menu;
 mod tx_check;
 mod ui;
 mod ui_check;
+mod undo;
+mod undo_check;
 mod update_check;
 mod update_ui;
 mod updates;
