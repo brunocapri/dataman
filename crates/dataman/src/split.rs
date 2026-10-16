@@ -4,7 +4,10 @@
 //! the focus — a click anywhere in a group, or the keyboard focus landing in it, gives it the
 //! focus — and the workspace's `active` tab is always the focused group's: Run, ⌘D, find, the
 //! result zoom, the history and the side panels, an agent's query all act there. The focused
-//! group's tab in front wears an accent line; the other group's a lighter wash.
+//! group's tab in front is a wash over the strip; the other group's a lighter one (never a
+//! line: the focus is not underlined). Each strip scrolls sideways on its own when its tabs
+//! overflow (a trackpad, or the wheel turned into a sideways scroll), keeping the tab in front in
+//! view; each group has its own cell viewer at its right (`cell_viewer`).
 //!
 //! Opening a tab to the side (its menu, ⌘\, the palette) copies it into the other group. A query
 //! tab is a session (a connection, a transaction, results), not a view of a document that two
@@ -15,21 +18,31 @@
 //! moves. ⌥ held while opening a table from the explorer or a favorite opens it in the other
 //! group.
 //!
+//! A tab dragged over a group's editor or results shows where it would land, VS Code's way:
+//! over the other group, all of it lights up (dropped, the tab moves into it); over the only
+//! group, its right or left third lights up its half (dropped, the tab opens a group of its own
+//! on that side, growing in like Open to the Side) and its middle all of it (it stays). The
+//! preview glides between the zones (`motion::RectTween`; at once with Reduce Motion).
+//!
 //! The split opens with the new group growing in from the right while the first narrows
 //! (`motion::SPLIT`), and folds away the same way; with Reduce Motion it is simply there. A
-//! group's × closes the split: its tabs join the other group, none is closed. Closing a group's
+//! group's × closes that group: its tabs join the other group (none is closed), whose tab stays
+//! in front, whichever group had the focus. Closing a group's
 //! last tab, or dragging it out, closes the split too. The seam between the groups resizes them;
 //! a double-click on it shares the width evenly again.
 
 use std::time::Instant;
 
 use dataman_core::groups::{self, Pane};
-use gpui::{App, Context, Entity, EntityId, Focusable, InteractiveElement, IntoElement, MouseButton, Styled, WeakEntity, Window, actions, div};
+use gpui::{
+    AnyElement, App, Context, Div, Entity, EntityId, Focusable, InteractiveElement, IntoElement, MouseButton, Stateful, Styled, WeakEntity, Window, actions, div,
+    relative,
+};
 
-use crate::app::{Drag, Workspace};
-use crate::motion::SplitTween;
+use crate::app::{Drag, DraggedTab, Workspace};
+use crate::motion::{RectTween, SplitTween};
 use crate::tab::QueryTab;
-use crate::theme::{ActiveTheme, px};
+use crate::theme::{ActiveTheme, Pt, px};
 
 actions!(
     split,
@@ -72,12 +85,41 @@ impl Split {
 
 /// The split opening or folding away: the group that grows in or folds (the right one when it
 /// opens), the left share it moves with, the motion, and the tab the folding group showed (drawn
-/// while it folds; gone when it was closed).
+/// while it folds; gone when it was closed) with its cell viewer's width then (0: shut).
 pub(crate) struct SplitMove {
     pub leaving: Pane,
     pub ratio: f32,
     pub tween: SplitTween,
     pub ghost: Option<WeakEntity<QueryTab>>,
+    pub viewer: f32,
+}
+
+/// Where a tab dragged over a group's editor or results would land.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DropZone {
+    /// In that group (from the other one; over the only group, where it is already).
+    Whole,
+    /// A group of its own on that side of the only one.
+    Side(Pane),
+}
+
+impl DropZone {
+    /// Its preview, as shares of the group: left, top, right, bottom.
+    pub fn rect(self) -> [f32; 4] {
+        match self {
+            DropZone::Whole => [0., 0., 1., 1.],
+            DropZone::Side(Pane::Left) => [0., 0., 0.5, 1.],
+            DropZone::Side(Pane::Right) => [0.5, 0., 1., 1.],
+        }
+    }
+}
+
+/// The drop preview gliding from one zone to another within a group, and where it was last
+/// drawn.
+pub(crate) struct DropGlide {
+    pane: Pane,
+    tween: RectTween,
+    shown: [f32; 4],
 }
 
 /// The work surface this frame: how far the split is open (0 … 1), the group that moves while it
@@ -219,9 +261,22 @@ impl Workspace {
         self.split_move.as_ref().and_then(|m| m.tween.at(target, Instant::now())).unwrap_or(target)
     }
 
-    fn move_split(&mut self, from: f32, leaving: Pane, ratio: f32, ghost: Option<WeakEntity<QueryTab>>, cx: &App) {
+    fn move_split(&mut self, from: f32, leaving: Pane, ratio: f32, ghost: Option<WeakEntity<QueryTab>>, viewer: f32, cx: &App) {
         // Reduce motion: the groups are simply there (or gone).
-        self.split_move = (!cx.reduce_motion()).then(|| SplitMove { leaving, ratio, tween: SplitTween::new(from), ghost });
+        self.split_move = (!cx.reduce_motion()).then(|| SplitMove { leaving, ratio, tween: SplitTween::new(from), ghost, viewer });
+    }
+
+    /// One group from now on, `survivor` the one that stays: what is the group's own (its cell
+    /// viewer, its strip's scroll) is the left group's from now on.
+    fn group_survives(&mut self, survivor: Pane) {
+        self.viewer_survives(survivor);
+        if survivor == Pane::Right {
+            self.strip_scroll[0] = self.strip_scroll[1].clone();
+        }
+        self.strip_scroll[1] = gpui::ScrollHandle::new();
+        for f in &self.strip_front {
+            f.set(None);
+        }
     }
 
     /// Two groups from now on: the right one grows in from the window's side.
@@ -229,7 +284,7 @@ impl Workspace {
         let from = self.split_progress();
         let ratio = s.ratio;
         self.split = Some(s);
-        self.move_split(from, Pane::Right, ratio, None, cx);
+        self.move_split(from, Pane::Right, ratio, None, 0., cx);
     }
 
     /// Group `pane` has no tab left (its last one closed, or dragged out): one group from now on,
@@ -237,20 +292,30 @@ impl Workspace {
     pub(crate) fn split_emptied(&mut self, pane: Pane, ghost: Option<WeakEntity<QueryTab>>, cx: &App) {
         let from = self.split_progress();
         let Some(s) = self.split.take() else { return };
-        self.move_split(from, pane, s.ratio, ghost, cx);
+        let viewer = self.viewers[pane.index()].now();
+        self.move_split(from, pane, s.ratio, ghost, viewer, cx);
+        self.group_survives(pane.other());
     }
 
-    /// A group's ×: one group from now on, its tabs joining the other's (after them, as they sat
-    /// side by side); the other group's tab stays in front, and takes the focus.
+    /// A group's ×: group `pane` closes, one group from now on, its tabs joining the other's
+    /// (after them, as they sat side by side). The other group's tab stays in front; it takes
+    /// the focus when the closing group had it (else the keys stay where they are).
     pub(crate) fn close_group(&mut self, pane: Pane, window: &mut Window, cx: &mut Context<Self>) {
         let from = self.split_progress();
         let Some(s) = self.split.clone() else { return };
-        let Some(front) = self.active_tab().map(|t| t.entity_id()) else { return };
-        let (stay, leave) = if s.focus == pane { (s.other, front) } else { (front, s.other) };
-        let ghost = self.tabs.iter().find(|t| t.entity_id() == leave).map(|t| t.downgrade());
+        // Each group's tab in front, by group (whichever has the focus).
+        let Some(stay) = self.front_of(pane.other()).map(|t| t.entity_id()) else { return };
+        let ghost = self.front_of(pane).map(|t| t.downgrade());
+        let front = self.active_tab().map(|t| t.entity_id());
+        let viewer = self.viewers[pane.index()].now();
         self.tabs = groups::merged(&self.tabs, |t| s.right.contains(&t.entity_id()));
+        // `active` follows its tab through the merge.
+        if let Some(ix) = front.and_then(|f| self.index_of(f)) {
+            self.active = ix;
+        }
         self.split = None;
-        self.move_split(from, pane, s.ratio, ghost, cx);
+        self.move_split(from, pane, s.ratio, ghost, viewer, cx);
+        self.group_survives(pane.other());
         let Some(ix) = self.index_of(stay) else { return };
         if s.focus == pane {
             self.activate(ix, window, cx);
@@ -359,6 +424,141 @@ impl Workspace {
             self.activate(ix, window, cx);
         }
         cx.notify();
+    }
+
+    /// Where tab `id` would land dropped at `pos` on group `pane`'s editor or results
+    /// (`bounds`); `None`: nowhere (its own group beside another, the split moving).
+    fn editor_zone(&self, id: EntityId, pane: Pane, pos: gpui::Point<gpui::Pixels>, bounds: gpui::Bounds<gpui::Pixels>) -> Option<DropZone> {
+        if self.split_move.is_some() || self.index_of(id).is_none() {
+            return None;
+        }
+        match &self.split {
+            Some(s) => (s.pane_of(id) != pane).then_some(DropZone::Whole),
+            // The only tab: nothing to split.
+            None if self.tabs.len() < 2 => None,
+            None => {
+                let at = ((pos.x - bounds.left()).pt() / bounds.size.width.pt().max(1.)).clamp(0., 1.);
+                Some(if at > 2. / 3. {
+                    DropZone::Side(Pane::Right)
+                } else if at < 1. / 3. {
+                    DropZone::Side(Pane::Left)
+                } else {
+                    DropZone::Whole
+                })
+            }
+        }
+    }
+
+    /// The preview over group `pane` points at `zone` now (`None`: not over it any more). A move
+    /// between zones of the same group glides there.
+    fn set_editor_drop(&mut self, pane: Pane, zone: Option<DropZone>, cx: &mut Context<Self>) {
+        let was = self.editor_drop;
+        let now = match zone {
+            Some(z) => Some((pane, z)),
+            // Off this group: its preview goes (another group's stays).
+            None if was.is_some_and(|(p, _)| p == pane) => None,
+            None => return,
+        };
+        if now == was {
+            return;
+        }
+        self.editor_drop_glide = match (was, now) {
+            (Some((p, a)), Some((q, b))) if p == q && a != b && !cx.reduce_motion() => {
+                let from = self.editor_drop_glide.as_ref().filter(|g| g.pane == p).map_or(a.rect(), |g| g.shown);
+                Some(DropGlide { pane: q, tween: RectTween::new(from), shown: from })
+            }
+            _ => None,
+        };
+        self.editor_drop = now;
+        cx.notify();
+    }
+
+    /// A group's editor and results as a drop target for a dragged tab (`group`: the group's
+    /// element, `relative`).
+    pub(crate) fn editor_drop_target(&self, group: Stateful<Div>, pane: Pane, cx: &mut Context<Self>) -> Stateful<Div> {
+        group
+            .on_drag_move(cx.listener(move |w, ev: &gpui::DragMoveEvent<DraggedTab>, _, cx| {
+                let pos = ev.event.position;
+                let id = ev.dragged_item().downcast_ref::<DraggedTab>().map(|d| d.0);
+                let zone = id.filter(|_| ev.bounds.contains(&pos)).and_then(|id| w.editor_zone(id, pane, pos, ev.bounds));
+                w.set_editor_drop(pane, zone, cx);
+            }))
+            .on_drop(cx.listener(move |w, d: &DraggedTab, window, cx| w.drop_on_editor(d.0, pane, window, cx)))
+    }
+
+    /// Tab `id` dropped on group `pane`'s editor or results: into that group, or a group of its
+    /// own beside the only one (the split opening as with Open to the Side).
+    fn drop_on_editor(&mut self, id: EntityId, pane: Pane, window: &mut Window, cx: &mut Context<Self>) {
+        let zone = self.editor_drop.take().filter(|(p, _)| *p == pane).map(|(_, z)| z);
+        self.editor_drop_glide = None;
+        self.tab_drop = None;
+        match zone {
+            Some(DropZone::Whole) if self.split.is_some() => self.move_into(id, pane, None, window, cx),
+            Some(DropZone::Side(Pane::Right)) => self.move_into(id, Pane::Right, None, window, cx),
+            Some(DropZone::Side(Pane::Left)) => self.split_off_left(id, window, cx),
+            _ => {
+                if let Some(ix) = self.index_of(id) {
+                    self.activate(ix, window, cx);
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    /// Tab `id` in a group of its own at the left of the only one, which becomes the right group
+    /// (its tab in front stays there): the left group grows in from the window's side.
+    fn split_off_left(&mut self, id: EntityId, window: &mut Window, cx: &mut Context<Self>) {
+        if self.split.is_some() {
+            return;
+        }
+        let ids: Vec<EntityId> = self.tabs.iter().map(|t| t.entity_id()).collect();
+        let front = self.active_tab().map(|t| t.entity_id());
+        let Some(other) = (if front == Some(id) { groups::neighbour(&ids, id) } else { front }) else { return };
+        let Some(ix) = self.index_of(id) else { return };
+        // First in the list: the left group's strip reads as the two sit side by side.
+        let tab = self.tabs.remove(ix);
+        self.tabs.insert(0, tab);
+        let from = self.split_progress();
+        let right = ids.into_iter().filter(|k| *k != id).collect();
+        self.split = Some(Split { right, focus: Pane::Left, other, ratio: groups::RATIO });
+        self.move_split(from, Pane::Left, groups::RATIO, None, 0., cx);
+        self.active = 0;
+        self.activate(0, window, cx);
+        cx.notify();
+    }
+
+    /// The preview over group `pane` of where the dragged tab would land: its zone lit, gliding
+    /// from the one before.
+    pub(crate) fn render_editor_drop(&mut self, pane: Pane, window: &mut Window, cx: &App) -> Option<AnyElement> {
+        let (p, zone) = self.editor_drop?;
+        if p != pane || !cx.has_active_drag() {
+            return None;
+        }
+        let target = zone.rect();
+        let r = match &mut self.editor_drop_glide {
+            Some(g) if g.pane == pane => match g.tween.at(target, Instant::now()) {
+                Some(r) => {
+                    window.request_animation_frame();
+                    g.shown = r;
+                    r
+                }
+                None => target,
+            },
+            _ => target,
+        };
+        let t = cx.theme();
+        Some(
+            div()
+                .absolute()
+                .left(relative(r[0]))
+                .top(relative(r[1]))
+                .w(relative(r[2] - r[0]))
+                .h(relative(r[3] - r[1]))
+                .bg(t.acc.opacity(0.14))
+                .border_1()
+                .border_color(t.acc.opacity(0.6))
+                .into_any_element(),
+        )
     }
 
     /// The seam dragged to `x` (window points): the left group's share, each group keeping

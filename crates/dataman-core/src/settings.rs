@@ -99,34 +99,6 @@ impl<'de> Deserialize<'de> for UiFont {
     }
 }
 
-/// How a run with several result sets shows them: a strip of tabs with one result on screen at a
-/// time (the default), or every result's grid one under the other. A value the app does not know
-/// reads as the default.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ResultLayout {
-    #[default]
-    Tabs,
-    Stacked,
-}
-
-impl ResultLayout {
-    pub fn is_default(&self) -> bool {
-        *self == ResultLayout::default()
-    }
-}
-
-impl<'de> Deserialize<'de> for ResultLayout {
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
-        // Never fails: a layout from a newer version must not reset the other keys.
-        let v = toml::Value::deserialize(d).ok();
-        Ok(match v.as_ref().and_then(|v| v.as_str()) {
-            Some("stacked") => ResultLayout::Stacked,
-            _ => ResultLayout::Tabs,
-        })
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -154,9 +126,6 @@ pub struct Settings {
     pub page_size: usize,
     /// Grid edits: ⌘S opens the review sheet first (`false`: ⌘S commits right away).
     pub confirm_commit: bool,
-    /// Several result sets of one run: tabs or stacked. Written only when not the default.
-    #[serde(skip_serializing_if = "ResultLayout::is_default")]
-    pub result_layout: ResultLayout,
     /// Where the export dialog proposes to save (`None`: ~/Downloads).
     pub export_dir: Option<String>,
     /// No explorer slide and no pop on a clicked value or a find: highlights appear at once
@@ -239,7 +208,6 @@ impl Default for Settings {
             prefetch_rows: crate::result::PREFETCH,
             page_size: 1000,
             confirm_commit: true,
-            result_layout: ResultLayout::Tabs,
             export_dir: None,
             reduce_motion: false,
             keyword_case: crate::format::KeywordCase::Upper,
@@ -489,28 +457,16 @@ mod tests {
     }
 
     #[test]
-    fn result_layout_defaults_roundtrips_and_is_omitted_when_default() {
+    fn a_removed_result_layout_key_still_loads() {
+        // Older versions wrote `result_layout` (results stacked or in tabs): it is ignored, and
+        // the other keys load.
         let dir = tempfile::tempdir().unwrap();
         let dirs = Dirs::at(dir.path().join("dataman"));
-        // No file, and an older file without the key: tabs.
-        assert_eq!(SettingsStore::open(&dirs).get().result_layout, ResultLayout::Tabs);
         std::fs::create_dir_all(&dirs.config).unwrap();
-        std::fs::write(dirs.settings_file(), "theme = \"light\"\n").unwrap();
-        assert_eq!(SettingsStore::open(&dirs).get().result_layout, ResultLayout::Tabs);
-        // The default is not written; stacked is, and reads back.
-        SettingsStore::open(&dirs).update(|_| {}).unwrap();
-        assert!(!std::fs::read_to_string(dirs.settings_file()).unwrap().contains("result_layout"));
-        SettingsStore::open(&dirs).update(|s| s.result_layout = ResultLayout::Stacked).unwrap();
-        let text = std::fs::read_to_string(dirs.settings_file()).unwrap();
-        assert!(text.contains("result_layout = \"stacked\""), "{text}");
-        assert_eq!(SettingsStore::open(&dirs).get().result_layout, ResultLayout::Stacked);
-        SettingsStore::open(&dirs).update(|s| s.result_layout = ResultLayout::Tabs).unwrap();
-        assert!(!std::fs::read_to_string(dirs.settings_file()).unwrap().contains("result_layout"));
-        // An unknown value or a wrong type is the default, and the other keys still load.
-        for v in ["\"grid\"", "3", "[\"stacked\"]"] {
+        for v in ["\"stacked\"", "\"tabs\"", "3"] {
             std::fs::write(dirs.settings_file(), format!("theme = \"light\"\nresult_layout = {v}\npage_size = 200\n")).unwrap();
             let s = SettingsStore::open(&dirs).get();
-            assert_eq!((s.result_layout, s.theme, s.page_size), (ResultLayout::Tabs, ThemePref::Light, 200), "{v}");
+            assert_eq!((s.theme, s.page_size), (ThemePref::Light, 200), "{v}");
         }
     }
 

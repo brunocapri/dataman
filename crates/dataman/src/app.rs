@@ -276,6 +276,9 @@ pub(crate) enum Drag {
     Split,
     /// The seam between two editor groups (`split`).
     Groups,
+    /// A group's cell viewer's left edge (`cell_viewer`): where the press was, and the width
+    /// then.
+    Viewer { pane: Pane, x0: f32, w0: f32 },
 }
 
 /// A query tab on the move (GPUI's drag; `dnd`).
@@ -394,8 +397,6 @@ pub struct Workspace {
     /// What the history's panel showed last frame (`None`: nothing; `Some(false)`: a view that
     /// does not slide), to see the history open or shut.
     side_was: Option<bool>,
-    /// The cell viewer (⇧Space), beside the result; not a dock's panel.
-    pub(crate) viewer_open: bool,
     /// Where each panel sits (`dock`), the panels settling into a new place, a panel being
     /// dragged, the docks as laid out this frame, and a panel's right-click menu (the panel,
     /// where the pointer was).
@@ -423,6 +424,18 @@ pub struct Workspace {
     pub(crate) tab_drop_pane: Pane,
     /// The right group's tabs' bounds (`tab_bounds` holds the left group's).
     pub(crate) tab_bounds_right: std::rc::Rc<std::cell::RefCell<Vec<gpui::Bounds<gpui::Pixels>>>>,
+    /// Each group's strip (by `Pane::index`): its tabs scroll sideways on their own, the tab in
+    /// front scrolled into view when it changes (the one last seen); its parts as last laid out
+    /// (the tabs, +, the room after them, the group's ×: the checks).
+    pub(crate) strip_scroll: [gpui::ScrollHandle; 2],
+    pub(crate) strip_front: [std::cell::Cell<Option<EntityId>>; 2],
+    pub(crate) strip_parts: std::rc::Rc<std::cell::RefCell<[Vec<gpui::Bounds<gpui::Pixels>>; 2]>>,
+    /// Each group's cell viewer (`cell_viewer`), by `Pane::index`.
+    pub(crate) viewers: [crate::cell_viewer::CellViewer; 2],
+    /// A tab dragged over a group's editor or results: the group and where it would land
+    /// (`split`), and its preview gliding between the zones.
+    pub(crate) editor_drop: Option<(Pane, crate::split::DropZone)>,
+    pub(crate) editor_drop_glide: Option<crate::split::DropGlide>,
     /// Two editor groups side by side (`split`): the second one and the focus, the split opening
     /// or folding, how it stands this frame, the group the next new tab goes to (`None`: the
     /// focused one), ⌥ held on the last press (⌥-click opens to the side), and the groups as laid
@@ -447,6 +460,8 @@ pub struct Workspace {
     /// open it again).
     pub(crate) conn_menu_shut: Option<Instant>,
     pub(crate) picker_bounds: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
+    /// Each group's toolbar as last laid out, by `Pane::index` (the checks).
+    pub(crate) toolbar_parts: std::rc::Rc<std::cell::RefCell<[Vec<gpui::Bounds<gpui::Pixels>>; 2]>>,
     /// A drag started on the empty title bar: the next move drags the window.
     pub(crate) title_drag: bool,
     /// Show the focus ring (after keyboard navigation; a click hides it).
@@ -614,7 +629,6 @@ impl Workspace {
             side_w: metrics::SIDE_W,
             side_tween: None,
             side_was: None,
-            viewer_open: false,
             layout: Default::default(),
             dock_moves: Vec::new(),
             panel_drag: None,
@@ -630,6 +644,12 @@ impl Workspace {
             tab_drop: None,
             tab_drop_pane: Pane::Left,
             tab_bounds_right: Default::default(),
+            strip_scroll: Default::default(),
+            strip_front: Default::default(),
+            strip_parts: Default::default(),
+            viewers: Default::default(),
+            editor_drop: None,
+            editor_drop_glide: None,
             split: None,
             split_move: None,
             split_now: None,
@@ -643,6 +663,7 @@ impl Workspace {
             conn_menu: false,
             conn_menu_shut: None,
             picker_bounds: Default::default(),
+            toolbar_parts: Default::default(),
             title_drag: false,
             focus_visible: false,
             shortcuts_open: false,
@@ -792,7 +813,13 @@ impl Workspace {
         let grid = tab.read(cx).grid.clone();
         let from = tab.downgrade();
         cx.subscribe_in(&grid, window, move |w, _, ev: &GridEvent, window, cx| match ev {
-            GridEvent::ToggleViewer => w.toggle_viewer(cx),
+            // The cell viewer of the group the tab is in.
+            GridEvent::ToggleViewer => {
+                if let Some(from) = from.upgrade() {
+                    let pane = w.pane_of(from.entity_id());
+                    w.toggle_viewer(pane, cx);
+                }
+            }
             GridEvent::FollowFk(j) => {
                 if let Some(from) = from.upgrade() {
                     w.follow_reference(&from, j, window, cx);
@@ -1799,12 +1826,6 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Shows or hides the cell viewer (⇧Space).
-    pub(crate) fn toggle_viewer(&mut self, cx: &mut Context<Self>) {
-        self.viewer_open = !self.viewer_open;
-        cx.notify();
-    }
-
     /// Opens or closes a registered server panel in the side panel (LAR's, from the toolbar or
     /// ⌥1), at the panel's width when it gives one, bound to the tab's connection.
     pub(crate) fn toggle_server_panel(&mut self, id: &'static str, window: &mut Window, cx: &mut Context<Self>) {
@@ -2488,6 +2509,7 @@ impl Workspace {
             Drag::Dock(dock, col) => self.resize_column(dock, col, ev.position.x.pt()),
             Drag::Stack(dock, col) => self.resize_stack(dock, col, ev.position.y.pt()),
             Drag::Groups => self.resize_groups(ev.position.x.pt()),
+            Drag::Viewer { pane, x0, w0 } => self.resize_viewer(pane, w0 + x0 - ev.position.x.pt()),
             Drag::Split => {
                 let top = metrics::TITLE_H + metrics::TOOLBAR_H;
                 let column = self.work_column_h(window);

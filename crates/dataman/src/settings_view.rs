@@ -4,7 +4,7 @@
 //!
 //! Sections: Appearance (theme, the UI font, window translucency, code font size, reduce motion), Editor
 //! (the formatter's keyword case and indent), Results grid
-//! (rows fetched ahead, review before commit, several results as tabs or stacked), Export
+//! (rows fetched ahead, review before commit), Export
 //! (default folder), MCP (agents' access,
 //! agent queries in tabs, rows per write and per call, the `claude mcp add` command, the log,
 //! each connection's permission, its allowed queries and YOLO), Keyboard (the remappable commands: a click
@@ -29,7 +29,7 @@ use gpui::{
 };
 use crate::theme::px;
 use dataman_core::format::KeywordCase;
-use dataman_core::{Core, ResultLayout, Settings, ThemePref, Translucency, UiFont};
+use dataman_core::{Core, Settings, ThemePref, Translucency, UiFont};
 
 use crate::assets::{Icon, icon};
 use crate::input::{InputEvent, TextInput};
@@ -95,7 +95,6 @@ enum Row {
     Prefetch,
     PageSize,
     ConfirmCommit,
-    ResultLayout,
     ExportDir,
     KeywordCase,
     Indent,
@@ -111,7 +110,7 @@ enum Row {
     CrashReports,
 }
 
-const ROWS: [(Row, Section, &str, &str); 23] = [
+const ROWS: [(Row, Section, &str, &str); 22] = [
     (Row::Theme, Section::Appearance, "Theme", "dark light system"),
     (Row::Font, Section::Appearance, "Font", "typeface family monospace geist lilex zed jetbrains"),
     (Row::Translucency, Section::Appearance, "Window translucency", "transparency blur opaque"),
@@ -123,7 +122,6 @@ const ROWS: [(Row, Section, &str, &str); 23] = [
     (Row::Prefetch, Section::Grid, "Rows fetched ahead", "prefetch fetch"),
     (Row::PageSize, Section::Grid, "Rows per table page", "page paging table data view"),
     (Row::ConfirmCommit, Section::Grid, "Review edits before commit", "commit edit sql"),
-    (Row::ResultLayout, Section::Grid, "Several results", "multiple result sets select statements script stacked tabs layout"),
     (Row::ExportDir, Section::Export, "Default export folder", "downloads directory"),
     (Row::McpAccess, Section::Mcp, "Agent access", "mcp ai agents claude"),
     (Row::McpTabs, Section::Mcp, "Agent queries in tabs", "mcp visible open query tab agent"),
@@ -146,7 +144,6 @@ impl Row {
             Row::McpWriteLimit => "An agent's write changing more rows than this waits for your Allow before it commits.",
             Row::McpRows => "The most rows an agent receives per query. The full result stays in its tab.",
             Row::McpClaude => "Copies the command that adds Dataman to Claude Code.",
-            Row::ResultLayout => "A run that returns several result sets: one at a time in tabs, or every grid one under the other.",
             _ => return None,
         })
     }
@@ -581,13 +578,6 @@ impl SettingsView {
         crate::updates::set_auto(on, cx);
     }
 
-    /// Open tabs change at once (`result_stack`).
-    fn set_result_layout(&mut self, layout: ResultLayout, cx: &mut Context<Self>) {
-        self.save(|s| s.result_layout = layout, cx);
-        crate::result_stack::set_layout(layout);
-        cx.refresh_windows();
-    }
-
     fn set_prefetch(&mut self, rows: usize, cx: &mut Context<Self>) {
         self.save(|s| s.prefetch_rows = rows, cx);
         dataman_core::result::set_prefetch(rows);
@@ -771,14 +761,6 @@ impl SettingsView {
                 ui::segmented(t)
                     .child(ui::segment(t, "cc-on", "Review first", on).on_click(cx.listener(|v, _, _, cx| v.save(|s| s.confirm_commit = true, cx))))
                     .child(ui::segment(t, "cc-off", "Commit at once", !on).on_click(cx.listener(|v, _, _, cx| v.save(|s| s.confirm_commit = false, cx))))
-                    .into_any_element()
-            }
-            Row::ResultLayout => {
-                let cur = s.result_layout;
-                ui::segmented(t)
-                    .children([(ResultLayout::Tabs, "Tabs"), (ResultLayout::Stacked, "Stacked")].into_iter().enumerate().map(|(i, (l, label))| {
-                        ui::segment(t, ("rl", i), label, cur == l).on_click(cx.listener(move |v, _, _, cx| v.set_result_layout(l, cx)))
-                    }))
                     .into_any_element()
             }
             Row::ExportDir => {

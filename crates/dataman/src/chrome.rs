@@ -25,12 +25,24 @@ use crate::tab::{ItemState, QueryTab};
 use crate::theme::{ActiveTheme, PIXEL, Theme, metrics};
 use crate::ui::{self, Btn};
 
+/// Below this width a group's toolbar drops its keycaps (Run's, History's): the connection
+/// picker keeps room for its name.
+const COMPACT_W: f32 = 440.;
+
+/// The connection picker's least width: its chip, a few letters, the chevron.
+const PICKER_MIN: f32 = 64.;
+
+/// The least width a query tab gives way to before its strip scrolls.
+const TAB_MIN: f32 = 120.;
+
 /// What the toolbar and result bar need from a group's tab in front, read once per frame.
 struct TabView {
     /// The editor group it is shown in, and whether that group has the focus (the popups, the
     /// bounds the checks read and the focus ring are the focused group's).
     pane: Pane,
     focused: bool,
+    /// The group's editor and results are narrow (its toolbar drops the keycaps).
+    compact: bool,
     conn: Option<Arc<Connection>>,
     /// The tab's database, the connection a restored tab waits for, and the agent whose tab it
     /// is (as its MCP client introduced itself).
@@ -58,11 +70,12 @@ pub(crate) fn fetch_all_label(rs: Option<&dataman_core::ResultSet>) -> SharedStr
     }
 }
 
-fn tab_view(tab: &QueryTab, pane: Pane, focused: bool) -> TabView {
+fn tab_view(tab: &QueryTab, pane: Pane, focused: bool, compact: bool) -> TabView {
     let results = tab.result_tabs();
     TabView {
         pane,
         focused,
+        compact,
         conn: tab.connection().cloned(),
         db: tab.database().to_string(),
         want: tab.want.clone(),
@@ -304,31 +317,65 @@ impl Workspace {
         v
     }
 
-    /// A group's strip: its tabs (`tabs`, indexes into `tabs`), + for a new tab in that group, and
-    /// at its end the split's control: Open to the Side with one group, the group's × with two.
-    /// `width`: a fixed width (the left group's, up to the seam), else the room left.
+    /// A group's strip: its tabs (`tabs`, indexes into `tabs`), scrolling sideways on their
+    /// own when they overflow, + for a new tab in that group, and at its end the group's × while
+    /// there are two. `width`: a fixed width (the left group's, up to the seam), else the room
+    /// left.
     fn render_strip(&self, pane: Pane, tabs: Vec<usize>, width: Option<f32>, pad: f32, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let stop = |_: &gpui::MouseDownEvent, _: &mut Window, cx: &mut gpui::App| cx.stop_propagation();
         let n = tabs.len();
         let els: Vec<AnyElement> = tabs.iter().enumerate().map(|(gi, &i)| self.render_tab(i, gi, n, pane, t, cx).into_any_element()).collect();
         let bounds = if pane == Pane::Left { self.tab_bounds.clone() } else { self.tab_bounds_right.clone() };
-        let control = match &self.split {
-            Some(_) => ui::icon_button(t, "close-group", Icon::Close, 22., 12.)
+        let scroll = self.strip_scroll[pane.index()].clone();
+        // The tab in front came to the front since the last frame (a click, a new tab, ⌃Tab, a
+        // move): scrolled into view.
+        let front = match &self.split {
+            Some(_) => self.front_of(pane),
+            None => self.active_tab(),
+        }
+        .map(|t| t.entity_id());
+        let seen = &self.strip_front[pane.index()];
+        if seen.get() != front {
+            seen.set(front);
+            if let Some(gi) = front.and_then(|f| tabs.iter().position(|&i| self.tabs[i].entity_id() == f)) {
+                scroll.scroll_to_item(gi);
+            }
+        }
+        let control = self.split.is_some().then(|| {
+            ui::icon_button(t, "close-group", Icon::Close, 22., 12.)
                 .tooltip(ui::tooltip("Close group", Some("its tabs join the other group"), None))
                 .on_mouse_down(MouseButton::Left, stop)
-                .on_click(cx.listener(move |w, _, window, cx| w.close_group(pane, window, cx))),
-            None => ui::icon_button(t, "open-to-side", Icon::Split, 22., 13.)
-                .tooltip(ui::tooltip("Open to the Side", Some("a copy of this tab in a second group"), crate::keymap::key("open_to_side").as_deref()))
-                .on_mouse_down(MouseButton::Left, stop)
-                .on_click(cx.listener(|w, _, window, cx| {
-                    if let Some(tab) = w.active_tab().cloned() {
-                        w.open_to_side(&tab, window, cx);
-                    }
-                })),
-        };
+                .on_click(cx.listener(move |w, _, window, cx| w.close_group(pane, window, cx)))
+        });
+        let parts = self.strip_parts.clone();
+        let offset = scroll.clone();
+        let strip_tabs = div()
+            // Where each tab is, scrolled: the gap a dragged one points at (and the checks). The
+            // scroll handle has them (a tracked scroller hands its children's bounds nowhere else).
+            .on_children_prepainted(move |_, _, _| {
+                let dx = offset.offset().x;
+                *bounds.borrow_mut() = (0..offset.children_count())
+                    .filter_map(|i| offset.bounds_for_item(i))
+                    .map(|mut b| {
+                        b.origin.x += dx;
+                        b
+                    })
+                    .collect();
+            })
+            .id(("strip-tabs", pane.index()))
+            .min_w_0()
+            .flex_shrink_1()
+            .h_full()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(2.))
+            // The wheel scrolls it sideways too (a vertical turn reads as a sideways one).
+            .overflow_x_scroll()
+            .track_scroll(&scroll)
+            .children(els);
         div()
-            // Where each tab is: the gap a dragged one points at (and the checks).
-            .on_children_prepainted(move |b, _, _| *bounds.borrow_mut() = b)
+            .on_children_prepainted(move |b, _, _| parts.borrow_mut()[pane.index()] = b)
             .id(("strip", pane.index()))
             .when_some(width, |d, w| d.w(px(w)).flex_none())
             .when(width.is_none(), |d| d.flex_1())
@@ -339,7 +386,6 @@ impl Workspace {
             .flex()
             .flex_row()
             .items_center()
-            .gap(px(2.))
             .overflow_hidden()
             // A press on a group's strip gives that group the focus.
             .capture_any_mouse_down(cx.listener(move |w, _, window, cx| w.focus_pane(pane, window, cx)))
@@ -370,10 +416,10 @@ impl Workspace {
                 }
             }))
             .on_drop(cx.listener(|w, d: &crate::app::DraggedTab, window, cx| w.drop_tab(d.0, window, cx)))
-            .children(els)
+            .child(strip_tabs)
             .child(
                 ui::icon_button(t, "new-tab", Icon::Plus, 26., 14.)
-                    .ml(px(4.))
+                    .ml(px(6.))
                     .on_mouse_down(MouseButton::Left, stop)
                     .on_click(cx.listener(move |w, _, window, cx| {
                         w.focus_pane(pane, window, cx);
@@ -381,14 +427,13 @@ impl Workspace {
                     })),
             )
             .child(div().flex_1())
-            .child(control)
+            .children(control)
             .into_any_element()
     }
 
     /// Tab `i` of the strip of group `pane`, `gi` of its `n` there.
     fn render_tab(&self, i: usize, gi: usize, n: usize, pane: Pane, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         // In front of the focused group (the active tab), or of the other one.
-        let split = self.split.is_some();
         let focused_front = i == self.active;
         let other_front = self.split.as_ref().is_some_and(|s| s.other == self.tabs[i].entity_id());
         let active = focused_front || other_front;
@@ -494,7 +539,8 @@ impl Workspace {
             .group(group.clone())
             .relative()
             .h(px(metrics::TAB_H))
-            .min_w(px(60.))
+            // They give way down to a readable width, then the strip scrolls.
+            .min_w(px(TAB_MIN))
             .max_w(px(220.))
             .flex_shrink_1()
             .pl(px(10.))
@@ -505,12 +551,11 @@ impl Workspace {
             .gap(px(7.))
             // The tabs sit on the work column's own fill: the active one is a wash over it
             // (Zeron's selected tab), the others light up on hover. With two editor groups the
-            // other group's tab in front is a lighter wash, and the focused group's carries an
-            // accent line along its foot.
+            // other group's tab in front is a lighter wash: the focus is told by the wash alone,
+            // never by a line.
             .when(focused_front, |d| d.bg(t.prs).text_color(t.tx))
             .when(other_front, |d| d.bg(t.hov).text_color(t.tx2))
             .when(!active, |d| d.text_color(t.tx3).hover(move |s| s.bg(hov).text_color(tx2)))
-            .when(focused_front && split, |d| d.child(div().absolute().left_0().right_0().bottom_0().h(px(2.)).bg(t.acc)))
             // Not the title bar's window move: a press may start a drag (`dnd`); ⌃-click is the
             // right click.
             .on_mouse_down(MouseButton::Left, cx.listener(move |w, ev: &gpui::MouseDownEvent, _, cx| {
@@ -618,23 +663,37 @@ impl Workspace {
     // The work surface.
 
     pub(crate) fn render_work(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        // A tab drag that ended anywhere (dropped elsewhere, cancelled): no preview left.
+        if !cx.has_active_drag() {
+            self.editor_drop = None;
+            self.editor_drop_glide = None;
+        }
+        let c = self.frame_now.center;
         let Some(f) = self.split_now else {
             let Some(tab) = self.active_tab().cloned() else { return div().size_full() };
-            return self.render_group(tab, Pane::Left, true, window, cx);
+            let body = self.render_group(tab, Pane::Left, true, c.w, false, window, cx);
+            let preview = self.render_editor_drop(Pane::Left, window, cx);
+            let group = div().id(("group", 0usize)).size_full().relative().child(body).children(preview);
+            return div().size_full().child(self.editor_drop_target(group, Pane::Left, cx));
         };
         // Two editor groups (`split`) side by side, a hairline between them. While the split
         // opens or folds, the moving group keeps its full width inside, clipped, and rides the
         // seam; the other one narrows or widens.
         let t = cx.theme();
-        let ((lw, _), (full_l, full_r)) = f.widths(self.frame_now.center.w);
+        let ((lw, _), (full_l, full_r)) = f.widths(c.w);
         let moving = f.open < 1.;
         let bounds = self.pane_bounds.clone();
         let mut row = div().size_full().relative().flex().flex_row().on_children_prepainted(move |b, _, _| *bounds.borrow_mut() = b);
         for pane in [Pane::Left, Pane::Right] {
             let (tab, focused) = self.pane_view(pane);
-            let body = tab.map(|tab| self.render_group(tab, pane, focused, window, cx));
             let full = if pane == Pane::Left { full_l } else { full_r };
+            // Folding away, the group that stays is the only one already: its state (its cell
+            // viewer, its strip) is the left group's; the folding one shows what it showed.
+            let ghost = self.split.is_none() && pane == f.leaving;
+            let state = if self.split.is_none() && !ghost { Pane::Left } else { pane };
+            let body = tab.map(|tab| self.render_group(tab, state, focused, full, ghost, window, cx));
             let clip = moving && pane == f.leaving;
+            let preview = self.render_editor_drop(pane, window, cx);
             let group = div()
                 .id(("group", pane.index()))
                 .h_full()
@@ -650,8 +709,9 @@ impl Workspace {
                     } else {
                         b.into_any_element()
                     }
-                }));
-            row = row.child(group);
+                }))
+                .children(preview);
+            row = row.child(self.editor_drop_target(group, pane, cx));
             if pane == Pane::Left {
                 row = row.child(div().w(px(crate::split::SEAM)).h_full().flex_none().bg(t.line));
             }
@@ -668,24 +728,39 @@ impl Workspace {
         if pane == Pane::Left { &self.messages } else { &self.messages_right }
     }
 
-    /// An editor group: `tab`'s Run row, editor and results (or its activity monitor);
-    /// `focused`: the group has the focus.
-    fn render_group(&mut self, tab: gpui::Entity<QueryTab>, pane: Pane, focused: bool, window: &mut Window, cx: &mut Context<Self>) -> Div {
+    /// An editor group: `tab`'s Run row, editor and results (or its activity monitor), and the
+    /// group's cell viewer at its right; `focused`: the group has the focus; `group_w`: its
+    /// width; `ghost`: it is folding away (its viewer as it was then).
+    #[allow(clippy::too_many_arguments)]
+    fn render_group(&mut self, tab: gpui::Entity<QueryTab>, pane: Pane, focused: bool, group_w: f32, ghost: bool, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let t = cx.theme();
         let (editor, grid, has_run) = {
             let t = tab.read(cx);
             (t.editor.clone(), t.grid.clone(), t.has_run)
         };
-        let view = tab_view(tab.read(cx), pane, focused);
+        let region = (self.focus_visible && focused).then(|| self.focused_region(window, cx)).flatten();
+        // The work column paints the translucent fill once (app.rs); the regions here are
+        // transparent, separated by straight hairlines, and flush: no corner to keep clear.
+        let monitor = tab.read(cx).monitor.clone();
+        // The group's cell viewer (not beside an activity monitor: it has the whole group).
+        let viewer = if monitor.is_some() {
+            None
+        } else {
+            let (w, full) = if ghost {
+                let w = self.split_move.as_ref().map_or(0., |m| m.viewer);
+                (w, w)
+            } else {
+                self.viewer_width(pane, group_w, window)
+            };
+            (w > 0.5).then(|| (w, self.render_group_viewer(&tab, pane, w, full, cx)))
+        };
+        let view = tab_view(tab.read(cx), pane, focused, group_w - viewer.as_ref().map_or(0., |v| v.0) < COMPACT_W);
+        let viewer = viewer.map(|v| v.1);
         // The TX chip's age changes once a minute: one wake-up per minute while a transaction is
         // open, none otherwise.
         if focused {
             self.schedule_tx_tick(view.tx.since.filter(|_| view.tx.status.is_open()), cx);
         }
-        let region = (self.focus_visible && focused).then(|| self.focused_region(window, cx)).flatten();
-        // The work column paints the translucent fill once (app.rs); the regions here are
-        // transparent, separated by straight hairlines, and flush: no corner to keep clear.
-        let monitor = tab.read(cx).monitor.clone();
         // The result zoom: another side view opening ends it (that view shows).
         let side_now = crate::app::side_id(&self.side);
         if focused && tab.read(cx).zoomed && side_now.is_some() && side_now != tab.read(cx).zoom_side {
@@ -719,10 +794,7 @@ impl Workspace {
                 Some(Key::Stmt(i)) => tab.read(cx).result().filter(|r| crate::messages::shows_log(r)).map(|r| (i, r.clone())),
                 _ => None,
             };
-            // Several results stacked (a setting): every grid in the grid's place.
-            let plain = view.shown != Some(Key::Messages) && !failed_view && live.is_none() && !shows_plan && log.is_none();
-            let stack = if plain { crate::result_stack::render(&tab, &t, cx) } else { None };
-            let strip = (view.results.len() > 1 && !stack.as_ref().is_some_and(|s| s.alone)).then(|| self.render_result_strip(&view, &t, cx));
+            let strip = (view.results.len() > 1).then(|| self.render_result_strip(&view, &t, cx));
             let below = if strip.is_some() { metrics::STRIP_H } else { 0. };
             let editor_h = self.editor_h(window, below);
             let grid_area: AnyElement = if view.shown == Some(Key::Messages) {
@@ -737,8 +809,6 @@ impl Workspace {
                 tab.read(cx).plan.clone().into_any_element()
             } else if let Some((i, rs)) = log {
                 self.render_log(i, &rs, pane, &t, cx).into_any_element()
-            } else if let Some(s) = stack {
-                s.element
             } else {
                 grid.clone().into_any_element()
             };
@@ -819,10 +889,7 @@ impl Workspace {
             );
         }
         // The history's panel is a dock's (`dock`): the zoom folds it there. The cell viewer is
-        // not a dock's panel: it stands beside the focused group.
-        let viewer = (focused && self.viewer_open).then(|| {
-            div().w(px(metrics::SIDE_W)).flex_none().h_full().overflow_hidden().border_l_1().border_color(t.line).child(self.render_viewer(&tab, &t, cx))
-        });
+        // the group's own (`cell_viewer`).
         div().size_full().flex().flex_row().child(main).children(viewer)
     }
 
@@ -856,7 +923,7 @@ impl Workspace {
                     t.on_acc
                 }))
                 .child(label)
-                .children(key)
+                .children(key.filter(|_| !v.compact))
                 .on_click(cx.listener(|w, _, window, cx| w.run_active(window, cx)))
         };
         // Cancel: only while something runs (it sits last in the row, so nothing moves).
@@ -924,7 +991,7 @@ impl Workspace {
             .gap(px(6.))
             .when(history_on, |d| d.bg(t.prs).text_color(t.tx).border_1().border_color(t.line2))
             .child(icon(Icon::History).size(px(14.)).text_color(if history_on { t.tx } else { t.tx2 }))
-            .when_some(crate::keymap::key("history"), |d, k| d.child(ui::keycap_sm(t.key, t.tx2, k)))
+            .when_some(crate::keymap::key("history").filter(|_| !v.compact), |d, k| d.child(ui::keycap_sm(t.key, t.tx2, k)))
             .on_click(cx.listener(|w, _, _, cx| w.toggle_history_for_demo(cx)));
         // ⌘S's "Saved as favorite →", fading in and out at the History button's left. Hung from
         // a zero-width anchor: nothing else in the toolbar moves.
@@ -959,7 +1026,11 @@ impl Workspace {
             )
         });
         let lar = v.conn.as_ref().filter(|c| c.info.is_lar).map(|c| self.render_lar_buttons(c, t, cx));
+        let (parts, pane) = (self.toolbar_parts.clone(), v.pane);
         div()
+            .on_children_prepainted(move |b, _, _| parts.borrow_mut()[pane.index()] = b)
+            // Never over the next group: what does not fit is cut at the group's edge.
+            .overflow_hidden()
             .h(px(metrics::TOOLBAR_H))
             .flex_none()
             .pl(px(10.))
@@ -1011,6 +1082,8 @@ impl Workspace {
             .h(px(24.))
             .max_w(px(220.))
             .min_w_0()
+            .flex_shrink_1()
+            .overflow_hidden()
             .pl(px(8.))
             .pr(px(7.))
             .flex()
@@ -1083,10 +1156,15 @@ impl Workspace {
             )
         });
         let bounds = v.focused.then(|| self.picker_bounds.clone());
+        // It gives way first when the toolbar is narrow (cut with an ellipsis inside, down to
+        // its chip, a few letters and the chevron), never wider than its room: the wrapper is a
+        // flex row so the button shrinks with it.
         div()
             .relative()
-            .min_w_0()
+            .min_w(px(PICKER_MIN))
             .flex_shrink_1()
+            .flex()
+            .flex_row()
             .on_children_prepainted(move |b, _, _| {
                 if let Some(bounds) = &bounds {
                     bounds.set(b.first().copied());
@@ -1385,7 +1463,8 @@ impl Workspace {
             let tr = tab.read(cx);
             if tr.shown_key() == Some(Key::Messages) { tr.batch_items().iter().any(|b| b.rs.as_ref().is_some_and(|r| r.has_messages())) } else { rs.as_ref().is_some_and(|r| r.has_messages()) }
         };
-        let viewer_on = self.viewer_open;
+        let viewer_on = self.viewer_open(v.pane);
+        let pane = v.pane;
         // A copy a moment ago: "Copied", fading in and out (`motion::copied`).
         let copied = grid.read(cx).copied_at.and_then(|at| crate::motion::copied(at, std::time::Instant::now(), cx.reduce_motion()));
         // Under the Copy button, its right edge on the button's (a zero-width point at the
@@ -1517,7 +1596,8 @@ impl Workspace {
                     .justify_center()
                     .when(viewer_on, |d| d.bg(t.acc_s).text_color(t.acc_t).border_1().border_color(t.acc))
                     .child(icon(Icon::PanelRight).size(px(14.)).text_color(if viewer_on { t.acc_t } else { t.tx2 }))
-                    .on_click(cx.listener(|w, _, _, cx| w.toggle_viewer(cx))),
+                    .tooltip(ui::tooltip("Cell viewer", None, crate::keymap::key("cell_viewer").as_deref()))
+                    .on_click(cx.listener(move |w, _, _, cx| w.toggle_viewer(pane, cx))),
             )
     }
 
@@ -2056,9 +2136,11 @@ impl Workspace {
     }
 
     // -----------------------------------------------------------------------------------------
-    // Cell viewer (⇧Space): JSON pretty-printed, full text, bytes as hex.
+    // Cell viewer (⇧Space): JSON pretty-printed, full text, bytes as hex; one in each editor
+    // group (`cell_viewer`), about the cell selected in that group's grid.
 
     pub(crate) fn render_viewer(&self, tab: &gpui::Entity<QueryTab>, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let pane = self.pane_of(tab.entity_id());
         let grid = tab.read(cx).grid.read(cx);
         let cell = grid.active_cell();
         let rs = grid.result().cloned();
@@ -2098,7 +2180,7 @@ impl Workspace {
             )
             .child(
                 ui::icon_button(t, "viewer-close", Icon::Close, 24., 13.)
-                    .on_click(cx.listener(|w, _, _, cx| w.toggle_viewer(cx))),
+                    .on_click(cx.listener(move |w, _, _, cx| w.toggle_viewer(pane, cx))),
             );
         let modes = div()
             .h(px(36.))

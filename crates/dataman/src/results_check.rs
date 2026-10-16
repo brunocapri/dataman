@@ -6,10 +6,7 @@
 //! - `results-messages`: the messages tab (screenshot);
 //! - `results-check`: the rules with real key events (tabs, folding, the error shown, partial
 //!   rows, ⌥⌘[ ⌥⌘], per-result selection and sort, find on the active result, closing tabs, a single
-//!   statement without strip), printed as PASS/FAIL lines; exit code 1 on a failure;
-//! - `results-stacked`: the results stacked (the setting), the first one picked (screenshot);
-//! - `results-stacked-check`: stacked results with real clicks (a grid each, the state carried
-//!   between a stacked grid and the tab's, a click that only picks, tabs again), likewise.
+//!   statement without strip), printed as PASS/FAIL lines; exit code 1 on a failure.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,7 +15,6 @@ use gpui::{
     AsyncWindowContext, Entity, Focusable, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, Pixels,
     Point, point, px,
 };
-use dataman_core::ResultLayout;
 use dataman_core::batch::{Key, State};
 use dataman_core::result::{PREFETCH, Phase, SortDir};
 
@@ -114,93 +110,8 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
             select(&tab, Key::Messages, cx);
             true
         }
-        // Stacked: the first result picked, a cell of it selected.
-        "results-stacked" => {
-            crate::result_stack::set_layout(ResultLayout::Stacked);
-            select(&tab, Key::Stmt(0), cx);
-            let grid = cx.update(|_, cx| tab.read(cx).grid.clone()).unwrap();
-            let _ = cx.update(|window, cx| {
-                grid.update(cx, |g, cx| g.select_cells(3..=6, 2, cx));
-                window.focus(&grid.focus_handle(cx), cx);
-            });
-            true
-        }
-        "results-stacked-check" => stacked_check(&tab, cx).await,
         _ => check(&tab, cx).await,
     }
-}
-
-/// Stacked results (the setting, switched here): the results with rows each have a grid, the
-/// one on screen the tab's own; what is done in a stacked grid (scroll, selection) is there when
-/// it comes on screen, and back in tabs; a click on a stacked grid only picks it.
-async fn stacked_check(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> bool {
-    let mut ok = true;
-    let mut report = |name: &str, pass: bool, detail: String| {
-        println!("{} {name}{}", if pass { "PASS" } else { "FAIL" }, if pass { String::new() } else { format!(" — {detail}") });
-        ok &= pass;
-    };
-    let grid = cx.update(|_, cx| tab.read(cx).grid.clone()).unwrap();
-    let stacked = |k: Key, cx: &mut AsyncWindowContext| cx.update(|_, cx| tab.read(cx).stack.demo_grid(k)).ok().flatten();
-    crate::result_stack::set_layout(ResultLayout::Stacked);
-    // The error is on screen: no stack (its view has the place).
-    draw(cx);
-    report("with the error on screen nothing is stacked", stacked(Key::Stmt(0), cx).is_none(), String::new());
-    select(tab, Key::Stmt(0), cx);
-    let _ = cx.update(|_, cx| grid.update(cx, |g, cx| g.select_cells(3..=6, 2, cx)));
-    draw(cx);
-    let customers = stacked(Key::Stmt(4), cx);
-    let same = |g: &Entity<crate::grid::ResultGrid>, k: Key, cx: &mut AsyncWindowContext| {
-        cx.update(|_, cx| match (g.read(cx).result(), tab.read(cx).result_of(k)) {
-            (Some(a), Some(b)) => Arc::ptr_eq(a, &b),
-            _ => false,
-        })
-        .unwrap_or(false)
-    };
-    report(
-        "orders on screen: customer has a stacked grid of its own, orders none (the tab's grid shows it)",
-        customers.as_ref().is_some_and(|g| same(g, Key::Stmt(4), cx)) && stacked(Key::Stmt(0), cx).is_none() && same(&grid, Key::Stmt(0), cx),
-        String::new(),
-    );
-    let Some(customers) = customers else { return false };
-    // Scrolled and a cell selected there, then picked from the strip (⌥⌘]-like): the tab's grid
-    // has both; orders is stacked with its own selection.
-    let _ = cx.update(|_, cx| {
-        customers.update(cx, |g, cx| {
-            g.set_scroll_y(66., cx);
-            g.select_cell(5, 1, cx);
-        })
-    });
-    draw(cx);
-    let scrolled = cx.update(|_, cx| customers.read(cx).demo_scroll().1).unwrap_or(0.);
-    select(tab, Key::Stmt(4), cx);
-    draw(cx);
-    let (sel, scroll) = cx.update(|_, cx| (grid.read(cx).demo_selection(), grid.read(cx).demo_scroll().1)).unwrap();
-    let orders = stacked(Key::Stmt(0), cx);
-    let orders_sel = orders.as_ref().and_then(|g| cx.update(|_, cx| g.read(cx).demo_selection()).ok().flatten());
-    report(
-        "customer on screen keeps what was done in its stacked grid; orders is stacked with its selection",
-        same(&grid, Key::Stmt(4), cx) && sel == Some(((5, 1), (5, 1))) && scrolled > 0. && scroll == scrolled && orders_sel == Some(((3, 2), (6, 2))),
-        format!("{sel:?} {scrolled} → {scroll}, orders {orders_sel:?}"),
-    );
-    // A click on a cell of the stacked orders grid picks it and nothing else.
-    if let Some(orders) = &orders {
-        let p = cx.update(|_, cx| orders.read(cx).demo_cell_point(0, 0)).unwrap();
-        click(cx, p);
-        draw(cx);
-    }
-    let (k, sel) = (shown(tab, cx), cx.update(|_, cx| grid.read(cx).demo_selection()).unwrap());
-    report("a click on a stacked grid puts it on screen as it was", k == Some(Key::Stmt(0)) && sel == Some(((3, 2), (6, 2))), format!("{k:?} {sel:?}"));
-    // Tabs again: the stacked grids go, what was made of them stays (customer is stacked again,
-    // in a grid of its own).
-    let customers = stacked(Key::Stmt(4), cx).unwrap_or(customers);
-    let _ = cx.update(|_, cx| customers.update(cx, |g, cx| g.select_cell(9, 0, cx)));
-    crate::result_stack::set_layout(ResultLayout::Tabs);
-    draw(cx);
-    let gone = stacked(Key::Stmt(4), cx).is_none();
-    select(tab, Key::Stmt(4), cx);
-    let sel = cx.update(|_, cx| grid.read(cx).demo_selection()).unwrap();
-    report("back in tabs the stacked grids go and their selection stays", gone && sel == Some(((9, 0), (9, 0))), format!("gone {gone}, {sel:?}"));
-    ok
 }
 
 async fn check(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> bool {

@@ -223,8 +223,7 @@ pub fn start(mode: Mode, ws: Entity<Workspace>, window: &mut Window, cx: &mut Ap
 /// `error-pop` and `tree-pop` (the find indicator; `DATAMAN_POP_FREEZE_MS=n` holds every pop
 /// n ms in, for a capture mid-flight; `fk-pop` and `fk-land` are in `fk_check`; the find bars'
 /// `find`, `find-grid` and `find-check` in `find_check`; a script's result tabs `results`,
-/// `results-grid`, `results-messages`, `results-check`, `results-stacked` and `results-stacked-check` in
-/// `results_check`; a favorite's
+/// `results-grid`, `results-messages` and `results-check` in `results_check`; a favorite's
 /// context menu, inline rename and the merged status dropdown's `history-check` in
 /// `history_check`). Any
 /// stage + `-light` renders in the light theme; `DATAMAN_SHOT_NO_EXPLORER=1` collapses the
@@ -522,7 +521,7 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                     "viewer" => {
                         grid.update(cx, |g, cx| g.select_cells(4..=4, 3, cx));
                         window.focus(&grid.focus_handle(cx), cx);
-                        ws.update(cx, |w, cx| w.toggle_viewer(cx));
+                        ws.update(cx, |w, cx| w.toggle_viewer(dataman_core::groups::Pane::Left, cx));
                     }
                     "focus" => ws.update(cx, |w, cx| w.focus_region(crate::app::Region::Grid, window, cx)),
                     // A selection over three lines, mid-line to mid-line.
@@ -769,7 +768,7 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
             }
             if stage.starts_with("results") {
                 let ok = crate::results_check::run(&ws, &stage, cx).await;
-                if stage == "results-check" || stage == "results-stacked-check" {
+                if stage == "results-check" {
                     let _ = cx.update(|_, cx| cx.quit());
                     if !ok {
                         std::process::exit(1);
