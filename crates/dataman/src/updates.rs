@@ -3,6 +3,12 @@
 //! its sheet), and Install & Relaunch: the download with its progress, the verification and the
 //! swap. The work is `dataman_core::update`, always off the UI thread; nothing polls the feed.
 //!
+//! A check asked for (the menu, the palette, Settings › About) always answers, from "Checking…"
+//! to its outcome: in Settings › About when Settings is open, else in the update sheet (its
+//! check card, which becomes the update itself when one is found), else in an alert (another
+//! sheet is up, or no window is left). One asked for while an automatic check runs joins it;
+//! nothing meant for the automatic checks ever skips it.
+//!
 //! The feed is the latest GitHub release's `feed.json`, signed with the release key below;
 //! `DATAMAN_UPDATE_FEED` / `DATAMAN_UPDATE_PUBKEY` at build time and `update_feed` in
 //! settings.toml (an empty one turns the checker off) override them.
@@ -53,6 +59,13 @@ pub enum State {
     Failed { feed: Feed, error: String },
 }
 
+/// The last check that finished: when, and why it failed (`None`: the feed was read).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Checked {
+    pub at: SystemTime,
+    pub error: Option<String>,
+}
+
 impl State {
     /// The version on offer, whatever is being done with it.
     pub fn feed(&self) -> Option<&Feed> {
@@ -72,10 +85,17 @@ pub struct Updates {
     ws: Option<(WeakEntity<Workspace>, AnyWindowHandle)>,
     /// "Later": the version whose notice stays hidden until a newer one or the next launch.
     dismissed: Option<String>,
+    /// The check under way was asked for, or one was asked for while it ran: its outcome is said.
+    manual: bool,
+    /// The last check that finished, asked for or not (Settings › About says when).
+    checked: Option<Checked>,
     /// The update check stage: the bundle replaced instead of this one, and no relaunch.
     pub(crate) test_target: Option<PathBuf>,
     /// The update check stage: what the last install swapped in.
     pub(crate) installed: Option<PathBuf>,
+    /// The update check stage: the alerts said instead of shown (a native alert waits for a
+    /// click no check can give).
+    pub(crate) alerts: Vec<String>,
 }
 
 impl Global for Updates {}
@@ -90,7 +110,19 @@ pub fn init(core: &Core, cx: &mut App) {
     let feed = s.update_feed.clone().or_else(|| BUILD_FEED.map(str::to_string)).unwrap_or_else(|| DEFAULT_FEED.to_string());
     let key = BUILD_KEY.unwrap_or(DEFAULT_PUBKEY);
     let cfg = UpdateConfig::new(Some(&feed), Some(key), crate::VERSION).map(Arc::new);
-    cx.set_global(Updates { cfg, state: State::Idle, last_check: None, auto: s.update_check, ws: None, dismissed: None, test_target: None, installed: None });
+    cx.set_global(Updates {
+        cfg,
+        state: State::Idle,
+        last_check: None,
+        auto: s.update_check,
+        ws: None,
+        dismissed: None,
+        manual: false,
+        checked: None,
+        test_target: None,
+        installed: None,
+        alerts: Vec::new(),
+    });
 }
 
 pub fn enabled(cx: &App) -> bool {
@@ -99,6 +131,32 @@ pub fn enabled(cx: &App) -> bool {
 
 pub fn state(cx: &App) -> State {
     cx.try_global::<Updates>().map(|u| u.state.clone()).unwrap_or(State::Idle)
+}
+
+/// The last check that finished.
+pub fn checked(cx: &App) -> Option<Checked> {
+    cx.try_global::<Updates>()?.checked.clone()
+}
+
+/// When a check finished, as Settings and the check card say it: "14:32" today, else
+/// "Oct 15, 14:32".
+pub fn when(at: SystemTime) -> String {
+    let at = chrono::DateTime::<chrono::Local>::from(at);
+    if at.date_naive() == chrono::Local::now().date_naive() { at.format("%H:%M").to_string() } else { at.format("%b %-d, %H:%M").to_string() }
+}
+
+/// A check's outcome as an alert says it: the message, the detail, and whether it failed
+/// (`None` before any outcome).
+pub fn outcome_text(cx: &App) -> Option<(String, String, bool)> {
+    let u = cx.try_global::<Updates>()?;
+    if let Some(f) = u.state.feed() {
+        return Some((format!("Dataman {} is available", f.version), format!("You have {}.", crate::VERSION), false));
+    }
+    match &u.checked {
+        Some(Checked { error: None, .. }) => Some(("Dataman is up to date".into(), format!("{} is the newest version.", crate::VERSION), false)),
+        Some(Checked { error: Some(e), .. }) => Some(("Could not check for updates".into(), e.clone(), true)),
+        None => None,
+    }
 }
 
 /// The version on offer.
@@ -137,19 +195,25 @@ fn set_state(state: State, cx: &mut App) {
     }
 }
 
-fn with_ws(cx: &mut App, f: impl FnOnce(&mut Workspace, &mut gpui::Window, &mut gpui::Context<Workspace>) + 'static) {
-    let Some((ws, window)) = cx.try_global::<Updates>().and_then(|u| u.ws.clone()) else { return };
-    let _ = window.update(cx, |_, window, cx| {
-        let _ = ws.update(cx, |w, cx| f(w, window, cx));
-    });
-}
-
-fn notice(msg: String, cx: &mut App) {
-    with_ws(cx, move |w, _, cx| w.notice(msg, cx));
+/// Runs `f` in the workspace's window; `false` when there is none left (closed).
+fn with_ws(cx: &mut App, f: impl FnOnce(&mut Workspace, &mut gpui::Window, &mut gpui::Context<Workspace>) + 'static) -> bool {
+    let Some((ws, window)) = cx.try_global::<Updates>().and_then(|u| u.ws.clone()) else { return false };
+    window.update(cx, |_, window, cx| ws.update(cx, |w, cx| f(w, window, cx)).is_ok()).unwrap_or(false)
 }
 
 fn open_sheet(cx: &mut App) {
     with_ws(cx, |w, window, cx| w.open_update_sheet(window, cx));
+}
+
+/// A check asked for, shown where it can be seen (`done`: its outcome, else "Checking…"); with
+/// no window left, an alert says the outcome. Deferred: asked for from the menu or Settings,
+/// this runs inside the window's own update, where the window cannot be entered again.
+fn show_check(done: bool, cx: &mut App) {
+    cx.defer(move |cx| {
+        if !with_ws(cx, move |w, window, cx| w.show_update_check(done, window, cx)) && done {
+            crate::update_ui::alert_without_window(cx);
+        }
+    });
 }
 
 /// After the first frame: remembers the window, and checks a few seconds later (unless checks
@@ -185,26 +249,38 @@ fn blocked_reason(target: Option<PathBuf>) -> Option<String> {
     }
 }
 
-/// Reads the feed now. `manual` (the menu, Settings): "up to date" or a failure is said, and
-/// an update found opens the sheet; otherwise only the title bar's notice comes up.
+/// Reads the feed now. `manual` (the menu, the palette, Settings): "Checking…", then "up to
+/// date", the failure or the update's sheet (the module's notes say where); otherwise only the
+/// title bar's notice comes up.
 pub fn check(manual: bool, cx: &mut App) {
     let Some(u) = updates_mut(cx) else { return };
     let Some(cfg) = u.cfg.clone() else { return };
     match &u.state {
-        State::Checking => return,
+        // One under way (the launch's, the daily one): it answers this request too.
+        State::Checking => {
+            if manual {
+                u.manual = true;
+                show_check(false, cx);
+            }
+            return;
+        }
         // Already on offer: the menu shows it again.
         State::Working { .. } | State::Ready { .. } | State::Failed { .. } => {
             if manual {
-                open_sheet(cx);
+                show_check(true, cx);
             }
             return;
         }
         State::Idle | State::Available { .. } => {}
     }
     u.last_check = Some(SystemTime::now());
+    u.manual = manual;
     let target = u.test_target.clone();
     let before = u.state.clone();
     set_state(State::Checking, cx);
+    if manual {
+        show_check(false, cx);
+    }
     let task = cx.background_spawn(async move {
         let r = update::check(&cfg);
         let blocked = blocked_reason(target);
@@ -216,12 +292,13 @@ pub fn check(manual: bool, cx: &mut App) {
             Ok(Some((feed, blocked))) => {
                 log::info!("update: {} offered{}", feed.version, blocked.as_ref().map(|b| format!(" ({b})")).unwrap_or_default());
                 let version = feed.version.clone();
+                let manual = finish(None, cx);
                 set_state(State::Available { feed, blocked }, cx);
                 if manual {
                     if let Some(u) = updates_mut(cx) {
                         u.dismissed = None;
                     }
-                    open_sheet(cx);
+                    show_check(true, cx);
                 } else if cx.try_global::<Updates>().is_some_and(|u| u.dismissed.as_deref() != Some(version.as_str())) {
                     crate::notify::update_available(&version, cx);
                 }
@@ -232,22 +309,32 @@ pub fn check(manual: bool, cx: &mut App) {
                 }
             }
             Ok(None) => {
+                let manual = finish(None, cx);
                 set_state(State::Idle, cx);
                 if manual {
-                    notice("Dataman is up to date".to_string(), cx);
+                    show_check(true, cx);
                 }
             }
             Err(e) => {
                 log::warn!("update check: {e:#}");
+                let manual = finish(Some(short(&e)), cx);
                 // An offer already made stays (the feed was unreachable this time).
                 set_state(if matches!(before, State::Available { .. }) { before } else { State::Idle }, cx);
                 if manual {
-                    notice(format!("Update check failed: {}", short(&e)), cx);
+                    show_check(true, cx);
                 }
             }
         });
     })
     .detach();
+}
+
+/// A check finished: records when and how (before the state changes, so the redraw that
+/// follows shows it); whether its outcome is to be said (it was asked for).
+fn finish(error: Option<String>, cx: &mut App) -> bool {
+    let Some(u) = updates_mut(cx) else { return false };
+    u.checked = Some(Checked { at: SystemTime::now(), error });
+    std::mem::take(&mut u.manual)
 }
 
 /// An error's first line, short enough for a notice or the sheet's status.
@@ -384,13 +471,23 @@ pub fn configure_for_test(feed: &str, key: &str, target: PathBuf, cx: &mut App) 
         u.state = State::Idle;
         u.dismissed = None;
         u.installed = None;
+        u.checked = None;
+        u.alerts.clear();
         u.test_target = Some(target);
     }
 }
 
-pub fn set_ws_for_test(ws: WeakEntity<Workspace>, window: AnyWindowHandle, cx: &mut App) {
+/// The update check stage: the window outcomes go to (`None`: as if it had been closed).
+pub fn set_ws_for_test(ws: Option<(WeakEntity<Workspace>, AnyWindowHandle)>, cx: &mut App) {
     if let Some(u) = updates_mut(cx) {
-        u.ws = Some((ws, window));
+        u.ws = ws;
+    }
+}
+
+/// The update check stage: an alert said instead of shown.
+pub(crate) fn record_alert(text: String, cx: &mut App) {
+    if let Some(u) = updates_mut(cx) {
+        u.alerts.push(text);
     }
 }
 
@@ -414,4 +511,19 @@ pub fn demo_offer(step: Option<Step>, cx: &mut App) {
         None => State::Available { feed, blocked: None },
     };
     set_state(state, cx);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn when_a_check_finished() {
+        let now = SystemTime::now();
+        let today = when(now);
+        assert_eq!(today.len(), 5, "{today}");
+        assert!(today.contains(':') && !today.contains(','), "{today}");
+        let earlier = when(now - 3 * DAY);
+        assert!(earlier.contains(", ") && earlier.len() > 5, "{earlier}");
+    }
 }

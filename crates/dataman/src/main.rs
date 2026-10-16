@@ -119,7 +119,9 @@ fn menus(cx: &App) -> Vec<Menu> {
         app_menu.push(MenuItem::action(label, ShowUpdate));
     }
     if updates::enabled(cx) {
-        app_menu.push(MenuItem::action("Check for Updates…", CheckForUpdates));
+        // While one runs (asked for or not), it says so; choosing it then waits for that one.
+        let checking = updates::state(cx) == updates::State::Checking;
+        app_menu.push(MenuItem::action(if checking { "Checking for Updates…" } else { "Check for Updates…" }, CheckForUpdates));
         app_menu.push(MenuItem::separator());
     }
     vec![
@@ -361,6 +363,9 @@ fn main() {
         keymap::set_overrides(keymap::clean(&core.settings.get().keys));
         keymap::bind_all(cx);
         cx.on_action(|_: &app::Quit, cx| cx.quit());
+        // Check for Updates works with no window left too (the workspace's own handler runs
+        // while there is one); its outcome is then an alert.
+        cx.on_action(|_: &app::CheckForUpdates, cx| updates::check(true, cx));
         updates::init(&core, cx);
         cx.set_menus(menus(cx));
 

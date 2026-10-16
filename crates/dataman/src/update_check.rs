@@ -3,7 +3,14 @@
 //! offer version 99.0.0 of a small stand-in bundle; the stage replaces a stand-in Dataman.app
 //! in a scratch folder (never this app, never /Applications) and does not relaunch.
 //!
-//! Checked: "Dataman is up to date" for a feed that offers nothing newer; the title bar's notice
+//! Checked, for a feed that offers nothing newer (and answers slowly): Check for Updates as the
+//! menu sends it shows the sheet's "Checking…", then "Dataman is up to date", closed by ↩; one
+//! asked for during an automatic check is still answered, and none is throttled; Settings ›
+//! About › Check now answers beside it ("Checking…" with the button off, then up to date and
+//! when), Settings staying open; the menu with Settings open shows it in About; an unreachable
+//! feed says why (beside Check now, and in the sheet with Try Again); under another sheet, and
+//! with no window left, an alert says it (recorded, not shown). With `DATAMAN_SHOT_DIR`, those
+//! steps are captured there. Then: the title bar's notice
 //! after a background check (and no sheet); the notice opens the sheet; Later closes it and
 //! hides the notice; a manual check brings the sheet back; Install & Relaunch (↩) shows the
 //! download's progress, and a DMG whose signature does not match is refused with Retry, the
@@ -16,6 +23,7 @@ use std::io::{BufRead as _, BufReader, Write as _};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -78,6 +86,21 @@ async fn wait(cx: &mut AsyncWindowContext, secs: u64, mut done: impl FnMut(&mut 
     false
 }
 
+/// Check for Updates as the app menu sends it with the window in front (on the focused
+/// element, up to the workspace).
+fn menu_check(cx: &mut AsyncWindowContext) {
+    let _ = cx.update(|window, cx| window.dispatch_action(Box::new(crate::app::CheckForUpdates), cx));
+    draw(cx);
+}
+
+/// `DATAMAN_SHOT_DIR=dir`: the window now, as `dir/name.png`.
+fn snap(cx: &mut AsyncWindowContext, name: &str) {
+    let Some(dir) = std::env::var_os("DATAMAN_SHOT_DIR") else { return };
+    let path = Path::new(&dir).join(format!("{name}.png"));
+    draw(cx);
+    let _ = cx.update(|window, cx| crate::bench::capture(window, &path.to_string_lossy(), cx));
+}
+
 fn state(cx: &mut AsyncWindowContext) -> State {
     cx.update(|_, cx| updates::state(cx)).unwrap_or(State::Idle)
 }
@@ -114,11 +137,17 @@ fn sh(cmd: &mut Command) -> anyhow::Result<()> {
 struct Site {
     files: Arc<Mutex<HashMap<String, Vec<u8>>>>,
     log: Arc<Mutex<Vec<String>>>,
+    /// Milliseconds before the feed answers (time to see "Checking…").
+    feed_delay: Arc<AtomicU64>,
 }
 
 impl Site {
     fn put(&self, path: &str, body: Vec<u8>) {
         self.files.lock().unwrap().insert(path.to_string(), body);
+    }
+
+    fn remove(&self, path: &str) {
+        self.files.lock().unwrap().remove(path);
     }
 
     /// Serves on a free loopback port; the body goes out in 12 slices 80 ms apart, so the
@@ -147,6 +176,9 @@ impl Site {
                     }
                     let path = line.split_whitespace().nth(1).unwrap_or("/").to_string();
                     site.log.lock().unwrap().push(path.clone());
+                    if path == "/feed.json" {
+                        std::thread::sleep(Duration::from_millis(site.feed_delay.load(Ordering::Relaxed)));
+                    }
                     let body = site.files.lock().unwrap().get(&path).cloned();
                     let Some(body) = body else {
                         let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
@@ -238,16 +270,121 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     };
     let dmg_url = format!("{base}/Dataman-{NEW}.dmg");
     site.put(&format!("/Dataman-{NEW}.dmg"), dmg.clone());
-    let _ = cx.update(|window, cx| {
+    let handle = cx.update(|window, _| window.window_handle()).ok();
+    let _ = cx.update(|_, cx| {
         updates::configure_for_test(&format!("{base}/feed.json"), &key.public(), target.clone(), cx);
-        updates::set_ws_for_test(ws.downgrade(), window.window_handle(), cx);
+        updates::set_ws_for_test(handle.map(|h| (ws.downgrade(), h)), cx);
     });
 
-    // Nothing newer: the manual check says so.
+    // Nothing newer, the feed slow to answer. Check for Updates as the menu sends it: the
+    // sheet says "Checking…", then "Dataman is up to date", and ↩ closes it.
     site.put("/feed.json", feed_json(crate::VERSION, &dmg_url, &dmg, key.sign(&dmg)));
-    let _ = cx.update(|_, cx| updates::check(true, cx));
-    let said = wait(cx, 10, |cx| cx.update(|_, cx| ws.read(cx).flash_notice.as_ref().is_some_and(|(m, _)| m == "Dataman is up to date")).unwrap_or(false)).await;
-    report("a feed with nothing newer: \"Dataman is up to date\"", said && state(cx) == State::Idle, format!("{:?}", state(cx)));
+    site.feed_delay.store(700, Ordering::Relaxed);
+    let sheet_open = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).update_sheet).unwrap_or(false);
+    let up_to_date = |cx: &mut AsyncWindowContext| cx.update(|_, cx| updates::checked(cx).is_some_and(|c| c.error.is_none())).unwrap_or(false);
+    menu_check(cx);
+    let checking = wait(cx, 3, |cx| sheet_open(cx) && state(cx) == State::Checking).await;
+    snap(cx, "check-menu-checking");
+    report("Check for Updates (the menu): the sheet says \"Checking…\" while the feed is read", checking, format!("{:?}, sheet {}", state(cx), sheet_open(cx)));
+    let said = wait(cx, 10, |cx| state(cx) == State::Idle && up_to_date(cx)).await;
+    let text = cx.update(|_, cx| updates::outcome_text(cx).map(|o| o.0)).ok().flatten().unwrap_or_default();
+    snap(cx, "check-menu-up-to-date");
+    report("then \"Dataman is up to date\", in the sheet", said && sheet_open(cx) && text == "Dataman is up to date", format!("{:?}, sheet {}, {text:?}", state(cx), sheet_open(cx)));
+    let buttons = cx.update(|_, cx| ws.read(cx).update_button_bounds.borrow().len()).unwrap_or(0);
+    press(cx, "enter");
+    report("its OK (↩) closes it", buttons == 1 && !sheet_open(cx), format!("{buttons} buttons, sheet {}", sheet_open(cx)));
+
+    // Asked for while an automatic check runs: that check answers it (the request is never
+    // dropped because one is under way).
+    let _ = cx.update(|_, cx| updates::check(false, cx));
+    draw(cx);
+    let was_auto = state(cx) == State::Checking && !sheet_open(cx);
+    menu_check(cx);
+    let joined = wait(cx, 10, |cx| state(cx) == State::Idle && sheet_open(cx) && up_to_date(cx)).await;
+    report("asked for during an automatic check: the outcome is still said", was_auto && joined, format!("auto first {was_auto}, {:?}, sheet {}", state(cx), sheet_open(cx)));
+    press(cx, "enter");
+    let fresh = cx.update(|_, cx| updates::checked(cx).is_some_and(|c| c.at.elapsed().unwrap_or_default() < Duration::from_secs(5))).unwrap_or(false);
+    report("a check asked for right after another still reads the feed (no throttle)", fresh, String::new());
+
+    // Settings › About › Check now answers beside the button, Settings staying open: off and
+    // "Checking…" while it runs, then up to date and when.
+    let settings = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).settings_view.clone()).ok().flatten();
+    let status = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).settings_view.as_ref().and_then(|v| v.read(cx).demo_update_status(cx))).ok().flatten().unwrap_or_default();
+    let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.open_settings_at("about", window, cx)));
+    draw(cx);
+    draw(cx);
+    let point = settings(cx).and_then(|v| cx.update(|_, cx| v.read(cx).demo_check_now_point()).ok().flatten());
+    let before = site.log.lock().unwrap().len();
+    if let Some(p) = point {
+        click(cx, p);
+    }
+    let checking = wait(cx, 3, |cx| state(cx) == State::Checking).await;
+    let shown = status(cx);
+    snap(cx, "check-settings-checking");
+    // A second click while it runs does nothing (the button is off).
+    if let Some(p) = point {
+        click(cx, p);
+    }
+    report("Check now: \"Checking…\" beside it, Settings open", point.is_some() && checking && shown == "◌ Checking…" && settings(cx).is_some(), format!("point {point:?}, {:?}, {shown:?}", state(cx)));
+    let said = wait(cx, 10, |cx| state(cx) == State::Idle && status(cx).starts_with("Dataman is up to date · checked ")).await;
+    snap(cx, "check-settings-up-to-date");
+    report("then \"Dataman is up to date · checked HH:MM\"", said, status(cx));
+    let requests = site.log.lock().unwrap().len() - before;
+    report("Check now is off while the check runs (one request for two clicks)", requests == 1, format!("{requests} requests"));
+    report("no sheet over Settings for it", !sheet_open(cx) && settings(cx).is_some(), format!("sheet {}", sheet_open(cx)));
+
+    // The menu with Settings open on another section: About shows the check.
+    if let Some(v) = settings(cx) {
+        let _ = cx.update(|_, cx| v.update(cx, |v, cx| v.show_section("appearance", cx)));
+    }
+    draw(cx);
+    menu_check(cx);
+    let about = wait(cx, 3, |cx| settings(cx).is_some_and(|v| cx.update(|_, cx| v.read(cx).demo_section() == "About").unwrap_or(false))).await;
+    let said = wait(cx, 10, |cx| state(cx) == State::Idle && status(cx).starts_with("Dataman is up to date")).await;
+    report("Check for Updates with Settings open: About says it", about && said && !sheet_open(cx), format!("about {about}, {:?}", status(cx)));
+
+    // The feed unreachable: the error, beside Check now and in the sheet (with Try Again).
+    site.remove("/feed.json");
+    if let Some(p) = point {
+        click(cx, p);
+    }
+    let failed = wait(cx, 10, |cx| state(cx) == State::Idle && status(cx).starts_with("Check failed: ")).await;
+    snap(cx, "check-settings-failed");
+    report("a failed check: \"Check failed: …\" beside Check now", failed, status(cx));
+    let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.toggle_settings(window, cx)));
+    draw(cx);
+    menu_check(cx);
+    let failed = wait(cx, 10, |cx| state(cx) == State::Idle && sheet_open(cx) && cx.update(|_, cx| updates::checked(cx).is_some_and(|c| c.error.is_some())).unwrap_or(false)).await;
+    draw(cx);
+    let buttons = cx.update(|_, cx| ws.read(cx).update_button_bounds.borrow().len()).unwrap_or(0);
+    snap(cx, "check-menu-failed");
+    report("a failed check from the menu: the sheet says why, with Try Again and OK", failed && buttons == 2, format!("{:?}, {buttons} buttons", state(cx)));
+    press(cx, "escape");
+    site.put("/feed.json", feed_json(crate::VERSION, &dmg_url, &dmg, key.sign(&dmg)));
+    site.feed_delay.store(0, Ordering::Relaxed);
+
+    // Another sheet up: an alert says the outcome (recorded here instead of shown).
+    let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.open_import(window, cx)));
+    draw(cx);
+    let alerts = |cx: &mut AsyncWindowContext| cx.update(|_, cx| cx.try_global::<updates::Updates>().map(|u| u.alerts.clone()).unwrap_or_default()).unwrap_or_default();
+    menu_check(cx);
+    let alerted = wait(cx, 10, |cx| alerts(cx).iter().any(|a| a == "window: Dataman is up to date")).await;
+    report("under another sheet: an alert on the window", alerted && !sheet_open(cx), format!("{:?}", alerts(cx)));
+    let _ = cx.update(|_, cx| {
+        ws.update(cx, |w, cx| {
+            w.import = None;
+            cx.notify();
+        })
+    });
+
+    // No window left (closed, the app still running): an alert of the app's own.
+    let _ = cx.update(|_, cx| {
+        updates::set_ws_for_test(None, cx);
+        updates::check(true, cx);
+    });
+    let alerted = wait(cx, 10, |cx| alerts(cx).iter().any(|a| a == "app: Dataman is up to date")).await;
+    report("with no window: an alert of the app's own", alerted, format!("{:?}", alerts(cx)));
+    let _ = cx.update(|_, cx| updates::set_ws_for_test(handle.map(|h| (ws.downgrade(), h)), cx));
 
     // 99.0.0 on offer, its DMG signed by another key: the background check raises the notice.
     let wrong = ThrowawayKey::new().map(|k| k.sign(&dmg)).unwrap_or_default();

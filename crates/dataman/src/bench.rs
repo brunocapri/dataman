@@ -1286,3 +1286,8 @@ fn typing(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
         },
     );
 }
+
+/// A capture of the window at `path` mid-check (the update check's `DATAMAN_SHOT_DIR`).
+pub(crate) fn capture(window: &Window, path: &str, cx: &App) {
+    shot(window, path, crate::theme::ActiveTheme::theme(cx).is_dark());
+}

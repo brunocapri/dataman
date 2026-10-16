@@ -7,10 +7,11 @@
 //! (rows fetched ahead, review before commit, several results as tabs or stacked), Export
 //! (default folder), MCP (agents' access,
 //! agent queries in tabs, rows per write and per call, the `claude mcp add` command, the log,
-//! each connection's permission), Keyboard (the remappable commands: a click
+//! each connection's permission, its allowed queries and YOLO), Keyboard (the remappable commands: a click
 //! on a key records the next one, esc cancels, ⌫ removes it; a key two commands share where
 //! both work is red; `[keys]` in settings.toml, bound again at once) and About (the
-//! version and the update check, both only with an update feed, and the crash reports folder).
+//! version and the update check, both only with an update feed: Check now answers beside it, from
+//! "Checking…" to up to date and when, or why it failed; and the crash reports folder).
 //! The search field filters every row of every section; a shortcut typed in it (`⌘K`,
 //! `cmd-shift-p`) finds the commands on that key. The keyboard button beside it searches by
 //! shortcut instead: the next keystroke (taken before any binding, so it does nothing else) shows
@@ -203,6 +204,8 @@ pub struct SettingsView {
     key_query: Option<String>,
     /// The keyboard button as last laid out (the checks click it).
     key_button_bounds: Rc<RefCell<Vec<Bounds<Pixels>>>>,
+    /// About's Check now as last laid out (the checks click it).
+    check_now_bounds: Rc<RefCell<Vec<Bounds<Pixels>>>>,
     /// The page under the pinned header: its hairline shows once this has scrolled.
     page_scroll: ScrollHandle,
     /// Takes the keystroke before any binding while recording or searching by shortcut.
@@ -269,6 +272,7 @@ impl SettingsView {
             key_search: false,
             key_query: None,
             key_button_bounds: Default::default(),
+            check_now_bounds: Default::default(),
             page_scroll: ScrollHandle::new(),
             _intercept: intercept,
         }
@@ -430,6 +434,13 @@ impl SettingsView {
                 let cur = p.mcp_access();
                 let env = p.env;
                 let id = p.id.clone();
+                let on = cur != dataman_core::McpAccess::Off;
+                // What the connection sheet adds to the tier: queries let through, and YOLO.
+                let allowed = match p.mcp_allowed.len() {
+                    0 => None,
+                    1 => Some("1 allowed query".to_string()),
+                    n => Some(format!("{n} allowed queries")),
+                };
                 div()
                     .h(px(36.))
                     .flex()
@@ -440,6 +451,8 @@ impl SettingsView {
                     .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx).child(p.name.clone()))
                     .when(!env.is_none(), |d| d.child(div().flex_none().text_size(px(11.)).text_color(if env.is_production() { t.err } else { t.tx3 }).child(env.label())))
                     .child(div().flex_1())
+                    .children(allowed.filter(|_| on).map(|a| div().flex_none().text_size(px(11.)).text_color(t.tx3).whitespace_nowrap().child(a)))
+                    .when(p.mcp_yolo_on(), |d| d.child(crate::conn_dialog::yolo_badge(t)))
                     .child(ui::segmented(t).w(px(232.)).children(dataman_core::McpAccess::ALL.into_iter().map(|a| {
                         let id = id.clone();
                         ui::segment(t, ("mcp-conn", i * 4 + a as usize), a.label(), cur == a)
@@ -448,6 +461,34 @@ impl SettingsView {
                     })))
             }))
             .into_any_element()
+    }
+
+    /// Check for Updates with the sheet open: About, where the check's status shows.
+    pub fn show_update_status(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.key_search {
+            self.set_key_search(false, window, cx);
+        }
+        self.search.update(cx, |i, cx| i.set_text("", cx));
+        if self.section != Section::About {
+            self.section = Section::About;
+            self.scroll_to_top();
+        }
+        cx.notify();
+    }
+
+    /// The Version row's status: "Checking…", what the last check found (and when), or the
+    /// version on offer; `true` for an error.
+    fn update_status(cx: &App) -> Option<(SharedString, gpui::Hsla, bool)> {
+        use crate::updates::State;
+        let t = cx.theme();
+        match crate::updates::state(cx) {
+            State::Checking => Some(("◌ Checking…".into(), t.tx3, false)),
+            s if s.feed().is_some() => s.feed().map(|f| (format!("{} available", f.version).into(), t.acc, false)),
+            _ => crate::updates::checked(cx).map(|c| match c.error {
+                None => (format!("Dataman is up to date · checked {}", crate::updates::when(c.at)).into(), t.tx3, false),
+                Some(e) => (format!("Check failed: {e}").into(), t.err, true),
+            }),
+        }
     }
 
     /// Opens on a section (demo screenshots).
@@ -765,32 +806,46 @@ impl SettingsView {
                 use crate::updates::State;
                 let enabled = crate::updates::enabled(cx);
                 let state = crate::updates::state(cx);
-                let status: Option<SharedString> = match &state {
-                    State::Checking => Some("checking".into()),
-                    State::Idle => None,
-                    s => s.feed().map(|f| format!("{} available", f.version).into()),
-                };
                 let offered = state.feed().is_some();
+                let checking = state == State::Checking;
+                let status = Self::update_status(cx);
                 div()
                     .flex()
                     .flex_row()
                     .items_center()
                     .gap(px(10.))
                     .child(div().text_color(t.tx2).child(crate::VERSION))
-                    .children(status.map(|s| div().text_size(px(11.5)).text_color(if offered { t.acc } else { t.tx3 }).child(s)))
-                    // Settings closes first: the outcome is the update sheet, or the status
-                    // bar's "Dataman is up to date".
+                    .children(status.map(|(s, color, err)| {
+                        div()
+                            .id("update-status")
+                            .max_w(px(320.))
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .text_size(px(11.5))
+                            .text_color(color)
+                            .when(err, |d| d.tooltip(ui::text_tooltip(s.clone())))
+                            .child(s)
+                    }))
+                    // The update's sheet is the workspace's: Settings closes first.
                     .when(enabled && offered, |d| {
                         d.child(ui::button(t, "update-now", ui::Btn::Primary).h(px(28.)).child("Update…").on_click(cx.listener(|_, _, window, cx| {
                             cx.emit(SettingsEvent::Close);
                             window.dispatch_action(Box::new(crate::app::ShowUpdate), cx);
                         })))
                     })
+                    // The check answers here, beside it; off while one runs.
                     .when(enabled && !offered, |d| {
-                        d.child(ui::button(t, "check-now", ui::Btn::Secondary).h(px(28.)).child("Check now").on_click(cx.listener(|_, _, window, cx| {
-                            cx.emit(SettingsEvent::Close);
-                            window.dispatch_action(Box::new(crate::app::CheckForUpdates), cx);
-                        })))
+                        let bounds = self.check_now_bounds.clone();
+                        d.child(
+                            div().flex_none().on_children_prepainted(move |b, _, _| *bounds.borrow_mut() = b).child(
+                                ui::button(t, "check-now", ui::Btn::Secondary)
+                                    .h(px(28.))
+                                    .child("Check now")
+                                    .when(checking, |d| d.opacity(0.45).cursor_default())
+                                    .when(!checking, |d| d.on_click(cx.listener(|_, _, _, cx| crate::updates::check(true, cx)))),
+                            ),
+                        )
                     })
                     .into_any_element()
             }
@@ -1110,6 +1165,15 @@ impl SettingsView {
     /// shortcut, the key searched for and the commands the page lists for it.
     pub fn demo_key_search_point(&self) -> Option<gpui::Point<Pixels>> {
         self.key_button_bounds.borrow().first().map(|b| b.center())
+    }
+
+    /// Checks: where About's Check now is (as last laid out), and the Version row's status.
+    pub fn demo_check_now_point(&self) -> Option<gpui::Point<Pixels>> {
+        self.check_now_bounds.borrow().first().map(|b| b.center())
+    }
+
+    pub fn demo_update_status(&self, cx: &App) -> Option<String> {
+        Self::update_status(cx).map(|(s, _, _)| s.to_string())
     }
 
     pub fn demo_key_search(&self) -> (bool, Option<String>, Vec<&'static str>) {
