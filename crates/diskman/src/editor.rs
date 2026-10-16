@@ -483,8 +483,18 @@ pub(crate) fn word_right(text: &str, offset: usize) -> usize {
     pos
 }
 
+/// `offset` within `text`, on a character boundary (at or before it).
+pub(crate) fn floor_boundary(text: &str, offset: usize) -> usize {
+    let mut i = offset.min(text.len());
+    while !text.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
 /// The run of same-class characters around `offset` (double-click), never crossing a line.
 pub(crate) fn word_at(text: &str, offset: usize) -> Range<usize> {
+    let offset = floor_boundary(text, offset);
     let after = text[offset..].chars().next().filter(|&c| c != '\n');
     let before = text[..offset].chars().next_back().filter(|&c| c != '\n');
     let k = match (before, after) {
@@ -3635,6 +3645,9 @@ mod tests {
         assert_eq!(word_at(t, 3), 0..6);
         assert_eq!(word_at("café x", 3), 0..5);
         assert_eq!(word_at("a\n\nb", 2), 2..2);
+        // A stale offset (the text changed under a double click) never panics.
+        assert_eq!(word_at("", 5), 0..0);
+        assert_eq!(word_at("café", 4), 0..5);
     }
 
     fn edits_applied(buf: &Buffer, edits: &Edits) -> String {

@@ -2035,7 +2035,25 @@ impl Workspace {
     /// A favorite in a tab (on its own connection and database; `run` also runs it), the tab
     /// linked to it: titled with its name, ⌘S saves into it.
     pub(crate) fn open_favorite(&mut self, fav: Favorite, run: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(tab) = self.tab_for_history(fav.connection_id.clone(), fav.database.clone(), false, window, cx) else { return };
+        // Its connection not connected (yet): the tab opens now and takes the connection once it
+        // is up (`want`, as a restored tab), which connects here; a run waits for it.
+        let offline = fav.connection_id.clone().filter(|id| self.store.read(cx).connection(id).is_none() && self.store.read(cx).profile(id).is_some());
+        let tab = match &offline {
+            Some(id) => {
+                let tab = self.new_tab(window, cx);
+                let (id, database) = (id.clone(), fav.database.clone());
+                tab.update(cx, |t, cx| {
+                    t.set_connection(None, cx);
+                    t.want = Some((id.clone(), database));
+                });
+                self.store.update(cx, |s, cx| s.connect(&id, None, cx));
+                tab
+            }
+            None => {
+                let Some(tab) = self.tab_for_history(fav.connection_id.clone(), fav.database.clone(), false, window, cx) else { return };
+                tab
+            }
+        };
         tab.update(cx, |t, cx| {
             let text = format!("{};", fav.sql.trim_end().trim_end_matches(';'));
             t.editor.update(cx, |e, cx| e.set_text(&text, cx));

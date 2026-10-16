@@ -10,7 +10,7 @@ use gpui::{
     MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, ShapedLine, SharedString, Style, TextRun,
     UTF16Selection, UnderlineStyle, Window, actions, div, fill, point, prelude::*, relative, size,
 };
-use crate::editor::{word_at, word_left, word_right};
+use crate::editor::{floor_boundary, word_at, word_left, word_right};
 use crate::theme::{Pt, px};
 
 use crate::theme::ActiveTheme;
@@ -374,7 +374,9 @@ impl TextInput {
         if p.y > b.bottom() {
             return self.content.len();
         }
-        self.from_display(l.closest_index_for_x(p.x - b.left()))
+        // The layout may still be the previous text's (the content changed since the last
+        // paint): never point past this text or inside a character.
+        floor_boundary(&self.content, self.from_display(l.closest_index_for_x(p.x - b.left())))
     }
 
     fn on_down(&mut self, e: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {

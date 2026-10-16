@@ -480,5 +480,44 @@ async fn palette_checks(ws: &Entity<Workspace>, history: &Entity<HistoryPanel>, 
     draw(cx);
     let next = cx.update(|_, cx| history.read(cx).demo_selected_favorite()).unwrap();
     report(&mut ok, "↓ in the list moves on from it", next.as_ref().is_some_and(|(id, _, inside)| Some(id) == ids.get(498) && *inside), format!("{next:?}"));
+
+    // A favorite whose connection is not connected: the tab opens at once and connects.
+    let conn_id = cx.update(|_, cx| ws.read(cx).active_tab().and_then(|t| t.read(cx).connection().map(|c| c.profile.id.clone()))).unwrap();
+    if let Some(conn_id) = conn_id {
+        let fav = cx
+            .update(|_, cx| {
+                let core = ws.read(cx).store.read(cx).core.clone();
+                let mut f = diskman_core::Favorite::new("Offline favorite", "SELECT 'offline' AS state");
+                f.connection_id = Some(conn_id.clone());
+                core.favorites.add(f).ok()
+            })
+            .unwrap();
+        let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.store.update(cx, |s, cx| s.disconnect(&conn_id, cx))));
+        pause(cx, 200).await;
+        let offline = cx.update(|_, cx| ws.read(cx).store.read(cx).connection(&conn_id).is_none()).unwrap();
+        if let Some(fav) = fav {
+            let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.open_favorite(fav, false, window, cx)));
+            let mut got = (false, String::new());
+            for _ in 0..200 {
+                pause(cx, 50).await;
+                got = cx
+                    .update(|_, cx| {
+                        let t = ws.read(cx).active_tab().cloned();
+                        let on = t.as_ref().and_then(|t| t.read(cx).connection().map(|c| c.profile.id.clone())) == Some(conn_id.clone());
+                        (on, t.map(|t| t.read(cx).editor.read(cx).text().to_string()).unwrap_or_default())
+                    })
+                    .unwrap();
+                if got.0 {
+                    break;
+                }
+            }
+            report(
+                &mut ok,
+                "a favorite on a disconnected connection opens in a tab that connects",
+                offline && got.0 && got.1.contains("'offline'"),
+                format!("offline before {offline}, connected {}, text {:?}", got.0, got.1),
+            );
+        }
+    }
     ok
 }
