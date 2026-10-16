@@ -5,8 +5,9 @@
 #   DISKMAN_VERSION         version (default: the workspace's, from Cargo.toml); baked into the app
 #   DISKMAN_BUILD           CFBundleVersion (default: the version)
 #   DISKMAN_SIGN_IDENTITY   e.g. "Developer ID Application: Name (TEAMID)"; unset: ad hoc ("-")
-#   DISKMAN_UPDATE_FEED     update feed URL baked into the app (unset: no update checker)
-#   DISKMAN_UPDATE_PUBKEY   the ed25519 public key (base64) that signs updates, baked in
+#   DISKMAN_UPDATE_FEED     update feed URL baked into the app (unset: the latest GitHub release)
+#   DISKMAN_UPDATE_PUBKEY   the ed25519 public key (base64) that signs updates, baked in (unset:
+#                           the release key, DEFAULT_PUBKEY in crates/diskman/src/updates.rs)
 #   DISKMAN_DIST            output folder (default dist)
 #   DISKMAN_SKIP_BUILD=1    package target/release as it is
 set -euo pipefail
@@ -18,9 +19,6 @@ bundle_id="${DISKMAN_BUNDLE_ID:-dev.diskman}"
 version="${DISKMAN_VERSION:-$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)}"
 build="${DISKMAN_BUILD:-$version}"
 identity="${DISKMAN_SIGN_IDENTITY:--}"
-if [ -n "${DISKMAN_UPDATE_FEED:-}" ] && [ -z "${DISKMAN_UPDATE_PUBKEY:-}" ]; then
-  echo "bundle: DISKMAN_UPDATE_FEED without DISKMAN_UPDATE_PUBKEY: the update checker stays off" >&2
-fi
 
 if [ -z "${DISKMAN_SKIP_BUILD:-}" ]; then
   cargo build --release -p diskman -p diskman-mcp
@@ -64,6 +62,4 @@ codesign --verify --deep --strict "$app"
 
 echo "$app"
 echo "  $version ($build) · $bundle_id · macOS ${minos:-11.0}+ · $(du -sh "$app" | cut -f1) · signed: $( [ "$identity" = "-" ] && echo "ad hoc" || echo "$identity")"
-if [ -n "${DISKMAN_UPDATE_FEED:-}" ] && [ -n "${DISKMAN_UPDATE_PUBKEY:-}" ]; then
-  echo "  updates: $DISKMAN_UPDATE_FEED"
-fi
+echo "  updates: ${DISKMAN_UPDATE_FEED:-GitHub Releases (brunocapri/diskman)}"

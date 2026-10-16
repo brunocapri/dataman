@@ -42,6 +42,7 @@ mod messages;
 mod motion;
 mod nav;
 mod nav_check;
+mod notify;
 mod palette;
 mod panels;
 mod params_ui;
@@ -62,6 +63,8 @@ mod tree_menu;
 mod tx_check;
 mod ui;
 mod ui_check;
+mod update_check;
+mod update_ui;
 mod updates;
 mod value_edit;
 mod welcome;
@@ -106,7 +109,7 @@ fn menus(cx: &App) -> Vec<Menu> {
     let when = |on: bool, items: Vec<MenuItem>| if on { items } else { Vec::new() };
     let mut app_menu: Vec<MenuItem> = Vec::new();
     if let Some(label) = updates::menu_label(cx) {
-        app_menu.push(MenuItem::action(label, InstallUpdate));
+        app_menu.push(MenuItem::action(label, ShowUpdate));
     }
     if updates::enabled(cx) {
         app_menu.push(MenuItem::action("Check for Updates…", CheckForUpdates));

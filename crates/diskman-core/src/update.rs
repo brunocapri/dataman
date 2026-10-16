@@ -1,6 +1,7 @@
 //! Self-update: a JSON feed, a DMG signed with ed25519, and an atomic swap of the `.app`.
 //!
-//! The feed (`DISKMAN_UPDATE_FEED` at build time, or `update_feed` in settings.toml):
+//! The feed (the latest GitHub release's `feed.json`, `DISKMAN_UPDATE_FEED` at build time, or
+//! `update_feed` in settings.toml):
 //!
 //! ```json
 //! { "version": "0.2.0", "notes": "…", "url": "https://…/Diskman-0.2.0.dmg",
@@ -8,8 +9,8 @@
 //!   "minimum_macos": "13.0", "published": "2026-10-13T12:00:00Z" }
 //! ```
 //!
-//! The public key (raw 32 bytes, base64) is baked in at build time (`DISKMAN_UPDATE_PUBKEY`);
-//! without it the checker is off. The signature covers the whole file, like Sparkle's
+//! The public key (raw 32 bytes, base64) is the app's own (its releases on GitHub), or
+//! `DISKMAN_UPDATE_PUBKEY` at build time. The signature covers the whole file, like Sparkle's
 //! `sign_update`, so either tool can sign. Only the DMG is signed, not the feed: the version
 //! read from the DMG's own Info.plist must match the feed's and be newer than the running one,
 //! so a replayed old DMG cannot downgrade the app.
@@ -150,16 +151,52 @@ pub fn check(cfg: &UpdateConfig) -> Result<Option<Feed>> {
     Ok(Some(feed))
 }
 
-/// Downloads the feed's DMG into `dir` and verifies it; a file that fails is removed.
-pub fn download(cfg: &UpdateConfig, feed: &Feed, dir: &Path) -> Result<PathBuf> {
+/// How far a download is: the bytes on disk so far, then the signature check.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Phase {
+    Got(u64),
+    Verifying,
+}
+
+/// Runs curl to `part`, reporting the bytes written so far every 150 ms.
+fn fetch_to(url: &str, size: u64, part: &Path, on: &dyn Fn(Phase)) -> Result<()> {
+    let mut c = curl();
+    c.args(["--max-time", "1800", "--max-filesize", &size.to_string(), "--output"]).arg(part).arg(url);
+    let mut child = c.stdout(Stdio::null()).stderr(Stdio::piped()).spawn().context("download: cannot run")?;
+    let status = loop {
+        if let Some(st) = child.try_wait()? {
+            break st;
+        }
+        if let Ok(m) = std::fs::metadata(part) {
+            on(Phase::Got(m.len()));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(150));
+    };
+    if !status.success() {
+        let mut err = String::new();
+        if let Some(mut s) = child.stderr.take() {
+            use std::io::Read as _;
+            let _ = s.read_to_string(&mut err);
+        }
+        bail!("download: {}", err.trim().lines().last().unwrap_or("failed"));
+    }
+    on(Phase::Got(std::fs::metadata(part).map(|m| m.len()).unwrap_or(size)));
+    Ok(())
+}
+
+/// Downloads the feed's DMG into `dir` and verifies it; a file that fails is removed. `on`
+/// hears how far it is (from the downloading thread).
+pub fn download(cfg: &UpdateConfig, feed: &Feed, dir: &Path, on: &dyn Fn(Phase)) -> Result<PathBuf> {
     if feed.size == 0 || feed.size > DMG_MAX {
         bail!("implausible size {}", feed.size);
     }
     std::fs::create_dir_all(dir)?;
     let name = format!("Diskman-{}.dmg", sanitize(&feed.version));
     let dest = dir.join(&name);
-    // Already here from an earlier launch.
+    // Already here from an earlier attempt.
     if let Ok(bytes) = std::fs::read(&dest) {
+        on(Phase::Got(bytes.len() as u64));
+        on(Phase::Verifying);
         if verify(&bytes, feed, &cfg.key).is_ok() {
             return Ok(dest);
         }
@@ -167,12 +204,11 @@ pub fn download(cfg: &UpdateConfig, feed: &Feed, dir: &Path) -> Result<PathBuf> 
     }
     let part = dir.join(format!("{name}.part"));
     let _ = std::fs::remove_file(&part);
-    let mut c = curl();
-    c.args(["--max-time", "1800", "--max-filesize", &feed.size.to_string(), "--output"]).arg(&part).arg(&feed.url);
-    if let Err(e) = output(c, "download") {
+    if let Err(e) = fetch_to(&feed.url, feed.size, &part, on) {
         let _ = std::fs::remove_file(&part);
         return Err(e);
     }
+    on(Phase::Verifying);
     let bytes = std::fs::read(&part)?;
     if let Err(e) = verify(&bytes, feed, &cfg.key) {
         let _ = std::fs::remove_file(&part);
@@ -180,6 +216,29 @@ pub fn download(cfg: &UpdateConfig, feed: &Feed, dir: &Path) -> Result<PathBuf> 
     }
     std::fs::rename(&part, &dest)?;
     Ok(dest)
+}
+
+/// A key pair made for one run, never stored: the app's offline update check signs its own
+/// feed with it.
+pub struct ThrowawayKey(ring::signature::Ed25519KeyPair);
+
+impl ThrowawayKey {
+    pub fn new() -> Result<ThrowawayKey> {
+        use ring::signature::Ed25519KeyPair;
+        let doc = Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new()).map_err(|_| anyhow!("key generation failed"))?;
+        Ok(ThrowawayKey(Ed25519KeyPair::from_pkcs8(doc.as_ref()).map_err(|_| anyhow!("bad key"))?))
+    }
+
+    /// The public key, base64 (as `DISKMAN_UPDATE_PUBKEY` takes it).
+    pub fn public(&self) -> String {
+        use ring::signature::KeyPair as _;
+        data_encoding::BASE64.encode(self.0.public_key().as_ref())
+    }
+
+    /// The base64 signature of `bytes` (a feed's `ed25519`).
+    pub fn sign(&self, bytes: &[u8]) -> String {
+        data_encoding::BASE64.encode(self.0.sign(bytes).as_ref())
+    }
 }
 
 fn sanitize(v: &str) -> String {
@@ -392,6 +451,40 @@ mod tests {
         assert_eq!(serde_json::from_str::<Feed>(&json).unwrap(), feed);
         let min: Feed = serde_json::from_str(r#"{"version":"1.0.0","url":"u","size":1,"ed25519":"x"}"#).unwrap();
         assert_eq!((min.notes.as_str(), min.minimum_macos), ("", None));
+    }
+
+    #[test]
+    fn download_reports_progress() {
+        let key = ThrowawayKey::new().unwrap();
+        let dir = std::env::temp_dir().join(format!("diskman-update-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("src.dmg");
+        let bytes: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
+        std::fs::write(&src, &bytes).unwrap();
+        let cfg = UpdateConfig::new(Some("file:///unused"), Some(&key.public()), "0.1.0").unwrap();
+        let mut feed = Feed {
+            version: "0.2.0".into(),
+            notes: String::new(),
+            url: format!("file://{}", src.display()),
+            size: bytes.len() as u64,
+            ed25519: key.sign(&bytes),
+            minimum_macos: None,
+            published: None,
+        };
+        let seen = std::sync::Mutex::new(Vec::new());
+        let out = download(&cfg, &feed, &dir.join("got"), &|p| seen.lock().unwrap().push(p)).unwrap();
+        assert_eq!(std::fs::read(&out).unwrap(), bytes);
+        let seen = seen.into_inner().unwrap();
+        assert!(seen.contains(&Phase::Got(bytes.len() as u64)), "{seen:?}");
+        assert_eq!(seen.last(), Some(&Phase::Verifying));
+        // A signature from another key: refused, nothing left behind.
+        feed.version = "0.3.0".into();
+        feed.ed25519 = ThrowawayKey::new().unwrap().sign(&bytes);
+        let err = download(&cfg, &feed, &dir.join("bad"), &|_| {}).unwrap_err();
+        assert!(err.to_string().contains("signature"), "{err:#}");
+        assert_eq!(std::fs::read_dir(dir.join("bad")).unwrap().count(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

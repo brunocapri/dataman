@@ -1,11 +1,15 @@
-//! The update checker in the app: when to check (after the first frame when the last check is
-//! a day old, then on window activation once a day, and from the menu), the background download
-//! and verification, and the swap on "Update and restart". The work is `diskman_core::update`,
-//! always off the UI thread; nothing polls. Without a feed or a public key the checker is off
-//! and every entry (app menu, palette, Settings › About, the title-bar dot) is hidden.
+//! The update checker in the app: when to check (a few seconds after launch, then on window
+//! activation once a day, and from the menu), the notice it raises (the title bar's pill and
+//! its sheet), and Install & Relaunch: the download with its progress, the verification and the
+//! swap. The work is `diskman_core::update`, always off the UI thread; nothing polls the feed.
+//!
+//! The feed is the latest GitHub release's `feed.json`, signed with the release key below;
+//! `DISKMAN_UPDATE_FEED` / `DISKMAN_UPDATE_PUBKEY` at build time and `update_feed` in
+//! settings.toml (an empty one turns the checker off) override them.
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
 use gpui::{AnyWindowHandle, App, AppContext as _, Global, SharedString, WeakEntity};
@@ -15,31 +19,63 @@ use diskman_core::update::{self, Feed, UpdateConfig};
 use crate::app::Workspace;
 
 const DAY: Duration = Duration::from_secs(24 * 3600);
+/// The launch check waits this long after the first frame.
+const LAUNCH_DELAY: Duration = Duration::from_secs(4);
 
-/// Baked in at build time (scripts/bundle.sh passes them through).
+/// Where releases are published, and the key that signs them (its private half never leaves
+/// the release machine: scripts/keygen.sh).
+pub const DEFAULT_FEED: &str = "https://github.com/brunocapri/diskman/releases/latest/download/feed.json";
+pub const DEFAULT_PUBKEY: &str = "FiTN/mz2ZVaeKkSihEQnJmMppTub1f1VgDU3KpLXbeY=";
+
+/// Overrides baked in at build time (scripts/bundle.sh passes them through).
 const BUILD_FEED: Option<&str> = option_env!("DISKMAN_UPDATE_FEED");
 const BUILD_KEY: Option<&str> = option_env!("DISKMAN_UPDATE_PUBKEY");
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Step {
+    Downloading { got: u64, total: u64 },
+    Verifying,
+    Installing,
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum State {
     Idle,
     Checking,
-    Downloading(String),
-    /// Downloaded and verified. `blocked`: why this copy cannot replace itself (not in a
-    /// bundle, translocated, not writable), said when the update is asked for.
-    Ready { feed: Feed, dmg: PathBuf, blocked: Option<String> },
-    Installing(String),
+    /// A newer version, not downloaded yet. `blocked`: why this copy cannot replace itself
+    /// (not in a bundle, translocated, not writable).
+    Available { feed: Feed, blocked: Option<String> },
+    /// Install & Relaunch under way.
+    Working { feed: Feed, step: Step },
+    /// Downloaded and verified: swapped in as the app quits.
+    Ready { feed: Feed, dmg: PathBuf },
+    /// The install failed; Retry starts it again.
+    Failed { feed: Feed, error: String },
+}
+
+impl State {
+    /// The version on offer, whatever is being done with it.
+    pub fn feed(&self) -> Option<&Feed> {
+        match self {
+            State::Available { feed, .. } | State::Working { feed, .. } | State::Ready { feed, .. } | State::Failed { feed, .. } => Some(feed),
+            State::Idle | State::Checking => None,
+        }
+    }
 }
 
 pub struct Updates {
     cfg: Option<Arc<UpdateConfig>>,
     pub state: State,
     last_check: Option<SystemTime>,
-    /// Its mtime is the last check; its text, the feed of an update found then.
-    stamp: PathBuf,
     auto: bool,
-    /// The window whose status bar shows the outcome of a manual check.
+    /// The window whose notice shows the outcome of a check.
     ws: Option<(WeakEntity<Workspace>, AnyWindowHandle)>,
+    /// "Later": the version whose notice stays hidden until a newer one or the next launch.
+    dismissed: Option<String>,
+    /// The update check stage: the bundle replaced instead of this one, and no relaunch.
+    pub(crate) test_target: Option<PathBuf>,
+    /// The update check stage: what the last install swapped in.
+    pub(crate) installed: Option<PathBuf>,
 }
 
 impl Global for Updates {}
@@ -51,16 +87,10 @@ fn updates_mut(cx: &mut App) -> Option<&mut Updates> {
 /// Reads the configuration (no I/O beyond the settings already loaded).
 pub fn init(core: &Core, cx: &mut App) {
     let s = core.settings.get();
-    let feed = s.update_feed.clone().or_else(|| BUILD_FEED.map(str::to_string));
-    let cfg = UpdateConfig::new(feed.as_deref(), BUILD_KEY, crate::VERSION).map(Arc::new);
-    cx.set_global(Updates {
-        cfg,
-        state: State::Idle,
-        last_check: None,
-        stamp: core.dirs.config.join(".update-check"),
-        auto: s.update_check,
-        ws: None,
-    });
+    let feed = s.update_feed.clone().or_else(|| BUILD_FEED.map(str::to_string)).unwrap_or_else(|| DEFAULT_FEED.to_string());
+    let key = BUILD_KEY.unwrap_or(DEFAULT_PUBKEY);
+    let cfg = UpdateConfig::new(Some(&feed), Some(key), crate::VERSION).map(Arc::new);
+    cx.set_global(Updates { cfg, state: State::Idle, last_check: None, auto: s.update_check, ws: None, dismissed: None, test_target: None, installed: None });
 }
 
 pub fn enabled(cx: &App) -> bool {
@@ -71,17 +101,24 @@ pub fn state(cx: &App) -> State {
     cx.try_global::<Updates>().map(|u| u.state.clone()).unwrap_or(State::Idle)
 }
 
-/// The update downloaded and verified.
-pub fn ready(cx: &App) -> Option<Feed> {
-    match &cx.try_global::<Updates>()?.state {
-        State::Ready { feed, .. } => Some(feed.clone()),
-        _ => None,
+/// The version on offer.
+pub fn offered(cx: &App) -> Option<Feed> {
+    cx.try_global::<Updates>()?.state.feed().cloned()
+}
+
+/// Whether the title bar shows the notice: an update on offer, unless Later hid that version
+/// (an install under way or failed always shows).
+pub fn notice_shown(cx: &App) -> bool {
+    let Some(u) = cx.try_global::<Updates>() else { return false };
+    match &u.state {
+        State::Available { feed, .. } => u.dismissed.as_deref() != Some(feed.version.as_str()),
+        s => s.feed().is_some(),
     }
 }
 
-/// The app menu's "Update to x.y.z and Restart".
+/// The app menu's and the palette's "Update to x.y.z…" (opens the sheet).
 pub fn menu_label(cx: &App) -> Option<SharedString> {
-    ready(cx).map(|f| format!("Update to {} and Restart", f.version).into())
+    offered(cx).map(|f| format!("Update to {}…", f.version).into())
 }
 
 pub fn set_auto(on: bool, cx: &mut App) {
@@ -100,44 +137,32 @@ fn set_state(state: State, cx: &mut App) {
     }
 }
 
-fn notice(msg: String, cx: &mut App) {
-    if let Some((ws, _)) = cx.try_global::<Updates>().and_then(|u| u.ws.clone()) {
-        let _ = ws.update(cx, |w, cx| w.notice(msg, cx));
-    }
+fn with_ws(cx: &mut App, f: impl FnOnce(&mut Workspace, &mut gpui::Window, &mut gpui::Context<Workspace>) + 'static) {
+    let Some((ws, window)) = cx.try_global::<Updates>().and_then(|u| u.ws.clone()) else { return };
+    let _ = window.update(cx, |_, window, cx| {
+        let _ = ws.update(cx, |w, cx| f(w, window, cx));
+    });
 }
 
-/// After the first frame: the last check's time and any update it found, read off the UI
-/// thread; checks when a day has passed, or resumes the download of the update found.
+fn notice(msg: String, cx: &mut App) {
+    with_ws(cx, move |w, _, cx| w.notice(msg, cx));
+}
+
+fn open_sheet(cx: &mut App) {
+    with_ws(cx, |w, window, cx| w.open_update_sheet(window, cx));
+}
+
+/// After the first frame: remembers the window, and checks a few seconds later (unless checks
+/// are off in Settings).
 pub fn start(ws: WeakEntity<Workspace>, window: AnyWindowHandle, cx: &mut App) {
     let Some(u) = updates_mut(cx) else { return };
     u.ws = Some((ws, window));
-    let Some(cfg) = u.cfg.clone() else { return };
-    let stamp = u.stamp.clone();
-    let task = cx.background_spawn(async move {
-        let at = std::fs::metadata(&stamp).and_then(|m| m.modified()).ok();
-        let found = std::fs::read(&stamp)
-            .ok()
-            .and_then(|b| serde_json::from_slice::<Feed>(&b).ok())
-            .filter(|f| update::is_newer(&f.version, &cfg.current));
-        (at, found)
-    });
+    if u.cfg.is_none() || !u.auto {
+        return;
+    }
     cx.spawn(async move |cx| {
-        let (at, found) = task.await;
-        log::info!(
-            "update: last check {}, pending {}",
-            at.and_then(|t| t.elapsed().ok()).map(|d| format!("{} s ago", d.as_secs())).unwrap_or_else(|| "never".into()),
-            found.as_ref().map(|f| f.version.as_str()).unwrap_or("none")
-        );
-        cx.update(|cx| {
-            let Some(u) = updates_mut(cx) else { return };
-            u.last_check = at;
-            let due = u.auto && at.is_none_or(|t| t.elapsed().unwrap_or(DAY) >= DAY);
-            match found {
-                _ if due => check(false, cx),
-                Some(feed) => fetch(feed, cx),
-                None => {}
-            }
-        });
+        cx.background_executor().timer(LAUNCH_DELAY).await;
+        cx.update(|cx| check(false, cx));
     })
     .detach();
 }
@@ -145,53 +170,79 @@ pub fn start(ws: WeakEntity<Workspace>, window: AnyWindowHandle, cx: &mut App) {
 /// On window activation: checks if the last check is a day old (no timers in between).
 pub fn on_activate(cx: &mut App) {
     let Some(u) = cx.try_global::<Updates>() else { return };
-    if u.cfg.is_some() && u.auto && u.state == State::Idle && u.last_check.is_some_and(|t| t.elapsed().unwrap_or(DAY) >= DAY) {
+    let idle = matches!(u.state, State::Idle | State::Available { .. });
+    if u.cfg.is_some() && u.auto && idle && u.last_check.is_some_and(|t| t.elapsed().unwrap_or(DAY) >= DAY) {
         check(false, cx);
     }
 }
 
-/// Reads the feed now. `manual` (the menu): the outcome goes to the status bar.
+/// Why Install & Relaunch cannot replace this copy, if it cannot.
+fn blocked_reason(target: Option<PathBuf>) -> Option<String> {
+    let app = target.or_else(|| std::env::current_exe().ok().and_then(|e| update::bundle_of(&e)));
+    match app {
+        None => Some("Not running from Diskman.app".to_string()),
+        Some(app) => update::check_writable(&app).err().map(|e| e.to_string()),
+    }
+}
+
+/// Reads the feed now. `manual` (the menu, Settings): "up to date" or a failure is said, and
+/// an update found opens the sheet; otherwise only the title bar's notice comes up.
 pub fn check(manual: bool, cx: &mut App) {
     let Some(u) = updates_mut(cx) else { return };
     let Some(cfg) = u.cfg.clone() else { return };
-    match u.state.clone() {
-        State::Ready { feed, .. } => {
+    match &u.state {
+        State::Checking => return,
+        // Already on offer: the menu shows it again.
+        State::Working { .. } | State::Ready { .. } | State::Failed { .. } => {
             if manual {
-                notice(format!("{} ready", feed.version), cx);
+                open_sheet(cx);
             }
             return;
         }
-        State::Checking | State::Downloading(_) | State::Installing(_) => return,
-        State::Idle => {}
+        State::Idle | State::Available { .. } => {}
     }
     u.last_check = Some(SystemTime::now());
-    let stamp = u.stamp.clone();
+    let target = u.test_target.clone();
+    let before = u.state.clone();
     set_state(State::Checking, cx);
     let task = cx.background_spawn(async move {
         let r = update::check(&cfg);
-        // The time of this check, and what it found (resumed on the next launch).
-        let body = match &r {
-            Ok(Some(feed)) => serde_json::to_vec(feed).unwrap_or_default(),
-            _ => Vec::new(),
-        };
-        let _ = std::fs::write(&stamp, body);
-        r
+        let blocked = blocked_reason(target);
+        r.map(|f| f.map(|f| (f, blocked)))
     });
     cx.spawn(async move |cx| {
         let r = task.await;
         cx.update(|cx| match r {
-            Ok(Some(feed)) => fetch(feed, cx),
+            Ok(Some((feed, blocked))) => {
+                log::info!("update: {} offered{}", feed.version, blocked.as_ref().map(|b| format!(" ({b})")).unwrap_or_default());
+                let version = feed.version.clone();
+                set_state(State::Available { feed, blocked }, cx);
+                if manual {
+                    if let Some(u) = updates_mut(cx) {
+                        u.dismissed = None;
+                    }
+                    open_sheet(cx);
+                } else if cx.try_global::<Updates>().is_some_and(|u| u.dismissed.as_deref() != Some(version.as_str())) {
+                    crate::notify::update_available(&version, cx);
+                }
+                // The end-to-end test installs it at once.
+                if std::env::var_os("DISKMAN_UPDATE_AUTORESTART").is_some() {
+                    open_sheet(cx);
+                    install(cx);
+                }
+            }
             Ok(None) => {
                 set_state(State::Idle, cx);
                 if manual {
-                    notice(format!("{} is the latest", crate::VERSION), cx);
+                    notice("Diskman is up to date".to_string(), cx);
                 }
             }
             Err(e) => {
                 log::warn!("update check: {e:#}");
-                set_state(State::Idle, cx);
+                // An offer already made stays (the feed was unreachable this time).
+                set_state(if matches!(before, State::Available { .. }) { before } else { State::Idle }, cx);
                 if manual {
-                    notice(format!("Update check failed: {e}"), cx);
+                    notice(format!("Update check failed: {}", short(&e)), cx);
                 }
             }
         });
@@ -199,93 +250,168 @@ pub fn check(manual: bool, cx: &mut App) {
     .detach();
 }
 
-/// Downloads and verifies the feed's DMG in the background.
-fn fetch(feed: Feed, cx: &mut App) {
-    let Some(cfg) = cx.try_global::<Updates>().and_then(|u| u.cfg.clone()) else { return };
-    log::info!("update: {} offered", feed.version);
-    set_state(State::Downloading(feed.version.clone()), cx);
+/// An error's first line, short enough for a notice or the sheet's status.
+fn short(e: &anyhow::Error) -> String {
+    let s = e.to_string();
+    let s = s.lines().next().unwrap_or("").trim();
+    if s.chars().count() > 90 { format!("{}…", s.chars().take(89).collect::<String>()) } else { s.to_string() }
+}
+
+/// "Later": hides the notice for this version (until a newer one or the next launch).
+pub fn later(cx: &mut App) {
+    if let Some(u) = updates_mut(cx) {
+        u.dismissed = u.state.feed().map(|f| f.version.clone());
+    }
+    cx.refresh_windows();
+}
+
+/// Install & Relaunch (and Retry): downloads and verifies the DMG in the background, the
+/// progress in the state; then the workspace quits like ⌘Q (open transactions are asked about)
+/// and [`swap`] puts the new copy in place.
+pub fn install(cx: &mut App) {
+    let Some(u) = cx.try_global::<Updates>() else { return };
+    let Some(cfg) = u.cfg.clone() else { return };
+    // Retry reads the feed again first (a release may have been replaced since).
+    let (feed, retry) = match &u.state {
+        State::Available { feed, blocked: None } => (feed.clone(), false),
+        State::Failed { feed, .. } => (feed.clone(), true),
+        _ => return,
+    };
+    log::info!("update: installing {}", feed.version);
+    set_state(State::Working { feed: feed.clone(), step: Step::Downloading { got: 0, total: feed.size } }, cx);
+    let got = Arc::new(AtomicU64::new(0));
+    let total = Arc::new(AtomicU64::new(feed.size));
+    let verifying = Arc::new(AtomicBool::new(false));
+    let done = Arc::new(AtomicBool::new(false));
     let dir = std::env::temp_dir().join("diskman-updates");
-    let task = cx.background_spawn(async move {
-        let dmg = update::download(&cfg, &feed, &dir)?;
-        let blocked = match std::env::current_exe().ok().and_then(|e| update::bundle_of(&e)) {
-            None => Some("not running from Diskman.app".to_string()),
-            Some(app) => update::check_writable(&app).err().map(|e| e.to_string()),
-        };
-        anyhow::Ok(State::Ready { feed, dmg, blocked })
+    let task = cx.background_spawn({
+        let (feed, got, total, verifying) = (feed.clone(), got.clone(), total.clone(), verifying.clone());
+        async move {
+            let feed = if retry { update::check(&cfg)?.ok_or_else(|| anyhow::anyhow!("No newer version on offer"))? } else { feed };
+            total.store(feed.size, Ordering::Relaxed);
+            let dmg = update::download(&cfg, &feed, &dir, &|p| match p {
+                update::Phase::Got(n) => got.store(n, Ordering::Relaxed),
+                update::Phase::Verifying => verifying.store(true, Ordering::Relaxed),
+            })?;
+            anyhow::Ok((feed, dmg))
+        }
     });
+    // The progress line, while the download runs.
+    cx.spawn({
+        let (feed, done) = (feed.clone(), done.clone());
+        async move |cx| {
+            while !done.load(Ordering::Relaxed) {
+                cx.background_executor().timer(Duration::from_millis(200)).await;
+                if done.load(Ordering::Relaxed) {
+                    break;
+                }
+                let step = if verifying.load(Ordering::Relaxed) {
+                    Step::Verifying
+                } else {
+                    Step::Downloading { got: got.load(Ordering::Relaxed), total: total.load(Ordering::Relaxed) }
+                };
+                cx.update(|cx| {
+                    if matches!(state(cx), State::Working { .. }) {
+                        set_state(State::Working { feed: feed.clone(), step }, cx);
+                    }
+                });
+            }
+        }
+    })
+    .detach();
     cx.spawn(async move |cx| {
         let r = task.await;
+        done.store(true, Ordering::Relaxed);
         cx.update(|cx| match r {
-            Ok(ready) => {
-                if let State::Ready { feed, blocked, .. } = &ready {
-                    log::info!("update: {} downloaded and verified{}", feed.version, blocked.as_ref().map(|b| format!(" ({b})")).unwrap_or_default());
-                }
-                set_state(ready, cx);
-                // The end-to-end test applies it at once.
-                if std::env::var_os("DISKMAN_UPDATE_AUTORESTART").is_some()
-                    && let Some((ws, window)) = cx.try_global::<Updates>().and_then(|u| u.ws.clone())
-                {
-                    let _ = window.update(cx, |_, window, cx| {
-                        let _ = ws.update(cx, |w, cx| w.install_update(window, cx));
-                    });
-                }
+            Ok((feed, dmg)) => {
+                log::info!("update: {} downloaded and verified", feed.version);
+                set_state(State::Ready { feed, dmg }, cx);
+                with_ws(cx, |w, window, cx| w.install_update(window, cx));
             }
             Err(e) => {
                 log::warn!("update rejected: {e:#}");
-                set_state(State::Idle, cx);
+                set_state(State::Failed { feed, error: short(&e) }, cx);
             }
         });
     })
     .detach();
 }
 
-/// Screenshots: an update ready, as if a feed had offered it.
-pub fn demo_ready(cx: &mut App) {
+/// Whether this run is the update check stage (no relaunch, no quit).
+pub fn testing(cx: &App) -> bool {
+    cx.try_global::<Updates>().is_some_and(|u| u.test_target.is_some())
+}
+
+/// Swaps the app for the downloaded one, off the UI thread; resolves to the app's path (to
+/// relaunch). On failure the sheet says why, with Retry.
+pub fn swap(cx: &mut App) -> Option<gpui::Task<anyhow::Result<PathBuf>>> {
+    let u = cx.try_global::<Updates>()?;
+    let State::Ready { feed, dmg } = u.state.clone() else { return None };
+    let app = u.test_target.clone().or_else(|| std::env::current_exe().ok().and_then(|e| update::bundle_of(&e)))?;
+    log::info!("update: installing {} over {}", feed.version, app.display());
+    set_state(State::Working { feed: feed.clone(), step: Step::Installing }, cx);
+    let task = cx.background_spawn({
+        let (version, dmg) = (feed.version.clone(), dmg.clone());
+        async move {
+            update::install(&dmg, &app, &version)?;
+            let _ = std::fs::remove_file(&dmg);
+            anyhow::Ok(app)
+        }
+    });
+    Some(cx.spawn(async move |cx| {
+        let r = task.await;
+        cx.update(|cx| match &r {
+            Err(e) => {
+                log::warn!("update install: {e:#}");
+                set_state(State::Failed { feed, error: short(e) }, cx);
+            }
+            Ok(app) if testing(cx) => {
+                if let Some(u) = updates_mut(cx) {
+                    u.installed = Some(app.clone());
+                }
+                set_state(State::Idle, cx);
+            }
+            Ok(_) => {}
+        });
+        r
+    }))
+}
+
+/// The update check stage: the feed, key and bundle it plays against.
+pub fn configure_for_test(feed: &str, key: &str, target: PathBuf, cx: &mut App) {
+    if let Some(u) = updates_mut(cx) {
+        u.cfg = UpdateConfig::new(Some(feed), Some(key), crate::VERSION).map(Arc::new);
+        u.state = State::Idle;
+        u.dismissed = None;
+        u.installed = None;
+        u.test_target = Some(target);
+    }
+}
+
+pub fn set_ws_for_test(ws: WeakEntity<Workspace>, window: AnyWindowHandle, cx: &mut App) {
+    if let Some(u) = updates_mut(cx) {
+        u.ws = Some((ws, window));
+    }
+}
+
+/// Screenshots: an update on offer (`step`: one under way), as if the feed had offered it.
+pub fn demo_offer(step: Option<Step>, cx: &mut App) {
     if let Some(u) = updates_mut(cx) {
         let zero_key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
         u.cfg = UpdateConfig::new(Some("http://127.0.0.1/feed.json"), Some(zero_key), crate::VERSION).map(Arc::new);
     }
     let feed = Feed {
-        version: "0.2.0".into(),
-        notes: "Faster grid scrolling; EXPLAIN for LAR.".into(),
+        version: "0.2.1".into(),
+        notes: "Faster result grid scrolling.\nSQL Server: table DDL with indexes and constraints.\nThe connection sheet remembers the last SSH key used.\nFixes a crash when a MySQL result had no columns.".into(),
         url: String::new(),
-        size: 0,
+        size: 34_603_008,
         ed25519: String::new(),
         minimum_macos: None,
         published: None,
     };
-    set_state(State::Ready { feed, dmg: PathBuf::new(), blocked: None }, cx);
-}
-
-/// Why "Update and restart" cannot run here, if it cannot.
-pub fn blocked(cx: &App) -> Option<String> {
-    match &cx.try_global::<Updates>()?.state {
-        State::Ready { blocked, .. } => blocked.clone(),
-        State::Installing(_) => Some("installing".into()),
-        _ => Some("no update ready".into()),
-    }
-}
-
-/// Swaps the app for the downloaded one, off the UI thread; resolves to the app's path (to
-/// relaunch). On failure the update stays offered, blocked with the reason.
-pub fn install(cx: &mut App) -> Option<gpui::Task<anyhow::Result<PathBuf>>> {
-    let State::Ready { feed, dmg, blocked: None } = state(cx) else { return None };
-    let app = std::env::current_exe().ok().and_then(|e| update::bundle_of(&e))?;
-    log::info!("update: installing {} over {}", feed.version, app.display());
-    set_state(State::Installing(feed.version.clone()), cx);
-    let (f, d) = (feed.clone(), dmg.clone());
-    let task = cx.background_spawn(async move {
-        update::install(&d, &app, &f.version)?;
-        let _ = std::fs::remove_file(&d);
-        anyhow::Ok(app)
-    });
-    Some(cx.spawn(async move |cx| {
-        let r = task.await;
-        if let Err(e) = &r {
-            log::warn!("update install: {e:#}");
-            let blocked = Some(e.to_string());
-            cx.update(|cx| set_state(State::Ready { feed, dmg, blocked }, cx));
-        }
-        r
-    }))
+    let state = match step {
+        Some(step) => State::Working { feed, step },
+        None => State::Available { feed, blocked: None },
+    };
+    set_state(state, cx);
 }

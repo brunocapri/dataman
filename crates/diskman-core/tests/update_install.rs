@@ -132,14 +132,14 @@ fn check_download_verify_install() {
     for (url, err) in [(&bad_sig, "signature"), (&bad_size, "size")] {
         let c = cfg(url, "0.1.0");
         let feed = update::check(&c).unwrap().expect("offered");
-        let e = update::download(&c, &feed, &cache).unwrap_err().to_string();
+        let e = update::download(&c, &feed, &cache, &|_| {}).unwrap_err().to_string();
         assert!(e.contains(err), "{e}");
         assert_eq!(std::fs::read_dir(&cache).unwrap().count(), 0);
     }
     // A validly signed DMG holding another version: downloaded, but the install refuses it.
     let c = cfg(&replay, "0.1.0");
     let feed = update::check(&c).unwrap().unwrap();
-    let file = update::download(&c, &feed, &cache).unwrap();
+    let file = update::download(&c, &feed, &cache, &|_| {}).unwrap();
     let e = update::install(&file, &installed, &feed.version).unwrap_err().to_string();
     assert!(e.contains("0.1.5"), "{e}");
     assert_eq!(update::plist_value(&installed, "CFBundleShortVersionString").unwrap(), "0.1.0");
@@ -148,7 +148,12 @@ fn check_download_verify_install() {
     let c = cfg(&good, "0.1.0");
     let feed = update::check(&c).unwrap().expect("0.2.0 offered");
     assert_eq!((feed.version.as_str(), feed.notes.as_str()), ("0.2.0", "Faster grid."));
-    let file = update::download(&c, &feed, &cache).unwrap();
+    // The download reports its progress, then the verification.
+    let seen = std::sync::Mutex::new(Vec::new());
+    let file = update::download(&c, &feed, &cache, &|p| seen.lock().unwrap().push(p)).unwrap();
+    let seen = seen.into_inner().unwrap();
+    assert!(matches!(seen.last(), Some(update::Phase::Verifying)), "{seen:?}");
+    assert!(seen.contains(&update::Phase::Got(feed.size)), "{seen:?}");
     // An unwritable folder is refused before anything moves.
     run(Command::new("chmod").arg("a-w").arg(&apps));
     let e = update::install(&file, &installed, &feed.version).unwrap_err().to_string();
@@ -162,5 +167,5 @@ fn check_download_verify_install() {
     let names: Vec<String> = std::fs::read_dir(&apps).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
     assert_eq!(names, ["Diskman.app"]);
     // A second download reuses the verified file.
-    assert_eq!(update::download(&c, &feed, &cache).unwrap(), file);
+    assert_eq!(update::download(&c, &feed, &cache, &|_| {}).unwrap(), file);
 }

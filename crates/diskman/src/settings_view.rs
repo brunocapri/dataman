@@ -687,27 +687,30 @@ impl SettingsView {
                 let state = crate::updates::state(cx);
                 let status: Option<SharedString> = match &state {
                     State::Checking => Some("checking".into()),
-                    State::Downloading(v) => Some(format!("downloading {v}").into()),
-                    State::Ready { feed, .. } => Some(format!("{} ready", feed.version).into()),
-                    State::Installing(v) => Some(format!("installing {v}").into()),
                     State::Idle => None,
+                    s => s.feed().map(|f| format!("{} available", f.version).into()),
                 };
-                let ready = matches!(state, State::Ready { .. });
+                let offered = state.feed().is_some();
                 div()
                     .flex()
                     .flex_row()
                     .items_center()
                     .gap(px(10.))
                     .child(div().text_color(t.tx2).child(crate::VERSION))
-                    .children(status.map(|s| div().text_size(px(11.5)).text_color(if ready { t.acc } else { t.tx3 }).child(s)))
-                    .when(enabled && ready, |d| {
-                        d.child(ui::button(t, "update-now", ui::Btn::Primary).h(px(28.)).child("Update and restart").on_click(cx.listener(|_, _, window, cx| {
+                    .children(status.map(|s| div().text_size(px(11.5)).text_color(if offered { t.acc } else { t.tx3 }).child(s)))
+                    // Settings closes first: the outcome is the update sheet, or the status
+                    // bar's "Diskman is up to date".
+                    .when(enabled && offered, |d| {
+                        d.child(ui::button(t, "update-now", ui::Btn::Primary).h(px(28.)).child("Update…").on_click(cx.listener(|_, _, window, cx| {
                             cx.emit(SettingsEvent::Close);
-                            window.dispatch_action(Box::new(crate::app::InstallUpdate), cx);
+                            window.dispatch_action(Box::new(crate::app::ShowUpdate), cx);
                         })))
                     })
-                    .when(enabled && !ready, |d| {
-                        d.child(ui::button(t, "check-now", ui::Btn::Secondary).h(px(28.)).child("Check now").on_click(|_, _, cx| crate::updates::check(true, cx)))
+                    .when(enabled && !offered, |d| {
+                        d.child(ui::button(t, "check-now", ui::Btn::Secondary).h(px(28.)).child("Check now").on_click(cx.listener(|_, _, window, cx| {
+                            cx.emit(SettingsEvent::Close);
+                            window.dispatch_action(Box::new(crate::app::CheckForUpdates), cx);
+                        })))
                     })
                     .into_any_element()
             }

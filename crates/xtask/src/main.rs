@@ -7,6 +7,8 @@
 //! - `pubkey`: prints the public key of the current private key.
 //! - `sign <dmg> --url <url> --version <v> [--notes <file>] [--min-macos <v>]`: signs the DMG and
 //!   prints the feed JSON.
+//! - `verify <feed.json> <dmg> --pubkey <b64> [--version <v>]`: checks a published feed and its
+//!   DMG as the app would (size, signature, version).
 //!
 //! The private key: `DISKMAN_UPDATE_PRIVATE_KEY` (its base64, for CI secrets), else the file
 //! at `DISKMAN_UPDATE_KEY`, else `~/.config/diskman-release/update_ed25519.key`.
@@ -35,7 +37,10 @@ fn run() -> Result<()> {
             Ok(())
         }
         Some("sign") if args.len() >= 2 => sign(&args[1], &args[2..]),
-        _ => bail!("usage: xtask icon <svg> <out.icns> | keygen [--force] | pubkey | sign <dmg> --url <url> --version <v> [--notes <file>] [--min-macos <v>]"),
+        Some("verify") if args.len() >= 3 => verify(&args[1], &args[2], &args[3..]),
+        _ => bail!(
+            "usage: xtask icon <svg> <out.icns> | keygen [--force] | pubkey | sign <dmg> --url <url> --version <v> [--notes <file>] [--min-macos <v>] | verify <feed.json> <dmg> --pubkey <b64> [--version <v>]"
+        ),
     }
 }
 
@@ -184,5 +189,28 @@ fn sign(dmg: &str, args: &[String]) -> Result<()> {
         feed["minimum_macos"] = min.into();
     }
     println!("{}", serde_json::to_string_pretty(&feed)?);
+    Ok(())
+}
+
+/// Checks a published feed against its DMG the way the app does: the size, the ed25519
+/// signature with the app's public key, and (with `--version`) the version.
+fn verify(feed: &str, dmg: &str, args: &[String]) -> Result<()> {
+    let pubkey = flag(args, "--pubkey").context("--pubkey is required")?;
+    let json: serde_json::Value = serde_json::from_slice(&std::fs::read(feed).with_context(|| format!("reading {feed}"))?).context("the feed is not JSON")?;
+    let version = json["version"].as_str().context("the feed has no version")?;
+    if let Some(want) = flag(args, "--version")
+        && want != version
+    {
+        bail!("the feed offers {version}, expected {want}");
+    }
+    let bytes = std::fs::read(dmg).with_context(|| format!("reading {dmg}"))?;
+    let size = json["size"].as_u64().context("the feed has no size")?;
+    if bytes.len() as u64 != size {
+        bail!("the DMG is {} bytes, the feed says {size}", bytes.len());
+    }
+    let key = data_encoding::BASE64.decode(pubkey.trim().as_bytes()).context("the public key is not base64")?;
+    let sig = data_encoding::BASE64.decode(json["ed25519"].as_str().context("the feed has no signature")?.trim().as_bytes()).context("the signature is not base64")?;
+    ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, &key).verify(&bytes, &sig).map_err(|_| anyhow!("signature mismatch"))?;
+    println!("{version}: {size} bytes, signature valid");
     Ok(())
 }

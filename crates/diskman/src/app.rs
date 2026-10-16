@@ -131,6 +131,8 @@ actions!(
         ToggleMcpLog,
         /// Reads the update feed now.
         CheckForUpdates,
+        /// The update on offer: its sheet (version, notes, Install & Relaunch).
+        ShowUpdate,
         /// Replaces the app with the downloaded update and relaunches it.
         InstallUpdate,
         /// Back / forward through the places visited (`nav`).
@@ -474,6 +476,12 @@ pub struct Workspace {
     pub(crate) crash_note: Option<&'static str>,
     /// The quit under way installs the update and relaunches.
     update_on_quit: bool,
+    /// The update sheet is up; its keys; the title bar's notice and the sheet's buttons as last
+    /// laid out (the checks).
+    pub(crate) update_sheet: bool,
+    pub(crate) update_focus: FocusHandle,
+    pub(crate) update_pill_bounds: std::rc::Rc<std::cell::RefCell<Vec<gpui::Bounds<gpui::Pixels>>>>,
+    pub(crate) update_button_bounds: std::rc::Rc<std::cell::RefCell<Vec<gpui::Bounds<gpui::Pixels>>>>,
     /// The saved session: the save waiting for the workspace to settle, and what it last saw
     /// (`restore`).
     pub(crate) session_task: Option<gpui::Task<()>>,
@@ -615,6 +623,10 @@ impl Workspace {
             crash: None,
             crash_note: None,
             update_on_quit: false,
+            update_sheet: false,
+            update_focus: cx.focus_handle(),
+            update_pill_bounds: Default::default(),
+            update_button_bounds: Default::default(),
             session_task: None,
             session_fp: 0,
             session_off: false,
@@ -845,6 +857,7 @@ impl Workspace {
             || self.active_tab().is_some_and(|t| t.read(cx).pending_run.is_some() || t.read(cx).confirm.is_some() || t.read(cx).params.is_some())
             || self.confirm_delete.is_some()
             || self.tx_prompt.is_some()
+            || self.update_sheet
             || cx.try_global::<crate::mcp::McpHost>().is_some_and(|h| !h.pending.is_empty())
     }
 
@@ -969,12 +982,20 @@ impl Workspace {
 
     fn quit_now(&mut self, cx: &mut Context<Self>) {
         if std::mem::take(&mut self.update_on_quit)
-            && let Some(install) = crate::updates::install(cx)
+            && let Some(install) = crate::updates::swap(cx)
         {
             // The swap first (a second or two, off the UI thread); the app quits and reopens
-            // only once the new copy is in place, and stays open if it failed.
+            // only once the new copy is in place, and stays open if it failed (the sheet says
+            // why, with Retry). The update check stage stops before the relaunch.
             cx.spawn(async move |this, cx| match install.await {
                 Ok(app) => {
+                    if cx.update(|cx| crate::updates::testing(cx)) {
+                        let _ = this.update(cx, |w, cx| {
+                            w.update_sheet = false;
+                            w.notice(format!("Installed {}", app.display()), cx);
+                        });
+                        return;
+                    }
                     if let Err(e) = diskman_core::update::relaunch_after_exit(&app) {
                         log::warn!("relaunch: {e:#}");
                     }
@@ -983,8 +1004,8 @@ impl Workspace {
                         cx.quit();
                     });
                 }
-                Err(e) => {
-                    let _ = this.update(cx, |w, cx| w.notice(format!("Update failed: {e}"), cx));
+                Err(_) => {
+                    let _ = this.update(cx, |_, cx| cx.notify());
                 }
             })
             .detach();
@@ -995,16 +1016,19 @@ impl Workspace {
         cx.quit();
     }
 
-    /// "Update to x.y.z and Restart": quits like ⌘Q (open transactions are asked about), then
-    /// swaps the app and opens the new one.
+    /// The update downloaded and verified: quits like ⌘Q (open transactions are asked about,
+    /// over the update sheet), then swaps the app and opens the new one.
     pub(crate) fn install_update(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(why) = crate::updates::blocked(cx) {
-            self.notice(format!("Cannot update: {why}"), cx);
+        if !matches!(crate::updates::state(cx), crate::updates::State::Ready { .. }) {
             return;
         }
         self.update_on_quit = true;
         if self.request_quit(window, cx) {
             self.quit_now(cx);
+        } else {
+            // The open-transactions prompt takes over; the title bar's notice brings it back.
+            self.update_sheet = false;
+            cx.notify();
         }
     }
 
@@ -2584,7 +2608,8 @@ impl Render for Workspace {
             .on_action(cx.listener(|w, _: &TogglePlanFlame, _, cx| w.toggle_plan_flame(cx)))
             .on_action(cx.listener(|w, _: &ToggleMcpLog, window, cx| w.toggle_mcp_log(window, cx)))
             .on_action(cx.listener(|_, _: &CheckForUpdates, _, cx| crate::updates::check(true, cx)))
-            .on_action(cx.listener(|w, _: &InstallUpdate, window, cx| w.install_update(window, cx)))
+            .on_action(cx.listener(|w, _: &ShowUpdate, window, cx| w.open_update_sheet(window, cx)))
+            .on_action(cx.listener(|w, _: &InstallUpdate, window, cx| w.update_primary(window, cx)))
             .on_action(cx.listener(|w, _: &OpenActivity, window, cx| {
                 let id = w.active_tab().and_then(|t| t.read(cx).connection().map(|c| c.profile.id.clone())).or(w.current_conn.clone());
                 match id {
@@ -2766,6 +2791,7 @@ impl Render for Workspace {
             .children(self.render_tx_sheet(cx))
             .children(self.render_param_sheet(cx))
             .children(self.render_mcp_sheet(cx))
+            .children(self.render_update_sheet(cx))
     }
 }
 

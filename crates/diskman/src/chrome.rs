@@ -223,34 +223,7 @@ impl Workspace {
                         }
                     }))
                     .child(div().flex_1())
-                    .when(show_logo, |d| {
-                        // An update downloaded and verified: a dot after the logotype, the
-                        // same "Update and restart" as the app menu.
-                        let update = crate::updates::ready(cx).map(|f| f.version);
-                        d.child(
-                            div()
-                                .pr(px(14.))
-                                .flex()
-                                .flex_row()
-                                .items_center()
-                                .gap(px(6.))
-                                .child(div().font_family(PIXEL).text_size(px(13.)).text_color(t.tx3).child("DISKMAN"))
-                                .children(update.map(|v| {
-                                    let acc = t.acc;
-                                    div()
-                                        .id("update-dot")
-                                        .size(px(14.))
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .cursor_pointer()
-                                        .on_mouse_down(MouseButton::Left, stop)
-                                        .child(div().size(px(6.)).rounded_full().bg(acc))
-                                        .tooltip(ui::tooltip(format!("Update to {v} and restart"), None, None))
-                                        .on_click(|_, window, cx| window.dispatch_action(Box::new(crate::app::InstallUpdate), cx))
-                                })),
-                        )
-                    }),
+                    .when(show_logo, |d| d.child(div().pr(px(14.)).font_family(PIXEL).text_size(px(13.)).text_color(t.tx3).child("DISKMAN"))),
             )
             .child(
                 div()
@@ -297,6 +270,8 @@ impl Workspace {
                             })),
                     )),
             )
+            // An update on offer: its notice, which opens the update sheet.
+            .children(self.render_update_pill(&t, cx))
             .child(
                 div()
                     .id("palette-hint")

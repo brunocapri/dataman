@@ -538,9 +538,14 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                             p.update(cx, |p, cx| p.set_query(q, cx));
                         }
                     }),
-                    // Distribution: an update ready (the dot, the palette), last session's crash.
-                    "update" | "update-palette" => {
-                        crate::updates::demo_ready(cx);
+                    // Distribution: an update on offer (the title bar's notice, its sheet, the
+                    // sheet while downloading, the palette), last session's crash.
+                    "update" | "update-sheet" | "update-progress" | "update-palette" => {
+                        let step = (stage == "update-progress").then_some(crate::updates::Step::Downloading { got: 12_400_000, total: 34_603_008 });
+                        crate::updates::demo_offer(step, cx);
+                        if stage == "update-sheet" || stage == "update-progress" {
+                            ws.update(cx, |w, cx| w.open_update_sheet(window, cx));
+                        }
                         if stage == "update-palette" {
                             ws.update(cx, |w, cx| {
                                 w.open_palette(crate::palette::Scope::All, window, cx);
@@ -561,7 +566,7 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                     }),
                     "settings" | "settings-keys" | "settings-grid" | "settings-mcp" | "settings-about" => ws.update(cx, |w, cx| {
                         if stage == "settings-about" {
-                            crate::updates::demo_ready(cx);
+                            crate::updates::demo_offer(None, cx);
                         }
                         if stage == "settings-mcp" {
                             let core = w.store.read(cx).core.clone();
@@ -780,6 +785,14 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                     }
                     return;
                 }
+            }
+            if crate::update_check::is_stage(&stage) {
+                let ok = crate::update_check::run(&ws, cx).await;
+                let _ = cx.update(|_, cx| cx.quit());
+                if !ok {
+                    std::process::exit(1);
+                }
+                return;
             }
             if crate::session_check::is_stage(&stage) {
                 let ok = crate::session_check::run_stage(&ws, &stage, cx).await;

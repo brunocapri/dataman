@@ -1172,9 +1172,9 @@ fn commands(conn: Option<&std::sync::Arc<diskman_core::Connection>>, cx: &App) -
             _ => true,
         });
     }
-    if let Some(feed) = crate::updates::ready(cx) {
+    if let Some(feed) = crate::updates::offered(cx) {
         let notes = feed.notes.lines().next().unwrap_or("").to_string();
-        v.push(c(&format!("Update to {} and restart", feed.version), &notes, "", Box::new(InstallUpdate), Workspace));
+        v.push(c(&format!("Update to {}…", feed.version), &notes, "", Box::new(ShowUpdate), Workspace));
     }
     if crate::updates::enabled(cx) {
         v.push(c("Check for updates…", crate::VERSION, "", Box::new(CheckForUpdates), Workspace));
