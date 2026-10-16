@@ -112,6 +112,9 @@ pub enum Act {
     /// A database's Read Only (a check mark when on): saved with the connection, applied to
     /// its open sessions without reconnecting.
     ToggleReadOnly,
+    /// A table or view into its connection's "pinned" group, and out of it (the tree's own).
+    Pin,
+    Unpin,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -385,6 +388,28 @@ pub fn entries_for(t: &Target, caps: &Caps) -> Vec<Entry> {
     out
 }
 
+/// A table's or view's menu with Pin (or Unpin, when `pinned`) in a section of its own after
+/// the opening items; other menus as they are. Pins live outside the menu model (the tree's
+/// store), so this is a step after [`entries_for`].
+pub fn with_pin(mut es: Vec<Entry>, t: &Target, pinned: bool) -> Vec<Entry> {
+    let Target::Rel { kind, .. } = t else { return es };
+    let view = kind.is_view();
+    let item = match (pinned, view) {
+        (false, false) => Item::new(Act::Pin, "Pin table", Icon::Pin),
+        (false, true) => Item::new(Act::Pin, "Pin view", Icon::Pin),
+        (true, false) => Item::new(Act::Unpin, "Unpin table", Icon::Pin),
+        (true, true) => Item::new(Act::Unpin, "Unpin view", Icon::Pin),
+    };
+    match es.iter().position(|e| matches!(e, Entry::Sep)) {
+        Some(i) => {
+            es.insert(i, Entry::Item(item));
+            es.insert(i, Entry::Sep);
+        }
+        None => es.push(Entry::Item(item)),
+    }
+    es
+}
+
 /// The row's default action (↩, double-click): its bold item, when enabled.
 pub fn default_act(t: &Target) -> Option<Act> {
     entries(t).into_iter().find_map(|e| match e {
@@ -649,6 +674,48 @@ mod tests {
         assert!(item(&lar, Act::ShowDefinition).disabled.unwrap().starts_with("not reported"));
         assert!(acts(&rel(RelKind::MaterializedView, false)).contains(&Act::DropView));
         assert!(!acts(&v).contains(&Act::Truncate));
+    }
+
+    /// Pin table / Unpin table: its own section after the opening items, never the default,
+    /// only on tables and views; still fits a small window.
+    #[test]
+    fn pinning_tables_and_views() {
+        let pg = Caps::of(dataman_core::config::Engine::Postgres);
+        let flat = |es: &[Entry]| -> Vec<Option<Act>> {
+            es.iter()
+                .map(|e| match e {
+                    Entry::Item(i) => Some(i.act),
+                    _ => None,
+                })
+                .collect()
+        };
+        let t = rel(RelKind::Table, false);
+        let es = with_pin(entries_for(&t, &pg), &t, false);
+        assert_eq!(
+            &flat(&es)[..7],
+            &[Some(Act::SelectTop), Some(Act::SelectAll), Some(Act::CountRows), Some(Act::OpenWithoutRunning), None, Some(Act::Pin), None]
+        );
+        let pin = es.iter().find_map(|e| if let Entry::Item(i) = e { (i.act == Act::Pin).then(|| i.clone()) } else { None }).unwrap();
+        assert_eq!((pin.label, pin.icon, pin.enabled(), pin.bold), ("Pin table", Icon::Pin, true, false));
+        assert_eq!(es.len(), entries_for(&t, &pg).len() + 2);
+        // Pinned: Unpin in its place; the default stays Select.
+        let un = with_pin(entries_for(&t, &pg), &t, true);
+        assert!(flat(&un).contains(&Some(Act::Unpin)) && !flat(&un).contains(&Some(Act::Pin)));
+        assert_eq!(default_act(&t), Some(Act::SelectTop));
+        // Views say so.
+        let v = rel(RelKind::View, false);
+        let labels: Vec<&str> = with_pin(entries(&v), &v, true).iter().filter_map(|e| if let Entry::Item(i) = e { Some(i.label) } else { None }).collect();
+        assert!(labels.contains(&"Unpin view"), "{labels:?}");
+        // No separator twice in a row, first or last.
+        for es in [&es, &un] {
+            assert!(!matches!(es.first(), Some(Entry::Sep)) && !matches!(es.last(), Some(Entry::Sep)));
+            assert!(!es.windows(2).any(|w| matches!(w, [Entry::Sep, Entry::Sep])));
+        }
+        assert!(menu_h(&es) < 600. - 2. * MARGIN - 40.);
+        // Other rows: unchanged.
+        for other in [conn(ConnPhase::Connected), Target::Group, Target::Column { name: "id".into() }, obj(Obj::Sequence)] {
+            assert_eq!(with_pin(entries(&other), &other, false), entries(&other), "{other:?}");
+        }
     }
 
     #[test]

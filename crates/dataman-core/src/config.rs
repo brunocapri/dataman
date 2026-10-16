@@ -462,6 +462,11 @@ impl Dirs {
         self.config.join("favorites.toml")
     }
 
+    /// The explorer's pinned tables (`pins`); only there while something is pinned.
+    pub fn pins_file(&self) -> PathBuf {
+        self.config.join("pins.toml")
+    }
+
     /// The workspace kept between launches (`session`).
     pub fn session_dir(&self) -> PathBuf {
         self.config.join("session")

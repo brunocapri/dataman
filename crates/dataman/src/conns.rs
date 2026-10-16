@@ -35,7 +35,12 @@ impl ConnStore {
     }
 
     pub fn reload(&mut self, cx: &mut Context<Self>) {
-        self.profiles = self.core.config.connections();
+        let profiles = self.core.config.connections();
+        // A deleted connection's pinned tables go with it.
+        for gone in self.profiles.iter().filter(|p| !profiles.iter().any(|n| n.id == p.id)) {
+            let _ = self.core.pins.forget(&gone.id);
+        }
+        self.profiles = profiles;
         cx.notify();
     }
 

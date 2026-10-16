@@ -1,11 +1,15 @@
 //! A single-line text field (forms, filters), after GPUI's `input.rs` example, with password
 //! masking and a submit event.
+//!
+//! Text wider than the field scrolls sideways as NSTextField does: the caret always shows
+//! (typing, arrows, clicks, pastes, a drag past either edge scrolling on its own), a line that
+//! shrinks leaves no empty room on the right, and a field without the focus shows its start.
 
 use std::ops::Range;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    App, Bounds, ClipboardItem, Context, CursorStyle, ElementId, ElementInputHandler, Entity, EntityInputHandler,
+    App, Bounds, ClipboardItem, Context, CursorStyle, DispatchPhase, ElementId, ElementInputHandler, Entity, EntityInputHandler,
     EventEmitter, FocusHandle, Focusable, GlobalElementId, KeyBinding, LayoutId, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, ShapedLine, SharedString, Style, TextRun,
     UTF16Selection, UnderlineStyle, Window, actions, div, fill, point, prelude::*, relative, size,
@@ -63,6 +67,40 @@ pub fn bind_keys(cx: &mut App) {
 
 /// Typing (or deleting) pauses longer than this start a new undo step.
 const COALESCE: Duration = Duration::from_millis(1000);
+
+/// How often a drag resting past the field's edge scrolls on.
+const AUTOSCROLL_TICK: Duration = Duration::from_millis(50);
+
+/// The scroll that shows the caret: `prev` moved as little as it takes to bring the caret
+/// (`caret` from the line's start) inside a field `width` wide, and never past the line's end
+/// (`line` wide), so a line that shrank leaves no empty room on the right. A line that fits
+/// does not scroll. All in the same unit.
+fn scroll_for(prev: f32, caret: f32, line: f32, width: f32) -> f32 {
+    if width <= 0. {
+        return 0.;
+    }
+    let max = (line - width).max(0.);
+    let s = prev.clamp(0., max);
+    let s = if caret < s {
+        caret
+    } else if caret > s + width {
+        caret - width
+    } else {
+        s
+    };
+    s.clamp(0., max)
+}
+
+/// Which side of `left..right` the pointer's `x` is out on: -1 left, 1 right (`None`: inside).
+fn edge_dir(x: f32, left: f32, right: f32) -> Option<isize> {
+    if x < left {
+        Some(-1)
+    } else if x > right {
+        Some(1)
+    } else {
+        None
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum EditKind {
@@ -174,6 +212,13 @@ pub struct TextInput {
     chrome: bool,
     /// Error ring (a field the server rejected).
     pub error: bool,
+    /// How far the text is scrolled left, as last painted (`scroll_for` keeps the caret in
+    /// the field).
+    scroll: Pixels,
+    /// The pointer during a drag-select, and whether the timer that scrolls while it rests
+    /// past an edge is running.
+    drag_at: Option<Point<Pixels>>,
+    autoscrolling: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -207,6 +252,9 @@ impl TextInput {
             history: History::default(),
             chrome: true,
             error: false,
+            scroll: Pixels::ZERO,
+            drag_at: None,
+            autoscrolling: false,
         }
     }
 
@@ -233,6 +281,18 @@ impl TextInput {
     /// Demo and checks: the selection, byte offsets into `text()`.
     pub fn demo_selected(&self) -> Range<usize> {
         self.clamp(self.selected.clone())
+    }
+
+    /// Checks: how far the text is scrolled (points), as last painted.
+    pub fn demo_scroll(&self) -> f32 {
+        self.scroll.pt()
+    }
+
+    /// Checks: the caret's x from the field's left edge (points, after the scroll), as last
+    /// painted.
+    pub fn demo_caret_x(&self) -> Option<f32> {
+        let l = self.last_layout.as_ref()?;
+        Some((l.x_for_index(self.to_display(self.cursor())) - self.scroll).pt())
     }
 
     /// Demo and checks: the field's bounds in window coordinates, as last painted.
@@ -376,7 +436,7 @@ impl TextInput {
         }
         // The layout may still be the previous text's (the content changed since the last
         // paint): never point past this text or inside a character.
-        floor_boundary(&self.content, self.from_display(l.closest_index_for_x(p.x - b.left())))
+        floor_boundary(&self.content, self.from_display(l.closest_index_for_x(p.x - b.left() + self.scroll)))
     }
 
     fn on_down(&mut self, e: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -406,13 +466,66 @@ impl TextInput {
 
     fn on_up(&mut self, _: &MouseUpEvent, _: &mut Window, _: &mut Context<Self>) {
         self.selecting = false;
+        self.drag_at = None;
     }
 
+    /// A move anywhere in the window while a drag-select is on (the field may be far behind).
     fn on_move(&mut self, e: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
         if !self.selecting {
             return;
         }
+        // Released where no up reached the field.
+        if e.pressed_button != Some(MouseButton::Left) {
+            self.selecting = false;
+            self.drag_at = None;
+            return;
+        }
+        self.drag_at = Some(e.position);
         let i = self.index_for(e.position);
+        self.drag_to(i, cx);
+        // Resting past an edge keeps scrolling (no more moves arrive): a timer steps on.
+        if self.past_edge().is_some() && !self.autoscrolling {
+            self.autoscrolling = true;
+            cx.spawn(async move |t, cx| {
+                loop {
+                    cx.background_executor().timer(AUTOSCROLL_TICK).await;
+                    if !t.update(cx, |t, cx| t.autoscroll(cx)).unwrap_or(false) {
+                        break;
+                    }
+                }
+            })
+            .detach();
+        }
+    }
+
+    /// Which edge the dragging pointer is past: -1 the left one, 1 the right one (`None`:
+    /// inside, or no drag).
+    fn past_edge(&self) -> Option<isize> {
+        let (p, b) = (self.drag_at?, self.last_bounds?);
+        edge_dir(p.x.pt(), b.left().pt(), b.right().pt())
+    }
+
+    /// One tick of a drag resting past an edge: the selection's end moves on toward the
+    /// pointer (as far as the pointer is out, a character at least) and the scroll follows it.
+    /// False once the drag ended or came back inside: the timer stops.
+    fn autoscroll(&mut self, cx: &mut Context<Self>) -> bool {
+        let (Some(dir), Some(p), true) = (self.past_edge(), self.drag_at, self.selecting) else {
+            self.autoscrolling = false;
+            return false;
+        };
+        let cur = self.cursor();
+        let i = match self.index_for(p) {
+            i if dir < 0 && i >= cur => self.prev(cur),
+            i if dir > 0 && i <= cur => self.next(cur),
+            i => i,
+        };
+        self.drag_to(i, cx);
+        true
+    }
+
+    /// A drag reaching content offset `i`: character by character, or by words after a double
+    /// click.
+    fn drag_to(&mut self, i: usize, cx: &mut Context<Self>) {
         match self.drag.clone() {
             Some(DragAnchor::Word(orig)) => {
                 let w = word_at(&self.content, i);
@@ -535,16 +648,17 @@ impl EntityInputHandler for TextInput {
     fn bounds_for_range(&mut self, r16: Range<usize>, b: Bounds<Pixels>, _: &mut Window, _: &mut Context<Self>) -> Option<Bounds<Pixels>> {
         let r = self.clamp(self.range_from16(&r16));
         let l = self.last_layout.as_ref()?;
+        let x = b.left() - self.scroll;
         Some(Bounds::from_corners(
-            point(b.left() + l.x_for_index(self.to_display(r.start)), b.top()),
-            point(b.left() + l.x_for_index(self.to_display(r.end)), b.bottom()),
+            point(x + l.x_for_index(self.to_display(r.start)), b.top()),
+            point(x + l.x_for_index(self.to_display(r.end)), b.bottom()),
         ))
     }
 
     fn character_index_for_point(&mut self, p: Point<Pixels>, _: &mut Window, _: &mut Context<Self>) -> Option<usize> {
         let lp = self.last_bounds?.localize(&p)?;
         let l = self.last_layout.as_ref()?;
-        let i = self.from_display(l.index_for_x(p.x - lp.x)?);
+        let i = self.from_display(l.index_for_x(lp.x + self.scroll)?);
         Some(self.utf8_to_utf16(self.clamp(i..i).start))
     }
 }
@@ -557,6 +671,7 @@ struct Prepaint {
     line: Option<ShapedLine>,
     cursor: Option<PaintQuad>,
     selection: Option<PaintQuad>,
+    scroll: Pixels,
 }
 
 impl IntoElement for TextElement {
@@ -637,18 +752,22 @@ impl Element for TextElement {
             let sel = input.clamp(input.selected.clone());
             (input.to_display(sel.start), input.to_display(sel.end), input.to_display(input.cursor()))
         };
+        // The caret in view while editing; the start when the field is left (or empty).
+        let scroll = if input.content.is_empty() || !input.focus.is_focused(window) {
+            Pixels::ZERO
+        } else {
+            gpui::px(scroll_for(input.scroll.as_f32(), line.x_for_index(cur).as_f32(), line.width.as_f32(), bounds.size.width.as_f32()))
+        };
+        let x0 = bounds.left() - scroll;
         let (selection, cursor) = if start == end {
-            (None, Some(fill(Bounds::new(point(bounds.left() + line.x_for_index(cur), bounds.top() + px(1.)), size(px(1.5), bounds.size.height - px(2.))), theme.acc)))
+            (None, Some(fill(Bounds::new(point(x0 + line.x_for_index(cur), bounds.top() + px(1.)), size(px(1.5), bounds.size.height - px(2.))), theme.acc)))
         } else {
             (
-                Some(fill(
-                    Bounds::from_corners(point(bounds.left() + line.x_for_index(start), bounds.top()), point(bounds.left() + line.x_for_index(end), bounds.bottom())),
-                    theme.sel,
-                )),
+                Some(fill(Bounds::from_corners(point(x0 + line.x_for_index(start), bounds.top()), point(x0 + line.x_for_index(end), bounds.bottom())), theme.sel)),
                 None,
             )
         };
-        Prepaint { line: Some(line), cursor, selection }
+        Prepaint { line: Some(line), cursor, selection, scroll }
     }
 
     fn paint(
@@ -663,23 +782,35 @@ impl Element for TextElement {
     ) {
         let focus = self.input.read(cx).focus.clone();
         window.handle_input(&focus, ElementInputHandler::new(bounds, self.input.clone()), cx);
+        // A drag-select follows the pointer out of the field, as far as it goes.
+        let input = self.input.clone();
+        window.on_mouse_event(move |e: &MouseMoveEvent, phase, window, cx| {
+            if phase == DispatchPhase::Bubble && input.read(cx).selecting {
+                input.update(cx, |i, cx| i.on_move(e, window, cx));
+            }
+        });
         let line = pre.line.take().unwrap();
-        // Text never runs out of the field (onto a neighbour); the cursor may sit on its edge.
-        let mask = Bounds::new(bounds.origin, size(bounds.size.width + px(2.), bounds.size.height));
-        window.with_content_mask(Some(gpui::ContentMask { bounds: mask }), |window| {
+        // Text never runs out of the field (onto its padding or a neighbour), scrolled or not;
+        // the cursor may sit on its right edge.
+        window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
             if let Some(s) = pre.selection.take() {
                 window.paint_quad(s);
             }
-            let _ = line.paint(bounds.origin, window.line_height(), gpui::TextAlign::Left, None, window, cx);
+            let _ = line.paint(point(bounds.left() - pre.scroll, bounds.top()), window.line_height(), gpui::TextAlign::Left, None, window, cx);
+        });
+        let mask = Bounds::new(bounds.origin, size(bounds.size.width + px(2.), bounds.size.height));
+        window.with_content_mask(Some(gpui::ContentMask { bounds: mask }), |window| {
             if focus.is_focused(window)
                 && let Some(c) = pre.cursor.take()
             {
                 window.paint_quad(c);
             }
         });
+        let scroll = pre.scroll;
         self.input.update(cx, |i, _| {
             i.last_layout = Some(line);
             i.last_bounds = Some(bounds);
+            i.scroll = scroll;
         });
     }
 }
@@ -780,7 +911,6 @@ impl Render for TextInput {
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_up))
-            .on_mouse_move(cx.listener(Self::on_move))
             .w_full()
             .line_height(px(18.))
             .when(chrome, |d| {
@@ -801,6 +931,72 @@ impl Render for TextInput {
                     .when(focused, |d| d.shadow(t.halo()))
             })
             .child(TextElement { input: cx.entity() })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A 100 pt field over a 300 pt line.
+    const W: f32 = 100.;
+    const LINE: f32 = 300.;
+
+    #[test]
+    fn a_line_that_fits_never_scrolls() {
+        assert_eq!(scroll_for(0., 80., 90., W), 0.);
+        // Whatever scroll it had (the text was longer a moment ago).
+        assert_eq!(scroll_for(140., 90., 90., W), 0.);
+        assert_eq!(scroll_for(0., 0., 0., W), 0.);
+        // Not laid out yet.
+        assert_eq!(scroll_for(50., 250., LINE, 0.), 0.);
+    }
+
+    #[test]
+    fn the_caret_stays_in_view() {
+        // Typing at the end: the caret sits on the right edge.
+        assert_eq!(scroll_for(0., LINE, LINE, W), LINE - W);
+        // Inside the view: nothing moves.
+        assert_eq!(scroll_for(120., 150., LINE, W), 120.);
+        assert_eq!(scroll_for(120., 120., LINE, W), 120., "on the left edge");
+        assert_eq!(scroll_for(120., 220., LINE, W), 120., "on the right edge");
+        // Left of it (←, Home, a click on the first visible character): just enough.
+        assert_eq!(scroll_for(120., 100., LINE, W), 100.);
+        assert_eq!(scroll_for(120., 0., LINE, W), 0., "Home shows the start");
+        // Right of it (→, End, a paste): just enough.
+        assert_eq!(scroll_for(0., 130., LINE, W), 30.);
+        assert_eq!(scroll_for(10., LINE, LINE, W), LINE - W, "End shows the end");
+    }
+
+    #[test]
+    fn a_shrinking_line_scrolls_back() {
+        // Deleting at the end of a long line: never empty room on the right.
+        assert_eq!(scroll_for(200., 250., 250., W), 150.);
+        assert_eq!(scroll_for(200., 120., 150., W), 50.);
+        // Cut down to what fits: back to the start.
+        assert_eq!(scroll_for(200., 40., 40., W), 0.);
+        // A scroll from before is never negative or past the end.
+        assert_eq!(scroll_for(-20., 50., LINE, W), 0.);
+        assert_eq!(scroll_for(900., 250., LINE, W), LINE - W);
+    }
+
+    #[test]
+    fn clicks_map_through_the_scroll() {
+        // A click 30 pt into a field (left edge at 40) scrolled by 120 is 150 pt into the line:
+        // where `index_for` asks the layout; the caret put there needs no scroll.
+        let (left, scroll, x) = (40., 120., 70.);
+        let at = x - left + scroll;
+        assert_eq!(at, 150.);
+        assert_eq!(scroll_for(scroll, at, LINE, W), scroll);
+    }
+
+    #[test]
+    fn drags_past_an_edge() {
+        assert_eq!(edge_dir(10., 20., 120.), Some(-1));
+        assert_eq!(edge_dir(130., 20., 120.), Some(1));
+        assert_eq!(edge_dir(20., 20., 120.), None);
+        assert_eq!(edge_dir(70., 20., 120.), None);
+        assert_eq!(edge_dir(120., 20., 120.), None);
     }
 }
 

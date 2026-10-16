@@ -1,7 +1,9 @@
 //! The explorer: saved connections → databases → schemas → tables, views, materialized views,
 //! functions, sequences, types, triggers → columns, indexes, constraints, triggers,
 //! partitions; extensions under each database and roles under each connection. A `/` filter
-//! searches everything loaded.
+//! searches everything loaded. Tables pinned from their menu head their connection in a
+//! "pinned" group (`dataman_core::pins`), where they open and offer the same menu as in their
+//! schema.
 //!
 //! The tree is flattened into the list of visible rows and drawn with `uniform_list`, so a
 //! schema with thousands of tables expands without drawing them all. Every level loads on
@@ -21,6 +23,7 @@ use gpui::{
 };
 use crate::theme::{Pt, px};
 use dataman_core::Connection;
+use dataman_core::pins::Pin;
 use dataman_core::schema::objects::{approx_count, constraint_summary, human_size, partition_bound_summary};
 use dataman_core::schema::{ConstraintKind, FuncKind, RelKind, RelStats, TypeKind};
 
@@ -185,6 +188,8 @@ enum Kind {
     Roles { conn: String },
     /// A database's extensions.
     Extensions { conn: String, db: String },
+    /// The connection's pinned tables (its rows are `Rel`s, as in their schema).
+    Pinned { conn: String },
     Rel { conn: String, db: String, schema: String, name: String, kind: RelKind },
     /// A partition or parent listed under a table: it opens like a table.
     RelRef { conn: String, db: String, schema: String, name: String },
@@ -406,6 +411,15 @@ fn gid(c: &str, db: &str, s: &str, g: G) -> String {
 }
 fn rid(c: &str, db: &str, s: &str, n: &str) -> String {
     format!("c:{c}/d:{db}/s:{s}/r:{n}")
+}
+/// The "pinned" group. Unlike the other nodes it starts open: its id in `expanded` means the
+/// user closed it.
+fn pinned_id(c: &str) -> String {
+    format!("c:{c}/pinned")
+}
+/// A pinned table's row (its columns and indexes below it, as under its schema).
+pub fn pin_id(c: &str, db: &str, s: &str, n: &str) -> String {
+    format!("c:{c}/pinned/d:{db}/s:{s}/r:{n}")
 }
 
 impl SchemaTree {
@@ -649,7 +663,10 @@ impl SchemaTree {
                 continue;
             }
             match state {
-                Some(ConnState::Connected(c)) => self.push_conn(rows, &p.id, c, t),
+                Some(ConnState::Connected(c)) => {
+                    self.push_pinned(rows, &p.id, c, &store.core.pins.of(&p.id), t);
+                    self.push_conn(rows, &p.id, c, t);
+                }
                 Some(ConnState::Failed(e)) => rows.push(error_row(&id, 1, e, &id, t)),
                 _ => rows.push(loading_row(&id, 1)),
             }
@@ -666,14 +683,11 @@ impl SchemaTree {
         // The match of `q` in `name` (a byte range), or the name for "did you mean".
         let mut find = |name: &str, names: &mut Vec<String>| -> Option<Range<usize>> {
             total += 1;
-            let low = name.to_lowercase();
-            match low.find(q) {
-                Some(i) if name.is_char_boundary(i) && name.is_char_boundary(i + q.len()) => Some(i..i + q.len()),
-                _ => {
-                    names.push(name.to_string());
-                    None
-                }
+            let m = match_range(name, q);
+            if m.is_none() {
+                names.push(name.to_string());
             }
+            m
         };
         for p in &store.profiles {
             let Some(ConnState::Connected(conn)) = store.states.get(&p.id) else { continue };
@@ -684,6 +698,25 @@ impl SchemaTree {
             let dd = usize::from(flat);
             let pg = conn.dialect() == dataman_core::sql::Dialect::Postgres;
             let mut block = Vec::new();
+            // Pinned tables that match, first (they are also under their schema when it is
+            // loaded: the same table matches twice, as it shows twice).
+            let pinned: Vec<Row> = store
+                .core
+                .pins
+                .of(c)
+                .iter()
+                .filter_map(|x| {
+                    let m = match_range(&x.name, q)?;
+                    let mut row = pin_row(c, conn, x, 2, false);
+                    row.hl = Some(m);
+                    Some(row)
+                })
+                .collect();
+            if !pinned.is_empty() {
+                matches += pinned.len();
+                block.push(group_row(&pinned_id(c), 1, "pinned", pinned.len(), true, Kind::Pinned { conn: c.into() }).icon(Icon::Pin));
+                block.extend(pinned);
+            }
             for db in cache.cached_databases().unwrap_or_else(|| vec![conn.database().to_string()]) {
                 let mut db_block = Vec::new();
                 for s in cache.cached_schemas(&db).unwrap_or_default() {
@@ -780,6 +813,30 @@ impl SchemaTree {
             return true;
         }
         false
+    }
+
+    /// The connection's pinned tables, first under it: a group that is open until closed, each
+    /// table opening (columns, indexes…) as it does in its schema.
+    fn push_pinned(&self, rows: &mut Vec<Row>, c: &str, conn: &Arc<Connection>, pins: &[Pin], t: &Theme) {
+        if pins.is_empty() {
+            return;
+        }
+        let g = pinned_id(c);
+        let open = !self.expanded.contains(&g);
+        rows.push(group_row(&g, 1, "pinned", pins.len(), open, Kind::Pinned { conn: c.into() }).icon(Icon::Pin));
+        if !open {
+            return;
+        }
+        for p in pins {
+            let id = pin_id(c, &p.database, &p.schema, &p.name);
+            let open = self.expanded.contains(&id);
+            let row = pin_row(c, conn, p, 2, open);
+            let found = row.expandable;
+            rows.push(row);
+            if open && found {
+                self.push_rel(rows, &id, c, &p.database, &p.schema, &p.name, conn, t, 3);
+            }
+        }
     }
 
     fn push_conn(&self, rows: &mut Vec<Row>, c: &str, conn: &Arc<Connection>, t: &Theme) {
@@ -881,7 +938,7 @@ impl SchemaTree {
                     let open = self.expanded.contains(&rv);
                     rows.push(rel_row(c, db, s, r, d0 + 1, open, stats.as_deref()));
                     if open {
-                        self.push_rel(rows, c, db, s, &r.name, conn, t, d0 + 2);
+                        self.push_rel(rows, &rv, c, db, s, &r.name, conn, t, d0 + 2);
                     }
                 }
                 continue;
@@ -918,10 +975,10 @@ impl SchemaTree {
         }
     }
 
-    /// A relation's columns, indexes and other groups, at depth `d` (their items one deeper).
+    /// A relation's columns, indexes and other groups, at depth `d` (their items one deeper),
+    /// under its row `base` (in its schema, or pinned).
     #[allow(clippy::too_many_arguments)]
-    fn push_rel(&self, rows: &mut Vec<Row>, c: &str, db: &str, s: &str, name: &str, conn: &Arc<Connection>, t: &Theme, d: usize) {
-        let base = rid(c, db, s, name);
+    fn push_rel(&self, rows: &mut Vec<Row>, base: &str, c: &str, db: &str, s: &str, name: &str, conn: &Arc<Connection>, t: &Theme, d: usize) {
         let cols_id = format!("{base}/cols");
         let idx_id = format!("{base}/idx");
         let lar = conn.info.is_lar;
@@ -1157,6 +1214,11 @@ impl SchemaTree {
         window.focus(&self.filter.focus_handle(cx), cx);
     }
 
+    /// Checks: the filter field.
+    pub fn demo_filter(&self) -> Entity<TextInput> {
+        self.filter.clone()
+    }
+
     pub fn set_filter(&mut self, text: &str, cx: &mut Context<Self>) {
         self.filter.update(cx, |f, cx| f.set_text(text, cx));
         self.rebuild(cx);
@@ -1279,7 +1341,7 @@ impl SchemaTree {
             Kind::Columns { conn, db, schema, name } => self.conn(conn, cx).map(|c| unit(c.columns(db, schema, name))),
             Kind::Indexes { conn, db, schema, name } => self.conn(conn, cx).map(|c| unit(c.indexes(db, schema, name))),
             Kind::TableSub { conn, db, schema, name, .. } => self.conn(conn, cx).map(|c| unit(c.table_extras(db, schema, name))),
-            Kind::RelRef { .. } | Kind::Object { .. } | Kind::Column { .. } | Kind::Index { .. } | Kind::Error { .. } | Kind::Leaf => None,
+            Kind::Pinned { .. } | Kind::RelRef { .. } | Kind::Object { .. } | Kind::Column { .. } | Kind::Index { .. } | Kind::Error { .. } | Kind::Leaf => None,
         };
         let Some(task) = task else { return };
         let id = id.to_string();
@@ -1376,10 +1438,26 @@ impl SchemaTree {
             | Kind::TableSub { conn, db, schema, name, .. } => {
                 let Some(c) = self.conn(conn, cx) else { return };
                 c.schema.invalidate_relation(db, schema, name);
-                let id = rid(conn, db, schema, name);
+                // The relation's own row (in its schema, or pinned): a group's parent.
+                let id = match &row.kind {
+                    Kind::Rel { .. } => row.id.to_string(),
+                    _ => row.id.rsplit_once('/').map_or_else(|| rid(conn, db, schema, name), |(base, _)| base.to_string()),
+                };
                 let kind = Kind::Rel { conn: conn.clone(), db: db.clone(), schema: schema.clone(), name: name.clone(), kind: RelKind::Table };
                 self.expanded.insert(id.clone());
                 self.load(&id, &kind, cx);
+            }
+            // The pinned tables' columns and indexes, read again.
+            Kind::Pinned { conn } => {
+                let Some(c) = self.conn(conn, cx) else { return };
+                for p in self.store.read(cx).core.pins.of(conn) {
+                    c.schema.invalidate_relation(&p.database, &p.schema, &p.name);
+                    let id = pin_id(conn, &p.database, &p.schema, &p.name);
+                    if self.expanded.contains(&id) {
+                        let kind = Kind::Rel { conn: conn.clone(), db: p.database.clone(), schema: p.schema.clone(), name: p.name.clone(), kind: p.kind() };
+                        self.load(&id, &kind, cx);
+                    }
+                }
             }
             Kind::Error { retry } => return self.retry(retry.clone(), cx),
             Kind::Column { .. } | Kind::Index { .. } | Kind::RelRef { .. } | Kind::Object { .. } | Kind::Leaf => {
@@ -1474,9 +1552,13 @@ impl SchemaTree {
                 ro: ro(conn, db),
             },
             Kind::Schema { conn, db, schema } => Target::Schema { conn: conn.clone(), db: db.clone(), schema: schema.clone(), lar: lar(conn), ro: ro(conn, db) },
-            Kind::Group { .. } | Kind::Columns { .. } | Kind::Indexes { .. } | Kind::TableSub { .. } | Kind::Roles { .. } | Kind::Extensions { .. } => {
-                Target::Group
-            }
+            Kind::Group { .. }
+            | Kind::Columns { .. }
+            | Kind::Indexes { .. }
+            | Kind::TableSub { .. }
+            | Kind::Roles { .. }
+            | Kind::Extensions { .. }
+            | Kind::Pinned { .. } => Target::Group,
             Kind::Rel { conn, db, schema, name, kind } => {
                 Target::Rel { conn: conn.clone(), db: db.clone(), schema: schema.clone(), name: name.clone(), kind: *kind, lar: lar(conn), ro: ro(conn, db) }
             }
@@ -1546,7 +1628,11 @@ impl SchemaTree {
         if let (Some(i), Some(_)) = (ix, &row) {
             self.select(i, cx);
         }
-        let entries = menu::entries_for(&target, &self.target_caps(&target, cx));
+        let pinned = match &target {
+            Target::Rel { conn, db, schema, name, .. } => self.store.read(cx).core.pins.is_pinned(conn, db, schema, name),
+            _ => false,
+        };
+        let entries = menu::with_pin(menu::entries_for(&target, &self.target_caps(&target, cx)), &target, pinned);
         let vp = window.viewport_size();
         let vp = (vp.width.pt(), vp.height.pt());
         let h = menu::menu_h(&entries);
@@ -1740,9 +1826,64 @@ impl SchemaTree {
                     copy(p.url(), cx);
                 }
             }
+            (Act::Pin | Act::Unpin, Target::Rel { conn, db, schema, name, kind, .. }) => {
+                let pin = act == Act::Pin;
+                self.set_pinned(Pin::new(conn, db, schema, name, *kind), pin, ix, cx);
+            }
             (act, target) => cx.emit(TreeEvent::RowAction { act, target: target.clone(), alt }),
         }
         cx.notify();
+    }
+
+    /// Pins a table (its connection's "pinned" group opens on it) or unpins it, saved at once.
+    /// The selection stays on its row; unpinned from the group, it goes to the row that takes
+    /// the place of the one at `ix`.
+    fn set_pinned(&mut self, pin: Pin, on: bool, ix: Option<usize>, cx: &mut Context<Self>) {
+        let core = self.store.read(cx).core.clone();
+        let engine = self.store.read(cx).profile(&pin.connection).map(|p| p.engine).unwrap_or_default();
+        let what = engine.dialect().qualified(Some(&pin.schema), &pin.name);
+        let saved = if on { core.pins.pin(pin.clone()) } else { core.pins.unpin(&pin.connection, &pin.database, &pin.schema, &pin.name) };
+        if let Err(e) = saved {
+            cx.emit(TreeEvent::Notice(format!("Could not save the pinned tables: {e:#}")));
+            return;
+        }
+        if on {
+            self.expanded.remove(&pinned_id(&pin.connection));
+        }
+        self.rebuild(cx);
+        match self.selected_ix() {
+            Some(i) => self.scroll.scroll_to_item(i, gpui::ScrollStrategy::Nearest),
+            None if !self.rows.is_empty() => self.select(ix.unwrap_or(0).min(self.rows.len() - 1), cx),
+            None => {}
+        }
+        cx.emit(TreeEvent::Notice(format!("{} {what}", if on { "Pinned" } else { "Unpinned" })));
+        cx.notify();
+    }
+
+    /// Checks: a row's middle (window coordinates), as last laid out.
+    pub fn demo_row_point(&self, id: &str) -> Option<gpui::Point<gpui::Pixels>> {
+        let ix = self.rows.iter().position(|r| r.id.as_ref() == id)?;
+        let (left, top, right) = self.row_rect(ix)?;
+        Some(point(px((left + right) / 2.), px(top + 11.)))
+    }
+
+    /// Checks: the labels of a connection's rows in its "pinned" group, as shown (with their
+    /// meta).
+    pub fn demo_pinned(&self, conn: &str) -> Vec<(String, String)> {
+        let prefix = format!("{}/", pinned_id(conn));
+        self.rows
+            .iter()
+            .filter(|r| r.id.starts_with(&prefix) && matches!(r.kind, Kind::Rel { .. }))
+            .map(|r| (r.label.to_string(), r.meta.to_string()))
+            .collect()
+    }
+
+    /// Checks: where item `act` of the open menu is (window coordinates, its middle).
+    pub fn demo_menu_item_point(&self, act: Act) -> Option<gpui::Point<gpui::Pixels>> {
+        let m = self.menu.as_ref()?;
+        let i = m.entries.iter().position(|e| matches!(e, Entry::Item(it) if it.act == act))?;
+        let y = m.origin.1 + menu::entry_top(&m.entries, i) + menu::ITEM_H / 2.;
+        Some(point(px(m.origin.0 + 40.), px(y)))
     }
 
     /// Demo screenshots: the menu of row `id` as the keyboard opens it (or at a point, as
@@ -2242,6 +2383,38 @@ fn rel_row(c: &str, db: &str, s: &str, r: &dataman_core::schema::Relation, depth
     row
 }
 
+/// A pinned table: its kind's icon (as its schema has it once loaded, else as pinned) and
+/// where it lives; dimmed, `not found` and closed for good when its loaded schema no longer
+/// has it.
+fn pin_row(c: &str, conn: &Connection, p: &Pin, depth: usize, open: bool) -> Row {
+    let (db, s) = (p.database.as_str(), p.schema.as_str());
+    let listed = conn.schema.cached_relations(db, s);
+    let kind = match &listed {
+        Some(rels) => rels.iter().find(|r| r.name == p.name).map(|r| r.kind),
+        None => Some(p.kind()),
+    };
+    let rel = dataman_core::schema::Relation { schema: s.into(), name: p.name.clone(), kind: kind.unwrap_or(p.kind()), oid: None };
+    let mut row = rel_row(c, db, s, &rel, depth, open, None);
+    row.id = pin_id(c, db, s, &p.name).into();
+    if kind.is_none() {
+        return Row { expandable: false, ..row.tone(Tone::Muted).meta("not found", Meta::Off) };
+    }
+    let place = pin_place(db, s, conn.database(), !conn.caps().schemas);
+    if place.is_empty() { row } else { row.meta(place, Meta::Plain) }
+}
+
+/// Where a pinned table lives, as its row says: its schema (`public`), with the database when
+/// that is not the connection's own (`analytics.public`); on engines without schemas just the
+/// database, and nothing in the connection's own.
+fn pin_place(db: &str, schema: &str, home: &str, flat: bool) -> String {
+    match (flat, db == home) {
+        (true, true) => String::new(),
+        (true, false) => db.to_string(),
+        (false, true) => schema.to_string(),
+        (false, false) => format!("{db}.{schema}"),
+    }
+}
+
 /// `~48k · 12 MB` and, when both are known, the short form `~48k`.
 fn stats_meta(st: &RelStats) -> (String, Option<String>) {
     let rows = st.rows.map(approx_count);
@@ -2449,6 +2622,12 @@ fn short_type(t: &str, pg: bool) -> String {
         _ if t.starts_with("character varying(") => format!("varchar{}", &t["character varying".len()..]),
         _ => t.to_string(),
     }
+}
+
+/// Where the (lowercase) filter `q` is in `name`, case aside: a byte range of `name`.
+fn match_range(name: &str, q: &str) -> Option<Range<usize>> {
+    let i = name.to_lowercase().find(q)?;
+    (name.is_char_boundary(i) && name.is_char_boundary(i + q.len())).then(|| i..i + q.len())
 }
 
 /// The loaded name closest to a filter that matched nothing ("did you mean orders?").
@@ -2707,6 +2886,23 @@ mod tests {
         assert!(rel_row("c", "d", "s", &rel(RelKind::View), 4, false, Some(&m)).meta.is_empty());
         assert_eq!(rel_row("c", "d", "s", &rel(RelKind::Foreign), 4, false, Some(&m)).meta.as_ref(), "foreign");
         assert_eq!(rel_row("c", "d", "s", &rel(RelKind::Partitioned), 4, false, None).icon.map(|(i, _)| i), Some(Icon::Partition));
+    }
+
+    #[test]
+    fn pinned_rows_say_where_they_live() {
+        assert_eq!(pin_place("app", "public", "app", false), "public");
+        assert_eq!(pin_place("analytics", "public", "app", false), "analytics.public");
+        // MySQL: the database is the schema.
+        assert_eq!(pin_place("shop", "shop", "shop", true), "");
+        assert_eq!(pin_place("crm", "crm", "shop", true), "crm");
+        // Their own ids: never a schema row's, so both can be open at once; under the
+        // connection, so collapsing or reloading it takes them along.
+        let p = pin_id("c", "d", "s", "orders");
+        assert_ne!(p, rid("c", "d", "s", "orders"));
+        assert!(p.starts_with(&format!("{}/", cid("c"))) && p.starts_with(&format!("{}/", pinned_id("c"))));
+        assert_eq!(match_range("Orders", "ord"), Some(0..3));
+        assert_eq!(match_range("big_orders", "ord"), Some(4..7));
+        assert_eq!(match_range("items", "ord"), None);
     }
 
     #[test]

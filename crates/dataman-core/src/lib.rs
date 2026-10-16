@@ -37,6 +37,7 @@ pub mod params;
 pub mod parse_check;
 pub mod pgpass;
 pub mod pgservice;
+pub mod pins;
 pub mod relations;
 pub mod result;
 pub mod rows;
@@ -73,6 +74,7 @@ pub use ssh::{HostKeyPrompt, SshError};
 pub use conn::{Connection, Session};
 pub use favorites::{Favorite, FavoritesStore, NameMatch};
 pub use history::{History, HistoryEntry, Outcome};
+pub use pins::PinStore;
 pub use result::{Phase, ResultSet};
 pub use secret::{Keychain, MemorySecrets, SecretStore};
 pub use server::{ServerExtension, ServerInfo};
@@ -120,6 +122,8 @@ pub struct Core {
     pub secrets: Arc<dyn SecretStore>,
     pub history: Arc<History>,
     pub favorites: Arc<FavoritesStore>,
+    /// The explorer's pinned tables.
+    pub pins: PinStore,
     pub extensions: Vec<Arc<dyn ServerExtension>>,
     /// Where to look passwords up when a connection has none saved (`~/.pgpass`, or
     /// `PGPASSFILE`); `None` turns the lookup off.
@@ -212,6 +216,7 @@ impl Core {
             settings: SettingsStore::open(&dirs),
             history: Arc::new(History::new(dirs.history_dir())),
             favorites: Arc::new(FavoritesStore::open(&dirs)?),
+            pins: PinStore::open(&dirs),
             dirs,
             secrets,
             extensions: server::default_extensions(),

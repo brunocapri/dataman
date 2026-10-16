@@ -927,6 +927,26 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                     return;
                 }
             }
+            if crate::input_check::is_stage(&stage) {
+                let ok = crate::input_check::run(&ws, &stage, cx).await;
+                if stage == "input-check" {
+                    let _ = cx.update(|_, cx| cx.quit());
+                    if !ok {
+                        std::process::exit(1);
+                    }
+                    return;
+                }
+            }
+            if crate::pin_check::is_stage(&stage) {
+                let ok = crate::pin_check::run(&ws, &stage, &id, &db, cx).await;
+                if stage == "pin-check" {
+                    let _ = cx.update(|_, cx| cx.quit());
+                    if !ok {
+                        std::process::exit(1);
+                    }
+                    return;
+                }
+            }
             if stage == "fav-menu" {
                 // The second favorite's context menu, once the list is painted.
                 sleep(cx, 600).await;

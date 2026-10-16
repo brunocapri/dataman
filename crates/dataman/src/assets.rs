@@ -57,6 +57,7 @@ assets!(
     "icons/panel-right.svg",
     "icons/partition.svg",
     "icons/pause.svg",
+    "icons/pin.svg",
     "icons/plug.svg",
     "icons/plus.svg",
     "icons/procedure.svg",
@@ -182,6 +183,8 @@ pub enum Icon {
     Star,
     /// A favorite query, favorited.
     StarFill,
+    /// A pinned table (the explorer's "pinned" group, Pin table / Unpin table).
+    Pin,
     /// An agent's tab, an agent's statement in the history (a four-point sparkle).
     Agent,
     // LAR (violet, LAR panels only).
@@ -253,6 +256,7 @@ impl Icon {
             Icon::Activity => "icons/activity.svg",
             Icon::Star => "icons/star.svg",
             Icon::StarFill => "icons/star-fill.svg",
+            Icon::Pin => "icons/pin.svg",
             Icon::Agent => "icons/agent.svg",
             Icon::Live => "icons/live.svg",
         }
@@ -276,7 +280,7 @@ mod tests {
             SchemaFilled, Group, Table, View, Key, Keyboard, Index, Search, Filter, Close, Check, Copy, Export, Import, Edit, Trash,
             Sidebar, PanelRight, Split, Expand, Collapse, Lock, Warning, Info, Server, Archive, More, Tab, Command, Code, Hash, Plug,
             Cursor, Tunnel, MatView, Function, Procedure, Sequence, Type, Label, Trigger, Extension, Role,
-            Constraint, Link, Partition, Activity, Star, StarFill, Agent, Live,
+            Constraint, Link, Partition, Activity, Star, StarFill, Pin, Agent, Live,
         ];
         for i in all {
             let bytes = Assets.load(i.path()).unwrap().unwrap_or_else(|| panic!("{} missing", i.path()));
