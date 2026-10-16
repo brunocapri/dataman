@@ -1,5 +1,5 @@
 //! `fk-nav-check` (`--demo`): back / forward (`nav`) driven with real events through the window —
-//! ⌘-click a reference and back to the very cell, ⌘← ⌘→, the mouse's side buttons, the title
+//! ⌘-click a reference and back to the very cell, ⌃⌘← ⌃⌘→, the mouse's side buttons, the title
 //! bar's arrows, a new jump dropping what was ahead, a closed tab skipped, ⌘← in the editor
 //! staying the line's start. PASS/FAIL lines like `fk-check`.
 
@@ -125,20 +125,23 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     report("⌘-click opens the referenced row in a new tab", dst != src, String::new());
     report("one step behind, none ahead", can(ws, cx) == (true, false), format!("{:?}", can(ws, cx)));
 
-    // ⌘← (the focus on the new tab's grid or editor, not a text field's ⌘←).
+    // ⌃⌘← (the focus on the new tab's grid or editor, not a text field). ⌘← on the grid is the
+    // row's first cell, never a step back.
     let g2 = cx.update(|_, cx| dst.read(cx).grid.clone()).unwrap();
     let _ = cx.update(|window, cx| window.focus(&g2.focus_handle(cx), cx));
+    key(cx, "cmd-left");
+    report("⌘← on the grid: no step back", active(ws, cx) == dst && can(ws, cx) == (true, false), format!("{:?}", can(ws, cx)));
     // The source grid drifting while away (it does not on its own): the step puts it back.
     let _ = cx.update(|_, cx| grid.update(cx, |g, cx| g.select_cell(0, plain, cx)));
-    key(cx, "cmd-left");
-    report("⌘← goes back to the source tab", active(ws, cx) == src, String::new());
+    key(cx, "ctrl-cmd-left");
+    report("⌃⌘← goes back to the source tab", active(ws, cx) == src, String::new());
     report("… with the grid focused", region(ws, cx) == Some(Region::Grid), format!("{:?}", region(ws, cx)));
     let after = spot(&grid, cx);
     report("… on the same cell and scroll", after == before, format!("{before} → {after}"));
     report("one step ahead", can(ws, cx) == (false, true), format!("{:?}", can(ws, cx)));
 
-    key(cx, "cmd-right");
-    report("⌘→ goes forward to the reference", active(ws, cx) == dst, String::new());
+    key(cx, "ctrl-cmd-right");
+    report("⌃⌘→ goes forward to the reference", active(ws, cx) == dst, String::new());
 
     // The mouse's side buttons, anywhere in the window.
     side_button(cx, mid, NavigationDirection::Back);

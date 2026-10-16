@@ -71,9 +71,9 @@ pub const COMMANDS: &[Command] = &[
     c("tab_7", "Tab 7", "GLOBAL", Scope::Workspace, &["cmd-7"], || Box::new(Tab7)),
     c("tab_8", "Tab 8", "GLOBAL", Scope::Workspace, &["cmd-8"], || Box::new(Tab8)),
     c("tab_9", "Tab 9", "GLOBAL", Scope::Workspace, &["cmd-9"], || Box::new(Tab9)),
-    // A text field's own ⌘← ⌘→ (line start / end) win: they are bound deeper.
-    c("go_back", "Back", "GLOBAL", Scope::Workspace, &["cmd-left"], || Box::new(GoBack)),
-    c("go_forward", "Forward", "GLOBAL", Scope::Workspace, &["cmd-right"], || Box::new(GoForward)),
+    // ⌃⌘ (Xcode's): plain ⌘← ⌘→ are a text's line start / end and the grid's row ends.
+    c("go_back", "Back", "GLOBAL", Scope::Workspace, &["ctrl-cmd-left"], || Box::new(GoBack)),
+    c("go_forward", "Forward", "GLOBAL", Scope::Workspace, &["ctrl-cmd-right"], || Box::new(GoForward)),
     c("toggle_explorer", "Toggle explorer", "GLOBAL", Scope::Workspace, &["cmd-b"], || Box::new(ToggleExplorer)),
     c("toggle_side_panel", "Toggle side panel", "GLOBAL", Scope::Workspace, &["cmd-alt-b"], || Box::new(ToggleSidePanel)),
     c("open_sql_file", "Open .sql file", "GLOBAL", Scope::Workspace, &["cmd-o"], || Box::new(OpenSqlFile)),

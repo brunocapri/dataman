@@ -1,6 +1,6 @@
 //! Back / forward through the workspace, like a browser's: every jump (another tab, a table
 //! opened from the explorer, a reference followed, another result) remembers where the focus was;
-//! ⌘← / ⌘→, the mouse's side buttons and the title bar's arrows go back there and forth.
+//! ⌃⌘← / ⌃⌘→, the mouse's side buttons and the title bar's arrows go back there and forth.
 
 use gpui::{Context, EntityId, Window};
 use diskman_core::batch::Key;
@@ -148,7 +148,7 @@ impl Workspace {
         if forward { self.nav.history.can_forward(alive) } else { self.nav.history.can_back(alive) }
     }
 
-    /// ⌘← / ⌘→, the side buttons, the title bar's arrows.
+    /// ⌃⌘← / ⌃⌘→, the side buttons, the title bar's arrows.
     pub(crate) fn go(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(here) = self.nav_place(Some(window), cx) else { return };
         let tabs: Vec<EntityId> = self.tabs.iter().map(|t| t.entity_id()).collect();

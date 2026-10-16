@@ -1032,6 +1032,7 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
         let _ = cx.update(|_, cx| cx.write_to_clipboard(c));
     }
     ok &= motion_checks(ws, id, cx).await;
+    ok &= grid_row_keys(ws, cx).await;
     ok &= zoom_checks(ws, cx).await;
     ok
 }

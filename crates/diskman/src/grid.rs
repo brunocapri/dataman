@@ -49,6 +49,12 @@ actions!(
         PageDown,
         Top,
         Bottom,
+        /// ⌘← / ⌘→: the row's first / last column (as a text's line start / end); with ⇧ the
+        /// selection grows to it.
+        RowStart,
+        RowEnd,
+        SelectRowStart,
+        SelectRowEnd,
         SelectAll,
         CopyTsv,
         CopyCsv,
@@ -90,6 +96,11 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("pageup", PageUp, c),
         KeyBinding::new("pagedown", PageDown, c),
         KeyBinding::new("cmd-up", Top, c),
+        // Deeper than the workspace's keys: on the grid they are the row's ends.
+        KeyBinding::new("cmd-left", RowStart, c),
+        KeyBinding::new("cmd-right", RowEnd, c),
+        KeyBinding::new("cmd-shift-left", SelectRowStart, c),
+        KeyBinding::new("cmd-shift-right", SelectRowEnd, c),
         KeyBinding::new("home", Top, c),
         KeyBinding::new("end", Bottom, c),
         KeyBinding::new("cmd-a", SelectAll, c),
@@ -2943,6 +2954,10 @@ impl Render for ResultGrid {
             }))
             .on_action(key::<Top>(cx, |g, cx| g.move_by(isize::MIN / 2, 0, false, cx)))
             .on_action(key::<Bottom>(cx, |g, cx| g.move_by(isize::MAX / 2, 0, false, cx)))
+            .on_action(key::<RowStart>(cx, |g, cx| g.move_by(0, isize::MIN / 2, false, cx)))
+            .on_action(key::<RowEnd>(cx, |g, cx| g.move_by(0, isize::MAX / 2, false, cx)))
+            .on_action(key::<SelectRowStart>(cx, |g, cx| g.move_by(0, isize::MIN / 2, true, cx)))
+            .on_action(key::<SelectRowEnd>(cx, |g, cx| g.move_by(0, isize::MAX / 2, true, cx)))
             .on_action(key::<SelectAll>(cx, |g, cx| g.select_all(cx)))
             .on_action(key::<CopyTsv>(cx, |g, cx| g.copy(CopyFormat::Tsv, false, cx)))
             .on_action(key::<CopyCsv>(cx, |g, cx| g.copy(CopyFormat::Csv, false, cx)))
