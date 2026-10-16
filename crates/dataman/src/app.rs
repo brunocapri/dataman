@@ -394,6 +394,10 @@ pub struct Workspace {
     pub(crate) dock_moves: Vec<crate::dock::DockMove>,
     pub(crate) panel_drag: Option<crate::dock::PanelDrag>,
     pub(crate) frame_now: crate::dock::Frame,
+    /// The title bar's geometry this frame (`dock_pass`), and how much each dock holds the
+    /// explorer as it moves.
+    pub(crate) title_now: crate::dock::TitleFrame,
+    pub(crate) explorer_blend: crate::dock::ExplorerBlend,
     pub(crate) panel_menu: Option<(dataman_core::layout::PanelId, gpui::Point<gpui::Pixels>)>,
     /// The docks' slots as last laid out, per dock and column (the checks hold them to
     /// `frame_now`).
@@ -405,6 +409,8 @@ pub struct Workspace {
     pub(crate) saved_bounds: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
     /// The title bar's "DATAMAN" as last laid out (`title_logo`; the checks).
     pub(crate) logo_bounds: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
+    /// The title bar's toggle, arrows and search as last laid out, by name (the checks).
+    pub(crate) title_marks: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<&'static str, gpui::Bounds<gpui::Pixels>>>>,
     /// Editor height as a share of the work column (kept when the window resizes).
     pub(crate) editor_frac: Option<f32>,
     pub(crate) drag: Option<Drag>,
@@ -627,12 +633,15 @@ impl Workspace {
             dock_moves: Vec::new(),
             panel_drag: None,
             frame_now: Default::default(),
+            title_now: Default::default(),
+            explorer_blend: Default::default(),
             panel_menu: None,
             slot_bounds: Default::default(),
             saved_flash: None,
             saved_flash_task: None,
             saved_bounds: Default::default(),
             logo_bounds: Default::default(),
+            title_marks: Default::default(),
             editor_frac: None,
             drag: None,
             tab_bounds: Default::default(),
@@ -2653,7 +2662,9 @@ impl Render for Workspace {
         let _trace = TraceRender::new("workspace render");
         RENDERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // A connection change of the active tab (explorer, ⌥↩, palette, disconnect) lands
-        // here before anything can act on a panel of the old connection.
+        // here before anything can act on a panel of the old connection. The history beside the
+        // explorer shows with it.
+        self.sync_shared_history();
         self.sync_bound_views(window, cx);
         // An activity monitor reads only while its tab is in front.
         self.sync_monitors(window, cx);
@@ -2690,9 +2701,14 @@ impl Render for Workspace {
         }
         // A production connection: a thin red accent across the top of the work column.
         let production = !first_run && self.active_tab().and_then(|t| t.read(cx).connection().map(|c| c.profile.env.is_production())).unwrap_or(false);
-        let docks = self.render_docks(&pass, window, cx);
+        let docks = self.render_docks(&pass, production, window, cx);
         let left_w = pass.frame.dock(dataman_core::layout::Dock::Left).rect.w;
         let left_shown = left_w > 0.5;
+        // The history beside the explorer is under the tab band: the seam beside it is its own,
+        // under the band (`render_docks`); this one keeps its room, unseen.
+        let seam = if pass.band_left() { gpui::transparent_black() } else { t.line };
+        // While the history shares the explorer's dock, the explorer controls it: no ⌘Y, no ⌥⌘B.
+        let own_history = !self.history_with_explorer();
         let moving = self.explorer_tween.is_some() || !self.dock_moves.is_empty();
         let work = div()
             .flex_1()
@@ -2704,11 +2720,11 @@ impl Render for Workspace {
             // theme), painted here and only here: every region inside is transparent, so no
             // overlap darkens. Under the title bar it carries the query tabs.
             .bg(t.panel)
-            .when(left_shown, |d| d.border_l_1().border_color(t.line))
+            .when(left_shown, |d| d.border_l_1().border_color(seam))
             .overflow_hidden()
             .child(div().h(px(metrics::TITLE_H)).flex_none())
-            // The title band ends on a hairline over the work column (the toolbar, the
-            // editor and the right dock start under it).
+            // The title band ends on a hairline over the work column (the toolbar and the editor
+            // start under it).
             .child(
                 div()
                     .flex_1()
@@ -2717,8 +2733,7 @@ impl Render for Workspace {
                     .flex_row()
                     .when(!production, |d| d.border_t_1().border_color(t.line))
                     .when(production, |d| d.border_t_2().border_color(t.err))
-                    .child(div().flex_1().min_w_0().h_full().flex().child(surface))
-                    .children(docks.right),
+                    .child(div().flex_1().min_w_0().h_full().flex().child(surface)),
             );
         // The docks' resize grabbers on their seams, from under the title bar down (the bar
         // keeps its drag area), painted over the columns; not while a panel moves.
@@ -2771,15 +2786,19 @@ impl Render for Workspace {
                 let id = w.current_conn.clone();
                 w.open_dialog(id, window, cx)
             }))
-            .on_action(cx.listener(|w, _: &ToggleHistory, window, cx| {
-                w.toggle_history(cx);
-                // Opening the panel from the keyboard moves the focus into it (esc gives it back).
-                if matches!(w.side, Some(Side::History)) {
-                    w.focus_region(Region::Side, window, cx);
-                } else if w.focused_region(window, cx).is_none() {
-                    w.focus_editor(window, cx);
-                }
-            }))
+            // Not while the history shares the explorer's dock (the explorer controls it): the
+            // key does nothing, the menu item and the palette's entry are off.
+            .when(own_history, |d| {
+                d.on_action(cx.listener(|w, _: &ToggleHistory, window, cx| {
+                    w.toggle_history(cx);
+                    // Opening the panel from the keyboard moves the focus into it (esc gives it back).
+                    if matches!(w.side, Some(Side::History)) {
+                        w.focus_region(Region::Side, window, cx);
+                    } else if w.focused_region(window, cx).is_none() {
+                        w.focus_editor(window, cx);
+                    }
+                }))
+            })
             .on_action(cx.listener(|w, _: &FavoriteQuery, _, cx| w.favorite_current_query(cx)))
             .on_action(cx.listener(|w, _: &SaveFavorite, _, cx| w.save_favorite(cx)))
             .on_action(cx.listener(|w, _: &SaveAs, window, cx| w.save_as(window, cx)))
@@ -2823,19 +2842,23 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(|w, _: &Refresh, _, cx| w.tree.update(cx, |t, cx| t.refresh_selected(cx))))
             .on_action(cx.listener(|w, _: &ToggleExplorer, window, cx| {
+                // The history beside it hides with it: the focus leaves it too.
+                let side = w.history_with_explorer() && w.focused_region(window, cx) == Some(Region::Side);
                 w.set_explorer_open(!w.explorer_open, cx);
-                if !w.explorer_open && w.tree.read(cx).contains_focus(window, cx) {
+                if !w.explorer_open && (side || w.tree.read(cx).contains_focus(window, cx)) {
                     w.focus_editor(window, cx);
                 }
             }))
-            .on_action(cx.listener(|w, _: &ToggleSidePanel, _, cx| {
-                if w.side.is_some() {
-                    w.last_side = w.side.take();
-                } else {
-                    w.side = Some(w.last_side.clone().unwrap_or(Side::History));
-                }
-                cx.notify();
-            }))
+            .when(own_history, |d| {
+                d.on_action(cx.listener(|w, _: &ToggleSidePanel, _, cx| {
+                    if w.side.is_some() {
+                        w.last_side = w.side.take();
+                    } else {
+                        w.side = Some(w.last_side.clone().unwrap_or(Side::History));
+                    }
+                    cx.notify();
+                }))
+            })
             .on_action(cx.listener(|w, _: &FocusExplorer, window, cx| w.focus_region(Region::Explorer, window, cx)))
             .on_action(cx.listener(|w, _: &FocusGrid, window, cx| w.focus_region(Region::Grid, window, cx)))
             .on_action(cx.listener(|w, _: &FocusEditor, window, cx| {
@@ -2979,7 +3002,7 @@ impl Render for Workspace {
                 w.alt_press = ev.modifiers.alt;
             }))
             .capture_key_down(cx.listener(|w, _, _, _| w.alt_press = false))
-            .child(div().flex_1().min_h_0().relative().flex().flex_row().children(docks.left).child(work).children(seams))
+            .child(div().flex_1().min_h_0().relative().flex().flex_row().children(docks.left).child(work).children(docks.right).children(seams))
             // A pane being resized keeps its cursor wherever the pointer goes.
             .children(self.drag.map(|d| {
                 let rows = matches!(d, Drag::Split | Drag::Stack(..));

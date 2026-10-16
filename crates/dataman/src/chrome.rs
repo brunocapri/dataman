@@ -181,31 +181,115 @@ impl Workspace {
 
     pub(crate) fn render_titlebar(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let t = cx.theme();
-        // Follows the left dock as it slides (⌘B, a panel moved): the tabs ride the seam, never
-        // closer than the traffic lights and the toggle (116 pt).
-        let left = self.frame_now.dock(dataman_core::layout::Dock::Left);
-        let left_w = left.rect.w;
+        // The bar's geometry follows the docks as they slide (⌘B, a panel moved; `dock_pass`):
+        // the header sits at the explorer's end of the bar, the tabs between.
+        let title = self.title_now;
+        let mirrored = title.header == Some(dataman_core::layout::Dock::Right);
         // The lights keep their size at any zoom: in zoomed points they take less room.
         let lights = metrics::lights_right_at(crate::theme::zoom());
-        // Room for the explorer toggle and the back / forward arrows when the left dock is shut.
-        let side = left_w.max(lights + 92.);
         // The toggle fills with the explorer, wherever it is; the tabs line up past the seam.
         let open = (self.explorer_now() / self.explorer_w.max(1.)).clamp(0., 1.);
-        let seam = (left_w / left.full().max(1.)).clamp(0., 1.);
         let logo = self.title_logo();
         let logo_bounds = self.logo_bounds.clone();
         if logo.is_none() {
             logo_bounds.set(None);
         }
+        // What the checks measure: the toggle, the arrows, the search, as laid out.
+        let marks = self.title_marks.clone();
+        marks.borrow_mut().clear();
+        let mark = move |name: &'static str, el: AnyElement| {
+            let marks = marks.clone();
+            div().flex_none().on_children_prepainted(move |b, _, _| {
+                if let Some(b) = b.first() {
+                    marks.borrow_mut().insert(name, *b);
+                }
+            })
+            .child(el)
+            .into_any_element()
+        };
         // First run: no query tabs until there is a connection.
         let first_run = self.first_run(cx);
         // The query tabs: one strip, or one over each editor group (`split`).
-        let strips: Vec<AnyElement> = if first_run { Vec::new() } else { self.render_strips(side, seam, &t, cx) };
+        let strips: Vec<AnyElement> = if first_run { Vec::new() } else { self.render_strips(title.lead, title.seam, &t, cx) };
         let stop = |_: &gpui::MouseDownEvent, _: &mut Window, cx: &mut gpui::App| cx.stop_propagation();
         let tab_menu = self.render_tab_menu(&t, cx);
-        // Laid over the top of the explorer and work columns (app.rs), which run up to the
-        // window's top edge: the left part sits on the explorer's glass, the tabs on the work
-        // column's fill.
+        // The window's header, carried by the explorer: its toggle (the glyph mirrored on the
+        // right) and the back / forward arrows, by the traffic lights or at the right edge.
+        let toggle = mark(
+            "toggle",
+            explorer_toggle(&t, open, mirrored)
+                .on_mouse_down(MouseButton::Left, stop)
+                .on_click(cx.listener(|w, _, _, cx| w.set_explorer_open(!w.explorer_open, cx)))
+                .into_any_element(),
+        );
+        let arrows: Vec<AnyElement> = [false, true]
+            .map(|fwd| {
+                let can = self.can_go(fwd);
+                let (id, i) = if fwd { ("nav-forward", Icon::ChevronRight) } else { ("nav-back", Icon::ChevronLeft) };
+                let b = ui::icon_button(&t, id, i, 20., 14.).on_mouse_down(MouseButton::Left, stop);
+                let b = if can { b.on_click(cx.listener(move |w, _, window, cx| w.go(fwd, window, cx))) } else { b.opacity(0.35).hover(|s| s).active(|s| s) };
+                mark(if fwd { "forward" } else { "back" }, b.into_any_element())
+            })
+            .into_iter()
+            .collect();
+        // The search (⌘K): at the far right, or past the lights when the header is there.
+        let search = mark(
+            "search",
+            div()
+                .id("palette-hint")
+                .flex_none()
+                .h(px(26.))
+                .pl(px(6.))
+                .pr(px(4.))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(6.))
+                .text_color(t.tx3)
+                .on_mouse_down(MouseButton::Left, stop)
+                .on_click(cx.listener(|w, _, window, cx| w.open_palette(crate::palette::Scope::All, window, cx)))
+                .child(icon(Icon::Search).size(px(14.)).text_color(t.tx3))
+                .when_some(crate::keymap::key("command_palette"), |d, k| d.child(ui::keycap(&t, k)))
+                .into_any_element(),
+        );
+        let (mut toggle, mut arrows, mut search) = (Some(toggle), arrows, Some(search));
+        // The left end: the traffic lights (16, 14; `metrics::LIGHTS_AT`), then the header (the
+        // toggle 14 pt after them, the arrows) or, mirrored, the search in the toggle's place.
+        let left = div()
+            .w(px(title.lead))
+            .flex_none()
+            .h_full()
+            .flex()
+            .flex_row()
+            .items_center()
+            .child(div().w(px(lights)).flex_none())
+            .map(|d| {
+                if mirrored {
+                    d.child(div().ml(px(14.)).flex_none().children(search.take()))
+                } else {
+                    d.child(div().ml(px(14.)).flex_none().children(toggle.take())).child(div().ml(px(4.)).flex_none().flex().flex_row().children(std::mem::take(&mut arrows)))
+                }
+            })
+            .child(div().flex_1());
+        // The right end, mirrored: the header over the explorer's column, its toggle at the
+        // window's edge; else the search.
+        let right = if mirrored {
+            div()
+                .w(px(title.trail))
+                .flex_none()
+                .h_full()
+                .flex()
+                .flex_row()
+                .items_center()
+                .child(div().flex_1())
+                .child(div().flex_none().flex().flex_row().children(std::mem::take(&mut arrows)))
+                .child(div().ml(px(4.)).mr(px(10.)).flex_none().children(toggle.take()))
+                .into_any_element()
+        } else {
+            div().ml(px(12.)).mr(px(10.)).flex_none().children(search.take()).into_any_element()
+        };
+        // Laid over the top of the docks and the work column (app.rs), which run up to the
+        // window's top edge: the header sits on the explorer's glass, the tabs on the band's fill.
         div()
             .id("titlebar")
             .absolute()
@@ -232,36 +316,10 @@ impl Workspace {
                     window.titlebar_double_click();
                 }
             })
-            .child(
-                div()
-                    .w(px(side))
-                    .flex_none()
-                    .h_full()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    // The traffic lights: three 12 pt circles from (16, 14), 8 pt apart, centred
-                    // on the bar's middle line like this button (`metrics::LIGHTS_AT`).
-                    .child(div().w(px(lights)).flex_none())
-                    .child(
-                        explorer_toggle(&t, open)
-                            .ml(px(14.))
-                            .on_mouse_down(MouseButton::Left, stop)
-                            .on_click(cx.listener(|w, _, _, cx| w.set_explorer_open(!w.explorer_open, cx))),
-                    )
-                    .children([false, true].map(|fwd| {
-                        let can = self.can_go(fwd);
-                        let (id, i) = if fwd { ("nav-forward", Icon::ChevronRight) } else { ("nav-back", Icon::ChevronLeft) };
-                        let b = ui::icon_button(&t, id, i, 20., 14.).on_mouse_down(MouseButton::Left, stop);
-                        if can {
-                            b.ml(px(if fwd { 0. } else { 4. })).on_click(cx.listener(move |w, _, window, cx| w.go(fwd, window, cx)))
-                        } else {
-                            b.ml(px(if fwd { 0. } else { 4. })).opacity(0.35).hover(|s| s).active(|s| s)
-                        }
-                    }))
-                    .child(div().flex_1()),
-            )
+            .child(left)
             .children(logo.map(|r| {
+                // At the explorer column's outer side: its right edge on the left, its left edge
+                // on the right (the header's controls at the window's edge).
                 div()
                     .absolute()
                     .top_0()
@@ -271,8 +329,8 @@ impl Workspace {
                     .flex()
                     .flex_row()
                     .items_center()
-                    .justify_end()
-                    .pr(px(14.))
+                    .when(!mirrored, |d| d.justify_end().pr(px(14.)))
+                    .when(mirrored, |d| d.justify_start().pl(px(14.)))
                     .on_children_prepainted(move |b, _, _| logo_bounds.set(b.first().copied()))
                     .child(div().font_family(PIXEL).text_size(px(13.)).text_color(t.tx3).child("DATAMAN"))
             }))
@@ -280,36 +338,24 @@ impl Workspace {
             .when(first_run, |d| d.child(div().flex_1()))
             // An update on offer: its notice, which opens the update sheet.
             .children(self.render_update_pill(&t, cx))
-            .child(
-                div()
-                    .id("palette-hint")
-                    .flex_none()
-                    .h(px(26.))
-                    .ml(px(12.))
-                    .mr(px(10.))
-                    .pl(px(6.))
-                    .pr(px(4.))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(6.))
-                    .text_color(t.tx3)
-                    .on_mouse_down(MouseButton::Left, stop)
-                    .on_click(cx.listener(|w, _, window, cx| w.open_palette(crate::palette::Scope::All, window, cx)))
-                    .child(icon(Icon::Search).size(px(14.)).text_color(t.tx3))
-                    .when_some(crate::keymap::key("command_palette"), |d, k| d.child(ui::keycap(&t, k))),
-            )
+            .child(right)
             .children(tab_menu)
     }
 
-    /// Where the title bar's "DATAMAN" goes: it is the explorer's header, at the right edge of
-    /// the explorer's column wherever that is in the left dock (beside the history, either side
-    /// of it, or stacked with it), never over the history's own column. `None` while the
-    /// explorer is shut, too narrow for it, or in the right dock (the tabs run over that one).
+    /// Where the title bar's "DATAMAN" goes: it is the explorer's header, at the outer side of
+    /// the explorer's column wherever that is (the left dock's first column, the right dock's
+    /// last; stacked with the history or beside it), never over the history's own column.
+    /// `None` while the explorer is shut or too narrow for it beside the header's controls.
     pub(crate) fn title_logo(&self) -> Option<crate::dock::Rect> {
-        let left = self.frame_now.dock(dataman_core::layout::Dock::Left);
-        let explorer = |c: &&crate::dock::ColFrame| c.slots.iter().any(|(s, _)| s.panel == dataman_core::layout::PanelId::Explorer && !s.ghost && s.weight >= 0.5);
-        left.cols.iter().find(explorer).map(|c| c.rect).filter(|r| r.w >= 120. && r.right() >= 230.)
+        use dataman_core::layout::{Dock, PanelId};
+        let d = self.layout.place_of(PanelId::Explorer).dock;
+        let explorer = |c: &&crate::dock::ColFrame| c.slots.iter().any(|(s, _)| s.panel == PanelId::Explorer && !s.ghost && s.weight >= 0.5);
+        let col = self.frame_now.dock(d).cols.iter().find(explorer).map(|c| c.rect);
+        match d {
+            Dock::Left => col.filter(|r| r.w >= 120. && r.right() >= 230.),
+            // The arrows and the toggle at its right end.
+            Dock::Right => col.filter(|r| r.w >= 190.),
+        }
     }
 
     /// The tab strips: one, or one over each editor group (`split`), the left one ending at the
@@ -1002,13 +1048,14 @@ impl Workspace {
                 .child(rollback)
         });
         let history_on = matches!(self.side, Some(Side::History));
-        let history = ui::button(t, "tb-history", Btn::Ghost)
+        // Not while the history shares the explorer's dock: the explorer controls it then (⌘B).
+        let history = (!self.history_with_explorer()).then(|| ui::button(t, "tb-history", Btn::Ghost)
             .px(px(7.))
             .gap(px(6.))
             .when(history_on, |d| d.bg(t.prs).text_color(t.tx).border_1().border_color(t.line2))
             .child(icon(Icon::History).size(px(14.)).text_color(if history_on { t.tx } else { t.tx2 }))
             .when_some(crate::keymap::key("history").filter(|_| !v.compact), |d, k| d.child(ui::keycap_sm(t.key, t.tx2, k)))
-            .on_click(cx.listener(|w, _, _, cx| w.toggle_history_for_demo(cx)));
+            .on_click(cx.listener(|w, _, _, cx| w.toggle_history_for_demo(cx))));
         // ⌘S's "Saved as favorite →", fading in and out at the History button's left. Hung from
         // a zero-width anchor: nothing else in the toolbar moves.
         let saved = self.saved_flash.as_ref().filter(|_| v.focused).and_then(|f| {
@@ -1066,7 +1113,7 @@ impl Workspace {
             .children(cancel)
             .child(div().flex_1())
             .children(saved)
-            .child(history)
+            .children(history)
             .children(lar)
     }
 
@@ -2520,12 +2567,14 @@ pub(crate) fn cut_chars(s: &str, n: usize) -> String {
 
 /// The title bar's explorer toggle (`icon_button`'s look): the sidebar glyph, its left part
 /// filled as far as the explorer is open (`open`, 0 to 1), so the fill sweeps in and out with
-/// the explorer's own slide (same tween, same easing; at once with "Reduce motion").
-fn explorer_toggle(t: &Theme, open: f32) -> gpui::Stateful<Div> {
+/// the explorer's own slide (same tween, same easing; at once with "Reduce motion"). `mirrored`
+/// (the explorer in the right dock): the glyph and its fill from the right.
+fn explorer_toggle(t: &Theme, open: f32, mirrored: bool) -> gpui::Stateful<Div> {
     let (hov, prs, ink) = (t.hov, t.prs, t.tx3);
-    // The glyph's left pane in its 16 pt box (`sidebar.svg`: the frame from x 2.5 to 13.5 and y
-    // 3 to 13, its divider at x 6.5).
-    let pane = div().absolute().left(px(2.5)).top(px(3.)).h(px(10.)).w(px(4. * open.clamp(0., 1.))).bg(ink);
+    // The glyph's outer pane in its 16 pt box (`sidebar.svg`: the frame from x 2.5 to 13.5 and y
+    // 3 to 13, its divider at x 6.5; `sidebar-right.svg` the same mirrored, at x 9.5).
+    let pane = div().absolute().top(px(3.)).h(px(10.)).w(px(4. * open.clamp(0., 1.))).bg(ink);
+    let (pane, glyph) = if mirrored { (pane.right(px(2.5)), Icon::SidebarRight) } else { (pane.left(px(2.5)), Icon::Sidebar) };
     div()
         .id("toggle-explorer")
         .flex_none()
@@ -2535,7 +2584,7 @@ fn explorer_toggle(t: &Theme, open: f32) -> gpui::Stateful<Div> {
         .justify_center()
         .hover(move |s| s.bg(hov))
         .active(move |s| s.bg(prs))
-        .child(div().relative().size(px(16.)).child(icon(Icon::Sidebar).size(px(16.)).text_color(ink)).child(pane))
+        .child(div().relative().size(px(16.)).child(icon(glyph).size(px(16.)).text_color(ink)).child(pane))
 }
 
 /// The focus ring of a region: a 1 pt neutral line and a faint 2 pt band inside it (square:

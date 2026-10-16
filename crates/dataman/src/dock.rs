@@ -11,7 +11,8 @@
 //! picks a place ([`target_at`]): over another panel, the edge it is nearest (left or right of
 //! it: a column of its own beside it; above or below it: stacked with it); over the work
 //! surface, the band along its left or right edge (that dock, a column next to the work
-//! surface). On the drop the old place folds shut while the new one opens (`motion::DOCK_MOVE`),
+//! surface). The explorer is always its dock's outermost column (`layout`): a place past it
+//! resolves to the one just inside it, and the preview shows exactly that. On the drop the old place folds shut while the new one opens (`motion::DOCK_MOVE`),
 //! the work surface and the other panels sliding along; with Reduce Motion the panel is simply
 //! there. Esc cancels the drag (`dnd`).
 //!
@@ -141,11 +142,6 @@ pub struct DockFrame {
 impl DockFrame {
     pub fn slots(&self) -> impl Iterator<Item = &(Slot, Rect)> {
         self.cols.iter().flat_map(|c| &c.slots)
-    }
-
-    /// Its width with every column open.
-    pub fn full(&self) -> f32 {
-        self.cols.iter().map(|c| c.full).sum()
     }
 }
 
@@ -333,7 +329,9 @@ pub fn target_at(frame: &Frame, layout: &PanelLayout, dragged: PanelId, pos: (f3
             }
         }
     };
-    (!layout.moved(dragged, place).same_places(layout)).then_some(place)
+    // Where it really lands: the explorer stays its dock's outermost column, so a place past it
+    // is the one just inside it (the preview shows that one).
+    (!layout.moved(dragged, place).same_places(layout)).then(|| layout.landing(dragged, place))
 }
 
 /// A panel settling into a new place: where its ghost stands ([`ghost_place`]), and how far
@@ -356,12 +354,105 @@ pub(crate) struct PanelDrag {
     glide: Option<RectTween>,
 }
 
+/// How much each dock holds the explorer (0 … 1), eased along a move of it (`DOCK_MOVE`): the
+/// history beside it takes the explorer's glass and, in the left dock, the tab band slides over
+/// it (the header slot it had alone) as the explorer arrives, and back as it leaves. With Reduce
+/// Motion it is simply the arrangement's.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct ExplorerBlend {
+    from: [f32; 2],
+    progress: Option<Progress>,
+}
+
+impl ExplorerBlend {
+    fn target(layout: &PanelLayout) -> [f32; 2] {
+        let d = layout.place_of(PanelId::Explorer).dock;
+        Dock::ALL.map(|x| (x == d) as u8 as f32)
+    }
+
+    /// Now, heading for `layout`'s, and whether it is still on its way.
+    fn at(&mut self, layout: &PanelLayout, now: Instant) -> ([f32; 2], bool) {
+        let to = Self::target(layout);
+        match self.progress.and_then(|p| p.at(now)) {
+            Some(k) => (std::array::from_fn(|i| self.from[i] + (to[i] - self.from[i]) * k), true),
+            None => {
+                self.progress = None;
+                (to, false)
+            }
+        }
+    }
+
+    /// The explorer changed docks: from wherever the blend is now (a move mid-way turns
+    /// around), or at once with Reduce Motion.
+    fn start(&mut self, old: &PanelLayout, new: &PanelLayout, reduced: bool) {
+        if Self::target(old) == Self::target(new) {
+            return;
+        }
+        let (now, _) = self.at(old, Instant::now());
+        self.from = now;
+        self.progress = (!reduced).then(|| Progress::new(motion::DOCK_MOVE));
+    }
+}
+
+/// The title bar's geometry this frame, from the docks' (`dock_pass`): the explorer carries the
+/// window's header (its toggle, the back / forward arrows, "DATAMAN") to its end of the bar, and
+/// the search goes to the other end (past the traffic lights when the explorer is on the right).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct TitleFrame {
+    /// The end of the bar with the header: the explorer's dock.
+    pub header: Option<Dock>,
+    /// Where the tabs start: past the traffic lights and what sits by them, and past the left
+    /// dock's header columns (the explorer's; the history's when it is there alone). The history
+    /// beside the explorer is under the tab band instead.
+    pub lead: f32,
+    /// How open those header columns are (0 … 1; the first tab lines up past their seam).
+    pub seam: f32,
+    /// The room the header takes at the right end (the explorer in the right dock), else 0.
+    pub trail: f32,
+    /// How much each dock holds the explorer ([`ExplorerBlend`]).
+    pub joined: [f32; 2],
+}
+
+/// The least room the header keeps at its end of the bar, past the lights on the left (the
+/// toggle 14 pt after them, the two arrows) or at the right edge (the arrows, the toggle).
+pub const HEADER_MIN: f32 = 92.;
+/// The least room past the lights for the search, when it is on the left.
+pub const SEARCH_MIN: f32 = 96.;
+
+/// The title bar's geometry for a frame of the docks: `lights` is the traffic lights' right
+/// edge.
+pub fn title_frame(frame: &Frame, layout: &PanelLayout, joined: [f32; 2], lights: f32) -> TitleFrame {
+    let header = layout.place_of(PanelId::Explorer).dock;
+    let explorer = |c: &ColFrame| c.slots.iter().any(|(s, _)| s.panel == PanelId::Explorer);
+    // The left dock's header columns: the explorer's, and the history's as far as it is on its
+    // own there (the tab band slides over it as the explorer joins it).
+    let k = |c: &ColFrame| if explorer(c) { 1. } else { 1. - joined[ix(Dock::Left)] };
+    let left = &frame.dock(Dock::Left).cols;
+    let edge: f32 = left.iter().map(|c| c.rect.w * k(c)).sum();
+    let full: f32 = left.iter().map(|c| c.full * k(c)).sum();
+    let lead = edge.max(lights + if header == Dock::Left { HEADER_MIN } else { SEARCH_MIN });
+    let trail = match header {
+        Dock::Right => frame.dock(Dock::Right).cols.iter().filter(|c| c.slots.iter().any(|(s, _)| s.panel == PanelId::Explorer && !s.ghost)).map(|c| c.rect.w).sum::<f32>().max(HEADER_MIN),
+        Dock::Left => 0.,
+    };
+    TitleFrame { header: Some(header), lead, seam: (edge / full.max(1.)).clamp(0., 1.), trail, joined }
+}
+
 /// This frame's docks: their geometry, the history's view on screen, and how much of it the
 /// result zoom leaves (1: all of it).
 pub(crate) struct DockPass {
     pub frame: Frame,
     pub side: Option<Side>,
     pub side_rest: f32,
+    pub title: TitleFrame,
+}
+
+impl DockPass {
+    /// The left dock's last column is the history's under the tab band (beside the explorer):
+    /// the work column's seam is that column's, under the band.
+    pub fn band_left(&self) -> bool {
+        self.title.joined[ix(Dock::Left)] > 0. && self.frame.dock(Dock::Left).cols.last().is_some_and(|c| !c.slots.iter().any(|(s, _)| s.panel == PanelId::Explorer))
+    }
 }
 
 /// The docks' elements, for `render` to place.
@@ -391,8 +482,10 @@ impl Workspace {
     /// hit test, and the area of each place it offers.
     pub(crate) fn rest_frame(&self, layout: &PanelLayout, window: &Window) -> Frame {
         let history = self.frame_now.panel(PanelId::History).is_some();
+        // The history joining the explorer's dock while that one is shut opens it (`move_panel`).
+        let explorer = self.explorer_open || (history && layout.shares_dock(PanelId::History));
         let open = |p: PanelId| match p {
-            PanelId::Explorer => self.explorer_open as u8 as f32,
+            PanelId::Explorer => explorer as u8 as f32,
             PanelId::History => history as u8 as f32,
         };
         frame(Self::view_pt(window), slots(layout, open, &[]), &self.sizes())
@@ -420,6 +513,8 @@ impl Workspace {
             k * rest
         });
         let explorer_open = self.explorer_now() / self.explorer_w.max(1.);
+        // Sharing the explorer's dock, the history shows and hides with it (⌘B).
+        let side_open = if self.layout.shares_dock(PanelId::History) { side_open * explorer_open.clamp(0., 1.) } else { side_open };
         let mut moves = Vec::new();
         self.dock_moves.retain(|m| match m.progress.at(now) {
             Some(k) => {
@@ -428,7 +523,8 @@ impl Workspace {
             }
             None => false,
         });
-        if !moves.is_empty() {
+        let (joined, blending) = self.explorer_blend.at(&self.layout, now);
+        if !moves.is_empty() || blending {
             window.request_animation_frame();
         }
         let open = |p: PanelId| match p {
@@ -436,8 +532,24 @@ impl Workspace {
             PanelId::History => side_open,
         };
         let frame = frame(Self::view_pt(window), slots(&self.layout, open, &moves), &self.sizes());
+        let title = title_frame(&frame, &self.layout, joined, metrics::lights_right_at(crate::theme::zoom()));
         self.frame_now = frame.clone();
-        DockPass { frame, side: shown, side_rest: rest }
+        self.title_now = title;
+        DockPass { frame, side: shown, side_rest: rest, title }
+    }
+
+    /// While the history shares the explorer's dock it is controlled with the explorer: shown
+    /// whenever the explorer is (⌘B hides both), never shut on its own (⌘Y, its ×, esc). Called
+    /// before each frame.
+    pub(crate) fn sync_shared_history(&mut self) {
+        if self.layout.shares_dock(PanelId::History) && self.side.is_none() {
+            self.side = Some(Side::History);
+        }
+    }
+
+    /// The history shares the explorer's dock (⌘Y and the toolbar's History button are off).
+    pub(crate) fn history_with_explorer(&self) -> bool {
+        self.layout.shares_dock(PanelId::History)
     }
 
     /// What the dragged panel is called on its ghost and on the preview.
@@ -449,10 +561,19 @@ impl Workspace {
         }
     }
 
-    /// The docks as elements: each column holds its panels stacked, each slot clipping its
-    /// panel, which keeps the column's full width (anchored to the window's edge) so it never
-    /// reflows mid-slide.
-    pub(crate) fn render_docks(&mut self, pass: &DockPass, window: &mut Window, cx: &mut Context<Self>) -> DockViews {
+    /// The docks as elements, each from the window's top edge to the status bar (the title bar
+    /// is laid over them): each column holds its panels stacked, each slot clipping its panel,
+    /// which keeps the column's full width (anchored to the window's edge) so it never reflows
+    /// mid-slide.
+    ///
+    /// The explorer's column is the glass sidebar, the title band over it its header. The
+    /// history with it (stacked, or a column beside it) takes the same glass; a column of its own
+    /// beside the explorer starts under the tab band, which runs over it (the band's hairline,
+    /// red on production, and no seam through the band). Alone in a dock, the history has the
+    /// work column's fill: in the left dock the band over it is the header slot, in the right
+    /// one the tab band runs over it. Between the two the fill fades as the explorer comes and
+    /// goes (`TitleFrame::joined`). `production`: the work column's red accent.
+    pub(crate) fn render_docks(&mut self, pass: &DockPass, production: bool, window: &mut Window, cx: &mut Context<Self>) -> DockViews {
         let t = cx.theme();
         let region = self.focus_visible.then(|| self.focused_region(window, cx)).flatten();
         // The history's header shows its × only on hover while it shares a dock.
@@ -473,15 +594,14 @@ impl Workspace {
             }
             let ncols = df.cols.len();
             let mut cols = Vec::with_capacity(ncols);
+            let joined = pass.title.joined[ix(d)];
             for (ci, col) in df.cols.iter().enumerate() {
                 let n = col.slots.len();
-                // In the left dock only the explorer's column is the glass sidebar under the
-                // title bar's left part ("DATAMAN"); the history keeps the work column's fill
-                // there: stacked with the explorer, its own slot; in a column of its own, the
-                // column, the title band over it included (it starts under the band's hairline,
-                // as in the right dock).
-                let glass = d == Dock::Left && col.slots.iter().any(|(s, _)| s.panel == PanelId::Explorer);
-                let fill = d == Dock::Left && !glass;
+                let glass = col.slots.iter().any(|(s, _)| s.panel == PanelId::Explorer);
+                // The work column's fill, as far as the history is on its own in the dock.
+                let fill = (!glass).then(|| t.panel.opacity(1. - joined)).filter(|f| f.a > 1e-3);
+                // Under the tab band (not a header slot): no seam through the band beside it.
+                let band = !glass && (d == Dock::Right || joined > 0.);
                 let mut children = Vec::with_capacity(n);
                 for (i, (s, r)) in col.slots.iter().enumerate() {
                     let content: AnyElement = match (s.ghost, s.panel, &pass.side) {
@@ -492,7 +612,7 @@ impl Workspace {
                         (false, PanelId::History, None) => div().into_any_element(),
                     };
                     let focus = s.panel == PanelId::History && !s.ghost && region == Some(Region::Side);
-                    children.push(self.render_slot(d, i, n, *s, *r, col.full, content, focus, glass, pass.side_rest, &t, cx));
+                    children.push(self.render_slot(d, i, n, *s, *r, col.full, content, focus, pass.side_rest, &t, cx));
                 }
                 let bounds = self.slot_bounds.clone();
                 let k = ix(d);
@@ -503,29 +623,50 @@ impl Workspace {
                 };
                 // The last column takes what is left (no gap from rounding).
                 let last = ci + 1 == ncols;
-                let body = div().flex_1().min_h_0().flex().flex_col().border_color(t.line).when(fill, |b| b.border_t_1()).on_children_prepainted(record).children(children);
+                // The seams: between columns, from the top (beside a header); the work column's
+                // own on the left (app.rs) unless this one is under the tab band, then this
+                // column's, under the band; on the right this column's, likewise.
+                let seam_l = ci > 0 || (d == Dock::Right && !band);
+                let body_l = ci == 0 && d == Dock::Right && band;
+                let body_r = last && d == Dock::Left && band;
+                let body = div()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
+                    .border_color(t.line)
+                    .when_some(fill, |b, f| b.bg(f))
+                    // The title band's hairline (red on production), as over the work column.
+                    .when(!glass && !production, |b| b.border_t_1())
+                    .when(!glass && production, |b| b.border_t_2().border_color(t.err))
+                    .on_children_prepainted(record)
+                    .children(children);
                 cols.push(
                     div()
+                        .relative()
                         .h_full()
                         .flex_none()
                         .flex()
                         .flex_col()
                         .overflow_hidden()
                         .border_color(t.line)
-                        .when(fill, |c| c.bg(t.panel))
                         .when(!last, |c| c.w(px(col.rect.w)))
                         .when(last, |c| c.flex_1().min_w_0())
-                        .when(ci > 0, |c| c.border_l_1())
-                        .when(d == Dock::Left, |c| c.child(div().h(px(metrics::TITLE_H)).flex_none()))
-                        .child(body),
+                        .when(seam_l, |c| c.border_l_1())
+                        // The title band over it: the header (glass), or the band's fill.
+                        .child(div().h(px(metrics::TITLE_H)).flex_none().when(!glass, |b| b.bg(t.panel)))
+                        .child(body)
+                        // The seam under the band: drawn over the edge (it takes no room, as the
+                        // work column's own would not have).
+                        .when(body_l || body_r, |c| {
+                            let line = div().absolute().top(px(metrics::TITLE_H)).bottom_0().w(px(1.)).bg(t.line);
+                            c.child(if body_l { line.left_0() } else { line.right_0() })
+                        }),
                 );
             }
             let rect = df.rect;
-            let el = match d {
-                // On the glass, from the window's top edge (the title bar is laid over it).
-                Dock::Left => div().w(px(rect.w)).flex_none().h_full().overflow_hidden().flex().flex_row().children(cols),
-                Dock::Right => div().relative().w(px(rect.w)).flex_none().h_full().border_l_1().border_color(t.line).flex().flex_row().children(cols),
-            };
+            // On the glass, from the window's top edge (the title bar is laid over it).
+            let el = div().w(px(rect.w)).flex_none().h_full().overflow_hidden().flex().flex_row().children(cols);
             views[ix(d)] = Some(el.into_any_element());
         }
         let [left, right] = views;
@@ -533,7 +674,7 @@ impl Workspace {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn render_slot(&self, d: Dock, i: usize, n: usize, s: Slot, r: Rect, full: f32, content: AnyElement, focus: bool, fill: bool, side_rest: f32, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    fn render_slot(&self, d: Dock, i: usize, n: usize, s: Slot, r: Rect, full: f32, content: AnyElement, focus: bool, side_rest: f32, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let last = i + 1 == n;
         let inner = match d {
             Dock::Left => div().absolute().top_0().bottom_0().left_0().w(px(full)),
@@ -542,9 +683,6 @@ impl Workspace {
         // The one being dragged waits, dimmed, until it is dropped.
         let dragged = !s.ghost && self.panel_drag.as_ref().is_some_and(|g| g.panel == s.panel);
         let fade = if s.panel == PanelId::History && !s.ghost { side_rest } else { 1. };
-        // Stacked with the explorer on the glass, the history keeps its own fill (and, at the
-        // top, the hairline under the title band).
-        let fill = fill && s.panel == PanelId::History && !s.ghost;
         let p = s.panel;
         // A right click on its header: the panel's menu (move it, reset the layout).
         let head = r.y + head_h(p);
@@ -558,8 +696,7 @@ impl Workspace {
             // The last slot takes what is left (no gap from rounding).
             .when(!last, |e| e.h(px(r.h)))
             .when(last, |e| e.flex_1().min_h_0())
-            .when(i > 0 || fill, |e| e.border_t_1())
-            .when(fill, |e| e.bg(t.panel))
+            .when(i > 0, |e| e.border_t_1())
             .child(inner.child(content))
             .when(fade < 1., |e| e.opacity(fade))
             .when(dragged, |e| e.opacity(0.4))
@@ -722,6 +859,10 @@ impl Workspace {
 
     pub(crate) fn move_panel(&mut self, p: PanelId, to: Place, cx: &mut Context<Self>) {
         let next = self.layout.moved(p, to);
+        // The history joining the explorer's dock goes with it: a shut explorer opens.
+        if next.shares_dock(PanelId::History) && !self.explorer_open {
+            self.set_explorer_open(true, cx);
+        }
         self.set_layout(next, Some(p), cx);
     }
 
@@ -732,6 +873,7 @@ impl Workspace {
             return;
         }
         let old = std::mem::replace(&mut self.layout, next);
+        self.explorer_blend.start(&old, &self.layout, cx.reduce_motion());
         for p in PanelId::ALL {
             let (a, b) = (old.place_of(p), self.layout.place_of(p));
             if a.dock != b.dock || (moved == Some(p) && a != b) {
@@ -950,21 +1092,22 @@ mod tests {
         assert_eq!(half.dock(Dock::Left).cols[0].full, 260., "the content keeps its width while it folds");
         let done = frame(VIEW, slots(&l, |_| 1., &[(Explorer, from, 1.)]), &SIZES);
         assert_eq!(done, rest(&l, true));
-        // Out of a stack into a column beside it: the ghost holds its old row.
+        // Out of a stack into a column beside it (right of the history: the explorer is the
+        // outermost column): the ghost holds its old row.
         let stacked = PanelLayout::default().moved(Explorer, Place::stack(Dock::Right, 0, 1));
         let beside = stacked.moved(Explorer, Place::column(Dock::Right, 0));
         let from = ghost_place(&stacked, &beside, Explorer);
-        assert_eq!(from, Place::stack(Dock::Right, 1, 1));
+        assert_eq!(from, Place::stack(Dock::Right, 0, 1));
         let s = slots(&beside, |_| 1., &[(Explorer, from, 0.25)]);
         let order: Vec<Vec<(PanelId, bool)>> = s[1].iter().map(|c| c.iter().map(|s| (s.panel, s.ghost)).collect()).collect();
-        assert_eq!(order, [vec![(Explorer, false)], vec![(H, false), (Explorer, true)]]);
-        // Back into the stack from a column of its own (left of the history): the ghost column
+        assert_eq!(order, [vec![(H, false), (Explorer, true)], vec![(Explorer, false)]]);
+        // Back into the stack from a column of its own (right of the history): the ghost column
         // stands where it was.
         let from = ghost_place(&beside, &stacked, Explorer);
-        assert_eq!(from, Place::column(Dock::Right, 0));
+        assert_eq!(from, Place::column(Dock::Right, 1));
         let s = slots(&stacked, |_| 1., &[(Explorer, from, 0.25)]);
         let order: Vec<Vec<(PanelId, bool)>> = s[1].iter().map(|c| c.iter().map(|s| (s.panel, s.ghost)).collect()).collect();
-        assert_eq!(order, [vec![(Explorer, true)], vec![(H, false), (Explorer, false)]]);
+        assert_eq!(order, [vec![(H, false), (Explorer, false)], vec![(Explorer, true)]]);
         // Another dock: the first move's ghost stands where the explorer was.
         assert_eq!(ghost_place(&PanelLayout::default(), &stacked, Explorer), Place::column(Dock::Left, 0));
     }
@@ -978,10 +1121,11 @@ mod tests {
         let f = rest(&l, true);
         let top = metrics::TITLE_H;
         let s = f.panel(H).unwrap();
-        // Over the history: above it, below it, left of it, right of it.
+        // Over the history: above it, below it, right of it; left of it is right of it too
+        // (the explorer is the right dock's outermost column).
         assert_eq!(target_at(&f, &l, Explorer, (s.x + s.w / 2., top + 40.)), Some(Place::stack(Dock::Right, 0, 0)));
         assert_eq!(target_at(&f, &l, Explorer, (s.x + s.w / 2., s.bottom() - 40.)), Some(Place::stack(Dock::Right, 0, 1)));
-        assert_eq!(target_at(&f, &l, Explorer, (s.x + 30., s.y + s.h / 2.)), Some(Place::column(Dock::Right, 0)));
+        assert_eq!(target_at(&f, &l, Explorer, (s.x + 30., s.y + s.h / 2.)), Some(Place::column(Dock::Right, 1)));
         assert_eq!(target_at(&f, &l, Explorer, (s.right() - 30., s.y + s.h / 2.)), Some(Place::column(Dock::Right, 1)));
         // Its own place, and the band of its own dock (where it already is): nowhere.
         assert_eq!(target_at(&f, &l, Explorer, (100., 300.)), None);
@@ -989,8 +1133,16 @@ mod tests {
         // The middle of the work surface, and its bottom: nowhere (no bottom dock).
         assert_eq!(target_at(&f, &l, Explorer, (650., 400.)), None);
         assert_eq!(target_at(&f, &l, Explorer, (650., 850.)), None);
-        // The right band: a column next to the work surface, left of the history.
-        assert_eq!(target_at(&f, &l, Explorer, (1000., 400.)), Some(Place::column(Dock::Right, 0)));
+        // The right band: right of the history all the same, at the window's edge.
+        assert_eq!(target_at(&f, &l, Explorer, (1000., 400.)), Some(Place::column(Dock::Right, 1)));
+        // In the right dock, the history over the explorer's right edge lands left of it; it is
+        // there already: nowhere.
+        let r = l.moved(Explorer, Place::column(Dock::Right, 1));
+        let fr = rest(&r, true);
+        let e = fr.panel(Explorer).unwrap();
+        assert!(e.right() == 1400. && fr.panel(H).unwrap().right() == e.x, "{e:?}");
+        assert_eq!(target_at(&fr, &r, H, (e.right() - 10., e.y + e.h / 2.)), None);
+        assert_eq!(target_at(&fr, &r, H, (e.x + e.w / 2., e.y + 10.)), Some(Place::stack(Dock::Right, 0, 0)));
         // The history to the left band: a column right of the explorer.
         assert_eq!(target_at(&f, &l, H, (300., 400.)), Some(Place::column(Dock::Left, 1)));
         // Stacked with the explorer: its halves are above and below it; its sides make columns.
@@ -999,7 +1151,8 @@ mod tests {
         let e = fs.panel(Explorer).unwrap();
         assert_eq!(target_at(&fs, &st, H, (e.x + e.w / 2., e.bottom() - 10.)), Some(Place::stack(Dock::Left, 0, 1)));
         assert_eq!(target_at(&fs, &st, H, (e.x + e.w / 2., e.y + 10.)), None, "where it already is");
-        assert_eq!(target_at(&fs, &st, H, (e.x + 10., e.y + e.h / 2.)), Some(Place::column(Dock::Left, 0)));
+        // Its left side: right of it (the explorer stays the leftmost column).
+        assert_eq!(target_at(&fs, &st, H, (e.x + 10., e.y + e.h / 2.)), Some(Place::column(Dock::Left, 1)));
         // Outside everything (the title bar): nowhere.
         assert_eq!(target_at(&f, &l, Explorer, (650., 10.)), None);
     }
@@ -1015,5 +1168,33 @@ mod tests {
         // Dropped: a column right of the explorer, the right dock gone.
         assert!(near(preview, Rect { x: 260., y: metrics::TITLE_H, w: 360., h: body() }), "{preview:?}");
         assert_eq!(rest(&after, true).center.right(), 1400.);
+        // The explorer dragged left of the history (right dock): the preview at the window's
+        // edge, where it lands.
+        let h = f.panel(H).unwrap();
+        let to = target_at(&f, &l, Explorer, (h.x + 20., h.y + h.h / 2.)).unwrap();
+        let p = rest(&l.moved(Explorer, to), true).panel(Explorer).unwrap();
+        assert!(near(p, Rect { x: 1140., y: metrics::TITLE_H, w: 260., h: body() }), "{p:?}");
+    }
+
+    /// The tabs start past the left dock's header columns: the explorer's, the history's alone
+    /// there (its header slot), not the history's beside the explorer (under the tab band); mid-way
+    /// they are between. The header goes with the explorer.
+    #[test]
+    fn the_title_follows_the_explorer() {
+        let lights = 70.;
+        let alone = PanelLayout::default().moved(H, Place::column(Dock::Left, 0)).moved(Explorer, Place::column(Dock::Right, 0));
+        let t = title_frame(&rest(&alone, true), &alone, [0., 1.], lights);
+        assert_eq!((t.header, t.lead, t.trail), (Some(Dock::Right), 360., 260.));
+        let beside = alone.moved(Explorer, Place::column(Dock::Left, 0));
+        assert_eq!(beside.left.len(), 2);
+        let f = rest(&beside, true);
+        assert_eq!(title_frame(&f, &beside, [1., 0.], lights).lead, 260.);
+        assert_eq!(title_frame(&f, &beside, [0.5, 0.], lights).lead, 260. + 180.);
+        // Nothing in the left dock: the lights and the header's controls (or the search).
+        let none = PanelLayout::default().moved(H, Place::column(Dock::Right, 0));
+        let t = title_frame(&rest(&none, true), &none, [1., 0.], lights);
+        assert_eq!((t.header, t.lead), (Some(Dock::Left), 260.));
+        let shut = frame(VIEW, slots(&none, |p| if p == Explorer { 0. } else { 1. }, &[]), &SIZES);
+        assert_eq!(title_frame(&shut, &none, [1., 0.], lights).lead, lights + HEADER_MIN);
     }
 }

@@ -8,16 +8,30 @@
 //! it now is, the session noticing, and "Reset panel layout" bringing every panel home. PASS/FAIL
 //! lines like `fk-check`. Along the way: a JSON cell's value sheet (⇧Space in the grid) opening
 //! over the window without moving a dock, the arrangement or the session, and the title bar's
-//! "DATAMAN" staying over the explorer's column (beside the history, either side, stacked with it;
-//! gone with the explorer in the right dock).
+//! "DATAMAN" staying over the explorer's column (beside the history, stacked with it, and in the
+//! right dock).
+//!
+//! The explorer is always its dock's outermost column: the history dropped on its outer side
+//! lands inside it (the preview shows that spot), the explorer dragged left of the history in
+//! the right dock lands at the window's edge. In the right dock it carries the window's header
+//! (its toggle mirrored at the right edge, the arrows, "DATAMAN" over its column) and the
+//! search goes past the traffic lights. Beside the explorer the history is under the tab band
+//! (the tabs are not pushed past it) and takes the explorer's glass; alone in the left dock it
+//! takes the header slot (the tabs start past it), and the explorer docked beside it slides the
+//! tabs over it (caught mid-way; at once with Reduce Motion). While they share a dock, ⌘B hides
+//! both, and ⌘Y, its palette entry and the toolbar's History button are off.
 //!
 //! Captures (`DATAMAN_SHOT`): `dock-drag` holds the history mid-drag over the explorer's right
 //! edge (the preview), `dock-moved` shows it settled beside the explorer, `dock-moving` the same
 //! move caught on its way (`DATAMAN_DOCK_FREEZE=0.5`), `dock-stacked` the two stacked at a moved
 //! split, `dock-menu` the history's header menu. `DATAMAN_SHOT_DIR=dir` also captures
 //! `dock-esc.png` (a drag let go of), `dock-stacked-hover.png` (the history's × on its header's
-//! hover), `dock-value.png` (a value sheet over the docks, which stay), `dock-beside.png` / `dock-history-left.png` (the history in a column right or
-//! left of the explorer: its own fill, "DATAMAN" over the explorer).
+//! hover), `dock-value.png` (a value sheet over the docks, which stay), `dock-beside.png` /
+//! `dock-history-left.png` (the history beside the explorer, under the tab band, on its glass),
+//! `dock-explorer-right.png` (the header mirrored), `dock-outermost-preview.png` (the explorer
+//! dragged left of the history: the preview at the window's edge), `dock-history-alone-left.png`
+//! (the header slot), `dock-tabs-sliding.png` (the tabs on their way over the history),
+//! `dock-both-hidden.png` (⌘B with the history beside).
 
 use std::time::Duration;
 
@@ -26,7 +40,7 @@ use gpui::{AsyncWindowContext, Entity, KeyDownEvent, KeyUpEvent, Keystroke, Modi
 
 use crate::app::{Side, Workspace};
 use crate::dock::Rect;
-use crate::theme::{Pt, px};
+use crate::theme::{Pt, metrics, px};
 
 pub fn is_stage(s: &str) -> bool {
     matches!(s, "dock-check" | "dock-drag" | "dock-moved" | "dock-moving" | "dock-stacked" | "dock-menu")
@@ -194,6 +208,42 @@ fn right_w(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> f32 {
     cx.update(|_, cx| ws.read(cx).frame_now.dock(Dock::Right).rect.w).unwrap()
 }
 
+fn view_w(cx: &mut AsyncWindowContext) -> f32 {
+    cx.update(|window, _| window.viewport_size().width.pt()).unwrap()
+}
+
+fn title(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> crate::dock::TitleFrame {
+    cx.update(|_, cx| ws.read(cx).title_now).unwrap()
+}
+
+/// The title bar's toggle, arrows or search as laid out.
+fn mark(ws: &Entity<Workspace>, name: &str, cx: &mut AsyncWindowContext) -> Option<Rect> {
+    cx.update(|_, cx| ws.read(cx).title_marks.borrow().get(name).copied()).ok().flatten().map(|b| Rect { x: b.origin.x.pt(), y: b.origin.y.pt(), w: b.size.width.pt(), h: b.size.height.pt() })
+}
+
+/// The first query tab as laid out.
+fn first_tab(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> Option<Rect> {
+    cx.update(|_, cx| ws.read(cx).tab_bounds.borrow().first().copied()).ok().flatten().map(|b| Rect { x: b.origin.x.pt(), y: b.origin.y.pt(), w: b.size.width.pt(), h: b.size.height.pt() })
+}
+
+/// Where the (only) tab strip's content ends.
+fn strip_end(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> f32 {
+    cx.update(|_, cx| ws.read(cx).strip_parts.borrow()[0].iter().map(|b| b.right().pt()).fold(0., f32::max)).unwrap()
+}
+
+/// ⌘Y as the keys, the menu and the palette see it: its handler is there, its entry live, and
+/// the toolbar's parts (the History button among them).
+fn history_toggles(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> (bool, bool, usize) {
+    cx.update(|window, cx| {
+        // As the keys see it from the editor.
+        ws.update(cx, |w, cx| w.focus_editor(window, cx));
+        let key = window.is_action_available(&crate::app::ToggleHistory, cx);
+        let entry = ws.read(cx).palette_items(cx).iter().any(|i| i.label == "History" && i.section == crate::palette::Section::Commands && !i.disabled);
+        (key, entry, ws.read(cx).toolbar_parts.borrow()[0].len())
+    })
+    .unwrap()
+}
+
 fn zoom(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) {
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.toggle_result_zoom(window, cx)));
 }
@@ -214,6 +264,8 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
     };
     report("the default arrangement", layout(ws, cx).is_default() && explorer.x == 0. && history.right() > explorer.right(), format!("{explorer:?} {history:?}"));
     let fp0 = cx.update(|_, cx| ws.read(cx).session_fingerprint(cx)).unwrap();
+    let toggles0 = history_toggles(ws, cx);
+    report("alone in its dock, the history has ⌘Y, its palette entry and its toolbar button", toggles0.0 && toggles0.1, format!("{toggles0:?}"));
     let full_stage = stage == "dock-check";
     let logo0 = logo(ws, cx);
     report("\"DATAMAN\" sits over the explorer, at its right edge", logo_over(logo0, explorer), format!("{logo0:?} {explorer:?}"));
@@ -338,6 +390,29 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
     let lg = logo(ws, cx);
     report("beside it, \"DATAMAN\" stays over the explorer (not over the history)", logo_over(lg, explorer) && lg == logo0, format!("{lg:?} vs {logo0:?}"));
     snap("beside", cx);
+    let (tf, tab) = (title(ws, cx), first_tab(ws, cx));
+    report(
+        "beside the explorer, the tabs are not pushed past the history: the band runs over it",
+        landed.zip(tab).is_some_and(|(h, tb)| (tf.lead - explorer.right()).abs() < 0.5 && tb.x >= explorer.right() && tb.right() < h.right() && h.y >= metrics::TITLE_H - 0.01),
+        format!("{tf:?} {tab:?} {landed:?}"),
+    );
+    report("…and it takes the explorer's glass (none of the work column's fill)", tf.joined[0] == 1., format!("{tf:?}"));
+    let toggles = history_toggles(ws, cx);
+    report("with the explorer, ⌘Y, its palette entry and the toolbar's History button are off", !toggles.0 && !toggles.1 && toggles.2 + 1 == toggles0.2, format!("{toggles:?} vs {toggles0:?}"));
+    press(cx, "cmd-y");
+    settle(cx).await;
+    let kept = (panel(ws, PanelId::History, cx), cx.update(|_, cx| matches!(ws.read(cx).side, Some(Side::History))).unwrap());
+    report("…⌘Y does nothing then", kept.0 == landed && kept.1, format!("{kept:?}"));
+    // ⌘B hides both, and shows both again.
+    press(cx, "cmd-b");
+    settle(cx).await;
+    let hidden = (panel(ws, PanelId::Explorer, cx), panel(ws, PanelId::History, cx), cx.update(|_, cx| ws.read(cx).frame_now.dock(Dock::Left).rect.w).unwrap());
+    snap("both-hidden", cx);
+    report("⌘B hides the explorer and the history beside it", hidden.0.is_none() && hidden.1.is_none() && hidden.2 == 0., format!("{hidden:?}"));
+    press(cx, "cmd-b");
+    settle(cx).await;
+    let back = (panel(ws, PanelId::Explorer, cx), panel(ws, PanelId::History, cx));
+    report("…and shows both again", back.0 == Some(explorer) && back.1 == landed, format!("{back:?}"));
     if stage == "dock-moved" {
         return ok;
     }
@@ -370,7 +445,9 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
     report("both laid out where the frame says", laid_right(ws, Dock::Left, cx), format!("{:?}", laid_out(ws, Dock::Left, cx)));
     let (lg, ec) = (logo(ws, cx), explorer_col(ws, cx));
     report("stacked, \"DATAMAN\" stays over their column", ec.is_some_and(|c| logo_over(lg, c)), format!("{lg:?} {ec:?}"));
-    report("sharing a dock, the history's × waits for its header's hover", cx.update(|_, cx| history_view.read(cx).shares_dock).unwrap(), String::new());
+    report("sharing the explorer's dock, the history has no × (the explorer controls it)", cx.update(|_, cx| history_view.read(cx).shares_dock).unwrap(), String::new());
+    let (tf, ec) = (title(ws, cx), explorer_col(ws, cx));
+    report("stacked, the tabs start past their column", ec.is_some_and(|c| (tf.lead - c.right()).abs() < 0.5), format!("{tf:?} {ec:?}"));
     // The seam between them, dragged up: the explorer shorter, the history taller.
     let col = cx.update(|_, cx| ws.read(cx).frame_now.dock(Dock::Left).cols[0].rect).unwrap();
     let seam = (e2.x + 12., e2.bottom());
@@ -428,28 +505,38 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
     draw(cx);
     report("let go there: unchanged", layout(ws, cx) == before && cx.update(|_, cx| ws.read(cx).panel_drag.is_none()).unwrap(), format!("{:?}", layout(ws, cx)));
 
-    // ⌘B shuts the explorer where it is (the history has the column), and opens it there again.
+    // ⌘B hides the explorer where it is, the history stacked with it too, and shows both again.
     command(ws, Box::new(crate::app::ToggleExplorer), cx);
     settle(cx).await;
     let shut = panel(ws, PanelId::Explorer, cx);
     let h4 = panel(ws, PanelId::History, cx);
-    report("⌘B shuts it in its stack", shut.is_none() && h4.is_some_and(|h| (h.y - col.y).abs() < 0.01 && (h.h - col.h).abs() < 0.01), format!("{shut:?} {h4:?}"));
+    report("⌘B hides it and the history stacked with it", shut.is_none() && h4.is_none(), format!("{shut:?} {h4:?}"));
     command(ws, Box::new(crate::app::ToggleExplorer), cx);
     settle(cx).await;
-    report("⌘B opens it there again", panel(ws, PanelId::Explorer, cx).is_some_and(|r| near(r, e, 0.01)), format!("{:?}", panel(ws, PanelId::Explorer, cx)));
+    report("⌘B shows them there again", panel(ws, PanelId::Explorer, cx).is_some_and(|r| near(r, e, 0.01)) && panel(ws, PanelId::History, cx).is_some(), format!("{:?}", panel(ws, PanelId::Explorer, cx)));
 
-    // The history onto the explorer's left edge: a column left of it. "DATAMAN" goes with the
-    // explorer, over its column.
+    // The history onto the explorer's left edge: the explorer is the leftmost column, so it lands
+    // right of it, and the preview says so. "DATAMAN" stays over the explorer.
     if full_stage {
         let (e, h) = (panel(ws, PanelId::Explorer, cx).unwrap(), panel(ws, PanelId::History, cx).unwrap());
         let to = (e.x + 12., e.y + e.h / 2.);
-        drag(cx, grip(h), &[(h.x + 200., h.y + 100.), (to.0 + 40., to.1), to], false).await;
+        drag(cx, grip(h), &[(h.x + 200., h.y + 100.), (to.0 + 40., to.1), to], true).await;
+        draw(cx);
+        let (target, preview) = cx.update(|_, cx| ws.read(cx).panel_drag.as_ref().map(|g| (g.target, g.preview))).unwrap().unwrap_or((None, None));
+        let want = cx.update(|window, cx| ws.read(cx).rest_frame(&ws.read(cx).layout.moved(PanelId::History, Place::column(Dock::Left, 1)), window)).unwrap();
+        let ex = want.panel(PanelId::Explorer);
+        report(
+            "left of the explorer resolves to right of it, and the preview shows that spot",
+            target == Some(Place::column(Dock::Left, 1)) && preview.is_some() && preview == want.panel(PanelId::History) && ex.zip(preview).is_some_and(|(x, p)| x.x == 0. && (p.x - x.right()).abs() < 0.5 && p.x > to.0),
+            format!("{target:?} {preview:?} explorer {e:?}"),
+        );
+        up(cx, to, MouseButton::Left, 1);
         settle(cx).await;
         let l = layout(ws, cx);
         let (e7, lg) = (panel(ws, PanelId::Explorer, cx), logo(ws, cx));
         report(
-            "left of the explorer, the history pushes it right; \"DATAMAN\" goes with the explorer",
-            panels(&l.left) == [vec![PanelId::History], vec![PanelId::Explorer]] && e7.is_some_and(|e| e.x > 0. && logo_over(lg, e)),
+            "dropped there, the explorer stays the leftmost column; \"DATAMAN\" over it",
+            panels(&l.left) == [vec![PanelId::Explorer], vec![PanelId::History]] && e7.is_some_and(|e| e.x == 0. && logo_over(lg, e)),
             format!("{l:?} {e7:?} {lg:?}"),
         );
         snap("history-left", cx);
@@ -487,12 +574,48 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
     settle(cx).await;
     let l = layout(ws, cx);
     let (e5, h5) = (panel(ws, PanelId::Explorer, cx), panel(ws, PanelId::History, cx));
+    let vw = view_w(cx);
     report(
-        "Move explorer to the right dock: a column beside the history",
-        panels(&l.right) == [vec![PanelId::Explorer], vec![PanelId::History]] && l.left.is_empty() && e5.zip(h5).is_some_and(|(e, h)| (e.right() - h.x).abs() < 0.01),
+        "Move explorer to the right dock: the outermost column, right of the history",
+        panels(&l.right) == [vec![PanelId::History], vec![PanelId::Explorer]] && l.left.is_empty() && e5.zip(h5).is_some_and(|(e, h)| (h.right() - e.x).abs() < 0.01 && (e.right() - vw).abs() < 0.01),
         format!("{l:?} {e5:?} {h5:?}"),
     );
-    report("in the right dock the explorer leaves the title bar without \"DATAMAN\"", logo(ws, cx).is_none(), format!("{:?}", logo(ws, cx)));
+    if let Some(e) = e5 {
+        // The header goes with it, mirrored; the search past the traffic lights.
+        let (tf, lg, toggle, back, fwd, search) = (title(ws, cx), logo(ws, cx), mark(ws, "toggle", cx), mark(ws, "back", cx), mark(ws, "forward", cx), mark(ws, "search", cx));
+        let lights = metrics::lights_right_at(crate::theme::zoom());
+        report("\"DATAMAN\" goes with it, at its column's left side", tf.header == Some(Dock::Right) && lg.is_some_and(|l| (l.x - (e.x + 14.)).abs() < 1.5), format!("{lg:?} {e:?}"));
+        report(
+            "its toggle at the window's right edge, the arrows before it, over its column",
+            toggle.zip(back).zip(fwd).is_some_and(|((t, b), f)| (t.right() - (vw - 10.)).abs() < 1.5 && b.x > e.x && b.right() <= f.x + 0.5 && f.right() <= t.x + 0.5),
+            format!("{toggle:?} {back:?} {fwd:?}"),
+        );
+        report("the search sits past the traffic lights, at the left", search.is_some_and(|s| s.x > lights && s.x < lights + 30.), format!("{search:?} lights {lights}"));
+        let (tab, end) = (first_tab(ws, cx), strip_end(ws, cx));
+        report(
+            "the tabs run over the history beside it and end at the explorer",
+            h5.zip(tab).is_some_and(|(h, tb)| tb.x < h.x && end > h.x && end <= e.x + 0.5) && tf.joined[1] == 1.,
+            format!("{tab:?} end {end} {h5:?} {e:?} {tf:?}"),
+        );
+        snap("explorer-right", cx);
+        // Its toggle, clicked: hidden with the history beside it; again: both back.
+        if let Some(t) = toggle {
+            let c = (t.x + t.w / 2., t.y + t.h / 2.);
+            down(cx, c, MouseButton::Left, 1);
+            up(cx, c, MouseButton::Left, 1);
+            settle(cx).await;
+            let hidden = (panel(ws, PanelId::Explorer, cx), panel(ws, PanelId::History, cx), right_w(ws, cx), mark(ws, "toggle", cx));
+            report(
+                "its toggle hides it with the history beside it (the header stays at the right edge)",
+                hidden.0.is_none() && hidden.1.is_none() && hidden.2 == 0. && hidden.3.is_some_and(|t| (t.right() - (vw - 10.)).abs() < 1.5),
+                format!("{hidden:?}"),
+            );
+            down(cx, c, MouseButton::Left, 1);
+            up(cx, c, MouseButton::Left, 1);
+            settle(cx).await;
+            report("…and shows both again", panel(ws, PanelId::Explorer, cx) == e5 && panel(ws, PanelId::History, cx) == h5, String::new());
+        }
+    }
     if full_stage {
         // A value sheet leaves the right dock, explorer and all, where it is.
         open_value(cx, ws);
@@ -511,5 +634,98 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
         format!("{e6:?} {h6:?}"),
     );
     report("…and \"DATAMAN\" over the explorer again", logo(ws, cx) == logo0, format!("{:?}", logo(ws, cx)));
+    if !full_stage {
+        return ok;
+    }
+
+    // The explorer dragged onto the history's left edge (the right dock): it lands right of it,
+    // at the window's edge, and the preview shows exactly that.
+    let (explorer, history) = (panel(ws, PanelId::Explorer, cx).unwrap(), panel(ws, PanelId::History, cx).unwrap());
+    let vw = view_w(cx);
+    let to = (history.x + 20., history.y + history.h / 2.);
+    drag(cx, grip(explorer), &[(explorer.right() + 200., to.1), (to.0 + 40., to.1), to], true).await;
+    draw(cx);
+    pause(cx, 200).await;
+    let (target, preview) = cx.update(|_, cx| ws.read(cx).panel_drag.as_ref().map(|g| (g.target, g.preview))).unwrap().unwrap_or((None, None));
+    report(
+        "left of the history in the right dock resolves to right of it: the preview at the window's edge",
+        target == Some(Place::column(Dock::Right, 1)) && preview.is_some_and(|p| (p.right() - vw).abs() < 0.5 && p.x > to.0),
+        format!("{target:?} {preview:?}"),
+    );
+    snap("outermost-preview", cx);
+    up(cx, to, MouseButton::Left, 1);
+    settle(cx).await;
+    let l = layout(ws, cx);
+    let (e, h) = (panel(ws, PanelId::Explorer, cx), panel(ws, PanelId::History, cx));
+    report(
+        "dropped, the explorer is the right dock's outermost column",
+        panels(&l.right) == [vec![PanelId::History], vec![PanelId::Explorer]] && e.is_some_and(|e| (e.right() - vw).abs() < 0.01) && e.zip(preview).is_some_and(|(a, b)| near(a, b, 0.01)),
+        format!("{l:?} {e:?} {preview:?}"),
+    );
+    // The history onto the explorer's right edge: it is inside it already, nothing to offer.
+    if let (Some(e), Some(h)) = (e, h) {
+        let to = (e.right() - 12., e.y + e.h / 2.);
+        drag(cx, grip(h), &[(h.x + 60., h.y + 200.), (to.0 - 40., to.1), to], true).await;
+        draw(cx);
+        let found = cx.update(|_, cx| ws.read(cx).panel_drag.as_ref().map(|g| (g.target, g.preview))).unwrap();
+        report("past the explorer's outer edge there is no place for the history", found == Some((None, None)), format!("{found:?}"));
+        press(cx, "escape");
+        up(cx, to, MouseButton::Left, 1);
+        draw(cx);
+    }
+
+    // The history alone in the left dock (the explorer on the right): the header slot, the tabs
+    // pushed past it; ⌘Y its own again.
+    command(ws, Box::new(crate::dock::MoveHistoryLeft), cx);
+    settle(cx).await;
+    let h = panel(ws, PanelId::History, cx);
+    let (tf, tab, search) = (title(ws, cx), first_tab(ws, cx), mark(ws, "search", cx));
+    report(
+        "alone in the left dock, the history takes the header slot: the tabs start past it",
+        h.zip(tab).is_some_and(|(h, tb)| (tf.lead - h.right()).abs() < 0.5 && tb.x >= h.right() && search.is_some_and(|s| s.right() < h.right())) && tf.joined[0] == 0.,
+        format!("{tf:?} {tab:?} {h:?} {search:?}"),
+    );
+    let toggles = history_toggles(ws, cx);
+    report("…with ⌘Y, its palette entry and its toolbar button", toggles == toggles0, format!("{toggles:?} vs {toggles0:?}"));
+    snap("history-alone-left", cx);
+    // The explorer docked into the left dock beside it: the tabs slide over the history.
+    let lead0 = tf.lead;
+    command(ws, Box::new(crate::dock::MoveExplorerLeft), cx);
+    let reduced = cx.update(|_, cx| cx.reduce_motion()).unwrap();
+    pause(cx, 90).await;
+    draw(cx);
+    let mid = title(ws, cx);
+    snap("tabs-sliding", cx);
+    settle(cx).await;
+    let l = layout(ws, cx);
+    let (e, h, tf, tab) = (panel(ws, PanelId::Explorer, cx), panel(ws, PanelId::History, cx), title(ws, cx), first_tab(ws, cx));
+    report(
+        "the explorer docked beside it: the tabs slide over the history (caught mid-way)",
+        reduced || (mid.lead < lead0 - 1. && mid.lead > tf.lead + 1. && mid.joined[0] > 0. && mid.joined[0] < 1.),
+        format!("{lead0} → {mid:?} → {}", tf.lead),
+    );
+    report(
+        "…and land past the explorer, over the history, which takes its glass",
+        panels(&l.left) == [vec![PanelId::Explorer], vec![PanelId::History]]
+            && e.zip(h).zip(tab).is_some_and(|((e, h), tb)| e.x == 0. && (tf.lead - e.right()).abs() < 0.5 && tb.x < h.right() && tb.x >= e.right())
+            && tf.joined[0] == 1.,
+        format!("{l:?} {e:?} {h:?} {tab:?} {tf:?}"),
+    );
+    // With Reduce Motion the band is simply there.
+    if !reduced {
+        let _ = cx.update(|_, cx| crate::motion::set_reduce_motion_pref(true, cx));
+        command(ws, Box::new(crate::dock::MoveExplorerRight), cx);
+        draw(cx);
+        let now = (title(ws, cx), cx.update(|_, cx| ws.read(cx).dock_moves.is_empty()).unwrap(), panel(ws, PanelId::History, cx));
+        let _ = cx.update(|_, cx| crate::motion::set_reduce_motion_pref(false, cx));
+        report(
+            "with Reduce Motion the tabs are at once past the history again (its header slot)",
+            now.1 && now.0.joined[0] == 0. && now.2.is_some_and(|h| (now.0.lead - h.right()).abs() < 0.5),
+            format!("{now:?}"),
+        );
+    }
+    command(ws, Box::new(crate::dock::ResetPanelLayout), cx);
+    settle(cx).await;
+    report("reset: every panel home", layout(ws, cx).is_default(), format!("{:?}", layout(ws, cx)));
     ok
 }

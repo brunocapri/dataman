@@ -963,7 +963,7 @@ impl Workspace {
     }
 
     /// Everything the palette can find, from memory.
-    fn palette_items(&self, cx: &App) -> Vec<Item> {
+    pub(crate) fn palette_items(&self, cx: &App) -> Vec<Item> {
         let mut items = Vec::new();
         let store = self.store.read(cx);
         let active_conn = self.active_tab().and_then(|t| t.read(cx).connection().cloned());
@@ -1039,6 +1039,13 @@ impl Workspace {
         }
         // Commands.
         items.extend(commands(active_conn.as_ref(), cx));
+        // The history beside the explorer goes with it (⌘B): its own toggles are off.
+        if self.history_with_explorer() {
+            for it in items.iter_mut().filter(|it| matches!(it.label.as_str(), "History" | "Toggle side panel") && it.section == Section::Commands) {
+                it.disabled = true;
+                it.sub = "with the explorer (⌘B) while beside it".into();
+            }
+        }
         // Connections; the disconnected ones also say their tables are not indexed.
         for p in &store.profiles {
             let state = store.states.get(&p.id);

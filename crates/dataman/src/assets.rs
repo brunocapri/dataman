@@ -69,6 +69,7 @@ assets!(
     "icons/sequence.svg",
     "icons/server.svg",
     "icons/sidebar.svg",
+    "icons/sidebar-right.svg",
     "icons/split.svg",
     "icons/star.svg",
     "icons/star-fill.svg",
@@ -136,6 +137,8 @@ pub enum Icon {
     Edit,
     Trash,
     Sidebar,
+    /// The sidebar glyph mirrored: the explorer in the right dock.
+    SidebarRight,
     PanelRight,
     /// Open to the Side: the work surface in two editor groups.
     Split,
@@ -224,6 +227,7 @@ impl Icon {
             Icon::Edit => "icons/edit.svg",
             Icon::Trash => "icons/trash.svg",
             Icon::Sidebar => "icons/sidebar.svg",
+            Icon::SidebarRight => "icons/sidebar-right.svg",
             Icon::PanelRight => "icons/panel-right.svg",
             Icon::Split => "icons/split.svg",
             Icon::Expand => "icons/expand.svg",
@@ -278,7 +282,7 @@ mod tests {
         let all = [
             Run, Stop, Pause, Cancel, History, Plus, Reload, ChevronRight, ChevronDown, ChevronUp, ChevronLeft, Database, Schema,
             SchemaFilled, Group, Table, View, Key, Keyboard, Index, Search, Filter, Close, Check, Copy, Export, Import, Edit, Trash,
-            Sidebar, PanelRight, Split, Expand, Collapse, Lock, Warning, Info, Server, Archive, More, Tab, Command, Code, Hash, Plug,
+            Sidebar, SidebarRight, PanelRight, Split, Expand, Collapse, Lock, Warning, Info, Server, Archive, More, Tab, Command, Code, Hash, Plug,
             Cursor, Tunnel, MatView, Function, Procedure, Sequence, Type, Label, Trigger, Extension, Role,
             Constraint, Link, Partition, Activity, Star, StarFill, Pin, Agent, Live,
         ];
