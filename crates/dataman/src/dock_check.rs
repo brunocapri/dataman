@@ -16,10 +16,11 @@
 //! the right dock lands at the window's edge. In the right dock it carries the window's header
 //! (its toggle mirrored at the right edge, the arrows, "DATAMAN" over its column) and the
 //! search goes past the traffic lights. Beside the explorer the history is under the tab band
-//! (the tabs are not pushed past it) and takes the explorer's glass; alone in the left dock it
+//! (the tabs are not pushed past it) but keeps its own fill and toggles; alone in the left dock it
 //! takes the header slot (the tabs start past it), and the explorer docked beside it slides the
-//! tabs over it (caught mid-way; at once with Reduce Motion). While they share a dock, ⌘B hides
-//! both, and ⌘Y, its palette entry and the toolbar's History button are off.
+//! tabs over it (caught mid-way; at once with Reduce Motion). Stacked with the explorer (always
+//! under it), the history takes its glass, ⌘B hides both, and ⌘Y, its palette entry and the
+//! toolbar's History button are off; beside it, ⌘B hides the explorer alone.
 //!
 //! Captures (`DATAMAN_SHOT`): `dock-drag` holds the history mid-drag over the explorer's right
 //! edge (the preview), `dock-moved` shows it settled beside the explorer, `dock-moving` the same
@@ -27,7 +28,7 @@
 //! split, `dock-menu` the history's header menu. `DATAMAN_SHOT_DIR=dir` also captures
 //! `dock-esc.png` (a drag let go of), `dock-stacked-hover.png` (the history's × on its header's
 //! hover), `dock-value.png` (a value sheet over the docks, which stay), `dock-beside.png` /
-//! `dock-history-left.png` (the history beside the explorer, under the tab band, on its glass),
+//! `dock-history-left.png` (the history beside the explorer, under the tab band, its own fill),
 //! `dock-explorer-right.png` (the header mirrored), `dock-outermost-preview.png` (the explorer
 //! dragged left of the history: the preview at the window's edge), `dock-history-alone-left.png`
 //! (the header slot), `dock-tabs-sliding.png` (the tabs on their way over the history),
@@ -396,23 +397,28 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
         landed.zip(tab).is_some_and(|(h, tb)| (tf.lead - explorer.right()).abs() < 0.5 && tb.x >= explorer.right() && tb.right() < h.right() && h.y >= metrics::TITLE_H - 0.01),
         format!("{tf:?} {tab:?} {landed:?}"),
     );
-    report("…and it takes the explorer's glass (none of the work column's fill)", tf.joined[0] == 1., format!("{tf:?}"));
+    // Beside the explorer the history stays its own: its fill, its × and its toggles.
+    let own = cx.update(|_, cx| !ws.read(cx).history_with_explorer() && !history_view.read(cx).shares_dock).unwrap();
+    report("…and stays its own beside it: its own fill and its ×", own, String::new());
     let toggles = history_toggles(ws, cx);
-    report("with the explorer, ⌘Y, its palette entry and the toolbar's History button are off", !toggles.0 && !toggles.1 && toggles.2 + 1 == toggles0.2, format!("{toggles:?} vs {toggles0:?}"));
+    report("beside the explorer, ⌘Y, its palette entry and the toolbar's History button stay on", toggles == toggles0, format!("{toggles:?} vs {toggles0:?}"));
     press(cx, "cmd-y");
     settle(cx).await;
-    let kept = (panel(ws, PanelId::History, cx), cx.update(|_, cx| matches!(ws.read(cx).side, Some(Side::History))).unwrap());
-    report("…⌘Y does nothing then", kept.0 == landed && kept.1, format!("{kept:?}"));
-    // ⌘B hides both, and shows both again.
+    let shut = (panel(ws, PanelId::History, cx), panel(ws, PanelId::Explorer, cx));
+    report("…⌘Y shuts the history alone", shut.0.is_none() && shut.1 == Some(explorer), format!("{shut:?}"));
+    press(cx, "cmd-y");
+    settle(cx).await;
+    report("…and opens it again in its place", panel(ws, PanelId::History, cx) == landed, format!("{:?}", panel(ws, PanelId::History, cx)));
+    // ⌘B hides the explorer only, and shows it again.
     press(cx, "cmd-b");
     settle(cx).await;
-    let hidden = (panel(ws, PanelId::Explorer, cx), panel(ws, PanelId::History, cx), cx.update(|_, cx| ws.read(cx).frame_now.dock(Dock::Left).rect.w).unwrap());
-    snap("both-hidden", cx);
-    report("⌘B hides the explorer and the history beside it", hidden.0.is_none() && hidden.1.is_none() && hidden.2 == 0., format!("{hidden:?}"));
+    let hidden = (panel(ws, PanelId::Explorer, cx), panel(ws, PanelId::History, cx));
+    snap("explorer-hidden-beside", cx);
+    report("⌘B hides the explorer, not the history beside it", hidden.0.is_none() && hidden.1.is_some(), format!("{hidden:?}"));
     press(cx, "cmd-b");
     settle(cx).await;
     let back = (panel(ws, PanelId::Explorer, cx), panel(ws, PanelId::History, cx));
-    report("…and shows both again", back.0 == Some(explorer) && back.1 == landed, format!("{back:?}"));
+    report("…and shows it again", back.0 == Some(explorer) && back.1 == landed, format!("{back:?}"));
     if stage == "dock-moved" {
         return ok;
     }
@@ -445,7 +451,19 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
     report("both laid out where the frame says", laid_right(ws, Dock::Left, cx), format!("{:?}", laid_out(ws, Dock::Left, cx)));
     let (lg, ec) = (logo(ws, cx), explorer_col(ws, cx));
     report("stacked, \"DATAMAN\" stays over their column", ec.is_some_and(|c| logo_over(lg, c)), format!("{lg:?} {ec:?}"));
-    report("sharing the explorer's dock, the history has no × (the explorer controls it)", cx.update(|_, cx| history_view.read(cx).shares_dock).unwrap(), String::new());
+    report("stacked with the explorer, the history has no × (the explorer controls it)", cx.update(|_, cx| history_view.read(cx).shares_dock).unwrap(), String::new());
+    let toggles = history_toggles(ws, cx);
+    report("stacked, ⌘Y, its palette entry and the toolbar's History button are off", !toggles.0 && !toggles.1 && toggles.2 + 1 == toggles0.2, format!("{toggles:?} vs {toggles0:?}"));
+    press(cx, "cmd-y");
+    settle(cx).await;
+    report("…⌘Y does nothing then", panel(ws, PanelId::History, cx) == Some(h2), format!("{:?}", panel(ws, PanelId::History, cx)));
+    // Onto the explorer's top half: under it all the same (the explorer is always on top).
+    let to = (e2.x + e2.w / 2., e2.y + 30.);
+    drag(cx, grip(h2), &[(h2.x + 40., h2.y + 60.), (to.0, to.1 + 60.), to], true).await;
+    let pv = cx.update(|_, cx| ws.read(cx).panel_drag.as_ref().map(|g| g.target)).unwrap();
+    up(cx, to, MouseButton::Left, 1);
+    settle(cx).await;
+    report("over the explorer's top half the history stays under it", matches!(pv, Some(None)) && panels(&layout(ws, cx).left) == [vec![PanelId::Explorer, PanelId::History]], format!("{pv:?} {:?}", layout(ws, cx)));
     let (tf, ec) = (title(ws, cx), explorer_col(ws, cx));
     report("stacked, the tabs start past their column", ec.is_some_and(|c| (tf.lead - c.right()).abs() < 0.5), format!("{tf:?} {ec:?}"));
     // The seam between them, dragged up: the explorer shorter, the history taller.
@@ -598,7 +616,7 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
             format!("{tab:?} end {end} {h5:?} {e:?} {tf:?}"),
         );
         snap("explorer-right", cx);
-        // Its toggle, clicked: hidden with the history beside it; again: both back.
+        // Its toggle, clicked: the explorer hidden, the history beside it stays; again: back.
         if let Some(t) = toggle {
             let c = (t.x + t.w / 2., t.y + t.h / 2.);
             down(cx, c, MouseButton::Left, 1);
@@ -606,14 +624,14 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
             settle(cx).await;
             let hidden = (panel(ws, PanelId::Explorer, cx), panel(ws, PanelId::History, cx), right_w(ws, cx), mark(ws, "toggle", cx));
             report(
-                "its toggle hides it with the history beside it (the header stays at the right edge)",
-                hidden.0.is_none() && hidden.1.is_none() && hidden.2 == 0. && hidden.3.is_some_and(|t| (t.right() - (vw - 10.)).abs() < 1.5),
+                "its toggle hides it, not the history beside it (the header stays at the right edge)",
+                hidden.0.is_none() && hidden.1.is_some() && hidden.2 > 0. && hidden.3.is_some_and(|t| (t.right() - (vw - 10.)).abs() < 1.5),
                 format!("{hidden:?}"),
             );
             down(cx, c, MouseButton::Left, 1);
             up(cx, c, MouseButton::Left, 1);
             settle(cx).await;
-            report("…and shows both again", panel(ws, PanelId::Explorer, cx) == e5 && panel(ws, PanelId::History, cx) == h5, String::new());
+            report("…and shows it again", panel(ws, PanelId::Explorer, cx) == e5 && panel(ws, PanelId::History, cx) == h5, String::new());
         }
     }
     if full_stage {

@@ -482,8 +482,8 @@ impl Workspace {
     /// hit test, and the area of each place it offers.
     pub(crate) fn rest_frame(&self, layout: &PanelLayout, window: &Window) -> Frame {
         let history = self.frame_now.panel(PanelId::History).is_some();
-        // The history joining the explorer's dock while that one is shut opens it (`move_panel`).
-        let explorer = self.explorer_open || (history && layout.shares_dock(PanelId::History));
+        // The history stacked onto the explorer while that one is shut opens it (`move_panel`).
+        let explorer = self.explorer_open || (history && layout.stacked_with(PanelId::History, PanelId::Explorer));
         let open = |p: PanelId| match p {
             PanelId::Explorer => explorer as u8 as f32,
             PanelId::History => history as u8 as f32,
@@ -513,8 +513,8 @@ impl Workspace {
             k * rest
         });
         let explorer_open = self.explorer_now() / self.explorer_w.max(1.);
-        // Sharing the explorer's dock, the history shows and hides with it (⌘B).
-        let side_open = if self.layout.shares_dock(PanelId::History) { side_open * explorer_open.clamp(0., 1.) } else { side_open };
+        // Stacked with the explorer, the history shows and hides with it (⌘B).
+        let side_open = if self.history_with_explorer() { side_open * explorer_open.clamp(0., 1.) } else { side_open };
         let mut moves = Vec::new();
         self.dock_moves.retain(|m| match m.progress.at(now) {
             Some(k) => {
@@ -538,18 +538,18 @@ impl Workspace {
         DockPass { frame, side: shown, side_rest: rest, title }
     }
 
-    /// While the history shares the explorer's dock it is controlled with the explorer: shown
-    /// whenever the explorer is (⌘B hides both), never shut on its own (⌘Y, its ×, esc). Called
-    /// before each frame.
+    /// While the history is stacked with the explorer it is controlled with the explorer: shown
+    /// whenever the explorer is (⌘B hides both), never shut on its own (⌘Y, its ×, esc). Beside
+    /// it, it stays its own. Called before each frame.
     pub(crate) fn sync_shared_history(&mut self) {
-        if self.layout.shares_dock(PanelId::History) && self.side.is_none() {
+        if self.history_with_explorer() && self.side.is_none() {
             self.side = Some(Side::History);
         }
     }
 
-    /// The history shares the explorer's dock (⌘Y and the toolbar's History button are off).
+    /// The history is stacked with the explorer (⌘Y and the toolbar's History button are off).
     pub(crate) fn history_with_explorer(&self) -> bool {
-        self.layout.shares_dock(PanelId::History)
+        self.layout.stacked_with(PanelId::History, PanelId::Explorer)
     }
 
     /// What the dragged panel is called on its ghost and on the preview.
@@ -576,8 +576,8 @@ impl Workspace {
     pub(crate) fn render_docks(&mut self, pass: &DockPass, production: bool, window: &mut Window, cx: &mut Context<Self>) -> DockViews {
         let t = cx.theme();
         let region = self.focus_visible.then(|| self.focused_region(window, cx)).flatten();
-        // The history's header shows its × only on hover while it shares a dock.
-        let shares = self.layout.shares_dock(PanelId::History);
+        // Stacked with the explorer, the history's header has no × (it goes with the explorer).
+        let shares = self.history_with_explorer();
         if self.history.read(cx).shares_dock != shares {
             self.history.update(cx, |h, cx| {
                 h.shares_dock = shares;
@@ -598,8 +598,9 @@ impl Workspace {
             for (ci, col) in df.cols.iter().enumerate() {
                 let n = col.slots.len();
                 let glass = col.slots.iter().any(|(s, _)| s.panel == PanelId::Explorer);
-                // The work column's fill, as far as the history is on its own in the dock.
-                let fill = (!glass).then(|| t.panel.opacity(1. - joined)).filter(|f| f.a > 1e-3);
+                // Out of the explorer's column, the history keeps the work column's fill (beside
+                // the explorer too: only stacked with it does it take the glass).
+                let fill = (!glass).then_some(t.panel);
                 // Under the tab band (not a header slot): no seam through the band beside it.
                 let band = !glass && (d == Dock::Right || joined > 0.);
                 let mut children = Vec::with_capacity(n);
@@ -859,8 +860,8 @@ impl Workspace {
 
     pub(crate) fn move_panel(&mut self, p: PanelId, to: Place, cx: &mut Context<Self>) {
         let next = self.layout.moved(p, to);
-        // The history joining the explorer's dock goes with it: a shut explorer opens.
-        if next.shares_dock(PanelId::History) && !self.explorer_open {
+        // The history stacked onto the explorer goes with it: a shut explorer opens.
+        if next.stacked_with(PanelId::History, PanelId::Explorer) && !self.explorer_open {
             self.set_explorer_open(true, cx);
         }
         self.set_layout(next, Some(p), cx);
@@ -1097,17 +1098,17 @@ mod tests {
         let stacked = PanelLayout::default().moved(Explorer, Place::stack(Dock::Right, 0, 1));
         let beside = stacked.moved(Explorer, Place::column(Dock::Right, 0));
         let from = ghost_place(&stacked, &beside, Explorer);
-        assert_eq!(from, Place::stack(Dock::Right, 0, 1));
+        assert_eq!(from, Place::stack(Dock::Right, 0, 0), "stacked, the explorer is on top");
         let s = slots(&beside, |_| 1., &[(Explorer, from, 0.25)]);
         let order: Vec<Vec<(PanelId, bool)>> = s[1].iter().map(|c| c.iter().map(|s| (s.panel, s.ghost)).collect()).collect();
-        assert_eq!(order, [vec![(H, false), (Explorer, true)], vec![(Explorer, false)]]);
+        assert_eq!(order, [vec![(Explorer, true), (H, false)], vec![(Explorer, false)]]);
         // Back into the stack from a column of its own (right of the history): the ghost column
         // stands where it was.
         let from = ghost_place(&beside, &stacked, Explorer);
         assert_eq!(from, Place::column(Dock::Right, 1));
         let s = slots(&stacked, |_| 1., &[(Explorer, from, 0.25)]);
         let order: Vec<Vec<(PanelId, bool)>> = s[1].iter().map(|c| c.iter().map(|s| (s.panel, s.ghost)).collect()).collect();
-        assert_eq!(order, [vec![(H, false), (Explorer, false)], vec![(Explorer, true)]]);
+        assert_eq!(order, [vec![(Explorer, false), (H, false)], vec![(Explorer, true)]]);
         // Another dock: the first move's ghost stands where the explorer was.
         assert_eq!(ghost_place(&PanelLayout::default(), &stacked, Explorer), Place::column(Dock::Left, 0));
     }
@@ -1121,10 +1122,10 @@ mod tests {
         let f = rest(&l, true);
         let top = metrics::TITLE_H;
         let s = f.panel(H).unwrap();
-        // Over the history: above it, below it, right of it; left of it is right of it too
-        // (the explorer is the right dock's outermost column).
+        // Over the history: above it; below it is above it too (stacked, the explorer is on
+        // top); right of it, and left of it is right of it too (the right dock's outermost).
         assert_eq!(target_at(&f, &l, Explorer, (s.x + s.w / 2., top + 40.)), Some(Place::stack(Dock::Right, 0, 0)));
-        assert_eq!(target_at(&f, &l, Explorer, (s.x + s.w / 2., s.bottom() - 40.)), Some(Place::stack(Dock::Right, 0, 1)));
+        assert_eq!(target_at(&f, &l, Explorer, (s.x + s.w / 2., s.bottom() - 40.)), Some(Place::stack(Dock::Right, 0, 0)));
         assert_eq!(target_at(&f, &l, Explorer, (s.x + 30., s.y + s.h / 2.)), Some(Place::column(Dock::Right, 1)));
         assert_eq!(target_at(&f, &l, Explorer, (s.right() - 30., s.y + s.h / 2.)), Some(Place::column(Dock::Right, 1)));
         // Its own place, and the band of its own dock (where it already is): nowhere.
@@ -1142,15 +1143,18 @@ mod tests {
         let e = fr.panel(Explorer).unwrap();
         assert!(e.right() == 1400. && fr.panel(H).unwrap().right() == e.x, "{e:?}");
         assert_eq!(target_at(&fr, &r, H, (e.right() - 10., e.y + e.h / 2.)), None);
-        assert_eq!(target_at(&fr, &r, H, (e.x + e.w / 2., e.y + 10.)), Some(Place::stack(Dock::Right, 0, 0)));
+        // Over its top half: stacked under it all the same (the explorer stays on top).
+        assert_eq!(target_at(&fr, &r, H, (e.x + e.w / 2., e.y + 10.)), Some(Place::stack(Dock::Right, 0, 1)));
         // The history to the left band: a column right of the explorer.
         assert_eq!(target_at(&f, &l, H, (300., 400.)), Some(Place::column(Dock::Left, 1)));
-        // Stacked with the explorer: its halves are above and below it; its sides make columns.
+        // Stacked with the explorer (asked for above it: under it, the explorer on top); either
+        // half of the explorer is where it already is; its sides make columns.
         let st = l.moved(H, Place::stack(Dock::Left, 0, 0));
+        assert_eq!(st.place_of(H), Place::stack(Dock::Left, 0, 1));
         let fs = rest(&st, true);
         let e = fs.panel(Explorer).unwrap();
-        assert_eq!(target_at(&fs, &st, H, (e.x + e.w / 2., e.bottom() - 10.)), Some(Place::stack(Dock::Left, 0, 1)));
-        assert_eq!(target_at(&fs, &st, H, (e.x + e.w / 2., e.y + 10.)), None, "where it already is");
+        assert_eq!(target_at(&fs, &st, H, (e.x + e.w / 2., e.bottom() - 10.)), None, "where it already is");
+        assert_eq!(target_at(&fs, &st, H, (e.x + e.w / 2., e.y + 10.)), None, "under it all the same");
         // Its left side: right of it (the explorer stays the leftmost column).
         assert_eq!(target_at(&fs, &st, H, (e.x + 10., e.y + e.h / 2.)), Some(Place::column(Dock::Left, 1)));
         // Outside everything (the title bar): nowhere.

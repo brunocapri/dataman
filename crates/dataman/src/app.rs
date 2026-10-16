@@ -2707,7 +2707,7 @@ impl Render for Workspace {
         // The history beside the explorer is under the tab band: the seam beside it is its own,
         // under the band (`render_docks`); this one keeps its room, unseen.
         let seam = if pass.band_left() { gpui::transparent_black() } else { t.line };
-        // While the history shares the explorer's dock, the explorer controls it: no ⌘Y, no ⌥⌘B.
+        // While the history is stacked with the explorer, the explorer controls it: no ⌘Y, no ⌥⌘B.
         let own_history = !self.history_with_explorer();
         let moving = self.explorer_tween.is_some() || !self.dock_moves.is_empty();
         let work = div()
@@ -2842,7 +2842,7 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(|w, _: &Refresh, _, cx| w.tree.update(cx, |t, cx| t.refresh_selected(cx))))
             .on_action(cx.listener(|w, _: &ToggleExplorer, window, cx| {
-                // The history beside it hides with it: the focus leaves it too.
+                // The history stacked with it hides with it: the focus leaves it too.
                 let side = w.history_with_explorer() && w.focused_region(window, cx) == Some(Region::Side);
                 w.set_explorer_open(!w.explorer_open, cx);
                 if !w.explorer_open && (side || w.tree.read(cx).contains_focus(window, cx)) {

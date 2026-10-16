@@ -165,7 +165,7 @@ pub async fn run_stage(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindow
     let (ew, history) = cx.update(|_, cx| (ws2.read(cx).explorer_w, matches!(ws2.read(cx).side, Some(crate::app::Side::History)))).unwrap_or_default();
     report("the explorer's width and the open history come back", ew == 300. && history, format!("explorer {ew}, history {history}"));
     let layout = cx.update(|_, cx| ws2.read(cx).layout.clone()).unwrap();
-    let stacked = dataman_core::layout::Column { panels: vec![dataman_core::layout::PanelId::History, dataman_core::layout::PanelId::Explorer], split: 0.35 };
+    let stacked = dataman_core::layout::Column { panels: vec![dataman_core::layout::PanelId::Explorer, dataman_core::layout::PanelId::History], split: 0.35 };
     report("the panels come back in their docks, at their split", layout.left == [stacked] && layout.right.is_empty(), format!("{layout:?}"));
     let (t1, t2) = cx.update(|_, cx| (ws2.read(cx).tabs[0].clone(), ws2.read(cx).tabs[1].clone())).unwrap();
     let link = cx.update(|_, cx| (t2.read(cx).favorite.as_ref().map(|(id, _)| id.clone()), t2.read(cx).title(cx).to_string())).unwrap();

@@ -1039,11 +1039,11 @@ impl Workspace {
         }
         // Commands.
         items.extend(commands(active_conn.as_ref(), cx));
-        // The history beside the explorer goes with it (⌘B): its own toggles are off.
+        // The history stacked with the explorer goes with it (⌘B): its own toggles are off.
         if self.history_with_explorer() {
             for it in items.iter_mut().filter(|it| matches!(it.label.as_str(), "History" | "Toggle side panel") && it.section == Section::Commands) {
                 it.disabled = true;
-                it.sub = "with the explorer (⌘B) while beside it".into();
+                it.sub = "with the explorer (⌘B) while stacked with it".into();
             }
         }
         // Connections; the disconnected ones also say their tables are not indexed.
