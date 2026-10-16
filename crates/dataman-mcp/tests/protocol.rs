@@ -248,7 +248,7 @@ fn stdio_favorites_and_create_connection() {
     let (err, text) = m.tool("list_favorites", json!({}));
     assert!(!err, "{text}");
     let rows = serde_json::from_str::<Value>(&text).unwrap()["rows"].as_array().unwrap().clone();
-    assert_eq!(rows, vec![json!([id1.clone(), "top", "local pg", Value::Null, "select 1"])]);
+    assert_eq!(rows, vec![json!([id1.clone(), "top", "local pg", Value::Null, "select 1", Value::Null])]);
 
     let (err, text) = m.tool("add_favorite", json!({"name": "x", "sql": "   "}));
     assert!(err && text.contains("must not be empty"), "{text}");
@@ -258,7 +258,7 @@ fn stdio_favorites_and_create_connection() {
     let (err, text) = m.tool("list_favorites", json!({}));
     assert!(!err, "{text}");
     let rows = serde_json::from_str::<Value>(&text).unwrap()["rows"].as_array().unwrap().clone();
-    assert_eq!(rows, vec![json!([id1.clone(), "renamed", "local pg", Value::Null, "select 1"])], "the statement and connection stay");
+    assert_eq!(rows, vec![json!([id1.clone(), "renamed", "local pg", Value::Null, "select 1", Value::Null])], "the statement and connection stay");
     let (err, text) = m.tool("rename_favorite", json!({"id": "nope", "name": "x"}));
     assert!(err && text.contains("no favorite"), "{text}");
     let (err, text) = m.tool("rename_favorite", json!({"id": id1, "name": "  "}));

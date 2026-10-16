@@ -1,13 +1,26 @@
 //! Query history of a connection (side panel), newest first, grouped by day, filterable by
-//! text and outcome, and favorite queries (saved across connections, never pruned). ↩ inserts
-//! at the cursor, ⌥↩ opens a new tab, ⌘↩ runs; double-click opens a new tab.
+//! text and outcome, and favorite queries (saved across connections, never pruned), which the
+//! panel opens on. ↩ inserts at the cursor, ⌥↩ opens a new tab, ⌘↩ runs; double-click opens a
+//! new tab.
+//!
+//! Favorites can be filed in folders, drawn as the explorer draws its tree (disclosure
+//! chevrons, a folder filled while shut, children indented under it): the header's "+ folder"
+//! makes one and names it in place, a favorite dragged onto a folder (or a favorite in it) is
+//! filed there, and dragged anywhere else in the list it goes back to the top level. A search
+//! opens the folders holding a match. Deleting a folder keeps its favorites: they move to the
+//! top level.
+
+use std::cell::Cell;
+use std::collections::HashSet;
+use std::rc::Rc;
 
 use chrono::{Datelike, Local};
 use gpui::{
-    App, Context, Entity, EventEmitter, FocusHandle, Focusable, KeyBinding, ListAlignment, ListState, SharedString,
-    Window, actions, div, list, prelude::*,
+    AnyElement, App, Bounds, Context, Entity, EventEmitter, FocusHandle, Focusable, KeyBinding, ListAlignment, ListState,
+    Pixels, Point, SharedString, Window, actions, div, list, point, prelude::*,
 };
 use crate::theme::px;
+use dataman_core::favorites::Folder;
 use dataman_core::{Favorite, HistoryEntry, Outcome};
 
 use crate::assets::{Icon, icon};
@@ -15,9 +28,10 @@ use crate::conns::ConnStore;
 use crate::grid::ui_count;
 use crate::input::{InputEvent, TextInput};
 use crate::theme::{ActiveTheme, Theme};
+use crate::tree_menu::{ITEM_H, PAD, SEP_H};
 use crate::ui;
 
-actions!(history_panel, [Prev, Next, Insert, OpenInTab, RunEntry, Close]);
+actions!(history_panel, [Prev, Next, Insert, OpenInTab, RunEntry, Close, Collapse, Expand]);
 
 const CONTEXT: &str = "HistoryPanel";
 
@@ -26,6 +40,8 @@ pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("up", Prev, c),
         KeyBinding::new("down", Next, c),
+        KeyBinding::new("left", Collapse, c),
+        KeyBinding::new("right", Expand, c),
         KeyBinding::new("enter", Insert, c),
         KeyBinding::new("alt-enter", OpenInTab, c),
         KeyBinding::new("cmd-enter", RunEntry, c),
@@ -48,14 +64,18 @@ pub enum HistoryEvent {
     Close,
 }
 
-/// The favorites menu opened on the star toggle (no favorite under it): Import Favorites… only.
-const NO_FAVORITE: usize = usize::MAX;
-
 /// A statement's first line, flattened and capped, for a favorite's default name.
 pub(crate) fn fav_name(sql: &str) -> String {
     let flat: String = sql.trim_end_matches(';').split_whitespace().collect::<Vec<_>>().join(" ");
     if flat.chars().count() > 60 { format!("{}…", flat.chars().take(60).collect::<String>()) } else { flat }
 }
+
+/// How far a favorite in a folder sits in from the folder's row: past its chevron, so the
+/// favorite's name lines up with the folder's icon (the explorer steps 12 pt a level).
+const NEST: f32 = 15.;
+/// The favorites' context menu, and its Move to folder submenu.
+const MENU_W: f32 = 220.;
+const SUB_W: f32 = 200.;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Chip {
@@ -68,8 +88,88 @@ enum Chip {
 enum Item {
     Day(SharedString),
     Entry(usize),
+    /// A folder of favorites: its index into `folders`, whether its favorites are listed under
+    /// it (open, or a search found some), and how many it holds.
+    Folder { ix: usize, open: bool, count: usize },
+    /// A favorite (index into `favorites`): indented under its folder when it is in one.
     Fav(usize),
 }
+
+/// A favorite on the move (dragged onto a folder, or out to the top level): its id.
+pub(crate) struct DraggedFav(pub(crate) String);
+
+/// Where a dragged favorite would land.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum DropAt {
+    Folder(String),
+    Top,
+}
+
+/// What is being named in place: a favorite (index into `favorites`) or a folder (its id).
+#[derive(Clone, PartialEq)]
+enum Naming {
+    Fav(usize),
+    Folder(String),
+}
+
+/// What a context menu is about: a favorite (index into `favorites`), a folder (its id), or
+/// the favorites as a whole (the star toggle).
+#[derive(Clone, PartialEq)]
+enum MenuOn {
+    Fav(usize),
+    Folder(String),
+    Panel,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum Act {
+    Run,
+    Open,
+    Insert,
+    Rename,
+    /// To a folder (its id), or the top level.
+    Move(Option<String>),
+    Remove,
+    NewFolder,
+    DeleteFolder,
+    Import,
+}
+
+enum MenuEntry {
+    Item { act: Act, icon: Icon, label: SharedString, detail: Option<SharedString>, key: Option<&'static str> },
+    Sep,
+    /// Move to folder ▸: where it can go, the folder it is in checked (and inert).
+    Sub { icon: Icon, label: SharedString, items: Vec<(Act, Icon, SharedString, bool)> },
+}
+
+impl MenuEntry {
+    fn item(act: Act, icon: Icon, label: &'static str, key: Option<&'static str>) -> MenuEntry {
+        MenuEntry::Item { act, icon, label: label.into(), detail: None, key }
+    }
+
+    fn h(&self) -> f32 {
+        if matches!(self, MenuEntry::Sep) { SEP_H } else { ITEM_H }
+    }
+
+    fn label(&self) -> Option<&str> {
+        match self {
+            MenuEntry::Item { label, .. } | MenuEntry::Sub { label, .. } => Some(label),
+            MenuEntry::Sep => None,
+        }
+    }
+}
+
+/// A context menu (right-click, ⌃-click) open at `at`: the row under the pointer (`hi`), and
+/// the submenu shown (the index of its entry) with its own highlighted row.
+struct Menu {
+    on: MenuOn,
+    at: Point<Pixels>,
+    hi: Option<usize>,
+    sub: Option<usize>,
+    sub_hi: Option<usize>,
+}
+
+type BoundsCell = Rc<Cell<Option<Bounds<Pixels>>>>;
 
 pub struct HistoryPanel {
     store: Entity<ConnStore>,
@@ -77,24 +177,35 @@ pub struct HistoryPanel {
     conn_id: Option<String>,
     entries: Vec<HistoryEntry>,
     favorites: Vec<Favorite>,
+    /// The favorites' folders, by name.
+    folders: Vec<Folder>,
+    /// The folders open (by id); a folder starts shut, like the explorer's.
+    open_folders: HashSet<String>,
     items: Vec<Item>,
     shown: usize,
     selected: Option<usize>,
     chip: Chip,
-    /// Favorites instead of history: a separate toggle, always next to the status dropdown
-    /// (never inside it).
+    /// Favorites instead of history (the view the panel opens on): a separate toggle, always
+    /// next to the status dropdown (never inside it).
     show_favorites: bool,
     /// The status dropdown (All / OK / Error / Cancelled): open, and its button's bounds
     /// (window coordinates), to place the popover under it.
     chip_menu: bool,
-    chip_bounds: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
+    chip_bounds: BoundsCell,
     /// The favorites toggle's own bounds (window coordinates), for the same reason.
-    fav_toggle_bounds: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
-    /// A favorite's context menu (right-click, ⌃-click): its index into `favorites`, and
-    /// where to anchor the popover.
-    fav_menu: Option<(usize, gpui::Point<gpui::Pixels>)>,
-    /// A favorite being renamed inline: its index into `favorites`, and the field.
-    renaming: Option<(usize, Entity<TextInput>)>,
+    fav_toggle_bounds: BoundsCell,
+    /// The header's "+ folder" button (the checks click it).
+    new_folder_bounds: BoundsCell,
+    /// The context menu, and where its popover and submenu were last painted (a click in the
+    /// submenu is not "outside" the menu).
+    menu: Option<Menu>,
+    menu_bounds: BoundsCell,
+    sub_bounds: BoundsCell,
+    /// A favorite or folder being renamed inline, and the field.
+    renaming: Option<(Naming, Entity<TextInput>)>,
+    /// While a favorite is dragged: its id, and where it would land.
+    dragging: Option<String>,
+    drop_at: Option<DropAt>,
     filter: Entity<TextInput>,
     list: ListState,
 }
@@ -121,16 +232,23 @@ impl HistoryPanel {
             conn_id: None,
             entries: vec![],
             favorites: vec![],
+            folders: vec![],
+            open_folders: HashSet::new(),
             items: vec![],
             shown: 0,
             selected: None,
             chip: Chip::All,
-            show_favorites: false,
+            show_favorites: true,
             chip_menu: false,
             chip_bounds: Default::default(),
             fav_toggle_bounds: Default::default(),
-            fav_menu: None,
+            new_folder_bounds: Default::default(),
+            menu: None,
+            menu_bounds: Default::default(),
+            sub_bounds: Default::default(),
             renaming: None,
+            dragging: None,
+            drop_at: None,
             filter,
             list: ListState::new(0, ListAlignment::Top, px(200.)),
         }
@@ -158,14 +276,23 @@ impl HistoryPanel {
             Some(id) => self.store.read(cx).core.history.load(id, 1000).unwrap_or_default(),
             None => vec![],
         };
-        self.favorites = self.store.read(cx).core.favorites.list();
+        self.read_favorites(cx);
         self.apply_filter(cx);
     }
 
     /// Re-reads favorites only (after a toggle), keeping the history as is.
     pub(crate) fn reload_favorites(&mut self, cx: &mut Context<Self>) {
-        self.favorites = self.store.read(cx).core.favorites.list();
+        self.read_favorites(cx);
         self.apply_filter(cx);
+    }
+
+    /// The favorites and their folders from the store, the folders by name.
+    fn read_favorites(&mut self, cx: &App) {
+        let core = &self.store.read(cx).core;
+        self.favorites = core.favorites.list();
+        let mut folders = core.favorites.folders();
+        folders.sort_by_key(|d| d.name.to_lowercase());
+        self.folders = folders;
     }
 
     fn is_favorited(&self, sql: &str) -> bool {
@@ -191,22 +318,26 @@ impl HistoryPanel {
     fn remove_favorite(&mut self, fav_ix: usize, cx: &mut Context<Self>) {
         let id = self.favorites[fav_ix].id.clone();
         let _ = self.store.read(cx).core.favorites.remove(&id);
-        self.reload_favorites(cx);
+        self.refresh_keeping(cx);
         cx.emit(HistoryEvent::FavoritesChanged);
     }
 
     /// The favorites view, with favorite `id` selected and scrolled into view, the panel
     /// focused (↑↓ ↩ work at once): the palette's pick, the "Saved as favorite" link. The
-    /// search is cleared so the favorite is listed. False when it is not saved (any more).
+    /// search is cleared so the favorite is listed, and its folder opened. False when it is not
+    /// saved (any more).
     pub fn focus_favorite(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        self.favorites = self.store.read(cx).core.favorites.list();
+        self.read_favorites(cx);
         self.show_favorites = true;
         self.chip_menu = false;
-        self.fav_menu = None;
+        self.menu = None;
         self.renaming = None;
+        if let Some(d) = self.favorites.iter().find(|f| f.id == id).and_then(|f| f.folder.clone()) {
+            self.open_folders.insert(d);
+        }
         self.filter.update(cx, |f, cx| f.set_text("", cx));
         self.apply_filter(cx);
-        let Some(ix) = self.items.iter().position(|it| matches!(it, Item::Fav(i) if self.favorites[*i].id == id)) else { return false };
+        let Some(ix) = self.fav_item(id) else { return false };
         self.selected = Some(ix);
         // Item heights are not measured yet after the reset: put the favorite near the top (the
         // list itself keeps the last page full), then reveal it exactly once it is laid out.
@@ -218,12 +349,32 @@ impl HistoryPanel {
         true
     }
 
-    /// Starts editing a favorite's name in place: ↩ confirms (`commit_rename`), esc cancels
-    /// (the `Close` action, intercepted while renaming), an empty name reverts to the old one.
-    fn start_rename(&mut self, fav_ix: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let name = self.favorites[fav_ix].name.clone();
+    /// The listed item of favorite `id`, if it is listed.
+    fn fav_item(&self, id: &str) -> Option<usize> {
+        self.items.iter().position(|it| matches!(it, Item::Fav(i) if self.favorites[*i].id == id))
+    }
+
+    /// The listed item of folder `id`.
+    fn folder_item(&self, id: &str) -> Option<usize> {
+        self.items.iter().position(|it| matches!(it, Item::Folder { ix, .. } if self.folders[*ix].id == id))
+    }
+
+    /// Starts editing a favorite's or a folder's name in place: ↩ confirms (`commit_rename`),
+    /// esc cancels (the `Close` action, intercepted while renaming), an empty name reverts to
+    /// the old one.
+    fn start_naming(&mut self, naming: Naming, window: &mut Window, cx: &mut Context<Self>) {
+        let name = match &naming {
+            Naming::Fav(i) => self.favorites[*i].name.clone(),
+            Naming::Folder(id) => match self.folders.iter().find(|d| d.id == *id) {
+                Some(d) => d.name.clone(),
+                None => return,
+            },
+        };
         let input = cx.new(|cx| TextInput::new(cx, "name").bare());
-        input.update(cx, |i, cx| i.set_text(name, cx));
+        input.update(cx, |i, cx| {
+            i.set_text(name, cx);
+            i.select_all(cx);
+        });
         cx.subscribe(&input, |h: &mut HistoryPanel, _, ev: &InputEvent, cx| {
             if let InputEvent::Submit = ev {
                 h.commit_rename(cx);
@@ -231,7 +382,7 @@ impl HistoryPanel {
         })
         .detach();
         window.focus(&input.focus_handle(cx), cx);
-        self.renaming = Some((fav_ix, input));
+        self.renaming = Some((naming, input));
         // The row (or the panel's own track_focus) takes the focus back on this same click
         // after this handler runs: the field reclaims it once the event is done.
         cx.defer_in(window, |h, window, cx| {
@@ -242,17 +393,125 @@ impl HistoryPanel {
         cx.notify();
     }
 
-    fn commit_rename(&mut self, cx: &mut Context<Self>) {
-        let Some((fav_ix, input)) = self.renaming.take() else { return };
-        let name = input.read(cx).text().trim().to_string();
-        if !name.is_empty()
-            && let Some(f) = self.favorites.get(fav_ix)
-        {
-            let _ = self.store.read(cx).core.favorites.rename(&f.id, &name);
-        }
-        self.reload_favorites(cx);
-        cx.emit(HistoryEvent::FavoritesChanged);
+    fn start_rename(&mut self, fav_ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.start_naming(Naming::Fav(fav_ix), window, cx);
     }
+
+    fn commit_rename(&mut self, cx: &mut Context<Self>) {
+        let Some((naming, input)) = self.renaming.take() else { return };
+        let name = input.read(cx).text().trim().to_string();
+        let favorites = self.store.read(cx).core.favorites.clone();
+        if !name.is_empty() {
+            match &naming {
+                Naming::Fav(i) => {
+                    if let Some(f) = self.favorites.get(*i) {
+                        let _ = favorites.rename(&f.id, &name);
+                    }
+                }
+                Naming::Folder(id) => {
+                    let _ = favorites.rename_folder(id, &name);
+                }
+            }
+        }
+        // Back to the panel: ↑↓ go on from the row just named.
+        self.refresh_keeping(cx);
+        if let Naming::Fav(_) = naming {
+            cx.emit(HistoryEvent::FavoritesChanged);
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Folders
+
+    /// The header's "+ folder": a folder named "New folder" (made unique), listed (the search
+    /// cleared, the favorites shown), selected, and its name in an inline field to type over.
+    fn new_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Ok(d) = self.store.read(cx).core.favorites.add_folder("New folder") else { return };
+        self.show_favorites = true;
+        self.chip_menu = false;
+        self.menu = None;
+        self.renaming = None;
+        self.open_folders.insert(d.id.clone());
+        self.filter.update(cx, |f, cx| f.set_text("", cx));
+        self.read_favorites(cx);
+        self.apply_filter(cx);
+        if let Some(ix) = self.folder_item(&d.id) {
+            self.selected = Some(ix);
+            self.list.scroll_to_reveal_item(ix);
+        }
+        self.start_naming(Naming::Folder(d.id), window, cx);
+    }
+
+    /// Opens or shuts a folder; shutting the one holding the selection selects the folder.
+    fn toggle_folder(&mut self, id: &str, cx: &mut Context<Self>) {
+        if !self.open_folders.remove(id) {
+            self.open_folders.insert(id.to_string());
+        } else if let Some(Item::Fav(i)) = self.selected.and_then(|s| self.items.get(s))
+            && self.favorites[*i].folder.as_deref() == Some(id)
+        {
+            self.selected = self.folder_item(id);
+        }
+        self.refresh_keeping(cx);
+    }
+
+    /// Deletes a folder, never its favorites: they move to the top level.
+    fn delete_folder(&mut self, id: &str, cx: &mut Context<Self>) {
+        let _ = self.store.read(cx).core.favorites.remove_folder(id);
+        self.open_folders.remove(id);
+        self.refresh_keeping(cx);
+    }
+
+    /// Files favorite `id` in a folder (`None`: the top level), opens that folder and selects
+    /// the favorite where it now is.
+    fn move_favorite(&mut self, id: &str, to: Option<String>, cx: &mut Context<Self>) {
+        let _ = self.store.read(cx).core.favorites.move_to_folder(id, to.as_deref());
+        if let Some(d) = &to {
+            self.open_folders.insert(d.clone());
+        }
+        self.read_favorites(cx);
+        self.apply_filter(cx);
+        if let Some(ix) = self.fav_item(id) {
+            self.selected = Some(ix);
+            self.list.scroll_to_reveal_item(ix);
+        }
+        cx.notify();
+    }
+
+    /// Where favorite `id` dragged to `pos` would land: the folder under the pointer (its row,
+    /// or a favorite in it), else the top level; `None` where it already is, or over the
+    /// history.
+    fn drop_target(&self, id: &str, pos: Point<Pixels>) -> Option<DropAt> {
+        let from = self.favorites.iter().find(|f| f.id == id)?.folder.clone();
+        let mut at = DropAt::Top;
+        for (ix, it) in self.items.iter().enumerate() {
+            if !self.list.bounds_for_item(ix).is_some_and(|b| b.contains(&pos)) {
+                continue;
+            }
+            at = match it {
+                Item::Folder { ix, .. } => DropAt::Folder(self.folders[*ix].id.clone()),
+                Item::Fav(i) => self.favorites[*i].folder.clone().map_or(DropAt::Top, DropAt::Folder),
+                Item::Day(_) | Item::Entry(_) => return None,
+            };
+            break;
+        }
+        let already = match &at {
+            DropAt::Top => from.is_none(),
+            DropAt::Folder(d) => from.as_deref() == Some(d.as_str()),
+        };
+        (!already).then_some(at)
+    }
+
+    fn drop_favorite(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.dragging = None;
+        match self.drop_at.take() {
+            Some(DropAt::Folder(d)) => self.move_favorite(id, Some(d), cx),
+            Some(DropAt::Top) => self.move_favorite(id, None, cx),
+            None => cx.notify(),
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // The list
 
     fn matches(&self, e: &HistoryEntry, q: &str) -> bool {
         let chip = match self.chip {
@@ -264,13 +523,31 @@ impl HistoryPanel {
         chip && (q.is_empty() || e.sql.to_lowercase().contains(q))
     }
 
+    /// Rebuilds the list, the selection back on the first row (the search's top match).
     fn apply_filter(&mut self, cx: &mut Context<Self>) {
         let q = self.filter.read(cx).text().to_lowercase();
         let mut items = Vec::new();
         let mut shown = 0;
         if self.show_favorites {
+            let hit = |f: &Favorite| q.is_empty() || f.name.to_lowercase().contains(&q) || f.sql.to_lowercase().contains(&q);
+            // The folders first, as the explorer lists them; a search lists those holding a
+            // match (or named like it), open.
+            for (ix, d) in self.folders.iter().enumerate() {
+                let named = !q.is_empty() && d.name.to_lowercase().contains(&q);
+                let inside: Vec<usize> = (0..self.favorites.len()).filter(|&i| self.favorites[i].folder.as_deref() == Some(d.id.as_str())).collect();
+                let found: Vec<usize> = inside.iter().copied().filter(|&i| named || hit(&self.favorites[i])).collect();
+                if !q.is_empty() && !named && found.is_empty() {
+                    continue;
+                }
+                let open = !q.is_empty() || self.open_folders.contains(&d.id);
+                items.push(Item::Folder { ix, open, count: inside.len() });
+                shown += found.len();
+                if open {
+                    items.extend(found.into_iter().map(Item::Fav));
+                }
+            }
             for (i, f) in self.favorites.iter().enumerate() {
-                if q.is_empty() || f.name.to_lowercase().contains(&q) || f.sql.to_lowercase().contains(&q) {
+                if f.folder.is_none() && hit(f) {
                     items.push(Item::Fav(i));
                     shown += 1;
                 }
@@ -307,6 +584,29 @@ impl HistoryPanel {
         cx.notify();
     }
 
+    /// Re-reads the favorites and rebuilds the list, the same favorite or folder selected (a
+    /// folder opened or shut, a favorite moved or renamed), else the one now in its place.
+    fn refresh_keeping(&mut self, cx: &mut Context<Self>) {
+        let was = self.selected;
+        // (id, a favorite's rather than a folder's)
+        let keep = match was.and_then(|s| self.items.get(s)) {
+            Some(Item::Fav(i)) => self.favorites.get(*i).map(|f| (f.id.clone(), true)),
+            Some(Item::Folder { ix, .. }) => self.folders.get(*ix).map(|d| (d.id.clone(), false)),
+            _ => None,
+        };
+        let top = self.list.logical_scroll_top();
+        self.read_favorites(cx);
+        self.apply_filter(cx);
+        self.list.scroll_to(top);
+        let found = keep.and_then(|(id, fav)| if fav { self.fav_item(&id) } else { self.folder_item(&id) });
+        let picks = |i: &Item| !matches!(i, Item::Day(_));
+        self.selected = found.or_else(|| {
+            let w = was?.min(self.items.len().checked_sub(1)?);
+            (w..self.items.len()).chain((0..w).rev()).find(|&i| picks(&self.items[i]))
+        });
+        cx.notify();
+    }
+
     fn move_sel(&mut self, d: isize, cx: &mut Context<Self>) {
         let picks: Vec<usize> = (0..self.items.len()).filter(|&i| !matches!(self.items[i], Item::Day(_))).collect();
         if picks.is_empty() {
@@ -319,10 +619,35 @@ impl HistoryPanel {
         cx.notify();
     }
 
+    /// ← and →, as in the explorer: → opens the selected folder, ← shuts it, or, on a
+    /// favorite in a folder, goes up to the folder.
+    fn fold(&mut self, open: bool, cx: &mut Context<Self>) {
+        match self.selected.and_then(|s| self.items.get(s)) {
+            Some(&Item::Folder { ix, open: is_open, .. }) if is_open != open => {
+                let id = self.folders[ix].id.clone();
+                self.toggle_folder(&id, cx);
+            }
+            Some(Item::Fav(i)) if !open => {
+                if let Some(ix) = self.favorites[*i].folder.clone().and_then(|d| self.folder_item(&d)) {
+                    self.selected = Some(ix);
+                    self.list.scroll_to_reveal_item(ix);
+                    cx.notify();
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn emit_selected(&mut self, f: fn(String) -> HistoryEvent, cx: &mut Context<Self>) {
         let sql = match self.selected.and_then(|s| self.items.get(s)) {
             Some(Item::Entry(i)) => Some(self.entries[*i].sql.clone()),
             Some(Item::Fav(i)) => Some(self.favorites[*i].sql.clone()),
+            // ↩ on a folder opens or shuts it.
+            Some(Item::Folder { ix, .. }) => {
+                let id = self.folders[*ix].id.clone();
+                self.toggle_folder(&id, cx);
+                None
+            }
             _ => None,
         };
         if let Some(sql) = sql {
@@ -350,7 +675,10 @@ impl HistoryPanel {
         }
     }
 
-    fn render_item(&self, ix: usize, t: &Theme, focused: bool, cx: &mut Context<Self>) -> gpui::AnyElement {
+    // ---------------------------------------------------------------------------------------
+    // Rows
+
+    fn render_item(&self, ix: usize, t: &Theme, focused: bool, cx: &mut Context<Self>) -> AnyElement {
         match &self.items[ix] {
             Item::Day(label) => div()
                 .h(px(28.))
@@ -362,228 +690,523 @@ impl HistoryPanel {
                 .text_color(t.tx3)
                 .child(label.clone())
                 .into_any_element(),
-            Item::Entry(i) => {
-                let entry_i = *i;
-                let e = &self.entries[entry_i];
-                let sel = self.selected == Some(ix);
-                let is_fav = self.is_favorited(&e.sql);
-                let (glyph, gcolor) = match e.outcome {
-                    Outcome::Ok => ("✓", t.ok),
-                    Outcome::Error => ("✕", t.err),
-                    Outcome::Cancelled => ("⊘", t.warn),
-                };
-                let result = match e.outcome {
-                    Outcome::Error => error_code(e.error.as_deref()).unwrap_or_else(|| "error".into()),
-                    Outcome::Cancelled => match e.rows {
-                        Some(n) => format!("cancelled · {}", ui_count(n as usize)),
-                        None => "cancelled".into(),
-                    },
-                    Outcome::Ok => match e.rows {
-                        Some(1) => "1 row".into(),
-                        Some(n) => format!("{} rows", ui_count(n as usize)),
-                        None => "done".into(),
-                    },
-                };
-                let rcolor = match e.outcome {
-                    Outcome::Error => t.err,
-                    Outcome::Cancelled => t.warn,
-                    Outcome::Ok => t.tx3,
-                };
-                // Leading comment lines are not the statement.
-                let body: Vec<&str> = e.sql.lines().skip_while(|l| l.trim().is_empty() || l.trim_start().starts_with("--")).collect();
-                let src = if body.is_empty() { e.sql.clone() } else { body.join("\n") };
-                let flat: String = src.split_whitespace().collect::<Vec<_>>().join(" ");
-                let (verb, rest) = match flat.split_once(' ') {
-                    Some((v, r)) => (v.to_string(), format!(" {r}")),
-                    None => (flat.clone(), String::new()),
-                };
-                let time = e.ts.with_timezone(&Local).format("%H:%M:%S").to_string();
-                let hov = t.hov;
-                div()
-                    .px(px(6.))
-                    .child(
-                        div()
-                            .id(("hist", ix))
-                            .px(px(8.))
-                            .py(px(7.))
-                            .flex()
-                            .flex_col()
-                            .gap(px(4.))
-                            // Neutral: blue is the explorer's selection.
-                            .when(sel && focused, |d| d.bg(t.mark).border_1().border_color(t.edge))
-                            .when(sel && !focused, |d| d.bg(t.prs))
-                            .when(!sel, |d| d.hover(move |s| s.bg(hov)))
-                            .on_click(cx.listener(move |h, ev: &gpui::ClickEvent, window, cx| {
-                                h.selected = Some(ix);
-                                window.focus(&h.focus, cx);
-                                if ev.click_count() >= 2 {
-                                    h.open_selected_in_tab(cx);
-                                }
-                                cx.notify();
-                            }))
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_row()
-                                    .items_center()
-                                    .gap(px(8.))
-                                    .text_size(px(11.))
-                                    .child(div().w(px(12.)).text_center().text_color(gcolor).child(glyph))
-                                    .child(div().text_color(t.tx).child(time))
-                                    .child(div().text_color(t.tx3).child(fmt_ms(e.duration_ms)))
-                                    .when(e.source.as_deref() == Some(dataman_core::history::AGENT), |d| {
-                                        d.child(crate::assets::icon(crate::assets::Icon::Agent).size(px(11.)).text_color(t.tx3))
-                                    })
-                                    .child(div().flex_1())
-                                    .child(div().text_color(rcolor).child(result))
-                                    .child(fav_button(t, ("fav-toggle", ix), is_fav).on_click(cx.listener(
-                                        move |h, _: &gpui::ClickEvent, _, cx| {
-                                            cx.stop_propagation();
-                                            h.toggle_favorite(entry_i, cx);
-                                        },
-                                    ))),
-                            )
-                            .child(
-                                div()
-                                    .pl(px(20.))
-                                    .flex()
-                                    .flex_row()
-                                    .overflow_hidden()
-                                    .whitespace_nowrap()
-                                    .text_color(t.tx2)
-                                    .child(div().flex_none().text_color(t.kw).child(verb))
-                                    .child(div().min_w_0().overflow_hidden().text_ellipsis().child(rest)),
-                            ),
-                    )
-                    .into_any_element()
-            }
-            Item::Fav(i) => {
-                let fav_i = *i;
-                let f = &self.favorites[fav_i];
-                let sel = self.selected == Some(ix);
-                let conn_name = f.connection_id.as_ref().and_then(|id| self.store.read(cx).profile(id)).map(|p| p.name.clone());
-                let flat: String = f.sql.split_whitespace().collect::<Vec<_>>().join(" ");
-                let hov = t.hov;
-                let renaming = self.renaming.as_ref().filter(|(i, _)| *i == fav_i).map(|(_, input)| input.clone());
-                // Renaming: the field in the accent, ↩ at its end (it confirms).
-                let name: gpui::AnyElement = match renaming {
-                    Some(input) => div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(4.))
-                        .border_1()
-                        .border_color(t.acc)
-                        .pl(px(4.))
-                        .pr(px(2.))
-                        .text_color(t.tx)
-                        .child(div().flex_1().min_w_0().child(input))
-                        .child(ui::keycap_sm(t.key, t.tx2, "↩").h(px(14.)).line_height(px(12.)).text_size(px(10.)))
-                        .into_any_element(),
-                    None => div().text_color(t.tx).child(f.name.clone()).into_any_element(),
-                };
-                div()
-                    .px(px(6.))
-                    .child(
-                        div()
-                            .id(("fav", ix))
-                            .px(px(8.))
-                            .py(px(7.))
-                            .flex()
-                            .flex_col()
-                            .gap(px(4.))
-                            .when(sel && focused, |d| d.bg(t.mark).border_1().border_color(t.edge))
-                            .when(sel && !focused, |d| d.bg(t.prs))
-                            .when(!sel, |d| d.hover(move |s| s.bg(hov)))
-                            .on_click(cx.listener(move |h, ev: &gpui::ClickEvent, window, cx| {
-                                // A click in the rename field belongs to the field: taking the
-                                // focus back to the panel here would swallow what is typed next.
-                                if h.renaming.as_ref().is_some_and(|(i, _)| *i == fav_i) {
-                                    return;
-                                }
-                                h.selected = Some(ix);
-                                window.focus(&h.focus, cx);
-                                if ev.click_count() >= 2 {
-                                    h.open_selected_in_tab(cx);
-                                }
-                                cx.notify();
-                            }))
-                            // Right-click, and ⌃-click (the Mac convention): the favorite's
-                            // context menu (Rename, Remove) at the pointer.
-                            .on_mouse_down(gpui::MouseButton::Right, cx.listener(move |h, ev: &gpui::MouseDownEvent, _, cx| {
-                                cx.stop_propagation();
-                                h.fav_menu = Some((fav_i, ev.position));
-                                cx.notify();
-                            }))
-                            .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |h, ev: &gpui::MouseDownEvent, _, cx| {
-                                if ev.modifiers.control {
-                                    cx.stop_propagation();
-                                    h.fav_menu = Some((fav_i, ev.position));
-                                    cx.notify();
-                                }
-                            }))
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_row()
-                                    .items_center()
-                                    .gap(px(8.))
-                                    .text_size(px(11.))
-                                    .child(name)
-                                    .child(div().flex_1())
-                                    .children(conn_name.map(|n| div().text_color(t.tx3).child(n)))
-                                    .child(fav_button(t, ("fav-remove", ix), true).on_click(cx.listener(
-                                        move |h, _: &gpui::ClickEvent, _, cx| {
-                                            cx.stop_propagation();
-                                            h.remove_favorite(fav_i, cx);
-                                        },
-                                    ))),
-                            )
-                            .child(
-                                div()
-                                    .pl(px(20.))
-                                    .flex()
-                                    .flex_row()
-                                    .overflow_hidden()
-                                    .whitespace_nowrap()
-                                    .text_color(t.tx2)
-                                    .child(flat),
-                            ),
-                    )
-                    .into_any_element()
-            }
+            Item::Entry(i) => self.render_entry(ix, *i, t, focused, cx),
+            &Item::Folder { ix: folder_ix, open, count } => self.render_folder(ix, folder_ix, open, count, t, focused, cx),
+            Item::Fav(i) => self.render_fav(ix, *i, t, focused, cx),
         }
     }
 
-    /// A favorite's context menu (right-click, ⌃-click): Rename, Remove, Import favorites…; on
-    /// the star toggle, Import favorites… alone (sentence case here; the menu bar's File ▸
-    /// Import Favorites… keeps the macOS title case).
-    fn render_fav_menu(&self, t: &Theme, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
-        let (fav_ix, at) = self.fav_menu?;
-        let item = |key: &'static str, label: &'static str, f: fn(&mut Self, usize, &mut Window, &mut Context<Self>)| {
-            ui::menu_item(t, key, label, None, true).on_click(cx.listener(move |h, _, window, cx| {
-                h.fav_menu = None;
-                f(h, fav_ix, window, cx);
-                cx.notify();
-            }))
+    fn render_entry(&self, ix: usize, entry_i: usize, t: &Theme, focused: bool, cx: &mut Context<Self>) -> AnyElement {
+        let e = &self.entries[entry_i];
+        let sel = self.selected == Some(ix);
+        let is_fav = self.is_favorited(&e.sql);
+        let (glyph, gcolor) = match e.outcome {
+            Outcome::Ok => ("✓", t.ok),
+            Outcome::Error => ("✕", t.err),
+            Outcome::Cancelled => ("⊘", t.warn),
         };
-        let menu = ui::popover(t)
-            .w(px(160.))
+        let result = match e.outcome {
+            Outcome::Error => error_code(e.error.as_deref()).unwrap_or_else(|| "error".into()),
+            Outcome::Cancelled => match e.rows {
+                Some(n) => format!("cancelled · {}", ui_count(n as usize)),
+                None => "cancelled".into(),
+            },
+            Outcome::Ok => match e.rows {
+                Some(1) => "1 row".into(),
+                Some(n) => format!("{} rows", ui_count(n as usize)),
+                None => "done".into(),
+            },
+        };
+        let rcolor = match e.outcome {
+            Outcome::Error => t.err,
+            Outcome::Cancelled => t.warn,
+            Outcome::Ok => t.tx3,
+        };
+        // Leading comment lines are not the statement.
+        let body: Vec<&str> = e.sql.lines().skip_while(|l| l.trim().is_empty() || l.trim_start().starts_with("--")).collect();
+        let src = if body.is_empty() { e.sql.clone() } else { body.join("\n") };
+        let flat: String = src.split_whitespace().collect::<Vec<_>>().join(" ");
+        let (verb, rest) = match flat.split_once(' ') {
+            Some((v, r)) => (v.to_string(), format!(" {r}")),
+            None => (flat.clone(), String::new()),
+        };
+        let time = e.ts.with_timezone(&Local).format("%H:%M:%S").to_string();
+        let hov = t.hov;
+        div()
+            .px(px(6.))
+            .child(
+                div()
+                    .id(("hist", ix))
+                    .px(px(8.))
+                    .py(px(7.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.))
+                    // Neutral: blue is the explorer's selection.
+                    .when(sel && focused, |d| d.bg(t.mark).border_1().border_color(t.edge))
+                    .when(sel && !focused, |d| d.bg(t.prs))
+                    .when(!sel, |d| d.hover(move |s| s.bg(hov)))
+                    .on_click(cx.listener(move |h, ev: &gpui::ClickEvent, window, cx| {
+                        h.selected = Some(ix);
+                        window.focus(&h.focus, cx);
+                        if ev.click_count() >= 2 {
+                            h.open_selected_in_tab(cx);
+                        }
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(8.))
+                            .text_size(px(11.))
+                            .child(div().w(px(12.)).text_center().text_color(gcolor).child(glyph))
+                            .child(div().text_color(t.tx).child(time))
+                            .child(div().text_color(t.tx3).child(fmt_ms(e.duration_ms)))
+                            .when(e.source.as_deref() == Some(dataman_core::history::AGENT), |d| {
+                                d.child(icon(Icon::Agent).size(px(11.)).text_color(t.tx3))
+                            })
+                            .child(div().flex_1())
+                            .child(div().text_color(rcolor).child(result))
+                            .child(fav_button(t, ("fav-toggle", ix), is_fav).on_click(cx.listener(
+                                move |h, _: &gpui::ClickEvent, _, cx| {
+                                    cx.stop_propagation();
+                                    h.toggle_favorite(entry_i, cx);
+                                },
+                            ))),
+                    )
+                    .child(
+                        div()
+                            .pl(px(20.))
+                            .flex()
+                            .flex_row()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_color(t.tx2)
+                            .child(div().flex_none().text_color(t.kw).child(verb))
+                            .child(div().min_w_0().overflow_hidden().text_ellipsis().child(rest)),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    /// The inline name field: the accent border, ↩ at its end (it confirms).
+    fn name_field(input: Entity<TextInput>, t: &Theme) -> AnyElement {
+        div()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(4.))
+            .border_1()
+            .border_color(t.acc)
+            .pl(px(4.))
+            .pr(px(2.))
+            .text_color(t.tx)
+            .child(div().flex_1().min_w_0().child(input))
+            .child(ui::keycap_sm(t.key, t.tx2, "↩").h(px(14.)).line_height(px(12.)).text_size(px(10.)))
+            .into_any_element()
+    }
+
+    /// A folder's row, the explorer's way: the chevron, the folder (filled while shut), the
+    /// name, how many favorites it holds; tinted in the accent while a favorite dragged over
+    /// it would drop in.
+    #[allow(clippy::too_many_arguments)]
+    fn render_folder(&self, ix: usize, folder_ix: usize, open: bool, count: usize, t: &Theme, focused: bool, cx: &mut Context<Self>) -> AnyElement {
+        let d = &self.folders[folder_ix];
+        let id = d.id.clone();
+        let sel = self.selected == Some(ix);
+        let dropping = cx.has_active_drag() && self.drop_at.as_ref() == Some(&DropAt::Folder(id.clone()));
+        let renaming = match &self.renaming {
+            Some((Naming::Folder(r), input)) if *r == id => Some(input.clone()),
+            _ => None,
+        };
+        let is_renaming = renaming.is_some();
+        let name: AnyElement = match renaming {
+            Some(input) => Self::name_field(input, t),
+            None => div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx).child(d.name.clone()).into_any_element(),
+        };
+        let hov = t.hov;
+        let chevron = icon(if open { Icon::ChevronDown } else { Icon::ChevronRight }).size(px(10.)).text_color(t.tx4);
+        let (click_id, menu_id, ctrl_id) = (id.clone(), id.clone(), id);
+        div()
+            .px(px(6.))
+            .child(
+                div()
+                    .id(("fav-folder", ix))
+                    .h(px(28.))
+                    .pl(px(8.))
+                    .pr(px(8.))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(5.))
+                    .text_size(px(12.))
+                    .when(dropping, |d| d.bg(t.acc_s).border_1().border_color(t.acc.opacity(0.45)))
+                    .when(!dropping && sel && focused, |d| d.bg(t.mark).border_1().border_color(t.edge))
+                    .when(!dropping && sel && !focused, |d| d.bg(t.prs))
+                    .when(!dropping && !sel, |d| d.hover(move |s| s.bg(hov)))
+                    .on_click(cx.listener(move |h, ev: &gpui::ClickEvent, window, cx| {
+                        // The rename field's clicks are its own; ⌃-click opened the menu.
+                        if is_renaming || ev.modifiers().control {
+                            return;
+                        }
+                        h.selected = Some(ix);
+                        window.focus(&h.focus, cx);
+                        // A click opens or shuts it (the explorer's way); a double-click renames
+                        // it, the first click's toggle undone.
+                        h.toggle_folder(&click_id, cx);
+                        if ev.click_count() >= 2 {
+                            h.start_naming(Naming::Folder(click_id.clone()), window, cx);
+                        }
+                    }))
+                    .on_mouse_down(gpui::MouseButton::Right, cx.listener(move |h, ev: &gpui::MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        h.selected = Some(ix);
+                        h.open_menu(MenuOn::Folder(menu_id.clone()), ev.position, cx);
+                    }))
+                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |h, ev: &gpui::MouseDownEvent, _, cx| {
+                        if ev.modifiers.control {
+                            cx.stop_propagation();
+                            h.selected = Some(ix);
+                            h.open_menu(MenuOn::Folder(ctrl_id.clone()), ev.position, cx);
+                        }
+                    }))
+                    .child(div().w(px(10.)).flex_none().flex().justify_center().child(chevron))
+                    .child(icon(if open { Icon::Schema } else { Icon::SchemaFilled }).size(px(14.)).text_color(if dropping { t.acc_t } else { t.tx3 }))
+                    .child(name)
+                    .when(!is_renaming, |d| d.child(div().flex_none().text_size(px(11.)).text_color(t.tx3).child(ui_count(count)))),
+            )
+            .into_any_element()
+    }
+
+    fn render_fav(&self, ix: usize, fav_i: usize, t: &Theme, focused: bool, cx: &mut Context<Self>) -> AnyElement {
+        let f = &self.favorites[fav_i];
+        let sel = self.selected == Some(ix);
+        let profile = f.connection_id.as_ref().and_then(|id| self.store.read(cx).profile(id));
+        let conn_name = profile.map(|p| p.name.clone());
+        let chip = profile.map(|p| t.profile_color(p));
+        let flat: String = f.sql.split_whitespace().collect::<Vec<_>>().join(" ");
+        let hov = t.hov;
+        let nested = f.folder.is_some();
+        let dragged = cx.has_active_drag() && self.dragging.as_deref() == Some(f.id.as_str());
+        let renaming = match &self.renaming {
+            Some((Naming::Fav(i), input)) if *i == fav_i => Some(input.clone()),
+            _ => None,
+        };
+        let is_renaming = renaming.is_some();
+        let name: AnyElement = match renaming {
+            Some(input) => Self::name_field(input, t),
+            None => div().text_color(t.tx).child(f.name.clone()).into_any_element(),
+        };
+        let (fav_id, ghost) = (f.id.clone(), f.name.clone());
+        div()
+            .relative()
+            .pl(px(if nested { 6. + NEST } else { 6. }))
+            .pr(px(6.))
+            // In a folder: a hairline under its chevron, down the folder's favorites (their
+            // cards are tall: the indent alone hardly tells where the folder ends).
+            .when(nested, |d| d.child(div().absolute().top_0().bottom_0().left(px(18.5)).w(gpui::px(1.)).bg(t.line)))
+            .child(
+                div()
+                    .id(("fav", ix))
+                    .px(px(8.))
+                    .py(px(7.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.))
+                    .when(sel && focused, |d| d.bg(t.mark).border_1().border_color(t.edge))
+                    .when(sel && !focused, |d| d.bg(t.prs))
+                    .when(!sel, |d| d.hover(move |s| s.bg(hov)))
+                    // Its place stays marked, dimmed, while its ghost is on the move.
+                    .when(dragged, |d| d.opacity(0.45))
+                    .on_click(cx.listener(move |h, ev: &gpui::ClickEvent, window, cx| {
+                        // A click in the rename field belongs to the field: taking the
+                        // focus back to the panel here would swallow what is typed next.
+                        if is_renaming || ev.modifiers().control {
+                            return;
+                        }
+                        h.selected = Some(ix);
+                        window.focus(&h.focus, cx);
+                        if ev.click_count() >= 2 {
+                            h.open_selected_in_tab(cx);
+                        }
+                        cx.notify();
+                    }))
+                    // Dragged onto a folder (or out of one); not while its name is edited
+                    // (a drag there selects text).
+                    .when(!is_renaming, |d| d.on_drag(DraggedFav(fav_id), move |_, _, _, cx| crate::dnd::ghost(ghost.clone(), chip, cx)))
+                    // Right-click, and ⌃-click (the Mac convention): the favorite's
+                    // context menu (Run, Open, Rename, Move to folder, Remove…) at the pointer.
+                    .on_mouse_down(gpui::MouseButton::Right, cx.listener(move |h, ev: &gpui::MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        h.selected = Some(ix);
+                        h.open_menu(MenuOn::Fav(fav_i), ev.position, cx);
+                    }))
+                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |h, ev: &gpui::MouseDownEvent, _, cx| {
+                        if ev.modifiers.control {
+                            cx.stop_propagation();
+                            h.selected = Some(ix);
+                            h.open_menu(MenuOn::Fav(fav_i), ev.position, cx);
+                        }
+                    }))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(8.))
+                            .text_size(px(11.))
+                            .child(name)
+                            .child(div().flex_1())
+                            .children(conn_name.map(|n| div().text_color(t.tx3).child(n)))
+                            .child(fav_button(t, ("fav-remove", ix), true).on_click(cx.listener(
+                                move |h, _: &gpui::ClickEvent, _, cx| {
+                                    cx.stop_propagation();
+                                    h.remove_favorite(fav_i, cx);
+                                },
+                            ))),
+                    )
+                    .child(
+                        div()
+                            .pl(px(20.))
+                            .flex()
+                            .flex_row()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_color(t.tx2)
+                            .child(flat),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // The context menu
+
+    fn open_menu(&mut self, on: MenuOn, at: Point<Pixels>, cx: &mut Context<Self>) {
+        self.chip_menu = false;
+        self.sub_bounds.set(None);
+        self.menu = Some(Menu { on, at, hi: None, sub: None, sub_hi: None });
+        cx.notify();
+    }
+
+    /// What a menu offers. A favorite: Run, Open in new tab, Insert at cursor (their keys on
+    /// the selected row), Rename, Move to folder ▸ (once there are folders), Remove, Import
+    /// favorites…; a folder: Rename, New folder, Delete folder (it says where its favorites
+    /// go); the star toggle: New folder, Import favorites…. Sentence case here; the menu bar's
+    /// File ▸ Import Favorites… keeps the macOS title case.
+    fn menu_entries(&self, on: &MenuOn) -> Vec<MenuEntry> {
+        use MenuEntry as E;
+        let import = E::item(Act::Import, Icon::Import, "Import favorites…", None);
+        let new_folder = E::item(Act::NewFolder, Icon::Plus, "New folder", None);
+        match on {
+            MenuOn::Fav(i) => {
+                let Some(f) = self.favorites.get(*i) else { return vec![] };
+                let mut v = vec![
+                    E::item(Act::Run, Icon::Run, "Run", Some("⌘↩")),
+                    E::item(Act::Open, Icon::Tab, "Open in new tab", Some("⌥↩")),
+                    E::item(Act::Insert, Icon::Cursor, "Insert at cursor", Some("↩")),
+                    E::Sep,
+                    E::item(Act::Rename, Icon::Edit, "Rename", None),
+                ];
+                if !self.folders.is_empty() {
+                    let mut items = Vec::new();
+                    if f.folder.is_some() {
+                        items.push((Act::Move(None), Icon::ChevronUp, SharedString::from("Top level"), false));
+                    }
+                    for d in &self.folders {
+                        let here = f.folder.as_deref() == Some(d.id.as_str());
+                        items.push((Act::Move(Some(d.id.clone())), Icon::Schema, d.name.clone().into(), here));
+                    }
+                    v.push(E::Sub { icon: Icon::Schema, label: "Move to folder".into(), items });
+                }
+                v.extend([E::Sep, E::item(Act::Remove, Icon::Trash, "Remove", None), E::Sep, import]);
+                v
+            }
+            MenuOn::Folder(id) => {
+                let n = self.favorites.iter().filter(|f| f.folder.as_deref() == Some(id.as_str())).count();
+                let delete = E::Item {
+                    act: Act::DeleteFolder,
+                    icon: Icon::Trash,
+                    label: "Delete folder".into(),
+                    // Its favorites are kept: say where they go.
+                    detail: (n > 0).then(|| if n == 1 { "1 favorite to top level".into() } else { format!("{n} favorites to top level").into() }),
+                    key: None,
+                };
+                vec![E::item(Act::Rename, Icon::Edit, "Rename", None), new_folder, E::Sep, delete]
+            }
+            MenuOn::Panel => vec![new_folder, E::Sep, import],
+        }
+    }
+
+    fn run_menu(&mut self, act: Act, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(m) = self.menu.take() else { return };
+        let fav = match m.on {
+            MenuOn::Fav(i) => self.favorites.get(i).cloned().map(|f| (i, f)),
+            _ => None,
+        };
+        match (act, fav) {
+            (Act::Run, Some((_, f))) => cx.emit(HistoryEvent::OpenFavorite(f, true)),
+            (Act::Open, Some((_, f))) => cx.emit(HistoryEvent::OpenFavorite(f, false)),
+            (Act::Insert, Some((_, f))) => cx.emit(HistoryEvent::Insert(f.sql)),
+            (Act::Rename, Some((i, _))) => self.start_rename(i, window, cx),
+            (Act::Rename, None) => {
+                if let MenuOn::Folder(id) = m.on {
+                    self.start_naming(Naming::Folder(id), window, cx);
+                }
+            }
+            (Act::Move(to), Some((_, f))) => self.move_favorite(&f.id, to, cx),
+            (Act::Remove, Some((i, _))) => self.remove_favorite(i, cx),
+            (Act::NewFolder, _) => self.new_folder(window, cx),
+            (Act::DeleteFolder, _) => {
+                if let MenuOn::Folder(id) = m.on {
+                    self.delete_folder(&id, cx);
+                }
+            }
+            (Act::Import, _) => cx.emit(HistoryEvent::ImportFavorites),
+            _ => {}
+        }
+        cx.notify();
+    }
+
+    /// The menu at the pointer, in the explorer's look (`grid_menu::row`: icon, label, a muted
+    /// detail, the key), and Move to folder's submenu beside it (to the left when the window
+    /// ends to its right: the panel is at the window's right edge).
+    fn render_menu(&self, t: &Theme, window: &Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let Some(m) = &self.menu else { return vec![] };
+        let entries = self.menu_entries(&m.on);
+        let mut rows: Vec<AnyElement> = Vec::new();
+        let mut sub = None;
+        for (i, e) in entries.iter().enumerate() {
+            match e {
+                MenuEntry::Sep => rows.push(ui::menu_sep(t).into_any_element()),
+                MenuEntry::Item { act, icon: ic, label, detail, key } => {
+                    let act = act.clone();
+                    let row = crate::grid_menu::row(t, ("fav-menu-item", i), *ic, label.clone(), detail.clone(), key.map(SharedString::from), m.hi == Some(i))
+                        .on_hover(cx.listener(move |h, on: &bool, _, cx| {
+                            if let (true, Some(m)) = (*on, h.menu.as_mut())
+                                && (m.hi != Some(i) || m.sub.is_some())
+                            {
+                                m.hi = Some(i);
+                                m.sub = None;
+                                m.sub_hi = None;
+                                cx.notify();
+                            }
+                        }))
+                        .on_click(cx.listener(move |h, _: &gpui::ClickEvent, window, cx| h.run_menu(act.clone(), window, cx)));
+                    rows.push(row.into_any_element());
+                }
+                MenuEntry::Sub { icon: ic, label, items } => {
+                    let open = m.sub == Some(i);
+                    if open {
+                        sub = Some((i, items));
+                    }
+                    let fg = if m.hi == Some(i) || open { t.on_acc } else { t.tx3 };
+                    let row = crate::grid_menu::row(t, ("fav-menu-item", i), *ic, label.clone(), None, None, m.hi == Some(i) || open)
+                        .child(icon(Icon::ChevronRight).size(px(10.)).text_color(fg))
+                        .on_hover(cx.listener(move |h, on: &bool, _, cx| {
+                            if let (true, Some(m)) = (*on, h.menu.as_mut())
+                                && m.sub != Some(i)
+                            {
+                                m.hi = Some(i);
+                                m.sub = Some(i);
+                                m.sub_hi = None;
+                                cx.notify();
+                            }
+                        }))
+                        .on_click(cx.listener(move |h, _: &gpui::ClickEvent, _, cx| {
+                            if let Some(m) = h.menu.as_mut() {
+                                m.hi = Some(i);
+                                m.sub = Some(i);
+                                cx.notify();
+                            }
+                        }));
+                    rows.push(row.into_any_element());
+                }
+            }
+        }
+        let sub_bounds = self.sub_bounds.clone();
+        let main = ui::popover(t)
+            .id("fav-menu")
+            .w(px(MENU_W))
+            .text_size(px(12.))
+            .font_family(crate::theme::mono())
             .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_mouse_down_out(cx.listener(|h, _, _, cx| {
-                h.fav_menu = None;
+            .on_mouse_down_out(cx.listener(move |h, ev: &gpui::MouseDownEvent, _, cx| {
+                // A click in the submenu is a click in the menu.
+                if h.menu.as_ref().is_some_and(|m| m.sub.is_some()) && sub_bounds.get().is_some_and(|b| b.contains(&ev.position)) {
+                    return;
+                }
+                h.menu = None;
                 cx.notify();
             }))
-            .when(fav_ix != NO_FAVORITE, |d| {
-                d.child(item("fm-rename", "Rename", |h, ix, window, cx| h.start_rename(ix, window, cx)))
-                    .child(item("fm-remove", "Remove", |h, ix, _, cx| h.remove_favorite(ix, cx)))
-                    .child(ui::menu_sep(t))
-            })
-            .child(item("fm-import", "Import favorites…", |_, _, _, cx| cx.emit(HistoryEvent::ImportFavorites)));
-        Some(gpui::deferred(gpui::anchored().position(at).snap_to_window_with_margin(px(8.)).child(menu)).priority(3))
+            .children(rows);
+        let bounds = self.menu_bounds.clone();
+        let mut out = vec![
+            gpui::deferred(
+                gpui::anchored()
+                    .position(m.at)
+                    .snap_to_window_with_margin(px(8.))
+                    .child(div().on_children_prepainted(move |b, _, _| bounds.set(b.first().copied())).child(main)),
+            )
+            .priority(3)
+            .into_any_element(),
+        ];
+        if let (Some((i, items)), Some(mb)) = (sub, self.menu_bounds.get()) {
+            let top = mb.top() + px(entries[..i].iter().map(MenuEntry::h).sum::<f32>());
+            let right = mb.right() + px(SUB_W + 8.) <= window.viewport_size().width;
+            let (at, corner) = if right { (point(mb.right() - px(2.), top), gpui::Anchor::TopLeft) } else { (point(mb.left() + px(2.), top), gpui::Anchor::TopRight) };
+            let sub_rows: Vec<AnyElement> = items
+                .iter()
+                .enumerate()
+                .map(|(j, (act, ic, label, here))| {
+                    let hi = m.sub_hi == Some(j) && !here;
+                    let row = crate::grid_menu::row(t, ("fav-submenu-item", j), *ic, label.clone(), None, None, hi)
+                        .when(*here, |d| d.text_color(t.tx3).child(icon(Icon::Check).size(px(12.)).text_color(t.tx2)))
+                        .on_hover(cx.listener(move |h, on: &bool, _, cx| {
+                            if let (true, Some(m)) = (*on, h.menu.as_mut())
+                                && m.sub_hi != Some(j)
+                            {
+                                m.sub_hi = Some(j);
+                                cx.notify();
+                            }
+                        }));
+                    if *here {
+                        row.into_any_element()
+                    } else {
+                        let act = act.clone();
+                        row.on_click(cx.listener(move |h, _: &gpui::ClickEvent, window, cx| h.run_menu(act.clone(), window, cx))).into_any_element()
+                    }
+                })
+                .collect();
+            let pop = ui::popover(t)
+                .id("fav-submenu")
+                .w(px(SUB_W))
+                .text_size(px(12.))
+                .font_family(crate::theme::mono())
+                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .children(sub_rows);
+            let bounds = self.sub_bounds.clone();
+            out.push(
+                gpui::deferred(
+                    gpui::anchored()
+                        .position(at)
+                        .anchor(corner)
+                        .snap_to_window_with_margin(px(8.))
+                        .child(div().on_children_prepainted(move |b, _, _| bounds.set(b.first().copied())).child(pop)),
+                )
+                .priority(4)
+                .into_any_element(),
+            );
+        }
+        out
     }
+
+    // ---------------------------------------------------------------------------------------
+    // The header's controls
 
     /// The status filter (All / OK / Error / Cancelled), compact, in the app's picker style
     /// (`chrome::render_conn_picker`). Favorites is a separate, always-visible toggle beside
@@ -667,19 +1290,39 @@ impl HistoryPanel {
             .on_click(cx.listener(|h, ev: &gpui::ClickEvent, _, cx| {
                 // ⌃-click is the Mac's right click: the favorites menu.
                 if ev.modifiers().control {
-                    h.fav_menu = Some((NO_FAVORITE, ev.position()));
-                    cx.notify();
+                    h.open_menu(MenuOn::Panel, ev.position(), cx);
                     return;
                 }
                 h.show_favorites = !h.show_favorites;
                 h.apply_filter(cx);
             }))
             .on_mouse_down(gpui::MouseButton::Right, cx.listener(|h, ev: &gpui::MouseDownEvent, _, cx| {
-                h.fav_menu = Some((NO_FAVORITE, ev.position));
+                h.open_menu(MenuOn::Panel, ev.position, cx);
                 cx.stop_propagation();
-                cx.notify();
             }));
         let bounds = self.fav_toggle_bounds.clone();
+        div().flex().flex_row().on_children_prepainted(move |b, _, _| bounds.set(b.first().copied())).child(button)
+    }
+
+    /// "+ folder" (the favorites only): a new folder, named in place.
+    fn render_new_folder(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let (hov, prs) = (t.hov, t.prs);
+        let button = div()
+            .id("new-fav-folder")
+            .flex_none()
+            .h(px(24.))
+            .px(px(5.))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(1.))
+            .hover(move |s| s.bg(hov))
+            .active(move |s| s.bg(prs))
+            .tooltip(ui::tooltip("New folder", Some("Drag favorites onto it to file them"), None))
+            .child(icon(Icon::Plus).size(px(10.)).text_color(t.tx3))
+            .child(icon(Icon::Schema).size(px(14.)).text_color(t.tx3))
+            .on_click(cx.listener(|h, _: &gpui::ClickEvent, window, cx| h.new_folder(window, cx)));
+        let bounds = self.new_folder_bounds.clone();
         div().flex().flex_row().on_children_prepainted(move |b, _, _| bounds.set(b.first().copied())).child(button)
     }
 
@@ -689,6 +1332,11 @@ impl HistoryPanel {
 
     pub(crate) fn demo_entry_count(&self) -> usize {
         self.entries.len()
+    }
+
+    /// Whether the history listed holds `sql` (a favorite run from its menu landed there).
+    pub(crate) fn demo_has_entry(&self, sql: &str) -> bool {
+        self.entries.iter().any(|e| e.sql.trim().trim_end_matches(';') == sql.trim().trim_end_matches(';'))
     }
 
     /// Favorites an entry directly (setup for a check: the star click itself is not what
@@ -701,6 +1349,7 @@ impl HistoryPanel {
     /// entry selected, or two favorites with the first selected and the second being renamed
     /// (the panel focused).
     pub(crate) fn demo_marks(&mut self, favorites: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_favorites = favorites;
         if favorites {
             let core = self.store.read(cx).core.clone();
             for (name, sql) in [("Orders by day", "SELECT date_trunc('day', p.created) AS day, count(*) FROM orders p GROUP BY 1 ORDER BY 1;"), ("Top customers", "SELECT c.name, count(*) FROM orders p JOIN customer c ON c.id = p.customer GROUP BY 1 ORDER BY 2 DESC LIMIT 10;")] {
@@ -708,10 +1357,9 @@ impl HistoryPanel {
                 f.connection_id = self.conn_id.clone();
                 let _ = core.favorites.add(f);
             }
-            self.reload_favorites(cx);
-            self.show_favorites = true;
-            self.apply_filter(cx);
+            self.read_favorites(cx);
         }
+        self.apply_filter(cx);
         self.selected = self.items.iter().position(|i| matches!(i, Item::Entry(_) | Item::Fav(_)));
         if favorites && let Some(second) = self.items.iter().filter_map(|i| if let Item::Fav(f) = i { Some(*f) } else { None }).nth(1) {
             self.start_rename(second, window, cx);
@@ -732,6 +1380,39 @@ impl HistoryPanel {
         self.favorites.iter().map(|f| (f.id.clone(), f.name.clone())).collect()
     }
 
+    /// Each favorite's name and the name of the folder it is in.
+    pub(crate) fn demo_filed(&self) -> Vec<(String, Option<String>)> {
+        let folder = |id: &str| self.folders.iter().find(|d| d.id == id).map(|d| d.name.clone());
+        self.favorites.iter().map(|f| (f.name.clone(), f.folder.as_deref().and_then(folder))).collect()
+    }
+
+    pub(crate) fn demo_folders(&self) -> Vec<(String, String)> {
+        self.folders.iter().map(|d| (d.id.clone(), d.name.clone())).collect()
+    }
+
+    /// The listed rows, as `▸ name (n)` / `▾ name (n)` for a folder, `name` for a favorite
+    /// (indented two spaces in a folder), `entry` for the history.
+    pub(crate) fn demo_rows(&self) -> Vec<String> {
+        self.items
+            .iter()
+            .map(|it| match it {
+                Item::Day(d) => d.to_string(),
+                Item::Entry(_) => "entry".into(),
+                Item::Folder { ix, open, count } => format!("{} {} ({count})", if *open { "▾" } else { "▸" }, self.folders[*ix].name),
+                Item::Fav(i) => format!("{}{}", if self.favorites[*i].folder.is_some() { "  " } else { "" }, self.favorites[*i].name),
+            })
+            .collect()
+    }
+
+    /// The listed item of the favorite or folder named `name`.
+    pub(crate) fn demo_item_named(&self, name: &str) -> Option<usize> {
+        self.items.iter().position(|it| match it {
+            Item::Folder { ix, .. } => self.folders[*ix].name == name,
+            Item::Fav(i) => self.favorites[*i].name == name,
+            _ => false,
+        })
+    }
+
     pub(crate) fn demo_showing_favorites(&self) -> bool {
         self.show_favorites
     }
@@ -748,7 +1429,7 @@ impl HistoryPanel {
 
     /// Screenshots (`fav-menu`): the favorites listed.
     pub(crate) fn demo_show_favorites(&mut self, cx: &mut Context<Self>) {
-        self.favorites = self.store.read(cx).core.favorites.list();
+        self.read_favorites(cx);
         self.show_favorites = true;
         self.apply_filter(cx);
     }
@@ -758,8 +1439,8 @@ impl HistoryPanel {
     pub(crate) fn demo_open_fav_menu(&mut self, item_ix: usize, cx: &mut Context<Self>) {
         if let (Some(Item::Fav(i)), Some(p)) = (self.items.get(item_ix), self.demo_item_point(item_ix)) {
             self.selected = Some(item_ix);
-            self.fav_menu = Some((*i, gpui::point(p.x + px(60.), p.y)));
-            cx.notify();
+            let i = *i;
+            self.open_menu(MenuOn::Fav(i), point(p.x + px(60.), p.y), cx);
         }
     }
 
@@ -782,20 +1463,59 @@ impl HistoryPanel {
 
     /// The status dropdown button's bounds, in window coordinates (`None` before it is first
     /// painted).
-    pub(crate) fn demo_dropdown_bounds(&self) -> Option<gpui::Bounds<gpui::Pixels>> {
+    pub(crate) fn demo_dropdown_bounds(&self) -> Option<Bounds<Pixels>> {
         self.chip_bounds.get()
     }
 
-    pub(crate) fn demo_favorites_toggle_bounds(&self) -> Option<gpui::Bounds<gpui::Pixels>> {
+    pub(crate) fn demo_favorites_toggle_bounds(&self) -> Option<Bounds<Pixels>> {
         self.fav_toggle_bounds.get()
     }
 
+    pub(crate) fn demo_new_folder_bounds(&self) -> Option<Bounds<Pixels>> {
+        self.new_folder_bounds.get()
+    }
+
     pub(crate) fn demo_fav_menu_open(&self) -> bool {
-        self.fav_menu.is_some()
+        self.menu.is_some()
+    }
+
+    /// The middle of the open menu's row labelled `label` (`sub`: the submenu's), as last
+    /// painted.
+    pub(crate) fn demo_menu_point(&self, label: &str, sub: bool) -> Option<Point<Pixels>> {
+        let m = self.menu.as_ref()?;
+        let entries = self.menu_entries(&m.on);
+        let (b, top) = if sub {
+            let MenuEntry::Sub { items, .. } = entries.get(m.sub?)? else { return None };
+            let j = items.iter().position(|(_, _, l, _)| l.as_ref() == label)?;
+            (self.sub_bounds.get()?, PAD + j as f32 * ITEM_H)
+        } else {
+            let i = entries.iter().position(|e| e.label() == Some(label))?;
+            (self.menu_bounds.get()?, PAD + entries[..i].iter().map(MenuEntry::h).sum::<f32>())
+        };
+        Some(point(b.left() + px(30.), b.top() + px(top + ITEM_H / 2.)))
+    }
+
+    /// Where a favorite being dragged would land: `"top"`, a folder's name, or `None`.
+    pub(crate) fn demo_drop_at(&self) -> Option<String> {
+        match self.drop_at.as_ref()? {
+            DropAt::Top => Some("top".into()),
+            DropAt::Folder(id) => self.folders.iter().find(|d| d.id == *id).map(|d| d.name.clone()),
+        }
     }
 
     pub(crate) fn demo_renaming_index(&self) -> Option<usize> {
-        self.renaming.as_ref().map(|(i, _)| *i)
+        match &self.renaming {
+            Some((Naming::Fav(i), _)) => Some(*i),
+            _ => None,
+        }
+    }
+
+    /// The folder (its name) being renamed in place.
+    pub(crate) fn demo_renaming_folder(&self) -> Option<String> {
+        match &self.renaming {
+            Some((Naming::Folder(id), _)) => self.folders.iter().find(|d| d.id == *id).map(|d| d.name.clone()),
+            _ => None,
+        }
     }
 
     /// Whether the rename field itself (not the panel, not the row) actually holds the
@@ -805,16 +1525,22 @@ impl HistoryPanel {
     }
 
     /// A point inside the rename field, as last painted.
-    pub(crate) fn demo_rename_field_point(&self, cx: &App) -> Option<gpui::Point<gpui::Pixels>> {
+    pub(crate) fn demo_rename_field_point(&self, cx: &App) -> Option<Point<Pixels>> {
         let (x, y, w, h) = self.renaming.as_ref()?.1.read(cx).demo_bounds()?;
-        Some(gpui::point(px(x + w * 0.5), px(y + h * 0.5)))
+        Some(point(px(x + w * 0.5), px(y + h * 0.5)))
     }
 
-    /// A point inside item `item_ix` of the visible list (a day header, a history entry or a
-    /// favorite), in window coordinates; `None` before it is painted.
-    pub(crate) fn demo_item_point(&self, item_ix: usize) -> Option<gpui::Point<gpui::Pixels>> {
+    /// A point inside item `item_ix` of the visible list (a day header, a history entry, a
+    /// folder or a favorite), in window coordinates; `None` before it is painted.
+    pub(crate) fn demo_item_point(&self, item_ix: usize) -> Option<Point<Pixels>> {
         let b = self.list.bounds_for_item(item_ix)?;
-        Some(gpui::point(b.origin.x + px(20.), b.origin.y + b.size.height * 0.5))
+        // Past a nested favorite's indent.
+        Some(point(b.origin.x + px(40.), b.origin.y + b.size.height * 0.5))
+    }
+
+    /// The list's own bounds (the checks drop below its last row).
+    pub(crate) fn demo_list_bounds(&self) -> Bounds<Pixels> {
+        self.list.viewport_bounds()
     }
 }
 
@@ -853,8 +1579,15 @@ impl Render for HistoryPanel {
         let profile = self.conn_id.as_ref().and_then(|id| self.store.read(cx).profile(id).cloned());
         let name: SharedString = profile.as_ref().map(|p| p.name.clone()).unwrap_or_else(|| "no connection".into()).into();
         let color = profile.as_ref().map(|p| t.profile_color(p));
-        let total = if self.show_favorites { self.favorites.len() } else { self.entries.len() };
-        let body: gpui::AnyElement = if self.items.is_empty() {
+        let favs = self.show_favorites;
+        let total = if favs { self.favorites.len() } else { self.entries.len() };
+        // A drag that ended outside the panel leaves no drop behind.
+        if !cx.has_active_drag() {
+            self.drop_at = None;
+            self.dragging = None;
+        }
+        let top_drop = self.drop_at == Some(DropAt::Top);
+        let body: AnyElement = if self.items.is_empty() {
             div()
                 .flex_1()
                 .px(px(30.))
@@ -865,8 +1598,28 @@ impl Render for HistoryPanel {
                 .into_any_element()
         } else {
             let theme = t.clone();
-            list(self.list.clone(), cx.processor(move |h, ix: usize, _window, cx| h.render_item(ix, &theme, focused, cx)))
+            div()
                 .flex_1()
+                .min_h_0()
+                .relative()
+                .flex()
+                .flex_col()
+                // A favorite dragged over the list: the folder it would drop into (its row, or
+                // a favorite in it), else the top level.
+                .on_drag_move(cx.listener(|h, ev: &gpui::DragMoveEvent<DraggedFav>, _, cx| {
+                    let pos = ev.event.position;
+                    let id = ev.drag(cx).0.clone();
+                    let at = if ev.bounds.contains(&pos) { h.drop_target(&id, pos) } else { None };
+                    if at != h.drop_at || h.dragging.as_ref() != Some(&id) {
+                        h.drop_at = at;
+                        h.dragging = Some(id);
+                        cx.notify();
+                    }
+                }))
+                .on_drop(cx.listener(|h, d: &DraggedFav, _, cx| h.drop_favorite(&d.0, cx)))
+                .child(list(self.list.clone(), cx.processor(move |h, ix: usize, _window, cx| h.render_item(ix, &theme, focused, cx))).flex_1())
+                // Out of its folder: the whole list is the drop target.
+                .when(top_drop, |d| d.child(div().absolute().inset_0().mx(px(6.)).border_1().border_color(t.acc.opacity(0.45))))
                 .into_any_element()
         };
         // Transparent: the work surface paints the fill once.
@@ -879,13 +1632,15 @@ impl Render for HistoryPanel {
             .track_focus(&self.focus)
             .on_action(cx.listener(|h, _: &Prev, _, cx| h.move_sel(-1, cx)))
             .on_action(cx.listener(|h, _: &Next, _, cx| h.move_sel(1, cx)))
+            .on_action(cx.listener(|h, _: &Collapse, _, cx| h.fold(false, cx)))
+            .on_action(cx.listener(|h, _: &Expand, _, cx| h.fold(true, cx)))
             .on_action(cx.listener(|h, _: &Insert, _, cx| h.emit_selected(HistoryEvent::Insert, cx)))
             .on_action(cx.listener(|h, _: &OpenInTab, _, cx| h.open_selected_in_tab(cx)))
             .on_action(cx.listener(|h, _: &RunEntry, _, cx| h.run_selected(cx)))
             .on_action(cx.listener(|h, _: &Close, _, cx| {
-                // esc while renaming cancels the rename (the old name stays); otherwise it
-                // closes the panel, as usual.
-                if h.renaming.take().is_some() {
+                // esc while renaming cancels the rename (the old name stays), with a menu open
+                // it shuts the menu; otherwise it closes the panel, as usual.
+                if h.renaming.take().is_some() || h.menu.take().is_some() {
                     cx.notify();
                 } else {
                     cx.emit(HistoryEvent::Close);
@@ -903,9 +1658,10 @@ impl Render for HistoryPanel {
                     .gap(px(8.))
                     .border_b_1()
                     .border_color(t.line)
-                    .child(ui::caps(&t, "HISTORY"))
-                    .children(color.map(|c| ui::chip(c, 8.)))
-                    .child(div().flex_1().text_color(t.tx).overflow_hidden().whitespace_nowrap().text_ellipsis().child(name))
+                    .child(ui::caps(&t, if favs { "FAVORITES" } else { "HISTORY" }))
+                    .children(color.filter(|_| !favs).map(|c| ui::chip(c, 8.)))
+                    .child(div().flex_1().text_color(t.tx).overflow_hidden().whitespace_nowrap().text_ellipsis().when(!favs, |d| d.child(name)))
+                    .when(favs, |d| d.child(self.render_new_folder(&t, cx)))
                     .child(
                         ui::icon_button(&t, "close-history", Icon::Close, 24., 13.)
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(HistoryEvent::Close))),
@@ -948,6 +1704,6 @@ impl Render for HistoryPanel {
                     ),
             )
             .child(body)
-            .children(self.render_fav_menu(&t, cx))
+            .children(self.render_menu(&t, window, cx))
     }
 }

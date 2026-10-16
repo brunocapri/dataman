@@ -935,7 +935,7 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
 /// premultiplied color (each fill blends `src·a + dst·(1−a)` over a transparent clear) with
 /// additive alpha, which is what the window server composites: color + desk·(1 − alpha).
 #[cfg(feature = "screenshots")]
-fn shot(window: &Window, path: &str, dark: bool) {
+pub(crate) fn shot(window: &Window, path: &str, dark: bool) {
     // `DATAMAN_SHOT_DESK=ffffff`: another desktop color (an adverse one shows seams best).
     let desk = std::env::var("DATAMAN_SHOT_DESK").ok().and_then(|h| u32::from_str_radix(h.trim_start_matches('#'), 16).ok());
     let bg: [f32; 3] = match desk {
@@ -992,7 +992,7 @@ fn shot(window: &Window, path: &str, dark: bool) {
 }
 
 #[cfg(not(feature = "screenshots"))]
-fn shot(_: &Window, path: &str, _: bool) {
+pub(crate) fn shot(_: &Window, path: &str, _: bool) {
     eprintln!("shot {path}: build with --features screenshots");
 }
 

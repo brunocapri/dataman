@@ -2,6 +2,11 @@
 //! `dataman-mcp`. Unlike [`crate::history`], favorites are never touched by pruning, limits
 //! or "clear history": only an explicit [`FavoritesStore::remove`] drops one. Re-read when the
 //! file's modification time changes, so either process sees the other's edits.
+//!
+//! Favorites can be filed in folders (one level, no nesting): a `[[folder]]` table each, and a
+//! favorite's `folder` naming one by id. Both are optional, so a file written before folders
+//! existed loads as is (everything at the top level), and one without folders is written the
+//! same way as before.
 
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -22,16 +27,29 @@ pub struct Favorite {
     pub connection_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub database: Option<String>,
+    /// The id of the [`Folder`] it is filed in; `None` at the top level (and when that folder
+    /// is gone: [`FavoritesStore::list`] never hands out a dangling one).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
 }
 
 impl Favorite {
     pub fn new(name: impl Into<String>, sql: impl Into<String>) -> Favorite {
-        Favorite { id: uuid::Uuid::new_v4().simple().to_string(), name: name.into(), sql: sql.into(), connection_id: None, database: None }
+        Favorite { id: uuid::Uuid::new_v4().simple().to_string(), name: name.into(), sql: sql.into(), connection_id: None, database: None, folder: None }
     }
+}
+
+/// A folder of favorites (the panel's tree): a name, nothing else; its favorites point at it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Folder {
+    pub id: String,
+    pub name: String,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct File {
+    #[serde(default, rename = "folder", skip_serializing_if = "Vec::is_empty")]
+    folders: Vec<Folder>,
     #[serde(default, rename = "favorite")]
     favorites: Vec<Favorite>,
 }
@@ -39,6 +57,16 @@ struct File {
 struct Fresh {
     stamp: Option<SystemTime>,
     items: Vec<Favorite>,
+    folders: Vec<Folder>,
+}
+
+impl Fresh {
+    /// Writes both lists and takes the new modification time (its own write is not news).
+    fn save(&mut self, path: &Path) -> Result<()> {
+        save(path, &self.items, &self.folders)?;
+        self.stamp = std::fs::metadata(path).and_then(|m| m.modified()).ok();
+        Ok(())
+    }
 }
 
 pub struct FavoritesStore {
@@ -48,7 +76,7 @@ pub struct FavoritesStore {
 
 impl FavoritesStore {
     pub fn open(dirs: &Dirs) -> Result<FavoritesStore> {
-        let store = FavoritesStore { path: dirs.favorites_file(), state: Mutex::new(Fresh { stamp: None, items: Vec::new() }) };
+        let store = FavoritesStore { path: dirs.favorites_file(), state: Mutex::new(Fresh { stamp: None, items: Vec::new(), folders: Vec::new() }) };
         store.refresh()?;
         Ok(store)
     }
@@ -63,13 +91,20 @@ impl FavoritesStore {
         if stamp.is_some() && g.stamp == stamp {
             return Ok(());
         }
-        let items = match std::fs::read_to_string(&self.path) {
-            Ok(s) => toml::from_str::<File>(&s).with_context(|| format!("reading {}", self.path.display()))?.favorites,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        let mut file = match std::fs::read_to_string(&self.path) {
+            Ok(s) => toml::from_str::<File>(&s).with_context(|| format!("reading {}", self.path.display()))?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => File::default(),
             Err(e) => return Err(e).with_context(|| format!("reading {}", self.path.display())),
         };
+        // Filed in a folder that is gone (the file edited by hand): the top level.
+        for f in &mut file.favorites {
+            if f.folder.as_ref().is_some_and(|id| !file.folders.iter().any(|d| d.id == *id)) {
+                f.folder = None;
+            }
+        }
         g.stamp = stamp;
-        g.items = items;
+        g.items = file.favorites;
+        g.folders = file.folders;
         Ok(())
     }
 
@@ -88,8 +123,7 @@ impl FavoritesStore {
             return Ok(existing.clone());
         }
         g.items.push(fav.clone());
-        save(&self.path, &g.items)?;
-        g.stamp = self.mtime();
+        g.save(&self.path)?;
         Ok(fav)
     }
 
@@ -98,8 +132,7 @@ impl FavoritesStore {
         let _ = self.refresh();
         let mut g = self.state.lock();
         g.items.retain(|f| f.id != id);
-        save(&self.path, &g.items)?;
-        g.stamp = self.mtime();
+        g.save(&self.path)?;
         Ok(())
     }
 
@@ -117,8 +150,7 @@ impl FavoritesStore {
         let Some(f) = g.items.iter_mut().find(|f| f.id == id) else { return Ok(None) };
         f.name = name.to_string();
         let updated = f.clone();
-        save(&self.path, &g.items)?;
-        g.stamp = self.mtime();
+        g.save(&self.path)?;
         Ok(Some(updated))
     }
 
@@ -130,8 +162,69 @@ impl FavoritesStore {
         let Some(f) = g.items.iter_mut().find(|f| f.id == id) else { return Ok(None) };
         f.sql = sql.to_string();
         let updated = f.clone();
-        save(&self.path, &g.items)?;
-        g.stamp = self.mtime();
+        g.save(&self.path)?;
+        Ok(Some(updated))
+    }
+
+    /// Every folder, in the order they were made.
+    pub fn folders(&self) -> Vec<Folder> {
+        let _ = self.refresh();
+        self.state.lock().folders.clone()
+    }
+
+    /// Makes a folder named `name` ("New folder" when blank), made unique among the folders'
+    /// names ([`unique_name`]).
+    pub fn add_folder(&self, name: &str) -> Result<Folder> {
+        let _ = self.refresh();
+        let mut g = self.state.lock();
+        let taken: Vec<&str> = g.folders.iter().map(|d| d.name.as_str()).collect();
+        let base = if name.trim().is_empty() { "New folder" } else { name };
+        let folder = Folder { id: uuid::Uuid::new_v4().simple().to_string(), name: unique_name(base, &taken) };
+        g.folders.push(folder.clone());
+        g.save(&self.path)?;
+        Ok(folder)
+    }
+
+    /// Renames a folder (its favorites stay in it); `None` when `id` is not found.
+    pub fn rename_folder(&self, id: &str, name: &str) -> Result<Option<Folder>> {
+        let _ = self.refresh();
+        let mut g = self.state.lock();
+        let Some(d) = g.folders.iter_mut().find(|d| d.id == id) else { return Ok(None) };
+        d.name = name.to_string();
+        let updated = d.clone();
+        g.save(&self.path)?;
+        Ok(Some(updated))
+    }
+
+    /// Removes a folder, never its favorites: they move to the top level. Returns how many
+    /// moved.
+    pub fn remove_folder(&self, id: &str) -> Result<usize> {
+        let _ = self.refresh();
+        let mut g = self.state.lock();
+        g.folders.retain(|d| d.id != id);
+        let mut moved = 0;
+        for f in g.items.iter_mut().filter(|f| f.folder.as_deref() == Some(id)) {
+            f.folder = None;
+            moved += 1;
+        }
+        g.save(&self.path)?;
+        Ok(moved)
+    }
+
+    /// Files a favorite in a folder (`None`: the top level); `None` when the favorite is not
+    /// found, an error when the folder is not.
+    pub fn move_to_folder(&self, id: &str, folder: Option<&str>) -> Result<Option<Favorite>> {
+        let _ = self.refresh();
+        let mut g = self.state.lock();
+        if let Some(d) = folder
+            && !g.folders.iter().any(|f| f.id == d)
+        {
+            anyhow::bail!("no folder with id {d:?}");
+        }
+        let Some(f) = g.items.iter_mut().find(|f| f.id == id) else { return Ok(None) };
+        f.folder = folder.map(str::to_string);
+        let updated = f.clone();
+        g.save(&self.path)?;
         Ok(Some(updated))
     }
 }
@@ -271,10 +364,10 @@ pub fn match_name(names: &[&str], query: &str) -> NameMatch {
 }
 
 /// Writes atomically: a temporary file in the same directory, then `rename`.
-fn save(path: &Path, items: &[Favorite]) -> Result<()> {
+fn save(path: &Path, items: &[Favorite], folders: &[Folder]) -> Result<()> {
     let dir = path.parent().context("favorites path has no parent")?;
     std::fs::create_dir_all(dir)?;
-    let text = toml::to_string_pretty(&File { favorites: items.to_vec() })?;
+    let text = toml::to_string_pretty(&File { folders: folders.to_vec(), favorites: items.to_vec() })?;
     let tmp = dir.join(format!(".favorites.toml.{}", std::process::id()));
     std::fs::write(&tmp, text)?;
     std::fs::rename(&tmp, path)?;
@@ -380,6 +473,93 @@ mod tests {
         // Two favorites with the same name cannot be told apart.
         assert_eq!(match_name(&["daily", "Daily"], "daily"), NameMatch::Ambiguous(vec![0, 1]));
         assert_eq!(fold_name("  Crème-Brûlée  (v2) "), "creme brulee v2");
+    }
+
+    /// A file from before folders: no `[[folder]]`, no `folder =`. It loads at the top level, and
+    /// as long as no folder is made it is written back the same way.
+    #[test]
+    fn a_file_without_folders_still_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = Dirs::at(dir.path().join("dataman"));
+        std::fs::create_dir_all(dirs.favorites_file().parent().unwrap()).unwrap();
+        std::fs::write(
+            dirs.favorites_file(),
+            "[[favorite]]\nid = \"a1\"\nname = \"daily\"\nsql = \"select 1\"\nconnection_id = \"c1\"\n\n[[favorite]]\nid = \"b2\"\nname = \"weekly\"\nsql = \"select 2\"\n",
+        )
+        .unwrap();
+        let store = FavoritesStore::open(&dirs).unwrap();
+        let list = store.list();
+        assert_eq!(list.iter().map(|f| (f.id.as_str(), f.folder.as_deref())).collect::<Vec<_>>(), vec![("a1", None), ("b2", None)]);
+        assert!(store.folders().is_empty());
+        store.rename("a1", "daily orders").unwrap();
+        let text = std::fs::read_to_string(dirs.favorites_file()).unwrap();
+        assert!(!text.contains("folder"), "{text}");
+    }
+
+    #[test]
+    fn folders_round_trip_and_favorites_move_in_and_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = Dirs::at(dir.path().join("dataman"));
+        let store = FavoritesStore::open(&dirs).unwrap();
+        let a = store.add(Favorite::new("a", "select 1")).unwrap();
+        let b = store.add(Favorite::new("b", "select 2")).unwrap();
+        let reports = store.add_folder("Reports").unwrap();
+        let again = store.add_folder("reports").unwrap();
+        assert_eq!(again.name, "reports 2", "a folder's name is made unique");
+        assert_eq!(store.add_folder("  ").unwrap().name, "New folder");
+        let moved = store.move_to_folder(&a.id, Some(&reports.id)).unwrap().unwrap();
+        assert_eq!((moved.name.as_str(), moved.sql.as_str(), moved.folder.as_deref()), ("a", "select 1", Some(reports.id.as_str())));
+        assert!(store.move_to_folder(&b.id, Some("nope")).is_err(), "no such folder");
+        assert!(store.move_to_folder("nope", None).unwrap().is_none());
+
+        // Another process (the MCP server) reads the same.
+        let other = FavoritesStore::open(&dirs).unwrap();
+        assert_eq!(other.folders().iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), vec!["Reports", "reports 2", "New folder"]);
+        assert_eq!(other.list().iter().map(|f| f.folder.clone()).collect::<Vec<_>>(), vec![Some(reports.id.clone()), None]);
+
+        let renamed = store.rename_folder(&reports.id, "Monthly").unwrap().unwrap();
+        assert_eq!(renamed.name, "Monthly");
+        assert!(store.rename_folder("nope", "x").unwrap().is_none());
+        assert_eq!(store.list()[0].folder.as_deref(), Some(reports.id.as_str()), "a rename keeps its favorites");
+
+        // Back to the top level.
+        store.move_to_folder(&a.id, None).unwrap();
+        assert_eq!(FavoritesStore::open(&dirs).unwrap().list()[0].folder, None);
+    }
+
+    /// Deleting a folder never deletes a favorite: they move to the top level.
+    #[test]
+    fn removing_a_folder_keeps_its_favorites() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = Dirs::at(dir.path().join("dataman"));
+        let store = FavoritesStore::open(&dirs).unwrap();
+        let d = store.add_folder("Old").unwrap();
+        let keep = store.add_folder("Keep").unwrap();
+        for (i, folder) in [Some(&d.id), Some(&d.id), Some(&keep.id), None].into_iter().enumerate() {
+            let f = store.add(Favorite::new(format!("f{i}"), format!("select {i}"))).unwrap();
+            store.move_to_folder(&f.id, folder.map(String::as_str)).unwrap();
+        }
+        assert_eq!(store.remove_folder(&d.id).unwrap(), 2);
+        let again = FavoritesStore::open(&dirs).unwrap();
+        assert_eq!(again.list().len(), 4);
+        assert_eq!(again.folders(), vec![keep.clone()]);
+        assert_eq!(again.list().iter().filter(|f| f.folder.is_none()).count(), 3);
+        assert_eq!(again.list().iter().filter(|f| f.folder.as_deref() == Some(keep.id.as_str())).count(), 1);
+    }
+
+    /// A favorite filed in a folder the file no longer has (edited by hand) is at the top level.
+    #[test]
+    fn a_dangling_folder_is_the_top_level() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = Dirs::at(dir.path().join("dataman"));
+        std::fs::create_dir_all(dirs.favorites_file().parent().unwrap()).unwrap();
+        std::fs::write(
+            dirs.favorites_file(),
+            "[[folder]]\nid = \"d1\"\nname = \"Reports\"\n\n[[favorite]]\nid = \"a1\"\nname = \"in\"\nsql = \"select 1\"\nfolder = \"d1\"\n\n[[favorite]]\nid = \"b2\"\nname = \"lost\"\nsql = \"select 2\"\nfolder = \"gone\"\n",
+        )
+        .unwrap();
+        let list = FavoritesStore::open(&dirs).unwrap().list();
+        assert_eq!(list.iter().map(|f| f.folder.as_deref()).collect::<Vec<_>>(), vec![Some("d1"), None]);
     }
 
     #[test]

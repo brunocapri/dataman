@@ -11,7 +11,7 @@ pub fn tools() -> Vec<Builtin> {
     vec![
         Builtin {
             name: "list_favorites",
-            description: "Lists Dataman's favorite queries: statements saved across history pruning and \"clear history\" (only remove_favorite drops one). Rows: [id, name, connection, database, sql], connection and database null when the favorite is not pinned to one. Run one with run_favorite by its name (an approximate name is enough).",
+            description: "Lists Dataman's favorite queries: statements saved across history pruning and \"clear history\" (only remove_favorite drops one). Rows: [id, name, connection, database, sql, folder], connection and database null when the favorite is not pinned to one, folder null at the top level (the folder only files it in the app's Favorites panel). Run one with run_favorite by its name (an approximate name is enough).",
             schema: crate::tool::Schema::new(),
             need: None,
             run: list_favorites,
@@ -80,6 +80,7 @@ fn list_favorites(cx: &Call, _a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
     Box::pin(async move {
         cx.enabled()?;
         let profiles = cx.hub.profiles();
+        let folders = cx.hub.core.favorites.folders();
         let rows = cx
             .hub
             .core
@@ -88,10 +89,11 @@ fn list_favorites(cx: &Call, _a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
             .into_iter()
             .map(|f| {
                 let conn_name = f.connection_id.as_ref().and_then(|id| profiles.iter().find(|p| p.id == *id)).map(|p| p.name.clone());
-                vec![json!(f.id), json!(f.name), conn_name.map(|n| json!(n)).unwrap_or(Value::Null), f.database.map(|d| json!(d)).unwrap_or(Value::Null), json!(f.sql)]
+                let folder = f.folder.as_ref().and_then(|id| folders.iter().find(|d| d.id == *id)).map(|d| json!(d.name)).unwrap_or(Value::Null);
+                vec![json!(f.id), json!(f.name), conn_name.map(|n| json!(n)).unwrap_or(Value::Null), f.database.map(|d| json!(d)).unwrap_or(Value::Null), json!(f.sql), folder]
             })
             .collect();
-        Ok(table(&["id", "name", "connection", "database", "sql"], rows))
+        Ok(table(&["id", "name", "connection", "database", "sql", "folder"], rows))
     })
 }
 
