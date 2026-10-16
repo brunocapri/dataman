@@ -192,7 +192,11 @@ impl Workspace {
         // The toggle fills with the explorer, wherever it is; the tabs line up past the seam.
         let open = (self.explorer_now() / self.explorer_w.max(1.)).clamp(0., 1.);
         let seam = (left_w / left.full().max(1.)).clamp(0., 1.);
-        let show_logo = left_w >= 230.;
+        let logo = self.title_logo();
+        let logo_bounds = self.logo_bounds.clone();
+        if logo.is_none() {
+            logo_bounds.set(None);
+        }
         // First run: no query tabs until there is a connection.
         let first_run = self.first_run(cx);
         // The query tabs: one strip, or one over each editor group (`split`).
@@ -253,9 +257,23 @@ impl Workspace {
                             b.ml(px(if fwd { 0. } else { 4. })).opacity(0.35).hover(|s| s).active(|s| s)
                         }
                     }))
-                    .child(div().flex_1())
-                    .when(show_logo, |d| d.child(div().pr(px(14.)).font_family(PIXEL).text_size(px(13.)).text_color(t.tx3).child("DATAMAN"))),
+                    .child(div().flex_1()),
             )
+            .children(logo.map(|r| {
+                div()
+                    .absolute()
+                    .top_0()
+                    .h_full()
+                    .left(px(r.x))
+                    .w(px(r.w))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_end()
+                    .pr(px(14.))
+                    .on_children_prepainted(move |b, _, _| logo_bounds.set(b.first().copied()))
+                    .child(div().font_family(PIXEL).text_size(px(13.)).text_color(t.tx3).child("DATAMAN"))
+            }))
             .children(strips)
             .when(first_run, |d| d.child(div().flex_1()))
             // An update on offer: its notice, which opens the update sheet.
@@ -285,6 +303,16 @@ impl Workspace {
                 let c = self.frame_now.center;
                 self.render_title_seam(c.x + f.widths(c.w).0.0, cx)
             }))
+    }
+
+    /// Where the title bar's "DATAMAN" goes: it is the explorer's header, at the right edge of
+    /// the explorer's column wherever that is in the left dock (beside the history, either side
+    /// of it, or stacked with it), never over the history's own column. `None` while the
+    /// explorer is shut, too narrow for it, or in the right dock (the tabs run over that one).
+    pub(crate) fn title_logo(&self) -> Option<crate::dock::Rect> {
+        let left = self.frame_now.dock(dataman_core::layout::Dock::Left);
+        let explorer = |c: &&crate::dock::ColFrame| c.slots.iter().any(|(s, _)| s.panel == dataman_core::layout::PanelId::Explorer && !s.ghost && s.weight >= 0.5);
+        left.cols.iter().find(explorer).map(|c| c.rect).filter(|r| r.w >= 120. && r.right() >= 230.)
     }
 
     /// The tab strips: one, or one over each editor group (`split`), the left one ending at the

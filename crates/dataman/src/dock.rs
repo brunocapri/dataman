@@ -18,6 +18,10 @@
 //! A panel keeps its own width (`explorer_w`, `side_w`; a column is as wide as its widest
 //! panel), resized on its column's inner seam; the seam between two stacked panels moves their
 //! split (a double click splits evenly).
+//!
+//! While a cell viewer is open (`cell_viewer`, at its group's right side) the right dock folds
+//! away ([`ViewerFold`]) and comes back as it was when the last one shuts; showing one of its
+//! panels meanwhile brings it back.
 
 use std::time::Instant;
 
@@ -25,7 +29,7 @@ use dataman_core::layout::{Dock, PanelId, PanelLayout, Place};
 use gpui::{AnyElement, App, Context, DragMoveEvent, InteractiveElement, IntoElement, MouseButton, ParentElement, SharedString, StatefulInteractiveElement, Styled, Window, actions, div, prelude::FluentBuilder};
 
 use crate::app::{Drag, Region, Side, Workspace};
-use crate::motion::{self, Progress, RectTween};
+use crate::motion::{self, Progress, RectTween, WidthTween};
 use crate::theme::{ActiveTheme, Pt, Theme, metrics, px};
 use crate::ui;
 
@@ -356,6 +360,23 @@ pub(crate) struct PanelDrag {
     glide: Option<RectTween>,
 }
 
+/// The right dock folded away while a cell viewer is open: the viewer takes the room at its
+/// group's right side. Temporary: the arrangement, what the panels show and the session never
+/// change, and when the last viewer shuts the dock comes back as it was. Showing one of its
+/// panels meanwhile (its toggle, ⌘B, focusing it, a sheet opening in it, a panel moved there)
+/// brings the dock back until the next viewer opens. It folds like the other columns
+/// (`WidthTween`); with Reduce Motion it is simply gone, or back.
+#[derive(Default)]
+pub(crate) struct ViewerFold {
+    /// A panel of the right dock was shown since the last viewer opened: the dock stays.
+    pub revealed: bool,
+    /// As last frame: the viewers open, what each panel of the right dock showed, folded or not.
+    viewers: usize,
+    shown: Vec<(PanelId, &'static str)>,
+    folded: bool,
+    tween: Option<WidthTween>,
+}
+
 /// This frame's docks: their geometry, the history's view on screen, and how much of it the
 /// result zoom leaves (1: all of it).
 pub(crate) struct DockPass {
@@ -390,8 +411,13 @@ impl Workspace {
     /// `layout` at rest, with the panels open that are open now (what a drag measures): its
     /// hit test, and the area of each place it offers.
     pub(crate) fn rest_frame(&self, layout: &PanelLayout, window: &Window) -> Frame {
-        let history = self.frame_now.panel(PanelId::History).is_some();
+        // Folded away for a cell viewer: not there, unless a panel would join the right dock
+        // (that brings it back).
+        let folded = self.right_folded();
+        let hidden = folded && layout.panels(Dock::Right).all(|p| self.layout.place_of(p).dock == Dock::Right);
+        let history = self.frame_now.panel(PanelId::History).is_some() || (folded && self.side.is_some() && self.layout.place_of(PanelId::History).dock == Dock::Right);
         let open = |p: PanelId| match p {
+            _ if hidden && layout.place_of(p).dock == Dock::Right => 0.,
             PanelId::Explorer => self.explorer_open as u8 as f32,
             PanelId::History => history as u8 as f32,
         };
@@ -435,9 +461,86 @@ impl Workspace {
             PanelId::Explorer => explorer_open,
             PanelId::History => side_open,
         };
-        let frame = frame(Self::view_pt(window), slots(&self.layout, open, &moves), &self.sizes());
+        // An open cell viewer folds the right dock away.
+        let fold = self.viewer_fold_now(window, cx);
+        let mut slots = slots(&self.layout, open, &moves);
+        slots[ix(Dock::Right)].iter_mut().flatten().for_each(|s| s.weight *= fold);
+        let frame = frame(Self::view_pt(window), slots, &self.sizes());
         self.frame_now = frame.clone();
         DockPass { frame, side: shown, side_rest: rest }
+    }
+
+    fn viewers_open(&self) -> usize {
+        self.viewers.iter().filter(|v| v.open).count()
+    }
+
+    /// What each panel of the right dock shows (a shut one is left out).
+    fn right_shown(&self) -> Vec<(PanelId, &'static str)> {
+        let l = &self.layout;
+        l.panels(Dock::Right)
+            .filter_map(|p| match p {
+                PanelId::Explorer => self.explorer_open.then_some((p, "explorer")),
+                PanelId::History => crate::app::side_id(&self.side).map(|s| (p, s)),
+            })
+            .collect()
+    }
+
+    /// Whether a cell viewer keeps the right dock folded away now ([`ViewerFold`]).
+    pub(crate) fn right_folded(&self) -> bool {
+        self.viewers_open() > 0 && !self.viewer_fold.revealed && self.layout.panels(Dock::Right).next().is_some()
+    }
+
+    /// `p` toggled (or focused) while a cell viewer keeps it folded away in the right dock: the
+    /// dock comes back, rather than the panel shutting out of sight. `true`: that was it.
+    pub(crate) fn reveal_folded(&mut self, p: PanelId, cx: &mut Context<Self>) -> bool {
+        if !self.right_folded() || self.layout.place_of(p).dock != Dock::Right {
+            return false;
+        }
+        self.viewer_fold.revealed = true;
+        cx.notify();
+        true
+    }
+
+    /// How open the right dock is this frame (0 folded away … 1) as the cell viewers open and
+    /// shut; asks for the next frame while it folds. Called once per frame.
+    fn viewer_fold_now(&mut self, window: &mut Window, cx: &App) -> f32 {
+        let (n, shown) = (self.viewers_open(), self.right_shown());
+        let f = &mut self.viewer_fold;
+        // Something new shows in the right dock (opened, or moved there): on purpose.
+        if n > 0 && shown.iter().any(|s| !f.shown.contains(s)) {
+            f.revealed = true;
+        }
+        // Another viewer opened: it folds the dock again. None left: nothing to fold for.
+        if n == 0 || n > f.viewers {
+            f.revealed = false;
+        }
+        f.viewers = n;
+        f.shown = shown;
+        let folded = self.right_folded();
+        let f = &mut self.viewer_fold;
+        let target = if folded { 0. } else { 1. };
+        let now = Instant::now();
+        if folded != f.folded {
+            let was = 1. - target;
+            let from = f.tween.and_then(|t| t.at(was, now)).unwrap_or(was);
+            f.tween = (!cx.reduce_motion()).then(|| WidthTween::panel(from, target, 1.));
+            f.folded = folded;
+        }
+        match f.tween.and_then(|t| t.at(target, now)) {
+            Some(k) => {
+                window.request_animation_frame();
+                k
+            }
+            None => {
+                f.tween = None;
+                target
+            }
+        }
+    }
+
+    /// Checks: the right dock is folding now.
+    pub(crate) fn demo_right_folding(&self) -> bool {
+        self.viewer_fold.tween.is_some_and(|t| t.at(0., Instant::now()).is_some())
     }
 
     /// What the dragged panel is called on its ghost and on the preview.
@@ -475,6 +578,13 @@ impl Workspace {
             let mut cols = Vec::with_capacity(ncols);
             for (ci, col) in df.cols.iter().enumerate() {
                 let n = col.slots.len();
+                // In the left dock only the explorer's column is the glass sidebar under the
+                // title bar's left part ("DATAMAN"); the history keeps the work column's fill
+                // there: stacked with the explorer, its own slot; in a column of its own, the
+                // column, the title band over it included (it starts under the band's hairline,
+                // as in the right dock).
+                let glass = d == Dock::Left && col.slots.iter().any(|(s, _)| s.panel == PanelId::Explorer);
+                let fill = d == Dock::Left && !glass;
                 let mut children = Vec::with_capacity(n);
                 for (i, (s, r)) in col.slots.iter().enumerate() {
                     let content: AnyElement = match (s.ghost, s.panel, &pass.side) {
@@ -485,7 +595,7 @@ impl Workspace {
                         (false, PanelId::History, None) => div().into_any_element(),
                     };
                     let focus = s.panel == PanelId::History && !s.ghost && region == Some(Region::Side);
-                    children.push(self.render_slot(d, i, n, *s, *r, col.full, content, focus, pass.side_rest, &t, cx));
+                    children.push(self.render_slot(d, i, n, *s, *r, col.full, content, focus, glass, pass.side_rest, &t, cx));
                 }
                 let bounds = self.slot_bounds.clone();
                 let k = ix(d);
@@ -496,6 +606,7 @@ impl Workspace {
                 };
                 // The last column takes what is left (no gap from rounding).
                 let last = ci + 1 == ncols;
+                let body = div().flex_1().min_h_0().flex().flex_col().border_color(t.line).when(fill, |b| b.border_t_1()).on_children_prepainted(record).children(children);
                 cols.push(
                     div()
                         .h_full()
@@ -504,17 +615,18 @@ impl Workspace {
                         .flex_col()
                         .overflow_hidden()
                         .border_color(t.line)
+                        .when(fill, |c| c.bg(t.panel))
                         .when(!last, |c| c.w(px(col.rect.w)))
                         .when(last, |c| c.flex_1().min_w_0())
                         .when(ci > 0, |c| c.border_l_1())
-                        .on_children_prepainted(record)
-                        .children(children),
+                        .when(d == Dock::Left, |c| c.child(div().h(px(metrics::TITLE_H)).flex_none()))
+                        .child(body),
                 );
             }
             let rect = df.rect;
             let el = match d {
                 // On the glass, from the window's top edge (the title bar is laid over it).
-                Dock::Left => div().w(px(rect.w)).flex_none().h_full().overflow_hidden().pt(px(metrics::TITLE_H)).flex().flex_row().children(cols),
+                Dock::Left => div().w(px(rect.w)).flex_none().h_full().overflow_hidden().flex().flex_row().children(cols),
                 Dock::Right => div().relative().w(px(rect.w)).flex_none().h_full().border_l_1().border_color(t.line).flex().flex_row().children(cols),
             };
             views[ix(d)] = Some(el.into_any_element());
@@ -524,7 +636,7 @@ impl Workspace {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn render_slot(&self, d: Dock, i: usize, n: usize, s: Slot, r: Rect, full: f32, content: AnyElement, focus: bool, side_rest: f32, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    fn render_slot(&self, d: Dock, i: usize, n: usize, s: Slot, r: Rect, full: f32, content: AnyElement, focus: bool, fill: bool, side_rest: f32, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let last = i + 1 == n;
         let inner = match d {
             Dock::Left => div().absolute().top_0().bottom_0().left_0().w(px(full)),
@@ -533,6 +645,9 @@ impl Workspace {
         // The one being dragged waits, dimmed, until it is dropped.
         let dragged = !s.ghost && self.panel_drag.as_ref().is_some_and(|g| g.panel == s.panel);
         let fade = if s.panel == PanelId::History && !s.ghost { side_rest } else { 1. };
+        // Stacked with the explorer on the glass, the history keeps its own fill (and, at the
+        // top, the hairline under the title band).
+        let fill = fill && s.panel == PanelId::History && !s.ghost;
         let p = s.panel;
         // A right click on its header: the panel's menu (move it, reset the layout).
         let head = r.y + head_h(p);
@@ -546,7 +661,8 @@ impl Workspace {
             // The last slot takes what is left (no gap from rounding).
             .when(!last, |e| e.h(px(r.h)))
             .when(last, |e| e.flex_1().min_h_0())
-            .when(i > 0, |e| e.border_t_1())
+            .when(i > 0 || fill, |e| e.border_t_1())
+            .when(fill, |e| e.bg(t.panel))
             .child(inner.child(content))
             .when(fade < 1., |e| e.opacity(fade))
             .when(dragged, |e| e.opacity(0.4))
@@ -735,6 +851,9 @@ impl Workspace {
     /// The palette's "Move … to the … dock": a column of its own next to the work surface,
     /// shown if it was shut.
     pub(crate) fn move_panel_to(&mut self, p: PanelId, d: Dock, cx: &mut Context<Self>) {
+        if d == Dock::Right {
+            self.reveal_folded(p, cx);
+        }
         match p {
             PanelId::Explorer => self.set_explorer_open(true, cx),
             PanelId::History if self.side.is_none() => self.side = Some(self.last_side.clone().unwrap_or(Side::History)),

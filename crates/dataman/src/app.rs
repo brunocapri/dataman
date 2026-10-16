@@ -404,6 +404,8 @@ pub struct Workspace {
     pub(crate) dock_moves: Vec<crate::dock::DockMove>,
     pub(crate) panel_drag: Option<crate::dock::PanelDrag>,
     pub(crate) frame_now: crate::dock::Frame,
+    /// The right dock folded away while a cell viewer is open (never saved).
+    pub(crate) viewer_fold: crate::dock::ViewerFold,
     pub(crate) panel_menu: Option<(dataman_core::layout::PanelId, gpui::Point<gpui::Pixels>)>,
     /// The docks' slots as last laid out, per dock and column (the checks hold them to
     /// `frame_now`).
@@ -413,6 +415,8 @@ pub struct Workspace {
     saved_flash_task: Option<gpui::Task<()>>,
     /// Where it was last laid out (the checks click it).
     pub(crate) saved_bounds: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
+    /// The title bar's "DATAMAN" as last laid out (`title_logo`; the checks).
+    pub(crate) logo_bounds: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
     /// Editor height as a share of the work column (kept when the window resizes).
     pub(crate) editor_frac: Option<f32>,
     pub(crate) drag: Option<Drag>,
@@ -633,11 +637,13 @@ impl Workspace {
             dock_moves: Vec::new(),
             panel_drag: None,
             frame_now: Default::default(),
+            viewer_fold: Default::default(),
             panel_menu: None,
             slot_bounds: Default::default(),
             saved_flash: None,
             saved_flash_task: None,
             saved_bounds: Default::default(),
+            logo_bounds: Default::default(),
             editor_frac: None,
             drag: None,
             tab_bounds: Default::default(),
@@ -1819,6 +1825,10 @@ impl Workspace {
 
     pub(crate) fn toggle_side(&mut self, which: Side, cx: &mut Context<Self>) {
         if self.side.as_ref().is_some_and(|s| s.same_kind(&which)) {
+            // Folded away for a cell viewer: shown again, not shut out of sight.
+            if self.reveal_folded(dataman_core::layout::PanelId::History, cx) {
+                return;
+            }
             self.last_side = self.side.take();
         } else {
             self.side = Some(which);
@@ -1833,6 +1843,9 @@ impl Workspace {
         let Some(panel) = cx.try_global::<PanelRegistry>().and_then(|r| r.find(&conn.info, id)) else { return };
         // Open for this connection: close it. Open for another one: rebuild.
         if matches!(&self.side, Some(Side::Server(pid, _, b)) if *pid == id && b.fits(None, Some(&conn))) {
+            if self.reveal_folded(dataman_core::layout::PanelId::History, cx) {
+                return;
+            }
             self.last_side = self.side.take();
         } else {
             if let Some(w) = panel.width() {
@@ -1942,6 +1955,10 @@ impl Workspace {
         if open == self.explorer_open {
             return;
         }
+        // Folded away in the right dock for a cell viewer: shown again, not shut out of sight.
+        if !open && self.reveal_folded(dataman_core::layout::PanelId::Explorer, cx) {
+            return;
+        }
         let from = self.explorer_now();
         self.explorer_open = open;
         let to = self.explorer_target();
@@ -2048,6 +2065,7 @@ impl Workspace {
     pub(crate) fn focus_region(&mut self, r: Region, window: &mut Window, cx: &mut Context<Self>) {
         match r {
             Region::Explorer => {
+                self.reveal_folded(dataman_core::layout::PanelId::Explorer, cx);
                 self.set_explorer_open(true, cx);
                 let f = self.tree.focus_handle(cx);
                 window.focus(&f, cx);
@@ -2066,6 +2084,7 @@ impl Workspace {
             }
             Region::Side => match &self.side {
                 Some(Side::History) => {
+                    self.reveal_folded(dataman_core::layout::PanelId::History, cx);
                     let f = self.history.read(cx).filter_focus(cx);
                     window.focus(&f, cx);
                 }
@@ -2813,6 +2832,9 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(|w, _: &ToggleSidePanel, _, cx| {
                 if w.side.is_some() {
+                    if w.reveal_folded(dataman_core::layout::PanelId::History, cx) {
+                        return;
+                    }
                     w.last_side = w.side.take();
                 } else {
                     w.side = Some(w.last_side.clone().unwrap_or(Side::History));
