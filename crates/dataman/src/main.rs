@@ -12,6 +12,8 @@ mod conns;
 mod crash_ui;
 mod data_import;
 mod dnd;
+mod dock;
+mod dock_check;
 mod dock_icon;
 mod edit_ui;
 mod editor;
@@ -204,6 +206,7 @@ fn menus(cx: &App) -> Vec<Menu> {
                 MenuItem::separator(),
                 MenuItem::action("Toggle Explorer", ToggleExplorer),
                 MenuItem::action("Toggle Side Panel", ToggleSidePanel),
+                MenuItem::action("Reset Panel Layout", dock::ResetPanelLayout),
             ]
             .into_iter()
             .chain(when(caps.activity, vec![MenuItem::action("Activity Monitor", OpenActivity)]))

@@ -6,6 +6,8 @@
 //! - [`WidthTween`]: the explorer, the history and the cell viewer sliding open and shut (the
 //!   title bar's explorer toggle fills its left part along with the explorer).
 //! - [`Flash`]: a feedback that fades in and out ("Copied", "Saved as favorite").
+//! - [`Progress`] and [`RectTween`]: a panel dropped in another dock settling into its place
+//!   (`dock`), and the drop preview gliding from one place to the next while it is dragged.
 //! - [`FindPop`]: Xcode's find indicator (AppKit's `showFindIndicatorForRange:`): a box (rounded
 //!   on a grid cell, square elsewhere) with the text drawn on top pops in enlarged, springs back to the text's size and fades.
 //!   Blue on a clicked grid value ([`PopStyle::Select`]), yellow on something found
@@ -137,6 +139,70 @@ impl ZoomTween {
         }
         Some(self.from + (target - self.from) * EASE_OUT.eval(raw))
     }
+}
+
+/// A panel moving to another dock (or another place in its own): the place it leaves folds
+/// shut while the new one opens, the other panels and the work surface sliding with them.
+pub const DOCK_MOVE: Duration = Duration::from_millis(240);
+/// The drop preview moving from one place to the next while a panel is dragged.
+pub const DROP_PREVIEW: Duration = Duration::from_millis(120);
+
+/// An eased progress 0 → 1 over a fixed time (`EASE`): the caller mixes its own start and end.
+#[derive(Clone, Copy, Debug)]
+pub struct Progress {
+    started: Instant,
+    duration: Duration,
+}
+
+impl Progress {
+    pub fn new(duration: Duration) -> Progress {
+        Progress { started: Instant::now(), duration }
+    }
+
+    /// How far along it is now; `None` once it has landed (the caller drops it).
+    pub fn at(&self, now: Instant) -> Option<f32> {
+        if let Some(p) = dock_freeze() {
+            return Some(p);
+        }
+        let raw = now.saturating_duration_since(self.started).as_secs_f32() / self.duration.as_secs_f32().max(1e-3);
+        (raw < 1.).then(|| EASE.eval(raw))
+    }
+}
+
+/// A rectangle (x, y, w, h in points) moving from where it was toward a target the caller
+/// passes each frame, over [`DROP_PREVIEW`].
+#[derive(Clone, Copy, Debug)]
+pub struct RectTween {
+    from: [f32; 4],
+    started: Instant,
+}
+
+impl RectTween {
+    pub fn new(from: [f32; 4]) -> RectTween {
+        RectTween { from, started: Instant::now() }
+    }
+
+    /// The rectangle now, heading for `target`; `None` once it has landed.
+    pub fn at(&self, target: [f32; 4], now: Instant) -> Option<[f32; 4]> {
+        let raw = now.saturating_duration_since(self.started).as_secs_f32() / DROP_PREVIEW.as_secs_f32();
+        if raw >= 1. {
+            return None;
+        }
+        let k = EASE_OUT.eval(raw);
+        Some(std::array::from_fn(|i| self.from[i] + (target[i] - self.from[i]) * k))
+    }
+}
+
+/// Screenshots (`--features screenshots`): `DATAMAN_DOCK_FREEZE=0.5` holds a panel's move
+/// half-way.
+fn dock_freeze() -> Option<f32> {
+    #[cfg(feature = "screenshots")]
+    {
+        static FREEZE: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
+        *FREEZE.get_or_init(|| std::env::var("DATAMAN_DOCK_FREEZE").ok().and_then(|v| v.parse().ok()))
+    }
+    #[cfg(not(feature = "screenshots"))]
+    None
 }
 
 /// Screenshots (`--features screenshots`): `DATAMAN_ZOOM_FREEZE=0.5` holds a zoom half-way.
@@ -484,6 +550,24 @@ mod tests {
             assert!(v + 1e-4 >= last);
             last = v;
         }
+    }
+
+    /// A dock move lands on 1 after `DOCK_MOVE`, eased; the preview glides to its target and
+    /// stops there.
+    #[test]
+    fn dock_move_and_preview_land() {
+        let p = Progress::new(DOCK_MOVE);
+        let t0 = p.started;
+        let mid = p.at(t0 + DOCK_MOVE / 2).unwrap();
+        assert!(mid > 0.5 && mid < 1., "{mid}");
+        assert!(p.at(t0 + Duration::from_millis(10)).unwrap() < mid);
+        assert_eq!(p.at(t0 + DOCK_MOVE), None);
+        let r = RectTween::new([0., 0., 100., 100.]);
+        let target = [200., 40., 300., 500.];
+        let half = r.at(target, r.started + DROP_PREVIEW / 2).unwrap();
+        assert!(half.iter().zip(target).all(|(v, t)| *v <= t && *v >= 0.), "{half:?}");
+        assert!(half[0] > 100., "quick out of the gate: {half:?}");
+        assert_eq!(r.at(target, r.started + DROP_PREVIEW), None);
     }
 
     fn pop(style: PopStyle, reduced: bool) -> FindPop<()> {

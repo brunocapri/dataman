@@ -27,6 +27,7 @@ pub mod guard;
 pub mod history;
 pub mod import;
 pub mod jsontree;
+pub mod layout;
 pub mod lar;
 pub mod lint;
 pub mod order;

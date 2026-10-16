@@ -44,6 +44,11 @@ impl Workspace {
     pub(crate) fn restore_session(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let Some(store) = store(cx) else { return false };
         let Some(s) = store.load() else { return false };
+        // Where the panels sit, whatever else comes back.
+        self.layout = s.layout.clone().normalized();
+        if s.bottom_h.is_finite() && s.bottom_h > 0. {
+            self.bottom_h = s.bottom_h.max(crate::dock::BOTTOM_MIN);
+        }
         if s.tabs.is_empty() {
             return false;
         }
@@ -145,6 +150,8 @@ impl Workspace {
             history_open: matches!(self.side, Some(Side::History)),
             side_w: self.side_w,
             editor_frac: self.editor_frac,
+            layout: self.layout.clone(),
+            bottom_h: self.bottom_h,
         };
         (session, files)
     }
@@ -165,6 +172,7 @@ impl Workspace {
         }
         (self.active, self.explorer_open, self.explorer_w.to_bits(), self.side_w.to_bits(), matches!(self.side, Some(Side::History))).hash(&mut h);
         self.editor_frac.map(f32::to_bits).hash(&mut h);
+        (&self.layout, self.bottom_h.to_bits()).hash(&mut h);
         h.finish()
     }
 

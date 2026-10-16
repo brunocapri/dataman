@@ -268,8 +268,8 @@ pub(crate) fn tabs_holding<K: PartialEq + Copy>(tabs: &[(K, Option<&str>, bool)]
 
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum Drag {
-    Explorer,
-    Side,
+    /// A dock's seam (`dock`): its width, or the bottom dock's height.
+    Dock(dataman_core::layout::Dock),
     Split,
 }
 
@@ -403,7 +403,7 @@ pub struct Workspace {
     pub(crate) welcome: Entity<Welcome>,
     pub(crate) side: Option<Side>,
     /// What ⌥⌘B reopens.
-    last_side: Option<Side>,
+    pub(crate) last_side: Option<Side>,
     /// The connection new tabs use: the last one selected or connected.
     pub(crate) current_conn: Option<String>,
     pub(crate) explorer_open: bool,
@@ -416,6 +416,15 @@ pub struct Workspace {
     /// What the side panel showed last frame (`None`: nothing; `Some(None)`: a panel that does
     /// not slide), to see a sliding one open or shut.
     side_was: Option<Option<Slide>>,
+    /// Which dock each panel sits in (`dock`), the bottom dock's height, the panels settling
+    /// into a new place, a panel being dragged, and the docks as laid out this frame.
+    pub(crate) layout: dataman_core::layout::PanelLayout,
+    pub(crate) bottom_h: f32,
+    pub(crate) dock_moves: Vec<crate::dock::DockMove>,
+    pub(crate) panel_drag: Option<crate::dock::PanelDrag>,
+    pub(crate) frame_now: crate::dock::Frame,
+    /// The docks' slots as last laid out, per dock (the checks hold them to `frame_now`).
+    pub(crate) slot_bounds: std::rc::Rc<std::cell::RefCell<[Vec<gpui::Bounds<gpui::Pixels>>; 3]>>,
     /// ⌘S's feedback in the toolbar, and the redraws of its fades.
     pub(crate) saved_flash: Option<SavedFlash>,
     saved_flash_task: Option<gpui::Task<()>>,
@@ -602,6 +611,12 @@ impl Workspace {
             side_w: metrics::SIDE_W,
             side_tween: None,
             side_was: None,
+            layout: Default::default(),
+            bottom_h: crate::dock::BOTTOM_H,
+            dock_moves: Vec::new(),
+            panel_drag: None,
+            frame_now: Default::default(),
+            slot_bounds: Default::default(),
             saved_flash: None,
             saved_flash_task: None,
             saved_bounds: Default::default(),
@@ -2416,15 +2431,8 @@ impl Workspace {
             self.drag = None;
             return;
         }
-        let size = window.viewport_size();
         match d {
-            Drag::Explorer => {
-                self.explorer_w = ev.position.x.pt().clamp(metrics::EXPLORER_MIN, metrics::EXPLORER_MAX);
-            }
-            Drag::Side => {
-                let w = size.width.pt() - ev.position.x.pt();
-                self.side_w = w.clamp(metrics::SIDE_MIN, metrics::SIDE_MAX);
-            }
+            Drag::Dock(dock) => self.resize_dock(dock, (ev.position.x.pt(), ev.position.y.pt()), window),
             Drag::Split => {
                 let top = metrics::TITLE_H + metrics::TOOLBAR_H;
                 let column = self.work_column_h(window);
@@ -2474,10 +2482,11 @@ impl Workspace {
         }
     }
 
-    /// Height of the work column below the toolbar (editor + divider + result bar + grid).
+    /// Height of the work column below the toolbar (editor + divider + result bar + grid), over
+    /// the bottom dock.
     pub(crate) fn work_column_h(&self, window: &Window) -> f32 {
         let h = window.viewport_size().height.pt();
-        h - metrics::TITLE_H - metrics::STATUS_H - metrics::TOOLBAR_H
+        h - metrics::TITLE_H - metrics::STATUS_H - metrics::TOOLBAR_H - self.frame_now.dock(dataman_core::layout::Dock::Bottom).rect.h
     }
 
     /// `below`: the extra chrome under the divider (the result tabs strip, when shown).
@@ -2564,12 +2573,15 @@ impl Render for Workspace {
         }
         let t = cx.theme();
         let first_run = self.first_run(cx);
+        // The docks first (`dock`): the work surface and the title bar follow their geometry.
+        let pass = self.dock_pass(first_run, window, cx);
         let surface = if first_run { self.welcome.clone().into_any_element() } else { self.render_work(window, cx).into_any_element() };
-        // Zeron's shell: the explorer column and the work column both run from the window's
-        // top edge to the status bar, with the title bar laid over them (transparent). The
-        // explorer sits on the glass; the work column paints its `panel` fill once, flush (no
-        // radius, no margin) to the window's right edge, and its left hairline is the seam.
-        // ⌘B slides the column (Zeron's sidebar tween): its content keeps the full width and is
+        // Zeron's shell: the left dock (the explorer) and the work column both run from the
+        // window's top edge to the status bar, with the title bar laid over them (transparent).
+        // The left dock sits on the glass; the work column paints its `panel` fill once, flush (no
+        // radius, no margin) to the window's right edge, and its left hairline is the seam; the
+        // right and bottom docks sit inside it.
+        // ⌘B slides the explorer (Zeron's sidebar tween): its content keeps the full width and is
         // clipped, so the tree never reflows mid-flight. Frames are requested only while it moves.
         if let Some(tw) = self.explorer_tween {
             if tw.at(self.explorer_target(), std::time::Instant::now()).is_some() {
@@ -2580,17 +2592,10 @@ impl Render for Workspace {
         }
         // A production connection: a thin red accent across the top of the work column.
         let production = !first_run && self.active_tab().and_then(|t| t.read(cx).connection().map(|c| c.profile.env.is_production())).unwrap_or(false);
-        let explorer_w = self.explorer_now();
-        let sliding = self.explorer_tween.is_some();
-        let explorer_shown = explorer_w > 0.5;
-        let explorer = explorer_shown.then(|| {
-            div()
-                .w(px(explorer_w))
-                .flex_none()
-                .h_full()
-                .overflow_hidden()
-                .child(div().w(px(self.explorer_w)).h_full().pt(px(metrics::TITLE_H)).child(self.tree.clone()))
-        });
+        let docks = self.render_docks(&pass, window, cx);
+        let left_w = pass.frame.dock(dataman_core::layout::Dock::Left).rect.w;
+        let left_shown = left_w > 0.5;
+        let moving = self.explorer_tween.is_some() || !self.dock_moves.is_empty();
         let work = div()
             .flex_1()
             .min_w_0()
@@ -2601,33 +2606,44 @@ impl Render for Workspace {
             // theme), painted here and only here: every region inside is transparent, so no
             // overlap darkens. Under the title bar it carries the query tabs.
             .bg(t.panel)
-            .when(explorer_shown, |d| d.border_l_1().border_color(t.line))
+            .when(left_shown, |d| d.border_l_1().border_color(t.line))
             .overflow_hidden()
             .child(div().h(px(metrics::TITLE_H)).flex_none())
             // The title band ends on a hairline over the work column (the toolbar, the
-            // editor and the side panel start under it).
+            // editor and the right dock start under it).
             .child(
                 div()
                     .flex_1()
                     .min_h_0()
                     .flex()
+                    .flex_row()
                     .when(!production, |d| d.border_t_1().border_color(t.line))
                     .when(production, |d| d.border_t_2().border_color(t.err))
-                    .child(surface),
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .flex()
+                            .flex_col()
+                            .child(div().flex_1().min_h_0().flex().child(surface))
+                            .children(docks.bottom),
+                    )
+                    .children(docks.right),
             );
-        // The explorer's resize grabber, on the seam: 8 pt straddling the hairline, from under
+        // The left dock's resize grabber, on the seam: 8 pt straddling the hairline, from under
         // the title bar down (the bar keeps its drag area), painted over both columns.
-        let seam = (self.explorer_open && !sliding).then(|| {
+        let seam = (left_shown && !moving).then(|| {
             div()
                 .id("explorer-resize")
                 .absolute()
                 .top(px(metrics::TITLE_H))
                 .bottom_0()
-                .left(px(self.explorer_w - 4.))
+                .left(px(left_w - 4.))
                 .w(px(8.))
                 .cursor_col_resize()
                 .on_mouse_down(MouseButton::Left, cx.listener(|w, _, _, cx| {
-                    w.drag = Some(Drag::Explorer);
+                    w.drag = Some(Drag::Dock(dataman_core::layout::Dock::Left));
                     cx.stop_propagation();
                 }))
         });
@@ -2886,13 +2902,15 @@ impl Render for Workspace {
             .on_action(cx.listener(|w, _: &CancelPendingRun, window, cx| w.resolve_pending_run(false, window, cx)))
             .on_action(cx.listener(|w, _: &DiscardAndRun, window, cx| w.resolve_pending_run(true, window, cx)))
             .map(|d| crate::lar::workspace_actions(d, cx))
+            .map(|d| crate::dock::workspace_actions(d, cx))
             .on_mouse_move(cx.listener(Self::on_drag_move))
             .on_mouse_up(MouseButton::Left, cx.listener(|w, _, _, _| w.drag = None))
             .capture_any_mouse_down(cx.listener(|w, _, _, _| w.focus_visible = false))
-            .child(div().flex_1().min_h_0().relative().flex().flex_row().children(explorer).child(work).children(seam))
+            .child(div().flex_1().min_h_0().relative().flex().flex_row().children(docks.left).child(work).children(seam))
             // A pane being resized keeps its cursor wherever the pointer goes.
             .children(self.drag.map(|d| {
-                let style = if d == Drag::Split { gpui::CursorStyle::ResizeRow } else { gpui::CursorStyle::ResizeColumn };
+                let rows = matches!(d, Drag::Split | Drag::Dock(dataman_core::layout::Dock::Bottom));
+                let style = if rows { gpui::CursorStyle::ResizeRow } else { gpui::CursorStyle::ResizeColumn };
                 gpui::canvas(|_, _, _| {}, move |_, _, window, _| window.set_window_cursor_style(style)).absolute().size_0()
             }))
             .child(self.render_status(window, cx))
@@ -2900,6 +2918,8 @@ impl Render for Workspace {
             .child(self.render_titlebar(window, cx))
             // A 1 pt highlight along the top edge (dark theme), across the whole window.
             .when(t.is_dark(), |d| d.child(div().absolute().top_0().left_0().right_0().h(px(1.)).bg(gpui::hsla(0., 0., 1., 0.08))))
+            // A panel being dragged: where it would land.
+            .children(self.render_drop_preview(window, cx))
             .children(self.render_toasts(window, cx))
             .children(self.render_crash_toast(cx))
             .children(self.dialog.clone())

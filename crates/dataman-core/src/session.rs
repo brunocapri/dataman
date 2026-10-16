@@ -53,6 +53,10 @@ pub struct Session {
     pub side_w: f32,
     /// The editor's share of the work column (`None`: the default height).
     pub editor_frac: Option<f32>,
+    /// Which dock each panel sits in (`layout`); missing in older files: the default.
+    pub layout: crate::layout::PanelLayout,
+    /// The bottom dock's height in points (0: the default).
+    pub bottom_h: f32,
 }
 
 /// A query tab.

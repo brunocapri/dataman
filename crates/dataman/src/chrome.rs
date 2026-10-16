@@ -14,7 +14,7 @@ use dataman_core::batch::{self, Key};
 use dataman_core::result::{CopyFormat, Phase};
 use dataman_core::{Connection, TxState, TxStatus};
 
-use crate::app::{Drag, Region, Side, Slide, ViewerMode, Workspace, fmt_dur};
+use crate::app::{Drag, Region, Side, ViewerMode, Workspace, fmt_dur};
 use crate::assets::{Icon, icon};
 use crate::grid::{fmt_clock, statement_verb, ui_count};
 use crate::messages::{self, Of, Row as MessageRow};
@@ -153,15 +153,18 @@ impl Workspace {
 
     pub(crate) fn render_titlebar(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let t = cx.theme();
-        // Follows the explorer as it slides (⌘B): the tabs ride the seam, never closer than the
-        // traffic lights and the toggle (116 pt).
-        let explorer_w = self.explorer_now();
+        // Follows the left dock as it slides (⌘B, a panel moved): the tabs ride the seam, never
+        // closer than the traffic lights and the toggle (116 pt).
+        let left = self.frame_now.dock(dataman_core::layout::Dock::Left);
+        let left_w = left.rect.w;
         // The lights keep their size at any zoom: in zoomed points they take less room.
         let lights = metrics::lights_right_at(crate::theme::zoom());
-        // Room for the explorer toggle and the back / forward arrows when the explorer is shut.
-        let side = explorer_w.max(lights + 92.);
-        let open = (explorer_w / self.explorer_w.max(1.)).clamp(0., 1.);
-        let show_logo = explorer_w >= 230.;
+        // Room for the explorer toggle and the back / forward arrows when the left dock is shut.
+        let side = left_w.max(lights + 92.);
+        // The toggle fills with the explorer, wherever it is; the tabs line up past the seam.
+        let open = (self.explorer_now() / self.explorer_w.max(1.)).clamp(0., 1.);
+        let seam = (left_w / left.full.max(1.)).clamp(0., 1.);
+        let show_logo = left_w >= 230.;
         // First run: no query tabs until there is a connection.
         let first_run = self.first_run(cx);
         let tabs: Vec<AnyElement> =
@@ -232,7 +235,7 @@ impl Workspace {
                     .h_full()
                     // Past the seam the first tab lines up with the toolbar's Run button (the
                     // hairline + its 10 pt padding).
-                    .pl(px(2. + 9. * open))
+                    .pl(px(2. + 9. * seam))
                     .flex()
                     .flex_row()
                     .items_center()
@@ -624,49 +627,8 @@ impl Workspace {
                 ),
             );
         }
-        // The history and the cell viewer slide in and out like the explorer (the content keeps
-        // its width and is clipped); the other panels just appear.
-        let slide = self.side_slide(window, cx);
-        let sliding = slide.is_some_and(|(_, w)| (w - self.side_w).abs() > 0.5);
-        // The zoomed result covers the side panel too: it folds away with the editor.
-        let shown = self.side.clone().or_else(|| slide.map(|(k, _)| k.side())).filter(|_| !covered);
-        let side = shown.map(|s| {
-            let slides = slide.filter(|(k, _)| Slide::of(&s) == Some(*k));
-            let content: AnyElement = match s {
-                Side::History => self.history.clone().into_any_element(),
-                Side::Viewer => self.render_viewer(&tab, &t, cx).into_any_element(),
-                Side::Server(_, v, _) | Side::Feature(_, v, _) => v.into_any_element(),
-            };
-            let w = slides.map_or(self.side_w, |(_, w)| w) * rest;
-            let moving = (slides.is_some() && sliding) || zoom > 0.;
-            div()
-                .relative()
-                .w(px(w))
-                .flex_none()
-                .h_full()
-                // The seam's hairline, like the explorer's and the bars'.
-                .border_l_1()
-                .border_color(t.line)
-                .when(moving, |d| d.overflow_hidden())
-                .when(zoom > 0., |d| d.opacity(rest))
-                .child(div().absolute().top_0().bottom_0().right_0().w(px(self.side_w)).child(content))
-                .children((region == Some(Region::Side)).then(|| focus_ring(&t)))
-                .when(!moving, |d| d.child(
-                    div()
-                        .id("side-resize")
-                        .absolute()
-                        .top_0()
-                        .bottom_0()
-                        .left(px(-4.))
-                        .w(px(8.))
-                        .cursor_col_resize()
-                        .on_mouse_down(MouseButton::Left, cx.listener(|w, _, _, cx| {
-                            w.drag = Some(Drag::Side);
-                            cx.stop_propagation();
-                        })),
-                ))
-        });
-        div().size_full().flex().flex_row().child(main).children(side)
+        // The side panel is a dock's (`dock`): the zoom folds it there.
+        div().size_full().flex().flex_row().child(main)
     }
 
     // -----------------------------------------------------------------------------------------
@@ -1894,7 +1856,7 @@ impl Workspace {
     // -----------------------------------------------------------------------------------------
     // Cell viewer (⇧Space): JSON pretty-printed, full text, bytes as hex.
 
-    fn render_viewer(&self, tab: &gpui::Entity<QueryTab>, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    pub(crate) fn render_viewer(&self, tab: &gpui::Entity<QueryTab>, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let grid = tab.read(cx).grid.read(cx);
         let cell = grid.active_cell();
         let rs = grid.result().cloned();
@@ -2425,7 +2387,7 @@ fn explorer_toggle(t: &Theme, open: f32) -> gpui::Stateful<Div> {
 /// The focus ring of a region: a 1 pt neutral line and a faint 2 pt band inside it (square:
 /// the regions are flush with each other and with the window's edges, so a ring outside would
 /// be cut off). Neutral, not the accent: blue is the selection's.
-fn focus_ring(t: &Theme) -> Div {
+pub(crate) fn focus_ring(t: &Theme) -> Div {
     div()
         .absolute()
         .inset_0()
