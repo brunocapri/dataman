@@ -11,6 +11,7 @@ use gpui::{
 };
 use crate::theme::{Pt, px};
 use dataman_core::batch::{self, Key};
+use dataman_core::groups::Pane;
 use dataman_core::result::{CopyFormat, Phase};
 use dataman_core::{Connection, TxState, TxStatus};
 
@@ -24,9 +25,18 @@ use crate::tab::{ItemState, QueryTab};
 use crate::theme::{ActiveTheme, PIXEL, Theme, metrics};
 use crate::ui::{self, Btn};
 
-/// What the toolbar and result bar need from the active tab, read once per frame.
+/// What the toolbar and result bar need from a group's tab in front, read once per frame.
 struct TabView {
+    /// The editor group it is shown in, and whether that group has the focus (the popups, the
+    /// bounds the checks read and the focus ring are the focused group's).
+    pane: Pane,
+    focused: bool,
     conn: Option<Arc<Connection>>,
+    /// The tab's database, the connection a restored tab waits for, and the agent whose tab it
+    /// is (as its MCP client introduced itself).
+    db: String,
+    want: Option<(String, Option<String>)>,
+    agent: Option<String>,
     running: bool,
     cancelling: bool,
     elapsed: Option<std::time::Duration>,
@@ -48,10 +58,15 @@ pub(crate) fn fetch_all_label(rs: Option<&dataman_core::ResultSet>) -> SharedStr
     }
 }
 
-fn tab_view(tab: &QueryTab) -> TabView {
+fn tab_view(tab: &QueryTab, pane: Pane, focused: bool) -> TabView {
     let results = tab.result_tabs();
     TabView {
+        pane,
+        focused,
         conn: tab.connection().cloned(),
+        db: tab.database().to_string(),
+        want: tab.want.clone(),
+        agent: tab.agent.as_ref().map(|a| agent_name(&a.client)),
         running: tab.is_running(),
         cancelling: tab.is_cancelling(),
         elapsed: tab.elapsed(),
@@ -167,8 +182,8 @@ impl Workspace {
         let show_logo = left_w >= 230.;
         // First run: no query tabs until there is a connection.
         let first_run = self.first_run(cx);
-        let tabs: Vec<AnyElement> =
-            if first_run { Vec::new() } else { (0..self.tabs.len()).map(|i| self.render_tab(i, &t, cx).into_any_element()).collect() };
+        // The query tabs: one strip, or one over each editor group (`split`).
+        let strips: Vec<AnyElement> = if first_run { Vec::new() } else { self.render_strips(side, seam, &t, cx) };
         let stop = |_: &gpui::MouseDownEvent, _: &mut Window, cx: &mut gpui::App| cx.stop_propagation();
         let tab_menu = self.render_tab_menu(&t, cx);
         // Laid over the top of the explorer and work columns (app.rs), which run up to the
@@ -228,51 +243,8 @@ impl Workspace {
                     .child(div().flex_1())
                     .when(show_logo, |d| d.child(div().pr(px(14.)).font_family(PIXEL).text_size(px(13.)).text_color(t.tx3).child("DATAMAN"))),
             )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .h_full()
-                    // Past the seam the first tab lines up with the toolbar's Run button (the
-                    // hairline + its 10 pt padding).
-                    .pl(px(2. + 9. * seam))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(2.))
-                    .overflow_hidden()
-                    // Where each tab is: the gap a dragged one points at (and the checks).
-                    .on_children_prepainted({
-                        let bounds = self.tab_bounds.clone();
-                        move |b, _, _| *bounds.borrow_mut() = b
-                    })
-                    .on_drag_move(cx.listener(|w, ev: &gpui::DragMoveEvent<crate::app::DraggedTab>, _, cx| {
-                        let pos = ev.event.position;
-                        let slot = ev.bounds.contains(&pos).then(|| {
-                            let id = ev.dragged_item().downcast_ref::<crate::app::DraggedTab>()?.0;
-                            let from = w.tabs.iter().position(|t| t.entity_id() == id)?;
-                            let bounds = w.tab_bounds.borrow();
-                            let mids: Vec<f32> = bounds.iter().take(w.tabs.len()).map(|b| b.center().x.pt()).collect();
-                            let s = dataman_core::order::slot(&mids, pos.x.pt());
-                            dataman_core::order::moves(from, s).then_some(s)
-                        });
-                        let slot = slot.flatten();
-                        if slot != w.tab_drop {
-                            w.tab_drop = slot;
-                            cx.notify();
-                        }
-                    }))
-                    .on_drop(cx.listener(|w, d: &crate::app::DraggedTab, window, cx| w.drop_tab(d.0, window, cx)))
-                    .children(tabs)
-                    .when(!first_run, |d| d.child(
-                        ui::icon_button(&t, "new-tab", Icon::Plus, 26., 14.)
-                            .ml(px(4.))
-                            .on_mouse_down(MouseButton::Left, stop)
-                            .on_click(cx.listener(|w, _, window, cx| {
-                                w.new_tab(window, cx);
-                            })),
-                    )),
-            )
+            .children(strips)
+            .when(first_run, |d| d.child(div().flex_1()))
             // An update on offer: its notice, which opens the update sheet.
             .children(self.render_update_pill(&t, cx))
             .child(
@@ -295,10 +267,131 @@ impl Workspace {
                     .when_some(crate::keymap::key("command_palette"), |d, k| d.child(ui::keycap(&t, k))),
             )
             .children(tab_menu)
+            // Between the editor groups' strips, the groups' seam runs up through the band.
+            .children(self.split_now.filter(|f| f.open > 0.).map(|f| {
+                let c = self.frame_now.center;
+                self.render_title_seam(c.x + f.widths(c.w).0.0, cx)
+            }))
     }
 
-    fn render_tab(&self, i: usize, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let active = i == self.active;
+    /// The tab strips: one, or one over each editor group (`split`), the left one ending at the
+    /// groups' seam. `side`: the room the title bar keeps on the left (the traffic lights, the
+    /// explorer toggle), `seam`: how open the left dock is (the first tab lines up past it).
+    fn render_strips(&self, side: f32, seam: f32, t: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        // Past the seam the first tab lines up with the toolbar's Run button (the hairline + its
+        // 10 pt padding).
+        let pad = 2. + 9. * seam;
+        let Some(f) = self.split_now else {
+            return vec![self.render_strip(Pane::Left, self.group(Pane::Left), None, pad, t, cx)];
+        };
+        let c = self.frame_now.center;
+        let x = c.x + f.widths(c.w).0.0;
+        let left_w = (x - side).max(0.);
+        let (left, right) = match &self.split {
+            Some(_) => (self.group(Pane::Left), self.group(Pane::Right)),
+            // Folding away: every tab is in the group that stays, over its side.
+            None if f.leaving == Pane::Right => (self.group(Pane::Left), Vec::new()),
+            None => (Vec::new(), self.group(Pane::Left)),
+        };
+        let (lp, rp) = if self.split.is_some() { (Pane::Left, Pane::Right) } else { (Pane::Left, Pane::Left) };
+        let mut v = Vec::new();
+        v.push(if left.is_empty() { div().w(px(left_w)).flex_none().into_any_element() } else { self.render_strip(lp, left, Some(left_w), pad, t, cx) });
+        if !right.is_empty() {
+            v.push(self.render_strip(rp, right, None, 2. + 9. + crate::split::SEAM, t, cx));
+        } else {
+            v.push(div().flex_1().into_any_element());
+        }
+        v
+    }
+
+    /// A group's strip: its tabs (`tabs`, indexes into `tabs`), + for a new tab in that group, and
+    /// at its end the split's control: Open to the Side with one group, the group's × with two.
+    /// `width`: a fixed width (the left group's, up to the seam), else the room left.
+    fn render_strip(&self, pane: Pane, tabs: Vec<usize>, width: Option<f32>, pad: f32, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let stop = |_: &gpui::MouseDownEvent, _: &mut Window, cx: &mut gpui::App| cx.stop_propagation();
+        let n = tabs.len();
+        let els: Vec<AnyElement> = tabs.iter().enumerate().map(|(gi, &i)| self.render_tab(i, gi, n, pane, t, cx).into_any_element()).collect();
+        let bounds = if pane == Pane::Left { self.tab_bounds.clone() } else { self.tab_bounds_right.clone() };
+        let control = match &self.split {
+            Some(_) => ui::icon_button(t, "close-group", Icon::Close, 22., 12.)
+                .tooltip(ui::tooltip("Close group", Some("its tabs join the other group"), None))
+                .on_mouse_down(MouseButton::Left, stop)
+                .on_click(cx.listener(move |w, _, window, cx| w.close_group(pane, window, cx))),
+            None => ui::icon_button(t, "open-to-side", Icon::Split, 22., 13.)
+                .tooltip(ui::tooltip("Open to the Side", Some("a copy of this tab in a second group"), crate::keymap::key("open_to_side").as_deref()))
+                .on_mouse_down(MouseButton::Left, stop)
+                .on_click(cx.listener(|w, _, window, cx| {
+                    if let Some(tab) = w.active_tab().cloned() {
+                        w.open_to_side(&tab, window, cx);
+                    }
+                })),
+        };
+        div()
+            // Where each tab is: the gap a dragged one points at (and the checks).
+            .on_children_prepainted(move |b, _, _| *bounds.borrow_mut() = b)
+            .id(("strip", pane.index()))
+            .when_some(width, |d, w| d.w(px(w)).flex_none())
+            .when(width.is_none(), |d| d.flex_1())
+            .min_w_0()
+            .h_full()
+            .pl(px(pad))
+            .pr(px(4.))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(2.))
+            .overflow_hidden()
+            // A press on a group's strip gives that group the focus.
+            .capture_any_mouse_down(cx.listener(move |w, _, window, cx| w.focus_pane(pane, window, cx)))
+            .on_drag_move(cx.listener(move |w, ev: &gpui::DragMoveEvent<crate::app::DraggedTab>, _, cx| {
+                let pos = ev.event.position;
+                if !ev.bounds.contains(&pos) {
+                    // Over the other strip, or neither: this one's gap goes.
+                    if w.tab_drop_pane == pane && w.tab_drop.is_some() {
+                        w.tab_drop = None;
+                        cx.notify();
+                    }
+                    return;
+                }
+                let slot = (|| {
+                    let id = ev.dragged_item().downcast_ref::<crate::app::DraggedTab>()?.0;
+                    let members = w.group(pane);
+                    // From the other group, any gap moves it.
+                    let from = members.iter().position(|&i| w.tabs[i].entity_id() == id);
+                    let bounds = if pane == Pane::Left { w.tab_bounds.borrow() } else { w.tab_bounds_right.borrow() };
+                    let mids: Vec<f32> = bounds.iter().take(members.len()).map(|b| b.center().x.pt()).collect();
+                    let s = dataman_core::order::slot(&mids, pos.x.pt());
+                    from.is_none_or(|f| dataman_core::order::moves(f, s)).then_some(s)
+                })();
+                if slot != w.tab_drop || w.tab_drop_pane != pane {
+                    w.tab_drop = slot;
+                    w.tab_drop_pane = pane;
+                    cx.notify();
+                }
+            }))
+            .on_drop(cx.listener(|w, d: &crate::app::DraggedTab, window, cx| w.drop_tab(d.0, window, cx)))
+            .children(els)
+            .child(
+                ui::icon_button(t, "new-tab", Icon::Plus, 26., 14.)
+                    .ml(px(4.))
+                    .on_mouse_down(MouseButton::Left, stop)
+                    .on_click(cx.listener(move |w, _, window, cx| {
+                        w.focus_pane(pane, window, cx);
+                        w.new_tab(window, cx);
+                    })),
+            )
+            .child(div().flex_1())
+            .child(control)
+            .into_any_element()
+    }
+
+    /// Tab `i` of the strip of group `pane`, `gi` of its `n` there.
+    fn render_tab(&self, i: usize, gi: usize, n: usize, pane: Pane, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        // In front of the focused group (the active tab), or of the other one.
+        let split = self.split.is_some();
+        let focused_front = i == self.active;
+        let other_front = self.split.as_ref().is_some_and(|s| s.other == self.tabs[i].entity_id());
+        let active = focused_front || other_front;
         let tab = self.tabs[i].read(cx);
         let title = tab.title(cx);
         let conn = tab.connection().cloned();
@@ -393,9 +486,8 @@ impl Workspace {
         let drag_id = entity.entity_id();
         let ghost_label = title.clone();
         // The gap a dragged tab would land in: before this tab, or after it when it is the last.
-        let n = self.tabs.len();
-        let line = self.tab_drop.filter(|_| cx.has_active_drag()).and_then(|s| {
-            if s == i { Some(false) } else if s == n && i + 1 == n { Some(true) } else { None }
+        let line = self.tab_drop.filter(|_| cx.has_active_drag() && self.tab_drop_pane == pane).and_then(|s| {
+            if s == gi { Some(false) } else if s == n && gi + 1 == n { Some(true) } else { None }
         });
         div()
             .id(("tab", key))
@@ -412,9 +504,13 @@ impl Workspace {
             .items_center()
             .gap(px(7.))
             // The tabs sit on the work column's own fill: the active one is a wash over it
-            // (Zeron's selected tab), the others light up on hover.
-            .when(active, |d| d.bg(t.prs).text_color(t.tx))
+            // (Zeron's selected tab), the others light up on hover. With two editor groups the
+            // other group's tab in front is a lighter wash, and the focused group's carries an
+            // accent line along its foot.
+            .when(focused_front, |d| d.bg(t.prs).text_color(t.tx))
+            .when(other_front, |d| d.bg(t.hov).text_color(t.tx2))
             .when(!active, |d| d.text_color(t.tx3).hover(move |s| s.bg(hov).text_color(tx2)))
+            .when(focused_front && split, |d| d.child(div().absolute().left_0().right_0().bottom_0().h(px(2.)).bg(t.acc)))
             // Not the title bar's window move: a press may start a drag (`dnd`); ⌃-click is the
             // right click.
             .on_mouse_down(MouseButton::Left, cx.listener(move |w, ev: &gpui::MouseDownEvent, _, cx| {
@@ -452,11 +548,23 @@ impl Workspace {
             .children(line.map(|after| crate::dnd::drop_line(t, true, after)))
     }
 
-    /// A tab's right-click menu: Close, Close Others, Close to the Right.
+    /// A tab's right-click menu: Close, Close Others, Close to the Right (in its group), Open to
+    /// the Side, Move to the other group.
     fn render_tab_menu(&self, t: &Theme, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
         let (id, at) = self.tab_menu?;
         let ix = self.tabs.iter().position(|t| t.entity_id() == id)?;
-        let n = self.tabs.len();
+        let pane = self.pane_of(id);
+        let group = self.group(pane);
+        let gi = group.iter().position(|&i| i == ix)?;
+        let n = group.len();
+        // An activity monitor moves rather than copies: with one tab there is nothing to split.
+        let alone = self.split.is_none() && self.tabs.len() < 2;
+        let side_ok = !(alone && self.tabs[ix].read(cx).monitor.is_some());
+        let move_label = match (self.split.is_some(), pane) {
+            (false, _) => "Move to the Side",
+            (true, Pane::Left) => "Move to the Right Group",
+            (true, Pane::Right) => "Move to the Left Group",
+        };
         let item = |key: &'static str, label: &'static str, enabled: bool, f: fn(&mut Self, usize, &mut Window, &mut Context<Self>)| {
             ui::menu_item(t, key, label, None, enabled).when(enabled, |d| {
                 d.on_click(cx.listener(move |w, _, window, cx| {
@@ -477,12 +585,31 @@ impl Workspace {
             }))
             .child(item("tm-close", "Close", true, |w, ix, window, cx| w.close_tab(ix, window, cx)))
             .child(item("tm-others", "Close Others", n > 1, |w, ix, window, cx| {
-                let close = w.tabs.iter().enumerate().filter(|(j, _)| *j != ix).map(|(_, t)| t.clone()).collect();
+                let group = w.group(w.pane_of(w.tabs[ix].entity_id()));
+                let close = group.into_iter().filter(|j| *j != ix).map(|j| w.tabs[j].clone()).collect();
                 w.close_tabs(close, window, cx)
             }))
-            .child(item("tm-right", "Close to the Right", ix + 1 < n, |w, ix, window, cx| {
-                let close = w.tabs[ix + 1..].to_vec();
+            .child(item("tm-right", "Close to the Right", gi + 1 < n, |w, ix, window, cx| {
+                let group = w.group(w.pane_of(w.tabs[ix].entity_id()));
+                let close = group.into_iter().filter(|j| *j > ix).map(|j| w.tabs[j].clone()).collect();
                 w.close_tabs(close, window, cx)
+            }))
+            .child(ui::menu_sep(t))
+            .child(
+                ui::menu_item(t, "tm-side", "Open to the Side", crate::keymap::key("open_to_side").as_deref(), side_ok).when(side_ok, |d| {
+                    d.on_click(cx.listener(move |w, _, window, cx| {
+                        w.tab_menu = None;
+                        if let Some(tab) = w.tabs.iter().find(|t| t.entity_id() == id).cloned() {
+                            w.open_to_side(&tab, window, cx);
+                        }
+                        cx.notify();
+                    }))
+                }),
+            )
+            .child(item("tm-move", move_label, !alone, |w, ix, window, cx| {
+                let id = w.tabs[ix].entity_id();
+                let to = w.pane_of(id).other();
+                w.move_into(id, to, None, window, cx)
             }));
         Some(gpui::deferred(gpui::anchored().position(at).snap_to_window_with_margin(px(8.)).child(menu)).priority(3))
     }
@@ -491,23 +618,77 @@ impl Workspace {
     // The work surface.
 
     pub(crate) fn render_work(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let Some(f) = self.split_now else {
+            let Some(tab) = self.active_tab().cloned() else { return div().size_full() };
+            return self.render_group(tab, Pane::Left, true, window, cx);
+        };
+        // Two editor groups (`split`) side by side, a hairline between them. While the split
+        // opens or folds, the moving group keeps its full width inside, clipped, and rides the
+        // seam; the other one narrows or widens.
         let t = cx.theme();
-        let Some(tab) = self.active_tab().cloned() else { return div().size_full() };
+        let ((lw, _), (full_l, full_r)) = f.widths(self.frame_now.center.w);
+        let moving = f.open < 1.;
+        let bounds = self.pane_bounds.clone();
+        let mut row = div().size_full().relative().flex().flex_row().on_children_prepainted(move |b, _, _| *bounds.borrow_mut() = b);
+        for pane in [Pane::Left, Pane::Right] {
+            let (tab, focused) = self.pane_view(pane);
+            let body = tab.map(|tab| self.render_group(tab, pane, focused, window, cx));
+            let full = if pane == Pane::Left { full_l } else { full_r };
+            let clip = moving && pane == f.leaving;
+            let group = div()
+                .id(("group", pane.index()))
+                .h_full()
+                .relative()
+                .overflow_hidden()
+                .map(|d| if pane == Pane::Left { d.w(px(lw)).flex_none() } else { d.flex_1().min_w_0() })
+                // A press anywhere in a group gives it the focus.
+                .capture_any_mouse_down(cx.listener(move |w, _, window, cx| w.focus_pane(pane, window, cx)))
+                .children(body.map(|b| {
+                    if clip {
+                        // Anchored on the seam side: it slides in and out with it.
+                        div().absolute().top_0().bottom_0().w(px(full)).when(pane == Pane::Right, |d| d.left_0()).when(pane == Pane::Left, |d| d.right_0()).child(b).into_any_element()
+                    } else {
+                        b.into_any_element()
+                    }
+                }));
+            row = row.child(group);
+            if pane == Pane::Left {
+                row = row.child(div().w(px(crate::split::SEAM)).h_full().flex_none().bg(t.line));
+            }
+        }
+        // The seam's grabber, over both groups (not while they move).
+        if !moving && self.split.is_some() {
+            row = row.child(self.render_seam(lw, cx));
+        }
+        row
+    }
+
+    /// The messages list of group `pane` (each group has its own).
+    fn messages_of(&self, pane: Pane) -> &crate::messages::Messages {
+        if pane == Pane::Left { &self.messages } else { &self.messages_right }
+    }
+
+    /// An editor group: `tab`'s Run row, editor and results (or its activity monitor);
+    /// `focused`: the group has the focus.
+    fn render_group(&mut self, tab: gpui::Entity<QueryTab>, pane: Pane, focused: bool, window: &mut Window, cx: &mut Context<Self>) -> Div {
+        let t = cx.theme();
         let (editor, grid, has_run) = {
             let t = tab.read(cx);
             (t.editor.clone(), t.grid.clone(), t.has_run)
         };
-        let view = tab_view(tab.read(cx));
+        let view = tab_view(tab.read(cx), pane, focused);
         // The TX chip's age changes once a minute: one wake-up per minute while a transaction is
         // open, none otherwise.
-        self.schedule_tx_tick(view.tx.since.filter(|_| view.tx.status.is_open()), cx);
-        let region = self.focus_visible.then(|| self.focused_region(window, cx)).flatten();
+        if focused {
+            self.schedule_tx_tick(view.tx.since.filter(|_| view.tx.status.is_open()), cx);
+        }
+        let region = (self.focus_visible && focused).then(|| self.focused_region(window, cx)).flatten();
         // The work column paints the translucent fill once (app.rs); the regions here are
         // transparent, separated by straight hairlines, and flush: no corner to keep clear.
         let monitor = tab.read(cx).monitor.clone();
         // The result zoom: another side view opening ends it (that view shows).
         let side_now = crate::app::side_id(&self.side);
-        if tab.read(cx).zoomed && side_now.is_some() && side_now != tab.read(cx).zoom_side {
+        if focused && tab.read(cx).zoomed && side_now.is_some() && side_now != tab.read(cx).zoom_side {
             self.toggle_result_zoom(window, cx);
         }
         // 0: in place; 1: the result covers the Run row, the editor and the side panel.
@@ -555,7 +736,7 @@ impl Workspace {
                 // An EXPLAIN: the plan in the grid's place.
                 tab.read(cx).plan.clone().into_any_element()
             } else if let Some((i, rs)) = log {
-                self.render_log(i, &rs, &t, cx).into_any_element()
+                self.render_log(i, &rs, pane, &t, cx).into_any_element()
             } else if let Some(s) = stack {
                 s.element
             } else {
@@ -609,9 +790,14 @@ impl Workspace {
                             }),
                     );
             }
-            let bounds = self.result_bounds.clone();
+            let bounds = focused.then(|| self.result_bounds.clone());
             main = main.child(
-                div().flex_1().min_h_0().flex().flex_col().on_children_prepainted(move |b, _, _| bounds.set(b.first().copied())).child(
+                div().flex_1().min_h_0().flex().flex_col().on_children_prepainted(move |b, _, _| {
+                    if let Some(bounds) = &bounds {
+                        bounds.set(b.first().copied());
+                    }
+                })
+                .child(
                     div()
                         .size_full()
                         .flex()
@@ -683,7 +869,7 @@ impl Workspace {
         });
         let picker = self.render_conn_picker(v, t, cx);
         // An agent's tab: the agent's name (as its MCP client introduced itself) by the picker.
-        let agent = self.active_tab().and_then(|tab| tab.read(cx).agent.as_ref().map(|a| agent_name(&a.client))).map(|name| {
+        let agent = v.agent.clone().map(|name| {
             let tip = format!("Made by {}", cut_chars(&name, 48));
             div()
                 .id("tb-agent")
@@ -738,7 +924,7 @@ impl Workspace {
             .on_click(cx.listener(|w, _, _, cx| w.toggle_history_for_demo(cx)));
         // ⌘S's "Saved as favorite →", fading in and out at the History button's left. Hung from
         // a zero-width anchor: nothing else in the toolbar moves.
-        let saved = self.saved_flash.as_ref().and_then(|f| {
+        let saved = self.saved_flash.as_ref().filter(|_| v.focused).and_then(|f| {
             let a = crate::motion::SAVED.at(f.at, std::time::Instant::now(), cx.reduce_motion())?;
             let (id, label, hov) = (f.id.clone(), f.label, t.hov);
             let bounds = self.saved_bounds.clone();
@@ -797,9 +983,9 @@ impl Workspace {
     /// `name · database` cut with an ellipsis inside the control, a chevron. Its popup lists
     /// the connected connections and their databases, the tab's checked.
     fn render_conn_picker(&self, v: &TabView, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let db = self.active_tab().map(|tab| tab.read(cx).database().to_string()).unwrap_or_default();
+        let db = v.db.clone();
         // A restored tab names the connection it waits for (it connects on the first run).
-        let want = self.active_tab().and_then(|tab| tab.read(cx).want.clone());
+        let want = v.want.clone();
         let wanted = want.as_ref().and_then(|(id, db)| self.store.read(cx).profile(id).map(|p| (p.clone(), db.clone().unwrap_or_else(|| p.database.clone()))));
         let (color, label): (Hsla, SharedString) = match (&v.conn, wanted) {
             (Some(c), _) if db.is_empty() => (t.profile_color(&c.profile), c.profile.name.clone().into()),
@@ -814,7 +1000,7 @@ impl Workspace {
             (None, Some((id, d))) => self.store.read(cx).profile(id).is_some_and(|p| p.read_only_for(d.as_deref().unwrap_or(&p.database))),
             (None, None) => false,
         };
-        let open = self.conn_menu;
+        let open = self.conn_menu && v.focused;
         let (hov, prs) = (t.hov, t.prs);
         let button = div()
             .id("tb-conn")
@@ -892,12 +1078,16 @@ impl Workspace {
                 .priority(3),
             )
         });
-        let bounds = self.picker_bounds.clone();
+        let bounds = v.focused.then(|| self.picker_bounds.clone());
         div()
             .relative()
             .min_w_0()
             .flex_shrink_1()
-            .on_children_prepainted(move |b, _, _| bounds.set(b.first().copied()))
+            .on_children_prepainted(move |b, _, _| {
+                if let Some(bounds) = &bounds {
+                    bounds.set(b.first().copied());
+                }
+            })
             .child(button)
             .children(menu)
     }
@@ -1186,7 +1376,8 @@ impl Workspace {
             );
         }
         let has_rows = rows > 0;
-        let printed = self.copy_menu && {
+        let copy_open = self.copy_menu && v.focused;
+        let printed = copy_open && {
             let tr = tab.read(cx);
             if tr.shown_key() == Some(Key::Messages) { tr.batch_items().iter().any(|b| b.rs.as_ref().is_some_and(|r| r.has_messages())) } else { rs.as_ref().is_some_and(|r| r.has_messages()) }
         };
@@ -1195,7 +1386,7 @@ impl Workspace {
         let copied = grid.read(cx).copied_at.and_then(|at| crate::motion::copied(at, std::time::Instant::now(), cx.reduce_motion()));
         // Under the Copy button, its right edge on the button's (a zero-width point at the
         // button's bottom-right corner anchors it; it flips above when there is no room).
-        let copy_menu = self.copy_menu.then(|| {
+        let copy_menu = copy_open.then(|| {
             div().absolute().right_0().top(px(26.)).child(gpui::deferred(
                 gpui::anchored().anchor(gpui::Anchor::TopRight).snap_to_window_with_margin(px(8.)).child(
                     ui::popover(t)
@@ -1332,10 +1523,12 @@ impl Workspace {
 
     fn render_result_strip(&self, v: &TabView, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let hov = t.hov;
+        let bounds = v.focused.then(|| self.result_tab_bounds.clone());
         div()
-            .on_children_prepainted({
-                let bounds = self.result_tab_bounds.clone();
-                move |b, _, _| *bounds.borrow_mut() = b
+            .on_children_prepainted(move |b, _, _| {
+                if let Some(bounds) = &bounds {
+                    *bounds.borrow_mut() = b;
+                }
             })
             .id("result-strip")
             .h(px(metrics::STRIP_H))
@@ -1412,17 +1605,17 @@ impl Workspace {
     /// a click on one that has a tab of its own shows it.
     fn render_messages(&self, tab: &gpui::Entity<QueryTab>, v: &TabView, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let running = v.batch.iter().any(|b| b.state == ItemState::Running);
-        self.messages.sync(Of::Tab(tab.entity_id()), messages::tab_rows(&v.batch), running);
-        self.render_message_list("messages", t, cx)
+        self.messages_of(v.pane).sync(Of::Tab(tab.entity_id()), messages::tab_rows(&v.batch), running);
+        self.render_message_list("messages", v.pane, t, cx)
     }
 
     /// What a result without rows printed (statement `i`'s), in the grid's place.
-    fn render_log(&self, i: usize, rs: &Arc<dataman_core::ResultSet>, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        self.messages.sync(Of::log(rs), messages::log_rows(i, rs), rs.phase() == Phase::Running);
-        self.render_message_list("log", t, cx)
+    fn render_log(&self, i: usize, rs: &Arc<dataman_core::ResultSet>, pane: Pane, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        self.messages_of(pane).sync(Of::log(rs), messages::log_rows(i, rs), rs.phase() == Phase::Running);
+        self.render_message_list("log", pane, t, cx)
     }
 
-    fn render_message_list(&self, id: &'static str, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn render_message_list(&self, id: &'static str, pane: Pane, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let theme = t.clone();
         div()
             .id(id)
@@ -1430,16 +1623,16 @@ impl Workspace {
             .px(px(20.))
             .py(px(14.))
             .text_size(px(12.))
-            .child(gpui::list(self.messages.list.clone(), cx.processor(move |w, ix: usize, _, cx| w.render_message_row(ix, &theme, cx))).size_full())
+            .child(gpui::list(self.messages_of(pane).list.clone(), cx.processor(move |w, ix: usize, _, cx| w.render_message_row(pane, ix, &theme, cx))).size_full())
     }
 
     /// A row of the messages list: a statement of the messages tab, or a line it printed.
-    fn render_message_row(&mut self, ix: usize, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let (Some(row), Some(tab)) = (self.messages.row(ix), self.active_tab().cloned()) else { return div().into_any_element() };
+    fn render_message_row(&mut self, pane: Pane, ix: usize, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let (Some(row), Some(tab)) = (self.messages_of(pane).row(ix), self.pane_view(pane).0) else { return div().into_any_element() };
         let tr = tab.read(cx);
         let batch = tr.batch_items();
         // Under a statement, a line lines up with its text.
-        let indent = if matches!(self.messages.of(), Some(Of::Tab(_))) { 64. } else { 0. };
+        let indent = if matches!(self.messages_of(pane).of(), Some(Of::Tab(_))) { 64. } else { 0. };
         let line = |text: String, c: Hsla| div().pl(px(indent)).pr(px(8.)).py(px(2.)).text_color(c).child(text).into_any_element();
         let i = match row {
             MessageRow::Stmt(i) => i,

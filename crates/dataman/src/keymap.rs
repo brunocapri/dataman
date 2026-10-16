@@ -60,6 +60,8 @@ pub const COMMANDS: &[Command] = &[
     c("new_connection", "New connection", "GLOBAL", Scope::Workspace, &["cmd-n"], || Box::new(NewConnection)),
     c("new_tab", "New query tab", "GLOBAL", Scope::Workspace, &["cmd-t"], || Box::new(NewTab)),
     c("close_tab", "Close tab", "GLOBAL", Scope::Workspace, &["cmd-w"], || Box::new(CloseTab)),
+    // VS Code's: a copy of the tab in a second editor group (`split`).
+    c("open_to_side", "Open to the side", "GLOBAL", Scope::Workspace, &["cmd-\\"], || Box::new(crate::split::OpenToSide)),
     c("next_tab", "Next tab", "GLOBAL", Scope::Workspace, &["ctrl-tab", "cmd-shift-]"], || Box::new(NextTab)),
     c("prev_tab", "Previous tab", "GLOBAL", Scope::Workspace, &["ctrl-shift-tab", "cmd-shift-["], || Box::new(PrevTab)),
     c("tab_1", "Tab 1", "GLOBAL", Scope::Workspace, &["cmd-1"], || Box::new(Tab1)),
@@ -485,5 +487,6 @@ mod tests {
         assert_eq!(label("alt-f12"), "⌥F12");
         assert_eq!(label("ctrl-tab"), "⌃Tab");
         assert_eq!(label("cmd-alt-left"), "⌥⌘←");
+        assert_eq!(label("cmd-\\"), "⌘\\");
     }
 }

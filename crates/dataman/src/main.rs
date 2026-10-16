@@ -56,6 +56,8 @@ mod result_stack;
 mod row_actions;
 mod settings_view;
 mod shortcuts;
+mod split;
+mod split_check;
 mod sql_picker;
 mod tab;
 mod table_check;
@@ -208,6 +210,7 @@ fn menus(cx: &App) -> Vec<Menu> {
                 MenuItem::action("Toggle Explorer", ToggleExplorer),
                 MenuItem::action("Toggle Side Panel", ToggleSidePanel),
                 MenuItem::action("Reset Panel Layout", dock::ResetPanelLayout),
+                MenuItem::action("Open to the Side", split::OpenToSide),
             ]
             .into_iter()
             .chain(when(caps.activity, vec![MenuItem::action("Activity Monitor", OpenActivity)]))

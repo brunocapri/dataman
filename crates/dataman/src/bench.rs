@@ -706,6 +706,7 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                         || crate::activity_demo::is_stage(s)
                         || crate::ui_check::is_stage(s)
                         || crate::dock_check::is_stage(s)
+                        || crate::split_check::is_stage(s)
                         || crate::session_check::is_stage(s)
                         || crate::history_check::is_stage(s)
                         || crate::mcp_check::is_stage(s)
@@ -829,6 +830,16 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
             if crate::dock_check::is_stage(&stage) {
                 let ok = crate::dock_check::run(&ws, &stage, cx).await;
                 if stage == "dock-check" {
+                    let _ = cx.update(|_, cx| cx.quit());
+                    if !ok {
+                        std::process::exit(1);
+                    }
+                    return;
+                }
+            }
+            if crate::split_check::is_stage(&stage) {
+                let ok = crate::split_check::run(&ws, &stage, cx).await;
+                if stage == "split-check" {
                     let _ = cx.update(|_, cx| cx.quit());
                     if !ok {
                         std::process::exit(1);

@@ -23,6 +23,7 @@ pub mod favorites;
 pub mod find;
 pub mod fknav;
 pub mod format;
+pub mod groups;
 pub mod guard;
 pub mod history;
 pub mod import;

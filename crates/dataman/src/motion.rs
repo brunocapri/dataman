@@ -8,6 +8,8 @@
 //! - [`Flash`]: a feedback that fades in and out ("Copied", "Saved as favorite").
 //! - [`Progress`] and [`RectTween`]: a panel dropped in another dock settling into its place
 //!   (`dock`), and the drop preview gliding from one place to the next while it is dragged.
+//! - [`SplitTween`]: the second editor group growing in from the right, or folding away
+//!   (`split`).
 //! - [`FindPop`]: Xcode's find indicator (AppKit's `showFindIndicatorForRange:`): a box (rounded
 //!   on a grid cell, square elsewhere) with the text drawn on top pops in enlarged, springs back to the text's size and fades.
 //!   Blue on a clicked grid value ([`PopStyle::Select`]), yellow on something found
@@ -191,6 +193,50 @@ impl RectTween {
         let k = EASE_OUT.eval(raw);
         Some(std::array::from_fn(|i| self.from[i] + (target[i] - self.from[i]) * k))
     }
+}
+
+/// The second editor group growing in from the right as the first narrows (Open to the Side),
+/// or folding away as the other takes its room back.
+pub const SPLIT: Duration = Duration::from_millis(220);
+
+/// How far the split is open (0 one group … 1 two), moving from where it was toward the
+/// workspace's current goal over [`SPLIT`] on `EASE` (the panels' curve).
+#[derive(Clone, Copy, Debug)]
+pub struct SplitTween {
+    from: f32,
+    started: Instant,
+}
+
+impl SplitTween {
+    pub fn new(from: f32) -> SplitTween {
+        SplitTween { from, started: Instant::now() }
+    }
+
+    /// The opening now, heading for `target` (0 or 1); `None` once it has landed. A turn
+    /// mid-way takes the time that is left of the way back.
+    pub fn at(&self, target: f32, now: Instant) -> Option<f32> {
+        if let Some(p) = split_freeze() {
+            return Some(p);
+        }
+        let span = SPLIT.as_secs_f32() * (target - self.from).abs().max(0.25);
+        let raw = now.saturating_duration_since(self.started).as_secs_f32() / span;
+        if raw >= 1. {
+            return None;
+        }
+        Some(self.from + (target - self.from) * EASE.eval(raw))
+    }
+}
+
+/// Screenshots (`--features screenshots`): `DATAMAN_SPLIT_FREEZE=0.5` holds the split half-way
+/// open (or shut).
+fn split_freeze() -> Option<f32> {
+    #[cfg(feature = "screenshots")]
+    {
+        static FREEZE: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
+        *FREEZE.get_or_init(|| std::env::var("DATAMAN_SPLIT_FREEZE").ok().and_then(|v| v.parse().ok()))
+    }
+    #[cfg(not(feature = "screenshots"))]
+    None
 }
 
 /// Screenshots (`--features screenshots`): `DATAMAN_DOCK_FREEZE=0.5` holds a panel's move

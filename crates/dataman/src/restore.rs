@@ -1,7 +1,8 @@
 //! The workspace kept between launches (`dataman_core::session`): saved a moment after each
 //! change (and when a result ends), and on quit; restored when the window opens, the tabs at
-//! once and their results as soon as they are read (off the UI thread). Restored tabs wait
-//! for their own connection: it connects when they run something (or from the explorer).
+//! once (in their editor groups) and their results as soon as they are read (off the UI thread).
+//! Restored tabs wait for their own connection: it connects when they run something (or from
+//! the explorer).
 //!
 //! `--demo`, the checks and the benchmarks never touch the user's session: they keep none
 //! unless `DATAMAN_SESSION_DIR` names a directory (the `session-check` stage sets its own).
@@ -11,6 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{App, Context, Global, Window};
+use dataman_core::groups::{Pane, SplitState};
 use dataman_core::session::{Session, SessionStore, VERSION};
 
 use crate::app::{Side, Workspace};
@@ -86,6 +88,16 @@ impl Workspace {
         }
         self.editor_frac = s.editor_frac.filter(|f| f.is_finite() && *f > 0. && *f < 1.);
         let active = s.active.min(self.tabs.len() - 1);
+        // The editor groups as they were (no motion: the window opens that way).
+        if let Some(sp) = s.split.as_ref().and_then(|sp| sp.normalized(self.tabs.len(), active)) {
+            let id = |i: usize| self.tabs[i].entity_id();
+            self.split = Some(crate::split::Split {
+                right: sp.right.iter().map(|&i| id(i)).collect(),
+                focus: if sp.focus_right { Pane::Right } else { Pane::Left },
+                other: id(sp.other),
+                ratio: sp.ratio,
+            });
+        }
         self.activate(active, window, cx);
         if s.history_open {
             self.side = Some(Side::History);
@@ -116,6 +128,8 @@ impl Workspace {
         let mut files = Vec::new();
         let mut tabs = Vec::new();
         let mut active = 0;
+        // Where each kept tab lands among the saved ones (the editor groups name them so).
+        let mut saved_at = std::collections::HashMap::new();
         for (i, tab) in self.tabs.clone().into_iter().enumerate() {
             // An activity monitor is a live view of a server, not a query: it does not come back.
             if tab.read(cx).monitor.is_some() {
@@ -124,6 +138,7 @@ impl Workspace {
             if i == self.active {
                 active = tabs.len();
             }
+            saved_at.insert(tab.entity_id(), tabs.len());
             let mut st = tab.read(cx).session_state(cx);
             let items = tab.read(cx).save_items();
             if !items.is_empty() {
@@ -141,10 +156,17 @@ impl Workspace {
             }
             tabs.push(st);
         }
+        // A group left with only monitors reads as no split.
+        let split = self.split.as_ref().and_then(|sp| {
+            let at = |id: &gpui::EntityId| saved_at.get(id).copied();
+            SplitState { right: sp.right.iter().filter_map(at).collect(), focus_right: sp.focus == Pane::Right, other: at(&sp.other).unwrap_or(usize::MAX), ratio: sp.ratio }
+                .normalized(tabs.len(), active)
+        });
         let session = Session {
             version: VERSION,
             tabs,
             active,
+            split,
             explorer_open: self.explorer_open,
             explorer_w: self.explorer_w,
             history_open: matches!(self.side, Some(Side::History)),
@@ -173,6 +195,7 @@ impl Workspace {
         (self.active, self.explorer_open, self.explorer_w.to_bits(), self.side_w.to_bits(), matches!(self.side, Some(Side::History))).hash(&mut h);
         self.editor_frac.map(f32::to_bits).hash(&mut h);
         (&self.layout, self.bottom_h.to_bits()).hash(&mut h);
+        self.split.as_ref().map(|s| (&s.right, s.focus, s.other, s.ratio.to_bits())).hash(&mut h);
         h.finish()
     }
 

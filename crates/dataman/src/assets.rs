@@ -68,6 +68,7 @@ assets!(
     "icons/sequence.svg",
     "icons/server.svg",
     "icons/sidebar.svg",
+    "icons/split.svg",
     "icons/star.svg",
     "icons/star-fill.svg",
     "icons/stop.svg",
@@ -135,6 +136,8 @@ pub enum Icon {
     Trash,
     Sidebar,
     PanelRight,
+    /// Open to the Side: the work surface in two editor groups.
+    Split,
     /// The result panel zoomed over the editor, and back.
     Expand,
     Collapse,
@@ -219,6 +222,7 @@ impl Icon {
             Icon::Trash => "icons/trash.svg",
             Icon::Sidebar => "icons/sidebar.svg",
             Icon::PanelRight => "icons/panel-right.svg",
+            Icon::Split => "icons/split.svg",
             Icon::Expand => "icons/expand.svg",
             Icon::Collapse => "icons/collapse.svg",
             Icon::Lock => "icons/lock.svg",
@@ -270,7 +274,7 @@ mod tests {
         let all = [
             Run, Stop, Pause, Cancel, History, Plus, Reload, ChevronRight, ChevronDown, ChevronUp, ChevronLeft, Database, Schema,
             SchemaFilled, Group, Table, View, Key, Keyboard, Index, Search, Filter, Close, Check, Copy, Export, Import, Edit, Trash,
-            Sidebar, PanelRight, Expand, Collapse, Lock, Warning, Info, Server, Archive, More, Tab, Command, Code, Hash, Plug,
+            Sidebar, PanelRight, Split, Expand, Collapse, Lock, Warning, Info, Server, Archive, More, Tab, Command, Code, Hash, Plug,
             Cursor, Tunnel, MatView, Function, Procedure, Sequence, Type, Label, Trigger, Extension, Role,
             Constraint, Link, Partition, Activity, Star, StarFill, Agent, Live,
         ];

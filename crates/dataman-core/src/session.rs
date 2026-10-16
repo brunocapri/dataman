@@ -1,6 +1,6 @@
 //! The workspace kept between launches: the query tabs (their SQL, selection, scroll, title,
-//! connection and database, a table's data view), the explorer and history panel, and each
-//! tab's last results.
+//! connection and database, a table's data view) and the editor groups they are in, the explorer
+//! and history panel, and each tab's last results.
 //!
 //! On disk, in the session directory (`~/.config/dataman/session/`, next to the history):
 //!
@@ -57,6 +57,9 @@ pub struct Session {
     pub layout: crate::layout::PanelLayout,
     /// The bottom dock's height in points (0: the default).
     pub bottom_h: f32,
+    /// Two editor groups side by side (`groups`): which tabs are in the right one, its focus
+    /// and width; missing in older files: one group.
+    pub split: Option<crate::groups::SplitState>,
 }
 
 /// A query tab.

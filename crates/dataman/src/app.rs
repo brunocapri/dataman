@@ -15,6 +15,7 @@ use gpui::{
     actions, div, prelude::*,
 };
 use crate::theme::{Pt, px};
+use dataman_core::groups::Pane;
 use dataman_core::{Connection, ConnectionProfile, Core, Favorite, Translucency};
 
 use crate::conn_dialog::{ConnDialog, DialogEvent};
@@ -271,6 +272,8 @@ pub(crate) enum Drag {
     /// A dock's seam (`dock`): its width, or the bottom dock's height.
     Dock(dataman_core::layout::Dock),
     Split,
+    /// The seam between two editor groups (`split`).
+    Groups,
 }
 
 /// A query tab on the move (GPUI's drag; `dnd`).
@@ -435,14 +438,30 @@ pub struct Workspace {
     pub(crate) drag: Option<Drag>,
     /// The query tabs' bounds as last laid out (the checks).
     pub(crate) tab_bounds: std::rc::Rc<std::cell::RefCell<Vec<gpui::Bounds<gpui::Pixels>>>>,
-    /// The gap a dragged tab would drop into (`order::slot`), while it is over the tabs.
+    /// The gap a dragged tab would drop into (`order::slot`), while it is over the tabs, and the
+    /// group whose strip it is over.
     pub(crate) tab_drop: Option<usize>,
+    pub(crate) tab_drop_pane: Pane,
+    /// The right group's tabs' bounds (`tab_bounds` holds the left group's).
+    pub(crate) tab_bounds_right: std::rc::Rc<std::cell::RefCell<Vec<gpui::Bounds<gpui::Pixels>>>>,
+    /// Two editor groups side by side (`split`): the second one and the focus, the split opening
+    /// or folding, how it stands this frame, the group the next new tab goes to (`None`: the
+    /// focused one), ⌥ held on the last press (⌥-click opens to the side), and the groups as laid
+    /// out (the checks).
+    pub(crate) split: Option<crate::split::Split>,
+    pub(crate) split_move: Option<crate::split::SplitMove>,
+    pub(crate) split_now: Option<crate::split::SplitFrame>,
+    pub(crate) open_in: Option<Pane>,
+    pub(crate) alt_press: bool,
+    pub(crate) pane_bounds: std::rc::Rc<std::cell::RefCell<Vec<gpui::Bounds<gpui::Pixels>>>>,
     /// A tab's right-click menu: the tab and where the pointer was.
     pub(crate) tab_menu: Option<(EntityId, gpui::Point<gpui::Pixels>)>,
     /// The result tabs' bounds as last laid out (the checks).
     pub(crate) result_tab_bounds: std::rc::Rc<std::cell::RefCell<Vec<gpui::Bounds<gpui::Pixels>>>>,
-    /// The messages tab, or the log of a result without rows, on screen.
+    /// The messages tab, or the log of a result without rows, on screen (in the left group, and
+    /// in the right one).
     pub(crate) messages: crate::messages::Messages,
+    pub(crate) messages_right: crate::messages::Messages,
     /// The toolbar's connection picker: its popup is open; where the button is (the checks).
     pub(crate) conn_menu: bool,
     /// When a click outside shut the popup (the click on the button that follows must not
@@ -566,7 +585,12 @@ impl Workspace {
                     t.run(vec![sql.trim_end().trim_end_matches(';').to_string()], cx);
                 });
             }
-            HistoryEvent::OpenFavorite(fav, run) => w.open_favorite(fav.clone(), *run, window, cx),
+            // ⌥-click: in the other editor group.
+            HistoryEvent::OpenFavorite(fav, run) => {
+                w.open_in = w.alt_aside(window);
+                w.open_favorite(fav.clone(), *run, window, cx);
+                w.open_in = None;
+            }
             HistoryEvent::ImportFavorites => w.import_favorites(cx),
             HistoryEvent::FavoritesChanged => w.sync_favorite_tabs(cx),
             HistoryEvent::Close => {
@@ -624,9 +648,18 @@ impl Workspace {
             drag: None,
             tab_bounds: Default::default(),
             tab_drop: None,
+            tab_drop_pane: Pane::Left,
+            tab_bounds_right: Default::default(),
+            split: None,
+            split_move: None,
+            split_now: None,
+            open_in: None,
+            alt_press: false,
+            pane_bounds: Default::default(),
             tab_menu: None,
             result_tab_bounds: Default::default(),
             messages: crate::messages::Messages::new(),
+            messages_right: crate::messages::Messages::new(),
             conn_menu: false,
             conn_menu_shut: None,
             picker_bounds: Default::default(),
@@ -807,7 +840,9 @@ impl Workspace {
         let edit = tab.read(cx).edit.clone();
         cx.subscribe_in(&edit, window, Self::on_edit).detach();
         self.nav_record(Some(window), cx);
+        let prev = self.active_tab().map(|t| t.entity_id());
         self.tabs.push(tab.clone());
+        self.place_new_tab(tab.entity_id(), prev, cx);
         self.active = self.tabs.len() - 1;
         self.sync_bound_views(window, cx);
         window.focus(&editor.focus_handle(cx), cx);
@@ -830,16 +865,40 @@ impl Workspace {
         if ix >= self.tabs.len() {
             return;
         }
-        self.tabs.remove(ix);
+        let id = self.tabs[ix].entity_id();
+        let pane = self.pane_of(id);
+        // In front of its group, the tab before it takes its place (else the one after it).
+        let group: Vec<EntityId> = self.group(pane).into_iter().map(|i| self.tabs[i].entity_id()).collect();
+        let next = dataman_core::groups::neighbour(&group, id);
+        let mut front = self.active_tab().map(|t| t.entity_id());
+        let closed = self.tabs.remove(ix);
         let open: Vec<_> = self.tabs.iter().map(|t| t.entity_id()).collect();
         self.nav.history.retain(|p| open.contains(&p.tab));
+        let mut emptied = false;
+        if let Some(s) = &mut self.split {
+            s.right.retain(|k| *k != id);
+            match next {
+                // Its group's last tab: the split closes, the other group's tab in front.
+                None => {
+                    if front == Some(id) {
+                        front = Some(s.other);
+                    }
+                    emptied = true;
+                }
+                Some(n) if s.other == id => s.other = n,
+                Some(_) => {}
+            }
+        }
+        if emptied {
+            self.split_emptied(pane, Some(closed.downgrade()), cx);
+        }
+        if front == Some(id) {
+            front = next;
+        }
         if self.tabs.is_empty() {
             self.new_tab(window, cx);
         }
-        if self.active >= ix && self.active > 0 {
-            self.active -= 1;
-        }
-        self.active = self.active.min(self.tabs.len() - 1);
+        self.active = front.and_then(|f| self.tabs.iter().position(|t| t.entity_id() == f)).unwrap_or(0).min(self.tabs.len() - 1);
         // The closed tab's review sheet goes with it.
         self.sync_bound_views(window, cx);
         self.focus_editor(window, cx);
@@ -851,6 +910,7 @@ impl Workspace {
             if ix != self.active {
                 self.nav_record(Some(window), cx);
             }
+            self.enter_group_of(ix);
             self.active = ix;
             self.history_pin = None;
             self.sync_bound_views(window, cx);
@@ -1491,7 +1551,12 @@ impl Workspace {
                     });
                 }
             }
-            TreeEvent::OpenRelation { conn, db, schema, name } => self.open_relation(conn, db, schema, name, window, cx),
+            // ⌥-click: in the other editor group.
+            TreeEvent::OpenRelation { conn, db, schema, name } => {
+                self.open_in = self.alt_aside(window);
+                self.open_relation(conn, db, schema, name, window, cx);
+                self.open_in = None;
+            }
             TreeEvent::EditConnection(id) => self.open_dialog(Some(id.clone()), window, cx),
             TreeEvent::NewConnection => self.open_dialog(None, window, cx),
             TreeEvent::Disconnect(id) => self.request_disconnect(id.clone(), false, window, cx),
@@ -2433,6 +2498,7 @@ impl Workspace {
         }
         match d {
             Drag::Dock(dock) => self.resize_dock(dock, (ev.position.x.pt(), ev.position.y.pt()), window),
+            Drag::Groups => self.resize_groups(ev.position.x.pt()),
             Drag::Split => {
                 let top = metrics::TITLE_H + metrics::TOOLBAR_H;
                 let column = self.work_column_h(window);
@@ -2444,15 +2510,16 @@ impl Workspace {
         cx.notify();
     }
 
-    /// A dragged tab dropped at the gap `slot` (`tab_drop`) moves there and is the active one.
+    /// A dragged tab dropped at the gap `slot` (`tab_drop`) of a group's strip moves there (into
+    /// that group, when it is the other one) and is the active one.
     pub(crate) fn drop_tab(&mut self, id: EntityId, window: &mut Window, cx: &mut Context<Self>) {
-        let slot = self.tab_drop.take();
-        let Some(i) = self.tabs.iter().position(|t| t.entity_id() == id) else { return };
-        if let Some(s) = slot {
-            dataman_core::order::move_to(&mut self.tabs, i, s);
-        }
-        if let Some(ix) = self.tabs.iter().position(|t| t.entity_id() == id) {
-            self.activate(ix, window, cx);
+        match self.tab_drop.take() {
+            Some(s) => self.move_into(id, self.tab_drop_pane, Some(s), window, cx),
+            None => {
+                if let Some(ix) = self.tabs.iter().position(|t| t.entity_id() == id) {
+                    self.activate(ix, window, cx);
+                }
+            }
         }
         cx.notify();
     }
@@ -2571,10 +2638,14 @@ impl Render for Workspace {
             self.session_fp = fp;
             self.schedule_session_save(cx);
         }
+        // The keyboard focus went into the other editor group: that group has the focus.
+        self.sync_group_focus(window, cx);
         let t = cx.theme();
         let first_run = self.first_run(cx);
-        // The docks first (`dock`): the work surface and the title bar follow their geometry.
+        // The docks first (`dock`): the work surface and the title bar follow their geometry, and
+        // the editor groups (`split`) share the surface.
         let pass = self.dock_pass(first_run, window, cx);
+        self.split_now = if first_run { None } else { self.split_frame(window) };
         let surface = if first_run { self.welcome.clone().into_any_element() } else { self.render_work(window, cx).into_any_element() };
         // Zeron's shell: the left dock (the explorer) and the work column both run from the
         // window's top edge to the status bar, with the title bar laid over them (transparent).
@@ -2677,27 +2748,19 @@ impl Render for Workspace {
                 let a = w.active;
                 w.close_tab(a, window, cx)
             }))
-            .on_action(cx.listener(|w, _: &NextTab, window, cx| {
-                let n = w.tabs.len().max(1);
-                w.activate((w.active + 1) % n, window, cx);
-            }))
-            .on_action(cx.listener(|w, _: &PrevTab, window, cx| {
-                let n = w.tabs.len().max(1);
-                w.activate((w.active + n - 1) % n, window, cx);
-            }))
-            .on_action(cx.listener(|w, _: &Tab1, window, cx| w.activate(0, window, cx)))
-            .on_action(cx.listener(|w, _: &Tab2, window, cx| w.activate(1, window, cx)))
-            .on_action(cx.listener(|w, _: &Tab3, window, cx| w.activate(2, window, cx)))
-            .on_action(cx.listener(|w, _: &Tab4, window, cx| w.activate(3, window, cx)))
-            .on_action(cx.listener(|w, _: &Tab5, window, cx| w.activate(4, window, cx)))
-            .on_action(cx.listener(|w, _: &Tab6, window, cx| w.activate(5, window, cx)))
-            .on_action(cx.listener(|w, _: &Tab7, window, cx| w.activate(6, window, cx)))
-            .on_action(cx.listener(|w, _: &Tab8, window, cx| w.activate(7, window, cx)))
-            .on_action(cx.listener(|w, _: &Tab9, window, cx| {
-                // ⌘9 is the last tab, as in browsers.
-                let last = w.tabs.len().saturating_sub(1);
-                w.activate(last, window, cx)
-            }))
+            // The tabs of the focused editor group.
+            .on_action(cx.listener(|w, _: &NextTab, window, cx| w.cycle_tab(true, window, cx)))
+            .on_action(cx.listener(|w, _: &PrevTab, window, cx| w.cycle_tab(false, window, cx)))
+            .on_action(cx.listener(|w, _: &Tab1, window, cx| w.activate_nth(Some(0), window, cx)))
+            .on_action(cx.listener(|w, _: &Tab2, window, cx| w.activate_nth(Some(1), window, cx)))
+            .on_action(cx.listener(|w, _: &Tab3, window, cx| w.activate_nth(Some(2), window, cx)))
+            .on_action(cx.listener(|w, _: &Tab4, window, cx| w.activate_nth(Some(3), window, cx)))
+            .on_action(cx.listener(|w, _: &Tab5, window, cx| w.activate_nth(Some(4), window, cx)))
+            .on_action(cx.listener(|w, _: &Tab6, window, cx| w.activate_nth(Some(5), window, cx)))
+            .on_action(cx.listener(|w, _: &Tab7, window, cx| w.activate_nth(Some(6), window, cx)))
+            .on_action(cx.listener(|w, _: &Tab8, window, cx| w.activate_nth(Some(7), window, cx)))
+            // ⌘9 is the last tab, as in browsers.
+            .on_action(cx.listener(|w, _: &Tab9, window, cx| w.activate_nth(None, window, cx)))
             .on_action(cx.listener(|w, _: &NewConnection, window, cx| w.open_dialog(None, window, cx)))
             .on_action(cx.listener(|w, _: &EditConnection, window, cx| {
                 let id = w.current_conn.clone();
@@ -2903,9 +2966,14 @@ impl Render for Workspace {
             .on_action(cx.listener(|w, _: &DiscardAndRun, window, cx| w.resolve_pending_run(true, window, cx)))
             .map(|d| crate::lar::workspace_actions(d, cx))
             .map(|d| crate::dock::workspace_actions(d, cx))
+            .map(|d| crate::split::workspace_actions(d, cx))
             .on_mouse_move(cx.listener(Self::on_drag_move))
             .on_mouse_up(MouseButton::Left, cx.listener(|w, _, _, _| w.drag = None))
-            .capture_any_mouse_down(cx.listener(|w, _, _, _| w.focus_visible = false))
+            .capture_any_mouse_down(cx.listener(|w, ev: &gpui::MouseDownEvent, _, _| {
+                w.focus_visible = false;
+                w.alt_press = ev.modifiers.alt;
+            }))
+            .capture_key_down(cx.listener(|w, _, _, _| w.alt_press = false))
             .child(div().flex_1().min_h_0().relative().flex().flex_row().children(docks.left).child(work).children(seam))
             // A pane being resized keeps its cursor wherever the pointer goes.
             .children(self.drag.map(|d| {
