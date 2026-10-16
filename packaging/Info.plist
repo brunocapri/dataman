@@ -6,13 +6,13 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleName</key>
-	<string>Diskman</string>
+	<string>Dataman</string>
 	<key>CFBundleDisplayName</key>
-	<string>Diskman</string>
+	<string>Dataman</string>
 	<key>CFBundleExecutable</key>
-	<string>diskman</string>
+	<string>dataman</string>
 	<key>CFBundleIdentifier</key>
-	<string>dev.diskman</string>
+	<string>dev.dataman</string>
 	<key>CFBundleIconFile</key>
 	<string>AppIcon</string>
 	<key>CFBundlePackageType</key>

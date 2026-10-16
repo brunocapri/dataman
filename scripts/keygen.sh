@@ -1,7 +1,7 @@
 #!/bin/bash
 # A new ed25519 key for update signatures, kept outside the repository:
-# ~/.config/diskman-release/update_ed25519.key (0600), or DISKMAN_UPDATE_KEY. Prints the public
-# key to build with (DISKMAN_UPDATE_PUBKEY). --force replaces an existing key.
+# ~/.config/dataman-release/update_ed25519.key (0600), or DATAMAN_UPDATE_KEY. Prints the public
+# key to build with (DATAMAN_UPDATE_PUBKEY). --force replaces an existing key.
 #
 #   scripts/keygen.sh
 #   scripts/keygen.sh --pubkey     # the public key of the current one

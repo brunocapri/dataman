@@ -1,0 +1,1125 @@
+//! New/edit connection sheet (UiConnDialog): test (stoppable), save (password to the
+//! Keychain), delete. States: not tested, testing, connected (Postgres or LAR), failed with
+//! the server's message verbatim, "password needed" when the server asked for one, and an
+//! unknown SSH host key to trust. A connection URL or libpq string pasted into the name or host
+//! field fills the fields; the SSH section (collapsed unless used) sets the tunnel. `Fields |
+//! URL` in the header swaps the server fields for one connection string (any engine's: a
+//! URL, libpq's keywords, JDBC, ADO.NET), read as it is typed into the same fields; its
+//! password goes where a typed one goes (the Keychain), never into connections.toml.
+
+use std::time::{Duration, Instant};
+
+use gpui::{
+    App, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, KeyBinding, SharedString, Task,
+    Window, actions, div, prelude::*,
+};
+use crate::theme::{Pt, px};
+use dataman_core::config::Engine;
+use dataman_core::{ConnectionProfile, Environment, HostKeyPrompt, McpAccess, ServerInfo, SshAuth, SshError, SshSettings, SslMode};
+
+/// The engines the sheet offers.
+const ENGINES: [Engine; 3] = [Engine::Postgres, Engine::MySql, Engine::SqlServer];
+
+use crate::conns::ConnStore;
+use crate::input::{InputEvent, TextInput};
+use crate::theme::{ActiveTheme, SWATCHES, Theme};
+use crate::ui::{self, Btn};
+
+actions!(conn_dialog, [DialogSave, DialogTest, DialogCancel]);
+
+pub fn bind_keys(cx: &mut App) {
+    let c = Some("ConnDialog");
+    cx.bind_keys([
+        KeyBinding::new("cmd-enter", DialogSave, c),
+        KeyBinding::new("cmd-t", DialogTest, c),
+        KeyBinding::new("escape", DialogCancel, c),
+    ]);
+}
+
+pub enum DialogEvent {
+    Close,
+    /// The fields are valid: the workspace asks about the open transactions a save would end,
+    /// then calls [`ConnDialog::save_now`].
+    Save,
+    /// Delete this connection (confirmed in the sheet); the workspace does it.
+    Delete(String),
+    /// Saved; connect right away (with the typed password, saved or not).
+    Saved { id: String, password: Option<String> },
+}
+
+enum Test {
+    NotTested,
+    Testing { since: Instant, target: String },
+    Ok { info: ServerInfo, ms: f64 },
+    /// `title` is the server's own line (`FATAL 28P01 · password authentication failed…`).
+    Failed { title: String, body: String },
+    /// A local problem (missing fields, Keychain).
+    Invalid(String),
+    /// The SSH server's key is not in known_hosts: trust it or not.
+    HostKey(HostKeyPrompt),
+}
+
+/// How the sheet takes the server: its fields, or one connection string.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Entry {
+    Fields,
+    Url,
+}
+
+/// The SSH section's fields.
+struct SshFields {
+    on: bool,
+    host: Entity<TextInput>,
+    port: Entity<TextInput>,
+    user: Entity<TextInput>,
+    auth: SshAuth,
+    key: Entity<TextInput>,
+    /// The key passphrase or the SSH password, by `auth`.
+    secret: Entity<TextInput>,
+}
+
+pub struct ConnDialog {
+    store: Entity<ConnStore>,
+    focus: FocusHandle,
+    profile: ConnectionProfile,
+    is_new: bool,
+    engine: Engine,
+    name: Entity<TextInput>,
+    host: Entity<TextInput>,
+    port: Entity<TextInput>,
+    user: Entity<TextInput>,
+    password: Entity<TextInput>,
+    database: Entity<TextInput>,
+    sslmode: SslMode,
+    save_password: bool,
+    color: usize,
+    env: Environment,
+    read_only: bool,
+    /// The MCP permission set here (`None`: the environment's default).
+    mcp: Option<McpAccess>,
+    ssh: SshFields,
+    entry: Entry,
+    /// The connection string (`Entry::Url`).
+    conn_str: Entity<TextInput>,
+    /// The name the last connection string gave: the next one replaces it, a typed one stays.
+    auto_name: Option<String>,
+    /// The password field holds the connection string's password (cleared with it).
+    pw_from_str: bool,
+    /// Text lengths of the name and host fields, to tell a paste from typing.
+    paste_len: [usize; 2],
+    test: Test,
+    /// Bumped per test, so a stopped test's late answer is ignored.
+    test_gen: u64,
+    /// The server asked for a password this connection does not have.
+    password_needed: bool,
+    confirm_delete: bool,
+    _ticker: Option<Task<()>>,
+}
+
+impl EventEmitter<DialogEvent> for ConnDialog {}
+
+impl Focusable for ConnDialog {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus.clone()
+    }
+}
+
+impl ConnDialog {
+    /// `profile`: the connection to edit, or the prefilled fields of a new one (`is_new`).
+    pub fn new(
+        store: Entity<ConnStore>,
+        profile: Option<ConnectionProfile>,
+        is_new: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let is_new = is_new || profile.is_none();
+        let profile = profile.unwrap_or_else(|| ConnectionProfile::new(""));
+        let field = |cx: &mut Context<Self>, ph: &str, v: &str| {
+            let v = v.to_string();
+            let ph = ph.to_string();
+            let e = cx.new(|cx| {
+                let mut t = TextInput::new(cx, ph);
+                t.set_text(v, cx);
+                t
+            });
+            cx.subscribe(&e, |d: &mut ConnDialog, _, ev: &InputEvent, cx| match ev {
+                InputEvent::Submit => d.save(cx),
+                InputEvent::Changed => {
+                    if !matches!(d.test, Test::Testing { .. }) {
+                        d.test = Test::NotTested;
+                    }
+                    cx.notify();
+                }
+            })
+            .detach();
+            e
+        };
+        let name = field(cx, "my-database", &profile.name);
+        let host = field(cx, "localhost", &profile.host);
+        let port = field(cx, &profile.engine.default_port().to_string(), &profile.port.to_string());
+        let user = field(cx, "user", &profile.user);
+        let database = field(cx, "database", &profile.database);
+        // A URL or key=value string pasted into the name or host field fills the form.
+        for (i, e) in [&name, &host].into_iter().enumerate() {
+            cx.subscribe(e, move |d: &mut ConnDialog, input, ev: &InputEvent, cx| {
+                if matches!(ev, InputEvent::Changed) {
+                    d.on_name_or_host(i, &input, cx);
+                }
+            })
+            .detach();
+        }
+        let saved = profile.save_password && !is_new;
+        let placeholder = if saved { "saved in Keychain" } else { "required by server" };
+        let password = cx.new(|cx| TextInput::new(cx, placeholder).masked());
+        cx.subscribe(&password, |d: &mut ConnDialog, _, ev: &InputEvent, cx| match ev {
+            InputEvent::Submit => d.save(cx),
+            InputEvent::Changed => {
+                d.password.update(cx, |p, _| p.error = false);
+                cx.notify();
+            }
+        })
+        .detach();
+        let s = profile.ssh.clone().unwrap_or_default();
+        let local_user = std::env::var("USER").unwrap_or_default();
+        let ssh = SshFields {
+            on: profile.ssh.is_some(),
+            host: field(cx, "bastion", &s.host),
+            port: field(cx, "22", &s.port.map(|p| p.to_string()).unwrap_or_default()),
+            user: field(cx, &local_user, &s.user),
+            auth: if profile.ssh.is_some() { s.auth } else { SshAuth::default() },
+            key: field(cx, "~/.ssh/id_ed25519", &s.key_file),
+            secret: cx.new(|cx| TextInput::new(cx, if saved && profile.ssh.is_some() { "saved in Keychain" } else { "" }).masked()),
+        };
+        cx.subscribe(&ssh.secret, |d: &mut ConnDialog, _, ev: &InputEvent, cx| match ev {
+            InputEvent::Submit => d.save(cx),
+            InputEvent::Changed => {
+                d.ssh.secret.update(cx, |p, _| p.error = false);
+                if !matches!(d.test, Test::Testing { .. }) {
+                    d.test = Test::NotTested;
+                }
+                cx.notify();
+            }
+        })
+        .detach();
+        let conn_str = cx.new(|cx| TextInput::new(cx, "postgresql://user@host:5432/database"));
+        cx.subscribe(&conn_str, |d: &mut ConnDialog, _, ev: &InputEvent, cx| match ev {
+            InputEvent::Submit => d.save(cx),
+            InputEvent::Changed => d.apply_conn_str(cx),
+        })
+        .detach();
+        let paste_len = [profile.name.len(), profile.host.len()];
+        window.focus(&name.focus_handle(cx), cx);
+        let color = profile
+            .color
+            .as_deref()
+            .and_then(|c| SWATCHES.iter().position(|s| *s == c))
+            .unwrap_or_else(|| profile.id.bytes().fold(0usize, |h, b| h.wrapping_mul(31).wrapping_add(b as usize)) % 5);
+        ConnDialog {
+            store,
+            focus: cx.focus_handle(),
+            sslmode: profile.sslmode,
+            save_password: profile.save_password || is_new,
+            color,
+            env: profile.env,
+            read_only: profile.read_only,
+            mcp: profile.mcp,
+            engine: profile.engine,
+            profile,
+            is_new,
+            name,
+            host,
+            port,
+            user,
+            password,
+            database,
+            ssh,
+            entry: Entry::Fields,
+            conn_str,
+            auto_name: None,
+            pw_from_str: false,
+            paste_len,
+            test: Test::NotTested,
+            test_gen: 0,
+            password_needed: false,
+            confirm_delete: false,
+            _ticker: None,
+        }
+    }
+
+    /// The password field (focused when the server asked for a password).
+    pub fn password_focus(&self, cx: &App) -> FocusHandle {
+        self.password.focus_handle(cx)
+    }
+
+    /// Reopened because the server asked for a password: banner, focus on the field.
+    pub fn set_password_needed(&mut self, cx: &mut Context<Self>) {
+        self.password_needed = true;
+        self.password.update(cx, |p, cx| p.set_placeholder("required by server", cx));
+        cx.notify();
+    }
+
+    pub fn set_password(&mut self, pw: &str, cx: &mut Context<Self>) {
+        self.password.update(cx, |p, cx| p.set_text(pw, cx));
+    }
+
+    /// Runs the test (demo screenshots; the UI uses the Test button and ⌘T).
+    pub fn run_test(&mut self, cx: &mut Context<Self>) {
+        self.test(cx);
+    }
+
+    /// Reopened because the SSH server's key is unknown: the fingerprint and Trust.
+    pub fn set_host_key(&mut self, prompt: HostKeyPrompt, cx: &mut Context<Self>) {
+        self.ssh.on = true;
+        self.test = Test::HostKey(prompt);
+        cx.notify();
+    }
+
+    /// Reopened because the tunnel needs a password or passphrase it does not have.
+    pub fn set_ssh_failed(&mut self, message: String, secret_needed: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.ssh.on = true;
+        self.test = Test::Failed { title: message, body: String::new() };
+        if secret_needed {
+            self.ssh.secret.update(cx, |p, _| p.error = true);
+            window.focus(&self.ssh.secret.focus_handle(cx), cx);
+        }
+        cx.notify();
+    }
+
+    /// The name (`which` 0) or host (1) field changed: a pasted connection string fills the
+    /// form (typing one character at a time never does).
+    fn on_name_or_host(&mut self, which: usize, input: &Entity<TextInput>, cx: &mut Context<Self>) {
+        let text = input.read(cx).text().to_string();
+        let pasted = text.len() > self.paste_len[which] + 1;
+        self.paste_len[which] = text.len();
+        if !pasted {
+            return;
+        }
+        let Some((p, pw)) = dataman_core::connstr::parse_profile(&text) else { return };
+        self.fill(&p, pw, which == 0, cx);
+    }
+
+    /// Fills the fields from a parsed connection string (the password field only when the
+    /// string had one; saving it is still up to "Save in Keychain").
+    pub fn fill(&mut self, p: &ConnectionProfile, pw: Option<String>, name_too: bool, cx: &mut Context<Self>) {
+        let keep_name = !name_too && !self.name.read(cx).text().trim().is_empty();
+        if !keep_name {
+            self.name.update(cx, |t, cx| t.set_text(p.name.clone(), cx));
+        }
+        self.engine = p.engine;
+        self.port.update(cx, |t, cx| t.set_placeholder(p.engine.default_port().to_string(), cx));
+        self.host.update(cx, |t, cx| t.set_text(p.host.clone(), cx));
+        self.port.update(cx, |t, cx| t.set_text(p.port.to_string(), cx));
+        self.user.update(cx, |t, cx| t.set_text(p.user.clone(), cx));
+        self.database.update(cx, |t, cx| t.set_text(p.database.clone(), cx));
+        if let Some(pw) = pw {
+            self.password.update(cx, |t, cx| t.set_text(pw, cx));
+        }
+        self.sslmode = p.sslmode;
+        self.paste_len = [self.name.read(cx).text().len(), self.host.read(cx).text().len()];
+        if !matches!(self.test, Test::Testing { .. }) {
+            self.test = Test::NotTested;
+        }
+        cx.notify();
+    }
+
+    /// `Fields | URL`. The string starts as the URL of the fields (no password) when they name
+    /// a host; the fields already follow the string.
+    pub fn set_entry(&mut self, e: Entry, window: &mut Window, cx: &mut Context<Self>) {
+        if self.entry == e {
+            return;
+        }
+        self.entry = e;
+        match e {
+            Entry::Url => {
+                if !self.host.read(cx).text().trim().is_empty() {
+                    let url = self.url(cx);
+                    self.conn_str.update(cx, |i, cx| {
+                        i.set_text(url, cx);
+                        i.error = false;
+                    });
+                }
+                window.focus(&self.conn_str.focus_handle(cx), cx);
+            }
+            Entry::Fields => window.focus(&self.name.focus_handle(cx), cx),
+        }
+        cx.notify();
+    }
+
+    /// Checks and demos: the connection string, as if typed.
+    pub fn set_conn_str(&mut self, s: &str, cx: &mut Context<Self>) {
+        self.conn_str.update(cx, |i, cx| i.set_text(s, cx));
+        self.apply_conn_str(cx);
+    }
+
+    /// The connection string is not one (its field shows red once left).
+    pub fn conn_str_invalid(&self, cx: &App) -> bool {
+        self.conn_str.read(cx).error
+    }
+
+    /// Demos: the keys to the name field (a red string field shows once it is left).
+    pub fn focus_name(&self, window: &mut Window, cx: &mut App) {
+        window.focus(&self.name.focus_handle(cx), cx);
+    }
+
+    /// Checks: the profile as the fields stand, and the password field.
+    pub fn current(&self, cx: &App) -> (ConnectionProfile, String) {
+        (self.fields(cx), self.password.read(cx).text().to_string())
+    }
+
+    /// The connection string changed: when it reads as one, the fields follow it (engine,
+    /// host, port, user, database, TLS mode, and its password into the password field).
+    fn apply_conn_str(&mut self, cx: &mut Context<Self>) {
+        let text = self.conn_str.read(cx).text().trim().to_string();
+        let parsed = dataman_core::connstr::parse_profile(&text);
+        let bad = parsed.is_none() && !text.is_empty();
+        self.conn_str.update(cx, |i, _| i.error = bad);
+        let Some((p, pw)) = parsed else {
+            cx.notify();
+            return;
+        };
+        let name = self.name.read(cx).text().trim().to_string();
+        let rename = name.is_empty() || self.auto_name.as_deref() == Some(name.as_str());
+        if rename {
+            self.auto_name = Some(p.name.clone());
+        }
+        let had_pw = pw.is_some();
+        self.fill(&p, pw, rename, cx);
+        if !had_pw && self.pw_from_str {
+            self.password.update(cx, |t, cx| t.set_text("", cx));
+        }
+        self.pw_from_str = had_pw;
+    }
+
+    /// A save or test that cannot go on: the message, and the string's field red when it is
+    /// what is wrong.
+    fn invalid(&mut self, msg: String, cx: &mut Context<Self>) {
+        if self.entry == Entry::Url && dataman_core::connstr::parse_profile(self.conn_str.read(cx).text()).is_none() {
+            self.conn_str.update(cx, |i, _| i.error = true);
+        }
+        self.test = Test::Invalid(msg);
+        cx.notify();
+    }
+
+    /// The profile, the typed password and the typed SSH secret.
+    fn collect(&self, cx: &App) -> Result<(ConnectionProfile, Option<String>, Option<String>), String> {
+        if self.entry == Entry::Url && dataman_core::connstr::parse_profile(self.conn_str.read(cx).text()).is_none() {
+            return Err("not a connection string".into());
+        }
+        let mut p = self.fields(cx);
+        p.port = self.port.read(cx).text().trim().parse().map_err(|_| "port must be a number".to_string())?;
+        p.color = Some(SWATCHES[self.color].to_string());
+        if p.name.is_empty() {
+            p.name = format!("{}@{}", if p.database.is_empty() { &p.user } else { &p.database }, p.host);
+        }
+        if p.host.is_empty() || p.user.is_empty() {
+            return Err("host and user are required".into());
+        }
+        if let Some(s) = &mut p.ssh {
+            if s.host.is_empty() {
+                return Err("SSH host is required".into());
+            }
+            let port = self.ssh.port.read(cx).text().trim().to_string();
+            s.port = if port.is_empty() { None } else { Some(port.parse().map_err(|_| "SSH port must be a number".to_string())?) };
+        }
+        let text = |e: &Entity<TextInput>| Some(e.read(cx).text().to_string()).filter(|s| !s.is_empty());
+        let secret = if self.ssh.on && self.ssh.auth != SshAuth::Agent { text(&self.ssh.secret) } else { None };
+        Ok((p, text(&self.password), secret))
+    }
+
+    /// The profile as the fields stand, unvalidated (the URL line).
+    fn fields(&self, cx: &App) -> ConnectionProfile {
+        let mut p = self.profile.clone();
+        let text = |e: &Entity<TextInput>| e.read(cx).text().trim().to_string();
+        p.name = text(&self.name);
+        p.host = text(&self.host);
+        p.user = text(&self.user);
+        p.database = text(&self.database);
+        p.port = text(&self.port).parse().unwrap_or(p.port);
+        p.engine = self.engine;
+        // MySQL and SQL Server connect without a database (the login's default; every one is
+        // browsable); PostgreSQL needs one.
+        if p.database.is_empty() && p.engine.is_postgres() {
+            p.database = "postgres".into();
+        }
+        p.sslmode = self.sslmode;
+        p.save_password = self.save_password;
+        p.env = self.env;
+        p.read_only = self.read_only;
+        p.mcp = self.mcp;
+        p.ssh = self.ssh.on.then(|| SshSettings {
+            host: text(&self.ssh.host),
+            port: text(&self.ssh.port).parse().ok(),
+            user: text(&self.ssh.user),
+            auth: self.ssh.auth,
+            key_file: if self.ssh.auth == SshAuth::Key { text(&self.ssh.key) } else { String::new() },
+        });
+        p
+    }
+
+    /// The same URL as "Copy connection string" (never the password).
+    fn url(&self, cx: &App) -> String {
+        self.fields(cx).url()
+    }
+
+    /// Another engine: the port, user and database that were the old engine's defaults follow.
+    fn set_engine(&mut self, e: Engine, cx: &mut Context<Self>) {
+        let old = self.engine;
+        if old == e {
+            return;
+        }
+        self.engine = e;
+        let text = |i: &Entity<TextInput>, cx: &Context<Self>| i.read(cx).text().trim().to_string();
+        let port = text(&self.port, cx);
+        if port.is_empty() || port == old.default_port().to_string() {
+            self.port.update(cx, |t, cx| t.set_text(e.default_port().to_string(), cx));
+        }
+        self.port.update(cx, |t, cx| t.set_placeholder(e.default_port().to_string(), cx));
+        let default_user = |e: Engine| match e {
+            Engine::Postgres => "postgres",
+            Engine::MySql => "root",
+            Engine::SqlServer => "sa",
+        };
+        let user = text(&self.user, cx);
+        if user.is_empty() || user == default_user(old) {
+            self.user.update(cx, |t, cx| t.set_text(default_user(e), cx));
+        }
+        let db = text(&self.database, cx);
+        if !e.is_postgres() && db == "postgres" {
+            self.database.update(cx, |t, cx| t.set_text("", cx));
+        }
+        if !matches!(self.test, Test::Testing { .. }) {
+            self.test = Test::NotTested;
+        }
+        cx.notify();
+    }
+
+    fn test(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.test, Test::Testing { .. }) {
+            return;
+        }
+        let (p, pw, ssh_secret) = match self.collect(cx) {
+            Ok(v) => v,
+            Err(e) => return self.invalid(e, cx),
+        };
+        let core = self.store.read(cx).core.clone();
+        let since = Instant::now();
+        let target = match &p.ssh {
+            Some(s) => format!("{}:{} via {}", p.host, p.port, s.host),
+            None => format!("{}:{}", p.host, p.port),
+        };
+        self.test = Test::Testing { since, target };
+        self.test_gen += 1;
+        let gen_ = self.test_gen;
+        // Saved secrets (keychain, pgpass) are looked up off the UI thread.
+        let task = core.test_connection(p, pw, ssh_secret);
+        // The elapsed time ticks at 10 Hz only while the test runs.
+        self._ticker = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_millis(100)).await;
+                let go_on = this
+                    .update(cx, |d, cx| {
+                        cx.notify();
+                        matches!(d.test, Test::Testing { .. }) && d.test_gen == gen_
+                    })
+                    .unwrap_or(false);
+                if !go_on {
+                    break;
+                }
+            }
+        }));
+        cx.spawn(async move |this, cx| {
+            let r = task.await;
+            let _ = this.update(cx, |d, cx| {
+                if d.test_gen != gen_ || !matches!(d.test, Test::Testing { .. }) {
+                    return;
+                }
+                d.test = match r {
+                    Ok((info, rtt)) => Test::Ok { info, ms: rtt.as_secs_f64() * 1e3 },
+                    Err(e) => match ssh_error(&e) {
+                        Some(SshError::UnknownHostKey(prompt)) => Test::HostKey(prompt),
+                        Some(s) => {
+                            if matches!(s, SshError::SecretNeeded { .. } | SshError::Auth { .. }) && d.ssh.auth != SshAuth::Agent {
+                                d.ssh.secret.update(cx, |p, _| p.error = true);
+                            }
+                            Test::Failed { title: s.to_string(), body: String::new() }
+                        }
+                        None => {
+                            let (title, body, password) = server_message(&e);
+                            if password {
+                                d.password.update(cx, |p, _| p.error = true);
+                            }
+                            Test::Failed { title, body }
+                        }
+                    },
+                };
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn cancel(&mut self, cx: &mut Context<Self>) {
+        // esc stops a running test first; a second esc closes.
+        if matches!(self.test, Test::Testing { .. }) {
+            self.test = Test::NotTested;
+            self.test_gen += 1;
+            cx.notify();
+        } else {
+            cx.emit(DialogEvent::Close);
+        }
+    }
+
+    /// Trusts the SSH host key shown, then tests again.
+    fn trust(&mut self, cx: &mut Context<Self>) {
+        let Test::HostKey(prompt) = &self.test else { return };
+        let task = self.store.read(cx).core.trust_host_key(prompt.clone());
+        cx.spawn(async move |this, cx| {
+            let r = task.await;
+            let _ = this.update(cx, |d, cx| match r {
+                Ok(()) => {
+                    d.test = Test::NotTested;
+                    d.test(cx);
+                }
+                Err(e) => {
+                    d.test = Test::Invalid(format!("known_hosts: {e:#}"));
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// The connection this sheet edits (or creates).
+    pub fn profile_id(&self) -> &str {
+        &self.profile.id
+    }
+
+    pub fn is_new(&self) -> bool {
+        self.is_new
+    }
+
+    fn save(&mut self, cx: &mut Context<Self>) {
+        if let Err(e) = self.collect(cx) {
+            return self.invalid(e, cx);
+        }
+        cx.emit(DialogEvent::Save);
+    }
+
+    /// Saves the connection and reconnects it with the new settings.
+    pub fn save_now(&mut self, cx: &mut Context<Self>) {
+        let (p, pw, ssh_secret) = match self.collect(cx) {
+            Ok(v) => v,
+            Err(e) => return self.invalid(e, cx),
+        };
+        let core = self.store.read(cx).core.clone();
+        if let Err(e) = core.save_connection(p.clone(), pw.as_deref(), ssh_secret.as_deref()) {
+            self.test = Test::Invalid(format!("{e:#}"));
+            cx.notify();
+            return;
+        }
+        self.store.update(cx, |s, cx| {
+            // Reconnect with the new settings.
+            s.disconnect(&p.id, cx);
+            s.reload(cx);
+        });
+        cx.emit(DialogEvent::Saved { id: p.id, password: pw });
+    }
+
+    fn delete(&mut self, cx: &mut Context<Self>) {
+        if !self.confirm_delete {
+            self.confirm_delete = true;
+            cx.notify();
+            return;
+        }
+        cx.emit(DialogEvent::Delete(self.profile.id.clone()));
+    }
+
+    fn field(&self, t: &Theme, label: &'static str, input: &Entity<TextInput>, label_color: Option<Hsla>) -> gpui::Div {
+        div()
+            .flex_1()
+            .flex()
+            .flex_col()
+            .gap(px(6.))
+            .child(div().text_size(px(10.)).text_color(label_color.unwrap_or(t.tx3)).child(label))
+            .child(input.clone())
+    }
+
+    /// The result box: glyph, title, the server's DETAIL/HINT on a failure, and the LAR badge
+    /// when detected. Nothing until a test runs.
+    fn result_box(&self, t: &Theme) -> Option<gpui::Div> {
+        let (glyph, gcolor, title, body, bg, ring, lar): (&str, Hsla, String, String, Hsla, Hsla, bool) = match &self.test {
+            Test::NotTested => return None,
+            Test::Testing { since, target } => (
+                "◌",
+                t.warn,
+                format!("Testing {target} … {:.1} s", since.elapsed().as_secs_f64()),
+                String::new(),
+                t.hov,
+                t.line2,
+                false,
+            ),
+            Test::Ok { info, ms } if info.is_lar => (
+                "●",
+                t.ok,
+                format!("Connected in {} · {}", fmt_ms(*ms), info.version_line()),
+                String::new(),
+                t.lar_s,
+                t.lar,
+                true,
+            ),
+            Test::Ok { info, ms } => {
+                ("●", t.ok, format!("Connected in {} · {}", fmt_ms(*ms), info.short_version()), String::new(), t.ok_s, t.line2, false)
+            }
+            Test::Failed { title, body, .. } => ("✕", t.err, title.clone(), body.clone(), t.err_s, t.err, false),
+            Test::Invalid(msg) => ("✕", t.err, msg.clone(), String::new(), t.err_s, t.err, false),
+            Test::HostKey(_) => return None,
+        };
+        Some(
+            div()
+            .px(px(12.))
+            .py(px(10.))
+            .flex()
+            .flex_row()
+            .gap(px(10.))
+            .bg(bg)
+            .border_1()
+            .border_color(ring)
+            .text_size(px(11.5))
+            .line_height(px(17.))
+            .child(div().flex_none().text_size(px(11.)).text_color(gcolor).child(glyph))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .child(div().text_color(t.tx).child(title))
+                    .children(body.lines().map(|l| div().text_color(t.tx2).child(l.to_string())).collect::<Vec<_>>()),
+            )
+            .when(lar, |d| d.child(ui::lar_badge(t, "◆ LAR").h(px(18.)).text_size(px(12.)))),
+        )
+    }
+
+    /// An unknown SSH host key: the host, the key type and fingerprint, and Trust.
+    fn host_key_box(&self, t: &Theme, cx: &mut Context<Self>) -> Option<gpui::Div> {
+        let Test::HostKey(p) = &self.test else { return None };
+        Some(
+            div()
+                .px(px(12.))
+                .py(px(10.))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(10.))
+                .bg(t.warn_s)
+                .border_1()
+                .border_color(t.line2)
+                .text_size(px(11.5))
+                .line_height(px(17.))
+                .child(div().flex_none().text_size(px(11.)).text_color(t.warn).child("?"))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.))
+                        .child(div().text_color(t.tx).child(format!("Unknown host key · {}", p.host)))
+                        .child(div().text_color(t.tx2).overflow_hidden().whitespace_nowrap().text_ellipsis().child(format!("{}  {}", p.algorithm, p.fingerprint))),
+                )
+                .child(
+                    ui::button(t, "dlg-trust", Btn::Secondary)
+                        .h(px(26.))
+                        .px(px(10.))
+                        .child("Trust")
+                        .on_click(cx.listener(|d, _, _, cx| d.trust(cx))),
+                ),
+        )
+    }
+
+    /// The SSH section: a toggle, and when on, host and port, user and auth, then the key
+    /// file and passphrase or the password.
+    fn ssh_section(&self, t: &Theme, cx: &mut Context<Self>) -> gpui::Div {
+        let s = &self.ssh;
+        let toggle = div()
+            .id("ssh-toggle")
+            .h(px(18.))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(8.))
+            .cursor_pointer()
+            .child(ui::checkbox(t, s.on))
+            .child(div().text_size(px(10.)).text_color(if s.on { t.tx2 } else { t.tx3 }).child("SSH"))
+            .on_click(cx.listener(|d, _, window, cx| {
+                d.ssh.on = !d.ssh.on;
+                if d.ssh.on {
+                    window.focus(&d.ssh.host.focus_handle(cx), cx);
+                }
+                if !matches!(d.test, Test::Testing { .. }) {
+                    d.test = Test::NotTested;
+                }
+                cx.notify();
+            }));
+        let mut col = div().flex().flex_col().gap(px(10.)).child(toggle);
+        if !s.on {
+            return col;
+        }
+        let auth = ui::segmented(t).children(SshAuth::ALL.iter().map(|a| {
+            let a = *a;
+            ui::segment(t, ("ssh-auth", a as usize), a.label(), a == s.auth).on_click(cx.listener(move |d, _, _, cx| {
+                d.ssh.auth = a;
+                d.ssh.secret.update(cx, |p, _| p.error = false);
+                cx.notify();
+            }))
+        }));
+        let row = || div().flex().flex_row().gap(px(12.));
+        let inner = div()
+            .pl(px(22.))
+            .flex()
+            .flex_col()
+            .gap(px(10.))
+            .child(row().child(self.field(t, "HOST", &s.host, None)).child(div().w(px(96.)).flex_none().child(self.field(t, "PORT", &s.port, None))))
+            .child(
+                row()
+                    .items_end()
+                    .child(self.field(t, "USER", &s.user, None))
+                    .child(div().flex_1().flex().flex_col().gap(px(6.)).child(div().text_size(px(10.)).text_color(t.tx3).child("AUTH")).child(auth)),
+            )
+            .when(s.auth == SshAuth::Key, |d| {
+                d.child(row().child(self.field(t, "KEY FILE", &s.key, None)).child(self.field(t, "PASSPHRASE", &s.secret, None)))
+            })
+            .when(s.auth == SshAuth::Password, |d| d.child(row().child(self.field(t, "SSH PASSWORD", &s.secret, None)).child(div().flex_1())));
+        col = col.child(inner);
+        col
+    }
+}
+
+/// The SSH error behind a failure, if the tunnel is what failed.
+pub fn ssh_error(e: &anyhow::Error) -> Option<SshError> {
+    e.chain().find_map(|c| c.downcast_ref::<SshError>()).cloned()
+}
+
+impl ServerInfoExt for ServerInfo {
+    fn version_line(&self) -> String {
+        let mut v = self.short_version();
+        if self.is_lar {
+            v.push_str(" (LAR)");
+        }
+        v
+    }
+}
+
+trait ServerInfoExt {
+    fn version_line(&self) -> String;
+}
+
+fn fmt_ms(ms: f64) -> String {
+    if ms < 10. { format!("{ms:.1} ms") } else { format!("{ms:.0} ms") }
+}
+
+/// The server's error, verbatim: `FATAL 28P01 · password authentication failed for user "app"`,
+/// and the server's DETAIL/HINT. `true` when it is about the password.
+pub fn server_message(e: &anyhow::Error) -> (String, String, bool) {
+    if let Some(s) = ssh_error(e) {
+        return (s.to_string(), String::new(), false);
+    }
+    match dataman_core::server_error(e) {
+        Some(db) => {
+            let code = db.code.unwrap_or_default();
+            let title = format!("{} {} · {}", db.severity.unwrap_or_default(), code, db.message);
+            let mut lines = Vec::new();
+            if let Some(d) = db.detail {
+                lines.push(format!("DETAIL  {d}"));
+            }
+            if let Some(h) = db.hint {
+                lines.push(format!("HINT  {h}"));
+            }
+            // PostgreSQL's 28P01/28000, MySQL's 1045 (access denied), SQL Server's 18456 (login
+            // failed).
+            (title, lines.join("\n"), code == "28P01" || code == "28000" || code == "1045" || code == "18456")
+        }
+        None => {
+            let msg = format!("{e:#}");
+            let password = msg.contains("password");
+            let title = msg.lines().next().unwrap_or(&msg).to_string();
+            (title, String::new(), password)
+        }
+    }
+}
+
+impl Render for ConnDialog {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = cx.theme();
+        let testing = matches!(self.test, Test::Testing { .. });
+        let color = if self.env.is_production() { t.err } else { t.swatches[self.color] };
+        let title: SharedString = if self.password_needed {
+            format!("Password needed · {}", self.profile.name).into()
+        } else if self.is_new {
+            "New connection".into()
+        } else {
+            "Edit connection".into()
+        };
+        let pw_focused = self.password.focus_handle(cx).is_focused(window);
+        let swatches = div().h(px(30.)).flex().flex_row().items_center().gap(px(6.)).children((0..SWATCHES.len()).map(|i| {
+            let c = t.swatches[i];
+            let on = i == self.color;
+            div()
+                .id(("swatch", i))
+                .size(px(22.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .when(on, |d| d.border_2().border_color(c))
+                .on_click(cx.listener(move |d, _, _, cx| {
+                    d.color = i;
+                    cx.notify();
+                }))
+                .child(div().size(px(if on { 14. } else { 18. })).bg(c))
+        }));
+        let engine = ui::segmented(&t).children(ENGINES.iter().map(|e| {
+            let e = *e;
+            ui::segment(&t, ("engine", e as usize), e.label(), e == self.engine).on_click(cx.listener(move |d, _, _, cx| d.set_engine(e, cx)))
+        }));
+        let ssl = ui::segmented(&t).children(SslMode::ALL.iter().map(|m| {
+            let m = *m;
+            ui::segment(&t, m.label(), m.label(), m == self.sslmode).on_click(cx.listener(move |d, _, _, cx| {
+                d.sslmode = m;
+                cx.notify();
+            }))
+        }));
+        let env = ui::segmented(&t).children(Environment::ALL.iter().map(|e| {
+            let e = *e;
+            ui::segment(&t, ("env", e as usize), e.label(), e == self.env)
+                .when(e.is_production() && e == self.env, |d| d.text_color(t.err))
+                .on_click(cx.listener(move |d, _, _, cx| {
+                    d.env = e;
+                    cx.notify();
+                }))
+        }));
+        let mcp_cur = self.mcp.unwrap_or_else(|| McpAccess::default_for(self.env));
+        let mcp = ui::segmented(&t).children(McpAccess::ALL.iter().map(|a| {
+            let a = *a;
+            ui::segment(&t, ("mcp", a as usize), a.label(), a == mcp_cur)
+                .when(a >= McpAccess::Write && a == mcp_cur && self.env.is_production(), |d| d.text_color(t.err))
+                .on_click(cx.listener(move |d, _, _, cx| {
+                    d.mcp = Some(a);
+                    cx.notify();
+                }))
+        }));
+        let read_only = div()
+            .id("read-only")
+            .h(px(28.))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(8.))
+            .text_size(px(11.5))
+            .text_color(t.tx2)
+            .cursor_pointer()
+            .child(ui::checkbox(&t, self.read_only))
+            .child("Read-only")
+            .on_click(cx.listener(|d, _, _, cx| {
+                d.read_only = !d.read_only;
+                cx.notify();
+            }));
+        let keychain = div()
+            .id("save-pw")
+            .h(px(30.))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(8.))
+            .text_size(px(11.5))
+            .text_color(t.tx2)
+            .cursor_pointer()
+            .child(ui::checkbox(&t, self.save_password))
+            .child("Save in Keychain")
+            .on_click(cx.listener(|d, _, _, cx| {
+                d.save_password = !d.save_password;
+                cx.notify();
+            }));
+        let url = self.url(cx);
+        let url2 = url.clone();
+        let by_url = self.entry == Entry::Url;
+        let entry = ui::segmented(&t).h(px(24.)).children([(Entry::Fields, "Fields"), (Entry::Url, "URL")].map(|(e, label)| {
+            ui::segment(&t, ("entry", e as usize), label, e == self.entry).on_click(cx.listener(move |d, _, window, cx| d.set_entry(e, window, cx)))
+        }));
+        let caption = |text: &'static str| div().text_size(px(10.)).text_color(t.tx3).child(text);
+        // The server: one connection string, or host and port, user and database, password.
+        let row = || div().flex().flex_row().gap(px(12.));
+        let server: Vec<gpui::Div> = if by_url {
+            vec![row().items_end().child(self.field(&t, "URL", &self.conn_str, None)).child(keychain)]
+        } else {
+            vec![
+                row().child(self.field(&t, "HOST", &self.host, None)).child(div().w(px(96.)).flex_none().child(self.field(&t, "PORT", &self.port, None))),
+                row().child(self.field(&t, "USER", &self.user, None)).child(self.field(&t, "DATABASE", &self.database, None)),
+                row()
+                    .items_end()
+                    .child(self.field(&t, "PASSWORD", &self.password, (pw_focused || self.password_needed).then_some(t.acc_t)))
+                    .child(keychain),
+            ]
+        };
+        // In a short window the fields scroll between the fixed header and footer.
+        let max_h = window.viewport_size().height.pt() - crate::theme::metrics::TITLE_H - 32.;
+        let card = ui::modal(&t, "conn-dialog")
+            .w(px(600.))
+            .max_h(px(max_h))
+            .child(ui::modal_header_with(
+                &t,
+                Some(ui::chip(color, 10.).into_any_element()),
+                title,
+                (!self.password_needed).then(|| entry.into_any_element()),
+                ui::modal_close(&t, "dlg-close").on_click(cx.listener(|_, _, _, cx| cx.emit(DialogEvent::Close))),
+            ))
+            .child(
+                div()
+                    .id("dlg-body")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .px(px(20.))
+                    .pt(px(16.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(14.))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .gap(px(12.))
+                            .items_end()
+                            .child(self.field(&t, "NAME", &self.name, None))
+                            .when(!by_url, |d| d.child(div().flex().flex_col().gap(px(6.)).child(caption("ENGINE")).child(engine)))
+                            .child(div().flex().flex_col().gap(px(6.)).child(caption("COLOR")).child(swatches)),
+                    )
+                    .children(server)
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_end()
+                            .gap(px(16.))
+                            .when(!by_url, |d| d.child(div().flex().flex_col().gap(px(6.)).child(caption("SSL")).child(ssl)))
+                            .child(div().flex().flex_col().gap(px(6.)).child(caption("MCP")).child(mcp)),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_end()
+                            .gap(px(16.))
+                            .child(div().flex().flex_col().gap(px(6.)).child(div().text_size(px(10.)).text_color(t.tx3).child("ENVIRONMENT")).child(env))
+                            .child(read_only),
+                    )
+                    .child(self.ssh_section(&t, cx))
+                    // The fields' URL (the string is on screen already in URL mode).
+                    .when(!by_url, |d| {
+                        d.child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(8.))
+                                .text_size(px(11.))
+                                .text_color(t.tx3)
+                                .child(div().text_color(t.tx4).child("url"))
+                                .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(url))
+                                .child(
+                                    div()
+                                        .id("copy-url")
+                                        .text_color(t.acc_t)
+                                        .cursor_pointer()
+                                        .child("copy")
+                                        .on_click(cx.listener(move |_, _, _, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(url2.clone())))),
+                                ),
+                        )
+                    })
+                    .children(self.result_box(&t))
+                    .children(self.host_key_box(&t, cx)),
+            )
+            .child(
+                ui::modal_footer(&t)
+                    .mt(px(14.))
+                    .child(
+                        ui::button(&t, "dlg-test", if testing { Btn::Ghost } else { Btn::Secondary })
+                            .h(px(28.))
+                            .px(px(10.))
+                            .when(testing, |d| d.bg(t.warn_s).text_color(t.warn))
+                            .child(if testing { "◌ Testing…" } else { "Test" })
+                            .child(ui::key_hint("⌘T"))
+                            .on_click(cx.listener(|d, _, _, cx| d.test(cx))),
+                    )
+                    .when(!self.is_new && !self.password_needed, |d| {
+                        d.child(
+                            ui::button(&t, "dlg-delete", Btn::Ghost)
+                                .h(px(28.))
+                                .px(px(10.))
+                                .text_color(t.err)
+                                .child(if self.confirm_delete { "Delete — sure?" } else { "Delete…" })
+                                .on_click(cx.listener(|d, _, _, cx| d.delete(cx))),
+                        )
+                    })
+                    .child(div().flex_1())
+                    .child(
+                        ui::button(&t, "dlg-cancel", Btn::Ghost)
+                            .h(px(28.))
+                            .px(px(12.))
+                            .child("Cancel")
+                            .child(div().text_size(px(10.5)).opacity(0.6).child("esc"))
+                            .on_click(cx.listener(|d, _, _, cx| d.cancel(cx))),
+                    )
+                    .child(
+                        ui::button(&t, "dlg-save", if testing { Btn::Ghost } else { Btn::Primary })
+                            .h(px(28.))
+                            .px(px(12.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .when(testing, |d| d.bg(t.prs).text_color(t.tx3))
+                            .child(if self.is_new || self.password_needed { "Save & connect" } else { "Save" })
+                            .child(div().text_size(px(10.5)).font_weight(FontWeight::NORMAL).opacity(0.75).child("⌘↩"))
+                            .on_click(cx.listener(|d, _, _, cx| d.save(cx))),
+                    ),
+            );
+        // The sheet: a scrim under the title bar and the card centered on it.
+        div()
+            .id("conn-dialog-backdrop")
+            .absolute()
+            .top(px(crate::theme::metrics::TITLE_H))
+            .left_0()
+            .right_0()
+            .bottom_0()
+            .bg(t.scrim)
+            .flex()
+            .items_center()
+            .justify_center()
+            .key_context("ConnDialog Modal")
+            .track_focus(&self.focus)
+            .on_action(cx.listener(|d, _: &DialogSave, _, cx| d.save(cx)))
+            .on_action(cx.listener(|d, _: &DialogTest, _, cx| d.test(cx)))
+            .on_action(cx.listener(|d, _: &DialogCancel, _, cx| d.cancel(cx)))
+            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(card)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// SSH failures show the tunnel's own line and never pass for a database password problem.
+    #[test]
+    fn ssh_failures_are_told_apart() {
+        let e = anyhow::Error::from(SshError::SecretNeeded { host: "bastion".into(), what: "password" }).context("connecting");
+        assert!(matches!(ssh_error(&e), Some(SshError::SecretNeeded { .. })));
+        assert_eq!(server_message(&e), ("SSH bastion · password needed".into(), String::new(), false));
+        let e = anyhow::anyhow!("password authentication failed for user \"app\"");
+        assert!(ssh_error(&e).is_none());
+        assert!(server_message(&e).2);
+        let k = HostKeyPrompt::from_openssh("bastion", 2222, "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1ebz9/cu7/QEXn9OIeZJ").unwrap();
+        assert_eq!((k.host.as_str(), k.algorithm.as_str()), ("bastion:2222", "ssh-ed25519"));
+        assert!(k.fingerprint.starts_with("SHA256:"));
+    }
+}

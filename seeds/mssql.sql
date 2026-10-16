@@ -1,8 +1,8 @@
--- The SQL Server test database (`diskman_test`) of the live tests (`tests/live_mssql*.rs`) and of
+-- The SQL Server test database (`dataman_test`) of the live tests (`tests/live_mssql*.rs`) and of
 -- the `mssql-check` demo stage. Each run starts from scratch. Load it with the container's sqlcmd:
 --
---   docker exec -i diskman-mssql /opt/mssql-tools18/bin/sqlcmd -C -I -b -S localhost -U sa \
---       -P "$DISKMAN_MSSQL_PASSWORD" < seeds/mssql.sql
+--   docker exec -i dataman-mssql /opt/mssql-tools18/bin/sqlcmd -C -I -b -S localhost -U sa \
+--       -P "$DATAMAN_MSSQL_PASSWORD" < seeds/mssql.sql
 --
 -- (`-I`: QUOTED_IDENTIFIER ON, which the persisted computed column needs; sqlcmd's default is
 -- off.)
@@ -14,15 +14,15 @@
 -- scalar and a table-valued function, a second schema with a heap (no key) and a synonym.
 USE master;
 GO
-IF DB_ID(N'diskman_test') IS NOT NULL
+IF DB_ID(N'dataman_test') IS NOT NULL
 BEGIN
-    ALTER DATABASE diskman_test SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
-    DROP DATABASE diskman_test;
+    ALTER DATABASE dataman_test SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+    DROP DATABASE dataman_test;
 END
 GO
-CREATE DATABASE diskman_test;
+CREATE DATABASE dataman_test;
 GO
-USE diskman_test;
+USE dataman_test;
 GO
 CREATE SCHEMA sales;
 GO

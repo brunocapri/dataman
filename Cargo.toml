@@ -1,12 +1,12 @@
-# Diskman: a native database client for PostgreSQL, MySQL/MariaDB and SQL Server (with extra
+# Dataman: a native database client for PostgreSQL, MySQL/MariaDB and SQL Server (with extra
 # panels for LAR servers).
 [workspace]
 resolver = "3"
-members = ["crates/diskman-core", "crates/diskman-mcp", "crates/diskman", "crates/xtask"]
+members = ["crates/dataman-core", "crates/dataman-mcp", "crates/dataman", "crates/xtask"]
 exclude = ["vendor"]
 # The release tooling (icon, update keys and signatures) builds only when asked for:
 # `cargo run --release -p xtask -- …` (scripts/ call it).
-default-members = ["crates/diskman-core", "crates/diskman-mcp", "crates/diskman"]
+default-members = ["crates/dataman-core", "crates/dataman-mcp", "crates/dataman"]
 
 [workspace.package]
 edition = "2024"
@@ -26,8 +26,8 @@ toml = "0.9"
 chrono = "0.4"
 uuid = "1"
 parking_lot = "0.12"
-diskman-core = { path = "crates/diskman-core" }
-diskman-mcp = { path = "crates/diskman-mcp" }
+dataman-core = { path = "crates/dataman-core" }
+dataman-mcp = { path = "crates/dataman-mcp" }
 # GPUI's API is not stable: pinned to the commit of Zed's v1.23.2 release tag.
 gpui = { git = "https://github.com/zed-industries/zed", rev = "c0199504b9cce79bc27524950022ed701bc3ebd5" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "c0199504b9cce79bc27524950022ed701bc3ebd5", features = ["font-kit"] }

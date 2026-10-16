@@ -1,0 +1,2747 @@
+//! The explorer: saved connections → databases → schemas → tables, views, materialized views,
+//! functions, sequences, types, triggers → columns, indexes, constraints, triggers,
+//! partitions; extensions under each database and roles under each connection. A `/` filter
+//! searches everything loaded.
+//!
+//! The tree is flattened into the list of visible rows and drawn with `uniform_list`, so a
+//! schema with thousands of tables expands without drawing them all. Every level loads on
+//! demand through the core's schema cache, one catalog query per node; a group the server
+//! reports empty (or does not report: LAR) is not shown.
+
+use std::collections::{HashMap, HashSet};
+use std::ops::Range;
+use std::sync::Arc;
+
+use std::time::{Duration, Instant};
+
+use gpui::{
+    AnyElement, App, ClickEvent, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla,
+    KeyBinding, MouseButton, MouseDownEvent, SharedString, Subscription, UniformListScrollHandle, Window, actions,
+    anchored, deferred, div, point, prelude::*, uniform_list,
+};
+use crate::theme::{Pt, px};
+use dataman_core::Connection;
+use dataman_core::schema::objects::{approx_count, constraint_summary, human_size, partition_bound_summary};
+use dataman_core::schema::{ConstraintKind, FuncKind, RelKind, RelStats, TypeKind};
+
+use crate::assets::{Icon, icon};
+use crate::conns::{ConnState, ConnStore};
+use crate::grid::ui_count;
+use crate::input::{InputEvent, TextInput};
+use crate::motion::{FindPop, PopFrame, PopStyle};
+use crate::theme::{ActiveTheme, Theme};
+use crate::tree_menu::{self as menu, Act, ConnPhase, Entry, Obj, Target};
+use crate::ui;
+
+actions!(
+    explorer,
+    [
+        SelectPrev,
+        SelectNext,
+        Expand,
+        Collapse,
+        Open,
+        ReloadNode,
+        EditConnection,
+        Disconnect,
+        FocusFilter,
+        Escape,
+        /// ⇧F10 (and the palette's "Show row actions"): the context menu of the selected row.
+        ShowRowActions,
+        MenuUp,
+        MenuDown,
+        MenuLeft,
+        MenuRight,
+        MenuConfirm,
+        /// ⌥↩ on a Generate SQL item: insert at the cursor instead of a new tab.
+        MenuConfirmAlt,
+        MenuClose,
+    ]
+);
+
+/// The key context of the open context menu (it holds the focus while open).
+const MENU_CONTEXT: &str = "ExplorerMenu";
+/// The hover group of a tree row (its ⋯ button shows on hover).
+const ROW_GROUP: &str = "tree-row";
+/// How far a row's meta moves left while its ⋯ button shows (the 16 pt button 3 pt from the
+/// row's right edge, the row's 8 pt padding, and a 3 pt gap).
+const MORE_ROOM: f32 = 14.;
+
+const CONTEXT: &str = "Explorer";
+
+/// The filter's first match pops once typing pauses this long (not on every keystroke).
+const POP_PAUSE: Duration = Duration::from_millis(150);
+
+pub fn bind_keys(cx: &mut App) {
+    let c = Some(CONTEXT);
+    cx.bind_keys([
+        KeyBinding::new("up", SelectPrev, c),
+        KeyBinding::new("down", SelectNext, c),
+        KeyBinding::new("right", Expand, c),
+        KeyBinding::new("left", Collapse, c),
+        KeyBinding::new("enter", Open, c),
+        KeyBinding::new("cmd-r", ReloadNode, c),
+        KeyBinding::new("cmd-i", EditConnection, c),
+        KeyBinding::new("cmd-backspace", Disconnect, c),
+        // In the filter field `/` types.
+        KeyBinding::new("/", FocusFilter, Some("Explorer && !TextInput")),
+        KeyBinding::new("escape", Escape, c),
+        // The Mac convention for the keyboard context menu (PC keyboards' menu key does not
+        // reach GPUI on macOS).
+        KeyBinding::new("shift-f10", ShowRowActions, c),
+    ]);
+    let m = Some(MENU_CONTEXT);
+    cx.bind_keys([
+        KeyBinding::new("up", MenuUp, m),
+        KeyBinding::new("down", MenuDown, m),
+        KeyBinding::new("left", MenuLeft, m),
+        KeyBinding::new("right", MenuRight, m),
+        KeyBinding::new("enter", MenuConfirm, m),
+        KeyBinding::new("space", MenuConfirm, m),
+        KeyBinding::new("alt-enter", MenuConfirmAlt, m),
+        KeyBinding::new("escape", MenuClose, m),
+        KeyBinding::new("shift-f10", MenuClose, m),
+    ]);
+}
+
+pub enum TreeEvent {
+    /// Double-click (or ↩) on a table or view.
+    OpenRelation { conn: String, db: String, schema: String, name: String },
+    /// The selected connection changed.
+    Selected(String),
+    /// Edit a connection (⌘I, or double-click on one that failed).
+    EditConnection(String),
+    NewConnection,
+    Disconnect(String),
+    /// esc: back to the editor.
+    FocusEditor,
+    /// A context menu action the workspace carries out (`alt`: ⌥ was held).
+    RowAction { act: Act, target: Target, alt: bool },
+    /// A short message for the status bar ("Copied …").
+    Notice(String),
+}
+
+/// The groups under a schema, in the order they are shown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum G {
+    Tables,
+    Views,
+    MatViews,
+    Functions,
+    Sequences,
+    Types,
+    Triggers,
+}
+
+impl G {
+    const ALL: [G; 7] = [G::Tables, G::Views, G::MatViews, G::Functions, G::Sequences, G::Types, G::Triggers];
+
+    /// The last part of the group's row id.
+    fn key(self) -> &'static str {
+        match self {
+            G::Tables => "tables",
+            G::Views => "views",
+            G::MatViews => "matviews",
+            G::Functions => "functions",
+            G::Sequences => "sequences",
+            G::Types => "types",
+            G::Triggers => "triggers",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            G::MatViews => "materialized views",
+            g => g.key(),
+        }
+    }
+
+    /// Which relations it lists (`None`: not a relation group).
+    fn holds(self, k: RelKind) -> Option<bool> {
+        match self {
+            G::Tables => Some(!k.is_view()),
+            G::Views => Some(k == RelKind::View),
+            G::MatViews => Some(k == RelKind::MaterializedView),
+            _ => None,
+        }
+    }
+}
+
+/// The groups under a table besides columns and indexes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Sub {
+    Constraints,
+    Triggers,
+    Partitions,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum Kind {
+    Conn { id: String },
+    Db { conn: String, db: String },
+    Schema { conn: String, db: String, schema: String },
+    Group { conn: String, db: String, schema: String, g: G },
+    /// The connection's roles.
+    Roles { conn: String },
+    /// A database's extensions.
+    Extensions { conn: String, db: String },
+    Rel { conn: String, db: String, schema: String, name: String, kind: RelKind },
+    /// A partition or parent listed under a table: it opens like a table.
+    RelRef { conn: String, db: String, schema: String, name: String },
+    Columns { conn: String, db: String, schema: String, name: String },
+    Indexes { conn: String, db: String, schema: String, name: String },
+    /// A table's constraints, triggers or partitions.
+    TableSub { conn: String, db: String, schema: String, name: String, what: Sub },
+    Column { name: String },
+    Index { name: String, definition: Option<String> },
+    /// A function, sequence, type, enum label, trigger, constraint, extension or role.
+    Object { conn: String, db: String, schema: String, name: String, what: Obj },
+    /// A failed load: clicking retries the node `retry`.
+    Error { retry: String },
+    Leaf,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Tone {
+    Normal,
+    /// A connected connection's name (semibold).
+    Conn,
+    ConnLar,
+    /// A connection that is not connected (off, failed): dim, regular weight.
+    ConnOff,
+    /// A connection on its way up: gray, between off and connected.
+    ConnWait,
+    Muted,
+    Italic,
+    Error,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Meta {
+    Plain,
+    Ok,
+    Warn,
+    Err,
+    Off,
+    LarState,
+    NotReported,
+    Link,
+}
+
+#[derive(Clone)]
+struct Row {
+    id: SharedString,
+    depth: usize,
+    label: SharedString,
+    /// Byte range of the filter match in `label`.
+    hl: Option<Range<usize>>,
+    tone: Tone,
+    icon: Option<(Icon, Option<Hsla>)>,
+    /// No icon, but its room kept: a plain column's name lines up with a key column's.
+    blank_icon: bool,
+    chip: Option<Hsla>,
+    /// The chip faded (a connection that is not connected).
+    chip_dim: bool,
+    /// The whole text on hover (a connection's error, a failed load's).
+    tip: Option<SharedString>,
+    lar: bool,
+    /// A connection through an SSH tunnel (a small glyph after the name).
+    tunnel: bool,
+    /// A read-only database (a small lock after the name).
+    lock: bool,
+    meta: SharedString,
+    /// What the meta column shows when `meta` and the label do not both fit (a table's row
+    /// estimate without its size).
+    meta_short: Option<SharedString>,
+    meta_kind: Meta,
+    expandable: bool,
+    expanded: bool,
+    kind: Kind,
+}
+
+impl Row {
+    fn new(id: impl Into<SharedString>, depth: usize, label: impl Into<SharedString>, kind: Kind) -> Row {
+        Row {
+            id: id.into(),
+            depth,
+            label: label.into(),
+            hl: None,
+            tone: Tone::Normal,
+            icon: None,
+            blank_icon: false,
+            chip: None,
+            chip_dim: false,
+            tip: None,
+            lar: false,
+            tunnel: false,
+            lock: false,
+            meta: SharedString::default(),
+            meta_short: None,
+            meta_kind: Meta::Plain,
+            expandable: false,
+            expanded: false,
+            kind,
+        }
+    }
+    fn icon(mut self, i: Icon) -> Row {
+        self.icon = Some((i, None));
+        self
+    }
+    fn icon_colored(mut self, i: Icon, c: Hsla) -> Row {
+        self.icon = Some((i, Some(c)));
+        self
+    }
+    fn blank_icon(mut self) -> Row {
+        self.blank_icon = true;
+        self
+    }
+    fn meta(mut self, m: impl Into<SharedString>, k: Meta) -> Row {
+        self.meta = m.into();
+        self.meta_kind = k;
+        self
+    }
+    fn tone(mut self, t: Tone) -> Row {
+        self.tone = t;
+        self
+    }
+    fn lock(mut self, on: bool) -> Row {
+        self.lock = on;
+        self
+    }
+    fn expandable(mut self, open: bool) -> Row {
+        self.expandable = true;
+        self.expanded = open;
+        self
+    }
+}
+
+/// The open context menu.
+struct RowMenu {
+    /// The row it belongs to (`None`: the "nothing selected" menu).
+    row: Option<SharedString>,
+    target: Target,
+    entries: Vec<Entry>,
+    /// Top-left corner, window coordinates.
+    origin: (f32, f32),
+    /// The highlighted entry (keyboard and hover share it).
+    hi: Option<usize>,
+    /// The open submenu (an entry index) and its highlighted item.
+    sub: Option<usize>,
+    sub_hi: Option<usize>,
+}
+
+/// Where a menu opens.
+#[derive(Clone, Copy, Debug)]
+pub enum MenuAnchor {
+    /// At the mouse (right-click, ctrl-click).
+    Mouse(gpui::Point<gpui::Pixels>),
+    /// Under the row's label (the keyboard).
+    Row,
+    /// Under the row's ⋯ button, aligned to its right.
+    RowMore,
+}
+
+pub struct SchemaTree {
+    store: Entity<ConnStore>,
+    focus: FocusHandle,
+    filter: Entity<TextInput>,
+    rows: Vec<Row>,
+    expanded: HashSet<String>,
+    loading: HashSet<String>,
+    errors: HashMap<String, String>,
+    /// The row under the pointer (its meta steps aside for the ⋯ button).
+    hovered: Option<SharedString>,
+    selected: Option<SharedString>,
+    scroll: UniformListScrollHandle,
+    /// Filter results: (matches, relations searched), and a near miss when nothing matched.
+    filter_stats: Option<(usize, usize, Option<String>)>,
+    /// The open context menu.
+    menu: Option<RowMenu>,
+    menu_focus: FocusHandle,
+    _menu_blur: Option<Subscription>,
+    /// The row whose menu a click outside just closed (a click on its ⋯ must not reopen it).
+    menu_closed: Option<(Option<SharedString>, Instant)>,
+    /// Sum of the cache versions of the connections at the last rebuild.
+    seen_version: u64,
+    /// Time spent in the last rebuild (shown by the tree benchmark).
+    pub last_rebuild: std::time::Duration,
+    /// The find indicator on the first match's highlighted name (by row id).
+    pop: Option<FindPop<SharedString>>,
+    /// Its frame for the rows being rendered (set in `render`).
+    pop_now: Option<(SharedString, PopFrame)>,
+    /// The pending pop: restarted by every keystroke, it fires once typing pauses.
+    pop_wait: Option<gpui::Task<()>>,
+    /// The match that popped last (row id, highlighted range): the same hit does not pop twice.
+    popped: Option<(SharedString, Range<usize>)>,
+    /// A row to select once it exists (go to definition, while its levels load).
+    reveal: Option<String>,
+    /// The gap among the connections a dragged one would drop into (`order::slot`).
+    conn_drop: Option<usize>,
+    /// The connections' rows as last laid out, by row id (the checks).
+    pub conn_bounds: std::rc::Rc<std::cell::RefCell<HashMap<SharedString, gpui::Bounds<gpui::Pixels>>>>,
+}
+
+/// A connection on the move in the explorer (GPUI's drag; `dnd`): its id.
+pub struct DraggedConn(pub String);
+
+impl EventEmitter<TreeEvent> for SchemaTree {}
+
+impl Focusable for SchemaTree {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus.clone()
+    }
+}
+
+fn cid(id: &str) -> String {
+    format!("c:{id}")
+}
+fn did(c: &str, db: &str) -> String {
+    format!("c:{c}/d:{db}")
+}
+fn sid(c: &str, db: &str, s: &str) -> String {
+    format!("c:{c}/d:{db}/s:{s}")
+}
+fn gid(c: &str, db: &str, s: &str, g: G) -> String {
+    format!("c:{c}/d:{db}/s:{s}/{}", g.key())
+}
+fn rid(c: &str, db: &str, s: &str, n: &str) -> String {
+    format!("c:{c}/d:{db}/s:{s}/r:{n}")
+}
+
+impl SchemaTree {
+    pub fn new(store: Entity<ConnStore>, cx: &mut Context<Self>) -> Self {
+        cx.observe(&store, |t, _, cx| {
+            t.load_connected(cx);
+            t.rebuild(cx);
+            cx.notify();
+        })
+        .detach();
+        let filter = cx.new(|cx| TextInput::new(cx, "Filter").bare());
+        cx.subscribe(&filter, |t: &mut SchemaTree, _, ev: &InputEvent, cx| match ev {
+            InputEvent::Changed => {
+                t.rebuild(cx);
+                // The first match is selected, so ↩ opens it.
+                if t.filtering(cx)
+                    && let Some(r) = t.rows.iter().find(|r| r.hl.is_some())
+                {
+                    t.selected = Some(r.id.clone());
+                }
+                // ... and it pops (Xcode's find yellow) once typing pauses.
+                t.pop_wait = Some(cx.spawn(async move |t, cx| {
+                    cx.background_executor().timer(POP_PAUSE).await;
+                    let _ = t.update(cx, |t, cx| t.pop_first_match(cx));
+                }));
+                cx.notify();
+            }
+            InputEvent::Submit => {
+                if let Some(ix) = t.selected_ix() {
+                    t.open(ix, cx);
+                }
+            }
+        })
+        .detach();
+        let mut t = SchemaTree {
+            store,
+            focus: cx.focus_handle(),
+            filter,
+            rows: Vec::new(),
+            expanded: HashSet::new(),
+            loading: HashSet::new(),
+            errors: Default::default(),
+            hovered: None,
+            selected: None,
+            scroll: UniformListScrollHandle::new(),
+            filter_stats: None,
+            menu: None,
+            menu_focus: cx.focus_handle(),
+            _menu_blur: None,
+            menu_closed: None,
+            seen_version: 0,
+            last_rebuild: Default::default(),
+            pop: None,
+            pop_now: None,
+            pop_wait: None,
+            popped: None,
+            reveal: None,
+            conn_drop: None,
+            conn_bounds: Default::default(),
+        };
+        t.rebuild(cx);
+        t
+    }
+
+    /// Go to definition: opens the explorer down to a table or view (and its column) and
+    /// selects it, loading the levels on the way.
+    pub fn reveal_relation(&mut self, conn: &str, db: &str, schema: &str, name: &str, kind: RelKind, column: Option<&str>, cx: &mut Context<Self>) {
+        let g = if kind == RelKind::View {
+            G::Views
+        } else if kind == RelKind::MaterializedView {
+            G::MatViews
+        } else {
+            G::Tables
+        };
+        let rel = rid(conn, db, schema, name);
+        let mut path = self.open_schema(conn, db, schema, cx);
+        path.push((gid(conn, db, schema, g), Kind::Group { conn: conn.into(), db: db.into(), schema: schema.into(), g }));
+        let target = match column {
+            Some(c) => {
+                path.push((rel.clone(), Kind::Rel { conn: conn.into(), db: db.into(), schema: schema.into(), name: name.into(), kind }));
+                format!("{rel}/cols/{c}")
+            }
+            None => rel,
+        };
+        self.reveal_path(path, target, cx);
+    }
+
+    /// Go to definition: opens the explorer down to a function and selects it.
+    pub fn reveal_function(&mut self, conn: &str, db: &str, schema: &str, oid: u32, cx: &mut Context<Self>) {
+        let mut path = self.open_schema(conn, db, schema, cx);
+        let g = gid(conn, db, schema, G::Functions);
+        path.push((g.clone(), Kind::Group { conn: conn.into(), db: db.into(), schema: schema.into(), g: G::Functions }));
+        self.reveal_path(path, format!("{g}/f:{oid}"), cx);
+    }
+
+    /// The connection, database and schema nodes (to expand) on the way to an object.
+    fn open_schema(&mut self, conn: &str, db: &str, schema: &str, cx: &mut Context<Self>) -> Vec<(String, Kind)> {
+        // A filter would hide the path.
+        if !self.filter.read(cx).text().is_empty() {
+            self.filter.update(cx, |f, cx| f.set_text("", cx));
+        }
+        vec![
+            (cid(conn), Kind::Conn { id: conn.into() }),
+            (did(conn, db), Kind::Db { conn: conn.into(), db: db.into() }),
+            (sid(conn, db, schema), Kind::Schema { conn: conn.into(), db: db.into(), schema: schema.into() }),
+        ]
+    }
+
+    /// Expands every node of `path` (loading what is not cached) and selects `target` as soon
+    /// as its row exists.
+    fn reveal_path(&mut self, path: Vec<(String, Kind)>, target: String, cx: &mut Context<Self>) {
+        for (id, kind) in path {
+            if self.expanded.insert(id.clone()) || !self.loading.contains(&id) {
+                self.load(&id, &kind, cx);
+            }
+        }
+        self.reveal = Some(target);
+        self.rebuild(cx);
+        cx.notify();
+    }
+
+    /// The selected row's id (checks).
+    pub fn selected_id(&self) -> Option<&str> {
+        self.selected.as_deref()
+    }
+
+    /// Selects the pending revealed row once it is there.
+    fn try_reveal(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self.reveal.clone() else { return };
+        if let Some(ix) = self.rows.iter().position(|r| r.id.as_ref() == id) {
+            self.reveal = None;
+            self.select(ix, cx);
+        }
+    }
+
+    pub fn row_count(&self) -> usize {
+        self.rows.len()
+    }
+
+    pub fn scroll_handle(&self) -> &UniformListScrollHandle {
+        &self.scroll
+    }
+
+    /// Whether the explorer (tree or filter) holds the focus.
+    pub fn contains_focus(&self, window: &Window, cx: &App) -> bool {
+        self.focus.contains_focused(window, cx) || self.filter.focus_handle(cx).is_focused(window)
+    }
+
+    /// What the selected row is about (the import's default target).
+    pub fn selected_target(&self, cx: &App) -> Option<Target> {
+        let row = self.rows.get(self.selected_ix()?)?;
+        self.target_for(row, cx)
+    }
+
+    pub fn selected_connection(&self) -> Option<String> {
+        let sel = self.selected.as_ref()?;
+        let rest = sel.strip_prefix("c:")?;
+        Some(rest.split('/').next()?.to_string())
+    }
+
+    fn selected_ix(&self) -> Option<usize> {
+        let s = self.selected.as_ref()?;
+        self.rows.iter().position(|r| &r.id == s)
+    }
+
+    fn filtering(&self, cx: &App) -> bool {
+        !self.filter.read(cx).text().trim().is_empty()
+    }
+
+    fn conn(&self, id: &str, cx: &App) -> Option<Arc<Connection>> {
+        self.store.read(cx).connection(id)
+    }
+
+    fn version(&self, cx: &App) -> u64 {
+        self.store
+            .read(cx)
+            .states
+            .values()
+            .map(|s| match s {
+                ConnState::Connected(c) => c.schema.version(),
+                _ => 0,
+            })
+            .sum::<u64>()
+            + self.store.read(cx).states.len() as u64
+    }
+
+    /// Recomputes the visible rows from the cache and the expanded set.
+    pub fn rebuild(&mut self, cx: &mut Context<Self>) {
+        let t0 = std::time::Instant::now();
+        self.seen_version = self.version(cx);
+        let theme = cx.theme();
+        let q = self.filter.read(cx).text().trim().to_lowercase();
+        let mut rows = Vec::with_capacity(self.rows.len().max(16));
+        if q.is_empty() {
+            self.filter_stats = None;
+            self.build_tree(&mut rows, &theme, cx);
+        } else {
+            self.build_filtered(&mut rows, &q, &theme, cx);
+        }
+        self.rows = rows;
+        self.last_rebuild = t0.elapsed();
+        self.try_reveal(cx);
+    }
+
+    fn conn_row(&self, p: &dataman_core::ConnectionProfile, state: Option<&ConnState>, open: bool, t: &Theme) -> Row {
+        let lar = matches!(state, Some(ConnState::Connected(c)) if c.info.is_lar);
+        let (glyph, meta) = match state {
+            Some(ConnState::Connecting) => ("◐", Meta::Warn),
+            Some(ConnState::Connected(_)) if lar => ("●", Meta::LarState),
+            Some(ConnState::Connected(_)) => ("●", Meta::Ok),
+            Some(ConnState::Failed(_)) => ("✕", Meta::Err),
+            None => ("○", Meta::Off),
+        };
+        let mut r = Row::new(cid(&p.id), 0, p.name.clone(), Kind::Conn { id: p.id.clone() })
+            .tone(match state {
+                Some(ConnState::Connected(_)) if lar => Tone::ConnLar,
+                Some(ConnState::Connected(_)) => Tone::Conn,
+                Some(ConnState::Connecting) => Tone::ConnWait,
+                _ => Tone::ConnOff,
+            })
+            .meta(glyph, meta)
+            .expandable(open);
+        r.chip = Some(t.profile_color(p));
+        r.chip_dim = r.tone == Tone::ConnOff;
+        if let Some(ConnState::Failed(e)) = state {
+            r.tip = Some(e.clone().into());
+        }
+        r.lar = lar;
+        r.tunnel = p.ssh.is_some();
+        r
+    }
+
+    fn build_tree(&self, rows: &mut Vec<Row>, t: &Theme, cx: &App) {
+        let store = self.store.read(cx);
+        for p in &store.profiles {
+            let id = cid(&p.id);
+            let open = self.expanded.contains(&id);
+            let state = store.states.get(&p.id);
+            rows.push(self.conn_row(p, state, open, t));
+            if !open {
+                continue;
+            }
+            match state {
+                Some(ConnState::Connected(c)) => self.push_conn(rows, &p.id, c, t),
+                Some(ConnState::Failed(e)) => rows.push(error_row(&id, 1, e, &id, t)),
+                _ => rows.push(loading_row(&id, 1)),
+            }
+        }
+    }
+
+    /// Loaded objects whose name contains the filter (relations, functions, sequences, types,
+    /// triggers, extensions, roles), each with its kind's icon, under their connection, database
+    /// and schema.
+    fn build_filtered(&mut self, rows: &mut Vec<Row>, q: &str, t: &Theme, cx: &App) {
+        let store = self.store.read(cx);
+        let (mut matches, mut total) = (0usize, 0usize);
+        let mut names: Vec<String> = Vec::new();
+        // The match of `q` in `name` (a byte range), or the name for "did you mean".
+        let mut find = |name: &str, names: &mut Vec<String>| -> Option<Range<usize>> {
+            total += 1;
+            let low = name.to_lowercase();
+            match low.find(q) {
+                Some(i) if name.is_char_boundary(i) && name.is_char_boundary(i + q.len()) => Some(i..i + q.len()),
+                _ => {
+                    names.push(name.to_string());
+                    None
+                }
+            }
+        };
+        for p in &store.profiles {
+            let Some(ConnState::Connected(conn)) = store.states.get(&p.id) else { continue };
+            let cache = &conn.schema;
+            let c = p.id.as_str();
+            // MySQL: no schema rows; a database's objects one level up.
+            let flat = !conn.caps().schemas;
+            let dd = usize::from(flat);
+            let pg = conn.dialect() == dataman_core::sql::Dialect::Postgres;
+            let mut block = Vec::new();
+            for db in cache.cached_databases().unwrap_or_else(|| vec![conn.database().to_string()]) {
+                let mut db_block = Vec::new();
+                for s in cache.cached_schemas(&db).unwrap_or_default() {
+                    let mut hits = Vec::new();
+                    let mut hit = |row: Row, range: Option<Range<usize>>| {
+                        if let Some(r) = range {
+                            let mut row = row;
+                            row.hl = Some(r);
+                            hits.push(row);
+                        }
+                    };
+                    if let Some(rels) = cache.cached_relations(&db, &s) {
+                        let stats = cache.cached_stats(&db, &s);
+                        for r in &rels {
+                            let m = find(&r.name, &mut names);
+                            if m.is_some() {
+                                hit(rel_row(c, &db, &s, r, 3 - dd, false, stats.as_deref()), m);
+                            }
+                        }
+                    }
+                    for f in cache.cached_functions(&db, &s).iter().flat_map(|v| v.iter()) {
+                        let m = find(&f.name, &mut names);
+                        if m.is_some() {
+                            hit(function_row(c, &db, &s, f, 3 - dd, pg), m);
+                        }
+                    }
+                    for x in cache.cached_sequences(&db, &s).iter().flat_map(|v| v.iter()) {
+                        let m = find(&x.name, &mut names);
+                        if m.is_some() {
+                            hit(sequence_row(c, &db, &s, x, 3 - dd, pg), m);
+                        }
+                    }
+                    for x in cache.cached_types(&db, &s).iter().flat_map(|v| v.iter()) {
+                        let m = find(&x.name, &mut names);
+                        if m.is_some() {
+                            hit(type_row(c, &db, &s, x, 3 - dd, false, pg), m);
+                        }
+                    }
+                    for x in cache.cached_triggers(&db, &s).iter().flat_map(|v| v.iter()) {
+                        let m = find(&x.name, &mut names);
+                        if m.is_some() {
+                            let id = format!("{}/g:{}/{}", gid(c, &db, &s, G::Triggers), x.table, x.name);
+                            hit(trigger_row(id, c, &db, &s, x, 3 - dd, true), m);
+                        }
+                    }
+                    if !hits.is_empty() {
+                        matches += hits.len();
+                        if !flat {
+                            db_block.push(Row::new(sid(c, &db, &s), 2, s.clone(), Kind::Schema { conn: c.into(), db: db.clone(), schema: s.clone() }).icon(Icon::Schema).expandable(true));
+                        }
+                        db_block.extend(hits);
+                    }
+                }
+                for x in cache.cached_extensions(&db).unwrap_or_default() {
+                    let m = find(&x.name, &mut names);
+                    if let Some(m) = m {
+                        let mut row = extension_row(c, &db, &x, 2);
+                        row.hl = Some(m);
+                        matches += 1;
+                        db_block.push(row);
+                    }
+                }
+                if !db_block.is_empty() {
+                    let ro = store.connection(c).is_some_and(|x| x.read_only_for(&db));
+                    block.push(Row::new(did(c, &db), 1, db.clone(), Kind::Db { conn: c.into(), db: db.clone() }).icon(Icon::Database).lock(ro).expandable(true));
+                    block.extend(db_block);
+                }
+            }
+            for r in cache.cached_roles().unwrap_or_default() {
+                let m = find(&r.name, &mut names);
+                if let Some(m) = m {
+                    let mut row = role_row(c, &r, 1);
+                    row.hl = Some(m);
+                    matches += 1;
+                    block.push(row);
+                }
+            }
+            if !block.is_empty() {
+                rows.push(self.conn_row(p, store.states.get(&p.id), true, t));
+                rows.extend(block);
+            }
+        }
+        let near = (matches == 0).then(|| nearest(q, &names)).flatten();
+        self.filter_stats = Some((matches, total, near));
+    }
+
+    fn push_status(&self, rows: &mut Vec<Row>, id: &str, depth: usize, t: &Theme) -> bool {
+        if self.loading.contains(id) {
+            rows.push(loading_row(id, depth));
+            return true;
+        }
+        if let Some(e) = self.errors.get(id) {
+            rows.push(error_row(id, depth, e, id, t));
+            return true;
+        }
+        false
+    }
+
+    fn push_conn(&self, rows: &mut Vec<Row>, c: &str, conn: &Arc<Connection>, t: &Theme) {
+        let id = cid(c);
+        let cache = &conn.schema;
+        let Some(dbs) = cache.cached_databases() else {
+            if !self.push_status(rows, &id, 1, t) {
+                rows.push(loading_row(&id, 1));
+            }
+            return;
+        };
+        for db in dbs {
+            let d = did(c, &db);
+            let open = self.expanded.contains(&d);
+            rows.push(
+                Row::new(d.clone(), 1, db.clone(), Kind::Db { conn: c.into(), db: db.clone() })
+                    .icon(Icon::Database)
+                    .lock(conn.read_only_for(&db))
+                    .expandable(open),
+            );
+            if !open || self.push_status(rows, &d, 2, t) {
+                continue;
+            }
+            // MySQL: a database is its own schema; its groups go right under it.
+            if !conn.caps().schemas {
+                self.push_schema(rows, c, &db, &db, conn, t, 2);
+                continue;
+            }
+            let Some(schemas) = cache.cached_schemas(&db) else { continue };
+            for s in schemas {
+                let sidv = sid(c, &db, &s);
+                let open = self.expanded.contains(&sidv);
+                rows.push(
+                    Row::new(sidv.clone(), 2, s.clone(), Kind::Schema { conn: c.into(), db: db.clone(), schema: s.clone() })
+                        .icon(Icon::Schema)
+                        .expandable(open),
+                );
+                if !open || self.push_status(rows, &sidv, 3, t) {
+                    continue;
+                }
+                self.push_schema(rows, c, &db, &s, conn, t, 3);
+            }
+            // The database's extensions, after its schemas.
+            if let Some(exts) = cache.cached_extensions(&db).filter(|v| !v.is_empty()) {
+                let g = format!("{d}/extensions");
+                let open = self.expanded.contains(&g);
+                rows.push(group_row(&g, 2, "extensions", exts.len(), open, Kind::Extensions { conn: c.into(), db: db.clone() }));
+                if open {
+                    rows.extend(exts.iter().map(|x| extension_row(c, &db, x, 3)));
+                }
+            }
+        }
+        // The server's roles, after its databases (none reported: no group).
+        if let Some(roles) = cache.cached_roles().filter(|v| !v.is_empty()) {
+            let g = format!("{id}/roles");
+            let open = self.expanded.contains(&g);
+            rows.push(group_row(&g, 1, "roles", roles.len(), open, Kind::Roles { conn: c.into() }));
+            if open {
+                rows.extend(roles.iter().map(|r| role_row(c, r, 2)));
+            }
+        }
+    }
+
+    /// A schema's groups (at depth `d0`): each shown when the server reports something in it.
+    #[allow(clippy::too_many_arguments)]
+    fn push_schema(&self, rows: &mut Vec<Row>, c: &str, db: &str, s: &str, conn: &Arc<Connection>, t: &Theme, d0: usize) {
+        let cache = &conn.schema;
+        let Some(rels) = cache.cached_relations(db, s) else { return };
+        let counts = cache.cached_counts(db, s).unwrap_or_default();
+        let functions = cache.cached_functions(db, s);
+        let sequences = cache.cached_sequences(db, s);
+        let types = cache.cached_types(db, s);
+        let triggers = cache.cached_triggers(db, s);
+        let pg = conn.dialect() == dataman_core::sql::Dialect::Postgres;
+        let start = rows.len();
+        for g in G::ALL {
+            // The loaded list's length, else the schema's count.
+            let n = match g {
+                G::Tables | G::Views | G::MatViews => rels.iter().filter(|r| g.holds(r.kind) == Some(true)).count() as u64,
+                G::Functions => functions.as_ref().map(|v| v.len() as u64).or(counts.functions).unwrap_or(0),
+                G::Sequences => sequences.as_ref().map(|v| v.len() as u64).or(counts.sequences).unwrap_or(0),
+                G::Types => types.as_ref().map(|v| v.len() as u64).or(counts.types).unwrap_or(0),
+                G::Triggers => triggers.as_ref().map(|v| v.len() as u64).or(counts.triggers).unwrap_or(0),
+            };
+            if n == 0 {
+                continue;
+            }
+            let gv = gid(c, db, s, g);
+            let open = self.expanded.contains(&gv);
+            rows.push(group_row(&gv, d0, g.label(), n as usize, open, Kind::Group { conn: c.into(), db: db.into(), schema: s.into(), g }));
+            if !open {
+                continue;
+            }
+            if g.holds(RelKind::Table).is_some() {
+                // Sizes arrive after the names: the rows are there meanwhile.
+                let stats = cache.cached_stats(db, s);
+                for r in rels.iter().filter(|r| g.holds(r.kind) == Some(true)) {
+                    let rv = rid(c, db, s, &r.name);
+                    let open = self.expanded.contains(&rv);
+                    rows.push(rel_row(c, db, s, r, d0 + 1, open, stats.as_deref()));
+                    if open {
+                        self.push_rel(rows, c, db, s, &r.name, conn, t, d0 + 2);
+                    }
+                }
+                continue;
+            }
+            if self.push_status(rows, &gv, d0 + 1, t) {
+                continue;
+            }
+            match g {
+                G::Functions => rows.extend(functions.iter().flat_map(|v| v.iter()).map(|f| function_row(c, db, s, f, d0 + 1, pg))),
+                G::Sequences => rows.extend(sequences.iter().flat_map(|v| v.iter()).map(|x| sequence_row(c, db, s, x, d0 + 1, pg))),
+                G::Types => {
+                    for x in types.iter().flat_map(|v| v.iter()) {
+                        let id = type_id(c, db, s, &x.name);
+                        let open = self.expanded.contains(&id);
+                        rows.push(type_row(c, db, s, x, d0 + 1, open, pg));
+                        if open {
+                            rows.extend(x.labels.iter().enumerate().map(|(i, l)| {
+                                let what = Obj::EnumLabel;
+                                Row::new(format!("{id}/l:{i}"), d0 + 2, l.clone(), Kind::Object { conn: c.into(), db: db.into(), schema: s.into(), name: l.clone(), what })
+                                    .icon(Icon::Label)
+                            }));
+                        }
+                    }
+                }
+                G::Triggers => rows.extend(triggers.iter().flat_map(|v| v.iter()).map(|x| {
+                    let id = format!("{gv}/g:{}/{}", x.table, x.name);
+                    trigger_row(id, c, db, s, x, d0 + 1, true)
+                })),
+                _ => {}
+            }
+        }
+        if rows.len() == start {
+            rows.push(Row::new(format!("{}/none", sid(c, db, s)), d0, "empty", Kind::Leaf).tone(Tone::Italic));
+        }
+    }
+
+    /// A relation's columns, indexes and other groups, at depth `d` (their items one deeper).
+    #[allow(clippy::too_many_arguments)]
+    fn push_rel(&self, rows: &mut Vec<Row>, c: &str, db: &str, s: &str, name: &str, conn: &Arc<Connection>, t: &Theme, d: usize) {
+        let base = rid(c, db, s, name);
+        let cols_id = format!("{base}/cols");
+        let idx_id = format!("{base}/idx");
+        let lar = conn.info.is_lar;
+        // Autocomplete's brief columns have no keys: wait for the full list (`columns`).
+        let cols = conn.schema.cached_full_columns(db, s, name);
+        let open = self.expanded.contains(&cols_id);
+        rows.push(
+            Row::new(cols_id.clone(), d, "columns", Kind::Columns { conn: c.into(), db: db.into(), schema: s.into(), name: name.into() })
+                .icon(Icon::Group)
+                .meta(cols.as_ref().map(|c| c.len().to_string()).unwrap_or_default(), Meta::Plain)
+                .expandable(open),
+        );
+        if open && !self.push_status(rows, &cols_id, d + 1, t) {
+            let cols = cols.unwrap_or_default();
+            for col in &cols {
+                let mut meta = short_type(&col.type_name, conn.dialect() == dataman_core::sql::Dialect::Postgres);
+                if col.primary_key {
+                    meta.push_str(" PK");
+                } else if col.nullable == Some(false) {
+                    meta.push_str(" !");
+                }
+                let row = Row::new(format!("{cols_id}/{}", col.name), d + 1, col.name.clone(), Kind::Column { name: col.name.clone() })
+                    .meta(meta, Meta::Plain);
+                rows.push(if col.primary_key { row.icon_colored(Icon::Key, t.num) } else { row.blank_icon() });
+            }
+        }
+        let idx = conn.schema.cached_indexes(db, s, name);
+        let open = self.expanded.contains(&idx_id);
+        let gap = lar && idx.as_ref().is_some_and(|i| i.is_empty());
+        let mut row = Row::new(idx_id.clone(), d, "indexes", Kind::Indexes { conn: c.into(), db: db.into(), schema: s.into(), name: name.into() })
+            .icon(Icon::Group)
+            .expandable(open && !gap);
+        row = if gap {
+            row.meta("not reported", Meta::NotReported)
+        } else {
+            row.meta(idx.as_ref().map(|c| c.len().to_string()).unwrap_or_default(), Meta::Plain)
+        };
+        rows.push(row);
+        if open && !gap && !self.push_status(rows, &idx_id, d + 1, t) {
+            let idx = idx.unwrap_or_default();
+            if idx.is_empty() {
+                rows.push(Row::new(format!("{idx_id}/none"), d + 1, "no indexes", Kind::Leaf).tone(Tone::Italic));
+            }
+            for i in idx {
+                let meta = if i.primary {
+                    "primary".to_string()
+                } else if i.unique {
+                    format!("unique ({})", i.columns.join(", "))
+                } else {
+                    format!("({})", i.columns.join(", "))
+                };
+                let kind = Kind::Index { name: i.name.clone(), definition: i.definition.clone() };
+                let row = Row::new(format!("{idx_id}/{}", i.name), d + 1, i.name.clone(), kind).meta(meta, Meta::Plain);
+                rows.push(if i.primary { row.icon_colored(Icon::Index, t.num) } else { row.icon(Icon::Index) });
+            }
+        }
+        // Constraints, triggers, partitions or the parent: loaded with the table, each shown
+        // when there is something in it.
+        let Some(x) = conn.schema.cached_extras(db, s, name) else { return };
+        let sub = |what: Sub| Kind::TableSub { conn: c.into(), db: db.into(), schema: s.into(), name: name.into(), what };
+        if let Some(cons) = x.constraints.filter(|v| !v.is_empty()) {
+            let g = format!("{base}/cons");
+            let open = self.expanded.contains(&g);
+            rows.push(group_row(&g, d, "constraints", cons.len(), open, sub(Sub::Constraints)));
+            if open {
+                for k in cons {
+                    let what = Obj::Constraint { table: name.into(), definition: k.definition.clone() };
+                    let row = Row::new(format!("{g}/{}", k.name), d + 1, k.name.clone(), Kind::Object { conn: c.into(), db: db.into(), schema: s.into(), name: k.name.clone(), what })
+                        .meta(clip(&constraint_summary(k.kind, k.definition.as_deref()), 36), Meta::Plain);
+                    rows.push(match k.kind {
+                        ConstraintKind::Primary => row.icon_colored(Icon::Key, t.num),
+                        ConstraintKind::Foreign => row.icon(Icon::Link),
+                        _ => row.icon(Icon::Constraint),
+                    });
+                }
+            }
+        }
+        if let Some(trg) = x.triggers.filter(|v| !v.is_empty()) {
+            let g = format!("{base}/trg");
+            let open = self.expanded.contains(&g);
+            rows.push(group_row(&g, d, "triggers", trg.len(), open, sub(Sub::Triggers)));
+            if open {
+                rows.extend(trg.iter().map(|tr| trigger_row(format!("{g}/{}", tr.name), c, db, s, tr, d + 1, false)));
+            }
+        }
+        if let Some(parts) = x.partitions.filter(|v| !v.is_empty()) {
+            let g = format!("{base}/parts");
+            let open = self.expanded.contains(&g);
+            let partitioned = conn.schema.cached_relations(db, s).is_some_and(|v| v.iter().any(|r| r.name == name && r.kind == RelKind::Partitioned));
+            rows.push(group_row(&g, d, if partitioned { "partitions" } else { "children" }, parts.len(), open, sub(Sub::Partitions)));
+            if open {
+                for p in parts {
+                    let label = if p.schema == s || p.schema.is_empty() { p.name.clone() } else { format!("{}.{}", p.schema, p.name) };
+                    let kind = Kind::RelRef { conn: c.into(), db: db.into(), schema: if p.schema.is_empty() { s.into() } else { p.schema.clone() }, name: p.name.clone() };
+                    rows.push(
+                        Row::new(format!("{g}/{}.{}", p.schema, p.name), d + 1, label, kind)
+                            .icon(Icon::Table)
+                            .meta(p.bound.as_deref().map(|b| clip(&partition_bound_summary(b), 36)).unwrap_or_default(), Meta::Plain),
+                    );
+                }
+            }
+        }
+        if let Some((ps, pn)) = x.parent {
+            let label = if ps == s { pn.clone() } else { format!("{ps}.{pn}") };
+            let kind = Kind::RelRef { conn: c.into(), db: db.into(), schema: ps, name: pn };
+            rows.push(Row::new(format!("{base}/parent"), d, label, kind).icon(Icon::Partition).meta("parent", Meta::Plain));
+        }
+    }
+
+    /// Selects a row (and tells the workspace which connection that is).
+    fn select(&mut self, ix: usize, cx: &mut Context<Self>) {
+        let Some(row) = self.rows.get(ix) else { return };
+        self.selected = Some(row.id.clone());
+        self.scroll.scroll_to_item(ix, gpui::ScrollStrategy::Nearest);
+        if let Some(c) = self.selected_connection() {
+            cx.emit(TreeEvent::Selected(c));
+        }
+        cx.notify();
+    }
+
+    /// Expands or collapses a node, loading its children when needed.
+    pub fn toggle(&mut self, ix: usize, cx: &mut Context<Self>) {
+        let Some(row) = self.rows.get(ix).cloned() else { return };
+        self.select(ix, cx);
+        if let Kind::Error { retry } = &row.kind {
+            self.retry(retry.clone(), cx);
+            return;
+        }
+        if !row.expandable {
+            return;
+        }
+        let id = row.id.to_string();
+        if !self.expanded.remove(&id) {
+            self.expanded.insert(id.clone());
+            self.load(&id, &row.kind, cx);
+        }
+        self.rebuild(cx);
+        cx.notify();
+    }
+
+    fn set_expanded(&mut self, ix: usize, open: bool, cx: &mut Context<Self>) {
+        let Some(row) = self.rows.get(ix).cloned() else { return };
+        if row.expandable && row.expanded != open {
+            self.toggle(ix, cx);
+        } else if !open {
+            // ← on a leaf or a collapsed node goes to its parent.
+            if let Some(p) = (0..ix).rev().find(|&i| self.rows[i].depth < row.depth) {
+                self.select(p, cx);
+            }
+        } else if open && row.expanded {
+            self.select((ix + 1).min(self.rows.len().saturating_sub(1)), cx);
+        }
+    }
+
+    fn retry(&mut self, id: String, cx: &mut Context<Self>) {
+        self.errors.remove(&id);
+        if let Some(row) = self.rows.iter().find(|r| r.id.as_ref() == id).cloned() {
+            if let Kind::Conn { id: c } = &row.kind {
+                self.store.update(cx, |s, cx| {
+                    s.disconnect(c, cx);
+                    s.connect(c, None, cx);
+                });
+            } else {
+                self.load(&id, &row.kind, cx);
+            }
+        }
+        self.rebuild(cx);
+        cx.notify();
+    }
+
+    /// A connection node left open while it was connecting (a click on it connects, then the
+    /// connection arrives): its databases load once it is connected. Without this the node
+    /// stayed on "loading…" until it was collapsed and opened again.
+    fn load_connected(&mut self, cx: &mut Context<Self>) {
+        let ids: Vec<String> = self.store.read(cx).profiles.iter().map(|p| p.id.clone()).collect();
+        for c in ids {
+            let id = cid(&c);
+            if !self.expanded.contains(&id) || self.loading.contains(&id) || self.errors.contains_key(&id) {
+                continue;
+            }
+            if self.conn(&c, cx).is_some_and(|conn| conn.schema.cached_databases().is_none()) {
+                self.load(&id, &Kind::Conn { id: c.clone() }, cx);
+            }
+        }
+    }
+
+    /// Expands a node by id (benchmarks, restoring state).
+    pub fn expand_id(&mut self, id: &str, cx: &mut Context<Self>) -> bool {
+        let Some(ix) = self.rows.iter().position(|r| r.id.as_ref() == id) else {
+            // A connection that has no row yet (just saved): open it for when it shows.
+            if id.starts_with("c:") && !id.contains('/') {
+                self.expanded.insert(id.to_string());
+                self.load_connected(cx);
+                self.rebuild(cx);
+                cx.notify();
+            }
+            return false;
+        };
+        if !self.rows[ix].expanded {
+            self.toggle(ix, cx);
+        }
+        true
+    }
+
+    pub fn has_row(&self, id: &str) -> bool {
+        self.rows.iter().any(|r| r.id.as_ref() == id)
+    }
+
+    /// Collapses a node by id (demo screenshots).
+    pub fn collapse_id(&mut self, id: &str, cx: &mut Context<Self>) {
+        if let Some(ix) = self.rows.iter().position(|r| r.id.as_ref() == id)
+            && self.rows[ix].expanded
+        {
+            self.toggle(ix, cx);
+        }
+    }
+
+    /// Selects a row by id (demo screenshots).
+    pub fn select_id(&mut self, id: &str, cx: &mut Context<Self>) {
+        if let Some(ix) = self.rows.iter().position(|r| r.id.as_ref() == id) {
+            self.select(ix, cx);
+        }
+    }
+
+    /// Reads a connection's schema again (demo screenshots, after a seed).
+    pub fn refresh_connection(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.refresh_conn(id.to_string(), cx);
+    }
+
+    /// Types a filter (demo screenshots).
+    /// The filter field takes the keyboard focus (screenshots).
+    pub fn demo_focus_filter(&self, window: &mut Window, cx: &mut Context<Self>) {
+        window.focus(&self.filter.focus_handle(cx), cx);
+    }
+
+    pub fn set_filter(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.filter.update(cx, |f, cx| f.set_text(text, cx));
+        self.rebuild(cx);
+        if let Some(r) = self.rows.iter().find(|r| r.hl.is_some()) {
+            self.selected = Some(r.id.clone());
+        }
+        cx.notify();
+    }
+
+    /// The filter's first match pops in Xcode's find yellow, on its highlighted name: called
+    /// once typing pauses (`POP_PAUSE`), and only when the first hit changed since the last pop
+    /// (another row, or more of its name matched). The row is scrolled into view.
+    pub fn pop_first_match(&mut self, cx: &mut Context<Self>) {
+        self.pop_wait = None;
+        if !self.filtering(cx) {
+            self.popped = None;
+            self.pop = None;
+            return;
+        }
+        let Some((ix, r)) = self.rows.iter().enumerate().find(|(_, r)| r.hl.is_some()) else { return };
+        let hit = (r.id.clone(), r.hl.clone().unwrap_or_default());
+        if self.popped.as_ref() == Some(&hit) {
+            return;
+        }
+        self.pop = FindPop::start(hit.0.clone(), PopStyle::Find, cx);
+        self.popped = Some(hit);
+        self.scroll.scroll_to_item(ix, gpui::ScrollStrategy::Nearest);
+        cx.notify();
+    }
+
+    /// Checks: a connection row's name as drawn (its color, semibold or not), unselected.
+    pub fn demo_conn_label(&self, conn_id: &str, cx: &App) -> Option<(Hsla, bool)> {
+        let id = cid(conn_id);
+        let r = self.rows.iter().find(|r| r.id.as_ref() == id)?;
+        Some(label_style(r.tone, false, &cx.theme()))
+    }
+
+    /// Checks: a connection row's label (as shown), whether its chip is faded, its hover text;
+    /// and the error row under it (its label and hover text), when there is one.
+    pub fn demo_conn_row(&self, conn_id: &str) -> Option<(String, bool, Option<String>, Option<(String, Option<String>)>)> {
+        let id = cid(conn_id);
+        let r = self.rows.iter().find(|r| r.id.as_ref() == id)?;
+        let err = self.rows.iter().find(|r| r.id.as_ref() == format!("{id}/err")).map(|e| (e.label.to_string(), e.tip.as_ref().map(|t| t.to_string())));
+        Some((r.label.to_string(), r.chip_dim, r.tip.as_ref().map(|t| t.to_string()), err))
+    }
+
+    /// Checks: where a connection's row is (window coordinates), once painted.
+    pub fn demo_conn_bounds(&self, conn_id: &str) -> Option<gpui::Bounds<gpui::Pixels>> {
+        self.conn_bounds.borrow().get(cid(conn_id).as_str()).copied()
+    }
+
+    /// Demo and live checks: the row whose match is popping now.
+    pub fn demo_pop(&self) -> Option<SharedString> {
+        self.pop.as_ref().filter(|p| p.frame(Instant::now()).is_some()).map(|p| p.target.clone())
+    }
+
+    fn clear_filter(&mut self, cx: &mut Context<Self>) {
+        if self.filtering(cx) {
+            self.filter.update(cx, |f, cx| f.set_text("", cx));
+            self.rebuild(cx);
+            self.popped = None;
+            self.pop = None;
+            cx.notify();
+        } else {
+            cx.emit(TreeEvent::FocusEditor);
+        }
+    }
+
+    fn load(&mut self, id: &str, kind: &Kind, cx: &mut Context<Self>) {
+        let task: Option<Load> = match kind {
+            Kind::Conn { id: c } => {
+                let store = self.store.clone();
+                match self.conn(c, cx) {
+                    Some(conn) => {
+                        // Open the connection's own database right away (its schemas and
+                        // extensions), with the server's roles.
+                        let db = conn.database().to_string();
+                        self.expanded.insert(did(c, &db));
+                        let mut loads = vec![unit(conn.databases()), unit(conn.schemas(&db)), unit(conn.extensions(&db)), unit(conn.roles())];
+                        if !conn.caps().schemas && !db.is_empty() {
+                            // MySQL: the database's tables and object counts (it is its schema).
+                            loads.extend([unit(conn.relations(&db, &db)), unit(conn.object_counts(&db, &db))]);
+                        }
+                        Some(join_all(loads))
+                    }
+                    None => {
+                        store.update(cx, |s, cx| s.connect(c, None, cx));
+                        None
+                    }
+                }
+            }
+            Kind::Db { conn, db } => self.conn(conn, cx).map(|c| {
+                if c.caps().schemas {
+                    join2(c.schemas(db), c.extensions(db))
+                } else {
+                    // MySQL: the database is the schema.
+                    join_all(vec![unit(c.schemas(db)), unit(c.relations(db, db)), unit(c.object_counts(db, db))])
+                }
+            }),
+            // The relations and, in one query, how many functions, sequences, types and
+            // triggers there are (empty groups are not shown).
+            Kind::Schema { conn, db, schema } => self.conn(conn, cx).map(|c| join2(c.relations(db, schema), c.object_counts(db, schema))),
+            Kind::Group { conn, db, schema, g } => self.conn(conn, cx).and_then(|c| match g {
+                // Row estimates and sizes of the whole schema, one query.
+                G::Tables | G::MatViews => Some(unit(c.rel_stats(db, schema))),
+                G::Views => None,
+                G::Functions => Some(unit(c.functions(db, schema))),
+                G::Sequences => Some(unit(c.sequences(db, schema))),
+                G::Types => Some(unit(c.types(db, schema))),
+                G::Triggers => Some(unit(c.triggers(db, schema))),
+            }),
+            Kind::Roles { conn } => self.conn(conn, cx).map(|c| unit(c.roles())),
+            Kind::Extensions { conn, db } => self.conn(conn, cx).map(|c| unit(c.extensions(db))),
+            Kind::Rel { conn, db, schema, name, .. } => {
+                // Columns open with the table.
+                let cols = format!("{id}/cols");
+                self.expanded.insert(cols);
+                self.conn(conn, cx).map(|c| join_all(vec![unit(c.columns(db, schema, name)), unit(c.indexes(db, schema, name)), unit(c.table_extras(db, schema, name))]))
+            }
+            Kind::Columns { conn, db, schema, name } => self.conn(conn, cx).map(|c| unit(c.columns(db, schema, name))),
+            Kind::Indexes { conn, db, schema, name } => self.conn(conn, cx).map(|c| unit(c.indexes(db, schema, name))),
+            Kind::TableSub { conn, db, schema, name, .. } => self.conn(conn, cx).map(|c| unit(c.table_extras(db, schema, name))),
+            Kind::RelRef { .. } | Kind::Object { .. } | Kind::Column { .. } | Kind::Index { .. } | Kind::Error { .. } | Kind::Leaf => None,
+        };
+        let Some(task) = task else { return };
+        let id = id.to_string();
+        self.loading.insert(id.clone());
+        self.errors.remove(&id);
+        cx.spawn(async move |this, cx| {
+            let r = task.await;
+            let _ = this.update(cx, |t, cx| {
+                t.loading.remove(&id);
+                if let Err(e) = r {
+                    t.errors.insert(id, format!("{e:#}"));
+                }
+                t.rebuild(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Refreshes the cached schema of the selected connection: everything below it collapses
+    /// and loads again from the catalog (the connection's own database reopens).
+    pub fn refresh_selected(&mut self, cx: &mut Context<Self>) {
+        if let Some(id) = self.selected_connection() {
+            self.refresh_conn(id, cx);
+        }
+    }
+
+    fn refresh_conn(&mut self, id: String, cx: &mut Context<Self>) {
+        let Some(c) = self.conn(&id, cx) else { return };
+        c.schema.invalidate(None);
+        let root = cid(&id);
+        self.collapse_below(&root);
+        self.expanded.insert(root.clone());
+        self.load(&root, &Kind::Conn { id }, cx);
+        self.rebuild(cx);
+        cx.notify();
+    }
+
+    /// Forgets the expanded, loading and failed state of everything below `id`.
+    fn collapse_below(&mut self, id: &str) {
+        let prefix = format!("{id}/");
+        self.expanded.retain(|e| !e.starts_with(&prefix));
+        self.loading.retain(|e| !e.starts_with(&prefix));
+        self.errors.retain(|e, _| !e.starts_with(&prefix));
+    }
+
+    /// ⌘R in the explorer and the menus' Reload: reads the row's node again from the catalog —
+    /// the connection, a database, a schema (its tables and views) or a relation (its columns
+    /// and indexes). A leaf reloads its parent.
+    pub fn reload_row(&mut self, ix: usize, cx: &mut Context<Self>) {
+        let Some(row) = self.rows.get(ix).cloned() else { return };
+        match &row.kind {
+            Kind::Conn { id } => self.refresh_conn(id.clone(), cx),
+            Kind::Db { conn, db } => {
+                let Some(c) = self.conn(conn, cx) else { return };
+                c.schema.invalidate(Some(db));
+                let id = did(conn, db);
+                self.collapse_below(&id);
+                self.expanded.insert(id.clone());
+                self.load(&id, &Kind::Db { conn: conn.clone(), db: db.clone() }, cx);
+            }
+            Kind::Schema { conn, db, schema } | Kind::Group { conn, db, schema, .. } => {
+                let Some(c) = self.conn(conn, cx) else { return };
+                c.schema.invalidate_schema(db, schema);
+                let id = sid(conn, db, schema);
+                // The groups stay open (their lists load again); the relations below them load
+                // again when reopened.
+                let rels = format!("{id}/r:");
+                self.expanded.retain(|e| !e.starts_with(&rels));
+                self.loading.retain(|e| !e.starts_with(&rels));
+                self.errors.retain(|e, _| !e.starts_with(&rels));
+                self.expanded.insert(id.clone());
+                self.load(&id, &Kind::Schema { conn: conn.clone(), db: db.clone(), schema: schema.clone() }, cx);
+                for g in G::ALL {
+                    let gv = gid(conn, db, schema, g);
+                    if self.expanded.contains(&gv) {
+                        self.load(&gv, &Kind::Group { conn: conn.clone(), db: db.clone(), schema: schema.clone(), g }, cx);
+                    }
+                }
+            }
+            Kind::Roles { conn } => {
+                let Some(c) = self.conn(conn, cx) else { return };
+                c.schema.invalidate_roles();
+                self.load(&row.id, &row.kind, cx);
+            }
+            Kind::Extensions { conn, db } => {
+                let Some(c) = self.conn(conn, cx) else { return };
+                c.schema.invalidate_extensions(db);
+                self.load(&row.id, &row.kind, cx);
+            }
+            Kind::Rel { conn, db, schema, name, .. }
+            | Kind::Columns { conn, db, schema, name }
+            | Kind::Indexes { conn, db, schema, name }
+            | Kind::TableSub { conn, db, schema, name, .. } => {
+                let Some(c) = self.conn(conn, cx) else { return };
+                c.schema.invalidate_relation(db, schema, name);
+                let id = rid(conn, db, schema, name);
+                let kind = Kind::Rel { conn: conn.clone(), db: db.clone(), schema: schema.clone(), name: name.clone(), kind: RelKind::Table };
+                self.expanded.insert(id.clone());
+                self.load(&id, &kind, cx);
+            }
+            Kind::Error { retry } => return self.retry(retry.clone(), cx),
+            Kind::Column { .. } | Kind::Index { .. } | Kind::RelRef { .. } | Kind::Object { .. } | Kind::Leaf => {
+                if let Some(p) = (0..ix).rev().find(|&i| self.rows[i].depth < row.depth) {
+                    self.reload_row(p, cx);
+                }
+                return;
+            }
+        }
+        self.rebuild(cx);
+        cx.notify();
+    }
+
+    /// ↩ / double-click: tables open as data in a new tab; the other objects do their menu's
+    /// default (a function's definition, a sequence's value…); other nodes toggle.
+    fn open(&mut self, ix: usize, cx: &mut Context<Self>) {
+        let Some(row) = self.rows.get(ix).cloned() else { return };
+        match row.kind {
+            Kind::Rel { conn, db, schema, name, .. } | Kind::RelRef { conn, db, schema, name } => {
+                self.selected = Some(row.id.clone());
+                cx.emit(TreeEvent::OpenRelation { conn, db, schema, name });
+                cx.notify();
+            }
+            Kind::Object { .. } if !row.expandable => {
+                self.selected = Some(row.id.clone());
+                if let Some(target) = self.target_for(&row, cx)
+                    && let Some(act) = menu::default_act(&target)
+                {
+                    cx.emit(TreeEvent::RowAction { act, target, alt: false });
+                }
+                cx.notify();
+            }
+            Kind::Conn { id } if matches!(self.store.read(cx).states.get(&id), Some(ConnState::Failed(_))) => {
+                cx.emit(TreeEvent::EditConnection(id));
+            }
+            _ => self.toggle(ix, cx),
+        }
+    }
+
+    fn on_click(&mut self, ix: usize, ev: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
+        // ⌃-click opened the menu on mouse down.
+        if ev.modifiers().control {
+            return;
+        }
+        window.focus(&self.focus, cx);
+        if ev.click_count() >= 2 {
+            return self.open(ix, cx);
+        }
+        // A single click on a row toggles it.
+        self.toggle(ix, cx);
+    }
+
+    fn move_sel(&mut self, d: isize, cx: &mut Context<Self>) {
+        if self.rows.is_empty() {
+            return;
+        }
+        let ix = match self.selected_ix() {
+            Some(i) => (i as isize + d).clamp(0, self.rows.len() as isize - 1) as usize,
+            None => 0,
+        };
+        self.select(ix, cx);
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // The context menu
+
+    /// What the menu of a row is about (`None`: the row has no menu — loading, placeholders).
+    fn target_for(&self, row: &Row, cx: &App) -> Option<Target> {
+        let store = self.store.read(cx);
+        let lar = |c: &str| matches!(store.states.get(c), Some(ConnState::Connected(x)) if x.info.is_lar);
+        // Read-only as the database is now (the live connection's setting, else the saved one).
+        let ro = |c: &str, db: &str| match store.connection(c) {
+            Some(x) => x.read_only_for(db),
+            None => store.profile(c).is_some_and(|p| p.read_only_for(db)),
+        };
+        Some(match &row.kind {
+            Kind::Conn { id } => Target::Conn {
+                id: id.clone(),
+                name: store.profile(id).map(|p| p.name.clone()).unwrap_or_default(),
+                state: match store.states.get(id) {
+                    None => ConnPhase::Off,
+                    Some(ConnState::Connecting) => ConnPhase::Connecting,
+                    Some(ConnState::Connected(_)) => ConnPhase::Connected,
+                    Some(ConnState::Failed(_)) => ConnPhase::Failed,
+                },
+            },
+            Kind::Db { conn, db } => Target::Db {
+                conn: conn.clone(),
+                db: db.clone(),
+                current: store.connection(conn).is_some_and(|c| c.database() == db),
+                lar: lar(conn),
+                ro: ro(conn, db),
+            },
+            Kind::Schema { conn, db, schema } => Target::Schema { conn: conn.clone(), db: db.clone(), schema: schema.clone(), lar: lar(conn), ro: ro(conn, db) },
+            Kind::Group { .. } | Kind::Columns { .. } | Kind::Indexes { .. } | Kind::TableSub { .. } | Kind::Roles { .. } | Kind::Extensions { .. } => {
+                Target::Group
+            }
+            Kind::Rel { conn, db, schema, name, kind } => {
+                Target::Rel { conn: conn.clone(), db: db.clone(), schema: schema.clone(), name: name.clone(), kind: *kind, lar: lar(conn), ro: ro(conn, db) }
+            }
+            Kind::RelRef { conn, db, schema, name } => {
+                let kind = store
+                    .connection(conn)
+                    .and_then(|c| c.schema.cached_relations(db, schema))
+                    .and_then(|v| v.into_iter().find(|r| &r.name == name).map(|r| r.kind))
+                    .unwrap_or(RelKind::Table);
+                Target::Rel { conn: conn.clone(), db: db.clone(), schema: schema.clone(), name: name.clone(), kind, lar: lar(conn), ro: ro(conn, db) }
+            }
+            Kind::Object { conn, db, schema, name, what } => {
+                Target::Object { conn: conn.clone(), db: db.clone(), schema: schema.clone(), name: name.clone(), what: what.clone() }
+            }
+            Kind::Column { name } => Target::Column { name: name.clone() },
+            Kind::Index { name, definition } => Target::Index { name: name.clone(), definition: definition.clone() },
+            Kind::Error { .. } => Target::Error,
+            Kind::Leaf => return None,
+        })
+    }
+
+    /// The engine of a menu's connection (from its profile: known while offline).
+    fn target_engine(&self, t: &Target, cx: &App) -> dataman_core::config::Engine {
+        let id = match t {
+            Target::Conn { id, .. } => Some(id),
+            Target::Db { conn, .. } | Target::Schema { conn, .. } | Target::Rel { conn, .. } | Target::Object { conn, .. } => Some(conn),
+            _ => None,
+        };
+        let store = self.store.read(cx);
+        id.and_then(|c| store.profile(c)).map(|p| p.engine).unwrap_or_default()
+    }
+
+    /// What the engine of a menu's connection can do.
+    fn target_caps(&self, t: &Target, cx: &App) -> dataman_core::Caps {
+        dataman_core::Caps::of(self.target_engine(t, cx))
+    }
+
+    /// The SQL dialect names are copied in.
+    fn target_dialect(&self, t: &Target, cx: &App) -> dataman_core::sql::Dialect {
+        self.target_engine(t, cx).dialect()
+    }
+
+    /// Where row `ix` is drawn (window coordinates): left, top, right. A row scrolled out of
+    /// view is placed where scrolling it into view puts it.
+    fn row_rect(&self, ix: usize) -> Option<(f32, f32, f32)> {
+        let st = self.scroll.0.borrow();
+        let b = st.base_handle.bounds();
+        if b.size.width.pt() <= 0. {
+            return None;
+        }
+        let (top, bottom) = (b.origin.y.pt(), b.origin.y.pt() + b.size.height.pt());
+        let y = top + 2. + ix as f32 * 22. + st.base_handle.offset().y.pt();
+        let y = y.clamp(top, (bottom - 22.).max(top));
+        let left = b.origin.x.pt() + 6.;
+        Some((left, y, left + b.size.width.pt() - 12.))
+    }
+
+    /// Opens the menu of row `ix` (or the "nothing selected" menu), which becomes selected.
+    pub fn open_menu(&mut self, ix: Option<usize>, at: MenuAnchor, window: &mut Window, cx: &mut Context<Self>) {
+        let (row, target) = match ix.and_then(|i| self.rows.get(i).cloned()) {
+            Some(r) => match self.target_for(&r, cx) {
+                Some(t) => (Some(r), t),
+                None => return,
+            },
+            None => (None, Target::Empty),
+        };
+        if let (Some(i), Some(_)) = (ix, &row) {
+            self.select(i, cx);
+        }
+        let entries = menu::entries_for(&target, &self.target_caps(&target, cx));
+        let vp = window.viewport_size();
+        let vp = (vp.width.pt(), vp.height.pt());
+        let h = menu::menu_h(&entries);
+        let rect = ix.and_then(|i| self.row_rect(i));
+        let origin = match (at, rect) {
+            (MenuAnchor::Mouse(p), _) => menu::place((p.x.pt(), p.y.pt()), p.y.pt(), menu::MENU_W, h, vp),
+            (MenuAnchor::RowMore, Some((_, top, right))) => menu::place((right - menu::MENU_W, top + 22.), top, menu::MENU_W, h, vp),
+            (_, Some((left, top, _))) => {
+                let depth = row.as_ref().map_or(0, |r| r.depth) as f32;
+                menu::place((left + 22. + depth * 12., top + 22.), top, menu::MENU_W, h, vp)
+            }
+            (_, None) => {
+                let st = self.scroll.0.borrow();
+                let b = st.base_handle.bounds();
+                menu::place((b.origin.x.pt() + 12., b.origin.y.pt() + 4.), b.origin.y.pt(), menu::MENU_W, h, vp)
+            }
+        };
+        let enabled: Vec<bool> = entries.iter().map(Entry::enabled).collect();
+        // From the keyboard the first item is highlighted; from the mouse nothing is.
+        let hi = if matches!(at, MenuAnchor::Mouse(_)) { None } else { menu::step(&enabled, None, 1) };
+        self.menu = Some(RowMenu { row: row.map(|r| r.id), target, entries, origin, hi, sub: None, sub_hi: None });
+        window.focus(&self.menu_focus, cx);
+        if self._menu_blur.is_none() {
+            // The focus went elsewhere (a shortcut, another window): the menu goes away.
+            self._menu_blur = Some(cx.on_focus_out(&self.menu_focus, window, |t, _, _, cx| {
+                if t.menu.take().is_some() {
+                    cx.notify();
+                }
+            }));
+        }
+        cx.notify();
+    }
+
+    /// Closes the menu; `refocus` gives the focus back to the tree (esc, a click outside).
+    pub fn close_menu(&mut self, refocus: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(m) = self.menu.take() {
+            self.menu_closed = Some((m.row, Instant::now()));
+        }
+        if refocus {
+            window.focus(&self.focus, cx);
+        }
+        cx.notify();
+    }
+
+    /// ⇧F10, the palette, the header's ⋯: the selected row's menu (the first row when none).
+    pub fn show_row_actions(&mut self, at: Option<gpui::Point<gpui::Pixels>>, window: &mut Window, cx: &mut Context<Self>) {
+        let ix = self.selected_ix().or((!self.rows.is_empty()).then_some(0));
+        let anchor = match at {
+            Some(p) => MenuAnchor::Mouse(p),
+            None => MenuAnchor::Row,
+        };
+        self.open_menu(ix, anchor, window, cx);
+    }
+
+    /// A ⋯ click: opens the row's menu, or leaves it closed when that click just closed it.
+    fn more_clicked(&mut self, ix: Option<usize>, at: Option<gpui::Point<gpui::Pixels>>, window: &mut Window, cx: &mut Context<Self>) {
+        let row = ix.and_then(|i| self.rows.get(i)).map(|r| r.id.clone());
+        let row = row.or_else(|| if ix.is_none() { self.selected.clone() } else { None });
+        if let Some((closed, at_)) = &self.menu_closed
+            && *closed == row
+            && at_.elapsed() < Duration::from_millis(400)
+        {
+            self.menu_closed = None;
+            return;
+        }
+        match ix {
+            Some(i) => self.open_menu(Some(i), MenuAnchor::RowMore, window, cx),
+            None => self.show_row_actions(at, window, cx),
+        }
+    }
+
+    fn menu_enabled(&self) -> Vec<bool> {
+        self.menu.as_ref().map(|m| m.entries.iter().map(Entry::enabled).collect()).unwrap_or_default()
+    }
+
+    fn sub_items(&self) -> Option<&[menu::Item]> {
+        let m = self.menu.as_ref()?;
+        match m.entries.get(m.sub?) {
+            Some(Entry::Sub { items, .. }) => Some(items),
+            _ => None,
+        }
+    }
+
+    fn menu_move(&mut self, dir: isize, cx: &mut Context<Self>) {
+        let sub_enabled: Option<Vec<bool>> = self.sub_items().map(|i| i.iter().map(menu::Item::enabled).collect());
+        let enabled = self.menu_enabled();
+        let Some(m) = self.menu.as_mut() else { return };
+        match (m.sub_hi, sub_enabled) {
+            (Some(_), Some(en)) => m.sub_hi = menu::step(&en, m.sub_hi, dir),
+            _ => {
+                m.hi = menu::step(&enabled, m.hi, dir);
+                m.sub = None;
+                m.sub_hi = None;
+            }
+        }
+        cx.notify();
+    }
+
+    /// → (or ↩ on "Generate SQL ▸"): into the submenu.
+    fn menu_enter_sub(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(m) = self.menu.as_mut() else { return false };
+        let Some(i) = m.hi else { return false };
+        let Some(Entry::Sub { items, .. }) = m.entries.get(i) else { return false };
+        let en: Vec<bool> = items.iter().map(menu::Item::enabled).collect();
+        m.sub = Some(i);
+        m.sub_hi = menu::step(&en, None, 1);
+        cx.notify();
+        true
+    }
+
+    fn menu_leave_sub(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(m) = self.menu.as_mut() else { return false };
+        if m.sub.is_none() {
+            return false;
+        }
+        m.sub = None;
+        m.sub_hi = None;
+        cx.notify();
+        true
+    }
+
+    fn menu_confirm(&mut self, alt: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(m) = self.menu.as_ref() else { return };
+        if let (Some(si), Some(items)) = (m.sub_hi, self.sub_items()) {
+            if let Some(it) = items.get(si).filter(|i| i.enabled()) {
+                let act = it.act;
+                self.run_menu(act, alt, window, cx);
+            }
+            return;
+        }
+        match m.hi.and_then(|i| m.entries.get(i)) {
+            Some(Entry::Item(it)) if it.enabled() => {
+                let act = it.act;
+                self.run_menu(act, alt, window, cx);
+            }
+            Some(Entry::Sub { .. }) => {
+                self.menu_enter_sub(cx);
+            }
+            _ => {}
+        }
+    }
+
+    /// Carries out a menu action: the tree's own (reload, copy, insert, connect, retry), or the
+    /// workspace's.
+    fn run_menu(&mut self, act: Act, alt: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(m) = self.menu.take() else { return };
+        window.focus(&self.focus, cx);
+        let ix = m.row.as_ref().and_then(|id| self.rows.iter().position(|r| &r.id == id));
+        let copy = |text: String, cx: &mut Context<Self>| {
+            cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+            let shown: String = if text.chars().count() > 60 { format!("{}…", text.chars().take(59).collect::<String>()) } else { text };
+            cx.emit(TreeEvent::Notice(format!("Copied {shown}")));
+        };
+        match (act, &m.target) {
+            (Act::Reload, _) => {
+                if let Some(i) = ix {
+                    self.reload_row(i, cx);
+                }
+            }
+            (Act::Retry, _) => {
+                if let Some(Kind::Error { retry }) = ix.map(|i| self.rows[i].kind.clone()) {
+                    self.retry(retry, cx);
+                }
+            }
+            (Act::Connect, Target::Conn { id, .. }) => {
+                let id = id.clone();
+                self.expanded.insert(cid(&id));
+                self.store.update(cx, |s, cx| s.connect(&id, None, cx));
+                self.rebuild(cx);
+            }
+            (Act::CopyName, t) => {
+                let name = match t {
+                    Target::Db { db, .. } => db.clone(),
+                    Target::Schema { schema, .. } => schema.clone(),
+                    Target::Rel { name, .. } | Target::Column { name } | Target::Index { name, .. } | Target::Object { name, .. } => name.clone(),
+                    _ => return,
+                };
+                copy(name, cx);
+            }
+            (Act::CopyQualified, Target::Rel { schema, name, .. } | Target::Object { schema, name, .. }) => {
+                copy(self.target_dialect(&m.target, cx).qualified(Some(schema), name), cx)
+            }
+            (Act::CopyDefinition, Target::Index { definition: Some(d), .. }) => copy(format!("{d};"), cx),
+            (Act::CopyDefinition, Target::Object { what: Obj::Trigger { definition: Some(d), .. }, .. }) => copy(format!("{d};"), cx),
+            (Act::CopyDefinition, Target::Object { schema, name, what: Obj::Constraint { table, definition: Some(def) }, .. }) => {
+                let d = self.target_dialect(&m.target, cx);
+                copy(format!("ALTER TABLE {} ADD CONSTRAINT {} {def};", d.qualified(Some(schema), table), d.quote_ident(name)), cx)
+            }
+            (Act::CopyUrl, Target::Conn { id, .. }) => {
+                if let Some(p) = self.store.read(cx).profile(id).cloned() {
+                    copy(p.url(), cx);
+                }
+            }
+            (act, target) => cx.emit(TreeEvent::RowAction { act, target: target.clone(), alt }),
+        }
+        cx.notify();
+    }
+
+    /// Demo screenshots: the menu of row `id` as the keyboard opens it (or at a point, as
+    /// right-click does), optionally with the Generate SQL ▸ submenu open on CREATE TABLE.
+    pub fn demo_menu(&mut self, id: &str, sub: bool, mouse: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(ix) = self.rows.iter().position(|r| r.id.as_ref() == id) else { return };
+        let at = match (mouse, self.row_rect(ix)) {
+            (true, Some((left, top, _))) => MenuAnchor::Mouse(point(px(left + 90.), px(top + 14.))),
+            _ => MenuAnchor::Row,
+        };
+        self.open_menu(Some(ix), at, window, cx);
+        self.demo_menu_highlight(sub, mouse, cx);
+    }
+
+    /// Checks: the actions of the open menu, its submenus' included.
+    pub fn demo_menu_acts(&self) -> Vec<Act> {
+        let Some(m) = &self.menu else { return vec![] };
+        m.entries
+            .iter()
+            .flat_map(|e| match e {
+                Entry::Item(i) => vec![i.act],
+                Entry::Sub { items, .. } => items.iter().map(|i| i.act).collect(),
+                Entry::Sep => vec![],
+            })
+            .collect()
+    }
+
+    /// Checks: whether the open menu's `act` has its check mark (`None`: not in the menu).
+    pub fn demo_menu_checked(&self, act: Act) -> Option<bool> {
+        let m = self.menu.as_ref()?;
+        m.entries.iter().find_map(|e| match e {
+            Entry::Item(i) if i.act == act => Some(i.checked),
+            _ => None,
+        })
+    }
+
+    /// Checks: chooses `act` in the open menu, as a click on it does.
+    pub fn demo_menu_run(&mut self, act: Act, window: &mut Window, cx: &mut Context<Self>) {
+        self.run_menu(act, false, window, cx);
+    }
+
+    /// Checks: whether row `id` shows the read-only lock (`None`: no such row).
+    pub fn demo_row_lock(&self, id: &str) -> Option<bool> {
+        self.rows.iter().find(|r| r.id.as_ref() == id).map(|r| r.lock)
+    }
+
+    /// The demo menu's highlight (again after the first frame: a pointer resting over the
+    /// window hovers an item as the menu appears).
+    pub fn demo_menu_highlight(&mut self, sub: bool, mouse: bool, cx: &mut Context<Self>) {
+        if let Some(m) = self.menu.as_mut() {
+            if mouse {
+                m.hi = Some(2);
+            }
+            if sub && let Some(i) = m.entries.iter().position(|e| matches!(e, Entry::Sub { .. })) {
+                m.hi = Some(i);
+                m.sub = Some(i);
+                m.sub_hi = Some(4);
+            }
+        }
+        cx.notify();
+    }
+
+    fn render_menu(&self, window: &Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let Some(m) = &self.menu else { return vec![] };
+        let t = cx.theme();
+        let vp = window.viewport_size();
+        let vp = (vp.width.pt(), vp.height.pt());
+        // The submenu's rectangle, so a click in it is not "outside" the menu.
+        let sub = m.sub.and_then(|i| match m.entries.get(i) {
+            Some(Entry::Sub { items, .. }) => {
+                let h = menu::sub_h(items);
+                Some((menu::place_sub(m.origin, menu::entry_top(&m.entries, i), h, vp), h, items.clone()))
+            }
+            _ => None,
+        });
+        let sub_rect = sub.as_ref().map(|((x, y), h, _)| (*x, *y, menu::SUB_W, *h));
+        let mut items: Vec<AnyElement> = Vec::new();
+        for (i, e) in m.entries.iter().enumerate() {
+            match e {
+                Entry::Sep => items.push(ui::menu_sep(&t).into_any_element()),
+                Entry::Item(it) => {
+                    let hi = m.hi == Some(i) && m.sub_hi.is_none();
+                    let el = menu_row(&t, ("menu-item", i), it.label, it.icon, it.key, it.disabled, it.bold, it.danger, it.checked, hi, false)
+                        .on_hover(cx.listener(move |tr, h: &bool, _, cx| {
+                            if let (true, Some(m)) = (*h, tr.menu.as_mut()) {
+                                m.hi = Some(i);
+                                m.sub = None;
+                                m.sub_hi = None;
+                                cx.notify();
+                            }
+                        }));
+                    let act = it.act;
+                    items.push(if it.enabled() {
+                        el.on_click(cx.listener(move |tr, ev: &ClickEvent, window, cx| tr.run_menu(act, ev.modifiers().alt, window, cx)))
+                            .into_any_element()
+                    } else {
+                        el.into_any_element()
+                    });
+                }
+                Entry::Sub { label, icon: ic, .. } => {
+                    let open = m.sub == Some(i);
+                    let hi = m.hi == Some(i) && m.sub_hi.is_none() || open && m.sub_hi.is_some();
+                    let el = menu_row(&t, ("menu-item", i), label, *ic, None, None, false, false, false, hi || open, true)
+                        .on_hover(cx.listener(move |tr, h: &bool, _, cx| {
+                            if let (true, Some(m)) = (*h, tr.menu.as_mut()) {
+                                m.hi = Some(i);
+                                m.sub = Some(i);
+                                m.sub_hi = None;
+                                cx.notify();
+                            }
+                        }))
+                        .on_click(cx.listener(move |tr, _, _, cx| {
+                            if let Some(m) = tr.menu.as_mut() {
+                                m.hi = Some(i);
+                            }
+                            tr.menu_enter_sub(cx);
+                        }));
+                    items.push(el.into_any_element());
+                }
+            }
+        }
+        let main = ui::popover(&t)
+            .id("row-menu")
+            .w(px(menu::MENU_W))
+            .text_size(px(12.))
+            .font_family(crate::theme::mono())
+            .track_focus(&self.menu_focus)
+            .key_context(MENU_CONTEXT)
+            .on_action(cx.listener(|tr, _: &MenuUp, _, cx| tr.menu_move(-1, cx)))
+            .on_action(cx.listener(|tr, _: &MenuDown, _, cx| tr.menu_move(1, cx)))
+            .on_action(cx.listener(|tr, _: &MenuRight, _, cx| {
+                tr.menu_enter_sub(cx);
+            }))
+            .on_action(cx.listener(|tr, _: &MenuLeft, _, cx| {
+                tr.menu_leave_sub(cx);
+            }))
+            .on_action(cx.listener(|tr, _: &MenuConfirm, window, cx| tr.menu_confirm(false, window, cx)))
+            .on_action(cx.listener(|tr, _: &MenuConfirmAlt, window, cx| tr.menu_confirm(true, window, cx)))
+            .on_action(cx.listener(|tr, _: &MenuClose, window, cx| {
+                if !tr.menu_leave_sub(cx) {
+                    tr.close_menu(true, window, cx);
+                }
+            }))
+            .on_mouse_down_out(cx.listener(move |tr, ev: &MouseDownEvent, window, cx| {
+                let (x, y) = (ev.position.x.pt(), ev.position.y.pt());
+                if sub_rect.is_some_and(|(sx, sy, sw, sh)| x >= sx && x < sx + sw && y >= sy && y < sy + sh) {
+                    return;
+                }
+                tr.close_menu(true, window, cx);
+            }))
+            .children(items);
+        let mut out = vec![deferred(anchored().position(point(px(m.origin.0), px(m.origin.1))).child(main)).priority(2).into_any_element()];
+        if let Some(((x, y), _, items)) = sub {
+            let rows: Vec<AnyElement> = items
+                .iter()
+                .enumerate()
+                .map(|(j, it)| {
+                    let hi = m.sub_hi == Some(j);
+                    let act = it.act;
+                    let el = menu_row(&t, ("sub-item", j), it.label, it.icon, it.key, it.disabled, it.bold, it.danger, it.checked, hi, false).on_hover(cx.listener(
+                        move |tr, h: &bool, _, cx| {
+                            if let (true, Some(m)) = (*h, tr.menu.as_mut()) {
+                                m.sub_hi = Some(j);
+                                cx.notify();
+                            }
+                        },
+                    ));
+                    if it.enabled() {
+                        el.on_click(cx.listener(move |tr, ev: &ClickEvent, window, cx| tr.run_menu(act, ev.modifiers().alt, window, cx)))
+                            .into_any_element()
+                    } else {
+                        el.into_any_element()
+                    }
+                })
+                .collect();
+            let pop = ui::popover(&t)
+                .id("row-submenu")
+                .w(px(menu::SUB_W))
+                .text_size(px(12.))
+                .font_family(crate::theme::mono())
+                .children(rows);
+            out.push(deferred(anchored().position(point(px(x), px(y))).child(pop)).priority(3).into_any_element());
+        }
+        out
+    }
+
+    /// Whether a row's label and full meta fit the tree's width, by the UI font's advance
+    /// (0.6 em: 7.2 pt per character of the 12 pt label, 6.6 of the 11 pt meta); the rest is the
+    /// row's padding, chevron, icon and gaps.
+    fn fit_meta(&self, r: &Row) -> SharedString {
+        let w = self.scroll.0.borrow().base_handle.bounds().size.width.pt();
+        if w <= 0. || r.meta.is_empty() || matches!(r.meta_kind, Meta::NotReported) {
+            return r.meta.clone();
+        }
+        let extra = if r.chip.is_some() || r.lar || r.tunnel || r.lock { 40. } else { 0. };
+        let em = crate::theme::advance();
+        let room = w - 65. - extra - r.depth as f32 * 12. - r.label.chars().count() as f32 * 12. * em;
+        match fit_meta_text(&r.meta, r.meta_short.as_ref().map(|s| s.as_ref()), (room / (11. * em)).floor() as i64) {
+            Some(s) => s.into(),
+            None => r.meta.clone(),
+        }
+    }
+
+    /// The gap among the connections a connection dragged over row `ix` points at: before or
+    /// after a connection's row by its middle, after the connection anywhere under it.
+    /// The gap a dragged connection would drop into (the checks).
+    pub fn conn_drop(&self) -> Option<usize> {
+        self.conn_drop
+    }
+
+    fn conn_slot(&self, ix: usize, bounds: &gpui::Bounds<gpui::Pixels>, pos: gpui::Point<gpui::Pixels>, cx: &App) -> Option<usize> {
+        let top = (0..=ix.min(self.rows.len().checked_sub(1)?)).rev().find(|&j| self.rows[j].depth == 0)?;
+        let Kind::Conn { id } = &self.rows[top].kind else { return None };
+        let k = self.store.read(cx).profiles.iter().position(|p| p.id == *id)?;
+        if top == ix { crate::dnd::slot_at(k, bounds, pos, false) } else { bounds.contains(&pos).then_some(k + 1) }
+    }
+
+    /// A connection dropped in the explorer moves to the gap the line marks (and the file
+    /// keeps the order).
+    fn drop_conn(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Some(slot) = self.conn_drop.take() else { return };
+        let Some(from) = self.store.read(cx).profiles.iter().position(|p| p.id == id) else { return };
+        self.store.update(cx, |s, cx| s.reorder(from, slot, cx));
+        cx.notify();
+    }
+
+    fn render_row(&self, ix: usize, t: &Theme, focused: bool, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let r = &self.rows[ix];
+        // Reordering: only the connections, and not while the filter narrows the list.
+        let reorder = self.filter_stats.is_none();
+        let drag_conn = match &r.kind {
+            Kind::Conn { id } if reorder && r.depth == 0 => Some(id.clone()),
+            _ => None,
+        };
+        let line = self.conn_drop.filter(|_| reorder && cx.has_active_drag()).and_then(|s| {
+            let profiles = &self.store.read(cx).profiles;
+            match &r.kind {
+                Kind::Conn { id } if r.depth == 0 && profiles.get(s).is_some_and(|p| p.id == *id) => Some(false),
+                _ if s == profiles.len() && ix + 1 == self.rows.len() => Some(true),
+                _ => None,
+            }
+        });
+        let sel = self.selected.as_ref() == Some(&r.id);
+        let (label_color, bold) = label_style(r.tone, sel, t);
+        let hov = t.hov;
+        let has_menu = !matches!(r.kind, Kind::Leaf);
+        let menu_here = self.menu.as_ref().is_some_and(|m| m.row.as_ref() == Some(&r.id));
+        let hovered = self.hovered.as_ref() == Some(&r.id);
+        let chevron = r.expandable.then(|| icon(if r.expanded { Icon::ChevronDown } else { Icon::ChevronRight }).size(px(10.)).text_color(t.tx4));
+        let pop = self.pop_now.as_ref().filter(|(id, _)| *id == r.id).map(|(_, f)| *f);
+        let label = {
+            let l = r.label.to_string();
+            match &r.hl {
+                Some(h) if h.end <= l.len() => {
+                    let hit = l[h.clone()].to_string();
+                    div()
+                        .flex()
+                        .flex_row()
+                        .child(l[..h.start].to_string())
+                        .child(
+                            // Neutral: blue is the selection's.
+                            div()
+                                .relative()
+                                .bg(t.mark)
+                                .text_color(t.tx)
+                                .border_b_1()
+                                .border_color(t.mark_b)
+                                .child(hit.clone())
+                                .children(pop.map(|f| pop_overlay(hit, f, t))),
+                        )
+                        .child(l[h.end..].to_string())
+                }
+                _ => div().child(l),
+            }
+        };
+        // The name has the room first: a table's size goes (its row estimate stays), a long
+        // signature or definition is cut.
+        let meta_text = self.fit_meta(r);
+        let meta = match r.meta_kind {
+            _ if meta_text.is_empty() => None,
+            Meta::NotReported => Some(ui::not_reported(t).into_any_element()),
+            k => {
+                let color = match k {
+                    Meta::Ok => t.ok,
+                    Meta::Warn => t.warn,
+                    Meta::Err => t.err,
+                    Meta::Off => t.tx4,
+                    Meta::LarState => t.lar,
+                    Meta::Link => t.acc_t,
+                    _ => t.tx3,
+                };
+                Some(div().flex_none().text_size(px(11.)).whitespace_nowrap().text_color(color).child(meta_text).into_any_element())
+            }
+        };
+        let more = has_menu.then(|| {
+            let (pop, prs, tx2) = (t.pop, t.prs, t.tx2);
+            div()
+                .id(("row-more", ix))
+                .absolute()
+                .top(px(3.))
+                .right(px(3.))
+                .size(px(16.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(if menu_here { prs } else { pop })
+                .when(!menu_here, |d| d.invisible().group_hover(ROW_GROUP, |s| s.visible()))
+                .hover(move |s| s.bg(prs))
+                .child(icon(Icon::More).size(px(12.)).text_color(tx2))
+                // Not a click on the row: no toggle, and the focus stays where the menu puts it.
+                .on_mouse_down(MouseButton::Left, |_, window, cx| {
+                    window.prevent_default();
+                    cx.stop_propagation();
+                })
+                .on_click(cx.listener(move |t, _, window, cx| {
+                    cx.stop_propagation();
+                    t.more_clicked(Some(ix), None, window, cx);
+                }))
+        });
+        let conn_bounds = (r.depth == 0).then(|| (self.conn_bounds.clone(), r.id.clone()));
+        div()
+            .w_full()
+            .px(px(6.))
+            // Where the connections' rows are (the checks drag them).
+            .when_some(conn_bounds, |d, (all, id)| d.on_children_prepainted(move |b, _, _| {
+                if let Some(b) = b.first() {
+                    all.borrow_mut().insert(id.clone(), *b);
+                }
+            }))
+            .child(div()
+            .id(ix)
+            .group(ROW_GROUP)
+            .relative()
+            .w_full()
+            .h(px(22.))
+            .pl(px(6. + r.depth as f32 * 12.))
+            .pr(px(8.))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(5.))
+            .when(sel && focused, |d| d.bg(t.acc_s).border_1().border_color(t.edge_acc))
+            .when(sel && !focused, |d| d.bg(t.prs))
+            .when(!sel, |d| d.hover(move |s| s.bg(hov)))
+            .on_click(cx.listener(move |t, ev: &ClickEvent, window, cx| t.on_click(ix, ev, window, cx)))
+            .when_some(drag_conn, |d, id| {
+                let (label, chip) = (r.label.clone(), r.chip);
+                d.on_drag(DraggedConn(id), move |_, _, _, cx| crate::dnd::ghost(label.clone(), chip, cx))
+            })
+            .when(reorder, |d| {
+                d.on_drag_move(cx.listener(move |t, ev: &gpui::DragMoveEvent<DraggedConn>, _, cx| {
+                    let pos = ev.event.position;
+                    if !ev.bounds.contains(&pos) {
+                        return;
+                    }
+                    let id = ev.drag(cx).0.clone();
+                    let Some(from) = t.store.read(cx).profiles.iter().position(|p| p.id == id) else { return };
+                    let slot = t.conn_slot(ix, &ev.bounds, pos, cx).filter(|s| dataman_core::order::moves(from, *s));
+                    if slot != t.conn_drop {
+                        t.conn_drop = slot;
+                        cx.notify();
+                    }
+                }))
+            })
+            .on_hover(cx.listener({
+                let id = r.id.clone();
+                move |t, on: &bool, _, cx| {
+                    if *on {
+                        if t.hovered.as_ref() != Some(&id) {
+                            t.hovered = Some(id.clone());
+                            cx.notify();
+                        }
+                    } else if t.hovered.as_ref() == Some(&id) {
+                        t.hovered = None;
+                        cx.notify();
+                    }
+                }
+            }))
+            // Right-click, and ⌃-click (the Mac convention), open the row's menu at the pointer.
+            .when(has_menu, |d| {
+                d.on_mouse_down(MouseButton::Right, cx.listener(move |t, ev: &MouseDownEvent, window, cx| {
+                    t.open_menu(Some(ix), MenuAnchor::Mouse(ev.position), window, cx);
+                    window.prevent_default();
+                    cx.stop_propagation();
+                }))
+                .on_mouse_down(MouseButton::Left, cx.listener(move |t, ev: &MouseDownEvent, window, cx| {
+                    if ev.modifiers.control {
+                        t.open_menu(Some(ix), MenuAnchor::Mouse(ev.position), window, cx);
+                        window.prevent_default();
+                        cx.stop_propagation();
+                    }
+                }))
+            })
+            .child(div().w(px(10.)).flex_none().flex().justify_center().children(chevron))
+            .when_some(r.tip.clone(), |d, tip| d.tooltip(ui::text_tooltip(tip)))
+            .children(r.chip.map(|c| div().mx(px(3.)).when(r.chip_dim, |d| d.opacity(0.45)).child(ui::chip(c, 8.))))
+            .children(r.icon.filter(|_| r.chip.is_none()).map(|(i, c)| {
+                // A folder is filled while shut and outlined while open.
+                let i = if i == Icon::Schema && !r.expanded { Icon::SchemaFilled } else { i };
+                icon(i).size(px(14.)).text_color(c.unwrap_or(t.tx3))
+            }))
+            .when(r.blank_icon, |d| d.child(div().flex_none().size(px(14.))))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .text_color(label_color)
+                    .when(bold, |d| d.font_weight(FontWeight::SEMIBOLD))
+                    .when(r.tone == Tone::Italic, |d| d.italic())
+                    .child(label),
+            )
+            .when(r.tunnel, |d| d.child(icon(Icon::Tunnel).size(px(11.)).text_color(t.tx3)))
+            .when(r.lock, |d| d.child(icon(Icon::Lock).flex_none().size(px(11.)).text_color(t.tx3)))
+            .when(r.lar, |d| d.child(ui::lar_tag(t)))
+            // The ⋯ button covers the row's right end while it shows: the meta steps aside.
+            // (A hover style cannot move it: GPUI lays out before it knows the hover.)
+            .children(meta.map(|m| div().flex_none().when(has_menu && (menu_here || hovered), |d| d.mr(px(MORE_ROOM))).child(m)))
+            .children(more)
+            .children(line.map(|after| crate::dnd::drop_line(t, false, after))))
+    }
+}
+
+/// A row's name: its color and whether it is semibold. Connected connections stand out; one
+/// that is not connected is gray and regular, a step lighter when selected.
+fn label_style(tone: Tone, sel: bool, t: &Theme) -> (Hsla, bool) {
+    let bold = matches!(tone, Tone::Conn | Tone::ConnLar);
+    let color = match tone {
+        Tone::ConnOff if sel => t.tx3,
+        Tone::ConnOff => t.tx4,
+        Tone::ConnWait if sel => t.tx2,
+        Tone::ConnWait => t.tx3,
+        _ if sel => t.tx,
+        Tone::Conn => t.tx,
+        Tone::ConnLar => t.lar_t,
+        Tone::Muted | Tone::Italic => t.tx3,
+        Tone::Error => t.err,
+        Tone::Normal => t.tx2,
+    };
+    (color, bold)
+}
+
+/// The find indicator over a matched name: Xcode's yellow box (2 pt wider than the text each
+/// side) with the name redrawn dark on top, both at the pop's scale. Deferred, so it paints
+/// after the tree and the enlarged box is not cut by the label's clip.
+fn pop_overlay(text: String, f: PopFrame, t: &Theme) -> impl IntoElement + use<> {
+    let (fill, ink) = (t.find.opacity(f.strength), t.find_tx.opacity(f.strength));
+    deferred(
+        gpui::canvas(
+            |_, _, _| (),
+            move |bounds, _, window, cx| {
+                // The row's face and size (the text style stack is not restored for a deferred
+                // paint); the span's height less its 1 pt underline is the text's line.
+                let run = gpui::TextRun {
+                    len: text.len(),
+                    font: gpui::font(crate::theme::mono()),
+                    color: ink,
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                };
+                let lh = bounds.size.height - px(1.);
+                let line = window.text_system().shape_line(text.clone().into(), px(12. * f.scale), &[run], None);
+                let rest = gpui::Bounds::from_corners(point(bounds.left() - px(2.), bounds.top()), point(bounds.right() + px(2.), bounds.bottom()));
+                crate::motion::paint_pop(window, cx, rest, 0., fill, f.scale, Some((&line, bounds.origin, lh)));
+            },
+        )
+        .absolute()
+        .inset_0(),
+    )
+}
+
+/// A table, view or materialized view; tables and materialized views show their row estimate
+/// and total size once the group's sizes arrived (`~48k · 12 MB`, or just `~48k` when the name
+/// leaves no room).
+fn rel_row(c: &str, db: &str, s: &str, r: &dataman_core::schema::Relation, depth: usize, open: bool, stats: Option<&std::collections::HashMap<String, RelStats>>) -> Row {
+    let icon = match r.kind {
+        RelKind::View => Icon::View,
+        RelKind::MaterializedView => Icon::MatView,
+        RelKind::Partitioned => Icon::Partition,
+        RelKind::Table | RelKind::Foreign => Icon::Table,
+    };
+    let mut row = Row::new(rid(c, db, s, &r.name), depth, r.name.clone(), Kind::Rel { conn: c.into(), db: db.into(), schema: s.into(), name: r.name.clone(), kind: r.kind })
+        .icon(icon)
+        .expandable(open);
+    match (r.kind, stats.and_then(|m| m.get(&r.name))) {
+        (RelKind::Foreign, _) => row = row.meta("foreign", Meta::Plain),
+        (RelKind::View, _) | (_, None) => {}
+        (_, Some(st)) => {
+            let (full, short) = stats_meta(st);
+            row = row.meta(full, Meta::Plain);
+            row.meta_short = short.map(SharedString::from);
+        }
+    }
+    row
+}
+
+/// `~48k · 12 MB` and, when both are known, the short form `~48k`.
+fn stats_meta(st: &RelStats) -> (String, Option<String>) {
+    let rows = st.rows.map(approx_count);
+    let size = st.bytes.map(human_size);
+    match (rows, size) {
+        (Some(r), Some(b)) => (format!("{r} · {b}"), Some(r)),
+        (Some(r), None) => (r, None),
+        (None, Some(b)) => (b, None),
+        (None, None) => (String::new(), None),
+    }
+}
+
+/// A group row: `functions 12`.
+fn group_row(id: &str, depth: usize, label: &'static str, n: usize, open: bool, kind: Kind) -> Row {
+    Row::new(id.to_string(), depth, label, kind).icon(Icon::Group).meta(ui_count(n), Meta::Plain).expandable(open)
+}
+
+/// The meta column's text for `room` characters left by the label (`None`: it fits as is).
+/// The short form first (a table's estimate without its size); else the text cut with an
+/// ellipsis; with less than 8 characters of room it goes (the icon still says the kind).
+fn fit_meta_text(meta: &str, short: Option<&str>, room: i64) -> Option<String> {
+    let n = meta.chars().count() as i64;
+    if n <= room {
+        return None;
+    }
+    if let Some(s) = short {
+        return Some(s.to_string());
+    }
+    Some(if room < 8 { String::new() } else { clip(meta, room as usize) })
+}
+
+/// `s` cut to `n` characters, with an ellipsis.
+fn clip(s: &str, n: usize) -> String {
+    if s.chars().count() <= n { s.to_string() } else { format!("{}…", s.chars().take(n - 1).collect::<String>()) }
+}
+
+/// `(int4, text) → int4` (procedures: just the arguments); types of the function's own schema
+/// lose their qualifier.
+fn function_meta(f: &dataman_core::schema::Function, schema: &str, pg: bool) -> String {
+    let own = format!("{schema}.");
+    let ty = |t: &str| short_type(t.strip_prefix(own.as_str()).unwrap_or(t), pg);
+    let args: Vec<String> = f.arg_types.iter().map(|a| ty(a)).collect();
+    let mut s = format!("({})", args.join(", "));
+    if let Some(r) = &f.result {
+        let r = match r.strip_prefix("SETOF ") {
+            Some(t) => format!("setof {}", ty(t)),
+            None => ty(r),
+        };
+        s.push_str(" → ");
+        s.push_str(&r);
+    }
+    clip(&s, 34)
+}
+
+fn obj_kind(c: &str, db: &str, s: &str, name: &str, what: Obj) -> Kind {
+    Kind::Object { conn: c.into(), db: db.into(), schema: s.into(), name: name.into(), what }
+}
+
+fn function_row(c: &str, db: &str, s: &str, f: &dataman_core::schema::Function, depth: usize, pg: bool) -> Row {
+    let procedure = f.kind == FuncKind::Procedure;
+    let id = format!("{}/f:{}", gid(c, db, s, G::Functions), f.oid);
+    Row::new(id, depth, f.name.clone(), obj_kind(c, db, s, &f.name, Obj::Function { oid: f.oid, procedure }))
+        .icon(if procedure { Icon::Procedure } else { Icon::Function })
+        .meta(function_meta(f, s, pg), Meta::Plain)
+}
+
+/// A sequence: the column that owns it (`orders.id`), else its type.
+fn sequence_row(c: &str, db: &str, s: &str, x: &dataman_core::schema::Sequence, depth: usize, pg: bool) -> Row {
+    let meta = match (&x.owned_by, &x.type_name) {
+        (Some((t, col)), _) => format!("{t}.{col}"),
+        (None, Some(ty)) => short_type(ty, pg),
+        (None, None) => String::new(),
+    };
+    let id = format!("{}/q:{}", gid(c, db, s, G::Sequences), x.name);
+    Row::new(id, depth, x.name.clone(), obj_kind(c, db, s, &x.name, Obj::Sequence)).icon(Icon::Sequence).meta(clip(&meta, 30), Meta::Plain)
+}
+
+fn type_id(c: &str, db: &str, s: &str, name: &str) -> String {
+    format!("{}/t:{name}", gid(c, db, s, G::Types))
+}
+
+/// A type: `enum` (its labels as children), `composite`, `domain numeric(12,2)`.
+fn type_row(c: &str, db: &str, s: &str, x: &dataman_core::schema::UserType, depth: usize, open: bool, pg: bool) -> Row {
+    let meta = match (&x.kind, &x.base) {
+        (TypeKind::Domain, Some(b)) => format!("domain {}", short_type(b, pg)),
+        (k, _) => k.label().to_string(),
+    };
+    let row = Row::new(type_id(c, db, s, &x.name), depth, x.name.clone(), obj_kind(c, db, s, &x.name, Obj::Type)).icon(Icon::Type).meta(clip(&meta, 30), Meta::Plain);
+    if x.kind == TypeKind::Enum && !x.labels.is_empty() { row.expandable(open) } else { row }
+}
+
+/// A trigger: under the schema its table, under a table its events; a disabled one is dimmed
+/// and says `off`.
+fn trigger_row(id: String, c: &str, db: &str, s: &str, x: &dataman_core::schema::Trigger, depth: usize, in_schema: bool) -> Row {
+    let what = Obj::Trigger { table: x.table.clone(), enabled: x.enabled, definition: x.definition.clone() };
+    let base = if in_schema { x.table.clone() } else { x.events.clone() };
+    let row = Row::new(id, depth, x.name.clone(), obj_kind(c, db, s, &x.name, what)).icon(Icon::Trigger);
+    if x.enabled {
+        row.meta(clip(&base, 30), Meta::Plain)
+    } else {
+        // `off` first: a cut keeps it.
+        row.tone(Tone::Muted).meta(format!("off · {}", clip(&base, 24)), Meta::Off)
+    }
+}
+
+/// An extension and its version (`1.5 → 1.6` when an update is available).
+fn extension_row(c: &str, db: &str, x: &dataman_core::schema::Extension, depth: usize) -> Row {
+    let meta = match x.update() {
+        Some(v) => format!("{} → {v}", x.version),
+        None => x.version.clone(),
+    };
+    let what = Obj::Extension { update: x.update().map(str::to_string) };
+    Row::new(format!("{}/extensions/{}", did(c, db), x.name), depth, x.name.clone(), obj_kind(c, db, "", &x.name, what))
+        .icon(Icon::Extension)
+        .meta(clip(&meta, 24), Meta::Plain)
+}
+
+/// A role and its flags (`superuser · login`).
+fn role_row(c: &str, r: &dataman_core::schema::Role, depth: usize) -> Row {
+    let flags: Vec<&str> = [(r.superuser, "superuser"), (r.login, "login")].into_iter().filter(|(on, _)| *on).map(|(_, f)| f).collect();
+    Row::new(format!("{}/roles/{}", cid(c), r.name), depth, r.name.clone(), obj_kind(c, "", "", &r.name, Obj::Role))
+        .icon(Icon::Role)
+        .meta(flags.join(" · "), Meta::Plain)
+}
+
+/// One menu row from the Components board: 26 pt, icon, label, right-aligned shortcut (or ▸);
+/// highlighted in accent; disabled in tx4 with a short reason in the right column.
+#[allow(clippy::too_many_arguments)]
+fn menu_row(
+    t: &Theme,
+    id: impl Into<gpui::ElementId>,
+    label: &'static str,
+    ic: Icon,
+    key: Option<&'static str>,
+    disabled: Option<&'static str>,
+    bold: bool,
+    danger: bool,
+    checked: bool,
+    hi: bool,
+    sub: bool,
+) -> gpui::Stateful<gpui::Div> {
+    let on = hi && disabled.is_none();
+    let fg = if disabled.is_some() { t.tx4 } else if on { t.on_acc } else { t.tx };
+    let icon_fg = if disabled.is_some() {
+        t.tx4
+    } else if on {
+        t.on_acc
+    } else if danger {
+        t.err
+    } else {
+        t.tx3
+    };
+    let key_fg = if on { t.on_acc.opacity(0.8) } else if disabled.is_some() { t.tx4 } else { t.tx3 };
+    div()
+        .id(id)
+        .h(px(menu::ITEM_H))
+        .px(px(10.))
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(10.))
+        .whitespace_nowrap()
+        .text_color(fg)
+        .when(on, |d| d.bg(t.acc))
+        .child(icon(ic).size(px(14.)).text_color(icon_fg))
+        .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().when(bold, |d| d.font_weight(FontWeight::SEMIBOLD)).child(label))
+        // A disabled item says why in the right column, in place of its shortcut.
+        .children(disabled.or(key).map(|k| div().flex_none().text_size(px(11.)).text_color(key_fg).child(k)))
+        .when(checked, |d| d.child(icon(Icon::Check).flex_none().size(px(12.)).text_color(if on { t.on_acc } else { t.tx2 })))
+        .when(sub, |d| d.child(icon(Icon::ChevronRight).size(px(10.)).text_color(key_fg)))
+}
+
+fn loading_row(id: &str, depth: usize) -> Row {
+    Row::new(format!("{id}/loading"), depth, "loading…", Kind::Leaf).tone(Tone::Italic)
+}
+
+/// A failed load: the server's message, and "retry".
+fn error_row(id: &str, depth: usize, e: &str, retry: &str, t: &Theme) -> Row {
+    let first = e.lines().next().unwrap_or(e);
+    let mut r = Row::new(format!("{id}/err"), depth, first.to_string(), Kind::Error { retry: retry.to_string() })
+        .tone(Tone::Error)
+        .icon_colored(Icon::Warning, t.err)
+        .meta("retry", Meta::Link);
+    r.tip = Some(e.to_string().into());
+    r
+}
+
+/// `timestamp with time zone` → `timestamptz`: the short names the explorer shows on
+/// PostgreSQL (other engines keep their own names: `bigint`, `real`).
+fn short_type(t: &str, pg: bool) -> String {
+    if !pg {
+        return t.to_string();
+    }
+    match t {
+        "bigint" => "int8".into(),
+        "integer" => "int4".into(),
+        "smallint" => "int2".into(),
+        "boolean" => "bool".into(),
+        "double precision" => "float8".into(),
+        "real" => "float4".into(),
+        "timestamp with time zone" => "timestamptz".into(),
+        "timestamp without time zone" => "timestamp".into(),
+        "time without time zone" => "time".into(),
+        "character varying" => "varchar".into(),
+        _ if t.starts_with("character varying(") => format!("varchar{}", &t["character varying".len()..]),
+        _ => t.to_string(),
+    }
+}
+
+/// The loaded name closest to a filter that matched nothing ("did you mean orders?").
+fn nearest(q: &str, names: &[String]) -> Option<String> {
+    let best = names.iter().map(|n| (edit_distance(q, &n.to_lowercase()), n)).min_by_key(|(d, n)| (*d, n.len()))?;
+    (best.0 <= (q.chars().count() / 3).max(2)).then(|| best.1.clone())
+}
+
+fn edit_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    for i in 1..=a.len() {
+        let mut cur = vec![i; b.len() + 1];
+        for j in 1..=b.len() {
+            let sub = prev[j - 1] + usize::from(a[i - 1] != b[j - 1]);
+            cur[j] = sub.min(prev[j] + 1).min(cur[j - 1] + 1);
+        }
+        prev = cur;
+    }
+    prev[b.len()]
+}
+
+type Load = std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>>>>;
+
+fn unit<T: 'static>(t: dataman_core::Task<T>) -> Load {
+    Box::pin(async move { t.await.map(|_| ()) })
+}
+
+fn join2<A: 'static, B: 'static>(a: dataman_core::Task<A>, b: dataman_core::Task<B>) -> Load {
+    join_all(vec![unit(a), unit(b)])
+}
+
+/// Every load (they run at once on the core); the first error.
+fn join_all(loads: Vec<Load>) -> Load {
+    Box::pin(async move {
+        let mut first = Ok(());
+        for l in loads {
+            if let (Err(e), Ok(())) = (l.await, &first) {
+                first = Err(e);
+            }
+        }
+        first
+    })
+}
+
+impl Render for SchemaTree {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.version(cx) != self.seen_version {
+            self.rebuild(cx);
+        }
+        // The filter's find pop: this frame of it, and the next frame only while it runs.
+        self.pop_now = match self.pop.as_ref().map(|p| (p.target.clone(), p.frame(Instant::now()))) {
+            Some((id, Some(f))) => {
+                window.request_animation_frame();
+                Some((id, f))
+            }
+            Some((_, None)) => {
+                self.pop = None;
+                None
+            }
+            None => None,
+        };
+        let t = cx.theme();
+        let focused = self.focus.contains_focused(window, cx);
+        let filter_focused = self.filter.focus_handle(cx).is_focused(window);
+        let filtering = self.filtering(cx);
+        let empty = self.store.read(cx).profiles.is_empty();
+        let filter_meta: SharedString = match &self.filter_stats {
+            Some((m, total, _)) if filtering => format!("{} of {}", ui_count(*m), ui_count(*total)).into(),
+            _ => "/".into(),
+        };
+        let no_match = filtering && self.filter_stats.as_ref().is_some_and(|(m, _, _)| *m == 0);
+        let menu_layer = self.render_menu(window, cx);
+        let header = div()
+            .h(px(34.))
+            .flex_none()
+            .pl(px(14.))
+            .pr(px(8.))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(2.))
+            .child(div().flex_1().child(ui::caps(&t, "EXPLORER")))
+            .child(
+                ui::icon_button(&t, "x-new", Icon::Plus, 24., 14.)
+                    .tooltip(ui::tooltip("New connection", None, Some("⌘N")))
+                    .on_click(cx.listener(|_, _, _, cx| cx.emit(TreeEvent::NewConnection))),
+            )
+            .child(
+                ui::icon_button(&t, "x-reload", Icon::Reload, 24., 14.)
+                    .on_click(cx.listener(|t, _, _, cx| t.refresh_selected(cx))),
+            )
+            .child(
+                ui::icon_button(&t, "x-more", Icon::More, 24., 14.)
+                    .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+                    .on_click(cx.listener(|t, ev: &ClickEvent, window, cx| t.more_clicked(None, Some(ev.position()), window, cx))),
+            );
+        let filter_box = div()
+            .mx(px(8.))
+            .mb(px(6.))
+            .h(px(28.))
+            .flex_none()
+            .pl(px(8.))
+            .pr(px(6.))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(7.))
+            // The glass's own translucent wash, the same focused or not (the border and its
+            // halo show the focus); only the border is opaque, so it holds over any desktop.
+            .relative()
+            .bg(t.hov)
+            .border_1()
+            // A search field's focus is neutral (blue is the tree's selection).
+            .border_color(if filter_focused { t.mark_b } else { t.field_b })
+            .when(filter_focused, |d| d.child(ui::halo_ring(t.mark)))
+            .child(icon(Icon::Filter).size(px(13.)).text_color(t.tx3))
+            .child(div().flex_1().min_w_0().text_color(t.tx).child(self.filter.clone()))
+            .child(div().flex_none().text_size(px(10.5)).text_color(t.tx3).whitespace_nowrap().child(filter_meta));
+        let body: gpui::AnyElement = if empty {
+            div()
+                .flex_1()
+                .pt(px(48.))
+                .px(px(20.))
+                .flex()
+                .flex_col()
+                .items_center()
+                .child(ui::empty_state(&t, "[ EMPTY ]", 22., None))
+                .into_any_element()
+        } else if no_match {
+            let near = self.filter_stats.as_ref().and_then(|(_, _, n)| n.clone());
+            div()
+                .flex_1()
+                .pt(px(48.))
+                .px(px(16.))
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(8.))
+                .text_center()
+                .child(ui::pixel("[ NO MATCH ]", 20., t.tx4))
+                .children(near.map(|n| {
+                    div().flex().flex_row().text_color(t.tx2).child("Did you mean ").child(div().text_color(t.acc_t).child(n)).child("?")
+                }))
+                .into_any_element()
+        } else {
+            let theme = t.clone();
+            uniform_list(
+                "schema-tree",
+                self.rows.len(),
+                cx.processor(move |tree, range: std::ops::Range<usize>, _window, cx| {
+                    range.map(|ix| tree.render_row(ix, &theme, focused, cx).into_any_element()).collect()
+                }),
+            )
+            .track_scroll(&self.scroll)
+            .flex_1()
+            .pt(px(2.))
+            .into_any_element()
+        };
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .key_context(CONTEXT)
+            .track_focus(&self.focus)
+            .text_size(px(12.))
+            .text_color(t.tx2)
+            // A connection dragged out of the explorer has no gap to drop into.
+            .on_drag_move(cx.listener(|t, ev: &gpui::DragMoveEvent<DraggedConn>, _, cx| {
+                if !ev.bounds.contains(&ev.event.position) && t.conn_drop.take().is_some() {
+                    cx.notify();
+                }
+            }))
+            .on_drop(cx.listener(|t, d: &DraggedConn, _, cx| t.drop_conn(&d.0, cx)))
+            .on_action(cx.listener(|t, _: &SelectPrev, _, cx| t.move_sel(-1, cx)))
+            .on_action(cx.listener(|t, _: &SelectNext, _, cx| t.move_sel(1, cx)))
+            .on_action(cx.listener(|t, _: &Expand, _, cx| {
+                if let Some(ix) = t.selected_ix() {
+                    t.set_expanded(ix, true, cx)
+                }
+            }))
+            .on_action(cx.listener(|t, _: &Collapse, _, cx| {
+                if let Some(ix) = t.selected_ix() {
+                    t.set_expanded(ix, false, cx)
+                }
+            }))
+            .on_action(cx.listener(|t, _: &Open, _, cx| {
+                if let Some(ix) = t.selected_ix() {
+                    t.open(ix, cx)
+                }
+            }))
+            .on_action(cx.listener(|t, _: &ReloadNode, _, cx| {
+                if let Some(ix) = t.selected_ix() {
+                    t.reload_row(ix, cx);
+                }
+            }))
+            .on_action(cx.listener(|t, _: &ShowRowActions, window, cx| t.show_row_actions(None, window, cx)))
+            .on_action(cx.listener(|t, _: &EditConnection, _, cx| {
+                if let Some(id) = t.selected_connection() {
+                    cx.emit(TreeEvent::EditConnection(id));
+                }
+            }))
+            .on_action(cx.listener(|t, _: &Disconnect, _, cx| {
+                if let Some(id) = t.selected_connection() {
+                    cx.emit(TreeEvent::Disconnect(id));
+                }
+            }))
+            .on_action(cx.listener(|t, _: &FocusFilter, window, cx| {
+                let f = t.filter.focus_handle(cx);
+                window.focus(&f, cx);
+            }))
+            .on_action(cx.listener(|t, _: &Escape, _, cx| t.clear_filter(cx)))
+            .on_mouse_down(MouseButton::Left, cx.listener(|t, _, window, cx| {
+                if !t.filter.focus_handle(cx).is_focused(window) {
+                    window.focus(&t.focus, cx);
+                }
+            }))
+            .child(header)
+            .child(filter_box)
+            .child(body)
+            .children(menu_layer)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dataman_core::schema::{Function, Relation, Trigger, UserType};
+
+    #[test]
+    fn groups_split_the_relations() {
+        assert_eq!(G::Tables.holds(RelKind::Partitioned), Some(true));
+        assert_eq!(G::Tables.holds(RelKind::Foreign), Some(true));
+        assert_eq!(G::Tables.holds(RelKind::MaterializedView), Some(false));
+        assert_eq!(G::Views.holds(RelKind::MaterializedView), Some(false), "materialized views have their own group");
+        assert_eq!(G::MatViews.holds(RelKind::MaterializedView), Some(true));
+        assert_eq!(G::Functions.holds(RelKind::Table), None);
+        // The bench and the demos address the tables group by this id.
+        assert_eq!(gid("c", "d", "s", G::Tables), "c:c/d:d/s:s/tables");
+        assert_eq!(G::MatViews.label(), "materialized views");
+    }
+
+    #[test]
+    fn table_rows_show_estimates_and_sizes() {
+        let st = RelStats { rows: Some(48_310.), bytes: Some(12 * 1024 * 1024) };
+        assert_eq!(stats_meta(&st), ("~48k · 12 MB".to_string(), Some("~48k".to_string())));
+        assert_eq!(stats_meta(&RelStats { rows: None, bytes: Some(8192) }), ("8 kB".to_string(), None), "never analyzed: the size alone");
+        let rel = |kind| Relation { schema: "s".into(), name: "t".into(), kind, oid: None };
+        let mut m = std::collections::HashMap::new();
+        m.insert("t".to_string(), st);
+        let r = rel_row("c", "d", "s", &rel(RelKind::Table), 4, false, Some(&m));
+        assert_eq!((r.meta.as_ref(), r.meta_short.as_ref().map(|s| s.as_ref())), ("~48k · 12 MB", Some("~48k")));
+        // Before the sizes arrive, and for views: nothing.
+        assert!(rel_row("c", "d", "s", &rel(RelKind::Table), 4, false, None).meta.is_empty());
+        assert!(rel_row("c", "d", "s", &rel(RelKind::View), 4, false, Some(&m)).meta.is_empty());
+        assert_eq!(rel_row("c", "d", "s", &rel(RelKind::Foreign), 4, false, Some(&m)).meta.as_ref(), "foreign");
+        assert_eq!(rel_row("c", "d", "s", &rel(RelKind::Partitioned), 4, false, None).icon.map(|(i, _)| i), Some(Icon::Partition));
+    }
+
+    #[test]
+    fn object_rows() {
+        let f = Function {
+            oid: 7,
+            name: "order_total".into(),
+            kind: FuncKind::Function,
+            identity: "o bigint".into(),
+            arg_types: vec!["bigint".into(), "character varying".into()],
+            result: Some("SETOF s.orders".into()),
+            returns_set: true,
+        };
+        let r = function_row("c", "d", "s", &f, 4, true);
+        assert_eq!(r.meta.as_ref(), "(int8, varchar) → setof orders");
+        assert_eq!(r.id.as_ref(), "c:c/d:d/s:s/functions/f:7", "overloads differ by oid");
+        let p = Function { kind: FuncKind::Procedure, result: None, arg_types: vec!["bigint".into(), "real".into()], ..f };
+        assert_eq!(function_row("c", "d", "s", &p, 4, false).meta.as_ref(), "(bigint, real)", "other engines keep their names");
+        let p = Function { arg_types: vec![], ..p };
+        assert_eq!(function_row("c", "d", "s", &p, 4, true).meta.as_ref(), "()");
+        assert_eq!(fit_meta_text("(int8) → numeric", None, 40), None, "fits");
+        assert_eq!(fit_meta_text("(int8) → numeric", None, 10).as_deref(), Some("(int8) → …"));
+        assert_eq!(fit_meta_text("(int8) → numeric", None, 5).as_deref(), Some(""), "the name first");
+        assert_eq!(fit_meta_text("~48k · 12 MB", Some("~48k"), 6).as_deref(), Some("~48k"));
+        assert_eq!(clip("abcdef", 4), "abc…");
+        assert_eq!(clip("abc", 4), "abc");
+        let e = UserType { name: "mood".into(), kind: TypeKind::Enum, base: None, labels: vec!["a".into()] };
+        assert!(type_row("c", "d", "s", &e, 4, false, true).expandable, "an enum opens on its labels");
+        let d = UserType { name: "amount".into(), kind: TypeKind::Domain, base: Some("numeric(12,2)".into()), labels: vec![] };
+        let dr = type_row("c", "d", "s", &d, 4, false, true);
+        assert_eq!((dr.meta.as_ref(), dr.expandable), ("domain numeric(12,2)", false));
+        let t = Trigger { name: "audit".into(), table: "orders".into(), enabled: false, events: "after delete".into(), definition: None };
+        let tr = trigger_row("x".into(), "c", "d", "s", &t, 4, true);
+        assert_eq!((tr.meta.as_ref(), tr.meta_kind == Meta::Off, tr.tone == Tone::Muted), ("off · orders", true, true));
+        let on = Trigger { enabled: true, ..t };
+        assert_eq!(trigger_row("x".into(), "c", "d", "s", &on, 6, false).meta.as_ref(), "after delete");
+    }
+}

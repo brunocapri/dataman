@@ -1,6 +1,6 @@
 [package]
 name = "xtask"
-description = "Diskman's release tooling: the app icon, the update signing key and DMG signatures"
+description = "Dataman's release tooling: the app icon, the update signing key and DMG signatures"
 edition.workspace = true
 version.workspace = true
 license.workspace = true

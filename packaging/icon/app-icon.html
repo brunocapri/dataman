@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Diskman app icon</title>
+<title>Dataman app icon</title>
 <style>
   html, body { margin: 0; padding: 0; background: transparent; overflow: hidden; }
 </style>
@@ -10,7 +10,7 @@
 <body>
 <div id="icon"></div>
 <script>
-// Diskman's macOS app icon: the disc on a black squircle ("night", the default), or on a
+// Dataman's macOS app icon: the disc on a black squircle ("night", the default), or on a
 // white one (?variant=day: the Dock icon while the app is light).
 // A standalone port of the AppIcon and UiDisc design components (no template engine).
 // The size comes from the query (?size=1024, default 1024) and every value follows from it,
@@ -80,7 +80,7 @@
     k1, k2: r1((1 - k1) * 10) / 10,
     lift: (1 / (1 - k1 / 2)).toFixed(3)
   };
-  const fid = 'diskman-lofi-' + ds + '-' + Math.round(g * 100) + '-' + spin;
+  const fid = 'dataman-lofi-' + ds + '-' + Math.round(g * 100) + '-' + spin;
   const n = (v) => String(v); // String(-0) is "0", as the template prints it
 
   const disc =

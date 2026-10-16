@@ -1,14 +1,14 @@
--- The MySQL test database (`diskman_test`) of the live tests (`tests/live_mysql*.rs`) and of the
+-- The MySQL test database (`dataman_test`) of the live tests (`tests/live_mysql*.rs`) and of the
 -- `mysql-check` demo stage. Each run starts from scratch. Load it with the server's client:
 --
---   docker exec -i diskman-mysql mysql -uroot -p"$DISKMAN_MYSQL_PASSWORD" < seeds/mysql.sql
+--   docker exec -i dataman-mysql mysql -uroot -p"$DATAMAN_MYSQL_PASSWORD" < seeds/mysql.sql
 --
 -- Customers and orders with a foreign key, every type the grid decodes (ENUM, SET, JSON,
 -- DECIMAL, DATETIME, TIMESTAMP, TIME, YEAR, BIT, BLOB, unsigned BIGINT past i64, zero dates),
 -- a view, a trigger, a procedure and a function.
-DROP DATABASE IF EXISTS diskman_test;
-CREATE DATABASE diskman_test CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
-USE diskman_test;
+DROP DATABASE IF EXISTS dataman_test;
+CREATE DATABASE dataman_test CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+USE dataman_test;
 
 CREATE TABLE customer (
     id         INT AUTO_INCREMENT PRIMARY KEY,

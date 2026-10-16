@@ -1,17 +1,17 @@
-//! Diskman's release tooling (`cargo run --release -p xtask -- <command>`):
+//! Dataman's release tooling (`cargo run --release -p xtask -- <command>`):
 //!
 //! - `icon <svg> <out.icns>`: renders the icon at every size macOS wants and packs it with
 //!   `iconutil`.
 //! - `keygen`: a new ed25519 key for update signatures, written outside the repository (0600);
-//!   prints the public key for `DISKMAN_UPDATE_PUBKEY`.
+//!   prints the public key for `DATAMAN_UPDATE_PUBKEY`.
 //! - `pubkey`: prints the public key of the current private key.
 //! - `sign <dmg> --url <url> --version <v> [--notes <file>] [--min-macos <v>]`: signs the DMG and
 //!   prints the feed JSON.
 //! - `verify <feed.json> <dmg> --pubkey <b64> [--version <v>]`: checks a published feed and its
 //!   DMG as the app would (size, signature, version).
 //!
-//! The private key: `DISKMAN_UPDATE_PRIVATE_KEY` (its base64, for CI secrets), else the file
-//! at `DISKMAN_UPDATE_KEY`, else `~/.config/diskman-release/update_ed25519.key`.
+//! The private key: `DATAMAN_UPDATE_PRIVATE_KEY` (its base64, for CI secrets), else the file
+//! at `DATAMAN_UPDATE_KEY`, else `~/.config/dataman-release/update_ed25519.key`.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -50,7 +50,7 @@ fn run() -> Result<()> {
 fn icon(svg: &Path, out: &Path) -> Result<()> {
     let data = std::fs::read(svg).with_context(|| format!("reading {}", svg.display()))?;
     let tree = usvg::Tree::from_data(&data, &usvg::Options::default())?;
-    let set = std::env::temp_dir().join(format!("diskman-{}.iconset", std::process::id()));
+    let set = std::env::temp_dir().join(format!("dataman-{}.iconset", std::process::id()));
     let _ = std::fs::remove_dir_all(&set);
     std::fs::create_dir_all(&set)?;
     for base in [16u32, 32, 128, 256, 512] {
@@ -81,11 +81,11 @@ fn icon(svg: &Path, out: &Path) -> Result<()> {
 // Update signing.
 
 fn key_path() -> Result<PathBuf> {
-    if let Some(p) = std::env::var_os("DISKMAN_UPDATE_KEY").filter(|p| !p.is_empty()) {
+    if let Some(p) = std::env::var_os("DATAMAN_UPDATE_KEY").filter(|p| !p.is_empty()) {
         return Ok(PathBuf::from(p));
     }
     let home = std::env::var_os("HOME").context("HOME is not set")?;
-    Ok(PathBuf::from(home).join(".config/diskman-release/update_ed25519.key"))
+    Ok(PathBuf::from(home).join(".config/dataman-release/update_ed25519.key"))
 }
 
 fn inside_git(dir: &Path) -> bool {
@@ -102,7 +102,7 @@ fn keygen(force: bool) -> Result<()> {
     let dir = path.parent().context("key path has no folder")?;
     std::fs::create_dir_all(dir)?;
     if inside_git(dir) {
-        bail!("{} is inside a git repository: keep the private key out of it (DISKMAN_UPDATE_KEY)", dir.display());
+        bail!("{} is inside a git repository: keep the private key out of it (DATAMAN_UPDATE_KEY)", dir.display());
     }
     if path.exists() && !force {
         bail!("{} exists (--force replaces it; apps built with the old public key would refuse new updates)", path.display());
@@ -116,13 +116,13 @@ fn keygen(force: bool) -> Result<()> {
         writeln!(f, "{}", data_encoding::BASE64.encode(doc.as_ref()))?;
     }
     eprintln!("private key: {} (0600; back it up, never commit it)", path.display());
-    eprintln!("public key (build with DISKMAN_UPDATE_PUBKEY=…):");
+    eprintln!("public key (build with DATAMAN_UPDATE_PUBKEY=…):");
     println!("{}", public_key(&kp));
     Ok(())
 }
 
 fn load_key() -> Result<Ed25519KeyPair> {
-    let b64 = match std::env::var("DISKMAN_UPDATE_PRIVATE_KEY") {
+    let b64 = match std::env::var("DATAMAN_UPDATE_PRIVATE_KEY") {
         Ok(v) if !v.trim().is_empty() => v,
         _ => {
             let p = key_path()?;
@@ -166,11 +166,11 @@ fn sign(dmg: &str, args: &[String]) -> Result<()> {
     };
     let kp = load_key()?;
     // Signed with the key the apps trust, or refuse.
-    if let Ok(want) = std::env::var("DISKMAN_UPDATE_PUBKEY")
+    if let Ok(want) = std::env::var("DATAMAN_UPDATE_PUBKEY")
         && !want.trim().is_empty()
         && want.trim() != public_key(&kp)
     {
-        bail!("the private key does not match DISKMAN_UPDATE_PUBKEY");
+        bail!("the private key does not match DATAMAN_UPDATE_PUBKEY");
     }
     let bytes = std::fs::read(dmg).with_context(|| format!("reading {dmg}"))?;
     let sig = kp.sign(&bytes);

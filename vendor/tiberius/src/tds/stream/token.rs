@@ -144,7 +144,7 @@ pub enum ReceivedToken {
     #[allow(dead_code)]
     TabName(TokenTabName),
     EnvChange(TokenEnvChange),
-    // Surfaced by `QueryStream` as `QueryItem::Info` (Diskman's patch).
+    // Surfaced by `QueryStream` as `QueryItem::Info` (Dataman's patch).
     Info(TokenInfo),
     // Consumed for its `tds_version` during login (see `get_login_ack`); the
     // remaining fields are retained for debugging but not otherwise read.

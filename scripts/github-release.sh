@@ -9,11 +9,11 @@
 #   scripts/github-release.sh 0.2.1 ~/notes-0.2.1.txt     # the notes from a file
 #
 # Needs: a clean tree on main, up to date with origin; gh, logged in; the update key
-# (scripts/keygen.sh: ~/.config/diskman-release/update_ed25519.key, or DISKMAN_UPDATE_KEY /
-# DISKMAN_UPDATE_PRIVATE_KEY). The notes are never written into the repository.
+# (scripts/keygen.sh: ~/.config/dataman-release/update_ed25519.key, or DATAMAN_UPDATE_KEY /
+# DATAMAN_UPDATE_PRIVATE_KEY). The notes are never written into the repository.
 set -euo pipefail
 
-repo="brunocapri/diskman"
+repo="brunocapri/dataman"
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
 usage="usage: github-release.sh <version> [notes text or file]"
@@ -31,7 +31,7 @@ if [ -n "$notes_arg" ] && [ -f "$notes_arg" ]; then
 else
   notes="$notes_arg"
 fi
-[ -n "$notes" ] || notes="Diskman $version"
+[ -n "$notes" ] || notes="Dataman $version"
 
 # --- Preconditions -----------------------------------------------------------------------------
 command -v gh > /dev/null || die "gh is not installed"
@@ -43,7 +43,7 @@ git fetch --quiet --tags origin
 git rev-parse -q --verify "refs/tags/$tag" > /dev/null && die "the tag $tag exists"
 [ -z "$(git ls-remote --tags origin "refs/tags/$tag")" ] || die "the tag $tag exists on origin"
 gh release view "$tag" --repo "$repo" > /dev/null 2>&1 && die "the release $tag exists"
-for v in DISKMAN_UPDATE_FEED DISKMAN_UPDATE_PUBKEY DISKMAN_VERSION DISKMAN_BUILD DISKMAN_DIST DISKMAN_SKIP_BUILD; do
+for v in DATAMAN_UPDATE_FEED DATAMAN_UPDATE_PUBKEY DATAMAN_VERSION DATAMAN_BUILD DATAMAN_DIST DATAMAN_SKIP_BUILD; do
   [ -z "${!v:-}" ] || die "$v is set: a release builds with the defaults"
 done
 
@@ -52,8 +52,8 @@ newest="$(printf '%s\n%s\n' "$current" "$version" | sort -t. -k1,1n -k2,2n -k3,3
 [ "$newest" = "$version" ] || die "$version is older than the current $current"
 
 # The key that signs must be the one the app trusts (DEFAULT_PUBKEY in updates.rs).
-pubkey="$(grep -m1 'pub const DEFAULT_PUBKEY' crates/diskman/src/updates.rs | cut -d'"' -f2)"
-[ -n "$pubkey" ] || die "no DEFAULT_PUBKEY in crates/diskman/src/updates.rs"
+pubkey="$(grep -m1 'pub const DEFAULT_PUBKEY' crates/dataman/src/updates.rs | cut -d'"' -f2)"
+[ -n "$pubkey" ] || die "no DEFAULT_PUBKEY in crates/dataman/src/updates.rs"
 signing="$(cargo run --release --quiet -p xtask -- pubkey)" || die "no update key (scripts/keygen.sh)"
 [ "$signing" = "$pubkey" ] || die "the update key does not match the app's DEFAULT_PUBKEY"
 
@@ -89,13 +89,13 @@ fi
 # --- Build, DMG, signed feed -------------------------------------------------------------------
 base="https://github.com/$repo/releases/download/$tag"
 printf '%s\n' "$notes" > "$work/notes.txt"
-step "building Diskman $version"
+step "building Dataman $version"
 "$root/scripts/release.sh" "$base" "$work/notes.txt"
-dmg="$root/dist/Diskman-$version.dmg"
+dmg="$root/dist/Dataman-$version.dmg"
 feed="$root/dist/feed.json"
 [ -f "$dmg" ] || die "no $dmg"
 [ "$(plutil -extract version raw -o - "$feed")" = "$version" ] || die "dist/feed.json is not for $version"
-[ "$(plutil -extract url raw -o - "$feed")" = "$base/Diskman-$version.dmg" ] || die "dist/feed.json points elsewhere"
+[ "$(plutil -extract url raw -o - "$feed")" = "$base/Dataman-$version.dmg" ] || die "dist/feed.json points elsewhere"
 cargo run --release --quiet -p xtask -- verify "$feed" "$dmg" --pubkey "$pubkey" --version "$version" > /dev/null
 
 # --- Commit, tag, push -------------------------------------------------------------------------
@@ -105,13 +105,13 @@ if [ -n "$bumped" ]; then
   git commit --quiet -m "Release $version"
   committed=1
 fi
-git tag -a "$tag" -m "Diskman $version"
+git tag -a "$tag" -m "Dataman $version"
 git push --quiet origin main
 git push --quiet origin "$tag"
 
 # --- The release -------------------------------------------------------------------------------
 step "GitHub release $tag"
-gh release create "$tag" "$dmg" "$feed" --repo "$repo" --title "Diskman $version" --notes "$notes" --latest > /dev/null
+gh release create "$tag" "$dmg" "$feed" --repo "$repo" --title "Dataman $version" --notes "$notes" --latest > /dev/null
 
 # --- What the app will read --------------------------------------------------------------------
 step "checking releases/latest/download/feed.json"
@@ -127,14 +127,14 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
 done
 [ -n "$ok" ] || die "the latest feed does not offer $version yet ($latest)"
 url="$(plutil -extract url raw -o - "$work/feed.json")"
-curl -fsSL --proto '=https' -o "$work/Diskman.dmg" "$url"
-checked="$(cargo run --release --quiet -p xtask -- verify "$work/feed.json" "$work/Diskman.dmg" --pubkey "$pubkey" --version "$version")"
+curl -fsSL --proto '=https' -o "$work/Dataman.dmg" "$url"
+checked="$(cargo run --release --quiet -p xtask -- verify "$work/feed.json" "$work/Dataman.dmg" --pubkey "$pubkey" --version "$version")"
 
 page="$(gh release view "$tag" --repo "$repo" --json url --jq .url)"
 echo
-echo "Diskman $version released"
+echo "Dataman $version released"
 echo "  release  $page"
 echo "  commit   $(git rev-parse --short HEAD) (tag $tag)"
-echo "  assets   Diskman-$version.dmg ($(du -h "$dmg" | cut -f1 | tr -d ' ')), feed.json"
+echo "  assets   Dataman-$version.dmg ($(du -h "$dmg" | cut -f1 | tr -d ' ')), feed.json"
 echo "  feed     $latest"
 echo "  check    $checked (downloaded from GitHub)"

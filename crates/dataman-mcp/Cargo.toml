@@ -1,0 +1,30 @@
+[package]
+name = "dataman-mcp"
+description = "Dataman's MCP server: agents use Dataman's connections, with read-only defaults, limits and an audit log"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "dataman-mcp"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+dataman-core.workspace = true
+tokio = { workspace = true, features = ["io-std", "io-util"] }
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+chrono.workspace = true
+parking_lot.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+log = "0.4"
+# The official MCP SDK: server role over stdio; no macros (tools are a registry).
+rmcp = { version = "3.5.1", default-features = false, features = ["server", "transport-io"] }
+tokio-util = "0.7"
+futures-util.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

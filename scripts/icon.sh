@@ -5,14 +5,14 @@
 # Every size is rendered natively by a headless Chromium browser (never scaled down from the
 # 1024), so small sizes get the reduced grain and shake the source computes for them.
 #
-#   DISKMAN_CHROME      the browser binary (default: Google Chrome, Chromium, Brave or Edge)
-#   DISKMAN_ICON_WORK   keep the PNGs and the iconset in this folder (default: a temp dir, removed)
+#   DATAMAN_CHROME      the browser binary (default: Google Chrome, Chromium, Brave or Edge)
+#   DATAMAN_ICON_WORK   keep the PNGs and the iconset in this folder (default: a temp dir, removed)
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 html="$root/packaging/icon/app-icon.html"
 
-chrome="${DISKMAN_CHROME:-}"
+chrome="${DATAMAN_CHROME:-}"
 if [ -z "$chrome" ]; then
   for c in \
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
@@ -22,13 +22,13 @@ if [ -z "$chrome" ]; then
     if [ -x "$c" ]; then chrome="$c"; break; fi
   done
 fi
-[ -n "$chrome" ] && [ -x "$chrome" ] || { echo "icon: no Chromium-based browser (set DISKMAN_CHROME)" >&2; exit 1; }
+[ -n "$chrome" ] && [ -x "$chrome" ] || { echo "icon: no Chromium-based browser (set DATAMAN_CHROME)" >&2; exit 1; }
 
-if [ -n "${DISKMAN_ICON_WORK:-}" ]; then
-  work="$DISKMAN_ICON_WORK"
+if [ -n "${DATAMAN_ICON_WORK:-}" ]; then
+  work="$DATAMAN_ICON_WORK"
   mkdir -p "$work"
 else
-  work="$(mktemp -d "${TMPDIR:-/tmp}/diskman-icon.XXXXXX")"
+  work="$(mktemp -d "${TMPDIR:-/tmp}/dataman-icon.XXXXXX")"
   trap 'rm -rf "$work"' EXIT
 fi
 profile="$work/profile"

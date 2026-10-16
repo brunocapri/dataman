@@ -1,13 +1,13 @@
--- Diskman's PostgreSQL test data: the database the demo mode, the check stages, the benchmarks
+-- Dataman's PostgreSQL test data: the database the demo mode, the check stages, the benchmarks
 -- and the live tests connect to (connection `local`).
 --
---   docker run -d --name diskman-pg -p 55432:5432 -e POSTGRES_PASSWORD=diskman \
---       -e POSTGRES_DB=diskman postgres:18 postgres -c shared_buffers=512MB -c work_mem=64MB
---   PGPASSWORD=diskman psql -h 127.0.0.1 -p 55432 -U postgres -d diskman -f seeds/postgres.sql
+--   docker run -d --name dataman-pg -p 55432:5432 -e POSTGRES_PASSWORD=dataman \
+--       -e POSTGRES_DB=dataman postgres:18 postgres -c shared_buffers=512MB -c work_mem=64MB
+--   PGPASSWORD=dataman psql -h 127.0.0.1 -p 55432 -U postgres -d dataman -f seeds/postgres.sql
 --
 -- A shop: 100,000 customers, 50,000 products, 1,000,000 orders and about 3,000,000 order items
 -- (times are Unix seconds, money is in cents), a reporting schema with a view and a function,
--- and a second database, `diskman_bench`, with 1,000 tables in schema `bench` (the tree
+-- and a second database, `dataman_bench`, with 1,000 tables in schema `bench` (the tree
 -- benchmark). The data is the same on every run (fixed random seed). Takes about a minute.
 
 \set ON_ERROR_STOP on
@@ -109,8 +109,8 @@ LANGUAGE sql STABLE AS $$ SELECT count(*) FROM public.orders WHERE customer = cu
 VACUUM ANALYZE public.customer, public.product, public.orders, public.item;
 
 -- The tree benchmark's database: 1,000 tables in one schema.
-SELECT 'CREATE DATABASE diskman_bench' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'diskman_bench') \gexec
-\connect diskman_bench
+SELECT 'CREATE DATABASE dataman_bench' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'dataman_bench') \gexec
+\connect dataman_bench
 SET client_min_messages = warning;
 DROP SCHEMA IF EXISTS bench CASCADE;
 CREATE SCHEMA bench;

@@ -30,10 +30,10 @@ notarize-*.log
 .env
 .env.*
 
-# Screenshots and captures from the demo stages (DISKMAN_SHOT=...)
+# Screenshots and captures from the demo stages (DATAMAN_SHOT=...)
 /shots
 *.png
-!/crates/diskman/assets/**/*.png
+!/crates/dataman/assets/**/*.png
 
 # Crash reports, logs and test leftovers
 *.ips

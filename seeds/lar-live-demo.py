@@ -2,7 +2,7 @@
 
     python3 seeds/lar-live-demo.py > seed.sql && psql -h 127.0.0.1 -p 5490 -U lar -d lar -f seed.sql
 
-The `lar-live*` demo stages (`DISKMAN_BENCH_PG=127.0.0.1:5490:lar::lar`) SUBSCRIBE to
+The `lar-live*` demo stages (`DATAMAN_BENCH_PG=127.0.0.1:5490:lar::lar`) SUBSCRIBE to
 `demo_orders WHERE id >= 49190` and write rows from 49300 up (and 50000 up for
 `lar-live-burst`) while the capture runs; the stage deletes them again before it writes.
 """
