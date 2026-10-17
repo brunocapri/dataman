@@ -555,16 +555,53 @@ pub(crate) async fn execute(client: &Client, sql: &str) -> Result<Option<u64>, t
     }))
 }
 
-/// Runs a prepared statement (binary results, no parameters).
-pub(crate) async fn start(client: &Client, stmt: &Statement, columns: &[ColumnInfo]) -> Result<Rows, tokio_postgres::Error> {
+/// Runs a prepared statement (binary results, no parameters; text for the types that have no
+/// binary form, see [`needs_text`]).
+pub(crate) async fn start(client: &Client, stmt: &Statement, columns: &[ColumnInfo], sql: &str) -> Result<Rows, tokio_postgres::Error> {
+    if needs_text(stmt) {
+        let stream = client.simple_query_raw(sql).await?;
+        return Ok(Rows::Pg(PgRows::text(stream, columns)));
+    }
     let stream = client.query_raw(stmt, std::iter::empty::<&(dyn ToSql + Sync)>()).await?;
     Ok(Rows::Pg(PgRows::new(stream, stmt, columns)))
 }
 
+/// Extension types the grid decodes from their binary form (`pgtypes`).
+const BINARY_DECODED: &[&str] = &["vector", "halfvec", "sparsevec", "hstore", "ltree", "lquery", "ltxtquery", "citext"];
+
+/// Whether a column type cannot be had in binary: `aclitem` has no binary output function (the
+/// server fails the whole query), and an extension type the grid has no decoder for would show
+/// as hex. Arrays, ranges, domains and composites count through what they hold.
+fn sendless(ty: &Type) -> bool {
+    use tokio_postgres::types::Kind as K;
+    match ty.kind() {
+        K::Array(e) | K::Range(e) | K::Multirange(e) | K::Domain(e) => sendless(e),
+        K::Composite(fields) => fields.iter().any(|f| sendless(f.type_())),
+        K::Enum(_) | K::Pseudo => false,
+        // OIDs from 16384 up are created by users and extensions.
+        K::Simple => ty.name() == "aclitem" || (ty.oid() >= 16384 && !BINARY_DECODED.contains(&ty.name())),
+        _ => false,
+    }
+}
+
+/// Whether the statement's rows come through the simple (text) protocol instead of the binary
+/// one: some column is [`sendless`].
+pub(crate) fn needs_text(stmt: &Statement) -> bool {
+    stmt.columns().iter().any(|c| sendless(c.type_()))
+}
+
 pub(crate) fn column_infos(stmt: &Statement) -> Vec<ColumnInfo> {
+    let text = needs_text(stmt);
     stmt.columns()
         .iter()
-        .map(|c| ColumnInfo { name: c.name().to_string(), type_name: c.type_().name().to_string(), type_oid: c.type_().oid(), kind: Kind::of(c.type_()) })
+        .map(|c| {
+            let mut kind = Kind::of(c.type_());
+            // Text results are kept as text where parsing them would be guesswork (times).
+            if text && matches!(kind, Kind::Date | Kind::Time | Kind::Timestamp | Kind::TimestampTz) {
+                kind = Kind::Other;
+            }
+            ColumnInfo { name: c.name().to_string(), type_name: c.type_().name().to_string(), type_oid: c.type_().oid(), kind }
+        })
         .collect()
 }
 
@@ -838,52 +875,122 @@ async fn fetch_extended(
     rs.set_columns(column_infos(stmt));
     let cols = rs.columns().unwrap_or_default();
     let params: Vec<TextParam> = rs.params().iter().map(|p| TextParam(p.as_deref())).collect();
-    let stream = client.query_raw(stmt, params.iter().map(|p| p as &(dyn ToSql + Sync))).await?;
-    let mut rows = PgRows::new(stream, stmt, &cols);
+    // Values of types without a binary form come as text (never with parameters: they cannot be
+    // bound through the simple protocol).
+    let mut rows = if params.is_empty() && needs_text(stmt) {
+        rs.update_status(|s| s.text_mode = true);
+        PgRows::text(client.simple_query_raw(&rs.sql).await?, &cols)
+    } else {
+        let stream = client.query_raw(stmt, params.iter().map(|p| p as &(dyn ToSql + Sync))).await?;
+        PgRows::new(stream, stmt, &cols)
+    };
     super::pump(&mut rows, rs, &cols, started, on_pause).await
 }
 
-/// A statement's binary rows, decoded into the grid's chunks.
+/// A statement's rows, decoded into the grid's chunks: binary, or text for types without a
+/// binary form.
 pub(crate) struct PgRows {
-    stream: Pin<Box<tokio_postgres::RowStream>>,
+    src: PgSource,
     types: Vec<Type>,
     storage: Vec<Storage>,
+}
+
+enum PgSource {
+    Binary(Pin<Box<tokio_postgres::RowStream>>),
+    Text { stream: Pin<Box<tokio_postgres::SimpleQueryStream>>, affected: Option<u64> },
 }
 
 impl PgRows {
     pub(crate) fn new(stream: tokio_postgres::RowStream, stmt: &Statement, cols: &[ColumnInfo]) -> PgRows {
         PgRows {
-            stream: Box::pin(stream),
+            src: PgSource::Binary(Box::pin(stream)),
             types: stmt.columns().iter().map(|c| c.type_().clone()).collect(),
             storage: cols.iter().map(|c| c.kind.storage()).collect(),
         }
     }
+
+    /// Rows read as text: the numbers and booleans are parsed back, the rest is kept as written.
+    pub(crate) fn text(stream: tokio_postgres::SimpleQueryStream, cols: &[ColumnInfo]) -> PgRows {
+        PgRows { src: PgSource::Text { stream: Box::pin(stream), affected: None }, types: Vec::new(), storage: cols.iter().map(|c| c.kind.storage()).collect() }
+    }
+}
+
+fn push_text_row(b: &mut ChunkBuilder, row: &tokio_postgres::SimpleQueryRow, storage: &[Storage]) {
+    if row.len() != storage.len() {
+        return;
+    }
+    for (i, st) in storage.iter().enumerate() {
+        match row.get(i) {
+            None => b.push_null(i),
+            Some(v) => match st {
+                Storage::Text => b.push_text(i, v),
+                Storage::I64 => match v.parse::<i64>() {
+                    Ok(n) => b.push_i64(i, n),
+                    Err(_) => b.push_null(i),
+                },
+                Storage::F64 => match v.parse::<f64>() {
+                    Ok(n) => b.push_f64(i, n),
+                    Err(_) => b.push_null(i),
+                },
+                Storage::Bool => b.push_bool(i, matches!(v, "t" | "true")),
+            },
+        }
+    }
+    b.end_row();
 }
 
 impl RowSource for PgRows {
     type Error = tokio_postgres::Error;
 
     async fn next_into(&mut self, b: &mut ChunkBuilder) -> Result<bool, tokio_postgres::Error> {
-        match self.stream.as_mut().next().await {
-            Some(Ok(row)) => {
-                push_row(b, &row, &self.types, &self.storage);
-                Ok(true)
-            }
-            Some(Err(e)) => Err(e),
-            None => Ok(false),
+        match &mut self.src {
+            PgSource::Binary(stream) => match stream.as_mut().next().await {
+                Some(Ok(row)) => {
+                    push_row(b, &row, &self.types, &self.storage);
+                    Ok(true)
+                }
+                Some(Err(e)) => Err(e),
+                None => Ok(false),
+            },
+            PgSource::Text { stream, affected } => loop {
+                match stream.as_mut().next().await {
+                    Some(Ok(SimpleQueryMessage::Row(row))) => {
+                        push_text_row(b, &row, &self.storage);
+                        return Ok(true);
+                    }
+                    Some(Ok(SimpleQueryMessage::CommandComplete(n))) => *affected = Some(n),
+                    Some(Ok(_)) => {}
+                    Some(Err(e)) => return Err(e),
+                    None => return Ok(false),
+                }
+            },
         }
     }
 
     async fn skip(&mut self) -> Result<bool, tokio_postgres::Error> {
-        match self.stream.as_mut().next().await {
-            Some(Ok(_)) => Ok(true),
-            Some(Err(e)) => Err(e),
-            None => Ok(false),
+        match &mut self.src {
+            PgSource::Binary(stream) => match stream.as_mut().next().await {
+                Some(Ok(_)) => Ok(true),
+                Some(Err(e)) => Err(e),
+                None => Ok(false),
+            },
+            PgSource::Text { stream, affected } => loop {
+                match stream.as_mut().next().await {
+                    Some(Ok(SimpleQueryMessage::Row(_))) => return Ok(true),
+                    Some(Ok(SimpleQueryMessage::CommandComplete(n))) => *affected = Some(n),
+                    Some(Ok(_)) => {}
+                    Some(Err(e)) => return Err(e),
+                    None => return Ok(false),
+                }
+            },
         }
     }
 
     fn affected(&self) -> Option<u64> {
-        self.stream.rows_affected()
+        match &self.src {
+            PgSource::Binary(stream) => stream.rows_affected(),
+            PgSource::Text { affected, .. } => *affected,
+        }
     }
 }
 

@@ -708,6 +708,10 @@ async fn statement(client: &Client, sql: &str, params: &[Option<String>], mode: 
         }
         Err(e) => return Err(Stop::Server(error_info(&e))),
     };
+    // Types without a binary form (aclitem, extension types) come through the text protocol.
+    if params.is_empty() && crate::backend::pg::needs_text(&stmt) {
+        return simple(client, sql, verb, mode, more, limits, out).await.map_err(|e| Stop::Server(error_info(&e)));
+    }
     let cols = column_infos(&stmt);
     let types: Vec<Type> = stmt.columns().iter().map(|c| c.type_().clone()).collect();
     let storage: Vec<Storage> = cols.iter().map(|c| c.kind.storage()).collect();

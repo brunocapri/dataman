@@ -1018,10 +1018,10 @@ impl<'a> P<'a> {
             self.a.scopes[id].open = true;
             return i;
         }
-        let name_end = self.t[i - 1].end;
+        let name_end = self.t.get(i - 1).map_or(self.src.len(), |t| t.end);
         let k = self.alias(i, hi, id, Some(kind), start);
         if let Some(s) = self.a.scopes[id].sources.last_mut()
-            && s.name_range.start == self.t[start].start
+            && self.t.get(start).is_some_and(|t| s.name_range.start == t.start)
         {
             s.name_range.end = s.name_range.end.min(name_end);
         }

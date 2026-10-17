@@ -217,6 +217,9 @@ fn type_decoding_sweep() {
 fn extension_tables_and_catalog() {
     let e = env();
     let Some(c) = pg(&e) else { return };
+    if !has_extensions(&e, &c) {
+        return;
+    }
     exec_quiet(&e, &c, &["DROP SCHEMA IF EXISTS sweep_ext CASCADE"]);
     let ddl: &[&str] = &[
         "CREATE SCHEMA sweep_ext",
@@ -285,6 +288,9 @@ fn edit_extension_cells() {
     use dataman_core::edit::{CellValue, ChangeSet, EditTarget, Editability, Outcome};
     let e = env();
     let Some(c) = pg(&e) else { return };
+    if !has_extensions(&e, &c) {
+        return;
+    }
     exec_quiet(&e, &c, &["DROP SCHEMA IF EXISTS sweep_edit CASCADE"]);
     exec(
         &e,
@@ -363,6 +369,9 @@ fn run_ddl(e: &Env, c: &Arc<Connection>, script: &str) {
 fn catalog_and_ddl_round_trip() {
     let e = env();
     let Some(c) = pg(&e) else { return };
+    if !has_extensions(&e, &c) {
+        return;
+    }
     let (a, b) = ("sweep_ddl_a", "sweep_ddl_b");
     exec_quiet(&e, &c, &[&format!("DROP SCHEMA IF EXISTS {a} CASCADE"), &format!("DROP SCHEMA IF EXISTS {b} CASCADE")]);
     let setup = [
@@ -949,4 +958,327 @@ fn copy_to_stdout_shows_lines() {
     assert_eq!((snap.text(0, 0).as_deref(), snap.text(1, 0).as_deref()), (Some("a,b"), Some("1,\"x,y\"")));
     let rs = c.session(None).execute("COPY (SELECT 1) TO STDOUT BINARY");
     assert_eq!(finish(&e, &rs), Phase::Failed);
+}
+
+#[test]
+fn explain_many_plan_shapes() {
+    use dataman_core::explain::{self, Plan, Target};
+    let e = env();
+    let Some(c) = pg(&e) else { return };
+    if !has_extensions(&e, &c) {
+        return;
+    }
+    exec_quiet(&e, &c, &["DROP SCHEMA IF EXISTS sweep_x CASCADE"]);
+    exec(
+        &e,
+        &c,
+        &[
+            "CREATE SCHEMA sweep_x",
+            "SET search_path = sweep_x, public",
+            "CREATE TABLE sweep_x.d (id int PRIMARY KEY, v vector(3), body text, ts tsvector, j jsonb, g int, h hstore, lt ltree)",
+            "INSERT INTO sweep_x.d SELECT i, ('[' || i || ',' || (i % 7) || ',1]')::vector, 'word' || i % 50, to_tsvector('word' || i % 50), jsonb_build_object('k', i % 9), i % 10, hstore('a', i::text), text2ltree('a.b' || i % 5) FROM generate_series(1, 5000) i",
+            "CREATE INDEX ON sweep_x.d USING hnsw (v vector_l2_ops)",
+            "CREATE INDEX ON sweep_x.d USING gin (ts)",
+            "CREATE INDEX ON sweep_x.d USING gin (body gin_trgm_ops)",
+            "CREATE INDEX ON sweep_x.d USING gin (j)",
+            "CREATE INDEX ON sweep_x.d USING gist (lt)",
+            "CREATE TABLE sweep_x.p (id int, d date) PARTITION BY RANGE (d)",
+            "CREATE TABLE sweep_x.p1 PARTITION OF sweep_x.p FOR VALUES FROM ('2024-01-01') TO ('2025-01-01')",
+            "CREATE TABLE sweep_x.p2 PARTITION OF sweep_x.p FOR VALUES FROM ('2025-01-01') TO ('2026-01-01')",
+            "INSERT INTO sweep_x.p SELECT i, '2024-01-01'::date + i FROM generate_series(1, 600) i",
+            "ANALYZE sweep_x.d",
+            "ANALYZE sweep_x.p",
+        ],
+    );
+    let t = Target::of(&c.info);
+    let qs = [
+        "SELECT * FROM sweep_x.d ORDER BY v <-> '[3,1,1]' LIMIT 5",
+        "SELECT id FROM sweep_x.d WHERE ts @@ to_tsquery('word7')",
+        "SELECT id FROM sweep_x.d WHERE body % 'word7'",
+        "SELECT id FROM sweep_x.d WHERE j @> '{\"k\": 3}'",
+        "SELECT id FROM sweep_x.d WHERE lt <@ 'a.b1'",
+        "SELECT g, count(*), avg(id), rank() OVER (ORDER BY g) FROM sweep_x.d GROUP BY g",
+        "WITH x AS MATERIALIZED (SELECT * FROM sweep_x.d WHERE g = 1) SELECT * FROM x a JOIN x b USING (id)",
+        "SELECT * FROM sweep_x.p WHERE d < '2024-06-01'",
+        "SELECT * FROM sweep_x.p p JOIN sweep_x.d d ON d.id = p.id WHERE d.g = (SELECT max(g) FROM sweep_x.d)",
+        "SELECT * FROM sweep_x.d d, LATERAL (SELECT * FROM sweep_x.p WHERE p.id = d.id LIMIT 1) l",
+        "SELECT * FROM generate_series(1, 10) gs JOIN sweep_x.d ON d.id = gs",
+        "SELECT id, (SELECT count(*) FROM sweep_x.p WHERE p.id = d.id) FROM sweep_x.d d",
+        "SELECT * FROM sweep_x.d WHERE id IN (1, 2, 3) UNION ALL SELECT * FROM sweep_x.d WHERE id = 5",
+        "SELECT sum(d.id) FROM sweep_x.d d JOIN sweep_x.d e ON d.g = e.g",
+        "SELECT jsonb_path_query(j, '$.k') FROM sweep_x.d",
+        "SELECT * FROM sweep_x.d TABLESAMPLE SYSTEM (10)",
+        "SELECT 1",
+        "VALUES (1), (2)",
+        "INSERT INTO sweep_x.d (id, g) VALUES (99999, 1)",
+        "UPDATE sweep_x.d SET g = g + 1 WHERE id < 10",
+        "DELETE FROM sweep_x.d WHERE id > 4000",
+        "MERGE INTO sweep_x.d t USING (VALUES (1, 5)) s(id, g) ON t.id = s.id WHEN MATCHED THEN UPDATE SET g = s.g",
+        "WITH i AS (INSERT INTO sweep_x.p VALUES (1, '2024-02-02') RETURNING id) SELECT * FROM i",
+    ];
+    let s = c.session(None);
+    let before = query_text(&e, &c, "SELECT (SELECT count(*) FROM sweep_x.d) || '/' || (SELECT count(*) FROM sweep_x.p)");
+    let mut failures = Vec::new();
+    for q in qs {
+        for analyze in [false, true] {
+            let sql = explain::sql(q, analyze, t);
+            let rs = s.execute_opts(sql.clone(), Vec::new(), analyze);
+            if finish(&e, &rs) != Phase::Done {
+                failures.push(format!("RUN analyze={analyze} {q}: {:?}", rs.status().error.map(|e| e.message)));
+                continue;
+            }
+            let snap = rs.snapshot();
+            let cols: Vec<String> = snap.columns.iter().map(|c| c.name.clone()).collect();
+            let rows: Vec<Vec<Option<String>>> = (0..snap.rows()).map(|r| (0..cols.len()).map(|c| snap.text(r, c).map(|s| s.into_owned())).collect()).collect();
+            let p = Plan::parse(&Plan::source_of(&cols, &rows));
+            if p.nodes.is_empty() {
+                failures.push(format!("NO NODES analyze={analyze} {q}"));
+            }
+            if analyze && p.totals.execution_ms.is_none() {
+                failures.push(format!("NO EXEC TIME {q}"));
+            }
+        }
+    }
+    let after = query_text(&e, &c, "SELECT (SELECT count(*) FROM sweep_x.d) || '/' || (SELECT count(*) FROM sweep_x.p)");
+    if before != after {
+        failures.push(format!("EXPLAIN ANALYZE changed data: {before} -> {after}"));
+    }
+    exec_quiet(&e, &c, &["DROP SCHEMA IF EXISTS sweep_x CASCADE"]);
+    assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+}
+
+/// Every editor analysis at every cursor position of scripts typed partway: none may panic.
+#[test]
+fn editor_analyses_never_panic() {
+    use dataman_core::complete::{complete, definition_at, signature_help};
+    use dataman_core::sql::tokenize;
+    let e = env();
+    let Some(c) = pg(&e) else { return };
+    let db = c.database().to_string();
+    let _ = e.core.block_on(c.preload(&db));
+    let _ = e.core.block_on(c.catalog(&db));
+    let snap = c.schema.snapshot(&db);
+    let texts: &[&str] = &[
+        "SELECT é, 日本語, '😀', \"naïve col\" FROM t WHERE x = 'ü' -- コメント\n/* 😀 /* nested */ */ ORDER BY 1;",
+        "CREATE FUNCTION f(a int) RETURNS int LANGUAGE plpgsql AS $é$ BEGIN RETURN a; END $é$; SELECT f(1);",
+        "WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM r) SELECT * FROM r JOIN LATERAL (SELECT 1) x ON true WINDOW w AS (PARTITION BY n);",
+        "INSERT INTO t (a, b) VALUES (1, 'é') ON CONFLICT (a) DO UPDATE SET b = excluded.b RETURNING *;",
+        "MERGE INTO t USING s ON t.a = s.a WHEN MATCHED THEN UPDATE SET b = s.b WHEN NOT MATCHED THEN INSERT VALUES (s.a);",
+        "SELECT '[1,2]'::vector <-> '[3,4]', ARRAY[1,2][1], E'a\\'b', U&'\\0061', $1, $$x$$, x::int[], a->>'k', a#>>'{x}';",
+        "UPDATE t SET (a, b) = (SELECT 1, 2) FROM u WHERE EXISTS (SELECT 1) AND t.a IN (1, 2) FOR UPDATE;",
+        "DO $$ BEGIN PERFORM 1; EXCEPTION WHEN OTHERS THEN RAISE; END $$ LANGUAGE plpgsql; CALL p(1, y => 2);",
+    ];
+    let mut n = 0;
+    for text in texts {
+        let idx: Vec<usize> = text.char_indices().map(|(i, _)| i).chain([text.len()]).collect();
+        for &i in &idx {
+            // Cursor everywhere, prefixes (as typed), suffixes (as pasted).
+            let r = std::panic::catch_unwind(|| {
+                let _ = complete(text, i, &snap);
+                let toks = tokenize(text);
+                let _ = signature_help(text, &toks, i, &snap);
+                let _ = definition_at(text, i, &snap);
+                let _ = split::statement_at(text, i);
+                let pre = &text[..i];
+                let _ = lint(pre, &LintContext { schema: Some(&snap), ..Default::default() });
+                let _ = split::split(pre);
+                let suf = &text[i..];
+                let _ = lint(suf, &LintContext { schema: Some(&snap), ..Default::default() });
+                let _ = dataman_core::guard::classify(pre);
+                let _ = dataman_core::guard::agent_read_refusal(suf);
+                let _ = dataman_core::guard::agent_write_class(pre, dataman_core::sql::Dialect::Postgres);
+                let _ = dataman_core::params::detect(pre);
+            });
+            if r.is_err() {
+                panic!("panicked at cursor {i} of {text:?}");
+            }
+            n += 1;
+        }
+    }
+    eprintln!("{n} positions");
+}
+
+/// Mutated (broken) scripts through the lexer, splitter, lint, completion and guards.
+#[test]
+fn mutated_scripts_never_panic() {
+    use dataman_core::complete::{complete, definition_at, signature_help};
+    use dataman_core::sql::tokenize;
+    let e = env();
+    let Some(c) = pg(&e) else { return };
+    let db = c.database().to_string();
+    let _ = e.core.block_on(c.preload(&db));
+    let snap = c.schema.snapshot(&db);
+    let seeds: &[&str] = &[
+        "WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM r WHERE n < 3) SELECT n, (SELECT max(n) FROM r) FROM r JOIN LATERAL (SELECT 1 AS q) x ON true WINDOW w AS (PARTITION BY n ORDER BY n ROWS BETWEEN 1 PRECEDING AND CURRENT ROW);",
+        "INSERT INTO emp (name, boss) SELECT e.name, b.id FROM emp e LEFT JOIN emp b ON b.id = e.boss ON CONFLICT (id) DO UPDATE SET name = excluded.name WHERE emp.id > 0 RETURNING emp.*;",
+        "CREATE FUNCTION f(a int DEFAULT 1) RETURNS TABLE (x int) LANGUAGE sql BEGIN ATOMIC SELECT CASE WHEN a > 0 THEN a END; SELECT 2; END; SELECT f();",
+        "MERGE INTO t USING (SELECT * FROM s) s ON t.a = s.a WHEN MATCHED AND s.b THEN DELETE WHEN NOT MATCHED THEN INSERT (a) VALUES (s.a) RETURNING merge_action();",
+        "DO $x$ DECLARE r record; BEGIN FOR r IN SELECT * FROM pg_class LOOP RAISE NOTICE '%', r.relname; END LOOP; END $x$; SELECT $1::int, E'a\\'b', U&'\\0041', B'101', X'1F', 'it''s', \"q\"\"q\";",
+        "UPDATE t SET a = a + 1, (b, c) = (SELECT 1, 2) FROM u JOIN v USING (id) WHERE t.id = u.id AND EXISTS (SELECT 1 FROM w WHERE w.x = t.x) RETURNING a;",
+        "SELECT a::int[], b->'k'->>0, c#>'{x,y}', d @> '{}', e ? 'k', f && g, ARRAY[1,2][1], (h).x, i[1:2], 'a' || 'b' FROM t TABLESAMPLE SYSTEM (1) FOR UPDATE OF t SKIP LOCKED;",
+        "ALTER TABLE ONLY t ADD CONSTRAINT c CHECK (a > 0) NOT VALID, ALTER COLUMN b SET DEFAULT now(), DROP COLUMN IF EXISTS z CASCADE; COMMENT ON COLUMN t.a IS 'x';",
+    ];
+    let mut state = 0x2545F4914F6CDD1Du64;
+    let mut rnd = move |n: usize| {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        (state % n.max(1) as u64) as usize
+    };
+    let junk = ["(", ")", "'", "\"", "$$", "/*", "*/", "--", "é", "😀", ";", "$1", "E'", "U&'", "::", "[", "]", ",", ".", "*"];
+    let mut n = 0;
+    for seed in seeds {
+        for _ in 0..1500 {
+            let mut chars: Vec<char> = seed.chars().collect();
+            for _ in 0..1 + rnd(3) {
+                let at = rnd(chars.len() + 1);
+                match rnd(3) {
+                    0 => {
+                        let len = rnd(8).min(chars.len() - at.min(chars.len()));
+                        chars.drain(at.min(chars.len())..at.min(chars.len()) + len);
+                    }
+                    1 => {
+                        let j = junk[rnd(junk.len())];
+                        for (k, ch) in j.chars().enumerate() {
+                            chars.insert((at + k).min(chars.len()), ch);
+                        }
+                    }
+                    _ => chars.truncate(at),
+                }
+            }
+            let text: String = chars.into_iter().collect();
+            let cur = text.char_indices().map(|(i, _)| i).nth(rnd(text.chars().count() + 1)).unwrap_or(text.len());
+            let r = std::panic::catch_unwind(|| {
+                let toks = tokenize(&text);
+                let _ = complete(&text, cur, &snap);
+                let _ = signature_help(&text, &toks, cur, &snap);
+                let _ = definition_at(&text, cur, &snap);
+                let _ = split::statement_at(&text, cur);
+                let _ = lint(&text, &LintContext { schema: Some(&snap), ..Default::default() });
+                let _ = dataman_core::guard::classify(&text);
+                let _ = dataman_core::guard::agent_read_refusal(&text);
+                let _ = dataman_core::guard::agent_write_class(&text, dataman_core::sql::Dialect::Postgres);
+                let _ = dataman_core::guard::agent_preview(&text, dataman_core::sql::Dialect::Postgres);
+                let _ = dataman_core::params::detect(&text);
+                let _ = dataman_core::sql::first_table(&text);
+                let _ = dataman_core::sql::statement_verb(&text);
+            });
+            if r.is_err() {
+                panic!("panicked on {text:?} cursor {cur}");
+            }
+            n += 1;
+        }
+    }
+    eprintln!("{n} mutations");
+}
+
+/// Types without a binary output function (aclitem, isn, cube…) must still show.
+#[test]
+fn types_without_binary_output() {
+    let e = env();
+    let Some(c) = pg(&e) else { return };
+    exec_quiet(&e, &c, &["CREATE EXTENSION IF NOT EXISTS cube", "CREATE EXTENSION IF NOT EXISTS isn", "CREATE EXTENSION IF NOT EXISTS seg"]);
+    let s = c.session(None);
+    let mut bad = Vec::new();
+    for q in [
+        "SELECT * FROM pg_class LIMIT 5",
+        "SELECT * FROM pg_namespace",
+        "SELECT * FROM pg_database",
+        "SELECT relacl FROM pg_class WHERE relacl IS NOT NULL LIMIT 1",
+        "SELECT '=r/postgres'::aclitem",
+        "SELECT * FROM pg_proc LIMIT 3",
+        "SELECT * FROM pg_attribute LIMIT 3",
+        "SELECT * FROM pg_stats LIMIT 3",
+        "SELECT * FROM pg_settings LIMIT 3",
+        "SELECT * FROM pg_stat_activity",
+        "SELECT * FROM pg_roles",
+        "SELECT * FROM pg_index LIMIT 3",
+        "SELECT * FROM pg_type LIMIT 3",
+        "SELECT * FROM pg_constraint LIMIT 3",
+        "SELECT * FROM pg_extension",
+        "SELECT * FROM pg_depend LIMIT 3",
+        "SELECT * FROM pg_trigger LIMIT 3",
+        "SELECT * FROM pg_user_mappings",
+        "SELECT * FROM pg_locks",
+        "SELECT * FROM pg_prepared_xacts",
+        "SELECT * FROM pg_replication_slots",
+        "SELECT * FROM pg_stat_all_tables LIMIT 3",
+        "SELECT * FROM information_schema.tables LIMIT 3",
+        "SELECT * FROM information_schema.columns LIMIT 3",
+        "SELECT * FROM information_schema.routines LIMIT 3",
+        "SELECT '(1,2),(3,4)'::cube",
+        "SELECT '0-306-40615-2'::isbn",
+        "SELECT '1 .. 2'::seg",
+        "SELECT ARRAY['(1,2)'::cube]",
+        "SELECT ROW('(1,2)'::cube, 1)",
+        "SELECT pg_get_keywords() LIMIT 1",
+        "SELECT * FROM pg_get_keywords() LIMIT 3",
+        "SELECT * FROM pg_timezone_names LIMIT 3",
+        "SELECT * FROM pg_available_extensions LIMIT 3",
+        "SELECT * FROM pg_hba_file_rules",
+        "SELECT * FROM pg_ls_waldir() LIMIT 1",
+        "SELECT '1'::regclass::oid, (SELECT array_agg(c) FROM pg_class c LIMIT 1)",
+    ] {
+        let rs = s.execute(q);
+        let ph = finish(&e, &rs);
+        if ph != Phase::Done {
+            bad.push(format!("{q}: {:?}", rs.status().error.map(|e| e.message)));
+            continue;
+        }
+        let snap = rs.snapshot();
+        for col in 0..snap.columns.len() {
+            for row in 0..snap.rows().min(3) {
+                if let Some(t) = snap.text(row, col)
+                    && t.starts_with("\\x")
+                    && snap.columns[col].type_name != "bytea"
+                {
+                    bad.push(format!("{q}: column {} ({}) shows {t:.40}", snap.columns[col].name, snap.columns[col].type_name));
+                    break;
+                }
+            }
+        }
+    }
+    assert!(bad.is_empty(), "\n{}", bad.join("\n"));
+}
+
+/// The same rows through every reader: the grid, the bounded read of the agents, the export.
+#[test]
+fn sendless_types_in_every_reader() {
+    use dataman_core::bounded::{Limits, Mode};
+    use dataman_core::export::{ExportFormat, ExportOptions};
+    let e = env();
+    let Some(c) = pg(&e) else { return };
+    let q = "SELECT oid, relname, relpages, relkind, relacl, reltuples FROM pg_class WHERE relacl IS NOT NULL AND relname = 'pg_class'";
+    let rs = query(&e, &c, q);
+    assert!(rs.status().text_mode);
+    let snap = rs.snapshot();
+    assert_eq!(snap.rows(), 1);
+    assert_eq!(snap.text(0, 1).as_deref(), Some("pg_class"));
+    assert!(snap.text(0, 4).unwrap().starts_with("{postgres=arwdDxtm/postgres"), "{:?}", snap.text(0, 4));
+    // Numbers stay numbers in the grid.
+    assert_eq!(rs.columns().unwrap()[0].kind, dataman_core::value::Kind::Int);
+    assert!(matches!(snap.cell(0, 0), dataman_core::result::Cell::Int(1259)));
+    // Agents.
+    let out = e.core.block_on(c.bounded(None, q, vec![], Mode::Read, Limits::default(), std::future::pending())).unwrap();
+    assert_eq!(out.rows.len(), 1);
+    assert!(out.rows[0][4].to_string().contains("postgres=arwdDxtm/postgres"), "{:?}", out.rows[0]);
+    // Export.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("o.csv");
+    let x = c.export_query(None, q, &path, ExportOptions::new(ExportFormat::Csv), None);
+    assert_eq!(e.core.block_on(x.task).unwrap().rows, 1);
+    assert!(std::fs::read_to_string(&path).unwrap().contains("postgres=arwdDxtm/postgres"));
+    // And the table in the explorer's data view.
+    let rs = query(&e, &c, "SELECT * FROM pg_namespace");
+    assert!(rs.snapshot().rows() >= 3);
+}
+
+
+/// The extension tests need the pgvector server (`DATAMAN_PG=127.0.0.1:55433`).
+fn has_extensions(e: &Env, c: &Arc<Connection>) -> bool {
+    let ok = query_text(e, c, "SELECT count(*) FROM pg_extension WHERE extname IN ('vector', 'hstore', 'ltree', 'citext', 'pg_trgm')") == "5";
+    if !ok {
+        eprintln!("skipping: the server lacks pgvector, hstore, ltree, citext or pg_trgm");
+    }
+    ok
 }

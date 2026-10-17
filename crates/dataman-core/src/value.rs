@@ -228,6 +228,8 @@ fn format_value(ty: &Type, raw: &[u8], out: &mut String) -> Result<(), BoxErr> {
         }
         Type::VOID => {}
         Type::INT2_VECTOR | Type::OID_VECTOR => format_array(ty, raw, out, " ", false)?,
+        // pg_stats' value lists: an array of whatever the column holds.
+        Type::ANYARRAY => format_array(ty, raw, out, ",", true)?,
         _ => match ty.kind() {
             PgKind::Array(_) => format_array(ty, raw, out, ",", true)?,
             PgKind::Enum(_) => out.push_str(std::str::from_utf8(raw)?),
@@ -238,7 +240,7 @@ fn format_value(ty: &Type, raw: &[u8], out: &mut String) -> Result<(), BoxErr> {
                 Some(r) => r?,
                 // Text-like unknown types (citext…) usually send UTF-8; anything else is hex.
                 None => match std::str::from_utf8(raw) {
-                    Ok(s) if s.chars().all(|c| !c.is_control() || c == '\n' || c == '\t') => out.push_str(s),
+                    Ok(s) if s.chars().all(|c| !c.is_control() || matches!(c, '\n' | '\t' | '\r')) => out.push_str(s),
                     _ => return Err("unknown".into()),
                 },
             },
@@ -785,6 +787,40 @@ pub fn cmp_natural(a: &str, b: &str) -> std::cmp::Ordering {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dates_bc_and_far() {
+        let s = |f: &dyn Fn(&mut String)| {
+            let mut o = String::new();
+            f(&mut o);
+            o
+        };
+        // 0044-03-15 BC: the suffix goes after the time, as PostgreSQL prints it.
+        let days = (days_from_civil(-43, 3, 15) - 10_957) as i32;
+        assert_eq!(s(&|o| format_date(days, o)), "0044-03-15 BC");
+        let micros = days as i64 * 86_400_000_000 + 10 * 3_600_000_000;
+        assert_eq!(s(&|o| format_timestamp(micros, o)), "0044-03-15 10:00:00 BC");
+        assert_eq!(s(&|o| format_date(i32::MAX, o)), "infinity");
+        assert_eq!(s(&|o| format_date(0, o)), "2000-01-01");
+        assert_eq!(s(&|o| format_timestamp(-1, o)), "1999-12-31 23:59:59.999999");
+        // Past what chrono can hold.
+        assert_eq!(s(&|o| format_date(106_751_982, o)), "294276-12-31");
+    }
+
+    #[test]
+    fn interval_words() {
+        let s = |m, d, us| {
+            let mut o = String::new();
+            format_interval(m, d, us, &mut o);
+            o
+        };
+        assert_eq!(s(0, -1, 0), "-1 days");
+        assert_eq!(s(0, 1, 0), "1 day");
+        assert_eq!(s(-1, 0, 0), "-1 mons");
+        assert_eq!(s(14, 2, 3_723_000_000), "1 year 2 mons 2 days 01:02:03");
+        assert_eq!(s(i32::MAX, i32::MAX, i64::MAX), "infinity");
+        assert_eq!(s(i32::MIN, i32::MIN, i64::MIN), "-infinity");
+    }
 
     #[test]
     fn natural_order() {

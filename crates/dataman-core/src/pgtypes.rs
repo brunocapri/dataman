@@ -561,3 +561,85 @@ fn sparsevec(raw: &[u8], out: &mut String) -> Result<(), BoxErr> {
     let _ = write!(out, "}}/{dim}");
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio_postgres::types::Kind;
+
+    fn show(ty: &Type, raw: &[u8]) -> String {
+        let mut s = String::new();
+        format_special(ty, raw, &mut s).expect("a special type").expect("decodes");
+        s
+    }
+
+    fn ext(name: &str) -> Type {
+        Type::new(name.into(), 99_999, Kind::Simple, "public".into())
+    }
+
+    fn hex(s: &str) -> Vec<u8> {
+        (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
+    }
+
+    #[test]
+    fn ranges() {
+        assert_eq!(show(&Type::INT4_RANGE, &hex("0200000004000000010000000400000005")), "[1,5)");
+        assert_eq!(show(&Type::INT4_RANGE, &hex("01")), "empty");
+        assert_eq!(show(&Type::NUM_RANGE, &hex("18")), "(,)");
+        // A timestamp bound has a space: quoted.
+        assert_eq!(show(&Type::TS_RANGE, &hex("02000000080002b0d5d4e94000000000087fffffffffffffff")), "[\"2024-01-01 00:00:00\",infinity)");
+        assert_eq!(show(&Type::INT4MULTI_RANGE, &hex("00000002000000110200000004000000010000000400000003000000110200000004000000050000000400000009")), "{[1,3),[5,9)}");
+        assert_eq!(show(&Type::INT4MULTI_RANGE, &hex("00000000")), "{}");
+    }
+
+    #[test]
+    fn bits_geometry_and_ids() {
+        assert_eq!(show(&Type::VARBIT, &hex("00000005a8")), "10101");
+        assert_eq!(show(&Type::VARBIT, &hex("00000000")), "");
+        assert_eq!(show(&Type::POINT, &hex("3ff00000000000004000000000000000")), "(1,2)");
+        assert_eq!(show(&Type::BOX, &hex("3ff00000000000003ff000000000000000000000000000000000000000000000")), "(1,1),(0,0)");
+        assert_eq!(show(&Type::PATH, &hex("0100000003000000000000000000000000000000003ff00000000000003ff000000000000040000000000000000000000000000000")), "((0,0),(1,1),(2,0))");
+        assert_eq!(show(&Type::CIRCLE, &hex("3ff000000000000040000000000000004008000000000000")), "<(1,2),3>");
+        assert_eq!(show(&Type::MACADDR8, &hex("08002b0102030405")), "08:00:2b:01:02:03:04:05");
+        assert_eq!(show(&Type::TID, &hex("000000010002")), "(1,2)");
+        assert_eq!(show(&Type::JSONPATH, &hex("01242e61")), "$.a");
+        assert_eq!(show(&Type::REGTYPE, &hex("00000017")), "integer");
+    }
+
+    #[test]
+    fn text_search() {
+        assert_eq!(show(&Type::TS_VECTOR, &hex("00000001616263000001c001")), "'abc':1A");
+        assert_eq!(show(&Type::TS_VECTOR, &hex("0000000261000002c001800262000000")), "'a':1A,2B 'b'");
+        assert_eq!(show(&Type::TSQUERY, &hex("000000030202010000666f7800010000717569636b00")), "'quick' & 'fox'");
+        // quick <-> fox & !dog
+        assert_eq!(
+            show(&Type::TSQUERY, &hex("0000000602020201010000646f670002040001010000666f7800010000717569636b00")),
+            "'quick' <-> 'fox' & !'dog'"
+        );
+        // !a | b <-> c
+        assert_eq!(show(&Type::TSQUERY, &hex("000000060203020400010100006300010000620002010100006100")), "!'a' | 'b' <-> 'c'");
+    }
+
+    #[test]
+    fn extension_types() {
+        assert_eq!(show(&ext("vector"), &hex("000300003f8000004000000040400000")), "[1,2,3]");
+        assert_eq!(show(&ext("vector"), &hex("000300003fc00000c000000037fba882")), "[1.5,-2,3e-05]");
+        assert_eq!(show(&ext("halfvec"), &hex("000300003c0040004200")), "[1,2,3]");
+        assert_eq!(show(&ext("sparsevec"), &hex("00000005000000020000000000000000000000023fc0000040000000")), "{1:1.5,3:2}/5");
+        assert_eq!(show(&ext("hstore"), &hex("00000003000000016100000001310000000162ffffffff0000000363206400000003782079")), "\"a\"=>\"1\", \"b\"=>NULL, \"c d\"=>\"x y\"");
+        assert_eq!(show(&ext("ltree"), &hex("01612e622e63")), "a.b.c");
+        // A short value is an error (the hex fallback), never a panic.
+        let mut s = String::new();
+        assert!(format_special(&ext("vector"), &hex("0003"), &mut s).unwrap().is_err());
+        assert!(format_special(&ext("unknown_ext"), &[1], &mut s).is_none());
+    }
+
+    #[test]
+    fn half_floats() {
+        assert_eq!(half_to_f32(0x3c00), 1.0);
+        assert_eq!(half_to_f32(0xc000), -2.0);
+        assert_eq!(half_to_f32(0x7c00), f32::INFINITY);
+        assert!(half_to_f32(0x7e00).is_nan());
+        assert_eq!(half_to_f32(0x0001), 2f32.powi(-24));
+    }
+}
