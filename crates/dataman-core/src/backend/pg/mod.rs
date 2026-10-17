@@ -648,6 +648,34 @@ pub(crate) async fn run(
     aborted: &(dyn Fn() -> bool + Sync),
 ) -> Ran {
     let executing = || rs.executing.store(true, std::sync::atomic::Ordering::Release);
+    // COPY over the client's own channel: the extended protocol cannot carry it (the server's
+    // reply kills the connection), so it never gets there.
+    match copy_channel(&rs.sql) {
+        Some(Copy::Out) if !aborted() => {
+            executing();
+            return match fetch_copy_out(client, rs, started, on_pause).await {
+                Ok(n) => Ran::Done(n),
+                Err(e) if e.code() == Some(&tokio_postgres::error::SqlState::QUERY_CANCELED) => Ran::Cancelled,
+                Err(e) => Ran::Failed(error_info(&e)),
+            };
+        }
+        Some(Copy::Out) => return Ran::NeverRan { settle: false },
+        Some(Copy::In) => {
+            return Ran::Failed(ErrorInfo {
+                message: "COPY … FROM STDIN needs data the editor cannot send".into(),
+                hint: Some("Use the table's Import, or INSERT; COPY … FROM 'file' reads a file on the server".into()),
+                ..Default::default()
+            });
+        }
+        Some(Copy::Binary) => {
+            return Ran::Failed(ErrorInfo {
+                message: "COPY … STDOUT in binary format cannot be shown".into(),
+                hint: Some("Run a SELECT and export its result".into()),
+                ..Default::default()
+            });
+        }
+        None => {}
+    }
     let r = match client.prepare(&rs.sql).await {
         Ok(_) if aborted() => return Ran::NeverRan { settle: false },
         Ok(stmt) => {
@@ -677,6 +705,120 @@ pub(crate) async fn run(
             let info = error_info(&e);
             if info.code.as_deref() == Some("57014") { Ran::Cancelled } else { Ran::Failed(info) }
         }
+    }
+}
+
+/// How a `COPY` statement talks to the client.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Copy {
+    /// `COPY … TO STDOUT`: text or CSV lines.
+    Out,
+    /// `COPY … FROM STDIN`.
+    In,
+    /// `COPY … TO STDOUT` in binary format.
+    Binary,
+}
+
+/// Whether the statement is a `COPY` that sends or expects data over the connection.
+fn copy_channel(sql: &str) -> Option<Copy> {
+    let toks: Vec<_> = crate::sql::tokenize(sql).into_iter().filter(|t| !t.kind.is_trivia()).collect();
+    let word = |i: usize, w: &str| toks.get(i).is_some_and(|t| matches!(t.kind, crate::sql::TokenKind::Keyword | crate::sql::TokenKind::Ident) && t.text(sql).eq_ignore_ascii_case(w));
+    if !word(0, "COPY") {
+        return None;
+    }
+    let end = toks.iter().position(|t| t.text(sql) == ";").unwrap_or(toks.len());
+    let stdout = (1..end).any(|i| word(i, "STDOUT"));
+    let stdin = (1..end).any(|i| word(i, "STDIN"));
+    if stdout && (1..end).any(|i| word(i, "BINARY")) {
+        Some(Copy::Binary)
+    } else if stdout {
+        Some(Copy::Out)
+    } else if stdin {
+        Some(Copy::In)
+    } else {
+        None
+    }
+}
+
+/// `COPY … TO STDOUT` as a one-column result: a row for each line the server sends.
+async fn fetch_copy_out(
+    client: &Client,
+    rs: &Arc<ResultSet>,
+    started: Instant,
+    on_pause: &(dyn Fn() + Sync),
+) -> Result<Option<u64>, tokio_postgres::Error> {
+    let cols = vec![ColumnInfo { name: "copy".into(), type_name: "text".into(), type_oid: 25, kind: Kind::Text }];
+    rs.set_columns(cols.clone());
+    let stream = client.copy_out(rs.sql.as_str()).await?;
+    let mut rows = CopyRows { stream: Box::pin(stream), partial: Vec::new(), lines: std::collections::VecDeque::new(), ended: false };
+    super::pump(&mut rows, rs, &cols, started, on_pause).await
+}
+
+/// The lines of a `COPY … TO STDOUT`, cut from the server's chunks.
+struct CopyRows {
+    stream: Pin<Box<tokio_postgres::CopyOutStream>>,
+    /// The bytes of a line whose end has not come yet.
+    partial: Vec<u8>,
+    lines: std::collections::VecDeque<String>,
+    ended: bool,
+}
+
+impl CopyRows {
+    /// Takes the next line, reading chunks until there is one (`None` at the end).
+    async fn line(&mut self) -> Result<Option<String>, tokio_postgres::Error> {
+        loop {
+            if let Some(l) = self.lines.pop_front() {
+                return Ok(Some(l));
+            }
+            if self.ended {
+                return Ok(None);
+            }
+            match self.stream.as_mut().next().await {
+                Some(chunk) => {
+                    for &b in chunk?.iter() {
+                        if b == b'\n' {
+                            let mut line = std::mem::take(&mut self.partial);
+                            if line.last() == Some(&b'\r') {
+                                line.pop();
+                            }
+                            self.lines.push_back(String::from_utf8_lossy(&line).into_owned());
+                        } else {
+                            self.partial.push(b);
+                        }
+                    }
+                }
+                None => {
+                    self.ended = true;
+                    if !self.partial.is_empty() {
+                        let line = std::mem::take(&mut self.partial);
+                        self.lines.push_back(String::from_utf8_lossy(&line).into_owned());
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl RowSource for CopyRows {
+    type Error = tokio_postgres::Error;
+
+    async fn next_into(&mut self, b: &mut ChunkBuilder) -> Result<bool, tokio_postgres::Error> {
+        match self.line().await? {
+            Some(l) => {
+                b.push_text(0, &l);
+                b.end_row();
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    async fn skip(&mut self) -> Result<bool, tokio_postgres::Error> {
+        Ok(self.line().await?.is_some())
+    }
+
+    fn affected(&self) -> Option<u64> {
+        None
     }
 }
 

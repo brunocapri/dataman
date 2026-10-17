@@ -718,3 +718,235 @@ fn lint_quiet_on_valid_scripts() {
     exec_quiet(&e, &c, &["DROP TABLE IF EXISTS sweep_k1 CASCADE"]);
     assert!(failures.is_empty(), "\n{}", failures.join("\n"));
 }
+
+/// The read-only guards: nothing that writes passes as a read; harmless text is not refused.
+#[test]
+fn guards_on_postgres_statements() {
+    use dataman_core::guard;
+    let writes: &[&str] = &[
+        "WITH d AS (DELETE FROM t RETURNING *) SELECT * FROM d",
+        "with d as (insert into t values (1) returning 1) select * from d",
+        "WITH u AS (UPDATE t SET a = 1 RETURNING a) SELECT a FROM u",
+        "SELECT (WITH d AS (DELETE FROM t RETURNING 1) SELECT count(*) FROM d)",
+        "SELECT * FROM t WHERE a IN (WITH i AS (INSERT INTO t VALUES (1) RETURNING a) SELECT a FROM i)",
+        "SELECT * FROM (WITH d AS (DELETE FROM t RETURNING *) SELECT * FROM d) x",
+        "WITH m AS (MERGE INTO t USING s ON t.a = s.a WHEN MATCHED THEN DELETE RETURNING t.*) SELECT * FROM m",
+        "SELECT * INTO newt FROM t",
+        "SELECT a INTO TEMP TABLE newt FROM t",
+        "EXPLAIN ANALYZE DELETE FROM t",
+        "EXPLAIN (ANALYZE, BUFFERS) INSERT INTO t VALUES (1)",
+        "EXPLAIN ANALYZE WITH d AS (DELETE FROM t RETURNING *) SELECT * FROM d",
+        "COPY t TO PROGRAM 'rm -rf /'",
+        "COPY t FROM STDIN",
+        "DO $$ BEGIN DELETE FROM t; END $$",
+        "CALL p()",
+        "PREPARE x AS DELETE FROM t",
+        "EXECUTE x",
+        "REFRESH MATERIALIZED VIEW mv",
+        "CREATE TEMP TABLE x (a int)",
+        "SET ROLE postgres",
+        "VACUUM t",
+        "LOCK TABLE t",
+        "NOTIFY ch",
+        "TRUNCATE t",
+        "/* c */ DELETE FROM t",
+        "-- c\nDELETE FROM t",
+        "dElEtE\nFROM t",
+        "  \n\t DROP TABLE t",
+        "MERGE INTO t USING s ON t.a = s.a WHEN MATCHED THEN DELETE",
+        "SELECT pg_terminate_backend(1)",
+        "SELECT pg_catalog.pg_terminate_backend (1)",
+        "SELECT \"pg_terminate_backend\"(1)",
+        "SELECT nextval('s')",
+        "SELECT setval('s', 1)",
+        "SELECT lo_import('/etc/passwd')",
+        "SELECT pg_read_file('/etc/passwd')",
+        "SELECT * FROM pg_ls_dir('/')",
+        "SELECT dblink_exec('x', 'drop table t')",
+        "SELECT * FROM t FOR UPDATE",
+        "SELECT * FROM t FOR NO KEY UPDATE SKIP LOCKED",
+        "SELECT * FROM t FOR SHARE",
+        "BEGIN",
+        "COMMIT",
+        "SAVEPOINT a",
+        "SELECT 1; DELETE FROM t",
+        "ALTER SYSTEM SET work_mem = '1GB'",
+        "SELECT set_config('log_statement', 'all', false) WHERE false; DROP TABLE t",
+        "WITH x AS (SELECT 1) DELETE FROM t",
+        "WITH x AS (SELECT 1) INSERT INTO t SELECT * FROM x",
+        "WITH x AS (SELECT 1) UPDATE t SET a = 1",
+        "(DELETE FROM t RETURNING *)",
+        "TABLE t; DROP TABLE t",
+        "SELECT pg_advisory_lock(1)",
+        "SELECT txid_current()",
+        "GRANT SELECT ON t TO PUBLIC",
+        "DISCARD ALL",
+        "RESET ALL",
+        "LISTEN x",
+        "IMPORT FOREIGN SCHEMA s FROM SERVER x INTO y",
+        "SECURITY LABEL ON TABLE t IS 'x'",
+        "CHECKPOINT",
+        "CLUSTER t",
+        "REINDEX TABLE t",
+        "UNLISTEN *",
+        "SELECT $$x$$; DROP TABLE t",
+        "SELECT 'a;b'; DROP TABLE t",
+
+    ];
+    let reads: &[&str] = &[
+        "SELECT * FROM t",
+        "select 1",
+        "WITH x AS (SELECT 1) SELECT * FROM x",
+        "WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM r WHERE n < 5) SELECT * FROM r",
+        "TABLE t",
+        "VALUES (1), (2)",
+        "SHOW search_path",
+        "EXPLAIN SELECT * FROM t",
+        "EXPLAIN (COSTS OFF, FORMAT JSON) SELECT * FROM t",
+        "EXPLAIN ANALYZE SELECT * FROM t",
+        "(SELECT 1) UNION (SELECT 2)",
+        "SELECT $$DELETE FROM t$$",
+        "SELECT 'DROP TABLE t; DELETE FROM t'",
+        "SELECT 1 AS \"for update\", 2 AS \"delete\", 'insert' AS update_",
+        "SELECT * FROM t WHERE note = 'FOR UPDATE' AND x = 'nextval(1)'",
+        "SELECT * FROM t -- FOR UPDATE\n WHERE a = 1",
+        "SELECT * FROM t /* DELETE FROM t; */ WHERE a = 1",
+        "SELECT currval('s')",
+        "SELECT last_value FROM s",
+        "SELECT a AS delete_count, b AS inserted FROM t",
+        "SELECT * FROM t WHERE a = ANY (ARRAY[1, 2])",
+        "SELECT e'a\\'b; DELETE'",
+        "SELECT \"update\", \"delete\" FROM t",
+        "SELECT * FROM insert_log, delete_log",
+        "SELECT jsonb_path_query(j, '$.a ? (@ > 1)') FROM t",
+        "SELECT pg_typeof(1), pg_size_pretty(pg_database_size(current_database()))",
+        "SELECT * FROM pg_stat_activity",
+        "SELECT t.* FROM t t WHERE EXISTS (SELECT 1 FROM u WHERE u.a = t.a)",
+        "SELECT 1;",
+        "SELECT * FROM t WHERE x ~ 'a;b';",
+    ];
+    let mut bad = Vec::new();
+    for s in writes {
+        let stmts: Vec<String> = split::split(s).into_iter().map(|x| s[x.range].to_string()).collect();
+        // The agent path splits first; each piece, or the whole text when it is a single piece.
+        let refused = if stmts.len() <= 1 { guard::agent_read_refusal(s).is_some() } else { stmts.iter().any(|p| guard::agent_read_refusal(p).is_some()) };
+        if !refused {
+            bad.push(format!("PASSED AS READ: {s:?}"));
+        }
+        if guard::agent_write_class(s, dataman_core::sql::Dialect::Postgres) == guard::WriteClass::Read {
+            bad.push(format!("WRITE CLASS READ: {s:?}"));
+        }
+    }
+    for s in reads {
+        if let Some(r) = guard::agent_read_refusal(s) {
+            bad.push(format!("REFUSED READ: {s:?}: {r}"));
+        }
+        if guard::read_only_refusal(s).is_some() {
+            bad.push(format!("READ-ONLY CONN REFUSED: {s:?}"));
+        }
+    }
+    assert!(bad.is_empty(), "\n{}", bad.join("\n"));
+}
+
+#[test]
+fn long_scripts_are_fast_and_whole() {
+    let mut script = String::new();
+    let n = 20_000;
+    for i in 0..n {
+        match i % 4 {
+            0 => script.push_str(&format!("INSERT INTO t (a, b) VALUES ({i}, 'x;{i}');\n")),
+            1 => script.push_str(&format!("UPDATE t SET b = 'it''s -- {i}' WHERE a = {i}; -- trailing ; comment\n")),
+            2 => script.push_str(&format!("DO $${i}$ BEGIN PERFORM {i}; END $${i}$;\n")),
+            _ => script.push_str(&format!("/* c ; /* nested */ */ SELECT a, b FROM t WHERE a = {i};\n")),
+        }
+    }
+    let t0 = Instant::now();
+    let parts = split::split(&script);
+    let t_split = t0.elapsed();
+    assert_eq!(parts.len(), n);
+    let t1 = Instant::now();
+    let l = lint(&script, &LintContext::default());
+    let t_lint = t1.elapsed();
+    eprintln!("split {t_split:?} lint {t_lint:?} ({} findings)", l.len());
+    assert!(t_split < Duration::from_secs(2), "split took {t_split:?}");
+    assert!(t_lint < Duration::from_secs(5), "lint took {t_lint:?}");
+    // The statement under the cursor anywhere.
+    let mid = script.len() / 2;
+    let s = split::statement_at(&script, mid).unwrap();
+    assert!(s.range.start <= mid + 100);
+}
+
+/// Commands outside the normal query flow must come back (done or failed), never hang or kill
+/// the session.
+#[test]
+fn odd_commands_settle() {
+    let e = env();
+    let Some(c) = pg(&e) else { return };
+    let s = c.session(None);
+    let cmds = [
+        "COPY (SELECT 1) TO STDOUT",
+        "COPY (SELECT 1, 'a') TO STDOUT WITH (FORMAT csv)",
+        "CREATE TEMP TABLE cp (a int)",
+        "COPY cp FROM STDIN",
+        "SELECT 'after copy'",
+        "COPY cp TO PROGRAM 'cat'",
+        "LISTEN sweep_ch",
+        "NOTIFY sweep_ch, 'hi'",
+        "UNLISTEN *",
+        "SELECT pg_sleep(0.01)",
+        "VACUUM cp",
+        "BEGIN",
+        "SELECT 1/0",
+        "SELECT 'in failed tx'",
+        "ROLLBACK",
+        "SELECT 'after rollback'",
+        "SET statement_timeout = '50ms'",
+        "SELECT pg_sleep(1)",
+        "RESET statement_timeout",
+        "SELECT 'alive'",
+        "DECLARE cc CURSOR FOR SELECT 1",
+        "SELECT 'x' \\gset",
+        "SELECT 1; SELECT 2",
+        "SELECT 1 /* multi */; SELECT 'second'",
+        "CREATE TABLE sweep_multi_a (a int); INSERT INTO sweep_multi_a VALUES (1); SELECT * FROM sweep_multi_a",
+        "DROP TABLE sweep_multi_a",
+        "DO $$ BEGIN RAISE NOTICE 'hello'; END $$",
+        "DO $$ BEGIN RAISE EXCEPTION 'boom %', 1; END $$",
+        "SELECT 'still alive'",
+        "SELECT * FROM generate_series(1, 5) g WHERE g > 100",
+        "SELECT",
+        "SELECT NULL",
+        "SELECT ''",
+        "SELECT 1 AS a, 2 AS a, 3 AS \"A\"",
+        "SELECT 1 AS \"\"",
+        "SELECT repeat('x', 5000000)",
+        "SELECT E'\\x00'::text",
+    ];
+    for sql in cmds {
+        let rs = s.execute(sql);
+        rs.fetch_all();
+        let ph = e.core.block_on(async { tokio::time::timeout(Duration::from_secs(10), rs.wait_finished()).await });
+        match ph {
+            Err(_) => panic!("HANG: {sql}"),
+            Ok(p) => eprintln!("{p:?} {sql:.60} {:?}", rs.status().error.map(|e| e.message)),
+        }
+    }
+    let rs = query(&e, &c, "SELECT 'last'");
+    assert_eq!(rs.snapshot().text(0, 0).as_deref(), Some("last"));
+}
+
+#[test]
+fn copy_to_stdout_shows_lines() {
+    let e = env();
+    let Some(c) = pg(&e) else { return };
+    let rs = query(&e, &c, "COPY (SELECT g, 'a' || chr(9) || 'b', NULL FROM generate_series(1, 3) g) TO STDOUT");
+    let snap = rs.snapshot();
+    assert_eq!(snap.rows(), 3);
+    assert_eq!(snap.text(0, 0).as_deref(), Some("1\ta\\tb\t\\N"));
+    assert_eq!(snap.text(2, 0).as_deref(), Some("3\ta\\tb\t\\N"));
+    let rs = query(&e, &c, "copy (select 1 as a, 'x,y' as b) to stdout with (format csv, header)");
+    let snap = rs.snapshot();
+    assert_eq!((snap.text(0, 0).as_deref(), snap.text(1, 0).as_deref()), (Some("a,b"), Some("1,\"x,y\"")));
+    let rs = c.session(None).execute("COPY (SELECT 1) TO STDOUT BINARY");
+    assert_eq!(finish(&e, &rs), Phase::Failed);
+}

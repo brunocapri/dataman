@@ -59,7 +59,9 @@ pub fn lint(src: &str, cx: &LintContext) -> Vec<Lint> {
     // The script may change where unqualified names resolve.
     let search_path_set = src.to_ascii_lowercase().contains("search_path");
     for s in &stmts {
-        let toks: Vec<Token> = tokens.iter().filter(|t| !t.kind.is_trivia() && t.start >= s.range.start && t.end <= s.range.end).copied().collect();
+        // Tokens are in source order: only this statement's, not a scan of the whole script.
+        let lo = tokens.partition_point(|t| t.start < s.range.start);
+        let toks: Vec<Token> = tokens[lo..].iter().take_while(|t| t.end <= s.range.end).filter(|t| !t.kind.is_trivia()).copied().collect();
         let toks = if dialect == Dialect::TSql { without_tsql_hints(src, toks) } else { toks };
         let Some(first) = toks.first() else { continue };
         let verb = first.text(src).to_ascii_uppercase();
