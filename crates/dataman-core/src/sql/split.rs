@@ -190,6 +190,33 @@ fn creates_routine(src: &str, sig: &[&Token], i: usize) -> bool {
     false
 }
 
+/// MySQL: whether the `IF` at `sig[i]` opens an `IF … THEN` statement (not the function `IF(a, b, c)`
+/// nor `IF [NOT] EXISTS`).
+fn if_is_statement(src: &str, sig: &[&Token], i: usize) -> bool {
+    let w = |k: usize, x: &str| sig.get(k).is_some_and(|t| matches!(t.kind, TokenKind::Keyword | TokenKind::Ident) && t.text(src).eq_ignore_ascii_case(x));
+    if w(i + 1, "NOT") || w(i + 1, "EXISTS") {
+        return false;
+    }
+    if !sig.get(i + 1).is_some_and(|t| t.text(src) == "(") {
+        return true;
+    }
+    // `IF (cond) THEN` against `IF(a, b, c)`.
+    let mut depth = 0;
+    for (k, t) in sig.iter().enumerate().skip(i + 1) {
+        match t.text(src) {
+            "(" => depth += 1,
+            ")" => {
+                depth -= 1;
+                if depth == 0 {
+                    return w(k + 1, "THEN");
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 /// MySQL's `/*! … */` (and MariaDB's `/*M! … */`): a comment the server runs as code.
 pub fn is_exec_comment(text: &str) -> bool {
     text.starts_with("/*!") || text.starts_with("/*M!")
@@ -268,15 +295,19 @@ pub fn split_tokens_in(src: &str, tokens: &[Token], rules: ScriptRules) -> Vec<S
             routine = creates_routine(src, &sig, i);
         }
         if routine && delimiter.is_none() {
-            // (`END CASE` closes the statement its `END` pops.)
-            if word(t, "BEGIN") || (word(t, "CASE") && !i.checked_sub(1).is_some_and(|p| word(sig[p], "END"))) {
+            // Every compound statement opens a block its `END` closes (`END IF`, `END LOOP`…
+            // pop the one they name, so the keyword after an `END` opens nothing).
+            let after_end = i.checked_sub(1).is_some_and(|p| word(sig[p], "END"));
+            let opens = word(t, "BEGIN")
+                || word(t, "CASE")
+                || word(t, "WHILE")
+                || word(t, "LOOP")
+                || (word(t, "IF") && if_is_statement(src, &sig, i))
+                || (word(t, "REPEAT") && !sig.get(i + 1).is_some_and(|n| n.text(src) == "("));
+            if !after_end && opens {
                 blocks.push(true);
             } else if word(t, "END") && !blocks.is_empty() {
-                // `END IF | WHILE | LOOP | REPEAT` close constructs that are not counted.
-                let closes_other = sig.get(i + 1).is_some_and(|n| ["IF", "WHILE", "LOOP", "REPEAT"].iter().any(|k| word(n, k)));
-                if !closes_other {
-                    blocks.pop();
-                }
+                blocks.pop();
             }
         } else if rules.begin_atomic && word(t, "BEGIN") && sig.get(i + 1).is_some_and(|n| word(n, "ATOMIC")) {
             blocks.push(true);
@@ -392,6 +423,21 @@ mod tests {
     }
 
     /// MySQL: routine, trigger and event bodies keep their `;` even without a `DELIMITER` line.
+    #[test]
+    fn mysql_bare_compound_bodies() {
+        let src = "CREATE PROCEDURE a(x INT) IF x > 1 THEN SELECT 1; SELECT 2; ELSE SELECT 3; END IF;\n\
+            CREATE PROCEDURE b(x INT) IF (x > 1) THEN SELECT IF(x, 1, 2); END IF;\n\
+            CREATE PROCEDURE c() l: LOOP SELECT 1; LEAVE l; END LOOP l;\n\
+            CREATE PROCEDURE d(x INT) WHILE x < 3 DO SET x = x + 1; SELECT REPEAT('a', 2); END WHILE;\n\
+            CREATE PROCEDURE e(x INT) REPEAT SET x = x - 1; UNTIL x < 0 END REPEAT;\n\
+            CREATE PROCEDURE f(x INT) CASE x WHEN 1 THEN SELECT 1; ELSE SELECT 2; END CASE;\n\
+            CREATE FUNCTION g(x INT) RETURNS INT RETURN IF(x > 1, 1, 2);\n\
+            SELECT 9";
+        let got: Vec<&str> = split_in(src, Dialect::MySql).into_iter().map(|s| &src[s.range]).collect();
+        assert_eq!(got.len(), 8, "{got:#?}");
+        assert!(got[0].ends_with("END IF") && got[2].ends_with("END LOOP l") && got[5].ends_with("END CASE") && got[6].ends_with("IF(x > 1, 1, 2)"));
+    }
+
     #[test]
     fn mysql_routine_bodies_without_delimiter() {
         let src = "CREATE PROCEDURE p() BEGIN DECLARE i INT DEFAULT 0; w: WHILE i < 3 DO SET i = i + 1; END WHILE w; REPEAT SET i = i - 1; UNTIL i <= 0 END REPEAT; \
