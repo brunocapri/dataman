@@ -7,6 +7,7 @@ use dataman_core::lint::{LintContext, Severity, lint};
 use dataman_core::sql::Dialect;
 
 const VALID: &[&str] = &[
+    "USE mysql; SELECT host, user FROM user; SELECT * FROM db",
     "SELECT * FROM t1 WHERE name = \"abc\" AND n IN (1, 2)",
     "SELECT n AS x, COUNT(*) c FROM t1 GROUP BY x HAVING c > 1 ORDER BY x DESC LIMIT 1, 2",
     "SELECT t1.*, l.msg FROM t1 JOIN log1 l ON l.id = t1.id LEFT JOIN log1 l2 USING (id)",

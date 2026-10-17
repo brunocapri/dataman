@@ -7,6 +7,7 @@ use dataman_core::lint::{LintContext, Severity, lint};
 use dataman_core::sql::Dialect;
 
 const VALID: &[&str] = &[
+    "USE master\nGO\nSELECT * FROM dbo.spt_values WHERE type = 'P'",
     "SELECT * FROM dbo.t1 WHERE name = N'x' AND n IN (1, 2)",
     "SELECT [id], [we]]ird col], t.[name] FROM [dbo].[t1] AS t",
     "SELECT TOP 5 PERCENT * FROM dbo.t1 ORDER BY id",

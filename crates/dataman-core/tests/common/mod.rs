@@ -140,7 +140,8 @@ pub fn mssql_seeded(e: &Env, database: &str) -> Option<Arc<Connection>> {
 /// Drops a database made by [`mssql_seeded`] (its sessions closed first).
 pub fn mssql_drop(e: &Env, database: &str) {
     let Some(c) = mssql_on(e, mssql_profile("master")) else { return };
-    let sql = format!("IF DB_ID(N'{database}') IS NOT NULL BEGIN ALTER DATABASE [{database}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{database}]; END");
+    let (lit, id) = (database.replace('\'', "''"), database.replace(']', "]]"));
+    let sql = format!("IF DB_ID(N'{lit}') IS NOT NULL BEGIN ALTER DATABASE [{id}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{id}]; END");
     exec_quiet(e, &c, &[&sql]);
 }
 

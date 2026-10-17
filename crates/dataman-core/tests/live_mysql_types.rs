@@ -43,5 +43,20 @@ fn every_type() {
         let t = |r: usize| snap.text(r, ix).map(|s| s.into_owned());
         eprintln!("{:6} {:?} | {:?} | {:?} | {:?} | {:?}", col.name, col.kind, t(0), t(1), t(2), t(3));
     }
+    // The text protocol (a CALL cannot be prepared) shows the same values as the binary one.
+    run(&e, &sess, "CREATE PROCEDURE sel() SELECT * FROM ty ORDER BY id");
+    let via_call = run(&e, &sess, "CALL sel()");
+    let a = via_call.snapshot();
+    let mut bad = Vec::new();
+    for (ix, col) in cols.iter().enumerate() {
+        for r in 0..4 {
+            let (x, y) = (snap.text(r, ix).map(|s| s.into_owned()), a.text(r, ix).map(|s| s.into_owned()));
+            if x != y {
+                bad.push(format!("{} row {}: binary {:?} vs text {:?}", col.name, r + 1, x, y));
+            }
+        }
+    }
+    let ck: Vec<_> = via_call.columns().unwrap().iter().zip(cols.iter()).filter(|(x, y)| x.kind != y.kind).map(|(x, y)| format!("{}: {:?} vs {:?}", x.name, x.kind, y.kind)).collect();
     exec_quiet(&e, &c0, &["DROP DATABASE dataman_sw5"]);
+    assert!(bad.is_empty() && ck.is_empty(), "{bad:#?} {ck:#?}");
 }

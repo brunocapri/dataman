@@ -1170,7 +1170,7 @@ impl Workspace {
     pub(crate) fn open_urls(&mut self, urls: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {
         for url in urls {
             let Some(path) = file_url_path(&url) else { continue };
-            match std::fs::read_to_string(&path) {
+            match dataman_core::sql::read_script(&path) {
                 Ok(text) => {
                     let tab = self.new_tab(window, cx);
                     tab.update(cx, |t, cx| t.editor.update(cx, |e, cx| e.set_text(&text, cx)));
@@ -1945,7 +1945,7 @@ impl Workspace {
     /// Opens each file in a new tab (title = its file name); one that cannot be read says so.
     pub(crate) fn open_sql_paths(&mut self, paths: &[std::path::PathBuf], window: &mut Window, cx: &mut Context<Self>) {
         for path in paths {
-            let text = match std::fs::read_to_string(path) {
+            let text = match dataman_core::sql::read_script(path) {
                 Ok(t) => t,
                 Err(e) => {
                     self.notice(format!("cannot read {}: {e}", path.display()), cx);
@@ -2254,7 +2254,7 @@ impl Workspace {
         let mut added = Vec::new();
         for path in paths {
             if crate::sql_picker::is_sql(path)
-                && let Ok(sql) = std::fs::read_to_string(path)
+                && let Ok(sql) = dataman_core::sql::read_script(path)
             {
                 let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("favorite").to_string();
                 let known = store.find_by_sql(&sql).is_some();

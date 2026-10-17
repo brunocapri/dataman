@@ -75,6 +75,26 @@ fn edit_every_type() {
             bad.push(format!("{} ({:?}): {}\n   {:?}", col.name, old, plan[0].sql, r.outcomes.iter().map(|o| format!("{:?}", o.outcome)).collect::<Vec<_>>()));
         }
     }
+    // Every column edited again from what it shows now (the text the grid shows is the guard).
+    let rs = run(&e, &s, "SELECT * FROM dbo.[we]]ird ]");
+    let snap = rs.snapshot();
+    for (ix, col) in cols.iter().enumerate() {
+        if col.name == "id col" || col.name == "x" {
+            continue;
+        }
+        let Some(now) = snap.text(0, ix).map(|x| x.into_owned()) else { continue };
+        let mut cs = ChangeSet::new();
+        cs.edit(0, ix, CellValue::text(now.clone()), CellValue::text(now.clone()));
+        let plan = cs.plan(&t, &snap).unwrap();
+        if plan.is_empty() {
+            continue;
+        }
+        let r = e.core.block_on(c.apply_changes(Some(db), plan.clone())).unwrap();
+        let ok = r.committed && r.outcomes.iter().all(|o| matches!(&o.outcome, Outcome::Applied { .. }));
+        if !ok {
+            bad.push(format!("same-value {} ({:?}): {}\n   {:?}", col.name, now, plan[0].sql, r.outcomes.iter().map(|o| format!("{:?}", o.outcome)).collect::<Vec<_>>()));
+        }
+    }
     mssql_drop(&e, db);
     assert!(bad.is_empty(), "\n{}", bad.join("\n"));
 }
