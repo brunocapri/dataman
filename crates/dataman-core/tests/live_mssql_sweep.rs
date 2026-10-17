@@ -200,12 +200,10 @@ fn big_script_runs_cleanly() {
         eprintln!("--- {}", src[st.range.clone()].lines().next().unwrap_or(""));
     }
     let bad = script(&e, &s, src);
-    mssql_drop_all(&e, &c);
+    drop(s);
+    drop(c);
+    mssql_drop(&e, "dataman_msw1");
     assert!(bad.is_empty(), "{bad:#?}");
-}
-
-fn mssql_drop_all(e: &Env, c: &Arc<Connection>) {
-    let _ = (e, c);
 }
 
 #[test]
@@ -226,6 +224,9 @@ fn lint_and_parse_check_accept_valid_scripts() {
     for x in &pc {
         bad.push(format!("PARSE {} @ {:?}", x.message, &SCRIPT[x.range.clone()]));
     }
+    drop(s);
+    drop(c);
+    mssql_drop(&e, "dataman_msw2");
     assert!(bad.is_empty(), "\n{}", bad.join("\n"));
     let _ = split_in;
 }
