@@ -60,7 +60,7 @@ pub struct Target {
 
 impl Target {
     pub fn of(p: &ConnectionProfile) -> Target {
-        Target { access: p.mcp_access(), env: p.env, read_only: p.read_only, dialect: p.engine.dialect(), yolo: p.mcp_yolo }
+        Target { access: p.mcp_access(), env: p.env, read_only: p.read_only, dialect: p.engine.dialect(), yolo: p.mcp_yolo_on() }
     }
 
     /// [`Target::of`] for one of its databases: read-only as that database is (its own
@@ -386,6 +386,11 @@ mod tests {
         // From the profile: set and off is not in effect; the database's read-only is.
         let mut p = ConnectionProfile::new("x");
         (p.mcp, p.mcp_yolo, p.env) = (Some(Write), true, Environment::Production);
+        if !dataman_core::MCP_ADVANCED {
+            // The advanced options off: set, but not in effect.
+            assert!(!Target::of(&p).yolo);
+            return;
+        }
         assert_eq!(judge(true, Target::of(&p), "DROP TABLE t", &[]).verdict, Verdict::Run);
         p.set_read_only_for("shop", true);
         assert!(matches!(judge(true, Target::of_in(&p, "shop"), "DROP TABLE t", &[]).verdict, Verdict::Refuse(_)));

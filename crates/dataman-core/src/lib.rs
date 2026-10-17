@@ -66,7 +66,7 @@ use tokio::runtime::{Handle, Runtime};
 use tokio::sync::oneshot;
 
 pub use backend::{Caps, server_error};
-pub use config::{ConfigStore, ConnectionProfile, Dirs, Engine, Environment, McpAccess, SshAuth, SshSettings, SslMode};
+pub use config::{ConfigStore, ConnectionProfile, Dirs, Engine, Environment, MCP_ADVANCED, McpAccess, SshAuth, SshSettings, SslMode};
 pub use sql::Dialect;
 pub use conn::TxEnd;
 pub use tx::{TxState, TxStatus};

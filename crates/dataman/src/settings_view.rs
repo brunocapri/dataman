@@ -489,7 +489,9 @@ impl SettingsView {
 
     fn row_visible(&self, row: Row, cx: &App) -> bool {
         match row {
-            Row::McpTabs | Row::McpWriteLimit | Row::McpRows | Row::McpClaude | Row::McpConnections | Row::McpAdvanced => self.settings.mcp_enabled,
+            Row::McpTabs | Row::McpWriteLimit | Row::McpRows | Row::McpClaude | Row::McpConnections => self.settings.mcp_enabled,
+            // Off for now (`MCP_ADVANCED`).
+            Row::McpAdvanced => dataman_core::MCP_ADVANCED && self.settings.mcp_enabled,
             Row::UpdateCheck => crate::updates::enabled(cx),
             _ => true,
         }
@@ -529,7 +531,7 @@ impl SettingsView {
                 let id = p.id.clone();
                 let on = cur != dataman_core::McpAccess::Off;
                 // What the connection sheet adds to the tier: queries let through, and YOLO.
-                let allowed = match p.mcp_allowed.len() {
+                let allowed = match p.mcp_allowed_on().len() {
                     0 => None,
                     1 => Some("1 allowed query".to_string()),
                     n => Some(format!("{n} allowed queries")),

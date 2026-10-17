@@ -241,7 +241,7 @@ fn explain_analyze(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
         // refuse it; the connection's allowed queries and YOLO count); always rolled back.
         let target = cx.target(&a, Need::Read)?;
         let t = crate::policy::Target { read_only: cx.read_only(&a, &target), ..crate::policy::Target::of(&target) };
-        if let crate::policy::Verdict::Refuse(e) = crate::policy::judge(cx.hub.settings().mcp_enabled, t, &inner, &target.mcp_allowed).verdict {
+        if let crate::policy::Verdict::Refuse(e) = crate::policy::judge(cx.hub.settings().mcp_enabled, t, &inner, target.mcp_allowed_on()).verdict {
             return Err(ToolError::Refused(e));
         }
         let o: Opened = cx.open(&a, Need::Read).await?;

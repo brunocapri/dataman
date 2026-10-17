@@ -525,7 +525,8 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
         let _ = core.favorites.remove(&f.id);
     }
 
-    if !advanced_options(ws, &agent_ipc, id, &conn, db, cx).await {
+    // The advanced options, while they are on (`MCP_ADVANCED`).
+    if dataman_core::MCP_ADVANCED && !advanced_options(ws, &agent_ipc, id, &conn, db, cx).await {
         check("the advanced MCP options", false, String::new());
     }
 

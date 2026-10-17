@@ -133,9 +133,9 @@ fn list_connections(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> 
                 json!(p.ssh.is_some()),
                 is_lar,
                 version,
-                if access >= McpAccess::Write && !p.mcp_yolo { json!(cx.hub.row_limit(p)) } else { Value::Null },
-                if p.mcp_allowed.is_empty() { Value::Null } else { json!(p.mcp_allowed) },
-                json!(p.mcp_yolo),
+                if access >= McpAccess::Write && !p.mcp_yolo_on() { json!(cx.hub.row_limit(p)) } else { Value::Null },
+                if p.mcp_allowed_on().is_empty() { Value::Null } else { json!(p.mcp_allowed_on()) },
+                json!(p.mcp_yolo_on()),
             ]);
         }
         Ok(table(&["name", "env", "mcp", "read_only", "host", "port", "database", "user", "ssh", "is_lar", "version", "row_limit", "allowed", "yolo"], rows))

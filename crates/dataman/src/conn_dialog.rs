@@ -1176,7 +1176,7 @@ impl Render for ConnDialog {
                 }))
         }));
         let mcp_cur = self.mcp.unwrap_or_else(|| McpAccess::default_for(self.env));
-        let yolo_on = self.advanced.yolo && mcp_cur != McpAccess::Off;
+        let yolo_on = dataman_core::MCP_ADVANCED && self.advanced.yolo && mcp_cur != McpAccess::Off;
         let mcp = ui::segmented(&t).children(McpAccess::ALL.iter().map(|a| {
             let a = *a;
             ui::segment(&t, ("mcp", a as usize), a.label(), a == mcp_cur)
@@ -1298,7 +1298,8 @@ impl Render for ConnDialog {
                             .child(div().flex().flex_col().gap(px(6.)).child(div().text_size(px(10.)).text_color(t.tx3).child("ENVIRONMENT")).child(env))
                             .child(read_only),
                     )
-                    .child(self.mcp_advanced(&t, cx))
+                    // Off for now (`MCP_ADVANCED`).
+                    .when(dataman_core::MCP_ADVANCED, |d| d.child(self.mcp_advanced(&t, cx)))
                     .child(self.ssh_section(&t, cx))
                     // The fields' URL (the string is on screen already in URL mode).
                     .when(!by_url, |d| {

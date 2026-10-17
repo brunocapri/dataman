@@ -494,7 +494,8 @@ impl Workspace {
                 .key_context(format!("{SHEET} Modal").as_str())
                 .track_focus(&self.mcp_focus)
                 .on_action(cx.listener(|w, _: &Allow, window, cx| w.mcp_answer(true, window, cx)))
-                .when(!req.allowable.is_empty(), |d| d.on_action(cx.listener(|w, _: &AlwaysAllow, window, cx| w.mcp_always_allow(window, cx))))
+                // Always Allow fills the allowed queries: off with them (`MCP_ADVANCED`).
+                .when(dataman_core::MCP_ADVANCED && !req.allowable.is_empty(), |d| d.on_action(cx.listener(|w, _: &AlwaysAllow, window, cx| w.mcp_always_allow(window, cx))))
                 .on_action(cx.listener(|w, _: &Deny, window, cx| w.mcp_answer(false, window, cx)))
                 .flex()
                 .items_center()
@@ -538,8 +539,9 @@ impl Workspace {
                                 .child(div().text_color(t.tx3).child(req.tool.clone()))
                                 .when(more > 0, |d| d.child(div().text_color(t.tx3).child(format!("+{more}"))))
                                 .child(div().flex_1())
-                                // Always Allow: a quieter button, apart from Deny / Allow.
-                                .when(!req.allowable.is_empty(), |d| {
+                                // Always Allow: a quieter button, apart from Deny / Allow (off with the
+                                // allowed queries, `MCP_ADVANCED`).
+                                .when(dataman_core::MCP_ADVANCED && !req.allowable.is_empty(), |d| {
                                     let what = if req.allowable.len() == 1 { "this statement" } else { "these statements" };
                                     let tip = format!("Allow, and from now on let agents run {what} on {} without asking (connection › MCP › Advanced › Allowed queries)", req.connection);
                                     d.child(

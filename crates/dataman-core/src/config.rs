@@ -49,6 +49,11 @@ impl Engine {
     }
 }
 
+/// The connection's advanced MCP options (allowed queries, YOLO) are off for now: kept in the
+/// file as set, but not shown anywhere and not applied ([`ConnectionProfile::mcp_yolo_on`],
+/// [`ConnectionProfile::mcp_allowed_on`]).
+pub const MCP_ADVANCED: bool = false;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SslMode {
@@ -328,9 +333,15 @@ impl ConnectionProfile {
         strip(self) == strip(other)
     }
 
-    /// YOLO in effect: set, and the tier is not off (an off connection stays invisible).
+    /// YOLO in effect: the advanced options on ([`MCP_ADVANCED`]), set, and the tier is not off
+    /// (an off connection stays invisible).
     pub fn mcp_yolo_on(&self) -> bool {
-        self.mcp_yolo && self.mcp_access() != McpAccess::Off
+        MCP_ADVANCED && self.mcp_yolo && self.mcp_access() != McpAccess::Off
+    }
+
+    /// The allowed queries in effect: none while the advanced options are off ([`MCP_ADVANCED`]).
+    pub fn mcp_allowed_on(&self) -> &[String] {
+        if MCP_ADVANCED { &self.mcp_allowed } else { &[] }
     }
 
     /// The tier as shown wherever it is: `full`, or `full · YOLO`.
@@ -845,8 +856,8 @@ mod tests {
         // Already allowed (by the pattern, or the same statement written otherwise): not added again.
         assert!(p.mcp_allow(&["delete from sessions where expires_at < 5", "truncate AUDIT_TMP"]).is_empty());
         p.mcp_yolo = true;
-        assert!(p.mcp_yolo_on());
-        assert_eq!(p.mcp_label(), "read · YOLO");
+        assert_eq!(p.mcp_yolo_on(), MCP_ADVANCED, "in effect only with the advanced options on");
+        assert_eq!(p.mcp_label(), if MCP_ADVANCED { "read · YOLO" } else { "read" });
         let q = ConnectionProfile::new("plain");
         store.upsert(p.clone()).unwrap();
         store.upsert(q.clone()).unwrap();
