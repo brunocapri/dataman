@@ -33,8 +33,18 @@ mod theme;
 #[allow(dead_code)]
 mod ui;
 
-/// The one thing the find bar takes from the grid.
+/// What the find bar and the editor take from the grid.
 mod grid {
+    /// No grid here: the editor draws its own gutter width.
+    #[derive(Clone, Default)]
+    pub struct GutterShare;
+
+    impl GutterShare {
+        pub fn editor(&self, need: f32) -> f32 {
+            need
+        }
+    }
+
     pub fn ui_count(n: usize) -> String {
         n.to_string()
     }

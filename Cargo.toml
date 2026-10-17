@@ -38,7 +38,8 @@ async-task = { git = "https://github.com/smol-rs/async-task.git", rev = "b4486cd
 # tiberius 0.13.0 from crates.io, patched so SQL Server's informational messages (PRINT,
 # RAISERROR at severity 10 or less) reach the caller as QueryItem::Info (search for `Info` in
 # vendor/tiberius/src/tds/stream/query.rs, src/tds/stream/token.rs,
-# src/tds/codec/token/token_info.rs and src/lib.rs; upgrading means applying that again).
+# src/tds/codec/token/token_info.rs and src/lib.rs; upgrading means applying that again). The same
+# stream also yields a statement's error as QueryItem::Error where the server sent it.
 tiberius = { path = "vendor/tiberius" }
 
 # One build tree only (the disk is tight): everything, tests included, builds with

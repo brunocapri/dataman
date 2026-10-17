@@ -78,7 +78,7 @@ fn connects_and_decodes_every_type() {
     assert_eq!(
         kinds,
         vec![
-            Int, Text, Text, Bool, Int, Numeric, Numeric, Numeric, Timestamp, TimestampTz, Date, Time, Timestamp, Timestamp, Other, Bytes, Text, Float4,
+            Int, Text, Text, Bool, Int, Numeric, Numeric, Numeric, Timestamp, Text, Date, Time, Timestamp, Timestamp, Other, Bytes, Text, Float4,
             Float, Int, Text, Bytes
         ]
     );
@@ -110,15 +110,14 @@ fn connects_and_decodes_every_type() {
             s1("12345678901"),
         ]
     );
-    // datetimeoffset: the instant (12:15 UTC), shown in local time.
+    // datetimeoffset: text, as stored (12:15 UTC at -03:00).
     let snap = rs.snapshot();
-    assert_eq!(snap.cell(0, 9), dataman_core::result::Cell::Int(value_ts(2026, 1, 5, 12, 15, 0)));
+    assert_eq!((snap.text(0, 9).as_deref(), snap.text(3, 9).as_deref()), (Some("2026-01-05 09:15:00 -03:00"), Some("2026-04-01 12:00:00 +09:00")), "datetimeoffset: as stored, with its offset");
     assert!(r0[21].as_deref().is_some_and(|v| v.starts_with("\\x") && v.len() == 18), "rowversion: 8 bytes {:?}", r0[21]);
     let r2 = texts(&rs, 2);
     assert_eq!((r2[3].as_deref(), r2[6].as_deref(), r2[9].as_deref(), r2[17].as_deref()), (Some("false"), Some("0.0001"), None, None));
     let r3 = texts(&rs, 3);
     assert_eq!((r3[1].as_deref(), r3[6].as_deref(), r3[12].as_deref(), r3[19].as_deref()), (Some("Diego O'Neil"), Some("-12.3456"), Some("1753-01-01 00:00:00"), Some("-9223372036854775808")));
-    assert_eq!(snap.cell(3, 9), dataman_core::result::Cell::Int(value_ts(2026, 4, 1, 3, 0, 0)), "+09:00");
     let r4 = texts(&rs, 4);
     assert_eq!((r4[1].as_deref(), r4[2].as_deref(), r4[17].as_deref(), r4[18].as_deref()), (Some("Élodie Zürich 東京"), None, Some("1e-07"), Some("1e+300")));
     // Numbers stay native: sorting by a column sorts numbers.

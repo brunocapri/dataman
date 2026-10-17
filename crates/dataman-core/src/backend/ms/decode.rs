@@ -4,7 +4,7 @@
 //! Exact numbers stay exact: `decimal`/`numeric` are formatted from their scaled integer, and
 //! `money`/`smallmoney` (which tiberius hands over as `f64`) go back to their four decimals,
 //! exact up to ±100 billion (15 digits). Dates are the grid's integers (days, µs since 2000-01-01);
-//! `datetime2`'s seventh decimal (100 ns) is cut to µs; `datetimeoffset` is its UTC instant.
+//! `datetime2`'s seventh decimal (100 ns) is cut to µs; `datetimeoffset` is text as the server writes it (its stored offset, 100 ns kept).
 
 use std::fmt::Write as _;
 
@@ -42,7 +42,8 @@ pub(crate) fn kind_of(ty: ColumnType) -> (Kind, &'static str) {
         Datetime2 => (Kind::Timestamp, "datetime2"),
         Daten => (Kind::Date, "date"),
         Timen => (Kind::Time, "time"),
-        DatetimeOffsetn => (Kind::TimestampTz, "datetimeoffset"),
+        // Text, as the server writes it: the offset stored with the value, the seventh decimal kept.
+        DatetimeOffsetn => (Kind::Text, "datetimeoffset"),
         Guid => (Kind::Other, "uniqueidentifier"),
         BigVarChar => (Kind::Text, "varchar"),
         BigChar => (Kind::Text, "char"),
@@ -90,6 +91,35 @@ fn date_days(d: tiberius::time::Date) -> i64 {
 fn time_us(t: tiberius::time::Time) -> i64 {
     let (inc, scale) = (t.increments() as i64, t.scale() as u32);
     if scale >= 6 { inc / 10i64.pow(scale - 6) } else { inc * 10i64.pow(6 - scale) }
+}
+
+/// The seventh decimal (100 ns) of a `time(7)`, which the grid's µs integers cannot hold.
+fn tenth_micro(t: tiberius::time::Time) -> u8 {
+    let (inc, scale) = (t.increments(), t.scale() as u32);
+    if scale >= 7 { (inc % 10) as u8 } else { 0 }
+}
+
+/// Appends the seventh decimal `tenth` to the time ending `out[start..]` (`hh:mm:ss[.ffffff]`, or
+/// a timestamp ending so).
+fn add_tenth(out: &mut String, start: usize, tenth: u8) {
+    if tenth == 0 {
+        return;
+    }
+    match out[start..].rfind('.') {
+        Some(dot) => {
+            let frac = out.len() - start - dot - 1;
+            out.extend(std::iter::repeat_n('0', 6 - frac));
+        }
+        None => out.push_str(".000000"),
+    }
+    out.push((b'0' + tenth) as char);
+}
+
+/// `us` as the grid writes a timestamp, with the seventh decimal `tenth` (0 when there is none).
+fn timestamp_text(us: i64, tenth: u8, out: &mut String) {
+    let start = out.len();
+    value::format_timestamp(us, out);
+    add_tenth(out, start, tenth);
 }
 
 fn datetime2_us(dt: tiberius::time::DateTime2) -> i64 {
@@ -177,13 +207,17 @@ pub(crate) fn text_into(v: &ColumnData<'_>, money_col: bool, out: &mut String) -
         ColumnData::Xml(Some(x)) => out.push_str(x.as_ref().as_ref()),
         ColumnData::DateTime(Some(dt)) => value::format_timestamp(datetime_us(*dt), out),
         ColumnData::SmallDateTime(Some(dt)) => value::format_timestamp(smalldatetime_us(*dt), out),
-        ColumnData::Time(Some(t)) => value::format_time(time_us(*t), out),
+        ColumnData::Time(Some(t)) => {
+            let start = out.len();
+            value::format_time(time_us(*t), out);
+            add_tenth(out, start, tenth_micro(*t));
+        }
         ColumnData::Date(Some(d)) => value::format_date(date_days(*d) as i32, out),
-        ColumnData::DateTime2(Some(dt)) => value::format_timestamp(datetime2_us(*dt), out),
+        ColumnData::DateTime2(Some(dt)) => timestamp_text(datetime2_us(*dt), tenth_micro(dt.time()), out),
         ColumnData::DateTimeOffset(Some(dto)) => {
             // As the server wrote it: the local time and its offset.
             let off = dto.offset() as i64;
-            value::format_timestamp(datetime2_us(dto.datetime2()) + off * 60_000_000, out);
+            timestamp_text(datetime2_us(dto.datetime2()) + off * 60_000_000, tenth_micro(dto.datetime2().time()), out);
             let a = off.unsigned_abs();
             let _ = write!(out, " {}{:02}:{:02}", if off < 0 { '-' } else { '+' }, a / 60, a % 60);
         }
@@ -293,7 +327,7 @@ mod tests {
             assert_eq!(kind_of(t).0, Kind::Numeric);
         }
         assert_eq!(kind_of(Datetime2).0, Kind::Timestamp);
-        assert_eq!(kind_of(DatetimeOffsetn).0, Kind::TimestampTz);
+        assert_eq!(kind_of(DatetimeOffsetn).0, Kind::Text);
         assert_eq!(kind_of(Daten).0, Kind::Date);
         assert_eq!(kind_of(Timen).0, Kind::Time);
         assert_eq!(kind_of(Guid), (Kind::Other, "uniqueidentifier"));
@@ -370,6 +404,21 @@ mod tests {
         assert_eq!(utc, "2026-10-13 12:00:00");
         // As text (catalog reads, variants): the server's local time and its offset.
         assert_eq!(value_text(&ColumnData::DateTimeOffset(Some(dto)), T::DatetimeOffsetn).as_deref(), Some("2026-10-13 09:00:00 -03:00"));
+    }
+
+    /// As text (a `datetimeoffset` column, `sql_variant`, the catalog) the 100 ns decimal stays,
+    /// and a datetimeoffset keeps the offset it was stored with.
+    #[test]
+    fn full_precision_text() {
+        use ColumnType as T;
+        let day = Date::new(739_901);
+        let t7 = |inc: u64| Time::new(((9 * 3600 + 30 * 60) as u64) * 10_000_000 + inc, 7);
+        assert_eq!(value_text(&ColumnData::Time(Some(t7(1_234_567))), T::Timen).as_deref(), Some("09:30:00.1234567"));
+        assert_eq!(value_text(&ColumnData::Time(Some(t7(5))), T::Timen).as_deref(), Some("09:30:00.0000005"));
+        assert_eq!(value_text(&ColumnData::Time(Some(t7(1_234_560))), T::Timen).as_deref(), Some("09:30:00.123456"));
+        assert_eq!(value_text(&ColumnData::DateTime2(Some(DateTime2::new(day, t7(1_234_567)))), T::Datetime2).as_deref(), Some("2026-10-13 09:30:00.1234567"));
+        let dto = DateTimeOffset::new(DateTime2::new(day, t7(1_234_567)), -330);
+        assert_eq!(value_text(&ColumnData::DateTimeOffset(Some(dto)), T::DatetimeOffsetn).as_deref(), Some("2026-10-13 04:00:00.1234567 -05:30"));
     }
 
     #[test]

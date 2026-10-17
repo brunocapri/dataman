@@ -71,6 +71,7 @@ pub fn lint(src: &str, cx: &LintContext) -> Vec<Lint> {
         }
         let facts = crate::guard::classify_in(&src[s.range.clone()], dialect);
         if facts.no_where
+            && !inner_join_on(src, &toks)
             && let Some(t) = toks.iter().enumerate().find(|(i, t)| {
                 let w = t.text(src);
                 (w.eq_ignore_ascii_case("UPDATE") || w.eq_ignore_ascii_case("DELETE"))
@@ -103,6 +104,28 @@ pub fn lint(src: &str, cx: &LintContext) -> Vec<Lint> {
     out.sort_by(|a, b| a.range.start.cmp(&b.range.start).then(a.range.end.cmp(&b.range.end)));
     out.dedup_by(|a, b| a.range == b.range && a.message == b.message);
     out
+}
+
+/// Whether the statement joins with `JOIN … ON` at its top level, not an outer or cross join: the
+/// join condition limits the rows an `UPDATE` or `DELETE` touches as a `WHERE` would (so the
+/// editor does not warn; the guard's own reading of such a statement stays strict).
+fn inner_join_on(src: &str, toks: &[Token]) -> bool {
+    let word = |i: usize, w: &str| toks.get(i).is_some_and(|t| t.text(src).eq_ignore_ascii_case(w));
+    let (mut depth, mut join, mut on) = (0i32, false, false);
+    for (i, t) in toks.iter().enumerate() {
+        match t.text(src) {
+            "(" => depth += 1,
+            ")" => depth -= 1,
+            _ if depth == 0 => {
+                if word(i, "JOIN") && !(i > 0 && ["LEFT", "RIGHT", "FULL", "OUTER", "CROSS"].iter().any(|w| word(i - 1, w))) {
+                    join = true;
+                }
+                on |= word(i, "ON");
+            }
+            _ => {}
+        }
+    }
+    join && on
 }
 
 /// A T-SQL statement's tokens without its query and table hints (`OPTION (MAXRECURSION 100)`,
@@ -355,6 +378,16 @@ mod tests {
         assert_eq!(msgs("update orders set sttus = 'x' where id = 1"), vec!["sttus: column \"sttus\" of relation \"orders\" does not exist"]);
         assert_eq!(msgs("insert into customer (id, nme) values (1, 'a')"), vec!["nme: column \"nme\" of relation \"customer\" does not exist"]);
         assert_eq!(msgs("insert customer (id, nme) values (1, 'a')"), vec!["nme: column \"nme\" of relation \"customer\" does not exist"]);
+    }
+
+    #[test]
+    fn join_conditions_limit_updates_and_deletes() {
+        let w = |sql: &str| msgs(sql).iter().any(|m| m.contains("without WHERE"));
+        assert!(!w("delete o from orders o join customer c on c.id = o.customer"));
+        assert!(!w("update orders o inner join customer c on c.id = o.customer set o.total = 0"));
+        assert!(w("delete o from orders o left join customer c on c.id = o.customer"));
+        assert!(w("update orders o cross join customer c set o.total = 0"));
+        assert!(w("delete from orders"));
     }
 
     #[test]

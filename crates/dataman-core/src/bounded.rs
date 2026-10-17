@@ -570,7 +570,7 @@ async fn ms_statement(c: &Arc<ms::Client>, ix: usize, sql: &str, params: &[Optio
                 match rows.next_result().await {
                     ms::Next::Columns(_) => continue,
                     ms::Next::End { affected, .. } => break 'sets affected,
-                    ms::Next::Fail(e) => return Err(Stop::Server(ms::error_info_at(&e, sql, 0))),
+                    ms::Next::Fail(e) | ms::Next::Error(e) => return Err(Stop::Server(ms::error_info_at(&e, sql, 0))),
                 }
             },
             ms::Next::End { affected, .. } => {
@@ -579,7 +579,7 @@ async fn ms_statement(c: &Arc<ms::Client>, ix: usize, sql: &str, params: &[Optio
                 }
                 break affected;
             }
-            ms::Next::Fail(e) => return Err(Stop::Server(ms::error_info_at(&e, sql, 0))),
+            ms::Next::Fail(e) | ms::Next::Error(e) => return Err(Stop::Server(ms::error_info_at(&e, sql, 0))),
         }
     };
     out.statements.push(Done { verb, affected: if returns_rows { (mode != Mode::Read).then_some(n) } else { affected } });
