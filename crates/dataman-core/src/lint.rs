@@ -59,7 +59,8 @@ pub fn lint(src: &str, cx: &LintContext) -> Vec<Lint> {
     // The script may change where unqualified names resolve.
     let search_path_set = src.to_ascii_lowercase().contains("search_path");
     for s in &stmts {
-        let toks: Vec<Token> = tokens.iter().filter(|t| !t.kind.is_trivia() && t.start >= s.range.start && t.end <= s.range.end).copied().collect();
+        let from = tokens.partition_point(|t| t.start < s.range.start);
+        let toks: Vec<Token> = tokens[from..].iter().take_while(|t| t.start < s.range.end).filter(|t| !t.kind.is_trivia() && t.end <= s.range.end).copied().collect();
         let toks = if dialect == Dialect::TSql { without_tsql_hints(src, toks) } else { toks };
         let Some(first) = toks.first() else { continue };
         let verb = first.text(src).to_ascii_uppercase();
@@ -185,12 +186,12 @@ fn unknown_tables(a: &Analysis, snap: &SchemaSnapshot, known: &dyn Fn(&str) -> b
         for src in &s.sources {
             let SourceKind::Table { schema, name } = &src.kind else { continue };
             // T-SQL's temporary tables live in tempdb, out of the cache.
-            if name.starts_with("pg_") || name.starts_with('#') || known(name) {
+            if name.starts_with("pg_") || name.starts_with('#') || known(name) || (name.eq_ignore_ascii_case("dual") && schema.is_none()) {
                 continue;
             }
             match schema {
                 Some(sc) => {
-                    if sc.starts_with("pg_") || sc == "information_schema" || !snap.loaded.contains(sc) || known(&format!("{sc}.{name}")) {
+                    if sc.starts_with("pg_") || sc.eq_ignore_ascii_case("information_schema") || !snap.loaded.contains(sc) || known(&format!("{sc}.{name}")) {
                         continue;
                     }
                     if snap.resolve(Some(sc), name).is_none() {
