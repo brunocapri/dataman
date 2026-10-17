@@ -41,7 +41,7 @@ use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 use self::decode::Dec;
 use super::{Ran, RowSource};
 use crate::config::{ConnectionProfile, SslMode};
-use crate::result::{ChunkBuilder, ColumnInfo, ErrorInfo, ResultSet};
+use crate::result::{ChunkBuilder, ColumnInfo, ErrorInfo, Phase, ResultSet};
 use crate::server::{ServerExtension, ServerInfo};
 use crate::sql::split::{GoBatch, go_batches};
 use crate::tx::{Seen, TxWatch};
@@ -467,6 +467,7 @@ async fn stream(
             }
             QueryItem::Row(r) => Msg::Row(r),
             QueryItem::Info(i) => Msg::Info(i.message().to_string()),
+            QueryItem::Error(e) => Msg::StmtError(MsError::Server(e)),
         };
         // A reader that went away (an export stopped) still gets its response read: the
         // connection is only free after the last row.
@@ -498,6 +499,9 @@ enum Msg {
     Row(tiberius::Row),
     /// An informational message (`PRINT`).
     Info(String),
+    /// A statement failed (the batch may go on): where the server sent the error. The response
+    /// still ends with [`Msg::Fail`] for the first error of the batch.
+    StmtError(MsError),
     /// The response ended: the count of a batch without result sets (when asked), or a cancel.
     End { affected: Option<u64>, cancelled: bool },
     Fail(MsError),
@@ -505,6 +509,8 @@ enum Msg {
 
 /// What comes after a result set.
 pub(crate) enum Next {
+    /// A statement failed here, and the batch goes on (only when [`MsRows::positional_errors`]).
+    Error(MsError),
     Columns(Arc<[tiberius::Column]>),
     End { affected: Option<u64>, cancelled: bool },
     Fail(MsError),
@@ -520,11 +526,14 @@ pub(crate) struct MsRows {
     /// Where the server's messages go as they arrive (the editor's current result); dropped
     /// when `None`.
     messages: Option<Arc<ResultSet>>,
+    /// Statement errors come as [`Next::Error`] where they happened; else only the batch's first
+    /// comes, at the end ([`Next::Fail`]).
+    pub(crate) positional_errors: bool,
 }
 
 impl MsRows {
     fn new(rx: mpsc::Receiver<Msg>) -> MsRows {
-        MsRows { rx, dec: Vec::new(), pending: None, messages: None }
+        MsRows { rx, dec: Vec::new(), pending: None, messages: None, positional_errors: false }
     }
 
     fn message(&self, m: String) {
@@ -543,6 +552,8 @@ impl MsRows {
             match self.rx.recv().await {
                 Some(Msg::Row(_)) => continue,
                 Some(Msg::Info(m)) => self.message(m),
+                Some(Msg::StmtError(e)) if self.positional_errors => return Next::Error(e),
+                Some(Msg::StmtError(_)) => continue,
                 Some(Msg::Columns(c)) => return Next::Columns(c),
                 Some(Msg::End { affected, cancelled }) => return Next::End { affected, cancelled },
                 Some(Msg::Fail(e)) => return Next::Fail(e),
@@ -567,6 +578,8 @@ impl MsRows {
             match self.rx.recv().await {
                 Some(Msg::Row(r)) => return Some(r),
                 Some(Msg::Info(m)) => self.message(m),
+                Some(Msg::StmtError(e)) if self.positional_errors => break Next::Error(e),
+                Some(Msg::StmtError(_)) => continue,
                 Some(Msg::Columns(c)) => break Next::Columns(c),
                 Some(Msg::End { affected, cancelled }) => break Next::End { affected, cancelled },
                 Some(Msg::Fail(e)) => break Next::Fail(e),
@@ -612,7 +625,7 @@ async fn first_result(mut rows: MsRows) -> Result<(Vec<ColumnInfo>, MsRows), MsE
             rows.pending = Some(end);
             Ok((Vec::new(), rows))
         }
-        Next::Fail(e) => Err(e),
+        Next::Fail(e) | Next::Error(e) => Err(e),
     }
 }
 
@@ -791,6 +804,20 @@ pub(crate) async fn run(
     let mut shown = false;
     let mut affected: Option<u64> = None;
     let mut sent = false;
+    // A statement's error was shown where it happened (the batch's own error, at its end, is it).
+    let mut reported = false;
+    // The next result set after `prev`, which stays failed if it was (`next` finishes it as done).
+    let advance = |prev: &Arc<ResultSet>| {
+        let failed = prev.status().error;
+        let new = next(prev);
+        if let Some(e) = failed {
+            prev.update_status(|s| {
+                s.phase = Some(Phase::Failed);
+                s.error = Some(e);
+            });
+        }
+        new
+    };
     for b in batches.iter() {
         for _ in 0..b.repeat {
             let stop = if Arc::ptr_eq(&cur, rs) { aborted() } else { cur.demand().borrow().abort };
@@ -802,6 +829,7 @@ pub(crate) async fn run(
             cur.executing.store(true, Ordering::Release);
             sent = true;
             let mut rows = client.begin(exec, true).await;
+            rows.positional_errors = true;
             // A message belongs to the result set before it (the first one's to the first).
             rows.messages = Some(cur.clone());
             // The user stopped a result set: the rest of the batch is cancelled, not shown.
@@ -811,7 +839,7 @@ pub(crate) async fn run(
                     Next::Columns(_) if stopping => {}
                     Next::Columns(cols) => {
                         if shown {
-                            cur = next(&cur);
+                            cur = advance(&cur);
                             rows.messages = Some(cur.clone());
                         }
                         shown = true;
@@ -825,6 +853,28 @@ pub(crate) async fn run(
                             let _ = client.cancel().await;
                         }
                     }
+                    Next::Error(_) if stopping => {}
+                    // Where the statement failed: its own result set (or a new one), failed, with the
+                    // results of what follows after it.
+                    Next::Error(e) => {
+                        let info = error_info_at(&e, sql, b.range.start);
+                        // A set that has columns and no rows is the failing statement's own
+                        // (the server sends the metadata first).
+                        let own = cur.rows() == 0 && cur.columns().is_some() && cur.status().error.is_none();
+                        if shown && !own {
+                            cur = advance(&cur);
+                            rows.messages = Some(cur.clone());
+                        }
+                        shown = true;
+                        reported = true;
+                        let elapsed = started.elapsed();
+                        // Failed once the run moves past it (or ends there): a reader that sees the
+                        // phase takes the statement as over.
+                        cur.update_status(|s| {
+                            s.error = Some(info);
+                            s.elapsed = Some(elapsed);
+                        });
+                    }
                     Next::End { .. } if stopping => return Ran::Cancelled,
                     Next::End { cancelled: true, .. } => return Ran::Cancelled,
                     Next::End { affected: a, .. } => {
@@ -834,6 +884,12 @@ pub(crate) async fn run(
                         break;
                     }
                     Next::Fail(_) if stopping => return Ran::Cancelled,
+                    // The batch's first error, already shown in its place: the run ends failed
+                    // when it was the last thing that happened, done when results followed.
+                    Next::Fail(e) if reported => {
+                        let info = error_info_at(&e, sql, b.range.start);
+                        return if cur.status().error.is_some() { Ran::Failed(info) } else { Ran::Done(None) };
+                    }
                     Next::Fail(e) => {
                         // A result of its own when the result set before it has rows to keep.
                         if shown && cur.rows() > 0 {

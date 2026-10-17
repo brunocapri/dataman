@@ -1,5 +1,5 @@
 use crate::tds::stream::ReceivedToken;
-use crate::{row::ColumnType, Column, Row, TokenInfo};
+use crate::{row::ColumnType, Column, Row, TokenError, TokenInfo};
 use futures_util::{
     ready,
     stream::{BoxStream, Peekable, Stream, StreamExt, TryStreamExt},
@@ -246,7 +246,7 @@ impl<'a> QueryStream<'a> {
         let s = self.try_filter_map(|item| async {
             match item {
                 QueryItem::Row(row) => Ok(Some(row)),
-                QueryItem::Metadata(_) | QueryItem::Info(_) => Ok(None),
+                QueryItem::Metadata(_) | QueryItem::Info(_) | QueryItem::Error(_) => Ok(None),
             }
         });
 
@@ -292,7 +292,7 @@ where
                 // a result set on the fly rather than discard a leading row.
                 current.get_or_insert_with(Vec::new).push(row);
             }
-            QueryItem::Info(_) => {}
+            QueryItem::Info(_) | QueryItem::Error(_) => {}
         }
     }
 
@@ -333,6 +333,9 @@ pub enum QueryItem {
     Metadata(ResultMetadata),
     /// An informational message (`PRINT`), in the order the server sent it.
     Info(TokenInfo),
+    /// A statement's error, where the server sent it (Dataman's patch): the stream still ends
+    /// with the first error of the response, as before.
+    Error(TokenError),
 }
 
 impl QueryItem {
@@ -427,6 +430,7 @@ impl<'a> Stream for QueryStream<'a> {
                     Poll::Ready(Some(Ok(QueryItem::Row(row))))
                 }
                 ReceivedToken::Info(info) => Poll::Ready(Some(Ok(QueryItem::Info(info)))),
+                ReceivedToken::Error(err) => Poll::Ready(Some(Ok(QueryItem::Error(err)))),
                 _ => continue,
             };
         }
