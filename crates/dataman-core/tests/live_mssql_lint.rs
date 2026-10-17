@@ -161,3 +161,24 @@ fn lint_valid_statements() {
     mssql_drop(&e, "dataman_msw3");
     assert!(bad.is_empty(), "\n{}", bad.join("\n"));
 }
+
+/// Reads are never classified as writes (a read-only connection refuses writes by this).
+#[test]
+fn reads_are_reads() {
+    let mut bad = Vec::new();
+    for src in VALID {
+        let up = src.trim_start().to_ascii_uppercase();
+        let read = ["SELECT", "WITH", "TABLE ", "SHOW", "DESCRIBE", "EXPLAIN", "VALUES", "("].iter().any(|v| up.starts_with(v));
+        let f = dataman_core::guard::classify_in(src, Dialect::TSql);
+        let writes_inside = up.contains(" INTO ") || up.contains("ANALYZE") || up.contains("NEXT VALUE FOR");
+        if read && !writes_inside && f.is_write() {
+            bad.push(format!("{src} -> {:?} {}", f.effect, f.verb));
+        }
+        if read && !writes_inside {
+            if let Some(why) = dataman_core::guard::read_only_refusal_in(src, Dialect::TSql) {
+                bad.push(format!("{src} refused: {why}"));
+            }
+        }
+    }
+    assert!(bad.is_empty(), "\n{}", bad.join("\n"));
+}

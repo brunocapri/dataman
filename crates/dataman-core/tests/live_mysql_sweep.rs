@@ -216,6 +216,24 @@ fn big_scripts_split_fast() {
     assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
 }
 
+/// A `mysqldump` of a database with routines, triggers and events (`DUMP_FILE`, naming
+/// `dump_src`) loads into a copy.
+#[test]
+fn mysqldump_loads() {
+    let Ok(path) = std::env::var("DUMP_FILE") else { return };
+    let src = String::from_utf8_lossy(&std::fs::read(path).unwrap()).replace("dump_src", "dump_dst");
+    let e = env();
+    let Some(c) = mysql_on(&e, mysql_profile("")) else { return };
+    exec_quiet(&e, &c, &["DROP DATABASE IF EXISTS dump_dst"]);
+    let s = c.session(None);
+    let n = split_in(&src, Dialect::MySql).len();
+    let bad = script(&e, &s, &src);
+    assert!(bad.is_empty(), "{n} statements: {bad:#?}");
+    let rs = run(&e, &s, "SELECT (SELECT COUNT(*) FROM dump_dst.t1) a, (SELECT COUNT(*) FROM information_schema.routines WHERE routine_schema = 'dump_dst') r, (SELECT COUNT(*) FROM information_schema.triggers WHERE trigger_schema = 'dump_dst') t, (SELECT COUNT(*) FROM information_schema.events WHERE event_schema = 'dump_dst') ev");
+    eprintln!("{n} statements, counts {:?}", (0..4).map(|i| rs.snapshot().text(0, i).map(|s| s.into_owned())).collect::<Vec<_>>());
+    exec_quiet(&e, &c, &["DROP DATABASE dump_dst"]);
+}
+
 #[test]
 fn delimiter_scripts() {
     let e = env();

@@ -5,6 +5,7 @@ pub mod split;
 
 pub use dialect::Dialect;
 pub use lexer::{Token, TokenKind, tokenize, tokenize_in};
+pub use split::is_exec_comment;
 pub use split::{GoBatch, Statement, batches_in, go_batches, split, split_in, statement_at, statement_at_in};
 
 /// Quotes an identifier when PostgreSQL would fold or reject it unquoted (the lexer's keywords;
@@ -111,4 +112,27 @@ mod tests {
         assert_eq!(quote_ident("a\"b"), "\"a\"\"b\"");
         assert_eq!(quote_ident("1x"), "\"1x\"");
     }
+}
+
+/// MySQL's `/*! … */` (and `/*M! … */`) comments hold code the server runs: `sql` with them
+/// opened (their delimiters blanked, so every byte offset stays), for reading what a statement
+/// does. Other dialects, and texts without such a comment, come back as they are.
+pub fn expand_exec_comments(sql: &str, dialect: Dialect) -> std::borrow::Cow<'_, str> {
+    if !dialect.script().exec_comments || !sql.contains("/*!") && !sql.contains("/*M!") {
+        return std::borrow::Cow::Borrowed(sql);
+    }
+    let mut out = sql.to_string();
+    for t in tokenize_in(sql, dialect) {
+        let text = t.text(sql);
+        if t.kind != TokenKind::BlockComment || !is_exec_comment(text) || !text.ends_with("*/") || text.len() < 5 {
+            continue;
+        }
+        // `/*!` or `/*M!`, then the version digits.
+        let head = if text.starts_with("/*!") { 3 } else { 4 };
+        let digits = text.as_bytes()[head..].iter().take_while(|b| b.is_ascii_digit()).count();
+        let blank = |out: &mut String, from: usize, to: usize| out.replace_range(from..to, &" ".repeat(to - from));
+        blank(&mut out, t.start, t.start + head + digits);
+        blank(&mut out, t.end - 2, t.end);
+    }
+    std::borrow::Cow::Owned(out)
 }

@@ -91,6 +91,8 @@ pub struct ScriptRules {
     /// `CREATE PROCEDURE | FUNCTION | TRIGGER | EVENT` keeps its `BEGIN … END` body (MySQL), with
     /// or without a `DELIMITER` line: clients like Workbench and DataGrip send it whole.
     pub routine_bodies: bool,
+    /// `/*! … */` comments hold code the server runs (MySQL): a statement made of them is one.
+    pub exec_comments: bool,
 }
 
 /// How the rows a write touched come back.
@@ -138,9 +140,9 @@ impl Dialect {
 
     pub fn script(self) -> ScriptRules {
         match self {
-            Dialect::Postgres => ScriptRules { begin_atomic: true, go_batches: false, delimiter_command: false, routine_bodies: false },
-            Dialect::MySql => ScriptRules { begin_atomic: false, go_batches: false, delimiter_command: true, routine_bodies: true },
-            Dialect::TSql => ScriptRules { begin_atomic: false, go_batches: true, delimiter_command: false, routine_bodies: false },
+            Dialect::Postgres => ScriptRules { begin_atomic: true, go_batches: false, delimiter_command: false, routine_bodies: false, exec_comments: false },
+            Dialect::MySql => ScriptRules { begin_atomic: false, go_batches: false, delimiter_command: true, routine_bodies: true, exec_comments: true },
+            Dialect::TSql => ScriptRules { begin_atomic: false, go_batches: true, delimiter_command: false, routine_bodies: false, exec_comments: false },
         }
     }
 

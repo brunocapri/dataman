@@ -183,6 +183,8 @@ pub fn classify(sql: &str) -> Facts {
 /// A T-SQL batch may hold several statements without `;` between them: its facts are those of
 /// the statement the rules would ask about first, with the strongest effect of them all.
 pub fn classify_in(sql: &str, dialect: Dialect) -> Facts {
+    // MySQL runs what its `/*! … */` comments hold.
+    let sql = &*crate::sql::expand_exec_comments(sql, dialect);
     let all: Vec<Token> = tokenize_in(sql, dialect).into_iter().filter(|t| !t.kind.is_trivia()).collect();
     let mut t = Toks { src: sql, t: &all, dialect };
     while t.t.last().is_some_and(|x| x.kind == TokenKind::Punct && x.text(sql) == ";") {

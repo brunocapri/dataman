@@ -230,6 +230,88 @@ fn lint_and_parse_check_accept_valid_scripts() {
     let _ = split_in;
 }
 
+const SSMS: &str = r#"
+USE [master]
+GO
+/****** Object:  Database [dataman_msw4]    Script Date: 1/1/2026 ******/
+CREATE DATABASE [dataman_msw4]
+GO
+ALTER DATABASE [dataman_msw4] SET COMPATIBILITY_LEVEL = 150
+GO
+ALTER DATABASE [dataman_msw4] SET ANSI_NULL_DEFAULT OFF
+GO
+USE [dataman_msw4]
+GO
+/****** Object:  Table [dbo].[Customers]    Script Date: 1/1/2026 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+CREATE TABLE [dbo].[Customers](
+	[Id] [int] IDENTITY(1,1) NOT NULL,
+	[Name] [nvarchar](50) NOT NULL,
+	[Notes] [nvarchar](max) NULL,
+ CONSTRAINT [PK_Customers] PRIMARY KEY CLUSTERED
+(
+	[Id] ASC
+)WITH (PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, IGNORE_DUP_KEY = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON, OPTIMIZE_FOR_SEQUENTIAL_KEY = OFF) ON [PRIMARY]
+) ON [PRIMARY] TEXTIMAGE_ON [PRIMARY]
+GO
+SET IDENTITY_INSERT [dbo].[Customers] ON
+GO
+INSERT [dbo].[Customers] ([Id], [Name], [Notes]) VALUES (1, N'Ana', N'line1
+GO
+line3 ''quoted''')
+GO
+INSERT [dbo].[Customers] ([Id], [Name], [Notes]) VALUES (2, N'Bob', NULL)
+GO
+SET IDENTITY_INSERT [dbo].[Customers] OFF
+GO
+ALTER TABLE [dbo].[Customers] ADD  CONSTRAINT [DF_Customers_Notes]  DEFAULT (N'n/a') FOR [Notes]
+GO
+/****** Object:  StoredProcedure [dbo].[GetCustomer]    Script Date: 1/1/2026 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[GetCustomer]') AND type in (N'P', N'PC'))
+BEGIN
+EXEC dbo.sp_executesql @statement = N'CREATE PROCEDURE [dbo].[GetCustomer]
+	@Id int
+AS
+BEGIN
+	SET NOCOUNT ON;
+	SELECT * FROM dbo.Customers WHERE Id = @Id;
+	-- GO in a comment
+END
+'
+END
+GO
+EXEC sys.sp_addextendedproperty @name=N'MS_Description', @value=N'The customers' , @level0type=N'SCHEMA',@level0name=N'dbo', @level1type=N'TABLE',@level1name=N'Customers'
+GO
+EXEC [dbo].[GetCustomer] @Id = 1
+GO
+USE [master]
+GO
+ALTER DATABASE [dataman_msw4] SET  READ_WRITE
+GO
+"#;
+
+/// A script made by SSMS: `USE`, `SET`s, `GO`s, a `GO` line inside a string, `sp_executesql`.
+#[test]
+fn ssms_script_runs() {
+    let e = env();
+    let Some(c0) = mssql_on(&e, mssql_profile("master")) else { return };
+    mssql_drop(&e, "dataman_msw4");
+    let s = c0.session(None);
+    let bad = script(&e, &s, SSMS);
+    let n = batches_in(SSMS, Dialect::TSql).len();
+    let check = cell(&e, &s, "SELECT COUNT(*) FROM [dataman_msw4].dbo.Customers WHERE Notes LIKE N'line1%line3%'");
+    mssql_drop(&e, "dataman_msw4");
+    assert!(bad.is_empty(), "{n} batches: {bad:#?}");
+    assert_eq!(check.as_deref(), Some("1"));
+}
+
 #[test]
 fn no_phantom_params() {
     let mut bad = Vec::new();

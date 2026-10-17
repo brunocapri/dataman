@@ -190,6 +190,11 @@ fn creates_routine(src: &str, sig: &[&Token], i: usize) -> bool {
     false
 }
 
+/// MySQL's `/*! … */` (and MariaDB's `/*M! … */`): a comment the server runs as code.
+pub fn is_exec_comment(text: &str) -> bool {
+    text.starts_with("/*!") || text.starts_with("/*M!")
+}
+
 /// Splits tokens lexed in a dialect by its [`ScriptRules`].
 pub fn split_tokens_in(src: &str, tokens: &[Token], rules: ScriptRules) -> Vec<Statement> {
     let b = src.as_bytes();
@@ -208,7 +213,8 @@ pub fn split_tokens_in(src: &str, tokens: &[Token], rules: ScriptRules) -> Vec<S
     // to pass over (the command's line, the rest of a terminator lexed as several tokens).
     let mut delimiter: Option<String> = None;
     let mut skip_until = 0;
-    let sig: Vec<&Token> = tokens.iter().filter(|t| !t.kind.is_trivia()).collect();
+    let exec_comment = |t: &Token| rules.exec_comments && t.kind == TokenKind::BlockComment && is_exec_comment(t.text(src));
+    let sig: Vec<&Token> = tokens.iter().filter(|t| !t.kind.is_trivia() || exec_comment(t)).collect();
     for (i, t) in sig.iter().enumerate() {
         if t.start < skip_until {
             continue;
@@ -367,6 +373,22 @@ mod tests {
         assert_eq!(split_in("SELECT delimiter FROM t; SELECT 2", Dialect::MySql).len(), 2);
         // PostgreSQL has no DELIMITER command.
         assert_eq!(split("DELIMITER //\nSELECT 1; SELECT 2").len(), 2);
+    }
+
+    /// MySQL: `/*! … */` comments are statements the server runs (mysqldump writes its settings
+    /// that way); plain comments are not.
+    #[test]
+    fn mysql_executable_comments_are_statements() {
+        let src = "/*!40101 SET NAMES utf8mb4 */;\n/* plain */;\n-- note\n/*!40014 SET FOREIGN_KEY_CHECKS=0 */;\nSELECT /*!40001 SQL_NO_CACHE */ 1;\n/*M!100000 SET x = 1 */";
+        let got: Vec<&str> = split_in(src, Dialect::MySql).into_iter().map(|s| &src[s.range]).collect();
+        assert_eq!(got, vec!["/*!40101 SET NAMES utf8mb4 */", "/*!40014 SET FOREIGN_KEY_CHECKS=0 */", "SELECT /*!40001 SQL_NO_CACHE */ 1", "/*M!100000 SET x = 1 */"]);
+        // Other dialects read them as comments.
+        assert_eq!(split_in("/*!40101 SET x */;", Dialect::Postgres).len(), 0);
+        // The guard sees the code inside.
+        let f = crate::guard::classify_in("/*!50000 DROP TABLE t */", Dialect::MySql);
+        assert_eq!((f.verb.as_str(), f.effect), ("DROP TABLE", crate::guard::Effect::Ddl));
+        assert!(crate::guard::read_only_refusal_in("/*!50000 DELETE FROM t */", Dialect::MySql).is_some());
+        assert!(crate::guard::read_only_refusal_in("SELECT /*!40001 SQL_NO_CACHE */ 1", Dialect::MySql).is_none());
     }
 
     /// MySQL: routine, trigger and event bodies keep their `;` even without a `DELIMITER` line.
