@@ -167,6 +167,34 @@ fn begins_block(next: Option<&str>) -> bool {
     })
 }
 
+/// MySQL: whether the statement starting at `sig[i]` (`CREATE`) makes a stored routine, trigger or
+/// event, whose `BEGIN … END` body keeps its `;`.
+fn creates_routine(src: &str, sig: &[&Token], i: usize) -> bool {
+    for n in sig.iter().skip(i + 1).take(14) {
+        if n.kind == TokenKind::Punct && n.text(src) == ";" {
+            return false;
+        }
+        if matches!(n.kind, TokenKind::Keyword | TokenKind::Ident) {
+            let w = n.text(src);
+            if ["PROCEDURE", "FUNCTION", "TRIGGER", "EVENT"].iter().any(|k| w.eq_ignore_ascii_case(k)) {
+                return true;
+            }
+            if ["TABLE", "VIEW", "INDEX", "DATABASE", "SCHEMA", "USER", "ROLE", "SERVER", "TABLESPACE", "UNIQUE", "FULLTEXT", "SPATIAL", "TEMPORARY", "SEQUENCE", "LOGFILE", "RESOURCE"]
+                .iter()
+                .any(|k| w.eq_ignore_ascii_case(k))
+            {
+                return false;
+            }
+        }
+    }
+    false
+}
+
+/// MySQL's `/*! … */` (and MariaDB's `/*M! … */`): a comment the server runs as code.
+pub fn is_exec_comment(text: &str) -> bool {
+    text.starts_with("/*!") || text.starts_with("/*M!")
+}
+
 /// Splits tokens lexed in a dialect by its [`ScriptRules`].
 pub fn split_tokens_in(src: &str, tokens: &[Token], rules: ScriptRules) -> Vec<Statement> {
     let b = src.as_bytes();
@@ -177,13 +205,16 @@ pub fn split_tokens_in(src: &str, tokens: &[Token], rules: ScriptRules) -> Vec<S
     let mut blocks: Vec<bool> = Vec::new(); // true = BEGIN (ATOMIC), false = CASE
     // T-SQL: a procedure's, function's or trigger's body runs to the end of its batch.
     let mut to_batch_end = false;
+    // MySQL: inside a routine's definition, its `BEGIN` and `CASE` blocks nest in `blocks`.
+    let mut routine = false;
     let mut first: Option<usize> = None;
     let mut last = 0;
     // MySQL clients' `DELIMITER //`: the terminator in force when it is not `;`, and the tokens
     // to pass over (the command's line, the rest of a terminator lexed as several tokens).
     let mut delimiter: Option<String> = None;
     let mut skip_until = 0;
-    let sig: Vec<&Token> = tokens.iter().filter(|t| !t.kind.is_trivia()).collect();
+    let exec_comment = |t: &Token| rules.exec_comments && t.kind == TokenKind::BlockComment && is_exec_comment(t.text(src));
+    let sig: Vec<&Token> = tokens.iter().filter(|t| !t.kind.is_trivia() || exec_comment(t)).collect();
     for (i, t) in sig.iter().enumerate() {
         if t.start < skip_until {
             continue;
@@ -210,6 +241,8 @@ pub fn split_tokens_in(src: &str, tokens: &[Token], rules: ScriptRules) -> Vec<S
                 out.push(Statement { range: f..last, full: f..t.start + p + d.len() });
             }
             skip_until = t.start + p + d.len();
+            routine = false;
+            blocks.clear();
             continue;
         }
         if rules.go_batches
@@ -231,7 +264,21 @@ pub fn split_tokens_in(src: &str, tokens: &[Token], rules: ScriptRules) -> Vec<S
             }
             to_batch_end = sig.get(j).is_some_and(|n| ["PROC", "PROCEDURE", "FUNCTION", "TRIGGER"].iter().any(|k| word(n, k)));
         }
-        if rules.begin_atomic && word(t, "BEGIN") && sig.get(i + 1).is_some_and(|n| word(n, "ATOMIC")) {
+        if rules.routine_bodies && first.is_none() && word(t, "CREATE") {
+            routine = creates_routine(src, &sig, i);
+        }
+        if routine && delimiter.is_none() {
+            // (`END CASE` closes the statement its `END` pops.)
+            if word(t, "BEGIN") || (word(t, "CASE") && !i.checked_sub(1).is_some_and(|p| word(sig[p], "END"))) {
+                blocks.push(true);
+            } else if word(t, "END") && !blocks.is_empty() {
+                // `END IF | WHILE | LOOP | REPEAT` close constructs that are not counted.
+                let closes_other = sig.get(i + 1).is_some_and(|n| ["IF", "WHILE", "LOOP", "REPEAT"].iter().any(|k| word(n, k)));
+                if !closes_other {
+                    blocks.pop();
+                }
+            }
+        } else if rules.begin_atomic && word(t, "BEGIN") && sig.get(i + 1).is_some_and(|n| word(n, "ATOMIC")) {
             blocks.push(true);
         } else if rules.go_batches && word(t, "BEGIN") && begins_block(sig.get(i + 1).map(|n| n.text(src))) {
             blocks.push(true);
@@ -248,6 +295,7 @@ pub fn split_tokens_in(src: &str, tokens: &[Token], rules: ScriptRules) -> Vec<S
                     if let Some(f) = first.take() {
                         out.push(Statement { range: f..last, full: f..t.end });
                     }
+                    routine = false;
                     continue;
                 }
                 _ => {}
@@ -325,6 +373,40 @@ mod tests {
         assert_eq!(split_in("SELECT delimiter FROM t; SELECT 2", Dialect::MySql).len(), 2);
         // PostgreSQL has no DELIMITER command.
         assert_eq!(split("DELIMITER //\nSELECT 1; SELECT 2").len(), 2);
+    }
+
+    /// MySQL: `/*! … */` comments are statements the server runs (mysqldump writes its settings
+    /// that way); plain comments are not.
+    #[test]
+    fn mysql_executable_comments_are_statements() {
+        let src = "/*!40101 SET NAMES utf8mb4 */;\n/* plain */;\n-- note\n/*!40014 SET FOREIGN_KEY_CHECKS=0 */;\nSELECT /*!40001 SQL_NO_CACHE */ 1;\n/*M!100000 SET x = 1 */";
+        let got: Vec<&str> = split_in(src, Dialect::MySql).into_iter().map(|s| &src[s.range]).collect();
+        assert_eq!(got, vec!["/*!40101 SET NAMES utf8mb4 */", "/*!40014 SET FOREIGN_KEY_CHECKS=0 */", "SELECT /*!40001 SQL_NO_CACHE */ 1", "/*M!100000 SET x = 1 */"]);
+        // Other dialects read them as comments.
+        assert_eq!(split_in("/*!40101 SET x */;", Dialect::Postgres).len(), 0);
+        // The guard sees the code inside.
+        let f = crate::guard::classify_in("/*!50000 DROP TABLE t */", Dialect::MySql);
+        assert_eq!((f.verb.as_str(), f.effect), ("DROP TABLE", crate::guard::Effect::Ddl));
+        assert!(crate::guard::read_only_refusal_in("/*!50000 DELETE FROM t */", Dialect::MySql).is_some());
+        assert!(crate::guard::read_only_refusal_in("SELECT /*!40001 SQL_NO_CACHE */ 1", Dialect::MySql).is_none());
+    }
+
+    /// MySQL: routine, trigger and event bodies keep their `;` even without a `DELIMITER` line.
+    #[test]
+    fn mysql_routine_bodies_without_delimiter() {
+        let src = "CREATE PROCEDURE p() BEGIN DECLARE i INT DEFAULT 0; w: WHILE i < 3 DO SET i = i + 1; END WHILE w; REPEAT SET i = i - 1; UNTIL i <= 0 END REPEAT; \
+            CASE WHEN i > 0 THEN SET i = 1; ELSE SET i = 2; END CASE; IF i THEN SELECT CASE WHEN i THEN 1 END; END IF; l: LOOP LEAVE l; END LOOP l; END;\n\
+            CREATE FUNCTION f() RETURNS INT RETURN CASE WHEN 1 THEN 1 ELSE 2 END;\n\
+            CREATE TRIGGER t BEFORE INSERT ON x FOR EACH ROW BEGIN SET NEW.a = 1; SET NEW.b = 2; END;\n\
+            CREATE DEFINER=`root`@`%` EVENT e ON SCHEDULE EVERY 1 DAY DO BEGIN DELETE FROM x; END;\n\
+            CREATE TABLE trigger_log (event INT, begin_at INT); BEGIN; SELECT 1; COMMIT; CREATE VIEW v AS SELECT CASE WHEN 1 THEN 2 END AS c; SELECT 9";
+        let got: Vec<&str> = split_in(src, Dialect::MySql).into_iter().map(|s| &src[s.range]).collect();
+        assert_eq!(got.len(), 10, "{got:#?}");
+        assert!(got[0].ends_with("END LOOP l; END") && got[1].ends_with("END") && got[2].ends_with("SET NEW.b = 2; END") && got[3].ends_with("DELETE FROM x; END"));
+        assert_eq!(&got[4..], ["CREATE TABLE trigger_log (event INT, begin_at INT)", "BEGIN", "SELECT 1", "COMMIT", "CREATE VIEW v AS SELECT CASE WHEN 1 THEN 2 END AS c", "SELECT 9"]);
+        // A custom delimiter still wins, and ends the routine state.
+        let src = "DELIMITER //\nCREATE PROCEDURE p() BEGIN SELECT 1; END//\nSELECT 2//\nDELIMITER ;\nSELECT 3; SELECT 4";
+        assert_eq!(split_in(src, Dialect::MySql).len(), 4);
     }
 
     /// T-SQL: `GO` lines end batches (never inside strings or comments); `;` ends statements

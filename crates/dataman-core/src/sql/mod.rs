@@ -5,6 +5,7 @@ pub mod split;
 
 pub use dialect::Dialect;
 pub use lexer::{Token, TokenKind, tokenize, tokenize_in};
+pub use split::is_exec_comment;
 pub use split::{GoBatch, Statement, batches_in, go_batches, split, split_in, statement_at, statement_at_in};
 
 /// Quotes an identifier when PostgreSQL would fold or reject it unquoted (the lexer's keywords;
@@ -91,6 +92,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn script_files_decode() {
+        assert_eq!(decode_script(b"SELECT 1"), "SELECT 1");
+        assert_eq!(decode_script(b"\xef\xbb\xbfUSE [x]\nGO"), "USE [x]\nGO");
+        let u16le: Vec<u8> = [0xff, 0xfe].into_iter().chain("SELECT 'é'".encode_utf16().flat_map(u16::to_le_bytes)).collect();
+        assert_eq!(decode_script(&u16le), "SELECT 'é'");
+        let u16be: Vec<u8> = [0xfe, 0xff].into_iter().chain("SELECT 'é'".encode_utf16().flat_map(u16::to_be_bytes)).collect();
+        assert_eq!(decode_script(&u16be), "SELECT 'é'");
+        assert_eq!(decode_script(b"SELECT 'caf\xe9'"), "SELECT 'café'");
+    }
+
+    #[test]
     fn tables_and_verbs() {
         assert_eq!(first_table("select * from public.\"Orders\" o").as_deref(), Some("Orders"));
         assert_eq!(first_table("select 1"), None);
@@ -111,4 +123,50 @@ mod tests {
         assert_eq!(quote_ident("a\"b"), "\"a\"\"b\"");
         assert_eq!(quote_ident("1x"), "\"1x\"");
     }
+}
+
+/// A SQL file's text: UTF-8 without or with its signature, UTF-16 (what SSMS and Windows tools
+/// save), else the bytes read as Latin-1 (a legacy code page); never the byte order mark.
+pub fn decode_script(bytes: &[u8]) -> String {
+    let utf16 = |b: &[u8], le: bool| {
+        let units: Vec<u16> = b.chunks_exact(2).map(|c| if le { u16::from_le_bytes([c[0], c[1]]) } else { u16::from_be_bytes([c[0], c[1]]) }).collect();
+        String::from_utf16_lossy(&units)
+    };
+    match bytes {
+        [0xff, 0xfe, rest @ ..] => utf16(rest, true),
+        [0xfe, 0xff, rest @ ..] => utf16(rest, false),
+        [0xef, 0xbb, 0xbf, rest @ ..] => String::from_utf8_lossy(rest).into_owned(),
+        _ => match std::str::from_utf8(bytes) {
+            Ok(s) => s.to_string(),
+            Err(_) => bytes.iter().map(|&b| b as char).collect(),
+        },
+    }
+}
+
+/// Reads a SQL file ([`decode_script`]).
+pub fn read_script(path: &std::path::Path) -> std::io::Result<String> {
+    std::fs::read(path).map(|b| decode_script(&b))
+}
+
+/// MySQL's `/*! … */` (and `/*M! … */`) comments hold code the server runs: `sql` with them
+/// opened (their delimiters blanked, so every byte offset stays), for reading what a statement
+/// does. Other dialects, and texts without such a comment, come back as they are.
+pub fn expand_exec_comments(sql: &str, dialect: Dialect) -> std::borrow::Cow<'_, str> {
+    if !dialect.script().exec_comments || !sql.contains("/*!") && !sql.contains("/*M!") {
+        return std::borrow::Cow::Borrowed(sql);
+    }
+    let mut out = sql.to_string();
+    for t in tokenize_in(sql, dialect) {
+        let text = t.text(sql);
+        if t.kind != TokenKind::BlockComment || !is_exec_comment(text) || !text.ends_with("*/") || text.len() < 5 {
+            continue;
+        }
+        // `/*!` or `/*M!`, then the version digits.
+        let head = if text.starts_with("/*!") { 3 } else { 4 };
+        let digits = text.as_bytes()[head..].iter().take_while(|b| b.is_ascii_digit()).count();
+        let blank = |out: &mut String, from: usize, to: usize| out.replace_range(from..to, &" ".repeat(to - from));
+        blank(&mut out, t.start, t.start + head + digits);
+        blank(&mut out, t.end - 2, t.end);
+    }
+    std::borrow::Cow::Owned(out)
 }

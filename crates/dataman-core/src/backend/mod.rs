@@ -576,7 +576,7 @@ pub(crate) enum Ran {
 
 /// Runs `rs`'s statement (with its parameters) on an editor session's client, its rows into
 /// `rs`. `aborted` says whether the user stopped it meanwhile. A text that returns several
-/// result sets (a T-SQL batch) puts each after the first into the result `next(prev)` returns
+/// result sets (a T-SQL batch, a MySQL procedure) puts each after the first into the result `next(prev)` returns
 /// (which finishes `prev`); [`Ran`] is then about the last one.
 pub(crate) async fn run(
     db: &Db,
@@ -588,7 +588,7 @@ pub(crate) async fn run(
 ) -> Ran {
     match db {
         Db::Pg(c) => pg::run(c, rs, started, on_pause, aborted).await,
-        Db::My(c) => my::run(c, rs, started, on_pause, aborted).await,
+        Db::My(c) => my::run(c, rs, started, on_pause, aborted, next).await,
         Db::Ms(c) => ms::run(c, rs, started, on_pause, aborted, next).await,
     }
 }

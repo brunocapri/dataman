@@ -129,6 +129,17 @@ fn tsql_time(s: &str) -> String {
         Some((date, time)) if date.len() == 10 && date.as_bytes().get(4) == Some(&b'-') => format!("{date}T{}", time.trim()),
         _ => s.to_string(),
     };
+    // The `T` form takes its offset glued to the time (`…T09:00:00 +01:00` is refused).
+    if out.contains('T') {
+        let b = out.as_bytes();
+        let n = b.len();
+        let hhmm = n > 7 && matches!(b[n - 6], b'+' | b'-') && b[n - 5..].iter().enumerate().all(|(i, c)| if i == 2 { *c == b':' } else { c.is_ascii_digit() });
+        let hh = n > 4 && matches!(b[n - 3], b'+' | b'-') && b[n - 2..].iter().all(u8::is_ascii_digit);
+        let at = if hhmm { n - 6 } else if hh { n - 3 } else { 0 };
+        if at > 1 && b[at - 1] == b' ' && out.is_char_boundary(at - 1) {
+            out.remove(at - 1);
+        }
+    }
     // A UTC offset without its minutes (`+00`, as the grid writes one) needs them.
     let b = out.as_bytes();
     if b.len() > 3 && matches!(b[b.len() - 3], b'+' | b'-') && b[b.len() - 2..].iter().all(u8::is_ascii_digit) && out.contains('T') {

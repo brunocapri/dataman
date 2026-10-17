@@ -157,8 +157,11 @@ const NOT_COLUMNS: &[&str] = &[
     "asymmetric", "isnull", "notnull", "sets", "ties", "only", "rows", "range", "groups", "preceding", "following",
     "unbounded", "current", "exclude", "others", "no", "row", "array", "interval", "distinct", "all", "any", "some",
     "excluded", "new", "old", "collate", "uescape", "xmlnamespaces", "passing", "columns", "path", "ref", "by",
-    "grouping", "cube", "rollup",
+    "grouping", "cube", "rollup", "character", "utc_timestamp", "utc_date", "utc_time",
 ];
+
+/// Functions whose first argument is a date part (`DATEADD(day, 1, x)`), not a column.
+const DATE_PART_FUNCS: &[&str] = &["dateadd", "datediff", "datediff_big", "datepart", "datename", "datetrunc", "date_bucket", "timestampadd", "timestampdiff"];
 
 /// Functions whose arguments use keywords (`extract(year FROM x)`): bare words inside are not
 /// columns.
@@ -195,6 +198,9 @@ fn unmodeled(src: &str, toks: &[Token], close: &[usize], dialect: Dialect) -> bo
                 return true;
             }
             if w.eq_ignore_ascii_case("NEXT") && word(i + 1, "VALUE") && word(i + 2, "FOR") {
+                return true;
+            }
+            if w.eq_ignore_ascii_case("UPDATE") && word(i + 1, "STATISTICS") {
                 return true;
             }
         }
@@ -424,6 +430,11 @@ impl<'a> P<'a> {
                     "HAVING" => clause = Clause::Having,
                     "ORDER" => clause = Clause::OrderBy,
                     "WINDOW" => clause = Clause::Window,
+                    // T-SQL's `FOR XML | JSON …` options end the query.
+                    "FOR" if self.dialect == Dialect::TSql && self.any_word(i + 1, &["XML", "JSON", "BROWSE"]) => {
+                        i = hi;
+                        continue;
+                    }
                     "LIMIT" | "OFFSET" | "FETCH" | "FOR" => clause = Clause::Other,
                     // OFFSET n ROWS FETCH NEXT m ROWS ONLY
                     "NEXT" | "FIRST" if self.word(i.wrapping_sub(1), "FETCH") => {
@@ -457,7 +468,7 @@ impl<'a> P<'a> {
                     }
                     // T-SQL and MySQL may leave INTO out.
                     "INTO" | "INSERT"
-                        if (w == "INTO" && self.word(i.wrapping_sub(1), "INSERT")) || (w == "INSERT" && !self.word(i + 1, "INTO") && self.is_name(i + 1)) =>
+                        if (w == "INTO" && self.any_word(i.wrapping_sub(1), &["INSERT", "REPLACE", "IGNORE", "LOW_PRIORITY", "HIGH_PRIORITY", "DELAYED"])) || (w == "INSERT" && !self.word(i + 1, "INTO") && self.is_name(i + 1)) =>
                     {
                         i = self.insert_target(i + 1, hi, id);
                         // INSERT … SELECT: the query reads its own sources.
@@ -637,6 +648,13 @@ impl<'a> P<'a> {
             let schema = (parts.len() > 1).then(|| self.value(parts[parts.len() - 2]));
             self.a.calls.push((schema, name.clone(), self.t[last].range()));
             let sp = SPECIAL_ARGS.contains(&name.as_str());
+            // `DATEADD(day, …)`, T-SQL's `CONVERT(int, …)`: a date part or a type first.
+            let keyword_first = DATE_PART_FUNCS.contains(&name.as_str()) || (self.dialect == Dialect::TSql && matches!(name.as_str(), "convert" | "try_convert" | "try_parse" | "parse"));
+            if keyword_first && parts.len() == 1 && matches!(self.t.get(k + 1).map(|t| t.kind), Some(TokenKind::Ident | TokenKind::Keyword)) && self.punct(k + 2, ",") {
+                let j = self.close[k].min(hi);
+                self.expr(k + 3, j, id, clause, sp);
+                return j + 1;
+            }
             return self.paren(k, hi, id, clause, sp);
         }
         let prev = i.checked_sub(1).map(|p| self.t[p]);
@@ -647,9 +665,13 @@ impl<'a> P<'a> {
                 s == "::"
                     || s == "."
                     || (p.kind == TokenKind::Punct && s == ":")
-                    || (p.kind == TokenKind::Keyword && ["AS", "OVER", "CONSTRAINT", "COLLATE", "OF", "WINDOW"].iter().any(|w| s.eq_ignore_ascii_case(w)))
+                    || (p.kind == TokenKind::Keyword && ["AS", "OVER", "CONSTRAINT", "COLLATE", "OF", "WINDOW", "CHARSET"].iter().any(|w| s.eq_ignore_ascii_case(w)))
             })
             || self.t.get(k).is_some_and(|t| t.kind == TokenKind::String || t.text(self.src) == "=>")
+            // MySQL's `CONVERT(x USING utf8mb4)`, `CHAR CHARACTER SET utf8mb4`: character sets, not columns.
+            || (parts.len() == 1 && i >= 2 && prev.is_some_and(|p| p.text(self.src).eq_ignore_ascii_case("SET")) && self.t[i - 2].text(self.src).eq_ignore_ascii_case("CHARACTER"))
+            || (parts.len() == 1 && prev.is_some_and(|p| p.text(self.src).eq_ignore_ascii_case("USING")) && !self.punct(k, "("))
+            || (self.dialect == Dialect::TSql && parts.len() == 1 && self.punct(k, ":") && self.punct(k + 1, ":"))
             || (parts.len() == 1 && NOT_COLUMNS.contains(&self.value(i).to_ascii_lowercase().as_str()));
         if !skip {
             let name = self.value(last);
@@ -677,6 +699,10 @@ impl<'a> P<'a> {
                 self.expr(i + 2, j, id, clause, false);
                 i = j + 1;
             }
+        }
+        // MySQL's select modifiers.
+        while self.any_word(i, &["DISTINCTROW", "HIGH_PRIORITY", "STRAIGHT_JOIN", "SQL_SMALL_RESULT", "SQL_BIG_RESULT", "SQL_BUFFER_RESULT", "SQL_NO_CACHE", "SQL_CACHE", "SQL_CALC_FOUND_ROWS"]) {
+            i += 1;
         }
         let mut start = i;
         loop {
@@ -731,6 +757,14 @@ impl<'a> P<'a> {
     /// One select item in `lo..hi`: its output name and the references in its expression.
     fn item(&mut self, lo: usize, hi: usize, id: usize, clause: Clause) {
         let n = hi - lo;
+        // T-SQL's `alias = expr`.
+        if self.dialect == Dialect::TSql && n >= 3 && self.is_name(lo) && self.text(lo + 1) == "=" {
+            let alias = self.value(lo);
+            self.a.scopes[id].items.push(Item::Named(alias));
+            self.a.scopes[id].item_refs.push(None);
+            self.expr(lo + 2, hi, id, clause, false);
+            return;
+        }
         let item = if n == 1 && self.text(lo) == "*" {
             Item::Star(None)
         } else if n == 3 && self.is_name(lo) && self.punct(lo + 1, ".") && self.text(lo + 2) == "*" {
@@ -860,11 +894,26 @@ impl<'a> P<'a> {
 
     /// `name` or `schema.name` at `i`: (schema, name, index after).
     fn qualified(&self, i: usize) -> (Option<String>, String, usize) {
-        if self.punct(i + 1, ".") && self.is_name(i + 2) {
-            (Some(self.value(i)), self.value(i + 2), i + 3)
-        } else {
-            (None, self.value(i), i + 1)
+        let mut parts = vec![self.value(i)];
+        let mut k = i + 1;
+        let mut gap = false;
+        loop {
+            if self.punct(k, ".") && self.is_name(k + 1) {
+                parts.push(self.value(k + 1));
+                k += 2;
+            } else if self.dialect == Dialect::TSql && self.punct(k, ".") && self.punct(k + 1, ".") && self.is_name(k + 2) {
+                // `db..table`
+                gap = true;
+                parts.push(self.value(k + 2));
+                k += 3;
+            } else {
+                break;
+            }
         }
+        let name = parts.pop().unwrap_or_default();
+        // `db.schema.table`, `db..table`: another database's table, named by its prefix.
+        let schema = if gap && parts.len() == 1 { Some(format!("{}..", parts[0])) } else if parts.is_empty() { None } else { Some(parts.join(".")) };
+        (schema, name, k)
     }
 
     /// A FROM list (sources, commas and joins); returns the index after it.
@@ -889,6 +938,10 @@ impl<'a> P<'a> {
                 k += 1;
             }
             if self.any_word(k, &["INNER", "OUTER"]) {
+                k += 1;
+            }
+            // T-SQL's join hint: `INNER LOOP JOIN`.
+            if self.dialect == Dialect::TSql && k > i && self.any_word(k, &["LOOP", "HASH", "MERGE", "REMOTE"]) && self.word(k + 1, "JOIN") {
                 k += 1;
             }
             if !self.word(k, "JOIN") {

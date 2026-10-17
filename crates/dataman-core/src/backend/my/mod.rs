@@ -366,33 +366,55 @@ type FirstMsg = Result<Arc<[Column]>, MyError>;
 /// What a reading task hands over after the columns.
 enum Msg {
     Row(Row),
+    /// The next result set of the statement starts (a procedure's): its columns. The rows
+    /// before it were the previous set's.
+    Set(Arc<[Column]>),
     /// The end: the row count, or the rows affected by a statement without rows.
     Done(u64),
     Fail(MyError),
 }
 
 async fn stream<P: Protocol>(mut qr: QueryResult<'_, 'static, P>, first: &mut Option<oneshot::Sender<FirstMsg>>, tx: &mpsc::Sender<Msg>) -> Result<u64, MyError> {
-    let cols: Arc<[Column]> = qr.columns().unwrap_or_else(|| Arc::from(Vec::new()));
-    let affected = qr.affected_rows();
-    if let Some(f) = first.take() {
-        let _ = f.send(Ok(cols.clone()));
-    }
-    if cols.is_empty() {
-        qr.drop_result().await?;
-        return Ok(affected);
-    }
+    // A procedure may return several result sets (then its own OK): each with columns goes to the
+    // reader in turn; sets without (an OK) only count when no set had rows.
+    let mut affected = qr.affected_rows();
     let mut n = 0;
+    let mut shown = false;
     let mut open = true;
-    while let Some(row) = qr.next().await? {
-        n += 1;
-        // A reader that went away (an export stopped) still gets its rows read: the
-        // connection is only free after the last one.
-        if open && tx.send(Msg::Row(row)).await.is_err() {
-            open = false;
+    while let Some(cols) = qr.columns() {
+        if cols.is_empty() {
+            if !shown {
+                affected = qr.affected_rows();
+            }
+            qr.next().await?;
+            continue;
+        }
+        match first.take() {
+            Some(f) => {
+                let _ = f.send(Ok(cols.clone()));
+            }
+            None => {
+                if open && tx.send(Msg::Set(cols.clone())).await.is_err() {
+                    open = false;
+                }
+            }
+        }
+        shown = true;
+        n = 0;
+        while let Some(row) = qr.next().await? {
+            n += 1;
+            // A reader that went away (an export stopped) still gets its rows read: the
+            // connection is only free after the last one.
+            if open && tx.send(Msg::Row(row)).await.is_err() {
+                open = false;
+            }
         }
     }
+    if let Some(f) = first.take() {
+        let _ = f.send(Ok(Arc::from(Vec::new())));
+    }
     qr.drop_result().await?;
-    Ok(n)
+    Ok(if shown { n } else { affected })
 }
 
 /// A statement's rows, decoded into the grid's chunks.
@@ -401,19 +423,25 @@ pub(crate) struct MyRows {
     dec: Vec<Dec>,
     affected: Option<u64>,
     ended: bool,
+    /// The columns of the next result set, when the rows just read ended at its start.
+    next_set: Option<Arc<[Column]>>,
 }
 
 impl MyRows {
     fn new(rx: mpsc::Receiver<Msg>, dec: Vec<Dec>) -> MyRows {
-        MyRows { rx, dec, affected: None, ended: false }
+        MyRows { rx, dec, affected: None, ended: false, next_set: None }
     }
 
     async fn next_msg(&mut self) -> Result<Option<Row>, MyError> {
-        if self.ended {
+        if self.ended || self.next_set.is_some() {
             return Ok(None);
         }
         match self.rx.recv().await {
             Some(Msg::Row(r)) => Ok(Some(r)),
+            Some(Msg::Set(cols)) => {
+                self.next_set = Some(cols);
+                Ok(None)
+            }
             Some(Msg::Done(n)) => {
                 self.ended = true;
                 self.affected = Some(n);
@@ -428,6 +456,17 @@ impl MyRows {
                 Err(closed_error())
             }
         }
+    }
+}
+
+impl MyRows {
+    /// The next result set of the statement, when the rows read ended at its start: its columns
+    /// are returned and its rows follow.
+    fn next_set(&mut self) -> Option<Arc<[Column]>> {
+        let cols = self.next_set.take()?;
+        let (_, dec) = decode::column_infos(&cols);
+        self.dec = dec;
+        Some(cols)
     }
 }
 
@@ -620,6 +659,7 @@ pub(crate) async fn run(
     started: Instant,
     on_pause: &(dyn Fn() + Sync),
     aborted: &(dyn Fn() -> bool + Sync),
+    next: &(dyn Fn(&Arc<ResultSet>) -> Arc<ResultSet> + Sync),
 ) -> Ran {
     let fail = |e: &MyError| if interrupted(e) { Ran::Cancelled } else { Ran::Failed(error_info_at(e, &rs.sql)) };
     let exec = match plan(client, &rs.sql, rs.params(), aborted).await {
@@ -637,9 +677,25 @@ pub(crate) async fn run(
     rs.set_columns(infos);
     let cols = rs.columns().unwrap_or_default();
     let mut rows = MyRows::new(rx, dec);
-    match super::pump(&mut rows, rs, &cols, started, on_pause).await {
-        Ok(n) => Ran::Done(n),
-        Err(e) => fail(&e),
+    // A procedure's later result sets each get a result of their own.
+    let mut cur = rs.clone();
+    let mut cols = cols;
+    loop {
+        let n = match super::pump(&mut rows, &cur, &cols, started, on_pause).await {
+            Ok(n) => n,
+            Err(e) => return fail(&e),
+        };
+        let Some(set) = rows.next_set() else { return Ran::Done(n) };
+        // The user stopped it: the rest of the procedure's results are not shown.
+        if cur.demand().borrow().abort && !cur.status().partial {
+            let _ = client.cancel().await;
+            return Ran::Cancelled;
+        }
+        cur = next(&cur);
+        let (infos, _) = decode::column_infos(&set);
+        cur.set_named_origins(set.iter().map(decode::origin).collect());
+        cur.set_columns(infos);
+        cols = cur.columns().unwrap_or_default();
     }
 }
 
