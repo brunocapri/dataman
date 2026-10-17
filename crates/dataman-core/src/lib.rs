@@ -36,6 +36,7 @@ pub mod own;
 pub mod params;
 pub mod parse_check;
 pub mod pgpass;
+mod pgtypes;
 pub mod pgservice;
 pub mod pins;
 pub mod relations;

@@ -137,6 +137,9 @@ pub struct Analysis {
     /// read, a scope left open, several statements run together without `;`): its sources and
     /// references may be wrong, so nothing is checked against the schema (fail-open).
     pub unsure: bool,
+    /// Tables (lower case) the script creates, drops and re-creates or alters: the catalog's
+    /// columns for them may be out of date, so they are read as having unknown columns.
+    pub distrust: std::collections::HashSet<String>,
 }
 
 impl Analysis {
@@ -201,6 +204,13 @@ fn unmodeled(src: &str, toks: &[Token], close: &[usize], dialect: Dialect) -> bo
                 return true;
             }
             if w.eq_ignore_ascii_case("UPDATE") && word(i + 1, "STATISTICS") {
+                return true;
+            }
+            // PostgreSQL: `OVERRIDING SYSTEM VALUE`, a CTE's `SEARCH … FIRST BY` and `CYCLE … SET`.
+            if (w.eq_ignore_ascii_case("OVERRIDING") && (word(i + 1, "SYSTEM") || word(i + 1, "USER")) && word(i + 2, "VALUE"))
+                || (w.eq_ignore_ascii_case("SEARCH") && (word(i + 1, "DEPTH") || word(i + 1, "BREADTH")) && word(i + 2, "FIRST"))
+                || (w.eq_ignore_ascii_case("CYCLE") && i > 0 && toks[i - 1].text(src) == ")")
+            {
                 return true;
             }
         }
@@ -432,6 +442,13 @@ impl<'a> P<'a> {
                     "WINDOW" => clause = Clause::Window,
                     // T-SQL's `FOR XML | JSON …` options end the query.
                     "FOR" if self.dialect == Dialect::TSql && self.any_word(i + 1, &["XML", "JSON", "BROWSE"]) => {
+                        i = hi;
+                        continue;
+                    }
+                    // `FOR [NO KEY] UPDATE | [KEY] SHARE [OF t, …] [NOWAIT | SKIP LOCKED]`: the
+                    // row-lock clause ends the query; none of its words is a column.
+                    "FOR" if self.any_word(i + 1, &["UPDATE", "SHARE", "NO", "KEY"]) => {
+                        clause = Clause::Other;
                         i = hi;
                         continue;
                     }
@@ -769,6 +786,10 @@ impl<'a> P<'a> {
             Item::Star(None)
         } else if n == 3 && self.is_name(lo) && self.punct(lo + 1, ".") && self.text(lo + 2) == "*" {
             Item::Star(Some(self.value(lo)))
+        } else if n >= 3 && self.text(hi - 1) == "*" && self.punct(hi - 2, ".") {
+            // `(expr).*`, `s.col.*`: the fields of a composite, columns the reader cannot know
+            // (a star of no source).
+            Item::Star(Some(String::new()))
         } else if n >= 2 && self.word(hi - 2, "AS") && (self.is_name(hi - 1) || self.t[hi - 1].kind == TokenKind::Keyword) {
             Item::Named(self.value(hi - 1))
         } else if n >= 2
@@ -1050,10 +1071,10 @@ impl<'a> P<'a> {
             self.a.scopes[id].open = true;
             return i;
         }
-        let name_end = self.t[i - 1].end;
+        let name_end = self.t.get(i - 1).map_or(self.src.len(), |t| t.end);
         let k = self.alias(i, hi, id, Some(kind), start);
         if let Some(s) = self.a.scopes[id].sources.last_mut()
-            && s.name_range.start == self.t[start].start
+            && self.t.get(start).is_some_and(|t| s.name_range.start == t.start)
         {
             s.name_range.end = s.name_range.end.min(name_end);
         }
@@ -1201,6 +1222,7 @@ impl Analysis {
                 let c = self.visible_cte(scope, name)?;
                 Some(renamed(self.cte_columns(c, snap, depth + 1)?))
             }
+            SourceKind::Table { name, .. } if self.distrust.contains(&name.to_lowercase()) => None,
             SourceKind::Table { schema, name } => {
                 let rel = snap.resolve(schema.as_deref(), name)?;
                 let cols = snap.known_columns(rel)?;

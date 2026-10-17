@@ -388,7 +388,7 @@ fn comparable(d: Dialect, type_name: &str) -> bool {
             "text" | "ntext" | "image" | "xml" | "udt" | "sql_variant" | "float" | "real" | "datetime2" | "time" | "datetimeoffset"
         );
     }
-    !matches!(base, "json" | "xml" | "point" | "line" | "lseg" | "box" | "path" | "polygon" | "circle" | "float" | "float unsigned" | "geometry")
+    !matches!(base, "json" | "xml" | "point" | "line" | "lseg" | "box" | "path" | "polygon" | "circle" | "jsonpath" | "lquery" | "ltxtquery" | "txid_snapshot" | "pg_snapshot" | "float" | "float unsigned" | "geometry")
 }
 
 /// The value a conflict check compares a column with: the text the grid showed, quoted. MySQL

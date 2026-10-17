@@ -188,7 +188,7 @@ impl Db {
         match self {
             Db::Pg(c) => {
                 let stmt = c.prepare(sql).await.map_err(|e| pg::error_info(&e))?;
-                Ok(Prepared { columns: pg::column_infos(&stmt), stmt: PreparedStmt::Pg(c.clone(), stmt) })
+                Ok(Prepared { columns: pg::column_infos(&stmt), stmt: PreparedStmt::Pg(c.clone(), stmt, sql.to_string()) })
             }
             Db::My(c) => {
                 let stmt = c.prepare(sql).await.map_err(|e| my::error_info_at(&e, sql))?;
@@ -385,7 +385,7 @@ pub(crate) struct Prepared {
 }
 
 enum PreparedStmt {
-    Pg(Arc<tokio_postgres::Client>, tokio_postgres::Statement),
+    Pg(Arc<tokio_postgres::Client>, tokio_postgres::Statement, String),
     My(Arc<my::Client>, mysql_async::Statement),
     /// The batch already runs: its rows, taken by [`Prepared::start`].
     Ms(parking_lot::Mutex<Option<ms::MsRows>>),
@@ -396,7 +396,7 @@ impl Prepared {
     /// server sends nothing before): race it with whatever cancels.
     pub(crate) async fn start(&self) -> Result<Rows, ErrorInfo> {
         match &self.stmt {
-            PreparedStmt::Pg(c, stmt) => pg::start(c, stmt, &self.columns).await.map_err(|e| pg::error_info(&e)),
+            PreparedStmt::Pg(c, stmt, sql) => pg::start(c, stmt, &self.columns, sql).await.map_err(|e| pg::error_info(&e)),
             PreparedStmt::My(c, stmt) => Ok(Rows::My(my::start(c, stmt, &self.columns).await.map_err(|e| my::error_info(&e))?)),
             PreparedStmt::Ms(rows) => match rows.lock().take() {
                 Some(r) => Ok(Rows::Ms(r)),

@@ -6,7 +6,7 @@
 
 use std::fmt::Write as _;
 
-use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
+use chrono::{DateTime, Local, NaiveDate, NaiveTime, TimeZone, Utc};
 use postgres_protocol::types as pt;
 use tokio_postgres::types::{FromSql, Kind as PgKind, Type};
 
@@ -152,8 +152,7 @@ fn format_inner(ty: &Type, raw: &[u8], out: &mut String) -> Result<(), BoxErr> {
 fn format_value(ty: &Type, raw: &[u8], out: &mut String) -> Result<(), BoxErr> {
     match *ty {
         Type::BOOL => out.push_str(if pt::bool_from_sql(raw)? { "true" } else { "false" }),
-        Type::INT2 | Type::INT4 | Type::INT8 | Type::OID | Type::XID | Type::CID | Type::REGPROC
-        | Type::REGCLASS | Type::REGTYPE => {
+        Type::INT2 | Type::INT4 | Type::INT8 | Type::OID | Type::XID | Type::CID => {
             let v = match *ty {
                 Type::INT2 => pt::int2_from_sql(raw)? as i64,
                 Type::INT4 => pt::int4_from_sql(raw)? as i64,
@@ -166,7 +165,7 @@ fn format_value(ty: &Type, raw: &[u8], out: &mut String) -> Result<(), BoxErr> {
         Type::FLOAT8 => format_float(pt::float8_from_sql(raw)?, false, out),
         Type::NUMERIC => format_numeric(raw, out)?,
         Type::TEXT | Type::VARCHAR | Type::BPCHAR | Type::NAME | Type::UNKNOWN | Type::XML
-        | Type::JSON | Type::JSONPATH => out.push_str(pt::text_from_sql(raw)?),
+        | Type::JSON => out.push_str(pt::text_from_sql(raw)?),
         Type::JSONB => {
             let (&ver, rest) = raw.split_first().ok_or("empty jsonb")?;
             if ver != 1 {
@@ -229,19 +228,22 @@ fn format_value(ty: &Type, raw: &[u8], out: &mut String) -> Result<(), BoxErr> {
         }
         Type::VOID => {}
         Type::INT2_VECTOR | Type::OID_VECTOR => format_array(ty, raw, out, " ", false)?,
+        // pg_stats' value lists: an array of whatever the column holds.
+        Type::ANYARRAY => format_array(ty, raw, out, ",", true)?,
         _ => match ty.kind() {
             PgKind::Array(_) => format_array(ty, raw, out, ",", true)?,
             PgKind::Enum(_) => out.push_str(std::str::from_utf8(raw)?),
             PgKind::Domain(base) => format_value(base, raw, out)?,
-            PgKind::Composite(_) => format_record(raw, out)?,
-            PgKind::Pseudo if *ty == Type::RECORD => format_record(raw, out)?,
-            _ => {
-                // Text-like unknown types (citext, ltree…) usually send UTF-8; anything else is hex.
-                match std::str::from_utf8(raw) {
-                    Ok(s) if s.chars().all(|c| !c.is_control() || c == '\n' || c == '\t') => out.push_str(s),
+            PgKind::Composite(fields) => format_record(raw, out, Some(fields))?,
+            PgKind::Pseudo if *ty == Type::RECORD => format_record(raw, out, None)?,
+            _ => match crate::pgtypes::format_special(ty, raw, out) {
+                Some(r) => r?,
+                // Text-like unknown types (citext…) usually send UTF-8; anything else is hex.
+                None => match std::str::from_utf8(raw) {
+                    Ok(s) if s.chars().all(|c| !c.is_control() || matches!(c, '\n' | '\t' | '\r')) => out.push_str(s),
                     _ => return Err("unknown".into()),
-                }
-            }
+                },
+            },
         },
     }
     Ok(())
@@ -258,13 +260,21 @@ fn format_array(ty: &Type, raw: &[u8], out: &mut String, sep: &str, braces: bool
         PgKind::Array(e) => e.clone(),
         _ => type_by_oid(arr.element_type()),
     };
-    let dims: Vec<i32> = arr.dimensions().map(|d| Ok(d.len)).collect()?;
+    let bounds: Vec<(i32, i32)> = arr.dimensions().map(|d| Ok((d.len, d.lower_bound))).collect()?;
+    let dims: Vec<i32> = bounds.iter().map(|b| b.0).collect();
     let mut values = arr.values();
     if dims.is_empty() {
         if braces {
             out.push_str("{}");
         }
         return Ok(());
+    }
+    // `[0:2]={1,2,3}`: dimensions that do not start at 1 are spelled out.
+    if braces && bounds.iter().any(|b| b.1 != 1) {
+        for (len, lo) in &bounds {
+            let _ = write!(out, "[{lo}:{}]", lo + len - 1);
+        }
+        out.push('=');
     }
     fn level(
         dims: &[i32],
@@ -290,6 +300,9 @@ fn format_array(ty: &Type, raw: &[u8], out: &mut String, sep: &str, braces: bool
                     Some(Some(v)) => {
                         let mut s = String::new();
                         format_binary(elem, v, &mut s);
+                        if braces && *elem == Type::BOOL {
+                            s = if s == "true" { "t".into() } else { "f".into() };
+                        }
                         if braces && needs_array_quotes(&s) {
                             out.push('"');
                             for c in s.chars() {
@@ -320,7 +333,7 @@ fn needs_array_quotes(s: &str) -> bool {
         || s.chars().any(|c| matches!(c, '{' | '}' | ',' | '"' | '\\' | ' ' | '\t' | '\n'))
 }
 
-fn format_record(raw: &[u8], out: &mut String) -> Result<(), BoxErr> {
+fn format_record(raw: &[u8], out: &mut String, fields: Option<&[tokio_postgres::types::Field]>) -> Result<(), BoxErr> {
     let mut b = raw;
     let take = |b: &mut &[u8], n: usize| -> Result<Vec<u8>, BoxErr> {
         if b.len() < n {
@@ -343,7 +356,10 @@ fn format_record(raw: &[u8], out: &mut String) -> Result<(), BoxErr> {
         }
         let v = take(&mut b, len as usize)?;
         let mut s = String::new();
-        format_binary(&type_by_oid(oid), &v, &mut s);
+        match fields.and_then(|f| f.get(i as usize)) {
+            Some(f) => format_binary(f.type_(), &v, &mut s),
+            None => format_binary(&type_by_oid(oid), &v, &mut s),
+        }
         if s.is_empty() || s.chars().any(|c| matches!(c, ',' | '(' | ')' | '"' | '\\' | ' ')) {
             out.push('"');
             out.push_str(&s.replace('\\', "\\\\").replace('"', "\"\""));
@@ -443,32 +459,38 @@ pub fn format_numeric(raw: &[u8], out: &mut String) -> Result<(), BoxErr> {
     Ok(())
 }
 
-const PG_EPOCH_DAYS_FROM_CE: i32 = 730_120; // 2000-01-01 as days from 0001-01-01 (CE day 1)
+/// The proleptic Gregorian date of a day number counted from 1970-01-01 (H. Hinnant's
+/// `civil_from_days`), as year (astronomical, 0 = 1 BC), month and day.
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    ((yoe + era * 400) + (m <= 2) as i64, m, d)
+}
 
-fn pg_date(days: i32) -> Option<NaiveDate> {
-    NaiveDate::from_num_days_from_ce_opt(days.checked_add(PG_EPOCH_DAYS_FROM_CE)?)
+/// `YYYY-MM-DD` of a day number counted from 2000-01-01; whether it is BC (the suffix is
+/// written by the caller, after the time).
+fn write_ymd(days: i64, out: &mut String) -> bool {
+    let (y, m, d) = civil_from_days(days + 10_957);
+    let bc = y <= 0;
+    let _ = write!(out, "{:04}-{:02}-{:02}", if bc { 1 - y } else { y }, m, d);
+    bc
 }
 
 pub fn format_date(days: i32, out: &mut String) {
     match days {
         i32::MAX => out.push_str("infinity"),
         i32::MIN => out.push_str("-infinity"),
-        _ => match pg_date(days) {
-            Some(d) => format_naive_date(d, out),
-            None => {
-                let _ = write!(out, "<date {days}>");
+        _ => {
+            if write_ymd(days as i64, out) {
+                out.push_str(" BC");
             }
-        },
-    }
-}
-
-fn format_naive_date(d: NaiveDate, out: &mut String) {
-    use chrono::Datelike;
-    let y = d.year();
-    if y <= 0 {
-        let _ = write!(out, "{:04}-{:02}-{:02} BC", 1 - y, d.month(), d.day());
-    } else {
-        let _ = write!(out, "{:04}-{:02}-{:02}", y, d.month(), d.day());
+        }
     }
 }
 
@@ -575,48 +597,47 @@ pub fn timestamp_cell(y: u16, m: u8, d: u8, h: u8, mi: u8, s: u8, us: u32) -> i6
     }
 }
 
-fn pg_datetime(micros: i64) -> Option<NaiveDateTime> {
-    let base = NaiveDate::from_ymd_opt(2000, 1, 1)?.and_time(NaiveTime::MIN);
-    base.checked_add_signed(chrono::Duration::microseconds(micros))
-}
-
 pub fn format_timestamp(micros: i64, out: &mut String) {
     match micros {
         i64::MAX => out.push_str("infinity"),
         i64::MIN => out.push_str("-infinity"),
-        _ => match pg_datetime(micros) {
-            Some(dt) => {
-                format_naive_date(dt.date(), out);
-                out.push(' ');
-                let t = dt.time();
-                use chrono::Timelike;
-                let _ = write!(out, "{:02}:{:02}:{:02}", t.hour(), t.minute(), t.second());
-                frac(t.nanosecond() / 1000, out);
+        _ => {
+            let bc = write_ymd(micros.div_euclid(86_400_000_000), out);
+            out.push(' ');
+            format_time(micros.rem_euclid(86_400_000_000), out);
+            if bc {
+                out.push_str(" BC");
             }
-            None => {
-                let _ = write!(out, "<timestamp {micros}>");
-            }
-        },
+        }
     }
 }
 
+/// Shown in the local zone (UTC beyond what chrono can convert).
 pub fn format_timestamptz(micros: i64, out: &mut String) {
     if micros == i64::MAX || micros == i64::MIN {
         return format_timestamp(micros, out);
     }
-    let Some(utc) = pg_datetime(micros) else {
-        let _ = write!(out, "<timestamptz {micros}>");
+    let utc = NaiveDate::from_ymd_opt(2000, 1, 1)
+        .map(|d| d.and_time(NaiveTime::MIN))
+        .and_then(|b| b.checked_add_signed(chrono::Duration::microseconds(micros)));
+    let Some(utc) = utc else {
+        format_timestamp(micros, out);
+        out.push_str("+00");
         return;
     };
     let local: DateTime<Local> = Utc.from_utc_datetime(&utc).with_timezone(&Local);
     let naive = local.naive_local();
-    format_naive_date(naive.date(), out);
-    out.push(' ');
-    use chrono::Timelike;
+    use chrono::{Datelike, Timelike};
+    let y = naive.year() as i64;
+    let bc = y <= 0;
+    let _ = write!(out, "{:04}-{:02}-{:02} ", if bc { 1 - y } else { y }, naive.month(), naive.day());
     let t = naive.time();
     let _ = write!(out, "{:02}:{:02}:{:02}", t.hour(), t.minute(), t.second());
     frac(t.nanosecond() / 1000, out);
     format_offset(local.offset().local_minus_utc(), out);
+    if bc {
+        out.push_str(" BC");
+    }
 }
 
 fn format_offset(secs: i32, out: &mut String) {
@@ -630,9 +651,16 @@ fn format_offset(secs: i32, out: &mut String) {
 
 /// PostgreSQL's default `IntervalStyle = postgres` output.
 pub fn format_interval(months: i32, days: i32, micros: i64, out: &mut String) {
+    // PostgreSQL 17's infinite intervals: every field at its extreme.
+    if (months, days, micros) == (i32::MAX, i32::MAX, i64::MAX) {
+        return out.push_str("infinity");
+    }
+    if (months, days, micros) == (i32::MIN, i32::MIN, i64::MIN) {
+        return out.push_str("-infinity");
+    }
     let mut parts: Vec<String> = Vec::new();
     let (y, m) = (months / 12, months % 12);
-    let unit = |n: i64, s: &str, p: &str| format!("{n} {}", if n == 1 || n == -1 { s } else { p });
+    let unit = |n: i64, s: &str, p: &str| format!("{n} {}", if n == 1 { s } else { p });
     if y != 0 {
         parts.push(unit(y as i64, "year", "years"));
     }
@@ -759,6 +787,40 @@ pub fn cmp_natural(a: &str, b: &str) -> std::cmp::Ordering {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dates_bc_and_far() {
+        let s = |f: &dyn Fn(&mut String)| {
+            let mut o = String::new();
+            f(&mut o);
+            o
+        };
+        // 0044-03-15 BC: the suffix goes after the time, as PostgreSQL prints it.
+        let days = (days_from_civil(-43, 3, 15) - 10_957) as i32;
+        assert_eq!(s(&|o| format_date(days, o)), "0044-03-15 BC");
+        let micros = days as i64 * 86_400_000_000 + 10 * 3_600_000_000;
+        assert_eq!(s(&|o| format_timestamp(micros, o)), "0044-03-15 10:00:00 BC");
+        assert_eq!(s(&|o| format_date(i32::MAX, o)), "infinity");
+        assert_eq!(s(&|o| format_date(0, o)), "2000-01-01");
+        assert_eq!(s(&|o| format_timestamp(-1, o)), "1999-12-31 23:59:59.999999");
+        // Past what chrono can hold.
+        assert_eq!(s(&|o| format_date(106_751_982, o)), "294276-12-31");
+    }
+
+    #[test]
+    fn interval_words() {
+        let s = |m, d, us| {
+            let mut o = String::new();
+            format_interval(m, d, us, &mut o);
+            o
+        };
+        assert_eq!(s(0, -1, 0), "-1 days");
+        assert_eq!(s(0, 1, 0), "1 day");
+        assert_eq!(s(-1, 0, 0), "-1 mons");
+        assert_eq!(s(14, 2, 3_723_000_000), "1 year 2 mons 2 days 01:02:03");
+        assert_eq!(s(i32::MAX, i32::MAX, i64::MAX), "infinity");
+        assert_eq!(s(i32::MIN, i32::MIN, i64::MIN), "-infinity");
+    }
 
     #[test]
     fn natural_order() {

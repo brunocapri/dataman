@@ -340,6 +340,28 @@ fn tsql_pieces(t: &Toks) -> Vec<std::ops::Range<usize>> {
 /// A statement with its leading `WITH` queries: the main statement's facts, with the strongest
 /// effect of all, and the no-WHERE of any of them (that one's command and target shown).
 fn with_queries(t: &Toks) -> Facts {
+    // A parenthesized query (`(SELECT 1) UNION (SELECT 2)`, `(DELETE … RETURNING *)`) is read as
+    // its first part.
+    let mut f = if t.punct(0, "(") {
+        let close = t.close_of(0).min(t.t.len());
+        with_queries(&t.sub(1..close))
+    } else {
+        with_queries_top(t)
+    };
+    // A writable CTE below the top level (`SELECT (WITH d AS (DELETE …) SELECT …)`,
+    // `… WHERE x IN (WITH i AS (INSERT …) SELECT …)`) still writes.
+    let mut i = 0;
+    while i + 1 < t.t.len() {
+        if t.punct(i, "(") && t.is(i + 1, "WITH") {
+            let close = t.close_of(i).min(t.t.len());
+            absorb(&mut f, with_queries(&t.sub(i + 1..close)));
+        }
+        i += 1;
+    }
+    f
+}
+
+fn with_queries_top(t: &Toks) -> Facts {
     if !t.is(0, "WITH") {
         return statement(t);
     }
@@ -381,26 +403,31 @@ fn with_queries(t: &Toks) -> Facts {
     }
     let mut f = statement(&t.sub(i.min(t.t.len())..t.t.len()));
     for c in ctes {
-        if c.no_where && !f.no_where {
-            f.no_where = true;
-            f.verb = c.verb.clone();
-            f.target = c.target.clone();
-        }
-        if c.trivial_where && !f.trivial_where && !f.no_where {
-            f.trivial_where = true;
-            f.verb = c.verb.clone();
-            f.target = c.target.clone();
-        }
-        f.merge_unbounded |= c.merge_unbounded;
-        if c.effect > f.effect {
-            f.effect = c.effect;
-            if !f.no_where && c.target.is_some() {
-                f.verb = c.verb;
-                f.target = c.target;
-            }
-        }
+        absorb(&mut f, c);
     }
     f
+}
+
+/// Adds what a statement nested in `f` (a CTE's body) does to `f`'s facts.
+fn absorb(f: &mut Facts, c: Facts) {
+    if c.no_where && !f.no_where {
+        f.no_where = true;
+        f.verb = c.verb.clone();
+        f.target = c.target.clone();
+    }
+    if c.trivial_where && !f.trivial_where && !f.no_where {
+        f.trivial_where = true;
+        f.verb = c.verb.clone();
+        f.target = c.target.clone();
+    }
+    f.merge_unbounded |= c.merge_unbounded;
+    if c.effect > f.effect {
+        f.effect = c.effect;
+        if !f.no_where && c.target.is_some() {
+            f.verb = c.verb;
+            f.target = c.target;
+        }
+    }
 }
 
 /// Object words of `CREATE`/`DROP`/`ALTER` (`MATERIALIZED VIEW`, `FOREIGN TABLE`) and the
