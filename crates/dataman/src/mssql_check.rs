@@ -95,7 +95,7 @@ fn col(tab: &Entity<QueryTab>, name: &str, cx: &mut AsyncWindowContext) -> usize
 }
 
 fn cell(tab: &Entity<QueryTab>, row: usize, col: usize, cx: &mut AsyncWindowContext) -> Option<String> {
-    cx.update(|_, cx| tab.read(cx).result().and_then(|r| r.snapshot().text(row, col).map(|v| v.into_owned()))).ok().flatten()
+    cx.update(|_, cx| tab.read(cx).result().filter(|r| row < r.rows()).and_then(|r| r.snapshot().text(row, col).map(|v| v.into_owned()))).ok().flatten()
 }
 
 /// Runs `sql` in the active tab (typed into its editor) and waits for it.

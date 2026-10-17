@@ -57,7 +57,7 @@ pub fn bench_profile(database_override: Option<&str>) -> (ConnectionProfile, Str
 }
 
 /// The MySQL server of the `mysql*` stages: `DATAMAN_BENCH_MYSQL` (`host:port:user:db`, by
-/// default the `dataman-mysql` test container) and its password in `DATAMAN_MYSQL_PASSWORD`.
+/// default the `dataman-mysql` test container) and its password in `DATAMAN_MYSQL_PASSWORD` (default the container's).
 pub fn mysql_profile() -> (ConnectionProfile, String) {
     let spec = std::env::var("DATAMAN_BENCH_MYSQL").unwrap_or_else(|_| "127.0.0.1:33306:root:dataman_test".into());
     let p: Vec<&str> = spec.split(':').collect();
@@ -69,11 +69,11 @@ pub fn mysql_profile() -> (ConnectionProfile, String) {
     prof.database = p[3].into();
     prof.sslmode = SslMode::Disable;
     prof.save_password = true;
-    (prof, std::env::var("DATAMAN_MYSQL_PASSWORD").unwrap_or_default())
+    (prof, std::env::var("DATAMAN_MYSQL_PASSWORD").unwrap_or_else(|_| "dataman-root".into()))
 }
 
 /// The SQL Server of the `mssql*` stages: `DATAMAN_BENCH_MSSQL` (`host:port:user:db`, by
-/// default the `dataman-mssql` test container) and its password in `DATAMAN_MSSQL_PASSWORD`.
+/// default the `dataman-mssql` test container) and its password in `DATAMAN_MSSQL_PASSWORD` (default the container's).
 pub fn mssql_profile() -> (ConnectionProfile, String) {
     let spec = std::env::var("DATAMAN_BENCH_MSSQL").unwrap_or_else(|_| "127.0.0.1:14330:sa:dataman_test".into());
     let p: Vec<&str> = spec.split(':').collect();
@@ -87,7 +87,7 @@ pub fn mssql_profile() -> (ConnectionProfile, String) {
     // The container's certificate is its own: encrypted, not verified.
     prof.sslmode = SslMode::Require;
     prof.save_password = true;
-    (prof, std::env::var("DATAMAN_MSSQL_PASSWORD").unwrap_or_default())
+    (prof, std::env::var("DATAMAN_MSSQL_PASSWORD").unwrap_or_else(|_| "Dataman-sa-1!".into()))
 }
 
 pub struct Stats(Vec<Duration>);

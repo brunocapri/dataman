@@ -89,7 +89,7 @@ fn col(tab: &Entity<QueryTab>, name: &str, cx: &mut AsyncWindowContext) -> usize
 }
 
 fn cell(tab: &Entity<QueryTab>, row: usize, col: usize, cx: &mut AsyncWindowContext) -> Option<String> {
-    cx.update(|_, cx| tab.read(cx).result().and_then(|r| r.snapshot().text(row, col).map(|v| v.into_owned()))).ok().flatten()
+    cx.update(|_, cx| tab.read(cx).result().filter(|r| row < r.rows()).and_then(|r| r.snapshot().text(row, col).map(|v| v.into_owned()))).ok().flatten()
 }
 
 /// Runs `sql` in the active tab (typed into its editor) and waits for it.
@@ -360,8 +360,12 @@ async fn check(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWindo
     let script = "# a procedure, then its call\nSET @n := 1;\nDELIMITER //\nCREATE PROCEDURE chk_two()\nBEGIN\n  SELECT 'one' AS a; -- first\n  SELECT 'two' AS b;\nEND //\nDELIMITER ;\nCALL chk_two();";
     run_in(&landed, script, true, cx).await;
     let items = cx.update(|_, cx| landed.read(cx).batch_items().iter().map(|b| (b.sql.clone(), b.rs.as_ref().map(|r| (r.phase(), r.rows())))).collect::<Vec<_>>()).unwrap();
-    let fine = items.len() == 3 && items.iter().all(|(_, r)| r.is_some_and(|(p, _)| p == Phase::Done)) && items[2].1.is_some_and(|(_, n)| n == 1) && items[1].0.ends_with("END");
-    report("a DELIMITER script runs as 3 statements", fine, format!("{items:?}"));
+    // The CALL's two SELECTs come back as two results.
+    let fine = items.len() == 4
+        && items.iter().all(|(_, r)| r.is_some_and(|(p, _)| p == Phase::Done))
+        && items[2..].iter().all(|(s, r)| s.starts_with("CALL") && r.is_some_and(|(_, n)| n == 1))
+        && items[1].0.ends_with("END");
+    report("a DELIMITER script runs as 3 statements, the CALL with 2 results", fine, format!("{items:?}"));
 
     // 7. A syntax error lands on its line.
     let bad = "SELECT 1,\n       2\n  FROM WHERE x = 1";
