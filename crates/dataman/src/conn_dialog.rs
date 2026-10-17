@@ -27,7 +27,7 @@ use crate::input::{InputEvent, TextInput};
 use crate::theme::{ActiveTheme, SWATCHES, Theme};
 use crate::ui::{self, Btn};
 
-actions!(conn_dialog, [DialogSave, DialogTest, DialogCancel]);
+actions!(conn_dialog, [DialogSave, DialogTest, DialogCancel, NextField, PrevField]);
 
 pub fn bind_keys(cx: &mut App) {
     let c = Some("ConnDialog");
@@ -35,6 +35,8 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-enter", DialogSave, c),
         KeyBinding::new("cmd-t", DialogTest, c),
         KeyBinding::new("escape", DialogCancel, c),
+        KeyBinding::new("tab", NextField, c),
+        KeyBinding::new("shift-tab", PrevField, c),
     ]);
 }
 
@@ -196,6 +198,10 @@ impl ConnDialog {
             InputEvent::Submit => d.save(cx),
             InputEvent::Changed => {
                 d.password.update(cx, |p, _| p.error = false);
+                // A new password: the last test's failure is no longer this one's.
+                if !matches!(d.test, Test::Testing { .. }) {
+                    d.test = Test::NotTested;
+                }
                 cx.notify();
             }
         })
@@ -442,13 +448,54 @@ impl ConnDialog {
         cx.notify();
     }
 
+    /// The text fields as shown, in order (Tab and ⇧Tab walk them).
+    fn inputs(&self) -> Vec<&Entity<TextInput>> {
+        let mut v = vec![&self.name];
+        if self.entry == Entry::Url {
+            v.push(&self.conn_str);
+        } else {
+            v.extend([&self.host, &self.port, &self.user, &self.database, &self.password]);
+        }
+        if self.ssh.on {
+            v.extend([&self.ssh.host, &self.ssh.port, &self.ssh.user]);
+            if self.ssh.auth == SshAuth::Key {
+                v.push(&self.ssh.key);
+            }
+            if self.ssh.auth != SshAuth::Agent {
+                v.push(&self.ssh.secret);
+            }
+        }
+        if dataman_core::MCP_ADVANCED && self.advanced.open {
+            v.push(&self.advanced.input);
+        }
+        v
+    }
+
+    /// Tab (`step` 1) and ⇧Tab (-1): the next or previous field, round.
+    fn focus_field(&mut self, step: isize, window: &mut Window, cx: &mut Context<Self>) {
+        let v = self.inputs();
+        let n = v.len() as isize;
+        let next = match v.iter().position(|i| i.focus_handle(cx).is_focused(window)) {
+            Some(at) => (at as isize + step).rem_euclid(n),
+            None if step > 0 => 0,
+            None => n - 1,
+        };
+        // As a Mac sheet: the field tabbed into is selected whole, typing replaces it.
+        let f = v[next as usize].clone();
+        window.focus(&f.focus_handle(cx), cx);
+        f.update(cx, |f, cx| f.select_all(cx));
+        cx.notify();
+    }
+
     /// The profile, the typed password and the typed SSH secret.
     fn collect(&self, cx: &App) -> Result<(ConnectionProfile, Option<String>, Option<String>), String> {
         if self.entry == Entry::Url && dataman_core::connstr::parse_profile(self.conn_str.read(cx).text()).is_none() {
             return Err("not a connection string".into());
         }
         let mut p = self.fields(cx);
-        p.port = self.port.read(cx).text().trim().parse().map_err(|_| "port must be a number".to_string())?;
+        // An empty port is the engine's (its placeholder).
+        let port = self.port.read(cx).text().trim().to_string();
+        p.port = if port.is_empty() { p.engine.default_port() } else { port.parse().map_err(|_| "port must be a number".to_string())? };
         p.color = Some(SWATCHES[self.color].to_string());
         if p.name.is_empty() {
             p.name = format!("{}@{}", if p.database.is_empty() { &p.user } else { &p.database }, p.host);
@@ -476,8 +523,11 @@ impl ConnDialog {
         p.host = text(&self.host);
         p.user = text(&self.user);
         p.database = text(&self.database);
-        p.port = text(&self.port).parse().unwrap_or(p.port);
         p.engine = self.engine;
+        p.port = match text(&self.port) {
+            t if t.is_empty() => p.engine.default_port(),
+            t => t.parse().unwrap_or(p.port),
+        };
         // MySQL and SQL Server connect without a database (the login's default; every one is
         // browsable); PostgreSQL needs one.
         if p.database.is_empty() && p.engine.is_postgres() {
@@ -729,6 +779,53 @@ impl ConnDialog {
     /// Checks: the advanced options as they stand (allowed queries, YOLO, confirmation showing).
     pub fn demo_advanced_state(&self) -> (Vec<String>, bool, bool) {
         (self.advanced.allowed.clone(), self.advanced.yolo, self.advanced.confirm)
+    }
+
+    /// Checks: another engine, as its segment's click.
+    pub fn demo_engine(&mut self, e: Engine, cx: &mut Context<Self>) {
+        self.set_engine(e, cx);
+    }
+
+    /// Checks: Test (⌘T) and Save (⌘↩), as their buttons.
+    pub fn demo_test(&mut self, cx: &mut Context<Self>) {
+        self.test(cx);
+    }
+
+    pub fn demo_save(&mut self, cx: &mut Context<Self>) {
+        self.save(cx);
+    }
+
+    /// Checks: the test line (`untested`, `testing`, `ok`, `failed: …`, `invalid: …`) and
+    /// whether the password field is red.
+    pub fn demo_status(&self, cx: &App) -> (String, bool) {
+        let s = match &self.test {
+            Test::NotTested => "untested".into(),
+            Test::Testing { .. } => "testing".into(),
+            Test::Ok { .. } => "ok".into(),
+            Test::Failed { title, .. } => format!("failed: {title}"),
+            Test::Invalid(m) => format!("invalid: {m}"),
+            Test::HostKey(_) => "hostkey".into(),
+        };
+        (s, self.password.read(cx).error)
+    }
+
+    /// Checks: the field (0 name, 1 host, 2 port, 3 user, 4 password, 5 database) with the
+    /// keyboard focus, if any.
+    pub fn demo_focused(&self, window: &Window, cx: &App) -> Option<usize> {
+        [&self.name, &self.host, &self.port, &self.user, &self.password, &self.database].iter().position(|f| f.focus_handle(cx).is_focused(window))
+    }
+
+    /// Checks: one field's text (as [`ConnDialog::demo_focused`] numbers them).
+    pub fn demo_field(&self, ix: usize, cx: &App) -> String {
+        [&self.name, &self.host, &self.port, &self.user, &self.password, &self.database][ix].read(cx).text().to_string()
+    }
+
+    pub fn demo_input(&self, ix: usize) -> Entity<TextInput> {
+        [&self.name, &self.host, &self.port, &self.user, &self.password, &self.database][ix].clone()
+    }
+
+    pub fn demo_set_field(&self, ix: usize, s: &str, cx: &mut Context<Self>) {
+        [&self.name, &self.host, &self.port, &self.user, &self.password, &self.database][ix].clone().update(cx, |t, cx| t.set_text(s, cx));
     }
 
     /// Saves the connection and reconnects it with the new settings.
@@ -1385,6 +1482,8 @@ impl Render for ConnDialog {
             .on_action(cx.listener(|d, _: &DialogSave, _, cx| d.save(cx)))
             .on_action(cx.listener(|d, _: &DialogTest, _, cx| d.test(cx)))
             .on_action(cx.listener(|d, _: &DialogCancel, _, cx| d.cancel(cx)))
+            .on_action(cx.listener(|d, _: &NextField, window, cx| d.focus_field(1, window, cx)))
+            .on_action(cx.listener(|d, _: &PrevField, window, cx| d.focus_field(-1, window, cx)))
             .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(card)
     }

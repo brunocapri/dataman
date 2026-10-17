@@ -50,6 +50,10 @@ pub enum TabEvent {
     /// A restored tab ran something while its connection (this profile id) is not connected:
     /// the workspace connects it; the run waits (`QueryTab::adopt`).
     Connect(String),
+    /// Its pending grid edits were discarded to close it: the workspace closes it now.
+    Close,
+    /// Its pending grid edits were discarded to quit: the workspace quits now.
+    Quit,
 }
 
 /// A run waiting for its parameters' values.
@@ -993,7 +997,7 @@ impl QueryTab {
     }
 
     /// `guard_edits` for something else than a run (`verb` names it on the sheet's button).
-    fn guard_edits_as(&mut self, verb: &'static str, f: impl FnOnce(&mut QueryTab, &mut Context<QueryTab>) + 'static, cx: &mut Context<Self>) {
+    pub(crate) fn guard_edits_as(&mut self, verb: &'static str, f: impl FnOnce(&mut QueryTab, &mut Context<QueryTab>) + 'static, cx: &mut Context<Self>) {
         let edits = self.edit.read(cx).pending_count();
         if edits == 0 {
             f(self, cx);

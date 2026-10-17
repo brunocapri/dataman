@@ -763,6 +763,16 @@ impl Workspace {
         self.next_id += 1;
         let tab = cx.new(|cx| QueryTab::new(id, conn, window, cx));
         cx.subscribe_in(&tab, window, |w, tab, ev: &TabEvent, window, cx| match ev {
+            TabEvent::Quit => {
+                if w.request_quit(window, cx) {
+                    w.quit_now(cx);
+                }
+            }
+            TabEvent::Close => {
+                if let Some(ix) = w.tabs.iter().position(|t| t == tab) {
+                    w.close_tab(ix, window, cx);
+                }
+            }
             TabEvent::Finished => {
                 if matches!(w.side, Some(Side::History)) {
                     let c = w.active_tab().and_then(|t| t.read(cx).connection().map(|c| c.profile.id.clone()));
@@ -872,6 +882,13 @@ impl Workspace {
     /// Closes tab `ix`; with a transaction open, asks Commit / Rollback / Cancel first.
     pub(crate) fn close_tab(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(tab) = self.tabs.get(ix).cloned() else { return };
+        // Pending grid edits are never dropped silently: the discard sheet first (on the tab, in
+        // front), then the close again (`TabEvent::Close`).
+        if tab.read(cx).edit.read(cx).pending_count() > 0 {
+            self.activate(ix, window, cx);
+            tab.update(cx, |t, cx| t.guard_edits_as("close", |_, cx| cx.emit(TabEvent::Close), cx));
+            return;
+        }
         if let Some(what) = ends_of(Change::CloseTab(tab.entity_id()))
             && self.ask_about_tx(what, AfterTx::CloseTab(tab), window, cx)
         {
@@ -970,6 +987,10 @@ impl Workspace {
     /// "Discard & run" (`discard`) or "Cancel" on the active tab's pending run.
     pub(crate) fn resolve_pending_run(&mut self, discard: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(tab) = self.active_tab().cloned() else { return };
+        if !discard {
+            // A quit for an update that the edits held back is called off.
+            self.update_on_quit = false;
+        }
         tab.update(cx, |t, cx| t.resolve_pending_run(discard, cx));
         match self.modal_return.take() {
             Some(f) => window.focus(&f, cx),
@@ -1111,6 +1132,14 @@ impl Workspace {
     /// ⌘Q, Quit in the menu, the window's close button: false when open transactions must be
     /// answered for first (the prompt is up).
     pub(crate) fn request_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        // Pending grid edits are not kept by the session: the discard sheet first, then the
+        // quit again (`TabEvent::Quit`).
+        if let Some(ix) = self.tabs.iter().position(|t| t.read(cx).edit.read(cx).pending_count() > 0) {
+            let tab = self.tabs[ix].clone();
+            self.activate(ix, window, cx);
+            tab.update(cx, |t, cx| t.guard_edits_as("quit", |_, cx| cx.emit(TabEvent::Quit), cx));
+            return false;
+        }
         !ends_of::<EntityId>(Change::Quit).is_some_and(|what| self.ask_about_tx(what, AfterTx::Quit, window, cx))
     }
 
@@ -2617,6 +2646,12 @@ impl Workspace {
 
     /// Closes the tabs in `close` together; with transactions open in any, asks once first.
     pub(crate) fn close_tabs(&mut self, close: Vec<Entity<QueryTab>>, window: &mut Window, cx: &mut Context<Self>) {
+        // Tabs with pending grid edits stay open (closing one alone asks about them).
+        let (kept, close): (Vec<_>, Vec<_>) = close.into_iter().partition(|t| t.read(cx).edit.read(cx).pending_count() > 0);
+        if !kept.is_empty() {
+            let n = kept.len();
+            self.notice(format!("{n} tab{} with pending edits left open", if n == 1 { "" } else { "s" }), cx);
+        }
         if close.is_empty() {
             return;
         }

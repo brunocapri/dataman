@@ -244,6 +244,18 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
     }
     let stage = raw.trim_end_matches("-light").to_string();
     // Connections made live while the welcome screen shows (nothing connected first).
+    if crate::newuser_check::is_stage(&stage) {
+        window
+            .spawn(cx, async move |cx| {
+                let ok = crate::newuser_check::run(&ws, cx).await;
+                let _ = cx.update(|_, cx| cx.quit());
+                if !ok {
+                    std::process::exit(1);
+                }
+            })
+            .detach();
+        return;
+    }
     if stage == "conns-check" {
         window
             .spawn(cx, async move |cx| {

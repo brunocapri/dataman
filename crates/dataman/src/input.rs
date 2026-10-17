@@ -606,6 +606,10 @@ impl EntityInputHandler for TextInput {
     }
 
     fn replace_text_in_range(&mut self, r16: Option<Range<usize>>, new: &str, _: &mut Window, cx: &mut Context<Self>) {
+        // A Tab no sheet took: a field is one line, it never holds one (nor loses its selection).
+        if !new.is_empty() && new.chars().all(|c| c == '\t') {
+            return;
+        }
         let r = self.target(r16.as_ref());
         let new = new.replace(['\n', '\r'], "");
         self.replace(r, &new, EditKind::Type, cx);

@@ -45,6 +45,7 @@ mod messages;
 mod motion;
 mod nav;
 mod nav_check;
+mod newuser_check;
 mod notify;
 mod palette;
 mod panels;
