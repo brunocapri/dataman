@@ -137,6 +137,9 @@ pub struct Analysis {
     /// read, a scope left open, several statements run together without `;`): its sources and
     /// references may be wrong, so nothing is checked against the schema (fail-open).
     pub unsure: bool,
+    /// Tables (lower case) the script creates, drops and re-creates or alters: the catalog's
+    /// columns for them may be out of date, so they are read as having unknown columns.
+    pub distrust: std::collections::HashSet<String>,
 }
 
 impl Analysis {
@@ -195,6 +198,13 @@ fn unmodeled(src: &str, toks: &[Token], close: &[usize], dialect: Dialect) -> bo
                 return true;
             }
             if w.eq_ignore_ascii_case("NEXT") && word(i + 1, "VALUE") && word(i + 2, "FOR") {
+                return true;
+            }
+            // PostgreSQL: `OVERRIDING SYSTEM VALUE`, a CTE's `SEARCH … FIRST BY` and `CYCLE … SET`.
+            if (w.eq_ignore_ascii_case("OVERRIDING") && (word(i + 1, "SYSTEM") || word(i + 1, "USER")) && word(i + 2, "VALUE"))
+                || (w.eq_ignore_ascii_case("SEARCH") && (word(i + 1, "DEPTH") || word(i + 1, "BREADTH")) && word(i + 2, "FIRST"))
+                || (w.eq_ignore_ascii_case("CYCLE") && i > 0 && toks[i - 1].text(src) == ")")
+            {
                 return true;
             }
         }
@@ -424,6 +434,13 @@ impl<'a> P<'a> {
                     "HAVING" => clause = Clause::Having,
                     "ORDER" => clause = Clause::OrderBy,
                     "WINDOW" => clause = Clause::Window,
+                    // `FOR [NO KEY] UPDATE | [KEY] SHARE [OF t, …] [NOWAIT | SKIP LOCKED]`: the
+                    // row-lock clause ends the query; none of its words is a column.
+                    "FOR" if self.any_word(i + 1, &["UPDATE", "SHARE", "NO", "KEY"]) => {
+                        clause = Clause::Other;
+                        i = hi;
+                        continue;
+                    }
                     "LIMIT" | "OFFSET" | "FETCH" | "FOR" => clause = Clause::Other,
                     // OFFSET n ROWS FETCH NEXT m ROWS ONLY
                     "NEXT" | "FIRST" if self.word(i.wrapping_sub(1), "FETCH") => {
@@ -735,6 +752,10 @@ impl<'a> P<'a> {
             Item::Star(None)
         } else if n == 3 && self.is_name(lo) && self.punct(lo + 1, ".") && self.text(lo + 2) == "*" {
             Item::Star(Some(self.value(lo)))
+        } else if n >= 3 && self.text(hi - 1) == "*" && self.punct(hi - 2, ".") {
+            // `(expr).*`, `s.col.*`: the fields of a composite, columns the reader cannot know
+            // (a star of no source).
+            Item::Star(Some(String::new()))
         } else if n >= 2 && self.word(hi - 2, "AS") && (self.is_name(hi - 1) || self.t[hi - 1].kind == TokenKind::Keyword) {
             Item::Named(self.value(hi - 1))
         } else if n >= 2
@@ -1148,6 +1169,7 @@ impl Analysis {
                 let c = self.visible_cte(scope, name)?;
                 Some(renamed(self.cte_columns(c, snap, depth + 1)?))
             }
+            SourceKind::Table { name, .. } if self.distrust.contains(&name.to_lowercase()) => None,
             SourceKind::Table { schema, name } => {
                 let rel = snap.resolve(schema.as_deref(), name)?;
                 let cols = snap.known_columns(rel)?;

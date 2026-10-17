@@ -74,7 +74,8 @@ pub fn lint(src: &str, cx: &LintContext) -> Vec<Lint> {
             let w = t.1.text(src).to_ascii_uppercase();
             out.push(Lint { range: t.1.range(), severity: Severity::Warning, message: format!("{w} without WHERE") });
         }
-        let a = scope::analyze_in(src, &toks, dialect);
+        let mut a = scope::analyze_in(src, &toks, dialect);
+        a.distrust = created.clone();
         for r in &a.missing_on {
             out.push(Lint { range: r.clone(), severity: Severity::Error, message: "JOIN without ON".into() });
         }
@@ -175,6 +176,14 @@ fn created_in(src: &str, tokens: &[Token], dialect: Dialect) -> HashSet<String> 
         }
         if w(i, "RENAME") && w(i + 1, "TO") {
             out.extend(name_at(i + 2));
+        }
+        // `ALTER TABLE [IF EXISTS] [ONLY] t …` changes its columns.
+        if w(i, "ALTER") && w(i + 1, "TABLE") {
+            let mut k = i + 2;
+            while w(k, "IF") || w(k, "EXISTS") || w(k, "ONLY") {
+                k += 1;
+            }
+            out.extend(name_at(k));
         }
     }
     out

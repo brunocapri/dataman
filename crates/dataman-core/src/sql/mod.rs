@@ -28,6 +28,12 @@ pub fn ident_value(src: &str, t: &Token) -> String {
 pub fn ident_value_in(src: &str, t: &Token, dialect: Dialect) -> String {
     let s = t.text(src);
     if t.kind == TokenKind::QuotedIdent {
+        // `U&"d\0061t\+000061"`: Unicode escapes (PostgreSQL's default escape character).
+        if let Some(u) = s.strip_prefix("U&").or_else(|| s.strip_prefix("u&"))
+            && u.starts_with('"')
+        {
+            return unicode_escapes(u[1..].strip_suffix('"').unwrap_or(&u[1..])).replace("\"\"", "\"");
+        }
         let (open, close) = match s.chars().next() {
             Some('`') => ('`', '`'),
             Some('[') => ('[', ']'),
@@ -41,6 +47,31 @@ pub fn ident_value_in(src: &str, t: &Token, dialect: Dialect) -> String {
     } else {
         s.to_string()
     }
+}
+
+/// Decodes `\XXXX`, `\+XXXXXX` and `\\` of a `U&` literal's body.
+fn unicode_escapes(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find('\\') {
+        out.push_str(&rest[..i]);
+        rest = &rest[i + 1..];
+        let (digits, n) = match rest.strip_prefix('+') {
+            Some(r) => (r, 6),
+            None => (rest, 4),
+        };
+        if rest.starts_with('\\') {
+            out.push('\\');
+            rest = &rest[1..];
+        } else if let Some(c) = digits.get(..n).and_then(|h| u32::from_str_radix(h, 16).ok()).and_then(char::from_u32) {
+            out.push(c);
+            rest = &digits[n..];
+        } else {
+            out.push('\\');
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// The table a simple query reads first (`FROM [schema.]table`), or `None` (`FROM f(…)`, a
@@ -110,5 +141,12 @@ mod tests {
         assert_eq!(quote_ident("select"), "\"select\"");
         assert_eq!(quote_ident("a\"b"), "\"a\"\"b\"");
         assert_eq!(quote_ident("1x"), "\"1x\"");
+    }
+
+    #[test]
+    fn unicode_ident() {
+        let src = "U&\"d\\0061t\\+000061\"";
+        let t = tokenize(src)[0];
+        assert_eq!(ident_value(src, &t), "data");
     }
 }
