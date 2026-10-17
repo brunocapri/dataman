@@ -308,14 +308,24 @@ pub fn parse_url(s: &str) -> Option<ConnSpec> {
         Some(r) => (Engine::MySql, r),
         None => (Engine::Postgres, s.strip_prefix("postgresql://").or_else(|| s.strip_prefix("postgres://"))?),
     };
+    // A password with an unencoded `/` or `?` hides the `@` from the authority: take the last
+    // `@` when what comes before it reads as `user:password` (not `host:port`).
+    let (userinfo, rest) = match rest.find(['/', '?']).filter(|&i| !rest[..i].contains('@')).and(rest.rfind('@')) {
+        Some(at) => match rest[..at].split_once(':') {
+            Some((_, pw)) if !pw.split(['/', '?']).next().is_some_and(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())) => (Some(&rest[..at]), &rest[at + 1..]),
+            _ => (None, rest),
+        },
+        None => (None, rest),
+    };
     let (main, query) = rest.split_once('?').unwrap_or((rest, ""));
     let (authority, path) = match main.find('/') {
         Some(i) => (&main[..i], &main[i + 1..]),
         None => (main, ""),
     };
-    let (auth, hosts) = match authority.rfind('@') {
-        Some(i) => (Some(&authority[..i]), &authority[i + 1..]),
-        None => (None, authority),
+    let (auth, hosts) = match (userinfo, authority.rfind('@')) {
+        (Some(u), _) => (Some(u), authority),
+        (None, Some(i)) => (Some(&authority[..i]), &authority[i + 1..]),
+        (None, None) => (None, authority),
     };
     let mut spec = ConnSpec { engine, ..Default::default() };
     if let Some(a) = auth {
@@ -483,6 +493,12 @@ mod tests {
         assert_eq!((s.user.as_deref(), s.password, s.sslmode), (Some("me"), None, Some(SslMode::Require)));
         let s = url("postgres://me:p@ss@h/d");
         assert_eq!((s.user.as_deref(), s.password.as_deref(), s.host.as_deref()), (Some("me"), Some("p@ss"), Some("h")));
+
+        // Unencoded `/` and `?` in the password; an @ later in the query is not the userinfo.
+        let s = url("postgres://me:a/b?c@h:5433/d");
+        assert_eq!((s.password.as_deref(), s.host.as_deref(), s.port, s.database.as_deref()), (Some("a/b?c"), Some("h"), Some(5433), Some("d")));
+        let s = url("postgres://h:5432/db?application_name=a@b");
+        assert_eq!((s.user, s.host.as_deref(), s.database.as_deref()), (None, Some("h"), Some("db")));
 
         assert!(parse("postgres://h:notaport/db").is_none());
         assert_eq!(url("postgres://h").engine, Engine::Postgres);
