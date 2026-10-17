@@ -241,7 +241,9 @@ impl Connection {
         if cols.is_empty() {
             anyhow::bail!("{schema}.{name} is not in the catalog");
         }
-        let cons = first_ok(&client, &[&ms::constraints_sql(schema, name)]).await.map(|r| ms::parse_constraints(schema, &r)).unwrap_or_default();
+        // A foreign key's target is written bare only in `dbo`, the default schema of a session.
+        let home = if schema.eq_ignore_ascii_case("dbo") { "dbo" } else { "" };
+        let cons = first_ok(&client, &[&ms::constraints_sql(schema, name)]).await.map(|r| ms::parse_constraints(home, &r)).unwrap_or_default();
         let idx = ms::indexes(&client, schema, name).await.unwrap_or_default();
         let d = self.dialect();
         Ok(format!(
