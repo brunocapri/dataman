@@ -90,9 +90,24 @@ pub struct TxWatch {
     settle: tokio::sync::Notify,
     /// The backend's process id, from its BackendKeyData (0 until it arrives).
     pid: AtomicI32,
+    /// The server's notices (`RAISE NOTICE`) since the last statement took them.
+    notices: Mutex<Vec<String>>,
 }
 
 impl TxWatch {
+    /// Keeps a notice the connection received (a loop of `RAISE NOTICE` must not fill memory).
+    pub(crate) fn push_notice(&self, m: String) {
+        let mut g = self.notices.lock();
+        if g.len() < 1000 {
+            g.push(m);
+        }
+    }
+
+    /// The notices since the last call.
+    pub(crate) fn take_notices(&self) -> Vec<String> {
+        std::mem::take(&mut *self.notices.lock())
+    }
+
     pub fn get(&self) -> TxState {
         *self.state.lock()
     }

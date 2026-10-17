@@ -196,7 +196,13 @@ fn drive<S, T>(
                         let _ = tx.send(n);
                     }
                 }
-                Ok(AsyncMessage::Notice(n)) => log::debug!("notice: {}", n.message()),
+                Ok(AsyncMessage::Notice(n)) => {
+                    log::debug!("notice: {}", n.message());
+                    // An editor session shows them with the statement's result.
+                    if let Some(w) = &watch {
+                        w.push_notice(format!("{}: {}", n.severity(), n.message()));
+                    }
+                }
                 Ok(_) => {}
                 Err(e) => {
                     log::debug!("connection closed: {e}");
@@ -569,6 +575,12 @@ pub(crate) async fn start(client: &Client, stmt: &Statement, columns: &[ColumnIn
 /// Extension types the grid decodes from their binary form (`pgtypes`).
 const BINARY_DECODED: &[&str] = &["vector", "halfvec", "sparsevec", "hstore", "ltree", "lquery", "ltxtquery", "citext"];
 
+/// Types whose text is a name the server looks up (the binary form is the OID).
+const REG_TYPES: &[&str] = &[
+    "regclass", "regproc", "regprocedure", "regoper", "regoperator", "regtype", "regnamespace", "regrole", "regconfig", "regdictionary",
+    "regcollation",
+];
+
 /// Whether a column type cannot be had in binary: `aclitem` has no binary output function (the
 /// server fails the whole query), and an extension type the grid has no decoder for would show
 /// as hex. Arrays, ranges, domains and composites count through what they hold.
@@ -579,7 +591,7 @@ fn sendless(ty: &Type) -> bool {
         K::Composite(fields) => fields.iter().any(|f| sendless(f.type_())),
         K::Enum(_) | K::Pseudo => false,
         // OIDs from 16384 up are created by users and extensions.
-        K::Simple => ty.name() == "aclitem" || (ty.oid() >= 16384 && !BINARY_DECODED.contains(&ty.name())),
+        K::Simple => ty.name() == "aclitem" || REG_TYPES.contains(&ty.name()) || (ty.oid() >= 16384 && !BINARY_DECODED.contains(&ty.name())),
         _ => false,
     }
 }

@@ -1282,3 +1282,53 @@ fn has_extensions(e: &Env, c: &Arc<Connection>) -> bool {
     }
     ok
 }
+#[test]
+fn notices_reach_the_result() {
+    let e = env();
+    let Some(c) = pg(&e) else { return };
+    let s = c.session(None);
+    let rs = s.execute("DO $$ BEGIN RAISE NOTICE 'hello %', 1; RAISE WARNING 'careful'; END $$");
+    assert_eq!(finish(&e, &rs), Phase::Done);
+    let (m, _) = rs.messages();
+    assert_eq!(m.as_slice(), ["NOTICE: hello 1", "WARNING: careful"]);
+    // Not carried over to the next statement; a failing one keeps what came before it.
+    let rs = s.execute("SELECT 1");
+    finish(&e, &rs);
+    assert!(!rs.has_messages());
+    let rs = s.execute("DO $$ BEGIN RAISE NOTICE 'before'; RAISE EXCEPTION 'boom'; END $$");
+    assert_eq!(finish(&e, &rs), Phase::Failed);
+    assert_eq!(rs.messages().0.as_slice(), ["NOTICE: before"]);
+    // A SELECT returning rows from a function that raises.
+    let s2 = c.session(None);
+    finish(&e, &s2.execute("CREATE FUNCTION pg_temp.noisy() RETURNS int LANGUAGE plpgsql AS $$ BEGIN RAISE NOTICE 'from select'; RETURN 1; END $$"));
+    let rs = s2.execute("SELECT pg_temp.noisy()");
+    assert_eq!(finish(&e, &rs), Phase::Done);
+    assert_eq!(rs.messages().0.as_slice(), ["NOTICE: from select"]);
+}
+
+#[test]
+fn reg_types_show_names_and_ranges_are_listed() {
+    let e = env();
+    let Some(c) = pg(&e) else { return };
+    let rs = query(&e, &c, "SELECT 'pg_class'::regclass, 'int4'::regtype, pg_typeof(1), 'pg_catalog'::regnamespace, 'postgres'::regrole, 'abs(int4)'::regprocedure, '+(int4,int4)'::regoperator, 'english'::regconfig, 'simple'::regdictionary, 'pg_catalog.\"default\"'::regcollation, to_regclass('pg_class')");
+    let snap = rs.snapshot();
+    let got: Vec<String> = (0..snap.columns.len()).map(|i| snap.text(0, i).unwrap().into_owned()).collect();
+    assert_eq!(got, ["pg_class", "integer", "integer", "pg_catalog", "postgres", "abs(integer)", "+(integer,integer)", "english", "simple", "\"default\"", "pg_class"]);
+    let rs = query(&e, &c, "SELECT ARRAY['pg_class'::regclass]");
+    assert_eq!(rs.snapshot().text(0, 0).as_deref(), Some("{pg_class}"));
+
+    exec_quiet(&e, &c, &["DROP SCHEMA IF EXISTS sweep_rt CASCADE"]);
+    exec(&e, &c, &["CREATE SCHEMA sweep_rt", "CREATE FUNCTION sweep_rt.d(a int, b int) RETURNS float8 LANGUAGE sql IMMUTABLE AS $$ SELECT (a - b)::float8 $$", "CREATE TYPE sweep_rt.span AS RANGE (subtype = int4, subtype_diff = sweep_rt.d)", "CREATE TYPE sweep_rt.mood AS ENUM ('a')"]);
+    let db = c.database().to_string();
+    let types = e.core.block_on(c.types(&db, "sweep_rt")).unwrap();
+    let span = types.iter().find(|t| t.name == "span").expect("range listed");
+    assert_eq!((span.kind, span.base.as_deref()), (dataman_core::schema::TypeKind::Range, Some("integer")));
+    let n = e.core.block_on(c.object_counts(&db, "sweep_rt")).unwrap();
+    assert_eq!(n.types, Some(2));
+    let def = e.core.block_on(c.type_definition(&db, "sweep_rt", "span")).unwrap().unwrap();
+    assert!(def.contains("subtype = integer") && def.contains("subtype_diff = sweep_rt.d"), "{def}");
+    // The definition runs.
+    exec(&e, &c, &["DROP TYPE sweep_rt.span"]);
+    run_ddl(&e, &c, &def);
+    exec_quiet(&e, &c, &["DROP SCHEMA IF EXISTS sweep_rt CASCADE"]);
+}

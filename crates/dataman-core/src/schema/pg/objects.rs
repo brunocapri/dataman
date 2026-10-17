@@ -36,7 +36,7 @@ pub fn count_queries(schema: &str) -> [(&'static str, String); 4] {
             format!(
                 "SELECT count(*) FROM pg_catalog.pg_type t JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace \
                  LEFT JOIN pg_catalog.pg_class c ON c.oid = t.typrelid \
-                 WHERE {w} AND (t.typtype IN ('e', 'd') OR (t.typtype = 'c' AND c.relkind = 'c'))"
+                 WHERE {w} AND (t.typtype IN ('e', 'd', 'r') OR (t.typtype = 'c' AND c.relkind = 'c'))"
             ),
         ),
         (
@@ -117,11 +117,11 @@ const LABEL_SEP: char = '\u{1f}';
 
 pub fn types_sql(schema: &str) -> String {
     format!(
-        "SELECT t.typname, t.typtype, pg_catalog.format_type(t.typbasetype, t.typtypmod), \
+        "SELECT t.typname, t.typtype, CASE WHEN t.typtype = 'r' THEN (SELECT pg_catalog.format_type(r.rngsubtype, NULL) FROM pg_catalog.pg_range r WHERE r.rngtypid = t.oid) ELSE pg_catalog.format_type(t.typbasetype, t.typtypmod) END, \
          (SELECT pg_catalog.string_agg(e.enumlabel, E'\\x1f' ORDER BY e.enumsortorder) FROM pg_catalog.pg_enum e WHERE e.enumtypid = t.oid) \
          FROM pg_catalog.pg_type t JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace \
          LEFT JOIN pg_catalog.pg_class c ON c.oid = t.typrelid \
-         WHERE {} AND (t.typtype IN ('e', 'd') OR (t.typtype = 'c' AND c.relkind = 'c')) ORDER BY t.typname",
+         WHERE {} AND (t.typtype IN ('e', 'd', 'r') OR (t.typtype = 'c' AND c.relkind = 'c')) ORDER BY t.typname",
         in_schema("n", schema)
     )
 }
@@ -131,12 +131,13 @@ pub fn parse_type(r: &[Option<String>]) -> Option<UserType> {
         "e" => TypeKind::Enum,
         "c" => TypeKind::Composite,
         "d" => TypeKind::Domain,
+        "r" => TypeKind::Range,
         _ => return None,
     };
     Some(UserType {
         name: get(r, 0)?,
         kind,
-        base: get(r, 2).filter(|_| kind == TypeKind::Domain),
+        base: get(r, 2).filter(|_| matches!(kind, TypeKind::Domain | TypeKind::Range)),
         labels: get(r, 3).map(|s| s.split(LABEL_SEP).map(str::to_string).collect()).unwrap_or_default(),
     })
 }
@@ -371,7 +372,7 @@ mod tests {
         assert!(functions_sql(s)[0].contains("p.prokind IN ('f', 'p')"));
         assert!(functions_sql(s)[1].contains("NOT p.proisagg"));
         assert!(sequences_sql(s)[0].contains("c.relkind = 'S'") && sequences_sql(s)[2].contains("information_schema.sequences"));
-        assert!(types_sql(s).contains("t.typtype IN ('e', 'd')"));
+        assert!(types_sql(s).contains("t.typtype IN ('e', 'd', 'r')"));
         assert!(triggers_sql(s).contains("NOT g.tgisinternal"));
         assert!(stats_sql(s).iter().all(|q| q.contains("c.relkind IN ('r', 'p', 'm', 'f')")));
         assert!(stats_sql(s)[0].contains("pg_partition_tree"));

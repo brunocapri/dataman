@@ -71,6 +71,7 @@ pub enum TypeKind {
     Enum,
     Composite,
     Domain,
+    Range,
 }
 
 impl TypeKind {
@@ -79,6 +80,7 @@ impl TypeKind {
             TypeKind::Enum => "enum",
             TypeKind::Composite => "composite",
             TypeKind::Domain => "domain",
+            TypeKind::Range => "range",
         }
     }
 }
@@ -875,6 +877,36 @@ impl Connection {
                     let checks: Vec<(String, String)> = rows.iter().filter_map(|r| Some((get(r, 0)?, get(r, 1)?))).collect();
                     let base = get(&r, 2).unwrap_or_else(|| "text".into());
                     Some(domain_ddl(&schema, &name, &base, parse_bool(&get(&r, 3)) == Some(true), get(&r, 4).as_deref(), &checks))
+                }
+                Some("r") => {
+                    let rows = first_ok(
+                        &client,
+                        &[&format!(
+                            "SELECT pg_catalog.format_type(r.rngsubtype, NULL), \
+                             CASE WHEN r.rngcollation <> 0 AND r.rngcollation <> (SELECT typcollation FROM pg_catalog.pg_type WHERE oid = r.rngsubtype) \
+                                  THEN (SELECT quote_ident(n.nspname) || '.' || quote_ident(c.collname) FROM pg_catalog.pg_collation c JOIN pg_catalog.pg_namespace n ON n.oid = c.collnamespace WHERE c.oid = r.rngcollation) END, \
+                             CASE WHEN NOT o.opcdefault THEN quote_ident(n2.nspname) || '.' || quote_ident(o.opcname) END, \
+                             NULLIF(r.rngcanonical::oid, 0)::regproc::text, NULLIF(r.rngsubdiff::oid, 0)::regproc::text \
+                             FROM pg_catalog.pg_range r JOIN pg_catalog.pg_opclass o ON o.oid = r.rngsubopc \
+                             JOIN pg_catalog.pg_namespace n2 ON n2.oid = o.opcnamespace WHERE r.rngtypid = {oid}"
+                        )],
+                    )
+                    .await?;
+                    let Some(r) = rows.first() else { return Ok(None) };
+                    let mut opts = vec![format!("subtype = {}", get(r, 0).unwrap_or_default())];
+                    if let Some(o) = get(r, 2) {
+                        opts.push(format!("subtype_opclass = {o}"));
+                    }
+                    if let Some(c) = get(r, 1) {
+                        opts.push(format!("collation = {c}"));
+                    }
+                    if let Some(f) = get(r, 3) {
+                        opts.push(format!("canonical = {f}"));
+                    }
+                    if let Some(f) = get(r, 4) {
+                        opts.push(format!("subtype_diff = {f}"));
+                    }
+                    Some(format!("CREATE TYPE {}.{} AS RANGE (\n    {}\n);", quote_ident(&schema), quote_ident(&name), opts.join(",\n    ")))
                 }
                 _ => None,
             })

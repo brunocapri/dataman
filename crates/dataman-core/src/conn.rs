@@ -526,6 +526,7 @@ impl Session {
             None
         };
         let started = Instant::now();
+        self.tx.take_notices();
         // A T-SQL batch returns any number of result sets: each after the first is a result of
         // its own, linked from the one before (`ResultSet::next_result`); the last is finished
         // here, and the statement goes to the history once.
@@ -564,6 +565,9 @@ impl Session {
             r => r,
         };
         let rs = &last.lock().clone();
+        for m in self.tx.take_notices() {
+            rs.push_message(m);
+        }
         // Running time: the pauses (the reader had what it asked for) are left out.
         let elapsed = started.elapsed().saturating_sub(rs.status().paused_time());
         // Undone before anyone sees the end: the transaction state is back to what it was.
