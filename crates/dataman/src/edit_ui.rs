@@ -19,7 +19,7 @@ use gpui::{
 };
 use crate::theme::px;
 use dataman_core::edit::{
-    ApplyReport, CellValue, ChangeSet, ConflictKind, EditTarget, Editability, KeySource, Outcome, PlannedChange, preview,
+    ApplyReport, CellValue, ChangeSet, ConflictKind, EditTarget, Editability, Outcome, PlannedChange, preview,
 };
 use dataman_core::result::{Phase, ResultSet, Snapshot};
 use dataman_core::sql::lexer::{TokenKind, tokenize};
@@ -70,6 +70,42 @@ pub enum Move {
     Down,
     Next,
     Prev,
+}
+
+/// What a cell's field takes while typing, for its column's type: a prefix of a valid value
+/// (`-`, `1.`, `1e` on the way to a number). Integers take digits, the other numbers a decimal
+/// or exponent form (and NaN / Infinity), a uuid its hex digits; `None` takes anything.
+pub fn typing_filter(kind: Kind, type_name: &str) -> Option<fn(&str) -> bool> {
+    match kind {
+        Kind::Int => Some(int_prefix),
+        Kind::Float | Kind::Float4 | Kind::Numeric => Some(number_prefix),
+        Kind::Other if matches!(type_name.to_ascii_lowercase().as_str(), "uuid" | "uniqueidentifier") => Some(uuid_prefix),
+        _ => None,
+    }
+}
+
+fn int_prefix(s: &str) -> bool {
+    let d = s.strip_prefix(['-', '+']).unwrap_or(s);
+    d.bytes().all(|b| b.is_ascii_digit())
+}
+
+fn number_prefix(s: &str) -> bool {
+    let d = s.strip_prefix(['-', '+']).unwrap_or(s);
+    let word = d.to_ascii_lowercase();
+    if !word.is_empty() && ["nan", "infinity"].iter().any(|w| w.starts_with(&word)) {
+        return true;
+    }
+    let (mant, exp) = match d.find(['e', 'E']) {
+        Some(i) => (&d[..i], Some(&d[i + 1..])),
+        None => (d, None),
+    };
+    let mant_ok = mant.bytes().filter(|&b| b == b'.').count() <= 1 && mant.bytes().all(|b| b.is_ascii_digit() || b == b'.');
+    let exp_ok = exp.is_none_or(|e| mant.bytes().any(|b| b.is_ascii_digit()) && int_prefix(e));
+    mant_ok && exp_ok
+}
+
+fn uuid_prefix(s: &str) -> bool {
+    s.len() <= 38 && s.bytes().all(|b| b.is_ascii_hexdigit() || matches!(b, b'-' | b'{' | b'}'))
 }
 
 /// The cell after `(row, col)` for a move, in a grid of `rows` × `cols` (⇥ wraps to the next
@@ -268,14 +304,14 @@ pub struct CellEditor {
 impl EventEmitter<CellEditorEvent> for CellEditor {}
 
 impl CellEditor {
-    pub(crate) fn new(value: Option<CellValue>, cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(value: Option<CellValue>, accept: Option<fn(&str) -> bool>, cx: &mut Context<Self>) -> Self {
         let (text, null, was_default) = match &value {
             None => (String::new(), false, true),
             Some(CellValue::Null) => (String::new(), true, false),
             Some(CellValue::Text(t)) => (t.clone(), false, false),
         };
         let input = cx.new(|cx| {
-            let mut i = TextInput::new(cx, if was_default { "default" } else { "" }).bare();
+            let mut i = TextInput::new(cx, if was_default { "default" } else { "" }).bare().accepting(accept);
             i.set_text(text, cx);
             // Entering a cell (double click or ↩) starts with its whole value selected.
             i.select_all(cx);
@@ -459,6 +495,8 @@ pub struct GridEdit {
     /// Enum labels of the result's enum columns (read with the target).
     enums: std::collections::HashMap<usize, Arc<Vec<String>>>,
     _task: Option<Task<()>>,
+    /// A `+` waiting for the rows being read to stop (`request`).
+    _insert_wait: Option<Task<()>>,
 }
 
 impl EventEmitter<EditEvent> for GridEdit {}
@@ -489,6 +527,7 @@ impl GridEdit {
             review_open: false,
             enums: Default::default(),
             _task: None,
+            _insert_wait: None,
         }
     }
 
@@ -567,19 +606,10 @@ impl GridEdit {
         self.model.summary()
     }
 
-    /// `products · pk id` for the result bar.
+    /// The table the edits go to, for the result bar.
     pub fn target_label(&self) -> Option<String> {
         match &self.target {
-            TargetState::Ready(t) => {
-                let key = t.key.iter().map(|k| k.name.as_str()).collect::<Vec<_>>().join(", ");
-                let src = match t.key_source {
-                    KeySource::PrimaryKey => "pk",
-                    KeySource::UniqueIndex => "unique",
-                    KeySource::Guessed => "key (guessed)",
-                    KeySource::Explicit => "key",
-                };
-                Some(format!("{} · {src} {key}", t.table.name))
-            }
+            TargetState::Ready(t) => Some(t.table.name.clone()),
             _ => None,
         }
     }
@@ -622,6 +652,32 @@ impl GridEdit {
     fn request(&mut self, p: Pending, window: &mut Window, cx: &mut Context<Self>) {
         let Some(rs) = self.rs.clone() else { return };
         if self.applying {
+            return;
+        }
+        // A `+` while rows are read (the next page of a paused result, scrolled to its end; a
+        // query's first rows): the row is added when they stop, up to 10 s.
+        if matches!(p, Pending::Insert) && matches!(rs.phase(), Phase::Running) && rs.columns().is_some_and(|c| !c.is_empty()) {
+            let watched = rs.clone();
+            self._insert_wait = Some(cx.spawn_in(window, async move |this, cx| {
+                for _ in 0..200 {
+                    cx.background_executor().timer(std::time::Duration::from_millis(50)).await;
+                    if watched.phase() != Phase::Running {
+                        break;
+                    }
+                }
+                let _ = this.update_in(cx, |e, window, cx| {
+                    // Another result since: the + was for the one that is gone.
+                    if !e.rs.as_ref().is_some_and(|r| Arc::ptr_eq(r, &watched)) {
+                        return;
+                    }
+                    if watched.phase() == Phase::Running {
+                        e.card = Some(Card::Note("Still running".into()));
+                        cx.notify();
+                    } else {
+                        e.request(Pending::Insert, window, cx);
+                    }
+                });
+            }));
             return;
         }
         if matches!(rs.phase(), Phase::Running) || rs.columns().is_none_or(|c| c.is_empty()) {
@@ -812,7 +868,8 @@ impl GridEdit {
             cx.notify();
             return;
         }
-        let editor = cx.new(|cx| CellEditor::new(current, cx));
+        let accept = typing_filter(kind, &cols[col].type_name);
+        let editor = cx.new(|cx| CellEditor::new(current, accept, cx));
         cx.subscribe_in(&editor, window, |e, _, ev: &CellEditorEvent, window, cx| match ev {
             CellEditorEvent::Commit(m) => e.commit_cell(*m, window, cx),
             CellEditorEvent::Cancel => e.cancel_cell(window, cx),
@@ -1660,6 +1717,29 @@ mod tests {
         assert_eq!(crate::grid::OverlayRow::Virtual(0).display(11_000), 11_000);
         assert_eq!(crate::grid::follow_growth(1000, 1000, 11_000), 11_000, "the new row's selection moves with it");
         assert_eq!(crate::grid::follow_growth(999, 1000, 11_000), 999, "a real row stays");
+    }
+
+    #[test]
+    fn number_fields_take_numbers() {
+        let int = typing_filter(Kind::Int, "int4").unwrap();
+        for ok in ["", "-", "+", "42", "-7", "0012"] {
+            assert!(int(ok), "{ok}");
+        }
+        for bad in ["a", "4a", "1.5", "1e3", "--1", " 1", "1-"] {
+            assert!(!int(bad), "{bad}");
+        }
+        let num = typing_filter(Kind::Numeric, "numeric").unwrap();
+        for ok in ["", "-", ".", "1.", "-1.25", ".5", "1e", "1e-", "1.5E+10", "N", "nan", "-Inf", "Infinity"] {
+            assert!(num(ok), "{ok}");
+        }
+        for bad in ["abc", "1.2.3", "1,5", "e5", "1e5.0", "1x", "NaNa", "- 1"] {
+            assert!(!num(bad), "{bad}");
+        }
+        let uuid = typing_filter(Kind::Other, "uuid").unwrap();
+        assert!(uuid("a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11"));
+        assert!(!uuid("a0eebc99-zz"));
+        assert!(typing_filter(Kind::Text, "text").is_none());
+        assert!(typing_filter(Kind::Other, "interval").is_none());
     }
 
     #[test]

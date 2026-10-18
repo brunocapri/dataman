@@ -351,6 +351,7 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                 && !mysql
                 && !mssql
                 && !crate::tx_check::is_stage(&stage)
+                && !crate::insert_check::is_stage(&stage)
                 && !crate::intel_demo::is_stage(&stage)
                 && !crate::plan_demo::is_stage(&stage)
                 && !crate::activity_demo::is_stage(&stage)
@@ -719,6 +720,7 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                         || crate::mssql_check::is_stage(s)
                         || crate::table_check::is_stage(s)
                         || crate::tx_check::is_stage(s)
+                        || crate::insert_check::is_stage(s)
                         || crate::import_demo::is_stage(s)
                         || crate::intel_demo::is_stage(s)
                         || crate::plan_demo::is_stage(s)
@@ -825,6 +827,14 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                     }
                     return;
                 }
+            }
+            if crate::insert_check::is_stage(&stage) {
+                let ok = crate::insert_check::run(&ws, cx).await;
+                let _ = cx.update(|_, cx| cx.quit());
+                if !ok {
+                    std::process::exit(1);
+                }
+                return;
             }
             if crate::tx_check::is_stage(&stage) {
                 let ok = crate::tx_check::run(&ws, &stage, cx).await;

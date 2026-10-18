@@ -219,6 +219,9 @@ pub struct TextInput {
     /// past an edge is running.
     drag_at: Option<Point<Pixels>>,
     autoscrolling: bool,
+    /// What the field may hold while typing (a grid cell of a number column): an insert or a
+    /// paste that would leave anything else is dropped.
+    accept: Option<fn(&str) -> bool>,
 }
 
 #[derive(Clone, Debug)]
@@ -255,7 +258,14 @@ impl TextInput {
             scroll: Pixels::ZERO,
             drag_at: None,
             autoscrolling: false,
+            accept: None,
         }
+    }
+
+    /// Only text `accept` takes can be typed or pasted (deleting is always allowed).
+    pub fn accepting(mut self, accept: Option<fn(&str) -> bool>) -> Self {
+        self.accept = accept;
+        self
     }
 
     /// Without its own field chrome.
@@ -354,6 +364,15 @@ impl TextInput {
 
     /// Replaces `range` with `new` and puts the cursor after it.
     fn replace(&mut self, range: Range<usize>, new: &str, kind: EditKind, cx: &mut Context<Self>) {
+        if !new.is_empty()
+            && let Some(ok) = self.accept
+        {
+            let mut after = self.content.clone();
+            after.replace_range(range.clone(), new);
+            if !ok(&after) {
+                return;
+            }
+        }
         let at = range.start + new.len();
         self.raw_replace(range, new, kind, cx);
         self.selected = at..at;
@@ -899,6 +918,8 @@ impl Render for TextInput {
             .on_action(cx.listener(|t, _: &Paste, _, cx| {
                 if let Some(s) = cx.read_from_clipboard().and_then(|i| i.text()) {
                     let r = t.clamp(t.selected.clone());
+                    // A number copied from somewhere usually brings spaces or a newline.
+                    let s = if t.accept.is_some() { s.trim().to_string() } else { s };
                     t.replace(r, &s, EditKind::Other, cx);
                 }
             }))

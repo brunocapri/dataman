@@ -1302,6 +1302,14 @@ impl Workspace {
         }
     }
 
+    /// The result bar's `+`: a row at the end of the active result, its first field open.
+    pub fn insert_row(&mut self, cx: &mut Context<Self>) {
+        if let Some(tab) = self.active_tab() {
+            let grid = tab.read(cx).grid.clone();
+            grid.update(cx, |g, cx| g.insert_row(cx));
+        }
+    }
+
     fn render_result_bar(&self, tab: &gpui::Entity<QueryTab>, v: &TabView, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let grid = tab.read(cx).grid.clone();
         let sorting = grid.read(cx).is_sorting();
@@ -1311,6 +1319,8 @@ impl Workspace {
         let edit_note = edit.target_label().map(|l| format!("{l} · {}", edit.summary())).unwrap_or_else(|| edit.summary());
         let state = lar_bar.as_ref().map(|b| b.state).unwrap_or_else(|| self.result_state(tab.read(cx), sorting, edit_pending));
         let rs = tab.read(cx).result().cloned();
+        // Rows to add to (`+`): a result with columns, not a live grid's.
+        let can_insert = lar_bar.is_none() && rs.as_ref().is_some_and(|r| r.columns().is_some_and(|c| !c.is_empty()));
         let summary = grid.update(cx, |g, _| g.selection_summary());
         let spec = state.spec();
         let (fg, bg) = role_colors(t, spec.role);
@@ -1591,6 +1601,18 @@ impl Workspace {
             .child(div().min_w_0().overflow_hidden().text_ellipsis().text_color(if note_err { t.err } else { t.tx3 }).child(note)))
             .children(actions)
             .child(ui::vsep(t, 16.))
+            .when(can_insert, |d| {
+                d.child(
+                    ui::button(t, "rb-insert", Btn::Ghost)
+                        .h(px(24.))
+                        .w(px(26.))
+                        .px(px(0.))
+                        .justify_center()
+                        .child(icon(Icon::Plus).size(px(13.)).text_color(t.tx2))
+                        .tooltip(ui::tooltip("Add row", None, crate::keymap::key("insert_row").as_deref()))
+                        .on_click(cx.listener(|w, _, _, cx| w.insert_row(cx))),
+                )
+            })
             .child(
                 div()
                     .relative()

@@ -337,9 +337,9 @@ async fn check(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWindo
     report("the next page keeps the hidden column", order2 == order, format!("{order2:?}"));
 
     // The inline cell editor (edit_ui/input.rs): double click selects the whole value, then
-    // word, line and (⌘Z/⇧⌘Z) undo rules shared with every text field in the app. `customer` is
-    // a plain integer column (not the key, not JSON): the text field, not a value editor.
-    let customer = col(&tab, "customer", cx);
+    // word, line and (⌘Z/⇧⌘Z) undo rules shared with every text field in the app. `status` is
+    // plain text (not the key, not JSON, not a number that takes digits only): the text field.
+    let customer = col(&tab, "status", cx);
     let edit = cx.update(|_, cx| tab.read(cx).edit.clone()).unwrap();
     let p = cx.update(|_, cx| grid.read(cx).demo_cell_point(2, customer)).unwrap();
     click_n(cx, p, 1);

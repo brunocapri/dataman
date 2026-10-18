@@ -633,6 +633,12 @@ impl ResultGrid {
     }
 
     /// Draws the row-number gutter as wide as the editor's line numbers (`GutterShare`).
+    /// The result bar's `+`: a new row at the end, its first field open (the owner adds it).
+    pub fn insert_row(&mut self, cx: &mut Context<Self>) {
+        self.follow_now();
+        cx.emit(GridEvent::InsertRow);
+    }
+
     pub fn share_gutter(&mut self, share: GutterShare) {
         self.gutter = Some(share);
     }
@@ -1071,7 +1077,9 @@ impl ResultGrid {
     }
 
     fn max_y(&self) -> f64 {
-        (self.geo.content_h - self.geo.body_h as f64).max(0.)
+        // Rows added since the last frame (a `+` revealing its new row) count already.
+        let content_h = self.geo.content_h.max(self.rows() as f64 * ROW_H as f64);
+        (content_h - self.geo.body_h as f64).max(0.)
     }
 
     /// Display rows: the result's, then the virtual rows of the decorations.
@@ -2480,8 +2488,11 @@ impl ResultGrid {
         let ry = |r: usize| (r as f64 * ROW_H as f64 - sy) as f32;
         let visible = (self.geo.body_h / ROW_H).ceil() as usize + 1;
         let last = (first + visible).min(rows);
-        // Keep the fetcher ahead of what is on screen.
-        rs.request_rows(last.min(data_rows));
+        // Keep the fetcher ahead of what is on screen; not for the new rows after the result (a
+        // `+` at the end of a paused result must not pull the next page in above its row).
+        if last <= data_rows {
+            rs.request_rows(last);
+        }
 
         // Visible columns: moved by the scroll, left out while entirely off screen.
         let mut cols: Vec<FCol> = Vec::new();
@@ -3319,7 +3330,7 @@ impl Render for ResultGrid {
                 // whose live query went away (a connection change): no result left to show.
                 root = root.child(center(ui::empty_state(&t, "[ NO RESULT ]", 22., None)));
             }
-            Some((Phase::Done, _, 0)) if has_cols => {
+            Some((Phase::Done, _, 0)) if has_cols && self.virtual_rows() == 0 => {
                 root = root.child(
                     div()
                         .absolute()

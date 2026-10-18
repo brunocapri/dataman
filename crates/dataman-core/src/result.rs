@@ -829,8 +829,8 @@ impl ResultSet {
             return;
         };
         let snap = Snapshot { order: None, ..self.snapshot() };
+        let Some(kind) = snap.columns.get(col).map(|c| c.kind) else { return };
         let n = snap.rows();
-        let kind = snap.columns[col].kind;
         let mut perm: Vec<u32> = (0..n as u32).collect();
         // Pre-extract keys: much faster than locating chunks inside the comparator.
         enum Keys<'a> {
