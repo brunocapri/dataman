@@ -664,7 +664,7 @@ impl Render for ExportView {
             let open = menu_open == Some(f);
             let menu = open.then(|| {
                 deferred(
-                    anchored().child(
+                    anchored().child(ui::menu_in("ex-field-menu-in", 
                         ui::popover(t)
                             .mt(px(52.))
                             .w(px(280.))
@@ -676,7 +676,7 @@ impl Render for ExportView {
                                 ui::menu_item(t, ("ex-opt", i), *c, if i == ix { Some("✓") } else { None }, true)
                                     .on_click(cx.listener(move |v, _, _, cx| v.set_field(f, i, cx)))
                             })),
-                    ),
+                    )),
                 )
                 .priority(3)
             });
@@ -700,7 +700,7 @@ impl Render for ExportView {
                         .border_color(if open { t.acc } else { t.field_b })
                         .text_color(t.tx)
                         .child(value)
-                        .child(div().text_size(px(10.)).text_color(t.tx3).child("▾"))
+                        .child(ui::dropdown_arrow(gpui::ElementId::Name(format!("{}-arrow", f.label()).into()), open, 9., t.tx3))
                         .when(!locked, |d| {
                             d.on_click(cx.listener(move |v, _, _, cx| {
                                 v.menu = if v.menu == Some(f) { None } else { Some(f) };
@@ -796,7 +796,7 @@ impl Render for ExportView {
             .items_center()
             .gap(px(6.))
             .cursor_pointer()
-            .child(icon(if open { Icon::ChevronDown } else { Icon::ChevronRight }).size(px(10.)).text_color(t.tx3))
+            .child(ui::disclosure("ex-advanced-chev", open, 10., t.tx3))
             .child(ui::caps(&t, "ADVANCED"))
             .on_click(cx.listener(|v, _, _, cx| {
                 v.advanced = !v.advanced;

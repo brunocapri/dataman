@@ -360,7 +360,7 @@ impl PlanView {
                 .justify_center()
                 .text_size(px(9.))
                 .text_color(t.tx3)
-                .child(if open { "▾" } else { "▸" })
+                .child(ui::disclosure(("plan-chev", i), open, 9., t.tx3))
                 .on_mouse_down(MouseButton::Left, cx.listener(move |v, _, _, cx| {
                     cx.stop_propagation();
                     v.toggle(i, cx);

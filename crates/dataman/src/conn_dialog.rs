@@ -22,7 +22,7 @@ use dataman_core::{ConnectionProfile, Environment, HostKeyPrompt, McpAccess, Ser
 const ENGINES: [Engine; 3] = [Engine::Postgres, Engine::MySql, Engine::SqlServer];
 
 use crate::conns::ConnStore;
-use crate::assets::{Icon, icon};
+use crate::assets::Icon;
 use crate::input::{InputEvent, TextInput};
 use crate::theme::{ActiveTheme, SWATCHES, Theme};
 use crate::ui::{self, Btn};
@@ -1040,7 +1040,7 @@ impl ConnDialog {
             .items_center()
             .gap(px(6.))
             .cursor_pointer()
-            .child(icon(if a.open { Icon::ChevronDown } else { Icon::ChevronRight }).size(px(11.)).text_color(t.tx3))
+            .child(ui::disclosure("mcp-advanced-chev", a.open, 11., t.tx3))
             .child(div().text_size(px(10.)).text_color(if a.open { t.tx2 } else { t.tx3 }).child("MCP · ADVANCED"))
             .when(!a.open, |d| d.children(summary.map(|s| div().text_size(px(10.5)).text_color(t.tx3).child(s))))
             .when(!a.open && a.yolo && !off, |d| d.child(yolo_badge(t)))

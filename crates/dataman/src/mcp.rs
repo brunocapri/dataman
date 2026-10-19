@@ -817,7 +817,7 @@ impl McpLog {
             }))
             .child(item("ml-copy", MENU[0], Self::copy))
             .child(item("ml-open", MENU[1], Self::open));
-        Some(gpui::deferred(gpui::anchored().position(at).snap_to_window_with_margin(px(8.)).child(menu)).priority(3))
+        Some(gpui::deferred(gpui::anchored().position(at).snap_to_window_with_margin(px(8.)).child(ui::menu_in("mcp-menu-in", menu))).priority(3))
     }
 
     // `mcp-check` (`--demo`): where the rows are, what a click cannot report back.

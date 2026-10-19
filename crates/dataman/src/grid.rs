@@ -1832,7 +1832,7 @@ impl ResultGrid {
                 g.close_menu(true, window, cx);
             }))
             .children(items);
-        Some(deferred(anchored().position(point(px(m.origin.0), px(m.origin.1))).child(pop)).priority(2).into_any_element())
+        Some(deferred(anchored().position(point(px(m.origin.0), px(m.origin.1))).child(ui::menu_in("grid-menu-in", pop))).priority(2).into_any_element())
     }
 
     /// Cycles a column through ascending → descending → original order, over the rows already

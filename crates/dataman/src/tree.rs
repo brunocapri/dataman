@@ -354,6 +354,9 @@ pub struct SchemaTree {
     filter: Entity<TextInput>,
     rows: Vec<Row>,
     expanded: HashSet<String>,
+    /// The schema last opened or shut, when, and which way: its folder's fill drains away or
+    /// comes back (`motion::folder_fill`); its rows simply show or go.
+    folder_turn: Option<(String, Instant, bool)>,
     loading: HashSet<String>,
     errors: HashMap<String, String>,
     /// The row under the pointer (its meta steps aside for the ⋯ button).
@@ -462,6 +465,7 @@ impl SchemaTree {
             filter,
             rows: Vec::new(),
             expanded: HashSet::new(),
+            folder_turn: None,
             loading: HashSet::new(),
             errors: Default::default(),
             hovered: None,
@@ -1113,9 +1117,13 @@ impl SchemaTree {
             return;
         }
         let id = row.id.to_string();
-        if !self.expanded.remove(&id) {
+        let opening = !self.expanded.remove(&id);
+        if opening {
             self.expanded.insert(id.clone());
             self.load(&id, &row.kind, cx);
+        }
+        if matches!(row.icon, Some((Icon::Schema, _))) && !cx.reduce_motion() {
+            self.folder_turn = Some((id, Instant::now(), opening));
         }
         self.rebuild(cx);
         cx.notify();
@@ -1212,6 +1220,18 @@ impl SchemaTree {
 
     /// Types a filter (demo screenshots).
     /// The filter field takes the keyboard focus (screenshots).
+    /// Checks: the first schema listed opened or shut; whether its folder started turning.
+    pub fn demo_turn_schema(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(ix) = self.rows.iter().position(|r| matches!(r.icon, Some((Icon::Schema, _)))) else { return false };
+        self.toggle(ix, cx);
+        self.folder_turn.is_some()
+    }
+
+    /// Checks: a schema's folder is still turning.
+    pub fn demo_folder_turning(&self) -> bool {
+        self.folder_turn.as_ref().is_some_and(|(_, at, opening)| crate::motion::folder_fill(*at, *opening).is_some())
+    }
+
     pub fn demo_focus_filter(&self, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.filter.focus_handle(cx), cx);
     }
@@ -2043,7 +2063,7 @@ impl SchemaTree {
                 tr.close_menu(true, window, cx);
             }))
             .children(items);
-        let mut out = vec![deferred(anchored().position(point(px(m.origin.0), px(m.origin.1))).child(main)).priority(2).into_any_element()];
+        let mut out = vec![deferred(anchored().position(point(px(m.origin.0), px(m.origin.1))).child(ui::menu_in("row-menu-in", main))).priority(2).into_any_element()];
         if let Some(((x, y), _, items)) = sub {
             let rows: Vec<AnyElement> = items
                 .iter()
@@ -2073,7 +2093,7 @@ impl SchemaTree {
                 .text_size(px(12.))
                 .font_family(crate::theme::mono())
                 .children(rows);
-            out.push(deferred(anchored().position(point(px(x), px(y))).child(pop)).priority(3).into_any_element());
+            out.push(deferred(anchored().position(point(px(x), px(y))).child(ui::menu_in("row-submenu-in", pop))).priority(3).into_any_element());
         }
         out
     }
@@ -2147,7 +2167,7 @@ impl SchemaTree {
         let has_menu = !matches!(r.kind, Kind::Leaf);
         let menu_here = self.menu.as_ref().is_some_and(|m| m.row.as_ref() == Some(&r.id));
         let hovered = self.hovered.as_ref() == Some(&r.id);
-        let chevron = r.expandable.then(|| icon(if r.expanded { Icon::ChevronDown } else { Icon::ChevronRight }).size(px(10.)).text_color(t.tx4));
+        let chevron = r.expandable.then(|| ui::disclosure(gpui::ElementId::Name(format!("chev-{}", r.id).into()), r.expanded, 10., t.tx4));
         let pop = self.pop_now.as_ref().filter(|(id, _)| *id == r.id).map(|(_, f)| *f);
         let label = {
             let l = r.label.to_string();
@@ -2296,9 +2316,14 @@ impl SchemaTree {
             .when_some(r.tip.clone(), |d, tip| d.tooltip(ui::text_tooltip(tip)))
             .children(r.chip.map(|c| div().mx(px(3.)).when(r.chip_dim, |d| d.opacity(0.45)).child(ui::chip(c, 8.))))
             .children(r.icon.filter(|_| r.chip.is_none()).map(|(i, c)| {
-                // A folder is filled while shut and outlined while open.
-                let i = if i == Icon::Schema && !r.expanded { Icon::SchemaFilled } else { i };
-                icon(i).size(px(14.)).text_color(c.unwrap_or(t.tx3))
+                let c = c.unwrap_or(t.tx3);
+                if i != Icon::Schema {
+                    return icon(i).size(px(14.)).text_color(c).into_any_element();
+                }
+                // A folder is filled while shut and outlined while open, its fill draining or
+                // coming back as it turns.
+                let fill = self.folder_turn.as_ref().filter(|(id, ..)| *id == *r.id).and_then(|(_, at, opening)| crate::motion::folder_fill(*at, *opening));
+                ui::folder_icon(r.expanded, fill, 14., c)
             }))
             .when(r.blank_icon, |d| d.child(div().flex_none().size(px(14.))))
             .child(
@@ -2693,6 +2718,12 @@ impl Render for SchemaTree {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.version(cx) != self.seen_version {
             self.rebuild(cx);
+        }
+        // A schema's folder turning: one more frame until its fill has drained or come back.
+        match &self.folder_turn {
+            Some((_, at, opening)) if crate::motion::folder_fill(*at, *opening).is_some() => window.request_animation_frame(),
+            Some(_) => self.folder_turn = None,
+            None => {}
         }
         // The filter's find pop: this frame of it, and the next frame only while it runs.
         self.pop_now = match self.pop.as_ref().map(|p| (p.target.clone(), p.frame(Instant::now()))) {

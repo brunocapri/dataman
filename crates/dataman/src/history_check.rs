@@ -14,7 +14,7 @@
 //! opening or shutting a folder, a folder renamed from its menu and deleted with its queries
 //! (Delete folder asks first: a red "Sure? (deletes N queries)" in its row, let go by the
 //! pointer leaving it, esc or a few seconds; clicked, the folder and its queries go).
-//! `DATAMAN_SHOT_DIR=dir` also captures `folders-reorder.png`, `folders-drag.png`,
+//! `DATAMAN_SHOT_DIR=dir` also captures `folders-reorder.png`, `folders-drag.png`, `folders-drain.png`, `folders-shut.png`,
 //! `folders-sure.png`, `folders-menu.png` and `folders-tree.png` there (build with
 //! `--features screenshots`). The helpers are `undo-check`'s too.
 
@@ -695,8 +695,17 @@ async fn folders(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
             f.connection_id = conn_id.clone();
             let _ = core.favorites.add(f);
         }
-        ws.update(cx, |w, cx| w.demo_favorites_view(cx));
     });
+    // Saved behind the panel, they are listed as soon as the rail shows the favorites.
+    rail_click(ws, NavView::Explorer, cx);
+    rail_click(ws, NavView::Favorites, cx);
+    let listed = rows(&history, cx);
+    report(
+        &mut ok,
+        "the rail's Favorites lists favorites saved behind the panel at once",
+        ["Orders by day", "Top customers", "Run marker"].iter().all(|n| listed.contains(&n.to_string())),
+        format!("{listed:?}"),
+    );
     draw(cx);
 
     // "+ folder": a folder named in place.
@@ -792,17 +801,49 @@ async fn folders(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     // A click shuts the folder, ← → too.
     let Some(folder) = named_point(&history, "Reports", cx).await else { return false };
     click(cx, folder, MouseButton::Left, Modifiers::default());
-    pause(cx, 30).await;
+    // Its favorites fold away (its icon fills back up) before it is shut.
+    pause(cx, 450).await;
     let shut = rows(&history, cx);
     key(cx, "right");
     let opened = rows(&history, cx);
     key(cx, "left");
+    pause(cx, 450).await;
     let shut_again = rows(&history, cx);
     report(
         &mut ok,
         "a click shuts a folder; → opens it, ← shuts it",
         shut.contains(&"▸ Reports".to_string()) && !shut.contains(&"  Orders by day".to_string()) && opened.contains(&"  Orders by day".to_string()) && shut_again == shut,
         format!("{shut:?} / {opened:?} / {shut_again:?}"),
+    );
+
+    // A click opening it: its icon's fill drains away and its favorites unfold, then all is
+    // still again.
+    click(cx, folder, MouseButton::Left, Modifiers::default());
+    pause(cx, 60).await;
+    let moving = cx.update(|_, cx| history.read(cx).demo_folding()).unwrap_or(false);
+    snap("drain", cx);
+    pause(cx, 700).await;
+    let still = cx.update(|_, cx| history.read(cx).demo_folding()).unwrap_or(true);
+    let shown = rows(&history, cx);
+    report(
+        &mut ok,
+        "a click opening a folder drains its icon's fill and unfolds its favorites, then stops",
+        moving && !still && shown.contains(&"  Orders by day".to_string()),
+        format!("moving {moving}, still {still}, {shown:?}"),
+    );
+    // A click shutting it: its icon fills back up, its favorites fold away under it, then gone.
+    click(cx, folder, MouseButton::Left, Modifiers::default());
+    pause(cx, 60).await;
+    let during = rows(&history, cx);
+    let moving = cx.update(|_, cx| history.read(cx).demo_folding()).unwrap_or(false);
+    snap("shut", cx);
+    pause(cx, 400).await;
+    let after = rows(&history, cx);
+    report(
+        &mut ok,
+        "a click shutting a folder folds its favorites away, then they are gone",
+        moving && during.contains(&"▸ Reports".to_string()) && during.contains(&"  Orders by day".to_string()) && after.contains(&"▸ Reports".to_string()) && !after.contains(&"  Orders by day".to_string()),
+        format!("moving {moving}, {during:?} / {after:?}"),
     );
 
     // A search finds a favorite in a shut folder and opens it; cleared, the folder is shut again.

@@ -16,6 +16,9 @@
 //!   ([`PopStyle::Find`]: ⌘' on the error, the row an FK "Go to" lands on, the explorer
 //!   filter's first match).
 //!
+//! - [`Fold`]: an amount 0..=1 that can turn around mid-way: the query tabs opening, closing and
+//!   making room for one dragged, the result tabs closing, a favorites folder's rows unfolding.
+//!
 //! "Reduce motion" (Settings ▸ Appearance, or the macOS accessibility switch) lands in GPUI's
 //! `App::reduce_motion`: no slide, no pop on a click, and a find shows its box at once, without
 //! the zoom, before it dissolves.
@@ -402,6 +405,89 @@ pub fn paint_pop(
     }
 }
 
+/// A tab growing in from nothing when it opens (its width and its ink).
+pub const TAB_OPEN: Duration = Duration::from_millis(180);
+/// A tab closing: its place folds shut as it fades, the tabs after it sliding over.
+pub const TAB_CLOSE: Duration = Duration::from_millis(150);
+/// The gap a dragged tab would land in opening (the tabs making room), or shutting behind it.
+pub const TAB_GAP: Duration = Duration::from_millis(140);
+/// A favorites folder opened: each favorite in it unfolds, one a little after the other.
+pub const FOLDER_ROW: Duration = Duration::from_millis(190);
+pub const FOLDER_STAGGER: Duration = Duration::from_millis(28);
+/// ... as its icon's fill drains away (shut: filled, open: an outline); shutting, it fills
+/// back up.
+pub const FLOOD: Duration = Duration::from_millis(300);
+/// How full a folder's icon is while it turns (`at`: when it was opened or shut): opening,
+/// its fill drains from 1 to 0; shutting, it fills back from 0 to 1. `None` once it is done.
+pub fn folder_fill(at: Instant, opening: bool) -> Option<f32> {
+    let p = at.elapsed().as_secs_f32() / FLOOD.as_secs_f32();
+    (p < 1.).then(|| if opening { 1. - EASE.eval(p) } else { EASE.eval(p) })
+}
+
+/// A folder shut: its favorites fold away, the last one first.
+pub const FOLDER_SHUT: Duration = Duration::from_millis(150);
+pub const FOLDER_SHUT_STAGGER: Duration = Duration::from_millis(18);
+/// A disclosure arrow turning (`ui::disclosure`): a quick spring, damped just short of
+/// critical, so it lands with life but without a wobble.
+pub const TURN: gpui::SpringConfig = gpui::SpringConfig::new(520., 42., 1.);
+/// A menu (a context menu, a dropdown) coming in: quick, so it never holds a click up.
+pub const MENU_IN: Duration = Duration::from_millis(110);
+
+/// An amount 0..=1 (a tab's width, a gap, a row unfolding) easing toward 0 or 1 on `EASE`.
+/// Turned around mid-way, it heads back from where it is, in the part of the time that is
+/// left of the way.
+#[derive(Clone, Copy, Debug)]
+pub struct Fold {
+    from: f32,
+    to: f32,
+    started: Instant,
+    full: Duration,
+}
+
+impl Fold {
+    /// From `from` to `to` over `full` for the whole way (zero: there at once, "Reduce
+    /// motion").
+    pub fn new(from: f32, to: f32, full: Duration) -> Fold {
+        Fold { from, to, started: Instant::now(), full }
+    }
+
+    fn span(&self) -> f32 {
+        self.full.as_secs_f32() * (self.to - self.from).abs()
+    }
+
+    /// The amount now.
+    pub fn at(&self, now: Instant) -> f32 {
+        let span = self.span();
+        let raw = if span <= 0. { 1. } else { now.saturating_duration_since(self.started).as_secs_f32() / span };
+        if raw >= 1. {
+            return self.to;
+        }
+        self.from + (self.to - self.from) * EASE.eval(raw)
+    }
+
+    /// Where it is heading.
+    pub fn target(&self) -> f32 {
+        self.to
+    }
+
+    /// Landed on its target (the caller may drop it).
+    pub fn done(&self, now: Instant) -> bool {
+        self.at(now) == self.to
+    }
+
+    /// Heading for `to` from where it is now.
+    pub fn turn(&mut self, to: f32, now: Instant) {
+        if to != self.to {
+            *self = Fold { from: self.at(now), to, started: now, full: self.full };
+        }
+    }
+}
+
+/// `d`, or nothing with "Reduce motion" on (a fold is there at once).
+pub fn timed(d: Duration, cx: &App) -> Duration {
+    if cx.reduce_motion() { Duration::ZERO } else { d }
+}
+
 /// How long the result bar's Copy button says "Copied" after a copy.
 pub const COPIED_FOR: Duration = Duration::from_millis(2000);
 /// When "Copied" starts to fade back into the Copy button.
@@ -520,6 +606,24 @@ pub fn system_reduce_motion() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A fold lands on its target; turned around half-way it comes back in half the time.
+    #[test]
+    fn fold_turns_around() {
+        let f = Fold::new(0., 1., Duration::from_millis(200));
+        let t0 = f.started;
+        let mid = f.at(t0 + Duration::from_millis(100));
+        assert!(mid > 0.5 && mid < 1., "{mid}");
+        assert!(f.done(t0 + Duration::from_millis(200)) && f.at(t0 + Duration::from_millis(500)) == 1.);
+        let mut back = Fold::new(0., 1., Duration::from_millis(200));
+        let half = back.started + Duration::from_millis(60);
+        back.turn(0., half);
+        let from = back.at(half);
+        assert!(from > 0. && from < 1. && back.target() == 0.);
+        assert!(back.done(half + Duration::from_millis((from * 200.) as u64 + 1)));
+        let now = Fold::new(1., 0., Duration::ZERO);
+        assert!(now.done(now.started) && now.at(now.started) == 0.);
+    }
 
     /// "Copied": in, held, out, gone after 2 s; without motion simply there, then gone, drawn
     /// again only at its end.

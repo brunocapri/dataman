@@ -441,6 +441,8 @@ pub struct Workspace {
     pub(crate) seam_line: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
     /// A tab's right-click menu: the tab and where the pointer was.
     pub(crate) tab_menu: Option<(EntityId, gpui::Point<gpui::Pixels>)>,
+    /// The tabs growing in, folding away, making room for one dragged (`tab_motion`).
+    pub(crate) tab_motion: crate::tab_motion::TabMotion,
     /// The result tabs' bounds as last laid out (the checks).
     pub(crate) result_tab_bounds: std::rc::Rc<std::cell::RefCell<Vec<gpui::Bounds<gpui::Pixels>>>>,
     /// The messages tab, or the log of a result without rows, on screen (in the left group, and
@@ -657,6 +659,7 @@ impl Workspace {
             close_arm: None,
             seam_line: Default::default(),
             tab_menu: None,
+            tab_motion: Default::default(),
             result_tab_bounds: Default::default(),
             messages: crate::messages::Messages::new(),
             messages_right: crate::messages::Messages::new(),
@@ -860,6 +863,7 @@ impl Workspace {
         let prev = self.active_tab().map(|t| t.entity_id());
         self.tabs.push(tab.clone());
         self.place_new_tab(tab.entity_id(), prev, cx);
+        self.tab_motion.opened(tab.entity_id(), cx);
         self.active = self.tabs.len() - 1;
         self.sync_bound_views(window, cx);
         window.focus(&editor.focus_handle(cx), cx);
@@ -906,6 +910,7 @@ impl Workspace {
         let group: Vec<EntityId> = self.group(pane).into_iter().map(|i| self.tabs[i].entity_id()).collect();
         let next = dataman_core::groups::neighbour(&group, id);
         let mut front = self.active_tab().map(|t| t.entity_id());
+        self.tab_folds_away(ix, &group, cx);
         let closed = self.tabs.remove(ix);
         let open: Vec<_> = self.tabs.iter().map(|t| t.entity_id()).collect();
         self.nav.history.retain(|p| open.contains(&p.tab));
@@ -2287,14 +2292,23 @@ impl Workspace {
     /// tab is linked to from then on. "Saved as favorite →" / "Saved →" next to the History
     /// button says so; a click there shows it in the favorites.
     pub(crate) fn save_favorite(&mut self, cx: &mut Context<Self>) {
-        let Some(tab) = self.active_tab().cloned() else { return };
-        if tab.read(cx).monitor.is_some() {
+        if let Some(tab) = self.active_tab().cloned() {
+            self.save_favorite_of(&tab, cx);
+        }
+    }
+
+    /// Whether tab `tab` has a script to save as a favorite (not an activity monitor, not
+    /// empty).
+    pub(crate) fn can_save_favorite(tab: &Entity<QueryTab>, cx: &App) -> bool {
+        tab.read(cx).monitor.is_none() && !tab.read(cx).editor.read(cx).text().trim().is_empty()
+    }
+
+    /// ⌘S on tab `tab` (its menu's Add to Favorites, whether or not it is in front).
+    pub(crate) fn save_favorite_of(&mut self, tab: &Entity<QueryTab>, cx: &mut Context<Self>) {
+        if !Self::can_save_favorite(tab, cx) {
             return;
         }
         let sql = tab.read(cx).editor.read(cx).text().trim().to_string();
-        if sql.is_empty() {
-            return;
-        }
         let store = self.store.read(cx).core.favorites.clone();
         let updated = match tab.read(cx).favorite.clone() {
             Some((id, _)) => match store.update_sql(&id, &sql) {
@@ -2516,6 +2530,7 @@ impl Workspace {
     /// The × of a result tab.
     pub(crate) fn close_result(&mut self, key: dataman_core::batch::Key, cx: &mut Context<Self>) {
         if let Some(t) = self.active_tab().cloned() {
+            self.result_folds_away(&t, key, cx);
             t.update(cx, |t, cx| t.close_result(key, cx));
         }
     }
@@ -2583,6 +2598,7 @@ impl Workspace {
     /// A dragged tab dropped at the gap `slot` (`tab_drop`) of a group's strip moves there (into
     /// that group, when it is the other one) and is the active one.
     pub(crate) fn drop_tab(&mut self, id: EntityId, window: &mut Window, cx: &mut Context<Self>) {
+        self.tab_motion.landed();
         match self.tab_drop.take() {
             Some(s) => self.move_into(id, self.tab_drop_pane, Some(s), window, cx),
             None => {

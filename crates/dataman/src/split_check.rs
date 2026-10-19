@@ -421,7 +421,8 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
     for _ in 0..6 {
         key(cx, "cmd-t");
     }
-    pause(cx, 50).await;
+    // The new tabs have grown in.
+    pause(cx, 250).await;
     draw(cx);
     let (x0, max0, view) = strip_scroll(ws, Pane::Left, cx);
     let last = tab_mid(ws, Pane::Left, 7, cx);

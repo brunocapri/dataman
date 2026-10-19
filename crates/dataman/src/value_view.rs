@@ -252,7 +252,7 @@ impl ValueView {
                             .flex_none()
                             .flex()
                             .items_center()
-                            .when(r.container, |d| d.child(icon(if r.expanded { Icon::ChevronDown } else { Icon::ChevronRight }).size(px(10.)).text_color(t.tx3))),
+                            .when(r.container, |d| d.child(ui::disclosure(("value-chev", i), r.expanded, 10., t.tx3))),
                     )
                     .children(key_text(r).map(|k| {
                         let index = matches!(r.key, Some(RowKey::Index(_)));

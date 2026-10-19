@@ -334,10 +334,10 @@ impl Workspace {
                 gpui::anchored()
                     .position(gpui::point(px(at.0), px(at.1)))
                     .snap_to_window_with_margin(px(8.))
-                    .child(div().on_mouse_down_out(cx.listener(|w, _, _, cx| {
+                    .child(ui::menu_in("filter-pop-in", div().on_mouse_down_out(cx.listener(|w, _, _, cx| {
                         w.filter_pop = None;
                         cx.notify();
-                    })).child(pop)),
+                    })).child(pop))),
             )
             .priority(3)
             .into_any_element(),

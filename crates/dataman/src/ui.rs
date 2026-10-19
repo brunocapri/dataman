@@ -290,6 +290,66 @@ pub fn segment(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedStrin
 
 /// A popover container (menus, autocomplete): pop background, square, the `line2` ring
 /// (no drop shadow).
+/// A disclosure chevron (a tree's node, a folder, a section): pointing right while shut, down
+/// while open, turning between the two on a spring as it opens or shuts. One that first
+/// appears (a row scrolled into view) is simply there. `id` tells it from the others under the
+/// same parent.
+pub fn disclosure(id: impl Into<ElementId>, open: bool, size: f32, color: Hsla) -> gpui::AnyElement {
+    use gpui::{AnimationExt, SpringAnimation, Transformation, radians};
+    crate::assets::icon(crate::assets::Icon::ChevronRight)
+        .size(px(size))
+        .text_color(color)
+        .with_spring(id, SpringAnimation::new(crate::motion::TURN).to(open), |svg, k| {
+            svg.with_transformation(Transformation::rotate(radians(k.0 * std::f32::consts::FRAC_PI_2)))
+        })
+        .into_any_element()
+}
+
+/// A dropdown's arrow: down while its menu is shut, turning up (on the same spring) while it
+/// is open.
+pub fn dropdown_arrow(id: impl Into<ElementId>, open: bool, size: f32, color: Hsla) -> gpui::AnyElement {
+    use gpui::{AnimationExt, SpringAnimation, Transformation, radians};
+    crate::assets::icon(crate::assets::Icon::ChevronDown)
+        .size(px(size))
+        .text_color(color)
+        .with_spring(id, SpringAnimation::new(crate::motion::TURN).to(open), |svg, k| {
+            svg.with_transformation(Transformation::rotate(radians(k.0 * std::f32::consts::PI)))
+        })
+        .into_any_element()
+}
+
+/// A menu (context menu, dropdown, popover) coming in: a quick fade as it settles the few
+/// points it starts above its place. Played once, when it opens (`id` must stay the same while
+/// it is open); never for the editor's completions. "Reduce motion": simply there.
+pub fn menu_in(id: impl Into<ElementId>, menu: impl IntoElement + 'static) -> gpui::AnyElement {
+    use gpui::{Animation, AnimationExt};
+    div()
+        .relative()
+        .child(menu)
+        .with_animation(id, Animation::new(crate::motion::MENU_IN).with_easing(gpui::ease_out_quint()), |d, k| {
+            d.opacity(k).top(px(-4. * (1. - k)))
+        })
+        .into_any_element()
+}
+
+/// A folder's icon (the explorer's schemas, the favorites' folders): filled while shut, an
+/// outline while open; `fill` (`motion::folder_fill`) while it turns, the fill draining away or
+/// coming back from the bottom up.
+pub fn folder_icon(open: bool, fill: Option<f32>, size: f32, color: Hsla) -> gpui::AnyElement {
+    let Some(level) = fill else {
+        return icon(if open { Icon::Schema } else { Icon::SchemaFilled }).size(px(size)).text_color(color).into_any_element();
+    };
+    let filled = div()
+        .absolute()
+        .left_0()
+        .bottom_0()
+        .w(px(size))
+        .h(px(size * level))
+        .overflow_hidden()
+        .child(icon(Icon::SchemaFilled).absolute().left_0().bottom_0().size(px(size)).text_color(color));
+    div().relative().flex_none().size(px(size)).child(icon(Icon::Schema).size(px(size)).text_color(color)).child(filled).into_any_element()
+}
+
 pub fn popover(t: &Theme) -> Div {
     div().bg(t.pop).shadow(t.ring()).p(px(4.)).occlude()
 }

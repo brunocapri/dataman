@@ -44,7 +44,11 @@ impl Workspace {
     pub(crate) fn set_nav(&mut self, v: NavView, cx: &mut Context<Self>) {
         match v {
             NavView::Explorer => {}
-            NavView::Favorites => self.history.update(cx, |h, cx| h.set_favorites(true, cx)),
+            // Read again: favorites change behind the panel (an agent, another window).
+            NavView::Favorites => self.history.update(cx, |h, cx| {
+                h.set_favorites(true, cx);
+                h.reload_favorites(cx);
+            }),
             NavView::History => self.history.update(cx, |h, cx| {
                 h.set_favorites(false, cx);
                 h.reload(cx);

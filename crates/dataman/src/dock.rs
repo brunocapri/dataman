@@ -861,7 +861,7 @@ impl Workspace {
             .child(item("pm-right", "Move Sidebar to the Right", here != Dock::Right, |w, cx| w.move_sidebar_to(Dock::Right, cx)))
             .child(ui::menu_sep(&t))
             .child(item("pm-reset", "Reset Panel Layout", !self.layout.is_default(), |w, cx| w.reset_panel_layout(cx)));
-        Some(gpui::deferred(gpui::anchored().position(at).snap_to_window_with_margin(px(8.)).child(menu)).priority(3).into_any_element())
+        Some(gpui::deferred(gpui::anchored().position(at).snap_to_window_with_margin(px(8.)).child(ui::menu_in("dock-menu-in", menu))).priority(3).into_any_element())
     }
 }
 

@@ -119,6 +119,17 @@ fn click(cx: &mut AsyncWindowContext, p: Point<Pixels>) {
     up(cx, p);
 }
 
+/// `DATAMAN_SHOT_DIR`: a capture of the window as it is, `ui-<name>.png`.
+fn snap(name: &str, cx: &mut AsyncWindowContext) {
+    let Ok(dir) = std::env::var("DATAMAN_SHOT_DIR") else { return };
+    let path = format!("{dir}/ui-{name}.png");
+    let _ = cx.update(|window, cx| {
+        window.refresh();
+        window.draw(cx).clear(cx);
+        crate::bench::shot(window, &path, crate::theme::ActiveTheme::theme(&*cx).is_dark());
+    });
+}
+
 async fn pause(cx: &mut AsyncWindowContext, ms: u64) {
     cx.background_executor().timer(Duration::from_millis(ms)).await;
 }
@@ -312,6 +323,8 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     while tabs(ws, cx).len() < 3 {
         new_tab(ws, cx);
     }
+    // They have grown in (`tab_motion`).
+    pause(cx, 250).await;
     let before = tabs(ws, cx);
     let (a, b, c) = (tab_points(ws, 0, cx), tab_points(ws, 1, cx), tab_points(ws, 2, cx));
     let mut during = (false, None, false);
@@ -322,12 +335,16 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
             mouse_move(cx, p, true);
             draw(cx);
         }
-        // The ghost rides the pointer, the line marks the gap after the last tab, and nothing
-        // has moved yet.
+        // The ghost rides the pointer, a gap opens after the last tab (the dragged one folding
+        // out of its place), and nothing has moved yet.
+        pause(cx, 200).await;
+        snap("tab-gap", cx);
         during = cx.update(|_, cx| (cx.has_active_drag(), ws.read(cx).tab_drop, ws.read(cx).tabs == before)).unwrap_or_default();
+        let gap = cx.update(|_, cx| ws.read(cx).tab_motion.gap_target()).ok().flatten();
+        report("the tabs make room: the gap the dragged tab would land in opens there", gap == Some((dataman_core::groups::Pane::Left, 3)), format!("{gap:?}"));
         up(cx, point(p2.x + px(4.), p2.y));
     }
-    report("while a tab is dragged its ghost follows, the line marks the gap and the tabs stay put", during == (true, Some(3), true), format!("{during:?}"));
+    report("while a tab is dragged its ghost follows, a gap opens where it would land and the tabs stay put", during == (true, Some(3), true), format!("{during:?}"));
     let after = tabs(ws, cx);
     let moved = after.len() == before.len() && after[2] == before[0] && after[0] == before[1] && after[1] == before[2];
     let active = cx.update(|_, cx| ws.read(cx).active_tab().cloned()).ok().flatten();
@@ -359,6 +376,29 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
         open
     };
     let four = tabs(ws, cx);
+    // Add to Favorites (under a 9 pt separator): that tab's script, saved and linked.
+    let sql = "SELECT 42 AS tab_menu_answer";
+    let _ = cx.update(|_, cx| four[2].read(cx).editor.clone().update(cx, |e, cx| e.set_text(sql, cx)));
+    let saved = match tab_points(ws, 2, cx) {
+        Some((p, _)) => {
+            mouse_move(cx, p, false);
+            input(cx, PlatformInput::MouseDown(MouseDownEvent { button: MouseButton::Right, position: p, modifiers: Modifiers::default(), click_count: 1, first_mouse: false }));
+            input(cx, PlatformInput::MouseUp(MouseUpEvent { button: MouseButton::Right, position: p, modifiers: Modifiers::default(), click_count: 1 }));
+            draw(cx);
+            pause(cx, 150).await;
+            snap("tab-menu", cx);
+            click(cx, point(p.x + px(40.), p.y + px(4. + 26. * 3. + 9. + 13.)));
+            draw(cx);
+            cx.update(|_, cx| {
+                let favs = ws.read(cx).store.read(cx).core.favorites.list();
+                let linked = four[2].read(cx).favorite.clone();
+                linked.is_some_and(|(id, _)| favs.iter().any(|f| f.id == id && f.sql == sql))
+            })
+            .unwrap_or(false)
+        }
+        None => false,
+    };
+    report("a tab's menu Add to Favorites saves its script as a favorite, linked to the tab", saved, String::new());
     let open = menu_pick(cx, 3, 2);
     let still = cx.update(|_, cx| ws.read(cx).tab_menu.is_some()).unwrap_or(false);
     let _ = cx.update(|_, cx| ws.update(cx, |w, _| w.tab_menu = None));
@@ -373,6 +413,21 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     let hit = menu_pick(cx, 0, 0);
     let left = tabs(ws, cx);
     report("Close closes it (the last one gives way to a new tab)", hit && left.len() == 1 && left[0] != four[1], format!("{} tabs", left.len()));
+
+    // 3b'. A schema opened (then shut) in the explorer: its folder's fill drains away (comes
+    //      back), then all is still.
+    let tree = cx.update(|_, cx| ws.read(cx).tree.clone()).unwrap();
+    let mut turned = Vec::new();
+    for name in ["schema-open", "schema-shut"] {
+        let started = cx.update(|_, cx| tree.update(cx, |t, cx| t.demo_turn_schema(cx))).unwrap_or(false);
+        pause(cx, 80).await;
+        let moving = cx.update(|_, cx| tree.read(cx).demo_folder_turning()).unwrap_or(false);
+        snap(name, cx);
+        pause(cx, 400).await;
+        let still = !cx.update(|_, cx| tree.read(cx).demo_folder_turning()).unwrap_or(true);
+        turned.push(started && moving && still);
+    }
+    report("a schema opened or shut in the explorer: its folder's fill drains away or comes back, then stops", turned == [true, true], format!("{turned:?}"));
 
     // 3c. A connection dragged above the first one in the explorer: the same ghost and line,
     //     and the file keeps the new order.

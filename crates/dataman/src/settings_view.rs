@@ -579,7 +579,7 @@ impl SettingsView {
             .items_center()
             .gap(px(6.))
             .cursor_pointer()
-            .child(icon(if open { Icon::ChevronDown } else { Icon::ChevronRight }).size(px(11.)).text_color(t.tx3))
+            .child(ui::disclosure("mcp-advanced-chev", open, 11., t.tx3))
             .child(ui::caps(t, "ADVANCED"))
             .when(!open, |d| d.children(summary.map(|s| div().text_size(px(10.5)).text_color(t.tx3).child(s))))
             .when(!open && yolos > 0, |d| d.child(crate::conn_dialog::yolo_badge(t)))

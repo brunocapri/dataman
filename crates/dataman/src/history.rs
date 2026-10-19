@@ -106,6 +106,13 @@ pub(crate) fn fav_name(sql: &str) -> String {
     if flat.chars().count() > 60 { format!("{}…", flat.chars().take(60).collect::<String>()) } else { flat }
 }
 
+/// A favorite's row, about (shutting folds rows from it when they were never measured).
+const FAV_ROW_H: f32 = 56.;
+
+/// A folder opening unfolds its favorites one after the other up to this many; the rest unfold
+/// with the last of them.
+const UNFOLD_STAGGERED: usize = 8;
+
 /// How far a favorite in a folder sits in from the folder's row: past its chevron, so the
 /// favorite's name lines up with the folder's icon (the explorer steps 12 pt a level).
 const NEST: f32 = 15.;
@@ -236,6 +243,14 @@ pub struct HistoryPanel {
     folders: Vec<Folder>,
     /// The folders open (by id); a folder starts shut, like the explorer's.
     open_folders: HashSet<String>,
+    /// The folder last opened or shut (a click, a key), when, and which way: opening, its icon's
+    /// fill drains away and its favorites unfold one after the other (`motion::FLOOD`,
+    /// `FOLDER_ROW`); shutting, they fold away the last one first (`FOLDER_SHUT`) and the folder
+    /// is shut once they are gone (`shut_task`), listed until then.
+    folding: Option<(String, std::time::Instant, bool)>,
+    shut_task: Option<gpui::Task<()>>,
+    /// The natural heights of the favorites unfolding, measured as they lay out.
+    unfold_h: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<String, f32>>>,
     items: Vec<Item>,
     shown: usize,
     selected: Option<usize>,
@@ -297,6 +312,9 @@ impl HistoryPanel {
             favorites: vec![],
             folders: vec![],
             open_folders: HashSet::new(),
+            folding: None,
+            shut_task: None,
+            unfold_h: Default::default(),
             items: vec![],
             shown: 0,
             selected: None,
@@ -579,14 +597,54 @@ impl HistoryPanel {
 
     /// Opens or shuts a folder; shutting the one holding the selection selects the folder.
     fn toggle_folder(&mut self, id: &str, cx: &mut Context<Self>) {
-        if !self.open_folders.remove(id) {
+        let now = std::time::Instant::now();
+        let animate = !cx.reduce_motion();
+        // Shutting: opened again before its favorites are gone, they unfold back.
+        if self.shutting(id) {
+            self.shut_task = None;
+            self.folding = Some((id.to_string(), now, true));
+            return cx.notify();
+        }
+        if !self.open_folders.contains(id) {
             self.open_folders.insert(id.to_string());
-        } else if let Some(Item::Fav(i)) = self.selected.and_then(|s| self.items.get(s))
+            if animate {
+                self.folding = Some((id.to_string(), now, true));
+                self.unfold_h.borrow_mut().clear();
+            }
+            return self.refresh_keeping(cx);
+        }
+        if let Some(Item::Fav(i)) = self.selected.and_then(|s| self.items.get(s))
             && self.favorites[*i].folder.as_deref() == Some(id)
         {
             self.selected = self.folder_item(id);
         }
+        if !animate {
+            return self.shut_now(id, cx);
+        }
+        // Listed until its favorites have folded away.
+        self.folding = Some((id.to_string(), now, false));
+        let wait = self.fold_time(id, false);
+        let id = id.to_string();
+        self.shut_task = Some(cx.spawn(async move |h, cx| {
+            cx.background_executor().timer(wait).await;
+            let _ = h.update(cx, |h, cx| h.shut_now(&id, cx));
+        }));
+        cx.notify();
+    }
+
+    /// Folder `id` shut, its favorites no longer listed.
+    fn shut_now(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.shutting(id) {
+            self.folding = None;
+        }
+        self.shut_task = None;
+        self.open_folders.remove(id);
         self.refresh_keeping(cx);
+    }
+
+    /// Folder `id` is shutting: its favorites folding away, still listed.
+    fn shutting(&self, id: &str) -> bool {
+        self.folding.as_ref().is_some_and(|(f, _, opening)| f == id && !opening)
     }
 
     /// Deletes a folder and the favorites in it (asked first: `ask_delete`).
@@ -857,7 +915,7 @@ impl HistoryPanel {
     /// favorite in a folder, goes up to the folder.
     fn fold(&mut self, open: bool, cx: &mut Context<Self>) {
         match self.selected.and_then(|s| self.items.get(s)) {
-            Some(&Item::Folder { ix, open: is_open, .. }) if is_open != open => {
+            Some(&Item::Folder { ix, open: is_open, .. }) if (is_open && !self.shutting(&self.folders[ix].id)) != open => {
                 let id = self.folders[ix].id.clone();
                 self.toggle_folder(&id, cx);
             }
@@ -929,8 +987,70 @@ impl HistoryPanel {
                 .into_any_element(),
             Item::Entry(i) => self.render_entry(ix, *i, t, focused, cx),
             &Item::Folder { ix: folder_ix, open } => self.render_folder(ix, folder_ix, open, t, focused, cx),
-            Item::Fav(i) => self.render_fav(ix, *i, t, focused, cx),
+            Item::Fav(i) => {
+                let row = self.render_fav(ix, *i, t, focused, cx);
+                self.unfolding(ix, *i, row)
+            }
         }
+    }
+
+    /// How long folder `id`'s favorites take to unfold (`opening`) or fold away, staggered.
+    fn fold_time(&self, id: &str, opening: bool) -> std::time::Duration {
+        let rows = self.favorites.iter().filter(|f| f.folder.as_deref() == Some(id)).count().saturating_sub(1).min(UNFOLD_STAGGERED) as u32;
+        if opening {
+            crate::motion::FLOOD.max(crate::motion::FOLDER_STAGGER * rows + crate::motion::FOLDER_ROW)
+        } else {
+            crate::motion::FLOOD.max(crate::motion::FOLDER_SHUT_STAGGER * rows + crate::motion::FOLDER_SHUT)
+        }
+    }
+
+    /// Whether a folder is still opening or shutting (its icon, its favorites moving).
+    fn folding_moves(&self) -> bool {
+        self.folding.as_ref().is_some_and(|(id, at, opening)| at.elapsed() < self.fold_time(id, *opening))
+    }
+
+    /// Favorite `fav_i`'s row (item `ix`), unfolding while its folder opens: the favorites in
+    /// it grow to their height and fade in one a little after the other, the rows under them
+    /// sliding down.
+    fn unfolding(&self, ix: usize, fav_i: usize, row: AnyElement) -> AnyElement {
+        let f = &self.favorites[fav_i];
+        let Some((_, at, opening)) = self.folding.as_ref().filter(|(d, ..)| f.folder.as_deref() == Some(d.as_str())) else { return row };
+        let Some(first) = self.items[..ix].iter().rposition(|it| matches!(it, Item::Folder { .. })) else { return row };
+        let ms = at.elapsed().as_secs_f32() * 1e3;
+        let nth = ix - first - 1;
+        let k = if *opening {
+            let delay = nth.min(UNFOLD_STAGGERED) as f32 * crate::motion::FOLDER_STAGGER.as_secs_f32() * 1e3;
+            let raw = (ms - delay) / (crate::motion::FOLDER_ROW.as_secs_f32() * 1e3);
+            if raw >= 1. {
+                return row;
+            }
+            crate::motion::EASE.eval(raw.max(0.))
+        } else {
+            // The last one first, up to the folder.
+            let n = self.items[first + 1..].iter().take_while(|it| matches!(it, Item::Fav(i) if self.favorites[*i].folder == f.folder)).count();
+            let from_end = (n - 1 - nth).min(UNFOLD_STAGGERED) as f32;
+            let delay = from_end * crate::motion::FOLDER_SHUT_STAGGER.as_secs_f32() * 1e3;
+            let raw = (ms - delay) / (crate::motion::FOLDER_SHUT.as_secs_f32() * 1e3);
+            1. - crate::motion::EASE.eval(raw.clamp(0., 1.))
+        };
+        let heights = self.unfold_h.clone();
+        let id = f.id.clone();
+        // Shutting, a row not measured yet (scrolled into view) starts from its usual height.
+        let h = heights.borrow().get(&id).copied().unwrap_or(if *opening { 0. } else { FAV_ROW_H });
+        div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .h(px(h * k))
+            .overflow_hidden()
+            .opacity(k)
+            .on_children_prepainted(move |b, _, _| {
+                if let Some(b) = b.first() {
+                    heights.borrow_mut().insert(id.clone(), crate::theme::Pt::pt(b.size.height));
+                }
+            })
+            .child(div().w_full().flex_none().child(row))
+            .into_any_element()
     }
 
     fn render_entry(&self, ix: usize, entry_i: usize, t: &Theme, focused: bool, cx: &mut Context<Self>) -> AnyElement {
@@ -1082,6 +1202,8 @@ impl HistoryPanel {
     fn render_folder(&self, ix: usize, folder_ix: usize, open: bool, t: &Theme, focused: bool, cx: &mut Context<Self>) -> AnyElement {
         let d = &self.folders[folder_ix];
         let id = d.id.clone();
+        // Shutting: shut already, its favorites folding away under it.
+        let open = open && !self.shutting(&id);
         let sel = self.selected == Some(ix);
         let dropping = cx.has_active_drag() && self.drop_at.as_ref() == Some(&DropAt::Folder(id.clone()));
         let dragged = cx.has_active_drag() && self.dragging_folder.as_deref() == Some(id.as_str());
@@ -1097,8 +1219,8 @@ impl HistoryPanel {
             None => div().flex_1().min_w_0().flex().flex_row().text_color(t.tx).child(ui::marked(t, d.name.clone(), &self.query)).into_any_element(),
         };
         let hov = t.hov;
-        let chevron = icon(if open { Icon::ChevronDown } else { Icon::ChevronRight }).size(px(10.)).text_color(t.tx4);
-        let (click_id, menu_id, ctrl_id, ghost) = (id.clone(), id.clone(), id.clone(), d.name.clone());
+        let chevron = ui::disclosure(gpui::ElementId::Name(format!("fav-chev-{id}").into()), open, 10., t.tx4);
+        let (click_id, menu_id, ctrl_id, ghost, id_for_icon) = (id.clone(), id.clone(), id.clone(), d.name.clone(), id.clone());
         div()
             .px(px(6.))
             .child(
@@ -1148,11 +1270,18 @@ impl HistoryPanel {
                         }
                     }))
                     .child(div().w(px(10.)).flex_none().flex().justify_center().child(chevron))
-                    .child(icon(if open { Icon::Schema } else { Icon::SchemaFilled }).size(px(14.)).text_color(if dropping { t.acc_t } else { t.tx3 }))
+                    .child(self.folder_icon(&id_for_icon, open, dropping, t))
                     .child(name)
                     .children(line.map(|after| crate::dnd::drop_line(t, false, after))),
             )
             .into_any_element()
+    }
+
+    /// A folder's icon: filled while shut, an outline while open; opening, its fill drains
+    /// away, shutting, it fills back up (`motion::FLOOD`).
+    fn folder_icon(&self, id: &str, open: bool, dropping: bool, t: &Theme) -> AnyElement {
+        let fill = self.folding.as_ref().filter(|(f, ..)| f == id).and_then(|(_, at, opening)| crate::motion::folder_fill(*at, *opening));
+        ui::folder_icon(open, fill, 14., if dropping { t.acc_t } else { t.tx3 })
     }
 
     fn render_fav(&self, ix: usize, fav_i: usize, t: &Theme, focused: bool, cx: &mut Context<Self>) -> AnyElement {
@@ -1473,7 +1602,7 @@ impl HistoryPanel {
                 gpui::anchored()
                     .position(m.at)
                     .snap_to_window_with_margin(px(8.))
-                    .child(div().on_children_prepainted(move |b, _, _| bounds.set(b.first().copied())).child(main)),
+                    .child(ui::menu_in("fav-menu-in", div().on_children_prepainted(move |b, _, _| bounds.set(b.first().copied())).child(main))),
             )
             .priority(3)
             .into_any_element(),
@@ -1519,7 +1648,7 @@ impl HistoryPanel {
                         .position(at)
                         .anchor(corner)
                         .snap_to_window_with_margin(px(8.))
-                        .child(div().on_children_prepainted(move |b, _, _| bounds.set(b.first().copied())).child(pop)),
+                        .child(ui::menu_in("fav-submenu-in", div().on_children_prepainted(move |b, _, _| bounds.set(b.first().copied())).child(pop))),
                 )
                 .priority(4)
                 .into_any_element(),
@@ -1591,7 +1720,7 @@ impl HistoryPanel {
             .when(open, |d| d.bg(prs).border_color(t.line2).text_color(t.tx))
             .when(!open, |d| d.text_color(t.tx3).border_color(t.line).hover(move |s| s.bg(hov)))
             .child(label)
-            .child(icon(Icon::ChevronDown).flex_none().size(px(8.)).text_color(t.tx3))
+            .child(ui::dropdown_arrow("history-chip-arrow", open, 8., t.tx3))
             .on_click(cx.listener(|h, _, _, cx| {
                 h.chip_menu = !h.chip_menu;
                 cx.notify();
@@ -1615,10 +1744,10 @@ impl HistoryPanel {
                 gpui::deferred(
                     gpui::anchored()
                         .snap_to_window_with_margin(px(8.))
-                        .child(ui::popover(t).w(px(140.)).on_mouse_down_out(cx.listener(|h, _, _, cx| {
+                        .child(ui::menu_in("chip-menu-in", ui::popover(t).w(px(140.)).on_mouse_down_out(cx.listener(|h, _, _, cx| {
                             h.chip_menu = false;
                             cx.notify();
-                        })).children(rows)),
+                        })).children(rows))),
                 )
                 .priority(3),
             )
@@ -1680,6 +1809,11 @@ impl HistoryPanel {
     // ---------------------------------------------------------------------------------------
     // `history_check` (`--demo`): real mouse and key events need window-coordinate anchors and
     // a way to read state a click cannot report back on its own.
+
+    /// A folder opening or shutting is still moving (its icon, its favorites).
+    pub(crate) fn demo_folding(&self) -> bool {
+        self.folding_moves()
+    }
 
     pub(crate) fn demo_entry_count(&self) -> usize {
         self.entries.len()
@@ -1749,7 +1883,10 @@ impl HistoryPanel {
             .map(|it| match it {
                 Item::Day(d) => d.to_string(),
                 Item::Entry(_) => "entry".into(),
-                Item::Folder { ix, open } => format!("{} {}", if *open { "▾" } else { "▸" }, self.folders[*ix].name),
+                Item::Folder { ix, open } => {
+                    let open = *open && !self.shutting(&self.folders[*ix].id);
+                    format!("{} {}", if open { "▾" } else { "▸" }, self.folders[*ix].name)
+                }
                 Item::Fav(i) => format!("{}{}", if self.favorites[*i].folder.is_some() { "  " } else { "" }, self.favorites[*i].name),
             })
             .collect()
@@ -1966,6 +2103,12 @@ impl Render for HistoryPanel {
         let filter_focused = self.filter.focus_handle(cx).is_focused(window);
         let favs = self.show_favorites;
         let total = if favs { self.favorites.len() } else { self.entries.len() };
+        // A folder opening or shutting: its icon and its favorites, frame by frame.
+        if self.folding_moves() {
+            window.request_animation_frame();
+        } else if self.folding.as_ref().is_some_and(|f| f.2) {
+            self.folding = None;
+        }
         // A drag that ended outside the panel leaves no drop behind.
         if !cx.has_active_drag() {
             self.drop_at = None;

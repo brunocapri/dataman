@@ -749,7 +749,7 @@ impl DataImportView {
                         .when(open, |d| d.bg(t.acc_s))
                         .when(!open && !locked, move |d| d.hover(move |s| s.bg(hov)))
                         .child(div().flex_1().min_w_0().whitespace_nowrap().overflow_hidden().text_ellipsis().text_color(if on { t.acc_t } else { t.tx4 }).child(label))
-                        .child(div().text_size(px(9.)).text_color(t.tx4).child("▾"))
+                        .child(ui::dropdown_arrow(("di-map-arrow", i), open, 9., t.tx4))
                         .when(!locked, |d| {
                             d.on_click(cx.listener(move |v, _, _, cx| {
                                 v.menu = if v.menu == Some(Menu::Column(i)) { None } else { Some(Menu::Column(i)) };
@@ -900,7 +900,7 @@ impl DataImportView {
         let left = if left < px(0.) { px(0.) } else { left };
         // Anchored at the grid's top-left corner, then moved under the column.
         div().absolute().top_0().left_0().child(deferred(
-            anchored().child(
+            anchored().child(ui::menu_in("di-col-menu-in", 
                 div().pl(left).pt(px(HEAD_H - 2.)).child(
                     ui::popover(t)
                         .id("di-col-menu")
@@ -913,7 +913,7 @@ impl DataImportView {
                         }))
                         .children(items),
                 ),
-            ),
+            )),
         )
         .priority(3))
         .into_any_element()
@@ -1103,7 +1103,7 @@ impl Render for DataImportView {
                 let choices = f.choices();
                 let menu = open.then(|| {
                     deferred(
-                        anchored().child(
+                        anchored().child(ui::menu_in("di-field-menu-in", 
                             ui::popover(&t)
                                 .mt(px(52.))
                                 .w(px(180.))
@@ -1115,7 +1115,7 @@ impl Render for DataImportView {
                                     ui::menu_item(&t, ("di-opt", i), *c, if i == ix { Some("✓") } else { None }, true)
                                         .on_click(cx.listener(move |v, _, _, cx| v.set_field(f, i, cx)))
                                 })),
-                        ),
+                        )),
                     )
                     .priority(3)
                 });
@@ -1141,7 +1141,7 @@ impl Render for DataImportView {
                             .border_color(if open { t.acc } else { t.field_b })
                             .text_color(t.tx)
                             .child(div().min_w_0().whitespace_nowrap().overflow_hidden().text_ellipsis().child(choices.get(ix).copied().unwrap_or("")))
-                            .child(div().text_size(px(10.)).text_color(t.tx3).child("▾"))
+                            .child(ui::dropdown_arrow(gpui::ElementId::Name(format!("{}-arrow", f.label()).into()), open, 9., t.tx3))
                             .when(!locked, |d| {
                                 d.on_click(cx.listener(move |v, _, _, cx| {
                                     v.menu = if v.menu == Some(Menu::Field(f)) { None } else { Some(Menu::Field(f)) };

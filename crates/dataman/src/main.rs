@@ -64,6 +64,7 @@ mod split;
 mod split_check;
 mod sql_picker;
 mod tab;
+mod tab_motion;
 mod table_check;
 mod table_view;
 mod theme;

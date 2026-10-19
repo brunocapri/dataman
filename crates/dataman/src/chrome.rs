@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, ClipboardItem, Context, Div, Focusable, FontWeight, Hsla, MouseButton, SharedString, Stateful, Window, div,
+    AnyElement, App, ClipboardItem, Context, Div, EntityId, Focusable, FontWeight, Hsla, MouseButton, SharedString, Stateful, Window, div,
     prelude::*,
 };
 use crate::theme::{Pt, px};
@@ -179,8 +179,14 @@ impl Workspace {
     // -----------------------------------------------------------------------------------------
     // Title bar.
 
-    pub(crate) fn render_titlebar(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    pub(crate) fn render_titlebar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let t = cx.theme();
+        // Tabs growing in, folding away, making room: one more frame while any moves. From the
+        // first frame on, new tabs grow in (not those restored at launch).
+        if self.tab_motion.prune(std::time::Instant::now()) {
+            window.request_animation_frame();
+        }
+        self.tab_motion.live = true;
         // The bar's geometry follows the docks as they slide (⌘B, a panel moved; `dock_pass`):
         // the header sits at the explorer's end of the bar, the tabs between.
         let title = self.title_now;
@@ -399,7 +405,26 @@ impl Workspace {
     fn render_strip(&self, pane: Pane, tabs: Vec<usize>, width: Option<f32>, pad: f32, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let stop = |_: &gpui::MouseDownEvent, _: &mut Window, cx: &mut gpui::App| cx.stop_propagation();
         let n = tabs.len();
-        let els: Vec<AnyElement> = tabs.iter().enumerate().map(|(gi, &i)| self.render_tab(i, gi, n, pane, t, cx).into_any_element()).collect();
+        // The tabs, and among them the ghosts of those closing and the gap a dragged one would
+        // land in (`tab_motion`); `is_tab` tells the tabs from the rest.
+        let now = std::time::Instant::now();
+        let m = &self.tab_motion;
+        let ids: Vec<EntityId> = tabs.iter().map(|&i| self.tabs[i].entity_id()).collect();
+        let mut els: Vec<AnyElement> = Vec::new();
+        let mut is_tab: Vec<bool> = Vec::new();
+        let extra = |els: &mut Vec<AnyElement>, is_tab: &mut Vec<bool>, more: Vec<AnyElement>| {
+            is_tab.extend(more.iter().map(|_| false));
+            els.extend(more);
+        };
+        extra(&mut els, &mut is_tab, m.ghosts(pane, None, t, now).collect());
+        for (gi, &i) in tabs.iter().enumerate() {
+            extra(&mut els, &mut is_tab, m.gap(pane, gi, t, now).into_iter().collect());
+            els.push(m.tab(ids[gi], self.render_tab(i, t, cx).into_any_element(), now));
+            is_tab.push(true);
+            extra(&mut els, &mut is_tab, m.ghosts(pane, Some(ids[gi]), t, now).collect());
+        }
+        extra(&mut els, &mut is_tab, m.gap(pane, n, t, now).into_iter().collect());
+        extra(&mut els, &mut is_tab, m.stray_ghosts(pane, &ids, t, now));
         let bounds = if pane == Pane::Left { self.tab_bounds.clone() } else { self.tab_bounds_right.clone() };
         let scroll = self.strip_scroll[pane.index()].clone();
         // The tab in front came to the front since the last frame (a click, a new tab, ⌃Tab, a
@@ -410,10 +435,11 @@ impl Workspace {
         }
         .map(|t| t.entity_id());
         let seen = &self.strip_front[pane.index()];
-        if seen.get() != front {
+        if seen.get() != front || front.is_some_and(|f| m.growing(f)) {
             seen.set(front);
-            if let Some(gi) = front.and_then(|f| tabs.iter().position(|&i| self.tabs[i].entity_id() == f)) {
-                scroll.scroll_to_item(gi);
+            let gi = front.and_then(|f| ids.iter().position(|&i| i == f));
+            if let Some(child) = gi.and_then(|gi| is_tab.iter().enumerate().filter(|(_, t)| **t).nth(gi).map(|(c, _)| c)) {
+                scroll.scroll_to_item(child);
             }
         }
         // Pressed once, the × asks "Sure?" in its place.
@@ -436,6 +462,7 @@ impl Workspace {
             .on_children_prepainted(move |_, _, _| {
                 let dx = offset.offset().x;
                 *bounds.borrow_mut() = (0..offset.children_count())
+                    .filter(|i| is_tab.get(*i).copied().unwrap_or(false))
                     .filter_map(|i| offset.bounds_for_item(i))
                     .map(|mut b| {
                         b.origin.x += dx;
@@ -476,6 +503,9 @@ impl Workspace {
                     // Over the other strip, or neither: this one's gap goes.
                     if w.tab_drop_pane == pane && w.tab_drop.is_some() {
                         w.tab_drop = None;
+                        if let Some(id) = ev.dragged_item().downcast_ref::<crate::app::DraggedTab>().map(|d| d.0) {
+                            w.follow_tab_drop(id, cx);
+                        }
                         cx.notify();
                     }
                     return;
@@ -493,6 +523,9 @@ impl Workspace {
                 if slot != w.tab_drop || w.tab_drop_pane != pane {
                     w.tab_drop = slot;
                     w.tab_drop_pane = pane;
+                    if let Some(id) = ev.dragged_item().downcast_ref::<crate::app::DraggedTab>().map(|d| d.0) {
+                        w.follow_tab_drop(id, cx);
+                    }
                     cx.notify();
                 }
             }))
@@ -512,8 +545,67 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// Tab `i` of the strip of group `pane`, `gi` of its `n` there.
-    fn render_tab(&self, i: usize, gi: usize, n: usize, pane: Pane, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    /// The color a tab wears: its connection's, or the one a restored tab waits for.
+    fn tab_color(&self, tab: &QueryTab, t: &Theme, cx: &App) -> Hsla {
+        let wanted = tab.want.as_ref().and_then(|(id, _)| self.store.read(cx).profile(id)).map(|p| t.profile_color(p));
+        tab.connection().map(|c| t.profile_color(&c.profile)).or(wanted).unwrap_or(t.tx4)
+    }
+
+    /// Tab `ix` closing (`group`: its group's tabs, in order): its ghost folds away where it
+    /// was (`tab_motion`).
+    pub(crate) fn tab_folds_away(&mut self, ix: usize, group: &[EntityId], cx: &mut Context<Self>) {
+        let id = self.tabs[ix].entity_id();
+        let pane = self.pane_of(id);
+        let Some(gi) = group.iter().position(|g| *g == id) else { return };
+        let bounds = if pane == Pane::Left { self.tab_bounds.borrow() } else { self.tab_bounds_right.borrow() };
+        let Some(width) = bounds.get(gi).map(|b| b.size.width.pt()) else { return };
+        drop(bounds);
+        let t = cx.theme();
+        let tab = self.tabs[ix].read(cx);
+        let front = ix == self.active || self.split.as_ref().is_some_and(|s| s.other == id);
+        let gone = crate::tab_motion::Gone {
+            pane,
+            after: gi.checked_sub(1).map(|p| group[p]),
+            width,
+            title: tab.title(cx),
+            color: self.tab_color(tab, &t, cx),
+            front,
+        };
+        self.tab_motion.closed(id, gone, cx);
+    }
+
+    /// Result tab `key` of `tab` closing: its ghost folds away where it was.
+    pub(crate) fn result_folds_away(&mut self, tab: &gpui::Entity<QueryTab>, key: Key, cx: &mut Context<Self>) {
+        let results = tab.read(cx).result_tabs();
+        let Some(i) = results.iter().position(|r| r.key == key) else { return };
+        let Some(width) = self.result_tab_bounds.borrow().get(i).map(|b| b.size.width.pt()) else { return };
+        let r = &results[i];
+        let label = match r.number {
+            Some(n) => format!("{n} · {}", r.label),
+            None => r.label.to_string(),
+        };
+        let gone = crate::tab_motion::GoneResult {
+            tab: tab.entity_id(),
+            after: i.checked_sub(1).map(|p| results[p].key),
+            width,
+            label: label.into(),
+            front: tab.read(cx).shown_key() == Some(key),
+        };
+        self.tab_motion.result_closed(gone, cx);
+    }
+
+    /// The gap a dragged tab would land in moved (`tab_drop`): the strips make room there.
+    pub(crate) fn follow_tab_drop(&mut self, id: EntityId, cx: &mut Context<Self>) {
+        let at = self.tab_drop.map(|s| (self.tab_drop_pane, s));
+        let home = self.pane_of(id);
+        let gi = self.group(home).iter().position(|&i| self.tabs[i].entity_id() == id);
+        let bounds = if home == Pane::Left { self.tab_bounds.clone() } else { self.tab_bounds_right.clone() };
+        let width = move || gi.and_then(|gi| bounds.borrow().get(gi).map(|b| b.size.width.pt())).unwrap_or(TAB_MIN);
+        self.tab_motion.follow_drop(id, width, at, cx);
+    }
+
+    /// Tab `i` of a group's strip.
+    fn render_tab(&self, i: usize, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         // In front of the focused group (the active tab), or of the other one.
         let focused_front = i == self.active;
         let other_front = self.split.as_ref().is_some_and(|s| s.other == self.tabs[i].entity_id());
@@ -522,8 +614,7 @@ impl Workspace {
         let title = tab.title(cx);
         let conn = tab.connection().cloned();
         // A restored tab waiting for its connection wears that connection's color already.
-        let wanted = tab.want.as_ref().and_then(|(id, _)| self.store.read(cx).profile(id)).map(|p| t.profile_color(p));
-        let color = conn.as_ref().map(|c| t.profile_color(&c.profile)).or(wanted).unwrap_or(t.tx4);
+        let color = self.tab_color(tab, t, cx);
         let lar = conn.as_ref().is_some_and(|c| c.info.is_lar);
         let agent = tab.agent.is_some();
         let phase = tab.run_phase();
@@ -611,10 +702,6 @@ impl Workspace {
         let middle = entity.clone();
         let drag_id = entity.entity_id();
         let ghost_label = title.clone();
-        // The gap a dragged tab would land in: before this tab, or after it when it is the last.
-        let line = self.tab_drop.filter(|_| cx.has_active_drag() && self.tab_drop_pane == pane).and_then(|s| {
-            if s == gi { Some(false) } else if s == n && gi + 1 == n { Some(true) } else { None }
-        });
         div()
             .id(("tab", key))
             .group(group.clone())
@@ -671,11 +758,10 @@ impl Workspace {
             .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(title))
             .when(show_tx, |d| d.child(tx_chip(t, &tx, true)))
             .child(end)
-            .children(line.map(|after| crate::dnd::drop_line(t, true, after)))
     }
 
-    /// A tab's right-click menu: Close, Close Others, Close to the Right (in its group), Open to
-    /// the Side, Move to the other group.
+    /// A tab's right-click menu: Close, Close Others, Close to the Right (in its group), Add to
+    /// Favorites (⌘S on it), Open to the Side, Move to the other group.
     fn render_tab_menu(&self, t: &Theme, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
         let (id, at) = self.tab_menu?;
         let ix = self.tabs.iter().position(|t| t.entity_id() == id)?;
@@ -691,6 +777,9 @@ impl Workspace {
             (true, Pane::Left) => "Move to the Right Group",
             (true, Pane::Right) => "Move to the Left Group",
         };
+        // ⌘S on that tab: a new favorite, or its own favorite updated.
+        let fav_ok = Self::can_save_favorite(&self.tabs[ix], cx);
+        let fav_label = if self.tabs[ix].read(cx).favorite.is_some() { "Update Favorite" } else { "Add to Favorites" };
         let item = |key: &'static str, label: &'static str, enabled: bool, f: fn(&mut Self, usize, &mut Window, &mut Context<Self>)| {
             ui::menu_item(t, key, label, None, enabled).when(enabled, |d| {
                 d.on_click(cx.listener(move |w, _, window, cx| {
@@ -722,6 +811,18 @@ impl Workspace {
             }))
             .child(ui::menu_sep(t))
             .child(
+                ui::menu_item(t, "tm-fav", fav_label, crate::keymap::key("save_favorite").as_deref(), fav_ok).when(fav_ok, |d| {
+                    d.on_click(cx.listener(move |w, _, _, cx| {
+                        w.tab_menu = None;
+                        if let Some(tab) = w.tabs.iter().find(|t| t.entity_id() == id).cloned() {
+                            w.save_favorite_of(&tab, cx);
+                        }
+                        cx.notify();
+                    }))
+                }),
+            )
+            .child(ui::menu_sep(t))
+            .child(
                 ui::menu_item(t, "tm-side", "Open to the Side", crate::keymap::key("open_to_side").as_deref(), side_ok).when(side_ok, |d| {
                     d.on_click(cx.listener(move |w, _, window, cx| {
                         w.tab_menu = None;
@@ -737,7 +838,7 @@ impl Workspace {
                 let to = w.pane_of(id).other();
                 w.move_into(id, to, None, window, cx)
             }));
-        Some(gpui::deferred(gpui::anchored().position(at).snap_to_window_with_margin(px(8.)).child(menu)).priority(3))
+        Some(gpui::deferred(gpui::anchored().position(at).snap_to_window_with_margin(px(8.)).child(ui::menu_in("tab-menu-in", menu))).priority(3))
     }
 
     // -----------------------------------------------------------------------------------------
@@ -748,6 +849,7 @@ impl Workspace {
         if !cx.has_active_drag() {
             self.editor_drop = None;
             self.editor_drop_glide = None;
+            self.tab_motion.drag_ended();
         }
         let c = self.frame_now.center;
         let Some(f) = self.split_now else {
@@ -861,7 +963,7 @@ impl Workspace {
                 Some(Key::Stmt(i)) => tab.read(cx).result().filter(|r| crate::messages::shows_log(r)).map(|r| (i, r.clone())),
                 _ => None,
             };
-            let strip = (view.results.len() > 1).then(|| self.render_result_strip(&view, &t, cx));
+            let strip = (view.results.len() > 1).then(|| self.render_result_strip(tab.entity_id(), &view, &t, cx));
             let below = if strip.is_some() { metrics::STRIP_H } else { 0. };
             let editor_h = self.editor_h(window, below);
             let grid_area: AnyElement = if view.shown == Some(Key::Messages) {
@@ -1121,7 +1223,7 @@ impl Workspace {
             .child(div().flex_none().size(px(7.)).bg(color))
             .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(label))
             .when(locked, |d| d.child(icon(Icon::Lock).flex_none().size(px(10.)).text_color(t.tx3)))
-            .child(icon(Icon::ChevronDown).flex_none().size(px(9.)).text_color(t.tx3))
+            .child(ui::dropdown_arrow("tb-conn-arrow", open, 9., t.tx3))
             .on_click(cx.listener(|w, _, _, cx| w.toggle_conn_menu(cx)));
         let menu = open.then(|| {
             let store = self.store.read(cx);
@@ -1161,7 +1263,7 @@ impl Workspace {
             // Under the button, its left edge on the button's.
             div().absolute().left_0().top(px(26.)).child(
                 gpui::deferred(
-                    gpui::anchored().snap_to_window_with_margin(px(8.)).child(
+                    gpui::anchored().snap_to_window_with_margin(px(8.)).child(ui::menu_in("conn-menu-in", 
                         ui::popover(t)
                             .w(px(240.))
                             .on_mouse_down_out(cx.listener(|w, _, _, cx| {
@@ -1174,7 +1276,7 @@ impl Workspace {
                             .p(px(0.))
                             .overflow_hidden()
                             .child(div().id("conn-menu").max_h(px(440.)).overflow_y_scroll().p(px(4.)).children(rows)),
-                    ),
+                    )),
                 )
                 .priority(3),
             )
@@ -1503,7 +1605,7 @@ impl Workspace {
         // button's bottom-right corner anchors it; it flips above when there is no room).
         let copy_menu = copy_open.then(|| {
             div().absolute().right_0().top(px(26.)).child(gpui::deferred(
-                gpui::anchored().anchor(gpui::Anchor::TopRight).snap_to_window_with_margin(px(8.)).child(
+                gpui::anchored().anchor(gpui::Anchor::TopRight).snap_to_window_with_margin(px(8.)).child(ui::menu_in("copy-menu-in", 
                     ui::popover(t)
                         .w(px(236.))
                         .on_mouse_down_out(cx.listener(|w, _, _, cx| {
@@ -1516,7 +1618,7 @@ impl Workspace {
                         .child(ui::menu_item(t, "cp-csv", "Copy as CSV", crate::keymap::key("copy_csv").as_deref(), has_rows).on_click(cx.listener(|w, _, _, cx| w.copy_selection(CopyFormat::Csv, false, cx))))
                         .child(ui::menu_item(t, "cp-csv-hdr", "Copy as CSV with Headers", None, has_rows).on_click(cx.listener(|w, _, _, cx| w.copy_selection(CopyFormat::Csv, true, cx))))
                         .when(printed, |d| d.child(ui::menu_sep(t)).child(ui::menu_item(t, "cp-msg", "Copy Messages", None, true).on_click(cx.listener(|w, _, _, cx| w.copy_messages(cx))))),
-                ),
+                )),
             )
             .priority(3))
         });
@@ -1584,7 +1686,7 @@ impl Workspace {
                             .when(copied.is_some(), |d| d.invisible())
                             .child(icon(Icon::Copy).size(px(13.)).text_color(t.tx2))
                             .child("Copy")
-                            .child(icon(Icon::ChevronDown).size(px(9.)).text_color(t.tx2))
+                            .child(ui::dropdown_arrow("rb-copy-arrow", self.copy_menu, 9., t.tx2))
                             .on_click(cx.listener(|w, _, _, cx| {
                                 w.copy_menu = !w.copy_menu;
                                 cx.notify();
@@ -1638,29 +1740,18 @@ impl Workspace {
     // Result tabs: one per statement of a script that returned rows, a count, an error or a
     // cancel, and the folded commands; over the result bar, only when there are several.
 
-    fn render_result_strip(&self, v: &TabView, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn render_result_strip(&self, id: EntityId, v: &TabView, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let hov = t.hov;
         let bounds = v.focused.then(|| self.result_tab_bounds.clone());
-        div()
-            .on_children_prepainted(move |b, _, _| {
-                if let Some(bounds) = &bounds {
-                    *bounds.borrow_mut() = b;
-                }
-            })
-            .id("result-strip")
-            .h(px(metrics::STRIP_H))
-            .flex_none()
-            .px(px(8.))
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(2.))
-            .border_b_1()
-            .border_color(t.line)
-            .overflow_x_scroll()
-            .whitespace_nowrap()
-            .text_size(px(11.5))
-            .children(v.results.iter().enumerate().map(|(i, r)| {
+        // Among the result tabs, the ghosts of those closing (`tab_motion`).
+        let now = std::time::Instant::now();
+        let mut els: Vec<AnyElement> = Vec::new();
+        let mut is_tab: Vec<bool> = Vec::new();
+        let first = self.tab_motion.result_ghosts(id, None, t, now);
+        is_tab.extend(first.iter().map(|_| false));
+        els.extend(first);
+        for (i, r) in v.results.iter().enumerate() {
+            let tab = {
                 let active = v.shown == Some(r.key);
                 let key = r.key;
                 let messages = r.key == Key::Messages;
@@ -1715,7 +1806,33 @@ impl Workspace {
                         cx.stop_propagation();
                         w.close_result(key, cx);
                     }))
-            }))
+            };
+            els.push(tab.into_any_element());
+            is_tab.push(true);
+            let after = self.tab_motion.result_ghosts(id, Some(r.key), t, now);
+            is_tab.extend(after.iter().map(|_| false));
+            els.extend(after);
+        }
+        div()
+            .on_children_prepainted(move |b, _, _| {
+                if let Some(bounds) = &bounds {
+                    *bounds.borrow_mut() = b.into_iter().zip(is_tab.iter().copied().chain(std::iter::repeat(true))).filter(|(_, t)| *t).map(|(b, _)| b).collect();
+                }
+            })
+            .id("result-strip")
+            .h(px(metrics::STRIP_H))
+            .flex_none()
+            .px(px(8.))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(2.))
+            .border_b_1()
+            .border_color(t.line)
+            .overflow_x_scroll()
+            .whitespace_nowrap()
+            .text_size(px(11.5))
+            .children(els)
     }
 
     /// The messages tab: every statement of the run, its outcome and time, and what it printed;

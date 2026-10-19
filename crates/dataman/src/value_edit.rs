@@ -16,7 +16,7 @@ use dataman_core::edit::CellValue;
 use dataman_core::jsontree::{self, Doc, Node, Path, RowKey};
 use dataman_core::value::Kind;
 
-use crate::assets::{Icon, icon};
+use crate::assets::Icon;
 use crate::editor::{CodeEditor, EditorEvent};
 use crate::input::{InputEvent, TextInput};
 use crate::theme::{ActiveTheme, Theme, mono};
@@ -767,7 +767,7 @@ impl ValueEditor {
                                 .w(px(12.))
                                 .flex_none()
                                 .when(r.container, |d| {
-                                    d.child(icon(if r.expanded { Icon::ChevronDown } else { Icon::ChevronRight }).size(px(10.)).text_color(t.tx3))
+                                    d.child(ui::disclosure(("json-chev", i), r.expanded, 10., t.tx3))
                                         .on_click(cx.listener(move |e, _: &ClickEvent, _, cx| {
                                             if let State::Json(j) = &mut e.state {
                                                 j.doc.toggle(&p_toggle);
