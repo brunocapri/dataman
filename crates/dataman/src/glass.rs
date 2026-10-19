@@ -76,6 +76,12 @@ fn macos_major() -> isize {
     imp::os_major()
 }
 
+/// The major version in "Version 15.6 (Build 24G84)"; 0 when there is none.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn major_of(text: &str) -> isize {
+    text.split(|c: char| !c.is_ascii_digit()).find(|s| !s.is_empty()).and_then(|s| s.parse().ok()).unwrap_or(0)
+}
+
 #[cfg(not(target_os = "macos"))]
 fn macos_major() -> isize {
     0
@@ -90,19 +96,6 @@ mod imp {
     use objc2::runtime::AnyObject;
     use objc2::{class, msg_send};
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    struct Version {
-        major: isize,
-        minor: isize,
-        patch: isize,
-    }
-
-    // SAFETY: the layout of Foundation's `NSOperatingSystemVersion` (three NSIntegers).
-    unsafe impl Encode for Version {
-        const ENCODING: Encoding = Encoding::Struct("NSOperatingSystemVersion", &[isize::ENCODING, isize::ENCODING, isize::ENCODING]);
-    }
 
     #[repr(C)]
     #[derive(Clone, Copy)]
@@ -149,17 +142,28 @@ mod imp {
         static VIEW: Cell<*mut AnyObject> = const { Cell::new(std::ptr::null_mut()) };
     }
 
+    /// From `operatingSystemVersionString` ("Version 15.6 (Build 24G84)"): the struct of
+    /// `operatingSystemVersion` is anonymous on some systems (`{?=qqq}`), which objc2's
+    /// encoding check rejects in debug builds.
     pub fn os_major() -> isize {
-        // SAFETY: `NSProcessInfo.operatingSystemVersion` (macOS 10.10+), any thread.
-        unsafe {
+        // SAFETY: `NSProcessInfo.operatingSystemVersionString` (macOS 10.2+), any thread; the
+        // UTF-8 buffer lives as long as the string, read before returning.
+        let text = unsafe {
             let info: *mut AnyObject = msg_send![class!(NSProcessInfo), processInfo];
             if info.is_null() {
                 return 0;
             }
-            let v: Version = msg_send![info, operatingSystemVersion];
-            let _ = (v.minor, v.patch);
-            v.major
-        }
+            let s: *mut AnyObject = msg_send![info, operatingSystemVersionString];
+            if s.is_null() {
+                return 0;
+            }
+            let c: *const std::ffi::c_char = msg_send![s, UTF8String];
+            if c.is_null() {
+                return 0;
+            }
+            std::ffi::CStr::from_ptr(c).to_string_lossy().into_owned()
+        };
+        super::major_of(&text)
     }
 
     pub fn installed() -> bool {
@@ -241,4 +245,14 @@ mod imp {
     }
 
     pub fn set_own_view(_: &gpui::Window, _: bool) {}
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn major_of() {
+        assert_eq!(super::major_of("Version 15.6 (Build 24G84)"), 15);
+        assert_eq!(super::major_of("Version 26.0 (Build 25A354)"), 26);
+        assert_eq!(super::major_of("unknown"), 0);
+    }
 }

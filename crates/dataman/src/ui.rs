@@ -196,6 +196,12 @@ pub fn button(t: &Theme, id: impl Into<ElementId>, kind: Btn) -> Stateful<Div> {
 /// A square icon button (24 or 26 pt) in tx3 that lights up on hover.
 pub fn icon_button(t: &Theme, id: impl Into<ElementId>, i: Icon, box_size: f32, icon_size: f32) -> Stateful<Div> {
     let (hov, prs) = (t.hov, t.prs);
+    icon_button_inert(t, id, i, box_size, icon_size).hover(move |s| s.bg(hov)).active(move |s| s.bg(prs))
+}
+
+/// [`icon_button`] without its hover and press tints (a disabled one: GPUI takes one hover
+/// style per element, so it cannot be cleared after).
+pub fn icon_button_inert(t: &Theme, id: impl Into<ElementId>, i: Icon, box_size: f32, icon_size: f32) -> Stateful<Div> {
     div()
         .id(id)
         .flex_none()
@@ -204,8 +210,6 @@ pub fn icon_button(t: &Theme, id: impl Into<ElementId>, i: Icon, box_size: f32, 
         .items_center()
         .justify_center()
         .text_color(t.tx3)
-        .hover(move |s| s.bg(hov))
-        .active(move |s| s.bg(prs))
         .child(icon(i).size(px(icon_size)).text_color(t.tx3))
 }
 

@@ -226,8 +226,12 @@ impl Workspace {
             .map(|fwd| {
                 let can = self.can_go(fwd);
                 let (id, i) = if fwd { ("nav-forward", Icon::ChevronRight) } else { ("nav-back", Icon::ChevronLeft) };
-                let b = ui::icon_button(&t, id, i, 20., 14.).on_mouse_down(MouseButton::Left, stop);
-                let b = if can { b.on_click(cx.listener(move |w, _, window, cx| w.go(fwd, window, cx))) } else { b.opacity(0.35).hover(|s| s).active(|s| s) };
+                let b = if can {
+                    ui::icon_button(&t, id, i, 20., 14.).on_click(cx.listener(move |w, _, window, cx| w.go(fwd, window, cx)))
+                } else {
+                    ui::icon_button_inert(&t, id, i, 20., 14.).opacity(0.35)
+                };
+                let b = b.on_mouse_down(MouseButton::Left, stop);
                 mark(if fwd { "forward" } else { "back" }, b.into_any_element())
             })
             .into_iter()
