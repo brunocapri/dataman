@@ -409,7 +409,7 @@ pub const COPIED_FADE_AT: Duration = Duration::from_millis(1750);
 /// Its fade in.
 pub const COPIED_IN: Duration = Duration::from_millis(120);
 
-/// How long the toolbar's "Saved as favorite" (⌘S) stays next to the History button.
+/// How long the sidebar rail's Favorites icon stays lit after ⌘S ("Saved as favorite").
 pub const SAVED_FOR: Duration = Duration::from_millis(2500);
 /// When it starts to fade out.
 pub const SAVED_FADE_AT: Duration = Duration::from_millis(2150);

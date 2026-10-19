@@ -109,12 +109,10 @@ pub async fn run_stage(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindow
     let _ = cx.update(|window, cx| {
         ws.update(cx, |w, cx| {
             w.activate(0, window, cx);
-            // A wider explorer and the history open come back too, and where the panels sit.
+            // A wider sidebar on its history come back too, and the side it sits on.
             w.explorer_w = 300.;
-            w.toggle_history_for_demo(cx);
-            use dataman_core::layout::{Dock, PanelId, Place};
-            w.move_panel(PanelId::History, Place::stack(Dock::Left, 0, 0), cx);
-            w.layout = w.layout.with_split(Dock::Left, 0, 0.35);
+            w.set_nav(dataman_core::layout::NavView::History, cx);
+            w.layout = dataman_core::layout::PanelLayout::explorer_at(dataman_core::layout::Dock::Right);
         });
         first.update(cx, |t, cx| t.editor.update(cx, |e, cx| e.demo_select(3, 9, cx)));
     });
@@ -162,11 +160,10 @@ pub async fn run_stage(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindow
         })
         .unwrap();
     report("the tabs come back with their SQL, selection and the tab in front", back && after.0 == before.0.iter().map(|t| (t.0.clone(), t.1)).collect::<Vec<_>>() && after.1 == before.1, format!("{after:?}"));
-    let (ew, history) = cx.update(|_, cx| (ws2.read(cx).explorer_w, matches!(ws2.read(cx).side, Some(crate::app::Side::History)))).unwrap_or_default();
-    report("the explorer's width and the open history come back", ew == 300. && history, format!("explorer {ew}, history {history}"));
+    let (ew, view) = cx.update(|_, cx| (ws2.read(cx).explorer_w, ws2.read(cx).view)).unwrap_or_default();
+    report("the sidebar's width and its view (the history) come back", ew == 300. && view == dataman_core::layout::NavView::History, format!("sidebar {ew}, view {view:?}"));
     let layout = cx.update(|_, cx| ws2.read(cx).layout.clone()).unwrap();
-    let stacked = dataman_core::layout::Column { panels: vec![dataman_core::layout::PanelId::Explorer, dataman_core::layout::PanelId::History], split: 0.35 };
-    report("the panels come back in their docks, at their split", layout.left == [stacked] && layout.right.is_empty(), format!("{layout:?}"));
+    report("the sidebar comes back on its side", layout == dataman_core::layout::PanelLayout::explorer_at(dataman_core::layout::Dock::Right), format!("{layout:?}"));
     let (t1, t2) = cx.update(|_, cx| (ws2.read(cx).tabs[0].clone(), ws2.read(cx).tabs[1].clone())).unwrap();
     let link = cx.update(|_, cx| (t2.read(cx).favorite.as_ref().map(|(id, _)| id.clone()), t2.read(cx).title(cx).to_string())).unwrap();
     report("a tab linked to a favorite comes back linked, titled with its name", fav.is_some() && link.0 == fav && link.1 == "Session favorite", format!("{link:?}"));

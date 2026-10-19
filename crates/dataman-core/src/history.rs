@@ -1,4 +1,5 @@
-//! Query history per connection: one JSON line per execution, append-only.
+//! Query history per connection: one JSON line per execution, appended; read per connection
+//! or for all of them, an entry taken out or the whole of it cleared, and either put back.
 
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
@@ -112,6 +113,69 @@ impl History {
         Ok(())
     }
 
+    /// The last `limit` entries of every connection in `connection_ids`, newest first, each
+    /// with its connection's id.
+    pub fn load_all(&self, connection_ids: &[String], limit: usize) -> Result<Vec<(String, HistoryEntry)>> {
+        let mut all = Vec::new();
+        for id in connection_ids {
+            all.extend(self.load(id, limit)?.into_iter().map(|e| (id.clone(), e)));
+        }
+        all.sort_by(|a, b| b.1.ts.cmp(&a.1.ts));
+        all.truncate(limit);
+        Ok(all)
+    }
+
+    /// Takes one entry out of a connection's history (the first line equal to it) and hands
+    /// back that line (`None`: it was not there), for [`Self::restore`].
+    pub fn remove(&self, connection_id: &str, entry: &HistoryEntry) -> Result<Option<Vec<u8>>> {
+        let _g = self.lock.lock();
+        let file = self.file(connection_id);
+        let text = match std::fs::read_to_string(&file) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        let mut taken = None;
+        let mut kept = String::with_capacity(text.len());
+        for line in text.split_inclusive('\n') {
+            if taken.is_none() && serde_json::from_str::<HistoryEntry>(line.trim_end()).is_ok_and(|e| e == *entry) {
+                taken = Some(line.as_bytes().to_vec());
+            } else {
+                kept.push_str(line);
+            }
+        }
+        if taken.is_some() {
+            let tmp = file.with_extension("jsonl.tmp");
+            std::fs::write(&tmp, kept)?;
+            std::fs::rename(&tmp, &file)?;
+        }
+        Ok(taken)
+    }
+
+    /// Lines [`Self::remove`] or [`Self::take`] took, back among what is there now, in the
+    /// order they ran.
+    pub fn restore(&self, connection_id: &str, bytes: &[u8]) -> Result<()> {
+        let _g = self.lock.lock();
+        std::fs::create_dir_all(&self.dir)?;
+        let file = self.file(connection_id);
+        let now = match std::fs::read(&file) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(e) => return Err(e.into()),
+        };
+        let text = String::from_utf8_lossy(bytes).into_owned() + &String::from_utf8_lossy(&now);
+        let mut lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+        // Unreadable lines keep their place at the start.
+        let at = |l: &&str| serde_json::from_str::<HistoryEntry>(l).ok().map(|e| e.ts);
+        lines.sort_by_key(at);
+        let mut out = lines.join("\n");
+        out.push('\n');
+        let tmp = file.with_extension("jsonl.tmp");
+        std::fs::write(&tmp, out)?;
+        std::fs::rename(&tmp, &file)?;
+        Ok(())
+    }
+
     pub fn clear(&self, connection_id: &str) -> Result<()> {
         let _g = self.lock.lock();
         match std::fs::remove_file(self.file(connection_id)) {
@@ -171,5 +235,33 @@ mod tests {
         h.put_back("abc", &bytes).unwrap();
         let got = h.load("abc", 10).unwrap();
         assert_eq!(got.iter().map(|e| e.sql.as_str()).collect::<Vec<_>>(), ["select 3", "select 2", "select 1"]);
+    }
+
+    /// Every connection's history, newest first; one entry taken out and put back in its place;
+    /// a whole history taken and restored among what ran since.
+    #[test]
+    fn all_connections_remove_and_restore() {
+        let dir = tempfile::tempdir().unwrap();
+        let h = History::new(dir.path().join("history"));
+        let at = |s: i64| DateTime::<Utc>::from_timestamp(1_700_000_000 + s, 0).unwrap();
+        let entry = |s: i64, sql: &str| HistoryEntry { ts: at(s), database: "db".into(), sql: sql.into(), duration_ms: 1., rows: None, outcome: Outcome::Ok, error: None, source: None };
+        h.append("a", &entry(1, "a1")).unwrap();
+        h.append("b", &entry(2, "b2")).unwrap();
+        h.append("a", &entry(3, "a3")).unwrap();
+        h.append("b", &entry(4, "b4")).unwrap();
+        let ids = ["a".to_string(), "b".to_string(), "gone".to_string()];
+        let sqls = |h: &History| h.load_all(&ids, 10).unwrap().into_iter().map(|(c, e)| format!("{c}:{}", e.sql)).collect::<Vec<_>>();
+        assert_eq!(sqls(&h), ["b:b4", "a:a3", "b:b2", "a:a1"]);
+        assert_eq!(h.load_all(&ids, 2).unwrap().len(), 2);
+        let line = h.remove("a", &entry(1, "a1")).unwrap().unwrap();
+        assert!(h.remove("a", &entry(1, "a1")).unwrap().is_none());
+        assert_eq!(sqls(&h), ["b:b4", "a:a3", "b:b2"]);
+        h.append("a", &entry(5, "a5")).unwrap();
+        h.restore("a", &line).unwrap();
+        assert_eq!(h.load("a", 10).unwrap().iter().map(|e| e.sql.as_str()).collect::<Vec<_>>(), ["a5", "a3", "a1"]);
+        let all = h.take("b").unwrap().unwrap();
+        h.append("b", &entry(6, "b6")).unwrap();
+        h.restore("b", &all).unwrap();
+        assert_eq!(h.load("b", 10).unwrap().iter().map(|e| e.sql.as_str()).collect::<Vec<_>>(), ["b6", "b4", "b2"]);
     }
 }

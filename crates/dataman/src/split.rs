@@ -230,7 +230,6 @@ impl Workspace {
             self.nav_record(Some(window), cx);
             self.enter_group_of(ix);
             self.active = ix;
-            self.history_pin = None;
             self.sync_bound_views(window, cx);
             cx.notify();
         }

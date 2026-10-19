@@ -59,6 +59,7 @@ mod result_bar;
 mod row_actions;
 mod settings_view;
 mod shortcuts;
+mod sidebar;
 mod split;
 mod split_check;
 mod sql_picker;
@@ -208,7 +209,6 @@ fn menus(cx: &App) -> Vec<Menu> {
             MenuItem::separator(),
             MenuItem::action("Jump to Error", JumpToError),
             MenuItem::action("Use Explorer Connection", UseExplorerConnection),
-            MenuItem::action("History", ToggleHistory),
             ]),
         ),
         Menu::new("View").items(
@@ -216,7 +216,10 @@ fn menus(cx: &App) -> Vec<Menu> {
                 MenuItem::action("Command Palette", CommandPalette),
                 MenuItem::action("Go to Table or Tab", GoTo),
                 MenuItem::separator(),
-                MenuItem::action("Toggle Explorer", ToggleExplorer),
+                MenuItem::action("Toggle Sidebar", ToggleExplorer),
+                MenuItem::action("Explorer", sidebar::ShowExplorer),
+                MenuItem::action("Favorites", sidebar::ShowFavorites),
+                MenuItem::action("History", sidebar::ShowHistory),
                 MenuItem::action("Toggle Side Panel", ToggleSidePanel),
                 MenuItem::action("Reset Panel Layout", dock::ResetPanelLayout),
                 MenuItem::action("Open to the Side", split::OpenToSide),

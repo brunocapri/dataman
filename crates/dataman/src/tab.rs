@@ -31,7 +31,7 @@ use crate::table_view::TableData;
 const PARSE_DELAY: std::time::Duration = std::time::Duration::from_millis(600);
 
 pub enum TabEvent {
-    /// A statement finished (the history panel refreshes).
+    /// A statement finished (the sidebar's history refreshes).
     Finished,
     /// Something would replace the result while grid edits are pending: the workspace asks
     /// what to do with them (`QueryTab::pending_run`).

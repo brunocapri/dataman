@@ -14,7 +14,7 @@ use crate::theme::px;
 use dataman_core::schema::RelKind;
 use dataman_core::sqlgen;
 
-use crate::app::{Bound, Region, Side, Workspace};
+use crate::app::{Bound, Side, Workspace};
 use crate::privileges::{PrivilegesEvent, PrivilegesPanel};
 use crate::tab::QueryTab;
 use crate::theme::ActiveTheme;
@@ -243,13 +243,8 @@ impl Workspace {
             Act::NewTab => {
                 self.open_sql_tab(&id, None, "", false, window, cx);
             }
-            Act::History => {
-                // This connection's history, whatever the active tab is on.
-                self.history_pin = Some(id.clone());
-                self.history.update(cx, |h, cx| h.show(Some(id), cx));
-                self.side = Some(Side::History);
-                self.focus_region(Region::Side, window, cx);
-            }
+            // This connection's history, whatever the active tab is on.
+            Act::History => self.show_history_of(id, window, cx),
             Act::Activity => self.open_activity(&id, window, cx),
             Act::EditConnection => self.open_dialog(Some(id), window, cx),
             Act::DuplicateConnection => self.duplicate_connection(&id, window, cx),

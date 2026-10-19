@@ -15,7 +15,7 @@
 //!   shortcut, which only searches; ⇧⌘C copies with
 //!   headers), "Copied" in the Copy button's place for 2 s after a copy, the Copy menu's CSV
 //!   and TSV with headers, a connection that is not connected drawn gray and regular, the
-//!   history's slide and the explorer toggle's fill, printed as
+//!   side panel's slide and the explorer toggle's fill, printed as
 //!   PASS/FAIL lines; exit code 1 on a failure.
 
 use std::time::Duration;
@@ -169,10 +169,10 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
         return true;
     }
     if stage == "zoom" {
-        // The history open, the result zoomed over it and the editor (DATAMAN_ZOOM_FREEZE=0.5
-        // holds it half-way).
+        // The side panel (the MCP log) open, the result zoomed over it and the editor
+        // (DATAMAN_ZOOM_FREEZE=0.5 holds it half-way).
         pause(cx, 600).await;
-        let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.toggle_side(crate::app::Side::History, cx)));
+        let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.toggle_mcp_log(window, cx)));
         pause(cx, 400).await;
         let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.toggle_result_zoom(window, cx)));
         pause(cx, 400).await;
@@ -971,21 +971,21 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
                 click(cx, r);
             }
             report("the reset puts ⌘T back and drops it from [keys]", keymap::effective("new_tab") == ["cmd-t"] && !saved_keys(cx).contains_key("new_tab"), format!("{:?}", keymap::effective("new_tab")));
-            search(&sv, "history", cx);
-            if let (Some(h), _) = points(&sv, "history", cx) {
+            search(&sv, "favorite query", cx);
+            if let (Some(h), _) = points(&sv, "favorite_query", cx) {
                 click(cx, h);
                 press(cx, "backspace");
             }
-            let removed = keymap::effective("history").is_empty() && saved_keys(cx).get("history").map(String::as_str) == Some("") && keymap::key("history").is_none();
+            let removed = keymap::effective("favorite_query").is_empty() && saved_keys(cx).get("favorite_query").map(String::as_str) == Some("") && keymap::key("favorite_query").is_none();
             search(&sv, "", cx);
             draw(cx);
             if let Some(p) = cx.update(|_, cx| sv.read(cx).demo_reset_all_point()).ok().flatten() {
                 click(cx, p);
             }
             report(
-                "⌫ removes History's key; Reset all restores ⌘Y and empties [keys]",
-                removed && keymap::effective("history") == ["cmd-y"] && saved_keys(cx).is_empty(),
-                format!("removed {removed}, {:?} {:?}", keymap::effective("history"), saved_keys(cx)),
+                "⌫ removes Favorite query's key; Reset all restores ⌘D and empties [keys]",
+                removed && keymap::effective("favorite_query") == ["cmd-d"] && saved_keys(cx).is_empty(),
+                format!("removed {removed}, {:?} {:?}", keymap::effective("favorite_query"), saved_keys(cx)),
             );
             // Search by shortcut: the keyboard button takes the next keystroke, which lists the
             // commands on it and does nothing else (⌘T opens no tab, ⌘+ does not zoom); ⌫
@@ -1134,7 +1134,7 @@ async fn zoom_checks(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> boo
     };
     let tab = run_sql(ws, "SELECT n, n * 2 AS twice FROM generate_series(1, 40) n", cx).await;
     let grid = cx.update(|_, cx| tab.read(cx).grid.clone()).unwrap();
-    let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.toggle_side(crate::app::Side::History, cx)));
+    let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.toggle_mcp_log(window, cx)));
     pause(cx, 350).await;
     draw(cx);
     let bounds = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).result_bounds.get()).ok().flatten();
@@ -1173,7 +1173,7 @@ async fn zoom_checks(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> boo
         after.is_some_and(|a| (a.left() - before.left()).abs() < px(1.) && a.left().as_f32() >= explorer - 1. && a.top().as_f32() >= title - 1.),
         format!("{after:?} explorer {explorer}"),
     );
-    let side_kept = cx.update(|_, cx| matches!(ws.read(cx).side, Some(crate::app::Side::History))).unwrap_or(false);
+    let side_kept = cx.update(|_, cx| ws.read(cx).side.is_some()).unwrap_or(false);
     report("the side panel stays open underneath (it comes back)", side_kept, String::new());
     let zoomed_icon = cx.update(|_, cx| tab.read(cx).zoomed).unwrap_or(false);
     report("the zoom button turns into its collapse control", zoomed_icon, String::new());
@@ -1202,13 +1202,13 @@ async fn zoom_checks(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> boo
     draw(cx);
     let restored = bounds(cx);
     report("esc on the zoomed grid closes it; the layout is back", zoom(cx) == 0. && restored.is_some_and(|r| (r.top() - before.top()).abs() < px(1.) && (r.right() - before.right()).abs() < px(1.)), format!("{before:?} → {restored:?}"));
-    // The button: zoom, then another side view (the history) opening ends it.
+    // The button: zoom, then a side view (the MCP log) opening ends it.
     let _ = cx.update(|_, cx| ws.update(cx, |w, _| w.side = None));
     draw(cx);
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.toggle_result_zoom(window, cx)));
     pause(cx, 340).await;
     draw(cx);
-    let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.toggle_history_for_demo(cx)));
+    let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.toggle_mcp_log(window, cx)));
     draw(cx);
     pause(cx, 340).await;
     draw(cx);
@@ -1218,7 +1218,7 @@ async fn zoom_checks(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> boo
     ok
 }
 
-/// The explorer's connection labels (one not connected gray and regular), the history's
+/// The explorer's connection labels (one not connected gray and regular), the side panel's
 /// slide, and the explorer toggle's fill sweeping with the explorer.
 async fn motion_checks(ws: &Entity<Workspace>, id: &str, cx: &mut AsyncWindowContext) -> bool {
     let mut ok = true;
@@ -1304,25 +1304,25 @@ async fn motion_checks(ws: &Entity<Workspace>, id: &str, cx: &mut AsyncWindowCon
 
     let motion = !cx.update(|_, cx| cx.reduce_motion()).unwrap_or(false);
     let sliding = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).demo_side_sliding()).unwrap_or(false);
-    let history = |cx: &mut AsyncWindowContext| cx.update(|_, cx| matches!(ws.read(cx).side, Some(crate::app::Side::History))).unwrap_or(false);
+    let history = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).side.is_some()).unwrap_or(false);
     let _ = cx.update(|_, cx| ws.update(cx, |w, _| w.side = None));
     draw(cx);
     pause(cx, 300).await;
     draw(cx);
-    let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.toggle_history_for_demo(cx)));
+    let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.toggle_mcp_log(window, cx)));
     draw(cx);
     let opening = sliding(cx);
     pause(cx, 320).await;
     draw(cx);
     let landed = !sliding(cx) && history(cx);
-    let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.toggle_history_for_demo(cx)));
+    let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.toggle_mcp_log(window, cx)));
     draw(cx);
     let closing = sliding(cx);
     pause(cx, 320).await;
     draw(cx);
     let gone = !sliding(cx) && !history(cx);
     report(
-        "the history slides in and out like the explorer",
+        "the side panel slides in and out like the sidebar",
         opening == motion && closing == motion && landed && gone,
         format!("opening {opening} landed {landed} closing {closing} gone {gone} (motion {motion})"),
     );

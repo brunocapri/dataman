@@ -875,11 +875,8 @@ impl Workspace {
             PaletteEvent::SearchHistory(q) => {
                 let q = q.clone();
                 w.close_palette(window, cx);
-                if !matches!(w.side, Some(app::Side::History)) {
-                    w.toggle_history_for_demo(cx);
-                }
+                w.show_nav(dataman_core::layout::NavView::History, window, cx);
                 w.history.update(cx, |h, cx| h.set_filter(&q, cx));
-                w.focus_region(app::Region::Side, window, cx);
             }
             PaletteEvent::Pick(kind, mode) => {
                 let (kind, mode) = (kind.clone(), *mode);
@@ -1040,13 +1037,6 @@ impl Workspace {
         // Commands, Undo and Redo first (they say what they would take back).
         items.extend(crate::undo::palette_items(self));
         items.extend(commands(active_conn.as_ref(), cx));
-        // The history stacked with the explorer goes with it (⌘B): its own toggles are off.
-        if self.history_with_explorer() {
-            for it in items.iter_mut().filter(|it| matches!(it.label.as_str(), "History" | "Toggle side panel") && it.section == Section::Commands) {
-                it.disabled = true;
-                it.sub = "with the explorer (⌘B) while stacked with it".into();
-            }
-        }
         // Connections; the disconnected ones also say their tables are not indexed.
         for p in &store.profiles {
             let state = store.states.get(&p.id);
@@ -1137,7 +1127,9 @@ fn commands(conn: Option<&std::sync::Arc<dataman_core::Connection>>, cx: &App) -
         c("View value", "a JSON or array cell, as a tree", "⇧Space", Box::new(crate::grid::ViewValue), Grid),
         c("Jump to error", "in the editor", "⌘'", Box::new(JumpToError), Workspace),
         c("Use explorer connection", "for this tab", "⌥↩", Box::new(UseExplorerConnection), Workspace),
-        c("History", "of this connection", "⌘Y", Box::new(ToggleHistory), Workspace),
+        c("Explorer", "the sidebar's connections and schema", "", Box::new(crate::sidebar::ShowExplorer), Workspace),
+        c("Favorites", "the sidebar's saved queries", "", Box::new(crate::sidebar::ShowFavorites), Workspace),
+        c("History", "the sidebar's history of this connection", "", Box::new(crate::sidebar::ShowHistory), Workspace),
         c("Favorite query", "the statement under the cursor", "⌘D", Box::new(FavoriteQuery), Workspace),
         c("Save as favorite", "the script, into the tab's favorite", "⌘S", Box::new(SaveFavorite), Workspace),
         c("Save as…", "the script, to a .sql file", "⇧⌘S", Box::new(SaveAs), Workspace),
@@ -1153,13 +1145,11 @@ fn commands(conn: Option<&std::sync::Arc<dataman_core::Connection>>, cx: &App) -
         c("Find & replace", "", "⌥⌘F", Box::new(crate::find::FindReplace), Workspace),
         c("Find next", "", "⌘G", Box::new(crate::find::FindNext), Workspace),
         c("Find previous", "", "⇧⌘G", Box::new(crate::find::FindPrevious), Workspace),
-        c("Toggle explorer", "", "⌘B", Box::new(ToggleExplorer), Workspace),
+        c("Toggle sidebar", "explorer, favorites, history", "⌘B", Box::new(ToggleExplorer), Workspace),
         c("Toggle side panel", "", "⌥⌘B", Box::new(ToggleSidePanel), Workspace),
-        c("Move explorer to the left dock", "panels: drag one by the dot on its top edge", "", Box::new(crate::dock::MoveExplorerLeft), Workspace),
-        c("Move explorer to the right dock", "", "", Box::new(crate::dock::MoveExplorerRight), Workspace),
-        c("Move history to the left dock", "favorites, server panels", "", Box::new(crate::dock::MoveHistoryLeft), Workspace),
-        c("Move history to the right dock", "", "", Box::new(crate::dock::MoveHistoryRight), Workspace),
-        c("Reset panel layout", "the explorer left, the history right", "", Box::new(crate::dock::ResetPanelLayout), Workspace),
+        c("Move sidebar to the left", "drag it by the dot on its top edge", "", Box::new(crate::dock::MoveExplorerLeft), Workspace),
+        c("Move sidebar to the right", "the side panel goes left", "", Box::new(crate::dock::MoveExplorerRight), Workspace),
+        c("Reset panel layout", "the sidebar left, the side panel right", "", Box::new(crate::dock::ResetPanelLayout), Workspace),
         c("Focus explorer", "", "⌘⇧E", Box::new(FocusExplorer), Workspace),
         c("Focus grid", "", "⌘⇧G", Box::new(FocusGrid), Workspace),
         c("Focus editor", "", "esc", Box::new(FocusEditor), Workspace),

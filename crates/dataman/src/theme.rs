@@ -256,11 +256,13 @@ pub mod metrics {
     /// The result tabs of a script, over the result bar.
     pub const STRIP_H: f32 = 30.;
     pub const STATUS_H: f32 = 28.;
-    pub const EXPLORER_W: f32 = 260.;
-    pub const EXPLORER_MIN: f32 = 200.;
-    pub const EXPLORER_MAX: f32 = 480.;
+    /// The sidebar's icon rail (`sidebar`), part of the explorer's width.
+    pub const RAIL_W: f32 = 36.;
+    pub const EXPLORER_W: f32 = 260. + RAIL_W;
+    pub const EXPLORER_MIN: f32 = 200. + RAIL_W;
+    pub const EXPLORER_MAX: f32 = 480. + RAIL_W;
     /// Explorer width when the window opens at the compact size (1280 x 800 or less).
-    pub const EXPLORER_COMPACT: f32 = 220.;
+    pub const EXPLORER_COMPACT: f32 = 220. + RAIL_W;
     pub const SIDE_W: f32 = 360.;
     pub const SIDE_MIN: f32 = 280.;
     pub const SIDE_MAX: f32 = 520.;

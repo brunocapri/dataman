@@ -955,7 +955,7 @@ impl Workspace {
                 ),
             );
         }
-        // The history's panel is a dock's (`dock`): the zoom folds it there.
+        // The side panel is a dock's (`dock`): the zoom folds it there.
         div().size_full().flex().flex_row().child(main)
     }
 
@@ -1051,47 +1051,6 @@ impl Workspace {
                 .child(commit)
                 .child(rollback)
         });
-        let history_on = matches!(self.side, Some(Side::History));
-        // Not while the history shares the explorer's dock: the explorer controls it then (⌘B).
-        let history = (!self.history_with_explorer()).then(|| ui::button(t, "tb-history", Btn::Ghost)
-            .px(px(7.))
-            .gap(px(6.))
-            .when(history_on, |d| d.bg(t.prs).text_color(t.tx).border_1().border_color(t.line2))
-            .child(icon(Icon::History).size(px(14.)).text_color(if history_on { t.tx } else { t.tx2 }))
-            .when_some(crate::keymap::key("history").filter(|_| !v.compact), |d, k| d.child(ui::keycap_sm(t.key, t.tx2, k)))
-            .on_click(cx.listener(|w, _, _, cx| w.toggle_history_for_demo(cx))));
-        // ⌘S's "Saved as favorite →", fading in and out at the History button's left. Hung from
-        // a zero-width anchor: nothing else in the toolbar moves.
-        let saved = self.saved_flash.as_ref().filter(|_| v.focused).and_then(|f| {
-            let a = crate::motion::SAVED.at(f.at, std::time::Instant::now(), cx.reduce_motion())?;
-            let (id, label, hov) = (f.id.clone(), f.label, t.hov);
-            let bounds = self.saved_bounds.clone();
-            Some(
-                div().relative().w(px(0.)).h(px(24.)).on_children_prepainted(move |b, _, _| bounds.set(b.first().copied())).child(
-                    div()
-                        .id("tb-saved")
-                        .absolute()
-                        .right(px(2.))
-                        .top_0()
-                        .h(px(24.))
-                        .px(px(7.))
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(5.))
-                        .whitespace_nowrap()
-                        .text_size(px(11.5))
-                        .text_color(t.tx2)
-                        .opacity(a)
-                        .cursor_pointer()
-                        .hover(move |s| s.bg(hov))
-                        .child(icon(Icon::StarFill).size(px(11.)).text_color(t.warn))
-                        .child(label)
-                        .child(div().text_color(t.tx3).child("→"))
-                        .on_click(cx.listener(move |w, _, window, cx| w.show_favorite(&id, window, cx))),
-                ),
-            )
-        });
         let lar = v.conn.as_ref().filter(|c| c.info.is_lar).map(|c| self.render_lar_buttons(c, t, cx));
         let (parts, pane) = (self.toolbar_parts.clone(), v.pane);
         div()
@@ -1116,8 +1075,6 @@ impl Workspace {
             .children(tx_controls)
             .children(cancel)
             .child(div().flex_1())
-            .children(saved)
-            .children(history)
             .children(lar)
     }
 

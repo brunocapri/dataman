@@ -432,7 +432,7 @@ impl SchemaTree {
             cx.notify();
         })
         .detach();
-        let filter = cx.new(|cx| TextInput::new(cx, "Filter").bare());
+        let filter = cx.new(|cx| TextInput::new(cx, "Search").bare());
         cx.subscribe(&filter, |t: &mut SchemaTree, _, ev: &InputEvent, cx| match ev {
             InputEvent::Changed => {
                 t.rebuild(cx);
@@ -2711,9 +2711,10 @@ impl Render for SchemaTree {
         let filter_focused = self.filter.focus_handle(cx).is_focused(window);
         let filtering = self.filtering(cx);
         let empty = self.store.read(cx).profiles.is_empty();
-        let filter_meta: SharedString = match &self.filter_stats {
-            Some((m, total, _)) if filtering => format!("{} of {}", ui_count(*m), ui_count(*total)).into(),
-            _ => "/".into(),
+        // How many match, only while searching.
+        let filter_meta: Option<SharedString> = match &self.filter_stats {
+            Some((m, total, _)) if filtering => Some(format!("{} of {}", ui_count(*m), ui_count(*total)).into()),
+            _ => None,
         };
         let no_match = filtering && self.filter_stats.as_ref().is_some_and(|(m, _, _)| *m == 0);
         let menu_layer = self.render_menu(window, cx);
@@ -2760,9 +2761,9 @@ impl Render for SchemaTree {
             // A search field's focus is neutral (blue is the tree's selection).
             .border_color(if filter_focused { t.mark_b } else { t.field_b })
             .when(filter_focused, |d| d.child(ui::halo_ring(t.mark)))
-            .child(icon(Icon::Filter).size(px(13.)).text_color(t.tx3))
+            .child(icon(Icon::Search).size(px(13.)).text_color(t.tx3))
             .child(div().flex_1().min_w_0().text_color(t.tx).child(self.filter.clone()))
-            .child(div().flex_none().text_size(px(10.5)).text_color(t.tx3).whitespace_nowrap().child(filter_meta));
+            .children(filter_meta.map(|m| div().flex_none().text_size(px(10.5)).text_color(t.tx3).whitespace_nowrap().child(m)));
         let body: gpui::AnyElement = if empty {
             div()
                 .flex_1()

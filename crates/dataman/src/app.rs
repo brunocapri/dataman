@@ -16,6 +16,7 @@ use gpui::{
 };
 use crate::theme::{Pt, px};
 use dataman_core::groups::Pane;
+use dataman_core::layout::NavView;
 use dataman_core::{Connection, ConnectionProfile, Core, Favorite, Translucency};
 
 use crate::conn_dialog::{ConnDialog, DialogEvent};
@@ -50,7 +51,6 @@ actions!(
         /// The pg_service.conf / .pgpass import sheet.
         ImportConnections,
         EditConnection,
-        ToggleHistory,
         /// Favorites the statement under the cursor of the active tab.
         FavoriteQuery,
         /// ⌘S: the editor's script into the tab's favorite (a new one, named after the tab, when
@@ -158,7 +158,7 @@ pub const SHEET_CONTEXT: &str = "TxSheet";
 /// a confirmation) has the keys, so ⌘W, ⌘T… cannot act behind it.
 pub const WORKSPACE_KEYS: &str = "Workspace && !Modal";
 
-/// The workspace's fixed keys; its commands (⌘T, ⌘W, ⌘Y…) are remappable (`keymap`).
+/// The workspace's fixed keys; its commands (⌘T, ⌘W, ⌘B…) are remappable (`keymap`).
 pub fn bind_keys(cx: &mut App) {
     let w = Some(WORKSPACE_KEYS);
     cx.bind_keys([
@@ -271,8 +271,6 @@ pub(crate) fn tabs_holding<K: PartialEq + Copy>(tabs: &[(K, Option<&str>, bool)]
 pub(crate) enum Drag {
     /// A dock column's inner seam (`dock`): its width.
     Dock(dataman_core::layout::Dock, usize),
-    /// The seam between a dock column's stacked panels: their split.
-    Stack(dataman_core::layout::Dock, usize),
     Split,
     /// The seam between two editor groups (`split`).
     Groups,
@@ -307,10 +305,9 @@ impl Bound {
     }
 }
 
-/// What the history's panel shows (`dock`: it may sit in either dock).
+/// What the side panel shows (`dock`: in the dock opposite the explorer).
 #[derive(Clone)]
 pub(crate) enum Side {
-    History,
     /// A registered server panel (LAR's live queries).
     Server(&'static str, AnyView, Bound),
     /// A feature's sheet (the grid-edit review), by id.
@@ -321,13 +318,13 @@ pub(crate) enum Side {
 pub(crate) fn side_id(s: &Option<Side>) -> Option<&'static str> {
     match s {
         None => None,
-        Some(Side::History) => Some("history"),
         Some(Side::Server(n, ..) | Side::Feature(n, ..)) => Some(n),
     }
 }
 
-/// The "Saved as favorite" feedback next to the History button: the favorite it is about (a
-/// click opens it in the favorites), what it says, when it started (`motion::SAVED`).
+/// ⌘S's feedback, the sidebar rail's Favorites icon lighting up: the favorite it is about (a
+/// click on the icon opens it in the favorites), what it says, when it started
+/// (`motion::SAVED`).
 #[derive(Clone)]
 pub(crate) struct SavedFlash {
     pub id: String,
@@ -336,18 +333,9 @@ pub(crate) struct SavedFlash {
 }
 
 impl Side {
-    fn same_kind(&self, other: &Side) -> bool {
-        match (self, other) {
-            (Side::History, Side::History) => true,
-            (Side::Server(a, ..), Side::Server(b, ..)) | (Side::Feature(a, ..), Side::Feature(b, ..)) => a == b,
-            _ => false,
-        }
-    }
-
     fn bound(&self) -> Option<&Bound> {
         match self {
             Side::Server(_, _, b) | Side::Feature(_, _, b) => Some(b),
-            _ => None,
         }
     }
 }
@@ -358,7 +346,6 @@ pub(crate) enum Region {
     Explorer,
     Editor,
     Grid,
-    Side,
 }
 
 pub struct Workspace {
@@ -370,7 +357,10 @@ pub struct Workspace {
     pub(crate) dialog: Option<Entity<ConnDialog>>,
     /// The import sheet (pg_service.conf, .pgpass).
     pub(crate) import: Option<Entity<crate::import_ui::ImportView>>,
+    /// The sidebar's Favorites and History views (one panel; `sidebar`).
     pub(crate) history: Entity<HistoryPanel>,
+    /// What the sidebar shows: the rail's selection.
+    pub(crate) view: dataman_core::layout::NavView,
     pub(crate) welcome: Entity<Welcome>,
     pub(crate) side: Option<Side>,
     /// What ⌥⌘B reopens.
@@ -382,11 +372,12 @@ pub struct Workspace {
     /// The explorer column sliding open or shut (⌘B, the title-bar button).
     explorer_tween: Option<crate::motion::WidthTween>,
     pub(crate) side_w: f32,
-    /// The history sliding open or shut, like the explorer.
+    /// The side panel sliding open or shut, like the explorer.
     side_tween: Option<crate::motion::WidthTween>,
-    /// What the history's panel showed last frame (`None`: nothing; `Some(false)`: a view that
-    /// does not slide), to see the history open or shut.
-    side_was: Option<bool>,
+    /// Whether the side panel showed something last frame, to see it open or shut, and what it
+    /// showed last (drawn while it slides out).
+    side_was: bool,
+    pub(crate) side_seen: Option<Side>,
     /// Where each panel sits (`dock`), the panels settling into a new place, a panel being
     /// dragged, the docks as laid out this frame, and a panel's right-click menu (the panel,
     /// where the pointer was).
@@ -402,10 +393,12 @@ pub struct Workspace {
     /// The docks' slots as last laid out, per dock and column (the checks hold them to
     /// `frame_now`).
     pub(crate) slot_bounds: std::rc::Rc<std::cell::RefCell<[Vec<Vec<gpui::Bounds<gpui::Pixels>>>; 2]>>,
-    /// ⌘S's feedback in the toolbar, and the redraws of its fades.
+    /// ⌘S's feedback on the rail, and the redraws of its fades.
     pub(crate) saved_flash: Option<SavedFlash>,
     saved_flash_task: Option<gpui::Task<()>>,
-    /// Where it was last laid out (the checks click it).
+    /// The rail's icons as last laid out (the checks click them).
+    pub(crate) rail_bounds: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<dataman_core::layout::NavView, gpui::Bounds<gpui::Pixels>>>>,
+    /// Where the Favorites icon was last laid out (the checks click it).
     pub(crate) saved_bounds: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
     /// The title bar's "DATAMAN" as last laid out (`title_logo`; the checks).
     pub(crate) logo_bounds: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
@@ -489,9 +482,6 @@ pub struct Workspace {
     /// The "Delete connection?" sheet: the connection it asks about.
     pub(crate) confirm_delete: Option<String>,
     pub(crate) confirm_delete_focus: FocusHandle,
-    /// The connection the history panel shows when the explorer asked for one ("Query
-    /// history" on a connection), whatever the active tab is on; cleared on a tab switch.
-    pub(crate) history_pin: Option<String>,
     /// A table's filter popover and where it opens (window coordinates).
     pub(crate) filter_pop: Option<(Entity<crate::table_view::FilterPopover>, (f32, f32))>,
     /// Open transactions in the way of a close, a disconnect or a quit.
@@ -564,20 +554,18 @@ impl Workspace {
                     window.focus(&editor.focus_handle(cx), cx);
                 }
             }
-            HistoryEvent::OpenInTab(sql, database) => {
-                // Always on the connection whose history is listed: a statement from staging's
-                // history must never run on whatever tab happens to be active. A new tab always.
-                let listed = w.history.read(cx).conn_id().map(str::to_string);
-                let (sql, database) = (sql.clone(), database.clone());
+            HistoryEvent::OpenInTab(sql, conn, database) => {
+                // Always on the entry's connection: a statement from staging's history must
+                // never run on whatever tab happens to be active. A new tab always.
+                let (sql, listed, database) = (sql.clone(), Some(conn.clone()), Some(database.clone()));
                 let Some(tab) = w.tab_for_history(listed, database, false, window, cx) else { return };
                 tab.update(cx, |t, cx| {
                     t.editor.update(cx, |e, cx| e.set_text(&format!("{};", sql.trim_end().trim_end_matches(';')), cx));
                 });
             }
-            HistoryEvent::Run(sql) => {
-                let sql = sql.clone();
-                let listed = w.history.read(cx).conn_id().map(str::to_string);
-                let Some(tab) = w.tab_for_history(listed, None, true, window, cx) else { return };
+            HistoryEvent::Run(sql, conn, database) => {
+                let (sql, listed, database) = (sql.clone(), Some(conn.clone()), Some(database.clone()));
+                let Some(tab) = w.tab_for_history(listed, database, true, window, cx) else { return };
                 tab.update(cx, |t, cx| {
                     t.editor.update(cx, |e, cx| e.set_text(&format!("{};", sql.trim_end().trim_end_matches(';')), cx));
                     t.run(vec![sql.trim_end().trim_end_matches(';').to_string()], cx);
@@ -592,9 +580,8 @@ impl Workspace {
             HistoryEvent::ImportFavorites => w.import_favorites(cx),
             HistoryEvent::FavoritesChanged => w.sync_favorite_tabs(cx),
             HistoryEvent::Did(e) => w.undo.push(e.clone()),
+            // esc: the view stays, the focus goes back to the editor.
             HistoryEvent::Close => {
-                w.side = None;
-                w.history_pin = None;
                 w.focus_editor(window, cx);
                 cx.notify();
             }
@@ -627,13 +614,15 @@ impl Workspace {
             welcome,
             side: None,
             last_side: None,
+            view: NavView::Explorer,
             current_conn: first,
             explorer_open: true,
             explorer_w: if compact { metrics::EXPLORER_COMPACT } else { metrics::EXPLORER_W },
             explorer_tween: None,
             side_w: metrics::SIDE_W,
             side_tween: None,
-            side_was: None,
+            side_was: false,
+            side_seen: None,
             layout: Default::default(),
             dock_moves: Vec::new(),
             panel_drag: None,
@@ -645,6 +634,7 @@ impl Workspace {
             saved_flash: None,
             saved_flash_task: None,
             saved_bounds: Default::default(),
+            rail_bounds: Default::default(),
             logo_bounds: Default::default(),
             title_marks: Default::default(),
             editor_frac: None,
@@ -690,7 +680,6 @@ impl Workspace {
             confirm_focus: cx.focus_handle(),
             confirm_delete: None,
             confirm_delete_focus: cx.focus_handle(),
-            history_pin: None,
             filter_pop: None,
             tx_prompt: None,
             sheet_focus: cx.focus_handle(),
@@ -774,9 +763,8 @@ impl Workspace {
                 }
             }
             TabEvent::Finished => {
-                if matches!(w.side, Some(Side::History)) {
-                    let c = w.active_tab().and_then(|t| t.read(cx).connection().map(|c| c.profile.id.clone()));
-                    w.history.update(cx, |h, cx| h.show(c, cx));
+                if w.view != NavView::Explorer {
+                    w.history.update(cx, |h, cx| h.reload(cx));
                 }
                 cx.notify();
             }
@@ -960,7 +948,6 @@ impl Workspace {
             }
             self.enter_group_of(ix);
             self.active = ix;
-            self.history_pin = None;
             self.sync_bound_views(window, cx);
             self.focus_editor(window, cx);
             if self.tabs[ix].read(cx).pending_run.is_some() {
@@ -1879,29 +1866,6 @@ impl Workspace {
         cx.notify();
     }
 
-    pub fn toggle_history_for_demo(&mut self, cx: &mut Context<Self>) {
-        self.toggle_history(cx);
-    }
-
-    fn toggle_history(&mut self, cx: &mut Context<Self>) {
-        self.history_pin = None;
-        let c = self
-            .active_tab()
-            .and_then(|t| t.read(cx).connection().map(|c| c.profile.id.clone()))
-            .or(self.current_conn.clone());
-        self.history.update(cx, |h, cx| h.show(c, cx));
-        self.toggle_side(Side::History, cx);
-    }
-
-    pub(crate) fn toggle_side(&mut self, which: Side, cx: &mut Context<Self>) {
-        if self.side.as_ref().is_some_and(|s| s.same_kind(&which)) {
-            self.last_side = self.side.take();
-        } else {
-            self.side = Some(which);
-        }
-        cx.notify();
-    }
-
     /// Opens or closes a registered server panel in the side panel (LAR's, from the toolbar or
     /// ⌥1), at the panel's width when it gives one, bound to the tab's connection.
     pub(crate) fn toggle_server_panel(&mut self, id: &'static str, window: &mut Window, cx: &mut Context<Self>) {
@@ -1952,12 +1916,6 @@ impl Workspace {
         if self.last_side.as_ref().and_then(|s| s.bound()).is_some_and(|b| !fits(b)) {
             self.last_side = None;
         }
-        if matches!(self.side, Some(Side::History)) {
-            let want = self.history_pin.clone().or(conn.as_ref().map(|c| c.profile.id.clone())).or(self.current_conn.clone());
-            if self.history.read(cx).conn_id() != want.as_deref() {
-                self.history.update(cx, |h, cx| h.show(want, cx));
-            }
-        }
     }
 
     /// ⌘O: one or more `.sql` files (the panel shows only those), each in a tab of its own on the
@@ -2006,8 +1964,8 @@ impl Workspace {
                 return Some(Region::Grid);
             }
         }
-        if self.side.is_some() && self.history.focus_handle(cx).contains_focused(window, cx) {
-            return Some(Region::Side);
+        if self.explorer_open && self.view != NavView::Explorer && self.history.focus_handle(cx).contains_focused(window, cx) {
+            return Some(Region::Explorer);
         }
         None
     }
@@ -2075,23 +2033,16 @@ impl Workspace {
         target
     }
 
-    /// The history's width this frame while it slides: in from its dock's edge when it opens
-    /// on its own, out when it shuts with nothing in its place (the explorer's tween); another
-    /// view replacing it just appears. `None` while the history is not there to draw. Called
-    /// once per frame.
+    /// The side panel's width this frame while it slides: in from its dock's edge when it
+    /// opens, out when it shuts (the explorer's tween); one view replacing another just
+    /// appears. `None` while there is nothing to draw. Called once per frame.
     pub(crate) fn side_slide(&mut self, window: &mut Window, cx: &App) -> Option<f32> {
-        let now_kind = self.side.as_ref().map(|s| matches!(s, Side::History));
-        let open = now_kind == Some(true);
-        if now_kind != self.side_was {
-            let was = self.side_was == Some(true);
-            let from = self.side_tween.and_then(|t| t.at(if was { self.side_w } else { 0. }, Instant::now()));
-            let slide = match (self.side_was, now_kind) {
-                (None, Some(true)) => Some((from.unwrap_or(0.), self.side_w)),
-                (Some(true), None) => Some((from.unwrap_or(self.side_w), 0.)),
-                _ => None,
-            };
-            self.side_tween = slide.filter(|_| !cx.reduce_motion()).map(|(a, b)| crate::motion::WidthTween::panel(a, b, metrics::SIDE_W));
-            self.side_was = now_kind;
+        let open = self.side.is_some();
+        if open != self.side_was {
+            let from = self.side_tween.and_then(|t| t.at(if self.side_was { self.side_w } else { 0. }, Instant::now()));
+            let (a, b) = if open { (from.unwrap_or(0.), self.side_w) } else { (from.unwrap_or(self.side_w), 0.) };
+            self.side_tween = (!cx.reduce_motion()).then(|| crate::motion::WidthTween::panel(a, b, metrics::SIDE_W));
+            self.side_was = open;
         }
         let target = if open { self.side_w } else { 0. };
         match self.side_tween.and_then(|t| t.at(target, Instant::now())) {
@@ -2106,7 +2057,12 @@ impl Workspace {
         }
     }
 
-    /// Checks: the history is sliding now.
+    /// Checks: the sidebar is sliding now.
+    pub(crate) fn demo_explorer_sliding(&self) -> bool {
+        self.explorer_tween.is_some_and(|t| t.at(self.explorer_target(), Instant::now()).is_some())
+    }
+
+    /// Checks: the side panel is sliding now.
     pub(crate) fn demo_side_sliding(&self) -> bool {
         self.side_tween.is_some_and(|t| t.at(0., Instant::now()).is_some())
     }
@@ -2125,7 +2081,10 @@ impl Workspace {
         match r {
             Region::Explorer => {
                 self.set_explorer_open(true, cx);
-                let f = self.tree.focus_handle(cx);
+                let f = match self.view {
+                    NavView::Explorer => self.tree.focus_handle(cx),
+                    _ => self.history.focus_handle(cx),
+                };
                 window.focus(&f, cx);
             }
             Region::Editor => self.focus_editor(window, cx),
@@ -2140,14 +2099,6 @@ impl Workspace {
                     window.focus(&f, cx);
                 }
             }
-            Region::Side => match &self.side {
-                Some(Side::History) => {
-                    let f = self.history.read(cx).filter_focus(cx);
-                    window.focus(&f, cx);
-                }
-                Some(Side::Server(..)) => {}
-                _ => {}
-            },
         }
         self.focus_visible = true;
         cx.notify();
@@ -2162,9 +2113,6 @@ impl Workspace {
         // No result panel before the tab's first run: nothing to focus there.
         if self.results_shown(cx) {
             order.push(Region::Grid);
-        }
-        if matches!(self.side, Some(Side::History)) {
-            order.push(Region::Side);
         }
         let cur = self.focused_region(window, cx).and_then(|r| order.iter().position(|x| *x == r));
         let n = order.len();
@@ -2360,7 +2308,7 @@ impl Workspace {
         };
         // Not linked, or its favorite was removed meanwhile: a new one.
         let (fav, label) = match updated {
-            Some(f) => (f, "Saved"),
+            Some(f) => (f, "saved to favorites"),
             None => {
                 let names: Vec<String> = store.list().into_iter().map(|f| f.name).collect();
                 let taken: Vec<&str> = names.iter().map(String::as_str).collect();
@@ -2374,7 +2322,7 @@ impl Workspace {
                     Ok(f) => {
                         let ix = store.list().iter().position(|x| x.id == f.id).unwrap_or(0);
                         self.did(format!("Add favorite '{}'", f.name), crate::undo::Op::Favorite { fav: f.clone(), ix, added: true });
-                        (f, "Saved as favorite")
+                        (f, "added to favorites")
                     }
                     Err(e) => {
                         self.notice(format!("cannot save the favorite: {e:#}"), cx);
@@ -2391,9 +2339,14 @@ impl Workspace {
         self.flash_saved(fav.id, label, cx);
     }
 
-    /// The toolbar's feedback for ⌘S, fading in and out (`motion::SAVED`), redrawn only while it
-    /// changes.
+    /// ⌘S's feedback: the rail's Favorites icon lit, fading in and out (`motion::SAVED`),
+    /// redrawn only while it changes; with the sidebar hidden (the rail with it), a notice.
     fn flash_saved(&mut self, id: String, label: &'static str, cx: &mut Context<Self>) {
+        if !self.explorer_open {
+            let mut said = label.to_string();
+            said[..1].make_ascii_uppercase();
+            self.notice(said, cx);
+        }
         let at = Instant::now();
         self.saved_flash = Some(SavedFlash { id, label, at });
         let redraws = crate::motion::SAVED.redraws(cx.reduce_motion());
@@ -2414,13 +2367,12 @@ impl Workspace {
         cx.notify();
     }
 
-    /// The history panel on its favorites, favorite `id` selected, scrolled into view and
-    /// focused (the panel slides in if it was shut): a palette pick, a click on "Saved as
-    /// favorite →".
+    /// The sidebar on its favorites, favorite `id` selected, scrolled into view and focused
+    /// (the sidebar slides in if it was shut): a palette pick, a click on the rail's lit
+    /// Favorites icon after ⌘S.
     pub(crate) fn show_favorite(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
-        if !matches!(self.side, Some(Side::History)) {
-            self.toggle_history(cx);
-        }
+        self.set_nav(NavView::Favorites, cx);
+        self.set_explorer_open(true, cx);
         self.saved_flash = None;
         if !self.history.update(cx, |h, cx| h.focus_favorite(id, window, cx)) {
             self.notice("That favorite was removed", cx);
@@ -2601,7 +2553,6 @@ impl Workspace {
         }
         match d {
             Drag::Dock(dock, col) => self.resize_column(dock, col, ev.position.x.pt()),
-            Drag::Stack(dock, col) => self.resize_stack(dock, col, ev.position.y.pt()),
             Drag::Groups => self.resize_groups(ev.position.x.pt()),
             Drag::Split => {
                 let top = metrics::TITLE_H + metrics::TOOLBAR_H;
@@ -2622,7 +2573,6 @@ impl Workspace {
         if from != to {
             let label = match d {
                 Drag::Dock(..) => "Resize panel",
-                Drag::Stack(..) => "Resize stacked panels",
                 Drag::Split => "Resize editor",
                 Drag::Groups => "Resize editor groups",
             };
@@ -2772,9 +2722,7 @@ impl Render for Workspace {
         let _trace = TraceRender::new("workspace render");
         RENDERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // A connection change of the active tab (explorer, ⌥↩, palette, disconnect) lands
-        // here before anything can act on a panel of the old connection. The history beside the
-        // explorer shows with it.
-        self.sync_shared_history();
+        // here before anything can act on a panel of the old connection.
         self.sync_bound_views(window, cx);
         // An activity monitor reads only while its tab is in front.
         self.sync_monitors(window, cx);
@@ -2817,8 +2765,6 @@ impl Render for Workspace {
         // The history beside the explorer is under the tab band: the seam beside it is its own,
         // under the band (`render_docks`); this one keeps its room, unseen.
         let seam = if pass.band_left() { gpui::transparent_black() } else { t.line };
-        // While the history is stacked with the explorer, the explorer controls it: no ⌘Y, no ⌥⌘B.
-        let own_history = !self.history_with_explorer();
         let moving = self.explorer_tween.is_some() || !self.dock_moves.is_empty();
         let work = div()
             .flex_1()
@@ -2898,17 +2844,6 @@ impl Render for Workspace {
             }))
             // Not while the history shares the explorer's dock (the explorer controls it): the
             // key does nothing, the menu item and the palette's entry are off.
-            .when(own_history, |d| {
-                d.on_action(cx.listener(|w, _: &ToggleHistory, window, cx| {
-                    w.toggle_history(cx);
-                    // Opening the panel from the keyboard moves the focus into it (esc gives it back).
-                    if matches!(w.side, Some(Side::History)) {
-                        w.focus_region(Region::Side, window, cx);
-                    } else if w.focused_region(window, cx).is_none() {
-                        w.focus_editor(window, cx);
-                    }
-                }))
-            })
             .on_action(cx.listener(|w, _: &FavoriteQuery, _, cx| w.favorite_current_query(cx)))
             .on_action(cx.listener(|w, _: &SaveFavorite, _, cx| w.save_favorite(cx)))
             .on_action(cx.listener(|w, _: &SaveAs, window, cx| w.save_as(window, cx)))
@@ -2952,23 +2887,23 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(|w, _: &Refresh, _, cx| w.tree.update(cx, |t, cx| t.refresh_selected(cx))))
             .on_action(cx.listener(|w, _: &ToggleExplorer, window, cx| {
-                // The history stacked with it hides with it: the focus leaves it too.
-                let side = w.history_with_explorer() && w.focused_region(window, cx) == Some(Region::Side);
+                // Whatever view the sidebar shows hides with it: the focus leaves it too.
+                let inside = w.focused_region(window, cx) == Some(Region::Explorer);
                 w.set_explorer_open(!w.explorer_open, cx);
-                if !w.explorer_open && (side || w.tree.read(cx).contains_focus(window, cx)) {
+                if !w.explorer_open && inside {
                     w.focus_editor(window, cx);
                 }
             }))
-            .when(own_history, |d| {
-                d.on_action(cx.listener(|w, _: &ToggleSidePanel, _, cx| {
-                    if w.side.is_some() {
-                        w.last_side = w.side.take();
-                    } else {
-                        w.side = Some(w.last_side.clone().unwrap_or(Side::History));
-                    }
-                    cx.notify();
-                }))
-            })
+            .on_action(cx.listener(|w, _: &ToggleSidePanel, _, cx| {
+                if w.side.is_some() {
+                    w.last_side = w.side.take();
+                } else if w.last_side.is_some() {
+                    w.side = w.last_side.clone();
+                } else {
+                    w.notice("Nothing to show in the side panel", cx);
+                }
+                cx.notify();
+            }))
             .on_action(cx.listener(|w, _: &FocusExplorer, window, cx| w.focus_region(Region::Explorer, window, cx)))
             .on_action(cx.listener(|w, _: &FocusGrid, window, cx| w.focus_region(Region::Grid, window, cx)))
             .on_action(cx.listener(|w, _: &FocusEditor, window, cx| {
@@ -2976,10 +2911,6 @@ impl Render for Workspace {
                     w.shortcuts_open = false;
                     cx.notify();
                     return;
-                }
-                // esc in the side panel closes it and gives the focus back.
-                if w.focused_region(window, cx) == Some(Region::Side) {
-                    w.last_side = w.side.take();
                 }
                 if w.copy_menu {
                     w.copy_menu = false;
@@ -3104,6 +3035,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|w, _: &DiscardAndRun, window, cx| w.resolve_pending_run(true, window, cx)))
             .map(|d| crate::lar::workspace_actions(d, cx))
             .map(|d| crate::dock::workspace_actions(d, cx))
+            .map(|d| crate::sidebar::workspace_actions(d, cx))
             .map(|d| crate::split::workspace_actions(d, cx))
             .map(|d| crate::undo::workspace_actions(d, cx))
             .on_mouse_move(cx.listener(Self::on_drag_move))
@@ -3116,7 +3048,7 @@ impl Render for Workspace {
             .child(div().flex_1().min_h_0().relative().flex().flex_row().children(docks.left).child(work).children(docks.right).children(seams))
             // A pane being resized keeps its cursor wherever the pointer goes.
             .children(self.drag.map(|d| {
-                let rows = matches!(d, Drag::Split | Drag::Stack(..));
+                let rows = matches!(d, Drag::Split);
                 let style = if rows { gpui::CursorStyle::ResizeRow } else { gpui::CursorStyle::ResizeColumn };
                 gpui::canvas(|_, _, _| {}, move |_, _, window, _| window.set_window_cursor_style(style)).absolute().size_0()
             }))
@@ -3127,6 +3059,7 @@ impl Render for Workspace {
             .when(t.is_dark(), |d| d.child(div().absolute().top_0().left_0().right_0().h(px(1.)).bg(gpui::hsla(0., 0., 1., 0.08))))
             // A panel being dragged: where it would land.
             .children(self.render_drop_preview(window, cx))
+            .children(self.render_saved_hint(window, cx))
             .children(self.render_panel_menu(cx))
             .children(self.render_toasts(window, cx))
             .children(self.render_crash_toast(cx))

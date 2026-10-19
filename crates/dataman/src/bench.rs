@@ -493,15 +493,19 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                     // Total, descending: two clicks on the header.
                     "sort" => grid.update(cx, |g, cx| g.toggle_sort(2, cx)),
                     "history" => {
-                        ws.update(cx, |w, cx| w.toggle_history_for_demo(cx));
+                        ws.update(cx, |w, cx| w.show_nav(dataman_core::layout::NavView::History, window, cx));
                         let tree = ws.read(cx).tree.clone();
                         tree.update(cx, |t, cx| t.set_filter("ord", cx));
                     }
                     // The neutral highlights: the explorer filter focused, its matches gray
-                    // beside the tree's blue selection, the history's entry selected; with
-                    // `-history` the history focused, a favorite being renamed.
+                    // beside the tree's blue selection; with `-history` the favorites focused,
+                    // a favorite being renamed; with `-search` the history's search focused.
                     "marks" | "marks-history" | "marks-search" => {
-                        ws.update(cx, |w, cx| w.toggle_history_for_demo(cx));
+                        // The explorer's marks on its own; the history's (or favorites') in the
+                        // sidebar instead.
+                        if stage != "marks" {
+                            ws.update(cx, |w, cx| w.set_nav(dataman_core::layout::NavView::History, cx));
+                        }
                         let tree = ws.read(cx).tree.clone();
                         tree.update(cx, |t, cx| t.set_filter("ord", cx));
                         let history = ws.read(cx).history.clone();
@@ -550,7 +554,7 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                         w.shortcuts_open = true;
                         cx.notify();
                     }),
-                    // ⌘S: "Saved as favorite →" by the History button.
+                    // ⌘S: "← added to favorites" over the window, the rail's Favorites icon lit.
                     "saved" => ws.update(cx, |w, cx| w.save_favorite(cx)),
                     // The palette's Favorites scope over a few dozen favorites; the favorites'
                     // context menu.
@@ -563,7 +567,7 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                             let _ = core.favorites.add(f);
                         }
                         if stage == "fav-menu" {
-                            w.toggle_history_for_demo(cx);
+                            w.set_nav(dataman_core::layout::NavView::Favorites, cx);
                             let history = w.history.clone();
                             history.update(cx, |h, cx| h.demo_show_favorites(cx));
                         } else {

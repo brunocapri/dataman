@@ -14,6 +14,7 @@
 use gpui::{AsyncWindowContext, Entity, Focusable, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, point, px};
 
 use crate::app::{Region, Workspace};
+use dataman_core::layout::NavView;
 use crate::history::HistoryPanel;
 use crate::history_check::{click, draw, drag, filed, input, key, menu_at, menu_click, named_point, pause, rows, typ};
 use crate::tree_menu::Act;
@@ -59,21 +60,33 @@ fn conn_ids(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> (Vec<String>
     .unwrap_or_default()
 }
 
-/// The focus on a region, the way the keys or a click put it there: ⌘⇧E, ⌘⇧G (from the editor:
-/// the keys always start somewhere), the favorites as a click on one of their rows focuses them.
+/// The focus on a region, the way the keys put it there: ⌘⇧E (the sidebar on the explorer),
+/// ⌘⇧G (from the editor: the keys always start somewhere).
 fn focus(ws: &Entity<Workspace>, r: Region, cx: &mut AsyncWindowContext) {
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.focus_editor(window, cx)));
     match r {
-        Region::Explorer => key(cx, "cmd-shift-e"),
-        Region::Grid => key(cx, "cmd-shift-g"),
-        _ => {
-            let _ = cx.update(|window, cx| {
-                let f = ws.read(cx).history.focus_handle(cx);
-                window.focus(&f, cx);
-            });
-            draw(cx);
+        Region::Explorer => {
+            let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.set_nav(NavView::Explorer, cx)));
+            key(cx, "cmd-shift-e");
         }
+        Region::Grid => key(cx, "cmd-shift-g"),
+        Region::Editor => {}
     }
+}
+
+/// The sidebar on the favorites, focused as a click on one of their rows focuses them.
+fn focus_favorites(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) {
+    let _ = cx.update(|window, cx| {
+        ws.update(cx, |w, cx| w.set_nav(NavView::Favorites, cx));
+        let f = ws.read(cx).history.focus_handle(cx);
+        window.focus(&f, cx);
+    });
+    draw(cx);
+}
+
+/// The keys go to the favorites (and are outside text there).
+fn on_favorites(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
+    cx.update(|window, cx| ws.read(cx).history.focus_handle(cx).contains_focused(window, cx) && crate::undo::outside_text(window)).unwrap_or(false)
 }
 
 /// The keys go to `r` (and are outside text there).
@@ -93,7 +106,7 @@ pub async fn run(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWin
         }
         pause(cx, 50).await;
     }
-    let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.toggle_history_for_demo(cx)));
+    let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.set_nav(NavView::Favorites, cx)));
     pause(cx, 400).await;
 
     // Nothing done yet: ⌘Z says so.
@@ -154,8 +167,8 @@ async fn favorites(ws: &Entity<Workspace>, history: &Entity<HistoryPanel>, r: &m
 
     // A rename, undone and redone with ⌃Z / ⌃⇧Z on the favorites.
     let _ = cx.update(|window, cx| history.update(cx, |h, cx| h.demo_rename(0, "Marker", window, cx)));
-    focus(ws, Region::Side, cx);
-    let on_panel = focused_on(ws, Region::Side, cx);
+    focus_favorites(ws, cx);
+    let on_panel = on_favorites(ws, cx);
     key(cx, "ctrl-z");
     let back = fav_names(ws, cx);
     key(cx, "ctrl-shift-z");
@@ -170,7 +183,7 @@ async fn favorites(ws: &Entity<Workspace>, history: &Entity<HistoryPanel>, r: &m
     let _ = cx.update(|_, cx| {
         let core = ws.read(cx).store.read(cx).core.clone();
         let _ = core.favorites.add(dataman_core::Favorite::new("Second", "SELECT 2"));
-        history.update(cx, |h, cx| h.demo_show_favorites(cx));
+        ws.update(cx, |w, cx| w.demo_favorites_view(cx));
     });
     let mut star = None;
     for _ in 0..20 {
@@ -185,7 +198,7 @@ async fn favorites(ws: &Entity<Workspace>, history: &Entity<HistoryPanel>, r: &m
         click(cx, p, MouseButton::Left, Modifiers::default());
     }
     let removed = fav_names(ws, cx);
-    focus(ws, Region::Side, cx);
+    focus_favorites(ws, cx);
     key(cx, "cmd-z");
     let restored = fav_names(ws, cx);
     r.check(
@@ -221,7 +234,7 @@ async fn favorites(ws: &Entity<Workspace>, history: &Entity<HistoryPanel>, r: &m
 /// "+ folder" named (one step), a favorite dragged in, renamed, moved, deleted after its
 /// "Sure?" (an empty one asks too).
 async fn folders(ws: &Entity<Workspace>, history: &Entity<HistoryPanel>, r: &mut Report, cx: &mut AsyncWindowContext) {
-    let _ = cx.update(|_, cx| history.update(cx, |h, cx| h.demo_show_favorites(cx)));
+    let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.demo_favorites_view(cx)));
     draw(cx);
     let new_folder = |cx: &mut AsyncWindowContext| {
         draw(cx);
@@ -241,7 +254,7 @@ async fn folders(ws: &Entity<Workspace>, history: &Entity<HistoryPanel>, r: &mut
         drag(cx, from, to, |_| {}).await;
     }
     let in_it = filed(history, "Marker", cx);
-    focus(ws, Region::Side, cx);
+    focus_favorites(ws, cx);
     key(cx, "cmd-z");
     let out = filed(history, "Marker", cx);
     key(cx, "cmd-z");
@@ -277,7 +290,8 @@ async fn folders(ws: &Entity<Workspace>, history: &Entity<HistoryPanel>, r: &mut
         format!("{renamed:?} {named_back:?} {:?}", folder_names(ws, cx)),
     );
 
-    // A second folder, moved above the first.
+    // A second folder, moved above the first (the sidebar on the favorites again).
+    focus_favorites(ws, cx);
     new_folder(cx);
     pause(cx, 30).await;
     typ(cx, "Archive");
@@ -286,7 +300,7 @@ async fn folders(ws: &Entity<Workspace>, history: &Entity<HistoryPanel>, r: &mut
         drag(cx, from, point(to.x, to.y - px(8.)), |_| {}).await;
     }
     let moved = folder_names(ws, cx);
-    focus(ws, Region::Side, cx);
+    focus_favorites(ws, cx);
     key(cx, "cmd-z");
     let order_back = folder_names(ws, cx);
     key(cx, "cmd-shift-z");
@@ -360,6 +374,8 @@ async fn choose(tree: &Entity<crate::tree::SchemaTree>, id: &str, act: Act, cx: 
 async fn pins(ws: &Entity<Workspace>, tree: &Entity<crate::tree::SchemaTree>, conn: &str, db: &str, r: &mut Report, cx: &mut AsyncWindowContext) {
     let rel = format!("c:{conn}/d:{db}/s:public/r:orders");
     let pinned = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).store.read(cx).core.pins.of(conn).into_iter().map(|p| p.name).collect::<Vec<_>>()).unwrap_or_default();
+    // The sidebar on the explorer, where the tree is.
+    focus(ws, Region::Explorer, cx);
     choose(tree, &rel, Act::Pin, cx).await;
     let on = pinned(cx);
     focus(ws, Region::Explorer, cx);
@@ -452,11 +468,11 @@ async fn connections(ws: &Entity<Workspace>, tree: &Entity<crate::tree::SchemaTr
     r.check("⌃⇧Z deletes it again (password too), ⌘Z restores it again", redone == (false, None, 0, 0) && kept(cx) == had, format!("{:?}", (redone.0, redone.1.is_some())));
 }
 
-/// The history moved to the left dock (the palette's move), the layout reset, a seam dragged.
+/// The sidebar moved to the right (the palette's move), the layout reset, a seam dragged.
 async fn panels(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowContext) {
     let layout = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).layout.clone()).unwrap();
     let home = layout(cx);
-    let _ = cx.update(|window, cx| window.dispatch_action(Box::new(crate::dock::MoveHistoryLeft), cx));
+    let _ = cx.update(|window, cx| window.dispatch_action(Box::new(crate::dock::MoveExplorerRight), cx));
     pause(cx, 400).await;
     let moved = layout(cx);
     focus(ws, Region::Grid, cx);
@@ -465,8 +481,8 @@ async fn panels(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCont
     key(cx, "cmd-shift-z");
     let again = layout(cx);
     r.check(
-        "a panel moved (the palette's move): ⌘Z on the grid puts it back, ⇧⌘Z moves it again",
-        moved != home && back == home && again == moved && next_undo(ws, cx).0.as_deref() == Some("Move history"),
+        "the sidebar moved (the palette's move): ⌘Z on the grid puts it back, ⇧⌘Z moves it again",
+        moved != home && back == home && again == moved && next_undo(ws, cx).0.as_deref() == Some("Move sidebar"),
         format!("{:?}", next_undo(ws, cx)),
     );
     let _ = cx.update(|window, cx| window.dispatch_action(Box::new(crate::dock::ResetPanelLayout), cx));

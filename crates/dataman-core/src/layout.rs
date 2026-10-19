@@ -1,18 +1,14 @@
-//! Where the window's movable panels sit: a dock at each side of the work surface (the editor
-//! and its results), each holding columns of panels side by side. The left dock runs the
-//! window's full height on the glass; the right one sits inside the work column. Panels sharing
-//! a column stack top to bottom, the top one taking the column's `split` of its height.
+//! Where the window's two panels sit: the explorer (the sidebar: its icon rail and the view it
+//! shows, the schema tree, the favorites or the history) in one dock beside the work surface
+//! (the editor and its results), the side panel (a server panel, a feature's sheet) in the other.
+//! Only these two arrangements exist: the explorer on the left (the default) or on the right,
+//! the side panel always opposite. The left dock runs the window's full height on the glass;
+//! the right one sits inside the work column.
 //!
-//! Kept in the session (`session.json`), so the arrangement survives a relaunch. A file that
-//! names a panel twice, or not at all, reads as a sane arrangement ([`PanelLayout::normalized`]):
-//! it never keeps the window from opening. Older files read as the arrangement they described:
-//! a dock's list of panels is one column, and a panel in the bottom dock (gone) goes home.
-//!
-//! The explorer is always its dock's outermost column (the left dock's first, the right dock's
-//! last): it carries the window's header (the title bar's toggle, arrows and "DATAMAN") at the
-//! window's edge. A move that would put another column past it lands just inside it instead
-//! ([`PanelLayout::moved`]), and an arrangement read that has it elsewhere is put right. Stacked,
-//! it is always on top: never under another panel.
+//! Kept in the session (`session.json`), so the arrangement survives a relaunch. Any older file
+//! (panels stacked, beside each other, in a bottom dock) reads as the arrangement with the
+//! explorer in the dock it was in ([`PanelLayout::normalized`]): it never keeps the window from
+//! opening.
 
 use std::hash::{Hash, Hasher};
 
@@ -29,6 +25,13 @@ pub enum Dock {
 impl Dock {
     pub const ALL: [Dock; 2] = [Dock::Left, Dock::Right];
 
+    pub fn other(self) -> Dock {
+        match self {
+            Dock::Left => Dock::Right,
+            Dock::Right => Dock::Left,
+        }
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             Dock::Left => "left",
@@ -37,40 +40,62 @@ impl Dock {
     }
 }
 
-/// A panel that can be moved between the docks.
+/// A panel in a dock.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PanelId {
-    /// The connections and schema tree.
+    /// The sidebar: the icon rail and its view (the connections and schema tree, the favorites,
+    /// the history).
     Explorer,
-    /// The history and favorites, and what opens in their place: a server panel (LAR), a
-    /// feature's sheet (the grid-edit review, the MCP log…). Older files call it "side".
-    #[serde(alias = "side")]
-    History,
+    /// What opens beside the work surface: a server panel (LAR), a feature's sheet (the
+    /// grid-edit review, the MCP log…). Files from 0.3 call it "history".
+    #[serde(alias = "history")]
+    Side,
 }
 
 impl PanelId {
-    pub const ALL: [PanelId; 2] = [PanelId::Explorer, PanelId::History];
+    pub const ALL: [PanelId; 2] = [PanelId::Explorer, PanelId::Side];
 
     /// Where it goes when the arrangement does not say (and after a reset).
     pub fn home(self) -> Dock {
         match self {
             PanelId::Explorer => Dock::Left,
-            PanelId::History => Dock::Right,
+            PanelId::Side => Dock::Right,
         }
     }
 
     pub fn label(self) -> &'static str {
         match self {
             PanelId::Explorer => "Explorer",
-            PanelId::History => "History",
+            PanelId::Side => "Side panel",
         }
     }
 }
 
-/// A column's even split, and the least share of its height a stacked panel keeps.
+/// What the sidebar shows (its rail's selection), kept in the session.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NavView {
+    #[default]
+    Explorer,
+    Favorites,
+    History,
+}
+
+impl NavView {
+    pub const ALL: [NavView; 3] = [NavView::Explorer, NavView::Favorites, NavView::History];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            NavView::Explorer => "Explorer",
+            NavView::Favorites => "Favorites",
+            NavView::History => "History",
+        }
+    }
+}
+
+/// A column's even split (files from before kept stacked panels).
 pub const EVEN: f32 = 0.5;
-pub const SPLIT_MIN: f32 = 0.1;
 
 /// Panels stacked top to bottom in a dock; `split` is the first one's share of the height
 /// (the others share the rest evenly).
@@ -154,24 +179,26 @@ fn dock_columns<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Column>, D::Error
 }
 
 impl Default for PanelLayout {
-    /// The explorer on the left, the history on the right, each a column of its own.
+    /// The explorer on the left, the side panel on the right.
     fn default() -> Self {
-        PanelLayout { left: vec![Column::of(vec![PanelId::Explorer])], right: vec![Column::of(vec![PanelId::History])] }
+        PanelLayout::explorer_at(Dock::Left)
     }
 }
 
 impl PanelLayout {
+    /// The explorer in dock `d`, the side panel in the other one.
+    pub fn explorer_at(d: Dock) -> PanelLayout {
+        let (e, s) = (vec![Column::of(vec![PanelId::Explorer])], vec![Column::of(vec![PanelId::Side])]);
+        match d {
+            Dock::Left => PanelLayout { left: e, right: s },
+            Dock::Right => PanelLayout { left: s, right: e },
+        }
+    }
+
     pub fn dock(&self, d: Dock) -> &[Column] {
         match d {
             Dock::Left => &self.left,
             Dock::Right => &self.right,
-        }
-    }
-
-    fn dock_mut(&mut self, d: Dock) -> &mut Vec<Column> {
-        match d {
-            Dock::Left => &mut self.left,
-            Dock::Right => &mut self.right,
         }
     }
 
@@ -180,8 +207,12 @@ impl PanelLayout {
         self.dock(d).iter().flat_map(|c| c.panels.iter().copied())
     }
 
-    /// Where `p` is (a normalized arrangement has every panel exactly once): alone in its
-    /// column it is a column of its own (`row: None`).
+    /// The dock the explorer is in.
+    pub fn explorer_dock(&self) -> Dock {
+        self.locate(PanelId::Explorer).map_or(Dock::Left, |(d, ..)| d)
+    }
+
+    /// Where `p` is: a column of its own in its dock.
     pub fn place_of(&self, p: PanelId) -> Place {
         match self.locate(p) {
             Some((d, ci, ri)) => Place { dock: d, col: ci, row: (self.dock(d)[ci].panels.len() > 1).then_some(ri) },
@@ -196,122 +227,15 @@ impl PanelLayout {
         })
     }
 
-    /// Whether `p` shares its dock with another panel.
-    pub fn shares_dock(&self, p: PanelId) -> bool {
-        let d = self.place_of(p).dock;
-        self.panels(d).any(|x| x != p)
-    }
-
-    /// Whether `p` and `q` are stacked in one column.
-    pub fn stacked_with(&self, p: PanelId, q: PanelId) -> bool {
-        matches!((self.locate(p), self.locate(q)), (Some((dp, cp, _)), Some((dq, cq, _))) if dp == dq && cp == cq)
-    }
-
-    /// The arrangement without `p`: an emptied column goes, one left alone is even again.
-    pub fn without(&self, p: PanelId) -> PanelLayout {
-        let mut l = self.clone();
-        for d in Dock::ALL {
-            let cols = l.dock_mut(d);
-            for c in cols.iter_mut() {
-                let n = c.panels.len();
-                c.panels.retain(|x| *x != p);
-                if c.panels.len() != n && c.panels.len() < 2 {
-                    c.split = EVEN;
-                }
-            }
-            cols.retain(|c| !c.panels.is_empty());
-        }
-        l
-    }
-
-    /// The arrangement with `p` taken out and put at `to` (its gaps counted without `p`,
-    /// clamped to the dock's end). A column `p` joins splits evenly; one it stays in keeps its
-    /// split.
+    /// The arrangement with `p` in `to`'s dock: the other panel goes to the opposite one.
     pub fn moved(&self, p: PanelId, to: Place) -> PanelLayout {
-        let mut l = self.without(p);
-        let cols = l.dock_mut(to.dock);
-        match to.row.map(|r| (r, to.col)).filter(|(_, c)| *c < cols.len()) {
-            Some((r, c)) => {
-                let col = &mut cols[c];
-                col.panels.insert(r.min(col.panels.len()), p);
-                col.split = EVEN;
-            }
-            None => cols.insert(to.col.min(cols.len()), Column::of(vec![p])),
-        }
-        let l = l.explorer_outermost();
-        if l.same_places(self) { self.clone() } else { l }
+        PanelLayout::explorer_at(if p == PanelId::Explorer { to.dock } else { to.dock.other() })
     }
 
-    /// Where `p` actually lands when moved to `to`: the place the explorer's rule leaves it
-    /// (a column asked for past the explorer is just inside it).
-    pub fn landing(&self, p: PanelId, to: Place) -> Place {
-        self.moved(p, to).place_of(p)
-    }
-
-    /// The explorer's column moved to its dock's outer edge (the left dock's first column, the
-    /// right dock's last), the others keeping their order; in it, the explorer on top (keeping
-    /// its share of the height).
-    fn explorer_outermost(mut self) -> PanelLayout {
-        if let Some((d, ci, ri)) = self.locate(PanelId::Explorer) {
-            let cols = self.dock_mut(d);
-            let mut c = cols.remove(ci);
-            if ri > 0 {
-                c.panels.remove(ri);
-                c.panels.insert(0, PanelId::Explorer);
-                if c.panels.len() == 2 {
-                    c.split = 1. - c.split;
-                }
-            }
-            match d {
-                Dock::Left => cols.insert(0, c),
-                Dock::Right => cols.push(c),
-            }
-        }
-        self
-    }
-
-    /// The same panels in the same columns (whatever the splits).
-    pub fn same_places(&self, other: &PanelLayout) -> bool {
-        Dock::ALL.into_iter().all(|d| {
-            let (a, b) = (self.dock(d), other.dock(d));
-            a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.panels == y.panels)
-        })
-    }
-
-    /// Column `col` of dock `d` split at `split` (kept within [`SPLIT_MIN`]).
-    pub fn with_split(&self, d: Dock, col: usize, split: f32) -> PanelLayout {
-        let mut l = self.clone();
-        if let Some(c) = l.dock_mut(d).get_mut(col) {
-            c.split = if split.is_finite() { split.clamp(SPLIT_MIN, 1. - SPLIT_MIN) } else { EVEN };
-        }
-        l
-    }
-
-    /// Every panel exactly once, every column with a panel and a sane split: a repeat is
-    /// dropped (the first stays), a missing one goes back to its home dock, a column of its own
-    /// at the window's edge; the explorer at its dock's outer edge.
-    pub fn normalized(mut self) -> PanelLayout {
-        let mut seen = Vec::new();
-        for d in Dock::ALL {
-            let cols = self.dock_mut(d);
-            for c in cols.iter_mut() {
-                c.panels.retain(|p| {
-                    let first = !seen.contains(p);
-                    seen.push(*p);
-                    first
-                });
-                c.split = if c.panels.len() > 1 && c.split.is_finite() { c.split.clamp(SPLIT_MIN, 1. - SPLIT_MIN) } else { EVEN };
-            }
-            cols.retain(|c| !c.panels.is_empty());
-        }
-        for p in PanelId::ALL {
-            if !seen.contains(&p) {
-                let cols = self.dock_mut(p.home());
-                let at = if p.home() == Dock::Left { 0 } else { cols.len() };
-                cols.insert(at, Column::of(vec![p]));
-            }
-        }
-        self.explorer_outermost()
+    /// One of the two arrangements: the explorer's dock kept (the left one when it is missing),
+    /// the side panel opposite.
+    pub fn normalized(self) -> PanelLayout {
+        PanelLayout::explorer_at(self.explorer_dock())
     }
 
     pub fn is_default(&self) -> bool {
@@ -329,103 +253,42 @@ mod tests {
     }
 
     #[test]
-    fn moves_between_docks_columns_and_stacks() {
+    fn two_arrangements() {
         let l = PanelLayout::default();
         assert_eq!(l.place_of(Explorer), Place::column(Dock::Left, 0));
-        assert_eq!(l.place_of(History), Place::column(Dock::Right, 0));
-        // The explorer to the right, stacked above the history: the left dock empties.
+        assert_eq!(l.place_of(Side), Place::column(Dock::Right, 0));
+        // The explorer to the right: the side panel to the left.
         let r = l.moved(Explorer, Place::stack(Dock::Right, 0, 0));
-        assert!(r.left.is_empty());
-        assert_eq!(panels(&r.right), [vec![Explorer, History]]);
-        assert_eq!(r.place_of(History), Place::stack(Dock::Right, 0, 1));
-        assert!(r.shares_dock(History) && !l.shares_dock(History));
-        // Within the column, asked for below the history: it stays on top.
-        assert_eq!(r.moved(Explorer, Place::stack(Dock::Right, 0, 1)), r);
-        assert_eq!(r.landing(Explorer, Place::stack(Dock::Right, 0, 1)), Place::stack(Dock::Right, 0, 0));
-        // Out of the stack into a column of its own, beside it (right of it).
-        let cols = r.moved(Explorer, Place::column(Dock::Right, 1));
-        assert_eq!(panels(&cols.right), [vec![History], vec![Explorer]]);
-        // The history beside the explorer in the left dock: asked for left of it, it lands
-        // right of it (the explorer stays the outermost column).
-        let beside = l.moved(History, Place::column(Dock::Left, 0));
-        assert_eq!(panels(&beside.left), [vec![Explorer], vec![History]]);
-        assert_eq!(l.landing(History, Place::column(Dock::Left, 0)), Place::column(Dock::Left, 1));
-        assert!(beside.right.is_empty());
-        // Past the end is the end; a stack in a column that is not there is a column.
-        assert_eq!(panels(&l.moved(History, Place::column(Dock::Left, 9)).left), [vec![Explorer], vec![History]]);
-        assert_eq!(panels(&l.moved(History, Place::stack(Dock::Left, 4, 0)).left), [vec![Explorer], vec![History]]);
-        // Back where it was: the same arrangement, its split kept.
-        assert_eq!(l.moved(Explorer, Place::column(Dock::Left, 0)), l);
-        let tall = r.with_split(Dock::Right, 0, 0.7);
-        assert_eq!(tall.moved(History, tall.place_of(History)), tall);
-        assert_eq!(tall.right[0].share(0), 0.7);
-        assert!((tall.right[0].share(1) - 0.3).abs() < 1e-6);
-        // Leaving a stack: the one left is a column of its own, even again.
-        assert_eq!(tall.without(History).right, [Column::of(vec![Explorer])]);
-        assert_eq!(tall.with_split(Dock::Right, 0, 0.99).right[0].split, 1. - SPLIT_MIN);
-    }
-
-    /// The explorer is its dock's outermost column, wherever a move asks to put the others.
-    #[test]
-    fn the_explorer_stays_outermost() {
-        let l = PanelLayout::default();
-        // To the right dock, left of the history: it lands right of it, at the window's edge.
-        let r = l.moved(Explorer, Place::column(Dock::Right, 0));
-        assert_eq!(panels(&r.right), [vec![History], vec![Explorer]]);
-        assert_eq!(l.landing(Explorer, Place::column(Dock::Right, 0)), Place::column(Dock::Right, 1));
-        // The history asked for right of it there: left of it instead (where it already is).
-        assert_eq!(r.moved(History, Place::column(Dock::Right, 1)), r);
-        // Stacked, their column is the outer one; the history out of it lands inside.
-        let st = r.moved(History, Place::stack(Dock::Right, 0, 0));
-        assert_eq!(panels(&st.right), [vec![Explorer, History]]);
-        assert_eq!(panels(&st.moved(History, Place::column(Dock::Right, 1)).right), [vec![History], vec![Explorer]]);
-        // On the left, mirrored.
-        let left = l.moved(History, Place::column(Dock::Left, 1));
-        assert_eq!(panels(&left.left), [vec![Explorer], vec![History]]);
-        assert_eq!(left.moved(History, Place::column(Dock::Left, 0)), left);
-        // Into a dock the history has: the explorer goes to its outer edge.
-        let hl = l.moved(History, Place::column(Dock::Left, 0)).moved(Explorer, Place::column(Dock::Right, 0));
-        assert_eq!((panels(&hl.left), panels(&hl.right)), (vec![vec![History]], vec![vec![Explorer]]));
-        assert_eq!(panels(&hl.moved(Explorer, Place::column(Dock::Left, 1)).left), [vec![Explorer], vec![History]]);
-        // An arrangement read with the explorer under the history: on top again, its share kept.
-        let under = PanelLayout { left: vec![Column { panels: vec![History, Explorer], split: 0.3 }], right: vec![] }.normalized();
-        assert_eq!(panels(&under.left), [vec![Explorer, History]]);
-        assert!((under.left[0].split - 0.7).abs() < 1e-6);
-        // An arrangement read with the explorer inside is put right.
-        let bad = PanelLayout { left: vec![], right: vec![Column::of(vec![Explorer]), Column::of(vec![History])] }.normalized();
-        assert_eq!(panels(&bad.right), [vec![History], vec![Explorer]]);
-        let bad = PanelLayout { left: vec![Column::of(vec![History]), Column { panels: vec![Explorer], split: 0.3 }], right: vec![] }.normalized();
-        assert_eq!(panels(&bad.left), [vec![Explorer], vec![History]]);
-        // A history missing from a file goes home, inside the explorer in the right dock.
-        let gone = PanelLayout { left: vec![], right: vec![Column::of(vec![Explorer])] }.normalized();
-        assert_eq!(panels(&gone.right), [vec![History], vec![Explorer]]);
+        assert_eq!((panels(&r.left), panels(&r.right)), (vec![vec![Side]], vec![vec![Explorer]]));
+        assert_eq!(r.explorer_dock(), Dock::Right);
+        // The side panel to the right: the explorer back on the left.
+        assert!(r.moved(Side, Place::column(Dock::Right, 3)).is_default());
+        assert_eq!(l.moved(Explorer, Place::column(Dock::Left, 1)), l);
     }
 
     #[test]
     fn a_damaged_arrangement_reads_sanely() {
         let twice = PanelLayout { left: vec![Column::of(vec![Explorer, Explorer]), Column::of(vec![])], right: vec![Column { panels: vec![Explorer], split: f32::NAN }] };
-        let n = twice.normalized();
-        assert_eq!(n, PanelLayout { left: vec![Column::of(vec![Explorer])], right: vec![Column::of(vec![History])] });
+        assert!(twice.normalized().is_default());
         let none = PanelLayout { left: vec![], right: vec![] }.normalized();
         assert!(none.is_default());
         let json = serde_json::to_string(&PanelLayout::default()).unwrap();
-        assert_eq!(json, r#"{"left":[{"panels":["explorer"],"split":0.5}],"right":[{"panels":["history"],"split":0.5}]}"#);
+        assert_eq!(json, r#"{"left":[{"panels":["explorer"],"split":0.5}],"right":[{"panels":["side"],"split":0.5}]}"#);
         let back: PanelLayout = serde_json::from_str(&json).unwrap();
         assert!(back.is_default());
     }
 
-    /// Files from before columns: a dock's list is one column, "side" is the history, and a
-    /// panel in the bottom dock (gone) goes back home.
+    /// Older files: a dock's list is one column, "history" and "side" are the side panel,
+    /// stacks and columns are gone (the explorer keeps its dock).
     #[test]
-    fn older_files_read_as_they_were() {
+    fn older_files_read_as_their_explorer_dock() {
         let l: PanelLayout = serde_json::from_str(r#"{"left":["explorer","side"],"right":[],"bottom":[]}"#).unwrap();
-        assert_eq!(panels(&l.normalized().left), [vec![Explorer, History]]);
+        assert!(l.normalized().is_default());
         let l: PanelLayout = serde_json::from_str(r#"{"left":[],"right":["side"],"bottom":["explorer"],"extra":1}"#).unwrap();
         assert!(l.normalized().is_default());
-        let l: PanelLayout = serde_json::from_str(r#"{"left":["explorer"],"bottom":["side"]}"#).unwrap();
-        assert!(l.normalized().is_default());
-        // A column without a split splits evenly (the explorer on top).
         let l: PanelLayout = serde_json::from_str(r#"{"right":[{"panels":["history","explorer"]}]}"#).unwrap();
-        assert_eq!(l.normalized().right, [Column::of(vec![Explorer, History])]);
+        assert_eq!(l.normalized(), PanelLayout::explorer_at(Dock::Right));
+        let l: PanelLayout = serde_json::from_str(r#"{"left":[{"panels":["history"]}],"right":[{"panels":["explorer"]}]}"#).unwrap();
+        assert_eq!(panels(&l.normalized().left), [vec![Side]]);
     }
 }

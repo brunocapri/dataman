@@ -29,13 +29,13 @@ use std::collections::VecDeque;
 
 use dataman_core::favorites::RemovedFolder;
 use dataman_core::groups::Pane;
-use dataman_core::layout::{PanelId, PanelLayout};
+use dataman_core::layout::PanelLayout;
 use dataman_core::pins::Pin;
 use dataman_core::session::TabState;
 use dataman_core::{ConnectionProfile, Favorite};
 use gpui::{Context, Entity, EntityId, Focusable, InteractiveElement, KeyBindingContextPredicate, Window, actions};
 
-use crate::app::{Region, Side, Workspace};
+use crate::app::{Region, Workspace};
 use crate::tab::QueryTab;
 
 actions!(
@@ -78,13 +78,12 @@ pub(crate) struct DeletedConn {
     pub pins: Vec<Pin>,
 }
 
-/// The panels' sizes, what a seam drag changes: the explorer's and the side panel's widths, the
-/// stacked panels' splits (in the layout), the editor's height, the editor groups' share.
+/// The panels' sizes, what a seam drag changes: the sidebar's and the side panel's widths, the
+/// editor's height, the editor groups' share.
 #[derive(Clone, PartialEq)]
 pub(crate) struct Sizes {
     pub explorer_w: f32,
     pub side_w: f32,
-    pub layout: PanelLayout,
     pub editor_frac: Option<f32>,
     pub ratio: Option<f32>,
 }
@@ -114,6 +113,9 @@ pub(crate) enum Op {
     /// Tabs closed together (a tab, Close Others, an editor group), in the order they closed;
     /// once reopened, the tabs they are now (what a redo closes again).
     Tabs { closed: Vec<ClosedTab>, reopened: Vec<EntityId> },
+    /// History taken out: one entry (its connection), or every connection's (`None`); and the
+    /// lines taken, per connection (what an undo puts back).
+    History { entry: Option<(String, dataman_core::HistoryEntry)>, taken: Vec<(String, Vec<u8>)> },
     /// Several steps as one (favorites imported together), undone last to first.
     Many(Vec<Op>),
 }
@@ -255,13 +257,13 @@ impl Workspace {
     /// the next ⌘Z goes on undoing: the explorer, the grid, the favorites.
     fn keep_focus(&mut self, region: Option<Region>, window: &mut Window, cx: &mut Context<Self>) {
         let f = match region {
-            Some(Region::Explorer) => Some(self.tree.focus_handle(cx)),
+            Some(Region::Explorer) if self.view == dataman_core::layout::NavView::Explorer => Some(self.tree.focus_handle(cx)),
+            Some(Region::Explorer) => Some(self.history.focus_handle(cx)),
             Some(Region::Grid) if self.results_shown(cx) => self.active_tab().map(|t| {
                 let t = t.read(cx);
                 // The plan view stands where the grid does.
                 if t.shows_plan(cx) { t.plan.focus_handle(cx) } else { t.grid.focus_handle(cx) }
             }),
-            Some(Region::Side) if matches!(self.side, Some(Side::History)) => Some(self.history.focus_handle(cx)),
             _ => None,
         };
         if let Some(f) = f {
@@ -320,10 +322,6 @@ impl Workspace {
             }
             Op::Layout { from, to } => {
                 let next = if back { from.clone() } else { to.clone() };
-                // The history stacked onto the explorer goes with it: a shut explorer opens.
-                if next.stacked_with(PanelId::History, PanelId::Explorer) && !self.explorer_open {
-                    self.set_explorer_open(true, cx);
-                }
                 self.set_layout(next, None, cx);
             }
             Op::Sizes { from, to } => self.set_sizes(if back { from } else { to }),
@@ -338,6 +336,20 @@ impl Workspace {
                     *closed = self.close_tabs_quietly(open, window, cx);
                     reopened.clear();
                 }
+            }
+            Op::History { entry, taken } => {
+                let h = &core.history;
+                if back {
+                    for (conn, bytes) in taken.iter() {
+                        said(h.restore(conn, bytes))?;
+                    }
+                } else {
+                    *taken = match entry {
+                        Some((conn, e)) => vec![(conn.clone(), said(h.remove(conn, e))?.ok_or("the entry is gone")?)],
+                        None => self.store.read(cx).profiles.iter().filter_map(|p| h.take(&p.id).ok().flatten().map(|b| (p.id.clone(), b))).collect(),
+                    };
+                }
+                self.history.update(cx, |h, cx| h.reload(cx));
             }
             Op::Many(ops) => {
                 if back {
@@ -379,9 +391,6 @@ impl Workspace {
         if self.current_conn.as_deref() == Some(id) {
             self.current_conn = self.store.read(cx).profiles.first().map(|p| p.id.clone());
         }
-        if self.history_pin.as_deref() == Some(id) {
-            self.history_pin = None;
-        }
         Ok(DeletedConn { profile, order, password, ssh_secret, history, pins })
     }
 
@@ -411,7 +420,6 @@ impl Workspace {
         Sizes {
             explorer_w: self.explorer_w,
             side_w: self.side_w,
-            layout: self.layout.clone(),
             editor_frac: self.editor_frac,
             ratio: self.split.as_ref().map(|s| s.ratio),
         }
@@ -420,10 +428,6 @@ impl Workspace {
     fn set_sizes(&mut self, s: &Sizes) {
         self.explorer_w = s.explorer_w;
         self.side_w = s.side_w;
-        // The splits only: where the panels sit is the layout's own step.
-        if s.layout.same_places(&self.layout) {
-            self.layout = s.layout.clone();
-        }
         self.editor_frac = s.editor_frac;
         if let (Some(sp), Some(r)) = (&mut self.split, s.ratio) {
             sp.ratio = r;

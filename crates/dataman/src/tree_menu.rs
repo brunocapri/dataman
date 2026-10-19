@@ -208,7 +208,7 @@ pub fn entries(t: &Target) -> Vec<Entry> {
                 I(it(Act::NewTab, "New query tab", Icon::Tab).key("⌘T").off(offline)),
                 Sep,
                 I(it(Act::Reload, "Reload schema", Icon::Reload).key("⌘R").off(offline)),
-                I(it(Act::History, "Query history", Icon::History).key("⌘Y")),
+                I(it(Act::History, "Query history", Icon::History)),
                 I(it(Act::Activity, "Activity monitor", Icon::Activity).off(offline)),
                 Sep,
                 I(it(Act::EditConnection, "Edit connection…", Icon::Edit).key("⌘I")),
@@ -554,7 +554,7 @@ mod tests {
         assert!(item(&on, Act::DeleteConnection).danger);
         assert_eq!(item(&on, Act::Reload).key, Some("⌘R"));
         assert_eq!(item(&on, Act::EditConnection).key, Some("⌘I"));
-        assert_eq!(item(&on, Act::History).key, Some("⌘Y"));
+        assert_eq!(item(&on, Act::History).key, None);
     }
 
     #[test]

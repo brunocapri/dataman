@@ -225,7 +225,7 @@ fn stdio_session() {
     assert!(draft["outcome"] == "refused" && draft.get("draft").is_none() && draft.get("rows").is_none(), "{draft}");
 }
 
-/// Favorites (shared with the app's ⌘Y panel) and create_connection: no database needed.
+/// Favorites (shared with the app's sidebar) and create_connection: no database needed.
 #[test]
 fn stdio_favorites_and_create_connection() {
     let cfg = config();

@@ -61,6 +61,33 @@ pub fn chip(color: Hsla, size: f32) -> Div {
         .border_color(gpui::hsla(0., 0., 0., 0.25))
 }
 
+/// Where `q` (lowercase) first occurs in `text`, ignoring case (`None`: nowhere, or a text
+/// whose lowercase is not the same length).
+pub fn find_ci(text: &str, q: &str) -> Option<std::ops::Range<usize>> {
+    if q.is_empty() {
+        return None;
+    }
+    let lower = text.to_lowercase();
+    if lower.len() != text.len() {
+        return None;
+    }
+    let at = lower.find(q)?;
+    Some(at..at + q.len())
+}
+
+/// `text` on one line with the search's match marked as the explorer marks its filter's hit
+/// (neutral: blue is the selection's), cut with an ellipsis where it runs out of room.
+pub fn marked(t: &Theme, text: String, q: &str) -> Div {
+    let row = div().min_w_0().flex().flex_row().overflow_hidden().whitespace_nowrap();
+    match find_ci(&text, q) {
+        Some(h) => row
+            .child(div().flex_none().child(text[..h.start].to_string()))
+            .child(div().flex_none().bg(t.mark).text_color(t.tx).border_b_1().border_color(t.mark_b).child(text[h.clone()].to_string()))
+            .child(div().min_w_0().overflow_hidden().text_ellipsis().child(text[h.end..].to_string())),
+        None => row.child(div().min_w_0().overflow_hidden().text_ellipsis().child(text)),
+    }
+}
+
 /// The violet dot of a LAR server (6 pt).
 pub fn lar_dot(t: &Theme) -> Div {
     div().flex_none().size(px(6.)).rounded(px(3.)).bg(t.lar)

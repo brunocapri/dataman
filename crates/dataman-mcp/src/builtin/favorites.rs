@@ -1,5 +1,5 @@
 //! list_favorites, add_favorite, remove_favorite, import_favorites: the favorite queries saved
-//! in `favorites.toml`, shared with the app (`crate::history` panel, ⌘Y).
+//! in `favorites.toml`, shared with the app (the sidebar's Favorites).
 
 use dataman_core::{Favorite, NameMatch};
 use serde_json::{Map, Value, json};

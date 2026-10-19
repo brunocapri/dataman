@@ -15,7 +15,7 @@ use gpui::{App, Context, Global, Window};
 use dataman_core::groups::{Pane, SplitState};
 use dataman_core::session::{Session, SessionStore, VERSION};
 
-use crate::app::{Side, Workspace};
+use crate::app::Workspace;
 use crate::theme::metrics;
 
 /// How long the workspace stays unchanged before it is saved.
@@ -79,10 +79,7 @@ impl Workspace {
             });
         }
         self.activate(active, window, cx);
-        if s.history_open {
-            self.side = Some(Side::History);
-            self.sync_bound_views(window, cx);
-        }
+        self.set_nav(s.nav, cx);
         // The results, read off the UI thread.
         let tabs: Vec<_> = files.iter().map(|(i, ..)| self.tabs[*i].downgrade()).collect();
         let jobs: Vec<_> = files.into_iter().map(|(_, f, shown, closed)| (f, shown, closed)).collect();
@@ -172,7 +169,7 @@ impl Workspace {
             split,
             explorer_open: self.explorer_open,
             explorer_w: self.explorer_w,
-            history_open: matches!(self.side, Some(Side::History)),
+            nav: self.view,
             side_w: self.side_w,
             editor_frac: self.editor_frac,
             layout: self.layout.clone(),
@@ -194,7 +191,7 @@ impl Workspace {
             (t.connection().map(|c| c.profile.id.clone()), t.database().to_string(), t.want.clone()).hash(&mut h);
             t.favorite.as_ref().map(|(id, _)| id.clone()).hash(&mut h);
         }
-        (self.active, self.explorer_open, self.explorer_w.to_bits(), self.side_w.to_bits(), matches!(self.side, Some(Side::History))).hash(&mut h);
+        (self.active, self.explorer_open, self.explorer_w.to_bits(), self.side_w.to_bits(), self.view).hash(&mut h);
         self.editor_frac.map(f32::to_bits).hash(&mut h);
         self.layout.hash(&mut h);
         self.split.as_ref().map(|s| (&s.right, s.focus, s.other, s.ratio.to_bits())).hash(&mut h);

@@ -1,7 +1,8 @@
-//! Query history of a connection (side panel), newest first, grouped by day, filterable by
-//! text and outcome, and favorite queries (saved across connections, never pruned), which the
-//! panel opens on. ↩ inserts at the cursor, ⌥↩ opens a new tab, ⌘↩ runs; double-click opens a
-//! new tab.
+//! The sidebar's Favorites and History views (its rail picks one; `sidebar`), one panel shown
+//! either way: favorite queries (saved across connections, never pruned), or the query history
+//! of a connection, newest first, grouped by day, filterable by text and outcome. Each view
+//! keeps its own search. ↩ inserts at the cursor, ⌥↩ opens a new tab, ⌘↩ runs; double-click
+//! opens a new tab.
 //!
 //! Favorites can be filed in folders, drawn as the explorer draws its tree (disclosure
 //! chevrons, a folder filled while shut, children indented under it): the header's "+ folder"
@@ -61,9 +62,11 @@ pub fn bind_keys(cx: &mut App) {
 pub enum HistoryEvent {
     /// Insert the statement at the editor's cursor.
     Insert(String),
-    /// A new tab, on the given connection's database (the history entry's).
-    OpenInTab(String, Option<String>),
-    Run(String),
+    /// A history entry in a new tab: its SQL, connection and database.
+    OpenInTab(String, String, String),
+    /// A history entry run on its connection (a tab there, else a new one): its SQL, connection
+    /// and database.
+    Run(String, String, String),
     /// A favorite, in a new tab on its own connection; `true` also runs it.
     OpenFavorite(Favorite, bool),
     /// Import Favorites…: `.sql` files picked in the panel, a favorite each.
@@ -72,7 +75,29 @@ pub enum HistoryEvent {
     FavoritesChanged,
     /// Something undoable was done to the favorites or their folders (the workspace's undo).
     Did(Entry),
+    /// esc: the focus goes back to the editor.
     Close,
+}
+
+/// How many entries the History view lists, all connections together.
+const HISTORY_MAX: usize = 2000;
+/// The longest a favorite's name and a statement's line run before an ellipsis.
+const NAME_MAX: usize = 40;
+const SQL_MAX: usize = 90;
+
+/// A statement's line for its row: from a little before the search's match when the match is
+/// further in than a narrow panel shows (an ellipsis in front), cut at `max` characters.
+fn excerpt(flat: &str, q: &str, max: usize) -> String {
+    const LEAD: usize = 12;
+    match ui::find_ci(flat, q).map(|h| flat[..h.start].chars().count()) {
+        Some(at) if at > LEAD + 8 => clip(&format!("…{}", flat.chars().skip(at - LEAD).collect::<String>()), max),
+        _ => clip(flat, max),
+    }
+}
+
+/// `s` cut at `max` characters, an ellipsis in place of the rest.
+fn clip(s: &str, max: usize) -> String {
+    if s.chars().count() > max { format!("{}…", s.chars().take(max).collect::<String>().trim_end()) } else { s.to_string() }
 }
 
 /// A statement's first line, flattened and capped, for a favorite's default name.
@@ -129,10 +154,11 @@ enum Naming {
     Folder(String),
 }
 
-/// What a context menu is about: a favorite (index into `favorites`), a folder (its id), or
-/// the favorites as a whole (the star toggle).
+/// What a context menu is about: a history entry (index into `entries`), a favorite (index
+/// into `favorites`), a folder (its id), or the favorites as a whole (their header).
 #[derive(Clone, PartialEq)]
 enum MenuOn {
+    Entry(usize),
     Fav(usize),
     Folder(String),
     Panel,
@@ -142,7 +168,6 @@ enum MenuOn {
 enum Act {
     Run,
     Open,
-    Insert,
     Rename,
     /// To a folder (its id), or the top level.
     Move(Option<String>),
@@ -150,6 +175,10 @@ enum Act {
     NewFolder,
     DeleteFolder,
     Import,
+    /// A history entry saved as a favorite, or the favorite with its SQL removed.
+    ToggleFavorite,
+    /// A history entry taken out of the history.
+    RemoveEntry,
 }
 
 enum MenuEntry {
@@ -200,8 +229,8 @@ type BoundsCell = Rc<Cell<Option<Bounds<Pixels>>>>;
 pub struct HistoryPanel {
     store: Entity<ConnStore>,
     focus: FocusHandle,
-    conn_id: Option<String>,
-    entries: Vec<HistoryEntry>,
+    /// Every connection's history, newest first, each entry with its connection's id.
+    entries: Vec<(String, HistoryEntry)>,
     favorites: Vec<Favorite>,
     /// The favorites' folders, in the user's order (the store's).
     folders: Vec<Folder>,
@@ -211,17 +240,20 @@ pub struct HistoryPanel {
     shown: usize,
     selected: Option<usize>,
     chip: Chip,
-    /// Favorites instead of history (the view the panel opens on): a separate toggle, always
-    /// next to the status dropdown (never inside it).
+    /// The Favorites view (else the History one), as the sidebar's rail picks it.
     show_favorites: bool,
+    /// The other view's search, kept while this one shows.
+    other_filter: String,
     /// The status dropdown (All / OK / Error / Cancelled): open, and its button's bounds
     /// (window coordinates), to place the popover under it.
     chip_menu: bool,
     chip_bounds: BoundsCell,
-    /// The favorites toggle's own bounds (window coordinates), for the same reason.
-    fav_toggle_bounds: BoundsCell,
     /// The header's "+ folder" button (the checks click it).
     new_folder_bounds: BoundsCell,
+    /// The History view's trash pressed once: it asks "Clear all?" until pressed again or a
+    /// few seconds pass; its bounds (the checks click it).
+    clear_ask: Option<gpui::Task<()>>,
+    clear_bounds: BoundsCell,
     /// The context menu, and where its popover and submenu were last painted (a click in the
     /// submenu is not "outside" the menu).
     menu: Option<Menu>,
@@ -237,10 +269,9 @@ pub struct HistoryPanel {
     dragging_folder: Option<String>,
     folder_drop: Option<usize>,
     filter: Entity<TextInput>,
+    /// The search, lowercase, as the list was last built from it (its rows mark the match).
+    query: String,
     list: ListState,
-    /// The panel shares the explorer's dock (`dock`): it shows and hides with the explorer, so
-    /// it has no × of its own.
-    pub(crate) shares_dock: bool,
 }
 
 impl EventEmitter<HistoryEvent> for HistoryPanel {}
@@ -253,7 +284,7 @@ impl Focusable for HistoryPanel {
 
 impl HistoryPanel {
     pub fn new(store: Entity<ConnStore>, cx: &mut Context<Self>) -> Self {
-        let filter = cx.new(|cx| TextInput::new(cx, "search statements").bare());
+        let filter = cx.new(|cx| TextInput::new(cx, "Search").bare());
         cx.subscribe(&filter, |h: &mut HistoryPanel, _, ev: &InputEvent, cx| match ev {
             InputEvent::Changed => h.apply_filter(cx),
             InputEvent::Submit => h.emit_selected(HistoryEvent::Insert, cx),
@@ -262,7 +293,6 @@ impl HistoryPanel {
         HistoryPanel {
             store,
             focus: cx.focus_handle(),
-            conn_id: None,
             entries: vec![],
             favorites: vec![],
             folders: vec![],
@@ -272,10 +302,12 @@ impl HistoryPanel {
             selected: None,
             chip: Chip::All,
             show_favorites: true,
+            other_filter: String::new(),
             chip_menu: false,
             chip_bounds: Default::default(),
-            fav_toggle_bounds: Default::default(),
             new_folder_bounds: Default::default(),
+            clear_ask: None,
+            clear_bounds: Default::default(),
             menu: None,
             menu_bounds: Default::default(),
             sub_bounds: Default::default(),
@@ -285,18 +317,28 @@ impl HistoryPanel {
             dragging_folder: None,
             folder_drop: None,
             filter,
+            query: String::new(),
             list: ListState::new(0, ListAlignment::Top, px(200.)),
-            shares_dock: false,
         }
     }
 
-    /// The connection whose history is listed.
-    pub fn conn_id(&self) -> Option<&str> {
-        self.conn_id.as_deref()
+    /// The Favorites view (`true`) or the History one: each keeps its own search.
+    pub fn set_favorites(&mut self, on: bool, cx: &mut Context<Self>) {
+        if on == self.show_favorites {
+            return;
+        }
+        self.show_favorites = on;
+        self.chip_menu = false;
+        self.menu = None;
+        self.renaming = None;
+        let text = std::mem::take(&mut self.other_filter);
+        self.other_filter = self.filter.read(cx).text().to_string();
+        self.filter.update(cx, |f, cx| f.set_text(text, cx));
+        self.apply_filter(cx);
     }
 
-    pub fn filter_focus(&self, cx: &App) -> FocusHandle {
-        self.filter.focus_handle(cx)
+    pub fn showing_favorites(&self) -> bool {
+        self.show_favorites
     }
 
     /// Puts text in the filter (the palette's "Search history").
@@ -305,13 +347,11 @@ impl HistoryPanel {
         self.apply_filter(cx);
     }
 
-    /// Shows (and re-reads) the history and favorites of a connection.
-    pub fn show(&mut self, conn_id: Option<String>, cx: &mut Context<Self>) {
-        self.conn_id = conn_id;
-        self.entries = match &self.conn_id {
-            Some(id) => self.store.read(cx).core.history.load(id, 1000).unwrap_or_default(),
-            None => vec![],
-        };
+    /// Re-reads every connection's history and the favorites.
+    pub fn reload(&mut self, cx: &mut Context<Self>) {
+        let store = self.store.read(cx);
+        let ids: Vec<String> = store.profiles.iter().map(|p| p.id.clone()).collect();
+        self.entries = store.core.history.load_all(&ids, HISTORY_MAX).unwrap_or_default();
         self.read_favorites(cx);
         self.apply_filter(cx);
     }
@@ -334,8 +374,8 @@ impl HistoryPanel {
     }
 
     fn toggle_favorite(&mut self, entry_ix: usize, cx: &mut Context<Self>) {
-        let e = &self.entries[entry_ix];
-        let (sql, database, conn_id) = (e.sql.clone(), e.database.clone(), self.conn_id.clone());
+        let (conn, e) = &self.entries[entry_ix];
+        let (sql, database, conn_id) = (e.sql.clone(), e.database.clone(), Some(conn.clone()));
         let store = self.store.read(cx).core.favorites.clone();
         if let Some(existing) = store.find_by_sql(&sql) {
             if let Ok(Some((ix, fav))) = store.take(&existing.id) {
@@ -354,6 +394,45 @@ impl HistoryPanel {
         cx.emit(HistoryEvent::FavoritesChanged);
     }
 
+    /// History entry `entry_ix` out of its connection's history (an undo step).
+    fn remove_entry(&mut self, entry_ix: usize, cx: &mut Context<Self>) {
+        let Some((conn, e)) = self.entries.get(entry_ix).cloned() else { return };
+        if let Ok(Some(line)) = self.store.read(cx).core.history.remove(&conn, &e) {
+            let op = Op::History { entry: Some((conn.clone(), e)), taken: vec![(conn, line)] };
+            cx.emit(HistoryEvent::Did(Entry::new("Remove from history", op)));
+        }
+        let keep = self.selected;
+        self.reload(cx);
+        self.selected = keep.filter(|&s| s < self.items.len() && !matches!(self.items[s], Item::Day(_))).or(self.selected);
+        cx.notify();
+    }
+
+    /// The trash: pressed once it asks "Clear all?"; again, every connection's history goes
+    /// (an undo step).
+    fn clear_clicked(&mut self, cx: &mut Context<Self>) {
+        if self.clear_ask.take().is_none() {
+            self.clear_ask = Some(cx.spawn(async move |h, cx| {
+                cx.background_executor().timer(DELETE_ASK).await;
+                let _ = h.update(cx, |h, cx| {
+                    h.clear_ask = None;
+                    cx.notify();
+                });
+            }));
+            return cx.notify();
+        }
+        let store = self.store.read(cx);
+        let mut taken = Vec::new();
+        for p in &store.profiles {
+            if let Ok(Some(bytes)) = store.core.history.take(&p.id) {
+                taken.push((p.id.clone(), bytes));
+            }
+        }
+        if !taken.is_empty() {
+            cx.emit(HistoryEvent::Did(Entry::new("Clear history", Op::History { entry: None, taken })));
+        }
+        self.reload(cx);
+    }
+
     fn remove_favorite(&mut self, fav_ix: usize, cx: &mut Context<Self>) {
         let id = self.favorites[fav_ix].id.clone();
         if let Ok(Some((ix, fav))) = self.store.read(cx).core.favorites.take(&id) {
@@ -369,7 +448,7 @@ impl HistoryPanel {
     /// saved (any more).
     pub fn focus_favorite(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
         self.read_favorites(cx);
-        self.show_favorites = true;
+        self.set_favorites(true, cx);
         self.chip_menu = false;
         self.menu = None;
         self.renaming = None;
@@ -483,7 +562,7 @@ impl HistoryPanel {
         let index = self.store.read(cx).core.favorites.folders().iter().position(|f| f.id == d.id).unwrap_or(0);
         let removed = RemovedFolder { index, folder: d.clone(), favorites: Vec::new() };
         cx.emit(HistoryEvent::Did(Entry::new(format!("New folder '{}'", d.name), Op::Folder { removed, added: true })));
-        self.show_favorites = true;
+        self.set_favorites(true, cx);
         self.chip_menu = false;
         self.menu = None;
         self.renaming = None;
@@ -664,19 +743,22 @@ impl HistoryPanel {
     // ---------------------------------------------------------------------------------------
     // The list
 
-    fn matches(&self, e: &HistoryEntry, q: &str) -> bool {
+    /// The status filter's, and the search's: in the SQL, the connection's name (`names`, by
+    /// id, lowercase) or the database.
+    fn matches(&self, (conn, e): &(String, HistoryEntry), q: &str, names: &std::collections::HashMap<String, String>) -> bool {
         let chip = match self.chip {
             Chip::All => true,
             Chip::Ok => e.outcome == Outcome::Ok,
             Chip::Error => e.outcome == Outcome::Error,
             Chip::Cancelled => e.outcome == Outcome::Cancelled,
         };
-        chip && (q.is_empty() || e.sql.to_lowercase().contains(q))
+        chip && (q.is_empty() || e.sql.to_lowercase().contains(q) || names.get(conn).is_some_and(|n| n.contains(q)) || e.database.to_lowercase().contains(q))
     }
 
     /// Rebuilds the list, the selection back on the first row (the search's top match).
     fn apply_filter(&mut self, cx: &mut Context<Self>) {
-        let q = self.filter.read(cx).text().to_lowercase();
+        let q = self.filter.read(cx).text().trim().to_lowercase();
+        self.query = q.clone();
         let mut items = Vec::new();
         let mut shown = 0;
         if self.show_favorites {
@@ -706,11 +788,12 @@ impl HistoryPanel {
         } else {
             let today = Local::now().date_naive();
             let mut day = None;
+            let names = self.store.read(cx).profiles.iter().map(|p| (p.id.clone(), p.name.to_lowercase())).collect();
             for (i, e) in self.entries.iter().enumerate() {
-                if !self.matches(e, &q) {
+                if !self.matches(e, &q, &names) {
                     continue;
                 }
-                let d = e.ts.with_timezone(&Local).date_naive();
+                let d = e.1.ts.with_timezone(&Local).date_naive();
                 if day != Some(d) {
                     day = Some(d);
                     let label = if d == today {
@@ -791,7 +874,7 @@ impl HistoryPanel {
 
     fn emit_selected(&mut self, f: fn(String) -> HistoryEvent, cx: &mut Context<Self>) {
         let sql = match self.selected.and_then(|s| self.items.get(s)) {
-            Some(Item::Entry(i)) => Some(self.entries[*i].sql.clone()),
+            Some(Item::Entry(i)) => Some(self.entries[*i].1.sql.clone()),
             Some(Item::Fav(i)) => Some(self.favorites[*i].sql.clone()),
             // ↩ on a folder opens or shuts it.
             Some(Item::Folder { ix, .. }) => {
@@ -810,8 +893,8 @@ impl HistoryPanel {
     fn open_selected_in_tab(&mut self, cx: &mut Context<Self>) {
         match self.selected.and_then(|s| self.items.get(s)) {
             Some(Item::Entry(i)) => {
-                let (sql, database) = (self.entries[*i].sql.clone(), self.entries[*i].database.clone());
-                cx.emit(HistoryEvent::OpenInTab(sql, Some(database)));
+                let (conn, e) = &self.entries[*i];
+                cx.emit(HistoryEvent::OpenInTab(e.sql.clone(), conn.clone(), e.database.clone()));
             }
             Some(Item::Fav(i)) => cx.emit(HistoryEvent::OpenFavorite(self.favorites[*i].clone(), false)),
             _ => {}
@@ -820,7 +903,10 @@ impl HistoryPanel {
 
     fn run_selected(&mut self, cx: &mut Context<Self>) {
         match self.selected.and_then(|s| self.items.get(s)) {
-            Some(Item::Entry(i)) => cx.emit(HistoryEvent::Run(self.entries[*i].sql.clone())),
+            Some(Item::Entry(i)) => {
+                let (conn, e) = &self.entries[*i];
+                cx.emit(HistoryEvent::Run(e.sql.clone(), conn.clone(), e.database.clone()));
+            }
             Some(Item::Fav(i)) => cx.emit(HistoryEvent::OpenFavorite(self.favorites[*i].clone(), true)),
             _ => {}
         }
@@ -848,9 +934,10 @@ impl HistoryPanel {
     }
 
     fn render_entry(&self, ix: usize, entry_i: usize, t: &Theme, focused: bool, cx: &mut Context<Self>) -> AnyElement {
-        let e = &self.entries[entry_i];
+        let (conn, e) = &self.entries[entry_i];
         let sel = self.selected == Some(ix);
-        let is_fav = self.is_favorited(&e.sql);
+        let profile = self.store.read(cx).profile(conn);
+        let (conn_name, chip) = (profile.map(|p| p.name.clone()), profile.map(|p| t.profile_color(p)));
         let (glyph, gcolor) = match e.outcome {
             Outcome::Ok => ("✓", t.ok),
             Outcome::Error => ("✕", t.err),
@@ -876,13 +963,15 @@ impl HistoryPanel {
         // Leading comment lines are not the statement.
         let body: Vec<&str> = e.sql.lines().skip_while(|l| l.trim().is_empty() || l.trim_start().starts_with("--")).collect();
         let src = if body.is_empty() { e.sql.clone() } else { body.join("\n") };
-        let flat: String = src.split_whitespace().collect::<Vec<_>>().join(" ");
+        let flat = excerpt(&src.split_whitespace().collect::<Vec<_>>().join(" "), &self.query, SQL_MAX);
+        // The verb in the keyword color, unless the search's match is in it.
         let (verb, rest) = match flat.split_once(' ') {
-            Some((v, r)) => (v.to_string(), format!(" {r}")),
-            None => (flat.clone(), String::new()),
+            Some((v, r)) if !v.starts_with('…') && ui::find_ci(&flat, &self.query).is_none_or(|h| h.start >= v.len()) => (Some(v.to_string()), format!(" {r}")),
+            _ => (None, flat.clone()),
         };
         let time = e.ts.with_timezone(&Local).format("%H:%M:%S").to_string();
         let hov = t.hov;
+        let q = self.query.clone();
         div()
             .px(px(6.))
             .child(
@@ -898,12 +987,31 @@ impl HistoryPanel {
                     .when(sel && !focused, |d| d.bg(t.prs))
                     .when(!sel, |d| d.hover(move |s| s.bg(hov)))
                     .on_click(cx.listener(move |h, ev: &gpui::ClickEvent, window, cx| {
+                        if ev.modifiers().control {
+                            return;
+                        }
                         h.selected = Some(ix);
                         window.focus(&h.focus, cx);
                         if ev.click_count() >= 2 {
                             h.open_selected_in_tab(cx);
                         }
                         cx.notify();
+                    }))
+                    // Right-click, and ⌃-click: the entry's menu (Run, Open in new tab, Add to
+                    // favorites, Remove from history).
+                    .on_mouse_down(gpui::MouseButton::Right, cx.listener(move |h, ev: &gpui::MouseDownEvent, window, cx| {
+                        cx.stop_propagation();
+                        h.selected = Some(ix);
+                        window.focus(&h.focus, cx);
+                        h.open_menu(MenuOn::Entry(entry_i), ev.position, cx);
+                    }))
+                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |h, ev: &gpui::MouseDownEvent, window, cx| {
+                        if ev.modifiers.control {
+                            cx.stop_propagation();
+                            h.selected = Some(ix);
+                            window.focus(&h.focus, cx);
+                            h.open_menu(MenuOn::Entry(entry_i), ev.position, cx);
+                        }
                     }))
                     .child(
                         div()
@@ -912,31 +1020,38 @@ impl HistoryPanel {
                             .items_center()
                             .gap(px(8.))
                             .text_size(px(11.))
-                            .child(div().w(px(12.)).text_center().text_color(gcolor).child(glyph))
-                            .child(div().text_color(t.tx).child(time))
-                            .child(div().text_color(t.tx3).child(fmt_ms(e.duration_ms)))
+                            .child(div().w(px(12.)).flex_none().text_center().text_color(gcolor).child(glyph))
+                            .child(div().flex_none().text_color(t.tx).child(time))
+                            .child(div().flex_none().text_color(t.tx3).child(fmt_ms(e.duration_ms)))
                             .when(e.source.as_deref() == Some(dataman_core::history::AGENT), |d| {
                                 d.child(icon(Icon::Agent).size(px(11.)).text_color(t.tx3))
                             })
                             .child(div().flex_1())
-                            .child(div().text_color(rcolor).child(result))
-                            .child(fav_button(t, ("fav-toggle", ix), is_fav).on_click(cx.listener(
-                                move |h, _: &gpui::ClickEvent, _, cx| {
-                                    cx.stop_propagation();
-                                    h.toggle_favorite(entry_i, cx);
-                                },
-                            ))),
+                            .child(div().flex_none().text_color(rcolor).child(result)),
                     )
                     .child(
                         div()
                             .pl(px(20.))
                             .flex()
                             .flex_row()
+                            .items_center()
+                            .gap(px(6.))
+                            .text_size(px(11.))
+                            .text_color(t.tx3)
+                            .children(chip.map(|c| ui::chip(c, 7.)))
+                            .child(ui::marked(t, clip(&format!("{} · {}", conn_name.unwrap_or_else(|| conn.clone()), e.database), NAME_MAX), &self.query)),
+                    )
+                    .child(
+                        div()
+                            .pl(px(20.))
+                            .min_w_0()
+                            .flex()
+                            .flex_row()
                             .overflow_hidden()
                             .whitespace_nowrap()
                             .text_color(t.tx2)
-                            .child(div().flex_none().text_color(t.kw).child(verb))
-                            .child(div().min_w_0().overflow_hidden().text_ellipsis().child(rest)),
+                            .children(verb.map(|v| div().flex_none().text_color(t.kw).child(v)))
+                            .child(ui::marked(t, rest, &q)),
                     ),
             )
             .into_any_element()
@@ -979,7 +1094,7 @@ impl HistoryPanel {
         let is_renaming = renaming.is_some();
         let name: AnyElement = match renaming {
             Some(input) => Self::name_field(input, t),
-            None => div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx).child(d.name.clone()).into_any_element(),
+            None => div().flex_1().min_w_0().flex().flex_row().text_color(t.tx).child(ui::marked(t, d.name.clone(), &self.query)).into_any_element(),
         };
         let hov = t.hov;
         let chevron = icon(if open { Icon::ChevronDown } else { Icon::ChevronRight }).size(px(10.)).text_color(t.tx4);
@@ -1046,7 +1161,7 @@ impl HistoryPanel {
         let profile = f.connection_id.as_ref().and_then(|id| self.store.read(cx).profile(id));
         let conn_name = profile.map(|p| p.name.clone());
         let chip = profile.map(|p| t.profile_color(p));
-        let flat: String = f.sql.split_whitespace().collect::<Vec<_>>().join(" ");
+        let flat = excerpt(&f.sql.split_whitespace().collect::<Vec<_>>().join(" "), &self.query, SQL_MAX);
         let hov = t.hov;
         let nested = f.folder.is_some();
         let dragged = cx.has_active_drag() && self.dragging.as_deref() == Some(f.id.as_str());
@@ -1057,7 +1172,7 @@ impl HistoryPanel {
         let is_renaming = renaming.is_some();
         let name: AnyElement = match renaming {
             Some(input) => Self::name_field(input, t),
-            None => div().text_color(t.tx).child(f.name.clone()).into_any_element(),
+            None => ui::marked(t, clip(&f.name, NAME_MAX), &self.query).text_color(t.tx).into_any_element(),
         };
         let (fav_id, ghost) = (f.id.clone(), f.name.clone());
         // A folder dragged after the last one: the line under its last favorite, as wide as a
@@ -1120,9 +1235,8 @@ impl HistoryPanel {
                             .items_center()
                             .gap(px(8.))
                             .text_size(px(11.))
-                            .child(name)
-                            .child(div().flex_1())
-                            .children(conn_name.map(|n| div().text_color(t.tx3).child(n)))
+                            .child(div().flex_1().min_w_0().flex().flex_row().child(name))
+                            .children(conn_name.map(|n| div().flex_none().text_color(t.tx3).child(clip(&n, 20))))
                             .child(fav_button(t, ("fav-remove", ix), true).on_click(cx.listener(
                                 move |h, _: &gpui::ClickEvent, _, cx| {
                                     cx.stop_propagation();
@@ -1133,12 +1247,13 @@ impl HistoryPanel {
                     .child(
                         div()
                             .pl(px(20.))
+                            .min_w_0()
                             .flex()
                             .flex_row()
                             .overflow_hidden()
                             .whitespace_nowrap()
                             .text_color(t.tx2)
-                            .child(flat),
+                            .child(ui::marked(t, flat, &self.query)),
                     ),
             )
             .children(line.map(|after| crate::dnd::drop_line(t, false, after).mx(px(6.))))
@@ -1155,8 +1270,9 @@ impl HistoryPanel {
         cx.notify();
     }
 
-    /// What a menu offers. A favorite: Run, Open in new tab, Insert at cursor (their keys on
-    /// the selected row), Rename, Move to folder ▸ (once there are folders), Remove, Import
+    /// What a menu offers. A history entry: Run, Open in new tab (their keys on the selected
+    /// row), Add to favorites (Remove from favorites when saved), Remove from history. A
+    /// favorite: Run, Open in new tab, Rename, Move to folder ▸ (once there are folders), Remove, Import
     /// favorites…; a folder: Rename, New folder, Delete folder (it says how many queries go
     /// with it; pressed once, "Sure? (deletes N queries)" in its place); the star toggle: New
     /// folder, Import favorites…. Sentence case here; the menu bar's File ▸ Import Favorites…
@@ -1166,12 +1282,23 @@ impl HistoryPanel {
         let import = E::item(Act::Import, Icon::Import, "Import favorites…", None);
         let new_folder = E::item(Act::NewFolder, Icon::Plus, "New folder", None);
         match on {
+            MenuOn::Entry(i) => {
+                let Some((_, e)) = self.entries.get(*i) else { return vec![] };
+                let saved = self.is_favorited(&e.sql);
+                vec![
+                    E::item(Act::Run, Icon::Run, "Run", Some("⌘↩")),
+                    E::item(Act::Open, Icon::Tab, "Open in new tab", Some("⌥↩")),
+                    E::Sep,
+                    if saved { E::item(Act::ToggleFavorite, Icon::StarFill, "Remove from favorites", None) } else { E::item(Act::ToggleFavorite, Icon::Star, "Add to favorites", None) },
+                    E::Sep,
+                    E::item(Act::RemoveEntry, Icon::Trash, "Remove from history", None),
+                ]
+            }
             MenuOn::Fav(i) => {
                 let Some(f) = self.favorites.get(*i) else { return vec![] };
                 let mut v = vec![
                     E::item(Act::Run, Icon::Run, "Run", Some("⌘↩")),
                     E::item(Act::Open, Icon::Tab, "Open in new tab", Some("⌥↩")),
-                    E::item(Act::Insert, Icon::Cursor, "Insert at cursor", Some("↩")),
                     E::Sep,
                     E::item(Act::Rename, Icon::Edit, "Rename", None),
                 ];
@@ -1213,6 +1340,24 @@ impl HistoryPanel {
 
     fn run_menu(&mut self, act: Act, window: &mut Window, cx: &mut Context<Self>) {
         let Some(mut m) = self.menu.take() else { return };
+        if let MenuOn::Entry(i) = m.on {
+            match act {
+                Act::Run => {
+                    if let Some((conn, e)) = self.entries.get(i) {
+                        cx.emit(HistoryEvent::Run(e.sql.clone(), conn.clone(), e.database.clone()));
+                    }
+                }
+                Act::Open => {
+                    if let Some((conn, e)) = self.entries.get(i) {
+                        cx.emit(HistoryEvent::OpenInTab(e.sql.clone(), conn.clone(), e.database.clone()));
+                    }
+                }
+                Act::ToggleFavorite => self.toggle_favorite(i, cx),
+                Act::RemoveEntry => self.remove_entry(i, cx),
+                _ => {}
+            }
+            return cx.notify();
+        }
         let fav = match m.on {
             MenuOn::Fav(i) => self.favorites.get(i).cloned().map(|f| (i, f)),
             _ => None,
@@ -1220,7 +1365,6 @@ impl HistoryPanel {
         match (act, fav) {
             (Act::Run, Some((_, f))) => cx.emit(HistoryEvent::OpenFavorite(f, true)),
             (Act::Open, Some((_, f))) => cx.emit(HistoryEvent::OpenFavorite(f, false)),
-            (Act::Insert, Some((_, f))) => cx.emit(HistoryEvent::Insert(f.sql)),
             (Act::Rename, Some((i, _))) => self.start_rename(i, window, cx),
             (Act::Rename, None) => {
                 if let MenuOn::Folder(id) = m.on {
@@ -1424,8 +1568,7 @@ impl HistoryPanel {
     // The header's controls
 
     /// The status filter (All / OK / Error / Cancelled), compact, in the app's picker style
-    /// (`chrome::render_conn_picker`). Favorites is a separate, always-visible toggle beside
-    /// it (`render_favorites_toggle`), never one of its rows.
+    /// (`chrome::render_conn_picker`): the History view's only.
     fn render_chip_dropdown(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let label = match self.chip {
             Chip::All => "All",
@@ -1458,12 +1601,10 @@ impl HistoryPanel {
             let rows: Vec<_> = options
                 .into_iter()
                 .map(|(c, lbl)| {
-                    let on = self.chip == c && !self.show_favorites;
+                    let on = self.chip == c;
                     ui::menu_item(t, lbl, lbl, on.then_some("✓"), true)
                         .on_click(cx.listener(move |h, _, _, cx| {
-                            // A status filter is the history again: favorites switch off.
                             h.chip = c;
-                            h.show_favorites = false;
                             h.chip_menu = false;
                             h.apply_filter(cx);
                         }))
@@ -1486,36 +1627,32 @@ impl HistoryPanel {
         div().flex().flex_row().relative().on_children_prepainted(move |b, _, _| bounds.set(b.first().copied())).child(button).children(menu)
     }
 
-    /// Favorites instead of history: a star, filled while on. Always next to the status
-    /// dropdown, never inside it.
-    fn render_favorites_toggle(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let on = self.show_favorites;
+    /// The History view's trash, beside its status filter: pressed once it turns into a red
+    /// "Clear all?", pressed again it clears every connection's history (⌘Z brings it back).
+    fn render_clear(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let asking = self.clear_ask.is_some();
         let (hov, prs) = (t.hov, t.prs);
         let button = div()
-            .id("history-fav-toggle")
+            .id("history-clear")
             .h(px(24.))
-            .w(px(24.))
+            .min_w(px(24.))
+            .px(px(if asking { 7. } else { 0. }))
             .flex()
+            .flex_row()
             .items_center()
             .justify_center()
+            .gap(px(5.))
+            .text_size(px(11.))
             .border_1()
-            .when(on, |d| d.bg(prs).border_color(t.line2))
-            .when(!on, |d| d.border_color(t.line).hover(move |s| s.bg(hov)))
-            .child(icon(if on { Icon::StarFill } else { Icon::Star }).size(px(12.)).text_color(if on { t.warn } else { t.tx3 }))
-            .on_click(cx.listener(|h, ev: &gpui::ClickEvent, _, cx| {
-                // ⌃-click is the Mac's right click: the favorites menu.
-                if ev.modifiers().control {
-                    h.open_menu(MenuOn::Panel, ev.position(), cx);
-                    return;
-                }
-                h.show_favorites = !h.show_favorites;
-                h.apply_filter(cx);
-            }))
-            .on_mouse_down(gpui::MouseButton::Right, cx.listener(|h, ev: &gpui::MouseDownEvent, _, cx| {
-                h.open_menu(MenuOn::Panel, ev.position, cx);
-                cx.stop_propagation();
-            }));
-        let bounds = self.fav_toggle_bounds.clone();
+            .border_color(if asking { t.err } else { t.line })
+            .when(asking, |d| d.text_color(t.err))
+            .hover(move |s| s.bg(hov))
+            .active(move |s| s.bg(prs))
+            .tooltip(ui::tooltip(if asking { "Click again to clear every connection's history" } else { "Clear history" }, None, None))
+            .child(icon(Icon::Trash).size(px(12.)).text_color(if asking { t.err } else { t.tx3 }))
+            .when(asking, |d| d.child("Clear all?"))
+            .on_click(cx.listener(|h, _: &gpui::ClickEvent, _, cx| h.clear_clicked(cx)));
+        let bounds = self.clear_bounds.clone();
         div().flex().flex_row().on_children_prepainted(move |b, _, _| bounds.set(b.first().copied())).child(button)
     }
 
@@ -1550,7 +1687,7 @@ impl HistoryPanel {
 
     /// Whether the history listed holds `sql` (a favorite run from its menu landed there).
     pub(crate) fn demo_has_entry(&self, sql: &str) -> bool {
-        self.entries.iter().any(|e| e.sql.trim().trim_end_matches(';') == sql.trim().trim_end_matches(';'))
+        self.entries.iter().map(|(_, e)| e).any(|e| e.sql.trim().trim_end_matches(';') == sql.trim().trim_end_matches(';'))
     }
 
     /// Favorites an entry directly (setup for a check: the star click itself is not what
@@ -1563,12 +1700,12 @@ impl HistoryPanel {
     /// entry selected, or two favorites with the first selected and the second being renamed
     /// (the panel focused).
     pub(crate) fn demo_marks(&mut self, favorites: bool, window: &mut Window, cx: &mut Context<Self>) {
-        self.show_favorites = favorites;
+        self.set_favorites(favorites, cx);
         if favorites {
             let core = self.store.read(cx).core.clone();
             for (name, sql) in [("Orders by day", "SELECT date_trunc('day', p.created) AS day, count(*) FROM orders p GROUP BY 1 ORDER BY 1;"), ("Top customers", "SELECT c.name, count(*) FROM orders p JOIN customer c ON c.id = p.customer GROUP BY 1 ORDER BY 2 DESC LIMIT 10;")] {
                 let mut f = dataman_core::Favorite::new(name, sql);
-                f.connection_id = self.conn_id.clone();
+                f.connection_id = self.store.read(cx).profiles.first().map(|p| p.id.clone());
                 let _ = core.favorites.add(f);
             }
             self.read_favorites(cx);
@@ -1627,6 +1764,10 @@ impl HistoryPanel {
         })
     }
 
+    pub(crate) fn demo_filter_text(&self, cx: &App) -> String {
+        self.filter.read(cx).text().to_string()
+    }
+
     pub(crate) fn demo_showing_favorites(&self) -> bool {
         self.show_favorites
     }
@@ -1644,7 +1785,7 @@ impl HistoryPanel {
     /// Screenshots (`fav-menu`): the favorites listed.
     pub(crate) fn demo_show_favorites(&mut self, cx: &mut Context<Self>) {
         self.read_favorites(cx);
-        self.show_favorites = true;
+        self.set_favorites(true, cx);
         self.apply_filter(cx);
     }
 
@@ -1681,8 +1822,27 @@ impl HistoryPanel {
         self.chip_bounds.get()
     }
 
-    pub(crate) fn demo_favorites_toggle_bounds(&self) -> Option<Bounds<Pixels>> {
-        self.fav_toggle_bounds.get()
+    pub(crate) fn demo_clear_asking(&self) -> bool {
+        self.clear_ask.is_some()
+    }
+
+    pub(crate) fn demo_clear_bounds(&self) -> Option<Bounds<Pixels>> {
+        self.clear_bounds.get()
+    }
+
+    /// The context menu of history entry `entry_ix`, as a right-click on its row opens it.
+    pub(crate) fn demo_open_entry_menu(&mut self, entry_ix: usize, cx: &mut Context<Self>) {
+        let Some(ix) = self.items.iter().position(|it| matches!(it, Item::Entry(i) if *i == entry_ix)) else { return };
+        if let Some(p) = self.demo_item_point(ix) {
+            self.selected = Some(ix);
+            self.open_menu(MenuOn::Entry(entry_ix), point(p.x + px(60.), p.y), cx);
+        }
+    }
+
+    /// The menu's rows' labels, separators as `—`.
+    pub(crate) fn demo_menu_labels(&self) -> Vec<String> {
+        let Some(m) = &self.menu else { return vec![] };
+        self.menu_entries(&m.on).iter().map(|e| e.label().map_or("—".to_string(), str::to_string)).collect()
     }
 
     pub(crate) fn demo_new_folder_bounds(&self) -> Option<Bounds<Pixels>> {
@@ -1804,9 +1964,6 @@ impl Render for HistoryPanel {
         let t = cx.theme();
         let focused = self.focus.contains_focused(window, cx);
         let filter_focused = self.filter.focus_handle(cx).is_focused(window);
-        let profile = self.conn_id.as_ref().and_then(|id| self.store.read(cx).profile(id).cloned());
-        let name: SharedString = profile.as_ref().map(|p| p.name.clone()).unwrap_or_else(|| "no connection".into()).into();
-        let color = profile.as_ref().map(|p| t.profile_color(p));
         let favs = self.show_favorites;
         let total = if favs { self.favorites.len() } else { self.entries.len() };
         // A drag that ended outside the panel leaves no drop behind.
@@ -1864,7 +2021,7 @@ impl Render for HistoryPanel {
                 .when(top_drop, |d| d.child(div().absolute().inset_0().mx(px(6.)).border_1().border_color(t.acc.opacity(0.45))))
                 .into_any_element()
         };
-        // Transparent: the work surface paints the fill once.
+        // Transparent: the sidebar's glass shows through.
         div()
             .size_full()
             .flex()
@@ -1881,16 +2038,18 @@ impl Render for HistoryPanel {
             .on_action(cx.listener(|h, _: &RunEntry, _, cx| h.run_selected(cx)))
             .on_action(cx.listener(|h, _: &Close, _, cx| {
                 // esc while renaming cancels the rename (the old name stays), with a menu open
-                // it shuts the menu; otherwise it closes the panel, as usual.
+                // it shuts the menu; otherwise the focus goes back to the editor.
                 if h.renaming.take().is_some() || h.menu.take().is_some() {
                     cx.notify();
                 } else {
                     cx.emit(HistoryEvent::Close);
                 }
             }))
+            // The explorer's header and filter, on its glass: the view's name, its controls.
             .child(
                 div()
-                    .h(px(40.))
+                    .id("history-head")
+                    .h(px(34.))
                     .flex_none()
                     .pl(px(14.))
                     .pr(px(8.))
@@ -1898,54 +2057,55 @@ impl Render for HistoryPanel {
                     .flex_row()
                     .items_center()
                     .gap(px(8.))
-                    .border_b_1()
-                    .border_color(t.line)
-                    .group("history-head")
-                    .child(ui::caps(&t, if favs { "FAVORITES" } else { "HISTORY" }))
-                    .children(color.filter(|_| !favs).map(|c| ui::chip(c, 8.)))
-                    .child(div().flex_1().text_color(t.tx).overflow_hidden().whitespace_nowrap().text_ellipsis().when(!favs, |d| d.child(name)))
-                    .when(favs, |d| d.child(self.render_new_folder(&t, cx)))
-                    // Stacked with the explorer it shows and hides with the explorer: no ×.
-                    .when(!self.shares_dock, |d| {
-                        d.child(ui::icon_button(&t, "close-history", Icon::Close, 24., 13.).on_click(cx.listener(|_, _, _, cx| cx.emit(HistoryEvent::Close))))
+                    .child(div().flex_1().child(ui::caps(&t, if favs { "FAVORITES" } else { "HISTORY" })))
+                    .when(favs, |d| {
+                        // A right click on the header: the favorites' menu (new folder, import).
+                        d.child(self.render_new_folder(&t, cx)).on_mouse_down(gpui::MouseButton::Right, cx.listener(|h, ev: &gpui::MouseDownEvent, _, cx| {
+                            h.open_menu(MenuOn::Panel, ev.position, cx);
+                            cx.stop_propagation();
+                        }))
                     }),
             )
             .child(
                 div()
-                    .px(px(12.))
-                    .pt(px(10.))
-                    .pb(px(8.))
+                    .mx(px(8.))
+                    .mb(px(6.))
+                    .h(px(28.))
                     .flex_none()
+                    .pl(px(8.))
+                    .pr(px(6.))
                     .flex()
-                    .flex_col()
-                    .gap(px(8.))
-                    .child(
-                        div()
-                            .h(px(28.))
-                            .px(px(8.))
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(8.))
-                            .relative()
-                            .border_1()
-                            // A search field's focus is neutral, like the explorer filter's: the
-                            // border and its halo, the fill unchanged.
-                            .border_color(if filter_focused { t.mark_b } else { t.field_b })
-                            .when(filter_focused, |d| d.child(ui::halo_ring(t.mark)))
-                            .child(icon(Icon::Search).size(px(13.)).text_color(t.tx3))
-                            .child(div().flex_1().min_w_0().text_color(t.tx).child(self.filter.clone()))
-                            .child(div().text_size(px(11.)).text_color(t.tx3).child(format!("{} of {}", ui_count(self.shown), ui_count(total)))),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .gap(px(4.))
-                            .child(self.render_chip_dropdown(&t, cx))
-                            .child(self.render_favorites_toggle(&t, cx)),
-                    ),
+                    .flex_row()
+                    .items_center()
+                    .gap(px(7.))
+                    .relative()
+                    .bg(t.hov)
+                    .border_1()
+                    // A search field's focus is neutral, like the explorer filter's: the border
+                    // and its halo, the fill unchanged.
+                    .border_color(if filter_focused { t.mark_b } else { t.field_b })
+                    .when(filter_focused, |d| d.child(ui::halo_ring(t.mark)))
+                    .child(icon(Icon::Search).size(px(13.)).text_color(t.tx3))
+                    .child(div().flex_1().min_w_0().text_color(t.tx).child(self.filter.clone()))
+                    // How many match, only while searching (the explorer's way).
+                    .when(!self.query.is_empty(), |d| {
+                        d.child(div().flex_none().text_size(px(10.5)).text_color(t.tx3).whitespace_nowrap().child(format!("{} of {}", ui_count(self.shown), ui_count(total))))
+                    }),
             )
+            .when(!favs, |d| {
+                d.child(
+                    div()
+                        .mx(px(8.))
+                        .mb(px(6.))
+                        .flex_none()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(4.))
+                        .child(self.render_chip_dropdown(&t, cx))
+                        .child(self.render_clear(&t, cx)),
+                )
+            })
             .child(body)
             .children(self.render_menu(&t, window, cx))
     }

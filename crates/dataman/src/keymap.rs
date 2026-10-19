@@ -80,7 +80,7 @@ pub const COMMANDS: &[Command] = &[
     // ⌃⌘ (Xcode's): plain ⌘← ⌘→ are a text's line start / end and the grid's row ends.
     c("go_back", "Back", "GLOBAL", Scope::Workspace, &["ctrl-cmd-left"], || Box::new(GoBack)),
     c("go_forward", "Forward", "GLOBAL", Scope::Workspace, &["ctrl-cmd-right"], || Box::new(GoForward)),
-    c("toggle_explorer", "Toggle explorer", "GLOBAL", Scope::Workspace, &["cmd-b"], || Box::new(ToggleExplorer)),
+    c("toggle_explorer", "Toggle sidebar", "GLOBAL", Scope::Workspace, &["cmd-b"], || Box::new(ToggleExplorer)),
     c("toggle_side_panel", "Toggle side panel", "GLOBAL", Scope::Workspace, &["cmd-alt-b"], || Box::new(ToggleSidePanel)),
     c("open_sql_file", "Open .sql file", "GLOBAL", Scope::Workspace, &["cmd-o"], || Box::new(OpenSqlFile)),
     c("refresh", "Reload schema", "GLOBAL", Scope::Workspace, &["cmd-r"], || Box::new(Refresh)),
@@ -110,7 +110,6 @@ pub const COMMANDS: &[Command] = &[
     c("open_definition", "Open definition", "EDITOR", Scope::Editor, &["alt-f12"], || Box::new(crate::editor::PeekDefinition)),
     c("jump_to_error", "Jump to error", "EDITOR", Scope::Workspace, &["cmd-'"], || Box::new(JumpToError)),
     c("use_explorer_connection", "Use explorer connection", "EDITOR", Scope::Workspace, &["alt-enter"], || Box::new(UseExplorerConnection)),
-    c("history", "History", "EDITOR", Scope::Workspace, &["cmd-y"], || Box::new(ToggleHistory)),
     c("favorite_query", "Favorite query", "EDITOR", Scope::Workspace, &["cmd-d"], || Box::new(FavoriteQuery)),
     // ⌘S in the editor saves the script as (or into) the tab's favorite; on the grid it stays
     // Review & commit (below): the editor and the grid never meet.
