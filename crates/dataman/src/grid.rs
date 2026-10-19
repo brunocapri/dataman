@@ -392,6 +392,8 @@ pub struct ResultGrid {
     summary: Option<(SummaryKey, SharedString)>,
     /// Extra paint from the owner (edits, live rows, diffs); `None` costs nothing.
     decor: Option<Arc<Decorations>>,
+    /// A tab's result, whose rows can be edited: the context menu has "Delete row".
+    pub editable: bool,
     overlay: Option<CellOverlay>,
     /// Result rows at the last frame: when more arrive, a selection on virtual rows follows them.
     seen_rows: usize,
@@ -607,6 +609,7 @@ impl ResultGrid {
             cancelling: false,
             summary: None,
             decor: None,
+            editable: false,
             overlay: None,
             seen_rows: 0,
             _watch: None,
@@ -1627,6 +1630,20 @@ impl ResultGrid {
                 entries = grid_menu::with_filter(entries, col, value);
             }
         }
+        if self.editable {
+            let rows = self.selected_rows();
+            // "Restore" when every stored row among them is already marked (⌫ toggles).
+            let (stored, marked) = match (&self.rs, &self.decor) {
+                (Some(rs), Some(d)) => {
+                    let snap = rs.snapshot();
+                    let stored: Vec<usize> = rows.iter().filter(|&&r| r < snap.rows()).map(|&r| snap.source_row(r)).collect();
+                    let marked = stored.iter().all(|r| d.rows.get(r).is_some_and(|x| x.strike));
+                    (stored.len(), marked)
+                }
+                _ => (0, false),
+            };
+            entries = grid_menu::with_delete(entries, rows.len(), stored > 0 && marked);
+        }
         self.open_menu(cell, entries, Some(at), false, window, cx);
     }
 
@@ -1728,7 +1745,6 @@ impl ResultGrid {
                     cx.write_to_clipboard(ClipboardItem::new_string(text));
                 }
             }
-            Some(MenuEntry::Item(MenuItem::CopyTsv)) => self.copy(CopyFormat::Tsv, false, cx),
             Some(MenuEntry::Item(MenuItem::CopyWithHeaders)) => self.copy(CopyFormat::Tsv, true, cx),
             Some(MenuEntry::Item(MenuItem::FilterValue(col, v))) => cx.emit(GridEvent::FilterValue { col: *col, value: v.clone() }),
             Some(MenuEntry::Item(MenuItem::SortAsc(col))) => self.sort_by_menu(*col, SortDir::Asc, cx),
@@ -1740,6 +1756,12 @@ impl ResultGrid {
             }
             Some(MenuEntry::Item(MenuItem::Hide(col))) => self.hide_column(*col, cx),
             Some(MenuEntry::Item(MenuItem::ShowAll(_))) => self.show_all_columns(cx),
+            Some(MenuEntry::Item(MenuItem::DeleteRows { .. })) => {
+                let rows = self.selected_rows();
+                if !rows.is_empty() {
+                    cx.emit(GridEvent::DeleteRows(rows));
+                }
+            }
             _ => {}
         }
         cx.notify();
@@ -1769,7 +1791,7 @@ impl ResultGrid {
                     let (ic, label, detail): (Icon, SharedString, Option<SharedString>) = it.look();
                     let key: Option<SharedString> = match it {
                         MenuItem::Go(_) => (first_go == Some(i)).then_some("⌘click".into()),
-                        MenuItem::CopyTsv => crate::keymap::key("copy_tsv").map(Into::into),
+                        MenuItem::DeleteRows { .. } => Some("⌫".into()),
                         MenuItem::CopyWithHeaders => crate::keymap::key("copy_with_headers").map(Into::into),
                         _ => None,
                     };

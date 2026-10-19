@@ -365,9 +365,11 @@ async fn check(ws: &Entity<Workspace>, grid: &Entity<ResultGrid>, fk: usize, pla
     right_click(cx, p);
     let m = menu(cx);
     report(
-        "right click on a reference: Go to, —, Copy value, Copy as TSV, Copy with headers",
+        "right click on a reference: Go to, —, Copy value, Copy with headers, —, Delete row",
         m.as_ref().is_some_and(|(_, l, _, _)| {
-            l.len() == 5 && l[0].starts_with("Go to") && l[1] == "—" && l[2] == "Copy value" && l[3] == "Copy as TSV" && l[4] == "Copy with headers"
+            l.len() == 6
+                && l[0].starts_with("Go to")
+                && l[1..] == ["—", "Copy value", "Copy with headers", "—", "Delete row"]
         }),
         format!("{m:?}"),
     );
@@ -376,8 +378,8 @@ async fn check(ws: &Entity<Workspace>, grid: &Entity<ResultGrid>, fk: usize, pla
     right_click(cx, q);
     let m = menu(cx);
     report(
-        "right click on a plain value: the copy items",
-        m.as_ref().is_some_and(|(_, l, _, _)| l == &["Copy value", "Copy as TSV", "Copy with headers"]),
+        "right click on a plain value: the copy items, Delete row",
+        m.as_ref().is_some_and(|(_, l, _, _)| l == &["Copy value", "Copy with headers", "—", "Delete row"]),
         format!("{m:?}"),
     );
     // Copy value puts the cell's text on the clipboard (the previous clipboard is restored).
@@ -392,7 +394,6 @@ async fn check(ws: &Entity<Workspace>, grid: &Entity<ResultGrid>, fk: usize, pla
     // Copy with headers: the selected column's name over its value.
     let q = at(cx, 2, plain);
     right_click(cx, q);
-    key(cx, "down");
     key(cx, "down");
     key(cx, "down");
     key(cx, "enter");
@@ -415,7 +416,7 @@ async fn check(ws: &Entity<Workspace>, grid: &Entity<ResultGrid>, fk: usize, pla
     let p = at(cx, 2, fk);
     click(cx, p, ctrl);
     let m = menu(cx);
-    report("⌃-click opens the right-click menu", m.as_ref().is_some_and(|(_, l, _, _)| l.len() == 5), format!("{m:?}"));
+    report("⌃-click opens the right-click menu", m.as_ref().is_some_and(|(_, l, _, _)| l.len() == 6), format!("{m:?}"));
     key(cx, "escape");
 
     // 8. ⌥↓ on the active reference, ↩ goes: a new tab on the same connection and database.

@@ -246,6 +246,7 @@ impl QueryTab {
         let grid = cx.new(|cx| {
             let mut g = ResultGrid::new(cx);
             g.share_gutter(gutter);
+            g.editable = true;
             g
         });
         let plan = cx.new(PlanView::new);

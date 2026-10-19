@@ -18,8 +18,6 @@ pub enum Item {
     Go(FkJump),
     /// The clicked cell's text.
     CopyValue,
-    /// The selection as TSV (⌘C).
-    CopyTsv,
     /// The selection as TSV under a row of its columns' names (⌥⌘C).
     CopyWithHeaders,
     /// A table's data view: rows whose column equals this cell's value (`None`: IS NULL).
@@ -32,6 +30,8 @@ pub enum Item {
     Hide(usize),
     /// Shows the hidden columns again (how many are hidden).
     ShowAll(usize),
+    /// Marks the selected rows for deletion (⌫); `restore` when they all are already.
+    DeleteRows { n: usize, restore: bool },
 }
 
 impl Item {
@@ -40,7 +40,6 @@ impl Item {
         match self {
             Item::Go(j) => (Icon::Table, j.label.clone().into(), Some(j.detail.clone().into())),
             Item::CopyValue => (Icon::Copy, "Copy value".into(), None),
-            Item::CopyTsv => (Icon::Copy, "Copy as TSV".into(), None),
             Item::CopyWithHeaders => (Icon::Copy, "Copy with headers".into(), None),
             Item::FilterValue(_, v) => {
                 let d = match v {
@@ -57,6 +56,10 @@ impl Item {
             Item::Filter(_) => (Icon::Filter, "Filter…".into(), None),
             Item::Hide(_) => (Icon::Close, "Hide column".into(), None),
             Item::ShowAll(n) => (Icon::View, "Show all columns".into(), Some(format!("{n} hidden").into())),
+            Item::DeleteRows { n, restore } => {
+                let rows = if *n == 1 { "row".to_string() } else { format!("{n} rows") };
+                (Icon::Trash, if *restore { format!("Restore {rows}") } else { format!("Delete {rows}") }.into(), None)
+            }
         }
     }
 }
@@ -118,10 +121,21 @@ pub fn entries(jumps: Vec<FkJump>, context: bool) -> Vec<Entry> {
             v.push(Entry::Sep);
         }
         v.push(Entry::Item(Item::CopyValue));
-        v.push(Entry::Item(Item::CopyTsv));
         v.push(Entry::Item(Item::CopyWithHeaders));
     }
     v
+}
+
+/// An editable result's context menu: "Delete row" (or "Restore row") last, after a separator.
+pub fn with_delete(mut entries: Vec<Entry>, n: usize, restore: bool) -> Vec<Entry> {
+    if n == 0 {
+        return entries;
+    }
+    if !entries.is_empty() {
+        entries.push(Entry::Sep);
+    }
+    entries.push(Entry::Item(Item::DeleteRows { n, restore }));
+    entries
 }
 
 pub fn menu_h(entries: &[Entry]) -> f32 {
@@ -217,13 +231,13 @@ mod tests {
         assert!(entries(vec![], false).is_empty(), "no reference, no menu");
         // Right click: references, a separator, the copy items.
         let ctx = entries(vec![j("customer"), j("account")], true);
-        let copies = [Entry::Item(Item::CopyValue), Entry::Item(Item::CopyTsv), Entry::Item(Item::CopyWithHeaders)];
-        assert_eq!(ctx.len(), 6);
+        let copies = [Entry::Item(Item::CopyValue), Entry::Item(Item::CopyWithHeaders)];
+        assert_eq!(ctx.len(), 5);
         assert_eq!(ctx[2], Entry::Sep);
         assert_eq!(ctx[3..], copies);
         // Not a reference: just the copy items, no leading separator.
         assert_eq!(entries(vec![], true), copies.to_vec());
-        assert_eq!(menu_h(&ctx), 5. * ITEM_H + SEP_H + 2. * PAD);
+        assert_eq!(menu_h(&ctx), 4. * ITEM_H + SEP_H + 2. * PAD);
         assert_eq!(Item::CopyWithHeaders.look().1.as_ref(), "Copy with headers");
     }
 
@@ -241,11 +255,21 @@ mod tests {
         );
         assert_eq!(header_entries(1, false, 0, false), vec![Entry::Item(Item::SortAsc(1)), Entry::Item(Item::SortDesc(1))]);
         let with = with_filter(entries(vec![j("customer")], true), 1, Some("7".into()));
-        assert_eq!(with.len(), 7);
+        assert_eq!(with.len(), 6);
         assert_eq!((&with[1], &with[2], &with[3]), (&Entry::Sep, &Entry::Item(Item::FilterValue(1, Some("7".into()))), &Entry::Sep));
         let plain = with_filter(entries(vec![], true), 0, None);
         assert_eq!(plain[..2], [Entry::Item(Item::FilterValue(0, None)), Entry::Sep]);
         assert_eq!(Item::FilterValue(0, None).look().2.as_deref(), Some("is null"));
+    }
+
+    #[test]
+    fn delete_item() {
+        let d = with_delete(entries(vec![], true), 1, false);
+        assert_eq!(d[2..], [Entry::Sep, Entry::Item(Item::DeleteRows { n: 1, restore: false })]);
+        assert_eq!(Item::DeleteRows { n: 1, restore: false }.look().1.as_ref(), "Delete row");
+        assert_eq!(Item::DeleteRows { n: 3, restore: false }.look().1.as_ref(), "Delete 3 rows");
+        assert_eq!(Item::DeleteRows { n: 1, restore: true }.look().1.as_ref(), "Restore row");
+        assert_eq!(with_delete(vec![], 0, false), vec![], "no rows, no item");
     }
 
     #[test]
