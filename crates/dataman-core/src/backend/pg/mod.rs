@@ -81,8 +81,17 @@ mod no_verify {
 }
 
 fn tls_for(mode: SslMode) -> Result<Tls> {
+    Ok(match rustls_config(mode)? {
+        None => Tls::None,
+        Some(cfg) => Tls::Rustls(tokio_postgres_rustls::MakeRustlsConnect::new(cfg)),
+    })
+}
+
+/// The TLS client config of a mode: none when disabled; the system's roots for verify-full;
+/// any certificate accepted otherwise (libpq's `prefer` and `require`). Redis' TLS too.
+pub(crate) fn rustls_config(mode: SslMode) -> Result<Option<rustls::ClientConfig>> {
     if mode == SslMode::Disable {
-        return Ok(Tls::None);
+        return Ok(None);
     }
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let builder = rustls::ClientConfig::builder_with_provider(provider.clone()).with_safe_default_protocol_versions()?;
@@ -99,7 +108,7 @@ fn tls_for(mode: SslMode) -> Result<Tls> {
             .with_custom_certificate_verifier(Arc::new(no_verify::NoVerify(provider)))
             .with_no_client_auth()
     };
-    Ok(Tls::Rustls(tokio_postgres_rustls::MakeRustlsConnect::new(cfg)))
+    Ok(Some(cfg))
 }
 
 /// Records whether the TLS handshake happened: with `sslmode=prefer` tokio-postgres only calls

@@ -127,6 +127,7 @@ impl Dialect {
             Engine::Postgres => Dialect::Postgres,
             Engine::MySql => Dialect::MySql,
             Engine::SqlServer => Dialect::TSql,
+            Engine::MongoDb | Engine::Elasticsearch | Engine::OpenSearch | Engine::Redis => Dialect::Postgres,
         }
     }
 

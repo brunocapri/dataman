@@ -19,6 +19,7 @@ assets!(
     "icons/activity.svg",
     "icons/agent.svg",
     "icons/archive.svg",
+    "icons/braces.svg",
     "icons/arrow-right.svg",
     "icons/cancel.svg",
     "icons/check.svg",
@@ -82,6 +83,13 @@ assets!(
     "icons/type.svg",
     "icons/view.svg",
     "icons/warning.svg",
+    "logos/elasticsearch.svg",
+    "logos/mongodb.svg",
+    "logos/mysql.svg",
+    "logos/opensearch.svg",
+    "logos/postgres.svg",
+    "logos/redis.svg",
+    "logos/sql-server.svg",
     "art/welcome-dark.svg",
     "art/welcome-light.svg",
 );
@@ -192,6 +200,8 @@ pub enum Icon {
     Agent,
     // LAR (violet, LAR panels only).
     Live,
+    /// A collection of documents (MongoDB's, an index's): `{ }`.
+    Collection,
 }
 
 impl Icon {
@@ -263,6 +273,7 @@ impl Icon {
             Icon::Pin => "icons/pin.svg",
             Icon::Agent => "icons/agent.svg",
             Icon::Live => "icons/live.svg",
+            Icon::Collection => "icons/braces.svg",
         }
     }
 }
@@ -272,9 +283,50 @@ pub fn icon(i: Icon) -> Svg {
     svg().path(i.path()).flex_none().size(crate::theme::px(16.))
 }
 
+/// The database logos are shown (Settings › Appearance › Database logos).
+static LOGOS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+pub fn logos_on() -> bool {
+    LOGOS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn set_logos(on: bool) {
+    LOGOS.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// An engine's logo, in its own colors (an image: drawn at 64 px, crisp at any size up to
+/// 32 pt); the size is up to the caller.
+pub fn logo(e: dataman_core::Engine) -> gpui::Img {
+    let path: &'static str = match e {
+        dataman_core::Engine::Postgres => "logos/postgres.svg",
+        dataman_core::Engine::MySql => "logos/mysql.svg",
+        dataman_core::Engine::SqlServer => "logos/sql-server.svg",
+        dataman_core::Engine::MongoDb => "logos/mongodb.svg",
+        dataman_core::Engine::Elasticsearch => "logos/elasticsearch.svg",
+        dataman_core::Engine::OpenSearch => "logos/opensearch.svg",
+        dataman_core::Engine::Redis => "logos/redis.svg",
+    };
+    gpui::img(path).flex_none()
+}
+
+/// The small logo the explorer and the connection picker put before a connection's name, when
+/// logos are on (`None` otherwise).
+pub fn small_logo(e: dataman_core::Engine, size: f32) -> Option<gpui::Img> {
+    logos_on().then(|| logo(e).size(crate::theme::px(size)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_engine_has_its_logo() {
+        for e in dataman_core::Engine::ALL {
+            let path = format!("logos/{}.svg", e.slug());
+            let bytes = Assets.load(&path).unwrap().unwrap_or_else(|| panic!("{path}"));
+            assert!(std::str::from_utf8(&bytes).unwrap().starts_with("<svg"), "{path}");
+        }
+    }
 
     #[test]
     fn every_icon_is_embedded() {
@@ -284,7 +336,7 @@ mod tests {
             SchemaFilled, Group, Table, View, Key, Keyboard, Index, Search, Filter, Close, Check, Copy, Export, Import, Edit, Trash,
             Sidebar, SidebarRight, PanelRight, Split, Expand, Collapse, Lock, Warning, Info, Server, Archive, More, Tab, Command, Code, Hash, Plug,
             Cursor, Tunnel, MatView, Function, Procedure, Sequence, Type, Label, Trigger, Extension, Role,
-            Constraint, Link, Partition, Activity, Star, StarFill, Pin, Agent, Live,
+            Constraint, Link, Partition, Activity, Star, StarFill, Pin, Agent, Live, Collection,
         ];
         for i in all {
             let bytes = Assets.load(i.path()).unwrap().unwrap_or_else(|| panic!("{} missing", i.path()));

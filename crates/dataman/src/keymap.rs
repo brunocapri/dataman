@@ -332,6 +332,7 @@ pub fn bind_all(cx: &mut App) {
     crate::row_actions::bind_keys(cx);
     crate::history::bind_keys(cx);
     crate::conn_dialog::bind_keys(cx);
+    crate::doc_view::bind_keys(cx);
     crate::import_ui::bind_keys(cx);
     crate::welcome::bind_keys(cx);
     crate::palette::bind_keys(cx);
@@ -351,10 +352,14 @@ pub fn bind_all(cx: &mut App) {
     let map = overrides();
     let mut bindings = Vec::new();
     for cmd in COMMANDS {
+        // The result zoom works on a document view as on the grid (its list, its bar).
+        let extra = (cmd.id == "zoom_result").then_some("DocView");
         for k in effective_in(&map, cmd).iter().rev() {
-            match KeyBinding::load(k, (cmd.action)(), cmd.context.map(|c| gpui::KeyBindingContextPredicate::parse(c).unwrap().into()), false, None, &gpui::DummyKeyboardMapper) {
-                Ok(b) => bindings.push(b),
-                Err(e) => log::warn!("key {k} for {}: {e}", cmd.id),
+            for context in std::iter::once(cmd.context).chain(extra.map(Some)) {
+                match KeyBinding::load(k, (cmd.action)(), context.map(|c| gpui::KeyBindingContextPredicate::parse(c).unwrap().into()), false, None, &gpui::DummyKeyboardMapper) {
+                    Ok(b) => bindings.push(b),
+                    Err(e) => log::warn!("key {k} for {}: {e}", cmd.id),
+                }
             }
         }
     }

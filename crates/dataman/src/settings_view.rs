@@ -91,6 +91,7 @@ enum Row {
     Translucency,
     FontSize,
     ReduceMotion,
+    DbLogos,
     Panels,
     Prefetch,
     PageSize,
@@ -111,12 +112,13 @@ enum Row {
     CrashReports,
 }
 
-const ROWS: [(Row, Section, &str, &str); 23] = [
+const ROWS: [(Row, Section, &str, &str); 24] = [
     (Row::Theme, Section::Appearance, "Theme", "dark light system"),
     (Row::Font, Section::Appearance, "Font", "typeface family monospace geist lilex zed jetbrains"),
     (Row::Translucency, Section::Appearance, "Window translucency", "transparency blur opaque"),
     (Row::FontSize, Section::Appearance, "Code font size", "editor text"),
     (Row::ReduceMotion, Section::Appearance, "Reduce motion", "animation accessibility"),
+    (Row::DbLogos, Section::Appearance, "Database logos", "icon engine postgres mysql mongodb redis elasticsearch opensearch explorer picker"),
     (Row::Panels, Section::Appearance, "Panels", "panel layout dock explorer history favorites move reset"),
     (Row::KeywordCase, Section::Editor, "Keyword case", "format formatter sql upper lower"),
     (Row::Indent, Section::Editor, "Indent", "format formatter spaces tab"),
@@ -823,6 +825,13 @@ impl SettingsView {
         crate::editor::set_format_options(self.settings.format_options());
     }
 
+    /// The explorer and every picker redraw with (or without) the logos.
+    fn set_logos(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.save(|s| s.db_logos = on, cx);
+        crate::assets::set_logos(on);
+        cx.refresh_windows();
+    }
+
     fn set_reduce_motion(&mut self, on: bool, cx: &mut Context<Self>) {
         self.save(|s| s.reduce_motion = on, cx);
         crate::motion::set_reduce_motion_pref(on, cx);
@@ -971,6 +980,13 @@ impl SettingsView {
                             .child(ui::segment(t, "rm-off", "Animate", !on).on_click(cx.listener(|v, _, _, cx| v.set_reduce_motion(false, cx))))
                             .child(ui::segment(t, "rm-on", "Reduce", on).on_click(cx.listener(|v, _, _, cx| v.set_reduce_motion(true, cx)))),
                     )
+                    .into_any_element()
+            }
+            Row::DbLogos => {
+                let on = s.db_logos;
+                ui::segmented(t)
+                    .child(ui::segment(t, "logos-off", "Hide", !on).on_click(cx.listener(|v, _, _, cx| v.set_logos(false, cx))))
+                    .child(ui::segment(t, "logos-on", "Show", on).on_click(cx.listener(|v, _, _, cx| v.set_logos(true, cx))))
                     .into_any_element()
             }
             // Every panel back in its home dock (`dock`): the explorer left, the history right.

@@ -4,6 +4,9 @@
 //! - `DATAMAN_LAR` (default `127.0.0.1:5490`, user `lar`, db `lar`, no password)
 //! - `DATAMAN_MYSQL` (default `127.0.0.1:33306`, root, `DATAMAN_MYSQL_PASSWORD`)
 //! - `DATAMAN_MSSQL` (default `127.0.0.1:14330`, sa, `DATAMAN_MSSQL_PASSWORD`)
+//! - `DATAMAN_MONGO` (default `127.0.0.1:27027`, root, `DATAMAN_MONGO_PASSWORD`)
+//! - `DATAMAN_ES` (default `127.0.0.1:9201`, elastic, `DATAMAN_ES_PASSWORD`)
+//! - `DATAMAN_REDIS` (default `127.0.0.1:63790`, `DATAMAN_REDIS_PASSWORD`)
 //!
 //! PostgreSQL work happens in a scratch schema, LAR's and SQL Server's in scratch tables (SQL
 //! Server's in tempdb), MySQL's in a scratch database; all are dropped. The app is played by a
@@ -76,6 +79,9 @@ fn env() -> Env {
     let (lh, lp) = addr("DATAMAN_LAR", "127.0.0.1:5490");
     let (mh, mp) = addr("DATAMAN_MYSQL", "127.0.0.1:33306");
     let (sh, sp) = addr("DATAMAN_MSSQL", "127.0.0.1:14330");
+    let (gh, gp) = addr("DATAMAN_MONGO", "127.0.0.1:27027");
+    let (eh, ep) = addr("DATAMAN_ES", "127.0.0.1:9201");
+    let (rh, rp) = addr("DATAMAN_REDIS", "127.0.0.1:63790");
     let conn = |id: &str, host: &str, port: u16, user: &str, db: &str, extra: &str| {
         format!("[[connection]]\nid = \"{id}\"\nname = \"{id}\"\nhost = \"{host}\"\nport = {port}\nuser = \"{user}\"\ndatabase = \"{db}\"\nsslmode = \"disable\"\n{extra}\n")
     };
@@ -93,6 +99,16 @@ fn env() -> Env {
         conn("myf", &mh, mp, "root", "mysql", &format!("{my}mcp = \"full\"")),
         conn("msw", &sh, sp, "sa", "tempdb", &format!("{ms}mcp = \"write\"\nmcp_row_limit = 3")).replace("sslmode = \"disable\"", "sslmode = \"require\""),
         conn("msf", &sh, sp, "sa", "tempdb", &format!("{ms}mcp = \"full\"")).replace("sslmode = \"disable\"", "sslmode = \"require\""),
+        conn("mg", &gh, gp, "root", "mcp_live", "engine = \"mongodb\"\nsave_password = true"),
+        conn("mgw", &gh, gp, "root", "mcp_live", "engine = \"mongodb\"\nsave_password = true\nmcp = \"write\"\nmcp_row_limit = 3"),
+        conn("mgf", &gh, gp, "root", "mcp_live", "engine = \"mongodb\"\nsave_password = true\nmcp = \"full\""),
+        conn("mgprod", &gh, gp, "root", "mcp_live", "engine = \"mongodb\"\nsave_password = true\nenv = \"production\"\nmcp = \"full\""),
+        conn("es", &eh, ep, "elastic", "", "engine = \"elasticsearch\"\nsave_password = true"),
+        conn("esw", &eh, ep, "elastic", "", "engine = \"elasticsearch\"\nsave_password = true\nmcp = \"write\"\nmcp_row_limit = 3"),
+        conn("esf", &eh, ep, "elastic", "", "engine = \"elasticsearch\"\nsave_password = true\nmcp = \"full\""),
+        conn("rd", &rh, rp, "", "8", "engine = \"redis\"\nsave_password = true"),
+        conn("rdw", &rh, rp, "", "8", "engine = \"redis\"\nsave_password = true\nmcp = \"write\"\nmcp_row_limit = 3"),
+        conn("rdf", &rh, rp, "", "8", "engine = \"redis\"\nsave_password = true\nmcp = \"full\""),
     ]
     .concat();
     std::fs::write(cfg.join("connections.toml"), text).unwrap();
@@ -103,7 +119,16 @@ fn env() -> Env {
     let secrets = Arc::new(MemorySecrets::default());
     let my_pw = std::env::var("DATAMAN_MYSQL_PASSWORD").unwrap_or_else(|_| "dataman-root".into());
     let ms_pw = std::env::var("DATAMAN_MSSQL_PASSWORD").unwrap_or_else(|_| "Dataman-sa-1!".into());
-    for (id, pw) in [("myw", &my_pw), ("myf", &my_pw), ("msw", &ms_pw), ("msf", &ms_pw)] {
+    let mg_pw = std::env::var("DATAMAN_MONGO_PASSWORD").unwrap_or_else(|_| "dataman".into());
+    let es_pw = std::env::var("DATAMAN_ES_PASSWORD").unwrap_or_else(|_| "dataman".into());
+    for id in ["es", "esw", "esf"] {
+        secrets.set(id, &es_pw).unwrap();
+    }
+    let rd_pw = std::env::var("DATAMAN_REDIS_PASSWORD").unwrap_or_else(|_| "dataman".into());
+    for id in ["rd", "rdw", "rdf"] {
+        secrets.set(id, &rd_pw).unwrap();
+    }
+    for (id, pw) in [("myw", &my_pw), ("myf", &my_pw), ("msw", &ms_pw), ("msf", &ms_pw), ("mg", &mg_pw), ("mgw", &mg_pw), ("mgf", &mg_pw), ("mgprod", &mg_pw)] {
         secrets.set(id, pw).unwrap();
     }
     let hub = Hub::new(Dirs::at(&cfg), secrets).unwrap();
@@ -700,5 +725,209 @@ fn sql_server_tiers() {
     e.asked();
     e.answer(&[Allow]);
     e.ok("execute", json!({"connection": "msf", "sql": format!("DROP TABLE dbo.{t}")}));
+    leak(e);
+}
+
+#[test]
+fn mongodb_tools() {
+    let (h, p) = addr("DATAMAN_MONGO", "127.0.0.1:27027");
+    if !up(&h, p) {
+        eprintln!("skipping: no MongoDB at {h}:{p}");
+        return;
+    }
+    use Answer::*;
+    let e = env();
+    let r = |x: Value| with("mg", x);
+    let w = |x: Value| with("mgw", x);
+    let f = |x: Value| with("mgf", x);
+    let _ = e.call("nosql_execute", f(json!({"query": "db.dropDatabase()"})));
+    e.answer(&[Allow]);
+    let _ = e.call("nosql_execute", f(json!({"query": "db.dropDatabase()"})));
+    let _ = e.asked();
+
+    // list_connections says what each connection speaks.
+    let conns = e.ok("list_connections", json!({}));
+    let cols: Vec<&str> = conns["columns"].as_array().unwrap().iter().map(|c| c.as_str().unwrap()).collect();
+    let (ei, li) = (cols.iter().position(|c| *c == "engine").unwrap(), cols.iter().position(|c| *c == "language").unwrap());
+    let row = conns["rows"].as_array().unwrap().iter().find(|r| r[0] == "mg").unwrap();
+    assert_eq!(row[ei], "mongodb");
+    assert!(row[li].as_str().unwrap().contains("nosql_query"), "{row:?}");
+
+    // Reads only in the read tier; writes refused before connecting.
+    assert!(e.err("nosql_execute", r(json!({"query": "db.items.insertOne({a: 1})"}))).contains("reads only"));
+    assert!(e.err("nosql_query", r(json!({"query": "db.items.insertOne({a: 1})"}))).contains("nosql_execute"));
+    assert!(e.err("nosql_query", r(json!({"query": "db.items.find({a: })"}))).contains("invalid"));
+
+    // Write tier: inserts and filtered updates within the row limit (3) run.
+    let v = e.ok("nosql_execute", w(json!({"query": "db.items.insertMany([{n: 1, k: 'a'}, {n: 2, k: 'a'}, {n: 3, k: 'b'}])"})));
+    assert_eq!(v["affected"], 3, "{v}");
+    let v = e.ok("nosql_execute", w(json!({"query": "db.items.updateMany({k: 'a'}, {$set: {seen: true}})"})));
+    assert_eq!(v["affected"], 2, "{v}");
+    // Past the limit it waits for the user: denied, nothing changed; allowed, it runs.
+    e.ok("nosql_execute", w(json!({"query": "db.items.insertOne({n: 4, k: 'b'})"})));
+    let err = e.err("nosql_execute", w(json!({"query": "db.items.updateMany({n: {$gt: 0}}, {$set: {big: true}})"})));
+    assert!(err.contains("denied") && err.contains("4 rows (limit 3)"), "{err}");
+    assert_eq!(e.asked().len(), 1);
+    assert_eq!(e.ok("nosql_query", r(json!({"query": "db.items.countDocuments({big: true})"})))["value"], 0);
+    e.answer(&[Allow]);
+    let v = e.ok("nosql_execute", w(json!({"query": "db.items.updateMany({n: {$gt: 0}}, {$set: {big: true}})"})));
+    assert_eq!((v["affected"].clone(), v["approved"]["reasons"][0].clone()), (json!(4), json!("4 rows (limit 3)")), "{v}");
+    let _ = e.asked();
+    // Destructive: refused in write, asked in full.
+    assert!(e.err("nosql_execute", w(json!({"query": "db.items.deleteMany({})"}))).contains("destructive"));
+    e.answer(&[Deny]);
+    assert!(e.err("nosql_execute", f(json!({"query": "db.items.drop()"}))).contains("denied"));
+    let asked = e.asked();
+    assert!(asked[0].destructive && asked[0].reasons[0].contains("drops a collection"), "{:?}", asked[0].reasons);
+    // Production asks for every write.
+    e.answer(&[Deny]);
+    assert!(e.err("nosql_execute", with("mgprod", json!({"query": "db.items.insertOne({n: 5})"}))).contains("production"));
+    let _ = e.asked();
+
+    // Reads: documents as extended JSON, bounded; run_query takes the shell's language too.
+    let v = e.ok("nosql_query", r(json!({"query": "db.items.find({}, {_id: 0}).sort({n: 1})", "max_rows": 2})));
+    assert_eq!((v["count"].clone(), v["more"].clone(), v["documents"][0]["n"].clone()), (json!(2), json!(true), json!(1)), "{v}");
+    let v = e.ok("run_query", r(json!({"sql": "db.items.find({n: 1})"})));
+    assert!(v["documents"][0]["_id"]["$oid"].is_string(), "{v}");
+    let v = e.ok("execute", w(json!({"sql": "db.items.deleteOne({n: 4})"})));
+    assert_eq!(v["affected"], 1, "{v}");
+
+    // Scripts (the shell's JavaScript): a read runs as a read, with what it printed; one that
+    // writes is refused by nosql_query and, in tier write, waits for the user (its writes cannot
+    // be counted first); a call the reading did not see is refused when it comes.
+    let v = e.ok("nosql_query", r(json!({"query": "let n = 0\ndb.items.find().forEach(d => { n += d.n })\nprint('sum', n)\ndb.items.find({}, {_id: 0}).sort({n: 1})"})));
+    assert_eq!((v["printed"][0].clone(), v["documents"][0]["n"].clone(), v["count"].clone()), (json!("sum 6"), json!(1), json!(3)), "{v}");
+    let script = "for (const n of [7, 8]) db.items.insertOne({n})\ndb.items.countDocuments({n: {$gte: 7}})";
+    assert!(e.err("nosql_query", r(json!({"query": script}))).contains("nosql_execute"));
+    e.answer(&[Deny]);
+    let err = e.err("nosql_execute", w(json!({"query": script})));
+    assert!(err.contains("denied") && err.contains("a script"), "{err}");
+    assert_eq!(e.asked().len(), 1);
+    e.answer(&[Allow]);
+    let v = e.ok("nosql_execute", w(json!({"query": script})));
+    assert_eq!((v["value"].clone(), v["writes"].as_array().map(Vec::len)), (json!(2), Some(2)), "{v}");
+    let _ = e.asked();
+    let err = e.err("nosql_query", r(json!({"query": "const m = 'delete' + 'Many'\ndb.items[m]({n: 7})"})));
+    assert!(err.contains("refused: this call writes"), "{err}");
+    assert_eq!(e.ok("nosql_query", r(json!({"query": "db.items.countDocuments({n: 7})"})))["value"], 1);
+    assert!(e.err("nosql_execute", w(json!({"query": "db.items.find().forEach(d => db.items.deleteMany({}))"}))).contains("destructive"));
+    e.answer(&[Allow]);
+    let v = e.ok("nosql_execute", w(json!({"query": "db.items.deleteMany({n: {$gte: 7}}); 'done'"})));
+    assert_eq!(v["value"], "done", "{v}");
+    let _ = e.asked();
+
+    // The catalog: databases, collections, fields sampled, documents.
+    let v = e.ok("list_schemas", r(json!({})));
+    assert!(v["databases"]["rows"].as_array().unwrap().iter().any(|r| r[0] == "mcp_live"), "{v}");
+    let v = e.ok("list_tables", r(json!({})));
+    assert_eq!(v["rows"][0][1], "items", "{v}");
+    let v = e.ok("describe_table", r(json!({"table": "items"})));
+    assert_eq!(v["fields"][0][0], "_id", "{v}");
+    assert!(v["fields"].as_array().unwrap().iter().any(|f| f[0] == "seen" && f[1] == "bool"), "{v}");
+    assert!(v["indexes"].as_array().is_some_and(|i| !i.is_empty()), "{v}");
+    let v = e.ok("sample_rows", r(json!({"table": "items", "n": 2})));
+    assert_eq!(v["count"], 2, "{v}");
+    let v = e.ok("search_objects", r(json!({"pattern": "ITE"})));
+    assert!(v["rows"].as_array().unwrap().iter().any(|r| r[2] == "items"), "{v}");
+    assert!(e.err("get_ddl", r(json!({"object": "items"}))).contains("describe_table"));
+
+    // The audit line has the statement and the decision.
+    let audit = e.audit();
+    assert!(audit.iter().any(|l| l["tool"] == "nosql_execute" && l["approval"]["decision"] == "approved"), "{audit:?}");
+    e.answer(&[Allow]);
+    let _ = e.call("nosql_execute", f(json!({"query": "db.dropDatabase()"})));
+    leak(e);
+}
+
+#[test]
+fn search_tools() {
+    let (h, p) = addr("DATAMAN_ES", "127.0.0.1:9201");
+    if !up(&h, p) {
+        eprintln!("skipping: no Elasticsearch at {h}:{p}");
+        return;
+    }
+    use Answer::*;
+    let e = env();
+    let r = |x: Value| with("es", x);
+    let w = |x: Value| with("esw", x);
+    let f = |x: Value| with("esf", x);
+    let idx = format!("mcp_live_{}", std::process::id());
+    // Creating an index is destructive: full, after the user's Allow.
+    assert!(e.err("nosql_execute", w(json!({"query": format!("PUT /{idx}")}))).contains("destructive"));
+    e.answer(&[Allow]);
+    e.ok("nosql_execute", f(json!({"query": format!("PUT /{idx}")})));
+    let _ = e.asked();
+
+    // Write tier: documents within the row limit; a query over it waits for the user.
+    for i in 0..4 {
+        e.ok("nosql_execute", w(json!({"query": format!("PUT /{idx}/_doc/{i}?refresh=true\n{{\"n\": {i}, \"k\": \"a\"}}")})));
+    }
+    let v = e.ok("nosql_query", r(json!({"query": format!("GET /{idx}/_search\n{{\"sort\": [{{\"n\": \"asc\"}}]}}"), "max_rows": 3})));
+    assert_eq!((v["count"].clone(), v["total"].clone(), v["more"].clone(), v["documents"][0]["n"].clone()), (json!(3), json!(4), json!(true), json!(0)), "{v}");
+    let err = e.err("nosql_execute", w(json!({"query": format!("POST /{idx}/_delete_by_query?refresh=true\n{{\"query\": {{\"term\": {{\"k\": \"a\"}}}}}}")})));
+    assert!(err.contains("denied") && err.contains("4 rows (limit 3)"), "{err}");
+    let _ = e.asked();
+    assert!(e.err("nosql_execute", w(json!({"query": format!("POST /{idx}/_delete_by_query\n{{\"query\": {{\"match_all\": {{}}}}}}")}))).contains("destructive"));
+    assert!(e.err("nosql_query", r(json!({"query": format!("DELETE /{idx}/_doc/1")}))).contains("nosql_execute"));
+    // run_query hands the console's requests on too.
+    let v = e.ok("run_query", r(json!({"sql": format!("GET /{idx}/_count")})));
+    assert_eq!(v["value"]["count"], 4, "{v}");
+
+    // The catalog: the indices, the mapping's fields, documents.
+    let v = e.ok("list_tables", r(json!({})));
+    assert!(v["rows"].as_array().unwrap().iter().any(|x| x[1] == json!(idx)), "{v}");
+    let v = e.ok("describe_table", r(json!({"table": idx})));
+    assert!(v["fields"].as_array().unwrap().iter().any(|x| x[0] == "n" && x[1] == "long"), "{v}");
+    let v = e.ok("sample_rows", r(json!({"table": idx, "n": 2})));
+    assert_eq!(v["count"], 2, "{v}");
+
+    e.answer(&[Allow]);
+    e.ok("nosql_execute", f(json!({"query": format!("DELETE /{idx}")})));
+    leak(e);
+}
+
+#[test]
+fn redis_tools() {
+    let (h, p) = addr("DATAMAN_REDIS", "127.0.0.1:63790");
+    if !up(&h, p) {
+        eprintln!("skipping: no Redis at {h}:{p}");
+        return;
+    }
+    use Answer::*;
+    let e = env();
+    let r = |x: Value| with("rd", x);
+    let w = |x: Value| with("rdw", x);
+    let f = |x: Value| with("rdf", x);
+    // FLUSHDB is destructive: full, after the user's Allow.
+    assert!(e.err("nosql_execute", w(json!({"query": "FLUSHDB"}))).contains("destructive"));
+    e.answer(&[Allow]);
+    e.ok("nosql_execute", f(json!({"query": "FLUSHDB"})));
+    let _ = e.asked();
+    // Writes within the row limit; a DEL of more keys waits for the user.
+    assert!(e.err("nosql_execute", r(json!({"query": "SET a 1"}))).contains("reads only"));
+    e.ok("nosql_execute", w(json!({"query": "HSET user:1 name Ada age 36"})));
+    e.ok("nosql_execute", w(json!({"query": "MSET a 1 b 2 c 3"})));
+    let err = e.err("nosql_execute", w(json!({"query": "DEL a b c user:1"})));
+    assert!(err.contains("denied") && err.contains("4 rows (limit 3)"), "{err}");
+    let _ = e.asked();
+    assert!(e.err("nosql_query", r(json!({"query": "DEL a"}))).contains("nosql_execute"));
+    assert!(e.err("nosql_query", r(json!({"query": "SUBSCRIBE x"}))).contains("not supported"));
+    // Reads: a value, a hash's entries.
+    // A string's value is one entry; another read's reply is its value.
+    assert_eq!(e.ok("nosql_query", r(json!({"query": "GET b"})))["documents"][0]["value"], "2");
+    assert_eq!(e.ok("nosql_query", r(json!({"query": "STRLEN b"})))["value"], 1);
+    let v = e.ok("run_query", r(json!({"sql": "HGETALL user:1"})));
+    assert_eq!((v["count"].clone(), v["documents"][0]["field"].clone()), (json!(2), json!("name")), "{v}");
+    // The catalog: databases, keys with their types.
+    let v = e.ok("list_schemas", r(json!({})));
+    assert!(v["databases"]["rows"].as_array().unwrap().iter().any(|x| x[0] == "8"), "{v}");
+    let v = e.ok("list_tables", r(json!({})));
+    assert!(v["rows"].as_array().unwrap().iter().any(|x| x[1] == "user:1" && x[2] == "hash"), "{v}");
+    let v = e.ok("describe_table", r(json!({"table": "user:1"})));
+    assert_eq!((v["type"].clone(), v["view"].clone()), (json!("hash"), json!("HGETALL user:1")), "{v}");
+    let v = e.ok("sample_rows", r(json!({"table": "user:1", "n": 1})));
+    assert_eq!(v["count"], 1, "{v}");
+    e.answer(&[Allow]);
+    e.ok("nosql_execute", f(json!({"query": "FLUSHDB"})));
     leak(e);
 }

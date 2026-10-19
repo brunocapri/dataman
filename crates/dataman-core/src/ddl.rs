@@ -227,7 +227,7 @@ impl Connection {
             match this.engine() {
                 crate::config::Engine::MySql => this.show_create("TABLE", &db, &schema, &name).await,
                 crate::config::Engine::SqlServer => this.ms_table_ddl(&db, &schema, &name).await,
-                crate::config::Engine::Postgres => Ok(render(&this.table_def(&db, &schema, &name).await?)),
+                _ => Ok(render(&this.table_def(&db, &schema, &name).await?)),
             }
         })
     }

@@ -16,9 +16,12 @@
 //! variant. PostgreSQL (and LAR) is [`pg`], MySQL (and MariaDB) [`my`], SQL Server (and Azure
 //! SQL) [`ms`].
 
+pub(crate) mod mongo;
 pub(crate) mod ms;
 pub(crate) mod my;
 pub(crate) mod pg;
+pub(crate) mod redis;
+pub(crate) mod search;
 
 /// rustls picks the process' crypto provider: ring, for every engine (two providers are
 /// compiled in: tiberius names aws-lc-rs as its fallback).
@@ -115,6 +118,9 @@ impl Caps {
         privileges: false,
     };
 
+    /// An engine without SQL (`crate::nosql`): no schemas either.
+    pub const NONE: Caps = Caps { schemas: false, ..Caps::BASIC };
+
     pub fn of(engine: Engine) -> Caps {
         match engine {
             Engine::Postgres => Caps::POSTGRES,
@@ -131,6 +137,8 @@ impl Caps {
                 toggle_triggers: true,
                 ..Caps::BASIC
             },
+            // The engines of `nosql`: none of the SQL features.
+            Engine::MongoDb | Engine::Elasticsearch | Engine::OpenSearch | Engine::Redis => Caps::NONE,
         }
     }
 }
@@ -309,6 +317,11 @@ impl Canceller {
 // ---------------------------------------------------------------------------------------------
 // Connecting
 
+/// What a SQL path says on an engine without SQL (callers check `Engine::is_sql` first).
+fn no_sql(e: Engine) -> anyhow::Error {
+    anyhow!("{} has no SQL sessions", e.label())
+}
+
 /// A [`Dedicated`] client for the profile (through its SSH tunnel, if any), on `database` or the
 /// profile's own.
 pub(crate) async fn dedicated(p: &ConnectionProfile, password: Option<&str>, database: Option<&str>, tunnel: Option<&Tunnel>) -> Result<Dedicated> {
@@ -316,6 +329,7 @@ pub(crate) async fn dedicated(p: &ConnectionProfile, password: Option<&str>, dat
         Engine::Postgres => Ok(Dedicated::Pg(pg::connect_through(p, password, database, tunnel).await?)),
         Engine::MySql => Ok(Dedicated::My(my::connect(p, password, database, tunnel, None).await?)),
         Engine::SqlServer => Ok(Dedicated::Ms(ms::connect(p, password, database, tunnel, None).await?)),
+        e => Err(no_sql(e)),
     }
 }
 
@@ -341,6 +355,7 @@ pub(crate) async fn session(
             let c = ms::connect(p, password, database, tunnel, Some(watch)).await?;
             Ok((Db::Ms(c.clone()), Canceller::Ms(c.canceller())))
         }
+        e => Err(no_sql(e)),
     }
 }
 

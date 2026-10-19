@@ -221,6 +221,15 @@ pub struct QueryTab {
     /// The favorite this tab was opened from (or saved as): its id and name. The tab is titled
     /// with the name, and ⌘S saves the editor's text into it.
     pub favorite: Option<(String, SharedString)>,
+    /// On a document engine's connection (`nosql`): its results in the grid's place, the
+    /// editor in the engine's language.
+    pub doc: Option<Entity<crate::doc_view::DocPane>>,
+    /// What the editor's completions know on such a connection, and the fields asked for.
+    doc_hints: dataman_core::nosql::lang::Hints,
+    doc_fields_asked: HashSet<String>,
+    /// The document view's run: since when it runs, and the last one's total (the toolbar's
+    /// timer reads them without the view).
+    doc_run: (Option<Instant>, Option<Duration>),
 }
 
 impl EventEmitter<TabEvent> for QueryTab {}
@@ -314,6 +323,10 @@ impl QueryTab {
             zoomed: false,
             zoom_side: None,
             favorite: None,
+            doc: None,
+            doc_hints: Default::default(),
+            doc_fields_asked: HashSet::new(),
+            doc_run: (None, None),
         };
         t.set_connection(conn, cx);
         t
@@ -617,6 +630,9 @@ impl QueryTab {
     }
 
     pub fn is_running(&self) -> bool {
+        if self.doc.is_some() {
+            return self.doc_run.0.is_some();
+        }
         self.current.as_ref().is_some_and(|(rs, _)| !rs.phase().is_finished() && rs.phase() != Phase::Paused)
     }
 
@@ -638,6 +654,9 @@ impl QueryTab {
 
     /// Time since the current statement started (while it runs), or its total.
     pub fn elapsed(&self) -> Option<Duration> {
+        if self.doc.is_some() {
+            return self.doc_run.0.map(|at| at.elapsed()).or(self.doc_run.1);
+        }
         let (rs, _) = self.current.as_ref()?;
         let st = rs.status();
         match st.elapsed {
@@ -673,8 +692,99 @@ impl QueryTab {
             e.set_server(lar, cx);
             e.set_known(Arc::default(), cx);
         });
+        self.sync_doc(cx);
         self.refresh_schema(cx);
         cx.notify();
+    }
+
+    /// A document engine's connection gets the document view and the engine's language; any
+    /// other the editor's SQL and the grid.
+    fn sync_doc(&mut self, cx: &mut Context<Self>) {
+        let doc_conn = self.conn.clone().filter(|c| !c.engine().is_sql());
+        let engine = doc_conn.as_ref().map(|c| c.engine());
+        self.editor.update(cx, |e, cx| e.set_doc_lang(engine, cx));
+        self.doc_hints = Default::default();
+        self.doc_fields_asked.clear();
+        let Some(conn) = doc_conn else {
+            self.doc = None;
+            return;
+        };
+        let db = self.database().to_string();
+        let pane = cx.new(|cx| crate::doc_view::DocPane::new(conn, db, cx));
+        cx.subscribe(&pane, |t, pane, ev: &crate::doc_view::DocEvent, cx| {
+            use crate::doc_view::DocEvent;
+            match ev {
+                DocEvent::Use(db) => t.set_database(db.clone(), cx),
+                DocEvent::Finished => {
+                    let p = pane.read(cx);
+                    t.doc_run = (p.started(), p.elapsed());
+                    t.want_doc_fields(cx);
+                    cx.notify();
+                }
+                DocEvent::Failed { stmt, at, message } => {
+                    let d = Diagnostic { stmt: stmt.clone(), at: *at, message: message.clone().into() };
+                    t.editor.update(cx, |e, cx| e.set_diagnostic(Some(d), cx));
+                    cx.notify();
+                }
+            }
+        })
+        .detach();
+        self.doc = Some(pane);
+        self.load_doc_hints(cx);
+    }
+
+    /// The collections of the tab's database, for the editor's completions.
+    fn load_doc_hints(&mut self, cx: &mut Context<Self>) {
+        let Some(conn) = self.conn.clone().filter(|c| !c.engine().is_sql()) else { return };
+        let db = self.database().to_string();
+        let task = conn.nosql_tree(Some(&db));
+        cx.spawn(async move |this, cx| {
+            let Ok(items) = task.await else { return };
+            let _ = this.update(cx, |t, cx| {
+                if t.database() != db {
+                    return;
+                }
+                t.doc_hints.collections = items.into_iter().filter(|i| i.kind != dataman_core::nosql::ItemKind::Database).map(|i| i.name).collect();
+                t.push_doc_hints(cx);
+                t.want_doc_fields(cx);
+            });
+        })
+        .detach();
+    }
+
+    fn push_doc_hints(&mut self, cx: &mut Context<Self>) {
+        let hints = Arc::new(self.doc_hints.clone());
+        self.editor.update(cx, |e, _| e.set_doc_hints(hints));
+    }
+
+    /// The fields of the collections the editor's text names (sampled once each), for its
+    /// completions.
+    fn want_doc_fields(&mut self, cx: &mut Context<Self>) {
+        let Some(conn) = self.conn.clone().filter(|c| !c.engine().is_sql()) else { return };
+        let text = self.editor.read(cx).text().to_string();
+        let db = self.database().to_string();
+        let named: Vec<String> = self
+            .doc_hints
+            .collections
+            .iter()
+            .filter(|c| text.contains(&format!("db.{c}.")) || text.contains(&format!("/{c}/")) || text.contains(&format!("\"{c}\"")) || text.contains(&format!("'{c}'")))
+            .filter(|c| !self.doc_fields_asked.contains(*c))
+            .take(4)
+            .cloned()
+            .collect();
+        for coll in named {
+            self.doc_fields_asked.insert(coll.clone());
+            let task = conn.sample_fields(&db, &coll);
+            cx.spawn(async move |this, cx| {
+                let Ok(fields) = task.await else { return };
+                let _ = this.update(cx, |t, cx| {
+                    let f = fields.into_iter().map(|(p, types)| (p, types.join(" | "))).collect();
+                    t.doc_hints.fields.insert(coll, f);
+                    t.push_doc_hints(cx);
+                });
+            })
+            .detach();
+        }
     }
 
     /// Runs this tab's statements on another database of the same server.
@@ -686,8 +796,14 @@ impl QueryTab {
         // Autocomplete needs that database's schema too.
         let _ = conn.preload(&db);
         self.release_session();
-        self.database = Some(db);
+        self.database = Some(db.clone());
         self.schema_version = 0;
+        if let Some(doc) = &self.doc {
+            doc.update(cx, |d, cx| d.set_db(db, cx));
+            self.doc_hints = Default::default();
+            self.doc_fields_asked.clear();
+            self.load_doc_hints(cx);
+        }
         cx.notify();
     }
 
@@ -928,6 +1044,29 @@ impl QueryTab {
         self.follow(rs, cx);
     }
 
+    /// An agent's statement on a document engine, run on the agent's side: its text in the
+    /// editor, the document view showing it running until [`QueryTab::agent_doc_done`]. `false`
+    /// when this tab has no document view (not a document engine's).
+    pub fn show_agent_doc(&mut self, text: &str, title: Option<String>, cx: &mut Context<Self>) -> bool {
+        let Some(doc) = self.doc.clone() else { return false };
+        self.put_agent_text(text, title, cx);
+        self.agent_draft = false;
+        self.notice = None;
+        self.has_run = true;
+        self.editor.update(cx, |e, cx| e.set_diagnostic(None, cx));
+        doc.update(cx, |d, cx| d.show_pending(Stmt { at: 0, sql: text.to_string(), params: Vec::new(), rollback: false }, cx));
+        cx.notify();
+        true
+    }
+
+    /// What came of the agent's statement [`QueryTab::show_agent_doc`] shows.
+    pub fn agent_doc_done(&mut self, ran: Result<dataman_core::nosql::Ran, String>, cx: &mut Context<Self>) {
+        if let Some(doc) = self.doc.clone() {
+            doc.update(cx, |d, cx| d.show_done(ran, cx));
+        }
+        cx.notify();
+    }
+
     /// An agent's draft: its SQL in the editor (the caret at its end), nothing run, nothing of
     /// earlier runs left on screen (the result area is gone until the user runs it). The user's
     /// run is theirs like any other: the guard, their read-only setting, their history.
@@ -955,6 +1094,9 @@ impl QueryTab {
         });
         let (conn, db) = (self.conn.clone(), self.database().to_string());
         self.edit.update(cx, |e, cx| e.reset(conn, db, None, cx));
+        if let Some(doc) = self.doc.clone() {
+            doc.update(cx, |d, cx| d.clear(cx));
+        }
         self.sync_plan(cx);
         cx.notify();
     }
@@ -1021,6 +1163,14 @@ impl QueryTab {
 
     pub fn run_stmts(&mut self, stmts: Vec<Stmt>, cx: &mut Context<Self>) {
         if stmts.is_empty() {
+            return;
+        }
+        // A document engine: its own statements, its own results.
+        if let Some(doc) = self.doc.clone() {
+            self.has_run = true;
+            self.editor.update(cx, |e, cx| e.set_diagnostic(None, cx));
+            doc.update(cx, |d, cx| d.run(stmts, cx));
+            cx.notify();
             return;
         }
         self.guard_edits(move |t, cx| t.run_stmts_now(stmts, cx), cx);
@@ -1437,6 +1587,9 @@ impl QueryTab {
         // ⌘. also stops a table's count.
         self.stop_count(cx);
         self.queue.clear();
+        if let Some(doc) = self.doc.clone() {
+            doc.update(cx, |d, cx| d.cancel(cx));
+        }
         if let Some(s) = &self.session
             && self.current.as_ref().is_some_and(|(rs, _)| !rs.phase().is_finished())
         {

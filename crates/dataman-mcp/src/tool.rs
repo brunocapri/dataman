@@ -489,6 +489,16 @@ impl Call {
         }
     }
 
+    /// Asks the human in the app about an action the tier lets through only with an Allow
+    /// (a write over the row limit that cannot be held in a transaction): refused unless
+    /// allowed; the decision goes to the audit line.
+    pub async fn ask_human(&self, o: &Opened, sql: &str, reasons: Vec<String>, affected: Option<u64>, destructive: bool) -> Result<(), ToolError> {
+        let a = Approval { destructive, ..self.approval(o, sql, reasons.clone(), affected, None, None) };
+        let d = self.ask(a).await?;
+        self.note_decision(d, reasons.clone(), affected);
+        if d == Decision::Approved { Ok(()) } else { Err(refusal_of(d, &reasons, false)) }
+    }
+
     /// The tier's verdict on an action that cannot wait in a transaction (a signal, a write
     /// asked about before it runs): refused, allowed, or asked about now.
     pub async fn gate(&self, o: &Opened, class: &WriteClass, sql: &str, tab: Option<u64>) -> Result<(), ToolError> {

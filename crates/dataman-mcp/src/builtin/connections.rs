@@ -13,8 +13,8 @@ use crate::tool::{Args, BoxFut, Call, Schema, ToolError};
 /// The fields both tools take, after their own `name` / `connection` and `host` / `user`.
 fn fields(s: Schema, mcp: Value) -> Schema {
     s.prop("connection_string", false, json!({"type": "string", "description": "A full connection string (postgres://, mysql://, sqlserver:// URL, libpq key=value, ADO.NET); the fields given here override whatever it sets."}))
-        .prop("engine", false, json!({"type": "string", "enum": ["postgres", "lar", "mysql", "sql-server"], "description": "lar is the postgres wire protocol (default postgres)."}))
-        .prop("port", false, json!({"type": "integer", "minimum": 1, "maximum": 65535, "description": "Default: the engine's own (5432 / 3306 / 1433)."}))
+        .prop("engine", false, json!({"type": "string", "enum": ["postgres", "lar", "mysql", "sql-server", "mongodb", "elasticsearch", "opensearch", "redis"], "description": "lar is the postgres wire protocol (default postgres)."}))
+        .prop("port", false, json!({"type": "integer", "minimum": 1, "maximum": 65535, "description": "Default: the engine's own (5432 / 3306 / 1433 / 27017 / 9200 / 6379)."}))
         .prop("password", false, json!({"type": "string", "maxLength": 1000, "description": "Saved to the Keychain; never echoed back."}))
         .prop("database", false, json!({"type": "string", "description": "Default: the user's name (postgres), empty (mysql, sql-server)."}))
         .prop("sslmode", false, json!({"type": "string", "enum": ["disable", "prefer", "require", "verify-full"], "description": "Default prefer."}))
@@ -33,7 +33,7 @@ pub fn tools() -> Vec<Builtin> {
     vec![
         Builtin {
             name: "create_connection",
-            description: "Saves a new database connection, for every engine Dataman speaks (postgres, mysql, sql-server; lar is a postgres connection, recognized automatically once connected). Fields directly, or connection_string (a postgres://, mysql:// or sqlserver:// URL, a libpq key=value string, or an ADO.NET string); given fields win over whatever the string sets. A password goes to the macOS Keychain only, never into connections.toml, this tool's response, or a log. Refuses to replace a connection of the same name unless overwrite is true.",
+            description: "Saves a new database connection, for every engine Dataman speaks (postgres, mysql, sql-server, mongodb, elasticsearch, opensearch, redis; lar is a postgres connection, recognized automatically once connected). Fields directly, or connection_string (a postgres://, mysql://, sqlserver://, mongodb:// (+srv) or redis:// URL, a libpq key=value string, or an ADO.NET string); given fields win over whatever the string sets. A password goes to the macOS Keychain only, never into connections.toml, this tool's response, or a log. Refuses to replace a connection of the same name unless overwrite is true.",
             schema: fields(
                 Schema::new()
                     .prop("name", true, json!({"type": "string", "maxLength": 200, "description": "A short label; must be unique (case-insensitive) unless overwrite is true."}))
@@ -63,12 +63,7 @@ pub fn tools() -> Vec<Builtin> {
 }
 
 fn engine_of(s: &str) -> Result<Engine, ToolError> {
-    match s {
-        "postgres" | "lar" => Ok(Engine::Postgres),
-        "mysql" => Ok(Engine::MySql),
-        "sql-server" => Ok(Engine::SqlServer),
-        other => Err(ToolError::Invalid(format!("unknown engine {other:?}"))),
-    }
+    Engine::parse(s).ok_or_else(|| ToolError::Invalid(format!("unknown engine {s:?}")))
 }
 
 fn sslmode_of(s: &str) -> Result<SslMode, ToolError> {

@@ -1,9 +1,10 @@
 //! libpq connection strings: `postgres://` / `postgresql://` URLs and `key=value` strings, as
 //! pasted from elsewhere, MySQL's `mysql://` (`mariadb://`) URLs, and SQL Server's
 //! `sqlserver://` URLs (`user@host/db?encrypt=…` or JDBC's `host:port;databaseName=…`) and
-//! ADO.NET strings (`Server=tcp:host,1433;Database=…;User Id=…`). Only what a profile holds is
-//! kept (engine, host, port, user, database, password, sslmode); `service=` reads the service
-//! file first, as libpq does.
+//! ADO.NET strings (`Server=tcp:host,1433;Database=…;User Id=…`), MongoDB's `mongodb://` and
+//! `mongodb+srv://` URLs and Redis' `redis://` / `rediss://`. Only what a profile holds is kept
+//! (engine, host, port, user, database, password, sslmode, a driver's options); `service=` reads
+//! the service file first, as libpq does.
 
 use crate::config::{ConnectionProfile, Engine, SslMode};
 
@@ -22,6 +23,8 @@ pub struct ConnSpec {
     /// SQL Server's `Encrypt` and `TrustServerCertificate`, read together into the sslmode.
     pub encrypt: Option<String>,
     pub trust_cert: Option<bool>,
+    /// A driver's own options (MongoDB's `authSource`, `replicaSet`, `srv`).
+    pub options: std::collections::BTreeMap<String, String>,
 }
 
 impl ConnSpec {
@@ -100,6 +103,27 @@ impl ConnSpec {
         }
     }
 
+    /// Applies one option of a MongoDB URL: TLS into the sslmode, the driver's own kept.
+    pub fn set_mongo(&mut self, key: &str, value: &str) {
+        let yes = matches!(value.to_ascii_lowercase().as_str(), "true" | "1" | "yes");
+        match key {
+            "tls" | "ssl" => {
+                self.sslmode = Some(if !yes {
+                    SslMode::Disable
+                } else if self.sslmode == Some(SslMode::Require) {
+                    SslMode::Require
+                } else {
+                    SslMode::VerifyFull
+                })
+            }
+            "tlsAllowInvalidCertificates" | "tlsInsecure" if yes => self.sslmode = Some(SslMode::Require),
+            "authSource" | "replicaSet" | "authMechanism" | "directConnection" | "srv" => {
+                self.options.insert(key.to_string(), value.to_string());
+            }
+            _ => {}
+        }
+    }
+
     /// Fills what this spec left out from `other` (a service definition).
     pub fn or(mut self, other: ConnSpec) -> ConnSpec {
         self.host = self.host.or(other.host);
@@ -117,18 +141,19 @@ impl ConnSpec {
         let mssql_mode = self.mssql_sslmode();
         let mut p = ConnectionProfile::new("");
         p.engine = self.engine;
+        p.options = self.options.clone();
         p.host = self.host.unwrap_or_else(|| "localhost".into());
         p.port = self.port.unwrap_or(self.engine.default_port());
         match self.engine {
-            Engine::MySql | Engine::SqlServer => {
-                // `root` / `sa`, and the login's default database when the string does not say.
-                let user = if self.engine == Engine::MySql { "root" } else { "sa" };
-                p.user = self.user.filter(|u| !u.is_empty()).unwrap_or_else(|| user.into());
-                p.database = self.database.unwrap_or_default();
-            }
             Engine::Postgres => {
                 p.user = self.user.filter(|u| !u.is_empty()).unwrap_or_else(local_user);
                 p.database = self.database.filter(|d| !d.is_empty()).unwrap_or_else(|| p.user.clone());
+            }
+            _ => {
+                // `root` / `sa`, and the login's default database when the string does not say.
+                let user = self.engine.default_user();
+                p.user = self.user.filter(|u| !u.is_empty()).unwrap_or_else(|| user.into());
+                p.database = self.database.unwrap_or_default();
             }
         }
         if let Some(m) = self.sslmode.or(mssql_mode.filter(|_| self.engine == Engine::SqlServer)) {
@@ -168,7 +193,7 @@ pub fn parse(s: &str) -> Option<ConnSpec> {
         Some(rest) if !rest.starts_with("sqlserver://") => rest,
         _ => s,
     };
-    if s.starts_with("postgres://") || s.starts_with("postgresql://") || s.starts_with("mysql://") || s.starts_with("mariadb://") {
+    if ["postgres://", "postgresql://", "mysql://", "mariadb://", "mongodb://", "mongodb+srv://", "redis://", "rediss://"].iter().any(|p| s.starts_with(p)) {
         parse_url(s)
     } else if let Some(rest) = s.strip_prefix("sqlserver://").or_else(|| s.strip_prefix("jdbc:sqlserver://")) {
         parse_sqlserver(rest)
@@ -304,9 +329,15 @@ pub fn parse_profile(s: &str) -> Option<(ConnectionProfile, Option<String>)> {
 /// `postgresql://[user[:password]@][host][:port][,…][/dbname][?key=value&…]`, and the same
 /// shape with `mysql://` or `mariadb://`.
 pub fn parse_url(s: &str) -> Option<ConnSpec> {
-    let (engine, rest) = match s.strip_prefix("mysql://").or_else(|| s.strip_prefix("mariadb://")) {
-        Some(r) => (Engine::MySql, r),
-        None => (Engine::Postgres, s.strip_prefix("postgresql://").or_else(|| s.strip_prefix("postgres://"))?),
+    let (engine, rest) = if let Some(r) = s.strip_prefix("mongodb+srv://").or_else(|| s.strip_prefix("mongodb://")) {
+        (Engine::MongoDb, r)
+    } else if let Some(r) = s.strip_prefix("rediss://").or_else(|| s.strip_prefix("redis://")) {
+        (Engine::Redis, r)
+    } else {
+        match s.strip_prefix("mysql://").or_else(|| s.strip_prefix("mariadb://")) {
+            Some(r) => (Engine::MySql, r),
+            None => (Engine::Postgres, s.strip_prefix("postgresql://").or_else(|| s.strip_prefix("postgres://"))?),
+        }
     };
     // A password with an unencoded `/` or `?` hides the `@` from the authority: take the last
     // `@` when what comes before it reads as `user:password` (not `host:port`).
@@ -328,6 +359,14 @@ pub fn parse_url(s: &str) -> Option<ConnSpec> {
         (None, None) => (None, authority),
     };
     let mut spec = ConnSpec { engine, ..Default::default() };
+    if s.starts_with("mongodb+srv://") {
+        // A seed list in DNS: TLS on, verified, unless the string says otherwise.
+        spec.options.insert("srv".into(), "true".into());
+        spec.sslmode = Some(SslMode::VerifyFull);
+    }
+    if s.starts_with("rediss://") {
+        spec.sslmode = Some(SslMode::VerifyFull);
+    }
     if let Some(a) = auth {
         let (u, pw) = match a.split_once(':') {
             Some((u, pw)) => (u, Some(pw)),
@@ -340,8 +379,19 @@ pub fn parse_url(s: &str) -> Option<ConnSpec> {
             spec.password = Some(decode(pw)?);
         }
     }
-    // The first of a host list.
+    // The first of a host list (MongoDB keeps them all: its driver reads the list).
     let hostport = hosts.split(',').next().unwrap_or("");
+    if engine == Engine::MongoDb && hosts.contains(',') {
+        spec.host = Some(decode(hosts)?);
+        for kv in query.split('&').filter(|kv| !kv.is_empty()) {
+            let (k, v) = kv.split_once('=').unwrap_or((kv, ""));
+            spec.set_mongo(&decode(k)?, &decode(v)?);
+        }
+        if !path.is_empty() {
+            spec.database = Some(decode(path)?);
+        }
+        return Some(spec);
+    }
     let (host, port) = if let Some(r) = hostport.strip_prefix('[') {
         let (h, after) = r.split_once(']')?;
         (h.to_string(), after.strip_prefix(':'))
@@ -362,7 +412,11 @@ pub fn parse_url(s: &str) -> Option<ConnSpec> {
     }
     for kv in query.split('&').filter(|kv| !kv.is_empty()) {
         let (k, v) = kv.split_once('=').unwrap_or((kv, ""));
-        spec.set(&decode(k)?, &decode(v)?);
+        if engine == Engine::MongoDb {
+            spec.set_mongo(&decode(k)?, &decode(v)?);
+        } else {
+            spec.set(&decode(k)?, &decode(v)?);
+        }
     }
     Some(spec)
 }
@@ -612,5 +666,26 @@ mod tests {
         (q.host, q.port, q.user, q.database, q.sslmode) = ("::1".into(), 6000, "a@b".into(), "d b".into(), SslMode::VerifyFull);
         let (r, pw) = parse(&q.url()).unwrap().into_profile();
         assert_eq!((r.host, r.port, r.user, r.database, r.sslmode, pw), (q.host, q.port, q.user, q.database, q.sslmode, None));
+    }
+
+    #[test]
+    fn document_engine_urls() {
+        let (p, pw) = parse_profile("mongodb://app:s%3Fcret@db.example:27018/shop?authSource=admin&replicaSet=rs0&tls=true").unwrap();
+        assert_eq!((p.engine, p.host.as_str(), p.port, p.user.as_str(), p.database.as_str()), (Engine::MongoDb, "db.example", 27018, "app", "shop"));
+        assert_eq!(pw.as_deref(), Some("s?cret"));
+        assert_eq!(p.sslmode, SslMode::VerifyFull);
+        assert_eq!((p.options.get("authSource").map(String::as_str), p.options.get("replicaSet").map(String::as_str)), (Some("admin"), Some("rs0")));
+        assert_eq!(p.url(), "mongodb://app@db.example:27018/shop?authSource=admin&replicaSet=rs0&tls=true");
+        // A seed list in DNS: TLS by default, no port.
+        let (p, _) = parse_profile("mongodb+srv://u@cluster0.ab1.mongodb.net/?retryWrites=true").unwrap();
+        assert_eq!((p.host.as_str(), p.sslmode, p.options.get("srv").map(String::as_str)), ("cluster0.ab1.mongodb.net", SslMode::VerifyFull, Some("true")));
+        assert_eq!(p.url(), "mongodb+srv://u@cluster0.ab1.mongodb.net/");
+        // A replica set's host list stays whole.
+        let (p, _) = parse_profile("mongodb://a:27017,b:27017/app").unwrap();
+        assert_eq!((p.host.as_str(), p.database.as_str()), ("a:27017,b:27017", "app"));
+        let (p, pw) = parse_profile("rediss://:pw@cache:6380/2").unwrap();
+        assert_eq!((p.engine, p.host.as_str(), p.port, p.database.as_str(), p.sslmode), (Engine::Redis, "cache", 6380, "2", SslMode::VerifyFull));
+        assert_eq!(pw.as_deref(), Some("pw"));
+        assert_eq!(p.url(), "rediss://cache:6380/2");
     }
 }

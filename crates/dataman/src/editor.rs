@@ -25,7 +25,7 @@ use dataman_core::format::{FormatOptions, KeywordCase};
 use dataman_core::lint::{Lint, LintContext, Severity, lint};
 use dataman_core::schema::SchemaSnapshot;
 use dataman_core::sql::split::{split_tokens_in, statement_at_in};
-use dataman_core::sql::{Dialect, Token, TokenKind, batches_in, split_in, tokenize, tokenize_in};
+use dataman_core::sql::{Dialect, Token, TokenKind, split_in, tokenize, tokenize_in};
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::find::{self, Count, FindBar, FindBarEvent};
@@ -235,10 +235,24 @@ pub(crate) struct Buffer {
     tokens: Vec<Token>,
     /// What the text is lexed (and split) as: the connection's dialect.
     dialect: Dialect,
+    /// A document engine's language instead of SQL (`dataman_core::nosql::lang`).
+    doc: Option<dataman_core::Engine>,
     /// Bytes outside ASCII; zero makes UTF-16 conversions the identity.
     non_ascii: usize,
     /// Length in bytes of the longest line (bounds horizontal scrolling).
     longest: usize,
+}
+
+/// The tokens of `text`: SQL in `dialect`, or a document engine's language.
+fn lex(text: &str, dialect: Dialect, doc: Option<dataman_core::Engine>) -> Vec<Token> {
+    match doc {
+        Some(e) => dataman_core::nosql::lang::tokenize(e, text),
+        None => tokenize_in(text, dialect),
+    }
+}
+
+fn doc_statements(e: dataman_core::Engine, text: &str) -> Vec<dataman_core::sql::Statement> {
+    dataman_core::nosql::statements(e, text).into_iter().map(|r| dataman_core::sql::Statement { range: r.clone(), full: r }).collect()
 }
 
 fn count_non_ascii(s: &str) -> usize {
@@ -251,13 +265,18 @@ impl Buffer {
     }
 
     pub(crate) fn new_in(text: &str, dialect: Dialect) -> Self {
+        Self::new_lang(text, dialect, None)
+    }
+
+    pub(crate) fn new_lang(text: &str, dialect: Dialect, doc: Option<dataman_core::Engine>) -> Self {
         let mut lines = vec![0];
         lines.extend(text.match_indices('\n').map(|(i, _)| i + 1));
         let mut b = Buffer {
             text: text.to_string(),
             lines,
-            tokens: tokenize_in(text, dialect),
+            tokens: lex(text, dialect, doc),
             dialect,
+            doc,
             non_ascii: count_non_ascii(text),
             longest: 0,
         };
@@ -269,18 +288,38 @@ impl Buffer {
     pub(crate) fn set_dialect(&mut self, dialect: Dialect) {
         if self.dialect != dialect {
             self.dialect = dialect;
-            self.tokens = tokenize_in(&self.text, dialect);
+            self.tokens = lex(&self.text, dialect, self.doc);
         }
     }
 
-    /// The statements of the text (top-level `;`, the dialect's `DELIMITER`, T-SQL's `GO`).
+    /// Lexes the text again as a document engine's language (`None`: SQL).
+    pub(crate) fn set_doc(&mut self, doc: Option<dataman_core::Engine>) {
+        if self.doc != doc {
+            self.doc = doc;
+            self.tokens = lex(&self.text, self.dialect, doc);
+        }
+    }
+
+    /// The statements of the text (top-level `;`, the dialect's `DELIMITER`, T-SQL's `GO`; a
+    /// document engine's own).
     pub(crate) fn statements(&self) -> Vec<dataman_core::sql::Statement> {
+        if let Some(e) = self.doc {
+            return doc_statements(e, &self.text);
+        }
         split_tokens_in(&self.text, &self.tokens, self.dialect.script())
     }
 
     /// What a script runs as, one unit at a time: its statements, T-SQL's `GO` batches.
     pub(crate) fn batches(&self) -> Vec<dataman_core::sql::Statement> {
-        dataman_core::sql::batches_in(&self.text, self.dialect)
+        self.split(&self.text)
+    }
+
+    /// Some text's statements in the buffer's language (a selection's).
+    pub(crate) fn split(&self, text: &str) -> Vec<dataman_core::sql::Statement> {
+        match self.doc {
+            Some(e) => doc_statements(e, text),
+            None => dataman_core::sql::batches_in(text, self.dialect),
+        }
     }
 
     fn compute_longest(&self) -> usize {
@@ -342,7 +381,7 @@ impl Buffer {
                 end -= 1;
             }
             let complete = end == self.text.len();
-            let fresh = tokenize_in(&self.text[r..end], self.dialect);
+            let fresh = lex(&self.text[r..end], self.dialect, self.doc);
             // Without the rest of the text only tokens up to a terminated whitespace are certain.
             let valid = if complete {
                 fresh.len()
@@ -833,6 +872,8 @@ pub struct CodeEditor {
     lar: bool,
     /// Relations the tab's session created (temp tables), lower case.
     known: Arc<HashSet<String>>,
+    /// A document engine's completions: its collections and sampled fields.
+    doc_hints: Arc<dataman_core::nosql::lang::Hints>,
     /// A query tab's: the gutter as wide as its grid's row numbers (`grid::GutterShare`).
     gutter: Option<crate::grid::GutterShare>,
     _blur: Subscription,
@@ -1046,6 +1087,7 @@ impl CodeEditor {
             hover: None,
             lar: false,
             known: Arc::default(),
+            doc_hints: Arc::default(),
             gutter: None,
             _blur: blur,
             _focus: on_focus,
@@ -1069,7 +1111,7 @@ impl CodeEditor {
 
     /// Replaces the whole buffer; resets undo and puts the cursor at the end.
     pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
-        self.buf = Buffer::new_in(&normalize_newlines(text), self.buf.dialect);
+        self.buf = Buffer::new_lang(&normalize_newlines(text), self.buf.dialect, self.buf.doc);
         let end = self.buf.len();
         self.sel = end..end;
         self.reversed = false;
@@ -1110,6 +1152,31 @@ impl CodeEditor {
         cx.notify();
     }
 
+    /// The text is a document engine's language (`None`: SQL): its colors, statements and
+    /// completions; no SQL lint.
+    pub fn set_doc_lang(&mut self, engine: Option<dataman_core::Engine>, cx: &mut Context<Self>) {
+        if self.buf.doc == engine {
+            return;
+        }
+        self.buf.set_doc(engine);
+        self.rev += 1;
+        self.menu = None;
+        self.sig = None;
+        self.clear_lints();
+        self.schedule_lint(cx);
+        cx.notify();
+    }
+
+    /// The language the text is in (`None`: SQL).
+    pub fn doc_lang(&self) -> Option<dataman_core::Engine> {
+        self.buf.doc
+    }
+
+    /// What a document engine's completions know (collections, sampled fields).
+    pub fn set_doc_hints(&mut self, hints: Arc<dataman_core::nosql::lang::Hints>) {
+        self.doc_hints = hints;
+    }
+
     /// The server is LAR (the lint skips what its catalog does not list).
     pub fn set_server(&mut self, lar: bool, cx: &mut Context<Self>) {
         if self.lar != lar {
@@ -1143,7 +1210,7 @@ impl CodeEditor {
     /// Lints the buffer `LINT_DELAY` after the last change, on a background thread; a result
     /// for a text that changed since is dropped. Typing never waits for it.
     fn schedule_lint(&mut self, cx: &mut Context<Self>) {
-        if self.plain {
+        if self.plain || self.buf.doc.is_some() {
             return;
         }
         let rev = self.rev;
@@ -1226,7 +1293,7 @@ impl CodeEditor {
 
     /// The call around the cursor, from the buffer's own tokens (no re-lexing).
     fn update_signature(&mut self) {
-        self.sig = if self.plain || !self.sel.is_empty() || self.marked.is_some() || self.schema.catalog.is_none() {
+        self.sig = if self.plain || self.buf.doc.is_some() || !self.sel.is_empty() || self.marked.is_some() || self.schema.catalog.is_none() {
             None
         } else {
             signature_help(&self.buf.text, &self.buf.tokens, self.sel.end, &self.schema)
@@ -1236,7 +1303,7 @@ impl CodeEditor {
     /// ⌥⇧F: formats the selection, or the whole script, as one undo step. The cursor stays on
     /// the same character (counting all but whitespace); a selection keeps covering the text.
     pub fn format_sql(&mut self, cx: &mut Context<Self>) {
-        if self.plain {
+        if self.plain || self.buf.doc.is_some() {
             return;
         }
         let range = if self.sel.is_empty() { 0..self.buf.len() } else { self.sel.clone() };
@@ -1281,7 +1348,7 @@ impl CodeEditor {
 
     /// What the name at `offset` refers to (a CTE's range in buffer offsets).
     fn definition_here(&self, offset: usize) -> Option<Definition> {
-        if self.plain {
+        if self.plain || self.buf.doc.is_some() {
             return None;
         }
         let w = self.completion_window(offset);
@@ -1474,6 +1541,17 @@ impl CodeEditor {
         self.history.seal();
         self.replace(r, with, EditKind::Other, cx);
         self.history.seal();
+    }
+
+    /// Checks: the completion popup's labels, in order (empty when it is shut).
+    pub fn demo_completions(&self) -> Vec<String> {
+        self.menu.as_ref().map(|m| m.items.iter().map(|c| c.label.clone()).collect()).unwrap_or_default()
+    }
+
+    /// Checks: ⌃Space at the cursor.
+    pub fn demo_show_completions(&mut self, cx: &mut Context<Self>) {
+        self.refresh_menu(true);
+        cx.notify();
     }
 
     pub fn completion_visible(&self) -> bool {
@@ -2273,7 +2351,7 @@ impl CodeEditor {
             }
             (at, 0)
         } else {
-            (batches_in(&text[self.sel.clone()], self.buf.dialect), self.sel.start)
+            (self.buf.split(&text[self.sel.clone()]), self.sel.start)
         };
         self.emit_run(stmts.iter().map(|s| base + s.range.start..base + s.range.end).collect(), false, cx);
     }
@@ -2305,9 +2383,21 @@ impl CodeEditor {
     /// buffer (T-SQL: every batch).
     pub fn run_script(&mut self, cx: &mut Context<Self>) {
         self.menu = None;
+        // A document engine's statements each show a result of their own: ⌘↩ runs the one
+        // under the cursor (or the selection's), as its shell does.
+        if self.buf.doc.is_some() {
+            let stmts = if self.sel.is_empty() {
+                statement_at_in(self.buf.text(), &self.buf.statements(), self.sel.start).into_iter().map(|s| s.range).collect()
+            } else {
+                let base = self.sel.start;
+                self.buf.split(&self.buf.text()[self.sel.clone()]).into_iter().map(|s| base + s.range.start..base + s.range.end).collect()
+            };
+            self.emit_run(stmts, true, cx);
+            return;
+        }
         if !self.sel.is_empty() {
             let base = self.sel.start;
-            let stmts = batches_in(&self.buf.text()[self.sel.clone()], self.buf.dialect);
+            let stmts = self.buf.split(&self.buf.text()[self.sel.clone()]);
             self.emit_run(stmts.iter().map(|s| base + s.range.start..base + s.range.end).collect(), true, cx);
             return;
         }
@@ -2363,8 +2453,15 @@ impl CodeEditor {
             return;
         }
         let cursor = self.sel.end;
-        let w = self.completion_window(cursor);
-        let c = complete(&self.buf.text[w.clone()], cursor - w.start, &self.schema);
+        // A document engine's statement needs its whole text (its brackets span lines).
+        let (w, c) = match self.buf.doc {
+            Some(e) => (0..self.buf.len(), dataman_core::nosql::lang::complete(e, &self.buf.text, cursor, &self.doc_hints)),
+            None => {
+                let w = self.completion_window(cursor);
+                let c = complete(&self.buf.text[w.clone()], cursor - w.start, &self.schema);
+                (w, c)
+            }
+        };
         let replace = w.start + c.replace.start..w.start + c.replace.end;
         let after_dot = self.buf.text[..replace.start].ends_with('.');
         let partial = &self.buf.text[replace.clone()];

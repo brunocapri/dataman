@@ -124,6 +124,14 @@ impl Front for AppFront {
         crate::agent::write_done(self, tab, sql, shown)
     }
 
+    fn show_doc(&self, w: dataman_mcp::TabWrite) -> futures_util::future::BoxFuture<'static, Option<u64>> {
+        crate::agent::show_doc(self, w)
+    }
+
+    fn doc_done(&self, tab: u64, ran: Result<dataman_core::nosql::Ran, String>) {
+        crate::agent::doc_done(self, tab, ran)
+    }
+
     fn draft(&self, d: dataman_mcp::TabDraft) -> futures_util::future::BoxFuture<'static, Result<dataman_mcp::Drafted, String>> {
         crate::agent::draft(self, d)
     }
@@ -613,7 +621,8 @@ impl Workspace {
             s.profile(c).or_else(|| s.profiles.iter().find(|p| p.name == c)).map(|p| p.id.clone())
         });
         let conn = id.as_deref().and_then(|id| self.store.read(cx).connection(id));
-        let text = format!("{};", sql.trim_end().trim_end_matches(';'));
+        let engine = id.as_deref().and_then(|id| self.store.read(cx).profile(id)).map(|p| p.engine);
+        let text = crate::app::statement_text(sql, engine);
         let database = database.map(str::to_string);
         let tab = self.new_tab(window, cx);
         tab.update(cx, |t, cx| {

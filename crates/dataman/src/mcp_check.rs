@@ -132,7 +132,7 @@ pub async fn run_conns(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> b
 // The stdio helper's side of the socket
 
 /// The app's config directory, where `app.sock` and `app.key` are.
-struct Ipc {
+pub(crate) struct Ipc {
     dirs: dataman_core::Dirs,
 }
 
@@ -158,7 +158,7 @@ impl Ipc {
 }
 
 /// A tool call on a thread of its own; the answer when it comes.
-fn start(ipc: &Arc<Ipc>, name: &'static str, args: Value) -> tokio::sync::oneshot::Receiver<(bool, String)> {
+pub(crate) fn start(ipc: &Arc<Ipc>, name: &'static str, args: Value) -> tokio::sync::oneshot::Receiver<(bool, String)> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     let ipc = ipc.clone();
     std::thread::spawn(move || {
@@ -168,7 +168,7 @@ fn start(ipc: &Arc<Ipc>, name: &'static str, args: Value) -> tokio::sync::onesho
     rx
 }
 
-async fn call(ipc: &Arc<Ipc>, name: &'static str, args: Value) -> (bool, String) {
+pub(crate) async fn call(ipc: &Arc<Ipc>, name: &'static str, args: Value) -> (bool, String) {
     start(ipc, name, args).await.unwrap_or((true, "the call thread went away".into()))
 }
 
@@ -230,7 +230,7 @@ async fn settled(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) {
 }
 
 /// The waiting question, once it shows (up to 10 s).
-async fn sheet(cx: &mut AsyncWindowContext) -> Option<dataman_mcp::Approval> {
+pub(crate) async fn sheet(cx: &mut AsyncWindowContext) -> Option<dataman_mcp::Approval> {
     for _ in 0..200 {
         let p = cx.update(|_, cx| cx.try_global::<crate::mcp::McpHost>().and_then(|h| h.pending.front().map(|p| p.req.clone()))).ok().flatten();
         if p.is_some() {
@@ -243,7 +243,7 @@ async fn sheet(cx: &mut AsyncWindowContext) -> Option<dataman_mcp::Approval> {
 }
 
 /// Clicks the sheet's Deny (`false`) or Allow.
-fn answer(ws: &Entity<Workspace>, allow: bool, cx: &mut AsyncWindowContext) -> bool {
+pub(crate) fn answer(ws: &Entity<Workspace>, allow: bool, cx: &mut AsyncWindowContext) -> bool {
     draw(cx);
     let b = cx.update(|_, cx| ws.read(cx).mcp_buttons.borrow().get(if allow { 1 } else { 0 }).copied()).ok().flatten();
     let Some(b) = b else { return false };
@@ -381,7 +381,7 @@ async fn advanced_options(ws: &Entity<Workspace>, ipc: &Arc<Ipc>, id: &str, conn
 }
 
 /// Opens the app's socket with the connection on tier full; the client.
-async fn serve(ws: &Entity<Workspace>, id: &str, cx: &mut AsyncWindowContext) -> Option<Arc<Ipc>> {
+pub(crate) async fn serve(ws: &Entity<Workspace>, id: &str, cx: &mut AsyncWindowContext) -> Option<Arc<Ipc>> {
     let core = cx.update(|_, cx| ws.read(cx).store.read(cx).core.clone()).ok()?;
     let mut p = core.config.get(id)?;
     p.mcp = Some(dataman_core::McpAccess::Full);

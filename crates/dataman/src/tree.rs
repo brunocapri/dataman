@@ -110,6 +110,8 @@ pub fn bind_keys(cx: &mut App) {
 pub enum TreeEvent {
     /// Double-click (or ↩) on a table or view.
     OpenRelation { conn: String, db: String, schema: String, name: String },
+    /// Double-click (or ↩) on a document engine's collection: its documents in a new tab.
+    OpenCollection { conn: String, db: String, coll: String },
     /// The selected connection changed.
     Selected(String),
     /// Edit a connection (⌘I, or double-click on one that failed).
@@ -203,6 +205,10 @@ enum Kind {
     Index { name: String, definition: Option<String> },
     /// A function, sequence, type, enum label, trigger, constraint, extension or role.
     Object { conn: String, db: String, schema: String, name: String, what: Obj },
+    /// A document engine's database (MongoDB's): its collections below it.
+    DocDb { conn: String, db: String },
+    /// A collection (or view) of documents.
+    Coll { conn: String, db: String, name: String },
     /// A failed load: clicking retries the node `retry`.
     Error { retry: String },
     Leaf,
@@ -254,6 +260,8 @@ struct Row {
     lar: bool,
     /// A connection through an SSH tunnel (a small glyph after the name).
     tunnel: bool,
+    /// A connection's engine: its logo before the name (when logos are on).
+    logo: Option<dataman_core::Engine>,
     /// A read-only database (a small lock after the name).
     lock: bool,
     meta: SharedString,
@@ -281,6 +289,7 @@ impl Row {
             tip: None,
             lar: false,
             tunnel: false,
+            logo: None,
             lock: false,
             meta: SharedString::default(),
             meta_short: None,
@@ -655,6 +664,7 @@ impl SchemaTree {
         }
         r.lar = lar;
         r.tunnel = p.ssh.is_some();
+        r.logo = Some(p.engine);
         r
     }
 
@@ -669,6 +679,7 @@ impl SchemaTree {
                 continue;
             }
             match state {
+                Some(ConnState::Connected(c)) if !c.engine().is_sql() => self.push_docs(rows, &p.id, c, t),
                 Some(ConnState::Connected(c)) => {
                     self.push_pinned(rows, &p.id, c, &store.core.pins.of(&p.id), t);
                     self.push_conn(rows, &p.id, c, t);
@@ -697,6 +708,42 @@ impl SchemaTree {
         };
         for p in &store.profiles {
             let Some(ConnState::Connected(conn)) = store.states.get(&p.id) else { continue };
+            // A document engine: its collections (indices, keys) as last read, under their
+            // database.
+            if !conn.engine().is_sql() {
+                let c = p.id.as_str();
+                let mut block = Vec::new();
+                let top = conn.cached_tree(None).unwrap_or_default();
+                let mut hit_rows = |db: &str, items: &[dataman_core::nosql::Item], depth: usize, block: &mut Vec<Row>| -> usize {
+                    let mut n = 0;
+                    for x in items.iter().filter(|i| i.kind != dataman_core::nosql::ItemKind::Database) {
+                        if let Some(m) = find(&x.name, &mut names) {
+                            let mut row = coll_row(c, db, x, depth);
+                            row.hl = Some(m);
+                            block.push(row);
+                            n += 1;
+                        }
+                    }
+                    n
+                };
+                matches += hit_rows(conn.database(), &top, 1, &mut block);
+                for db in top.iter().filter(|i| i.kind == dataman_core::nosql::ItemKind::Database) {
+                    let Some(items) = conn.cached_tree(Some(&db.name)) else { continue };
+                    let mut db_block = Vec::new();
+                    let n = hit_rows(&db.name, &items, 2, &mut db_block);
+                    if n > 0 {
+                        matches += n;
+                        let label = if conn.engine() == dataman_core::Engine::Redis { format!("db{}", db.name) } else { db.name.clone() };
+                        block.push(Row::new(did(c, &db.name), 1, label, Kind::DocDb { conn: c.into(), db: db.name.clone() }).icon(Icon::Database).expandable(true));
+                        block.extend(db_block);
+                    }
+                }
+                if !block.is_empty() {
+                    rows.push(self.conn_row(p, store.states.get(&p.id), true, t));
+                    rows.extend(block);
+                }
+                continue;
+            }
             let cache = &conn.schema;
             let c = p.id.as_str();
             // MySQL: no schema rows; a database's objects one level up.
@@ -841,6 +888,46 @@ impl SchemaTree {
             rows.push(row);
             if open && found {
                 self.push_rel(rows, &id, c, &p.database, &p.schema, &p.name, conn, t, 3);
+            }
+        }
+    }
+
+    /// A document engine's connection: its databases and their collections (MongoDB), as last
+    /// read from the server.
+    fn push_docs(&self, rows: &mut Vec<Row>, c: &str, conn: &Arc<Connection>, t: &Theme) {
+        let id = cid(c);
+        let Some(items) = conn.cached_tree(None) else {
+            if !self.push_status(rows, &id, 1, t) {
+                rows.push(loading_row(&id, 1));
+            }
+            return;
+        };
+        for it in items.iter() {
+            match it.kind {
+                dataman_core::nosql::ItemKind::Database => {
+                    let d = did(c, &it.name);
+                    let open = self.expanded.contains(&d);
+                    // Redis' databases are numbers: `db0`, as its INFO says.
+                    let label = if conn.engine() == dataman_core::Engine::Redis { format!("db{}", it.name) } else { it.name.clone() };
+                    let mut row = Row::new(d.clone(), 1, label, Kind::DocDb { conn: c.into(), db: it.name.clone() })
+                        .icon(Icon::Database)
+                        .lock(conn.read_only_for(&it.name))
+                        .expandable(open);
+                    if let Some(s) = it.size.filter(|s| *s > 0) {
+                        row = row.meta(human_size(s as i64), Meta::Plain);
+                    } else if let Some(n) = it.count.filter(|_| conn.engine() == dataman_core::Engine::Redis) {
+                        row = row.meta(format!("{} keys", approx_count(n as f64)), Meta::Plain);
+                    }
+                    rows.push(row);
+                    if !open || self.push_status(rows, &d, 2, t) {
+                        continue;
+                    }
+                    match conn.cached_tree(Some(&it.name)) {
+                        Some(colls) => rows.extend(colls.iter().map(|x| coll_row(c, &it.name, x, 2))),
+                        None => rows.push(loading_row(&d, 2)),
+                    }
+                }
+                _ => rows.push(coll_row(c, conn.database(), it, 1)),
             }
         }
     }
@@ -1169,7 +1256,8 @@ impl SchemaTree {
             if !self.expanded.contains(&id) || self.loading.contains(&id) || self.errors.contains_key(&id) {
                 continue;
             }
-            if self.conn(&c, cx).is_some_and(|conn| conn.schema.cached_databases().is_none()) {
+            let unread = |conn: &Arc<Connection>| if conn.engine().is_sql() { conn.schema.cached_databases().is_none() } else { conn.cached_tree(None).is_none() };
+            if self.conn(&c, cx).is_some_and(|conn| unread(&conn)) {
                 self.load(&id, &Kind::Conn { id: c.clone() }, cx);
             }
         }
@@ -1287,6 +1375,18 @@ impl SchemaTree {
         Some((r.label.to_string(), r.chip_dim, r.tip.as_ref().map(|t| t.to_string()), err))
     }
 
+    /// Checks: the engine whose logo a connection's row shows.
+    pub fn demo_logo(&self, conn_id: &str) -> Option<dataman_core::Engine> {
+        let id = cid(conn_id);
+        self.rows.iter().find(|r| r.id.as_ref() == id)?.logo
+    }
+
+    /// Checks: the labels of the rows under a node (its id's prefix), in order.
+    pub fn demo_children(&self, id: &str) -> Vec<String> {
+        let prefix = format!("{id}/");
+        self.rows.iter().filter(|r| r.id.starts_with(&prefix)).map(|r| r.label.to_string()).collect()
+    }
+
     /// Checks: where a connection's row is (window coordinates), once painted.
     pub fn demo_conn_bounds(&self, conn_id: &str) -> Option<gpui::Bounds<gpui::Pixels>> {
         self.conn_bounds.borrow().get(cid(conn_id).as_str()).copied()
@@ -1311,6 +1411,16 @@ impl SchemaTree {
 
     fn load(&mut self, id: &str, kind: &Kind, cx: &mut Context<Self>) {
         let task: Option<Load> = match kind {
+            // A document engine: its databases, the connection's own opened right away.
+            Kind::Conn { id: c } if self.conn(c, cx).is_some_and(|x| !x.engine().is_sql()) => {
+                let conn = self.conn(c, cx).expect("connected");
+                let db = conn.database().to_string();
+                let d = did(c, &db);
+                self.expanded.insert(d.clone());
+                self.load(&d, &Kind::DocDb { conn: c.clone(), db: db.clone() }, cx);
+                Some(unit(conn.nosql_tree(None)))
+            }
+            Kind::DocDb { conn, db } => self.conn(conn, cx).map(|c| unit(c.nosql_tree(Some(db)))),
             Kind::Conn { id: c } => {
                 let store = self.store.clone();
                 match self.conn(c, cx) {
@@ -1363,7 +1473,7 @@ impl SchemaTree {
             Kind::Columns { conn, db, schema, name } => self.conn(conn, cx).map(|c| unit(c.columns(db, schema, name))),
             Kind::Indexes { conn, db, schema, name } => self.conn(conn, cx).map(|c| unit(c.indexes(db, schema, name))),
             Kind::TableSub { conn, db, schema, name, .. } => self.conn(conn, cx).map(|c| unit(c.table_extras(db, schema, name))),
-            Kind::Pinned { .. } | Kind::RelRef { .. } | Kind::Object { .. } | Kind::Column { .. } | Kind::Index { .. } | Kind::Error { .. } | Kind::Leaf => None,
+            Kind::Pinned { .. } | Kind::RelRef { .. } | Kind::Object { .. } | Kind::Column { .. } | Kind::Index { .. } | Kind::Coll { .. } | Kind::Error { .. } | Kind::Leaf => None,
         };
         let Some(task) = task else { return };
         let id = id.to_string();
@@ -1394,6 +1504,7 @@ impl SchemaTree {
     fn refresh_conn(&mut self, id: String, cx: &mut Context<Self>) {
         let Some(c) = self.conn(&id, cx) else { return };
         c.schema.invalidate(None);
+        c.forget_tree();
         let root = cid(&id);
         self.collapse_below(&root);
         self.expanded.insert(root.clone());
@@ -1481,8 +1592,13 @@ impl SchemaTree {
                     }
                 }
             }
+            Kind::DocDb { conn, db } => {
+                let id = did(conn, db);
+                self.expanded.insert(id.clone());
+                self.load(&id, &row.kind, cx);
+            }
             Kind::Error { retry } => return self.retry(retry.clone(), cx),
-            Kind::Column { .. } | Kind::Index { .. } | Kind::RelRef { .. } | Kind::Object { .. } | Kind::Leaf => {
+            Kind::Column { .. } | Kind::Index { .. } | Kind::RelRef { .. } | Kind::Object { .. } | Kind::Coll { .. } | Kind::Leaf => {
                 if let Some(p) = (0..ix).rev().find(|&i| self.rows[i].depth < row.depth) {
                     self.reload_row(p, cx);
                 }
@@ -1501,6 +1617,11 @@ impl SchemaTree {
             Kind::Rel { conn, db, schema, name, .. } | Kind::RelRef { conn, db, schema, name } => {
                 self.selected = Some(row.id.clone());
                 cx.emit(TreeEvent::OpenRelation { conn, db, schema, name });
+                cx.notify();
+            }
+            Kind::Coll { conn, db, name } => {
+                self.selected = Some(row.id.clone());
+                cx.emit(TreeEvent::OpenCollection { conn, db, coll: name });
                 cx.notify();
             }
             Kind::Object { .. } if !row.expandable => {
@@ -1597,6 +1718,8 @@ impl SchemaTree {
             }
             Kind::Column { name } => Target::Column { name: name.clone() },
             Kind::Index { name, definition } => Target::Index { name: name.clone(), definition: definition.clone() },
+            Kind::DocDb { conn, db } => Target::DocDb { conn: conn.clone(), db: db.clone(), ro: ro(conn, db) },
+            Kind::Coll { conn, db, name } => Target::Coll { conn: conn.clone(), db: db.clone(), name: name.clone() },
             Kind::Error { .. } => Target::Error,
             Kind::Leaf => return None,
         })
@@ -1607,6 +1730,7 @@ impl SchemaTree {
         let id = match t {
             Target::Conn { id, .. } => Some(id),
             Target::Db { conn, .. } | Target::Schema { conn, .. } | Target::Rel { conn, .. } | Target::Object { conn, .. } => Some(conn),
+            Target::DocDb { conn, .. } | Target::Coll { conn, .. } => Some(conn),
             _ => None,
         };
         let store = self.store.read(cx);
@@ -1827,7 +1951,8 @@ impl SchemaTree {
             }
             (Act::CopyName, t) => {
                 let name = match t {
-                    Target::Db { db, .. } => db.clone(),
+                    Target::Db { db, .. } | Target::DocDb { db, .. } => db.clone(),
+                    Target::Coll { name, .. } => name.clone(),
                     Target::Schema { schema, .. } => schema.clone(),
                     Target::Rel { name, .. } | Target::Column { name } | Target::Index { name, .. } | Target::Object { name, .. } => name.clone(),
                     _ => return,
@@ -2315,6 +2440,7 @@ impl SchemaTree {
             .child(div().w(px(10.)).flex_none().flex().justify_center().children(chevron))
             .when_some(r.tip.clone(), |d, tip| d.tooltip(ui::text_tooltip(tip)))
             .children(r.chip.map(|c| div().mx(px(3.)).when(r.chip_dim, |d| d.opacity(0.45)).child(ui::chip(c, 8.))))
+            .children(r.logo.and_then(|e| crate::assets::small_logo(e, 13.)).map(|l| l.when(r.chip_dim, |d| d.opacity(0.5))))
             .children(r.icon.filter(|_| r.chip.is_none()).map(|(i, c)| {
                 let c = c.unwrap_or(t.tx3);
                 if i != Icon::Schema {
@@ -2625,6 +2751,27 @@ fn menu_row(
         .children(disabled.or(key).map(|k| div().flex_none().text_size(px(11.)).text_color(key_fg).child(k)))
         .when(checked, |d| d.child(icon(Icon::Check).flex_none().size(px(12.)).text_color(if on { t.on_acc } else { t.tx2 })))
         .when(sub, |d| d.child(icon(Icon::ChevronRight).size(px(10.)).text_color(key_fg)))
+}
+
+/// A collection (a view in italics), with its estimated count; a Redis key with its type.
+fn coll_row(c: &str, db: &str, x: &dataman_core::nosql::Item, depth: usize) -> Row {
+    let view = x.kind == dataman_core::nosql::ItemKind::View;
+    let icon = match (&x.note, view) {
+        (Some(_), _) => Icon::Key,
+        (None, true) => Icon::View,
+        (None, false) => Icon::Collection,
+    };
+    let mut r = Row::new(format!("{}/k:{}", did(c, db), x.name), depth, x.name.clone(), Kind::Coll { conn: c.into(), db: db.into(), name: x.name.clone() }).icon(icon);
+    if let Some(n) = x.count {
+        r = r.meta(approx_count(n as f64), Meta::Plain);
+    }
+    if let Some(t) = &x.note {
+        r = r.meta(t.clone(), Meta::Plain);
+    }
+    if x.name.starts_with("system.") {
+        r = r.tone(Tone::Muted);
+    }
+    r
 }
 
 fn loading_row(id: &str, depth: usize) -> Row {

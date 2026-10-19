@@ -354,7 +354,7 @@ impl Connection {
                 "SELECT SUM(p.rows) FROM sys.partitions p WHERE p.object_id = {} AND p.index_id IN (0, 1)",
                 ms::object_id(schema, table)
             )),
-            Engine::Postgres => None,
+            _ => None,
         };
         self.spawn(async move {
             let client = this.meta(&db).await?;
@@ -409,7 +409,7 @@ impl Connection {
                   WHERE i.object_id = {} AND i.is_primary_key = 1 AND ic.is_included_column = 0 ORDER BY ic.key_ordinal",
                 ms::object_id(schema, table)
             )),
-            Engine::Postgres => None,
+            _ => None,
         };
         if let Some(q) = other {
             return self.spawn(async move {

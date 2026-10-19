@@ -1,4 +1,5 @@
-//! Dataman: a native PostgreSQL client, with extra panels for LAR servers.
+//! Dataman: a native database client (PostgreSQL, MySQL, SQL Server; MongoDB, Elasticsearch,
+//! OpenSearch and Redis as documents), with extra panels for LAR servers.
 
 mod activity;
 mod activity_demo;
@@ -12,6 +13,7 @@ mod conns;
 mod crash_ui;
 mod data_import;
 mod dnd;
+mod doc_view;
 mod dock;
 mod dock_check;
 mod dock_icon;
@@ -47,6 +49,7 @@ mod nav;
 mod nav_check;
 mod insert_check;
 mod newuser_check;
+mod nosql_check;
 mod notify;
 mod palette;
 mod panels;
@@ -363,6 +366,7 @@ fn main() {
         dataman_core::result::set_prefetch(prefs.prefetch_rows);
         // Reduce motion: the setting, or macOS's accessibility switch (re-read on activation).
         motion::set_reduce_motion_pref(prefs.reduce_motion, cx);
+        assets::set_logos(prefs.db_logos);
         cx.set_global(panels::PanelRegistry::default());
         cx.set_global(restore::Sessions(session_dir.clone().map(|d| Arc::new(dataman_core::session::SessionStore::new(d)))));
         // LAR's panels: live queries.

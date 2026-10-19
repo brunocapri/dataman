@@ -256,6 +256,23 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
             .detach();
         return;
     }
+    // A MongoDB connection beside PostgreSQL (it connects both itself).
+    if crate::nosql_check::is_stage(&stage) {
+        window
+            .spawn(cx, async move |cx| {
+                if crate::nosql_check::is_demo(&stage) {
+                    crate::nosql_check::demo(&ws, &stage, cx).await;
+                    return;
+                }
+                let ok = crate::nosql_check::run(&ws, cx).await;
+                let _ = cx.update(|_, cx| cx.quit());
+                if !ok {
+                    std::process::exit(1);
+                }
+            })
+            .detach();
+        return;
+    }
     if stage == "conns-check" {
         window
             .spawn(cx, async move |cx| {

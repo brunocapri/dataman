@@ -4,6 +4,7 @@ mod activity;
 mod catalog;
 mod connections;
 mod favorites;
+mod nosql;
 mod query;
 
 use dataman_core::bounded;
@@ -44,7 +45,7 @@ impl Tool for Builtin {
 }
 
 pub fn register(r: &mut Registry) {
-    for t in catalog::tools().into_iter().chain(query::tools()).chain(activity::tools()).chain(favorites::tools()).chain(connections::tools()) {
+    for t in catalog::tools().into_iter().chain(query::tools()).chain(activity::tools()).chain(favorites::tools()).chain(connections::tools()).chain(nosql::tools()) {
         r.register(std::sync::Arc::new(t));
     }
 }
@@ -194,7 +195,7 @@ mod tests {
         for want in [
             "list_connections", "list_schemas", "list_tables", "search_objects", "describe_table", "get_ddl", "sample_rows", "run_query",
             "open_query", "explain", "explain_analyze", "execute", "activity_sessions", "activity_locks", "cancel_backend", "terminate_backend",
-            "list_favorites", "run_favorite", "create_connection", "update_connection",
+            "list_favorites", "run_favorite", "create_connection", "update_connection", "nosql_query", "nosql_execute",
         ] {
             assert!(names.contains(&want), "{want} missing from {names:?}");
         }

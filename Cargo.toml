@@ -1,5 +1,5 @@
 # Dataman: a native database client for PostgreSQL, MySQL/MariaDB and SQL Server (with extra
-# panels for LAR servers).
+# panels for LAR servers), and for MongoDB, Elasticsearch, OpenSearch and Redis as documents.
 [workspace]
 resolver = "3"
 members = ["crates/dataman-core", "crates/dataman-mcp", "crates/dataman", "crates/xtask"]

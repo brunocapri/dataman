@@ -107,6 +107,22 @@ impl Workspace {
                 Act::Privileges => self.open_privileges(&conn, &db, &schema, None, window, cx),
                 _ => {}
             },
+            Target::DocDb { conn, db, .. } => match act {
+                Act::ToggleReadOnly => self.toggle_read_only(&conn, &db, cx),
+                Act::NewTab => {
+                    self.open_sql_tab(&conn, Some(&db), "", false, window, cx);
+                }
+                _ => {}
+            },
+            Target::Coll { conn, db, name } => match act {
+                Act::OpenDocuments => self.open_collection(&conn, &db, &name, window, cx),
+                Act::CountRows => {
+                    let Some(c) = self.store.read(cx).connection(&conn) else { return self.notice("Connect first", cx) };
+                    let stmt = dataman_core::nosql::count_statement_for(&c, &db, &name);
+                    self.open_sql_tab(&conn, Some(&db), &stmt, true, window, cx);
+                }
+                _ => {}
+            },
             Target::Rel { conn, db, schema, name, .. } if act == Act::Privileges => self.open_privileges(&conn, &db, &schema, Some(&name), window, cx),
             Target::Rel { conn, db, schema, name, kind, .. } => self.rel_action(act, &conn, &db, &schema, &name, kind, alt, window, cx),
             Target::Object { conn, db, schema, name, what } => self.object_action(act, &conn, &db, &schema, &name, what, alt, window, cx),
@@ -373,6 +389,14 @@ impl Workspace {
             }
         });
         Some(tab)
+    }
+
+    /// A collection's documents (explorer ↩, double-click, its menu's "Open documents"): a new
+    /// tab on its connection and database, its first page.
+    pub(crate) fn open_collection(&mut self, conn: &str, db: &str, coll: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(c) = self.store.read(cx).connection(conn) else { return self.notice("Connect first", cx) };
+        let stmt = dataman_core::nosql::open_statement_for(&c, db, coll);
+        self.open_sql_tab(conn, Some(db), &stmt, true, window, cx);
     }
 
     /// Generated SQL: a new tab on the table's database, or (⌥) at the active editor's cursor.

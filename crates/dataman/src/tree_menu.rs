@@ -29,6 +29,10 @@ pub enum Target {
     /// A function, sequence, type, trigger, constraint, extension or role (`schema` is empty
     /// for extensions and roles, `db` for roles).
     Object { conn: String, db: String, schema: String, name: String, what: Obj },
+    /// A document engine's database (MongoDB's); `ro`: read-only.
+    DocDb { conn: String, db: String, ro: bool },
+    /// A collection of documents.
+    Coll { conn: String, db: String, name: String },
     /// A failed load.
     Error,
 }
@@ -115,6 +119,8 @@ pub enum Act {
     /// A table or view into its connection's "pinned" group, and out of it (the tree's own).
     Pin,
     Unpin,
+    /// A collection's documents, in a new tab.
+    OpenDocuments,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -280,6 +286,20 @@ pub fn entries(t: &Target) -> Vec<Entry> {
             Sep,
             I(it(Act::Truncate, "Truncate…", Icon::Trash).danger()),
             I(it(Act::DropTable, "Drop table…", Icon::Trash).danger()),
+        ],
+        Target::DocDb { ro, .. } => vec![
+            I(it(Act::NewTab, "New query tab", Icon::Tab)),
+            I(it(Act::Reload, "Reload", Icon::Reload).key("⌘R")),
+            I(it(Act::CopyName, "Copy name", Icon::Copy)),
+            Sep,
+            I(it(Act::ToggleReadOnly, "Read Only", Icon::Lock).checked(*ro)),
+        ],
+        Target::Coll { .. } => vec![
+            I(it(Act::OpenDocuments, "Open documents", Icon::Run).key("↩").bold()),
+            I(it(Act::CountRows, "Count documents", Icon::Hash)),
+            Sep,
+            I(it(Act::CopyName, "Copy name", Icon::Copy)),
+            I(it(Act::Reload, "Reload", Icon::Reload).key("⌘R")),
         ],
         Target::Group => vec![I(it(Act::Reload, "Reload", Icon::Reload).key("⌘R"))],
         Target::Column { .. } => vec![I(it(Act::CopyName, "Copy name", Icon::Copy))],

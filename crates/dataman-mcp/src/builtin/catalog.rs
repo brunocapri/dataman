@@ -17,7 +17,7 @@ pub fn tools() -> Vec<Builtin> {
     vec![
         Builtin {
             name: "list_connections",
-            description: "Lists Dataman's saved database connections. Each row: name (pass it as `connection` to the other tools), env (none/dev/staging/production), mcp tier (off: unusable; read: reads only; write: non-destructive writes; full: destructive writes too, each after the user's Allow in the app), read_only, host, port, database, user, ssh (tunnelled), is_lar and version (known once connected; probe: true connects first), row_limit (rows a write may change before it waits for the user), allowed (statements the user lets run without asking in any tier, matched token for token with ? for one value; null: none), yolo (anything runs without asking; read-only still refuses writes). LAR servers have no EXPLAIN and no declared keys, and do not enforce READ ONLY (Dataman does). Never returns passwords.",
+            description: "Lists Dataman's saved database connections. Each row: name (pass it as `connection` to the other tools), env (none/dev/staging/production), mcp tier (off: unusable; read: reads only; write: non-destructive writes; full: destructive writes too, each after the user's Allow in the app), read_only, host, port, database, user, ssh (tunnelled), is_lar and version (known once connected; probe: true connects first), row_limit (rows a write may change before it waits for the user), allowed (statements the user lets run without asking in any tier, matched token for token with ? for one value; null: none), yolo (anything runs without asking; read-only still refuses writes). engine (postgres, mysql, sql-server, mongodb…), language (sql, or the engine's own: use nosql_query / nosql_execute). LAR has no EXPLAIN and no declared keys. Never returns passwords.",
             schema: crate::tool::Schema::new().prop("probe", false, json!({"type": "boolean", "description": "Connect to each usable connection first to fill is_lar and version."})),
             need: None,
             run: list_connections,
@@ -98,6 +98,16 @@ fn kind_label(k: RelKind) -> &'static str {
     }
 }
 
+/// What a connection's statements are written in, and the tools that run them.
+fn language(e: dataman_core::Engine) -> &'static str {
+    match e {
+        dataman_core::Engine::Postgres | dataman_core::Engine::MySql | dataman_core::Engine::SqlServer => "sql",
+        dataman_core::Engine::MongoDb => "mongodb shell, statements or javascript (nosql_query / nosql_execute)",
+        dataman_core::Engine::Elasticsearch | dataman_core::Engine::OpenSearch => "query dsl console (nosql_query / nosql_execute)",
+        dataman_core::Engine::Redis => "redis commands (nosql_query / nosql_execute)",
+    }
+}
+
 fn list_connections(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
     Box::pin(async move {
         cx.enabled()?;
@@ -109,6 +119,7 @@ fn list_connections(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> 
             if access == McpAccess::Off {
                 let mut row = vec![json!(p.name), json!(p.env.label()), json!("off")];
                 row.resize(14, Value::Null);
+                row.extend([json!(p.engine.slug()), json!(language(p.engine))]);
                 rows.push(row);
                 continue;
             }
@@ -136,9 +147,11 @@ fn list_connections(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> 
                 if access >= McpAccess::Write && !p.mcp_yolo_on() { json!(cx.hub.row_limit(p)) } else { Value::Null },
                 if p.mcp_allowed_on().is_empty() { Value::Null } else { json!(p.mcp_allowed_on()) },
                 json!(p.mcp_yolo_on()),
+                json!(p.engine.slug()),
+                json!(language(p.engine)),
             ]);
         }
-        Ok(table(&["name", "env", "mcp", "read_only", "host", "port", "database", "user", "ssh", "is_lar", "version", "row_limit", "allowed", "yolo"], rows))
+        Ok(table(&["name", "env", "mcp", "read_only", "host", "port", "database", "user", "ssh", "is_lar", "version", "row_limit", "allowed", "yolo", "engine", "language"], rows))
     })
 }
 
@@ -161,6 +174,9 @@ async fn schemas_of(o: &Opened, only: Option<&str>, system: bool) -> Result<Vec<
 fn list_schemas(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
     Box::pin(async move {
         let o = cx.open(&a, Need::Read).await?;
+        if !o.conn.engine().is_sql() {
+            return super::nosql::databases(cx, &o).await;
+        }
         cx.hub.fresh_schema(&o.profile.id, &o.database, &o.conn, false);
         let mut rows = Vec::new();
         for s in schemas_of(&o, None, a.bool("include_system")).await? {
@@ -176,6 +192,9 @@ fn list_schemas(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
 fn list_tables(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
     Box::pin(async move {
         let o = cx.open(&a, Need::Read).await?;
+        if !o.conn.engine().is_sql() {
+            return super::nosql::collections(cx, &o, a.u64_or("limit", 500) as usize).await;
+        }
         cx.hub.fresh_schema(&o.profile.id, &o.database, &o.conn, false);
         let limit = a.u64_or("limit", 500) as usize;
         let kind = a.opt_str("kind").unwrap_or("all");
@@ -234,6 +253,11 @@ fn like(s: &str, p: &str) -> bool {
     go(&s, &p)
 }
 
+/// `s` (any case) against a pattern from [`like_pattern`].
+pub fn like_matches(s: &str, p: &str) -> bool {
+    like(s, p)
+}
+
 /// A substring becomes `%substring%`.
 pub fn like_pattern(p: &str) -> String {
     let p = p.trim().to_lowercase();
@@ -267,6 +291,9 @@ fn search_objects(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
         let o = cx.open(&a, Need::Read).await?;
         let pattern = like_pattern(a.str("pattern")?);
         let limit = a.u64_or("limit", 50) as usize;
+        if !o.conn.engine().is_sql() {
+            return super::nosql::search(cx, &o, &pattern, limit).await;
+        }
         let kinds: Vec<String> = match a.get("kinds").and_then(Value::as_array) {
             Some(k) if !k.is_empty() => k.iter().filter_map(Value::as_str).map(str::to_string).collect(),
             _ => KINDS.iter().map(|s| s.to_string()).collect(),
@@ -349,6 +376,9 @@ pub async fn find_relation(o: &Opened, name: &str) -> Result<Relation, ToolError
 fn describe_table(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
     Box::pin(async move {
         let o = cx.open(&a, Need::Read).await?;
+        if !o.conn.engine().is_sql() {
+            return super::nosql::describe(cx, &o, a.str("table")?).await;
+        }
         cx.hub.fresh_schema(&o.profile.id, &o.database, &o.conn, false);
         let r = find_relation(&o, a.str("table")?).await?;
         let (db, c) = (o.database.as_str(), &o.conn);
@@ -488,6 +518,9 @@ async fn ddl_of(c: &Arc<Connection>, db: &str, r: &Relation) -> Result<String, T
 fn get_ddl(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
     Box::pin(async move {
         let o = cx.open(&a, Need::Read).await?;
+        if !o.conn.engine().is_sql() {
+            return Err(ToolError::Invalid(format!("{} has no DDL: describe_table lists a collection's fields and indexes", o.conn.engine().label())));
+        }
         cx.hub.fresh_schema(&o.profile.id, &o.database, &o.conn, false);
         let name = a.str("object")?;
         let kind = a.opt_str("kind");
@@ -531,8 +564,11 @@ fn get_ddl(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
 fn sample_rows(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
     Box::pin(async move {
         let o = cx.open(&a, Need::Read).await?;
-        let r = find_relation(&o, a.str("table")?).await?;
         let n = a.u64_or("n", 10).clamp(1, 100);
+        if !o.conn.engine().is_sql() {
+            return super::nosql::sample(cx, &o, a.str("table")?, n, a.bool("random")).await;
+        }
+        let r = find_relation(&o, a.str("table")?).await?;
         let d = o.conn.dialect();
         let order = match (a.bool("random"), d) {
             (false, _) => "",

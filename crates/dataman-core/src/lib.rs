@@ -31,6 +31,7 @@ pub mod jsontree;
 pub mod layout;
 pub mod lar;
 pub mod lint;
+pub mod nosql;
 pub mod order;
 pub mod own;
 pub mod params;
@@ -294,6 +295,15 @@ impl Core {
             let password = secrets.password(&profile, password)?;
             let ssh_secret = secrets.ssh(&profile, ssh_secret)?;
             let tunnel = open_tunnel(&profile, ssh_secret, known).await?;
+            if !profile.engine.is_sql() {
+                let t = std::time::Instant::now();
+                let r = nosql::connect(&profile, password.as_deref(), tunnel.as_deref()).await;
+                let rtt = t.elapsed();
+                if let Some(t) = tunnel {
+                    t.close();
+                }
+                return Ok((r?.1, rtt));
+            }
             let d = backend::dedicated(&profile, password.as_deref(), None, tunnel.as_deref()).await?;
             let t = std::time::Instant::now();
             let info = backend::server_info(&d.db(), &exts).await?;

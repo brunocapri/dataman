@@ -131,6 +131,8 @@ pub struct Settings {
     /// No explorer slide and no pop on a clicked value or a find: highlights appear at once
     /// (macOS's own Reduce motion switch has the same effect).
     pub reduce_motion: bool,
+    /// Each connection's database logo, small, in the explorer and the connection picker.
+    pub db_logos: bool,
     /// The SQL formatter (⌥⇧F): keyword case and spaces per indent level (2 or 4).
     pub keyword_case: crate::format::KeywordCase,
     pub indent: u8,
@@ -210,6 +212,7 @@ impl Default for Settings {
             confirm_commit: true,
             export_dir: None,
             reduce_motion: false,
+            db_logos: true,
             keyword_case: crate::format::KeywordCase::Upper,
             indent: 2,
             mcp_enabled: true,

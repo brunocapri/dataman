@@ -552,7 +552,8 @@ impl Workspace {
             HistoryEvent::Insert(sql) => {
                 if let Some(tab) = w.tabs.get(w.active).cloned() {
                     let editor = tab.read(cx).editor.clone();
-                    editor.update(cx, |e, cx| e.insert_at_cursor(&format!("{};", sql.trim_end().trim_end_matches(';')), cx));
+                    let sql = statement_text(sql, tab.read(cx).connection().map(|c| c.engine()));
+                    editor.update(cx, |e, cx| e.insert_at_cursor(&sql, cx));
                     window.focus(&editor.focus_handle(cx), cx);
                 }
             }
@@ -560,16 +561,18 @@ impl Workspace {
                 // Always on the entry's connection: a statement from staging's history must
                 // never run on whatever tab happens to be active. A new tab always.
                 let (sql, listed, database) = (sql.clone(), Some(conn.clone()), Some(database.clone()));
+                let text = statement_text(&sql, w.store.read(cx).profile(conn).map(|p| p.engine));
                 let Some(tab) = w.tab_for_history(listed, database, false, window, cx) else { return };
                 tab.update(cx, |t, cx| {
-                    t.editor.update(cx, |e, cx| e.set_text(&format!("{};", sql.trim_end().trim_end_matches(';')), cx));
+                    t.editor.update(cx, |e, cx| e.set_text(&text, cx));
                 });
             }
             HistoryEvent::Run(sql, conn, database) => {
                 let (sql, listed, database) = (sql.clone(), Some(conn.clone()), Some(database.clone()));
+                let text = statement_text(&sql, w.store.read(cx).profile(conn).map(|p| p.engine));
                 let Some(tab) = w.tab_for_history(listed, database, true, window, cx) else { return };
                 tab.update(cx, |t, cx| {
-                    t.editor.update(cx, |e, cx| e.set_text(&format!("{};", sql.trim_end().trim_end_matches(';')), cx));
+                    t.editor.update(cx, |e, cx| e.set_text(&text, cx));
                     t.run(vec![sql.trim_end().trim_end_matches(';').to_string()], cx);
                 });
             }
@@ -953,6 +956,11 @@ impl Workspace {
             }
             self.enter_group_of(ix);
             self.active = ix;
+            // The connection the user works on now: a new tab opens on it (SQL or documents,
+            // as it is), whichever kind the other tabs are on.
+            if let Some(id) = self.tabs[ix].read(cx).connection().map(|c| c.profile.id.clone()) {
+                self.current_conn = Some(id);
+            }
             self.sync_bound_views(window, cx);
             self.focus_editor(window, cx);
             if self.tabs[ix].read(cx).pending_run.is_some() {
@@ -1443,7 +1451,10 @@ impl Workspace {
             // result: its grid takes them.
             let f = match &t.read(cx).monitor {
                 Some(m) => m.read(cx).focus_target(cx),
-                None if t.read(cx).zoomed && t.read(cx).has_run => t.read(cx).grid.focus_handle(cx),
+                None if t.read(cx).zoomed && t.read(cx).has_run => match &t.read(cx).doc {
+                    Some(d) => d.read(cx).list_focus(),
+                    None => t.read(cx).grid.focus_handle(cx),
+                },
                 None => t.read(cx).editor.focus_handle(cx),
             };
             window.focus(&f, cx);
@@ -1631,6 +1642,11 @@ impl Workspace {
             TreeEvent::OpenRelation { conn, db, schema, name } => {
                 self.open_in = self.alt_aside(window);
                 self.open_relation(conn, db, schema, name, window, cx);
+                self.open_in = None;
+            }
+            TreeEvent::OpenCollection { conn, db, coll } => {
+                self.open_in = self.alt_aside(window);
+                self.open_collection(conn, db, coll, window, cx);
                 self.open_in = None;
             }
             TreeEvent::EditConnection(id) => self.open_dialog(Some(id.clone()), window, cx),
@@ -1965,7 +1981,11 @@ impl Workspace {
             if t.editor.focus_handle(cx).contains_focused(window, cx) || t.editor.read(cx).find_has_focus(window, cx) {
                 return Some(Region::Editor);
             }
-            if t.grid.focus_handle(cx).contains_focused(window, cx) || t.grid.read(cx).find_has_focus(window, cx) || t.plan.focus_handle(cx).contains_focused(window, cx) {
+            if t.grid.focus_handle(cx).contains_focused(window, cx)
+                || t.grid.read(cx).find_has_focus(window, cx)
+                || t.plan.focus_handle(cx).contains_focused(window, cx)
+                || t.doc.as_ref().is_some_and(|d| d.read(cx).list_focus().contains_focused(window, cx))
+            {
                 return Some(Region::Grid);
             }
         }
@@ -2006,8 +2026,11 @@ impl Workspace {
         });
         self.zoom_tween = (!cx.reduce_motion()).then(|| (tab.entity_id(), crate::motion::ZoomTween::new(from)));
         if on {
-            // The editor goes out of sight: the keys go to the grid.
-            let g = tab.read(cx).grid.focus_handle(cx);
+            // The editor goes out of sight: the keys go to the grid (a document view's list).
+            let g = match &tab.read(cx).doc {
+                Some(d) => d.read(cx).list_focus(),
+                None => tab.read(cx).grid.focus_handle(cx),
+            };
             window.focus(&g, cx);
         }
         cx.notify();
@@ -2277,7 +2300,8 @@ impl Workspace {
             }
         };
         tab.update(cx, |t, cx| {
-            let text = format!("{};", fav.sql.trim_end().trim_end_matches(';'));
+            let engine = fav.connection_id.as_deref().and_then(|id| self.store.read(cx).profile(id)).map(|p| p.engine);
+            let text = statement_text(&fav.sql, engine);
             t.editor.update(cx, |e, cx| e.set_text(&text, cx));
             t.favorite = Some((fav.id.clone(), fav.name.clone().into()));
             if run {
@@ -2718,6 +2742,17 @@ pub(crate) fn file_url_path(url: &str) -> Option<std::path::PathBuf> {
     }
     use std::os::unix::ffi::OsStringExt as _;
     Some(std::ffi::OsString::from_vec(out).into())
+}
+
+/// A statement as an editor shows it: SQL ends with `;`; the other engines' languages have no
+/// terminator (a `;` would be part of a Redis key, or break a search's JSON).
+pub(crate) fn statement_text(sql: &str, engine: Option<dataman_core::Engine>) -> String {
+    let body = sql.trim_end().trim_end_matches(';');
+    if engine.is_some_and(|e| !e.is_sql()) {
+        sql.trim_end().to_string()
+    } else {
+        format!("{body};")
+    }
 }
 
 pub fn fmt_dur(d: Duration) -> String {

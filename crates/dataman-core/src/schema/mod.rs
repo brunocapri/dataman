@@ -505,6 +505,10 @@ impl Connection {
     pub fn preload(self: &Arc<Self>, db: &str) -> Task<()> {
         let (this, db) = (self.clone(), db.to_string());
         self.spawn(async move {
+            // The engines without SQL have no catalog to load.
+            if !this.engine().is_sql() {
+                return Ok(());
+            }
             let schemas = this.schemas(&db).await?;
             let sp: Vec<String> = this.schema.search_path(&db).into_iter().filter(|s| schemas.contains(s)).collect();
             for s in &sp {

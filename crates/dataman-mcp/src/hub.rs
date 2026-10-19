@@ -124,6 +124,14 @@ pub trait Front: Send + Sync {
     }
     /// What came of a write [`Front::show_write`] showed in `tab`.
     fn write_done(&self, _tab: u64, _sql: String, _shown: WriteShown) {}
+    /// Shows a document engine's statement in the client's agent tab before it runs (it runs on
+    /// the agent's side: [`Front::doc_done`] brings what came of it); the tab, if one shows it.
+    fn show_doc(&self, _d: TabWrite) -> BoxFuture<'static, Option<u64>> {
+        Box::pin(async { None })
+    }
+    /// What came of the statement [`Front::show_doc`] showed in `tab`: its documents, value or
+    /// write, or why it failed or was refused.
+    fn doc_done(&self, _tab: u64, _ran: Result<dataman_core::nosql::Ran, String>) {}
     /// Places a draft in the client's agent tab ([`TabDraft`]); runs nothing.
     fn draft(&self, _d: TabDraft) -> BoxFuture<'static, Result<Drafted, String>> {
         Box::pin(async { Err(DRAFTS_NEED_APP.to_string()) })

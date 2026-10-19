@@ -79,6 +79,7 @@ impl Connection {
                 }
                 showplan_rows(plan.ok()?.first()?.first()?.as_deref()?)
             }
+            _ => None,
         }
     }
 

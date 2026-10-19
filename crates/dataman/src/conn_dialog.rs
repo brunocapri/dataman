@@ -7,6 +7,10 @@
 //! URL` in the header swaps the server fields for one connection string (any engine's: a
 //! URL, libpq's keywords, JDBC, ADO.NET), read as it is typed into the same fields; its
 //! password goes where a typed one goes (the Keychain), never into connections.toml.
+//!
+//! A new connection starts with its database: a grid of the engines (their logos, a search
+//! field that narrows it, ↑ ↓ and ↩), then that engine's form. The engine's chip in the form's
+//! header goes back to the grid.
 
 use std::time::{Duration, Instant};
 
@@ -18,8 +22,55 @@ use crate::theme::{Pt, px};
 use dataman_core::config::Engine;
 use dataman_core::{ConnectionProfile, Environment, HostKeyPrompt, McpAccess, ServerInfo, SshAuth, SshError, SshSettings, SslMode};
 
-/// The engines the sheet offers.
-const ENGINES: [Engine; 3] = [Engine::Postgres, Engine::MySql, Engine::SqlServer];
+/// The engines the sheet offers, in the grid's order.
+const ENGINES: [Engine; 7] = Engine::ALL;
+
+/// What the grid says under an engine's name.
+fn family_label(e: Engine) -> &'static str {
+    match e {
+        Engine::Postgres | Engine::MySql | Engine::SqlServer => "Relational",
+        Engine::MongoDb => "Document",
+        Engine::Elasticsearch | Engine::OpenSearch => "Search",
+        Engine::Redis => "Key-value",
+    }
+}
+
+/// The engines a search matches: their names, the words people use for them (`mongo`, `es`,
+/// `nosql`, `sql`), their kind.
+pub fn engines_matching(q: &str) -> Vec<Engine> {
+    let q = q.trim().to_lowercase();
+    ENGINES
+        .into_iter()
+        .filter(|e| {
+            if q.is_empty() {
+                return true;
+            }
+            let words = match e {
+                Engine::Postgres => "postgresql postgres pg lar",
+                Engine::MySql => "mysql mariadb",
+                Engine::SqlServer => "sql server mssql azure microsoft",
+                Engine::MongoDb => "mongodb mongo atlas",
+                Engine::Elasticsearch => "elasticsearch elastic es",
+                Engine::OpenSearch => "opensearch aws os",
+                Engine::Redis => "redis valkey cache",
+            };
+            let kind = if e.is_sql() { "sql relational" } else { "nosql" };
+            format!("{words} {kind} {}", family_label(*e).to_lowercase()).split_whitespace().any(|w| w.starts_with(&q)) || (q.len() >= 3 && e.label().to_lowercase().contains(&q))
+        })
+        .collect()
+}
+
+/// Which page of the sheet shows.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Step {
+    /// The engines' grid.
+    Engine,
+    /// The chosen engine's form.
+    Form,
+}
+
+/// The TLS modes an engine without SQL offers (no "if offered"): off, on, on and verified.
+const DOC_TLS: [(SslMode, &str); 3] = [(SslMode::Disable, "off"), (SslMode::Require, "on"), (SslMode::VerifyFull, "verify")];
 
 use crate::conns::ConnStore;
 use crate::assets::Icon;
@@ -27,7 +78,7 @@ use crate::input::{InputEvent, TextInput};
 use crate::theme::{ActiveTheme, SWATCHES, Theme};
 use crate::ui::{self, Btn};
 
-actions!(conn_dialog, [DialogSave, DialogTest, DialogCancel, NextField, PrevField]);
+actions!(conn_dialog, [DialogSave, DialogTest, DialogCancel, NextField, PrevField, PickNext, PickPrev]);
 
 pub fn bind_keys(cx: &mut App) {
     let c = Some("ConnDialog");
@@ -37,6 +88,10 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("escape", DialogCancel, c),
         KeyBinding::new("tab", NextField, c),
         KeyBinding::new("shift-tab", PrevField, c),
+        KeyBinding::new("down", PickNext, Some("EnginePicker")),
+        KeyBinding::new("up", PickPrev, Some("EnginePicker")),
+        KeyBinding::new("right", PickNext, Some("EnginePicker && !TextInput")),
+        KeyBinding::new("left", PickPrev, Some("EnginePicker && !TextInput")),
     ]);
 }
 
@@ -136,6 +191,14 @@ pub struct ConnDialog {
     password_needed: bool,
     confirm_delete: bool,
     _ticker: Option<Task<()>>,
+    /// The name field takes the focus at the next render (after the grid's pick).
+    pending_focus: bool,
+    step: Step,
+    /// The grid's search, and the engine ↩ picks (an index into the matches).
+    search: Entity<TextInput>,
+    pick_hi: usize,
+    /// MongoDB's driver options as one string (`authSource=admin&replicaSet=rs0`).
+    options: Entity<TextInput>,
 }
 
 impl EventEmitter<DialogEvent> for ConnDialog {}
@@ -255,7 +318,30 @@ impl ConnDialog {
         })
         .detach();
         let paste_len = [profile.name.len(), profile.host.len()];
-        window.focus(&name.focus_handle(cx), cx);
+        let search = cx.new(|cx| TextInput::new(cx, "Search databases"));
+        cx.subscribe(&search, |d: &mut ConnDialog, _, ev: &InputEvent, cx| match ev {
+            InputEvent::Submit => {
+                let found = engines_matching(d.search.read(cx).text());
+                if let Some(e) = found.get(d.pick_hi.min(found.len().saturating_sub(1))) {
+                    d.pick_engine(*e, cx);
+                }
+            }
+            InputEvent::Changed => {
+                d.pick_hi = 0;
+                cx.notify();
+            }
+        })
+        .detach();
+        let opts: Vec<String> = profile.options.iter().map(|(k, v)| format!("{k}={v}")).collect();
+        let options = field(cx, "authSource=admin&replicaSet=rs0", &opts.join("&"));
+        // A brand-new connection starts with its database; one prefilled (a pasted string, an
+        // import) or edited, with its form.
+        let step = if profile.host == ConnectionProfile::new("").host && is_new && profile.name.is_empty() { Step::Engine } else { Step::Form };
+        if step == Step::Engine {
+            window.focus(&search.focus_handle(cx), cx);
+        } else {
+            window.focus(&name.focus_handle(cx), cx);
+        }
         let color = profile
             .color
             .as_deref()
@@ -291,7 +377,48 @@ impl ConnDialog {
             password_needed: false,
             confirm_delete: false,
             _ticker: None,
+            pending_focus: false,
+            step,
+            search,
+            pick_hi: 0,
+            options,
         }
+    }
+
+    /// The sheet's page: the engines' grid or the form.
+    pub fn step(&self) -> Step {
+        self.step
+    }
+
+    /// An engine chosen in the grid: its form, the name field focused.
+    pub fn pick_engine(&mut self, e: Engine, cx: &mut Context<Self>) {
+        self.set_engine(e, cx);
+        self.step = Step::Form;
+        self.pending_focus = true;
+        cx.notify();
+    }
+
+    /// Back to the grid (the form's engine chip).
+    fn change_engine(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.step = Step::Engine;
+        self.pick_hi = engines_matching(self.search.read(cx).text()).iter().position(|e| *e == self.engine).unwrap_or(0);
+        window.focus(&self.search.focus_handle(cx), cx);
+        cx.notify();
+    }
+
+    fn move_pick(&mut self, step: isize, cx: &mut Context<Self>) {
+        let n = engines_matching(self.search.read(cx).text()).len() as isize;
+        if n > 0 {
+            self.pick_hi = (self.pick_hi as isize + step).rem_euclid(n) as usize;
+            cx.notify();
+        }
+    }
+
+    /// Checks: the search as typed.
+    pub fn demo_search(&mut self, q: &str, cx: &mut Context<Self>) {
+        self.search.update(cx, |i, cx| i.set_text(q, cx));
+        self.pick_hi = 0;
+        cx.notify();
     }
 
     /// The password field (focused when the server asked for a password).
@@ -354,6 +481,9 @@ impl ConnDialog {
             self.name.update(cx, |t, cx| t.set_text(p.name.clone(), cx));
         }
         self.engine = p.engine;
+        self.step = Step::Form;
+        let opts: Vec<String> = p.options.iter().map(|(k, v)| format!("{k}={v}")).collect();
+        self.options.update(cx, |t, cx| t.set_text(opts.join("&"), cx));
         self.port.update(cx, |t, cx| t.set_placeholder(p.engine.default_port().to_string(), cx));
         self.host.update(cx, |t, cx| t.set_text(p.host.clone(), cx));
         self.port.update(cx, |t, cx| t.set_text(p.port.to_string(), cx));
@@ -373,6 +503,8 @@ impl ConnDialog {
     /// `Fields | URL`. The string starts as the URL of the fields (no password) when they name
     /// a host; the fields already follow the string.
     pub fn set_entry(&mut self, e: Entry, window: &mut Window, cx: &mut Context<Self>) {
+        // A connection string names its engine: no need for the grid.
+        self.step = Step::Form;
         if self.entry == e {
             return;
         }
@@ -454,7 +586,14 @@ impl ConnDialog {
         if self.entry == Entry::Url {
             v.push(&self.conn_str);
         } else {
-            v.extend([&self.host, &self.port, &self.user, &self.database, &self.password]);
+            v.extend([&self.host, &self.port, &self.user]);
+            if self.has_database() {
+                v.push(&self.database);
+            }
+            v.push(&self.password);
+            if self.engine == Engine::MongoDb {
+                v.push(&self.options);
+            }
         }
         if self.ssh.on {
             v.extend([&self.ssh.host, &self.ssh.port, &self.ssh.user]);
@@ -500,8 +639,15 @@ impl ConnDialog {
         if p.name.is_empty() {
             p.name = format!("{}@{}", if p.database.is_empty() { &p.user } else { &p.database }, p.host);
         }
-        if p.host.is_empty() || p.user.is_empty() {
+        if p.host.is_empty() {
+            return Err("host is required".into());
+        }
+        // The engines without SQL may connect without a login.
+        if p.user.is_empty() && p.engine.is_sql() {
             return Err("host and user are required".into());
+        }
+        if p.engine == Engine::Redis && !p.database.is_empty() && p.database.parse::<u32>().is_err() {
+            return Err("Redis' database is a number (0–15)".into());
         }
         if let Some(s) = &mut p.ssh {
             if s.host.is_empty() {
@@ -534,6 +680,23 @@ impl ConnDialog {
             p.database = "postgres".into();
         }
         p.sslmode = self.sslmode;
+        if !p.engine.is_sql() && p.sslmode == SslMode::Prefer {
+            p.sslmode = SslMode::Disable;
+        }
+        if !self.has_database() {
+            p.database.clear();
+        }
+        p.options = if p.engine == Engine::MongoDb {
+            text(&self.options)
+                .split('&')
+                .filter_map(|kv| {
+                    let (k, v) = kv.split_once('=')?;
+                    Some((k.trim().to_string(), v.trim().to_string())).filter(|(k, _)| !k.is_empty())
+                })
+                .collect()
+        } else {
+            Default::default()
+        };
         p.save_password = self.save_password;
         p.env = self.env;
         p.read_only = self.read_only;
@@ -568,11 +731,7 @@ impl ConnDialog {
             self.port.update(cx, |t, cx| t.set_text(e.default_port().to_string(), cx));
         }
         self.port.update(cx, |t, cx| t.set_placeholder(e.default_port().to_string(), cx));
-        let default_user = |e: Engine| match e {
-            Engine::Postgres => "postgres",
-            Engine::MySql => "root",
-            Engine::SqlServer => "sa",
-        };
+        let default_user = |e: Engine| e.default_user();
         let user = text(&self.user, cx);
         if user.is_empty() || user == default_user(old) {
             self.user.update(cx, |t, cx| t.set_text(default_user(e), cx));
@@ -581,6 +740,19 @@ impl ConnDialog {
         if !e.is_postgres() && db == "postgres" {
             self.database.update(cx, |t, cx| t.set_text("", cx));
         }
+        // No "TLS if offered" without SQL: off, as before.
+        if !e.is_sql() && self.sslmode == SslMode::Prefer {
+            self.sslmode = SslMode::Disable;
+        }
+        if e.is_sql() && !old.is_sql() && self.sslmode == SslMode::Disable {
+            self.sslmode = SslMode::Prefer;
+        }
+        let ph = match e {
+            Engine::Redis => "0",
+            Engine::MongoDb => "test",
+            _ => "database",
+        };
+        self.database.update(cx, |t, cx| t.set_placeholder(ph, cx));
         if !matches!(self.test, Test::Testing { .. }) {
             self.test = Test::NotTested;
         }
@@ -781,9 +953,9 @@ impl ConnDialog {
         (self.advanced.allowed.clone(), self.advanced.yolo, self.advanced.confirm)
     }
 
-    /// Checks: another engine, as its segment's click.
+    /// Checks: another engine, as its tile's click (the form follows).
     pub fn demo_engine(&mut self, e: Engine, cx: &mut Context<Self>) {
-        self.set_engine(e, cx);
+        self.pick_engine(e, cx);
     }
 
     /// Checks: Test (⌘T) and Save (⌘↩), as their buttons.
@@ -855,6 +1027,78 @@ impl ConnDialog {
             return;
         }
         cx.emit(DialogEvent::Delete(self.profile.id.clone()));
+    }
+
+    /// The engine keeps databases one connects to (not the search engines).
+    fn has_database(&self) -> bool {
+        !matches!(self.engine, Engine::Elasticsearch | Engine::OpenSearch)
+    }
+
+    /// The engines' grid: a search field and a tile per engine (its logo, its name, its kind),
+    /// grouped as relational and NoSQL.
+    fn render_picker(&self, t: &Theme, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
+        let found = engines_matching(self.search.read(cx).text());
+        let hi = found.get(self.pick_hi.min(found.len().saturating_sub(1))).copied();
+        let tile = |e: Engine| {
+            let on = Some(e) == hi;
+            let (hov, line) = (t.hov, t.line2);
+            div()
+                .id(("engine-tile", e as usize))
+                .w(px(127.))
+                .h(px(96.))
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap(px(6.))
+                .border_1()
+                .border_color(if on { t.acc } else { t.line })
+                .when(on, |d| d.bg(t.acc_s))
+                .when(!on, |d| d.hover(move |s| s.bg(hov).border_color(line)))
+                .cursor_pointer()
+                .child(crate::assets::logo(e).size(px(30.)))
+                .child(div().text_size(px(12.)).text_color(t.tx).child(e.label()))
+                .child(div().text_size(px(10.5)).text_color(t.tx3).child(family_label(e)))
+                .on_click(cx.listener(move |d, _, _, cx| d.pick_engine(e, cx)))
+        };
+        let section = |label: &'static str, engines: Vec<Engine>| {
+            (!engines.is_empty()).then(|| {
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.))
+                    .child(div().text_size(px(10.)).text_color(t.tx3).child(label))
+                    .child(div().flex().flex_row().flex_wrap().gap(px(10.)).children(engines.into_iter().map(tile)))
+            })
+        };
+        let (sql, other): (Vec<Engine>, Vec<Engine>) = found.iter().partition(|e| e.is_sql());
+        ui::modal(t, "conn-dialog")
+            .w(px(600.))
+            .child(ui::modal_header(t, None, "New connection", ui::modal_close(t, "dlg-close").on_click(cx.listener(|_, _, _, cx| cx.emit(DialogEvent::Close)))))
+            .child(
+                div()
+                    .key_context("EnginePicker")
+                    .on_action(cx.listener(|d, _: &PickNext, _, cx| d.move_pick(1, cx)))
+                    .on_action(cx.listener(|d, _: &PickPrev, _, cx| d.move_pick(-1, cx)))
+                    .px(px(20.))
+                    .pt(px(16.))
+                    .pb(px(20.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(16.))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(8.))
+                            .child(crate::assets::icon(Icon::Search).size(px(13.)).text_color(t.tx3))
+                            .child(div().flex_1().child(self.search.clone())),
+                    )
+                    .children(section("RELATIONAL", sql))
+                    .children(section("NOSQL", other))
+                    .when(found.is_empty(), |d| d.child(div().h(px(96.)).flex().items_center().justify_center().text_size(px(12.)).text_color(t.tx3).child("No database by that name"))),
+            )
     }
 
     fn field(&self, t: &Theme, label: &'static str, input: &Entity<TextInput>, label_color: Option<Hsla>) -> gpui::Div {
@@ -1252,13 +1496,37 @@ impl Render for ConnDialog {
                 }))
                 .child(div().size(px(if on { 14. } else { 18. })).bg(c))
         }));
-        let engine = ui::segmented(&t).children(ENGINES.iter().map(|e| {
-            let e = *e;
-            ui::segment(&t, ("engine", e as usize), e.label(), e == self.engine).on_click(cx.listener(move |d, _, _, cx| d.set_engine(e, cx)))
-        }));
-        let ssl = ui::segmented(&t).children(SslMode::ALL.iter().map(|m| {
-            let m = *m;
-            ui::segment(&t, m.label(), m.label(), m == self.sslmode).on_click(cx.listener(move |d, _, _, cx| {
+        if self.step == Step::Engine {
+            return self.wrap(self.render_picker(&t, cx), &t, cx);
+        }
+        if std::mem::take(&mut self.pending_focus) {
+            window.focus(&self.name.focus_handle(cx), cx);
+        }
+        // The engine: its logo and name; a click goes back to the grid.
+        let (hov, prs) = (t.hov, t.prs);
+        let engine = div()
+            .id("engine-chip")
+            .h(px(30.))
+            .px(px(8.))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(7.))
+            .border_1()
+            .border_color(t.line2)
+            .text_size(px(11.5))
+            .text_color(t.tx)
+            .cursor_pointer()
+            .hover(move |s| s.bg(hov))
+            .active(move |s| s.bg(prs))
+            .child(crate::assets::logo(self.engine).size(px(16.)))
+            .child(self.engine.label())
+            .child(ui::dropdown_arrow("engine-chip-arrow", false, 9., t.tx3))
+            .tooltip(ui::text_tooltip("Change database"))
+            .on_click(cx.listener(|d, _, window, cx| d.change_engine(window, cx)));
+        let modes: Vec<(SslMode, &'static str)> = if self.engine.is_sql() { SslMode::ALL.iter().map(|m| (*m, m.label())).collect() } else { DOC_TLS.to_vec() };
+        let ssl = ui::segmented(&t).children(modes.into_iter().map(|(m, label)| {
+            ui::segment(&t, m.label(), label, m == self.sslmode).on_click(cx.listener(move |d, _, _, cx| {
                 d.sslmode = m;
                 cx.notify();
             }))
@@ -1327,14 +1595,20 @@ impl Render for ConnDialog {
         let server: Vec<gpui::Div> = if by_url {
             vec![row().items_end().child(self.field(&t, "URL", &self.conn_str, None)).child(keychain)]
         } else {
-            vec![
+            let db_label = if self.engine == Engine::Redis { "DB" } else { "DATABASE" };
+            let user_label = if self.engine.is_sql() { "USER" } else { "USER (OPTIONAL)" };
+            let mut v = vec![
                 row().child(self.field(&t, "HOST", &self.host, None)).child(div().w(px(96.)).flex_none().child(self.field(&t, "PORT", &self.port, None))),
-                row().child(self.field(&t, "USER", &self.user, None)).child(self.field(&t, "DATABASE", &self.database, None)),
+                row().child(self.field(&t, user_label, &self.user, None)).when(self.has_database(), |r| r.child(self.field(&t, db_label, &self.database, None))),
                 row()
                     .items_end()
                     .child(self.field(&t, "PASSWORD", &self.password, (pw_focused || self.password_needed).then_some(t.acc_t)))
                     .child(keychain),
-            ]
+            ];
+            if self.engine == Engine::MongoDb {
+                v.push(row().child(self.field(&t, "OPTIONS", &self.options, None)));
+            }
+            v
         };
         // In a short window the fields scroll between the fixed header and footer.
         let max_h = window.viewport_size().height.pt() - crate::theme::metrics::TITLE_H - 32.;
@@ -1376,7 +1650,7 @@ impl Render for ConnDialog {
                             .flex_row()
                             .items_end()
                             .gap(px(16.))
-                            .when(!by_url, |d| d.child(div().flex().flex_col().gap(px(6.)).child(caption("SSL")).child(ssl)))
+                            .when(!by_url, |d| d.child(div().flex().flex_col().gap(px(6.)).child(caption(if self.engine.is_sql() { "SSL" } else { "TLS" })).child(ssl)))
                             .child(
                                 div()
                                     .flex()
@@ -1465,7 +1739,13 @@ impl Render for ConnDialog {
                             .on_click(cx.listener(|d, _, _, cx| d.save(cx))),
                     ),
             );
-        // The sheet: a scrim under the title bar and the card centered on it.
+        self.wrap(card, &t, cx)
+    }
+}
+
+impl ConnDialog {
+    /// The sheet: a scrim under the title bar and the card centered on it, with the sheet's keys.
+    fn wrap(&self, card: gpui::Stateful<gpui::Div>, t: &Theme, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
         div()
             .id("conn-dialog-backdrop")
             .absolute()
@@ -1505,5 +1785,18 @@ mod tests {
         let k = HostKeyPrompt::from_openssh("bastion", 2222, "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1ebz9/cu7/QEXn9OIeZJ").unwrap();
         assert_eq!((k.host.as_str(), k.algorithm.as_str()), ("bastion:2222", "ssh-ed25519"));
         assert!(k.fingerprint.starts_with("SHA256:"));
+    }
+
+    /// The grid's search: names, nicknames and kinds.
+    #[test]
+    fn engines_are_found_by_what_people_call_them() {
+        assert_eq!(engines_matching(""), ENGINES.to_vec());
+        assert_eq!(engines_matching("mongo"), vec![Engine::MongoDb]);
+        assert_eq!(engines_matching("ES"), vec![Engine::Elasticsearch]);
+        assert_eq!(engines_matching("pg"), vec![Engine::Postgres]);
+        assert_eq!(engines_matching("maria"), vec![Engine::MySql]);
+        assert_eq!(engines_matching("nosql"), vec![Engine::MongoDb, Engine::Elasticsearch, Engine::OpenSearch, Engine::Redis]);
+        assert_eq!(engines_matching("search"), vec![Engine::Elasticsearch, Engine::OpenSearch]);
+        assert!(engines_matching("oracle").is_empty());
     }
 }

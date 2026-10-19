@@ -538,7 +538,7 @@ impl Connection {
                 Engine::SqlServer => {
                     first_ok(&client, &[&ms::counts_sql(&schema)]).await.ok().and_then(|rows| rows.first().map(|r| ms::parse_counts(r))).unwrap_or_default()
                 }
-                Engine::Postgres => match first_ok(&client, &[&pg::counts_sql(&schema)]).await {
+                _ => match first_ok(&client, &[&pg::counts_sql(&schema)]).await {
                     Ok(rows) => rows.first().map(|r| pg::parse_counts(r)).unwrap_or_default(),
                     // A server that cannot run the four together (LAR's planner): one by one.
                     Err(_) => each_count(&client, &schema).await,
@@ -566,7 +566,7 @@ impl Connection {
                     let qs = ms::stats_sql(&schema);
                     first_ok(&client, &[&qs[0], &qs[1]]).await.map(|rows| ms::parse_stats(&rows))
                 }
-                Engine::Postgres => {
+                _ => {
                     let qs = pg::stats_sql(&schema);
                     first_ok(&client, &[&qs[0], &qs[1], &qs[2]]).await.map(|rows| pg::parse_stats(&rows))
                 }
@@ -605,7 +605,7 @@ impl Connection {
                     let rows = first_ok(&client, &[&ms::routines_sql(Some(&schema))]).await.unwrap_or_default();
                     ms::parse_routines(&rows).into_iter().enumerate().map(|(n, f)| ms::function_of(n, f)).collect()
                 }
-                Engine::Postgres => {
+                _ => {
                     let qs = pg::functions_sql(&schema);
                     first_ok(&client, &[&qs[0], &qs[1]]).await.map(|rows| rows.iter().filter_map(|r| pg::parse_function(r)).collect()).unwrap_or_default()
                 }
@@ -676,7 +676,7 @@ impl Connection {
             let (q, parse): (String, fn(&[Option<String>]) -> Option<Trigger>) = match this.engine() {
                 Engine::MySql => (my::triggers_sql(&schema), my::parse_trigger),
                 Engine::SqlServer => (ms::triggers_sql(&schema), ms::parse_trigger),
-                Engine::Postgres => (pg::triggers_sql(&schema), pg::parse_trigger),
+                _ => (pg::triggers_sql(&schema), pg::parse_trigger),
             };
             let v: Vec<Trigger> = first_ok(&client, &[&q]).await.map(|rows| rows.iter().filter_map(|r| parse(r)).collect()).unwrap_or_default();
             let v = Arc::new(v);

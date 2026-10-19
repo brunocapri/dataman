@@ -175,7 +175,15 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     };
     let focused = |cx: &mut AsyncWindowContext| cx.update(|window, cx| d.read(cx).demo_focused(window, cx)).ok().flatten();
     let field = |i: usize, cx: &mut AsyncWindowContext| cx.update(|_, cx| d.read(cx).demo_field(i, cx)).unwrap_or_default();
-    check("⌘N opens the connection sheet on its name", focused(cx) == Some(0), format!("{:?}", focused(cx)));
+    // First its database: the engines' grid, its search typed into; ↩ picks the match.
+    let step = |cx: &mut AsyncWindowContext| cx.update(|_, cx| d.read(cx).step()).ok();
+    check("⌘N opens the connection sheet on the engines", step(cx) == Some(crate::conn_dialog::Step::Engine), format!("{:?}", step(cx)));
+    typ(cx, "postg");
+    key(cx, "enter");
+    pause(cx, 50).await;
+    draw(cx);
+    let picked = cx.update(|_, cx| d.read(cx).current(cx).0.engine).ok();
+    check("typing a name and ↩ picks PostgreSQL: its form, on the name", step(cx) == Some(crate::conn_dialog::Step::Form) && picked == Some(Engine::Postgres) && focused(cx) == Some(0), format!("{:?} {picked:?} {:?}", step(cx), focused(cx)));
 
     // Tab walks the fields in order; ⇧Tab walks back.
     typ(cx, "first");

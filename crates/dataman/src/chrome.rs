@@ -955,7 +955,10 @@ impl Workspace {
                     .children((region == Some(Region::Editor)).then(|| focus_ring(&t))),
             );
         } else {
-            let failed_view = self.error_view_needed(&tab, cx);
+            // A document engine's tab: its document view takes the result area whole (its own
+            // bar, no result tabs).
+            let doc = tab.read(cx).doc.clone();
+            let failed_view = doc.is_none() && self.error_view_needed(&tab, cx);
             let live = crate::lar::grid_override(&tab, cx);
             let shows_plan = !failed_view && tab.read(cx).shows_plan(cx);
             // A result without rows that printed: what it printed, in the grid's place.
@@ -963,10 +966,16 @@ impl Workspace {
                 Some(Key::Stmt(i)) => tab.read(cx).result().filter(|r| crate::messages::shows_log(r)).map(|r| (i, r.clone())),
                 _ => None,
             };
-            let strip = (view.results.len() > 1).then(|| self.render_result_strip(tab.entity_id(), &view, &t, cx));
+            let strip = (doc.is_none() && view.results.len() > 1).then(|| self.render_result_strip(tab.entity_id(), &view, &t, cx));
             let below = if strip.is_some() { metrics::STRIP_H } else { 0. };
             let editor_h = self.editor_h(window, below);
-            let grid_area: AnyElement = if view.shown == Some(Key::Messages) {
+            let grid_area: AnyElement = if let Some(d) = &doc {
+                let zoomed = tab.read(cx).zoomed;
+                if d.read(cx).zoomed != zoomed {
+                    d.update(cx, |p, _| p.zoomed = zoomed);
+                }
+                d.clone().into_any_element()
+            } else if view.shown == Some(Key::Messages) {
                 self.render_messages(&tab, &view, &t, cx).into_any_element()
             } else if failed_view {
                 self.render_error_view(&tab, &t, cx).into_any_element()
@@ -981,7 +990,13 @@ impl Workspace {
             } else {
                 grid.clone().into_any_element()
             };
-            let bar = if shows_plan { self.render_plan_bar(&tab, &t, cx).into_any_element() } else { self.render_result_bar(&tab, &view, &t, cx).into_any_element() };
+            let bar = if doc.is_some() {
+                div().into_any_element()
+            } else if shows_plan {
+                self.render_plan_bar(&tab, &t, cx).into_any_element()
+            } else {
+                self.render_result_bar(&tab, &view, &t, cx).into_any_element()
+            };
             // Zooming, the Run row, the editor and the divider fold up under the rising result
             // (each keeps its height inside and is clipped from below); zoomed, they are gone.
             if !covered {
@@ -1051,7 +1066,7 @@ impl Workspace {
                                 .overflow_hidden()
                                 .child(grid_area)
                                 // Grid-edit cards (read-only reason, key picker) float over the grid.
-                                .child(tab.read(cx).edit.clone())
+                                .when(doc.is_none(), |d| d.child(tab.read(cx).edit.clone()))
                                 .children((region == Some(Region::Grid)).then(|| focus_ring(&t))),
                         ),
                 ),
@@ -1188,8 +1203,10 @@ impl Workspace {
         // A restored tab names the connection it waits for (it connects on the first run).
         let want = v.want.clone();
         let wanted = want.as_ref().and_then(|(id, db)| self.store.read(cx).profile(id).map(|p| (p.clone(), db.clone().unwrap_or_else(|| p.database.clone()))));
+        let engine = v.conn.as_ref().map(|c| c.engine()).or_else(|| wanted.as_ref().map(|(p, _)| p.engine));
         let (color, label): (Hsla, SharedString) = match (&v.conn, wanted) {
             (Some(c), _) if db.is_empty() => (t.profile_color(&c.profile), c.profile.name.clone().into()),
+            (Some(c), _) if c.engine() == dataman_core::Engine::Redis => (t.profile_color(&c.profile), format!("{} · db{db}", c.profile.name).into()),
             (Some(c), _) => (t.profile_color(&c.profile), format!("{} · {db}", c.profile.name).into()),
             (None, Some((p, db))) if db.is_empty() => (t.profile_color(&p), p.name.into()),
             (None, Some((p, db))) => (t.profile_color(&p), format!("{} · {db}", p.name).into()),
@@ -1221,6 +1238,7 @@ impl Workspace {
             .when(open, |d| d.bg(prs))
             .when(!open, |d| d.hover(move |s| s.bg(hov)))
             .child(div().flex_none().size(px(7.)).bg(color))
+            .children(engine.and_then(|e| crate::assets::small_logo(e, 12.)))
             .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(label))
             .when(locked, |d| d.child(icon(Icon::Lock).flex_none().size(px(10.)).text_color(t.tx3)))
             .child(ui::dropdown_arrow("tb-conn-arrow", open, 9., t.tx3))
@@ -1245,15 +1263,31 @@ impl Workspace {
                         .text_size(px(11.))
                         .text_color(t.tx3)
                         .child(div().flex_none().size(px(7.)).bg(t.profile_color(p)))
+                        .children(crate::assets::small_logo(p.engine, 12.))
                         .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(p.name.clone()))
                         .into_any_element(),
                 );
-                let dbs = conn.schema.cached_databases().unwrap_or_else(|| vec![conn.database().to_string()]);
+                // A document engine's databases as the explorer last read them.
+                let dbs = if conn.engine().is_sql() {
+                    conn.schema.cached_databases()
+                } else {
+                    conn.cached_tree(None).map(|v| v.iter().filter(|i| i.kind == dataman_core::nosql::ItemKind::Database).map(|i| i.name.clone()).collect())
+                }
+                .filter(|v: &Vec<String>| !v.is_empty())
+                .unwrap_or_else(|| vec![conn.database().to_string()]);
                 for d in dbs {
                     let on = cur.as_deref() == Some(p.id.as_str()) && d == db;
+                    // The search engines have no databases: their one row is the connection's.
+                    let label = if d.is_empty() {
+                        "all indices".to_string()
+                    } else if p.engine == dataman_core::Engine::Redis {
+                        format!("db{d}")
+                    } else {
+                        d.clone()
+                    };
                     let (id, pick) = (p.id.clone(), d.clone());
                     rows.push(
-                        ui::menu_item(t, SharedString::from(format!("pick:{}:{d}", p.id)), d, on.then_some("✓"), true)
+                        ui::menu_item(t, SharedString::from(format!("pick:{}:{d}", p.id)), label, on.then_some("✓"), true)
                             .pl(px(25.))
                             .on_click(cx.listener(move |w, _, window, cx| w.pick_target(&id, &pick, window, cx)))
                             .into_any_element(),
@@ -1981,6 +2015,10 @@ impl Workspace {
                         dataman_core::Engine::Postgres => "PG",
                         dataman_core::Engine::MySql => "MY",
                         dataman_core::Engine::SqlServer => "MS",
+                        dataman_core::Engine::MongoDb => "MDB",
+                        dataman_core::Engine::Elasticsearch => "ES",
+                        dataman_core::Engine::OpenSearch => "OS",
+                        dataman_core::Engine::Redis => "RDS",
                     })
                     .into_any_element()
             }

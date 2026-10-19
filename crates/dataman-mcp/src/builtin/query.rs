@@ -24,7 +24,7 @@ pub fn tools() -> Vec<Builtin> {
         },
         Builtin {
             name: "open_query",
-            description: "Runs SQL visibly in Dataman: while the app is open, the statement goes into this client's agent tab for the connection (one per connection and client, reused), runs there, and the full result stays there for the user (one result tab per statement); you get the same bounded result as run_query (results: […] for several reads). Reads run as run_query does; a write follows the connection's MCP tier as execute does (write: non-destructive DML within the row limit; full: destructive statements and writes over the limit wait for the user's Allow). Without the app it runs headless; writes that need approval are then refused. Set run: false to only place the statement in the user's tab for them to review and run themselves (nothing runs; any tier but off; needs the app open); use this for writes the user wants to run personally.",
+            description: "Runs SQL visibly in Dataman: while the app is open, the statement goes into this client's agent tab for the connection (one per connection and client, reused), runs there, and the full result stays there for the user (a result tab per statement); you get run_query's bounded result. Reads run as run_query does; a write follows the connection's MCP tier as execute does. Without the app it runs headless; writes that need approval are then refused. run: false only places the statement in the user's tab for them to review and run themselves (nothing runs; any tier but off; needs the app open): use it for writes the user wants to run personally. On MongoDB, Elasticsearch, OpenSearch and Redis, sql is the connection's own language (as nosql_query takes it), shown with its result in the tab's document view.",
             schema: limits_props(
                 conn_schema()
                     .prop("sql", true, sql_prop("The statements (reads, or a write's), separated by ;."))
@@ -70,7 +70,13 @@ pub fn tools() -> Vec<Builtin> {
 }
 
 fn run_query(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
-    Box::pin(async move { read(cx, &a, false).await })
+    Box::pin(async move {
+        // A document engine's statement: its own language.
+        if super::nosql::is_nosql(cx, &a) {
+            return super::nosql::query(cx, &a, "sql", false).await;
+        }
+        read(cx, &a, false).await
+    })
 }
 
 /// A read (run_query, open_query's reads): refused before connecting unless it is one, then
@@ -107,6 +113,12 @@ pub(super) async fn open(cx: &Call, a: Args) -> Result<Value, ToolError> {
     let sql = a.str("sql")?;
     if a.get("run").and_then(Value::as_bool) == Some(false) {
         return draft(cx, &a, sql).await;
+    }
+    // A document engine: in the agent tab's document view, a read or a write as it is.
+    if super::nosql::is_nosql(cx, &a) {
+        let p = cx.target(&a, Need::Read)?;
+        let reads = dataman_core::nosql::classify(p.engine, sql).is_ok_and(|c| c == WriteClass::Read);
+        return if reads { super::nosql::query(cx, &a, "sql", true).await } else { super::nosql::execute(cx, &a, "sql", true).await };
     }
     let target = cx.target(&a, Need::Read)?;
     // What it is decides the path: reads (every statement one) as run_query, anything else as
@@ -253,7 +265,12 @@ fn explain_analyze(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
 }
 
 fn execute(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
-    Box::pin(async move { write(cx, &a, false).await })
+    Box::pin(async move {
+        if super::nosql::is_nosql(cx, &a) {
+            return super::nosql::execute(cx, &a, "sql", false).await;
+        }
+        write(cx, &a, false).await
+    })
 }
 
 /// A write (execute, open_query's writes) through the tiers ([`Call::write`]).

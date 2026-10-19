@@ -44,6 +44,9 @@ pub struct Connection {
     /// The databases' own read-only settings, changed while connected
     /// ([`Connection::set_read_only_for`]); the profile's `read_only` is the default.
     read_only_dbs: parking_lot::RwLock<std::collections::BTreeMap<String, bool>>,
+    /// The client of an engine without SQL ([`crate::nosql`]): such a connection has no
+    /// metadata sessions and no editor sessions.
+    pub(crate) nosql: Option<crate::nosql::Client>,
 }
 
 impl Connection {
@@ -55,6 +58,24 @@ impl Connection {
         exts: Vec<Arc<dyn ServerExtension>>,
         tunnel: Option<Arc<crate::ssh::Tunnel>>,
     ) -> Result<Arc<Connection>> {
+        if !profile.engine.is_sql() {
+            let (client, info) = crate::nosql::connect(&profile, password.as_deref(), tunnel.as_deref()).await?;
+            let schema = Arc::new(SchemaCache::with_dialect(info.database.clone(), Vec::new(), profile.engine.dialect()));
+            return Ok(Arc::new(Connection {
+                read_only_dbs: parking_lot::RwLock::new(profile.read_only_databases.clone()),
+                tls_active: client.tls_active(),
+                nosql: Some(client),
+                profile,
+                info,
+                schema,
+                password,
+                rt,
+                history,
+                meta: tokio::sync::Mutex::new(HashMap::new()),
+                tunnel,
+                caches: Default::default(),
+            }));
+        }
         let d = backend::dedicated(&profile, password.as_deref(), None, tunnel.as_deref()).await?;
         let (client, tls_active) = (d.db(), d.tls_active());
         drop(d);
@@ -75,6 +96,7 @@ impl Connection {
             tls_active,
             tunnel,
             caches: Default::default(),
+            nosql: None,
         }))
     }
 

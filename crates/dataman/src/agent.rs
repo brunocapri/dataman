@@ -8,6 +8,8 @@
 //! counts, its RETURNING rows and what became of it. A tab the user is busy in (an edited text,
 //! a run of their own, an open transaction, pending edits) is left alone: the agent gets another.
 //! The tab carries a small agent glyph; its statements are in the history as the agent's.
+//! A document engine's statement (MongoDB, the search engines, Redis) runs on the agent's side
+//! too: the tab's document view shows it running, then its documents, value or write.
 //! A draft (`open_query` with `run: false`) only puts its SQL in the tab, on the connection and
 //! database, with nothing from earlier runs left on screen: nothing runs until the user runs it,
 //! and then it runs as any statement of theirs (the guard, their read-only setting, their
@@ -45,6 +47,8 @@ pub(crate) enum TabMsg {
     ShowWrite { req: TabWrite, reply: oneshot::Sender<Option<u64>> },
     WriteDone { tab: u64, sql: String, shown: WriteShown },
     Draft { req: TabDraft, reply: oneshot::Sender<Result<Drafted, String>> },
+    ShowDoc { req: TabWrite, reply: oneshot::Sender<Option<u64>> },
+    DocDone { tab: u64, ran: Result<dataman_core::nosql::Ran, String> },
 }
 
 /// How long a read waits for its connection to open in the app (a write's tab waits less: the
@@ -77,6 +81,16 @@ pub(crate) fn write_done(f: &AppFront, tab: u64, sql: String, shown: WriteShown)
     f.send(FrontMsg::Tab(TabMsg::WriteDone { tab, sql, shown }));
 }
 
+pub(crate) fn show_doc(f: &AppFront, req: TabWrite) -> BoxFuture<'static, Option<u64>> {
+    let (reply, rx) = oneshot::channel();
+    let sent = f.send(FrontMsg::Tab(TabMsg::ShowDoc { req, reply }));
+    Box::pin(async move { if sent { rx.await.ok().flatten() } else { None } })
+}
+
+pub(crate) fn doc_done(f: &AppFront, tab: u64, ran: Result<dataman_core::nosql::Ran, String>) {
+    f.send(FrontMsg::Tab(TabMsg::DocDone { tab, ran }));
+}
+
 pub(crate) fn draft(f: &AppFront, req: TabDraft) -> BoxFuture<'static, Result<Drafted, String>> {
     let (reply, rx) = oneshot::channel();
     let sent = f.send(FrontMsg::Tab(TabMsg::Draft { req, reply }));
@@ -96,6 +110,8 @@ pub(crate) fn arrived(m: TabMsg, cx: &mut App) {
             TabMsg::ShowWrite { req, reply } => w.agent_show_write(req, reply, window, cx),
             TabMsg::WriteDone { tab, sql, shown } => w.agent_write_done(tab, sql, shown, cx),
             TabMsg::Draft { req, reply } => w.agent_draft(req, reply, window, cx),
+            TabMsg::ShowDoc { req, reply } => w.agent_show_doc(req, reply, window, cx),
+            TabMsg::DocDone { tab, ran } => w.agent_doc_done(tab, ran, cx),
         });
     });
 }
@@ -283,6 +299,36 @@ impl Workspace {
             let _ = reply.send(id);
         })
         .detach();
+    }
+
+    /// A document engine's statement in the client's agent tab, shown running until
+    /// [`Workspace::agent_doc_done`] (it runs on the agent's side). The answer names the tab.
+    fn agent_show_doc(&mut self, req: TabWrite, reply: oneshot::Sender<Option<u64>>, window: &mut Window, cx: &mut Context<Self>) {
+        let connect = self.agent_connection(&req.connection_id, CONNECT_FOR_WRITE, cx);
+        cx.spawn_in(window, async move |w, cx| {
+            let Ok(conn) = connect.await else {
+                let _ = reply.send(None);
+                return;
+            };
+            let id = w
+                .update_in(cx, |w, window, cx| {
+                    let database = if req.database.is_empty() { conn.database().to_string() } else { req.database.clone() };
+                    let tab = w.agent_tab(conn, &req.client, &database, false, window, cx);
+                    let shown = tab.update(cx, |t, cx| t.show_agent_doc(&req.sql, req.title.clone(), cx));
+                    shown.then(|| tab.entity_id().as_u64())
+                })
+                .ok()
+                .flatten();
+            let _ = reply.send(id);
+        })
+        .detach();
+    }
+
+    /// What came of the statement a tab shows ([`Workspace::agent_show_doc`]).
+    fn agent_doc_done(&mut self, tab: u64, ran: Result<dataman_core::nosql::Ran, String>, cx: &mut Context<Self>) {
+        let Some(tab) = self.tabs.iter().find(|t| t.entity_id().as_u64() == tab).cloned() else { return };
+        tab.update(cx, |t, cx| t.agent_doc_done(ran, cx));
+        cx.notify();
     }
 
     /// A draft: its SQL in the client's agent tab, on the connection (connected in the app if

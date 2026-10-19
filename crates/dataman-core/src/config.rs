@@ -9,7 +9,9 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
 /// The database engine a connection speaks to. LAR is a PostgreSQL engine (wire protocol and
-/// SQL), recognized after connecting ([`crate::server`]).
+/// SQL), recognized after connecting ([`crate::server`]). The SQL engines run statements in
+/// editor sessions; the others ([`Family::Document`], [`Family::KeyValue`]) are reached through
+/// [`crate::nosql`] and shown as documents with their own query language.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Engine {
@@ -18,17 +20,67 @@ pub enum Engine {
     #[serde(rename = "mysql")]
     MySql,
     SqlServer,
+    #[serde(rename = "mongodb")]
+    MongoDb,
+    Elasticsearch,
+    #[serde(rename = "opensearch")]
+    OpenSearch,
+    Redis,
+}
+
+/// What kind of database an engine is: what its tabs show and what their editor speaks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Family {
+    /// Tables and SQL statements: the editor, the grid, the explorer's schemas.
+    Sql,
+    /// Collections (indices) of JSON documents and the engine's own query language.
+    Document,
+    /// Keys and their typed values, and the engine's commands.
+    KeyValue,
 }
 
 impl Engine {
-    pub const ALL: [Engine; 3] = [Engine::Postgres, Engine::MySql, Engine::SqlServer];
+    pub const ALL: [Engine; 7] =
+        [Engine::Postgres, Engine::MySql, Engine::SqlServer, Engine::MongoDb, Engine::Elasticsearch, Engine::OpenSearch, Engine::Redis];
 
     pub fn label(self) -> &'static str {
         match self {
             Engine::Postgres => "PostgreSQL",
             Engine::MySql => "MySQL",
             Engine::SqlServer => "SQL Server",
+            Engine::MongoDb => "MongoDB",
+            Engine::Elasticsearch => "Elasticsearch",
+            Engine::OpenSearch => "OpenSearch",
+            Engine::Redis => "Redis",
         }
+    }
+
+    /// The name the file, the MCP tools and the logos know it by (`mysql`, `mongodb`).
+    pub fn slug(self) -> &'static str {
+        match self {
+            Engine::Postgres => "postgres",
+            Engine::MySql => "mysql",
+            Engine::SqlServer => "sql-server",
+            Engine::MongoDb => "mongodb",
+            Engine::Elasticsearch => "elasticsearch",
+            Engine::OpenSearch => "opensearch",
+            Engine::Redis => "redis",
+        }
+    }
+
+    /// The engine a name stands for: its slug, its label, or a common alias (`pg`, `mongo`, `es`).
+    pub fn parse(s: &str) -> Option<Engine> {
+        let s = s.trim().to_ascii_lowercase();
+        let alias = match s.as_str() {
+            "pg" | "postgresql" | "lar" => Some(Engine::Postgres),
+            "mariadb" => Some(Engine::MySql),
+            "mssql" | "sqlserver" | "sql_server" => Some(Engine::SqlServer),
+            "mongo" => Some(Engine::MongoDb),
+            "es" | "elastic" => Some(Engine::Elasticsearch),
+            "os" => Some(Engine::OpenSearch),
+            _ => None,
+        };
+        alias.or_else(|| Engine::ALL.into_iter().find(|e| e.slug() == s || e.label().eq_ignore_ascii_case(&s)))
     }
 
     pub fn default_port(self) -> u16 {
@@ -36,10 +88,39 @@ impl Engine {
             Engine::Postgres => 5432,
             Engine::MySql => 3306,
             Engine::SqlServer => 1433,
+            Engine::MongoDb => 27017,
+            Engine::Elasticsearch | Engine::OpenSearch => 9200,
+            Engine::Redis => 6379,
         }
     }
 
-    /// The SQL dialect the engine's statements are written in.
+    /// The user a new connection starts with (empty: none by default).
+    pub fn default_user(self) -> &'static str {
+        match self {
+            Engine::Postgres => "postgres",
+            Engine::MySql => "root",
+            Engine::SqlServer => "sa",
+            Engine::Elasticsearch => "elastic",
+            Engine::OpenSearch => "admin",
+            Engine::MongoDb | Engine::Redis => "",
+        }
+    }
+
+    pub fn family(self) -> Family {
+        match self {
+            Engine::Postgres | Engine::MySql | Engine::SqlServer => Family::Sql,
+            Engine::MongoDb | Engine::Elasticsearch | Engine::OpenSearch => Family::Document,
+            Engine::Redis => Family::KeyValue,
+        }
+    }
+
+    /// Statements in editor sessions (everything but [`crate::nosql`]'s engines).
+    pub fn is_sql(self) -> bool {
+        self.family() == Family::Sql
+    }
+
+    /// The SQL dialect the engine's statements are written in (PostgreSQL's for the engines
+    /// without SQL: nothing of theirs is lexed as SQL).
     pub fn dialect(self) -> crate::sql::Dialect {
         crate::sql::Dialect::of(self)
     }
@@ -135,6 +216,10 @@ pub struct ConnectionProfile {
     /// still refuse writes.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub mcp_yolo: bool,
+    /// The driver's own options, by their names in its connection strings (MongoDB's
+    /// `authSource`, `replicaSet`, `srv`…), for what the fields above do not say.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub options: BTreeMap<String, String>,
 }
 
 /// The override of `database` in `overrides`: by its exact name (SQL Server's names, compared
@@ -301,6 +386,7 @@ impl ConnectionProfile {
             mcp_row_limit: None,
             mcp_allowed: Vec::new(),
             mcp_yolo: false,
+            options: BTreeMap::new(),
         }
     }
 
@@ -399,6 +485,33 @@ impl ConnectionProfile {
                 SslMode::VerifyFull => "VERIFY_IDENTITY",
             };
             return format!("mysql://{}@{host}:{}/{}?ssl-mode={ssl}", percent_encode(&self.user), self.port, percent_encode(&self.database));
+        }
+        let user = if self.user.is_empty() { String::new() } else { format!("{}@", percent_encode(&self.user)) };
+        match self.engine {
+            Engine::MongoDb => {
+                let srv = self.options.get("srv").is_some_and(|v| v == "true");
+                let mut q: Vec<String> = self.options.iter().filter(|(k, _)| *k != "srv").map(|(k, v)| format!("{k}={}", percent_encode(v))).collect();
+                match self.sslmode {
+                    SslMode::Require => q.push("tls=true&tlsAllowInvalidCertificates=true".into()),
+                    SslMode::VerifyFull if !srv => q.push("tls=true".into()),
+                    SslMode::Disable | SslMode::Prefer if srv => q.push("tls=false".into()),
+                    _ => {}
+                }
+                let q = if q.is_empty() { String::new() } else { format!("?{}", q.join("&")) };
+                let hostport = if srv || self.host.contains(',') { self.host.clone() } else { format!("{host}:{}", self.port) };
+                let scheme = if srv { "mongodb+srv" } else { "mongodb" };
+                return format!("{scheme}://{user}{hostport}/{}{q}", percent_encode(&self.database));
+            }
+            Engine::Redis => {
+                let scheme = if matches!(self.sslmode, SslMode::Require | SslMode::VerifyFull) { "rediss" } else { "redis" };
+                let db = if self.database.is_empty() { String::new() } else { format!("/{}", self.database) };
+                return format!("{scheme}://{user}{host}:{}{db}", self.port);
+            }
+            Engine::Elasticsearch | Engine::OpenSearch => {
+                let scheme = if matches!(self.sslmode, SslMode::Require | SslMode::VerifyFull) { "https" } else { "http" };
+                return format!("{scheme}://{user}{host}:{}", self.port);
+            }
+            _ => {}
         }
         if self.engine == Engine::SqlServer {
             // JDBC's form (Prisma's too): the encryption in SQL Server's words.
@@ -895,7 +1008,7 @@ mod tests {
         assert_eq!(ConfigStore::open(&dirs).unwrap().connections(), vec![pg, my, ms]);
         std::fs::write(dirs.connections_file(), "[[connection]]\nid = \"a\"\nname = \"n\"\nhost = \"h\"\nport = 1\nuser = \"u\"\ndatabase = \"d\"\n").unwrap();
         assert_eq!(ConfigStore::open(&dirs).unwrap().connections()[0].engine, Engine::Postgres);
-        assert_eq!(Engine::ALL.map(Engine::default_port), [5432, 3306, 1433]);
+        assert_eq!(Engine::ALL.map(Engine::default_port), [5432, 3306, 1433, 27017, 9200, 9200, 6379]);
     }
 
     /// Files written by older versions load: keys Dataman no longer knows (`metrics_url`, from
