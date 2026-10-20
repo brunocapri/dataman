@@ -469,9 +469,13 @@ impl TextInput {
         if self.past_edge().is_some() && !self.autoscrolling {
             self.autoscrolling = true;
             cx.spawn(async move |t, cx| {
+                let mut last = std::time::Instant::now();
                 loop {
                     cx.background_executor().timer(AUTOSCROLL_TICK).await;
-                    if !t.update(cx, |t, cx| t.autoscroll(cx)).unwrap_or(false) {
+                    // A step per tick that passed, not per wake-up: as fast on a slow frame rate.
+                    let steps = (last.elapsed().as_secs_f32() / AUTOSCROLL_TICK.as_secs_f32()).floor().max(1.) as usize;
+                    last += AUTOSCROLL_TICK * steps as u32;
+                    if !t.update(cx, |t, cx| (0..steps).all(|_| t.autoscroll(cx))).unwrap_or(false) {
                         break;
                     }
                 }
