@@ -468,6 +468,11 @@ impl ExportView {
     }
 
     #[cfg(feature = "checks")]
+    pub fn demo_menu_open(&self) -> bool {
+        self.menu.is_some()
+    }
+
+    #[cfg(feature = "checks")]
     pub fn demo_start(&mut self, format: ExportFormat, cx: &mut Context<Self>) {
         self.set_format(format, cx);
         self.scope = RowScope::All;
@@ -619,7 +624,9 @@ impl Render for ExportView {
                             .mt(px(52.))
                             .w(px(280.))
                             .on_mouse_down_out(cx.listener(|v, _, _, cx| {
-                                v.menu = None;
+                                if let Some(f) = v.menu.take() {
+                                    ui::menu_shut(format!("export-{f:?}"));
+                                }
                                 cx.notify();
                             }))
                             .children(choices.iter().enumerate().map(|(i, c)| {
@@ -638,6 +645,7 @@ impl Render for ExportView {
                 .child(ui::caps(t, f.label()))
                 .child(
                     div()
+                        .children(ui::here(&f.label().into()))
                         .id(f.label())
                         .h(px(28.))
                         .px(px(10.))
@@ -653,6 +661,9 @@ impl Render for ExportView {
                         .child(ui::dropdown_arrow(gpui::ElementId::Name(format!("{}-arrow", f.label()).into()), open, 9., t.tx3))
                         .when(!locked, |d| {
                             d.on_click(cx.listener(move |v, _, _, cx| {
+                                if v.menu.is_none() && ui::menu_just_shut(&format!("export-{f:?}")) {
+                                    return;
+                                }
                                 v.menu = if v.menu == Some(f) { None } else { Some(f) };
                                 cx.notify();
                             }))
@@ -736,6 +747,7 @@ impl Render for ExportView {
         );
         let open = self.advanced;
         let advanced = div()
+            .children(ui::here(&"ex-advanced".into()))
             .id("ex-advanced")
             .h(px(20.))
             .flex()

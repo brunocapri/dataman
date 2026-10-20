@@ -69,6 +69,8 @@ mod mcp;
 mod mcp_check;
 #[cfg(feature = "checks")]
 mod mcp_tools_check;
+#[cfg(feature = "checks")]
+mod menus_check;
 mod messages;
 mod motion;
 mod nav;

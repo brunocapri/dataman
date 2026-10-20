@@ -18,7 +18,7 @@ use crate::tab::QueryTab;
 
 /// The stages that start with no connection and drive everything themselves.
 pub fn is_stage(s: &str) -> bool {
-    matches!(s, "connections-check" | "tabs-check" | "edit-check" | "explorer-check" | "export-check" | "import-check" | "settings-check" | "welcome-check" | "palette-check" | "nosql-engines-check" | "mcp-tools-check")
+    matches!(s, "connections-check" | "tabs-check" | "edit-check" | "explorer-check" | "export-check" | "import-check" | "settings-check" | "welcome-check" | "palette-check" | "nosql-engines-check" | "mcp-tools-check" | "dropdowns-check")
 }
 
 pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContext) -> bool {
@@ -36,6 +36,7 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
         "palette-check" => crate::welcome_check::run_palette(ws, &mut r, cx).await,
         "nosql-engines-check" => crate::engines_check::run(ws, &mut r, cx).await,
         "mcp-tools-check" => crate::mcp_tools_check::run(ws, &mut r, cx).await,
+        "dropdowns-check" => crate::menus_check::run_dropdowns(ws, &mut r, cx).await,
         _ => {
             r.check("a known stage", false, stage);
         }

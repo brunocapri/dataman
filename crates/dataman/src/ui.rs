@@ -546,6 +546,28 @@ mod tests {
     }
 }
 
+thread_local! {
+    static MENU_SHUT: std::cell::RefCell<Option<(String, std::time::Instant)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// A dropdown closed by a press outside it: when that press was on the dropdown's own button,
+/// the click that follows must not open it again (one click on the button closes it).
+pub fn menu_shut(id: impl Into<String>) {
+    MENU_SHUT.with(|s| *s.borrow_mut() = Some((id.into(), std::time::Instant::now())));
+}
+
+/// True once, right after `menu_shut(id)`: the button's click then leaves the menu closed.
+pub fn menu_just_shut(id: &str) -> bool {
+    MENU_SHUT.with(|s| {
+        let mut s = s.borrow_mut();
+        let hit = s.as_ref().is_some_and(|(i, at)| i == id && at.elapsed() < std::time::Duration::from_millis(400));
+        if hit {
+            *s = None;
+        }
+        hit
+    })
+}
+
 /// Test probes: in `--demo` runs, a wrapped control records where it was laid out, under a
 /// name, so a check can click it with real mouse events. Off otherwise (no wrapper at all).
 #[cfg(feature = "checks")]

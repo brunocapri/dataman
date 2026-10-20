@@ -725,6 +725,9 @@ impl DataImportView {
                         .child(ui::dropdown_arrow(("di-map-arrow", i), open, 9., t.tx4))
                         .when(!locked, |d| {
                             d.on_click(cx.listener(move |v, _, _, cx| {
+                                if v.menu.is_none() && ui::menu_just_shut(&format!("import-{:?}", Menu::Column(i))) {
+                                    return;
+                                }
                                 v.menu = if v.menu == Some(Menu::Column(i)) { None } else { Some(Menu::Column(i)) };
                                 cx.notify();
                             }))
@@ -878,7 +881,9 @@ impl DataImportView {
                         .max_h(px(300.))
                         .overflow_y_scroll()
                         .on_mouse_down_out(cx.listener(|v, _, _, cx| {
-                            v.menu = None;
+                            if let Some(m) = v.menu.take() {
+                                ui::menu_shut(format!("import-{m:?}"));
+                            }
                             cx.notify();
                         }))
                         .children(items),
@@ -1073,7 +1078,9 @@ impl Render for DataImportView {
                                 .mt(px(52.))
                                 .w(px(180.))
                                 .on_mouse_down_out(cx.listener(|v, _, _, cx| {
-                                    v.menu = None;
+                                    if let Some(m) = v.menu.take() {
+                                        ui::menu_shut(format!("import-{m:?}"));
+                                    }
                                     cx.notify();
                                 }))
                                 .children(choices.iter().enumerate().map(|(i, c)| {
@@ -1109,6 +1116,9 @@ impl Render for DataImportView {
                             .child(ui::dropdown_arrow(gpui::ElementId::Name(format!("{}-arrow", f.label()).into()), open, 9., t.tx3))
                             .when(!locked, |d| {
                                 d.on_click(cx.listener(move |v, _, _, cx| {
+                                    if v.menu.is_none() && ui::menu_just_shut(&format!("import-{:?}", Menu::Field(f))) {
+                                        return;
+                                    }
                                     v.menu = if v.menu == Some(Menu::Field(f)) { None } else { Some(Menu::Field(f)) };
                                     cx.notify();
                                 }))

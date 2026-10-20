@@ -1475,6 +1475,7 @@ impl Workspace {
                         .w(px(236.))
                         .on_mouse_down_out(cx.listener(|w, _, _, cx| {
                             w.copy_menu = false;
+                            ui::menu_shut("copy-menu");
                             cx.notify();
                         }))
                         .child(ui::menu_item(t, "cp-tsv", "Copy as TSV", crate::keymap::key("copy_tsv").as_deref(), has_rows).on_click(cx.listener(|w, _, _, cx| w.copy_selection(CopyFormat::Tsv, false, cx))))
@@ -1548,6 +1549,9 @@ impl Workspace {
                             .child("Copy")
                             .child(ui::dropdown_arrow("rb-copy-arrow", self.copy_menu, 9., t.tx2))
                             .on_click(cx.listener(|w, _, _, cx| {
+                                if !w.copy_menu && ui::menu_just_shut("copy-menu") {
+                                    return;
+                                }
                                 w.copy_menu = !w.copy_menu;
                                 cx.notify();
                             })),
@@ -1568,6 +1572,9 @@ impl Workspace {
                             .child(icon(Icon::Check).size(px(12.)).text_color(t.ok))
                             .child("Copied")
                             .on_click(cx.listener(|w, _, _, cx| {
+                                if !w.copy_menu && ui::menu_just_shut("copy-menu") {
+                                    return;
+                                }
                                 w.copy_menu = !w.copy_menu;
                                 cx.notify();
                             }))

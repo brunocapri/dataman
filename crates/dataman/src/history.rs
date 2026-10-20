@@ -1506,6 +1506,7 @@ impl HistoryPanel {
         let open = self.chip_menu;
         let (hov, prs) = (t.hov, t.prs);
         let button = div()
+            .children(ui::here(&"history-chip".into()))
             .id("history-chip")
             .h(px(24.))
             .px(px(8.))
@@ -1520,6 +1521,9 @@ impl HistoryPanel {
             .child(label)
             .child(ui::dropdown_arrow("history-chip-arrow", open, 8., t.tx3))
             .on_click(cx.listener(|h, _, _, cx| {
+                if !h.chip_menu && ui::menu_just_shut("history-chip") {
+                    return;
+                }
                 h.chip_menu = !h.chip_menu;
                 cx.notify();
             }));
@@ -1544,6 +1548,7 @@ impl HistoryPanel {
                         .snap_to_window_with_margin(px(8.))
                         .child(ui::menu_in("chip-menu-in", ui::popover(t).w(px(140.)).on_mouse_down_out(cx.listener(|h, _, _, cx| {
                             h.chip_menu = false;
+                            ui::menu_shut("history-chip");
                             cx.notify();
                         })).children(rows))),
                 )
