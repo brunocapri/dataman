@@ -516,6 +516,11 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
         let _ = cx.update(|_, cx| d.update(cx, |d, cx| d.demo_host("cache.example.com", cx)));
         let there = tls(cx);
         report("Redis: off on this machine, on across the network", here == (SslMode::Disable, None) && there == (SslMode::Require, None), format!("{here:?} {there:?}"));
+        let _ = cx.update(|_, cx| d.update(cx, |d, cx| d.demo_ssh(true, cx)));
+        let tunneled = tls(cx);
+        let _ = cx.update(|_, cx| d.update(cx, |d, cx| d.demo_ssh(false, cx)));
+        let back = tls(cx);
+        report("through an SSH tunnel it is as on this machine, no warning; without it, on again", tunneled == (SslMode::Disable, None) && back == (SslMode::Require, None), format!("{tunneled:?} {back:?}"));
         let _ = cx.update(|_, cx| d.update(cx, |d, cx| d.demo_tls(SslMode::Disable, cx)));
         let _ = cx.update(|_, cx| d.update(cx, |d, cx| d.demo_host("other.example.com", cx)));
         draw(cx);

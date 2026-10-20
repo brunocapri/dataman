@@ -343,12 +343,15 @@ fn stdio_favorites_and_create_connection() {
     assert!(!err, "{text}");
     let (err, text) = m.tool("create_connection", json!({"name": "clear", "host": "db.internal", "user": "bob", "sslmode": "disable"}));
     assert!(!err, "{text}");
+    let (err, text) = m.tool("create_connection", json!({"name": "tunneled", "host": "db.internal", "user": "bob", "ssh_host": "bastion"}));
+    assert!(!err, "{text}");
     let (err, text) = m.tool("create_connection", json!({"name": "by string", "connection_string": "postgresql://alice@dbhost/app?sslmode=prefer"}));
     assert!(!err, "{text}");
     let toml = std::fs::read_to_string(cfg.path().join("dataman/connections.toml")).unwrap();
     assert!(block_for(&toml, "new1").contains("sslmode = \"require\""), "{toml}");
     assert!(block_for(&toml, "here").contains("sslmode = \"prefer\""), "{toml}");
     assert!(block_for(&toml, "clear").contains("sslmode = \"disable\""), "asked for: {toml}");
+    assert!(block_for(&toml, "tunneled").contains("sslmode = \"prefer\""), "the tunnel encrypts the hop: {toml}");
     assert!(block_for(&toml, "by string").contains("sslmode = \"prefer\""), "the string asked for it: {toml}");
 
     let (err, text) = m.tool("create_connection", json!({"name": "new1", "host": "db2.internal", "user": "bob", "overwrite": true}));

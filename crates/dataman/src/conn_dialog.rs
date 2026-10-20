@@ -305,7 +305,7 @@ impl ConnDialog {
         ConnDialog {
             store,
             focus: cx.focus_handle(),
-            sslmode: if is_new && profile.sslmode == SslMode::Prefer { dataman_core::default_sslmode(profile.engine, &profile.host) } else { profile.sslmode },
+            sslmode: if is_new && profile.sslmode == SslMode::Prefer { dataman_core::default_sslmode(profile.engine, &profile.host, profile.ssh.is_some()) } else { profile.sslmode },
             ssl_chosen: !is_new || profile.sslmode != SslMode::Prefer,
             save_password: profile.save_password || is_new,
             color,
@@ -425,7 +425,8 @@ impl ConnDialog {
     /// Across the network, said plainly when the password and data may travel in clear (a
     /// warning when they surely do).
     fn tls_note(&self, cx: &App) -> Option<(bool, &'static str)> {
-        let remote = self.entry != Entry::Url && !dataman_core::is_local_host(self.host.read(cx).text());
+        // Through a tunnel the network hop is SSH's: no warning.
+        let remote = self.entry != Entry::Url && !self.ssh.on && !dataman_core::is_local_host(self.host.read(cx).text());
         match (remote, self.sslmode, self.engine.is_sql()) {
             (true, SslMode::Disable, _) => Some((true, "Not encrypted: data, and maybe the password, cross the network in clear.")),
             (true, SslMode::Prefer, true) => Some((false, "Encrypted only if the server offers it; the server is not verified.")),
@@ -451,13 +452,20 @@ impl ConnDialog {
         self.tls_note(cx)
     }
 
-    /// Until the user picks, TLS follows the host: opportunistic only on this machine.
+    #[cfg(feature = "checks")]
+    pub fn demo_ssh(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.ssh.on = on;
+        self.follow_host(cx);
+    }
+
+    /// Until the user picks, TLS follows the host: opportunistic only on this machine or
+    /// through a tunnel.
     fn follow_host(&mut self, cx: &mut Context<Self>) {
         if self.ssl_chosen {
             return;
         }
         let host = self.host.read(cx).text().to_string();
-        let want = dataman_core::default_sslmode(self.engine, &host);
+        let want = dataman_core::default_sslmode(self.engine, &host, self.ssh.on);
         if want != self.sslmode {
             self.sslmode = want;
             cx.notify();
@@ -481,7 +489,7 @@ impl ConnDialog {
         if let Some(pw) = pw {
             self.password.update(cx, |t, cx| t.set_text(pw, cx));
         }
-        self.sslmode = if self.ssl_chosen { p.sslmode } else { dataman_core::default_sslmode(p.engine, &p.host) };
+        self.sslmode = if self.ssl_chosen { p.sslmode } else { dataman_core::default_sslmode(p.engine, &p.host, self.ssh.on) };
         self.paste_len = [self.name.read(cx).text().len(), self.host.read(cx).text().len()];
         if !matches!(self.test, Test::Testing { .. }) {
             self.test = Test::NotTested;
@@ -730,7 +738,7 @@ impl ConnDialog {
             self.database.update(cx, |t, cx| t.set_text("", cx));
         }
         if !self.ssl_chosen {
-            self.sslmode = dataman_core::default_sslmode(e, &text(&self.host, cx));
+            self.sslmode = dataman_core::default_sslmode(e, &text(&self.host, cx), self.ssh.on);
         } else if !e.is_sql() && self.sslmode == SslMode::Prefer {
             self.sslmode = SslMode::Disable;
         } else if e.is_sql() && !old.is_sql() && self.sslmode == SslMode::Disable {
@@ -1200,6 +1208,7 @@ impl ConnDialog {
             .child(div().text_size(px(10.)).text_color(if s.on { t.tx2 } else { t.tx3 }).child("SSH"))
             .on_click(cx.listener(|d, _, window, cx| {
                 d.ssh.on = !d.ssh.on;
+                d.follow_host(cx);
                 if d.ssh.on {
                     window.focus(&d.ssh.host.focus_handle(cx), cx);
                 }

@@ -140,9 +140,10 @@ pub fn is_local_host(host: &str) -> bool {
 }
 
 /// What a new connection starts with until the user picks: opportunistic (`prefer`, which is
-/// plain text for the document engines) only on this machine, TLS required anywhere else.
-pub fn default_sslmode(engine: Engine, host: &str) -> SslMode {
-    match (is_local_host(host), engine.is_sql()) {
+/// plain text for the document engines) on this machine or through an SSH tunnel (already
+/// encrypted up to the bastion), TLS required anywhere else.
+pub fn default_sslmode(engine: Engine, host: &str, tunnel: bool) -> SslMode {
+    match (tunnel || is_local_host(host), engine.is_sql()) {
         (false, _) => SslMode::Require,
         (true, true) => SslMode::Prefer,
         (true, false) => SslMode::Disable,
@@ -660,13 +661,15 @@ mod tests {
     fn tls_defaults_follow_the_host() {
         for h in ["", "localhost", "LOCALHOST", "127.0.0.1", "127.1.2.3", "::1", "[::1]", "/tmp", "db.localhost"] {
             assert!(is_local_host(h), "{h}");
-            assert_eq!(default_sslmode(Engine::Postgres, h), SslMode::Prefer, "{h}");
-            assert_eq!(default_sslmode(Engine::Redis, h), SslMode::Disable, "{h}");
+            assert_eq!(default_sslmode(Engine::Postgres, h, false), SslMode::Prefer, "{h}");
+            assert_eq!(default_sslmode(Engine::Redis, h, false), SslMode::Disable, "{h}");
         }
         for h in ["db.example.com", "10.0.0.5", "192.168.1.2", "localhost.evil.com", "::2", "host.docker.internal"] {
             assert!(!is_local_host(h), "{h}");
             for e in Engine::ALL {
-                assert_eq!(default_sslmode(e, h), SslMode::Require, "{h} {e:?}");
+                assert_eq!(default_sslmode(e, h, false), SslMode::Require, "{h} {e:?}");
+                // Through a tunnel the hop to the bastion is encrypted: as on this machine.
+                assert_eq!(default_sslmode(e, h, true), if e.is_sql() { SslMode::Prefer } else { SslMode::Disable }, "{h} {e:?} tunnel");
             }
         }
     }
