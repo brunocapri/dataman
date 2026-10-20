@@ -14,6 +14,7 @@ mod conns;
 #[cfg(feature = "checks")]
 mod conns_check;
 mod crash_ui;
+mod csd;
 mod data_import;
 mod dnd;
 mod doc_view;
@@ -60,6 +61,8 @@ mod import_ui;
 mod input;
 #[cfg(feature = "checks")]
 mod input_check;
+#[cfg(target_os = "linux")]
+mod instance;
 #[cfg(feature = "checks")]
 mod intel_demo;
 mod keymap;
@@ -334,11 +337,22 @@ fn main() {
     let startup = false;
 
     let (dirs, secrets): (Dirs, Arc<dyn SecretStore>) = match bench {
-        Some(_) => (
-            Dirs::at(std::env::temp_dir().join(format!("dataman-bench-{}", std::process::id()))),
-            Arc::new(MemorySecrets::default()),
-        ),
+        Some(_) => {
+            // A run that exited early leaves its folder; a later one can get the same pid.
+            let dir = std::env::temp_dir().join(format!("dataman-bench-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            (Dirs::at(dir), Arc::new(MemorySecrets::default()))
+        }
         None => (Dirs::default_dirs().expect("no home directory"), Arc::new(Keychain)),
+    };
+    #[cfg(target_os = "linux")]
+    let (launch_urls, instance_socket) = {
+        let urls = instance::urls_from_args(&args);
+        let socket = instance::socket_path(&dirs);
+        if bench.is_none() && instance::hand_over(&socket, &urls) {
+            return;
+        }
+        (urls, socket)
     };
     let core = match Core::new(dirs.clone(), secrets) {
         Ok(c) => Arc::new(c),
@@ -352,6 +366,16 @@ fn main() {
     mark(t_main, "core ready");
     let app = application().with_assets(assets::Assets);
     let (open_tx, mut open_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<String>>();
+    #[cfg(target_os = "linux")]
+    if bench.is_none() {
+        if !launch_urls.is_empty() {
+            let _ = open_tx.send(launch_urls);
+        }
+        let tx = open_tx.clone();
+        instance::listen(instance_socket, move |urls| {
+            let _ = tx.send(urls);
+        });
+    }
     app.on_open_urls(move |urls| {
         let _ = open_tx.send(urls);
     });
@@ -440,6 +464,10 @@ fn main() {
                     window_min_size: Some(size(px(min_w), px(min_h))),
                     app_owns_titlebar_drag: true,
                     app_id: Some(APP_ID.into()),
+                    window_decorations: crate::keymap::LINUX.then(|| match std::env::var("DATAMAN_DECORATIONS").as_deref() {
+                        Ok("server") => gpui::WindowDecorations::Server,
+                        _ => gpui::WindowDecorations::Client,
+                    }),
                     ..Default::default()
                 },
                 |window, cx| cx.new(|cx| app::Workspace::new(core.clone(), window, cx)),
@@ -461,6 +489,9 @@ fn main() {
                         cx.spawn(async move |cx| {
                             while let Some(urls) = open_rx.recv().await {
                                 let _ = handle.update(cx, |_, window, cx| {
+                                    if crate::keymap::LINUX {
+                                        window.activate_window();
+                                    }
                                     let _ = weak.update(cx, |w, cx| w.open_urls(urls, window, cx));
                                 });
                             }

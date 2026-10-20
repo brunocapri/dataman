@@ -21,7 +21,9 @@ pub fn blur() -> Blur {
             _ if macos_major() >= 16 => Blur::Own,
             _ => Blur::Gpui,
         };
-        log::info!("window blur: {b:?} (macOS {})", macos_major());
+        if cfg!(target_os = "macos") {
+            log::info!("window blur: {b:?} (macOS {})", macos_major());
+        }
         b
     })
 }

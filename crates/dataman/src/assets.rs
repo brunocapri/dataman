@@ -47,6 +47,7 @@ assets!(
     "icons/live.svg",
     "icons/lock.svg",
     "icons/matview.svg",
+    "icons/menu.svg",
     "icons/more.svg",
     "icons/panel-right.svg",
     "icons/partition.svg",
@@ -73,6 +74,9 @@ assets!(
     "icons/tunnel.svg",
     "icons/type.svg",
     "icons/view.svg",
+    "icons/win-max.svg",
+    "icons/win-min.svg",
+    "icons/win-restore.svg",
     "icons/warning.svg",
     "logos/elasticsearch.svg",
     "logos/mongodb.svg",
@@ -161,6 +165,10 @@ pub enum Icon {
     Agent,
     Live,
     Collection,
+    Menu,
+    WinMinimize,
+    WinMaximize,
+    WinRestore,
 }
 
 impl Icon {
@@ -228,6 +236,10 @@ impl Icon {
             Icon::Agent => "icons/agent.svg",
             Icon::Live => "icons/live.svg",
             Icon::Collection => "icons/braces.svg",
+            Icon::Menu => "icons/menu.svg",
+            Icon::WinMinimize => "icons/win-min.svg",
+            Icon::WinMaximize => "icons/win-max.svg",
+            Icon::WinRestore => "icons/win-restore.svg",
         }
     }
 }

@@ -674,7 +674,13 @@ pub fn glass_level(cx: &App) -> Translucency {
 }
 
 pub fn effective_level(level: Translucency) -> Translucency {
-    if std::env::var_os("DATAMAN_OPAQUE").is_some() { Translucency::Off } else { level }
+    if std::env::var_os("DATAMAN_OPAQUE").is_some() || !translucency_works() { Translucency::Off } else { level }
+}
+
+/// GPUI blurs behind a Linux window on KWin (Wayland) only; elsewhere "transparent" is see-through.
+pub fn translucency_works() -> bool {
+    !crate::keymap::LINUX
+        || (std::env::var_os("WAYLAND_DISPLAY").is_some() && std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|d| d.to_ascii_uppercase().contains("KDE")))
 }
 
 /// Where GPUI's blur does not work, transparent over Dataman's own blur view (`glass`).

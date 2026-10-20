@@ -369,7 +369,7 @@ impl Workspace {
             PanelId::Side => side_open,
         };
         let frame = frame(Self::view_pt(window), slots(&self.layout, open, &moves), &self.sizes());
-        let title = title_frame(&frame, &self.layout, joined, metrics::lights_right_at(crate::theme::zoom()));
+        let title = title_frame(&frame, &self.layout, joined, crate::csd::lead(window, cx));
         self.frame_now = frame.clone();
         self.title_now = title;
         DockPass { frame, side: shown, side_rest: rest, title }

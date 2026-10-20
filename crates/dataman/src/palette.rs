@@ -1113,5 +1113,13 @@ fn commands(conn: Option<&std::sync::Arc<dataman_core::Connection>>, cx: &App) -
         it.lar = true;
         v.push(it);
     }
+    if crate::keymap::LINUX {
+        // No menu bar there: what only it reached.
+        v.push(c("Go to table or tab", "", "", Box::new(GoTo), Workspace));
+        v.push(c("Next region", "explorer → editor → grid", "", Box::new(CycleFocus), Workspace));
+        if !crate::theme::translucency_works() {
+            v.retain(|i| !i.label.starts_with("Transparency"));
+        }
+    }
     v
 }

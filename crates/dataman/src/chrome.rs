@@ -157,7 +157,7 @@ impl Workspace {
         let title = self.title_now;
         let mirrored = title.header == Some(dataman_core::layout::Dock::Right);
         // The lights keep their size at any zoom: in zoomed points they take less room.
-        let lights = metrics::lights_right_at(crate::theme::zoom());
+        let lights = crate::csd::lead(window, cx);
         let open = (self.explorer_now() / self.explorer_w.max(1.)).clamp(0., 1.);
         let logo = self.title_logo();
         let logo_bounds = self.logo_bounds.clone();
@@ -228,7 +228,7 @@ impl Workspace {
             .flex()
             .flex_row()
             .items_center()
-            .child(div().w(px(lights)).flex_none())
+            .child(div().w(px(lights)).h_full().flex_none().children(self.render_window_buttons_left(window, cx)))
             .map(|d| {
                 if mirrored {
                     d.child(div().ml(px(14.)).flex_none().children(search.take()))
@@ -273,8 +273,11 @@ impl Workspace {
                 }
             }))
             .on_click(|ev, window, _| {
-                if ev.click_count() == 2 {
+                if ev.click_count() != 2 {
+                } else if !crate::keymap::LINUX {
                     window.titlebar_double_click();
+                } else if window.window_controls().maximize && window.is_resizable() {
+                    window.zoom_window();
                 }
             })
             .child(left)
@@ -297,6 +300,7 @@ impl Workspace {
             .when(first_run, |d| d.child(div().flex_1()))
             .children(self.render_update_pill(&t, cx))
             .child(right)
+            .children(self.render_window_buttons_right(window, cx))
             .children(tab_menu)
     }
 

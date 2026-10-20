@@ -40,7 +40,8 @@ fn main() {
             }
             "--claude" => {
                 let bin = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "dataman-mcp".into());
-                println!("{}", dataman_mcp::claude_stdio_command(&bin));
+                let argv = dataman_mcp::stable_server_argv(&bin);
+                println!("{}", dataman_mcp::claude_stdio_command_with(&argv.iter().map(String::as_str).collect::<Vec<_>>()));
                 return;
             }
             "-h" | "--help" => usage(),

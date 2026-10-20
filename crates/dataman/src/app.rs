@@ -337,6 +337,7 @@ pub struct Workspace {
     pub(crate) picker_bounds: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
     pub(crate) toolbar_parts: std::rc::Rc<std::cell::RefCell<[Vec<gpui::Bounds<gpui::Pixels>>; 2]>>,
     pub(crate) title_drag: bool,
+    pub(crate) app_menu: Option<gpui::Point<gpui::Pixels>>,
     pub(crate) focus_visible: bool,
     pub(crate) shortcuts_open: bool,
     pub(crate) shortcuts_focus: FocusHandle,
@@ -514,6 +515,7 @@ impl Workspace {
             picker_bounds: Default::default(),
             toolbar_parts: Default::default(),
             title_drag: false,
+            app_menu: None,
             focus_visible: false,
             shortcuts_open: false,
             shortcuts_focus: cx.focus_handle(),
@@ -2841,6 +2843,9 @@ impl Render for Workspace {
             .children(self.render_param_sheet(cx))
             .children(self.render_mcp_sheet(cx))
             .children(self.render_update_sheet(cx))
+            .children(self.render_app_menu(cx))
+            .children(crate::csd::border(window, cx))
+            .children(self.render_resize_edges(window))
     }
 }
 

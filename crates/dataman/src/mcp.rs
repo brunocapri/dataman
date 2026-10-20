@@ -238,7 +238,8 @@ pub fn stdio_binary() -> String {
 }
 
 pub fn stdio_command() -> String {
-    dataman_mcp::claude_stdio_command(&stdio_binary())
+    let argv = dataman_mcp::stable_server_argv(&stdio_binary());
+    dataman_mcp::claude_stdio_command_with(&argv.iter().map(String::as_str).collect::<Vec<_>>())
 }
 
 pub fn apply(core: &Arc<Core>, cx: &mut App) {

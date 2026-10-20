@@ -465,7 +465,49 @@ pub fn system_reduce_motion() -> bool {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+/// GNOME's "Animations" switch (`enable-animations`), else KDE's animation speed set to
+/// instant; read again at most every few seconds (the settings view asks every frame).
+#[cfg(target_os = "linux")]
+pub fn system_reduce_motion() -> bool {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+    static LAST: Mutex<Option<(Instant, bool)>> = Mutex::new(None);
+    let Ok(mut last) = LAST.lock() else { return false };
+    if let Some((at, on)) = *last
+        && at.elapsed() < Duration::from_secs(5)
+    {
+        return on;
+    }
+    let gnome = std::process::Command::new("gsettings")
+        .args(["get", "org.gnome.desktop.interface", "enable-animations"])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "false");
+    let on = gnome.unwrap_or_else(|| {
+        let kde = dataman_core::os::config_home().and_then(|c| std::fs::read_to_string(c.join("kdeglobals")).ok());
+        kde.is_some_and(|t| kde_instant(&t))
+    });
+    *last = Some((Instant::now(), on));
+    on
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn kde_instant(kdeglobals: &str) -> bool {
+    let mut kde = false;
+    for line in kdeglobals.lines().map(str::trim) {
+        if line.starts_with('[') {
+            kde = line == "[KDE]";
+        } else if kde && let Some(v) = line.strip_prefix("AnimationDurationFactor=") {
+            return v.trim().parse::<f32>().is_ok_and(|f| f == 0.);
+        }
+    }
+    false
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub fn system_reduce_motion() -> bool {
     false
 }
@@ -473,6 +515,14 @@ pub fn system_reduce_motion() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kde_animation_speed() {
+        assert!(kde_instant("[General]\nfoo=1\n[KDE]\nAnimationDurationFactor=0\n"));
+        assert!(!kde_instant("[KDE]\nAnimationDurationFactor=0.5\n"));
+        assert!(!kde_instant("[General]\nAnimationDurationFactor=0\n"));
+        assert!(!kde_instant(""));
+    }
 
     #[test]
     fn fold_turns_around() {

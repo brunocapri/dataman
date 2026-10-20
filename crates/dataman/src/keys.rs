@@ -5,8 +5,7 @@ pub const LINUX: bool = cfg!(target_os = "linux");
 /// The keymap is written as on macOS (and so are `[keys]` in settings.toml); on Linux ⌘ is
 /// Ctrl, with the desktop's own text keys (⌘←/→ Home/End, ⌘↑/↓ Ctrl+Home/End, ⌥←/→ ⌥⌫ ⌥⌦ by
 /// word with Ctrl, ⌘⌫ Ctrl+Shift+⌫), and where Ctrl would take a key from something else the
-/// key moves: ⌃⌘←/→ (back, forward) to Alt+←/→, ⌃⌘↩/⌫ (commit, rollback) to
-/// Ctrl+Alt+Shift+↩/⌫, ⌥⌘←/→ (pages) to Alt+PgUp/PgDn, ⌥⌘L to Ctrl+Shift+L (Ctrl+Alt+L locks
+/// key moves: ⌃⌘←/→ (back, forward) to Alt+←/→, ⌃⌘↩/⌫ (commit, rollback) to Alt+Shift+↩/⌫, ⌥⌘←/→ (pages) to Alt+PgUp/PgDn, ⌥⌘L to Ctrl+Shift+L (Ctrl+Alt+L locks
 /// the screen).
 pub fn native(s: &str) -> String {
     if !LINUX {
@@ -21,7 +20,7 @@ pub fn native(s: &str) -> String {
         if m.control {
             match key.as_str() {
                 "left" | "right" => (ctrl, alt) = (false, true),
-                "enter" | "backspace" => (alt, shift) = (true, true),
+                "enter" | "backspace" => (ctrl, alt, shift) = (false, true, true),
                 _ => return s.to_string(),
             }
         } else if !alt && (arrow || matches!(key.as_str(), "backspace" | "delete")) {

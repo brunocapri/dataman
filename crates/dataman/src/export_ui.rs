@@ -356,7 +356,7 @@ impl ExportView {
         let name = self.path.file_name().and_then(|n| n.to_str()).map(str::to_string);
         let rx = cx.prompt_for_new_path(&dir, name.as_deref());
         cx.spawn(async move |this, cx| {
-            let Ok(Ok(Some(p))) = rx.await else { return };
+            let Some(p) = crate::sql_picker::picked(rx.await, cx) else { return };
             let _ = this.update(cx, |v, cx| {
                 if let Some(f) = ExportFormat::from_path(&p)
                     && f != v.format
@@ -798,7 +798,7 @@ impl Render for ExportView {
                 .child(ui::button(&t, "ex-stop", Btn::Danger).h(px(28.)).child("Stop").child(ui::key_hint("⌘.")).on_click(cx.listener(|v, _, _, cx| v.stop(cx))));
         } else {
             if let Some(p) = done_path {
-                footer = footer.child(ui::button(&t, "ex-reveal", Btn::Ghost).h(px(28.)).child("Reveal in Finder").on_click(move |_, _, cx| cx.reveal_path(&p)));
+                footer = footer.child(ui::button(&t, "ex-reveal", Btn::Ghost).h(px(28.)).child(if crate::keymap::LINUX { "Show in Folder" } else { "Reveal in Finder" }).on_click(move |_, _, cx| cx.reveal_path(&p)));
             }
             let close = if self.job.is_some() { "Close" } else { "Cancel" };
             footer = footer.child(ui::button(&t, "ex-cancel", Btn::Ghost).h(px(28.)).child(close).on_click(cx.listener(|_, _, _, cx| cx.emit(ExportEvent::Close)))).child(ui::probe(

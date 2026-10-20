@@ -43,16 +43,35 @@ pub fn pick_save_path(name: &str, cx: &App) -> oneshot::Receiver<Option<PathBuf>
     {
         let dir = std::env::current_dir().unwrap_or_default();
         let path = cx.prompt_for_new_path(&dir, Some(name));
-        cx.spawn(async move |_| {
-            let picked = match path.await {
-                Ok(Ok(Some(p))) => Some(if is_sql(&p) { p } else { p.with_extension("sql") }),
-                _ => None,
-            };
+        cx.spawn(async move |cx| {
+            let picked = picked(path.await, cx).map(|p| if is_sql(&p) { p } else { p.with_extension("sql") });
             let _ = tx.send(picked);
         })
         .detach();
     }
     rx
+}
+
+/// A picker's answer; when there is no file chooser at all (Linux without
+/// xdg-desktop-portal) the user is told so instead of nothing happening.
+pub fn picked<T, E>(answer: Result<anyhow::Result<Option<T>>, E>, cx: &mut gpui::AsyncApp) -> Option<T> {
+    match answer {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => {
+            log::warn!("file chooser: {e:#}");
+            let _ = cx.update(|cx| no_chooser(&e, cx));
+            None
+        }
+        Err(_) => None,
+    }
+}
+
+fn no_chooser(e: &anyhow::Error, cx: &mut App) {
+    let Some(window) = cx.windows().into_iter().next() else { return };
+    let detail = format!("{e}\n\nInstall xdg-desktop-portal with a backend for your desktop (xdg-desktop-portal-gnome, -kde or -gtk), then try again.");
+    let _ = window.update(cx, |_, window, cx| {
+        let _ = window.prompt(gpui::PromptLevel::Warning, "No file chooser", Some(&detail), &["OK"], cx);
+    });
 }
 
 pub fn is_sql(p: &std::path::Path) -> bool {
@@ -73,11 +92,8 @@ pub fn pick_sql_files(multiple: bool, cx: &App) -> oneshot::Receiver<Vec<PathBuf
     #[cfg(not(target_os = "macos"))]
     {
         let paths = cx.prompt_for_paths(gpui::PathPromptOptions { files: true, directories: false, multiple, prompt: None });
-        cx.spawn(async move |_| {
-            let picked = match paths.await {
-                Ok(Ok(Some(p))) => p.into_iter().filter(|p| is_sql(p)).collect(),
-                _ => Vec::new(),
-            };
+        cx.spawn(async move |cx| {
+            let picked = picked(paths.await, cx).map(|p| p.into_iter().filter(|p| is_sql(p)).collect()).unwrap_or_default();
             let _ = tx.send(picked);
         })
         .detach();

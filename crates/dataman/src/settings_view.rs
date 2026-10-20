@@ -779,7 +779,7 @@ impl SettingsView {
             prompt: Some("Use this folder".into()),
         });
         cx.spawn(async move |this, cx| {
-            let Ok(Ok(Some(paths))) = rx.await else { return };
+            let Some(paths) = crate::sql_picker::picked(rx.await, cx) else { return };
             let Some(p) = paths.into_iter().next() else { return };
             let _ = this.update(cx, |v, cx| v.save(|s| s.export_dir = Some(p.display().to_string()), cx));
         })
@@ -870,6 +870,9 @@ impl SettingsView {
                     .when(open, |d| d.child(self.render_system_font_picker(t, cx)))
                     .into_any_element()
             }
+            Row::Translucency if !crate::theme::translucency_works() => {
+                div().text_size(px(11.5)).text_color(t.tx3).child("KDE Plasma on Wayland only").into_any_element()
+            }
             Row::Translucency => {
                 let on = s.translucency.is_on();
                 ui::segmented(t)
@@ -894,7 +897,7 @@ impl SettingsView {
                     .flex_row()
                     .items_center()
                     .gap(px(10.))
-                    .when(system && !on, |d| d.child(div().text_size(px(11.)).text_color(t.tx3).whitespace_nowrap().child("on in macOS")))
+                    .when(system && !on, |d| d.child(div().text_size(px(11.)).text_color(t.tx3).whitespace_nowrap().child(if crate::keymap::LINUX { "on in the desktop" } else { "on in macOS" })))
                     .child(
                         ui::segmented(t)
                             .child(ui::segment(t, "rm-off", "Animate", !on).on_click(cx.listener(|v, _, _, cx| v.set_reduce_motion(false, cx))))

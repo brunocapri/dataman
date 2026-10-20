@@ -307,7 +307,7 @@ impl DataImportView {
         }
         let rx = cx.prompt_for_paths(gpui::PathPromptOptions { files: true, directories: false, multiple: false, prompt: None });
         cx.spawn(async move |this, cx| {
-            let Ok(Ok(Some(paths))) = rx.await else { return };
+            let Some(paths) = crate::sql_picker::picked(rx.await, cx) else { return };
             let Some(p) = paths.into_iter().next() else { return };
             let _ = this.update(cx, |v, cx| {
                 if v.new_table() {
@@ -1343,7 +1343,7 @@ impl Workspace {
             None => {
                 let rx = cx.prompt_for_paths(gpui::PathPromptOptions { files: true, directories: false, multiple: false, prompt: None });
                 cx.spawn_in(window, async move |this, cx| {
-                    let Ok(Ok(Some(paths))) = rx.await else { return };
+                    let Some(paths) = crate::sql_picker::picked(rx.await, cx) else { return };
                     let Some(p) = paths.into_iter().next() else { return };
                     let _ = this.update_in(cx, |w, window, cx| w.show_data_import(target, p, window, cx));
                 })

@@ -428,8 +428,8 @@ mod tests {
         for (mac, linux, shown) in [
             ("cmd-shift-c", "ctrl-shift-c", "Ctrl+Shift+C"),
             ("cmd-enter", "ctrl-enter", "Ctrl+Enter"),
-            ("ctrl-cmd-enter", "ctrl-alt-shift-enter", "Ctrl+Alt+Shift+Enter"),
-            ("ctrl-cmd-backspace", "ctrl-alt-shift-backspace", "Ctrl+Alt+Shift+Backspace"),
+            ("ctrl-cmd-enter", "alt-shift-enter", "Alt+Shift+Enter"),
+            ("ctrl-cmd-backspace", "alt-shift-backspace", "Alt+Shift+Backspace"),
             ("ctrl-cmd-left", "alt-left", "Alt+←"),
             ("cmd-alt-right", "alt-pagedown", "Alt+PgDn"),
             ("cmd-alt-l", "ctrl-shift-l", "Ctrl+Shift+L"),

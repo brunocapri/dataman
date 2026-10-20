@@ -351,7 +351,28 @@ pub(crate) fn alert_without_window(cx: &mut App) {
         return;
     }
     let buttons: &'static [&'static str] = if url.is_some() { &["Download", "Later"] } else { &["OK"] };
+    #[cfg(not(target_os = "macos"))]
+    {
+        // No app without a window here: the prompt goes to whichever window there is.
+        let Some(window) = cx.windows().into_iter().next() else {
+            log::warn!("update: {msg}: {detail}");
+            return;
+        };
+        let level = if err { PromptLevel::Warning } else { PromptLevel::Info };
+        let answer = window.update(cx, |_, window, cx| window.prompt(level, &msg, Some(&detail), buttons, cx));
+        if let Ok(answer) = answer {
+            cx.spawn(async move |cx| {
+                if answer.await == Ok(0)
+                    && let Some(url) = url
+                {
+                    cx.update(|cx| cx.open_url(&url));
+                }
+            })
+            .detach();
+        }
+    }
     // The alert runs a modal loop of its own: from a task, so the app is not held meanwhile.
+    #[cfg(target_os = "macos")]
     cx.spawn(async move |cx| {
         if native::alert(&msg, &detail, err, buttons) == 0
             && let Some(url) = url
@@ -395,13 +416,6 @@ mod native {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
-mod native {
-    pub fn alert(message: &str, detail: &str, _: bool, _: &[&str]) -> usize {
-        log::info!("{message}: {detail}");
-        1
-    }
-}
 
 #[cfg(test)]
 mod tests {
