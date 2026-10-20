@@ -481,6 +481,18 @@ impl Dirs {
         Dirs { config: path.into() }
     }
 
+    /// The directory holds the connections, the history and unsaved editors: this user's only,
+    /// whatever the files' own modes are (an older Dataman left it 0755).
+    pub fn ensure_private(&self) -> std::io::Result<()> {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&self.config)?;
+        let mode = std::fs::metadata(&self.config)?.permissions().mode();
+        if mode & 0o077 != 0 {
+            std::fs::set_permissions(&self.config, std::fs::Permissions::from_mode(mode & 0o700))?;
+        }
+        Ok(())
+    }
+
     pub fn connections_file(&self) -> PathBuf {
         self.config.join("connections.toml")
     }
@@ -618,6 +630,21 @@ fn save(path: &Path, connections: &[ConnectionProfile]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn config_dir_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = Dirs::at(dir.path().join("new").join("dataman"));
+        dirs.ensure_private().unwrap();
+        assert_eq!(std::fs::metadata(&dirs.config).unwrap().permissions().mode() & 0o777, 0o700);
+        let old = Dirs::at(dir.path().join("old"));
+        std::fs::create_dir(&old.config).unwrap();
+        std::fs::set_permissions(&old.config, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let core = crate::Core::new(old.clone(), std::sync::Arc::new(crate::MemorySecrets::default())).unwrap();
+        assert_eq!(std::fs::metadata(&old.config).unwrap().permissions().mode() & 0o777, 0o700, "an older, open directory is closed");
+        drop(core);
+    }
 
     #[test]
     fn roundtrip_without_passwords() {

@@ -134,7 +134,7 @@ impl Drop for IpcServer {
 
 /// Blocking (a bind): off the UI thread. Never takes over a socket another app listens on.
 pub fn serve(dirs: &Dirs, provide: Provide) -> std::io::Result<IpcServer> {
-    std::fs::create_dir_all(&dirs.config)?;
+    dirs.ensure_private()?;
     let path = socket_path(dirs);
     if std::os::unix::net::UnixStream::connect(&path).is_ok() {
         return Err(std::io::Error::new(std::io::ErrorKind::AddrInUse, "another Dataman is listening"));

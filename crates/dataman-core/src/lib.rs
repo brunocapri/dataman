@@ -187,6 +187,9 @@ pub struct Importable {
 
 impl Core {
     pub fn new(dirs: Dirs, secrets: Arc<dyn SecretStore>) -> Result<Core> {
+        if let Err(e) = dirs.ensure_private() {
+            log::warn!("{}: {e}", dirs.config.display());
+        }
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .thread_name("dataman-core")
