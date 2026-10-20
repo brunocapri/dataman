@@ -634,7 +634,7 @@ impl Workspace {
             .when(!active, |d| d.text_color(t.tx3).hover(move |s| s.bg(hov).text_color(tx2)))
             .on_mouse_down(MouseButton::Left, cx.listener(move |w, ev: &gpui::MouseDownEvent, _, cx| {
                 cx.stop_propagation();
-                if ev.modifiers.control {
+                if crate::keymap::menu_click(&ev.modifiers) {
                     w.tab_menu = Some((drag_id, ev.position));
                     cx.notify();
                 }
@@ -646,7 +646,7 @@ impl Workspace {
             }))
             .on_drag(crate::app::DraggedTab(drag_id), move |_, _, _, cx| crate::dnd::ghost(ghost_label.clone(), Some(color), cx))
             .on_click(cx.listener(move |w, ev: &gpui::ClickEvent, window, cx| {
-                if !ev.modifiers().control {
+                if !crate::keymap::menu_click(&ev.modifiers()) {
                     w.activate_tab(&activate, window, cx)
                 }
             }))
@@ -1983,7 +1983,7 @@ impl Workspace {
         let suggestion = err.hint.as_deref().and_then(|h| h.split('"').nth(1)).map(str::to_string).filter(|_| token.is_some());
         let err_copy = err.to_string();
         let btn = |id: &'static str, label: &'static str, key: Option<String>| {
-            ui::button(t, id, Btn::Secondary).h(px(28.)).px(px(10.)).gap(px(8.)).child(label).children(key.map(|k| div().text_size(px(10.5)).text_color(t.tx3).child(k)))
+            ui::button(t, id, Btn::Secondary).h(px(28.)).px(px(10.)).gap(px(8.)).child(label).children(key.map(|k| div().text_size(px(10.5)).text_color(t.tx3).child(crate::ui::keys_text(k))))
         };
         let left = div()
             .flex_1()

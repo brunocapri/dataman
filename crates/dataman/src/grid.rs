@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use gpui::{
     AnyElement, AnyView, App, Bounds, ClickEvent, ClipboardItem, Context, CursorStyle, Entity, EventEmitter, FocusHandle, Focusable,
-    Font, FontStyle, FontWeight, Hsla, KeyBinding, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
+    Font, FontStyle, FontWeight, Hsla, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
     Point, ScrollWheelEvent, ShapedLine, SharedString, StrikethroughStyle, Subscription, Task, TextAlign, TextRun, Window, actions,
     anchored, canvas, deferred, div, fill, font, point, prelude::*, size,
 };
@@ -68,42 +68,42 @@ pub const MENU_CONTEXT: &str = "GridMenu";
 pub fn bind_keys(cx: &mut App) {
     let c = Some(GRID_KEYS);
     cx.bind_keys([
-        KeyBinding::new("up", MoveUp, c),
-        KeyBinding::new("down", MoveDown, c),
-        KeyBinding::new("left", MoveLeft, c),
-        KeyBinding::new("right", MoveRight, c),
-        KeyBinding::new("shift-up", SelectUp, c),
-        KeyBinding::new("shift-down", SelectDown, c),
-        KeyBinding::new("shift-left", SelectLeft, c),
-        KeyBinding::new("shift-right", SelectRight, c),
-        KeyBinding::new("pageup", PageUp, c),
-        KeyBinding::new("pagedown", PageDown, c),
-        KeyBinding::new("cmd-up", Top, c),
-        KeyBinding::new("cmd-left", RowStart, c),
-        KeyBinding::new("cmd-right", RowEnd, c),
-        KeyBinding::new("cmd-shift-left", SelectRowStart, c),
-        KeyBinding::new("cmd-shift-right", SelectRowEnd, c),
-        KeyBinding::new("home", Top, c),
-        KeyBinding::new("end", Bottom, c),
-        KeyBinding::new("cmd-a", SelectAll, c),
-        KeyBinding::new("enter", EditCell, c),
-        KeyBinding::new("backspace", DeleteRows, c),
-        KeyBinding::new("delete", DeleteRows, c),
-        KeyBinding::new("alt-down", OpenCellMenu, c),
-        KeyBinding::new("cmd-f", find::Find, c),
-        KeyBinding::new("cmd-g", find::FindNext, c),
+        crate::keymap::kb("up", MoveUp, c),
+        crate::keymap::kb("down", MoveDown, c),
+        crate::keymap::kb("left", MoveLeft, c),
+        crate::keymap::kb("right", MoveRight, c),
+        crate::keymap::kb("shift-up", SelectUp, c),
+        crate::keymap::kb("shift-down", SelectDown, c),
+        crate::keymap::kb("shift-left", SelectLeft, c),
+        crate::keymap::kb("shift-right", SelectRight, c),
+        crate::keymap::kb("pageup", PageUp, c),
+        crate::keymap::kb("pagedown", PageDown, c),
+        crate::keymap::kb("cmd-up", Top, c),
+        crate::keymap::kb("cmd-left", RowStart, c),
+        crate::keymap::kb("cmd-right", RowEnd, c),
+        crate::keymap::kb("cmd-shift-left", SelectRowStart, c),
+        crate::keymap::kb("cmd-shift-right", SelectRowEnd, c),
+        crate::keymap::kb(if crate::keymap::LINUX { "ctrl-home" } else { "home" }, Top, c),
+        crate::keymap::kb(if crate::keymap::LINUX { "ctrl-end" } else { "end" }, Bottom, c),
+        crate::keymap::kb("cmd-a", SelectAll, c),
+        crate::keymap::kb("enter", EditCell, c),
+        crate::keymap::kb("backspace", DeleteRows, c),
+        crate::keymap::kb("delete", DeleteRows, c),
+        crate::keymap::kb("alt-down", OpenCellMenu, c),
+        crate::keymap::kb("cmd-f", find::Find, c),
+        crate::keymap::kb("cmd-g", find::FindNext, c),
     ]);
     let f = Some("ResultGrid && find && !GridCellEditor");
-    cx.bind_keys([KeyBinding::new("cmd-shift-g", find::FindPrevious, f), KeyBinding::new("escape", find::CloseFind, f)]);
+    cx.bind_keys([crate::keymap::kb("cmd-shift-g", find::FindPrevious, f), crate::keymap::kb("escape", find::CloseFind, f)]);
     let m = Some(MENU_CONTEXT);
     cx.bind_keys([
-        KeyBinding::new("up", MenuUp, m),
-        KeyBinding::new("down", MenuDown, m),
-        KeyBinding::new("enter", MenuConfirm, m),
-        KeyBinding::new("space", MenuConfirm, m),
-        KeyBinding::new("escape", MenuClose, m),
-        KeyBinding::new("alt-down", MenuClose, m),
-        KeyBinding::new("alt-up", MenuClose, m),
+        crate::keymap::kb("up", MenuUp, m),
+        crate::keymap::kb("down", MenuDown, m),
+        crate::keymap::kb("enter", MenuConfirm, m),
+        crate::keymap::kb("space", MenuConfirm, m),
+        crate::keymap::kb("escape", MenuClose, m),
+        crate::keymap::kb("alt-down", MenuClose, m),
+        crate::keymap::kb("alt-up", MenuClose, m),
     ]);
 }
 
@@ -1074,7 +1074,7 @@ impl ResultGrid {
                 return;
             }
             let bx = x - g.gutter;
-            if ev.modifiers.control && !ev.modifiers.platform {
+            if crate::keymap::menu_click(&ev.modifiers) && !ev.modifiers.platform {
                 if let Some(d) = self.hit_col(bx) {
                     self.header_menu(d, ev.position, window, cx);
                 }
@@ -1092,7 +1092,7 @@ impl ResultGrid {
             }
             return;
         }
-        if !ev.modifiers.control
+        if !crate::keymap::menu_click(&ev.modifiers)
             && let Some(cell) = self.eye_at(ev.position)
         {
             if self.pop.as_ref().is_some_and(|p| p.style == PopStyle::Select) {
@@ -1105,7 +1105,7 @@ impl ResultGrid {
             return;
         }
         let Some(cell) = self.hit_cell(ev.position) else { return };
-        if ev.modifiers.control && !ev.modifiers.platform && x >= g.gutter {
+        if crate::keymap::menu_click(&ev.modifiers) && !ev.modifiers.platform && x >= g.gutter {
             self.context_menu(cell, ev.position, window, cx);
             return;
         }
@@ -1123,7 +1123,7 @@ impl ResultGrid {
             };
             let fresh = ev.click_count == 1
                 && !ev.modifiers.shift
-                && !ev.modifiers.platform
+                && !ev.modifiers.secondary()
                 && !self.sel.is_some_and(|s| s.single() && s.head == cell);
             if fresh {
                 self.pop = FindPop::start(cell, PopStyle::Select, cx);
@@ -1132,7 +1132,7 @@ impl ResultGrid {
             }
             self.sel = Some(Selection { anchor, head: cell, rows: false });
             self.drag = Some(Drag::Cells);
-            self.press = grid_menu::press(ev.click_count, ev.modifiers.shift, ev.modifiers.platform, false, cell.row, cell.col);
+            self.press = grid_menu::press(ev.click_count, ev.modifiers.shift, ev.modifiers.secondary(), false, cell.row, cell.col);
             if ev.click_count == 2 && !ev.modifiers.shift {
                 self.drag = None;
                 cx.emit(GridEvent::EditCell { row: cell.row, col: self.rc(cell.col) });

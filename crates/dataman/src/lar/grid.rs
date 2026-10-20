@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use gpui::{
     App, Bounds, ClipboardItem, Context, Entity, FocusHandle, Focusable, Font, FontStyle, FontWeight,
-    Hsla, KeyBinding, MouseButton, MouseDownEvent, Pixels, ScrollWheelEvent, ShapedLine, SharedString, Task,
+    Hsla, MouseButton, MouseDownEvent, Pixels, ScrollWheelEvent, ShapedLine, SharedString, Task,
     TextAlign, TextRun, Window, actions, canvas, div, fill, font, point, prelude::*, size,
 };
 use crate::theme::{Pt, px};
@@ -24,10 +24,10 @@ actions!(lar_grid, [Up, Down, CopyRow, Top]);
 pub fn bind_keys(cx: &mut App) {
     let c = Some("LarGrid");
     cx.bind_keys([
-        KeyBinding::new("up", Up, c),
-        KeyBinding::new("down", Down, c),
-        KeyBinding::new("cmd-c", CopyRow, c),
-        KeyBinding::new("cmd-up", Top, c),
+        crate::keymap::kb("up", Up, c),
+        crate::keymap::kb("down", Down, c),
+        crate::keymap::kb("cmd-c", CopyRow, c),
+        crate::keymap::kb("cmd-up", Top, c),
     ]);
 }
 

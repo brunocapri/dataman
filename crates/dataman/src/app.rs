@@ -119,15 +119,15 @@ pub const WORKSPACE_KEYS: &str = "Workspace && !Modal";
 pub fn bind_keys(cx: &mut App) {
     let w = Some(WORKSPACE_KEYS);
     cx.bind_keys([
-        KeyBinding::new("escape", FocusEditor, w),
+        crate::keymap::kb("escape", FocusEditor, w),
         // The sheet holds the focus: esc reaches it whatever had the keys before.
-        KeyBinding::new("escape", CloseShortcuts, Some("Shortcuts")),
-        KeyBinding::new("escape", CancelPendingRun, Some("ConfirmDiscard")),
-        KeyBinding::new("enter", CancelPendingRun, Some("ConfirmDiscard")),
-        KeyBinding::new("cmd-backspace", DiscardAndRun, Some("ConfirmDiscard")),
-        KeyBinding::new("cmd-enter", SheetConfirm, Some(SHEET_CONTEXT)),
-        KeyBinding::new("cmd-backspace", SheetRollback, Some(SHEET_CONTEXT)),
-        KeyBinding::new("escape", SheetCancel, Some(SHEET_CONTEXT)),
+        crate::keymap::kb("escape", CloseShortcuts, Some("Shortcuts")),
+        crate::keymap::kb("escape", CancelPendingRun, Some("ConfirmDiscard")),
+        crate::keymap::kb("enter", CancelPendingRun, Some("ConfirmDiscard")),
+        crate::keymap::kb("cmd-backspace", DiscardAndRun, Some("ConfirmDiscard")),
+        crate::keymap::kb("cmd-enter", SheetConfirm, Some(SHEET_CONTEXT)),
+        crate::keymap::kb("cmd-backspace", SheetRollback, Some(SHEET_CONTEXT)),
+        crate::keymap::kb("escape", SheetCancel, Some(SHEET_CONTEXT)),
     ]);
     let grid = Some(crate::grid::GRID_KEYS);
     let run: Vec<KeyBinding> = crate::keymap::effective("run_all").iter().filter_map(|k| KeyBinding::load(k, Box::new(RunZoomed), grid.map(|c| gpui::KeyBindingContextPredicate::parse(c).unwrap().into()), false, None, &gpui::DummyKeyboardMapper).ok()).collect();
@@ -2865,7 +2865,7 @@ impl Drop for TraceRender {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{KeyContext, Keymap, Keystroke};
+    use gpui::{KeyContext, Keymap};
 
     #[test]
     fn file_urls() {
@@ -2886,12 +2886,12 @@ mod tests {
     #[test]
     fn fields_and_modals_keep_their_keys() {
         let keymap = Keymap::new(vec![
-            KeyBinding::new("backspace", crate::grid::DeleteRows, Some(crate::grid::GRID_KEYS)),
-            KeyBinding::new("/", crate::tree::FocusFilter, Some("Explorer && !TextInput")),
-            KeyBinding::new("cmd-w", CloseTab, Some(WORKSPACE_KEYS)),
-            KeyBinding::new("cmd-i", crate::grid::InsertRow, Some("ResultGrid")),
+            crate::keymap::kb("backspace", crate::grid::DeleteRows, Some(crate::grid::GRID_KEYS)),
+            crate::keymap::kb("/", crate::tree::FocusFilter, Some("Explorer && !TextInput")),
+            crate::keymap::kb("cmd-w", CloseTab, Some(WORKSPACE_KEYS)),
+            crate::keymap::kb("cmd-i", crate::grid::InsertRow, Some("ResultGrid")),
         ]);
-        let hits = |k: &str, s: &[&str]| !keymap.bindings_for_input(&[Keystroke::parse(k).unwrap()], &stack(s)).0.is_empty();
+        let hits = |k: &str, s: &[&str]| !keymap.bindings_for_input(&[crate::keymap::keystroke(k)], &stack(s)).0.is_empty();
         assert!(hits("backspace", &["Workspace", "ResultGrid"]), "on the grid ⌫ marks rows for deletion");
         assert!(!hits("backspace", &["Workspace", "ResultGrid", "GridCellEditor", "TextInput"]), "in the cell editor ⌫ deletes a character");
         assert!(hits("/", &["Workspace", "Explorer"]));
@@ -2906,13 +2906,13 @@ mod tests {
     fn result_tab_keys() {
         let w = Some(WORKSPACE_KEYS);
         let keymap = Keymap::new(vec![
-            KeyBinding::new("cmd-shift-]", NextTab, w),
-            KeyBinding::new("cmd-shift-[", PrevTab, w),
-            KeyBinding::new("cmd-alt-]", NextResult, w),
-            KeyBinding::new("cmd-alt-[", PrevResult, w),
+            crate::keymap::kb("cmd-shift-]", NextTab, w),
+            crate::keymap::kb("cmd-shift-[", PrevTab, w),
+            crate::keymap::kb("cmd-alt-]", NextResult, w),
+            crate::keymap::kb("cmd-alt-[", PrevResult, w),
         ]);
         let first = |k: &str, s: &[&str]| {
-            keymap.bindings_for_input(&[Keystroke::parse(k).unwrap()], &stack(s)).0.first().map(|b| b.action().name().to_string())
+            keymap.bindings_for_input(&[crate::keymap::keystroke(k)], &stack(s)).0.first().map(|b| b.action().name().to_string())
         };
         for ctx in [&["Workspace", "CodeEditor"][..], &["Workspace", "ResultGrid"], &["Workspace", "ResultGrid", "GridCellEditor", "TextInput"]] {
             assert_eq!(first("cmd-alt-]", ctx).as_deref(), Some("workspace::NextResult"), "{ctx:?}");
@@ -2926,15 +2926,15 @@ mod tests {
     fn explain_keys() {
         let w = Some(WORKSPACE_KEYS);
         let keymap = Keymap::new(vec![
-            KeyBinding::new("cmd-l", Explain, w),
-            KeyBinding::new("cmd-alt-l", ExplainAnalyze, w),
-            KeyBinding::new("cmd-l", crate::welcome::Localhost, Some("Welcome")),
-            KeyBinding::new("up", crate::grid::MoveUp, Some(crate::grid::GRID_KEYS)),
-            KeyBinding::new("up", crate::plan::SelectPrev, Some(crate::plan::CONTEXT)),
-            KeyBinding::new("escape", FocusEditor, w),
+            crate::keymap::kb("cmd-l", Explain, w),
+            crate::keymap::kb("cmd-alt-l", ExplainAnalyze, w),
+            crate::keymap::kb("cmd-l", crate::welcome::Localhost, Some("Welcome")),
+            crate::keymap::kb("up", crate::grid::MoveUp, Some(crate::grid::GRID_KEYS)),
+            crate::keymap::kb("up", crate::plan::SelectPrev, Some(crate::plan::CONTEXT)),
+            crate::keymap::kb("escape", FocusEditor, w),
         ]);
         let first = |k: &str, s: &[&str]| {
-            keymap.bindings_for_input(&[Keystroke::parse(k).unwrap()], &stack(s)).0.first().map(|b| b.action().name().to_string())
+            keymap.bindings_for_input(&[crate::keymap::keystroke(k)], &stack(s)).0.first().map(|b| b.action().name().to_string())
         };
         for ctx in [&["Workspace", "CodeEditor"][..], &["Workspace", "ResultGrid"], &["Workspace", "PlanView"]] {
             assert_eq!(first("cmd-l", ctx).as_deref(), Some("workspace::Explain"), "{ctx:?}");
@@ -2950,17 +2950,17 @@ mod tests {
     fn table_keys() {
         let w = Some(WORKSPACE_KEYS);
         let keymap = Keymap::new(vec![
-            KeyBinding::new("cmd-alt-right", NextPage, w),
-            KeyBinding::new("cmd-alt-left", PrevPage, w),
-            KeyBinding::new("alt-right", crate::editor::MoveWordRight, Some("CodeEditor")),
-            KeyBinding::new("shift-space", crate::grid::ViewValue, Some(crate::grid::GRID_KEYS)),
-            KeyBinding::new("down", crate::grid::MoveDown, Some(crate::grid::GRID_KEYS)),
-            KeyBinding::new("escape", FocusEditor, w),
-            KeyBinding::new("escape", crate::value_edit::CancelValue, Some(crate::value_edit::CONTEXT)),
-            KeyBinding::new("escape", crate::table_view::CloseFilter, Some(crate::table_view::POPOVER_CONTEXT)),
+            crate::keymap::kb("cmd-alt-right", NextPage, w),
+            crate::keymap::kb("cmd-alt-left", PrevPage, w),
+            crate::keymap::kb("alt-right", crate::editor::MoveWordRight, Some("CodeEditor")),
+            crate::keymap::kb("shift-space", crate::grid::ViewValue, Some(crate::grid::GRID_KEYS)),
+            crate::keymap::kb("down", crate::grid::MoveDown, Some(crate::grid::GRID_KEYS)),
+            crate::keymap::kb("escape", FocusEditor, w),
+            crate::keymap::kb("escape", crate::value_edit::CancelValue, Some(crate::value_edit::CONTEXT)),
+            crate::keymap::kb("escape", crate::table_view::CloseFilter, Some(crate::table_view::POPOVER_CONTEXT)),
         ]);
         let first = |k: &str, s: &[&str]| {
-            keymap.bindings_for_input(&[Keystroke::parse(k).unwrap()], &stack(s)).0.first().map(|b| b.action().name().to_string())
+            keymap.bindings_for_input(&[crate::keymap::keystroke(k)], &stack(s)).0.first().map(|b| b.action().name().to_string())
         };
         for ctx in [&["Workspace", "CodeEditor"][..], &["Workspace", "ResultGrid"]] {
             assert_eq!(first("cmd-alt-right", ctx).as_deref(), Some("workspace::NextPage"), "{ctx:?}");
@@ -2978,17 +2978,17 @@ mod tests {
     fn transaction_keys() {
         let w = Some(WORKSPACE_KEYS);
         let keymap = Keymap::new(vec![
-            KeyBinding::new("cmd-enter", crate::editor::RunScript, Some("CodeEditor")),
-            KeyBinding::new("cmd-backspace", DiscardChanges, Some(crate::grid::GRID_KEYS)),
-            KeyBinding::new("escape", FocusEditor, w),
-            KeyBinding::new("ctrl-cmd-enter", CommitTx, w),
-            KeyBinding::new("ctrl-cmd-backspace", RollbackTx, w),
-            KeyBinding::new("cmd-enter", SheetConfirm, Some(SHEET_CONTEXT)),
-            KeyBinding::new("cmd-backspace", SheetRollback, Some(SHEET_CONTEXT)),
-            KeyBinding::new("escape", SheetCancel, Some(SHEET_CONTEXT)),
+            crate::keymap::kb("cmd-enter", crate::editor::RunScript, Some("CodeEditor")),
+            crate::keymap::kb("cmd-backspace", DiscardChanges, Some(crate::grid::GRID_KEYS)),
+            crate::keymap::kb("escape", FocusEditor, w),
+            crate::keymap::kb("ctrl-cmd-enter", CommitTx, w),
+            crate::keymap::kb("ctrl-cmd-backspace", RollbackTx, w),
+            crate::keymap::kb("cmd-enter", SheetConfirm, Some(SHEET_CONTEXT)),
+            crate::keymap::kb("cmd-backspace", SheetRollback, Some(SHEET_CONTEXT)),
+            crate::keymap::kb("escape", SheetCancel, Some(SHEET_CONTEXT)),
         ]);
         let first = |k: &str, s: &[&str]| {
-            keymap.bindings_for_input(&[Keystroke::parse(k).unwrap()], &stack(s)).0.first().map(|b| b.action().name().to_string())
+            keymap.bindings_for_input(&[crate::keymap::keystroke(k)], &stack(s)).0.first().map(|b| b.action().name().to_string())
         };
         for ctx in [&["Workspace", "CodeEditor"][..], &["Workspace", "ResultGrid"], &["Workspace", "ResultGrid", "GridCellEditor", "TextInput"]] {
             assert_eq!(first("ctrl-cmd-enter", ctx).as_deref(), Some("workspace::CommitTx"), "{ctx:?}");
@@ -3053,12 +3053,12 @@ mod tests {
     fn save_keys() {
         let w = Some(WORKSPACE_KEYS);
         let keymap = Keymap::new(vec![
-            KeyBinding::new("cmd-s", SaveFavorite, Some("CodeEditor")),
-            KeyBinding::new("cmd-s", ReviewChanges, Some("ResultGrid")),
-            KeyBinding::new("cmd-shift-s", SaveAs, w),
+            crate::keymap::kb("cmd-s", SaveFavorite, Some("CodeEditor")),
+            crate::keymap::kb("cmd-s", ReviewChanges, Some("ResultGrid")),
+            crate::keymap::kb("cmd-shift-s", SaveAs, w),
         ]);
         let first = |k: &str, s: &[&str]| {
-            keymap.bindings_for_input(&[Keystroke::parse(k).unwrap()], &stack(s)).0.first().map(|b| b.action().name().to_string())
+            keymap.bindings_for_input(&[crate::keymap::keystroke(k)], &stack(s)).0.first().map(|b| b.action().name().to_string())
         };
         assert_eq!(first("cmd-s", &["Workspace", "CodeEditor"]).as_deref(), Some("workspace::SaveFavorite"));
         assert_eq!(first("cmd-s", &["Workspace", "ResultGrid"]).as_deref(), Some("workspace::ReviewChanges"));
@@ -3077,17 +3077,17 @@ mod tests {
     fn the_open_menu_takes_the_keys() {
         use crate::tree;
         let keymap = Keymap::new(vec![
-            KeyBinding::new("up", tree::SelectPrev, Some("Explorer")),
-            KeyBinding::new("escape", tree::Escape, Some("Explorer")),
-            KeyBinding::new("enter", tree::Open, Some("Explorer")),
-            KeyBinding::new("shift-f10", tree::ShowRowActions, Some("Explorer")),
-            KeyBinding::new("escape", FocusEditor, Some(WORKSPACE_KEYS)),
-            KeyBinding::new("up", tree::MenuUp, Some("ExplorerMenu")),
-            KeyBinding::new("escape", tree::MenuClose, Some("ExplorerMenu")),
-            KeyBinding::new("enter", tree::MenuConfirm, Some("ExplorerMenu")),
+            crate::keymap::kb("up", tree::SelectPrev, Some("Explorer")),
+            crate::keymap::kb("escape", tree::Escape, Some("Explorer")),
+            crate::keymap::kb("enter", tree::Open, Some("Explorer")),
+            crate::keymap::kb("shift-f10", tree::ShowRowActions, Some("Explorer")),
+            crate::keymap::kb("escape", FocusEditor, Some(WORKSPACE_KEYS)),
+            crate::keymap::kb("up", tree::MenuUp, Some("ExplorerMenu")),
+            crate::keymap::kb("escape", tree::MenuClose, Some("ExplorerMenu")),
+            crate::keymap::kb("enter", tree::MenuConfirm, Some("ExplorerMenu")),
         ]);
         let first = |k: &str, s: &[&str]| {
-            let (b, _) = keymap.bindings_for_input(&[Keystroke::parse(k).unwrap()], &stack(s));
+            let (b, _) = keymap.bindings_for_input(&[crate::keymap::keystroke(k)], &stack(s));
             b.first().map(|b| b.action().name().to_string())
         };
         let menu = ["Workspace", "Explorer", "ExplorerMenu"];
@@ -3102,19 +3102,19 @@ mod tests {
     fn find_keys_resolve_by_context() {
         use crate::find;
         let keymap = Keymap::new(vec![
-            KeyBinding::new("cmd-shift-g", FocusGrid, Some(WORKSPACE_KEYS)),
-            KeyBinding::new("escape", FocusEditor, Some(WORKSPACE_KEYS)),
-            KeyBinding::new("cmd-f", find::Find, Some("CodeEditor")),
-            KeyBinding::new("cmd-shift-g", find::FindPrevious, Some("CodeEditor && find")),
-            KeyBinding::new("cmd-f", find::Find, Some(crate::grid::GRID_KEYS)),
-            KeyBinding::new("cmd-shift-g", find::FindPrevious, Some("ResultGrid && find && !GridCellEditor")),
-            KeyBinding::new("escape", find::CloseFind, Some("ResultGrid && find && !GridCellEditor")),
-            KeyBinding::new("escape", find::CloseFind, Some(find::CONTEXT)),
-            KeyBinding::new("shift-enter", find::FindPrevious, Some(find::CONTEXT)),
-            KeyBinding::new("enter", crate::input::Submit, Some("TextInput")),
+            crate::keymap::kb("cmd-shift-g", FocusGrid, Some(WORKSPACE_KEYS)),
+            crate::keymap::kb("escape", FocusEditor, Some(WORKSPACE_KEYS)),
+            crate::keymap::kb("cmd-f", find::Find, Some("CodeEditor")),
+            crate::keymap::kb("cmd-shift-g", find::FindPrevious, Some("CodeEditor && find")),
+            crate::keymap::kb("cmd-f", find::Find, Some(crate::grid::GRID_KEYS)),
+            crate::keymap::kb("cmd-shift-g", find::FindPrevious, Some("ResultGrid && find && !GridCellEditor")),
+            crate::keymap::kb("escape", find::CloseFind, Some("ResultGrid && find && !GridCellEditor")),
+            crate::keymap::kb("escape", find::CloseFind, Some(find::CONTEXT)),
+            crate::keymap::kb("shift-enter", find::FindPrevious, Some(find::CONTEXT)),
+            crate::keymap::kb("enter", crate::input::Submit, Some("TextInput")),
         ]);
         let first = |k: &str, s: &[&str]| {
-            let (b, _) = keymap.bindings_for_input(&[Keystroke::parse(k).unwrap()], &stack(s));
+            let (b, _) = keymap.bindings_for_input(&[crate::keymap::keystroke(k)], &stack(s));
             b.first().map(|b| b.action().name().to_string())
         };
         assert_eq!(first("cmd-shift-g", &["Workspace", "CodeEditor"]).as_deref(), Some("workspace::FocusGrid"));
@@ -3133,19 +3133,19 @@ mod tests {
     fn the_cell_menu_takes_the_keys() {
         use crate::grid::{self, GRID_KEYS, MENU_CONTEXT};
         let keymap = Keymap::new(vec![
-            KeyBinding::new("up", grid::MoveUp, Some(GRID_KEYS)),
-            KeyBinding::new("left", grid::MoveLeft, Some(GRID_KEYS)),
-            KeyBinding::new("enter", grid::EditCell, Some(GRID_KEYS)),
-            KeyBinding::new("cmd-c", grid::CopyTsv, Some(GRID_KEYS)),
-            KeyBinding::new("alt-down", grid::OpenCellMenu, Some(GRID_KEYS)),
-            KeyBinding::new("escape", FocusEditor, Some(WORKSPACE_KEYS)),
-            KeyBinding::new("up", grid::MenuUp, Some(MENU_CONTEXT)),
-            KeyBinding::new("enter", grid::MenuConfirm, Some(MENU_CONTEXT)),
-            KeyBinding::new("escape", grid::MenuClose, Some(MENU_CONTEXT)),
-            KeyBinding::new("alt-down", grid::MenuClose, Some(MENU_CONTEXT)),
+            crate::keymap::kb("up", grid::MoveUp, Some(GRID_KEYS)),
+            crate::keymap::kb("left", grid::MoveLeft, Some(GRID_KEYS)),
+            crate::keymap::kb("enter", grid::EditCell, Some(GRID_KEYS)),
+            crate::keymap::kb("cmd-c", grid::CopyTsv, Some(GRID_KEYS)),
+            crate::keymap::kb("alt-down", grid::OpenCellMenu, Some(GRID_KEYS)),
+            crate::keymap::kb("escape", FocusEditor, Some(WORKSPACE_KEYS)),
+            crate::keymap::kb("up", grid::MenuUp, Some(MENU_CONTEXT)),
+            crate::keymap::kb("enter", grid::MenuConfirm, Some(MENU_CONTEXT)),
+            crate::keymap::kb("escape", grid::MenuClose, Some(MENU_CONTEXT)),
+            crate::keymap::kb("alt-down", grid::MenuClose, Some(MENU_CONTEXT)),
         ]);
         let first = |k: &str, s: &[&str]| {
-            let (b, _) = keymap.bindings_for_input(&[Keystroke::parse(k).unwrap()], &stack(s));
+            let (b, _) = keymap.bindings_for_input(&[crate::keymap::keystroke(k)], &stack(s));
             b.first().map(|b| b.action().name().to_string())
         };
         let menu = ["Workspace", "ResultGrid", MENU_CONTEXT];

@@ -1,4 +1,4 @@
-use gpui::{AnyElement, App, Context, FontWeight, KeyBinding, MouseButton, PromptLevel, SharedString, Window, actions, div, prelude::*};
+use gpui::{AnyElement, App, Context, FontWeight, MouseButton, PromptLevel, SharedString, Window, actions, div, prelude::*};
 
 use crate::app::Workspace;
 use crate::theme::{ActiveTheme, Theme, px};
@@ -18,7 +18,7 @@ const SHEET: &str = "UpdateSheet";
 
 pub fn bind_keys(cx: &mut App) {
     let c = Some(SHEET);
-    cx.bind_keys([KeyBinding::new("escape", UpdateLater, c), KeyBinding::new("enter", UpdateInstall, c)]);
+    cx.bind_keys([crate::keymap::kb("escape", UpdateLater, c), crate::keymap::kb("enter", UpdateInstall, c)]);
 }
 
 fn mb(n: u64) -> String {

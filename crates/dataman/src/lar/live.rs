@@ -893,7 +893,7 @@ impl Render for LivePanel {
                     .text_size(px(11.))
                     .text_color(if n > 0 { t.tx2 } else { t.tx4 })
                     .cursor_pointer()
-                    .child(if any_live { "pause all ⌥P" } else { "resume all ⌥P" })
+                    .child(crate::ui::keys_text(if any_live { "pause all ⌥P" } else { "resume all ⌥P" }))
                     .on_click(cx.listener(move |p, _, _, cx| {
                         for (_, _, r, _) in p.runs(cx) {
                             r.update(cx, |r, cx| {

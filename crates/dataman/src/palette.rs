@@ -1,5 +1,5 @@
 use gpui::{
-    Action, App, Context, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, KeyBinding, MouseButton,
+    Action, App, Context, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, MouseButton,
     ScrollHandle, Window, actions, div, prelude::*,
 };
 use crate::theme::px;
@@ -16,17 +16,17 @@ const CONTEXT: &str = "Palette";
 pub fn bind_keys(cx: &mut App) {
     let c = Some(CONTEXT);
     cx.bind_keys([
-        KeyBinding::new("escape", Dismiss, c),
-        KeyBinding::new("up", Up, c),
-        KeyBinding::new("down", Down, c),
-        KeyBinding::new("ctrl-p", Up, c),
-        KeyBinding::new("ctrl-n", Down, c),
-        KeyBinding::new("pageup", PageUp, c),
-        KeyBinding::new("pagedown", PageDown, c),
-        KeyBinding::new("tab", NextScope, c),
-        KeyBinding::new("shift-tab", PrevScope, c),
-        KeyBinding::new("cmd-enter", OpenNewTab, c),
-        KeyBinding::new("alt-enter", OpenInPlace, c),
+        crate::keymap::kb("escape", Dismiss, c),
+        crate::keymap::kb("up", Up, c),
+        crate::keymap::kb("down", Down, c),
+        crate::keymap::kb("ctrl-p", Up, c),
+        crate::keymap::kb("ctrl-n", Down, c),
+        crate::keymap::kb("pageup", PageUp, c),
+        crate::keymap::kb("pagedown", PageDown, c),
+        crate::keymap::kb("tab", NextScope, c),
+        crate::keymap::kb("shift-tab", PrevScope, c),
+        crate::keymap::kb("cmd-enter", OpenNewTab, c),
+        crate::keymap::kb("alt-enter", OpenInPlace, c),
     ]);
 }
 
@@ -240,7 +240,7 @@ pub enum PaletteIcon {
 
 impl Item {
     pub fn command(label: &str, sub: &str, key: &str, action: Box<dyn Action>, target: Target) -> Item {
-        let key = crate::keymap::label_for_action(&*action).unwrap_or_else(|| key.to_string());
+        let key = crate::keymap::label_for_action(&*action).unwrap_or_else(|| crate::keymap::glyphs(key));
         Item {
             kind: ItemKind::Command { action, target },
             section: Section::Commands,
@@ -489,7 +489,7 @@ impl Palette {
             )
             .child(div().flex_none().text_size(px(11.)).text_color(t.tx3).child(it.key.clone()))
             .on_click(cx.listener(move |p, ev: &gpui::ClickEvent, _, cx| {
-                let mode = if ev.modifiers().platform {
+                let mode = if ev.modifiers().secondary() {
                     OpenMode::NewTab
                 } else if ev.modifiers().alt {
                     OpenMode::InPlace

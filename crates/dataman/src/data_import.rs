@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, KeyBinding, MouseButton,
+    AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, MouseButton,
     ScrollHandle, SharedString, Task, Window, actions, anchored, deferred, div, prelude::*,
 };
 use crate::theme::px;
@@ -29,9 +29,9 @@ const CONTEXT: &str = "DataImport";
 pub fn bind_keys(cx: &mut App) {
     let c = Some(CONTEXT);
     cx.bind_keys([
-        KeyBinding::new("escape", CloseDataImport, c),
-        KeyBinding::new("cmd-enter", StartDataImport, c),
-        KeyBinding::new("cmd-.", StopDataImport, c),
+        crate::keymap::kb("escape", CloseDataImport, c),
+        crate::keymap::kb("cmd-enter", StartDataImport, c),
+        crate::keymap::kb("cmd-.", StopDataImport, c),
     ]);
 }
 
@@ -1251,7 +1251,7 @@ impl Render for DataImportView {
                         .px(px(12.))
                         .font_weight(FontWeight::SEMIBOLD)
                         .child("Import")
-                        .child(div().text_size(px(10.5)).font_weight(FontWeight::NORMAL).opacity(0.75).child("⌘↩"))
+                        .child(div().text_size(px(10.5)).font_weight(FontWeight::NORMAL).opacity(0.75).child(crate::ui::keys_text("⌘↩")))
                         .when(ready, |d| d.on_click(cx.listener(|v, _, _, cx| v.start(cx)))),
                 )
                 .into_any_element(),

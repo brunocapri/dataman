@@ -16,6 +16,9 @@ mod glass;
 #[path = "../src/input.rs"]
 #[allow(dead_code)]
 mod input;
+#[path = "../src/keys.rs"]
+#[allow(dead_code)]
+mod keymap;
 #[path = "../src/motion.rs"]
 #[allow(dead_code)]
 mod motion;

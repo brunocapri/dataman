@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use gpui::{AsyncWindowContext, Entity, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, Pixels, Point};
+use gpui::{AsyncWindowContext, Entity, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, Pixels, Point};
 
 use crate::app::Workspace;
 use crate::tree::{SchemaTree, pin_id};
@@ -37,7 +37,7 @@ fn click(cx: &mut AsyncWindowContext, p: Point<Pixels>, button: MouseButton, cou
 
 fn key(cx: &mut AsyncWindowContext, k: &str) {
     let _ = cx.update(|window, cx| {
-        window.dispatch_keystroke(Keystroke::parse(k).unwrap(), cx);
+        window.dispatch_keystroke(crate::keymap::keystroke(k), cx);
         window.refresh();
         window.draw(cx).clear(cx);
     });

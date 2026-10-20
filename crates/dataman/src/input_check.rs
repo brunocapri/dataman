@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use gpui::{
-    AsyncWindowContext, ClipboardItem, Entity, Focusable, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    AsyncWindowContext, ClipboardItem, Entity, Focusable, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     PlatformInput, Pixels, Point, point, px,
 };
 
@@ -31,7 +31,7 @@ fn input(cx: &mut AsyncWindowContext, e: PlatformInput) {
 
 fn key(cx: &mut AsyncWindowContext, k: &str) {
     let _ = cx.update(|window, cx| {
-        window.dispatch_keystroke(Keystroke::parse(k).unwrap(), cx);
+        window.dispatch_keystroke(crate::keymap::keystroke(k), cx);
         window.refresh();
         window.draw(cx).clear(cx);
     });

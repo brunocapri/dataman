@@ -2,7 +2,7 @@
 // the grid's keys (arrows, ↩, ⌘Z…) never act while the field has the focus.
 
 use gpui::{
-    App, ClickEvent, Context, Entity, EventEmitter, Focusable, KeyBinding, SharedString, Subscription, Window, actions,
+    App, ClickEvent, Context, Entity, EventEmitter, Focusable, SharedString, Subscription, Window, actions,
     div, prelude::*,
 };
 use crate::theme::px;
@@ -32,14 +32,14 @@ const FIELD_W: f32 = 196.;
 pub fn bind_keys(cx: &mut App) {
     let b = Some(CONTEXT);
     cx.bind_keys([
-        KeyBinding::new("cmd-f", Find, b),
-        KeyBinding::new("cmd-alt-f", FindReplace, b),
-        KeyBinding::new("cmd-g", FindNext, b),
-        KeyBinding::new("cmd-shift-g", FindPrevious, b),
-        KeyBinding::new("shift-enter", FindPrevious, b),
-        KeyBinding::new("escape", CloseFind, b),
-        KeyBinding::new("tab", NextField, b),
-        KeyBinding::new("shift-tab", NextField, b),
+        crate::keymap::kb("cmd-f", Find, b),
+        crate::keymap::kb("cmd-alt-f", FindReplace, b),
+        crate::keymap::kb("cmd-g", FindNext, b),
+        crate::keymap::kb("cmd-shift-g", FindPrevious, b),
+        crate::keymap::kb("shift-enter", FindPrevious, b),
+        crate::keymap::kb("escape", CloseFind, b),
+        crate::keymap::kb("tab", NextField, b),
+        crate::keymap::kb("shift-tab", NextField, b),
     ]);
 }
 

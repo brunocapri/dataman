@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use dataman_core::layout::{Dock, NavView, PanelId, PanelLayout};
-use gpui::{AsyncWindowContext, Entity, KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, Pixels, Point, point};
+use gpui::{AsyncWindowContext, Entity, KeyDownEvent, KeyUpEvent, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, Pixels, Point, point};
 
 use crate::app::Workspace;
 use crate::dock::Rect;
@@ -85,7 +85,7 @@ fn move_to(cx: &mut AsyncWindowContext, (x, y): (f32, f32), held: bool) {
 }
 
 fn press(cx: &mut AsyncWindowContext, k: &str) {
-    let ks = Keystroke::parse(k).unwrap();
+    let ks = crate::keymap::keystroke(k);
     input(cx, PlatformInput::KeyDown(KeyDownEvent { keystroke: ks.clone(), is_held: false, prefer_character_input: false }));
     input(cx, PlatformInput::KeyUp(KeyUpEvent { keystroke: ks }));
 }

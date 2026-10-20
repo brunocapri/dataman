@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use gpui::{AsyncWindowContext, Entity, Focusable, Keystroke};
+use gpui::{AsyncWindowContext, Entity, Focusable};
 use dataman_core::find::FindOptions;
 
 use crate::app::Workspace;
@@ -17,7 +17,7 @@ fn draw(cx: &mut AsyncWindowContext) {
 
 fn key(cx: &mut AsyncWindowContext, k: &str) {
     let _ = cx.update(|window, cx| {
-        window.dispatch_keystroke(Keystroke::parse(k).unwrap(), cx);
+        window.dispatch_keystroke(crate::keymap::keystroke(k), cx);
         window.refresh();
         window.draw(cx).clear(cx);
     });
@@ -195,7 +195,7 @@ async fn check(ws: &Entity<Workspace>, editor: &Entity<CodeEditor>, grid: &Entit
     });
     let t = Instant::now();
     let _ = cx.update(|window, cx| {
-        window.dispatch_keystroke(Keystroke::parse("x").unwrap(), cx);
+        window.dispatch_keystroke(crate::keymap::keystroke("x"), cx);
     });
     let closed_ms = t.elapsed().as_secs_f64() * 1e3;
     key(cx, "backspace");
@@ -213,7 +213,7 @@ async fn check(ws: &Entity<Workspace>, editor: &Entity<CodeEditor>, grid: &Entit
     let _ = cx.update(|window, cx| window.focus(&editor.focus_handle(cx), cx));
     let t1 = Instant::now();
     let _ = cx.update(|window, cx| {
-        window.dispatch_keystroke(Keystroke::parse("x").unwrap(), cx);
+        window.dispatch_keystroke(crate::keymap::keystroke("x"), cx);
     });
     let key_ms = t1.elapsed().as_secs_f64() * 1e3;
     println!("     2,000 lines: search {open_ms:.2} ms ({label}); a key {closed_ms:.2} ms with the bar closed, {key_ms:.2} ms open");

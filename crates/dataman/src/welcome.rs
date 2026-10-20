@@ -1,5 +1,5 @@
 use gpui::{
-    App, Context, EventEmitter, FocusHandle, Focusable, KeyBinding, Window, actions, div, img, prelude::*,
+    App, Context, EventEmitter, FocusHandle, Focusable, Window, actions, div, img, prelude::*,
 };
 use crate::theme::px;
 use dataman_core::ConnectionProfile;
@@ -12,11 +12,11 @@ actions!(welcome, [Up, Down, Choose, PasteUrl, Localhost]);
 pub fn bind_keys(cx: &mut App) {
     let c = Some("Welcome");
     cx.bind_keys([
-        KeyBinding::new("up", Up, c),
-        KeyBinding::new("down", Down, c),
-        KeyBinding::new("enter", Choose, c),
-        KeyBinding::new("cmd-v", PasteUrl, c),
-        KeyBinding::new("cmd-l", Localhost, c),
+        crate::keymap::kb("up", Up, c),
+        crate::keymap::kb("down", Down, c),
+        crate::keymap::kb("enter", Choose, c),
+        crate::keymap::kb("cmd-v", PasteUrl, c),
+        crate::keymap::kb("cmd-l", Localhost, c),
     ]);
 }
 

@@ -2,7 +2,7 @@
 // to the Keychain.
 
 use gpui::{
-    App, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, KeyBinding, Window, actions, div, prelude::*,
+    App, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Window, actions, div, prelude::*,
 };
 use crate::theme::px;
 use dataman_core::{ImportSource, Importable};
@@ -16,12 +16,12 @@ actions!(import_sheet, [ImportUp, ImportDown, ImportToggle, ImportConfirm, Impor
 pub fn bind_keys(cx: &mut App) {
     let c = Some("ImportSheet");
     cx.bind_keys([
-        KeyBinding::new("up", ImportUp, c),
-        KeyBinding::new("down", ImportDown, c),
-        KeyBinding::new("space", ImportToggle, c),
-        KeyBinding::new("enter", ImportToggle, c),
-        KeyBinding::new("cmd-enter", ImportConfirm, c),
-        KeyBinding::new("escape", ImportCancel, c),
+        crate::keymap::kb("up", ImportUp, c),
+        crate::keymap::kb("down", ImportDown, c),
+        crate::keymap::kb("space", ImportToggle, c),
+        crate::keymap::kb("enter", ImportToggle, c),
+        crate::keymap::kb("cmd-enter", ImportConfirm, c),
+        crate::keymap::kb("escape", ImportCancel, c),
     ]);
 }
 
@@ -209,7 +209,7 @@ impl Render for ImportView {
                             .font_weight(FontWeight::SEMIBOLD)
                             .when(n == 0, |d| d.bg(t.prs).text_color(t.tx3))
                             .child(if n > 0 { format!("Import {n}") } else { "Import".into() })
-                            .child(div().text_size(px(10.5)).font_weight(FontWeight::NORMAL).opacity(0.75).child("⌘↩"))
+                            .child(div().text_size(px(10.5)).font_weight(FontWeight::NORMAL).opacity(0.75).child(crate::ui::keys_text("⌘↩")))
                             .on_click(cx.listener(|v, _, _, cx| v.confirm(cx))),
                     ),
             );

@@ -177,7 +177,7 @@ pub fn row(
                 .text_color(soft)
                 .children(detail),
         )
-        .children(key.map(|k| div().flex_none().text_size(px(11.)).text_color(soft).child(k)))
+        .children(key.map(|k| div().flex_none().text_size(px(11.)).text_color(soft).child(crate::ui::keys_text(k))))
 }
 
 #[cfg(test)]

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    App, Context, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, KeyBinding, MouseButton, Task,
+    App, Context, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, MouseButton, Task,
     Window, actions, anchored, deferred, div, prelude::*,
 };
 use crate::theme::px;
@@ -24,9 +24,9 @@ const CONTEXT: &str = "ExportDialog";
 pub fn bind_keys(cx: &mut App) {
     let c = Some(CONTEXT);
     cx.bind_keys([
-        KeyBinding::new("escape", CloseExport, c),
-        KeyBinding::new("cmd-enter", StartExport, c),
-        KeyBinding::new("cmd-.", StopExport, c),
+        crate::keymap::kb("escape", CloseExport, c),
+        crate::keymap::kb("cmd-enter", StartExport, c),
+        crate::keymap::kb("cmd-.", StopExport, c),
     ]);
 }
 
@@ -808,7 +808,7 @@ impl Render for ExportView {
                     .px(px(12.))
                     .font_weight(FontWeight::SEMIBOLD)
                     .child("Export")
-                    .child(div().text_size(px(10.5)).font_weight(FontWeight::NORMAL).opacity(0.75).child("⌘↩"))
+                    .child(div().text_size(px(10.5)).font_weight(FontWeight::NORMAL).opacity(0.75).child(crate::ui::keys_text("⌘↩")))
                     .on_click(cx.listener(|v, _, _, cx| v.start(cx))),
             ));
         }
@@ -858,7 +858,7 @@ impl Workspace {
 
     pub(crate) fn export_table(&mut self, conn: &str, db: &str, schema: &str, name: &str, window: &mut Window, cx: &mut Context<Self>) {
         if self.export.as_ref().is_some_and(|e| e.read(cx).is_running()) {
-            self.notice("An export is running: wait for it, or open it with ⌘E", cx);
+            self.notice(crate::keymap::glyphs("An export is running: wait for it, or open it with ⌘E"), cx);
             return;
         }
         if self.modal_open(cx) {

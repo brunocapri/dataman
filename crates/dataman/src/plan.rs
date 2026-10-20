@@ -4,7 +4,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    App, Bounds, Context, Div, FocusHandle, Focusable, FontWeight, Hsla, KeyBinding, MouseButton, MouseDownEvent, Pixels, SharedString,
+    App, Bounds, Context, Div, FocusHandle, Focusable, FontWeight, Hsla, MouseButton, MouseDownEvent, Pixels, SharedString,
     Task, TextAlign, UniformListScrollHandle, Window, actions, canvas, div, point, prelude::*, size, uniform_list,
 };
 use crate::theme::{Pt, px};
@@ -21,10 +21,10 @@ pub const CONTEXT: &str = "PlanView";
 pub fn bind_keys(cx: &mut App) {
     let c = Some(CONTEXT);
     cx.bind_keys([
-        KeyBinding::new("up", SelectPrev, c),
-        KeyBinding::new("down", SelectNext, c),
-        KeyBinding::new("left", Collapse, c),
-        KeyBinding::new("right", Expand, c),
+        crate::keymap::kb("up", SelectPrev, c),
+        crate::keymap::kb("down", SelectNext, c),
+        crate::keymap::kb("left", Collapse, c),
+        crate::keymap::kb("right", Expand, c),
     ]);
 }
 

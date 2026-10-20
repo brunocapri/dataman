@@ -63,6 +63,7 @@ mod input_check;
 #[cfg(feature = "checks")]
 mod intel_demo;
 mod keymap;
+mod keys;
 mod lar;
 mod mcp;
 #[cfg(feature = "checks")]

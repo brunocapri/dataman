@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    AsyncWindowContext, Entity, Focusable, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, Pixels,
+    AsyncWindowContext, Entity, Focusable, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, Pixels,
     Point, point, px,
 };
 use dataman_core::batch::{Key, State};
@@ -22,7 +22,7 @@ SELECT 1;";
 
 fn key(cx: &mut AsyncWindowContext, k: &str) {
     let _ = cx.update(|window, cx| {
-        window.dispatch_keystroke(Keystroke::parse(k).unwrap(), cx);
+        window.dispatch_keystroke(crate::keymap::keystroke(k), cx);
         window.refresh();
         window.draw(cx).clear(cx);
     });
@@ -505,7 +505,7 @@ async fn gutters(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     report("gutters: a table's data view: one divider", data != tab && aligned(d), format!("{d:?}"));
 
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.activate_tab(&tab, window, cx)));
-    let _ = cx.update(|window, cx| window.dispatch_keystroke(Keystroke::parse("cmd-\\").unwrap(), cx));
+    let _ = cx.update(|window, cx| window.dispatch_keystroke(crate::keymap::keystroke("cmd-\\"), cx));
     pause(cx, 500).await;
     let copy = self::tab(ws, cx);
     run_in(&copy, short, many, cx).await;

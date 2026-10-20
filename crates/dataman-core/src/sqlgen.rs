@@ -6,6 +6,9 @@ use crate::schema::Column;
 use crate::sql::Dialect;
 use crate::value::{self, Kind};
 
+
+/// What runs a statement, as the generated comments name it.
+pub const RUN_KEY: &str = if cfg!(target_os = "macos") { "⌘↩" } else { "Ctrl+Enter" };
 pub fn quote_ident(name: &str) -> String {
     Dialect::Postgres.quote_ident(name)
 }
@@ -437,19 +440,19 @@ pub fn view_ddl(schema: &str, name: &str, materialized: bool, definition: &str) 
 }
 
 pub fn create_schema_template(db: &str) -> String {
-    format!("-- A new schema in {}. Rename it, then run it with ⌘↩.\nCREATE SCHEMA new_schema;", quote_ident(db))
+    format!("-- A new schema in {}. Rename it, then run it with {RUN_KEY}.\nCREATE SCHEMA new_schema;", quote_ident(db))
 }
 
 pub fn create_table_template(schema: &str, lar: bool) -> String {
     let q = qualified(Some(schema), "new_table");
     if lar {
         format!(
-            "-- A new table in {}. Edit the columns, then run it with ⌘↩.\nCREATE TABLE {q} (\n    id         bigint PRIMARY KEY,\n    name       text NOT NULL,\n    created_at timestamp\n);",
+            "-- A new table in {}. Edit the columns, then run it with {RUN_KEY}.\nCREATE TABLE {q} (\n    id         bigint PRIMARY KEY,\n    name       text NOT NULL,\n    created_at timestamp\n);",
             quote_ident(schema)
         )
     } else {
         format!(
-            "-- A new table in {}. Edit the columns, then run it with ⌘↩.\nCREATE TABLE {q} (\n    id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n    name       text NOT NULL,\n    created_at timestamptz NOT NULL DEFAULT now()\n);",
+            "-- A new table in {}. Edit the columns, then run it with {RUN_KEY}.\nCREATE TABLE {q} (\n    id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n    name       text NOT NULL,\n    created_at timestamptz NOT NULL DEFAULT now()\n);",
             quote_ident(schema)
         )
     }
@@ -458,7 +461,7 @@ pub fn create_table_template(schema: &str, lar: bool) -> String {
 pub fn create_table_template_mysql(schema: &str) -> String {
     let d = Dialect::MySql;
     format!(
-        "-- A new table in {}. Edit the columns, then run it with ⌘↩.\nCREATE TABLE {} (\n    id         BIGINT AUTO_INCREMENT PRIMARY KEY,\n    name       VARCHAR(255) NOT NULL,\n    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP\n);",
+        "-- A new table in {}. Edit the columns, then run it with {RUN_KEY}.\nCREATE TABLE {} (\n    id         BIGINT AUTO_INCREMENT PRIMARY KEY,\n    name       VARCHAR(255) NOT NULL,\n    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP\n);",
         d.quote_ident(schema),
         d.qualified(Some(schema), "new_table")
     )
@@ -467,14 +470,14 @@ pub fn create_table_template_mysql(schema: &str) -> String {
 pub fn create_table_template_tsql(schema: &str) -> String {
     let d = Dialect::TSql;
     format!(
-        "-- A new table in {}. Edit the columns, then run it with ⌘↩.\nCREATE TABLE {} (\n    id         bigint IDENTITY(1, 1) PRIMARY KEY,\n    name       nvarchar(255) NOT NULL,\n    created_at datetime2 NOT NULL DEFAULT SYSUTCDATETIME()\n);",
+        "-- A new table in {}. Edit the columns, then run it with {RUN_KEY}.\nCREATE TABLE {} (\n    id         bigint IDENTITY(1, 1) PRIMARY KEY,\n    name       nvarchar(255) NOT NULL,\n    created_at datetime2 NOT NULL DEFAULT SYSUTCDATETIME()\n);",
         d.quote_ident(schema),
         d.qualified(Some(schema), "new_table")
     )
 }
 
 fn danger(what: &str, statement: String) -> String {
-    format!("-- ⚠ {what}\n-- Nothing has run. Review it, then run it yourself with ⌘↩.\n{statement}")
+    format!("-- ⚠ {what}\n-- Nothing has run. Review it, then run it yourself with {RUN_KEY}.\n{statement}")
 }
 
 pub fn drop_database_template_in(d: Dialect, db: &str) -> String {
@@ -572,7 +575,7 @@ pub fn grant_template(schema: &str, table: Option<&str>, role: Option<&str>) -> 
         Some(t) => (format!("TABLE {}", qualified(Some(schema), t)), "SELECT, INSERT, UPDATE, DELETE", qualified(Some(schema), t)),
         None => (format!("SCHEMA {}", quote_ident(schema)), "USAGE", quote_ident(schema)),
     };
-    format!("-- Grant on {what}. Edit the privileges and the role, then run it with ⌘↩.\nGRANT {privs} ON {on} TO {};", grantee(role))
+    format!("-- Grant on {what}. Edit the privileges and the role, then run it with {RUN_KEY}.\nGRANT {privs} ON {on} TO {};", grantee(role))
 }
 
 pub fn revoke_template(schema: &str, table: Option<&str>, role: Option<&str>) -> String {
@@ -657,7 +660,7 @@ pub fn trigger_toggle_template_in(d: Dialect, schema: &str, table: &str, name: &
     let n = d.quote_ident(name);
     let stmt = format!("ALTER TABLE {t} {} TRIGGER {n};", if enable { "ENABLE" } else { "DISABLE" });
     if enable {
-        format!("-- {n} fires again on {t}. Run it with ⌘↩.\n{stmt}")
+        format!("-- {n} fires again on {t}. Run it with {RUN_KEY}.\n{stmt}")
     } else {
         danger(&format!("DISABLE stops {n} on {t}: what it enforces or records stops until it is enabled."), stmt)
     }
@@ -674,7 +677,7 @@ pub fn sequence_reset_template_in(d: Dialect, schema: &str, name: &str, owned_by
 pub fn alter_role_template(name: &str) -> String {
     let r = quote_ident(name);
     format!(
-        "-- ALTER ROLE {r}. Uncomment what you need, then run it with ⌘↩.\n\
+        "-- ALTER ROLE {r}. Uncomment what you need, then run it with {RUN_KEY}.\n\
          -- ALTER ROLE {r} WITH PASSWORD 'new password';\n\
          -- ALTER ROLE {r} WITH LOGIN;\n\
          -- ALTER ROLE {r} WITH NOLOGIN;\n\
@@ -688,7 +691,7 @@ pub fn alter_role_template(name: &str) -> String {
 pub fn extension_update_template(name: &str, to: Option<&str>) -> String {
     let e = quote_ident(name);
     let to = to.map(|v| format!(" TO {}", quote_literal(v))).unwrap_or_default();
-    format!("-- Update {e}. Run it with ⌘↩.\nALTER EXTENSION {e} UPDATE{to};")
+    format!("-- Update {e}. Run it with {RUN_KEY}.\nALTER EXTENSION {e} UPDATE{to};")
 }
 
 pub fn search_path_for(schema: &str) -> String {
@@ -776,7 +779,7 @@ mod tests {
         assert!(create_table_template_tsql("dbo").contains("IDENTITY(1, 1) PRIMARY KEY"));
         assert!(drop_database_template_in(ms, "shop").contains("SINGLE_USER"));
         assert!(drop_table_template_in(ms, "dbo", "t").ends_with("DROP TABLE dbo.t;"));
-        assert_eq!(trigger_toggle_template_in(ms, "dbo", "orders", "trg x", true), "-- [trg x] fires again on dbo.orders. Run it with ⌘↩.\nALTER TABLE dbo.orders ENABLE TRIGGER [trg x];");
+        assert_eq!(trigger_toggle_template_in(ms, "dbo", "orders", "trg x", true), format!("-- [trg x] fires again on dbo.orders. Run it with {RUN_KEY}.\nALTER TABLE dbo.orders ENABLE TRIGGER [trg x];"));
         let p = crate::schema::Function {
             oid: 1,
             name: "customer_orders".into(),

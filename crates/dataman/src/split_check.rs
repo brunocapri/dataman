@@ -4,7 +4,7 @@ use std::time::Duration;
 use dataman_core::groups::Pane;
 use dataman_core::session::SessionStore;
 use gpui::{
-    AsyncWindowContext, Bounds, Entity, Focusable, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, Pixels, Point,
+    AsyncWindowContext, Bounds, Entity, Focusable, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, Pixels, Point,
     ScrollDelta, ScrollWheelEvent, TouchPhase, point,
 };
 
@@ -36,7 +36,7 @@ fn input(cx: &mut AsyncWindowContext, e: PlatformInput) {
 fn key(cx: &mut AsyncWindowContext, k: &str) {
     draw(cx);
     let _ = cx.update(|window, cx| {
-        window.dispatch_keystroke(Keystroke::parse(k).unwrap(), cx);
+        window.dispatch_keystroke(crate::keymap::keystroke(k), cx);
         window.refresh();
         window.draw(cx).clear(cx);
     });

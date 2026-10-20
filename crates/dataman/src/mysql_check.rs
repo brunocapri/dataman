@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use gpui::{AsyncWindowContext, Entity, Focusable, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, PlatformInput, Pixels, Point};
+use gpui::{AsyncWindowContext, Entity, Focusable, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, PlatformInput, Pixels, Point};
 use dataman_core::edit::CellValue;
 use dataman_core::result::Phase;
 use dataman_core::sql::Dialect;
@@ -24,7 +24,7 @@ fn input(cx: &mut AsyncWindowContext, e: PlatformInput) {
 
 fn key(cx: &mut AsyncWindowContext, k: &str) {
     let _ = cx.update(|window, cx| {
-        window.dispatch_keystroke(Keystroke::parse(k).unwrap(), cx);
+        window.dispatch_keystroke(crate::keymap::keystroke(k), cx);
         window.refresh();
         window.draw(cx).clear(cx);
     });

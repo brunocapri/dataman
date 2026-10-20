@@ -4,7 +4,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    App, Bounds, Context, EventEmitter, FocusHandle, Focusable, FontWeight, KeyBinding, MouseButton, Pixels, ScrollHandle, SharedString,
+    App, Bounds, Context, EventEmitter, FocusHandle, Focusable, FontWeight, MouseButton, Pixels, ScrollHandle, SharedString,
     Window, actions, div, prelude::*,
 };
 use crate::theme::px;
@@ -23,9 +23,9 @@ const CONTEXT: &str = "SettingsSheet";
 pub fn bind_keys(cx: &mut App) {
     let c = Some(CONTEXT);
     cx.bind_keys([
-        KeyBinding::new("escape", Close, c),
-        KeyBinding::new("down", NextSection, c),
-        KeyBinding::new("up", PrevSection, c),
+        crate::keymap::kb("escape", Close, c),
+        crate::keymap::kb("down", NextSection, c),
+        crate::keymap::kb("up", PrevSection, c),
     ]);
 }
 

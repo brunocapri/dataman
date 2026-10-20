@@ -175,7 +175,7 @@ fn resolve_with(template: &str, key: impl Fn(&str) -> String) -> String {
 }
 
 pub fn keys(template: &str) -> String {
-    resolve_with(template, crate::keymap::key_label)
+    crate::keymap::glyphs(&resolve_with(template, crate::keymap::key_label))
 }
 
 fn group(t: &Theme, title: &str, keys: &[(&str, &str)]) -> Div {
@@ -235,7 +235,8 @@ mod tests {
 
     #[test]
     fn features_have_their_keys() {
-        let has = |group: &str, key: &str| GROUPS.iter().any(|(g, keys)| *g == group && keys.iter().any(|(k, _)| resolve_with(k, defaults) == key));
+        let g = crate::keymap::glyphs;
+        let has = |group: &str, key: &str| GROUPS.iter().any(|(gr, keys)| *gr == group && keys.iter().any(|(k, _)| g(&resolve_with(k, defaults)) == g(key)));
         for (g, k) in [("ACTIVITY", "⌘R"), ("ACTIVITY", "↩"), ("PLAN", "← →"), ("SHEETS", "⌘⌫"), ("SHEETS", "⌘T"), ("MCP", "⌘↩"), ("SHEETS", "⇥ / ⇧⇥"), ("FIND", "⌥⌘F"), ("EDITOR", "⌥⌘[ ⌥⌘]")] {
             assert!(has(g, k), "{g} {k}");
         }
@@ -253,9 +254,10 @@ mod tests {
             }
         }
         let gone = |id: &str| if id == "explain" { String::new() } else { defaults(id) };
-        assert_eq!(resolve_with("{explain} · {explain_analyze}", gone), "⌥⌘L");
-        assert_eq!(resolve_with("{explain_analyze} · {explain}", gone), "⌥⌘L");
+        let l = crate::keymap::label("cmd-alt-l");
+        assert_eq!(resolve_with("{explain} · {explain_analyze}", gone), l);
+        assert_eq!(resolve_with("{explain_analyze} · {explain}", gone), l);
         assert_eq!(resolve_with("{explain}", gone), "");
-        assert_eq!(resolve_with("{tab_1}–{tab_9}", defaults), "⌘1–⌘9");
+        assert_eq!(resolve_with("{tab_1}–{tab_9}", defaults), format!("{}–{}", crate::keymap::label("cmd-1"), crate::keymap::label("cmd-9")));
     }
 }

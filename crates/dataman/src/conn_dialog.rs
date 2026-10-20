@@ -4,7 +4,7 @@
 use std::time::{Duration, Instant};
 
 use gpui::{
-    App, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, KeyBinding, SharedString, Task,
+    App, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, SharedString, Task,
     Window, actions, div, prelude::*,
 };
 use crate::theme::{Pt, px};
@@ -66,15 +66,15 @@ actions!(conn_dialog, [DialogSave, DialogTest, DialogCancel, NextField, PrevFiel
 pub fn bind_keys(cx: &mut App) {
     let c = Some("ConnDialog");
     cx.bind_keys([
-        KeyBinding::new("cmd-enter", DialogSave, c),
-        KeyBinding::new("cmd-t", DialogTest, c),
-        KeyBinding::new("escape", DialogCancel, c),
-        KeyBinding::new("tab", NextField, c),
-        KeyBinding::new("shift-tab", PrevField, c),
-        KeyBinding::new("down", PickNext, Some("EnginePicker")),
-        KeyBinding::new("up", PickPrev, Some("EnginePicker")),
-        KeyBinding::new("right", PickNext, Some("EnginePicker && !TextInput")),
-        KeyBinding::new("left", PickPrev, Some("EnginePicker && !TextInput")),
+        crate::keymap::kb("cmd-enter", DialogSave, c),
+        crate::keymap::kb("cmd-t", DialogTest, c),
+        crate::keymap::kb("escape", DialogCancel, c),
+        crate::keymap::kb("tab", NextField, c),
+        crate::keymap::kb("shift-tab", PrevField, c),
+        crate::keymap::kb("down", PickNext, Some("EnginePicker")),
+        crate::keymap::kb("up", PickPrev, Some("EnginePicker")),
+        crate::keymap::kb("right", PickNext, Some("EnginePicker && !TextInput")),
+        crate::keymap::kb("left", PickPrev, Some("EnginePicker && !TextInput")),
     ]);
 }
 
@@ -1728,7 +1728,7 @@ impl Render for ConnDialog {
                             .font_weight(FontWeight::SEMIBOLD)
                             .when(testing, |d| d.bg(t.prs).text_color(t.tx3))
                             .child(if self.is_new || self.password_needed { "Save & connect" } else { "Save" })
-                            .child(div().text_size(px(10.5)).font_weight(FontWeight::NORMAL).opacity(0.75).child("⌘↩"))
+                            .child(div().text_size(px(10.5)).font_weight(FontWeight::NORMAL).opacity(0.75).child(crate::ui::keys_text("⌘↩")))
                             .on_click(cx.listener(|d, _, _, cx| d.save(cx))))
                     ),
             );

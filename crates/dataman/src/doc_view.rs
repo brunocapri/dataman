@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    App, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, KeyBinding, SharedString, Window,
+    App, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, SharedString, Window,
     actions, div, prelude::*,
 };
 use dataman_core::Connection;
@@ -20,8 +20,8 @@ const CONTEXT: &str = "DocView";
 
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
-        KeyBinding::new("down", NextDocument, Some("DocList")),
-        KeyBinding::new("up", PrevDocument, Some("DocList")),
+        crate::keymap::kb("down", NextDocument, Some("DocList")),
+        crate::keymap::kb("up", PrevDocument, Some("DocList")),
     ]);
 }
 

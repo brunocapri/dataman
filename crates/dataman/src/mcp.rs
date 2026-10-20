@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use chrono::Local;
 use gpui::{
-    AnyWindowHandle, App, AppContext, Context, EventEmitter, FocusHandle, Focusable, FontWeight, Global, KeyBinding, SharedString,
+    AnyWindowHandle, App, AppContext, Context, EventEmitter, FocusHandle, Focusable, FontWeight, Global, SharedString,
     StyledText, WeakEntity, Window, actions, div, prelude::*, uniform_list,
 };
 use crate::theme::px;
@@ -30,11 +30,11 @@ const MENU: [&str; 2] = ["Copy Query", "Open in Tab"];
 
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
-        KeyBinding::new("cmd-enter", Allow, Some(SHEET)),
-        KeyBinding::new("cmd-alt-enter", AlwaysAllow, Some(SHEET)),
-        KeyBinding::new("escape", Deny, Some(SHEET)),
-        KeyBinding::new("cmd-r", ReloadLog, Some(LOG)),
-        KeyBinding::new("escape", CloseLog, Some(LOG)),
+        crate::keymap::kb("cmd-enter", Allow, Some(SHEET)),
+        crate::keymap::kb("cmd-alt-enter", AlwaysAllow, Some(SHEET)),
+        crate::keymap::kb("escape", Deny, Some(SHEET)),
+        crate::keymap::kb("cmd-r", ReloadLog, Some(LOG)),
+        crate::keymap::kb("escape", CloseLog, Some(LOG)),
     ]);
 }
 
@@ -727,7 +727,7 @@ impl McpLog {
             .when(sel, |d| d.bg(t.prs))
             .when(!sel, |d| d.hover(move |s| s.bg(hov)))
             .on_click(cx.listener(move |v, ev: &gpui::ClickEvent, window, cx| {
-                if ev.modifiers().control {
+                if crate::keymap::menu_click(&ev.modifiers()) {
                     return;
                 }
                 window.focus(&v.focus, cx);
@@ -745,7 +745,7 @@ impl McpLog {
                 cx.notify();
             }))
             .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |v, ev: &gpui::MouseDownEvent, _, cx| {
-                if ev.modifiers.control {
+                if crate::keymap::menu_click(&ev.modifiers) {
                     cx.stop_propagation();
                     v.menu = Some((i, ev.position));
                     cx.notify();

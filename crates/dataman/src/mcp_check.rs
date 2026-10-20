@@ -156,7 +156,7 @@ fn click(cx: &mut AsyncWindowContext, p: Point<Pixels>) {
 fn key(cx: &mut AsyncWindowContext, k: &str) {
     draw(cx);
     let _ = cx.update(|window, cx| {
-        window.dispatch_keystroke(gpui::Keystroke::parse(k).unwrap(), cx);
+        window.dispatch_keystroke(crate::keymap::keystroke(k), cx);
         window.refresh();
         window.draw(cx).clear(cx);
     });

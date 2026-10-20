@@ -1,4 +1,4 @@
-use gpui::{App, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, KeyBinding, SharedString, Window, actions, div, prelude::*};
+use gpui::{App, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, SharedString, Window, actions, div, prelude::*};
 use crate::theme::px;
 
 use crate::input::{InputEvent, TextInput};
@@ -12,10 +12,10 @@ const CONTEXT: &str = "ParamPrompt";
 pub fn bind_keys(cx: &mut App) {
     let c = Some(CONTEXT);
     cx.bind_keys([
-        KeyBinding::new("tab", NextField, c),
-        KeyBinding::new("shift-tab", PrevField, c),
-        KeyBinding::new("cmd-enter", RunParams, c),
-        KeyBinding::new("escape", CancelParams, c),
+        crate::keymap::kb("tab", NextField, c),
+        crate::keymap::kb("shift-tab", PrevField, c),
+        crate::keymap::kb("cmd-enter", RunParams, c),
+        crate::keymap::kb("escape", CancelParams, c),
     ]);
 }
 

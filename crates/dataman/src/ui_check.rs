@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use gpui::{
-    AsyncWindowContext, Entity, Focusable, KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput,
+    AsyncWindowContext, Entity, Focusable, KeyDownEvent, KeyUpEvent, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput,
     Pixels, Point, point, px,
 };
 use dataman_core::result::Phase;
@@ -71,7 +71,7 @@ fn input(cx: &mut AsyncWindowContext, e: PlatformInput) {
 fn key(cx: &mut AsyncWindowContext, k: &str) {
     draw(cx);
     let _ = cx.update(|window, cx| {
-        window.dispatch_keystroke(Keystroke::parse(k).unwrap(), cx);
+        window.dispatch_keystroke(crate::keymap::keystroke(k), cx);
         window.refresh();
         window.draw(cx).clear(cx);
     });
@@ -1355,7 +1355,7 @@ async fn motion_checks(ws: &Entity<Workspace>, id: &str, cx: &mut AsyncWindowCon
 
 fn press(cx: &mut AsyncWindowContext, k: &str) {
     draw(cx);
-    let ks = Keystroke::parse(k).unwrap();
+    let ks = crate::keymap::keystroke(k);
     input(cx, PlatformInput::KeyDown(KeyDownEvent { keystroke: ks.clone(), is_held: false, prefer_character_input: false }));
     input(cx, PlatformInput::KeyUp(KeyUpEvent { keystroke: ks }));
 }

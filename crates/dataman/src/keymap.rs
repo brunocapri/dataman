@@ -5,6 +5,8 @@ use std::sync::RwLock;
 
 use gpui::{Action, App, KeyBinding, Keystroke};
 
+pub use crate::keys::*;
+
 use crate::app::*;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -43,6 +45,10 @@ pub struct Command {
 const fn c(id: &'static str, label: &'static str, group: &'static str, scope: Scope, keys: &'static [&'static str], action: fn() -> Box<dyn Action>) -> Command {
     Command { id, label, group, keys, scope, context: scope.context(), action }
 }
+
+// ⌘↓ is Ctrl+End on Linux, the grid's last row there.
+const FETCH_MORE: &[&str] = &[if LINUX { "ctrl-down" } else { "cmd-down" }];
+const FETCH_ALL: &[&str] = &[if LINUX { "ctrl-shift-down" } else { "cmd-shift-down" }];
 
 pub const COMMANDS: &[Command] = &[
     c("command_palette", "Command palette", "GLOBAL", Scope::Workspace, &["cmd-k"], || Box::new(CommandPalette)),
@@ -105,8 +111,8 @@ pub const COMMANDS: &[Command] = &[
     c("cell_viewer", "View value", "GRID", Scope::Grid, &["shift-space"], || Box::new(crate::grid::ViewValue)),
     c("next_page", "Next page", "GRID", Scope::Workspace, &["cmd-alt-right"], || Box::new(NextPage)),
     c("prev_page", "Previous page", "GRID", Scope::Workspace, &["cmd-alt-left"], || Box::new(PrevPage)),
-    c("fetch_more", "Fetch next rows", "GRID", Scope::Grid, &["cmd-down"], || Box::new(crate::grid::FetchMore)),
-    c("fetch_all", "Fetch all", "GRID", Scope::Grid, &["cmd-shift-down"], || Box::new(crate::grid::FetchAll)),
+    c("fetch_more", "Fetch next rows", "GRID", Scope::Grid, FETCH_MORE, || Box::new(crate::grid::FetchMore)),
+    c("fetch_all", "Fetch all", "GRID", Scope::Grid, FETCH_ALL, || Box::new(crate::grid::FetchAll)),
     Command { context: Some("ResultGrid"), ..c("insert_row", "Insert row", "GRID", Scope::Grid, &["cmd-i"], || Box::new(crate::grid::InsertRow)) },
     Command { context: Some("ResultGrid"), ..c("review_changes", "Review & commit", "GRID", Scope::Grid, &["cmd-s"], || Box::new(ReviewChanges)) },
     c("discard_changes", "Discard edits", "GRID", Scope::Grid, &["cmd-backspace"], || Box::new(DiscardChanges)),
@@ -139,7 +145,7 @@ pub fn parse(s: &str) -> Option<String> {
 pub fn effective_in(overrides: &BTreeMap<String, String>, cmd: &Command) -> Vec<String> {
     match overrides.get(cmd.id).map(|s| s.trim()) {
         Some("") => Vec::new(),
-        Some(s) => match parse(s) {
+        Some(s) => match parse(s).and_then(|k| parse(&native_chosen(&k))) {
             Some(k) => vec![k],
             None => defaults(cmd),
         },
@@ -148,7 +154,13 @@ pub fn effective_in(overrides: &BTreeMap<String, String>, cmd: &Command) -> Vec<
 }
 
 fn defaults(cmd: &Command) -> Vec<String> {
-    cmd.keys.iter().filter_map(|k| parse(k)).collect()
+    let mut keys: Vec<String> = Vec::new();
+    for k in cmd.keys.iter().filter_map(|k| parse(&native(k))) {
+        if !keys.contains(&k) {
+            keys.push(k);
+        }
+    }
+    keys
 }
 
 pub fn conflicts_in(overrides: &BTreeMap<String, String>) -> BTreeSet<&'static str> {
@@ -170,14 +182,19 @@ pub fn clean(overrides: &BTreeMap<String, String>) -> BTreeMap<String, String> {
         .iter()
         .filter_map(|(id, k)| {
             let cmd = find(id)?;
-            let k = if k.trim().is_empty() { String::new() } else { parse(k)? };
+            let k = if k.trim().is_empty() { String::new() } else { parse(&native_chosen(&parse(k)?))? };
             let changes = if k.is_empty() { !cmd.keys.is_empty() } else { defaults(cmd) != [k.clone()] };
             changes.then(|| (id.clone(), k))
         })
         .collect()
 }
 
+/// A shortcut as people type it (⇧⌘P, Shift+Cmd+P, Ctrl+Shift+P), in this platform's keys.
 pub fn parse_typed(s: &str) -> Option<String> {
+    parse_typed_as_written(s).and_then(|k| parse(&native_chosen(&k)))
+}
+
+fn parse_typed_as_written(s: &str) -> Option<String> {
     let s = s.trim().to_lowercase();
     let mut mods: Vec<&str> = Vec::new();
     let mut rest = s.as_str();
@@ -197,22 +214,13 @@ pub fn parse_typed(s: &str) -> Option<String> {
             Some(head) => format!("{}-+", head.replace('+', "-")),
             None => s.replace('+', "-"),
         };
+        let gpui = match gpui.rsplit_once('-') {
+            Some((head, tail)) if !head.is_empty() => format!("{head}-{}", typed_key(tail)),
+            _ => gpui,
+        };
         return gpui.contains('-').then(|| parse(&gpui)).flatten().filter(|k| k.contains('-'));
     }
-    let key = match rest {
-        "↩" => "enter",
-        "⌫" => "backspace",
-        "⌦" => "delete",
-        "↑" => "up",
-        "↓" => "down",
-        "←" => "left",
-        "→" => "right",
-        "⇞" => "pageup",
-        "⇟" => "pagedown",
-        "↖" => "home",
-        "↘" => "end",
-        k => k,
-    };
+    let key = typed_key(rest);
     if key.is_empty() {
         return None;
     }
@@ -220,36 +228,6 @@ pub fn parse_typed(s: &str) -> Option<String> {
     parse(&mods.join("-"))
 }
 
-pub fn label(keystroke: &str) -> String {
-    let Ok(k) = Keystroke::parse(keystroke) else { return keystroke.to_string() };
-    let m = k.modifiers;
-    let mut s = String::new();
-    for (on, sym) in [(m.function, "fn"), (m.control, "⌃"), (m.alt, "⌥"), (m.shift, "⇧"), (m.platform, "⌘")] {
-        if on {
-            s.push_str(sym);
-        }
-    }
-    let key = match k.key.as_str() {
-        "enter" => "↩".to_string(),
-        "backspace" => "⌫".to_string(),
-        "delete" => "⌦".to_string(),
-        "escape" => "esc".to_string(),
-        "tab" => "Tab".to_string(),
-        "space" => "Space".to_string(),
-        "up" => "↑".to_string(),
-        "down" => "↓".to_string(),
-        "left" => "←".to_string(),
-        "right" => "→".to_string(),
-        "pageup" => "⇞".to_string(),
-        "pagedown" => "⇟".to_string(),
-        "home" => "↖".to_string(),
-        "end" => "↘".to_string(),
-        k if k.len() > 1 && k.starts_with('f') && k[1..].chars().all(|c| c.is_ascii_digit()) => k.to_uppercase(),
-        k => k.to_uppercase(),
-    };
-    s.push_str(&key);
-    s
-}
 
 static OVERRIDES: RwLock<BTreeMap<String, String>> = RwLock::new(BTreeMap::new());
 
@@ -268,7 +246,7 @@ pub fn effective(id: &str) -> Vec<String> {
 }
 
 pub fn key_label(id: &str) -> String {
-    effective(id).first().map(|k| label(k)).unwrap_or_default()
+    effective(id).first().map(|k| label_native(k)).unwrap_or_default()
 }
 
 pub fn key(id: &str) -> Option<String> {
@@ -340,6 +318,10 @@ pub fn apply(map: BTreeMap<String, String>, cx: &mut App) {
 mod tests {
     use super::*;
 
+    fn n(s: &str) -> String {
+        parse(&native(s)).unwrap()
+    }
+
     fn map(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
         pairs.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect()
     }
@@ -363,9 +345,11 @@ mod tests {
 
     #[test]
     fn parse_canonical_and_rejects() {
-        assert_eq!(parse("shift-cmd-c").as_deref(), Some("cmd-shift-c"));
-        assert_eq!(parse(" cmd-shift-c ").as_deref(), Some("cmd-shift-c"));
-        assert_eq!(parse("cmd--").as_deref(), Some("cmd--"));
+        assert_eq!(parse("shift-cmd-c"), parse("cmd-shift-c"));
+        assert_eq!(parse(" cmd-shift-c "), parse("cmd-shift-c"));
+        assert_eq!(parse("ctrl-shift-c").as_deref(), Some("ctrl-shift-c"));
+        #[cfg(target_os = "macos")]
+        assert_eq!((parse("shift-cmd-c").as_deref(), parse("cmd--").as_deref()), (Some("cmd-shift-c"), Some("cmd--")));
         for bad in ["", "cmd-k cmd-s", "cmd-", "shift", "cmd-shift", "foo-bar-c", "cmd-x-y"] {
             assert_eq!(parse(bad), None, "{bad}");
         }
@@ -374,32 +358,32 @@ mod tests {
     #[test]
     fn overrides_replace_remove_or_are_ignored() {
         let run = find("run").unwrap();
-        assert_eq!(effective_in(&map(&[]), run), vec!["cmd-shift-enter"]);
-        assert_eq!(effective_in(&map(&[("run", "cmd-shift-r")]), run), vec!["cmd-shift-r"]);
+        assert_eq!(effective_in(&map(&[]), run), vec![n("cmd-shift-enter")]);
+        assert_eq!(effective_in(&map(&[("run", "cmd-shift-r")]), run), vec![n("cmd-shift-r")]);
         assert_eq!(effective_in(&map(&[("run", "")]), run), Vec::<String>::new());
-        assert_eq!(effective_in(&map(&[("run", "cmd-k cmd-r")]), run), vec!["cmd-shift-enter"], "a chord is ignored");
-        assert_eq!(effective_in(&map(&[("run", "nonsense-key-x")]), run), vec!["cmd-shift-enter"]);
-        assert_eq!(effective_in(&map(&[("zoom_in", "cmd-u")]), find("zoom_in").unwrap()), vec!["cmd-u"]);
+        assert_eq!(effective_in(&map(&[("run", "cmd-k cmd-r")]), run), vec![n("cmd-shift-enter")], "a chord is ignored");
+        assert_eq!(effective_in(&map(&[("run", "nonsense-key-x")]), run), vec![n("cmd-shift-enter")]);
+        assert_eq!(effective_in(&map(&[("zoom_in", "cmd-u")]), find("zoom_in").unwrap()), vec![n("cmd-u")]);
         let kept = clean(&map(&[("nope", "cmd-j"), ("run", "bad-bad-x"), ("history", "cmd-y"), ("favorite_query", ""), ("export", "shift-cmd-j")]));
-        assert_eq!(kept, map(&[("export", "cmd-shift-j"), ("favorite_query", "")]));
+        assert_eq!(kept, BTreeMap::from([("export".to_string(), n("cmd-shift-j")), ("favorite_query".to_string(), String::new())]));
     }
 
     #[test]
     fn defaults_have_no_conflicts_and_new_copy_keys() {
         assert!(conflicts_in(&map(&[])).is_empty(), "{:?}", conflicts_in(&map(&[])));
-        assert_eq!(effective_in(&map(&[]), find("copy_with_headers").unwrap()), vec!["cmd-shift-c"]);
-        assert_eq!(effective_in(&map(&[]), find("copy_csv").unwrap()), vec!["alt-cmd-c"]);
+        assert_eq!(effective_in(&map(&[]), find("copy_with_headers").unwrap()), vec![n("cmd-shift-c")]);
+        assert_eq!(effective_in(&map(&[]), find("copy_csv").unwrap()), vec![n("alt-cmd-c")]);
     }
 
     #[test]
     fn run_runs_the_script() {
         let script = find("run_all").unwrap();
         let stmt = find("run").unwrap();
-        assert_eq!(effective_in(&map(&[]), script), vec!["cmd-enter"]);
+        assert_eq!(effective_in(&map(&[]), script), vec![n("cmd-enter")]);
         assert_eq!((script.action)().name(), "code_editor::RunScript");
         assert_eq!((stmt.action)().name(), "code_editor::RunStatement");
-        assert_eq!(effective_in(&map(&[("run", "cmd-shift-r")]), stmt), vec!["cmd-shift-r"]);
-        assert_eq!(effective_in(&map(&[("run", "cmd-shift-r")]), script), vec!["cmd-enter"]);
+        assert_eq!(effective_in(&map(&[("run", "cmd-shift-r")]), stmt), vec![n("cmd-shift-r")]);
+        assert_eq!(effective_in(&map(&[("run", "cmd-shift-r")]), script), vec![n("cmd-enter")]);
     }
 
     #[test]
@@ -426,19 +410,68 @@ mod tests {
             ("cmd++", "cmd-+"),
             ("cmd--", "cmd--"),
         ] {
-            assert_eq!(parse_typed(typed).as_deref(), Some(want), "{typed}");
+            assert_eq!(parse_typed(typed), Some(n(want)), "{typed}");
         }
         for typed in ["", "run", "copy csv", "⌘", "⇧⌘", "cmd-", "foo-bar"] {
             assert_eq!(parse_typed(typed), None, "{typed}");
         }
         for c in COMMANDS {
             for k in defaults(c).into_iter().filter(|k| k.contains('-')) {
-                assert_eq!(parse_typed(&label(&k)).as_deref(), Some(k.as_str()), "{} {k}", c.id);
+                assert_eq!(parse_typed(&label_native(&k)).as_deref(), Some(k.as_str()), "{} {k}", c.id);
             }
         }
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
+    fn linux_keys_and_labels() {
+        for (mac, linux, shown) in [
+            ("cmd-shift-c", "ctrl-shift-c", "Ctrl+Shift+C"),
+            ("cmd-enter", "ctrl-enter", "Ctrl+Enter"),
+            ("ctrl-cmd-enter", "ctrl-alt-shift-enter", "Ctrl+Alt+Shift+Enter"),
+            ("ctrl-cmd-backspace", "ctrl-alt-shift-backspace", "Ctrl+Alt+Shift+Backspace"),
+            ("ctrl-cmd-left", "alt-left", "Alt+←"),
+            ("cmd-alt-right", "alt-pagedown", "Alt+PgDn"),
+            ("cmd-alt-l", "ctrl-shift-l", "Ctrl+Shift+L"),
+            ("cmd-left", "home", "Home"),
+            ("cmd-shift-right", "shift-end", "Shift+End"),
+            ("cmd-up", "ctrl-home", "Ctrl+Home"),
+            ("cmd-shift-down", "ctrl-shift-end", "Ctrl+Shift+End"),
+            ("alt-left", "ctrl-left", "Ctrl+←"),
+            ("alt-shift-right", "ctrl-shift-right", "Ctrl+Shift+→"),
+            ("alt-backspace", "ctrl-backspace", "Ctrl+Backspace"),
+            ("cmd-backspace", "ctrl-shift-backspace", "Ctrl+Shift+Backspace"),
+            ("cmd--", "ctrl--", "Ctrl+-"),
+            ("cmd-\\", "ctrl-\\", "Ctrl+\\"),
+            ("f6", "f6", "F6"),
+            ("ctrl-tab", "ctrl-tab", "Ctrl+Tab"),
+        ] {
+            assert_eq!(native(mac), linux, "{mac}");
+            assert_eq!(native_chosen(linux), linux, "{linux} chosen on Linux stays");
+            assert_eq!(label_native(linux), shown);
+            assert_eq!(label(mac), shown, "{mac}");
+            if shown.contains('+') {
+                assert_eq!(parse_typed(shown).as_deref(), Some(linux), "{shown}");
+            }
+        }
+        assert_eq!(parse_typed("⌘K").as_deref(), Some("ctrl-k"), "typed as on a Mac");
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn linux_defaults_leave_the_desktop_its_keys() {
+        for c in COMMANDS {
+            for k in defaults(c) {
+                assert!(!k.contains("super"), "{} {k}", c.id);
+                for taken in ["ctrl-alt-t", "ctrl-alt-l", "ctrl-alt-delete", "ctrl-alt-backspace", "ctrl-alt-left", "ctrl-alt-right", "ctrl-alt-up", "ctrl-alt-down", "ctrl-alt-d"] {
+                    assert_ne!(k, taken, "{}", c.id);
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
     fn labels() {
         assert_eq!(label("cmd-shift-c"), "⇧⌘C");
         assert_eq!(label("ctrl-cmd-enter"), "⌃⌘↩");

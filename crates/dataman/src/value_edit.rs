@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use chrono::{NaiveDate, NaiveTime};
 use gpui::{
-    App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, KeyBinding, KeyDownEvent,
+    App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, KeyDownEvent,
     MouseButton, Subscription, Window, actions, div, prelude::*,
 };
 use crate::theme::px;
@@ -23,19 +23,19 @@ pub const CONTEXT: &str = "ValueEditor";
 pub fn bind_keys(cx: &mut App) {
     let c = Some(CONTEXT);
     cx.bind_keys([
-        KeyBinding::new("cmd-enter", ApplyValue, c),
-        KeyBinding::new("escape", CancelValue, c),
-        KeyBinding::new("cmd-shift-n", ToggleNullValue, c),
+        crate::keymap::kb("cmd-enter", ApplyValue, c),
+        crate::keymap::kb("escape", CancelValue, c),
+        crate::keymap::kb("cmd-shift-n", ToggleNullValue, c),
     ]);
     let b = Some("ValueBody");
     cx.bind_keys([
-        KeyBinding::new("up", Up, b),
-        KeyBinding::new("down", Down, b),
-        KeyBinding::new("left", Left, b),
-        KeyBinding::new("right", Right, b),
-        KeyBinding::new("enter", Confirm, b),
-        KeyBinding::new("space", Confirm, b),
-        KeyBinding::new("backspace", RemoveNode, b),
+        crate::keymap::kb("up", Up, b),
+        crate::keymap::kb("down", Down, b),
+        crate::keymap::kb("left", Left, b),
+        crate::keymap::kb("right", Right, b),
+        crate::keymap::kb("enter", Confirm, b),
+        crate::keymap::kb("space", Confirm, b),
+        crate::keymap::kb("backspace", RemoveNode, b),
     ]);
 }
 

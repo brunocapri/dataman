@@ -1,8 +1,7 @@
 use std::sync::Arc;
 
 use gpui::{
-    App, ClipboardItem, Context, Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla,
-    KeyBinding, MouseButton, Subscription, Task, Window, actions, div, prelude::*,
+    App, ClipboardItem, Context, Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, MouseButton, Subscription, Task, Window, actions, div, prelude::*,
 };
 use crate::theme::px;
 use dataman_core::edit::{
@@ -26,14 +25,14 @@ const CONTEXT: &str = "GridCellEditor";
 pub fn bind_keys(cx: &mut App) {
     let c = Some(CONTEXT);
     cx.bind_keys([
-        KeyBinding::new("escape", CancelCell, c),
-        KeyBinding::new("tab", NextCell, c),
-        KeyBinding::new("shift-tab", PrevCell, c),
-        KeyBinding::new("up", CellUp, c),
-        KeyBinding::new("down", CellDown, c),
-        KeyBinding::new("cmd-shift-n", ToggleNull, c),
+        crate::keymap::kb("escape", CancelCell, c),
+        crate::keymap::kb("tab", NextCell, c),
+        crate::keymap::kb("shift-tab", PrevCell, c),
+        crate::keymap::kb("up", CellUp, c),
+        crate::keymap::kb("down", CellDown, c),
+        crate::keymap::kb("cmd-shift-n", ToggleNull, c),
         // The grid binds these; inside the field they type.
-        KeyBinding::new("shift-space", TypeSpace, c),
+        crate::keymap::kb("shift-space", TypeSpace, c),
     ]);
 }
 

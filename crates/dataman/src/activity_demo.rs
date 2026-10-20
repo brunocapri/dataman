@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use gpui::{AsyncWindowContext, Entity, Keystroke};
+use gpui::{AsyncWindowContext, Entity};
 use dataman_core::activity::{Signal, State, StatementRow, Statements, Thresholds};
 use dataman_core::result::Phase;
 use dataman_core::{Connection, TxStatus};
@@ -32,7 +32,7 @@ async fn until(cx: &mut AsyncWindowContext, ms: u64, ready: impl Fn(&mut gpui::A
 
 fn key(cx: &mut AsyncWindowContext, k: &str) {
     let _ = cx.update(|window, cx| {
-        window.dispatch_keystroke(Keystroke::parse(k).unwrap(), cx);
+        window.dispatch_keystroke(crate::keymap::keystroke(k), cx);
         window.refresh();
     });
 }

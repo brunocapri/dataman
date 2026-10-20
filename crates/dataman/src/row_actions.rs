@@ -2,7 +2,7 @@
 //! warning comment: nothing here runs them.
 
 use gpui::{
-    AnyElement, App, ClipboardItem, Context, Entity, Focusable, FontWeight, KeyBinding, MouseButton, Window, actions, div,
+    AnyElement, App, ClipboardItem, Context, Entity, Focusable, FontWeight, MouseButton, Window, actions, div,
     prelude::*,
 };
 use crate::theme::px;
@@ -32,9 +32,9 @@ const CONFIRM: &str = "ConfirmDeleteConnection";
 pub fn bind_keys(cx: &mut App) {
     let c = Some(CONFIRM);
     cx.bind_keys([
-        KeyBinding::new("escape", CancelDeleteConnection, c),
-        KeyBinding::new("enter", CancelDeleteConnection, c),
-        KeyBinding::new("cmd-backspace", ConfirmDeleteConnection, c),
+        crate::keymap::kb("escape", CancelDeleteConnection, c),
+        crate::keymap::kb("enter", CancelDeleteConnection, c),
+        crate::keymap::kb("cmd-backspace", ConfirmDeleteConnection, c),
     ]);
 }
 

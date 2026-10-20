@@ -421,7 +421,7 @@ pub(crate) fn palette_items(w: &Workspace) -> Vec<crate::palette::Item> {
 mod tests {
     use super::*;
     use dataman_core::favorites::Folder;
-    use gpui::{KeyBinding, KeyContext, Keymap, Keystroke};
+    use gpui::{KeyContext, Keymap};
 
     fn fav_op(name: &str) -> Entry {
         Entry::new(format!("Add favorite '{name}'"), Op::Favorite { fav: Favorite::new(name, format!("select '{name}'")), ix: 0, added: true })
@@ -478,14 +478,14 @@ mod tests {
     #[test]
     fn undo_keys_stay_out_of_text() {
         let keymap = Keymap::new(vec![
-            KeyBinding::new("cmd-z", crate::editor::Undo, Some("CodeEditor")),
-            KeyBinding::new("cmd-z", crate::input::Undo, Some("TextInput")),
-            KeyBinding::new("cmd-z", Undo, Some(KEYS)),
-            KeyBinding::new("ctrl-z", Undo, Some(KEYS)),
-            KeyBinding::new("cmd-shift-z", Redo, Some(KEYS)),
-            KeyBinding::new("ctrl-shift-z", Redo, Some(KEYS)),
+            crate::keymap::kb("cmd-z", crate::editor::Undo, Some("CodeEditor")),
+            crate::keymap::kb("cmd-z", crate::input::Undo, Some("TextInput")),
+            crate::keymap::kb("cmd-z", Undo, Some(KEYS)),
+            crate::keymap::kb("ctrl-z", Undo, Some(KEYS)),
+            crate::keymap::kb("cmd-shift-z", Redo, Some(KEYS)),
+            crate::keymap::kb("ctrl-shift-z", Redo, Some(KEYS)),
         ]);
-        let first = |k: &str, s: &[&str]| keymap.bindings_for_input(&[Keystroke::parse(k).unwrap()], &stack(s)).0.first().map(|b| b.action().name());
+        let first = |k: &str, s: &[&str]| keymap.bindings_for_input(&[crate::keymap::keystroke(k)], &stack(s)).0.first().map(|b| b.action().name());
         for k in ["cmd-z", "ctrl-z"] {
             assert_eq!(first(k, &["Workspace", "Explorer"]), Some("undo::Undo"), "{k} on the explorer");
             assert_eq!(first(k, &["Workspace", "ResultGrid"]), Some("undo::Undo"), "{k} on the grid");
@@ -497,11 +497,14 @@ mod tests {
             assert_ne!(first(k, &["Workspace", "ConfirmDiscard Modal"]), Some("undo::Undo"));
         }
         assert_eq!(first("cmd-z", &["Workspace", "CodeEditor"]), Some("code_editor::Undo"), "⌘Z in the editor is its text's");
+        #[cfg(target_os = "macos")]
         assert_eq!(first("ctrl-z", &["Workspace", "CodeEditor"]), None, "⌃Z in the editor is nothing");
         assert_eq!(first("cmd-z", &["Workspace", "HistoryPanel", "TextInput"]), Some("text_input::Undo"), "a rename field's own");
+        #[cfg(target_os = "macos")]
         assert_eq!(first("ctrl-z", &["Workspace", "HistoryPanel", "TextInput"]), None);
         assert_eq!(first("cmd-shift-z", &["Workspace", "Explorer"]), Some("undo::Redo"));
         assert_eq!(first("ctrl-shift-z", &["Workspace", "ResultGrid"]), Some("undo::Redo"));
+        #[cfg(target_os = "macos")]
         assert_eq!(first("ctrl-shift-z", &["Workspace", "CodeEditor"]), None);
     }
 }

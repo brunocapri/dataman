@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use gpui::{AsyncWindowContext, Entity, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, Pixels, Point, point, px};
+use gpui::{AsyncWindowContext, Entity, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, Pixels, Point, point, px};
 
 use crate::app::Workspace;
 use dataman_core::layout::NavView;
@@ -34,7 +34,7 @@ pub(crate) fn click(cx: &mut AsyncWindowContext, p: Point<Pixels>, button: Mouse
 
 pub(crate) fn key(cx: &mut AsyncWindowContext, k: &str) {
     let _ = cx.update(|window, cx| {
-        window.dispatch_keystroke(Keystroke::parse(k).unwrap(), cx);
+        window.dispatch_keystroke(crate::keymap::keystroke(k), cx);
         window.refresh();
         window.draw(cx).clear(cx);
     });

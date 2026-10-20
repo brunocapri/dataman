@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use gpui::{AsyncWindowContext, Entity, Focusable, Keystroke};
+use gpui::{AsyncWindowContext, Entity, Focusable};
 use dataman_core::{ConnectionProfile, Environment, TxStatus};
 
 use crate::app::Workspace;
@@ -25,7 +25,7 @@ const PROD_SQL: &str = "UPDATE orders\n   SET total = total * 1.1\n WHERE custom
 fn key(cx: &mut AsyncWindowContext, k: &str) {
     draw(cx);
     let _ = cx.update(|window, cx| {
-        window.dispatch_keystroke(Keystroke::parse(k).unwrap(), cx);
+        window.dispatch_keystroke(crate::keymap::keystroke(k), cx);
         window.refresh();
         window.draw(cx).clear(cx);
     });

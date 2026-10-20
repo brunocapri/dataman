@@ -98,7 +98,7 @@ pub async fn until(cx: &mut AsyncWindowContext, secs: u64, mut ok: impl FnMut(&m
 pub fn key(cx: &mut AsyncWindowContext, k: &str) {
     draw(cx);
     let _ = cx.update(|window, cx| {
-        window.dispatch_keystroke(Keystroke::parse(k).unwrap(), cx);
+        window.dispatch_keystroke(crate::keymap::keystroke(k), cx);
         window.refresh();
         window.draw(cx).clear(cx);
     });

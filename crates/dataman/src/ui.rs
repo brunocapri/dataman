@@ -21,7 +21,13 @@ pub fn keycap(t: &Theme, text: impl Into<SharedString>) -> Div {
         .text_size(px(10.5))
         .line_height(px(16.))
         .text_color(t.tx2)
-        .child(text.into())
+        .child(keys_text(text))
+}
+
+/// Key text as this platform names keys (`keymap::glyphs`).
+pub fn keys_text(text: impl Into<SharedString>) -> SharedString {
+    let s = text.into();
+    if crate::keymap::LINUX { crate::keymap::glyphs(&s).into() } else { s }
 }
 
 pub fn keycap_sm(bg: Hsla, fg: Hsla, text: impl Into<SharedString>) -> Div {
@@ -36,11 +42,11 @@ pub fn keycap_sm(bg: Hsla, fg: Hsla, text: impl Into<SharedString>) -> Div {
         .line_height(px(14.))
         .font_weight(FontWeight::MEDIUM)
         .text_color(fg)
-        .child(text.into())
+        .child(keys_text(text))
 }
 
 pub fn key_hint(text: impl Into<SharedString>) -> Div {
-    div().flex_none().text_size(px(10.5)).opacity(0.7).child(text.into())
+    div().flex_none().text_size(px(10.5)).opacity(0.7).child(keys_text(text))
 }
 
 pub fn chip(color: Hsla, size: f32) -> Div {
@@ -378,7 +384,7 @@ pub fn tooltip(
 ) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
     let title = title.into();
     let desc: Option<SharedString> = desc.map(|d| SharedString::from(d.to_string()));
-    let key: Option<SharedString> = key.map(|k| SharedString::from(k.to_string()));
+    let key: Option<SharedString> = key.map(|k| keys_text(k.to_string()));
     move |_, cx| {
         let (title, desc, key) = (title.clone(), desc.clone(), key.clone());
         cx.new(|_| Tooltip { title, desc, key }).into()

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, KeyBinding, ScrollHandle, SharedString, StyledText,
+    App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, ScrollHandle, SharedString, StyledText,
     Task, WeakEntity, Window, actions, div, prelude::*,
 };
 use crate::theme::px;
@@ -25,9 +25,9 @@ const LOCKS_CONTEXT: &str = "ActivityLocks";
 
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
-        KeyBinding::new("cmd-r", Refresh, Some(CONTEXT)),
-        KeyBinding::new("up", LockUp, Some(LOCKS_CONTEXT)),
-        KeyBinding::new("down", LockDown, Some(LOCKS_CONTEXT)),
+        crate::keymap::kb("cmd-r", Refresh, Some(CONTEXT)),
+        crate::keymap::kb("up", LockUp, Some(LOCKS_CONTEXT)),
+        crate::keymap::kb("down", LockDown, Some(LOCKS_CONTEXT)),
     ]);
 }
 

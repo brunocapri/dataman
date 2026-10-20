@@ -3,7 +3,7 @@ use std::time::Instant;
 use dataman_core::jsontree::{self, Doc, Node, Row, RowKey};
 use dataman_core::value::Kind;
 use gpui::{
-    App, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, KeyBinding, SharedString, StyledText, Task, TextRun,
+    App, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, SharedString, StyledText, Task, TextRun,
     Window, actions, div, font, prelude::*,
 };
 
@@ -24,10 +24,10 @@ pub fn bind_keys(cx: &mut App) {
     // Space closes the sheet like it opened it, except while typing in its editor.
     let reading = Some("ValueSheet && !CodeEditor");
     cx.bind_keys([
-        KeyBinding::new("escape", CloseValue, c),
-        KeyBinding::new("shift-space", CloseValue, reading),
-        KeyBinding::new("space", CloseValue, reading),
-        KeyBinding::new("cmd-c", CopyValue, c),
+        crate::keymap::kb("escape", CloseValue, c),
+        crate::keymap::kb("shift-space", CloseValue, reading),
+        crate::keymap::kb("space", CloseValue, reading),
+        crate::keymap::kb("cmd-c", CopyValue, c),
     ]);
 }
 
@@ -485,7 +485,7 @@ impl Render for ValueView {
                             .when(copied.is_some(), |d| d.invisible())
                             .child(icon(Icon::Copy).size(px(13.)).text_color(t.tx2))
                             .child("Copy")
-                            .child(div().text_size(px(10.5)).opacity(0.6).child("⌘C"))
+                            .child(div().text_size(px(10.5)).opacity(0.6).child(crate::ui::keys_text("⌘C")))
                             .tooltip(ui::tooltip("Copy", Some(copy_tip), None))
                             .on_click(cx.listener(|v, _, _, cx| v.copy(cx))),
                     )
@@ -528,7 +528,7 @@ impl Render for ValueView {
                         .font_weight(FontWeight::SEMIBOLD)
                         .when(!ok, |d| d.opacity(0.5))
                         .child("Apply")
-                        .child(div().text_size(px(10.5)).font_weight(FontWeight::NORMAL).opacity(0.75).child("⌘↩"))
+                        .child(div().text_size(px(10.5)).font_weight(FontWeight::NORMAL).opacity(0.75).child(crate::ui::keys_text("⌘↩")))
                         .tooltip(ui::tooltip("Apply", Some("A pending edit of the cell: commit it with the grid's other edits"), None))
                         .on_click(cx.listener(|v, _, _, cx| v.apply(cx))),
                 )

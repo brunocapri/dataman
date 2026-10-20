@@ -1,5 +1,5 @@
 use gpui::{
-    App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, KeyBinding, MouseButton, Window,
+    App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, MouseButton, Window,
     actions, div, prelude::*,
 };
 use crate::theme::px;
@@ -19,9 +19,9 @@ pub const POPOVER_CONTEXT: &str = "FilterPopover";
 pub fn bind_keys(cx: &mut App) {
     let c = Some(POPOVER_CONTEXT);
     cx.bind_keys([
-        KeyBinding::new("escape", CloseFilter, c),
-        KeyBinding::new("tab", NextOp, c),
-        KeyBinding::new("shift-tab", PrevOp, c),
+        crate::keymap::kb("escape", CloseFilter, c),
+        crate::keymap::kb("tab", NextOp, c),
+        crate::keymap::kb("shift-tab", PrevOp, c),
     ]);
 }
 

@@ -5,8 +5,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    AnyElement, App, ClickEvent, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla,
-    KeyBinding, MouseButton, MouseDownEvent, SharedString, Subscription, UniformListScrollHandle, Window, actions,
+    AnyElement, App, ClickEvent, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, MouseButton, MouseDownEvent, SharedString, Subscription, UniformListScrollHandle, Window, actions,
     anchored, deferred, div, point, prelude::*, uniform_list,
 };
 use crate::theme::{Pt, px};
@@ -59,31 +58,31 @@ const POP_PAUSE: Duration = Duration::from_millis(150);
 pub fn bind_keys(cx: &mut App) {
     let c = Some(CONTEXT);
     cx.bind_keys([
-        KeyBinding::new("up", SelectPrev, c),
-        KeyBinding::new("down", SelectNext, c),
-        KeyBinding::new("right", Expand, c),
-        KeyBinding::new("left", Collapse, c),
-        KeyBinding::new("enter", Open, c),
-        KeyBinding::new("cmd-r", ReloadNode, c),
-        KeyBinding::new("cmd-i", EditConnection, c),
-        KeyBinding::new("cmd-backspace", Disconnect, c),
-        KeyBinding::new("/", FocusFilter, Some("Explorer && !TextInput")),
-        KeyBinding::new("escape", Escape, c),
+        crate::keymap::kb("up", SelectPrev, c),
+        crate::keymap::kb("down", SelectNext, c),
+        crate::keymap::kb("right", Expand, c),
+        crate::keymap::kb("left", Collapse, c),
+        crate::keymap::kb("enter", Open, c),
+        crate::keymap::kb("cmd-r", ReloadNode, c),
+        crate::keymap::kb("cmd-i", EditConnection, c),
+        crate::keymap::kb("cmd-backspace", Disconnect, c),
+        crate::keymap::kb("/", FocusFilter, Some("Explorer && !TextInput")),
+        crate::keymap::kb("escape", Escape, c),
         // The Mac convention for the keyboard context menu (PC keyboards' menu key does not
         // reach GPUI on macOS).
-        KeyBinding::new("shift-f10", ShowRowActions, c),
+        crate::keymap::kb("shift-f10", ShowRowActions, c),
     ]);
     let m = Some(MENU_CONTEXT);
     cx.bind_keys([
-        KeyBinding::new("up", MenuUp, m),
-        KeyBinding::new("down", MenuDown, m),
-        KeyBinding::new("left", MenuLeft, m),
-        KeyBinding::new("right", MenuRight, m),
-        KeyBinding::new("enter", MenuConfirm, m),
-        KeyBinding::new("space", MenuConfirm, m),
-        KeyBinding::new("alt-enter", MenuConfirmAlt, m),
-        KeyBinding::new("escape", MenuClose, m),
-        KeyBinding::new("shift-f10", MenuClose, m),
+        crate::keymap::kb("up", MenuUp, m),
+        crate::keymap::kb("down", MenuDown, m),
+        crate::keymap::kb("left", MenuLeft, m),
+        crate::keymap::kb("right", MenuRight, m),
+        crate::keymap::kb("enter", MenuConfirm, m),
+        crate::keymap::kb("space", MenuConfirm, m),
+        crate::keymap::kb("alt-enter", MenuConfirmAlt, m),
+        crate::keymap::kb("escape", MenuClose, m),
+        crate::keymap::kb("shift-f10", MenuClose, m),
     ]);
 }
 
@@ -1543,7 +1542,7 @@ impl SchemaTree {
     }
 
     fn on_click(&mut self, ix: usize, ev: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if ev.modifiers().control {
+        if crate::keymap::menu_click(&ev.modifiers()) {
             return;
         }
         window.focus(&self.focus, cx);
@@ -2290,7 +2289,7 @@ impl SchemaTree {
                     cx.stop_propagation();
                 }))
                 .on_mouse_down(MouseButton::Left, cx.listener(move |t, ev: &MouseDownEvent, window, cx| {
-                    if ev.modifiers.control {
+                    if crate::keymap::menu_click(&ev.modifiers) {
                         t.open_menu(Some(ix), MenuAnchor::Mouse(ev.position), window, cx);
                         window.prevent_default();
                         cx.stop_propagation();
@@ -2573,7 +2572,7 @@ fn menu_row(
         .when(on, |d| d.bg(t.acc))
         .child(icon(ic).size(px(14.)).text_color(icon_fg))
         .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().when(bold, |d| d.font_weight(FontWeight::SEMIBOLD)).child(label))
-        .children(disabled.or(key).map(|k| div().flex_none().text_size(px(11.)).text_color(key_fg).child(k)))
+        .children(disabled.or(key).map(|k| div().flex_none().text_size(px(11.)).text_color(key_fg).child(crate::ui::keys_text(k))))
         .when(checked, |d| d.child(icon(Icon::Check).flex_none().size(px(12.)).text_color(if on { t.on_acc } else { t.tx2 })))
         .when(sub, |d| d.child(icon(Icon::ChevronRight).size(px(10.)).text_color(key_fg)))
 }

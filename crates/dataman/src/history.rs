@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use chrono::{Datelike, Local};
 use gpui::{
-    AnyElement, App, Bounds, Context, Entity, EventEmitter, FocusHandle, Focusable, KeyBinding, ListAlignment, ListState,
+    AnyElement, App, Bounds, Context, Entity, EventEmitter, FocusHandle, Focusable, ListAlignment, ListState,
     Pixels, Point, SharedString, Window, actions, div, list, point, prelude::*,
 };
 use crate::theme::px;
@@ -28,14 +28,14 @@ const CONTEXT: &str = "HistoryPanel";
 pub fn bind_keys(cx: &mut App) {
     let c = Some(CONTEXT);
     cx.bind_keys([
-        KeyBinding::new("up", Prev, c),
-        KeyBinding::new("down", Next, c),
-        KeyBinding::new("left", Collapse, c),
-        KeyBinding::new("right", Expand, c),
-        KeyBinding::new("enter", Insert, c),
-        KeyBinding::new("alt-enter", OpenInTab, c),
-        KeyBinding::new("cmd-enter", RunEntry, c),
-        KeyBinding::new("escape", Close, c),
+        crate::keymap::kb("up", Prev, c),
+        crate::keymap::kb("down", Next, c),
+        crate::keymap::kb("left", Collapse, c),
+        crate::keymap::kb("right", Expand, c),
+        crate::keymap::kb("enter", Insert, c),
+        crate::keymap::kb("alt-enter", OpenInTab, c),
+        crate::keymap::kb("cmd-enter", RunEntry, c),
+        crate::keymap::kb("escape", Close, c),
     ]);
 }
 
@@ -960,7 +960,7 @@ impl HistoryPanel {
                     .when(sel && !focused, |d| d.bg(t.prs))
                     .when(!sel, |d| d.hover(move |s| s.bg(hov)))
                     .on_click(cx.listener(move |h, ev: &gpui::ClickEvent, window, cx| {
-                        if ev.modifiers().control {
+                        if crate::keymap::menu_click(&ev.modifiers()) {
                             return;
                         }
                         h.selected = Some(ix);
@@ -977,7 +977,7 @@ impl HistoryPanel {
                         h.open_menu(MenuOn::Entry(entry_i), ev.position, cx);
                     }))
                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |h, ev: &gpui::MouseDownEvent, window, cx| {
-                        if ev.modifiers.control {
+                        if crate::keymap::menu_click(&ev.modifiers) {
                             cx.stop_propagation();
                             h.selected = Some(ix);
                             window.focus(&h.focus, cx);
@@ -1087,7 +1087,7 @@ impl HistoryPanel {
                     .when(!dropping && !sel, |d| d.hover(move |s| s.bg(hov)))
                     .when(dragged, |d| d.opacity(0.45))
                     .on_click(cx.listener(move |h, ev: &gpui::ClickEvent, window, cx| {
-                        if is_renaming || ev.modifiers().control {
+                        if is_renaming || crate::keymap::menu_click(&ev.modifiers()) {
                             return;
                         }
                         h.selected = Some(ix);
@@ -1104,7 +1104,7 @@ impl HistoryPanel {
                         h.open_menu(MenuOn::Folder(menu_id.clone()), ev.position, cx);
                     }))
                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |h, ev: &gpui::MouseDownEvent, _, cx| {
-                        if ev.modifiers.control {
+                        if crate::keymap::menu_click(&ev.modifiers) {
                             cx.stop_propagation();
                             h.selected = Some(ix);
                             h.open_menu(MenuOn::Folder(ctrl_id.clone()), ev.position, cx);
@@ -1164,7 +1164,7 @@ impl HistoryPanel {
                     .on_click(cx.listener(move |h, ev: &gpui::ClickEvent, window, cx| {
                         // A click in the rename field belongs to the field: taking the
                         // focus back to the panel here would swallow what is typed next.
-                        if is_renaming || ev.modifiers().control {
+                        if is_renaming || crate::keymap::menu_click(&ev.modifiers()) {
                             return;
                         }
                         h.selected = Some(ix);
@@ -1182,7 +1182,7 @@ impl HistoryPanel {
                         h.open_menu(MenuOn::Fav(fav_i), ev.position, cx);
                     }))
                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |h, ev: &gpui::MouseDownEvent, _, cx| {
-                        if ev.modifiers.control {
+                        if crate::keymap::menu_click(&ev.modifiers) {
                             cx.stop_propagation();
                             h.selected = Some(ix);
                             h.open_menu(MenuOn::Fav(fav_i), ev.position, cx);

@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use gpui::{AsyncWindowContext, Entity, Keystroke};
+use gpui::{AsyncWindowContext, Entity};
 use dataman_core::config::{ConnectionProfile, Engine, SslMode};
 use dataman_core::nosql::{Output, Page};
 
@@ -246,7 +246,7 @@ fn draw(cx: &mut AsyncWindowContext) {
 
 fn key(cx: &mut AsyncWindowContext, k: &str) {
     let _ = cx.update(|window, cx| {
-        window.dispatch_keystroke(Keystroke::parse(k).unwrap(), cx);
+        window.dispatch_keystroke(crate::keymap::keystroke(k), cx);
         window.refresh();
         window.draw(cx).clear(cx);
     });
