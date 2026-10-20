@@ -244,6 +244,8 @@ pub struct Note {
     pub draft: bool,
     pub favorite: Option<String>,
     pub allowed_by: Option<AllowedBy>,
+    pub rewritten: Option<String>,
+    pub seen: crate::audit::Seen,
 }
 
 pub struct Write<'a> {

@@ -37,6 +37,7 @@ pub mod pgpass;
 mod pgtypes;
 pub mod pgservice;
 pub mod pins;
+pub mod privacy;
 pub mod relations;
 pub mod result;
 pub mod rows;

@@ -38,6 +38,11 @@ pub fn commands() -> impl Iterator<Item = &'static str> {
     READS.iter().chain(SAFE_WRITES).chain(OTHERS).chain(REFUSED).copied()
 }
 
+/// A command Redis' own lists put among reads (by name: `CLIENT LIST`, or its first word).
+pub fn is_read_command(name: &str) -> bool {
+    CLIENT_READS.contains(&name) || READS.contains(&name.split(' ').next().unwrap_or(""))
+}
+
 pub fn is_command(word: &str) -> bool {
     let up = word.to_ascii_uppercase();
     commands().any(|c| c == up)

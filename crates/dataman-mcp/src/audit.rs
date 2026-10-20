@@ -59,6 +59,30 @@ pub struct Entry {
     pub favorite: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allowed_by: Option<AllowedBy>,
+    /// The statement as it ran, when visibility rewrote it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rewritten: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seen: Option<Seen>,
+}
+
+/// What the agent received, past the privacy rules.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Seen {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub columns: Option<u64>,
+    /// Sensitive columns masked, with their mask.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub masked: Vec<(String, dataman_core::privacy::Mask)>,
+    /// Values of sensitive data types masked inside the reply, by type.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub values: std::collections::BTreeMap<String, u64>,
+}
+
+impl Seen {
+    pub fn is_empty(&self) -> bool {
+        *self == Seen::default()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -252,6 +276,8 @@ mod tests {
                     2 => Some(AllowedBy::Yolo),
                     _ => None,
                 },
+                rewritten: None,
+                seen: None,
             });
         }
         let text = std::fs::read_to_string(a.path()).unwrap();
@@ -301,6 +327,8 @@ mod tests {
             draft: false,
             favorite: None,
             allowed_by: None,
+            rewritten: None,
+            seen: None,
         };
         let line = serde_json::to_string(&e).unwrap();
         let back: Entry = serde_json::from_str(&line).unwrap();

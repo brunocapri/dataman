@@ -165,14 +165,18 @@ impl Connection {
     }
 
     pub fn record_history(&self, entry: &HistoryEntry) {
-        let masked;
-        let entry = match crate::mask::statement(self.profile.engine, &entry.sql) {
-            std::borrow::Cow::Borrowed(_) => entry,
-            std::borrow::Cow::Owned(sql) => {
-                masked = HistoryEntry { sql, ..entry.clone() };
-                &masked
-            }
-        };
+        let mut e = std::borrow::Cow::Borrowed(entry);
+        if let std::borrow::Cow::Owned(sql) = crate::mask::statement(self.profile.engine, &entry.sql) {
+            e.to_mut().sql = sql;
+        }
+        // An agent's rows on disk keep the cleaned error only; the raw one stays in its tab.
+        if entry.source.as_deref() == Some(crate::history::AGENT)
+            && let Some(err) = &entry.error
+            && let std::borrow::Cow::Owned(clean) = crate::privacy::clean_error(err)
+        {
+            e.to_mut().error = Some(clean);
+        }
+        let entry = e.as_ref();
         if let Err(e) = self.history.append(&self.profile.id, entry) {
             log::warn!("history: {e}");
         }

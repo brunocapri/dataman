@@ -114,6 +114,9 @@ pub struct Settings {
     pub update_check: bool,
     pub update_feed: Option<String>,
     pub crash_report_url: Option<String>,
+    /// Sensitive data types for agents, in every connection (only changes are written).
+    #[serde(skip_serializing_if = "crate::privacy::TypeSettings::is_unchanged", deserialize_with = "de_types")]
+    pub agent_types: crate::privacy::TypeSettings,
     // Last: a table (TOML writes it after the plain keys).
     #[serde(deserialize_with = "de_keys")]
     pub keys: std::collections::BTreeMap<String, String>,
@@ -125,6 +128,11 @@ fn de_keys<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<std::c
         Some(toml::Value::Table(t)) => t.into_iter().filter_map(|(k, v)| v.as_str().map(|s| (k, s.to_string()))).collect(),
         _ => Default::default(),
     })
+}
+
+fn de_types<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<crate::privacy::TypeSettings, D::Error> {
+    // Never fails: a hand-edited table must not reset the other keys.
+    Ok(toml::Value::deserialize(d).ok().and_then(|v| v.try_into().ok()).unwrap_or_default())
 }
 
 pub const MCP_WRITE_ROW_LIMIT: u64 = 100;
@@ -178,6 +186,7 @@ impl Default for Settings {
             update_check: true,
             update_feed: None,
             crash_report_url: None,
+            agent_types: Default::default(),
             keys: Default::default(),
         }
     }

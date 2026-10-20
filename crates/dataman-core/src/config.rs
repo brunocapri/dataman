@@ -198,6 +198,9 @@ pub struct ConnectionProfile {
     pub mcp_allowed: Vec<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub mcp_yolo: bool,
+    /// Privacy and Permissions for agents (the Agents area); an older Dataman ignores them.
+    #[serde(default, skip_serializing_if = "crate::privacy::AgentRules::is_default")]
+    pub mcp_rules: crate::privacy::AgentRules,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub options: BTreeMap<String, String>,
     /// Made by an agent (create_connection): its host is the agent's choice, so a `~/.pgpass`
@@ -347,6 +350,7 @@ impl ConnectionProfile {
             mcp_row_limit: None,
             mcp_allowed: Vec::new(),
             mcp_yolo: false,
+            mcp_rules: Default::default(),
             options: BTreeMap::new(),
             agent_made: false,
         }
@@ -369,7 +373,7 @@ impl ConnectionProfile {
     }
 
     pub fn same_but_agents(&self, other: &ConnectionProfile) -> bool {
-        let strip = |p: &ConnectionProfile| ConnectionProfile { mcp: None, mcp_row_limit: None, mcp_allowed: Vec::new(), mcp_yolo: false, ..p.clone() };
+        let strip = |p: &ConnectionProfile| ConnectionProfile { mcp: None, mcp_row_limit: None, mcp_allowed: Vec::new(), mcp_yolo: false, mcp_rules: Default::default(), ..p.clone() };
         strip(self) == strip(other)
     }
 
