@@ -338,6 +338,7 @@ pub struct Workspace {
     pub(crate) cancel_toast_hidden: Option<Instant>,
     pub(crate) lar_toast: Option<(String, Instant)>,
     pub(crate) flash_notice: Option<(String, Instant)>,
+    file_drag: Option<gpui::ExternalPaths>,
     pub(crate) palette: Option<Entity<crate::palette::Palette>>,
     pub(crate) settings_view: Option<Entity<crate::settings_view::SettingsView>>,
     pub(crate) modal_return: Option<FocusHandle>,
@@ -513,6 +514,7 @@ impl Workspace {
             cancel_toast_hidden: None,
             lar_toast: None,
             flash_notice: None,
+            file_drag: None,
             palette: None,
             settings_view: None,
             modal_return: None,
@@ -1610,6 +1612,30 @@ impl Workspace {
         .detach();
     }
 
+    /// An empty canvas whose paint listens for the mouse up that ends a file drag, wherever the
+    /// window is and whatever the last input was.
+    fn file_drop_catcher(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let ws = cx.entity().downgrade();
+        gpui::canvas(
+            |_, _, _| {},
+            move |_, _, window, _| {
+                window.on_mouse_event(move |_: &gpui::MouseUpEvent, phase, window, cx| {
+                    if phase != gpui::DispatchPhase::Capture {
+                        return;
+                    }
+                    let _ = ws.update(cx, |w, cx| {
+                        let Some(paths) = w.file_drag.take() else { return };
+                        if cx.stop_active_drag(window) {
+                            w.drop_files(&paths, window, cx);
+                        }
+                    });
+                });
+            },
+        )
+        .absolute()
+        .size_0()
+    }
+
     pub(crate) fn notice(&mut self, msg: impl Into<String>, cx: &mut Context<Self>) {
         let at = Instant::now();
         self.flash_notice = Some((msg.into(), at));
@@ -2629,7 +2655,11 @@ impl Render for Workspace {
             .on_action(cx.listener(|w, _: &OpenSettings, window, cx| w.toggle_settings(window, cx)))
             .on_action(cx.listener(|w, _: &ExportResult, window, cx| w.open_export(window, cx)))
             .on_action(cx.listener(|w, _: &ImportData, window, cx| w.import_data(None, None, window, cx)))
-            .on_drop(cx.listener(|w, paths: &gpui::ExternalPaths, window, cx| w.drop_files(paths, window, cx)))
+            // Files dragged in from Finder: remembered as they move over the window, taken on the
+            // drop below. Not `on_drop`: GPUI hovers nothing after keyboard input until a mouse
+            // move, and a Finder drag sends none, so a drop after typing would be lost.
+            .on_drag_move(cx.listener(|w, ev: &gpui::DragMoveEvent<gpui::ExternalPaths>, _, cx| w.file_drag = Some(ev.drag(cx).clone())))
+            .child(self.file_drop_catcher(cx))
             .on_action(cx.listener(|w, _: &ReviewChanges, window, cx| {
                 // On production the edits are writes like any other: always reviewed first.
                 let production = w.active_tab().and_then(|t| t.read(cx).connection().map(|c| c.profile.env.is_production())).unwrap_or(false);
