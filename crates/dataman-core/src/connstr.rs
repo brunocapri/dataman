@@ -164,7 +164,7 @@ pub fn parse(s: &str) -> Option<ConnSpec> {
         Some(rest) if !rest.starts_with("sqlserver://") => rest,
         _ => s,
     };
-    if ["postgres://", "postgresql://", "mysql://", "mariadb://", "mongodb://", "mongodb+srv://", "redis://", "rediss://"].iter().any(|p| s.starts_with(p)) {
+    if ["postgres://", "postgresql://", "mysql://", "mariadb://", "mongodb://", "mongodb+srv://", "redis://", "rediss://", "http://", "https://"].iter().any(|p| s.starts_with(p)) {
         parse_url(s)
     } else if let Some(rest) = s.strip_prefix("sqlserver://").or_else(|| s.strip_prefix("jdbc:sqlserver://")) {
         parse_sqlserver(rest)
@@ -295,6 +295,9 @@ pub fn parse_url(s: &str) -> Option<ConnSpec> {
         (Engine::MongoDb, r)
     } else if let Some(r) = s.strip_prefix("rediss://").or_else(|| s.strip_prefix("redis://")) {
         (Engine::Redis, r)
+    } else if let Some(r) = s.strip_prefix("https://").or_else(|| s.strip_prefix("http://")) {
+        // What the sheet shows for Elasticsearch and OpenSearch; the sheet keeps OpenSearch.
+        (Engine::Elasticsearch, r)
     } else {
         match s.strip_prefix("mysql://").or_else(|| s.strip_prefix("mariadb://")) {
             Some(r) => (Engine::MySql, r),
@@ -323,8 +326,10 @@ pub fn parse_url(s: &str) -> Option<ConnSpec> {
         spec.options.insert("srv".into(), "true".into());
         spec.sslmode = Some(SslMode::VerifyFull);
     }
-    if s.starts_with("rediss://") {
+    if s.starts_with("rediss://") || s.starts_with("https://") {
         spec.sslmode = Some(SslMode::VerifyFull);
+    } else if s.starts_with("http://") {
+        spec.sslmode = Some(SslMode::Disable);
     }
     if let Some(a) = auth {
         let (u, pw) = match a.split_once(':') {
@@ -365,10 +370,10 @@ pub fn parse_url(s: &str) -> Option<ConnSpec> {
     if let Some(p) = port.filter(|p| !p.is_empty()) {
         spec.port = Some(p.parse().ok()?);
     }
-    if !path.is_empty() {
+    if !path.is_empty() && engine != Engine::Elasticsearch {
         spec.database = Some(decode(path)?);
     }
-    for kv in query.split('&').filter(|kv| !kv.is_empty()) {
+    for kv in query.split('&').filter(|kv| !kv.is_empty() && engine != Engine::Elasticsearch) {
         let (k, v) = kv.split_once('=').unwrap_or((kv, ""));
         if engine == Engine::MongoDb {
             spec.set_mongo(&decode(k)?, &decode(v)?);
@@ -622,5 +627,15 @@ mod tests {
         assert_eq!((p.engine, p.host.as_str(), p.port, p.database.as_str(), p.sslmode), (Engine::Redis, "cache", 6380, "2", SslMode::VerifyFull));
         assert_eq!(pw.as_deref(), Some("pw"));
         assert_eq!(p.url(), "rediss://cache:6380/2");
+    }
+
+    #[test]
+    fn search_urls_read_back() {
+        let (p, pw) = parse_profile("http://elastic:s3cret@127.0.0.1:9201").unwrap();
+        assert_eq!((p.engine, p.host.as_str(), p.port, p.user.as_str(), p.sslmode), (Engine::Elasticsearch, "127.0.0.1", 9201, "elastic", SslMode::Disable));
+        assert_eq!(pw.as_deref(), Some("s3cret"));
+        assert_eq!(parse_profile(&p.url()).unwrap().0.url(), "http://elastic@127.0.0.1:9201");
+        let (p, _) = parse_profile("https://search.example/").unwrap();
+        assert_eq!((p.port, p.database.as_str(), p.sslmode), (9200, "", SslMode::VerifyFull));
     }
 }

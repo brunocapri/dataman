@@ -481,10 +481,17 @@ impl ConnDialog {
         let parsed = dataman_core::connstr::parse_profile(&text);
         let bad = parsed.is_none() && !text.is_empty();
         self.conn_str.update(cx, |i, _| i.error = bad);
-        let Some((p, pw)) = parsed else {
+        let Some((mut p, pw)) = parsed else {
             cx.notify();
             return;
         };
+        // An http(s) URL reads as Elasticsearch; on an OpenSearch sheet it is OpenSearch's.
+        if p.engine == Engine::Elasticsearch && self.engine == Engine::OpenSearch {
+            p.engine = Engine::OpenSearch;
+            if !text.contains('@') {
+                p.user = Engine::OpenSearch.default_user().into();
+            }
+        }
         let name = self.name.read(cx).text().trim().to_string();
         let rename = name.is_empty() || self.auto_name.as_deref() == Some(name.as_str());
         if rename {
