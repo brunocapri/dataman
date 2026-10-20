@@ -24,8 +24,13 @@ pub struct Feed {
     pub version: String,
     #[serde(default)]
     pub notes: String,
+    // The top-level download may be missing (a release with no Mac build): defaults, so a
+    // Linux client still reads the feed.
+    #[serde(default)]
     pub url: String,
+    #[serde(default)]
     pub size: u64,
+    #[serde(default)]
     pub ed25519: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub minimum_macos: Option<String>,
@@ -56,7 +61,7 @@ impl Feed {
             (self.url, self.size, self.ed25519) = (a.url, a.size, a.ed25519);
             return Some(self);
         }
-        platform.starts_with("macos-").then_some(self)
+        (platform.starts_with("macos-") && !self.url.is_empty()).then_some(self)
     }
 }
 
@@ -625,6 +630,10 @@ mod tests {
         assert_eq!((linux.url.as_str(), linux.size, linux.ed25519.as_str(), linux.version.as_str()), ("https://x/Dataman-x86_64.AppImage", 20, "l", "0.4.0"));
         assert_eq!(f.clone().for_platform("linux-aarch64"), None);
         assert_eq!(f.for_platform("macos-aarch64").map(|f| f.size), Some(10));
+        let linux_only = r#"{"version":"0.4.0","assets":{"linux-aarch64":{"url":"https://x/a.AppImage","size":3,"ed25519":"s"}}}"#;
+        let f: Feed = serde_json::from_str(linux_only).unwrap();
+        assert_eq!(f.clone().for_platform("linux-aarch64").map(|f| f.url), Some("https://x/a.AppImage".into()));
+        assert_eq!(f.for_platform("macos-aarch64"), None, "no Mac download, no update for Macs");
         #[derive(Deserialize)]
         #[allow(dead_code)]
         struct Shipped {

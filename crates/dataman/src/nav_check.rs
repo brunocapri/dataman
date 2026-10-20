@@ -56,8 +56,8 @@ fn spot(grid: &Entity<ResultGrid>, cx: &mut AsyncWindowContext) -> String {
 }
 
 /// chrome.rs: the explorer toggle 14 pt after the lights, 26 wide, then 4 pt and two 20 pt arrows.
-fn arrow(forward: bool) -> Point<Pixels> {
-    let lights = metrics::lights_right_at(crate::theme::zoom());
+fn arrow(forward: bool, cx: &mut AsyncWindowContext) -> Point<Pixels> {
+    let lights = cx.update(|window, cx| crate::csd::lead(window, cx)).unwrap_or(0.);
     point(px(lights + if forward { 74. } else { 54. }), px(metrics::TITLE_H / 2.))
 }
 
@@ -107,7 +107,7 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     report("nothing behind at the start", can(ws, cx) == (false, false), format!("{:?}", can(ws, cx)));
 
     let p = at(cx, 14, fk);
-    click(cx, p, MouseButton::Left, Modifiers { platform: true, ..Default::default() });
+    click(cx, p, MouseButton::Left, Modifiers::secondary_key());
     pause(cx, 400).await;
     let before = spot(&grid, cx);
     let fk_cell = format!("head: CellPos {{ row: 14, col: {fk} }}");
@@ -136,13 +136,17 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     side_button(cx, point(px(600.), px(metrics::TITLE_H / 2.)), NavigationDirection::Forward);
     report("the forward button goes forward", active(ws, cx) == dst, String::new());
 
-    click(cx, arrow(false), MouseButton::Left, Modifiers::default());
+    let p = arrow(false, cx);
+    click(cx, p, MouseButton::Left, Modifiers::default());
     report("the ‹ arrow goes back", active(ws, cx) == src, String::new());
-    click(cx, arrow(false), MouseButton::Left, Modifiers::default());
+    let p = arrow(false, cx);
+    click(cx, p, MouseButton::Left, Modifiers::default());
     report("the dimmed ‹ does nothing", active(ws, cx) == src, String::new());
-    click(cx, arrow(true), MouseButton::Left, Modifiers::default());
+    let p = arrow(true, cx);
+    click(cx, p, MouseButton::Left, Modifiers::default());
     report("the › arrow goes forward", active(ws, cx) == dst, String::new());
-    click(cx, arrow(false), MouseButton::Left, Modifiers::default());
+    let p = arrow(false, cx);
+    click(cx, p, MouseButton::Left, Modifiers::default());
 
     key(cx, "cmd-t");
     pause(cx, 50).await;

@@ -330,7 +330,7 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     key(cx, "cmd-enter");
     let _ = finished(ws, 15, cx).await;
     focus_grid(ws, cx);
-    key(cx, "cmd-shift-down");
+    key(cx, &crate::keymap::effective("fetch_all")[0]);
     let mut rows = 0;
     for _ in 0..300 {
         pause(cx, 50).await;

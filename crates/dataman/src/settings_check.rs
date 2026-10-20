@@ -56,9 +56,11 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     click_probe("fs-13", cx);
     r.check("Code font size: 14 saved", fs == 14, fs);
 
-    click_probe("tr-off", cx);
-    let tr = settings(ws, cx).translucency;
-    r.check("Window translucency: Off saved", tr == dataman_core::Translucency::Off, format!("{tr:?}"));
+    if crate::theme::translucency_works() {
+        click_probe("tr-off", cx);
+        let tr = settings(ws, cx).translucency;
+        r.check("Window translucency: Off saved", tr == dataman_core::Translucency::Off, format!("{tr:?}"));
+    }
 
     click_probe("rm-on", cx);
     let reduced = settings(ws, cx).reduce_motion;

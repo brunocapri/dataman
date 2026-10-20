@@ -91,7 +91,7 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
         }
         "fk-land" => {
             let p = at(cx, 3, fk);
-            click(cx, p, Modifiers { platform: true, ..Default::default() });
+            click(cx, p, Modifiers::secondary_key());
             true
         }
         "fk-pop-check" => pop_check(ws, &grid, fk, plain, cx).await,
@@ -190,7 +190,7 @@ async fn pop_check(ws: &Entity<Workspace>, grid: &Entity<ResultGrid>, fk: usize,
     draw(cx);
 
     let p = at(cx, 2, fk);
-    let cmd = Modifiers { platform: true, ..Default::default() };
+    let cmd = Modifiers::secondary_key();
     click(cx, p, cmd);
     let mut landed = None;
     for _ in 0..60 {
@@ -372,9 +372,14 @@ async fn check(ws: &Entity<Workspace>, grid: &Entity<ResultGrid>, fk: usize, pla
     }
     let ctrl = Modifiers { control: true, ..Default::default() };
     let p = at(cx, 2, fk);
-    click(cx, p, ctrl);
+    // ⌃-click is the right click on macOS; on Linux Ctrl-click is the ⌘-click.
+    if crate::keymap::LINUX {
+        right_click(cx, p);
+    } else {
+        click(cx, p, ctrl);
+    }
     let m = menu(cx);
-    report("⌃-click opens the right-click menu", m.as_ref().is_some_and(|(_, l, _, _)| l.len() == 6), format!("{m:?}"));
+    report(if crate::keymap::LINUX { "a right click opens the menu" } else { "⌃-click opens the right-click menu" }, m.as_ref().is_some_and(|(_, l, _, _)| l.len() == 6), format!("{m:?}"));
     key(cx, "escape");
 
     let n0 = tabs(cx);
@@ -420,7 +425,7 @@ async fn check(ws: &Entity<Workspace>, grid: &Entity<ResultGrid>, fk: usize, pla
         window.draw(cx).clear(cx);
     });
     let p5 = at(cx, 5, fk);
-    let cmd = Modifiers { platform: true, ..Default::default() };
+    let cmd = Modifiers::secondary_key();
     click(cx, p5, cmd);
     pause(cx, 300).await;
     let n2 = tabs(cx);

@@ -362,7 +362,7 @@ async fn check(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWindo
     let _ = cx.update(|window, cx| window.focus(&grid.focus_handle(cx), cx));
     draw(cx);
     let at = cx.update(|_, cx| grid.read(cx).demo_cell_point(2, fk)).unwrap();
-    click(cx, at, Modifiers { platform: true, ..Default::default() });
+    click(cx, at, Modifiers::secondary_key());
     let landed = active(ws, cx);
     finished(&landed, cx).await;
     let s = sql(&landed, cx);

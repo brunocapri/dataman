@@ -923,15 +923,16 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
         cx.update(|_, cx| sv.read(cx).demo_key_points(id)).unwrap_or_default()
     };
     let recording = |sv: &Entity<crate::settings_view::SettingsView>, cx: &mut AsyncWindowContext| cx.update(|_, cx| sv.read(cx).demo_recording()).ok().flatten();
+    let k = |s: &str| keymap::parse(&keymap::native(s)).unwrap_or_default();
     let (cap, reset) = points(&sv, "new_tab", cx);
-    report("Keyboard lists New tab on ⌘T, no reset while it is the default", cap.is_some() && reset.is_none() && keymap::key_label("new_tab") == "⌘T", format!("{cap:?} {reset:?}"));
+    report("Keyboard lists New tab on ⌘T, no reset while it is the default", cap.is_some() && reset.is_none() && keymap::key_label("new_tab") == keymap::label("cmd-t"), format!("{cap:?} {reset:?}"));
     if let Some(cap) = cap {
         click(cx, cap);
         let rec = recording(&sv, cx);
         press(cx, "escape");
         report(
             "a click on the key records; esc cancels and keeps ⌘T and the sheet",
-            rec == Some("new_tab") && recording(&sv, cx).is_none() && keymap::effective("new_tab") == ["cmd-t"] && settings(cx).is_some(),
+            rec == Some("new_tab") && recording(&sv, cx).is_none() && keymap::effective("new_tab") == [k("cmd-t")] && settings(cx).is_some(),
             format!("{rec:?} {:?}", keymap::effective("new_tab")),
         );
         click(cx, cap);
@@ -944,10 +945,10 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
         let saved = saved_keys(cx);
         report(
             "⌥⌘T becomes New tab's key: saved in [keys], on the ⌘? sheet, the only binding the menus see",
-            keymap::effective("new_tab") == ["alt-cmd-t"]
-                && saved.get("new_tab").map(String::as_str) == Some("alt-cmd-t")
-                && crate::shortcuts::keys("{new_tab}") == "⌥⌘T"
-                && bound == ["alt-cmd-t"],
+            keymap::effective("new_tab") == [k("alt-cmd-t")]
+                && saved.get("new_tab") == Some(&k("alt-cmd-t"))
+                && crate::shortcuts::keys("{new_tab}") == keymap::label("alt-cmd-t")
+                && bound == [k("alt-cmd-t")],
             format!("{:?} {saved:?} {bound:?}", keymap::effective("new_tab")),
         );
         let (_, reset) = points(&sv, "new_tab", cx);
@@ -967,7 +968,7 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
             }
             report(
                 "⌥⌘T on Run Statement too is a conflict on both; its reset clears it",
-                both.contains("run") && both.contains("new_tab") && keymap::conflicts().is_empty() && keymap::effective("run") == ["cmd-shift-enter"],
+                both.contains("run") && both.contains("new_tab") && keymap::conflicts().is_empty() && keymap::effective("run") == [k("cmd-shift-enter")],
                 format!("{both:?} → {:?}", keymap::conflicts()),
             );
         }
@@ -984,7 +985,7 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
             if let (_, Some(r)) = points(&sv, "new_tab", cx) {
                 click(cx, r);
             }
-            report("the reset puts ⌘T back and drops it from [keys]", keymap::effective("new_tab") == ["cmd-t"] && !saved_keys(cx).contains_key("new_tab"), format!("{:?}", keymap::effective("new_tab")));
+            report("the reset puts ⌘T back and drops it from [keys]", keymap::effective("new_tab") == [k("cmd-t")] && !saved_keys(cx).contains_key("new_tab"), format!("{:?}", keymap::effective("new_tab")));
             search(&sv, "favorite query", cx);
             if let (Some(h), _) = points(&sv, "favorite_query", cx) {
                 click(cx, h);
@@ -998,7 +999,7 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
             }
             report(
                 "⌫ removes Favorite query's key; Reset all restores ⌘D and empties [keys]",
-                removed && keymap::effective("favorite_query") == ["cmd-d"] && saved_keys(cx).is_empty(),
+                removed && keymap::effective("favorite_query") == [k("cmd-d")] && saved_keys(cx).is_empty(),
                 format!("removed {removed}, {:?} {:?}", keymap::effective("favorite_query"), saved_keys(cx)),
             );
             let key_search = |sv: &Entity<crate::settings_view::SettingsView>, cx: &mut AsyncWindowContext| cx.update(|_, cx| sv.read(cx).demo_key_search()).unwrap_or_default();
@@ -1017,10 +1018,10 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
             let (still, _, _) = key_search(&sv, cx);
             report(
                 "search by shortcut: ⌘T lists New tab and opens none, ⇧⌘= finds Zoom in by its second key; ⌫ clears, esc ends it",
-                on && key.as_deref() == Some("cmd-t")
+                on && key == Some(k("cmd-t"))
                     && ids == ["new_tab"]
                     && tabs(ws, cx).len() == n0
-                    && plus.as_deref() == Some("cmd-shift-=")
+                    && plus == Some(k("cmd-shift-="))
                     && zoom_ids == ["zoom_in"]
                     && crate::theme::zoom() == 1.0
                     && cleared.is_none()
@@ -1107,7 +1108,7 @@ async fn grid_row_keys(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> b
     press(cx, "cmd-shift-left");
     let (sel, _) = state(cx);
     report("⇧⌘← back to its first", sel == Some(((2, 0), (2, 0))), format!("{sel:?}"));
-    report("Back and Forward are ⌃⌘← ⌃⌘→", crate::keymap::effective("go_back") == ["ctrl-cmd-left"] && crate::keymap::effective("go_forward") == ["ctrl-cmd-right"], format!("{:?}", crate::keymap::effective("go_back")));
+    report("Back and Forward are ⌃⌘← ⌃⌘→", crate::keymap::effective("go_back") == [crate::keymap::native("ctrl-cmd-left")] && crate::keymap::effective("go_forward") == [crate::keymap::native("ctrl-cmd-right")], format!("{:?}", crate::keymap::effective("go_back")));
     let ix = cx.update(|_, cx| ws.read(cx).tabs.iter().position(|t| *t == wide)).ok().flatten().unwrap_or(0);
     let other = if ix == 0 { 1 } else { 0 };
     if cx.update(|_, cx| ws.read(cx).tabs.len()).unwrap_or(0) < 2 {

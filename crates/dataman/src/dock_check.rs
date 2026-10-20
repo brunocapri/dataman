@@ -288,7 +288,7 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
     let (lg, toggle) = (logo(ws, cx), mark(ws, "toggle", cx));
     report(
         "the header too: \"DATAMAN\" over the sidebar, the toggle at the right edge",
-        e.zip(lg).is_some_and(|(e, l)| l.x >= e.x && l.right() <= e.right()) && toggle.is_some_and(|t| t.right() > vw - 40.),
+        e.zip(lg).is_some_and(|(e, l)| l.x >= e.x && l.right() <= e.right()) && toggle.is_some_and(|t| t.right() > vw - 40. - if crate::keymap::LINUX { 4. * crate::csd::BUTTON + 6. } else { 0. }),
         format!("{lg:?} {toggle:?} {e:?}"),
     );
     report("both docks laid out where the frame says", laid_right(ws, Dock::Left, cx) && laid_right(ws, Dock::Right, cx), format!("{:?}", laid_out(ws, Dock::Right, cx)));

@@ -550,7 +550,10 @@ async fn text(ws: &Entity<Workspace>, tree: &Entity<crate::tree::SchemaTree>, r:
     });
     typ(cx, "23");
     let typed = cx.update(|_, cx| editor.read(cx).text().to_string()).unwrap();
-    key(cx, "ctrl-z");
+    // On Linux ⌃Z is ⌘Z itself.
+    if !crate::keymap::LINUX {
+        key(cx, "ctrl-z");
+    }
     let ctrl = (cx.update(|_, cx| editor.read(cx).text().to_string()).unwrap(), next_undo(ws, cx));
     key(cx, "cmd-z");
     let cmd = (cx.update(|_, cx| editor.read(cx).text().to_string()).unwrap(), next_undo(ws, cx));
@@ -569,7 +572,10 @@ async fn text(ws: &Entity<Workspace>, tree: &Entity<crate::tree::SchemaTree>, r:
     draw(cx);
     typ(cx, "ord");
     let typed = cx.update(|_, cx| field.read(cx).text().to_string()).unwrap();
-    key(cx, "ctrl-z");
+    // On Linux ⌃Z is ⌘Z itself.
+    if !crate::keymap::LINUX {
+        key(cx, "ctrl-z");
+    }
     let ctrl = (cx.update(|_, cx| field.read(cx).text().to_string()).unwrap(), next_undo(ws, cx));
     key(cx, "cmd-z");
     let cmd = (cx.update(|_, cx| field.read(cx).text().to_string()).unwrap(), next_undo(ws, cx));

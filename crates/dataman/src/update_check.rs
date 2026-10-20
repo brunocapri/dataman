@@ -92,7 +92,8 @@ const APP: &str = "Dataman.app";
 fn stand_in(app: &Path, version: &str) -> anyhow::Result<()> {
     use std::os::unix::fs::PermissionsExt as _;
     std::fs::create_dir_all(app.parent().unwrap_or(Path::new("/")))?;
-    std::fs::write(app, format!("#!/bin/sh\necho {version}\n"))?;
+    // As big as a small DMG, so the download is seen in steps.
+    std::fs::write(app, format!("#!/bin/sh\necho {version}\nexit 0\n# {}\n", "-".repeat(400_000)))?;
     std::fs::set_permissions(app, std::fs::Permissions::from_mode(0o755))?;
     Ok(())
 }
@@ -471,6 +472,7 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     report("no quarantine on the installed bundle", !quarantined, String::new());
     let left: Vec<String> = std::fs::read_dir(&apps).map(|d| d.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect()).unwrap_or_default();
     report("nothing left beside it (staging copy, old app)", left == [APP], format!("{left:?}"));
+    let _ = wait(cx, 3, |cx| !sheet_open(cx)).await;
     let (sheet, notice) = cx.update(|_, cx| (ws.read(cx).update_sheet, updates::notice_shown(cx))).unwrap_or((true, true));
     report("after the install: no sheet, no notice", !sheet && !notice, format!("sheet {sheet}, notice {notice}"));
     let log = site.log.lock().unwrap().clone();

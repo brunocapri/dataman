@@ -215,7 +215,7 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     key(cx, "escape");
     let grid = cx.update(|_, cx| tab.read(cx).grid.clone()).unwrap();
     let _ = cx.update(|window, cx| window.focus(&grid.focus_handle(cx), cx));
-    key(cx, "cmd-down");
+    key(cx, &crate::keymap::effective("fetch_more")[0]);
     let (phase, rows, _) = settle(&tab, cx).await;
     pause(cx, 150).await;
     draw(cx);
@@ -255,7 +255,7 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     plus(&tab, cx).await;
     key(cx, "escape");
     let _ = cx.update(|window, cx| window.focus(&grid.focus_handle(cx), cx));
-    key(cx, "cmd-shift-down");
+    key(cx, &crate::keymap::effective("fetch_all")[0]);
     let (phase, rows, _) = settle(&tab, cx).await;
     pause(cx, 150).await;
     draw(cx);
