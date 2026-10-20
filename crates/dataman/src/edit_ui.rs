@@ -877,6 +877,9 @@ impl GridEdit {
         }
         self.model.changes.clear();
         self.report = None;
+        if matches!(self.card, Some(Card::Note(_))) {
+            self.card = None;
+        }
         self.refresh(cx);
         cx.emit(EditEvent::CloseReview);
     }
@@ -885,6 +888,9 @@ impl GridEdit {
         self.cancel_cell(window, cx);
         self.model.changes.clear();
         self.report = None;
+        if matches!(self.card, Some(Card::Note(_))) {
+            self.card = None;
+        }
         self.refresh(cx);
         cx.emit(EditEvent::CloseReview);
     }
@@ -933,6 +939,16 @@ impl GridEdit {
         if self.applying {
             return;
         }
+        // A new try: the last one's note (a bad date, a plan that failed) goes.
+        if matches!(self.card, Some(Card::Note(_))) {
+            self.card = None;
+        }
+        if let Some(why) = self.bad_date() {
+            self.card = Some(Card::Note(why));
+            cx.emit(EditEvent::OpenReview);
+            cx.notify();
+            return;
+        }
         let plan = match self.plan() {
             Ok(p) => p,
             Err(e) => {
@@ -971,6 +987,28 @@ impl GridEdit {
                 cx.notify();
             });
         }));
+    }
+
+    /// Dates and times are typed as text: the first edited or inserted one a server would not
+    /// read, said before anything is sent.
+    fn bad_date(&self) -> Option<String> {
+        let snap = self.snapshot()?;
+        let cols = &snap.columns;
+        let bad = |col: usize, v: Option<&str>| {
+            let c = cols.get(col)?;
+            let v = v?;
+            (!crate::value_edit::date_text_ok(c.kind, v)).then(|| format!("{}: \u{201c}{v}\u{201d} is not a valid value: write it as {}", c.name, crate::value_edit::date_format(c.kind)))
+        };
+        let changes = &self.model.changes;
+        for (row, edits) in changes.edited_rows() {
+            if changes.is_deleted(row) {
+                continue;
+            }
+            if let Some(why) = edits.iter().find_map(|(col, e)| bad(*col, e.new.as_deref())) {
+                return Some(why);
+            }
+        }
+        changes.inserted().iter().find_map(|r| r.iter().enumerate().find_map(|(col, v)| bad(col, v.as_ref().and_then(|v| v.as_deref()))))
     }
 
     pub fn overwrite(&mut self, cx: &mut Context<Self>) {

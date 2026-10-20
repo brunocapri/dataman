@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use chrono::{Datelike, NaiveDate, NaiveTime, Timelike};
+use chrono::{NaiveDate, NaiveTime};
 use gpui::{
     App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, KeyBinding, KeyDownEvent,
     MouseButton, Subscription, Window, actions, div, prelude::*,
@@ -43,7 +43,6 @@ pub fn bind_keys(cx: &mut App) {
 pub enum Mode {
     Bool,
     Enum(Arc<Vec<String>>),
-    DateTime(Kind),
     Json,
     LongText,
 }
@@ -54,7 +53,8 @@ pub fn mode_for(kind: Kind, enum_labels: Option<&Arc<Vec<String>>>, value: Optio
     match kind {
         Kind::Bool => Some(Mode::Bool),
         Kind::Json => Some(Mode::Json),
-        Kind::Date | Kind::Time | Kind::Timestamp | Kind::TimestampTz => Some(Mode::DateTime(kind)),
+        // Dates and times are typed as text (checked when the edits are committed).
+        Kind::Date | Kind::Time | Kind::Timestamp | Kind::TimestampTz => None,
         _ => {
             if let Some(l) = enum_labels.filter(|l| !l.is_empty()) {
                 return Some(Mode::Enum(l.clone()));
@@ -65,65 +65,51 @@ pub fn mode_for(kind: Kind, enum_labels: Option<&Arc<Vec<String>>>, value: Optio
     }
 }
 
-// Dates and times as text (UTC for timestamptz, like the grid edit's values).
-
-pub fn parse_datetime(kind: Kind, s: &str) -> (Option<NaiveDate>, Option<NaiveTime>) {
+/// A date or time typed in a cell, as the servers read it: `YYYY-MM-DD`, `HH:MM[:SS[.fff]]`,
+/// both with a space or a `T` between them, and an offset after a time (`Z`, `±HH[:MM]`)
+/// where the type has a time zone. MySQL's zero date passes (its server decides).
+pub fn date_text_ok(kind: Kind, s: &str) -> bool {
     let s = s.trim();
-    let s = match kind {
-        Kind::TimestampTz => s.trim_end_matches("+00").trim_end_matches('Z').trim_end(),
-        _ => s,
-    };
-    let date = |p: &str| NaiveDate::parse_from_str(p, "%Y-%m-%d").ok();
-    let time = |p: &str| NaiveTime::parse_from_str(p, "%H:%M:%S%.f").or_else(|_| NaiveTime::parse_from_str(p, "%H:%M")).ok();
-    match kind {
-        Kind::Date => (date(s), None),
-        Kind::Time => (None, time(s)),
-        _ => {
-            let (d, t) = s.split_once([' ', 'T']).unwrap_or((s, ""));
-            (date(d), time(t).or_else(|| Some(NaiveTime::MIN).filter(|_| t.is_empty())))
+    let date = |p: &str| p == "0000-00-00" || NaiveDate::parse_from_str(p, "%Y-%m-%d").is_ok();
+    let time = |p: &str| ["%H:%M:%S%.f", "%H:%M"].iter().any(|f| NaiveTime::parse_from_str(p, f).is_ok());
+    let zoned = |p: &str| -> bool {
+        if let Some(t) = p.strip_suffix('Z') {
+            return time(t);
         }
-    }
-}
-
-pub fn time_text(t: NaiveTime) -> String {
-    let mut s = t.format("%H:%M:%S").to_string();
-    let ns = t.nanosecond();
-    if ns > 0 {
-        let frac = format!("{:06}", ns / 1000);
-        s.push('.');
-        s.push_str(frac.trim_end_matches('0'));
-    }
-    s
-}
-
-pub fn datetime_text(kind: Kind, d: NaiveDate, t: NaiveTime) -> String {
+        match p.rfind(['+', '-']) {
+            Some(at) if at > 0 => {
+                let off = &p[at + 1..];
+                let ok = matches!(off.len(), 2 | 4 | 5) && off.bytes().enumerate().all(|(i, b)| b.is_ascii_digit() || (i == 2 && b == b':' && off.len() == 5));
+                ok && time(&p[..at])
+            }
+            _ => time(p),
+        }
+    };
     match kind {
-        Kind::Date => d.format("%Y-%m-%d").to_string(),
-        Kind::Time => time_text(t),
-        Kind::TimestampTz => format!("{} {}+00", d.format("%Y-%m-%d"), time_text(t)),
-        _ => format!("{} {}", d.format("%Y-%m-%d"), time_text(t)),
+        Kind::Date => date(s),
+        Kind::Time => time(s),
+        Kind::Timestamp | Kind::TimestampTz => {
+            if matches!(s, "infinity" | "-infinity") {
+                return true;
+            }
+            match s.split_once([' ', 'T']) {
+                None => date(s),
+                Some((d, t)) if kind == Kind::TimestampTz => date(d) && zoned(t.trim()),
+                Some((d, t)) => date(d) && time(t.trim()),
+            }
+        }
+        _ => true,
     }
 }
 
-pub fn month_grid(year: i32, month: u32) -> Vec<Option<NaiveDate>> {
-    let first = NaiveDate::from_ymd_opt(year, month, 1).unwrap_or_default();
-    let lead = first.weekday().num_days_from_monday() as i64;
-    (0..42)
-        .map(|i| {
-            let d = first + chrono::Duration::days(i - lead);
-            (d.month() == month).then_some(d)
-        })
-        .collect()
-}
-
-fn month_name(m: u32) -> &'static str {
-    ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
-        [(m.clamp(1, 12) - 1) as usize]
-}
-
-fn add_months(y: i32, m: u32, n: i32) -> (i32, u32) {
-    let i = y * 12 + m as i32 - 1 + n;
-    (i.div_euclid(12), (i.rem_euclid(12) + 1) as u32)
+/// What a date column takes, for the message about a value it does not.
+pub fn date_format(kind: Kind) -> &'static str {
+    match kind {
+        Kind::Date => "YYYY-MM-DD",
+        Kind::Time => "HH:MM:SS",
+        Kind::TimestampTz => "YYYY-MM-DD HH:MM:SS+HH:MM",
+        _ => "YYYY-MM-DD HH:MM:SS",
+    }
 }
 
 pub enum ValueEvent {
@@ -144,7 +130,6 @@ enum State {
     Bool(Option<bool>),
     /// `hi == labels.len()` is NULL.
     Enum { labels: Arc<Vec<String>>, hi: usize },
-    DateTime { kind: Kind, date: NaiveDate, month: (i32, u32), time: Entity<TextInput> },
     Json(Box<JsonState>),
     Text(Entity<CodeEditor>),
 }
@@ -181,25 +166,6 @@ impl ValueEditor {
                 let none = if nullable { labels.len() } else { 0 };
                 let hi = value.and_then(|v| labels.iter().position(|l| l == v)).unwrap_or(if value.is_none() { none } else { 0 });
                 State::Enum { labels, hi }
-            }
-            Mode::DateTime(kind) => {
-                let (d, t) = value.map(|v| parse_datetime(kind, v)).unwrap_or((None, None));
-                let now = chrono::Utc::now().naive_utc();
-                let date = d.unwrap_or(now.date());
-                let t = t.unwrap_or(if value.is_some() { NaiveTime::MIN } else { now.time().with_nanosecond(0).unwrap_or(NaiveTime::MIN) });
-                let time = cx.new(|cx| {
-                    let mut i = TextInput::new(cx, "");
-                    i.set_text(time_text(t), cx);
-                    i
-                });
-                subs.push(cx.subscribe_in(&time, window, |e, _, ev: &InputEvent, _, cx| match ev {
-                    InputEvent::Submit => e.apply(cx),
-                    InputEvent::Changed => {
-                        e.null = false;
-                        cx.notify();
-                    }
-                }));
-                State::DateTime { kind, date, month: (date.year(), date.month()), time }
             }
             Mode::Json => {
                 let text = value.unwrap_or("null");
@@ -258,17 +224,6 @@ impl ValueEditor {
             }),
             State::Enum { labels, hi } => Ok(labels.get(*hi).map(CellValue::text).unwrap_or(CellValue::Null)),
             _ if self.null => Ok(CellValue::Null),
-            State::DateTime { kind, date, time, .. } => {
-                let text = time.read(cx).text().trim().to_string();
-                let t = if *kind == Kind::Date {
-                    NaiveTime::MIN
-                } else {
-                    NaiveTime::parse_from_str(&text, "%H:%M:%S%.f")
-                        .or_else(|_| NaiveTime::parse_from_str(&text, "%H:%M"))
-                        .map_err(|_| format!("not a time: {text}"))?
-                };
-                Ok(CellValue::text(datetime_text(*kind, *date, t)))
-            }
             State::Json(j) => {
                 if j.raw {
                     let text = j.editor.read(cx).text().to_string();
@@ -312,11 +267,6 @@ impl ValueEditor {
                 let n = labels.len() as i64 + extra;
                 *hi = ((*hi as i64 + dy + dx).rem_euclid(n)) as usize;
             }
-            State::DateTime { kind, date, month, .. } if *kind != Kind::Time => {
-                *date += chrono::Duration::days(dx + 7 * dy);
-                *month = (date.year(), date.month());
-                self.null = false;
-            }
             State::Json(j) if !j.raw => {
                 let rows = j.doc.rows();
                 if dy != 0 {
@@ -347,7 +297,6 @@ impl ValueEditor {
                 }
             }
             State::Bool(_) | State::Enum { .. } => self.apply(cx),
-            State::DateTime { .. } => self.apply(cx),
             _ => {}
         }
     }
@@ -567,76 +516,6 @@ impl ValueEditor {
             .into_any_element()
     }
 
-    fn render_datetime(&self, kind: Kind, date: NaiveDate, month: (i32, u32), time: &Entity<TextInput>, t: &Theme, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let null = self.null;
-        let mut col = div().flex().flex_col().gap(px(8.));
-        if kind != Kind::Time {
-            let (y, m) = month;
-            let nav = |id: &'static str, ic: Icon, n: i32| {
-                ui::icon_button(t, id, ic, 22., 12.).on_click(cx.listener(move |e, _: &ClickEvent, _, cx| {
-                    if let State::DateTime { month, .. } = &mut e.state {
-                        *month = add_months(month.0, month.1, n);
-                    }
-                    cx.notify();
-                }))
-            };
-            let today = chrono::Utc::now().date_naive();
-            let (hov, acc, on_acc) = (t.hov, t.acc, t.on_acc);
-            let days = month_grid(y, m).into_iter().enumerate().map(|(i, d)| {
-                let Some(d) = d else { return div().w(px(30.)).h(px(24.)).into_any_element() };
-                let on = d == date && !null;
-                div()
-                    .id(("day", i))
-                    .w(px(30.))
-                    .h(px(24.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_size(px(11.5))
-                    .when(on, |x| x.bg(acc).text_color(on_acc).font_weight(FontWeight::SEMIBOLD))
-                    .when(!on, |x| x.text_color(if d == today { t.acc_t } else { t.tx }).hover(move |s| s.bg(hov)))
-                    .child(d.day().to_string())
-                    .on_click(cx.listener(move |e, _: &ClickEvent, _, cx| {
-                        if let State::DateTime { date, .. } = &mut e.state {
-                            *date = d;
-                        }
-                        e.null = false;
-                        cx.notify();
-                    }))
-                    .into_any_element()
-            });
-            col = col
-                .child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .child(nav("month-prev", Icon::ChevronLeft, -1))
-                        .child(div().flex_1().text_center().font_weight(FontWeight::SEMIBOLD).text_color(t.tx).child(format!("{} {y}", month_name(m))))
-                        .child(nav("month-next", Icon::ChevronRight, 1)),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .children(["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"].into_iter().map(|w| div().w(px(30.)).text_center().text_size(px(10.5)).text_color(t.tx4).child(w))),
-                )
-                .child(div().w(px(210.)).flex().flex_row().flex_wrap().children(days));
-        }
-        if kind != Kind::Date {
-            col = col.child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(8.))
-                    .child(div().w(px(130.)).child(time.clone()))
-                    .when(kind == Kind::TimestampTz, |d| d.child(div().text_size(px(11.)).text_color(t.tx3).child("UTC"))),
-            );
-        }
-        col.into_any_element()
-    }
-
     fn render_json(&self, j: &JsonState, t: &Theme, cx: &mut Context<Self>) -> gpui::AnyElement {
         let raw = j.raw;
         let modes = ui::segmented(t)
@@ -772,10 +651,6 @@ impl Render for ValueEditor {
                 let (l, h) = (labels.clone(), *hi);
                 (self.render_enum(&l, h, &t, cx), 240., false)
             }
-            State::DateTime { kind, date, month, time } => {
-                let (k, d, m, tm) = (*kind, *date, *month, time.clone());
-                (self.render_datetime(k, d, m, &tm, &t, cx), 236., true)
-            }
             State::Json(j) => (self.render_json(j, &t, cx), 440., true),
             State::Text(ed) => (
                 div().h(px(160.)).border_1().border_color(t.line2).overflow_hidden().child(ed.clone()).into_any_element(),
@@ -861,7 +736,7 @@ mod tests {
         let labels = Arc::new(vec!["new".to_string(), "paid".to_string()]);
         assert_eq!(mode_for(Kind::Bool, None, Some("t")), Some(Mode::Bool));
         assert_eq!(mode_for(Kind::Json, None, None), Some(Mode::Json));
-        assert_eq!(mode_for(Kind::TimestampTz, None, None), Some(Mode::DateTime(Kind::TimestampTz)));
+        assert_eq!(mode_for(Kind::TimestampTz, None, None), None, "dates are typed");
         assert_eq!(mode_for(Kind::Text, Some(&labels), Some("new")), Some(Mode::Enum(labels.clone())));
         assert_eq!(mode_for(Kind::Text, Some(&Arc::new(vec![])), Some("x")), None, "a plain text column");
         assert_eq!(mode_for(Kind::Text, None, Some("a\nb")), Some(Mode::LongText));
@@ -870,29 +745,23 @@ mod tests {
     }
 
     #[test]
-    fn dates_round_trip() {
-        let (d, t) = parse_datetime(Kind::TimestampTz, "2024-02-29 13:05:07.25+00");
-        assert_eq!(d, NaiveDate::from_ymd_opt(2024, 2, 29));
-        assert_eq!(datetime_text(Kind::TimestampTz, d.unwrap(), t.unwrap()), "2024-02-29 13:05:07.25+00");
-        let (d, t) = parse_datetime(Kind::Timestamp, "2026-10-13 00:00:00");
-        assert_eq!(datetime_text(Kind::Timestamp, d.unwrap(), t.unwrap()), "2026-10-13 00:00:00");
-        assert_eq!(parse_datetime(Kind::Timestamp, "2026-10-13").1, Some(NaiveTime::MIN), "a date alone is midnight");
-        let (_, t) = parse_datetime(Kind::Time, "07:30");
-        assert_eq!(time_text(t.unwrap()), "07:30:00");
-        let (d, _) = parse_datetime(Kind::Date, "1999-12-31");
-        assert_eq!(datetime_text(Kind::Date, d.unwrap(), NaiveTime::MIN), "1999-12-31");
-        assert_eq!(parse_datetime(Kind::Date, "infinity").0, None);
-        assert_eq!(time_text(NaiveTime::from_hms_micro_opt(1, 2, 3, 500).unwrap()), "01:02:03.0005");
-    }
-
-    #[test]
-    fn calendar() {
-        let g = month_grid(2026, 10);
-        assert_eq!(g.len(), 42);
-        assert_eq!(g.iter().position(|d| d.is_some()), Some(3));
-        assert_eq!(g.iter().flatten().count(), 31);
-        assert_eq!(add_months(2026, 12, 1), (2027, 1));
-        assert_eq!(add_months(2026, 1, -1), (2025, 12));
-        assert_eq!(month_name(10), "October");
+    fn dates_typed_as_text() {
+        assert!(date_text_ok(Kind::Date, "1999-12-31"));
+        assert!(!date_text_ok(Kind::Date, "1999-13-01"));
+        assert!(!date_text_ok(Kind::Date, "31/12/1999"));
+        assert!(date_text_ok(Kind::Date, "0000-00-00"), "MySQL's zero date is the server's call");
+        assert!(date_text_ok(Kind::Time, "07:30"));
+        assert!(date_text_ok(Kind::Time, "07:30:15.25"));
+        assert!(!date_text_ok(Kind::Time, "25:00"));
+        assert!(date_text_ok(Kind::Timestamp, "2026-10-13 08:00:00"));
+        assert!(date_text_ok(Kind::Timestamp, "2026-10-13T08:00"));
+        assert!(date_text_ok(Kind::Timestamp, "2026-10-13"), "a date alone is midnight");
+        assert!(!date_text_ok(Kind::Timestamp, "2026-10-13 8h"));
+        assert!(date_text_ok(Kind::TimestampTz, "2024-02-29 13:05:07.25+00"));
+        assert!(date_text_ok(Kind::TimestampTz, "2024-02-29T13:05:07-03:00"));
+        assert!(date_text_ok(Kind::TimestampTz, "2024-02-29 13:05:07Z"));
+        assert!(!date_text_ok(Kind::TimestampTz, "2024-02-30 13:05:07+00"));
+        assert!(date_text_ok(Kind::TimestampTz, "infinity"));
+        assert!(date_text_ok(Kind::Text, "anything"));
     }
 }

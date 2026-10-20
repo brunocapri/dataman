@@ -1,6 +1,8 @@
 //! `json-check`: the eye on SQL Server nvarchar and PostgreSQL text cells holding JSON (not on
 //! plain or broken text), the viewer's editor, invalid JSON refused, Apply as a pending edit
-//! committed with the grid's others; jsonb and MySQL's JSON too.
+//! committed with the grid's others; jsonb and MySQL's JSON too. `dates-check`: dates and times
+//! typed as text in the cell (no calendar), a bad one stopped at commit with the column and the
+//! format, good ones written on PostgreSQL and SQL Server.
 
 use gpui::{AsyncWindowContext, Entity, Focusable};
 use dataman_core::config::{ConnectionProfile, Engine};
@@ -135,5 +137,65 @@ pub async fn run_json(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWind
         let editable = cx.update(|_, cx| ws.read(cx).value_view.as_ref().is_some_and(|v| v.read(cx).demo_editor().is_some())).unwrap_or(false);
         r.check("MySQL's JSON: the eye opens an editable viewer", at.is_some() && editable, format!("{at:?} {editable}"));
         key(cx, "escape");
+    }
+}
+
+/// Clicks the cell, ↩ opens its editor (text, not a calendar), types over it, ↩.
+async fn type_cell(tab: &Entity<QueryTab>, row: usize, col: usize, text: &str, cx: &mut AsyncWindowContext) -> bool {
+    let grid = cx.update(|_, cx| tab.read(cx).grid.clone()).unwrap();
+    draw(cx);
+    let p = cx.update(|_, cx| grid.read(cx).demo_cell_point(row, col)).unwrap();
+    click(cx, p);
+    key(cx, "enter");
+    pause(cx, 50).await;
+    let edit = cx.update(|_, cx| tab.read(cx).edit.clone()).unwrap();
+    let as_text = cx.update(|_, cx| edit.read(cx).demo_cell_editor().is_some() && edit.read(cx).demo_value_editor().is_none()).unwrap_or(false);
+    key(cx, "cmd-a");
+    typ(cx, text);
+    key(cx, "enter");
+    pause(cx, 50).await;
+    as_text
+}
+
+pub async fn run_dates(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowContext) {
+    let (pg, ppw) = profile(Engine::Postgres);
+    let up = connect(ws, &pg, &ppw, cx).await;
+    if !r.check("PostgreSQL connects", up.is_ok(), format!("{up:?}")) {
+        return;
+    }
+    let core = core(ws, cx);
+    let _ = sql(&core, &pg, &ppw, "UPDATE dataman_scratch.documents SET due = '2026-10-15', updated_at = '2026-10-01 09:00:00+00' WHERE id = 1", cx).await;
+    let Some(tab) = open_table(ws, &pg, "dataman_scratch", "documents", 4, cx).await else { return };
+    let (due, upd) = (col(&tab, "due", cx), col(&tab, "updated_at", cx));
+    let as_text = type_cell(&tab, 0, due, "2026-02-30", cx).await;
+    r.check("a date cell is edited as text: no calendar", as_text, "");
+    commit(&tab, cx).await;
+    let note = cx.update(|_, cx| tab.read(cx).edit.read(cx).demo_card()).ok().flatten().unwrap_or_default();
+    let kept = sql1(&core, &pg, &ppw, "SELECT due::text FROM dataman_scratch.documents WHERE id = 1", cx).await;
+    r.check("an impossible date is stopped at commit: the column, the value, the format", note.contains("due") && note.contains("2026-02-30") && note.contains("YYYY-MM-DD") && kept.as_deref() == Some("2026-10-15"), format!("{note:?} {kept:?}"));
+
+    let edit = cx.update(|_, cx| tab.read(cx).edit.clone()).unwrap();
+    let _ = cx.update(|window, cx| edit.update(cx, |e, cx| e.discard(window, cx)));
+    pause(cx, 100).await;
+    type_cell(&tab, 0, due, "2026-11-20", cx).await;
+    type_cell(&tab, 0, upd, "2026-10-20 08:30:00-03:00", cx).await;
+    commit(&tab, cx).await;
+    let got = sql(&core, &pg, &ppw, "SELECT due::text, to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') FROM dataman_scratch.documents WHERE id = 1", cx).await;
+    r.check(
+        "dates typed freely are written (a timestamptz with its offset)",
+        got.as_ref().ok().and_then(|g| g.first().cloned()) == Some(vec![Some("2026-11-20".into()), Some("2026-10-20 11:30".into())]),
+        format!("{got:?}"),
+    );
+
+    let (ms, mpw) = profile(Engine::SqlServer);
+    let up = connect(ws, &ms, &mpw, cx).await;
+    if r.check("SQL Server connects", up.is_ok(), format!("{up:?}"))
+        && let Some(tab) = open_table(ws, &ms, "dbo", "documents", 7, cx).await
+    {
+        let upd = col(&tab, "updated_at", cx);
+        type_cell(&tab, 1, upd, "2026-12-24T18:45:00", cx).await;
+        commit(&tab, cx).await;
+        let got = sql1(&core, &ms, &mpw, "SELECT CONVERT(varchar(19), updated_at, 120) FROM dbo.documents WHERE id = 2", cx).await;
+        r.check("SQL Server datetime2: typed with a T, written", got.as_deref() == Some("2026-12-24 18:45:00"), format!("{got:?}"));
     }
 }
