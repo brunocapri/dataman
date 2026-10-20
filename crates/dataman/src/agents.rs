@@ -212,7 +212,16 @@ fn denied(e: &Entry) -> bool {
 }
 
 fn hidden_refusal(e: &Entry) -> bool {
-    e.error.as_deref().is_some_and(|m| m.contains("not visible to agents") || m.contains(" is hidden"))
+    e.error.as_deref().is_some_and(|m| m.contains("not visible to agents") || m.contains("is hidden from agents"))
+}
+
+fn masked_refusal(e: &Entry) -> bool {
+    e.error.as_deref().is_some_and(|m| m.contains("is masked for agents"))
+}
+
+/// Refused by what agents may do on the connection (Permissions), not by its tier.
+fn permission_refusal(e: &Entry) -> bool {
+    e.error.as_deref().is_some_and(|m| ["never runs for agents", "is off for agents", "is off", "structure only"].iter().any(|k| m.contains(k)))
 }
 
 /// The refusal's own words, without the `refused: ` every refusal starts with.
@@ -249,7 +258,9 @@ pub(crate) fn outcome_word(e: &Entry) -> (String, bool) {
             };
             (w.into(), false)
         }
-        Outcome::Refused if hidden_refusal(e) => ("refused · hidden column".into(), true),
+        Outcome::Refused if e.error.as_deref().is_some_and(|m| m.contains("is hidden from agents")) => ("refused · hidden column".into(), true),
+        Outcome::Refused if hidden_refusal(e) => ("refused · hidden".into(), true),
+        Outcome::Refused if masked_refusal(e) => ("refused · masked".into(), true),
         Outcome::Refused => ("refused".into(), true),
         Outcome::Cancelled => ("cancelled".into(), false),
         Outcome::Timeout => ("timed out".into(), true),
@@ -315,6 +326,8 @@ pub(crate) fn decision_text(e: &Entry) -> String {
     }
     match e.outcome {
         Outcome::Refused if hidden_refusal(e) => "Refused · hidden".into(),
+        Outcome::Refused if masked_refusal(e) => "Refused · masked".into(),
+        Outcome::Refused if permission_refusal(e) => "Refused · permissions".into(),
         Outcome::Refused => {
             let m = e.error.as_deref().unwrap_or("");
             if ["tier", "reads only", "destructive", "read-only", "MCP access"].iter().any(|k| m.contains(k)) { "Refused · tier".into() } else { "Refused".into() }
