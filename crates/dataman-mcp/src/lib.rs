@@ -10,7 +10,7 @@ pub mod user;
 
 use std::sync::Arc;
 
-pub use hub::{Approval, Drafted, Front, Hub, TabDraft, TabRead, TabWrite, WriteShown};
+pub use hub::{Approval, Drafted, Front, Hub, TabDraft, TabRead, TabWrite, WriteShown, shown_client, shown_text};
 pub use server::Server;
 pub use tool::{Args, Call, Registry, Schema, Tool, ToolError};
 

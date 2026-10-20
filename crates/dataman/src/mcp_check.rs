@@ -190,6 +190,9 @@ pub(crate) async fn sheet(cx: &mut AsyncWindowContext) -> Option<dataman_mcp::Ap
         let p = cx.update(|_, cx| cx.try_global::<crate::mcp::McpHost>().and_then(|h| h.pending.front().map(|p| p.req.clone()))).ok().flatten();
         if p.is_some() {
             draw(cx);
+            // As a person reads it: Allow takes effect once the sheet has been up a moment.
+            pause(cx, crate::mcp::ALLOW_AFTER.as_millis() as u64 + 100).await;
+            draw(cx);
             return p;
         }
         pause(cx, 50).await;
@@ -572,6 +575,26 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
         check("the connection goes back to tier full", false, String::new());
         return false;
     }
+
+    // A sheet that has just appeared takes no Allow: a key pressed for the one before cannot approve it.
+    let rx = start(&agent_ipc, "execute", json!({"connection": conn, "database": db, "sql": format!("CREATE TABLE {s}.quick (a int)")}));
+    let mut up = false;
+    for _ in 0..200 {
+        if sheet_open(cx) {
+            up = true;
+            break;
+        }
+        pause(cx, 10).await;
+    }
+    draw(cx);
+    key(cx, "cmd-enter");
+    pause(cx, 100).await;
+    check("⌘↩ the moment a sheet appears does not allow it", up && sheet_open(cx), String::new());
+    pause(cx, crate::mcp::ALLOW_AFTER.as_millis() as u64).await;
+    draw(cx);
+    key(cx, "cmd-enter");
+    let (err, out) = rx.await.unwrap_or((true, String::new()));
+    check("… a moment later it does", !err && out.contains("approved"), out);
 
     let rx = start(&agent_ipc,"execute", json!({"connection": conn, "database": db, "sql": format!("DROP SCHEMA {s} CASCADE")}));
     let q = sheet(cx).await;

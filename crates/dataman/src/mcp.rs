@@ -42,6 +42,23 @@ pub struct Pending {
     pub id: u64,
     pub req: Approval,
     reply: Option<oneshot::Sender<bool>>,
+    /// When the sheet first showed it, and whether a redraw is due when Allow becomes active.
+    shown: std::cell::Cell<Option<std::time::Instant>>,
+    waking: std::cell::Cell<bool>,
+}
+
+/// A sheet that just appeared (the one before it withdrawn, answered, or ⌘↩ held down) takes
+/// no Allow yet: the click or key meant for what was there before cannot approve it.
+pub const ALLOW_AFTER: std::time::Duration = std::time::Duration::from_millis(600);
+
+impl Pending {
+    fn new(id: u64, req: Approval, reply: Option<oneshot::Sender<bool>>) -> Pending {
+        Pending { id, req, reply, shown: Default::default(), waking: Default::default() }
+    }
+}
+
+pub(crate) fn allow_ready(cx: &App) -> bool {
+    cx.try_global::<McpHost>().and_then(|h| h.pending.front()).and_then(|p| p.shown.get()).is_some_and(|t| t.elapsed() >= ALLOW_AFTER)
 }
 
 pub(crate) enum FrontMsg {
@@ -81,7 +98,7 @@ impl Front for AppFront {
     fn approve(&self, req: Approval) -> futures_util::future::BoxFuture<'static, bool> {
         let (reply, rx) = oneshot::channel();
         let id = self.next.fetch_add(1, Ordering::Relaxed) + 1;
-        let sent = self.tx.send(FrontMsg::Approve(Pending { id, req, reply: Some(reply) })).is_ok();
+        let sent = self.tx.send(FrontMsg::Approve(Pending::new(id, req, Some(reply)))).is_ok();
         let asked = Asked { id, tx: self.tx.clone(), done: false };
         Box::pin(async move {
             // The whole guard lives in the future: dropped unanswered, it withdraws the question.
@@ -364,6 +381,9 @@ impl Workspace {
     }
 
     fn mcp_answer(&mut self, allow: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if allow && !allow_ready(cx) {
+            return;
+        }
         answer(allow, cx);
         let more = cx.try_global::<McpHost>().is_some_and(|h| !h.pending.is_empty());
         if !more {
@@ -374,6 +394,9 @@ impl Workspace {
 
     /// Saved without reconnecting: the write held in its transaction goes on.
     pub(crate) fn mcp_always_allow(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !allow_ready(cx) {
+            return;
+        }
         let Some((id, stmts)) = cx.try_global::<McpHost>().and_then(|h| h.pending.front()).map(|p| (p.req.connection_id.clone(), p.req.allowable.clone())) else { return };
         if !stmts.is_empty() {
             let core = self.store.read(cx).core.clone();
@@ -393,16 +416,28 @@ impl Workspace {
         let host = cx.try_global::<McpHost>()?;
         let p = host.pending.front()?;
         let more = host.pending.len() - 1;
+        let shown = *p.shown.get().get_or_insert_with(std::time::Instant::now);
+        p.shown.set(Some(shown));
+        let wait = ALLOW_AFTER.saturating_sub(shown.elapsed());
+        let ready = wait.is_zero();
+        if !ready && !p.waking.replace(true) {
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(wait).await;
+                let _ = this.update(cx, |_, cx| cx.notify());
+            })
+            .detach();
+        }
         let t = cx.theme();
         let req = p.req.clone();
         let prod = req.env.is_production();
         let color = self.store.read(cx).profile(&req.connection_id).map(|p| t.profile_color(p)).unwrap_or(t.tx4);
         let btn = |id: &'static str, kind: Btn, label: &'static str, key: &'static str| ui::button(&t, id, kind).h(px(28.)).child(label).child(ui::key_hint(key));
-        let lines = crate::editor::highlighted_lines(&t, req.sql.trim());
+        let lines = crate::editor::highlighted_lines(&t, &dataman_mcp::shown_text(&req.sql));
+        let tall = (lines.len() > 12).then(|| format!("{} lines", lines.len()));
         let sql = div()
             .id("mcp-sql")
             .max_h(px(240.))
-            .overflow_scroll()
+            .overflow_y_scroll()
             .px(px(12.))
             .py(px(10.))
             .bg(t.card)
@@ -416,7 +451,7 @@ impl Workspace {
                 if text.is_empty() {
                     div().h(px(18.)).into_any_element()
                 } else {
-                    div().whitespace_nowrap().child(StyledText::new(text).with_runs(runs)).into_any_element()
+                    div().child(StyledText::new(text).with_runs(runs)).into_any_element()
                 }
             }));
         let tags = div().flex().flex_row().flex_wrap().items_center().gap(px(6.)).children(req.reasons.iter().map(|r| {
@@ -472,7 +507,7 @@ impl Workspace {
                                     .child(div().text_color(t.tx2).child(req.database.clone()))
                                     .when(!req.env.is_none(), |d| d.child(div().text_color(if prod { t.err } else { t.tx3 }).child(req.env.label())))
                                     .child(div().w(px(1.)).h(px(12.)).bg(t.line))
-                                    .child(div().text_color(t.tx3).child(req.client.clone()))
+                                    .child(div().text_color(t.tx3).child(dataman_mcp::shown_client(&req.client)))
                                     .into_any_element(),
                             ),
                             ui::modal_close(&t, "mcp-close").on_click(cx.listener(|w, _, window, cx| w.mcp_answer(false, window, cx))),
@@ -492,6 +527,7 @@ impl Workspace {
                             ui::modal_footer(&t)
                                 .text_size(px(11.))
                                 .child(div().text_color(t.tx3).child(req.tool.clone()))
+                                .children(tall.map(|n| div().text_color(t.tx3).child(n)))
                                 .when(more > 0, |d| d.child(div().text_color(t.tx3).child(format!("+{more}"))))
                                 .child(div().flex_1())
                                 .when(dataman_core::MCP_ADVANCED && !req.allowable.is_empty(), |d| {
@@ -514,6 +550,7 @@ impl Workspace {
                                         .child(
                                             btn("mcp-allow", if prod || req.destructive { Btn::Danger } else { Btn::Primary }, "Allow", "⌘↩")
                                                 .font_weight(FontWeight::SEMIBOLD)
+                                                .when(!ready, |b| b.opacity(0.5))
                                                 .on_click(cx.listener(|w, _, window, cx| w.mcp_answer(true, window, cx))),
                                         )
                                 }),
@@ -937,9 +974,9 @@ pub fn demo_seed(core: &Arc<Core>, approval: bool, cx: &mut App) {
     if approval {
         let host = cx.default_global::<McpHost>();
         let id = core.config.connections().into_iter().find(|p| p.name == "shop").map(|p| p.id).unwrap_or_default();
-        host.pending.push_back(Pending {
-            id: 0,
-            req: Approval {
+        host.pending.push_back(Pending::new(
+            0,
+            Approval {
                 client: "claude-code".into(),
                 tool: "execute".into(),
                 connection: "shop".into(),
@@ -963,7 +1000,7 @@ pub fn demo_seed(core: &Arc<Core>, approval: bool, cx: &mut App) {
                 tab: None,
                 allowable: vec!["DELETE FROM orders\n RETURNING id, status, total".into()],
             },
-            reply: None,
-        });
+            None,
+        ));
     }
 }

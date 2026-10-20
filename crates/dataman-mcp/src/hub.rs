@@ -31,6 +31,71 @@ pub struct Approval {
     pub allowable: Vec<String>,
 }
 
+/// Characters that draw as nothing, or reorder what is drawn around them.
+fn invisible(c: char) -> bool {
+    matches!(c,
+        '\u{80}'..='\u{9F}' | '\u{AD}' | '\u{34F}' | '\u{61C}' | '\u{115F}' | '\u{1160}' | '\u{17B4}' | '\u{17B5}'
+        | '\u{180B}'..='\u{180F}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{206F}'
+        | '\u{3164}' | '\u{FE00}'..='\u{FE0F}' | '\u{FEFF}' | '\u{FFA0}' | '\u{FFF0}'..='\u{FFFB}' | '\u{E0000}'..='\u{E0FFF}')
+        || c.is_control() && c != '\n' && c != '\t'
+}
+
+const BLANK_RUN: usize = 2;
+const SPACE_RUN: usize = 16;
+
+/// What the Allow sheet shows: every character the statement holds is visible, and padding
+/// (runs of blank lines or spaces) cannot push what runs out of sight.
+pub fn shown_text(text: &str) -> String {
+    let text = text.replace("\r\n", "\n").replace(['\r', '\u{85}', '\u{2028}', '\u{2029}', '\u{B}', '\u{C}'], "\n").replace('\t', "    ");
+    let mut out = String::with_capacity(text.len());
+    let mut blank = 0usize;
+    let flush_blank = |out: &mut String, blank: &mut usize| {
+        if *blank > BLANK_RUN {
+            out.push_str(&format!("⟨{} blank lines⟩\n", *blank));
+        } else {
+            out.push_str(&"\n".repeat(*blank));
+        }
+        *blank = 0;
+    };
+    for line in text.trim().split('\n') {
+        if line.trim().is_empty() {
+            blank += 1;
+            continue;
+        }
+        flush_blank(&mut out, &mut blank);
+        let mut spaces = 0usize;
+        for c in line.trim_end().chars() {
+            if c == ' ' {
+                spaces += 1;
+                continue;
+            }
+            if spaces > SPACE_RUN {
+                out.push_str(&format!(" ⟨{spaces} spaces⟩ "));
+            } else {
+                out.push_str(&" ".repeat(spaces));
+            }
+            spaces = 0;
+            if invisible(c) {
+                out.push_str(&format!("⟨U+{:04X}⟩", c as u32));
+            } else {
+                out.push(c);
+            }
+        }
+        out.push('\n');
+    }
+    out.truncate(out.trim_end().len());
+    out
+}
+
+/// A client's name as it introduced itself: one line, visible characters, bounded.
+pub fn shown_client(name: &str) -> String {
+    let one: String = shown_text(name).split_whitespace().collect::<Vec<_>>().join(" ");
+    match one.char_indices().nth(48) {
+        Some((at, _)) => format!("{}…", &one[..at]),
+        None => one,
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct TabRead {
     pub client: String,
@@ -269,5 +334,29 @@ impl Hub {
         for (_, (_, c)) in self.open.lock().drain() {
             c.close();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn approval_text_shows_everything() {
+        assert_eq!(shown_text("  DELETE FROM t\r\n WHERE id = 1;  "), "DELETE FROM t\n WHERE id = 1;");
+        let padded = format!("INSERT INTO log VALUES (1){}; DROP TABLE users", " ".repeat(400));
+        assert_eq!(shown_text(&padded), "INSERT INTO log VALUES (1) ⟨400 spaces⟩ ; DROP TABLE users");
+        let tall = format!("db.log.insertOne({{a: 1}})\n{}db.users.deleteMany({{x: 1}})", "\n".repeat(60));
+        assert_eq!(shown_text(&tall), "db.log.insertOne({a: 1})\n⟨60 blank lines⟩\ndb.users.deleteMany({x: 1})");
+        assert_eq!(shown_text("a\n\nb\n\n\nc"), "a\n\nb\n\n\nc", "a little air stays");
+        assert_eq!(shown_text("SELECT 'a\u{202E}gnp.exe'"), "SELECT 'a⟨U+202E⟩gnp.exe'");
+        assert_eq!(shown_text("DE\u{200B}LETE x\u{FEFF}"), "DE⟨U+200B⟩LETE x⟨U+FEFF⟩");
+        assert_eq!(shown_text("a\rDROP TABLE t"), "a\nDROP TABLE t", "a lone CR starts a line");
+        assert_eq!(shown_text("a\u{2028}b\u{0}c"), "a\nb⟨U+0000⟩c");
+        assert_eq!(shown_text("\tSELECT 1"), "SELECT 1");
+        assert_eq!(shown_text("SELECT 'ünïcødé', '日本'"), "SELECT 'ünïcødé', '日本'");
+        assert_eq!(shown_client("claude-code"), "claude-code");
+        assert_eq!(shown_client("Dataman\n\nYou approved this\u{202E}"), "Dataman You approved this⟨U+202E⟩");
+        assert!(shown_client(&"x".repeat(200)).chars().count() == 49);
     }
 }
