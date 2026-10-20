@@ -53,7 +53,15 @@ impl Server {
     }
 
     fn audit(&self, call: &Call, started: Instant, outcome: Outcome, error: Option<String>) {
-        let n = call.note();
+        let mut n = call.note();
+        // Passwords written into statements (and echoed in errors) stay out of the log.
+        let engine = n.connection.as_deref().and_then(|c| self.hub.profile(c).ok()).map(|p| p.engine);
+        let masked = |s: &str| match engine {
+            Some(e) => dataman_core::mask::statement(e, s).into_owned(),
+            None => dataman_core::mask::any(s).into_owned(),
+        };
+        n.sql = n.sql.as_deref().map(masked);
+        let error = error.as_deref().map(dataman_core::mask::any).map(|c| c.into_owned());
         self.hub.audit.write(&Entry {
             ts: chrono::Utc::now(),
             client: call.client.clone(),

@@ -117,3 +117,14 @@ fn postgres_explain_analyze_options() {
     }
     exec(&e, &c, &["DROP TABLE guard_explain"]);
 }
+
+/// A password written into a statement is kept masked in the history.
+#[test]
+fn history_masks_passwords() {
+    let e = env();
+    let Some(c) = pg(&e) else { return };
+    exec_quiet(&e, &c, &["ALTER ROLE dataman_no_such_role PASSWORD 'hunter4'"]);
+    let h = e.core.history.load(&c.profile.id, 20).unwrap();
+    let sql: Vec<&str> = h.iter().map(|x| x.sql.as_str()).collect();
+    assert!(sql.contains(&"ALTER ROLE dataman_no_such_role PASSWORD '••••••'") && !sql.iter().any(|s| s.contains("hunter4")), "{sql:?}");
+}

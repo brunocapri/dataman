@@ -509,6 +509,11 @@ fn stdio_update_connection() {
     assert!(!text.to_lowercase().contains("password") && !text.contains("hunter2"), "{text}");
     let log = std::fs::read_to_string(cfg.path().join("dataman/mcp-audit.jsonl")).unwrap();
     assert!(!log.contains("hunter2") && log.contains("\"tool\":\"update_connection\""), "{log}");
+    // A password written into a statement stays out of the log too (refused or not).
+    let (err, _) = m.tool("execute", json!({"connection": "local", "sql": "CREATE USER eve PASSWORD 'hunter3'"}));
+    assert!(err);
+    let log = std::fs::read_to_string(cfg.path().join("dataman/mcp-audit.jsonl")).unwrap();
+    assert!(!log.contains("hunter3") && log.contains("CREATE USER eve PASSWORD '••••••'"), "{log}");
 }
 
 #[test]

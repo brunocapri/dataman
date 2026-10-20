@@ -30,6 +30,7 @@ pub mod order;
 pub mod own;
 pub mod params;
 pub mod parse_check;
+pub mod mask;
 pub mod pgpass;
 mod pgtypes;
 pub mod pgservice;

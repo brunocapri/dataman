@@ -165,6 +165,14 @@ impl Connection {
     }
 
     pub fn record_history(&self, entry: &HistoryEntry) {
+        let masked;
+        let entry = match crate::mask::statement(self.profile.engine, &entry.sql) {
+            std::borrow::Cow::Borrowed(_) => entry,
+            std::borrow::Cow::Owned(sql) => {
+                masked = HistoryEntry { sql, ..entry.clone() };
+                &masked
+            }
+        };
         if let Err(e) = self.history.append(&self.profile.id, entry) {
             log::warn!("history: {e}");
         }
@@ -389,9 +397,7 @@ impl Session {
             error,
             source: None,
         };
-        if let Err(e) = self.conn.history.append(&self.conn.profile.id, &entry) {
-            log::warn!("history: {e}");
-        }
+        self.conn.record_history(&entry);
     }
 
     async fn wrapper(&self, client: &Db, rs: &ResultSet, sql: &str) -> bool {
@@ -554,9 +560,7 @@ impl Session {
             error: error.map(|e| e.to_string()),
             source: rs.agent().map(|_| crate::history::AGENT.to_string()),
         };
-        if let Err(e) = self.conn.history.append(&self.conn.profile.id, &entry) {
-            log::warn!("history: {e}");
-        }
+        self.conn.record_history(&entry);
     }
 }
 
