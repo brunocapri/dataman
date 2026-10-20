@@ -61,6 +61,12 @@ pub fn lookup(path: &Path, host: &str, port: u16, database: &str, user: &str) ->
     find(&entries, host, port, database, user)
 }
 
+/// Only lines that name this host: a `*` host line is for servers the user picked.
+pub fn lookup_named_host(path: &Path, host: &str, port: u16, database: &str, user: &str) -> Option<String> {
+    let entries: Vec<Entry> = read(path).ok()?.into_iter().filter(|e| e.host != "*").collect();
+    find(&entries, host, port, database, user)
+}
+
 pub fn find(entries: &[Entry], host: &str, port: u16, database: &str, user: &str) -> Option<String> {
     entries.iter().find(|e| e.matches(host, port, database, user)).map(|e| e.password.clone()).filter(|p| !p.is_empty())
 }
@@ -92,6 +98,19 @@ fn parse_line(line: &str) -> Option<Entry> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn named_host_lines_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("pgpass");
+        std::fs::write(&f, "db.corp:5432:*:app:exact\n*:*:*:postgres:anyhost\n").unwrap();
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(lookup(&f, "evil.example", 5432, "x", "postgres").as_deref(), Some("anyhost"));
+        assert_eq!(lookup_named_host(&f, "evil.example", 5432, "x", "postgres"), None, "a * line never goes to a host an agent picked");
+        assert_eq!(lookup_named_host(&f, "db.corp", 5432, "x", "app").as_deref(), Some("exact"));
+    }
+
     use super::*;
 
     const FILE: &str = "\

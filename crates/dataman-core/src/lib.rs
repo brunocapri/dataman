@@ -144,7 +144,8 @@ impl Secrets {
         if !p.engine.is_postgres() {
             return Ok(None);
         }
-        Ok(self.pgpass.as_deref().and_then(|f| pgpass::lookup(f, &p.host, p.port, &p.database, &p.user)))
+        let lookup = if p.agent_made { pgpass::lookup_named_host } else { pgpass::lookup };
+        Ok(self.pgpass.as_deref().and_then(|f| lookup(f, &p.host, p.port, &p.database, &p.user)))
     }
 
     fn ssh(&self, p: &ConnectionProfile, given: Option<String>) -> Result<Option<String>> {

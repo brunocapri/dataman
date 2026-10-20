@@ -69,6 +69,16 @@ pub fn tools() -> Vec<Builtin> {
     ]
 }
 
+/// A favorite saved on a connection whose MCP access is off is not the agents' to see or change.
+fn visible(cx: &Call, f: &Favorite) -> bool {
+    let Some(id) = &f.connection_id else { return true };
+    cx.hub.profiles().iter().find(|p| p.id == *id).is_none_or(|p| p.mcp_access() != dataman_core::McpAccess::Off)
+}
+
+fn favorites(cx: &Call) -> Vec<Favorite> {
+    cx.hub.core.favorites.list().into_iter().filter(|f| visible(cx, f)).collect()
+}
+
 fn failed(e: anyhow::Error) -> ToolError {
     ToolError::Failed(format!("{e:#}"))
 }
@@ -78,11 +88,7 @@ fn list_favorites(cx: &Call, _a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
         cx.enabled()?;
         let profiles = cx.hub.profiles();
         let folders = cx.hub.core.favorites.folders();
-        let rows = cx
-            .hub
-            .core
-            .favorites
-            .list()
+        let rows = favorites(cx)
             .into_iter()
             .map(|f| {
                 let conn_name = f.connection_id.as_ref().and_then(|id| profiles.iter().find(|p| p.id == *id)).map(|p| p.name.clone());
@@ -106,7 +112,7 @@ fn run_favorite(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
     Box::pin(async move {
         cx.enabled()?;
         let query = a.str("name")?;
-        let favorites = cx.hub.core.favorites.list();
+        let favorites = favorites(cx);
         let profiles = cx.hub.profiles();
         let conn_name = |f: &Favorite| f.connection_id.as_ref().map(|id| profiles.iter().find(|p| p.id == *id).map(|p| p.name.clone()).unwrap_or_else(|| id.clone()));
         let names: Vec<&str> = favorites.iter().map(|f| f.name.as_str()).collect();
@@ -168,7 +174,7 @@ fn add_favorite(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
             return Err(ToolError::Invalid("\"sql\" must not be empty".into()));
         }
         let connection_id = match a.opt_str("connection") {
-            Some(name) => Some(cx.hub.profile(name).map_err(ToolError::Invalid)?.id),
+            Some(_) => Some(cx.target(&a, crate::policy::Need::Read)?.id),
             None => None,
         };
         let mut fav = Favorite::new(name, sql);
@@ -183,6 +189,9 @@ fn remove_favorite(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
     Box::pin(async move {
         cx.enabled()?;
         let id = a.str("id")?;
+        if !favorites(cx).iter().any(|f| f.id == id) {
+            return Ok(json!({"removed": id}));
+        }
         cx.hub.core.favorites.remove(id).map_err(failed)?;
         Ok(json!({"removed": id}))
     })
@@ -195,6 +204,9 @@ fn rename_favorite(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
         let name = a.str("name")?;
         if name.trim().is_empty() {
             return Err(ToolError::Invalid("\"name\" must not be empty".into()));
+        }
+        if !favorites(cx).iter().any(|f| f.id == id) {
+            return Err(ToolError::Invalid(format!("no favorite with id {id:?}")));
         }
         match cx.hub.core.favorites.rename(id, name).map_err(failed)? {
             Some(f) => Ok(json!({"id": f.id, "name": f.name})),

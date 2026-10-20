@@ -59,10 +59,14 @@ struct Mcp {
 
 impl Mcp {
     fn spawn(cfg: &std::path::Path) -> Mcp {
+        Mcp::spawn_with(cfg, &cfg.join("none"))
+    }
+
+    fn spawn_with(cfg: &std::path::Path, pgpass: &std::path::Path) -> Mcp {
         let mut child = Command::new(env!("CARGO_BIN_EXE_dataman-mcp"))
             .env("XDG_CONFIG_HOME", cfg)
             .env("DATAMAN_MCP_SECRETS", "memory")
-            .env("PGPASSFILE", cfg.join("none"))
+            .env("PGPASSFILE", pgpass)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -210,6 +214,60 @@ fn stdio_session() {
     assert!(draft["outcome"] == "refused" && draft.get("draft").is_none() && draft.get("rows").is_none(), "{draft}");
 }
 
+/// A favorite saved on a connection agents cannot reach (production: off by default) is not
+/// theirs to read, run, rename or remove.
+#[test]
+fn stdio_favorites_of_closed_connections() {
+    let cfg = config();
+    std::fs::write(
+        cfg.path().join("dataman/favorites.toml"),
+        "[[favorite]]\nid = \"open\"\nname = \"open one\"\nsql = \"select 1\"\nconnection_id = \"pg1\"\n\n[[favorite]]\nid = \"shut\"\nname = \"payroll\"\nsql = \"select salary from payroll where ssn = '078-05-1120'\"\nconnection_id = \"prod1\"\n",
+    )
+    .unwrap();
+    let mut m = Mcp::spawn(cfg.path());
+    m.call("initialize", json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}));
+    m.send(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
+    let (err, text) = m.tool("list_favorites", json!({}));
+    assert!(!err && text.contains("open one") && !text.contains("payroll") && !text.contains("078-05"), "{text}");
+    let (_, text) = m.tool("run_favorite", json!({"name": "payroll"}));
+    assert!(!text.contains("078-05") && !text.contains("salary"), "{text}");
+    let (err, text) = m.tool("rename_favorite", json!({"id": "shut", "name": "harmless"}));
+    assert!(err && text.contains("no favorite"), "{text}");
+    let (err, _) = m.tool("remove_favorite", json!({"id": "shut"}));
+    assert!(!err);
+    let (err, text) = m.tool("add_favorite", json!({"name": "x", "sql": "select 2", "connection": "prod"}));
+    assert!(err && text.contains("off"), "{text}");
+    let saved = std::fs::read_to_string(cfg.path().join("dataman/favorites.toml")).unwrap();
+    assert!(saved.contains("name = \"payroll\"") && !saved.contains("select 2"), "{saved}");
+}
+
+/// A `*` line of ~/.pgpass is not sent to a server an agent named (it could ask for the
+/// password in clear); the user's own connections keep libpq's behavior.
+#[test]
+fn stdio_pgpass_wildcard_stays_home() {
+    use std::os::unix::fs::PermissionsExt;
+    let cfg = config();
+    let pgpass = cfg.path().join("pgpass");
+    let pw = std::env::var("DATAMAN_PG_PASSWORD").unwrap_or_else(|_| "dataman".into());
+    std::fs::write(&pgpass, format!("*:*:*:postgres:{pw}\n")).unwrap();
+    std::fs::set_permissions(&pgpass, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let mut m = Mcp::spawn_with(cfg.path(), &pgpass);
+    m.call("initialize", json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}));
+    m.send(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
+    let (err, text) = m.tool("run_query", json!({"connection": "local pg", "sql": "SELECT 1"}));
+    if err && text.contains("cannot connect") && !text.contains("password") {
+        eprintln!("skipping: {text}");
+        return;
+    }
+    assert!(!err, "the user's connection uses the * line: {text}");
+    let (err, text) = m.tool("create_connection", json!({"name": "agent pg", "host": "127.0.0.1", "port": 55432, "user": "postgres", "database": "dataman", "sslmode": "disable"}));
+    assert!(!err, "{text}");
+    let toml = std::fs::read_to_string(cfg.path().join("dataman/connections.toml")).unwrap();
+    assert!(block_for(&toml, "agent pg").contains("agent_made = true"), "{toml}");
+    let (err, text) = m.tool("run_query", json!({"connection": "agent pg", "sql": "SELECT 1"}));
+    assert!(err && text.contains("password"), "no password for the agent's own server: {text}");
+}
+
 #[test]
 fn stdio_favorites_and_create_connection() {
     let cfg = config();
@@ -283,7 +341,9 @@ fn stdio_favorites_and_create_connection() {
     assert!(err && text.contains("already exists"), "{text}");
 
     let (err, text) = m.tool("create_connection", json!({"name": "new1", "host": "db2.internal", "user": "bob", "overwrite": true}));
-    assert!(!err, "{text}");
+    assert!(err && text.contains("moves the connection to another server") && text.contains("open the app"), "headless, a move is refused: {text}");
+    let (err, text) = m.tool("create_connection", json!({"name": "new1", "host": "db.internal", "user": "bob", "database": "other", "overwrite": true}));
+    assert!(!err, "same server: {text}");
 
     let (err, text) = m.tool("create_connection", json!({"name": "from url", "connection_string": "postgresql://alice@dbhost/app"}));
     assert!(!err, "{text}");
@@ -315,13 +375,21 @@ fn stdio_create_connection_refuses_escalation() {
     let (err, text) = m.tool("create_connection", json!({"name": "x1", "host": "h", "user": "u", "mcp": "write"}));
     assert!(err && text.contains("cannot grant") && text.contains("write"), "{text}");
 
+    // An MCP-off connection (prod) is edited in the app only, whatever the change.
     let (err, text) = m.tool("create_connection", json!({"name": "prod", "host": "10.255.255.1", "user": "app", "overwrite": true, "mcp": "read"}));
-    assert!(err && text.contains("widen"), "{text}");
+    assert!(err && text.contains("is off"), "{text}");
 
     let (err, text) = m.tool("create_connection", json!({"name": "prod", "host": "10.255.255.1", "user": "app", "overwrite": true, "env": "dev"}));
+    assert!(err && text.contains("is off"), "{text}");
+
+    let (err, text) = m.tool("create_connection", json!({"name": "full", "host": "10.255.255.1", "user": "app", "overwrite": true, "env": "none"}));
+    assert!(!err, "{text}");
+    let (err, text) = m.tool("create_connection", json!({"name": "full", "host": "10.255.255.1", "user": "app", "overwrite": true, "mcp": "read", "env": "dev"}));
+    assert!(!err, "narrowing, tightening: {text}");
+    let (err, text) = m.tool("create_connection", json!({"name": "full", "host": "10.255.255.1", "user": "app", "overwrite": true, "env": "none"}));
     assert!(err && text.contains("loosen"), "{text}");
 
-    let (err, text) = m.tool("create_connection", json!({"name": "local pg", "host": "127.0.0.1", "user": "postgres", "overwrite": true, "env": "production"}));
+    let (err, text) = m.tool("create_connection", json!({"name": "local pg", "host": "127.0.0.1", "user": "postgres", "overwrite": true, "env": "staging"}));
     assert!(!err, "{text}");
     let (err, text) = m.tool("create_connection", json!({"name": "local pg", "host": "127.0.0.1", "user": "postgres", "overwrite": true, "color": "violet"}));
     assert!(!err, "{text}");
@@ -361,19 +429,17 @@ fn stdio_create_connection_drops_the_secret_when_the_target_changes() {
     assert!(!err);
     assert!(block_for(&toml_of(cfg.path()), "secret1").contains("save_password = true"));
 
-    let (err, _) = m.tool("create_connection", json!({"name": "secret1", "host": "h2", "port": 5432, "user": "u1", "overwrite": true}));
-    assert!(!err);
-    assert!(block_for(&toml_of(cfg.path()), "secret1").contains("save_password = false"));
-
-    let (err, _) = m.tool("create_connection", json!({"name": "secret2", "host": "h3", "port": 5432, "user": "u1", "password": "p2"}));
-    assert!(!err);
-    let (err, _) = m.tool("create_connection", json!({"name": "secret2", "host": "h3", "port": 5432, "user": "u2", "overwrite": true}));
-    assert!(!err);
-    assert!(block_for(&toml_of(cfg.path()), "secret2").contains("save_password = false"));
-
-    let (err, _) = m.tool("create_connection", json!({"name": "secret2", "host": "h4", "port": 5432, "user": "u2", "password": "p3", "overwrite": true}));
-    assert!(!err);
-    assert!(block_for(&toml_of(cfg.path()), "secret2").contains("save_password = true"));
+    // Moving it to another server waits for the user's Allow: without the app, nothing changes.
+    for (host, user) in [("h2", "u1"), ("h1", "u2")] {
+        let (err, text) = m.tool("create_connection", json!({"name": "secret1", "host": host, "port": 5432, "user": user, "overwrite": true}));
+        assert!(err && text.contains("another server"), "{text}");
+        let block = block_for(&toml_of(cfg.path()), "secret1").to_string();
+        assert!(block.contains("host = \"h1\"") && block.contains("user = \"u1\"") && block.contains("save_password = true"), "{block}");
+    }
+    let (err, text) = m.tool("create_connection", json!({"name": "secret1", "host": "h1", "port": 5432, "user": "u1", "sslmode": "disable", "overwrite": true}));
+    assert!(err && text.contains("sslmode would loosen"), "{text}");
+    let (err, text) = m.tool("create_connection", json!({"name": "prod", "host": "10.255.255.1", "user": "app", "color": "violet", "overwrite": true}));
+    assert!(err && text.contains("off"), "an MCP-off connection is not replaced: {text}");
 }
 
 #[test]
@@ -401,8 +467,13 @@ fn stdio_update_connection() {
     let (err, text) = m.tool("update_connection", json!({"connection": "local"}));
     assert!(!err && serde_json::from_str::<Value>(&text).unwrap()["changed"] == json!([]), "{text}");
     let (err, text) = m.tool("update_connection", json!({"connection": "local", "host": "10.0.0.9"}));
-    assert!(!err && serde_json::from_str::<Value>(&text).unwrap()["password"] == "dropped", "{text}");
-    assert!(block_for(&toml_of(cfg.path()), "local").contains("save_password = false"));
+    assert!(err && text.contains("another server"), "{text}");
+    let block = block_for(&toml_of(cfg.path()), "local").to_string();
+    assert!(block.contains("host = \"127.0.0.1\"") && block.contains("save_password = true"), "{block}");
+    let (err, text) = m.tool("update_connection", json!({"connection": "local", "sslmode": "require"}));
+    assert!(!err, "tightening is fine: {text}");
+    let (err, text) = m.tool("update_connection", json!({"connection": "local", "sslmode": "disable"}));
+    assert!(err && text.contains("sslmode would loosen"), "{text}");
     let (err, text) = m.tool("update_connection", json!({"connection": "writable", "mcp": "full"}));
     assert!(err && text.contains("widen"), "{text}");
     let (err, text) = m.tool("update_connection", json!({"connection": "writable", "env": "production"}));

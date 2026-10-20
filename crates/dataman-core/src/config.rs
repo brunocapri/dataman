@@ -179,6 +179,10 @@ pub struct ConnectionProfile {
     pub mcp_yolo: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub options: BTreeMap<String, String>,
+    /// Made by an agent (create_connection): its host is the agent's choice, so a `~/.pgpass`
+    /// line that matches any host is not sent there.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub agent_made: bool,
 }
 
 fn override_key<'a>(overrides: &'a BTreeMap<String, bool>, engine: Engine, database: &str) -> Option<&'a String> {
@@ -323,6 +327,7 @@ impl ConnectionProfile {
             mcp_allowed: Vec::new(),
             mcp_yolo: false,
             options: BTreeMap::new(),
+            agent_made: false,
         }
     }
 

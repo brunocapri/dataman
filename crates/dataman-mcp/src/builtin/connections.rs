@@ -1,6 +1,7 @@
 //! Passwords are write-only: they go to the Keychain, never into connections.toml, a response
-//! or the audit log. Through MCP a connection's safety settings only stay or tighten, and a
-//! saved password never follows a connection to another server.
+//! or the audit log. Through MCP a connection's safety settings only stay or tighten, a saved
+//! password never follows a connection to another server, and moving one there waits for the
+//! user's Allow.
 
 use dataman_core::{ConfigStore, ConnectionProfile, Engine, Environment, McpAccess, SshAuth, SshSettings, SslMode};
 use serde_json::{Value, json};
@@ -44,7 +45,7 @@ pub fn tools() -> Vec<Builtin> {
         },
         Builtin {
             name: "update_connection",
-            description: "Edits a saved connection (from list_connections): only the fields given change. A password is write-only: saved to the Keychain, never returned. env, read_only and mcp may only stay the same or tighten; moving the connection to another server (engine, host, port, user or SSH) drops its saved password unless a new one is given. Refused while the connection has a transaction open in Dataman. Returns the fields that changed.",
+            description: "Edits a saved connection (from list_connections): only the fields given change. A password is write-only: saved to the Keychain, never returned. env, sslmode, read_only and mcp may only stay the same or tighten; moving the connection to another server (engine, host, port, user or SSH) waits for the user's Allow in Dataman and drops its saved password unless a new one is given. Refused while the connection has a transaction open in Dataman. Returns the fields that changed.",
             schema: fields(
                 Schema::new()
                     .prop("connection", true, json!({"type": "string", "description": "Connection name (or id) from list_connections."}))
@@ -170,7 +171,19 @@ fn apply(profile: &mut ConnectionProfile, a: &Args) -> Result<Option<String>, To
     Ok(password)
 }
 
+fn ssl_rank(m: SslMode) -> u8 {
+    match m {
+        SslMode::Disable => 0,
+        SslMode::Prefer => 1,
+        SslMode::Require => 2,
+        SslMode::VerifyFull => 3,
+    }
+}
+
 fn no_loosening(old: &ConnectionProfile, new: &ConnectionProfile) -> Result<(), ToolError> {
+    if ssl_rank(new.sslmode) < ssl_rank(old.sslmode) {
+        return Err(ToolError::Refused(format!("sslmode would loosen from {:?} to {:?}; through MCP it may only stay the same or tighten", old.sslmode.label(), new.sslmode.label())));
+    }
     if env_rank(new.env) < env_rank(old.env) {
         return Err(ToolError::Refused(format!("env would loosen from {:?} to {:?}; through MCP it may only stay the same or tighten", old.env.label(), new.env.label())));
     }
@@ -189,6 +202,30 @@ fn no_loosening(old: &ConnectionProfile, new: &ConnectionProfile) -> Result<(), 
 
 fn target_changed(old: &ConnectionProfile, new: &ConnectionProfile) -> bool {
     new.engine != old.engine || new.host != old.host || new.port != old.port || new.user != old.user || new.ssh != old.ssh
+}
+
+fn ssh_text(p: &ConnectionProfile) -> String {
+    p.ssh.as_ref().map(|s| format!("{}@{}:{}", s.user, s.host, s.port.unwrap_or(22))).unwrap_or_else(|| "none".into())
+}
+
+/// The user types this connection's password into Dataman: sending it to another server is
+/// the user's call (an agent could otherwise point a trusted connection at its own host).
+async fn allow_move(cx: &Call, old: &ConnectionProfile, new: &ConnectionProfile) -> Result<(), ToolError> {
+    if !target_changed(old, new) {
+        return Ok(());
+    }
+    let mut lines = Vec::new();
+    let mut line = |what: &str, a: String, b: String| {
+        if a != b {
+            lines.push(format!("{what}: {a} → {b}"));
+        }
+    };
+    line("engine", old.engine.label().to_string(), new.engine.label().to_string());
+    line("host", old.host.clone(), new.host.clone());
+    line("port", old.port.to_string(), new.port.to_string());
+    line("user", old.user.clone(), new.user.clone());
+    line("ssh", ssh_text(old), ssh_text(new));
+    cx.ask_about(old, &lines.join("\n"), vec!["moves the connection to another server".into()]).await
 }
 
 /// An old secret must not follow the connection to another server unseen: kept only while
@@ -272,14 +309,18 @@ fn create_connection(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>>
         }
         cx.note_connection(&name);
 
+        if existing.is_some_and(|p| p.mcp_access() == McpAccess::Off) {
+            return Err(ToolError::Refused("MCP access to this connection is off (connection settings › MCP); it is edited in Dataman only".into()));
+        }
         let mut profile = match existing {
             Some(p) => p.clone(),
-            None => ConnectionProfile::new(name.clone()),
+            None => ConnectionProfile { agent_made: true, ..ConnectionProfile::new(name.clone()) },
         };
         profile.name = name;
         let password = apply(&mut profile, &a)?;
         if let Some(old) = existing {
             no_loosening(old, &profile)?;
+            allow_move(cx, old, &profile).await?;
         }
         settle_secrets(cx, existing, &mut profile, password)?;
         save(cx, &profile)?;
@@ -326,6 +367,7 @@ fn update_connection(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>>
                 )));
             }
         }
+        allow_move(cx, &old, &profile).await?;
         cx.note_connection(&profile.name);
         let state = settle_secrets(cx, Some(&old), &mut profile, password)?;
         save(cx, &profile)?;

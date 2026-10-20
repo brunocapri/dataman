@@ -430,6 +430,25 @@ impl Call {
         if d == Decision::Approved { Ok(()) } else { Err(refusal_of(d, &reasons, false)) }
     }
 
+    /// The user's Allow for a change that is not a statement (`what` is shown as the text).
+    pub async fn ask_about(&self, p: &ConnectionProfile, what: &str, reasons: Vec<String>) -> Result<(), ToolError> {
+        let a = Approval {
+            client: self.client.clone(),
+            tool: self.tool.clone(),
+            connection: p.name.clone(),
+            connection_id: p.id.clone(),
+            database: p.database.clone(),
+            env: p.env,
+            sql: what.to_string(),
+            reasons: reasons.clone(),
+            destructive: true,
+            ..Approval::default()
+        };
+        let d = self.ask(a).await?;
+        self.note_decision(d, reasons.clone(), None);
+        if d == Decision::Approved { Ok(()) } else { Err(refusal_of(d, &reasons, false)) }
+    }
+
     pub async fn gate(&self, o: &Opened, class: &WriteClass, sql: &str, tab: Option<u64>) -> Result<(), ToolError> {
         let t = Target::of_in(&o.profile, &o.database);
         match policy::write_verdict(self.hub.settings().mcp_enabled, t, class) {
