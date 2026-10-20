@@ -105,6 +105,7 @@ fn check_download_verify_install() {
             ed25519: data_encoding::BASE64.encode(kp.sign(sig_of).as_ref()),
             minimum_macos: Some("11.0".into()),
             published: None,
+            assets: Default::default(),
         };
         std::fs::write(www.join(name), serde_json::to_vec(&f).unwrap()).unwrap();
         format!("{base}/{name}")

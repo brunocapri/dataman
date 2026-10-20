@@ -14,6 +14,7 @@ use crate::app::Workspace;
 use crate::updates::{self, State, Step};
 
 const NEW: &str = "99.0.0";
+#[cfg(target_os = "macos")]
 const BUNDLE_ID: &str = "dev.dataman.update-check";
 
 pub fn is_stage(s: &str) -> bool {
@@ -81,6 +82,37 @@ fn state(cx: &mut AsyncWindowContext) -> State {
     cx.update(|_, cx| updates::state(cx)).unwrap_or(State::Idle)
 }
 
+#[cfg(not(target_os = "macos"))]
+const APP: &str = "Dataman.AppImage";
+#[cfg(target_os = "macos")]
+const APP: &str = "Dataman.app";
+
+/// An AppImage stand-in: a script that says its version, as `dataman --version` does.
+#[cfg(not(target_os = "macos"))]
+fn stand_in(app: &Path, version: &str) -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::create_dir_all(app.parent().unwrap_or(Path::new("/")))?;
+    std::fs::write(app, format!("#!/bin/sh\necho {version}\n"))?;
+    std::fs::set_permissions(app, std::fs::Permissions::from_mode(0o755))?;
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn artifact(work: &Path, _stage_dir: &Path) -> anyhow::Result<Vec<u8>> {
+    let new = work.join(format!("Dataman-{NEW}.AppImage"));
+    stand_in(&new, NEW)?;
+    Ok(std::fs::read(&new)?)
+}
+
+#[cfg(target_os = "macos")]
+fn artifact(work: &Path, stage_dir: &Path) -> anyhow::Result<Vec<u8>> {
+    let dmg_path = work.join(format!("Dataman-{NEW}.dmg"));
+    stand_in(&stage_dir.join(APP), NEW)?;
+    sh(Command::new("/usr/bin/hdiutil").args(["create", "-quiet", "-volname", "Dataman", "-fs", "HFS+", "-format", "UDZO", "-ov", "-srcfolder"]).arg(stage_dir).arg(&dmg_path))?;
+    Ok(std::fs::read(&dmg_path)?)
+}
+
+#[cfg(target_os = "macos")]
 fn stand_in(app: &Path, version: &str) -> anyhow::Result<()> {
     let macos = app.join("Contents/MacOS");
     std::fs::create_dir_all(&macos)?;
@@ -98,6 +130,7 @@ fn stand_in(app: &Path, version: &str) -> anyhow::Result<()> {
     sh(Command::new("/usr/bin/codesign").args(["--force", "--sign", "-"]).arg(app))
 }
 
+#[cfg(target_os = "macos")]
 fn sh(cmd: &mut Command) -> anyhow::Result<()> {
     let out = cmd.output()?;
     if !out.status.success() {
@@ -176,7 +209,7 @@ impl Site {
 }
 
 fn feed_json(version: &str, url: &str, dmg: &[u8], sig: String) -> Vec<u8> {
-    let feed = Feed {
+    let mut feed = Feed {
         version: version.into(),
         notes: "A stand-in release for the update check.\nIts DMG holds a small signed bundle.".into(),
         url: url.into(),
@@ -184,12 +217,38 @@ fn feed_json(version: &str, url: &str, dmg: &[u8], sig: String) -> Vec<u8> {
         ed25519: sig,
         minimum_macos: None,
         published: None,
+        assets: Default::default(),
     };
+    if !cfg!(target_os = "macos") {
+        // As a release's feed: the top-level download is the Mac's, this one is in `assets`.
+        let asset = dataman_core::update::Asset { url: feed.url.clone(), size: feed.size, ed25519: feed.ed25519.clone() };
+        feed.assets.insert(dataman_core::update::platform(), asset);
+        (feed.url, feed.size) = ("http://127.0.0.1:9/Dataman.dmg".into(), 1);
+    }
     serde_json::to_vec(&feed).unwrap_or_default()
 }
 
+#[cfg(target_os = "macos")]
 fn plist_version(app: &Path) -> String {
     dataman_core::update::plist_value(app, "CFBundleShortVersionString").unwrap_or_default()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn plist_version(app: &Path) -> String {
+    Command::new(app).arg("--version").output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default()
+}
+
+#[cfg(target_os = "macos")]
+fn installed_ok(target: &Path) -> (bool, bool) {
+    let signed = Command::new("/usr/bin/codesign").args(["--verify", "--deep", "--strict"]).arg(target).status().is_ok_and(|s| s.success());
+    let quarantined = Command::new("/usr/bin/xattr").args(["-p", "com.apple.quarantine"]).arg(target).output().is_ok_and(|o| o.status.success());
+    (signed, quarantined)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn installed_ok(target: &Path) -> (bool, bool) {
+    use std::os::unix::fs::PermissionsExt as _;
+    (std::fs::metadata(target).is_ok_and(|m| m.permissions().mode() & 0o111 != 0), false)
 }
 
 pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
@@ -201,14 +260,11 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let work = std::env::temp_dir().join(format!("dataman-update-check-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&work);
     let apps = work.join("Applications");
-    let target: PathBuf = apps.join("Dataman.app");
+    let target: PathBuf = apps.join(APP);
     let stage_dir = work.join("new");
-    let dmg_path = work.join(format!("Dataman-{NEW}.dmg"));
     let built = (|| -> anyhow::Result<Vec<u8>> {
         stand_in(&target, "0.0.1")?;
-        stand_in(&stage_dir.join("Dataman.app"), NEW)?;
-        sh(Command::new("/usr/bin/hdiutil").args(["create", "-quiet", "-volname", "Dataman", "-fs", "HFS+", "-format", "UDZO", "-ov", "-srcfolder"]).arg(&stage_dir).arg(&dmg_path))?;
-        Ok(std::fs::read(&dmg_path)?)
+        artifact(&work, &stage_dir)
     })();
     let dmg = match built {
         Ok(b) => b,
@@ -410,12 +466,11 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     report("Retry downloads, verifies and installs", installed, format!("{:?}", state(cx)));
     report("the steps after the download show (verifying / installing)", verifying, String::new());
     report("the bundle is now 99.0.0", plist_version(&target) == NEW, plist_version(&target));
-    let signed = Command::new("/usr/bin/codesign").args(["--verify", "--deep", "--strict"]).arg(&target).status().is_ok_and(|s| s.success());
-    report("its signature is valid", signed, String::new());
-    let quarantined = Command::new("/usr/bin/xattr").args(["-p", "com.apple.quarantine"]).arg(&target).output().is_ok_and(|o| o.status.success());
+    let (signed, quarantined) = installed_ok(&target);
+    report(if cfg!(target_os = "macos") { "its signature is valid" } else { "it is executable" }, signed, String::new());
     report("no quarantine on the installed bundle", !quarantined, String::new());
     let left: Vec<String> = std::fs::read_dir(&apps).map(|d| d.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect()).unwrap_or_default();
-    report("nothing left beside it (staging copy, old app)", left == ["Dataman.app"], format!("{left:?}"));
+    report("nothing left beside it (staging copy, old app)", left == [APP], format!("{left:?}"));
     let (sheet, notice) = cx.update(|_, cx| (ws.read(cx).update_sheet, updates::notice_shown(cx))).unwrap_or((true, true));
     report("after the install: no sheet, no notice", !sheet && !notice, format!("sheet {sheet}, notice {notice}"));
     let log = site.log.lock().unwrap().clone();

@@ -433,6 +433,7 @@ mod tests {
             ed25519: String::new(),
             minimum_macos: None,
             published: None,
+            assets: Default::default(),
         };
         let s = |st: State| status(&st).map(|(s, e)| (s.to_string(), e));
         assert_eq!(s(State::Working { feed: feed.clone(), step: Step::Downloading { got: 12_000_000, total: 33_000_000 } }), Some(("Downloading… 12 MB of 33 MB".into(), false)));

@@ -195,10 +195,9 @@ pub fn on_activate(cx: &mut App) {
 }
 
 fn blocked_reason(target: Option<PathBuf>) -> Option<String> {
-    let app = target.or_else(|| std::env::current_exe().ok().and_then(|e| update::bundle_of(&e)));
-    match app {
-        None => Some("Not running from Dataman.app".to_string()),
-        Some(app) => update::check_writable(&app).err().map(|e| e.to_string()),
+    match target.map_or_else(update::installed_app, Ok) {
+        Err(why) => Some(why),
+        Ok(app) => update::check_writable(&app).err().map(|e| e.to_string()),
     }
 }
 
@@ -370,7 +369,7 @@ pub fn testing(cx: &App) -> bool {
 pub fn swap(cx: &mut App) -> Option<gpui::Task<anyhow::Result<PathBuf>>> {
     let u = cx.try_global::<Updates>()?;
     let State::Ready { feed, dmg } = u.state.clone() else { return None };
-    let app = u.test_target.clone().or_else(|| std::env::current_exe().ok().and_then(|e| update::bundle_of(&e)))?;
+    let app = u.test_target.clone().or_else(|| update::installed_app().ok())?;
     log::info!("update: installing {} over {}", feed.version, app.display());
     set_state(State::Working { feed: feed.clone(), step: Step::Installing }, cx);
     let task = cx.background_spawn({
@@ -440,6 +439,7 @@ pub fn demo_offer(step: Option<Step>, cx: &mut App) {
         ed25519: String::new(),
         minimum_macos: None,
         published: None,
+        assets: Default::default(),
     };
     let state = match step {
         Some(step) => State::Working { feed, step },

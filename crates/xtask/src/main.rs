@@ -27,10 +27,11 @@ fn run() -> Result<()> {
             Ok(())
         }
         Some("sign") if args.len() >= 2 => sign(&args[1], &args[2..]),
+        Some("feed") => feed(&args[1..]),
         Some("verify") if args.len() >= 3 => verify(&args[1], &args[2], &args[3..]),
         Some("e2e") => e2e::run(&args[1..]),
         _ => bail!(
-            "usage: xtask icon <svg> <out.icns> | keygen [--force] | pubkey | sign <dmg> --url <url> --version <v> [--notes <file>] [--min-macos <v>] | verify <feed.json> <dmg> --pubkey <b64> [--version <v>] | e2e [--list] [--only a,b] [--skip a,b] [--no-build] [--no-reset] [--fresh] [-v]"
+            "usage: xtask icon <svg> <out.icns> | keygen [--force] | pubkey | sign <dmg> --url <url> --version <v> [--notes <file>] [--min-macos <v>] | feed --version <v> [--notes <file>] [--min-macos <v>] (--asset <os-arch> <file> <url>)… | verify <feed.json> <file> --pubkey <b64> [--version <v>] [--asset <os-arch>] | e2e [--list] [--only a,b] [--skip a,b] [--no-build] [--no-reset] [--fresh] [-v]"
         ),
     }
 }
@@ -176,6 +177,59 @@ fn sign(dmg: &str, args: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// One feed for every platform's download: each asset signed with the update key; the macOS
+/// one is also the top-level download, the only one released Macs read.
+fn feed(args: &[String]) -> Result<()> {
+    let version = flag(args, "--version").context("--version is required")?;
+    let notes = match flag(args, "--notes") {
+        Some(p) => std::fs::read_to_string(p).with_context(|| format!("reading {p}"))?.trim().to_string(),
+        None => String::new(),
+    };
+    let kp = load_key()?;
+    if let Ok(want) = std::env::var("DATAMAN_UPDATE_PUBKEY")
+        && !want.trim().is_empty()
+        && want.trim() != public_key(&kp)
+    {
+        bail!("the private key does not match DATAMAN_UPDATE_PUBKEY");
+    }
+    let mut assets = serde_json::Map::new();
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--asset" {
+            let (Some(platform), Some(file), Some(url)) = (args.get(i + 1), args.get(i + 2), args.get(i + 3)) else {
+                bail!("--asset takes <os-arch> <file> <url>");
+            };
+            if !platform.contains('-') {
+                bail!("{platform}: an asset is named <os>-<arch> (macos-aarch64, linux-x86_64)");
+            }
+            let bytes = std::fs::read(file).with_context(|| format!("reading {file}"))?;
+            let sig = kp.sign(&bytes);
+            ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, kp.public_key().as_ref())
+                .verify(&bytes, sig.as_ref())
+                .map_err(|_| anyhow!("self-check failed"))?;
+            assets.insert(platform.clone(), serde_json::json!({ "url": url, "size": bytes.len(), "ed25519": data_encoding::BASE64.encode(sig.as_ref()) }));
+            i += 4;
+        } else {
+            i += 1;
+        }
+    }
+    if assets.is_empty() {
+        bail!("no --asset given");
+    }
+    let mac = assets.iter().find(|(k, _)| k.starts_with("macos-")).map(|(_, v)| v.clone());
+    let mut feed = serde_json::json!({ "version": version, "notes": notes, "published": now_utc(), "assets": assets });
+    if let Some(m) = mac {
+        for k in ["url", "size", "ed25519"] {
+            feed[k] = m[k].clone();
+        }
+        if let Some(min) = flag(args, "--min-macos") {
+            feed["minimum_macos"] = min.into();
+        }
+    }
+    println!("{}", serde_json::to_string_pretty(&feed)?);
+    Ok(())
+}
+
 fn verify(feed: &str, dmg: &str, args: &[String]) -> Result<()> {
     let pubkey = flag(args, "--pubkey").context("--pubkey is required")?;
     let json: serde_json::Value = serde_json::from_slice(&std::fs::read(feed).with_context(|| format!("reading {feed}"))?).context("the feed is not JSON")?;
@@ -185,13 +239,17 @@ fn verify(feed: &str, dmg: &str, args: &[String]) -> Result<()> {
     {
         bail!("the feed offers {version}, expected {want}");
     }
+    let entry = match flag(args, "--asset") {
+        Some(a) => json["assets"].get(a).cloned().with_context(|| format!("the feed has no {a} asset"))?,
+        None => json.clone(),
+    };
     let bytes = std::fs::read(dmg).with_context(|| format!("reading {dmg}"))?;
-    let size = json["size"].as_u64().context("the feed has no size")?;
+    let size = entry["size"].as_u64().context("the feed has no size")?;
     if bytes.len() as u64 != size {
-        bail!("the DMG is {} bytes, the feed says {size}", bytes.len());
+        bail!("the download is {} bytes, the feed says {size}", bytes.len());
     }
     let key = data_encoding::BASE64.decode(pubkey.trim().as_bytes()).context("the public key is not base64")?;
-    let sig = data_encoding::BASE64.decode(json["ed25519"].as_str().context("the feed has no signature")?.trim().as_bytes()).context("the signature is not base64")?;
+    let sig = data_encoding::BASE64.decode(entry["ed25519"].as_str().context("the feed has no signature")?.trim().as_bytes()).context("the signature is not base64")?;
     ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, &key).verify(&bytes, &sig).map_err(|_| anyhow!("signature mismatch"))?;
     println!("{version}: {size} bytes, signature valid");
     Ok(())

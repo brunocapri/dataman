@@ -1,8 +1,13 @@
-//! Only the DMG is signed, not the feed: the version read from the DMG's own Info.plist must
-//! match the feed's and be newer than the running one, so a replayed old DMG cannot downgrade
-//! the app. The signature covers the whole file, like Sparkle's `sign_update`, so either tool
-//! can sign. Copying goes through `ditto`, which keeps signatures and attributes.
+//! Only the download is signed, not the feed: the version read from the download itself (the
+//! DMG's Info.plist, the AppImage's `--version`) must match the feed's and be newer than the
+//! running one, so a replayed old download cannot downgrade the app. The signature covers the
+//! whole file, like Sparkle's `sign_update`, so either tool can sign. Copying a bundle goes
+//! through `ditto`, which keeps signatures and attributes.
+//!
+//! The feed's top-level download is the macOS one (the only one older Macs read); `assets`
+//! holds every platform's, keyed `<os>-<arch>` (`macos-aarch64`, `linux-x86_64`).
 
+use std::collections::BTreeMap;
 use std::ffi::CString;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -26,6 +31,46 @@ pub struct Feed {
     pub minimum_macos: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub published: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub assets: BTreeMap<String, Asset>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Asset {
+    pub url: String,
+    pub size: u64,
+    pub ed25519: String,
+}
+
+/// This build's key in the feed's `assets`.
+pub fn platform() -> String {
+    let os = if cfg!(target_os = "macos") { "macos" } else { std::env::consts::OS };
+    format!("{os}-{}", std::env::consts::ARCH)
+}
+
+impl Feed {
+    /// The feed with this platform's download in its top-level fields, or `None` when the
+    /// release has none for it.
+    pub fn for_platform(mut self, platform: &str) -> Option<Feed> {
+        if let Some(a) = self.assets.get(platform).cloned() {
+            (self.url, self.size, self.ed25519) = (a.url, a.size, a.ed25519);
+            return Some(self);
+        }
+        platform.starts_with("macos-").then_some(self)
+    }
+}
+
+/// Where the running app is installed, to be replaced by an update; else why it cannot be.
+pub fn installed_app() -> Result<PathBuf, String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    if cfg!(target_os = "macos") {
+        return bundle_of(&exe).ok_or_else(|| "Not running from Dataman.app".to_string());
+    }
+    match std::env::var_os("APPIMAGE").map(PathBuf::from) {
+        Some(img) if img.is_file() => Ok(img),
+        _ if exe.starts_with("/usr/") || exe.starts_with("/opt/") => Err("Installed by a package manager: updates come with it".into()),
+        _ => Err("Not running from the AppImage".into()),
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -96,6 +141,7 @@ pub fn verify(bytes: &[u8], feed: &Feed, key: &[u8; 32]) -> Result<()> {
         .map_err(|_| anyhow!("signature mismatch"))
 }
 
+#[cfg(target_os = "macos")]
 fn curl() -> Command {
     let mut c = Command::new("/usr/bin/curl");
     c.args(["--fail", "--silent", "--show-error", "--location", "--proto", "=https,http,file", "--connect-timeout", "15"]);
@@ -103,6 +149,7 @@ fn curl() -> Command {
     c
 }
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn output(mut cmd: Command, what: &str) -> Result<Vec<u8>> {
     let out = cmd.stderr(Stdio::piped()).stdout(Stdio::piped()).output().with_context(|| format!("{what}: cannot run"))?;
     if !out.status.success() {
@@ -112,10 +159,92 @@ fn output(mut cmd: Command, what: &str) -> Result<Vec<u8>> {
     Ok(out.stdout)
 }
 
-pub fn check(cfg: &UpdateConfig) -> Result<Option<Feed>> {
+#[cfg(target_os = "macos")]
+fn get(url: &str, max: u64) -> Result<Vec<u8>> {
     let mut c = curl();
-    c.args(["--max-time", "30", "--max-filesize", &FEED_MAX.to_string(), &cfg.feed]);
-    let body = output(c, "feed")?;
+    c.args(["--max-time", "30", "--max-filesize", &max.to_string(), url]);
+    output(c, "feed")
+}
+
+/// No curl on every Linux desktop: reqwest, on the same rustls as the database drivers.
+#[cfg(not(target_os = "macos"))]
+mod http {
+    use std::io::Write as _;
+    use std::path::Path;
+    use std::time::Duration;
+
+    use anyhow::{Context as _, Result, bail};
+
+    use super::Phase;
+
+    fn run<T>(f: impl std::future::Future<Output = Result<T>>) -> Result<T> {
+        crate::backend::install_tls_provider();
+        tokio::runtime::Builder::new_current_thread().enable_all().build()?.block_on(f)
+    }
+
+    fn client(timeout: Duration) -> Result<reqwest::Client> {
+        Ok(reqwest::Client::builder().connect_timeout(Duration::from_secs(15)).timeout(timeout).user_agent(concat!("Dataman/", env!("CARGO_PKG_VERSION"))).build()?)
+    }
+
+    fn local(url: &str) -> Option<&str> {
+        url.strip_prefix("file://")
+    }
+
+    pub fn get(url: &str, max: u64, what: &str) -> Result<Vec<u8>> {
+        if let Some(path) = local(url) {
+            let bytes = std::fs::read(path).with_context(|| format!("{what}: {path}"))?;
+            if bytes.len() as u64 > max {
+                bail!("{what}: larger than {max} bytes");
+            }
+            return Ok(bytes);
+        }
+        run(async {
+            let mut r = client(Duration::from_secs(30))?.get(url).send().await.with_context(|| what.to_string())?.error_for_status().with_context(|| what.to_string())?;
+            let mut out = Vec::new();
+            while let Some(c) = r.chunk().await? {
+                out.extend_from_slice(&c);
+                if out.len() as u64 > max {
+                    bail!("{what}: larger than {max} bytes");
+                }
+            }
+            Ok(out)
+        })
+    }
+
+    pub fn download(url: &str, size: u64, part: &Path, on: &dyn Fn(Phase)) -> Result<()> {
+        let mut f = std::fs::File::create(part)?;
+        if let Some(path) = local(url) {
+            let bytes = std::fs::read(path).with_context(|| format!("download: {path}"))?;
+            if bytes.len() as u64 > size {
+                bail!("download: larger than the feed says");
+            }
+            f.write_all(&bytes)?;
+            on(Phase::Got(bytes.len() as u64));
+            return Ok(());
+        }
+        run(async {
+            let mut r = client(Duration::from_secs(1800))?.get(url).send().await.context("download")?.error_for_status().context("download")?;
+            let mut got = 0u64;
+            while let Some(c) = r.chunk().await.context("download")? {
+                got += c.len() as u64;
+                if got > size {
+                    bail!("download: larger than the feed says");
+                }
+                f.write_all(&c)?;
+                on(Phase::Got(got));
+            }
+            Ok(())
+        })
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn get(url: &str, max: u64) -> Result<Vec<u8>> {
+    http::get(url, max, "feed")
+}
+
+pub fn check(cfg: &UpdateConfig) -> Result<Option<Feed>> {
+    let body = get(&cfg.feed, FEED_MAX)?;
     let feed: Feed = serde_json::from_slice(&body).context("feed is not valid JSON")?;
     if version(&feed.version).is_none() {
         bail!("feed version {:?} is not a version", feed.version);
@@ -123,6 +252,11 @@ pub fn check(cfg: &UpdateConfig) -> Result<Option<Feed>> {
     if !is_newer(&feed.version, &cfg.current) {
         return Ok(None);
     }
+    let offered = feed.version.clone();
+    let Some(feed) = feed.for_platform(&platform()) else {
+        log::info!("update: {offered} has no {} download", platform());
+        return Ok(None);
+    };
     if let (Some(min), Some(os)) = (feed.minimum_macos.as_deref(), macos_version())
         && version(&os) < version(min)
     {
@@ -138,6 +272,12 @@ pub enum Phase {
     Verifying,
 }
 
+#[cfg(not(target_os = "macos"))]
+fn fetch_to(url: &str, size: u64, part: &Path, on: &dyn Fn(Phase)) -> Result<()> {
+    http::download(url, size, part, on)
+}
+
+#[cfg(target_os = "macos")]
 fn fetch_to(url: &str, size: u64, part: &Path, on: &dyn Fn(Phase)) -> Result<()> {
     let mut c = curl();
     c.args(["--max-time", "1800", "--max-filesize", &size.to_string(), "--output"]).arg(part).arg(url);
@@ -168,7 +308,7 @@ pub fn download(cfg: &UpdateConfig, feed: &Feed, dir: &Path, on: &dyn Fn(Phase))
         bail!("implausible size {}", feed.size);
     }
     std::fs::create_dir_all(dir)?;
-    let name = format!("Dataman-{}.dmg", sanitize(&feed.version));
+    let name = format!("Dataman-{}.{}", sanitize(&feed.version), if cfg!(target_os = "macos") { "dmg" } else { "AppImage" });
     let dest = dir.join(&name);
     if let Ok(bytes) = std::fs::read(&dest) {
         on(Phase::Got(bytes.len() as u64));
@@ -245,14 +385,17 @@ pub fn check_writable(app: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
 pub fn plist_value(app: &Path, key: &str) -> Result<String> {
     let mut c = Command::new("/usr/bin/plutil");
     c.args(["-extract", key, "raw", "-o", "-"]).arg(app.join("Contents/Info.plist"));
     Ok(String::from_utf8_lossy(&output(c, "plutil")?).trim().to_string())
 }
 
+#[cfg(target_os = "macos")]
 struct Mount(PathBuf);
 
+#[cfg(target_os = "macos")]
 impl Drop for Mount {
     fn drop(&mut self) {
         let _ = Command::new("/usr/bin/hdiutil").args(["detach", "-quiet", "-force"]).arg(&self.0).stdout(Stdio::null()).stderr(Stdio::null()).status();
@@ -260,6 +403,7 @@ impl Drop for Mount {
     }
 }
 
+#[cfg(target_os = "macos")]
 /// The copy is a hidden sibling (same volume, for the swap); nothing changes at `app` unless
 /// every step before the swap succeeded.
 pub fn install(dmg: &Path, app: &Path, want: &str) -> Result<()> {
@@ -317,17 +461,20 @@ pub fn install(dmg: &Path, app: &Path, want: &str) -> Result<()> {
     result
 }
 
+#[cfg(target_os = "macos")]
 fn team_of(codesign_info: &str) -> Option<String> {
     let id = codesign_info.lines().find_map(|l| l.trim().strip_prefix("TeamIdentifier="))?.trim();
     (!id.is_empty() && id != "not set").then(|| id.to_string())
 }
 
 /// The signing team (`codesign -dv`), `None` for an ad hoc or unsigned app.
+#[cfg(target_os = "macos")]
 fn team_id(app: &Path) -> Option<String> {
     let out = Command::new("/usr/bin/codesign").args(["-dv", "--verbose=2"]).arg(app).stdin(Stdio::null()).output().ok()?;
     team_of(&String::from_utf8_lossy(&out.stderr))
 }
 
+#[cfg(target_os = "macos")]
 fn swap(a: &Path, b: &Path) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
@@ -354,6 +501,7 @@ fn swap(a: &Path, b: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
 pub fn relaunch_after_exit(app: &Path) -> Result<()> {
     let mut args: Vec<String> = Vec::new();
     for var in ["XDG_CONFIG_HOME", "DATAMAN_LOG_DIR"] {
@@ -377,12 +525,148 @@ pub fn relaunch_after_exit(app: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The AppImage is one file: the new one is staged beside it (same filesystem), its own
+/// `--version` must say the feed's version, then one rename replaces the old. The running copy
+/// keeps its mount of the old file.
+#[cfg(not(target_os = "macos"))]
+pub fn install(download: &Path, app: &Path, want: &str) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+    check_writable(app)?;
+    let parent = app.parent().context("the app has no folder")?;
+    let name = app.file_name().context("the app has no name")?.to_string_lossy().into_owned();
+    let nonce = format!("{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos());
+    let staged = parent.join(format!(".{name}.update-{nonce}"));
+    let result = (|| -> Result<()> {
+        std::fs::copy(download, &staged).context("staging the update")?;
+        std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755))?;
+        let got = artifact_version(&staged)?;
+        if self::version(&got).is_none() || self::version(&got) != self::version(want) {
+            bail!("the download holds version {got}, the feed says {want}");
+        }
+        std::fs::rename(&staged, app).context("moving the new AppImage in")?;
+        log::info!("update: {} replaced", app.display());
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&staged);
+    }
+    result
+}
+
+/// What a downloaded (and verified) AppImage says it is; extracted rather than mounted, so no
+/// FUSE is needed for it.
+#[cfg(not(target_os = "macos"))]
+fn artifact_version(file: &Path) -> Result<String> {
+    let mut child = Command::new(file)
+        .arg("--version")
+        .env("APPIMAGE_EXTRACT_AND_RUN", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("running the download")?;
+    let start = std::time::Instant::now();
+    loop {
+        if child.try_wait()?.is_some() {
+            break;
+        }
+        if start.elapsed() > std::time::Duration::from_secs(60) {
+            let _ = child.kill();
+            bail!("the download did not say its version");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let mut out = String::new();
+    if let Some(mut o) = child.stdout.take() {
+        use std::io::Read as _;
+        let _ = o.read_to_string(&mut out);
+    }
+    Ok(out.lines().next().unwrap_or("").trim().to_string())
+}
+
+/// The environment goes with the process (no LaunchServices in between, as on macOS).
+#[cfg(not(target_os = "macos"))]
+pub fn relaunch_after_exit(app: &Path) -> Result<()> {
+    Command::new("/bin/sh")
+        .arg("-c")
+        .arg(r#"pid=$1; app=$2; while kill -0 "$pid" 2>/dev/null; do sleep 0.1; done; exec "$app""#)
+        .arg("sh")
+        .arg(std::process::id().to_string())
+        .arg(app)
+        .env_remove("APPDIR")
+        .env_remove("APPIMAGE")
+        .env_remove("ARGV0")
+        .env_remove("OWD")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("relaunch")?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use ring::signature::{Ed25519KeyPair, KeyPair};
 
     #[test]
+    fn feeds_name_each_platform() {
+        let old = r#"{"version":"0.4.0","url":"https://x/Dataman-0.4.0.dmg","size":10,"ed25519":"m"}"#;
+        let f: Feed = serde_json::from_str(old).unwrap();
+        assert!(f.assets.is_empty());
+        assert_eq!(f.clone().for_platform("macos-aarch64").map(|f| f.url), Some("https://x/Dataman-0.4.0.dmg".into()), "an old feed is the Mac's");
+        assert_eq!(f.for_platform("linux-x86_64"), None);
+        let new = r#"{"version":"0.4.0","url":"https://x/Dataman-0.4.0.dmg","size":10,"ed25519":"m",
+            "assets":{"macos-aarch64":{"url":"https://x/Dataman-0.4.0.dmg","size":10,"ed25519":"m"},
+                      "linux-x86_64":{"url":"https://x/Dataman-x86_64.AppImage","size":20,"ed25519":"l"}}}"#;
+        let f: Feed = serde_json::from_str(new).unwrap();
+        let linux = f.clone().for_platform("linux-x86_64").unwrap();
+        assert_eq!((linux.url.as_str(), linux.size, linux.ed25519.as_str(), linux.version.as_str()), ("https://x/Dataman-x86_64.AppImage", 20, "l", "0.4.0"));
+        assert_eq!(f.clone().for_platform("linux-aarch64"), None);
+        assert_eq!(f.for_platform("macos-aarch64").map(|f| f.size), Some(10));
+        #[derive(Deserialize)]
+        #[allow(dead_code)]
+        struct Shipped {
+            version: String,
+            url: String,
+            size: u64,
+            ed25519: String,
+            minimum_macos: Option<String>,
+        }
+        let shipped: Shipped = serde_json::from_str(new).unwrap();
+        assert_eq!((shipped.url.as_str(), shipped.size), ("https://x/Dataman-0.4.0.dmg", 10), "what released Macs read is unchanged");
+        assert!(platform().ends_with(std::env::consts::ARCH));
+    }
+
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn an_appimage_update_replaces_the_file() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = std::env::temp_dir().join(format!("dataman-appimage-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("Apps")).unwrap();
+        let stand_in = |path: &Path, v: &str| {
+            std::fs::write(path, format!("#!/bin/sh\necho {v}\n")).unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        let app = dir.join("Apps/Dataman.AppImage");
+        stand_in(&app, "0.1.0");
+        let new = dir.join("new.AppImage");
+        stand_in(&new, "0.2.0");
+        let err = install(&new, &app, "0.3.0").unwrap_err();
+        assert!(err.to_string().contains("holds version 0.2.0"), "{err:#}");
+        assert_eq!(artifact_version(&app).unwrap(), "0.1.0", "untouched after a refusal");
+        install(&new, &app, "0.2.0").unwrap();
+        assert_eq!(artifact_version(&app).unwrap(), "0.2.0");
+        assert!(std::fs::metadata(&app).unwrap().permissions().mode() & 0o111 != 0);
+        let left: Vec<_> = std::fs::read_dir(dir.join("Apps")).unwrap().flatten().map(|e| e.file_name()).collect();
+        assert_eq!(left, vec![std::ffi::OsString::from("Dataman.AppImage")], "nothing staged left");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
     fn signing_team() {
         assert_eq!(team_of("Executable=/A.app/Contents/MacOS/a\nAuthority=Developer ID Application: B (ABCDE12345)\nTeamIdentifier=ABCDE12345\n").as_deref(), Some("ABCDE12345"));
         assert_eq!(team_of("Signature=adhoc\nTeamIdentifier=not set\n"), None);
@@ -431,6 +715,7 @@ mod tests {
             ed25519: data_encoding::BASE64.encode(kp.sign(&dmg).as_ref()),
             minimum_macos: None,
             published: None,
+            assets: Default::default(),
         };
         verify(&dmg, &feed, &key).unwrap();
         let mut bad = dmg.clone();
@@ -463,6 +748,7 @@ mod tests {
             ed25519: key.sign(&bytes),
             minimum_macos: None,
             published: None,
+            assets: Default::default(),
         };
         let seen = std::sync::Mutex::new(Vec::new());
         let out = download(&cfg, &feed, &dir.join("got"), &|p| seen.lock().unwrap().push(p)).unwrap();
