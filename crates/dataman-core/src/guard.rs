@@ -212,6 +212,29 @@ const TSQL_HEADS: &[&str] = &[
     "RAISERROR", "THROW", "DBCC", "BACKUP", "RESTORE", "KILL",
 ];
 
+/// Reserved words that only ever start a statement.
+const TSQL_MORE_HEADS: &[&str] = &[
+    "CHECKPOINT", "DEALLOCATE", "GOTO", "READTEXT", "RECONFIGURE", "SETUSER", "SHUTDOWN", "UPDATETEXT", "WRITETEXT", "REVERT",
+    "OPEN", "CLOSE", "BREAK", "CONTINUE",
+];
+
+/// Statements T-SQL runs without a `;` before them, beyond `TSQL_HEADS`: what is not split off
+/// is read as part of the statement before it (`SELECT 1 DISABLE TRIGGER …` is not a read).
+fn tsql_head(t: &Toks, i: usize, w: &str, head: &str, prev: &str, start: usize) -> bool {
+    match w {
+        _ if TSQL_MORE_HEADS.contains(&w) => true,
+        "DISABLE" | "ENABLE" => t.is(i + 1, "TRIGGER"),
+        "SEND" => t.is(i + 1, "ON"),
+        "MOVE" | "GET" | "END" => t.is(i + 1, "CONVERSATION"),
+        "RECEIVE" => t.is(i + 1, "TOP") || t.punct(i + 1, "(") || t.t.get(i + 1).is_some_and(|x| x.text(t.src) == "*"),
+        // `UPDATE t SET`, `THEN UPDATE SET`, `ON DELETE SET NULL`, `ALTER … SET`.
+        "SET" => !(matches!(head, "ALTER" | "CREATE" | "GRANT" | "REVOKE" | "DENY")
+            || matches!(prev, "UPDATE" | "DELETE")
+            || head == "UPDATE" && !(start..i).any(|j| t.is(j, "SET"))),
+        _ => false,
+    }
+}
+
 fn tsql_pieces(t: &Toks) -> Vec<std::ops::Range<usize>> {
     let mut out = Vec::new();
     let mut start = 0;
@@ -251,10 +274,16 @@ fn tsql_pieces(t: &Toks) -> Vec<std::ops::Range<usize>> {
         if head == "INSERT" && matches!(w.as_str(), "VALUES" | "DEFAULT") {
             waiting = false;
         }
+        let prev = t.word(i - 1).unwrap_or_default();
         if !TSQL_HEADS.contains(&w.as_str()) {
+            if tsql_head(t, i, &w, &head, &prev, start) {
+                out.push(start..i);
+                start = i;
+                head = w;
+                waiting = false;
+            }
             continue;
         }
-        let prev = t.word(i - 1).unwrap_or_default();
         let part = match w.as_str() {
             _ if matches!(head.as_str(), "GRANT" | "REVOKE" | "DENY") => true,
             _ if matches!(prev.as_str(), "FOR" | "THEN" | "UNION" | "ALL" | "EXCEPT" | "INTERSECT" | "AS") || t.punct(i - 1, ",") => true,
@@ -492,7 +521,9 @@ fn statement(t: &Toks) -> Facts {
             let mut analyze = false;
             if t.punct(i, "(") {
                 let close = t.close_of(i);
-                analyze = (i..close).any(|j| t.is(j, "ANALYZE") || t.is(j, "ANALYSE")) && !(i..close).any(|j| t.is(j, "FALSE") || t.is(j, "OFF"));
+                // Each option's own value: `(ANALYZE, COSTS OFF)` analyzes.
+                let off = |j: usize| t.is(j, "FALSE") || t.is(j, "OFF") || t.t.get(j).is_some_and(|x| x.kind == TokenKind::Number && x.text(t.src) == "0");
+                analyze = (i + 1..close).any(|j| (t.is(j, "ANALYZE") || t.is(j, "ANALYSE")) && (t.punct(j - 1, "(") || t.punct(j - 1, ",")) && !off(j + 1));
                 i = close + 1;
             }
             while let Some(w) = t.word(i) {
@@ -896,7 +927,7 @@ pub const SIDE_EFFECT_FUNCTIONS: &[&str] = &[
     "nextval", "setval", "pg_stat_reset", "pg_stat_reset_shared", "pg_stat_reset_single_table_counters", "pg_stat_statements_reset",
     "pg_drop_replication_slot", "pg_create_physical_replication_slot", "pg_create_logical_replication_slot",
     "pg_logical_emit_message", "pg_replication_origin_create", "pg_replication_origin_drop", "pg_import_system_collations",
-    "txid_current", "pg_current_xact_id",
+    "txid_current", "pg_current_xact_id", "set_config",
     "get_lock", "release_lock", "release_all_locks", "load_file", "master_pos_wait", "source_pos_wait", "wait_for_executed_gtid_set",
     "openrowset", "openquery", "opendatasource",
 ];
@@ -1041,11 +1072,14 @@ enum Piece {
 
 fn neutral(t: &Toks, f: &Facts) -> bool {
     let var = |i: usize| t.t.get(i).is_some_and(|x| x.kind == TokenKind::Ident && x.text(t.src).starts_with('@') && !x.text(t.src).starts_with("@@"));
+    let setting = |i: usize| t.word(i).is_some_and(|w| TSQL_SESSION_SETTINGS.contains(&w.as_str()) || w.starts_with("ANSI_"));
+    // Every item of a list: `SET @a = 1, sql_mode = …` sets more than a variable.
+    let each = |first: &dyn Fn(usize) -> bool| first(1) && t.top().into_iter().all(|i| !t.punct(i, ",") || first(i + 1));
     match (t.dialect, f.verb.as_str()) {
         (Dialect::TSql, "DECLARE") => var(1),
-        (Dialect::TSql, "SET") => var(1) || t.word(1).is_some_and(|w| TSQL_SESSION_SETTINGS.contains(&w.as_str()) || w.starts_with("ANSI_")),
+        (Dialect::TSql, "SET") => var(1) || each(&setting),
         (Dialect::TSql, "PRINT") => true,
-        (Dialect::MySql, "SET") => var(1),
+        (Dialect::MySql, "SET") => each(&var),
         _ => false,
     }
 }
@@ -1292,9 +1326,13 @@ mod tests {
             "EXPLAIN SELECT 1",
             "EXPLAIN ANALYZE SELECT 1",
             "EXPLAIN INSERT INTO t VALUES (1)",
+            "EXPLAIN (ANALYZE OFF, COSTS) DELETE FROM t",
+            "EXPLAIN (ANALYZE FALSE) DELETE FROM t",
+            "EXPLAIN (COSTS OFF) DELETE FROM t",
             "SELECT lar_history('t')",
             "SELECT pg_sleep(0.1)",
             "SELECT format('for update')",
+            "SELECT current_setting('standard_conforming_strings')",
             "SELECT * FROM t FOR_x",
         ] {
             assert_eq!(agent_read_refusal(ok), None, "{ok}");
@@ -1304,6 +1342,9 @@ mod tests {
             ("INSERT INTO t VALUES (1)", "not a read"),
             ("WITH x AS (DELETE FROM t RETURNING *) SELECT * FROM x", "not a read"),
             ("EXPLAIN ANALYZE DELETE FROM t", "not a read"),
+            ("EXPLAIN (ANALYZE, COSTS OFF) DELETE FROM t", "not a read"),
+            ("EXPLAIN (ANALYZE TRUE, TIMING FALSE) DELETE FROM t", "not a read"),
+            ("EXPLAIN (VERBOSE OFF, ANALYZE 1) DELETE FROM t", "not a read"),
             ("SELECT 1 INTO t2", "not a read"),
             ("SET search_path = a", "not a read"),
             ("COPY t TO '/tmp/x'", "not a read"),
@@ -1318,6 +1359,7 @@ mod tests {
             ("SELECT pg_catalog.pg_cancel_backend(1)", "effects"),
             ("SELECT nextval('s')", "effects"),
             ("SELECT \"pg_reload_conf\"()", "effects"),
+            ("SELECT set_config('role', 'postgres', false)", "effects"),
             ("SELECT lar_backup('/tmp/b')", "administrative"),
             ("SELECT lar_create_user('x', 'y')", "administrative"),
         ] {
@@ -1671,6 +1713,27 @@ mod tests {
             (Pg, "SET search_path = evil; INSERT INTO t VALUES (1)", D("SET")),
             (My, "SET @@global.read_only = 0", D("SET")),
             (Ms, "SET IDENTITY_INSERT t ON", D("SET")),
+            (Pg, "EXPLAIN (ANALYZE, COSTS OFF) DELETE FROM t", D("DELETE without WHERE")),
+            (Pg, "EXPLAIN (ANALYZE TRUE, TIMING FALSE) UPDATE t SET a = 1 WHERE id = 1", S),
+            (My, "SET @a = 1, sql_mode = 'NO_BACKSLASH_ESCAPES'; INSERT INTO t VALUES (1)", D("SET")),
+            (My, "SET @a = 1, @@session.sql_mode = 'ANSI'", D("SET")),
+            (My, "SET @a = 1, @b = (SELECT MAX(x) FROM t); INSERT INTO t VALUES (@a)", S),
+            (Ms, "SET NOCOUNT, IDENTITY_INSERT t ON", D("SET")),
+            (Ms, "SELECT 1 DISABLE TRIGGER ALL ON t", D("DISABLE")),
+            (Ms, "SELECT 1 SET IMPLICIT_TRANSACTIONS ON", D("SET")),
+            (Ms, "SELECT 1 SET CONTEXT_INFO 0x01", D("SET")),
+            (Ms, "SELECT 1 SETUSER 'x'", D("SETUSER")),
+            (Ms, "SELECT 1 UPDATETEXT t.c @p 0 NULL 'x'", D("UPDATETEXT")),
+            (Ms, "SELECT 1 OPEN SYMMETRIC KEY k DECRYPTION BY PASSWORD = 'x'", D("OPEN")),
+            (Ms, "SELECT * FROM t RECEIVE TOP (1) * FROM q", D("RECEIVE")),
+            (Ms, "SELECT 1 SEND ON CONVERSATION @h", D("SEND")),
+            (Ms, "UPDATE t SET a = 1 WHERE id = 1 SET IMPLICIT_TRANSACTIONS ON", D("SET")),
+            (Ms, "SELECT disable, receive, [open] FROM t", R),
+            (Ms, "SELECT * FROM t ORDER BY a OFFSET 5 ROWS FETCH NEXT 5 ROWS ONLY", R),
+            (Ms, "DECLARE @x int\nSET @x = 1\nUPDATE t SET a = @x WHERE id = 2", S),
+            (Ms, "CREATE TABLE c (id int REFERENCES p ON DELETE SET NULL ON UPDATE SET DEFAULT)", D("CREATE")),
+            (Ms, "SET ANSI_NULLS, QUOTED_IDENTIFIER ON; INSERT INTO t VALUES (1)", S),
+            (Pg, "SELECT set_config('role', 'admin', true); INSERT INTO t VALUES (1)", D("set_config()")),
             (Pg, "BEGIN; INSERT INTO t VALUES (1); COMMIT", D("transaction control")),
             (Ms, "UPDATE STATISTICS dbo.t", D("UPDATE")),
             (Pg, "DECLARE c CURSOR FOR SELECT 1", D("DECLARE")),

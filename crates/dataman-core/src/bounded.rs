@@ -186,6 +186,17 @@ pub fn refusal_in(stmts: &[String], params: usize, mode: Mode, read_only_profile
     None
 }
 
+/// Modes that change how MySQL reads strings (and the composite modes that turn them on).
+const MY_LEXING_MODES: &[&str] = &["NO_BACKSLASH_ESCAPES", "ANSI_QUOTES", "ANSI", "ORACLE", "MSSQL", "DB2", "POSTGRESQL", "MAXDB"];
+
+fn my_lexed_sql_mode() -> String {
+    let mut e = "CONCAT(',', @@SESSION.sql_mode, ',')".to_string();
+    for m in MY_LEXING_MODES {
+        e = format!("REPLACE({e}, ',{m},', ',')");
+    }
+    format!("SET SESSION sql_mode = TRIM(BOTH ',' FROM {e})")
+}
+
 const GRACE: Duration = Duration::from_millis(500);
 const POOL_SIZE: usize = 2;
 const POOL: &str = "agent-pool";
@@ -217,8 +228,16 @@ impl Connection {
             }
         }
         let d = self.dedicated(Some(db)).await?;
-        if let Some(p) = d.pg() {
-            let _ = p.client.simple_query("SET application_name = 'Dataman MCP'").await;
+        // The guard lexes strings as these settings read them: the server must too.
+        match &d {
+            Dedicated::Pg(p) => {
+                let _ = p.client.simple_query("SET application_name = 'Dataman MCP'").await;
+                p.client.simple_query("SET standard_conforming_strings = on").await?;
+            }
+            Dedicated::My(c) => {
+                c.execute(&my_lexed_sql_mode()).await?;
+            }
+            Dedicated::Ms(_) => {}
         }
         Ok(d)
     }
@@ -597,7 +616,7 @@ async fn statement(client: &Client, sql: &str, params: &[Option<String>], mode: 
         Ok(s) => s,
         // Statements the server cannot prepare run through the simple protocol (text results).
         // A failed prepare aborted the transaction: start it again first. Never with parameters.
-        Err(e) if e.as_db_error().is_some() && params.is_empty() && out.statements.is_empty() => {
+        Err(e) if e.as_db_error().is_some() && params.is_empty() && out.statements.is_empty() && !crate::backend::pg::several_commands(&e) => {
             if mode != Mode::Autocommit {
                 client.simple_query("ROLLBACK").await.map_err(|e| Stop::Server(error_info(&e)))?;
                 begin(client, mode, limits).await.map_err(|(e, _)| e)?;

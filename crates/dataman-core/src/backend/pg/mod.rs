@@ -551,6 +551,12 @@ fn sendless(ty: &Type) -> bool {
     }
 }
 
+/// The server read more than one statement where the splitter saw one: the text protocol would
+/// run them all, unseen by the agents' checks.
+pub(crate) fn several_commands(e: &tokio_postgres::Error) -> bool {
+    e.as_db_error().is_some_and(|d| d.code() == &tokio_postgres::error::SqlState::SYNTAX_ERROR && d.message().contains("multiple commands"))
+}
+
 pub(crate) fn needs_text(stmt: &Statement) -> bool {
     stmt.columns().iter().any(|c| sendless(c.type_()))
 }
@@ -678,7 +684,7 @@ pub(crate) async fn run(
         }
         Err(e) if aborted() || e.code() == Some(&tokio_postgres::error::SqlState::QUERY_CANCELED) => return Ran::NeverRan { settle: true },
         // With parameters there is no such fallback: values are never spliced into SQL.
-        Err(e) if e.as_db_error().is_some() && rs.params().is_empty() => {
+        Err(e) if e.as_db_error().is_some() && rs.params().is_empty() && !(rs.agent().is_some() && several_commands(&e)) => {
             rs.update_status(|s| s.text_mode = true);
             executing();
             match fetch_simple(client, rs, started, on_pause).await {
