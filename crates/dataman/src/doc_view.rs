@@ -178,6 +178,7 @@ impl DocPane {
         cx.notify();
     }
 
+    #[cfg(feature = "checks")]
     pub fn shown(&self) -> Option<(&str, Result<&Ran, &Failed>)> {
         self.last.as_ref().map(|l| (l.stmt.sql.as_str(), l.result.as_ref()))
     }
@@ -186,40 +187,49 @@ impl DocPane {
         self.list_focus.clone()
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_selected(&self) -> Option<usize> {
         self.selected
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_select(&mut self, ix: usize, cx: &mut Context<Self>) {
         self.select(ix, cx);
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_list_bounds(&self, ix: usize) -> Option<(gpui::Bounds<gpui::Pixels>, gpui::Bounds<gpui::Pixels>)> {
         // A child's bounds are its place in the content: the scroll moves it by the offset.
         let row = self.list_scroll.bounds_for_item(ix)?;
         Some((self.list_scroll.bounds(), gpui::Bounds { origin: row.origin + self.list_scroll.offset(), size: row.size }))
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_detail(&self) -> Option<Entity<CodeEditor>> {
         self.detail.clone()
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_save(&mut self, cx: &mut Context<Self>) {
         self.save(cx);
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_page(&mut self, skip: u64, cx: &mut Context<Self>) {
         self.go_page(skip, cx);
     }
 
+    #[cfg(feature = "checks")]
     pub fn has_confirm(&self) -> bool {
         self.confirm.is_some()
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_new(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.new_document(window, cx);
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_note(&self) -> Option<(String, bool)> {
         self.note.clone()
     }

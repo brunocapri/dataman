@@ -672,6 +672,7 @@ impl SettingsView {
         }
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_mcp_advanced(&mut self, cx: &mut Context<Self>) {
         if !self.mcp_advanced {
             self.toggle_mcp_advanced(cx);
@@ -1305,51 +1306,62 @@ impl SettingsView {
         div().flex().flex_col().gap(px(18.)).children(reset_all).children(sections).into_any_element()
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_key_points(&self, id: &str) -> (Option<gpui::Point<Pixels>>, Option<gpui::Point<Pixels>>) {
         let b = self.key_bounds.borrow();
         let v = b.get(id).cloned().unwrap_or_default();
         (v.last().map(|b| b.center()), (v.len() == 2).then(|| v[0].center()))
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_reset_all_point(&self) -> Option<gpui::Point<Pixels>> {
         self.reset_all_bounds.borrow().first().map(|b| b.center())
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_recording(&self) -> Option<&'static str> {
         self.recording
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_section(&self) -> &'static str {
         self.section.label()
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_search(&mut self, q: &str, cx: &mut Context<Self>) {
         self.search.update(cx, |i, cx| i.set_text(q, cx));
         cx.notify();
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_key_search_point(&self) -> Option<gpui::Point<Pixels>> {
         self.key_button_bounds.borrow().first().map(|b| b.center())
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_check_now_point(&self) -> Option<gpui::Point<Pixels>> {
         self.check_now_bounds.borrow().first().map(|b| b.center())
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_update_status(&self, cx: &App) -> Option<String> {
         Self::update_status(cx).map(|(s, _, _)| s.to_string())
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_key_search(&self) -> (bool, Option<String>, Vec<&'static str>) {
         let ids = if self.key_search { Self::commands_on(self.key_query.as_deref()).iter().map(|c| c.id).collect() } else { Vec::new() };
         (self.key_search, self.key_query.clone(), ids)
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_key_search_with(&mut self, key: Option<&str>, window: &mut Window, cx: &mut Context<Self>) {
         self.set_key_search(true, window, cx);
         self.key_query = key.and_then(crate::keymap::parse);
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_scroll(&mut self, y: f32) {
         self.page_scroll.set_offset(gpui::point(px(0.), px(-y)));
     }

@@ -372,6 +372,7 @@ enum Pending {
     Edit(usize, usize),
     Insert,
     Delete(Vec<usize>),
+    #[cfg(feature = "checks")]
     Set(usize, usize, CellValue),
 }
 
@@ -464,6 +465,7 @@ impl GridEdit {
         }
     }
 
+    #[cfg(feature = "checks")]
     pub fn enum_labels(&self, col: usize) -> Option<&Arc<Vec<String>>> {
         self.enums.get(&col)
     }
@@ -475,6 +477,7 @@ impl GridEdit {
         }
     }
 
+    #[cfg(feature = "checks")]
     pub fn editable(&self, col: usize) -> Option<bool> {
         match &self.target {
             TargetState::Ready(t) => Some(t.is_editable(col)),
@@ -483,6 +486,7 @@ impl GridEdit {
         }
     }
 
+    #[cfg(feature = "checks")]
     pub fn current_text(&self, row: usize, col: usize) -> Option<Option<String>> {
         let snap = self.snapshot()?;
         if row >= snap.rows() + self.model.changes.inserted().len() || col >= snap.columns.len() {
@@ -497,6 +501,7 @@ impl GridEdit {
         Some(v.and_then(|v| v.as_deref().map(str::to_string)))
     }
 
+    #[cfg(feature = "checks")]
     pub fn set_cell(&mut self, row: usize, col: usize, v: CellValue, window: &mut Window, cx: &mut Context<Self>) {
         self.request(Pending::Set(row, col, v), window, cx);
     }
@@ -689,6 +694,7 @@ impl GridEdit {
                 self.model.toggle_delete(&refs);
                 self.refresh(cx);
             }
+            #[cfg(feature = "checks")]
             Pending::Set(row, col, v) => {
                 let TargetState::Ready(target) = &self.target else { return };
                 let Some(snap) = self.snapshot() else { return };
@@ -1132,15 +1138,18 @@ impl GridEdit {
         false
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_edit(&mut self, row: usize, col: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.request(Pending::Edit(row, col), window, cx);
     }
 
     /// The last commit's conflicts, when it left any.
+    #[cfg(feature = "checks")]
     pub fn demo_conflicts(&self) -> usize {
         self.report.as_ref().map_or(0, |r| r.outcomes.iter().filter(|o| matches!(o.outcome, Outcome::Conflict { .. })).count())
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_read_only(&self) -> Option<String> {
         match &self.card {
             Some(Card::ReadOnly { reason, .. }) => Some(reason.clone()),
@@ -1148,6 +1157,7 @@ impl GridEdit {
         }
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_value_editor(&self) -> Option<Entity<ValueEditor>> {
         match self.editing.as_ref().map(|e| &e.editor) {
             Some(CellEdit::Value(v)) => Some(v.clone()),
@@ -1155,6 +1165,7 @@ impl GridEdit {
         }
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_cell_editor(&self) -> Option<Entity<CellEditor>> {
         match self.editing.as_ref().map(|e| &e.editor) {
             Some(CellEdit::Text(e)) => Some(e.clone()),
@@ -1162,10 +1173,12 @@ impl GridEdit {
         }
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_start(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.request(Pending::Edit(3, 4), window, cx);
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_fill(&mut self, keep_editing: bool, window: &mut Window, cx: &mut Context<Self>) {
         let (Some(snap), TargetState::Ready(target)) = (self.snapshot(), &self.target) else { return };
         let own_id = target.check == dataman_core::edit::ConflictCheck::Reread;

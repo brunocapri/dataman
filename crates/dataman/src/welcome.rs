@@ -77,6 +77,7 @@ impl Welcome {
         cx.notify();
     }
 
+    #[cfg(feature = "checks")]
     pub(crate) fn demo_choose(&mut self, ix: usize, cx: &mut Context<Self>) -> &'static str {
         self.choose(ix, cx);
         ITEMS[ix].0

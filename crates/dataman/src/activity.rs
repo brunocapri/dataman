@@ -282,6 +282,7 @@ impl ActivityView {
         self.visible
     }
 
+    #[cfg(feature = "checks")]
     pub fn ticking(&self) -> bool {
         self.ticker.is_some()
     }
@@ -714,12 +715,14 @@ impl ActivityView {
         self.select_pid(Some(self.tree[next].pid), cx);
     }
 
+    #[cfg(feature = "checks")]
     pub fn set_thresholds(&mut self, th: Thresholds, cx: &mut Context<Self>) {
         self.th = th;
         self.rebuild_sessions(cx);
         cx.notify();
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_statements(&mut self, rows: Vec<StatementRow>, cx: &mut Context<Self>) {
         self.statements_fixed = true;
         self.avail[Section::Statements.ix()] = Avail::Yes;
@@ -728,18 +731,22 @@ impl ActivityView {
         cx.notify();
     }
 
+    #[cfg(feature = "checks")]
     pub fn tree(&self) -> &[TreeRow] {
         &self.tree
     }
 
+    #[cfg(feature = "checks")]
     pub fn shown_sessions(&self) -> &[SessionRow] {
         &self.shown
     }
 
+    #[cfg(feature = "checks")]
     pub fn statements_state(&self) -> Option<&Statements> {
         self.statements.as_ref()
     }
 
+    #[cfg(feature = "checks")]
     pub fn tables(&self) -> &[TableRow] {
         &self.tables
     }

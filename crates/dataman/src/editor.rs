@@ -95,6 +95,7 @@ const FIND_CAP: usize = 10_000;
 const FIND_POP_DELAY: Duration = Duration::from_millis(150);
 const LINT_DELAY: Duration = Duration::from_millis(300);
 
+#[cfg(feature = "checks")]
 pub(crate) fn dispatch(cx: &mut gpui::AsyncWindowContext, action: Box<dyn gpui::Action>) {
     let _ = cx.update(|window, cx| {
         window.refresh();
@@ -733,6 +734,7 @@ struct EditorFind {
 struct Geometry {
     bounds: Bounds<Pixels>,
     origin_x: Pixels,
+    #[cfg(feature = "checks")]
     gutter_w: Pixels,
     text_width: Pixels,
     char_width: Pixels,
@@ -1052,6 +1054,7 @@ impl CodeEditor {
         cx.notify();
     }
 
+    #[cfg(feature = "checks")]
     pub fn doc_lang(&self) -> Option<dataman_core::Engine> {
         self.buf.doc
     }
@@ -1072,14 +1075,17 @@ impl CodeEditor {
         self.schedule_lint(cx);
     }
 
+    #[cfg(feature = "checks")]
     pub fn lints(&self) -> &[Lint] {
         &self.lints
     }
 
+    #[cfg(feature = "checks")]
     pub fn signature(&self) -> Option<&SignatureHelp> {
         self.sig.as_ref()
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_hover(&mut self, ix: Option<usize>, cx: &mut Context<Self>) {
         self.hover = ix.filter(|&i| i < self.lints.len());
         cx.notify();
@@ -1245,6 +1251,7 @@ impl CodeEditor {
         self.go_to_definition(self.cursor(), true, cx);
     }
 
+    #[cfg(feature = "checks")]
     pub fn type_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
         let text = normalize_newlines(text);
         let mut rest = text.as_str();
@@ -1312,6 +1319,7 @@ impl CodeEditor {
         true
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_pop(&self) -> Option<Range<usize>> {
         self.pop.as_ref().filter(|p| p.frame(Instant::now()).is_some()).map(|p| p.target.clone())
     }
@@ -1385,19 +1393,23 @@ impl CodeEditor {
         self.history.seal();
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_completions(&self) -> Vec<String> {
         self.menu.as_ref().map(|m| m.items.iter().map(|c| c.label.clone()).collect()).unwrap_or_default()
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_show_completions(&mut self, cx: &mut Context<Self>) {
         self.refresh_menu(true);
         cx.notify();
     }
 
+    #[cfg(feature = "checks")]
     pub fn completion_visible(&self) -> bool {
         self.menu.is_some()
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_cursor(&self) -> (usize, Dialect) {
         (self.cursor(), self.buf.dialect)
     }
@@ -2070,18 +2082,22 @@ impl CodeEditor {
         }
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_find(&self, cx: &App) -> Option<(Entity<FindBar>, bool, String)> {
         self.find.as_ref().map(|f| (f.bar.clone(), f.open, f.bar.read(cx).count().label()))
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_metrics(&self) -> (f32, f32) {
         (line_height().as_f32(), self.geo.map_or(0., |g| g.char_width.as_f32()))
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_selection(&self) -> Range<usize> {
         self.sel.clone()
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_gutter_divider(&self) -> Option<f32> {
         self.geo.map(|g| (g.bounds.left() + g.gutter_w - px(1.)).as_f32())
     }
@@ -2094,6 +2110,7 @@ impl CodeEditor {
         (self.scroll.x.pt(), self.scroll.y.pt())
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_bars(&self) -> ([Option<(Bounds<Pixels>, Bounds<Pixels>)>; 2], (f32, f32)) {
         let (v, h) = self.bars;
         let (mx, my) = self.max_scroll();
@@ -2121,6 +2138,7 @@ impl CodeEditor {
         cx.notify();
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_select(&mut self, anchor: usize, head: usize, cx: &mut Context<Self>) {
         let n = self.buf.len();
         self.set_sel(anchor.min(n), head.min(n));
@@ -2674,7 +2692,14 @@ impl CodeEditor {
         let gutter_w = self.gutter.as_ref().map_or(need, |g| px(g.editor(need.pt())));
         let text_bounds = Bounds::from_corners(point(bounds.left() + gutter_w, bounds.top()), bounds.bottom_right());
         let origin_x = text_bounds.left() + px(12.);
-        let g = Geometry { bounds, origin_x, gutter_w, text_width: text_bounds.size.width - px(12.), char_width: cw };
+        let g = Geometry {
+            bounds,
+            origin_x,
+            #[cfg(feature = "checks")]
+            gutter_w,
+            text_width: text_bounds.size.width - px(12.),
+            char_width: cw,
+        };
         let z = crate::theme::zoom();
         if (z - self.zoom_at).abs() > 1e-4 {
             let k = z / self.zoom_at;

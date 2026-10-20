@@ -90,6 +90,7 @@ impl PrivilegesPanel {
         }
     }
 
+    #[cfg(feature = "checks")]
     pub fn pick(&mut self, role: &str, cx: &mut Context<Self>) {
         self.picked = Some(role.to_string());
         cx.notify();

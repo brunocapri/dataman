@@ -400,6 +400,7 @@ pub fn swap(cx: &mut App) -> Option<gpui::Task<anyhow::Result<PathBuf>>> {
     }))
 }
 
+#[cfg(feature = "checks")]
 pub fn configure_for_test(feed: &str, key: &str, target: PathBuf, cx: &mut App) {
     if let Some(u) = updates_mut(cx) {
         u.cfg = UpdateConfig::new(Some(feed), Some(key), crate::VERSION).map(Arc::new);
@@ -412,6 +413,7 @@ pub fn configure_for_test(feed: &str, key: &str, target: PathBuf, cx: &mut App) 
     }
 }
 
+#[cfg(feature = "checks")]
 pub fn set_ws_for_test(ws: Option<(WeakEntity<Workspace>, AnyWindowHandle)>, cx: &mut App) {
     if let Some(u) = updates_mut(cx) {
         u.ws = ws;
@@ -424,6 +426,7 @@ pub(crate) fn record_alert(text: String, cx: &mut App) {
     }
 }
 
+#[cfg(feature = "checks")]
 pub fn demo_offer(step: Option<Step>, cx: &mut App) {
     if let Some(u) = updates_mut(cx) {
         let zero_key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";

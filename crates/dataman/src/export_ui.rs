@@ -467,6 +467,7 @@ impl ExportView {
         cx.notify();
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_start(&mut self, format: ExportFormat, cx: &mut Context<Self>) {
         self.set_format(format, cx);
         self.scope = RowScope::All;
@@ -475,6 +476,7 @@ impl ExportView {
         self.start(cx);
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_outcome(&self) -> Option<Result<(PathBuf, u64), String>> {
         match &self.job.as_ref()?.state {
             JobState::Running => None,
@@ -483,10 +485,12 @@ impl ExportView {
         }
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_close_point(&self) -> Option<gpui::Point<gpui::Pixels>> {
         self.close_bounds.get().map(|b| b.center())
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_status(&self, cx: &App) -> Option<String> {
         self.status(&cx.theme()).map(|s| s.0)
     }

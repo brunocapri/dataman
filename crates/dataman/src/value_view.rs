@@ -149,14 +149,17 @@ impl ValueView {
         cx.notify();
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_all(&mut self, open: bool, cx: &mut Context<Self>) {
         self.all(open, cx);
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_text(&mut self, text: bool, cx: &mut Context<Self>) {
         self.set_text(text, cx);
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_state(&self) -> (String, bool, Vec<String>) {
         let lines = if self.text {
             self.pretty.lines().map(str::to_string).collect()

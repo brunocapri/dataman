@@ -1,96 +1,134 @@
 mod activity;
+#[cfg(feature = "checks")]
 mod activity_demo;
 mod agent;
 mod app;
 mod assets;
+#[cfg(feature = "checks")]
 mod bench;
+#[cfg(feature = "checks")]
 mod check;
 mod chrome;
 mod conn_dialog;
 mod conns;
+#[cfg(feature = "checks")]
 mod conns_check;
 mod crash_ui;
 mod data_import;
 mod dnd;
 mod doc_view;
 mod dock;
+#[cfg(feature = "checks")]
 mod dock_check;
 mod dock_icon;
+#[cfg(feature = "checks")]
 mod edit_check;
 mod edit_ui;
 mod editor;
+#[cfg(feature = "checks")]
 mod engines_check;
+#[cfg(feature = "checks")]
 mod explorer_check;
+#[cfg(feature = "checks")]
 mod explorer_demo;
+#[cfg(feature = "checks")]
 mod export_check;
 mod export_ui;
 mod find;
+#[cfg(feature = "checks")]
 mod find_check;
+#[cfg(feature = "checks")]
 mod fk_check;
 mod glass;
+#[cfg(feature = "checks")]
 mod mssql_check;
+#[cfg(feature = "checks")]
 mod mysql_check;
 mod restore;
+#[cfg(feature = "checks")]
 mod results_check;
+#[cfg(feature = "checks")]
 mod session_check;
 mod grid;
 mod grid_menu;
 mod history;
+#[cfg(feature = "checks")]
 mod history_check;
+#[cfg(feature = "checks")]
 mod import_demo;
 mod import_ui;
 mod input;
+#[cfg(feature = "checks")]
 mod input_check;
+#[cfg(feature = "checks")]
 mod intel_demo;
 mod keymap;
 mod lar;
 mod mcp;
+#[cfg(feature = "checks")]
 mod mcp_check;
+#[cfg(feature = "checks")]
 mod mcp_tools_check;
 mod messages;
 mod motion;
 mod nav;
+#[cfg(feature = "checks")]
 mod nav_check;
+#[cfg(feature = "checks")]
 mod insert_check;
+#[cfg(feature = "checks")]
 mod newuser_check;
+#[cfg(feature = "checks")]
 mod nosql_check;
 mod notify;
 mod palette;
 mod panels;
 mod params_ui;
+#[cfg(feature = "checks")]
 mod pin_check;
 mod plan;
+#[cfg(feature = "checks")]
 mod plan_demo;
 mod privileges;
 mod result_bar;
 mod row_actions;
+#[cfg(feature = "checks")]
 mod settings_check;
 mod settings_view;
 mod shortcuts;
 mod sidebar;
 mod split;
+#[cfg(feature = "checks")]
 mod split_check;
 mod sql_picker;
 mod tab;
 mod tab_motion;
+#[cfg(feature = "checks")]
 mod tabs_check;
+#[cfg(feature = "checks")]
 mod table_check;
 mod table_view;
 mod theme;
 mod tree;
 mod tree_menu;
+#[cfg(feature = "checks")]
 mod tx_check;
 mod ui;
+#[cfg(feature = "checks")]
 mod ui_check;
 mod undo;
+#[cfg(feature = "checks")]
 mod undo_check;
+#[cfg(feature = "checks")]
 mod update_check;
 mod update_ui;
 mod updates;
+#[cfg(feature = "checks")]
 mod value_check;
 mod value_edit;
 mod value_view;
 mod welcome;
+#[cfg(feature = "checks")]
 mod welcome_check;
 
 use std::sync::Arc;
@@ -276,7 +314,16 @@ fn main() {
     }
     dataman_core::crash::install(dataman_core::crash::dir(), VERSION);
     log::info!("Dataman {VERSION}, macOS {}", std::env::consts::ARCH);
+    // The check stages and benchmarks (`--demo`, `--bench-*`) exist only in builds with the
+    // `checks` feature; the app ships without them.
+    #[cfg(feature = "checks")]
     let bench = bench::Mode::from_args(&args);
+    #[cfg(not(feature = "checks"))]
+    let bench: Option<()> = None;
+    #[cfg(feature = "checks")]
+    let startup = bench == Some(bench::Mode::Startup);
+    #[cfg(not(feature = "checks"))]
+    let startup = false;
 
     let (dirs, secrets): (Dirs, Arc<dyn SecretStore>) = match bench {
         Some(_) => (
@@ -415,10 +462,10 @@ fn main() {
                     if let Some(t0) = std::env::var("DATAMAN_T0_MS").ok().and_then(|v| v.parse::<u128>().ok()) {
                         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
                         println!("startup: launch to first frame {} ms (main to first frame {main_ms:.1} ms)", now - t0);
-                    } else if bench == Some(bench::Mode::Startup) {
+                    } else if startup {
                         println!("startup: main to first frame {main_ms:.1} ms");
                     }
-                    if bench == Some(bench::Mode::Startup) {
+                    if startup {
                         cx.quit();
                     }
                 });
@@ -427,6 +474,7 @@ fn main() {
                 cx.activate(true);
             })
             .expect("window update");
+        #[cfg(feature = "checks")]
         if let Some(mode) = bench {
             let ws = window.entity(cx).expect("workspace");
             cx.update_window(window.into(), |_, window, cx| bench::start(mode, ws, window, cx))

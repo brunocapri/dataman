@@ -148,6 +148,7 @@ impl MenuEntry {
         if matches!(self, MenuEntry::Sep) { SEP_H } else { ITEM_H }
     }
 
+    #[cfg(feature = "checks")]
     fn label(&self) -> Option<&str> {
         match self {
             MenuEntry::Item { label, .. } | MenuEntry::Sub { label, .. } => Some(label),
@@ -1600,22 +1601,27 @@ impl HistoryPanel {
         div().flex().flex_row().on_children_prepainted(move |b, _, _| bounds.set(b.first().copied())).child(button)
     }
 
+    #[cfg(feature = "checks")]
     pub(crate) fn demo_folding(&self) -> bool {
         self.folding_moves()
     }
 
+    #[cfg(feature = "checks")]
     pub(crate) fn demo_entry_count(&self) -> usize {
         self.entries.len()
     }
 
+    #[cfg(feature = "checks")]
     pub(crate) fn demo_has_entry(&self, sql: &str) -> bool {
         self.entries.iter().map(|(_, e)| e).any(|e| e.sql.trim().trim_end_matches(';') == sql.trim().trim_end_matches(';'))
     }
 
+    #[cfg(feature = "checks")]
     pub(crate) fn demo_favorite_entry(&mut self, entry_ix: usize, cx: &mut Context<Self>) {
         self.toggle_favorite(entry_ix, cx);
     }
 
+    #[cfg(feature = "checks")]
     pub(crate) fn demo_marks(&mut self, favorites: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.set_favorites(favorites, cx);
         if favorites {
@@ -1637,25 +1643,30 @@ impl HistoryPanel {
         cx.notify();
     }
 
+    #[cfg(feature = "checks")]
     pub(crate) fn demo_search(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.filter.update(cx, |f, cx| f.set_text(text, cx));
         self.apply_filter(cx);
         window.focus(&self.filter.focus_handle(cx), cx);
     }
 
+    #[cfg(feature = "checks")]
     pub(crate) fn demo_favorites(&self) -> Vec<(String, String)> {
         self.favorites.iter().map(|f| (f.id.clone(), f.name.clone())).collect()
     }
 
+    #[cfg(feature = "checks")]
     pub(crate) fn demo_filed(&self) -> Vec<(String, Option<String>)> {
         let folder = |id: &str| self.folders.iter().find(|d| d.id == id).map(|d| d.name.clone());
         self.favorites.iter().map(|f| (f.name.clone(), f.folder.as_deref().and_then(folder))).collect()
     }
 
+    #[cfg(feature = "checks")]
     pub(crate) fn demo_folders(&self) -> Vec<(String, String)> {
         self.folders.iter().map(|d| (d.id.clone(), d.name.clone())).collect()
     }
 
+    #[cfg(feature = "checks")]
     pub(crate) fn demo_rows(&self) -> Vec<String> {
         self.items
             .iter()
@@ -1671,6 +1682,7 @@ impl HistoryPanel {
             .collect()
     }
 
+    #[cfg(feature = "checks")]
     pub(crate) fn demo_item_named(&self, name: &str) -> Option<usize> {
         self.items.iter().position(|it| match it {
             Item::Folder { ix, .. } => self.folders[*ix].name == name,
@@ -1679,14 +1691,17 @@ impl HistoryPanel {
         })
     }
 
+    #[cfg(feature = "checks")]
     pub(crate) fn demo_filter_text(&self, cx: &App) -> String {
         self.filter.read(cx).text().to_string()
     }
 
+    #[cfg(feature = "checks")]
     pub(crate) fn demo_showing_favorites(&self) -> bool {
         self.show_favorites
     }
 
+    #[cfg(feature = "checks")]
     pub(crate) fn demo_selected_favorite(&self) -> Option<(String, usize, bool)> {
         let ix = self.selected?;
         let Item::Fav(i) = self.items.get(ix)? else { return None };
@@ -1695,12 +1710,14 @@ impl HistoryPanel {
         Some((self.favorites[*i].id.clone(), ix, inside))
     }
 
+    #[cfg(feature = "checks")]
     pub(crate) fn demo_show_favorites(&mut self, cx: &mut Context<Self>) {
         self.read_favorites(cx);
         self.set_favorites(true, cx);
         self.apply_filter(cx);
     }
 
+    #[cfg(feature = "checks")]
     pub(crate) fn demo_open_fav_menu(&mut self, item_ix: usize, cx: &mut Context<Self>) {
         if let (Some(Item::Fav(i)), Some(p)) = (self.items.get(item_ix), self.demo_item_point(item_ix)) {
             self.selected = Some(item_ix);
@@ -1709,6 +1726,7 @@ impl HistoryPanel {
         }
     }
 
+    #[cfg(feature = "checks")]
     pub(crate) fn demo_rename(&mut self, fav_ix: usize, name: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.start_rename(fav_ix, window, cx);
         if let Some((_, input)) = &self.renaming {
@@ -1717,26 +1735,32 @@ impl HistoryPanel {
         self.commit_rename(cx);
     }
 
+    #[cfg(feature = "checks")]
     pub(crate) fn demo_has_focus(&self, window: &Window) -> bool {
         self.focus.is_focused(window)
     }
 
+    #[cfg(feature = "checks")]
     pub(crate) fn demo_dropdown_open(&self) -> bool {
         self.chip_menu
     }
 
+    #[cfg(feature = "checks")]
     pub(crate) fn demo_dropdown_bounds(&self) -> Option<Bounds<Pixels>> {
         self.chip_bounds.get()
     }
 
+    #[cfg(feature = "checks")]
     pub(crate) fn demo_clear_asking(&self) -> bool {
         self.clear_ask.is_some()
     }
 
+    #[cfg(feature = "checks")]
     pub(crate) fn demo_clear_bounds(&self) -> Option<Bounds<Pixels>> {
         self.clear_bounds.get()
     }
 
+    #[cfg(feature = "checks")]
     pub(crate) fn demo_open_entry_menu(&mut self, entry_ix: usize, cx: &mut Context<Self>) {
         let Some(ix) = self.items.iter().position(|it| matches!(it, Item::Entry(i) if *i == entry_ix)) else { return };
         if let Some(p) = self.demo_item_point(ix) {
@@ -1745,19 +1769,23 @@ impl HistoryPanel {
         }
     }
 
+    #[cfg(feature = "checks")]
     pub(crate) fn demo_menu_labels(&self) -> Vec<String> {
         let Some(m) = &self.menu else { return vec![] };
         self.menu_entries(&m.on).iter().map(|e| e.label().map_or("—".to_string(), str::to_string)).collect()
     }
 
+    #[cfg(feature = "checks")]
     pub(crate) fn demo_new_folder_bounds(&self) -> Option<Bounds<Pixels>> {
         self.new_folder_bounds.get()
     }
 
+    #[cfg(feature = "checks")]
     pub(crate) fn demo_fav_menu_open(&self) -> bool {
         self.menu.is_some()
     }
 
+    #[cfg(feature = "checks")]
     pub(crate) fn demo_menu_point(&self, label: &str, sub: bool) -> Option<Point<Pixels>> {
         let m = self.menu.as_ref()?;
         let entries = self.menu_entries(&m.on);
@@ -1772,6 +1800,7 @@ impl HistoryPanel {
         Some(point(b.left() + px(30.), b.top() + px(top + ITEM_H / 2.)))
     }
 
+    #[cfg(feature = "checks")]
     pub(crate) fn demo_drop_at(&self) -> Option<String> {
         match self.drop_at.as_ref()? {
             DropAt::Top => Some("top".into()),
@@ -1779,11 +1808,13 @@ impl HistoryPanel {
         }
     }
 
+    #[cfg(feature = "checks")]
     pub(crate) fn demo_folder_drop(&self) -> Option<(usize, Vec<(usize, bool)>)> {
         let slot = self.folder_drop?;
         Some((slot, (0..self.items.len()).filter_map(|ix| self.folder_line(ix).map(|after| (ix, after))).collect()))
     }
 
+    #[cfg(feature = "checks")]
     pub(crate) fn demo_renaming_index(&self) -> Option<usize> {
         match &self.renaming {
             Some((Naming::Fav(i), _)) => Some(*i),
@@ -1791,6 +1822,7 @@ impl HistoryPanel {
         }
     }
 
+    #[cfg(feature = "checks")]
     pub(crate) fn demo_renaming_folder(&self) -> Option<String> {
         match &self.renaming {
             Some((Naming::Folder(id), _)) => self.folders.iter().find(|d| d.id == *id).map(|d| d.name.clone()),
@@ -1798,26 +1830,31 @@ impl HistoryPanel {
         }
     }
 
+    #[cfg(feature = "checks")]
     pub(crate) fn demo_renaming_focused(&self, window: &Window, cx: &App) -> bool {
         self.renaming.as_ref().is_some_and(|(_, input)| input.focus_handle(cx).is_focused(window))
     }
 
+    #[cfg(feature = "checks")]
     pub(crate) fn demo_rename_field_point(&self, cx: &App) -> Option<Point<Pixels>> {
         let (x, y, w, h) = self.renaming.as_ref()?.1.read(cx).demo_bounds()?;
         Some(point(px(x + w * 0.5), px(y + h * 0.5)))
     }
 
+    #[cfg(feature = "checks")]
     pub(crate) fn demo_item_point(&self, item_ix: usize) -> Option<Point<Pixels>> {
         let b = self.list.bounds_for_item(item_ix)?;
         Some(point(b.origin.x + px(40.), b.origin.y + b.size.height * 0.5))
     }
 
+    #[cfg(feature = "checks")]
     pub(crate) fn demo_star_point(&self, item_ix: usize) -> Option<Point<Pixels>> {
         let b = self.list.bounds_for_item(item_ix)?;
         // Past the row's 6 pt margin and 8 pt padding, the 20 pt star ends its first line.
         Some(point(b.right() - px(6. + 8. + 10.), b.top() + px(7. + 10.)))
     }
 
+    #[cfg(feature = "checks")]
     pub(crate) fn demo_list_bounds(&self) -> Bounds<Pixels> {
         self.list.viewport_bounds()
     }

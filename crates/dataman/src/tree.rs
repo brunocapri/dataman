@@ -470,6 +470,7 @@ impl SchemaTree {
         cx.notify();
     }
 
+    #[cfg(feature = "checks")]
     pub fn selected_id(&self) -> Option<&str> {
         self.selected.as_deref()
     }
@@ -482,10 +483,12 @@ impl SchemaTree {
         }
     }
 
+    #[cfg(feature = "checks")]
     pub fn row_count(&self) -> usize {
         self.rows.len()
     }
 
+    #[cfg(feature = "checks")]
     pub fn scroll_handle(&self) -> &UniformListScrollHandle {
         &self.scroll
     }
@@ -1198,10 +1201,12 @@ impl SchemaTree {
         true
     }
 
+    #[cfg(feature = "checks")]
     pub fn has_row(&self, id: &str) -> bool {
         self.rows.iter().any(|r| r.id.as_ref() == id)
     }
 
+    #[cfg(feature = "checks")]
     pub fn collapse_id(&mut self, id: &str, cx: &mut Context<Self>) {
         if let Some(ix) = self.rows.iter().position(|r| r.id.as_ref() == id)
             && self.rows[ix].expanded
@@ -1210,34 +1215,41 @@ impl SchemaTree {
         }
     }
 
+    #[cfg(feature = "checks")]
     pub fn select_id(&mut self, id: &str, cx: &mut Context<Self>) {
         if let Some(ix) = self.rows.iter().position(|r| r.id.as_ref() == id) {
             self.select(ix, cx);
         }
     }
 
+    #[cfg(feature = "checks")]
     pub fn refresh_connection(&mut self, id: &str, cx: &mut Context<Self>) {
         self.refresh_conn(id.to_string(), cx);
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_turn_schema(&mut self, cx: &mut Context<Self>) -> bool {
         let Some(ix) = self.rows.iter().position(|r| matches!(r.icon, Some((Icon::Schema, _)))) else { return false };
         self.toggle(ix, cx);
         self.folder_turn.is_some()
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_folder_turning(&self) -> bool {
         self.folder_turn.as_ref().is_some_and(|(_, at, opening)| crate::motion::folder_fill(*at, *opening).is_some())
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_focus_filter(&self, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.filter.focus_handle(cx), cx);
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_filter(&self) -> Entity<TextInput> {
         self.filter.clone()
     }
 
+    #[cfg(feature = "checks")]
     pub fn set_filter(&mut self, text: &str, cx: &mut Context<Self>) {
         self.filter.update(cx, |f, cx| f.set_text(text, cx));
         self.rebuild(cx);
@@ -1265,12 +1277,14 @@ impl SchemaTree {
         cx.notify();
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_conn_label(&self, conn_id: &str, cx: &App) -> Option<(Hsla, bool)> {
         let id = cid(conn_id);
         let r = self.rows.iter().find(|r| r.id.as_ref() == id)?;
         Some(label_style(r.tone, false, &cx.theme()))
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_conn_row(&self, conn_id: &str) -> Option<(String, bool, Option<String>, Option<(String, Option<String>)>)> {
         let id = cid(conn_id);
         let r = self.rows.iter().find(|r| r.id.as_ref() == id)?;
@@ -1278,25 +1292,30 @@ impl SchemaTree {
         Some((r.label.to_string(), r.chip_dim, r.tip.as_ref().map(|t| t.to_string()), err))
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_logo(&self, conn_id: &str) -> Option<dataman_core::Engine> {
         let id = cid(conn_id);
         self.rows.iter().find(|r| r.id.as_ref() == id)?.logo
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_row_ids(&self, id: &str) -> Vec<String> {
         let prefix = format!("{id}/");
         self.rows.iter().filter(|r| r.id.starts_with(&prefix)).map(|r| r.id.to_string()).collect()
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_children(&self, id: &str) -> Vec<String> {
         let prefix = format!("{id}/");
         self.rows.iter().filter(|r| r.id.starts_with(&prefix)).map(|r| r.label.to_string()).collect()
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_conn_bounds(&self, conn_id: &str) -> Option<gpui::Bounds<gpui::Pixels>> {
         self.conn_bounds.borrow().get(cid(conn_id).as_str()).copied()
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_pop(&self) -> Option<SharedString> {
         self.pop.as_ref().filter(|p| p.frame(Instant::now()).is_some()).map(|p| p.target.clone())
     }
@@ -1872,12 +1891,14 @@ impl SchemaTree {
         cx.notify();
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_row_point(&self, id: &str) -> Option<gpui::Point<gpui::Pixels>> {
         let ix = self.rows.iter().position(|r| r.id.as_ref() == id)?;
         let (left, top, right) = self.row_rect(ix)?;
         Some(point(px((left + right) / 2.), px(top + 11.)))
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_pinned(&self, conn: &str) -> Vec<(String, String)> {
         let prefix = format!("{}/", pinned_id(conn));
         self.rows
@@ -1887,6 +1908,7 @@ impl SchemaTree {
             .collect()
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_menu_item_point(&self, act: Act) -> Option<gpui::Point<gpui::Pixels>> {
         let m = self.menu.as_ref()?;
         let i = m.entries.iter().position(|e| matches!(e, Entry::Item(it) if it.act == act))?;
@@ -1894,6 +1916,7 @@ impl SchemaTree {
         Some(point(px(m.origin.0 + 40.), px(y)))
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_menu(&mut self, id: &str, sub: bool, mouse: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(ix) = self.rows.iter().position(|r| r.id.as_ref() == id) else { return };
         let at = match (mouse, self.row_rect(ix)) {
@@ -1904,6 +1927,7 @@ impl SchemaTree {
         self.demo_menu_highlight(sub, mouse, cx);
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_menu_acts(&self) -> Vec<Act> {
         let Some(m) = &self.menu else { return vec![] };
         m.entries
@@ -1916,6 +1940,7 @@ impl SchemaTree {
             .collect()
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_menu_checked(&self, act: Act) -> Option<bool> {
         let m = self.menu.as_ref()?;
         m.entries.iter().find_map(|e| match e {
@@ -1924,14 +1949,17 @@ impl SchemaTree {
         })
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_menu_run(&mut self, act: Act, window: &mut Window, cx: &mut Context<Self>) {
         self.run_menu(act, false, window, cx);
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_row_lock(&self, id: &str) -> Option<bool> {
         self.rows.iter().find(|r| r.id.as_ref() == id).map(|r| r.lock)
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_menu_highlight(&mut self, sub: bool, mouse: bool, cx: &mut Context<Self>) {
         if let Some(m) = self.menu.as_mut() {
             if mouse {
@@ -2083,6 +2111,7 @@ impl SchemaTree {
         }
     }
 
+    #[cfg(feature = "checks")]
     pub fn conn_drop(&self) -> Option<usize> {
         self.conn_drop
     }

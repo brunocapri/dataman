@@ -150,7 +150,8 @@ pub fn run(args: &[String]) -> Result<()> {
     let t0 = Instant::now();
     if o.build {
         step("build");
-        let st = Command::new("cargo").args(["build", "--release", "-p", "dataman", "-p", "dataman-mcp"]).current_dir(&root).status()?;
+        // The stages live behind the `checks` feature: the app as shipped has none of them.
+        let st = Command::new("cargo").args(["build", "--release", "-p", "dataman", "-p", "dataman-mcp", "--features", "dataman/checks"]).current_dir(&root).status()?;
         if !st.success() {
             bail!("the build failed");
         }

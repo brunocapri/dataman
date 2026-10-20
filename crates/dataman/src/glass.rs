@@ -39,10 +39,12 @@ pub fn apply(level: Translucency, window: &mut Window) {
     imp::set_own_view(window, level.is_on() && blur() == Blur::Own);
 }
 
+#[cfg(feature = "checks")]
 pub fn own_view_installed() -> bool {
     imp::installed()
 }
 
+#[cfg(feature = "checks")]
 pub fn own_view_layout() -> Option<(bool, (f64, f64), (f64, f64))> {
     imp::layout()
 }
@@ -143,6 +145,7 @@ mod imp {
         VIEW.with(|v| !v.get().is_null())
     }
 
+    #[cfg(feature = "checks")]
     pub fn layout() -> Option<(bool, (f64, f64), (f64, f64))> {
         let view = VIEW.with(|v| v.get());
         if view.is_null() {

@@ -160,6 +160,7 @@ impl FilterPopover {
         self.set_op(all[((i + dir).rem_euclid(n)) as usize], window, cx);
     }
 
+    #[cfg(feature = "checks")]
     pub fn set_value(&mut self, v: &str, cx: &mut Context<Self>) {
         self.input.update(cx, |i, cx| i.set_text(v, cx));
     }

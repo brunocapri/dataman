@@ -16,6 +16,7 @@ pub fn follow(light: bool) {
     }
 }
 
+#[cfg(feature = "checks")]
 pub fn shown_light() -> Option<bool> {
     SHOWN.lock().ok().and_then(|s| *s)
 }

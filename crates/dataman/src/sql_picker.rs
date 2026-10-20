@@ -10,10 +10,12 @@ use tokio::sync::oneshot;
 static TEST_PATHS: Mutex<Option<Vec<PathBuf>>> = Mutex::new(None);
 static TEST_SAVE: Mutex<Option<PathBuf>> = Mutex::new(None);
 
+#[cfg(feature = "checks")]
 pub fn set_test_paths(paths: Vec<PathBuf>) {
     *TEST_PATHS.lock().unwrap() = Some(paths);
 }
 
+#[cfg(feature = "checks")]
 pub fn set_test_save_path(path: PathBuf) {
     *TEST_SAVE.lock().unwrap() = Some(path);
 }
@@ -83,6 +85,7 @@ pub fn pick_sql_files(multiple: bool, cx: &App) -> oneshot::Receiver<Vec<PathBuf
     rx
 }
 
+#[cfg(feature = "checks")]
 pub async fn demo_panel(cx: &mut gpui::AsyncWindowContext) -> bool {
     let Ok(rx) = cx.update(|_, cx| pick_sql_files(true, cx)) else { return false };
     cx.background_executor().timer(std::time::Duration::from_millis(1200)).await;
@@ -117,6 +120,7 @@ mod imp {
         unsafe { msg_send![class!(NSString), stringWithUTF8String: c.as_ptr()] }
     }
 
+    #[cfg(feature = "checks")]
     pub fn cancel_panels() -> usize {
         let mut n = 0;
         // SAFETY: AppKit on the main thread; `windows` and `cancel:` as documented.

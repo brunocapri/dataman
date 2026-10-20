@@ -353,6 +353,7 @@ impl Palette {
         p
     }
 
+    #[cfg(feature = "checks")]
     pub fn set_query(&mut self, q: &str, cx: &mut Context<Self>) {
         self.input.update(cx, |i, cx| i.set_text(q, cx));
         self.refilter(cx);
@@ -411,6 +412,7 @@ impl Palette {
         row
     }
 
+    #[cfg(feature = "checks")]
     pub(crate) fn demo_state(&self) -> (String, usize, usize, f32, bool, gpui::Bounds<gpui::Pixels>) {
         let label = self.selected().map(|h| self.items[h.item].label.clone()).unwrap_or_default();
         let view = self.scroll.bounds();

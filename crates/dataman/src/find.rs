@@ -124,10 +124,12 @@ impl FindBar {
         self.query.update(cx, |i, cx| i.set_text(q, cx));
     }
 
+    #[cfg(feature = "checks")]
     pub fn set_replacement(&mut self, r: &str, cx: &mut Context<Self>) {
         self.replace.update(cx, |i, cx| i.set_text(r, cx));
     }
 
+    #[cfg(feature = "checks")]
     pub fn set_options(&mut self, opts: FindOptions, cx: &mut Context<Self>) {
         self.opts = opts;
         cx.notify();
@@ -145,6 +147,7 @@ impl FindBar {
         }
     }
 
+    #[cfg(feature = "checks")]
     pub fn count(&self) -> Count {
         self.count
     }

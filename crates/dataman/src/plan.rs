@@ -196,10 +196,12 @@ impl PlanView {
         cx.notify();
     }
 
+    #[cfg(feature = "checks")]
     pub fn selected(&self) -> Option<usize> {
         self.selected
     }
 
+    #[cfg(feature = "checks")]
     pub fn visible_rows(&self) -> usize {
         self.rows.len()
     }

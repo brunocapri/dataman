@@ -1,3 +1,4 @@
+#[cfg(feature = "checks")]
 pub mod demo;
 pub mod grid;
 pub mod live;

@@ -1374,6 +1374,7 @@ impl QueryTab {
         cx.notify();
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_pretend_cancel(&mut self, cx: &mut Context<Self>) {
         self.cancel_at = Some(Instant::now() - Duration::from_millis(1200));
         cx.notify();

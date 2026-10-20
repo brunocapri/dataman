@@ -205,6 +205,7 @@ pub mod metrics {
     pub const GRID_MIN: f32 = 120.;
     pub const DIVIDER: f32 = 7.;
     pub const DIVIDER_HIT: f32 = 11.;
+    #[cfg(feature = "checks")]
     pub const GRID_ROW: f32 = 22.;
     pub const EDITOR_LINE: f32 = 20.;
     pub const MIN_WINDOW: (f32, f32) = (960., 600.);

@@ -335,6 +335,7 @@ impl ConnDialog {
         }
     }
 
+    #[cfg(feature = "checks")]
     pub fn step(&self) -> Step {
         self.step
     }
@@ -361,6 +362,7 @@ impl ConnDialog {
         }
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_search(&mut self, q: &str, cx: &mut Context<Self>) {
         self.search.update(cx, |i, cx| i.set_text(q, cx));
         self.pick_hi = 0;
@@ -381,6 +383,7 @@ impl ConnDialog {
         self.password.update(cx, |p, cx| p.set_text(pw, cx));
     }
 
+    #[cfg(feature = "checks")]
     pub fn run_test(&mut self, cx: &mut Context<Self>) {
         self.test(cx);
     }
@@ -459,23 +462,28 @@ impl ConnDialog {
         cx.notify();
     }
 
+    #[cfg(feature = "checks")]
     pub fn set_conn_str(&mut self, s: &str, cx: &mut Context<Self>) {
         self.conn_str.update(cx, |i, cx| i.set_text(s, cx));
         self.apply_conn_str(cx);
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_conn_str(&self, cx: &App) -> String {
         self.conn_str.read(cx).text().to_string()
     }
 
+    #[cfg(feature = "checks")]
     pub fn conn_str_invalid(&self, cx: &App) -> bool {
         self.conn_str.read(cx).error
     }
 
+    #[cfg(feature = "checks")]
     pub fn focus_name(&self, window: &mut Window, cx: &mut App) {
         window.focus(&self.name.focus_handle(cx), cx);
     }
 
+    #[cfg(feature = "checks")]
     pub fn current(&self, cx: &App) -> (ConnectionProfile, String) {
         (self.fields(cx), self.password.read(cx).text().to_string())
     }
@@ -856,6 +864,7 @@ impl ConnDialog {
         cx.notify();
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_advanced(&mut self, stmt: Option<&str>, yolo: bool, cx: &mut Context<Self>) {
         self.advanced.open = true;
         if let Some(s) = stmt {
@@ -868,22 +877,27 @@ impl ConnDialog {
         cx.notify();
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_advanced_state(&self) -> (Vec<String>, bool, bool) {
         (self.advanced.allowed.clone(), self.advanced.yolo, self.advanced.confirm)
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_engine(&mut self, e: Engine, cx: &mut Context<Self>) {
         self.pick_engine(e, cx);
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_test(&mut self, cx: &mut Context<Self>) {
         self.test(cx);
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_save(&mut self, cx: &mut Context<Self>) {
         self.save(cx);
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_status(&self, cx: &App) -> (String, bool) {
         let s = match &self.test {
             Test::NotTested => "untested".into(),
@@ -896,18 +910,22 @@ impl ConnDialog {
         (s, self.password.read(cx).error)
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_focused(&self, window: &Window, cx: &App) -> Option<usize> {
         [&self.name, &self.host, &self.port, &self.user, &self.password, &self.database].iter().position(|f| f.focus_handle(cx).is_focused(window))
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_field(&self, ix: usize, cx: &App) -> String {
         [&self.name, &self.host, &self.port, &self.user, &self.password, &self.database][ix].read(cx).text().to_string()
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_input(&self, ix: usize) -> Entity<TextInput> {
         [&self.name, &self.host, &self.port, &self.user, &self.password, &self.database][ix].clone()
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_set_field(&self, ix: usize, s: &str, cx: &mut Context<Self>) {
         [&self.name, &self.host, &self.port, &self.user, &self.password, &self.database][ix].clone().update(cx, |t, cx| t.set_text(s, cx));
     }

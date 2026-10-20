@@ -73,6 +73,7 @@ impl ImportView {
         self.items = Some(items);
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_items(&self) -> Option<Vec<(String, dataman_core::ImportSource, bool, bool)>> {
         Some(self.items.as_ref()?.iter().zip(&self.picked).map(|(i, p)| (i.profile.name.clone(), i.source, i.exists, *p)).collect())
     }

@@ -26,6 +26,12 @@ objc2 = "0.6"
 block2 = "0.6"
 raw-window-handle = "0.6"
 
+[[example]]
+name = "editor_demo"
+required-features = ["checks"]
+
 [features]
 # Test builds only.
-screenshots = ["gpui/test-support", "gpui_platform/test-support", "dep:image"]
+# The check stages and benchmarks (`--demo`, `--bench-*`): `xtask e2e` builds with it.
+checks = []
+screenshots = ["checks", "gpui/test-support", "gpui_platform/test-support", "dep:image"]

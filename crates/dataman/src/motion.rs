@@ -222,6 +222,7 @@ impl PopStyle {
         }
     }
 
+    #[cfg(any(test, feature = "checks"))]
     pub fn duration(self) -> Duration {
         Duration::from_millis(self.fade_ms().1 as u64)
     }

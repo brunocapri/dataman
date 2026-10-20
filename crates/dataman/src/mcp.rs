@@ -585,6 +585,7 @@ impl Workspace {
         cx.notify();
     }
 
+    #[cfg(feature = "checks")]
     pub(crate) fn mcp_log(&self) -> Option<gpui::Entity<McpLog>> {
         match &self.side {
             Some(Side::Feature("mcp-log", v, _)) => v.clone().downcast::<McpLog>().ok(),
@@ -792,25 +793,30 @@ impl McpLog {
         Some(gpui::deferred(gpui::anchored().position(at).snap_to_window_with_margin(px(8.)).child(ui::menu_in("mcp-menu-in", menu))).priority(3))
     }
 
+    #[cfg(feature = "checks")]
     pub(crate) fn demo_row_point(&self, i: usize) -> Option<gpui::Point<gpui::Pixels>> {
         let b = self.list_bounds.get()?;
         Some(gpui::point(b.origin.x + px(40.), b.origin.y + px(ROW_H * i as f32 + ROW_H / 2.)))
     }
 
+    #[cfg(feature = "checks")]
     pub(crate) fn demo_menu_open(&self) -> bool {
         self.menu.is_some()
     }
 
+    #[cfg(feature = "checks")]
     pub(crate) fn demo_menu_items(&self) -> Vec<(&'static str, bool)> {
         let Some((i, _)) = self.menu else { return Vec::new() };
         let on = self.entries.get(i).and_then(|e| e.statement()).is_some();
         MENU.iter().map(|l| (*l, on)).collect()
     }
 
+    #[cfg(feature = "checks")]
     pub(crate) fn demo_entries(&self) -> &[Entry] {
         &self.entries
     }
 
+    #[cfg(feature = "checks")]
     pub(crate) fn demo_open_menu(&mut self, i: usize, cx: &mut Context<Self>) {
         self.menu = self.demo_row_point(i).map(|p| (i, p));
         cx.notify();
@@ -910,6 +916,7 @@ impl gpui::Render for McpLog {
     }
 }
 
+#[cfg(feature = "checks")]
 pub fn demo_seed(core: &Arc<Core>, approval: bool, cx: &mut App) {
     for (name, env, mcp) in [
         ("shop", dataman_core::Environment::Staging, Some(dataman_core::McpAccess::Full)),

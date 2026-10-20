@@ -112,6 +112,7 @@ impl TabMotion {
             || self.lifted.as_ref().is_some_and(|l| !l.2.done(now))
     }
 
+    #[cfg(feature = "checks")]
     pub fn gap_target(&self) -> Option<(Pane, usize)> {
         self.gaps.iter().find(|g| g.2.target() == 1.).map(|g| (g.0, g.1))
     }

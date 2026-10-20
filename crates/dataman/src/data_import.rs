@@ -449,6 +449,7 @@ impl DataImportView {
         Some(format!("importing{pct} · {} rows", ui_count(j.progress.rows() as usize)))
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_progress(&mut self, cx: &mut Context<Self>) {
         let total = self.preview.as_ref().map(|p| p.file_bytes).unwrap_or(0).max(86 << 20);
         let progress = ImportProgress::fixed(412_300, total * 41 / 100, total);
@@ -463,6 +464,7 @@ impl DataImportView {
         cx.notify();
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_failed(&mut self, cx: &mut Context<Self>) {
         let mut report = failed_report(String::new());
         report.outcome = Outcome::Failed(dataman_core::import::ImportFailure {
@@ -488,12 +490,14 @@ impl DataImportView {
         cx.notify();
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_menu(&mut self, col: usize, cx: &mut Context<Self>) {
         self.menu = Some(Menu::Column(col));
         cx.notify();
     }
 
     /// The finished import: rows written, rows skipped, rolled back.
+    #[cfg(feature = "checks")]
     pub fn demo_report(&self) -> Option<(u64, u64, bool)> {
         match &self.job.as_ref()?.state {
             JobState::Done(r) => Some((r.rows, r.skipped, r.rolled_back)),
@@ -501,14 +505,17 @@ impl DataImportView {
         }
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_set_skip(&mut self, on: bool) {
         self.skip = on;
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_set_truncate(&mut self, on: bool) {
         self.truncate = on;
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_ready(&self) -> bool {
         self.preview.is_some() && !self.loading && (self.new_table() || self.target_cols.is_some())
     }

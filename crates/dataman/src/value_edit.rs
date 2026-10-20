@@ -496,6 +496,7 @@ impl ValueEditor {
         }
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_edit_first_leaf(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let path = match &self.state {
             State::Json(j) => j.doc.rows().into_iter().find(|r| !r.container && !r.path.is_empty()).map(|r| r.path),

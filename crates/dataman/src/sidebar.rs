@@ -56,6 +56,7 @@ impl Workspace {
         self.focus_region(Region::Explorer, window, cx);
     }
 
+    #[cfg(feature = "checks")]
     pub(crate) fn demo_favorites_view(&mut self, cx: &mut Context<Self>) {
         self.set_explorer_open(true, cx);
         self.set_nav(NavView::Favorites, cx);

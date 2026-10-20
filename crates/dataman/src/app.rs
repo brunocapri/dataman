@@ -11,7 +11,9 @@ use dataman_core::layout::NavView;
 use dataman_core::{Connection, ConnectionProfile, Core, Favorite, Translucency};
 
 use crate::conn_dialog::{ConnDialog, DialogEvent};
-use crate::conns::{ConnEvent, ConnState, ConnStore};
+#[cfg(feature = "checks")]
+use crate::conns::ConnState;
+use crate::conns::{ConnEvent, ConnStore};
 use crate::grid::GridEvent;
 use crate::history::{HistoryEvent, HistoryPanel};
 use crate::panels::PanelRegistry;
@@ -834,6 +836,7 @@ impl Workspace {
     }
 
     /// Which of `modal_open`'s conditions hold (for the checks' failure details).
+    #[cfg(feature = "checks")]
     pub(crate) fn demo_modal(&self, cx: &App) -> Vec<&'static str> {
         let tab = self.active_tab().map(|t| t.read(cx));
         [
@@ -1301,6 +1304,7 @@ impl Workspace {
         Some(tab)
     }
 
+    #[cfg(feature = "checks")]
     pub fn close_dialog(&mut self, cx: &mut Context<Self>) {
         self.dialog = None;
         cx.notify();
@@ -1869,10 +1873,12 @@ impl Workspace {
         }
     }
 
+    #[cfg(feature = "checks")]
     pub(crate) fn demo_explorer_sliding(&self) -> bool {
         self.explorer_tween.is_some_and(|t| t.at(self.explorer_target(), Instant::now()).is_some())
     }
 
+    #[cfg(feature = "checks")]
     pub(crate) fn demo_side_sliding(&self) -> bool {
         self.side_tween.is_some_and(|t| t.at(0., Instant::now()).is_some())
     }
@@ -2430,6 +2436,7 @@ impl Workspace {
         h.clamp(metrics::EDITOR_MIN, max)
     }
 
+    #[cfg(feature = "checks")]
     pub fn connection_state(&self, id: &str, cx: &App) -> Option<ConnState> {
         self.store.read(cx).states.get(id).cloned()
     }

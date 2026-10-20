@@ -261,19 +261,23 @@ impl TextInput {
         &self.content
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_selected(&self) -> Range<usize> {
         self.clamp(self.selected.clone())
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_scroll(&self) -> f32 {
         self.scroll.pt()
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_caret_x(&self) -> Option<f32> {
         let l = self.last_layout.as_ref()?;
         Some((l.x_for_index(self.to_display(self.cursor())) - self.scroll).pt())
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_bounds(&self) -> Option<(f32, f32, f32, f32)> {
         let b = self.last_bounds?;
         Some((b.origin.x.pt(), b.origin.y.pt(), b.size.width.pt(), b.size.height.pt()))

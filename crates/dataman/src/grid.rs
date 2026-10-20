@@ -534,10 +534,12 @@ impl ResultGrid {
         }
     }
 
+    #[cfg(feature = "checks")]
     pub fn table_mode(&self) -> Option<&TableMode> {
         self.table.as_ref()
     }
 
+    #[cfg(feature = "checks")]
     pub fn display_order(&self) -> Vec<usize> {
         (0..self.dcols()).map(|d| self.rc(d)).collect()
     }
@@ -617,6 +619,7 @@ impl ResultGrid {
         self.land = key;
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_pop(&self) -> Option<((usize, usize), PopStyle)> {
         self.live_pop().map(|(c, style, _)| ((c.row, c.col), style))
     }
@@ -630,15 +633,18 @@ impl ResultGrid {
         cx.notify();
     }
 
+    #[cfg(feature = "checks")]
     pub fn is_fk_column(&self, col: usize) -> bool {
         self.fk_cols.get(col).copied().unwrap_or(false)
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_cell_point(&self, row: usize, col: usize) -> Point<Pixels> {
         let r = self.cell_rect(CellPos { row, col: self.dc(col).unwrap_or(col) });
         point(px(r.0 + r.2.min(120.) / 2.), px(r.1 + r.3 / 2.))
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_header_point(&self, col: usize) -> Point<Pixels> {
         let d = self.dc(col).unwrap_or(col);
         let g = &self.geo;
@@ -646,6 +652,7 @@ impl ResultGrid {
         point(px(x), px(g.bounds.origin.y.pt() + HEADER_H / 2.))
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_menu(&self) -> Option<((usize, usize), Vec<String>, Option<usize>, (f32, f32))> {
         let m = self.menu.as_ref()?;
         let labels = m
@@ -659,10 +666,12 @@ impl ResultGrid {
         Some(((m.cell.row, self.rc(m.cell.col)), labels, m.hi, m.origin))
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_selection(&self) -> Option<((usize, usize), (usize, usize))> {
         self.sel.map(|s| ((s.anchor.row, self.rc(s.anchor.col)), (s.head.row, self.rc(s.head.col))))
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_header_menu(&mut self, col: usize, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(d) = self.dc(col) {
             let p = self.demo_header_point(col);
@@ -670,10 +679,12 @@ impl ResultGrid {
         }
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_editing(&self) -> bool {
         self.overlay.is_some()
     }
 
+    #[cfg(feature = "checks")]
     pub fn menu_focus_handle(&self) -> &FocusHandle {
         &self.menu_focus
     }
@@ -875,18 +886,21 @@ impl ResultGrid {
         self.sel.map(|s| s.rows().collect()).unwrap_or_default()
     }
 
+    #[cfg(feature = "checks")]
     pub fn set_scroll_x(&mut self, x: f32, cx: &mut Context<Self>) {
         self.scroll.0 = x;
         self.clamp_scroll();
         cx.notify();
     }
 
+    #[cfg(feature = "checks")]
     pub fn set_scroll_y(&mut self, y: f32, cx: &mut Context<Self>) {
         self.scroll.1 = y as f64;
         self.clamp_scroll();
         cx.notify();
     }
 
+    #[cfg(feature = "checks")]
     pub fn max_scroll_y(&self) -> f32 {
         self.max_y() as f32
     }
@@ -966,6 +980,7 @@ impl ResultGrid {
         self.widths_at = now;
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_widths(&self) -> (Vec<f32>, f32) {
         (self.widths.clone(), self.char_w)
     }
@@ -1255,23 +1270,28 @@ impl ResultGrid {
         }
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_cells_rect(&self) -> (f32, f32, f32, f32) {
         let g = self.geo;
         (g.bounds.origin.x.pt() + g.gutter, g.bounds.origin.y.pt() + HEADER_H, g.body_w, g.body_h)
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_gutter_divider(&self) -> f32 {
         (self.geo.bounds.origin.x + px(self.geo.gutter - 1.)).as_f32()
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_row_metrics(&self) -> (f32, f32) {
         (px(ROW_H).as_f32(), self.char_w)
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_scroll(&self) -> (f32, f64) {
         self.scroll
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_autoscrolling(&self) -> bool {
         self.auto.as_ref().is_some_and(|a| a._tick.is_some())
     }
@@ -1514,6 +1534,7 @@ impl ResultGrid {
         cx.notify();
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_menu_run(&mut self, label: &str, window: &mut Window, cx: &mut Context<Self>) {
         let ix = self.menu.as_ref().and_then(|m| {
             m.entries.iter().position(|e| matches!(e, MenuEntry::Item(it) if it.look().1.as_ref() == label))
@@ -1740,6 +1761,7 @@ impl ResultGrid {
         cx.notify();
     }
 
+    #[cfg(feature = "checks")]
     pub fn select_cells(&mut self, rows: std::ops::RangeInclusive<usize>, col: usize, cx: &mut Context<Self>) {
         let col = self.dc(col).unwrap_or(col);
         self.sel = Some(Selection {
@@ -1813,6 +1835,7 @@ impl ResultGrid {
         self.eyes.iter().find(|(_, b)| b.contains(&p)).map(|(c, _)| *c)
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_eyes(&self) -> Vec<((usize, usize), Point<Pixels>)> {
         self.eyes.iter().map(|(c, b)| ((c.row, self.rc(c.col)), b.center())).collect()
     }
@@ -2120,6 +2143,7 @@ impl ResultGrid {
         }
     }
 
+    #[cfg(feature = "checks")]
     pub fn demo_find(&self, cx: &App) -> Option<(bool, String, Vec<(u32, u32)>, usize, bool)> {
         let f = self.find.as_ref()?;
         Some((f.open, f.bar.read(cx).count().label(), f.hits.clone(), f.covers.as_ref().map_or(0, |c| c.1), f.task.is_some()))
