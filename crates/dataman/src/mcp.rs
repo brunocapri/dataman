@@ -430,9 +430,18 @@ impl Workspace {
         let t = cx.theme();
         let req = p.req.clone();
         let prod = req.env.is_production();
+        // About this Mac (files to read), not a connection.
+        let local = req.connection_id.is_empty();
         let color = self.store.read(cx).profile(&req.connection_id).map(|p| t.profile_color(p)).unwrap_or(t.tx4);
         let btn = |id: &'static str, kind: Btn, label: &'static str, key: &'static str| ui::button(&t, id, kind).h(px(28.)).child(label).child(ui::key_hint(key));
-        let lines = crate::editor::highlighted_lines(&t, &dataman_mcp::shown_text(&req.sql));
+        let shown = dataman_mcp::shown_text(&req.sql);
+        // A statement is highlighted; a list of files or changes is plain text.
+        let lines = if req.connection_id.is_empty() {
+            let run = |len| gpui::TextRun { len, font: crate::editor::mono(), color: t.tx, background_color: None, underline: None, strikethrough: None };
+            shown.lines().map(|l| (SharedString::from(l.to_string()), vec![run(l.len())])).collect()
+        } else {
+            crate::editor::highlighted_lines(&t, &shown)
+        };
         let tall = (lines.len() > 12).then(|| format!("{} lines", lines.len()));
         let sql = div()
             .id("mcp-sql")
@@ -495,7 +504,7 @@ impl Workspace {
                         .w(px(600.))
                         .child(ui::modal_header_with(
                             &t,
-                            Some(ui::chip(color, 8.).into_any_element()),
+                            (!local).then(|| ui::chip(color, 8.).into_any_element()),
                             req.connection.clone(),
                             Some(
                                 div()
@@ -504,9 +513,9 @@ impl Workspace {
                                     .flex_row()
                                     .gap(px(10.))
                                     .text_size(px(11.5))
-                                    .child(div().text_color(t.tx2).child(req.database.clone()))
+                                    .when(!local, |d| d.child(div().text_color(t.tx2).child(req.database.clone())))
                                     .when(!req.env.is_none(), |d| d.child(div().text_color(if prod { t.err } else { t.tx3 }).child(req.env.label())))
-                                    .child(div().w(px(1.)).h(px(12.)).bg(t.line))
+                                    .when(!local, |d| d.child(div().w(px(1.)).h(px(12.)).bg(t.line)))
                                     .child(div().text_color(t.tx3).child(dataman_mcp::shown_client(&req.client)))
                                     .into_any_element(),
                             ),
@@ -521,7 +530,15 @@ impl Workspace {
                                 .gap(px(12.))
                                 .child(sql)
                                 .child(div().flex().flex_row().items_center().gap(px(10.)).child(div().flex_1().child(tags)).children(rows.map(|r| div().flex_none().text_size(px(11.5)).text_color(t.tx2).child(r))))
-                                .children(preview),
+                                .children(preview)
+                                .when(req.counted, |d| {
+                                    d.child(
+                                        div()
+                                            .text_size(px(11.))
+                                            .text_color(t.tx3)
+                                            .child("Counted a moment ago and rolled back, so nothing is locked while you decide. Allow runs it again, and never with more rows than these."),
+                                    )
+                                }),
                         )
                         .child(
                             ui::modal_footer(&t)
@@ -1006,6 +1023,7 @@ pub fn demo_seed(core: &Arc<Core>, approval: bool, cx: &mut App) {
                 )),
                 tab: None,
                 allowable: vec!["DELETE FROM orders\n RETURNING id, status, total".into()],
+                counted: true,
             },
             None,
         ));

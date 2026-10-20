@@ -320,15 +320,13 @@ fn stdio_favorites_and_create_connection() {
     std::fs::write(&txt_path, "select * from customers").unwrap();
     let (err, text) = m.tool("import_favorites", json!({"paths": [sql_path.display().to_string(), txt_path.display().to_string()]}));
     assert!(err && text.contains("not a .sql file"), "{text}");
+    // Reading files of this Mac waits for the user's Allow: without the app, nothing is read.
     let (err, text) = m.tool("import_favorites", json!({"paths": [sql_path.display().to_string()]}));
-    assert!(!err, "{text}");
-    let (err, _) = m.tool("import_favorites", json!({"paths": [sql_path.display().to_string()]}));
-    assert!(!err);
+    assert!(err && text.contains("reads a file on this Mac") && text.contains("open the app"), "{text}");
     let (err, text) = m.tool("list_favorites", json!({}));
-    assert!(!err);
-    let rows = serde_json::from_str::<Value>(&text).unwrap()["rows"].as_array().unwrap().clone();
-    assert_eq!(rows.len(), 1, "imported twice, same content: no duplicate");
-    assert_eq!(rows[0][1], json!("top customers"));
+    assert!(!err && !text.contains("customers"), "{text}");
+    let (err, text) = m.tool("import_favorites", json!({"paths": [files.path().join("folder.sql").display().to_string()]}));
+    assert!(err && text.contains("No such file"), "{text}");
 
     let (err, text) = m.tool("create_connection", json!({"name": "new1", "host": "db.internal", "user": "bob", "password": "s3cret"}));
     assert!(!err, "{text}");

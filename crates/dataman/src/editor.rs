@@ -825,7 +825,7 @@ fn line_height() -> Pixels {
     px(crate::theme::metrics::EDITOR_LINE + 1.5 * (code_size().pt() - crate::theme::text::CODE)).round()
 }
 
-fn mono() -> Font {
+pub(crate) fn mono() -> Font {
     font(crate::theme::mono())
 }
 

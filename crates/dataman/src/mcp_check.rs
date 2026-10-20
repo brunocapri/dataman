@@ -489,6 +489,9 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     check("Deny rolls back", err && out.contains("denied") && out.contains("rolled back"), out);
     let (_, out) = call(&agent_ipc,"run_query", json!({"connection": conn, "database": db, "sql": format!("SELECT count(*) AS n FROM {s}.t")})).await;
     check("the rows are still there", out.contains("[[3]]"), out);
+    let (err, out) = call(&agent_ipc, "execute", json!({"connection": conn, "database": db, "sql": format!("UPDATE {s}.t SET note = 'x'")})).await;
+    check("right after a Deny the same client's next question waits", err && out.contains("just denied") && !sheet_open(cx), out);
+    pause(cx, dataman_mcp::hub::AFTER_DENY.as_millis() as u64 + 100).await;
     let rx = start(&agent_ipc,"execute", json!({"connection": conn, "database": db, "sql": format!("UPDATE {s}.t SET note = 'x'")}));
     let q = sheet(cx).await;
     check("an UPDATE without WHERE is asked about", q.is_some_and(|q| q.affected == Some(3)), String::new());
@@ -750,6 +753,36 @@ async fn connection_edits(ws: &Entity<Workspace>, ipc: &Arc<Ipc>, id: &str, conn
     }
     let (err, out) = call(ipc, "update_connection", json!({"connection": conn, "color": "teal"})).await;
     check("rolled back: the edit goes through", !err && out.contains("color"), out);
+
+    // Moving a connection to another server, and reading files of this Mac, wait for the user.
+    let rx = start(ipc, "update_connection", json!({"connection": "agent renamed", "host": "10.9.9.9"}));
+    let q = sheet(cx).await;
+    check("a move to another server asks, showing the change", q.as_ref().is_some_and(|q| q.sql.contains("host: 127.0.0.1 → 10.9.9.9") && q.reasons.iter().any(|r| r.contains("another server"))), format!("{q:?}"));
+    answer(ws, false, cx);
+    let (err, out) = rx.await.unwrap_or((false, String::new()));
+    let host = cx.update(|_, cx| ws.read(cx).store.read(cx).profile(&made).map(|p| p.host.clone())).ok().flatten();
+    check("… denied, it stays where it was", err && host.as_deref() == Some("127.0.0.1"), format!("{out} {host:?}"));
+    pause(cx, dataman_mcp::hub::AFTER_DENY.as_millis() as u64 + 100).await;
+
+    let dir = std::env::temp_dir().join(format!("dataman-mcp-check-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let file = dir.join("imported by agent.sql");
+    let _ = std::fs::write(&file, "SELECT 'from a file'");
+    let rx = start(ipc, "import_favorites", json!({"paths": [file.display().to_string()]}));
+    let q = sheet(cx).await;
+    check("import_favorites asks before reading, naming the file", q.as_ref().is_some_and(|q| q.connection == "Import favorites" && q.connection_id.is_empty() && q.sql.contains("imported by agent.sql")), format!("{q:?}"));
+    answer(ws, false, cx);
+    let (err, out) = rx.await.unwrap_or((false, String::new()));
+    let (_, list) = call(ipc, "list_favorites", json!({})).await;
+    check("… denied, nothing is read", err && out.contains("denied") && !list.contains("from a file"), out);
+    pause(cx, dataman_mcp::hub::AFTER_DENY.as_millis() as u64 + 100).await;
+    let rx = start(ipc, "import_favorites", json!({"paths": [file.display().to_string()]}));
+    let _ = sheet(cx).await;
+    answer(ws, true, cx);
+    let (err, out) = rx.await.unwrap_or((true, String::new()));
+    let (_, list) = call(ipc, "list_favorites", json!({})).await;
+    check("… allowed, it is a favorite", !err && list.contains("from a file"), out);
+    let _ = std::fs::remove_dir_all(&dir);
     ok
 }
 

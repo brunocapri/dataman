@@ -263,10 +263,10 @@ pub struct Written {
 }
 
 #[derive(Clone, Debug)]
-struct Held {
-    decision: Decision,
-    reasons: Vec<String>,
+struct Counted {
+    why: Vec<String>,
     affected: u64,
+    preview: Option<(Vec<String>, Vec<Vec<String>>)>,
 }
 
 pub struct Call {
@@ -407,20 +407,26 @@ impl Call {
             preview,
             tab,
             allowable: Vec::new(),
+            counted: false,
         }
     }
 
     async fn ask(&self, a: Approval) -> Result<Decision, ToolError> {
         let Some(f) = self.hub.front() else { return Ok(Decision::Unavailable) };
+        let _slot = self.hub.ask_slot(&self.client).map_err(ToolError::Refused)?;
         let wait = tokio::time::timeout(self.hub.approval_timeout(), f.approve(a));
-        tokio::select! {
-            r = wait => Ok(match r {
+        let d = tokio::select! {
+            r = wait => match r {
                 Ok(true) => Decision::Approved,
                 Ok(false) => Decision::Denied,
                 Err(_) => Decision::Timeout,
-            }),
-            _ = self.cancel.cancelled() => Err(ToolError::Cancelled),
+            },
+            _ = self.cancel.cancelled() => return Err(ToolError::Cancelled),
+        };
+        if d == Decision::Denied {
+            self.hub.denied(&self.client);
         }
+        Ok(d)
     }
 
     pub async fn ask_human(&self, o: &Opened, sql: &str, reasons: Vec<String>, affected: Option<u64>, destructive: bool) -> Result<(), ToolError> {
@@ -432,18 +438,21 @@ impl Call {
 
     /// The user's Allow for a change that is not a statement (`what` is shown as the text).
     pub async fn ask_about(&self, p: &ConnectionProfile, what: &str, reasons: Vec<String>) -> Result<(), ToolError> {
-        let a = Approval {
-            client: self.client.clone(),
-            tool: self.tool.clone(),
-            connection: p.name.clone(),
-            connection_id: p.id.clone(),
-            database: p.database.clone(),
-            env: p.env,
-            sql: what.to_string(),
-            reasons: reasons.clone(),
-            destructive: true,
-            ..Approval::default()
-        };
+        let a = Approval { connection: p.name.clone(), connection_id: p.id.clone(), database: p.database.clone(), env: p.env, ..self.plain_approval(what, &reasons) };
+        self.decide(a, reasons).await
+    }
+
+    /// The same for something on this Mac, not a connection: `title` heads the sheet.
+    pub async fn ask_local(&self, title: &str, what: &str, reasons: Vec<String>) -> Result<(), ToolError> {
+        let a = Approval { connection: title.to_string(), ..self.plain_approval(what, &reasons) };
+        self.decide(a, reasons).await
+    }
+
+    fn plain_approval(&self, what: &str, reasons: &[String]) -> Approval {
+        Approval { client: self.client.clone(), tool: self.tool.clone(), sql: what.to_string(), reasons: reasons.to_vec(), destructive: true, ..Approval::default() }
+    }
+
+    async fn decide(&self, a: Approval, reasons: Vec<String>) -> Result<(), ToolError> {
         let d = self.ask(a).await?;
         self.note_decision(d, reasons.clone(), None);
         if d == Decision::Approved { Ok(()) } else { Err(refusal_of(d, &reasons, false)) }
@@ -547,49 +556,86 @@ impl Call {
             };
         }
         let limit = if mode == Mode::Rollback || !judged.row_limit { u64::MAX } else { self.hub.row_limit(&p) };
-        let held: Arc<Mutex<Option<Held>>> = Arc::new(Mutex::new(None));
+        // First run: nothing to ask, it commits. Something to ask: counted, then rolled back at
+        // once, so no row stays locked while the user decides.
+        let counted: Arc<Mutex<Option<Counted>>> = Arc::new(Mutex::new(None));
         let decide: bounded::Decide = {
-            let (held, front, ask) = (held.clone(), front.clone(), ask.clone());
-            let base = Approval { destructive: class.is_destructive(), allowable: allowable.clone(), ..self.approval(&o, w.sql, Vec::new(), None, None, tab) };
-            let timeout = self.hub.approval_timeout();
+            let (counted, ask) = (counted.clone(), ask.clone());
             Box::new(move |out: &bounded::Outcome| {
                 let affected = out.affected();
                 let mut why = ask.unwrap_or_default();
                 if let Some(x) = policy::over_limit(affected, limit) {
                     why.push(x);
                 }
-                if why.is_empty() {
-                    return Box::pin(async { true });
+                let commit = why.is_empty();
+                if !commit {
+                    *counted.lock() = Some(Counted { why, affected, preview: preview_rows(out) });
                 }
-                let Some(front) = front else {
-                    *held.lock() = Some(Held { decision: Decision::Unavailable, reasons: why, affected });
-                    return Box::pin(async { false });
-                };
-                let a = Approval { reasons: why.clone(), affected: Some(affected), preview: preview_rows(out), ..base };
-                Box::pin(async move {
-                    let decision = match tokio::time::timeout(timeout, front.approve(a)).await {
-                        Ok(true) => Decision::Approved,
-                        Ok(false) => Decision::Denied,
-                        Err(_) => Decision::Timeout,
-                    };
-                    *held.lock() = Some(Held { decision, reasons: why, affected });
-                    decision == Decision::Approved
-                })
+                Box::pin(async move { commit })
+            })
+        };
+        let r = self.run_held(&o, w.sql, w.params.clone(), mode, w.limits, Some(decide)).await;
+        let counted = counted.lock().take();
+        let out = match r {
+            Ok(out) if out.committed || mode == Mode::Rollback => {
+                show(WriteShown::Ran { outcome: out.clone(), note: None });
+                return Ok(Written { opened: o, outcome: out });
+            }
+            Ok(out) => out,
+            Err(e) => {
+                show(WriteShown::Failed(e.message()));
+                return Err(e);
+            }
+        };
+        let Some(c) = counted else {
+            let e = ToolError::Failed("the write was not committed".into());
+            show(WriteShown::Ran { outcome: out, note: Some(e.message()) });
+            return Err(e);
+        };
+        let a = Approval {
+            destructive: class.is_destructive(),
+            allowable: allowable.clone(),
+            affected: Some(c.affected),
+            preview: c.preview.clone(),
+            counted: true,
+            ..self.approval(&o, w.sql, c.why.clone(), None, None, tab)
+        };
+        let dec = match self.ask(a).await {
+            Ok(d) => d,
+            Err(e) => {
+                show(WriteShown::Failed(e.message()));
+                return Err(e);
+            }
+        };
+        self.note_decision(dec, c.why.clone(), Some(c.affected));
+        if dec != Decision::Approved {
+            let e = refusal_of(dec, &c.why, true);
+            show(WriteShown::Ran { outcome: out, note: Some(e.message()) });
+            return Err(e);
+        }
+        // Run again: committed only if it changes no more rows than the user saw.
+        let allowed = c.affected;
+        let grew: Arc<Mutex<Option<u64>>> = Arc::new(Mutex::new(None));
+        let decide: bounded::Decide = {
+            let grew = grew.clone();
+            Box::new(move |out: &bounded::Outcome| {
+                let n = out.affected();
+                let commit = n <= allowed;
+                if !commit {
+                    *grew.lock() = Some(n);
+                }
+                Box::pin(async move { commit })
             })
         };
         let r = self.run_held(&o, w.sql, w.params, mode, w.limits, Some(decide)).await;
-        let held = held.lock().take();
-        if let Some(h) = &held {
-            self.note_decision(h.decision, h.reasons.clone(), Some(h.affected));
-        }
         match r {
-            Ok(out) if out.committed || mode == Mode::Rollback => {
+            Ok(out) if out.committed => {
                 show(WriteShown::Ran { outcome: out.clone(), note: None });
                 Ok(Written { opened: o, outcome: out })
             }
             Ok(out) => {
-                let e = match &held {
-                    Some(h) => refusal_of(h.decision, &h.reasons, true),
+                let e = match grew.lock().take() {
+                    Some(n) => ToolError::Refused(format!("by the time it ran it changed {n} rows, {allowed} were allowed in Dataman; rolled back, call again to ask anew")),
                     None => ToolError::Failed("the write was not committed".into()),
                 };
                 show(WriteShown::Ran { outcome: out, note: Some(e.message()) });

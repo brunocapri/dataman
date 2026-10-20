@@ -26,17 +26,27 @@ enum Answer {
     Never,
 }
 
+type Probe = Arc<dyn Fn() -> BoxFuture<'static, String> + Send + Sync>;
+
 #[derive(Default)]
 struct Human {
     answers: Mutex<VecDeque<Answer>>,
     asked: Mutex<Vec<Approval>>,
+    /// Runs while the sheet is up, before the answer.
+    probe: Mutex<Option<Probe>>,
+    probed: Arc<Mutex<Vec<String>>>,
 }
 
 impl Front for Human {
     fn approve(&self, a: Approval) -> BoxFuture<'static, bool> {
         self.asked.lock().push(a);
         let ans = self.answers.lock().pop_front().unwrap_or(Answer::Deny);
+        let (probe, probed) = (self.probe.lock().clone(), self.probed.clone());
         Box::pin(async move {
+            if let Some(p) = probe {
+                let got = p().await;
+                probed.lock().push(got);
+            }
             match ans {
                 Answer::Allow => true,
                 Answer::Deny => false,
@@ -121,6 +131,8 @@ fn env() -> Env {
     let human = Arc::new(Human::default());
     hub.set_front(Some(human.clone()));
     hub.set_approval_timeout(Duration::from_millis(600));
+    // These tests deny and ask again at once (the pause after a Deny is the hub's unit test's).
+    hub.set_after_deny(Duration::ZERO);
     let reg = Arc::new(Registry::standard(Some(cfg.join("mcp-tools.toml"))));
     Env { server: Server::new(hub, reg, "stdio"), human, dir }
 }
@@ -418,6 +430,67 @@ fn postgres_tools() {
     assert_eq!((limit["approval"]["rows"].as_u64(), limit["outcome"].as_str()), (Some(500), Some("refused")));
     assert!(log.iter().any(|l| l["outcome"] == "timeout") && log.iter().any(|l| l["outcome"] == "cancelled"));
     assert!(log.iter().all(|l| !l["sql"].as_str().unwrap_or_default().contains("Alice")), "literals are redacted");
+    leak(e);
+}
+
+/// A write waiting for the user holds no transaction (no row stays locked): it was counted and
+/// rolled back; Allow runs it again, and never with more rows than the user saw.
+#[test]
+fn approvals_hold_no_locks() {
+    let (h, p) = addr("DATAMAN_PG", "127.0.0.1:55432");
+    if !up(&h, p) {
+        eprintln!("skipping: no PostgreSQL at {h}:{p}");
+        return;
+    }
+    use dataman_core::bounded::{Limits, Mode};
+    let e = env();
+    let hub = e.server.hub.clone();
+    let profile = hub.profile("pg").unwrap();
+    let c = hub.core.block_on(hub.core.connect(profile, None)).unwrap();
+    let run = |c: &Arc<dataman_core::Connection>, sql: &str, mode: Mode| hub.core.block_on(c.bounded(Some("dataman"), sql, vec![], mode, Limits::default(), std::future::pending())).unwrap();
+    run(&c, "DROP TABLE IF EXISTS mcp_nolock; CREATE TABLE mcp_nolock (id int); INSERT INTO mcp_nolock SELECT generate_series(1, 200)", Mode::Write);
+    let holders = {
+        let c = c.clone();
+        let p: Probe = Arc::new(move || {
+            let c = c.clone();
+            Box::pin(async move {
+                let sql = "SELECT count(*) FROM (SELECT id FROM mcp_nolock WHERE id <= 150 FOR UPDATE NOWAIT) x";
+                match c.bounded(Some("dataman"), sql, vec![], Mode::Write, Limits::default(), std::future::pending()).await {
+                    Ok(_) => "free".to_string(),
+                    Err(e) => e.to_string(),
+                }
+            })
+        });
+        p
+    };
+    *e.human.probe.lock() = Some(holders);
+    e.answer(&[Answer::Allow]);
+    let r = e.ok("execute", with("pgw", json!({"sql": "UPDATE mcp_nolock SET id = id + 1000 WHERE id <= 150"})));
+    let q = e.asked();
+    assert_eq!(std::mem::take(&mut *e.human.probed.lock()), vec!["free".to_string()], "nothing held while asking");
+    assert!(q[0].counted && q[0].affected == Some(150), "{q:?}");
+    assert!(r["committed"] == json!(true), "{r}");
+    assert_eq!(e.count("pg", "SELECT count(*) FROM mcp_nolock WHERE id > 1000"), json!(150));
+
+    // Rows that turn up while the user decides: the run after Allow is refused, nothing changes.
+    let grow = {
+        let c = c.clone();
+        let p: Probe = Arc::new(move || {
+            let c = c.clone();
+            Box::pin(async move {
+                let ins = "INSERT INTO mcp_nolock SELECT generate_series(301, 305)";
+                c.bounded(Some("dataman"), ins, vec![], Mode::Write, Limits::default(), std::future::pending()).await.map(|_| "grew".to_string()).unwrap_or_else(|e| e.to_string())
+            })
+        });
+        p
+    };
+    *e.human.probe.lock() = Some(grow);
+    e.answer(&[Answer::Allow]);
+    let err = e.err("execute", with("pgw", json!({"sql": "UPDATE mcp_nolock SET id = -id WHERE id > 0"})));
+    assert!(err.contains("205 rows") && err.contains("200 were allowed") && err.contains("rolled back"), "{err}");
+    assert_eq!(e.count("pg", "SELECT count(*) FROM mcp_nolock WHERE id < 0"), json!(0));
+    *e.human.probe.lock() = None;
+    run(&c, "DROP TABLE mcp_nolock", Mode::Write);
     leak(e);
 }
 

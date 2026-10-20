@@ -253,6 +253,8 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     let res = rx.await.unwrap_or((true, String::new()));
     let n = sql1(&core, &pg, &pgpw, "SELECT count(*) FROM e2e_mcp.t", cx).await;
     r.check("tier Full: a TRUNCATE waits on the sheet; Deny refuses it", asked.is_some() && res.0 && n.as_deref() == Some("1"), format!("{asked:?} {} {n:?}", short(&res)));
+    // Right after a Deny the same client waits before asking again.
+    pause(cx, dataman_mcp::hub::AFTER_DENY.as_millis() as u64 + 100).await;
     let rx = start(&client, "execute", json!({"connection": c, "sql": "TRUNCATE e2e_mcp.t"}));
     let asked = sheet_answer(ws, true, cx).await;
     let res = rx.await.unwrap_or((true, String::new()));
@@ -300,8 +302,10 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     r.check("remove_favorite", !res.0 && !core.favorites.list().iter().any(|f| f.name == "e2e seven"), short(&res));
     let file = std::env::temp_dir().join(format!("e2e-imported-{}.sql", std::process::id()));
     let _ = std::fs::write(&file, "SELECT 'imported' AS origin");
-    let res = call(&client, "import_favorites", json!({"paths": [file.display().to_string()]}), cx).await;
-    r.check("import_favorites adds a .sql file", !res.0 && core.favorites.list().iter().any(|f| f.sql.contains("'imported'")), short(&res));
+    let rx = start(&client, "import_favorites", json!({"paths": [file.display().to_string()]}));
+    let asked = sheet_answer(ws, true, cx).await;
+    let res = rx.await.unwrap_or((true, String::new()));
+    r.check("import_favorites asks, then adds the .sql file", asked.is_some() && !res.0 && core.favorites.list().iter().any(|f| f.sql.contains("'imported'")), short(&res));
     let _ = std::fs::remove_file(&file);
 
     let res = call(&client, "activity_sessions", json!({"connection": pg.name}), cx).await;

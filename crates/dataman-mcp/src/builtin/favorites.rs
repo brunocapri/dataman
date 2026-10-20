@@ -57,7 +57,7 @@ pub fn tools() -> Vec<Builtin> {
         },
         Builtin {
             name: "import_favorites",
-            description: "Adds each given .sql file as a favorite query: name is the file's name without extension, sql is the file's content verbatim. Deduplicates like add_favorite. Every path must exist and end in .sql.",
+            description: "Adds each given .sql file as a favorite query: name is the file's name without extension, sql is the file's content verbatim. The files are read only after the user's Allow in Dataman (the app must be open). Deduplicates like add_favorite. Every path must exist and end in .sql.",
             schema: crate::tool::Schema::new().prop(
                 "paths",
                 true,
@@ -219,14 +219,26 @@ fn import_favorites(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> 
     Box::pin(async move {
         cx.enabled()?;
         let paths = a.get("paths").and_then(Value::as_array).filter(|a| !a.is_empty()).ok_or_else(|| ToolError::Invalid("\"paths\" is required".into()))?;
-        let mut added = Vec::new();
+        let mut files = Vec::new();
         for p in paths {
             let s = p.as_str().ok_or_else(|| ToolError::Invalid("\"paths\" items must be strings".into()))?;
             let path = std::path::Path::new(s);
             if !path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("sql")) {
                 return Err(ToolError::Invalid(format!("{s:?} is not a .sql file")));
             }
-            let sql = std::fs::read_to_string(path).map_err(|e| ToolError::Invalid(format!("{s:?}: {e}")))?;
+            let meta = std::fs::metadata(path).map_err(|e| ToolError::Invalid(format!("{s:?}: {e}")))?;
+            if !meta.is_file() {
+                return Err(ToolError::Invalid(format!("{s:?} is not a file")));
+            }
+            files.push((path.to_path_buf(), meta.len()));
+        }
+        // What the agent reads back with list_favorites: the user says which files leave their Mac.
+        let what: Vec<String> = files.iter().map(|(p, n)| format!("{}  ({})", p.display(), dataman_core::schema::objects::human_size(*n as i64))).collect();
+        let why = if files.len() == 1 { "reads a file on this Mac" } else { "reads files on this Mac" };
+        cx.ask_local("Import favorites", &what.join("\n"), vec![why.into()]).await?;
+        let mut added = Vec::new();
+        for (path, _) in &files {
+            let sql = std::fs::read_to_string(path).map_err(|e| ToolError::Invalid(format!("{:?}: {e}", path.display().to_string())))?;
             let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("favorite").to_string();
             let saved = cx.hub.core.favorites.add(Favorite::new(name, sql)).map_err(failed)?;
             added.push(json!({"id": saved.id, "name": saved.name}));

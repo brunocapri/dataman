@@ -29,6 +29,9 @@ pub struct Approval {
     pub preview: Option<(Vec<String>, Vec<Vec<String>>)>,
     pub tab: Option<u64>,
     pub allowable: Vec<String>,
+    /// `affected` and `preview` come from a run rolled back before asking: a count from a
+    /// moment ago, not a promise (the write is run again after Allow, never with more rows).
+    pub counted: bool,
 }
 
 /// Characters that draw as nothing, or reorder what is drawn around them.
@@ -167,6 +170,37 @@ pub trait Front: Send + Sync {
 
 pub const APPROVAL_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// Questions waiting for the user at once: per client, and from all clients (a client names
+/// itself, so the total is what bounds a client posing as several).
+pub const WAITING_PER_CLIENT: usize = 3;
+pub const WAITING: usize = 8;
+/// After a Deny, the same client's next question waits this long: no sheet right after "no".
+pub const AFTER_DENY: Duration = Duration::from_secs(5);
+
+#[derive(Default)]
+struct Asks {
+    waiting: HashMap<String, usize>,
+    denied: HashMap<String, Instant>,
+}
+
+/// A question on the user's screen; its place is given back when dropped.
+pub struct AskSlot {
+    asks: Arc<Mutex<Asks>>,
+    client: String,
+}
+
+impl Drop for AskSlot {
+    fn drop(&mut self) {
+        let mut g = self.asks.lock();
+        if let Some(n) = g.waiting.get_mut(&self.client) {
+            *n -= 1;
+            if *n == 0 {
+                g.waiting.remove(&self.client);
+            }
+        }
+    }
+}
+
 struct Fresh<T> {
     stamp: Option<SystemTime>,
     value: Arc<T>,
@@ -189,6 +223,8 @@ pub struct Hub {
     approval_timeout: Mutex<Duration>,
     pub(crate) snapshots: Mutex<HashMap<(String, String, bool), Arc<String>>>,
     refreshed: Mutex<HashMap<(String, String), Instant>>,
+    asks: Arc<Mutex<Asks>>,
+    after_deny: Mutex<Duration>,
 }
 
 pub const SCHEMA_TTL: Duration = Duration::from_secs(30);
@@ -209,6 +245,8 @@ impl Hub {
             approval_timeout: Mutex::new(APPROVAL_TIMEOUT),
             snapshots: Mutex::new(HashMap::new()),
             refreshed: Mutex::new(HashMap::new()),
+            asks: Arc::new(Mutex::new(Asks::default())),
+            after_deny: Mutex::new(AFTER_DENY),
         }))
     }
 
@@ -233,6 +271,31 @@ impl Hub {
 
     pub fn front(&self) -> Option<Arc<dyn Front>> {
         self.front.lock().clone()
+    }
+
+    pub fn ask_slot(&self, client: &str) -> Result<AskSlot, String> {
+        let mut g = self.asks.lock();
+        let pause = *self.after_deny.lock();
+        if let Some(t) = g.denied.get(client)
+            && t.elapsed() < pause
+        {
+            return Err(format!("the user just denied this client's request in Dataman; wait {} s before asking again", pause.as_secs().max(1)));
+        }
+        let mine = g.waiting.get(client).copied().unwrap_or(0);
+        let all: usize = g.waiting.values().sum();
+        if mine >= WAITING_PER_CLIENT || all >= WAITING {
+            return Err(format!("{} questions already wait for the user in Dataman; wait for an answer before asking more", if mine >= WAITING_PER_CLIENT { mine } else { all }));
+        }
+        *g.waiting.entry(client.to_string()).or_default() += 1;
+        Ok(AskSlot { asks: self.asks.clone(), client: client.to_string() })
+    }
+
+    pub fn set_after_deny(&self, d: Duration) {
+        *self.after_deny.lock() = d;
+    }
+
+    pub fn denied(&self, client: &str) {
+        self.asks.lock().denied.insert(client.to_string(), Instant::now());
     }
 
     pub fn approval_timeout(&self) -> Duration {
@@ -340,6 +403,23 @@ impl Hub {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn questions_are_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let hub = Hub::new(Dirs::at(dir.path().join("d")), Arc::new(dataman_core::MemorySecrets::default())).unwrap();
+        let mine: Vec<AskSlot> = (0..WAITING_PER_CLIENT).map(|_| hub.ask_slot("a").unwrap()).collect();
+        assert!(hub.ask_slot("a").err().unwrap().contains("already wait"));
+        let others: Vec<AskSlot> = (0..WAITING - WAITING_PER_CLIENT).map(|i| hub.ask_slot(&format!("b{i}")).unwrap()).collect();
+        assert!(hub.ask_slot("fresh-name").err().unwrap().contains("already wait"), "renaming does not help past the total");
+        drop(others);
+        drop(mine);
+        assert!(hub.ask_slot("a").is_ok(), "answered questions give their place back");
+        hub.denied("a");
+        assert!(hub.ask_slot("a").err().unwrap().contains("just denied"));
+        assert!(hub.ask_slot("b").is_ok(), "only the denied client waits");
+        std::mem::forget(hub);
+    }
 
     #[test]
     fn approval_text_shows_everything() {
