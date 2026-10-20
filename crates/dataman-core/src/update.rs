@@ -296,12 +296,30 @@ pub fn install(dmg: &Path, app: &Path, want: &str) -> Result<()> {
         let mut c = Command::new("/usr/bin/codesign");
         c.args(["--verify", "--deep", "--strict"]).arg(&staged);
         output(c, "codesign")?;
+        // Any valid signature passes --verify: a Developer ID app takes only its own team's.
+        if let Some(team) = team_id(app) {
+            let got = team_id(&staged);
+            if got.as_deref() != Some(team.as_str()) {
+                bail!("the DMG's app is signed by {}, this app by {team}", got.as_deref().unwrap_or("no team"));
+            }
+        }
         swap(&staged, app)?;
         log::info!("update: {} swapped in", app.display());
         Ok(())
     })();
     let _ = std::fs::remove_dir_all(&staged);
     result
+}
+
+fn team_of(codesign_info: &str) -> Option<String> {
+    let id = codesign_info.lines().find_map(|l| l.trim().strip_prefix("TeamIdentifier="))?.trim();
+    (!id.is_empty() && id != "not set").then(|| id.to_string())
+}
+
+/// The signing team (`codesign -dv`), `None` for an ad hoc or unsigned app.
+fn team_id(app: &Path) -> Option<String> {
+    let out = Command::new("/usr/bin/codesign").args(["-dv", "--verbose=2"]).arg(app).stdin(Stdio::null()).output().ok()?;
+    team_of(&String::from_utf8_lossy(&out.stderr))
 }
 
 fn swap(a: &Path, b: &Path) -> Result<()> {
@@ -354,6 +372,14 @@ pub fn relaunch_after_exit(app: &Path) -> Result<()> {
 mod tests {
     use super::*;
     use ring::signature::{Ed25519KeyPair, KeyPair};
+
+    #[test]
+    fn signing_team() {
+        assert_eq!(team_of("Executable=/A.app/Contents/MacOS/a\nAuthority=Developer ID Application: B (ABCDE12345)\nTeamIdentifier=ABCDE12345\n").as_deref(), Some("ABCDE12345"));
+        assert_eq!(team_of("Signature=adhoc\nTeamIdentifier=not set\n"), None);
+        assert_eq!(team_of("/x.app: code object is not signed at all\n"), None);
+        assert_eq!(team_id(Path::new("/System/Applications/Calculator.app")), None, "Apple's own apps have no team");
+    }
 
     fn keypair() -> Ed25519KeyPair {
         let doc = Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new()).unwrap();

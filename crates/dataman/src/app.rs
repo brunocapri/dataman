@@ -2378,6 +2378,10 @@ pub(crate) fn file_url_path(url: &str) -> Option<std::path::PathBuf> {
         None if url.starts_with('/') => url,
         None => return None,
     };
+    // `file://host/x` names another machine's file: never a path relative to ours.
+    if !rest.starts_with('/') {
+        return None;
+    }
     let b = rest.as_bytes();
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
@@ -2778,6 +2782,8 @@ mod tests {
         assert_eq!(file_url_path("file:///tmp/caf%C3%A9.sql"), Some("/tmp/café.sql".into()));
         assert_eq!(file_url_path("file:///tmp/100%"), Some("/tmp/100%".into()));
         assert_eq!(file_url_path("/tmp/plain.sql"), Some("/tmp/plain.sql".into()));
+        assert_eq!(file_url_path("file://server/share/x.sql"), None);
+        assert_eq!(file_url_path("file://localhost"), None);
         assert_eq!(file_url_path("https://example.com/x.sql"), None);
     }
 
