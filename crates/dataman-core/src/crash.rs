@@ -4,11 +4,10 @@
 use std::collections::VecDeque;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 use std::time::SystemTime;
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::Result;
 use parking_lot::Mutex;
 
 pub const LOG_LINES: usize = 200;
@@ -228,21 +227,7 @@ pub struct Endpoint(pub String);
 
 impl Reporter for Endpoint {
     fn send(&self, text: &str) -> Result<()> {
-        let mut child = Command::new("/usr/bin/curl")
-            .args(["--fail", "--silent", "--show-error", "--max-time", "30", "--proto", "=https,http", "-X", "POST"])
-            .args(["-H", "Content-Type: text/plain; charset=utf-8", "--data-binary", "@-"])
-            .arg(&self.0)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .context("curl")?;
-        child.stdin.take().context("curl stdin")?.write_all(text.as_bytes())?;
-        let out = child.wait_with_output()?;
-        if !out.status.success() {
-            bail!("{}", String::from_utf8_lossy(&out.stderr).trim());
-        }
-        Ok(())
+        crate::http::post_text(&self.0, text, "crash report")
     }
 }
 

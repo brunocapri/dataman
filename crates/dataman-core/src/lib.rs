@@ -20,6 +20,7 @@ pub mod format;
 pub mod groups;
 pub mod guard;
 pub mod history;
+pub mod http;
 pub mod import;
 pub mod jsontree;
 pub mod layout;

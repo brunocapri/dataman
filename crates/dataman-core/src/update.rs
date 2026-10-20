@@ -171,81 +171,9 @@ fn get(url: &str, max: u64) -> Result<Vec<u8>> {
     output(c, "feed")
 }
 
-/// No curl on every Linux desktop: reqwest, on the same rustls as the database drivers.
-#[cfg(not(target_os = "macos"))]
-mod http {
-    use std::io::Write as _;
-    use std::path::Path;
-    use std::time::Duration;
-
-    use anyhow::{Context as _, Result, bail};
-
-    use super::Phase;
-
-    fn run<T>(f: impl std::future::Future<Output = Result<T>>) -> Result<T> {
-        crate::backend::install_tls_provider();
-        tokio::runtime::Builder::new_current_thread().enable_all().build()?.block_on(f)
-    }
-
-    fn client(timeout: Duration) -> Result<reqwest::Client> {
-        Ok(reqwest::Client::builder().connect_timeout(Duration::from_secs(15)).timeout(timeout).user_agent(concat!("Dataman/", env!("CARGO_PKG_VERSION"))).build()?)
-    }
-
-    fn local(url: &str) -> Option<&str> {
-        url.strip_prefix("file://")
-    }
-
-    pub fn get(url: &str, max: u64, what: &str) -> Result<Vec<u8>> {
-        if let Some(path) = local(url) {
-            let bytes = std::fs::read(path).with_context(|| format!("{what}: {path}"))?;
-            if bytes.len() as u64 > max {
-                bail!("{what}: larger than {max} bytes");
-            }
-            return Ok(bytes);
-        }
-        run(async {
-            let mut r = client(Duration::from_secs(30))?.get(url).send().await.with_context(|| what.to_string())?.error_for_status().with_context(|| what.to_string())?;
-            let mut out = Vec::new();
-            while let Some(c) = r.chunk().await? {
-                out.extend_from_slice(&c);
-                if out.len() as u64 > max {
-                    bail!("{what}: larger than {max} bytes");
-                }
-            }
-            Ok(out)
-        })
-    }
-
-    pub fn download(url: &str, size: u64, part: &Path, on: &dyn Fn(Phase)) -> Result<()> {
-        let mut f = std::fs::File::create(part)?;
-        if let Some(path) = local(url) {
-            let bytes = std::fs::read(path).with_context(|| format!("download: {path}"))?;
-            if bytes.len() as u64 > size {
-                bail!("download: larger than the feed says");
-            }
-            f.write_all(&bytes)?;
-            on(Phase::Got(bytes.len() as u64));
-            return Ok(());
-        }
-        run(async {
-            let mut r = client(Duration::from_secs(1800))?.get(url).send().await.context("download")?.error_for_status().context("download")?;
-            let mut got = 0u64;
-            while let Some(c) = r.chunk().await.context("download")? {
-                got += c.len() as u64;
-                if got > size {
-                    bail!("download: larger than the feed says");
-                }
-                f.write_all(&c)?;
-                on(Phase::Got(got));
-            }
-            Ok(())
-        })
-    }
-}
-
 #[cfg(not(target_os = "macos"))]
 fn get(url: &str, max: u64) -> Result<Vec<u8>> {
-    http::get(url, max, "feed")
+    crate::http::get(url, max, "feed")
 }
 
 pub fn check(cfg: &UpdateConfig) -> Result<Option<Feed>> {
@@ -279,7 +207,7 @@ pub enum Phase {
 
 #[cfg(not(target_os = "macos"))]
 fn fetch_to(url: &str, size: u64, part: &Path, on: &dyn Fn(Phase)) -> Result<()> {
-    http::download(url, size, part, on)
+    crate::http::download(url, size, part, on)
 }
 
 #[cfg(target_os = "macos")]
