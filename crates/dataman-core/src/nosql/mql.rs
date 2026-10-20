@@ -102,7 +102,10 @@ impl Op {
             Op::DropDatabase => destructive("drops the database"),
             Op::Command { doc, .. } => {
                 let name = doc.keys().next().map(|k| k.to_ascii_lowercase()).unwrap_or_default();
+                // `validate` with repair (or fixMultikey) rewrites what it finds.
+                let repairs = name == "validate" && doc.keys().any(|k| matches!(k.to_ascii_lowercase().as_str(), "repair" | "fixmultikey"));
                 let reads = READ_COMMANDS.contains(&name.as_str())
+                    && !repairs
                     && !(name == "aggregate" && doc.get_array("pipeline").is_ok_and(|p| {
                         p.iter().any(|s| s.as_document().is_some_and(|s| s.contains_key("$out") || s.contains_key("$merge")))
                     }));
@@ -613,6 +616,9 @@ mod tests {
         assert!(class("db.a.drop()").is_destructive());
         assert!(class("db.a.aggregate([{$out: 'b'}])").is_destructive());
         assert!(class("db.runCommand({drop: 'a'})").is_destructive());
+        assert_eq!(class("db.runCommand({validate: 'a', full: true})"), WriteClass::Read);
+        assert!(class("db.runCommand({validate: 'a', repair: true})").is_destructive());
+        assert!(class("db.runCommand({validate: 'a', fixMultikey: true})").is_destructive());
         assert!(class("db.runCommand({aggregate: 'a', pipeline: [{$merge: 'b'}], cursor: {}})").is_destructive());
     }
 

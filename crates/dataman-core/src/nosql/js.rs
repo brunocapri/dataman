@@ -731,6 +731,41 @@ mod tests {
         (r, l)
     }
 
+    /// Read as a read, a script never reaches a write, however it names or reaches the call.
+    #[test]
+    fn indirect_writes_stop_at_the_ceiling() {
+        let writes = ["Insert", "Delete", "Update", "Replace", "FindAndModify", "BulkWrite", "Drop", "Rename", "CreateIndex", "CreateCollection", "shutdown", "repair", "$out", "$merge"];
+        let mut read = 0;
+        for text in [
+            "const m = ['delete', 'Many'].join(''); db.users[m]({x: 1})",
+            "const d = db; const c = d['us' + 'ers']; c[String.fromCharCode(100, 114, 111, 112)]()",
+            "Function('return d' + 'b')().users['dr' + 'op']()",
+            "eval('db.users.dr' + 'op()')",
+            "globalThis['d' + 'b'].getSiblingDB('admin').runCommand({['shut' + 'down']: 1})",
+            "const o = {get x() { return db.users['remove'.slice(0)]({_id: 1}) }}; o.x",
+            "db.users.find({}).forEach(d => db.users[['delete', 'One'].join('')]({_id: d._id}))",
+            "__n_op('shop', 'users', '[[\"drop\", []]]')",
+            "__n_cursor('shop', 'users', '[[\"deleteMany\", [{}]]]', 0, 1)",
+            "Object.getPrototypeOf(db.users).find = function () { return this['insert' + 'One']({a: 1}) }; db.users.find({})",
+            "db.runCommand({['val' + 'idate']: 'users', repair: true})",
+            "db.users.aggregate([{['$' + 'out']: 'copy'}])",
+            "const s = db.getSiblingDB('other'); s.getCollection('x')['update' + 'Many']({}, {$set: {a: 1}})",
+            "new Proxy({}, {get: () => db.users['drop']()}).anything",
+            "[1].map(db.users['delete' + 'Many'].bind(db.users, {}))",
+            "Reflect.apply(db.users['insert' + 'Many'], db.users, [[{a: 1}]])",
+        ] {
+            let c = class(text).unwrap_or(WriteClass::Read);
+            if c != WriteClass::Read {
+                continue;
+            }
+            read += 1;
+            let (_, log) = script(text);
+            let wrote: Vec<&String> = log.iter().filter(|l| writes.iter().any(|w| l.contains(w))).collect();
+            assert!(wrote.is_empty(), "{text}: {wrote:?}");
+        }
+        assert!(read >= 12, "most of these read as reads: {read}");
+    }
+
     fn value(text: &str) -> Bson {
         match script(text).0.unwrap_or_else(|f| panic!("{text}: {}", f.message)).output {
             Output::Value(Body::Bson(b)) => b,

@@ -19,6 +19,39 @@ pub enum Body {
     Lines(Vec<serde_json::Value>),
 }
 
+fn decoded(seg: &str) -> std::borrow::Cow<'_, str> {
+    if !seg.contains('%') {
+        return seg.into();
+    }
+    let b = seg.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        let hex = |c: u8| (c as char).to_digit(16);
+        match (b[i], b.get(i + 1).copied().and_then(hex), b.get(i + 2).copied().and_then(hex)) {
+            (b'%', Some(h), Some(l)) => {
+                out.push((h * 16 + l) as u8);
+                i += 3;
+            }
+            (c, _, _) => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned().into()
+}
+
+/// The path as the HTTP client sends it (`.` and `..` segments resolved, `%2e` included), so
+/// what is classified is what the server is asked for.
+fn sent_path(path: &str) -> Option<String> {
+    let url = reqwest::Url::parse("http://h/").ok()?.join(path).ok()?;
+    Some(match url.query() {
+        Some(q) => format!("{}?{q}", url.path()),
+        None => url.path().to_string(),
+    })
+}
+
 impl Request {
     pub fn segments(&self) -> Vec<&str> {
         self.path.split('?').next().unwrap_or("").split('/').filter(|s| !s.is_empty()).collect()
@@ -32,26 +65,44 @@ impl Request {
         self.segments().into_iter().find(|s| s.starts_with('_'))
     }
 
+    /// The segment after the endpoint (`_plugins/_sql`, `_search/scroll`).
+    fn after_endpoint(&self) -> Option<&str> {
+        let segs = self.segments();
+        let at = segs.iter().position(|s| s.starts_with('_'))?;
+        segs.get(at + 1).copied()
+    }
+
+    fn sql_writes(&self) -> bool {
+        let q = match &self.body {
+            Body::Json(b) => b["query"].as_str().unwrap_or(""),
+            _ => "",
+        };
+        crate::bounded::statements(q).iter().any(|s| crate::guard::classify(s).is_write())
+    }
+
     pub fn is_search(&self) -> bool {
         matches!(self.method.as_str(), "GET" | "POST") && self.endpoint() == Some("_search") && !self.path.contains("scroll")
     }
 
+    fn sql(&self) -> bool {
+        let (ep, next) = (self.endpoint(), self.after_endpoint());
+        ep == Some("_sql") || matches!(ep, Some("_plugins" | "_opendistro")) && matches!(next, Some("_sql" | "_ppl"))
+    }
+
     fn reads(&self) -> bool {
-        let segs = self.segments();
-        let has = |s: &str| segs.contains(&s);
-        let sql_delete = || match &self.body {
-            Body::Json(b) => b["query"].as_str().is_some_and(|q| q.trim_start().to_ascii_uppercase().starts_with("DELETE")),
-            _ => false,
-        };
-        (has("_sql") || has("_ppl")) && !sql_delete()
-            || ["_query", "_eql", "_pit", "_async_search", "_knn_search", "_terms_enum", "_msearch", "_rollup_search", "_graph"].iter().any(|s| has(s))
-            || has("_search") && (has("scroll") || has("template"))
+        let (ep, next) = (self.endpoint().unwrap_or(""), self.after_endpoint());
+        self.sql()
+            || ["_query", "_eql", "_pit", "_async_search", "_knn_search", "_terms_enum", "_msearch", "_rollup_search", "_graph"].contains(&ep)
+            || ep == "_search" && matches!(next, Some("scroll" | "template"))
     }
 
     pub fn class(&self) -> WriteClass {
         let destructive = |why: &str| WriteClass::Destructive { reasons: vec![why.to_string()] };
         let ep = self.endpoint().unwrap_or("");
         let segs = self.segments();
+        if self.sql() && self.sql_writes() {
+            return destructive("SQL that writes");
+        }
         if matches!(self.method.as_str(), "GET" | "POST") && self.reads() {
             return WriteClass::Read;
         }
@@ -123,6 +174,18 @@ pub fn parse(text: &str) -> Result<Request, ParseError> {
         return Err(ParseError { message: "the method needs a path (GET /index/_search)".into(), at: lead + first.len() });
     }
     let path = if path.starts_with('/') { path.to_string() } else { format!("/{path}") };
+    let Some(path) = sent_path(&path) else {
+        return Err(ParseError { message: "the path is not a valid URL path".into(), at: lead + m.len() });
+    };
+    // The server routes `%5Fdelete_by_query` as `_delete_by_query`: the endpoint is written out.
+    for seg in path.split('?').next().unwrap_or("").split('/').filter(|s| !s.is_empty()) {
+        if seg.starts_with('_') {
+            break;
+        }
+        if decoded(seg).starts_with('_') {
+            return Err(ParseError { message: format!("write the endpoint out ({} as {})", seg, decoded(seg)), at: lead + m.len() });
+        }
+    }
     let body_at = lead + first.len() + 1;
     let mut req = Request { method: m.to_string(), path, body: Body::None };
     let ndjson = matches!(req.endpoint(), Some("_bulk" | "_msearch" | "_msearch/template"));
@@ -192,5 +255,22 @@ mod tests {
         assert_eq!(c("POST /a/_pit?keep_alive=1m"), WriteClass::Read);
         assert_eq!(c("POST _search/scroll\n{\"scroll_id\": \"x\"}"), WriteClass::Read);
         assert!(c("POST _plugins/_sql\n{\"query\": \"DELETE FROM a\"}").is_destructive());
+        assert!(c("POST _plugins/_sql\n{\"query\": \"/* x */ delete from a\"}").is_destructive());
+        assert!(c("GET _plugins/_sql\n{\"query\": \"DELETE FROM a\"}").is_destructive());
+        assert_eq!(c("POST _sql\n{\"query\": \"SELECT \\\"delete\\\" FROM a WHERE b = 'drop'\"}"), WriteClass::Read);
+        for (path, sent) in [
+            ("POST /a/_search/../_delete_by_query", "/a/_delete_by_query"),
+            ("POST /a/_search/%2e%2e/_delete_by_query", "/a/_delete_by_query"),
+            ("POST /_sql/../a/_delete_by_query", "/a/_delete_by_query"),
+            ("POST /a/./_delete_by_query?x=/../_search", "/a/_delete_by_query?x=/../_search"),
+        ] {
+            let r = parse(&format!("{path}\n{{\"query\": {{\"match_all\": {{}}}}}}")).unwrap();
+            assert_eq!(r.path, sent);
+            assert!(r.class().is_destructive(), "{path}");
+        }
+        assert!(parse("POST /a/%5Fdelete_by_query\n{\"query\": {\"match_all\": {}}}").unwrap_err().message.contains("endpoint"));
+        assert!(parse("POST /%5fsql/../a/_delete_by_query\n{}").unwrap().class().is_destructive());
+        assert!(c("POST /a/_delete_by_query/_pit\n{}").is_destructive());
+        assert_eq!(c("GET /a/_doc/%5Fid"), WriteClass::Read);
     }
 }

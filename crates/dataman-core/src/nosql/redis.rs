@@ -46,7 +46,7 @@ pub fn is_command(word: &str) -> bool {
 pub fn name(args: &[String]) -> String {
     let first = args.first().map(|a| a.to_ascii_uppercase()).unwrap_or_default();
     match (first.as_str(), args.get(1)) {
-        ("CONFIG" | "SCRIPT" | "FUNCTION" | "CLUSTER" | "ACL" | "LATENCY" | "MEMORY" | "OBJECT" | "XINFO" | "XGROUP" | "CLIENT", Some(sub)) => {
+        ("CONFIG" | "SCRIPT" | "FUNCTION" | "CLUSTER" | "ACL" | "LATENCY" | "MEMORY" | "OBJECT" | "XINFO" | "XGROUP" | "CLIENT" | "SLOWLOG" | "COMMAND", Some(sub)) => {
             format!("{first} {}", sub.to_ascii_uppercase())
         }
         _ => first,
@@ -56,8 +56,8 @@ pub fn name(args: &[String]) -> String {
 pub fn class(args: &[String]) -> WriteClass {
     let n = name(args);
     let first = n.split(' ').next().unwrap_or("");
-    let read_sub = CLIENT_READS.contains(&n.as_str()) || matches!(n.as_str(), "CONFIG GET" | "SCRIPT EXISTS" | "FUNCTION LIST" | "CLUSTER INFO" | "CLUSTER NODES" | "ACL WHOAMI" | "ACL LIST" | "LATENCY LATEST" | "MEMORY USAGE" | "MEMORY STATS");
-    if read_sub || READS.contains(&first) && !n.contains(' ') || matches!(first, "OBJECT" | "XINFO") {
+    let read_sub = CLIENT_READS.contains(&n.as_str()) || matches!(n.as_str(), "CONFIG GET" | "SCRIPT EXISTS" | "FUNCTION LIST" | "CLUSTER INFO" | "CLUSTER NODES" | "ACL WHOAMI" | "ACL LIST" | "LATENCY LATEST" | "MEMORY USAGE" | "MEMORY STATS" | "SLOWLOG GET" | "SLOWLOG LEN");
+    if read_sub || READS.contains(&first) && !n.contains(' ') || matches!(first, "OBJECT" | "XINFO" | "COMMAND") {
         WriteClass::Read
     } else if SAFE_WRITES.contains(&first) {
         WriteClass::SafeWrite
@@ -254,6 +254,12 @@ mod tests {
         assert!(c("FLUSHDB").is_destructive());
         assert!(c("CONFIG SET maxmemory 1").is_destructive());
         assert!(c("EVAL \"return 1\" 0").is_destructive());
+        assert_eq!(c("SLOWLOG GET 10"), WriteClass::Read);
+        assert_eq!(c("COMMAND DOCS get"), WriteClass::Read);
+        assert!(c("SLOWLOG RESET").is_destructive());
+        for cmd in ["FUNCTION LOAD x", "MODULE LOAD /tmp/x.so", "DEBUG SLEEP 0", "MIGRATE h 1 k 0 1", "REPLICAOF h 1", "SLAVEOF h 1", "FLUSHALL", "SCRIPT FLUSH", "EVALSHA x 0", "\"\\x46LUSHALL\"", "flushall", "ACL SETUSER x on", "LATENCY RESET", "MEMORY PURGE", "SORT k STORE d", "BGREWRITEAOF", "FCALL f 0"] {
+            assert!(c(cmd).is_destructive(), "{cmd}");
+        }
         assert!(refusal(&parse("SUBSCRIBE ch").unwrap()).is_some());
         assert!(refusal(&parse("GET a").unwrap()).is_none());
     }
