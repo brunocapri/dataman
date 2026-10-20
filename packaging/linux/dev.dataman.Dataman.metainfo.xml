@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>dev.dataman.Dataman</id>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Dataman</name>
+  <summary>A fast database client</summary>
+  <description>
+    <p>Dataman queries and edits PostgreSQL, MySQL, SQL Server, MongoDB, Redis, Elasticsearch and OpenSearch, with an MCP server that lets agents use your saved connections under read-only defaults.</p>
+  </description>
+  <launchable type="desktop-id">dev.dataman.Dataman.desktop</launchable>
+  <url type="homepage">https://github.com/brunocapri/dataman</url>
+  <content_rating type="oars-1.1"/>
+</component>

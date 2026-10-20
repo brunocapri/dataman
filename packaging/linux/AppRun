@@ -1,0 +1,9 @@
+#!/bin/sh
+# The AppImage's entry: `--mcp` starts the MCP server (the stable command for `claude mcp add`,
+# since the mount path changes on every launch), anything else the app.
+here="$(dirname "$(readlink -f "$0")")"
+if [ "${1:-}" = "--mcp" ]; then
+  shift
+  exec "$here/usr/bin/dataman-mcp" "$@"
+fi
+exec "$here/usr/bin/dataman" "$@"

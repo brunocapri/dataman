@@ -11,6 +11,7 @@
 #   DATAMAN_DIST            output folder (default dist)
 #   DATAMAN_SKIP_BUILD=1    package target/release as it is
 set -euo pipefail
+[ "$(uname)" = Darwin ] || { echo "bundle: macOS only (the Linux release: scripts/linux/build.sh)" >&2; exit 1; }
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"

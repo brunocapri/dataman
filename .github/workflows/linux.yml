@@ -1,0 +1,102 @@
+name: Linux
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: "1.99.0"
+  # No GPU on the runners: Mesa's GL (llvmpipe) draws; its Vulkan driver presents black under Xvfb.
+  VK_ICD_FILENAMES: /nonexistent.json
+  DEPS: >-
+    libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libxcb1-dev
+    libfontconfig-dev libfreetype-dev libegl1 libgl1-mesa-dri
+    xvfb xauth x11-utils dbus-x11 gnome-keyring libsecret-tools postgresql-client
+    imagemagick dpkg-dev file
+
+jobs:
+  test:
+    name: test (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-22.04, arch: x86_64, skip: "" }
+          # No SQL Server image for arm64: the stages that need it run on x86_64.
+          - { os: ubuntu-22.04-arm, arch: aarch64, skip: "newuser-check,connections-check,explorer-check,json-check,dates-check,insert-check,mssql-check,mcp-tools-check" }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: System packages
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends $DEPS
+      - name: Rust ${{ env.RUST_TOOLCHAIN }}
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal && rustup default "$RUST_TOOLCHAIN"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.arch }}
+      - name: Check (no new warnings)
+        run: |
+          cargo check --release --workspace --all-targets --features dataman/checks 2>&1 | tee check.log
+          # The two `unused Result` warnings in the live sweeps are known; anything else fails.
+          n=$(grep -c '^warning: unused `Result`' check.log || true)
+          others=$(grep '^warning' check.log | grep -v 'unused `Result`\|generated [0-9]* warning\|future version of Rust' || true)
+          [ -z "$others" ] || { echo "$others"; exit 1; }
+          [ "$n" -le 2 ]
+      - name: Tests, with a Secret Service for the password store
+        run: |
+          dbus-run-session -- bash -c '
+            echo -n ci | gnome-keyring-daemon --unlock --components=secrets > /dev/null
+            cargo test --release --workspace
+            cargo test --release -p dataman-core --test keychain -- --ignored'
+      - name: End-to-end under Xvfb
+        run: |
+          xvfb-run -a -s "-screen 0 1600x1000x24" \
+            cargo run --release -p xtask -- e2e ${{ matrix.skip && format('--skip {0}', matrix.skip) || '' }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-${{ matrix.arch }}
+          path: target/e2e/
+          if-no-files-found: ignore
+
+  package:
+    name: package (${{ matrix.arch }})
+    needs: test
+    strategy:
+      matrix:
+        include:
+          - { os: ubuntu-22.04, arch: x86_64 }
+          - { os: ubuntu-22.04-arm, arch: aarch64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: System packages
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends $DEPS
+      - name: Rust ${{ env.RUST_TOOLCHAIN }}
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal && rustup default "$RUST_TOOLCHAIN"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: package-${{ matrix.arch }}
+      - name: AppImage and .deb
+        run: scripts/linux/build.sh ${{ matrix.arch }}
+      - name: The AppImage starts
+        run: |
+          img=$(ls dist/linux/*.AppImage)
+          APPIMAGE_EXTRACT_AND_RUN=1 "$img" --version
+          APPIMAGE_EXTRACT_AND_RUN=1 "$img" --mcp --version
+          sudo apt-get install -y ./dist/linux/*.deb && dataman --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dataman-linux-${{ matrix.arch }}
+          path: dist/linux/

@@ -10,8 +10,10 @@
 #
 # Needs: a clean tree on main, up to date with origin; gh, logged in; the update key
 # (scripts/keygen.sh: ~/.config/dataman-release/update_ed25519.key, or DATAMAN_UPDATE_KEY /
-# DATAMAN_UPDATE_PRIVATE_KEY). The notes are never written into the repository.
+# DATAMAN_UPDATE_PRIVATE_KEY). The notes are never written into the repository. DATAMAN_LINUX=1
+# also builds, uploads and checks the Linux AppImages and .debs (Docker).
 set -euo pipefail
+[ "$(uname)" = Darwin ] || { echo "github-release: macOS only (the Linux release: scripts/linux/build.sh)" >&2; exit 1; }
 
 repo="brunocapri/dataman"
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -111,7 +113,11 @@ git push --quiet origin "$tag"
 
 # --- The release -------------------------------------------------------------------------------
 step "GitHub release $tag"
-gh release create "$tag" "$dmg" "$feed" --repo "$repo" --title "Dataman $version" --notes "$notes" --latest > /dev/null
+linux=()
+if [ -n "${DATAMAN_LINUX:-}" ]; then
+  linux=("$root"/dist/linux/Dataman-"$version"-*.AppImage "$root"/dist/linux/dataman_"$version"_*.deb)
+fi
+gh release create "$tag" "$dmg" ${linux[@]+"${linux[@]}"} "$feed" --repo "$repo" --title "Dataman $version" --notes "$notes" --latest > /dev/null
 
 # --- What the app will read --------------------------------------------------------------------
 step "checking releases/latest/download/feed.json"
@@ -129,6 +135,14 @@ done
 url="$(plutil -extract url raw -o - "$work/feed.json")"
 curl -fsSL --proto '=https' -o "$work/Dataman.dmg" "$url"
 checked="$(cargo run --release --quiet -p xtask -- verify "$work/feed.json" "$work/Dataman.dmg" --pubkey "$pubkey" --version "$version")"
+if [ -n "${DATAMAN_LINUX:-}" ]; then
+  for a in x86_64 aarch64; do
+    url="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["assets"]["linux-" + sys.argv[2]]["url"])' "$work/feed.json" "$a")"
+    curl -fsSL --proto '=https' -o "$work/Dataman-$a.AppImage" "$url"
+    cargo run --release --quiet -p xtask -- verify "$work/feed.json" "$work/Dataman-$a.AppImage" --pubkey "$pubkey" --version "$version" --asset "linux-$a" > /dev/null
+  done
+  checked="$checked; Linux x86_64 and aarch64 AppImages too"
+fi
 
 page="$(gh release view "$tag" --repo "$repo" --json url --jq .url)"
 echo

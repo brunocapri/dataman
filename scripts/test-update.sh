@@ -9,6 +9,7 @@
 #
 # Leaves target/release built with the test feed and key: rebuild afterwards.
 set -euo pipefail
+[ "$(uname)" = Darwin ] || { echo "test-update: macOS only (the Linux release: scripts/linux/build.sh)" >&2; exit 1; }
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 work="${1:-$(mktemp -d)}"

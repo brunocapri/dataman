@@ -5,6 +5,7 @@
 #   DATAMAN_DIST            the folder with the app (default dist)
 #   DATAMAN_SIGN_IDENTITY   signs the image too (needed to notarize it)
 set -euo pipefail
+[ "$(uname)" = Darwin ] || { echo "dmg: macOS only (the Linux release: scripts/linux/build.sh)" >&2; exit 1; }
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 dist="${DATAMAN_DIST:-$root/dist}"

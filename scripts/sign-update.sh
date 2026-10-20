@@ -9,6 +9,7 @@
 #
 # The version and the minimum macOS are read from the app inside the DMG.
 set -euo pipefail
+[ "$(uname)" = Darwin ] || { echo "sign-update: macOS only (the Linux release: scripts/linux/build.sh)" >&2; exit 1; }
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 dmg="${1:?usage: sign-update.sh <dmg> <url> [notes.md]}"

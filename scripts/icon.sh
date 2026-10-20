@@ -8,6 +8,7 @@
 #   DATAMAN_CHROME      the browser binary (default: Google Chrome, Chromium, Brave or Edge)
 #   DATAMAN_ICON_WORK   keep the PNGs and the iconset in this folder (default: a temp dir, removed)
 set -euo pipefail
+[ "$(uname)" = Darwin ] || { echo "icon: macOS only (the Linux release: scripts/linux/build.sh)" >&2; exit 1; }
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 html="$root/packaging/icon/app-icon.html"

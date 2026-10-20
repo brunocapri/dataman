@@ -111,6 +111,9 @@ impl Workspace {
             .rounded_full()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(cx.listener(|w, ev: &gpui::ClickEvent, _, cx| {
+                if w.app_menu.is_none() && ui::menu_just_shut("app-menu") {
+                    return;
+                }
                 w.app_menu = if w.app_menu.is_some() { None } else { Some(ev.position()) };
                 cx.notify();
             }));
@@ -145,6 +148,7 @@ impl Workspace {
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_mouse_down_out(cx.listener(|w, _, _, cx| {
                 w.app_menu = None;
+                ui::menu_shut("app-menu");
                 cx.notify();
             }));
         if let Some(label) = crate::updates::menu_label(cx) {

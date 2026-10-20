@@ -9,6 +9,7 @@
 #
 # Stapling changes the file: sign the update (scripts/sign-update.sh) after this, never before.
 set -euo pipefail
+[ "$(uname)" = Darwin ] || { echo "notarize: macOS only (the Linux release: scripts/linux/build.sh)" >&2; exit 1; }
 
 target="${1:?usage: notarize.sh <app or dmg>}"
 : "${DATAMAN_NOTARY_PROFILE:?set DATAMAN_NOTARY_PROFILE (xcrun notarytool store-credentials)}"
