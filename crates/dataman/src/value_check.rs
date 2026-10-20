@@ -103,8 +103,8 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let _ = cx.update(|_, cx| grid.update(cx, |g, cx| g.set_scroll_x(0., cx)));
     draw(cx);
     report(
-        "the hovered cell shows an eye on JSON objects and arrays only (not text, NULL or a scalar)",
-        hovered == [false, false, true, true, true, true, false, false, false],
+        "the hovered cell shows an eye on JSON objects and arrays, text holding one too (not plain text, NULL or a scalar)",
+        hovered == [false, false, true, true, true, true, true, false, false],
         format!("{hovered:?}"),
     );
     let p = at(cx, 3, ADDRESS);
@@ -153,7 +153,7 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     snap("collapsed", cx);
     let collapsed = sheet(ws, cx).map_or(0, |s| s.2.len());
     if let Some(v) = &view {
-        let _ = cx.update(|_, cx| v.update(cx, |v, cx| v.demo_text(true, cx)));
+        let _ = cx.update(|window, cx| v.update(cx, |v, cx| v.demo_text(true, window, cx)));
     }
     draw(cx);
     snap("text", cx);

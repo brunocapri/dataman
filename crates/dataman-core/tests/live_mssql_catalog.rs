@@ -28,7 +28,7 @@ fn explorer_levels_and_objects() {
     assert!(!schemas.iter().any(|s| s == "guest" || s.starts_with("db_")), "{schemas:?}");
     let rels = e.core.block_on(c.relations(db, "dbo")).unwrap();
     let names: Vec<(&str, RelKind)> = rels.iter().map(|r| (r.name.as_str(), r.kind)).collect();
-    assert_eq!(names, vec![("customer", RelKind::Table), ("item", RelKind::Table), ("orders", RelKind::Table), ("v_order_customer", RelKind::View)]);
+    assert_eq!(names, vec![("customer", RelKind::Table), ("documents", RelKind::Table), ("item", RelKind::Table), ("orders", RelKind::Table), ("v_order_customer", RelKind::View)]);
     let cols = e.core.block_on(c.columns(db, "dbo", "customer")).unwrap();
     assert!(cols[0].primary_key);
     assert_eq!(cols[0].default.as_deref(), Some("IDENTITY(1,1)"));

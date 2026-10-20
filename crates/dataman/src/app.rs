@@ -667,7 +667,9 @@ impl Workspace {
         let from = tab.downgrade();
         cx.subscribe_in(&grid, window, move |w, _, ev: &GridEvent, window, cx| match ev {
             GridEvent::ViewValue { row, col } => {
-                if let Some(cell) = from.upgrade().and_then(|t| t.read(cx).grid.read(cx).value_at(*row, *col)) {
+                if let Some(t) = from.upgrade()
+                    && let Some(cell) = t.read(cx).grid.read(cx).value_at(*row, *col)
+                {
                     w.open_value(cell, window, cx);
                 }
             }
@@ -1392,16 +1394,24 @@ impl Workspace {
             return;
         }
         self.modal_return = window.focused(cx);
-        let v = cx.new(|cx| crate::value_view::ValueView::new(cell, window, cx));
-        cx.subscribe_in(&v, window, |w, _, ev: &crate::value_view::ValueEvent, window, cx| match ev {
-            crate::value_view::ValueEvent::Close => {
-                w.value_view = None;
-                match w.modal_return.take() {
-                    Some(f) => window.focus(&f, cx),
-                    None => w.focus_editor(window, cx),
-                }
-                cx.notify();
+        // Editable unless the result is known not to be (the edit says why when it is not).
+        let edit = self.active_tab().map(|t| t.read(cx).edit.clone());
+        let editable = edit.as_ref().is_some_and(|e| e.read(cx).editable(cell.col) != Some(false)) && !self.active_tab().is_some_and(|t| t.read(cx).doc.is_some());
+        let (row, col) = (cell.row, cell.col);
+        let v = cx.new(|cx| crate::value_view::ValueView::new(cell, editable, window, cx));
+        cx.subscribe_in(&v, window, move |w, _, ev: &crate::value_view::ValueEvent, window, cx| {
+            if let crate::value_view::ValueEvent::Apply(json) = ev
+                && let Some(e) = &edit
+            {
+                let json = json.clone();
+                e.update(cx, |e, cx| e.set_cell(row, col, dataman_core::edit::CellValue::text(json), window, cx));
             }
+            w.value_view = None;
+            match w.modal_return.take() {
+                Some(f) => window.focus(&f, cx),
+                None => w.focus_editor(window, cx),
+            }
+            cx.notify();
         })
         .detach();
         self.value_view = Some(v);

@@ -3,11 +3,12 @@ use std::time::Instant;
 use dataman_core::jsontree::{self, Doc, Node, Row, RowKey};
 use dataman_core::value::Kind;
 use gpui::{
-    App, ClipboardItem, Context, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, KeyBinding, SharedString, StyledText, Task, TextRun,
+    App, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, KeyBinding, SharedString, StyledText, Task, TextRun,
     Window, actions, div, font, prelude::*,
 };
 
 use crate::assets::{Icon, icon};
+use crate::editor::{CodeEditor, EditorEvent};
 use crate::theme::{ActiveTheme, Theme, px};
 use crate::ui::{self, Btn};
 
@@ -20,10 +21,12 @@ const LINE: f32 = 20.;
 
 pub fn bind_keys(cx: &mut App) {
     let c = Some(CONTEXT);
+    // Space closes the sheet like it opened it, except while typing in its editor.
+    let reading = Some("ValueSheet && !CodeEditor");
     cx.bind_keys([
         KeyBinding::new("escape", CloseValue, c),
-        KeyBinding::new("shift-space", CloseValue, c),
-        KeyBinding::new("space", CloseValue, c),
+        KeyBinding::new("shift-space", CloseValue, reading),
+        KeyBinding::new("space", CloseValue, reading),
         KeyBinding::new("cmd-c", CopyValue, c),
     ]);
 }
@@ -37,7 +40,8 @@ pub enum Shape {
 /// PostgreSQL names array types `_int4` (the driver's name) or `int4[]` (catalog text).
 pub fn shape_of(kind: Kind, type_name: &str) -> Option<Shape> {
     match kind {
-        Kind::Json => Some(Shape::Json),
+        // Text holding JSON (SQL Server's nvarchar, a text column): viewable when it parses.
+        Kind::Json | Kind::Text => Some(Shape::Json),
         Kind::Other if type_name.starts_with('_') || type_name.ends_with("[]") => Some(Shape::List),
         _ => None,
     }
@@ -46,6 +50,7 @@ pub fn shape_of(kind: Kind, type_name: &str) -> Option<Shape> {
 pub fn viewable(kind: Kind, type_name: &str, value: &str) -> bool {
     let v = value.trim_start();
     match shape_of(kind, type_name) {
+        Some(Shape::Json) if kind == Kind::Text => (v.starts_with('{') || v.starts_with('[')) && jsontree::parse(v).is_ok_and(|n| n.is_container()),
         Some(Shape::Json) => v.starts_with('{') || v.starts_with('['),
         Some(Shape::List) => v.starts_with('{') || v.starts_with('['),
         None => false,
@@ -55,6 +60,7 @@ pub fn viewable(kind: Kind, type_name: &str, value: &str) -> bool {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ValueCell {
     pub column: String,
+    pub col: usize,
     pub type_name: String,
     pub kind: Kind,
     pub row: usize,
@@ -63,6 +69,8 @@ pub struct ValueCell {
 
 pub enum ValueEvent {
     Close,
+    /// The edited JSON, for the cell's pending edit.
+    Apply(String),
 }
 
 pub struct ValueView {
@@ -75,6 +83,10 @@ pub struct ValueView {
     text: bool,
     copied_at: Option<Instant>,
     _copied: Option<Task<()>>,
+    /// Editable cells: the Text view is an editor, Apply makes it the cell's pending edit.
+    edit: Option<Entity<CodeEditor>>,
+    error: Option<String>,
+    _edit_sub: Option<gpui::Subscription>,
 }
 
 impl EventEmitter<ValueEvent> for ValueView {}
@@ -86,7 +98,7 @@ impl Focusable for ValueView {
 }
 
 impl ValueView {
-    pub fn new(cell: ValueCell, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(cell: ValueCell, editable: bool, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         let shape = shape_of(cell.kind, &cell.type_name).unwrap_or(Shape::Json);
@@ -99,9 +111,55 @@ impl ValueView {
             _ => cell.value.clone(),
         };
         let text = root.is_none();
-        let mut v = ValueView { focus, cell, shape, doc: root.map(Doc::new), rows: Vec::new(), pretty, text, copied_at: None, _copied: None };
+        let (edit, sub) = if editable && shape == Shape::Json && root.is_some() {
+            let pretty = pretty.clone();
+            let e = cx.new(|cx| {
+                let mut e = CodeEditor::new(window, cx).plain();
+                e.set_text(&pretty, cx);
+                e
+            });
+            let sub = cx.subscribe(&e, |v: &mut ValueView, _, ev: &EditorEvent, cx| match ev {
+                EditorEvent::Changed => v.check(cx),
+                EditorEvent::Run(_) | EditorEvent::RunAll(_) => v.apply(cx),
+                _ => {}
+            });
+            (Some(e), Some(sub))
+        } else {
+            (None, None)
+        };
+        let mut v = ValueView { focus, cell, shape, doc: root.map(Doc::new), rows: Vec::new(), pretty, text, copied_at: None, _copied: None, edit, error: None, _edit_sub: sub };
         v.refresh_rows();
         v
+    }
+
+    #[cfg(feature = "checks")]
+    pub fn demo_editor(&self) -> Option<(Entity<CodeEditor>, Option<String>)> {
+        Some((self.edit.clone()?, self.error.clone()))
+    }
+
+    fn edited(&self, cx: &App) -> Option<String> {
+        let text = self.edit.as_ref()?.read(cx).text().to_string();
+        (text != self.pretty).then_some(text)
+    }
+
+    fn check(&mut self, cx: &mut Context<Self>) {
+        self.error = self.edited(cx).and_then(|t| jsontree::parse(&t).err().map(|e| e.to_string()));
+        cx.notify();
+    }
+
+    /// The edit, valid JSON, written as the stored value was (one line, or indented).
+    fn apply(&mut self, cx: &mut Context<Self>) {
+        let Some(text) = self.edited(cx) else { return };
+        match jsontree::parse(&text) {
+            Ok(n) => {
+                let out = if self.cell.value.contains('\n') { n.pretty() } else { n.compact() };
+                cx.emit(ValueEvent::Apply(out));
+            }
+            Err(e) => {
+                self.error = Some(e.to_string());
+                cx.notify();
+            }
+        }
     }
 
     fn refresh_rows(&mut self) {
@@ -124,8 +182,13 @@ impl ValueView {
         cx.notify();
     }
 
-    fn set_text(&mut self, text: bool, cx: &mut Context<Self>) {
+    fn set_text(&mut self, text: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.text = text || self.doc.is_none();
+        if self.text
+            && let Some(e) = &self.edit
+        {
+            window.focus(&e.focus_handle(cx), cx);
+        }
         cx.notify();
     }
 
@@ -155,8 +218,8 @@ impl ValueView {
     }
 
     #[cfg(feature = "checks")]
-    pub fn demo_text(&mut self, text: bool, cx: &mut Context<Self>) {
-        self.set_text(text, cx);
+    pub fn demo_text(&mut self, text: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_text(text, window, cx);
     }
 
     #[cfg(feature = "checks")]
@@ -366,8 +429,8 @@ impl Render for ValueView {
                 ui::segmented(&t)
                     .w(px(132.))
                     .h(px(26.))
-                    .child(ui::segment(&t, "vv-tree", tree_label, !text).when(!tree_ok, |d| d.opacity(0.4)).on_click(cx.listener(|v, _, _, cx| v.set_text(false, cx))))
-                    .child(ui::segment(&t, "vv-text", "Text", text).on_click(cx.listener(|v, _, _, cx| v.set_text(true, cx)))),
+                    .child(ui::segment(&t, "vv-tree", tree_label, !text).when(!tree_ok, |d| d.opacity(0.4)).on_click(cx.listener(|v, _, window, cx| v.set_text(false, window, cx))))
+                    .child(ui::segment(&t, "vv-text", "Text", text).on_click(cx.listener(|v, _, window, cx| v.set_text(true, window, cx)))),
             )
             .when(!text && self.rows.iter().any(|r| r.container), |d| {
                 d.child(ui::button(&t, "vv-expand", Btn::Ghost).h(px(24.)).text_size(px(11.5)).child("Expand all").on_click(cx.listener(|v, _, _, cx| v.all(true, cx))))
@@ -375,7 +438,8 @@ impl Render for ValueView {
             })
             .child(div().flex_1())
             .child(div().text_size(px(11.)).text_color(t.tx3).child(self.meta()));
-        let lines = if text { self.render_text(&t) } else { self.render_tree(&t, cx) };
+        let editing = text && self.edit.is_some();
+        let lines = if editing { Vec::new() } else if text { self.render_text(&t) } else { self.render_tree(&t, cx) };
         let total = if text { self.pretty.lines().count() } else { self.rows.len() };
         let more = (total > MAX_LINES).then(|| {
             div()
@@ -398,10 +462,14 @@ impl Render for ValueView {
             .font_family(crate::theme::mono())
             .text_size(px(12.))
             .line_height(px(LINE))
-            .overflow_y_scroll()
+            .when(editing, |d| d.h(px(380.)).py(px(0.)))
+            .when(!editing, |d| d.overflow_y_scroll())
+            .when_some(self.edit.clone().filter(|_| editing), |d, e| d.child(e))
             .children(lines)
             .children(empty)
             .children(more);
+        let changed = self.edited(cx).is_some();
+        let note = self.error.clone().map(|e| div().mx(px(20.)).mt(px(8.)).text_size(px(11.5)).text_color(t.err).child(format!("Not valid JSON: {e}")));
         let copied = self.copied_at.and_then(|at| crate::motion::copied(at, Instant::now(), cx.reduce_motion()));
         let copy_tip = if text { "The formatted text" } else { "The value as stored" };
         let footer = ui::modal_footer(&t)
@@ -438,15 +506,34 @@ impl Render for ValueView {
                     })),
             )
             .child(
-                ui::button(&t, "vv-done", Btn::Primary)
+                ui::button(&t, "vv-done", if changed { Btn::Ghost } else { Btn::Primary })
                     .h(px(28.))
                     .px(px(12.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child("Done")
+                    .when(!changed, |d| d.font_weight(FontWeight::SEMIBOLD))
+                    .child(if changed { "Discard" } else { "Done" })
                     .child(div().text_size(px(10.5)).font_weight(FontWeight::NORMAL).opacity(0.75).child("esc"))
-                    .on_click(cx.listener(|_, _, _, cx| cx.emit(ValueEvent::Close))),
-            );
-        let card = ui::modal(&t, "value-sheet").w(px(720.)).child(header).child(toolbar).child(body).child(footer);
+                    // Under the eye that opened it, the double click's second press is no "Done".
+                    .on_click(cx.listener(|_, ev: &gpui::ClickEvent, _, cx| {
+                        if ev.click_count() < 2 {
+                            cx.emit(ValueEvent::Close);
+                        }
+                    })),
+            )
+            .when(self.edit.is_some(), |d| {
+                let ok = changed && self.error.is_none();
+                d.child(
+                    ui::button(&t, "vv-apply", Btn::Primary)
+                        .h(px(28.))
+                        .px(px(12.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .when(!ok, |d| d.opacity(0.5))
+                        .child("Apply")
+                        .child(div().text_size(px(10.5)).font_weight(FontWeight::NORMAL).opacity(0.75).child("⌘↩"))
+                        .tooltip(ui::tooltip("Apply", Some("A pending edit of the cell: commit it with the grid's other edits"), None))
+                        .on_click(cx.listener(|v, _, _, cx| v.apply(cx))),
+                )
+            });
+        let card = ui::modal(&t, "value-sheet").w(px(720.)).child(header).child(toolbar).child(body).children(note).child(footer);
         div()
             .id("value-backdrop")
             .absolute()
@@ -483,14 +570,18 @@ mod tests {
         assert_eq!(shape_of(Kind::Json, "json"), Some(Shape::Json));
         assert_eq!(shape_of(Kind::Other, "_int4"), Some(Shape::List));
         assert_eq!(shape_of(Kind::Other, "text[]"), Some(Shape::List));
-        assert_eq!(shape_of(Kind::Text, "nvarchar"), None, "JSON-looking text is text");
+        assert_eq!(shape_of(Kind::Text, "nvarchar"), Some(Shape::Json), "text holding JSON gets the eye");
         assert_eq!(shape_of(Kind::Other, "uuid"), None);
         assert!(viewable(Kind::Json, "jsonb", r#" {"a": 1}"#));
         assert!(viewable(Kind::Json, "jsonb", "[1, 2]"));
         assert!(!viewable(Kind::Json, "jsonb", "42"), "a JSON scalar has nothing to unfold");
         assert!(!viewable(Kind::Json, "jsonb", "\"x\""));
         assert!(viewable(Kind::Other, "_text", "{a,b}"));
-        assert!(!viewable(Kind::Text, "text", r#"{"a": 1}"#));
+        assert!(viewable(Kind::Text, "text", r#"{"a": 1}"#));
+        assert!(viewable(Kind::Text, "nvarchar", r#"[{"ü": "ção"}]"#));
+        assert!(!viewable(Kind::Text, "nvarchar", "{not json"), "only what parses");
+        assert!(!viewable(Kind::Text, "nvarchar", "[note]"));
+        assert!(!viewable(Kind::Text, "varchar", "42"));
         assert_eq!(type_label("_int8"), "int8[]");
         assert_eq!(type_label("jsonb"), "jsonb");
     }

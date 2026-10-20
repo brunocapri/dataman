@@ -91,6 +91,7 @@ const STAGES: &[Stage] = &[
     st("value-check", &[Pg], 120),
     st("table-check", &[Pg], 200),
     st("edit-check", &[Pg], 200),
+    st("json-check", SQL3, 300),
     st("tx-check", &[Pg], 300),
     st("insert-check", SQL3, 300),
     st("mysql-check", &[Pg, MySql], 300),

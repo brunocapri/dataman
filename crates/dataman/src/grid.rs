@@ -1797,6 +1797,7 @@ impl ResultGrid {
         let value = self.shown_value(&snap, row, col)??;
         crate::value_view::viewable(c.kind, &c.type_name, &value).then(|| crate::value_view::ValueCell {
             column: c.name.clone(),
+            col,
             type_name: c.type_name.clone(),
             kind: c.kind,
             row,

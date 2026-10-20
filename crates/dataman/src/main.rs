@@ -127,6 +127,8 @@ mod update_ui;
 mod updates;
 #[cfg(feature = "checks")]
 mod value_check;
+#[cfg(feature = "checks")]
+mod values_check;
 mod value_edit;
 mod value_view;
 mod welcome;

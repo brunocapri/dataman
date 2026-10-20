@@ -16,3 +16,13 @@ INSERT INTO dataman_scratch.products VALUES
 (108,'AUD-0108','Wave soundbar','audio',279.00,22,true),
 (109,'AUD-0109','Wave sub','audio',219.00,NULL,true),
 (110,'AUD-0110','Field recorder','audio',389.00,5,true);
+
+-- JSON in PostgreSQL: a jsonb column, and the same documents kept as text (the grid's eye opens
+-- both); dates and times to edit as text.
+DROP TABLE IF EXISTS dataman_scratch.documents;
+CREATE TABLE dataman_scratch.documents (id int PRIMARY KEY, title text NOT NULL, body jsonb, body_text text, due date, updated_at timestamptz NOT NULL);
+INSERT INTO dataman_scratch.documents VALUES
+(1,'Order 1001','{"order": 1001, "customer": {"name": "Ana Lima", "city": "São Paulo", "tags": ["vip", "early"]}, "items": [{"sku": "AUD-0101", "qty": 2, "price": 199.0}, {"sku": "AUD-0105", "qty": 1, "price": 59.0}], "paid": true, "notes": null}','{"order": 1001, "paid": true}','2026-10-15','2026-10-01 09:00:00+00'),
+(2,'Settings','{"theme": "dark", "font": {"family": "Geist Mono", "size": 13}, "recent": [], "flags": {"beta": false, "limits": {"rows": 1000, "timeout_ms": 30000}}}','{"theme": "dark"}','2026-10-16','2026-10-02 10:30:00+00'),
+(3,'Tags','["数据", "données", "Daten", "🙂", "naïve café"]','["a", "b"]',NULL,'2026-10-03 11:45:00+00'),
+(4,'Plain text',NULL,'Not JSON at all: just a note.','2026-10-18','2026-10-04 08:15:00+00');

@@ -138,3 +138,21 @@ GO
 CREATE FUNCTION sales.items_of (@order int) RETURNS TABLE AS
     RETURN SELECT line, product, qty, price FROM dbo.item WHERE order_id = @order;
 GO
+-- JSON kept in nvarchar(max), as SQL Server stores it: nested, arrays, unicode; one plain text
+-- and one broken value (no eye for those). The grid's eye opens and edits the others.
+CREATE TABLE dbo.documents (
+    id         int IDENTITY(1, 1) PRIMARY KEY,
+    title      nvarchar(100) NOT NULL,
+    body       nvarchar(max),
+    updated_at datetime2(0) NOT NULL DEFAULT '2026-10-01T09:00:00'
+);
+GO
+INSERT INTO dbo.documents (title, body, updated_at) VALUES
+    (N'Order 1001', N'{"order": 1001, "customer": {"name": "Ana Lima", "city": "São Paulo", "tags": ["vip", "early"]}, "items": [{"sku": "AUD-0101", "qty": 2, "price": 199.0}, {"sku": "AUD-0105", "qty": 1, "price": 59.0}], "paid": true, "notes": null}', '2026-10-01T09:00:00'),
+    (N'Settings', N'{"theme": "dark", "font": {"family": "Geist Mono", "size": 13}, "recent": [], "flags": {"beta": false, "limits": {"rows": 1000, "timeout_ms": 30000}}}', '2026-10-02T10:30:00'),
+    (N'Tags', N'["数据", "données", "Daten", "🙂", "naïve café"]', '2026-10-03T11:45:00'),
+    (N'Event', N'{"type": "login", "at": "2026-10-04T08:15:00Z", "geo": {"lat": -23.5505, "lng": -46.6333}, "device": {"os": "macOS", "version": "15.1"}}', '2026-10-04T08:15:00'),
+    (N'Empty object', N'{}', '2026-10-05T12:00:00'),
+    (N'Plain text', N'Not JSON at all: just a note.', '2026-10-06T13:00:00'),
+    (N'Broken', N'{"unterminated": [1, 2', '2026-10-07T14:00:00');
+GO

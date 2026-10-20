@@ -372,7 +372,6 @@ enum Pending {
     Edit(usize, usize),
     Insert,
     Delete(Vec<usize>),
-    #[cfg(feature = "checks")]
     Set(usize, usize, CellValue),
 }
 
@@ -477,7 +476,6 @@ impl GridEdit {
         }
     }
 
-    #[cfg(feature = "checks")]
     pub fn editable(&self, col: usize) -> Option<bool> {
         match &self.target {
             TargetState::Ready(t) => Some(t.is_editable(col)),
@@ -501,7 +499,6 @@ impl GridEdit {
         Some(v.and_then(|v| v.as_deref().map(str::to_string)))
     }
 
-    #[cfg(feature = "checks")]
     pub fn set_cell(&mut self, row: usize, col: usize, v: CellValue, window: &mut Window, cx: &mut Context<Self>) {
         self.request(Pending::Set(row, col, v), window, cx);
     }
@@ -694,7 +691,6 @@ impl GridEdit {
                 self.model.toggle_delete(&refs);
                 self.refresh(cx);
             }
-            #[cfg(feature = "checks")]
             Pending::Set(row, col, v) => {
                 let TargetState::Ready(target) = &self.target else { return };
                 let Some(snap) = self.snapshot() else { return };
@@ -1153,6 +1149,14 @@ impl GridEdit {
     pub fn demo_read_only(&self) -> Option<String> {
         match &self.card {
             Some(Card::ReadOnly { reason, .. }) => Some(reason.clone()),
+            _ => None,
+        }
+    }
+
+    #[cfg(feature = "checks")]
+    pub fn demo_card(&self) -> Option<String> {
+        match &self.card {
+            Some(Card::Note(n)) => Some(n.clone()),
             _ => None,
         }
     }
