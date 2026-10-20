@@ -96,7 +96,7 @@ fn seed_audit(core: &Core) {
         (113, "Claude Code", "orders-mongo", "nosql_query", "db.orders.aggregate([{ $match: { status: \"paid\" } }, { $group: { _id: \"$customer\", total: { $sum: \"$total\" } } }])", Some(500), 91., Outcome::Ok, None, None, seen(None, &[("customer.email", Mask::Partial)], &[])),
         (77, "Claude Code", "prod-pg", "run_query", "SELECT id, name, email, cpf,\n       city, total\n  FROM customers\n WHERE city = 'Recife'\n LIMIT 40;", Some(40), 41., Outcome::Ok, None, None, seen(Some(6), &[("email", Mask::Partial), ("cpf", Mask::Hash)], &[("E-mail", 3)])),
         (42, "Claude Code", "prod-pg", "execute", "INSERT INTO users (email) VALUES ($1)", None, 6., Outcome::Error, Some("23505 duplicate key value violates unique constraint \"users_email_key\" · Key (email)=(‹value›) already exists"), None, None),
-        (24, "Claude Code", "prod-pg", "run_query", "SELECT upper(password) FROM users LIMIT 5", None, 0.3, Outcome::Refused, Some("refused: users.password is hidden"), None, None),
+        (24, "Claude Code", "prod-pg", "run_query", "SELECT upper(password) FROM users LIMIT 5", None, 0.3, Outcome::Refused, Some("refused: users.password is hidden from agents on prod-pg"), None, None),
         (12, "Claude Code", "prod-pg", "execute", "UPDATE orders SET status = $1 WHERE id = $2", Some(1), 12., Outcome::Ok, None, note(Decision::Approved, &["production"]), None),
     ];
     let audit = Audit::new(core.dirs.mcp_audit_file());
