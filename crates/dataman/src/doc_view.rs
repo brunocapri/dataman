@@ -632,6 +632,8 @@ impl DocPane {
         let d = cx.new(|cx| {
             let mut e = CodeEditor::new(window, cx);
             e.set_doc_lang(Some(engine), cx);
+            // A document, not a statement: ⌘↩ saves it however the console would read it.
+            e.set_runs_whole_text(true);
             e.set_text(&text, cx);
             e.set_cursor(0, cx);
             e

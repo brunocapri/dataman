@@ -765,6 +765,8 @@ pub struct CodeEditor {
     last_input: Instant,
     blink_task: Option<Task<()>>,
     plain: bool,
+    /// ⌘↩ submits the whole text, whatever it parses to (a document being edited).
+    whole: bool,
     sig: Option<SignatureHelp>,
     lints: Vec<Lint>,
     lint_task: Option<Task<()>>,
@@ -964,6 +966,7 @@ impl CodeEditor {
             last_input: Instant::now(),
             blink_task: None,
             plain: false,
+            whole: false,
             sig: None,
             lints: Vec::new(),
             lint_task: None,
@@ -983,6 +986,10 @@ impl CodeEditor {
     pub fn plain(mut self) -> Self {
         self.plain = true;
         self
+    }
+
+    pub fn set_runs_whole_text(&mut self, on: bool) {
+        self.whole = on;
     }
 
     pub fn share_gutter(&mut self, share: crate::grid::GutterShare) {
@@ -2204,6 +2211,7 @@ impl CodeEditor {
             cx.emit(EditorEvent::Run(Vec::new()));
             return;
         }
+        let ranges = if self.whole { vec![0..self.buf.text.len()] } else { ranges };
         let ranges: Vec<_> = ranges.into_iter().filter(|r| !self.buf.text[r.clone()].trim().is_empty()).collect();
         let (Some(first), Some(last)) = (ranges.first(), ranges.last()) else { return };
         let span = first.start..last.end;
