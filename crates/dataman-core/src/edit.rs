@@ -732,25 +732,46 @@ impl Connection {
             let table = TableRef { schema: r.first().cloned().flatten(), name: r.get(1).cloned().flatten().unwrap_or_default() };
             (table, columns, Some(oid), not_null)
         } else {
-            let schema = match &shape.table.schema {
-                Some(s) => s.clone(),
-                None => {
-                    let mut found = None;
-                    for s in self.schema.search_path(db) {
-                        if let Ok(rels) = self.relations(db, &s).await
-                            && rels.iter().any(|r| r.name == shape.table.name)
-                        {
-                            found = Some(s);
-                            break;
+            // A table created since its schema was read (DDL in a tab, another client) is not in
+            // the cache yet: one more read before it counts as missing.
+            let mut fresh = false;
+            let rel = loop {
+                let schema = match &shape.table.schema {
+                    Some(s) => Some(s.clone()),
+                    None => {
+                        let mut found = None;
+                        for s in self.schema.search_path(db) {
+                            if let Ok(rels) = self.relations(db, &s).await
+                                && rels.iter().any(|r| r.name == shape.table.name)
+                            {
+                                found = Some(s);
+                                break;
+                            }
                         }
+                        found
                     }
-                    match found {
-                        Some(s) => s,
-                        None => return Ok(Editability::ReadOnly(format!("table {} was not found", shape.table.name))),
+                };
+                let rel = match &schema {
+                    Some(s) => self.relations(db, s).await?.into_iter().find(|r| r.name == shape.table.name).map(|r| (s.clone(), r)),
+                    None => None,
+                };
+                if rel.is_some() || fresh {
+                    break rel;
+                }
+                fresh = true;
+                match &shape.table.schema {
+                    Some(s) => self.schema.invalidate_schema(db, s),
+                    None => {
+                        for s in self.schema.search_path(db) {
+                            self.schema.invalidate_schema(db, &s);
+                        }
                     }
                 }
             };
-            let rel = self.relations(db, &schema).await?.into_iter().find(|r| r.name == shape.table.name);
+            let (schema, rel) = match rel {
+                Some((s, r)) => (s, Some(r)),
+                None => return Ok(Editability::ReadOnly(format!("table {} was not found", shape.table.name))),
+            };
             let Some(rel) = rel else { return Ok(Editability::ReadOnly(format!("table {} was not found", shape.table.name))) };
             if rel.kind.is_view() {
                 return ro("the result comes from a view, which is not edited directly");

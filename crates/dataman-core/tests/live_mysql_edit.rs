@@ -100,3 +100,24 @@ fn edit_every_type() {
     exec_quiet(&e, &c0, &["DROP DATABASE dataman_me1"]);
     assert!(bad.is_empty(), "\n{}", bad.join("\n"));
 }
+
+#[test]
+fn a_table_made_after_its_schema_was_read_is_editable() {
+    let e = env();
+    let Some(c0) = mysql_on(&e, mysql_profile("")) else { return };
+    exec_quiet(&e, &c0, &["DROP DATABASE IF EXISTS dataman_me3", "CREATE DATABASE dataman_me3"]);
+    let Some(c) = mysql_on(&e, mysql_profile("dataman_me3")) else { return };
+    let db = "dataman_me3";
+    let s = c.session(None);
+    run(&e, &s, "CREATE TABLE early (id INT PRIMARY KEY)");
+    let known = e.core.block_on(c.relations(db, db)).unwrap();
+    assert!(known.iter().any(|r| r.name == "early") && !known.iter().any(|r| r.name == "late"), "{known:?}");
+    run(&e, &s, "CREATE TABLE late (id INT PRIMARY KEY, name VARCHAR(20))");
+    run(&e, &s, "INSERT INTO late VALUES (1, 'a')");
+    let rs = run(&e, &s, "SELECT * FROM late");
+    match e.core.block_on(c.edit_target(db, &rs, None)).unwrap() {
+        Editability::Editable(_) => {}
+        Editability::ReadOnly(why) => panic!("{why}"),
+    }
+    exec_quiet(&e, &c0, &["DROP DATABASE IF EXISTS dataman_me3"]);
+}
