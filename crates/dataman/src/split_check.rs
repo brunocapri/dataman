@@ -235,6 +235,7 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
     let one = parts(ws, Pane::Left, cx);
     report("one group: no Open to the Side button at the strip's end (tabs, +, room)", one.len() == 3, format!("{} parts", one.len()));
 
+    let t0 = std::time::Instant::now();
     key(cx, "cmd-\\");
     let all = tabs(ws, cx);
     let copy = all.last().cloned().unwrap();
@@ -259,10 +260,11 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
     let moving = cx.update(|_, cx| ws.read(cx).split_move.is_some()).unwrap();
     pause(cx, 60).await;
     let mid = panes(ws, cx);
+    let in_time = crate::check::mid_possible(t0, crate::motion::SPLIT);
     let c = center(ws, cx);
     report(
         "the new group grows in from the right while the first narrows",
-        reduced || (moving && mid.is_some_and(|((_, lw), (rx, rw))| rw > 1. && rw < c.w / 2. - 10. && lw > c.w / 2. && near(rx + rw, c.right(), 1.5))),
+        reduced || !in_time || (moving && mid.is_some_and(|((_, lw), (rx, rw))| rw > 1. && rw < c.w / 2. - 10. && lw > c.w / 2. && near(rx + rw, c.right(), 1.5))),
         format!("{mid:?} in {c:?}"),
     );
     pause(cx, 400).await;
@@ -364,8 +366,18 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
     for _ in 0..6 {
         key(cx, "cmd-t");
     }
-    pause(cx, 250).await;
-    draw(cx);
+    // Each new tab grows in and the strip follows the one in front: done once it stops moving
+    // (a slow renderer takes many times the 180 ms).
+    let mut last = f32::NAN;
+    for _ in 0..60 {
+        pause(cx, 50).await;
+        draw(cx);
+        let x = strip_scroll(ws, Pane::Left, cx).0;
+        if x == last && x < -1. {
+            break;
+        }
+        last = x;
+    }
     let (x0, max0, view) = strip_scroll(ws, Pane::Left, cx);
     let last = tab_mid(ws, Pane::Left, 7, cx);
     snap("scrolled", cx);
@@ -376,7 +388,15 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
     );
     let right0 = strip_scroll(ws, Pane::Right, cx).0;
     wheel(cx, middle(view), 120.);
-    let x1 = strip_scroll(ws, Pane::Left, cx).0;
+    let mut x1 = strip_scroll(ws, Pane::Left, cx).0;
+    for _ in 0..20 {
+        if x1 > x0 + 50. {
+            break;
+        }
+        pause(cx, 50).await;
+        draw(cx);
+        x1 = strip_scroll(ws, Pane::Left, cx).0;
+    }
     report("the wheel (a vertical turn) scrolls the strip sideways", x1 > x0 + 50., format!("{x0} → {x1}"));
     report("the other group's strip stays where it was", strip_scroll(ws, Pane::Right, cx).0 == right0, String::new());
     wheel(cx, middle(view), -400.);

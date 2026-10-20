@@ -723,14 +723,24 @@ async fn folders(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     );
 
     let Some(folder) = named_point(&history, "Reports", cx).await else { return false };
+    // A folder's rows fold away over frames: waited for, so a slow renderer sees the end too.
+    let folded = async |cx: &mut AsyncWindowContext| {
+        for _ in 0..60 {
+            pause(cx, 50).await;
+            draw(cx);
+            let r = rows(&history, cx);
+            if !r.contains(&"  Orders by day".to_string()) {
+                return r;
+            }
+        }
+        rows(&history, cx)
+    };
     click(cx, folder, MouseButton::Left, Modifiers::default());
-    pause(cx, 450).await;
-    let shut = rows(&history, cx);
+    let shut = folded(cx).await;
     key(cx, "right");
     let opened = rows(&history, cx);
     key(cx, "left");
-    pause(cx, 450).await;
-    let shut_again = rows(&history, cx);
+    let shut_again = folded(cx).await;
     report(
         &mut ok,
         "a click shuts a folder; → opens it, ← shuts it",

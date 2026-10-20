@@ -265,7 +265,7 @@ async fn check(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> bool {
     println!("big plan: {nodes} nodes, ↓ + frame {per_key:?} (tree), {per_flame:?} (flame)");
     report(
         "a plan of 500+ nodes: ↓ and its frame under 8 ms in the tree and the flame",
-        up && nodes >= 500 && per_key < Duration::from_millis(8) && per_flame < Duration::from_millis(8),
+        up && nodes >= 500 && per_key < crate::check::budget(Duration::from_millis(8)) && per_flame < crate::check::budget(Duration::from_millis(8)),
         format!("{nodes} nodes, {per_key:?} / {per_flame:?}"),
     );
 

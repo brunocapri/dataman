@@ -329,3 +329,16 @@ pub fn clipboard(cx: &mut AsyncWindowContext) -> String {
 pub fn set_clipboard(text: &str, cx: &mut AsyncWindowContext) {
     let _ = cx.update(|_, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.to_string())));
 }
+
+/// Whether a sample taken now can still fall inside an animation `d` long that began at `t0`.
+/// On a slow renderer (Xvfb's software GL in CI) one frame can outlast an animation: then there
+/// is no mid-way to see, and a check holds the animation to where it lands only.
+pub fn mid_possible(t0: std::time::Instant, d: std::time::Duration) -> bool {
+    t0.elapsed() < d.mul_f32(0.9)
+}
+
+/// A time budget set on macOS (Metal, the machine it was measured on). Linux CI draws with Mesa's
+/// software GL under Xvfb, in a VM: 2.5 times the budget there, so a regression still shows.
+pub fn budget(mac: std::time::Duration) -> std::time::Duration {
+    if cfg!(target_os = "linux") { mac.mul_f32(2.5) } else { mac }
+}

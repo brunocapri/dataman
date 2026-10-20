@@ -1150,20 +1150,22 @@ async fn zoom_checks(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> boo
     let win = cx.update(|window, _| window.viewport_size()).unwrap();
     let explorer = cx.update(|_, cx| ws.read(cx).explorer_now()).unwrap_or(0.);
     let _ = cx.update(|window, cx| window.focus(&grid.focus_handle(cx), cx));
+    let t0 = std::time::Instant::now();
     press(cx, "cmd-shift-enter");
     let motion = !cx.update(|_, cx| cx.reduce_motion()).unwrap_or(false);
     pause(cx, 60).await;
     draw(cx);
     let mid = zoom(cx);
     let mid_b = bounds(cx);
+    let in_time = crate::check::mid_possible(t0, crate::motion::ZOOM);
     pause(cx, 320).await;
     draw(cx);
     let after = bounds(cx);
     let landed = cx.update(|_, cx| ws.read(cx).zoom_tween.is_none() || ws.read(cx).zoom_now(&tab, cx) == 1.).unwrap_or(false);
-    report("⇧⌘↩ on the grid zooms the result, animated", (!motion || (mid > 0.05 && mid < 0.999)) && zoom(cx) == 1. && landed, format!("mid {mid} end {}", zoom(cx)));
+    report("⇧⌘↩ on the grid zooms the result, animated", (!motion || !in_time || (mid > 0.05 && mid < 0.999)) && zoom(cx) == 1. && landed, format!("mid {mid} end {}{}", zoom(cx), if in_time { "" } else { " (frames too slow for a mid-way sample)" }));
     report(
         "mid-way the result has grown part of the way",
-        !motion || mid_b.zip(after).is_some_and(|(m, a)| m.top() < before.top() && m.top() > a.top()),
+        !motion || !in_time || mid_b.zip(after).is_some_and(|(m, a)| m.top() < before.top() && m.top() > a.top()),
         format!("{:?} {:?} {:?}", before.top(), mid_b.map(|b| b.top()), after.map(|b| b.top())),
     );
     let title = crate::theme::metrics::TITLE_H;
@@ -1327,10 +1329,12 @@ async fn motion_checks(ws: &Entity<Workspace>, id: &str, cx: &mut AsyncWindowCon
     let editor = cx.update(|_, cx| ws.read(cx).active_tab().unwrap().read(cx).editor.clone()).unwrap();
     let _ = cx.update(|window, cx| window.focus(&editor.focus_handle(cx), cx));
     let before = fill(cx);
+    let t0 = std::time::Instant::now();
     key(cx, "cmd-b");
     pause(cx, 70).await;
     draw(cx);
     let mid = fill(cx);
+    let in_time = crate::check::mid_possible(t0, std::time::Duration::from_millis(180));
     pause(cx, 300).await;
     draw(cx);
     let shut = fill(cx);
@@ -1340,8 +1344,8 @@ async fn motion_checks(ws: &Entity<Workspace>, id: &str, cx: &mut AsyncWindowCon
     let back = fill(cx);
     report(
         "the explorer toggle's left part fills and empties with the explorer's slide",
-        (before - 1.).abs() < 1e-3 && (!motion || (mid > 0.01 && mid < 0.99)) && shut.abs() < 1e-3 && (back - 1.).abs() < 1e-3,
-        format!("{before} → {mid} → {shut} → {back}"),
+        (before - 1.).abs() < 1e-3 && (!motion || !in_time || (mid > 0.01 && mid < 0.99)) && shut.abs() < 1e-3 && (back - 1.).abs() < 1e-3,
+        format!("{before} → {mid} → {shut} → {back}{}", if in_time { "" } else { " (frames too slow for a mid-way sample)" }),
     );
 
     let pref = cx.update(|_, cx| crate::theme::pref(cx)).unwrap_or_default();

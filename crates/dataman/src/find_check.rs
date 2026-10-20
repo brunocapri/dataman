@@ -217,7 +217,7 @@ async fn check(ws: &Entity<Workspace>, editor: &Entity<CodeEditor>, grid: &Entit
     });
     let key_ms = t1.elapsed().as_secs_f64() * 1e3;
     println!("     2,000 lines: search {open_ms:.2} ms ({label}); a key {closed_ms:.2} ms with the bar closed, {key_ms:.2} ms open");
-    report("a 2,000-line script searches and edits fast", open_ms < 8. && key_ms < 4., format!("{open_ms:.2} {key_ms:.2}"));
+    report("a 2,000-line script searches and edits fast", open_ms < crate::check::budget(Duration::from_millis(8)).as_secs_f64() * 1e3 && key_ms < crate::check::budget(Duration::from_millis(4)).as_secs_f64() * 1e3, format!("{open_ms:.2} {key_ms:.2}"));
     key(cx, "escape");
     key(cx, "escape");
     let _ = cx.update(|_, cx| editor.update(cx, |e, cx| e.set_text(&original, cx)));

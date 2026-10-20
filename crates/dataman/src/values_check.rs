@@ -96,6 +96,13 @@ pub async fn run_json(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWind
     let edited = "{\n  \"order\": 1001,\n  \"customer\": {\"name\": \"Ana Souza\", \"city\": \"São Paulo\", \"tags\": [\"vip\", \"early\"]},\n  \"items\": [],\n  \"paid\": true\n}";
     let (_, error) = edit_in_viewer(ws, at, edited, cx).await;
     let closed = cx.update(|_, cx| ws.read(cx).value_view.is_none()).unwrap_or(false);
+    // The first edit of a result asks the server for its key: the edit lands when it answers.
+    for _ in 0..100 {
+        if pending(&tab, cx) > 0 {
+            break;
+        }
+        pause(cx, 50).await;
+    }
     let n = pending(&tab, cx);
     r.check("Apply (⌘↩) closes the viewer: a pending edit of the cell", error.is_none() && closed && n == 1, format!("{error:?} closed {closed} pending {n}"));
     commit(&tab, cx).await;
