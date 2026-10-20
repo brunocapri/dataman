@@ -110,6 +110,7 @@ const STAGES: &[Stage] = &[
     st("nosql-engines-check", &[Pg, Mongo, Es, OpenSearch, Redis], 300),
     st("mcp-check", &[Pg], 300),
     st("mcp-tools-check", &[Pg, MySql, MsSql, Mongo, Es, OpenSearch, Redis], 400),
+    st("agents-check", &[Pg], 200),
     st("update-check", &[Pg], 300),
 ];
 

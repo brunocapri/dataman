@@ -61,6 +61,8 @@ pub enum NavView {
     Explorer,
     Favorites,
     History,
+    /// The Agents area: its own icon at the foot of the rail, not one of `ALL`.
+    Agents,
 }
 
 impl NavView {
@@ -71,6 +73,7 @@ impl NavView {
             NavView::Explorer => "Explorer",
             NavView::Favorites => "Favorites",
             NavView::History => "History",
+            NavView::Agents => "Agents",
         }
     }
 }

@@ -1,40 +1,34 @@
 //! Running the tools in the app means the Keychain is read by the executable that wrote it: no prompt.
 
 use std::collections::VecDeque;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use chrono::Local;
-use gpui::{
-    AnyWindowHandle, App, AppContext, Context, EventEmitter, FocusHandle, Focusable, FontWeight, Global, SharedString,
-    StyledText, WeakEntity, Window, actions, div, prelude::*, uniform_list,
-};
+#[cfg(feature = "checks")]
+use gpui::AppContext;
+use gpui::{AnyWindowHandle, App, Context, FontWeight, Global, SharedString, StyledText, WeakEntity, Window, actions, div, prelude::*};
 use crate::theme::px;
 use dataman_core::{Core, Dirs, SecretStore};
+#[cfg(feature = "checks")]
 use dataman_mcp::audit::{AllowedBy, Decision, Entry, Outcome};
 use dataman_mcp::{Approval, Front, Hub, Registry};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::app::{Bound, Side, Workspace};
-use crate::assets::Icon;
+use crate::app::Workspace;
+#[cfg(feature = "checks")]
+use crate::app::{Bound, Side};
 use crate::theme::{ActiveTheme, Theme};
 use crate::ui::{self, Btn};
 
-actions!(mcp, [Allow, AlwaysAllow, Deny, ReloadLog, CloseLog]);
+actions!(mcp, [Allow, AlwaysAllow, Deny]);
 
 const SHEET: &str = "McpSheet";
-const LOG: &str = "McpLog";
-const ROW_H: f32 = 46.;
-const MENU: [&str; 2] = ["Copy Query", "Open in Tab"];
 
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         crate::keymap::kb("cmd-enter", Allow, Some(SHEET)),
         crate::keymap::kb("cmd-alt-enter", AlwaysAllow, Some(SHEET)),
         crate::keymap::kb("escape", Deny, Some(SHEET)),
-        crate::keymap::kb("cmd-r", ReloadLog, Some(LOG)),
-        crate::keymap::kb("escape", CloseLog, Some(LOG)),
     ]);
 }
 
@@ -578,40 +572,35 @@ impl Workspace {
         )
     }
 
+    /// The MCP log is the Agents area's Audit page; a second time back to the explorer.
     pub(crate) fn toggle_mcp_log(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if matches!(self.side, Some(Side::Feature("mcp-log", ..))) {
-            self.side = None;
-            cx.notify();
+        if self.view == dataman_core::layout::NavView::Agents && self.agents.read(cx).page == crate::agents::Page::Audit {
+            self.show_nav(dataman_core::layout::NavView::Explorer, window, cx);
+            self.focus_editor(window, cx);
             return;
         }
-        let path = self.store.read(cx).core.dirs.mcp_audit_file();
-        let view = cx.new(|cx| McpLog::new(path, cx));
-        cx.subscribe_in(&view, window, |w, _, ev: &LogEvent, window, cx| match ev {
-            LogEvent::Close => {
-                if matches!(w.side, Some(Side::Feature("mcp-log", ..))) {
-                    w.side = None;
-                }
-                w.focus_editor(window, cx);
-                cx.notify();
-            }
-            LogEvent::Open { sql, connection, database } => w.open_logged(sql, connection.as_deref(), database.as_deref(), window, cx),
-        })
-        .detach();
-        window.focus(&view.focus_handle(cx), cx);
-        self.side_w = self.side_w.max(400.);
-        self.side = Some(Side::Feature("mcp-log", view.into(), Bound::Explorer));
-        cx.notify();
+        self.show_agents(crate::agents::Page::Audit, window, cx);
     }
 
     #[cfg(feature = "checks")]
-    pub(crate) fn mcp_log(&self) -> Option<gpui::Entity<McpLog>> {
-        match &self.side {
-            Some(Side::Feature("mcp-log", v, _)) => v.clone().downcast::<McpLog>().ok(),
-            _ => None,
-        }
+    pub(crate) fn mcp_log(&self) -> Option<gpui::Entity<crate::agents::AgentsPage>> {
+        (self.view == dataman_core::layout::NavView::Agents).then(|| self.agents.clone())
     }
 
-    fn open_logged(&mut self, sql: &str, connection: Option<&str>, database: Option<&str>, window: &mut Window, cx: &mut Context<Self>) {
+    /// A plain side panel for the layout checks (its docking, sliding and the result's zoom).
+    #[cfg(feature = "checks")]
+    pub(crate) fn demo_toggle_side(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.side, Some(Side::Feature("demo-side", ..))) {
+            self.side = None;
+        } else {
+            let view = cx.new(|_| DemoSide);
+            self.side_w = self.side_w.max(400.);
+            self.side = Some(Side::Feature("demo-side", view.into(), Bound::Explorer));
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn open_logged(&mut self, sql: &str, connection: Option<&str>, database: Option<&str>, window: &mut Window, cx: &mut Context<Self>) {
         let id = connection.and_then(|c| {
             let s = self.store.read(cx);
             s.profile(c).or_else(|| s.profiles.iter().find(|p| p.name == c)).map(|p| p.id.clone())
@@ -644,6 +633,7 @@ impl Workspace {
     }
 }
 
+#[cfg(feature = "checks")]
 pub(crate) fn row_what(e: &Entry) -> String {
     match (e.outcome, e.rows, e.approval.as_ref().map(|a| a.decision)) {
         (Outcome::Ok, _, _) if e.draft => "draft".to_string(),
@@ -655,282 +645,14 @@ pub(crate) fn row_what(e: &Entry) -> String {
     }
 }
 
-pub enum LogEvent {
-    Close,
-    Open { sql: String, connection: Option<String>, database: Option<String> },
-}
+#[cfg(feature = "checks")]
+pub(crate) struct DemoSide;
 
-pub struct McpLog {
-    path: PathBuf,
-    focus: FocusHandle,
-    entries: Vec<Entry>,
-    selected: Option<usize>,
-    loaded: bool,
-    menu: Option<(usize, gpui::Point<gpui::Pixels>)>,
-    list_bounds: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
-}
-
-impl EventEmitter<LogEvent> for McpLog {}
-
-impl Focusable for McpLog {
-    fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.focus.clone()
-    }
-}
-
-impl McpLog {
-    pub fn new(path: PathBuf, cx: &mut Context<Self>) -> Self {
-        let mut v = McpLog { path, focus: cx.focus_handle(), entries: Vec::new(), selected: None, loaded: false, menu: None, list_bounds: Default::default() };
-        v.reload(cx);
-        v
-    }
-
-    fn reload(&mut self, cx: &mut Context<Self>) {
-        let path = self.path.clone();
-        let task = cx.background_spawn(async move { dataman_mcp::audit::tail(&path, 500) });
-        cx.spawn(async move |this, cx| {
-            let mut entries = task.await;
-            entries.reverse();
-            let _ = this.update(cx, |v, cx| {
-                v.entries = entries;
-                v.loaded = true;
-                v.selected = v.selected.filter(|i| *i < v.entries.len());
-                v.menu = None;
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    fn render_row(&self, i: usize, t: &Theme, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let e = &self.entries[i];
-        let sel = self.selected == Some(i);
-        let decision = e.approval.as_ref().map(|a| a.decision);
-        let color = match (e.outcome, decision) {
-            (Outcome::Ok, _) => t.ok,
-            (_, Some(Decision::Denied | Decision::Timeout)) => t.err,
-            (Outcome::Refused | Outcome::Invalid, _) => t.warn,
-            _ => t.err,
-        };
-        let time = e.ts.with_timezone(&Local).format("%H:%M:%S").to_string();
-        let what = row_what(e);
-        let line: SharedString = e.sql.clone().or_else(|| e.error.clone()).unwrap_or_default().into();
-        let hov = t.hov;
-        div()
-            .id(("mcp-log", i))
-            .h(px(ROW_H))
-            .mx(px(6.))
-            .px(px(8.))
-            .flex()
-            .flex_col()
-            .justify_center()
-            .gap(px(3.))
-            .when(sel, |d| d.bg(t.prs))
-            .when(!sel, |d| d.hover(move |s| s.bg(hov)))
-            .on_click(cx.listener(move |v, ev: &gpui::ClickEvent, window, cx| {
-                if crate::keymap::menu_click(&ev.modifiers()) {
-                    return;
-                }
-                window.focus(&v.focus, cx);
-                if ev.click_count() >= 2 {
-                    v.selected = Some(i);
-                    v.open(i, cx);
-                } else {
-                    v.selected = if v.selected == Some(i) { None } else { Some(i) };
-                }
-                cx.notify();
-            }))
-            .on_mouse_down(gpui::MouseButton::Right, cx.listener(move |v, ev: &gpui::MouseDownEvent, _, cx| {
-                cx.stop_propagation();
-                v.menu = Some((i, ev.position));
-                cx.notify();
-            }))
-            .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |v, ev: &gpui::MouseDownEvent, _, cx| {
-                if crate::keymap::menu_click(&ev.modifiers) {
-                    cx.stop_propagation();
-                    v.menu = Some((i, ev.position));
-                    cx.notify();
-                }
-            }))
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(8.))
-                    .text_size(px(11.))
-                    .child(ui::chip(color, 6.))
-                    .child(div().text_color(t.tx3).child(time))
-                    .child(div().text_color(t.tx).child(e.tool.clone()))
-                    .children(e.connection.clone().map(|c| div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx2).child(c)))
-                    .child(div().flex_1())
-                    .child(div().text_color(t.tx3).child(dataman_core::activity::fmt_ms(e.ms)))
-                    .children(e.allowed_by.as_ref().map(|b| {
-                        let c = if matches!(b, AllowedBy::Yolo) { t.err } else { t.warn };
-                        div().h(px(15.)).px(px(4.)).flex().items_center().border_1().border_color(c).text_color(c).text_size(px(9.5)).child(b.label())
-                    }))
-                    .child(div().text_color(if e.outcome == Outcome::Ok { t.tx3 } else { color }).child(what)),
-            )
-            .child(div().pl(px(14.)).text_size(px(11.)).text_color(t.tx3).whitespace_nowrap().overflow_hidden().text_ellipsis().child(line))
-            .into_any_element()
-    }
-
-    fn open(&mut self, i: usize, cx: &mut Context<Self>) {
-        let Some(e) = self.entries.get(i) else { return };
-        let Some(sql) = e.statement() else { return };
-        cx.emit(LogEvent::Open { sql: sql.to_string(), connection: e.connection.clone(), database: e.database.clone() });
-    }
-
-    fn copy(&mut self, i: usize, cx: &mut Context<Self>) {
-        if let Some(sql) = self.entries.get(i).and_then(|e| e.statement()) {
-            cx.write_to_clipboard(gpui::ClipboardItem::new_string(sql.to_string()));
-        }
-    }
-
-    fn render_menu(&self, t: &Theme, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
-        let (i, at) = self.menu?;
-        let has_sql = self.entries.get(i).and_then(|e| e.statement()).is_some();
-        let item = |key: &'static str, label: &'static str, f: fn(&mut Self, usize, &mut Context<Self>)| {
-            ui::menu_item(t, key, label, None, has_sql).when(has_sql, |d| {
-                d.on_click(cx.listener(move |v, _, _, cx| {
-                    v.menu = None;
-                    f(v, i, cx);
-                    cx.notify();
-                }))
-            })
-        };
-        let menu = ui::popover(t)
-            .w(px(160.))
-            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_mouse_down_out(cx.listener(|v, _, _, cx| {
-                v.menu = None;
-                cx.notify();
-            }))
-            .child(item("ml-copy", MENU[0], Self::copy))
-            .child(item("ml-open", MENU[1], Self::open));
-        Some(gpui::deferred(gpui::anchored().position(at).snap_to_window_with_margin(px(8.)).child(ui::menu_in("mcp-menu-in", menu))).priority(3))
-    }
-
-    #[cfg(feature = "checks")]
-    pub(crate) fn demo_row_point(&self, i: usize) -> Option<gpui::Point<gpui::Pixels>> {
-        let b = self.list_bounds.get()?;
-        Some(gpui::point(b.origin.x + px(40.), b.origin.y + px(ROW_H * i as f32 + ROW_H / 2.)))
-    }
-
-    #[cfg(feature = "checks")]
-    pub(crate) fn demo_menu_open(&self) -> bool {
-        self.menu.is_some()
-    }
-
-    #[cfg(feature = "checks")]
-    pub(crate) fn demo_menu_items(&self) -> Vec<(&'static str, bool)> {
-        let Some((i, _)) = self.menu else { return Vec::new() };
-        let on = self.entries.get(i).and_then(|e| e.statement()).is_some();
-        MENU.iter().map(|l| (*l, on)).collect()
-    }
-
-    #[cfg(feature = "checks")]
-    pub(crate) fn demo_entries(&self) -> &[Entry] {
-        &self.entries
-    }
-
-    #[cfg(feature = "checks")]
-    pub(crate) fn demo_open_menu(&mut self, i: usize, cx: &mut Context<Self>) {
-        self.menu = self.demo_row_point(i).map(|p| (i, p));
-        cx.notify();
-    }
-
-    fn render_detail(&self, t: &Theme) -> Option<gpui::AnyElement> {
-        let e = self.entries.get(self.selected?)?;
-        let facts: Vec<String> = [Some(e.client.clone()), Some(e.transport.clone()), e.database.clone()].into_iter().flatten().filter(|s| !s.is_empty()).collect();
-        let approval = e.approval.as_ref().map(|a| {
-            let mut parts = vec![a.decision.label().to_string()];
-            parts.extend(a.by.clone());
-            parts.extend(a.reasons.iter().cloned());
-            parts.join(" · ")
-        });
-        let allowed = e.allowed_by.as_ref().map(|b| match b {
-            AllowedBy::Yolo => "ran without asking: YOLO".to_string(),
-            AllowedBy::Allowlist { entries } => format!("ran without asking: allowed {}", entries.join(" · ")),
-        });
-        Some(
-            div()
-                .flex_none()
-                .px(px(12.))
-                .py(px(10.))
-                .flex()
-                .flex_col()
-                .gap(px(8.))
-                .border_t_1()
-                .border_color(t.line)
-                .child(div().text_size(px(11.)).text_color(t.tx3).child(facts.join(" · ")))
-                .children(approval.map(|a| div().text_size(px(11.)).text_color(t.tx2).child(a)))
-                .children(allowed.map(|a| div().text_size(px(11.)).text_color(if matches!(e.allowed_by, Some(AllowedBy::Yolo)) { t.err } else { t.warn }).child(a)))
-                .children(e.sql.as_ref().map(|s| crate::chrome::code_block(t, s, None)))
-                .children(e.error.as_ref().map(|err| div().text_size(px(11.5)).line_height(px(17.)).text_color(t.err).child(err.clone())))
-                .into_any_element(),
-        )
-    }
-}
-
-impl gpui::Render for McpLog {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+#[cfg(feature = "checks")]
+impl Render for DemoSide {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme();
-        let body: gpui::AnyElement = if self.entries.is_empty() {
-            div()
-                .flex_1()
-                .flex()
-                .items_center()
-                .justify_center()
-                .when(self.loaded, |d| d.child(ui::empty_state(&t, "[ NO CALLS ]", 20., None)))
-                .into_any_element()
-        } else {
-            let theme = t.clone();
-            uniform_list("mcp-log-list", self.entries.len(), cx.processor(move |v, range: std::ops::Range<usize>, _window, cx| {
-                range.map(|i| v.render_row(i, &theme, cx)).collect::<Vec<_>>()
-            }))
-            .flex_1()
-            .into_any_element()
-        };
-        div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .text_size(px(12.))
-            .key_context(LOG)
-            .track_focus(&self.focus)
-            .on_action(cx.listener(|v, _: &ReloadLog, _, cx| v.reload(cx)))
-            .on_action(cx.listener(|v, _: &CloseLog, _, cx| {
-                if v.menu.take().is_some() {
-                    cx.notify();
-                } else {
-                    cx.emit(LogEvent::Close);
-                }
-            }))
-            .child(
-                div()
-                    .h(px(40.))
-                    .flex_none()
-                    .pl(px(14.))
-                    .pr(px(8.))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(8.))
-                    .border_b_1()
-                    .border_color(t.line)
-                    .child(ui::caps(&t, "MCP LOG"))
-                    .child(div().text_color(t.tx3).child(self.entries.len().to_string()))
-                    .child(div().flex_1())
-                    .child(ui::icon_button(&t, "mcp-log-reload", Icon::Reload, 24., 13.).on_click(cx.listener(|v, _, _, cx| v.reload(cx))))
-                    .child(ui::icon_button(&t, "mcp-log-close", Icon::Close, 24., 13.).on_click(cx.listener(|_, _, _, cx| cx.emit(LogEvent::Close)))),
-            )
-            .child({
-                let bounds = self.list_bounds.clone();
-                div().flex_1().min_h_0().pt(px(4.)).flex().flex_col().on_children_prepainted(move |b, _, _| bounds.set(b.first().copied())).child(body)
-            })
-            .children(self.render_detail(&t))
-            .children(self.render_menu(&t, cx))
+        div().size_full().flex().items_center().justify_center().text_color(t.tx4).child("side panel")
     }
 }
 
@@ -994,6 +716,8 @@ pub fn demo_seed(core: &Arc<Core>, approval: bool, cx: &mut App) {
             draft: false,
             favorite: None,
             allowed_by: (i == 7).then(|| AllowedBy::Allowlist { entries: vec!["UPDATE orders SET status = ? WHERE id = ?".into()] }),
+            rewritten: None,
+            seen: None,
         });
     }
     if approval {

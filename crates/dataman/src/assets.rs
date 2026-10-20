@@ -14,6 +14,14 @@ macro_rules! assets {
 assets!(
     "icons/activity.svg",
     "icons/agent.svg",
+    "icons/robot.svg",
+    "icons/home.svg",
+    "icons/pulse.svg",
+    "icons/shield.svg",
+    "icons/padlock.svg",
+    "icons/types.svg",
+    "icons/column.svg",
+    "icons/grid-table.svg",
     "icons/braces.svg",
     "icons/arrow-right.svg",
     "icons/check.svg",
@@ -169,6 +177,14 @@ pub enum Icon {
     WinMinimize,
     WinMaximize,
     WinRestore,
+    Robot,
+    Home,
+    Pulse,
+    Shield,
+    Padlock,
+    Types,
+    Column,
+    GridTable,
 }
 
 impl Icon {
@@ -240,6 +256,14 @@ impl Icon {
             Icon::WinMinimize => "icons/win-min.svg",
             Icon::WinMaximize => "icons/win-max.svg",
             Icon::WinRestore => "icons/win-restore.svg",
+            Icon::Robot => "icons/robot.svg",
+            Icon::Home => "icons/home.svg",
+            Icon::Pulse => "icons/pulse.svg",
+            Icon::Shield => "icons/shield.svg",
+            Icon::Padlock => "icons/padlock.svg",
+            Icon::Types => "icons/types.svg",
+            Icon::Column => "icons/column.svg",
+            Icon::GridTable => "icons/grid-table.svg",
         }
     }
 }
@@ -296,7 +320,8 @@ mod tests {
             SchemaFilled, Group, Table, View, Key, Keyboard, Index, Search, Filter, Close, Check, Copy, Export, Import, Edit, Trash,
             Sidebar, SidebarRight, PanelRight, Expand, Collapse, Lock, Warning, Info, More, Tab, Command, Code, Hash, Plug,
             Tunnel, MatView, Function, Procedure, Sequence, Type, Label, Trigger, Extension, Role,
-            Constraint, Link, Partition, Activity, Star, StarFill, Pin, Agent, Live, Collection,
+            Constraint, Link, Partition, Activity, Star, StarFill, Pin, Agent, Live, Collection, Robot, Home, Pulse, Shield,
+            Padlock, Types, Column, GridTable,
         ];
         for i in all {
             let bytes = Assets.load(i.path()).unwrap().unwrap_or_else(|| panic!("{} missing", i.path()));

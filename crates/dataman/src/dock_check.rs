@@ -238,7 +238,7 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
     settle(cx).await;
     report("Explorer again", state(ws, cx).0 == NavView::Explorer, format!("{:?}", state(ws, cx)));
 
-    command(ws, Box::new(crate::app::ToggleMcpLog), cx);
+    let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.demo_toggle_side(cx)));
     settle(cx).await;
     let side = panel(ws, PanelId::Side, cx);
     report("the side panel opens in the right dock", side.is_some_and(|s| (s.right() - view_w(cx)).abs() < 0.5), format!("{side:?}"));

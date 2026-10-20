@@ -39,7 +39,9 @@ impl Workspace {
                 h.set_favorites(false, cx);
                 h.reload(cx);
             }),
+            NavView::Agents => {}
         }
+        self.agents.update(cx, |a, cx| a.set_visible(v == NavView::Agents, cx));
         self.view = v;
         cx.notify();
     }
@@ -94,12 +96,19 @@ impl Workspace {
         Some(hint.into_any_element())
     }
 
+    /// The Agents area on one of its pages (the robot at the foot of the rail, Settings' MCP log).
+    pub(crate) fn show_agents(&mut self, page: crate::agents::Page, window: &mut Window, cx: &mut Context<Self>) {
+        self.agents.update(cx, |a, cx| a.show(page, cx));
+        self.show_nav(NavView::Agents, window, cx);
+    }
+
     pub(crate) fn render_sidebar(&mut self, d: Dock, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        if self.view != NavView::Explorer {
+        if matches!(self.view, NavView::Favorites | NavView::History) {
             self.view = if self.history.read(cx).showing_favorites() { NavView::Favorites } else { NavView::History };
         }
         let view: AnyElement = match self.view {
             NavView::Explorer => self.tree.clone().into_any_element(),
+            NavView::Agents => self.agents.update(cx, |a, cx| a.render_nav(cx)),
             _ => self.history.clone().into_any_element(),
         };
         let rail = self.render_rail(d, window, cx);
@@ -129,6 +138,7 @@ impl Workspace {
                 NavView::Favorites if flash.is_some() => Icon::StarFill,
                 NavView::Favorites => Icon::Star,
                 NavView::History => Icon::History,
+                NavView::Agents => Icon::Robot,
             };
             let color = match flash {
                 Some(_) => t.warn,
@@ -164,12 +174,46 @@ impl Workspace {
                         .child(icon(glyph).size(px(GLYPH)).text_color(color)),
                 )
         });
+        let on = self.view == NavView::Agents;
+        let hov = t.hov;
+        let robot = div()
+            .flex_none()
+            .on_children_prepainted({
+                let bounds = bounds.clone();
+                move |b, _, _| {
+                    if let Some(b) = b.first() {
+                        bounds.borrow_mut().insert(NavView::Agents, *b);
+                    }
+                }
+            })
+            .child(
+                div()
+                    .children(ui::here(&"rail-agents".into()))
+                    .id("rail-agents")
+                    .size(px(ICON_BOX))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .when(on, |e| e.bg(t.prs))
+                    .when(!on, move |e| e.hover(move |s| s.bg(hov)))
+                    .tooltip(ui::tooltip("Agents", None, None))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(cx.listener(move |w, _, window, cx| {
+                        if w.view == NavView::Agents {
+                            w.show_nav(NavView::Explorer, window, cx);
+                        } else {
+                            w.show_nav(NavView::Agents, window, cx);
+                        }
+                    }))
+                    .child(icon(Icon::Robot).size(px(16.)).text_color(if on { t.tx } else { t.tx3 })),
+            );
         div()
             .id("sidebar-rail")
             .w(px(metrics::RAIL_W))
             .flex_none()
             .h_full()
             .pt(px(4.))
+            .pb(px(8.))
             .flex()
             .flex_col()
             .items_center()
@@ -178,5 +222,7 @@ impl Workspace {
             .when(d == Dock::Left, |e| e.border_r_1())
             .when(d == Dock::Right, |e| e.border_l_1())
             .children(icons)
+            .child(div().flex_1())
+            .child(robot)
     }
 }
