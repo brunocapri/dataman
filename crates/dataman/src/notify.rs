@@ -1,11 +1,35 @@
 use gpui::App;
 
-pub fn update_available(version: &str, _cx: &App) {
+pub fn update_available(version: &str, cx: &App) {
     if std::env::var_os("DATAMAN_NO_NOTIFY").is_some() {
         return;
     }
     #[cfg(target_os = "macos")]
+    let _ = cx;
+    #[cfg(target_os = "linux")]
+    if cx.active_window().is_some() {
+        return;
+    }
     imp::post(&format!("Dataman {version} is available"), "Open Dataman to install it.");
+}
+
+#[cfg(target_os = "linux")]
+mod imp {
+    /// The freedesktop notification service, off the UI thread; none running is only logged.
+    pub fn post(title: &str, body: &str) {
+        let (title, body) = (title.to_string(), body.to_string());
+        let _ = std::thread::Builder::new().name("notify".into()).spawn(move || {
+            let shown = notify_rust::Notification::new().appname("Dataman").icon(crate::APP_ID).summary(&title).body(&body).show();
+            if let Err(e) = shown {
+                log::info!("update: no notification ({e})");
+            }
+        });
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+mod imp {
+    pub fn post(_: &str, _: &str) {}
 }
 
 #[cfg(target_os = "macos")]

@@ -211,10 +211,12 @@ mod imp {
 
 #[cfg(not(target_os = "macos"))]
 mod imp {
+    #[cfg(feature = "checks")]
     pub fn installed() -> bool {
         false
     }
 
+    #[cfg(feature = "checks")]
     pub fn layout() -> Option<(bool, (f64, f64), (f64, f64))> {
         None
     }

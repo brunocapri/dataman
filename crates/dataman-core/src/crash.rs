@@ -23,11 +23,18 @@ pub fn dir() -> PathBuf {
     if let Some(d) = std::env::var_os("DATAMAN_LOG_DIR").filter(|d| !d.is_empty()) {
         return PathBuf::from(d);
     }
+    if crate::os::LINUX {
+        return crate::os::state_home().unwrap_or_else(std::env::temp_dir).join("dataman/logs");
+    }
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
     home.join("Library/Logs/Dataman")
 }
 
+/// Linux keeps no per-app crash reports: an empty folder there.
 pub fn system_dir() -> PathBuf {
+    if crate::os::LINUX {
+        return dir().join("system");
+    }
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
     home.join("Library/Logs/DiagnosticReports")
 }
@@ -119,10 +126,10 @@ pub fn write_to(
     backtrace: &str,
     log: Option<&[String]>,
 ) -> std::io::Result<()> {
-    let os = crate::update::macos_version().unwrap_or_else(|| "?".into());
+    let os = crate::os::version().unwrap_or_else(|| "?".into());
     writeln!(w, "Dataman {version} crash report")?;
     writeln!(w, "time      {when}")?;
-    writeln!(w, "macOS     {os} ({})", std::env::consts::ARCH)?;
+    writeln!(w, "{:<10}{os} ({})", crate::os::NAME, std::env::consts::ARCH)?;
     writeln!(w, "process   {}", std::process::id())?;
     writeln!(w, "thread    {thread}")?;
     writeln!(w, "panic     {msg}")?;
@@ -162,7 +169,7 @@ impl Pending {
                 s.push('\n');
             }
             match &self.report {
-                Some(_) => s.push_str(&format!("macOS report: {}\n", sys.display())),
+                Some(_) => s.push_str(&format!("{} report: {}\n", crate::os::NAME, sys.display())),
                 None => s.push_str(&std::fs::read_to_string(sys).unwrap_or_else(|e| format!("{}: {e}", sys.display()))),
             }
         }
@@ -259,7 +266,8 @@ mod tests {
         let log = vec!["12:00:00.000 WARN  dataman: one".to_string()];
         write_to(&mut out, "0.1.0", "2026-10-13T12:00:00Z", "main", "boom", "src/x.rs:1:2", "0: f\n1: g", Some(&log)).unwrap();
         let s = String::from_utf8(out).unwrap();
-        for want in ["Dataman 0.1.0", "thread    main", "panic     boom", "location  src/x.rs:1:2", "0: f", "log (last 1)", "dataman: one", "macOS     1"] {
+        let os = format!("{:<10}", crate::os::NAME);
+        for want in ["Dataman 0.1.0", "thread    main", "panic     boom", "location  src/x.rs:1:2", "0: f", "log (last 1)", "dataman: one", os.as_str()] {
             assert!(s.contains(want), "{want} in {s}");
         }
     }
@@ -284,7 +292,7 @@ mod tests {
         let p = take_pending(&dir, &sys).unwrap();
         assert_eq!(p.primary(), dir.join("crash-20261013-000000.txt"));
         assert_eq!(p.system.as_deref(), Some(sys.join("dataman-2026-10-13-000000.ips").as_path()));
-        assert!(p.text().contains("macOS report: "));
+        assert!(p.text().contains(&format!("{} report: ", crate::os::NAME)));
         std::fs::File::options().write(true).open(dir.join(STAMP)).unwrap().set_modified(ago(20)).unwrap();
         touch(&sys.join("dataman-2026-10-13-000100.ips"), ago(10));
         let p = take_pending(&dir, &sys).unwrap();

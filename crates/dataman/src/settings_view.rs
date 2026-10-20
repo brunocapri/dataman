@@ -954,7 +954,7 @@ impl SettingsView {
                     .into_any_element()
             }
             Row::ExportDir => {
-                let dir: SharedString = s.export_dir.clone().unwrap_or_else(|| "~/Downloads".into()).into();
+                let dir: SharedString = s.export_dir.clone().unwrap_or_else(|| dataman_core::os::downloads_dir().map(|d| crate::export_ui::tilde(&d)).unwrap_or_else(|| "~/Downloads".into())).into();
                 div()
                     .flex()
                     .flex_row()

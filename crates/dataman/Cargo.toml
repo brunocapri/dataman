@@ -26,6 +26,10 @@ objc2 = "0.6"
 block2 = "0.6"
 raw-window-handle = "0.6"
 
+# The same crate and features GPUI's Linux platform builds.
+[target.'cfg(target_os = "linux")'.dependencies]
+notify-rust = "4"
+
 [[example]]
 name = "editor_demo"
 required-features = ["checks"]

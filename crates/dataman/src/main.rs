@@ -144,6 +144,9 @@ use gpui::{
 use gpui_platform::application;
 use dataman_core::{Core, Dirs, Keychain, MemorySecrets, SecretStore, ThemePref};
 
+/// The desktop entry's name on Linux (Wayland app id, icon, notifications).
+pub const APP_ID: &str = "dev.dataman.Dataman";
+
 pub const VERSION: &str = match option_env!("DATAMAN_VERSION") {
     Some(v) => v,
     None => env!("CARGO_PKG_VERSION"),
@@ -317,7 +320,7 @@ fn main() {
         return;
     }
     dataman_core::crash::install(dataman_core::crash::dir(), VERSION);
-    log::info!("Dataman {VERSION}, macOS {}", std::env::consts::ARCH);
+    log::info!("Dataman {VERSION}, {} {}", dataman_core::os::NAME, std::env::consts::ARCH);
     // The check stages and benchmarks (`--demo`, `--bench-*`) exist only in builds with the
     // `checks` feature; the app ships without them.
     #[cfg(feature = "checks")]
@@ -435,6 +438,7 @@ fn main() {
                     window_background: theme::background_for(level),
                     window_min_size: Some(size(px(min_w), px(min_h))),
                     app_owns_titlebar_drag: true,
+                    app_id: Some(APP_ID.into()),
                     ..Default::default()
                 },
                 |window, cx| cx.new(|cx| app::Workspace::new(core.clone(), window, cx)),

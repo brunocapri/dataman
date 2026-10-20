@@ -2,7 +2,7 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use dataman_core::bounded::{self, Limits, Mode, Stop};
 use dataman_core::guard::{self, Preview, WriteClass};
@@ -713,7 +713,7 @@ pub struct Registry {
 
 #[derive(Default)]
 struct UserSet {
-    stamp: Option<SystemTime>,
+    stamp: Option<dataman_core::stamp::FileStamp>,
     tools: Vec<Arc<dyn Tool>>,
     errors: Vec<String>,
 }
@@ -740,7 +740,7 @@ impl Registry {
 
     pub fn refresh(&self) -> bool {
         let Some(file) = &self.file else { return false };
-        let stamp = std::fs::metadata(file).and_then(|m| m.modified()).ok();
+        let stamp = dataman_core::stamp::FileStamp::of(file);
         let mut g = self.user.lock();
         if g.stamp == stamp {
             return false;

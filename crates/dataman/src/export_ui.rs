@@ -262,7 +262,7 @@ impl ExportView {
     fn export_dir(&self) -> PathBuf {
         match self.core.settings.get().export_dir {
             Some(d) => PathBuf::from(d),
-            None => std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Downloads")).unwrap_or_else(std::env::temp_dir),
+            None => dataman_core::os::downloads_dir().unwrap_or_else(std::env::temp_dir),
         }
     }
 

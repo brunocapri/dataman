@@ -1,3 +1,5 @@
+#![cfg(target_os = "macos")]
+
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};

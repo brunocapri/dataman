@@ -2,7 +2,6 @@
 //! (everything at the top level), and one without folders is written the same way as before.
 
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
 use anyhow::{Context as _, Result};
 use parking_lot::Mutex;
@@ -55,7 +54,7 @@ struct File {
 }
 
 struct Fresh {
-    stamp: Option<SystemTime>,
+    stamp: Option<crate::stamp::FileStamp>,
     items: Vec<Favorite>,
     folders: Vec<Folder>,
 }
@@ -63,7 +62,7 @@ struct Fresh {
 impl Fresh {
     fn save(&mut self, path: &Path) -> Result<()> {
         save(path, &self.items, &self.folders)?;
-        self.stamp = std::fs::metadata(path).and_then(|m| m.modified()).ok();
+        self.stamp = crate::stamp::FileStamp::of(path);
         Ok(())
     }
 }
@@ -80,8 +79,8 @@ impl FavoritesStore {
         Ok(store)
     }
 
-    fn mtime(&self) -> Option<SystemTime> {
-        std::fs::metadata(&self.path).and_then(|m| m.modified()).ok()
+    fn mtime(&self) -> Option<crate::stamp::FileStamp> {
+        crate::stamp::FileStamp::of(&self.path)
     }
 
     fn refresh(&self) -> Result<()> {

@@ -52,8 +52,13 @@ pub fn set_zoom(z: f32, window: &mut Window, cx: &mut App) {
     if let Some(save) = cx.try_global::<SaveZoom>() {
         (save.0)(zoom());
     }
-    let (x, y) = metrics::traffic_light_position_at(zoom());
-    window.set_traffic_light_position(point(gpui::px(x), gpui::px(y)));
+    #[cfg(target_os = "macos")]
+    {
+        let (x, y) = metrics::traffic_light_position_at(zoom());
+        window.set_traffic_light_position(point(gpui::px(x), gpui::px(y)));
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = window;
     cx.refresh_windows();
 }
 

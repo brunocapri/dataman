@@ -561,11 +561,11 @@ pub struct ConfigStore {
 
 struct Inner {
     connections: Vec<ConnectionProfile>,
-    stamp: Option<std::time::SystemTime>,
+    stamp: Option<crate::stamp::FileStamp>,
 }
 
-fn mtime(p: &Path) -> Option<std::time::SystemTime> {
-    std::fs::metadata(p).and_then(|m| m.modified()).ok()
+fn mtime(p: &Path) -> Option<crate::stamp::FileStamp> {
+    crate::stamp::FileStamp::of(p)
 }
 
 fn read(path: &Path) -> Result<Vec<ConnectionProfile>> {

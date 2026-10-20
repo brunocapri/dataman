@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 use dataman_core::bounded;
+use dataman_core::stamp::FileStamp;
 use dataman_core::{ConfigStore, Connection, ConnectionProfile, Core, Dirs, Environment, SecretStore, Settings, SettingsStore};
 use futures_util::future::BoxFuture;
 use parking_lot::Mutex;
@@ -202,12 +203,12 @@ impl Drop for AskSlot {
 }
 
 struct Fresh<T> {
-    stamp: Option<SystemTime>,
+    stamp: Option<FileStamp>,
     value: Arc<T>,
 }
 
-fn mtime(p: &std::path::Path) -> Option<SystemTime> {
-    std::fs::metadata(p).and_then(|m| m.modified()).ok()
+fn mtime(p: &std::path::Path) -> Option<FileStamp> {
+    FileStamp::of(p)
 }
 
 pub struct Hub {

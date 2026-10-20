@@ -66,6 +66,12 @@ pub fn is_newer(candidate: &str, current: &str) -> bool {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
+pub fn macos_version() -> Option<String> {
+    None
+}
+
+#[cfg(target_os = "macos")]
 pub fn macos_version() -> Option<String> {
     let name = CString::new("kern.osproductversion").ok()?;
     let mut buf = [0u8; 32];
@@ -323,16 +329,19 @@ fn team_id(app: &Path) -> Option<String> {
 }
 
 fn swap(a: &Path, b: &Path) -> Result<()> {
-    let ca = CString::new(a.as_os_str().as_bytes())?;
-    let cb = CString::new(b.as_os_str().as_bytes())?;
-    // SAFETY: valid NUL-terminated paths.
-    if unsafe { libc::renamex_np(ca.as_ptr(), cb.as_ptr(), libc::RENAME_SWAP) } == 0 {
-        return Ok(());
-    }
-    let err = std::io::Error::last_os_error();
-    // Not APFS (HFS+, a network volume): two renames, the old app kept until the second one.
-    if err.raw_os_error() != Some(libc::ENOTSUP) && err.raw_os_error() != Some(libc::EINVAL) {
-        return Err(err).context("swap");
+    #[cfg(target_os = "macos")]
+    {
+        let ca = CString::new(a.as_os_str().as_bytes())?;
+        let cb = CString::new(b.as_os_str().as_bytes())?;
+        // SAFETY: valid NUL-terminated paths.
+        if unsafe { libc::renamex_np(ca.as_ptr(), cb.as_ptr(), libc::RENAME_SWAP) } == 0 {
+            return Ok(());
+        }
+        let err = std::io::Error::last_os_error();
+        // Not APFS (HFS+, a network volume): two renames, the old app kept until the second one.
+        if err.raw_os_error() != Some(libc::ENOTSUP) && err.raw_os_error() != Some(libc::EINVAL) {
+            return Err(err).context("swap");
+        }
     }
     let old = b.with_extension("app.old");
     let _ = std::fs::remove_dir_all(&old);
@@ -395,7 +404,7 @@ mod tests {
         assert!(!is_newer("0.1.0-beta.1", "0.1.0"));
         assert!(is_newer("0.1.0", "0.1.0-beta.1"));
         assert!(!is_newer("garbage", "0.1.0"));
-        assert!(macos_version().is_some_and(|v| version(&v).is_some()));
+        assert_eq!(macos_version().is_some_and(|v| version(&v).is_some()), cfg!(target_os = "macos"));
     }
 
     #[test]
