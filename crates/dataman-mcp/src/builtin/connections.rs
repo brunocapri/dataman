@@ -13,7 +13,7 @@ fn fields(s: Schema, mcp: Value) -> Schema {
     s.prop("connection_string", false, json!({"type": "string", "description": "A full connection string (postgres://, mysql://, sqlserver:// URL, libpq key=value, ADO.NET); the fields given here override whatever it sets."}))
         .prop("engine", false, json!({"type": "string", "enum": ["postgres", "lar", "mysql", "sql-server", "mongodb", "elasticsearch", "opensearch", "redis"], "description": "lar is the postgres wire protocol (default postgres)."}))
         .prop("port", false, json!({"type": "integer", "minimum": 1, "maximum": 65535, "description": "Default: the engine's own (5432 / 3306 / 1433 / 27017 / 9200 / 6379)."}))
-        .prop("password", false, json!({"type": "string", "maxLength": 1000, "description": "Saved to the Keychain; never echoed back."}))
+        .prop("password", false, json!({"type": "string", "maxLength": 1000, "description": "Saved to the system keyring (the macOS Keychain, the Secret Service on Linux); never echoed back."}))
         .prop("database", false, json!({"type": "string", "description": "Default: the user's name (postgres), empty (mysql, sql-server)."}))
         .prop("sslmode", false, json!({"type": "string", "enum": ["disable", "prefer", "require", "verify-full"], "description": "Default: prefer on this machine (localhost, a socket) or through an SSH tunnel, require anywhere else."}))
         .prop("color", false, json!({"type": "string", "description": "A swatch name shown in the explorer and on tabs; default: picked from the id."}))
@@ -31,7 +31,7 @@ pub fn tools() -> Vec<Builtin> {
     vec![
         Builtin {
             name: "create_connection",
-            description: "Saves a new database connection, for every engine Dataman speaks (postgres, mysql, sql-server, mongodb, elasticsearch, opensearch, redis; lar is a postgres connection, recognized automatically once connected). Fields directly, or connection_string (a postgres://, mysql://, sqlserver://, mongodb:// (+srv) or redis:// URL, a libpq key=value string, or an ADO.NET string); given fields win over whatever the string sets. A password goes to the macOS Keychain only, never into connections.toml, this tool's response, or a log. Refuses to replace a connection of the same name unless overwrite is true.",
+            description: "Saves a new database connection, for every engine Dataman speaks (postgres, mysql, sql-server, mongodb, elasticsearch, opensearch, redis; lar is a postgres connection, recognized automatically once connected). Fields directly, or connection_string (a postgres://, mysql://, sqlserver://, mongodb:// (+srv) or redis:// URL, a libpq key=value string, or an ADO.NET string); given fields win over whatever the string sets. A password goes to the system keyring only (the macOS Keychain, the Secret Service on Linux), never into connections.toml, this tool's response, or a log. Refuses to replace a connection of the same name unless overwrite is true.",
             schema: fields(
                 Schema::new()
                     .prop("name", true, json!({"type": "string", "maxLength": 200, "description": "A short label; must be unique (case-insensitive) unless overwrite is true."}))
@@ -45,7 +45,7 @@ pub fn tools() -> Vec<Builtin> {
         },
         Builtin {
             name: "update_connection",
-            description: "Edits a saved connection (from list_connections): only the fields given change. A password is write-only: saved to the Keychain, never returned. env, sslmode, read_only and mcp may only stay the same or tighten; moving the connection to another server (engine, host, port, user or SSH) waits for the user's Allow in Dataman and drops its saved password unless a new one is given. Refused while the connection has a transaction open in Dataman. Returns the fields that changed.",
+            description: "Edits a saved connection (from list_connections): only the fields given change. A password is write-only: saved to the system keyring, never returned. env, sslmode, read_only and mcp may only stay the same or tighten; moving the connection to another server (engine, host, port, user or SSH) waits for the user's Allow in Dataman and drops its saved password unless a new one is given. Refused while the connection has a transaction open in Dataman. Returns the fields that changed.",
             schema: fields(
                 Schema::new()
                     .prop("connection", true, json!({"type": "string", "description": "Connection name (or id) from list_connections."}))

@@ -22,7 +22,6 @@ toml.workspace = true
 chrono = { workspace = true, features = ["serde"] }
 parking_lot.workspace = true
 uuid = { workspace = true, features = ["v4"] }
-keyring = { version = "3", features = ["apple-native"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 rustls-native-certs = "0.8"
 tokio-postgres-rustls = "0.13"
@@ -52,6 +51,15 @@ mongodb = { version = "3.9", default-features = false, features = ["compat-3-0-0
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots-no-provider", "http2"] }
 boa_engine = { version = "0.22", default-features = false }
+
+# Passwords: the Keychain on macOS, the Secret Service (GNOME Keyring, KWallet, KeePassXC) on
+# Linux through oo7 with the features GPUI's Linux platform already builds.
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+oo7 = { version = "0.6", default-features = false, features = ["async-std", "native_crypto"] }
+futures-lite = "2"
 
 [dev-dependencies]
 tempfile = "3"

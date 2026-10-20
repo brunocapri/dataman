@@ -12,6 +12,8 @@ use dataman_core::config::Engine;
 use dataman_core::{ConnectionProfile, Environment, HostKeyPrompt, McpAccess, ServerInfo, SshAuth, SshError, SshSettings, SslMode};
 
 const ENGINES: [Engine; 7] = Engine::ALL;
+const SAVED_IN: &str = if cfg!(target_os = "macos") { "saved in Keychain" } else { "saved in keyring" };
+const SAVE_IN: &str = if cfg!(target_os = "macos") { "Save in Keychain" } else { "Save in keyring" };
 
 fn family_label(e: Engine) -> &'static str {
     match e {
@@ -213,7 +215,7 @@ impl ConnDialog {
             .detach();
         }
         let saved = profile.save_password && !is_new;
-        let placeholder = if saved { "saved in Keychain" } else { "required by server" };
+        let placeholder = if saved { SAVED_IN } else { "required by server" };
         let password = cx.new(|cx| TextInput::new(cx, placeholder).masked());
         cx.subscribe(&password, |d: &mut ConnDialog, _, ev: &InputEvent, cx| match ev {
             InputEvent::Submit => d.save(cx),
@@ -235,7 +237,7 @@ impl ConnDialog {
             user: field(cx, &local_user, &s.user),
             auth: if profile.ssh.is_some() { s.auth } else { SshAuth::default() },
             key: field(cx, "~/.ssh/id_ed25519", &s.key_file),
-            secret: cx.new(|cx| TextInput::new(cx, if saved && profile.ssh.is_some() { "saved in Keychain" } else { "" }).masked()),
+            secret: cx.new(|cx| TextInput::new(cx, if saved && profile.ssh.is_some() { SAVED_IN } else { "" }).masked()),
         };
         cx.subscribe(&ssh.secret, |d: &mut ConnDialog, _, ev: &InputEvent, cx| match ev {
             InputEvent::Submit => d.save(cx),
@@ -1571,7 +1573,7 @@ impl Render for ConnDialog {
             .text_color(t.tx2)
             .cursor_pointer()
             .child(ui::checkbox(&t, self.save_password))
-            .child("Save in Keychain")
+            .child(SAVE_IN)
             .on_click(cx.listener(|d, _, _, cx| {
                 d.save_password = !d.save_password;
                 cx.notify();
