@@ -587,7 +587,7 @@ impl Render for ExportView {
             let on = f == self.format;
             let label = if f == ExportFormat::SqlInsert { "SQL" } else { f.label() };
             let hov = t.prs;
-            div()
+            ui::probe(format!("ex-fmt-{label}"), div()
                 .id(label)
                 .flex_1()
                 .h(px(34.))
@@ -600,7 +600,7 @@ impl Render for ExportView {
                 .when(!on, |d| d.bg(t.hov).text_color(t.tx2).border_color(t.line).hover(move |s| s.bg(hov)))
                 .when(locked, |d| d.opacity(0.6))
                 .child(div().text_size(px(12.5)).font_weight(FontWeight::SEMIBOLD).child(label))
-                .when(!locked, |d| d.on_click(cx.listener(move |v, _, _, cx| v.set_format(f, cx))))
+                .when(!locked, |d| d.on_click(cx.listener(move |v, _, _, cx| v.set_format(f, cx)))))
         })));
         let menu_open = self.menu;
         let field = |v: &Self, f: Field, t: &Theme, cx: &mut Context<Self>| {
@@ -785,7 +785,8 @@ impl Render for ExportView {
                 footer = footer.child(ui::button(&t, "ex-reveal", Btn::Ghost).h(px(28.)).child("Reveal in Finder").on_click(move |_, _, cx| cx.reveal_path(&p)));
             }
             let close = if self.job.is_some() { "Close" } else { "Cancel" };
-            footer = footer.child(ui::button(&t, "ex-cancel", Btn::Ghost).h(px(28.)).child(close).on_click(cx.listener(|_, _, _, cx| cx.emit(ExportEvent::Close)))).child(
+            footer = footer.child(ui::button(&t, "ex-cancel", Btn::Ghost).h(px(28.)).child(close).on_click(cx.listener(|_, _, _, cx| cx.emit(ExportEvent::Close)))).child(ui::probe(
+                "ex-start",
                 ui::button(&t, "ex-start", Btn::Primary)
                     .h(px(28.))
                     .px(px(12.))
@@ -793,7 +794,7 @@ impl Render for ExportView {
                     .child("Export")
                     .child(div().text_size(px(10.5)).font_weight(FontWeight::NORMAL).opacity(0.75).child("⌘↩"))
                     .on_click(cx.listener(|v, _, _, cx| v.start(cx))),
-            );
+            ));
         }
         scrim(sheet.child(body).child(footer).into_any_element(), cx).into_any_element()
     }

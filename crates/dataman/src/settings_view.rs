@@ -1149,6 +1149,7 @@ impl SettingsView {
                         ),
                 );
             div()
+                .children(ui::here(&id.into()))
                 .id(id)
                 .flex()
                 .flex_col()
@@ -1364,6 +1365,7 @@ impl Render for SettingsView {
             let on = if keys { s == Section::Keyboard } else { !searching && s == self.section };
             let hov = t.hov;
             div()
+                .children(ui::here(&s.label().into()))
                 .id(s.label())
                 .h(px(30.))
                 .mx(px(8.))

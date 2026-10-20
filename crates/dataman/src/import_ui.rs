@@ -73,6 +73,10 @@ impl ImportView {
         self.items = Some(items);
     }
 
+    pub fn demo_items(&self) -> Option<Vec<(String, dataman_core::ImportSource, bool, bool)>> {
+        Some(self.items.as_ref()?.iter().zip(&self.picked).map(|(i, p)| (i.profile.name.clone(), i.source, i.exists, *p)).collect())
+    }
+
     pub fn pick(&mut self, ix: usize, cx: &mut Context<Self>) {
         let Some(items) = &self.items else { return };
         if items.get(ix).is_some_and(|i| !i.exists) {

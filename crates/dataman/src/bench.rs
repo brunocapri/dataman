@@ -186,6 +186,7 @@ pub fn start(mode: Mode, ws: Entity<Workspace>, window: &mut Window, cx: &mut Ap
 }
 
 fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
+    crate::ui::enable_probes();
     let raw = std::env::var("DATAMAN_SHOT_STAGE").unwrap_or_else(|_| "main".into());
     let shot_path = std::env::var("DATAMAN_SHOT").ok();
     if raw == "light" || raw.ends_with("-light") {
@@ -202,6 +203,18 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
         window
             .spawn(cx, async move |cx| {
                 let ok = crate::newuser_check::run(&ws, cx).await;
+                let _ = cx.update(|_, cx| cx.quit());
+                if !ok {
+                    std::process::exit(1);
+                }
+            })
+            .detach();
+        return;
+    }
+    if crate::check::is_stage(&stage) {
+        window
+            .spawn(cx, async move |cx| {
+                let ok = crate::check::run(&ws, &stage, cx).await;
                 let _ = cx.update(|_, cx| cx.quit());
                 if !ok {
                     std::process::exit(1);

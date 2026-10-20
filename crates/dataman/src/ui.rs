@@ -157,7 +157,9 @@ pub enum Btn {
 }
 
 pub fn button(t: &Theme, id: impl Into<ElementId>, kind: Btn) -> Stateful<Div> {
+    let id = id.into();
     let base = div()
+        .children(here(&id))
         .id(id)
         .flex_none()
         .h(px(26.))
@@ -195,7 +197,9 @@ pub fn icon_button(t: &Theme, id: impl Into<ElementId>, i: Icon, box_size: f32, 
 /// [`icon_button`] without its hover and press tints (a disabled one: GPUI takes one hover
 /// style per element, so it cannot be cleared after).
 pub fn icon_button_inert(t: &Theme, id: impl Into<ElementId>, i: Icon, box_size: f32, icon_size: f32) -> Stateful<Div> {
+    let id = id.into();
     div()
+        .children(here(&id))
         .id(id)
         .flex_none()
         .size(px(box_size))
@@ -236,7 +240,9 @@ pub fn segmented(t: &Theme) -> Div {
 
 pub fn segment(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedString>, on: bool) -> Stateful<Div> {
     let hov = t.hov;
+    let id = id.into();
     div()
+        .children(here(&id))
         .id(id)
         .flex_1()
         .px(px(10.))
@@ -309,7 +315,9 @@ pub fn menu_item(
     enabled: bool,
 ) -> Stateful<Div> {
     let (acc, on_acc) = (t.acc, t.on_acc);
+    let id = id.into();
     div()
+        .children(here(&id))
         .id(id)
         .h(px(26.))
         .px(px(10.))
@@ -535,5 +543,90 @@ mod tests {
         let (t, _) = fit_tip(&"line\n".repeat(40));
         assert_eq!(t.lines().count(), TIP_LINES);
         assert!(t.ends_with('…'));
+    }
+}
+
+/// Test probes: in `--demo` runs, a wrapped control records where it was laid out, under a
+/// name, so a check can click it with real mouse events. Off otherwise (no wrapper at all).
+static PROBING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+thread_local! {
+    static PROBES: std::cell::RefCell<std::collections::HashMap<SharedString, gpui::Bounds<gpui::Pixels>>> = Default::default();
+}
+
+pub fn enable_probes() {
+    PROBING.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Called as the window renders: only what this frame lays out stays clickable.
+pub fn clear_probes() {
+    if PROBING.load(std::sync::atomic::Ordering::Relaxed) {
+        PROBES.with(|p| p.borrow_mut().clear());
+    }
+}
+
+pub fn probed(id: &str) -> Option<gpui::Bounds<gpui::Pixels>> {
+    PROBES.with(|p| p.borrow().get(id).copied())
+}
+
+/// For a control with an element id: an absolutely placed, empty canvas that records the
+/// control's bounds under that id (`segment-2` for `("segment", 2)`).
+pub fn here(id: &ElementId) -> Option<gpui::AnyElement> {
+    if !PROBING.load(std::sync::atomic::Ordering::Relaxed) {
+        return None;
+    }
+    let id: SharedString = id.to_string().into();
+    Some(
+        gpui::canvas(move |bounds, _, _| PROBES.with(|p| p.borrow_mut().insert(id, bounds)), |_, _, _, _| {})
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .into_any_element(),
+    )
+}
+
+pub fn probe(id: impl Into<SharedString>, el: impl IntoElement) -> gpui::AnyElement {
+    if !PROBING.load(std::sync::atomic::Ordering::Relaxed) {
+        return el.into_any_element();
+    }
+    Probe { id: id.into(), child: el.into_any_element() }.into_any_element()
+}
+
+struct Probe {
+    id: SharedString,
+    child: gpui::AnyElement,
+}
+
+impl IntoElement for Probe {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl gpui::Element for Probe {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(&mut self, _: Option<&gpui::GlobalElementId>, _: Option<&gpui::InspectorElementId>, window: &mut Window, cx: &mut App) -> (gpui::LayoutId, ()) {
+        (self.child.request_layout(window, cx), ())
+    }
+
+    fn prepaint(&mut self, _: Option<&gpui::GlobalElementId>, _: Option<&gpui::InspectorElementId>, bounds: gpui::Bounds<gpui::Pixels>, _: &mut (), window: &mut Window, cx: &mut App) {
+        PROBES.with(|p| p.borrow_mut().insert(self.id.clone(), bounds));
+        self.child.prepaint(window, cx);
+    }
+
+    fn paint(&mut self, _: Option<&gpui::GlobalElementId>, _: Option<&gpui::InspectorElementId>, _: gpui::Bounds<gpui::Pixels>, _: &mut (), _: &mut (), window: &mut Window, cx: &mut App) {
+        self.child.paint(window, cx);
     }
 }

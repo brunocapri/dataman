@@ -1283,6 +1283,11 @@ impl SchemaTree {
         self.rows.iter().find(|r| r.id.as_ref() == id)?.logo
     }
 
+    pub fn demo_row_ids(&self, id: &str) -> Vec<String> {
+        let prefix = format!("{id}/");
+        self.rows.iter().filter(|r| r.id.starts_with(&prefix)).map(|r| r.id.to_string()).collect()
+    }
+
     pub fn demo_children(&self, id: &str) -> Vec<String> {
         let prefix = format!("{id}/");
         self.rows.iter().filter(|r| r.id.starts_with(&prefix)).map(|r| r.label.to_string()).collect()

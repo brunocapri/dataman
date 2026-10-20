@@ -101,6 +101,7 @@ impl Render for Welcome {
             let quiet = key.is_empty();
             let hov = t.hov;
             div()
+                .children(crate::ui::here(&("welcome", i).into()))
                 .id(("welcome", i))
                 .h(px(if quiet { 30. } else { 40. }))
                 .px(px(14.))

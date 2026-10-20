@@ -493,6 +493,18 @@ impl DataImportView {
         cx.notify();
     }
 
+    /// The finished import: rows written, rows skipped, rolled back.
+    pub fn demo_report(&self) -> Option<(u64, u64, bool)> {
+        match &self.job.as_ref()?.state {
+            JobState::Done(r) => Some((r.rows, r.skipped, r.rolled_back)),
+            JobState::Running => None,
+        }
+    }
+
+    pub fn demo_set_skip(&mut self, on: bool) {
+        self.skip = on;
+    }
+
     pub fn demo_set_truncate(&mut self, on: bool) {
         self.truncate = on;
     }

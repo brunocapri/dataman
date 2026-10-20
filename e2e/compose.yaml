@@ -1,0 +1,124 @@
+# Every database the E2E suite (`cargo run --release -p xtask -- e2e`) drives, on the ports and
+# with the passwords the check stages default to. The runner starts only the services whose port
+# nothing answers on (a server already there is reused) and reloads the seeds on each run.
+name: dataman-e2e
+
+services:
+  pg:
+    image: postgres:18
+    command: postgres -c shared_buffers=512MB -c work_mem=64MB
+    environment:
+      POSTGRES_PASSWORD: dataman
+      POSTGRES_DB: dataman
+    ports: ["55432:5432"]
+    volumes: [pg:/var/lib/postgresql]
+    healthcheck:
+      test: pg_isready -U postgres -d dataman
+      interval: 2s
+      retries: 60
+
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: dataman-root
+    ports: ["33306:3306"]
+    volumes: [mysql:/var/lib/mysql]
+    healthcheck:
+      test: mysqladmin ping -h 127.0.0.1 -uroot -pdataman-root --silent
+      interval: 2s
+      retries: 90
+
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_PID: Developer
+      MSSQL_SA_PASSWORD: Dataman-sa-1!
+      MSSQL_MEMORY_LIMIT_MB: "2048"
+    ports: ["14330:1433"]
+    volumes: [mssql:/var/opt/mssql]
+    healthcheck:
+      test: /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P 'Dataman-sa-1!' -b -Q 'SELECT 1'
+      interval: 3s
+      retries: 60
+
+  mongo:
+    image: mongo:8
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: dataman
+    ports: ["27027:27017"]
+    volumes: [mongo:/data/db]
+    healthcheck:
+      test: mongosh --quiet -u root -p dataman --eval 'db.runCommand({ping:1}).ok'
+      interval: 2s
+      retries: 60
+
+  es:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.3
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "true"
+      xpack.security.http.ssl.enabled: "false"
+      ELASTIC_PASSWORD: dataman
+      ES_JAVA_OPTS: -Xms512m -Xmx512m
+    ports: ["9201:9200"]
+    healthcheck:
+      test: curl -fsu elastic:dataman 'http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=2s'
+      interval: 3s
+      retries: 60
+
+  opensearch:
+    image: opensearchproject/opensearch:2.19.1
+    environment:
+      discovery.type: single-node
+      DISABLE_SECURITY_PLUGIN: "true"
+      DISABLE_INSTALL_DEMO_CONFIG: "true"
+      OPENSEARCH_JAVA_OPTS: -Xms512m -Xmx512m
+    ports: ["9200:9200"]
+    healthcheck:
+      test: curl -fs 'http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=2s'
+      interval: 3s
+      retries: 60
+
+  redis:
+    image: redis:7
+    command: redis-server --requirepass dataman
+    ports: ["63790:6379"]
+    healthcheck:
+      test: redis-cli -a dataman --no-auth-warning ping
+      interval: 2s
+      retries: 30
+
+  # An SSH bastion for the tunnel checks: user `dataman`, the key the runner makes in
+  # target/e2e/ssh (or the password `dataman-ssh`); it forwards to the host's ports. sshd is
+  # installed when the container is first created (no image build, so no registry access).
+  ssh:
+    image: debian:bookworm-slim
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        if ! command -v sshd >/dev/null; then
+          apt-get update -qq && apt-get install -y -qq --no-install-recommends openssh-server >/dev/null
+          useradd -m -s /bin/bash dataman && echo 'dataman:dataman-ssh' | chpasswd
+          printf 'AllowTcpForwarding yes\nPasswordAuthentication yes\n' >> /etc/ssh/sshd_config
+        fi
+        mkdir -p /run/sshd
+        install -d -m 700 -o dataman -g dataman /home/dataman/.ssh
+        install -m 600 -o dataman -g dataman /keys/id_ed25519.pub /home/dataman/.ssh/authorized_keys
+        exec /usr/sbin/sshd -D -e
+    ports: ["2299:22"]
+    volumes: ["../target/e2e/ssh:/keys:ro"]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    healthcheck:
+      test: bash -c '</dev/tcp/127.0.0.1/22'
+      interval: 2s
+      retries: 150
+
+volumes:
+  pg:
+  mysql:
+  mssql:
+  mongo:

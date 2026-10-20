@@ -833,6 +833,31 @@ impl Workspace {
             || cx.try_global::<crate::mcp::McpHost>().is_some_and(|h| !h.pending.is_empty())
     }
 
+    /// Which of `modal_open`'s conditions hold (for the checks' failure details).
+    pub(crate) fn demo_modal(&self, cx: &App) -> Vec<&'static str> {
+        let tab = self.active_tab().map(|t| t.read(cx));
+        [
+            ("palette", self.palette.is_some()),
+            ("settings", self.settings_view.is_some()),
+            ("dialog", self.dialog.is_some()),
+            ("import", self.import.is_some()),
+            ("export", self.export.as_ref().is_some_and(|e| e.read(cx).visible)),
+            ("data import", self.data_import.as_ref().is_some_and(|e| e.read(cx).visible)),
+            ("value", self.value_view.is_some()),
+            ("pending run", tab.is_some_and(|t| t.pending_run.is_some())),
+            ("confirm", tab.is_some_and(|t| t.confirm.is_some())),
+            ("params", tab.is_some_and(|t| t.params.is_some())),
+            ("delete", self.confirm_delete.is_some()),
+            ("tx prompt", self.tx_prompt.is_some()),
+            ("update", self.update_sheet),
+            ("mcp", cx.try_global::<crate::mcp::McpHost>().is_some_and(|h| !h.pending.is_empty())),
+        ]
+        .into_iter()
+        .filter(|(_, on)| *on)
+        .map(|(n, _)| n)
+        .collect()
+    }
+
     pub(crate) fn focus_sheet(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.sheet_focus.is_focused(window) {
             self.modal_return = window.focused(cx).filter(|f| *f != self.sheet_focus);
@@ -2475,6 +2500,7 @@ impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let _trace = TraceRender::new("workspace render");
         RENDERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        crate::ui::clear_probes();
         // A connection change of the active tab (explorer, ⌥↩, palette, disconnect) lands
         // here before anything can act on a panel of the old connection.
         self.sync_bound_views(window, cx);

@@ -1136,6 +1136,11 @@ impl GridEdit {
         self.request(Pending::Edit(row, col), window, cx);
     }
 
+    /// The last commit's conflicts, when it left any.
+    pub fn demo_conflicts(&self) -> usize {
+        self.report.as_ref().map_or(0, |r| r.outcomes.iter().filter(|o| matches!(o.outcome, Outcome::Conflict { .. })).count())
+    }
+
     pub fn demo_read_only(&self) -> Option<String> {
         match &self.card {
             Some(Card::ReadOnly { reason, .. }) => Some(reason.clone()),
@@ -1383,13 +1388,14 @@ impl Render for ReviewPanel {
                             .flex()
                             .flex_row()
                             .gap(px(6.))
-                            .child(ui::button(&t, "cf-discard", Btn::Ghost).child("Discard mine").on_click(move |_, window, cx| e2.update(cx, |e, cx| e.discard(window, cx))))
-                            .child(
+                            .child(ui::probe("cf-discard", ui::button(&t, "cf-discard", Btn::Ghost).child("Discard mine").on_click(move |_, window, cx| e2.update(cx, |e, cx| e.discard(window, cx)))))
+                            .child(ui::probe(
+                                "cf-over",
                                 ui::button(&t, "cf-over", Btn::Ghost)
                                     .text_color(t.err)
                                     .child("Overwrite")
                                     .on_click(move |_, _, cx| e3.update(cx, |e, cx| e.overwrite(cx))),
-                            ),
+                            )),
                     )
                 })
         });
@@ -1450,11 +1456,15 @@ impl Render for ReviewPanel {
             .gap(px(8.))
             .border_t_1()
             .border_color(t.line)
-            .child(ui::button(&t, "rv-discard", Btn::Ghost).h(px(28.)).text_color(t.err).child("Discard all").when_some(crate::keymap::key("discard_changes"), |d, k| d.child(ui::key_hint(k))).on_click(move |_, window, cx| {
-                e_discard.update(cx, |e, cx| e.discard(window, cx))
-            }))
+            .child(ui::probe(
+                "rv-discard",
+                ui::button(&t, "rv-discard", Btn::Ghost).h(px(28.)).text_color(t.err).child("Discard all").when_some(crate::keymap::key("discard_changes"), |d, k| d.child(ui::key_hint(k))).on_click(move |_, window, cx| {
+                    e_discard.update(cx, |e, cx| e.discard(window, cx))
+                }),
+            ))
             .child(div().flex_1())
-            .child(
+            .child(ui::probe(
+                "rv-commit",
                 ui::button(&t, "rv-commit", Btn::Primary)
                     .h(px(28.))
                     .px(px(12.))
@@ -1463,7 +1473,7 @@ impl Render for ReviewPanel {
                     .child(if applying { "Committing…".to_string() } else { format!("Commit {n} change{}", if n == 1 { "" } else { "s" }) })
                     .when_some(crate::keymap::key("review_changes"), |d, k| d.child(div().text_size(px(10.5)).font_weight(FontWeight::NORMAL).opacity(0.75).child(k)))
                     .on_click(move |_, _, cx| e_commit.update(cx, |e, cx| e.apply(cx))),
-            );
+            ));
         div()
             .size_full()
             .flex()

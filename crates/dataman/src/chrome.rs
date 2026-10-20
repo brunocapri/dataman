@@ -1136,12 +1136,12 @@ impl Workspace {
                         d.clone()
                     };
                     let (id, pick) = (p.id.clone(), d.clone());
-                    rows.push(
+                    rows.push(ui::probe(
+                        format!("pick:{}:{d}", p.id),
                         ui::menu_item(t, SharedString::from(format!("pick:{}:{d}", p.id)), label, on.then_some("✓"), true)
                             .pl(px(25.))
-                            .on_click(cx.listener(move |w, _, window, cx| w.pick_target(&id, &pick, window, cx)))
-                            .into_any_element(),
-                    );
+                            .on_click(cx.listener(move |w, _, window, cx| w.pick_target(&id, &pick, window, cx))),
+                    ));
                 }
             }
             div().absolute().left_0().top(px(26.)).child(

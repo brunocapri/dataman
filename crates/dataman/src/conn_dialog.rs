@@ -464,6 +464,10 @@ impl ConnDialog {
         self.apply_conn_str(cx);
     }
 
+    pub fn demo_conn_str(&self, cx: &App) -> String {
+        self.conn_str.read(cx).text().to_string()
+    }
+
     pub fn conn_str_invalid(&self, cx: &App) -> bool {
         self.conn_str.read(cx).error
     }
@@ -964,6 +968,7 @@ impl ConnDialog {
                 .child(div().text_size(px(10.5)).text_color(t.tx3).child(family_label(e)))
                 .on_click(cx.listener(move |d, _, _, cx| d.pick_engine(e, cx)))
         };
+        let tile = |e: Engine| ui::probe(format!("engine-{}", e.label()), tile(e));
         let section = |label: &'static str, engines: Vec<Engine>| {
             (!engines.is_empty()).then(|| {
                 div()
@@ -1005,13 +1010,17 @@ impl ConnDialog {
     }
 
     fn field(&self, t: &Theme, label: &'static str, input: &Entity<TextInput>, label_color: Option<Hsla>) -> gpui::Div {
+        self.field_as(t, label, label, input, label_color)
+    }
+
+    fn field_as(&self, t: &Theme, probe: &str, label: &'static str, input: &Entity<TextInput>, label_color: Option<Hsla>) -> gpui::Div {
         div()
             .flex_1()
             .flex()
             .flex_col()
             .gap(px(6.))
             .child(div().text_size(px(10.)).text_color(label_color.unwrap_or(t.tx3)).child(label))
-            .child(input.clone())
+            .child(ui::probe(format!("field-{probe}"), input.clone()))
     }
 
     fn result_box(&self, t: &Theme) -> Option<gpui::Div> {
@@ -1096,11 +1105,14 @@ impl ConnDialog {
                         .child(div().text_color(t.tx2).overflow_hidden().whitespace_nowrap().text_ellipsis().child(format!("{}  {}", p.algorithm, p.fingerprint))),
                 )
                 .child(
-                    ui::button(t, "dlg-trust", Btn::Secondary)
-                        .h(px(26.))
-                        .px(px(10.))
-                        .child("Trust")
-                        .on_click(cx.listener(|d, _, _, cx| d.trust(cx))),
+                    ui::probe(
+                        "dlg-trust",
+                        ui::button(t, "dlg-trust", Btn::Secondary)
+                            .h(px(26.))
+                            .px(px(10.))
+                            .child("Trust")
+                            .on_click(cx.listener(|d, _, _, cx| d.trust(cx))),
+                    ),
                 ),
         )
     }
@@ -1127,17 +1139,20 @@ impl ConnDialog {
                 }
                 cx.notify();
             }));
-        let mut col = div().flex().flex_col().gap(px(10.)).child(toggle);
+        let mut col = div().flex().flex_col().gap(px(10.)).child(ui::probe("ssh-toggle", toggle));
         if !s.on {
             return col;
         }
         let auth = ui::segmented(t).children(SshAuth::ALL.iter().map(|a| {
             let a = *a;
-            ui::segment(t, ("ssh-auth", a as usize), a.label(), a == s.auth).on_click(cx.listener(move |d, _, _, cx| {
-                d.ssh.auth = a;
-                d.ssh.secret.update(cx, |p, _| p.error = false);
-                cx.notify();
-            }))
+            ui::probe(
+                format!("ssh-auth-{}", a.label()),
+                ui::segment(t, ("ssh-auth", a as usize), a.label(), a == s.auth).on_click(cx.listener(move |d, _, _, cx| {
+                    d.ssh.auth = a;
+                    d.ssh.secret.update(cx, |p, _| p.error = false);
+                    cx.notify();
+                })),
+            )
         }));
         let row = || div().flex().flex_row().gap(px(12.));
         let inner = div()
@@ -1145,11 +1160,11 @@ impl ConnDialog {
             .flex()
             .flex_col()
             .gap(px(10.))
-            .child(row().child(self.field(t, "HOST", &s.host, None)).child(div().w(px(96.)).flex_none().child(self.field(t, "PORT", &s.port, None))))
+            .child(row().child(self.field_as(t, "SSH HOST", "HOST", &s.host, None)).child(div().w(px(96.)).flex_none().child(self.field_as(t, "SSH PORT", "PORT", &s.port, None))))
             .child(
                 row()
                     .items_end()
-                    .child(self.field(t, "USER", &s.user, None))
+                    .child(self.field_as(t, "SSH USER", "USER", &s.user, None))
                     .child(div().flex_1().flex().flex_col().gap(px(6.)).child(div().text_size(px(10.)).text_color(t.tx3).child("AUTH")).child(auth)),
             )
             .when(s.auth == SshAuth::Key, |d| {
@@ -1373,7 +1388,7 @@ impl Render for ConnDialog {
         let swatches = div().h(px(30.)).flex().flex_row().items_center().gap(px(6.)).children((0..SWATCHES.len()).map(|i| {
             let c = t.swatches[i];
             let on = i == self.color;
-            div()
+            let swatch = div()
                 .id(("swatch", i))
                 .size(px(22.))
                 .flex()
@@ -1384,7 +1399,8 @@ impl Render for ConnDialog {
                     d.color = i;
                     cx.notify();
                 }))
-                .child(div().size(px(if on { 14. } else { 18. })).bg(c))
+                .child(div().size(px(if on { 14. } else { 18. })).bg(c));
+            ui::probe(format!("swatch-{i}"), swatch)
         }));
         if self.step == Step::Engine {
             return self.wrap(self.render_picker(&t, cx), &t, cx);
@@ -1415,30 +1431,39 @@ impl Render for ConnDialog {
             .on_click(cx.listener(|d, _, window, cx| d.change_engine(window, cx)));
         let modes: Vec<(SslMode, &'static str)> = if self.engine.is_sql() { SslMode::ALL.iter().map(|m| (*m, m.label())).collect() } else { DOC_TLS.to_vec() };
         let ssl = ui::segmented(&t).children(modes.into_iter().map(|(m, label)| {
-            ui::segment(&t, m.label(), label, m == self.sslmode).on_click(cx.listener(move |d, _, _, cx| {
-                d.sslmode = m;
-                cx.notify();
-            }))
+            ui::probe(
+                format!("tls-{label}"),
+                ui::segment(&t, m.label(), label, m == self.sslmode).on_click(cx.listener(move |d, _, _, cx| {
+                    d.sslmode = m;
+                    cx.notify();
+                })),
+            )
         }));
         let env = ui::segmented(&t).children(Environment::ALL.iter().map(|e| {
             let e = *e;
-            ui::segment(&t, ("env", e as usize), e.label(), e == self.env)
-                .when(e.is_production() && e == self.env, |d| d.text_color(t.err))
-                .on_click(cx.listener(move |d, _, _, cx| {
-                    d.env = e;
-                    cx.notify();
-                }))
+            ui::probe(
+                format!("env-{}", e.label()),
+                ui::segment(&t, ("env", e as usize), e.label(), e == self.env)
+                    .when(e.is_production() && e == self.env, |d| d.text_color(t.err))
+                    .on_click(cx.listener(move |d, _, _, cx| {
+                        d.env = e;
+                        cx.notify();
+                    })),
+            )
         }));
         let mcp_cur = self.mcp.unwrap_or_else(|| McpAccess::default_for(self.env));
         let yolo_on = dataman_core::MCP_ADVANCED && self.advanced.yolo && mcp_cur != McpAccess::Off;
         let mcp = ui::segmented(&t).children(McpAccess::ALL.iter().map(|a| {
             let a = *a;
-            ui::segment(&t, ("mcp", a as usize), a.label(), a == mcp_cur)
-                .when(a >= McpAccess::Write && a == mcp_cur && self.env.is_production(), |d| d.text_color(t.err))
-                .on_click(cx.listener(move |d, _, _, cx| {
-                    d.mcp = Some(a);
-                    cx.notify();
-                }))
+            ui::probe(
+                format!("mcp-{}", a.label()),
+                ui::segment(&t, ("mcp", a as usize), a.label(), a == mcp_cur)
+                    .when(a >= McpAccess::Write && a == mcp_cur && self.env.is_production(), |d| d.text_color(t.err))
+                    .on_click(cx.listener(move |d, _, _, cx| {
+                        d.mcp = Some(a);
+                        cx.notify();
+                    })),
+            )
         }));
         let read_only = div()
             .id("read-only")
@@ -1476,12 +1501,12 @@ impl Render for ConnDialog {
         let url2 = url.clone();
         let by_url = self.entry == Entry::Url;
         let entry = ui::segmented(&t).h(px(24.)).children([(Entry::Fields, "Fields"), (Entry::Url, "URL")].map(|(e, label)| {
-            ui::segment(&t, ("entry", e as usize), label, e == self.entry).on_click(cx.listener(move |d, _, window, cx| d.set_entry(e, window, cx)))
+            ui::probe(format!("entry-{label}"), ui::segment(&t, ("entry", e as usize), label, e == self.entry).on_click(cx.listener(move |d, _, window, cx| d.set_entry(e, window, cx))))
         }));
         let caption = |text: &'static str| div().text_size(px(10.)).text_color(t.tx3).child(text);
         let row = || div().flex().flex_row().gap(px(12.));
         let server: Vec<gpui::Div> = if by_url {
-            vec![row().items_end().child(self.field(&t, "URL", &self.conn_str, None)).child(keychain)]
+            vec![row().items_end().child(self.field(&t, "URL", &self.conn_str, None)).child(ui::probe("save-pw", keychain))]
         } else {
             let db_label = if self.engine == Engine::Redis { "DB" } else { "DATABASE" };
             let user_label = if self.engine.is_sql() { "USER" } else { "USER (OPTIONAL)" };
@@ -1491,7 +1516,7 @@ impl Render for ConnDialog {
                 row()
                     .items_end()
                     .child(self.field(&t, "PASSWORD", &self.password, (pw_focused || self.password_needed).then_some(t.acc_t)))
-                    .child(keychain),
+                    .child(ui::probe("save-pw", keychain)),
             ];
             if self.engine == Engine::MongoDb {
                 v.push(row().child(self.field(&t, "OPTIONS", &self.options, None)));
@@ -1527,7 +1552,7 @@ impl Render for ConnDialog {
                             .gap(px(12.))
                             .items_end()
                             .child(self.field(&t, "NAME", &self.name, None))
-                            .when(!by_url, |d| d.child(div().flex().flex_col().gap(px(6.)).child(caption("ENGINE")).child(engine)))
+                            .when(!by_url, |d| d.child(div().flex().flex_col().gap(px(6.)).child(caption("ENGINE")).child(ui::probe("engine-chip", engine))))
                             .child(div().flex().flex_col().gap(px(6.)).child(caption("COLOR")).child(swatches)),
                     )
                     .children(server)
@@ -1554,7 +1579,7 @@ impl Render for ConnDialog {
                             .items_end()
                             .gap(px(16.))
                             .child(div().flex().flex_col().gap(px(6.)).child(div().text_size(px(10.)).text_color(t.tx3).child("ENVIRONMENT")).child(env))
-                            .child(read_only),
+                            .child(ui::probe("read-only", read_only)),
                     )
                     .when(dataman_core::MCP_ADVANCED, |d| d.child(self.mcp_advanced(&t, cx)))
                     .child(self.ssh_section(&t, cx))
@@ -1586,42 +1611,42 @@ impl Render for ConnDialog {
                 ui::modal_footer(&t)
                     .mt(px(14.))
                     .child(
-                        ui::button(&t, "dlg-test", if testing { Btn::Ghost } else { Btn::Secondary })
+                        ui::probe("dlg-test", ui::button(&t, "dlg-test", if testing { Btn::Ghost } else { Btn::Secondary })
                             .h(px(28.))
                             .px(px(10.))
                             .when(testing, |d| d.bg(t.warn_s).text_color(t.warn))
                             .child(if testing { "◌ Testing…" } else { "Test" })
                             .child(ui::key_hint("⌘T"))
-                            .on_click(cx.listener(|d, _, _, cx| d.test(cx))),
+                            .on_click(cx.listener(|d, _, _, cx| d.test(cx))))
                     )
                     .when(!self.is_new && !self.password_needed, |d| {
                         d.child(
-                            ui::button(&t, "dlg-delete", Btn::Ghost)
+                            ui::probe("dlg-delete", ui::button(&t, "dlg-delete", Btn::Ghost)
                                 .h(px(28.))
                                 .px(px(10.))
                                 .text_color(t.err)
                                 .child(if self.confirm_delete { "Delete — sure?" } else { "Delete…" })
-                                .on_click(cx.listener(|d, _, _, cx| d.delete(cx))),
+                                .on_click(cx.listener(|d, _, _, cx| d.delete(cx))))
                         )
                     })
                     .child(div().flex_1())
                     .child(
-                        ui::button(&t, "dlg-cancel", Btn::Ghost)
+                        ui::probe("dlg-cancel", ui::button(&t, "dlg-cancel", Btn::Ghost)
                             .h(px(28.))
                             .px(px(12.))
                             .child("Cancel")
                             .child(div().text_size(px(10.5)).opacity(0.6).child("esc"))
-                            .on_click(cx.listener(|d, _, _, cx| d.cancel(cx))),
+                            .on_click(cx.listener(|d, _, _, cx| d.cancel(cx))))
                     )
                     .child(
-                        ui::button(&t, "dlg-save", if testing { Btn::Ghost } else { Btn::Primary })
+                        ui::probe("dlg-save", ui::button(&t, "dlg-save", if testing { Btn::Ghost } else { Btn::Primary })
                             .h(px(28.))
                             .px(px(12.))
                             .font_weight(FontWeight::SEMIBOLD)
                             .when(testing, |d| d.bg(t.prs).text_color(t.tx3))
                             .child(if self.is_new || self.password_needed { "Save & connect" } else { "Save" })
                             .child(div().text_size(px(10.5)).font_weight(FontWeight::NORMAL).opacity(0.75).child("⌘↩"))
-                            .on_click(cx.listener(|d, _, _, cx| d.save(cx))),
+                            .on_click(cx.listener(|d, _, _, cx| d.save(cx))))
                     ),
             );
         self.wrap(card, &t, cx)

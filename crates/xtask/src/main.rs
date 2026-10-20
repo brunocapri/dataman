@@ -1,4 +1,7 @@
-//! The update signing key is written outside the repository (0600).
+//! Release tooling and the E2E suite (`e2e`). The update signing key is written outside the
+//! repository (0600).
+
+mod e2e;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -25,8 +28,9 @@ fn run() -> Result<()> {
         }
         Some("sign") if args.len() >= 2 => sign(&args[1], &args[2..]),
         Some("verify") if args.len() >= 3 => verify(&args[1], &args[2], &args[3..]),
+        Some("e2e") => e2e::run(&args[1..]),
         _ => bail!(
-            "usage: xtask icon <svg> <out.icns> | keygen [--force] | pubkey | sign <dmg> --url <url> --version <v> [--notes <file>] [--min-macos <v>] | verify <feed.json> <dmg> --pubkey <b64> [--version <v>]"
+            "usage: xtask icon <svg> <out.icns> | keygen [--force] | pubkey | sign <dmg> --url <url> --version <v> [--notes <file>] [--min-macos <v>] | verify <feed.json> <dmg> --pubkey <b64> [--version <v>] | e2e [--list] [--only a,b] [--skip a,b] [--no-build] [--no-reset] [--fresh] [-v]"
         ),
     }
 }
