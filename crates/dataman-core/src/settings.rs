@@ -48,9 +48,6 @@ impl Translucency {
         self == Translucency::On
     }
 
-    pub fn from_bool(on: bool) -> Translucency {
-        if on { Translucency::On } else { Translucency::Off }
-    }
 }
 
 /// The one monospace family of the whole UI (editor, grid, explorer, menus), all embedded.
@@ -236,14 +233,6 @@ impl Dirs {
 pub struct SettingsStore {
     path: PathBuf,
     current: Mutex<Settings>,
-    /// The file still had the MCP HTTP server's keys (`mcp_http`, `mcp_port`): the server is
-    /// gone, and its token may still be in the Keychain.
-    legacy_http: bool,
-}
-
-/// Whether a settings file has the removed MCP HTTP server's keys.
-fn has_http_keys(text: &str) -> bool {
-    toml::from_str::<toml::Table>(text).is_ok_and(|t| t.contains_key("mcp_http") || t.contains_key("mcp_port"))
 }
 
 impl SettingsStore {
@@ -251,10 +240,8 @@ impl SettingsStore {
     /// file must never keep the app from starting).
     pub fn open(dirs: &Dirs) -> SettingsStore {
         let path = dirs.settings_file();
-        let mut legacy_http = false;
         let current = match std::fs::read_to_string(&path) {
             Ok(text) => {
-                legacy_http = has_http_keys(&text);
                 let mut s = toml::from_str::<Settings>(&text).unwrap_or_else(|e| {
                     log::warn!("ignoring {}: {e}", path.display());
                     Settings::default()
@@ -267,13 +254,7 @@ impl SettingsStore {
             }
             Err(_) => Settings::default(),
         };
-        SettingsStore { path, current: Mutex::new(current), legacy_http }
-    }
-
-    /// Whether the file was written while the app had an MCP HTTP server (true until it is
-    /// saved again, which drops those keys).
-    pub fn legacy_http(&self) -> bool {
-        self.legacy_http
+        SettingsStore { path, current: Mutex::new(current) }
     }
 
     pub fn get(&self) -> Settings {
@@ -303,7 +284,7 @@ mod tests {
     use super::*;
 
     /// A file from when the app had an MCP HTTP server: its keys are ignored, nothing else is
-    /// lost, the store says so until it is saved again (which drops them).
+    /// lost, and saving drops them.
     #[test]
     fn old_http_server_keys_are_ignored() {
         let dir = tempfile::tempdir().unwrap();
@@ -312,15 +293,11 @@ mod tests {
         std::fs::write(dirs.settings_file(), "theme = \"light\"\nmcp_enabled = false\nmcp_http = true\nmcp_port = 47321\nmcp_write_row_limit = 10\nmcp_show_in_tabs = false\n\n[keys]\n\"editor.run\" = \"cmd-r\"\n").unwrap();
         let st = SettingsStore::open(&dirs);
         let s = st.get();
-        assert!(st.legacy_http());
         assert_eq!((s.theme, s.mcp_enabled, s.mcp_write_row_limit, s.mcp_show_in_tabs), (ThemePref::Light, false, 10, false));
         assert_eq!(s.keys.get("editor.run").map(String::as_str), Some("cmd-r"));
         st.update(|_| {}).unwrap();
         let text = std::fs::read_to_string(dirs.settings_file()).unwrap();
         assert!(!text.contains("mcp_http") && !text.contains("mcp_port") && text.contains("mcp_write_row_limit = 10"), "{text}");
-        assert!(!SettingsStore::open(&dirs).legacy_http());
-        std::fs::write(dirs.settings_file(), "theme = \"light\"\n").unwrap();
-        assert!(!SettingsStore::open(&dirs).legacy_http());
     }
 
     #[test]

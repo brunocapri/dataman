@@ -68,6 +68,7 @@ pub fn is_own(key: &str, pid: i32) -> bool {
 }
 
 /// This process's backends on server `key`, sorted.
+#[cfg(test)]
 pub fn pids(key: &str) -> Vec<i32> {
     let mut v: Vec<i32> = OWN.lock().get(key).map(|m| m.keys().copied().collect()).unwrap_or_default();
     v.sort_unstable();

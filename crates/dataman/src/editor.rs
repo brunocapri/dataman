@@ -845,7 +845,6 @@ pub struct CodeEditor {
     pop: Option<FindPop<Range<usize>>>,
     /// ⌘F: the find bar and its matches.
     find: Option<EditorFind>,
-    last_run: Option<Range<usize>>,
     drag: Option<Drag>,
     geo: Option<Geometry>,
     /// The scrollbars of the last frame (vertical, horizontal), only while there is more to see.
@@ -1069,7 +1068,6 @@ impl CodeEditor {
             flash: None,
             pop: None,
             find: None,
-            last_run: None,
             drag: None,
             geo: None,
             bars: (None, None),
@@ -1124,7 +1122,6 @@ impl CodeEditor {
         self.marks.clear();
         self.flash = None;
         self.pop = None;
-        self.last_run = None;
         self.autoscroll = true;
         self.clear_lints();
         self.hover = None;
@@ -1513,12 +1510,6 @@ impl CodeEditor {
         }
         self.marked = None;
         self.move_to(offset, cx);
-    }
-
-    /// Byte range of what the last `Run`/`RunAll` executed.
-    #[allow(dead_code)]
-    pub fn last_run_range(&self) -> Option<Range<usize>> {
-        self.last_run.clone()
     }
 
     /// Inserts text at the cursor (replacing the selection) as one undo step.
@@ -2429,7 +2420,6 @@ impl CodeEditor {
         let (Some(first), Some(last)) = (ranges.first(), ranges.last()) else { return };
         let span = first.start..last.end;
         let stmts = ranges.iter().map(|r| Stmt { at: r.start, sql: self.buf.text[r.clone()].to_string(), params: Vec::new(), rollback: false }).collect();
-        self.last_run = Some(span.clone());
         self.flash(span, cx);
         cx.emit(if all { EditorEvent::RunAll(stmts) } else { EditorEvent::Run(stmts) });
     }

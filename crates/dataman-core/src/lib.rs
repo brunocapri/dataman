@@ -243,6 +243,7 @@ impl Core {
     /// The password to use: the given one, the saved one, or the one `~/.pgpass` has for it.
     /// Reads the keychain and a file: not for the UI thread ([`Core::connect`] and
     /// [`Core::test_connection`] resolve it in the background).
+    #[cfg(test)]
     pub fn password_for(&self, profile: &ConnectionProfile, given: Option<String>) -> Result<Option<String>> {
         self.resolver().password(profile, given)
     }

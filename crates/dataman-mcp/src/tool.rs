@@ -790,11 +790,6 @@ impl Registry {
         before != after
     }
 
-    /// The problems of the user tools file, as last read.
-    pub fn user_errors(&self) -> Vec<String> {
-        self.user.lock().errors.clone()
-    }
-
     pub fn all(&self) -> Vec<Arc<dyn Tool>> {
         self.refresh();
         let mut v = self.tools.clone();

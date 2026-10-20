@@ -591,11 +591,6 @@ impl Tunnel {
         self.shared.last_error.lock().take()
     }
 
-    /// The session is up (it may still drop at any time).
-    pub fn is_up(&self) -> bool {
-        self.shared.chain.try_lock().map(|g| g.as_ref().is_some_and(|c| !c.is_closed())).unwrap_or(true)
-    }
-
     /// Stops listening and ends the SSH session (every connection through it closes).
     pub fn close(&self) {
         if self.shared.closed.swap(true, Ordering::AcqRel) {

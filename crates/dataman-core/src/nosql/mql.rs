@@ -142,10 +142,6 @@ impl Op {
         }
     }
 
-    /// Writes documents (an insert, update, replace or delete): what the row limit counts.
-    pub fn changes_documents(&self) -> bool {
-        matches!(self, Op::Insert { .. } | Op::Update { .. } | Op::Replace { .. } | Op::Delete { .. } | Op::FindAndModify { .. } | Op::BulkWrite { .. })
-    }
 }
 
 // ---------------------------------------------------------------------------------------------

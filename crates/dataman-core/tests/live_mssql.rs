@@ -142,11 +142,6 @@ fn connects_and_decodes_every_type() {
     mssql_drop(&e, "dataman_t_types");
 }
 
-/// µs since 2000-01-01 of a UTC time.
-fn value_ts(y: u16, m: u8, d: u8, h: u8, mi: u8, s: u8) -> i64 {
-    dataman_core::value::timestamp_cell(y, m, d, h, mi, s, 0)
-}
-
 #[test]
 fn batches_results_and_errors() {
     let e = env();

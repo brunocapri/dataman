@@ -16,7 +16,7 @@ use std::collections::HashSet;
 use std::ops::Range;
 
 use crate::schema::SchemaSnapshot;
-use crate::sql::lexer::{Token, TokenKind, tokenize, tokenize_in, unterminated_in};
+use crate::sql::lexer::{Token, TokenKind, tokenize_in, unterminated_in};
 use crate::sql::scope::{self, Analysis, Clause, Item, SYSTEM_COLUMNS, SourceKind};
 use crate::sql::{Dialect, split::split_tokens_in};
 
@@ -160,12 +160,6 @@ fn without_tsql_hints(src: &str, toks: Vec<Token>) -> Vec<Token> {
         i += 1;
     }
     out
-}
-
-/// Tables and views a script creates (`CREATE [TEMP] TABLE x`, `CREATE VIEW x`,
-/// `SELECT … INTO x`, `ALTER … RENAME TO x`), lower case.
-pub fn created_names(src: &str) -> HashSet<String> {
-    created_in(src, &tokenize(src), Dialect::Postgres)
 }
 
 /// [`created_names`] of a script in `dialect` (T-SQL's `#temp` tables, `[brackets]`).

@@ -421,7 +421,6 @@ fn main() {
                     // they never delay the window.
                     if bench.is_none() {
                         mcp::apply(&mcp_core, cx);
-                        mcp::forget_http_token(&mcp_core);
                         updates::start(weak.clone(), handle, cx);
                         crash_ui::check(weak.clone(), cx);
                         crash_ui::maybe_crash_for_test(cx);

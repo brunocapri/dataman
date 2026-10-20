@@ -286,21 +286,6 @@ pub fn apply(core: &Arc<Core>, cx: &mut App) {
     .detach();
 }
 
-/// The settings file still has the keys of the MCP HTTP server the app once had: saving it
-/// drops them, once, off the UI thread. Its Keychain token stays (deleting an item an older
-/// build wrote makes macOS ask; nothing reads it).
-pub fn forget_http_token(core: &Arc<Core>) {
-    if !core.settings.legacy_http() {
-        return;
-    }
-    let core = core.clone();
-    let _ = std::thread::Builder::new().name("mcp-old-settings".into()).spawn(move || {
-        if let Err(e) = core.settings.update(|_| {}) {
-            log::warn!("saving the settings: {e:#}");
-        }
-    });
-}
-
 /// A message from the tools.
 fn arrived(m: FrontMsg, cx: &mut App) {
     match m {

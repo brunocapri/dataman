@@ -430,12 +430,6 @@ impl ConnectionProfile {
         if MCP_ADVANCED { &self.mcp_allowed } else { &[] }
     }
 
-    /// The tier as shown wherever it is: `full`, or `full · YOLO`.
-    pub fn mcp_label(&self) -> String {
-        let a = self.mcp_access().label();
-        if self.mcp_yolo_on() { format!("{a} · YOLO") } else { a.to_string() }
-    }
-
     /// Adds statements to the allowed queries (each checked as an entry, those already allowed
     /// by an entry left out); the ones added.
     pub fn mcp_allow<S: AsRef<str>>(&mut self, stmts: &[S]) -> Vec<String> {
@@ -970,7 +964,6 @@ mod tests {
         assert!(p.mcp_allow(&["delete from sessions where expires_at < 5", "truncate AUDIT_TMP"]).is_empty());
         p.mcp_yolo = true;
         assert_eq!(p.mcp_yolo_on(), MCP_ADVANCED, "in effect only with the advanced options on");
-        assert_eq!(p.mcp_label(), if MCP_ADVANCED { "read · YOLO" } else { "read" });
         let q = ConnectionProfile::new("plain");
         store.upsert(p.clone()).unwrap();
         store.upsert(q.clone()).unwrap();
@@ -980,11 +973,10 @@ mod tests {
         assert_eq!(ConfigStore::open(&dirs).unwrap().connections(), vec![p.clone(), q]);
         std::fs::write(dirs.connections_file(), "[[connection]]\nid = \"a\"\nname = \"n\"\nhost = \"h\"\nport = 1\nuser = \"u\"\ndatabase = \"d\"\n").unwrap();
         let old = &ConfigStore::open(&dirs).unwrap().connections()[0];
-        assert!(old.mcp_allowed.is_empty() && !old.mcp_yolo && old.mcp_label() == "read");
+        assert!(old.mcp_allowed.is_empty() && !old.mcp_yolo);
         // Off wins: YOLO stays set but is not in effect.
         p.mcp = Some(McpAccess::Off);
         assert!(p.mcp_yolo && !p.mcp_yolo_on());
-        assert_eq!(p.mcp_label(), "off");
     }
 
     /// The engine: PostgreSQL stays out of the file (older files load as PostgreSQL), the others

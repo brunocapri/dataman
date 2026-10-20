@@ -169,7 +169,6 @@ pub fn pill(glyph: &str, label: impl Into<SharedString>, fg: Hsla, bg: Hsla) -> 
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum Btn {
     /// Accent fill (Run, Save & connect).
     Primary,
@@ -179,8 +178,6 @@ pub enum Btn {
     Ghost,
     /// Error-tinted with an error ring (Cancel while running).
     Danger,
-    /// LAR fill.
-    Lar,
 }
 
 /// A 26 pt button (square, padding 0 9) with its hover and pressed states. Everything is
@@ -212,10 +209,6 @@ pub fn button(t: &Theme, id: impl Into<ElementId>, kind: Btn) -> Stateful<Div> {
         Btn::Danger => {
             let (h, p) = (t.err.opacity(0.22), t.err.opacity(0.30));
             base.bg(t.err_s).border_1().border_color(t.err).text_color(t.err).hover(move |s| s.bg(h)).active(move |s| s.bg(p))
-        }
-        Btn::Lar => {
-            let (h, p) = (t.lar_h, t.lar_p);
-            base.bg(t.lar).text_color(t.on_lar).hover(move |s| s.bg(h)).active(move |s| s.bg(p))
         }
     }
 }

@@ -3402,7 +3402,6 @@ pub use dataman_core::sql::statement_verb;
 /// The color of a decoration, resolved against the active theme when painting (so a theme
 /// switch recolors it): a soft background (`*_s`) or the strong color.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum Tone {
     Ok,
     Warn,

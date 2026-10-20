@@ -7,7 +7,6 @@ use gpui::Hsla;
 use crate::theme::Theme;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum ResultState {
     Idle,
     Running,

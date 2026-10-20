@@ -754,6 +754,7 @@ pub fn print_bson(b: &Bson) -> String {
     out
 }
 
+#[cfg(test)]
 pub fn print_document(d: &Document) -> String {
     let mut out = String::new();
     write_doc(&mut out, d, 0);

@@ -107,11 +107,6 @@ impl Matcher {
         self.find_iter(text).next().is_some()
     }
 
-    /// Whether NULL cells count as matches.
-    pub fn matches_null(&self) -> bool {
-        self.null
-    }
-
     /// What replaces the match `m` of `text`: `rep` as typed for a literal query; for a regular
     /// expression, with `$1`, `${name}` and `$$` expanded from the match's groups.
     pub fn expand(&self, text: &str, m: Range<usize>, rep: &str) -> String {
@@ -170,6 +165,7 @@ fn group_digits(rep: &str) -> String {
 }
 
 /// `text` with sorted, disjoint `edits` applied in one pass.
+#[cfg(test)]
 pub fn apply_edits(text: &str, edits: &[(Range<usize>, String)]) -> String {
     let mut out = String::with_capacity(text.len());
     let mut pos = 0;

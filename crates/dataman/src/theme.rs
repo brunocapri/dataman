@@ -247,7 +247,6 @@ pub fn activate_system_font(name: &str, cx: &App) {
 }
 
 /// Fixed metrics, in points (Spec board, reference window 1400 x 900).
-#[allow(dead_code)]
 pub mod metrics {
     pub const TITLE_H: f32 = 40.;
     pub const TAB_H: f32 = 28.;
@@ -273,9 +272,7 @@ pub mod metrics {
     pub const DIVIDER: f32 = 7.;
     /// Hit area of a divider (2 pt past each side of the visible bar).
     pub const DIVIDER_HIT: f32 = 11.;
-    pub const TREE_ROW: f32 = 22.;
     pub const GRID_ROW: f32 = 22.;
-    pub const GRID_HEADER: f32 = 28.;
     pub const EDITOR_LINE: f32 = 20.;
     pub const MIN_WINDOW: (f32, f32) = (960., 600.);
 
@@ -311,18 +308,17 @@ pub mod metrics {
         LIGHTS_RIGHT / zoom
     }
 
-    /// Centre of light `i` (0 close, 1 minimize, 2 zoom), from the window's top-left.
-    pub fn light_centre(i: usize) -> (f32, f32) {
-        let (x, y) = traffic_light_position();
-        (x + i as f32 * LIGHT_STEP + LIGHT_FRAME.0 / 2., y + LIGHT_FRAME.1 / 2.)
-    }
-
     /// Right edge of the zoom light's circle (the explorer button starts 14 pt after it).
     pub const LIGHTS_RIGHT: f32 = LIGHTS_AT.0 + 2. * LIGHT_STEP + LIGHT_D;
 
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        fn light_centre(i: usize) -> (f32, f32) {
+            let (x, y) = traffic_light_position();
+            (x + i as f32 * LIGHT_STEP + LIGHT_FRAME.0 / 2., y + LIGHT_FRAME.1 / 2.)
+        }
 
         #[test]
         fn the_title_bar_centres_on_the_traffic_lights() {
@@ -347,14 +343,8 @@ pub mod metrics {
 }
 
 /// Type scale (sizes in points).
-#[allow(dead_code)]
 pub mod text {
     pub const CODE: f32 = 13.;
-    pub const BODY: f32 = 12.;
-    pub const META: f32 = 11.;
-    pub const LABEL: f32 = 10.5;
-    pub const TITLE: f32 = 13.5;
-    pub const MESSAGE: f32 = 18.;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -368,12 +358,9 @@ pub const SWATCHES: [&str; 8] = ["rose", "coral", "lime", "mint", "sky", "cobalt
 
 /// Every token of the boards is here, including the ones only later phases use.
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub struct Theme {
     pub mode: Mode,
     // Surfaces.
-    /// The shell surface, solid (Zeron's `surface`, zeronsh/zeron, MIT).
-    pub win: Hsla,
     /// The window's tint over the system blur, painted once behind the whole window (title
     /// bar, explorer, status bar, and under the work surface): `win` at 86 % (`GLASS_ALPHA`).
     /// Solid `win` when the window is opaque.
@@ -444,7 +431,6 @@ pub struct Theme {
     pub lar_r: Hsla,
     pub lar_t: Hsla,
     pub lar_h: Hsla,
-    pub lar_p: Hsla,
     pub on_lar: Hsla,
     // States.
     pub ok: Hsla,
@@ -493,7 +479,6 @@ pub struct Theme {
     pub alt_base: Hsla,
     // Keycaps.
     pub key: Hsla,
-    pub key_b: Hsla,
     // Syntax.
     pub kw: Hsla,
     pub func: Hsla,
@@ -555,7 +540,6 @@ impl Theme {
         // Zeron's dark ladder: panel #060606, shell #0d0d0d, card #0e0e0e, overlay #161616.
         Theme {
             mode: Mode::Dark,
-            win: c(0x0d0d0d),
             glass: ca(0x0d0d0d, GLASS_ALPHA),
             bg: c(0x060606),
             panel: ca(0x060606, PANEL_ALPHA),
@@ -588,7 +572,6 @@ impl Theme {
             lar_r: ca(0xa47bff, 0.35),
             lar_t: c(0xcdb7ff),
             lar_h: c(0xb28eff),
-            lar_p: c(0x8f66f0),
             on_lar: c(0x0b0716),
             ok: c(0x5be49b),
             ok_s: ca(0x5be49b, 0.12),
@@ -616,7 +599,6 @@ impl Theme {
             alt: ca(W, ALT_GLASS.0),
             alt_base: ca(0x000000, ALT_GLASS.0),
             key: ca(W, 0.06),
-            key_b: ca(W, 0.16),
             kw: c(0x7aa2ff),
             func: c(0xff8fd0),
             str: c(0x9be37b),
@@ -650,7 +632,6 @@ impl Theme {
         // Zeron's light ladder: white panel inside a neutral-100 (#f5f5f5) shell.
         Theme {
             mode: Mode::Light,
-            win: c(0xf5f5f5),
             glass: ca(0xf5f5f5, GLASS_ALPHA),
             bg: c(0xffffff),
             panel: c(0xffffff),
@@ -683,7 +664,6 @@ impl Theme {
             lar_r: ca(0x7a4dff, 0.30),
             lar_t: c(0x5b30dd),
             lar_h: c(0x8a62ff),
-            lar_p: c(0x6a3cf0),
             on_lar: c(0xffffff),
             ok: c(0x0e8f50),
             ok_s: ca(0x0e8f50, 0.10),
@@ -710,7 +690,6 @@ impl Theme {
             alt: ca(K, ALT_GLASS.1),
             alt_base: gpui::transparent_black(),
             key: ca(K, 0.04),
-            key_b: ca(K, 0.18),
             kw: c(0x2f5bff),
             func: c(0xb0287a),
             str: c(0x2c7a2e),

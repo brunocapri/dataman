@@ -4,7 +4,6 @@
 //! the user before a write).
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -213,10 +212,6 @@ impl Hub {
 
     pub fn handle(&self) -> tokio::runtime::Handle {
         self.core.handle()
-    }
-
-    pub fn tools_file(&self) -> PathBuf {
-        self.dirs.mcp_tools_file()
     }
 
     /// The app's side of the tools (set by the app on its own hub; never in a standalone

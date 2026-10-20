@@ -10,7 +10,7 @@ use dataman_core::ConnectionProfile;
 use crate::theme::{ActiveTheme, PIXEL};
 use crate::ui;
 
-actions!(welcome, [Up, Down, Choose, PasteUrl, Localhost, NewConn]);
+actions!(welcome, [Up, Down, Choose, PasteUrl, Localhost]);
 
 pub fn bind_keys(cx: &mut App) {
     let c = Some("Welcome");
@@ -146,7 +146,6 @@ impl Render for Welcome {
             }))
             .on_action(cx.listener(|w, _: &PasteUrl, _, cx| w.paste_url(cx)))
             .on_action(cx.listener(|w, _: &Localhost, _, cx| w.choose(LOCALHOST, cx)))
-            .on_action(cx.listener(|_, _: &NewConn, _, cx| cx.emit(WelcomeEvent::NewConnection)))
             .on_mouse_down(gpui::MouseButton::Left, cx.listener(|w, _, window, cx| window.focus(&w.focus, cx)))
             .child(
                 div()

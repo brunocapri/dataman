@@ -241,12 +241,7 @@ fn check(ed: Entity<CodeEditor>, window: &mut Window, cx: &mut App) {
     }
     fn p(label: &'static str) -> Step {
         Box::new(move |ed, _, cx| {
-            println!(
-                "{label}: {} popup={} sel_run={:?}",
-                t(ed, cx),
-                ed.read(cx).completion_visible(),
-                ed.read(cx).last_run_range()
-            )
+            println!("{label}: {} popup={}", t(ed, cx), ed.read(cx).completion_visible())
         })
     }
     fn f(g: impl Fn(&mut CodeEditor, &mut Window, &mut Context<CodeEditor>) + 'static) -> Step {

@@ -1254,6 +1254,7 @@ impl Analysis {
     }
 
     /// The output columns of a scope's select list, when every `*` can be expanded.
+    #[cfg(test)]
     pub fn outputs(&self, scope: usize, snap: &SchemaSnapshot) -> Option<Vec<(String, String)>> {
         self.outputs_depth(scope, snap, 0)
     }

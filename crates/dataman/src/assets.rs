@@ -18,10 +18,8 @@ macro_rules! assets {
 assets!(
     "icons/activity.svg",
     "icons/agent.svg",
-    "icons/archive.svg",
     "icons/braces.svg",
     "icons/arrow-right.svg",
-    "icons/cancel.svg",
     "icons/check.svg",
     "icons/chevron-d.svg",
     "icons/chevron-l.svg",
@@ -34,7 +32,6 @@ assets!(
     "icons/command.svg",
     "icons/constraint.svg",
     "icons/copy.svg",
-    "icons/cursor.svg",
     "icons/database.svg",
     "icons/edit.svg",
     "icons/export.svg",
@@ -68,10 +65,8 @@ assets!(
     "icons/schema-fill.svg",
     "icons/search.svg",
     "icons/sequence.svg",
-    "icons/server.svg",
     "icons/sidebar.svg",
     "icons/sidebar-right.svg",
-    "icons/split.svg",
     "icons/star.svg",
     "icons/star-fill.svg",
     "icons/stop.svg",
@@ -107,13 +102,11 @@ impl AssetSource for Assets {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum Icon {
     /// Run: an SF-Symbols-style `arrow.right` (round caps, short head).
     Run,
     Stop,
     Pause,
-    Cancel,
     History,
     Plus,
     Reload,
@@ -148,16 +141,12 @@ pub enum Icon {
     /// The sidebar glyph mirrored: the explorer in the right dock.
     SidebarRight,
     PanelRight,
-    /// Open to the Side: the work surface in two editor groups.
-    Split,
     /// The result panel zoomed over the editor, and back.
     Expand,
     Collapse,
     Lock,
     Warning,
     Info,
-    Server,
-    Archive,
     More,
     /// A query tab (command palette).
     Tab,
@@ -169,8 +158,6 @@ pub enum Icon {
     Hash,
     /// Connect / disconnect.
     Plug,
-    /// Insert at the cursor.
-    Cursor,
     /// The connection goes through an SSH tunnel (explorer).
     Tunnel,
     // Explorer object kinds.
@@ -210,7 +197,6 @@ impl Icon {
             Icon::Run => "icons/arrow-right.svg",
             Icon::Stop => "icons/stop.svg",
             Icon::Pause => "icons/pause.svg",
-            Icon::Cancel => "icons/cancel.svg",
             Icon::History => "icons/history.svg",
             Icon::Plus => "icons/plus.svg",
             Icon::Reload => "icons/reload.svg",
@@ -239,21 +225,17 @@ impl Icon {
             Icon::Sidebar => "icons/sidebar.svg",
             Icon::SidebarRight => "icons/sidebar-right.svg",
             Icon::PanelRight => "icons/panel-right.svg",
-            Icon::Split => "icons/split.svg",
             Icon::Expand => "icons/expand.svg",
             Icon::Collapse => "icons/collapse.svg",
             Icon::Lock => "icons/lock.svg",
             Icon::Warning => "icons/warning.svg",
             Icon::Info => "icons/info.svg",
-            Icon::Server => "icons/server.svg",
-            Icon::Archive => "icons/archive.svg",
             Icon::More => "icons/more.svg",
             Icon::Tab => "icons/tab.svg",
             Icon::Command => "icons/command.svg",
             Icon::Code => "icons/code.svg",
             Icon::Hash => "icons/hash.svg",
             Icon::Plug => "icons/plug.svg",
-            Icon::Cursor => "icons/cursor.svg",
             Icon::Tunnel => "icons/tunnel.svg",
             Icon::MatView => "icons/matview.svg",
             Icon::Function => "icons/function.svg",
@@ -332,10 +314,10 @@ mod tests {
     fn every_icon_is_embedded() {
         use Icon::*;
         let all = [
-            Run, Stop, Pause, Cancel, History, Plus, Reload, ChevronRight, ChevronDown, ChevronUp, ChevronLeft, Database, Schema,
+            Run, Stop, Pause, History, Plus, Reload, ChevronRight, ChevronDown, ChevronUp, ChevronLeft, Database, Schema,
             SchemaFilled, Group, Table, View, Key, Keyboard, Index, Search, Filter, Close, Check, Copy, Export, Import, Edit, Trash,
-            Sidebar, SidebarRight, PanelRight, Split, Expand, Collapse, Lock, Warning, Info, Server, Archive, More, Tab, Command, Code, Hash, Plug,
-            Cursor, Tunnel, MatView, Function, Procedure, Sequence, Type, Label, Trigger, Extension, Role,
+            Sidebar, SidebarRight, PanelRight, Expand, Collapse, Lock, Warning, Info, More, Tab, Command, Code, Hash, Plug,
+            Tunnel, MatView, Function, Procedure, Sequence, Type, Label, Trigger, Extension, Role,
             Constraint, Link, Partition, Activity, Star, StarFill, Pin, Agent, Live, Collection,
         ];
         for i in all {

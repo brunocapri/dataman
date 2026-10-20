@@ -117,6 +117,7 @@ pub fn is_decimal(s: &str) -> bool {
 }
 
 /// The SQL literal for a stored cell of `kind`.
+#[cfg(test)]
 pub fn literal(kind: Kind, cell: Cell<'_>) -> String {
     literal_in(Dialect::Postgres, kind, cell)
 }
@@ -181,6 +182,7 @@ pub fn literal_in(d: Dialect, kind: Kind, cell: Cell<'_>) -> String {
 /// The SQL literal for a value typed as text into a column of `kind`: numbers and booleans go
 /// unquoted when they look like one (so servers without implicit casts from text accept them),
 /// everything else is a quoted string the server converts.
+#[cfg(test)]
 pub fn value_literal(kind: Kind, v: &CellValue) -> String {
     value_literal_in(Dialect::Postgres, kind, v)
 }
@@ -262,6 +264,7 @@ fn text_literal(d: Dialect, kind: Kind, s: &str) -> String {
 // destructive ones start with a warning comment and are never run by the app.
 
 /// `SELECT * FROM schema.table LIMIT n;` (no limit with `None`).
+#[cfg(test)]
 pub fn select_star(schema: &str, name: &str, limit: Option<u64>) -> String {
     select_star_in(Dialect::Postgres, schema, name, limit)
 }
@@ -276,6 +279,7 @@ pub fn select_star_in(d: Dialect, schema: &str, name: &str, limit: Option<u64>) 
 }
 
 /// `SELECT count(*) FROM schema.table;`
+#[cfg(test)]
 pub fn count_rows(schema: &str, name: &str) -> String {
     count_rows_in(Dialect::Postgres, schema, name)
 }
@@ -355,6 +359,7 @@ fn column_note(c: &Column) -> String {
 }
 
 /// `SELECT a, b, … FROM schema.table;` with every column listed.
+#[cfg(test)]
 pub fn select_columns(schema: &str, name: &str, cols: &[Column]) -> String {
     select_columns_in(Dialect::Postgres, schema, name, cols)
 }
@@ -386,6 +391,7 @@ fn commented_values(values: &[(String, String)], indent: &str) -> String {
 /// `INSERT INTO schema.table (…) VALUES (…);` with a typed placeholder per column, `DEFAULT`
 /// where the column has a default (identity and generated columns included), and a comment
 /// with each column's type.
+#[cfg(test)]
 pub fn insert_template(schema: &str, name: &str, cols: &[Column]) -> String {
     insert_template_in(Dialect::Postgres, schema, name, cols)
 }
@@ -439,6 +445,7 @@ fn key_condition(d: Dialect, cols: &[Column]) -> String {
 }
 
 /// `UPDATE schema.table SET … WHERE <pk> = …;`: every non-key column with a typed placeholder.
+#[cfg(test)]
 pub fn update_template(schema: &str, name: &str, cols: &[Column]) -> String {
     update_template_in(Dialect::Postgres, schema, name, cols)
 }
@@ -459,6 +466,7 @@ pub fn update_template_in(d: Dialect, schema: &str, name: &str, cols: &[Column])
 }
 
 /// `DELETE FROM schema.table WHERE <pk> = …;`
+#[cfg(test)]
 pub fn delete_template(schema: &str, name: &str, cols: &[Column]) -> String {
     delete_template_in(Dialect::Postgres, schema, name, cols)
 }
@@ -593,6 +601,7 @@ pub fn drop_schema_template(schema: &str) -> String {
     )
 }
 
+#[cfg(test)]
 pub fn truncate_template(schema: &str, name: &str) -> String {
     let q = qualified(Some(schema), name);
     danger(&format!("TRUNCATE deletes every row of {q} at once: no WHERE, no per-row triggers."), format!("TRUNCATE TABLE {q};"))

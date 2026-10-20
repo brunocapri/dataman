@@ -16,13 +16,11 @@ static TEST_PATHS: Mutex<Option<Vec<PathBuf>>> = Mutex::new(None);
 static TEST_SAVE: Mutex<Option<PathBuf>> = Mutex::new(None);
 
 /// Checks: the next pick answers with these paths, without a panel.
-#[allow(dead_code)]
 pub fn set_test_paths(paths: Vec<PathBuf>) {
     *TEST_PATHS.lock().unwrap() = Some(paths);
 }
 
 /// Checks: the next save panel answers with this path, without a panel.
-#[allow(dead_code)]
 pub fn set_test_save_path(path: PathBuf) {
     *TEST_SAVE.lock().unwrap() = Some(path);
 }

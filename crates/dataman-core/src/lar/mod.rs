@@ -30,8 +30,4 @@ impl Lar {
         &self.conn
     }
 
-    /// For tests and tools: LAR operations without the detection (the server must be LAR).
-    pub fn new_unchecked(conn: Arc<Connection>) -> Lar {
-        Lar { conn }
-    }
 }
