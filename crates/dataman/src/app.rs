@@ -2212,13 +2212,14 @@ impl Workspace {
         self.conn_menu = false;
         cx.notify();
         let (Some(tab), Some(conn)) = (self.active_tab().cloned(), self.store.read(cx).connection(id)) else { return };
+        // Picked, even the tab's own: the connection a new tab (⌘T) opens on.
+        self.current_conn = Some(id.to_string());
         {
             let t = tab.read(cx);
             if t.connection().is_some_and(|c| Arc::ptr_eq(c, &conn)) && t.database() == db {
                 return;
             }
         }
-        self.current_conn = Some(id.to_string());
         self.retarget(&tab, conn, Some(db.to_string()), None, window, cx);
     }
 
