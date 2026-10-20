@@ -2456,17 +2456,11 @@ impl Workspace {
             .flex()
             .items_center()
             .justify_center()
-            .on_mouse_down(MouseButton::Left, cx.listener(|w, _, _, cx| {
-                w.shortcuts_open = false;
-                cx.notify();
-            }))
-            .child(crate::shortcuts::sheet(
-                &t,
-                ui::modal_close(&t, "shortcuts-close").on_click(cx.listener(|w, _, _, cx| {
-                    w.shortcuts_open = false;
-                    cx.notify();
-                })),
-            ))
+            .track_focus(&self.shortcuts_focus)
+            .key_context("Shortcuts")
+            .on_action(cx.listener(|w, _: &crate::app::CloseShortcuts, window, cx| w.set_shortcuts(false, window, cx)))
+            .on_mouse_down(MouseButton::Left, cx.listener(|w, _, window, cx| w.set_shortcuts(false, window, cx)))
+            .child(crate::shortcuts::sheet(&t, ui::modal_close(&t, "shortcuts-close").on_click(cx.listener(|w, _, window, cx| w.set_shortcuts(false, window, cx)))))
     }
 }
 

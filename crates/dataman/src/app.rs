@@ -23,6 +23,7 @@ use crate::welcome::{Welcome, WelcomeEvent};
 actions!(
     workspace,
     [
+        CloseShortcuts,
         NewTab,
         CloseTab,
         NextTab,
@@ -117,6 +118,8 @@ pub fn bind_keys(cx: &mut App) {
     let w = Some(WORKSPACE_KEYS);
     cx.bind_keys([
         KeyBinding::new("escape", FocusEditor, w),
+        // The sheet holds the focus: esc reaches it whatever had the keys before.
+        KeyBinding::new("escape", CloseShortcuts, Some("Shortcuts")),
         KeyBinding::new("escape", CancelPendingRun, Some("ConfirmDiscard")),
         KeyBinding::new("enter", CancelPendingRun, Some("ConfirmDiscard")),
         KeyBinding::new("cmd-backspace", DiscardAndRun, Some("ConfirmDiscard")),
@@ -334,6 +337,7 @@ pub struct Workspace {
     pub(crate) title_drag: bool,
     pub(crate) focus_visible: bool,
     pub(crate) shortcuts_open: bool,
+    pub(crate) shortcuts_focus: FocusHandle,
     pub(crate) copy_menu: bool,
     pub(crate) cancel_toast_hidden: Option<Instant>,
     pub(crate) lar_toast: Option<(String, Instant)>,
@@ -510,6 +514,7 @@ impl Workspace {
             title_drag: false,
             focus_visible: false,
             shortcuts_open: false,
+            shortcuts_focus: cx.focus_handle(),
             copy_menu: false,
             cancel_toast_hidden: None,
             lar_toast: None,
@@ -1380,10 +1385,7 @@ impl Workspace {
             WelcomeEvent::AgentSetup => self.open_settings_at("mcp", window, cx),
             WelcomeEvent::Prefill(p, pw) => self.open_dialog_with(Some(p.clone()), true, pw.clone(), window, cx),
             WelcomeEvent::OpenFile => self.open_sql_file(window, cx),
-            WelcomeEvent::Shortcuts => {
-                self.shortcuts_open = true;
-                cx.notify();
-            }
+            WelcomeEvent::Shortcuts => self.set_shortcuts(true, window, cx),
         }
     }
 
@@ -1634,6 +1636,23 @@ impl Workspace {
         )
         .absolute()
         .size_0()
+    }
+
+    pub(crate) fn set_shortcuts(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if open == self.shortcuts_open {
+            return;
+        }
+        self.shortcuts_open = open;
+        if open {
+            self.modal_return = window.focused(cx);
+            window.focus(&self.shortcuts_focus, cx);
+        } else {
+            match self.modal_return.take() {
+                Some(f) => window.focus(&f, cx),
+                None => self.focus_editor(window, cx),
+            }
+        }
+        cx.notify();
     }
 
     pub(crate) fn notice(&mut self, msg: impl Into<String>, cx: &mut Context<Self>) {
@@ -2615,8 +2634,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|w, _: &FocusGrid, window, cx| w.focus_region(Region::Grid, window, cx)))
             .on_action(cx.listener(|w, _: &FocusEditor, window, cx| {
                 if w.shortcuts_open {
-                    w.shortcuts_open = false;
-                    cx.notify();
+                    w.set_shortcuts(false, window, cx);
                     return;
                 }
                 if w.copy_menu {
@@ -2646,9 +2664,9 @@ impl Render for Workspace {
             .on_action(cx.listener(|w, _: &crate::find::FindNext, window, cx| w.find_step_in_editor(true, window, cx)))
             .on_action(cx.listener(|w, _: &crate::find::FindPrevious, window, cx| w.find_step_in_editor(false, window, cx)))
             .on_action(cx.listener(|w, _: &UseExplorerConnection, window, cx| w.use_explorer_connection(window, cx)))
-            .on_action(cx.listener(|w, _: &ShowShortcuts, _, cx| {
-                w.shortcuts_open = !w.shortcuts_open;
-                cx.notify();
+            .on_action(cx.listener(|w, _: &ShowShortcuts, window, cx| {
+                let open = !w.shortcuts_open;
+                w.set_shortcuts(open, window, cx);
             }))
             .on_action(cx.listener(|w, _: &CommandPalette, window, cx| w.open_palette(crate::palette::Scope::All, window, cx)))
             .on_action(cx.listener(|w, _: &GoTo, window, cx| w.open_palette(crate::palette::Scope::Goto, window, cx)))
