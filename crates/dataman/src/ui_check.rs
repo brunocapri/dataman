@@ -140,6 +140,18 @@ async fn run_sql(ws: &Entity<Workspace>, sql: &str, cx: &mut AsyncWindowContext)
     tab
 }
 
+/// A new tab grows in (motion::TAB_OPEN): its bounds are only its own once that is over.
+async fn grown(ws: &Entity<Workspace>, tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) {
+    for _ in 0..40 {
+        draw(cx);
+        if !cx.update(|_, cx| ws.read(cx).tab_motion.growing(tab.entity_id())).unwrap_or(false) {
+            break;
+        }
+        pause(cx, 25).await;
+    }
+    draw(cx);
+}
+
 fn new_tab(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> Entity<QueryTab> {
     let t = cx.update(|window, cx| ws.update(cx, |w, cx| w.new_tab(window, cx))).unwrap();
     draw(cx);
@@ -274,6 +286,7 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     report("⌘W closes a tab whose run failed", gone && tabs(ws, cx).len() == n0, format!("{} tabs", tabs(ws, cx).len()));
     new_tab(ws, cx);
     let failed = run_sql(ws, "SELECT * FROM no_such_table_here", cx).await;
+    grown(ws, &failed, cx).await;
     let ix = tabs(ws, cx).iter().position(|t| *t == failed).unwrap_or(0);
     if let Some((mid, x)) = tab_points(ws, ix, cx) {
         mouse_move(cx, mid, false);
@@ -542,6 +555,7 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
 
     let n0 = tabs(ws, cx).len();
     let doomed = new_tab(ws, cx);
+    grown(ws, &doomed, cx).await;
     let ix = tabs(ws, cx).iter().position(|t| *t == doomed).unwrap_or(0);
     if let Some((mid, _)) = tab_points(ws, ix, cx) {
         middle_click(cx, mid);

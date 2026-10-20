@@ -182,6 +182,8 @@ async fn check(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWindo
         println!("{} {name}{}", if pass { "PASS" } else { "FAIL" }, if pass { String::new() } else { format!(" — {detail}") });
         ok &= pass;
     };
+    // The edit and transaction checks below commit changes to customers 2 and 3: start from the seed's values.
+    direct(ws, "UPDATE customer SET name = CASE id WHEN 2 THEN 'Ben Lewis' ELSE name END, balance = CASE id WHEN 3 THEN 0.00 ELSE balance END WHERE id IN (2, 3)", cx).await;
     let tab = active(ws, cx);
     let info = cx.update(|_, cx| tab.read(cx).connection().map(|c| (c.engine(), c.info.version.clone(), c.dialect()))).ok().flatten();
     report(

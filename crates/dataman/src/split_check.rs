@@ -412,11 +412,12 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
     snap("narrow", cx);
     let picker = cx.update(|_, cx| ws.read(cx).picker_bounds.get()).ok().flatten();
     let tb = cx.update(|_, cx| ws.read(cx).toolbar_parts.borrow()[0].clone()).unwrap_or_default();
-    let history = tb.iter().rev().find(|b| b.size.width > px(10.)).copied();
+    let edge = narrow.map(|((lx, lw), _)| px(lx + lw));
+    let fits = edge.is_some_and(|r| tb.iter().all(|b| b.right() <= r + px(0.5))) && tb.windows(2).all(|w| w[0].right() <= w[1].left() + px(0.5));
     report(
-        "in a narrow group the connection picker shrinks, never over the History button",
-        picker.zip(history).is_some_and(|(p, h)| p.right() <= h.left() && p.size.width > px(40.)),
-        format!("picker {picker:?} history {history:?} in {narrow:?}"),
+        "in a narrow group the toolbar's controls fit, the connection picker kept readable, none over another",
+        fits && picker.is_some_and(|p| p.size.width > px(40.) && tb.contains(&p)),
+        format!("picker {picker:?} parts {tb:?} in {narrow:?}"),
     );
     let resized = narrow;
     let fp = cx.update(|_, cx| ws.read(cx).session_fingerprint(cx)).unwrap();
