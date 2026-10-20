@@ -165,7 +165,7 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     }
     if stage == "zoom" {
         pause(cx, 600).await;
-        let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.toggle_mcp_log(window, cx)));
+        let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.demo_toggle_side(cx)));
         pause(cx, 400).await;
         let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.toggle_result_zoom(window, cx)));
         pause(cx, 400).await;
@@ -1138,7 +1138,7 @@ async fn zoom_checks(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> boo
     };
     let tab = run_sql(ws, "SELECT n, n * 2 AS twice FROM generate_series(1, 40) n", cx).await;
     let grid = cx.update(|_, cx| tab.read(cx).grid.clone()).unwrap();
-    let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.toggle_mcp_log(window, cx)));
+    let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.demo_toggle_side(cx)));
     pause(cx, 350).await;
     draw(cx);
     let bounds = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).result_bounds.get()).ok().flatten();
@@ -1210,7 +1210,7 @@ async fn zoom_checks(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> boo
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.toggle_result_zoom(window, cx)));
     pause(cx, 340).await;
     draw(cx);
-    let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.toggle_mcp_log(window, cx)));
+    let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.demo_toggle_side(cx)));
     draw(cx);
     pause(cx, 340).await;
     draw(cx);
@@ -1307,13 +1307,13 @@ async fn motion_checks(ws: &Entity<Workspace>, id: &str, cx: &mut AsyncWindowCon
     draw(cx);
     pause(cx, 300).await;
     draw(cx);
-    let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.toggle_mcp_log(window, cx)));
+    let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.demo_toggle_side(cx)));
     draw(cx);
     let opening = sliding(cx);
     pause(cx, 320).await;
     draw(cx);
     let landed = !sliding(cx) && history(cx);
-    let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.toggle_mcp_log(window, cx)));
+    let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.demo_toggle_side(cx)));
     draw(cx);
     let closing = sliding(cx);
     pause(cx, 320).await;

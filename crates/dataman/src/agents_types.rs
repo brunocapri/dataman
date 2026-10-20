@@ -1,0 +1,498 @@
+//! Agents › Sensitive data: the types recognized and masked inside any value an agent
+//! receives, for every connection (settings' `agent_types`), with each connection free to switch
+//! a type differently (`mcp_rules.types`). Masks and patterns stay global.
+
+use std::collections::BTreeMap;
+
+use dataman_core::privacy::{self, CustomType, Mask, TypeRow, Validator};
+use gpui::{AnyElement, App, ClickEvent, Context, Focusable, FontWeight, SharedString, StyledText, TextRun, Window, div, prelude::*};
+
+use crate::agents::{Act, AgentsPage, dropdown, field, qmark, seg, switch};
+use crate::assets::{Icon, icon};
+use crate::theme::{Theme, px};
+use crate::ui;
+
+impl AgentsPage {
+    fn overrides(&self, cx: &App) -> BTreeMap<String, bool> {
+        self.scope.as_ref().and_then(|id| self.store.read(cx).profile(id)).map(|p| p.mcp_rules.types.clone()).unwrap_or_default()
+    }
+
+    pub(crate) fn type_rows(&self, cx: &App) -> Vec<TypeRow> {
+        self.core.settings.get().agent_types.rows(&self.overrides(cx))
+    }
+
+    pub(crate) fn flip_type(&mut self, id: &str, cx: &mut Context<Self>) {
+        let types = self.core.settings.get().agent_types;
+        let Some(global) = types.global_on(id) else { return };
+        match self.scope.clone() {
+            None => {
+                let id = id.to_string();
+                self.edit_settings(|s| {
+                    if privacy::builtin(&id).is_some() {
+                        s.agent_types.set_builtin(&id, Some(!global), None);
+                    } else if let Some(c) = s.agent_types.custom.iter_mut().find(|c| c.id == id) {
+                        c.on = !c.on;
+                    }
+                }, cx);
+            }
+            Some(conn) => {
+                let now = self.overrides(cx).get(id).copied().unwrap_or(global);
+                let id = id.to_string();
+                // Only what differs from All connections is kept on the connection.
+                self.edit_conn(&conn, |p| {
+                    if !now == global {
+                        p.mcp_rules.types.remove(&id);
+                    } else {
+                        p.mcp_rules.types.insert(id, !now);
+                    }
+                }, cx);
+            }
+        }
+    }
+
+    pub(crate) fn set_type_mask(&mut self, id: &str, m: Mask, cx: &mut Context<Self>) {
+        let id = id.to_string();
+        self.edit_settings(|s| {
+            if privacy::builtin(&id).is_some() {
+                s.agent_types.set_builtin(&id, None, Some(m));
+            } else if let Some(c) = s.agent_types.custom.iter_mut().find(|c| c.id == id) {
+                c.mask = m;
+            }
+        }, cx);
+    }
+
+    pub(crate) fn reset_to_global(&mut self, cx: &mut Context<Self>) {
+        if let Some(conn) = self.scope.clone() {
+            self.edit_conn(&conn, |p| p.mcp_rules.types.clear(), cx);
+        }
+    }
+
+    pub(crate) fn edit_type(&mut self, id: Option<&str>, cx: &mut Context<Self>) {
+        let c = id.and_then(|id| self.core.settings.get().agent_types.custom.into_iter().find(|c| c.id == id));
+        let e = &mut self.editor;
+        e.confirm_delete = false;
+        match c {
+            Some(c) => {
+                e.editing = Some(c.id.clone());
+                e.mask = c.mask;
+                e.validator = c.validator;
+                e.ignore_case = c.ignore_case;
+                e.keep = c.keep;
+                e.more = c.validator != Validator::None || c.ignore_case;
+                e.name.update(cx, |i, cx| i.set_text(c.name.clone(), cx));
+                e.regex.update(cx, |i, cx| i.set_text(c.pattern.clone(), cx));
+            }
+            None => {
+                e.editing = None;
+                e.mask = Mask::Hidden;
+                e.validator = Validator::None;
+                e.ignore_case = false;
+                e.keep = 4;
+                e.more = false;
+                e.name.update(cx, |i, cx| i.set_text("", cx));
+                e.regex.update(cx, |i, cx| i.set_text("", cx));
+            }
+        }
+        cx.notify();
+    }
+
+    /// The type as the editor holds it now.
+    pub(crate) fn drafted(&self, cx: &App) -> CustomType {
+        let e = &self.editor;
+        let mut c = CustomType::new(e.name.read(cx).text(), e.regex.read(cx).text(), e.mask);
+        if let Some(id) = &e.editing {
+            c.id = id.clone();
+        }
+        c.validator = e.validator;
+        c.ignore_case = e.ignore_case;
+        c.keep = e.keep;
+        c
+    }
+
+    pub(crate) fn save_type(&mut self, cx: &mut Context<Self>) {
+        let c = self.drafted(cx);
+        if c.name.is_empty() || privacy::check_pattern(&c.pattern).is_err() {
+            return;
+        }
+        self.edit_settings(|s| {
+            let n = s.agent_types.custom.len();
+            match s.agent_types.custom.iter_mut().find(|x| x.id == c.id) {
+                Some(x) => *x = CustomType { on: x.on, ..c },
+                None if n < privacy::MAX_CUSTOM => s.agent_types.custom.push(c),
+                None => {}
+            }
+        }, cx);
+        self.edit_type(None, cx);
+    }
+
+    pub(crate) fn delete_type(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self.editor.editing.clone() else { return };
+        self.edit_settings(|s| s.agent_types.custom.retain(|c| c.id != id), cx);
+        // Connections' switches for a deleted type go with it.
+        for p in self.profiles(cx).into_iter().filter(|p| p.mcp_rules.types.contains_key(&id)) {
+            let id = id.clone();
+            self.edit_conn(&p.id, |p| {
+                p.mcp_rules.types.remove(&id);
+            }, cx);
+        }
+        self.edit_type(None, cx);
+    }
+
+    pub(crate) fn render_types(&mut self, t: &Theme, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        if self.scope.as_ref().is_some_and(|id| self.store.read(cx).profile(id).is_none()) {
+            self.scope = None;
+        }
+        let in_conn = self.scope.is_some();
+        let rows = self.type_rows(cx);
+        let scope_name = self.scope.as_ref().and_then(|id| self.store.read(cx).profile(id)).map(|p| (p.name.clone(), p.engine));
+        let mut scopes: Vec<(SharedString, bool, Act)> = vec![("All connections".into(), self.scope.is_none(), Act::Scope(None))];
+        scopes.extend(self.profiles(cx).into_iter().map(|p| (p.name.clone().into(), self.scope.as_deref() == Some(p.id.as_str()), Act::Scope(Some(p.id)))));
+        let hov = t.hov;
+        let picker = div().relative().child(self.anchor("agents-scope")).child(
+            div()
+                .children(ui::here(&"agents-scope".into()))
+                .id("agents-scope")
+                .h(px(28.))
+                .px(px(10.))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(8.))
+                .border_1()
+                .border_color(t.line2)
+                .hover(move |s| s.bg(hov))
+                .children(scope_name.as_ref().and_then(|(_, e)| crate::assets::small_logo(*e, 14.)))
+                .child(scope_name.as_ref().map(|(n, _)| n.clone()).unwrap_or_else(|| "All connections".into()))
+                .child(icon(Icon::ChevronDown).size(px(10.)).text_color(t.tx3))
+                .on_click(cx.listener(move |v, _, _, cx| v.open_menu("agents-scope", 220., scopes.clone(), cx))),
+        );
+        let head = self.header(t, "Sensitive data").child(div().flex_1()).child(picker).when(in_conn, |d| {
+            d.child(
+                div()
+                    .children(ui::here(&"agents-reset".into()))
+                    .id("agents-reset")
+                    .text_size(px(11.5))
+                    .text_color(t.tx2)
+                    .hover(|s| s.opacity(0.75))
+                    .child("Reset to global")
+                    .on_click(cx.listener(|v, _, _, cx| v.reset_to_global(cx))),
+            )
+        });
+        let broken: Vec<&TypeRow> = rows.iter().filter(|r| r.broken.is_some() && r.on).collect();
+        let notice = broken.first().map(|r| div().pb(px(6.)).text_size(px(11.5)).text_color(t.err).child(format!("{} has an invalid pattern. Reads are refused where it is on.", r.name)));
+        let list = rows.iter().map(|r| self.type_row(t, r, in_conn, cx));
+        let left = div().id("agents-types-list").flex_1().min_w_0().overflow_y_scroll().flex().flex_col().px(px(32.)).pt(px(8.)).pb(px(24.)).children(notice).children(list);
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(head)
+            .child(div().flex_1().min_h_0().flex().flex_row().border_t_1().border_color(t.line).child(left).child(self.render_editor(t, window, cx)))
+            .into_any_element()
+    }
+
+    fn type_row(&self, t: &Theme, r: &TypeRow, in_conn: bool, cx: &mut Context<Self>) -> AnyElement {
+        let mut tags: Vec<&str> = Vec::new();
+        if r.custom {
+            tags.push("custom");
+        }
+        if in_conn && r.changed_here {
+            tags.push("changed here");
+        }
+        let (flip_id, name_id, mask_id) = (r.id.clone(), r.id.clone(), SharedString::from(format!("agents-type-mask-{}", r.id)));
+        let items: Vec<(SharedString, bool, Act)> = Mask::ALL.iter().map(|m| (m.label().into(), *m == r.mask, Act::TypeMask(r.id.clone(), *m))).collect();
+        let open = mask_id.clone();
+        let custom = r.custom;
+        let hinted = self.name_hint.as_deref() == Some(r.id.as_str());
+        let tip_rule = if r.custom { r.rule.trim_start_matches("Custom: ").to_string() } else { r.rule.clone() };
+        let example = (!r.example.is_empty()).then_some(r.example.as_str());
+        let mask: AnyElement = if in_conn {
+            div()
+                .id(SharedString::from(format!("agents-type-mask-off-{}", r.id)))
+                .opacity(0.55)
+                .child(dropdown(t, self, mask_id, r.mask.label(), false))
+                .tooltip(ui::tooltip("Masks are the same in every connection.", None, None))
+                .into_any_element()
+        } else {
+            div()
+                .id(SharedString::from(format!("agents-type-mask-btn-{}", r.id)))
+                .child(dropdown(t, self, mask_id, r.mask.label(), r.on))
+                .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.open_menu(open.clone(), 120., items.clone(), cx)))
+                .into_any_element()
+        };
+        let sw = SharedString::from(format!("agents-type-switch-{}", r.id));
+        div()
+            .h(px(44.))
+            .flex_none()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(14.))
+            .border_b_1()
+            .border_color(t.line)
+            .child(
+                div()
+                    .children(ui::here(&sw.clone().into()))
+                    .id(sw)
+                    .when(!r.on, |d| d.opacity(0.55))
+                    .child(switch(t, r.on))
+                    .on_click(cx.listener(move |v, _, _, cx| v.flip_type(&flip_id, cx))),
+            )
+            .child(
+                div()
+                    .id(SharedString::from(format!("agents-type-name-{}", r.id)))
+                    .when(!r.on, |d| d.opacity(0.55))
+                    .text_color(if r.broken.is_some() { t.err } else { t.tx })
+                    .child(r.name.clone())
+                    .when(custom, |d| {
+                        d.on_click(cx.listener(move |v, _, _, cx| {
+                            if v.scope.is_some() {
+                                v.name_hint = Some(name_id.clone());
+                                cx.notify();
+                            } else {
+                                v.edit_type(Some(&name_id), cx);
+                            }
+                        }))
+                    }),
+            )
+            .child(div().when(!r.on, |d| d.opacity(0.55)).child(qmark(t, &format!("agents-type-tip-{}", r.id), &tip_rule, example, r.custom)))
+            .when(!tags.is_empty(), |d| d.child(div().text_size(px(11.)).text_color(t.tx3).child(tags.join(" · "))))
+            .when(hinted, |d| {
+                let id = r.id.clone();
+                d.child(
+                    div()
+                        .id("agents-edit-global")
+                        .text_size(px(11.))
+                        .text_color(t.tx2)
+                        .hover(|s| s.opacity(0.75))
+                        .child("Edit in All connections")
+                        .on_click(cx.listener(move |v, _, _, cx| {
+                            v.scope = None;
+                            v.name_hint = None;
+                            v.edit_type(Some(&id), cx);
+                        })),
+                )
+            })
+            .child(div().flex_1())
+            .when(r.broken.is_some() && !in_conn, |d| {
+                let id = r.id.clone();
+                d.child(div().id(SharedString::from(format!("agents-fix-{}", r.id))).text_size(px(11.5)).text_color(t.err).child("Fix").on_click(cx.listener(move |v, _, _, cx| v.edit_type(Some(&id), cx))))
+            })
+            .child(div().when(!r.on, |d| d.opacity(0.55)).child(mask))
+            .into_any_element()
+    }
+
+    fn render_editor(&mut self, t: &Theme, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let c = self.drafted(cx);
+        let editing = self.editor.editing.is_some();
+        let full = !editing && self.core.settings.get().agent_types.custom.len() >= privacy::MAX_CUSTOM;
+        let problem = (!c.pattern.is_empty()).then(|| privacy::check_pattern(&c.pattern).err()).flatten();
+        let samples: Vec<&str> = self.editor.samples.iter().map(String::as_str).collect();
+        let tested = (problem.is_none() && !c.pattern.is_empty()).then(|| privacy::test_pattern(&c, &samples, &self.key).ok()).flatten();
+        let ok = !c.name.is_empty() && !c.pattern.is_empty() && problem.is_none() && !full;
+        let caps = |s: &str| ui::caps(t, s.to_string());
+        let masks: Vec<(Mask, &str)> = Mask::ALL.iter().map(|m| (*m, m.label())).collect();
+        let mut panel = div()
+            .id("agents-editor")
+            .w(px(400.))
+            .flex_none()
+            .flex()
+            .flex_col()
+            .gap(px(16.))
+            .px(px(24.))
+            .py(px(20.))
+            .border_l_1()
+            .border_color(t.line)
+            .overflow_y_scroll()
+            .child(div().text_size(px(13.)).font_weight(FontWeight::BOLD).child(if editing { "Edit type" } else { "New type" }))
+            .child(div().flex().flex_col().gap(px(6.)).child(caps("NAME")).child(field(t, "agents-field-name", &self.editor.name, window, cx)))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.))
+                    .child(caps("REGEX"))
+                    .child(field(t, "agents-field-regex", &self.editor.regex, window, cx))
+                    .children(problem.clone().map(|p| div().text_size(px(11.)).text_color(t.err).child(p))),
+            )
+            .child(div().flex().flex_col().gap(px(8.)).child(caps("MASK")).child(seg(t, "agents-new-mask", &masks, self.editor.mask, false, cx, |v, m, _| v.editor.mask = m)));
+        let more = self.editor.more;
+        panel = panel.child(
+            div()
+                .children(ui::here(&"agents-more".into()))
+                .id("agents-more")
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(6.))
+                .text_size(px(11.5))
+                .text_color(t.tx2)
+                .child("More options")
+                .child(ui::disclosure("agents-more-arrow", more, 10., t.tx3))
+                .on_click(cx.listener(|v, _, _, cx| {
+                    v.editor.more = !v.editor.more;
+                    cx.notify();
+                })),
+        );
+        if more {
+            let vals: Vec<(SharedString, bool, Act)> = Validator::ALL.iter().map(|x| (x.label().into(), *x == self.editor.validator, Act::Validator(*x))).collect();
+            let keeps: Vec<(u8, String)> = (0..=6u8).map(|n| (n, n.to_string())).collect();
+            let keeps: Vec<(u8, &str)> = keeps.iter().map(|(n, s)| (*n, s.as_str())).collect();
+            panel = panel.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(10.))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(12.))
+                            .child(div().flex_1().text_color(t.tx2).child("Validator"))
+                            .child(div().id("agents-validator-btn").child(dropdown(t, self, "agents-validator".into(), self.editor.validator.label(), true).w(px(130.))).on_click(cx.listener(move |v, _: &ClickEvent, _, cx| {
+                                v.open_menu("agents-validator", 150., vals.clone(), cx)
+                            }))),
+                    )
+                    .child(
+                        div()
+                            .id("agents-ignore-case")
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(10.))
+                            .child(crate::agents::checkbox(t, self.editor.ignore_case, false))
+                            .child(div().text_color(t.tx2).child("Ignore case"))
+                            .on_click(cx.listener(|v, _, _, cx| {
+                                v.editor.ignore_case = !v.editor.ignore_case;
+                                cx.notify();
+                            })),
+                    )
+                    .when(self.editor.mask == Mask::Partial, |d| {
+                        d.child(div().flex().flex_row().items_center().gap(px(12.)).child(div().flex_1().text_color(t.tx2).child("Keep last")).child(seg(t, "agents-keep", &keeps, self.editor.keep, true, cx, |v, n, _| v.editor.keep = n)))
+                    }),
+            );
+        }
+        let count = tested.as_ref().map(|r| r.matches).unwrap_or(0);
+        let broad = tested.as_ref().is_some_and(|r| r.broad);
+        let hit = t.prs;
+        let lines = self.editor.samples.iter().enumerate().map(|(k, line)| {
+            let found = tested.as_ref().and_then(|r| r.lines.iter().find(|(l, _, _)| l == line).cloned());
+            let (spans, out) = found.map(|(_, s, o)| (s, o)).unwrap_or_default();
+            let base = TextRun { len: 0, font: crate::editor::mono(), color: t.tx, background_color: None, underline: None, strikethrough: None };
+            let mut runs = Vec::new();
+            let mut at = 0;
+            for r in &spans {
+                if r.start > at {
+                    runs.push(TextRun { len: r.start - at, ..base.clone() });
+                }
+                runs.push(TextRun { len: r.end - r.start, background_color: Some(hit), ..base.clone() });
+                at = r.end;
+            }
+            if at < line.len() {
+                runs.push(TextRun { len: line.len() - at, ..base.clone() });
+            }
+            let rid = SharedString::from(format!("agents-sample-{k}"));
+            div()
+                .id(rid.clone())
+                .group(rid.clone())
+                .relative()
+                .flex()
+                .flex_col()
+                .gap(px(3.))
+                .px(px(10.))
+                .py(px(8.))
+                .border_b_1()
+                .border_color(t.line)
+                .text_size(px(11.5))
+                .child(div().pr(px(16.)).whitespace_nowrap().overflow_hidden().child(StyledText::new(line.clone()).with_runs(runs)))
+                .child(div().whitespace_nowrap().overflow_hidden().text_ellipsis().text_color(t.tx3).child(out.unwrap_or_else(|| "no match".into())))
+                .child(
+                    div()
+                        .id(SharedString::from(format!("agents-sample-rm-{k}")))
+                        .absolute()
+                        .top(px(6.))
+                        .right(px(6.))
+                        .invisible()
+                        .group_hover(rid, |s| s.visible())
+                        .text_color(t.tx3)
+                        .child("×")
+                        .on_click(cx.listener(move |v, _, _, cx| {
+                            if k < v.editor.samples.len() {
+                                v.editor.samples.remove(k);
+                            }
+                            cx.notify();
+                        })),
+                )
+        });
+        let sample_focused = self.editor.sample.read(cx).focus_handle(cx).is_focused(window);
+        panel = panel.child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(6.))
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .child(div().flex_1().child(caps("TEST")))
+                        .child(div().text_size(px(11.)).text_color(t.tx3).child(if count == 1 { "1 match".to_string() } else { format!("{count} matches") })),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .bg(t.field)
+                        .border_1()
+                        .border_color(if sample_focused { t.acc } else { t.field_b })
+                        .children(lines)
+                        .child(div().children(ui::here(&"agents-field-sample".into())).h(px(30.)).px(px(10.)).flex().items_center().child(self.editor.sample.clone())),
+                )
+                .when(broad, |d| d.child(div().text_size(px(11.)).text_color(t.warn).child("Matches most of these lines; it may be too broad."))),
+        );
+        if full {
+            panel = panel.child(div().text_size(px(11.)).text_color(t.tx3).child(format!("{} custom types at most.", privacy::MAX_CUSTOM)));
+        }
+        let confirm = self.editor.confirm_delete;
+        let buttons = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(8.))
+            .when(editing && !confirm, |d| {
+                d.child(
+                    div()
+                        .children(ui::here(&"agents-type-delete".into()))
+                        .id("agents-type-delete")
+                        .text_size(px(11.5))
+                        .text_color(t.err)
+                        .child("Delete")
+                        .on_click(cx.listener(|v, _, _, cx| {
+                            v.editor.confirm_delete = true;
+                            cx.notify();
+                        })),
+                )
+            })
+            .when(editing && confirm, |d| {
+                d.child(div().text_size(px(11.5)).text_color(t.err).child(format!("Delete {}?", c.name)))
+                    .child(ui::button(t, "agents-type-delete-yes", ui::Btn::Danger).h(px(24.)).child("Delete").on_click(cx.listener(|v, _, _, cx| v.delete_type(cx))))
+                    .child(ui::button(t, "agents-type-delete-no", ui::Btn::Ghost).h(px(24.)).child("Keep").on_click(cx.listener(|v, _, _, cx| {
+                        v.editor.confirm_delete = false;
+                        cx.notify();
+                    })))
+            })
+            .child(div().flex_1())
+            .child(ui::button(t, "agents-type-cancel", ui::Btn::Ghost).h(px(28.)).px(px(10.)).text_color(t.tx).child("Cancel").on_click(cx.listener(|v, _, _, cx| v.edit_type(None, cx))))
+            .child(
+                ui::button(t, "agents-type-save", if ok { ui::Btn::Primary } else { ui::Btn::Secondary })
+                    .h(px(28.))
+                    .px(px(10.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .when(!ok, |d| d.opacity(0.5))
+                    .child(if editing { "Save" } else { "Add" })
+                    .on_click(cx.listener(|v, _, _, cx| v.save_type(cx))),
+            );
+        panel.child(div().flex_1()).child(buttons).into_any_element()
+    }
+}

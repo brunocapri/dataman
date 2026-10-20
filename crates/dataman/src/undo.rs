@@ -190,6 +190,7 @@ impl Workspace {
     fn keep_focus(&mut self, region: Option<Region>, window: &mut Window, cx: &mut Context<Self>) {
         let f = match region {
             Some(Region::Explorer) if self.view == dataman_core::layout::NavView::Explorer => Some(self.tree.focus_handle(cx)),
+            Some(Region::Explorer) if self.view == dataman_core::layout::NavView::Agents => Some(self.agents.focus_handle(cx)),
             Some(Region::Explorer) => Some(self.history.focus_handle(cx)),
             Some(Region::Grid) if self.results_shown(cx) => self.active_tab().map(|t| {
                 let t = t.read(cx);

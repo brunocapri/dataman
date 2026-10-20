@@ -142,7 +142,8 @@ impl Workspace {
             split,
             explorer_open: self.explorer_open,
             explorer_w: self.explorer_w,
-            nav: self.view,
+            // The Agents area is not where a relaunch opens (older versions could not read it either).
+            nav: if self.view == dataman_core::layout::NavView::Agents { dataman_core::layout::NavView::Explorer } else { self.view },
             side_w: self.side_w,
             editor_frac: self.editor_frac,
             layout: self.layout.clone(),

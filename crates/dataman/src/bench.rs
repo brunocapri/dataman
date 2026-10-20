@@ -608,6 +608,7 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                             });
                         }
                     }),
+                    s if crate::agents_check::is_demo(s) => crate::agents_check::demo(&ws, s, window, cx),
                     "mcp-log" | "mcp-log-menu" | "mcp-approve" => ws.update(cx, |w, cx| {
                         let core = w.store.read(cx).core.clone();
                         crate::mcp::demo_seed(&core, stage == "mcp-approve", cx);

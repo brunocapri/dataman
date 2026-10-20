@@ -2,6 +2,11 @@ mod activity;
 #[cfg(feature = "checks")]
 mod activity_demo;
 mod agent;
+mod agents;
+#[cfg(feature = "checks")]
+mod agents_check;
+mod agents_rules;
+mod agents_types;
 mod app;
 mod assets;
 #[cfg(feature = "checks")]

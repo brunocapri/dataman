@@ -18,7 +18,7 @@ use crate::tab::QueryTab;
 
 /// The stages that start with no connection and drive everything themselves.
 pub fn is_stage(s: &str) -> bool {
-    matches!(s, "connections-check" | "tabs-check" | "edit-check" | "explorer-check" | "export-check" | "import-check" | "settings-check" | "welcome-check" | "palette-check" | "nosql-engines-check" | "mcp-tools-check" | "dropdowns-check" | "history-filter-check" | "json-check" | "dates-check")
+    matches!(s, "connections-check" | "tabs-check" | "edit-check" | "explorer-check" | "export-check" | "import-check" | "settings-check" | "welcome-check" | "palette-check" | "nosql-engines-check" | "mcp-tools-check" | "dropdowns-check" | "history-filter-check" | "json-check" | "dates-check" | "agents-check")
 }
 
 pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContext) -> bool {
@@ -40,6 +40,7 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
         "history-filter-check" => crate::menus_check::run_history_filter(ws, &mut r, cx).await,
         "json-check" => crate::values_check::run_json(ws, &mut r, cx).await,
         "dates-check" => crate::values_check::run_dates(ws, &mut r, cx).await,
+        "agents-check" => crate::agents_check::run(ws, &mut r, cx).await,
         _ => {
             r.check("a known stage", false, stage);
         }

@@ -280,6 +280,7 @@ pub struct Workspace {
     pub(crate) dialog: Option<Entity<ConnDialog>>,
     pub(crate) import: Option<Entity<crate::import_ui::ImportView>>,
     pub(crate) history: Entity<HistoryPanel>,
+    pub(crate) agents: Entity<crate::agents::AgentsPage>,
     pub(crate) view: dataman_core::layout::NavView,
     pub(crate) welcome: Entity<Welcome>,
     pub(crate) side: Option<Side>,
@@ -394,6 +395,16 @@ impl Workspace {
         let tree = cx.new(|cx| SchemaTree::new(store.clone(), cx));
         let history = cx.new(|cx| HistoryPanel::new(store.clone(), cx));
         let welcome = cx.new(Welcome::new);
+        let core = store.read(cx).core.clone();
+        let agents = cx.new(|cx| crate::agents::AgentsPage::new(core, store.clone(), cx));
+        cx.subscribe_in(&agents, window, |w, _, ev: &crate::agents::AgentsEvent, window, cx| match ev {
+            crate::agents::AgentsEvent::Open { sql, connection, database } => {
+                let (sql, connection, database) = (sql.clone(), connection.clone(), database.clone());
+                w.show_nav(NavView::Explorer, window, cx);
+                w.open_logged(&sql, connection.as_deref(), database.as_deref(), window, cx);
+            }
+        })
+        .detach();
         cx.subscribe_in(&tree, window, Self::on_tree).detach();
         cx.subscribe_in(&store, window, Self::on_conn).detach();
         cx.subscribe_in(&welcome, window, Self::on_welcome).detach();
@@ -460,6 +471,7 @@ impl Workspace {
             dialog: None,
             import: None,
             history,
+            agents,
             welcome,
             side: None,
             last_side: None,
@@ -1910,6 +1922,7 @@ impl Workspace {
                 self.set_explorer_open(true, cx);
                 let f = match self.view {
                     NavView::Explorer => self.tree.focus_handle(cx),
+                    NavView::Agents => self.agents.focus_handle(cx),
                     _ => self.history.focus_handle(cx),
                 };
                 window.focus(&f, cx);
@@ -2535,7 +2548,13 @@ impl Render for Workspace {
         let first_run = self.first_run(cx);
         let pass = self.dock_pass(first_run, window, cx);
         self.split_now = if first_run { None } else { self.split_frame(window) };
-        let surface = if first_run { self.welcome.clone().into_any_element() } else { self.render_work(window, cx).into_any_element() };
+        let surface = if first_run {
+            self.welcome.clone().into_any_element()
+        } else if self.view == NavView::Agents {
+            self.agents.clone().into_any_element()
+        } else {
+            self.render_work(window, cx).into_any_element()
+        };
         // The explorer's content keeps the full width and is clipped while it slides, so the tree
         // never reflows mid-flight. Frames are requested only while it moves.
         if let Some(tw) = self.explorer_tween {
@@ -2545,7 +2564,7 @@ impl Render for Workspace {
                 self.explorer_tween = None;
             }
         }
-        let production = !first_run && self.active_tab().and_then(|t| t.read(cx).connection().map(|c| c.profile.env.is_production())).unwrap_or(false);
+        let production = !first_run && self.view != NavView::Agents && self.active_tab().and_then(|t| t.read(cx).connection().map(|c| c.profile.env.is_production())).unwrap_or(false);
         let docks = self.render_docks(&pass, production, window, cx);
         let left_w = pass.frame.dock(dataman_core::layout::Dock::Left).rect.w;
         let left_shown = left_w > 0.5;
