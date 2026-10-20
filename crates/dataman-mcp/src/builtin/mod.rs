@@ -4,6 +4,7 @@ mod connections;
 mod favorites;
 mod nosql;
 mod query;
+pub(crate) mod rules;
 
 use dataman_core::bounded;
 use serde_json::{Map, Value, json};

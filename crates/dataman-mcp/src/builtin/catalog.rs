@@ -115,7 +115,7 @@ fn list_connections(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> 
             if access == McpAccess::Off {
                 let mut row = vec![json!(p.name), json!(p.env.label()), json!("off")];
                 row.resize(14, Value::Null);
-                row.extend([json!(p.engine.slug()), json!(language(p.engine))]);
+                row.extend([json!(p.engine.slug()), json!(language(p.engine)), Value::Null]);
                 rows.push(row);
                 continue;
             }
@@ -128,16 +128,19 @@ fn list_connections(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> 
                 Some(c) => (json!(c.info.is_lar), json!(c.info.version.split(" on ").next().unwrap_or_default())),
                 None => (Value::Null, Value::Null),
             };
+            // Agents that do not see the data do not learn where it lives either.
+            let hide = super::rules::hides_metadata(p);
+            let meta = |v: Value| if hide { Value::Null } else { v };
             rows.push(vec![
                 json!(p.name),
                 json!(p.env.label()),
                 json!(access.label()),
                 json!(p.read_only),
-                json!(p.host),
-                json!(p.port),
+                meta(json!(p.host)),
+                meta(json!(p.port)),
                 json!(p.database),
-                json!(p.user),
-                json!(p.ssh.is_some()),
+                meta(json!(p.user)),
+                meta(json!(p.ssh.is_some())),
                 is_lar,
                 version,
                 if access >= McpAccess::Write && !p.mcp_yolo_on() { json!(cx.hub.row_limit(p)) } else { Value::Null },
@@ -145,13 +148,14 @@ fn list_connections(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> 
                 json!(p.mcp_yolo_on()),
                 json!(p.engine.slug()),
                 json!(language(p.engine)),
+                super::rules::summary(p),
             ]);
         }
-        Ok(table(&["name", "env", "mcp", "read_only", "host", "port", "database", "user", "ssh", "is_lar", "version", "row_limit", "allowed", "yolo", "engine", "language"], rows))
+        Ok(table(&["name", "env", "mcp", "read_only", "host", "port", "database", "user", "ssh", "is_lar", "version", "row_limit", "allowed", "yolo", "engine", "language", "agents"], rows))
     })
 }
 
-async fn schemas_of(o: &Opened, only: Option<&str>, system: bool) -> Result<Vec<String>, ToolError> {
+pub(super) async fn schemas_of(o: &Opened, only: Option<&str>, system: bool) -> Result<Vec<String>, ToolError> {
     if let Some(s) = only {
         return Ok(vec![s.to_string()]);
     }
@@ -175,7 +179,10 @@ fn list_schemas(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
         cx.hub.fresh_schema(&o.profile.id, &o.database, &o.conn, false);
         let mut rows = Vec::new();
         for s in schemas_of(&o, None, a.bool("include_system")).await? {
-            let rels = o.conn.relations(&o.database, &s).await.map_err(failed)?;
+            if !super::rules::schema_visible(&o.profile, &s) {
+                continue;
+            }
+            let rels: Vec<Relation> = o.conn.relations(&o.database, &s).await.map_err(failed)?.into_iter().filter(|r| super::rules::table_visible(&o.profile, &s, &r.name)).collect();
             let tables = rels.iter().filter(|r| !r.kind.is_view()).count();
             rows.push(vec![json!(s), json!(tables), json!(rels.len() - tables)]);
         }
@@ -199,6 +206,7 @@ fn list_tables(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
             let rels = o.conn.relations(&o.database, &s).await.map_err(failed)?;
             let rels: Vec<Relation> = rels
                 .into_iter()
+                .filter(|r| super::rules::table_visible(&o.profile, &s, &r.name))
                 .filter(|r| match kind {
                     "table" => !r.kind.is_view(),
                     "view" => r.kind.is_view(),
@@ -297,7 +305,7 @@ fn search_objects(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
             match cx.run(&o, SEARCH_SQL, params, Mode::Read, limits).await {
                 Ok(r) => {
                     let more = r.rows.len() > limit;
-                    let rows: Vec<Vec<Value>> = r.rows.into_iter().take(limit).collect();
+                    let rows: Vec<Vec<Value>> = r.rows.into_iter().filter(|row| found_visible(&o, row)).take(limit).collect();
                     cx.note_rows(rows.len());
                     let mut v = table(&header, rows);
                     if more {
@@ -322,12 +330,15 @@ fn search_objects(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
                     RelKind::MaterializedView => "materialized_view",
                     _ => "table",
                 };
+                if !super::rules::table_visible(&o.profile, &s, &r.name) {
+                    continue;
+                }
                 if want(k) && like(&r.name, &pattern) {
                     rows.push(vec![json!(k), json!(s), json!(r.name), Value::Null]);
                 }
                 if want("column") {
                     for c in o.conn.columns(&o.database, &s, &r.name).await.map_err(failed)? {
-                        if like(&c.name, &pattern) {
+                        if like(&c.name, &pattern) && !super::rules::column_hidden(&o.profile, &s, &r.name, &c.name) {
                             rows.push(vec![json!("column"), json!(s), json!(format!("{}.{}", r.name, c.name)), json!(c.type_name)]);
                         }
                     }
@@ -343,6 +354,37 @@ fn search_objects(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
         }
         Ok(v)
     })
+}
+
+/// A catalog search hit agents may see (tables and columns as Visible to agents says; functions
+/// and types while nothing is kept from them).
+fn found_visible(o: &Opened, row: &[Value]) -> bool {
+    let p = &o.profile;
+    let (kind, schema, name) = (row[0].as_str().unwrap_or(""), row[1].as_str().unwrap_or(""), row[2].as_str().unwrap_or(""));
+    if !super::rules::schema_visible(p, schema) {
+        return false;
+    }
+    match kind {
+        "column" => {
+            let (t, c) = name.split_once('.').unwrap_or((name, ""));
+            super::rules::table_visible(p, schema, t) && !super::rules::column_hidden(p, schema, t, c)
+        }
+        "function" | "type" => !super::rules::restricted(&p.mcp_rules),
+        _ => super::rules::table_visible(p, schema, name),
+    }
+}
+
+/// The relation, refused when it is not visible to agents.
+async fn visible_relation(o: &Opened, name: &str) -> Result<Relation, ToolError> {
+    let r = find_relation(o, name).await?;
+    if !super::rules::table_visible(&o.profile, &r.schema, &r.name) {
+        return Err(super::rules::not_visible(&o.profile, &r.name));
+    }
+    Ok(r)
+}
+
+fn hidden_of(o: &Opened, r: &Relation, cols: &[dataman_core::schema::Column]) -> Vec<String> {
+    cols.iter().filter(|c| super::rules::column_hidden(&o.profile, &r.schema, &r.name, &c.name)).map(|c| c.name.clone()).collect()
 }
 
 pub async fn find_relation(o: &Opened, name: &str) -> Result<Relation, ToolError> {
@@ -368,9 +410,11 @@ fn describe_table(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
             return super::nosql::describe(cx, &o, a.str("table")?).await;
         }
         cx.hub.fresh_schema(&o.profile.id, &o.database, &o.conn, false);
-        let r = find_relation(&o, a.str("table")?).await?;
+        let r = visible_relation(&o, a.str("table")?).await?;
         let (db, c) = (o.database.as_str(), &o.conn);
-        let cols = c.columns(db, &r.schema, &r.name).await.map_err(failed)?;
+        let mut cols = c.columns(db, &r.schema, &r.name).await.map_err(failed)?;
+        let hidden = hidden_of(&o, &r, &cols);
+        cols.retain(|c| !hidden.contains(&c.name));
         let mut out = Map::new();
         out.insert("table".into(), json!(format!("{}.{}", r.schema, r.name)));
         out.insert("kind".into(), json!(kind_label(r.kind)));
@@ -412,10 +456,51 @@ fn describe_table(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
             pg_details(cx, &o, &r, &mut out).await?;
         }
         if a.bool("include_ddl") {
-            out.insert("ddl".into(), json!(ddl_of(c, db, &r).await?));
+            out.insert("ddl".into(), json!(super::rules::ddl_without(&ddl_of(c, db, &r).await?, &hidden)));
+        }
+        if super::rules::restricted(&o.profile.mcp_rules) {
+            hide_details(&o, &hidden, &mut out);
         }
         Ok(Value::Object(out))
     })
+}
+
+/// Indexes, keys and triggers that name a hidden column go; links to hidden tables read
+/// `(not visible)`.
+fn hide_details(o: &Opened, hidden: &[String], out: &mut Map<String, Value>) {
+    let names_hidden = |v: &Value| {
+        let t = v.to_string().to_lowercase();
+        hidden.iter().any(|h| {
+            let h = h.to_lowercase();
+            t.match_indices(&h).any(|(i, _)| {
+                let ok = |c: Option<char>| c.is_none_or(|c| !(c.is_alphanumeric() || c == '_'));
+                ok(t[..i].chars().last()) && ok(t[i + h.len()..].chars().next())
+            })
+        })
+    };
+    for k in ["indexes", "foreign_keys", "constraints", "triggers"] {
+        if let Some(Value::Array(a)) = out.get_mut(k) {
+            a.retain(|x| !names_hidden(x));
+        }
+    }
+    let p = &o.profile;
+    let shown = |q: &str| {
+        let (s, t) = q.split('(').next().unwrap_or(q).split_once('.').unwrap_or(("", q));
+        super::rules::table_visible(p, s, t.trim())
+    };
+    for k in ["referenced_by", "foreign_keys"] {
+        if let Some(Value::Array(a)) = out.get_mut(k) {
+            for x in a.iter_mut() {
+                let target = x.get(1).and_then(Value::as_str).or_else(|| x.get("from").and_then(Value::as_str)).or_else(|| x.get("references").and_then(Value::as_str)).map(str::to_string);
+                if let Some(t) = target
+                    && !shown(&t)
+                {
+                    *x = json!("(not visible)");
+                }
+            }
+        }
+    }
+    out.retain(|_, v| !matches!(v, Value::Array(a) if a.is_empty()));
 }
 
 async fn pg_details(cx: &Call, o: &Opened, r: &Relation, out: &mut Map<String, Value>) -> Result<(), ToolError> {
@@ -511,14 +596,24 @@ fn get_ddl(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
         let kind = a.opt_str("kind");
         let (db, c) = (o.database.as_str(), &o.conn);
         if kind.is_none_or(|k| k == "table" || k == "view") {
-            match find_relation(&o, name).await {
-                Ok(r) => return Ok(json!({"object": format!("{}.{}", r.schema, r.name), "kind": kind_label(r.kind), "ddl": ddl_of(c, db, &r).await?})),
+            match visible_relation(&o, name).await {
+                Ok(r) => {
+                    let cols = c.columns(db, &r.schema, &r.name).await.map_err(failed)?;
+                    let hidden = hidden_of(&o, &r, &cols);
+                    let ddl = super::rules::ddl_without(&ddl_of(c, db, &r).await?, &hidden);
+                    return Ok(json!({"object": format!("{}.{}", r.schema, r.name), "kind": kind_label(r.kind), "ddl": ddl}));
+                }
+                Err(e @ ToolError::Refused(_)) => return Err(e),
                 Err(e) if kind.is_some() => return Err(e),
                 Err(_) => {}
             }
         }
         let (schema, base) = split_name(name);
         let schemas = schemas_of(&o, schema.as_deref(), true).await?;
+        // A function's body can read anything: not shown while something is kept from agents.
+        if super::rules::restricted(&o.profile.mcp_rules) {
+            return Err(ToolError::Refused(format!("definitions of functions and types are not shown to agents on {} while some data is kept from them", o.profile.name)));
+        }
         if kind.is_none_or(|k| k == "function") {
             for s in &schemas {
                 let fs = c.functions(db, s).await.map_err(failed)?;
@@ -553,7 +648,10 @@ fn sample_rows(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
         if !o.conn.engine().is_sql() {
             return super::nosql::sample(cx, &o, a.str("table")?, n, a.bool("random")).await;
         }
-        let r = find_relation(&o, a.str("table")?).await?;
+        if o.profile.mcp_rules.view == dataman_core::privacy::AgentView::Structure {
+            return Err(ToolError::Refused(super::rules::structure_only(&o.profile)));
+        }
+        let r = visible_relation(&o, a.str("table")?).await?;
         let d = o.conn.dialect();
         let order = match (a.bool("random"), d) {
             (false, _) => "",
@@ -568,9 +666,13 @@ fn sample_rows(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
             format!("SELECT * FROM {table}{order} LIMIT {n}")
         };
         let limits = Limits { max_rows: n as usize, ..Limits::default() };
-        let out = cx.run(&o, &sql, vec![], Mode::Read, limits).await?;
+        let checked = super::rules::checked_sql(cx, &a, &o.profile, &sql, false).await?;
+        let mut out = cx.run(&o, &checked.sql, vec![], Mode::Read, limits).await?;
+        super::rules::mask_outcome(cx, &mut out, &checked.masked);
         cx.note_rows(out.rows.len());
-        Ok(result_json(&out, n as usize))
+        let mut v = result_json(&out, n as usize);
+        super::rules::tell(&mut v, &checked, &cx.note().seen.masked);
+        Ok(v)
     })
 }
 

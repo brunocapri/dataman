@@ -63,6 +63,7 @@ fn cut(s: &str, n: usize) -> String {
 fn sessions(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
     Box::pin(async move {
         let o = cx.open(&a, Need::Read).await?;
+        super::rules::activity(&o.profile)?;
         let rows = o.conn.activity_sessions(&o.database).await.map_err(failed)?;
         let (idle, bg) = (a.bool("include_idle"), a.bool("include_background"));
         let out: Vec<Vec<Value>> = rows
@@ -93,6 +94,7 @@ fn sessions(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
 fn locks(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
     Box::pin(async move {
         let o = cx.open(&a, Need::Read).await?;
+        super::rules::activity(&o.profile)?;
         let edges = o.conn.activity_locks(&o.database).await.map_err(failed)?;
         let tree = activity::blocking_tree(&edges);
         let out: Vec<Vec<Value>> = tree
@@ -126,13 +128,16 @@ pub fn signal_class(s: Signal) -> WriteClass {
 fn signal(cx: &Call, a: Args, s: Signal) -> BoxFut<'_, Result<Value, ToolError>> {
     Box::pin(async move {
         let p = cx.target(&a, Need::Write)?;
+        super::rules::activity(&p)?;
         let pid = a.u64_or("pid", 0) as i32;
         let sql = s.sql(pid);
         cx.note_sql(&sql);
         let class = signal_class(s);
         match policy::write_verdict(cx.hub.settings().mcp_enabled, Target::of(&p), &class) {
             Verdict::Refuse(e) => return Err(ToolError::Refused(e)),
-            Verdict::Ask(r) if cx.hub.front().is_none() => return Err(ToolError::Refused(policy::needs_app(&r))),
+            Verdict::Ask(r) if cx.hub.front().is_none() => {
+                return Err(ToolError::Refused(policy::needs_app(&r)));
+            }
             _ => {}
         }
         let o = cx.open(&a, Need::Write).await?;

@@ -10,6 +10,7 @@ use parking_lot::Mutex;
 use tokio::sync::Semaphore;
 
 use crate::audit::Audit;
+use dataman_core::privacy::{HashKey, Types};
 
 pub const PER_CONNECTION: usize = 2;
 pub const GLOBAL: usize = 8;
@@ -226,14 +227,18 @@ pub struct Hub {
     refreshed: Mutex<HashMap<(String, String), Instant>>,
     asks: Arc<Mutex<Asks>>,
     after_deny: Mutex<Duration>,
+    types: Mutex<HashMap<String, Arc<Types>>>,
+    mask_key: Mutex<HashKey>,
 }
 
 pub const SCHEMA_TTL: Duration = Duration::from_secs(30);
 
 impl Hub {
     pub fn new(dirs: Dirs, secrets: Arc<dyn SecretStore>) -> anyhow::Result<Arc<Hub>> {
-        let core = Core::new(dirs.clone(), secrets)?;
+        let core = Core::new(dirs.clone(), secrets.clone())?;
         Ok(Arc::new(Hub {
+            types: Mutex::new(HashMap::new()),
+            mask_key: Mutex::new(HashKey::stored(secrets)),
             audit: Audit::new(dirs.mcp_audit_file()),
             core,
             dirs,
@@ -307,6 +312,33 @@ impl Hub {
         *self.approval_timeout.lock() = d;
     }
 
+    /// The sensitive data types switched on for a connection (`None`: All connections),
+    /// compiled once per settings change.
+    pub fn types(&self, p: Option<&ConnectionProfile>) -> Arc<Types> {
+        let settings = self.settings();
+        let empty = Default::default();
+        let overrides = p.map_or(&empty, |p| &p.mcp_rules.types);
+        let key = serde_json::to_string(&(&settings.agent_types, overrides)).unwrap_or_default();
+        let mut g = self.types.lock();
+        if let Some(t) = g.get(&key) {
+            return t.clone();
+        }
+        if g.len() > 64 {
+            g.clear();
+        }
+        let t = Arc::new(Types::new(&settings.agent_types, overrides));
+        g.insert(key, t.clone());
+        t
+    }
+
+    pub fn mask_key(&self) -> HashKey {
+        self.mask_key.lock().clone()
+    }
+
+    pub fn set_mask_key(&self, k: HashKey) {
+        *self.mask_key.lock() = k;
+    }
+
     pub fn row_limit(&self, p: &ConnectionProfile) -> u64 {
         p.mcp_row_limit.unwrap_or_else(|| self.settings().mcp_write_row_limit)
     }
@@ -373,7 +405,12 @@ impl Hub {
         if let Some(c) = stale {
             c.close();
         }
-        let task = self.core.connect(p.clone(), None);
+        // Agents' reads on MongoDB go where Permissions › Read from says.
+        let mut agent = p.clone();
+        if let Some(r) = p.mcp_rules.read_from.filter(|_| p.engine == dataman_core::Engine::MongoDb) {
+            agent.options.insert("readPreference".into(), r.mongo().into());
+        }
+        let task = self.core.connect(agent, None);
         let c = match tokio::time::timeout(CONNECT_TIMEOUT, task).await {
             Ok(Ok(c)) => c,
             Ok(Err(e)) => return Err(format!("cannot connect to {}: {e:#}", p.name)),

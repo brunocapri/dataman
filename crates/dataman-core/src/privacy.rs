@@ -730,12 +730,20 @@ impl Types {
                 }
             }
             Value::Object(m) => {
-                let keys: Vec<String> = m.keys().cloned().collect();
-                for k in keys {
-                    let clean = self.scrub(&k, key, counts).into_owned();
-                    let mut x = m.remove(&k).unwrap_or(Value::Null);
-                    self.walk(&mut x, key, counts, deadline, n)?;
-                    m.insert(clean, x);
+                let renamed: Vec<(String, String)> = m
+                    .keys()
+                    .filter_map(|k| match self.scrub(k, key, counts) {
+                        Cow::Owned(clean) => Some((k.clone(), clean)),
+                        Cow::Borrowed(_) => None,
+                    })
+                    .collect();
+                for (k, clean) in renamed {
+                    if let Some(x) = m.remove(&k) {
+                        m.insert(clean, x);
+                    }
+                }
+                for x in m.values_mut() {
+                    self.walk(x, key, counts, deadline, n)?;
                 }
             }
             _ => {}
@@ -747,7 +755,8 @@ impl Types {
     }
 }
 
-pub const BUDGET: std::time::Duration = std::time::Duration::from_millis(100);
+/// Per reply. Debug builds (tests) match many times slower than the app.
+pub const BUDGET: std::time::Duration = std::time::Duration::from_millis(if cfg!(debug_assertions) { 1500 } else { 100 });
 
 /// Values quoted by database errors become ‹value›; codes, constraint and column names, the
 /// position and the hint stay.
@@ -1458,6 +1467,16 @@ mod tests {
         assert_eq!(c["E-mail"], 2);
         let mut big = serde_json::json!((0..5000).map(|i| format!("ana{i}@acme.com")).collect::<Vec<_>>());
         assert_eq!(t.scrub_json(&mut big, &key(), &mut c, Instant::now()), Err(Unfinished));
+    }
+
+    #[test]
+    #[ignore]
+    fn scrub_speed() {
+        let t = Types::new(&TypeSettings::default(), &BTreeMap::new());
+        let mut v = serde_json::json!({"rows": (0..200).map(|i| vec![serde_json::json!("x".repeat(2000)), serde_json::json!(format!("ana{i}@acme.com 123.456.789-09"))]).collect::<Vec<_>>()});
+        let t0 = Instant::now();
+        t.scrub_json(&mut v, &key(), &mut Counts::new(), Instant::now() + std::time::Duration::from_secs(60)).unwrap();
+        eprintln!("scrub 400 KB: {:?}", t0.elapsed());
     }
 
     #[test]

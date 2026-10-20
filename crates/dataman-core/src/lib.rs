@@ -1,4 +1,6 @@
 pub mod activity;
+pub mod agent_nosql;
+pub mod agent_sql;
 pub mod backend;
 pub mod batch;
 pub mod bounded;

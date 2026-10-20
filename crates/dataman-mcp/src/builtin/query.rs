@@ -3,7 +3,7 @@ use dataman_core::explain::{self, Plan};
 use dataman_core::guard::{self, WriteClass};
 use serde_json::{Map, Value, json};
 
-use super::{Builtin, confirm_prop, conn_schema, limits_props, ms, read_json, result_json};
+use super::{Builtin, confirm_prop, conn_schema, limits_props, ms, read_json, result_json, rules};
 use crate::policy::Need;
 use crate::tool::{Args, BoxFut, Call, Opened, ToolError, Write, params_schema};
 
@@ -86,12 +86,16 @@ async fn read(cx: &Call, a: &Args, open: bool) -> Result<Value, ToolError> {
     if let Some(r) = bounded::refusal_in(&stmts, params.len(), Mode::Read, cx.read_only(a, &target), d) {
         return Err(ToolError::Refused(r));
     }
+    rules::structure_read(&target, &stmts)?;
+    let checked = rules::checked_sql(cx, a, &target, sql, false).await?;
     let limits = cx.limits(a, 200);
     let front = cx.tab_front(open);
     let shown = front.is_some();
-    let out = cx.read(a, sql, params, limits, front, a.opt_str("title").map(str::to_string)).await?;
+    let mut out = cx.read(a, &checked.sql, params, limits, front, a.opt_str("title").map(str::to_string)).await?;
+    rules::mask_outcome(cx, &mut out, &checked.masked);
     cx.note_rows(out.total_rows());
     let mut v = read_json(&out, limits.max_rows, &stmts);
+    rules::tell(&mut v, &checked, &cx.note().seen.masked);
     if open && let Some(m) = v.as_object_mut() {
         m.insert("in_tab".into(), json!(shown));
     }
@@ -199,6 +203,15 @@ fn plan_json(out: &bounded::Outcome, format: &str, rolled_back: bool) -> Value {
     Value::Object(m)
 }
 
+/// The statement to plan, as the connection's rules let agents see it (EXPLAIN's own options
+/// are dropped when the statement had to be narrowed).
+async fn narrowed(cx: &Call, a: &Args, o: &Opened, stmt: String) -> Result<String, ToolError> {
+    let inner = explain::inner(&stmt).map(str::to_string).unwrap_or_else(|| stmt.clone());
+    let writes = guard::classify(&inner).is_write();
+    let c = rules::checked_sql(cx, a, &o.profile, &inner, writes).await?;
+    Ok(if c.rewritten { c.sql } else { stmt })
+}
+
 fn plans(o: &Opened) -> Result<(), ToolError> {
     if o.conn.caps().explain {
         Ok(())
@@ -211,7 +224,7 @@ fn explain_plain(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
     Box::pin(async move {
         let o = cx.open(&a, Need::Read).await?;
         plans(&o)?;
-        let stmt = one(a.str("sql")?)?;
+        let stmt = narrowed(cx, &a, &o, one(a.str("sql")?)?).await?;
         let sql = explain::sql(&stmt, false, explain::Target::of(&o.conn.info));
         if explain::analyzes(&sql) {
             return Err(ToolError::Invalid("this EXPLAIN runs the statement (ANALYZE): use explain_analyze".into()));
@@ -226,17 +239,22 @@ fn explain_analyze(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
         let stmt = one(a.str("sql")?)?;
         let inner = explain::inner(&stmt).map(str::to_string).unwrap_or_else(|| stmt.clone());
         let writes = guard::classify(&inner).is_write();
-        let limits = plan_limits(a.u64_or("timeout_ms", 30_000));
+        let limits = plan_limits(cx.time_limit(&a).as_millis() as u64);
+        let target = cx.target(&a, Need::Read)?;
+        if target.mcp_rules.view == dataman_core::privacy::AgentView::Structure {
+            return Err(ToolError::Refused(rules::structure_only(&target)));
+        }
         if !writes {
             let o: Opened = cx.open(&a, Need::Read).await?;
             plans(&o)?;
+            let stmt = narrowed(cx, &a, &o, stmt).await?;
             let sql = explain::sql(&stmt, true, explain::Target::of(&o.conn.info));
             let out = cx.run(&o, &sql, a.params()?, Mode::Read, limits).await?;
             return Ok(plan_json(&out, a.opt_str("format").unwrap_or("text"), false));
         }
         // EXPLAIN ANALYZE of a write runs it: the tiers judge the statement (allowed queries and YOLO
         // count), refused before connecting; always rolled back.
-        let target = cx.target(&a, Need::Read)?;
+        rules::checked_sql(cx, &a, &target, &inner, true).await?;
         let t = crate::policy::Target { read_only: cx.read_only(&a, &target), ..crate::policy::Target::of(&target) };
         if let crate::policy::Verdict::Refuse(e) = crate::policy::judge(cx.hub.settings().mcp_enabled, t, &inner, target.mcp_allowed_on()).verdict {
             return Err(ToolError::Refused(e));
@@ -266,7 +284,9 @@ async fn write(cx: &Call, a: &Args, open: bool) -> Result<Value, ToolError> {
     let limits = cx.limits(a, 50);
     let visible = cx.tab_front(open).is_some();
     let title = a.opt_str("title").map(str::to_string);
-    let r = cx.write(a, Write { sql, judged: None, params, limits, rollback: false, visible, title }).await;
+    let target = cx.target(a, Need::Read)?;
+    let checked = rules::checked_sql(cx, a, &target, sql, true).await?;
+    let r = cx.write(a, Write { sql: &checked.sql, judged: None, params, limits, rollback: false, visible, title }).await;
     // DDL changes what the catalog tools see (even when it failed half-way on LAR, whose DDL is
     // not transactional).
     if let Ok(p) = cx.hub.profile(a.str("connection")?) {

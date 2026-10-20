@@ -6,7 +6,7 @@ use serde_json::{Map, Value, json};
 
 use std::sync::Arc;
 
-use super::{Builtin, confirm_prop, conn_schema, ms, table};
+use super::{Builtin, confirm_prop, conn_schema, ms, rules, table};
 use crate::hub::{Front, TabWrite};
 use crate::policy::Need;
 use crate::tool::{Args, BoxFut, Call, Opened, ToolError};
@@ -51,8 +51,8 @@ fn failed(e: anyhow::Error) -> ToolError {
     }
 }
 
-fn timeout_of(a: &Args) -> Duration {
-    Duration::from_millis(a.u64_or("timeout_ms", 30_000).clamp(100, 300_000))
+fn bytes_of(cx: &Call, a: &Args) -> usize {
+    cx.rules_of(a).read_bytes.map_or(MAX_BYTES, |b| (b as usize).min(MAX_BYTES))
 }
 
 async fn run(cx: &Call, o: &Opened, text: &str, page: Page, timeout: Duration) -> Result<nosql::Ran, ToolError> {
@@ -66,7 +66,7 @@ async fn run(cx: &Call, o: &Opened, text: &str, page: Page, timeout: Duration) -
     }
 }
 
-fn output_json(ran: &nosql::Ran) -> Value {
+fn output_json(ran: &nosql::Ran, max_bytes: usize) -> Value {
     let mut m = Map::new();
     match &ran.output {
         Output::Docs(d) => {
@@ -76,7 +76,7 @@ fn output_json(ran: &nosql::Ran) -> Value {
             for doc in &d.docs {
                 let v = doc.body.to_json();
                 bytes += v.to_string().len();
-                if bytes > MAX_BYTES && !docs.is_empty() {
+                if bytes > max_bytes && !docs.is_empty() {
                     cut = true;
                     break;
                 }
@@ -90,7 +90,7 @@ fn output_json(ran: &nosql::Ran) -> Value {
             m.insert("more".into(), json!(d.more || cut));
             if cut {
                 m.insert("truncated".into(), json!("bytes"));
-                m.insert("note".into(), json!("the documents passed ~256 KB; project fewer fields or lower max_rows"));
+                m.insert("note".into(), json!(format!("the documents passed ~{} KB; project fewer fields or lower max_rows", max_bytes / 1024)));
             }
         }
         Output::Value(v) => {
@@ -157,13 +157,17 @@ pub(super) async fn query(cx: &Call, a: &Args, key: &str, open: bool) -> Result<
     match nosql::classify(target.engine, text) {
         Err(f) => return Err(ToolError::Invalid(f.message)),
         Ok(WriteClass::Read) => {}
-        Ok(_) => return Err(ToolError::Refused("this statement writes: use nosql_execute".into())),
+        Ok(_) => {
+            return Err(ToolError::Refused("this statement writes: use nosql_execute".into()));
+        }
     }
+    let shaped = rules::nosql_check(a, &target, text, false)?;
     let shown = Shown::new(cx, a, text, open).await?;
     let r = read(cx, a, text).await;
     shown.done(&r, r.as_ref().ok());
     let ran = r?;
-    let mut v = output_json(&ran);
+    let mut v = output_json(&ran, bytes_of(cx, a));
+    rules::nosql_shape(cx, a, &target, text, &mut v, &shaped);
     if open && let Some(m) = v.as_object_mut() {
         m.insert("in_tab".into(), json!(shown.tab.is_some()));
     }
@@ -176,9 +180,9 @@ async fn read(cx: &Call, a: &Args, text: &str) -> Result<nosql::Ran, ToolError> 
         p = cx.hub.permit(&o.profile.id) => p,
         _ = cx.cancel.cancelled() => return Err(ToolError::Cancelled),
     };
-    let cap = cx.hub.settings().mcp_max_rows.max(1) as u64;
+    let cap = (cx.hub.settings().mcp_max_rows.max(1) as u64).min(o.profile.mcp_rules.read_rows.unwrap_or(u64::MAX)).max(1);
     let page = Page { skip: a.u64_or("skip", 0), limit: a.u64_or("max_rows", 50).clamp(1, cap.min(1000)) as usize };
-    let ran = run(cx, &o, text, page, timeout_of(a)).await?;
+    let ran = run(cx, &o, text, page, cx.time_limit(a)).await?;
     if let Output::Docs(d) = &ran.output {
         cx.note_rows(d.docs.len());
     }
@@ -194,11 +198,13 @@ pub(super) async fn execute(cx: &Call, a: &Args, key: &str, open: bool) -> Resul
     cx.note_sql(text);
     let target = cx.target(a, Need::Write)?;
     let class = nosql::classify(target.engine, text).map_err(|f| ToolError::Invalid(f.message))?;
+    let shaped = rules::nosql_check(a, &target, text, true)?;
     let shown = Shown::new(cx, a, text, open).await?;
     let r = write(cx, a, text, &class, shown.tab).await;
     shown.done(&r, r.as_ref().ok());
     let ran = r?;
-    let mut v = output_json(&ran);
+    let mut v = output_json(&ran, bytes_of(cx, a));
+    rules::nosql_shape(cx, a, &target, text, &mut v, &shaped);
     if let Some(m) = v.as_object_mut() {
         if let Some(n) = cx.note().approval.filter(|n| n.decision == crate::audit::Decision::Approved) {
             m.insert("approved".into(), json!({"by": n.by, "reasons": n.reasons}));
@@ -236,7 +242,7 @@ async fn write(cx: &Call, a: &Args, text: &str, class: &WriteClass, tab: Option<
     {
         cx.ask_human(&o, text, vec![why], n, false).await?;
     }
-    let ran = run(cx, &o, text, Page::default(), timeout_of(a)).await?;
+    let ran = run(cx, &o, text, Page::default(), cx.time_limit(a)).await?;
     if let Output::Written { affected, .. } = &ran.output {
         cx.note_rows(*affected as usize);
     }
@@ -247,7 +253,7 @@ pub(super) async fn databases(cx: &Call, o: &Opened) -> Result<Value, ToolError>
     let items = o.conn.nosql_tree(None).await.map_err(failed)?;
     let rows: Vec<Vec<Value>> = items
         .iter()
-        .filter(|i| i.kind == ItemKind::Database)
+        .filter(|i| i.kind == ItemKind::Database && rules::schema_visible(&o.profile, &i.name))
         .map(|i| vec![json!(i.name), i.size.map_or(Value::Null, |b| json!(dataman_core::schema::objects::human_size(b as i64)))])
         .collect();
     cx.note_rows(rows.len());
@@ -256,7 +262,7 @@ pub(super) async fn databases(cx: &Call, o: &Opened) -> Result<Value, ToolError>
 }
 
 pub(super) async fn collections(cx: &Call, o: &Opened, limit: usize) -> Result<Value, ToolError> {
-    let items = o.conn.nosql_tree(Some(&o.database)).await.map_err(failed)?;
+    let items: Vec<_> = o.conn.nosql_tree(Some(&o.database)).await.map_err(failed)?.iter().filter(|i| rules::table_visible(&o.profile, &o.database, &i.name)).cloned().collect();
     let more = items.len() > limit;
     let rows: Vec<Vec<Value>> = items
         .iter()
@@ -281,9 +287,9 @@ pub(super) async fn collections(cx: &Call, o: &Opened, limit: usize) -> Result<V
 pub(super) async fn search(cx: &Call, o: &Opened, pattern: &str, limit: usize) -> Result<Value, ToolError> {
     let like = |s: &str| super::catalog::like_matches(s, pattern);
     let mut rows = Vec::new();
-    for db in o.conn.nosql_tree(None).await.map_err(failed)?.iter().filter(|i| i.kind == ItemKind::Database) {
+    for db in o.conn.nosql_tree(None).await.map_err(failed)?.iter().filter(|i| i.kind == ItemKind::Database && rules::schema_visible(&o.profile, &i.name)) {
         for c in o.conn.nosql_tree(Some(&db.name)).await.map_err(failed)?.iter() {
-            if like(&c.name) {
+            if like(&c.name) && rules::table_visible(&o.profile, &db.name, &c.name) {
                 rows.push(vec![json!(if c.kind == ItemKind::View { "view" } else { "collection" }), json!(db.name), json!(c.name), c.count.map_or(Value::Null, |n| json!(format!("{n} documents")))]);
             }
             if rows.len() > limit {
@@ -306,7 +312,12 @@ pub(super) async fn describe(cx: &Call, o: &Opened, coll: &str) -> Result<Value,
     let Some(item) = items.iter().find(|i| i.name == coll) else {
         return Err(ToolError::Invalid(format!("no collection {coll:?} in {} (list_tables lists them)", o.database)));
     };
-    let fields = o.conn.sample_fields(&o.database, coll).await.map_err(failed)?;
+    if !rules::table_visible(&o.profile, &o.database, coll) {
+        return Err(rules::not_visible(&o.profile, coll));
+    }
+    let mut fields = o.conn.sample_fields(&o.database, coll).await.map_err(failed)?;
+    // Hidden fields go at any depth, as they do from documents.
+    fields.retain(|(path, _)| !path.split('.').any(|seg| rules::column_hidden(&o.profile, &o.database, coll, seg)) && !rules::column_hidden(&o.profile, &o.database, coll, path));
     let mut out = Map::new();
     out.insert("collection".into(), json!(coll));
     out.insert("database".into(), json!(o.database));
@@ -334,11 +345,21 @@ pub(super) async fn describe(cx: &Call, o: &Opened, coll: &str) -> Result<Value,
 }
 
 pub(super) async fn sample(cx: &Call, o: &Opened, coll: &str, n: u64, random: bool) -> Result<Value, ToolError> {
+    if o.profile.mcp_rules.view == dataman_core::privacy::AgentView::Structure {
+        return Err(ToolError::Refused(rules::structure_only(&o.profile)));
+    }
     let base = nosql::open_statement_for(&o.conn, &o.database, coll);
     let stmt = if random { base.replace(".find({})", &format!(".aggregate([{{$sample: {{size: {n}}}}}])")) } else { base };
+    let mut m = Map::new();
+    m.insert("connection".into(), json!(o.profile.name));
+    m.insert("database".into(), json!(o.database));
+    let a = Args(m);
+    let shaped = rules::nosql_check(&a, &o.profile, &stmt, false)?;
     let ran = run(cx, o, &stmt, Page { skip: 0, limit: n as usize }, Duration::from_secs(30)).await?;
     if let Output::Docs(d) = &ran.output {
         cx.note_rows(d.docs.len());
     }
-    Ok(output_json(&ran))
+    let mut v = output_json(&ran, MAX_BYTES);
+    rules::nosql_shape(cx, &a, &o.profile, &stmt, &mut v, &shaped);
+    Ok(v)
 }

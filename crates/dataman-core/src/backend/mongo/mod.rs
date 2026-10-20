@@ -50,6 +50,18 @@ pub(crate) async fn options(p: &ConnectionProfile, password: Option<&str>, tunne
     if let Some(rs) = opt("replicaSet") {
         o.repl_set_name = Some(rs.into());
     }
+    if let Some(rp) = opt("readPreference") {
+        use mongodb::options::{ReadPreference, SelectionCriteria};
+        let rp = match rp {
+            "primary" => ReadPreference::Primary,
+            "primaryPreferred" => ReadPreference::PrimaryPreferred { options: None },
+            "secondary" => ReadPreference::Secondary { options: None },
+            "secondaryPreferred" => ReadPreference::SecondaryPreferred { options: None },
+            "nearest" => ReadPreference::Nearest { options: None },
+            other => return Err(anyhow!("readPreference: unknown mode {other:?}")),
+        };
+        o.selection_criteria = Some(SelectionCriteria::ReadPreference(rp));
+    }
     if !p.user.is_empty() {
         let mut c = Credential::default();
         c.username = Some(p.user.clone());
@@ -105,7 +117,9 @@ pub(crate) fn message(e: &anyhow::Error) -> String {
             return match &*e.kind {
                 ErrorKind::Command(c) => format!("{} ({})", c.message, c.code_name),
                 ErrorKind::Write(mongodb::error::WriteFailure::WriteError(w)) => w.message.clone(),
-                ErrorKind::Authentication { message, .. } => format!("authentication failed: {message}"),
+                ErrorKind::Authentication { message, .. } => {
+                    format!("authentication failed: {message}")
+                }
                 ErrorKind::ServerSelection { message, .. } => {
                     let first = message.split(", Topology:").next().unwrap_or(message);
                     format!("cannot reach the server: {first}")
@@ -568,7 +582,9 @@ pub(crate) async fn save(c: &Client, db: &str, coll: &str, id: Option<Bson>, mut
         }
         Some(id) => {
             match doc.get("_id") {
-                Some(new) if *new != id => return Err(anyhow!("_id cannot change (save it as a new document instead)")),
+                Some(new) if *new != id => {
+                    return Err(anyhow!("_id cannot change (save it as a new document instead)"));
+                }
                 Some(_) => {}
                 None => {
                     let mut with = Document::new();

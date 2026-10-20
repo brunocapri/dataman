@@ -882,15 +882,16 @@ fn redis_tools() {
         eprintln!("skipping: no Redis at {h}:{p}");
         return;
     }
-    use Answer::*;
     let e = env();
     let r = |x: Value| with("rd", x);
     let w = |x: Value| with("rdw", x);
     let f = |x: Value| with("rdf", x);
-    assert!(e.err("nosql_execute", w(json!({"query": "FLUSHDB"}))).contains("destructive"));
-    e.answer(&[Allow]);
-    e.ok("nosql_execute", f(json!({"query": "FLUSHDB"})));
-    let _ = e.asked();
+    // @dangerous never runs for agents, whatever the tier (Agents › Permissions).
+    for c in [w(json!({"query": "FLUSHDB"})), f(json!({"query": "FLUSHDB"}))] {
+        assert_eq!(e.err("nosql_execute", c), "refused: FLUSHDB never runs for agents");
+    }
+    assert!(e.asked().is_empty(), "never asked either");
+    e.ok("nosql_execute", f(json!({"query": "DEL a b c user:1"})));
     assert!(e.err("nosql_execute", r(json!({"query": "SET a 1"}))).contains("reads only"));
     e.ok("nosql_execute", w(json!({"query": "HSET user:1 name Ada age 36"})));
     e.ok("nosql_execute", w(json!({"query": "MSET a 1 b 2 c 3"})));
@@ -911,7 +912,6 @@ fn redis_tools() {
     assert_eq!((v["type"].clone(), v["view"].clone()), (json!("hash"), json!("HGETALL user:1")), "{v}");
     let v = e.ok("sample_rows", r(json!({"table": "user:1", "n": 1})));
     assert_eq!(v["count"], 1, "{v}");
-    e.answer(&[Allow]);
-    e.ok("nosql_execute", f(json!({"query": "FLUSHDB"})));
+    e.ok("nosql_execute", f(json!({"query": "DEL a b c user:1"})));
     leak(e);
 }

@@ -38,6 +38,17 @@ impl ToolError {
         }
     }
 
+    /// The same error with its text passed through `f` (errors are cleaned before they leave).
+    pub fn map_text(self, f: impl FnOnce(&str) -> String) -> ToolError {
+        match self {
+            ToolError::Invalid(m) => ToolError::Invalid(f(&m)),
+            ToolError::Refused(m) => ToolError::Refused(f(&m)),
+            ToolError::Failed(m) => ToolError::Failed(f(&m)),
+            ToolError::Timeout(m) => ToolError::Timeout(f(&m)),
+            ToolError::Cancelled => ToolError::Cancelled,
+        }
+    }
+
     pub fn message(&self) -> String {
         match self {
             ToolError::Invalid(m) => format!("invalid arguments: {m}"),
@@ -312,6 +323,41 @@ impl Call {
         self.note.lock().connection = Some(name.to_string());
     }
 
+    pub fn note_rewritten(&self, sql: &str) {
+        self.note.lock().rewritten = Some(sql.to_string());
+    }
+
+    pub fn note_columns(&self, n: usize) {
+        self.note.lock().seen.columns = Some(n as u64);
+    }
+
+    pub fn note_masked_columns(&self, cols: &[(String, dataman_core::privacy::Mask)]) {
+        let mut g = self.note.lock();
+        for c in cols {
+            if !g.seen.masked.contains(c) {
+                g.seen.masked.push(c.clone());
+            }
+        }
+    }
+
+    pub fn note_masked_values(&self, counts: &dataman_core::privacy::Counts) {
+        let mut g = self.note.lock();
+        for (k, n) in counts {
+            *g.seen.values.entry(k.clone()).or_default() += n;
+        }
+    }
+
+    /// The connection's rules (none for a call without one).
+    pub fn rules_of(&self, args: &Args) -> dataman_core::privacy::AgentRules {
+        args.opt_str("connection").and_then(|c| self.hub.profile(c).ok()).map(|p| p.mcp_rules).unwrap_or_default()
+    }
+
+    /// Time per call: what the agent asks (`timeout_ms`, 30 s by default) within the connection's limit.
+    pub fn time_limit(&self, args: &Args) -> Duration {
+        let cap = self.rules_of(args).time_limit().as_millis() as u64;
+        Duration::from_millis(args.u64_or("timeout_ms", 30_000).min(cap).clamp(100, 300_000))
+    }
+
     pub fn target(&self, args: &Args, need: Need) -> Result<ConnectionProfile, ToolError> {
         let name = args.str("connection")?;
         let p = self.hub.profile(name).map_err(ToolError::Invalid)?;
@@ -353,7 +399,9 @@ impl Call {
         let p = self.target(args, Need::Read)?;
         let database = target_database(args, &p).to_string();
         self.note.lock().database = Some(database.clone());
-        self.note_sql(sql);
+        if self.note.lock().sql.is_none() {
+            self.note_sql(sql);
+        }
         let _slots = tokio::select! {
             p = self.hub.permit(&p.id) => p,
             _ = self.cancel.cancelled() => return Err(ToolError::Cancelled),
@@ -651,11 +699,14 @@ impl Call {
     }
 
     pub fn limits(&self, args: &Args, default_rows: u64) -> Limits {
-        let cap = self.hub.settings().mcp_max_rows.max(1) as u64;
+        let rules = self.rules_of(args);
+        let cap = (self.hub.settings().mcp_max_rows.max(1) as u64).min(rules.read_rows.unwrap_or(u64::MAX)).max(1);
+        let base = Limits::default();
         Limits {
             max_rows: args.u64_or("max_rows", default_rows).clamp(1, cap) as usize,
-            timeout: Duration::from_millis(args.u64_or("timeout_ms", 30_000).clamp(100, 300_000)),
-            ..Limits::default()
+            timeout: self.time_limit(args),
+            max_bytes: rules.read_bytes.map_or(base.max_bytes, |b| (b as usize).min(base.max_bytes)),
+            ..base
         }
     }
 

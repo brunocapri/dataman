@@ -91,9 +91,12 @@ fn list_favorites(cx: &Call, _a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
         let rows = favorites(cx)
             .into_iter()
             .map(|f| {
-                let conn_name = f.connection_id.as_ref().and_then(|id| profiles.iter().find(|p| p.id == *id)).map(|p| p.name.clone());
+                let profile = f.connection_id.as_ref().and_then(|id| profiles.iter().find(|p| p.id == *id));
+                let conn_name = profile.map(|p| p.name.clone());
+                // Pinned to a connection whose data agents do not see: the favorite runs by name only.
+                let sql = if profile.is_some_and(super::rules::hides_metadata) { Value::Null } else { json!(f.sql) };
                 let folder = f.folder.as_ref().and_then(|id| folders.iter().find(|d| d.id == *id)).map(|d| json!(d.name)).unwrap_or(Value::Null);
-                vec![json!(f.id), json!(f.name), conn_name.map(|n| json!(n)).unwrap_or(Value::Null), f.database.map(|d| json!(d)).unwrap_or(Value::Null), json!(f.sql), folder]
+                vec![json!(f.id), json!(f.name), conn_name.map(|n| json!(n)).unwrap_or(Value::Null), f.database.map(|d| json!(d)).unwrap_or(Value::Null), sql, folder]
             })
             .collect();
         Ok(table(&["id", "name", "connection", "database", "sql", "folder"], rows))

@@ -173,6 +173,27 @@ async fn read_walk(o: &Opened) -> Result<(Tree, bool), ToolError> {
     Ok((t, false))
 }
 
+/// What Visible to agents leaves of the snapshot: hidden schemas, tables and columns go, and so
+/// do keys that name them.
+fn visible_only(p: &dataman_core::ConnectionProfile, t: &mut Tree) {
+    use crate::builtin::rules::{column_hidden, schema_visible, table_visible};
+    t.retain(|s, _| schema_visible(p, s));
+    for (s, rels) in t.iter_mut() {
+        rels.retain(|name, _| table_visible(p, s, name));
+        for (name, rel) in rels.iter_mut() {
+            let hidden: Vec<String> = rel.columns.iter().filter(|c| column_hidden(p, s, name, &c.0)).map(|c| c.0.to_lowercase()).collect();
+            rel.columns.retain(|c| !hidden.contains(&c.0.to_lowercase()));
+            rel.fks.retain(|fk| {
+                let low = fk.to_lowercase();
+                let to = low.split("references ").nth(1).or_else(|| low.split("→ ").nth(1)).unwrap_or("");
+                let target = to.split('(').next().unwrap_or("").trim().replace('"', "");
+                let (ts, tn) = target.split_once('.').unwrap_or((s.as_str(), target.as_str()));
+                !hidden.iter().any(|h| low.contains(h.as_str())) && (target.is_empty() || table_visible(p, ts, tn))
+            });
+        }
+    }
+}
+
 fn markdown(head: &str, t: &Tree, truncated: bool) -> String {
     let mut out = format!("# {head}\n");
     for (schema, rels) in t {
@@ -246,7 +267,8 @@ pub async fn read(cx: &Call, u: &Uri) -> Result<Arc<String>, ToolError> {
     let o = cx.open(&Args(m), Need::Read).await?;
     cx.hub.fresh_schema(&o.profile.id, &o.database, &o.conn, u.refresh);
     let key = (o.profile.id.clone(), o.database.clone(), u.json);
-    if let Some(s) = cx.hub.snapshots.lock().get(&key) {
+    let restricted = crate::builtin::rules::restricted(&o.profile.mcp_rules);
+    if !restricted && let Some(s) = cx.hub.snapshots.lock().get(&key) {
         return Ok(s.clone());
     }
     let (t, truncated) = if o.conn.info.is_lar || !o.conn.engine().is_postgres() {
@@ -258,6 +280,10 @@ pub async fn read(cx: &Call, u: &Uri) -> Result<Arc<String>, ToolError> {
             Err(_) => read_walk(&o).await?,
         }
     };
+    let mut t = t;
+    if restricted {
+        visible_only(&o.profile, &mut t);
+    }
     let text = if u.json {
         serde_json::to_string(&as_json(&o, &t, truncated)).unwrap_or_default()
     } else {
@@ -266,7 +292,9 @@ pub async fn read(cx: &Call, u: &Uri) -> Result<Arc<String>, ToolError> {
     };
     cx.note_rows(t.values().map(|r| r.len()).sum());
     let text = Arc::new(text);
-    cx.hub.snapshots.lock().insert(key, text.clone());
+    if !restricted {
+        cx.hub.snapshots.lock().insert(key, text.clone());
+    }
     Ok(text)
 }
 
