@@ -1,5 +1,3 @@
-//! SQL Server: grid edits of every column type, keys, quoting.
-
 mod common;
 
 use common::*;
@@ -45,7 +43,6 @@ fn edit_every_type() {
             continue;
         }
         let old = snap.text(0, ix).map(|s| s.into_owned());
-        // Edit each column to itself's text (no change of meaning), and to something else.
         let new = match col.name.as_str() {
             "bt" => "false",
             "ti" => "7",
@@ -75,7 +72,6 @@ fn edit_every_type() {
             bad.push(format!("{} ({:?}): {}\n   {:?}", col.name, old, plan[0].sql, r.outcomes.iter().map(|o| format!("{:?}", o.outcome)).collect::<Vec<_>>()));
         }
     }
-    // Every column edited again from what it shows now (the text the grid shows is the guard).
     let rs = run(&e, &s, "SELECT * FROM dbo.[we]]ird ]");
     let snap = rs.snapshot();
     for (ix, col) in cols.iter().enumerate() {

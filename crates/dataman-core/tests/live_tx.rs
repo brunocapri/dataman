@@ -1,9 +1,3 @@
-//! Transactions of an editor session against real servers: the status read off ReadyForQuery,
-//! a typed BEGIN ended by COMMIT / ROLLBACK (the session's own or typed), a failed
-//! transaction and its recovery, a paused result inside a transaction, the CancelRequest on
-//! the session's own socket, and read-only connections (enforced by PostgreSQL, accepted but
-//! not enforced by LAR: the client-side refusal is what holds there). Skips without servers.
-
 mod common;
 
 use common::*;
@@ -42,7 +36,6 @@ fn open(e: &Env, p: ConnectionProfile, pw: Option<&str>) -> Option<Arc<Connectio
     }
 }
 
-/// Runs one statement in `s` to its end.
 fn run(e: &Env, s: &Arc<Session>, sql: &str) -> Arc<dataman_core::ResultSet> {
     let rs = s.execute(sql);
     rs.fetch_all();
@@ -73,12 +66,9 @@ fn begin_commit_and_rollback_on_postgres() {
     let s = c.session(None);
     assert_eq!(s.tx().status, TxStatus::Idle);
 
-    // Auto-commit: nothing stays open.
     ok(&e, &s, "INSERT INTO dataman_tx.t VALUES (1)");
     assert_eq!(s.tx().status, TxStatus::Idle);
 
-    // BEGIN typed in the editor (not counted); the statements after it are; others do not
-    // see the rows yet.
     ok(&e, &s, "BEGIN");
     assert_eq!((s.tx().status, s.tx().statements), (TxStatus::Open, 0));
     ok(&e, &s, "INSERT INTO dataman_tx.t VALUES (2)");
@@ -92,7 +82,6 @@ fn begin_commit_and_rollback_on_postgres() {
     assert_eq!(s.tx().status, TxStatus::Idle);
     assert_eq!(count(&e, &c, "SELECT count(*) FROM dataman_tx.t"), "2");
 
-    // Rollback.
     ok(&e, &s, "BEGIN");
     ok(&e, &s, "DELETE FROM dataman_tx.t");
     assert_eq!(s.tx().status, TxStatus::Open);
@@ -100,17 +89,14 @@ fn begin_commit_and_rollback_on_postgres() {
     assert_eq!(count(&e, &c, "SELECT count(*) FROM dataman_tx.t"), "2");
     assert_eq!(end(&e, &s, true), TxEnd::NoTransaction);
 
-    // COMMIT / ROLLBACK typed in the editor end it too.
     ok(&e, &s, "BEGIN");
     ok(&e, &s, "INSERT INTO dataman_tx.t VALUES (3)");
     assert_eq!((s.tx().status, s.tx().statements), (TxStatus::Open, 1));
     ok(&e, &s, "ROLLBACK");
     assert_eq!(s.tx().status, TxStatus::Idle);
-    // What cannot run in a transaction runs as typed.
     ok(&e, &s, "VACUUM dataman_tx.t");
     assert_eq!(s.tx().status, TxStatus::Idle);
 
-    // A closed session (a closed tab) rolls back what it had open.
     ok(&e, &s, "BEGIN");
     ok(&e, &s, "INSERT INTO dataman_tx.t VALUES (4)");
     drop(s);
@@ -130,11 +116,9 @@ fn failed_transaction_and_recovery() {
     assert_eq!(rs.phase(), Phase::Failed);
     assert_eq!(s.tx().status, TxStatus::Failed);
     assert_eq!(s.tx().statements, 2);
-    // Everything else is refused until it ends.
     let rs = run(&e, &s, "SELECT 2");
     assert_eq!(rs.status().error.and_then(|e| e.code).as_deref(), Some("25P02"));
     assert!(guard::classify("ROLLBACK").ends_failed_tx());
-    // A COMMIT of a failed transaction is a rollback.
     assert_eq!(end(&e, &s, true), TxEnd::RolledBack);
     assert_eq!(s.tx().status, TxStatus::Idle);
     ok(&e, &s, "SELECT 3");
@@ -142,7 +126,6 @@ fn failed_transaction_and_recovery() {
     ok(&e, &s, "BEGIN");
     assert_eq!(s.tx().status, TxStatus::Open);
 
-    // A savepoint recovers the transaction without ending it.
     ok(&e, &s, "SAVEPOINT a");
     assert_eq!(run(&e, &s, "SELECT 1/0").phase(), Phase::Failed);
     assert_eq!(s.tx().status, TxStatus::Failed);
@@ -157,8 +140,6 @@ fn paused_result_and_cancel_inside_a_transaction() {
     let Some(c) = open(&e, pg_profile(), Some(&pg_password())) else { return };
     let s = c.session(None);
     ok(&e, &s, "BEGIN");
-    // A big result pauses after the prefetch window; committing reads it to its end instead of
-    // cancelling it (a cancel would abort the transaction).
     let rs = s.execute("SELECT g FROM generate_series(1, 200000) g");
     e.core.block_on(async {
         tokio::time::timeout(Duration::from_secs(30), async {
@@ -175,7 +156,6 @@ fn paused_result_and_cancel_inside_a_transaction() {
     assert_eq!(rs.phase(), Phase::Done);
     assert!(rs.status().partial);
 
-    // ⌘. on a running statement: the CancelRequest goes on a socket of the session's own.
     let t0 = Instant::now();
     let rs = s.execute("SELECT pg_sleep(20)");
     std::thread::sleep(Duration::from_millis(300));
@@ -188,7 +168,6 @@ fn paused_result_and_cancel_inside_a_transaction() {
 
 #[test]
 fn status_through_sslmode_prefer() {
-    // The server declines TLS: the sniffer skips its one-byte answer and reads the frames.
     let e = env();
     let mut p = pg_profile();
     p.sslmode = SslMode::Prefer;
@@ -200,10 +179,6 @@ fn status_through_sslmode_prefer() {
     assert_eq!(s.tx().status, TxStatus::Idle);
 }
 
-/// One database of a writable connection made read-only (its own setting): PostgreSQL refuses
-/// writes there (25006, `default_transaction_read_only`) and not on another database; turned
-/// off and on again while connected, the same session follows before its next statement;
-/// grid edits and bounded (MCP) writes refuse there too.
 #[test]
 fn read_only_per_database_on_postgres() {
     use dataman_core::bounded::{Limits, Mode, Stop};
@@ -226,11 +201,9 @@ fn read_only_per_database_on_postgres() {
     assert_eq!(ed, dataman_core::edit::Editability::ReadOnly("the database is read-only".into()));
     let bounded = |sql: &str| e.core.block_on(c.bounded(Some("dataman"), sql, vec![], Mode::Write, Limits::default(), std::future::pending::<()>()));
     assert!(matches!(bounded("INSERT INTO public.dataman_ro_db VALUES (9)"), Err(Stop::Refused(_))));
-    // Writable again while connected: the same session, no reconnect.
     c.set_read_only_for("dataman", false);
     ok(&e, &s, "INSERT INTO public.dataman_ro_db VALUES (1)");
     assert!(bounded("INSERT INTO public.dataman_ro_db VALUES (9)").is_ok());
-    // A toggle inside a transaction waits for its end (a rollback would undo the SET).
     ok(&e, &s, "BEGIN");
     c.set_read_only_for("dataman", true);
     ok(&e, &s, "INSERT INTO public.dataman_ro_db VALUES (2)");
@@ -250,14 +223,11 @@ fn read_only_on_postgres() {
     let mut p = pg_profile();
     p.read_only = true;
     let Some(c) = open(&e, p, Some(&pg_password())) else { return };
-    // The client refuses before the server sees it…
     assert!(guard::read_only_refusal("INSERT INTO public.dataman_ro VALUES (1)").is_some());
-    // …and PostgreSQL refuses too: the session started read-only.
     let s = c.session(None);
     let rs = run(&e, &s, "INSERT INTO public.dataman_ro VALUES (1)");
     assert_eq!(rs.status().error.and_then(|e| e.code).as_deref(), Some("25006"), "read_only_sql_transaction");
     ok(&e, &s, "SELECT * FROM public.dataman_ro");
-    // Grid edits: the target is read-only, and applying is refused anyway.
     let rs = query(&e, &c, "SELECT * FROM public.dataman_ro");
     let ed = e.core.block_on(c.edit_target("dataman", &rs, None)).unwrap();
     assert_eq!(ed, dataman_core::edit::Editability::ReadOnly("the database is read-only".into()));
@@ -272,7 +242,6 @@ fn transactions_and_read_only_on_lar() {
     let Some(w) = open(&e, lar_profile(), None) else { return };
     exec_quiet(&e, &w, &["DROP TABLE dataman_tx_lar"]);
     exec(&e, &w, &["CREATE TABLE dataman_tx_lar (id int, v text)"]);
-    // LAR reports the transaction status too.
     let s = w.session(None);
     ok(&e, &s, "BEGIN");
     ok(&e, &s, "INSERT INTO dataman_tx_lar VALUES (1, 'a')");

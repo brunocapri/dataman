@@ -1,22 +1,7 @@
-//! Self-update: a JSON feed, a DMG signed with ed25519, and an atomic swap of the `.app`.
-//!
-//! The feed (the latest GitHub release's `feed.json`, `DATAMAN_UPDATE_FEED` at build time, or
-//! `update_feed` in settings.toml):
-//!
-//! ```json
-//! { "version": "0.2.0", "notes": "…", "url": "https://…/Dataman-0.2.0.dmg",
-//!   "size": 23456789, "ed25519": "<base64 signature of the DMG's bytes>",
-//!   "minimum_macos": "13.0", "published": "2026-10-13T12:00:00Z" }
-//! ```
-//!
-//! The public key (raw 32 bytes, base64) is the app's own (its releases on GitHub), or
-//! `DATAMAN_UPDATE_PUBKEY` at build time. The signature covers the whole file, like Sparkle's
-//! `sign_update`, so either tool can sign. Only the DMG is signed, not the feed: the version
-//! read from the DMG's own Info.plist must match the feed's and be newer than the running one,
-//! so a replayed old DMG cannot downgrade the app.
-//!
-//! Transfers go through `/usr/bin/curl` (system proxies and trust store, `file://` for tests);
-//! mounting and copying through `hdiutil` and `ditto`, which keep signatures and attributes.
+//! Only the DMG is signed, not the feed: the version read from the DMG's own Info.plist must
+//! match the feed's and be newer than the running one, so a replayed old DMG cannot downgrade
+//! the app. The signature covers the whole file, like Sparkle's `sign_update`, so either tool
+//! can sign. Copying goes through `ditto`, which keeps signatures and attributes.
 
 use std::ffi::CString;
 use std::os::unix::ffi::OsStrExt;
@@ -26,9 +11,7 @@ use std::process::{Command, Stdio};
 use anyhow::{Context as _, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 
-/// The most a feed may weigh (it is a few hundred bytes).
 const FEED_MAX: u64 = 1 << 20;
-/// The most a DMG may weigh.
 const DMG_MAX: u64 = 1 << 30;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,7 +21,6 @@ pub struct Feed {
     pub notes: String,
     pub url: String,
     pub size: u64,
-    /// Base64 ed25519 signature of the DMG's bytes.
     pub ed25519: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub minimum_macos: Option<String>,
@@ -46,8 +28,6 @@ pub struct Feed {
     pub published: Option<String>,
 }
 
-/// Where to look and whom to trust. `None` from [`UpdateConfig::new`] means the checker is
-/// off (no feed, or no valid public key).
 #[derive(Clone, Debug)]
 pub struct UpdateConfig {
     pub feed: String,
@@ -71,7 +51,6 @@ pub fn decode_key(b64: &str) -> Result<[u8; 32]> {
 fn version(v: &str) -> Option<semver::Version> {
     let v = v.trim().trim_start_matches('v');
     semver::Version::parse(v).ok().or_else(|| {
-        // "1.2" → 1.2.0
         let mut parts: Vec<&str> = v.split('.').collect();
         while parts.len() < 3 {
             parts.push("0");
@@ -80,7 +59,6 @@ fn version(v: &str) -> Option<semver::Version> {
     })
 }
 
-/// Whether `candidate` is a newer version than `current` (semver, `v` prefix allowed).
 pub fn is_newer(candidate: &str, current: &str) -> bool {
     match (version(candidate), version(current)) {
         (Some(a), Some(b)) => a > b,
@@ -88,7 +66,6 @@ pub fn is_newer(candidate: &str, current: &str) -> bool {
     }
 }
 
-/// The running macOS version ("15.6.1"), from `kern.osproductversion`.
 pub fn macos_version() -> Option<String> {
     let name = CString::new("kern.osproductversion").ok()?;
     let mut buf = [0u8; 32];
@@ -103,7 +80,6 @@ pub fn macos_version() -> Option<String> {
     Some(String::from_utf8_lossy(s).into_owned())
 }
 
-/// Checks the signature and the size of a downloaded DMG.
 pub fn verify(bytes: &[u8], feed: &Feed, key: &[u8; 32]) -> Result<()> {
     if bytes.len() as u64 != feed.size {
         bail!("size mismatch: {} bytes, the feed says {}", bytes.len(), feed.size);
@@ -130,7 +106,6 @@ fn output(mut cmd: Command, what: &str) -> Result<Vec<u8>> {
     Ok(out.stdout)
 }
 
-/// Reads the feed; `Some` when it offers a newer version this macOS can run.
 pub fn check(cfg: &UpdateConfig) -> Result<Option<Feed>> {
     let mut c = curl();
     c.args(["--max-time", "30", "--max-filesize", &FEED_MAX.to_string(), &cfg.feed]);
@@ -151,14 +126,12 @@ pub fn check(cfg: &UpdateConfig) -> Result<Option<Feed>> {
     Ok(Some(feed))
 }
 
-/// How far a download is: the bytes on disk so far, then the signature check.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
     Got(u64),
     Verifying,
 }
 
-/// Runs curl to `part`, reporting the bytes written so far every 150 ms.
 fn fetch_to(url: &str, size: u64, part: &Path, on: &dyn Fn(Phase)) -> Result<()> {
     let mut c = curl();
     c.args(["--max-time", "1800", "--max-filesize", &size.to_string(), "--output"]).arg(part).arg(url);
@@ -184,8 +157,6 @@ fn fetch_to(url: &str, size: u64, part: &Path, on: &dyn Fn(Phase)) -> Result<()>
     Ok(())
 }
 
-/// Downloads the feed's DMG into `dir` and verifies it; a file that fails is removed. `on`
-/// hears how far it is (from the downloading thread).
 pub fn download(cfg: &UpdateConfig, feed: &Feed, dir: &Path, on: &dyn Fn(Phase)) -> Result<PathBuf> {
     if feed.size == 0 || feed.size > DMG_MAX {
         bail!("implausible size {}", feed.size);
@@ -193,7 +164,6 @@ pub fn download(cfg: &UpdateConfig, feed: &Feed, dir: &Path, on: &dyn Fn(Phase))
     std::fs::create_dir_all(dir)?;
     let name = format!("Dataman-{}.dmg", sanitize(&feed.version));
     let dest = dir.join(&name);
-    // Already here from an earlier attempt.
     if let Ok(bytes) = std::fs::read(&dest) {
         on(Phase::Got(bytes.len() as u64));
         on(Phase::Verifying);
@@ -218,8 +188,7 @@ pub fn download(cfg: &UpdateConfig, feed: &Feed, dir: &Path, on: &dyn Fn(Phase))
     Ok(dest)
 }
 
-/// A key pair made for one run, never stored: the app's offline update check signs its own
-/// feed with it.
+/// Made for one run, never stored: the app's offline update check signs its own feed with it.
 pub struct ThrowawayKey(ring::signature::Ed25519KeyPair);
 
 impl ThrowawayKey {
@@ -229,13 +198,11 @@ impl ThrowawayKey {
         Ok(ThrowawayKey(Ed25519KeyPair::from_pkcs8(doc.as_ref()).map_err(|_| anyhow!("bad key"))?))
     }
 
-    /// The public key, base64 (as `DATAMAN_UPDATE_PUBKEY` takes it).
     pub fn public(&self) -> String {
         use ring::signature::KeyPair as _;
         data_encoding::BASE64.encode(self.0.public_key().as_ref())
     }
 
-    /// The base64 signature of `bytes` (a feed's `ed25519`).
     pub fn sign(&self, bytes: &[u8]) -> String {
         data_encoding::BASE64.encode(self.0.sign(bytes).as_ref())
     }
@@ -245,7 +212,6 @@ fn sanitize(v: &str) -> String {
     v.chars().map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+') { c } else { '_' }).collect()
 }
 
-/// The `.app` an executable runs from (`…/X.app/Contents/MacOS/exe`).
 pub fn bundle_of(exe: &Path) -> Option<PathBuf> {
     let macos = exe.parent()?;
     let contents = macos.parent()?;
@@ -259,9 +225,8 @@ fn writable(p: &Path) -> bool {
     unsafe { libc::access(c.as_ptr(), libc::W_OK) == 0 }
 }
 
-/// Whether the app can replace itself where it is: not translocated (a quarantined app run
-/// from where it was downloaded runs from a random read-only mount), not on a read-only
-/// volume (the DMG itself), and both the bundle and its folder writable.
+/// A quarantined app run from where it was downloaded is translocated: it runs from a random
+/// read-only mount.
 pub fn check_writable(app: &Path) -> Result<()> {
     let s = app.to_string_lossy();
     if s.contains("/AppTranslocation/") {
@@ -274,14 +239,12 @@ pub fn check_writable(app: &Path) -> Result<()> {
     Ok(())
 }
 
-/// A value of a bundle's Info.plist.
 pub fn plist_value(app: &Path, key: &str) -> Result<String> {
     let mut c = Command::new("/usr/bin/plutil");
     c.args(["-extract", key, "raw", "-o", "-"]).arg(app.join("Contents/Info.plist"));
     Ok(String::from_utf8_lossy(&output(c, "plutil")?).trim().to_string())
 }
 
-/// Detaches the DMG however the install ends.
 struct Mount(PathBuf);
 
 impl Drop for Mount {
@@ -291,10 +254,8 @@ impl Drop for Mount {
     }
 }
 
-/// Replaces `app` with the `.app` inside `dmg`: mounts it, copies the app to a hidden sibling
-/// (same volume), checks it (version, bundle id, code signature), strips quarantine and swaps
-/// the two folders in one `renamex_np(RENAME_SWAP)`; the old app is then removed. Nothing
-/// changes at `app` unless every step before the swap succeeded.
+/// The copy is a hidden sibling (same volume, for the swap); nothing changes at `app` unless
+/// every step before the swap succeeded.
 pub fn install(dmg: &Path, app: &Path, want: &str) -> Result<()> {
     check_writable(app)?;
     let parent = app.parent().context("the app has no folder")?;
@@ -339,7 +300,6 @@ pub fn install(dmg: &Path, app: &Path, want: &str) -> Result<()> {
         log::info!("update: {} swapped in", app.display());
         Ok(())
     })();
-    // After a swap `staged` holds the old app; after a failure, the copy.
     let _ = std::fs::remove_dir_all(&staged);
     result
 }
@@ -367,8 +327,6 @@ fn swap(a: &Path, b: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Opens `app` again once this process has exited (Launch Services, like a double click).
-/// The config and log folders a test points at go along.
 pub fn relaunch_after_exit(app: &Path) -> Result<()> {
     let mut args: Vec<String> = Vec::new();
     for var in ["XDG_CONFIG_HOME", "DATAMAN_LOG_DIR"] {
@@ -446,7 +404,6 @@ mod tests {
         assert!(verify(&dmg[1..], &feed, &key).unwrap_err().to_string().contains("size"));
         let other: [u8; 32] = keypair().public_key().as_ref().try_into().unwrap();
         assert!(verify(&dmg, &feed, &other).is_err());
-        // The feed round-trips and tolerates missing optional fields.
         let json = serde_json::to_string(&feed).unwrap();
         assert_eq!(serde_json::from_str::<Feed>(&json).unwrap(), feed);
         let min: Feed = serde_json::from_str(r#"{"version":"1.0.0","url":"u","size":1,"ed25519":"x"}"#).unwrap();
@@ -478,7 +435,6 @@ mod tests {
         let seen = seen.into_inner().unwrap();
         assert!(seen.contains(&Phase::Got(bytes.len() as u64)), "{seen:?}");
         assert_eq!(seen.last(), Some(&Phase::Verifying));
-        // A signature from another key: refused, nothing left behind.
         feed.version = "0.3.0".into();
         feed.ed25519 = ThrowawayKey::new().unwrap().sign(&bytes);
         let err = download(&cfg, &feed, &dir.join("bad"), &|_| {}).unwrap_err();

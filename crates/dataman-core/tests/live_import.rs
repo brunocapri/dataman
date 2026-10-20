@@ -1,11 +1,3 @@
-//! Importing files into real servers: CSV, TSV, NDJSON and Parquet into existing and new tables
-//! (PostgreSQL, in the scratch schema `dataman_import`, dropped at the end), the line of a bad
-//! row, skipping bad rows, cancelling mid-way, truncate first, the read-only refusal, a 1 M-row
-//! CSV through COPY (throughput printed) and the `INSERT` fallback on PostgreSQL and on LAR.
-//! Skips without servers.
-//!
-//! `cargo test --release -p dataman-core --test live_import -- --nocapture` prints the rates.
-
 mod common;
 
 use std::io::Write as _;
@@ -26,7 +18,6 @@ fn preview(path: &Path) -> Preview {
     import::preview(path, None, None).expect("preview")
 }
 
-/// Every column into a new table, with the inferred types.
 fn new_table(pv: &Preview, schema: &str, table: &str) -> ImportOptions {
     ImportOptions {
         format: pv.format,
@@ -44,7 +35,6 @@ fn new_table(pv: &Preview, schema: &str, table: &str) -> ImportOptions {
     }
 }
 
-/// The file's columns mapped by name onto an existing table's.
 fn existing(e: &Env, c: &Arc<Connection>, pv: &Preview, schema: &str, table: &str) -> ImportOptions {
     let cols = e.core.block_on(c.columns(c.database(), schema, table)).expect("columns");
     let names: Vec<String> = cols.iter().map(|c| c.name.clone()).collect();
@@ -75,7 +65,6 @@ fn write(dir: &Path, name: &str, body: &[u8]) -> PathBuf {
     p
 }
 
-/// `n` rows of `id,name,price,ok,at,doc` (one bad id at `bad`, if any).
 fn big_csv(dir: &Path, n: u64, bad: Option<u64>) -> PathBuf {
     let p = dir.join(format!("big-{n}.csv"));
     let mut w = std::io::BufWriter::with_capacity(1 << 20, std::fs::File::create(&p).unwrap());
@@ -116,8 +105,6 @@ fn files_into_postgres() {
     ]);
     let dir = tempfile::tempdir().unwrap();
 
-    // CSV into an existing table: `;`, quotes, an embedded line break, Latin-1, a column the
-    // table does not have, a quoted empty string vs an empty field.
     let mut csv = b"id;Name;born;score;note;extra\n1;\"Smith; Zo\xeb\";1990-05-01;9.5;\"two\nlines\";x\n2;Ana;;;\"\";y\n".to_vec();
     csv.extend_from_slice(b"3;\"say \"\"hi\"\"\";2000-01-31;10;tab\there;z\n");
     let p = write(dir.path(), "people.csv", &csv);
@@ -138,7 +125,6 @@ fn files_into_postgres() {
     assert_eq!(got[2][4].as_deref(), Some("tab\there"));
     assert_eq!(got[2][5].as_deref(), Some("true"), "defaults fill the columns left out");
 
-    // Truncate first, from TSV (COPY text escapes, \N).
     let p = write(dir.path(), "people.tsv", b"id\tname\tnote\n7\tSeven\tback\\\\slash\n8\tEight\t\\N\n");
     let pv = preview(&p);
     let mut o = existing(&e, &c, &pv, "dataman_import", "people");
@@ -150,7 +136,6 @@ fn files_into_postgres() {
         vec![Some("8".into()), None]
     ]);
 
-    // NDJSON into a new table: inferred types, nested values as jsonb.
     let nd = "{\"id\": 1, \"name\": \"a\", \"tags\": [\"x\", \"y\"], \"at\": \"2024-03-01T10:00:00Z\", \"ok\": true, \"u\": \"0f8fad5b-d9cb-469f-a165-70867728950e\"}\n\
               {\"id\": 2, \"name\": \"b\", \"tags\": {\"k\": 1}, \"at\": null, \"ok\": false, \"u\": null, \"price\": 2.5}\n";
     let p = write(dir.path(), "events.ndjson", nd.as_bytes());
@@ -162,7 +147,6 @@ fn files_into_postgres() {
     assert_eq!(one(&e, &c, "SELECT format_type(atttypid, atttypmod) FROM pg_attribute WHERE attrelid = 'dataman_import.events'::regclass AND attname = 'at'"), "timestamp with time zone");
     assert_eq!(one(&e, &c, "SELECT (tags->>'k')::int + price FROM dataman_import.events WHERE id = 2"), "3.5");
 
-    // A JSON array into a new table, through INSERT (forced) and per-chunk commits.
     let p = write(dir.path(), "arr.json", b"[{\"a\": 1, \"b\": \"it's\"}, {\"a\": 2, \"b\": null}]");
     let pv = preview(&p);
     let mut o = new_table(&pv, "dataman_import", "arr");
@@ -172,7 +156,6 @@ fn files_into_postgres() {
     assert_eq!((r.outcome.clone(), r.rows, r.method), (Outcome::Done, 2, Method::Insert), "{r:?}");
     assert_eq!(one(&e, &c, "SELECT b FROM dataman_import.arr WHERE a = 1"), "it's");
 
-    // Parquet into a new table: Arrow types → PostgreSQL types.
     let p = parquet_file(dir.path());
     let pv = preview(&p);
     let r = import_into(&e, &c, &p, new_table(&pv, "dataman_import", "pq"));
@@ -221,7 +204,6 @@ fn bad_rows_cancel_and_read_only_on_postgres() {
     let pv = preview(&p);
     let base = existing(&e, &c, &pv, "dataman_import_err", "t");
 
-    // Stop, one transaction: the server's error and the file's line; nothing stays.
     let r = import_into(&e, &c, &p, base.clone());
     let Outcome::Failed(f) = &r.outcome else { panic!("{r:?}") };
     assert_eq!(f.line, Some(4), "{f:?}");
@@ -230,14 +212,12 @@ fn bad_rows_cancel_and_read_only_on_postgres() {
     assert!(r.rolled_back && r.rows == 0);
     assert_eq!(one(&e, &c, "SELECT count(*) FROM dataman_import_err.t"), "0");
 
-    // Through INSERT the line comes from bisecting the batch.
     let mut o = base.clone();
     o.method = Method::Insert;
     let r = import_into(&e, &c, &p, o);
     let Outcome::Failed(f) = &r.outcome else { panic!("{r:?}") };
     assert_eq!(f.line, Some(4), "{f:?}");
 
-    // Skip: the bad rows are left out, counted, with their lines; the rest goes.
     for method in [Method::Copy, Method::Insert] {
         for one_tx in [true, false] {
             exec(&e, &c, &["TRUNCATE dataman_import_err.t"]);
@@ -253,7 +233,6 @@ fn bad_rows_cancel_and_read_only_on_postgres() {
         }
     }
 
-    // A row the file gets wrong (a field missing): its line, before the server sees it.
     let p2 = write(dir.path(), "short.csv", b"id,v\n1,a\n2\n3,c\n");
     exec(&e, &c, &["TRUNCATE dataman_import_err.t"]);
     let r = import_into(&e, &c, &p2, base.clone());
@@ -261,7 +240,6 @@ fn bad_rows_cancel_and_read_only_on_postgres() {
     assert_eq!(f.line, Some(3));
     assert!(f.error.message.contains("1 fields, expected 2"), "{f:?}");
 
-    // Not one transaction: what committed before the failing chunk stays.
     let big = big_csv(dir.path(), 120_000, Some(110_000));
     exec(&e, &c, &["CREATE TABLE dataman_import_err.big (id int, name text, price numeric, ok boolean, at timestamptz, doc jsonb)"]);
     let pvb = preview(&big);
@@ -273,7 +251,6 @@ fn bad_rows_cancel_and_read_only_on_postgres() {
     assert_eq!(r.rows, 100_000, "two chunks of 50,000 committed");
     assert_eq!(one(&e, &c, "SELECT count(*) FROM dataman_import_err.big"), "100000");
 
-    // Cancel mid-way: one transaction rolls back everything.
     exec(&e, &c, &["TRUNCATE dataman_import_err.big"]);
     let big2 = big_csv(dir.path(), 1_500_000, None);
     let pvb = preview(&big2);
@@ -293,7 +270,6 @@ fn bad_rows_cancel_and_read_only_on_postgres() {
     assert!(t_cancel.elapsed() < Duration::from_secs(5));
     assert_eq!(one(&e, &c, "SELECT count(*) FROM dataman_import_err.big"), "0");
 
-    // A read-only connection refuses before connecting for the import.
     let ro = e.core.block_on(e.core.connect(pg_profile(true), Some(pg_password()))).unwrap();
     let r = import_into(&e, &ro, &p2, base.clone());
     let Outcome::Failed(f) = &r.outcome else { panic!("{r:?}") };
@@ -303,7 +279,6 @@ fn bad_rows_cancel_and_read_only_on_postgres() {
     exec(&e, &c, &["DROP SCHEMA dataman_import_err CASCADE"]);
 }
 
-/// 1 M rows of CSV through COPY into PostgreSQL, and 200 k through the INSERT fallback.
 #[test]
 fn throughput_on_postgres() {
     let e = env();
@@ -336,8 +311,6 @@ fn throughput_on_postgres() {
     exec(&e, &c, &["DROP SCHEMA dataman_import_big CASCADE"]);
 }
 
-/// 10 M rows through COPY: memory stays flat (run under `/usr/bin/time -l` for the peak RSS).
-/// `cargo test --release -p dataman-core --test live_import ten_million -- --ignored --nocapture`
 #[test]
 #[ignore]
 fn ten_million_rows() {
@@ -366,8 +339,6 @@ fn ten_million_rows() {
     exec(&e, &c, &["DROP SCHEMA dataman_import_10m CASCADE"]);
 }
 
-/// LAR: COPY FROM STDIN (text) when it has it, the INSERT fallback, a bad row's line found by
-/// bisection (its COPY errors carry no line), skip mode.
 #[test]
 fn files_into_lar() {
     let e = env();
@@ -384,7 +355,6 @@ fn files_into_lar() {
     eprintln!("LAR {:?}: 100,000 rows in {:.2} s = {:.0} rows/s", r.method, r.elapsed.as_secs_f64(), 1e5 / r.elapsed.as_secs_f64());
     assert_eq!(one(&e, &c, "SELECT count(*) FROM dataman_imp_lar"), "100000");
 
-    // The INSERT fallback, forced, into a new table.
     let mut o2 = new_table(&pv, "public", "dataman_imp_lar_ins");
     o2.method = Method::Insert;
     let r = import_into(&e, &c, &p, o2);
@@ -393,7 +363,6 @@ fn files_into_lar() {
     assert_eq!(one(&e, &c, "SELECT count(*) FROM dataman_imp_lar_ins"), "100000");
     assert_eq!(rows(&e, &c, "SELECT name, doc FROM dataman_imp_lar_ins WHERE id = 7")[0][0].as_deref(), Some("name 7, with comma"));
 
-    // A bad row: its line, found by bisection; nothing stays.
     let bad = write(dir.path(), "bad.csv", b"id,name\n1,a\n2,b\nx,c\n4,d\n");
     let pvb = preview(&bad);
     for method in [Method::Auto, Method::Insert] {
@@ -408,7 +377,6 @@ fn files_into_lar() {
         let s = c.session(None);
         let rs = s.execute("SELECT 1 FROM dataman_imp_lar_new");
         assert_eq!(e.core.block_on(rs.wait_finished()), Phase::Failed, "the new table is gone");
-        // Skip mode: three rows.
         o3.on_error = OnError::Skip;
         let r = import_into(&e, &c, &bad, o3);
         assert_eq!((r.outcome.clone(), r.rows, r.skipped), (Outcome::Done, 3, 1), "{method:?}: {r:?}");

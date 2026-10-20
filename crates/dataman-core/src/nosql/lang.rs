@@ -1,9 +1,5 @@
-//! The document engines' editor languages: their tokens (the editor's colors) and completions,
-//! in the SQL editor's own types ([`Token`], [`Completion`]) so the same editor serves them.
-//!
-//! The lexer keeps the SQL lexer's promise to the editor's incremental re-lexing: it never looks
-//! behind a token's start, and a token's extent never depends on text past the whitespace that
-//! follows it. A token's kind may look at the next character only (`name:` is a key).
+// The editor re-lexes incrementally: never look behind a token's start, and never let a token's
+// extent depend on text past the whitespace after it (its kind may look at the next char only).
 
 use std::collections::HashMap;
 
@@ -13,19 +9,12 @@ use crate::sql::{Token, TokenKind};
 
 use super::shell::{is_ident_char, is_ident_start};
 
-/// What completions know about the connection: its collections, and the fields sampled from
-/// some of them.
 #[derive(Clone, Debug, Default)]
 pub struct Hints {
     pub collections: Vec<String>,
-    /// Field paths by collection, most frequent first, with their types (`string`, `int`).
     pub fields: HashMap<String, Vec<(String, String)>>,
 }
 
-// ---------------------------------------------------------------------------------------------
-// Tokens
-
-/// `text` as tokens of `engine`'s language.
 pub fn tokenize(engine: Engine, text: &str) -> Vec<Token> {
     match engine {
         Engine::Elasticsearch | Engine::OpenSearch => console_tokens(text),
@@ -34,7 +23,6 @@ pub fn tokenize(engine: Engine, text: &str) -> Vec<Token> {
     }
 }
 
-/// Redis' tokens: commands, quoted strings, numbers, the rest as names (keys, fields).
 fn redis_tokens(text: &str) -> Vec<Token> {
     let b = text.as_bytes();
     let mut out = Vec::new();
@@ -91,8 +79,6 @@ fn redis_tokens(text: &str) -> Vec<Token> {
     out
 }
 
-/// The console's tokens: a method (`GET`), its path (one token, up to the whitespace), the
-/// body's JSON as the shell's.
 fn console_tokens(text: &str) -> Vec<Token> {
     let b = text.as_bytes();
     let mut out = Vec::new();
@@ -109,7 +95,6 @@ fn console_tokens(text: &str) -> Vec<Token> {
                 TokenKind::Ident
             }
             b'_' if b.get(i + 1).is_some_and(u8::is_ascii_alphabetic) => {
-                // `_search`, `_cat/indices?v`: a path without its leading slash, or a meta field.
                 let mut j = i;
                 while j < b.len() && path_char(b[j]) && b[j] != b'"' && b[j] != b':' && b[j] != b',' && b[j] != b'}' {
                     j += 1;
@@ -129,7 +114,6 @@ fn console_tokens(text: &str) -> Vec<Token> {
                 if super::console::METHODS.contains(&&text[start..i]) {
                     TokenKind::Keyword
                 } else {
-                    // Not a method: lex it as the shell would.
                     let t = shell_tokens(&text[start..]);
                     let first = t.first().copied().unwrap_or(Token { kind: TokenKind::Ident, start: 0, end: 1 });
                     i = start + first.end;
@@ -137,8 +121,6 @@ fn console_tokens(text: &str) -> Vec<Token> {
                 }
             }
             _ => {
-                // The rest of the line's next token as the shell lexes it (strings, numbers,
-                // keys, punctuation, comments).
                 let line_end = text[i..].find('\n').map_or(b.len(), |n| i + n + 1);
                 let t = shell_tokens(&text[i..line_end]);
                 let first = t.first().copied().unwrap_or(Token { kind: TokenKind::Unknown, start: 0, end: 1 });
@@ -151,10 +133,8 @@ fn console_tokens(text: &str) -> Vec<Token> {
     out
 }
 
-/// Words that read as the language's own.
 const WORDS: &[&str] = &[
     "db", "true", "false", "null", "undefined", "new", "show", "use", "NaN", "Infinity",
-    // A script's JavaScript.
     "var", "let", "const", "function", "return", "if", "else", "for", "of", "in", "while", "do", "break", "continue", "try",
     "catch", "finally", "throw", "typeof", "instanceof", "this", "class", "switch", "case", "default", "delete", "void",
 ];
@@ -190,7 +170,6 @@ fn shell_tokens(text: &str) -> Vec<Token> {
                 i = text[i + 2..].find("*/").map_or(b.len(), |j| i + 2 + j + 2);
                 TokenKind::BlockComment
             }
-            // After a value (a name, a number, a closing bracket): a script's division.
             b'/' if out.iter().rev().find(|t: &&Token| !matches!(t.kind, TokenKind::Whitespace | TokenKind::LineComment | TokenKind::BlockComment)).is_some_and(|t| {
                 matches!(t.kind, TokenKind::Ident | TokenKind::Number) || (t.kind == TokenKind::Punct && matches!(b[t.start], b')' | b']'))
             }) => {
@@ -198,7 +177,6 @@ fn shell_tokens(text: &str) -> Vec<Token> {
                 TokenKind::Operator
             }
             b'/' => {
-                // A regular expression: to the next `/` on the line.
                 i += 1;
                 let mut class = false;
                 while i < b.len() && b[i] != b'\n' && (b[i] != b'/' || class) {
@@ -219,7 +197,6 @@ fn shell_tokens(text: &str) -> Vec<Token> {
                 TokenKind::String
             }
             b'`' => {
-                // A script's template string (over lines too).
                 i += 1;
                 while i < b.len() && b[i] != b'`' {
                     if b[i] == b'\\' {
@@ -239,7 +216,6 @@ fn shell_tokens(text: &str) -> Vec<Token> {
                     i += 1;
                 }
                 i = (i + 1).min(b.len());
-                // A key: `"name":`.
                 if b.get(i) == Some(&b':') { TokenKind::QuotedIdent } else { TokenKind::String }
             }
             b'0'..=b'9' => {
@@ -261,7 +237,6 @@ fn shell_tokens(text: &str) -> Vec<Token> {
                 }
                 let word = &text[start..i];
                 if word.starts_with('$') {
-                    // Operators and stages: `$match`, `$gt`.
                     TokenKind::Keyword
                 } else if b.get(i) == Some(&b':') {
                     TokenKind::QuotedIdent
@@ -285,9 +260,6 @@ fn shell_tokens(text: &str) -> Vec<Token> {
     }
     out
 }
-
-// ---------------------------------------------------------------------------------------------
-// Completions
 
 const DB_METHODS: &[(&str, &str)] = &[
     ("getCollection", "(name)"),
@@ -329,14 +301,12 @@ const COLL_METHODS: &[(&str, &str)] = &[
 const CURSOR_METHODS: &[(&str, &str)] =
     &[("sort", "(spec)"), ("limit", "(n)"), ("skip", "(n)"), ("projection", "(spec)"), ("count", "()"), ("explain", "(verbosity)"), ("toArray", "()")];
 
-/// Query and update operators (at a key inside a filter or an update).
 const OPERATORS: &[&str] = &[
     "$eq", "$ne", "$gt", "$gte", "$lt", "$lte", "$in", "$nin", "$and", "$or", "$nor", "$not", "$exists", "$type", "$regex",
     "$options", "$elemMatch", "$size", "$all", "$expr", "$text", "$search", "$mod", "$where", "$set", "$unset", "$inc",
     "$push", "$pull", "$addToSet", "$pop", "$rename", "$min", "$max", "$mul", "$currentDate", "$setOnInsert", "$each",
 ];
 
-/// Aggregation stages and expression operators.
 const STAGES: &[&str] = &[
     "$match", "$group", "$project", "$sort", "$limit", "$skip", "$unwind", "$lookup", "$addFields", "$set", "$unset",
     "$count", "$facet", "$bucket", "$sample", "$replaceRoot", "$sortByCount", "$out", "$merge", "$unionWith",
@@ -354,7 +324,6 @@ const CONSTRUCTORS: &[(&str, &str)] = &[
 ];
 
 fn call(name: &str, args: &str, kind: CandidateKind) -> Candidate {
-    // The cursor between the parentheses (inside the quotes of a string argument).
     let caret = if args.starts_with("(\"") { name.len() + 2 } else { name.len() + 1 };
     let insert = if args.starts_with("(\"") { format!("{name}(\"\")") } else { format!("{name}()") };
     Candidate { label: name.to_string(), kind, detail: args.to_string(), insert, caret: Some(caret) }
@@ -364,7 +333,6 @@ fn word(label: &str, kind: CandidateKind, detail: &str) -> Candidate {
     Candidate { label: label.to_string(), kind, detail: detail.to_string(), insert: label.to_string(), caret: None }
 }
 
-/// The collection the statement around `at` works on (`db.name.` or `db.getCollection("name")`).
 fn statement_collection(src: &str, at: usize) -> Option<String> {
     let range = super::mql::statement_at(src, at)?;
     let text = &src[range];
@@ -376,23 +344,19 @@ fn statement_collection(src: &str, at: usize) -> Option<String> {
     }
     let r = rest.strip_prefix('.')?;
     let name: String = r.chars().take_while(|c| is_ident_char(*c) || *c == '.').collect();
-    // `db.users.find` → `users` (the last name before a call).
     let name = name.rsplit_once('.').map(|(c, _)| c.to_string()).unwrap_or(name);
     (!name.is_empty()).then_some(name)
 }
 
-/// Where the cursor is inside the brackets before it.
 #[derive(Debug, PartialEq)]
 enum Spot {
     Top,
-    /// Inside `{…}` where a key goes.
     Key,
-    /// Where a value goes (after `:`, in an array, an argument).
     Value,
 }
 
 fn spot(tokens: &[Token], src: &str) -> Spot {
-    let mut stack: Vec<(u8, bool)> = Vec::new(); // (bracket, expecting a key)
+    let mut stack: Vec<(u8, bool)> = Vec::new();
     for t in tokens {
         if t.kind != TokenKind::Punct {
             if let Some(top) = stack.last_mut()
@@ -430,14 +394,12 @@ fn spot(tokens: &[Token], src: &str) -> Spot {
     }
 }
 
-/// Completions at byte `cursor` of `src`.
 pub fn complete(engine: Engine, src: &str, cursor: usize, hints: &Hints) -> Completion {
     let cursor = cursor.min(src.len());
     if matches!(engine, Engine::Elasticsearch | Engine::OpenSearch) {
         return complete_console(src, cursor, hints);
     }
     if engine == Engine::Redis {
-        // The line's first word: commands; the next ones: the database's keys.
         let line_start = src[..cursor].rfind('\n').map_or(0, |i| i + 1);
         let start = src[..cursor].char_indices().rev().take_while(|(_, c)| !c.is_whitespace()).last().map_or(cursor, |(i, _)| i);
         let typed = &src[start..cursor];
@@ -458,16 +420,13 @@ pub fn complete(engine: Engine, src: &str, cursor: usize, hints: &Hints) -> Comp
         return Completion { replace: cursor..cursor, items: Vec::new() };
     }
     let before = &src[..cursor];
-    // The word being typed: a name, `$` included.
     let start = before.char_indices().rev().take_while(|(_, c)| is_ident_char(*c)).last().map_or(cursor, |(i, _)| i);
     let partial = &src[start..cursor];
     let tokens = shell_tokens(&src[..start]);
-    // Inside a string: `"$field"` references in a pipeline.
     if let Some(last) = tokens.last()
         && last.kind == TokenKind::String
         && last.end == start
         && {
-            // Not closed: its quote does not end it.
             let t = &src[last.start..last.end];
             t.len() == 1 || !t[1..].ends_with(&t[..1])
         }
@@ -493,8 +452,6 @@ pub fn complete(engine: Engine, src: &str, cursor: usize, hints: &Hints) -> Comp
             items.extend(hints.collections.iter().map(|c| word(c, CandidateKind::Table, "collection")));
             items.extend(DB_METHODS.iter().map(|(m, a)| call(m, a, CandidateKind::Function)));
         } else if before_dot == Some(")") {
-            // After a call: a collection's methods after `getCollection(…)`, a cursor's after
-            // `find(…)`: the name before the call's `(`.
             let mut depth = 0;
             let mut name = None;
             for j in (0..n - 1).rev() {
@@ -545,19 +502,16 @@ pub fn complete(engine: Engine, src: &str, cursor: usize, hints: &Hints) -> Comp
     }
     let lower = partial.to_ascii_lowercase();
     let mut items: Vec<Candidate> = items.into_iter().filter(|c| c.label.to_ascii_lowercase().starts_with(&lower) || (lower.len() >= 3 && c.label.to_ascii_lowercase().contains(&lower))).collect();
-    // Prefix matches first, then in the order given.
     items.sort_by_key(|c| !c.label.to_ascii_lowercase().starts_with(&lower));
     items.truncate(MAX_ITEMS);
     Completion { replace: start..cursor, items }
 }
 
-/// The endpoints offered after a method.
 const ENDPOINTS: &[&str] = &[
     "_search", "_count", "_doc/", "_mapping", "_settings", "_bulk", "_update_by_query", "_delete_by_query", "_cat/indices?v",
     "_cat/health?v", "_cat/shards?v", "_cluster/health", "_cluster/stats", "_nodes/stats", "_aliases", "_refresh",
 ];
 
-/// Query DSL keys.
 const DSL: &[&str] = &[
     "query", "match", "match_all", "match_phrase", "multi_match", "term", "terms", "range", "bool", "must", "should", "filter",
     "must_not", "exists", "prefix", "wildcard", "regexp", "fuzzy", "ids", "nested", "query_string", "simple_query_string",
@@ -569,7 +523,6 @@ fn complete_console(src: &str, cursor: usize, hints: &Hints) -> Completion {
     let line_start = src[..cursor].rfind('\n').map_or(0, |i| i + 1);
     let line = &src[line_start..cursor];
     let word_start = |stop: &dyn Fn(char) -> bool| src[..cursor].char_indices().rev().take_while(|(_, c)| !stop(*c)).last().map_or(cursor, |(i, _)| i);
-    // On a method line: the path (an index, then its endpoint).
     if let Some(m) = super::console::METHODS.iter().find(|m| line.starts_with(*m)) {
         let rest = &line[m.len()..];
         if rest.starts_with(' ') {
@@ -587,14 +540,12 @@ fn complete_console(src: &str, cursor: usize, hints: &Hints) -> Completion {
         }
         return Completion { replace: cursor..cursor, items: Vec::new() };
     }
-    // In the body: the DSL's keys and the index's fields where a key goes.
     let start = word_start(&|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '@'));
     let typed = &src[start..cursor];
     let req = super::console::statement_at(src, cursor).map(|r| &src[r]).unwrap_or("");
     let index = req.split_whitespace().nth(1).map(|p| p.trim_start_matches('/').split('/').next().unwrap_or("").to_string()).unwrap_or_default();
     let body_at = super::console::statement_at(src, cursor).map_or(0, |r| r.start + req.find('\n').unwrap_or(req.len()));
     let quoted = start > 0 && matches!(src.as_bytes()[start - 1], b'"' | b'\'');
-    // Where the word is, read up to its opening quote.
     let upto = if quoted { start - 1 } else { start };
     let tokens = shell_tokens(&src[body_at.min(upto)..upto]);
     let mut items: Vec<Candidate> = Vec::new();
@@ -635,10 +586,8 @@ mod tests {
                 ("-1.5", Number), ("}", Punct), ("}", Punct), (")", Punct), ("// hi", LineComment),
             ]
         );
-        // A script's JavaScript: its keywords, template strings, division beside regexes.
         let k = kinds("const n = total / 2; let r = /a/ \nprint(`${n}`)");
         assert!(k.contains(&("const", Keyword)) && k.contains(&("let", Keyword)) && k.contains(&("/", Operator)) && k.contains(&("/a/", String)) && k.contains(&("`${n}`", String)), "{k:?}");
-        // Every byte is in a token, in order (the editor relies on it).
         let s = "db.é.find({a: \"open";
         let t = tokenize(Engine::MongoDb, s);
         assert_eq!(t.first().unwrap().start, 0);

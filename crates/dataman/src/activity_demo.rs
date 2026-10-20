@@ -1,17 +1,3 @@
-//! Demo stages of the activity monitor (`--demo`), on the demo database:
-//!
-//! - `activity-sessions`, `activity-locks`, `activity-tables`, `activity-statements`: a scratch
-//!   schema with a table full of dead tuples, and outside connections (their own application
-//!   names) that hold a row lock in an open transaction, wait on it, run a long query and sit
-//!   idle in a transaction; the monitor on each section. The thresholds are lowered to seconds
-//!   (the sessions are seconds old), and the statements are sample rows when the server has no
-//!   `pg_stat_statements` loaded; `activity-statements-state` shows the extension's state line
-//!   as the server reports it; `activity-terminate` the confirmation sheet over the blocker.
-//! - `activity-check`: the rules with real key events (the tab, the default filter, this app's
-//!   backends, the blocking tree, Cancel and Terminate through the sheet, the refresh stopping
-//!   when the tab is hidden, the window inactive or the interval off, and redrawing nothing
-//!   while nothing changes), printed as PASS/FAIL lines; exit code 1 on a failure.
-
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -51,7 +37,6 @@ fn key(cx: &mut AsyncWindowContext, k: &str) {
     });
 }
 
-/// Runs statements in a fresh session of `conn`, waiting for each.
 async fn exec(conn: &Arc<Connection>, sqls: &[&str], cx: &mut AsyncWindowContext) {
     let s = conn.session(None);
     for sql in sqls {
@@ -64,8 +49,6 @@ async fn exec(conn: &Arc<Connection>, sqls: &[&str], cx: &mut AsyncWindowContext
     }
 }
 
-/// A connection of another program (its own application name, not this app's): it runs
-/// `sqls` and then holds its session open until the process ends.
 fn outside(conn: &Arc<Connection>, password: &str, app: &str, sqls: &[&str]) {
     let p = &conn.profile;
     let mut cfg = tokio_postgres::Config::new();
@@ -121,7 +104,6 @@ fn sample_statements() -> Vec<StatementRow> {
     ]
 }
 
-/// Builds the scenario and opens the monitor on the stage's section.
 pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, password: &str, cx: &mut AsyncWindowContext) -> bool {
     let conn = cx.update(|_, cx| ws.read(cx).store.read(cx).connection(id)).ok().flatten().expect("connected");
     if stage == "activity-check" {
@@ -212,7 +194,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, password: &str, 
     true
 }
 
-/// `activity-check`.
 async fn check(ws: &Entity<Workspace>, conn: &Arc<Connection>, id: &str, cx: &mut AsyncWindowContext) -> bool {
     let mut ok = true;
     let mut report = |name: &str, pass: bool, detail: String| {
@@ -223,8 +204,7 @@ async fn check(ws: &Entity<Workspace>, conn: &Arc<Connection>, id: &str, cx: &mu
     let renders = || crate::app::RENDERS.load(Relaxed);
     let _ = cx.update(|_, cx| ws.update(cx, |w, _| w.assume_active = Some(true)));
 
-    // Opened from the action (View ▸ Activity Monitor, the palette): a tab on the connection.
-    // (The focus first: the action goes up from the focused element.)
+    // The focus first: the action goes up from the focused element.
     let _ = cx.update(|window, cx| {
         ws.update(cx, |w, cx| w.focus_editor(window, cx));
         window.refresh();
@@ -244,13 +224,11 @@ async fn check(ws: &Entity<Workspace>, conn: &Arc<Connection>, id: &str, cx: &mu
     report("PostgreSQL reports sessions, locks and tables", probed && avail[..3].iter().all(|a| *a == crate::activity::Avail::Yes), format!("{avail:?}"));
     let st = cx.update(|_, cx| m.read(cx).statements_state().cloned()).unwrap();
     report("pg_stat_statements: its state or its rows", matches!(st, Some(Statements::NotInstalled | Statements::NotLoaded | Statements::Rows(_))), format!("{st:?}"));
-    // Opening it again goes to the same tab.
     let tabs = cx.update(|_, cx| ws.read(cx).tabs.len()).unwrap();
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.open_activity(id, window, cx)));
     let tabs2 = cx.update(|_, cx| ws.read(cx).tabs.len()).unwrap();
     report("a second open goes to the same tab", tabs == tabs2, format!("{tabs} → {tabs2}"));
 
-    // The default filter, and this app's backends.
     let shown = cx.update(|_, cx| m.read(cx).shown_sessions().to_vec()).unwrap();
     report("idle and background sessions are hidden by default", !shown.is_empty() && shown.iter().all(|s| s.shown_by_default()), format!("{} shown", shown.len()));
     let own_mark = cx
@@ -268,7 +246,6 @@ async fn check(ws: &Entity<Workspace>, conn: &Arc<Connection>, id: &str, cx: &mu
     report("the toggles show idle and background sessions", all > shown.len(), format!("{all} vs {}", shown.len()));
     let _ = cx.update(|_, cx| m.update(cx, |m, cx| m.set_filters(false, false, cx)));
 
-    // A blocking scenario: a row lock held in an open transaction, a session waiting on it.
     exec(conn, &[
         &format!("DROP SCHEMA IF EXISTS {SCHEMA}_check CASCADE"),
         &format!("CREATE SCHEMA {SCHEMA}_check"),
@@ -296,7 +273,6 @@ async fn check(ws: &Entity<Workspace>, conn: &Arc<Connection>, id: &str, cx: &mu
     .await;
     report("the blocking tree: the holder on top, the waiter under it", tree_ok, format!("{hp} / {wp}"));
 
-    // Cancel the waiter through the sheet (a ⌘↩ in the first 350 ms does not count).
     let _ = cx.update(|_, cx| m.update(cx, |m, cx| {
         m.select_pid(Some(wp), cx);
         m.request_signal(Signal::Cancel, cx);
@@ -310,7 +286,6 @@ async fn check(ws: &Entity<Workspace>, conn: &Arc<Connection>, id: &str, cx: &mu
     let cancelled = until(cx, 5000, move |_| b2.phase().is_finished()).await && blocked.phase() == Phase::Cancelled;
     report("⌘↩ cancels the waiter's statement", cancelled, format!("{:?}", blocked.phase()));
 
-    // Terminate the holder: the sheet marks it as this app's; esc keeps it, ⌘↩ ends it.
     let _ = cx.update(|_, cx| m.update(cx, |m, cx| {
         m.select_pid(Some(hp), cx);
         m.request_signal(Signal::Terminate, cx);
@@ -340,7 +315,6 @@ async fn check(ws: &Entity<Workspace>, conn: &Arc<Connection>, id: &str, cx: &mu
     drop((holder, waiter));
     exec(conn, &[&format!("DROP SCHEMA {SCHEMA}_check CASCADE")], cx).await;
 
-    // Explain of a session's query: a new tab with the plan.
     let _ = cx.update(|window, cx| m.update(cx, |m, cx| m.set_section(Section::Sessions, window, cx)));
     pause(cx, 300).await;
     let tabs_before = cx.update(|_, cx| ws.read(cx).tabs.len()).unwrap();
@@ -351,7 +325,6 @@ async fn check(ws: &Entity<Workspace>, conn: &Arc<Connection>, id: &str, cx: &mu
     let tabs_after = cx.update(|_, cx| ws.read(cx).tabs.len()).unwrap();
     report("Explain opens the query in a new tab with its plan", planned && tabs_after == tabs_before + 1, String::new());
 
-    // Hidden: another tab in front. No reads, no frames.
     let mon_ix = cx.update(|_, cx| ws.read(cx).tabs.iter().position(|t| t.read(cx).monitor.is_some())).unwrap().unwrap();
     // The notices fade and the new tab's cursor stops blinking first (6 s after its text).
     pause(cx, 7000).await;
@@ -366,13 +339,11 @@ async fn check(ws: &Entity<Workspace>, conn: &Arc<Connection>, id: &str, cx: &mu
         format!("{} reads, {} renders, {} frames, timer {ticking}", r1 - r0, v1 - v0, f1 - f0),
     );
 
-    // Back in front: it reads at once.
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.activate(mon_ix, window, cx)));
     let m2 = m.clone();
     let back = until(cx, 2000, move |cx| m2.read(cx).refreshes > r1).await;
     report("back in front, it reads at once", back && cx.update(|_, cx| m.read(cx).ticking()).unwrap(), String::new());
 
-    // On screen with nothing changing: reads every second, no frame.
     let _ = cx.update(|_, cx| m.update(cx, |m, cx| m.set_every(Every::S1, cx)));
     pause(cx, 2500).await;
     let (r0, f0, d0) = (cx.update(|_, cx| m.read(cx).refreshes).unwrap(), renders(), cx.update(|_, cx| m.read(cx).redraws).unwrap());
@@ -384,7 +355,6 @@ async fn check(ws: &Entity<Workspace>, conn: &Arc<Connection>, id: &str, cx: &mu
         format!("{} reads, {} frames, {} redraws", r1 - r0, f1 - f0, d1 - d0),
     );
 
-    // The window inactive: the timer stops.
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| {
         w.assume_active = Some(false);
         w.sync_monitors(window, cx);
@@ -398,20 +368,17 @@ async fn check(ws: &Entity<Workspace>, conn: &Arc<Connection>, id: &str, cx: &mu
         w.sync_monitors(window, cx);
     }));
 
-    // Off: no timer.
     let _ = cx.update(|_, cx| m.update(cx, |m, cx| m.set_every(Every::Off, cx)));
     let r0 = cx.update(|_, cx| m.read(cx).refreshes).unwrap();
     pause(cx, 3000).await;
     let r1 = cx.update(|_, cx| m.read(cx).refreshes).unwrap();
     report("refresh off: no reads", r1 == r0 && !cx.update(|_, cx| m.read(cx).ticking()).unwrap(), format!("{} reads", r1 - r0));
-    // ⌘R still reads.
     let f = cx.update(|_, cx| m.read(cx).focus_target(cx)).unwrap();
     let _ = cx.update(|window, cx| window.focus(&f, cx));
     key(cx, "cmd-r");
     let m2 = m.clone();
     report("⌘R reads now", until(cx, 2000, move |cx| m2.read(cx).refreshes > r1).await, String::new());
 
-    // Closing the tab ends the monitor (its timer goes with it).
     let weak = m.downgrade();
     drop(m);
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.close_tab(mon_ix, window, cx)));

@@ -1,5 +1,3 @@
-//! SQL Server: result sets, messages, repeats and errors of batches.
-
 mod common;
 
 use common::*;
@@ -34,7 +32,6 @@ fn statement_errors_keep_their_place() {
     let e = env();
     let Some(c) = mssql_on(&e, mssql_profile("master")) else { return };
     let s = c.session(None);
-    // The error is a result of its own between the sets before and after it.
     let rs = all(&e, &s, "SELECT 1 AS first_ok; SELECT 1/0 AS boom; SELECT 2 AS later");
     let got = shape(&rs);
     let state: Vec<(Phase, Option<String>)> = rs.iter().map(|r| (r.phase(), r.status().error.map(|e| e.message))).collect();
@@ -45,15 +42,12 @@ fn statement_errors_keep_their_place() {
     assert_eq!(state.iter().filter(|(p, _)| *p == Phase::Failed).count(), 1, "{got:#?}");
     assert_eq!(rs[later].phase(), Phase::Done, "{got:#?}");
     assert_eq!(rs[0].snapshot().text(0, 0).as_deref(), Some("1"));
-    // A failure with nothing after it is the last result, failed.
     let rs = all(&e, &s, "SELECT 1 AS a; SELECT 1/0 AS b");
     assert_eq!(rs.last().unwrap().phase(), Phase::Failed, "{:#?}", shape(&rs));
     assert_eq!(rs.iter().filter(|r| r.phase() == Phase::Failed).count(), 1);
-    // A failure first.
     let rs = all(&e, &s, "UPDATE #nope SET a = 1; SELECT 5 AS five");
     let got = shape(&rs);
     assert_eq!(rs[0].phase(), Phase::Failed, "{got:#?}");
-    // And the connection works after.
     let rs = all(&e, &s, "SELECT 7 AS seven");
     assert_eq!(rs[0].snapshot().text(0, 0).as_deref(), Some("7"));
 }

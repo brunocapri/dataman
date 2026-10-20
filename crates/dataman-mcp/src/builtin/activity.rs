@@ -1,6 +1,3 @@
-//! The server's activity: activity_sessions, activity_locks (read), cancel_backend and
-//! terminate_backend (write).
-
 use dataman_core::activity::{self, Signal};
 use dataman_core::guard::WriteClass;
 use serde_json::{Value, json};
@@ -119,9 +116,6 @@ fn locks(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
     })
 }
 
-/// What a signal is to the tiers: a cancel stops a statement (a safe write: tier write, asks on
-/// production); a terminate ends a session and rolls back its work (destructive: tier full and
-/// the user's Allow).
 pub fn signal_class(s: Signal) -> WriteClass {
     match s {
         Signal::Cancel => WriteClass::SafeWrite,
@@ -135,8 +129,6 @@ fn signal(cx: &Call, a: Args, s: Signal) -> BoxFut<'_, Result<Value, ToolError>>
         let pid = a.u64_or("pid", 0) as i32;
         let sql = s.sql(pid);
         cx.note_sql(&sql);
-        // Refused before connecting when the tier refuses it, or when it needs a human and no
-        // app runs.
         let class = signal_class(s);
         match policy::write_verdict(cx.hub.settings().mcp_enabled, Target::of(&p), &class) {
             Verdict::Refuse(e) => return Err(ToolError::Refused(e)),

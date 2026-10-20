@@ -1,15 +1,3 @@
-//! Pinned tables in the explorer (`--demo`), on the bench database's `public` schema:
-//!
-//! - `pins`: `orders` and `customer` pinned, `orders` open on its columns in the "pinned"
-//!   group (screenshot);
-//! - `pins-menu`: a pinned table's context menu, with Unpin table (screenshot);
-//! - `pin-check`: right-click ▸ Pin table puts a table in its connection's "pinned" group (and
-//!   the file); the menu then says Unpin, on the table in its schema and in the group alike; a
-//!   pinned table opens its columns on a click (apart from its schema's row) and its data on a
-//!   double click; the filter finds it in the group; Unpin takes it out, the selection moves on,
-//!   and the last one takes the group and the file along. Real mouse events through the
-//!   window; PASS/FAIL lines, exit code 1 on a failure.
-
 use std::time::Duration;
 
 use gpui::{AsyncWindowContext, Entity, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, Pixels, Point};
@@ -37,7 +25,7 @@ fn draw(cx: &mut AsyncWindowContext) {
     });
 }
 
-/// A move first (GPUI's hit-test follows the latest hovered element), then `count` clicks.
+/// A move first: GPUI's hit-test follows the latest hovered element.
 fn click(cx: &mut AsyncWindowContext, p: Point<Pixels>, button: MouseButton, count: usize) {
     let m = Modifiers::default();
     input(cx, PlatformInput::MouseMove(MouseMoveEvent { position: p, pressed_button: None, modifiers: m }));
@@ -59,7 +47,6 @@ async fn pause(cx: &mut AsyncWindowContext, ms: u64) {
     cx.background_executor().timer(Duration::from_millis(ms)).await;
 }
 
-/// Waits (up to 10 s) for a row to be in the tree.
 async fn row(tree: &Entity<SchemaTree>, id: &str, cx: &mut AsyncWindowContext) -> bool {
     for _ in 0..200 {
         if cx.update(|_, cx| tree.read(cx).has_row(id)).unwrap_or(false) {
@@ -78,7 +65,6 @@ async fn expand(tree: &Entity<SchemaTree>, id: &str, cx: &mut AsyncWindowContext
     }
 }
 
-/// A row's middle once it is drawn (scrolled into view by selecting it first).
 async fn point_of(tree: &Entity<SchemaTree>, id: &str, cx: &mut AsyncWindowContext) -> Option<Point<Pixels>> {
     row(tree, id, cx).await;
     for _ in 0..20 {
@@ -91,8 +77,6 @@ async fn point_of(tree: &Entity<SchemaTree>, id: &str, cx: &mut AsyncWindowConte
     None
 }
 
-/// Right-clicks a row and chooses `act` in its menu, by the mouse; the menu's actions as it
-/// showed them.
 async fn menu_choose(tree: &Entity<SchemaTree>, id: &str, act: Act, cx: &mut AsyncWindowContext) -> Vec<Act> {
     let Some(p) = point_of(tree, id, cx).await else { return vec![] };
     click(cx, p, MouseButton::Right, 1);
@@ -121,7 +105,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, conn: &str, db: &str, cx: 
     expand(&tree, &s, cx).await;
     expand(&tree, &format!("{s}/tables"), cx).await;
     row(&tree, &rel("orders"), cx).await;
-    // The demo opens `orders` in its schema: shut, so the pinned one is seen to open apart.
     let _ = cx.update(|_, cx| tree.update(cx, |t, cx| t.collapse_id(&rel("orders"), cx)));
 
     if stage != "pin-check" {
@@ -138,7 +121,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, conn: &str, db: &str, cx: 
         return true;
     }
 
-    // Pin table, from the table's menu in its schema.
     let acts = menu_choose(&tree, &rel("orders"), Act::Pin, cx).await;
     report("a table's menu offers Pin table", acts.contains(&Act::Pin) && !acts.contains(&Act::Unpin), format!("{acts:?}"));
     let shown = cx.update(|_, cx| tree.read(cx).demo_pinned(conn)).unwrap();
@@ -151,7 +133,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, conn: &str, db: &str, cx: 
     report("saved in pins.toml", file.contains("name = \"orders\"") && file.contains(&format!("connection = \"{conn}\"")), file.clone());
     let acts = menu_choose(&tree, &rel("orders"), Act::Unpin, cx).await;
     report("its menu in the schema now says Unpin", acts.contains(&Act::Unpin) && !acts.contains(&Act::Pin), format!("{acts:?}"));
-    // That chose Unpin: pin it again, then a second one after it.
     menu_choose(&tree, &rel("orders"), Act::Pin, cx).await;
     menu_choose(&tree, &rel("customer"), Act::Pin, cx).await;
     let names: Vec<String> = cx.update(|_, cx| tree.read(cx).demo_pinned(conn)).unwrap().into_iter().map(|p| p.0).collect();
@@ -160,7 +141,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, conn: &str, db: &str, cx: 
     let first_db = cx.update(|_, cx| tree.read(cx).demo_row_point(&format!("c:{conn}/d:{db}")).map(|p| p.y)).unwrap();
     report("the group heads the connection", group_ix.zip(first_db).is_some_and(|(g, d)| g < d), format!("{group_ix:?} {first_db:?}"));
 
-    // A click opens its columns, apart from the schema's row.
     if let Some(p) = point_of(&tree, &pinned("orders"), cx).await {
         click(cx, p, MouseButton::Left, 1);
     }
@@ -171,7 +151,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, conn: &str, db: &str, cx: 
     let col = format!("{cols}/id");
     report("its columns are there", row(&tree, &col, cx).await, String::new());
 
-    // A double click opens its data, as in its schema.
     let before = cx.update(|_, cx| ws.read(cx).active_tab().map(|t| t.entity_id())).ok().flatten();
     if let Some(p) = point_of(&tree, &pinned("customer"), cx).await {
         click(cx, p, MouseButton::Left, 2);
@@ -189,7 +168,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, conn: &str, db: &str, cx: 
     }
     report("a double click opens its data in a tab", title.contains("customer"), format!("tab title {title:?}"));
 
-    // The filter finds it in the group (first, so ↩ opens it) and in its schema.
     let _ = cx.update(|_, cx| tree.update(cx, |t, cx| t.set_filter("custom", cx)));
     draw(cx);
     let (in_group, in_schema, sel) = cx
@@ -206,7 +184,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, conn: &str, db: &str, cx: 
     let _ = cx.update(|_, cx| tree.update(cx, |t, cx| t.set_filter("", cx)));
     draw(cx);
 
-    // Unpin, from the group: the table's own menu with Unpin; the selection moves on.
     let acts = menu_choose(&tree, &pinned("orders"), Act::Unpin, cx).await;
     report("a pinned table has its table menu, with Unpin", acts.contains(&Act::Unpin) && acts.contains(&Act::SelectTop) && acts.contains(&Act::DropTable), format!("{acts:?}"));
     let (shown, sel) = cx.update(|_, cx| (tree.read(cx).demo_pinned(conn), tree.read(cx).selected_id().map(str::to_string))).unwrap();

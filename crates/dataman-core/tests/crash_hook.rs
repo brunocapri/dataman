@@ -1,4 +1,4 @@
-//! The panic hook for real (its own test binary: the hook and the logger are process-wide).
+//! Its own test binary: the hook and the logger are process-wide.
 
 #[test]
 fn panic_writes_a_report() {
@@ -8,7 +8,6 @@ fn panic_writes_a_report() {
     log::warn!(target: "dataman::test", "before the panic");
     let h = std::thread::Builder::new().name("worker-7".into()).spawn(|| panic!("deliberate {}", 42)).unwrap();
     assert!(h.join().is_err());
-    // A second panic in the same process is appended to the same report.
     let _ = std::thread::spawn(|| panic!("second")).join();
     let files: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path()).collect();
     assert_eq!(files.len(), 1, "{files:?}");

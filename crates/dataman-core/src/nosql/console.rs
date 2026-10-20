@@ -1,24 +1,3 @@
-//! Elasticsearch's and OpenSearch's editor language: Kibana's Dev Tools console.
-//!
-//! ```text
-//! GET /orders/_search
-//! {
-//!   "query": { "match": { "status": "paid" } },
-//!   "sort": [{ "created": "desc" }]
-//! }
-//!
-//! PUT /orders/_doc/42
-//! { "status": "shipped" }
-//!
-//! POST _bulk
-//! { "index": { "_index": "orders", "_id": "1" } }
-//! { "status": "new" }
-//! ```
-//!
-//! A request is a method line (`GET`, `POST`, `PUT`, `DELETE`, `HEAD`, `PATCH`) and the body
-//! under it, up to the next method line. Bodies are relaxed JSON (keys without quotes, trailing
-//! commas, comments, as in [`super::shell`]); `_bulk` and `_msearch` take one JSON per line.
-
 use std::ops::Range;
 
 use super::shell::{self, ParseError};
@@ -26,11 +5,9 @@ use crate::guard::WriteClass;
 
 pub const METHODS: [&str; 6] = ["GET", "POST", "PUT", "DELETE", "HEAD", "PATCH"];
 
-/// One request, read.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Request {
     pub method: String,
-    /// The path as typed, always with its leading `/` (query string included).
     pub path: String,
     pub body: Body,
 }
@@ -39,34 +16,26 @@ pub struct Request {
 pub enum Body {
     None,
     Json(serde_json::Value),
-    /// `_bulk`, `_msearch`: one JSON per line, sent as NDJSON.
     Lines(Vec<serde_json::Value>),
 }
 
 impl Request {
-    /// The path without its query string, split at `/` (empty parts dropped).
     pub fn segments(&self) -> Vec<&str> {
         self.path.split('?').next().unwrap_or("").split('/').filter(|s| !s.is_empty()).collect()
     }
 
-    /// The index (or index pattern) the request names first, if any (`_cat`, `_cluster`… are
-    /// not indices).
     pub fn index(&self) -> Option<&str> {
         self.segments().first().copied().filter(|s| !s.starts_with('_'))
     }
 
-    /// The endpoint: the first segment starting with `_` (`_search`, `_doc`, `_bulk`).
     pub fn endpoint(&self) -> Option<&str> {
         self.segments().into_iter().find(|s| s.starts_with('_'))
     }
 
-    /// A search whose hits are documents to page through.
     pub fn is_search(&self) -> bool {
         matches!(self.method.as_str(), "GET" | "POST") && self.endpoint() == Some("_search") && !self.path.contains("scroll")
     }
 
-    /// A query API that only reads whatever its method: SQL, PPL, ES|QL, EQL, point in time,
-    /// async and kNN searches, scrolls, templates.
     fn reads(&self) -> bool {
         let segs = self.segments();
         let has = |s: &str| segs.contains(&s);
@@ -79,7 +48,6 @@ impl Request {
             || has("_search") && (has("scroll") || has("template"))
     }
 
-    /// What it does (see [`crate::guard::WriteClass`]).
     pub fn class(&self) -> WriteClass {
         let destructive = |why: &str| WriteClass::Destructive { reasons: vec![why.to_string()] };
         let ep = self.endpoint().unwrap_or("");
@@ -117,7 +85,6 @@ fn method_at(line: &str) -> Option<&'static str> {
     METHODS.into_iter().find(|m| m.eq_ignore_ascii_case(word) && line.starts_with(word))
 }
 
-/// The requests of `text`, as byte ranges (from a method line to the last line of its body).
 pub fn split(text: &str) -> Vec<Range<usize>> {
     let mut starts = Vec::new();
     let mut at = 0;
@@ -136,13 +103,11 @@ pub fn split(text: &str) -> Vec<Range<usize>> {
     out
 }
 
-/// The request around byte `at` (or the last one before it).
 pub fn statement_at(text: &str, at: usize) -> Option<Range<usize>> {
     let all = split(text);
     all.iter().rev().find(|r| r.start <= at).or(all.first()).cloned()
 }
 
-/// Reads one request.
 pub fn parse(text: &str) -> Result<Request, ParseError> {
     let lead = text.len() - text.trim_start().len();
     let text_t = text.trim_start();
@@ -220,7 +185,6 @@ mod tests {
         assert!(c("PUT /a").is_destructive());
         assert!(c("PUT /_cluster/settings\n{}").is_destructive());
         assert!(c("POST _bulk\n{\"delete\": {\"_index\": \"a\", \"_id\": \"1\"}}").is_destructive());
-        // The query languages and the other read APIs that take a POST.
         assert_eq!(c("POST _sql?format=json\n{\"query\": \"SELECT 1\"}"), WriteClass::Read);
         assert_eq!(c("POST _plugins/_sql\n{\"query\": \"SELECT * FROM a\"}"), WriteClass::Read);
         assert_eq!(c("POST _plugins/_ppl\n{\"query\": \"source=a | head 5\"}"), WriteClass::Read);

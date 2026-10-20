@@ -1,8 +1,3 @@
-//! What the server printed (SQL Server's `PRINT`): in the grid's place for a result without
-//! rows, and under each statement in the messages tab. Both are one `list` (only the rows on
-//! screen are built, long lines wrap), kept in step with the run by splicing what changed; a
-//! log that is still being written follows its end.
-
 use std::cell::RefCell;
 
 use gpui::{EntityId, FollowMode, ListAlignment, ListState};
@@ -14,20 +9,14 @@ use crate::theme::px;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Row {
-    /// Statement `i` of the run (the messages tab).
     Stmt(usize),
-    /// Message `j` of statement `i`.
     Line(usize, usize),
-    /// Statement `i` printed this many more than a result keeps.
     More(usize, usize),
 }
 
-/// The view the rows are of.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Of {
-    /// The messages tab of a query tab.
     Tab(EntityId),
-    /// The log of one result (by address: a new run is a new result).
     Log(usize),
 }
 
@@ -47,8 +36,6 @@ impl Messages {
         Messages { list: ListState::new(0, ListAlignment::Top, px(600.)), rows: RefCell::new((None, Vec::new())) }
     }
 
-    /// Brings the list in step with `rows` of view `of`: another view starts over (at the end
-    /// while it is still being written), the same one splices from the first row that changed.
     pub(crate) fn sync(&self, of: Of, rows: Vec<Row>, running: bool) {
         let mut g = self.rows.borrow_mut();
         if g.0 != Some(of) {
@@ -67,13 +54,11 @@ impl Messages {
         self.rows.borrow().1.get(ix).copied()
     }
 
-    /// The view on screen last.
     pub(crate) fn of(&self) -> Option<Of> {
         self.rows.borrow().0
     }
 }
 
-/// The lines of statement `i`'s result.
 fn lines(i: usize, rs: &ResultSet, out: &mut Vec<Row>) {
     let (m, more) = rs.messages();
     out.extend((0..m.len()).map(|j| Row::Line(i, j)));
@@ -82,7 +67,6 @@ fn lines(i: usize, rs: &ResultSet, out: &mut Vec<Row>) {
     }
 }
 
-/// The messages tab: every statement, each followed by what it printed.
 pub(crate) fn tab_rows(batch: &[BatchItem]) -> Vec<Row> {
     let mut out = Vec::with_capacity(batch.len());
     for (i, b) in batch.iter().enumerate() {
@@ -94,19 +78,16 @@ pub(crate) fn tab_rows(batch: &[BatchItem]) -> Vec<Row> {
     out
 }
 
-/// One result's log (statement `i`'s).
 pub(crate) fn log_rows(i: usize, rs: &ResultSet) -> Vec<Row> {
     let mut out = Vec::new();
     lines(i, rs, &mut out);
     out
 }
 
-/// A result shows its log instead of the grid: it printed, and has no rows or error to show.
 pub(crate) fn shows_log(rs: &ResultSet) -> bool {
     rs.has_messages() && !rs.columns().is_some_and(|c| !c.is_empty()) && rs.phase() != Phase::Failed
 }
 
-/// What the results printed, one message a line.
 pub(crate) fn text<'a>(results: impl Iterator<Item = &'a ResultSet>) -> String {
     let mut out = String::new();
     for rs in results {

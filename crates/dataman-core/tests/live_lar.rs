@@ -1,5 +1,3 @@
-//! Live tests of the LAR-only APIs (see `common` for the servers): detection and live queries.
-
 mod common;
 use common::*;
 
@@ -14,7 +12,6 @@ fn lar_is_detected_and_postgres_is_not() {
     }
 }
 
-/// Polls `f` until it holds (panics after `secs`).
 fn wait_until(secs: u64, what: &str, mut f: impl FnMut() -> bool) {
     let t = Instant::now();
     while !f() {
@@ -102,15 +99,12 @@ mod live {
         assert_eq!(s.state(), SubState::Ended { error: None });
         eprintln!("SUBSCRIBE stop (CancelRequest → 57014) in {:?}", t.elapsed());
 
-        // An empty first result: the first rows are inserts, not the initial result.
         let s = e.core.block_on(lar.subscribe("SELECT id, v FROM stsub WHERE n > 100", SubscribeOptions::default())).unwrap();
         std::thread::sleep(Duration::from_millis(200));
         assert_eq!(s.with_table(|t| t.len()), 0);
         exec(&e, &c, &["INSERT INTO stsub VALUES (101, 'big', 500)"]);
         wait_until(10, "insert into an empty subscription", || s.with_table(|t| t.len()) == 1);
         assert_eq!(s.rows()[0].kind, ChangeKind::Inserted);
-        // A user pause outlives the end of the stream (LAR currently ends an idle SUBSCRIBE about
-        // a second after the last change; a stop ends it otherwise).
         assert!(!s.paused_by_user());
         s.pause();
         let t = Instant::now();

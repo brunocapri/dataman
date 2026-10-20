@@ -1,8 +1,3 @@
-//! The planner's estimate of the rows a paused result's statement returns ("Fetch all ~30k"):
-//! asked once per result, never on the tab's session (the connection's metadata client on
-//! PostgreSQL and MySQL, a connection of its own with SHOWPLAN on SQL Server), only for plain
-//! reads without parameters. Nothing runs: `EXPLAIN` without ANALYZE, `SET SHOWPLAN_XML ON`.
-
 use std::sync::Arc;
 
 use crate::config::Engine;
@@ -13,8 +8,6 @@ use crate::{Connection, Task};
 
 type Slot = tokio::sync::Mutex<Option<Arc<crate::backend::ms::Client>>>;
 
-/// Whether `sql` is a plain read the estimate may be asked for: one `SELECT` / `WITH … SELECT` /
-/// `TABLE` / `VALUES`, no `INTO`, nothing the guard sees as an effect.
 pub fn estimable(sql: &str, dialect: Dialect) -> bool {
     let stmts = crate::sql::split_in(sql, dialect);
     let mut real = stmts.iter().filter(|s| !sql[s.range.clone()].trim().is_empty());
@@ -29,9 +22,6 @@ pub fn estimable(sql: &str, dialect: Dialect) -> bool {
 }
 
 impl Connection {
-    /// Asks for `rs`'s estimate once (the first call; later ones do nothing) and stores the
-    /// answer on it ([`ResultSet::row_estimate`]); `None` where there is none (LAR, MySQL before
-    /// 5.7, a statement with parameters or not a plain read, no permission, an error).
     pub fn ask_row_estimate(self: &Arc<Self>, database: &str, rs: &Arc<ResultSet>) {
         if !rs.ask_estimate() {
             return;
@@ -42,7 +32,6 @@ impl Connection {
             return;
         }
         let (this, db, rs) = (self.clone(), database.to_string(), rs.clone());
-        // (Dropping the task handle does not stop the work.)
         let _: Task<()> = self.spawn(async move {
             let found = this.estimate(&db, rs.sql.trim().trim_end_matches(';')).await;
             rs.set_estimate(found);
@@ -106,16 +95,12 @@ pub fn mysql_explains_safely(version: &str) -> bool {
     major > 5 || (major == 5 && minor >= 7)
 }
 
-/// `EXPLAIN (FORMAT JSON)`: the top plan node's "Plan Rows".
 pub fn pg_plan_rows(json: &str) -> Option<u64> {
     let v: serde_json::Value = serde_json::from_str(json).ok()?;
     let rows = v.get(0)?.get("Plan")?.get("Plan Rows")?.as_f64()?;
     (rows >= 0.).then_some(rows.round() as u64)
 }
 
-/// `EXPLAIN FORMAT=JSON` (MySQL, MariaDB): the rows the outermost operation produces: a single
-/// table's `rows_produced_per_join` (else `rows_examined_per_scan`, MariaDB's `rows`), a
-/// join's last table's; through ordering, grouping and duplicate removal wrappers.
 pub fn mysql_plan_rows(json: &str) -> Option<u64> {
     let v: serde_json::Value = serde_json::from_str(json).ok()?;
     let mut node = v.get("query_block")?;
@@ -139,7 +124,6 @@ fn table_rows(t: &serde_json::Value) -> Option<u64> {
     (rows >= 0.).then_some(rows.round() as u64)
 }
 
-/// `SET SHOWPLAN_XML ON`'s plan: the first statement's `StatementEstRows`.
 pub fn showplan_rows(xml: &str) -> Option<u64> {
     let at = xml.find("StatementEstRows=\"")? + "StatementEstRows=\"".len();
     let rest = &xml[at..];

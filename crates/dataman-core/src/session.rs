@@ -1,19 +1,5 @@
-//! The workspace kept between launches: the query tabs (their SQL, selection, scroll, title,
-//! connection and database, a table's data view) and the editor groups they are in, the explorer
-//! and sidebar view, and each tab's last results.
-//!
-//! On disk, in the session directory (`~/.config/dataman/session/`, next to the history):
-//!
-//! - `session.json`: the workspace ([`Session`]), small, written last;
-//! - one `r<tab>-<generation>.bin` per tab with results: a header (the statements of the run,
-//!   each result's columns, outcome, error and row counts, as JSON) and the rows, cell by
-//!   cell in a tagged binary form. At most [`ROW_CAP`] rows and [`BYTE_CAP`] bytes of cells
-//!   per tab; past them the result keeps the rows that fit (marked partial).
-//!
-//! Every file is written to a temporary name and renamed into place; result files no longer
-//! named by `session.json` are removed after it is written. No passwords: a tab names its
-//! connection by id. A missing, old or damaged file reads as no session (or a tab without its
-//! results): it never keeps the app from starting.
+// No passwords: a tab names its connection by id. A missing, old or damaged file reads as no
+// session (or a tab without its results): it never keeps the app from starting.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -28,67 +14,44 @@ use crate::batch::Key;
 use crate::dataview::TableView;
 use crate::result::{CHUNK, Cell, ChunkBuilder, ColumnInfo, ColumnOrigin, ErrorInfo, NamedOrigin, Phase, ResultSet, SortDir, Status};
 
-/// The most rows of results kept per tab.
 pub const ROW_CAP: usize = 10_000;
-/// The most bytes of cells kept per tab (about; checked row by row).
 pub const BYTE_CAP: usize = 20 * 1024 * 1024;
-/// The workspace file in the session directory.
 pub const SESSION_FILE: &str = "session.json";
-/// The format of `session.json` (a newer one is not read).
 pub const VERSION: u32 = 1;
 const MAGIC: &[u8; 8] = b"LARSRS01";
 
-/// The workspace.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Session {
     pub version: u32,
     pub tabs: Vec<TabState>,
-    /// The tab in front (an index into `tabs`).
     pub active: usize,
     pub explorer_open: bool,
     pub explorer_w: f32,
-    /// What the sidebar shows (older files: the explorer).
     pub nav: crate::layout::NavView,
     pub side_w: f32,
-    /// The editor's share of the work column (`None`: the default height).
     pub editor_frac: Option<f32>,
-    /// Where each panel sits (`layout`: its dock, column and share of it); missing in older
-    /// files: the default. (Older files also kept a bottom dock's height, now ignored.)
     pub layout: crate::layout::PanelLayout,
-    /// Two editor groups side by side (`groups`): which tabs are in the right one, its focus
-    /// and width; missing in older files: one group.
     pub split: Option<crate::groups::SplitState>,
 }
 
-/// A query tab.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TabState {
     pub sql: String,
-    /// The selection as byte offsets (anchor, head; equal for a cursor).
     pub selection: (usize, usize),
-    /// The editor's scroll (x, y), in points at 100 %.
     pub scroll: (f32, f32),
-    /// A title given with the SQL (a followed reference, a table), kept while the text is
-    /// `title_sql`.
     pub title: Option<String>,
     pub title_sql: Option<String>,
-    /// The connection (profile id) and database the tab was on.
     pub conn: Option<String>,
     pub database: Option<String>,
-    /// A table's data view (the statement in `sql` is its page).
     pub table: Option<TableView>,
-    /// The results file (in the session directory), if the tab had run something.
     pub results: Option<String>,
-    /// The result tab on screen and the ones the user closed.
     pub shown: Option<Key>,
     pub closed: Vec<Key>,
-    /// The favorite the tab is linked to (its id): ⌘S saves the editor's text into it.
     pub favorite: Option<String>,
 }
 
-/// How a statement of the last run ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ItemState {
     Pending,
@@ -97,7 +60,6 @@ pub enum ItemState {
     Cancelled,
 }
 
-/// A statement of a tab's last run, as saved (the header of a results file).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct Item {
     at: usize,
@@ -109,7 +71,6 @@ struct Item {
     result: Option<Meta>,
 }
 
-/// A result, less its rows.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct Meta {
     sql: String,
@@ -122,17 +83,14 @@ struct Meta {
     elapsed_ms: Option<f64>,
     error: Option<ErrorInfo>,
     partial: bool,
-    /// Rows stored (in arrival order) and rows the result had when saved.
     rows: usize,
     total: usize,
     sort: Option<(usize, SortDir)>,
     params: Vec<Option<String>>,
-    /// The server's messages (`PRINT`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     messages: Vec<String>,
 }
 
-/// A statement to save: its outcome and its result as it is now.
 pub struct SaveItem {
     pub at: usize,
     pub sql: String,
@@ -143,8 +101,6 @@ pub struct SaveItem {
     pub rs: Option<Arc<ResultSet>>,
 }
 
-/// A statement read back, with its result rebuilt (finished, read-only:
-/// [`ResultSet::is_restored`]).
 pub struct RestoredItem {
     pub at: usize,
     pub sql: String,
@@ -191,9 +147,6 @@ fn put_cell(out: &mut Vec<u8>, c: Cell<'_>) {
     }
 }
 
-/// A tab's last run as a results file: every statement and the rows of its result (arrival
-/// order; the sort is saved apart), within [`ROW_CAP`] rows and [`BYTE_CAP`] bytes for the
-/// whole tab. A result still running or paused is saved as it is now, finished.
 pub fn encode_results(items: &[SaveItem]) -> Vec<u8> {
     let (mut rows_left, mut bytes_left) = (ROW_CAP, BYTE_CAP);
     let mut data = Vec::new();
@@ -221,7 +174,6 @@ pub fn encode_results(items: &[SaveItem]) -> Vec<u8> {
                 stored += 1;
             }
             let phase = match rs.phase() {
-                // The stream is gone with the app: what arrived is the result.
                 Phase::Running | Phase::Paused => Phase::Done,
                 p => p,
             };
@@ -262,7 +214,6 @@ pub fn encode_results(items: &[SaveItem]) -> Vec<u8> {
     out
 }
 
-/// Reads bytes off a slice; `None` past its end.
 struct Reader<'a>(&'a [u8]);
 
 impl<'a> Reader<'a> {
@@ -288,8 +239,6 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// A results file read back; `None` when it is not one or is damaged (the tab then opens
-/// without its results).
 pub fn decode_results(bytes: &[u8]) -> Option<Vec<RestoredItem>> {
     let mut r = Reader(bytes);
     if r.take(MAGIC.len())? != MAGIC {
@@ -359,10 +308,8 @@ pub fn decode_results(bytes: &[u8]) -> Option<Vec<RestoredItem>> {
     Some(out)
 }
 
-/// The session directory: reads and writes the files above, one save at a time.
 pub struct SessionStore {
     dir: PathBuf,
-    /// The newest save written: an older one that finishes later is dropped.
     written: Mutex<u64>,
     next: AtomicU64,
 }
@@ -376,12 +323,10 @@ impl SessionStore {
         &self.dir
     }
 
-    /// A number for the next save (saves apply in this order).
     pub fn ticket(&self) -> u64 {
         self.next.fetch_add(1, Ordering::Relaxed)
     }
 
-    /// The saved workspace; `None` (logged) when there is none or it cannot be read.
     pub fn load(&self) -> Option<Session> {
         let path = self.dir.join(SESSION_FILE);
         let text = match std::fs::read(&path) {
@@ -405,7 +350,6 @@ impl SessionStore {
         }
     }
 
-    /// A tab's results; `None` (logged) when the file is missing or damaged.
     pub fn load_results(&self, name: &str) -> Option<Vec<RestoredItem>> {
         if !is_results_name(name) {
             return None;
@@ -419,8 +363,6 @@ impl SessionStore {
         r
     }
 
-    /// Writes save number `ticket`: the new results files, then `session.json`, then removes the
-    /// results files it no longer names. A save older than one already written does nothing.
     pub fn save(&self, ticket: u64, session: &Session, files: &[(String, Vec<u8>)]) -> Result<()> {
         let mut written = self.written.lock();
         if ticket < *written {
@@ -447,7 +389,7 @@ impl SessionStore {
     }
 }
 
-/// `r<digits>-<hex>.bin`: the only names the store writes, reads or removes.
+// The only names the store writes, reads or removes.
 pub fn is_results_name(name: &str) -> bool {
     let Some(stem) = name.strip_prefix('r').and_then(|s| s.strip_suffix(".bin")) else { return false };
     let Some((tab, generation)) = stem.split_once('-') else { return false };
@@ -550,10 +492,8 @@ mod tests {
         assert_eq!(r.rows(), ROW_CAP);
         assert!(r.status().partial);
         assert_eq!(r.snapshot().text(ROW_CAP - 1, 0).as_deref(), Some(&*(ROW_CAP - 1).to_string()));
-        // The cap is the tab's: nothing is left for the next result.
         let s = back[1].rs.as_ref().unwrap();
         assert_eq!((s.rows(), s.status().partial, s.columns().map(|c| c.len())), (0, true, Some(4)));
-        // The byte cap: a few rows of huge text.
         let huge = "z".repeat(BYTE_CAP / 3);
         let mut b = ChunkBuilder::new(&cols());
         for i in 0..5 {
@@ -579,7 +519,7 @@ mod tests {
         assert!(decode_results(&bytes[..bytes.len() - 3]).is_none(), "cut short");
         let mut bad = bytes.clone();
         let n = bad.len();
-        bad[n - 40] = 99; // an unknown tag, or a length past the end
+        bad[n - 40] = 99;
         let _ = decode_results(&bad);
         let mut huge = bytes.clone();
         huge[8..16].copy_from_slice(&u64::MAX.to_le_bytes());
@@ -598,7 +538,6 @@ mod tests {
         let back = store.load().unwrap();
         assert_eq!(back, s);
         assert_eq!(store.load_results("r1-a1.bin").unwrap()[0].rs.as_ref().unwrap().rows(), 3);
-        // Next save: tab 1 has a new generation; the old file goes, nothing temporary stays.
         let mut s2 = s.clone();
         s2.tabs[0].results = Some("r1-b2.bin".into());
         let t_old = store.ticket();
@@ -607,10 +546,8 @@ mod tests {
         let names: Vec<String> = std::fs::read_dir(store.dir()).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
         assert!(names.contains(&"r1-b2.bin".to_string()) && !names.contains(&"r1-a1.bin".to_string()), "{names:?}");
         assert!(names.iter().all(|n| !n.starts_with('.')), "{names:?}");
-        // An older save finishing late does not undo the newer one.
         store.save(t_old, &s, &[]).unwrap();
         assert_eq!(store.load().unwrap().tabs[0].results.as_deref(), Some("r1-b2.bin"));
-        // Damaged, foreign or newer files: no session, no panic.
         for text in ["{ not json", "[]", "{\"version\": 99}"] {
             std::fs::write(store.dir().join(SESSION_FILE), text).unwrap();
             assert!(store.load().is_none(), "{text}");
@@ -619,7 +556,6 @@ mod tests {
         assert!(store.load_results("r1-b2.bin").is_none());
         assert!(store.load_results("../settings.toml").is_none());
         assert!(!is_results_name("settings.toml") && !is_results_name("r-1.bin") && is_results_name("r12-ff0a.bin"));
-        // Unknown keys are ignored, missing ones take their defaults.
         std::fs::write(store.dir().join(SESSION_FILE), "{\"version\": 1, \"tabs\": [{\"sql\": \"SELECT 3\", \"future\": true}]}").unwrap();
         let s = store.load().unwrap();
         assert_eq!((s.tabs.len(), s.tabs[0].sql.as_str(), s.tabs[0].conn.as_deref()), (1, "SELECT 3", None));

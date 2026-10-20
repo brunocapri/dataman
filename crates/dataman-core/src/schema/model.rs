@@ -1,5 +1,3 @@
-//! What the schema tree and autocomplete know about a database.
-
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -45,7 +43,6 @@ impl RelKind {
 pub struct Column {
     pub name: String,
     pub type_name: String,
-    /// `None` when the catalog does not say.
     pub nullable: Option<bool>,
     pub primary_key: bool,
     pub default: Option<String>,
@@ -57,7 +54,6 @@ pub struct Index {
     pub columns: Vec<String>,
     pub unique: bool,
     pub primary: bool,
-    /// `pg_get_indexdef`, when the server has it.
     pub definition: Option<String>,
 }
 
@@ -69,24 +65,15 @@ pub struct Relation {
     pub oid: Option<u32>,
 }
 
-/// A flat, immutable view of everything cached for one database, used by autocomplete.
 #[derive(Clone, Debug, Default)]
 pub struct SchemaSnapshot {
-    /// Schemas searched for unqualified names, in order.
     pub search_path: Vec<String>,
     pub schemas: Vec<String>,
     pub relations: Vec<Relation>,
-    /// Columns per relation index, when loaded.
     pub columns: HashMap<usize, Vec<Column>>,
-    /// Schemas whose list of relations is loaded.
     pub loaded: HashSet<String>,
-    /// Every relation of the search path's schemas has its columns loaded (a relation of
-    /// theirs without an entry in `columns` has none).
     pub complete: bool,
-    /// Functions and types (`pg_proc`, `pg_type`), once loaded for the connection.
     pub catalog: Option<Arc<Catalog>>,
-    /// The connection's SQL dialect: what completion, lint and parameters read the editor's
-    /// text as.
     pub dialect: crate::sql::Dialect,
     by_name: HashMap<String, Vec<usize>>,
 }
@@ -106,7 +93,6 @@ impl SchemaSnapshot {
         SchemaSnapshot { search_path, schemas, relations, columns, loaded, complete: false, catalog: None, dialect: Default::default(), by_name }
     }
 
-    /// The columns of relation `rel` when they are known (an empty list is a known empty table).
     pub fn known_columns(&self, rel: usize) -> Option<&[Column]> {
         if let Some(c) = self.columns.get(&rel) {
             return Some(c);
@@ -115,14 +101,11 @@ impl SchemaSnapshot {
         (self.complete && self.search_path.contains(&r.schema)).then_some(&[])
     }
 
-    /// Every schema an unqualified name may come from has its relations loaded.
     pub fn search_path_loaded(&self) -> bool {
         !self.search_path.is_empty()
             && self.search_path.iter().filter(|s| self.schemas.is_empty() || self.schemas.contains(s)).all(|s| self.loaded.contains(s))
     }
 
-    /// Resolves `[schema.]name` (already folded/unquoted) to a relation index, preferring the
-    /// search path for unqualified names.
     pub fn resolve(&self, schema: Option<&str>, name: &str) -> Option<usize> {
         let cands = self.by_name.get(&name.to_lowercase())?;
         let exact = |i: &&usize| self.relations[**i].name == name;

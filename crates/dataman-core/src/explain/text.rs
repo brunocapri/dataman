@@ -1,7 +1,3 @@
-//! Text plans: PostgreSQL's `FORMAT TEXT` (`->` children, `(cost=…)`, detail lines) and plain
-//! indented trees (DataFusion, LAR), parsed into the same nodes; and the text a JSON plan prints
-//! as ("Copy as text" after ANALYZE, which cannot run again).
-
 use serde_json::{Map, Number, Value};
 
 use super::{Format, Node, Plan, Totals, Trigger, value_text};
@@ -30,7 +26,6 @@ fn num(s: &str) -> Option<Value> {
     Number::from_f64(f).map(Value::Number)
 }
 
-/// `Seq Scan on public.orders p` → `Seq Scan`.
 fn op_of(title: &str) -> String {
     let cut = [" on ", " using "].iter().filter_map(|s| title.find(s)).min().unwrap_or(title.len());
     title[..cut].to_string()
@@ -65,8 +60,6 @@ fn push(p: &mut Plan, parent: Option<usize>, title: &str, mut raw: Map<String, V
     id
 }
 
-/// The label and measures of a node line: `Hash Join  (cost=1.00..2.00 rows=9 width=4) (actual
-/// time=0.1..0.2 rows=9 loops=1)`.
 fn node_line(text: &str) -> (String, Map<String, Value>) {
     let mut raw = Map::new();
     let cut = ["  (cost=", " (cost=", "  (actual", " (actual", " (never executed)"].iter().filter_map(|s| text.find(s)).min().unwrap_or(text.len());
@@ -101,7 +94,6 @@ fn node_line(text: &str) -> (String, Map<String, Value>) {
 }
 
 fn parse_pg(lines: &[&str], p: &mut Plan) {
-    // (column of the node's line, node).
     let mut stack: Vec<(usize, usize)> = Vec::new();
     let mut pending: Option<String> = None;
     let mut in_jit = false;
@@ -149,7 +141,6 @@ fn parse_pg(lines: &[&str], p: &mut Plan) {
             }
             continue;
         }
-        // A detail of the node above.
         if let Some(&(_, id)) = stack.last() {
             let value = num(v).unwrap_or_else(|| Value::String(v.to_string()));
             p.nodes[id].raw.insert(k.to_string(), value);
@@ -157,7 +148,6 @@ fn parse_pg(lines: &[&str], p: &mut Plan) {
     }
 }
 
-/// One node per line, children indented under their parent (DataFusion, LAR).
 fn parse_indented(lines: &[&str], p: &mut Plan) {
     let mut stack: Vec<(usize, usize)> = Vec::new();
     for line in lines {
@@ -177,10 +167,6 @@ fn parse_indented(lines: &[&str], p: &mut Plan) {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// JSON → text.
-
-/// Keys shown in a node's first line, or not at all.
 const HEADER: &[&str] = &[
     "Node Type", "Parent Relationship", "Subplan Name", "Parallel Aware", "Async Capable", "Disabled", "Startup Cost", "Total Cost",
     "Plan Rows", "Plan Width", "Actual Startup Time", "Actual Total Time", "Actual Rows", "Actual Loops", "Relation Name", "Schema",
@@ -192,7 +178,6 @@ fn n2(v: Option<f64>) -> String {
     format!("{:.2}", v.unwrap_or(0.))
 }
 
-/// Rows as PostgreSQL prints them: whole estimates, actual rows with decimals only when needed.
 fn rows(v: Option<f64>) -> String {
     let v = v.unwrap_or(0.);
     if v.fract() == 0. { format!("{v:.0}") } else { format!("{v:.2}") }
@@ -226,7 +211,6 @@ fn skip_key(k: &str) -> bool {
     HEADER.contains(&k) || k.ends_with(" Blocks") || k.starts_with("WAL ")
 }
 
-/// The plan as PostgreSQL's text format prints it (a text plan is returned as it came).
 pub fn render_text(p: &Plan) -> String {
     if p.format != Format::Json {
         return p.source.clone();
@@ -348,7 +332,6 @@ Execution Time: 6.500 ms";
         assert_eq!(p.nodes[3].parent, Some(0));
         assert_eq!(p.nodes[3].num("Rows Removed by Filter"), Some(5.));
         assert!(p.nodes[4].never_executed());
-        // The InitPlan is read by u's filter: u pays for it.
         assert!((p.nodes[3].excl_ms - 1.5).abs() < 1e-9);
         assert!((p.nodes[0].excl_ms - 0.5).abs() < 1e-9);
         assert_eq!(p.totals.execution_ms, Some(6.5));
@@ -357,7 +340,6 @@ Execution Time: 6.500 ms";
 
     #[test]
     fn indented_plans_and_raw_text() {
-        // DataFusion's shape (what LAR would answer): one operator per line, two-space indent.
         let s = "ProjectionExec: expr=[id@0 as id, name@1 as name]\n  CoalesceBatchesExec: target_batch_size=8192\n    FilterExec: country@2 = DE\n      DataSourceExec: partitions=1\n  SortExec: expr=[id@0 ASC]";
         let p = Plan::parse(s);
         assert_eq!(p.format, Format::Text);

@@ -1,15 +1,3 @@
-//! The activity monitor's data: sessions (`pg_stat_activity`), the blocking tree (`pg_locks` and
-//! `pg_blocking_pids()`), table health (`pg_stat_user_tables` with a bloat estimate) and the top
-//! statements (`pg_stat_statements`).
-//!
-//! Everything is read through the connection's metadata client in text form, so a server that
-//! lacks a view (LAR has no `pg_stat_activity`) just fails that query: the UI hides what is not
-//! reported. Ages are whole seconds computed by the server (`now() - …`), so two reads of an idle
-//! server compare equal and the monitor does not redraw.
-//!
-//! Signals (`pg_cancel_backend`, `pg_terminate_backend`) and `pg_stat_statements_reset()` are
-//! plain functions here; asking first is the UI's job. VACUUM and ANALYZE are only templates.
-
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
@@ -17,46 +5,34 @@ use crate::Task;
 use crate::conn::{Connection, first_ok, text_rows};
 use crate::sqlgen::qualified;
 
-// ---------------------------------------------------------------------------------------------
-// Sessions
-
-/// One backend of `pg_stat_activity`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SessionRow {
     pub pid: i32,
     pub user: Option<String>,
     pub db: Option<String>,
     pub app: Option<String>,
-    /// `10.0.0.5:51234`, `local` (Unix socket), or nothing (background processes).
     pub client: Option<String>,
     pub state: Option<String>,
     pub wait_type: Option<String>,
     pub wait: Option<String>,
-    /// Seconds since the transaction, the statement, the state and the backend started.
     pub xact_age: Option<i64>,
     pub query_age: Option<i64>,
     pub state_age: Option<i64>,
     pub backend_age: Option<i64>,
     pub backend_type: Option<String>,
-    /// As the server reports it: `<insufficient privilege>` for another role's session when the
-    /// user may not see it.
     pub query: Option<String>,
     pub blocked_by: Vec<i32>,
-    /// The backend running this very query (the monitor's own).
     pub is_self: bool,
 }
 
-/// What a session's `state` says.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum State {
     Active,
     Idle,
     IdleInTx,
-    /// Idle in a transaction that failed.
     Aborted,
     FastPath,
     Disabled,
-    /// No state: a background process.
     None,
 }
 
@@ -74,13 +50,10 @@ impl State {
     }
 }
 
-/// When a session is worth a look: a statement running long, or a transaction left idle.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Thresholds {
-    /// An active statement this old (seconds) is a warning, then an error.
     pub query_warn: i64,
     pub query_err: i64,
-    /// Idle in a transaction this long (seconds).
     pub idle_tx_warn: i64,
     pub idle_tx_err: i64,
 }
@@ -102,11 +75,9 @@ impl SessionRow {
         State::of(self.state.as_deref())
     }
 
-    /// Not a client backend (autovacuum, the checkpointer, WAL senders, parallel workers…).
     pub fn is_background(&self) -> bool {
         match self.backend_type.as_deref() {
             Some(t) => t != "client backend",
-            // Before PostgreSQL 10: background processes have no state.
             None => self.state.is_none(),
         }
     }
@@ -115,12 +86,10 @@ impl SessionRow {
         self.state_kind() == State::Idle
     }
 
-    /// Shown with the default filter: not idle, not a background process.
     pub fn shown_by_default(&self) -> bool {
         !self.is_idle() && !self.is_background()
     }
 
-    /// A long-running statement or a transaction left idle, past the thresholds.
     pub fn severity(&self, th: &Thresholds) -> Option<Severity> {
         let level = |age: Option<i64>, warn: i64, err: i64| match age {
             Some(a) if a >= err => Some(Severity::Err),
@@ -134,12 +103,10 @@ impl SessionRow {
         }
     }
 
-    /// The query text, unless the server withheld it.
     pub fn visible_query(&self) -> Option<&str> {
         self.query.as_deref().filter(|q| !q.trim().is_empty() && !is_withheld(q))
     }
 
-    /// The text the filter looks in.
     pub fn haystack(&self) -> String {
         let parts = [
             Some(self.pid.to_string()),
@@ -156,14 +123,11 @@ impl SessionRow {
     }
 }
 
-/// `<insufficient privilege>`: the server hides another role's query from this user.
 pub fn is_withheld(q: &str) -> bool {
     q.trim() == "<insufficient privilege>"
 }
 
-/// The sessions query for a server of major version `major` (0: unknown, taken as recent).
-/// Before PostgreSQL 10 there is no backend type, and the waits are left out (9.6 had them,
-/// but `major` cannot tell 9.6 from 9.5).
+// Before PostgreSQL 10 the waits are left out: 9.6 had them, but `major` cannot tell 9.6 from 9.5.
 pub fn sessions_sql(major: u32) -> String {
     let recent = major == 0 || major >= 10;
     let backend_type = if recent { "a.backend_type" } else { "NULL::text" };
@@ -208,28 +172,17 @@ pub fn parse_sessions(rows: &[Vec<Option<String>>]) -> Vec<SessionRow> {
         .collect()
 }
 
-// ---------------------------------------------------------------------------------------------
-// Locks
-
-/// A session waiting on another: what it waits for, and what the blocker holds there.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LockEdge {
     pub waiter: i32,
     pub blocker: i32,
-    /// `relation`, `transactionid` (a row lock), `tuple`, `advisory`…
     pub locktype: Option<String>,
-    /// The mode the waiter asks for.
     pub mode: Option<String>,
     pub relation: Option<String>,
-    /// Seconds the waiter has waited.
     pub wait: Option<i64>,
-    /// The modes the blocker holds on that relation (or transaction).
     pub held: Option<String>,
 }
 
-/// The edges query: one row per (waiter, blocker) pair from `pg_blocking_pids()`, with the lock
-/// the waiter asks for (a row lock is a wait on the holder's transaction id; the relation then
-/// comes from the waiter's tuple lock) and the modes the blocker holds there.
 pub fn locks_sql(major: u32) -> String {
     let waitstart = major == 0 || major >= 14;
     let (ws_col, since) = if waitstart { (", l.waitstart", "coalesce(wl.waitstart, w.state_change)") } else { ("", "w.state_change") };
@@ -267,25 +220,16 @@ pub fn parse_locks(rows: &[Vec<Option<String>>]) -> Vec<LockEdge> {
         .collect()
 }
 
-/// One line of the blocking tree.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TreeRow {
     pub pid: i32,
     pub depth: usize,
-    /// How this session waits on the row above it (`None` at the top).
     pub edge: Option<LockEdge>,
-    /// Part of a wait cycle (a deadlock the server has not broken yet).
     pub cycle: bool,
-    /// Already shown under another blocker (a session waiting on several): not expanded again.
     pub again: bool,
-    /// Sessions waiting behind it, directly or not.
     pub behind: usize,
 }
 
-/// The blocking tree from the edges: the blockers that wait on nobody at the top (the most
-/// sessions behind them first), the sessions waiting on each as its children, recursively. A
-/// session waiting on several blockers appears under each (`again` after the first); sessions
-/// that only wait on each other (a cycle) start from the lowest pid, marked `cycle`.
 pub fn blocking_tree(edges: &[LockEdge]) -> Vec<TreeRow> {
     let mut children: BTreeMap<i32, Vec<&LockEdge>> = BTreeMap::new();
     let mut waiting: BTreeSet<i32> = BTreeSet::new();
@@ -300,7 +244,6 @@ pub fn blocking_tree(edges: &[LockEdge]) -> Vec<TreeRow> {
         nodes.insert(e.waiter);
         nodes.insert(e.blocker);
     }
-    // Everyone behind a node (the cycles included, counted once).
     let behind = |root: i32| -> usize {
         let mut seen = HashSet::from([root]);
         let mut stack = vec![root];
@@ -324,11 +267,8 @@ pub fn blocking_tree(edges: &[LockEdge]) -> Vec<TreeRow> {
         out: Vec<TreeRow>,
     }
     impl Walk<'_> {
-        /// `path`: the sessions above this one, with their rows.
         fn visit(&mut self, pid: i32, depth: usize, edge: Option<LockEdge>, path: &mut Vec<(i32, usize)>) {
             if let Some(k) = path.iter().position(|(p, _)| *p == pid) {
-                // Back to a session on this path: the cycle closes here, and every session
-                // from there down is on it.
                 for &(_, row) in &path[k..] {
                     self.out[row].cycle = true;
                 }
@@ -352,7 +292,6 @@ pub fn blocking_tree(edges: &[LockEdge]) -> Vec<TreeRow> {
     for r in roots {
         w.visit(r, 0, None, &mut Vec::new());
     }
-    // What is left only waits on itself, around a cycle.
     for &n in &nodes {
         if !w.shown.contains(&n) {
             w.visit(n, 0, None, &mut Vec::new());
@@ -361,11 +300,6 @@ pub fn blocking_tree(edges: &[LockEdge]) -> Vec<TreeRow> {
     w.out
 }
 
-// ---------------------------------------------------------------------------------------------
-// Tables
-
-/// One table's health: dead tuples, (auto)vacuum and (auto)analyze ages, scans, sizes and the
-/// bloat estimate.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TableRow {
     pub schema: String,
@@ -373,7 +307,6 @@ pub struct TableRow {
     pub live: Option<i64>,
     pub dead: Option<i64>,
     pub mod_since_analyze: Option<i64>,
-    /// Seconds since the last manual and automatic vacuum and analyze (`None`: never).
     pub vacuum_age: Option<i64>,
     pub autovacuum_age: Option<i64>,
     pub analyze_age: Option<i64>,
@@ -382,26 +315,22 @@ pub struct TableRow {
     pub idx_scan: Option<i64>,
     pub table_bytes: Option<i64>,
     pub index_bytes: Option<i64>,
-    /// The estimate: wasted bytes and their share of the table (`None`: no estimate).
     pub bloat_bytes: Option<i64>,
     pub bloat_pct: Option<f64>,
 }
 
 impl TableRow {
-    /// Dead tuples among all, 0–1.
     pub fn dead_ratio(&self) -> Option<f64> {
         let (l, d) = (self.live?, self.dead?);
         (l + d > 0).then(|| d as f64 / (l + d) as f64)
     }
 
-    /// Sequential scans among all scans, 0–1.
     pub fn seq_ratio(&self) -> Option<f64> {
         let s = self.seq_scan.unwrap_or(0);
         let i = self.idx_scan.unwrap_or(0);
         (s + i > 0).then(|| s as f64 / (s + i) as f64)
     }
 
-    /// The more recent of the two (`None`: never).
     pub fn last_vacuum(&self) -> Option<i64> {
         min_some(self.vacuum_age, self.autovacuum_age)
     }
@@ -418,10 +347,9 @@ fn min_some(a: Option<i64>, b: Option<i64>) -> Option<i64> {
     }
 }
 
-/// The table statistics with their sizes. The size functions take a share lock on each table:
-/// `lock_timeout` keeps a table locked exclusively (VACUUM FULL, ALTER) from stalling the
-/// monitor (the SET is rolled back with the implicit transaction if the SELECT fails); the second
-/// query does without sizes.
+// The size functions take a share lock on each table: `lock_timeout` keeps a table locked
+// exclusively (VACUUM FULL, ALTER) from stalling the monitor; the SET rolls back with the
+// implicit transaction if the SELECT fails.
 pub fn tables_sql() -> [String; 2] {
     let cols = "s.schemaname, s.relname, s.n_live_tup, s.n_dead_tup, s.n_mod_since_analyze, \
          round(extract(epoch FROM now() - s.last_vacuum))::int8, \
@@ -463,11 +391,7 @@ pub fn parse_tables(rows: &[Vec<Option<String>>]) -> Vec<TableRow> {
         .collect()
 }
 
-/// The usual lightweight table bloat estimate (after ioguix's `table_bloat` query): the
-/// expected pages from the planner's statistics (average widths, null fractions, the tuple
-/// header and alignment, the fill factor) against the pages the table has. It reads only the
-/// catalog and `pg_stats`, takes no lock, and is an estimate: a table never analyzed, or with a
-/// `name` column, gives none.
+// After ioguix's `table_bloat` query.
 pub fn bloat_sql() -> &'static str {
     "SELECT schemaname, tblname, \
        CASE WHEN tblpages > 0 AND tblpages - est_pages_ff > 0 AND NOT is_na THEN ((tblpages - est_pages_ff) * bs)::int8 ELSE 0 END, \
@@ -505,7 +429,6 @@ pub fn bloat_sql() -> &'static str {
      ) AS s3"
 }
 
-/// Adds the bloat estimate (schema, table, bytes, percent, not applicable) to the tables.
 pub fn merge_bloat(tables: &mut [TableRow], rows: &[Vec<Option<String>>]) {
     let est: HashMap<(String, String), (i64, f64)> = rows
         .iter()
@@ -520,7 +443,6 @@ pub fn merge_bloat(tables: &mut [TableRow], rows: &[Vec<Option<String>>]) {
     }
 }
 
-/// What the Tables section's actions open in a new tab (never run from the monitor).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Maintenance {
     Vacuum,
@@ -537,13 +459,9 @@ pub fn maintenance_template(schema: &str, table: &str, m: Maintenance) -> String
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Statements
-
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct StatementRow {
     pub queryid: Option<String>,
-    /// Normalized: constants are `$1`, `$2`…
     pub query: String,
     pub user: Option<String>,
     pub db: Option<String>,
@@ -557,25 +475,20 @@ pub struct StatementRow {
     pub shared_hit: i64,
     pub shared_read: i64,
     pub temp_blocks: i64,
-    /// Planning, PostgreSQL 13+ (counted only with `pg_stat_statements.track_planning`).
     pub plans: Option<i64>,
     pub plan_ms: Option<f64>,
 }
 
 impl StatementRow {
-    /// Shared buffer hits among hits and reads, 0–1.
     pub fn hit_ratio(&self) -> Option<f64> {
         let all = self.shared_hit + self.shared_read;
         (all > 0).then(|| self.shared_hit as f64 / all as f64)
     }
 }
 
-/// What `pg_stat_statements` gives in this database.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Statements {
-    /// The extension is not created in this database.
     NotInstalled,
-    /// Created, but the library is not in `shared_preload_libraries`.
     NotLoaded,
     Rows(Vec<StatementRow>),
     Failed(String),
@@ -585,8 +498,6 @@ pub const CREATE_PGSS: &str = "CREATE EXTENSION IF NOT EXISTS pg_stat_statements
 pub const RESET_PGSS: &str = "SELECT pg_stat_statements_reset()";
 pub const STATEMENTS_LIMIT: usize = 500;
 
-/// The top statements by total time; the column names changed in PostgreSQL 13
-/// (`total_exec_time`, planning counters).
 pub fn statements_sql(major: u32) -> String {
     let exec = major == 0 || major >= 13;
     let (total, mean, min, max, dev, plans, plan_ms) = if exec {
@@ -629,8 +540,7 @@ pub fn parse_statements(rows: &[Vec<Option<String>>]) -> Vec<StatementRow> {
         .collect()
 }
 
-/// The extension's state from the failed query: `55000` (object not in prerequisite state) is
-/// the "must be loaded via shared_preload_libraries" error.
+// `55000` is the "must be loaded via shared_preload_libraries" error.
 pub fn statements_error(code: Option<&str>, message: &str) -> Statements {
     if code == Some("55000") || message.contains("shared_preload_libraries") {
         Statements::NotLoaded
@@ -641,14 +551,9 @@ pub fn statements_error(code: Option<&str>, message: &str) -> Statements {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Signals
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Signal {
-    /// `pg_cancel_backend`: stops the running statement.
     Cancel,
-    /// `pg_terminate_backend`: ends the session (its transaction rolls back).
     Terminate,
 }
 
@@ -668,10 +573,6 @@ impl Signal {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Formatting
-
-/// `<1s` → `0s`, `42s`, `3m 05s`, `2h 07m`, `4d 3h`: an age in whole seconds.
 pub fn fmt_age(secs: i64) -> String {
     let s = secs.max(0);
     match s {
@@ -682,7 +583,6 @@ pub fn fmt_age(secs: i64) -> String {
     }
 }
 
-/// A coarser age for things that happen daily (vacuum, analyze): `42s`, `12m`, `5h`, `3d`.
 pub fn fmt_age_coarse(secs: i64) -> String {
     let s = secs.max(0);
     match s {
@@ -693,7 +593,6 @@ pub fn fmt_age_coarse(secs: i64) -> String {
     }
 }
 
-/// `0.08 ms`, `12.4 ms`, `318 ms`, `2.41 s`, `3m 12s`.
 pub fn fmt_ms(ms: f64) -> String {
     let ms = ms.max(0.);
     if ms < 1. {
@@ -709,7 +608,6 @@ pub fn fmt_ms(ms: f64) -> String {
     }
 }
 
-/// `37%`, `0.4%`, `100%`: a 0–1 share.
 pub fn fmt_pct(x: f64) -> String {
     let p = x * 100.;
     if p > 0. && p < 1. { format!("{p:.1}%") } else { format!("{:.0}%", p.round()) }
@@ -726,9 +624,6 @@ pub fn fmt_count(n: i64) -> String {
     }
     if n < 0 { format!("-{out}") } else { out }
 }
-
-// ---------------------------------------------------------------------------------------------
-// Cells
 
 fn cell(r: &[Option<String>], i: usize) -> Option<String> {
     r.get(i).cloned().flatten()
@@ -748,12 +643,10 @@ fn float(r: &[Option<String>], i: usize) -> Option<f64> {
     cell(r, i)?.trim().parse::<f64>().ok().filter(|f| f.is_finite())
 }
 
-/// `{12,345}` → `[12, 345]`.
 fn int_array(s: &str) -> Vec<i32> {
     s.trim_matches(|c| c == '{' || c == '}').split(',').filter_map(|x| x.trim().parse().ok()).collect()
 }
 
-/// The SQLSTATE of a failed query, if the server sent one.
 fn sqlstate(e: &anyhow::Error) -> Option<String> {
     crate::backend::server_error(e).and_then(|i| i.code)
 }
@@ -765,25 +658,16 @@ fn message(e: &anyhow::Error) -> String {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Reading
-
 impl Connection {
-    /// The monitor's client for `db`, on an engine that has the monitor ([`Caps::activity`]).
-    ///
-    /// [`Caps::activity`]: crate::Caps::activity
     async fn monitor(&self, db: &str) -> anyhow::Result<crate::backend::Db> {
         anyhow::ensure!(self.caps().activity, "{} has no activity monitor", self.engine().label());
         self.meta(db).await
     }
 
-    /// Whether backend `pid` of this server is one of this process's (an editor tab, the
-    /// explorer, the monitor, an export…).
     pub fn owns_backend(&self, pid: i32) -> bool {
         crate::own::is_own(&crate::own::server_key(&self.profile), pid)
     }
 
-    /// Every backend of `pg_stat_activity`.
     pub fn activity_sessions(self: &Arc<Self>, db: &str) -> Task<Vec<SessionRow>> {
         let (this, db) = (self.clone(), db.to_string());
         let sql = sessions_sql(self.info.major());
@@ -793,7 +677,6 @@ impl Connection {
         })
     }
 
-    /// The waits between sessions.
     pub fn activity_locks(self: &Arc<Self>, db: &str) -> Task<Vec<LockEdge>> {
         let (this, db) = (self.clone(), db.to_string());
         let sql = locks_sql(self.info.major());
@@ -803,7 +686,6 @@ impl Connection {
         })
     }
 
-    /// Table health, with the bloat estimate (`bloat`) when it can be computed.
     pub fn activity_tables(self: &Arc<Self>, db: &str, bloat: bool) -> Task<Vec<TableRow>> {
         let (this, db) = (self.clone(), db.to_string());
         self.spawn(async move {
@@ -820,7 +702,6 @@ impl Connection {
         })
     }
 
-    /// The top statements, or why there are none.
     pub fn activity_statements(self: &Arc<Self>, db: &str) -> Task<Statements> {
         let (this, db) = (self.clone(), db.to_string());
         let sql = statements_sql(self.info.major());
@@ -837,8 +718,6 @@ impl Connection {
         })
     }
 
-    /// `pg_cancel_backend` / `pg_terminate_backend`: whether the server signalled the process.
-    /// A refusal (another role's session without the right) is the error.
     pub fn signal_backend(self: &Arc<Self>, db: &str, pid: i32, signal: Signal) -> Task<bool> {
         let (this, db) = (self.clone(), db.to_string());
         self.spawn(async move {
@@ -848,7 +727,6 @@ impl Connection {
         })
     }
 
-    /// `pg_stat_statements_reset()`.
     pub fn reset_statements(self: &Arc<Self>, db: &str) -> Task<()> {
         let (this, db) = (self.clone(), db.to_string());
         self.spawn(async move {
@@ -871,7 +749,6 @@ mod tests {
         LockEdge { waiter: w, blocker: b, ..Default::default() }
     }
 
-    /// (pid, depth, cycle, again) of each tree row.
     fn shape(rows: &[TreeRow]) -> Vec<(i32, usize, bool, bool)> {
         rows.iter().map(|r| (r.pid, r.depth, r.cycle, r.again)).collect()
     }
@@ -940,13 +817,11 @@ mod tests {
         assert!(s[2].is_self && !s[0].is_self);
         assert_eq!(s[2].severity(&Thresholds::default()), Some(Severity::Err), "active for 400 s");
         assert!(s[2].haystack().contains("dataman") && s[2].haystack().contains("77"));
-        // Older servers: no backend type, background processes have no state.
         let old = SessionRow { pid: 1, state: None, ..Default::default() };
         assert!(old.is_background());
         let idle = SessionRow { pid: 2, state: Some("idle".into()), backend_type: Some("client backend".into()), query_age: Some(9999), ..Default::default() };
         assert!(idle.is_idle() && !idle.shown_by_default());
         assert_eq!(idle.severity(&Thresholds::default()), None, "an idle session is never long-running");
-        // Another role's query, withheld.
         let hidden = SessionRow { query: Some("<insufficient privilege>".into()), ..Default::default() };
         assert_eq!(hidden.visible_query(), None);
         assert!(is_withheld(" <insufficient privilege> "));
@@ -1010,17 +885,14 @@ mod tests {
 
     #[test]
     fn tree_chain_and_fan_out() {
-        // 10 blocks 20 and 30; 30 blocks 40. 50 blocks 60.
         let t = blocking_tree(&[edge(20, 10), edge(30, 10), edge(40, 30), edge(60, 50)]);
         assert_eq!(shape(&t), vec![(10, 0, false, false), (20, 1, false, false), (30, 1, false, false), (40, 2, false, false), (50, 0, false, false), (60, 1, false, false)]);
         assert_eq!(t[0].behind, 3, "three sessions behind 10");
         assert_eq!(t[2].behind, 1);
         assert_eq!(t[1].edge.as_ref().map(|e| (e.waiter, e.blocker)), Some((20, 10)));
         assert!(t[0].edge.is_none());
-        // The blocker with the most behind it comes first.
         let t = blocking_tree(&[edge(2, 1), edge(4, 3), edge(5, 3)]);
         assert_eq!(t[0].pid, 3);
-        // Duplicate edges count once.
         let t = blocking_tree(&[edge(2, 1), edge(2, 1)]);
         assert_eq!(shape(&t), vec![(1, 0, false, false), (2, 1, false, false)]);
         assert!(blocking_tree(&[]).is_empty());
@@ -1028,7 +900,6 @@ mod tests {
 
     #[test]
     fn tree_multiple_blockers() {
-        // 30 waits on both 10 and 20 (e.g. a lock queue): under each, expanded once.
         let t = blocking_tree(&[edge(30, 10), edge(30, 20), edge(40, 30)]);
         assert_eq!(shape(&t), vec![(10, 0, false, false), (30, 1, false, false), (40, 2, false, false), (20, 0, false, false), (30, 1, false, true)]);
         assert_eq!(t[0].behind, 2);
@@ -1037,18 +908,14 @@ mod tests {
 
     #[test]
     fn tree_cycles() {
-        // 1 ↔ 2 (a deadlock in progress): nobody is free, the cycle starts from the lowest pid.
         let t = blocking_tree(&[edge(1, 2), edge(2, 1)]);
         assert_eq!(shape(&t), vec![(1, 0, true, false), (2, 1, true, false), (1, 2, true, true)]);
-        // A cycle 3 → 4 → 5 → 3 with 6 waiting on 4, and a free blocker 7 elsewhere.
         let t = blocking_tree(&[edge(4, 3), edge(5, 4), edge(3, 5), edge(6, 4), edge(8, 7)]);
         assert_eq!(t[0].pid, 7, "free blockers first");
         let cyc: Vec<_> = t.iter().skip(2).map(|r| (r.pid, r.depth, r.cycle, r.again)).collect();
         assert_eq!(cyc, vec![(3, 0, true, false), (4, 1, true, false), (5, 2, true, false), (3, 3, true, true), (6, 2, false, false)]);
-        // Every session appears, and the walk ends.
         let pids: BTreeSet<i32> = t.iter().map(|r| r.pid).collect();
         assert_eq!(pids, BTreeSet::from([3, 4, 5, 6, 7, 8]));
-        // A free blocker feeding into a cycle: walked from the blocker, only the loop marked.
         let t = blocking_tree(&[edge(2, 1), edge(3, 2), edge(2, 3)]);
         assert_eq!(shape(&t), vec![(1, 0, false, false), (2, 1, true, false), (3, 2, true, false), (2, 3, true, true)]);
     }

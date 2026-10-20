@@ -1,7 +1,3 @@
-//! A script run the way a query tab runs it: one session, one statement after the other,
-//! stopping at the first error; a statement that pauses before the end of the script keeps the
-//! rows it loaded (`stop_fetching`) and the next one runs. Skips without the PostgreSQL server.
-
 mod common;
 
 use common::*;
@@ -9,7 +5,6 @@ use dataman_core::ResultSet;
 use dataman_core::batch::{self, Key, Kind, Outcome, State};
 use dataman_core::result::PREFETCH;
 
-/// Runs `stmts` like the tab does; `None` for the statements after an error.
 fn run_script(e: &Env, s: &Arc<dataman_core::Session>, stmts: &[&str]) -> Vec<Option<Arc<ResultSet>>> {
     let mut out = vec![None; stmts.len()];
     for (i, sql) in stmts.iter().enumerate() {
@@ -68,7 +63,6 @@ fn four_statement_script() {
     assert_eq!(batch::default_active(&t), Some(Key::Stmt(3)), "the error is shown");
     assert!(results[4].is_none(), "nothing runs after the error");
 
-    // Statement 2 paused before the end: it kept one prefetch window, the rest was dropped.
     let big = results[1].as_ref().unwrap();
     assert_eq!(t[0].state, State::Partial);
     assert_eq!(big.phase(), Phase::Done);
@@ -77,7 +71,6 @@ fn four_statement_script() {
     let err = results[3].as_ref().unwrap().status().error.unwrap();
     assert_eq!(err.code.as_deref(), Some("42P01"));
 
-    // The history has every statement that ran, once.
     let h = e.core.history.load(&c.profile.id, 20).unwrap();
     assert_eq!(h.len(), 4, "{h:?}");
 }
@@ -101,14 +94,12 @@ fn stopping_a_paused_result_keeps_the_transaction() {
         let r = r.as_ref().unwrap();
         assert_ne!(r.phase(), Phase::Failed, "{sql}: {:?}", r.status().error);
     }
-    // No CancelRequest: the INSERT and the count ran inside the same transaction.
     let count = results[4].as_ref().unwrap();
     assert_eq!(count.snapshot().text(0, 0).as_deref(), Some("2"));
     let t = tabs(&script, &results);
     let names: Vec<&str> = t.iter().map(|t| t.label.as_str()).collect();
     assert_eq!(names, ["SELECT", "INSERT 2", "batch_tx", "SELECT", "messages"]);
     assert_eq!(t[0].state, State::Partial);
-    // The last statement stays paused with its stream open (Fetch next / Fetch all).
     assert_eq!(t[3].state, State::Paused);
     assert_eq!(t[4].folded, 3);
     results[6].as_ref().unwrap().fetch_all();

@@ -1,12 +1,3 @@
-//! Shared helpers of the live tests (servers, scratch schemas). Every test skips when its server
-//! does not answer:
-//!
-//! - `DATAMAN_PG`  (default `127.0.0.1:55432`, user `postgres`, the password in
-//!   `DATAMAN_PG_PASSWORD`, default `dataman`, db `dataman`, loaded with `seeds/postgres.sql`)
-//! - `DATAMAN_LAR` (default `127.0.0.1:5490`, user `lar`, db `lar`, no password)
-//! - `DATAMAN_MYSQL` and `DATAMAN_MSSQL` (see their profiles below)
-//!
-//! Every test works in its own schema (PostgreSQL) or its own tables (LAR) and drops them.
 #![allow(dead_code, unused_imports)]
 
 
@@ -39,7 +30,6 @@ fn pg_profile() -> ConnectionProfile {
     ConnectionProfile { host, port, user: "postgres".into(), database: "dataman".into(), sslmode: SslMode::Disable, ..ConnectionProfile::new("pg") }
 }
 
-/// `DATAMAN_PG_PASSWORD`, default the throwaway one of the `dataman-pg` test container.
 pub fn pg_password() -> String {
     std::env::var("DATAMAN_PG_PASSWORD").unwrap_or_else(|_| "dataman".into())
 }
@@ -67,8 +57,6 @@ pub fn lar(e: &Env) -> Option<Arc<Connection>> {
     connect(e, lar_profile(), None)
 }
 
-/// `DATAMAN_MYSQL` (default `127.0.0.1:33306`, user `root`, the password in
-/// `DATAMAN_MYSQL_PASSWORD`, default the throwaway one of the `dataman-mysql` test container).
 pub fn mysql_profile(database: &str) -> ConnectionProfile {
     let (host, port) = addr("DATAMAN_MYSQL", "127.0.0.1:33306");
     ConnectionProfile {
@@ -90,8 +78,6 @@ pub fn mysql_on(e: &Env, p: ConnectionProfile) -> Option<Arc<Connection>> {
     connect(e, p, Some(&mysql_password()))
 }
 
-/// A database of its own loaded with `seeds/mysql.sql` (run through Dataman itself: its
-/// `DELIMITER` blocks go through the MySQL splitter), and a connection to it.
 pub fn mysql_seeded(e: &Env, database: &str) -> Option<Arc<Connection>> {
     let c = mysql_on(e, mysql_profile(""))?;
     let seed = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../seeds/mysql.sql")).unwrap().replace("dataman_test", database);
@@ -102,8 +88,6 @@ pub fn mysql_seeded(e: &Env, database: &str) -> Option<Arc<Connection>> {
     mysql_on(e, mysql_profile(database))
 }
 
-/// `DATAMAN_MSSQL` (default `127.0.0.1:14330`, user `sa`, the password in
-/// `DATAMAN_MSSQL_PASSWORD`, default the throwaway one of the `dataman-mssql` test container).
 pub fn mssql_profile(database: &str) -> ConnectionProfile {
     let (host, port) = addr("DATAMAN_MSSQL", "127.0.0.1:14330");
     ConnectionProfile {
@@ -125,8 +109,6 @@ pub fn mssql_on(e: &Env, p: ConnectionProfile) -> Option<Arc<Connection>> {
     connect(e, p, Some(&mssql_password()))
 }
 
-/// A database of its own loaded with `seeds/mssql.sql` (run through Dataman itself: its `GO`
-/// batches go through the T-SQL splitter, in one session), and a connection to it.
 pub fn mssql_seeded(e: &Env, database: &str) -> Option<Arc<Connection>> {
     let c = mssql_on(e, mssql_profile("master"))?;
     let seed = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../seeds/mssql.sql")).unwrap().replace("dataman_test", database);
@@ -137,7 +119,6 @@ pub fn mssql_seeded(e: &Env, database: &str) -> Option<Arc<Connection>> {
     mssql_on(e, mssql_profile(database))
 }
 
-/// Drops a database made by [`mssql_seeded`] (its sessions closed first).
 pub fn mssql_drop(e: &Env, database: &str) {
     let Some(c) = mssql_on(e, mssql_profile("master")) else { return };
     let (lit, id) = (database.replace('\'', "''"), database.replace(']', "]]"));
@@ -145,7 +126,6 @@ pub fn mssql_drop(e: &Env, database: &str) {
     exec_quiet(e, &c, &[&sql]);
 }
 
-/// Runs statements one by one in a fresh session, panicking on errors.
 pub fn exec(e: &Env, c: &Arc<Connection>, sqls: &[&str]) {
     let s = c.session(None);
     for sql in sqls {
@@ -155,7 +135,6 @@ pub fn exec(e: &Env, c: &Arc<Connection>, sqls: &[&str]) {
     }
 }
 
-/// Like `exec`, ignoring failures (cleanup).
 pub fn exec_quiet(e: &Env, c: &Arc<Connection>, sqls: &[&str]) {
     let s = c.session(None);
     for sql in sqls {

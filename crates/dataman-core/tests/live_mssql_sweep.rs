@@ -1,6 +1,3 @@
-//! SQL Server sweep: big valid scripts through Dataman's batch splitter, session, lint and
-//! PARSEONLY check; types decoded.
-
 mod common;
 
 use common::*;
@@ -15,7 +12,6 @@ fn run(e: &Env, s: &Arc<Session>, sql: &str) -> Arc<ResultSet> {
     rs
 }
 
-/// Every result set of a statement, in order (each waited for).
 fn results(e: &Env, first: &Arc<ResultSet>) -> Vec<Arc<ResultSet>> {
     let mut out = vec![first.clone()];
     loop {
@@ -29,7 +25,6 @@ fn results(e: &Env, first: &Arc<ResultSet>) -> Vec<Arc<ResultSet>> {
     }
 }
 
-/// Runs the batches of a script like the app; returns failures `(batch, error)`.
 fn script(e: &Env, s: &Arc<Session>, src: &str) -> Vec<(String, String)> {
     let mut bad = Vec::new();
     for st in batches_in(src, Dialect::TSql) {
@@ -298,7 +293,6 @@ ALTER DATABASE [dataman_msw4] SET  READ_WRITE
 GO
 "#;
 
-/// A script made by SSMS: `USE`, `SET`s, `GO`s, a `GO` line inside a string, `sp_executesql`.
 #[test]
 fn ssms_script_runs() {
     let e = env();

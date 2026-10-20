@@ -1,34 +1,5 @@
-//! User-defined tools: `mcp-tools.toml` in the config directory. Each tool is an SQL template
-//! whose `$1 … $n` are bound to typed, validated parameters by the server (never spliced into
-//! the SQL), on one connection or on any (then the tool takes a `connection` argument). A `read`
-//! tool runs like run_query (read-only transaction, the agent read check); a `write` tool like
-//! execute (the connection's MCP tier decides what its SQL may do, destructive templates and
-//! writes over the row limit wait for the user's Allow). The file is read again when it
-//! changes; a tool with a problem is left out and the problem logged.
-//!
-//! ```toml
-//! [[tool]]
-//! name = "orders_by_customer"
-//! description = "A customer's latest orders, newest first."
-//! connection = "local pg"          # a connection name, or "any"
-//! database = "shop"                # optional
-//! mode = "read"                    # read (default) | write
-//! sql = "SELECT id, total, status FROM orders WHERE customer_id = $1 AND status = $2 ORDER BY created_at DESC"
-//! max_rows = 50                    # optional (default 200)
-//! timeout_ms = 5000                # optional (default 30000)
-//!
-//! [[tool.param]]
-//! name = "customer_id"
-//! type = "int"                     # string | int | number | bool | enum
-//! description = "The customer's id."
-//! min = 1
-//!
-//! [[tool.param]]
-//! name = "status"
-//! type = "enum"
-//! values = ["open", "paid", "shipped"]
-//! default = "open"
-//! ```
+//! A template's `$1 … $n` are bound to typed, validated parameters by the server, never
+//! spliced into the SQL.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -94,7 +65,6 @@ pub struct Param {
     pub kind: Kind,
     #[serde(default)]
     pub description: Option<String>,
-    /// Defaults to true unless there is a default.
     #[serde(default)]
     pub required: Option<bool>,
     #[serde(default)]
@@ -143,7 +113,6 @@ impl Param {
         Value::Object(m)
     }
 
-    /// The value as text for the server, checked against the type and limits (`None`: NULL).
     pub fn bind(&self, v: Option<&Value>) -> Result<Option<String>, String> {
         let v = match (v.filter(|v| !v.is_null()), &self.default) {
             (Some(v), _) => v.clone(),
@@ -196,7 +165,6 @@ fn toml_to_json(v: &toml::Value) -> Value {
     serde_json::to_value(v).unwrap_or(Value::Null)
 }
 
-/// The highest `$n` of the SQL (0 without any).
 pub fn max_placeholder(sql: &str) -> usize {
     tokenize(sql).into_iter().filter(|t| t.kind == TokenKind::Param).filter_map(|t| t.text(sql)[1..].parse::<usize>().ok()).max().unwrap_or(0)
 }
@@ -206,7 +174,6 @@ fn valid_name(s: &str) -> bool {
     c.next().is_some_and(|f| f.is_ascii_lowercase()) && s.len() <= 64 && c.all(|x| x.is_ascii_lowercase() || x.is_ascii_digit() || x == '_')
 }
 
-/// Checks a definition; the reason when it cannot be a tool.
 pub fn check(d: &Def, taken: &[String]) -> Result<(), String> {
     if !valid_name(&d.name) {
         return Err("names are lower case letters, digits and _, starting with a letter (64 at most)".into());
@@ -257,7 +224,6 @@ pub fn check(d: &Def, taken: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// The tools of a `mcp-tools.toml` text, and the problems of those left out.
 pub fn load(text: &str, builtins: &[String]) -> (Vec<Arc<dyn Tool>>, Vec<String>) {
     let file: File = match toml::from_str(text) {
         Ok(f) => f,
@@ -299,7 +265,6 @@ impl UserTool {
         UserTool { def, schema: s }
     }
 
-    /// The SQL parameters for a call, in `$n` order.
     pub fn bind(&self, a: &Args) -> Result<Vec<Option<String>>, ToolError> {
         self.def.params.iter().map(|p| p.bind(a.get(&p.name)).map_err(ToolError::Invalid)).collect()
     }
@@ -413,7 +378,6 @@ type = "int"
         assert_eq!(w.required(), ["connection", "id"]);
         assert!(w.properties().contains_key("confirm") && w.properties().contains_key("database"));
         assert_eq!(tools[1].need(), Some(Need::Write));
-        // The generic validation applies to user tools too.
         assert!(s.validate(&args(json!({"customer_id": 0})).0).unwrap_err().contains("at least 1"));
         assert!(s.validate(&args(json!({"customer_id": 3, "status": "lost"})).0).unwrap_err().contains("one of"));
         assert!(s.validate(&args(json!({"customer_id": 3, "x": 1})).0).unwrap_err().contains("unknown"));

@@ -1,9 +1,5 @@
-//! The find bar: one compact bar docked at the top right of the editor (⌘F, ⌥⌘F adds the
-//! replace row) and of the grid (⌘F). It holds the query, the toggles and the count; its owner
-//! searches (`dataman_core::find`), highlights and moves through the matches.
-//!
-//! The owner renders the bar beside its own key context, not inside it, so the editor's and the
-//! grid's keys (arrows, ↩, ⌘Z…) never act while the field has the focus.
+// The owner renders the bar beside its own key context, not inside it, so the editor's and
+// the grid's keys (arrows, ↩, ⌘Z…) never act while the field has the focus.
 
 use gpui::{
     App, ClickEvent, Context, Entity, EventEmitter, Focusable, KeyBinding, SharedString, Subscription, Window, actions,
@@ -20,17 +16,11 @@ use crate::ui;
 actions!(
     find,
     [
-        /// ⌘F: open the bar on its field (prefilled with a one-line selection).
         Find,
-        /// ⌥⌘F: the bar with its replace row (editor).
         FindReplace,
-        /// ⌘G (↩ in the field): the next match.
         FindNext,
-        /// ⇧⌘G (⇧↩ in the field): the previous match.
         FindPrevious,
-        /// esc: close the bar, the focus back to its owner.
         CloseFind,
-        /// ⇥ in the bar: between the find and the replace fields.
         NextField,
     ]
 );
@@ -53,16 +43,13 @@ pub fn bind_keys(cx: &mut App) {
     ]);
 }
 
-/// What the count says: `3/17`, `10,000+`, `…` while a search runs, nothing for no query.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Count {
     pub cur: Option<usize>,
     pub total: usize,
     pub capped: bool,
     pub busy: bool,
-    /// The query does not compile (a regular expression): the field turns red.
     pub invalid: bool,
-    /// There is a query (an empty one shows no count).
     pub query: bool,
 }
 
@@ -81,7 +68,6 @@ impl Count {
 }
 
 pub enum FindBarEvent {
-    /// The query or a toggle changed.
     Changed,
     Next,
     Prev,
@@ -95,7 +81,6 @@ pub struct FindBar {
     replace: Entity<TextInput>,
     opts: FindOptions,
     replacing: bool,
-    /// The grid has no replace row.
     can_replace: bool,
     count: Count,
     _subs: [Subscription; 2],
@@ -135,7 +120,6 @@ impl FindBar {
         self.opts
     }
 
-    /// Replaces the query (no `Changed`: the owner searches right after).
     pub fn set_query(&mut self, q: &str, cx: &mut Context<Self>) {
         self.query.update(cx, |i, cx| i.set_text(q, cx));
     }
@@ -165,14 +149,12 @@ impl FindBar {
         self.count
     }
 
-    /// The focus to the find field, its text selected (typing replaces it).
     pub fn focus_query(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let h = self.query.focus_handle(cx);
         window.focus(&h, cx);
         self.query.update(cx, |i, cx| i.select_all(cx));
     }
 
-    /// One of the bar's fields has the focus.
     pub fn has_focus(&self, window: &Window, cx: &App) -> bool {
         self.query.focus_handle(cx).is_focused(window) || self.replace.focus_handle(cx).is_focused(window)
     }

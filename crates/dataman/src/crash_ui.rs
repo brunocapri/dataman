@@ -1,8 +1,3 @@
-//! The crash toast: on launch, after the first frame and off the UI thread, the report the last
-//! session left (`dataman_core::crash`); one line with Show (Finder), Copy, the macOS report when
-//! there is one, and Send when an endpoint is configured. `DATAMAN_CRASH_TEST=panic` (or `abort`)
-//! crashes the app inside a GPUI callback a moment after the first frame, to test the whole path.
-
 use std::time::Duration;
 
 use gpui::{AnyElement, App, Context, FontWeight, WeakEntity, div, prelude::*};
@@ -14,7 +9,6 @@ use crate::assets::Icon;
 use crate::theme::ActiveTheme;
 use crate::ui::{self, Btn};
 
-/// How long the toast stays unless dismissed.
 const SHOW_FOR: Duration = Duration::from_secs(30);
 
 pub fn check(ws: WeakEntity<Workspace>, cx: &mut App) {
@@ -38,8 +32,7 @@ pub fn check(ws: WeakEntity<Workspace>, cx: &mut App) {
     .detach();
 }
 
-/// The test crash, inside a GPUI callback (a deferred effect run from the platform's run loop:
-/// the panic cannot unwind out of it, so the process aborts right after the hook).
+/// Inside a GPUI callback the panic cannot unwind out: the process aborts right after the hook.
 pub fn maybe_crash_for_test(cx: &mut App) {
     let Some(mode) = std::env::var("DATAMAN_CRASH_TEST").ok() else { return };
     cx.spawn(async move |cx| {

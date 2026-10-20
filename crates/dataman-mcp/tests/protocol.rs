@@ -1,8 +1,3 @@
-//! The MCP protocol end to end: `dataman-mcp` spawned over stdio and driven with JSON-RPC
-//! (initialize → tools/list → tools/call, resources), alone and handing its calls to an app
-//! through `app.sock`. No database is needed: the calls here are answered or refused before any
-//! connection opens.
-
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::Arc;
@@ -83,7 +78,6 @@ impl Mcp {
         self.stdin.flush().unwrap();
     }
 
-    /// A request and its response (notifications in between are skipped).
     fn call(&mut self, method: &str, params: Value) -> Value {
         let id = self.next;
         self.next += 1;
@@ -125,7 +119,6 @@ fn stdio_session() {
     m.send(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
     assert_eq!(m.call("ping", json!({}))["result"], json!({}));
 
-    // tools/list: the built-ins, typed schemas and hints.
     let list = m.call("tools/list", json!({}));
     let tools = list["result"]["tools"].as_array().unwrap();
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
@@ -136,7 +129,6 @@ fn stdio_session() {
     let ex = tools.iter().find(|t| t["name"] == "execute").unwrap();
     assert_eq!(ex["annotations"]["destructiveHint"], true);
 
-    // list_connections: names, permissions, no secrets.
     let (err, text) = m.tool("list_connections", json!({}));
     assert!(!err, "{text}");
     let v: Value = serde_json::from_str(&text).unwrap();
@@ -148,7 +140,6 @@ fn stdio_session() {
     assert_eq!(rows[3][2], "full");
     assert!(!text.to_lowercase().contains("password"));
 
-    // Argument validation, unknown tools, refusals before any connection.
     let (err, text) = m.tool("run_query", json!({"connection": "local pg"}));
     assert!(err && text.contains("\"sql\" is required"), "{text}");
     let (err, text) = m.tool("run_query", json!({"connection": "local pg", "sql": "select 1", "rows": 5}));
@@ -159,8 +150,6 @@ fn stdio_session() {
     assert!(err && text.contains("off"), "{text}");
     let (err, text) = m.tool("execute", json!({"connection": "local pg", "sql": "INSERT INTO t VALUES (1)"}));
     assert!(err && text.contains("reads only"), "{text}");
-    // The tiers, before any connection: write refuses what is destructive (the agent's
-    // `confirm` changes nothing); full needs the app, which is not running here.
     for sql in ["DELETE FROM t", "DELETE FROM t WHERE 1=1", "DROP TABLE t", "TRUNCATE t", "UPDATE t SET a = 1 WHERE id = id"] {
         for confirm in [false, true] {
             let (err, text) = m.tool("execute", json!({"connection": "writable", "sql": sql, "confirm": confirm}));
@@ -181,8 +170,6 @@ fn stdio_session() {
     assert!(err && text.contains("no connection named"), "{text}");
     let unknown = m.call("tools/call", json!({"name": "drop_everything", "arguments": {}}));
     assert!(unknown["error"]["message"].as_str().unwrap().contains("unknown tool"), "{unknown}");
-    // Drafts (open_query run: false) need the app: headless they are refused in every tier,
-    // never run instead; off stays off.
     let oq = tools.iter().find(|t| t["name"] == "open_query").unwrap();
     assert_eq!(oq["inputSchema"]["properties"]["run"]["type"], "boolean");
     assert!(oq["description"].as_str().unwrap().contains("run: false") && r["instructions"].as_str().unwrap().contains("run: false"));
@@ -193,7 +180,6 @@ fn stdio_session() {
     let (err, text) = m.tool("open_query", json!({"connection": "prod", "sql": "SELECT 1", "run": false}));
     assert!(err && text.contains("off") && !text.contains("drafts"), "{text}");
 
-    // Resources: listed for usable connections only.
     let res = m.call("resources/list", json!({}));
     let uris: Vec<&str> = res["result"]["resources"].as_array().unwrap().iter().map(|r| r["uri"].as_str().unwrap()).collect();
     assert_eq!(
@@ -210,7 +196,6 @@ fn stdio_session() {
     let tpl = m.call("resources/templates/list", json!({}));
     assert_eq!(tpl["result"]["resourceTemplates"].as_array().unwrap().len(), 2, "{tpl}");
 
-    // Every call is in the audit log, with the client's name.
     let log = std::fs::read_to_string(cfg.path().join("dataman/mcp-audit.jsonl")).unwrap();
     let lines: Vec<Value> = log.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
     assert!(lines.len() >= 9, "{log}");
@@ -225,7 +210,6 @@ fn stdio_session() {
     assert!(draft["outcome"] == "refused" && draft.get("draft").is_none() && draft.get("rows").is_none(), "{draft}");
 }
 
-/// Favorites (shared with the app's sidebar) and create_connection: no database needed.
 #[test]
 fn stdio_favorites_and_create_connection() {
     let cfg = config();
@@ -240,7 +224,6 @@ fn stdio_favorites_and_create_connection() {
     let (err, text) = m.tool("add_favorite", json!({"name": "top", "sql": "select 1", "connection": "local pg"}));
     assert!(!err, "{text}");
     let id1 = serde_json::from_str::<Value>(&text).unwrap()["id"].as_str().unwrap().to_string();
-    // Same statement (just padded): no duplicate, the same id comes back.
     let (err, text) = m.tool("add_favorite", json!({"name": "dup", "sql": "  select 1  "}));
     assert!(!err, "{text}");
     assert_eq!(serde_json::from_str::<Value>(&text).unwrap()["id"].as_str().unwrap(), id1);
@@ -269,11 +252,9 @@ fn stdio_favorites_and_create_connection() {
     let (err, text) = m.tool("list_favorites", json!({}));
     assert!(!err);
     assert_eq!(serde_json::from_str::<Value>(&text).unwrap()["rows"], json!([]));
-    // A missing id is not an error.
     let (err, _) = m.tool("remove_favorite", json!({"id": "nope"}));
     assert!(!err);
 
-    // import_favorites: name from the file, deduped by content, non-.sql refused.
     let files = tempfile::tempdir().unwrap();
     let sql_path = files.path().join("top customers.sql");
     std::fs::write(&sql_path, "select * from customers").unwrap();
@@ -291,8 +272,6 @@ fn stdio_favorites_and_create_connection() {
     assert_eq!(rows.len(), 1, "imported twice, same content: no duplicate");
     assert_eq!(rows[0][1], json!("top customers"));
 
-    // create_connection: fields, then refused on the same name, then overwrite; a connection
-    // string; an unknown engine; the password never shows up anywhere, including the file.
     let (err, text) = m.tool("create_connection", json!({"name": "new1", "host": "db.internal", "user": "bob", "password": "s3cret"}));
     assert!(!err, "{text}");
     assert!(!text.to_lowercase().contains("s3cret"), "{text}");
@@ -322,15 +301,10 @@ fn stdio_favorites_and_create_connection() {
     assert!(names.contains(&"new1".to_string()) && names.contains(&"from url".to_string()), "{names:?}");
 }
 
-/// The `[[connection]]` block naming `name`, for assertions on one field (`save_password`)
-/// `list_connections` does not surface.
 fn block_for<'a>(toml: &'a str, name: &str) -> &'a str {
     toml.split("[[connection]]").find(|b| b.contains(&format!("name = \"{name}\""))).unwrap_or_else(|| panic!("{name} not in {toml}"))
 }
 
-/// create_connection cannot be used to escalate: the most it grants is "read" (never "write"),
-/// and overwriting an existing connection may only hold `mcp`, `env` and `read_only` steady or
-/// tighten them, never loosen.
 #[test]
 fn stdio_create_connection_refuses_escalation() {
     let cfg = config();
@@ -338,52 +312,39 @@ fn stdio_create_connection_refuses_escalation() {
     m.call("initialize", json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}));
     m.send(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
 
-    // A brand-new connection cannot be granted "write".
     let (err, text) = m.tool("create_connection", json!({"name": "x1", "host": "h", "user": "u", "mcp": "write"}));
     assert!(err && text.contains("cannot grant") && text.contains("write"), "{text}");
 
-    // "prod" (env production, so mcp defaults to off): widening mcp to "read" is refused.
     let (err, text) = m.tool("create_connection", json!({"name": "prod", "host": "10.255.255.1", "user": "app", "overwrite": true, "mcp": "read"}));
     assert!(err && text.contains("widen"), "{text}");
 
-    // Loosening env from production to dev is refused (it would also loosen the mcp default).
     let (err, text) = m.tool("create_connection", json!({"name": "prod", "host": "10.255.255.1", "user": "app", "overwrite": true, "env": "dev"}));
     assert!(err && text.contains("loosen"), "{text}");
 
-    // Tightening (none → production) is fine; so is leaving env/mcp/read_only untouched while
-    // changing something else.
     let (err, text) = m.tool("create_connection", json!({"name": "local pg", "host": "127.0.0.1", "user": "postgres", "overwrite": true, "env": "production"}));
     assert!(!err, "{text}");
     let (err, text) = m.tool("create_connection", json!({"name": "local pg", "host": "127.0.0.1", "user": "postgres", "overwrite": true, "color": "violet"}));
     assert!(!err, "{text}");
 
-    // read_only may turn on, but once on, an overwrite cannot turn it back off.
     let (err, text) = m.tool("create_connection", json!({"name": "local pg", "host": "127.0.0.1", "user": "postgres", "overwrite": true, "read_only": true}));
     assert!(!err, "{text}");
     let (err, text) = m.tool("create_connection", json!({"name": "local pg", "host": "127.0.0.1", "user": "postgres", "overwrite": true, "read_only": false}));
     assert!(err && text.contains("turn off"), "{text}");
 
-    // "writable" (mcp write, set by a human in the app) keeps it when the agent does not touch
-    // mcp at all: inherited, not granted by this call.
     let (err, text) = m.tool("create_connection", json!({"name": "writable", "host": "10.255.255.1", "user": "app", "overwrite": true, "color": "amber"}));
     assert!(!err, "{text}");
     let toml = std::fs::read_to_string(cfg.path().join("dataman/connections.toml")).unwrap();
     assert!(block_for(&toml, "writable").contains("mcp = \"write\""), "{toml}");
 
-    // Narrowing "writable" from write to read is a tightening: allowed.
     let (err, text) = m.tool("create_connection", json!({"name": "writable", "host": "10.255.255.1", "user": "app", "overwrite": true, "mcp": "read"}));
     assert!(!err, "{text}");
     let toml = std::fs::read_to_string(cfg.path().join("dataman/connections.toml")).unwrap();
     assert!(block_for(&toml, "writable").contains("mcp = \"read\""), "{toml}");
 
-    // But it cannot be put back to write afterwards.
     let (err, text) = m.tool("create_connection", json!({"name": "writable", "host": "10.255.255.1", "user": "app", "overwrite": true, "mcp": "write"}));
     assert!(err && text.contains("cannot grant"), "{text}");
 }
 
-/// Overwriting a connection keeps its saved password only when the server it points at did not
-/// change (engine, host, port, user); otherwise the Keychain secret is dropped, so a changed
-/// host (or user) never receives a password it was not given.
 #[test]
 fn stdio_create_connection_drops_the_secret_when_the_target_changes() {
     let cfg = config();
@@ -396,32 +357,25 @@ fn stdio_create_connection_drops_the_secret_when_the_target_changes() {
     assert!(!err);
     assert!(block_for(&toml_of(cfg.path()), "secret1").contains("save_password = true"));
 
-    // Same target (engine, host, port, user unchanged), no new password: kept.
     let (err, _) = m.tool("create_connection", json!({"name": "secret1", "host": "h1", "port": 5432, "user": "u1", "database": "newdb", "overwrite": true}));
     assert!(!err);
     assert!(block_for(&toml_of(cfg.path()), "secret1").contains("save_password = true"));
 
-    // The host changes, no new password: the secret is dropped, not carried to the new host.
     let (err, _) = m.tool("create_connection", json!({"name": "secret1", "host": "h2", "port": 5432, "user": "u1", "overwrite": true}));
     assert!(!err);
     assert!(block_for(&toml_of(cfg.path()), "secret1").contains("save_password = false"));
 
-    // A second connection: only the user changes this time.
     let (err, _) = m.tool("create_connection", json!({"name": "secret2", "host": "h3", "port": 5432, "user": "u1", "password": "p2"}));
     assert!(!err);
     let (err, _) = m.tool("create_connection", json!({"name": "secret2", "host": "h3", "port": 5432, "user": "u2", "overwrite": true}));
     assert!(!err);
     assert!(block_for(&toml_of(cfg.path()), "secret2").contains("save_password = false"));
 
-    // Giving a new password always sets it, target changed or not.
     let (err, _) = m.tool("create_connection", json!({"name": "secret2", "host": "h4", "port": 5432, "user": "u2", "password": "p3", "overwrite": true}));
     assert!(!err);
     assert!(block_for(&toml_of(cfg.path()), "secret2").contains("save_password = true"));
 }
 
-/// update_connection, headless (the app is not running): only the given fields change, the
-/// password is write-only, nothing loosens, a move to another server drops the saved password,
-/// an off connection is not the agent's to edit, names stay unique.
 #[test]
 fn stdio_update_connection() {
     let cfg = config();
@@ -434,7 +388,6 @@ fn stdio_update_connection() {
     assert_eq!(uc["inputSchema"]["required"], json!(["connection"]));
     assert_eq!(uc["annotations"]["readOnlyHint"], false, "{uc}");
 
-    // A password and a database: saved, the password never echoed nor in the file.
     let (err, text) = m.tool("update_connection", json!({"connection": "local pg", "password": "hunter2", "database": "other"}));
     assert!(!err, "{text}");
     let v: Value = serde_json::from_str(&text).unwrap();
@@ -442,18 +395,14 @@ fn stdio_update_connection() {
     assert!(!text.contains("hunter2") && !toml_of(cfg.path()).contains("hunter2"));
     let block = block_for(&toml_of(cfg.path()), "local pg").to_string();
     assert!(block.contains("database = \"other\"") && block.contains("save_password = true") && block.contains("port = 55432"), "{block}");
-    // By id, renamed and recolored; the password stays (same server).
     let (err, text) = m.tool("update_connection", json!({"connection": "pg1", "name": "local", "color": "violet"}));
     let v: Value = serde_json::from_str(&text).unwrap();
     assert!(!err && v["changed"] == json!(["name", "color"]) && v["password"] == "kept", "{text}");
-    // Nothing given: nothing changes.
     let (err, text) = m.tool("update_connection", json!({"connection": "local"}));
     assert!(!err && serde_json::from_str::<Value>(&text).unwrap()["changed"] == json!([]), "{text}");
-    // Another host: the saved password is dropped, not carried there.
     let (err, text) = m.tool("update_connection", json!({"connection": "local", "host": "10.0.0.9"}));
     assert!(!err && serde_json::from_str::<Value>(&text).unwrap()["password"] == "dropped", "{text}");
     assert!(block_for(&toml_of(cfg.path()), "local").contains("save_password = false"));
-    // Nothing loosens.
     let (err, text) = m.tool("update_connection", json!({"connection": "writable", "mcp": "full"}));
     assert!(err && text.contains("widen"), "{text}");
     let (err, text) = m.tool("update_connection", json!({"connection": "writable", "env": "production"}));
@@ -466,21 +415,18 @@ fn stdio_update_connection() {
     assert!(err && text.contains("turn off"), "{text}");
     let (err, text) = m.tool("update_connection", json!({"connection": "full", "mcp": "write"}));
     assert!(!err && text.contains("\"mcp\""), "narrowing is fine: {text}");
-    // Off (prod) is edited in the app only; names stay unique; unknown names are invalid.
     let (err, text) = m.tool("update_connection", json!({"connection": "prod", "host": "x"}));
     assert!(err && text.contains("off"), "{text}");
     let (err, text) = m.tool("update_connection", json!({"connection": "full", "name": "WRITABLE"}));
     assert!(err && text.contains("another connection"), "{text}");
     let (err, text) = m.tool("update_connection", json!({"connection": "nope", "host": "x"}));
     assert!(err && text.contains("no connection named"), "{text}");
-    // list_connections still never says anything about passwords.
     let (_, text) = m.tool("list_connections", json!({}));
     assert!(!text.to_lowercase().contains("password") && !text.contains("hunter2"), "{text}");
     let log = std::fs::read_to_string(cfg.path().join("dataman/mcp-audit.jsonl")).unwrap();
     assert!(!log.contains("hunter2") && log.contains("\"tool\":\"update_connection\""), "{log}");
 }
 
-/// The user tools file is read again when it changes, and the new tools are listed.
 #[test]
 fn stdio_user_tools_reload() {
     let cfg = config();
@@ -505,7 +451,6 @@ fn stdio_user_tools_reload() {
     assert!(!names(&mut m).contains(&"active_users".to_string()));
 }
 
-/// An app that takes drafts (and would deny any question, which a draft must never ask).
 #[derive(Default)]
 struct Drafter {
     drafts: std::sync::Mutex<Vec<dataman_mcp::TabDraft>>,
@@ -532,15 +477,11 @@ impl dataman_mcp::Front for Drafter {
     }
 }
 
-/// Drafts through the app: any tier but off, destructive statements included, read-only and
-/// production too; never classified, asked about, connected or run. Off and the switch off
-/// refuse them; without the app (no front) they are refused, never run.
 #[test]
 fn drafts_go_to_the_app_and_never_run() {
     let cfg = tempfile::tempdir().unwrap();
     let dir = cfg.path().join("dataman");
     std::fs::create_dir_all(&dir).unwrap();
-    // Unreachable hosts: anything that connected would fail.
     let conns = [("r", "read", "", false), ("w", "write", "", false), ("f", "full", "", false), ("ro", "full", "", true), ("p", "write", "production", false), ("o", "off", "", false)];
     let mut toml = String::new();
     for (name, tier, env, ro) in conns {
@@ -576,28 +517,22 @@ fn drafts_go_to_the_app_and_never_run() {
     }
     assert_eq!((*app.asked.lock().unwrap(), *app.reads.lock().unwrap()), (0, 0), "nothing asked, nothing run");
     assert!(hub.connected("f").is_none(), "nothing connected");
-    // The database defaults to the connection's.
     let (_, text) = call(json!({"connection": "w", "sql": "DELETE FROM orders", "run": false}));
     assert_eq!(serde_json::from_str::<Value>(&text).unwrap()["database"], "app");
-    // Off, and params (the user runs the text as it is).
     let (err, text) = call(json!({"connection": "o", "sql": "SELECT 1", "run": false}));
     assert!(err && text.contains("off"), "{text}");
     let (err, text) = call(json!({"connection": "f", "sql": "SELECT $1", "params": [1], "run": false}));
     assert!(err && text.contains("params"), "{text}");
-    // run: true (the default) on tier read still refuses the write.
     let (err, text) = call(json!({"connection": "r", "sql": "DELETE FROM orders", "run": true}));
     assert!(err && text.contains("reads only"), "{text}");
-    // The switch off.
     std::fs::write(dir.join("settings.toml"), "mcp_enabled = false\n").unwrap();
     let (err, text) = call(json!({"connection": "f", "sql": "SELECT 1", "run": false}));
     assert!(err && text.contains("turned off"), "{text}");
     std::fs::remove_file(dir.join("settings.toml")).unwrap();
-    // No app: refused, nothing run.
     hub.set_front(None);
     let (err, text) = call(json!({"connection": "f", "sql": "DELETE FROM orders", "run": false}));
     assert!(err && text.contains("drafts need Dataman open"), "{text}");
     assert_eq!(app.drafts.lock().unwrap().len(), 21);
-    // The audit marks the drafts, with the statement redacted and as sent.
     let log = std::fs::read_to_string(dir.join("mcp-audit.jsonl")).unwrap();
     let lines: Vec<Value> = log.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
     let d = lines.iter().find(|l| l["draft"] == true && l["connection"] == "r").unwrap();
@@ -608,7 +543,6 @@ fn drafts_go_to_the_app_and_never_run() {
     std::mem::forget(hub);
 }
 
-/// The app's side for the forwarding test: denies everything, counts the questions.
 #[derive(Default)]
 struct Denier(std::sync::Mutex<Vec<dataman_mcp::Approval>>);
 
@@ -619,10 +553,6 @@ impl dataman_mcp::Front for Denier {
     }
 }
 
-/// The stdio binary hands its calls to a running app through `app.sock` (here a socket this
-/// test serves with its own hub and a human that denies): a destructive write on a full
-/// connection is asked about there and denied; with the app gone, the binary refuses it
-/// itself, never runs it.
 #[test]
 fn stdio_hands_calls_to_the_app() {
     if std::net::TcpStream::connect_timeout(&"127.0.0.1:55432".parse().unwrap(), Duration::from_secs(1)).is_err() {
@@ -666,7 +596,6 @@ fn stdio_hands_calls_to_the_app() {
     let (err, text) = m.tool("run_query", json!({"connection": "pg full", "sql": "SELECT 1 AS one"}));
     assert!(!err && text.contains("\"one\""), "{text}");
 
-    // The app quits: the binary refuses what needs a human, and runs the rest itself.
     app.stop();
     let (err, text) = m.tool("execute", json!({"connection": "pg full", "sql": drop_sql}));
     assert!(err && text.contains("needs approval in Dataman; open the app"), "{text}");

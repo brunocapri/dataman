@@ -1,35 +1,17 @@
-//! The window's blur when GPUI's does not work.
-//!
-//! GPUI (`gpui_macos/src/window.rs`, `set_background_appearance`) blurs the desktop with an
-//! `NSVisualEffectView` subclass (`BlurredView`: material `.selection`, state active, the
-//! default `.behindWindow` blending) added under its Metal view, and then edits that view's
-//! private layer tree on every `updateLayer`: it hides the `CAChameleonLayer` (the wallpaper
-//! tint), clears every sublayer's background and drops any layer filter whose description
-//! contains "Saturat" (the `colorSaturate` filter of macOS ≤ 15). That works on macOS 15
-//! (here); on macOS 26 the blur is reported lost — the desktop shows through sharp. The edits
-//! match on private class names and filter descriptions, so a material rebuilt in a new
-//! release (a blur filter that also carries a saturation parameter, a renamed layer) loses its
-//! blur with them; `.selection` is also no window background material.
-//!
-//! So on macOS 26 and later (which reports itself as 16.x to binaries built with an older
-//! SDK) Dataman asks GPUI for a plain transparent window and puts its own stock
-//! `NSVisualEffectView` (`.underWindowBackground`, `.behindWindow`, active, its layers left
-//! alone) at the bottom of the content view, under GPUI's view; the theme's glass tint is drawn
-//! over it as before. `DATAMAN_BLUR=own` / `DATAMAN_BLUR=gpui` picks one on any version.
+// GPUI's blur (`set_background_appearance`) edits the NSVisualEffectView's private layer tree
+// by class names and filter descriptions; on macOS 26 the blur is lost. So there (it reports
+// itself as 16.x to binaries built with an older SDK) Dataman asks GPUI for a transparent
+// window and puts its own stock NSVisualEffectView, layers left alone, under GPUI's view.
 
 use gpui::{Window, WindowBackgroundAppearance};
 use dataman_core::Translucency;
 
-/// Whose blur the window uses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Blur {
-    /// GPUI's `WindowBackgroundAppearance::Blurred`.
     Gpui,
-    /// A stock `NSVisualEffectView` of Dataman's under a transparent GPUI window.
     Own,
 }
 
-/// The blur for this system (`DATAMAN_BLUR` overrides).
 pub fn blur() -> Blur {
     static B: std::sync::OnceLock<Blur> = std::sync::OnceLock::new();
     *B.get_or_init(|| {
@@ -44,7 +26,6 @@ pub fn blur() -> Blur {
     })
 }
 
-/// The platform background for a translucency level.
 pub fn background_for(level: Translucency) -> WindowBackgroundAppearance {
     match (level.is_on(), blur()) {
         (false, _) => WindowBackgroundAppearance::Opaque,
@@ -53,20 +34,15 @@ pub fn background_for(level: Translucency) -> WindowBackgroundAppearance {
     }
 }
 
-/// Sets the window's background for `level`, with Dataman's own blur view under it when that is
-/// the blur in use (and none otherwise).
 pub fn apply(level: Translucency, window: &mut Window) {
     window.set_background_appearance(background_for(level));
     imp::set_own_view(window, level.is_on() && blur() == Blur::Own);
 }
 
-/// Whether Dataman's blur view is in the window now (the checks).
 pub fn own_view_installed() -> bool {
     imp::installed()
 }
 
-/// Dataman's blur view as AppKit has it (the checks): whether it is the content view's first
-/// subview (under GPUI's), and its size against the content view's.
 pub fn own_view_layout() -> Option<(bool, (f64, f64), (f64, f64))> {
     imp::layout()
 }
@@ -76,7 +52,6 @@ fn macos_major() -> isize {
     imp::os_major()
 }
 
-/// The major version in "Version 15.6 (Build 24G84)"; 0 when there is none.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn major_of(text: &str) -> isize {
     text.split(|c: char| !c.is_ascii_digit()).find(|s| !s.is_empty()).and_then(|s| s.parse().ok()).unwrap_or(0)
@@ -138,13 +113,11 @@ mod imp {
     const BELOW: isize = -1;
 
     thread_local! {
-        /// Dataman's blur view (retained), while it is in the window.
         static VIEW: Cell<*mut AnyObject> = const { Cell::new(std::ptr::null_mut()) };
     }
 
-    /// From `operatingSystemVersionString` ("Version 15.6 (Build 24G84)"): the struct of
-    /// `operatingSystemVersion` is anonymous on some systems (`{?=qqq}`), which objc2's
-    /// encoding check rejects in debug builds.
+    // From the string: the struct of `operatingSystemVersion` is anonymous on some systems
+    // (`{?=qqq}`), which objc2's encoding check rejects in debug builds.
     pub fn os_major() -> isize {
         // SAFETY: `NSProcessInfo.operatingSystemVersionString` (macOS 10.2+), any thread; the
         // UTF-8 buffer lives as long as the string, read before returning.
@@ -189,7 +162,6 @@ mod imp {
         }
     }
 
-    /// GPUI's view (an `NSView` in the window's content view).
     fn gpui_view(window: &Window) -> Option<*mut AnyObject> {
         match HasWindowHandle::window_handle(window).ok()?.as_raw() {
             RawWindowHandle::AppKit(h) => Some(h.ns_view.as_ptr().cast()),

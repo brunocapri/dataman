@@ -1,19 +1,3 @@
-//! Exporting a result to a file: CSV, TSV, JSON, NDJSON, SQL `INSERT`s and Parquet.
-//!
-//! Two sources:
-//!
-//! - [`export_result`]: a result already in the grid (optionally only the selected rows). When
-//!   the result is paused with rows left, the export asks for more as it writes, so the rest is
-//!   fetched on demand; those rows stay in the result (it is the grid's), so memory grows with it.
-//! - [`Connection::export_query`]: runs the statement again on a dedicated connection and streams
-//!   it straight to the file, one chunk at a time: flat memory for 10 M rows and more.
-//!
-//! The writer runs on a blocking thread fed through a small bounded channel (back-pressure all
-//! the way to the server socket). It writes to a temporary file next to the target and renames it
-//! at the end; a cancelled or failed export removes the temporary file and leaves the target
-//! untouched. Progress is published in [`ExportProgress`] (atomics the UI polls) and through an
-//! optional callback.
-
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -32,17 +16,11 @@ use crate::{Task, spawn};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExportFormat {
-    /// RFC 4180 (delimiter, quoting and NULL text configurable).
     Csv,
-    /// `COPY … (FORMAT text)`: tab-separated, `\t \n \r \\` escaped, NULL as `\N` by default.
     Tsv,
-    /// One JSON array of objects.
     Json,
-    /// One JSON object per line.
     Ndjson,
-    /// `INSERT INTO table (…) VALUES (…), (…);` in batches.
     SqlInsert,
-    /// Apache Parquet (Snappy), columns typed from the result's kinds.
     Parquet,
 }
 
@@ -72,7 +50,6 @@ impl ExportFormat {
         }
     }
 
-    /// The format a file name suggests (`x.csv` → CSV).
     pub fn from_path(p: &Path) -> Option<ExportFormat> {
         let ext = p.extension()?.to_str()?.to_ascii_lowercase();
         Some(match ext.as_str() {
@@ -89,13 +66,10 @@ impl ExportFormat {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum QuoteStyle {
-    /// Only fields that need it (delimiter, quote, line break, leading/trailing space, empty).
     #[default]
     Necessary,
     Always,
-    /// Everything but numbers and booleans.
     NonNumeric,
-    /// Never quote (the caller knows the data is clean).
     Never,
 }
 
@@ -118,25 +92,16 @@ impl LineEnding {
 #[derive(Clone, Debug)]
 pub struct ExportOptions {
     pub format: ExportFormat,
-    /// CSV/TSV: a first line with the column names.
     pub header: bool,
-    /// CSV only (TSV is always a tab).
     pub delimiter: char,
     pub quote: QuoteStyle,
-    /// How NULL is written in CSV/TSV. `None`: CSV writes nothing (unquoted), TSV writes `\N`.
     pub null_text: Option<String>,
     pub line_ending: LineEnding,
-    /// Columns to write, in this order (indexes into the result's columns). `None`: all.
     pub columns: Option<Vec<usize>>,
-    /// Only these display rows of the result (the grid's selection). Only for [`export_result`].
     pub rows: Option<Vec<usize>>,
-    /// SQL INSERT: the target table (quoted as needed; `schema.table` allowed).
     pub table: String,
-    /// SQL INSERT: rows per statement.
     pub batch_size: usize,
-    /// SQL INSERT: the dialect of the statements (the source connection's by default in the UI).
     pub dialect: crate::sql::Dialect,
-    /// Parquet: rows per row group (memory held by the writer before flushing a group).
     pub row_group_rows: usize,
 }
 
@@ -165,12 +130,10 @@ impl ExportOptions {
     }
 }
 
-/// Live progress of an export, shared with the UI.
 #[derive(Debug, Default)]
 pub struct ExportProgress {
     rows: AtomicU64,
     bytes: AtomicU64,
-    /// Rows expected (0 = unknown).
     total: AtomicU64,
     cancel: AtomicBool,
     finished: AtomicBool,
@@ -183,11 +146,9 @@ impl ExportProgress {
     pub fn bytes(&self) -> u64 {
         self.bytes.load(Ordering::Relaxed)
     }
-    /// Rows expected, when known (an export of a selection or of a finished result).
     pub fn total_rows(&self) -> Option<u64> {
         Some(self.total.load(Ordering::Relaxed)).filter(|t| *t > 0)
     }
-    /// Asks the export to stop: the temporary file is removed and the target left untouched.
     pub fn cancel(&self) {
         self.cancel.store(true, Ordering::Release);
     }
@@ -199,7 +160,6 @@ impl ExportProgress {
     }
 }
 
-/// Called with (rows, bytes) at most every 100 ms, from the writer thread.
 pub type ProgressFn = Arc<dyn Fn(u64, u64) + Send + Sync>;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -208,35 +168,24 @@ pub struct ExportSummary {
     pub rows: u64,
     pub bytes: u64,
     pub elapsed: Duration,
-    /// Stopped by [`ExportProgress::cancel`]: nothing was written to `path`.
     pub cancelled: bool,
-    /// All rows of the source were written (false when the result had been cancelled with rows
-    /// never fetched: the loaded ones were exported).
     pub complete: bool,
 }
 
-/// A running export: poll `progress`, await `task`.
 pub struct Export {
     pub progress: Arc<ExportProgress>,
     pub task: Task<ExportSummary>,
 }
 
-// ---------------------------------------------------------------------------------------------
-// Sources
-
 enum Batch {
-    /// Display rows `range` of a snapshot.
     Range(Snapshot, std::ops::Range<usize>),
-    /// Selected display rows of a snapshot.
     Picked(Snapshot, Vec<usize>),
-    /// Storage rows `range` of a snapshot (arrival order, whatever the sort).
     Stored(Snapshot, std::ops::Range<usize>),
     Chunk(Chunk),
 }
 
 const CHANNEL: usize = 4;
 
-/// Exports a result shown in the grid. Rows not fetched yet are requested as the writer goes.
 pub fn export_result(rt: &Handle, rs: Arc<ResultSet>, path: impl Into<PathBuf>, opts: ExportOptions) -> Export {
     export_result_with(rt, rs, path, opts, None)
 }
@@ -254,7 +203,6 @@ pub fn export_result_with(
     let rt2 = rt.clone();
     let task = spawn(rt, async move {
         let t0 = Instant::now();
-        // The columns are known once the statement has been described.
         let mut rx = rs.subscribe();
         while rs.columns().is_none() && !rs.phase().is_finished() {
             if rx.changed().await.is_err() {
@@ -279,7 +227,6 @@ pub fn export_result_with(
                 }
             }
         } else if rs.sort_state().is_some() {
-            // A sorted result is shown in sort order: wait for every row, then write them.
             rs.fetch_all();
             let ph = wait_or_cancel(&rs, &p).await;
             complete = ph != Some(Phase::Cancelled);
@@ -294,8 +241,6 @@ pub fn export_result_with(
                 at = end;
             }
         } else {
-            // Unsorted when the export started: stream in arrival (storage) order, so sorting the
-            // grid meanwhile changes nothing here.
             let mut sent = 0usize;
             loop {
                 if p.is_cancelled() {
@@ -323,7 +268,6 @@ pub fn export_result_with(
                     }
                     break;
                 }
-                // Keep the fetcher a little ahead of the writer, not the whole result ahead.
                 rs.request_rows(sent + CHUNK * 4);
                 let _ = tokio::time::timeout(Duration::from_millis(200), rx.changed()).await;
             }
@@ -335,7 +279,6 @@ pub fn export_result_with(
     Export { progress, task }
 }
 
-/// Resolves once the export is cancelled (polled: the flag is a plain atomic).
 async fn cancelled(p: &ExportProgress) {
     while !p.is_cancelled() {
         tokio::time::sleep(Duration::from_millis(25)).await;
@@ -357,9 +300,8 @@ async fn wait_or_cancel(rs: &ResultSet, p: &ExportProgress) -> Option<Phase> {
 }
 
 impl Connection {
-    /// Runs `sql` on a dedicated connection to `database` and streams its rows to `path`, with
-    /// flat memory. Only for statements that are safe to run again: SELECT, WITH, TABLE, VALUES.
-    /// `opts.rows` (a selection) does not apply here.
+    /// Runs `sql` a second time: only for statements that are safe to run again (SELECT, WITH,
+    /// TABLE, VALUES).
     pub fn export_query(
         self: &Arc<Self>,
         database: Option<&str>,
@@ -384,8 +326,6 @@ impl Connection {
             }
             let (tx, writer) = start_writer(this.handle(), path.clone(), cols.clone(), opts, p.clone(), on_progress);
             let run = async {
-                // Waiting for the first row of a slow statement (or for room in the channel)
-                // must not delay a cancel: this whole future races the cancel flag below.
                 let mut rows = match stmt.start().await {
                     Ok(r) => r,
                     Err(e) => return Some(e.to_string()),
@@ -411,13 +351,11 @@ impl Connection {
             let failure = tokio::select! {
                 f = run => f,
                 _ = cancelled(&p) => {
-                    // The statement may still be running on the server: stop it there too.
                     let _ = d.cancel().await;
                     None
                 }
             };
             if failure.is_some() {
-                // The writer removes its temporary file when cancelled.
                 p.cancel();
             }
             drop(tx);
@@ -432,7 +370,6 @@ impl Connection {
     }
 }
 
-/// SELECT, WITH (without data-modifying parts), TABLE or VALUES.
 pub fn is_rerunnable(sql: &str) -> bool {
     use crate::sql::lexer::{TokenKind, tokenize};
     let toks: Vec<_> = tokenize(sql).into_iter().filter(|t| !t.kind.is_trivia()).collect();
@@ -446,9 +383,6 @@ pub fn is_rerunnable(sql: &str) -> bool {
             && matches!(t.text(sql).to_ascii_uppercase().as_str(), "INSERT" | "UPDATE" | "DELETE" | "MERGE" | "INTO" | "SUBSCRIBE" | "LISTEN")
     })
 }
-
-// ---------------------------------------------------------------------------------------------
-// Writer
 
 type WriterResult = Result<(u64, u64, bool)>;
 
@@ -471,7 +405,6 @@ fn temp_path(path: &Path) -> PathBuf {
     path.with_file_name(format!(".{name}.{}.tmp", &tag[..8]))
 }
 
-/// Counts bytes written, into the shared progress.
 struct Counting<W> {
     inner: W,
     progress: Arc<ExportProgress>,
@@ -654,7 +587,6 @@ fn make_sink<'a, W: Write + Send + 'a>(out: W, cols: &[ColumnInfo], o: &ExportOp
     })
 }
 
-/// `schema.table` or `table`, quoting each part when needed; already-quoted parts kept.
 fn table_sql(t: &str, d: crate::sql::Dialect) -> String {
     let t = t.trim();
     if t.contains(['"', '`', '[']) {
@@ -666,7 +598,6 @@ fn table_sql(t: &str, d: crate::sql::Dialect) -> String {
     }
 }
 
-/// An identifier quoted for `d` (PostgreSQL's as before: only where it folds or is reserved).
 fn quoted(d: crate::sql::Dialect, name: &str) -> String {
     if d == crate::sql::Dialect::Postgres { quote_ident(name) } else { d.quote_ident(name) }
 }
@@ -754,8 +685,6 @@ impl<W: Write> Sink for DelimitedSink<W> {
     }
 }
 
-/// A JSON value for a cell: numbers and booleans as such, `json` columns embedded, timestamps
-/// with zone in RFC 3339 UTC, everything else as a string.
 pub(crate) fn json_value(kind: Kind, cell: Cell<'_>, out: &mut String) {
     use std::fmt::Write as _;
     match (kind, cell) {
@@ -873,7 +802,6 @@ impl<W: Write> Sink for InsertSink<W> {
     }
 }
 
-/// `\x0aff` → bytes (the grid's text for `bytea`); anything else → its UTF-8 bytes.
 fn unhex(s: &str) -> Vec<u8> {
     let Some(h) = s.strip_prefix("\\x") else { return s.as_bytes().to_vec() };
     if h.len() % 2 != 0 || !h.bytes().all(|c| c.is_ascii_hexdigit()) {
@@ -919,9 +847,6 @@ mod parquet_sink {
         TsTz(TimestampMicrosecondBuilder),
     }
 
-    /// Kind → Arrow type: integers Int64, floats Float64 (real: Float32), bool Boolean, bytea
-    /// Binary, date Date32, time Time64(µs), timestamp Timestamp(µs), timestamptz
-    /// Timestamp(µs, UTC); numeric, json, text and everything else Utf8 (exact text).
     pub(super) fn arrow_type(k: Kind) -> DataType {
         match k {
             Kind::Bool => DataType::Boolean,
@@ -1122,7 +1047,6 @@ mod tests {
         let e = export_result(rt.handle(), rs, &path, opts);
         let s = rt.block_on(e.task).unwrap();
         let text = std::fs::read(&path).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
-        // No temporary file left behind.
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
         (text, s)
     }
@@ -1218,7 +1142,6 @@ mod tests {
         assert!(md.num_row_groups() >= 3, "{}", md.num_row_groups());
         let schema = md.file_metadata().schema_descr();
         assert_eq!(schema.num_columns(), 8);
-        // Read back the first row through Arrow and check the types.
         let f = std::fs::File::open(&path).unwrap();
         let b = parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(f).unwrap();
         let mut rd = b.build().unwrap();
@@ -1239,7 +1162,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("out.csv");
         std::fs::write(&path, "old").unwrap();
-        // A result that never finishes: the export waits for rows until cancelled.
         let rs = ResultSet::new("x");
         rs.set_columns(cols());
         let e = export_result(rt.handle(), rs, &path, ExportOptions::new(ExportFormat::Csv));
@@ -1253,8 +1175,6 @@ mod tests {
 
     #[test]
     fn failed_statement_leaves_target_untouched() {
-        // Rows, then the statement fails: the export errors and the partial file never replaces
-        // the target.
         let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("out.csv");
@@ -1273,8 +1193,6 @@ mod tests {
 
     #[test]
     fn sorting_during_a_streaming_export_changes_nothing() {
-        // A current-thread runtime runs the export only inside `block_on`, so the grid can sort
-        // between two of its reads deterministically.
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("out.csv");
@@ -1303,7 +1221,6 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
         });
-        // More rows arrive and the grid sorts them all (descending) before the export looks again.
         rs.push_chunk(chunk(100, 100));
         rs.sort(Some((0, crate::result::SortDir::Desc)));
         rs.update_status(|s| s.phase = Some(Phase::Done));

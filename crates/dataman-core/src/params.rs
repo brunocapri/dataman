@@ -1,39 +1,27 @@
-//! Statement parameters: `$1 … $n`, and psql-style variables `:name` / `:'name'`, read with
-//! the lexer (never inside strings, comments, dollar-quoted bodies, `::` casts or array
-//! slices). Variables are rewritten to `$n` so that every value is bound through the extended
-//! protocol, never spliced into the SQL. Types are inferred from the statement when the
-//! schema says (`col = $1`, `$1::int`, `LIMIT $1`, `INSERT … VALUES ($1)`).
+// Variables are rewritten to `$n` so every value is bound through the extended protocol, never
+// spliced into the SQL.
 
 use crate::schema::SchemaSnapshot;
 use crate::sql::lexer::{Token, TokenKind, tokenize, tokenize_in};
 use crate::sql::{Dialect, scope};
 
-/// The identifier a token names, as the snapshot's dialect reads it.
 fn ident_value(sql: &str, t: &Token, d: Dialect) -> String {
     crate::sql::ident_value_in(sql, t, d)
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Param {
-    /// What the user wrote: `$1`, `:name`.
     pub key: String,
-    /// The `$n` it is bound as.
     pub index: u32,
-    /// A type inferred from the statement.
     pub hint: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Prepared {
-    /// The statement with every variable rewritten to its `$n`.
     pub sql: String,
-    /// One per `$n`, in order.
     pub params: Vec<Param>,
 }
 
-/// [`detect`] for a statement in `dialect`. MySQL's placeholders are `?`, bound in order (the
-/// statement is sent as written; no `:name` variables there, `@var` is MySQL's own). T-SQL's
-/// are its variables that the text does not declare ([`detect_tsql`]).
 pub fn detect_in(sql: &str, dialect: Dialect) -> Option<Prepared> {
     if dialect == Dialect::TSql {
         return detect_tsql(sql);
@@ -50,17 +38,11 @@ pub fn detect_in(sql: &str, dialect: Dialect) -> Option<Prepared> {
     (n > 0).then(|| Prepared { sql: sql.to_string(), params: (1..=n).map(|i| Param { key: format!("?{i}"), index: i, hint: None }).collect() })
 }
 
-/// Words that end a T-SQL `DECLARE` list (the next statement starts).
 const TSQL_STATEMENT_WORDS: &[&str] = &[
     "SELECT", "INSERT", "UPDATE", "DELETE", "MERGE", "SET", "IF", "WHILE", "EXEC", "EXECUTE", "RETURN", "PRINT", "BEGIN", "END",
     "OPEN", "FETCH", "CLOSE", "DEALLOCATE", "WITH", "TRUNCATE", "DROP", "CREATE", "ALTER", "WAITFOR", "THROW", "RAISERROR",
 ];
 
-/// T-SQL's parameters: the `@variables` the text uses without declaring them (`DECLARE @a int,
-/// @b …`), in order of appearance, compared without case. Not a parameter: `@@globals`, a
-/// variable assigned (`SELECT @a = …`, `SET @a = …`) or a procedure's named argument
-/// (`EXEC p @a = 1`), and nothing in a text that creates a procedure, function or trigger (its
-/// `@names` are its own). Each becomes `@Pn`, which the driver binds through `sp_executesql`.
 pub fn detect_tsql(sql: &str) -> Option<Prepared> {
     let sig: Vec<Token> = tokenize_in(sql, Dialect::TSql).into_iter().filter(|t| !t.kind.is_trivia()).collect();
     let word = |i: usize| sig.get(i).filter(|t| matches!(t.kind, TokenKind::Keyword | TokenKind::Ident)).map(|t| t.text(sql).to_ascii_uppercase());
@@ -110,7 +92,6 @@ pub fn detect_tsql(sql: &str) -> Option<Prepared> {
         }
         let next_eq = sig.get(i + 1).is_some_and(|n| n.text(sql) == "=");
         let prev = i.checked_sub(1).and_then(|p| sig.get(p)).map(|p| p.text(sql).to_ascii_uppercase());
-        // Assigned (`SELECT @a = …`, `SET @a = …`, `, @b = …`) or a named argument.
         if next_eq && (in_exec || matches!(prev.as_deref(), Some("SELECT" | "SET" | ","))) {
             continue;
         }
@@ -134,7 +115,6 @@ pub fn detect_tsql(sql: &str) -> Option<Prepared> {
         pos = r.end;
     }
     out.push_str(&sql[pos..]);
-    // The keys as first written.
     let keys: Vec<String> = named
         .iter()
         .map(|n| at.iter().find(|(_, k)| named[*k] == *n).map(|(r, _)| sql[r.clone()].to_string()).unwrap_or_else(|| n.clone()))
@@ -142,8 +122,6 @@ pub fn detect_tsql(sql: &str) -> Option<Prepared> {
     Some(Prepared { sql: out, params: keys.into_iter().enumerate().map(|(k, key)| Param { key, index: k as u32 + 1, hint: None }).collect() })
 }
 
-/// The parameters of one statement, or `None` when it has none (or is a statement whose `$n`
-/// belong to a body: PREPARE, CREATE FUNCTION…, DO).
 pub fn detect(sql: &str) -> Option<Prepared> {
     let tokens = tokenize(sql);
     let sig: Vec<Token> = tokens.iter().copied().filter(|t| !t.kind.is_trivia()).collect();
@@ -153,7 +131,6 @@ pub fn detect(sql: &str) -> Option<Prepared> {
     }
     let mut max = 0u32;
     let mut named: Vec<String> = Vec::new();
-    // (byte range to replace, name)
     let mut vars: Vec<(std::ops::Range<usize>, String)> = Vec::new();
     let mut brackets = 0i32;
     for (i, t) in sig.iter().enumerate() {
@@ -210,7 +187,6 @@ pub fn detect(sql: &str) -> Option<Prepared> {
     Some(Prepared { sql: out, params })
 }
 
-/// Fills in the types the statement shows for its parameters.
 pub fn infer(p: &mut Prepared, snap: &SchemaSnapshot) {
     let sql = &p.sql;
     let tokens = tokenize_in(sql, snap.dialect);
@@ -219,7 +195,6 @@ pub fn infer(p: &mut Prepared, snap: &SchemaSnapshot) {
     let text = |i: usize| sig.get(i).map_or("", |t| t.text(sql));
     let word = |i: usize, w: &str| sig.get(i).is_some_and(|t| matches!(t.kind, TokenKind::Keyword | TokenKind::Ident) && t.text(sql).eq_ignore_ascii_case(w));
     let is_name = |i: usize| sig.get(i).is_some_and(|t| matches!(t.kind, TokenKind::Ident | TokenKind::QuotedIdent));
-    // A column reference ending at `i` (`name` or `q.name`), its type.
     let col_type = |end: usize, at: usize| -> Option<String> {
         if !is_name(end) {
             return None;
@@ -229,13 +204,11 @@ pub fn infer(p: &mut Prepared, snap: &SchemaSnapshot) {
         let scope = a.scope_at(at)?;
         a.ref_type(scope, q.as_deref(), &name, snap)
     };
-    // A column reference starting at `i`.
     let col_type_from = |start: usize, at: usize| -> Option<String> {
         if is_name(start) && text(start + 1) == "." && is_name(start + 2) { col_type(start + 2, at) } else { col_type(start, at) }
     };
     const CMP: &[&str] = &["=", "<>", "!=", "<", ">", "<=", ">="];
     let values_row = sig.iter().position(|t| t.text(sql).eq_ignore_ascii_case("VALUES"));
-    // MySQL's `?` are numbered by their place; T-SQL's are `@P1 …`.
     let mut nth = 0u32;
     for (i, t) in sig.iter().enumerate() {
         let n = match (t.kind, t.text(sql)) {
@@ -269,7 +242,6 @@ pub fn infer(p: &mut Prepared, snap: &SchemaSnapshot) {
         } else if CMP.contains(&text(i + 1)) {
             col_type_from(i + 2, at)
         } else {
-            // col IN ($1, $2, …)
             let mut k = i;
             while k >= 2 && text(k - 1) == "," {
                 k -= 2;
@@ -279,7 +251,6 @@ pub fn infer(p: &mut Prepared, snap: &SchemaSnapshot) {
             } else if let Some(v) = values_row
                 && i > v
             {
-                // INSERT INTO t (a, b) VALUES ($1, $2): by position in its row.
                 let open = (v..i).rev().find(|&j| text(j) == "(");
                 open.and_then(|o| {
                     let pos = (o + 1..i).filter(|&j| text(j) == ",").count();
@@ -296,8 +267,6 @@ pub fn infer(p: &mut Prepared, snap: &SchemaSnapshot) {
     }
 }
 
-/// A field's text as a bound value: `NULL` (any case) is SQL NULL, anything else is sent as text
-/// for the server to parse as the parameter's type.
 pub fn bind_value(text: &str) -> Option<String> {
     if text.trim().eq_ignore_ascii_case("null") { None } else { Some(text.to_string()) }
 }
@@ -350,7 +319,6 @@ mod tests {
         let p = detect_in("SELECT * FROM orders WHERE customer_id = @Customer AND status = @s OR @s IS NULL AND x = @customer -- @nope\n AND y = '@no'", d).unwrap();
         assert_eq!(p.params.iter().map(|x| (x.key.as_str(), x.index)).collect::<Vec<_>>(), vec![("@Customer", 1), ("@s", 2)]);
         assert_eq!(p.sql, "SELECT * FROM orders WHERE customer_id = @P1 AND status = @P2 OR @P2 IS NULL AND x = @P1 -- @nope\n AND y = '@no'");
-        // Declared, assigned, named arguments, globals: not parameters.
         assert!(detect_in("DECLARE @a int = 1, @b int; SELECT @a + @b, @@ROWCOUNT", d).is_none());
         assert!(detect_in("DECLARE @t TABLE (a int); INSERT @t VALUES (1); SELECT * FROM @t", d).is_none());
         assert!(detect_in("EXEC dbo.p @customer = 1, @total = 2", d).is_none());

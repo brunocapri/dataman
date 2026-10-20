@@ -1,7 +1,3 @@
-//! Editor intelligence against real servers: the function and type catalog (signature help,
-//! enum labels), go to definition (and the definitions it opens), parameters bound through
-//! the extended protocol, and lint staying quiet on LAR. Skips without servers.
-
 mod common;
 
 use common::*;
@@ -45,7 +41,6 @@ fn catalog_signatures_and_definitions_on_postgres() {
     assert_eq!(rate.args, "amount numeric, pct numeric DEFAULT 0.1");
     assert_eq!(rate.result, "numeric");
     assert_eq!(cat.enum_labels("dataman_intel.mood", &[]).unwrap(), &["happy".to_string(), "tense".into(), "content".into()]);
-    // Cached: the second call returns the same catalog.
     assert!(Arc::ptr_eq(&cat, &wait(&e, c.catalog(&db))));
 
     wait(&e, c.preload(&db));
@@ -54,7 +49,6 @@ fn catalog_signatures_and_definitions_on_postgres() {
     let snap = c.schema.snapshot(&db);
     assert!(snap.catalog.is_some() && snap.complete);
 
-    // Signature help on the live catalog.
     let src = "select dataman_intel.rate(10, ";
     let h = signature_help(src, &tokenize(src), src.len(), &snap).expect("signature help");
     assert_eq!((h.function.name.as_str(), h.active), ("rate", Some(1)));
@@ -64,12 +58,10 @@ fn catalog_signatures_and_definitions_on_postgres() {
     assert_eq!(h.active, Some(1));
     assert!(h.overloads >= 2);
 
-    // Enum labels inside a string compared with an enum column.
     let src = "select * from dataman_intel.person p where p.mood = 'te";
     let comp = complete(src, src.len(), &snap);
     assert_eq!(comp.items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>(), vec!["tense", "content"], "prefix first, then substring");
 
-    // Go to definition: a view, a column, a function, then their definitions.
     let src = "select a.name from dataman_intel.happy_people a where dataman_intel.rate(a.id) > 1";
     let at = |needle: &str| definition_at(src, src.find(needle).unwrap() + 1, &snap);
     assert_eq!(at("happy_people"), Some(Definition::Relation { schema: "dataman_intel".into(), name: "happy_people".into(), column: None }));
@@ -81,7 +73,6 @@ fn catalog_signatures_and_definitions_on_postgres() {
     let view = wait(&e, c.view_definition(&db, "dataman_intel", "happy_people")).expect("view definition");
     assert!(view.to_uppercase().contains("SELECT"), "{view}");
 
-    // Lint against the live schema: a typo is caught, the real names are not.
     let l = lint("select p.nam from dataman_intel.person p", &LintContext { schema: Some(&snap), ..Default::default() });
     assert_eq!(l.iter().map(|x| x.message.as_str()).collect::<Vec<_>>(), vec!["column p.nam does not exist"]);
     assert!(lint("select p.name, mood from dataman_intel.person p join orders x on x.id = p.id", &LintContext { schema: Some(&snap), ..Default::default() }).is_empty());
@@ -94,7 +85,6 @@ fn parameters_bind_through_the_extended_protocol() {
     let e = env();
     let Some(c) = pg(&e) else { return };
     let s = c.session(None);
-    // $n with a NULL and a value the server parses as the parameter's type.
     let rs = s.execute_with("SELECT $1::int + 1 AS n, $2::text IS NULL AS null, $3::date AS d", vec![Some("41".into()), None, Some("2026-10-13".into())]);
     finish(&e, &rs);
     assert_eq!(rs.phase(), Phase::Done, "{:?}", rs.status().error);
@@ -102,7 +92,6 @@ fn parameters_bind_through_the_extended_protocol() {
     assert_eq!(snap.text(0, 0).unwrap(), "42");
     assert_eq!(snap.text(0, 1).unwrap(), "true");
     assert_eq!(snap.text(0, 2).unwrap(), "2026-10-13");
-    // psql variables are rewritten to $n: a value with quotes stays a value.
     let p = params::detect("SELECT :n::int * 2 AS doubled, :'name' AS name, :n::int AS again").unwrap();
     assert_eq!(p.sql, "SELECT $1::int * 2 AS doubled, $2 AS name, $1::int AS again");
     let rs = s.execute_with(p.sql.clone(), vec![Some("21".into()), Some("o'brien'); drop table x; --".into())]);
@@ -111,7 +100,6 @@ fn parameters_bind_through_the_extended_protocol() {
     let snap = rs.snapshot();
     assert_eq!(snap.text(0, 0).unwrap(), "42");
     assert_eq!(snap.text(0, 1).unwrap(), "o'brien'); drop table x; --");
-    // A wrong value is the server's error, never a client-side splice.
     let rs = s.execute_with("SELECT $1::int", vec![Some("abc".into())]);
     finish(&e, &rs);
     assert_eq!(rs.phase(), Phase::Failed);
@@ -123,7 +111,6 @@ fn lar_catalog_degrades_quietly() {
     let e = env();
     let Some(c) = lar(&e) else { return };
     let db = c.database().to_string();
-    // Whatever LAR's catalog has, loading it never fails.
     let cat = wait(&e, c.catalog(&db));
     eprintln!("LAR catalog: {} functions, {} types", cat.functions.len(), cat.types.len());
     wait(&e, c.preload(&db));

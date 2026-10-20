@@ -1,8 +1,3 @@
-//! The part of `~/.ssh/config` a tunnel needs: for a host alias, its HostName, User, Port,
-//! IdentityFile(s), IdentitiesOnly and ProxyJump. `Host` patterns (`*`, `?`, `!negated`) and
-//! `Include` are honoured; the first value of a keyword wins, as in ssh (IdentityFile
-//! accumulates). `Match` blocks are skipped, except `Match all`.
-
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -10,15 +5,12 @@ pub struct HostConfig {
     pub hostname: Option<String>,
     pub user: Option<String>,
     pub port: Option<u16>,
-    /// Raw values, `~` and `%` tokens not expanded yet (see [`HostConfig::identity_paths`]).
     pub identity_files: Vec<String>,
     pub identities_only: Option<bool>,
-    /// `ProxyJump`, unparsed (`none` is kept as written).
     pub proxy_jump: Option<String>,
 }
 
 impl HostConfig {
-    /// The host to connect to: HostName (its `%h` is the alias), or the alias itself.
     pub fn real_host(&self, alias: &str) -> String {
         match &self.hostname {
             Some(h) => h.replace("%h", alias).replace("%%", "%"),
@@ -26,12 +18,10 @@ impl HostConfig {
         }
     }
 
-    /// IdentityFile paths with `~`, `%d`, `%u`, `%r`, `%h`, `%p`, `%%` expanded.
     pub fn identity_paths(&self, home: &Path, local_user: &str, remote_user: &str, host: &str, port: u16) -> Vec<PathBuf> {
         self.identity_files.iter().map(|f| PathBuf::from(expand(f, home, local_user, remote_user, host, port))).collect()
     }
 
-    /// The jump hosts, in order; empty for none.
     pub fn jumps(&self) -> Vec<Jump> {
         match self.proxy_jump.as_deref() {
             None => vec![],
@@ -41,7 +31,6 @@ impl HostConfig {
     }
 }
 
-/// One `ProxyJump` hop: `[user@]host[:port]` or `ssh://[user@]host[:port]`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Jump {
     pub user: Option<String>,
@@ -101,7 +90,6 @@ fn expand(s: &str, home: &Path, local_user: &str, remote_user: &str, host: &str,
     out
 }
 
-/// `~/.ssh/config` for `alias` (empty when there is no file).
 pub fn resolve_default(alias: &str) -> HostConfig {
     match home() {
         Some(h) => resolve_file(&h.join(".ssh").join("config"), alias, &h.join(".ssh")),
@@ -113,7 +101,6 @@ pub(crate) fn home() -> Option<PathBuf> {
     std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from)
 }
 
-/// `path` for `alias`; relative `Include`s are under `ssh_dir`.
 pub fn resolve_file(path: &Path, alias: &str, ssh_dir: &Path) -> HostConfig {
     let mut out = HostConfig::default();
     if let Ok(text) = std::fs::read_to_string(path) {
@@ -122,7 +109,6 @@ pub fn resolve_file(path: &Path, alias: &str, ssh_dir: &Path) -> HostConfig {
     out
 }
 
-/// The config text for `alias` (no `Include` resolution beyond `ssh_dir`).
 pub fn resolve(text: &str, alias: &str, ssh_dir: &Path) -> HostConfig {
     let mut out = HostConfig::default();
     apply(text, alias, ssh_dir, &mut out, 0);
@@ -130,7 +116,6 @@ pub fn resolve(text: &str, alias: &str, ssh_dir: &Path) -> HostConfig {
 }
 
 fn apply(text: &str, alias: &str, ssh_dir: &Path, out: &mut HostConfig, depth: usize) {
-    // Lines before the first Host/Match apply to every host.
     let mut active = true;
     for line in text.lines() {
         let Some((key, args)) = split_line(line) else { continue };
@@ -172,7 +157,6 @@ fn set(slot: &mut Option<String>, args: &[String]) {
     }
 }
 
-/// `Keyword args…` or `Keyword=args…`, comments and blank lines dropped; double quotes group.
 fn split_line(line: &str) -> Option<(String, Vec<String>)> {
     let line = line.trim();
     if line.is_empty() || line.starts_with('#') {
@@ -210,7 +194,6 @@ fn split_line(line: &str) -> Option<(String, Vec<String>)> {
     Some((key, args))
 }
 
-/// A `Host` line matches when one of its patterns does and none of its `!` patterns does.
 fn host_matches(patterns: &[String], alias: &str) -> bool {
     let mut hit = false;
     for p in patterns {
@@ -225,7 +208,6 @@ fn host_matches(patterns: &[String], alias: &str) -> bool {
     hit
 }
 
-/// ssh's patterns: `*` any run, `?` one character; case-insensitive (host names).
 pub(crate) fn wildcard(pat: &str, s: &str) -> bool {
     let p: Vec<char> = pat.to_lowercase().chars().collect();
     let s: Vec<char> = s.to_lowercase().chars().collect();
@@ -252,8 +234,6 @@ pub(crate) fn wildcard(pat: &str, s: &str) -> bool {
     pi == p.len()
 }
 
-/// The files an `Include` names: `~` expanded, relative to `ssh_dir`, a `*`/`?` in the last
-/// component matched against that directory, sorted (as glob(3) does).
 fn include_files(pat: &str, ssh_dir: &Path) -> Vec<PathBuf> {
     let expanded = match (pat.strip_prefix("~/"), home()) {
         (Some(rest), Some(h)) => h.join(rest),
@@ -305,7 +285,6 @@ Host *
         let dir = Path::new("/home/me/.ssh");
         let b = resolve(CONFIG, "bastion", dir);
         assert_eq!((b.hostname.as_deref(), b.user.as_deref(), b.port), (Some("203.0.113.10"), Some("jump"), Some(2222)));
-        // IdentityFile accumulates (the alias' own first, then `Host *`).
         assert_eq!(b.identity_files, vec!["~/.ssh/bastion_ed25519", "~/.ssh/id_ed25519"]);
         assert!(b.jumps().is_empty());
 
@@ -319,12 +298,9 @@ Host *
             vec![PathBuf::from("/home/me/.ssh/my keys/deploy@db-main"), PathBuf::from("/home/me/.ssh/id_ed25519")]
         );
 
-        // Negated pattern: db-legacy only gets `Host *`; Match blocks are skipped.
         let l = resolve(CONFIG, "db-legacy", dir);
         assert_eq!((l.hostname, l.user.as_deref(), l.proxy_jump), (None, Some("fallback"), None));
-        // Case-insensitive host patterns.
         assert_eq!(resolve(CONFIG, "BASTION", dir).port, Some(2222));
-        // Unknown host: only the catch-all.
         let u = resolve(CONFIG, "example.com", dir);
         assert_eq!((u.hostname, u.port), (None, Some(22)));
     }

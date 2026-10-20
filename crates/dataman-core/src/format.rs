@@ -1,16 +1,3 @@
-//! SQL formatter on top of the lexer (⌥⇧F in the editor).
-//!
-//! Deterministic and idempotent: the layout depends only on the tokens (and on whether each
-//! comment sat on its own line), so formatting twice changes nothing. Comments, string
-//! literals, dollar-quoted bodies and the casing of identifiers are kept byte for byte; only
-//! keywords change case, as the settings say.
-//!
-//! Queries and DML get a layout: one clause per line (SELECT, FROM, JOIN, WHERE, GROUP BY,
-//! HAVING, ORDER BY, LIMIT, RETURNING, SET, VALUES, ON CONFLICT, set operations), select and
-//! SET lists one item per line when there are several, AND/OR of WHERE/ON/HAVING on their own
-//! lines, CTE and subquery bodies indented inside their parentheses, CASE with one WHEN per
-//! line. Other statements (DDL, PL/pgSQL…) keep their own layout; only keyword case changes.
-
 use serde::{Deserialize, Serialize};
 
 use crate::sql::Dialect;
@@ -41,7 +28,6 @@ impl KeywordCase {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FormatOptions {
     pub keyword_case: KeywordCase,
-    /// Spaces per indent level (2 or 4).
     pub indent: usize,
 }
 
@@ -51,12 +37,10 @@ impl Default for FormatOptions {
     }
 }
 
-/// Formats a script (or a selection of one) written in PostgreSQL.
 pub fn format(src: &str, opts: &FormatOptions) -> String {
     format_in(src, opts, Dialect::Postgres)
 }
 
-/// [`format`] for a script in `dialect`.
 pub fn format_in(src: &str, opts: &FormatOptions, dialect: Dialect) -> String {
     let tokens = tokenize_in(src, dialect);
     let stmts = split_tokens_in(src, &tokens, dialect.script());
@@ -95,7 +79,6 @@ pub fn format_in(src: &str, opts: &FormatOptions, dialect: Dialect) -> String {
         match t.kind {
             TokenKind::Whitespace => newlines += t.text(src).matches('\n').count(),
             TokenKind::Punct if t.text(src) == ";" => {
-                // An empty statement's `;` stays glued to what is before it.
                 out.push(';');
                 first = false;
                 newlines = 0;
@@ -112,7 +95,6 @@ pub fn format_in(src: &str, opts: &FormatOptions, dialect: Dialect) -> String {
     format!("{lead}{out}{trail}")
 }
 
-/// Formats one statement (its tokens, `;` included).
 fn statement(src: &str, toks: &[Token], opts: &FormatOptions) -> String {
     let sig: Vec<usize> = (0..toks.len()).filter(|&k| !toks[k].kind.is_trivia()).collect();
     let word = |si: usize| sig.get(si).map_or(String::new(), |&k| toks[k].text(src).to_ascii_uppercase());
@@ -130,7 +112,6 @@ fn statement(src: &str, toks: &[Token], opts: &FormatOptions) -> String {
     f.out
 }
 
-/// `CREATE … VIEW|TABLE … AS <query>`.
 fn create_as(src: &str, toks: &[Token], sig: &[usize]) -> bool {
     let text = |si: usize| sig.get(si).map_or("", |&k| toks[k].text(src));
     let mut depth = 0i32;
@@ -161,13 +142,11 @@ fn cased(text: &str, case: KeywordCase) -> String {
     }
 }
 
-/// A keyword token in a name's place (`t.type`, `key.x`) is a name: its case stays.
 fn keyword_as_name(src: &str, toks: &[Token], sig: &[usize], si: usize) -> bool {
     let at = |i: Option<usize>| i.and_then(|i| sig.get(i)).map(|&k| toks[k].text(src));
     at(si.checked_sub(1)) == Some(".") || at(Some(si + 1)) == Some(".")
 }
 
-/// The statement as written, keywords recased.
 fn verbatim(src: &str, toks: &[Token], sig: &[usize], opts: &FormatOptions) -> String {
     let mut out = String::with_capacity(toks.iter().map(|t| t.end - t.start).sum());
     let mut si = 0;
@@ -207,14 +186,10 @@ enum C {
 #[derive(Clone, Copy, Debug)]
 struct Frame {
     kind: Kind,
-    /// Query: the level of its clause lines. Case: the level of its WHEN lines.
     base: usize,
-    /// The line level where the frame opened (its `)` or END goes back there).
     open: usize,
     clause: C,
-    /// The current list puts one item per line.
     list_break: bool,
-    /// The sig index of the first item of a broken list.
     item_at: Option<usize>,
     between: bool,
     first: bool,
@@ -226,7 +201,6 @@ impl Frame {
     }
 }
 
-/// Keywords written right against their `(`.
 const NO_SPACE_KW: &[&str] = &[
     "CAST", "ANY", "SOME", "ALL", "ARRAY", "ROW", "NUMERIC", "DECIMAL", "VARCHAR", "CHAR", "CHARACTER", "TIMESTAMP",
     "TIMESTAMPTZ", "TIME", "LEFT", "RIGHT", "REPLACE",
@@ -237,7 +211,6 @@ const SELECT_END: &[&str] = &[
 ];
 const SET_END: &[&str] = &["WHERE", "FROM", "RETURNING"];
 const VALUES_END: &[&str] = &["ON", "RETURNING", "ORDER", "LIMIT", "OFFSET", "UNION", "INTERSECT", "EXCEPT"];
-/// Words that start a clause line in a query.
 const CLAUSES: &[&str] = &[
     "SELECT", "FROM", "WHERE", "GROUP", "HAVING", "ORDER", "LIMIT", "OFFSET", "FETCH", "WINDOW", "UNION", "INTERSECT",
     "EXCEPT", "RETURNING", "VALUES", "SET", "JOIN", "LEFT", "RIGHT", "FULL", "INNER", "CROSS", "NATURAL", "UPDATE",
@@ -248,7 +221,6 @@ struct Fmt<'a> {
     src: &'a str,
     toks: &'a [Token],
     sig: Vec<usize>,
-    /// For the sig index of a `(`, the sig index of its `)` (`sig.len()` when unclosed).
     close: Vec<usize>,
     opts: FormatOptions,
     out: String,
@@ -320,8 +292,6 @@ impl<'a> Fmt<'a> {
         ["SELECT", "WITH", "VALUES", "TABLE"].iter().any(|w| self.kw(si, w)) || (self.punct(si, "(") && self.starts_query(si + 1))
     }
 
-    /// The list from `si` to its end (a keyword of `ends`, `)` or `;`): its depth-0 commas,
-    /// its length written on one line (roughly), and whether an item holds a CASE or a subquery.
     fn list(&self, mut si: usize, ends: &[&str]) -> (usize, usize, bool) {
         let (mut n, mut len, mut block) = (0, 0, false);
         while si < self.sig.len() {
@@ -351,8 +321,6 @@ impl<'a> Fmt<'a> {
         (n, len, block)
     }
 
-    /// A select list goes one item per line from three items on, when it is long, or when an
-    /// item holds a CASE or a subquery.
     fn breaks(&self, si: usize, ends: &[&str]) -> bool {
         let (n, len, block) = self.list(si, ends);
         n >= 2 || (n >= 1 && (len > 60 || block))
@@ -381,7 +349,6 @@ impl<'a> Fmt<'a> {
         self.line_start = false;
     }
 
-    /// Where a line goes when nothing says otherwise (after a line comment).
     fn cont_level(&self) -> usize {
         let f = self.frames.last().expect("frame");
         match f.kind {
@@ -416,7 +383,6 @@ impl<'a> Fmt<'a> {
         let line = t.kind == TokenKind::LineComment;
         if own {
             let level = self.pending.take().unwrap_or_else(|| {
-                // Before a clause keyword: at the clause's level.
                 let next = self.sig.iter().position(|&x| x > k);
                 let f = self.frames.last().expect("frame");
                 match next {
@@ -623,7 +589,6 @@ impl<'a> Fmt<'a> {
         }
     }
 
-    /// Whether the token at `p` leaves the next `-`/`+` unary.
     fn opens_operand(&self, p: usize) -> bool {
         let Some(t) = self.tok(p) else { return true };
         match t.kind {
@@ -658,11 +623,9 @@ impl<'a> Fmt<'a> {
         }
         if ct.kind == TokenKind::Punct && cs == "(" {
             return match pt.kind {
-                // A call hugs its name; a column list after a target or before AS does not.
                 TokenKind::Ident | TokenKind::QuotedIdent => {
                     let after = self.close[si] + 1;
                     ["INTO", "WITH", "RECURSIVE", "VIEW", "TABLE"].iter().any(|w| self.word(p.wrapping_sub(1), w))
-                        // `, name (cols) AS (` in a WITH list.
                         || (self.punct(p.wrapping_sub(1), ",") && self.kw(after, "AS") && (self.punct(after + 1, "(") || self.kw(after + 1, "NOT") || self.kw(after + 1, "MATERIALIZED")))
                 }
                 TokenKind::Keyword => !NO_SPACE_KW.iter().any(|w| ps.eq_ignore_ascii_case(w)),
@@ -780,7 +743,6 @@ where c.id = orders.customer"
             out,
             "-- head\nSelect\n  \"Odd Column\",\n  'it''s  spaced',\n  E'a\\'b',\n  MyCol -- trailing\nFROM t /* inline */\nwhere x = $tag$ keep   this $tag$;\n\n/* own\n   lines */\ncreate function f() returns int as $$ select   1 $$ language sql;\n"
         );
-        // Upper case: keywords only (identifiers and the function body stay).
         let up = fmt("select MyCol, count(*) from t; create table x (id int primary key)");
         assert_eq!(up, "SELECT MyCol, count(*)\nFROM t;\nCREATE TABLE x (id INT PRIMARY KEY)".replace("INT PRIMARY", "int PRIMARY"));
     }
@@ -824,7 +786,6 @@ where c.id = orders.customer"
 
     #[test]
     fn only_whitespace_and_keyword_case_change() {
-        // Removing whitespace and folding keyword case gives the same text before and after.
         let squash = |s: &str| {
             let toks = tokenize(s);
             toks.iter().filter(|t| t.kind != TokenKind::Whitespace).map(|t| if t.kind == TokenKind::Keyword { t.text(s).to_ascii_uppercase() } else { t.text(s).trim_end().to_string() }).collect::<String>()

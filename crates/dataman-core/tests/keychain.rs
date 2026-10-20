@@ -1,5 +1,4 @@
-//! The real macOS Keychain. Ignored by default (it touches the login keychain); run with
-//! `cargo test --release -p dataman-core --test keychain -- --ignored`.
+//! Ignored by default: it touches the real login keychain.
 
 use dataman_core::{Keychain, SecretStore};
 

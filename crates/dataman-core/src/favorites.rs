@@ -1,18 +1,5 @@
-//! Favorite queries (`~/.config/dataman/favorites.toml`), shared between the app and
-//! `dataman-mcp`. Unlike [`crate::history`], favorites are never touched by pruning, limits
-//! or "clear history": only an explicit [`FavoritesStore::remove`] drops one. Re-read when the
-//! file's modification time changes, so either process sees the other's edits.
-//!
-//! Favorites can be filed in folders (one level, no nesting): a `[[folder]]` table each, and a
-//! favorite's `folder` naming one by id. Both are optional, so a file written before folders
-//! existed loads as is (everything at the top level), and one without folders is written the
-//! same way as before. Deleting a folder deletes the favorites in it; what a removal took
-//! ([`FavoritesStore::take`], [`RemovedFolder`]) can be put back where it was (the app's undo).
-//!
-//! The folders are in the user's order: the file's order of its `[[folder]]` tables (new ones
-//! at the end, [`FavoritesStore::reorder_folders`] moves them). A file written before folders
-//! could be reordered has no `folders_ordered` flag: its folders load by name, as the panel
-//! listed them then, and the next write keeps that order (and sets the flag).
+//! Folders are optional in the file: one written before folders existed loads as is
+//! (everything at the top level), and one without folders is written the same way as before.
 
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -28,13 +15,10 @@ pub struct Favorite {
     pub id: String,
     pub name: String,
     pub sql: String,
-    /// The connection this query was saved from, if any (used to open it in that connection).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connection_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub database: Option<String>,
-    /// The id of the [`Folder`] it is filed in; `None` at the top level (and when that folder
-    /// is gone: [`FavoritesStore::list`] never hands out a dangling one).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folder: Option<String>,
 }
@@ -45,15 +29,12 @@ impl Favorite {
     }
 }
 
-/// A folder of favorites (the panel's tree): a name, nothing else; its favorites point at it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Folder {
     pub id: String,
     pub name: String,
 }
 
-/// What [`FavoritesStore::remove_folder`] took: the folder and its place among the folders,
-/// its favorites and their places in the list.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RemovedFolder {
     pub index: usize,
@@ -80,7 +61,6 @@ struct Fresh {
 }
 
 impl Fresh {
-    /// Writes both lists and takes the new modification time (its own write is not news).
     fn save(&mut self, path: &Path) -> Result<()> {
         save(path, &self.items, &self.folders)?;
         self.stamp = std::fs::metadata(path).and_then(|m| m.modified()).ok();
@@ -118,7 +98,6 @@ impl FavoritesStore {
         if !file.folders_ordered {
             file.folders.sort_by_key(|d| d.name.to_lowercase());
         }
-        // Filed in a folder that is gone (the file edited by hand): the top level.
         for f in &mut file.favorites {
             if f.folder.as_ref().is_some_and(|id| !file.folders.iter().any(|d| d.id == *id)) {
                 f.folder = None;
@@ -130,14 +109,11 @@ impl FavoritesStore {
         Ok(())
     }
 
-    /// Every favorite, re-read from disk first if it changed since the last read.
     pub fn list(&self) -> Vec<Favorite> {
         let _ = self.refresh();
         self.state.lock().items.clone()
     }
 
-    /// Adds a favorite, unless one with the same statement (trimmed) is saved already; returns
-    /// the favorite that ended up saved (the new one, or the matching existing one).
     pub fn add(&self, fav: Favorite) -> Result<Favorite> {
         let _ = self.refresh();
         let mut g = self.state.lock();
@@ -149,13 +125,10 @@ impl FavoritesStore {
         Ok(fav)
     }
 
-    /// Only an explicit call removes a favorite: history pruning and "clear history" never do.
     pub fn remove(&self, id: &str) -> Result<()> {
         self.take(id).map(|_| ())
     }
 
-    /// Removes a favorite and hands it back with its place in the list (for [`Self::restore`]);
-    /// `None` when `id` is not found.
     pub fn take(&self, id: &str) -> Result<Option<(usize, Favorite)>> {
         let _ = self.refresh();
         let mut g = self.state.lock();
@@ -165,9 +138,6 @@ impl FavoritesStore {
         Ok(Some((ix, fav)))
     }
 
-    /// Puts a removed favorite back at its place (`ix`, or the end when the list is shorter
-    /// now), its id and folder kept; false when one with its id is saved already, or its
-    /// folder is gone.
     pub fn restore(&self, ix: usize, fav: Favorite) -> Result<bool> {
         let _ = self.refresh();
         let mut g = self.state.lock();
@@ -181,14 +151,11 @@ impl FavoritesStore {
         Ok(true)
     }
 
-    /// The favorite whose statement matches `sql` (trimmed), if any.
     pub fn find_by_sql(&self, sql: &str) -> Option<Favorite> {
         let _ = self.refresh();
         self.state.lock().items.iter().find(|f| f.sql.trim() == sql.trim()).cloned()
     }
 
-    /// Renames a favorite in place (its statement, connection and database stay); `None` when
-    /// `id` is not found.
     pub fn rename(&self, id: &str, name: &str) -> Result<Option<Favorite>> {
         let _ = self.refresh();
         let mut g = self.state.lock();
@@ -199,8 +166,6 @@ impl FavoritesStore {
         Ok(Some(updated))
     }
 
-    /// Replaces a favorite's statement (its name, connection and database stay); `None` when
-    /// `id` is not found.
     pub fn update_sql(&self, id: &str, sql: &str) -> Result<Option<Favorite>> {
         let _ = self.refresh();
         let mut g = self.state.lock();
@@ -211,14 +176,11 @@ impl FavoritesStore {
         Ok(Some(updated))
     }
 
-    /// Every folder, in the user's order (new ones at the end).
     pub fn folders(&self) -> Vec<Folder> {
         let _ = self.refresh();
         self.state.lock().folders.clone()
     }
 
-    /// Makes a folder named `name` ("New folder" when blank), made unique among the folders'
-    /// names ([`unique_name`]).
     pub fn add_folder(&self, name: &str) -> Result<Folder> {
         let _ = self.refresh();
         let mut g = self.state.lock();
@@ -230,7 +192,6 @@ impl FavoritesStore {
         Ok(folder)
     }
 
-    /// Renames a folder (its favorites stay in it); `None` when `id` is not found.
     pub fn rename_folder(&self, id: &str, name: &str) -> Result<Option<Folder>> {
         let _ = self.refresh();
         let mut g = self.state.lock();
@@ -241,8 +202,6 @@ impl FavoritesStore {
         Ok(Some(updated))
     }
 
-    /// Puts the folders in the order of `ids` (the panel's, after a drag); any it does not name
-    /// keep their order after them.
     pub fn reorder_folders(&self, ids: &[String]) -> Result<()> {
         let _ = self.refresh();
         let mut g = self.state.lock();
@@ -250,8 +209,6 @@ impl FavoritesStore {
         g.save(&self.path)
     }
 
-    /// Deletes a folder and the favorites filed in it; what went is handed back (for
-    /// [`Self::restore_folder`]), `None` when `id` is not found.
     pub fn remove_folder(&self, id: &str) -> Result<Option<RemovedFolder>> {
         let _ = self.refresh();
         let mut g = self.state.lock();
@@ -259,8 +216,6 @@ impl FavoritesStore {
         let folder = g.folders.remove(index);
         let mut favorites = Vec::new();
         let mut i = 0;
-        // Their places as they were, first to last: put back in that order, each lands where
-        // it was.
         g.items.retain(|f| {
             let gone = f.folder.as_deref() == Some(id);
             if gone {
@@ -273,8 +228,6 @@ impl FavoritesStore {
         Ok(Some(RemovedFolder { index, folder, favorites }))
     }
 
-    /// A deleted folder back at its place, with its favorites at theirs; false when a folder
-    /// with its id exists already (nothing changes then).
     pub fn restore_folder(&self, r: &RemovedFolder) -> Result<bool> {
         let _ = self.refresh();
         let mut g = self.state.lock();
@@ -293,8 +246,6 @@ impl FavoritesStore {
         Ok(true)
     }
 
-    /// Files a favorite in a folder (`None`: the top level); `None` when the favorite is not
-    /// found, an error when the folder is not.
     pub fn move_to_folder(&self, id: &str, folder: Option<&str>) -> Result<Option<Favorite>> {
         let _ = self.refresh();
         let mut g = self.state.lock();
@@ -311,7 +262,6 @@ impl FavoritesStore {
     }
 }
 
-/// `base`, or `base 2`, `base 3`… : the first one no name in `taken` has (case aside).
 pub fn unique_name(base: &str, taken: &[&str]) -> String {
     let base = base.trim();
     let base = if base.is_empty() { "query" } else { base };
@@ -322,29 +272,17 @@ pub fn unique_name(base: &str, taken: &[&str]) -> String {
     (2..).map(|i| format!("{base} {i}")).find(|n| !used(n)).unwrap_or_default()
 }
 
-// ---------------------------------------------------------------------------------------------
-// Finding a favorite by a name typed from memory (`run_favorite`)
-
-/// What a typed name finds among the favorites' names (indices into the names given).
 #[derive(Clone, Debug, PartialEq)]
 pub enum NameMatch {
-    /// One clear best match.
     One(usize),
-    /// Several close matches, best first: nobody can tell which one was meant.
     Ambiguous(Vec<usize>),
-    /// Nothing close enough; the nearest names, best first (possibly none).
     Nothing(Vec<usize>),
 }
 
-/// The lowest score a name needs to be a match at all.
 pub const MATCH_MIN: u32 = 45;
-/// How far ahead of the next one the best match must be to be the one meant.
 pub const MATCH_GAP: u32 = 8;
-/// Candidates listed when the name is ambiguous or matches nothing.
 pub const MATCH_LIST: usize = 5;
 
-/// Lower case, accents dropped (`Crème` → `creme`), anything but letters and digits a space,
-/// spaces collapsed.
 pub fn fold_name(s: &str) -> String {
     use unicode_normalization::UnicodeNormalization;
     let mut out = String::with_capacity(s.len());
@@ -363,7 +301,6 @@ pub fn fold_name(s: &str) -> String {
     out
 }
 
-/// Edit distance with adjacent transpositions (`dya` is one edit from `day`).
 fn distance(a: &str, b: &str) -> usize {
     let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
     let mut d = vec![vec![0usize; b.len() + 1]; a.len() + 1];
@@ -385,8 +322,6 @@ fn distance(a: &str, b: &str) -> usize {
     d[a.len()][b.len()]
 }
 
-/// How alike two words are, 0 to 1: 1 when equal, 0.9 when one starts the other (three
-/// letters at least), else what the edit distance leaves of the longer one.
 fn word_like(a: &str, b: &str) -> f32 {
     if a == b {
         return 1.;
@@ -399,10 +334,6 @@ fn word_like(a: &str, b: &str) -> f32 {
     (1. - distance(a, b) as f32 / n as f32).max(0.)
 }
 
-/// How well `query` names `name`, both folded ([`fold_name`]), 0 to 100: 100 the same name,
-/// 95 the same words in another order, 90 a prefix of it, 80 inside it; otherwise up to 70 by
-/// its words: how alike each typed word is to the closest word of the name (three quarters)
-/// and how many of the name's words were typed (a quarter).
 pub fn name_score(query: &str, name: &str) -> u32 {
     if query.is_empty() || name.is_empty() {
         return 0;
@@ -429,10 +360,6 @@ pub fn name_score(query: &str, name: &str) -> u32 {
     (70. * (0.75 * typed + 0.25 * covered)).round() as u32
 }
 
-/// Finds the name `query` means among `names`: the exact name (case and accents aside), the
-/// same words in any order, a prefix, a part, or the closest by its words despite typos. One
-/// match when the best scores at least [`MATCH_MIN`] and [`MATCH_GAP`] ahead of the next
-/// (two favorites of the same name are ambiguous); else the closest names to choose from.
 pub fn match_name(names: &[&str], query: &str) -> NameMatch {
     let q = fold_name(query);
     let mut scored: Vec<(u32, usize)> = names.iter().enumerate().map(|(i, n)| (name_score(&q, &fold_name(n)), i)).collect();
@@ -445,7 +372,6 @@ pub fn match_name(names: &[&str], query: &str) -> NameMatch {
     if close.len() == 1 { NameMatch::One(ix) } else { NameMatch::Ambiguous(close) }
 }
 
-/// Writes atomically: a temporary file in the same directory, then `rename`.
 fn save(path: &Path, items: &[Favorite], folders: &[Folder]) -> Result<()> {
     let dir = path.parent().context("favorites path has no parent")?;
     std::fs::create_dir_all(dir)?;
@@ -523,42 +449,31 @@ mod tests {
         assert_eq!(unique_name("  ", &["query"]), "query 2");
     }
 
-    /// `run_favorite`'s matcher: a name typed from memory finds its favorite; an unclear one
-    /// finds the candidates.
     #[test]
     fn names_typed_from_memory() {
         let names = ["Orders by day", "Orders by month", "Top customers", "Crème brûlée sales", "Slow queries (pg_stat_statements)", "orders"];
         let m = |q: &str| match_name(&names, q);
-        // Exact, case and accents aside.
         assert_eq!(m("orders"), NameMatch::One(5));
         assert_eq!(m("TOP CUSTOMERS"), NameMatch::One(2));
         assert_eq!(m("creme brulee sales"), NameMatch::One(3));
         assert_eq!(m("Crème Brûlée Sales"), NameMatch::One(3));
-        // Word order, punctuation.
         assert_eq!(m("customers top"), NameMatch::One(2));
         assert_eq!(m("slow queries pg stat statements"), NameMatch::One(4));
-        // A prefix or a part that only one has.
         assert_eq!(m("slow"), NameMatch::One(4));
         assert_eq!(m("brulee"), NameMatch::One(3));
-        // Typos.
         assert_eq!(m("ordrs by dya"), NameMatch::One(0));
         assert_eq!(m("orders by mnth"), NameMatch::One(1));
         assert_eq!(m("top custmers"), NameMatch::One(2));
         assert_eq!(m("cremme brule"), NameMatch::One(3));
         assert_eq!(m("customer top"), NameMatch::One(2));
-        // Two equally close: ambiguous, the close ones listed, best first.
         assert_eq!(m("orders by"), NameMatch::Ambiguous(vec![0, 1]));
         assert_eq!(m("order"), NameMatch::Ambiguous(vec![0, 1, 5]));
-        // Nothing near: the nearest names, but no match.
         assert!(matches!(m("inventory forecast"), NameMatch::Nothing(_)));
         assert_eq!(match_name(&[], "x"), NameMatch::Nothing(vec![]));
-        // Two favorites with the same name cannot be told apart.
         assert_eq!(match_name(&["daily", "Daily"], "daily"), NameMatch::Ambiguous(vec![0, 1]));
         assert_eq!(fold_name("  Crème-Brûlée  (v2) "), "creme brulee v2");
     }
 
-    /// A file from before folders: no `[[folder]]`, no `folder =`. It loads at the top level, and
-    /// as long as no folder is made it is written back the same way.
     #[test]
     fn a_file_without_folders_still_loads() {
         let dir = tempfile::tempdir().unwrap();
@@ -594,7 +509,6 @@ mod tests {
         assert!(store.move_to_folder(&b.id, Some("nope")).is_err(), "no such folder");
         assert!(store.move_to_folder("nope", None).unwrap().is_none());
 
-        // Another process (the MCP server) reads the same.
         let other = FavoritesStore::open(&dirs).unwrap();
         assert_eq!(other.folders().iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), vec!["Reports", "reports 2", "New folder"]);
         assert_eq!(other.list().iter().map(|f| f.folder.clone()).collect::<Vec<_>>(), vec![Some(reports.id.clone()), None]);
@@ -604,13 +518,10 @@ mod tests {
         assert!(store.rename_folder("nope", "x").unwrap().is_none());
         assert_eq!(store.list()[0].folder.as_deref(), Some(reports.id.as_str()), "a rename keeps its favorites");
 
-        // Back to the top level.
         store.move_to_folder(&a.id, None).unwrap();
         assert_eq!(FavoritesStore::open(&dirs).unwrap().list()[0].folder, None);
     }
 
-    /// Deleting a folder deletes the favorites in it (only those), and hands back what it
-    /// took: restored, the folder and its favorites are where they were.
     #[test]
     fn removing_a_folder_removes_its_favorites_and_restores_them() {
         let dir = tempfile::tempdir().unwrap();
@@ -632,14 +543,12 @@ mod tests {
         assert_eq!(again.folders(), vec![first.clone(), keep.clone()]);
         assert_eq!(again.list().iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["f1", "f3", "f4"], "its favorites went with it, the others stay");
 
-        // Put back: the same folders and favorites, in the same places, filed as they were.
         assert!(store.restore_folder(&gone).unwrap());
         assert!(!store.restore_folder(&gone).unwrap(), "there already");
         let again = FavoritesStore::open(&dirs).unwrap();
         assert_eq!((again.folders(), again.list()), before);
     }
 
-    /// A favorite taken out goes back to its place, once; not into a folder that is gone.
     #[test]
     fn a_removed_favorite_is_restored_in_place() {
         let dir = tempfile::tempdir().unwrap();
@@ -655,7 +564,6 @@ mod tests {
         assert!(store.restore(ix, f.clone()).unwrap());
         assert!(!store.restore(ix, f.clone()).unwrap(), "no duplicate");
         assert_eq!(FavoritesStore::open(&dirs).unwrap().list(), before);
-        // Filed in a folder deleted since: not restored.
         let d = store.add_folder("D").unwrap();
         store.move_to_folder(&f.id, Some(&d.id)).unwrap();
         let (ix, f) = store.take(&f.id).unwrap().unwrap();
@@ -664,7 +572,6 @@ mod tests {
         assert_eq!(store.list().len(), 2);
     }
 
-    /// A favorite filed in a folder the file no longer has (edited by hand) is at the top level.
     #[test]
     fn a_dangling_folder_is_the_top_level() {
         let dir = tempfile::tempdir().unwrap();
@@ -683,8 +590,6 @@ mod tests {
         store.folders().into_iter().map(|d| d.name).collect()
     }
 
-    /// The folders keep the user's order, not their names': new ones at the end, a reorder
-    /// written to the file, a rename or a delete moving no other.
     #[test]
     fn folders_keep_the_users_order() {
         let dir = tempfile::tempdir().unwrap();
@@ -692,7 +597,6 @@ mod tests {
         let store = FavoritesStore::open(&dirs).unwrap();
         let (c, a, b) = (store.add_folder("Charts").unwrap(), store.add_folder("Archive").unwrap(), store.add_folder("Billing").unwrap());
         assert_eq!(folder_names(&store), ["Charts", "Archive", "Billing"], "made last, listed last");
-        // `c` is not named: it keeps its place after the ones that are.
         store.reorder_folders(&[b.id.clone(), a.id.clone()]).unwrap();
         assert_eq!(folder_names(&store), ["Billing", "Archive", "Charts"]);
         let other = FavoritesStore::open(&dirs).unwrap();
@@ -705,8 +609,6 @@ mod tests {
         assert_eq!(folder_names(&FavoritesStore::open(&dirs).unwrap()), ["Charts", "Zzz", "Aaa"]);
     }
 
-    /// A file from before folders could be reordered (no `folders_ordered`): its folders load
-    /// by name, as the panel listed them, and the next write keeps that order for good.
     #[test]
     fn an_older_file_keeps_its_folders_by_name() {
         let dir = tempfile::tempdir().unwrap();
@@ -717,14 +619,12 @@ mod tests {
         let store = FavoritesStore::open(&dirs).unwrap();
         assert_eq!(folder_names(&store), ["alpha", "Mid", "Zeta"]);
         assert_eq!(store.list()[0].folder.as_deref(), Some("z"));
-        // Any write: the order it had is the file's now, flagged.
         store.add(Favorite::new("x", "select 2")).unwrap();
         let text = std::fs::read_to_string(dirs.favorites_file()).unwrap();
         assert!(text.contains("folders_ordered = true"), "{text}");
         store.reorder_folders(&["z".into()]).unwrap();
         assert_eq!(folder_names(&FavoritesStore::open(&dirs).unwrap()), ["Zeta", "alpha", "Mid"], "reordered, not by name again");
 
-        // Flagged by hand: the file's order as is.
         std::fs::write(dirs.favorites_file(), format!("folders_ordered = true\n\n{folders}")).unwrap();
         assert_eq!(folder_names(&FavoritesStore::open(&dirs).unwrap()), ["Zeta", "alpha", "Mid"]);
     }

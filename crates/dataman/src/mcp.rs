@@ -1,10 +1,4 @@
-//! The MCP server inside the app (`dataman_mcp`): one hub for the whole process, made on first
-//! use, with the app as its [`Front`] (a human to ask, agent tabs to work in); the local socket
-//! (`app.sock`) through which `dataman-mcp` hands its calls to the app while it runs
-//! (started off the UI thread, after the first frame); the approval sheet; the log of tool
-//! calls in the side panel. Running the tools here means the Keychain is read by the executable
-//! that wrote it: no prompt. Idle, nothing runs: accepts on the socket and a channel receiver,
-//! waiting.
+//! Running the tools in the app means the Keychain is read by the executable that wrote it: no prompt.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -31,9 +25,7 @@ actions!(mcp, [Allow, AlwaysAllow, Deny, ReloadLog, CloseLog]);
 
 const SHEET: &str = "McpSheet";
 const LOG: &str = "McpLog";
-/// A log row's height.
 const ROW_H: f32 = 46.;
-/// A log row's context menu.
 const MENU: [&str; 2] = ["Copy Query", "Open in Tab"];
 
 pub fn bind_keys(cx: &mut App) {
@@ -46,33 +38,25 @@ pub fn bind_keys(cx: &mut App) {
     ]);
 }
 
-/// An agent's write waiting for the user.
 pub struct Pending {
     pub id: u64,
     pub req: Approval,
     reply: Option<oneshot::Sender<bool>>,
 }
 
-/// What the tools (on the hub's runtime) send the UI.
 pub(crate) enum FrontMsg {
     Approve(Pending),
-    /// The question went away unanswered (the agent cancelled, the hub's timeout).
     Withdraw(u64),
-    /// Agent tabs (`agent`).
     Tab(crate::agent::TabMsg),
-    /// The titles of the tabs with a transaction open on a connection.
     OpenTx { connection_id: String, reply: oneshot::Sender<Vec<String>> },
-    /// The saved connections changed: show them now.
     ConnectionsChanged,
 }
 
-/// The app's side of the tools: messages to the UI, answered there.
 pub(crate) struct AppFront {
     tx: mpsc::UnboundedSender<FrontMsg>,
     next: AtomicU64,
 }
 
-/// Withdraws a question whose answer nobody waits for any more.
 struct Asked {
     id: u64,
     tx: mpsc::UnboundedSender<FrontMsg>,
@@ -147,8 +131,7 @@ impl Front for AppFront {
     }
 }
 
-/// What the socket serves with: one hub, made on first use (never dropped: its runtime must not
-/// end from one of its own tasks), and the app's front.
+/// The hub is never dropped: its runtime must not end from one of its own tasks.
 pub(crate) struct Shared {
     dirs: Dirs,
     secrets: Arc<dyn SecretStore>,
@@ -171,7 +154,6 @@ impl Shared {
     }
 }
 
-/// The app's MCP state (a global).
 pub struct McpHost {
     shared: Option<Arc<Shared>>,
     ipc: Option<dataman_mcp::ipc::IpcServer>,
@@ -194,8 +176,6 @@ impl Default for McpHost {
     }
 }
 
-/// The window whose workspace shows the approval sheet and the agent tabs; the socket goes
-/// when the app quits.
 pub fn register(ws: WeakEntity<Workspace>, window: AnyWindowHandle, cx: &mut App) {
     cx.default_global::<McpHost>().workspace = Some((ws, window));
     cx.on_app_quit(|cx| {
@@ -206,12 +186,10 @@ pub fn register(ws: WeakEntity<Workspace>, window: AnyWindowHandle, cx: &mut App
     .detach();
 }
 
-/// The workspace and its window, for what the tools send.
 pub(crate) fn workspace(cx: &App) -> Option<(WeakEntity<Workspace>, AnyWindowHandle)> {
     cx.try_global::<McpHost>()?.workspace.clone()
 }
 
-/// The shared hub's cell and the UI's receiver, made once.
 pub(crate) fn shared(core: &Arc<Core>, cx: &mut App) -> Arc<Shared> {
     if let Some(s) = &cx.default_global::<McpHost>().shared {
         return s.clone();
@@ -233,7 +211,6 @@ pub(crate) fn shared(core: &Arc<Core>, cx: &mut App) -> Arc<Shared> {
     s
 }
 
-/// The `dataman-mcp` next to this executable (a cargo build, an app bundle), or the name.
 pub fn stdio_binary() -> String {
     std::env::current_exe()
         .ok()
@@ -247,7 +224,6 @@ pub fn stdio_command() -> String {
     dataman_mcp::claude_stdio_command(&stdio_binary())
 }
 
-/// The socket for `dataman-mcp`, while agent access is on (Settings › MCP › Agent access).
 pub fn apply(core: &Arc<Core>, cx: &mut App) {
     let want = core.settings.get().mcp_enabled;
     let shared = shared(core, cx);
@@ -286,7 +262,6 @@ pub fn apply(core: &Arc<Core>, cx: &mut App) {
     .detach();
 }
 
-/// A message from the tools.
 fn arrived(m: FrontMsg, cx: &mut App) {
     match m {
         FrontMsg::Approve(p) => {
@@ -297,7 +272,6 @@ fn arrived(m: FrontMsg, cx: &mut App) {
                 answer(false, cx);
                 return;
             };
-            // The sheet over the agent tab that shows the write, when one does.
             let _ = window.update(cx, |_, window, cx| {
                 let _ = ws.update(cx, |w, cx| {
                     if let Some(t) = tab.and_then(|id| w.tabs.iter().find(|t| t.entity_id().as_u64() == id).cloned()) {
@@ -352,7 +326,6 @@ fn arrived(m: FrontMsg, cx: &mut App) {
     }
 }
 
-/// Answers the oldest waiting write.
 pub fn answer(allow: bool, cx: &mut App) {
     if let Some(mut p) = cx.default_global::<McpHost>().pending.pop_front()
         && let Some(tx) = p.reply.take()
@@ -362,8 +335,6 @@ pub fn answer(allow: bool, cx: &mut App) {
     cx.refresh_windows();
 }
 
-/// Why a question was asked, as a tag's color: destructive and production in red, a row count
-/// in amber.
 fn reason_color(t: &Theme, req: &Approval, r: &str) -> gpui::Hsla {
     if r.contains(" rows (limit ") {
         t.warn
@@ -385,7 +356,6 @@ impl Workspace {
         cx.notify();
     }
 
-    /// The last question went (answered or withdrawn): the keys go back.
     pub(crate) fn mcp_sheet_closed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.mcp_return.take() {
             Some(f) => window.focus(&f, cx),
@@ -402,9 +372,7 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Allows the oldest waiting write and adds its statements to the connection's allowed
-    /// queries (MCP › Advanced in its sheet): the same statements run without asking from now
-    /// on. Saved without reconnecting (the write held in its transaction goes on).
+    /// Saved without reconnecting: the write held in its transaction goes on.
     pub(crate) fn mcp_always_allow(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some((id, stmts)) = cx.try_global::<McpHost>().and_then(|h| h.pending.front()).map(|p| (p.req.connection_id.clone(), p.req.allowable.clone())) else { return };
         if !stmts.is_empty() {
@@ -421,10 +389,6 @@ impl Workspace {
         self.mcp_answer(true, window, cx);
     }
 
-    /// The approval sheet for the oldest waiting write: where (the connection's color, its
-    /// database and environment), who asks, the exact SQL, why it asks, what it changed in the
-    /// transaction held for the answer, Deny / Allow, and Always Allow (its statements into the
-    /// connection's allowed queries).
     pub(crate) fn render_mcp_sheet(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         let host = cx.try_global::<McpHost>()?;
         let p = host.pending.front()?;
@@ -459,7 +423,6 @@ impl Workspace {
             let c = reason_color(&t, &req, r);
             div().h(px(20.)).px(px(7.)).flex().items_center().bg(gpui::Hsla { a: 0.14, ..c }).text_size(px(11.)).text_color(c).child(r.clone())
         }));
-        // The count, unless a reason says it already (over the limit).
         let counted = req.reasons.iter().any(|r| r.contains(" rows (limit "));
         let rows = req.affected.filter(|_| !counted).map(|n| if n == 1 { "1 row".to_string() } else { format!("{} rows", crate::grid::ui_count(n as usize)) });
         let preview = req.preview.clone().map(|(cols, data)| {
@@ -487,7 +450,6 @@ impl Workspace {
                 .key_context(format!("{SHEET} Modal").as_str())
                 .track_focus(&self.mcp_focus)
                 .on_action(cx.listener(|w, _: &Allow, window, cx| w.mcp_answer(true, window, cx)))
-                // Always Allow fills the allowed queries: off with them (`MCP_ADVANCED`).
                 .when(dataman_core::MCP_ADVANCED && !req.allowable.is_empty(), |d| d.on_action(cx.listener(|w, _: &AlwaysAllow, window, cx| w.mcp_always_allow(window, cx))))
                 .on_action(cx.listener(|w, _: &Deny, window, cx| w.mcp_answer(false, window, cx)))
                 .flex()
@@ -532,8 +494,6 @@ impl Workspace {
                                 .child(div().text_color(t.tx3).child(req.tool.clone()))
                                 .when(more > 0, |d| d.child(div().text_color(t.tx3).child(format!("+{more}"))))
                                 .child(div().flex_1())
-                                // Always Allow: a quieter button, apart from Deny / Allow (off with the
-                                // allowed queries, `MCP_ADVANCED`).
                                 .when(dataman_core::MCP_ADVANCED && !req.allowable.is_empty(), |d| {
                                     let what = if req.allowable.len() == 1 { "this statement" } else { "these statements" };
                                     let tip = format!("Allow, and from now on let agents run {what} on {} without asking (connection › MCP › Advanced › Allowed queries)", req.connection);
@@ -563,7 +523,6 @@ impl Workspace {
         )
     }
 
-    /// The MCP log in the side panel (toggles).
     pub(crate) fn toggle_mcp_log(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if matches!(self.side, Some(Side::Feature("mcp-log", ..))) {
             self.side = None;
@@ -589,7 +548,6 @@ impl Workspace {
         cx.notify();
     }
 
-    /// The MCP log, while it is in the side panel.
     pub(crate) fn mcp_log(&self) -> Option<gpui::Entity<McpLog>> {
         match &self.side {
             Some(Side::Feature("mcp-log", v, _)) => v.clone().downcast::<McpLog>().ok(),
@@ -597,9 +555,6 @@ impl Workspace {
         }
     }
 
-    /// A logged statement in a new tab, not run: on the call's connection (its name in the
-    /// log; an id works too) and database, connecting it when it is not yet; a connection
-    /// since deleted leaves the tab on the default one.
     fn open_logged(&mut self, sql: &str, connection: Option<&str>, database: Option<&str>, window: &mut Window, cx: &mut Context<Self>) {
         let id = connection.and_then(|c| {
             let s = self.store.read(cx);
@@ -618,7 +573,6 @@ impl Workspace {
                         t.set_database(db, cx);
                     }
                 }
-                // It takes the connection once it is up (`on_conn`), as a restored tab does.
                 (Some(id), None) => {
                     t.set_connection(None, cx);
                     t.want = Some((id.clone(), database));
@@ -634,10 +588,6 @@ impl Workspace {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// The log view
-
-/// What a log row says came of the call: the rows, `draft`, `ok`, the decision or the outcome.
 pub(crate) fn row_what(e: &Entry) -> String {
     match (e.outcome, e.rows, e.approval.as_ref().map(|a| a.decision)) {
         (Outcome::Ok, _, _) if e.draft => "draft".to_string(),
@@ -651,8 +601,6 @@ pub(crate) fn row_what(e: &Entry) -> String {
 
 pub enum LogEvent {
     Close,
-    /// A call's statement in a new tab (not run), on its connection (a name, or an id) and
-    /// database.
     Open { sql: String, connection: Option<String>, database: Option<String> },
 }
 
@@ -662,9 +610,7 @@ pub struct McpLog {
     entries: Vec<Entry>,
     selected: Option<usize>,
     loaded: bool,
-    /// A row's context menu (right-click, ⌃-click): the entry and where it opened.
     menu: Option<(usize, gpui::Point<gpui::Pixels>)>,
-    /// The list's bounds as last painted (`mcp-check` finds its rows by them).
     list_bounds: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
 }
 
@@ -683,7 +629,6 @@ impl McpLog {
         v
     }
 
-    /// Reads the file's tail off the UI thread, newest first.
     fn reload(&mut self, cx: &mut Context<Self>) {
         let path = self.path.clone();
         let task = cx.background_spawn(async move { dataman_mcp::audit::tail(&path, 500) });
@@ -739,7 +684,6 @@ impl McpLog {
                 }
                 cx.notify();
             }))
-            // Right-click, and ⌃-click (the Mac convention): Copy Query, Open in Tab.
             .on_mouse_down(gpui::MouseButton::Right, cx.listener(move |v, ev: &gpui::MouseDownEvent, _, cx| {
                 cx.stop_propagation();
                 v.menu = Some((i, ev.position));
@@ -765,7 +709,6 @@ impl McpLog {
                     .children(e.connection.clone().map(|c| div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx2).child(c)))
                     .child(div().flex_1())
                     .child(div().text_color(t.tx3).child(dataman_core::activity::fmt_ms(e.ms)))
-                    // Let through without a human: by an allowed query (amber) or YOLO (red).
                     .children(e.allowed_by.as_ref().map(|b| {
                         let c = if matches!(b, AllowedBy::Yolo) { t.err } else { t.warn };
                         div().h(px(15.)).px(px(4.)).flex().items_center().border_1().border_color(c).text_color(c).text_size(px(9.5)).child(b.label())
@@ -776,7 +719,6 @@ impl McpLog {
             .into_any_element()
     }
 
-    /// Entry `i`'s statement in a new tab (the workspace opens it).
     fn open(&mut self, i: usize, cx: &mut Context<Self>) {
         let Some(e) = self.entries.get(i) else { return };
         let Some(sql) = e.statement() else { return };
@@ -789,7 +731,6 @@ impl McpLog {
         }
     }
 
-    /// A row's context menu: Copy Query, Open in Tab (dimmed for calls without SQL).
     fn render_menu(&self, t: &Theme, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
         let (i, at) = self.menu?;
         let has_sql = self.entries.get(i).and_then(|e| e.statement()).is_some();
@@ -814,9 +755,6 @@ impl McpLog {
         Some(gpui::deferred(gpui::anchored().position(at).snap_to_window_with_margin(px(8.)).child(ui::menu_in("mcp-menu-in", menu))).priority(3))
     }
 
-    // `mcp-check` (`--demo`): where the rows are, what a click cannot report back.
-
-    /// A point inside row `i` of the list, in window coordinates (`None` before it is painted).
     pub(crate) fn demo_row_point(&self, i: usize) -> Option<gpui::Point<gpui::Pixels>> {
         let b = self.list_bounds.get()?;
         Some(gpui::point(b.origin.x + px(40.), b.origin.y + px(ROW_H * i as f32 + ROW_H / 2.)))
@@ -826,7 +764,6 @@ impl McpLog {
         self.menu.is_some()
     }
 
-    /// The open menu's items and whether each is enabled.
     pub(crate) fn demo_menu_items(&self) -> Vec<(&'static str, bool)> {
         let Some((i, _)) = self.menu else { return Vec::new() };
         let on = self.entries.get(i).and_then(|e| e.statement()).is_some();
@@ -837,7 +774,6 @@ impl McpLog {
         &self.entries
     }
 
-    /// Opens row `i`'s menu as a right-click there would (screenshots).
     pub(crate) fn demo_open_menu(&mut self, i: usize, cx: &mut Context<Self>) {
         self.menu = self.demo_row_point(i).map(|p| (i, p));
         cx.notify();
@@ -904,7 +840,6 @@ impl gpui::Render for McpLog {
             .track_focus(&self.focus)
             .on_action(cx.listener(|v, _: &ReloadLog, _, cx| v.reload(cx)))
             .on_action(cx.listener(|v, _: &CloseLog, _, cx| {
-                // esc closes the menu first.
                 if v.menu.take().is_some() {
                     cx.notify();
                 } else {
@@ -938,8 +873,6 @@ impl gpui::Render for McpLog {
     }
 }
 
-/// Seeds the log and the host for the screenshots (`--demo`): a few calls of each outcome and,
-/// with `approval`, a waiting write.
 pub fn demo_seed(core: &Arc<Core>, approval: bool, cx: &mut App) {
     for (name, env, mcp) in [
         ("shop", dataman_core::Environment::Staging, Some(dataman_core::McpAccess::Full)),
@@ -969,7 +902,6 @@ pub fn demo_seed(core: &Arc<Core>, approval: bool, cx: &mut App) {
         ("execute", Some("shop"), Some("DELETE FROM orders"), None, 48211.0, Outcome::Refused, Some("refused: denied in Dataman (DELETE without WHERE); rolled back"), note(Decision::Denied, &["DELETE without WHERE"], Some(1204))),
         ("execute", Some("shop-live"), Some("TRUNCATE orders"), None, 0.1, Outcome::Refused, Some("refused: MCP access to this connection is off"), None),
     ];
-    // As the agent sent them (the log shows them redacted).
     let sent: [Option<&str>; 10] = [
         None,
         None,

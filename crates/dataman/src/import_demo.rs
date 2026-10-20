@@ -1,14 +1,3 @@
-//! Demo stages of the data import (`--demo`), against the demo database. The files are written
-//! to a temporary folder when the stage starts; nothing is loaded into the database (the
-//! progress and failure views get fixed numbers).
-//!
-//! - `import-data`: a `;`-separated CSV into `public.orders`, mapped by name (screenshot);
-//! - `import-data-menu`: the same with a column's mapping menu open (screenshot);
-//! - `import-data-new`: an NDJSON file into a new table, with inferred types (screenshot);
-//! - `import-data-guard`: truncate first, Import: the guard sheet (screenshot);
-//! - `import-data-run`: the progress view (screenshot);
-//! - `import-data-failed`: a failed load with its line (screenshot).
-
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -29,7 +18,6 @@ pub fn demo_dir() -> PathBuf {
     std::env::temp_dir().join(format!("dataman-demo-import-{}", std::process::id()))
 }
 
-/// `orders-2024.csv`: the columns of `orders` (one in another case), and one it lacks.
 fn orders_csv() -> String {
     let status = ["delivered", "shipped", "paid", "cancelled", "new"];
     let mut s = String::from("id;Customer;status;created_at;total;address;notes\n");
@@ -54,7 +42,6 @@ fn orders_csv() -> String {
     s
 }
 
-/// `events.ndjson`: integers, text, timestamps, decimals, objects, booleans, uuids.
 fn events_ndjson() -> String {
     let kinds = ["login", "checkout", "search", "logout"];
     (0..80u64)

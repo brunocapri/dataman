@@ -1,6 +1,3 @@
-//! list_favorites, add_favorite, remove_favorite, import_favorites: the favorite queries saved
-//! in `favorites.toml`, shared with the app (the sidebar's Favorites).
-
 use dataman_core::{Favorite, NameMatch};
 use serde_json::{Map, Value, json};
 
@@ -97,7 +94,6 @@ fn list_favorites(cx: &Call, _a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
     })
 }
 
-/// A statement's first line that is not a comment (a candidate's preview).
 fn first_line(sql: &str) -> String {
     let line = sql.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with("--")).unwrap_or("");
     match line.char_indices().nth(120) {
@@ -114,7 +110,6 @@ fn run_favorite(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
         let profiles = cx.hub.profiles();
         let conn_name = |f: &Favorite| f.connection_id.as_ref().map(|id| profiles.iter().find(|p| p.id == *id).map(|p| p.name.clone()).unwrap_or_else(|| id.clone()));
         let names: Vec<&str> = favorites.iter().map(|f| f.name.as_str()).collect();
-        // Its id names it too (from list_favorites).
         let found = match favorites.iter().position(|f| f.id == query) {
             Some(i) => NameMatch::One(i),
             None => dataman_core::favorites::match_name(&names, query),

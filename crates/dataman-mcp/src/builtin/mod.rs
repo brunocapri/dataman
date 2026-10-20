@@ -1,5 +1,3 @@
-//! The built-in tools, registered like any other [`Tool`].
-
 mod activity;
 mod catalog;
 mod connections;
@@ -17,7 +15,6 @@ pub use catalog::system_schema as catalog_system_schema;
 
 pub type Handler =for<'a> fn(&'a Call, Args) -> BoxFut<'a, Result<Value, ToolError>>;
 
-/// A built-in tool: its definition and the function that runs it.
 pub struct Builtin {
     pub name: &'static str,
     pub description: &'static str,
@@ -50,7 +47,6 @@ pub fn register(r: &mut Registry) {
     }
 }
 
-/// A bounded result as compact JSON: `columns` as `[name, type]` pairs, `rows` as arrays.
 pub fn result_json(o: &bounded::Outcome, max_rows: usize) -> Value {
     let mut m = Map::new();
     m.insert("columns".into(), Value::Array(o.columns.iter().map(|c| json!([c.name, c.type_name])).collect()));
@@ -71,12 +67,6 @@ pub fn result_json(o: &bounded::Outcome, max_rows: usize) -> Value {
     Value::Object(m)
 }
 
-/// A read's answer: one statement with one result set as [`result_json`] (the shape single
-/// statements always had); several statements, or a T-SQL batch's several result sets, as
-/// `{results: [{statement, sql, columns, rows, row_count, truncated?, note?, cut_cells?, ms}],
-/// statements, ms}`. The row cap is for each result, the ~256 KB byte cap for all of them: the
-/// statements after the one that reaches it are not run (or, in an agent tab, not returned),
-/// which `truncated: "bytes"` and a note say at the top level.
 pub fn read_json(o: &bounded::Outcome, max_rows: usize, statements: &[String]) -> Value {
     if o.parts.len() <= 1 && statements.len() <= 1 {
         return result_json(o, max_rows);
@@ -110,7 +100,6 @@ pub fn read_json(o: &bounded::Outcome, max_rows: usize, statements: &[String]) -
     Value::Object(m)
 }
 
-/// A statement's first line that is not a comment, up to 120 characters.
 fn first_line(sql: &str) -> String {
     let line = sql.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with("--")).unwrap_or("");
     match line.char_indices().nth(120) {
@@ -123,12 +112,10 @@ pub fn ms(d: std::time::Duration) -> f64 {
     (d.as_secs_f64() * 1e4).round() / 10.0
 }
 
-/// `"rows"` style tables: a header and arrays.
 pub fn table(columns: &[&str], rows: Vec<Vec<Value>>) -> Value {
     json!({"columns": columns, "rows": rows})
 }
 
-/// `schema.name` split (a quoted part keeps its dots); `None` schema when unqualified.
 pub fn split_name(s: &str) -> (Option<String>, String) {
     let s = s.trim();
     let mut parts: Vec<String> = Vec::new();
@@ -185,8 +172,6 @@ mod tests {
         assert_eq!(split_name("db.s.t"), (Some("s".into()), "t".into()));
     }
 
-    /// Every built-in has a precise description and a valid object schema with the connection
-    /// argument when it needs one.
     #[test]
     fn builtin_schemas() {
         let r = Registry::standard(None);
@@ -205,7 +190,6 @@ mod tests {
             assert_eq!(s.0["additionalProperties"], false, "{}", t.name());
             assert!(t.description().len() > 40 && t.description().len() < 900, "{}: {} chars", t.name(), t.description().len());
             assert!(t.name().chars().all(|c| c.is_ascii_lowercase() || c == '_'), "{}", t.name());
-            // update_connection names the connection it edits, but runs nothing on it.
             assert_eq!(t.need().is_some(), s.required().contains(&"connection") && t.name() != "update_connection", "{}", t.name());
             for (k, v) in s.properties() {
                 assert!(v.get("type").is_some(), "{}.{k}", t.name());

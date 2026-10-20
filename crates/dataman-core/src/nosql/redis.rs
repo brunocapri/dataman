@@ -1,21 +1,8 @@
-//! Redis' editor language: commands as `redis-cli` takes them, one per line.
-//!
-//! ```text
-//! HGETALL user:42
-//! SET greeting "hello world" EX 60
-//! ZRANGE leaderboard 0 -1 WITHSCORES
-//! SELECT 2
-//! ```
-//!
-//! Arguments split at spaces; `"double"` quotes take `\n`, `\t`, `\"`, `\\` and `\xHH`
-//! escapes, `'single'` quotes take only `\'`. A `#` or `//` line is a comment.
-
 use std::ops::Range;
 
 use super::shell::ParseError;
 use crate::guard::WriteClass;
 
-/// Commands that only read (upper case, first word; two-word ones as `CONFIG GET`).
 const READS: &[&str] = &[
     "GET", "MGET", "GETRANGE", "STRLEN", "EXISTS", "TYPE", "TTL", "PTTL", "EXPIRETIME", "KEYS", "SCAN", "RANDOMKEY", "DBSIZE",
     "HGET", "HMGET", "HGETALL", "HKEYS", "HVALS", "HLEN", "HEXISTS", "HSTRLEN", "HSCAN", "HRANDFIELD", "LRANGE", "LINDEX",
@@ -27,7 +14,6 @@ const READS: &[&str] = &[
     "JSON.TYPE", "JSON.MGET", "JSON.OBJKEYS", "JSON.STRLEN", "JSON.ARRLEN", "FT.SEARCH", "FT.INFO", "FT._LIST",
 ];
 
-/// Writes bounded by their keys (each named in the command).
 const SAFE_WRITES: &[&str] = &[
     "SET", "SETEX", "PSETEX", "SETNX", "MSET", "MSETNX", "APPEND", "SETRANGE", "INCR", "INCRBY", "INCRBYFLOAT", "DECR",
     "DECRBY", "GETSET", "GETDEL", "GETEX", "DEL", "UNLINK", "EXPIRE", "PEXPIRE", "EXPIREAT", "PEXPIREAT", "PERSIST",
@@ -38,32 +24,25 @@ const SAFE_WRITES: &[&str] = &[
     "JSON.SET", "JSON.DEL", "JSON.ARRAPPEND", "JSON.NUMINCRBY", "PUBLISH",
 ];
 
-/// Commands that cannot run here: they block, hold the connection, or change its state.
 const REFUSED: &[&str] = &[
     "SUBSCRIBE", "PSUBSCRIBE", "SSUBSCRIBE", "MONITOR", "MULTI", "EXEC", "DISCARD", "WATCH", "UNWATCH", "BLPOP", "BRPOP",
     "BLMOVE", "BRPOPLPUSH", "BZPOPMIN", "BZPOPMAX", "BLMPOP", "BZMPOP", "XREAD", "XREADGROUP", "WAIT", "AUTH", "HELLO",
     "QUIT", "RESET", "CLIENT", "SYNC", "PSYNC", "SHUTDOWN",
 ];
 
-/// `CLIENT`'s subcommands that only look.
 const CLIENT_READS: &[&str] = &["CLIENT LIST", "CLIENT INFO", "CLIENT GETNAME", "CLIENT ID"];
 
-/// Other commands people type (administration), for colors and completions.
 const OTHERS: &[&str] = &["FLUSHDB", "FLUSHALL", "CONFIG", "EVAL", "EVALSHA", "SCRIPT", "FUNCTION", "SAVE", "BGSAVE", "SWAPDB", "MOVE", "DEBUG", "CLUSTER", "ACL", "LATENCY"];
 
-/// Every command name these lists know, in upper case.
 pub fn commands() -> impl Iterator<Item = &'static str> {
     READS.iter().chain(SAFE_WRITES).chain(OTHERS).chain(REFUSED).copied()
 }
 
-/// `word` (any case) is a command.
 pub fn is_command(word: &str) -> bool {
     let up = word.to_ascii_uppercase();
     commands().any(|c| c == up)
 }
 
-/// A command's name as the lists above have it: its first word in upper case (`CONFIG GET`
-/// for the commands whose second word says what they do).
 pub fn name(args: &[String]) -> String {
     let first = args.first().map(|a| a.to_ascii_uppercase()).unwrap_or_default();
     match (first.as_str(), args.get(1)) {
@@ -74,7 +53,6 @@ pub fn name(args: &[String]) -> String {
     }
 }
 
-/// What a command does.
 pub fn class(args: &[String]) -> WriteClass {
     let n = name(args);
     let first = n.split(' ').next().unwrap_or("");
@@ -88,14 +66,12 @@ pub fn class(args: &[String]) -> WriteClass {
     }
 }
 
-/// Why a command cannot run here, if it cannot.
 pub fn refusal(args: &[String]) -> Option<String> {
     let n = name(args);
     let first = n.split(' ').next().unwrap_or("");
     (REFUSED.contains(&first) && !CLIENT_READS.contains(&n.as_str())).then(|| format!("{n} is not supported here: it blocks or changes the connection's state"))
 }
 
-/// The commands of `text`: one per line that is not empty or a comment (byte ranges).
 pub fn split(text: &str) -> Vec<Range<usize>> {
     let mut out = Vec::new();
     let mut at = 0;
@@ -110,13 +86,10 @@ pub fn split(text: &str) -> Vec<Range<usize>> {
     out
 }
 
-/// A command's arguments, as text (classification, the explorer): bytes that are not UTF-8
-/// (`"\xff"`) are replaced; [`parse_bytes`] keeps them.
 pub fn parse(text: &str) -> Result<Vec<String>, ParseError> {
     Ok(parse_bytes(text)?.into_iter().map(|a| String::from_utf8_lossy(&a).into_owned()).collect())
 }
 
-/// A command's arguments as the server gets them: `"\xHH"` is that byte.
 pub fn parse_bytes(text: &str) -> Result<Vec<Vec<u8>>, ParseError> {
     let lead = text.len() - text.trim_start().len();
     let mut args = Vec::new();
@@ -184,8 +157,6 @@ pub fn parse_bytes(text: &str) -> Result<Vec<Vec<u8>>, ParseError> {
     Ok(args)
 }
 
-/// Bytes as `redis-cli` shows them (and takes them back inside double quotes): text as it
-/// is, other bytes as `\xHH`.
 pub fn escape_bytes(b: &[u8]) -> String {
     if let Ok(s) = std::str::from_utf8(b) {
         return s.to_string();
@@ -205,7 +176,6 @@ pub fn escape_bytes(b: &[u8]) -> String {
     out
 }
 
-/// An argument as `redis-cli` would need it typed (quoted when it has spaces or quotes).
 pub fn quote(arg: &str) -> String {
     if !arg.is_empty() && !arg.chars().any(|c| c.is_whitespace() || c == '"' || c == '\'' || c == '\\') {
         return arg.to_string();
@@ -224,7 +194,6 @@ pub fn quote(arg: &str) -> String {
     s
 }
 
-/// The command that shows a key's whole value, by its type.
 pub fn view_command(key: &str, kind: &str) -> String {
     let k = quote(key);
     match kind {
@@ -238,7 +207,6 @@ pub fn view_command(key: &str, kind: &str) -> String {
     }
 }
 
-/// The command that says how many entries a key's value holds, by its type.
 pub fn len_command(key: &str, kind: &str) -> String {
     let k = quote(key);
     match kind {
@@ -258,7 +226,6 @@ mod tests {
     #[test]
     fn reads_commands_as_redis_cli() {
         assert_eq!(parse(r#"SET "my key" 'it\'s' "a\tb\x41""#).unwrap(), ["SET", "my key", "it's", "a\tbA"]);
-        // Bytes: as sent, and as shown (typed back, the same bytes).
         assert_eq!(parse_bytes(r#"SET b "\x00\xffé""#).unwrap()[2], vec![0, 0xff, 0xc3, 0xa9]);
         let shown = escape_bytes(&[0, 0xff, b'a', b'"']);
         assert_eq!(shown, r#"\x00\xffa\""#);

@@ -1,17 +1,3 @@
-//! MongoDB's editor language: mongosh's statements, read into an [`Op`].
-//!
-//! ```text
-//! db.users.find({ age: { $gt: 30 } }, { name: 1 }).sort({ name: 1 }).limit(20)
-//! db.orders.aggregate([{ $match: { paid: true } }, { $group: { _id: "$user", n: { $sum: 1 } } }])
-//! db.users.updateOne({ _id: ObjectId("…") }, { $set: { vip: true } })
-//! db.getCollection("odd name").countDocuments({})
-//! db.runCommand({ dbStats: 1 })      show dbs      show collections      use shop
-//! ```
-//!
-//! Statements end at `;` or at a line break outside brackets, unless the next line goes on with
-//! `.method(…)`. [`Op::class`] says what a statement does, for the read-only switch, production's
-//! confirmations and the MCP tiers.
-
 use std::ops::Range;
 
 use mongodb::bson::{Bson, Document, doc};
@@ -19,10 +5,8 @@ use mongodb::bson::{Bson, Document, doc};
 use super::shell::{self, ParseError, Parser, Val};
 use crate::guard::WriteClass;
 
-/// One statement, read.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Parsed {
-    /// `db.getSiblingDB("other")…`: the database it runs in instead of the tab's.
     pub db: Option<String>,
     pub op: Op,
 }
@@ -31,25 +15,16 @@ pub struct Parsed {
 pub enum Op {
     ShowDbs,
     ShowCollections,
-    /// `use name`: the tab's database changes.
     Use(String),
-    /// `options`: what else the `find` command takes (`collation`, `hint`, `maxTimeMS`…).
     Find { coll: String, filter: Document, projection: Option<Document>, sort: Option<Document>, skip: u64, limit: Option<i64>, one: bool, options: Document },
-    /// `coll: None`: `db.aggregate(…)` (`$currentOp`, `$documents`).
     Aggregate { coll: Option<String>, pipeline: Vec<Document> },
-    /// `filter: None`: the collection's estimated count (its metadata).
     Count { coll: String, filter: Option<Document> },
     Distinct { coll: String, field: String, filter: Document },
     Insert { coll: String, docs: Vec<Document> },
-    /// `update` is an update document (`{$set: …}`) or a pipeline (an array of stages);
-    /// `options` the statement's others (`arrayFilters`, `collation`, `hint`).
     Update { coll: String, filter: Document, update: Bson, many: bool, upsert: bool, options: Document },
     Replace { coll: String, filter: Document, doc: Document, upsert: bool, options: Document },
     Delete { coll: String, filter: Document, many: bool, options: Document },
-    /// `findOneAndUpdate` / `…Replace` / `…Delete`: one document changed, returned (`update`:
-    /// an update or a replacement; `None`: deleted). `options`: `findAndModify`'s own.
     FindAndModify { coll: String, filter: Document, update: Option<Bson>, options: Document },
-    /// `bulkWrite([{insertOne: …}, {updateMany: …}, …])`, run in order.
     BulkWrite { coll: String, ops: Vec<Document> },
     CreateIndex { coll: String, keys: Document, options: Document },
     DropIndex { coll: String, index: Bson },
@@ -58,13 +33,10 @@ pub enum Op {
     CreateCollection { name: String, options: Document },
     RenameCollection { coll: String, to: String },
     DropDatabase,
-    /// `db.stats()` (`coll: None`) and `db.coll.stats()`.
     Stats { coll: Option<String> },
-    /// `db.runCommand(…)`, `db.adminCommand(…)` (`admin`), and the helpers that are one command.
     Command { doc: Document, admin: bool },
 }
 
-/// Commands that only read (`runCommand`'s first key, in lower case).
 const READ_COMMANDS: &[&str] = &[
     "ping", "buildinfo", "hello", "ismaster", "serverstatus", "dbstats", "collstats", "datasize", "listcollections",
     "listdatabases", "listindexes", "count", "distinct", "find", "explain", "hostinfo", "getlog", "getparameter",
@@ -73,7 +45,6 @@ const READ_COMMANDS: &[&str] = &[
 ];
 
 impl Op {
-    /// The collection it works on, if one.
     pub fn collection(&self) -> Option<&str> {
         match self {
             Op::Find { coll, .. }
@@ -96,8 +67,6 @@ impl Op {
         }
     }
 
-    /// What it does: reads, bounded writes (a filter that is not empty, one document), or
-    /// everything else (no filter on a `Many`, drops, `$out`, commands that are not reads).
     pub fn class(&self) -> WriteClass {
         let destructive = |why: &str| WriteClass::Destructive { reasons: vec![why.to_string()] };
         match self {
@@ -144,12 +113,6 @@ impl Op {
 
 }
 
-// ---------------------------------------------------------------------------------------------
-// Splitting
-
-/// The statements of `text`, as byte ranges (trimmed, never empty). A script (a statement that
-/// is JavaScript: `var`, a loop, `print`; see [`super::js`]) is one statement, all of it: its
-/// statements depend on each other.
 pub fn split(text: &str) -> Vec<Range<usize>> {
     let parts = statements(text);
     if parts.len() > 1 && parts.iter().any(|r| super::js::is_script_start(&text[r.clone()])) {
@@ -158,14 +121,12 @@ pub fn split(text: &str) -> Vec<Range<usize>> {
     parts
 }
 
-/// The shell's statements of `text` one by one (`;`, line breaks), script or not.
 pub(crate) fn statements(text: &str) -> Vec<Range<usize>> {
     let b = text.as_bytes();
     let mut out = Vec::new();
     let mut start = 0;
     let mut depth = 0i32;
     let mut i = 0;
-    // The last significant byte, to tell a regex's `/` from anything else.
     let mut last = b'(';
     let push = |s: usize, e: usize, out: &mut Vec<Range<usize>>| {
         let t = &text[s..e];
@@ -227,7 +188,6 @@ pub(crate) fn statements(text: &str) -> Vec<Range<usize>> {
                 last = b'(';
             }
             b'\n' if depth <= 0 => {
-                // A chain may go on on the next line: `.sort(…)`.
                 let next = text[i + 1..].trim_start();
                 if !next.starts_with('.') && !text[start..i].trim().is_empty() && !text[start..i].trim_end().ends_with('.') {
                     push(start, i, &mut out);
@@ -251,16 +211,11 @@ fn only_comments(s: &str) -> bool {
     p.at_end()
 }
 
-/// The statement around byte `at` (or the last one before it).
 pub fn statement_at(text: &str, at: usize) -> Option<Range<usize>> {
     let all = split(text);
     all.iter().find(|r| r.start <= at && at <= r.end).or_else(|| all.iter().rev().find(|r| r.end <= at)).or(all.first()).cloned()
 }
 
-// ---------------------------------------------------------------------------------------------
-// Parsing
-
-/// Reads one statement.
 pub fn parse(text: &str) -> Result<Parsed, ParseError> {
     let mut p = Parser::new(text);
     p.skip_ws();
@@ -297,8 +252,6 @@ pub fn parse(text: &str) -> Result<Parsed, ParseError> {
     Ok(parsed)
 }
 
-/// After `db`: `.coll.method(…)…`, `.method(…)`, `["coll"]`, `.getCollection("…")`,
-/// `.getSiblingDB("…")`.
 fn chain(p: &mut Parser) -> Result<Parsed, ParseError> {
     let mut db = None;
     let mut coll: Option<String> = None;
@@ -346,8 +299,6 @@ fn chain(p: &mut Parser) -> Result<Parsed, ParseError> {
     }
 }
 
-/// The operation a script's call names (`js`): a database method (`coll: None`, one call) or a
-/// collection's with the cursor's methods after it, from arguments already evaluated.
 pub(crate) fn op_of(coll: Option<&str>, calls: Vec<(String, Vec<Val>)>) -> Result<Op, ParseError> {
     match coll {
         None => {
@@ -448,7 +399,6 @@ fn db_method(name: &str, args: &[Val], at: usize) -> Result<Op, ParseError> {
 fn pipeline(args: &[Val], at: usize) -> Result<Vec<Document>, ParseError> {
     let stages: Vec<&Val> = match args.first() {
         Some(Val::Arr(a)) => a.iter().collect(),
-        // aggregate({…}, {…}): stages as arguments (the old shell's form).
         Some(Val::Obj(_)) => args.iter().collect(),
         None => Vec::new(),
         Some(_) => return Err(err_at(at, "aggregate() takes an array of stages")),
@@ -560,11 +510,9 @@ fn coll_method(coll: String, calls: Vec<(String, Vec<Val>, usize)>) -> Result<Op
         "stats" => Op::Stats { coll: Some(coll.clone()) },
         other => return Err(err_at(at, format!("{other}() is not a collection method here"))),
     };
-    // The cursor's methods after find() / aggregate().
     for (m, a, at) in calls {
         match (&mut op, m.as_str()) {
             (_, "toArray" | "pretty" | "batchSize") => {}
-            // The cursor's options: into the find command.
             (Op::Find { options, .. }, "hint" | "collation" | "maxTimeMS" | "comment" | "allowDiskUse" | "min" | "max" | "returnKey" | "showRecordId") => {
                 let v = match a.first() {
                     Some(v) => shell::to_bson(v).map_err(|e| err_at(at, e))?,
@@ -646,7 +594,6 @@ mod tests {
         assert!(matches!(op("db.o.aggregate([{$match: {a: 1}}, {$count: 'n'}])"), Op::Aggregate { pipeline, .. } if pipeline.len() == 2));
         assert!(matches!(op("db.o.updateMany({}, [{$set: {a: 1}}], {upsert: true})"), Op::Update { many: true, upsert: true, update: Bson::Array(_), .. }));
         assert!(matches!(op("db.c.find().explain('executionStats')"), Op::Command { doc, .. } if doc.get_str("verbosity") == Ok("executionStats")));
-        // Errors say where.
         let e = parse("db.users.find({a: 1}).frobnicate()").unwrap_err();
         assert_eq!(e.at, 22, "{e:?}");
         assert!(parse("db.users.deleteMany()").unwrap_err().message.contains("filter"));

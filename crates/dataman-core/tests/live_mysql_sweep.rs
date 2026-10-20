@@ -1,5 +1,3 @@
-//! MySQL sweep: big valid scripts through Dataman's splitter and session, every type decoded.
-
 mod common;
 
 use common::*;
@@ -14,7 +12,6 @@ fn run(e: &Env, s: &Arc<Session>, sql: &str) -> Arc<ResultSet> {
     rs
 }
 
-/// Splits like the app and runs each statement; returns the failures `(statement, error)`.
 fn script(e: &Env, s: &Arc<Session>, src: &str) -> Vec<(String, String)> {
     let mut bad = Vec::new();
     for st in split_in(src, Dialect::MySql) {
@@ -216,8 +213,6 @@ fn big_scripts_split_fast() {
     assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
 }
 
-/// A `mysqldump` of a database with routines, triggers and events (`DUMP_FILE`, naming
-/// `dump_src`) loads into a copy.
 #[test]
 fn mysqldump_loads() {
     let Ok(path) = std::env::var("DUMP_FILE") else { return };

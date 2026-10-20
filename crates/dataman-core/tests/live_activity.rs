@@ -1,9 +1,3 @@
-//! The activity monitor against real servers: the sessions with this process's backends marked,
-//! a blocking scenario (one session holds a row lock in an open transaction, another waits on
-//! it) read back as a tree, the waiter cancelled and the holder terminated, table health with
-//! the bloat estimate, `pg_stat_statements` absent or not loaded (both handled), and what LAR
-//! reports. Skips without servers.
-
 mod common;
 
 use common::*;
@@ -22,7 +16,6 @@ fn run(e: &Env, s: &Arc<Session>, sql: &str) {
     assert_eq!(wait(e, &rs), Phase::Done, "{sql}: {:?}", rs.status().error);
 }
 
-/// Polls `f` until it gives something (10 s).
 fn until<T>(mut f: impl FnMut() -> Option<T>) -> Option<T> {
     for _ in 0..100 {
         if let Some(v) = f() {
@@ -51,14 +44,12 @@ fn sessions_mark_this_process() {
     let background = rows.iter().find(|r| r.is_background()).expect("a background process");
     assert!(!c.owns_backend(background.pid));
     assert!(rows.iter().all(|r| r.blocked_by.is_empty() || r.state_kind() == State::Active));
-    // An idle session reads the same twice (ages are whole seconds and may tick): nothing to
-    // redraw. Only this test's own session: the other tests of this file run in parallel on the
-    // same server, and their sessions come and go between the two reads.
+    // Only this test's own session: the other tests of this file run in parallel on the same
+    // server, and their sessions come and go between the two reads.
     let again = e.core.block_on(c.activity_sessions(c.database())).unwrap();
     let me_again = again.iter().find(|r| r.pid == pid).expect("still listed");
     let still = |r: &activity::SessionRow| (r.pid, r.state.clone(), r.query.clone(), r.app.clone(), r.blocked_by.clone());
     assert_eq!(still(me), still(me_again));
-    // A dropped session's mark goes with its connection.
     drop(s);
     assert!(until(|| (!c.owns_backend(pid)).then_some(())).is_some(), "the mark outlived the session");
 }
@@ -75,13 +66,11 @@ fn blocking_tree_cancel_and_terminate() {
     ]);
     let db = c.database().to_string();
 
-    // The holder: a row lock in an open transaction.
     let holder = c.session(None);
     run(&e, &holder, "BEGIN");
     run(&e, &holder, &format!("UPDATE {SCHEMA}.acct SET balance = balance - 1 WHERE id = 1"));
     assert_eq!(holder.tx().status, TxStatus::Open);
     let hp = holder.backend_pid().unwrap();
-    // The waiter: the same row.
     let waiter = c.session(None);
     run(&e, &waiter, "SELECT 1");
     let wp = waiter.backend_pid().unwrap();
@@ -116,13 +105,11 @@ fn blocking_tree_cancel_and_terminate() {
     assert_eq!(w.blocked_by, vec![hp]);
     assert!(c.owns_backend(hp) && c.owns_backend(wp));
 
-    // Cancel the waiter: its statement ends cancelled (57014), its session stays.
     assert!(e.core.block_on(c.signal_backend(&db, wp, Signal::Cancel)).unwrap());
     assert_eq!(wait(&e, &blocked), Phase::Cancelled);
     run(&e, &waiter, "SELECT 1");
     assert!(until(|| e.core.block_on(c.activity_locks(&db)).ok().filter(|x| x.is_empty()).map(|_| ())).is_some(), "no wait left");
 
-    // Terminate the holder: its session goes, the transaction rolls back.
     assert!(e.core.block_on(c.signal_backend(&db, hp, Signal::Terminate)).unwrap());
     let gone = until(|| {
         let s = e.core.block_on(c.activity_sessions(&db)).ok()?;
@@ -133,10 +120,8 @@ fn blocking_tree_cancel_and_terminate() {
     assert!(until(|| (!c.owns_backend(hp)).then_some(())).is_some());
     let rs = query(&e, &c, &format!("SELECT balance FROM {SCHEMA}.acct WHERE id = 1"));
     assert_eq!(rs.snapshot().text(0, 0).as_deref(), Some("100"), "rolled back");
-    // A signal to a backend that is gone reports false.
     assert!(!e.core.block_on(c.signal_backend(&db, hp, Signal::Cancel)).unwrap());
 
-    // Table health: the scratch table, analyzed, with its sizes.
     exec(&e, &c, &[&format!("ANALYZE {SCHEMA}.acct")]);
     let tables = e.core.block_on(c.activity_tables(&db, true)).unwrap();
     let t = tables.iter().find(|t| t.schema == SCHEMA && t.name == "acct").expect("the table is listed");
@@ -151,8 +136,6 @@ fn blocking_tree_cancel_and_terminate() {
     exec(&e, &c, &[&format!("DROP SCHEMA {SCHEMA} CASCADE")]);
 }
 
-/// `pg_stat_statements`: not created here (this container), and created but not loaded (a
-/// scratch database); with the library loaded, rows.
 #[test]
 fn statements_presence() {
     let e = env();
@@ -187,8 +170,6 @@ fn statements_presence() {
     exec(&e, &c, &[&format!("DROP DATABASE {db} WITH (FORCE)")]);
 }
 
-/// LAR has no `pg_stat_activity`, `pg_locks` nor `pg_stat_statements`, and its
-/// `pg_stat_user_tables` is empty: the monitor hides it all.
 #[test]
 fn lar_reports_little() {
     let e = env();
@@ -204,7 +185,6 @@ fn lar_reports_little() {
     assert!(locks.is_err(), "no pg_locks");
     assert!(tables.is_ok_and(|t| t.is_empty()), "pg_stat_user_tables answers, empty");
     assert!(!matches!(statements, Ok(Statements::Rows(_))));
-    // The connection still works after the failed queries.
     let s = c.session(None);
     run(&e, &s, "SELECT 1");
 }

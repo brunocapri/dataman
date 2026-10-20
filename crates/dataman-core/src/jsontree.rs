@@ -1,24 +1,17 @@
-//! A JSON value as an editable tree (the grid's JSON editor): keys keep their order, numbers
-//! keep their text, and parse errors say where (line and column). Nodes are addressed by their
-//! path of child indexes, which stays valid for the rows of a flattened view.
-
 use std::collections::HashSet;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Node {
     Null,
     Bool(bool),
-    /// The number as written (`1.50` stays `1.50`).
     Number(String),
     String(String),
     Array(Vec<Node>),
     Object(Vec<(String, Node)>),
 }
 
-/// Child indexes from the root.
 pub type Path = Vec<usize>;
 
-/// Where a parse failed (1-based) and why.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParseError {
     pub line: usize,
@@ -201,7 +194,6 @@ impl<'a> Parser<'a> {
                         b'u' => {
                             let hi = self.hex4()?;
                             let ch = if (0xD800..0xDC00).contains(&hi) {
-                                // A surrogate pair.
                                 if !self.s[self.i..].starts_with(b"\\u") {
                                     return Err(self.err("invalid surrogate pair"));
                                 }
@@ -218,7 +210,6 @@ impl<'a> Parser<'a> {
                 }
                 c if c < 0x20 => return Err(self.err("control character in string")),
                 _ => {
-                    // Copy one UTF-8 character.
                     let ch = self.text[self.i..].chars().next().unwrap_or('\u{fffd}');
                     out.push(ch);
                     self.i += ch.len_utf8();
@@ -262,14 +253,12 @@ fn quote(s: &str, out: &mut String) {
 }
 
 impl Node {
-    /// One line, PostgreSQL's style: `{"a": 1, "b": [1, 2]}`.
     pub fn compact(&self) -> String {
         let mut s = String::new();
         self.write(&mut s, None, 0);
         s
     }
 
-    /// Indented by two spaces.
     pub fn pretty(&self) -> String {
         let mut s = String::new();
         self.write(&mut s, Some(2), 0);
@@ -341,7 +330,6 @@ impl Node {
         self.len() == 0
     }
 
-    /// `null`, `bool`, `number`, `string`, `array`, `object`.
     pub fn type_name(&self) -> &'static str {
         match self {
             Node::Null => "null",
@@ -371,7 +359,6 @@ impl Node {
         }
     }
 
-    /// The text a leaf is edited as: strings without quotes, the rest as JSON.
     pub fn edit_text(&self) -> String {
         match self {
             Node::String(s) => s.clone(),
@@ -380,20 +367,15 @@ impl Node {
     }
 }
 
-/// What a typed leaf value means: valid JSON is taken as JSON (`42`, `true`, `"42"`, `{}`),
-/// anything else is a string.
 pub fn leaf_from_text(text: &str) -> Node {
     parse(text.trim()).unwrap_or_else(|_| Node::String(text.to_string()))
 }
 
-/// One row of the tree as drawn.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Row {
     pub path: Path,
     pub depth: usize,
-    /// The member's key (objects) or index (arrays); `None` for the root.
     pub key: Option<RowKey>,
-    /// Leaves: their JSON text; containers: `{3}` / `[2]`.
     pub value: String,
     pub type_name: &'static str,
     pub container: bool,
@@ -406,11 +388,9 @@ pub enum RowKey {
     Index(usize),
 }
 
-/// The editable document.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Doc {
     pub root: Node,
-    /// Collapsed containers (everything starts expanded).
     pub collapsed: HashSet<Path>,
 }
 
@@ -423,7 +403,6 @@ impl Doc {
         parse(text).map(Doc::new)
     }
 
-    /// The visible rows, depth first.
     pub fn rows(&self) -> Vec<Row> {
         let mut out = Vec::new();
         self.walk(&self.root, &mut Vec::new(), 0, None, &mut out);
@@ -466,7 +445,6 @@ impl Doc {
         }
     }
 
-    /// Sets a node from typed text (see [`leaf_from_text`]).
     pub fn set_text(&mut self, path: &[usize], text: &str) -> bool {
         match self.root.get_mut(path) {
             Some(n) => {
@@ -477,7 +455,6 @@ impl Doc {
         }
     }
 
-    /// Renames an object member; a key its object already has is refused.
     pub fn rename(&mut self, path: &[usize], key: &str) -> Result<(), String> {
         let Some((&i, parent)) = path.split_last() else { return Err("the root has no key".into()) };
         match self.root.get_mut(parent) {
@@ -497,7 +474,6 @@ impl Doc {
         }
     }
 
-    /// Removes a member or item (the root cannot go: it becomes `null`).
     pub fn remove(&mut self, path: &[usize]) {
         let Some((&i, parent)) = path.split_last() else {
             self.root = Node::Null;
@@ -512,12 +488,9 @@ impl Doc {
             }
             _ => {}
         }
-        // Collapsed paths at or after it moved: forget them (they re-expand).
         self.collapsed.retain(|p| !p.starts_with(parent) || p.len() <= parent.len());
     }
 
-    /// Adds a child to a container (`"key": null` to an object, `null` to an array) and returns
-    /// its path; on a leaf, adds after it in its parent.
     pub fn add(&mut self, path: &[usize]) -> Option<Path> {
         let n = self.root.get_mut(path)?;
         let mut out = path.to_vec();
@@ -561,12 +534,10 @@ impl Doc {
         Some(out)
     }
 
-    /// Every container open.
     pub fn expand_all(&mut self) {
         self.collapsed.clear();
     }
 
-    /// Every container below the root shut: the root's own members stay listed.
     pub fn collapse_all(&mut self) {
         fn walk(n: &Node, path: &mut Path, out: &mut HashSet<Path>) {
             let kids: Vec<&Node> = match n {
@@ -588,9 +559,6 @@ impl Doc {
     }
 }
 
-/// A PostgreSQL array as text (`{1,2,"a b",NULL}`, nested `{{1,2},{3,4}}`, with or without a
-/// `[1:2]=` bounds prefix) as a tree of arrays: unquoted numbers become numbers, an unquoted
-/// `NULL` null, anything else a string (quotes and backslashes undone). `None`: not an array.
 pub fn from_pg_array(text: &str) -> Option<Node> {
     let mut t = text.trim();
     if t.starts_with('[') {
@@ -732,7 +700,6 @@ mod tests {
         d.remove(&[1]);
         d.remove(&[1, 0]);
         assert_eq!(d.root.compact(), r#"{"name": "Ana Lima", "tags": [true], "count": 42, "key": {}}"#);
-        // The edited text is valid JSON that parses to the same tree.
         assert_eq!(parse(&d.root.compact()).unwrap(), d.root);
         assert_eq!(leaf_from_text("abc"), Node::String("abc".into()));
         assert_eq!(leaf_from_text(" null "), Node::Null);

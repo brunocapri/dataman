@@ -1,11 +1,3 @@
-//! A table opened as data, not as SQL: column filters, a free-form `WHERE`, a server-side sort
-//! and a page, turned into one `SELECT` the editor shows (and the user may take over).
-//!
-//! Paging is `LIMIT … OFFSET …`: it works with any filter and any sort, and the statement stays
-//! readable. Without a sort the rows come in primary-key order, so the pages never overlap. The
-//! total is estimated from `pg_class.reltuples` at once and counted (`count(*)`) on a backend of
-//! its own, cancellable.
-
 use std::sync::Arc;
 
 use anyhow::anyhow;
@@ -19,7 +11,6 @@ use crate::sql::Dialect;
 use crate::sqlgen::{CellValue, qualified, quote_literal, value_literal_in};
 use crate::value::Kind;
 
-/// A filter's comparison.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Op {
     Eq,
@@ -28,13 +19,10 @@ pub enum Op {
     Gt,
     Le,
     Ge,
-    /// Case-insensitive substring (`ILIKE '%v%'`).
     Contains,
-    /// Case-insensitive prefix (`ILIKE 'v%'`).
     StartsWith,
     IsNull,
     NotNull,
-    /// A comma-separated list (`'a, b'` items may be quoted; an unquoted `NULL` matches NULL).
     In,
 }
 
@@ -58,13 +46,11 @@ impl Op {
         }
     }
 
-    /// Whether the operator compares with a typed value.
     pub fn takes_value(self) -> bool {
         !matches!(self, Op::IsNull | Op::NotNull)
     }
 }
 
-/// One column filter. `kind` is the column's, so numbers and booleans go unquoted.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Filter {
     pub column: String,
@@ -73,8 +59,6 @@ pub struct Filter {
     pub value: String,
 }
 
-/// A typed value without one pair of surrounding single quotes (`'paid'` → `paid`, doubled
-/// quotes inside undone): what the user meant when they quoted it themselves.
 pub fn unquote(v: &str) -> String {
     let t = v.trim();
     if t.len() >= 2 && t.starts_with('\'') && t.ends_with('\'') {
@@ -83,8 +67,6 @@ pub fn unquote(v: &str) -> String {
     v.to_string()
 }
 
-/// Items of an `IN` list: comma-separated, trimmed; `'…'` or `"…"` keep commas inside. Each item
-/// is `Some(text)`, or `None` for an unquoted `NULL`.
 pub fn parse_list(s: &str) -> Vec<Option<String>> {
     let mut out = Vec::new();
     let mut cur = String::new();
@@ -105,7 +87,6 @@ pub fn parse_list(s: &str) -> Vec<Option<String>> {
     while let Some(c) = chars.next() {
         match c {
             '\'' | '"' if cur.trim().is_empty() && !quoted => {
-                // A quoted item: up to the closing quote (doubled quotes are one).
                 cur.clear();
                 quoted = true;
                 while let Some(d) = chars.next() {
@@ -119,7 +100,6 @@ pub fn parse_list(s: &str) -> Vec<Option<String>> {
                     }
                     cur.push(d);
                 }
-                // Anything after the closing quote up to the comma is dropped.
                 while let Some(&d) = chars.peek() {
                     if d == ',' {
                         break;
@@ -135,8 +115,7 @@ pub fn parse_list(s: &str) -> Vec<Option<String>> {
     out
 }
 
-/// `%`, `_` and `\` escaped for a LIKE pattern (backslash is LIKE's default escape). T-SQL's
-/// `[` (a character class there) too; its LIKE has no default escape: the caller adds
+/// T-SQL's LIKE has no default escape and `[` is a character class there: the caller adds
 /// `ESCAPE '\'`.
 fn like_escape(s: &str, d: Dialect) -> String {
     let mut out = String::with_capacity(s.len());
@@ -154,12 +133,10 @@ impl Filter {
         Filter { column: column.into(), kind, op, value: value.into() }
     }
 
-    /// The condition, its column and values quoted (PostgreSQL).
     pub fn sql(&self) -> String {
         self.sql_in(Dialect::Postgres)
     }
 
-    /// The condition in `d`.
     pub fn sql_in(&self, d: Dialect) -> String {
         let col = d.quote_ident(&self.column);
         let v = unquote(&self.value);
@@ -186,7 +163,6 @@ impl Filter {
             Op::Le => format!("{col} <= {}", lit(&v)),
             Op::Ge => format!("{col} >= {}", lit(&v)),
             Op::Contains | Op::StartsWith => {
-                // Any type matches on its text (numbers, uuids, json…).
                 let text = if self.kind == Kind::Text { col } else { d.text_cast(&col) };
                 let pat = like_escape(&v, d);
                 let pat = if self.op == Op::Contains { format!("%{pat}%") } else { format!("{pat}%") };
@@ -210,7 +186,6 @@ impl Filter {
         }
     }
 
-    /// `status = paid`, `total > 100`, `name is null`: the chip text.
     pub fn label(&self) -> String {
         let v: String = {
             let s = self.value.trim();
@@ -220,21 +195,16 @@ impl Filter {
     }
 }
 
-/// A table's data view: what it shows and which page.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TableView {
     pub schema: String,
     pub table: String,
     pub filters: Vec<Filter>,
-    /// Free-form condition (power users); empty for none.
     pub where_raw: String,
-    /// Server-side sort (a header click).
     pub sort: Option<(String, SortDir)>,
-    /// The order without a sort (the primary key), so pages never overlap.
     pub key: Vec<String>,
     pub page: u64,
     pub page_size: u64,
-    /// The statements' dialect (PostgreSQL unless set).
     pub dialect: Dialect,
 }
 
@@ -257,7 +227,6 @@ impl TableView {
         self.dialect.qualified(Some(&self.schema), &self.table)
     }
 
-    /// The conditions, one per line item (the free-form one in parentheses when not alone).
     pub fn conditions(&self) -> Vec<String> {
         let mut v: Vec<String> = self.filters.iter().map(|f| f.sql_in(self.dialect)).collect();
         let raw = self.where_raw.trim().trim_end_matches(';').trim();
@@ -282,14 +251,6 @@ impl TableView {
         }
     }
 
-    /// The page's statement:
-    ///
-    /// ```sql
-    /// SELECT * FROM public.orders
-    ///  WHERE status = 'paid'
-    ///  ORDER BY total DESC
-    ///  LIMIT 1000 OFFSET 2000;
-    /// ```
     pub fn sql(&self) -> String {
         let mut s = format!("SELECT * FROM {}", self.relation());
         self.where_lines(&mut s);
@@ -312,7 +273,7 @@ impl TableView {
         s
     }
 
-    /// The total under the same conditions (`COUNT_BIG` in T-SQL, whose `count(*)` is an int).
+    /// `COUNT_BIG` in T-SQL, whose `count(*)` is an int.
     pub fn count_sql(&self) -> String {
         let count = if self.dialect == Dialect::TSql { "COUNT_BIG(*)" } else { "count(*)" };
         let mut s = format!("SELECT {count} FROM {}", self.relation());
@@ -320,14 +281,11 @@ impl TableView {
         s
     }
 
-    /// The last page for `total` rows (0-based).
     pub fn last_page(&self, total: u64) -> u64 {
         total.saturating_sub(1) / self.page_size
     }
 }
 
-/// A `count(*)` running on its own backend: its result, and the handle whose drop cancels the
-/// statement on the server.
 pub struct RowCount {
     pub task: Task<u64>,
     pub stop: CountStop,
@@ -337,19 +295,15 @@ pub struct RowCount {
 pub struct CountStop(#[allow(dead_code)] tokio::sync::oneshot::Sender<()>);
 
 impl Connection {
-    /// The planner's row estimate of a table (`pg_class.reltuples`); `None` when the table was
-    /// never analyzed or the catalog does not say.
     pub fn estimate_rows(self: &Arc<Self>, db: &str, schema: &str, table: &str) -> Task<Option<u64>> {
         let (this, db) = (self.clone(), db.to_string());
         let rel = quote_literal(&qualified(Some(schema), table));
         let my = match self.engine() {
-            // InnoDB's sampled estimate (`ANALYZE TABLE` refreshes it); views have none.
             Engine::MySql => Some(format!(
                 "SELECT TABLE_ROWS FROM information_schema.TABLES WHERE TABLE_SCHEMA = {} AND TABLE_NAME = {} AND TABLE_TYPE = 'BASE TABLE'",
                 my::lit(schema),
                 my::lit(table)
             )),
-            // The rows of the heap or clustered index, as the storage engine counts them.
             Engine::SqlServer => Some(format!(
                 "SELECT SUM(p.rows) FROM sys.partitions p WHERE p.object_id = {} AND p.index_id IN (0, 1)",
                 ms::object_id(schema, table)
@@ -365,8 +319,6 @@ impl Connection {
         })
     }
 
-    /// `sql` (a `SELECT count(*) …`) on a backend of its own: a long count never holds up the
-    /// catalog queries or the tab's session. Drop the handle to cancel it.
     pub fn count_rows(self: &Arc<Self>, db: &str, sql: String) -> RowCount {
         let (tx, mut rx) = tokio::sync::oneshot::channel::<()>();
         let (this, db) = (self.clone(), db.to_string());
@@ -390,8 +342,6 @@ impl Connection {
         RowCount { task, stop: CountStop(tx) }
     }
 
-    /// The primary key's columns of a table, in key order (empty without one, or when the
-    /// catalog does not say).
     pub fn primary_key(self: &Arc<Self>, db: &str, schema: &str, table: &str) -> Task<Vec<String>> {
         let (this, db) = (self.clone(), db.to_string());
         let rel = quote_literal(&qualified(Some(schema), table));
@@ -432,7 +382,6 @@ impl Connection {
         })
     }
 
-    /// The labels of an enum type, in order (empty for any other type). Cached per database.
     pub fn enum_labels(self: &Arc<Self>, db: &str, type_oid: u32) -> Task<Arc<Vec<String>>> {
         let (this, db) = (self.clone(), db.to_string());
         self.spawn(async move {
@@ -457,8 +406,6 @@ impl Connection {
         })
     }
 
-    /// The enum labels of result column `col`, in order (empty when it is not an enum):
-    /// PostgreSQL's enum type, or MySQL's `ENUM('…')` column the result shows.
     pub fn result_enum_labels(self: &Arc<Self>, db: &str, rs: &ResultSet, col: usize) -> Task<Arc<Vec<String>>> {
         let Some(info) = rs.columns().and_then(|c| c.get(col).cloned()) else { return self.spawn(async { Ok(Arc::new(Vec::new())) }) };
         if self.engine() != Engine::MySql {
@@ -489,7 +436,6 @@ impl Connection {
     }
 }
 
-/// `enum('a','it''s','b\\c')` → `a`, `it's`, `b\c` (MySQL's `COLUMN_TYPE`).
 pub fn mysql_enum_labels(column_type: &str) -> Vec<String> {
     let t = column_type.trim();
     let Some(inner) = t.strip_prefix("enum(").or_else(|| t.strip_prefix("ENUM(")).and_then(|s| s.strip_suffix(')')) else { return Vec::new() };
@@ -615,7 +561,6 @@ mod tests {
         v.page = 3;
         assert_eq!(v.sql(), "SELECT * FROM dbo.orders\n ORDER BY id\n OFFSET 300 ROWS FETCH NEXT 100 ROWS ONLY;");
         assert_eq!(v.count_sql(), "SELECT COUNT_BIG(*) FROM dbo.orders");
-        // Without a key or a sort, OFFSET still needs an ORDER BY.
         let mut h = TableView::new("sales", "event", vec![], 50);
         h.dialect = Dialect::TSql;
         assert_eq!(h.sql(), "SELECT * FROM sales.event\n ORDER BY (SELECT NULL)\n OFFSET 0 ROWS FETCH NEXT 50 ROWS ONLY;");
@@ -639,11 +584,9 @@ mod tests {
             "SELECT * FROM public.orders\n WHERE status = 'paid'\n   AND (total > 100 OR customer = 7)\n ORDER BY total DESC\n LIMIT 1000;"
         );
         assert_eq!(v.count_sql(), "SELECT count(*) FROM public.orders\n WHERE status = 'paid'\n   AND (total > 100 OR customer = 7)");
-        // The free-form condition alone goes in as typed.
         v.filters.clear();
         v.sort = Some(("Total".into(), SortDir::Asc));
         assert_eq!(v.sql(), "SELECT * FROM public.orders\n WHERE total > 100 OR customer = 7\n ORDER BY \"Total\"\n LIMIT 1000;");
-        // No key, no sort: no ORDER BY; quoted names.
         let w = TableView::new("Sales", "order", vec![], 50);
         assert_eq!(w.sql(), "SELECT * FROM \"Sales\".\"order\"\n LIMIT 50;");
         let k = TableView::new("s", "t", vec!["a".into(), "b".into()], 10);

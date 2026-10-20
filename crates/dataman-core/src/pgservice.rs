@@ -1,19 +1,13 @@
-//! libpq's connection service file: `[name]` sections of `key=value` lines. The user's file
-//! (`PGSERVICEFILE`, or `~/.pg_service.conf`) wins over the system one
-//! (`$PGSYSCONFDIR/pg_service.conf`) for a name both define.
-
 use std::path::PathBuf;
 
 use crate::connstr::ConnSpec;
 
-/// A service: its name and its parameters.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Service {
     pub name: String,
     pub spec: ConnSpec,
 }
 
-/// The files to read, the user's first.
 pub fn files() -> Vec<PathBuf> {
     let mut v = Vec::new();
     match std::env::var_os("PGSERVICEFILE").filter(|p| !p.is_empty()) {
@@ -30,7 +24,6 @@ pub fn files() -> Vec<PathBuf> {
     v
 }
 
-/// Every service of every file, a name only once (the first file that defines it).
 pub fn all() -> Vec<Service> {
     let mut out: Vec<Service> = Vec::new();
     for f in files() {
@@ -81,7 +74,6 @@ mod tests {
         assert_eq!((s[0].spec.user.as_deref(), s[0].spec.sslmode), (Some("bruno"), Some(SslMode::VerifyFull)));
         let (p, pw) = s[1].spec.clone().into_profile();
         assert_eq!((p.host.as_str(), p.port, p.database.as_str(), pw), ("/tmp", 5432, "dev", None));
-        // An explicit parameter wins over the service's.
         let spec = crate::connstr::parse("service=prod dbname=other").unwrap().or(s[0].spec.clone());
         assert_eq!((spec.database.as_deref(), spec.host.as_deref()), (Some("other"), Some("db.prod.internal")));
     }

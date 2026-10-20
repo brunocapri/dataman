@@ -1,10 +1,3 @@
-//! The backends this process holds open, by server: the activity monitor marks them as "this
-//! app" (cancelling or terminating one of them ends a tab's work or the monitor itself).
-//!
-//! Editor sessions learn their process id from the BackendKeyData that goes by on their socket
-//! (`tx::Sniff`, no round trip); the other connections ask `pg_backend_pid()` once when they
-//! open. A [`Mark`] lives as long as its connection's driver task.
-
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
@@ -14,8 +7,6 @@ use crate::config::ConnectionProfile;
 
 static OWN: LazyLock<Mutex<HashMap<String, HashMap<i32, usize>>>> = LazyLock::new(Default::default);
 
-/// Which server a profile talks to, as far as process ids go: host and port, with the loopback
-/// names folded together (an SSH tunnel's profile names the server behind it).
 pub fn server_key(p: &ConnectionProfile) -> String {
     let host = p.host.trim().to_ascii_lowercase();
     let host = match host.as_str() {
@@ -26,7 +17,6 @@ pub fn server_key(p: &ConnectionProfile) -> String {
     format!("{host}:{}", p.port)
 }
 
-/// One open backend of this process; unregistered when dropped.
 #[derive(Debug)]
 pub struct Mark {
     key: String,
@@ -39,7 +29,6 @@ impl Mark {
     }
 }
 
-/// Registers backend `pid` on the server `key` until the mark is dropped.
 pub fn mark(key: String, pid: i32) -> Mark {
     *OWN.lock().entry(key.clone()).or_default().entry(pid).or_default() += 1;
     Mark { key, pid }
@@ -62,12 +51,10 @@ impl Drop for Mark {
     }
 }
 
-/// Whether backend `pid` on server `key` is one of this process's.
 pub fn is_own(key: &str, pid: i32) -> bool {
     OWN.lock().get(key).is_some_and(|m| m.contains_key(&pid))
 }
 
-/// This process's backends on server `key`, sorted.
 #[cfg(test)]
 pub fn pids(key: &str) -> Vec<i32> {
     let mut v: Vec<i32> = OWN.lock().get(key).map(|m| m.keys().copied().collect()).unwrap_or_default();

@@ -1,8 +1,3 @@
-//! MySQL against a real server (`DATAMAN_MYSQL`, see `common`): connecting, the types decoded
-//! into the grid, errors with their position, streaming with pauses, cancel, transactions from
-//! the OK packets, parameters, scripts with DELIMITER, read-only connections. Skips without a
-//! server.
-
 mod common;
 
 use common::*;
@@ -94,17 +89,14 @@ fn connects_and_decodes_every_type() {
     assert_eq!((r2[5].as_deref(), r2[8].as_deref(), r2[10].as_deref(), r2[13].as_deref()), (None, Some(""), Some("838:59:59"), None));
     let r4 = texts(&rs, 4);
     assert_eq!((r4[1].as_deref(), r4[13].as_deref(), r4[14].as_deref()), (Some("Eva \\ Brown"), Some("1e-07"), Some("1e+300")));
-    // Numbers stay native: sorting by a column sorts numbers.
     rs.sort(Some((3, dataman_core::result::SortDir::Desc)));
     assert_eq!(rs.snapshot().text(0, 1).as_deref(), Some("Ana Smith"));
 
-    // The text protocol (a statement the server will not prepare) decodes the same way.
     let a = ok(&e, &s, "SELECT * FROM customer WHERE id = 4");
     let b = ok(&e, &s, "SELECT * FROM customer WHERE id = 4; DO 0");
     assert_eq!(texts(&a, 0), texts(&b, 0));
     assert_eq!(texts(&a, 0)[8].as_deref(), Some("9223372036854775808"), "past i64");
 
-    // Zero and impossible dates stay as the server wrote them.
     let z = ok(&e, &s, "SELECT d, dt FROM odd_dates ORDER BY id");
     assert_eq!(texts(&z, 0), vec![s1("0000-00-00"), s1("0000-00-00 00:00:00")]);
     assert_eq!(texts(&z, 1), vec![s1("2024-02-30"), s1("2024-02-30 10:00:00")]);
@@ -127,9 +119,7 @@ fn errors_point_at_the_statement() {
     let rs = run(&e, &s, "SELECT * FROM no_such_db.no_such_table");
     let err = rs.status().error.unwrap();
     assert!(matches!(err.code.as_deref(), Some("1049" | "1146")), "{err:?}");
-    // The session is still usable.
     assert_eq!(ok(&e, &s, "SELECT 42").snapshot().text(0, 0).as_deref(), Some("42"));
-    // A wrong password is the server's error.
     let bad = e.core.block_on(e.core.connect(mysql_profile(""), Some("wrong".into())));
     let info = dataman_core::server_error(&bad.err().unwrap()).unwrap();
     assert_eq!(info.code.as_deref(), Some("1045"));
@@ -163,7 +153,6 @@ fn streams_pauses_and_fetches_all() {
     assert_eq!(snap.text(6, 2).as_deref(), Some("1"));
     eprintln!("MySQL 1M rows x 3 cols: first pause after {first_pause:?}, all rows after {:?}", t0.elapsed());
 
-    // A paused result is cancelled when the next statement runs in the same session.
     let big = s.execute("WITH RECURSIVE g(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM g WHERE n < 1000000) SELECT n FROM g");
     e.core.block_on(async {
         let mut rx = big.subscribe();
@@ -178,7 +167,6 @@ fn streams_pauses_and_fetches_all() {
 
 #[test]
 fn bench_fetch_all() {
-    // `DATAMAN_MYSQL_BENCH=n`: n timed rounds of 1M rows x 3 columns to the end.
     let Some(n) = std::env::var("DATAMAN_MYSQL_BENCH").ok().and_then(|v| v.parse::<usize>().ok()) else { return };
     let e = env();
     let Some(c) = mysql_on(&e, mysql_profile("")) else { return };
@@ -210,7 +198,6 @@ fn cancel_a_sleep() {
     // SLEEP interrupted by KILL QUERY returns 1 (not an error) on MySQL; either way it is over fast.
     assert!(rs.phase().is_finished());
     assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
-    // A statement interrupted while it reads is reported as cancelled.
     ok(&e, &s, "SET SESSION cte_max_recursion_depth = 100000000");
     let rs = s.execute("WITH RECURSIVE g(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM g WHERE n < 50000000) SELECT COUNT(*) FROM g");
     std::thread::sleep(Duration::from_millis(300));
@@ -229,13 +216,11 @@ fn transactions_from_the_status_flags() {
     ok(&e, &s, "INSERT INTO item VALUES (2, 9, 'x', 1, 1)");
     assert_eq!(s.tx().status, TxStatus::Idle, "auto-commit");
 
-    // A typed START TRANSACTION: the transaction stays open.
     ok(&e, &s, "START TRANSACTION");
     ok(&e, &s, "UPDATE customer SET balance = balance + 1 WHERE id = 1");
     assert_eq!(s.tx().status, TxStatus::Open);
     ok(&e, &s, "UPDATE customer SET balance = balance + 1 WHERE id = 2");
     assert_eq!(s.tx().statements, 2);
-    // An error leaves MySQL's transaction open (it is not failed).
     let bad = run(&e, &s, "UPDATE customer SET nope = 1");
     assert_eq!(bad.phase(), Phase::Failed);
     assert_eq!(s.tx().status, TxStatus::Open);
@@ -249,7 +234,6 @@ fn transactions_from_the_status_flags() {
     assert_eq!(e.core.block_on(s.end_transaction(true)).unwrap(), TxEnd::Committed);
     assert_eq!(balance(3).as_deref(), Some("1.00"));
 
-    // DDL commits on its own: the badge follows the server.
     ok(&e, &s, "START TRANSACTION");
     ok(&e, &s, "UPDATE customer SET balance = 2 WHERE id = 3");
     assert_eq!(s.tx().status, TxStatus::Open);
@@ -257,7 +241,6 @@ fn transactions_from_the_status_flags() {
     assert_eq!(s.tx().status, TxStatus::Idle);
     assert_eq!(balance(3).as_deref(), Some("2.00"), "the DDL committed the update");
 
-    // Typed START TRANSACTION / COMMIT.
     ok(&e, &s, "START TRANSACTION");
     assert_eq!(s.tx().status, TxStatus::Open);
     ok(&e, &s, "COMMIT");
@@ -270,7 +253,6 @@ fn parameters_scripts_and_procedures() {
     let e = env();
     let Some(c) = mysql_seeded(&e, "dataman_t_script") else { return };
     let s = c.session(None);
-    // `?` bound in order, as text the server converts; NULL as NULL.
     let rs = s.execute_with("SELECT name FROM customer WHERE id = ? OR email <=> ?", vec![Some("2".into()), None]);
     rs.fetch_all();
     e.core.block_on(rs.wait_finished());
@@ -278,7 +260,6 @@ fn parameters_scripts_and_procedures() {
     assert_eq!(texts(&rs, 0), vec![Some("Ben Lewis".to_string())]);
     assert_eq!(rs.rows(), 2, "Eva has no email");
 
-    // A procedure created through DELIMITER, then CALLed: its first result set is shown.
     let script = "DELIMITER //\nCREATE PROCEDURE two()\nBEGIN\n  SELECT 1 AS a;\n  SELECT 2 AS b;\nEND //\nDELIMITER ;\nCALL two();\nCALL customer_orders(1)";
     let stmts: Vec<&str> = split_in(script, Dialect::MySql).into_iter().map(|st| &script[st.range]).collect();
     assert_eq!(stmts.len(), 3);
@@ -289,18 +270,13 @@ fn parameters_scripts_and_procedures() {
     assert_eq!(call.rows(), 2);
     assert_eq!(ok(&e, &s, "SELECT customer_total(1)").snapshot().text(0, 0).as_deref(), Some("330.50"));
 
-    // Affected rows (matched rows, as PostgreSQL counts them).
     let up = ok(&e, &s, "UPDATE orders SET status = status WHERE customer_id = 1");
     assert_eq!(up.status().affected, Some(2));
-    // The trigger filled the timestamp.
     ok(&e, &s, "INSERT INTO orders (customer_id, total) VALUES (5, 1)");
     assert!(ok(&e, &s, "SELECT created_at FROM orders WHERE customer_id = 5").snapshot().text(0, 0).is_some());
     exec_quiet(&e, &c, &["DROP DATABASE dataman_t_script"]);
 }
 
-/// TLS: MySQL 8 serves it with its own self-signed certificate. `prefer` and `require` encrypt
-/// without checking it, `verify-full` refuses it, `disable` stays plain; the session (and the
-/// cancel's side connection) follow the profile.
 #[test]
 fn tls_modes() {
     let e = env();
@@ -328,7 +304,6 @@ fn read_only_connections_refuse_writes() {
     p.read_only = true;
     let Some(c) = mysql_on(&e, p) else { return };
     let s = c.session(None);
-    // The server refuses it (SET SESSION TRANSACTION READ ONLY), whatever the client does.
     let rs = run(&e, &s, "UPDATE customer SET balance = 0");
     assert_eq!(rs.phase(), Phase::Failed);
     assert_eq!(rs.status().error.unwrap().code.as_deref(), Some("1792"));
@@ -338,9 +313,6 @@ fn read_only_connections_refuse_writes() {
     exec_quiet(&e, &seed, &["DROP DATABASE dataman_t_ro"]);
 }
 
-/// One database of a writable connection made read-only (its own setting): the server refuses
-/// writes there (1792, the session's READ ONLY); turned off and on again while connected, the
-/// same session follows before its next statement.
 #[test]
 fn read_only_per_database() {
     let e = env();

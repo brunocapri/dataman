@@ -1,15 +1,3 @@
-//! The explorer's other catalog objects: per-schema counts, functions and procedures,
-//! sequences, types (enums with their labels, composites, domains), triggers; per table its
-//! constraints, triggers and partitions (or parent); per database its extensions; per server
-//! its roles; table sizes and row estimates; privileges; and the definitions read when a menu
-//! item asks for one.
-//!
-//! Every list is one catalog query, run when its node expands and cached like the rest of the
-//! schema. A server that does not have a catalog table (LAR) gets `None` ("not reported") or an
-//! empty list, never an error: the explorer hides those groups. An engine without a kind of
-//! object ([`Caps`](crate::Caps)) gets the same. The SQL builders and the row parsers are pure
-//! functions, per engine (`pg::objects`).
-
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -26,10 +14,6 @@ pub(super) fn get(r: &[Option<String>], i: usize) -> Option<String> {
     r.get(i).cloned().flatten().filter(|s| !s.is_empty())
 }
 
-// ---------------------------------------------------------------------------------------------
-// Model
-
-/// How many of each object kind a schema has (`None`: the server did not say).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ObjectCounts {
     pub functions: Option<u64>,
@@ -49,11 +33,8 @@ pub struct Function {
     pub oid: u32,
     pub name: String,
     pub kind: FuncKind,
-    /// `pg_get_function_identity_arguments`: `a integer, b text`.
     pub identity: String,
-    /// The input argument types (`oidvectortypes`): `integer, text`.
     pub arg_types: Vec<String>,
-    /// `pg_get_function_result` (`None` for procedures).
     pub result: Option<String>,
     pub returns_set: bool,
 }
@@ -62,7 +43,6 @@ pub struct Function {
 pub struct Sequence {
     pub name: String,
     pub type_name: Option<String>,
-    /// The column that owns it (serial and identity columns): (table, column).
     pub owned_by: Option<(String, String)>,
 }
 
@@ -89,9 +69,7 @@ impl TypeKind {
 pub struct UserType {
     pub name: String,
     pub kind: TypeKind,
-    /// A domain's base type.
     pub base: Option<String>,
-    /// An enum's labels, in order.
     pub labels: Vec<String>,
 }
 
@@ -100,9 +78,7 @@ pub struct Trigger {
     pub name: String,
     pub table: String,
     pub enabled: bool,
-    /// `before insert/update`, from `tgtype`.
     pub events: String,
-    /// `pg_get_triggerdef`.
     pub definition: Option<String>,
 }
 
@@ -132,7 +108,6 @@ impl ConstraintKind {
 pub struct Constraint {
     pub name: String,
     pub kind: ConstraintKind,
-    /// `pg_get_constraintdef`.
     pub definition: Option<String>,
 }
 
@@ -140,18 +115,14 @@ pub struct Constraint {
 pub struct Partition {
     pub schema: String,
     pub name: String,
-    /// `FOR VALUES …` (`None` for inheritance children).
     pub bound: Option<String>,
 }
 
-/// What the explorer shows under a table besides its columns and indexes (`None`: not
-/// reported).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TableExtras {
     pub constraints: Option<Vec<Constraint>>,
     pub triggers: Option<Vec<Trigger>>,
     pub partitions: Option<Vec<Partition>>,
-    /// The parent of a partition or inheritance child: (schema, name).
     pub parent: Option<(String, String)>,
 }
 
@@ -160,12 +131,10 @@ pub struct Extension {
     pub name: String,
     pub version: String,
     pub schema: Option<String>,
-    /// The version `ALTER EXTENSION … UPDATE` would install.
     pub default_version: Option<String>,
 }
 
 impl Extension {
-    /// The newer version available, if any.
     pub fn update(&self) -> Option<&str> {
         self.default_version.as_deref().filter(|d| *d != self.version)
     }
@@ -181,12 +150,10 @@ pub struct Role {
     pub replication: bool,
     pub inherit: bool,
     pub bypassrls: bool,
-    /// `-1`: no limit.
     pub conn_limit: i64,
     pub valid_until: Option<String>,
 }
 
-/// A table's estimated row count (`reltuples`; `None` when never analyzed) and total size.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct RelStats {
     pub rows: Option<f64>,
@@ -200,7 +167,6 @@ pub struct Grant {
     pub grantable: bool,
 }
 
-/// The grants on a table or a schema.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Privileges {
     pub schema_level: bool,
@@ -211,18 +177,14 @@ pub struct Privileges {
 pub const TABLE_PRIVILEGES: [&str; 7] = ["SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"];
 pub const SCHEMA_PRIVILEGES: [&str; 2] = ["USAGE", "CREATE"];
 
-/// One cell of the grant matrix.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Cell {
     No,
     Yes,
-    /// Granted WITH GRANT OPTION.
     Grantable,
 }
 
 impl Privileges {
-    /// The matrix's columns: the standard privileges of the object, plus any other the server
-    /// reported (PostgreSQL 17's MAINTAIN).
     pub fn columns(&self) -> Vec<String> {
         let base: &[&str] = if self.schema_level { &SCHEMA_PRIVILEGES } else { &TABLE_PRIVILEGES };
         let mut v: Vec<String> = base.iter().map(|s| s.to_string()).collect();
@@ -234,7 +196,6 @@ impl Privileges {
         v
     }
 
-    /// The matrix's rows: the owner first, then the other roles by name, PUBLIC last.
     pub fn roles(&self) -> Vec<String> {
         let mut v: Vec<String> = Vec::new();
         for g in &self.grants {
@@ -264,10 +225,6 @@ impl Privileges {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Formatting
-
-/// `8 kB`, `1.2 MB`, `48 MB`: bytes in powers of 1024, PostgreSQL's unit names.
 pub fn human_size(bytes: i64) -> String {
     const UNITS: [&str; 5] = ["kB", "MB", "GB", "TB", "PB"];
     if bytes < 1024 {
@@ -282,7 +239,6 @@ pub fn human_size(bytes: i64) -> String {
     if v < 10. && v.fract() >= 0.05 { format!("{v:.1} {}", UNITS[u]) } else { format!("{:.0} {}", v.round(), UNITS[u]) }
 }
 
-/// An estimate in a few characters: `~0`, `~940`, `~1.2k`, `~48k`, `~3.1M`.
 pub fn approx_count(n: f64) -> String {
     let n = n.max(0.).round();
     let (v, unit) = if n >= 1e9 {
@@ -297,7 +253,6 @@ pub fn approx_count(n: f64) -> String {
     if v < 10. && (v * 10.).round() % 10. != 0. { format!("~{v:.1}{unit}") } else { format!("~{:.0}{unit}", v.round()) }
 }
 
-/// `tgtype` → `before insert/update`, `after delete`, `instead of insert`.
 pub fn trigger_events(tgtype: i64) -> String {
     let timing = if tgtype & 64 != 0 {
         "instead of"
@@ -314,8 +269,6 @@ pub fn trigger_events(tgtype: i64) -> String {
     format!("{timing} {}", ev.join("/"))
 }
 
-/// A constraint in a few words for the explorer's meta column: `PK (id)`,
-/// `FK (customer) → shop.customers(id)`, `unique (a, b)`, `check (total >= 0)`.
 pub fn constraint_summary(kind: ConstraintKind, definition: Option<&str>) -> String {
     let word = match kind {
         ConstraintKind::Primary => "PK",
@@ -331,14 +284,12 @@ pub fn constraint_summary(kind: ConstraintKind, definition: Option<&str>) -> Str
         ConstraintKind::Unique => strip("UNIQUE"),
         ConstraintKind::Exclusion => strip("EXCLUDE"),
         ConstraintKind::Check => strip("CHECK").map(|r| {
-            // `((expr))` → `(expr)`.
             match r.strip_prefix("((").and_then(|x| x.strip_suffix("))")) {
                 Some(inner) if balanced(inner) => &r[1..r.len() - 1],
                 _ => r,
             }
         }),
         ConstraintKind::Foreign => strip("FOREIGN KEY").map(|r| {
-            // Up to the referenced columns: the ON DELETE / MATCH clauses are left out.
             let cut = r.find(" ON ").or_else(|| r.find(" MATCH ")).or_else(|| r.find(" DEFERRABLE")).or_else(|| r.find(" NOT VALID")).unwrap_or(r.len());
             &r[..cut]
         }),
@@ -350,7 +301,6 @@ pub fn constraint_summary(kind: ConstraintKind, definition: Option<&str>) -> Str
     }
 }
 
-/// Whether the parentheses of `s` balance (so stripping an outer pair keeps it valid).
 pub(crate) fn balanced(s: &str) -> bool {
     let mut depth = 0i32;
     for c in s.chars() {
@@ -368,7 +318,6 @@ pub(crate) fn balanced(s: &str) -> bool {
     depth == 0
 }
 
-/// Splits `a integer, b numeric(10,2)` at the top-level commas.
 pub fn split_args(s: &str) -> Vec<String> {
     let mut out = Vec::new();
     let (mut depth, mut cur) = (0i32, String::new());
@@ -391,22 +340,16 @@ pub fn split_args(s: &str) -> Vec<String> {
     out
 }
 
-// ---------------------------------------------------------------------------------------------
-// Definitions (pure)
-
-/// `CREATE TYPE … AS ENUM (…)`.
 pub fn enum_ddl(schema: &str, name: &str, labels: &[String]) -> String {
     let items: Vec<String> = labels.iter().map(|l| format!("    {}", quote_literal(l))).collect();
     format!("CREATE TYPE {} AS ENUM (\n{}\n);", qualified(Some(schema), name), items.join(",\n"))
 }
 
-/// `CREATE TYPE … AS (a integer, …)`.
 pub fn composite_ddl(schema: &str, name: &str, fields: &[(String, String)]) -> String {
     let items: Vec<String> = fields.iter().map(|(n, t)| format!("    {} {t}", quote_ident(n))).collect();
     format!("CREATE TYPE {} AS (\n{}\n);", qualified(Some(schema), name), items.join(",\n"))
 }
 
-/// `CREATE DOMAIN … AS base [DEFAULT …] [NOT NULL] [CONSTRAINT … CHECK (…)]`.
 pub fn domain_ddl(schema: &str, name: &str, base: &str, not_null: bool, default: Option<&str>, checks: &[(String, String)]) -> String {
     let mut s = format!("CREATE DOMAIN {} AS {base}", qualified(Some(schema), name));
     if let Some(d) = default {
@@ -422,7 +365,6 @@ pub fn domain_ddl(schema: &str, name: &str, base: &str, not_null: bool, default:
     s
 }
 
-/// `CREATE ROLE … WITH …;` and its memberships (`GRANT group TO role`).
 pub fn role_ddl(r: &Role, member_of: &[(String, bool)]) -> String {
     let flag = |on: bool, yes: &str, no: &str| if on { yes.to_string() } else { no.to_string() };
     let mut opts = vec![
@@ -447,13 +389,9 @@ pub fn role_ddl(r: &Role, member_of: &[(String, bool)]) -> String {
     s
 }
 
-/// `FOR VALUES FROM ('2026-01-01') TO ('2026-02-01')` → `FROM ('2026-01-01') TO ('2026-02-01')`.
 pub fn partition_bound_summary(bound: &str) -> String {
     bound.trim().strip_prefix("FOR VALUES").map(str::trim_start).unwrap_or(bound.trim()).to_string()
 }
-
-// ---------------------------------------------------------------------------------------------
-// Cache
 
 impl super::SchemaCache {
     pub fn cached_counts(&self, db: &str, schema: &str) -> Option<ObjectCounts> {
@@ -484,13 +422,11 @@ impl super::SchemaCache {
         self.roles.read().clone()
     }
 
-    /// Forgets the roles (read again on the next load).
     pub fn invalidate_roles(&self) {
         *self.roles.write() = None;
         self.bump();
     }
 
-    /// Forgets a database's extensions.
     pub fn invalidate_extensions(&self, db: &str) {
         if let Some(d) = self.dbs.write().get_mut(db) {
             d.extensions = None;
@@ -504,10 +440,6 @@ impl super::SchemaCache {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Loading
-
-/// Runs each query alone; a failure leaves its kind out (`None`).
 async fn each_count(client: &crate::backend::Db, schema: &str) -> ObjectCounts {
     let mut v: [Option<u64>; 4] = [None; 4];
     for (i, (_, q)) in pg::count_queries(schema).iter().enumerate() {
@@ -519,7 +451,6 @@ async fn each_count(client: &crate::backend::Db, schema: &str) -> ObjectCounts {
 }
 
 impl Connection {
-    /// The counts of a schema's functions, sequences, types and triggers (one query).
     pub fn object_counts(self: &Arc<Self>, db: &str, schema: &str) -> Task<ObjectCounts> {
         let (this, db, schema) = (self.clone(), db.to_string(), schema.to_string());
         self.spawn(async move {
@@ -551,8 +482,6 @@ impl Connection {
         })
     }
 
-    /// Row estimates and total sizes of a schema's tables (one query, when the tables group
-    /// opens). Empty when the server does not report them.
     pub fn rel_stats(self: &Arc<Self>, db: &str, schema: &str) -> Task<Arc<HashMap<String, RelStats>>> {
         let (this, db, schema) = (self.clone(), db.to_string(), schema.to_string());
         self.spawn(async move {
@@ -687,7 +616,6 @@ impl Connection {
         })
     }
 
-    /// A table's constraints, triggers and partitions or parent (one query).
     pub fn table_extras(self: &Arc<Self>, db: &str, schema: &str, rel: &str) -> Task<TableExtras> {
         let (this, db, schema, rel) = (self.clone(), db.to_string(), schema.to_string(), rel.to_string());
         self.spawn(async move {
@@ -721,7 +649,6 @@ impl Connection {
                 let client = this.meta(&db).await?;
                 match first_ok(&client, &[&pg::extras_sql(oid)]).await {
                     Ok(rows) => {
-                        // Every piece answered: what is absent is empty, not unreported.
                         t.constraints = Some(Vec::new());
                         t.triggers = Some(Vec::new());
                         t.partitions = Some(Vec::new());
@@ -761,7 +688,6 @@ impl Connection {
         })
     }
 
-    /// The server's roles (the built-in `pg_*` ones left out).
     pub fn roles(self: &Arc<Self>) -> Task<Vec<Role>> {
         let this = self.clone();
         self.spawn(async move {
@@ -780,7 +706,6 @@ impl Connection {
         })
     }
 
-    /// `pg_get_functiondef` (`None` when the server does not report it).
     pub fn function_definition(self: &Arc<Self>, db: &str, oid: u32) -> Task<Option<String>> {
         let (this, db) = (self.clone(), db.to_string());
         self.spawn(async move {
@@ -796,8 +721,6 @@ impl Connection {
         })
     }
 
-    /// A function's or procedure's definition: `pg_get_functiondef`, MySQL's `SHOW CREATE
-    /// PROCEDURE | FUNCTION`.
     pub fn routine_definition(self: &Arc<Self>, db: &str, schema: &str, f: &Function) -> Task<Option<String>> {
         if self.engine() == Engine::SqlServer {
             return self.module_definition(db, schema, &f.name);
@@ -814,8 +737,6 @@ impl Connection {
         })
     }
 
-    /// A SQL Server module's text (procedure, function, view, trigger) as it was created:
-    /// `OBJECT_DEFINITION`.
     pub fn module_definition(self: &Arc<Self>, db: &str, schema: &str, name: &str) -> Task<Option<String>> {
         let (this, db, schema, name) = (self.clone(), db.to_string(), schema.to_string(), name.to_string());
         self.spawn(async move {
@@ -825,7 +746,6 @@ impl Connection {
         })
     }
 
-    /// A type's `CREATE TYPE` / `CREATE DOMAIN`, from the catalog.
     pub fn type_definition(self: &Arc<Self>, db: &str, schema: &str, name: &str) -> Task<Option<String>> {
         let (this, db, schema, name) = (self.clone(), db.to_string(), schema.to_string(), name.to_string());
         self.spawn(async move {
@@ -913,7 +833,6 @@ impl Connection {
         })
     }
 
-    /// A role's `CREATE ROLE` with its memberships.
     pub fn role_definition(self: &Arc<Self>, name: &str) -> Task<Option<String>> {
         let (this, name) = (self.clone(), name.to_string());
         self.spawn(async move {
@@ -939,7 +858,6 @@ impl Connection {
         })
     }
 
-    /// A sequence's `last_value` and `is_called`.
     pub fn sequence_value(self: &Arc<Self>, db: &str, schema: &str, name: &str) -> Task<Option<(String, bool)>> {
         let q = match self.engine() {
             Engine::SqlServer => ms::sequence_value_sql(schema, name),
@@ -956,8 +874,6 @@ impl Connection {
         })
     }
 
-    /// The grants on a table (`table` given) or a schema; `None` when the server does not
-    /// report them.
     pub fn privileges(self: &Arc<Self>, db: &str, schema: &str, table: Option<&str>) -> Task<Option<Privileges>> {
         let (this, db, schema, table) = (self.clone(), db.to_string(), schema.to_string(), table.map(str::to_string));
         self.spawn(async move {
@@ -1000,7 +916,6 @@ mod tests {
 
     #[test]
     fn trigger_event_bits() {
-        // ROW | BEFORE | INSERT | UPDATE
         assert_eq!(trigger_events(1 | 2 | 4 | 16), "before insert/update");
         assert_eq!(trigger_events(8), "after delete");
         assert_eq!(trigger_events(64 | 1 | 4), "instead of insert");
@@ -1017,7 +932,6 @@ mod tests {
         );
         assert_eq!(constraint_summary(Unique, Some("UNIQUE (a, b)")), "unique (a, b)");
         assert_eq!(constraint_summary(Check, Some("CHECK ((total >= (0)::numeric))")), "check (total >= (0)::numeric)");
-        // Outer parentheses that do not wrap the whole expression stay.
         assert_eq!(constraint_summary(Check, Some("CHECK ((a > 0) AND (b > 0))")), "check ((a > 0) AND (b > 0))");
         assert_eq!(constraint_summary(Exclusion, Some("EXCLUDE USING gist (r WITH &&)")), "exclude USING gist (r WITH &&)");
         assert_eq!(constraint_summary(Check, None), "check");

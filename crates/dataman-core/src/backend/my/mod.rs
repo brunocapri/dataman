@@ -1,18 +1,3 @@
-//! MySQL (and MariaDB) through mysql_async: TLS on the same rustls as PostgreSQL, SSH tunnels,
-//! the transaction status from the OK packets' status flags, cancels with `KILL QUERY` from a
-//! connection of their own, and rows decoded straight into the grid's chunks.
-//!
-//! A MySQL connection serves one statement at a time and its result must be read to the end
-//! before the next. Each [`Client`] holds its `Conn` behind an async mutex; a statement's rows
-//! are read by a task that owns the lock until the last row (and the statement's status) is in,
-//! and hands them over through a small channel: the reader of [`MyRows`] may stop and drop its
-//! future at any point (the grid's pump does, every 20 ms) without breaking the connection's
-//! state, and when it stops asking, the channel fills and the server waits on the socket.
-//!
-//! Editor statements are prepared and run through the binary protocol (typed values, bound
-//! parameters); what the server will not prepare (compound statements, `CREATE PROCEDURE`,
-//! `LOCK TABLES`…) runs through the text protocol, which is decoded by column type the same way.
-
 pub(crate) mod decode;
 
 use std::net::SocketAddr;
@@ -35,22 +20,14 @@ use crate::tx::{Seen, TxWatch};
 
 type MyError = mysql_async::Error;
 
-/// Rows read ahead of the reader of a statement (then the server waits on the socket).
 const IN_FLIGHT: usize = 1024;
 
-/// `ER_QUERY_INTERRUPTED`: the statement was stopped by `KILL QUERY`.
 const QUERY_INTERRUPTED: u16 = 1317;
 
 fn closed_error() -> MyError {
     MyError::Driver(DriverError::ConnectionClosed)
 }
 
-// ---------------------------------------------------------------------------------------------
-// Connecting
-
-/// TLS for a profile: libpq's modes mapped onto MySQL's (`prefer`/`require` encrypt without
-/// checking the certificate, `verify-full` checks it against the system roots and the host).
-/// Through a tunnel the profile's host still names the server.
 fn ssl_opts(p: &ConnectionProfile, mode: SslMode, via: Option<SocketAddr>) -> Option<SslOpts> {
     let mut o = match mode {
         SslMode::Disable => return None,
@@ -66,7 +43,6 @@ fn ssl_opts(p: &ConnectionProfile, mode: SslMode, via: Option<SocketAddr>) -> Op
     Some(o)
 }
 
-/// The driver's options for a profile, through `via` when an SSH tunnel stands for the server.
 fn opts(p: &ConnectionProfile, password: Option<&str>, database: Option<&str>, via: Option<SocketAddr>, ssl: Option<SslOpts>) -> Opts {
     let db = database.filter(|d| !d.is_empty()).or(Some(p.database.as_str()).filter(|d| !d.is_empty()));
     let mut b = OptsBuilder::default()
@@ -75,7 +51,6 @@ fn opts(p: &ConnectionProfile, password: Option<&str>, database: Option<&str>, v
         .db_name(db.map(str::to_string))
         // Never switch to the server's Unix socket on our own (it would leave the tunnel).
         .prefer_socket(false)
-        // Editor statements are prepared once and closed: no cache.
         .stmt_cache_size(0)
         // UPDATE reports the rows it matched, as PostgreSQL does (edits count them).
         .client_found_rows(true)
@@ -100,13 +75,10 @@ async fn dial(opts: Opts) -> Result<Conn> {
     }
 }
 
-/// The server does not offer TLS (`prefer` then goes without).
 fn no_tls(e: &anyhow::Error) -> bool {
     matches!(e.downcast_ref::<MyError>(), Some(MyError::Driver(DriverError::NoClientSslFlagFromServer)))
 }
 
-/// A connection to the profile's server (through its tunnel, if any) on `database` or the
-/// profile's own. `watch` (editor sessions) follows its transaction status.
 pub(crate) async fn connect(
     p: &ConnectionProfile,
     password: Option<&str>,
@@ -132,7 +104,6 @@ pub(crate) async fn connect(
 
 async fn open(p: &ConnectionProfile, password: Option<&str>, database: Option<&str>, via: Option<SocketAddr>, watch: Option<&Arc<TxWatch>>) -> Result<Arc<Client>> {
     super::install_tls_provider();
-    // No TLS on a Unix socket, whatever the mode says (as libpq).
     let mode = if p.is_socket() && via.is_none() { SslMode::Disable } else { p.sslmode };
     let plain = || opts(p, password, database, via, None);
     let (conn, side, tls_active) = match ssl_opts(p, mode, via) {
@@ -168,21 +139,13 @@ async fn open(p: &ConnectionProfile, password: Option<&str>, database: Option<&s
     }))
 }
 
-// ---------------------------------------------------------------------------------------------
-// The client
-
-/// One MySQL connection, shared by whoever holds the [`Db`](super::Db): statements take turns.
 pub(crate) struct Client {
     conn: Arc<tokio::sync::Mutex<Option<Conn>>>,
     closed: AtomicBool,
-    /// The server's connection id (`CONNECTION_ID()`), what `KILL QUERY` names.
     pub(crate) id: u32,
     pub(crate) tls_active: bool,
-    /// An editor session's transaction status.
     watch: Option<Arc<TxWatch>>,
-    /// How to reach the same server again (the cancel's own connection).
     side: Opts,
-    /// "This app" for the activity monitor, while the connection lives.
     _mark: crate::own::Mark,
 }
 
@@ -191,17 +154,14 @@ impl Client {
         self.closed.load(Ordering::Acquire)
     }
 
-    /// What cancels this connection's statements.
     pub(crate) fn canceller(&self) -> Canceller {
         Canceller { id: self.id, opts: self.side.clone() }
     }
 
-    /// Stops the statement running on this connection (`KILL QUERY` from another one).
     pub(crate) async fn cancel(&self) -> Result<()> {
         self.canceller().cancel().await
     }
 
-    /// The connection broke: it is gone, and its transaction with it.
     fn lost(&self, slot: &mut Option<Conn>) {
         *slot = None;
         self.closed.store(true, Ordering::Release);
@@ -210,8 +170,7 @@ impl Client {
         }
     }
 
-    /// After each statement: a broken connection is dropped; an editor session's transaction
-    /// status is read from the last OK packet (an error carries none, so a `DO 0` asks).
+    /// An error carries no status flags, so a `DO 0` asks for the transaction status.
     async fn settle(&self, slot: &mut Option<Conn>, failed: Option<&MyError>) {
         let Some(conn) = slot.as_mut() else { return };
         if failed.is_some_and(|e| !matches!(e, MyError::Server(_))) || conn.is_disconnected() {
@@ -232,8 +191,6 @@ impl Client {
         }
     }
 
-    /// Runs `sql` (one or more statements) and returns what the first reported: its row count
-    /// for a statement with rows, else the rows it affected.
     pub(crate) async fn execute(&self, sql: &str) -> Result<Option<u64>, MyError> {
         let mut g = self.conn.lock().await;
         let Some(conn) = g.as_mut() else { return Err(closed_error()) };
@@ -242,7 +199,6 @@ impl Client {
         r
     }
 
-    /// Every row of every statement of `sql`, as text.
     pub(crate) async fn text_rows(&self, sql: &str) -> Result<Vec<Vec<Option<String>>>, MyError> {
         let mut g = self.conn.lock().await;
         let Some(conn) = g.as_mut() else { return Err(closed_error()) };
@@ -251,7 +207,6 @@ impl Client {
         r
     }
 
-    /// Prepares one statement (binary protocol): its columns, before any row.
     pub(crate) async fn prepare(&self, sql: &str) -> Result<Statement, MyError> {
         let mut g = self.conn.lock().await;
         let Some(conn) = g.as_mut() else { return Err(closed_error()) };
@@ -264,15 +219,12 @@ impl Client {
         r
     }
 
-    /// Forgets a prepared statement that will not run.
     pub(crate) async fn close(&self, stmt: Statement) {
         if let Some(conn) = self.conn.lock().await.as_mut() {
             let _ = conn.close(stmt).await;
         }
     }
 
-    /// Starts a statement: its columns, and its rows to read (a task reads them off the
-    /// connection, which stays taken until the statement is over).
     async fn begin(self: &Arc<Self>, exec: Exec) -> Result<(Arc<[Column]>, mpsc::Receiver<Msg>), MyError> {
         let slot = self.conn.clone().lock_owned().await;
         let (first_tx, first_rx) = oneshot::channel();
@@ -285,8 +237,6 @@ impl Client {
         }
     }
 
-    /// The reading task of [`Client::begin`]: the first result set's rows go to `tx`; later
-    /// result sets (a procedure's) are read and dropped, their errors reported.
     async fn read(self: Arc<Self>, mut slot: OwnedMutexGuard<Option<Conn>>, exec: Exec, first: oneshot::Sender<FirstMsg>, tx: mpsc::Sender<Msg>) {
         let mut first = Some(first);
         let r = match slot.as_mut() {
@@ -355,7 +305,6 @@ async fn text_rows_on(conn: &mut Conn, sql: &str) -> Result<Vec<Vec<Option<Strin
     Ok(out)
 }
 
-/// What a reading task runs.
 enum Exec {
     Text(String),
     Stmt(Statement, Params),
@@ -363,20 +312,14 @@ enum Exec {
 
 type FirstMsg = Result<Arc<[Column]>, MyError>;
 
-/// What a reading task hands over after the columns.
 enum Msg {
     Row(Row),
-    /// The next result set of the statement starts (a procedure's): its columns. The rows
-    /// before it were the previous set's.
     Set(Arc<[Column]>),
-    /// The end: the row count, or the rows affected by a statement without rows.
     Done(u64),
     Fail(MyError),
 }
 
 async fn stream<P: Protocol>(mut qr: QueryResult<'_, 'static, P>, first: &mut Option<oneshot::Sender<FirstMsg>>, tx: &mpsc::Sender<Msg>) -> Result<u64, MyError> {
-    // A procedure may return several result sets (then its own OK): each with columns goes to the
-    // reader in turn; sets without (an OK) only count when no set had rows.
     let mut affected = qr.affected_rows();
     let mut n = 0;
     let mut shown = false;
@@ -417,13 +360,11 @@ async fn stream<P: Protocol>(mut qr: QueryResult<'_, 'static, P>, first: &mut Op
     Ok(if shown { n } else { affected })
 }
 
-/// A statement's rows, decoded into the grid's chunks.
 pub(crate) struct MyRows {
     rx: mpsc::Receiver<Msg>,
     dec: Vec<Dec>,
     affected: Option<u64>,
     ended: bool,
-    /// The columns of the next result set, when the rows just read ended at its start.
     next_set: Option<Arc<[Column]>>,
 }
 
@@ -460,8 +401,6 @@ impl MyRows {
 }
 
 impl MyRows {
-    /// The next result set of the statement, when the rows read ended at its start: its columns
-    /// are returned and its rows follow.
     fn next_set(&mut self) -> Option<Arc<[Column]>> {
         let cols = self.next_set.take()?;
         let (_, dec) = decode::column_infos(&cols);
@@ -494,7 +433,6 @@ impl RowSource for MyRows {
     }
 }
 
-/// Runs a prepared statement (no parameters): its rows.
 pub(crate) async fn start(client: &Arc<Client>, stmt: &Statement, columns: &[ColumnInfo]) -> Result<MyRows, MyError> {
     let (_, rx) = client.begin(Exec::Stmt(stmt.clone(), Params::Empty)).await?;
     let dec = columns.iter().map(|c| Dec { kind: c.kind, bits: c.type_name == "bit" }).collect();
@@ -505,7 +443,6 @@ pub(crate) fn column_infos(stmt: &Statement) -> Vec<ColumnInfo> {
     decode::column_infos(&stmt.columns()).0
 }
 
-/// Sends `KILL QUERY` for one connection, from a connection of its own.
 #[derive(Clone)]
 pub(crate) struct Canceller {
     id: u32,
@@ -521,10 +458,6 @@ impl Canceller {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Server
-
-/// `8.4.6` → `MySQL 8.4.6`; `11.4.2-MariaDB-ubu2404` → `MariaDB 11.4.2`.
 pub(crate) fn version_label(v: &str) -> String {
     if v.contains("MariaDB") {
         // Old MariaDB releases put a replication prefix in front (`5.5.5-10.6.12-MariaDB`).
@@ -545,16 +478,12 @@ pub(crate) async fn server_info(client: &Client, exts: &[Arc<dyn ServerExtension
     Ok(info)
 }
 
-/// The "schema" searched for unqualified names: the current database.
 pub(crate) async fn search_path(client: &Client) -> Vec<String> {
     match client.text_rows("SELECT DATABASE()").await {
         Ok(rows) => rows.first().and_then(|r| r.first().cloned().flatten()).into_iter().collect(),
         Err(_) => vec![],
     }
 }
-
-// ---------------------------------------------------------------------------------------------
-// Errors
 
 pub(crate) fn error_info(e: &MyError) -> ErrorInfo {
     match e {
@@ -580,7 +509,6 @@ pub(crate) fn error_info(e: &MyError) -> ErrorInfo {
     }
 }
 
-/// [`error_info`] of an error running `sql`, with the position of a syntax error.
 pub(crate) fn error_info_at(e: &MyError, sql: &str) -> ErrorInfo {
     let mut info = error_info(e);
     if matches!(e, MyError::Server(_)) {
@@ -589,9 +517,6 @@ pub(crate) fn error_info_at(e: &MyError, sql: &str) -> ErrorInfo {
     info
 }
 
-/// Where a syntax error is: MySQL says `… near 'rest of the statement' at line N` (the text from
-/// the offending token on, cut short, on line N of the statement). The 1-based character
-/// position of that text in `sql`; the end of the statement for `near ''`.
 pub(crate) fn near_position(sql: &str, message: &str) -> Option<u32> {
     let start = message.find(" near '")? + " near '".len();
     let end = message.rfind("' at line ")?;
@@ -611,12 +536,6 @@ pub(crate) fn near_position(sql: &str, message: &str) -> Option<u32> {
     Some(sql[..at].chars().count() as u32 + 1)
 }
 
-// ---------------------------------------------------------------------------------------------
-// Statements with their rows (the editor's, the agents')
-
-/// How a statement is sent: prepared and run through the binary protocol (its parameters bound,
-/// as text the server converts; `None` is NULL), or, when the server will not prepare it and it
-/// has no parameters, through the text protocol. `None` when `aborted` before it was sent.
 async fn plan(client: &Client, sql: &str, params: &[Option<String>], aborted: &(dyn Fn() -> bool + Sync)) -> Result<Option<Exec>, MyError> {
     match client.prepare(sql).await {
         Ok(stmt) if aborted() => {
@@ -638,7 +557,6 @@ async fn plan(client: &Client, sql: &str, params: &[Option<String>], aborted: &(
     }
 }
 
-/// Runs one statement: its columns and its rows to read.
 pub(crate) async fn query(client: &Arc<Client>, sql: &str, params: &[Option<String>]) -> Result<(Vec<ColumnInfo>, MyRows), MyError> {
     let exec = plan(client, sql, params, &|| false).await?.ok_or_else(closed_error)?;
     let (cols, rx) = client.begin(exec).await?;
@@ -646,13 +564,10 @@ pub(crate) async fn query(client: &Arc<Client>, sql: &str, params: &[Option<Stri
     Ok((infos, MyRows::new(rx, dec)))
 }
 
-/// `KILL QUERY` stopped it.
 pub(crate) fn interrupted(e: &MyError) -> bool {
     matches!(e, MyError::Server(se) if se.code == QUERY_INTERRUPTED)
 }
 
-/// Prepares the statement and streams its binary rows (with its parameters bound); what the
-/// server cannot prepare runs through the text protocol.
 pub(crate) async fn run(
     client: &Arc<Client>,
     rs: &Arc<ResultSet>,
@@ -677,7 +592,6 @@ pub(crate) async fn run(
     rs.set_columns(infos);
     let cols = rs.columns().unwrap_or_default();
     let mut rows = MyRows::new(rx, dec);
-    // A procedure's later result sets each get a result of their own.
     let mut cur = rs.clone();
     let mut cols = cols;
     loop {
@@ -686,7 +600,6 @@ pub(crate) async fn run(
             Err(e) => return fail(&e),
         };
         let Some(set) = rows.next_set() else { return Ran::Done(n) };
-        // The user stopped it: the rest of the procedure's results are not shown.
         if cur.demand().borrow().abort && !cur.status().partial {
             let _ = client.cancel().await;
             return Ran::Cancelled;
@@ -711,7 +624,6 @@ mod tests {
         assert_eq!(version_label("5.5.5-10.6.12-MariaDB-log"), "MariaDB 10.6.12");
     }
 
-    /// The syntax error's `near '…' at line N` lands on the token in the editor's statement.
     #[test]
     fn syntax_error_positions() {
         let msg = |near: &str, line: usize| {
@@ -724,13 +636,10 @@ mod tests {
         let sql = "SELECT id,\n       name\n  FROM customer\n WHERE id = = 3";
         let p = near_position(sql, &msg("= 3", 4)).unwrap() as usize;
         assert_eq!(&sql[sql.char_indices().nth(p - 1).unwrap().0..], "= 3", "the second `=` on line 4");
-        // The same text earlier in the statement is skipped by the line number.
         let sql = "SELECT 'x'\nFROM t WHERE 'x'";
         let p = near_position(sql, &msg("'x'", 2)).unwrap() as usize;
         assert_eq!(p, sql.rfind("'x'").unwrap() + 1);
-        // `near ''`: the end.
         assert_eq!(near_position("SELECT * FROM", &msg("", 1)), Some(13));
-        // Characters, not bytes; a quote inside the near text.
         let sql = "SELECT 'été' 'it''s' x y z";
         assert_eq!(near_position(sql, &msg("y z", 1)), Some(sql.chars().count() as u32 - 2));
         assert_eq!(near_position("x", "Unknown column 'a' in 'field list'"), None);

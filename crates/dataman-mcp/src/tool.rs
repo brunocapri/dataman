@@ -1,22 +1,3 @@
-//! The extension point: a [`Tool`] is a name, a description for the agent, a JSON schema for
-//! its arguments, what it needs on its connection, and an async `call`. Built-in tools are
-//! registrations like any other; user-defined tools (`mcp-tools.toml`, [`crate::user`]) are
-//! reloaded when their file changes.
-//!
-//! ```ignore
-//! struct ServerTime;
-//! impl Tool for ServerTime {
-//!     fn name(&self) -> &str { "server_time" }
-//!     fn description(&self) -> &str { "The database server's clock (now())." }
-//!     fn schema(&self) -> &Schema { &SCHEMA } // Schema::new().conn()
-//!     fn need(&self) -> Option<Need> { Some(Need::Read) }
-//!     fn call<'a>(&'a self, cx: &'a Call, args: Args) -> BoxFut<'a, Result<Value, ToolError>> {
-//!         Box::pin(async move { let r = cx.read(&args, "SELECT now()", vec![], None).await?; Ok(r) })
-//!     }
-//! }
-//! registry.register(Arc::new(ServerTime));
-//! ```
-
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -36,14 +17,10 @@ use crate::policy::{self, Need, Target, Verdict};
 
 pub type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
-/// Why a call failed; the message is for the agent.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ToolError {
-    /// Bad arguments.
     Invalid(String),
-    /// Permissions, the guard, the global switch.
     Refused(String),
-    /// The server's error, or a connection that failed.
     Failed(String),
     Cancelled,
     Timeout(String),
@@ -84,11 +61,6 @@ impl From<Stop> for ToolError {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Schemas
-
-/// A tool's argument schema (a JSON Schema object with `additionalProperties: false`), built
-/// with small helpers so every tool reads the same.
 #[derive(Clone, Debug)]
 pub struct Schema(pub Map<String, Value>);
 
@@ -116,7 +88,6 @@ impl Schema {
         self
     }
 
-    /// `connection` (required) and `database` (optional).
     pub fn conn(self) -> Schema {
         self.prop("connection", true, json!({"type": "string", "description": "Connection name (or id) from list_connections."}))
             .prop("database", false, json!({"type": "string", "description": "Database on that server; default: the connection's own."}))
@@ -130,8 +101,6 @@ impl Schema {
         self.0.get("required").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default()
     }
 
-    /// Checks `args` against the schema: required keys, no unknown keys, and each value's type,
-    /// enum, bounds and length.
     pub fn validate(&self, args: &Map<String, Value>) -> Result<(), String> {
         let props = self.properties();
         for k in args.keys() {
@@ -155,7 +124,6 @@ impl Schema {
     }
 }
 
-/// The database a call is about: its `database`, else the connection's own (as saved).
 fn target_database<'a>(args: &'a Args, p: &'a ConnectionProfile) -> &'a str {
     args.opt_str("database").unwrap_or(p.database.as_str())
 }
@@ -218,10 +186,6 @@ fn check_value(name: &str, v: &Value, spec: &Value) -> Result<(), String> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------------------------
-// Arguments
-
-/// A call's arguments, validated against the tool's schema already.
 #[derive(Clone, Debug, Default)]
 pub struct Args(pub Map<String, Value>);
 
@@ -246,7 +210,6 @@ impl Args {
         self.get(k).and_then(|v| v.as_u64().or_else(|| v.as_f64().map(|f| f as u64))).unwrap_or(default)
     }
 
-    /// `params`: scalars bound to `$1 … $n` as text (`null` is NULL).
     pub fn params(&self) -> Result<Vec<Option<String>>, ToolError> {
         let Some(v) = self.get("params") else { return Ok(Vec::new()) };
         let a = v.as_array().ok_or_else(|| ToolError::Invalid("\"params\" must be an array".into()))?;
@@ -256,7 +219,6 @@ impl Args {
                 Value::String(s) => Some(s.clone()),
                 Value::Bool(b) => Some(b.to_string()),
                 Value::Number(n) => Some(n.to_string()),
-                // Arrays and objects go as JSON text (for json/jsonb parameters).
                 other => Some(other.to_string()),
             })
             .collect())
@@ -272,9 +234,6 @@ pub fn params_schema() -> Value {
     })
 }
 
-// ---------------------------------------------------------------------------------------------
-// The call context
-
 #[derive(Default, Clone, Debug)]
 pub struct Note {
     pub connection: Option<String>,
@@ -282,35 +241,27 @@ pub struct Note {
     pub sql: Option<String>,
     pub rows: Option<u64>,
     pub approval: Option<ApprovalNote>,
-    /// A draft: placed in an agent tab, not run.
     pub draft: bool,
-    /// The favorite query `run_favorite` resolved.
     pub favorite: Option<String>,
-    /// What let a write through beyond the tier (allowed queries, YOLO).
     pub allowed_by: Option<AllowedBy>,
 }
 
-/// An agent's write as [`Call::write`] runs it.
 pub struct Write<'a> {
     pub sql: &'a str,
-    /// The statement the tiers judge in place of `sql` (EXPLAIN ANALYZE's: the one it runs).
     pub judged: Option<&'a str>,
     pub params: Vec<Option<String>>,
     pub limits: Limits,
     /// Rolled back whatever happens (EXPLAIN ANALYZE): no row limit, but the tiers still apply.
     pub rollback: bool,
-    /// Shown in the agent tab while the app runs.
     pub visible: bool,
     pub title: Option<String>,
 }
 
-/// What [`Call::write`] did.
 pub struct Written {
     pub opened: Opened,
     pub outcome: bounded::Outcome,
 }
 
-/// Why a held write did not commit, as its decision saw it.
 #[derive(Clone, Debug)]
 struct Held {
     decision: Decision,
@@ -318,7 +269,6 @@ struct Held {
     affected: u64,
 }
 
-/// One tool call: the hub, the client, the cancellation and what the audit line will say.
 pub struct Call {
     pub hub: Arc<Hub>,
     pub client: String,
@@ -328,7 +278,6 @@ pub struct Call {
     note: Mutex<Note>,
 }
 
-/// A connection a tool may use, with the database it asked for.
 #[derive(Clone)]
 pub struct Opened {
     pub profile: ConnectionProfile,
@@ -357,12 +306,10 @@ impl Call {
         self.note.lock().favorite = Some(name.to_string());
     }
 
-    /// The connection the audit line is about (tools that resolve it themselves).
     pub fn note_connection(&self, name: &str) {
         self.note.lock().connection = Some(name.to_string());
     }
 
-    /// The profile named by `connection`, if the policy lets this tool use it for `need`.
     pub fn target(&self, args: &Args, need: Need) -> Result<ConnectionProfile, ToolError> {
         let name = args.str("connection")?;
         let p = self.hub.profile(name).map_err(ToolError::Invalid)?;
@@ -372,13 +319,10 @@ impl Call {
         Ok(p)
     }
 
-    /// Whether the call's database (`database`, else the connection's) is read-only in
-    /// Dataman, before connecting.
     pub fn read_only(&self, args: &Args, p: &ConnectionProfile) -> bool {
         p.read_only_for(target_database(args, p))
     }
 
-    /// [`Call::target`], connected.
     pub async fn open(&self, args: &Args, need: Need) -> Result<Opened, ToolError> {
         let profile = self.target(args, need)?;
         let conn = tokio::select! {
@@ -390,20 +334,15 @@ impl Call {
         Ok(Opened { profile, conn, database })
     }
 
-    /// The global switch, without a connection.
     pub fn enabled(&self) -> Result<(), ToolError> {
         if self.hub.settings().mcp_enabled { Ok(()) } else { Err(ToolError::Refused("MCP access is turned off in Dataman (Settings › MCP)".into())) }
     }
 
-    /// The app's side when this call shows in an agent tab: always for `open_query` (`open`),
-    /// else as the setting "Show agent queries in tabs" says; never without the app.
     pub fn tab_front(&self, open: bool) -> Option<Arc<dyn Front>> {
         let f = self.hub.front().filter(|f| f.tabs())?;
         (open || self.hub.settings().mcp_show_in_tabs).then_some(f)
     }
 
-    /// A read the caller has checked: in the agent tab when `front` is given (the tab's own
-    /// session, the agent gets the bounded view), else bounded on the agent's own backend.
     pub async fn read(&self, args: &Args, sql: &str, params: Vec<Option<String>>, limits: Limits, front: Option<Arc<dyn Front>>, title: Option<String>) -> Result<bounded::Outcome, ToolError> {
         let Some(f) = front else {
             let o = self.open(args, Need::Read).await?;
@@ -424,9 +363,6 @@ impl Call {
         }
     }
 
-    /// A draft: `sql` into the client's agent tab for the connection, bound to it and the
-    /// database, run by nobody (no session, no transaction, no classification, no question: the
-    /// user runs it later, as the user). Every tier but off; only with the app open.
     pub async fn draft(&self, args: &Args, sql: &str, title: Option<String>) -> Result<(ConnectionProfile, Drafted), ToolError> {
         self.note_sql(sql);
         let name = args.str("connection")?;
@@ -474,8 +410,6 @@ impl Call {
         }
     }
 
-    /// Asks the human in the app, within the hub's approval timeout (denied after it); an
-    /// agent's cancel withdraws the question.
     async fn ask(&self, a: Approval) -> Result<Decision, ToolError> {
         let Some(f) = self.hub.front() else { return Ok(Decision::Unavailable) };
         let wait = tokio::time::timeout(self.hub.approval_timeout(), f.approve(a));
@@ -489,9 +423,6 @@ impl Call {
         }
     }
 
-    /// Asks the human in the app about an action the tier lets through only with an Allow
-    /// (a write over the row limit that cannot be held in a transaction): refused unless
-    /// allowed; the decision goes to the audit line.
     pub async fn ask_human(&self, o: &Opened, sql: &str, reasons: Vec<String>, affected: Option<u64>, destructive: bool) -> Result<(), ToolError> {
         let a = Approval { destructive, ..self.approval(o, sql, reasons.clone(), affected, None, None) };
         let d = self.ask(a).await?;
@@ -499,8 +430,6 @@ impl Call {
         if d == Decision::Approved { Ok(()) } else { Err(refusal_of(d, &reasons, false)) }
     }
 
-    /// The tier's verdict on an action that cannot wait in a transaction (a signal, a write
-    /// asked about before it runs): refused, allowed, or asked about now.
     pub async fn gate(&self, o: &Opened, class: &WriteClass, sql: &str, tab: Option<u64>) -> Result<(), ToolError> {
         let t = Target::of_in(&o.profile, &o.database);
         match policy::write_verdict(self.hub.settings().mcp_enabled, t, class) {
@@ -520,14 +449,6 @@ impl Call {
         }
     }
 
-    /// An agent's write through the tiers (see [`crate::policy`]): classified, refused before
-    /// anything connects when its tier says so (or when it needs a human and no app runs), else
-    /// run. A write that must be asked about runs in a transaction held open for the answer
-    /// (its rows counted, its RETURNING read) when it can be, else is asked about first; one that
-    /// changes more rows than the connection's limit asks too. The connection's allowed queries
-    /// and YOLO run without a question and without the limit ([`policy::judge`]). Committed only
-    /// when allowed; shown in the agent tab when `w.visible`; the decision (or what let it
-    /// through) goes to the audit line.
     pub async fn write(&self, args: &Args, w: Write<'_>) -> Result<Written, ToolError> {
         self.note_sql(w.sql);
         let p = self.hub.profile(args.str("connection")?).map_err(ToolError::Invalid)?;
@@ -556,7 +477,6 @@ impl Call {
             return Err(ToolError::Refused(r));
         }
         self.note.lock().allowed_by = judged.by.as_ref().map(policy::By::audit);
-        // What "Always allow" in the app would add to the connection's allowed queries.
         let allowable = guard::allowlist_candidates(judged_sql, d);
         let front = self.hub.front();
         if let Some(r) = &ask
@@ -579,7 +499,6 @@ impl Call {
                 f.write_done(tab, w.sql.to_string(), shown);
             }
         };
-        // Asked about before it runs: nothing reaches the server until the answer.
         if let Some(r) = ask.clone()
             && (preview != Preview::Held || mode == Mode::Rollback)
         {
@@ -608,7 +527,6 @@ impl Call {
                 }
             };
         }
-        // Held: the statements run, then the decision commits or rolls back.
         let limit = if mode == Mode::Rollback || !judged.row_limit { u64::MAX } else { self.hub.row_limit(&p) };
         let held: Arc<Mutex<Option<Held>>> = Arc::new(Mutex::new(None));
         let decide: bounded::Decide = {
@@ -665,7 +583,6 @@ impl Call {
         }
     }
 
-    /// The limits for this call: rows asked (capped by the settings), timeout asked (≤ 5 min).
     pub fn limits(&self, args: &Args, default_rows: u64) -> Limits {
         let cap = self.hub.settings().mcp_max_rows.max(1) as u64;
         Limits {
@@ -675,12 +592,10 @@ impl Call {
         }
     }
 
-    /// Runs SQL bounded on an opened connection, holding one of its agent slots.
     pub async fn run(&self, o: &Opened, sql: &str, params: Vec<Option<String>>, mode: Mode, limits: Limits) -> Result<bounded::Outcome, ToolError> {
         self.run_held(o, sql, params, mode, limits, None).await
     }
 
-    /// [`Call::run`] with a decision before the commit ([`Connection::bounded_held`]).
     pub async fn run_held(&self, o: &Opened, sql: &str, params: Vec<Option<String>>, mode: Mode, limits: Limits, decide: Option<bounded::Decide>) -> Result<bounded::Outcome, ToolError> {
         if self.note.lock().sql.is_none() {
             self.note_sql(sql);
@@ -694,7 +609,6 @@ impl Call {
     }
 }
 
-/// The agent's error for a write a human (or nobody) did not allow.
 fn refusal_of(d: Decision, reasons: &[String], rolled_back: bool) -> ToolError {
     let rb = if rolled_back { "; rolled back" } else { "" };
     match d {
@@ -705,7 +619,6 @@ fn refusal_of(d: Decision, reasons: &[String], rolled_back: bool) -> ToolError {
     }
 }
 
-/// The first RETURNING / OUTPUT rows of a held write, as text, for the approval sheet.
 fn preview_rows(o: &bounded::Outcome) -> Option<(Vec<String>, Vec<Vec<String>>)> {
     if o.columns.is_empty() || o.rows.is_empty() {
         return None;
@@ -719,20 +632,14 @@ fn preview_rows(o: &bounded::Outcome) -> Option<(Vec<String>, Vec<Vec<String>>)>
     Some((o.columns.iter().map(|c| c.name.clone()).collect(), rows))
 }
 
-// ---------------------------------------------------------------------------------------------
-// The trait and the registry
-
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
-    /// For the agent: what it does, what it returns, its limits. Short and exact.
     fn description(&self) -> &str;
     fn schema(&self) -> &Schema;
-    /// What it needs on its connection (`None`: no connection).
     fn need(&self) -> Option<Need>;
     fn call<'a>(&'a self, cx: &'a Call, args: Args) -> BoxFut<'a, Result<Value, ToolError>>;
 }
 
-/// The tools: built-ins registered once, user tools reloaded from their file when it changes.
 pub struct Registry {
     tools: Vec<Arc<dyn Tool>>,
     file: Option<PathBuf>,
@@ -751,7 +658,6 @@ impl Registry {
         Registry { tools: Vec::new(), file: user_file, user: Mutex::new(UserSet::default()) }
     }
 
-    /// All built-in tools, and the user's from `user_file`.
     pub fn standard(user_file: Option<PathBuf>) -> Registry {
         let mut r = Registry::new(user_file);
         crate::builtin::register(&mut r);
@@ -767,7 +673,6 @@ impl Registry {
         self.tools.iter().map(|t| t.name().to_string()).collect()
     }
 
-    /// Reloads the user tools when their file changed; true when the list changed.
     pub fn refresh(&self) -> bool {
         let Some(file) = &self.file else { return false };
         let stamp = std::fs::metadata(file).and_then(|m| m.modified()).ok();

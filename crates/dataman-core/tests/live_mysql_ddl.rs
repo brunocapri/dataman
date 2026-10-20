@@ -1,5 +1,3 @@
-//! MySQL: DDL generated from the catalog runs again; edits on odd tables.
-
 mod common;
 
 use common::*;
@@ -45,7 +43,6 @@ fn ddl_round_trips() {
     let s2 = c2.session(None);
     let rels = e.core.block_on(c.relations("dataman_sw6", "dataman_sw6")).unwrap();
     assert_eq!(rels.len(), 8, "{rels:?}");
-    // Parents before children.
     let mut order: Vec<&str> = rels.iter().map(|r| r.name.as_str()).collect();
     order.sort_by_key(|n| (*n == "child", *n == "v_gen"));
     let mut bad = Vec::new();
@@ -119,7 +116,6 @@ fn edits_on_odd_tables() {
         let a = after.snapshot();
         assert!((0..after.rows()).any(|r| a.text(r, col).as_deref() == Some(new)), "{table}: edit not applied");
     }
-    // Inserts and deletes.
     let rs = run(&e, &s, "SELECT * FROM auto");
     let t = match e.core.block_on(c.edit_target(db, &rs, None)).unwrap() {
         Editability::Editable(t) => t,

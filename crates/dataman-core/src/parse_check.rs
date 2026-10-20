@@ -1,8 +1,4 @@
-//! SQL Server's own syntax check of the editor's text, for the error squiggles the local lint
-//! cannot be sure of: each `GO` batch is sent with `SET PARSEONLY ON` in force, on a connection
-//! of its own (never the tab's session: its transaction, temp tables and settings stay
-//! untouched). PARSEONLY parses and returns the first syntax error of a batch; it runs nothing,
-//! so it is safe on read-only and production connections alike.
+// On a connection of its own, never the tab's session: SET PARSEONLY stays in force on it.
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -12,15 +8,11 @@ use crate::config::Engine;
 use crate::lint::{Lint, Severity};
 use crate::{Connection, Task};
 
-/// Texts larger than this are not sent.
 pub const MAX_BYTES: usize = 200 * 1024;
 
 type Slot = tokio::sync::Mutex<Option<Arc<crate::backend::ms::Client>>>;
 
 impl Connection {
-    /// The server's syntax errors in `sql` (one per `GO` batch at most, the first the server
-    /// reports), as error findings over the token they name (else the start of their line).
-    /// Empty on other engines, for a text over [`MAX_BYTES`], or when the check cannot run.
     pub fn parse_check(self: &Arc<Self>, database: &str, sql: String) -> Task<Vec<Lint>> {
         let (this, db) = (self.clone(), database.to_string());
         self.spawn(async move {
@@ -41,7 +33,6 @@ impl Connection {
             let mut out = Vec::new();
             for b in crate::sql::split::go_batches(&sql) {
                 let Err(e) = c.text_rows(&sql[b.range.clone()]).await else { continue };
-                // Only the server's own errors: a dropped connection says nothing about the text.
                 let tiberius::error::Error::Server(_) = &e else { break };
                 let info = crate::backend::ms::error_info_at(&e, &sql, b.range.start);
                 // An undeclared @variable (137, 1087) is how the editor writes a parameter it asks
@@ -56,7 +47,6 @@ impl Connection {
         })
     }
 
-    /// The parse-only connection of `db` (made on first use, kept for the next checks).
     fn parse_slot(&self, db: &str) -> Arc<Slot> {
         let key = ("parse-only", db.to_string(), String::new());
         let mut g = self.caches.lock();
@@ -73,7 +63,6 @@ fn char_to_byte(s: &str, chars: usize) -> usize {
     s.char_indices().nth(chars).map_or(s.len(), |(i, _)| i)
 }
 
-/// The word (or the one symbol) at byte `at`, never empty.
 fn token_at(s: &str, at: usize) -> Range<usize> {
     let at = at.min(s.len());
     let word = |c: char| c.is_alphanumeric() || matches!(c, '_' | '@' | '#' | '$' | '[' | ']' | '.');

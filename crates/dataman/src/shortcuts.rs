@@ -1,7 +1,3 @@
-//! The key map (Shortcuts board) and the ⇧⌘/ sheet that lists it. Only keys that do something
-//! today are listed; the LAR group (violet) works on LAR servers. `{id}` in a key stands for a
-//! remappable command's current key (`keymap`).
-
 use gpui::{Div, div, prelude::*};
 use crate::theme::px;
 
@@ -153,10 +149,8 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
     ),
 ];
 
-/// The sheet's columns, as indices into [`GROUPS`]: short groups share a column.
 const COLUMNS: &[&[usize]] = &[&[0, 9, 8], &[1, 7], &[2, 11], &[3, 4, 10], &[5, 6]];
 
-/// `template` with each `{id}` as `key(id)`; separators left dangling by a removed key go.
 fn resolve_with(template: &str, key: impl Fn(&str) -> String) -> String {
     let mut out = String::new();
     let mut rest = template;
@@ -180,7 +174,6 @@ fn resolve_with(template: &str, key: impl Fn(&str) -> String) -> String {
     words.join(" ").trim_matches('–').to_string()
 }
 
-/// The keys of one row of [`GROUPS`] as they are now.
 pub fn keys(template: &str) -> String {
     resolve_with(template, crate::keymap::key_label)
 }
@@ -202,13 +195,11 @@ fn group(t: &Theme, title: &str, keys: &[(&str, &str)]) -> Div {
                 .gap(px(8.))
                 .border_b_1()
                 .border_color(t.line)
-                // A narrow column (a small window, a zoomed UI) cuts the words, never the key.
                 .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(11.5)).text_color(t.tx2).child(d.to_string()))
                 .child(div().flex_none().child(ui::keycap(t, k).when(lar, |d| d.text_color(t.lar_t).border_color(t.lar_r))))
         }))
 }
 
-/// The sheet, with `close` (the modals' ×) beside its title.
 pub fn sheet(t: &Theme, close: impl IntoElement) -> gpui::Stateful<Div> {
     crate::ui::modal(t, "shortcuts-sheet")
         .w(px(1260.))
@@ -216,7 +207,6 @@ pub fn sheet(t: &Theme, close: impl IntoElement) -> gpui::Stateful<Div> {
         .p(px(28.))
         .gap(px(22.))
         .child(div().flex().flex_row().items_center().child(div().flex_1().font_family(PIXEL).text_size(px(26.)).child("KEYS & FOCUS")).child(close))
-        // Taller than the window (a zoomed UI): the columns scroll under the title.
         .child(div().id("shortcuts-body").flex_1().min_h_0().overflow_y_scroll().child(div().flex().flex_row().gap(px(18.)).children(COLUMNS.iter().map(|ixs| {
             div()
                 .flex_1()
@@ -246,11 +236,9 @@ mod tests {
     #[test]
     fn features_have_their_keys() {
         let has = |group: &str, key: &str| GROUPS.iter().any(|(g, keys)| *g == group && keys.iter().any(|(k, _)| resolve_with(k, defaults) == key));
-        // Activity monitor, plan, confirmation sheets, MCP approval, parameters, find, results.
         for (g, k) in [("ACTIVITY", "⌘R"), ("ACTIVITY", "↩"), ("PLAN", "← →"), ("SHEETS", "⌘⌫"), ("SHEETS", "⌘T"), ("MCP", "⌘↩"), ("SHEETS", "⇥ / ⇧⇥"), ("FIND", "⌥⌘F"), ("EDITOR", "⌥⌘[ ⌥⌘]")] {
             assert!(has(g, k), "{g} {k}");
         }
-        // The copy keys: ⇧⌘C with headers, ⌥⌘C CSV.
         assert!(has("GRID", "⇧⌘C") && has("GRID", "⌥⌘C"));
     }
 

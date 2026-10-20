@@ -1,6 +1,3 @@
-//! First run (Welcome board): no saved connection yet. The logo, a short menu and the
-//! isometric memory blocks.
-
 use gpui::{
     App, Context, EventEmitter, FocusHandle, Focusable, KeyBinding, Window, actions, div, img, prelude::*,
 };
@@ -25,15 +22,12 @@ pub fn bind_keys(cx: &mut App) {
 
 pub enum WelcomeEvent {
     NewConnection,
-    /// Settings › MCP: an agent adds the connection (`create_connection`).
     AgentSetup,
-    /// A new connection prefilled (from a pasted URL or localhost), with its password.
     Prefill(ConnectionProfile, Option<String>),
     OpenFile,
     Shortcuts,
 }
 
-/// The menu; an empty key marks the quieter entry under the one it goes with.
 const ITEMS: [(&str, &str); 6] = [
     ("New connection", "⌘N"),
     ("Add with an agent", ""),
@@ -43,7 +37,6 @@ const ITEMS: [(&str, &str); 6] = [
     ("Keyboard shortcuts", "⇧⌘/"),
 ];
 
-/// The localhost entry (⌘L).
 const LOCALHOST: usize = 3;
 
 pub struct Welcome {
@@ -84,7 +77,6 @@ impl Welcome {
         cx.notify();
     }
 
-    /// Checks: picks menu entry `ix` as a click would; its label.
     pub(crate) fn demo_choose(&mut self, ix: usize, cx: &mut Context<Self>) -> &'static str {
         self.choose(ix, cx);
         ITEMS[ix].0
@@ -92,7 +84,6 @@ impl Welcome {
 
     fn paste_url(&mut self, cx: &mut Context<Self>) {
         let text = cx.read_from_clipboard().and_then(|c| c.text()).unwrap_or_default();
-        // A postgres:// URL or a libpq key=value string (parsed by the core).
         match dataman_core::connstr::parse_profile(&text) {
             Some((p, pw)) => cx.emit(WelcomeEvent::Prefill(p, pw)),
             None => self.note = Some("The clipboard has no connection string".into()),

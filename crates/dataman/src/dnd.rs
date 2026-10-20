@@ -1,17 +1,9 @@
-//! Reordering by drag, shared by the query tabs and the explorer's connections: GPUI's own drag
-//! (`on_drag` makes the ghost, `on_drag_move` follows it, `on_drop` lands it). While it moves, a
-//! light copy of the label rides the pointer and a 1 pt line marks the gap it would drop into;
-//! nothing moves until the drop (`dataman_core::order`). Esc lets go of any drag, the panels'
-//! and the favorites' too ([`cancel_on_escape`]).
-
 use gpui::{App, AppContext, Bounds, Context, Div, Entity, Hsla, IntoElement, ParentElement, Pixels, Point, Render, SharedString, Styled, WeakEntity, Window, div, prelude::FluentBuilder};
 
 use crate::app::Workspace;
 use crate::theme::{ActiveTheme, Theme, px};
 use crate::ui;
 
-/// The ghost under the pointer: the dragged item's label (and its connection chip), translucent,
-/// square, no shadow.
 pub struct Ghost {
     label: SharedString,
     chip: Option<Hsla>,
@@ -42,16 +34,12 @@ impl Render for Ghost {
     }
 }
 
-/// The ghost for `on_drag`'s constructor.
 pub fn ghost(label: impl Into<SharedString>, chip: Option<Hsla>, cx: &mut App) -> Entity<Ghost> {
     let label = label.into();
     cx.new(|_| Ghost { label, chip })
 }
 
-/// Esc while anything is dragged (a tab, a panel, a favorite, a connection): the drag ends
-/// where it is, nothing dropped, its previews gone, and the key does nothing else (no sheet
-/// closes, no filter clears, Settings stays). A keystroke interceptor runs before any binding
-/// and any key handler, in every window.
+/// A keystroke interceptor runs before any binding and any key handler, in every window.
 pub(crate) fn cancel_on_escape(ws: WeakEntity<Workspace>, cx: &mut App) {
     cx.intercept_keystrokes(move |ev, window, cx| {
         if ev.keystroke.key != "escape" || !cx.has_active_drag() {
@@ -64,8 +52,6 @@ pub(crate) fn cancel_on_escape(ws: WeakEntity<Workspace>, cx: &mut App) {
     .detach();
 }
 
-/// Which side of an item the pointer is on, along the axis the list runs: the gap before it
-/// (`i`) or after it (`i + 1`); `None` when the pointer is not over it.
 pub fn slot_at(i: usize, bounds: &Bounds<Pixels>, pos: Point<Pixels>, horizontal: bool) -> Option<usize> {
     if !bounds.contains(&pos) {
         return None;
@@ -75,8 +61,6 @@ pub fn slot_at(i: usize, bounds: &Bounds<Pixels>, pos: Point<Pixels>, horizontal
     Some(if past { i + 1 } else { i })
 }
 
-/// The drop line, laid over the edge of the item it sits at: before it (`after` false) or after
-/// it. Vertical between tabs, horizontal between rows; the parent must be `relative`.
 pub fn drop_line(t: &Theme, horizontal: bool, after: bool) -> Div {
     let d = div().absolute().bg(t.acc.opacity(0.45));
     match (horizontal, after) {

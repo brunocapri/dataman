@@ -1,9 +1,3 @@
-//! Multi-line SQL editor: syntax colors from the `dataman_core` lexer, a line-number gutter,
-//! IME-aware text input, undo, statement execution and local autocomplete.
-//!
-//! Only the visible lines are shaped and painted, and the token list is re-lexed incrementally
-//! around each edit, so a 50,000-line script edits and scrolls like a short one.
-
 use std::ops::{Range, RangeInclusive};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -89,30 +83,18 @@ actions!(
 const CONTEXT: &str = "CodeEditor";
 const INDENT: usize = 4;
 const MENU_ROWS: usize = 12;
-/// Typing pauses longer than this start a new undo step.
 const COALESCE: Duration = Duration::from_millis(1000);
-/// Lines around the cursor handed to autocomplete (it re-lexes what it gets).
 const COMPLETION_LINES: usize = 300;
-/// Space above the first line.
 const TOP_PAD: f32 = 8.;
-/// The selection's outer corners.
 const SEL_RADIUS: f32 = 4.;
-/// Width of the gutter (marks + line numbers) for up to 4-digit line numbers.
 const GUTTER_MIN: f32 = 52.;
-/// The run flash fades from `acc_s` to transparent in this long, once.
 const FLASH: Duration = Duration::from_millis(180);
-/// The cursor blinks for this long after the last key, then stays solid.
 const BLINK_FOR: Duration = Duration::from_secs(6);
 const BLINK_PERIOD: Duration = Duration::from_millis(530);
-/// Matches kept (and highlighted) by the find bar; the count says `+` past it.
 const FIND_CAP: usize = 10_000;
-/// Typing in the find field pops the current match once it pauses this long.
 const FIND_POP_DELAY: Duration = Duration::from_millis(150);
-/// The lint runs once typing pauses this long, on a background thread.
 const LINT_DELAY: Duration = Duration::from_millis(300);
 
-/// Check stages: a command sent to the focused element the way its key would be, whatever key
-/// it has now (Run Statement, Run).
 pub(crate) fn dispatch(cx: &mut gpui::AsyncWindowContext, action: Box<dyn gpui::Action>) {
     let _ = cx.update(|window, cx| {
         window.refresh();
@@ -123,7 +105,6 @@ pub(crate) fn dispatch(cx: &mut gpui::AsyncWindowContext, action: Box<dyn gpui::
     });
 }
 
-/// Registers the editor's key bindings (context "CodeEditor").
 pub fn bind_keys(cx: &mut App) {
     let c = Some(CONTEXT);
     cx.bind_keys([
@@ -171,7 +152,6 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-v", Paste, c),
         KeyBinding::new("cmd-z", Undo, c),
         KeyBinding::new("cmd-shift-z", Redo, c),
-        // Run, comment, format and the definitions are remappable commands (`keymap`).
         KeyBinding::new("ctrl-space", ShowCompletions, c),
         KeyBinding::new("escape", Cancel, c),
         KeyBinding::new("ctrl-cmd-space", ShowCharacterPalette, c),
@@ -183,19 +163,14 @@ pub fn bind_keys(cx: &mut App) {
     ]);
 }
 
-/// A statement to run and where it starts in the buffer.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Stmt {
     pub at: usize,
     pub sql: String,
-    /// Values bound to its `$1 … $n` (empty: none asked for yet).
     pub params: Vec<Option<String>>,
-    /// Runs inside a transaction that is rolled back (Explain Analyze).
     pub rollback: bool,
 }
 
-/// A server error shown in the editor: the failed statement's lines, the token it points
-/// at, and the message beside that line. Cleared by the next edit.
 #[derive(Clone, Debug)]
 pub struct Diagnostic {
     pub stmt: Range<usize>,
@@ -203,7 +178,6 @@ pub struct Diagnostic {
     pub message: SharedString,
 }
 
-/// Gutter mark of a statement in a multi-statement run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mark {
     Ok,
@@ -213,37 +187,23 @@ pub enum Mark {
 }
 
 pub enum EditorEvent {
-    /// Run Statement (⌘⇧↩): the statements of the selection, else the statement under the cursor.
     Run(Vec<Stmt>),
-    /// Run (⌘↩): the selection's statements, else every statement of the buffer (or from the
-    /// cursor's, ⌥⌘↩).
     RunAll(Vec<Stmt>),
-    /// The buffer changed.
     Changed,
-    /// F12 / ⌘-click (reveal in the explorer), ⌥F12 (`peek`: open its definition).
     Definition { def: Definition, peek: bool },
 }
 
-// ---------------------------------------------------------------------------------------------
-// Text model (no UI).
-
-/// Text with a line index and its token list, both kept up to date across edits.
 pub(crate) struct Buffer {
     text: String,
-    /// Byte offset where each line starts; `lines[0] == 0`.
     lines: Vec<usize>,
     tokens: Vec<Token>,
-    /// What the text is lexed (and split) as: the connection's dialect.
     dialect: Dialect,
-    /// A document engine's language instead of SQL (`dataman_core::nosql::lang`).
     doc: Option<dataman_core::Engine>,
     /// Bytes outside ASCII; zero makes UTF-16 conversions the identity.
     non_ascii: usize,
-    /// Length in bytes of the longest line (bounds horizontal scrolling).
     longest: usize,
 }
 
-/// The tokens of `text`: SQL in `dialect`, or a document engine's language.
 fn lex(text: &str, dialect: Dialect, doc: Option<dataman_core::Engine>) -> Vec<Token> {
     match doc {
         Some(e) => dataman_core::nosql::lang::tokenize(e, text),
@@ -284,7 +244,6 @@ impl Buffer {
         b
     }
 
-    /// Lexes the text again as `dialect`.
     pub(crate) fn set_dialect(&mut self, dialect: Dialect) {
         if self.dialect != dialect {
             self.dialect = dialect;
@@ -292,7 +251,6 @@ impl Buffer {
         }
     }
 
-    /// Lexes the text again as a document engine's language (`None`: SQL).
     pub(crate) fn set_doc(&mut self, doc: Option<dataman_core::Engine>) {
         if self.doc != doc {
             self.doc = doc;
@@ -300,8 +258,6 @@ impl Buffer {
         }
     }
 
-    /// The statements of the text (top-level `;`, the dialect's `DELIMITER`, T-SQL's `GO`; a
-    /// document engine's own).
     pub(crate) fn statements(&self) -> Vec<dataman_core::sql::Statement> {
         if let Some(e) = self.doc {
             return doc_statements(e, &self.text);
@@ -309,12 +265,10 @@ impl Buffer {
         split_tokens_in(&self.text, &self.tokens, self.dialect.script())
     }
 
-    /// What a script runs as, one unit at a time: its statements, T-SQL's `GO` batches.
     pub(crate) fn batches(&self) -> Vec<dataman_core::sql::Statement> {
         self.split(&self.text)
     }
 
-    /// Some text's statements in the buffer's language (a selection's).
     pub(crate) fn split(&self, text: &str) -> Vec<dataman_core::sql::Statement> {
         match self.doc {
             Some(e) => doc_statements(e, text),
@@ -341,7 +295,6 @@ impl Buffer {
     pub(crate) fn line_start(&self, line: usize) -> usize {
         self.lines[line]
     }
-    /// End of the line, before its `\n`.
     pub(crate) fn line_end(&self, line: usize) -> usize {
         self.lines.get(line + 1).map_or(self.text.len(), |&s| s - 1)
     }
@@ -349,7 +302,6 @@ impl Buffer {
         &self.text[self.line_start(line)..self.line_end(line)]
     }
 
-    /// Replaces `range` with `new`, updating the line index and the tokens.
     pub(crate) fn edit(&mut self, range: Range<usize>, new: &str) {
         self.non_ascii = self.non_ascii + count_non_ascii(new) - count_non_ascii(&self.text[range.clone()]);
         let (l0, l1) = (self.line_of(range.start), self.line_of(range.end));
@@ -365,10 +317,9 @@ impl Buffer {
         self.longest = self.compute_longest();
     }
 
-    /// Re-lexes around an edit of `start..old_end` (now `start..new_end`), reusing the old tokens
-    /// on both sides. The lexer never looks behind a token start, and no token's extent depends on
-    /// text past the whitespace that follows it, so lexing restarts at the last whitespace token
-    /// before the edit and stops once a fresh token starts where an old one did.
+    /// The lexer never looks behind a token start, and no token's extent depends on text past
+    /// the whitespace that follows it, so lexing restarts at the last whitespace token before
+    /// the edit and stops once a fresh token starts where an old one did.
     fn relex(&mut self, start: usize, old_end: usize, new_end: usize) {
         let delta = new_end as isize - old_end as isize;
         let first = self.tokens.partition_point(|t| t.end <= start);
@@ -465,7 +416,6 @@ impl Buffer {
         self.text[offset..le].graphemes(true).next().map_or(le, |g| offset + g.len())
     }
 
-    /// Index of the token covering `offset` (or the first one after it).
     fn token_at(&self, offset: usize) -> usize {
         self.tokens.partition_point(|t| t.end <= offset)
     }
@@ -488,7 +438,6 @@ fn class(c: char) -> Class {
     }
 }
 
-/// Start of the word before `offset`, skipping whitespace first.
 pub(crate) fn word_left(text: &str, offset: usize) -> usize {
     let mut pos = offset;
     let mut run = None;
@@ -505,7 +454,6 @@ pub(crate) fn word_left(text: &str, offset: usize) -> usize {
     pos
 }
 
-/// End of the word after `offset`, skipping whitespace first.
 pub(crate) fn word_right(text: &str, offset: usize) -> usize {
     let mut pos = offset;
     let mut run = None;
@@ -522,7 +470,6 @@ pub(crate) fn word_right(text: &str, offset: usize) -> usize {
     pos
 }
 
-/// `offset` within `text`, on a character boundary (at or before it).
 pub(crate) fn floor_boundary(text: &str, offset: usize) -> usize {
     let mut i = offset.min(text.len());
     while !text.is_char_boundary(i) {
@@ -531,7 +478,6 @@ pub(crate) fn floor_boundary(text: &str, offset: usize) -> usize {
     i
 }
 
-/// The run of same-class characters around `offset` (double-click), never crossing a line.
 pub(crate) fn word_at(text: &str, offset: usize) -> Range<usize> {
     let offset = floor_boundary(text, offset);
     let after = text[offset..].chars().next().filter(|&c| c != '\n');
@@ -558,7 +504,6 @@ fn indent_of(line: &str) -> &str {
 
 type Edits = Vec<(Range<usize>, String)>;
 
-/// Inserts one indent level at the start of every non-empty line.
 pub(crate) fn indent_edits(buf: &Buffer, lines: RangeInclusive<usize>) -> Edits {
     lines
         .filter(|&l| !buf.line(l).is_empty())
@@ -569,7 +514,6 @@ pub(crate) fn indent_edits(buf: &Buffer, lines: RangeInclusive<usize>) -> Edits 
         .collect()
 }
 
-/// Removes up to one indent level (spaces, or a tab) from every line.
 pub(crate) fn outdent_edits(buf: &Buffer, lines: RangeInclusive<usize>) -> Edits {
     lines
         .filter_map(|l| {
@@ -582,8 +526,6 @@ pub(crate) fn outdent_edits(buf: &Buffer, lines: RangeInclusive<usize>) -> Edits
         .collect()
 }
 
-/// Toggles `-- ` comments: removes them when every non-blank line has one, else adds them at
-/// the smallest indentation.
 pub(crate) fn comment_edits(buf: &Buffer, lines: RangeInclusive<usize>) -> Edits {
     let all: Vec<usize> = lines.clone().collect();
     let mut body: Vec<usize> = all.iter().copied().filter(|&l| !buf.line(l).trim().is_empty()).collect();
@@ -611,8 +553,6 @@ pub(crate) fn comment_edits(buf: &Buffer, lines: RangeInclusive<usize>) -> Edits
     }
 }
 
-/// Maps a pre-edit offset through sorted, disjoint `edits`; `right` keeps it after text inserted
-/// exactly at it.
 pub(crate) fn map_offset(offset: usize, edits: &[(Range<usize>, String)], right: bool) -> usize {
     let mut delta = 0isize;
     for (r, s) in edits {
@@ -629,8 +569,6 @@ pub(crate) fn map_offset(offset: usize, edits: &[(Range<usize>, String)], right:
     (offset as isize + delta) as usize
 }
 
-/// Applies sorted, disjoint `edits` to `buf` as one edit over their span (Replace All: one relex
-/// and one reindex however many matches), returned for the undo history.
 pub(crate) fn splice_edits(buf: &mut Buffer, edits: &[(Range<usize>, String)]) -> Option<Edit> {
     let span = edits.first()?.0.start..edits.last()?.0.end;
     let mut new = String::with_capacity(span.len());
@@ -645,7 +583,6 @@ pub(crate) fn splice_edits(buf: &mut Buffer, edits: &[(Range<usize>, String)]) -
     Some(Edit { at: span.start, old, new })
 }
 
-/// The match the selection is on (or the first one after it): the find bar's `n` in `n/m`.
 fn current_match(matches: &[Range<usize>], sel: &Range<usize>) -> Option<usize> {
     let i = matches.partition_point(|m| m.start < sel.start);
     if matches.get(i) == Some(sel) {
@@ -676,7 +613,6 @@ struct Group {
     time: Instant,
 }
 
-/// Undo/redo stacks; consecutive typing (or deleting) coalesces into one step.
 #[derive(Default)]
 pub(crate) struct History {
     undo: Vec<Group>,
@@ -685,7 +621,6 @@ pub(crate) struct History {
 }
 
 impl History {
-    /// Ends the current step: the next edit starts a new one.
     pub(crate) fn seal(&mut self) {
         self.sealed = true;
     }
@@ -724,7 +659,6 @@ impl History {
         }
     }
 
-    /// Reverts the last step; returns the selection to restore.
     pub(crate) fn undo(&mut self, buf: &mut Buffer) -> Option<Range<usize>> {
         let g = self.undo.pop()?;
         for e in g.edits.iter().rev() {
@@ -752,9 +686,6 @@ fn normalize_newlines(s: &str) -> String {
     s.replace("\r\n", "\n").replace('\r', "\n")
 }
 
-// ---------------------------------------------------------------------------------------------
-// The view.
-
 struct Menu {
     replace: Range<usize>,
     items: Vec<Candidate>,
@@ -766,56 +697,42 @@ enum Drag {
     Char,
     Word(Range<usize>),
     Line(Range<usize>),
-    /// A scrollbar's thumb (vertical or not), grabbed this far from its start.
     Thumb { vertical: bool, grab: Pixels },
 }
 
-/// Hit width of a scrollbar along the editor's right or bottom edge, and its thumb's thickness
-/// (the grid's: 6 pt, square, `line2`, over the text).
 const BAR: f32 = 10.;
 const THUMB: f32 = 6.;
 const THUMB_MIN: f32 = 24.;
 
-/// One scrollbar of the last frame (window coordinates): its track (where a press pages or
-/// grabs) and its thumb.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Bar {
     track: Bounds<Pixels>,
     thumb: Bounds<Pixels>,
 }
 
-/// The thumb on a track of `track` pt for `view` pt of `view + range` pt scrolled `at` pt in:
-/// its start and length.
 fn thumb_span(track: f32, view: f32, range: f32, at: f32) -> (f32, f32) {
     let len = (track * view / (view + range)).max(THUMB_MIN).min(track);
     let start = if range > 0. { (at / range).clamp(0., 1.) * (track - len) } else { 0. };
     (start, len)
 }
 
-/// The find bar (`find.rs`) and what it found. Created on the first ⌘F.
 struct EditorFind {
     bar: Entity<FindBar>,
     open: bool,
-    /// The query compiled (rebuilt when it or a toggle changes, not on every edit).
     matcher: Option<Matcher>,
     invalid: bool,
-    /// Every match (up to `FIND_CAP`), sorted and disjoint; recomputed on an edit or a new query.
     matches: Vec<Range<usize>>,
     capped: bool,
     cur: Option<usize>,
-    /// Where typing in the field searches from: the selection when the bar opened.
     origin: usize,
     pop_task: Option<Task<()>>,
     _sub: Subscription,
 }
 
-/// Where the last frame put things (window coordinates).
 #[derive(Clone, Copy)]
 struct Geometry {
     bounds: Bounds<Pixels>,
-    /// x of column 0 when not scrolled.
     origin_x: Pixels,
-    /// Width of the line-number gutter (its divider is its last point).
     gutter_w: Pixels,
     text_width: Pixels,
     char_width: Pixels,
@@ -829,51 +746,36 @@ pub struct CodeEditor {
     marked: Option<Range<usize>>,
     goal_x: Option<Pixels>,
     history: History,
-    /// Scroll offset of the content (both components >= 0).
     scroll: Point<Pixels>,
-    /// The UI zoom `scroll` was made at.
     zoom_at: f32,
     autoscroll: bool,
     schema: Arc<SchemaSnapshot>,
     menu: Option<Menu>,
-    /// The erroneous token (wavy underline) of `diagnostic`.
     error: Option<Range<usize>>,
     diagnostic: Option<Diagnostic>,
     marks: Vec<(usize, Mark)>,
     flash: Option<(Range<usize>, Instant)>,
-    /// The find indicator over a range (⌘' on the error), evaluated in `layout`.
     pop: Option<FindPop<Range<usize>>>,
-    /// ⌘F: the find bar and its matches.
     find: Option<EditorFind>,
     drag: Option<Drag>,
     geo: Option<Geometry>,
-    /// The scrollbars of the last frame (vertical, horizontal), only while there is more to see.
     bars: (Option<Bar>, Option<Bar>),
     focused: bool,
     blink_on: bool,
     last_input: Instant,
     blink_task: Option<Task<()>>,
-    /// Plain text (a value editor's long text, raw JSON): no SQL colors, no completion.
     plain: bool,
-    /// The function call around the cursor and its parameter (the popover above the line).
     sig: Option<SignatureHelp>,
-    /// Lint findings, as byte ranges of the buffer (sorted), from the last pause in typing.
     lints: Vec<Lint>,
     lint_task: Option<Task<()>>,
-    /// The local lint's findings and the server's syntax errors (SQL Server); `lints` is both.
     local_lints: Vec<Lint>,
     server_lints: Vec<Lint>,
     /// Bumped on every buffer change: a lint of an older text is dropped.
     rev: u64,
-    /// The lint under the mouse (its message shows under it).
     hover: Option<usize>,
-    /// A LAR server: the lint does not report its catalog's gaps.
     lar: bool,
-    /// Relations the tab's session created (temp tables), lower case.
     known: Arc<HashSet<String>>,
-    /// A document engine's completions: its collections and sampled fields.
     doc_hints: Arc<dataman_core::nosql::lang::Hints>,
-    /// A query tab's: the gutter as wide as its grid's row numbers (`grid::GutterShare`).
     gutter: Option<crate::grid::GutterShare>,
     _blur: Subscription,
     _focus: Subscription,
@@ -887,10 +789,8 @@ impl Focusable for CodeEditor {
     }
 }
 
-/// The code font size in points (Settings ▸ Editor: 12, 13 or 14); read on every layout.
 static CODE_PT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(crate::theme::text::CODE as u32);
 
-/// Changes the editor's font size (the caller refreshes the windows).
 pub fn set_code_size(pt: u8) {
     CODE_PT.store(u32::from(pt.clamp(11, 16)), std::sync::atomic::Ordering::Relaxed);
 }
@@ -918,7 +818,6 @@ fn format_options() -> FormatOptions {
 }
 
 fn line_height() -> Pixels {
-    // 13 pt → 20 (the design's line), one more point of leading per point of size.
     px(crate::theme::metrics::EDITOR_LINE + 1.5 * (code_size().pt() - crate::theme::text::CODE)).round()
 }
 
@@ -930,7 +829,7 @@ fn code_size() -> Pixels {
     px(CODE_PT.load(std::sync::atomic::Ordering::Relaxed) as f32)
 }
 
-/// The line as shaped: tabs and other control characters show as one space (same byte length).
+/// Tabs and other control characters show as one space: same byte length, so offsets hold.
 fn display_text(s: &str) -> SharedString {
     if s.bytes().any(|b| b < 0x20) {
         s.chars().map(|c| if c.is_control() && c.is_ascii() { ' ' } else { c }).collect::<String>().into()
@@ -939,10 +838,6 @@ fn display_text(s: &str) -> SharedString {
     }
 }
 
-/// Which corners of a selection run (left, right) are on the selection's outline and get
-/// rounded — top-left, top-right, bottom-right, bottom-left — given the runs on the lines
-/// above and below. A corner is inside the shape when the neighbouring run touches this one
-/// and reaches at least as far that way.
 fn outline_corners(above: Option<(f32, f32)>, run: (f32, f32), below: Option<(f32, f32)>) -> [bool; 4] {
     let (x0, x1) = run;
     let touch = |n: Option<(f32, f32)>| n.filter(|n| n.0 < x1 && n.1 > x0);
@@ -955,9 +850,7 @@ fn outline_corners(above: Option<(f32, f32)>, run: (f32, f32), below: Option<(f3
     ]
 }
 
-/// Words colored as LAR syntax (`FOR SYSTEM_TIME AS OF`, `SUBSCRIBE`, `LISTEN … AS`).
 const LAR_WORDS: &[&str] = &["SYSTEM_TIME", "SUBSCRIBE", "LISTEN", "LAR_HISTORY"];
-/// Type names colored as types when they appear as identifiers.
 const TYPE_WORDS: &[&str] = &[
     "bigint", "bool", "boolean", "bytea", "date", "float4", "float8", "int", "int2", "int4", "int8", "integer",
     "interval", "json", "jsonb", "numeric", "text", "timestamp", "timestamptz", "uuid", "varchar", "vector",
@@ -978,8 +871,6 @@ fn token_color(t: &Theme, kind: TokenKind, word: &str, next_is_paren: bool) -> H
     }
 }
 
-/// SQL in the editor's colors, one (text, runs) per line, for read-only views (the activity
-/// monitor's details). Tabs and control characters become spaces.
 pub(crate) fn highlighted_lines(t: &Theme, sql: &str) -> Vec<(SharedString, Vec<TextRun>)> {
     let clean: String = sql.chars().map(|c| if c.is_ascii_control() && c != '\n' { ' ' } else { c }).collect();
     let toks = tokenize(&clean);
@@ -1003,13 +894,10 @@ pub(crate) fn highlighted_lines(t: &Theme, sql: &str) -> Vec<(SharedString, Vec<
     lines.into_iter().map(|(s, r)| (SharedString::from(s), r)).collect()
 }
 
-/// Adds `underline` to the part of `runs` (covering text from `base`) that overlaps `range`.
 fn underline_runs(runs: &mut Vec<TextRun>, base: usize, range: &Range<usize>, underline: UnderlineStyle) {
     decorate_runs(runs, base, range, |r| r.underline = Some(underline));
 }
 
-/// Applies `f` to the part of `runs` (covering text from `base`) that overlaps `range`,
-/// splitting runs at the range's edges.
 fn decorate_runs(runs: &mut Vec<TextRun>, base: usize, range: &Range<usize>, f: impl Fn(&mut TextRun)) {
     let mut out = Vec::with_capacity(runs.len() + 2);
     let mut pos = base;
@@ -1092,13 +980,11 @@ impl CodeEditor {
         }
     }
 
-    /// Plain text: no SQL colors, no completion (⌘↩ still emits `Run`).
     pub fn plain(mut self) -> Self {
         self.plain = true;
         self
     }
 
-    /// Draws the line-number gutter as wide as the tab's grid's row numbers.
     pub fn share_gutter(&mut self, share: crate::grid::GutterShare) {
         self.gutter = Some(share);
     }
@@ -1107,7 +993,6 @@ impl CodeEditor {
         self.buf.text()
     }
 
-    /// Replaces the whole buffer; resets undo and puts the cursor at the end.
     pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
         self.buf = Buffer::new_lang(&normalize_newlines(text), self.buf.dialect, self.buf.doc);
         let end = self.buf.len();
@@ -1134,7 +1019,6 @@ impl CodeEditor {
     }
 
     pub fn set_schema(&mut self, schema: Arc<SchemaSnapshot>, cx: &mut Context<Self>) {
-        // The connection's dialect: what the text is highlighted, split and checked as.
         if schema.dialect != self.buf.dialect {
             self.buf.set_dialect(schema.dialect);
             self.rev += 1;
@@ -1144,13 +1028,10 @@ impl CodeEditor {
             self.refresh_menu(true);
         }
         self.update_signature();
-        // The schema rules see the new cache (debounced like typing).
         self.schedule_lint(cx);
         cx.notify();
     }
 
-    /// The text is a document engine's language (`None`: SQL): its colors, statements and
-    /// completions; no SQL lint.
     pub fn set_doc_lang(&mut self, engine: Option<dataman_core::Engine>, cx: &mut Context<Self>) {
         if self.buf.doc == engine {
             return;
@@ -1164,17 +1045,14 @@ impl CodeEditor {
         cx.notify();
     }
 
-    /// The language the text is in (`None`: SQL).
     pub fn doc_lang(&self) -> Option<dataman_core::Engine> {
         self.buf.doc
     }
 
-    /// What a document engine's completions know (collections, sampled fields).
     pub fn set_doc_hints(&mut self, hints: Arc<dataman_core::nosql::lang::Hints>) {
         self.doc_hints = hints;
     }
 
-    /// The server is LAR (the lint skips what its catalog does not list).
     pub fn set_server(&mut self, lar: bool, cx: &mut Context<Self>) {
         if self.lar != lar {
             self.lar = lar;
@@ -1182,30 +1060,24 @@ impl CodeEditor {
         }
     }
 
-    /// Relations the tab's session created (temp tables): never unknown to the lint.
     pub fn set_known(&mut self, known: Arc<HashSet<String>>, cx: &mut Context<Self>) {
         self.known = known;
         self.schedule_lint(cx);
     }
 
-    /// The lint's findings (demo and checks).
     pub fn lints(&self) -> &[Lint] {
         &self.lints
     }
 
-    /// The signature help shown (demo and checks).
     pub fn signature(&self) -> Option<&SignatureHelp> {
         self.sig.as_ref()
     }
 
-    /// Shows lint `ix`'s message as if the mouse were on it (demo screenshots).
     pub fn demo_hover(&mut self, ix: Option<usize>, cx: &mut Context<Self>) {
         self.hover = ix.filter(|&i| i < self.lints.len());
         cx.notify();
     }
 
-    /// Lints the buffer `LINT_DELAY` after the last change, on a background thread; a result
-    /// for a text that changed since is dropped. Typing never waits for it.
     fn schedule_lint(&mut self, cx: &mut Context<Self>) {
         if self.plain || self.buf.doc.is_some() {
             return;
@@ -1232,13 +1104,10 @@ impl CodeEditor {
         }));
     }
 
-    /// Bumped on every change of the buffer (an answer about an older text is dropped).
     pub fn rev(&self) -> u64 {
         self.rev
     }
 
-    /// The server's syntax errors for the text at `rev` (SQL Server's PARSEONLY); dropped when
-    /// the text changed since.
     pub fn set_server_lints(&mut self, rev: u64, found: Vec<Lint>, cx: &mut Context<Self>) {
         if rev != self.rev || self.server_lints == found {
             return;
@@ -1248,8 +1117,6 @@ impl CodeEditor {
         cx.notify();
     }
 
-    /// `lints` = the local findings and the server's, in order (a range the server reports
-    /// is not repeated by a local finding with the same message).
     fn merge_lints(&mut self) {
         let mut all: Vec<Lint> = self.local_lints.iter().chain(&self.server_lints).cloned().collect();
         all.sort_by(|a, b| a.range.start.cmp(&b.range.start).then(a.range.end.cmp(&b.range.end)));
@@ -1264,7 +1131,6 @@ impl CodeEditor {
         self.server_lints.clear();
     }
 
-    /// Lints next to an edit of `range` (now `new_len` long) go; the ones after it move.
     fn shift_lints(&mut self, range: &Range<usize>, new_len: usize) {
         if self.lints.is_empty() {
             return;
@@ -1288,7 +1154,6 @@ impl CodeEditor {
         self.merge_lints();
     }
 
-    /// The call around the cursor, from the buffer's own tokens (no re-lexing).
     fn update_signature(&mut self) {
         self.sig = if self.plain || self.buf.doc.is_some() || !self.sel.is_empty() || self.marked.is_some() || self.schema.catalog.is_none() {
             None
@@ -1297,8 +1162,6 @@ impl CodeEditor {
         };
     }
 
-    /// ⌥⇧F: formats the selection, or the whole script, as one undo step. The cursor stays on
-    /// the same character (counting all but whitespace); a selection keeps covering the text.
     pub fn format_sql(&mut self, cx: &mut Context<Self>) {
         if self.plain || self.buf.doc.is_some() {
             return;
@@ -1343,7 +1206,6 @@ impl CodeEditor {
         self.format_sql(cx);
     }
 
-    /// What the name at `offset` refers to (a CTE's range in buffer offsets).
     fn definition_here(&self, offset: usize) -> Option<Definition> {
         if self.plain || self.buf.doc.is_some() {
             return None;
@@ -1355,8 +1217,6 @@ impl CodeEditor {
         })
     }
 
-    /// F12 / ⌘-click (reveal in the explorer) and ⌥F12 (`peek`: its definition in a new tab);
-    /// a CTE is selected in place.
     pub fn go_to_definition(&mut self, offset: usize, peek: bool, cx: &mut Context<Self>) {
         match self.definition_here(offset) {
             Some(Definition::Local(r)) => {
@@ -1378,7 +1238,6 @@ impl CodeEditor {
         self.go_to_definition(self.cursor(), true, cx);
     }
 
-    /// Typed input at the cursor, as if the user typed it (`\n` and `\t` act as Enter and Tab).
     pub fn type_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
         let text = normalize_newlines(text);
         let mut rest = text.as_str();
@@ -1397,8 +1256,6 @@ impl CodeEditor {
         }
     }
 
-    /// Shows a server error (until the next edit); `None` clears. The token at the error's
-    /// position gets a wavy underline.
     pub fn set_diagnostic(&mut self, d: Option<Diagnostic>, cx: &mut Context<Self>) {
         self.error = d.as_ref().and_then(|d| d.at).and_then(|o| {
             let toks = &self.buf.tokens;
@@ -1406,7 +1263,6 @@ impl CodeEditor {
             let j = (i.min(toks.len())..toks.len())
                 .find(|&j| toks[j].kind != TokenKind::Whitespace)
                 .or_else(|| (0..i.min(toks.len())).rev().find(|&j| toks[j].kind != TokenKind::Whitespace))?;
-            // A qualified name (`s.delivered_at`) is underlined whole.
             let mut end = j;
             let is_name = |k: TokenKind| matches!(k, TokenKind::Ident | TokenKind::QuotedIdent | TokenKind::Keyword);
             while is_name(toks[end].kind)
@@ -1430,14 +1286,11 @@ impl CodeEditor {
         self.diagnostic.as_ref()
     }
 
-    /// Marks for the statements of a multi-statement run (by offset); cleared by the next edit.
     pub fn set_marks(&mut self, marks: Vec<(usize, Mark)>, cx: &mut Context<Self>) {
         self.marks = marks;
         cx.notify();
     }
 
-    /// Puts the cursor on the error (⌘'), which pops in Xcode's find yellow (the underlined
-    /// token, or the token where the failed statement starts); false when there is none.
     pub fn jump_to_error(&mut self, cx: &mut Context<Self>) -> bool {
         let Some(d) = &self.diagnostic else { return false };
         let at = d.at.unwrap_or(d.stmt.start).min(self.buf.len());
@@ -1452,26 +1305,21 @@ impl CodeEditor {
         true
     }
 
-    /// Demo and live checks: the range a find pop is running on now.
     pub fn demo_pop(&self) -> Option<Range<usize>> {
         self.pop.as_ref().filter(|p| p.frame(Instant::now()).is_some()).map(|p| p.target.clone())
     }
 
-    /// Pops the find indicator over `range` (Xcode's yellow box with the text on top). For any
-    /// "found it" in the editor (⌘' today; a find bar later).
     pub fn find_pop(&mut self, range: Range<usize>, cx: &mut Context<Self>) {
         let range = self.clamp_range(range);
         self.pop = FindPop::start(range, PopStyle::Find, cx);
         cx.notify();
     }
 
-    /// Highlights `range` with the run flash: `acc_s` fading to transparent in 180 ms, once.
     pub fn flash(&mut self, range: Range<usize>, cx: &mut Context<Self>) {
         self.flash = Some((range, Instant::now()));
         cx.notify();
     }
 
-    /// The cursor shows again and blinks for a while; then it stays solid (no idle redraws).
     fn reset_blink(&mut self, cx: &mut Context<Self>) {
         self.blink_on = true;
         self.last_input = Instant::now();
@@ -1502,7 +1350,6 @@ impl CodeEditor {
         }));
     }
 
-    /// Puts the cursor at byte `offset` (clamped to a char boundary) and scrolls it into view.
     pub fn set_cursor(&mut self, offset: usize, cx: &mut Context<Self>) {
         let mut offset = offset.min(self.buf.len());
         while !self.buf.text.is_char_boundary(offset) {
@@ -1512,7 +1359,6 @@ impl CodeEditor {
         self.move_to(offset, cx);
     }
 
-    /// Inserts text at the cursor (replacing the selection) as one undo step.
     pub fn insert_at_cursor(&mut self, text: &str, cx: &mut Context<Self>) {
         self.history.seal();
         self.marked = None;
@@ -1521,12 +1367,10 @@ impl CodeEditor {
         self.history.seal();
     }
 
-    /// The token the current error points at.
     pub fn error_range(&self) -> Option<Range<usize>> {
         self.error.clone()
     }
 
-    /// Replaces the erroneous token (the error view's "Apply hint").
     pub fn replace_error_token(&mut self, with: &str, cx: &mut Context<Self>) {
         let Some(r) = self.error.clone() else { return };
         self.history.seal();
@@ -1534,12 +1378,10 @@ impl CodeEditor {
         self.history.seal();
     }
 
-    /// Checks: the completion popup's labels, in order (empty when it is shut).
     pub fn demo_completions(&self) -> Vec<String> {
         self.menu.as_ref().map(|m| m.items.iter().map(|c| c.label.clone()).collect()).unwrap_or_default()
     }
 
-    /// Checks: ⌃Space at the cursor.
     pub fn demo_show_completions(&mut self, cx: &mut Context<Self>) {
         self.refresh_menu(true);
         cx.notify();
@@ -1549,7 +1391,6 @@ impl CodeEditor {
         self.menu.is_some()
     }
 
-    /// Checks: where the cursor is (a byte offset), and what the text is lexed as.
     pub fn demo_cursor(&self) -> (usize, Dialect) {
         (self.cursor(), self.buf.dialect)
     }
@@ -1597,8 +1438,6 @@ impl CodeEditor {
         l0..=l1
     }
 
-    // Editing.
-
     fn after_edit(&mut self, cx: &mut Context<Self>) {
         self.error = None;
         self.diagnostic = None;
@@ -1615,7 +1454,6 @@ impl CodeEditor {
         cx.notify();
     }
 
-    /// Replaces `range` with `new` and puts the cursor after it.
     fn replace(&mut self, range: Range<usize>, new: &str, kind: EditKind, cx: &mut Context<Self>) {
         let before = self.sel.clone();
         let old = self.buf.text[range.clone()].to_string();
@@ -1633,8 +1471,6 @@ impl CodeEditor {
         self.after_edit(cx);
     }
 
-    /// The selection's (anchor, head) after sorted, disjoint `edits`: text inserted at a caret
-    /// goes before it; a selection grows to take in text inserted at its edges.
     fn mapped_sel(&self, edits: &[(Range<usize>, String)]) -> (usize, usize) {
         let (a, h) = (self.anchor(), self.cursor());
         let map = |o: usize, right: bool| map_offset(o, edits, right);
@@ -1647,7 +1483,6 @@ impl CodeEditor {
         }
     }
 
-    /// Applies sorted, disjoint edits as one undo step and maps the selection through them.
     fn apply(&mut self, edits: Edits, cx: &mut Context<Self>) {
         if edits.is_empty() {
             return;
@@ -1775,7 +1610,6 @@ impl CodeEditor {
         self.apply(comment_edits(&self.buf, self.sel_lines()), cx);
     }
 
-    /// The selection, or the whole current line when nothing is selected.
     fn copy_range(&self) -> Range<usize> {
         if !self.sel.is_empty() {
             return self.sel.clone();
@@ -1834,8 +1668,6 @@ impl CodeEditor {
         self.after_edit(cx);
     }
 
-    // Movement.
-
     fn x_for(&self, offset: usize, window: &mut Window) -> Pixels {
         let l = self.buf.line_of(offset);
         self.shape_plain(l, window).x_for_index(offset - self.buf.line_start(l))
@@ -1854,7 +1686,6 @@ impl CodeEditor {
         window.text_system().shape_line(text, code_size(), &[run], None)
     }
 
-    /// The offset `rows` lines above/below `from`, at the goal column.
     fn vertical(&mut self, from: usize, rows: isize, window: &mut Window) -> usize {
         let x = match self.goal_x {
             Some(x) => x,
@@ -1970,7 +1801,6 @@ impl CodeEditor {
         self.select_to(word_right(self.text(), self.cursor()), cx);
     }
 
-    /// First non-blank of the line, or column 0 when already there.
     fn smart_home(&self) -> usize {
         let c = self.cursor();
         let l = self.buf.line_of(c);
@@ -2036,8 +1866,6 @@ impl CodeEditor {
         window.show_character_palette();
     }
 
-    // Find and replace.
-
     fn find_bar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Entity<FindBar> {
         if let Some(f) = &self.find {
             return f.bar.clone();
@@ -2059,8 +1887,6 @@ impl CodeEditor {
         bar
     }
 
-    /// ⌘F (⌥⌘F with the replace row): the bar opens on its field, prefilled with a one-line
-    /// selection, and the match at or after the selection becomes the current one.
     pub fn open_find(&mut self, replace: bool, window: &mut Window, cx: &mut Context<Self>) {
         let bar = self.find_bar(window, cx);
         let picked = (!self.sel.is_empty())
@@ -2083,7 +1909,6 @@ impl CodeEditor {
         cx.notify();
     }
 
-    /// Closes the bar (the query stays for ⌘G); the selection stays on the current match.
     pub fn close_find(&mut self, cx: &mut Context<Self>) {
         if let Some(f) = &mut self.find {
             f.open = false;
@@ -2094,7 +1919,6 @@ impl CodeEditor {
         cx.notify();
     }
 
-    /// The find bar's field has the focus (the work column counts it as the editor's region).
     pub fn find_has_focus(&self, window: &Window, cx: &App) -> bool {
         self.find.as_ref().is_some_and(|f| f.open && f.bar.read(cx).has_focus(window, cx))
     }
@@ -2111,7 +1935,6 @@ impl CodeEditor {
         };
     }
 
-    /// Recomputes the matches of an open bar (after an edit or a new query; never per frame).
     fn refind(&mut self, cx: &mut Context<Self>) {
         let Some(f) = self.find.as_mut().filter(|f| f.open) else { return };
         (f.matches, f.capped) = match &f.matcher {
@@ -2128,8 +1951,6 @@ impl CodeEditor {
         f.bar.update(cx, |b, cx| b.set_count(c, cx));
     }
 
-    /// Typing in the field: the first match at or after where the search started is selected
-    /// and scrolled to; it pops once typing pauses.
     fn find_from_origin(&mut self, cx: &mut Context<Self>) {
         self.refind(cx);
         let Some(f) = &self.find else { return };
@@ -2139,7 +1960,6 @@ impl CodeEditor {
         }
     }
 
-    /// Selects match `i`, scrolls to it and pops it (now, or after `FIND_POP_DELAY`).
     fn select_match(&mut self, i: usize, pop_now: bool, cx: &mut Context<Self>) {
         let Some(f) = &mut self.find else { return };
         let Some(r) = f.matches.get(i).cloned() else { return };
@@ -2168,9 +1988,6 @@ impl CodeEditor {
         cx.notify();
     }
 
-    /// ⌘G / ⇧⌘G (↩ / ⇧↩ in the field): the next or previous match from the selection, around
-    /// the ends. With the bar closed ⌘G brings it back on the last query (the focus stays
-    /// here); with no query yet it is ⌘F.
     pub fn find_step(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
         if !self.find.as_ref().is_some_and(|f| f.open) {
             if !self.find.as_ref().is_some_and(|f| f.matcher.is_some()) {
@@ -2190,8 +2007,6 @@ impl CodeEditor {
         }
     }
 
-    /// Replace: the current match (the selection when it is one, else the next one) becomes
-    /// the replacement, as one undo step; then the next match is selected.
     fn replace_current(&mut self, cx: &mut Context<Self>) {
         let Some(f) = &self.find else { return };
         let Some(m) = f.matcher.clone() else { return };
@@ -2210,8 +2025,6 @@ impl CodeEditor {
         }
     }
 
-    /// Replace All: every match (not only the first `FIND_CAP`), `$1` groups expanded for a
-    /// regular expression, in one edit and one undo step.
     fn replace_all_matches(&mut self, cx: &mut Context<Self>) {
         let Some(f) = &self.find else { return };
         let Some(m) = f.matcher.clone() else { return };
@@ -2250,14 +2063,10 @@ impl CodeEditor {
         }
     }
 
-    /// Demo and checks: the bar (once created), whether it is open, and its count (`3/17`).
     pub fn demo_find(&self, cx: &App) -> Option<(Entity<FindBar>, bool, String)> {
         self.find.as_ref().map(|f| (f.bar.clone(), f.open, f.bar.read(cx).count().label()))
     }
 
-    /// Demo and checks: the selection.
-    /// Demo and checks: the line height and the measured advance of a character, in window
-    /// points (both follow the UI zoom).
     pub fn demo_metrics(&self) -> (f32, f32) {
         (line_height().as_f32(), self.geo.map_or(0., |g| g.char_width.as_f32()))
     }
@@ -2266,36 +2075,28 @@ impl CodeEditor {
         self.sel.clone()
     }
 
-    /// Demo and checks: the left edge of the gutter's divider (window pixels), as last laid out.
     pub fn demo_gutter_divider(&self) -> Option<f32> {
         self.geo.map(|g| (g.bounds.left() + g.gutter_w - px(1.)).as_f32())
     }
 
-    /// The selection as (anchor, head) byte offsets (the saved session).
     pub fn selection_ends(&self) -> (usize, usize) {
         if self.reversed { (self.sel.end, self.sel.start) } else { (self.sel.start, self.sel.end) }
     }
 
-    /// The scroll in points at 100 % (the saved session).
     pub fn scroll_points(&self) -> (f32, f32) {
         (self.scroll.x.pt(), self.scroll.y.pt())
     }
 
-    /// Checks: the last frame's scrollbars as (track, thumb), vertical then horizontal, and
-    /// how far the content scrolls (x, y), in window coordinates.
     pub fn demo_bars(&self) -> ([Option<(Bounds<Pixels>, Bounds<Pixels>)>; 2], (f32, f32)) {
         let (v, h) = self.bars;
         let (mx, my) = self.max_scroll();
         ([v.map(|b| (b.track, b.thumb)), h.map(|b| (b.track, b.thumb))], (mx.pt(), my.pt()))
     }
 
-    /// Bumped on every change of the text.
     pub fn revision(&self) -> u64 {
         self.rev
     }
 
-    /// A saved editor back (session restore): its text, selection and scroll, without
-    /// scrolling to the cursor.
     pub fn restore_saved(&mut self, text: &str, (anchor, head): (usize, usize), (sx, sy): (f32, f32), cx: &mut Context<Self>) {
         self.set_text(text, cx);
         let at = |i: usize| {
@@ -2313,21 +2114,16 @@ impl CodeEditor {
         cx.notify();
     }
 
-    /// Demo: selects `anchor..head` (the `selection` screen).
     pub fn demo_select(&mut self, anchor: usize, head: usize, cx: &mut Context<Self>) {
         let n = self.buf.len();
         self.set_sel(anchor.min(n), head.min(n));
         cx.notify();
     }
 
-    // Execution.
-
     fn run_statement_action(&mut self, _: &RunStatement, window: &mut Window, cx: &mut Context<Self>) {
         self.run_statement(window, cx);
     }
 
-    /// Run Statement (⌘⇧↩): emits `Run` with the selection's statements, else the statement
-    /// under the cursor.
     pub fn run_statement(&mut self, _: &mut Window, cx: &mut Context<Self>) {
         self.menu = None;
         let text = self.buf.text();
@@ -2347,8 +2143,6 @@ impl CodeEditor {
         self.emit_run(stmts.iter().map(|s| base + s.range.start..base + s.range.end).collect(), false, cx);
     }
 
-    /// The statement Explain works on: the first of the selection, else the one under the
-    /// cursor (flashed like a run).
     pub fn current_statement(&mut self, cx: &mut Context<Self>) -> Option<Stmt> {
         self.menu = None;
         let text = self.buf.text();
@@ -2370,12 +2164,8 @@ impl CodeEditor {
         self.run_script(cx);
     }
 
-    /// Run (⌘↩, the toolbar's button): the selection's statements, else every statement of the
-    /// buffer (T-SQL: every batch).
     pub fn run_script(&mut self, cx: &mut Context<Self>) {
         self.menu = None;
-        // A document engine's statements each show a result of their own: ⌘↩ runs the one
-        // under the cursor (or the selection's), as its shell does.
         if self.buf.doc.is_some() {
             let stmts = if self.sel.is_empty() {
                 statement_at_in(self.buf.text(), &self.buf.statements(), self.sel.start).into_iter().map(|s| s.range).collect()
@@ -2396,7 +2186,6 @@ impl CodeEditor {
         self.emit_run(stmts.into_iter().map(|s| s.range).collect(), true, cx);
     }
 
-    /// ⌥⌘↩: the statement (T-SQL: the batch) under the cursor and every one after it.
     pub fn run_from_here(&mut self, cx: &mut Context<Self>) {
         self.menu = None;
         let text = self.buf.text();
@@ -2411,7 +2200,6 @@ impl CodeEditor {
     }
 
     fn emit_run(&mut self, ranges: Vec<Range<usize>>, all: bool, cx: &mut Context<Self>) {
-        // Plain text has no statements: ⌘↩ just says "done" (a value editor applies).
         if self.plain {
             cx.emit(EditorEvent::Run(Vec::new()));
             return;
@@ -2424,9 +2212,6 @@ impl CodeEditor {
         cx.emit(if all { EditorEvent::RunAll(stmts) } else { EditorEvent::Run(stmts) });
     }
 
-    // Completion.
-
-    /// Lines around the cursor, starting at a token boundary.
     fn completion_window(&self, cursor: usize) -> Range<usize> {
         let l = self.buf.line_of(cursor);
         let a = self.buf.line_start(l.saturating_sub(COMPLETION_LINES));
@@ -2435,8 +2220,6 @@ impl CodeEditor {
         a..b.max(cursor)
     }
 
-    /// Recomputes the popup at the cursor; with an empty partial word it stays open only when
-    /// `forced` or right after a `.`.
     fn refresh_menu(&mut self, forced: bool) {
         if !self.sel.is_empty() || self.marked.is_some() || self.plain {
             self.menu = None;
@@ -2479,15 +2262,12 @@ impl CodeEditor {
         self.history.seal();
         self.replace(m.replace.clone(), &item.insert, EditKind::Other, cx);
         self.history.seal();
-        // A call: the cursor goes between its parens, and its signature shows.
         if let Some(c) = item.caret {
             let at = m.replace.start + c;
             self.set_sel(at, at);
             self.update_signature();
         }
     }
-
-    // Mouse and scrolling.
 
     fn offset_at(&self, pos: Point<Pixels>, window: &mut Window) -> usize {
         let Some(g) = self.geo else { return 0 };
@@ -2516,7 +2296,6 @@ impl CodeEditor {
         self.history.seal();
         self.goal_x = None;
         let off = self.offset_at(ev.position, window);
-        // ⌘-click: go to the definition of the name clicked.
         if ev.modifiers.platform && ev.click_count == 1 && !ev.modifiers.shift {
             self.set_sel(off, off);
             self.update_signature();
@@ -2545,8 +2324,6 @@ impl CodeEditor {
         cx.notify();
     }
 
-    /// A press on a scrollbar: on its thumb it grabs it, elsewhere on the track it pages
-    /// towards the press. `false` when the press is not on one.
     fn bar_down(&mut self, p: Point<Pixels>, cx: &mut Context<Self>) -> bool {
         let (v, h) = self.bars;
         for (bar, vertical) in [(v, true), (h, false)] {
@@ -2570,7 +2347,6 @@ impl CodeEditor {
         false
     }
 
-    /// A grabbed thumb follows the pointer.
     fn thumb_drag(&mut self, vertical: bool, grab: Pixels, pos: Point<Pixels>) {
         let (max_x, max_y) = self.max_scroll();
         let bar = if vertical { self.bars.0 } else { self.bars.1 };
@@ -2621,8 +2397,6 @@ impl CodeEditor {
         cx.notify();
     }
 
-    /// How far the content scrolls (x, y): three lines past the last one, four columns past the
-    /// longest line.
     fn max_scroll(&self) -> (Pixels, Pixels) {
         let Some(g) = self.geo else { return (px(0.), px(0.)) };
         let lh = line_height();
@@ -2641,13 +2415,10 @@ impl CodeEditor {
         self.scroll.x = self.scroll.x.clamp(px(0.), max_x);
     }
 
-    /// The scrollbars for this frame: one per direction with more to see, over the right and
-    /// bottom edges (the horizontal one under the text only).
     fn layout_bars(&self, text_left: Pixels) -> (Option<Bar>, Option<Bar>) {
         let Some(g) = self.geo else { return (None, None) };
         let (max_x, max_y) = self.max_scroll();
         let b = g.bounds;
-        // Content that fits (the three lines past the end aside) shows no bar.
         let lh = line_height();
         let tall = max_y > lh * 3. + px(0.5);
         let wide = max_x > px(0.5);
@@ -2669,7 +2440,6 @@ impl CodeEditor {
         (v, h)
     }
 
-    /// Scrolls so the cursor is visible (once, after a move or an edit).
     fn autoscroll_now(&mut self, window: &mut Window) {
         let Some(g) = self.geo else { return };
         if !std::mem::take(&mut self.autoscroll) {
@@ -2694,8 +2464,6 @@ impl CodeEditor {
         }
         self.clamp_scroll();
     }
-
-    // Painting.
 
     fn line_runs(&self, t: &Theme, l: usize, text_len: usize) -> Vec<TextRun> {
         let (start, end) = (self.buf.line_start(l), self.buf.line_end(l));
@@ -2735,7 +2503,6 @@ impl CodeEditor {
                 r.background_color = Some(bg);
             });
         }
-        // Lint squiggles (red errors, amber warnings).
         let hi = self.lints.partition_point(|l| l.range.start <= end);
         for l in self.lints[..hi].iter().filter(|l| l.range.end >= start && !self.being_typed(l)) {
             let color = if l.severity == Severity::Error { t.err } else { t.warn };
@@ -2748,13 +2515,10 @@ impl CodeEditor {
         runs
     }
 
-    /// An unknown name that ends at the cursor is still being typed: it waits for the cursor to
-    /// leave.
     fn being_typed(&self, l: &Lint) -> bool {
         self.sel.is_empty() && l.range.end == self.sel.end && l.message.ends_with("does not exist")
     }
 
-    /// The lint under the mouse (`None`: the mouse left the editor).
     fn hover_at(&mut self, pos: Option<Point<Pixels>>, window: &mut Window, cx: &mut Context<Self>) {
         let ix = pos.and_then(|p| {
             let off = self.offset_at(p, window);
@@ -2766,7 +2530,6 @@ impl CodeEditor {
         }
     }
 
-    /// The hovered lint's message, under its first character.
     fn render_hover(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
         let l = self.lints.get(self.hover?)?.clone();
         let g = self.geo?;
@@ -2794,8 +2557,6 @@ impl CodeEditor {
         )
     }
 
-    /// Signature help: the call's parameters above the cursor's line, the one being typed in
-    /// bold accent.
     fn render_signature(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
         if !self.focused {
             return None;
@@ -2844,9 +2605,6 @@ impl CodeEditor {
         )
     }
 
-    /// Quads covering `range` on the visible lines. With a `radius`, the runs read as one shape
-    /// (Xcode's, Zed's): a corner is rounded where it is on the outline, and square where the
-    /// run above or below continues past it.
     fn range_quads(
         &self,
         range: &Range<usize>,
@@ -2858,7 +2616,6 @@ impl CodeEditor {
     ) {
         let lh = line_height();
         let x = g.origin_x - self.scroll.x;
-        // (line, left, right) of each run, top to bottom.
         let mut runs: Vec<(usize, Pixels, Pixels)> = Vec::new();
         for (l, shaped) in lines {
             let (ls, le) = (self.buf.line_start(*l), self.buf.line_end(*l));
@@ -2880,7 +2637,6 @@ impl CodeEditor {
                 out.push(fill(b, color));
                 continue;
             }
-            // The runs on the lines above and below.
             let near = |n: Option<&(usize, Pixels, Pixels)>, line: usize| n.filter(|n| n.0 == line).map(|n| (n.1.as_f32(), n.2.as_f32()));
             let above = if i > 0 { near(runs.get(i - 1), l - 1) } else { None };
             let round = outline_corners(above, (x0.as_f32(), x1.as_f32()), near(runs.get(i + 1), l + 1));
@@ -2911,7 +2667,6 @@ impl CodeEditor {
         let text_bounds = Bounds::from_corners(point(bounds.left() + gutter_w, bounds.top()), bounds.bottom_right());
         let origin_x = text_bounds.left() + px(12.);
         let g = Geometry { bounds, origin_x, gutter_w, text_width: text_bounds.size.width - px(12.), char_width: cw };
-        // The scroll is in window points: a zoom keeps the same lines in view.
         let z = crate::theme::zoom();
         if (z - self.zoom_at).abs() > 1e-4 {
             let k = z / self.zoom_at;
@@ -2949,7 +2704,6 @@ impl CodeEditor {
             numbers.push((point(bounds.left() + gutter_w - px(12.) - shaped_n.width(), y_of(l)), shaped_n));
         }
 
-        // Whole-width rows: the run flash, the failed statement, the current line.
         let mut rows = Vec::new();
         let lines_of = |r: &Range<usize>| self.buf.line_of(r.start)..=self.buf.line_of(r.end.max(r.start));
         let mut flash_lines = None;
@@ -2958,7 +2712,6 @@ impl CodeEditor {
             if p >= 1. {
                 self.flash = None;
             } else {
-                // ease-out: most of the fade happens at the start.
                 let a = (1. - p).powi(3);
                 let ls = lines_of(&range);
                 for l in first.max(*ls.start())..last.min(ls.end() + 1) {
@@ -2986,15 +2739,12 @@ impl CodeEditor {
         }
 
         let mut backgrounds = Vec::new();
-        // Every match of an open find bar, faintly: only the visible ones, found by binary search
-        // in the list computed at the last edit or query change.
         if let Some(f) = self.find.as_ref().filter(|f| f.open && !f.matches.is_empty())
             && first < last
         {
             let (vs, ve) = (self.buf.line_start(first), self.buf.line_end(last - 1));
             let lo = f.matches.partition_point(|m| m.end <= vs);
             let hi = f.matches.partition_point(|m| m.start <= ve).max(lo);
-            // The current match is the selection, painted plain below.
             for m in f.matches[lo..hi].iter().filter(|m| **m != self.sel) {
                 let l0 = self.buf.line_of(m.start).max(first);
                 let l1 = self.buf.line_of(m.end).min(last - 1);
@@ -3003,13 +2753,9 @@ impl CodeEditor {
                 }
             }
         }
-        // The current match is the selection: it reads as selected while the bar has the keys.
         let sel_color = if focused || find_focused { t.sel } else { t.prs };
         self.range_quads(&self.sel, &lines, sel_color, SEL_RADIUS, &g, &mut backgrounds);
 
-        // The find indicator (⌘' on the error): Xcode's yellow box over the range (its first
-        // line), 2 pt wider than the text each side, the text redrawn dark on top at the box's
-        // scale. Positions come from this frame's layout, so it scrolls with the text.
         let mut pop = None;
         match self.pop.as_ref().map(|p| (p.frame(Instant::now()), p.target.clone())) {
             Some((None, _)) => self.pop = None,
@@ -3032,14 +2778,12 @@ impl CodeEditor {
             None => {}
         }
 
-        // Gutter marks of a multi-statement run.
         let mut marks = Vec::new();
         for &(at, m) in &self.marks {
             if at > self.buf.len() {
                 continue;
             }
             let mut l = self.buf.line_of(at);
-            // A statement offset may point at the blank line before its first word.
             while l + 1 < count && self.buf.line(l).trim().is_empty() {
                 l += 1;
             }
@@ -3057,7 +2801,6 @@ impl CodeEditor {
             marks.push((point(x, y_of(l)), shaped));
         }
 
-        // The error message beside its line.
         let lens = self.diagnostic.as_ref().and_then(|d| {
             let l = self.buf.line_of(d.at.unwrap_or(d.stmt.start).min(self.buf.len()));
             let (_, shaped) = lines.iter().find(|(x, _)| *x == l)?;
@@ -3196,7 +2939,6 @@ impl CodeEditor {
                 CandidateKind::Table | CandidateKind::View if !c.detail.is_empty() => format!("{}.{}", c.detail, c.label),
                 _ => c.label.clone(),
             };
-            // A function: its overloads' signatures.
             let sigs: Vec<String> = match (c.kind, &self.schema.catalog) {
                 (CandidateKind::Function, Some(cat)) => {
                     let all: Vec<_> = cat.functions_named(None, &c.label).collect();
@@ -3253,7 +2995,6 @@ impl CodeEditor {
     }
 }
 
-/// Character positions of `label` that match `partial` (prefix, else subsequence), for bold.
 fn match_positions(label: &str, partial: &str) -> Vec<usize> {
     if partial.is_empty() {
         return Vec::new();
@@ -3275,8 +3016,7 @@ fn match_positions(label: &str, partial: &str) -> Vec<usize> {
 }
 
 impl CodeEditor {
-    /// `r` made safe for the buffer: within it, on character boundaries, start ≤ end. Ranges
-    /// from the IME may predate an edit, and a panic in its callbacks aborts the app.
+    /// Ranges from the IME may predate an edit, and a panic in its callbacks aborts the app.
     fn clamp_range(&self, r: Range<usize>) -> Range<usize> {
         let t = &self.buf.text;
         let snap = |mut i: usize| {
@@ -3402,10 +3142,8 @@ impl Render for CodeEditor {
         let hover = self.render_hover(window, cx);
         let t = cx.theme();
         let find_open = self.find.as_ref().is_some_and(|f| f.open);
-        // The find bar sits beside the editor's key context (its field must not get the
-        // editor's keys), docked at the top right.
+        // The find bar sits outside the editor's key context: its field must not get the editor's keys.
         let bar = self.find.as_ref().filter(|f| f.open).map(|f| div().absolute().top(px(6.)).right(px(10.)).child(f.bar.clone()));
-        // Transparent: the work surface paints the fill once under every region.
         let editor = div()
             .key_context(if find_open { "CodeEditor find" } else { CONTEXT })
             .track_focus(&self.focus)
@@ -3473,34 +3211,26 @@ impl Render for CodeEditor {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// The element that paints the visible lines.
-
 struct EditorElement {
     editor: Entity<CodeEditor>,
 }
 
 struct Prepainted {
     hitbox: Hitbox,
-    /// The scrollbars' thumbs and tracks (the arrow cursor over them).
     bars: Vec<(PaintQuad, Hitbox)>,
     text_bounds: Bounds<Pixels>,
     gutter: Bounds<Pixels>,
     gutter_line: PaintQuad,
-    /// Whole-width backgrounds (current line, run flash, failed statement).
     rows: Vec<PaintQuad>,
     lines: Vec<(Point<Pixels>, ShapedLine)>,
     numbers: Vec<(Point<Pixels>, ShapedLine)>,
     marks: Vec<(Point<Pixels>, ShapedLine)>,
     lens: Option<(Point<Pixels>, ShapedLine)>,
-    /// Text-area backgrounds (selection).
     backgrounds: Vec<PaintQuad>,
     cursor: Option<PaintQuad>,
     pop: Option<EditorPop>,
 }
 
-/// This frame of the find indicator: its box at rest, its fill, its scale, and the text shaped
-/// at that scale with the text's resting origin.
 struct EditorPop {
     rest: Bounds<Pixels>,
     fill: Hsla,
@@ -3626,7 +3356,6 @@ impl Element for EditorElement {
                 }
             });
         });
-        // The lint under the mouse (its message shows); nothing to do without lints.
         let editor = self.editor.clone();
         let hitbox = p.hitbox.clone();
         window.on_mouse_event(move |ev: &MouseMoveEvent, phase, window, cx| {
@@ -3657,26 +3386,18 @@ impl Element for EditorElement {
 mod tests {
     use super::*;
 
-    /// A three-line selection (from mid-line to mid-line) is one shape: rounded on its
-    /// outline, square where the lines join; a lone run is rounded all round, and runs that
-    /// do not touch are shapes of their own.
     #[test]
     fn selection_runs_join_into_one_shape() {
         let (first, mid, last) = ((40., 120.), (0., 90.), (0., 30.));
-        // The first run sticks out right of the middle one; its bottom-left sits on it.
         assert_eq!(outline_corners(None, first, Some(mid)), [true, true, true, false]);
         assert_eq!(outline_corners(Some(first), mid, Some(last)), [true, false, true, false]);
         assert_eq!(outline_corners(Some(mid), last, None), [false, false, true, true]);
-        // Same left edge on every line: square down the left side.
         assert_eq!(outline_corners(Some((0., 50.)), (0., 50.), Some((0., 80.))), [false, false, false, false]);
         assert_eq!(outline_corners(None, (10., 20.), None), [true; 4]);
-        // From the end of a long line to the start of the next: they do not touch.
         assert_eq!(outline_corners(None, (100., 120.), Some((0., 30.))), [true; 4]);
         assert_eq!(outline_corners(Some((100., 120.)), (0., 30.), None), [true; 4]);
     }
 
-    /// A scrollbar's thumb: as long as the share in view (never under the minimum), at the
-    /// start when not scrolled and at the end when scrolled all the way.
     #[test]
     fn thumb_spans() {
         assert_eq!(thumb_span(400., 400., 400., 0.), (0., 200.));
@@ -3706,11 +3427,10 @@ mod tests {
     #[test]
     fn utf16() {
         let b = Buffer::new("café\n😀 x\né");
-        // c a f é(2 bytes) \n 😀(2 units) space x \n é
         assert_eq!(b.to_utf16(0), 0);
-        assert_eq!(b.to_utf16(5), 4); // after "café"
-        assert_eq!(b.to_utf16(6), 5); // after "café\n"
-        assert_eq!(b.to_utf16(10), 7); // after the emoji
+        assert_eq!(b.to_utf16(5), 4);
+        assert_eq!(b.to_utf16(6), 5);
+        assert_eq!(b.to_utf16(10), 7);
         assert_eq!(b.to_utf16(b.len()), 11);
         for off in (0..=b.len()).filter(|&o| b.text().is_char_boundary(o)) {
             assert_eq!(b.from_utf16(b.to_utf16(off)), off);
@@ -3748,7 +3468,6 @@ mod tests {
         assert_eq!(word_at(t, 3), 0..6);
         assert_eq!(word_at("café x", 3), 0..5);
         assert_eq!(word_at("a\n\nb", 2), 2..2);
-        // A stale offset (the text changed under a double click) never panics.
         assert_eq!(word_at("", 5), 0..0);
         assert_eq!(word_at("café", 4), 0..5);
     }
@@ -3812,12 +3531,10 @@ mod tests {
         }
         typed(&mut b, &mut h, 6, " 1", EditKind::Type, t + Duration::from_millis(200));
         assert_eq!(h.undo.len(), 1);
-        // A pause starts a new step, and so does a seal (cursor moved).
         typed(&mut b, &mut h, 8, ";", EditKind::Type, t + Duration::from_secs(5));
         h.seal();
         typed(&mut b, &mut h, 9, "\n", EditKind::Type, t + Duration::from_secs(5));
         assert_eq!(h.undo.len(), 3);
-        // Backspaces coalesce together.
         let now = t + Duration::from_secs(6);
         for at in [8, 7] {
             let old = b.text()[at..at + 1].to_string();
@@ -3837,7 +3554,6 @@ mod tests {
         h.redo(&mut b);
         h.redo(&mut b);
         assert_eq!(b.text(), "select 1;");
-        // A new edit drops the redo stack.
         typed(&mut b, &mut h, 0, "x", EditKind::Other, now);
         assert!(h.redo(&mut b).is_none());
     }
@@ -3857,7 +3573,6 @@ mod tests {
         assert_eq!(b.text(), "");
     }
 
-    /// Incremental re-lexing must always match lexing the whole text.
     #[test]
     fn relex_matches_full() {
         let base = "select 'a;b', \"Q\" from t -- c\n/* x /* y */ */ $f$ body; $f$ where a::int >= 1.5e3;\n";
@@ -3890,8 +3605,6 @@ mod tests {
         }
     }
 
-    /// Replace All: every match, `$1` groups expanded, in one buffer edit that one undo reverts
-    /// (and one redo brings back).
     #[test]
     fn replace_all_is_one_undo_step() {
         use dataman_core::find::FindOptions;
@@ -3913,7 +3626,6 @@ mod tests {
         assert!(h.undo(&mut b).is_none(), "one step");
         h.redo(&mut b);
         assert_eq!(b.text(), "select o.id, o.total\n  from orders p\n where o.id > 1;");
-        // Nothing to replace: no edit.
         assert!(splice_edits(&mut b, &[]).is_none());
     }
 

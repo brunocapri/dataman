@@ -1,16 +1,3 @@
-//! Editing a result in the grid (GridEdit board): ↩ or a double click edits a cell in place,
-//! ⌘I adds a row, ⌫ marks rows for deletion; pending changes are drawn on the grid through
-//! its [`Decorations`]; ⌘S opens the review sheet with the generated SQL (one transaction),
-//! and the commit runs on a dedicated connection with per-statement outcomes and conflict
-//! detection (`dataman_core::edit`). After a commit the tab runs its statement again.
-//!
-//! - [`EditModel`]: the pending changes and what the grid should draw; pure, unit-tested.
-//! - [`GridEdit`]: one per tab; resolves the edit target (table and key) the first time you
-//!   edit, drives the inline editor, plans and applies. Its own render is the card layer over
-//!   the grid (read-only reason, key picker).
-//! - [`CellEditor`]: the text field over the cell (NULL toggle, esc cancels, ⇥ / ↩ move).
-//! - [`ReviewPanel`]: the side-panel sheet: changes, SQL, outcomes, Commit / Discard.
-
 use std::sync::Arc;
 
 use gpui::{
@@ -50,19 +37,12 @@ pub fn bind_keys(cx: &mut App) {
     ]);
 }
 
-// ---------------------------------------------------------------------------------------------
-// The model (no GPUI)
-
-/// A row of the grid as the change set sees it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RowRef {
-    /// A row of the result, by storage row.
     Stored(usize),
-    /// A row being inserted, by its index in the change set.
     New(usize),
 }
 
-/// Where the cursor goes after a cell is committed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Move {
     Stay,
@@ -72,9 +52,6 @@ pub enum Move {
     Prev,
 }
 
-/// What a cell's field takes while typing, for its column's type: a prefix of a valid value
-/// (`-`, `1.`, `1e` on the way to a number). Integers take digits, the other numbers a decimal
-/// or exponent form (and NaN / Infinity), a uuid its hex digits; `None` takes anything.
 pub fn typing_filter(kind: Kind, type_name: &str) -> Option<fn(&str) -> bool> {
     match kind {
         Kind::Int => Some(int_prefix),
@@ -108,8 +85,6 @@ fn uuid_prefix(s: &str) -> bool {
     s.len() <= 38 && s.bytes().all(|b| b.is_ascii_hexdigit() || matches!(b, b'-' | b'{' | b'}'))
 }
 
-/// The cell after `(row, col)` for a move, in a grid of `rows` × `cols` (⇥ wraps to the next
-/// row, ⇧⇥ to the previous; the edges hold).
 pub fn step(row: usize, col: usize, rows: usize, cols: usize, m: Move) -> (usize, usize) {
     let (rows, cols) = (rows.max(1), cols.max(1));
     match m {
@@ -125,7 +100,6 @@ pub fn step(row: usize, col: usize, rows: usize, cols: usize, m: Move) -> (usize
     }
 }
 
-/// The pending changes of one result.
 #[derive(Clone, Debug, Default)]
 pub struct EditModel {
     pub changes: ChangeSet,
@@ -137,8 +111,6 @@ impl EditModel {
         EditModel { changes: ChangeSet::new(), ncols }
     }
 
-    /// Sets a cell. For a stored row, `orig` is what the result holds (setting it back undoes
-    /// the edit); for a new row, `None` means the column's default.
     pub fn set(&mut self, at: RowRef, col: usize, orig: CellValue, new: Option<CellValue>) {
         match at {
             RowRef::Stored(r) => {
@@ -152,8 +124,6 @@ impl EditModel {
         }
     }
 
-    /// The value a cell shows now: the pending one, else what the result holds. `None` for a
-    /// new row's default.
     pub fn current(&self, at: RowRef, col: usize, stored: impl FnOnce() -> CellValue) -> Option<CellValue> {
         match at {
             RowRef::Stored(r) => Some(self.changes.edited(r, col).map(|e| e.new.clone()).unwrap_or_else(stored)),
@@ -165,8 +135,6 @@ impl EditModel {
         self.changes.insert_row(self.ncols)
     }
 
-    /// ⌫ on some rows: if all are already marked, unmark them; else mark them. New rows among
-    /// them are removed instead.
     pub fn toggle_delete(&mut self, rows: &[RowRef]) {
         let stored: Vec<usize> = rows.iter().filter_map(|r| if let RowRef::Stored(s) = r { Some(*s) } else { None }).collect();
         let mut news: Vec<usize> = rows.iter().filter_map(|r| if let RowRef::New(i) = r { Some(*i) } else { None }).collect();
@@ -187,7 +155,6 @@ impl EditModel {
         }
     }
 
-    /// Undoes everything pending on one row.
     pub fn undo_row(&mut self, at: RowRef) {
         match at {
             RowRef::Stored(r) => {
@@ -201,13 +168,11 @@ impl EditModel {
         }
     }
 
-    /// Rows with a pending change.
     pub fn pending(&self) -> usize {
         let (u, i, d) = self.changes.counts();
         u + i + d
     }
 
-    /// `1 insert · 2 updates · 1 delete`.
     pub fn summary(&self) -> String {
         let (u, i, d) = self.changes.counts();
         let mut parts = Vec::new();
@@ -224,8 +189,6 @@ impl EditModel {
         parts.join(" · ")
     }
 
-    /// What the grid draws for the pending changes: changed cells tinted with the old value
-    /// struck through, deleted rows struck on red, new rows on green after the result.
     pub fn decorations(&self, editable: &[bool]) -> Decorations {
         let mut d = Decorations::default();
         for (row, edits) in self.changes.edited_rows() {
@@ -264,8 +227,6 @@ impl EditModel {
     }
 }
 
-/// The display row of storage row `source` in a grid of `rows` rows (`source_of` maps display
-/// to storage rows): `hint` when it still matches, else a search (only after a sort).
 pub fn find_display(rows: usize, source_of: impl Fn(usize) -> usize, source: usize, hint: usize) -> Option<usize> {
     if hint < rows && source_of(hint) == source {
         return Some(hint);
@@ -273,7 +234,6 @@ pub fn find_display(rows: usize, source_of: impl Fn(usize) -> usize, source: usi
     (0..rows).find(|&d| source_of(d) == source)
 }
 
-/// The value typed in the editor: NULL, a new row's default (empty, untouched), or text.
 pub fn typed_value(text: &str, null: bool, was_default: bool) -> Option<CellValue> {
     if null {
         Some(CellValue::Null)
@@ -284,9 +244,6 @@ pub fn typed_value(text: &str, null: bool, was_default: bool) -> Option<CellValu
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// The inline editor
-
 pub enum CellEditorEvent {
     Commit(Move),
     Cancel,
@@ -295,9 +252,7 @@ pub enum CellEditorEvent {
 pub struct CellEditor {
     pub input: Entity<TextInput>,
     pub null: bool,
-    /// A new row's cell still on its default.
     pub was_default: bool,
-    /// The text NULL replaced (toggling NULL off brings it back).
     hidden_text: Option<String>,
 }
 
@@ -313,14 +268,12 @@ impl CellEditor {
         let input = cx.new(|cx| {
             let mut i = TextInput::new(cx, if was_default { "default" } else { "" }).bare().accepting(accept);
             i.set_text(text, cx);
-            // Entering a cell (double click or ↩) starts with its whole value selected.
             i.select_all(cx);
             i
         });
         cx.subscribe(&input, |e: &mut CellEditor, _, ev: &InputEvent, cx| match ev {
             InputEvent::Submit => cx.emit(CellEditorEvent::Commit(Move::Down)),
             InputEvent::Changed => {
-                // Typing replaces NULL with text.
                 if e.null {
                     e.null = false;
                     e.hidden_text = None;
@@ -337,8 +290,6 @@ impl CellEditor {
         typed_value(self.input.read(cx).text(), self.null, self.was_default)
     }
 
-    /// ⌘⇧N or the NULL chip. The field stays rendered and focused either way (it holds the
-    /// keys: ↩, ⇥, esc…): NULL empties it, and turning NULL off brings the text back.
     fn toggle_null(&mut self, cx: &mut Context<Self>) {
         self.null = !self.null;
         self.was_default = false;
@@ -376,7 +327,6 @@ impl Render for CellEditor {
             .flex_row()
             .items_center()
             .gap(px(6.))
-            // Opaque: the cell's own text is under the editor.
             .bg(t.bg)
             .border_2()
             .border_color(t.acc)
@@ -409,9 +359,6 @@ impl Render for CellEditor {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// The controller
-
 #[derive(Clone, Debug)]
 enum TargetState {
     Unknown,
@@ -420,38 +367,30 @@ enum TargetState {
     ReadOnly(String),
 }
 
-/// What the user asked for while the target was being resolved.
 #[derive(Clone, Debug)]
 enum Pending {
     Edit(usize, usize),
     Insert,
     Delete(Vec<usize>),
-    /// A value set from outside the grid (display row, result column).
     Set(usize, usize, CellValue),
 }
 
-/// The editor of the cell being edited: the text field over the cell, or a value editor (JSON,
-/// date-time, enum, boolean, long text) in a popover under it.
 enum CellEdit {
     Text(Entity<CellEditor>),
     Value(Entity<ValueEditor>),
 }
 
 struct Editing {
-    /// The row by identity: a new row keeps its place after the result even when more rows
-    /// arrive before it (the display row is worked out when needed, `display_of`).
     at: RowRef,
-    /// The display row when editing began (a stored row's display row only moves on a sort).
     row_hint: usize,
     col: usize,
     orig: CellValue,
     editor: CellEdit,
-    /// Where a value editor's popover opens (window coordinates, under the cell).
     at_point: (f32, f32),
     _blur: Subscription,
 }
 
-/// Text types that are never enums (an enum column's type is its own name).
+/// An enum column's type is its own name: these text types never are enums.
 fn plain_text_type(name: &str) -> bool {
     let n = name.trim_end_matches("[]").to_ascii_lowercase();
     let base = n.split('(').next().unwrap_or("").trim();
@@ -459,15 +398,12 @@ fn plain_text_type(name: &str) -> bool {
 }
 
 pub enum EditEvent {
-    /// The pending changes changed (the result bar redraws).
     Changed,
     OpenReview,
     CloseReview,
-    /// Committed; the tab runs its statement again.
     Committed { rows: usize },
 }
 
-/// A card over the grid (NextStates: read-only, conflicts).
 #[derive(Clone, Debug)]
 enum Card {
     Checking,
@@ -487,15 +423,12 @@ pub struct GridEdit {
     editing: Option<Editing>,
     pending: Option<Pending>,
     card: Option<Card>,
-    /// Review sheet state.
     pub detect_conflicts: bool,
     pub applying: bool,
     pub report: Option<ApplyReport>,
     pub review_open: bool,
-    /// Enum labels of the result's enum columns (read with the target).
     enums: std::collections::HashMap<usize, Arc<Vec<String>>>,
     _task: Option<Task<()>>,
-    /// A `+` waiting for the rows being read to stop (`request`).
     _insert_wait: Option<Task<()>>,
 }
 
@@ -531,12 +464,10 @@ impl GridEdit {
         }
     }
 
-    /// The labels of an enum column (once the target is known).
     pub fn enum_labels(&self, col: usize) -> Option<&Arc<Vec<String>>> {
         self.enums.get(&col)
     }
 
-    /// Whether NULL may be written to a column (true until the catalog says NOT NULL).
     pub fn nullable(&self, col: usize) -> bool {
         match &self.target {
             TargetState::Ready(t) => t.nullable(col),
@@ -544,7 +475,6 @@ impl GridEdit {
         }
     }
 
-    /// Whether a column can be edited: `None` until the target is known.
     pub fn editable(&self, col: usize) -> Option<bool> {
         match &self.target {
             TargetState::Ready(t) => Some(t.is_editable(col)),
@@ -553,7 +483,6 @@ impl GridEdit {
         }
     }
 
-    /// A cell's value now: its pending edit, else the stored one (`None`: NULL).
     pub fn current_text(&self, row: usize, col: usize) -> Option<Option<String>> {
         let snap = self.snapshot()?;
         if row >= snap.rows() + self.model.changes.inserted().len() || col >= snap.columns.len() {
@@ -568,18 +497,14 @@ impl GridEdit {
         Some(v.and_then(|v| v.as_deref().map(str::to_string)))
     }
 
-    /// A value set from outside the grid (the engine checks), through the same change set as
-    /// the grid's.
     pub fn set_cell(&mut self, row: usize, col: usize, v: CellValue, window: &mut Window, cx: &mut Context<Self>) {
         self.request(Pending::Set(row, col, v), window, cx);
     }
 
-    /// A new result in the tab: everything pending belonged to the old one.
     pub fn reset(&mut self, conn: Option<Arc<Connection>>, db: String, rs: Option<Arc<ResultSet>>, cx: &mut Context<Self>) {
         let had = self.model.pending() > 0 || self.review_open;
         self.conn = conn;
         self.db = db;
-        // A result of the saved session is a snapshot: nothing is written from it.
         self.target = if rs.as_ref().is_some_and(|r| r.is_restored()) { TargetState::ReadOnly("a saved result: run it again to edit".into()) } else { TargetState::Unknown };
         self.rs = rs;
         self.key_override = None;
@@ -606,7 +531,6 @@ impl GridEdit {
         self.model.summary()
     }
 
-    /// The table the edits go to, for the result bar.
     pub fn target_label(&self) -> Option<String> {
         match &self.target {
             TargetState::Ready(t) => Some(t.table.name.clone()),
@@ -640,7 +564,6 @@ impl GridEdit {
         if display >= snap.rows() { RowRef::New(display - snap.rows()) } else { RowRef::Stored(snap.source_row(display)) }
     }
 
-    /// Where a row is in the grid now.
     fn display_of(snap: &Snapshot, at: RowRef, hint: usize) -> Option<usize> {
         match at {
             RowRef::New(i) => Some(snap.rows() + i),
@@ -648,14 +571,11 @@ impl GridEdit {
         }
     }
 
-    /// Runs `p` now, or once the target is known.
     fn request(&mut self, p: Pending, window: &mut Window, cx: &mut Context<Self>) {
         let Some(rs) = self.rs.clone() else { return };
         if self.applying {
             return;
         }
-        // A `+` while rows are read (the next page of a paused result, scrolled to its end; a
-        // query's first rows): the row is added when they stop, up to 10 s.
         if matches!(p, Pending::Insert) && matches!(rs.phase(), Phase::Running) && rs.columns().is_some_and(|c| !c.is_empty()) {
             let watched = rs.clone();
             self._insert_wait = Some(cx.spawn_in(window, async move |this, cx| {
@@ -666,7 +586,6 @@ impl GridEdit {
                     }
                 }
                 let _ = this.update_in(cx, |e, window, cx| {
-                    // Another result since: the + was for the one that is gone.
                     if !e.rs.as_ref().is_some_and(|r| Arc::ptr_eq(r, &watched)) {
                         return;
                     }
@@ -709,8 +628,6 @@ impl GridEdit {
         self.card = Some(Card::Checking);
         cx.notify();
         let task = conn.edit_target(&self.db, &rs, self.key_override.clone());
-        // Columns that may be enums (a type of their own over text, MySQL's `enum`): their
-        // labels, for the enum editor.
         let candidates: Vec<usize> = rs
             .columns()
             .map(|c| c.iter().enumerate().filter(|(_, c)| c.kind == Kind::Text && !plain_text_type(&c.type_name)).map(|(i, _)| i).collect())
@@ -839,8 +756,6 @@ impl GridEdit {
             RowRef::New(_) => CellValue::Null,
         };
         let current = self.model.current(at, col, || orig.clone());
-        // JSON, dates and times, enums, booleans and long text get their own editor, in a
-        // popover under the cell; the rest the text field over it.
         let text = current.as_ref().and_then(|v| v.as_deref().map(str::to_string));
         if let Some(mode) = crate::value_edit::mode_for(kind, self.enums.get(&col), text.as_deref()) {
             let nullable = self.nullable(col);
@@ -850,14 +765,12 @@ impl GridEdit {
                     ValueEvent::Commit => e.commit_cell(Move::Stay, window, cx),
                     ValueEvent::Cancel => e.cancel_cell(window, cx),
                 }
-                // Applied or cancelled from the popover: the keys go back to the grid.
                 let f = e.grid.read(cx).focus_handle(cx);
                 window.focus(&f, cx);
             })
             .detach();
             let focus = editor.focus_handle(cx);
             let blur = cx.on_focus_out(&focus, window, |e, _, window, cx| {
-                // Clicking elsewhere keeps what was chosen.
                 if e.editing.is_some() {
                     e.commit_cell(Move::Stay, window, cx);
                 }
@@ -877,7 +790,6 @@ impl GridEdit {
         .detach();
         let focus = editor.read(cx).input.focus_handle(cx);
         let blur = cx.on_blur(&focus, window, |e, window, cx| {
-            // Clicking elsewhere keeps what was typed.
             if e.editing.is_some() {
                 e.commit_cell(Move::Stay, window, cx);
             }
@@ -896,15 +808,12 @@ impl GridEdit {
         cx.notify();
     }
 
-    /// Keeps the typed value and moves; ⇥ / ⇧⇥ open the next cell's editor.
     pub fn commit_cell(&mut self, m: Move, window: &mut Window, cx: &mut Context<Self>) {
         let Some(ed) = self.editing.take() else { return };
         let v = match &ed.editor {
             CellEdit::Text(e) => Some(e.read(cx).value(cx)),
-            // A value that does not parse (invalid JSON, a bad time) is not taken.
             CellEdit::Value(e) => e.read(cx).value(cx).ok().map(Some),
         };
-        // Setting a stored cell back to its original value drops the edit (`ChangeSet::edit`).
         if let Some(v) = v {
             self.model.set(ed.at, ed.col, ed.orig.clone(), v);
         }
@@ -912,7 +821,6 @@ impl GridEdit {
         self.refresh(cx);
         let snap = self.snapshot();
         let rows = snap.as_ref().map_or(0, |s| s.rows()) + self.model.changes.inserted().len();
-        // The row may have moved (rows arrived before a new row): from where it is now.
         let Some(cur) = snap.as_ref().and_then(|s| Self::display_of(s, ed.at, ed.row_hint)) else {
             let f = self.grid.read(cx).focus_handle(cx);
             window.focus(&f, cx);
@@ -921,7 +829,6 @@ impl GridEdit {
         let (r, c) = step(cur, ed.col, rows, self.ncols(), m);
         match m {
             Move::Next | Move::Prev if (r, c) != (cur, ed.col) => {
-                // Skip computed columns.
                 let mask = self.editable_mask();
                 let (mut r, mut c) = (r, c);
                 for _ in 0..mask.len() {
@@ -951,7 +858,6 @@ impl GridEdit {
         }
     }
 
-    /// Pushes the decorations to the grid.
     fn refresh(&mut self, cx: &mut Context<Self>) {
         let d = self.model.decorations(&self.editable_mask());
         let d = (!d.is_empty()).then(|| Arc::new(d));
@@ -963,7 +869,6 @@ impl GridEdit {
         cx.notify();
     }
 
-    /// Drops every pending change without moving the focus ("Discard & run").
     pub fn discard_all(&mut self, cx: &mut Context<Self>) {
         if self.editing.take().is_some() {
             self.grid.update(cx, |g, cx| g.set_overlay(None, cx));
@@ -974,7 +879,6 @@ impl GridEdit {
         cx.emit(EditEvent::CloseReview);
     }
 
-    /// ⌘⌫: drops every pending change.
     pub fn discard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.cancel_cell(window, cx);
         self.model.changes.clear();
@@ -989,7 +893,6 @@ impl GridEdit {
         self.refresh(cx);
     }
 
-    /// The target the plan uses: without conflict checks, nothing compares old values.
     fn plan_target(&self) -> Option<EditTarget> {
         let TargetState::Ready(t) = &self.target else { return None };
         let mut t = (**t).clone();
@@ -1001,14 +904,12 @@ impl GridEdit {
         Some(t)
     }
 
-    /// The statements of the commit, or why they cannot be made.
     pub fn plan(&self) -> Result<Vec<PlannedChange>, String> {
         let t = self.plan_target().ok_or_else(|| "nothing to commit".to_string())?;
         let snap = self.snapshot().ok_or_else(|| "no result".to_string())?;
         self.model.changes.plan(&t, &snap)
     }
 
-    /// ⌘S: the review sheet (or straight to the commit, per Settings).
     pub fn review(&mut self, confirm: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.commit_cell(Move::Stay, window, cx);
         if self.model.pending() == 0 {
@@ -1070,13 +971,11 @@ impl GridEdit {
         }));
     }
 
-    /// Re-applies without conflict checks ("Overwrite").
     pub fn overwrite(&mut self, cx: &mut Context<Self>) {
         self.detect_conflicts = false;
         self.apply(cx);
     }
 
-    /// The review list: one line per changed row (glyph, key, what, the row).
     pub fn change_lines(&self) -> Vec<(char, Tone, String, String, RowRef)> {
         let (Some(snap), TargetState::Ready(t)) = (self.snapshot(), &self.target) else { return vec![] };
         let cols = snap.columns.clone();
@@ -1101,7 +1000,6 @@ impl GridEdit {
             out.push(('~', Tone::Warn, key_text(row), what, RowRef::Stored(row)));
         }
         for row in self.model.changes.deleted_rows() {
-            // The first text column names the row, as on the board.
             let name = (0..cols.len())
                 .find(|&c| cols[c].kind == Kind::Text && !t.key.iter().any(|k| k.result_col == c))
                 .and_then(|c| dataman_core::result::format_cell(Kind::Text, snap.source_cell(row, c)).map(|s| s.into_owned()));
@@ -1123,9 +1021,7 @@ impl GridEdit {
 }
 
 impl Render for GridEdit {
-    /// The card layer over the grid: read-only reasons, notes, the key picker.
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // A value editor under its cell.
         let popover = self.editing.as_ref().and_then(|ed| match &ed.editor {
             CellEdit::Value(v) => Some(
                 gpui::deferred(
@@ -1228,7 +1124,6 @@ impl Render for GridEdit {
 }
 
 impl GridEdit {
-    /// esc on the grid: closes the card first.
     pub fn dismiss_card(&mut self, cx: &mut Context<Self>) -> bool {
         if self.card.take().is_some() {
             cx.notify();
@@ -1237,12 +1132,10 @@ impl GridEdit {
         false
     }
 
-    /// Demo and checks: edits a cell (display row, result column), as ↩ would.
     pub fn demo_edit(&mut self, row: usize, col: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.request(Pending::Edit(row, col), window, cx);
     }
 
-    /// Demo and checks: the read-only card's reason, when it is up.
     pub fn demo_read_only(&self) -> Option<String> {
         match &self.card {
             Some(Card::ReadOnly { reason, .. }) => Some(reason.clone()),
@@ -1250,7 +1143,6 @@ impl GridEdit {
         }
     }
 
-    /// Demo and checks: the value editor open over the grid, if any.
     pub fn demo_value_editor(&self) -> Option<Entity<ValueEditor>> {
         match self.editing.as_ref().map(|e| &e.editor) {
             Some(CellEdit::Value(v)) => Some(v.clone()),
@@ -1258,7 +1150,6 @@ impl GridEdit {
         }
     }
 
-    /// Demo and checks: the text field over the cell, if that is what is open.
     pub fn demo_cell_editor(&self) -> Option<Entity<CellEditor>> {
         match self.editing.as_ref().map(|e| &e.editor) {
             Some(CellEdit::Text(e)) => Some(e.clone()),
@@ -1266,16 +1157,12 @@ impl GridEdit {
         }
     }
 
-    /// Demo: resolves the target (the board's edits follow in `demo_fill`).
     pub fn demo_start(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.request(Pending::Edit(3, 4), window, cx);
     }
 
-    /// Demo: the GridEdit board's changes (price and name edited, a row deleted, one inserted,
-    /// the price of row 4 being typed).
     pub fn demo_fill(&mut self, keep_editing: bool, window: &mut Window, cx: &mut Context<Self>) {
         let (Some(snap), TargetState::Ready(target)) = (self.snapshot(), &self.target) else { return };
-        // LAR has no column defaults to fill a key: the new row brings its own id.
         let own_id = target.check == dataman_core::edit::ConflictCheck::Reread;
         self.cancel_cell(window, cx);
         let cols = snap.columns.clone();
@@ -1311,9 +1198,6 @@ fn capitalize(s: &str) -> String {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// The review sheet
-
 pub struct ReviewPanel {
     pub edit: Entity<GridEdit>,
     focus: FocusHandle,
@@ -1332,9 +1216,7 @@ impl ReviewPanel {
     }
 }
 
-/// A line of SQL in syntax colors.
 pub fn sql_line(t: &Theme, line: &str) -> gpui::Div {
-    // Long statements wrap at token boundaries, under the line's indentation.
     let mut row = div().flex().flex_row().flex_wrap();
     for tok in tokenize(line) {
         let text = &line[tok.start..tok.end];
@@ -1351,7 +1233,6 @@ pub fn sql_line(t: &Theme, line: &str) -> gpui::Div {
     row
 }
 
-/// The plan's SQL laid out like the board: `WHERE`, `AND` and `VALUES` start lines.
 /// Only keyword tokens move (never text inside a literal), so the result is the same SQL.
 pub fn layout_sql(sql: &str) -> String {
     let toks = tokenize(sql);
@@ -1373,7 +1254,6 @@ pub fn layout_sql(sql: &str) -> String {
     out
 }
 
-/// Lines of the review's SQL shown at most (the copy has them all).
 const REVIEW_LINES: usize = 400;
 
 impl Render for ReviewPanel {
@@ -1475,7 +1355,6 @@ impl Render for ReviewPanel {
                 .flex_col()
                 .gap(px(6.))
                 .child(div().text_color(if conflicts > 0 { t.warn } else { t.err }).font_weight(FontWeight::SEMIBOLD).child(title))
-                // The reason, unless an outcome below says it already.
                 .children(r.error.clone().filter(|e| !r.outcomes.iter().any(|o| matches!(&o.outcome, Outcome::Conflict { message, .. } | Outcome::Failed { message, .. } if message == e))).map(|e| div().text_size(px(11.5)).line_height(px(17.)).text_color(t.tx).child(e)))
                 .children(r.outcomes.iter().map(|o| {
                     let (g, c, what): (&str, Hsla, String) = match &o.outcome {
@@ -1608,7 +1487,6 @@ impl Render for ReviewPanel {
     }
 }
 
-/// Opens SQL text in a new query tab (the review's "Open in a new tab").
 #[derive(Clone, PartialEq, gpui::Action)]
 #[action(namespace = review, no_json)]
 pub struct OpenSqlInTab(pub String);
@@ -1641,7 +1519,6 @@ mod tests {
         assert_eq!(m.summary(), "1 update");
         assert_eq!(m.current(RowRef::Stored(4), 1, || t("89.00")), Some(t("79.00")));
         assert_eq!(m.current(RowRef::Stored(5), 1, || t("x")), Some(t("x")));
-        // Typing the original value back undoes the edit.
         m.set(RowRef::Stored(4), 1, t("89.00"), Some(t("89.00")));
         m.set(RowRef::Stored(4), 2, t("a"), Some(t("a")));
         assert_eq!(m.pending(), 0);
@@ -1652,7 +1529,6 @@ mod tests {
         let mut m = EditModel::new(2);
         m.set(RowRef::Stored(1), 0, t("x"), Some(t("y")));
         m.toggle_delete(&[RowRef::Stored(1), RowRef::Stored(2)]);
-        // A deleted row's edits are dropped.
         assert_eq!(m.changes.counts(), (0, 0, 2));
         m.toggle_delete(&[RowRef::Stored(1), RowRef::Stored(2)]);
         assert_eq!(m.changes.counts(), (0, 0, 0));
@@ -1686,12 +1562,10 @@ mod tests {
         assert_eq!(d.virtual_rows.len(), 1);
         let v = &d.virtual_rows[0];
         assert_eq!(v.label.as_ref(), "+");
-        // A computed column, a typed value, an explicit NULL.
         assert_eq!(v.cells[0].text, Some(Some("—".into())));
         assert!(v.cells[0].ghost);
         assert_eq!(v.cells[1].text, Some(Some("Nimbus".into())));
         assert_eq!(v.cells[2].text, Some(None));
-        // Nothing pending, nothing drawn.
         assert!(EditModel::new(3).decorations(&[]).is_empty());
     }
 
@@ -1700,19 +1574,15 @@ mod tests {
         let sql = "UPDATE t SET a = 'x WHERE y AND z' WHERE id = 1 AND a IS NOT DISTINCT FROM 'b';\nINSERT INTO t (a) VALUES ('VALUES');\n";
         let out = layout_sql(sql);
         assert_eq!(out, "UPDATE t SET a = 'x WHERE y AND z'\n WHERE id = 1\n   AND a IS NOT DISTINCT FROM 'b';\nINSERT INTO t (a)\nVALUES ('VALUES');\n");
-        // Only whitespace changed.
         let squash = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
         assert_eq!(squash(&out), squash(sql));
     }
 
     #[test]
     fn rows_are_found_by_identity() {
-        // Unsorted: display = storage; the hint is right.
         assert_eq!(find_display(10, |d| d, 4, 4), Some(4));
-        // Sorted (reversed): the hint is stale, the row is searched for.
         assert_eq!(find_display(10, |d| 9 - d, 4, 4), Some(5));
         assert_eq!(find_display(3, |d| d, 7, 1), None);
-        // A new row after the result follows it when more rows arrive (paused result).
         assert_eq!(crate::grid::OverlayRow::Virtual(0).display(1000), 1000);
         assert_eq!(crate::grid::OverlayRow::Virtual(0).display(11_000), 11_000);
         assert_eq!(crate::grid::follow_growth(1000, 1000, 11_000), 11_000, "the new row's selection moves with it");

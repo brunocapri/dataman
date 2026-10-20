@@ -1,22 +1,12 @@
-//! Findings computed from an analyzed JSON plan: terse, few, and only where the numbers are
-//! clear. Each names its node, a chip for the node's row and a line for the list.
-
 use super::{Plan, fmt_count, fmt_kb};
 
-/// What a hint is about.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Rule {
-    /// A sequential scan whose filter throws away almost everything it reads.
     SeqScanFilter,
-    /// A sort or a hash aggregate that went to disk.
     Spill,
-    /// A hash join's table did not fit in memory: several batches.
     HashBatches,
-    /// A nested loop that ran its inner side very many times.
     NestedLoops,
-    /// A scan whose row estimate was far off.
     Misestimate,
-    /// A Gather got fewer workers than planned.
     Workers,
 }
 
@@ -24,26 +14,17 @@ pub enum Rule {
 pub struct Hint {
     pub node: usize,
     pub rule: Rule,
-    /// On the node's row (`filter 99%`); empty when the row says it already.
     pub chip: String,
-    /// `Seq Scan on orders · 3.1M rows · filter removes 99%`.
     pub text: String,
-    /// `index on orders (status)`, `raise work_mem`.
     pub fix: Option<String>,
 }
 
-/// Rows read before a filter's share means anything.
 pub const SCAN_MIN_ROWS: f64 = 10_000.;
-/// Share of the rows read that the filter removes.
 pub const FILTER_MIN: f64 = 0.95;
-/// Inner-side runs of a nested loop worth a mention.
 pub const LOOPS_MIN: f64 = 10_000.;
-/// Estimate off by this much (either way).
 pub const MISESTIMATE_MIN: f64 = 100.;
-/// …on a scan that returned (or was expected to return) at least this many rows in all.
 pub const MISESTIMATE_ROWS: f64 = 1_000.;
 
-/// The findings of a plan, the costliest node first.
 pub fn find(p: &Plan) -> Vec<Hint> {
     let mut out = Vec::new();
     if !p.analyzed {
@@ -56,7 +37,6 @@ pub fn find(p: &Plan) -> Vec<Hint> {
         }
         let loops = n.loops().unwrap_or(1.);
         let rel = n.str("Relation Name");
-        // A seq scan reading many rows for few.
         if n.op.ends_with("Seq Scan")
             && let (Some(rows), Some(removed)) = (n.act_rows(), n.num("Rows Removed by Filter"))
         {
@@ -76,7 +56,6 @@ pub fn find(p: &Plan) -> Vec<Hint> {
                 });
             }
         }
-        // Sorts and hash aggregates on disk (the leader's numbers and each worker's).
         let spilled = spill_kb(n);
         if spilled > 0. {
             let what = if n.op.contains("Sort") { "Sort" } else { n.op.as_str() };
@@ -135,7 +114,6 @@ pub fn find(p: &Plan) -> Vec<Hint> {
     out
 }
 
-/// Kilobytes a sort or hash aggregate wrote to disk, over the leader and its workers.
 fn spill_kb(n: &super::Node) -> f64 {
     let on_disk = |o: &serde_json::Map<String, serde_json::Value>| {
         let f = |k: &str| o.get(k).and_then(serde_json::Value::as_f64).unwrap_or(0.);
@@ -149,8 +127,6 @@ fn spill_kb(n: &super::Node) -> f64 {
     kb
 }
 
-/// The columns a filter compares directly (`(customer.city = 'x'::text)` → `city`), when an
-/// index could serve it: none for an `OR`, nor for expressions.
 pub fn filter_columns(filter: &str) -> Vec<String> {
     if filter.contains(" OR ") {
         return Vec::new();
@@ -189,9 +165,7 @@ mod tests {
         assert_eq!(h.text, "Seq Scan on customer · 100k rows · filter removes 100%");
         assert_eq!(h.chip, "filter 100%");
         assert_eq!(h.fix.as_deref(), Some("index for the filter on customer"), "an OR: no column to name");
-        // 90 % removed (1M rows read for 100k) is not enough.
         assert!(!rules(&fixture("spill")).contains(&Rule::SeqScanFilter));
-        // 85,715 of 100,000 removed: no.
         assert!(!rules(&fixture("jit")).contains(&Rule::SeqScanFilter));
         assert_eq!(filter_columns("(customer.city = 'Berlin'::text)"), ["city"]);
         assert_eq!(filter_columns("((p.status = 'paid'::text) AND (p.total > 100))"), ["status", "total"]);
@@ -213,7 +187,6 @@ mod tests {
     fn spills() {
         let p = fixture("spill");
         let h = p.hints.iter().find(|h| h.rule == Rule::Spill).expect("hint");
-        // 1,944 + 1,896 + 2,024 kB over the leader and both workers.
         assert_eq!(h.text, "Sort spills to disk · 5.7 MB");
         assert_eq!(h.chip, "spill 5.7 MB");
         assert_eq!(h.fix.as_deref(), Some("raise work_mem · now 64kB"));
@@ -249,7 +222,6 @@ mod tests {
         assert_eq!(p.hints[0].fix.as_deref(), Some("ANALYZE customer"));
         assert!(p.hints[0].chip.is_empty(), "the row's ×200 says it");
         assert!(!rules(&fixture("parallel")).contains(&Rule::Misestimate));
-        // Far off but small: 2 estimated, 300 returned.
         let tiny = include_str!("fixtures/misestimate.json").replace("\"Plan Rows\":500", "\"Plan Rows\":2").replace("\"Actual Rows\":100000.00", "\"Actual Rows\":300.00");
         assert!(!rules(&Plan::parse(&tiny)).contains(&Rule::Misestimate));
     }

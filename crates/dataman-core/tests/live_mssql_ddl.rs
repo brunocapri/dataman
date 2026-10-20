@@ -1,5 +1,3 @@
-//! SQL Server: the catalog of odd objects and the DDL generated from it runs again.
-
 mod common;
 
 use common::*;
@@ -61,7 +59,6 @@ fn ddl_round_trips() {
             tables.push((sc.clone(), r.name));
         }
     }
-    // Parents before children.
     tables.sort_by_key(|(sc, n)| (n == "child", n.starts_with("v_"), sc.clone()));
     for (sc, n) in &tables {
         if n.starts_with("v_") {
@@ -71,7 +68,6 @@ fn ddl_round_trips() {
         }
         let ddl = e.core.block_on(c.table_ddl(db, sc, n)).unwrap();
         eprintln!("{ddl}\n");
-        // The DDL's batches (it may carry GO lines).
         for st in dataman_core::sql::batches_in(&ddl, dataman_core::sql::Dialect::TSql) {
             let sql = &ddl[st.range];
             let rs = s2.execute(sql);
@@ -87,7 +83,6 @@ fn ddl_round_trips() {
         eprintln!("ROUTINE {} {:?} {:?}: {}", f.name, f.kind, f.identity, def.as_deref().unwrap_or("<none>").lines().next().unwrap_or(""));
         match def {
             Some(d) => {
-                // Runs again in the copy (alter/create).
                 for st in dataman_core::sql::batches_in(&d, dataman_core::sql::Dialect::TSql) {
                     let sql = &d[st.range];
                     let rs = s2.execute(sql);

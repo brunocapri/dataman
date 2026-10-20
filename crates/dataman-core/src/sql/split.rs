@@ -1,25 +1,18 @@
-//! Statement boundaries in a script.
-
 use std::ops::Range;
 
 use super::dialect::{Dialect, ScriptRules};
 use super::lexer::{Token, TokenKind, tokenize, tokenize_in};
 
-/// One statement of a script: `range` spans its first to last significant token (without the
-/// terminating `;`), `full` extends to the `;` when there is one.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Statement {
     pub range: Range<usize>,
     pub full: Range<usize>,
 }
 
-/// Splits a script into statements at top-level `;` (not inside parentheses, strings,
-/// dollar-quoted bodies or comments). Empty statements are dropped.
 pub fn split(src: &str) -> Vec<Statement> {
     split_tokens(src, &tokenize(src))
 }
 
-/// [`split`] in `dialect`.
 pub fn split_in(src: &str, dialect: Dialect) -> Vec<Statement> {
     split_tokens_in(src, &tokenize_in(src, dialect), dialect.script())
 }
@@ -28,8 +21,6 @@ pub fn split_tokens(src: &str, tokens: &[Token]) -> Vec<Statement> {
     split_tokens_in(src, tokens, Dialect::Postgres.script())
 }
 
-/// `DELIMITER x` on a line of its own (only spaces before it): the new terminator, and where
-/// the command's line ends.
 fn delimiter_command(src: &str, t: &Token) -> Option<(String, usize)> {
     if !matches!(t.kind, TokenKind::Keyword | TokenKind::Ident) || !t.text(src).eq_ignore_ascii_case("DELIMITER") {
         return None;
@@ -43,8 +34,6 @@ fn delimiter_command(src: &str, t: &Token) -> Option<(String, usize)> {
     Some((delim.to_string(), line_end))
 }
 
-/// `GO` on a line of its own (only spaces before it; after it an optional repeat count and a
-/// `--` comment): how many times the batch before it runs, and where the line ends.
 fn go_line(src: &str, t: &Token) -> Option<(u32, usize)> {
     if !matches!(t.kind, TokenKind::Keyword | TokenKind::Ident) || !t.text(src).eq_ignore_ascii_case("GO") {
         return None;
@@ -60,18 +49,13 @@ fn go_line(src: &str, t: &Token) -> Option<(u32, usize)> {
     Some((n, line_end))
 }
 
-/// One batch of a T-SQL script: the text between `GO` lines (first to last significant
-/// token), run `repeat` times (`GO 5`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GoBatch {
     pub range: Range<usize>,
     pub repeat: u32,
-    /// Where its `GO` line ends (the end of the script for the last batch).
     pub end: usize,
 }
 
-/// The batches of a T-SQL script, split at `GO` lines (never inside strings or comments).
-/// Batches without a statement (only comments) are left out; `GO 0` runs its batch no time.
 pub fn go_batches(src: &str) -> Vec<GoBatch> {
     let tokens = tokenize_in(src, Dialect::TSql);
     let mut out = Vec::new();
@@ -98,9 +82,6 @@ pub fn go_batches(src: &str) -> Vec<GoBatch> {
     out
 }
 
-/// What ⌘↩ sends for the T-SQL statement `stmt` of `src`: the statement, or, when it uses
-/// variables that its `GO` batch declares before it, the batch from its start through the
-/// statement, in one round trip (a variable lives only in the batch that declares it).
 pub fn tsql_run_range(src: &str, stmt: &Statement) -> Range<usize> {
     let own = stmt.range.clone();
     let Some(used) = crate::params::detect_tsql(&src[own.clone()]) else { return own };
@@ -115,9 +96,7 @@ pub fn tsql_run_range(src: &str, stmt: &Statement) -> Range<usize> {
     if left < used.params.len() { wide } else { own }
 }
 
-/// The units a script runs as, one round trip each: its statements, but in T-SQL its `GO`
-/// batches (variables, temporary tables and control flow live in a batch). A batch repeated by
-/// `GO n` keeps its `GO n` line, which the driver reads back.
+/// A batch repeated by `GO n` keeps its `GO n` line, which the driver reads back.
 pub fn batches_in(src: &str, dialect: Dialect) -> Vec<Statement> {
     if !dialect.script().go_batches {
         return split_in(src, dialect);
@@ -132,16 +111,11 @@ pub fn batches_in(src: &str, dialect: Dialect) -> Vec<Statement> {
         .collect()
 }
 
-/// T-SQL: whether a text may return more than one result set: several statements, several
-/// batches, or a batch run again (`GO n`).
 pub fn may_return_more(src: &str) -> bool {
     let b = go_batches(src);
     b.len() > 1 || b.iter().any(|b| b.repeat > 1) || b.first().is_some_and(|b| crate::guard::tsql_statements(&src[b.range.clone()]).len() > 1)
 }
 
-/// The statement of a T-SQL text that most likely returned its `k`-th result set (0-based): the
-/// `k`-th statement that returns rows, across its batches. `None` when there is no such one
-/// (a procedure may return several).
 pub fn result_statement(src: &str, k: usize) -> Option<&str> {
     let mut n = 0;
     for b in go_batches(src) {
@@ -160,15 +134,12 @@ pub fn result_statement(src: &str, k: usize) -> Option<&str> {
     None
 }
 
-/// T-SQL words after BEGIN that do not open a block (`BEGIN TRAN`, `BEGIN DIALOG`…).
 fn begins_block(next: Option<&str>) -> bool {
     !next.is_some_and(|w| {
         ["TRAN", "TRANSACTION", "DISTRIBUTED", "DIALOG", "CONVERSATION"].iter().any(|k| w.eq_ignore_ascii_case(k))
     })
 }
 
-/// MySQL: whether the statement starting at `sig[i]` (`CREATE`) makes a stored routine, trigger or
-/// event, whose `BEGIN … END` body keeps its `;`.
 fn creates_routine(src: &str, sig: &[&Token], i: usize) -> bool {
     for n in sig.iter().skip(i + 1).take(14) {
         if n.kind == TokenKind::Punct && n.text(src) == ";" {
@@ -190,8 +161,6 @@ fn creates_routine(src: &str, sig: &[&Token], i: usize) -> bool {
     false
 }
 
-/// MySQL: whether the `IF` at `sig[i]` opens an `IF … THEN` statement (not the function `IF(a, b, c)`
-/// nor `IF [NOT] EXISTS`).
 fn if_is_statement(src: &str, sig: &[&Token], i: usize) -> bool {
     let w = |k: usize, x: &str| sig.get(k).is_some_and(|t| matches!(t.kind, TokenKind::Keyword | TokenKind::Ident) && t.text(src).eq_ignore_ascii_case(x));
     if w(i + 1, "NOT") || w(i + 1, "EXISTS") {
@@ -200,7 +169,6 @@ fn if_is_statement(src: &str, sig: &[&Token], i: usize) -> bool {
     if !sig.get(i + 1).is_some_and(|t| t.text(src) == "(") {
         return true;
     }
-    // `IF (cond) THEN` against `IF(a, b, c)`.
     let mut depth = 0;
     for (k, t) in sig.iter().enumerate().skip(i + 1) {
         match t.text(src) {
@@ -217,27 +185,20 @@ fn if_is_statement(src: &str, sig: &[&Token], i: usize) -> bool {
     false
 }
 
-/// MySQL's `/*! … */` (and MariaDB's `/*M! … */`): a comment the server runs as code.
 pub fn is_exec_comment(text: &str) -> bool {
     text.starts_with("/*!") || text.starts_with("/*M!")
 }
 
-/// Splits tokens lexed in a dialect by its [`ScriptRules`].
 pub fn split_tokens_in(src: &str, tokens: &[Token], rules: ScriptRules) -> Vec<Statement> {
     let b = src.as_bytes();
     let mut out = Vec::new();
     let mut depth = 0i32;
-    // SQL-standard function bodies (`BEGIN ATOMIC … END`, T-SQL's `BEGIN … END`) contain `;`.
-    // Inside one, CASE … END pairs are tracked too, so their END does not close the body.
-    let mut blocks: Vec<bool> = Vec::new(); // true = BEGIN (ATOMIC), false = CASE
-    // T-SQL: a procedure's, function's or trigger's body runs to the end of its batch.
+    // CASE … END pairs are tracked too, so their END does not close the body.
+    let mut blocks: Vec<bool> = Vec::new();
     let mut to_batch_end = false;
-    // MySQL: inside a routine's definition, its `BEGIN` and `CASE` blocks nest in `blocks`.
     let mut routine = false;
     let mut first: Option<usize> = None;
     let mut last = 0;
-    // MySQL clients' `DELIMITER //`: the terminator in force when it is not `;`, and the tokens
-    // to pass over (the command's line, the rest of a terminator lexed as several tokens).
     let mut delimiter: Option<String> = None;
     let mut skip_until = 0;
     let exec_comment = |t: &Token| rules.exec_comments && t.kind == TokenKind::BlockComment && is_exec_comment(t.text(src));
@@ -258,8 +219,6 @@ pub fn split_tokens_in(src: &str, tokens: &[Token], rules: ScriptRules) -> Vec<S
             && !matches!(t.kind, TokenKind::String | TokenKind::QuotedIdent | TokenKind::DollarString)
             && let Some(p) = t.text(src).find(d.as_str()).or_else(|| src[t.start..].starts_with(d.as_str()).then_some(0))
         {
-            // The terminator may be glued to a word (`END$$`): what is before it belongs to the
-            // statement.
             if p > 0 {
                 first.get_or_insert(t.start);
                 last = t.start + p;
@@ -295,8 +254,6 @@ pub fn split_tokens_in(src: &str, tokens: &[Token], rules: ScriptRules) -> Vec<S
             routine = creates_routine(src, &sig, i);
         }
         if routine && delimiter.is_none() {
-            // Every compound statement opens a block its `END` closes (`END IF`, `END LOOP`…
-            // pop the one they name, so the keyword after an `END` opens nothing).
             let after_end = i.checked_sub(1).is_some_and(|p| word(sig[p], "END"));
             let opens = word(t, "BEGIN")
                 || word(t, "CASE")
@@ -341,9 +298,6 @@ pub fn split_tokens_in(src: &str, tokens: &[Token], rules: ScriptRules) -> Vec<S
     out
 }
 
-/// The statement to run for a cursor at byte `cursor`: the one containing it; in the gap
-/// between two statements, the previous one if the cursor is on the line where it ends,
-/// otherwise the next one (or the previous one when there is no next).
 pub fn statement_at(src: &str, cursor: usize) -> Option<Statement> {
     statement_at_in(src, &split(src), cursor)
 }
@@ -394,35 +348,27 @@ mod tests {
         let src = "# setup\nSELECT 1; -- a\nDELIMITER //\nCREATE PROCEDURE p()\nBEGIN\n  SELECT 'a;b'; # c;\n  SELECT 2;\nEND //\nDELIMITER ;\nSELECT `x;y` FROM t; SELECT \"q;\\\";\"";
         let got: Vec<&str> = split_in(src, Dialect::MySql).into_iter().map(|s| &src[s.range]).collect();
         assert_eq!(got, vec!["SELECT 1", "CREATE PROCEDURE p()\nBEGIN\n  SELECT 'a;b'; # c;\n  SELECT 2;\nEND", "SELECT `x;y` FROM t", "SELECT \"q;\\\";\""]);
-        // `$$` (two tokens), glued to END, case-insensitive command, `;;`.
         let src = "delimiter $$\nCREATE TRIGGER t BEFORE INSERT ON x FOR EACH ROW BEGIN SET NEW.a = 1; END$$\nSELECT 1$$\nDELIMITER ;;\nSELECT 2;; SELECT 3;;";
         let got: Vec<&str> = split_in(src, Dialect::MySql).into_iter().map(|s| &src[s.range]).collect();
         assert_eq!(got, vec!["CREATE TRIGGER t BEFORE INSERT ON x FOR EACH ROW BEGIN SET NEW.a = 1; END", "SELECT 1", "SELECT 2", "SELECT 3"]);
-        // `full` takes the terminator; DELIMITER only counts at the start of a line and of a statement.
         let s = split_in("DELIMITER //\nSELECT 1 //", Dialect::MySql);
         assert_eq!((s.len(), &"DELIMITER //\nSELECT 1 //"[s[0].full.clone()]), (1, "SELECT 1 //"));
         assert_eq!(split_in("SELECT delimiter FROM t; SELECT 2", Dialect::MySql).len(), 2);
-        // PostgreSQL has no DELIMITER command.
         assert_eq!(split("DELIMITER //\nSELECT 1; SELECT 2").len(), 2);
     }
 
-    /// MySQL: `/*! … */` comments are statements the server runs (mysqldump writes its settings
-    /// that way); plain comments are not.
     #[test]
     fn mysql_executable_comments_are_statements() {
         let src = "/*!40101 SET NAMES utf8mb4 */;\n/* plain */;\n-- note\n/*!40014 SET FOREIGN_KEY_CHECKS=0 */;\nSELECT /*!40001 SQL_NO_CACHE */ 1;\n/*M!100000 SET x = 1 */";
         let got: Vec<&str> = split_in(src, Dialect::MySql).into_iter().map(|s| &src[s.range]).collect();
         assert_eq!(got, vec!["/*!40101 SET NAMES utf8mb4 */", "/*!40014 SET FOREIGN_KEY_CHECKS=0 */", "SELECT /*!40001 SQL_NO_CACHE */ 1", "/*M!100000 SET x = 1 */"]);
-        // Other dialects read them as comments.
         assert_eq!(split_in("/*!40101 SET x */;", Dialect::Postgres).len(), 0);
-        // The guard sees the code inside.
         let f = crate::guard::classify_in("/*!50000 DROP TABLE t */", Dialect::MySql);
         assert_eq!((f.verb.as_str(), f.effect), ("DROP TABLE", crate::guard::Effect::Ddl));
         assert!(crate::guard::read_only_refusal_in("/*!50000 DELETE FROM t */", Dialect::MySql).is_some());
         assert!(crate::guard::read_only_refusal_in("SELECT /*!40001 SQL_NO_CACHE */ 1", Dialect::MySql).is_none());
     }
 
-    /// MySQL: routine, trigger and event bodies keep their `;` even without a `DELIMITER` line.
     #[test]
     fn mysql_bare_compound_bodies() {
         let src = "CREATE PROCEDURE a(x INT) IF x > 1 THEN SELECT 1; SELECT 2; ELSE SELECT 3; END IF;\n\
@@ -450,13 +396,10 @@ mod tests {
         assert_eq!(got.len(), 10, "{got:#?}");
         assert!(got[0].ends_with("END LOOP l; END") && got[1].ends_with("END") && got[2].ends_with("SET NEW.b = 2; END") && got[3].ends_with("DELETE FROM x; END"));
         assert_eq!(&got[4..], ["CREATE TABLE trigger_log (event INT, begin_at INT)", "BEGIN", "SELECT 1", "COMMIT", "CREATE VIEW v AS SELECT CASE WHEN 1 THEN 2 END AS c", "SELECT 9"]);
-        // A custom delimiter still wins, and ends the routine state.
         let src = "DELIMITER //\nCREATE PROCEDURE p() BEGIN SELECT 1; END//\nSELECT 2//\nDELIMITER ;\nSELECT 3; SELECT 4";
         assert_eq!(split_in(src, Dialect::MySql).len(), 4);
     }
 
-    /// T-SQL: `GO` lines end batches (never inside strings or comments); `;` ends statements
-    /// except inside `BEGIN … END` and procedure bodies.
     #[test]
     fn tsql_batches_and_statements() {
         let d = Dialect::TSql;
@@ -465,13 +408,10 @@ mod tests {
         let texts: Vec<&str> = b.iter().map(|b| &src[b.range.clone()]).collect();
         assert_eq!(texts, vec!["CREATE TABLE #t (a int)", "INSERT #t VALUES (1); /* GO\n*/ SELECT 'GO\nGO'", "SELECT 1", "SELECT [GO] FROM x"]);
         assert_eq!(b.iter().map(|b| b.repeat).collect::<Vec<_>>(), vec![1, 1, 3, 1]);
-        // The units a script runs: its batches; `GO 3` keeps its line (the driver repeats it).
         let units: Vec<&str> = batches_in(src, d).into_iter().map(|s| &src[s.range]).collect();
         assert_eq!(units[2], "SELECT 1\nGO 3");
         assert_eq!(go_batches(&units[2])[0].repeat, 3);
-        // PostgreSQL's units are its statements.
         assert_eq!(batches_in("select 1; select 2", Dialect::Postgres).len(), 2);
-        // The editor's statements: `;` and GO, never inside BEGIN … END or a procedure's body.
         let src = "IF 1 = 1 BEGIN SELECT 1; SELECT 2; END; SELECT 3\nGO\nCREATE PROCEDURE p AS SELECT 1; SELECT 2;\nGO\nBEGIN TRAN; UPDATE t SET a = 1; COMMIT\nBEGIN TRY SELECT 1/0; END TRY BEGIN CATCH SELECT CASE WHEN 1 = 1 THEN 1 END; END CATCH";
         let s: Vec<&str> = split_in(src, d).into_iter().map(|s| &src[s.range]).collect();
         assert_eq!(
@@ -485,12 +425,10 @@ mod tests {
                 "COMMIT\nBEGIN TRY SELECT 1/0; END TRY BEGIN CATCH SELECT CASE WHEN 1 = 1 THEN 1 END; END CATCH"
             ]
         );
-        // `GO` must be alone on its line, with only a count or a comment after it.
         assert_eq!(go_batches("SELECT 1 GO\nSELECT 2").len(), 1);
         assert_eq!(go_batches("SELECT 1\nGO x\nSELECT 2").len(), 1);
         assert_eq!(go_batches("SELECT 1\r\nGO\r\nSELECT 2").len(), 2);
         assert!(go_batches("-- only\nGO\n/* comments */").is_empty());
-        // Several result sets: which statement returned which.
         let src = "DECLARE @n int = 2\nSELECT * FROM customer\nUPDATE t SET a = 1 OUTPUT inserted.id\nSELECT * INTO #x FROM t\nGO\nEXEC dbo.p";
         assert!(may_return_more(src) && may_return_more("SELECT 1 SELECT 2") && may_return_more("SELECT 1\nGO 2"));
         assert!(!may_return_more("SELECT * FROM t WHERE a IN (SELECT b FROM u)") && !may_return_more("EXEC dbo.p"));
@@ -505,8 +443,8 @@ mod tests {
         let src = "select 1;\n\nselect 2; select 3;\n";
         let at = |c| statement_at(src, c).map(|s| &src[s.range]);
         assert_eq!(at(0), Some("select 1"));
-        assert_eq!(at(9), Some("select 1")); // right after `;`
-        assert_eq!(at(10), Some("select 2")); // next line
+        assert_eq!(at(9), Some("select 1"));
+        assert_eq!(at(10), Some("select 2"));
         assert_eq!(at(src.find("select 3").unwrap() - 1), Some("select 2"));
         assert_eq!(at(src.len()), Some("select 3"));
         assert_eq!(statement_at("  -- only a comment", 3), None);
@@ -520,9 +458,7 @@ mod tests {
             let s = statement_at_in(src, &stmts, src.find(needle).unwrap()).unwrap();
             &src[tsql_run_range(src, &s)]
         };
-        // Uses @d, declared above in its batch: from the batch's start (not the batch before).
         assert_eq!(at("SELECT *"), "DECLARE @d date = '2026-01-01';\nSET @d = DATEADD(day, 1, @d);\nSELECT * FROM t WHERE c > @d AND id = @id");
-        // No variables, or only undeclared ones (a parameter): the statement alone.
         assert_eq!(at("SELECT 2"), "SELECT 2");
         let src = "SELECT * FROM t WHERE id = @id";
         assert_eq!(&src[tsql_run_range(src, &split_in(src, Dialect::TSql)[0])], src);

@@ -1,25 +1,6 @@
-//! Editing a result in the grid: a change set (cell edits, inserted rows, deleted rows), the
-//! table and row key behind the result, the SQL that applies it, and applying it in one
-//! transaction with conflict detection.
-//!
-//! Flow for the UI:
-//!
-//! 1. [`Connection::edit_target`] on a finished result → [`Editability`]: either an
-//!    [`EditTarget`] (table, key columns, which result columns map to table columns) or a reason
-//!    the result is read-only. The caller may force the key columns (LAR does not report keys).
-//! 2. The grid records changes in a [`ChangeSet`], by *storage* row
-//!    ([`Snapshot::source_row`](crate::result::Snapshot::source_row)), so sorting does not move
-//!    them.
-//! 3. [`ChangeSet::plan`] → [`PlannedChange`]s; [`preview`] shows their SQL.
-//! 4. [`Connection::apply_changes`] runs them in one transaction on a dedicated connection and
-//!    returns an [`ApplyReport`] with one outcome per statement. Any conflict or error rolls the
-//!    whole transaction back.
-//!
-//! Conflicts: an UPDATE or DELETE whose row is gone, or whose edited columns no longer hold the
-//! values the grid showed. PostgreSQL checks in the statement itself
-//! (`AND col IS NOT DISTINCT FROM old`); LAR does not accept that predicate in writes (verified:
-//! `0A000 not supported`), so there the row is first re-read by its key (a primary-key lookup,
-//! which LAR allows inside a transaction even after writing the table) and compared.
+//! LAR does not accept `IS NOT DISTINCT FROM` in writes (verified: `0A000 not supported`), so
+//! there the row is first re-read by its key (allowed inside a transaction even after writing
+//! the table) and compared.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -56,26 +37,20 @@ impl TableRef {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KeySource {
     PrimaryKey,
-    /// A unique index whose columns are all NOT NULL.
     UniqueIndex,
-    /// Guessed from the names (LAR: an integer `id`, or `<table>_id`).
     Guessed,
-    /// Set by the caller.
     Explicit,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConflictCheck {
-    /// `… AND col IS NOT DISTINCT FROM old` in the UPDATE (PostgreSQL).
     Predicate,
-    /// Re-read the row by key and compare before writing (LAR).
     Reread,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KeyColumn {
     pub name: String,
-    /// Its column in the result.
     pub result_col: usize,
 }
 
@@ -84,19 +59,12 @@ pub struct EditTarget {
     pub table: TableRef,
     pub key: Vec<KeyColumn>,
     pub key_source: KeySource,
-    /// For each result column, the table column it shows (`None`: computed, read-only).
     pub columns: Vec<Option<String>>,
     pub kinds: Vec<Kind>,
-    /// Type names of the result columns (some types cannot be compared for conflicts).
     pub type_names: Vec<String>,
     pub check: ConflictCheck,
-    /// Result columns whose table column is NOT NULL, from the catalog (LAR does not report
-    /// it: all false there).
     pub not_null: Vec<bool>,
-    /// The dialect the planned statements are written in (quoting, NULL-safe comparison).
     pub dialect: Dialect,
-    /// Result columns the server writes itself (SQL Server's identity, computed and rowversion
-    /// columns): they still identify rows, but are never written.
     pub generated: Vec<bool>,
 }
 
@@ -105,7 +73,6 @@ impl EditTarget {
         self.columns.get(col).is_some_and(|c| c.is_some()) && !self.generated.get(col).copied().unwrap_or(false)
     }
 
-    /// Whether NULL may be written to result column `col`.
     pub fn nullable(&self, col: usize) -> bool {
         !self.not_null.get(col).copied().unwrap_or(false)
     }
@@ -114,16 +81,11 @@ impl EditTarget {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Editability {
     Editable(EditTarget),
-    /// Why not, in words for the user.
     ReadOnly(String),
 }
 
-// ---------------------------------------------------------------------------------------------
-// Change set
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CellEdit {
-    /// What the grid showed (for display; conflict checks use the stored cell).
     pub old: CellValue,
     pub new: CellValue,
 }
@@ -131,7 +93,6 @@ pub struct CellEdit {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ChangeSet {
     edits: BTreeMap<usize, BTreeMap<usize, CellEdit>>,
-    /// New rows: one value per result column, `None` = the column's default.
     inserts: Vec<Vec<Option<CellValue>>>,
     deletes: BTreeSet<usize>,
 }
@@ -141,8 +102,6 @@ impl ChangeSet {
         Self::default()
     }
 
-    /// Records an edit of storage row `row`, column `col`. Setting a cell back to its original
-    /// value removes the edit.
     pub fn edit(&mut self, row: usize, col: usize, old: CellValue, new: CellValue) {
         let r = self.edits.entry(row).or_default();
         let orig = r.get(&col).map(|e| e.old.clone()).unwrap_or(old);
@@ -169,7 +128,6 @@ impl ChangeSet {
         self.edits.get(&row)?.get(&col)
     }
 
-    /// Marks a row for deletion (its pending edits are dropped).
     pub fn delete_row(&mut self, row: usize) {
         self.edits.remove(&row);
         self.deletes.insert(row);
@@ -183,13 +141,11 @@ impl ChangeSet {
         self.deletes.contains(&row)
     }
 
-    /// Adds an empty new row (all defaults) with `ncols` columns; returns its index.
     pub fn insert_row(&mut self, ncols: usize) -> usize {
         self.inserts.push(vec![None; ncols]);
         self.inserts.len() - 1
     }
 
-    /// Sets a value of a new row (`None`: back to the default).
     pub fn set_inserted(&mut self, index: usize, col: usize, v: Option<CellValue>) {
         if let Some(c) = self.inserts.get_mut(index).and_then(|r| r.get_mut(col)) {
             *c = v;
@@ -218,7 +174,6 @@ impl ChangeSet {
         self.edits.is_empty() && self.inserts.is_empty() && self.deletes.is_empty()
     }
 
-    /// (rows updated, rows inserted, rows deleted).
     pub fn counts(&self) -> (usize, usize, usize) {
         (self.edits.len(), self.inserts.len(), self.deletes.len())
     }
@@ -227,7 +182,6 @@ impl ChangeSet {
         *self = Self::default();
     }
 
-    /// The statements that apply this change set: updates, then inserts, then deletes.
     pub fn plan(&self, target: &EditTarget, snap: &Snapshot) -> Result<Vec<PlannedChange>, String> {
         let mut out = Vec::new();
         let d = target.dialect;
@@ -372,11 +326,8 @@ impl ChangeSet {
     }
 }
 
-/// Types whose values can be compared with `IS NOT DISTINCT FROM` / client-side equality. An
-/// array (`_json`, `_point`…) compares by its element type; domains are resolved to their base
-/// type by [`Connection::edit_target`], which puts the base element's name in
-/// [`EditTarget::type_names`] when that one cannot be compared. MySQL's FLOAT never equals the
-/// decimal it prints (`0.1` is 0.100000001…), and its JSON only equals JSON.
+/// MySQL's FLOAT never equals the decimal it prints (`0.1` is 0.100000001…), and its JSON only
+/// equals JSON.
 fn comparable(d: Dialect, type_name: &str) -> bool {
     let base = type_name.trim_start_matches('_');
     if d == Dialect::TSql {
@@ -391,9 +342,8 @@ fn comparable(d: Dialect, type_name: &str) -> bool {
     !matches!(base, "json" | "xml" | "point" | "line" | "lseg" | "box" | "path" | "polygon" | "circle" | "jsonpath" | "lquery" | "ltxtquery" | "txid_snapshot" | "pg_snapshot" | "float" | "float unsigned" | "geometry")
 }
 
-/// The value a conflict check compares a column with: the text the grid showed, quoted. MySQL
-/// compares a number with a string as doubles (an unsigned BIGINT would lose digits): numbers
-/// go bare there, bytes as `X'…'`.
+/// MySQL compares a number with a string as doubles (an unsigned BIGINT would lose digits):
+/// numbers go bare there, bytes as `X'…'`.
 fn compare_literal(d: Dialect, kind: Kind, shown: &str) -> String {
     if d != Dialect::Postgres {
         return value_literal_in(d, kind, &CellValue::Text(shown.to_string()));
@@ -401,9 +351,6 @@ fn compare_literal(d: Dialect, kind: Kind, shown: &str) -> String {
     d.quote_literal(shown)
 }
 
-/// Columns a DELETE checks for conflicts: comparable, and of a kind whose displayed text is a
-/// valid input of its type (a value of some exotic type is left out rather than risk failing the
-/// whole save).
 fn delete_checkable(d: Dialect, kind: Kind, type_name: &str) -> bool {
     comparable(d, type_name)
         && matches!(
@@ -423,15 +370,13 @@ fn delete_checkable(d: Dialect, kind: Kind, type_name: &str) -> bool {
         )
 }
 
-/// The literal of a key value in `WHERE key = …`. A `real` written bare (`0.1`) is a numeric
-/// constant, compared after widening both sides to double precision, so it never matches the
-/// stored float4: cast it.
+/// A `real` written bare (`0.1`) is a numeric constant, compared after widening both sides to
+/// double precision, so it never matches the stored float4: cast it.
 fn key_literal(d: Dialect, kind: Kind, cell: Cell<'_>) -> String {
     let lit = literal_in(d, kind, cell);
     if d == Dialect::Postgres && kind == Kind::Float4 && matches!(cell, Cell::Float(_)) { format!("{lit}::real") } else { lit }
 }
 
-/// An owned cell value.
 #[derive(Clone, Debug)]
 pub enum Value {
     Null,
@@ -486,7 +431,6 @@ pub enum ChangeKind {
     Delete,
 }
 
-/// Re-read a row before writing it, and the values it must still have.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Reread {
     pub sql: String,
@@ -496,19 +440,14 @@ pub struct Reread {
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlannedChange {
     pub kind: ChangeKind,
-    /// Storage row of the result (updates and deletes).
     pub row: Option<usize>,
-    /// Index of the new row in the change set (inserts).
     pub insert: Option<usize>,
     pub sql: String,
-    /// Distinguishes "row gone" from "row changed" when a guarded UPDATE matches nothing.
     pub exists_sql: Option<String>,
     pub reread: Option<Reread>,
-    /// `id = 10`, for messages.
     pub key: String,
 }
 
-/// The SQL of a plan as text (with LAR's re-reads as comments).
 pub fn preview(changes: &[PlannedChange]) -> String {
     let mut s = String::new();
     for c in changes {
@@ -523,17 +462,10 @@ pub fn preview(changes: &[PlannedChange]) -> String {
     s
 }
 
-// ---------------------------------------------------------------------------------------------
-// Applying
-
 #[derive(Clone, Debug, PartialEq)]
 pub enum ConflictKind {
-    /// The row is not there any more (deleted, or its key changed).
     RowGone,
-    /// A column no longer holds what the grid showed. `column` is `None` when PostgreSQL's
-    /// guarded UPDATE matched nothing while the row still exists.
     Changed { column: Option<String>, expected: Option<String>, found: Option<String> },
-    /// The key matched more than one row (a guessed key that is not unique).
     NotUnique(u64),
 }
 
@@ -542,9 +474,7 @@ pub enum Outcome {
     Applied { rows: u64 },
     Conflict { kind: ConflictKind, message: String },
     Failed { error: ErrorInfo, message: String },
-    /// Not run: an earlier statement failed or conflicted.
     NotRun,
-    /// Run, then undone by the rollback.
     RolledBack { rows: u64 },
 }
 
@@ -559,11 +489,9 @@ pub struct StatementOutcome {
 pub struct ApplyReport {
     pub committed: bool,
     pub outcomes: Vec<StatementOutcome>,
-    /// The reason nothing was saved (a conflict, an error, a failed COMMIT).
     pub error: Option<String>,
 }
 
-/// A readable explanation of a server error, by SQLSTATE.
 pub fn explain_error(e: &ErrorInfo) -> String {
     let base = match e.code.as_deref() {
         Some("23505") => "Duplicate value: another row already has this value in a unique column or key.",
@@ -580,7 +508,6 @@ pub fn explain_error(e: &ErrorInfo) -> String {
         Some("42501") => "Permission denied.",
         Some("0A000") => "The server does not support this.",
         Some("57014") => "Cancelled.",
-        // MySQL's error numbers.
         Some("1062") => "Duplicate value: another row already has this value in a unique column or key.",
         Some("1048" | "1364") => "A required column (NOT NULL) has no value.",
         Some("1451" | "1452") => "Foreign key: the row points to a row that does not exist, or other rows still point to it.",
@@ -612,7 +539,6 @@ fn cell_eq(a: &Value, b: Cell<'_>) -> bool {
 }
 
 impl Connection {
-    /// Applies planned changes in one transaction on a dedicated connection to `database`.
     pub fn apply_changes(self: &Arc<Self>, database: Option<&str>, changes: Vec<PlannedChange>) -> Task<ApplyReport> {
         let (this, db) = (self.clone(), database.map(str::to_string));
         self.spawn(async move {
@@ -725,8 +651,6 @@ impl Connection {
         })
     }
 
-    /// Works out whether (and how) a result can be edited: its table, the key columns, which
-    /// result columns are table columns. `key` forces the key columns (by table column name).
     pub fn edit_target(self: &Arc<Self>, database: &str, rs: &Arc<ResultSet>, key: Option<Vec<String>>) -> Task<Editability> {
         let (this, db, rs) = (self.clone(), database.to_string(), rs.clone());
         self.spawn(async move { this.resolve_edit_target(&db, &rs, key).await })
@@ -758,7 +682,6 @@ impl Connection {
         if !self.info.is_lar && dialect == Dialect::Postgres {
             resolve_base_types(&client, &cols, &mut type_names).await;
         }
-        // MySQL names each column's table: they must all be the statement's one table.
         if let Some(named) = rs.named_origins() {
             let tables: BTreeSet<(&str, &str)> = named.iter().flatten().map(|o| (o.schema.as_str(), o.table.as_str())).collect();
             if tables.len() > 1 {
@@ -766,7 +689,6 @@ impl Connection {
             }
         }
 
-        // 1. The server said where the columns come from (PostgreSQL).
         let oids: BTreeSet<u32> = rs.origins().map(|o| o.iter().filter_map(|x| x.table_oid).collect()).unwrap_or_default();
         if oids.len() > 1 {
             return ro("the result mixes columns of several tables (a join): edit the tables one at a time");
@@ -784,7 +706,6 @@ impl Connection {
             if !matches!(r.get(2).cloned().flatten().as_deref(), Some("r" | "p" | "f")) {
                 return ro("the result comes from a view, which is not edited directly");
             }
-            // The columns must come from the table the statement names (and nothing else).
             let (nsp, relname) = (r.first().cloned().flatten().unwrap_or_default(), r.get(1).cloned().flatten().unwrap_or_default());
             if relname != shape.table.name || shape.table.schema.as_ref().is_some_and(|s| *s != nsp) {
                 return Ok(Editability::ReadOnly(format!(
@@ -811,7 +732,6 @@ impl Connection {
             let table = TableRef { schema: r.first().cloned().flatten(), name: r.get(1).cloned().flatten().unwrap_or_default() };
             (table, columns, Some(oid), not_null)
         } else {
-            // 2. The parsed single-table SELECT.
             let schema = match &shape.table.schema {
                 Some(s) => s.clone(),
                 None => {
@@ -841,20 +761,16 @@ impl Connection {
                 Ok(c) => c,
                 Err(reason) => return Ok(Editability::ReadOnly(reason)),
             };
-            // SQL Server writes identity, computed and rowversion columns itself (read from the
-            // catalog now: the cached columns of autocomplete do not say).
             if dialect == Dialect::TSql {
                 let own = ms_generated(&client, &schema, &rel.name).await;
                 generated = columns.iter().map(|c| c.as_ref().is_some_and(|n| own.contains(n))).collect();
             }
-            // Only a catalog that says NOT NULL counts (LAR's says nothing: NULL stays offered).
             let not_null = columns
                 .iter()
                 .map(|c| c.as_ref().and_then(|n| tcols_full.iter().find(|t| &t.name == n)).is_some_and(|t| t.nullable == Some(false)))
                 .collect();
             (TableRef { schema: Some(schema), name: rel.name.clone() }, columns, rel.oid, not_null)
         };
-        // Duplicate mappings (the same column twice) are ambiguous: keep the first.
         let mut columns = columns;
         let mut seen = BTreeSet::new();
         for c in columns.iter_mut() {
@@ -866,14 +782,12 @@ impl Connection {
         }
         let position = |name: &str| columns.iter().position(|c| c.as_deref() == Some(name));
 
-        // 3. The key.
         let (names, source) = if let Some(k) = key {
             if k.is_empty() {
                 return ro("no key column given");
             }
             (k, KeySource::Explicit)
         } else if self.info.is_lar {
-            // LAR's catalog has no keys: an integer `id`, else `<table>_id`.
             let int = |n: &str| {
                 position(n).filter(|&i| kinds[i] == Kind::Int).map(|_| n.to_string())
             };
@@ -941,8 +855,6 @@ impl Connection {
     }
 }
 
-/// Unique keys usable as row identity: the primary key first, then unique indexes whose columns
-/// are all NOT NULL (no partial or expression indexes). `(is_primary, column names)`.
 async fn pg_key(client: &Db, oid: u32) -> Result<Vec<(bool, Vec<String>)>> {
     let idx = first_ok(
         client,
@@ -978,8 +890,6 @@ async fn pg_key(client: &Db, oid: u32) -> Result<Vec<(bool, Vec<String>)>> {
     Ok(out)
 }
 
-/// MySQL's row identities: the primary key, then unique indexes whose columns are all NOT NULL
-/// (no expression parts). `(is_primary, column names)`.
 async fn my_key(client: &Db, schema: &str, table: &str) -> Result<Vec<(bool, Vec<String>)>> {
     use crate::schema::my::lit;
     let rows = first_ok(
@@ -1016,7 +926,6 @@ async fn my_key(client: &Db, schema: &str, table: &str) -> Result<Vec<(bool, Vec
     Ok(keys)
 }
 
-/// SQL Server's columns that the server writes: identity, computed and rowversion columns.
 async fn ms_generated(client: &Db, schema: &str, table: &str) -> BTreeSet<String> {
     let q = format!(
         "SELECT name FROM sys.columns WHERE object_id = {} AND (is_identity = 1 OR is_computed = 1 OR system_type_id = 189)",
@@ -1025,8 +934,6 @@ async fn ms_generated(client: &Db, schema: &str, table: &str) -> BTreeSet<String
     first_ok(client, &[&q]).await.map(|rows| rows.into_iter().filter_map(|r| r.into_iter().next().flatten()).collect()).unwrap_or_default()
 }
 
-/// SQL Server's row identities: the primary key, then unique indexes (and unique constraints)
-/// without a filter whose key columns are all NOT NULL. `(is_primary, column names)`.
 async fn ms_key(client: &Db, schema: &str, table: &str) -> Result<Vec<(bool, Vec<String>)>> {
     let rows = first_ok(
         client,
@@ -1056,16 +963,10 @@ async fn ms_key(client: &Db, schema: &str, table: &str) -> Result<Vec<(bool, Vec
     Ok(keys)
 }
 
-// ---------------------------------------------------------------------------------------------
-// Parsing a simple SELECT
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SelectItem {
-    /// `*` or `t.*`.
     Star,
-    /// A plain column, possibly aliased: the table column name.
     Column(String),
-    /// Anything else.
     Expr,
 }
 
@@ -1076,14 +977,11 @@ pub(crate) struct SelectShape {
     pub items: Vec<SelectItem>,
 }
 
-/// `SELECT items FROM [schema.]table [alias] [WHERE …] [ORDER BY …] [LIMIT …]`, or why the
-/// statement is not that.
 #[cfg(test)]
 pub(crate) fn analyze_select(sql: &str) -> Result<SelectShape, String> {
     analyze_select_in(sql, Dialect::Postgres)
 }
 
-/// [`analyze_select`] of a statement in `d` (MySQL's backticks, names kept as written).
 pub(crate) fn analyze_select_in(sql: &str, d: Dialect) -> Result<SelectShape, String> {
     let ident_value = |sql: &str, t: &Token| ident_value_in(sql, t, d);
     let toks: Vec<Token> = tokenize_in(sql, d).into_iter().filter(|t| !t.kind.is_trivia()).collect();
@@ -1099,7 +997,6 @@ pub(crate) fn analyze_select_in(sql: &str, d: Dialect) -> Result<SelectShape, St
     }
     const CLAUSES: &[&str] = &["WHERE", "ORDER", "LIMIT", "OFFSET", "FETCH", "FOR"];
     if toks.first().is_some_and(|t| word(t, "TABLE")) {
-        // `TABLE [ONLY] [schema.]name [ORDER BY …] [LIMIT …]` is `SELECT * FROM name`.
         let mut i = 1;
         if toks.get(i).is_some_and(|t| word(t, "ONLY")) {
             i += 1;
@@ -1124,7 +1021,6 @@ pub(crate) fn analyze_select_in(sql: &str, d: Dialect) -> Result<SelectShape, St
     if !toks.first().is_some_and(|t| word(t, "SELECT")) {
         return Err("only the results of a SELECT can be edited".into());
     }
-    // Top-level tokens only (depth 0).
     let mut depth = 0;
     let mut top: Vec<(usize, Token)> = Vec::new();
     for (i, t) in toks.iter().enumerate() {
@@ -1160,9 +1056,7 @@ pub(crate) fn analyze_select_in(sql: &str, d: Dialect) -> Result<SelectShape, St
         }
     }
     let from = top.iter().position(|(_, t)| word(t, "FROM")).ok_or("the SELECT has no FROM")?;
-    // Items: tokens between SELECT and FROM, split at top-level commas.
     let (sel_i, from_i) = (top[0].0, top[from].0);
-    // T-SQL's `TOP (n) [PERCENT] [WITH TIES]` comes before them.
     let mut first_item = sel_i + 1;
     if toks.get(first_item).is_some_and(|t| word(t, "TOP")) {
         first_item += 1;
@@ -1211,7 +1105,6 @@ pub(crate) fn analyze_select_in(sql: &str, d: Dialect) -> Result<SelectShape, St
                 [s] if star(s) => SelectItem::Star,
                 [q, dot, s] if is_name(q) && punct(dot, ".") && star(s) => SelectItem::Star,
                 _ => {
-                    // `col`, `t.col`, `col AS a`, `col a`.
                     let n = it.len();
                     if let Some(c) = col_part(it) {
                         return SelectItem::Column(c);
@@ -1227,7 +1120,6 @@ pub(crate) fn analyze_select_in(sql: &str, d: Dialect) -> Result<SelectShape, St
             }
         })
         .collect();
-    // FROM [schema.]table [AS] [alias], then nothing but WHERE / ORDER / LIMIT / OFFSET / FETCH.
     let rest: Vec<Token> = toks[from_i + 1..].to_vec();
     let Some(first) = rest.first() else { return Err("the SELECT has no table".into()) };
     if punct(first, "(") {
@@ -1267,11 +1159,9 @@ pub(crate) fn analyze_select_in(sql: &str, d: Dialect) -> Result<SelectShape, St
     Ok(SelectShape { table, alias, items })
 }
 
-/// Result column → table column, from the parsed select list. `*` expands to the table's columns
-/// as the schema cache knows them, which may be stale (a column added or dropped since): every
-/// expanded name must equal the result column at its position. When the list does not line up
-/// with the result, a lone `*` is mapped by name (its result columns are named after the table's);
-/// anything else is an error (read-only), since aliases make names unreliable.
+/// `*` expands to the schema cache's columns, which may be stale: every expanded name must
+/// equal the result column at its position. Aliases make names unreliable, so only a lone `*`
+/// falls back to names.
 pub(crate) fn map_columns(items: &[SelectItem], table_cols: &[String], result_cols: &[String]) -> Result<Vec<Option<String>>, String> {
     let mut out = Vec::new();
     let mut aligned = true;
@@ -1296,10 +1186,6 @@ pub(crate) fn map_columns(items: &[SelectItem], table_cols: &[String], result_co
     Err("the result's columns do not match the table's as last read (refresh the schema to edit)".into())
 }
 
-/// For PostgreSQL: resolves domains and arrays to their base element type, and puts its name in
-/// `type_names` when that type cannot be compared (a domain over `json`, `xml[]`, a domain over
-/// `point[]`…), so conflict checks leave the column out instead of failing the whole save with
-/// "could not identify an equality operator". Best effort: a failed lookup changes nothing.
 async fn resolve_base_types(client: &Db, cols: &[crate::result::ColumnInfo], type_names: &mut [String]) {
     let oids: BTreeSet<u32> = cols.iter().map(|c| c.type_oid).filter(|o| *o != 0).collect();
     if oids.is_empty() {
@@ -1365,16 +1251,11 @@ mod tests {
             let e = analyze_select(sql).unwrap_err();
             assert!(e.contains(why), "{sql}: {e}");
         }
-        // Subqueries in WHERE are fine.
         assert!(analyze_select("SELECT * FROM t WHERE id IN (SELECT a FROM b JOIN c ON true)").is_ok());
     }
 
     #[test]
     fn subqueries_and_ctes_are_read_only() {
-        // A self-join hidden in a subquery or a CTE: every column has one origin table, but rows
-        // do not map one to one. Whatever is not a plain one-table SELECT fails the analysis,
-        // which makes the result read-only (`resolve_edit_target` no longer lets the origin
-        // path through).
         for sql in [
             "SELECT * FROM (SELECT w.id, w.name, m.email FROM emp w JOIN emp m ON m.id = w.manager) x",
             "WITH x AS (SELECT w.id, w.name, m.email FROM emp w JOIN emp m ON m.id = w.manager) SELECT * FROM x",
@@ -1384,7 +1265,6 @@ mod tests {
         ] {
             assert!(analyze_select(sql).is_err(), "{sql}");
         }
-        // `TABLE t` is `SELECT * FROM t`.
         let s = analyze_select("TABLE s.emp ORDER BY 1").unwrap();
         assert_eq!(s.table, TableRef { schema: Some("s".into()), name: "emp".into() });
         assert_eq!(s.items, vec![SelectItem::Star]);
@@ -1397,15 +1277,11 @@ mod tests {
         let items = vec![SelectItem::Column("name".into()), SelectItem::Expr, SelectItem::Star];
         let r: Vec<String> = ["n", "x", "id", "name", "total"].iter().map(|s| s.to_string()).collect();
         assert_eq!(map_columns(&items, &t, &r).unwrap(), vec![Some("name".into()), None, Some("id".into()), Some("name".into()), Some("total".into())]);
-        // Misaligned: read-only (aliases make names unreliable).
         let r: Vec<String> = ["id", "zzz"].iter().map(|s| s.to_string()).collect();
         assert!(map_columns(&items, &t, &r).is_err());
-        // A stale cache: `*` expands to the cached columns, which must match the result's names
-        // position by position, even when the count happens to be the same.
         let stale = vec!["id".to_string(), "total".into(), "name".into()];
         let r: Vec<String> = ["n", "x", "id", "name", "total"].iter().map(|s| s.to_string()).collect();
         assert!(map_columns(&items, &stale, &r).is_err());
-        // A lone `*` falls back to names (they are the table's own).
         let r: Vec<String> = ["id", "name", "total"].iter().map(|s| s.to_string()).collect();
         assert_eq!(map_columns(&[SelectItem::Star], &stale, &r).unwrap(), vec![Some("id".into()), Some("name".into()), Some("total".into())]);
         let r: Vec<String> = ["id", "name", "total", "fresh"].iter().map(|s| s.to_string()).collect();
@@ -1480,7 +1356,7 @@ mod tests {
         cs.edit(0, 1, CellValue::text("a'b"), CellValue::text("fresh"));
         cs.edit(0, 2, CellValue::text("0.1"), CellValue::text("2.5"));
         cs.edit(1, 1, CellValue::Null, CellValue::text("x"));
-        cs.edit(1, 1, CellValue::text("x"), CellValue::Null); // back to the original: no edit
+        cs.edit(1, 1, CellValue::text("x"), CellValue::Null);
         assert_eq!(cs.counts(), (1, 0, 0));
         let i = cs.insert_row(4);
         cs.set_inserted(i, 0, Some(CellValue::text("12")));
@@ -1496,14 +1372,11 @@ mod tests {
                 "DELETE FROM public.\"Orders\" WHERE id = 11 AND name IS NULL AND total IS NOT DISTINCT FROM '0.1'",
             ]
         );
-        // A DELETE is guarded like an UPDATE, and tells "gone" from "changed".
         assert_eq!(plan[2].exists_sql.as_deref(), Some("SELECT 1 FROM public.\"Orders\" WHERE id = 11"));
         assert!(preview(&plan).ends_with("total IS NOT DISTINCT FROM '0.1';\n"));
-        // Without conflict detection (the UI marks every column incomparable) it is bare.
         let mut t2 = t.clone();
         t2.type_names = vec!["json".into(); t2.type_names.len()];
         assert_eq!(cs.plan(&t2, &snap).unwrap()[2].sql, "DELETE FROM public.\"Orders\" WHERE id = 11");
-        // Computed columns cannot be edited.
         let mut bad = ChangeSet::new();
         bad.edit(0, 3, CellValue::text("1"), CellValue::text("2"));
         assert!(bad.plan(&t, &snap).unwrap_err().contains("computed"));
@@ -1523,7 +1396,6 @@ mod tests {
         let mut pk = ChangeSet::new();
         pk.edit(0, 0, CellValue::text("10"), CellValue::text("99"));
         assert!(pk.plan(&t, &snap).unwrap_err().contains("primary key"));
-        // A DELETE re-reads every compared column first.
         let mut del = ChangeSet::new();
         del.delete_row(0);
         let plan = del.plan(&t, &snap).unwrap();

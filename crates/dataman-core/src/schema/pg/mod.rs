@@ -1,7 +1,3 @@
-//! PostgreSQL's catalog (`pg_catalog`), read into the shared schema model: what the schema cache
-//! loads (`schema/mod.rs` falls back to `information_schema` where these fail), the editor's
-//! functions and types ([`catalog`]) and the explorer's other objects ([`objects`]).
-
 pub(crate) mod catalog;
 pub(crate) mod objects;
 
@@ -11,7 +7,6 @@ use super::{Column, Index, RelKind, Relation, lit, parse_bool};
 use crate::backend::Db;
 use crate::conn::first_ok;
 
-/// `1 2`, `{1,2}` or `[1, 2]` → `[1, 2]`.
 fn parse_ints(s: &str) -> Vec<i64> {
     s.split(|c: char| !(c.is_ascii_digit() || c == '-')).filter_map(|p| p.parse().ok()).collect()
 }
@@ -27,7 +22,6 @@ fn sort_schemas(mut v: Vec<String>) -> Vec<String> {
     v
 }
 
-/// The databases a client may connect to, sorted.
 pub(super) async fn databases(client: &Db) -> Result<Vec<String>> {
     let rows = first_ok(
         client,
@@ -39,13 +33,11 @@ pub(super) async fn databases(client: &Db) -> Result<Vec<String>> {
     Ok(v)
 }
 
-/// The schemas, the user's first and the system ones last (no TOAST or temporary schemas).
 pub(super) async fn schemas(client: &Db) -> Result<Vec<String>> {
     let rows = first_ok(client, &["SELECT nspname FROM pg_catalog.pg_namespace", "SELECT schema_name FROM information_schema.schemata"]).await?;
     Ok(sort_schemas(rows.into_iter().filter_map(|r| r.into_iter().next().flatten()).collect()))
 }
 
-/// A schema's relations with their kinds and oids (`pg_class`).
 pub(super) async fn relations(client: &Db, schema: &str) -> Result<Vec<Relation>> {
     let s = lit(schema);
     let pg = format!(
@@ -62,8 +54,6 @@ pub(super) async fn relations(client: &Db, schema: &str) -> Result<Vec<Relation>
         .collect())
 }
 
-/// A relation's columns in order, with the primary key and the defaults when the catalog has
-/// them; `None` when `pg_attribute` cannot be read.
 pub(super) async fn columns(client: &Db, oid: u32) -> Option<Vec<Column>> {
     let base = format!(
         "SELECT a.attname, pg_catalog.format_type(a.atttypid, a.atttypmod), a.attnotnull, a.attnum \
@@ -89,7 +79,6 @@ pub(super) async fn columns(client: &Db, oid: u32) -> Option<Vec<Column>> {
     v.sort_by_key(|(n, _)| *n);
     let nums: Vec<i64> = v.iter().map(|(n, _)| *n).collect();
     let mut v: Vec<Column> = v.into_iter().map(|(_, c)| c).collect();
-    // Optional extras: primary key and defaults. Missing catalog support just leaves them out.
     let pk = format!("SELECT indkey FROM pg_catalog.pg_index WHERE indrelid = {oid} AND indisprimary");
     if let Ok(rows) = first_ok(client, &[&pk]).await {
         for k in rows.iter().filter_map(|r| r.first().cloned().flatten()).flat_map(|s| parse_ints(&s)) {
@@ -110,7 +99,6 @@ pub(super) async fn columns(client: &Db, oid: u32) -> Option<Vec<Column>> {
     Some(v)
 }
 
-/// A relation's indexes (`cols`: its columns, for numbers the catalog cannot name).
 pub(super) async fn indexes(client: &Db, oid: u32, cols: &[Column]) -> Result<Vec<Index>> {
     // Column numbers → names, from the catalog (attnum is not the list position when columns
     // were dropped).
@@ -142,8 +130,6 @@ pub(super) async fn indexes(client: &Db, oid: u32, cols: &[Column]) -> Result<Ve
     Ok(v)
 }
 
-/// Every column of the schemas in `list` (their quoted literals, comma-separated), in
-/// `information_schema.columns`' layout: schema, table, column, type, `YES`/`NO`, position.
 pub(super) async fn columns_of_schemas(client: &Db, list: &str) -> Result<Vec<Vec<Option<String>>>> {
     let base = format!(
         "SELECT n.nspname, c.relname, a.attname, pg_catalog.format_type(a.atttypid, a.atttypmod), a.attnotnull, a.attnum \
@@ -155,7 +141,6 @@ pub(super) async fn columns_of_schemas(client: &Db, list: &str) -> Result<Vec<Ve
         .await?
         .into_iter()
         .map(|mut r| {
-            // attnotnull → is_nullable.
             r[4] = parse_bool(&r[4]).map(|nn| if nn { "NO".to_string() } else { "YES".to_string() });
             r
         })

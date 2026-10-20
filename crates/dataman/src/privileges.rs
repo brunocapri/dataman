@@ -1,8 +1,3 @@
-//! The privileges panel (the explorer menu's "Privileges" on a table or schema): a compact
-//! grant matrix, role × privilege, read with `aclexplode` (the owner first, PUBLIC last; `*`
-//! marks WITH GRANT OPTION), in the side panel. GRANT… and REVOKE… open templates in a new tab
-//! for the picked role; nothing here runs a statement.
-
 use std::sync::Arc;
 
 use gpui::{App, ClickEvent, Context, EventEmitter, FocusHandle, Focusable, FontWeight, ScrollHandle, SharedString, Window, div, prelude::*};
@@ -17,7 +12,6 @@ use crate::theme::ActiveTheme;
 use crate::ui::{self, Btn};
 
 pub enum PrivilegesEvent {
-    /// A template for a new tab on the panel's connection and database.
     Template(String),
     Close,
 }
@@ -35,7 +29,6 @@ pub struct PrivilegesPanel {
     schema: String,
     table: Option<String>,
     state: State,
-    /// The role the templates name.
     picked: Option<String>,
     focus: FocusHandle,
     scroll: ScrollHandle,
@@ -49,7 +42,6 @@ impl Focusable for PrivilegesPanel {
     }
 }
 
-/// The matrix's column heads: three letters for a table's privileges.
 fn abbrev(p: &str) -> &str {
     match p {
         "SELECT" => "SEL",
@@ -65,7 +57,6 @@ fn abbrev(p: &str) -> &str {
 }
 
 impl PrivilegesPanel {
-    /// Reads the grants of `schema.table` (or of `schema`) on `conn`, off the UI thread.
     pub fn new(conn: Arc<Connection>, db: String, schema: String, table: Option<String>, cx: &mut Context<Self>) -> Self {
         let task = conn.privileges(&db, &schema, table.as_deref());
         cx.spawn(async move |this, cx| {
@@ -92,7 +83,6 @@ impl PrivilegesPanel {
         }
     }
 
-    /// What the panel is about: `public.orders`, or the schema.
     pub fn target(&self) -> String {
         match &self.table {
             Some(t) => sqlgen::qualified(Some(&self.schema), t),
@@ -100,7 +90,6 @@ impl PrivilegesPanel {
         }
     }
 
-    /// Demo screenshots: pick a role once the grants are in.
     pub fn pick(&mut self, role: &str, cx: &mut Context<Self>) {
         self.picked = Some(role.to_string());
         cx.notify();

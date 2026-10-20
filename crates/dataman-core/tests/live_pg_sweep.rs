@@ -1,6 +1,3 @@
-//! PostgreSQL sweep: valid scripts must split, lint and run cleanly; types decode; the catalog
-//! and DDL round-trip. Skips without the server (`DATAMAN_PG=127.0.0.1:55433` for pgvector).
-
 mod common;
 
 use common::*;
@@ -12,7 +9,6 @@ fn finish(e: &Env, rs: &Arc<dataman_core::ResultSet>) -> Phase {
     e.core.block_on(async { tokio::time::timeout(Duration::from_secs(60), rs.wait_finished()).await.expect("timeout") })
 }
 
-/// Each statement must come back from the splitter verbatim, lint clean and run.
 fn check_script(e: &Env, c: &Arc<Connection>, stmts: &[&str]) {
     let script = stmts.iter().map(|s| format!("{s};")).collect::<Vec<_>>().join("\n\n");
     let parts = split::split(&script);
@@ -28,7 +24,6 @@ fn check_script(e: &Env, c: &Arc<Connection>, stmts: &[&str]) {
         let ph = finish(e, &rs);
         assert_eq!(ph, Phase::Done, "{sql}: {:?}", rs.status().error);
     }
-    // Lint with the schema the script created (as the editor does once the cache loaded).
     let db = c.database().to_string();
     let _ = e.core.block_on(c.preload(&db));
     let snap = c.schema.snapshot(&db);
@@ -135,7 +130,6 @@ fn big_valid_script() {
     exec_quiet(&e, &c, &["DROP SCHEMA IF EXISTS sweep CASCADE"]);
 }
 
-/// Every expression of `exprs` through the grid decoder next to the server's text for it.
 fn decode_all(e: &Env, c: &Arc<Connection>, exprs: &[&str]) -> Vec<(String, String, String)> {
     let mut out = Vec::new();
     for x in exprs {
@@ -243,7 +237,6 @@ fn extension_tables_and_catalog() {
         "CREATE MATERIALIZED VIEW docs_mv AS SELECT id, sv, lt FROM docs",
     ];
     exec(&e, &c, ddl);
-    // Every column decodes without the hex fallback.
     let rs = query(&e, &c, "SELECT * FROM sweep_ext.docs ORDER BY id");
     let snap = rs.snapshot();
     let cols = rs.columns().unwrap();
@@ -252,7 +245,6 @@ fn extension_tables_and_catalog() {
         eprintln!("{:10} {:14} {t}", col.name, col.type_name);
         assert!(!t.starts_with("\\x") || col.type_name == "bytea", "{} not decoded: {t}", col.name);
     }
-    // Searches over them.
     for q in [
         "SELECT id FROM sweep_ext.docs ORDER BY v <-> '[1,2,4]' LIMIT 1",
         "SELECT v <=> '[1,2,4]', v <#> '[1,2,4]', hv <-> '[1,2,4]', cosine_distance(v, '[1,2,4]') FROM sweep_ext.docs WHERE v IS NOT NULL",
@@ -273,7 +265,6 @@ fn extension_tables_and_catalog() {
             assert!(!t.starts_with("\\x"), "{q}: undecoded {t}");
         }
     }
-    // Catalog, columns, objects.
     let db = c.database().to_string();
     let _ = e.core.block_on(c.preload(&db));
     let rels = e.core.block_on(c.relations(&db, "sweep_ext")).expect("relations");
@@ -322,7 +313,6 @@ fn edit_extension_cells() {
         cs.edit(0, col, old, CellValue::text(*new));
     }
     let plan = cs.plan(&t, &snap).unwrap();
-    // One statement per row: apply and then each column must read back as typed.
     let r = e.core.block_on(c.apply_changes(None, plan)).unwrap();
     assert!(r.committed && r.outcomes.iter().all(|o| matches!(o.outcome, Outcome::Applied { rows: 1 })), "{r:?}");
     let after = query(&e, &c, "SELECT * FROM sweep_edit.t");
@@ -331,8 +321,6 @@ fn edit_extension_cells() {
         let col = cols.iter().position(|c| c.name == *name).unwrap();
         eprintln!("{name:4} {new:30} -> {:?}", a.text(0, col));
     }
-    // Round trip: the shown text of every column is valid input and equal to itself (the
-    // conflict check of the next save).
     let t2: EditTarget = match e.core.block_on(c.edit_target(c.database(), &after, None)).unwrap() {
         Editability::Editable(t) => t,
         Editability::ReadOnly(why) => panic!("read-only: {why}"),
@@ -349,7 +337,6 @@ fn edit_extension_cells() {
     let plan = cs.plan(&t2, &a).unwrap();
     let r = e.core.block_on(c.apply_changes(None, plan)).unwrap();
     assert!(r.committed, "re-save of unchanged shown text failed: {r:?}");
-    // Deleting the row checks every column it can.
     let after = query(&e, &c, "SELECT * FROM sweep_edit.t");
     let a = after.snapshot();
     let mut cs = ChangeSet::new();
@@ -461,7 +448,6 @@ fn catalog_and_ddl_round_trip() {
             run!(c.table_extras(&db, a, &r.name)).unwrap_or_else(|e| panic!("extras of {}: {e:#}", r.name));
         }
     }
-    // Definitions of every function / type run (in schema b), and the schema reads the same.
     exec(&e, &c, &[&format!("CREATE SCHEMA {b}")]);
     let mut defs = Vec::new();
     for t in types.iter() {
@@ -471,7 +457,6 @@ fn catalog_and_ddl_round_trip() {
     for t in &defs {
         run_ddl(&e, &c, &t.replace(a, b));
     }
-    // Tables in dependency order, then their views.
     let tables = ["docs", "child", "ev", "ev_1", "ev_d", "lst", "lst_a", "hsh", "hsh_0", "fk", "logd", "unl"];
     let mut ddl_a = Vec::new();
     for t in tables {
@@ -482,8 +467,6 @@ fn catalog_and_ddl_round_trip() {
         run_ddl(&e, &c, &d.replace(a, b));
     }
     for (t, d) in tables.iter().zip(&ddl_a) {
-        // Partitions are created by their parent's DDL elsewhere; this run is standalone, so the
-        // statements are checked as scripts.
         let script = d.replace(a, b);
         let stmts: Vec<String> = split::split(&script).into_iter().map(|s| script[s.range].to_string()).collect();
         let refs: Vec<&str> = stmts.iter().map(String::as_str).collect();
@@ -633,7 +616,6 @@ fn lint_quiet_on_valid_queries() {
     let s = c.session(None);
     let mut failures = Vec::new();
     for q in qs {
-        // Run first (so the created names exist for the session's lint context).
         let rs = s.execute(*q);
         let ph = finish(&e, &rs);
         if ph != Phase::Done {
@@ -651,7 +633,6 @@ fn lint_quiet_on_valid_queries() {
     assert!(failures.is_empty(), "\n{}", failures.join("\n"));
 }
 
-/// Whole scripts (not executed) against a snapshot that knows only `sweep_l1`.
 #[test]
 fn lint_quiet_on_valid_scripts() {
     let e = env();
@@ -720,7 +701,6 @@ fn lint_quiet_on_valid_scripts() {
         for x in l.iter().filter(|x| x.severity == Severity::Error) {
             failures.push(format!("{:?}: {:?} {}", sc, &sc[x.range.clone()], x.message));
         }
-        // And the splitter keeps every non-empty statement whole.
         let n = split::split(sc).len();
         assert!(n >= 1, "{sc}");
     }
@@ -728,7 +708,6 @@ fn lint_quiet_on_valid_scripts() {
     assert!(failures.is_empty(), "\n{}", failures.join("\n"));
 }
 
-/// The read-only guards: nothing that writes passes as a read; harmless text is not refused.
 #[test]
 fn guards_on_postgres_statements() {
     use dataman_core::guard;
@@ -837,7 +816,6 @@ fn guards_on_postgres_statements() {
     let mut bad = Vec::new();
     for s in writes {
         let stmts: Vec<String> = split::split(s).into_iter().map(|x| s[x.range].to_string()).collect();
-        // The agent path splits first; each piece, or the whole text when it is a single piece.
         let refused = if stmts.len() <= 1 { guard::agent_read_refusal(s).is_some() } else { stmts.iter().any(|p| guard::agent_read_refusal(p).is_some()) };
         if !refused {
             bad.push(format!("PASSED AS READ: {s:?}"));
@@ -879,14 +857,11 @@ fn long_scripts_are_fast_and_whole() {
     eprintln!("split {t_split:?} lint {t_lint:?} ({} findings)", l.len());
     assert!(t_split < Duration::from_secs(2), "split took {t_split:?}");
     assert!(t_lint < Duration::from_secs(5), "lint took {t_lint:?}");
-    // The statement under the cursor anywhere.
     let mid = script.len() / 2;
     let s = split::statement_at(&script, mid).unwrap();
     assert!(s.range.start <= mid + 100);
 }
 
-/// Commands outside the normal query flow must come back (done or failed), never hang or kill
-/// the session.
 #[test]
 fn odd_commands_settle() {
     let e = env();
@@ -1047,7 +1022,6 @@ fn explain_many_plan_shapes() {
     assert!(failures.is_empty(), "\n{}", failures.join("\n"));
 }
 
-/// Every editor analysis at every cursor position of scripts typed partway: none may panic.
 #[test]
 fn editor_analyses_never_panic() {
     use dataman_core::complete::{complete, definition_at, signature_help};
@@ -1072,7 +1046,6 @@ fn editor_analyses_never_panic() {
     for text in texts {
         let idx: Vec<usize> = text.char_indices().map(|(i, _)| i).chain([text.len()]).collect();
         for &i in &idx {
-            // Cursor everywhere, prefixes (as typed), suffixes (as pasted).
             let r = std::panic::catch_unwind(|| {
                 let _ = complete(text, i, &snap);
                 let toks = tokenize(text);
@@ -1098,7 +1071,6 @@ fn editor_analyses_never_panic() {
     eprintln!("{n} positions");
 }
 
-/// Mutated (broken) scripts through the lexer, splitter, lint, completion and guards.
 #[test]
 fn mutated_scripts_never_panic() {
     use dataman_core::complete::{complete, definition_at, signature_help};
@@ -1172,7 +1144,6 @@ fn mutated_scripts_never_panic() {
     eprintln!("{n} mutations");
 }
 
-/// Types without a binary output function (aclitem, isn, cube…) must still show.
 #[test]
 fn types_without_binary_output() {
     let e = env();
@@ -1241,7 +1212,6 @@ fn types_without_binary_output() {
     assert!(bad.is_empty(), "\n{}", bad.join("\n"));
 }
 
-/// The same rows through every reader: the grid, the bounded read of the agents, the export.
 #[test]
 fn sendless_types_in_every_reader() {
     use dataman_core::bounded::{Limits, Mode};
@@ -1255,26 +1225,21 @@ fn sendless_types_in_every_reader() {
     assert_eq!(snap.rows(), 1);
     assert_eq!(snap.text(0, 1).as_deref(), Some("pg_class"));
     assert!(snap.text(0, 4).unwrap().starts_with("{postgres=arwdDxtm/postgres"), "{:?}", snap.text(0, 4));
-    // Numbers stay numbers in the grid.
     assert_eq!(rs.columns().unwrap()[0].kind, dataman_core::value::Kind::Int);
     assert!(matches!(snap.cell(0, 0), dataman_core::result::Cell::Int(1259)));
-    // Agents.
     let out = e.core.block_on(c.bounded(None, q, vec![], Mode::Read, Limits::default(), std::future::pending())).unwrap();
     assert_eq!(out.rows.len(), 1);
     assert!(out.rows[0][4].to_string().contains("postgres=arwdDxtm/postgres"), "{:?}", out.rows[0]);
-    // Export.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("o.csv");
     let x = c.export_query(None, q, &path, ExportOptions::new(ExportFormat::Csv), None);
     assert_eq!(e.core.block_on(x.task).unwrap().rows, 1);
     assert!(std::fs::read_to_string(&path).unwrap().contains("postgres=arwdDxtm/postgres"));
-    // And the table in the explorer's data view.
     let rs = query(&e, &c, "SELECT * FROM pg_namespace");
     assert!(rs.snapshot().rows() >= 3);
 }
 
 
-/// The extension tests need the pgvector server (`DATAMAN_PG=127.0.0.1:55433`).
 fn has_extensions(e: &Env, c: &Arc<Connection>) -> bool {
     let ok = query_text(e, c, "SELECT count(*) FROM pg_extension WHERE extname IN ('vector', 'hstore', 'ltree', 'citext', 'pg_trgm')") == "5";
     if !ok {
@@ -1291,14 +1256,12 @@ fn notices_reach_the_result() {
     assert_eq!(finish(&e, &rs), Phase::Done);
     let (m, _) = rs.messages();
     assert_eq!(m.as_slice(), ["NOTICE: hello 1", "WARNING: careful"]);
-    // Not carried over to the next statement; a failing one keeps what came before it.
     let rs = s.execute("SELECT 1");
     finish(&e, &rs);
     assert!(!rs.has_messages());
     let rs = s.execute("DO $$ BEGIN RAISE NOTICE 'before'; RAISE EXCEPTION 'boom'; END $$");
     assert_eq!(finish(&e, &rs), Phase::Failed);
     assert_eq!(rs.messages().0.as_slice(), ["NOTICE: before"]);
-    // A SELECT returning rows from a function that raises.
     let s2 = c.session(None);
     finish(&e, &s2.execute("CREATE FUNCTION pg_temp.noisy() RETURNS int LANGUAGE plpgsql AS $$ BEGIN RAISE NOTICE 'from select'; RETURN 1; END $$"));
     let rs = s2.execute("SELECT pg_temp.noisy()");
@@ -1327,7 +1290,6 @@ fn reg_types_show_names_and_ranges_are_listed() {
     assert_eq!(n.types, Some(2));
     let def = e.core.block_on(c.type_definition(&db, "sweep_rt", "span")).unwrap().unwrap();
     assert!(def.contains("subtype = integer") && def.contains("subtype_diff = sweep_rt.d"), "{def}");
-    // The definition runs.
     exec(&e, &c, &["DROP TYPE sweep_rt.span"]);
     run_ddl(&e, &c, &def);
     exec_quiet(&e, &c, &["DROP SCHEMA IF EXISTS sweep_rt CASCADE"]);

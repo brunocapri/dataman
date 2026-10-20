@@ -1,17 +1,3 @@
-//! The tools against real servers (skipped when one does not answer):
-//!
-//! - `DATAMAN_PG`  (default `127.0.0.1:55432`, user `postgres`, password `dataman`, db `dataman`)
-//! - `DATAMAN_LAR` (default `127.0.0.1:5490`, user `lar`, db `lar`, no password)
-//! - `DATAMAN_MYSQL` (default `127.0.0.1:33306`, root, `DATAMAN_MYSQL_PASSWORD`)
-//! - `DATAMAN_MSSQL` (default `127.0.0.1:14330`, sa, `DATAMAN_MSSQL_PASSWORD`)
-//! - `DATAMAN_MONGO` (default `127.0.0.1:27027`, root, `DATAMAN_MONGO_PASSWORD`)
-//! - `DATAMAN_ES` (default `127.0.0.1:9201`, elastic, `DATAMAN_ES_PASSWORD`)
-//! - `DATAMAN_REDIS` (default `127.0.0.1:63790`, `DATAMAN_REDIS_PASSWORD`)
-//!
-//! PostgreSQL work happens in a scratch schema, LAR's and SQL Server's in scratch tables (SQL
-//! Server's in tempdb), MySQL's in a scratch database; all are dropped. The app is played by a
-//! [`Front`] whose answers each test scripts (Allow, Deny, no answer): what a human would do.
-
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -33,16 +19,13 @@ fn up(host: &str, port: u16) -> bool {
     std::net::TcpStream::connect_timeout(&format!("{host}:{port}").parse().unwrap(), Duration::from_secs(1)).is_ok()
 }
 
-/// What the human does with the next approval.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Answer {
     Allow,
     Deny,
-    /// Never answers: the hub's timeout denies it.
     Never,
 }
 
-/// The app's side as a script: answers in order (Deny when none is left), every question kept.
 #[derive(Default)]
 struct Human {
     answers: Mutex<VecDeque<Answer>>,
@@ -69,8 +52,6 @@ struct Env {
     dir: tempfile::TempDir,
 }
 
-/// A config with PostgreSQL as `pg` (read), `pgw` (write), `pgf` (full), `pgprod` (production,
-/// full), LAR as `lar` / `larw` / `larf`, MySQL as `myw` / `myf`, SQL Server as `msw` / `msf`.
 fn env() -> Env {
     let dir = tempfile::tempdir().unwrap();
     let cfg = dir.path().join("dataman");
@@ -132,7 +113,6 @@ fn env() -> Env {
         secrets.set(id, pw).unwrap();
     }
     let hub = Hub::new(Dirs::at(&cfg), secrets).unwrap();
-    // The hub's core reads pgpass at construction from PGPASSFILE; point it here instead.
     let hub = {
         let mut h = Arc::try_unwrap(hub).ok().unwrap();
         h.core.pgpass = Some(pgpass);
@@ -171,12 +151,10 @@ impl Env {
         }
     }
 
-    /// The next answers the human gives.
     fn answer(&self, a: &[Answer]) {
         self.human.answers.lock().extend(a.iter().copied());
     }
 
-    /// The questions asked since the last call.
     fn asked(&self) -> Vec<Approval> {
         std::mem::take(&mut *self.human.asked.lock())
     }
@@ -219,8 +197,6 @@ fn postgres_tools() {
     let w = |x: Value| with("pgw", x);
     let f = |x: Value| with("pgf", x);
 
-    // DDL: refused in read and write, asked about first in full (no preview: it would hold its
-    // locks), then run in one transaction.
     assert!(e.err("execute", c(json!({"sql": format!("CREATE SCHEMA {s}")}))).contains("reads only"));
     let err = e.err("execute", w(json!({"sql": format!("CREATE SCHEMA {s}")})));
     assert!(err.contains("destructive") && err.contains("full"), "{err}");
@@ -243,12 +219,10 @@ fn postgres_tools() {
     assert_eq!(r["approved"]["reasons"][0], "CREATE SCHEMA");
     assert_eq!(e.asked().len(), 1);
 
-    // Safe writes in the write tier: committed without a question, RETURNING read.
     let r = e.ok("execute", w(json!({"sql": format!("INSERT INTO {s}.customer VALUES (1, 'Alice', ''), (2, 'Bob', NULL) RETURNING id")})));
     assert_eq!(r["statements"][0], json!(["INSERT", 2]));
     assert_eq!(r["returning"]["rows"], json!([[1], [2]]));
     assert!(e.asked().is_empty());
-    // Over the row limit (100): held, asked; Deny rolls back, Allow commits.
     let fill = format!("INSERT INTO {s}.orders SELECT g, 1 + g % 2, g * 1.5, jsonb_build_object('g', g) FROM generate_series(1, 500) g");
     e.answer(&[Deny]);
     let err = e.err("execute", w(json!({"sql": fill})));
@@ -260,12 +234,10 @@ fn postgres_tools() {
     e.ok("execute", w(json!({"sql": fill})));
     assert_eq!(e.count("pg", &format!("SELECT count(*) FROM {s}.orders")), json!(500), "committed after Allow");
     assert_eq!(e.asked().len(), 1);
-    // A failing script leaves nothing behind.
     let err = e.err("execute", w(json!({"sql": format!("INSERT INTO {s}.customer VALUES (3, 'C', NULL); INSERT INTO {s}.customer VALUES (1, 'dup', NULL)")})));
     assert!(err.contains("23505"), "{err}");
     assert_eq!(e.count("pg", &format!("SELECT count(*) FROM {s}.customer")), json!(2), "rolled back as a whole");
 
-    // Destructive DML: refused in write whatever the agent says; held and asked in full.
     for sql in [format!("UPDATE {s}.customer SET note = 'x'"), format!("UPDATE {s}.customer SET note = 'x' WHERE 1 = 1"), format!("UPDATE {s}.customer SET note = 'x' WHERE id = id")] {
         let err = e.err("execute", w(json!({"sql": sql, "confirm": true})));
         assert!(err.contains("destructive"), "{sql}: {err}");
@@ -276,7 +248,6 @@ fn postgres_tools() {
     assert_eq!((q[0].reasons.clone(), q[0].affected), (vec!["UPDATE without WHERE".to_string()], Some(2)));
     assert_eq!(q[0].preview.as_ref().map(|(c, r)| (c.clone(), r.len())), Some((vec!["id".to_string(), "note".into()], 2)), "the RETURNING rows");
     assert_eq!(e.count("pg", &format!("SELECT count(*) FROM {s}.customer WHERE note = 'x'")), json!(0));
-    // No answer in time: rolled back, a timeout for the agent.
     e.answer(&[Never]);
     let t = Instant::now();
     let err = e.err("execute", f(json!({"sql": format!("DELETE FROM {s}.orders")})));
@@ -288,7 +259,6 @@ fn postgres_tools() {
     let r = e.ok("execute", f(json!({"sql": format!("UPDATE {s}.customer SET note = 'x'")})));
     assert_eq!(r["statements"][0], json!(["UPDATE", 2]));
     e.asked();
-    // The app gone (stdio without it): anything needing a human is refused, never run.
     e.server.hub.set_front(None);
     let err = e.err("execute", f(json!({"sql": format!("DELETE FROM {s}.orders")})));
     assert!(err.contains("needs approval in Dataman; open the app"), "{err}");
@@ -296,13 +266,11 @@ fn postgres_tools() {
     assert!(err.contains("500 rows (limit 100)") && err.contains("open the app") && err.contains("rolled back"), "{err}");
     assert_eq!(e.ok("execute", w(json!({"sql": format!("UPDATE {s}.orders SET total = total WHERE id <= 3")})))["statements"][0], json!(["UPDATE", 3]), "within the limit it runs");
     e.server.hub.set_front(Some(e.human.clone()));
-    // Production: every write asks, even a safe one in full.
     e.answer(&[Allow]);
     let prod = json!({"connection": "pgprod", "sql": format!("UPDATE {s}.customer SET note = 'y' WHERE id = 1")});
     assert_eq!(e.ok("execute", prod)["statements"][0], json!(["UPDATE", 1]));
     assert_eq!(e.asked()[0].reasons, vec!["production".to_string()]);
 
-    // run_query: NULL is not "", types, params, limits.
     let r = e.ok("run_query", c(json!({"sql": format!("SELECT id, name, note, NULL::text AS n2 FROM {s}.customer WHERE id = $1"), "params": [2]})));
     assert_eq!(r["columns"], json!([["id", "int4"], ["name", "text"], ["note", "text"], ["n2", "text"]]));
     assert_eq!(r["rows"], json!([[2, "Bob", "x", null]]));
@@ -320,13 +288,11 @@ fn postgres_tools() {
     let r = e.ok("run_query", c(json!({"sql": "SELECT repeat('x', 3000) AS big, g FROM generate_series(1, 200) g"})));
     assert_eq!(r["truncated"], "bytes", "the byte cap");
     assert!(r["rows"][0][0].as_str().unwrap().ends_with('…') && r["cut_cells"].as_u64().unwrap() > 0);
-    // open_query without tabs (no app tabs here): a read as run_query, a write as execute.
     let r = e.ok("open_query", c(json!({"sql": format!("SELECT count(*) FROM {s}.orders"), "title": "orders"})));
     assert_eq!((r["rows"].clone(), r["in_tab"].as_bool()), (json!([[500]]), Some(false)));
     assert!(e.err("open_query", c(json!({"sql": format!("DELETE FROM {s}.orders WHERE id = 1")}))).contains("reads only"));
     assert_eq!(e.ok("open_query", w(json!({"sql": format!("DELETE FROM {s}.orders WHERE id = 500")})))["statements"][0], json!(["DELETE", 1]));
 
-    // Read-only, three ways: the client check, PostgreSQL's READ ONLY, and nothing left behind.
     assert!(e.err("run_query", c(json!({"sql": format!("DELETE FROM {s}.orders")}))).contains("not a read"));
     assert!(e.err("run_query", c(json!({"sql": "SELECT pg_terminate_backend(1)"}))).contains("effects"));
     e.answer(&[Allow]);
@@ -336,7 +302,6 @@ fn postgres_tools() {
     assert!(err.contains("25006") || err.contains("read-only"), "{err}");
     assert_eq!(e.count("pg", &format!("SELECT count(*) FROM {s}.orders")), json!(499));
 
-    // Time limit and cancellation: the statement stops on the server.
     let t = Instant::now();
     let err = e.err("run_query", c(json!({"sql": "SELECT pg_sleep(10)", "timeout_ms": 300})));
     assert!(err.contains("57014") || err.contains("timed out"), "{err}");
@@ -356,7 +321,6 @@ fn postgres_tools() {
     assert_eq!(act["rows"], json!([[0]]), "the cancelled sleeps stopped on the server");
     let act = e.ok("activity_sessions", json!({"connection": "pg"}));
     assert_eq!(act["columns"][0], "pid");
-    // A cancel while a held write waits for its answer rolls it back.
     e.answer(&[Never]);
     let ct = CancellationToken::new();
     let ct2 = ct.clone();
@@ -368,7 +332,6 @@ fn postgres_tools() {
     assert_eq!(e.count("pg", &format!("SELECT count(*) FROM {s}.orders")), json!(499));
     e.asked();
 
-    // Concurrency: two statements per connection at once.
     let t = Instant::now();
     std::thread::scope(|sc| {
         for _ in 0..4 {
@@ -378,7 +341,6 @@ fn postgres_tools() {
     let took = t.elapsed();
     assert!(took >= Duration::from_millis(590) && took < Duration::from_secs(3), "4 sleeps of 0.3 s through 2 slots: {took:?}");
 
-    // The catalog.
     let r = e.ok("list_tables", c(json!({"schema": s})));
     assert_eq!(r["rows"].as_array().unwrap().iter().map(|r| r[1].as_str().unwrap()).collect::<Vec<_>>(), ["customer", "orders"]);
     let r = e.ok("list_schemas", c(json!({})));
@@ -402,7 +364,6 @@ fn postgres_tools() {
     let r = e.ok("sample_rows", c(json!({"table": format!("{s}.orders"), "n": 3})));
     assert_eq!(r["row_count"], 3);
 
-    // Plans: explain never runs; explain_analyze of a write follows the tiers and is rolled back.
     let r = e.ok("explain", c(json!({"sql": format!("DELETE FROM {s}.orders WHERE id = 1")})));
     assert!(r["plan"].as_str().unwrap().contains("Delete on"), "{r}");
     let r = e.ok("explain_analyze", c(json!({"sql": format!("SELECT * FROM {s}.orders WHERE total > 100")})));
@@ -415,7 +376,6 @@ fn postgres_tools() {
     assert!(e.err("explain_analyze", w(json!({"sql": format!("DELETE FROM {s}.orders")}))).contains("destructive"));
     assert_eq!(e.count("pg", &format!("SELECT count(*) FROM {s}.orders")), json!(499), "rolled back");
 
-    // Resources: the snapshot knows the scratch tables.
     let call = dataman_mcp::Call::new(e.server.hub.clone(), "t".into(), "stdio", "resources/read", CancellationToken::new());
     let u = dataman_mcp::resources::parse("dataman://pg/dataman/schema?refresh=true").unwrap();
     let md = e.server.hub.core.block_on(dataman_mcp::resources::read(&call, &u)).unwrap();
@@ -424,7 +384,6 @@ fn postgres_tools() {
     let js: Value = serde_json::from_str(&e.server.hub.core.block_on(dataman_mcp::resources::read(&call, &u)).unwrap()).unwrap();
     assert_eq!(js["schemas"][&s]["orders"]["columns"][0], json!(["id", "integer", "pk", "not_null"]));
 
-    // User tools, bound parameters; a write template follows the tiers like execute.
     std::fs::write(
         e.dir.path().join("dataman/mcp-tools.toml"),
         format!(
@@ -438,14 +397,12 @@ fn postgres_tools() {
     assert_eq!(r["rows"], json!([[1], [3], [5]]));
     assert!(e.err("wipe", json!({"confirm": true})).contains("destructive"));
 
-    // Activity and signals.
     assert!(e.err("terminate_backend", json!({"connection": "pg", "pid": 1})).contains("reads only"));
     assert!(e.err("terminate_backend", json!({"connection": "pgw", "pid": 1})).contains("destructive"));
     e.answer(&[Deny]);
     assert!(e.err("terminate_backend", json!({"connection": "pgprod", "pid": 1, "confirm": true})).contains("denied"));
     assert_eq!(e.asked()[0].reasons, vec!["terminate a session".to_string(), "production".into()]);
 
-    // Clean up, and the audit trail of it all.
     e.answer(&[Allow]);
     e.ok("execute", f(json!({"sql": format!("DROP SCHEMA {s} CASCADE")})));
     let log = e.audit();
@@ -464,9 +421,6 @@ fn postgres_tools() {
     leak(e);
 }
 
-/// Several reads in one call (run_query, open_query headless): every result comes back, in
-/// order, the row cap for each and the byte cap for all; a write anywhere refuses them all. One
-/// statement keeps its own shape.
 #[test]
 fn several_reads() {
     let e = env();
@@ -488,18 +442,14 @@ fn several_reads() {
         );
         assert_eq!((res[2]["truncated"].as_str(), res[1]["columns"].clone()), (Some("rows"), json!([["b", "text"], ["c", "int4"]])));
         assert!(r.get("truncated").is_none() && r["ms"].is_number());
-        // One statement: the shape it always had.
         let r = e.ok("run_query", pg(json!({"sql": "SELECT 1 AS a;"})));
         assert_eq!((r["rows"].clone(), r.get("results")), (json!([[1]]), None));
-        // open_query without the app: the same, headless.
         let r = e.ok("open_query", pg(json!({"sql": "SELECT 1 AS a; SELECT 2 AS b"})));
         assert_eq!((r["results"][1]["rows"].clone(), r["in_tab"].clone()), (json!([[2]]), json!(false)));
-        // A write anywhere: refused before anything runs.
         let err = e.err("run_query", pg(json!({"sql": "SELECT 1; DELETE FROM pg_class WHERE false; SELECT 2"})));
         assert!(err.contains("statement 2") && err.contains("not a read"), "{err}");
         assert!(e.err("open_query", pg(json!({"sql": "SELECT 1; DELETE FROM pg_class WHERE false"}))).contains("reads only"));
         assert!(e.err("run_query", pg(json!({"sql": "SELECT $1::int; SELECT 2", "params": [1]}))).contains("single statement"));
-        // ~256 KB in all: the second result is cut there, the third does not run.
         let big = "SELECT repeat('x', 1000) AS t FROM generate_series(1, 150)";
         let r = e.ok("run_query", pg(json!({"sql": format!("{big}; {big}; SELECT 3"), "max_rows": 1000})));
         let res = r["results"].as_array().unwrap();
@@ -523,16 +473,13 @@ fn several_reads() {
     }
     let (h, p) = addr("DATAMAN_MSSQL", "127.0.0.1:14330");
     if up(&h, p) {
-        // Statements separated by ;, the row cap on the first.
         let r = e.ok("run_query", json!({"connection": "msw", "sql": "SELECT TOP 10 object_id FROM sys.objects ORDER BY object_id; SELECT 'b' AS b", "max_rows": 3}));
         let res = r["results"].as_array().unwrap();
         assert_eq!((res.len(), res[0]["row_count"].clone(), res[0]["truncated"].clone(), res[1]["rows"].clone()), (2, json!(3), json!("rows"), json!([["b"]])), "{r}");
-        // One batch, three SELECTs without ;: three result sets of statement 1.
         let r = e.ok("run_query", json!({"connection": "msw", "sql": "SELECT 1 AS a\nSELECT 2 AS b\nSELECT 3 AS c"}));
         let res = r["results"].as_array().unwrap();
         let shape: Vec<(Value, Value, Value)> = res.iter().map(|x| (x["statement"].clone(), x["sql"].clone(), x["rows"].clone())).collect();
         assert_eq!(shape, vec![(json!(1), json!("SELECT 1 AS a"), json!([[1]])), (json!(1), json!("SELECT 2 AS b"), json!([[2]])), (json!(1), json!("SELECT 3 AS c"), json!([[3]]))], "{r}");
-        // GO batches.
         let r = e.ok("run_query", json!({"connection": "msw", "sql": "SELECT 1 AS a\nGO\nSELECT 2 AS b\nGO"}));
         assert_eq!((r["statements"].clone(), r["results"][1]["rows"].clone()), (json!(2), json!([[2]])), "{r}");
         assert!(e.err("run_query", json!({"connection": "msw", "sql": "SELECT 1 AS a\nDELETE FROM sys.objects WHERE 1 = 0"})).contains("not a read"));
@@ -542,8 +489,6 @@ fn several_reads() {
     leak(e);
 }
 
-/// run_favorite: a favorite found by a name typed from memory runs as open_query would; an
-/// unclear name lists the candidates and runs nothing.
 #[test]
 fn run_favorite_by_name() {
     let (h, p) = addr("DATAMAN_PG", "127.0.0.1:55432");
@@ -560,13 +505,10 @@ fn run_favorite_by_name() {
         e.ok("add_favorite", a);
     }
     assert!(e.ok("list_favorites", json!({}))["rows"].as_array().unwrap().len() == 4);
-    // A typo, on the favorite's own connection: it runs, and says which favorite.
     let r = e.ok("run_favorite", json!({"name": "ordrs by dya"}));
     assert_eq!((r["favorite"]["name"].clone(), r["rows"].clone()), (json!("Orders by day"), json!([[1]])), "{r}");
-    // Word order and case; several statements come back as results.
     let r = e.ok("run_favorite", json!({"name": "CUSTOMERS TOP"}));
     assert_eq!((r["favorite"]["name"].clone(), r["results"][1]["rows"].clone()), (json!("Top customers"), json!([[4]])), "{r}");
-    // Ambiguous: the candidates, nothing run.
     let before = e.audit().len();
     let r = e.ok("run_favorite", json!({"name": "orders by"}));
     let names: Vec<&str> = r["candidates"].as_array().unwrap().iter().filter_map(|c| c["name"].as_str()).collect();
@@ -576,12 +518,10 @@ fn run_favorite_by_name() {
     assert_eq!(r["matched"], json!(false));
     let log = e.audit();
     assert!(log[before..].iter().all(|l| l["sql"].is_null() && l["favorite"].is_null()), "nothing ran: {:?}", &log[before..]);
-    // Another connection given; a favorite saved without one needs it.
     let r = e.ok("run_favorite", json!({"name": "Orders by month", "connection": "pgw"}));
     assert_eq!(r["rows"], json!([[2]]));
     assert!(e.err("run_favorite", json!({"name": "loose one"})).contains("pass connection"));
     assert_eq!(e.ok("run_favorite", json!({"name": "loose one", "connection": "pg"}))["rows"], json!([[5]]));
-    // The audit names the tool and the favorite.
     let log = e.audit();
     let line = log.iter().find(|l| l["tool"] == "run_favorite" && l["favorite"] == "Orders by day").unwrap();
     assert_eq!((line["connection"].as_str(), line["sql"].as_str(), line["outcome"].as_str()), (Some("pg"), Some("SELECT ? AS day"), Some("ok")));
@@ -626,12 +566,10 @@ fn lar_tools() {
     assert_eq!(r["statements"][0], json!(["INSERT", 3]));
     let r = e.ok("run_query", json!({"connection": "lar", "sql": format!("SELECT id, name FROM {t} ORDER BY id")}));
     assert_eq!(r["rows"], json!([[1, "a"], [2, null], [3, ""]]));
-    // A held DELETE on LAR: counted, denied, rolled back (LAR rolls back DML).
     e.answer(&[Deny]);
     assert!(e.err("execute", json!({"connection": "larf", "sql": format!("DELETE FROM {t}")})).contains("rolled back"));
     assert_eq!(e.asked()[0].affected, Some(3));
     assert_eq!(e.count("lar", &format!("SELECT count(*) FROM {t}")), json!(3), "LAR rolled the DELETE back");
-    // TRUNCATE is never previewed (LAR does not roll it back): asked first, denied, not run.
     e.answer(&[Deny]);
     assert!(e.err("execute", json!({"connection": "larf", "sql": format!("TRUNCATE {t}")})).contains("denied"));
     assert_eq!(e.asked()[0].affected, None);
@@ -666,11 +604,9 @@ fn mysql_tiers() {
     let e = env();
     let db = format!("mcp_live_{}", std::process::id());
     let on = |conn: &str, sql: String| json!({"connection": conn, "database": db, "sql": sql});
-    // CREATE DATABASE runs outside a transaction: asked first, then alone.
     e.answer(&[Allow]);
     e.ok("execute", json!({"connection": "myf", "sql": format!("CREATE DATABASE {db}")}));
     assert_eq!(e.asked()[0].reasons, vec!["CREATE DATABASE".to_string()]);
-    // MySQL commits DDL on its own: asked before it runs, never previewed.
     e.answer(&[Allow]);
     e.ok("execute", on("myf", "CREATE TABLE t (id int PRIMARY KEY, a int)".into()));
     assert_eq!(e.asked()[0].affected, None);
@@ -681,7 +617,6 @@ fn mysql_tiers() {
     for sql in ["DELETE FROM t", "DELETE FROM t WHERE 1", "UPDATE t SET a = 2 WHERE id = id", "DELETE FROM t ORDER BY id LIMIT 1"] {
         assert!(e.err("execute", on("myw", sql.into())).contains("destructive"), "{sql}");
     }
-    // Held and denied: InnoDB rolls the DELETE back.
     e.answer(&[Deny]);
     assert!(e.err("execute", on("myf", "DELETE FROM t".into())).contains("rolled back"));
     assert_eq!(e.asked()[0].affected, Some(3));
@@ -702,7 +637,6 @@ fn sql_server_tiers() {
     use Answer::*;
     let e = env();
     let t = format!("mcp_live_{}", std::process::id());
-    // msw's own row limit is 3.
     e.answer(&[Allow]);
     e.ok("execute", json!({"connection": "msf", "sql": format!("CREATE TABLE dbo.{t} (id int PRIMARY KEY, a int)")}));
     assert_eq!(e.asked()[0].reasons, vec!["CREATE TABLE".to_string()]);
@@ -711,13 +645,11 @@ fn sql_server_tiers() {
     for sql in [format!("DELETE TOP (1) FROM dbo.{t}"), format!("DELETE FROM dbo.{t} WHERE 1=1"), format!("EXEC('DROP TABLE dbo.{t}')"), format!("TRUNCATE TABLE dbo.{t}")] {
         assert!(e.err("execute", json!({"connection": "msw", "sql": sql})).contains("destructive"), "{sql}");
     }
-    // Over msw's limit of 3: held with its OUTPUT rows, denied, rolled back.
     e.answer(&[Deny]);
     let err = e.err("execute", json!({"connection": "msw", "sql": format!("INSERT INTO dbo.{t} OUTPUT inserted.id VALUES (4, 0), (5, 0), (6, 0), (7, 0)")}));
     assert!(err.contains("4 rows (limit 3)") && err.contains("rolled back"), "{err}");
     let q = e.asked();
     assert_eq!((q[0].affected, q[0].preview.as_ref().map(|p| p.1.len())), (Some(4), Some(4)));
-    // A held DELETE on SQL Server, then allowed.
     e.answer(&[Deny]);
     assert!(e.err("execute", json!({"connection": "msf", "sql": format!("DELETE FROM dbo.{t}")})).contains("rolled back"));
     let n = e.ok("run_query", json!({"connection": "msw", "sql": format!("SELECT count(*) FROM dbo.{t}")}));
@@ -745,7 +677,6 @@ fn mongodb_tools() {
     let _ = e.call("nosql_execute", f(json!({"query": "db.dropDatabase()"})));
     let _ = e.asked();
 
-    // list_connections says what each connection speaks.
     let conns = e.ok("list_connections", json!({}));
     let cols: Vec<&str> = conns["columns"].as_array().unwrap().iter().map(|c| c.as_str().unwrap()).collect();
     let (ei, li) = (cols.iter().position(|c| *c == "engine").unwrap(), cols.iter().position(|c| *c == "language").unwrap());
@@ -753,17 +684,14 @@ fn mongodb_tools() {
     assert_eq!(row[ei], "mongodb");
     assert!(row[li].as_str().unwrap().contains("nosql_query"), "{row:?}");
 
-    // Reads only in the read tier; writes refused before connecting.
     assert!(e.err("nosql_execute", r(json!({"query": "db.items.insertOne({a: 1})"}))).contains("reads only"));
     assert!(e.err("nosql_query", r(json!({"query": "db.items.insertOne({a: 1})"}))).contains("nosql_execute"));
     assert!(e.err("nosql_query", r(json!({"query": "db.items.find({a: })"}))).contains("invalid"));
 
-    // Write tier: inserts and filtered updates within the row limit (3) run.
     let v = e.ok("nosql_execute", w(json!({"query": "db.items.insertMany([{n: 1, k: 'a'}, {n: 2, k: 'a'}, {n: 3, k: 'b'}])"})));
     assert_eq!(v["affected"], 3, "{v}");
     let v = e.ok("nosql_execute", w(json!({"query": "db.items.updateMany({k: 'a'}, {$set: {seen: true}})"})));
     assert_eq!(v["affected"], 2, "{v}");
-    // Past the limit it waits for the user: denied, nothing changed; allowed, it runs.
     e.ok("nosql_execute", w(json!({"query": "db.items.insertOne({n: 4, k: 'b'})"})));
     let err = e.err("nosql_execute", w(json!({"query": "db.items.updateMany({n: {$gt: 0}}, {$set: {big: true}})"})));
     assert!(err.contains("denied") && err.contains("4 rows (limit 3)"), "{err}");
@@ -773,18 +701,15 @@ fn mongodb_tools() {
     let v = e.ok("nosql_execute", w(json!({"query": "db.items.updateMany({n: {$gt: 0}}, {$set: {big: true}})"})));
     assert_eq!((v["affected"].clone(), v["approved"]["reasons"][0].clone()), (json!(4), json!("4 rows (limit 3)")), "{v}");
     let _ = e.asked();
-    // Destructive: refused in write, asked in full.
     assert!(e.err("nosql_execute", w(json!({"query": "db.items.deleteMany({})"}))).contains("destructive"));
     e.answer(&[Deny]);
     assert!(e.err("nosql_execute", f(json!({"query": "db.items.drop()"}))).contains("denied"));
     let asked = e.asked();
     assert!(asked[0].destructive && asked[0].reasons[0].contains("drops a collection"), "{:?}", asked[0].reasons);
-    // Production asks for every write.
     e.answer(&[Deny]);
     assert!(e.err("nosql_execute", with("mgprod", json!({"query": "db.items.insertOne({n: 5})"}))).contains("production"));
     let _ = e.asked();
 
-    // Reads: documents as extended JSON, bounded; run_query takes the shell's language too.
     let v = e.ok("nosql_query", r(json!({"query": "db.items.find({}, {_id: 0}).sort({n: 1})", "max_rows": 2})));
     assert_eq!((v["count"].clone(), v["more"].clone(), v["documents"][0]["n"].clone()), (json!(2), json!(true), json!(1)), "{v}");
     let v = e.ok("run_query", r(json!({"sql": "db.items.find({n: 1})"})));
@@ -792,9 +717,6 @@ fn mongodb_tools() {
     let v = e.ok("execute", w(json!({"sql": "db.items.deleteOne({n: 4})"})));
     assert_eq!(v["affected"], 1, "{v}");
 
-    // Scripts (the shell's JavaScript): a read runs as a read, with what it printed; one that
-    // writes is refused by nosql_query and, in tier write, waits for the user (its writes cannot
-    // be counted first); a call the reading did not see is refused when it comes.
     let v = e.ok("nosql_query", r(json!({"query": "let n = 0\ndb.items.find().forEach(d => { n += d.n })\nprint('sum', n)\ndb.items.find({}, {_id: 0}).sort({n: 1})"})));
     assert_eq!((v["printed"][0].clone(), v["documents"][0]["n"].clone(), v["count"].clone()), (json!("sum 6"), json!(1), json!(3)), "{v}");
     let script = "for (const n of [7, 8]) db.items.insertOne({n})\ndb.items.countDocuments({n: {$gte: 7}})";
@@ -816,7 +738,6 @@ fn mongodb_tools() {
     assert_eq!(v["value"], "done", "{v}");
     let _ = e.asked();
 
-    // The catalog: databases, collections, fields sampled, documents.
     let v = e.ok("list_schemas", r(json!({})));
     assert!(v["databases"]["rows"].as_array().unwrap().iter().any(|r| r[0] == "mcp_live"), "{v}");
     let v = e.ok("list_tables", r(json!({})));
@@ -831,7 +752,6 @@ fn mongodb_tools() {
     assert!(v["rows"].as_array().unwrap().iter().any(|r| r[2] == "items"), "{v}");
     assert!(e.err("get_ddl", r(json!({"object": "items"}))).contains("describe_table"));
 
-    // The audit line has the statement and the decision.
     let audit = e.audit();
     assert!(audit.iter().any(|l| l["tool"] == "nosql_execute" && l["approval"]["decision"] == "approved"), "{audit:?}");
     e.answer(&[Allow]);
@@ -852,13 +772,11 @@ fn search_tools() {
     let w = |x: Value| with("esw", x);
     let f = |x: Value| with("esf", x);
     let idx = format!("mcp_live_{}", std::process::id());
-    // Creating an index is destructive: full, after the user's Allow.
     assert!(e.err("nosql_execute", w(json!({"query": format!("PUT /{idx}")}))).contains("destructive"));
     e.answer(&[Allow]);
     e.ok("nosql_execute", f(json!({"query": format!("PUT /{idx}")})));
     let _ = e.asked();
 
-    // Write tier: documents within the row limit; a query over it waits for the user.
     for i in 0..4 {
         e.ok("nosql_execute", w(json!({"query": format!("PUT /{idx}/_doc/{i}?refresh=true\n{{\"n\": {i}, \"k\": \"a\"}}")})));
     }
@@ -869,11 +787,9 @@ fn search_tools() {
     let _ = e.asked();
     assert!(e.err("nosql_execute", w(json!({"query": format!("POST /{idx}/_delete_by_query\n{{\"query\": {{\"match_all\": {{}}}}}}")}))).contains("destructive"));
     assert!(e.err("nosql_query", r(json!({"query": format!("DELETE /{idx}/_doc/1")}))).contains("nosql_execute"));
-    // run_query hands the console's requests on too.
     let v = e.ok("run_query", r(json!({"sql": format!("GET /{idx}/_count")})));
     assert_eq!(v["value"]["count"], 4, "{v}");
 
-    // The catalog: the indices, the mapping's fields, documents.
     let v = e.ok("list_tables", r(json!({})));
     assert!(v["rows"].as_array().unwrap().iter().any(|x| x[1] == json!(idx)), "{v}");
     let v = e.ok("describe_table", r(json!({"table": idx})));
@@ -898,12 +814,10 @@ fn redis_tools() {
     let r = |x: Value| with("rd", x);
     let w = |x: Value| with("rdw", x);
     let f = |x: Value| with("rdf", x);
-    // FLUSHDB is destructive: full, after the user's Allow.
     assert!(e.err("nosql_execute", w(json!({"query": "FLUSHDB"}))).contains("destructive"));
     e.answer(&[Allow]);
     e.ok("nosql_execute", f(json!({"query": "FLUSHDB"})));
     let _ = e.asked();
-    // Writes within the row limit; a DEL of more keys waits for the user.
     assert!(e.err("nosql_execute", r(json!({"query": "SET a 1"}))).contains("reads only"));
     e.ok("nosql_execute", w(json!({"query": "HSET user:1 name Ada age 36"})));
     e.ok("nosql_execute", w(json!({"query": "MSET a 1 b 2 c 3"})));
@@ -912,13 +826,10 @@ fn redis_tools() {
     let _ = e.asked();
     assert!(e.err("nosql_query", r(json!({"query": "DEL a"}))).contains("nosql_execute"));
     assert!(e.err("nosql_query", r(json!({"query": "SUBSCRIBE x"}))).contains("not supported"));
-    // Reads: a value, a hash's entries.
-    // A string's value is one entry; another read's reply is its value.
     assert_eq!(e.ok("nosql_query", r(json!({"query": "GET b"})))["documents"][0]["value"], "2");
     assert_eq!(e.ok("nosql_query", r(json!({"query": "STRLEN b"})))["value"], 1);
     let v = e.ok("run_query", r(json!({"sql": "HGETALL user:1"})));
     assert_eq!((v["count"].clone(), v["documents"][0]["field"].clone()), (json!(2), json!("name")), "{v}");
-    // The catalog: databases, keys with their types.
     let v = e.ok("list_schemas", r(json!({})));
     assert!(v["databases"]["rows"].as_array().unwrap().iter().any(|x| x[0] == "8"), "{v}");
     let v = e.ok("list_tables", r(json!({})));

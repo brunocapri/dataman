@@ -1,9 +1,3 @@
-//! Resources: a schema snapshot per connection and database, as Markdown
-//! (`dataman://<connection>/<database>/schema`) or JSON (`…/schema.json`): every table and
-//! view of the non-system schemas with its columns (type, PK, NOT NULL), estimated rows and
-//! foreign keys. Built from one catalog query on PostgreSQL (the explorer's per-table reads on
-//! LAR), cached, and rebuilt with `?refresh=true` or when the tools see the schema change.
-
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::sync::Arc;
@@ -18,7 +12,6 @@ use crate::tool::{Args, Call, Opened, ToolError};
 
 pub const SCHEME: &str = "dataman://";
 
-/// A parsed resource URI.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Uri {
     pub connection: String,
@@ -62,7 +55,6 @@ pub fn uri(connection: &str, database: &str, json: bool) -> String {
     format!("{SCHEME}{}/{}/schema{}", encode(connection), encode(database), if json { ".json" } else { "" })
 }
 
-/// `dataman://conn/db/schema[.json][?refresh=true]` (`db` may be `-` for the default).
 pub fn parse(u: &str) -> Option<Uri> {
     let rest = u.strip_prefix(SCHEME)?;
     let (path, query) = rest.split_once('?').unwrap_or((rest, ""));
@@ -78,7 +70,6 @@ pub fn parse(u: &str) -> Option<Uri> {
     Some(Uri { connection: decode(conn), database: (!db.is_empty() && db != "-").then_some(db), json, refresh })
 }
 
-/// The resources to list: both formats of each usable connection's own database (no I/O).
 pub fn list(cx: &Call) -> Vec<(String, String, bool)> {
     if !cx.hub.settings().mcp_enabled {
         return Vec::new();
@@ -146,7 +137,6 @@ async fn read_pg(cx: &Call, o: &Opened) -> Result<(Tree, bool), ToolError> {
     Ok((t, cols.truncated.is_some()))
 }
 
-/// LAR: the relations and columns the explorer reads, and the links it infers.
 async fn read_walk(o: &Opened) -> Result<(Tree, bool), ToolError> {
     let f = |e: anyhow::Error| ToolError::Failed(format!("{e:#}"));
     let (db, c) = (o.database.as_str(), &o.conn);
@@ -247,7 +237,6 @@ fn as_json(o: &Opened, t: &Tree, truncated: bool) -> Value {
     v
 }
 
-/// The snapshot text for `u` (cached unless `refresh`).
 pub async fn read(cx: &Call, u: &Uri) -> Result<Arc<String>, ToolError> {
     let mut m = serde_json::Map::new();
     m.insert("connection".into(), json!(u.connection));
@@ -260,7 +249,6 @@ pub async fn read(cx: &Call, u: &Uri) -> Result<Arc<String>, ToolError> {
     if let Some(s) = cx.hub.snapshots.lock().get(&key) {
         return Ok(s.clone());
     }
-    // LAR's catalog and other engines' (MySQL): walked through Dataman's schema cache.
     let (t, truncated) = if o.conn.info.is_lar || !o.conn.engine().is_postgres() {
         read_walk(&o).await?
     } else {

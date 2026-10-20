@@ -1,8 +1,4 @@
-//! The audit log: one JSON object per tool call in `mcp-audit.jsonl` (config directory), with
-//! the time, the client, the tool, the connection, the SQL with its literals replaced by `?`
-//! (shown) and as sent (to reopen it), the rows, the duration and the outcome, a human's
-//! decision, and what let a write through without one (an allowed query, YOLO). Never a
-//! password or a bound parameter value. The file is 0600 and rotated to `mcp-audit.1.jsonl` past 8 MiB.
+//! Never a password or a bound parameter value. The file is 0600.
 
 use std::io::{BufRead, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -11,14 +7,11 @@ use dataman_core::sql::{TokenKind, tokenize};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
-/// How a call ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Outcome {
     Ok,
-    /// Bad arguments.
     Invalid,
-    /// Permissions, the guard, the global switch, a denial in the app.
     Refused,
     Error,
     Cancelled,
@@ -41,19 +34,15 @@ impl Outcome {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Entry {
     pub ts: chrono::DateTime<chrono::Utc>,
-    /// The MCP client (`claude-code`), as it introduced itself.
     pub client: String,
-    /// `stdio` (`http` in lines from when the app had an HTTP server).
     pub transport: String,
     pub tool: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connection: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub database: Option<String>,
-    /// With literals redacted (what the log shows).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sql: Option<String>,
-    /// The statement as the agent sent it (Copy Query, Open in Tab); absent in older lines.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub query: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -62,28 +51,19 @@ pub struct Entry {
     pub outcome: Outcome,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-    /// A write that waited for a human: what was decided, by whom, why it was asked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval: Option<ApprovalNote>,
-    /// `open_query` with `run: false`: the SQL was placed in an agent tab, nothing ran.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub draft: bool,
-    /// `run_favorite`: the name of the favorite query it ran (or drafted).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub favorite: Option<String>,
-    /// A write the connection's advanced options let through without a human: its allowed
-    /// queries, or YOLO.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allowed_by: Option<AllowedBy>,
 }
 
-/// What let a write run that the tier alone would have refused or asked about
-/// ([`crate::policy::By`]): `{"by": "allowlist", "entries": […]}` or `{"by": "yolo"}`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "by", rename_all = "lowercase")]
 pub enum AllowedBy {
-    /// The entries of the connection's allowed queries its statements matched (redacted, as
-    /// the log shows SQL).
     Allowlist { entries: Vec<String> },
     Yolo,
 }
@@ -97,15 +77,12 @@ impl AllowedBy {
     }
 }
 
-/// What became of a write that needed a human's Allow.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Decision {
     Approved,
     Denied,
-    /// No answer in time: rolled back.
     Timeout,
-    /// The app was not running (stdio without the app): refused.
     Unavailable,
 }
 
@@ -123,24 +100,19 @@ impl Decision {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ApprovalNote {
     pub decision: Decision,
-    /// The local user who answered (the app's), when someone did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub by: Option<String>,
-    /// Why it was asked: `DELETE without WHERE`, `1204 rows (limit 100)`, `production`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reasons: Vec<String>,
-    /// The rows it changed (or would have), when it ran before the question.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rows: Option<u64>,
 }
 
-/// The local user's name (who answers in the app).
 pub fn local_user() -> String {
     std::env::var("USER").ok().filter(|u| !u.is_empty()).unwrap_or_else(|| "unknown".into())
 }
 
-/// `'…'` strings, dollar-quoted strings and numbers become `?`; identifiers, keywords and `$n`
-/// stay. Comments go (they can hold anything).
+/// Comments go too: they can hold anything.
 pub fn redact(sql: &str) -> String {
     let mut out = String::with_capacity(sql.len());
     for t in tokenize(sql) {
@@ -155,17 +127,14 @@ pub fn redact(sql: &str) -> String {
         }
     }
     let s = out.trim();
-    // Long scripts keep their start.
     match s.char_indices().nth(4000) {
         Some((at, _)) => format!("{}…", &s[..at]),
         None => s.to_string(),
     }
 }
 
-/// Longer statements keep only the redacted start (`sql`): one call never fills the log.
 const QUERY_MAX: usize = 256 * 1024;
 
-/// The statement as sent, for [`Entry::query`] (`None` past [`QUERY_MAX`]).
 pub fn full(sql: &str) -> Option<String> {
     (sql.len() <= QUERY_MAX).then(|| sql.to_string())
 }
@@ -178,7 +147,6 @@ pub struct Audit {
 }
 
 impl Entry {
-    /// The statement to copy or reopen: as sent when the line has it, else the redacted one.
     pub fn statement(&self) -> Option<&str> {
         self.query.as_deref().or(self.sql.as_deref()).filter(|s| !s.trim().is_empty())
     }
@@ -193,7 +161,7 @@ impl Audit {
         &self.path
     }
 
-    /// Appends one line (errors go to the log: an audit failure never fails a call).
+    /// Errors go to the log: an audit failure never fails a call.
     pub fn write(&self, e: &Entry) {
         let _g = self.lock.lock();
         if let Err(err) = self.append(e) {
@@ -220,7 +188,6 @@ impl Audit {
     }
 }
 
-/// The last `n` entries of the log at `path`, newest last (reads at most the file's last MiB).
 pub fn tail(path: &Path, n: usize) -> Vec<Entry> {
     let Ok(mut f) = std::fs::File::open(path) else { return Vec::new() };
     let len = f.metadata().map(|m| m.len()).unwrap_or(0);
@@ -340,7 +307,6 @@ mod tests {
         assert_eq!(back, e);
         assert_eq!(back.sql.as_deref(), Some("UPDATE orders SET status = ? WHERE id = ?"));
         assert_eq!(back.statement(), Some(sql));
-        // A line written before `query` existed: the redacted text is all there is.
         let old = r#"{"ts":"2026-10-14T12:00:00Z","client":"claude-code","transport":"http","tool":"run_query","connection":"local pg","sql":"SELECT * FROM t WHERE id = ?","ms":1.5,"outcome":"ok"}"#;
         let old: Entry = serde_json::from_str(old).unwrap();
         assert_eq!((old.query.as_deref(), old.statement()), (None, Some("SELECT * FROM t WHERE id = ?")));

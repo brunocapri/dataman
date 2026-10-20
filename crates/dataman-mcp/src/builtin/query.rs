@@ -1,5 +1,3 @@
-//! Statements: run_query, open_query, explain, explain_analyze, execute.
-
 use dataman_core::bounded::{self, Limits, Mode};
 use dataman_core::explain::{self, Plan};
 use dataman_core::guard::{self, WriteClass};
@@ -71,7 +69,6 @@ pub fn tools() -> Vec<Builtin> {
 
 fn run_query(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
     Box::pin(async move {
-        // A document engine's statement: its own language.
         if super::nosql::is_nosql(cx, &a) {
             return super::nosql::query(cx, &a, "sql", false).await;
         }
@@ -79,12 +76,9 @@ fn run_query(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
     })
 }
 
-/// A read (run_query, open_query's reads): refused before connecting unless it is one, then
-/// in the agent tab (`open`, or the setting) or headless.
 async fn read(cx: &Call, a: &Args, open: bool) -> Result<Value, ToolError> {
     let sql = a.str("sql")?;
     let params = a.params()?;
-    // Refused before connecting: nothing reaches the server.
     cx.note_sql(sql);
     let target = cx.target(a, Need::Read)?;
     let d = target.engine.dialect();
@@ -108,21 +102,17 @@ fn open_query(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
     Box::pin(open(cx, a))
 }
 
-/// `open_query` (and `run_favorite`, with the favorite's SQL in `sql`).
 pub(super) async fn open(cx: &Call, a: Args) -> Result<Value, ToolError> {
     let sql = a.str("sql")?;
     if a.get("run").and_then(Value::as_bool) == Some(false) {
         return draft(cx, &a, sql).await;
     }
-    // A document engine: in the agent tab's document view, a read or a write as it is.
     if super::nosql::is_nosql(cx, &a) {
         let p = cx.target(&a, Need::Read)?;
         let reads = dataman_core::nosql::classify(p.engine, sql).is_ok_and(|c| c == WriteClass::Read);
         return if reads { super::nosql::query(cx, &a, "sql", true).await } else { super::nosql::execute(cx, &a, "sql", true).await };
     }
     let target = cx.target(&a, Need::Read)?;
-    // What it is decides the path: reads (every statement one) as run_query, anything else as
-    // execute. (A script that also sets something, `SET …; SELECT …`, runs as a write does.)
     let d = target.engine.dialect();
     let stmts = bounded::statements_in(sql, d);
     let reads = guard::agent_write_class(sql, d) == WriteClass::Read && (stmts.len() == 1 || stmts.iter().all(|s| guard::agent_read_refusal_in(s, d).is_none()));
@@ -136,7 +126,6 @@ pub(super) async fn open(cx: &Call, a: Args) -> Result<Value, ToolError> {
     Ok(v)
 }
 
-/// `open_query` with `run: false`: the SQL in the user's agent tab, nothing run ([`Call::draft`]).
 async fn draft(cx: &Call, a: &Args, sql: &str) -> Result<Value, ToolError> {
     if sql.trim().is_empty() {
         return Err(ToolError::Invalid("empty statement".into()));
@@ -148,7 +137,6 @@ async fn draft(cx: &Call, a: &Args, sql: &str) -> Result<Value, ToolError> {
     Ok(json!({"drafted": true, "tab": d.tab, "connection": p.name, "database": d.database}))
 }
 
-/// One statement, or why not.
 fn one(sql: &str) -> Result<String, ToolError> {
     let mut s = bounded::statements(sql);
     match s.len() {
@@ -158,12 +146,10 @@ fn one(sql: &str) -> Result<String, ToolError> {
     }
 }
 
-/// Explain output generous enough for a whole JSON plan.
 fn plan_limits(timeout_ms: u64) -> Limits {
     Limits { max_rows: 10_000, max_bytes: 8 * 1024 * 1024, max_cell: 8 * 1024 * 1024, timeout: std::time::Duration::from_millis(timeout_ms.clamp(100, 300_000)) }
 }
 
-/// The plan of an EXPLAIN result, as text or JSON, with its hints and totals.
 fn plan_json(out: &bounded::Outcome, format: &str, rolled_back: bool) -> Value {
     let columns: Vec<String> = out.columns.iter().map(|c| c.name.clone()).collect();
     let rows: Vec<Vec<Option<String>>> = out
@@ -213,7 +199,6 @@ fn plan_json(out: &bounded::Outcome, format: &str, rolled_back: bool) -> Value {
     Value::Object(m)
 }
 
-/// EXPLAIN is PostgreSQL's (and LAR's) here.
 fn plans(o: &Opened) -> Result<(), ToolError> {
     if o.conn.caps().explain {
         Ok(())
@@ -249,8 +234,8 @@ fn explain_analyze(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
             let out = cx.run(&o, &sql, a.params()?, Mode::Read, limits).await?;
             return Ok(plan_json(&out, a.opt_str("format").unwrap_or("text"), false));
         }
-        // A write: the tiers read the statement it runs (refused before connecting when they
-        // refuse it; the connection's allowed queries and YOLO count); always rolled back.
+        // EXPLAIN ANALYZE of a write runs it: the tiers judge the statement (allowed queries and YOLO
+        // count), refused before connecting; always rolled back.
         let target = cx.target(&a, Need::Read)?;
         let t = crate::policy::Target { read_only: cx.read_only(&a, &target), ..crate::policy::Target::of(&target) };
         if let crate::policy::Verdict::Refuse(e) = crate::policy::judge(cx.hub.settings().mcp_enabled, t, &inner, target.mcp_allowed_on()).verdict {
@@ -273,7 +258,6 @@ fn execute(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
     })
 }
 
-/// A write (execute, open_query's writes) through the tiers ([`Call::write`]).
 async fn write(cx: &Call, a: &Args, open: bool) -> Result<Value, ToolError> {
     let sql = a.str("sql")?;
     let params = a.params()?;

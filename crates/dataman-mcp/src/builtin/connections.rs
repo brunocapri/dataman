@@ -1,8 +1,6 @@
-//! create_connection and update_connection: saved connections, for every engine, by fields or a
-//! connection string. Passwords are write-only: they go to the Keychain, never into
-//! connections.toml, a response or the audit log. Through MCP a connection's safety settings
-//! only stay or tighten (env, read_only, the MCP tier), and a saved password never follows a
-//! connection to another server.
+//! Passwords are write-only: they go to the Keychain, never into connections.toml, a response
+//! or the audit log. Through MCP a connection's safety settings only stay or tighten, and a
+//! saved password never follows a connection to another server.
 
 use dataman_core::{ConfigStore, ConnectionProfile, Engine, Environment, McpAccess, SshAuth, SshSettings, SslMode};
 use serde_json::{Value, json};
@@ -10,7 +8,6 @@ use serde_json::{Value, json};
 use super::Builtin;
 use crate::tool::{Args, BoxFut, Call, Schema, ToolError};
 
-/// The fields both tools take, after their own `name` / `connection` and `host` / `user`.
 fn fields(s: Schema, mcp: Value) -> Schema {
     s.prop("connection_string", false, json!({"type": "string", "description": "A full connection string (postgres://, mysql://, sqlserver:// URL, libpq key=value, ADO.NET); the fields given here override whatever it sets."}))
         .prop("engine", false, json!({"type": "string", "enum": ["postgres", "lar", "mysql", "sql-server", "mongodb", "elasticsearch", "opensearch", "redis"], "description": "lar is the postgres wire protocol (default postgres)."}))
@@ -98,8 +95,6 @@ fn env_rank(e: Environment) -> u8 {
     }
 }
 
-/// The fields of `a` over `profile`; the password they carry (the connection string's, or
-/// `password`, which wins).
 fn apply(profile: &mut ConnectionProfile, a: &Args) -> Result<Option<String>, ToolError> {
     let mut password = None;
     if let Some(cs) = a.opt_str("connection_string") {
@@ -140,7 +135,6 @@ fn apply(profile: &mut ConnectionProfile, a: &Args) -> Result<Option<String>, To
         profile.read_only = a.bool("read_only");
     }
     if let Some(m) = a.opt_str("mcp") {
-        // The same tier as the default stays the default (no setting written for nothing).
         let m = mcp_of(m)?;
         if m != profile.mcp_access() {
             profile.mcp = Some(m);
@@ -176,7 +170,6 @@ fn apply(profile: &mut ConnectionProfile, a: &Args) -> Result<Option<String>, To
     Ok(password)
 }
 
-/// Through MCP the safety settings of an existing connection only stay or tighten.
 fn no_loosening(old: &ConnectionProfile, new: &ConnectionProfile) -> Result<(), ToolError> {
     if env_rank(new.env) < env_rank(old.env) {
         return Err(ToolError::Refused(format!("env would loosen from {:?} to {:?}; through MCP it may only stay the same or tighten", old.env.label(), new.env.label())));
@@ -194,14 +187,12 @@ fn no_loosening(old: &ConnectionProfile, new: &ConnectionProfile) -> Result<(), 
     Ok(())
 }
 
-/// The server the saved secrets were for moved: engine, host, port, user or the SSH hop.
 fn target_changed(old: &ConnectionProfile, new: &ConnectionProfile) -> bool {
     new.engine != old.engine || new.host != old.host || new.port != old.port || new.user != old.user || new.ssh != old.ssh
 }
 
-/// The secrets after the change: a new password saved; else the old one kept while the target
-/// stays (an old secret must not follow the connection to another server unseen), dropped
-/// otherwise. What became of the password, for the response (never the password).
+/// An old secret must not follow the connection to another server unseen: kept only while
+/// the target stays. Never returns the password.
 fn settle_secrets(cx: &Call, old: Option<&ConnectionProfile>, profile: &mut ConnectionProfile, password: Option<String>) -> Result<&'static str, ToolError> {
     let had = old.is_some_and(|o| o.save_password);
     let moved = old.is_some_and(|o| target_changed(o, profile));
@@ -227,7 +218,6 @@ fn settle_secrets(cx: &Call, old: Option<&ConnectionProfile>, profile: &mut Conn
     Ok(state)
 }
 
-/// Saves the connection and tells the app (when it runs this call) to show it now.
 fn save(cx: &Call, profile: &ConnectionProfile) -> Result<(), ToolError> {
     let store = ConfigStore::open(&cx.hub.dirs).map_err(failed)?;
     store.upsert(profile.clone()).map_err(failed)?;
@@ -237,7 +227,6 @@ fn save(cx: &Call, profile: &ConnectionProfile) -> Result<(), ToolError> {
     Ok(())
 }
 
-/// The names of the fields that differ (what the response lists; never a secret).
 fn changed_fields(old: &ConnectionProfile, new: &ConnectionProfile) -> Vec<&'static str> {
     let mut v = Vec::new();
     let mut f = |name: &'static str, differs: bool| {
@@ -283,8 +272,6 @@ fn create_connection(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>>
         }
         cx.note_connection(&name);
 
-        // The baseline is the existing connection (so a field left out stays as it was, not
-        // reset to a blank profile's defaults), or a fresh one when there is none.
         let mut profile = match existing {
             Some(p) => p.clone(),
             None => ConnectionProfile::new(name.clone()),
@@ -361,7 +348,6 @@ mod tests {
         p
     }
 
-    /// Only the given fields change; the response's list names them.
     #[test]
     fn fields_apply_and_are_listed() {
         let old = base();
@@ -371,18 +357,15 @@ mod tests {
         assert_eq!((p.host.as_str(), p.port, p.color.as_deref(), p.user.as_str(), p.database.as_str()), ("db2", 6543, Some("violet"), "app", "shop"));
         assert_eq!(changed_fields(&old, &p), ["host", "port", "color"]);
         assert!(target_changed(&old, &p));
-        // A connection string sets its fields; a given field wins over it.
         let mut q = old.clone();
         let pw = apply(&mut q, &args(json!({"connection_string": "postgresql://bob:pw1@h3:5440/other", "database": "mine"}))).unwrap();
         assert_eq!((q.host.as_str(), q.port, q.user.as_str(), q.database.as_str(), pw.as_deref()), ("h3", 5440, "bob", "mine", Some("pw1")));
-        // The same tier as the default writes nothing.
         let mut r = old.clone();
         apply(&mut r, &args(json!({"mcp": "read"}))).unwrap();
         assert_eq!(r.mcp, None);
         assert!(changed_fields(&old, &r).is_empty());
     }
 
-    /// SSH: a host adds the tunnel, "" removes it; its other fields need one.
     #[test]
     fn ssh_fields() {
         let old = base();
@@ -398,7 +381,6 @@ mod tests {
         assert!(matches!(apply(&mut r, &args(json!({"ssh_user": "x"}))), Err(ToolError::Invalid(m)) if m.contains("ssh_host")));
     }
 
-    /// env, read_only and mcp only stay or tighten.
     #[test]
     fn nothing_loosens() {
         let mut old = base();
@@ -414,14 +396,11 @@ mod tests {
         for ok in [json!({"env": "production"}), json!({"read_only": true}), json!({"mcp": "read"}), json!({"mcp": "off"}), json!({"env": "staging", "mcp": "write"})] {
             assert!(try_(ok.clone()).is_ok(), "{ok}");
         }
-        // Tightening env to production with the tier left as it was: the explicit tier stays.
         let mut p = old.clone();
         apply(&mut p, &args(json!({"env": "production"}))).unwrap();
         assert_eq!(p.mcp_access(), McpAccess::Write);
     }
 
-    /// The schema: connection required, password write-only (never in a response by
-    /// construction: the handlers build their answers from ids, names and field names).
     #[test]
     fn update_schema() {
         let t = tools();

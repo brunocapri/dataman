@@ -1,10 +1,3 @@
-//! Reading a file as rows of text values: CSV/TSV, JSON arrays, NDJSON and Parquet. Each value
-//! becomes the text PostgreSQL parses for its column (JSON objects and arrays as JSON, Parquet
-//! timestamps in ISO form, binary as `\x…` hex), or NULL.
-//!
-//! [`read_rows`] streams a whole file through a callback (the import's producer thread); the
-//! `preview_*` functions read the start of a file for [`super::preview`].
-
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Read};
 use std::path::Path;
@@ -18,8 +11,6 @@ use super::csv::{self, Reader, Record, decode_field};
 use super::infer::{Infer, PgType};
 use super::{CsvDialect, ImportFormat, PREVIEW_ROWS, Preview, SAMPLE_BYTES, SAMPLE_ROWS, SourceColumn};
 
-/// One row of the file: a text value (or NULL) per source column. The buffers are reused row
-/// after row.
 #[derive(Debug, Default)]
 pub struct Row {
     vals: Vec<String>,
@@ -69,14 +60,12 @@ impl Row {
     }
 }
 
-/// What the callbacks tell the reader.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Flow {
     Go,
     Stop,
 }
 
-/// Counts the bytes read from the file (progress).
 struct Counting<R> {
     inner: R,
     n: Arc<AtomicU64>,
@@ -90,18 +79,12 @@ impl<R: Read> Read for Counting<R> {
     }
 }
 
-/// What to read and how.
 pub struct Spec<'a> {
     pub format: ImportFormat,
     pub dialect: &'a CsvDialect,
-    /// The source columns (JSON keys, Parquet fields), in the preview's order.
     pub names: &'a [String],
 }
 
-/// Streams every row of `path`. `on_row(row, location)` gets each good row (location: its line,
-/// or its row number for JSON arrays and Parquet); `on_bad(location, why)` each row that cannot
-/// be read (a wrong number of fields, bad bytes, invalid JSON). Either stops the reading by
-/// returning [`Flow::Stop`].
 pub fn read_rows(
     path: &Path,
     spec: &Spec<'_>,
@@ -135,11 +118,6 @@ fn key_index(names: &[String]) -> HashMap<String, usize> {
     names.iter().enumerate().map(|(i, n)| (n.clone(), i)).collect()
 }
 
-// ---------------------------------------------------------------------------------------------
-// CSV / TSV
-
-/// One record into `row`: `Err(why)` when it has another number of fields or bytes the
-/// encoding rejects.
 fn fill_from_record(rec: &Record, d: &CsvDialect, row: &mut Row, n: usize) -> Result<(), String> {
     if rec.len() != n {
         return Err(format!("{} fields, expected {n}", rec.len()));
@@ -188,7 +166,6 @@ fn read_delimited<R: BufRead>(
     Ok(())
 }
 
-/// Column names from a header record: empty ones become `column_N`, repeated ones get `_2`.
 pub fn column_names(raw: &[Option<String>]) -> Vec<String> {
     let mut seen: HashMap<String, usize> = HashMap::new();
     raw.iter()
@@ -204,7 +181,6 @@ pub fn column_names(raw: &[Option<String>]) -> Vec<String> {
 
 pub fn preview_delimited(head: &[u8], complete: bool, format: ImportFormat, given: Option<CsvDialect>) -> Result<Preview> {
     let body = head.strip_prefix(&[0xef, 0xbb, 0xbf][..]).unwrap_or(head);
-    // A sample cut mid-file ends at its last line break (a quoted one is rare enough here).
     let sample = if complete {
         body
     } else {
@@ -228,7 +204,6 @@ pub fn preview_delimited(head: &[u8], complete: bool, format: ImportFormat, give
                     match decode_field(raw, q, &dialect, &mut s) {
                         Ok(true) => Some(s),
                         Ok(false) => None,
-                        // Shown lossily here; the import reports the row.
                         Err(()) => Some(String::from_utf8_lossy(raw).into_owned()),
                     }
                 })
@@ -264,7 +239,6 @@ pub fn preview_delimited(head: &[u8], complete: bool, format: ImportFormat, give
     })
 }
 
-/// Delimiter, quote, encoding and header of a CSV sample; TSV keeps its tab and escapes.
 pub fn detect_dialect(sample: &[u8], complete: bool, format: ImportFormat) -> CsvDialect {
     let encoding = csv::sniff_encoding(sample, complete);
     let mut d = if format == ImportFormat::Tsv {
@@ -293,10 +267,6 @@ pub fn detect_dialect(sample: &[u8], complete: bool, format: ImportFormat) -> Cs
     d
 }
 
-// ---------------------------------------------------------------------------------------------
-// JSON
-
-/// A JSON value as the text of a column: strings as they are, objects and arrays as JSON.
 fn json_text(v: &Value, out: &mut String) -> bool {
     match v {
         Value::Null => return false,
@@ -355,8 +325,8 @@ fn read_ndjson<R: BufRead>(
     }
 }
 
-/// A JSON value read for the preview: an object's entries in the file's order (serde_json's
-/// map sorts its keys unless a crate in the build turns `preserve_order` on), or anything else.
+/// serde_json's map sorts its keys unless a crate in the build turns `preserve_order` on: an
+/// object's entries are kept here in the file's order.
 enum Ordered {
     Object(Vec<(String, Value)>),
     Other,
@@ -396,8 +366,6 @@ impl<'de> serde::Deserialize<'de> for Ordered {
     }
 }
 
-/// Streams the elements of a top-level JSON array, one value at a time (flat memory).
-/// `f` returns `false` to stop early.
 fn each_element<R: Read, T: serde::de::DeserializeOwned>(input: R, f: &mut dyn FnMut(T) -> Result<bool>) -> Result<()> {
     use serde::de::{Deserializer, SeqAccess, Visitor};
     struct V<'a, T> {
@@ -460,8 +428,6 @@ fn read_json_array<R: BufRead>(
     })
 }
 
-/// The first objects of a JSON or NDJSON file (at most `SAMPLE_ROWS`, within `SAMPLE_BYTES`
-/// for NDJSON).
 fn json_sample(path: &Path, format: ImportFormat) -> Result<(Vec<Vec<(String, Value)>>, bool)> {
     let file = std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
     let mut input = BufReader::new(file);
@@ -513,7 +479,6 @@ pub fn preview_json(path: &Path, format: ImportFormat) -> Result<Preview> {
     if objs.is_empty() {
         bail!("no JSON objects at the start of {}", path.display());
     }
-    // The keys in the order they first appear.
     let mut names: Vec<String> = Vec::new();
     let mut index: HashMap<String, usize> = HashMap::new();
     for o in &objs {
@@ -559,9 +524,6 @@ pub fn preview_json(path: &Path, format: ImportFormat) -> Result<Preview> {
     })
 }
 
-// ---------------------------------------------------------------------------------------------
-// Parquet
-
 mod pq {
     use std::fmt::Write as _;
 
@@ -572,7 +534,6 @@ mod pq {
 
     use super::PgType;
 
-    /// An Arrow type → the PostgreSQL column type its values become.
     pub fn pg_type(t: &DataType) -> PgType {
         match t {
             DataType::Boolean => PgType::Bool,
@@ -594,7 +555,6 @@ mod pq {
     }
 
     fn micros(unit: &TimeUnit, v: i64) -> (i64, u32) {
-        // (seconds, nanoseconds)
         let (div, mul) = match unit {
             TimeUnit::Second => (1, 1_000_000_000),
             TimeUnit::Millisecond => (1_000, 1_000_000),
@@ -640,7 +600,6 @@ mod pq {
         }
     }
 
-    /// The text of `a[i]` into `out`; `false` for NULL (or a value with no text here).
     pub fn text(a: &dyn Array, i: usize, out: &mut String) -> bool {
         if a.is_null(i) {
             return false;
@@ -758,7 +717,6 @@ mod pq {
         }
     }
 
-    /// `a[i]` as JSON (nested values).
     pub fn json(a: &dyn Array, i: usize, out: &mut String) {
         if a.is_null(i) {
             out.push_str("null");
@@ -840,8 +798,6 @@ mod pq {
     }
 }
 
-/// Every row of a Parquet file (at most `limit`), 8,192 at a time. The byte counter advances
-/// with the rows read (the reader's own I/O is in row groups).
 fn read_parquet(
     path: &Path,
     ncols: usize,
@@ -973,7 +929,6 @@ mod tests {
         let (good, bad) = all_rows(&p, pv.format, &pv.dialect, &names);
         assert!(bad.is_empty());
         assert_eq!(good[0], (2, vec![s("1"), s("Smith; J"), s("1.50"), s("2024-01-02")]));
-        // Empty unquoted → NULL; quoted empty → "".
         assert_eq!(good[1].1, vec![s("2"), None, s(""), s("2024-01-03")]);
         assert_eq!(good[2].0, 4);
     }
@@ -985,7 +940,6 @@ mod tests {
         let (good, bad) = all_rows(&p, ImportFormat::Csv, &d, &["a".into(), "b".into()]);
         assert_eq!(good.len(), 2);
         assert_eq!(bad, vec![(3, "1 fields, expected 2".to_string()), (4, "3 fields, expected 2".to_string())]);
-        // Latin-1 bytes read as UTF-8 are a bad row; as Latin-1 they are text.
         let (_d2, p2) = tmp("c.csv", b"n\nZ\xfcrich\n");
         let (good, bad) = all_rows(&p2, ImportFormat::Csv, &d, &["n".into()]);
         assert!(good.is_empty() && bad[0].1.contains("UTF-8"));
@@ -1032,7 +986,6 @@ mod tests {
         assert_eq!(good[0], (1, vec![s("1"), s("a"), s("[1,2]"), None]));
         assert_eq!(good[1], (3, vec![s("2"), None, None, s("{\"k\":true}")]));
         assert_eq!(bad.iter().map(|b| b.0).collect::<Vec<_>>(), vec![4, 5]);
-        // A JSON array, streamed; an object in a .json file reads as NDJSON.
         let (_d2, p2) = tmp("y.json", b"[{\"a\": 1.5, \"b\": \"2024-01-01T00:00:00Z\"}, 7, {\"a\": 2}]");
         let pv = super::super::preview(&p2, None, None).unwrap();
         assert_eq!(pv.format, ImportFormat::Json);
@@ -1087,7 +1040,7 @@ mod tests {
             PgType::TimestampTz,
             PgType::Bytea,
             PgType::Jsonb,
-            PgType::Int8 // strings that are all integers
+            PgType::Int8
         ]);
         assert_eq!(pv.rows[0], vec![s("true"), s("12.50"), s("0.5"), s("2024-01-01"), s("2000-01-01 00:00:01.500+00"), s("\\xdead"), s("[1,2]"), s("42")]);
         assert_eq!(pv.rows[1], vec![None, s("-0.05"), s("NaN"), s("1970-01-01"), None, s("\\x"), None, s("43")]);

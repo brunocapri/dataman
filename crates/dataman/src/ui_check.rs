@@ -1,23 +1,3 @@
-//! Demo stages of the window's chrome (`--demo`), against the demo database, driven with real
-//! mouse and key events through the window:
-//!
-//! - `picker`: the toolbar's connection picker open, on a connection with a long name
-//!   (screenshot);
-//! - `copy-menu`: the result bar's Copy menu open (screenshot);
-//! - `ui-check`: the explorer's first connection (its databases show without collapsing it),
-//!   query tabs (one whose run failed closes with ⌘W and with its ×, a drag reorders them, a
-//!   click does not), the connection picker (a database picked moves the tab there, a click
-//!   outside shuts it), the connection sheet's URL mode (each engine's string fills the
-//!   fields, a bad one is red and does not save), the UI font (each family's five faces
-//!   resolve; a live switch re-measures the grid and scales its columns), a middle click on a
-//!   query tab and on a result tab (they close like ⌘W and the ×), the zoom, Settings ▸
-//!   Keyboard (a command remapped, removed and reset with clicks and keys; the search by
-//!   shortcut, which only searches; ⇧⌘C copies with
-//!   headers), "Copied" in the Copy button's place for 2 s after a copy, the Copy menu's CSV
-//!   and TSV with headers, a connection that is not connected drawn gray and regular, the
-//!   side panel's slide and the explorer toggle's fill, printed as
-//!   PASS/FAIL lines; exit code 1 on a failure.
-
 use std::time::Duration;
 
 use gpui::{
@@ -29,15 +9,11 @@ use dataman_core::result::Phase;
 use crate::app::Workspace;
 use crate::tab::QueryTab;
 
-/// The stages this module drives.
 pub fn is_stage(s: &str) -> bool {
     s == "ui-check" || s == "picker" || s == "copy-menu" || s == "tip-error" || s == "zoom"
 }
 
-/// `tip-error`: many connections not connected (dim) under the connected one, the last one
-/// failed with a long error, the pointer on it: its tooltip near the window's bottom edge.
 async fn tip_error(ws: &Entity<Workspace>, id: &str, cx: &mut AsyncWindowContext) {
-    // The connected one shut: the failed one lands near the window's bottom.
     let _ = cx.update(|_, cx| {
         let tree = ws.read(cx).tree.clone();
         tree.update(cx, |t, cx| t.collapse_id(&format!("c:{id}"), cx));
@@ -119,7 +95,6 @@ fn click(cx: &mut AsyncWindowContext, p: Point<Pixels>) {
     up(cx, p);
 }
 
-/// `DATAMAN_SHOT_DIR`: a capture of the window as it is, `ui-<name>.png`.
 fn snap(name: &str, cx: &mut AsyncWindowContext) {
     let Ok(dir) = std::env::var("DATAMAN_SHOT_DIR") else { return };
     let path = format!("{dir}/ui-{name}.png");
@@ -138,7 +113,6 @@ fn tabs(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> Vec<Entity<Query
     cx.update(|_, cx| ws.read(cx).tabs.clone()).unwrap_or_default()
 }
 
-/// The centre of tab `i` and the point of its close button, as last laid out.
 fn tab_points(ws: &Entity<Workspace>, i: usize, cx: &mut AsyncWindowContext) -> Option<(Point<Pixels>, Point<Pixels>)> {
     draw(cx);
     let b = cx.update(|_, cx| ws.read(cx).tab_bounds.borrow().get(i).copied()).ok().flatten()?;
@@ -147,7 +121,6 @@ fn tab_points(ws: &Entity<Workspace>, i: usize, cx: &mut AsyncWindowContext) -> 
     Some((mid, point(b.right() - px(16.), mid.y)))
 }
 
-/// Runs `sql` in the active tab with Run Statement and waits for the end.
 async fn run_sql(ws: &Entity<Workspace>, sql: &str, cx: &mut AsyncWindowContext) -> Entity<QueryTab> {
     let tab = cx.update(|_, cx| ws.read(cx).active_tab().unwrap().clone()).unwrap();
     let editor = cx.update(|_, cx| tab.read(cx).editor.clone()).unwrap();
@@ -173,15 +146,12 @@ fn new_tab(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> Entity<QueryT
     t
 }
 
-/// Runs a stage; `false` when a check failed.
 pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &mut AsyncWindowContext) -> bool {
     if stage == "tip-error" {
         tip_error(ws, id, cx).await;
         return true;
     }
     if stage == "zoom" {
-        // The side panel (the MCP log) open, the result zoomed over it and the editor
-        // (DATAMAN_ZOOM_FREEZE=0.5 holds it half-way).
         pause(cx, 600).await;
         let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.toggle_mcp_log(window, cx)));
         pause(cx, 400).await;
@@ -200,7 +170,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
         return true;
     }
     if stage == "picker" {
-        // A second connection with a long name, the tab on it, the picker open.
         let (mut p, pw) = crate::bench::bench_profile(None);
         p.name = "analytics-warehouse-replica-eu-west-1".into();
         let other = p.id.clone();
@@ -223,8 +192,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
         ok &= pass;
     };
 
-    // 1. The explorer's first connection: opened while it is not connected yet (a click on it
-    //    connects), its databases and the connection's schemas show once it is.
     let (p, pw) = crate::bench::bench_profile(None);
     let first = p.id.clone();
     let _ = cx.update(|_, cx| {
@@ -250,8 +217,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     report("a connection opened before it connects shows its databases and schemas", shown == (true, true), format!("{shown:?}"));
     let _ = id;
 
-    // 1b. A database's Read Only, from its menu: the lock on its row, saved with the
-    //     connection, a tab on it refuses writes at once (no reconnect); off again, it writes.
     let menu_ro = |cx: &mut AsyncWindowContext| {
         let _ = cx.update(|window, cx| tree.update(cx, |t, cx| t.demo_menu(&dbrow, false, false, window, cx)));
         draw(cx);
@@ -298,7 +263,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
         pause(cx, 100).await;
     }
 
-    // 2. A tab whose run failed closes with ⌘W, and with the × that replaces its ✕ on hover.
     let n0 = tabs(ws, cx).len();
     new_tab(ws, cx);
     let failed = run_sql(ws, "SELECT * FROM no_such_table_here", cx).await;
@@ -319,11 +283,9 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     let gone = !tabs(ws, cx).contains(&failed);
     report("its × (shown on hover in place of ✕) closes it", gone, format!("{} tabs", tabs(ws, cx).len()));
 
-    // 3. Dragging a tab moves it; the others keep their order; a click does not move it.
     while tabs(ws, cx).len() < 3 {
         new_tab(ws, cx);
     }
-    // They have grown in (`tab_motion`).
     pause(cx, 250).await;
     let before = tabs(ws, cx);
     let (a, b, c) = (tab_points(ws, 0, cx), tab_points(ws, 1, cx), tab_points(ws, 2, cx));
@@ -335,8 +297,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
             mouse_move(cx, p, true);
             draw(cx);
         }
-        // The ghost rides the pointer, a gap opens after the last tab (the dragged one folding
-        // out of its place), and nothing has moved yet.
         pause(cx, 200).await;
         snap("tab-gap", cx);
         during = cx.update(|_, cx| (cx.has_active_drag(), ws.read(cx).tab_drop, ws.read(cx).tabs == before)).unwrap_or_default();
@@ -357,8 +317,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     let active = cx.update(|_, cx| ws.read(cx).active_tab().cloned()).ok().flatten();
     report("a click activates a tab without moving it", again == after && active.as_ref() == Some(&after[1]), String::new());
 
-    // 3b. A tab's right-click menu: Close to the Right, then Close Others (the last tab has
-    //     nothing to its right: that item is off).
     while tabs(ws, cx).len() < 4 {
         new_tab(ws, cx);
     }
@@ -376,7 +334,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
         open
     };
     let four = tabs(ws, cx);
-    // Add to Favorites (under a 9 pt separator): that tab's script, saved and linked.
     let sql = "SELECT 42 AS tab_menu_answer";
     let _ = cx.update(|_, cx| four[2].read(cx).editor.clone().update(cx, |e, cx| e.set_text(sql, cx)));
     let saved = match tab_points(ws, 2, cx) {
@@ -414,8 +371,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     let left = tabs(ws, cx);
     report("Close closes it (the last one gives way to a new tab)", hit && left.len() == 1 && left[0] != four[1], format!("{} tabs", left.len()));
 
-    // 3b'. A schema opened (then shut) in the explorer: its folder's fill drains away (comes
-    //      back), then all is still.
     let tree = cx.update(|_, cx| ws.read(cx).tree.clone()).unwrap();
     let mut turned = Vec::new();
     for name in ["schema-open", "schema-shut"] {
@@ -429,8 +384,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     }
     report("a schema opened or shut in the explorer: its folder's fill drains away or comes back, then stops", turned == [true, true], format!("{turned:?}"));
 
-    // 3c. A connection dragged above the first one in the explorer: the same ghost and line,
-    //     and the file keeps the new order.
     let (mut p2, pw2) = crate::bench::bench_profile(None);
     p2.name = "second".into();
     let second = p2.id.clone();
@@ -448,7 +401,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     };
     let mut during = (false, None);
     let top = cx.update(|_, cx| ws.read(cx).store.read(cx).profiles.first().map(|p| p.id.clone())).ok().flatten().unwrap_or_default();
-    // All shut, so the rows are on screen.
     let _ = cx.update(|_, cx| {
         let ids: Vec<String> = ws.read(cx).store.read(cx).profiles.iter().map(|p| format!("c:{}", p.id)).collect();
         tree.update(cx, |t, cx| ids.iter().for_each(|i| t.collapse_id(i, cx)));
@@ -475,12 +427,9 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
             (ids(s.profiles.clone()), ids(s.core.config.connections()))
         })
         .unwrap_or_default();
-    // It is first; the others keep their order after it.
     let dropped = order.0.first() == Some(&second) && order.0.get(1) == Some(&top) && order.1 == order.0;
     report("dropped, it is first in the explorer and in connections.toml", dropped, format!("{order:?}"));
 
-    // 4. The connection picker beside Run: a click opens it; a database picked moves the tab;
-    //    a click outside shuts it.
     let target = cx.update(|_, cx| ws.read(cx).picker_bounds.get()).ok().flatten();
     if let Some(b) = target {
         click(cx, point(b.left() + b.size.width / 2., b.top() + b.size.height / 2.));
@@ -502,9 +451,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     let shut = cx.update(|_, cx| !ws.read(cx).conn_menu).unwrap_or(false);
     report("a click outside shuts it", shut, String::new());
 
-    // 5. The connection sheet's URL mode: each engine's string fills the fields as it is
-    //    typed (the engine read from it, its password in the password field), one that is not
-    //    a connection string turns red and does not save, and Fields shows what it filled.
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.open_dialog(None, window, cx)));
     draw(cx);
     let saved = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).store.read(cx).core.config.connections().len()).unwrap_or(0);
@@ -540,9 +486,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     let saved_after = saved(cx);
     report("esc closes the sheet and nothing was saved", closed && saved_after == saved_before, format!("closed {closed}, {saved_before} → {saved_after}"));
 
-    // 6. The UI font: every family resolves with its five faces of its own (none synthesized,
-    //    none a fallback), and switching it live (View ▸ Font) re-measures the grid and scales
-    //    its column widths to the new advance — no width kept from the old face.
     use dataman_core::UiFont;
     let ids = cx
         .update(|window, cx| {
@@ -588,7 +531,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     );
     switch(cx, Box::new(crate::app::FontJetBrainsMono));
     let (w2, cw2) = widths(cx);
-    // Each scaling rounds to whole points: back within 1.5 pt.
     let back = w0.len() == w2.len() && w0.iter().zip(&w2).all(|(a, b)| (a - b).abs() <= 1.5);
     report("JetBrains Mono live: back to 0.6 em and the first widths", crate::theme::mono() == "JetBrains Mono" && (cw2 - 7.2).abs() < 0.05 && back, format!("advance {cw2:.2}, widths {w2:?}"));
     switch(cx, Box::new(crate::app::FontLilex));
@@ -598,8 +540,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     let (w4, _) = widths(cx);
     report("Geist Mono again: the widths it started with", crate::theme::mono() == "Geist Mono" && w4.len() == w0.len() && w0.iter().zip(&w4).all(|(a, b)| (a - b).abs() <= 1.5), format!("{w4:?}"));
 
-    // 7. A middle click (the wheel) closes a query tab the way ⌘W does (an open transaction
-    //    is asked about first) and a result tab the way its × does.
     let n0 = tabs(ws, cx).len();
     let doomed = new_tab(ws, cx);
     let ix = tabs(ws, cx).iter().position(|t| *t == doomed).unwrap_or(0);
@@ -628,7 +568,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
         editor.update(cx, |e, cx| e.set_text("SELECT 1 AS a;\nSELECT 2 AS b;\nSELECT 3 AS c;", cx));
         window.focus(&editor.focus_handle(cx), cx);
     });
-    // ⌘↩ (no selection) runs the whole script.
     key(cx, "cmd-enter");
     for _ in 0..200 {
         pause(cx, 50).await;
@@ -647,7 +586,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     let after = cx.update(|_, cx| script.read(cx).result_tabs().iter().map(|t| t.key).collect::<Vec<_>>()).unwrap_or_default();
     let closed = before.len() >= 3 && after.len() + 1 == before.len() && !after.contains(&before[1]);
     report("a middle click closes a result tab", closed, format!("{before:?} → {after:?}"));
-    // ⌘⇧↩ runs only the statement under the cursor; a selection is what ⌘↩ runs.
     let run_one = |sel: Option<(usize, usize)>, k: &'static str, cx: &mut AsyncWindowContext| {
         let _ = cx.update(|window, cx| {
             editor.update(cx, |e, cx| match sel {
@@ -685,8 +623,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     let sel = ran(cx);
     report("⌘↩ with a selection runs only the selection", sel.0 == 1 && sel.1.as_deref() == Some(&["c".to_string()][..]), format!("{sel:?}"));
 
-    // The editor's scrollbars: only with more to see; a press on the track pages, the thumb
-    // drags to the end; a long line brings the horizontal one.
     let put = |text: &str, cx: &mut AsyncWindowContext| {
         let _ = cx.update(|window, cx| {
             editor.update(cx, |e, cx| {
@@ -725,8 +661,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     let (([v, h], _), _) = put(&wide, cx);
     report("a line wider than the editor has a horizontal scrollbar", v.is_none() && h.is_some(), format!("{v:?} {h:?}"));
 
-    // Export: CSV then JSON from the same sheet (nothing disabled after the first), the status
-    // as text, and the header's × (then esc) closing it after an export.
     run_sql(ws, "SELECT generate_series(1, 2000) AS n, 'x' AS t", cx).await;
     let export_one = async |format: dataman_core::export::ExportFormat, cx: &mut AsyncWindowContext| {
         let e = cx.update(|_, cx| ws.read(cx).export.clone()).ok().flatten()?;
@@ -780,7 +714,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     let closed = cx.update(|_, cx| ws.read(cx).export.is_none()).unwrap_or(false);
     report("…and esc too", again.is_some() && closed, String::new());
 
-    // ⌘O with several .sql files (the picker's paths injected): a tab each, named after it.
     let dir = std::env::temp_dir().join(format!("dataman-open-sql-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&dir);
     let files: Vec<std::path::PathBuf> = [("a report.sql", "SELECT 1 AS a;"), ("b.sql", "SELECT 2 AS b;")]
@@ -813,9 +746,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
         pause(cx, 50).await;
     }
 
-    // 8. The window's blur: GPUI's, or (macOS 26+, `DATAMAN_BLUR=own`) Dataman's own effect view
-    //    at the bottom of the content view, sized to it, gone with Transparency off and back
-    //    with it on, following a resize; never both.
     use crate::glass::{Blur, blur, own_view_installed, own_view_layout};
     let own = blur() == Blur::Own;
     let level_on = crate::theme::effective_level(dataman_core::Translucency::On).is_on();
@@ -841,9 +771,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
         report("it follows a resize", fits(cx), format!("{:?}", own_view_layout()));
     }
 
-    // 9. A cell selection dragged past the grid's right edge (out of the window) scrolls it
-    //    sideways while the pointer stays there and keeps extending to the column under it;
-    //    past the bottom edge, down through the rows; the release stops it.
     new_tab(ws, cx);
     let cols: Vec<String> = (1..=40).map(|i| format!("g * {i} AS column_{i:02}")).collect();
     let wide = run_sql(ws, &format!("SELECT {} FROM generate_series(1, 2000) g", cols.join(", ")), cx).await;
@@ -855,7 +782,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     let window_w = cx.update(|window, _| window.viewport_size().width.as_f32()).unwrap_or(0.);
     mouse_move(cx, start, false);
     down(cx, start);
-    // Past the grid's right edge and out of the window, then still.
     let out = point(px(window_w.max(gx + gw) + 40.), start.y);
     mouse_move(cx, point(px(gx + gw - 30.), start.y), true);
     mouse_move(cx, out, true);
@@ -891,10 +817,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     let down_far = head.is_some_and(|(a, h)| a == (0, 0) && h.1 == 0 && h.0 > visible_rows);
     report("past the bottom edge it scrolls down and extends through the rows", sy > 50. && down_far, format!("scroll y {sy:.0}, selection {head:?}, {visible_rows} rows visible"));
 
-    // 10. Zoom: ⌘= twice is 125 % — the tabs as laid out, the editor's line and measured
-    //     advance and the grid's rows grow by it, the grid's columns keep their widths in
-    //     points (so they grow on screen too) and the zoom is saved; ⌘- steps back; ⌘0 is 100 %
-    //     with everything as it was.
     let editor = cx.update(|_, cx| wide.read(cx).editor.clone()).unwrap();
     let measure = |cx: &mut AsyncWindowContext| {
         draw(cx);
@@ -934,11 +856,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
         format!("tab {:.1}, line {:.1}, advance {:.2}, row {:.1}", m2.0, m2.1, m2.2, m2.3),
     );
 
-    // 11. Settings ▸ Keyboard, with key events through the window: a click on New tab's key
-    //     records, esc cancels, ⌥⌘T becomes the key (saved, on the ⌘? sheet and in the keymap
-    //     the menus read), ⌥⌘T opens a tab and ⌘T no longer does; a key two commands share is a
-    //     conflict; the reset puts ⌘T back; ⌫ removes a key and Reset all restores it; ⇧⌘C
-    //     copies with headers in the grid, ⌥⌘C as CSV.
     use crate::keymap;
     let saved_keys = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).store.read(cx).core.settings.get().keys).unwrap_or_default();
     let settings = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).settings_view.clone()).ok().flatten();
@@ -974,7 +891,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
         );
         click(cx, cap);
         press(cx, "cmd-alt-t");
-        // The app's keymap, out of any context (what the menu bar reads).
         let bound = cx
             .update(|_, cx| {
                 cx.key_bindings().borrow().bindings_for_action(&crate::app::NewTab).map(|b| b.keystrokes().iter().map(|k| k.inner().unparse()).collect::<Vec<_>>().join(" ")).collect::<Vec<_>>()
@@ -991,8 +907,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
         );
         let (_, reset) = points(&sv, "new_tab", cx);
         report("a changed key shows its reset", reset.is_some(), String::new());
-        // The same key on Run (the editor, inside the workspace): both are in conflict. The
-        // search brings the row into view.
         let search = |sv: &Entity<crate::settings_view::SettingsView>, q: &str, cx: &mut AsyncWindowContext| {
             let _ = cx.update(|_, cx| sv.update(cx, |v, cx| v.demo_search(q, cx)));
             draw(cx);
@@ -1042,9 +956,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
                 removed && keymap::effective("favorite_query") == ["cmd-d"] && saved_keys(cx).is_empty(),
                 format!("removed {removed}, {:?} {:?}", keymap::effective("favorite_query"), saved_keys(cx)),
             );
-            // Search by shortcut: the keyboard button takes the next keystroke, which lists the
-            // commands on it and does nothing else (⌘T opens no tab, ⌘+ does not zoom); ⌫
-            // clears it, esc ends the search and leaves Settings open.
             let key_search = |sv: &Entity<crate::settings_view::SettingsView>, cx: &mut AsyncWindowContext| cx.update(|_, cx| sv.read(cx).demo_key_search()).unwrap_or_default();
             let n0 = tabs(ws, cx).len();
             draw(cx);
@@ -1094,13 +1005,11 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
         let _ = cx.update(|_, cx| cx.write_to_clipboard(c));
     }
     report("⇧⌘C in the grid copies with headers, ⌥⌘C as CSV", with.as_deref().map(str::trim_end) == Some("answer\n7") && csv.as_deref().map(str::trim_end) == Some("7"), format!("{with:?} {csv:?}"));
-    // The copy just made: "Copied" in the Copy button's place, for 2 s.
     let shown = |cx: &mut AsyncWindowContext| cx.update(|_, cx| grid.read(cx).copied_at.and_then(|at| crate::motion::copied(at, std::time::Instant::now(), cx.reduce_motion())).is_some()).unwrap_or(false);
     let copied_now = shown(cx);
     pause(cx, 2100).await;
     draw(cx);
     report("a copy shows Copied, then the Copy button again after 2 s", copied_now && !shown(cx), String::new());
-    // The Copy menu's CSV and TSV with headers: RFC 4180 quoting, TSV's escapes.
     let quoted = run_sql(ws, "SELECT 'a,b' AS \"x y\", 'say \"hi\"' AS z, NULL AS n", cx).await;
     let qgrid = cx.update(|_, cx| quoted.read(cx).grid.clone()).unwrap();
     let _ = cx.update(|window, cx| window.focus(&qgrid.focus_handle(cx), cx));
@@ -1124,8 +1033,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     ok
 }
 
-/// ⌘← ⌘→ on the grid: the row's first and last column (scrolled into view), ⇧ extends; ⌃⌘←
-/// is Back.
 async fn grid_row_keys(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let mut ok = true;
     let mut report = |name: &str, pass: bool, detail: String| {
@@ -1156,7 +1063,6 @@ async fn grid_row_keys(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> b
     let (sel, _) = state(cx);
     report("⇧⌘← back to its first", sel == Some(((2, 0), (2, 0))), format!("{sel:?}"));
     report("Back and Forward are ⌃⌘← ⌃⌘→", crate::keymap::effective("go_back") == ["ctrl-cmd-left"] && crate::keymap::effective("go_forward") == ["ctrl-cmd-right"], format!("{:?}", crate::keymap::effective("go_back")));
-    // ⌃⌘← steps back: another tab activated (a jump), then back to this one.
     let ix = cx.update(|_, cx| ws.read(cx).tabs.iter().position(|t| *t == wide)).ok().flatten().unwrap_or(0);
     let other = if ix == 0 { 1 } else { 0 };
     if cx.update(|_, cx| ws.read(cx).tabs.len()).unwrap_or(0) < 2 {
@@ -1178,9 +1084,6 @@ async fn grid_row_keys(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> b
     ok
 }
 
-/// The result zoom: over the Run row, the editor and the side panel, not the explorer or the
-/// tabs; animated; ⌘↩ re-runs; per tab; esc and the button close it; another side view opening
-/// ends it.
 async fn zoom_checks(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let mut ok = true;
     let mut report = |name: &str, pass: bool, detail: String| {
@@ -1232,7 +1135,6 @@ async fn zoom_checks(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> boo
     report("the side panel stays open underneath (it comes back)", side_kept, String::new());
     let zoomed_icon = cx.update(|_, cx| tab.read(cx).zoomed).unwrap_or(false);
     report("the zoom button turns into its collapse control", zoomed_icon, String::new());
-    // ⌘↩ on the zoomed grid runs the tab's script again.
     let first = cx.update(|_, cx| tab.read(cx).result().map(|r| std::sync::Arc::as_ptr(r) as usize)).ok().flatten();
     press(cx, "cmd-enter");
     for _ in 0..100 {
@@ -1244,20 +1146,17 @@ async fn zoom_checks(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> boo
     }
     let again = cx.update(|_, cx| tab.read(cx).result().map(|r| (std::sync::Arc::as_ptr(r) as usize, r.rows()))).ok().flatten();
     report("⌘↩ on the zoomed grid re-runs the tab's script", again.is_some_and(|(p, n)| Some(p) != first && n == 40) && zoom(cx) == 1., format!("{first:?} → {again:?}"));
-    // Per tab: another tab is not zoomed; back, this one still is.
     let other = new_tab(ws, cx);
     let other_zoomed = cx.update(|_, cx| other.read(cx).zoomed).unwrap_or(true);
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.activate_tab(&tab, window, cx)));
     draw(cx);
     report("zoom is per tab", !other_zoomed && cx.update(|_, cx| tab.read(cx).zoomed).unwrap_or(false), String::new());
-    // esc on the grid: back in place.
     let _ = cx.update(|window, cx| window.focus(&grid.focus_handle(cx), cx));
     press(cx, "escape");
     pause(cx, 340).await;
     draw(cx);
     let restored = bounds(cx);
     report("esc on the zoomed grid closes it; the layout is back", zoom(cx) == 0. && restored.is_some_and(|r| (r.top() - before.top()).abs() < px(1.) && (r.right() - before.right()).abs() < px(1.)), format!("{before:?} → {restored:?}"));
-    // The button: zoom, then a side view (the MCP log) opening ends it.
     let _ = cx.update(|_, cx| ws.update(cx, |w, _| w.side = None));
     draw(cx);
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.toggle_result_zoom(window, cx)));
@@ -1273,8 +1172,6 @@ async fn zoom_checks(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> boo
     ok
 }
 
-/// The explorer's connection labels (one not connected gray and regular), the side panel's
-/// slide, and the explorer toggle's fill sweeping with the explorer.
 async fn motion_checks(ws: &Entity<Workspace>, id: &str, cx: &mut AsyncWindowContext) -> bool {
     let mut ok = true;
     let mut report = |name: &str, pass: bool, detail: String| {
@@ -1316,8 +1213,6 @@ async fn motion_checks(ws: &Entity<Workspace>, id: &str, cx: &mut AsyncWindowCon
     });
     report("its colour chip is faded; a connected one's is not", chips.as_ref().ok() == Some(&(Some(false), Some(true))), format!("{chips:?}"));
 
-    // A failed connection: its whole error on hover, on its row and on its error row, cut to
-    // fit (wrapped, at most 360 pt wide and 14 lines).
     let long = format!(
         "could not connect to server: Connection refused\n\tIs the server running on host \"offline.db.internal\" (10.20.30.40) and accepting TCP/IP connections on port 9?\nDETAIL: {}\nHINT: check the host, the port and the firewall.",
         "a very long detail that goes on and on ".repeat(30)
@@ -1382,7 +1277,6 @@ async fn motion_checks(ws: &Entity<Workspace>, id: &str, cx: &mut AsyncWindowCon
         format!("opening {opening} landed {landed} closing {closing} gone {gone} (motion {motion})"),
     );
 
-    // The toggle's fill is the explorer's open share, frame by frame.
     let fill = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).explorer_now() / ws.read(cx).explorer_w).unwrap_or(-1.);
     let editor = cx.update(|_, cx| ws.read(cx).active_tab().unwrap().read(cx).editor.clone()).unwrap();
     let _ = cx.update(|window, cx| window.focus(&editor.focus_handle(cx), cx));
@@ -1404,7 +1298,6 @@ async fn motion_checks(ws: &Entity<Workspace>, id: &str, cx: &mut AsyncWindowCon
         format!("{before} → {mid} → {shut} → {back}"),
     );
 
-    // The Dock icon follows the theme: the light one while the app is light.
     let pref = cx.update(|_, cx| crate::theme::pref(cx)).unwrap_or_default();
     let _ = cx.update(|_, cx| crate::theme::set_pref(dataman_core::ThemePref::Light, cx));
     let light = crate::dock_icon::shown_light();
@@ -1415,7 +1308,6 @@ async fn motion_checks(ws: &Entity<Workspace>, id: &str, cx: &mut AsyncWindowCon
     ok
 }
 
-/// A key pressed and released through the window (the events the platform sends).
 fn press(cx: &mut AsyncWindowContext, k: &str) {
     draw(cx);
     let ks = Keystroke::parse(k).unwrap();

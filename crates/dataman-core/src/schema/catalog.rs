@@ -1,8 +1,3 @@
-//! Functions and types for the editor (autocomplete, signature help, `::` types, enum labels,
-//! go to definition): read once per connection and database, on first need, in the background
-//! (PostgreSQL's `pg_proc` and `pg_type`, `pg::catalog`). A server without them (LAR) gives an
-//! empty catalog.
-
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -12,17 +7,13 @@ use crate::Task;
 use crate::backend::Db;
 use crate::conn::{Connection, first_ok};
 
-/// One function or procedure, with its signature as the server prints it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FuncSig {
     pub oid: u32,
     pub schema: String,
     pub name: String,
-    /// `pg_get_function_arguments`: `a integer, b text DEFAULT 'x'::text`.
     pub args: String,
-    /// `pg_get_function_result`: `numeric`, `SETOF record`, `TABLE(x integer)`.
     pub result: String,
-    /// `f` function, `a` aggregate, `w` window, `p` procedure.
     pub kind: char,
     pub returns_set: bool,
 }
@@ -32,23 +23,19 @@ impl FuncSig {
         split_args(&self.args).into_iter().filter(|p| !p.starts_with("OUT ")).collect()
     }
 
-    /// `name(args) → result`.
     pub fn signature(&self) -> String {
         if self.kind == 'p' { format!("{}({})", self.name, self.args) } else { format!("{}({}) → {}", self.name, self.args, self.result) }
     }
 
-    /// Takes any number of arguments from its last parameter on.
     pub fn variadic(&self) -> bool {
         self.params().last().is_some_and(|p| p.starts_with("VARIADIC"))
     }
 }
 
-/// A user type: enum (with its labels), domain, composite, range or base type.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TypeEntry {
     pub schema: String,
     pub name: String,
-    /// `e` enum, `d` domain, `c` composite, `r` range, `m` multirange, `b` base.
     pub kind: char,
     pub labels: Vec<String>,
 }
@@ -60,7 +47,6 @@ pub struct Catalog {
     by_name: HashMap<String, Vec<usize>>,
 }
 
-/// The built-in types offered after `::` and `CAST(… AS`.
 pub const BUILTIN_TYPES: &[&str] = &[
     "bigint", "bigserial", "bit", "boolean", "box", "bytea", "char", "cidr", "circle", "date", "daterange",
     "decimal", "double precision", "float4", "float8", "inet", "int", "int2", "int4", "int4range", "int8",
@@ -80,7 +66,6 @@ impl Catalog {
         Catalog { functions, types, by_name }
     }
 
-    /// The overloads of `name` (in `schema` when given).
     pub fn functions_named<'a>(&'a self, schema: Option<&'a str>, name: &str) -> impl Iterator<Item = &'a FuncSig> + 'a {
         self.by_name
             .get(&name.to_lowercase())
@@ -94,7 +79,6 @@ impl Catalog {
         self.by_name.contains_key(&name.to_lowercase())
     }
 
-    /// The type a column's `format_type` names (`mood`, `public.mood`, `"Mood"`).
     pub fn type_named(&self, type_name: &str, search_path: &[String]) -> Option<&TypeEntry> {
         let t = type_name.trim();
         if t.ends_with("[]") {
@@ -115,7 +99,6 @@ impl Catalog {
         }
     }
 
-    /// The labels of the enum a column's type names.
     pub fn enum_labels(&self, type_name: &str, search_path: &[String]) -> Option<&[String]> {
         self.type_named(type_name, search_path).filter(|t| t.kind == 'e').map(|t| t.labels.as_slice())
     }
@@ -128,7 +111,6 @@ impl super::SchemaCache {
 }
 
 impl Connection {
-    /// The functions and types of `db`, loaded once (later calls return the cached catalog).
     pub fn catalog(self: &Arc<Self>, db: &str) -> Task<Arc<Catalog>> {
         let (this, db) = (self.clone(), db.to_string());
         self.spawn(async move {
@@ -149,7 +131,6 @@ impl Connection {
                     let types = first_ok(&client, &[&pg::types_sql()]).await.map(|rows| rows.iter().filter_map(|r| pg::parse_type(r)).collect()).unwrap_or_default();
                     (functions, types)
                 }
-                // The database's routines; MySQL's enum labels live in each column's type.
                 Db::My(_) => {
                     let functions = match first_ok(&client, &[&super::my::routines_sql(&db)]).await {
                         Ok(rows) => rows.iter().filter_map(|r| super::my::parse_routine(r)).collect(),
@@ -160,7 +141,6 @@ impl Connection {
                     };
                     (functions, Vec::new())
                 }
-                // The database's procedures and functions, every schema's.
                 Db::Ms(_) => {
                     let functions = match first_ok(&client, &[&super::ms::routines_sql(None)]).await {
                         Ok(rows) => super::ms::parse_routines(&rows),

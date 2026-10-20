@@ -1,10 +1,3 @@
-// MongoDB's shell in JavaScript, as `js` runs it (Boa): `db`, its collections and cursors, the
-// BSON types and print. Every call to the server goes through one of the `__n_*` natives, which
-// read the operation as `mql` does (its class checked against what the script was cleared for).
-//
-// Values cross as text: to the server in the shell's form (`ObjectId("…")`, `ISODate(…)`, read
-// back by `shell::parse`), from it as JavaScript calling `__B`'s constructors.
-
 var __B = (function () {
   "use strict";
   var native = {
@@ -18,8 +11,6 @@ var __B = (function () {
   function method(ctor, name, f) {
     Object.defineProperty(ctor.prototype, name, { value: f, enumerable: false, writable: true, configurable: true });
   }
-
-  // --- BSON's types ------------------------------------------------------------------------
 
   function ObjectId(hex) {
     if (!new.target) return new ObjectId(hex);
@@ -159,8 +150,6 @@ var __B = (function () {
   method(BSONRegExp, "toString", function () { return "/" + this.pattern + "/" + this.flags; });
   method(BSONRegExp, "__shell", function () { return "RegExp(" + JSON.stringify(this.pattern) + ", " + JSON.stringify(this.flags) + ")"; });
 
-  // --- Values to the server: the shell's text ------------------------------------------------
-
   function enc(v, depth) {
     if (depth > 150) throw new RangeError("this value nests too deeply (or contains itself)");
     if (v === null) return "null";
@@ -203,11 +192,8 @@ var __B = (function () {
   }
   function encode(v) { return enc(v, 0); }
 
-  // What the natives answer, read as JavaScript.
   function decode(text) { return (0, eval)("(" + text + ")"); }
 
-  // A pending call as the server reads it: [[method, [args…]], …] (trailing undefineds dropped,
-  // as the shell treats a missing argument).
   function args(a) {
     var out = Array.prototype.slice.call(a);
     while (out.length && out[out.length - 1] === undefined) out.pop();
@@ -217,10 +203,7 @@ var __B = (function () {
     return decode(native.op(dbName, coll, encode(calls)));
   }
 
-  // --- Cursors -----------------------------------------------------------------------------
-
   var BATCH = 1000;
-  // Methods that refine a cursor before it runs (into the command); the others it ignores.
   var REFINE = ["sort", "limit", "skip", "projection", "project", "hint", "collation", "maxTimeMS", "comment", "allowDiskUse", "min", "max", "returnKey", "showRecordId"];
   var IGNORE = ["batchSize", "noCursorTimeout", "readPref", "readConcern", "addOption", "tailable", "maxAwaitTimeMS", "pretty"];
 
@@ -280,8 +263,6 @@ var __B = (function () {
   method(Cursor, "explain", function (v) { return run(this.$db, this.$coll, this.$calls.concat([["explain", args(arguments)]])).v; });
   method(Cursor, "toString", function () { return "Cursor"; });
   Cursor.prototype[Symbol.iterator] = function* () { while (this._fill()) yield this.$s.buf[this.$s.at++]; };
-
-  // --- Collections and databases ------------------------------------------------------------
 
   function ack(o) { o.acknowledged = true; return o; }
   function writes(r) { return r.detail || {}; }
@@ -413,8 +394,6 @@ var __B = (function () {
     });
   }
 
-  // --- Printing ------------------------------------------------------------------------------
-
   function show(v) {
     if (typeof v === "string") return v;
     if (v === undefined) return "undefined";
@@ -430,8 +409,6 @@ var __B = (function () {
   function printjson(v) { native.print(v === undefined ? "undefined" : show(v)); }
   function printjsononeline(v) { native.print(show(v).replace(/\n\s*/g, " ")); }
 
-  // What the script's last value is, for Rust: a cursor not started (run with the tab's page),
-  // nothing, text, or a value in the shell's form.
   function final(v) {
     if (v instanceof Cursor && !v.$s.started) return "C" + encode({ db: v.$db, coll: v.$coll, calls: v.$calls });
     if (v === undefined) return "U";
@@ -478,7 +455,7 @@ var __B = (function () {
     ts: function (t, i) { return new Timestamp(t, i); },
     re: function (p, f) {
       if (/^[imsu]*$/.test(f)) {
-        try { return new RegExp(p, f); } catch (e) { /* PCRE only */ }
+        try { return new RegExp(p, f); } catch (e) { }
       }
       return new BSONRegExp(p, f);
     },

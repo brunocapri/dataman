@@ -1,8 +1,3 @@
-//! Pinned tables (`~/.config/dataman/pins.toml`): tables and views the explorer keeps in a
-//! "pinned" group at the top of their connection, by connection, database, schema and name, in
-//! the order they were pinned. The file exists only while something is pinned; connections,
-//! and the files of older versions, are untouched by it.
-
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result};
@@ -14,14 +9,10 @@ use crate::schema::RelKind;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Pin {
-    /// The connection's id.
     pub connection: String,
     pub database: String,
-    /// The database's name again where databases have no schemas (MySQL).
     pub schema: String,
     pub name: String,
-    /// What it was when pinned (`RelKind::label`: `table`, `view`…), for its icon and menu
-    /// before its schema is loaded; empty or unknown reads as a table.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub kind: String,
 }
@@ -38,7 +29,6 @@ impl Pin {
             .unwrap_or(RelKind::Table)
     }
 
-    /// The same relation (its kind aside).
     pub fn is(&self, connection: &str, database: &str, schema: &str, name: &str) -> bool {
         self.connection == connection && self.database == database && self.schema == schema && self.name == name
     }
@@ -56,8 +46,7 @@ pub struct PinStore {
 }
 
 impl PinStore {
-    /// The pins saved in `dirs`. A file that does not read (a hand edit half done) is logged
-    /// and leaves none: pins are a convenience, never a reason not to start.
+    // A file that does not read is logged and leaves no pins: never a reason not to start.
     pub fn open(dirs: &Dirs) -> PinStore {
         let path = dirs.pins_file();
         let pins = read(&path).unwrap_or_else(|e| {
@@ -67,7 +56,6 @@ impl PinStore {
         PinStore { path, pins: Mutex::new(pins) }
     }
 
-    /// A connection's pins, in the order they were pinned.
     pub fn of(&self, connection: &str) -> Vec<Pin> {
         self.pins.lock().iter().filter(|p| p.connection == connection).cloned().collect()
     }
@@ -76,7 +64,6 @@ impl PinStore {
         self.pins.lock().iter().any(|p| p.is(connection, database, schema, name))
     }
 
-    /// Pins a relation (last of its connection's; already pinned: nothing changes) and saves.
     pub fn pin(&self, pin: Pin) -> Result<()> {
         let mut g = self.pins.lock();
         if g.iter().any(|p| p.is(&pin.connection, &pin.database, &pin.schema, &pin.name)) {
@@ -86,7 +73,6 @@ impl PinStore {
         save(&self.path, &g)
     }
 
-    /// Unpins a relation and saves (the file goes with the last pin).
     pub fn unpin(&self, connection: &str, database: &str, schema: &str, name: &str) -> Result<()> {
         let mut g = self.pins.lock();
         let n = g.len();
@@ -97,8 +83,6 @@ impl PinStore {
         save(&self.path, &g)
     }
 
-    /// A connection's pins replaced by `pins` (in that order), the others' kept: what the app's
-    /// undo puts back.
     pub fn set_of(&self, connection: &str, pins: &[Pin]) -> Result<()> {
         let mut g = self.pins.lock();
         let at = g.iter().position(|p| p.connection == connection).unwrap_or(g.len());
@@ -112,7 +96,6 @@ impl PinStore {
         save(&self.path, &g)
     }
 
-    /// Drops every pin of a connection (deleted).
     pub fn forget(&self, connection: &str) -> Result<()> {
         let mut g = self.pins.lock();
         let n = g.len();
@@ -132,7 +115,6 @@ fn read(path: &Path) -> Result<Vec<Pin>> {
     }
 }
 
-/// Writes atomically (a temporary file in the same directory, then `rename`); no pins, no file.
 fn save(path: &Path, pins: &[Pin]) -> Result<()> {
     if pins.is_empty() {
         return match std::fs::remove_file(path) {
@@ -167,13 +149,11 @@ mod tests {
         s.pin(Pin::new("c1", "app", "public", "orders", RelKind::Table)).unwrap();
         s.pin(Pin::new("c2", "shop", "shop", "items", RelKind::Table)).unwrap();
         s.pin(Pin::new("c1", "app", "sales", "daily", RelKind::View)).unwrap();
-        // Pinned again: no duplicate, its place kept.
         s.pin(Pin::new("c1", "app", "public", "orders", RelKind::Table)).unwrap();
         let names = |v: Vec<Pin>| v.into_iter().map(|p| p.name).collect::<Vec<_>>();
         assert_eq!(names(s.of("c1")), ["orders", "daily"]);
         assert_eq!(names(s.of("c2")), ["items"]);
         assert!(s.is_pinned("c1", "app", "sales", "daily"));
-        // Database and schema are part of the key.
         assert!(!s.is_pinned("c1", "other", "sales", "daily") && !s.is_pinned("c1", "app", "public", "daily"));
         let again = PinStore::open(&dirs);
         assert_eq!(again.of("c1"), s.of("c1"));
@@ -207,8 +187,6 @@ mod tests {
         assert!(PinStore::open(&dirs).of("c1").is_empty());
     }
 
-    /// A connection's pins put back as they were (the undo), the other connections' untouched;
-    /// none left, no file.
     #[test]
     fn setting_a_connections_pins() {
         let (_d, dirs, s) = store();
@@ -226,8 +204,6 @@ mod tests {
         assert!(!dirs.pins_file().exists());
     }
 
-    /// The kind is optional (a hand-written pin is a table) and an unknown one reads as a
-    /// table; a broken file starts with no pins instead of failing.
     #[test]
     fn lenient_reading() {
         let (_d, dirs, _s) = store();

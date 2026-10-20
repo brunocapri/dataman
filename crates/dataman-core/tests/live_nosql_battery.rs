@@ -1,9 +1,3 @@
-//! A large battery of real-world statements against each document engine, on rich data
-//! (dates, geo points, arrays, nested documents, decimals, binaries): aggregations, date and
-//! geo filters, text search, every Redis type. Every statement runs; the failures are listed
-//! together at the end (one test per engine). Skips an engine whose server does not answer
-//! (the servers of `live_mongo`, `live_search` and `live_redis`).
-
 mod common;
 
 use common::*;
@@ -29,7 +23,6 @@ impl Battery<'_> {
         }
     }
 
-    /// Runs `text`; `check` says whether its output is right (`Err`: why not).
     fn expect(&mut self, what: &str, text: &str, check: impl FnOnce(&Output) -> Result<(), String>) {
         match self.run(text, Page::default()) {
             Ok(r) => {
@@ -41,7 +34,6 @@ impl Battery<'_> {
         }
     }
 
-    /// As [`Battery::expect`], with the whole run (a script's printed lines, its final cursor).
     fn expect_ran(&mut self, what: &str, text: &str, check: impl FnOnce(&Ran) -> Result<(), String>) {
         match self.run(text, Page::default()) {
             Ok(r) => {
@@ -53,7 +45,6 @@ impl Battery<'_> {
         }
     }
 
-    /// A script whose value must be `true`.
     fn yes(&mut self, what: &str, text: &str) {
         self.expect(what, text, |o| match o {
             Output::Value(b) if b.text() == "true" => Ok(()),
@@ -65,7 +56,6 @@ impl Battery<'_> {
         self.expect(what, text, |_| Ok(()));
     }
 
-    /// Must be refused or fail (unsupported, bad input): `Ok` is a failure.
     fn refused(&mut self, what: &str, text: &str, says: &str) {
         match self.run(text, Page::default()) {
             Ok(r) => self.failures.push(format!("{what}: ran, expected a refusal: {:?}\n    {text}", short(&r.output))),
@@ -116,9 +106,6 @@ fn text_has(o: &Output, needle: &str) -> Result<(), String> {
     if t.contains(needle) { Ok(()) } else { Err(format!("{needle:?} not in {}", t.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(160).collect::<String>())) }
 }
 
-// ---------------------------------------------------------------------------------------------
-// MongoDB
-
 #[test]
 fn mongodb_battery() {
     let e = env();
@@ -133,8 +120,6 @@ fn mongodb_battery() {
     let mut b = Battery { e: &e, c, db: "dataman_battery".into(), failures: Vec::new(), ran: 0 };
     b.ok("drop", "db.dropDatabase()");
 
-    // Rich data: places with points, people with nested addresses and arrays, orders with
-    // decimals and dates, a big document, binaries.
     b.ok("places", r#"db.places.insertMany([
       {_id: 1, name: "Belém Tower", city: "Lisbon", loc: {type: "Point", coordinates: [-9.2160, 38.6916]}, tags: ["monument", "river"]},
       {_id: 2, name: "Praça do Comércio", city: "Lisbon", loc: {type: "Point", coordinates: [-9.1366, 38.7075]}, tags: ["square"]},
@@ -191,7 +176,6 @@ fn mongodb_battery() {
     b.ok("big document", &format!("db.big.insertOne({{_id: 'big', text: '{}', arr: [{}]}})", "x".repeat(200_000), (0..5000).map(|i| i.to_string()).collect::<Vec<_>>().join(",")));
     b.ok("binaries and odd types", "db.odd.insertOne({_id: 'odd', bin: BinData(0, 'AAECAwQF/w=='), uuid: UUID('123e4567-e89b-12d3-a456-426614174000'), ts: Timestamp(1700000000, 1), min: MinKey(), max: MaxKey(), re: /ab+c/i, nan: NaN, inf: Infinity, neg: -0.0, old: ISODate('1900-01-01T00:00:00Z'), far: ISODate('2999-12-31T23:59:59.999Z'), big: NumberLong('9223372036854775807'), dec: NumberDecimal('12345678901234567890.123456789'), nested: {a: {b: {c: {d: [1, [2, [3]]]}}}}})");
 
-    // Filters: dates, regex, arrays, nested, $expr, $in with ObjectIds, $exists, $type.
     b.expect("date range", "db.orders.find({created: {$gte: ISODate('2024-03-01'), $lt: new Date('2024-04-01')}})", |o| docs(o).map(|_| ()));
     b.expect("date range count", "db.orders.countDocuments({created: {$gte: ISODate('2024-03-01T00:00:00Z'), $lt: ISODate('2024-04-01T00:00:00Z')}})", |o| text_has(o, "NumberLong(17)"));
     b.expect("regex literal", "db.people.find({name: /^ada/i}, {name: 1})", |o| n_docs(o, 8));
@@ -223,7 +207,6 @@ fn mongodb_battery() {
         Ok(())
     });
 
-    // Aggregations.
     b.expect("$group by month", "db.orders.aggregate([{$group: {_id: {$dateToString: {format: '%Y-%m', date: '$created'}}, n: {$sum: 1}, total: {$sum: '$total'}, avg: {$avg: '$qty'}}}, {$sort: {_id: 1}}])", |o| n_docs(o, 12));
     b.expect("$lookup $unwind $project", "db.orders.aggregate([{$match: {status: 'paid'}}, {$lookup: {from: 'people', localField: 'person', foreignField: '_id', as: 'who'}}, {$unwind: '$who'}, {$project: {n: 1, 'who.name': 1, 'who.address.city': 1}}, {$limit: 5}])", |o| { n_docs(o, 5)?; text_has(o, "who") });
     b.expect("$lookup pipeline", "db.people.aggregate([{$lookup: {from: 'orders', let: {p: '$_id'}, pipeline: [{$match: {$expr: {$eq: ['$person', '$$p']}}}, {$group: {_id: null, spent: {$sum: '$total'}}}], as: 'spent'}}, {$project: {name: 1, spent: {$first: '$spent.spent'}}}, {$sort: {spent: -1}}, {$limit: 3}])", |o| n_docs(o, 3));
@@ -243,7 +226,6 @@ fn mongodb_battery() {
     b.expect("explain", "db.orders.find({status: 'paid'}).explain('executionStats')", |o| text_has(o, "executionStats"));
     b.expect("aggregate explain", "db.orders.aggregate([{$match: {n: 1}}]).explain()", |o| text_has(o, "queryPlanner"));
 
-    // Writes with options and the shell's helpers.
     b.expect("updateOne arrayFilters", "db.people.updateOne({_id: ObjectId('650000000000000000000000')}, {$set: {'scores.$[s].v': 100}}, {arrayFilters: [{'s.subject': 'math'}]})", |o| text_has(o, "1 modified"));
     b.expect("update pipeline", "db.orders.updateMany({status: 'refunded'}, [{$set: {refundedTotal: {$multiply: ['$total', -1]}}}])", |o| text_has(o, "50 modified"));
     b.expect("upsert", "db.orders.updateOne({n: 9999}, {$setOnInsert: {status: 'new'}, $inc: {qty: 1}}, {upsert: true})", |o| text_has(o, "upserted"));
@@ -274,7 +256,6 @@ fn mongodb_battery() {
     b.ok("time series", "db.createCollection('ticks', {timeseries: {timeField: 't', metaField: 'sym'}})");
     b.ok("time series insert", "db.ticks.insertOne({t: new Date(), sym: 'ACME', px: 1.5})");
 
-    // The shell's JavaScript: variables, dates, loops, functions, cursors, print.
     b.yes("const + new Date + Date.UTC", "const since = new Date(Date.UTC(2024, 5, 1))\ndb.orders.countDocuments({created: {$gte: since}}) === db.orders.countDocuments({created: {$gte: ISODate('2024-06-01')}})");
     b.yes("Date.now() arithmetic", "const weekAgo = new Date(Date.now() - 7 * 864e5)\ndb.events2.countDocuments({at: {$gte: weekAgo}}) >= 1");
     b.yes("date methods", "const d = new Date('2024-02-29T00:00:00Z'); d.setUTCFullYear(2025); d.toISOString() === '2025-03-01T00:00:00.000Z'");
@@ -309,7 +290,6 @@ fn mongodb_battery() {
         if d.docs.is_empty() || r.rerun.is_none() { Err(format!("{} docs, rerun {}", d.docs.len(), r.rerun.is_some())) } else { Ok(()) }
     });
     b.expect("several statements: the last one's result", "db.gen.insertOne({_id: 'multi'}); db.gen.findOne({_id: 'multi'})", |o| text_has(o, "multi"));
-    // The page after a script's final cursor: its query again, not the script.
     let ran = b.run("db.gen.insertOne({mark: 1})\ndb.orders.find({}).sort({n: 1})", Page::default());
     match ran.as_ref().ok().and_then(|r| r.rerun.clone()) {
         Some(rerun) => {
@@ -322,7 +302,6 @@ fn mongodb_battery() {
         }
         None => b.failures.push(format!("rerun: no cursor: {ran:?}")),
     }
-    // What a script does is read before it runs, and held to while it runs.
     let class = |t: &str| dataman_core::nosql::classify(Engine::MongoDb, t);
     for (t, want) in [
         ("let n = db.orders.countDocuments({}); n", "read"),
@@ -352,9 +331,6 @@ fn mongodb_battery() {
     b.refused("mapReduce is not here", "db.orders.mapReduce(function () {}, function () {})", "mapReduce");
     b.finish("MongoDB");
 }
-
-// ---------------------------------------------------------------------------------------------
-// Elasticsearch and OpenSearch
 
 fn search_battery(engine: Engine) {
     let e = env();
@@ -456,7 +432,6 @@ fn search_battery(engine: Engine) {
         b.expect("ES|QL", &format!("POST _query?format=json\n{{\"query\": \"FROM {ix} | STATS n = COUNT(*) BY status\"}}"), |o| text_has(o, "paid"));
         b.ok("point in time", &format!("POST /{ix}/_pit?keep_alive=1m"));
     }
-    // Writes.
     b.expect("update a document", &format!("POST /{ix}/_update/1?refresh=true\n{{\"doc\": {{\"status\": \"returned\"}}}}"), |o| text_has(o, "updated"));
     b.expect("update by query with a script", &format!("POST /{ix}/_update_by_query?refresh=true\n{{\"query\": {{\"term\": {{\"status\": \"new\"}}}}, \"script\": {{\"source\": \"ctx._source.total += 1\"}}}}"), |o| text_has(o, "75 documents updated"));
     b.expect("delete by query", &format!("POST /{ix}/_delete_by_query?refresh=true\n{{\"query\": {{\"term\": {{\"status\": \"refunded\"}}}}}}"), |o| text_has(o, "deleted"));
@@ -481,9 +456,6 @@ fn opensearch_battery() {
     search_battery(Engine::OpenSearch);
 }
 
-// ---------------------------------------------------------------------------------------------
-// Redis
-
 #[test]
 fn redis_battery() {
     let e = env();
@@ -498,7 +470,6 @@ fn redis_battery() {
     let mut b = Battery { e: &e, c, db: "10".into(), failures: Vec::new(), ran: 0 };
     b.ok("flush", "FLUSHDB");
 
-    // Strings, counters, expiry, binary.
     b.expect("SET EX", "SET session:1 \"{\\\"user\\\": 1}\" EX 3600", |o| text_has(o, "OK"));
     b.expect("TTL", "TTL session:1", |o| { let v = json_of(o)?; if v.as_i64().is_some_and(|t| t > 3500) { Ok(()) } else { Err(v.to_string()) } });
     b.ok("PERSIST", "PERSIST session:1");
@@ -514,7 +485,6 @@ fn redis_battery() {
     b.expect("GETRANGE", "GETRANGE big 0 9", |o| text_has(o, "xxxxxxxxxx"));
     b.ok("MSET", "MSET a 1 b 2 c 3");
     b.expect("MGET", "MGET a b c nope", |o| { let v = json_of(o)?; if v == serde_json::json!(["1", "2", "3", null]) { Ok(()) } else { Err(v.to_string()) } });
-    // A huge hash, list, set, sorted set: paged entries.
     let mut h = String::from("HSET huge");
     for i in 0..3000 {
         h.push_str(&format!(" f{i} v{i}"));
@@ -534,7 +504,6 @@ fn redis_battery() {
     b.expect("ZRANGE BYSCORE REV LIMIT", "ZRANGE board +inf -inf BYSCORE REV LIMIT 0 2", |o| text_has(o, "grace"));
     b.expect("ZRANK", "ZRANK board alan", |o| text_has(o, "2"));
     b.expect("ZINCRBY", "ZINCRBY board 100 linus", |o| text_has(o, "105"));
-    // Streams.
     b.expect("XADD", "XADD events * type login user 1", |o| text_has(o, "-"));
     b.ok("XADD more", "XADD events * type logout user 1");
     b.expect("XRANGE", "XRANGE events - + COUNT 10", |o| text_has(o, "login"));
@@ -542,18 +511,15 @@ fn redis_battery() {
     b.ok("XINFO", "XINFO STREAM events");
     b.ok("XGROUP", "XGROUP CREATE events g1 0");
     b.ok("XINFO GROUPS", "XINFO GROUPS events");
-    // Geo.
     b.ok("GEOADD", "GEOADD places -9.2160 38.6916 belem -9.1366 38.7075 comercio -8.6146 41.1456 clerigos");
     b.expect("GEOSEARCH", "GEOSEARCH places FROMLONLAT -9.14 38.71 BYRADIUS 20 km ASC WITHDIST", |o| { text_has(o, "comercio")?; text_has(o, "belem") });
     b.expect("GEODIST", "GEODIST places belem clerigos km", |o| text_has(o, "27"));
     b.ok("GEOPOS", "GEOPOS places belem");
     b.ok("GEOHASH", "GEOHASH places belem");
-    // HyperLogLog, bitmaps.
     b.ok("PFADD", "PFADD visitors a b c a");
     b.expect("PFCOUNT", "PFCOUNT visitors", |o| text_has(o, "3"));
     b.ok("SETBIT", "SETBIT bits 7 1");
     b.expect("BITCOUNT", "BITCOUNT bits", |o| text_has(o, "1"));
-    // Keys: patterns, types, memory, encoding.
     for i in 0..300 {
         b.ok("many keys", &format!("SET user:{i}:name n{i}"));
     }
@@ -578,7 +544,6 @@ fn redis_battery() {
     if !keys.iter().any(|k| k.name == "events" && k.note.as_deref() == Some("stream")) {
         b.failures.push(format!("the stream is not listed: {} keys", keys.len()));
     }
-    // Not here: modules, blocking, stateful commands.
     b.refused("JSON without the module", "JSON.GET doc", "unknown command");
     b.refused("blocking", "BLPOP q 1", "not supported");
     b.refused("MULTI", "MULTI", "not supported");

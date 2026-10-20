@@ -1,6 +1,3 @@
-//! MySQL and SQL Server: objects with awkward names load in the explorer, and reading them back
-//! through every catalog call works.
-
 mod common;
 
 use common::*;
@@ -70,7 +67,6 @@ fn mysql_weird_names() {
     assert!(snap.resolve(None, "se;lect").is_some());
     let cat = e.core.block_on(c.catalog(db)).unwrap();
     assert!(cat.functions_named(None, "f n").count() >= 1);
-    // A data view of the weird table.
     let rs = s.execute("SELECT * FROM `se;lect` ORDER BY `from`");
     rs.fetch_all();
     e.core.block_on(rs.wait_finished());
@@ -128,7 +124,6 @@ fn mssql_weird_names() {
     eprintln!("{counts:?}");
     let ddl = e.core.block_on(c.table_ddl(db, sc, "se;lect")).unwrap();
     assert!(ddl.contains("[x]]y]"), "{ddl}");
-    // The DDL runs again.
     let again = ddl.replace("[s]]1].", "dbo.");
     for st in dataman_core::sql::batches_in(&again, Dialect::TSql) {
         run(&e, &s, &again[st.range.clone()]);

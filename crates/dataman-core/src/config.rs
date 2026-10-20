@@ -8,10 +8,6 @@ use anyhow::{Context as _, Result};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
-/// The database engine a connection speaks to. LAR is a PostgreSQL engine (wire protocol and
-/// SQL), recognized after connecting ([`crate::server`]). The SQL engines run statements in
-/// editor sessions; the others ([`Family::Document`], [`Family::KeyValue`]) are reached through
-/// [`crate::nosql`] and shown as documents with their own query language.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Engine {
@@ -28,14 +24,10 @@ pub enum Engine {
     Redis,
 }
 
-/// What kind of database an engine is: what its tabs show and what their editor speaks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Family {
-    /// Tables and SQL statements: the editor, the grid, the explorer's schemas.
     Sql,
-    /// Collections (indices) of JSON documents and the engine's own query language.
     Document,
-    /// Keys and their typed values, and the engine's commands.
     KeyValue,
 }
 
@@ -55,7 +47,7 @@ impl Engine {
         }
     }
 
-    /// The name the file, the MCP tools and the logos know it by (`mysql`, `mongodb`).
+    /// Stored in the file and used by the MCP tools and the logos: must not change.
     pub fn slug(self) -> &'static str {
         match self {
             Engine::Postgres => "postgres",
@@ -68,7 +60,6 @@ impl Engine {
         }
     }
 
-    /// The engine a name stands for: its slug, its label, or a common alias (`pg`, `mongo`, `es`).
     pub fn parse(s: &str) -> Option<Engine> {
         let s = s.trim().to_ascii_lowercase();
         let alias = match s.as_str() {
@@ -94,7 +85,6 @@ impl Engine {
         }
     }
 
-    /// The user a new connection starts with (empty: none by default).
     pub fn default_user(self) -> &'static str {
         match self {
             Engine::Postgres => "postgres",
@@ -114,13 +104,10 @@ impl Engine {
         }
     }
 
-    /// Statements in editor sessions (everything but [`crate::nosql`]'s engines).
     pub fn is_sql(self) -> bool {
         self.family() == Family::Sql
     }
 
-    /// The SQL dialect the engine's statements are written in (PostgreSQL's for the engines
-    /// without SQL: nothing of theirs is lexed as SQL).
     pub fn dialect(self) -> crate::sql::Dialect {
         crate::sql::Dialect::of(self)
     }
@@ -130,21 +117,15 @@ impl Engine {
     }
 }
 
-/// The connection's advanced MCP options (allowed queries, YOLO) are off for now: kept in the
-/// file as set, but not shown anywhere and not applied ([`ConnectionProfile::mcp_yolo_on`],
-/// [`ConnectionProfile::mcp_allowed_on`]).
 pub const MCP_ADVANCED: bool = false;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SslMode {
     Disable,
-    /// TLS if the server offers it, without verifying the certificate (libpq's default).
     #[default]
     Prefer,
-    /// TLS required, certificate not verified (as in libpq).
     Require,
-    /// TLS required, certificate verified against the system roots and the host name.
     VerifyFull,
 }
 
@@ -174,56 +155,32 @@ pub struct ConnectionProfile {
     pub database: String,
     #[serde(default)]
     pub sslmode: SslMode,
-    /// A password is stored in the keychain for this connection.
     #[serde(default)]
     pub save_password: bool,
-    /// Color tag shown in the explorer and on tabs (a swatch name such as `rose`); `None`
-    /// picks one from the id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
-    /// Reach the server through an SSH tunnel. With `save_password`, the SSH password or key
-    /// passphrase is in the keychain too (account `<id>:ssh`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ssh: Option<SshSettings>,
-    /// Which environment the server is: production gets the red accent and asks before every
-    /// write and DDL (`guard`).
     #[serde(default, skip_serializing_if = "Environment::is_none")]
     pub env: Environment,
-    /// Sessions start with `default_transaction_read_only = on` and Dataman refuses writes
-    /// before they reach the server (LAR accepts READ ONLY without enforcing it).
+    /// Dataman refuses writes before they reach the server: LAR accepts READ ONLY without
+    /// enforcing it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub read_only: bool,
-    /// Databases whose read-only state differs from `read_only` (the default for the others),
-    /// set from the explorer (a database's menu ▸ Read Only). Only differences are kept.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub read_only_databases: BTreeMap<String, bool>,
-    /// What agents may do through the MCP server (`dataman-mcp`); `None` is the default for the
-    /// environment ([`ConnectionProfile::mcp_access`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp: Option<McpAccess>,
-    /// The most rows an agent's write may change before it waits for a human (`None`: the
-    /// setting `mcp_write_row_limit`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp_row_limit: Option<u64>,
-    /// Statements agents may run here without a human, whatever the tier would say (one
-    /// statement each; `?` stands for one value: [`crate::guard::allowlist_match`]). The switch,
-    /// the tier off and the database's read-only still refuse them. Set in the connection's
-    /// MCP › Advanced, or by "Always allow" on an approval.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mcp_allowed: Vec<String>,
-    /// YOLO: agents run anything here without a human (destructive statements, writes past the
-    /// row limit, production), in any tier but off. The switch and the database's read-only
-    /// still refuse writes.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub mcp_yolo: bool,
-    /// The driver's own options, by their names in its connection strings (MongoDB's
-    /// `authSource`, `replicaSet`, `srv`…), for what the fields above do not say.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub options: BTreeMap<String, String>,
 }
 
-/// The override of `database` in `overrides`: by its exact name (SQL Server's names, compared
-/// without case there, also by its case-folded one).
 fn override_key<'a>(overrides: &'a BTreeMap<String, bool>, engine: Engine, database: &str) -> Option<&'a String> {
     overrides
         .get_key_value(database)
@@ -231,13 +188,10 @@ fn override_key<'a>(overrides: &'a BTreeMap<String, bool>, engine: Engine, datab
         .or_else(|| (engine == Engine::SqlServer).then(|| overrides.keys().find(|k| k.eq_ignore_ascii_case(database))).flatten())
 }
 
-/// [`ConnectionProfile::read_only_for`] over a default and its overrides (a live connection
-/// keeps its own copy of them, changed without reconnecting).
 pub fn read_only_in(default: bool, overrides: &BTreeMap<String, bool>, engine: Engine, database: &str) -> bool {
     override_key(overrides, engine, database).and_then(|k| overrides.get(k)).copied().unwrap_or(default)
 }
 
-/// [`ConnectionProfile::set_read_only_for`] over a default and its overrides.
 pub fn set_read_only_in(default: bool, overrides: &mut BTreeMap<String, bool>, engine: Engine, database: &str, on: bool) {
     while let Some(k) = override_key(overrides, engine, database).cloned() {
         overrides.remove(&k);
@@ -247,19 +201,12 @@ pub fn set_read_only_in(default: bool, overrides: &mut BTreeMap<String, bool>, e
     }
 }
 
-/// What agents (MCP clients) may do on a connection: the tiers, from least to most.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum McpAccess {
-    /// Not visible to agents' tools.
     Off,
-    /// Reads only: read-only transactions and the client-side guard.
     Read,
-    /// Non-destructive writes (`guard::WriteClass::SafeWrite`) within the row limit; anything
-    /// destructive is refused, more rows than the limit wait for a human in the app.
     Write,
-    /// Anything, but destructive statements and writes over the row limit wait for a human's
-    /// Allow in the app.
     Full,
 }
 
@@ -279,13 +226,11 @@ impl McpAccess {
         McpAccess::ALL.into_iter().find(|a| a.label().eq_ignore_ascii_case(s.trim()))
     }
 
-    /// The default for a connection without an explicit setting: read, off on production.
     pub fn default_for(env: Environment) -> McpAccess {
         if env.is_production() { McpAccess::Off } else { McpAccess::Read }
     }
 }
 
-/// A connection's environment tag.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Environment {
@@ -317,13 +262,10 @@ impl Environment {
     }
 }
 
-/// How the SSH tunnel authenticates.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SshAuth {
-    /// The keys of the running ssh-agent (`SSH_AUTH_SOCK`), then the unencrypted identity files.
     Agent,
-    /// A private key file, with an optional passphrase.
     Key,
     Password,
 }
@@ -341,26 +283,20 @@ impl SshAuth {
 }
 
 impl Default for SshAuth {
-    /// The agent when one is running, the key file otherwise.
     fn default() -> Self {
         if std::env::var_os("SSH_AUTH_SOCK").is_some_and(|s| !s.is_empty()) { SshAuth::Agent } else { SshAuth::Key }
     }
 }
 
-/// The SSH hop in front of the database. `host` may be an alias of `~/.ssh/config`: its
-/// HostName, User, Port, IdentityFile and ProxyJump apply where these fields are empty.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SshSettings {
     pub host: String,
-    /// `None`: the alias' Port, or 22.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub port: Option<u16>,
-    /// Empty: the alias' User, or the local user.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub user: String,
     #[serde(default)]
     pub auth: SshAuth,
-    /// The private key (`SshAuth::Key`); empty: the alias' IdentityFile, or `~/.ssh/id_*`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub key_file: String,
 }
@@ -390,48 +326,35 @@ impl ConnectionProfile {
         }
     }
 
-    /// Whether `database` is read-only: its own setting, else the connection's.
     pub fn read_only_for(&self, database: &str) -> bool {
         read_only_in(self.read_only, &self.read_only_databases, self.engine, database)
     }
 
-    /// Makes `database` read-only or writable (kept as an override only where it differs
-    /// from the connection's default).
     pub fn set_read_only_for(&mut self, database: &str, on: bool) {
         set_read_only_in(self.read_only, &mut self.read_only_databases, self.engine, database, on);
     }
 
-    /// No database is writable: the default and every override are read-only (SQL Server's
-    /// `ApplicationIntent=ReadOnly` is for such a connection only).
     pub fn read_only_everywhere(&self) -> bool {
         self.read_only && self.read_only_databases.values().all(|v| *v)
     }
 
-    /// What agents may do here: the explicit setting, or the environment's default.
     pub fn mcp_access(&self) -> McpAccess {
         self.mcp.unwrap_or_else(|| McpAccess::default_for(self.env))
     }
 
-    /// The same connection but for what agents may do on it (the MCP tier, row limit, allowed
-    /// queries, YOLO): no session reads those, so a live connection stays as it is.
     pub fn same_but_agents(&self, other: &ConnectionProfile) -> bool {
         let strip = |p: &ConnectionProfile| ConnectionProfile { mcp: None, mcp_row_limit: None, mcp_allowed: Vec::new(), mcp_yolo: false, ..p.clone() };
         strip(self) == strip(other)
     }
 
-    /// YOLO in effect: the advanced options on ([`MCP_ADVANCED`]), set, and the tier is not off
-    /// (an off connection stays invisible).
     pub fn mcp_yolo_on(&self) -> bool {
         MCP_ADVANCED && self.mcp_yolo && self.mcp_access() != McpAccess::Off
     }
 
-    /// The allowed queries in effect: none while the advanced options are off ([`MCP_ADVANCED`]).
     pub fn mcp_allowed_on(&self) -> &[String] {
         if MCP_ADVANCED { &self.mcp_allowed } else { &[] }
     }
 
-    /// Adds statements to the allowed queries (each checked as an entry, those already allowed
-    /// by an entry left out); the ones added.
     pub fn mcp_allow<S: AsRef<str>>(&mut self, stmts: &[S]) -> Vec<String> {
         let d = self.engine.dialect();
         let mut added = Vec::new();
@@ -449,19 +372,15 @@ impl ConnectionProfile {
         format!("{}@{}:{}/{}", self.user, self.host, self.port, self.database)
     }
 
-    /// The host is a Unix-socket directory (`/tmp`, `/var/run/postgresql`), as in libpq.
     pub fn is_socket(&self) -> bool {
         self.host.starts_with('/')
     }
 
-    /// The keychain account of the SSH password or key passphrase.
     pub fn ssh_secret_id(&self) -> String {
         format!("{}:ssh", self.id)
     }
 
-    /// `postgresql://user@host:port/db?sslmode=…`: the connection as a libpq URL. Never with the
-    /// password (it lives in the keychain); user and database are percent-encoded, an IPv6 host
-    /// goes in brackets, a socket directory is percent-encoded (`%2Ftmp`), as libpq reads it.
+    /// Never with the password (it lives in the keychain).
     pub fn url(&self) -> String {
         let host = if self.is_socket() {
             percent_encode(&self.host)
@@ -471,7 +390,6 @@ impl ConnectionProfile {
             self.host.clone()
         };
         if self.engine == Engine::MySql {
-            // MySQL Shell's form, with its own TLS mode names.
             let ssl = match self.sslmode {
                 SslMode::Disable => "DISABLED",
                 SslMode::Prefer => "PREFERRED",
@@ -508,7 +426,6 @@ impl ConnectionProfile {
             _ => {}
         }
         if self.engine == Engine::SqlServer {
-            // JDBC's form (Prisma's too): the encryption in SQL Server's words.
             let enc = match self.sslmode {
                 SslMode::Disable => "encrypt=false",
                 SslMode::Prefer => "encrypt=optional;trustServerCertificate=true",
@@ -528,7 +445,6 @@ impl ConnectionProfile {
     }
 }
 
-/// RFC 3986 percent-encoding of everything but the unreserved characters.
 pub(crate) fn percent_encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
@@ -547,14 +463,12 @@ struct File {
     connections: Vec<ConnectionProfile>,
 }
 
-/// Where Dataman keeps its files.
 #[derive(Clone, Debug)]
 pub struct Dirs {
     pub config: PathBuf,
 }
 
 impl Dirs {
-    /// `$XDG_CONFIG_HOME/dataman`, or `~/.config/dataman`.
     pub fn default_dirs() -> Result<Dirs> {
         let base = match std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
             Some(x) => PathBuf::from(x),
@@ -575,40 +489,33 @@ impl Dirs {
         self.config.join("history")
     }
 
-    /// Favorite queries, shared with `dataman-mcp`.
     pub fn favorites_file(&self) -> PathBuf {
         self.config.join("favorites.toml")
     }
 
-    /// The explorer's pinned tables (`pins`); only there while something is pinned.
     pub fn pins_file(&self) -> PathBuf {
         self.config.join("pins.toml")
     }
 
-    /// The workspace kept between launches (`session`).
     pub fn session_dir(&self) -> PathBuf {
         self.config.join("session")
     }
 
-    /// SSH host keys the user trusted in Dataman (read after `~/.ssh/known_hosts`).
     pub fn known_hosts_file(&self) -> PathBuf {
         self.config.join("known_hosts")
     }
 
-    /// The MCP server's user-defined tools.
     pub fn mcp_tools_file(&self) -> PathBuf {
         self.config.join("mcp-tools.toml")
     }
 
-    /// The MCP server's audit log (one JSON object per tool call).
     pub fn mcp_audit_file(&self) -> PathBuf {
         self.config.join("mcp-audit.jsonl")
     }
 }
 
-/// The saved connections. Other processes write the file too (`dataman-mcp` without the app, a
-/// hand edit): [`ConfigStore::refresh`] reads it again when its modification time moved, and
-/// every change here starts from the file as it is on disk, so nobody's write is lost.
+/// Other processes write the file too (`dataman-mcp` without the app, a hand edit): every
+/// change starts from the file as it is on disk, so nobody's write is lost.
 pub struct ConfigStore {
     path: PathBuf,
     inner: Mutex<Inner>,
@@ -616,7 +523,6 @@ pub struct ConfigStore {
 
 struct Inner {
     connections: Vec<ConnectionProfile>,
-    /// The file's modification time as last read or written (`None`: no file).
     stamp: Option<std::time::SystemTime>,
 }
 
@@ -648,9 +554,7 @@ impl ConfigStore {
         self.inner.lock().connections.iter().find(|c| c.id == id).cloned()
     }
 
-    /// Reads the file again when it changed on disk since it was last read or written here;
-    /// true when the connections differ from before. A file that does not parse (a hand edit
-    /// half done) keeps the connections as they were.
+    /// A file that does not parse (a hand edit half done) keeps the connections as they were.
     pub fn refresh(&self) -> bool {
         let mut g = self.inner.lock();
         Self::sync(&self.path, &mut g)
@@ -675,7 +579,6 @@ impl ConfigStore {
         }
     }
 
-    /// A change made on the file as it is now, saved.
     fn change(&self, f: impl FnOnce(&mut Vec<ConnectionProfile>)) -> Result<()> {
         let mut g = self.inner.lock();
         Self::sync(&self.path, &mut g);
@@ -685,7 +588,6 @@ impl ConfigStore {
         Ok(())
     }
 
-    /// Adds or replaces (by id) a connection and saves the file.
     pub fn upsert(&self, profile: ConnectionProfile) -> Result<()> {
         self.change(|g| match g.iter_mut().find(|c| c.id == profile.id) {
             Some(c) => *c = profile,
@@ -697,8 +599,6 @@ impl ConfigStore {
         self.change(|g| g.retain(|c| c.id != id))
     }
 
-    /// Puts the connections in the order of `ids` (the explorer's, the file's); any it does not
-    /// name keep their order after them.
     pub fn reorder(&self, ids: &[String]) -> Result<()> {
         self.change(|g| g.sort_by_key(|c| ids.iter().position(|i| *i == c.id).unwrap_or(usize::MAX)))
     }
@@ -743,8 +643,6 @@ mod tests {
         assert_eq!(ConfigStore::open(&dirs).unwrap().connections(), vec![q]);
     }
 
-    /// Another process writes the file (`dataman-mcp` without the app): `refresh` picks it up,
-    /// once; a change made here afterwards keeps it; a broken file keeps what was there.
     #[test]
     fn refresh_follows_other_writers() {
         let dir = tempfile::tempdir().unwrap();
@@ -754,14 +652,12 @@ mod tests {
         let a = ConnectionProfile::new("a");
         app.upsert(a.clone()).unwrap();
         assert!(!app.refresh(), "its own write is not a change");
-        // The other writer, with a store of its own.
         let other = ConfigStore::open(&dirs).unwrap();
         let b = ConnectionProfile::new("b");
         other.upsert(b.clone()).unwrap();
         assert!(app.refresh());
         assert_eq!(app.connections(), vec![a.clone(), b.clone()]);
         assert!(!app.refresh());
-        // A write the app has not read yet survives the app's next change.
         let mut b2 = b.clone();
         b2.name = "b renamed".into();
         other.upsert(b2.clone()).unwrap();
@@ -769,7 +665,6 @@ mod tests {
         app.upsert(c.clone()).unwrap();
         assert_eq!(ConfigStore::open(&dirs).unwrap().connections(), vec![a.clone(), b2.clone(), c.clone()]);
         assert_eq!(app.connections(), vec![a.clone(), b2.clone(), c.clone()]);
-        // Half a hand edit: the connections stay.
         std::thread::sleep(std::time::Duration::from_millis(5));
         std::fs::write(dirs.connections_file(), "[[connection]]\nid = ").unwrap();
         assert!(!app.refresh());
@@ -785,7 +680,6 @@ mod tests {
         for p in [&a, &b, &c] {
             store.upsert(p.clone()).unwrap();
         }
-        // `a` is not named: it keeps its place after the ones that are.
         store.reorder(&[c.id.clone(), b.id.clone()]).unwrap();
         assert_eq!(store.connections(), vec![c.clone(), b.clone(), a.clone()]);
         assert_eq!(ConfigStore::open(&dirs).unwrap().connections(), vec![c, b, a]);
@@ -807,7 +701,6 @@ mod tests {
         assert_eq!(p.url(), "postgresql://a%40b%3Ac@[::1]:6543/my%20db%2F%C3%A9?sslmode=require");
     }
 
-    /// SSH settings round-trip; a file without them (older versions) loads with `ssh = None`.
     #[test]
     fn ssh_settings_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
@@ -826,8 +719,6 @@ mod tests {
         assert_eq!(ConfigStore::open(&dirs).unwrap().connections()[0].ssh, None);
     }
 
-    /// The environment tag and the read-only flag round-trip; left out of the file when unset,
-    /// so older files load as `none` / writable.
     #[test]
     fn environment_and_read_only_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
@@ -845,9 +736,6 @@ mod tests {
         assert_eq!(ConfigStore::open(&dirs).unwrap().connections(), vec![p, q]);
     }
 
-    /// Per-database read-only: the connection's flag is the default, a database's own setting
-    /// wins; only differences are kept; older files (none) load unchanged and files without
-    /// overrides do not gain the key.
     #[test]
     fn read_only_per_database() {
         let mut p = ConnectionProfile::new("pg");
@@ -855,17 +743,14 @@ mod tests {
         p.set_read_only_for("shop", true);
         assert!(p.read_only_for("shop") && !p.read_only_for("other"));
         assert_eq!(p.read_only_databases, BTreeMap::from([("shop".to_string(), true)]));
-        // Back to the default: the override goes.
         p.set_read_only_for("shop", false);
         assert!(p.read_only_databases.is_empty());
-        // A read-only connection with one writable database.
         p.read_only = true;
         p.set_read_only_for("scratch", false);
         assert!(p.read_only_for("shop") && !p.read_only_for("scratch"));
         assert!(!p.read_only_everywhere());
         p.set_read_only_for("scratch", true);
         assert!(p.read_only_everywhere() && p.read_only_databases.is_empty());
-        // PostgreSQL names keep their case; SQL Server's do not.
         p.read_only = false;
         p.set_read_only_for("Shop", true);
         assert!(!p.read_only_for("shop"));
@@ -893,7 +778,6 @@ mod tests {
         assert!(old.read_only_databases.is_empty() && old.read_only_for("d") && old.read_only_for("other"));
     }
 
-    /// The MCP permission: absent means read (off on production); an explicit one round-trips.
     #[test]
     fn mcp_access_defaults_and_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
@@ -914,9 +798,6 @@ mod tests {
         assert_eq!(ConfigStore::open(&dirs).unwrap().connections(), vec![p, q]);
     }
 
-    /// The tiers: a file from before them keeps its meaning (write is now the non-destructive
-    /// tier; nothing becomes full), full and the row limit round-trip, an unknown tier fails the
-    /// file instead of granting anything.
     #[test]
     fn mcp_tiers_migration() {
         let dir = tempfile::tempdir().unwrap();
@@ -950,8 +831,6 @@ mod tests {
         assert!(ConfigStore::open(&dirs).is_err() || ConfigStore::open(&dirs).unwrap().connections().iter().all(|p| p.mcp_access() <= McpAccess::Read));
     }
 
-    /// The advanced MCP options: allowed queries and YOLO round-trip, stay out of the file when
-    /// unset (older files load without them), and YOLO is not in effect on an off connection.
     #[test]
     fn mcp_allowed_and_yolo_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
@@ -960,7 +839,6 @@ mod tests {
         let mut p = ConnectionProfile::new("staging");
         p.env = Environment::Staging;
         assert_eq!(p.mcp_allow(&["TRUNCATE audit_tmp;", "DELETE FROM sessions WHERE expires_at < ?", "BEGIN", "a; b"]), ["TRUNCATE audit_tmp", "DELETE FROM sessions WHERE expires_at < ?"]);
-        // Already allowed (by the pattern, or the same statement written otherwise): not added again.
         assert!(p.mcp_allow(&["delete from sessions where expires_at < 5", "truncate AUDIT_TMP"]).is_empty());
         p.mcp_yolo = true;
         assert_eq!(p.mcp_yolo_on(), MCP_ADVANCED, "in effect only with the advanced options on");
@@ -974,13 +852,10 @@ mod tests {
         std::fs::write(dirs.connections_file(), "[[connection]]\nid = \"a\"\nname = \"n\"\nhost = \"h\"\nport = 1\nuser = \"u\"\ndatabase = \"d\"\n").unwrap();
         let old = &ConfigStore::open(&dirs).unwrap().connections()[0];
         assert!(old.mcp_allowed.is_empty() && !old.mcp_yolo);
-        // Off wins: YOLO stays set but is not in effect.
         p.mcp = Some(McpAccess::Off);
         assert!(p.mcp_yolo && !p.mcp_yolo_on());
     }
 
-    /// The engine: PostgreSQL stays out of the file (older files load as PostgreSQL), the others
-    /// round-trip by name.
     #[test]
     fn engine_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
@@ -1003,8 +878,6 @@ mod tests {
         assert_eq!(Engine::ALL.map(Engine::default_port), [5432, 3306, 1433, 27017, 9200, 9200, 6379]);
     }
 
-    /// Files written by older versions load: keys Dataman no longer knows (`metrics_url`, from
-    /// the engine health panel) are ignored and dropped on the next save.
     #[test]
     fn old_keys_are_ignored() {
         let dir = tempfile::tempdir().unwrap();

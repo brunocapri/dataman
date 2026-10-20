@@ -1,12 +1,3 @@
-//! Redis over RESP2: a small client of our own on tokio, TLS through the process' rustls (ring),
-//! SSH tunnels to the forwarded port. One connection per Dataman connection, its commands one
-//! at a time; each selects the database it is for (a tab's), so tabs on different databases
-//! share it safely. A broken connection is dialed again on the next command.
-//!
-//! A key's whole value (`HGETALL`, `LRANGE k 0 -1`, `SMEMBERS`, `ZRANGE k 0 -1 WITHSCORES`,
-//! `GET`) comes back as documents, one per entry (a hash's field, a list's item, a set's member,
-//! a sorted set's member and score), paged and saved back entry by entry.
-
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -20,7 +11,6 @@ use crate::nosql::redis::{self as cmd};
 use crate::nosql::{Body, Doc, Docs, Item, ItemKind, Output, Page, Source};
 use crate::ssh::Tunnel;
 
-/// A reply.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Reply {
     Simple(String),
@@ -35,14 +25,12 @@ impl Reply {
         match self {
             Reply::Simple(s) | Reply::Error(s) => Value::String(s.clone()),
             Reply::Int(n) => json!(n),
-            // Bytes that are not text: as redis-cli shows them.
             Reply::Bulk(Some(b)) => Value::String(cmd::escape_bytes(b)),
             Reply::Bulk(None) | Reply::Array(None) => Value::Null,
             Reply::Array(Some(a)) => Value::Array(a.iter().map(Reply::json).collect()),
         }
     }
 
-    /// Bytes that are not UTF-8 (shown escaped: an entry holding them is not edited as text).
     fn binary(&self) -> bool {
         match self {
             Reply::Bulk(Some(b)) => std::str::from_utf8(b).is_err(),
@@ -71,7 +59,6 @@ impl Reply {
 trait Stream: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> Stream for T {}
 
-/// How to reach the server again.
 struct Dial {
     addr: SocketAddr,
     tls: Option<(Arc<rustls::ClientConfig>, rustls::pki_types::ServerName<'static>)>,
@@ -80,7 +67,6 @@ struct Dial {
 
 struct Conn {
     io: BufStream<Box<dyn Stream>>,
-    /// The database selected on it.
     db: u32,
 }
 
@@ -88,12 +74,10 @@ pub(crate) struct Client {
     dial: Dial,
     conn: tokio::sync::Mutex<Option<Conn>>,
     pub tls_active: bool,
-    /// `Redis 7.4.1` (Valkey says so).
     pub version: String,
     pub default_db: u32,
 }
 
-/// The longest one command may take (blocking commands are refused).
 const TIMEOUT: Duration = Duration::from_secs(60);
 
 async fn write_command(io: &mut BufStream<Box<dyn Stream>>, args: &[&[u8]]) -> std::io::Result<()> {
@@ -209,7 +193,6 @@ pub(crate) async fn connect(p: &ConnectionProfile, password: Option<&str>, tunne
 }
 
 impl Client {
-    /// One command on database `db`: its reply (a server error is an error).
     pub(crate) async fn call<S: AsRef<[u8]>>(&self, db: u32, args: &[S]) -> Result<Reply> {
         let mut r = self.raw(db, &[args.iter().map(|a| a.as_ref()).collect()]).await?;
         match r.pop() {
@@ -219,7 +202,6 @@ impl Client {
         }
     }
 
-    /// Commands sent together (a pipeline), their replies in order (errors kept as replies).
     async fn pipeline(&self, db: u32, cmds: Vec<Vec<Vec<u8>>>) -> Result<Vec<Reply>> {
         let refs: Vec<Vec<&[u8]>> = cmds.iter().map(|c| c.iter().map(|a| a.as_slice()).collect()).collect();
         self.raw(db, &refs).await
@@ -271,10 +253,6 @@ fn db_of(db: &str, c: &Client) -> Result<u32> {
     db.trim().parse().map_err(|_| anyhow!("Redis' databases are numbers: {db:?}"))
 }
 
-// ---------------------------------------------------------------------------------------------
-// The explorer
-
-/// The databases that hold keys (and the connection's own), with their key counts.
 pub(crate) async fn databases(c: &Client) -> Result<Vec<Item>> {
     let info = c.call(c.default_db, &["INFO", "keyspace"]).await?.text().unwrap_or_default();
     let mut items: Vec<Item> = info
@@ -292,10 +270,8 @@ pub(crate) async fn databases(c: &Client) -> Result<Vec<Item>> {
     Ok(items)
 }
 
-/// The most keys the explorer lists under a database.
 const KEYS_LISTED: usize = 2000;
 
-/// A database's keys (the first [`KEYS_LISTED`], by name), each with its type.
 pub(crate) async fn keys(c: &Client, db: &str) -> Result<Vec<Item>> {
     let db = db_of(db, c)?;
     let mut cursor = "0".to_string();
@@ -320,10 +296,6 @@ pub(crate) async fn keys(c: &Client, db: &str) -> Result<Vec<Item>> {
         .collect())
 }
 
-// ---------------------------------------------------------------------------------------------
-// Commands
-
-/// A command that shows a key's whole value, read as one: its type and key.
 fn view_of(args: &[String]) -> Option<(&'static str, String)> {
     let up: Vec<String> = args.iter().map(|a| a.to_ascii_uppercase()).collect();
     let key = args.get(1)?.clone();
@@ -337,8 +309,6 @@ fn view_of(args: &[String]) -> Option<(&'static str, String)> {
     })
 }
 
-/// Runs one command on database `db`: a key's value as entries (paged), a write's reply, or
-/// the reply as JSON.
 pub(crate) async fn run(c: &Client, db: &str, args: &[String], raw: &[Vec<u8>], page: Page) -> Result<Output> {
     if let Some(why) = cmd::refusal(args) {
         bail!(why);
@@ -373,11 +343,9 @@ fn entry(id: Value, fields: Value) -> Doc {
     Doc { id: Some(Body::Json(id)), index: None, body: Body::Json(fields) }
 }
 
-/// The entries of a key's value, page `page`.
 async fn view(c: &Client, db: u32, dbname: &str, kind: &str, key: &str, page: Page) -> Result<Output> {
     let (skip, limit) = (page.skip as i64, page.limit as i64);
     let t = c.call(db, &["TYPE", key]).await?.text().unwrap_or_default();
-    // No such key: what the command itself says (nil, or an empty list).
     if t == "none" {
         return Ok(Output::Value(Body::Json(if kind == "string" { Value::Null } else { json!([]) })));
     }
@@ -423,7 +391,6 @@ async fn view(c: &Client, db: u32, dbname: &str, kind: &str, key: &str, page: Pa
         "hash" | "set" => {
             let (count_cmd, scan_cmd) = if kind == "hash" { ("HLEN", "HSCAN") } else { ("SCARD", "SSCAN") };
             let total = c.call(db, &[count_cmd, key]).await?.json().as_u64().unwrap_or(0);
-            // Scanned in the server's order, which stays put while the value does.
             let want = (skip + limit) as usize;
             let mut cursor = "0".to_string();
             let mut got: Vec<Reply> = Vec::new();
@@ -453,7 +420,6 @@ async fn view(c: &Client, db: u32, dbname: &str, kind: &str, key: &str, page: Pa
     Ok(Output::Docs(Docs { docs, source, total: Some(total), skip: page.skip, more }))
 }
 
-/// How many keys or entries a write would change (its keys or members named).
 pub(crate) fn affects(args: &[String]) -> Option<u64> {
     let n = cmd::name(args);
     Some(match n.as_str() {
@@ -465,9 +431,6 @@ pub(crate) fn affects(args: &[String]) -> Option<u64> {
     })
 }
 
-// ---------------------------------------------------------------------------------------------
-// Entries
-
 fn text_of(v: Option<&Value>, what: &str) -> Result<String> {
     match v {
         Some(Value::String(s)) => Ok(s.clone()),
@@ -476,7 +439,6 @@ fn text_of(v: Option<&Value>, what: &str) -> Result<String> {
     }
 }
 
-/// Saves an entry as edited (`id`: the entry it was, `None`: a new one); its id now.
 pub(crate) async fn save(c: &Client, db: &str, key: &str, kind: &str, id: Option<Value>, entry: Value) -> Result<Value> {
     let db = db_of(db, c)?;
     let e = entry.as_object().ok_or_else(|| anyhow!("an entry is an object, as shown"))?;
@@ -533,7 +495,6 @@ pub(crate) async fn save(c: &Client, db: &str, key: &str, kind: &str, id: Option
     }
 }
 
-/// Deletes an entry (a string: its key).
 pub(crate) async fn delete(c: &Client, db: &str, key: &str, kind: &str, id: Value) -> Result<u64> {
     let db = db_of(db, c)?;
     let n = |r: Reply| r.json().as_u64().unwrap_or(0);

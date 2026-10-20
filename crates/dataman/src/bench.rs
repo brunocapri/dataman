@@ -1,13 +1,3 @@
-//! Built-in benchmarks: they drive the real UI frame by frame and print measurements.
-//!
-//! - `--bench-scroll`: 1 M rows in the grid; steady fling and random jumps, while fetching and
-//!   after everything is loaded.
-//! - `--bench-tree`: a schema with 1,000 tables (database `dataman_bench`, schema `bench`).
-//! - `--bench-typing`: types a query one key per frame, with autocomplete on a real schema.
-//!
-//! Connection: `DATAMAN_BENCH_PG=host:port:user:password:database`
-//! (default `127.0.0.1:55432:postgres:dataman:dataman`).
-
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -25,8 +15,6 @@ pub enum Mode {
     Scroll,
     Tree,
     Typing,
-    /// Not a benchmark: connects, opens the tree and runs a query, then stays open
-    /// (screenshots).
     Demo,
 }
 
@@ -56,8 +44,6 @@ pub fn bench_profile(database_override: Option<&str>) -> (ConnectionProfile, Str
     (prof, p[3].into())
 }
 
-/// The MySQL server of the `mysql*` stages: `DATAMAN_BENCH_MYSQL` (`host:port:user:db`, by
-/// default the `dataman-mysql` test container) and its password in `DATAMAN_MYSQL_PASSWORD` (default the container's).
 pub fn mysql_profile() -> (ConnectionProfile, String) {
     let spec = std::env::var("DATAMAN_BENCH_MYSQL").unwrap_or_else(|_| "127.0.0.1:33306:root:dataman_test".into());
     let p: Vec<&str> = spec.split(':').collect();
@@ -72,8 +58,6 @@ pub fn mysql_profile() -> (ConnectionProfile, String) {
     (prof, std::env::var("DATAMAN_MYSQL_PASSWORD").unwrap_or_else(|_| "dataman-root".into()))
 }
 
-/// The SQL Server of the `mssql*` stages: `DATAMAN_BENCH_MSSQL` (`host:port:user:db`, by
-/// default the `dataman-mssql` test container) and its password in `DATAMAN_MSSQL_PASSWORD` (default the container's).
 pub fn mssql_profile() -> (ConnectionProfile, String) {
     let spec = std::env::var("DATAMAN_BENCH_MSSQL").unwrap_or_else(|_| "127.0.0.1:14330:sa:dataman_test".into());
     let p: Vec<&str> = spec.split(':').collect();
@@ -84,7 +68,6 @@ pub fn mssql_profile() -> (ConnectionProfile, String) {
     prof.port = p[1].parse().unwrap();
     prof.user = p[2].into();
     prof.database = p[3].into();
-    // The container's certificate is its own: encrypted, not verified.
     prof.sslmode = SslMode::Require;
     prof.save_password = true;
     (prof, std::env::var("DATAMAN_MSSQL_PASSWORD").unwrap_or_else(|_| "Dataman-sa-1!".into()))
@@ -120,7 +103,6 @@ impl Stats {
     }
 }
 
-/// Calls `step` once per frame (after each frame is presented) until it returns false.
 fn every_frame(window: &mut Window, step: impl FnMut(&mut Window, &mut App) -> bool + 'static) {
     let step = Rc::new(RefCell::new(step));
     fn go(step: Rc<RefCell<dyn FnMut(&mut Window, &mut App) -> bool>>, window: &mut Window) {
@@ -134,7 +116,6 @@ fn every_frame(window: &mut Window, step: impl FnMut(&mut Window, &mut App) -> b
     go(step, window);
 }
 
-/// Waits (polling each frame) until `ready` holds, then runs `then`.
 fn when(window: &mut Window, timeout: Duration, mut ready: impl FnMut(&mut App) -> bool + 'static, then: impl FnOnce(&mut Window, &mut App) + 'static) {
     let start = Instant::now();
     let mut then = Some(then);
@@ -169,7 +150,6 @@ pub(crate) fn connect(ws: &Entity<Workspace>, prof: ConnectionProfile, password:
     });
 }
 
-/// The import sheet's demo list: two services, two pgpass lines, one already saved.
 fn demo_importable() -> Vec<dataman_core::Importable> {
     let mk = |name: &str, host: &str, port: u16, user: &str, db: &str, source, exists| {
         let mut p = dataman_core::ConnectionProfile::new(name);
@@ -195,7 +175,6 @@ fn connected(ws: &Entity<Workspace>, id: &str, cx: &App) -> bool {
 }
 
 pub fn start(mode: Mode, ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
-    // The throwaway config starts empty, which opens the first-run dialog: not wanted here.
     ws.update(cx, |w, cx| w.close_dialog(cx));
     match mode {
         Mode::Startup => {}
@@ -206,33 +185,9 @@ pub fn start(mode: Mode, ws: Entity<Workspace>, window: &mut Window, cx: &mut Ap
     }
 }
 
-/// Driven by a timer, not by frames: it works with the window hidden, and draws explicitly
-/// before a capture.
-///
-/// `DATAMAN_SHOT_STAGE` picks the screen: `welcome` (first run, nothing connected), `main`,
-/// `light` (main in the light theme), `completion`, `dialog`, `dialog-advanced` and
-/// `dialog-advanced-prod` (MCP › Advanced open; YOLO confirming on production), `dialog-url` (and
-/// `dialog-url-bad`: the connection string mode), `dialog-fail` (a real
-/// password failure), `sort`, `history` (with the explorer filter), `marks`, `marks-history`
-/// and `marks-search` (the neutral highlights: the filter's matches, the history's selection,
-/// a favorite renamed, the history's search focused), `copied` (the result bar's Copy after ⌘C),
-/// `saved` (⌘S's "Saved as favorite →"), `palette-favorites` (the palette's Favorites scope),
-/// `fav-menu` (a favorite's context menu), `error` (a batch that
-/// stops at statement 2), `cancelling`, `value` (a nested jsonb cell's value sheet; `value-check`
-/// in `value_check`), `empty` (connected, nothing run),
-/// `shortcuts`, `focus` (the grid with the keyboard focus ring), `dialog-password`,
-/// `error-pop` and `tree-pop` (the find indicator; `DATAMAN_POP_FREEZE_MS=n` holds every pop
-/// n ms in, for a capture mid-flight; `fk-pop` and `fk-land` are in `fk_check`; the find bars'
-/// `find`, `find-grid` and `find-check` in `find_check`; a script's result tabs `results`,
-/// `results-grid`, `results-messages` and `results-check` in `results_check`; a favorite's
-/// context menu, inline rename and the merged status dropdown's `history-check` in
-/// `history_check`). Any
-/// stage + `-light` renders in the light theme; `DATAMAN_SHOT_NO_EXPLORER=1` collapses the
-/// explorer (⌘B).
 fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
     let raw = std::env::var("DATAMAN_SHOT_STAGE").unwrap_or_else(|_| "main".into());
     let shot_path = std::env::var("DATAMAN_SHOT").ok();
-    // `<stage>-light` is any stage in the light theme.
     if raw == "light" || raw.ends_with("-light") {
         crate::theme::set_pref(dataman_core::ThemePref::Light, cx);
     }
@@ -243,7 +198,6 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
         });
     }
     let stage = raw.trim_end_matches("-light").to_string();
-    // Connections made live while the welcome screen shows (nothing connected first).
     if crate::newuser_check::is_stage(&stage) {
         window
             .spawn(cx, async move |cx| {
@@ -256,7 +210,6 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
             .detach();
         return;
     }
-    // A MongoDB connection beside PostgreSQL (it connects both itself).
     if crate::nosql_check::is_stage(&stage) {
         window
             .spawn(cx, async move |cx| {
@@ -316,12 +269,10 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
     let bad_pw = stage == "dialog-fail";
     let password = pw.clone();
     connect(&ws, prof, pw, cx);
-    // Live query stages bring their own SQL (`lar::demo`).
     let default_sql = crate::lar::demo::sql(&stage).unwrap_or_else(|| match stage.as_str() {
         "error" | "error-pop" => "-- shipping backfill (3 statements)\nSELECT count(*) FROM orders;\n\nUPDATE orders p\n   SET status = s.delivered_at\n  FROM orders s\n WHERE s.id = p.id;\n\nSELECT count(*) FROM customer;".to_string(),
         "edit" | "edit-review" | "edit-commit" | "edit-conflict" => "SELECT * FROM dataman_scratch.products ORDER BY id;".to_string(),
         "export-done" => "SELECT * FROM dataman_scratch.products ORDER BY id;".to_string(),
-        // Taller and wider than the editor: both scrollbars.
         "editor-scroll" => {
             let mut s = String::from("-- monthly report, every region\n");
             for i in 1..=80 {
@@ -346,7 +297,6 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                     break;
                 }
             }
-            // A table's data view opens its own tab (`table_check`).
             let run = !matches!(
                 stage.as_str(),
                 "export-empty"
@@ -388,7 +338,6 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
             });
             let c = format!("c:{id}");
             let s = format!("{c}/d:{db}/s:public");
-            // The explorer's object stages open their own schema (`explorer_demo`).
             let nodes = if crate::explorer_demo::is_stage(&stage) || mysql || mssql { vec![] } else { vec![s.clone(), format!("{s}/tables"), format!("{s}/r:orders")] };
             for node in nodes {
                 sleep(cx, 400).await;
@@ -410,8 +359,6 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                         window.focus(&editor.focus_handle(cx), cx);
                     }
                     "dialog" => ws.update(cx, |w, cx| w.open_dialog(None, window, cx)),
-                    // MCP › Advanced open: the allowed queries and YOLO on (staging); `-prod`:
-                    // YOLO waiting for its confirmation on production.
                     "dialog-advanced" | "dialog-advanced-prod" => ws.update(cx, |w, cx| {
                         let core = w.store.read(cx).core.clone();
                         crate::mcp::demo_seed(&core, false, cx);
@@ -424,7 +371,6 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                             d.update(cx, |d, cx| d.demo_advanced(prod.then_some("DELETE FROM sessions WHERE expires_at < ?"), true, cx));
                         }
                     }),
-                    // A new connection by its connection string; `-bad`: one that is not, left.
                     "dialog-url" | "dialog-url-bad" => ws.update(cx, |w, cx| {
                         w.open_dialog(None, window, cx);
                         if let Some(d) = w.dialog.clone() {
@@ -440,7 +386,6 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                         }
                     }),
                     "dialog-test" => ws.update(cx, |w, cx| {
-                        // A new connection prefilled with the bench server's fields, tested.
                         let (mut p, pw) = bench_profile(None);
                         p.name = "local".into();
                         w.open_dialog_with(Some(p), true, Some(pw), window, cx);
@@ -465,8 +410,6 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                             });
                         }
                     }),
-                    // SSH: the section open (key auth), an unknown host key to trust, the
-                    // import sheet, and the explorer's tunnel glyph.
                     "dialog-ssh" | "dialog-hostkey" => ws.update(cx, |w, cx| {
                         let (mut p, _) = bench_profile(None);
                         (p.name, p.host, p.port, p.database) = ("prod".into(), "db.internal".into(), 5432, "app".into());
@@ -507,19 +450,13 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                         core.save_connection(p, None, None).unwrap();
                         w.store.update(cx, |s, cx| s.reload(cx));
                     }),
-                    // Total, descending: two clicks on the header.
                     "sort" => grid.update(cx, |g, cx| g.toggle_sort(2, cx)),
                     "history" => {
                         ws.update(cx, |w, cx| w.show_nav(dataman_core::layout::NavView::History, window, cx));
                         let tree = ws.read(cx).tree.clone();
                         tree.update(cx, |t, cx| t.set_filter("ord", cx));
                     }
-                    // The neutral highlights: the explorer filter focused, its matches gray
-                    // beside the tree's blue selection; with `-history` the favorites focused,
-                    // a favorite being renamed; with `-search` the history's search focused.
                     "marks" | "marks-history" | "marks-search" => {
-                        // The explorer's marks on its own; the history's (or favorites') in the
-                        // sidebar instead.
                         if stage != "marks" {
                             ws.update(cx, |w, cx| w.set_nav(dataman_core::layout::NavView::History, cx));
                         }
@@ -534,14 +471,11 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                             _ => {}
                         }
                     }
-                    // ⌘C in the grid: "Copied" in place of the Copy button.
                     "copied" => {
                         grid.update(cx, |g, cx| g.select_cells(2..=6, 2, cx));
                         window.focus(&grid.focus_handle(cx), cx);
                         grid.update(cx, |g, cx| g.copy(dataman_core::result::CopyFormat::Tsv, false, cx));
                     }
-                    // The find indicator (hold it mid-pop with DATAMAN_POP_FREEZE_MS): ⌘' on the
-                    // error, the explorer filter's first match.
                     "error-pop" => {
                         editor.update(cx, |e, cx| e.jump_to_error(cx));
                         window.focus(&editor.focus_handle(cx), cx);
@@ -562,7 +496,6 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                         }
                     }
                     "focus" => ws.update(cx, |w, cx| w.focus_region(crate::app::Region::Grid, window, cx)),
-                    // A selection over three lines, mid-line to mid-line.
                     "selection" => {
                         editor.update(cx, |e, cx| e.demo_select(30, 150, cx));
                         window.focus(&editor.focus_handle(cx), cx);
@@ -571,10 +504,7 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                         w.shortcuts_open = true;
                         cx.notify();
                     }),
-                    // ⌘S: "← added to favorites" over the window, the rail's Favorites icon lit.
                     "saved" => ws.update(cx, |w, cx| w.save_favorite(cx)),
-                    // The palette's Favorites scope over a few dozen favorites; the favorites'
-                    // context menu.
                     "palette-favorites" | "fav-menu" => ws.update(cx, |w, cx| {
                         let core = w.store.read(cx).core.clone();
                         let words = ["Orders by day", "Top customers", "Revenue by month", "Churned accounts", "Slow queries", "Open carts"];
@@ -606,8 +536,6 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                             p.update(cx, |p, cx| p.set_query(q, cx));
                         }
                     }),
-                    // Distribution: an update on offer (the title bar's notice, its sheet, the
-                    // sheet while downloading, the palette), last session's crash.
                     "update" | "update-sheet" | "update-progress" | "update-palette" => {
                         let step = (stage == "update-progress").then_some(crate::updates::Step::Downloading { got: 12_400_000, total: 34_603_008 });
                         crate::updates::demo_offer(step, cx);
@@ -655,22 +583,18 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                                 if let Ok(q) = std::env::var("DATAMAN_SHOT_SEARCH") {
                                     v.demo_search(&q, cx);
                                 }
-                                // `DATAMAN_SHOT_KEY_SEARCH=cmd-k` searches by shortcut ("" before a key).
                                 if let Ok(k) = std::env::var("DATAMAN_SHOT_KEY_SEARCH") {
                                     v.demo_key_search_with(Some(k.as_str()).filter(|k| !k.is_empty()), window, cx);
                                 }
-                                // `DATAMAN_SHOT_SCROLL=300`: the page scrolled under its header.
                                 if let Some(y) = std::env::var("DATAMAN_SHOT_SCROLL").ok().and_then(|y| y.parse::<f32>().ok()) {
                                     v.demo_scroll(y);
                                 }
-                                // `DATAMAN_SHOT_MCP_ADVANCED=1`: Settings › MCP › Advanced opened.
                                 if std::env::var_os("DATAMAN_SHOT_MCP_ADVANCED").is_some() {
                                     v.demo_mcp_advanced(cx);
                                 }
                             });
                         }
                     }),
-                    // The MCP log in the side panel; a write waiting for Allow.
                     "mcp-log" | "mcp-log-menu" | "mcp-approve" => ws.update(cx, |w, cx| {
                         let core = w.store.read(cx).core.clone();
                         crate::mcp::demo_seed(&core, stage == "mcp-approve", cx);
@@ -688,7 +612,6 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                     }
                     "export" | "export-run" | "export-empty" | "export-done" => {
                         if stage == "export-run" {
-                            // A big result, paused: "all rows" streams the query again.
                             grid.update(cx, |g, cx| g.select_cells(2..=6, 2, cx));
                         }
                         ws.update(cx, |w, cx| {
@@ -706,8 +629,6 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                         grid.update(cx, |g, cx| g.select_cells(2..=6, 2, cx));
                         window.focus(&grid.focus_handle(cx), cx);
                     }
-                    // The explorer's context menu on `orders`: the menu, its Generate SQL ▸
-                    // submenu, a connection's menu, the delete sheet, the generated DDL.
                     "tree-menu" | "tree-menu-sub" | "tree-menu-conn" | "tree-menu-mouse" => {
                         let tree = ws.read(cx).tree.clone();
                         let row = match stage.as_str() {
@@ -716,8 +637,6 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                         };
                         tree.update(cx, |t, cx| t.demo_menu(&row, stage == "tree-menu-sub", stage == "tree-menu-mouse", window, cx));
                     }
-                    // A database made read-only from its menu: the lock on its row and in the
-                    // tab's picker, the menu open again with its check mark.
                     "tree-ro" => {
                         ws.update(cx, |w, cx| w.toggle_read_only(&id, &db, cx));
                         let tree = ws.read(cx).tree.clone();
@@ -732,8 +651,6 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                         let target = crate::tree_menu::Target::Rel { conn: id.clone(), db: db.clone(), schema: "public".into(), name: "orders".into(), kind: dataman_core::schema::RelKind::Table, lar: false, ro: false };
                         w.on_row_action(crate::tree_menu::Act::Generate(crate::tree_menu::Gen::CreateTable), target, false, window, cx);
                     }),
-                    // The grid's cell menu and the find bars: driven below with real mouse and
-                    // key events.
                     s if s.starts_with("fk-")
                         || s.starts_with("find")
                         || s.starts_with("results")
@@ -763,11 +680,9 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                 let edit = cx.update(|_, cx| ws.read(cx).active_tab().unwrap().read(cx).edit.clone()).unwrap();
                 let _ = cx.update(|window, cx| edit.update(cx, |e, cx| e.demo_fill(stage == "edit", window, cx)));
                 if stage == "edit-conflict" {
-                    // Time for a script to change a row underneath (the conflict test).
                     sleep(cx, 4000).await;
                 }
                 if stage != "edit" {
-                    // ⌘S: the review sheet ("edit-review"), or straight to the commit.
                     let _ = cx.update(|window, cx| edit.update(cx, |e, cx| e.review(stage == "edit-review", window, cx)));
                 }
                 sleep(cx, 1500).await;
@@ -1014,7 +929,6 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                 }
             }
             if stage == "fav-menu" {
-                // The second favorite's context menu, once the list is painted.
                 sleep(cx, 600).await;
                 let _ = cx.update(|_, cx| {
                     let history = ws.read(cx).history.clone();
@@ -1022,7 +936,6 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                 });
             }
             if stage == "mcp-log-menu" {
-                // A row's context menu, once the list is painted (the UPDATE, 3rd from the top).
                 sleep(cx, 600).await;
                 let _ = cx.update(|_, cx| {
                     if let Some(log) = ws.read(cx).mcp_log() {
@@ -1031,7 +944,6 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                 });
             }
             if stage == "tree-menu-sub" {
-                // A resting pointer over the menu hovers an item when it appears: highlight again.
                 sleep(cx, 300).await;
                 let _ = cx.update(|_, cx| {
                     let tree = ws.read(cx).tree.clone();
@@ -1039,9 +951,7 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                 });
             }
             sleep(cx, if stage.starts_with("dialog-") { 1500 } else { 500 } + crate::lar::demo::wait_ms(&stage)).await;
-            // `DATAMAN_SHOT_HOVER=x,y`: the pointer rests there (hover states) for the capture.
             if let Some((x, y)) = std::env::var("DATAMAN_SHOT_HOVER").ok().and_then(|v| v.split_once(',').and_then(|(x, y)| Some((x.parse::<f32>().ok()?, y.parse::<f32>().ok()?)))) {
-                // Moved there, then again once a tooltip's delay has passed (it shows then).
                 for wait in [900, 300] {
                     let _ = cx.update(|window, cx| {
                         let ev = gpui::MouseMoveEvent { position: gpui::point(gpui::px(x), gpui::px(y)), pressed_button: None, modifiers: Default::default() };
@@ -1064,13 +974,10 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
         .detach();
 }
 
-/// Captures the window. The glass is translucent, so the capture is flattened onto the
-/// design's desktop color (what shows through the blur in the boards). GPUI's target holds
-/// premultiplied color (each fill blends `src·a + dst·(1−a)` over a transparent clear) with
-/// additive alpha, which is what the window server composites: color + desk·(1 − alpha).
+/// GPUI's target holds premultiplied color with additive alpha, which is what the window
+/// server composites: flatten as color + desk·(1 − alpha).
 #[cfg(feature = "screenshots")]
 pub(crate) fn shot(window: &Window, path: &str, dark: bool) {
-    // `DATAMAN_SHOT_DESK=ffffff`: another desktop color (an adverse one shows seams best).
     let desk = std::env::var("DATAMAN_SHOT_DESK").ok().and_then(|h| u32::from_str_radix(h.trim_start_matches('#'), 16).ok());
     let bg: [f32; 3] = match desk {
         Some(h) => [(h >> 16 & 255) as f32, (h >> 8 & 255) as f32, (h & 255) as f32],
@@ -1085,13 +992,10 @@ pub(crate) fn shot(window: &Window, path: &str, dark: bool) {
             }
             p.0[3] = 255;
         }
-        // `DATAMAN_SHOT_LIGHTS=1`: the native traffic lights are not in the capture; paint
-        // where AppKit puts them (`metrics::light_centre`) to check the title bar against them.
         if std::env::var_os("DATAMAN_SHOT_LIGHTS").is_some() {
             use crate::theme::metrics;
             let k = img.width() as f32 / window.viewport_size().width.as_f32();
             let colors = [[255u8, 95, 87], [254, 188, 46], [40, 200, 64]];
-            // At a UI zoom AppKit's lights keep their size, centred on the zoomed bar.
             let (lx, ly) = metrics::traffic_light_position_at(crate::theme::zoom());
             let centre = |i: usize| (lx + i as f32 * metrics::LIGHT_STEP + metrics::LIGHT_FRAME.0 / 2., ly + metrics::LIGHT_FRAME.1 / 2.);
             for (i, c) in colors.iter().enumerate() {
@@ -1107,7 +1011,6 @@ pub(crate) fn shot(window: &Window, path: &str, dark: bool) {
                     }
                 }
             }
-            // The centre line, across the lights and the explorer button.
             let y = (centre(0).1 * k) as u32;
             for x in 0..(140. * k) as u32 {
                 if x % 4 < 2 {
@@ -1141,7 +1044,6 @@ fn scroll(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
         let grid = tab.read(cx).grid.clone();
         let t0 = Instant::now();
         tab.update(cx, |t, cx| t.run(vec![sql.clone()], cx));
-        // Phase A: fling while the result streams in (the grid's demand drives the fetch).
         let mut y = 0f32;
         let mut last = None::<Instant>;
         let mut a = Vec::new();
@@ -1181,7 +1083,6 @@ fn scroll(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                     }
                 }
                 1 => {
-                    // Wait for everything, then fling across the whole result.
                     if rs.phase() != Phase::Done {
                         last = None;
                         frames_in_phase = 0;
@@ -1198,7 +1099,6 @@ fn scroll(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                     }
                 }
                 _ => {
-                    // Random jumps: every frame shows rows never drawn before.
                     rng ^= rng << 13;
                     rng ^= rng >> 7;
                     rng ^= rng << 17;
@@ -1240,7 +1140,6 @@ fn tree(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
         Duration::from_secs(30),
         move |cx| connected(&ws2, &id2, cx) && tree2.read(cx).has_row(&d2),
         move |window, cx| {
-            // 1. Expand the schema: catalog query for 1,000 relations, then the frame.
             let t = Instant::now();
             tree.update(cx, |tr, cx| {
                 tr.expand_id(&d, cx);
@@ -1250,7 +1149,6 @@ fn tree(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
             let g2 = g.clone();
             when(window, Duration::from_secs(30), move |cx| tree3.read(cx).has_row(&g2), move |window, cx| {
                 let loaded = t.elapsed();
-                // 2. Expand the "tables" group (cached): 1,000 rows appear.
                 let t = Instant::now();
                 tree.update(cx, |tr, cx| {
                     tr.expand_id(&g, cx);
@@ -1271,7 +1169,6 @@ fn tree(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                         frames.push(now - l);
                     }
                     last = Some(now);
-                    // 3. Scroll through the tree, 3 rows per frame.
                     n += 1;
                     let handle = tree.read(cx).scroll_handle().clone();
                     handle.scroll_to_item((n * 3) % rows.max(1), gpui::ScrollStrategy::Top);
@@ -1311,7 +1208,6 @@ fn typing(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
             let tab = ws.read(cx).active_tab().unwrap().clone();
             tab.update(cx, |t, cx| t.refresh_schema(cx));
             let editor = tab.read(cx).editor.clone();
-            // A big script first: typing must not depend on its size.
             let mut script = String::new();
             for i in 0..2000 {
                 script.push_str(&format!("SELECT p.id, p.total FROM orders p WHERE p.customer = {i};\n"));
@@ -1353,7 +1249,6 @@ fn typing(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
     );
 }
 
-/// A capture of the window at `path` mid-check (the update check's `DATAMAN_SHOT_DIR`).
 pub(crate) fn capture(window: &Window, path: &str, cx: &App) {
     shot(window, path, crate::theme::ActiveTheme::theme(cx).is_dark());
 }

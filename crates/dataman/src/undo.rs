@@ -1,30 +1,3 @@
-//! App-wide undo and redo: ⌘Z / ⇧⌘Z (⌃Z / ⌃⇧Z too), Edit ▸ Undo / Redo and the palette take
-//! back what was just done to the app's own things, the way an IDE does outside its editors:
-//! the favorites (added with ⌘D, the star or ⌘S, removed, renamed, filed in a folder, imported)
-//! and their folders (made, renamed, moved, deleted with their queries), the connections' order
-//! and a deleted connection, the pinned tables, the panels' places (a drag, the palette's moves,
-//! Reset panel layout) and sizes (a seam dragged), closed tabs and editor groups (reopened with
-//! their script, connection and database; a new session, not the one they had).
-//!
-//! In a text field, the SQL editor or the grid's cell editor the keys are the text's own undo:
-//! their contexts are left out of [`KEYS`], and Edit ▸ Undo follows the focus the same way (in
-//! text it is the text's). Not undoable: what reaches a server (running a statement, committing
-//! grid edits, which have their own review first), the settings (their sheet is where they change
-//! back, and a key or a theme is no "thing" to bring back), a connection edited in its sheet (its
-//! passwords may have changed in the keychain), opening a tab or a panel (closing it is the way
-//! back).
-//!
-//! Each entry knows its way back and forth and is labelled for the palette ("Undo Delete folder
-//! 'Reports'") and the notice after ("Undid: Delete folder 'Reports'"). A new action clears what
-//! was undone; the stack keeps the last [`CAP`]. Undoing or redoing never records anything
-//! itself. An entry whose thing is gone by other means (a favorite an agent removed, a tab
-//! closed since) is dropped with a notice, and the next ⌘Z goes on with the one before it.
-//!
-//! A deleted connection's saved passwords (its own and its SSH secret) are read from the keychain
-//! just before they are deleted and kept in the entry, in memory only, never written anywhere
-//! else; undone, they go back to the keychain. The entry dropped (pushed out past [`CAP`], cleared
-//! by a new action after an undo, the app quit), they are gone with it, as the delete meant.
-
 use std::collections::VecDeque;
 
 use dataman_core::favorites::RemovedFolder;
@@ -41,23 +14,15 @@ use crate::tab::QueryTab;
 actions!(
     undo,
     [
-        /// Takes back the last thing done to the app's own things (not text: fields and the
-        /// editor keep their own undo).
         Undo,
-        /// Does again what Undo took back.
         Redo,
     ]
 );
 
-/// Where ⌘Z and ⌃Z are the app's: the workspace, no modal up, and not in text (a field, the SQL
-/// editor, the grid's cell editor, a value's editor).
 pub const KEYS: &str = "Workspace && !Modal && !CodeEditor && !TextInput && !GridCellEditor && !ValueEditor";
 
-/// How many steps back the stack keeps.
 pub const CAP: usize = 100;
 
-/// A tab closed, as it is reopened: its saved state, where it was among the tabs and in which
-/// group, and whether closing it emptied that group (the split folded).
 #[derive(Clone)]
 pub(crate) struct ClosedTab {
     pub state: TabState,
@@ -66,8 +31,7 @@ pub(crate) struct ClosedTab {
     pub emptied: bool,
 }
 
-/// A deleted connection, all that goes with it: the profile and its place in the list, its saved
-/// passwords (memory only), its history file and its pinned tables. No `Debug`: it holds secrets.
+/// No `Debug`: it holds the deleted connection's passwords (memory only).
 #[derive(Clone)]
 pub(crate) struct DeletedConn {
     pub profile: ConnectionProfile,
@@ -78,8 +42,6 @@ pub(crate) struct DeletedConn {
     pub pins: Vec<Pin>,
 }
 
-/// The panels' sizes, what a seam drag changes: the sidebar's and the side panel's widths, the
-/// editor's height, the editor groups' share.
 #[derive(Clone, PartialEq)]
 pub(crate) struct Sizes {
     pub explorer_w: f32,
@@ -88,35 +50,21 @@ pub(crate) struct Sizes {
     pub ratio: Option<f32>,
 }
 
-/// What was done, both ways.
 #[derive(Clone)]
 pub(crate) enum Op {
-    /// A favorite added (`added`) or removed, and its place in the list.
     Favorite { fav: Favorite, ix: usize, added: bool },
     FavoriteName { id: String, from: String, to: String },
-    /// A favorite filed in a folder (`None`: the top level).
     FavoriteFolder { id: String, from: Option<String>, to: Option<String> },
-    /// A folder made (`added`, empty) or deleted with its favorites.
     Folder { removed: RemovedFolder, added: bool },
     FolderName { id: String, from: String, to: String },
-    /// The folders' order, by id.
     FolderOrder { from: Vec<String>, to: Vec<String> },
-    /// The connections' order, by id.
     ConnOrder { from: Vec<String>, to: Vec<String> },
-    /// A connection deleted (boxed: it is the big one).
     ConnDeleted(Box<DeletedConn>),
-    /// A connection's pinned tables, in order.
     Pins { conn: String, from: Vec<Pin>, to: Vec<Pin> },
-    /// The panels' places.
     Layout { from: PanelLayout, to: PanelLayout },
     Sizes { from: Sizes, to: Sizes },
-    /// Tabs closed together (a tab, Close Others, an editor group), in the order they closed;
-    /// once reopened, the tabs they are now (what a redo closes again).
     Tabs { closed: Vec<ClosedTab>, reopened: Vec<EntityId> },
-    /// History taken out: one entry (its connection), or every connection's (`None`); and the
-    /// lines taken, per connection (what an undo puts back).
     History { entry: Option<(String, dataman_core::HistoryEntry)>, taken: Vec<(String, Vec<u8>)> },
-    /// Several steps as one (favorites imported together), undone last to first.
     Many(Vec<Op>),
 }
 
@@ -132,18 +80,14 @@ impl Entry {
     }
 }
 
-/// The steps done (oldest first, at most [`CAP`]) and the ones undone (the next redo last).
 #[derive(Default)]
 pub(crate) struct UndoStack {
     done: VecDeque<Entry>,
     undone: Vec<Entry>,
-    /// An undo or a redo under way: what it does is not a new step.
     replaying: bool,
 }
 
 impl UndoStack {
-    /// A new step: what was undone cannot be redone any more. A folder named right after it
-    /// was made ("+ folder", its name typed in place) is one step with its making.
     pub fn push(&mut self, e: Entry) {
         if self.replaying {
             return;
@@ -164,7 +108,6 @@ impl UndoStack {
         }
     }
 
-    /// What Undo would take back, and what Redo would do again (their labels).
     pub fn next_undo(&self) -> Option<&str> {
         self.done.back().map(|e| e.label.as_str())
     }
@@ -179,14 +122,10 @@ impl UndoStack {
     }
 }
 
-/// Whether the keys are outside text now (the focus's contexts match [`KEYS`]): Edit ▸ Undo is
-/// the app's there.
 pub(crate) fn outside_text(window: &Window) -> bool {
     KeyBindingContextPredicate::parse(KEYS).is_ok_and(|p| p.depth_of(&window.context_stack()).is_some())
 }
 
-/// Undo and Redo on the workspace: its keys, the palette's entries, and Edit ▸ Undo / Redo (the
-/// editor's actions) when the focus is not in text.
 pub(crate) fn workspace_actions(d: gpui::Stateful<gpui::Div>, cx: &mut Context<Workspace>) -> gpui::Stateful<gpui::Div> {
     d.on_action(cx.listener(|w, _: &Undo, window, cx| w.undo(window, cx)))
         .on_action(cx.listener(|w, _: &Redo, window, cx| w.redo(window, cx)))
@@ -204,13 +143,11 @@ pub(crate) fn workspace_actions(d: gpui::Stateful<gpui::Div>, cx: &mut Context<W
 
 type Applied = Result<(), String>;
 
-/// A store's error, as the notice says it.
 fn said<T>(r: anyhow::Result<T>) -> Result<T, String> {
     r.map_err(|e| format!("{e:#}"))
 }
 
 impl Workspace {
-    /// Records a step (nothing while an undo or a redo is under way).
     pub(crate) fn did(&mut self, label: impl Into<String>, op: Op) {
         self.undo.push(Entry::new(label, op));
     }
@@ -223,8 +160,6 @@ impl Workspace {
         self.step(false, window, cx);
     }
 
-    /// One step back (`back`) or forth, and the notice that says what it was; a step whose thing
-    /// is gone is dropped, the notice saying why.
     fn step(&mut self, back: bool, window: &mut Window, cx: &mut Context<Self>) {
         let next = if back { self.undo.done.pop_back() } else { self.undo.undone.pop() };
         let Some(mut e) = next else {
@@ -236,7 +171,6 @@ impl Workspace {
         let r = self.apply(&mut e.op, back, window, cx);
         self.undo.replaying = false;
         self.keep_focus(region, window, cx);
-        // What changed under the panels: the favorites listed again, the tabs linked to one.
         self.history.update(cx, |h, cx| h.reload_favorites(cx));
         self.sync_favorite_tabs(cx);
         match r {
@@ -253,15 +187,12 @@ impl Workspace {
         cx.notify();
     }
 
-    /// The keys back where Undo was pressed (a reopened tab, a closed one, do not take them), so
-    /// the next ⌘Z goes on undoing: the explorer, the grid, the favorites.
     fn keep_focus(&mut self, region: Option<Region>, window: &mut Window, cx: &mut Context<Self>) {
         let f = match region {
             Some(Region::Explorer) if self.view == dataman_core::layout::NavView::Explorer => Some(self.tree.focus_handle(cx)),
             Some(Region::Explorer) => Some(self.history.focus_handle(cx)),
             Some(Region::Grid) if self.results_shown(cx) => self.active_tab().map(|t| {
                 let t = t.read(cx);
-                // The plan view stands where the grid does.
                 if t.shows_plan(cx) { t.plan.focus_handle(cx) } else { t.grid.focus_handle(cx) }
             }),
             _ => None,
@@ -271,7 +202,6 @@ impl Workspace {
         }
     }
 
-    /// Takes `op` back (`back`) or does it again; the op keeps what it needs for the other way.
     fn apply(&mut self, op: &mut Op, back: bool, window: &mut Window, cx: &mut Context<Self>) -> Applied {
         let core = self.store.read(cx).core.clone();
         let favs = &core.favorites;
@@ -366,18 +296,11 @@ impl Workspace {
         Ok(())
     }
 
-    // -----------------------------------------------------------------------------------------
-    // Connections
-
-    /// Deletes a connection — from `connections.toml`, its passwords from the keychain, its
-    /// history and its pinned tables — and hands back all of it for the undo (the passwords read
-    /// just before, kept in memory only). Its tabs stay, without a connection.
     pub(crate) fn remove_connection(&mut self, id: &str, cx: &mut Context<Self>) -> anyhow::Result<DeletedConn> {
         let core = self.store.read(cx).core.clone();
         let store = self.store.read(cx);
         let profile = store.profile(id).cloned().ok_or_else(|| anyhow::anyhow!("no connection {id}"))?;
         let order: Vec<String> = store.profiles.iter().map(|p| p.id.clone()).collect();
-        // Only a connection that saves its passwords has any in the keychain.
         let (password, ssh_secret) = if profile.save_password {
             (core.secrets.get(id).ok().flatten(), core.secrets.get(&profile.ssh_secret_id()).ok().flatten())
         } else {
@@ -394,8 +317,6 @@ impl Workspace {
         Ok(DeletedConn { profile, order, password, ssh_secret, history, pins })
     }
 
-    /// A deleted connection back: its profile at its place, its passwords in the keychain, its
-    /// history and pinned tables.
     fn restore_connection(&mut self, d: &DeletedConn, cx: &mut Context<Self>) -> Applied {
         let id = d.profile.id.clone();
         if self.store.read(cx).profile(&id).is_some() {
@@ -412,9 +333,6 @@ impl Workspace {
         self.tree.update(cx, |t, cx| t.rebuild(cx));
         Ok(())
     }
-
-    // -----------------------------------------------------------------------------------------
-    // Panels
 
     pub(crate) fn sizes_now(&self) -> Sizes {
         Sizes {
@@ -434,11 +352,6 @@ impl Workspace {
         }
     }
 
-    // -----------------------------------------------------------------------------------------
-    // Tabs
-
-    /// Tab `ix` as it would be reopened (`None`: an activity monitor, a live view that does not
-    /// come back, as the session does not keep one).
     pub(crate) fn closing(&self, ix: usize, cx: &gpui::App) -> Option<ClosedTab> {
         let tab = self.tabs.get(ix)?;
         if tab.read(cx).monitor.is_some() {
@@ -450,9 +363,6 @@ impl Workspace {
         Some(ClosedTab { state: tab.read(cx).session_state(cx), ix, pane, emptied })
     }
 
-    /// Closed tabs back, last closed first, each in its group (the split opening again for a
-    /// group they had emptied) at its place; the first one closed comes to the front. A lone
-    /// empty tab (the one closing the last tab left) gives way to them. Returns the tabs.
     fn reopen_tabs(&mut self, closed: &[ClosedTab], window: &mut Window, cx: &mut Context<Self>) -> Vec<EntityId> {
         let lone = (self.tabs.len() == 1).then(|| self.tabs[0].clone()).filter(|t| {
             let t = t.read(cx);
@@ -471,10 +381,8 @@ impl Workspace {
             self.fill_tab(&tab, &c.state, cx);
             let id = tab.entity_id();
             if left_alone {
-                // The left group it emptied: a group of its own again, at the left.
                 self.split_off_left(id, window, cx);
             }
-            // Its place among the tabs (the groups keep their membership by identity).
             if let Some(from) = self.tabs.iter().position(|t| t.entity_id() == id) {
                 let t = self.tabs.remove(from);
                 let to = c.ix.min(self.tabs.len());
@@ -496,7 +404,6 @@ impl Workspace {
     }
 }
 
-/// Undo's palette entries ("Undo Delete folder 'Reports'"), dim when there is nothing to undo.
 pub(crate) fn palette_items(w: &Workspace) -> Vec<crate::palette::Item> {
     use crate::palette::{Item, Target};
     let item = |verb: &str, next: Option<&str>, action: Box<dyn gpui::Action>| {
@@ -520,7 +427,6 @@ mod tests {
         Entry::new(format!("Add favorite '{name}'"), Op::Favorite { fav: Favorite::new(name, format!("select '{name}'")), ix: 0, added: true })
     }
 
-    /// The last [`CAP`] steps are kept; a new step clears what was undone.
     #[test]
     fn cap_and_redo_cleared() {
         let mut s = UndoStack::default();
@@ -539,7 +445,6 @@ mod tests {
         assert_eq!(s.next_undo(), Some("Add favorite 'new'"));
     }
 
-    /// While an undo or a redo runs nothing it does is recorded.
     #[test]
     fn replaying_records_nothing() {
         let mut s = UndoStack::default();
@@ -550,7 +455,6 @@ mod tests {
         assert_eq!(s.labels(), (vec!["Add favorite 'a'"], vec![]));
     }
 
-    /// A folder named right after it was made is one step; named later, its own.
     #[test]
     fn a_new_folder_and_its_name_are_one_step() {
         let mut s = UndoStack::default();
@@ -571,9 +475,6 @@ mod tests {
         s.iter().map(|c| KeyContext::parse(c).unwrap()).collect()
     }
 
-    /// ⌘Z and ⌃Z are the app's undo on the explorer, the grid and the panels; in the editor, a
-    /// field, the cell editor or behind a modal they are not (the text's own undo has ⌘Z there,
-    /// ⌃Z does nothing).
     #[test]
     fn undo_keys_stay_out_of_text() {
         let keymap = Keymap::new(vec![

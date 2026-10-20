@@ -1,10 +1,5 @@
-//! Host-key verification against OpenSSH `known_hosts` files: `~/.ssh/known_hosts`,
-//! `~/.ssh/known_hosts2`, then Dataman's own file, where keys the user trusts are written.
-//!
-//! Lines are `[marker] patterns keytype base64 [comment]`. Patterns are comma-separated names,
-//! `[host]:port` for ports other than 22, `*`/`?` wildcards, `!negations` and hashed names
-//! (`|1|salt|hmac-sha1`). `@revoked` keys are refused; `@cert-authority` lines are skipped
-//! (host certificates are not supported).
+//! `@revoked` keys are refused; `@cert-authority` lines are skipped (host certificates are not
+//! supported).
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -14,23 +9,19 @@ use hmac::{Hmac, KeyInit, Mac};
 use russh::keys::PublicKey;
 use sha1::Sha1;
 
-/// What the files say about a host's key.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Status {
     Known,
-    /// No line for this host with this key type.
     Unknown,
     /// The host is recorded with another key of the same type: refuse.
     Changed { path: PathBuf, line: usize },
     Revoked { path: PathBuf, line: usize },
 }
 
-/// The name a host is recorded under: `host`, or `[host]:port` when the port is not 22.
 pub fn host_name(host: &str, port: u16) -> String {
     if port == 22 { host.to_string() } else { format!("[{host}]:{port}") }
 }
 
-/// The files to check, in order (missing ones are skipped).
 pub fn default_files(app_file: &Path) -> Vec<PathBuf> {
     let mut v = Vec::new();
     if let Some(h) = super::config::home() {
@@ -41,7 +32,6 @@ pub fn default_files(app_file: &Path) -> Vec<PathBuf> {
     v
 }
 
-/// The wire encoding of a key (what the base64 column holds) and its type name.
 fn wire(key: &PublicKey) -> (String, Vec<u8>) {
     (key.algorithm().as_str().to_string(), key.to_bytes().unwrap_or_default())
 }
@@ -69,7 +59,6 @@ pub fn check(files: &[PathBuf], host: &str, port: u16, key: &PublicKey) -> Statu
     }
 }
 
-/// The key types recorded for a host (to prefer them when negotiating, as ssh does).
 pub fn known_types(files: &[PathBuf], host: &str, port: u16) -> Vec<String> {
     let name = host_name(host, port);
     let mut v: Vec<String> = Vec::new();
@@ -141,7 +130,6 @@ fn check_text(text: &str, host: &str, port: u16, alg: &str, blob: &[u8]) -> Verd
     v
 }
 
-/// One pattern list against a name: some pattern matches and no negated one does.
 fn patterns_match(list: &str, name: &str) -> bool {
     let mut hit = false;
     for p in list.split(',') {
@@ -160,7 +148,6 @@ fn patterns_match(list: &str, name: &str) -> bool {
     hit
 }
 
-/// `salt|hash`, both base64: HMAC-SHA1 of the name keyed by the salt.
 fn hashed_match(s: &str, name: &str) -> bool {
     let Some((salt, hash)) = s.split_once('|') else { return false };
     let (Ok(salt), Ok(hash)) = (BASE64.decode(salt.as_bytes()), BASE64.decode(hash.as_bytes())) else { return false };
@@ -169,13 +156,12 @@ fn hashed_match(s: &str, name: &str) -> bool {
     mac.verify_slice(&hash).is_ok()
 }
 
-/// The line written for a trusted key (plain name, as `ssh` writes with HashKnownHosts off).
 pub fn line_for(host: &str, port: u16, key: &PublicKey) -> String {
     let (alg, blob) = wire(key);
     format!("{} {alg} {}", host_name(host, port), BASE64.encode(&blob))
 }
 
-/// Appends a trusted key to `path` (created 0600 with its directory when missing).
+/// Created 0600 (with its directory) when missing.
 pub fn append(path: &Path, host: &str, port: u16, key: &PublicKey) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
@@ -228,24 +214,17 @@ mod tests {
         let (a, b) = (key(ED_A), key(ED_B));
         assert_eq!(check(&files, "bastion.example", 22, &a), Status::Known);
         assert_eq!(check(&files, "203.0.113.10", 22, &a), Status::Known);
-        // Same type, other key: refused, with the line.
         assert_eq!(check(&files, "bastion.example", 22, &b), Status::Changed { path: f.clone(), line: 2 });
-        // A non-22 port is recorded as [host]:port only.
         assert_eq!(check(&files, "db.example", 2222, &a), Status::Known);
         assert_eq!(check(&files, "db.example", 22, &a), Status::Unknown);
-        // Hashed names.
         assert_eq!(check(&files, "hidden.example", 2200, &b), Status::Known);
         assert_eq!(check(&files, "hidden.example", 2200, &a), Status::Changed { path: f.clone(), line: 4 });
-        // Wildcards and negation.
         assert_eq!(check(&files, "x.wild.example", 22, &a), Status::Known);
         assert_eq!(check(&files, "bad.wild.example", 22, &a), Status::Unknown);
-        // A cert-authority line is not a host key.
         assert_eq!(check(&files, "other.example", 22, &b), Status::Unknown);
-        // Revoked wins over a plain line with the same key.
         assert_eq!(check(&files, "revoked.example", 22, &a), Status::Revoked { path: f.clone(), line: 7 });
         assert_eq!(known_types(&files, "db.example", 2222), vec!["ssh-ed25519"]);
 
-        // Trusting appends to the app's own file; the next check knows the host.
         let app = dir.path().join("dataman/known_hosts");
         let files = vec![f.clone(), app.clone()];
         assert_eq!(check(&files, "new.example", 2022, &b), Status::Unknown);

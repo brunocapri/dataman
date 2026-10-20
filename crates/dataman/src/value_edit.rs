@@ -1,9 +1,3 @@
-//! Value editors for grid edits, by column type: a JSON tree (expand,
-//! collapse, edit leaves and keys, add and remove members, pretty / raw text with validation),
-//! a date-time picker (with the zone shown), an enum's labels, a boolean's true / false / NULL,
-//! and a multi-line editor for long text. Every one ends in a text value (or NULL) for the
-//! grid edit's change set: nothing new happens on the commit path.
-
 use std::sync::Arc;
 
 use chrono::{Datelike, NaiveDate, NaiveTime, Timelike};
@@ -33,7 +27,6 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("escape", CancelValue, c),
         KeyBinding::new("cmd-shift-n", ToggleNullValue, c),
     ]);
-    // The editor's own body (not its fields): arrows, ↩, ⌫.
     let b = Some("ValueBody");
     cx.bind_keys([
         KeyBinding::new("up", Up, b),
@@ -46,18 +39,15 @@ pub fn bind_keys(cx: &mut App) {
     ]);
 }
 
-/// Which editor a column gets (`None`: the plain text field).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Mode {
     Bool,
     Enum(Arc<Vec<String>>),
-    /// `Kind::Date`, `Time`, `Timestamp` or `TimestampTz`.
     DateTime(Kind),
     Json,
     LongText,
 }
 
-/// Text values this long (or with a line break) get the multi-line editor.
 pub const LONG_TEXT: usize = 80;
 
 pub fn mode_for(kind: Kind, enum_labels: Option<&Arc<Vec<String>>>, value: Option<&str>) -> Option<Mode> {
@@ -75,10 +65,8 @@ pub fn mode_for(kind: Kind, enum_labels: Option<&Arc<Vec<String>>>, value: Optio
     }
 }
 
-// ---------------------------------------------------------------------------------------------
 // Dates and times as text (UTC for timestamptz, like the grid edit's values).
 
-/// (date, time, fraction digits kept) of a value of `kind`; `None` parts are absent.
 pub fn parse_datetime(kind: Kind, s: &str) -> (Option<NaiveDate>, Option<NaiveTime>) {
     let s = s.trim();
     let s = match kind {
@@ -97,7 +85,6 @@ pub fn parse_datetime(kind: Kind, s: &str) -> (Option<NaiveDate>, Option<NaiveTi
     }
 }
 
-/// `HH:MM:SS`, with the fraction when there is one.
 pub fn time_text(t: NaiveTime) -> String {
     let mut s = t.format("%H:%M:%S").to_string();
     let ns = t.nanosecond();
@@ -109,7 +96,6 @@ pub fn time_text(t: NaiveTime) -> String {
     s
 }
 
-/// The value as the column takes it.
 pub fn datetime_text(kind: Kind, d: NaiveDate, t: NaiveTime) -> String {
     match kind {
         Kind::Date => d.format("%Y-%m-%d").to_string(),
@@ -119,7 +105,6 @@ pub fn datetime_text(kind: Kind, d: NaiveDate, t: NaiveTime) -> String {
     }
 }
 
-/// The 6 × 7 days shown for a month (Monday first), `None` outside it.
 pub fn month_grid(year: i32, month: u32) -> Vec<Option<NaiveDate>> {
     let first = NaiveDate::from_ymd_opt(year, month, 1).unwrap_or_default();
     let lead = first.weekday().num_days_from_monday() as i64;
@@ -141,11 +126,7 @@ fn add_months(y: i32, m: u32, n: i32) -> (i32, u32) {
     (i.div_euclid(12), (i.rem_euclid(12) + 1) as u32)
 }
 
-// ---------------------------------------------------------------------------------------------
-// The editor
-
 pub enum ValueEvent {
-    /// A valid value is ready (the grid's edit reads it with `value`).
     Commit,
     Cancel,
 }
@@ -156,7 +137,6 @@ struct JsonState {
     editor: Entity<CodeEditor>,
     error: Option<String>,
     sel: usize,
-    /// A key (`true`) or value being typed, at a path.
     field: Option<(Path, bool, Entity<TextInput>)>,
 }
 
@@ -171,9 +151,7 @@ enum State {
 
 pub struct ValueEditor {
     state: State,
-    /// NULL (Bool and Enum carry their own).
     null: bool,
-    /// NULL is offered (false on a NOT NULL column).
     nullable: bool,
     focus: FocusHandle,
     body: FocusHandle,
@@ -189,8 +167,6 @@ impl Focusable for ValueEditor {
 }
 
 impl ValueEditor {
-    /// `nullable`: NULL is offered (a NOT NULL column hides it; a NULL value there starts on the
-    /// first choice).
     pub fn new(mode: Mode, value: Option<&str>, nullable: bool, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut subs = Vec::new();
         let null = value.is_none() && nullable;
@@ -229,7 +205,6 @@ impl ValueEditor {
                 let text = value.unwrap_or("null");
                 let (doc, raw, error) = match Doc::parse(text) {
                     Ok(d) => (d, false, None),
-                    // Not valid JSON (it can happen in a json column): the raw text, flagged.
                     Err(e) => (Doc::new(Node::Null), true, Some(e.to_string())),
                 };
                 let pretty = if raw { text.to_string() } else { doc.root.pretty() };
@@ -267,7 +242,6 @@ impl ValueEditor {
         e
     }
 
-    /// Where the keys go first: the text of a text editor, the body otherwise.
     pub fn focus_start(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match &self.state {
             State::Text(ed) => window.focus(&ed.focus_handle(cx), cx),
@@ -276,7 +250,6 @@ impl ValueEditor {
         }
     }
 
-    /// The value now, or why it cannot be taken (invalid JSON, an unreadable time).
     pub fn value(&self, cx: &App) -> Result<CellValue, String> {
         match &self.state {
             State::Bool(b) => Ok(match b {
@@ -309,7 +282,6 @@ impl ValueEditor {
     }
 
     pub fn apply(&mut self, cx: &mut Context<Self>) {
-        // A field still being typed goes in first.
         self.end_field(true, cx);
         if self.value(cx).is_ok() {
             cx.emit(ValueEvent::Commit);
@@ -328,13 +300,10 @@ impl ValueEditor {
         cx.notify();
     }
 
-    // Keys on the body.
-
     fn arrow(&mut self, dx: i64, dy: i64, cx: &mut Context<Self>) {
         let extra = self.nullable as i64;
         match &mut self.state {
             State::Bool(b) => {
-                // true → false → NULL.
                 let order = [Some(true), Some(false), None];
                 let i = order.iter().position(|x| x == b).unwrap_or(0) as i64;
                 *b = order[(i + dx + dy).rem_euclid(2 + extra) as usize];
@@ -356,7 +325,6 @@ impl ValueEditor {
                     && r.container
                     && (dx > 0) != r.expanded
                 {
-                    // → opens, ← closes.
                     j.doc.toggle(&r.path);
                 }
             }
@@ -398,7 +366,6 @@ impl ValueEditor {
                 'n' if nullable => *b = None,
                 _ => return,
             },
-            // Type-ahead: the next label starting with the letter.
             State::Enum { labels, hi } => {
                 let n = labels.len();
                 if let Some(i) = (1..=n).map(|d| (*hi + d) % n.max(1)).find(|&i| labels[i].to_lowercase().starts_with(ch)) {
@@ -415,8 +382,6 @@ impl ValueEditor {
         cx.notify();
     }
 
-    // JSON.
-
     fn reparse(&mut self, cx: &mut Context<Self>) {
         if let State::Json(j) = &mut self.state
             && j.raw
@@ -427,7 +392,6 @@ impl ValueEditor {
         }
     }
 
-    /// Tree ⇄ raw text. Raw text that does not parse stays raw.
     fn set_raw(&mut self, raw: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.end_field(true, cx);
         let State::Json(j) = &mut self.state else { return };
@@ -484,7 +448,6 @@ impl ValueEditor {
         cx.notify();
     }
 
-    /// Takes (or drops) the key or value being typed.
     fn end_field(&mut self, keep: bool, cx: &mut Context<Self>) -> bool {
         let State::Json(j) = &mut self.state else { return false };
         let Some((path, key, input)) = j.field.take() else { return false };
@@ -509,7 +472,6 @@ impl ValueEditor {
             let rows = j.doc.rows();
             j.sel = rows.iter().position(|r| r.path == p).unwrap_or(j.sel);
             let is_key = matches!(rows.get(j.sel).and_then(|r| r.key.clone()), Some(RowKey::Key(_)));
-            // A new member: its key first; a new item: its value.
             self.begin_field(p, is_key, window, cx);
         }
     }
@@ -534,7 +496,6 @@ impl ValueEditor {
         }
     }
 
-    /// Demo: a JSON editor with a member being typed.
     pub fn demo_edit_first_leaf(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let path = match &self.state {
             State::Json(j) => j.doc.rows().into_iter().find(|r| !r.container && !r.path.is_empty()).map(|r| r.path),
@@ -863,7 +824,6 @@ impl Render for ValueEditor {
             .text_color(t.tx)
             .on_action(cx.listener(|e, _: &ApplyValue, _, cx| e.apply(cx)))
             .on_action(cx.listener(|e, _: &CancelValue, _, cx| {
-                // A field being typed goes first.
                 if !e.end_field(false, cx) {
                     cx.emit(ValueEvent::Cancel);
                 }
@@ -926,7 +886,6 @@ mod tests {
 
     #[test]
     fn calendar() {
-        // October 2026 starts on a Thursday.
         let g = month_grid(2026, 10);
         assert_eq!(g.len(), 42);
         assert_eq!(g.iter().position(|d| d.is_some()), Some(3));

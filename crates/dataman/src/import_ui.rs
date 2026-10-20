@@ -1,7 +1,5 @@
-//! Import connections from `~/.pg_service.conf` (and `PGSYSCONFDIR`) and `~/.pgpass`: a sheet
-//! listing what the files describe; the user picks which become saved connections. pgpass
-//! passwords stay in the file (looked up on connect); a service's own password goes to the
-//! Keychain.
+// pgpass passwords stay in the file (looked up on connect); a service's own password goes
+// to the Keychain.
 
 use gpui::{
     App, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, KeyBinding, Window, actions, div, prelude::*,
@@ -29,14 +27,12 @@ pub fn bind_keys(cx: &mut App) {
 
 pub enum ImportEvent {
     Close,
-    /// Saved; the new connections' ids.
     Imported(Vec<String>),
 }
 
 pub struct ImportView {
     store: Entity<ConnStore>,
     focus: FocusHandle,
-    /// `None` while the files are read.
     items: Option<Vec<Importable>>,
     picked: Vec<bool>,
     hi: usize,
@@ -60,7 +56,6 @@ impl ImportView {
             let r = task.await;
             let _ = this.update(cx, |v, cx| {
                 match r {
-                    // (The demo sets its own list first.)
                     Ok(items) if v.items.is_none() => v.set_items(items),
                     Ok(_) => {}
                     Err(e) => v.error = Some(format!("{e:#}")),
@@ -72,7 +67,6 @@ impl ImportView {
         ImportView { store, focus, items: None, picked: vec![], hi: 0, error: None }
     }
 
-    /// The list (also the demo screenshots' way in).
     pub fn set_items(&mut self, items: Vec<Importable>) {
         self.picked = vec![false; items.len()];
         self.hi = items.iter().position(|i| !i.exists).unwrap_or(0);

@@ -1,16 +1,5 @@
-//! New/edit connection sheet (UiConnDialog): test (stoppable), save (password to the
-//! Keychain), delete. States: not tested, testing, connected (Postgres or LAR), failed with
-//! the server's message verbatim, "password needed" when the server asked for one, and an
-//! unknown SSH host key to trust. A connection URL or libpq string pasted into the name or host
-//! field fills the fields; the SSH section (collapsed unless used) sets the tunnel; MCP ›
-//! Advanced (collapsed) holds the statements agents may run without asking and YOLO. `Fields |
-//! URL` in the header swaps the server fields for one connection string (any engine's: a
-//! URL, libpq's keywords, JDBC, ADO.NET), read as it is typed into the same fields; its
-//! password goes where a typed one goes (the Keychain), never into connections.toml.
-//!
-//! A new connection starts with its database: a grid of the engines (their logos, a search
-//! field that narrows it, ↑ ↓ and ↩), then that engine's form. The engine's chip in the form's
-//! header goes back to the grid.
+//! A connection string's password goes where a typed one goes (the Keychain), never into
+//! connections.toml.
 
 use std::time::{Duration, Instant};
 
@@ -22,10 +11,8 @@ use crate::theme::{Pt, px};
 use dataman_core::config::Engine;
 use dataman_core::{ConnectionProfile, Environment, HostKeyPrompt, McpAccess, ServerInfo, SshAuth, SshError, SshSettings, SslMode};
 
-/// The engines the sheet offers, in the grid's order.
 const ENGINES: [Engine; 7] = Engine::ALL;
 
-/// What the grid says under an engine's name.
 fn family_label(e: Engine) -> &'static str {
     match e {
         Engine::Postgres | Engine::MySql | Engine::SqlServer => "Relational",
@@ -35,8 +22,6 @@ fn family_label(e: Engine) -> &'static str {
     }
 }
 
-/// The engines a search matches: their names, the words people use for them (`mongo`, `es`,
-/// `nosql`, `sql`), their kind.
 pub fn engines_matching(q: &str) -> Vec<Engine> {
     let q = q.trim().to_lowercase();
     ENGINES
@@ -60,16 +45,12 @@ pub fn engines_matching(q: &str) -> Vec<Engine> {
         .collect()
 }
 
-/// Which page of the sheet shows.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Step {
-    /// The engines' grid.
     Engine,
-    /// The chosen engine's form.
     Form,
 }
 
-/// The TLS modes an engine without SQL offers (no "if offered"): off, on, on and verified.
 const DOC_TLS: [(SslMode, &str); 3] = [(SslMode::Disable, "off"), (SslMode::Require, "on"), (SslMode::VerifyFull, "verify")];
 
 use crate::conns::ConnStore;
@@ -97,12 +78,8 @@ pub fn bind_keys(cx: &mut App) {
 
 pub enum DialogEvent {
     Close,
-    /// The fields are valid: the workspace asks about the open transactions a save would end,
-    /// then calls [`ConnDialog::save_now`].
     Save,
-    /// Delete this connection (confirmed in the sheet); the workspace does it.
     Delete(String),
-    /// Saved; connect right away (with the typed password, saved or not).
     Saved { id: String, password: Option<String> },
 }
 
@@ -110,22 +87,17 @@ enum Test {
     NotTested,
     Testing { since: Instant, target: String },
     Ok { info: ServerInfo, ms: f64 },
-    /// `title` is the server's own line (`FATAL 28P01 · password authentication failed…`).
     Failed { title: String, body: String },
-    /// A local problem (missing fields, Keychain).
     Invalid(String),
-    /// The SSH server's key is not in known_hosts: trust it or not.
     HostKey(HostKeyPrompt),
 }
 
-/// How the sheet takes the server: its fields, or one connection string.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Entry {
     Fields,
     Url,
 }
 
-/// The SSH section's fields.
 struct SshFields {
     on: bool,
     host: Entity<TextInput>,
@@ -133,23 +105,16 @@ struct SshFields {
     user: Entity<TextInput>,
     auth: SshAuth,
     key: Entity<TextInput>,
-    /// The key passphrase or the SSH password, by `auth`.
     secret: Entity<TextInput>,
 }
 
-/// The MCP section's advanced options, hidden behind a disclosure: statements agents may run
-/// without asking, and YOLO.
 struct Advanced {
     open: bool,
-    /// `ConnectionProfile::mcp_allowed` as edited.
     allowed: Vec<String>,
-    /// The next entry, and why it was not taken.
     input: Entity<TextInput>,
     error: Option<String>,
     yolo: bool,
-    /// Turning YOLO on for a production connection waits for this confirmation.
     confirm: bool,
-    /// Confirmed in this sheet (a save does not ask again).
     confirmed: bool,
 }
 
@@ -170,34 +135,24 @@ pub struct ConnDialog {
     color: usize,
     env: Environment,
     read_only: bool,
-    /// The MCP permission set here (`None`: the environment's default).
     mcp: Option<McpAccess>,
-    /// MCP › Advanced (collapsed until opened): the allowed queries and YOLO.
     advanced: Advanced,
     ssh: SshFields,
     entry: Entry,
-    /// The connection string (`Entry::Url`).
     conn_str: Entity<TextInput>,
-    /// The name the last connection string gave: the next one replaces it, a typed one stays.
     auto_name: Option<String>,
-    /// The password field holds the connection string's password (cleared with it).
     pw_from_str: bool,
-    /// Text lengths of the name and host fields, to tell a paste from typing.
     paste_len: [usize; 2],
     test: Test,
     /// Bumped per test, so a stopped test's late answer is ignored.
     test_gen: u64,
-    /// The server asked for a password this connection does not have.
     password_needed: bool,
     confirm_delete: bool,
     _ticker: Option<Task<()>>,
-    /// The name field takes the focus at the next render (after the grid's pick).
     pending_focus: bool,
     step: Step,
-    /// The grid's search, and the engine ↩ picks (an index into the matches).
     search: Entity<TextInput>,
     pick_hi: usize,
-    /// MongoDB's driver options as one string (`authSource=admin&replicaSet=rs0`).
     options: Entity<TextInput>,
 }
 
@@ -210,7 +165,6 @@ impl Focusable for ConnDialog {
 }
 
 impl ConnDialog {
-    /// `profile`: the connection to edit, or the prefilled fields of a new one (`is_new`).
     pub fn new(
         store: Entity<ConnStore>,
         profile: Option<ConnectionProfile>,
@@ -245,7 +199,6 @@ impl ConnDialog {
         let port = field(cx, &profile.engine.default_port().to_string(), &profile.port.to_string());
         let user = field(cx, "user", &profile.user);
         let database = field(cx, "database", &profile.database);
-        // A URL or key=value string pasted into the name or host field fills the form.
         for (i, e) in [&name, &host].into_iter().enumerate() {
             cx.subscribe(e, move |d: &mut ConnDialog, input, ev: &InputEvent, cx| {
                 if matches!(ev, InputEvent::Changed) {
@@ -261,7 +214,6 @@ impl ConnDialog {
             InputEvent::Submit => d.save(cx),
             InputEvent::Changed => {
                 d.password.update(cx, |p, _| p.error = false);
-                // A new password: the last test's failure is no longer this one's.
                 if !matches!(d.test, Test::Testing { .. }) {
                     d.test = Test::NotTested;
                 }
@@ -334,8 +286,6 @@ impl ConnDialog {
         .detach();
         let opts: Vec<String> = profile.options.iter().map(|(k, v)| format!("{k}={v}")).collect();
         let options = field(cx, "authSource=admin&replicaSet=rs0", &opts.join("&"));
-        // A brand-new connection starts with its database; one prefilled (a pasted string, an
-        // import) or edited, with its form.
         let step = if profile.host == ConnectionProfile::new("").host && is_new && profile.name.is_empty() { Step::Engine } else { Step::Form };
         if step == Step::Engine {
             window.focus(&search.focus_handle(cx), cx);
@@ -385,12 +335,10 @@ impl ConnDialog {
         }
     }
 
-    /// The sheet's page: the engines' grid or the form.
     pub fn step(&self) -> Step {
         self.step
     }
 
-    /// An engine chosen in the grid: its form, the name field focused.
     pub fn pick_engine(&mut self, e: Engine, cx: &mut Context<Self>) {
         self.set_engine(e, cx);
         self.step = Step::Form;
@@ -398,7 +346,6 @@ impl ConnDialog {
         cx.notify();
     }
 
-    /// Back to the grid (the form's engine chip).
     fn change_engine(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.step = Step::Engine;
         self.pick_hi = engines_matching(self.search.read(cx).text()).iter().position(|e| *e == self.engine).unwrap_or(0);
@@ -414,19 +361,16 @@ impl ConnDialog {
         }
     }
 
-    /// Checks: the search as typed.
     pub fn demo_search(&mut self, q: &str, cx: &mut Context<Self>) {
         self.search.update(cx, |i, cx| i.set_text(q, cx));
         self.pick_hi = 0;
         cx.notify();
     }
 
-    /// The password field (focused when the server asked for a password).
     pub fn password_focus(&self, cx: &App) -> FocusHandle {
         self.password.focus_handle(cx)
     }
 
-    /// Reopened because the server asked for a password: banner, focus on the field.
     pub fn set_password_needed(&mut self, cx: &mut Context<Self>) {
         self.password_needed = true;
         self.password.update(cx, |p, cx| p.set_placeholder("required by server", cx));
@@ -437,19 +381,16 @@ impl ConnDialog {
         self.password.update(cx, |p, cx| p.set_text(pw, cx));
     }
 
-    /// Runs the test (demo screenshots; the UI uses the Test button and ⌘T).
     pub fn run_test(&mut self, cx: &mut Context<Self>) {
         self.test(cx);
     }
 
-    /// Reopened because the SSH server's key is unknown: the fingerprint and Trust.
     pub fn set_host_key(&mut self, prompt: HostKeyPrompt, cx: &mut Context<Self>) {
         self.ssh.on = true;
         self.test = Test::HostKey(prompt);
         cx.notify();
     }
 
-    /// Reopened because the tunnel needs a password or passphrase it does not have.
     pub fn set_ssh_failed(&mut self, message: String, secret_needed: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.ssh.on = true;
         self.test = Test::Failed { title: message, body: String::new() };
@@ -460,8 +401,6 @@ impl ConnDialog {
         cx.notify();
     }
 
-    /// The name (`which` 0) or host (1) field changed: a pasted connection string fills the
-    /// form (typing one character at a time never does).
     fn on_name_or_host(&mut self, which: usize, input: &Entity<TextInput>, cx: &mut Context<Self>) {
         let text = input.read(cx).text().to_string();
         let pasted = text.len() > self.paste_len[which] + 1;
@@ -473,8 +412,6 @@ impl ConnDialog {
         self.fill(&p, pw, which == 0, cx);
     }
 
-    /// Fills the fields from a parsed connection string (the password field only when the
-    /// string had one; saving it is still up to "Save in Keychain").
     pub fn fill(&mut self, p: &ConnectionProfile, pw: Option<String>, name_too: bool, cx: &mut Context<Self>) {
         let keep_name = !name_too && !self.name.read(cx).text().trim().is_empty();
         if !keep_name {
@@ -500,10 +437,7 @@ impl ConnDialog {
         cx.notify();
     }
 
-    /// `Fields | URL`. The string starts as the URL of the fields (no password) when they name
-    /// a host; the fields already follow the string.
     pub fn set_entry(&mut self, e: Entry, window: &mut Window, cx: &mut Context<Self>) {
-        // A connection string names its engine: no need for the grid.
         self.step = Step::Form;
         if self.entry == e {
             return;
@@ -525,29 +459,23 @@ impl ConnDialog {
         cx.notify();
     }
 
-    /// Checks and demos: the connection string, as if typed.
     pub fn set_conn_str(&mut self, s: &str, cx: &mut Context<Self>) {
         self.conn_str.update(cx, |i, cx| i.set_text(s, cx));
         self.apply_conn_str(cx);
     }
 
-    /// The connection string is not one (its field shows red once left).
     pub fn conn_str_invalid(&self, cx: &App) -> bool {
         self.conn_str.read(cx).error
     }
 
-    /// Demos: the keys to the name field (a red string field shows once it is left).
     pub fn focus_name(&self, window: &mut Window, cx: &mut App) {
         window.focus(&self.name.focus_handle(cx), cx);
     }
 
-    /// Checks: the profile as the fields stand, and the password field.
     pub fn current(&self, cx: &App) -> (ConnectionProfile, String) {
         (self.fields(cx), self.password.read(cx).text().to_string())
     }
 
-    /// The connection string changed: when it reads as one, the fields follow it (engine,
-    /// host, port, user, database, TLS mode, and its password into the password field).
     fn apply_conn_str(&mut self, cx: &mut Context<Self>) {
         let text = self.conn_str.read(cx).text().trim().to_string();
         let parsed = dataman_core::connstr::parse_profile(&text);
@@ -570,8 +498,6 @@ impl ConnDialog {
         self.pw_from_str = had_pw;
     }
 
-    /// A save or test that cannot go on: the message, and the string's field red when it is
-    /// what is wrong.
     fn invalid(&mut self, msg: String, cx: &mut Context<Self>) {
         if self.entry == Entry::Url && dataman_core::connstr::parse_profile(self.conn_str.read(cx).text()).is_none() {
             self.conn_str.update(cx, |i, _| i.error = true);
@@ -580,7 +506,6 @@ impl ConnDialog {
         cx.notify();
     }
 
-    /// The text fields as shown, in order (Tab and ⇧Tab walk them).
     fn inputs(&self) -> Vec<&Entity<TextInput>> {
         let mut v = vec![&self.name];
         if self.entry == Entry::Url {
@@ -610,7 +535,6 @@ impl ConnDialog {
         v
     }
 
-    /// Tab (`step` 1) and ⇧Tab (-1): the next or previous field, round.
     fn focus_field(&mut self, step: isize, window: &mut Window, cx: &mut Context<Self>) {
         let v = self.inputs();
         let n = v.len() as isize;
@@ -619,20 +543,17 @@ impl ConnDialog {
             None if step > 0 => 0,
             None => n - 1,
         };
-        // As a Mac sheet: the field tabbed into is selected whole, typing replaces it.
         let f = v[next as usize].clone();
         window.focus(&f.focus_handle(cx), cx);
         f.update(cx, |f, cx| f.select_all(cx));
         cx.notify();
     }
 
-    /// The profile, the typed password and the typed SSH secret.
     fn collect(&self, cx: &App) -> Result<(ConnectionProfile, Option<String>, Option<String>), String> {
         if self.entry == Entry::Url && dataman_core::connstr::parse_profile(self.conn_str.read(cx).text()).is_none() {
             return Err("not a connection string".into());
         }
         let mut p = self.fields(cx);
-        // An empty port is the engine's (its placeholder).
         let port = self.port.read(cx).text().trim().to_string();
         p.port = if port.is_empty() { p.engine.default_port() } else { port.parse().map_err(|_| "port must be a number".to_string())? };
         p.color = Some(SWATCHES[self.color].to_string());
@@ -642,7 +563,6 @@ impl ConnDialog {
         if p.host.is_empty() {
             return Err("host is required".into());
         }
-        // The engines without SQL may connect without a login.
         if p.user.is_empty() && p.engine.is_sql() {
             return Err("host and user are required".into());
         }
@@ -661,7 +581,6 @@ impl ConnDialog {
         Ok((p, text(&self.password), secret))
     }
 
-    /// The profile as the fields stand, unvalidated (the URL line).
     fn fields(&self, cx: &App) -> ConnectionProfile {
         let mut p = self.profile.clone();
         let text = |e: &Entity<TextInput>| e.read(cx).text().trim().to_string();
@@ -713,12 +632,11 @@ impl ConnDialog {
         p
     }
 
-    /// The same URL as "Copy connection string" (never the password).
+    /// Never includes the password.
     fn url(&self, cx: &App) -> String {
         self.fields(cx).url()
     }
 
-    /// Another engine: the port, user and database that were the old engine's defaults follow.
     fn set_engine(&mut self, e: Engine, cx: &mut Context<Self>) {
         let old = self.engine;
         if old == e {
@@ -740,7 +658,6 @@ impl ConnDialog {
         if !e.is_postgres() && db == "postgres" {
             self.database.update(cx, |t, cx| t.set_text("", cx));
         }
-        // No "TLS if offered" without SQL: off, as before.
         if !e.is_sql() && self.sslmode == SslMode::Prefer {
             self.sslmode = SslMode::Disable;
         }
@@ -778,7 +695,6 @@ impl ConnDialog {
         let gen_ = self.test_gen;
         // Saved secrets (keychain, pgpass) are looked up off the UI thread.
         let task = core.test_connection(p, pw, ssh_secret);
-        // The elapsed time ticks at 10 Hz only while the test runs.
         self._ticker = Some(cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(Duration::from_millis(100)).await;
@@ -826,7 +742,6 @@ impl ConnDialog {
     }
 
     fn cancel(&mut self, cx: &mut Context<Self>) {
-        // esc stops a running test first; a second esc closes.
         if matches!(self.test, Test::Testing { .. }) {
             self.test = Test::NotTested;
             self.test_gen += 1;
@@ -836,7 +751,6 @@ impl ConnDialog {
         }
     }
 
-    /// Trusts the SSH host key shown, then tests again.
     fn trust(&mut self, cx: &mut Context<Self>) {
         let Test::HostKey(prompt) = &self.test else { return };
         let task = self.store.read(cx).core.trust_host_key(prompt.clone());
@@ -856,7 +770,6 @@ impl ConnDialog {
         .detach();
     }
 
-    /// The connection this sheet edits (or creates).
     pub fn profile_id(&self) -> &str {
         &self.profile.id
     }
@@ -880,13 +793,11 @@ impl ConnDialog {
         cx.emit(DialogEvent::Save);
     }
 
-    /// YOLO on production that nobody confirmed: not as saved, not in this sheet.
     fn yolo_needs_confirm(&self) -> bool {
         let saved = self.profile.mcp_yolo && self.profile.env.is_production() && !self.is_new;
         self.advanced.yolo && self.env.is_production() && !self.advanced.confirmed && !saved
     }
 
-    /// The YOLO switch: on production, turning it on asks first ([`Advanced::confirm`]).
     fn toggle_yolo(&mut self, cx: &mut Context<Self>) {
         let a = &mut self.advanced;
         if a.yolo || a.confirm {
@@ -901,7 +812,6 @@ impl ConnDialog {
         cx.notify();
     }
 
-    /// The production confirmation's answer.
     fn confirm_yolo(&mut self, on: bool, cx: &mut Context<Self>) {
         let a = &mut self.advanced;
         a.confirm = false;
@@ -910,8 +820,6 @@ impl ConnDialog {
         cx.notify();
     }
 
-    /// The typed statement into the allowed queries (one statement; one already allowed is not
-    /// added twice); else why not, under the field.
     fn add_allowed(&mut self, cx: &mut Context<Self>) {
         let d = self.engine.dialect();
         let text = self.advanced.input.read(cx).text().to_string();
@@ -935,7 +843,6 @@ impl ConnDialog {
         cx.notify();
     }
 
-    /// Demos and checks: MCP › Advanced opened, with `stmt` typed into its field and added.
     pub fn demo_advanced(&mut self, stmt: Option<&str>, yolo: bool, cx: &mut Context<Self>) {
         self.advanced.open = true;
         if let Some(s) = stmt {
@@ -948,17 +855,14 @@ impl ConnDialog {
         cx.notify();
     }
 
-    /// Checks: the advanced options as they stand (allowed queries, YOLO, confirmation showing).
     pub fn demo_advanced_state(&self) -> (Vec<String>, bool, bool) {
         (self.advanced.allowed.clone(), self.advanced.yolo, self.advanced.confirm)
     }
 
-    /// Checks: another engine, as its tile's click (the form follows).
     pub fn demo_engine(&mut self, e: Engine, cx: &mut Context<Self>) {
         self.pick_engine(e, cx);
     }
 
-    /// Checks: Test (⌘T) and Save (⌘↩), as their buttons.
     pub fn demo_test(&mut self, cx: &mut Context<Self>) {
         self.test(cx);
     }
@@ -967,8 +871,6 @@ impl ConnDialog {
         self.save(cx);
     }
 
-    /// Checks: the test line (`untested`, `testing`, `ok`, `failed: …`, `invalid: …`) and
-    /// whether the password field is red.
     pub fn demo_status(&self, cx: &App) -> (String, bool) {
         let s = match &self.test {
             Test::NotTested => "untested".into(),
@@ -981,13 +883,10 @@ impl ConnDialog {
         (s, self.password.read(cx).error)
     }
 
-    /// Checks: the field (0 name, 1 host, 2 port, 3 user, 4 password, 5 database) with the
-    /// keyboard focus, if any.
     pub fn demo_focused(&self, window: &Window, cx: &App) -> Option<usize> {
         [&self.name, &self.host, &self.port, &self.user, &self.password, &self.database].iter().position(|f| f.focus_handle(cx).is_focused(window))
     }
 
-    /// Checks: one field's text (as [`ConnDialog::demo_focused`] numbers them).
     pub fn demo_field(&self, ix: usize, cx: &App) -> String {
         [&self.name, &self.host, &self.port, &self.user, &self.password, &self.database][ix].read(cx).text().to_string()
     }
@@ -1000,7 +899,6 @@ impl ConnDialog {
         [&self.name, &self.host, &self.port, &self.user, &self.password, &self.database][ix].clone().update(cx, |t, cx| t.set_text(s, cx));
     }
 
-    /// Saves the connection and reconnects it with the new settings.
     pub fn save_now(&mut self, cx: &mut Context<Self>) {
         let (p, pw, ssh_secret) = match self.collect(cx) {
             Ok(v) => v,
@@ -1013,7 +911,6 @@ impl ConnDialog {
             return;
         }
         self.store.update(cx, |s, cx| {
-            // Reconnect with the new settings.
             s.disconnect(&p.id, cx);
             s.reload(cx);
         });
@@ -1029,13 +926,10 @@ impl ConnDialog {
         cx.emit(DialogEvent::Delete(self.profile.id.clone()));
     }
 
-    /// The engine keeps databases one connects to (not the search engines).
     fn has_database(&self) -> bool {
         !matches!(self.engine, Engine::Elasticsearch | Engine::OpenSearch)
     }
 
-    /// The engines' grid: a search field and a tile per engine (its logo, its name, its kind),
-    /// grouped as relational and NoSQL.
     fn render_picker(&self, t: &Theme, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
         let found = engines_matching(self.search.read(cx).text());
         let hi = found.get(self.pick_hi.min(found.len().saturating_sub(1))).copied();
@@ -1111,8 +1005,6 @@ impl ConnDialog {
             .child(input.clone())
     }
 
-    /// The result box: glyph, title, the server's DETAIL/HINT on a failure, and the LAR badge
-    /// when detected. Nothing until a test runs.
     fn result_box(&self, t: &Theme) -> Option<gpui::Div> {
         let (glyph, gcolor, title, body, bg, ring, lar): (&str, Hsla, String, String, Hsla, Hsla, bool) = match &self.test {
             Test::NotTested => return None,
@@ -1168,7 +1060,6 @@ impl ConnDialog {
         )
     }
 
-    /// An unknown SSH host key: the host, the key type and fingerprint, and Trust.
     fn host_key_box(&self, t: &Theme, cx: &mut Context<Self>) -> Option<gpui::Div> {
         let Test::HostKey(p) = &self.test else { return None };
         Some(
@@ -1205,8 +1096,6 @@ impl ConnDialog {
         )
     }
 
-    /// The SSH section: a toggle, and when on, host and port, user and auth, then the key
-    /// file and passphrase or the password.
     fn ssh_section(&self, t: &Theme, cx: &mut Context<Self>) -> gpui::Div {
         let s = &self.ssh;
         let toggle = div()
@@ -1264,9 +1153,6 @@ impl ConnDialog {
 }
 
 impl ConnDialog {
-    /// MCP › Advanced: a disclosure, collapsed by default (its summary says what is set). Open:
-    /// the allowed queries (listed, removable, one added per line, how they match), then YOLO
-    /// in red with what it does, and the confirmation it needs on production.
     fn mcp_advanced(&self, t: &Theme, cx: &mut Context<Self>) -> gpui::Div {
         let a = &self.advanced;
         let off = self.mcp.unwrap_or_else(|| McpAccess::default_for(self.env)) == McpAccess::Off;
@@ -1336,7 +1222,6 @@ impl ConnDialog {
             .children(rows)
             .child(add)
             .children(a.error.clone().map(|e| div().text_size(px(11.)).text_color(t.err).child(e)));
-        // A red switch: the only one of its kind.
         let switch = div()
             .flex_none()
             .w(px(26.))
@@ -1399,7 +1284,6 @@ impl ConnDialog {
     }
 }
 
-/// The `YOLO` badge wherever a connection's MCP tier shows: agents run anything there.
 pub(crate) fn yolo_badge(t: &Theme) -> gpui::Div {
     div()
         .flex_none()
@@ -1414,7 +1298,6 @@ pub(crate) fn yolo_badge(t: &Theme) -> gpui::Div {
         .child("YOLO")
 }
 
-/// The SSH error behind a failure, if the tunnel is what failed.
 pub fn ssh_error(e: &anyhow::Error) -> Option<SshError> {
     e.chain().find_map(|c| c.downcast_ref::<SshError>()).cloned()
 }
@@ -1437,8 +1320,6 @@ fn fmt_ms(ms: f64) -> String {
     if ms < 10. { format!("{ms:.1} ms") } else { format!("{ms:.0} ms") }
 }
 
-/// The server's error, verbatim: `FATAL 28P01 · password authentication failed for user "app"`,
-/// and the server's DETAIL/HINT. `true` when it is about the password.
 pub fn server_message(e: &anyhow::Error) -> (String, String, bool) {
     if let Some(s) = ssh_error(e) {
         return (s.to_string(), String::new(), false);
@@ -1502,7 +1383,6 @@ impl Render for ConnDialog {
         if std::mem::take(&mut self.pending_focus) {
             window.focus(&self.name.focus_handle(cx), cx);
         }
-        // The engine: its logo and name; a click goes back to the grid.
         let (hov, prs) = (t.hov, t.prs);
         let engine = div()
             .id("engine-chip")
@@ -1590,7 +1470,6 @@ impl Render for ConnDialog {
             ui::segment(&t, ("entry", e as usize), label, e == self.entry).on_click(cx.listener(move |d, _, window, cx| d.set_entry(e, window, cx)))
         }));
         let caption = |text: &'static str| div().text_size(px(10.)).text_color(t.tx3).child(text);
-        // The server: one connection string, or host and port, user and database, password.
         let row = || div().flex().flex_row().gap(px(12.));
         let server: Vec<gpui::Div> = if by_url {
             vec![row().items_end().child(self.field(&t, "URL", &self.conn_str, None)).child(keychain)]
@@ -1610,7 +1489,6 @@ impl Render for ConnDialog {
             }
             v
         };
-        // In a short window the fields scroll between the fixed header and footer.
         let max_h = window.viewport_size().height.pt() - crate::theme::metrics::TITLE_H - 32.;
         let card = ui::modal(&t, "conn-dialog")
             .w(px(600.))
@@ -1669,10 +1547,8 @@ impl Render for ConnDialog {
                             .child(div().flex().flex_col().gap(px(6.)).child(div().text_size(px(10.)).text_color(t.tx3).child("ENVIRONMENT")).child(env))
                             .child(read_only),
                     )
-                    // Off for now (`MCP_ADVANCED`).
                     .when(dataman_core::MCP_ADVANCED, |d| d.child(self.mcp_advanced(&t, cx)))
                     .child(self.ssh_section(&t, cx))
-                    // The fields' URL (the string is on screen already in URL mode).
                     .when(!by_url, |d| {
                         d.child(
                             div()
@@ -1744,7 +1620,6 @@ impl Render for ConnDialog {
 }
 
 impl ConnDialog {
-    /// The sheet: a scrim under the title bar and the card centered on it, with the sheet's keys.
     fn wrap(&self, card: gpui::Stateful<gpui::Div>, t: &Theme, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
         div()
             .id("conn-dialog-backdrop")
@@ -1773,7 +1648,6 @@ impl ConnDialog {
 mod tests {
     use super::*;
 
-    /// SSH failures show the tunnel's own line and never pass for a database password problem.
     #[test]
     fn ssh_failures_are_told_apart() {
         let e = anyhow::Error::from(SshError::SecretNeeded { host: "bastion".into(), what: "password" }).context("connecting");
@@ -1787,7 +1661,6 @@ mod tests {
         assert!(k.fingerprint.starts_with("SHA256:"));
     }
 
-    /// The grid's search: names, nicknames and kinds.
     #[test]
     fn engines_are_found_by_what_people_call_them() {
         assert_eq!(engines_matching(""), ENGINES.to_vec());

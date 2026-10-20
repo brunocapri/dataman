@@ -1,28 +1,3 @@
-//! The MCP stages (`--demo`), against the demo database, through the app's socket (`app.sock`)
-//! as `dataman-mcp` reaches it: its IPC client in this process, with the launch's key, its
-//! calls on threads of their own while the UI is driven with real mouse and key events:
-//!
-//! - `mcp-check`: an `open_query` lands in an agent tab (the SQL in its editor, the whole result
-//!   in its grid, the bounded rows for the agent, the agent's mark in the history), the next
-//!   calls reuse that tab, a tab the user edited is left alone (a new agent tab, behind the
-//!   one in front), "Agent queries in tabs" off keeps `run_query` headless; several reads in
-//!   one call (every result for the agent, a result tab each); favorites listed and run by a
-//!   name typed with a typo (in the agent tab), an unclear name (the candidates, nothing run);
-//!   writes on a
-//!   connection of tier full: DDL waits for Allow (clicked) before it runs, a safe INSERT
-//!   commits without a question, a DELETE without WHERE is held with its row count over its
-//!   agent tab and Deny rolls it back, an UPDATE without WHERE is allowed and commits; the
-//!   connection's advanced options (an allowed query runs in tier read unasked, its shape only,
-//!   and read-only still refuses it; Always Allow, ⌥⌘↩, saves a DDL so the next one runs
-//!   unasked; YOLO runs an UPDATE without WHERE unasked; the audit says why); ⌘↩
-//!   allows; drafts (`run: false`) on tier read: the SQL in the agent tab, nothing run, no
-//!   question, a run of the agent's leaves the draft alone, the user's own run meets the app's
-//!   guard (cancelled: nothing deleted) and a write of theirs commits as theirs; the MCP log's
-//!   draft row, its row menu (Copy Query, Open in Tab) and double-click; printed as
-//!   PASS/FAIL lines, exit code 1 on a failure;
-//! - `mcp-tab`: an agent tab after an `open_query` (screenshot);
-//! - `mcp-sheet`: a held DELETE waiting for Allow over its agent tab (screenshot).
-
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -36,11 +11,6 @@ pub fn is_stage(s: &str) -> bool {
     matches!(s, "mcp-check" | "mcp-tab" | "mcp-sheet")
 }
 
-/// `conns-check`: the welcome screen, no connection saved. Its "Add with an agent" opens
-/// Settings › MCP; a connection an agent creates through the app shows at once (the welcome
-/// screen gives way), one `dataman-mcp` writes while the app is not its server (straight to
-/// the file) shows within the file watch's second, and edits of either kind relabel the
-/// explorer. Run before anything connects.
 pub async fn run_conns(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let mut ok = true;
     let mut check = |name: &str, pass: bool, detail: String| {
@@ -73,14 +43,12 @@ pub async fn run_conns(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> b
         }
     }
     check("the app's socket answers", up, String::new());
-    // Through the app: at once.
     let (err, out) = call(&ipc, "create_connection", json!({"name": "first by agent", "host": "127.0.0.1", "port": 9, "user": "x", "password": "hidden-1"})).await;
     let made = serde_json::from_str::<Value>(&out).ok().and_then(|v| v["id"].as_str().map(str::to_string)).unwrap_or_default();
     pause(cx, 150).await;
     draw(cx);
     let row = cx.update(|_, cx| ws.read(cx).tree.read(cx).demo_conn_row(&made).map(|r| r.0)).ok().flatten();
     check("an agent's connection shows at once: the welcome screen gives way to it", !err && !first_run(cx) && row.as_deref() == Some("first by agent"), format!("{out} {row:?}"));
-    // Straight to the file (dataman-mcp on its own): within the watch's second.
     let mut p = dataman_core::ConnectionProfile::new("written elsewhere");
     (p.host, p.port) = ("127.0.0.1".into(), 9);
     let other = p.id.clone();
@@ -96,7 +64,6 @@ pub async fn run_conns(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> b
     }
     draw(cx);
     check("one written to the file by another process shows within ~1 s", written.is_ok() && seen, format!("{:?} after {:?}", written.err(), t0.elapsed()));
-    // Edits of both kinds relabel the explorer.
     let (err, out) = call(&ipc, "update_connection", json!({"connection": "first by agent", "name": "renamed by agent"})).await;
     pause(cx, 150).await;
     draw(cx);
@@ -114,7 +81,6 @@ pub async fn run_conns(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> b
         }
     }
     check("an edit in the file relabels it within ~1 s", row.as_deref() == Some("renamed elsewhere"), format!("{row:?}"));
-    // Removed in the file: gone from the explorer.
     let _ = dataman_core::ConfigStore::open(&core.dirs).and_then(|s| s.remove(&other));
     let mut gone = false;
     for _ in 0..60 {
@@ -128,17 +94,12 @@ pub async fn run_conns(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> b
     ok
 }
 
-// ---------------------------------------------------------------------------------------------
-// The stdio helper's side of the socket
-
-/// The app's config directory, where `app.sock` and `app.key` are.
 pub(crate) struct Ipc {
     dirs: dataman_core::Dirs,
 }
 
 impl Ipc {
-    /// A tool call through the socket, as `dataman-mcp` forwards one: (is an error, the
-    /// text). Blocking: on a thread of its own, with a runtime of its own.
+    /// Blocking: on a thread of its own, with a runtime of its own.
     fn tool(&self, name: &str, args: Value) -> (bool, String) {
         let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
             Ok(rt) => rt,
@@ -157,7 +118,6 @@ impl Ipc {
     }
 }
 
-/// A tool call on a thread of its own; the answer when it comes.
 pub(crate) fn start(ipc: &Arc<Ipc>, name: &'static str, args: Value) -> tokio::sync::oneshot::Receiver<(bool, String)> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     let ipc = ipc.clone();
@@ -171,9 +131,6 @@ pub(crate) fn start(ipc: &Arc<Ipc>, name: &'static str, args: Value) -> tokio::s
 pub(crate) async fn call(ipc: &Arc<Ipc>, name: &'static str, args: Value) -> (bool, String) {
     start(ipc, name, args).await.unwrap_or((true, "the call thread went away".into()))
 }
-
-// ---------------------------------------------------------------------------------------------
-// The UI
 
 fn draw(cx: &mut AsyncWindowContext) {
     let _ = cx.update(|window, cx| {
@@ -217,7 +174,6 @@ fn text(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> String {
     cx.update(|_, cx| tab.read(cx).editor.read(cx).text().to_string()).unwrap_or_default()
 }
 
-/// Waits until the tab's run is over (finished or paused).
 async fn settled(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) {
     for _ in 0..200 {
         pause(cx, 50).await;
@@ -229,7 +185,6 @@ async fn settled(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) {
     draw(cx);
 }
 
-/// The waiting question, once it shows (up to 10 s).
 pub(crate) async fn sheet(cx: &mut AsyncWindowContext) -> Option<dataman_mcp::Approval> {
     for _ in 0..200 {
         let p = cx.update(|_, cx| cx.try_global::<crate::mcp::McpHost>().and_then(|h| h.pending.front().map(|p| p.req.clone()))).ok().flatten();
@@ -242,7 +197,6 @@ pub(crate) async fn sheet(cx: &mut AsyncWindowContext) -> Option<dataman_mcp::Ap
     None
 }
 
-/// Clicks the sheet's Deny (`false`) or Allow.
 pub(crate) fn answer(ws: &Entity<Workspace>, allow: bool, cx: &mut AsyncWindowContext) -> bool {
     draw(cx);
     let b = cx.update(|_, cx| ws.read(cx).mcp_buttons.borrow().get(if allow { 1 } else { 0 }).copied()).ok().flatten();
@@ -255,7 +209,6 @@ fn sheet_open(cx: &mut AsyncWindowContext) -> bool {
     cx.update(|_, cx| cx.try_global::<crate::mcp::McpHost>().is_some_and(|h| !h.pending.is_empty())).unwrap_or(false)
 }
 
-/// Sets the connection's MCP tier, as its dialog would.
 async fn set_tier(ws: &Entity<Workspace>, id: &str, tier: dataman_core::McpAccess, cx: &mut AsyncWindowContext) -> bool {
     let Ok(core) = cx.update(|_, cx| ws.read(cx).store.read(cx).core.clone()) else { return false };
     let Some(mut p) = core.config.get(id) else { return false };
@@ -268,7 +221,6 @@ async fn set_tier(ws: &Entity<Workspace>, id: &str, tier: dataman_core::McpAcces
     true
 }
 
-/// Changes the connection's profile as its sheet would (saved, the explorer reloaded).
 async fn edit_profile(ws: &Entity<Workspace>, id: &str, f: impl FnOnce(&mut dataman_core::ConnectionProfile), cx: &mut AsyncWindowContext) -> bool {
     let Ok(core) = cx.update(|_, cx| ws.read(cx).store.read(cx).core.clone()) else { return false };
     let Some(mut p) = core.config.get(id) else { return false };
@@ -281,12 +233,6 @@ async fn edit_profile(ws: &Entity<Workspace>, id: &str, f: impl FnOnce(&mut data
     true
 }
 
-/// The connection's advanced MCP options against the live database, in a schema of their own
-/// that YOLO makes and drops unasked: an allowed query runs in tier read without a question,
-/// its shape only (`?` is one value); the database's read-only still refuses it; Always Allow
-/// (⌥⌘↩) allows a DDL and saves it, so the next one runs unasked; YOLO runs an UPDATE without
-/// WHERE unasked; the audit says why; the sheet's entries and YOLO's production confirmation.
-/// Leaves the connection on tier full, with neither option set.
 async fn advanced_options(ws: &Entity<Workspace>, ipc: &Arc<Ipc>, id: &str, conn: &str, db: &str, cx: &mut AsyncWindowContext) -> bool {
     let mut ok = true;
     let mut check = |name: &str, pass: bool, detail: String| {
@@ -317,7 +263,6 @@ async fn advanced_options(ws: &Entity<Workspace>, ipc: &Arc<Ipc>, id: &str, conn
     let log = std::fs::read_to_string(core.dirs.mcp_audit_file()).unwrap_or_default();
     check("the audit says an allowed query let it through", log.contains(&format!("\"allowed_by\":{{\"by\":\"allowlist\",\"entries\":[\"{entry}\"]}}")), String::new());
 
-    // Always Allow: the DDL asks, ⌥⌘↩ allows it and saves it; the next one runs unasked.
     edit_profile(ws, id, |p| p.mcp = Some(dataman_core::McpAccess::Full), cx).await;
     let ddl = format!("ALTER TABLE {s}.t ADD COLUMN IF NOT EXISTS extra int");
     let rx = start(ipc, "execute", json!({"connection": conn, "database": db, "sql": ddl}));
@@ -330,7 +275,6 @@ async fn advanced_options(ws: &Entity<Workspace>, ipc: &Arc<Ipc>, id: &str, conn
     let (err, out) = call(ipc, "execute", json!({"connection": conn, "database": db, "sql": ddl.to_lowercase()})).await;
     check("the same statement next time: unasked", !err && !sheet_open(cx) && out.contains("\"committed\":true"), out);
 
-    // YOLO: an UPDATE without WHERE runs unasked.
     edit_profile(ws, id, |p| p.mcp_yolo = true, cx).await;
     let (err, out) = call(ipc, "execute", json!({"connection": conn, "database": db, "sql": format!("UPDATE {s}.t SET note = 'yolo'")})).await;
     check("YOLO: an UPDATE without WHERE runs unasked", !err && !sheet_open(cx) && out.contains("[\"UPDATE\",3]"), out);
@@ -352,8 +296,6 @@ async fn advanced_options(ws: &Entity<Workspace>, ipc: &Arc<Ipc>, id: &str, conn
     .await;
     check("the connection stayed connected through the edits", back && cx.update(|_, cx| ws.read(cx).store.read(cx).connection(id).is_some()).unwrap_or(false), String::new());
 
-    // The sheet's MCP › Advanced: entries checked as they are added; YOLO on production waits
-    // for its confirmation (closed unsaved).
     let Some(mut p) = core.config.get(id) else { return false };
     p.env = dataman_core::Environment::Production;
     let state = cx
@@ -380,7 +322,6 @@ async fn advanced_options(ws: &Entity<Workspace>, ipc: &Arc<Ipc>, id: &str, conn
     ok
 }
 
-/// Opens the app's socket with the connection on tier full; the client.
 pub(crate) async fn serve(ws: &Entity<Workspace>, id: &str, cx: &mut AsyncWindowContext) -> Option<Arc<Ipc>> {
     let core = cx.update(|_, cx| ws.read(cx).store.read(cx).core.clone()).ok()?;
     let mut p = core.config.get(id)?;
@@ -416,7 +357,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
         println!("{} {name}{}", if pass { "PASS" } else { "FAIL" }, if pass || detail.is_empty() { String::new() } else { format!(": {detail}") });
         ok &= pass;
     };
-    // The tab in front starts empty (the demo puts its query there): it becomes the agent tab.
     let _ = cx.update(|_, cx| {
         if let Some(t) = ws.read(cx).active_tab().cloned() {
             let e = t.read(cx).editor.clone();
@@ -427,7 +367,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     let conn = cx.update(|_, cx| ws.read(cx).store.read(cx).profile(id).map(|p| p.name.clone())).ok().flatten().unwrap_or_default();
     let read_sql = "SELECT p.id, p.status, p.total\nFROM   orders p\nORDER  BY p.id\nLIMIT  12";
 
-    // A read through open_query: in the agent tab (the empty tab in front becomes it).
     let (err, out) = call(&agent_ipc,"open_query", json!({"connection": conn, "database": db, "sql": read_sql, "max_rows": 5})).await;
     let v: Value = serde_json::from_str(&out).unwrap_or(Value::Null);
     check("open_query answers the agent with its bounded rows", !err && v["row_count"] == json!(5) && v["truncated"] == json!("rows") && v["in_tab"] == json!(true), out.clone());
@@ -450,12 +389,10 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
         return true;
     }
 
-    // The next calls reuse it; run_query too while "Agent queries in tabs" is on.
     let (err, _) = call(&agent_ipc,"open_query", json!({"connection": conn, "database": db, "sql": "SELECT count(*) FROM orders"})).await;
     let (err2, _) = call(&agent_ipc,"run_query", json!({"connection": conn, "database": db, "sql": "SELECT count(*) AS customers FROM customer"})).await;
     let n = agent_tabs(ws, cx).len();
     check("open_query and run_query reuse the agent tab", !err && !err2 && n == 1 && text(&agent, cx).contains("customers"), format!("{n} tabs, {}", text(&agent, cx)));
-    // The user takes the tab over (types in it): the agent gets a new tab, behind the user's.
     let editor = cx.update(|_, cx| agent.read(cx).editor.clone()).unwrap();
     let _ = cx.update(|window, cx| {
         let f = editor.focus_handle(cx);
@@ -473,7 +410,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     let active_is_users = cx.update(|_, cx| ws.read(cx).active_tab() == Some(&agent)).unwrap_or(false);
     check("a tab the user edited is left alone: a new agent tab", !err && tabs.len() == 2 && text(&agent, cx) == edited && edited.ends_with(" x"), format!("{} tabs", tabs.len()));
     check("the new agent tab opens behind the user's", active_is_users, String::new());
-    // Off: run_query runs headless (no tab touched); open_query still shows.
     let _ = core.settings.update(|s| s.mcp_show_in_tabs = false);
     let second = tabs.last().cloned().unwrap();
     let before = text(&second, cx);
@@ -481,8 +417,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     check("Agent queries in tabs off: run_query stays headless", !err && out.contains("headless") && text(&second, cx) == before && agent_tabs(ws, cx).len() == 2, out);
     let _ = core.settings.update(|s| s.mcp_show_in_tabs = true);
 
-    // Several reads in one open_query: every result for the agent, a result tab each in the
-    // agent tab.
     let several = "SELECT 1 AS one;\nSELECT 'two' AS two;\nSELECT generate_series(1, 4) AS n";
     let (err, out) = call(&agent_ipc, "open_query", json!({"connection": conn, "database": db, "sql": several, "max_rows": 2})).await;
     let v: Value = serde_json::from_str(&out).unwrap_or(Value::Null);
@@ -498,8 +432,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     let n_rows = shown.as_ref().and_then(|t| cx.update(|_, cx| t.read(cx).batch_items().last().and_then(|b| b.rs.as_ref().map(|r| r.rows()))).ok().flatten());
     check("the whole last result stays in the tab", n_rows == Some(4), format!("{n_rows:?}"));
 
-    // Favorites by name: listed, then run by a name typed from memory, in the agent tab; an
-    // unclear name runs nothing and lists the candidates.
     let favs = [("Orders by day", "SELECT 'day' AS per;"), ("Orders by month", "SELECT 'month' AS per;"), ("Top customers", "SELECT c.name FROM customer c ORDER BY c.id LIMIT 3;")];
     for (name, sql) in favs {
         let mut f = dataman_core::Favorite::new(name, sql);
@@ -525,12 +457,10 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
         let _ = core.favorites.remove(&f.id);
     }
 
-    // The advanced options, while they are on (`MCP_ADVANCED`).
     if dataman_core::MCP_ADVANCED && !advanced_options(ws, &agent_ipc, id, &conn, db, cx).await {
         check("the advanced MCP options", false, String::new());
     }
 
-    // Writes on tier full. DDL: asked before it runs, Allow clicked.
     let s = format!("mcp_check_{}", std::process::id());
     let rx = start(&agent_ipc,"execute", json!({"connection": conn, "database": db, "sql": format!("CREATE SCHEMA {s}; CREATE TABLE {s}.t (id int PRIMARY KEY, note text)")}));
     let q = sheet(cx).await;
@@ -539,12 +469,10 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     let (err, out) = rx.await.unwrap_or((true, String::new()));
     check("the DDL committed after Allow", !err && out.contains("\"committed\":true") && out.contains("approved"), out);
     check("the sheet closed", !sheet_open(cx), String::new());
-    // A safe INSERT: no question.
     let (err, out) = call(&agent_ipc,"execute", json!({"connection": conn, "database": db, "sql": format!("INSERT INTO {s}.t VALUES (1, 'a'), (2, 'b'), (3, NULL)")})).await;
     check("a safe INSERT commits without a question", !err && !sheet_open(cx) && out.contains("[\"INSERT\",3]"), out);
     let shown = agent_tabs(ws, cx).into_iter().find(|t| cx.update(|_, cx| t.read(cx).result().is_some_and(|r| r.sql.contains("INSERT INTO"))).unwrap_or(false));
     check("the write shows in an agent tab", shown.is_some(), String::new());
-    // DELETE without WHERE: held with its count over its agent tab; Deny rolls it back.
     let rx = start(&agent_ipc,"execute", json!({"connection": conn, "database": db, "sql": format!("DELETE FROM {s}.t RETURNING id")}));
     let q = sheet(cx).await;
     check("a DELETE without WHERE is held and asked about", q.as_ref().is_some_and(|q| q.affected == Some(3) && q.reasons.iter().any(|r| r == "DELETE without WHERE") && q.preview.as_ref().is_some_and(|p| p.1.len() == 3)), format!("{q:?}"));
@@ -558,7 +486,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     check("Deny rolls back", err && out.contains("denied") && out.contains("rolled back"), out);
     let (_, out) = call(&agent_ipc,"run_query", json!({"connection": conn, "database": db, "sql": format!("SELECT count(*) AS n FROM {s}.t")})).await;
     check("the rows are still there", out.contains("[[3]]"), out);
-    // UPDATE without WHERE: Allow commits.
     let rx = start(&agent_ipc,"execute", json!({"connection": conn, "database": db, "sql": format!("UPDATE {s}.t SET note = 'x'")}));
     let q = sheet(cx).await;
     check("an UPDATE without WHERE is asked about", q.is_some_and(|q| q.affected == Some(3)), String::new());
@@ -567,9 +494,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     let (_, n) = call(&agent_ipc,"run_query", json!({"connection": conn, "database": db, "sql": format!("SELECT count(*) AS n FROM {s}.t WHERE note = 'x'")})).await;
     check("Allow commits", !err && n.contains("[[3]]"), format!("{out} / {n}"));
 
-    // Drafts (open_query run: false) on a connection of tier read: a DELETE without WHERE goes
-    // into the agent tab (the one that showed the writes, its result cleared), nothing runs,
-    // nobody is asked; the user's own run of it meets the app's guard.
     let delete = format!("DELETE FROM {s}.t");
     if !set_tier(ws, id, dataman_core::McpAccess::Read, cx).await {
         check("the connection goes to tier read", false, String::new());
@@ -606,10 +530,8 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     check("no approval sheet for a draft", !sheet_open(cx), String::new());
     let hist = core.history.load(id, 50).unwrap_or_default();
     check("no statement in the history", hist.len() == hist_before && !hist.iter().any(|h| h.sql == delete), format!("{hist_before} → {}", hist.len()));
-    // An agent's run leaves a draft the user has not run alone (a new agent tab instead).
     let (_, out) = call(&agent_ipc, "open_query", json!({"connection": conn, "database": db, "sql": format!("SELECT count(*) AS n FROM {s}.t")})).await;
     check("an agent's run leaves the draft alone; the rows are all there", out.contains("[[3]]") && text(&drafted, cx) == delete && agent_tabs(ws, cx).len() == tabs.len() + 1, out);
-    // The user runs it (⌘↩ in the tab): the app's guard asks; Cancel, nothing deleted.
     let editor = cx.update(|_, cx| drafted.read(cx).editor.clone()).unwrap();
     let _ = cx.update(|window, cx| {
         ws.update(cx, |w, cx| w.activate_tab(&drafted, window, cx));
@@ -632,8 +554,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     let pending = cx.update(|_, cx| drafted.read(cx).confirm.is_some()).unwrap_or(true);
     let (_, out) = call(&agent_ipc, "open_query", json!({"connection": conn, "database": db, "sql": format!("SELECT count(*) AS n FROM {s}.t")})).await;
     check("Cancel: nothing deleted", !pending && out.contains("[[3]]"), out);
-    // A second draft replaces the first; the user's run of a write the tier read would refuse
-    // the agent commits, as the user's (the tiers are for agents), in the history as theirs.
     let update = format!("UPDATE {s}.t SET note = 'y' WHERE id = 1");
     let (err, out) = call(&agent_ipc, "open_query", json!({"connection": conn, "database": db, "sql": update, "run": false})).await;
     check("a draft replaces the user's unrun draft", !err && text(&drafted, cx) == update, out);
@@ -653,18 +573,14 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
         return false;
     }
 
-    // The keys: ⌘↩ allows the clean-up.
     let rx = start(&agent_ipc,"execute", json!({"connection": conn, "database": db, "sql": format!("DROP SCHEMA {s} CASCADE")}));
     let q = sheet(cx).await;
     key(cx, "cmd-enter");
     let (err, out) = rx.await.unwrap_or((true, String::new()));
     check("⌘↩ allows", q.is_some() && !err, out);
-    // The audit says who decided what.
     let log = std::fs::read_to_string(core.dirs.mcp_audit_file()).unwrap_or_default();
     check("the audit has the approvals and the denial", log.contains("\"decision\":\"approved\"") && log.contains("\"decision\":\"denied\""), String::new());
 
-    // The MCP log: a row's context menu copies the statement as sent (the row shows it
-    // redacted); a double-click opens it in a new tab, not run, on the call's connection.
     let update = format!("UPDATE {s}.t SET note = 'x'");
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.toggle_mcp_log(window, cx)));
     let mut found = None;
@@ -716,7 +632,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     let copied = cx.update(|_, cx| cx.read_from_clipboard().and_then(|c| c.text())).ok().flatten();
     let closed = !cx.update(|_, cx| log.read(cx).demo_menu_open()).unwrap_or(true);
     check("Copy Query puts the full statement on the clipboard", copied.as_deref() == Some(update.as_str()) && closed, format!("{copied:?}"));
-    // Double-click: a new tab with it, not run, on the call's connection and database.
     let before = cx.update(|_, cx| ws.read(cx).tabs.len()).unwrap_or(0);
     press(cx, row, MouseButton::Left, 1);
     press(cx, row, MouseButton::Left, 2);
@@ -740,9 +655,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     ok && edits
 }
 
-/// Connections made and edited by an agent through the app: they show at once (no restart),
-/// passwords never come back, a live connection reconnects with its new settings (its idle tabs
-/// follow), and an edit waits while a transaction is open on it.
 async fn connection_edits(ws: &Entity<Workspace>, ipc: &Arc<Ipc>, id: &str, conn: &str, db: &str, cx: &mut AsyncWindowContext) -> bool {
     let mut ok = true;
     let mut check = |name: &str, pass: bool, detail: String| {
@@ -772,7 +684,6 @@ async fn connection_edits(ws: &Entity<Workspace>, ipc: &Arc<Ipc>, id: &str, conn
     let (_, list) = call(ipc, "list_connections", json!({})).await;
     check("list_connections never shows a password", !list.to_lowercase().contains("password") && !list.contains(secret), String::new());
 
-    // A live connection edited: it reconnects with the new settings, its idle tabs move to it.
     let old = cx.update(|_, cx| ws.read(cx).store.read(cx).connection(id)).ok().flatten();
     let tab = cx.update(|_, cx| ws.read(cx).tabs.iter().find(|t| t.read(cx).connection().is_some_and(|c| c.profile.id == id) && !t.read(cx).tx_open()).cloned()).ok().flatten();
     let (err, out) = call(ipc, "update_connection", json!({"connection": conn, "color": "amber"})).await;
@@ -790,7 +701,6 @@ async fn connection_edits(ws: &Entity<Workspace>, ipc: &Arc<Ipc>, id: &str, conn
     let moved = tab.as_ref().and_then(|t| cx.update(|_, cx| t.read(cx).connection().cloned()).ok().flatten()).zip(fresh.clone()).is_some_and(|(a, b)| Arc::ptr_eq(&a, &b));
     check("… and its idle tabs move to the new connection", moved, String::new());
 
-    // A transaction open in a tab on it: the edit is refused until it ends.
     let user_tab = cx.update(|window, cx| ws.update(cx, |w, cx| w.new_tab(window, cx))).unwrap();
     let editor = cx.update(|_, cx| user_tab.read(cx).editor.clone()).unwrap();
     let _ = cx.update(|window, cx| {
@@ -820,8 +730,6 @@ async fn connection_edits(ws: &Entity<Workspace>, ipc: &Arc<Ipc>, id: &str, conn
     ok
 }
 
-/// A press and release of `button` at `p` (`count`: the click count, 2 for a double-click's
-/// second), after a move there.
 fn press(cx: &mut AsyncWindowContext, p: Point<Pixels>, button: MouseButton, count: usize) {
     input(cx, PlatformInput::MouseMove(MouseMoveEvent { position: p, pressed_button: None, modifiers: Modifiers::default() }));
     input(cx, PlatformInput::MouseDown(MouseDownEvent { button, position: p, modifiers: Modifiers::default(), click_count: count, first_mouse: false }));

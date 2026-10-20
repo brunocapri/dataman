@@ -1,34 +1,5 @@
-//! SSH tunnels against a throwaway OpenSSH server, and Unix sockets. The tunnel tests skip
-//! unless `DATAMAN_SSH_KEYS` names a directory with the test keys and the server answers:
-//!
-//! ```sh
-//! K=/tmp/dataman-ssh; mkdir -p $K
-//! ssh-keygen -q -t ed25519 -N "" -f $K/k_ed
-//! ssh-keygen -q -t rsa -b 3072 -N "s3cret pp" -f $K/k_rsa
-//! cat $K/k_ed.pub $K/k_rsa.pub > $K/authorized_keys
-//! cat > $K/Dockerfile <<'EOF'
-//! FROM debian:bookworm-slim
-//! RUN apt-get update && apt-get install -y --no-install-recommends openssh-server procps \
-//!  && mkdir -p /run/sshd && useradd -m -s /bin/sh dataman && echo dataman:pw-dataman | chpasswd \
-//!  && printf 'Port 2222\nPasswordAuthentication yes\nAllowTcpForwarding yes\n' > /etc/ssh/sshd_config.d/t.conf
-//! COPY --chown=dataman:dataman authorized_keys /home/dataman/.ssh/authorized_keys
-//! RUN chmod 700 /home/dataman/.ssh && chmod 600 /home/dataman/.ssh/authorized_keys
-//! CMD ["/usr/sbin/sshd", "-D", "-e"]
-//! EOF
-//! docker build -t dataman-sshd:test $K
-//! docker network create dataman-ssh-net
-//! docker run -d --name dataman-ssh-pg --network dataman-ssh-net -e POSTGRES_PASSWORD=dataman postgres:18 \
-//!   -c ssl=on -c ssl_cert_file=/etc/ssl/certs/ssl-cert-snakeoil.pem \
-//!   -c ssl_key_file=/etc/ssl/private/ssl-cert-snakeoil.key
-//! docker run -d --name dataman-ssh --network dataman-ssh-net -p 127.0.0.1:2299:2222 dataman-sshd:test
-//! DATAMAN_SSH_KEYS=$K DATAMAN_SSH_CONTAINER=dataman-ssh cargo test --release -p dataman-core --test live_ssh
-//! ```
-//!
-//! The database (`dataman-ssh-pg:5432`, TLS on) is reachable only from inside the SSH server's
-//! network: every query here goes through the tunnel. `DATAMAN_SSH_SSLMODE` picks its sslmode
-//! (default `require`); verify-full needs the CA-signed certificate of `tests/live_tls.rs` and
-//! `SSL_CERT_FILE` naming its CA. HOME points at a scratch directory with its own
-//! `~/.ssh/config`, so the user's files are never read or written.
+//! HOME points at a scratch directory with its own `~/.ssh/config`, so the user's files are
+//! never read or written.
 
 use std::net::TcpStream;
 use std::path::PathBuf;
@@ -45,9 +16,6 @@ struct Setup {
     home: PathBuf,
 }
 
-/// The server and keys, or `None` (skip). Sets HOME to a scratch directory once, with a
-/// `~/.ssh/config` that names the test server (alias `dataman-test`) and a ProxyJump through it
-/// (`dataman-jump`, the same sshd seen from inside its container).
 fn setup() -> Option<&'static Setup> {
     static S: OnceLock<Option<Setup>> = OnceLock::new();
     S.get_or_init(|| {
@@ -87,7 +55,6 @@ fn env() -> Env {
     Env { core, _dir: dir }
 }
 
-/// `DATAMAN_SSH_SSLMODE` (default `require`): the database's sslmode through the tunnel.
 fn sslmode() -> SslMode {
     let m = std::env::var("DATAMAN_SSH_SSLMODE").unwrap_or_else(|_| "require".into());
     SslMode::ALL.into_iter().find(|s| s.label() == m).unwrap_or_else(|| panic!("DATAMAN_SSH_SSLMODE={m}"))
@@ -115,12 +82,10 @@ fn connect(e: &Env, p: &ConnectionProfile) -> anyhow::Result<Arc<Connection>> {
     e.core.block_on(e.core.connect(p.clone(), Some("dataman".into())))
 }
 
-/// The error of a connect that must fail.
 fn fails(e: &Env, p: &ConnectionProfile) -> anyhow::Error {
     connect(e, p).err().expect("the connection should have failed")
 }
 
-/// Connects, trusting every unknown host key on the way (one prompt per hop).
 fn connect_trusting(e: &Env, p: &ConnectionProfile) -> Arc<Connection> {
     for _ in 0..4 {
         match connect(e, p) {
@@ -165,21 +130,17 @@ fn tunnel_end_to_end() {
     let e = env();
     let p = db_profile(key_auth(s, "k_ed"));
 
-    // First contact: the host key is unknown; nothing connects until it is trusted.
     let err = fails(&e, &p);
     let Some(SshError::UnknownHostKey(prompt)) = ssh_error(&err) else { panic!("{err:#}") };
     assert_eq!((prompt.hostname.as_str(), prompt.port), (s.ssh.0.as_str(), s.ssh.1));
     trust(&e, prompt);
     let c = connect(&e, &p).unwrap();
     assert!(c.tunneled());
-    // TLS to Postgres through the tunnel, with the database's name for SNI (verify-full checks
-    // the certificate against it); none with sslmode=disable.
     let tls = sslmode() != SslMode::Disable;
     assert_eq!(c.tls_in_use(), tls);
     assert_eq!(one(&e, &c, "SELECT current_setting('ssl')"), "on");
     assert_eq!(one(&e, &c, "SELECT ssl::text FROM pg_stat_ssl WHERE pid = pg_backend_pid()"), tls.to_string());
 
-    // The CancelRequest goes through the tunnel too.
     let session = c.session(None);
     let rs = session.execute("SELECT pg_sleep(30)");
     std::thread::sleep(Duration::from_millis(400));
@@ -189,25 +150,21 @@ fn tunnel_end_to_end() {
     assert_eq!(phase, Phase::Cancelled);
     assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
 
-    // Many backends share one SSH session (metadata, editor sessions, a dedicated client).
     let sessions: Vec<_> = (0..4).map(|_| c.session(None)).collect();
     let results: Vec<_> = sessions.iter().map(|s| s.execute("SELECT 1")).collect();
     for rs in &results {
         assert_eq!(e.core.block_on(rs.wait_finished()), Phase::Done);
     }
 
-    // Disconnect closes the tunnel: nothing gets through any more.
     c.close();
     std::thread::sleep(Duration::from_millis(200));
     let rs = c.session(None).execute("SELECT 1");
     assert_eq!(e.core.block_on(rs.wait_finished()), Phase::Failed);
 
-    // test_connection opens and closes its own tunnel.
     let (info, _) = e.core.block_on(e.core.test_connection(p.clone(), Some("dataman".into()), None)).unwrap();
     assert!(info.version.starts_with("PostgreSQL"));
 }
 
-/// The SSH session drops (sshd killed server-side): the next statement reconnects the tunnel.
 #[test]
 fn tunnel_reconnects_after_the_session_drops() {
     let Some(s) = setup() else { return };
@@ -233,11 +190,8 @@ fn auth_methods_and_errors() {
     let Some(s) = setup() else { return };
     let _g = shared();
     let e = env();
-    // Trust the host once.
     connect_trusting(&e, &db_profile(key_auth(s, "k_ed")));
 
-    // An encrypted RSA key: the passphrase is needed, a wrong one fails, the right one works
-    // (rsa-sha2 signatures).
     let rsa = db_profile(key_auth(s, "k_rsa"));
     let err = fails(&e, &rsa);
     assert!(matches!(ssh_error(&err), Some(SshError::SecretNeeded { what: "key passphrase", .. })), "{err:#}");
@@ -246,7 +200,6 @@ fn auth_methods_and_errors() {
     let err = e.core.block_on(e.core.test_connection(rsa.clone(), Some("dataman".into()), Some("wrong".into()))).unwrap_err();
     assert!(matches!(ssh_error(&err), Some(SshError::Auth { .. })), "{err:#}");
 
-    // Password auth: needed, wrong, right.
     let pw = db_profile(SshSettings { auth: SshAuth::Password, key_file: String::new(), ..key_auth(s, "") });
     let err = fails(&e, &pw);
     assert!(matches!(ssh_error(&err), Some(SshError::SecretNeeded { what: "password", .. })), "{err:#}");
@@ -255,23 +208,19 @@ fn auth_methods_and_errors() {
     assert!(matches!(ssh_error(&err), Some(SshError::Auth { .. })), "{msg}");
     assert!(msg.starts_with(&format!("SSH dataman@{}:{} · authentication failed", s.ssh.0, s.ssh.1)), "{msg}");
     e.core.block_on(e.core.test_connection(pw.clone(), Some("dataman".into()), Some("pw-dataman".into()))).unwrap();
-    // Saved for the session (not kept): connect finds it.
     e.core.save_connection(pw.clone(), None, Some("pw-dataman")).unwrap();
     assert!(connect(&e, &pw).is_ok());
 
-    // The database password is still the server's business.
     let ed = db_profile(key_auth(s, "k_ed"));
     let err = e.core.block_on(e.core.connect(ed, Some("bad".into()))).map(|_| ()).unwrap_err();
     assert!(ssh_error(&err).is_none() && format!("{err:#}").contains("password"), "{err:#}");
 
-    // The database cannot be reached from the SSH server: the server's reason.
     let mut nowhere = db_profile(key_auth(s, "k_ed"));
     nowhere.host = "no-such-host.invalid".into();
     let err = fails(&e, &nowhere);
     assert!(matches!(ssh_error(&err), Some(SshError::Forward { .. })), "{err:#}");
     eprintln!("unreachable database: {err:#}");
 
-    // The SSH server is unreachable.
     let mut down = key_auth(s, "k_ed");
     down.port = Some(1);
     let err = fails(&e, &db_profile(down));
@@ -283,19 +232,16 @@ fn ssh_config_alias_proxyjump_and_agent() {
     let Some(s) = setup() else { return };
     let _g = shared();
     let e = env();
-    // The alias gives HostName, Port, User and IdentityFile; key_file stays empty.
     let alias = db_profile(SshSettings { host: "dataman-test".into(), auth: SshAuth::Key, ..Default::default() });
     let c = connect_trusting(&e, &alias);
     assert_eq!(one(&e, &c, "SELECT 1"), "1");
     c.close();
 
-    // ProxyJump: dataman-test, then the same sshd from inside its container (127.0.0.1:2222).
     let jump = db_profile(SshSettings { host: "dataman-jump".into(), auth: SshAuth::Key, ..Default::default() });
     let c = connect_trusting(&e, &jump);
     assert_eq!(one(&e, &c, "SELECT 'jumped'"), "jumped");
     c.close();
 
-    // ssh-agent: a private agent with the ed25519 key (the user's agent is never touched).
     let sock = s.home.join("agent.sock");
     let _ = std::fs::remove_file(&sock);
     let out = std::process::Command::new("ssh-agent").arg("-a").arg(&sock).output().unwrap();
@@ -320,7 +266,6 @@ fn changed_host_key_is_refused() {
     let e = env();
     std::fs::create_dir_all(&e.core.dirs.config).unwrap();
     let name = if s.ssh.1 == 22 { s.ssh.0.clone() } else { format!("[{}]:{}", s.ssh.0, s.ssh.1) };
-    // An Ed25519 key that is not the server's.
     std::fs::write(
         e.core.dirs.known_hosts_file(),
         format!("{name} ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1ebz9/cu7/QEXn9OIeZJ\n"),
@@ -334,8 +279,6 @@ fn changed_host_key_is_refused() {
     assert!(format!("{err:#}").contains("host key changed"), "{err:#}");
 }
 
-/// `host=/some/dir`: libpq's Unix-socket form. A socket file forwarding to the test
-/// PostgreSQL stands in for a local server's.
 #[test]
 fn unix_socket_host() {
     let (pg_host, pg_port) = ("127.0.0.1", 55432u16);
@@ -361,7 +304,6 @@ fn unix_socket_host() {
         port: pg_port,
         user: "postgres".into(),
         database: "dataman".into(),
-        // libpq ignores sslmode on a socket; so does Dataman.
         sslmode: SslMode::Require,
         ..ConnectionProfile::new("socket")
     };
@@ -369,7 +311,6 @@ fn unix_socket_host() {
     let c = e.core.block_on(e.core.connect(p.clone(), Some(pw))).unwrap();
     assert!(!c.tls_in_use());
     assert_eq!(one(&e, &c, "SELECT 'socket'"), "socket");
-    // The CancelRequest takes the socket too.
     let session = c.session(None);
     let rs = session.execute("SELECT pg_sleep(30)");
     std::thread::sleep(Duration::from_millis(300));

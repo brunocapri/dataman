@@ -1,7 +1,3 @@
-//! The result bar's states (UiResultBar): glyph, label, color role and what the row count
-//! means. Phase 1 uses idle…sorting; `Live` is LAR's live queries and `Edit`
-//! grid editing (construct the state, the bar draws it).
-
 use gpui::Hsla;
 
 use crate::theme::Theme;
@@ -12,7 +8,6 @@ pub enum ResultState {
     Running,
     Paused,
     Done,
-    /// INSERT / UPDATE / DELETE / DDL: the label is the statement's verb.
     Affected,
     Cancelling,
     Cancelled,
@@ -22,13 +17,10 @@ pub enum ResultState {
     Sorting,
     Live,
     Edit,
-    /// A script statement that kept only the rows loaded before the next one ran.
     Partial,
-    /// A script's commands without rows (the messages tab).
     Messages,
 }
 
-/// The color pair of a state pill.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {
     Muted,
@@ -45,7 +37,6 @@ pub struct Spec {
     pub glyph: &'static str,
     pub label: &'static str,
     pub role: Role,
-    /// What the number next to the pill counts.
     pub rows_label: &'static str,
 }
 
@@ -72,7 +63,6 @@ impl ResultState {
     }
 }
 
-/// (text, background) of a pill.
 pub fn role_colors(t: &Theme, r: Role) -> (Hsla, Hsla) {
     match r {
         Role::Muted => (t.tx3, t.hov),

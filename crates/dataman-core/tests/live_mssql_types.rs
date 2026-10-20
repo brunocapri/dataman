@@ -1,5 +1,3 @@
-//! SQL Server: every type decoded into the grid.
-
 mod common;
 
 use common::*;

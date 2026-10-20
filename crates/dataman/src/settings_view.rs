@@ -1,23 +1,3 @@
-//! The Settings sheet (⌘,), from the Settings board: a navigation column on the glass and the
-//! page of the selected section on `pop`. Every change applies at once and is written to
-//! `settings.toml` (`dataman_core::settings`); nothing here is a secret.
-//!
-//! Sections: Appearance (theme, the UI font, window translucency, code font size, reduce motion), Editor
-//! (the formatter's keyword case and indent), Results grid
-//! (rows fetched ahead, review before commit), Export
-//! (default folder), MCP (agents' access,
-//! agent queries in tabs, rows per write and per call, the `claude mcp add` command, the log,
-//! each connection's permission, its allowed queries and YOLO), Keyboard (the remappable commands: a click
-//! on a key records the next one, esc cancels, ⌫ removes it; a key two commands share where
-//! both work is red; `[keys]` in settings.toml, bound again at once) and About (the
-//! version and the update check, both only with an update feed: Check now answers beside it, from
-//! "Checking…" to up to date and when, or why it failed; and the crash reports folder).
-//! The search field filters every row of every section; a shortcut typed in it (`⌘K`,
-//! `cmd-shift-p`) finds the commands on that key. The keyboard button beside it searches by
-//! shortcut instead: the next keystroke (taken before any binding, so it does nothing else) shows
-//! in the field and the page lists the commands bound to it; ⌫ clears it, esc or the button
-//! again ends it. The page's title and × stay on top while it scrolls.
-
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -51,7 +31,6 @@ pub fn bind_keys(cx: &mut App) {
 
 pub enum SettingsEvent {
     Close,
-    /// A connection's MCP permission changed (the workspace reloads its profiles).
     ConnectionsChanged,
 }
 
@@ -83,7 +62,6 @@ impl Section {
     }
 }
 
-/// One setting row: its label, the extra words the search matches, and its control.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Row {
     Theme,
@@ -140,7 +118,6 @@ const ROWS: [(Row, Section, &str, &str); 24] = [
 ];
 
 impl Row {
-    /// One line under the label: what the setting does (the MCP ones, where the stakes are).
     fn help(self) -> Option<&'static str> {
         Some(match self {
             Row::McpAccess => "Lets AI agents (Claude Code, Claude Desktop, any MCP client) use your connections. Off blocks every agent.",
@@ -153,7 +130,6 @@ impl Row {
     }
 }
 
-/// What each permission level lets an agent do on a connection.
 const MCP_TIERS: [(&str, &str); 4] = [
     ("Off", "no access"),
     ("Read", "queries only, in a read-only transaction"),
@@ -162,17 +138,13 @@ const MCP_TIERS: [(&str, &str); 4] = [
 ];
 
 pub const MCP_ROW_CHOICES: [(usize, &str); 4] = [(200, "200"), (1_000, "1k"), (5_000, "5k"), (10_000, "10k")];
-/// The rows an agent's write may change before it asks.
 pub const MCP_WRITE_CHOICES: [(u64, &str); 4] = [(10, "10"), (100, "100"), (1_000, "1k"), (10_000, "10k")];
 
 pub const PREFETCH_CHOICES: [(usize, &str); 4] = [(5_000, "5k"), (10_000, "10k"), (50_000, "50k"), (100_000, "100k")];
 pub const PAGE_CHOICES: [(usize, &str); 4] = [(200, "200"), (1_000, "1k"), (5_000, "5k"), (10_000, "10k")];
 
-/// Rows shown in the Font row's "a system font" picker.
 const MAX_SHOWN_FONTS: usize = 8;
 
-/// The installed families matching `query` (best match first, ties alphabetical), capped to
-/// `max`; an empty query keeps them all, alphabetically.
 fn rank_fonts<'a>(query: &str, fonts: &'a [String], max: usize) -> Vec<&'a str> {
     let mut matches: Vec<(i32, &str)> =
         fonts.iter().filter_map(|n| crate::palette::fuzzy(query, n).map(|m| (m.score, n.as_str()))).collect();
@@ -187,38 +159,23 @@ pub struct SettingsView {
     search: gpui::Entity<TextInput>,
     section: Section,
     settings: Settings,
-    /// The copy button that just copied (its label reads "Copied" for a moment).
     copied: Option<&'static str>,
     _copied_timer: Option<gpui::Task<()>>,
-    /// The Font row's "a system font" picker: open or not, its filter, and the installed
-    /// families (fetched once, on the first open — enumerating them again on every render
-    /// would be wasteful).
     system_font_open: bool,
     system_font_query: gpui::Entity<TextInput>,
     system_fonts: Option<Arc<[String]>>,
-    /// The command whose key the next keystroke becomes (Keyboard).
     recording: Option<&'static str>,
-    /// Each command row's controls as last laid out: [reset,] key (the checks click them).
     key_bounds: Rc<RefCell<BTreeMap<&'static str, Vec<Bounds<Pixels>>>>>,
     reset_all_bounds: Rc<RefCell<Vec<Bounds<Pixels>>>>,
-    /// Search by shortcut (the keyboard button): on, and the keystroke pressed since (GPUI's
-    /// canonical spelling), whose commands the page lists.
     key_search: bool,
     key_query: Option<String>,
-    /// The keyboard button as last laid out (the checks click it).
     key_button_bounds: Rc<RefCell<Vec<Bounds<Pixels>>>>,
-    /// About's Check now as last laid out (the checks click it).
     check_now_bounds: Rc<RefCell<Vec<Bounds<Pixels>>>>,
-    /// The page under the pinned header: its hairline shows once this has scrolled.
     page_scroll: ScrollHandle,
-    /// MCP › Advanced (collapsed until opened): each connection's allowed queries and YOLO.
     mcp_advanced: bool,
-    /// Its add fields and why an entry was not taken, by connection id (made on opening).
     allow_inputs: BTreeMap<String, gpui::Entity<TextInput>>,
     allow_errors: BTreeMap<String, String>,
-    /// The production connection whose YOLO waits for a confirmation.
     yolo_confirm: Option<String>,
-    /// Takes the keystroke before any binding while recording or searching by shortcut.
     _intercept: gpui::Subscription,
 }
 
@@ -249,7 +206,6 @@ impl SettingsView {
         .detach();
         let focus = cx.focus_handle();
         window.focus(&search.focus_handle(cx), cx);
-        // The Font row names each family in its own face.
         theme::ensure_fonts(&UiFont::ALL, cx);
         let settings = core.settings.get();
         let weak = cx.weak_entity();
@@ -260,7 +216,6 @@ impl SettingsView {
                 v.update(cx, |v, cx| v.record(&ev.keystroke, cx));
                 cx.stop_propagation();
             } else if key_search {
-                // Taken here, before any binding: the keystroke only searches.
                 v.update(cx, |v, cx| v.search_keystroke(&ev.keystroke, window, cx));
                 cx.stop_propagation();
             }
@@ -296,22 +251,17 @@ impl SettingsView {
         self.page_scroll.set_offset(gpui::point(px(0.), px(0.)));
     }
 
-    /// The keyboard button: search by shortcut (the field waits for a keystroke) or back to
-    /// searching by text. Either way the field starts empty.
     fn set_key_search(&mut self, on: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.key_search = on;
         self.key_query = None;
         self.recording = None;
         self.search.update(cx, |i, cx| i.set_text("", cx));
-        // Recording: the sheet has focus, so no keystroke reaches the text field.
         let target = if on { self.focus.clone() } else { self.search.focus_handle(cx) };
         window.focus(&target, cx);
         self.scroll_to_top();
         cx.notify();
     }
 
-    /// A keystroke while searching by shortcut: esc ends the search, ⌫ clears the key, a
-    /// modifier alone waits for the rest; anything else (⌘⇧P, F6, ⌥1) is the key searched for.
     fn search_keystroke(&mut self, k: &gpui::Keystroke, window: &mut Window, cx: &mut Context<Self>) {
         let m = k.modifiers;
         let bare = !(m.control || m.alt || m.platform || m.shift);
@@ -336,8 +286,6 @@ impl SettingsView {
         cx.notify();
     }
 
-    /// The keystroke typed while recording: esc cancels, ⌫ removes the key, a combination with
-    /// ⌃ ⌥ or ⌘ (or an F key, or ⇧ with a named key) becomes it; anything else is ignored.
     fn record(&mut self, k: &gpui::Keystroke, cx: &mut Context<Self>) {
         let Some(id) = self.recording else { return };
         let m = k.modifiers;
@@ -360,7 +308,6 @@ impl SettingsView {
         cx.notify();
     }
 
-    /// `key`: the new keystroke ("" for none), or `None` back to the default; `id` "" resets all.
     fn set_key(&mut self, id: &str, key: Option<String>, cx: &mut Context<Self>) {
         let mut keys = crate::keymap::overrides();
         match (id, key) {
@@ -378,7 +325,6 @@ impl SettingsView {
         crate::keymap::apply(keys, cx);
     }
 
-    /// Saves an MCP setting and starts or stops the socket to match.
     fn set_mcp(&mut self, f: impl FnOnce(&mut Settings), cx: &mut Context<Self>) {
         self.save(f, cx);
         crate::mcp::apply(&self.core, cx);
@@ -408,7 +354,6 @@ impl SettingsView {
         }
     }
 
-    /// Saves a connection changed here (MCP fields only: the workspace does not reconnect).
     fn edit_conn(&mut self, id: &str, f: impl FnOnce(&mut dataman_core::ConnectionProfile), cx: &mut Context<Self>) {
         if let Some(mut p) = self.core.config.get(id) {
             f(&mut p);
@@ -420,7 +365,6 @@ impl SettingsView {
         }
     }
 
-    /// MCP › Advanced opened or shut; opening makes each connection's add field.
     fn toggle_mcp_advanced(&mut self, cx: &mut Context<Self>) {
         self.mcp_advanced = !self.mcp_advanced;
         self.yolo_confirm = None;
@@ -449,8 +393,6 @@ impl SettingsView {
         cx.notify();
     }
 
-    /// The typed statement into the connection's allowed queries (one statement, not one
-    /// already allowed); else why not, under its field.
     fn add_allowed(&mut self, id: &str, cx: &mut Context<Self>) {
         let (Some(p), Some(input)) = (self.core.config.get(id), self.allow_inputs.get(id).cloned()) else { return };
         let d = p.engine.dialect();
@@ -475,7 +417,6 @@ impl SettingsView {
         }
     }
 
-    /// YOLO's switch: off at once; on, except that a production connection asks first.
     fn toggle_yolo(&mut self, id: &str, cx: &mut Context<Self>) {
         let Some(p) = self.core.config.get(id) else { return };
         if p.mcp_yolo || self.yolo_confirm.as_deref() == Some(id) {
@@ -492,7 +433,6 @@ impl SettingsView {
     fn row_visible(&self, row: Row, cx: &App) -> bool {
         match row {
             Row::McpTabs | Row::McpWriteLimit | Row::McpRows | Row::McpClaude | Row::McpConnections => self.settings.mcp_enabled,
-            // Off for now (`MCP_ADVANCED`).
             Row::McpAdvanced => dataman_core::MCP_ADVANCED && self.settings.mcp_enabled,
             Row::UpdateCheck => crate::updates::enabled(cx),
             _ => true,
@@ -510,7 +450,6 @@ impl SettingsView {
             .into_any_element()
     }
 
-    /// The per-connection permissions: name, environment, off / read / write.
     fn render_mcp_connections(&self, t: &Theme, cx: &mut Context<Self>) -> gpui::AnyElement {
         let profiles = self.core.config.connections();
         div()
@@ -532,7 +471,6 @@ impl SettingsView {
                 let env = p.env;
                 let id = p.id.clone();
                 let on = cur != dataman_core::McpAccess::Off;
-                // What the connection sheet adds to the tier: queries let through, and YOLO.
                 let allowed = match p.mcp_allowed_on().len() {
                     0 => None,
                     1 => Some("1 allowed query".to_string()),
@@ -560,9 +498,6 @@ impl SettingsView {
             .into_any_element()
     }
 
-    /// MCP › Advanced: a disclosure, collapsed by default (its summary says what is set). Open:
-    /// per connection with agent access, its allowed queries (removable, one added per line)
-    /// and its YOLO switch, with the confirmation production needs.
     fn render_mcp_advanced(&self, t: &Theme, cx: &mut Context<Self>) -> gpui::AnyElement {
         let profiles: Vec<_> = self.core.config.connections().into_iter().filter(|p| p.mcp_access() != dataman_core::McpAccess::Off).collect();
         let open = self.mcp_advanced;
@@ -712,7 +647,6 @@ impl SettingsView {
         col.into_any_element()
     }
 
-    /// Check for Updates with the sheet open: About, where the check's status shows.
     pub fn show_update_status(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.key_search {
             self.set_key_search(false, window, cx);
@@ -725,8 +659,6 @@ impl SettingsView {
         cx.notify();
     }
 
-    /// The Version row's status: "Checking…", what the last check found (and when), or the
-    /// version on offer; `true` for an error.
     fn update_status(cx: &App) -> Option<(SharedString, gpui::Hsla, bool)> {
         use crate::updates::State;
         let t = cx.theme();
@@ -740,14 +672,12 @@ impl SettingsView {
         }
     }
 
-    /// Demos: MCP › Advanced opened.
     pub fn demo_mcp_advanced(&mut self, cx: &mut Context<Self>) {
         if !self.mcp_advanced {
             self.toggle_mcp_advanced(cx);
         }
     }
 
-    /// Opens on a section (demo screenshots).
     pub fn show_section(&mut self, name: &str, cx: &mut Context<Self>) {
         if let Some(s) = SECTIONS.iter().find(|s| s.label().to_lowercase().starts_with(&name.to_lowercase())) {
             self.section = *s;
@@ -764,29 +694,24 @@ impl SettingsView {
     }
 
     fn set_theme(&mut self, pref: ThemePref, cx: &mut Context<Self>) {
-        // `set_pref` saves through the `SavePref` global.
         theme::set_pref(pref, cx);
         self.settings = self.core.settings.get();
         cx.notify();
     }
 
     fn set_translucency(&mut self, level: Translucency, window: &mut Window, cx: &mut Context<Self>) {
-        // `set_translucency` saves through the `SaveTranslucency` global.
         theme::set_translucency(level, window, cx);
         self.settings = self.core.settings.get();
         cx.notify();
     }
 
     fn set_font(&mut self, font: UiFont, cx: &mut Context<Self>) {
-        // `set_font` saves through the `SaveFont` global.
         theme::set_font(font, cx);
         self.settings = self.core.settings.get();
         self.system_font_open = false;
         cx.notify();
     }
 
-    /// The Font row's "a system font" segment: opens the picker (fetching the installed
-    /// families once) or closes it.
     fn toggle_system_fonts(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.system_font_open = !self.system_font_open;
         if self.system_font_open {
@@ -807,7 +732,6 @@ impl SettingsView {
     }
 
     fn set_system_font(&mut self, name: String, cx: &mut Context<Self>) {
-        // `set_system_font` saves through the `SaveSystemFont` global.
         theme::set_system_font(Some(name), cx);
         self.settings = self.core.settings.get();
         self.system_font_open = false;
@@ -825,7 +749,6 @@ impl SettingsView {
         crate::editor::set_format_options(self.settings.format_options());
     }
 
-    /// The explorer and every picker redraw with (or without) the logos.
     fn set_logos(&mut self, on: bool, cx: &mut Context<Self>) {
         self.save(|s| s.db_logos = on, cx);
         crate::assets::set_logos(on);
@@ -874,9 +797,6 @@ impl SettingsView {
         cx.notify();
     }
 
-    /// The Font row's "a system font" picker: a filter field over the installed families that
-    /// match it (best match first, capped so the sheet does not grow), each clicked straight
-    /// into use. Falls back to `theme::mono()`'s own default if the chosen one is ever gone.
     fn render_system_font_picker(&self, t: &Theme, cx: &mut Context<Self>) -> gpui::AnyElement {
         let query = self.system_font_query.read(cx).text().to_string();
         let current = self.settings.system_font.clone();
@@ -967,7 +887,6 @@ impl SettingsView {
             }
             Row::ReduceMotion => {
                 let on = s.reduce_motion;
-                // The system's switch wins over "Animate": say so instead of looking broken.
                 let system = crate::motion::system_reduce_motion();
                 div()
                     .flex()
@@ -989,7 +908,6 @@ impl SettingsView {
                     .child(ui::segment(t, "logos-on", "Show", on).on_click(cx.listener(|v, _, _, cx| v.set_logos(true, cx))))
                     .into_any_element()
             }
-            // Every panel back in its home dock (`dock`): the explorer left, the history right.
             Row::Panels => ui::button(t, "reset-panels", ui::Btn::Secondary)
                 .h(px(28.))
                 .child("Reset panels")
@@ -1089,14 +1007,12 @@ impl SettingsView {
                             .when(err, |d| d.tooltip(ui::text_tooltip(s.clone())))
                             .child(s)
                     }))
-                    // The update's sheet is the workspace's: Settings closes first.
                     .when(enabled && offered, |d| {
                         d.child(ui::button(t, "update-now", ui::Btn::Primary).h(px(28.)).child("Update…").on_click(cx.listener(|_, _, window, cx| {
                             cx.emit(SettingsEvent::Close);
                             window.dispatch_action(Box::new(crate::app::ShowUpdate), cx);
                         })))
                     })
-                    // The check answers here, beside it; off while one runs.
                     .when(enabled && !offered, |d| {
                         let bounds = self.check_now_bounds.clone();
                         d.child(
@@ -1189,7 +1105,6 @@ impl SettingsView {
             .into_any_element()
     }
 
-    /// The three theme cards (Dark, Light, Match system).
     fn render_themes(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let cur = theme::pref(cx);
         let card = |id: &'static str, label: &'static str, pref: ThemePref, dark: bool, split: bool| {
@@ -1263,8 +1178,6 @@ impl SettingsView {
             )
     }
 
-    /// The commands `q` finds (by name, group or current key, or bound to the shortcut `q`
-    /// spells: `⌘⇧P` finds ⇧⌘P); all of them for an empty `q`.
     fn matching_commands(q: &str) -> Vec<&'static crate::keymap::Command> {
         let typed = crate::keymap::parse_typed(q);
         crate::keymap::COMMANDS
@@ -1279,14 +1192,10 @@ impl SettingsView {
             .collect()
     }
 
-    /// The commands bound to `key` (any of their keys, not only the one shown); all of them
-    /// before a key is pressed.
     fn commands_on(key: Option<&str>) -> Vec<&'static crate::keymap::Command> {
         crate::keymap::COMMANDS.iter().filter(|c| key.is_none_or(|k| crate::keymap::effective(c.id).iter().any(|e| e == k))).collect()
     }
 
-    /// The search field while searching by shortcut: the key pressed as a keycap, or what to
-    /// do.
     fn render_key_query(&self, t: &Theme) -> gpui::AnyElement {
         match &self.key_query {
             Some(k) => div().flex().flex_row().child(ui::keycap(t, crate::keymap::label(k)).text_color(t.acc_t).border_color(t.acc)).into_any_element(),
@@ -1294,7 +1203,6 @@ impl SettingsView {
         }
     }
 
-    /// The remappable commands by group: name, a reset when changed, the key (a click records).
     fn render_commands(&self, cmds: Vec<&'static crate::keymap::Command>, searching: bool, t: &Theme, cx: &mut Context<Self>) -> gpui::AnyElement {
         let conflicts = crate::keymap::conflicts();
         let overrides = crate::keymap::overrides();
@@ -1366,7 +1274,6 @@ impl SettingsView {
                         .border_b_1()
                         .border_color(t.line)
                         .child(div().flex_1().min_w_0().text_size(px(12.)).text_color(t.tx2).child(c.label))
-                        // Found by another of its keys than the one shown: that one too.
                         .children(also.as_ref().filter(|k| **k != shown_label).map(|k| div().flex_none().text_size(px(11.)).text_color(t.tx3).child(format!("also {k}"))))
                         .child(
                             div()
@@ -1397,7 +1304,6 @@ impl SettingsView {
         div().flex().flex_col().gap(px(18.)).children(reset_all).children(sections).into_any_element()
     }
 
-    /// The checks: where a command's key and its reset are (as last laid out), and Reset all.
     pub fn demo_key_points(&self, id: &str) -> (Option<gpui::Point<Pixels>>, Option<gpui::Point<Pixels>>) {
         let b = self.key_bounds.borrow();
         let v = b.get(id).cloned().unwrap_or_default();
@@ -1412,8 +1318,6 @@ impl SettingsView {
         self.recording
     }
 
-    /// The search field's text (the checks; typing goes through the IME, which they skip).
-    /// Checks: the section shown.
     pub fn demo_section(&self) -> &'static str {
         self.section.label()
     }
@@ -1423,13 +1327,10 @@ impl SettingsView {
         cx.notify();
     }
 
-    /// Checks: where the keyboard button is (as last laid out), whether the search is by
-    /// shortcut, the key searched for and the commands the page lists for it.
     pub fn demo_key_search_point(&self) -> Option<gpui::Point<Pixels>> {
         self.key_button_bounds.borrow().first().map(|b| b.center())
     }
 
-    /// Checks: where About's Check now is (as last laid out), and the Version row's status.
     pub fn demo_check_now_point(&self) -> Option<gpui::Point<Pixels>> {
         self.check_now_bounds.borrow().first().map(|b| b.center())
     }
@@ -1443,13 +1344,11 @@ impl SettingsView {
         (self.key_search, self.key_query.clone(), ids)
     }
 
-    /// Screenshots: searching by shortcut, with `key` (GPUI syntax) pressed.
     pub fn demo_key_search_with(&mut self, key: Option<&str>, window: &mut Window, cx: &mut Context<Self>) {
         self.set_key_search(true, window, cx);
         self.key_query = key.and_then(crate::keymap::parse);
     }
 
-    /// Screenshots: the page scrolled down by `y`.
     pub fn demo_scroll(&mut self, y: f32) {
         self.page_scroll.set_offset(gpui::point(px(0.), px(-y)));
     }
@@ -1495,7 +1394,6 @@ impl Render for SettingsView {
             None => "Keyboard".into(),
         };
         if keys {
-            // Only the commands on the key pressed (all of them until one is).
             let cmds = Self::commands_on(self.key_query.as_deref());
             if !cmds.is_empty() {
                 page.push(self.render_commands(cmds, true, &t, cx));
@@ -1520,7 +1418,6 @@ impl Render for SettingsView {
             let free = key_label.map(|k| SharedString::from(format!("No command uses {k}.")));
             page.push(div().pt(px(80.)).flex().justify_center().child(ui::empty_state(&t, "[ NO MATCH ]", 20., free)).into_any_element());
         }
-        // The keyboard button: search by shortcut, or back to text.
         let key_button = {
             let hov = t.hov;
             let bounds = self.key_button_bounds.clone();
@@ -1586,8 +1483,6 @@ impl Render for SettingsView {
                     .h_full()
                     .flex()
                     .flex_col()
-                    // Pinned: the title and the connection sheet's × (16 pt from the right, centred
-                    // on the title); the page scrolls under it, past a hairline once it has.
                     .child(
                         div()
                             .flex_none()
@@ -1647,7 +1542,6 @@ impl Render for SettingsView {
             .key_context("SettingsSheet Modal")
             .track_focus(&self.focus)
             .on_action(cx.listener(|v, _: &Close, window, cx| {
-                // esc clears the search first (searching by shortcut, esc never gets here).
                 if !v.search.read(cx).text().is_empty() {
                     v.search.update(cx, |i, cx| i.set_text("", cx));
                     window.focus(&v.search.focus_handle(cx), cx);
@@ -1673,13 +1567,9 @@ mod tests {
     #[test]
     fn rank_fonts_filters_sorts_and_caps() {
         let all = fonts(&["Menlo", "Monaco", "Consolas", "Courier New", "Arial"]);
-        // Only the names that start with the query, best (the prefix) first; here just one.
         assert_eq!(rank_fonts("cour", &all, 8), vec!["Courier New"]);
-        // An empty query keeps everything, alphabetically (the tie-break between equal scores).
         assert_eq!(rank_fonts("", &all, 8), vec!["Arial", "Consolas", "Courier New", "Menlo", "Monaco"]);
-        // Capped.
         assert_eq!(rank_fonts("", &all, 2).len(), 2);
-        // Nothing matches a query none of the names contain (not even scattered).
         assert!(rank_fonts("xyz123", &all, 8).is_empty());
     }
 }

@@ -1,20 +1,7 @@
-//! Where the window's two panels sit: the explorer (the sidebar: its icon rail and the view it
-//! shows, the schema tree, the favorites or the history) in one dock beside the work surface
-//! (the editor and its results), the side panel (a server panel, a feature's sheet) in the other.
-//! Only these two arrangements exist: the explorer on the left (the default) or on the right,
-//! the side panel always opposite. The left dock runs the window's full height on the glass;
-//! the right one sits inside the work column.
-//!
-//! Kept in the session (`session.json`), so the arrangement survives a relaunch. Any older file
-//! (panels stacked, beside each other, in a bottom dock) reads as the arrangement with the
-//! explorer in the dock it was in ([`PanelLayout::normalized`]): it never keeps the window from
-//! opening.
-
 use std::hash::{Hash, Hasher};
 
 use serde::{Deserialize, Deserializer, Serialize};
 
-/// A dock beside the work surface.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Dock {
@@ -40,15 +27,11 @@ impl Dock {
     }
 }
 
-/// A panel in a dock.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PanelId {
-    /// The sidebar: the icon rail and its view (the connections and schema tree, the favorites,
-    /// the history).
     Explorer,
-    /// What opens beside the work surface: a server panel (LAR), a feature's sheet (the
-    /// grid-edit review, the MCP log…). Files from 0.3 call it "history".
+    // Files from 0.3 call it "history".
     #[serde(alias = "history")]
     Side,
 }
@@ -56,7 +39,6 @@ pub enum PanelId {
 impl PanelId {
     pub const ALL: [PanelId; 2] = [PanelId::Explorer, PanelId::Side];
 
-    /// Where it goes when the arrangement does not say (and after a reset).
     pub fn home(self) -> Dock {
         match self {
             PanelId::Explorer => Dock::Left,
@@ -72,7 +54,6 @@ impl PanelId {
     }
 }
 
-/// What the sidebar shows (its rail's selection), kept in the session.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NavView {
@@ -94,11 +75,8 @@ impl NavView {
     }
 }
 
-/// A column's even split (files from before kept stacked panels).
 pub const EVEN: f32 = 0.5;
 
-/// Panels stacked top to bottom in a dock; `split` is the first one's share of the height
-/// (the others share the rest evenly).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Column {
     pub panels: Vec<PanelId>,
@@ -122,7 +100,6 @@ impl Column {
         Column { panels, split: EVEN }
     }
 
-    /// The share of the column's height its `i`th panel asks for (all of it when alone).
     pub fn share(&self, i: usize) -> f32 {
         match self.panels.len() {
             0 | 1 => 1.,
@@ -132,8 +109,6 @@ impl Column {
     }
 }
 
-/// A position in a dock: a column of its own at the gap `col` among the dock's columns
-/// (`row: None`), or the gap `row` among column `col`'s panels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Place {
     pub dock: Dock,
@@ -142,18 +117,15 @@ pub struct Place {
 }
 
 impl Place {
-    /// A column of its own.
     pub fn column(dock: Dock, col: usize) -> Place {
         Place { dock, col, row: None }
     }
 
-    /// Stacked in a column.
     pub fn stack(dock: Dock, col: usize, row: usize) -> Place {
         Place { dock, col, row: Some(row) }
     }
 }
 
-/// The columns of each dock, left to right.
 #[derive(Clone, Debug, PartialEq, Hash, Serialize, Deserialize)]
 pub struct PanelLayout {
     #[serde(default, deserialize_with = "dock_columns")]
@@ -162,7 +134,7 @@ pub struct PanelLayout {
     pub right: Vec<Column>,
 }
 
-/// A dock as written: its columns, or (older files) its panels, one column.
+// Older files wrote a dock as its panels (one column): both forms must still read.
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum DockRepr {
@@ -179,14 +151,12 @@ fn dock_columns<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Column>, D::Error
 }
 
 impl Default for PanelLayout {
-    /// The explorer on the left, the side panel on the right.
     fn default() -> Self {
         PanelLayout::explorer_at(Dock::Left)
     }
 }
 
 impl PanelLayout {
-    /// The explorer in dock `d`, the side panel in the other one.
     pub fn explorer_at(d: Dock) -> PanelLayout {
         let (e, s) = (vec![Column::of(vec![PanelId::Explorer])], vec![Column::of(vec![PanelId::Side])]);
         match d {
@@ -202,17 +172,14 @@ impl PanelLayout {
         }
     }
 
-    /// The panels of dock `d`, column by column.
     pub fn panels(&self, d: Dock) -> impl Iterator<Item = PanelId> + '_ {
         self.dock(d).iter().flat_map(|c| c.panels.iter().copied())
     }
 
-    /// The dock the explorer is in.
     pub fn explorer_dock(&self) -> Dock {
         self.locate(PanelId::Explorer).map_or(Dock::Left, |(d, ..)| d)
     }
 
-    /// Where `p` is: a column of its own in its dock.
     pub fn place_of(&self, p: PanelId) -> Place {
         match self.locate(p) {
             Some((d, ci, ri)) => Place { dock: d, col: ci, row: (self.dock(d)[ci].panels.len() > 1).then_some(ri) },
@@ -220,20 +187,16 @@ impl PanelLayout {
         }
     }
 
-    /// The dock, column and row `p` is at.
     pub fn locate(&self, p: PanelId) -> Option<(Dock, usize, usize)> {
         Dock::ALL.into_iter().find_map(|d| {
             self.dock(d).iter().enumerate().find_map(|(ci, c)| c.panels.iter().position(|x| *x == p).map(|ri| (d, ci, ri)))
         })
     }
 
-    /// The arrangement with `p` in `to`'s dock: the other panel goes to the opposite one.
     pub fn moved(&self, p: PanelId, to: Place) -> PanelLayout {
         PanelLayout::explorer_at(if p == PanelId::Explorer { to.dock } else { to.dock.other() })
     }
 
-    /// One of the two arrangements: the explorer's dock kept (the left one when it is missing),
-    /// the side panel opposite.
     pub fn normalized(self) -> PanelLayout {
         PanelLayout::explorer_at(self.explorer_dock())
     }
@@ -257,11 +220,9 @@ mod tests {
         let l = PanelLayout::default();
         assert_eq!(l.place_of(Explorer), Place::column(Dock::Left, 0));
         assert_eq!(l.place_of(Side), Place::column(Dock::Right, 0));
-        // The explorer to the right: the side panel to the left.
         let r = l.moved(Explorer, Place::stack(Dock::Right, 0, 0));
         assert_eq!((panels(&r.left), panels(&r.right)), (vec![vec![Side]], vec![vec![Explorer]]));
         assert_eq!(r.explorer_dock(), Dock::Right);
-        // The side panel to the right: the explorer back on the left.
         assert!(r.moved(Side, Place::column(Dock::Right, 3)).is_default());
         assert_eq!(l.moved(Explorer, Place::column(Dock::Left, 1)), l);
     }
@@ -278,8 +239,6 @@ mod tests {
         assert!(back.is_default());
     }
 
-    /// Older files: a dock's list is one column, "history" and "side" are the side panel,
-    /// stacks and columns are gone (the explorer keeps its dock).
     #[test]
     fn older_files_read_as_their_explorer_dock() {
         let l: PanelLayout = serde_json::from_str(r#"{"left":["explorer","side"],"right":[],"bottom":[]}"#).unwrap();

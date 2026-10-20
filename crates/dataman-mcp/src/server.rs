@@ -1,6 +1,3 @@
-//! The MCP surface (rmcp's `ServerHandler`): tools from the [`Registry`], schema resources, and
-//! the audit line of every call.
-
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -33,13 +30,11 @@ in list_connections; ? stands for one value) or let anything run (yolo); a read-
 cannot approve or allow anything yourself. Results: columns as [name, type], rows as \
 arrays, null is SQL NULL. create_connection and update_connection save connections; passwords are write-only (never returned).";
 
-/// The handler for one transport. Clones share the hub and the registry.
 #[derive(Clone)]
 pub struct Server {
     pub hub: Arc<Hub>,
     pub registry: Arc<Registry>,
     pub transport: &'static str,
-    /// Tool calls go to the running app first ([`crate::ipc`]): the stdio binary's.
     pub forward: bool,
 }
 
@@ -48,7 +43,6 @@ impl Server {
         Server { hub, registry, transport, forward: false }
     }
 
-    /// This server hands its tool calls to the app while it runs.
     pub fn forwarding(mut self) -> Server {
         self.forward = true;
         self
@@ -80,8 +74,6 @@ impl Server {
         });
     }
 
-    /// Runs one tool call: validation, the tool, the audit line. Errors the agent should read
-    /// come back as tool results with `isError`.
     pub async fn run_tool(&self, tool: Arc<dyn Tool>, args: serde_json::Map<String, Value>, client: String, ct: tokio_util::sync::CancellationToken) -> CallToolResult {
         let started = Instant::now();
         let call = Call::new(self.hub.clone(), client, self.transport, tool.name(), ct);
@@ -104,11 +96,9 @@ impl Server {
     }
 }
 
-/// The MCP form of a tool, with hints from what it needs.
 pub fn describe(t: &dyn Tool) -> rmcp::model::Tool {
     let ann = match t.need() {
         Some(Need::Write) => ToolAnnotations::new().read_only(false).destructive(true).idempotent(false).open_world(false),
-        // They change the saved connections (not a database).
         None if matches!(t.name(), "create_connection" | "update_connection") => ToolAnnotations::new().read_only(false).destructive(false).idempotent(true).open_world(false),
         _ => ToolAnnotations::new().read_only(true).destructive(false).idempotent(true).open_world(false),
     };
@@ -138,7 +128,6 @@ impl ServerHandler for Server {
         };
         let client = Self::client(&cx);
         let args = req.arguments.unwrap_or_default();
-        // The app runs it when it is up (its tabs, its human); else it runs here, headless.
         if self.forward {
             match crate::ipc::call(&self.hub.dirs, &req.name, args.clone(), &client, cx.ct.clone()).await {
                 Ok(r) => return Ok(r.into()),

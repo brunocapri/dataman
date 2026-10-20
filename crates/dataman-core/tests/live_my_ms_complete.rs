@@ -1,6 +1,3 @@
-//! Autocomplete, signature help, definitions and lint at every cursor of real scripts: never a
-//! panic (char boundaries, unicode), on MySQL and SQL Server.
-
 mod common;
 
 use common::*;
@@ -20,7 +17,6 @@ fn sweep(src: &str, snap: &dataman_core::schema::SchemaSnapshot, d: Dialect) -> 
         n += c.items.len();
         let _ = signature_help(src, &tokens, cursor, snap);
         let _ = definition_at(src, cursor, snap);
-        // Every prefix of the script is a text being typed.
         let _ = lint(&src[..cursor], &LintContext { schema: Some(snap), ..Default::default() });
     }
     n

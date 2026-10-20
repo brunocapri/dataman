@@ -1,27 +1,3 @@
-//! MongoDB's shell as JavaScript: what [`super::mql`] does not read (variables, loops, functions,
-//! `forEach`, `print`, several statements together) runs here, in Boa, as mongosh would run it:
-//!
-//! ```text
-//! const since = new Date(Date.now() - 7 * 864e5)
-//! let n = 0
-//! db.orders.find({created: {$gte: since}}).forEach(o => {
-//!   db.orders.updateOne({_id: o._id}, {$set: {week: true}})
-//!   n++
-//! })
-//! print(`${n} orders`)
-//! db.orders.find({week: true}).sort({created: -1})
-//! ```
-//!
-//! The script's last value is its result: a cursor that has not started runs as the statement
-//! of a tab does (its pages, its documents saved back: [`Script::rerun`]), anything else is shown
-//! as a value; `print` and `printjson` lines come with it.
-//!
-//! Every call to the server is read into an [`Op`] as a statement is, and checked twice: before
-//! the script runs, [`class`] reads it for its writes (the method names, the filters written out)
-//! — what the read-only switch, production's confirmation and the MCP tiers decide on; while it
-//! runs, each operation must not do more than that (a write in a script read as a read, a drop in
-//! one read as a bounded write, are refused when they come), nor write a read-only database.
-
 use std::cell::RefCell;
 use std::fmt::Write as _;
 
@@ -35,42 +11,30 @@ use crate::guard::WriteClass;
 
 const PRELUDE: &str = include_str!("js_prelude.js");
 
-/// The longest a loop runs (iterations) and the deepest calls nest: a script that would run
-/// forever stops with an error.
 const LOOP_LIMIT: u64 = if cfg!(test) { 200_000 } else { 20_000_000 };
 const RECURSION_LIMIT: usize = 400;
-/// What `print` keeps (lines, bytes); more is dropped with a note.
 const PRINT_LINES: usize = 5_000;
 const PRINT_BYTES: usize = 1 << 20;
-/// The most documents an array shown as the result holds.
 const SHOWN_DOCS: usize = 1_000;
 
-/// The server behind a script's calls: MongoDB's client in the app, a fake in the tests.
 pub(crate) trait Server {
     fn run(&mut self, db: &str, op: &Op, page: Page) -> Result<Output, String>;
-    /// A command's answer as the server sends it (`db.runCommand`).
     fn command(&mut self, db: &str, cmd: Document, admin: bool) -> Result<Document, String>;
-    /// Whether `db` may be written (a read-only database may not).
     fn writable(&self, db: &str) -> bool;
     fn cancelled(&self) -> bool;
     fn sleep(&mut self, ms: u64);
 }
 
-/// What a script came to.
 pub(crate) struct Script {
     pub output: Output,
-    /// Its last value was a cursor: that read again, for another page.
     pub rerun: Option<(String, Op)>,
     pub printed: Vec<String>,
-    /// What each write it ran changed, in order.
     pub writes: Vec<String>,
-    /// The database `db` was at the end (`use`, `db = db.getSiblingDB(…)`).
     pub db: String,
 }
 
 struct Session {
     server: Box<dyn Server>,
-    /// The most the script was cleared for ([`rank`]).
     ceiling: u8,
     cleared: String,
     printed: Vec<String>,
@@ -121,12 +85,7 @@ fn js_str(s: &str) -> JsValue {
     JsValue::from(JsString::from(s))
 }
 
-// ---------------------------------------------------------------------------------------------
-// Natives
-
 impl Session {
-    /// One call: `calls` as the prelude encodes them (`[["find", [{…}]], ["sort", [{…}]]]`),
-    /// answered as JavaScript for the prelude to read.
     fn call(&mut self, db: &str, coll: Option<&str>, calls: &str, page: Option<Page>) -> Result<String, String> {
         if self.server.cancelled() {
             return Err("the script was stopped".into());
@@ -144,8 +103,6 @@ impl Session {
         Ok(describe(&out))
     }
 
-    /// Whether `op` may run: not a write on a read-only database, nor more than the script
-    /// was cleared for.
     fn allow(&self, db: &str, op: &Op) -> Result<(), String> {
         let class = op.class();
         if class.is_write() && !self.server.writable(db) {
@@ -198,7 +155,6 @@ fn n_print(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue
     Ok(JsValue::undefined())
 }
 
-/// A value (in the shell's form) as `printjson` writes it.
 fn n_pretty(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
     let text = arg_str(args, 0, ctx)?.unwrap_or_default();
     let out = shell::parse(&text).ok().and_then(|v| shell::to_bson(&v).ok()).map(|b| shell::print_bson(&b)).unwrap_or(text);
@@ -213,7 +169,6 @@ fn n_uuid(_: &JsValue, _: &[JsValue], _: &mut Context) -> JsResult<JsValue> {
     Ok(js_str(&mongodb::bson::Uuid::new().to_string()))
 }
 
-/// `ISODate("…")`'s milliseconds, read as the shell reads dates.
 fn n_date(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
     let s = arg_str(args, 0, ctx)?.unwrap_or_default();
     match shell::parse_date(&s) {
@@ -231,7 +186,6 @@ fn n_sleep(_: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue
     Ok(JsValue::undefined())
 }
 
-/// The prelude's encoded calls back as methods and their arguments.
 fn decode_calls(text: &str) -> Result<Vec<(String, Vec<Val>)>, String> {
     let Val::Arr(calls) = shell::parse(text).map_err(|e| format!("a value the shell cannot store: {}", e.message))? else {
         return Err("no calls".into());
@@ -251,10 +205,6 @@ fn decode_calls(text: &str) -> Result<Vec<(String, Vec<Val>)>, String> {
         .collect()
 }
 
-// ---------------------------------------------------------------------------------------------
-// Values to JavaScript
-
-/// An output as the prelude reads it.
 fn describe(out: &Output) -> String {
     let body = |b: &Body| match b {
         Body::Bson(b) => js_text(b),
@@ -280,7 +230,6 @@ fn describe(out: &Output) -> String {
     }
 }
 
-/// A BSON value as a JavaScript expression (its types through the prelude's `__B`).
 pub(crate) fn js_text(b: &Bson) -> String {
     let mut out = String::new();
     write_js(&mut out, b);
@@ -362,11 +311,6 @@ fn write_js(out: &mut String, b: &Bson) {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Running
-
-/// The shell's `use name` and `show …` lines as JavaScript (each line keeps its place, for the
-/// errors' positions).
 fn prepare(text: &str) -> String {
     let mut out = String::with_capacity(text.len() + 32);
     for line in text.split_inclusive('\n') {
@@ -424,11 +368,8 @@ fn context() -> Result<Context, Failed> {
     Ok(ctx)
 }
 
-/// The name the script's own code goes by in errors' positions (the prelude's has none).
 const SCRIPT: &str = "script";
 
-/// A JavaScript error as the shell says it (`TypeError: …`; a plain `Error`'s message alone),
-/// and where in `text` it was thrown when that was the script's own code.
 fn failed(e: boa_engine::JsError, ctx: &mut Context, text: &str) -> Failed {
     let m = match e.try_native(ctx) {
         Ok(n) => n.to_string(),
@@ -436,7 +377,6 @@ fn failed(e: boa_engine::JsError, ctx: &mut Context, text: &str) -> Failed {
     };
     let mut m = m.strip_prefix("Error: ").map(str::to_string).unwrap_or(m);
     let mut at = None;
-    // `… (script:3:7)`, `… (unknown at :12:4)`: the place, said apart.
     if m.ends_with(')')
         && let Some(i) = m.rfind(" (")
     {
@@ -456,7 +396,6 @@ fn failed(e: boa_engine::JsError, ctx: &mut Context, text: &str) -> Failed {
     Failed { message: m, at }
 }
 
-/// Where a syntax error is (`… at line 3, col 7`), as a byte offset of `text`.
 fn syntax_at(message: &str, text: &str) -> Option<usize> {
     let at = message.rfind("line ")?;
     let mut nums = message[at + 5..].split(|c: char| !c.is_ascii_digit()).filter(|s| !s.is_empty());
@@ -468,22 +407,18 @@ fn syntax_at(message: &str, text: &str) -> Option<usize> {
     Some((start + off).min(text.len()))
 }
 
-/// Whether `text` reads as JavaScript (its syntax only), and where it does not.
 pub(crate) fn check(text: &str) -> Result<(), Failed> {
     let prepared = prepare(text);
     let mut ctx = Context::default();
     boa_engine::Script::parse(Source::from_bytes(&prepared), None, &mut ctx).map(|_| ()).map_err(|e| {
         let m = e.to_string();
         let at = syntax_at(&m, text);
-        // The place is `at` (the editor marks it, the error says its line and column).
         let m = m.strip_prefix("SyntaxError: ").unwrap_or(&m);
         let m = m.rfind(" at line ").map_or(m, |i| &m[..i]);
         Failed { at, message: format!("SyntaxError: {m}") }
     })
 }
 
-/// Runs `text` on `db` (blocking: on a thread of its own, `server` answering its calls),
-/// cleared for `class` ([`class`]'s reading of it); a final cursor's page `page`.
 pub(crate) fn run(text: &str, db: &str, class: &WriteClass, server: Box<dyn Server>, page: Page) -> Result<Script, Failed> {
     SESSION.with(|s| {
         *s.borrow_mut() = Some(Session { server, ceiling: rank(class), cleared: what(class), printed: Vec::new(), printed_bytes: 0, writes: Vec::new() })
@@ -495,7 +430,6 @@ pub(crate) fn run(text: &str, db: &str, class: &WriteClass, server: Box<dyn Serv
         script.printed = s.printed;
         script.writes = s.writes;
     }
-    // Nothing returned but lines printed: the lines are the result.
     if matches!(script.output, Output::Value(Body::Bson(Bson::Undefined))) && !script.printed.is_empty() {
         script.output = Output::Value(Body::Json(serde_json::Value::String(std::mem::take(&mut script.printed).join("\n"))));
     }
@@ -547,7 +481,6 @@ fn run_in_session(text: &str, db: &str, page: Page) -> Result<Script, Failed> {
     Ok(Script { output, rerun, printed: Vec::new(), writes: Vec::new(), db: end_db })
 }
 
-/// The final cursor's database and operation.
 fn cursor_op(spec: &str) -> Result<(String, Op), Failed> {
     let fail = |m: String| Failed { message: m, at: None };
     let Val::Obj(fields) = shell::parse(spec).map_err(|e| fail(e.message))? else { return Err(fail("no cursor".into())) };
@@ -565,7 +498,6 @@ fn cursor_op(spec: &str) -> Result<(String, Op), Failed> {
     Ok((db, op))
 }
 
-/// A [`Val`] back in the shell's form (the calls of a final cursor, read again).
 fn print_val(v: &Val) -> String {
     match v {
         Val::Null => "null".into(),
@@ -583,8 +515,6 @@ fn print_val(v: &Val) -> String {
     }
 }
 
-/// A last value that is not a cursor: documents (an array of them) as a list, anything else
-/// as a value.
 fn value_output(text: &str) -> Result<Output, Failed> {
     let fail = |m: String| Failed { message: m, at: None };
     let b = shell::to_bson(&shell::parse(text).map_err(|e| fail(e.message))?).map_err(fail)?;
@@ -605,10 +535,6 @@ fn value_output(text: &str) -> Result<Output, Failed> {
     })
 }
 
-// ---------------------------------------------------------------------------------------------
-// Reading a script before it runs
-
-/// Methods that write: with a filter (one document, or a filter written out), or anything else.
 const BOUNDED: &[&str] = &["insertOne", "insertMany", "insert", "updateOne", "replaceOne", "findOneAndUpdate", "findOneAndReplace", "findOneAndDelete", "findAndModify", "deleteOne", "save"];
 const FILTERED: &[&str] = &["updateMany", "deleteMany", "remove", "update"];
 const DESTRUCTIVE: &[(&str, &str)] = &[
@@ -624,9 +550,6 @@ const DESTRUCTIVE: &[(&str, &str)] = &[
     ("renameCollection", "renames a collection"),
 ];
 
-/// Whether the text is a script rather than the shell's statements one by one: a statement
-/// that does not start with `db.`, `show` or `use` (a declaration, a loop, `print`), or one
-/// that assigns `db`.
 pub(crate) fn is_script_start(stmt: &str) -> bool {
     let mut p = Parser::new(stmt);
     p.skip_ws();
@@ -640,10 +563,7 @@ pub(crate) fn is_script_start(stmt: &str) -> bool {
     }
 }
 
-/// What a script does, read before it runs: its write methods by name, with the filters they
-/// are given when written out (`deleteMany({})` or a filter the script computes counts as
-/// destructive), `$out` / `$merge`, commands. Not proof (a method name the script builds is
-/// not seen): [`run`] refuses any call that does more.
+// Not proof (a method name the script builds is not seen): `run` refuses any call that does more.
 pub(crate) fn class(text: &str) -> Result<WriteClass, Failed> {
     check(text)?;
     let mut reasons: Vec<String> = Vec::new();
@@ -697,8 +617,6 @@ pub(crate) fn class(text: &str) -> Result<WriteClass, Failed> {
     })
 }
 
-/// The first argument of a call whose text starts at `args` (after its `(`), when it is
-/// written out as a value.
 fn first_arg(args: &str) -> Option<Val> {
     let mut p = Parser::new(args);
     p.skip_ws();
@@ -707,8 +625,6 @@ fn first_arg(args: &str) -> Option<Val> {
     matches!(p.peek(), Some(',' | ')')).then_some(v)
 }
 
-/// Every `.name(` in the text outside strings and comments: the method and the text after its
-/// parenthesis.
 fn calls_in(text: &str) -> Vec<(String, &str)> {
     let b = text.as_bytes();
     let mut out = Vec::new();
@@ -761,7 +677,6 @@ mod tests {
     use super::*;
     use mongodb::bson::doc;
 
-    /// A server that records what it is asked and answers from a few documents.
     struct Fake {
         log: std::rc::Rc<RefCell<Vec<String>>>,
         read_only: bool,
@@ -837,12 +752,10 @@ mod tests {
         assert_eq!(value("typeof Date.now()"), Bson::String("number".into()));
         assert!(matches!(value("UUID()"), Bson::Binary(b) if b.bytes.len() == 16));
         assert_eq!(value("[/a+b/i, MinKey()]"), Bson::Array(vec![Bson::RegularExpression(mongodb::bson::Regex { pattern: "a+b".into(), options: "i".into() }), Bson::MinKey]));
-        // print: the lines are the result when nothing is returned.
         assert_eq!(value("print('a', 1); printjson({x: NumberLong(2)})"), Bson::String("a 1\n{\n  \"x\": NumberLong(2)\n}".into()));
         let (r, _) = script("print('hello'); 42");
         let r = r.unwrap();
         assert_eq!((r.output, r.printed), (Output::Value(Body::Bson(Bson::Int32(42))), vec!["hello".to_string()]));
-        // Errors: syntax (where), thrown, a loop that never ends.
         let f = script("let x = 1\nlet = = 2").0.err().unwrap();
         assert_eq!((f.at, f.message.as_str()), (Some(16), "SyntaxError: unexpected token '=', primary expression"), "{f:?}");
         let f = script("let a = 1\n  throw new Error('boom')").0.err().unwrap();
@@ -853,32 +766,26 @@ mod tests {
 
     #[test]
     fn the_database_through_the_prelude() {
-        // A cursor iterated in batches; forEach; a final cursor runs with the page.
         let (r, log) = script("let n = 0\ndb.items.find({}).forEach(d => { n += d.n })\nprint(n)\ndb.items.find().sort({n: -1})");
         let r = r.unwrap();
         assert_eq!(r.printed, ["7140"]);
         assert!(matches!(&r.output, Output::Docs(d) if d.docs.len() == 50 && d.more));
         assert!(matches!(&r.rerun, Some((db, Op::Find { sort: Some(s), .. })) if db == "shop" && s.get_i32("n") == Ok(-1)));
         assert!(log[0].contains("Find") && log[0].ends_with(" 0 1000"), "{log:?}");
-        // Documents come back with their types.
         assert_eq!(value("const d = db.items.findOne({n: 3}); [d.l instanceof NumberLong, d.at instanceof Date, d._id]"), Bson::Array(vec![Bson::Boolean(true), Bson::Boolean(true), Bson::Int32(3)]));
         assert_eq!(value("db.items.countDocuments({}) === 120"), Bson::Boolean(true));
         assert_eq!(value("db.items.find().toArray().length"), Bson::Int32(120));
         assert_eq!(value("db.items.find().map(d => d.n).length"), Bson::Int32(120));
         assert_eq!(value("const out = []; for (const d of db.items.find().limit(3)) out.push(d.n); out"), Bson::Array(vec![Bson::Int32(0), Bson::Int32(1), Bson::Int32(2)]));
-        // Writes return as mongosh's do.
         assert_eq!(value("db.items.insertOne({_id: 7, at: new Date(5)}).insertedId"), Bson::Int32(7));
         assert_eq!(value("db.items.deleteMany({n: {$gt: 1}}).deletedCount"), Bson::Int32(3));
-        // A database by name, a sibling, `use`, a collection with dots.
         let (r, log) = script("use other\ndb.getSiblingDB('x').system.users.findOne()\ndb.version()");
         let r = r.unwrap();
         assert_eq!(r.db, "other");
         assert_eq!(r.output, Output::Value(Body::Json(serde_json::Value::String("8.0.0".into()))));
         assert!(log[0].starts_with("x Find") && log[0].contains("system.users"), "{log:?}");
         assert!(log[1].contains("buildInfo") && log[1].ends_with("true"), "{log:?}");
-        // show dbs.
         assert_eq!(value("show dbs"), Bson::Array(vec![Bson::String("admin".into()), Bson::String("shop".into())]));
-        // An array of documents is a list.
         assert!(matches!(script("[{a: 1}, {a: 2}]").0.unwrap().output, Output::Docs(d) if d.docs.len() == 2 && d.source.is_none()));
     }
 
@@ -895,21 +802,16 @@ mod tests {
         assert!(c("db.a.aggregate([{$out: 'b'}]).toArray()").is_destructive());
         assert!(c("db.runCommand({drop: 'a'}); 1").is_destructive());
         assert_eq!(c("db.runCommand({ping: 1}); 1"), WriteClass::Read);
-        // Strings and comments are not calls.
         assert_eq!(c("// db.a.drop()\nprint('db.a.drop()')"), WriteClass::Read);
-        // A syntax error is said where it is.
         assert!(class("let x = ;").unwrap_err().at.is_some());
-        // At run time: a call the reading did not see is refused.
         let log = std::rc::Rc::new(RefCell::new(Vec::new()));
         let r = run("const m = 'delete' + 'Many'; db.a[m]({})", "shop", &WriteClass::Read, Box::new(Fake { log: log.clone(), read_only: false }), Page::default());
         assert!(r.err().unwrap().message.starts_with("refused: this call deleteMany without a filter"));
         assert!(log.borrow().is_empty());
         let r = run("const m = 'insert' + 'One'; db.a[m]({x: 1})", "shop", &WriteClass::Read, Box::new(Fake { log: log.clone(), read_only: false }), Page::default());
         assert!(r.err().unwrap().message.starts_with("refused: this call writes"));
-        // A read-only database refuses writes whatever the script was cleared for.
         let r = run("db.a.insertOne({x: 1})", "shop", &WriteClass::SafeWrite, Box::new(Fake { log: log.clone(), read_only: true }), Page::default());
         assert!(r.err().unwrap().message.contains("read-only"));
-        // Errors from the server can be caught, as in mongosh.
         assert_eq!(value("try { db.a.find({$bad: 1}).sort('x').toArray(); 'no' } catch (e) { 'caught' }"), Bson::String("caught".into()));
     }
 

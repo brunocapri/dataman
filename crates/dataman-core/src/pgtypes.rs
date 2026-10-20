@@ -1,7 +1,3 @@
-//! Binary-format decoders of the PostgreSQL types `value::format_binary` has no library for:
-//! ranges, bit strings, geometry, text search, snapshots, and the extension types hstore, ltree
-//! and pgvector. Each prints what the type's output function does (what `psql` shows).
-
 use std::fmt::Write;
 
 use tokio_postgres::types::{Kind as PgKind, Type};
@@ -10,7 +6,6 @@ use crate::value::{format_binary, format_float};
 
 type BoxErr = Box<dyn std::error::Error + Sync + Send>;
 
-/// A reader over a binary value; every read fails (never panics) on short input.
 struct Cur<'a>(&'a [u8]);
 
 impl<'a> Cur<'a> {
@@ -46,7 +41,6 @@ impl<'a> Cur<'a> {
     fn f64(&mut self) -> Result<f64, BoxErr> {
         Ok(f64::from_be_bytes(self.take(8)?.try_into()?))
     }
-    /// A NUL-terminated string.
     fn cstr(&mut self) -> Result<&'a str, BoxErr> {
         let n = self.0.iter().position(|&b| b == 0).ok_or("unterminated string")?;
         let s = std::str::from_utf8(&self.0[..n])?;
@@ -55,8 +49,7 @@ impl<'a> Cur<'a> {
     }
 }
 
-/// The value of a base type this module reads (by name: extension types have no fixed OID),
-/// or `None` for any other type.
+// By name: extension types have no fixed OID.
 pub(crate) fn format_special(ty: &Type, raw: &[u8], out: &mut String) -> Option<Result<(), BoxErr>> {
     match ty.kind() {
         PgKind::Range(elem) => return Some(range(elem, raw, out)),
@@ -146,7 +139,6 @@ pub(crate) fn format_special(ty: &Type, raw: &[u8], out: &mut String) -> Option<
             }
             Ok(())
         })(),
-        // Their names need the catalog: the OID is what the server sent.
         "regclass" | "regproc" | "regprocedure" | "regoper" | "regoperator" | "regnamespace" | "regrole" | "regconfig" | "regdictionary"
         | "regcollation" => (|| {
             let _ = write!(out, "{}", Cur(raw).u32()?);
@@ -168,7 +160,6 @@ pub(crate) fn format_special(ty: &Type, raw: &[u8], out: &mut String) -> Option<
     })
 }
 
-/// How `format_type` spells a built-in type (what `pg_typeof` and `::regtype` print).
 fn builtin_type_name(t: &Type) -> &str {
     match t.name() {
         "int2" => "smallint",
@@ -257,10 +248,6 @@ fn snapshot(raw: &[u8], out: &mut String) -> Result<(), BoxErr> {
     Ok(())
 }
 
-// --- ranges ---------------------------------------------------------------------------------
-
-/// A range bound as the output function writes it: quoted when it has a character that is
-/// special in a range literal (or is empty).
 fn range_bound(elem: &Type, raw: &[u8], out: &mut String) {
     let mut s = String::new();
     format_binary(elem, raw, &mut s);
@@ -321,8 +308,6 @@ fn multirange(elem: &Type, raw: &[u8], out: &mut String) -> Result<(), BoxErr> {
     out.push('}');
     Ok(())
 }
-
-// --- text search ----------------------------------------------------------------------------
 
 fn quoted_lexeme(s: &str, out: &mut String) {
     out.push('\'');
@@ -392,7 +377,6 @@ fn read_q(c: &mut Cur, depth: usize) -> Result<Q, BoxErr> {
 }
 
 fn q_out(q: &Q, parent: u8, right_of_phrase: bool, out: &mut String) {
-    // NOT binds tightest, then <->, then &, then |.
     fn priority(op: u8) -> u8 {
         match op {
             3 => 1,
@@ -461,8 +445,6 @@ fn tsquery(raw: &[u8], out: &mut String) -> Result<(), BoxErr> {
     Ok(())
 }
 
-// --- extension types ------------------------------------------------------------------------
-
 fn hstore_string(s: &str, out: &mut String) {
     out.push('"');
     for c in s.chars() {
@@ -498,7 +480,6 @@ fn float4(v: f32, out: &mut String) {
     format_float(v as f64, true, out);
 }
 
-/// IEEE half precision to single.
 fn half_to_f32(h: u16) -> f32 {
     let sign = if h & 0x8000 != 0 { -1.0f32 } else { 1.0 };
     let exp = ((h >> 10) & 0x1f) as i32;
@@ -586,7 +567,6 @@ mod tests {
         assert_eq!(show(&Type::INT4_RANGE, &hex("0200000004000000010000000400000005")), "[1,5)");
         assert_eq!(show(&Type::INT4_RANGE, &hex("01")), "empty");
         assert_eq!(show(&Type::NUM_RANGE, &hex("18")), "(,)");
-        // A timestamp bound has a space: quoted.
         assert_eq!(show(&Type::TS_RANGE, &hex("02000000080002b0d5d4e94000000000087fffffffffffffff")), "[\"2024-01-01 00:00:00\",infinity)");
         assert_eq!(show(&Type::INT4MULTI_RANGE, &hex("00000002000000110200000004000000010000000400000003000000110200000004000000050000000400000009")), "{[1,3),[5,9)}");
         assert_eq!(show(&Type::INT4MULTI_RANGE, &hex("00000000")), "{}");
@@ -611,12 +591,10 @@ mod tests {
         assert_eq!(show(&Type::TS_VECTOR, &hex("00000001616263000001c001")), "'abc':1A");
         assert_eq!(show(&Type::TS_VECTOR, &hex("0000000261000002c001800262000000")), "'a':1A,2B 'b'");
         assert_eq!(show(&Type::TSQUERY, &hex("000000030202010000666f7800010000717569636b00")), "'quick' & 'fox'");
-        // quick <-> fox & !dog
         assert_eq!(
             show(&Type::TSQUERY, &hex("0000000602020201010000646f670002040001010000666f7800010000717569636b00")),
             "'quick' <-> 'fox' & !'dog'"
         );
-        // !a | b <-> c
         assert_eq!(show(&Type::TSQUERY, &hex("000000060203020400010100006300010000620002010100006100")), "!'a' | 'b' <-> 'c'");
     }
 
@@ -628,7 +606,6 @@ mod tests {
         assert_eq!(show(&ext("sparsevec"), &hex("00000005000000020000000000000000000000023fc0000040000000")), "{1:1.5,3:2}/5");
         assert_eq!(show(&ext("hstore"), &hex("00000003000000016100000001310000000162ffffffff0000000363206400000003782079")), "\"a\"=>\"1\", \"b\"=>NULL, \"c d\"=>\"x y\"");
         assert_eq!(show(&ext("ltree"), &hex("01612e622e63")), "a.b.c");
-        // A short value is an error (the hex fallback), never a panic.
         let mut s = String::new();
         assert!(format_special(&ext("vector"), &hex("0003"), &mut s).unwrap().is_err());
         assert!(format_special(&ext("unknown_ext"), &[1], &mut s).is_none());

@@ -1,16 +1,3 @@
-//! Demo stages of a script's result tabs (`--demo`), on a 7-statement script against the demo
-//! database (rows that pause, a temp table, SET, UPDATE, rows, an error, one statement left):
-//!
-//! - `results`: the run as it ends, the error tab on screen (screenshot);
-//! - `results-grid`: the first result picked, a cell selected (screenshot);
-//! - `results-messages`: the messages tab (screenshot);
-//! - `results-check`: the rules with real key events (tabs, folding, the error shown, partial
-//!   rows, ⌥⌘[ ⌥⌘], per-result selection and sort, find on the active result, closing tabs, a single
-//!   statement without strip), printed as PASS/FAIL lines; exit code 1 on a failure. It ends
-//!   with the gutters: the editor's line-number divider and the grid's row-number divider at
-//!   one x (short and long scripts, 9 and 100,000 rows, the code font and the UI zoom, the
-//!   result zoom, a table's data view, two editor groups).
-
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -55,7 +42,6 @@ fn tab(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> Entity<QueryTab> 
     cx.update(|_, cx| ws.read(cx).active_tab().unwrap().clone()).unwrap()
 }
 
-/// Waits until the run is over (it stops at the error).
 async fn finished(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) {
     for _ in 0..300 {
         let done = cx
@@ -94,7 +80,6 @@ fn select(tab: &Entity<QueryTab>, k: Key, cx: &mut AsyncWindowContext) {
     });
 }
 
-/// Runs a stage; `false` when a check failed.
 pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContext) -> bool {
     let tab = tab(ws, cx);
     finished(&tab, cx).await;
@@ -151,7 +136,6 @@ async fn check(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> bool {
         format!("{:?} {rows}", first.0),
     );
 
-    // ⌥⌘[ / ⌥⌘] from the editor, wrapping around.
     let _ = cx.update(|window, cx| window.focus(&editor.focus_handle(cx), cx));
     key(cx, "cmd-alt-[");
     let a = shown(tab, cx);
@@ -171,7 +155,6 @@ async fn check(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> bool {
     };
     report("the messages tab leaves no result under copy, export and find", messages_grid, String::new());
 
-    // Each result keeps its own selection and sort.
     select(tab, Key::Stmt(4), cx);
     let _ = cx.update(|_, cx| grid.update(cx, |g, cx| g.toggle_sort(0, cx)));
     for _ in 0..50 {
@@ -203,7 +186,6 @@ async fn check(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> bool {
         format!("{sel:?} {sort:?}"),
     );
 
-    // Find (⌘F in the grid) searches the result on screen, and follows a switch.
     let _ = cx.update(|window, cx| window.focus(&grid.focus_handle(cx), cx));
     key(cx, "cmd-f");
     typ(cx, "a");
@@ -225,8 +207,6 @@ async fn check(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> bool {
     report("find searches the active result after a switch", open && hits_ok, format!("open {open} hits {hits_ok}"));
     let _ = cx.update(|_, cx| grid.update(cx, |g, cx| g.close_find(cx)));
 
-    // A result tab's ×: the tab on screen gives way to the next one; another closes alone; the
-    // next run brings them all back.
     select(tab, Key::Stmt(4), cx);
     let _ = cx.update(|_, cx| tab.update(cx, |t, cx| t.close_result(Key::Stmt(4), cx)));
     let (n, k) = (names(tab, cx), shown(tab, cx));
@@ -249,17 +229,12 @@ async fn check(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> bool {
     let n = names(tab, cx);
     report("the next run has every tab again", n.len() == 5, format!("{n:?}"));
 
-    // One statement: no strip, like before.
     let _ = cx.update(|_, cx| tab.update(cx, |t, cx| t.run(vec!["SELECT 1 AS one".into()], cx)));
     pause(cx, 200).await;
     finished(tab, cx).await;
     let n = names(tab, cx);
     report("a single statement has a single tab (the strip is hidden)", n == ["1 · SELECT"], format!("{n:?}"));
 
-    // The header sorts the result here: the query does not run again; a paused result reads the
-    // rest first (a sort is of the whole result); asc → desc → the server's order; NULLs last
-    // both ways; text in natural order; a header dragged sideways
-    // neither sorts nor moves its column.
     let sql = "SELECT g AS n, CASE WHEN g % 10 = 0 THEN NULL ELSE 'Item' || g END AS t FROM generate_series(1, 300000) g";
     let _ = cx.update(|_, cx| tab.update(cx, |t, cx| t.run(vec![sql.into()], cx)));
     let paused = |cx: &mut AsyncWindowContext| cx.update(|_, cx| tab.read(cx).result().map(|r| r.phase())).ok().flatten() == Some(Phase::Paused);
@@ -288,7 +263,6 @@ async fn check(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> bool {
         })
         .unwrap_or_default()
     };
-    // The same result (the query did not run again).
     let same = |cx: &mut AsyncWindowContext| {
         cx.update(|_, cx| match (grid.read(cx).result(), &rs0) {
             (Some(a), Some(b)) => Arc::ptr_eq(a, b),
@@ -300,7 +274,6 @@ async fn check(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> bool {
     click(cx, p);
     settle(&grid, cx).await;
     click(cx, p);
-    // A sort is of the whole result: a paused one reads the rest, then sorts it all.
     for _ in 0..400 {
         pause(cx, 50).await;
         let whole = cx
@@ -348,7 +321,6 @@ async fn check(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> bool {
             format!("ordered {ordered}, nulls last {nulls_last}, first {:?}", vals.first()),
         );
     }
-    // A header dragged sideways: no sort, no move.
     let before = cx.update(|_, cx| (grid.read(cx).display_order(), grid.read(cx).result().and_then(|r| r.sort_state()))).unwrap();
     let m = Modifiers::default();
     let p = header(0, cx);
@@ -361,8 +333,6 @@ async fn check(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> bool {
     let after = cx.update(|_, cx| (grid.read(cx).display_order(), grid.read(cx).result().and_then(|r| r.sort_state()))).unwrap();
     report("a header dragged sideways does not move its column (nor sort)", before == after && after.0 == [0, 1], format!("{before:?} → {after:?}"));
 
-    // A paused result asks the planner once (off the tab's session): Fetch all says how many
-    // are left; clicked, everything comes.
     let _ = cx.update(|_, cx| tab.update(cx, |t, cx| t.run(vec!["SELECT * FROM orders".into()], cx)));
     let mut label = String::new();
     for _ in 0..200 {
@@ -408,8 +378,6 @@ fn draw(cx: &mut AsyncWindowContext) {
     });
 }
 
-/// The dividers of the editor's line numbers and of the grid's row numbers (window pixels), as
-/// laid out by the last frame.
 fn divider_xs(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> (f32, f32) {
     cx.update(|_, cx| {
         let t = tab.read(cx);
@@ -418,8 +386,7 @@ fn divider_xs(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> (f32, f32)
     .unwrap()
 }
 
-/// The same after two frames (a need the grid learns while laying out reaches the editor a
-/// frame later).
+/// After two frames: a need the grid learns while laying out reaches the editor a frame later.
 fn dividers(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> (f32, f32) {
     draw(cx);
     draw(cx);
@@ -430,7 +397,6 @@ fn aligned((e, g): (f32, f32)) -> bool {
     (e - g).abs() <= 0.5
 }
 
-/// Runs `sql` in `tab` (its editor holding `script`) and waits for its end.
 async fn run_in(tab: &Entity<QueryTab>, script: &str, sql: &str, cx: &mut AsyncWindowContext) {
     let _ = cx.update(|_, cx| {
         tab.update(cx, |t, cx| {
@@ -441,7 +407,6 @@ async fn run_in(tab: &Entity<QueryTab>, script: &str, sql: &str, cx: &mut AsyncW
     finished(tab, cx).await;
 }
 
-/// Reads the rest of `tab`'s result, with each frame's dividers on the way.
 async fn fetch_rest(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> Vec<(f32, f32)> {
     let _ = cx.update(|_, cx| tab.update(cx, |t, cx| t.fetch_all(cx)));
     let mut frames = Vec::new();
@@ -456,8 +421,6 @@ async fn fetch_rest(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> Vec<
     frames
 }
 
-/// The editor's line-number divider and the grid's row-number divider read as one line down a
-/// tab, whichever side's width changes.
 async fn gutters(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let mut ok = true;
     let mut report = |name: &str, pass: bool, detail: String| {
@@ -473,7 +436,6 @@ async fn gutters(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let nine = "SELECT g FROM generate_series(1, 9) g";
     let many = "SELECT g FROM generate_series(1, 100000) g";
 
-    // A fresh tab: its editor's gutter does not move on the first run.
     let tab = cx.update(|window, cx| ws.update(cx, |w, cx| w.new_tab(window, cx))).unwrap();
     let _ = cx.update(|_, cx| tab.update(cx, |t, cx| t.editor.update(cx, |e, cx| e.set_text(short, cx))));
     let before = dividers(&tab, cx).0;
@@ -482,13 +444,10 @@ async fn gutters(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     report("gutters: short script, 9 rows: one divider", aligned(base), format!("{base:?}"));
     report("gutters: the editor's stays put on the first run", (base.0 - before).abs() <= 0.5, format!("{before} → {}", base.0));
 
-    // A long script widens the editor's gutter: the grid's follows.
     run_in(&tab, &long, nine, cx).await;
     let wide = dividers(&tab, cx);
     report("gutters: 1,500-line script, 9 rows: one divider, wider", aligned(wide) && wide.1 > base.1 + 1., format!("{wide:?} (short {base:?})"));
 
-    // 100,000 rows streaming in widen the grid's: the editor's follows, and neither moves back
-    // on the way.
     run_in(&tab, short, many, cx).await;
     let frames = fetch_rest(&tab, cx).await;
     let rows = cx.update(|_, cx| tab.read(cx).result().map(|r| r.rows())).ok().flatten();
@@ -502,7 +461,6 @@ async fn gutters(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
         format!("{apart} of {} frames apart: {frames:?}", frames.len()),
     );
 
-    // The code font and the UI zoom.
     for (code, zoom) in [(16u8, 1.0f32), (12, 1.0), (13, 0.8), (13, 1.5), (16, 2.0)] {
         let _ = cx.update(|window, cx| {
             crate::editor::set_code_size(code);
@@ -519,7 +477,6 @@ async fn gutters(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
         crate::theme::set_zoom(1.0, window, cx);
     });
 
-    // The result zoomed over the editor: the grid's gutter keeps its width.
     run_in(&tab, &long, nine, cx).await;
     let shown = dividers(&tab, cx);
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.toggle_result_zoom(window, cx)));
@@ -534,7 +491,6 @@ async fn gutters(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
         format!("{shown:?} → {zoomed:?} → {back:?}"),
     );
 
-    // A table's data view.
     let (conn, db) = cx
         .update(|_, cx| {
             let t = tab.read(cx);
@@ -548,8 +504,6 @@ async fn gutters(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let d = dividers(&data, cx);
     report("gutters: a table's data view: one divider", data != tab && aligned(d), format!("{d:?}"));
 
-    // Two editor groups: each tab's dividers meet, the long script's at the left, 100,000 rows
-    // at the right.
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.activate_tab(&tab, window, cx)));
     let _ = cx.update(|window, cx| window.dispatch_keystroke(Keystroke::parse("cmd-\\").unwrap(), cx));
     pause(cx, 500).await;

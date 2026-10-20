@@ -1,19 +1,3 @@
-//! A light grid for LAR's live rows (SUBSCRIBE / LISTEN … AS). It replaces the result grid of a
-//! tab while a live query is shown, and draws like it (header 28, rows 22, gutter, every other
-//! row tinted, NULL in italics) plus what the LiveQueries board adds: a gutter mark (+ −), row
-//! and cell tints, struck rows, and highlights that fade.
-//!
-//! It is its own element (not `crate::grid`, which belongs to the result sets) so live rows
-//! never have to become a `ResultSet`. Like the main grid, a frame costs what is
-//! visible: only on-screen rows are shaped and painted.
-//!
-//! Motion follows the Spec's "live row": a changed row starts at `lar_s` and fades to
-//! transparent in 1.2 s; a removed row stays struck at 0.45 opacity for 600 ms and goes. The
-//! grid redraws at most every 33 ms and only while something is fading (a one-shot timer
-//! re-armed per frame), so an idle grid draws nothing. When rows arrive above the first
-//! visible one, the view stays on the row the user was reading ("scroll is yours") and a pill
-//! counts the rows above.
-
 use std::time::{Duration, Instant};
 
 use gpui::{
@@ -31,11 +15,8 @@ const HEADER_H: f32 = 28.;
 const PAD: f32 = 8.;
 const BAR: f32 = 10.;
 const GUTTER: f32 = 60.;
-/// "Live row": highlight from `lar_s` to transparent.
 pub const FADE: Duration = Duration::from_millis(1200);
-/// A removed row stays (struck, 0.45 opacity) this long.
 pub const GONE: Duration = Duration::from_millis(600);
-/// Redraws while fading: at most this often.
 const TICK: Duration = Duration::from_millis(33);
 
 actions!(lar_grid, [Up, Down, CopyRow, Top]);
@@ -60,30 +41,22 @@ pub struct GCol {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RowStyle {
     Plain,
-    /// Live: a row that came in (left bar + `+`, tinted while it fades).
     LiveNew,
-    /// Live: changed cells tinted while they fade.
     LiveChanged,
-    /// Live: removed; struck at 0.45 until it goes.
     LiveGone,
-    /// The stream ended: the last state, dimmed.
     Stale,
 }
 
 #[derive(Clone, Debug)]
 pub struct GRow {
-    /// Stable identity (selection and scroll anchoring follow it across updates).
     pub id: u64,
     pub cells: Vec<Option<SharedString>>,
-    /// Per column: the value changed.
     pub changed: Vec<bool>,
     pub style: RowStyle,
-    /// When it changed (live highlight fading) or was removed (`LiveGone`).
     pub at: Option<Instant>,
 }
 
 impl GRow {
-    /// Until when this row needs frames (a fading highlight, a removed row going).
     fn deadline(&self) -> Option<Instant> {
         match (self.style, self.at) {
             (RowStyle::LiveGone, Some(a)) => Some(a + GONE),
@@ -102,8 +75,6 @@ impl GRow {
     }
 }
 
-/// A change to one row of a live grid (by `GRow::id`): new values (or the same), its style
-/// and when it changed.
 #[derive(Clone, Debug)]
 pub struct RowPatch {
     pub cells: Option<Vec<Option<SharedString>>>,
@@ -112,24 +83,19 @@ pub struct RowPatch {
     pub at: Option<Instant>,
 }
 
-/// How strong a live highlight is at `now` (1 → 0 over [`FADE`]), ease-out.
 pub fn fade_alpha(at: Instant, now: Instant) -> f32 {
     let t = now.saturating_duration_since(at).as_secs_f32() / FADE.as_secs_f32();
     if t >= 1. {
         0.
     } else {
-        // ease-out: fast at first, settling at the end.
         (1. - t).powf(1.6)
     }
 }
 
-/// Until when a set of rows still needs frames (fading highlights, removed rows going).
 pub fn fade_deadline(rows: &[GRow]) -> Option<Instant> {
     rows.iter().filter_map(GRow::deadline).max()
 }
 
-/// Applies live changes to rows: patches by row id (one pass, only while some are left), new
-/// rows on top. Returns the latest deadline among the touched rows.
 pub fn patch_rows(rows: &mut Vec<GRow>, mut patches: std::collections::HashMap<u64, RowPatch>, top: Vec<GRow>) -> Option<Instant> {
     let mut until = top.iter().filter_map(GRow::deadline).max();
     if !patches.is_empty() {
@@ -151,7 +117,6 @@ pub fn patch_rows(rows: &mut Vec<GRow>, mut patches: std::collections::HashMap<u
     until
 }
 
-/// Width of a column from its header and sample values (types are not known for text rows).
 pub fn guess_width(name: &str, sample: impl Iterator<Item = usize>) -> f32 {
     let chars = sample.take(400).max().unwrap_or(4).max(name.chars().count());
     (chars as f32 * char_w() + 2. * PAD + 2.).clamp(64., 360.)
@@ -162,7 +127,6 @@ fn char_w() -> f32 {
     12. * crate::theme::advance() + 0.05
 }
 
-/// Columns for text rows: widths from the values, numeric when every sampled value parses.
 pub fn columns_for(names: &[String], rows: &[Vec<Option<String>>]) -> Vec<GCol> {
     names
         .iter()
@@ -197,15 +161,12 @@ pub struct LarGrid {
     focus: FocusHandle,
     pub cols: Vec<GCol>,
     rows: Vec<GRow>,
-    /// (x, y) scroll offsets in pixels.
     scroll: (f32, f32),
     geo: Geo,
     selected: Option<u64>,
-    /// Rows that arrived above the view while the user was scrolled down.
     above: usize,
     fade_until: Option<Instant>,
     tick: Option<Task<()>>,
-    /// What an empty grid says: a pixel tag.
     pub empty: SharedString,
 }
 
@@ -246,7 +207,6 @@ impl LarGrid {
 
     pub fn select(&mut self, id: Option<u64>, cx: &mut Context<Self>) {
         self.selected = id;
-        // Keep the selection on screen (when the grid has been laid out).
         if let Some(i) = id.and_then(|id| self.rows.iter().position(|r| r.id == id))
             && self.geo.body_h > 0.
         {
@@ -263,7 +223,6 @@ impl LarGrid {
         (self.scroll.1 / ROW_H).floor() as usize
     }
 
-    /// Replaces everything (the first result, a reopened stream): back to the top.
     pub fn set_data(&mut self, cols: Vec<GCol>, rows: Vec<GRow>, cx: &mut Context<Self>) {
         self.cols = cols;
         self.rows = rows;
@@ -274,8 +233,6 @@ impl LarGrid {
         cx.notify();
     }
 
-    /// New rows for the same columns (live updates). `prepended`: rows that came in at the top.
-    /// While the user is scrolled down, the first visible row stays where it is.
     pub fn replace_rows(&mut self, rows: Vec<GRow>, prepended: usize, cx: &mut Context<Self>) {
         let anchor = if self.scroll.1 > 0. {
             let first = self.first_visible();
@@ -298,8 +255,6 @@ impl LarGrid {
         cx.notify();
     }
 
-    /// Live changes without rebuilding the rows: only the touched rows change, new rows go on
-    /// top (the view stays on the row the user reads, as in `replace_rows`).
     pub fn patch(&mut self, patches: std::collections::HashMap<u64, RowPatch>, top: Vec<GRow>, cx: &mut Context<Self>) {
         let prepended = top.len();
         let anchor = (self.scroll.1 > 0. && prepended > 0).then(|| {
@@ -308,7 +263,6 @@ impl LarGrid {
         });
         let until = patch_rows(&mut self.rows, patches, top);
         if let Some((first, off)) = anchor {
-            // Every row moved down by the rows put on top.
             self.scroll.1 = (first + prepended) as f32 * ROW_H + off;
             self.above += prepended;
         }
@@ -379,7 +333,6 @@ impl LarGrid {
             Some(i) => (i as isize + d).clamp(0, self.rows.len() as isize - 1) as usize,
             None => 0,
         };
-        // Keep it on screen.
         let top = next as f32 * ROW_H;
         if top < self.scroll.1 {
             self.scroll.1 = top;
@@ -398,7 +351,6 @@ impl LarGrid {
         cx.write_to_clipboard(ClipboardItem::new_string(format!("{}\n{}", header.join("\t"), line.join("\t"))));
     }
 
-    /// Re-arms the one-shot redraw timer while something fades; drops expired removed rows.
     fn arm_tick(&mut self, cx: &mut Context<Self>) {
         let now = Instant::now();
         let Some(until) = self.fade_until else { return };
@@ -419,7 +371,6 @@ impl LarGrid {
         }));
     }
 
-    /// Removed rows whose 600 ms are over leave (the view keeps its place).
     fn prune(&mut self, now: Instant) {
         if !self.rows.iter().any(|r| r.style == RowStyle::LiveGone && r.at.is_some_and(|a| now >= a + GONE)) {
             return;
@@ -486,7 +437,6 @@ impl LarGrid {
             let y = ri as f32 * ROW_H - sy;
             let alpha = r.at.map(|a| fade_alpha(a, now)).unwrap_or(0.);
             let selected = self.selected == Some(r.id);
-            // Row background and text color.
             let (bg, fg, strike, opacity): (Option<Hsla>, Hsla, bool, f32) = match r.style {
                 RowStyle::Plain => (None, t.tx, false, 1.),
                 RowStyle::LiveNew => ((alpha > 0.).then(|| t.lar_s.opacity(alpha)), t.tx, false, 1.),
@@ -553,9 +503,7 @@ struct FrameRow {
     y: f32,
     bg: Option<Hsla>,
     selected: bool,
-    /// (x, width, text, right-aligned, NULL)
     cells: Vec<(f32, f32, ShapedLine, bool, bool)>,
-    /// (x, width, fill, bottom line)
     tints: Vec<(f32, f32, Hsla, Hsla)>,
     gutter: ShapedLine,
     mark: Option<ShapedLine>,
@@ -589,7 +537,6 @@ fn paint(grid: &Entity<LarGrid>, frame: Frame, bounds: Bounds<Pixels>, window: &
     window.with_content_mask(Some(gpui::ContentMask { bounds: body }), |window| {
         for r in &frame.rows {
             let y = HEADER_H + r.y;
-            // The zebra as in `grid::paint_frame` (`alt_base` under the rows between).
             let zebra = Some(if r.alt { t.alt } else { t.alt_base }).filter(|c| c.a > 0.);
             let bg = if r.selected { Some(if focused { t.sel } else { t.prs }) } else { r.bg.or(zebra) };
             if let Some(bg) = bg {
@@ -627,7 +574,6 @@ fn paint(grid: &Entity<LarGrid>, frame: Frame, bounds: Bounds<Pixels>, window: &
             }
         }
     });
-    // Gutter: marks and row numbers.
     window.with_content_mask(Some(gpui::ContentMask { bounds: rect(0., HEADER_H, GUTTER, geo.body_h) }), |window| {
         for r in &frame.rows {
             let y = HEADER_H + r.y;
@@ -640,7 +586,6 @@ fn paint(grid: &Entity<LarGrid>, frame: Frame, bounds: Bounds<Pixels>, window: &
             let _ = r.gutter.paint(at(GUTTER - 10. - r.gutter.width.pt(), y), lh, TextAlign::Left, None, window, cx);
         }
     });
-    // Header.
     let _ = frame.hash.paint(at(GUTTER - 10. - frame.hash.width.pt(), 0.), px(HEADER_H), TextAlign::Left, None, window, cx);
     window.with_content_mask(Some(gpui::ContentMask { bounds: rect(GUTTER, 0., geo.body_w + BAR, HEADER_H) }), |window| {
         for (x, w, name, right) in &frame.headers {
@@ -652,7 +597,6 @@ fn paint(grid: &Entity<LarGrid>, frame: Frame, bounds: Bounds<Pixels>, window: &
     });
     window.paint_quad(fill(rect(0., HEADER_H - 1., full_w, 1.), t.line2));
     window.paint_quad(fill(rect(GUTTER - 1., 0., 1., bounds.size.height.pt()), t.line));
-    // Scrollbars.
     let thumb = |b: Bounds<Pixels>| fill(b, t.line2);
     if frame.content_h > geo.body_h && frame.content_h > 0. {
         let hh = (geo.body_h * geo.body_h / frame.content_h).max(24.);
@@ -664,7 +608,6 @@ fn paint(grid: &Entity<LarGrid>, frame: Frame, bounds: Bounds<Pixels>, window: &
         let left = (sx / (frame.cw - geo.body_w).max(1.)) * (geo.body_w - ww);
         window.paint_quad(thumb(rect(GUTTER + left, HEADER_H + geo.body_h + 2., ww, 6.)));
     }
-    // "N new rows above": the view stayed where the user was reading.
     if let Some(p) = &frame.pill {
         let w = p.width.pt() + 20.;
         let x = GUTTER + (geo.body_w - w) / 2.;
@@ -706,7 +649,6 @@ impl Render for LarGrid {
             );
         }
         if pill_hit {
-            // The pill's click target (drawn by the canvas).
             root = root.child(
                 div()
                     .id("lar-grid-above")
@@ -762,7 +704,6 @@ mod tests {
         assert!((fade_alpha(t0, t0) - 1.).abs() < 1e-6);
         let mid = fade_alpha(t0, t0 + Duration::from_millis(600));
         assert!(mid > 0. && mid < 1.);
-        // Monotonic, and over at 1.2 s (nothing keeps drawing after that).
         assert!(fade_alpha(t0, t0 + Duration::from_millis(900)) < mid);
         assert_eq!(fade_alpha(t0, t0 + FADE), 0.);
         assert_eq!(fade_alpha(t0, t0 + Duration::from_secs(5)), 0.);
@@ -778,7 +719,6 @@ mod tests {
         let mut b = plain(2, vec![]);
         b.style = RowStyle::LiveGone;
         b.at = Some(t0 + Duration::from_millis(900));
-        // The removed row (900 + 600 ms) outlasts the fade (1200 ms).
         assert_eq!(fade_deadline(&[a.clone(), b]), Some(t0 + Duration::from_millis(1500)));
         assert_eq!(fade_deadline(&[a]), Some(t0 + FADE));
     }

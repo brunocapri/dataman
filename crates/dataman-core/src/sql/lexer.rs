@@ -1,11 +1,3 @@
-//! A small, forgiving SQL lexer for PostgreSQL syntax.
-//!
-//! It never fails: unterminated strings and comments run to the end of the input. The same
-//! tokens feed syntax highlighting, statement splitting and autocomplete. [`tokenize_in`] takes
-//! the dialect: PostgreSQL's own forms (dollar quotes, `E'…'`, nested comments, `::`) only exist
-//! where its [`LexRules`] say so, and MySQL's (`#` comments, `` `backticks` ``, `"…"` strings
-//! with backslash escapes, `?`, `@variables`) only in MySQL.
-
 use std::ops::Range;
 
 use super::dialect::{Dialect, LexRules};
@@ -15,19 +7,14 @@ pub enum TokenKind {
     Whitespace,
     LineComment,
     BlockComment,
-    /// `'…'`, `E'…'`, `B'…'`, `X'…'`, `U&'…'`.
     String,
-    /// `$tag$…$tag$`.
     DollarString,
-    /// `"…"`.
     QuotedIdent,
     Number,
     Keyword,
     Ident,
-    /// `$1`.
     Param,
     Operator,
-    /// `( ) [ ] , ; . :`
     Punct,
     Unknown,
 }
@@ -54,12 +41,10 @@ impl Token {
     }
 }
 
-/// [`tokenize_in`] PostgreSQL's syntax.
 pub fn tokenize(src: &str) -> Vec<Token> {
     tokenize_in(src, Dialect::Postgres)
 }
 
-/// The tokens of `src` in `dialect`: forms the dialect lacks ([`LexRules`]) lex as their parts.
 pub fn tokenize_in(src: &str, dialect: Dialect) -> Vec<Token> {
     let rules: LexRules = dialect.lex();
     let mut out = Vec::with_capacity(src.len() / 4 + 1);
@@ -99,7 +84,6 @@ pub fn tokenize_in(src: &str, dialect: Dialect) -> Vec<Token> {
                 i += 1;
                 TokenKind::Param
             }
-            // `@user_var`, `@@system_var`, `` @`quoted` ``, `@'quoted'`.
             b'@' if rules.mysql_quotes && b.get(i + 1).is_some_and(|&n| is_ident_start(n) || matches!(n, b'@' | b'`' | b'\'' | b'"')) => {
                 i += 1;
                 if b[i] == b'@' {
@@ -115,7 +99,6 @@ pub fn tokenize_in(src: &str, dialect: Dialect) -> Vec<Token> {
                 }
                 TokenKind::Ident
             }
-            // T-SQL: `[name]` (`]]` inside), `@var` / `@@global`, `#temp` / `##temp`.
             b'[' if rules.tsql_names => {
                 i = quoted(b, i + 1, b']', false);
                 TokenKind::QuotedIdent
@@ -131,7 +114,6 @@ pub fn tokenize_in(src: &str, dialect: Dialect) -> Vec<Token> {
                 TokenKind::Ident
             }
             b'/' if b.get(i + 1) == Some(&b'*') => {
-                // Block comments nest in PostgreSQL.
                 i += 2;
                 let mut depth = 1;
                 while i < b.len() && depth > 0 {
@@ -223,7 +205,6 @@ pub fn tokenize_in(src: &str, dialect: Dialect) -> Vec<Token> {
             }
             c if is_op_char(c) => {
                 while i < b.len() && is_op_char(b[i]) {
-                    // Stop before a comment start (or a MySQL token) inside an operator run.
                     if dash_comment(b, i, &rules)
                         || (b[i] == b'/' && b.get(i + 1) == Some(&b'*'))
                         || (rules.mysql_quotes && i > start && matches!(b[i], b'#' | b'`' | b'?' | b'@'))
@@ -239,7 +220,6 @@ pub fn tokenize_in(src: &str, dialect: Dialect) -> Vec<Token> {
                 TokenKind::Operator
             }
             _ => {
-                // Skip a whole UTF-8 scalar.
                 i += utf8_len(c);
                 TokenKind::Unknown
             }
@@ -249,8 +229,6 @@ pub fn tokenize_in(src: &str, dialect: Dialect) -> Vec<Token> {
     out
 }
 
-/// `--` starts a comment at `i`: always in PostgreSQL; in MySQL only before a space, a control
-/// character or the end of the input.
 fn dash_comment(b: &[u8], i: usize, rules: &LexRules) -> bool {
     b[i] == b'-'
         && b.get(i + 1) == Some(&b'-')
@@ -267,13 +245,10 @@ fn utf8_len(c: u8) -> usize {
     }
 }
 
-/// Scans a quoted run starting after the opening quote; a doubled quote escapes itself, and
-/// with `backslash` a backslash escapes the next byte. Returns the index after the closing quote.
 fn quoted(b: &[u8], i: usize, q: u8, backslash: bool) -> usize {
     quoted_end(b, i, q, backslash).unwrap_or(b.len())
 }
 
-/// `quoted`, or `None` when the closing quote never comes.
 fn quoted_end(b: &[u8], mut i: usize, q: u8, backslash: bool) -> Option<usize> {
     while i < b.len() {
         if backslash && b[i] == b'\\' {
@@ -292,13 +267,10 @@ fn quoted_end(b: &[u8], mut i: usize, q: u8, backslash: bool) -> Option<usize> {
     None
 }
 
-/// What a token that runs to the end of the input lacks: `None` when it is complete, else the
-/// kind of construct left open ("string", "comment", "quoted identifier", "dollar-quoted string").
 pub fn unterminated(src: &str, t: &Token) -> Option<&'static str> {
     unterminated_in(src, t, Dialect::Postgres)
 }
 
-/// [`unterminated`] for a token lexed in `dialect`.
 pub fn unterminated_in(src: &str, t: &Token, dialect: Dialect) -> Option<&'static str> {
     let b = t.text(src).as_bytes();
     if dialect.lex().mysql_quotes {
@@ -352,7 +324,6 @@ pub fn unterminated_in(src: &str, t: &Token, dialect: Dialect) -> Option<&'stati
     }
 }
 
-/// `$tag$` or `$$` at `i`; returns the index after the closing `$` of the tag.
 fn dollar_tag(b: &[u8], i: usize) -> Option<usize> {
     let mut j = i + 1;
     if b.get(j) == Some(&b'$') {
@@ -411,7 +382,6 @@ fn is_op_char(c: u8) -> bool {
     matches!(c, b'+' | b'-' | b'*' | b'/' | b'<' | b'>' | b'=' | b'~' | b'!' | b'@' | b'#' | b'%' | b'^' | b'&' | b'|' | b'`' | b'?')
 }
 
-/// Keywords highlighted and offered by autocomplete (upper case, sorted for binary search).
 pub const KEYWORDS: &[&str] = &[
     "ABORT", "ADD", "ALL", "ALTER", "ANALYZE", "AND", "ANY", "ARRAY", "AS", "ASC", "BEGIN",
     "BETWEEN", "BIGINT", "BOOLEAN", "BOTH", "BY", "CALL", "CASCADE", "CASE", "CAST", "CHAR",
@@ -435,14 +405,12 @@ pub const KEYWORDS: &[&str] = &[
     "VACUUM", "VALUES", "VARCHAR", "VIEW", "WHEN", "WHERE", "WINDOW", "WITH", "WITHOUT",
 ];
 
-/// MySQL's words beyond [`KEYWORDS`] (upper case, sorted): highlighted and offered in MySQL only.
 pub const MYSQL_KEYWORDS: &[&str] = &[
     "AUTO_INCREMENT", "BINARY", "BLOB", "CHANGE", "CHARSET", "DATETIME", "DELAYED", "DESCRIBE", "DISTINCTROW", "DIV", "DUPLICATE", "ENGINE", "ENUM",
     "HIGH_PRIORITY", "IGNORE", "LONGBLOB", "LONGTEXT", "LOW_PRIORITY", "MEDIUMINT", "MEDIUMTEXT", "MOD", "MODIFY", "QUICK", "REGEXP",
     "RLIKE", "SQL_BIG_RESULT", "SQL_BUFFER_RESULT", "SQL_CALC_FOUND_ROWS", "SQL_NO_CACHE", "SQL_SMALL_RESULT", "STRAIGHT_JOIN", "TINYINT", "TINYTEXT", "UNSIGNED", "USE", "XOR", "ZEROFILL",
 ];
 
-/// T-SQL's words beyond [`KEYWORDS`] (upper case, sorted): highlighted and offered in T-SQL only.
 pub const TSQL_KEYWORDS: &[&str] = &[
     "BIT", "BREAK", "CATCH", "CLUSTERED", "CONTINUE", "DATETIME", "DATETIME2", "DATETIMEOFFSET", "DBCC", "DENY", "EXEC",
     "GO", "GOTO", "IDENTITY", "IIF", "IMAGE", "INCLUDE", "MERGE", "MONEY", "NCHAR", "NEXT", "NOCOUNT", "NOLOCK", "NONCLUSTERED",
@@ -455,7 +423,6 @@ pub fn is_keyword(word: &str) -> bool {
     in_list(KEYWORDS, word)
 }
 
-/// Whether `word` is a keyword of `dialect`.
 pub fn is_keyword_in(word: &str, dialect: Dialect) -> bool {
     is_keyword(word)
         || match dialect {
@@ -477,7 +444,6 @@ fn in_list(list: &[&str], word: &str) -> bool {
     list.binary_search_by(|k| k.as_bytes().cmp(up)).is_ok()
 }
 
-/// Whether `word` (already a keyword or identifier token) equals the keyword `kw` (upper case).
 pub fn eq_kw(word: &str, kw: &str) -> bool {
     word.eq_ignore_ascii_case(kw)
 }
@@ -571,7 +537,6 @@ mod tests {
         assert_eq!(open("select ''"), None);
     }
 
-    /// Without PostgreSQL's forms, their characters lex as plain parts.
     #[test]
     fn dialect_rules() {
         use TokenKind::*;
@@ -594,16 +559,12 @@ mod tests {
         let my = |src: &'static str| -> Vec<(TokenKind, &'static str)> {
             tokenize_in(src, Dialect::MySql).into_iter().filter(|t| t.kind != Whitespace).map(|t| (t.kind, t.text(src))).collect()
         };
-        // `#` comments; `-- ` needs the space, `--3` is arithmetic.
         assert_eq!(my("a # c ; d\nb"), vec![(Ident, "a"), (LineComment, "# c ; d"), (Ident, "b")]);
         assert_eq!(my("5--3 -- x"), vec![(Number, "5"), (Operator, "--"), (Number, "3"), (LineComment, "-- x")]);
         assert_eq!(my("1 --\n2"), vec![(Number, "1"), (LineComment, "--"), (Number, "2")]);
-        // Backticks (doubled inside), `"…"` strings, backslash escapes.
         assert_eq!(my("`a``b` \"it\\\"s\" 'x\\'y' 'q''r'"), vec![(QuotedIdent, "`a``b`"), (String, "\"it\\\"s\""), (String, "'x\\'y'"), (String, "'q''r'")]);
         assert_eq!(my("'a\\\\' ; 'b'"), vec![(String, "'a\\\\'"), (Punct, ";"), (String, "'b'")], "an escaped backslash ends the string");
-        // Versioned comments are comments; block comments do not nest.
         assert_eq!(my("/*!50100 PARTITION */ x /* a /* b */ c"), vec![(BlockComment, "/*!50100 PARTITION */"), (Ident, "x"), (BlockComment, "/* a /* b */"), (Ident, "c")]);
-        // Placeholders and variables.
         assert_eq!(
             my("x = ? AND @v := @@session.sql_mode"),
             vec![
@@ -620,10 +581,8 @@ mod tests {
             ]
         );
         assert!(my("SELECT x FROM t WHERE y >= ? ORDER BY 1").contains(&(Param, "?")));
-        // MySQL's own keywords only there.
         assert_eq!(my("ENGINE")[0].0, Keyword);
         assert_eq!(tokenize("ENGINE")[0].kind, Ident);
-        // Open constructs.
         let open = |src: &str| tokenize_in(src, Dialect::MySql).iter().find_map(|t| unterminated_in(src, t, Dialect::MySql));
         assert_eq!(open("select 'a\\'"), Some("string"));
         assert_eq!(open("select \"a"), Some("string"));
@@ -641,12 +600,10 @@ mod tests {
         let ms = |src: &'static str| -> Vec<(TokenKind, &'static str)> {
             tokenize_in(src, Dialect::TSql).into_iter().filter(|t| t.kind != Whitespace).map(|t| (t.kind, t.text(src))).collect()
         };
-        // Brackets (a doubled `]` inside), `"…"` identifiers, N'…' with doubled quotes.
         assert_eq!(
             ms("[a]]b c].[x] \"q\" N'it''s é' 'x'"),
             vec![(QuotedIdent, "[a]]b c]"), (Punct, "."), (QuotedIdent, "[x]"), (QuotedIdent, "\"q\""), (String, "N'it''s é'"), (String, "'x'")]
         );
-        // Variables, globals and temporary tables are one name each.
         assert_eq!(
             ms("SELECT @v=@@ROWCOUNT FROM #t JOIN ##g ON 1=1"),
             vec![
@@ -664,10 +621,8 @@ mod tests {
                 (Number, "1")
             ]
         );
-        // Block comments nest; `--` always starts a comment; no `$`, `::`, `?` forms.
         assert_eq!(ms("/* a /* b */ c */ x --y"), vec![(BlockComment, "/* a /* b */ c */"), (Ident, "x"), (LineComment, "--y")]);
         assert_eq!(ms("0x0A1B")[0], (Number, "0x0A1B"));
-        // T-SQL's words, there only.
         assert_eq!(ms("TOP")[0].0, Keyword);
         assert_eq!(tokenize("TOP")[0].kind, Ident);
         let open = |src: &str| tokenize_in(src, Dialect::TSql).iter().find_map(|t| unterminated_in(src, t, Dialect::TSql));

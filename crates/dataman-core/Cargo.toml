@@ -16,7 +16,7 @@ futures-util.workspace = true
 bytes = "1"
 fallible-iterator = "0.2"
 serde.workspace = true
-# EXPLAIN's properties keep the server's order (the plan's details panel).
+# preserve_order: EXPLAIN's properties and imported JSON keep their order.
 serde_json = { workspace = true, features = ["preserve_order"] }
 toml.workspace = true
 chrono = { workspace = true, features = ["serde"] }
@@ -27,47 +27,30 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 rustls-native-certs = "0.8"
 tokio-postgres-rustls = "0.13"
 log = "0.4"
-# TCP keepalive on the sockets editor sessions open themselves (already in tokio-postgres' tree).
 socket2 = "0.6"
-# Find and replace (editor and grid); already in the tree through GPUI.
 regex = "1"
-# Favorites found by a name typed without its accents (`run_favorite`); already in the tree.
 unicode-normalization = "0.1"
-# Parquet export only: the Arrow writer, Snappy compression, nothing else.
 parquet = { version = "=58.4.0", default-features = false, features = ["arrow", "snap"] }
 arrow-array = "=58.4.0"
 arrow-schema = "=58.4.0"
-# SSH tunnels: a pure-Rust client. `ring` (already here through rustls) instead of the default
-# aws-lc-rs; RSA keys and host keys stay supported, compression is left out.
+# `ring` instead of the default aws-lc-rs.
 russh = { version = "0.64", default-features = false, features = ["ring", "rsa"] }
-# known_hosts' hashed names (`|1|salt|hash`): HMAC-SHA1, both already in russh's tree.
 hmac = "0.13"
 sha1 = "0.11"
 data-encoding = "2"
-# Self-update: ed25519 signatures (ring is already here through rustls), versions, and the
-# atomic folder swap (renamex_np) and sysctl from libc; all three already in the tree.
 ring = "0.17"
 semver = "1"
 libc = "0.2"
-# MySQL and MariaDB: a pure-Rust client on tokio, TLS through the same rustls on ring (no
-# OpenSSL, no aws-lc), compression with the Rust backend of flate2.
+# TLS through the same rustls on ring: no OpenSSL, no aws-lc.
 mysql_async = { version = "0.37", default-features = false, features = ["minimal-rust", "rustls-tls", "ring", "tls12"] }
-# SQL Server: a pure-Rust TDS client on the same rustls 0.23 / tokio-rustls 0.26. Its TLS code
-# names aws-lc-rs as the fallback provider, so that one is compiled in, but the process-wide
-# provider (ring, installed before any connection) is the one it uses. Named instances resolve
-# through the SQL Browser (UDP 1434).
+# Its TLS code names aws-lc-rs as the fallback provider, so that one is compiled in, but the
+# process-wide provider (ring, installed before any connection) is the one it uses.
 tiberius = { version = "0.13", default-features = false, features = ["tds80", "rustls", "sql-browser-tokio"] }
 tokio-util = { version = "0.7", features = ["compat"] }
-# MongoDB: the official driver, pure Rust, TLS through rustls on ring (no OpenSSL, no aws-lc);
-# `mongodb+srv://` names resolve through hickory.
+# TLS through rustls on ring: no OpenSSL, no aws-lc.
 mongodb = { version = "3.9", default-features = false, features = ["compat-3-0-0", "rustls-tls", "dns-resolver"] }
-# Elasticsearch and OpenSearch: their REST APIs over HTTP(S), TLS on the process' rustls provider
-# (ring), the system's roots.
-# Redis: RESP over tokio, TLS through the same rustls (already in the tree).
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots-no-provider", "http2"] }
-# MongoDB's shell JavaScript (`var`, loops, `forEach`, functions): Boa, pure Rust, without Intl
-# and Temporal.
 boa_engine = { version = "0.22", default-features = false }
 
 [dev-dependencies]

@@ -1,13 +1,5 @@
-//! Crash reports. A panic hook writes a report first thing: GPUI's platform callbacks are
-//! `extern "C"`, so a panic inside one aborts the process ("panic in a function that cannot
-//! unwind") right after the hook returns, and nothing later would run. The report has the
-//! version, macOS, the thread, the message, a backtrace (function names from the symbol
-//! table: release builds carry no debug info) and the last log lines, which a small logger
-//! keeps in memory.
-//!
-//! On the next launch [`take_pending`] finds a report newer than the last launch, and the
-//! report macOS writes itself for a crash that was not a panic (`DiagnosticReports/dataman*.ips`).
-//! Nothing is uploaded unless an endpoint is configured ([`Reporter`]).
+//! The panic hook writes the report first thing: GPUI's platform callbacks are `extern "C"`,
+//! so a panic inside one aborts the process right after the hook returns.
 
 use std::collections::VecDeque;
 use std::io::Write as _;
@@ -19,19 +11,14 @@ use std::time::SystemTime;
 use anyhow::{Context as _, Result, bail};
 use parking_lot::Mutex;
 
-/// Log lines kept for a report.
 pub const LOG_LINES: usize = 200;
-/// Reports kept in the folder (the oldest go first).
 const KEEP: usize = 20;
 const STAMP: &str = ".last-launch";
 
 static LINES: Mutex<VecDeque<String>> = parking_lot::const_mutex(VecDeque::new());
 static HOOK: OnceLock<(PathBuf, String)> = OnceLock::new();
-/// The report this process already wrote (a second panic, like the abort's own message, is
-/// appended to it).
 static WRITTEN: Mutex<Option<PathBuf>> = parking_lot::const_mutex(None);
 
-/// `DATAMAN_LOG_DIR`, or `~/Library/Logs/Dataman`.
 pub fn dir() -> PathBuf {
     if let Some(d) = std::env::var_os("DATAMAN_LOG_DIR").filter(|d| !d.is_empty()) {
         return PathBuf::from(d);
@@ -40,7 +27,6 @@ pub fn dir() -> PathBuf {
     home.join("Library/Logs/Dataman")
 }
 
-/// macOS's own crash reports.
 pub fn system_dir() -> PathBuf {
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
     home.join("Library/Logs/DiagnosticReports")
@@ -73,8 +59,6 @@ impl log::Log for Logger {
     fn flush(&self) {}
 }
 
-/// Installs the logger and the panic hook. No I/O: the folder is created by the first report.
-/// `DATAMAN_LOG=1` also prints the log to stderr.
 pub fn install(dir: PathBuf, version: &str) {
     let _ = HOOK.set((dir, version.to_string()));
     let logger = Box::leak(Box::new(Logger { stderr: std::env::var_os("DATAMAN_LOG").is_some() }));
@@ -124,7 +108,6 @@ fn write_report(p: &std::panic::PanicHookInfo) {
     let _ = f.sync_all();
 }
 
-/// The report's text.
 #[allow(clippy::too_many_arguments)]
 pub fn write_to(
     w: &mut impl std::io::Write,
@@ -157,23 +140,18 @@ pub fn write_to(
     Ok(())
 }
 
-/// What the last session left behind.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Pending {
-    /// The panic report.
     pub report: Option<PathBuf>,
-    /// macOS's report (a crash that was not a panic, or the abort after one).
     pub system: Option<PathBuf>,
     pub at: SystemTime,
 }
 
 impl Pending {
-    /// The file "Show" reveals.
     pub fn primary(&self) -> &Path {
         self.report.as_deref().or(self.system.as_deref()).expect("a pending crash has a file")
     }
 
-    /// What "Copy" puts on the clipboard: the report, and where macOS's is.
     pub fn text(&self) -> String {
         let mut s = match &self.report {
             Some(p) => std::fs::read_to_string(p).unwrap_or_else(|e| format!("{}: {e}", p.display())),
@@ -206,10 +184,6 @@ fn newest(dir: &Path, keep: impl Fn(&str) -> bool, after: Option<SystemTime>) ->
         .max_by_key(|(_, t)| *t)
 }
 
-/// The crash the last session left, if any, and marks this launch. A report counts when it
-/// is newer than the previous launch (any report, on the first one); macOS's only after a
-/// previous launch is known, so an old one is never shown on a first run. Old reports beyond
-/// the last 20 are removed.
 pub fn take_pending(dir: &Path, system: &Path) -> Option<Pending> {
     let stamp = dir.join(STAMP);
     let last = mtime(&stamp);
@@ -239,13 +213,10 @@ fn prune(dir: &Path) {
     }
 }
 
-/// Where a report goes besides the disk. None by default: there is no server; an endpoint in
-/// settings (`crash_report_url`) adds "Send" to the toast.
 pub trait Reporter: Send + Sync {
     fn send(&self, text: &str) -> Result<()>;
 }
 
-/// POSTs the report as text/plain.
 pub struct Endpoint(pub String);
 
 impl Reporter for Endpoint {
@@ -268,7 +239,6 @@ impl Reporter for Endpoint {
     }
 }
 
-/// The configured reporter, if any.
 pub fn reporter(endpoint: Option<&str>) -> Option<Box<dyn Reporter>> {
     endpoint.map(str::trim).filter(|u| !u.is_empty()).map(|u| Box::new(Endpoint(u.to_string())) as Box<dyn Reporter>)
 }
@@ -302,14 +272,11 @@ mod tests {
         std::fs::create_dir_all(&sys).unwrap();
         let now = SystemTime::now();
         let ago = |s: u64| now - Duration::from_secs(s);
-        // First launch: an old macOS report is ignored, our own report is shown.
         touch(&sys.join("dataman-2026-10-01-000000.ips"), ago(5000));
         touch(&dir.join("crash-20261001-000000.txt"), ago(4000));
         let p = take_pending(&dir, &sys).unwrap();
         assert_eq!((p.report.as_deref(), p.system.as_deref()), (Some(dir.join("crash-20261001-000000.txt").as_path()), None));
-        // Nothing new since: nothing pending.
         assert_eq!(take_pending(&dir, &sys), None);
-        // A crash after this launch: both reports, the panic one first.
         std::fs::File::options().write(true).open(dir.join(STAMP)).unwrap().set_modified(ago(100)).unwrap();
         touch(&dir.join("crash-20261013-000000.txt"), ago(50));
         touch(&sys.join("dataman-2026-10-13-000000.ips"), ago(40));
@@ -318,7 +285,6 @@ mod tests {
         assert_eq!(p.primary(), dir.join("crash-20261013-000000.txt"));
         assert_eq!(p.system.as_deref(), Some(sys.join("dataman-2026-10-13-000000.ips").as_path()));
         assert!(p.text().contains("macOS report: "));
-        // An abort with no panic: macOS's report alone.
         std::fs::File::options().write(true).open(dir.join(STAMP)).unwrap().set_modified(ago(20)).unwrap();
         touch(&sys.join("dataman-2026-10-13-000100.ips"), ago(10));
         let p = take_pending(&dir, &sys).unwrap();

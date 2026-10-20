@@ -1,21 +1,3 @@
-//! The load: a producer thread reads the file and encodes chunks of rows; the loader sends each
-//! chunk to the server and keeps the transaction rules.
-//!
-//! - **Encoding.** `COPY` text format (tab-separated, `\N` for NULL, `\\ \t \n \r` escaped): the
-//!   server parses each value with its column's input function, so every type works without
-//!   binary encoders. For the `INSERT` fallback each row is a `(…)` tuple of `sqlgen` literals.
-//!   An empty value for a non-text column is NULL (an empty string is never a valid number,
-//!   date or uuid).
-//! - **Chunks** of up to 50,000 rows or 4 MiB, with each row's end offset and its line in the
-//!   file, travel through a channel of 2: memory stays flat, reading overlaps sending.
-//! - **Atomic sends.** One transaction: each chunk goes inside a savepoint when a bad row has to
-//!   be found or skipped (skip mode, `INSERT`, or LAR, whose COPY errors carry no line). Not one
-//!   transaction: each chunk commits by itself (a COPY is atomic; `INSERT`s go between BEGIN and
-//!   COMMIT).
-//! - **Bad rows.** PostgreSQL's COPY errors say the line (`COPY t, line 12`); otherwise the
-//!   chunk is bisected (prefixes, inside a savepoint that is rolled back) to find it. Skip mode
-//!   splits a failing chunk until the bad rows stand alone and leaves them out.
-
 use std::collections::VecDeque;
 use std::ops::Range;
 use std::path::PathBuf;
@@ -29,8 +11,6 @@ use tokio_postgres::Client;
 
 use super::source::{self, Flow, Row, Spec};
 use super::{ImportFailure, ImportOptions, ImportProgress, ImportReport, Method, OnError, Outcome, kind_of_type, refused};
-// The loader speaks PostgreSQL (COPY, savepoints, its literals); another engine brings its own
-// `Loader` (batched INSERTs) behind the same report.
 use crate::backend::Dedicated;
 use crate::backend::pg::error_info;
 use crate::result::ErrorInfo;
@@ -42,12 +22,9 @@ const INSERT_MAX_ROWS: usize = 5_000;
 const INSERT_MAX_BYTES: usize = 1 << 20;
 const SAVEPOINT: &str = "dataman_import";
 
-/// Rows encoded for the server: `COPY` lines or `INSERT` tuples, back to back.
 pub(crate) struct Chunk {
     data: Bytes,
-    /// The end offset of each row in `data`.
     ends: Vec<u32>,
-    /// Each row's line (or row number) in the file.
     lines: Vec<u64>,
 }
 
@@ -64,22 +41,14 @@ impl Chunk {
 
 enum Msg {
     Chunk(Chunk),
-    /// Stop mode: a row the file itself gets wrong (its line, why).
     Bad(u64, String),
-    /// The reader failed (I/O, invalid JSON array).
     Failed(String),
 }
 
-// ---------------------------------------------------------------------------------------------
-// Encoding
-
-/// How each target column is written.
 #[derive(Clone)]
 pub(crate) struct Columns {
-    /// The source column of each target column.
     map: Vec<usize>,
     kinds: Vec<Kind>,
-    /// Takes an empty string as a value (text types); other columns get NULL for it.
     text: Vec<bool>,
 }
 
@@ -95,7 +64,6 @@ impl Columns {
     }
 }
 
-/// `v` escaped for COPY text format.
 pub(crate) fn copy_escape(out: &mut BytesMut, v: &str) {
     let b = v.as_bytes();
     if !b.iter().any(|c| matches!(c, b'\\' | b'\t' | b'\n' | b'\r')) {
@@ -113,7 +81,6 @@ pub(crate) fn copy_escape(out: &mut BytesMut, v: &str) {
     }
 }
 
-/// One row as a COPY text line.
 pub(crate) fn copy_line(out: &mut BytesMut, cols: &Columns, row: &Row) {
     for j in 0..cols.map.len() {
         if j > 0 {
@@ -127,7 +94,6 @@ pub(crate) fn copy_line(out: &mut BytesMut, cols: &Columns, row: &Row) {
     out.extend_from_slice(b"\n");
 }
 
-/// One row as an `INSERT` tuple: `(1, 'a', NULL)`.
 pub(crate) fn insert_tuple(out: &mut String, cols: &Columns, row: &Row) {
     out.push('(');
     for j in 0..cols.map.len() {
@@ -139,7 +105,6 @@ pub(crate) fn insert_tuple(out: &mut String, cols: &Columns, row: &Row) {
     out.push(')');
 }
 
-/// Encodes rows into chunks.
 struct Encoder {
     cols: Columns,
     copy: bool,
@@ -175,7 +140,6 @@ impl Encoder {
     }
 }
 
-/// The producer thread: reads the file, encodes, sends chunks (blocking on a full channel).
 fn produce(path: PathBuf, opts: ImportOptions, copy: bool, progress: Arc<ImportProgress>, tx: tokio::sync::mpsc::Sender<Msg>) {
     let cols = Columns::of(&opts);
     let enc = std::cell::RefCell::new(Encoder {
@@ -218,7 +182,6 @@ fn produce(path: PathBuf, opts: ImportOptions, copy: bool, progress: Arc<ImportP
                 p.skip(line, why);
                 return Ok(Flow::Go);
             }
-            // The rows before it still go (they are in the file before the bad one).
             let pending = enc.borrow_mut().take();
             if let Some(c) = pending {
                 send(&tx, Msg::Chunk(c));
@@ -241,14 +204,8 @@ fn produce(path: PathBuf, opts: ImportOptions, copy: bool, progress: Arc<ImportP
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Sending
-
-/// A failed send: the server's error and, when it says, which rows of the range sent.
 struct Fail {
     error: ErrorInfo,
-    /// Rows (relative to the range sent) the error is about: the COPY line, or the `INSERT`
-    /// statement's rows.
     bad: Option<Range<usize>>,
 }
 
@@ -257,14 +214,12 @@ impl Fail {
         Fail { error: error_info(e), bad }
     }
 
-    /// `COPY t, line 12, column id: "x"` → row 11 of the range sent.
     fn copy(e: &tokio_postgres::Error) -> Fail {
         let line = e.as_db_error().and_then(|d| d.where_()).and_then(copy_line_of);
         Fail::of(e, line.filter(|l| *l > 0).map(|l| (l as usize - 1)..l as usize))
     }
 }
 
-/// The line in a COPY error's context, if it has one.
 pub(crate) fn copy_line_of(where_: &str) -> Option<u64> {
     let at = where_.find("line ")? + 5;
     let digits: String = where_[at..].chars().take_while(|c| c.is_ascii_digit()).collect();
@@ -277,13 +232,9 @@ struct Loader<'a> {
     copy: Option<tokio_postgres::Statement>,
     insert_head: String,
     one_tx: bool,
-    /// Chunks go inside savepoints (one transaction only).
     savepoints: bool,
 }
 
-/// An error about the data of a row (SQLSTATE classes 22, data exception, and 23, integrity
-/// constraint): finding or skipping the row makes sense. Anything else (a missing table,
-/// permissions, the connection) stops the import whatever the mode.
 fn row_error(e: &ErrorInfo) -> bool {
     e.code.as_deref().is_some_and(|c| c.starts_with("22") || c.starts_with("23"))
 }
@@ -293,7 +244,6 @@ impl Loader<'_> {
         self.client.batch_execute(sql).await.map_err(|e| Fail::of(&e, None))
     }
 
-    /// Sends rows `r` of the chunk: one COPY, or `INSERT`s of up to 1,000 rows / 512 KB.
     async fn send(&self, c: &Chunk, r: Range<usize>) -> Result<(), Fail> {
         if let Some(stmt) = &self.copy {
             let sink = self.client.copy_in::<_, Bytes>(stmt).await.map_err(|e| Fail::copy(&e))?;
@@ -314,7 +264,6 @@ impl Loader<'_> {
                     sql.push_str(", ");
                 }
                 let row = c.span(&(at..at + 1));
-                // The tuples are UTF-8 (they were Strings).
                 sql.push_str(std::str::from_utf8(&row).unwrap_or(""));
                 at += 1;
             }
@@ -323,8 +272,6 @@ impl Loader<'_> {
         Ok(())
     }
 
-    /// Sends rows `r` all or nothing: inside a savepoint (one transaction), or as its own
-    /// transaction (each chunk commits by itself).
     async fn atomic(&self, c: &Chunk, r: Range<usize>) -> Result<(), Fail> {
         if self.one_tx {
             if !self.savepoints {
@@ -339,7 +286,6 @@ impl Loader<'_> {
                 }
             }
         } else if self.copy.is_some() || self.one_statement(c, &r) {
-            // One statement: atomic by itself.
             self.send(c, r).await
         } else {
             self.exec("BEGIN").await?;
@@ -353,13 +299,11 @@ impl Loader<'_> {
         }
     }
 
-    /// Rows `r` fit in one `INSERT` (see `send`).
     fn one_statement(&self, c: &Chunk, r: &Range<usize>) -> bool {
         let max_rows = if self.opts.insert_rows > 0 { self.opts.insert_rows } else { INSERT_MAX_ROWS };
         r.len() <= max_rows && self.insert_head.len() + c.span(r).len() + 2 * r.len() < INSERT_MAX_BYTES
     }
 
-    /// Whether rows `0..k` of the range go through (inside a savepoint that is rolled back).
     async fn try_prefix(&self, c: &Chunk, r: &Range<usize>, k: usize) -> Result<Option<Fail>, Fail> {
         self.exec("SAVEPOINT dataman_locate").await?;
         let res = self.send(c, r.start..r.start + k).await;
@@ -367,9 +311,6 @@ impl Loader<'_> {
         Ok(res.err())
     }
 
-    /// The first row of `r` that fails (the shortest failing prefix), with its error. Runs
-    /// after the failed send was rolled back: inside the import's transaction, or in one of
-    /// its own that is rolled back at the end.
     async fn locate(&self, c: &Chunk, r: Range<usize>) -> Option<(usize, ErrorInfo)> {
         if !self.one_tx && self.exec("BEGIN").await.is_err() {
             return None;
@@ -401,16 +342,12 @@ impl Loader<'_> {
     }
 }
 
-/// Resolves once the import is cancelled.
 async fn cancelled(p: &ImportProgress) {
     while !p.is_cancelled() {
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
 }
 
-/// Whether the server takes `COPY … FROM STDIN`: a COPY into a table that does not exist fails
-/// with "undefined table" where it does, and with "not supported" or a syntax error where not.
-///
 /// Sent as a simple query: through `copy_in` (extended protocol) an error before the
 /// CopyInResponse leaves tokio-postgres one ReadyForQuery out of step (it sends CopyFail and a
 /// second Sync), and the next statement fails with "unexpected message".
@@ -419,7 +356,6 @@ async fn copy_supported(client: &Client) -> bool {
         Ok(_) => true,
         Err(e) => match e.as_db_error() {
             Some(d) => !matches!(d.code().code(), "0A000" | "42601" | "XX000"),
-            // Not an error from the server: the COPY started (a table by that name exists).
             None => true,
         },
     }
@@ -477,7 +413,6 @@ pub(crate) async fn run(
             return finish(report, &progress);
         }
     };
-    // Only PostgreSQL's loader exists (`Caps::import`: the UI offers imports there only).
     let Some(pg) = d.pg() else {
         report.outcome = Outcome::Failed(ImportFailure::plain(format!("imports into {} are not available", conn.engine().label())));
         return finish(report, &progress);
@@ -505,7 +440,6 @@ pub(crate) async fn run(
         savepoints: one_tx && (skip || method == Method::Insert || conn.info.is_lar),
     };
 
-    // Setup: BEGIN, CREATE TABLE, TRUNCATE.
     let setup = async {
         if one_tx {
             loader.exec("BEGIN").await?;
@@ -554,14 +488,11 @@ pub(crate) async fn run(
                 break;
             }
         };
-        // Ranges of the chunk still to send, in order.
         let mut todo: VecDeque<Range<usize>> = VecDeque::from([0..chunk.rows()]);
         while let Some(r) = todo.pop_front() {
             let res = tokio::select! {
                 r = loader.atomic(&chunk, r.clone()) => r,
                 _ = cancelled(&progress) => {
-                    // A COPY in flight is abandoned with its sink (CopyFail); an INSERT in
-                    // flight is one short statement: the ROLLBACK below waits for it.
                     outcome = Outcome::Cancelled;
                     break 'chunks;
                 }
@@ -593,7 +524,6 @@ pub(crate) async fn run(
                 }
                 Err(f) if r.len() == 1 => progress.skip(chunk.lines[r.start], f.error.message.clone()),
                 Err(f) => {
-                    // Skip mode: what the error points at, else halves.
                     let parts: Vec<Range<usize>> = match f.bad.filter(|b| b.end <= r.len() && !b.is_empty() && b.len() < r.len()) {
                         Some(b) if b.len() == 1 => {
                             let bad = r.start + b.start;
@@ -613,7 +543,6 @@ pub(crate) async fn run(
             }
         }
     }
-    // Stop the producer (it sees the channel closed or the flag).
     drop(rx);
     if !matches!(outcome, Outcome::Done) {
         progress.cancel();
@@ -629,7 +558,6 @@ pub(crate) async fn run(
             }
         }
         _ => {
-            // One transaction: nothing stays. Otherwise a chunk interrupted mid-way rolls back.
             let _ = loader.exec("ROLLBACK").await;
             if one_tx {
                 report.rolled_back = true;
@@ -686,9 +614,7 @@ mod tests {
         let cols = Columns::of(&opts(&["text", "int8", "text", "jsonb", "text"]));
         let mut out = BytesMut::new();
         copy_line(&mut out, &cols, &row(&[Some("a\tb\\c\nd\re"), Some(""), Some(""), None, Some("café 😀 \"q\" 'x'")]));
-        // Empty for int8 → NULL; empty for text stays empty; NULL → \N.
         assert_eq!(std::str::from_utf8(&out).unwrap(), "a\\tb\\\\c\\nd\\re\t\\N\t\t\\N\tcafé 😀 \"q\" 'x'\n");
-        // A value that is literally \N or \. stays data.
         let mut out = BytesMut::new();
         copy_line(&mut out, &Columns::of(&opts(&["text", "text"])), &row(&[Some("\\N"), Some("\\.")]));
         assert_eq!(std::str::from_utf8(&out).unwrap(), "\\\\N\t\\\\.\n");

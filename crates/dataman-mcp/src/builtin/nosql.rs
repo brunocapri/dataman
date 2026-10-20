@@ -1,13 +1,3 @@
-//! The engines without SQL (MongoDB; `dataman_core::nosql`): `nosql_query` reads in the engine's
-//! own language, `nosql_execute` writes through the same tiers as `execute`, and the catalog
-//! tools (`list_schemas`, `list_tables`, `describe_table`, `sample_rows`, `search_objects`)
-//! answer about databases, collections and their sampled fields. `run_query`, `open_query` and
-//! `execute` hand such a connection's statements here.
-//!
-//! A write cannot wait in a transaction for the user: what it would change is counted first
-//! (its filter's matches), and a write over the row limit, a destructive one (a `deleteMany({})`,
-//! a drop) or any on production waits for the user's Allow before it runs.
-
 use std::time::Duration;
 
 use dataman_core::guard::WriteClass;
@@ -21,7 +11,6 @@ use crate::hub::{Front, TabWrite};
 use crate::policy::Need;
 use crate::tool::{Args, BoxFut, Call, Opened, ToolError};
 
-/// The most a read returns in all (as `run_query`'s results).
 const MAX_BYTES: usize = 256 * 1024;
 
 fn query_prop() -> Value {
@@ -51,7 +40,6 @@ pub fn tools() -> Vec<Builtin> {
     ]
 }
 
-/// The connection is one of `nosql`'s engines (checked before connecting, from its profile).
 pub fn is_nosql(cx: &Call, a: &Args) -> bool {
     a.opt_str("connection").and_then(|c| cx.hub.profile(c).ok()).is_some_and(|p| !p.engine.is_sql())
 }
@@ -67,7 +55,6 @@ fn timeout_of(a: &Args) -> Duration {
     Duration::from_millis(a.u64_or("timeout_ms", 30_000).clamp(100, 300_000))
 }
 
-/// Runs a statement on an opened connection within the call's time limit and cancel.
 async fn run(cx: &Call, o: &Opened, text: &str, page: Page, timeout: Duration) -> Result<nosql::Ran, ToolError> {
     let r = o.conn.run_nosql(&o.database, text, page);
     tokio::select! {
@@ -79,7 +66,6 @@ async fn run(cx: &Call, o: &Opened, text: &str, page: Page, timeout: Duration) -
     }
 }
 
-/// An output as the agent reads it: documents capped by bytes, values, writes.
 fn output_json(ran: &nosql::Ran) -> Value {
     let mut m = Map::new();
     match &ran.output {
@@ -121,7 +107,6 @@ fn output_json(ran: &nosql::Ran) -> Value {
             m.insert("note".into(), json!(format!("pass database: {db:?} to the next calls instead of use")));
         }
     }
-    // A script's (MongoDB's JavaScript): its printed lines, its writes, where `db` ended.
     if !ran.printed.is_empty() {
         m.insert("printed".into(), json!(ran.printed));
     }
@@ -135,8 +120,6 @@ fn output_json(ran: &nosql::Ran) -> Value {
     Value::Object(m)
 }
 
-/// The agent tab showing a statement while it runs (`open_query`; `run_query` / `execute` when
-/// "Agent queries in tabs" is on), and what came of it there.
 struct Shown {
     front: Option<Arc<dyn Front>>,
     tab: Option<u64>,
@@ -167,8 +150,6 @@ fn nosql_query(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
     Box::pin(async move { query(cx, &a, "query", false).await })
 }
 
-/// A read (`nosql_query`, or `run_query`'s `sql` on such a connection: `key`), shown in the
-/// agent tab when `open` (`open_query`) or the setting says so.
 pub(super) async fn query(cx: &Call, a: &Args, key: &str, open: bool) -> Result<Value, ToolError> {
     let text = a.str(key)?;
     cx.note_sql(text);
@@ -208,8 +189,6 @@ fn nosql_execute(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
     Box::pin(async move { execute(cx, &a, "query", false).await })
 }
 
-/// A write through the tiers (`nosql_execute`, or `execute`'s `sql` on such a connection),
-/// shown in the agent tab when `open` or the setting says so.
 pub(super) async fn execute(cx: &Call, a: &Args, key: &str, open: bool) -> Result<Value, ToolError> {
     let text = a.str(key)?;
     cx.note_sql(text);
@@ -264,10 +243,6 @@ async fn write(cx: &Call, a: &Args, text: &str, class: &WriteClass, tab: Option<
     Ok(ran)
 }
 
-// ---------------------------------------------------------------------------------------------
-// The catalog
-
-/// `list_schemas`: the databases.
 pub(super) async fn databases(cx: &Call, o: &Opened) -> Result<Value, ToolError> {
     let items = o.conn.nosql_tree(None).await.map_err(failed)?;
     let rows: Vec<Vec<Value>> = items
@@ -280,7 +255,6 @@ pub(super) async fn databases(cx: &Call, o: &Opened) -> Result<Value, ToolError>
     Ok(json!({"databases": table(&["database", "size"], rows), "note": note}))
 }
 
-/// `list_tables`: the database's collections and views with their estimated counts.
 pub(super) async fn collections(cx: &Call, o: &Opened, limit: usize) -> Result<Value, ToolError> {
     let items = o.conn.nosql_tree(Some(&o.database)).await.map_err(failed)?;
     let more = items.len() > limit;
@@ -304,8 +278,6 @@ pub(super) async fn collections(cx: &Call, o: &Opened, limit: usize) -> Result<V
     Ok(v)
 }
 
-/// `search_objects`: collections whose name matches, in every database (and the fields
-/// sampled from the connection's own database's collections, when asked for columns).
 pub(super) async fn search(cx: &Call, o: &Opened, pattern: &str, limit: usize) -> Result<Value, ToolError> {
     let like = |s: &str| super::catalog::like_matches(s, pattern);
     let mut rows = Vec::new();
@@ -329,8 +301,6 @@ pub(super) async fn search(cx: &Call, o: &Opened, pattern: &str, limit: usize) -
     Ok(v)
 }
 
-/// `describe_table`: a collection's fields (sampled, with the types seen), its indexes and
-/// estimated count.
 pub(super) async fn describe(cx: &Call, o: &Opened, coll: &str) -> Result<Value, ToolError> {
     let items = o.conn.nosql_tree(Some(&o.database)).await.map_err(failed)?;
     let Some(item) = items.iter().find(|i| i.name == coll) else {
@@ -342,7 +312,6 @@ pub(super) async fn describe(cx: &Call, o: &Opened, coll: &str) -> Result<Value,
     out.insert("database".into(), json!(o.database));
     out.insert("kind".into(), json!(if item.kind == ItemKind::View { "view" } else { "collection" }));
     if let Some(t) = &item.note {
-        // A Redis key: its type, and the command that shows its value.
         out.insert("kind".into(), json!("key"));
         out.insert("type".into(), json!(t));
         out.insert("view".into(), json!(nosql::open_statement_for(&o.conn, &o.database, coll)));
@@ -364,7 +333,6 @@ pub(super) async fn describe(cx: &Call, o: &Opened, coll: &str) -> Result<Value,
     Ok(Value::Object(out))
 }
 
-/// `sample_rows`: the first (or random) documents.
 pub(super) async fn sample(cx: &Call, o: &Opened, coll: &str, n: u64, random: bool) -> Result<Value, ToolError> {
     let base = nosql::open_statement_for(&o.conn, &o.database, coll);
     let stmt = if random { base.replace(".find({})", &format!(".aggregate([{{$sample: {{size: {n}}}}}])")) } else { base };

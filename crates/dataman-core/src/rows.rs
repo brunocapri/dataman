@@ -1,10 +1,6 @@
-//! Small query helpers for the core's own statements: text rows with their column names, and
-//! typed rows decoded like the grid's ([`Kind`](crate::value::Kind)s).
-
 use crate::backend::{Db, RowSource};
 use crate::result::{Cell, Chunk, ChunkBuilder, ColumnInfo, ErrorInfo, format_cell};
 
-/// Rows of a simple-protocol query with the column names (known even when no row comes back).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TextRows {
     pub columns: Vec<String>,
@@ -16,13 +12,11 @@ impl TextRows {
         self.columns.iter().position(|c| c == name)
     }
 
-    /// Value of column `name` in row `row`.
     pub fn get(&self, row: usize, name: &str) -> Option<&str> {
         self.rows.get(row)?.get(self.col(name)?)?.as_deref()
     }
 }
 
-/// Rows decoded into columnar chunks, like a result in the grid.
 pub struct TypedRows {
     pub columns: Vec<ColumnInfo>,
     chunks: Vec<Chunk>,
@@ -56,8 +50,6 @@ impl TypedRows {
     }
 }
 
-/// Runs `sql` through the typed protocol, keeping at most `max` rows (the rest is read and
-/// dropped).
 pub(crate) async fn typed_query(db: &Db, sql: &str, max: usize) -> Result<TypedRows, ErrorInfo> {
     let p = db.prepare(sql).await?;
     let mut rows = p.start().await?;

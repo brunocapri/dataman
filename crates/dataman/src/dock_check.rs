@@ -1,20 +1,3 @@
-//! `dock-check` (`--demo`): the sidebar and the side panel with real mouse and key events
-//! through the window. The sidebar (the explorer's dock) has a narrow icon rail at the window's
-//! edge: Explorer, Favorites, History, each showing its view in the same place on the same glass
-//! (the rail's selection filled, never underlined); a click on the icon showing hides the
-//! sidebar, rail and all, and ⌘B brings it back on the same view. The side panel (the MCP log
-//! here) opens in the other dock and has no grip: it does not move on its own. The sidebar
-//! dragged by its grip past the middle of the work surface goes to the right, taking the rail
-//! (at the window's right edge now), the header and "DATAMAN" with it, the side panel going left;
-//! the preview is the area it then takes. Esc lets go of a drag; on its own side a drag offers
-//! nothing. The palette's "Move sidebar to the left" and "Reset panel layout" bring it home; the
-//! session notices the view. PASS/FAIL lines like `fk-check`.
-//!
-//! Captures (`DATAMAN_SHOT`): `dock-drag` holds the sidebar mid-drag over the right half (the
-//! preview), `dock-moved` shows it settled on the right with the side panel on the left,
-//! `dock-menu` its header menu. `DATAMAN_SHOT_DIR=dir` also captures `dock-favorites.png`,
-//! `dock-history.png` and `dock-hidden.png`.
-
 use std::time::Duration;
 
 use dataman_core::layout::{Dock, NavView, PanelId, PanelLayout};
@@ -43,7 +26,6 @@ fn draw(cx: &mut AsyncWindowContext) {
     });
 }
 
-/// `DATAMAN_SHOT_DIR`: a capture of the window as it is, `dock-<name>.png`.
 fn snap(name: &str, cx: &mut AsyncWindowContext) {
     let Ok(dir) = std::env::var("DATAMAN_SHOT_DIR") else { return };
     let path = format!("{dir}/dock-{name}.png");
@@ -54,7 +36,6 @@ fn snap(name: &str, cx: &mut AsyncWindowContext) {
     });
 }
 
-/// A command as the palette or the menu sends it (the focus in the editor, as after the palette).
 fn command(ws: &Entity<Workspace>, a: Box<dyn gpui::Action>, cx: &mut AsyncWindowContext) {
     let _ = cx.update(|window, cx| {
         ws.update(cx, |w, cx| w.focus_editor(window, cx));
@@ -66,7 +47,6 @@ async fn pause(cx: &mut AsyncWindowContext, ms: u64) {
     cx.background_executor().timer(Duration::from_millis(ms)).await;
 }
 
-/// Lets a move (or a zoom) settle, then draws.
 async fn settle(cx: &mut AsyncWindowContext) {
     pause(cx, 400).await;
     draw(cx);
@@ -76,7 +56,6 @@ fn at(x: f32, y: f32) -> Point<Pixels> {
     point(px(x), px(y))
 }
 
-/// The grip on a panel's top edge (`dock::GRIP`: centred, 10 pt high).
 fn grip(r: Rect) -> (f32, f32) {
     (r.x + r.w / 2., r.y + 5.)
 }
@@ -111,8 +90,6 @@ fn press(cx: &mut AsyncWindowContext, k: &str) {
     input(cx, PlatformInput::KeyUp(KeyUpEvent { keystroke: ks }));
 }
 
-/// Presses at `from`, moves through `path` with the button held (a few steps, as a hand would),
-/// and lets go at the last point unless `hold`.
 async fn drag(cx: &mut AsyncWindowContext, from: (f32, f32), path: &[(f32, f32)], hold: bool) {
     down(cx, from, MouseButton::Left, 1);
     // Past GPUI's drag threshold first: the drag starts.
@@ -130,7 +107,6 @@ fn near(a: Rect, b: Rect, tol: f32) -> bool {
     (a.x - b.x).abs() <= tol && (a.y - b.y).abs() <= tol && (a.w - b.w).abs() <= tol && (a.h - b.h).abs() <= tol
 }
 
-/// The slots of dock `d`, column by column, as GPUI laid them out and as the frame says.
 fn laid_out(ws: &Entity<Workspace>, d: Dock, cx: &mut AsyncWindowContext) -> (Vec<Rect>, Vec<Rect>) {
     let i = crate::dock::ix(d);
     cx.update(|_, cx| {
@@ -151,12 +127,10 @@ fn laid_right(ws: &Entity<Workspace>, d: Dock, cx: &mut AsyncWindowContext) -> b
     laid.len() == want.len() && laid.iter().zip(&want).all(|(a, b)| near(*a, *b, 1.5))
 }
 
-/// The title bar's "DATAMAN" as laid out.
 fn logo(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> Option<Rect> {
     cx.update(|_, cx| ws.read(cx).logo_bounds.get()).ok().flatten().map(|b| Rect { x: b.origin.x.pt(), y: b.origin.y.pt(), w: b.size.width.pt(), h: b.size.height.pt() })
 }
 
-/// "DATAMAN" at the right edge of column `c` (its 14 pt inset), inside it.
 fn logo_over(l: Option<Rect>, c: Rect) -> bool {
     l.is_some_and(|l| l.x >= c.x && (l.right() - (c.right() - 14.)).abs() < 1.5)
 }
@@ -165,12 +139,10 @@ fn view_w(cx: &mut AsyncWindowContext) -> f32 {
     cx.update(|window, _| window.viewport_size().width.pt()).unwrap()
 }
 
-/// The title bar's toggle, arrows or search as laid out.
 fn mark(ws: &Entity<Workspace>, name: &str, cx: &mut AsyncWindowContext) -> Option<Rect> {
     cx.update(|_, cx| ws.read(cx).title_marks.borrow().get(name).copied()).ok().flatten().map(|b| Rect { x: b.origin.x.pt(), y: b.origin.y.pt(), w: b.size.width.pt(), h: b.size.height.pt() })
 }
 
-/// The rail's icon for `v` as laid out.
 fn rail(ws: &Entity<Workspace>, v: NavView, cx: &mut AsyncWindowContext) -> Option<Rect> {
     cx.update(|_, cx| ws.read(cx).rail_bounds.borrow().get(&v).copied())
         .ok()
@@ -187,7 +159,6 @@ fn click(cx: &mut AsyncWindowContext, p: (f32, f32)) {
     up(cx, p, MouseButton::Left, 1);
 }
 
-/// What the sidebar shows, whether it is open, and whether the history panel has the focus.
 fn state(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> (NavView, bool, bool) {
     cx.update(|window, cx| {
         let w = ws.read(cx);
@@ -219,7 +190,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
     let toolbar = cx.update(|_, cx| ws.read(cx).palette_items(cx).iter().any(|i| i.key == "⌘Y")).unwrap();
     report("no ⌘Y any more", !toolbar, String::new());
 
-    // Favorites, then History: the same place, the focus in the view.
     let fp0 = cx.update(|_, cx| ws.read(cx).session_fingerprint(cx)).unwrap();
     if let Some(f) = icons[1] {
         click(cx, center(f));
@@ -243,7 +213,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
     let fav = cx.update(|_, cx| ws.read(cx).history.read(cx).showing_favorites()).unwrap();
     report("History: its view in the same place", st == (NavView::History, true, true) && !fav && panel(ws, PanelId::Explorer, cx) == Some(explorer), format!("{st:?} {fav}"));
     snap("history", cx);
-    // The icon showing hides the sidebar, rail and all; ⌘B brings it back on the same view.
     if let Some(h) = icons[2] {
         click(cx, center(h));
     }
@@ -256,7 +225,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
     settle(cx).await;
     let st = state(ws, cx);
     report("⌘B: back on the history", st.0 == NavView::History && st.1 && panel(ws, PanelId::Explorer, cx) == Some(explorer), format!("{st:?}"));
-    // Hidden from inside a view: the focus leaves it.
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.focus_region(crate::app::Region::Explorer, window, cx)));
     press(cx, "cmd-b");
     settle(cx).await;
@@ -270,7 +238,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
     settle(cx).await;
     report("Explorer again", state(ws, cx).0 == NavView::Explorer, format!("{:?}", state(ws, cx)));
 
-    // The side panel (the MCP log) opposite the sidebar; it has no grip.
     command(ws, Box::new(crate::app::ToggleMcpLog), cx);
     settle(cx).await;
     let side = panel(ws, PanelId::Side, cx);
@@ -281,7 +248,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
         report("the side panel does not move on its own", layout(ws, cx).is_default(), format!("{:?}", layout(ws, cx)));
     }
 
-    // On its own side a drag offers nothing; esc lets go of it.
     let c = cx.update(|_, cx| ws.read(cx).frame_now.center).unwrap();
     let start = grip(explorer);
     let near_side = (c.x + c.w * 0.3, c.y + 200.);
@@ -295,7 +261,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
     settle(cx).await;
     report("esc lets go of the drag: nothing drops", !dragging && none_left && layout(ws, cx).is_default(), format!("dragging {dragging}"));
 
-    // Past the middle: the right dock, the preview where it lands.
     let far = (c.x + c.w * 0.8, c.y + 200.);
     drag(cx, start, &[(start.0 + 200., start.1 + 100.), (c.x + c.w * 0.6, c.y + 200.), far], true).await;
     draw(cx);
@@ -330,14 +295,12 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
     if stage == "dock-moved" {
         return ok;
     }
-    // The views switch there too.
     if let Some(f) = rail(ws, NavView::Favorites, cx) {
         click(cx, center(f));
     }
     settle(cx).await;
     report("on the right, Favorites in the same place", state(ws, cx).0 == NavView::Favorites && panel(ws, PanelId::Explorer, cx) == e, format!("{:?}", state(ws, cx)));
 
-    // Its menu, on its grip.
     if let Some(e) = e {
         let p = grip(e);
         down(cx, p, MouseButton::Right, 1);

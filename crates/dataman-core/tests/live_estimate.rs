@@ -1,13 +1,8 @@
-//! The planner's row estimate of a paused result ("Fetch all ~30k") on each engine: produced for
-//! a plain full-table SELECT, within a sane factor of the real count, and never for a write or
-//! a statement with parameters. Skips without servers.
-
 mod common;
 
 use common::*;
 use dataman_core::ResultSet;
 
-/// Asks the estimate of `sql` on `db` and waits for the answer.
 fn estimate(e: &Env, c: &Arc<Connection>, db: &str, sql: &str) -> Option<u64> {
     let rs = ResultSet::new(sql);
     c.ask_row_estimate(db, &rs);
@@ -61,8 +56,6 @@ fn sqlserver_estimates_with_showplan() {
     let real: u64 = query(&e, &c, "SELECT COUNT(*) FROM dbo.orders").snapshot().text(0, 0).and_then(|s| s.parse().ok()).unwrap_or(0);
     let est = estimate(&e, &c, db, "SELECT * FROM dbo.orders");
     assert!(near(est, real), "{est:?} vs {real}");
-    // The aux connection is plain again: an ordinary query on it would return rows (checked
-    // through a second estimate, which needs SHOWPLAN off first).
     assert!(near(estimate(&e, &c, db, "SELECT id FROM dbo.orders"), real));
     assert_eq!(estimate(&e, &c, db, "EXEC dbo.customer_orders @customer = 1"), None);
     drop(c);

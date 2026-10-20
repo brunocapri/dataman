@@ -1,9 +1,5 @@
-//! Embedded assets: the icon set (one stroke path per icon, 16-unit grid) and the welcome
-//! illustration. Everything is compiled in (`include_bytes!`); there is no file IO at runtime.
-//!
-//! Icons render with `svg()`, tinted by the svg element's own text color (it is not inherited
-//! from the parent, so always set it): `icon(Icon::Run).size(px(14.)).text_color(t.tx2)`.
-//! GPUI rasterizes each one once per size.
+//! An icon's tint is the svg element's own text color: it is not inherited from the parent,
+//! so always set it.
 
 use std::borrow::Cow;
 
@@ -103,7 +99,6 @@ impl AssetSource for Assets {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Icon {
-    /// Run: an SF-Symbols-style `arrow.right` (round caps, short head).
     Run,
     Stop,
     Pause,
@@ -112,19 +107,15 @@ pub enum Icon {
     Reload,
     ChevronRight,
     ChevronDown,
-    /// Previous match (find bar).
     ChevronUp,
-    /// Previous page (a table's data view).
     ChevronLeft,
     Database,
-    /// A schema (a folder): outlined while open, `SchemaFilled` while shut.
     Schema,
     SchemaFilled,
     Group,
     Table,
     View,
     Key,
-    /// Search by shortcut (Settings › Keyboard).
     Keyboard,
     Index,
     Search,
@@ -133,61 +124,42 @@ pub enum Icon {
     Check,
     Copy,
     Export,
-    /// Import data from a file.
     Import,
     Edit,
     Trash,
     Sidebar,
-    /// The sidebar glyph mirrored: the explorer in the right dock.
     SidebarRight,
     PanelRight,
-    /// The result panel zoomed over the editor, and back.
     Expand,
     Collapse,
     Lock,
     Warning,
     Info,
     More,
-    /// A query tab (command palette).
     Tab,
-    /// A command (command palette).
     Command,
-    /// Generated SQL (`</>`).
     Code,
-    /// Count rows.
     Hash,
-    /// Connect / disconnect.
     Plug,
-    /// The connection goes through an SSH tunnel (explorer).
     Tunnel,
-    // Explorer object kinds.
     MatView,
     Function,
     Procedure,
     Sequence,
     Type,
-    /// An enum's label.
     Label,
     Trigger,
     Extension,
     Role,
     Constraint,
-    /// A foreign key.
     Link,
     Partition,
-    /// The activity monitor.
     Activity,
-    /// A favorite query, unfavorited.
     Star,
-    /// A favorite query, favorited.
     StarFill,
-    /// A pinned table (the explorer's "pinned" group, Pin table / Unpin table).
     Pin,
-    /// An agent's tab, an agent's statement in the history (a four-point sparkle).
     Agent,
-    // LAR (violet, LAR panels only).
     Live,
-    /// A collection of documents (MongoDB's, an index's): `{ }`.
     Collection,
 }
 
@@ -260,12 +232,10 @@ impl Icon {
     }
 }
 
-/// An icon element (size and color are up to the caller; default 16 pt).
 pub fn icon(i: Icon) -> Svg {
     svg().path(i.path()).flex_none().size(crate::theme::px(16.))
 }
 
-/// The database logos are shown (Settings › Appearance › Database logos).
 static LOGOS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
 pub fn logos_on() -> bool {
@@ -276,8 +246,6 @@ pub fn set_logos(on: bool) {
     LOGOS.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// An engine's logo, in its own colors (an image: drawn at 64 px, crisp at any size up to
-/// 32 pt); the size is up to the caller.
 pub fn logo(e: dataman_core::Engine) -> gpui::Img {
     let path: &'static str = match e {
         dataman_core::Engine::Postgres => "logos/postgres.svg",
@@ -291,8 +259,6 @@ pub fn logo(e: dataman_core::Engine) -> gpui::Img {
     gpui::img(path).flex_none()
 }
 
-/// The small logo the explorer and the connection picker put before a connection's name, when
-/// logos are on (`None` otherwise).
 pub fn small_logo(e: dataman_core::Engine, size: f32) -> Option<gpui::Img> {
     logos_on().then(|| logo(e).size(crate::theme::px(size)))
 }

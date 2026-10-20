@@ -1,17 +1,3 @@
-//! Live queries on LAR, each on its own dedicated connection (they only work outside
-//! transaction blocks).
-//!
-//! - [`Lar::listen`]: `LISTEN ch AS <query>`. Every notification carries the *whole* result as
-//!   JSON, `{"rows":[{…}],"ts":N}` (the first one right after LISTEN). The connection task now
-//!   polls its messages, so notifications reach a channel; [`LiveListen`] keeps the latest result
-//!   and a log of notifications.
-//! - [`Lar::subscribe`]: `SUBSCRIBE <query>`, a COPY that never ends: text lines
-//!   `<ts>\t<diff>\t<col1>\t…`. The first batch is the full result (diff = multiplicity), later
-//!   ones are multiset deltas, removals before additions; an UPDATE is `-1 old` and `+1 new` with
-//!   the same ts, paired into "changed" when a key is known. [`Subscription`] maintains the live
-//!   rows (with each row's last change, for highlight fading), counters, pause (keeps reading
-//!   and buffering) / resume, and stop (CancelRequest; LAR answers 57014, which is the normal end).
-
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -29,22 +15,15 @@ use crate::Task;
 use crate::result::ErrorInfo;
 use crate::sqlgen::quote_ident;
 
-// ---------------------------------------------------------------------------------------------
-// LISTEN … AS
-
-/// One notification's result: column names in the order of the first row's keys.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LivePayload {
     pub ts: u64,
     pub columns: Vec<String>,
-    /// Values as JSON: numbers, strings (timestamps RFC 3339, bytea `\x…`, vectors `[…]`),
-    /// booleans, JSON values for json columns, null.
     pub rows: Vec<Vec<serde_json::Value>>,
 }
 
 impl LivePayload {
-    /// Puts the columns in `order` (LAR serializes each row with its keys sorted, so the
-    /// payload alone loses the query's column order). Unknown columns go last.
+    // LAR serializes each row with its keys sorted: the payload alone loses the query's column order.
     pub fn reorder(&mut self, order: &[String]) {
         let mut idx: Vec<usize> = order.iter().filter_map(|n| self.columns.iter().position(|c| c == n)).collect();
         for i in 0..self.columns.len() {
@@ -63,7 +42,6 @@ impl LivePayload {
     }
 }
 
-/// How a JSON value is shown in a cell (`None` = NULL).
 pub fn json_text(v: &serde_json::Value) -> Option<String> {
     match v {
         serde_json::Value::Null => None,
@@ -72,7 +50,6 @@ pub fn json_text(v: &serde_json::Value) -> Option<String> {
     }
 }
 
-/// A JSON object with its keys in document order.
 struct Ordered(Vec<(String, serde_json::Value)>);
 
 impl<'de> serde::Deserialize<'de> for Ordered {
@@ -117,7 +94,6 @@ impl<'de> serde::Deserialize<'de> for Rows {
     }
 }
 
-/// Parses a `LISTEN … AS` payload, `{"rows":[{…}],"ts":N}`.
 pub fn parse_payload(s: &str) -> Result<LivePayload> {
     #[derive(serde::Deserialize)]
     struct P {
@@ -157,7 +133,6 @@ pub struct NotificationEntry {
     pub ts: Option<u64>,
     pub rows: usize,
     pub bytes: usize,
-    /// The payload did not parse.
     pub error: Option<String>,
 }
 
@@ -171,7 +146,6 @@ struct ListenState {
     ended: Option<String>,
 }
 
-/// A running `LISTEN ch AS query`.
 pub struct LiveListen {
     channel: String,
     state: Arc<Mutex<ListenState>>,
@@ -184,26 +158,21 @@ impl LiveListen {
     pub fn channel(&self) -> &str {
         &self.channel
     }
-    /// The latest result received.
     pub fn latest(&self) -> Option<Arc<LivePayload>> {
         self.state.lock().latest.clone()
     }
-    /// Notifications received, newest last (the last 1000).
     pub fn log(&self) -> Vec<NotificationEntry> {
         self.state.lock().log.iter().cloned().collect()
     }
     pub fn received(&self) -> u64 {
         self.state.lock().received
     }
-    /// Why the listener stopped on its own (connection lost), if it did.
     pub fn ended(&self) -> Option<String> {
         self.state.lock().ended.clone()
     }
-    /// Changes on every notification.
     pub fn changes(&self) -> watch::Receiver<u64> {
         self.version.clone()
     }
-    /// `UNLISTEN` and closes the connection.
     pub fn unlisten(&self) -> Task<()> {
         let stop = self.stop.lock().take();
         crate::spawn(&self.rt, async move {
@@ -228,13 +197,11 @@ impl Drop for LiveListen {
 }
 
 impl Lar {
-    /// `LISTEN channel AS query` on a dedicated connection.
     pub fn listen(&self, channel: &str, query: &str) -> Task<LiveListen> {
         let (conn, channel, query) = (self.conn.clone(), channel.to_string(), query.trim().trim_end_matches(';').to_string());
         let rt = self.conn.handle().clone();
         self.conn.spawn(async move {
             let mut d = conn.dedicated(None).await?.into_pg()?;
-            // The column order, which the payload does not keep.
             let order: Vec<String> = match d.client.prepare(&query).await {
                 Ok(stmt) => stmt.columns().iter().map(|c| c.name().to_string()).collect(),
                 Err(_) => vec![],
@@ -298,10 +265,6 @@ impl Lar {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// SUBSCRIBE: COPY text lines
-
-/// Splits one COPY text line into fields: `\N` is NULL, backslash escapes decoded.
 pub fn parse_copy_line(line: &[u8]) -> Vec<Option<String>> {
     let line = line.strip_suffix(b"\n").unwrap_or(line);
     let line = line.strip_suffix(b"\r").unwrap_or(line);
@@ -357,7 +320,6 @@ pub fn parse_copy_line(line: &[u8]) -> Vec<Option<String>> {
     out
 }
 
-/// One line of a subscription: a row added (`diff` > 0) or removed (`diff` < 0) at commit `ts`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Delta {
     pub ts: u64,
@@ -378,19 +340,15 @@ pub fn parse_delta(line: &[u8]) -> Option<Delta> {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ChangeKind {
-    /// Part of the first result.
     Initial,
     Inserted,
-    /// Replaced a row with the same key; `changed` flags the columns that differ.
     Updated { changed: Vec<bool> },
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct LiveRow {
     pub values: Vec<Option<String>>,
-    /// How many identical rows this stands for (multisets).
     pub count: i64,
-    /// The last change and when it happened (commit, and local time for fading highlights).
     pub kind: ChangeKind,
     pub ts: u64,
     pub at: Instant,
@@ -410,14 +368,12 @@ pub struct BatchSummary {
     pub deleted: usize,
 }
 
-/// The current rows of a subscription.
 #[derive(Debug, Default)]
 pub struct LiveTable {
     pub columns: Vec<String>,
     rows: Vec<LiveRow>,
     index: HashMap<Vec<Option<String>>, usize>,
     key: Option<Vec<usize>>,
-    /// Recently removed rows (newest last), for showing them fading out.
     pub removed: VecDeque<RemovedRow>,
     pub last_ts: u64,
     initial_done: bool,
@@ -460,19 +416,16 @@ impl LiveTable {
         row
     }
 
-    /// Marks the initial result as complete even if it was empty (no lines ever came).
     pub fn mark_initial_done(&mut self) {
         self.initial_done = true;
     }
 
-    /// Applies the deltas of one commit (`initial`: the first result).
     pub fn apply(&mut self, ts: u64, deltas: Vec<Delta>, now: Instant) -> BatchSummary {
         let mut s = BatchSummary::default();
         let initial = !self.initial_done;
         self.initial_done = true;
         self.last_ts = self.last_ts.max(ts);
         let (removals, additions): (Vec<Delta>, Vec<Delta>) = deltas.into_iter().partition(|d| d.diff < 0);
-        // Rows fully removed in this batch, by key, to pair with additions (updates).
         let mut gone: Vec<Vec<Option<String>>> = Vec::new();
         for d in removals {
             let Some(&i) = self.index.get(&d.values) else { continue };
@@ -525,20 +478,14 @@ pub enum SubState {
     Starting,
     Live,
     Paused,
-    /// Stopped by the user (57014 from the server), by an error, or by the server closing the
-    /// stream (paused or not: see [`Subscription::paused_by_user`]).
     Ended { error: Option<ErrorInfo> },
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SubStats {
-    /// Delta lines received since the start (the first result included).
     pub deltas: u64,
-    /// Commits seen (batches).
     pub batches: u64,
-    /// Deltas per second over the last second.
     pub deltas_per_s: f64,
-    /// Deltas received while paused, not applied yet.
     pub buffered: usize,
     pub last_ts: u64,
     pub last: BatchSummary,
@@ -546,9 +493,7 @@ pub struct SubStats {
 
 #[derive(Clone, Debug)]
 pub struct SubscribeOptions {
-    /// Key columns for pairing updates. `None`: `id` when the query returns it.
     pub key: Option<Vec<String>>,
-    /// Use `COPY (SUBSCRIBE …) TO STDOUT` instead of `SUBSCRIBE …`.
     pub copy_form: bool,
 }
 
@@ -609,8 +554,6 @@ impl SubShared {
         self.paused.store(true, Ordering::Release);
     }
 
-    /// Applies the buffered batches, oldest first, then clears the pause flag, all under the
-    /// table lock (see `deliver`).
     fn resume(&self) {
         let mut table = self.table.lock();
         let pending: Vec<(u64, Vec<Delta>)> = self.pending.lock().drain(..).collect();
@@ -623,7 +566,6 @@ impl SubShared {
     }
 }
 
-/// A running `SUBSCRIBE`.
 pub struct Subscription {
     shared: Arc<SubShared>,
     version: watch::Receiver<u64>,
@@ -643,7 +585,6 @@ impl Subscription {
         f(&self.shared.table.lock())
     }
 
-    /// A copy of the current rows.
     pub fn rows(&self) -> Vec<LiveRow> {
         self.shared.table.lock().rows().to_vec()
     }
@@ -661,12 +602,10 @@ impl Subscription {
         self.shared.state.lock().clone()
     }
 
-    /// Changes whenever rows, counters or the state change.
     pub fn changes(&self) -> watch::Receiver<u64> {
         self.version.clone()
     }
 
-    /// Keeps receiving, but stops applying changes to the rows (they are buffered).
     pub fn pause(&self) {
         self.shared.pause();
         let mut st = self.shared.state.lock();
@@ -677,18 +616,13 @@ impl Subscription {
         self.shared.bump();
     }
 
-    /// The user paused this subscription and has not resumed it. Unlike [`state`](Self::state),
-    /// which says [`SubState::Ended`] once the stream ends, this stays true after the end: LAR
-    /// currently ends an idle `SUBSCRIBE` about a second after the last change (it takes the
-    /// Sync that tokio-postgres sends with COPY for the client leaving), and a UI that
-    /// resubscribes automatically should call [`pause`](Self::pause) on the new subscription
-    /// (once its first result is in) when this was true, so the user's pause survives. Batches
-    /// buffered before the end stay buffered; [`resume`](Self::resume) still applies them.
+    /// Stays true after the stream ends: LAR ends an idle `SUBSCRIBE` about a second after the
+    /// last change (it takes the Sync tokio-postgres sends with COPY for the client leaving), so a
+    /// UI that resubscribes should pause the new subscription when this was true.
     pub fn paused_by_user(&self) -> bool {
         self.shared.paused.load(Ordering::Acquire)
     }
 
-    /// Applies what was buffered while paused, then goes on live.
     pub fn resume(&self) {
         self.shared.resume();
         let mut st = self.shared.state.lock();
@@ -699,7 +633,6 @@ impl Subscription {
         self.shared.bump();
     }
 
-    /// Ends the subscription (CancelRequest); resolves when the server confirmed it.
     pub fn stop(&self) -> Task<()> {
         let (token, tls, shared) = (self.cancel.clone(), self.tls.clone(), self.shared.clone());
         crate::spawn(&self.rt, async move {
@@ -732,19 +665,15 @@ impl Drop for Subscription {
     }
 }
 
-/// The server's latest commit number (`lar_replication().last_ts`), read before a SUBSCRIBE
-/// starts: a first delta past it means the initial result was empty.
 async fn latest_commit(client: &tokio_postgres::Client) -> Result<u64> {
     // The function ignores a column list: ask for everything and pick the column.
     let (rows, _) = crate::backend::pg::text_query(client, "SELECT * FROM lar_replication()", None).await?;
     rows.get(0, "last_ts").and_then(|v| v.parse().ok()).ok_or_else(|| anyhow!("lar_replication() did not report last_ts"))
 }
 
-/// How long a partial batch waits for more lines of the same commit before it is applied.
 const BATCH_IDLE: Duration = Duration::from_millis(5);
 
 impl Lar {
-    /// `SUBSCRIBE <query>` on a dedicated connection.
     pub fn subscribe(&self, query: &str, opts: SubscribeOptions) -> Task<Subscription> {
         let (conn, query) = (self.conn.clone(), query.trim().trim_end_matches(';').to_string());
         let rt = self.conn.handle().clone();
@@ -805,8 +734,6 @@ impl Lar {
                                 let Some(delta) = parse_delta(line) else { continue };
                                 if first {
                                     first = false;
-                                    // The first commit after the start, not the initial result:
-                                    // the initial result was empty.
                                     if delta.ts > before && before > 0 {
                                         sh.table.lock().mark_initial_done();
                                     }
@@ -828,8 +755,6 @@ impl Lar {
                 if !batch.is_empty() {
                     sh.deliver(batch_ts, batch);
                 }
-                // `Ended` replaces `Paused` too; whether the user had paused is kept in the pause
-                // flag (`Subscription::paused_by_user`), for a resubscribe to restore it.
                 *sh.state.lock() = SubState::Ended { error: end };
                 sh.bump();
             });
@@ -878,9 +803,6 @@ mod tests {
 
     #[test]
     fn pause_resume_races_keep_commit_order() {
-        // One thread delivers "insert row i" then "delete row i" for many i while another pauses
-        // and resumes as fast as it can. If a buffered insert were applied after the delete that
-        // followed it, a ghost row would remain.
         let sh = Arc::new(SubShared {
             table: Mutex::new(LiveTable::new(vec!["id".into()], Some(vec![0]))),
             pending: Mutex::new(VecDeque::new()),
@@ -928,7 +850,6 @@ mod tests {
         assert_eq!(s, BatchSummary::default());
         assert_eq!(t.len(), 3);
         assert!(t.rows().iter().all(|r| r.kind == ChangeKind::Initial));
-        // An update (removal + addition with the same key), a delete and an insert.
         let s = t.apply(6, vec![d(6, -1, &["1", "a"]), d(6, -1, &["2", "b"]), d(6, 1, &["1", "A"]), d(6, 1, &["4", "d"])], now);
         assert_eq!(s, BatchSummary { inserted: 1, updated: 1, deleted: 1 });
         assert_eq!(t.len(), 3);
@@ -936,7 +857,6 @@ mod tests {
         assert_eq!(r1.kind, ChangeKind::Updated { changed: vec![false, true] });
         assert_eq!(r1.ts, 6);
         assert_eq!(t.removed.back().unwrap().values[1].as_deref(), Some("b"));
-        // Multiplicity: one of the two "3" rows goes away.
         let s = t.apply(7, vec![d(7, -1, &["3", "c"])], now);
         assert_eq!(s.deleted, 0);
         assert_eq!(t.rows().iter().find(|r| r.values[0].as_deref() == Some("3")).unwrap().count, 1);
@@ -944,12 +864,10 @@ mod tests {
         assert_eq!(s.deleted, 1);
         assert_eq!(t.len(), 2);
         assert_eq!(t.last_ts, 8);
-        // Without a key, an update is a delete plus an insert.
         let mut t = LiveTable::new(vec!["v".into()], None);
         t.apply(1, vec![d(1, 1, &["a"])], now);
         let s = t.apply(2, vec![d(2, -1, &["a"]), d(2, 1, &["b"])], now);
         assert_eq!(s, BatchSummary { inserted: 1, updated: 0, deleted: 1 });
-        // An empty initial result: the first batch is already a change.
         let mut t = LiveTable::new(vec!["v".into()], None);
         t.mark_initial_done();
         let s = t.apply(3, vec![d(3, 1, &["a"])], now);

@@ -1,8 +1,3 @@
-//! Visual EXPLAIN against real servers: the plan of a join (JSON, then analyzed with a spill),
-//! writes explained with ANALYZE inside the rolled-back wrapper (alone, inside an open
-//! transaction, and failing), parameters bound to an EXPLAIN, the text format, and what LAR
-//! answers. Skips without servers.
-
 mod common;
 
 use common::*;
@@ -48,7 +43,6 @@ fn explain_and_analyze_on_postgres() {
     assert!(p.totals.execution_ms.is_none());
     assert!((p.nodes.iter().map(|n| n.share).sum::<f64>() - 1.).abs() < 1e-6);
 
-    // Analyzed, with a work_mem small enough to spill the sort.
     run(&e, &s, "SET work_mem = '64kB'");
     let t0 = Instant::now();
     let rs = run(&e, &s, &explain::sql(JOIN, true, t));
@@ -64,7 +58,6 @@ fn explain_and_analyze_on_postgres() {
     let root = p.nodes[0].incl_ms;
     assert!(sum <= root + 0.01 && sum > root * 0.5, "exclusive {sum} vs root {root}");
 
-    // The text format of the same statement: the same tree.
     run(&e, &s, "RESET work_mem");
     let rs = run(&e, &s, &explain::text_sql(JOIN, t));
     let text = plan_of(&rs);
@@ -84,7 +77,6 @@ fn writes_explained_with_analyze_are_rolled_back() {
     exec(&e, &c, &["CREATE SCHEMA dataman_explain", "CREATE TABLE dataman_explain.t AS SELECT g AS id FROM generate_series(1, 100) g"]);
     let s = c.session(None);
 
-    // Alone: a transaction of its own, rolled back.
     let rs = s.execute_opts(explain::sql("DELETE FROM dataman_explain.t WHERE id <= 60", true, t), Vec::new(), true);
     assert_eq!(finish(&e, &rs), Phase::Done, "{:?}", rs.status().error);
     assert!(rs.rolled_back());
@@ -94,15 +86,12 @@ fn writes_explained_with_analyze_are_rolled_back() {
     assert_eq!(count(&e, &s, "dataman_explain.t"), "100", "and nothing stayed deleted");
     assert_eq!(s.tx().status, TxStatus::Idle);
 
-    // Failing: still rolled back, no failed transaction left.
     let rs = s.execute_opts(explain::sql("UPDATE dataman_explain.t SET id = id / 0", true, t), Vec::new(), true);
     assert_eq!(finish(&e, &rs), Phase::Failed);
     assert_eq!(rs.status().error.and_then(|x| x.code).as_deref(), Some("22012"));
     assert_eq!(s.tx().status, TxStatus::Idle);
     assert_eq!(count(&e, &s, "dataman_explain.t"), "100");
 
-    // Inside an open transaction: a savepoint; the transaction and its work survive, also
-    // after a failure.
     run(&e, &s, "BEGIN");
     run(&e, &s, "INSERT INTO dataman_explain.t VALUES (1000)");
     let rs = s.execute_opts(explain::sql("DELETE FROM dataman_explain.t", true, t), Vec::new(), true);
@@ -116,7 +105,6 @@ fn writes_explained_with_analyze_are_rolled_back() {
     run(&e, &s, "ROLLBACK");
     assert_eq!(count(&e, &s, "dataman_explain.t"), "100");
 
-    // A read-only connection refuses it before sending (the tab checks with this).
     assert!(dataman_core::guard::read_only_refusal(&explain::sql("DELETE FROM dataman_explain.t", true, t)).is_some());
     assert!(dataman_core::guard::read_only_refusal(&explain::sql("DELETE FROM dataman_explain.t", false, t)).is_none());
     exec_quiet(&e, &c, &["DROP SCHEMA IF EXISTS dataman_explain CASCADE"]);
@@ -150,13 +138,11 @@ fn lar_answers_explain() {
     for analyze in [false, true] {
         let rs = s.execute(explain::sql("SELECT 1", analyze, t));
         match finish(&e, &rs) {
-            // Today: not supported, said plainly (the error view shows it).
             Phase::Failed => {
                 let err = rs.status().error.unwrap();
                 eprintln!("LAR EXPLAIN (analyze={analyze}): {} {}", err.code.as_deref().unwrap_or(""), err.message);
                 assert_eq!(err.code.as_deref(), Some("0A000"));
             }
-            // Should it answer: a text tree (or the raw text), never hints.
             Phase::Done => {
                 let p = plan_of(&rs);
                 assert!(matches!(p.format, Format::Text | Format::Raw));

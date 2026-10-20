@@ -1,15 +1,3 @@
-//! The result grid: a canvas that draws only the visible cells of a [`ResultSet`].
-//!
-//! The cost of a frame depends on the window size, not on the result: a million rows scroll
-//! like ten. Cells are formatted and shaped only when visible; the fetcher is told how far the
-//! user has scrolled so it keeps reading ahead. Per row the grid paints at most one
-//! background quad (every other row) plus its text runs; column borders are one quad per
-//! column, not per cell (Spec, performance block).
-//!
-//! Owners can decorate the grid without touching its drawing code: see [`Decorations`] (row and
-//! cell tints, changed flags, struck rows, gutter marks, override text, virtual rows after the
-//! result) and [`CellOverlay`] (a view placed over one cell, e.g. an inline editor).
-
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -49,8 +37,6 @@ actions!(
         PageDown,
         Top,
         Bottom,
-        /// ⌘← / ⌘→: the row's first / last column (as a text's line start / end); with ⇧ the
-        /// selection grows to it.
         RowStart,
         RowEnd,
         SelectRowStart,
@@ -61,12 +47,10 @@ actions!(
         CopyTsvWithHeader,
         FetchMore,
         FetchAll,
-        /// ⇧Space: the selected JSON or array cell's value sheet (`value_view`).
         ViewValue,
         EditCell,
         InsertRow,
         DeleteRows,
-        /// ⌥↓ on a reference (a foreign-key value): the "Go to …" menu under the cell.
         OpenCellMenu,
         MenuUp,
         MenuDown,
@@ -75,12 +59,10 @@ actions!(
     ]
 );
 
-/// The grid's bindings. The inline cell editor lives inside the grid's key context, so they
-/// are off while it is open: there the keys type (`[`, `]`, ⇧arrows…).
+/// Off while the inline cell editor is open (it lives inside the grid's key context): there
+/// the keys type.
 pub const GRID_KEYS: &str = "ResultGrid && !GridCellEditor";
 
-/// The key context of the open cell menu (it holds the focus while open; the grid keeps
-/// drawing as focused).
 pub const MENU_CONTEXT: &str = "GridMenu";
 
 pub fn bind_keys(cx: &mut App) {
@@ -97,7 +79,6 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("pageup", PageUp, c),
         KeyBinding::new("pagedown", PageDown, c),
         KeyBinding::new("cmd-up", Top, c),
-        // Deeper than the workspace's keys: on the grid they are the row's ends.
         KeyBinding::new("cmd-left", RowStart, c),
         KeyBinding::new("cmd-right", RowEnd, c),
         KeyBinding::new("cmd-shift-left", SelectRowStart, c),
@@ -105,7 +86,6 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("home", Top, c),
         KeyBinding::new("end", Bottom, c),
         KeyBinding::new("cmd-a", SelectAll, c),
-        // Copy, fetch, the value sheet and ⌘I are remappable commands (`keymap`).
         KeyBinding::new("enter", EditCell, c),
         KeyBinding::new("backspace", DeleteRows, c),
         KeyBinding::new("delete", DeleteRows, c),
@@ -113,8 +93,6 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-f", find::Find, c),
         KeyBinding::new("cmd-g", find::FindNext, c),
     ]);
-    // While the find bar is open: ⇧⌘G is "previous match" (else "focus the grid") and esc closes
-    // the bar (else "back to the editor").
     let f = Some("ResultGrid && find && !GridCellEditor");
     cx.bind_keys([KeyBinding::new("cmd-shift-g", find::FindPrevious, f), KeyBinding::new("escape", find::CloseFind, f)]);
     let m = Some(MENU_CONTEXT);
@@ -130,47 +108,30 @@ pub fn bind_keys(cx: &mut App) {
 }
 
 pub enum GridEvent {
-    /// The eye of a JSON or array cell, or ⇧Space on the selected one: its value sheet (display
-    /// row, result column; `value_at` says what it shows).
     ViewValue { row: usize, col: usize },
-    /// ↩ or a double click on a cell: edit it (display row, result column).
     EditCell { row: usize, col: usize },
-    /// ⌘I: a new row at the end.
     InsertRow,
-    /// ⌫: mark the selected display rows for deletion (or unmark them).
     DeleteRows(Vec<usize>),
-    /// "Go to …" on a reference (the menu, ⌘-click): open the referenced row in a new tab.
     FollowFk(FkJump),
-    /// A table's data view: sort on the server by result column `col` (`None`: no sort).
     ServerSort { col: usize, dir: Option<SortDir> },
-    /// A table's data view: the filter popover for result column `col`, its top-left corner at
-    /// `at` (window coordinates).
     Filter { col: usize, at: (f32, f32) },
-    /// A table's data view: rows whose column equals this value (`None`: IS NULL).
     FilterValue { col: usize, value: Option<String> },
 }
 
-/// A table's data view, as the grid needs it: header clicks sort on the server (`sort` is the
-/// current one, by result column) and row numbers count from the page's first row.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TableMode {
     pub sort: Option<(usize, SortDir)>,
     pub offset: usize,
 }
 
-/// Which columns show (in the result's order), hidden ones left out. Indexes are result
-/// columns; the grid works on display columns and maps them through `disp` / `pos`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ColLayout {
     hidden: Vec<bool>,
-    /// Display → result column.
     disp: Vec<usize>,
-    /// Result → display column (`usize::MAX` when hidden).
     pos: Vec<usize>,
 }
 
 impl ColLayout {
-    /// The identity layout for `n` columns (kept as is when it already has `n`).
     pub fn ensure(&mut self, n: usize) {
         if self.hidden.len() == n && self.pos.len() == n {
             return;
@@ -188,7 +149,6 @@ impl ColLayout {
         }
     }
 
-    /// Display columns.
     pub fn shown(&self) -> usize {
         self.disp.len()
     }
@@ -205,7 +165,6 @@ impl ColLayout {
         self.hidden.iter().filter(|h| **h).count()
     }
 
-    /// Hides a column; the last one shown stays.
     pub fn hide(&mut self, c: usize) -> bool {
         if c >= self.hidden.len() || self.hidden[c] || self.shown() <= 1 {
             return false;
@@ -228,21 +187,9 @@ const BAR: f32 = 10.;
 const MIN_W: f32 = 48.;
 const MAX_AUTO_W: f32 = 420.;
 const GUTTER_MIN: f32 = 60.;
-/// The room an eye (`value_view`) takes at its cell's right edge, and the icon in it.
 const EYE_W: f32 = 22.;
 const EYE_ICON: f32 = 13.;
 
-/// One width for a query tab's two gutters, the editor's line numbers and the grid's row
-/// numbers, so their dividers read as one line down the tab: each side says what its digits
-/// need (points) and both draw the larger. A tab hands the same share to its editor and its
-/// grid; a side that is not on screen keeps its last need (the result zoom, a plan in the
-/// grid's place), so nothing moves when it comes back. The grid starts at its minimum, so the
-/// editor does not widen on the first run.
-///
-/// In a frame the grid renders (and says its rows' need) before the editor lays out, and the
-/// editor lays out before the grid: both draw the same width. Only a need the grid learns while
-/// laying out (rows that arrived since it rendered, a font switch) reaches the editor a frame
-/// later, with one more frame asked for.
 #[derive(Clone)]
 pub struct GutterShare(std::rc::Rc<std::cell::Cell<Gutters>>);
 
@@ -250,7 +197,6 @@ pub struct GutterShare(std::rc::Rc<std::cell::Cell<Gutters>>);
 struct Gutters {
     editor: f32,
     grid: f32,
-    /// The width the editor drew last, and the one a frame was last asked for it.
     drawn: f32,
     asked: f32,
 }
@@ -262,7 +208,6 @@ impl Default for GutterShare {
 }
 
 impl GutterShare {
-    /// The editor's need, in points; returns the width it draws.
     pub fn editor(&self, need: f32) -> f32 {
         let mut g = self.0.get();
         g.editor = need;
@@ -271,15 +216,13 @@ impl GutterShare {
         g.drawn
     }
 
-    /// The grid's need, said early (render), when it knows its rows.
     fn say_grid(&self, need: f32) {
         let mut g = self.0.get();
         g.grid = need;
         self.0.set(g);
     }
 
-    /// The grid's need while laying out; returns the width it draws. The editor drew another
-    /// this frame: one more frame, once per width (a hidden editor would never catch up).
+    // One more frame, once per width: a hidden editor would never catch up.
     fn grid(&self, need: f32, window: &mut Window) -> f32 {
         let mut g = self.0.get();
         g.grid = need;
@@ -293,9 +236,7 @@ impl GutterShare {
     }
 }
 
-/// Grab zone on each side of a header border for resizing.
 const RESIZE_GRAB: f32 = 4.;
-/// Selections up to this many cells get a sum and an average in the result bar.
 const SUMMARY_MAX_CELLS: usize = 5_000;
 
 fn type_width(k: Kind) -> f32 {
@@ -322,7 +263,6 @@ struct CellPos {
 struct Selection {
     anchor: CellPos,
     head: CellPos,
-    /// Whole rows (clicked in the row-number gutter).
     rows: bool,
 }
 
@@ -337,14 +277,11 @@ impl Selection {
             self.anchor.col.min(self.head.col)..=self.anchor.col.max(self.head.col)
         }
     }
-    /// One clicked value (not a range, not whole rows): drawn with rounded corners.
     fn single(&self) -> bool {
         !self.rows && self.anchor == self.head
     }
 }
 
-/// Corner radius of the active cell's ring (always) and of a single selected cell's fill; a
-/// range's fill stays square, so its cells join into one block.
 const CELL_RADIUS: f32 = 4.;
 
 #[derive(Clone, Copy, Debug)]
@@ -352,19 +289,15 @@ enum Drag {
     Cells,
     Rows,
     Resize { col: usize, start_x: f32, start_w: f32 },
-    /// `grab` = offset of the pointer inside the thumb.
     VThumb { grab: f32 },
     HThumb { grab: f32 },
-    /// Pressed on a header cell (display column); a release without movement sorts.
     Header { col: usize, x: f32 },
 }
 
-/// Layout of the last frame, in window coordinates.
 #[derive(Clone, Copy, Debug, Default)]
 struct Geometry {
     bounds: Bounds<Pixels>,
     gutter: f32,
-    /// Cells area (without header, gutter, scrollbars).
     body_w: f32,
     body_h: f32,
     content_w: f32,
@@ -377,87 +310,51 @@ pub struct ResultGrid {
     rs: Option<Arc<ResultSet>>,
     rt: Option<tokio::runtime::Handle>,
     widths: Vec<f32>,
-    /// Horizontal and vertical offsets in pixels (vertical in f64, see `content_h`).
     scroll: (f32, f64),
     geo: Geometry,
     sel: Option<Selection>,
     drag: Option<Drag>,
     char_w: f32,
-    /// The `char_w` the column widths were made for: after a font switch the next frame scales
-    /// them (auto and resized alike) to the new face, so each keeps its characters.
     widths_at: f32,
     sorting: bool,
-    /// The tab asked the server to cancel (the message row says so).
     pub cancelling: bool,
     summary: Option<(SummaryKey, SharedString)>,
-    /// Extra paint from the owner (edits, live rows, diffs); `None` costs nothing.
     decor: Option<Arc<Decorations>>,
-    /// A tab's result, whose rows can be edited: the context menu has "Delete row".
     pub editable: bool,
     overlay: Option<CellOverlay>,
-    /// Result rows at the last frame: when more arrive, a selection on virtual rows follows them.
     seen_rows: usize,
     _watch: Option<Task<()>>,
-    /// The references of the current result (`dataman_core::fknav`), once resolved; `fk_cols`
-    /// flags them per column for painting.
     fk: Option<Arc<ForeignKeys>>,
     fk_cols: Arc<Vec<bool>>,
-    /// A plain click on a cell whose release may open the cell menu (cleared by a drag).
     press: Option<Press>,
     menu: Option<CellMenu>,
     menu_focus: FocusHandle,
     _menu_blur: Option<Subscription>,
-    /// The find indicator on a cell: blue on a clicked value, yellow on the row an FK "Go to"
-    /// landed on (`motion::FindPop`, evaluated in `prepare`).
     pop: Option<FindPop<CellPos>>,
-    /// Pop on this column (by name) of the first row once rows arrive: the key of the row an FK
-    /// "Go to" opened this tab on. Survives `set_result` (the tab may run after this is set).
     land: Option<String>,
-    /// When cells last went to the clipboard: the result bar's Copy button says "Copied" for a
-    /// moment (`crate::motion::copied`).
     pub(crate) copied_at: Option<Instant>,
     _copied: Option<Task<()>>,
-    /// ⌘F: the find bar and the matching cells of the loaded rows.
     find: Option<GridFind>,
-    /// Hidden and moved columns (display ↔ result column).
     layout: ColLayout,
-    /// The layout, widths and horizontal scroll of the result before this one: a result with
-    /// the same columns (the next page of a table, a re-run) takes them over.
     kept: Option<(Vec<String>, ColLayout, Vec<f32>, f32, f32)>,
-    /// A table's data view (server-side sort, page offset).
     table: Option<TableMode>,
-    /// Widths the owner wants for a fresh result (`prefer_widths`).
     preferred: Option<Vec<f32>>,
-    /// The row-number gutter's width, shared with the tab's editor (`GutterShare`).
     gutter: Option<GutterShare>,
-    /// A cell or row selection dragged near or past an edge: where the pointer was last seen
-    /// (window coordinates, also outside the grid and the window), and the timer that keeps
-    /// scrolling while it stays there.
     auto: Option<AutoScroll>,
-    /// The cell under the pointer, when its column can show an eye (JSON, arrays), and whether
-    /// the pointer is on the eye itself.
     hover: Option<CellPos>,
     hover_eye: bool,
-    /// The eyes of the last frame: their cell and box (window coordinates).
     eyes: Vec<(CellPos, Bounds<Pixels>)>,
 }
 
-/// Drag-select autoscroll (Excel, Numbers): the grid scrolls towards the pointer while a
-/// selection is dragged into the last `EDGE_ZONE` pt before an edge of the cells or past it,
-/// faster the farther it is, and the selection follows the cell under the pointer.
 struct AutoScroll {
     at: Point<Pixels>,
     last: Instant,
     _tick: Option<Task<()>>,
 }
 
-/// The band inside each edge of the cells where a dragged selection starts scrolling.
 const EDGE_ZONE: f32 = 24.;
-/// The autoscroll timer's period.
 const AUTO_TICK: Duration = Duration::from_millis(16);
 
-/// Autoscroll speed (pt/s) for a pointer `d` pt into the edge band (`d` grows past the edge):
-/// slow in the band, a few hundred at the edge, thousands well past it.
 pub(crate) fn edge_speed(d: f32) -> f32 {
     if d <= 0. {
         return 0.;
@@ -465,8 +362,6 @@ pub(crate) fn edge_speed(d: f32) -> f32 {
     (60. + 8. * d + 0.08 * d * d).min(8000.)
 }
 
-/// The signed autoscroll speed along one axis for pointer `p` and the cells' span `lo..hi`
-/// (negative towards `lo`).
 pub(crate) fn axis_speed(p: f32, lo: f32, hi: f32) -> f32 {
     let zone = EDGE_ZONE.min((hi - lo).max(0.) / 4.);
     if p > hi - zone {
@@ -478,7 +373,6 @@ pub(crate) fn axis_speed(p: f32, lo: f32, hi: f32) -> f32 {
     }
 }
 
-/// What a result tab keeps of the grid while another result is on screen.
 pub struct GridView {
     rs: Option<Arc<ResultSet>>,
     widths: Vec<f32>,
@@ -491,12 +385,10 @@ pub struct GridView {
 }
 
 impl GridView {
-    /// A result not shown yet.
     pub fn fresh(rs: Arc<ResultSet>) -> Self {
         GridView { rs: Some(rs), ..Self::empty() }
     }
 
-    /// No result (the messages tab is on screen).
     pub fn empty() -> Self {
         GridView {
             rs: None,
@@ -510,14 +402,12 @@ impl GridView {
         }
     }
 
-    /// References resolved while the result was off screen.
     pub fn set_foreign_keys(&mut self, fk: Arc<ForeignKeys>) {
         self.fk_cols = Arc::new(fk.flags());
         self.fk = Some(fk);
     }
 }
 
-/// The grid's place in the back / forward history (`ResultGrid::spot`).
 #[derive(Clone, Debug)]
 pub struct GridSpot {
     rs: Option<std::sync::Weak<ResultSet>>,
@@ -525,30 +415,21 @@ pub struct GridSpot {
     scroll: (f32, f64),
 }
 
-/// Matching cells kept (and tinted); the count says `+` past it.
 const FIND_CAP: usize = 100_000;
-/// Searches up to this many cells run inline; bigger ones on the background executor.
 const FIND_INLINE_CELLS: usize = 8_000;
 const FIND_POP_DELAY: Duration = Duration::from_millis(150);
 
-/// The grid's find bar and what it found. The cells come from `dataman_core::find::search_rows`
-/// over the rows loaded so far: new rows are searched as they arrive (appended, when the order
-/// has not changed), a new query or order searches again. Paint only looks up the visible rows.
 struct GridFind {
     bar: Entity<FindBar>,
     open: bool,
     matcher: Option<Arc<Matcher>>,
     invalid: bool,
-    /// (display row, column), row by row.
     hits: Vec<(u32, u32)>,
     capped: bool,
     cur: Option<usize>,
-    /// What `hits` covers: the result, its display rows searched so far, its order then.
     covers: Option<(Arc<ResultSet>, usize, Option<(usize, SortDir)>)>,
-    /// The search in flight and its stop flag (set when the query changes).
     task: Option<Task<()>>,
     cancel: Arc<AtomicBool>,
-    /// The next fresh result lands on its first match from `origin` (a new query).
     land: bool,
     origin: (u32, u32),
     pop_task: Option<Task<()>>,
@@ -562,16 +443,11 @@ impl GridFind {
     }
 }
 
-/// The open cell menu ("Go to …", and the copy items on a right click).
 struct CellMenu {
     cell: CellPos,
     entries: Vec<MenuEntry>,
-    /// Top-left corner, window coordinates.
     origin: (f32, f32),
-    /// The highlighted entry (keyboard and hover share it).
     hi: Option<usize>,
-    /// The cell's rectangle in window coordinates: a click there is the grid's (it closes the
-    /// menu instead of reopening it).
     cell_rect: (f32, f32, f32, f32),
 }
 
@@ -635,8 +511,6 @@ impl ResultGrid {
         }
     }
 
-    /// Draws the row-number gutter as wide as the editor's line numbers (`GutterShare`).
-    /// The result bar's `+`: a new row at the end, its first field open (the owner adds it).
     pub fn insert_row(&mut self, cx: &mut Context<Self>) {
         self.follow_now();
         cx.emit(GridEvent::InsertRow);
@@ -646,7 +520,6 @@ impl ResultGrid {
         self.gutter = Some(share);
     }
 
-    /// Width the row numbers of `rows` rows need (a table's page counts from its offset).
     fn gutter_need(&self, rows: usize) -> f32 {
         let offset = self.table.as_ref().map_or(0, |t| t.offset);
         let num_w = self.char_w * 11. / 12.;
@@ -654,8 +527,6 @@ impl ResultGrid {
         (digits as f32 * num_w + 26.).max(GUTTER_MIN)
     }
 
-    /// A table's data view (or not): header clicks sort on the server, rows count from the
-    /// page's offset.
     pub fn set_table_mode(&mut self, m: Option<TableMode>, cx: &mut Context<Self>) {
         if self.table != m {
             self.table = m;
@@ -667,12 +538,10 @@ impl ResultGrid {
         self.table.as_ref()
     }
 
-    /// Result columns in display order (hidden ones left out).
     pub fn display_order(&self) -> Vec<usize> {
         (0..self.dcols()).map(|d| self.rc(d)).collect()
     }
 
-    /// Hides result column `c`, or shows every column again (header menu).
     pub fn hide_column(&mut self, c: usize, cx: &mut Context<Self>) {
         self.change_layout(|l| {
             l.hide(c);
@@ -683,8 +552,6 @@ impl ResultGrid {
         self.change_layout(ColLayout::show_all, cx);
     }
 
-    /// Changes the layout, keeping the selection on the same result columns (or dropping it
-    /// when its column went away).
     fn change_layout(&mut self, f: impl FnOnce(&mut ColLayout), cx: &mut Context<Self>) {
         let n = self.ncols();
         self.layout.ensure(n);
@@ -696,8 +563,6 @@ impl ResultGrid {
         });
         self.menu = None;
         self.clamp_scroll();
-        // An open find bar searches again: a hidden column's matches go, a shown one's come
-        // back, and the order follows the columns on screen.
         if let Some(fd) = self.find.as_mut().filter(|f| f.open) {
             fd.stop();
             fd.covers = None;
@@ -715,62 +580,47 @@ impl ResultGrid {
         self.layout.pos.len() == self.ncols()
     }
 
-    /// Display columns.
     fn dcols(&self) -> usize {
         if self.layout_ok() { self.layout.shown() } else { self.ncols() }
     }
 
-    /// Display → result column.
     fn rc(&self, d: usize) -> usize {
         if self.layout_ok() { self.layout.result_col(d).unwrap_or(d) } else { d }
     }
 
-    /// Result → display column (`None` when hidden).
     fn dc(&self, c: usize) -> Option<usize> {
         if self.layout_ok() { self.layout.display_col(c) } else { (c < self.ncols()).then_some(c) }
     }
 
-    /// Width of display column `d`.
     fn dwidth(&self, d: usize) -> f32 {
         self.widths.get(self.rc(d)).copied().unwrap_or(MIN_W)
     }
 
-    /// Left edge of display column `d` in the content (no scroll).
     fn content_x(&self, d: usize) -> f32 {
         (0..d.min(self.dcols())).map(|i| self.dwidth(i)).sum()
     }
 
-    /// Left edge of display column `d` relative to the cells area, as drawn now (the horizontal
-    /// scroll moves every column).
     fn col_left(&self, d: usize) -> f32 {
         self.content_x(d) - self.scroll.0
     }
 
-    /// Demo and checks: a cell's rectangle in window coordinates, by display row and result
-    /// column (`None` when the column is hidden).
     pub fn cell_bounds(&self, row: usize, col: usize) -> Option<(f32, f32, f32, f32)> {
         let d = self.dc(col)?;
         Some(self.cell_rect(CellPos { row, col: d }))
     }
 
-    /// The active row (the head of the selection), if any.
     pub fn active_row(&self) -> Option<usize> {
         self.sel.map(|s| s.head.row)
     }
 
-    /// The result about to arrive is the row an FK "Go to" asked for: pop on its `key` column
-    /// in the first row when it shows up.
     pub fn land_on(&mut self, key: Option<String>) {
         self.land = key;
     }
 
-    /// Demo and live checks: the cell a pop is running on now, and its style.
     pub fn demo_pop(&self) -> Option<((usize, usize), PopStyle)> {
         self.live_pop().map(|(c, style, _)| ((c.row, c.col), style))
     }
 
-    /// The references of `rs` (resolved by the tab when it arrived). Ignored when the grid has
-    /// moved on to another result since.
     pub fn set_foreign_keys(&mut self, rs: &Arc<ResultSet>, fk: Arc<ForeignKeys>, cx: &mut Context<Self>) {
         if !self.rs.as_ref().is_some_and(|r| Arc::ptr_eq(r, rs)) {
             return;
@@ -780,18 +630,15 @@ impl ResultGrid {
         cx.notify();
     }
 
-    /// Whether result column `col` holds references (demo, live checks).
     pub fn is_fk_column(&self, col: usize) -> bool {
         self.fk_cols.get(col).copied().unwrap_or(false)
     }
 
-    /// Demo and live checks: the window position of a cell's center (last frame's layout).
     pub fn demo_cell_point(&self, row: usize, col: usize) -> Point<Pixels> {
         let r = self.cell_rect(CellPos { row, col: self.dc(col).unwrap_or(col) });
         point(px(r.0 + r.2.min(120.) / 2.), px(r.1 + r.3 / 2.))
     }
 
-    /// Demo and checks: the window position of a header cell's centre (result column).
     pub fn demo_header_point(&self, col: usize) -> Point<Pixels> {
         let d = self.dc(col).unwrap_or(col);
         let g = &self.geo;
@@ -799,8 +646,6 @@ impl ResultGrid {
         point(px(x), px(g.bounds.origin.y.pt() + HEADER_H / 2.))
     }
 
-    /// Demo and live checks: the open cell menu as (cell, item labels, highlighted entry,
-    /// top-left corner); separators are `—`.
     pub fn demo_menu(&self) -> Option<((usize, usize), Vec<String>, Option<usize>, (f32, f32))> {
         let m = self.menu.as_ref()?;
         let labels = m
@@ -814,12 +659,10 @@ impl ResultGrid {
         Some(((m.cell.row, self.rc(m.cell.col)), labels, m.hi, m.origin))
     }
 
-    /// Demo and live checks: (anchor, head) of the selection, by result column.
     pub fn demo_selection(&self) -> Option<((usize, usize), (usize, usize))> {
         self.sel.map(|s| ((s.anchor.row, self.rc(s.anchor.col)), (s.head.row, self.rc(s.head.col))))
     }
 
-    /// Opens the header menu of result column `col` (demo).
     pub fn demo_header_menu(&mut self, col: usize, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(d) = self.dc(col) {
             let p = self.demo_header_point(col);
@@ -827,7 +670,6 @@ impl ResultGrid {
         }
     }
 
-    /// Demo and live checks: a view is laid over a cell (the inline editor).
     pub fn demo_editing(&self) -> bool {
         self.overlay.is_some()
     }
@@ -836,9 +678,7 @@ impl ResultGrid {
         &self.menu_focus
     }
 
-    /// Shows a new result (or none). Redraws whenever the result changes.
     pub fn set_result(&mut self, rs: Option<Arc<ResultSet>>, rt: tokio::runtime::Handle, cx: &mut Context<Self>) {
-        // What the user made of the columns carries over to a result with the same ones.
         if let Some(cols) = self.rs.as_ref().and_then(|r| r.columns())
             && self.widths.len() == cols.len()
         {
@@ -864,7 +704,6 @@ impl ResultGrid {
         self.press = None;
         self.menu = None;
         self.pop = None;
-        // An open find bar searches the new result (on its first frame).
         if let Some(f) = &mut self.find {
             f.stop();
             f.covers = None;
@@ -878,8 +717,6 @@ impl ResultGrid {
             cx.spawn(async move |this, cx| {
                 while rx.changed().await.is_ok() {
                     let alive = this.update(cx, |g, cx| {
-                        // New rows or a new order: an open find bar searches them, a sort
-                        // takes them in once they stop coming.
                         g.find_sync(cx);
                         g.resort_settled(cx);
                         cx.notify()
@@ -894,10 +731,6 @@ impl ResultGrid {
         cx.notify();
     }
 
-    /// A fresh read of the same list (the activity monitor's refresh): with the same columns, the
-    /// widths, layout and scroll carry over and the selection moves to display row `row` (or
-    /// goes); the caller sorts `rs` as the old one was (`ResultSet::sort_state`). Otherwise it
-    /// is `set_result`.
     pub fn replace_result(&mut self, rs: Arc<ResultSet>, row: Option<usize>, rt: tokio::runtime::Handle, cx: &mut Context<Self>) {
         let same = match (self.rs.as_ref().and_then(|r| r.columns()), rs.columns()) {
             (Some(a), Some(b)) => a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x.name == y.name),
@@ -922,16 +755,11 @@ impl ResultGrid {
         self.clamp_scroll();
     }
 
-    /// Column widths for the next result whose widths are not known yet (one per column; a
-    /// list of another length is ignored).
     pub fn prefer_widths(&mut self, widths: Vec<f32>) {
         self.preferred = Some(widths);
     }
 
-    /// The per-result part of the grid's state (the result tabs of a script keep one each): the
-    /// result, column widths, scroll, selection and its references. The sort lives in the result.
     pub fn take_view(&mut self) -> GridView {
-        // A fresh result with the same columns (the next page of a table) starts from these.
         if let Some(cols) = self.rs.as_ref().and_then(|r| r.columns())
             && self.widths.len() == cols.len()
         {
@@ -950,7 +778,6 @@ impl ResultGrid {
         }
     }
 
-    /// Shows a result with the state it had when it was last on screen (`take_view`).
     pub fn show_view(&mut self, v: GridView, rt: Option<tokio::runtime::Handle>, cx: &mut Context<Self>) {
         match rt.or_else(|| self.rt.clone()) {
             Some(rt) => self.set_result(v.rs, rt, cx),
@@ -967,28 +794,22 @@ impl ResultGrid {
         cx.notify();
     }
 
-    /// Installs (or clears) the owner's decorations. Cheap: the grid repaints only the
-    /// visible rows, looking each one up by storage row.
     pub fn set_decorations(&mut self, d: Option<Arc<Decorations>>, cx: &mut Context<Self>) {
         self.follow_now();
         self.decor = d;
         let n = self.rows().max(1) - 1;
         if let Some(s) = &mut self.sel {
-            // A selection on virtual rows that went away.
             s.anchor.row = s.anchor.row.min(n);
             s.head.row = s.head.row.min(n);
         }
         cx.notify();
     }
 
-    /// Places a view over one cell (an inline editor), or removes it.
     pub fn set_overlay(&mut self, o: Option<CellOverlay>, cx: &mut Context<Self>) {
         self.overlay = o;
         cx.notify();
     }
 
-    /// Rows arrived while rows are being inserted (virtual rows after the result): a selection
-    /// on those rows moves down with them instead of landing on a real row.
     fn follow_rows(&mut self, data_rows: usize) {
         if data_rows == self.seen_rows {
             return;
@@ -1007,12 +828,10 @@ impl ResultGrid {
         self.follow_rows(n);
     }
 
-    /// Where the grid stands (result, selection, scroll), for back / forward (`nav`).
     pub fn spot(&self) -> GridSpot {
         GridSpot { rs: self.rs.as_ref().map(Arc::downgrade), sel: self.sel, scroll: self.scroll }
     }
 
-    /// Back to a `spot` taken on the result still on screen; another result leaves the grid be.
     pub fn set_spot(&mut self, s: &GridSpot, cx: &mut Context<Self>) {
         let same = match (&s.rs, &self.rs) {
             (Some(w), Some(rs)) => std::ptr::eq(w.as_ptr(), Arc::as_ptr(rs)),
@@ -1033,8 +852,6 @@ impl ResultGrid {
         cx.notify();
     }
 
-    /// Moves the active cell (and reveals it). `row` is a display row of the result as it is now,
-    /// `col` a result column (a hidden one keeps the column of the selection).
     pub fn select_cell(&mut self, row: usize, col: usize, cx: &mut Context<Self>) {
         self.follow_now();
         let (rows, ncols) = (self.rows(), self.dcols());
@@ -1048,27 +865,22 @@ impl ResultGrid {
         cx.notify();
     }
 
-    /// The selection as (display rows, result columns in display order), for exporting it.
     pub fn selection(&self) -> Option<(Vec<usize>, Vec<usize>)> {
         let s = self.sel?;
         Some((s.rows().collect(), s.cols(self.dcols()).map(|d| self.rc(d)).collect()))
     }
 
-    /// The selected display rows (whole rows or the rows of a cell range), against the result
-    /// as it is now.
     pub fn selected_rows(&mut self) -> Vec<usize> {
         self.follow_now();
         self.sel.map(|s| s.rows().collect()).unwrap_or_default()
     }
 
-    /// Scrolls sideways to an absolute pixel offset (demo).
     pub fn set_scroll_x(&mut self, x: f32, cx: &mut Context<Self>) {
         self.scroll.0 = x;
         self.clamp_scroll();
         cx.notify();
     }
 
-    /// Scrolls to an absolute pixel offset (benchmarks).
     pub fn set_scroll_y(&mut self, y: f32, cx: &mut Context<Self>) {
         self.scroll.1 = y as f64;
         self.clamp_scroll();
@@ -1080,12 +892,10 @@ impl ResultGrid {
     }
 
     fn max_y(&self) -> f64 {
-        // Rows added since the last frame (a `+` revealing its new row) count already.
         let content_h = self.geo.content_h.max(self.rows() as f64 * ROW_H as f64);
         (content_h - self.geo.body_h as f64).max(0.)
     }
 
-    /// Display rows: the result's, then the virtual rows of the decorations.
     fn rows(&self) -> usize {
         self.rs.as_ref().map(|r| r.rows()).unwrap_or(0) + self.virtual_rows()
     }
@@ -1105,15 +915,12 @@ impl ResultGrid {
         self.scroll.1 = self.scroll.1.clamp(0., max_y);
     }
 
-    /// Initial widths by type (Spec: int 84 · numeric 96 · text 200 · timestamptz 206 · jsonb
-    /// 290 · bool 72), widened to fit the header. Never scans the result.
     fn ensure_widths(&mut self, snap: &Snapshot) {
         let n = snap.columns.len();
         if self.widths.len() == n {
             self.layout.ensure(n);
             return;
         }
-        // The same columns as the result before (next page, re-run): its layout and widths.
         if let Some((names, layout, widths, sx, at)) = self.kept.take()
             && names.len() == n
             && names.iter().zip(snap.columns.iter()).all(|(a, b)| *a == b.name)
@@ -1131,7 +938,7 @@ impl ResultGrid {
             return;
         }
         let (cw, cw_type) = (self.char_w, self.char_w * 10.5 / 12.);
-        // The Spec's widths are for a 0.6 em face (7.2 pt at 12 pt): a narrower one scales them.
+        // The type widths are for a 0.6 em face (7.2 pt at 12 pt): a narrower one scales them.
         let per_type = cw / 7.2;
         self.widths = (0..n)
             .map(|c| {
@@ -1143,8 +950,6 @@ impl ResultGrid {
             .collect();
     }
 
-    /// The UI font changed since the widths were made: scale them (and the horizontal scroll)
-    /// by the new advance, so every column shows as many characters as before.
     fn follow_font(&mut self) {
         let (now, at) = (self.char_w, self.widths_at);
         if self.widths.is_empty() || at <= 0. || (now - at).abs() < 0.01 {
@@ -1161,13 +966,10 @@ impl ResultGrid {
         self.widths_at = now;
     }
 
-    /// Demo and checks: the column widths as laid out, and the advance they were made for.
     pub fn demo_widths(&self) -> (Vec<f32>, f32) {
         (self.widths.clone(), self.char_w)
     }
 
-    /// Display column under `x` (relative to the cells area, scrolled); past the last column,
-    /// the last one.
     fn hit_col(&self, x: f32) -> Option<usize> {
         let n = self.dcols();
         if n == 0 || self.widths.is_empty() {
@@ -1184,7 +986,6 @@ impl ResultGrid {
         Some(n - 1)
     }
 
-    /// Cell under a window position (cells area only); the column is a display column.
     fn hit_cell(&self, p: Point<Pixels>) -> Option<CellPos> {
         let g = &self.geo;
         let x = p.x.pt() - g.bounds.origin.x.pt() - g.gutter;
@@ -1215,7 +1016,6 @@ impl ResultGrid {
         self.scroll.0 -= dx;
         self.scroll.1 -= dy as f64;
         self.clamp_scroll();
-        // Another cell is under the pointer now: the eye follows it.
         self.track_hover(ev.position, true, cx);
         cx.notify();
     }
@@ -1223,21 +1023,18 @@ impl ResultGrid {
     fn on_mouse_down(&mut self, ev: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.focus, cx);
         self.follow_now();
-        // Any press closes the cell menu.
         self.menu = None;
         self.press = None;
         let g = self.geo;
         let (x, y) = self.local(ev.position);
         let w = g.bounds.size.width.pt();
         let h = g.bounds.size.height.pt();
-        // Scrollbars.
         if x >= w - BAR && y >= HEADER_H && g.content_h > g.body_h as f64 {
             let (top, len) = self.v_thumb();
             let ty = y - HEADER_H;
             if ty >= top && ty <= top + len {
                 self.drag = Some(Drag::VThumb { grab: ty - top });
             } else {
-                // Page towards the click.
                 let page = g.body_h - ROW_H;
                 self.scroll.1 += if ty < top { -page as f64 } else { page as f64 };
                 self.clamp_scroll();
@@ -1262,14 +1059,12 @@ impl ResultGrid {
                 return;
             }
             let bx = x - g.gutter;
-            // ⌃-click is the Mac's right click.
             if ev.modifiers.control && !ev.modifiers.platform {
                 if let Some(d) = self.hit_col(bx) {
                     self.header_menu(d, ev.position, window, cx);
                 }
                 return;
             }
-            // Resize handle: near a column's right border, as drawn.
             for d in 0..self.dcols() {
                 let right = self.col_left(d) + self.dwidth(d);
                 if (bx - right).abs() <= RESIZE_GRAB {
@@ -1282,8 +1077,6 @@ impl ResultGrid {
             }
             return;
         }
-        // The eye of a JSON or array cell: its value sheet. The cell becomes the selected one,
-        // quietly (no pop, no drag, no cell menu); a second click is not an edit.
         if !ev.modifiers.control
             && let Some(cell) = self.eye_at(ev.position)
         {
@@ -1297,7 +1090,6 @@ impl ResultGrid {
             return;
         }
         let Some(cell) = self.hit_cell(ev.position) else { return };
-        // ⌃-click is the Mac's right click.
         if ev.modifiers.control && !ev.modifiers.platform && x >= g.gutter {
             self.context_menu(cell, ev.position, window, cx);
             return;
@@ -1314,10 +1106,6 @@ impl ResultGrid {
                 (true, Some(s)) => s.anchor,
                 _ => cell,
             };
-            // A plain click that selects a value pops it (Xcode's find indicator, in the
-            // selection blue). Not a click on the value already selected, not when extending
-            // (⇧, ⌘ = straight to the reference), not the second click of a double click (it
-            // opens the editor over the cell): those keep or replace the selection quietly.
             let fresh = ev.click_count == 1
                 && !ev.modifiers.shift
                 && !ev.modifiers.platform
@@ -1348,7 +1136,6 @@ impl ResultGrid {
         let g = self.geo;
         let (x, y) = self.local(ev.position);
         match drag {
-            // The window-wide listener of `paint_frame` follows these (also past the grid).
             Drag::Cells | Drag::Rows => return,
             Drag::Resize { col, start_x, start_w } => {
                 if let Some(w) = self.widths.get_mut(col) {
@@ -1370,7 +1157,6 @@ impl ResultGrid {
                 }
             }
             Drag::Header { x: x0, .. } => {
-                // Moved: no sort (columns do not move).
                 if (x - x0).abs() > 3. {
                     self.drag = Some(Drag::Header { col: usize::MAX, x: x0 });
                 }
@@ -1380,10 +1166,6 @@ impl ResultGrid {
         cx.notify();
     }
 
-    /// A dragged cell or row selection follows the pointer at window position `p` (inside the
-    /// grid or not): the head moves to the cell under it (clamped to the cells on screen), and
-    /// near or past an edge the grid scrolls on its own until the pointer comes back or the
-    /// button is released.
     fn drag_to(&mut self, p: Point<Pixels>, cx: &mut Context<Self>) {
         if !matches!(self.drag, Some(Drag::Cells | Drag::Rows)) {
             self.auto = None;
@@ -1417,8 +1199,6 @@ impl ResultGrid {
         cx.notify();
     }
 
-    /// The autoscroll speed (pt/s, x and y) for the pointer at window position `p`: zero on an
-    /// axis that cannot scroll that way any more; a row drag scrolls only vertically.
     fn auto_velocity(&self, p: Point<Pixels>) -> (f32, f32) {
         let g = self.geo;
         let (x, y) = self.local(p);
@@ -1435,8 +1215,6 @@ impl ResultGrid {
         (vx, vy)
     }
 
-    /// One autoscroll step: scrolls by the speed × the time since the last one and moves the
-    /// selection's head; false once there is nothing left to do (the timer stops).
     fn auto_tick(&mut self, cx: &mut Context<Self>) -> bool {
         if !matches!(self.drag, Some(Drag::Cells | Drag::Rows)) {
             self.auto = None;
@@ -1451,7 +1229,6 @@ impl ResultGrid {
             return false;
         }
         let now = Instant::now();
-        // A stalled frame does not jump: at most 50 ms of travel per step.
         let dt = (now - last).as_secs_f32().min(0.05);
         self.scroll.0 += vx * dt;
         self.scroll.1 += (vy * dt) as f64;
@@ -1464,7 +1241,6 @@ impl ResultGrid {
         true
     }
 
-    /// Moves the dragged selection's head to the cell under `p`, clamped to the cells on screen.
     fn extend_drag(&mut self, p: Point<Pixels>) {
         let g = self.geo;
         let o = g.bounds.origin;
@@ -1473,23 +1249,17 @@ impl ResultGrid {
         let p = point(p.x.clamp(o.x + px(g.gutter + 1.), o.x + px(right)), p.y.clamp(o.y + px(HEADER_H + 1.), o.y + px(bottom)));
         if let (Some(cell), Some(sel)) = (self.hit_cell(p), self.sel.as_mut()) {
             sel.head = if sel.rows { CellPos { row: cell.row, col: sel.head.col } } else { cell };
-            // A drag selects a range: its release opens nothing.
             if self.press.is_some_and(|pr| (pr.row, pr.col) != (cell.row, cell.col)) {
                 self.press = None;
             }
         }
     }
 
-    /// Demo and checks: the cells area (x, y, w, h) in window coordinates, as last laid out.
     pub fn demo_cells_rect(&self) -> (f32, f32, f32, f32) {
         let g = self.geo;
         (g.bounds.origin.x.pt() + g.gutter, g.bounds.origin.y.pt() + HEADER_H, g.body_w, g.body_h)
     }
 
-    /// Demo and checks: a row's height on screen (window points, zoomed) and the measured
-    /// advance in the UI's points (the same at any zoom).
-    /// Demo and checks: the left edge of the row-number gutter's divider (window pixels), as
-    /// last laid out.
     pub fn demo_gutter_divider(&self) -> f32 {
         (self.geo.bounds.origin.x + px(self.geo.gutter - 1.)).as_f32()
     }
@@ -1498,12 +1268,10 @@ impl ResultGrid {
         (px(ROW_H).as_f32(), self.char_w)
     }
 
-    /// Demo and checks: the scroll offsets (x, y) in points.
     pub fn demo_scroll(&self) -> (f32, f64) {
         self.scroll
     }
 
-    /// Demo and checks: whether the drag autoscroll timer runs.
     pub fn demo_autoscrolling(&self) -> bool {
         self.auto.as_ref().is_some_and(|a| a._tick.is_some())
     }
@@ -1518,7 +1286,6 @@ impl ResultGrid {
             _ => {}
         }
         self.drag = None;
-        // The release of a ⌘-click on a reference: straight there, no menu.
         if let (Some(p), Some(s)) = (self.press.take(), self.sel) {
             let at = (s.head.row, s.head.col);
             let jumps = if (p.row, p.col) == at && s.single() { self.jumps_at(s.head) } else { Vec::new() };
@@ -1529,10 +1296,6 @@ impl ResultGrid {
         cx.notify();
     }
 
-    // The cell menu.
-
-    /// Where the references of a cell lead: one jump per target. None for NULL values, rows
-    /// being inserted and cells with a pending edit (the stored value is not what is shown).
     fn jumps_at(&self, c: CellPos) -> Vec<FkJump> {
         let (Some(fk), Some(rs)) = (&self.fk, &self.rs) else { return Vec::new() };
         let col = self.rc(c.col);
@@ -1558,7 +1321,6 @@ impl ResultGrid {
             .collect()
     }
 
-    /// A cell's rectangle in window coordinates (from the last frame's layout).
     fn cell_rect(&self, c: CellPos) -> (f32, f32, f32, f32) {
         let g = &self.geo;
         let x = g.bounds.origin.x.pt() + g.gutter + self.col_left(c.col);
@@ -1566,8 +1328,6 @@ impl ResultGrid {
         (x, y, self.dwidth(c.col), ROW_H)
     }
 
-    /// Opens the cell menu: under the cell (a click, ⌥↓) or at the pointer (right click). From
-    /// the keyboard the first item is highlighted; ↩ takes the first one anyway.
     fn open_menu(&mut self, cell: CellPos, entries: Vec<MenuEntry>, at: Option<Point<Pixels>>, keyboard: bool, window: &mut Window, cx: &mut Context<Self>) {
         if entries.is_empty() {
             return;
@@ -1579,7 +1339,6 @@ impl ResultGrid {
         let origin = match at {
             Some(p) => crate::tree_menu::place((p.x.pt(), p.y.pt()), p.y.pt(), grid_menu::MENU_W, h, vp),
             None => {
-                // A cell scrolled half out of view on the left: the menu starts at the body.
                 let left = r.0.max(self.geo.bounds.origin.x.pt() + self.geo.gutter);
                 crate::tree_menu::place((left, r.1 + ROW_H + grid_menu::GAP), r.1 - grid_menu::GAP, grid_menu::MENU_W, h, vp)
             }
@@ -1596,7 +1355,6 @@ impl ResultGrid {
             }
         });
         if self._menu_blur.is_none() {
-            // The focus went elsewhere (a shortcut, another window): the menu goes away.
             self._menu_blur = Some(cx.on_focus_out(&self.menu_focus, window, |g, _, _, cx| {
                 if g.menu.take().is_some() {
                     cx.notify();
@@ -1606,8 +1364,6 @@ impl ResultGrid {
         cx.notify();
     }
 
-    /// Right click (or ⌃-click) on a cell: inside the selection it keeps it (macOS), elsewhere
-    /// it selects the cell; the menu has the cell's "Go to …" items and the copy items.
     fn context_menu(&mut self, cell: CellPos, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
         let inside = self.sel.is_some_and(|s| s.rows().contains(&cell.row) && s.cols(self.dcols()).contains(&cell.col));
         if !inside {
@@ -1617,7 +1373,6 @@ impl ResultGrid {
         self.drag = None;
         let jumps = self.jumps_at(cell);
         let mut entries = grid_menu::entries(jumps, true);
-        // A table's data view: "Filter by value" on a stored value (not a pending edit or a new row).
         if self.table.is_some()
             && let Some(rs) = &self.rs
             && cell.row < rs.rows()
@@ -1632,7 +1387,6 @@ impl ResultGrid {
         }
         if self.editable {
             let rows = self.selected_rows();
-            // "Restore" when every stored row among them is already marked (⌫ toggles).
             let (stored, marked) = match (&self.rs, &self.decor) {
                 (Some(rs), Some(d)) => {
                     let snap = rs.snapshot();
@@ -1647,13 +1401,11 @@ impl ResultGrid {
         self.open_menu(cell, entries, Some(at), false, window, cx);
     }
 
-    /// Right click on a header: sort and filter (data view), hide, show all.
     fn header_menu(&mut self, d: usize, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
         let c = self.rc(d);
         let entries = grid_menu::header_entries(c, self.table.is_some(), self.layout.hidden_count(), self.dcols() > 1);
         self.press = None;
         self.drag = None;
-        // The header cell stands for the menu's cell (a click there only closes it).
         let cell = CellPos { row: usize::MAX, col: d };
         let vp = window.viewport_size();
         let vp = (vp.width.pt(), vp.height.pt());
@@ -1691,7 +1443,6 @@ impl ResultGrid {
             }
             return;
         }
-        // Cells only, and not the empty space under the last row.
         let below = (y - HEADER_H) as f64 + self.scroll.1 >= self.rows() as f64 * ROW_H as f64;
         if y < HEADER_H || x < g.gutter || x >= w - BAR || y >= h - BAR || below {
             return;
@@ -1701,7 +1452,6 @@ impl ResultGrid {
         }
     }
 
-    /// ⌥↓: the menu of the active cell, when it holds a reference.
     fn open_menu_from_keys(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.follow_now();
         let Some(s) = self.sel.filter(Selection::single) else { return };
@@ -1713,7 +1463,6 @@ impl ResultGrid {
         self.open_menu(s.head, grid_menu::entries(jumps, false), None, true, window, cx);
     }
 
-    /// Closes the menu; `refocus` gives the keys back to the grid.
     fn close_menu(&mut self, refocus: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.menu = None;
         if refocus {
@@ -1729,7 +1478,6 @@ impl ResultGrid {
         cx.notify();
     }
 
-    /// Runs entry `ix` (or the highlighted one, or the first).
     fn menu_run(&mut self, ix: Option<usize>, window: &mut Window, cx: &mut Context<Self>) {
         let Some(m) = self.menu.take() else { return };
         window.focus(&self.focus, cx);
@@ -1750,7 +1498,6 @@ impl ResultGrid {
             Some(MenuEntry::Item(MenuItem::SortAsc(col))) => self.sort_by_menu(*col, SortDir::Asc, cx),
             Some(MenuEntry::Item(MenuItem::SortDesc(col))) => self.sort_by_menu(*col, SortDir::Desc, cx),
             Some(MenuEntry::Item(MenuItem::Filter(col))) => {
-                // Under the header cell.
                 let r = m.cell_rect;
                 cx.emit(GridEvent::Filter { col: *col, at: (r.0.max(self.geo.bounds.origin.x.pt() + self.geo.gutter), r.1 + r.3 + 2.) });
             }
@@ -1767,7 +1514,6 @@ impl ResultGrid {
         cx.notify();
     }
 
-    /// Runs a menu entry by its label (demo, checks).
     pub fn demo_menu_run(&mut self, label: &str, window: &mut Window, cx: &mut Context<Self>) {
         let ix = self.menu.as_ref().and_then(|m| {
             m.entries.iter().position(|e| matches!(e, MenuEntry::Item(it) if it.look().1.as_ref() == label))
@@ -1821,11 +1567,9 @@ impl ResultGrid {
             .on_action(cx.listener(|g, _: &MenuDown, _, cx| g.menu_move(1, cx)))
             .on_action(cx.listener(|g, _: &MenuConfirm, window, cx| g.menu_run(None, window, cx)))
             .on_action(cx.listener(|g, _: &MenuClose, window, cx| g.close_menu(true, window, cx)))
-            // Typing closes it (keys the grid binds, like ←→ or ⌘C, reach the grid and close it there).
             .on_key_down(cx.listener(|g, _: &KeyDownEvent, window, cx| g.close_menu(true, window, cx)))
             .on_mouse_down_out(cx.listener(move |g, ev: &MouseDownEvent, window, cx| {
                 let (x, y) = (ev.position.x.pt(), ev.position.y.pt());
-                // On its own cell the grid decides (a plain click there only closes it).
                 if x >= cell.0 && x < cell.0 + cell.2 && y >= cell.1 && y < cell.1 + cell.3 {
                     return;
                 }
@@ -1835,10 +1579,7 @@ impl ResultGrid {
         Some(deferred(anchored().position(point(px(m.origin.0), px(m.origin.1))).child(ui::menu_in("grid-menu-in", pop))).priority(2).into_any_element())
     }
 
-    /// Cycles a column through ascending → descending → original order, over the rows already
-    /// loaded (`sort_local`); the query does not run again.
     pub fn toggle_sort(&mut self, col: usize, cx: &mut Context<Self>) {
-        // A table's data view sorts on the server (right across its pages).
         if let Some(t) = &self.table {
             let dir = match t.sort {
                 Some((c, SortDir::Asc)) if c == col => Some(SortDir::Desc),
@@ -1857,7 +1598,6 @@ impl ResultGrid {
         self.sort_local(next, cx);
     }
 
-    /// The header menu's Sort ascending / descending.
     fn sort_by_menu(&mut self, col: usize, dir: SortDir, cx: &mut Context<Self>) {
         if self.table.is_some() {
             cx.emit(GridEvent::ServerSort { col, dir: Some(dir) });
@@ -1866,10 +1606,6 @@ impl ResultGrid {
         }
     }
 
-    /// Sorts the result here (the query does not run again), on the core's threads; `None`
-    /// brings back the server's order. A result not read to its end reads the rest first (a sort
-    /// is of the whole result, as Fetch all): rows still arriving show after the sorted ones until
-    /// it ends, when the sort is applied again (`resort_settled`).
     pub fn sort_local(&mut self, by: Option<(usize, SortDir)>, cx: &mut Context<Self>) {
         let (Some(rs), Some(rt)) = (self.rs.clone(), self.rt.clone()) else { return };
         if self.sorting {
@@ -1892,8 +1628,6 @@ impl ResultGrid {
         cx.notify();
     }
 
-    /// A sorted result that took more rows and stopped taking them (paused or finished): the
-    /// sort covers them too.
     fn resort_settled(&mut self, cx: &mut Context<Self>) {
         let Some(rs) = &self.rs else { return };
         if self.sorting || self.table.is_some() || rs.phase() == Phase::Running {
@@ -1925,9 +1659,6 @@ impl ResultGrid {
         (left, len)
     }
 
-    // Keyboard.
-
-    /// Moves the active cell by rows and display columns.
     pub fn move_by(&mut self, dr: isize, dc: isize, extend: bool, cx: &mut Context<Self>) {
         self.follow_now();
         let (rows, ncols) = (self.rows(), self.dcols());
@@ -1981,8 +1712,6 @@ impl ResultGrid {
         self.mark_copied(cx);
     }
 
-    /// Something of this result went to the clipboard: "Copied" in the result bar for a
-    /// moment, then the Copy button again (redrawn through its fades and at its end only).
     pub fn mark_copied(&mut self, cx: &mut Context<Self>) {
         let start = Instant::now();
         self.copied_at = Some(start);
@@ -2011,7 +1740,6 @@ impl ResultGrid {
         cx.notify();
     }
 
-    /// Selects one cell (demo screenshots) or a range of rows in one column (a result column).
     pub fn select_cells(&mut self, rows: std::ops::RangeInclusive<usize>, col: usize, cx: &mut Context<Self>) {
         let col = self.dc(col).unwrap_or(col);
         self.sel = Some(Selection {
@@ -2022,14 +1750,11 @@ impl ResultGrid {
         cx.notify();
     }
 
-    /// The active cell (the head of a cell selection): display row, result column.
     pub fn active_cell(&self) -> Option<(usize, usize)> {
         let s = self.sel?;
         (!s.rows || s.anchor.row == s.head.row).then_some((s.head.row, self.rc(s.head.col)))
     }
 
-    /// The value of a cell (display row, result column) as drawn: a pending edit's text over the
-    /// stored one, a row being inserted's own; `None` for NULL. Outer `None`: no such cell.
     fn shown_value(&self, snap: &Snapshot, row: usize, col: usize) -> Option<Option<String>> {
         let data_rows = snap.rows();
         let decor = self.decor.as_ref().filter(|d| !d.is_empty());
@@ -2043,8 +1768,6 @@ impl ResultGrid {
         Some(over.unwrap_or_else(|| snap.text(row, col).map(|v| v.into_owned())))
     }
 
-    /// What the value sheet shows for a cell (display row, result column): `None` unless it is
-    /// a JSON object or array, or an array (`value_view::viewable`), not NULL.
     pub fn value_at(&self, row: usize, col: usize) -> Option<crate::value_view::ValueCell> {
         let snap = self.rs.as_ref()?.snapshot();
         let c = snap.columns.get(col)?;
@@ -2059,16 +1782,11 @@ impl ResultGrid {
         })
     }
 
-    /// Whether a cell (display row, result column) of `snap` shows an eye when hovered or
-    /// selected (see `value_at`).
     fn has_eye(&self, snap: &Snapshot, row: usize, col: usize) -> bool {
         let Some(c) = snap.columns.get(col).filter(|c| crate::value_view::shape_of(c.kind, &c.type_name).is_some()) else { return false };
         self.shown_value(snap, row, col).flatten().is_some_and(|v| crate::value_view::viewable(c.kind, &c.type_name, &v))
     }
 
-    /// The pointer moved (window position; `inside`: over the cells, nothing on top): the
-    /// cell under it when its column can show an eye, and whether it is on the eye. Redraws
-    /// only when that changes (an eye appears, goes, or lights up).
     fn track_hover(&mut self, p: Point<Pixels>, inside: bool, cx: &mut Context<Self>) {
         let g = self.geo;
         let (x, y) = self.local(p);
@@ -2091,12 +1809,10 @@ impl ResultGrid {
         }
     }
 
-    /// The cell whose eye (as last drawn) is at window position `p`.
     fn eye_at(&self, p: Point<Pixels>) -> Option<CellPos> {
         self.eyes.iter().find(|(_, b)| b.contains(&p)).map(|(c, _)| *c)
     }
 
-    /// Checks: the eyes on screen (display row, result column) and their centres (window).
     pub fn demo_eyes(&self) -> Vec<((usize, usize), Point<Pixels>)> {
         self.eyes.iter().map(|(c, b)| ((c.row, self.rc(c.col)), b.center())).collect()
     }
@@ -2109,7 +1825,6 @@ impl ResultGrid {
         self.sorting
     }
 
-    /// `sel 5 cells · Σ 2,184.20 · avg 436.84` for the result bar; cached per selection.
     pub fn selection_summary(&mut self) -> Option<SharedString> {
         let (rs, sel) = (self.rs.as_ref()?, self.sel?);
         let rows = sel.rows();
@@ -2146,9 +1861,6 @@ impl ResultGrid {
         Some(text)
     }
 
-    /// This frame of the running pop, asking for the next frame while it runs. Dropped when it
-    /// is over, when its cell is gone, and for a click's pop when its cell is no longer the one
-    /// selected value (a drag made a range, the keys moved on).
     fn pop_frame(&mut self, window: &mut Window) -> Option<(CellPos, PopStyle, PopFrame)> {
         match self.live_pop() {
             Some(f) => {
@@ -2169,8 +1881,6 @@ impl ResultGrid {
             && (p.style == PopStyle::Find || self.sel.is_some_and(|s| s.single() && s.head == p.target));
         p.frame(std::time::Instant::now()).filter(|_| alive).map(|f| (p.target, p.style, f))
     }
-
-    // Find.
 
     fn find_bar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Entity<FindBar> {
         if let Some(f) = &self.find {
@@ -2197,8 +1907,6 @@ impl ResultGrid {
         bar
     }
 
-    /// ⌘F on the grid: the bar opens on its field; the first match from the active cell becomes
-    /// the active cell.
     pub fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.ncols() == 0 {
             return;
@@ -2227,13 +1935,10 @@ impl ResultGrid {
         cx.notify();
     }
 
-    /// The find bar's field has the focus (the grid still draws as focused under it).
     pub fn find_has_focus(&self, window: &Window, cx: &App) -> bool {
         self.find.as_ref().is_some_and(|f| f.open && f.bar.read(cx).has_focus(window, cx))
     }
 
-    /// A new query or toggle (or the bar opening): compile it, stop the search in flight and
-    /// search again.
     fn restart_find(&mut self, cx: &mut Context<Self>) {
         let Some(f) = &mut self.find else { return };
         let (q, opts) = {
@@ -2255,10 +1960,6 @@ impl ResultGrid {
         cx.notify();
     }
 
-    /// Brings the matches up to date with the result: nothing (nothing changed), the rows that
-    /// arrived since (same order: appended), or everything (another result or order). Runs when
-    /// the result changes, never per frame; one search at a time (the next one starts when it
-    /// lands). Small searches run inline, big ones on the background executor.
     fn find_sync(&mut self, cx: &mut Context<Self>) {
         let Some(rs) = self.rs.clone() else { return };
         let Some(f) = self.find.as_mut().filter(|f| f.open && f.task.is_none()) else { return };
@@ -2299,7 +2000,6 @@ impl ResultGrid {
                 }
                 if let Some(h) = found {
                     g.take_hits(h, (rs, rows, sort), cx);
-                    // Rows that arrived meanwhile.
                     g.find_sync(cx);
                 }
                 g.push_find_count(cx);
@@ -2309,14 +2009,11 @@ impl ResultGrid {
         self.push_find_count(cx);
     }
 
-    /// A search landed: its cells join the list. After a new query, the first match from where
-    /// the search started becomes the active cell (it pops once typing pauses).
     fn take_hits(&mut self, h: CellHits, covers: (Arc<ResultSet>, usize, Option<(usize, SortDir)>), cx: &mut Context<Self>) {
         let at = self.sel.map(|s| (s.head.row as u32, s.head.col as u32));
         let pos = self.find_pos();
         let Some(f) = &mut self.find else { return };
-        // Hidden columns have no match to land on; the rest go in display order (the new rows
-        // come after the old ones, so sorting the chunk keeps the list sorted).
+        // New rows come after the old ones, so sorting the chunk keeps the list sorted.
         let mut cells: Vec<(u32, u32)> = h.cells.into_iter().filter(|&(_, c)| pos.get(c as usize).is_some_and(|&d| d != u32::MAX)).collect();
         cells.sort_by_key(|&(r, c)| (r, pos[c as usize]));
         f.hits.extend(cells);
@@ -2335,8 +2032,6 @@ impl ResultGrid {
         cx.notify();
     }
 
-    /// Result column → its display position, the order of the find's matches (`u32::MAX`:
-    /// hidden).
     fn find_pos(&self) -> Vec<u32> {
         (0..self.ncols()).map(|c| self.dc(c).map_or(u32::MAX, |d| d as u32)).collect()
     }
@@ -2354,14 +2049,12 @@ impl ResultGrid {
         f.bar.update(cx, |b, cx| b.set_count(c, cx));
     }
 
-    /// Match `i` becomes the active cell (revealed) and pops, now or once typing pauses.
     fn select_hit(&mut self, i: usize, pop_now: bool, cx: &mut Context<Self>) {
         let Some(f) = &mut self.find else { return };
         let Some(&(row, col)) = f.hits.get(i) else { return };
         f.cur = Some(i);
         f.pop_task = None;
         let col = col as usize;
-        // The pop is drawn on a display column (none on a hidden one).
         let shown = match self.dc(col) {
             Some(d) => d,
             None => usize::MAX,
@@ -2388,8 +2081,6 @@ impl ResultGrid {
         self.push_find_count(cx);
     }
 
-    /// ⌘G / ⇧⌘G (↩ / ⇧↩ in the field): the next or previous matching cell from the active one,
-    /// around the ends. With the bar closed ⌘G brings it back on the last query.
     fn find_step(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
         if !self.find.as_ref().is_some_and(|f| f.open) {
             if !self.find.as_ref().is_some_and(|f| f.matcher.is_some()) {
@@ -2425,26 +2116,21 @@ impl ResultGrid {
                 self.close_find(cx);
                 window.focus(&self.focus, cx);
             }
-            // The grid has no replace (editing values is the grid edit's job).
             FindBarEvent::Replace | FindBarEvent::ReplaceAll => {}
         }
     }
 
-    /// Demo and checks: whether the bar is open, its count (`3/17`), the matching cells found so
-    /// far, the rows they cover and whether a search is running.
     pub fn demo_find(&self, cx: &App) -> Option<(bool, String, Vec<(u32, u32)>, usize, bool)> {
         let f = self.find.as_ref()?;
         Some((f.open, f.bar.read(cx).count().label(), f.hits.clone(), f.covers.as_ref().map_or(0, |c| c.1), f.task.is_some()))
     }
 
-    /// Layout and text for one frame.
     fn prepare(&mut self, bounds: Bounds<Pixels>, window: &mut Window, t: &Theme, cx: &mut Context<Self>) -> Option<Frame> {
         let _trace = crate::app::TraceRender::new("grid prepare");
         let rs = self.rs.clone()?;
         let snap = rs.snapshot();
         let ts = window.text_system().clone();
         let size12 = px(12.);
-        // Advance of one monospace character, measured on shaped text.
         let probe = ts.shape_line("0000000000".into(), size12, &[run(10, mono(), t.tx)], None);
         self.char_w = probe.width.pt() / 10.;
         self.ensure_widths(&snap);
@@ -2455,8 +2141,6 @@ impl ResultGrid {
         let rows = data_rows + decor.as_ref().map_or(0, |d| d.virtual_rows.len());
         let phase = rs.phase();
         let status = rs.status();
-        // An FK "Go to" opened this tab: the key of the row it landed on pops (yellow) as soon
-        // as the row is here.
         if let Some(key) = &self.land {
             if data_rows > 0 {
                 if let Some(col) = snap.columns.iter().position(|c| &c.name == key).and_then(|c| self.dc(c)) {
@@ -2468,7 +2152,6 @@ impl ResultGrid {
             }
         }
         let pop = self.pop_frame(window);
-        // A message row after the last row: paused, cancelled, or an error after rows.
         let message = match phase {
             Phase::Paused => Some((format!("┄┄ {} rows · paused", ui_count(data_rows)), t.info, t.info_s)),
             Phase::Cancelled if data_rows > 0 => Some((
@@ -2487,7 +2170,6 @@ impl ResultGrid {
             _ if self.cancelling && data_rows > 0 && !phase.is_finished() => Some(("◌ cancel requested".to_string(), t.warn, t.warn_s)),
             _ => None,
         };
-        // A table's page numbers its rows from the page's first one.
         let offset = self.table.as_ref().map_or(0, |t| t.offset);
         let need = self.gutter_need(rows);
         let gutter = self.gutter.as_ref().map_or(need, |g| g.grid(need, window));
@@ -2506,7 +2188,6 @@ impl ResultGrid {
         self.clamp_scroll();
         let (sx, sy) = self.scroll;
         let first = (sy / ROW_H as f64).floor() as usize;
-        // Row positions relative to the viewport, computed in f64 then narrowed.
         let ry = |r: usize| (r as f64 * ROW_H as f64 - sy) as f32;
         let visible = (self.geo.body_h / ROW_H).ceil() as usize + 1;
         let last = (first + visible).min(rows);
@@ -2516,7 +2197,6 @@ impl ResultGrid {
             rs.request_rows(last);
         }
 
-        // Visible columns: moved by the scroll, left out while entirely off screen.
         let mut cols: Vec<FCol> = Vec::new();
         let mut x = 0.;
         for d in 0..self.dcols() {
@@ -2536,7 +2216,6 @@ impl ResultGrid {
         };
         let max_chars = |wd: f32| ((wd - 2. * PAD) / self.char_w).floor().max(1.) as usize;
         let fit = |s: &str, n: usize| -> String {
-            // One line, at most n characters.
             let mut out = String::with_capacity(s.len().min(n * 4));
             for (i, ch) in s.chars().enumerate() {
                 if i + 1 == n && s.chars().nth(n).is_some() {
@@ -2554,13 +2233,10 @@ impl ResultGrid {
             out
         };
 
-        // Matching cells of an open find bar: the visible rows' slice of the list (binary search),
-        // on visible columns only.
         let mut found = Vec::new();
         if let Some(f) = self.find.as_ref().filter(|f| f.open && !f.hits.is_empty()) {
             let lo = f.hits.partition_point(|&(r, _)| (r as usize) < first);
             let hi = f.hits.partition_point(|&(r, _)| (r as usize) < last).max(lo);
-            // The active cell (the current match) keeps the plain selection.
             let current = self.active_cell().map(|(r, c)| (r as u32, c as u32));
             for &(r, c) in f.hits[lo..hi].iter().filter(|h| Some(**h) != current) {
                 if let Some(fc) = cols.iter().find(|fc| fc.c == c as usize) {
@@ -2569,8 +2245,6 @@ impl ResultGrid {
             }
         }
         let active = self.active_cell();
-        // The eyes (`value_view`): on the hovered cell and the selected one, when it holds a JSON
-        // object or array, or an array. The value stops short of them.
         let mut eye_cells: Vec<CellPos> = Vec::with_capacity(2);
         for c in [self.hover, self.sel.filter(|s| !s.rows).map(|s| s.head)].into_iter().flatten() {
             if !eye_cells.contains(&c) && (first..last).contains(&c.row) && cols.iter().any(|fc| fc.d == c.col) && self.has_eye(&snap, c.row, self.rc(c.col)) {
@@ -2578,7 +2252,6 @@ impl ResultGrid {
             }
         }
         let room = |r: usize, fc: &FCol| if eye_cells.contains(&CellPos { row: r, col: fc.d }) { fc.w - EYE_W } else { fc.w };
-        // References are drawn in the accent's text color (one flag per column, no extra paint).
         let fk_cols = self.fk_cols.clone();
         let mut cells = Vec::with_capacity((last - first) * cols.len());
         let mut nulls = Vec::new();
@@ -2587,7 +2260,6 @@ impl ResultGrid {
         let mut pop_text: Option<(ShapedLine, bool)> = None;
         for r in first..last {
             let y = ry(r);
-            // Decorations of this row: by storage row, or a virtual row after the result.
             let (rdec, vrow, src) = match &decor {
                 None => (None, None, r),
                 Some(d) if r >= data_rows => {
@@ -2640,7 +2312,6 @@ impl ResultGrid {
                         max_chars(room(r, fc)),
                     );
                     let right = value.is_some() && kind.is_numeric() && cdec.and_then(|d| d.old.as_ref()).is_none();
-                    // (A pop on a decorated cell scales its box only.)
                     cells.push(CellText { x: cx_, y, w: wd, line, right, scale: 1. });
                     continue;
                 }
@@ -2650,7 +2321,6 @@ impl ResultGrid {
                         ("NULL".to_string(), &italic, t.null, false)
                     }
                     Some(v) if v.is_empty() => {
-                        // Empty is drawn as nothing; `""` shows only on the active cell.
                         if active == Some((r, c)) {
                             ("\"\"".to_string(), &normal, t.tx4, false)
                         } else {
@@ -2671,10 +2341,7 @@ impl ResultGrid {
                 let mut scale = 1.;
                 if let Some((_, style, f)) = pop.filter(|(p, _, _)| p.row == r && p.col == fc.d) {
                     match style {
-                        // A click: the value grows with its box (shaped a little larger: one
-                        // cell, for a few frames).
                         PopStyle::Select => scale = f.scale,
-                        // A find: the yellow box carries its own dark copy of the value.
                         PopStyle::Find => pop_text = Some((shape(text.clone(), face, size12 * f.scale, t.find_tx.opacity(f.strength)), right)),
                     }
                 }
@@ -2694,7 +2361,6 @@ impl ResultGrid {
                 (ry(r), shape(ui_count(r + 1 + offset), &normal, px(11.), if selected { t.tx } else { t.tx4 }))
             })
             .collect();
-        // A table's data view shows the server's sort; any other result its own.
         let sort = match &self.table {
             Some(t) => t.sort,
             None => rs.sort_state(),
@@ -2727,8 +2393,6 @@ impl ResultGrid {
         let message = message.map(|(a, color, bg)| (ry(rows), shape(a, &normal, px(11.5), color), bg));
         let hash = shape("#".into(), &normal, px(10.5), t.tx4);
         let pop = pop.map(|(cell, style, f)| GridPop { cell, style, f, text: pop_text });
-        // The grab zones on the header's column borders take the column-resize cursor (not
-        // while cells or a scrollbar are being dragged).
         let resize_hits = if matches!(self.drag, None | Some(Drag::Resize { .. } | Drag::Header { .. })) {
             let left = bounds.origin.x.pt() + self.geo.gutter;
             let top = bounds.origin.y.pt();
@@ -2743,8 +2407,6 @@ impl ResultGrid {
         } else {
             Vec::new()
         };
-        // The cells area (it tells the pointer over the cells from one over a sheet or a
-        // popover on top), and each eye's box: drawn whole, hit only where it shows.
         let body = Bounds::new(point(bounds.origin.x + px(self.geo.gutter), bounds.origin.y + px(HEADER_H)), size(px(self.geo.body_w), px(self.geo.body_h)));
         let body_hit = window.insert_hitbox(body, gpui::HitboxBehavior::Normal);
         self.eyes.clear();
@@ -2782,8 +2444,6 @@ impl ResultGrid {
     }
 }
 
-/// A visible column of a frame: display and result index, left edge relative to the cells
-/// area (as drawn), and width.
 #[derive(Clone, Copy, Debug)]
 struct FCol {
     d: usize,
@@ -2798,18 +2458,13 @@ struct CellText {
     w: f32,
     line: ShapedLine,
     right: bool,
-    /// ≠ 1 only for the value of a click's pop: shaped larger, drawn scaled about the cell's
-    /// centre.
     scale: f32,
 }
 
-/// The pop of this frame (see `ResultGrid::pop`).
 struct GridPop {
     cell: CellPos,
     style: PopStyle,
     f: PopFrame,
-    /// A find's dark copy of the value (shaped at the scaled size), and whether it is
-    /// right-aligned.
     text: Option<(ShapedLine, bool)>,
 }
 
@@ -2822,8 +2477,6 @@ struct Header {
     right: bool,
 }
 
-/// The eye of a JSON or array cell (`value_view`): its box, whether the pointer is on it, and
-/// its hitbox (the pointing hand).
 struct Eye {
     bounds: Bounds<Pixels>,
     hot: bool,
@@ -2831,26 +2484,19 @@ struct Eye {
 }
 
 struct Frame {
-    /// The cells area, for the pointer's hover (`ResultGrid::track_hover`).
     body_hit: gpui::Hitbox,
     eyes: Vec<Eye>,
     cells: Vec<CellText>,
-    /// NULL cells: (x, y, width), painted on `null_b`.
     nulls: Vec<(f32, f32, f32)>,
-    /// Visible cells matching the find bar: (x, y, width), painted on `find_s`.
     found: Vec<(f32, f32, f32)>,
     gutter_lines: Vec<(f32, ShapedLine)>,
-    /// One per visible column, in `cols` order.
     headers: Vec<Header>,
     cols: Vec<FCol>,
-    /// The header's column-border grab zones (column-resize cursor).
     resize_hits: Vec<gpui::Hitbox>,
     first: usize,
     last: usize,
-    /// The row after the last one: (y, message, background).
     message: Option<(f32, ShapedLine, Hsla)>,
     hash: ShapedLine,
-    /// Decorated rows (tint, left edge, gutter mark) and cells (tint, changed bar).
     row_marks: Vec<RowPaint>,
     cell_marks: Vec<CellPaint>,
     pop: Option<GridPop>,
@@ -2877,7 +2523,6 @@ fn paint_frame(grid: &Entity<ResultGrid>, frame: Frame, bounds: Bounds<Pixels>, 
     for e in &frame.eyes {
         window.set_cursor_style(CursorStyle::PointingHand, &e.hit);
     }
-    // The pointer over the cells (anywhere in the window: leaving the grid takes the eye away).
     {
         let grid = grid.clone();
         let body = frame.body_hit.clone();
@@ -2893,7 +2538,6 @@ fn paint_frame(grid: &Entity<ResultGrid>, frame: Frame, bounds: Bounds<Pixels>, 
             });
         });
     }
-    // A column being resized keeps the cursor wherever the pointer goes.
     if matches!(grid.read(cx).drag, Some(Drag::Resize { .. })) {
         window.set_window_cursor_style(CursorStyle::ResizeColumn);
     }
@@ -2922,8 +2566,6 @@ fn paint_frame(grid: &Entity<ResultGrid>, frame: Frame, bounds: Bounds<Pixels>, 
     let g = grid.read(cx);
     let geo = g.geo;
     let sel = g.sel;
-    // The open cell menu and the find bar hold the keys, but the grid still reads as focused
-    // under them (the active cell is the current match).
     let focused = g.focus.is_focused(window) || g.menu_focus.is_focused(window) || g.find_has_focus(window, cx);
     let sy = g.scroll.1;
     let ry = |r: usize| (r as f64 * ROW_H as f64 - sy) as f32;
@@ -2935,11 +2577,8 @@ fn paint_frame(grid: &Entity<ResultGrid>, frame: Frame, bounds: Bounds<Pixels>, 
     let lh = px(ROW_H);
     let full_w = bounds.size.width.pt();
     let sel_color = if focused { t.sel } else { t.prs };
-    // A click's pop sits on the single selected cell (`pop_frame` checked it).
     let click_pop = frame.pop.as_ref().filter(|p| p.style == PopStyle::Select && sel.is_some_and(|s| s.single() && s.head == p.cell));
-    // The popping cell at rest, when on screen. A pop's enlarged box may reach past the body
-    // into the gutter (a first column is the usual key): it paints under the rows' mask, not
-    // the body's.
+    // A pop's enlarged box may reach into the gutter: it paints under the rows' mask, not the body's.
     let pop_rect = frame.pop.as_ref().and_then(|p| {
         let fc = frame.cols.iter().find(|fc| fc.d == p.cell.col)?;
         let (x, w) = (fc.x, fc.w);
@@ -2947,7 +2586,6 @@ fn paint_frame(grid: &Entity<ResultGrid>, frame: Frame, bounds: Bounds<Pixels>, 
     });
     let rows_area = gpui::ContentMask { bounds: rect(0., HEADER_H, full_w, geo.body_h) };
     if let (Some(p), Some((_, _, b))) = (click_pop, pop_rect) {
-        // A click's pop: the box springs back from 1.15× and its blue fades to the selection's.
         window.with_content_mask(Some(rows_area.clone()), |window| {
             crate::motion::paint_pop(window, cx, b, CELL_RADIUS, crate::theme::mix(sel_color, t.sel_hi, p.f.strength), p.f.scale, None);
         });
@@ -2957,8 +2595,6 @@ fn paint_frame(grid: &Entity<ResultGrid>, frame: Frame, bounds: Bounds<Pixels>, 
     // overlays (zebra rows, NULL, selection, marks) are painted here.
     let body = rect(geo.gutter, HEADER_H, geo.body_w, geo.body_h);
     window.with_content_mask(Some(gpui::ContentMask { bounds: body }), |window| {
-        // Every other row, and on the translucent dark surface the rows between at the same
-        // alpha (`Theme::alt_base`): one quad per row at most.
         let base = t.alt_base.a > 0.;
         for r in frame.first..frame.last {
             if r % 2 == 1 {
@@ -2983,7 +2619,6 @@ fn paint_frame(grid: &Entity<ResultGrid>, frame: Frame, bounds: Bounds<Pixels>, 
         for cm in &frame.cell_marks {
             window.paint_quad(fill(rect(geo.gutter + cm.x, HEADER_H + cm.y, cm.w - 1., ROW_H), tone_soft(&t, cm.tint)));
         }
-        // Selection.
         if let Some(s) = sel {
             let rows = s.rows();
             let cols = s.cols(ncols);
@@ -2998,8 +2633,6 @@ fn paint_frame(grid: &Entity<ResultGrid>, frame: Frame, bounds: Bounds<Pixels>, 
                     continue;
                 }
                 if s.single() {
-                    // Same bounds as the active ring, so the rounded fill sits inside it (a
-                    // popping one was painted above).
                     if click_pop.is_none() {
                         let b = rect(geo.gutter + x, HEADER_H + ry(r0), w - 1., ROW_H);
                         window.paint_quad(gpui::quad(b, px(CELL_RADIUS), sel_color, px(0.), gpui::transparent_black(), gpui::BorderStyle::Solid));
@@ -3009,7 +2642,6 @@ fn paint_frame(grid: &Entity<ResultGrid>, frame: Frame, bounds: Bounds<Pixels>, 
                 }
             }
         }
-        // Column borders: one quad per column, down to the last row.
         let rows_h = ((geo.content_h - sy) as f32).clamp(0., geo.body_h);
         for fc in &frame.cols {
             window.paint_quad(fill(rect(geo.gutter + fc.x + fc.w - 1., HEADER_H, 1., rows_h), t.grid_line));
@@ -3018,8 +2650,6 @@ fn paint_frame(grid: &Entity<ResultGrid>, frame: Frame, bounds: Bounds<Pixels>, 
             // Clip to the cell: wide glyphs (CJK, emoji) must not spill into the next column.
             let cell = rect(geo.gutter + c.x, HEADER_H + c.y, c.w - 1., ROW_H);
             if c.scale != 1. {
-                // The clicked value, growing with its box: laid out as at rest, then scaled
-                // about the cell's centre (a right-aligned number keeps hugging the right edge).
                 let rest = at(geo.gutter + if c.right { c.x + c.w - PAD } else { c.x + PAD }, HEADER_H + c.y);
                 let p = crate::motion::scale_point(rest, cell.center(), c.scale);
                 let x = if c.right { p.x - c.line.width } else { p.x };
@@ -3033,7 +2663,6 @@ fn paint_frame(grid: &Entity<ResultGrid>, frame: Frame, bounds: Bounds<Pixels>, 
                 let _ = c.line.paint(at(geo.gutter + x, HEADER_H + c.y), lh, TextAlign::Left, None, window, cx);
             });
         }
-        // The eyes, in the room the values left them; the one under the pointer lights up.
         for e in &frame.eyes {
             if e.hot {
                 window.paint_quad(gpui::quad(e.bounds, px(3.), t.hov, px(0.), gpui::transparent_black(), gpui::BorderStyle::Solid));
@@ -3067,7 +2696,6 @@ fn paint_frame(grid: &Entity<ResultGrid>, frame: Frame, bounds: Bounds<Pixels>, 
             }
         }
     });
-    // The active ring pops with its box.
     if let (Some(p), Some((_, _, b)), true) = (click_pop, pop_rect, focused) {
         window.with_content_mask(Some(rows_area.clone()), |window| {
             window.paint_quad(gpui::quad(
@@ -3080,7 +2708,6 @@ fn paint_frame(grid: &Entity<ResultGrid>, frame: Frame, bounds: Bounds<Pixels>, 
             ));
         });
     }
-    // The message row spans the whole width (gutter included).
     if let Some((y, msg, bg)) = &frame.message {
         let top = HEADER_H + y;
         if top < HEADER_H + geo.body_h {
@@ -3090,7 +2717,6 @@ fn paint_frame(grid: &Entity<ResultGrid>, frame: Frame, bounds: Bounds<Pixels>, 
             });
         }
     }
-    // Row numbers (the body's mask keeps cells out of the gutter and the header).
     window.with_content_mask(Some(gpui::ContentMask { bounds: rect(0., HEADER_H, geo.gutter, geo.body_h) }), |window| {
         if let Some(s) = sel {
             let rows = s.rows();
@@ -3111,7 +2737,6 @@ fn paint_frame(grid: &Entity<ResultGrid>, frame: Frame, bounds: Bounds<Pixels>, 
             }
         }
     });
-    // Header.
     let _ = frame.hash.paint(at(geo.gutter - 10. - frame.hash.width.pt(), 0.), px(HEADER_H), TextAlign::Left, None, window, cx);
     window.with_content_mask(Some(gpui::ContentMask { bounds: rect(geo.gutter, 0., geo.body_w + BAR, HEADER_H) }), |window| {
         let sel_cols = sel.map(|s| s.cols(ncols));
@@ -3123,7 +2748,6 @@ fn paint_frame(grid: &Entity<ResultGrid>, frame: Frame, bounds: Bounds<Pixels>, 
             let hl = px(HEADER_H);
             let label_w = h.name.width.pt() + if h.ty.width.pt() > 0. { 6. + h.ty.width.pt() } else { 0. };
             let arrow_w = h.arrow.as_ref().map_or(0., |a| a.width.pt() + 6.);
-            // Numbers: the label hugs the right edge, like the values below it.
             let lx = if h.right { (x0 + h.w - PAD - arrow_w - label_w).max(x0 + PAD) } else { x0 + PAD };
             let _ = h.name.paint(at(lx, 0.), hl, TextAlign::Left, None, window, cx);
             let _ = h.ty.paint(at(lx + h.name.width.pt() + 6., 0.), hl, TextAlign::Left, None, window, cx);
@@ -3135,7 +2759,6 @@ fn paint_frame(grid: &Entity<ResultGrid>, frame: Frame, bounds: Bounds<Pixels>, 
     });
     window.paint_quad(fill(rect(0., HEADER_H - 1., full_w, 1.), t.line2));
     window.paint_quad(fill(rect(geo.gutter - 1., 0., 1., bounds.size.height.pt()), t.line));
-    // Scrollbars (6 pt thumbs, line2).
     let thumb = |b: Bounds<Pixels>| fill(b, t.line2);
     if geo.content_h > geo.body_h as f64 {
         window.paint_quad(thumb(rect(geo.gutter + geo.body_w + 2., HEADER_H + vthumb.0, 6., vthumb.1)));
@@ -3143,13 +2766,8 @@ fn paint_frame(grid: &Entity<ResultGrid>, frame: Frame, bounds: Bounds<Pixels>, 
     if geo.content_w > geo.body_w {
         window.paint_quad(thumb(rect(geo.gutter + hthumb.0, HEADER_H + geo.body_h + 2., hthumb.1, 6.)));
     }
-    // A find's pop (the row an FK "Go to" landed on), last, over everything: Xcode's yellow
-    // box with its dark copy of the value on top, the pair fading out once the box has sprung
-    // back (by then the copy sits exactly over the value). On the first row it may rise a few
-    // points over the header's bottom line.
     if let (Some(p), Some((x, w, b))) = (frame.pop.as_ref().filter(|p| p.style == PopStyle::Find), pop_rect) {
         let text = p.text.as_ref().map(|(line, right)| {
-            // Resting origin: what the scaled line would be at 1×.
             let rest_x = if *right { x + w - PAD - line.width.pt() / p.f.scale } else { x + PAD };
             (line, at(geo.gutter + rest_x, HEADER_H + ry(p.cell.row)), lh)
         });
@@ -3160,13 +2778,11 @@ fn paint_frame(grid: &Entity<ResultGrid>, frame: Frame, bounds: Bounds<Pixels>, 
     }
 }
 
-/// `10k`: how far ⌘↓ fetches (Settings ▸ Results grid).
 pub fn fetch_step() -> String {
     let n = dataman_core::result::prefetch();
     if n % 1000 == 0 { format!("{}k", n / 1000) } else { ui_count(n) }
 }
 
-/// `1,234,567`.
 pub fn ui_count(n: usize) -> String {
     let s = n.to_string();
     let mut out = String::with_capacity(s.len() + s.len() / 3);
@@ -3179,7 +2795,6 @@ pub fn ui_count(n: usize) -> String {
     out
 }
 
-/// `2,184.20`.
 fn fmt_num(v: f64) -> String {
     let neg = v < 0.;
     let s = format!("{:.2}", v.abs());
@@ -3188,7 +2803,6 @@ fn fmt_num(v: f64) -> String {
     format!("{}{int}.{frac}", if neg { "-" } else { "" })
 }
 
-/// `00:41.9`.
 pub fn fmt_clock(d: std::time::Duration) -> String {
     let s = d.as_secs_f64();
     format!("{:02}:{:04.1}", (s / 60.) as u64, s % 60.)
@@ -3196,8 +2810,6 @@ pub fn fmt_clock(d: std::time::Duration) -> String {
 
 impl EventEmitter<GridEvent> for ResultGrid {}
 
-/// A grid action. It first closes the cell menu: the keys the menu does not take (←→, ⌘C,
-/// ⇧arrows…) reach the grid through it, and act on the grid as usual.
 fn key<A: gpui::Action>(
     cx: &mut Context<ResultGrid>,
     f: impl Fn(&mut ResultGrid, &mut Context<ResultGrid>) + 'static,
@@ -3217,7 +2829,6 @@ impl Render for ResultGrid {
         let entity2 = entity.clone();
         let rs = self.rs.clone();
         let find_open = self.find.as_ref().is_some_and(|f| f.open);
-        // The rows' gutter need, before the editor above lays out (`GutterShare`).
         if let (Some(g), Some(rs)) = (&self.gutter, &rs) {
             let virtual_rows = self.decor.as_ref().map_or(0, |d| d.virtual_rows.len());
             g.say_grid(self.gutter_need(rs.rows() + virtual_rows));
@@ -3265,8 +2876,6 @@ impl Render for ResultGrid {
                     rs.fetch_all();
                 }
             }))
-            // (The owner decides: a query tab opens the sheet for a JSON or array cell, the
-            // activity monitor its details.)
             .on_action(key::<ViewValue>(cx, |g, cx| {
                 if let Some((row, col)) = g.active_cell() {
                     cx.emit(GridEvent::ViewValue { row, col });
@@ -3286,7 +2895,6 @@ impl Render for ResultGrid {
                 }
             }))
             .on_action(cx.listener(|g, _: &OpenCellMenu, window, cx| g.open_menu_from_keys(window, cx)))
-            // ⌘F (and the menu's Replace…: the grid finds only).
             .on_action(cx.listener(|g, _: &find::Find, window, cx| g.open_find(window, cx)))
             .on_action(cx.listener(|g, _: &find::FindReplace, window, cx| g.open_find(window, cx)))
             .on_action(cx.listener(|g, _: &find::FindNext, window, cx| g.find_step(true, window, cx)))
@@ -3297,7 +2905,6 @@ impl Render for ResultGrid {
             .on_mouse_down(MouseButton::Right, cx.listener(Self::on_right_down))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
-            // A release outside the grid ends a drag; it is never a click.
             .on_mouse_up_out(
                 MouseButton::Left,
                 cx.listener(|g, ev: &MouseUpEvent, window, cx| {
@@ -3320,7 +2927,6 @@ impl Render for ResultGrid {
                 .size_full(),
             );
         }
-        // A view over one cell (the inline editor), clipped to the cells area.
         if let Some(o) = &self.overlay
             && has_cols
             && o.col < self.widths.len()
@@ -3344,12 +2950,9 @@ impl Render for ResultGrid {
         if let Some(menu) = self.render_menu(cx) {
             root = root.child(menu);
         }
-        // Empty states: a tag (and the affected count of a statement without rows).
         let center = |el: gpui::Div| div().absolute().inset_0().flex().items_center().justify_center().child(el);
         match rs.as_ref().map(|r| (r.phase(), r.status(), r.rows())) {
             None => {
-                // The result panel only shows once the tab has run something, so this is a tab
-                // whose live query went away (a connection change): no result left to show.
                 root = root.child(center(ui::empty_state(&t, "[ NO RESULT ]", 22., None)));
             }
             Some((Phase::Done, _, 0)) if has_cols && self.virtual_rows() == 0 => {
@@ -3387,20 +2990,8 @@ impl Render for ResultGrid {
     }
 }
 
-/// `UPDATE`, `CREATE TABLE`: the command of a statement, for result labels.
 pub use dataman_core::sql::statement_verb;
 
-// ---------------------------------------------------------------------------------------------
-// Decorations: extra paint supplied by the grid's owner.
-//
-// Edits (changed cells, inserted and deleted rows) and results with fading rows all need the
-// same few things, so the grid offers them as data instead of hooks into its
-// drawing code. Rows are keyed by *storage* row (`Snapshot::source_row`), so sorting does not
-// move them; colors are semantic tones resolved against the theme at paint time. With no
-// decorations (`None`, or empty) the grid's fast path is unchanged.
-
-/// The color of a decoration, resolved against the active theme when painting (so a theme
-/// switch recolors it): a soft background (`*_s`) or the strong color.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tone {
     Ok,
@@ -3436,52 +3027,35 @@ pub fn tone_strong(t: &Theme, tone: Tone) -> Hsla {
     }
 }
 
-/// How a whole row is drawn.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RowDecor {
-    /// Soft background over the row (instead of the zebra stripe).
     pub tint: Option<Tone>,
-    /// Text struck through in `tx3` (rows to delete, rows gone from B).
     pub strike: bool,
-    /// Text opacity, 0–1 (rows fading out).
     pub opacity: Option<f32>,
-    /// A short mark at the left of the row-number gutter (`+`, `−`, `~`).
     pub mark: Option<(SharedString, Tone)>,
-    /// A 3 pt bar on the row's left edge (live inserts).
     pub edge: Option<Tone>,
 }
 
-/// How one cell is drawn.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CellDecor {
     pub tint: Option<Tone>,
-    /// Text drawn instead of the stored value (`Some(None)` draws NULL).
     pub text: Option<Option<String>>,
-    /// A previous value, drawn struck through before an arrow (`89.00 → 79.00`).
     pub old: Option<Option<String>>,
-    /// Muted italic (placeholders such as `default`).
     pub ghost: bool,
-    /// The text in a role color (a session's state in the activity monitor).
     pub color: Option<Tone>,
 }
 
-/// A row drawn after the result's rows (rows being inserted). Its cells show `CellDecor::text`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct VirtualRow {
-    /// Shown in the row-number gutter instead of a number (`+`).
     pub label: SharedString,
     pub row: RowDecor,
     pub cells: Vec<CellDecor>,
 }
 
-/// Everything the owner adds to the grid. Build it when the state changes, not per frame.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Decorations {
-    /// By storage row.
     pub rows: HashMap<usize, RowDecor>,
-    /// By (storage row, column).
     pub cells: HashMap<(usize, usize), CellDecor>,
-    /// After the last row of the result, in order. Display row = result rows + index.
     pub virtual_rows: Vec<VirtualRow>,
 }
 
@@ -3491,7 +3065,6 @@ impl Decorations {
     }
 }
 
-/// A view laid over one cell, at least `min_w` wide.
 #[derive(Clone)]
 pub struct CellOverlay {
     pub row: OverlayRow,
@@ -3500,9 +3073,6 @@ pub struct CellOverlay {
     pub view: AnyView,
 }
 
-/// Which row an overlay sits on: a row of the result (display row), or a virtual row by its
-/// index among the virtual rows — so it stays on that row when more result rows arrive
-/// before it (a paused result fetching its next rows).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OverlayRow {
     Data(usize),
@@ -3518,14 +3088,10 @@ impl OverlayRow {
     }
 }
 
-/// A display row after the result grew from `old` to `new` rows: rows past the old end were
-/// virtual rows (drawn after the result) and move down with them.
 pub fn follow_growth(row: usize, old: usize, new: usize) -> usize {
     if row >= old && new > old { row + (new - old) } else { row }
 }
 
-/// One decorated cell as a shaped line: NULL, ghost, struck, faded, or `old → new`, fitted
-/// to `max` characters.
 #[allow(clippy::too_many_arguments)]
 fn decorated_line(
     ts: &gpui::WindowTextSystem,
@@ -3552,7 +3118,6 @@ fn decorated_line(
         (Some(_), Kind::Bool) => t.tx3,
         _ => t.tx,
     };
-    // (text, font, color, struck)
     let mut pieces: Vec<(String, Font, Hsla, bool)> = Vec::new();
     if let Some(o) = old {
         let (txt, f) = match o {
@@ -3566,7 +3131,6 @@ fn decorated_line(
         Some(v) => pieces.push((one_line(v), if ghost { italic.clone() } else { normal.clone() }, fade(base), strike)),
         None => pieces.push(("NULL".into(), italic.clone(), fade(base), strike)),
     }
-    // Fit to `max` characters, ending with an ellipsis.
     let total: usize = pieces.iter().map(|p| p.0.chars().count()).sum();
     if total > max {
         let mut left = max.saturating_sub(1);
@@ -3616,18 +3180,14 @@ mod tests {
 
     #[test]
     fn drag_autoscroll_speed_grows_past_the_edge() {
-        // Inside, away from the edges: still.
         assert_eq!(axis_speed(300., 0., 600.), 0.);
-        // In the band before the right edge: slow, forwards; before the left one: backwards.
         let band = axis_speed(590., 0., 600.);
         assert!(band > 0. && band < 300., "{band}");
         assert!(axis_speed(10., 0., 600.) < 0.);
-        // At the edge a few hundred pt/s, farther past it faster, capped.
         let edge = axis_speed(600., 0., 600.);
         let past = axis_speed(700., 0., 600.);
         assert!(edge > band && past > 3. * edge, "{edge} {past}");
         assert_eq!(axis_speed(1e6, 0., 600.), 8000.);
-        // A tiny grid keeps a band a quarter of its size.
         assert_eq!(axis_speed(20., 0., 40.), 0.);
     }
 
@@ -3636,7 +3196,6 @@ mod tests {
         let mut l = ColLayout::default();
         l.ensure(5);
         assert_eq!(disp(&l), vec![0, 1, 2, 3, 4]);
-        // Hidden ones are left out; the map back says so.
         assert!(l.hide(1));
         assert!(l.hide(4));
         assert_eq!(disp(&l), vec![0, 2, 3]);
@@ -3644,11 +3203,9 @@ mod tests {
         assert_eq!(l.hidden_count(), 2);
         l.show_all();
         assert_eq!(disp(&l), vec![0, 1, 2, 3, 4]);
-        // The last column shown cannot be hidden.
         let mut one = ColLayout::default();
         one.ensure(1);
         assert!(!one.hide(0));
-        // Another column count: a fresh layout.
         l.ensure(2);
         assert_eq!(disp(&l), vec![0, 1]);
     }

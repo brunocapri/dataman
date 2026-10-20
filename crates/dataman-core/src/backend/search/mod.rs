@@ -1,8 +1,3 @@
-//! Elasticsearch and OpenSearch over their REST APIs (reqwest, TLS on the process' rustls
-//! provider). The two speak the same API for everything Dataman does: requests from the
-//! console ([`crate::nosql::console`]), the indices for the explorer, a mapping's fields, and
-//! documents saved and deleted by their `_index` and `_id`.
-//!
 //! Through an SSH tunnel the server's host name still names it (the TLS name, the `Host`
 //! header): its address resolves to the tunnel's local end.
 
@@ -19,15 +14,12 @@ use crate::ssh::Tunnel;
 
 pub(crate) struct Client {
     http: reqwest::Client,
-    /// `https://host:9200` (no trailing `/`).
     base: String,
     auth: Option<HeaderValue>,
     pub tls_active: bool,
-    /// `Elasticsearch 8.15.3`, `OpenSearch 2.19.1`.
     pub version: String,
 }
 
-/// The server's error: `type: reason (status)`.
 #[derive(Debug)]
 pub(crate) struct HttpError {
     pub status: u16,
@@ -65,7 +57,6 @@ pub(crate) async fn connect(p: &ConnectionProfile, password: Option<&str>, tunne
         b = b.danger_accept_invalid_certs(true);
     }
     let base = match tunnel {
-        // A name: it resolves to the tunnel (the URL without a port takes the address' port).
         Some(t) if p.host.parse::<std::net::IpAddr>().is_err() => {
             b = b.resolve(&p.host, t.local_addr());
             format!("{scheme}://{host}")
@@ -78,7 +69,6 @@ pub(crate) async fn connect(p: &ConnectionProfile, password: Option<&str>, tunne
             let raw = format!("{}:{}", p.user, pw.unwrap_or(""));
             Some(HeaderValue::from_str(&format!("Basic {}", data_encoding::BASE64.encode(raw.as_bytes())))?)
         }
-        // No user, a secret: an API key.
         (true, Some(key)) => Some(HeaderValue::from_str(&format!("ApiKey {key}"))?),
         (true, None) => None,
     };
@@ -103,15 +93,12 @@ pub(crate) async fn connect(p: &ConnectionProfile, password: Option<&str>, tunne
     Ok(c)
 }
 
-/// A request's body on the wire.
 enum Wire {
     Json(Value),
     Lines(Vec<Value>),
 }
 
 impl Client {
-    /// Sends a request; the answer as JSON (text that is not JSON as a string; nothing as
-    /// null). A status of 400 or more is an error with the server's reason.
     async fn call(&self, method: &str, path: &str, body: Option<Wire>) -> Result<Value> {
         let m = reqwest::Method::from_bytes(method.as_bytes())?;
         let mut r = self.http.request(m, format!("{}{path}", self.base)).timeout(Duration::from_secs(120));
@@ -151,10 +138,6 @@ fn wire(b: &console::Body) -> Option<Wire> {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// The explorer
-
-/// The indices (hidden ones, `.`-prefixed, last), with their counts and sizes.
 pub(crate) async fn indices(c: &Client) -> Result<Vec<Item>> {
     let v = c.call("GET", "/_cat/indices?format=json&bytes=b&h=index,docs.count,store.size&s=index", None).await?;
     let num = |x: &Value| x.as_str().and_then(|s| s.parse::<u64>().ok()).or(x.as_u64());
@@ -173,7 +156,6 @@ pub(crate) async fn indices(c: &Client) -> Result<Vec<Item>> {
     Ok(items)
 }
 
-/// An index's fields from its mapping (`a`, `a.b`), with their types.
 pub(crate) async fn fields(c: &Client, index: &str) -> Result<Vec<(String, Vec<&'static str>)>> {
     let v = c.call("GET", &format!("/{}/_mapping", enc(index)), None).await?;
     let mut out: Vec<(String, Vec<&'static str>)> = Vec::new();
@@ -201,7 +183,6 @@ pub(crate) async fn fields(c: &Client, index: &str) -> Result<Vec<(String, Vec<&
     Ok(out)
 }
 
-/// The mapping's type names, as static strings (an unknown one is `other`).
 fn known_type(t: &str) -> &'static str {
     const TYPES: &[&str] = &[
         "text", "keyword", "long", "integer", "short", "byte", "double", "float", "half_float", "scaled_float", "date", "date_nanos",
@@ -212,7 +193,6 @@ fn known_type(t: &str) -> &'static str {
     TYPES.iter().find(|x| **x == t).copied().unwrap_or("other")
 }
 
-/// A path segment percent-encoded (an index named with odd characters).
 fn enc(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
@@ -222,11 +202,6 @@ fn enc(s: &str) -> String {
         .collect()
 }
 
-// ---------------------------------------------------------------------------------------------
-// Requests
-
-/// Runs a console request: a search's hits from `page`, another request's answer, or what a
-/// write changed.
 pub(crate) async fn run(c: &Client, req: &Request, page: Page) -> Result<Output> {
     if req.is_search() {
         return search(c, req, page).await;
@@ -238,7 +213,6 @@ pub(crate) async fn run(c: &Client, req: &Request, page: Page) -> Result<Output>
     Ok(written(&v))
 }
 
-/// A write's answer: how many documents it changed and what the server said.
 fn written(v: &Value) -> Output {
     let n = |k: &str| v[k].as_u64();
     let (affected, summary) = if let Some(r) = v["result"].as_str() {
@@ -265,7 +239,6 @@ async fn search(c: &Client, req: &Request, page: Page) -> Result<Output> {
         console::Body::None => serde_json::Map::new(),
         _ => return Err(anyhow!("a search's body is one JSON object")),
     };
-    // Aggregations: the whole answer, its buckets first (they are the point), the rest after.
     if body.contains_key("aggs") || body.contains_key("aggregations") {
         let v = c.call(&req.method, &req.path, Some(Wire::Json(Value::Object(body)))).await?;
         return Ok(Output::Value(Body::Json(aggregations_first(v))));
@@ -274,7 +247,6 @@ async fn search(c: &Client, req: &Request, page: Page) -> Result<Output> {
     let size = body.get("size").and_then(Value::as_u64);
     let left = size.map(|s| s.saturating_sub(page.skip));
     let want = left.map_or(page.limit as u64, |l| l.min(page.limit as u64));
-    // `search_after` and a point in time page by their own values, not by `from`.
     let after = body.contains_key("search_after") || body.contains_key("pit");
     if after && page.skip > 0 {
         return Err(anyhow!("a search_after search pages by its sort values: put the last hit's sort in search_after"));
@@ -300,7 +272,6 @@ async fn search(c: &Client, req: &Request, page: Page) -> Result<Output> {
     let docs = hits
         .into_iter()
         .map(|h| {
-            // The source, and what the hit adds beside it: `_highlight`, `_fields`, `_sort`.
             let mut body = h.get("_source").cloned().unwrap_or(json!({}));
             if let Value::Object(m) = &mut body {
                 for (k, as_) in [("highlight", "_highlight"), ("fields", "_fields"), ("inner_hits", "_inner_hits")] {
@@ -329,7 +300,6 @@ fn aggregations_first(v: Value) -> Value {
     Value::Object(out)
 }
 
-/// How many documents a write would change (counted before it runs).
 pub(crate) async fn affects(c: &Client, req: &Request) -> Result<Option<u64>> {
     Ok(match (req.method.as_str(), req.endpoint()) {
         ("POST", Some("_delete_by_query" | "_update_by_query")) => {
@@ -350,11 +320,6 @@ pub(crate) async fn affects(c: &Client, req: &Request) -> Result<Option<u64>> {
     })
 }
 
-// ---------------------------------------------------------------------------------------------
-// Documents
-
-/// Writes `doc` as the document `id` of `index` (`None`: a new one, its id the server's), and
-/// waits until searches see it. The saved document's id.
 pub(crate) async fn save(c: &Client, index: &str, id: Option<&str>, doc: Value) -> Result<String> {
     if !doc.is_object() {
         return Err(anyhow!("a document is a JSON object {{…}}"));

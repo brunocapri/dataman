@@ -1,10 +1,3 @@
-//! The update notice: the title bar's pill ("Update available · 0.2.1") and the sheet it opens
-//! (the version, its notes, Install & Relaunch / Later, the progress as text, a failure with
-//! Retry). A check asked for shows in the same sheet first, as its check card ("Checking…",
-//! then up to date or why it failed), which becomes the update when one is found; where no
-//! sheet can show (another one is up, or no window is left), an alert says the outcome. The
-//! state is `updates`; this only draws it and answers its buttons.
-
 use gpui::{AnyElement, App, Context, FontWeight, KeyBinding, MouseButton, PromptLevel, SharedString, Window, actions, div, prelude::*};
 
 use crate::app::Workspace;
@@ -16,9 +9,7 @@ use dataman_core::update::Feed;
 actions!(
     update_ui,
     [
-        /// The update sheet: Later (hides the notice for this version).
         UpdateLater,
-        /// The update sheet: Install & Relaunch, or Retry.
         UpdateInstall,
     ]
 );
@@ -30,13 +21,11 @@ pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([KeyBinding::new("escape", UpdateLater, c), KeyBinding::new("enter", UpdateInstall, c)]);
 }
 
-/// Bytes as the Finder says them (decimal megabytes).
 fn mb(n: u64) -> String {
     let m = n as f64 / 1e6;
     if m < 10. { format!("{m:.1} MB") } else { format!("{m:.0} MB") }
 }
 
-/// The progress line under way, or why it stopped.
 fn status(state: &State) -> Option<(SharedString, bool)> {
     match state {
         State::Working { step: Step::Downloading { got, total }, .. } => Some((format!("Downloading… {} of {}", mb(*got), mb(*total)).into(), false)),
@@ -54,7 +43,6 @@ impl Workspace {
         if self.update_sheet || updates::offered(cx).is_none() {
             return;
         }
-        // Another sheet is up: the title bar's notice stays, to open it later.
         if self.modal_open(cx) {
             return;
         }
@@ -64,10 +52,6 @@ impl Workspace {
         cx.notify();
     }
 
-    /// A check asked for (the menu, the palette, Settings): "Checking…" or, `done`, its outcome,
-    /// where it can be seen. With Settings open, its About section says it; otherwise the sheet
-    /// (the check card, or the update found), unless another sheet is up: an alert then says
-    /// the outcome.
     pub(crate) fn show_update_check(&mut self, done: bool, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(v) = self.settings_view.clone() {
             v.update(cx, |v, cx| v.show_update_status(window, cx));
@@ -85,7 +69,6 @@ impl Workspace {
         }
     }
 
-    /// Closes the sheet; `later`: the notice hides until a newer version (or the next launch).
     pub(crate) fn close_update_sheet(&mut self, later: bool, window: &mut Window, cx: &mut Context<Self>) {
         if !self.update_sheet {
             return;
@@ -102,8 +85,6 @@ impl Workspace {
         cx.notify();
     }
 
-    /// The sheet's primary button (and ↩): Install & Relaunch, Retry, or the download page when
-    /// this copy cannot replace itself; the check card's OK.
     pub(crate) fn update_primary(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match updates::state(cx) {
             State::Available { blocked: None, .. } | State::Failed { .. } => updates::install(cx),
@@ -115,7 +96,6 @@ impl Workspace {
         cx.notify();
     }
 
-    /// The title bar's notice, when an update is on offer.
     pub(crate) fn render_update_pill(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
         if !updates::notice_shown(cx) {
             return None;
@@ -159,7 +139,6 @@ impl Workspace {
         )
     }
 
-    /// The update sheet: the update on offer, or the check card while there is none.
     pub(crate) fn render_update_sheet(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         if !self.update_sheet {
             return None;
@@ -191,8 +170,6 @@ impl Workspace {
         )
     }
 
-    /// A check asked for, while there is no update to show: "Checking…", then up to date (and
-    /// when) or why it failed, with Try Again. Nothing before any check.
     fn render_check_card(&self, state: &State, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
         let checking = matches!(state, State::Checking);
         let checked = updates::checked(cx);
@@ -267,7 +244,6 @@ impl Workspace {
         )
     }
 
-    /// The update on offer: the version, the notes, the progress or the failure, and the buttons.
     fn render_update_card(&self, feed: Feed, state: &State, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let working = matches!(state, State::Working { .. });
         let primary: &'static str = match &state {
@@ -340,7 +316,6 @@ impl Workspace {
                                     .child(ui::key_hint("esc"))
                                     .on_click(cx.listener(move |w, _, window, cx| later(w, window, cx))),
                             )
-                            // Under way, the progress line takes its place.
                             .when(!working, |d| {
                                 d.child(
                                     ui::button(&t, "update-install", Btn::Primary)
@@ -357,8 +332,6 @@ impl Workspace {
     }
 }
 
-/// A check's outcome when another sheet is up: a native alert on the window (an update found
-/// also keeps its title bar notice). The update check stage records it instead.
 pub(crate) fn alert_in_window(window: &mut Window, cx: &mut App) {
     let Some((msg, detail, err)) = updates::outcome_text(cx) else { return };
     let detail = if updates::offered(cx).is_some() { format!("{detail} The title bar's notice installs it.") } else { detail };
@@ -370,8 +343,6 @@ pub(crate) fn alert_in_window(window: &mut Window, cx: &mut App) {
     let _ = window.prompt(level, &msg, Some(&detail), &["OK"], cx);
 }
 
-/// A check's outcome with no window left (closed with the app still running): an alert of the
-/// app's own; Download opens an update's DMG. The update check stage records it instead.
 pub(crate) fn alert_without_window(cx: &mut App) {
     let Some((msg, detail, err)) = updates::outcome_text(cx) else { return };
     let url = updates::offered(cx).map(|f| f.url).filter(|u| !u.is_empty());
@@ -405,8 +376,6 @@ mod native {
         unsafe { msg_send![class!(NSString), stringWithUTF8String: c.as_ptr()] }
     }
 
-    /// An application-modal NSAlert (`warning`: its warning style); the index of the button
-    /// clicked.
     pub fn alert(message: &str, detail: &str, warning: bool, buttons: &[&str]) -> usize {
         // SAFETY: AppKit's NSAlert as documented, on the main thread (GPUI's foreground tasks
         // run there); the strings are retained for the calls.

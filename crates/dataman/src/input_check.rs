@@ -1,13 +1,3 @@
-//! Text fields wider than their text (`--demo`), on the explorer's filter:
-//!
-//! - `input-scroll`: a long filter typed, its last word selected (screenshot: the text cut at
-//!   the field's left edge, the caret's end of it in view);
-//! - `input-check`: typing past the edge scrolls with the caret, ⌘← / ⌘→ show the start and the
-//!   end, arrows inside the view leave it, a click lands on the character it points at, a drag
-//!   resting past the left edge scrolls on its own to the start, a paste ends in view,
-//!   deleting scrolls back (no empty room on the right) and leaving the field shows its start.
-//!   Real key and mouse events through the window; PASS/FAIL lines, exit code 1 on a failure.
-
 use std::time::Duration;
 
 use gpui::{
@@ -22,7 +12,6 @@ pub fn is_stage(s: &str) -> bool {
     s == "input-check" || s == "input-scroll"
 }
 
-/// Long enough to overflow any explorer width (letters only: each a plain keystroke).
 const LONG: &str = "thequickbrownfoxjumpsoverthelazydogandthequickbrownfoxjumpsoverthelazycat";
 
 fn draw(cx: &mut AsyncWindowContext) {
@@ -58,7 +47,6 @@ async fn pause(cx: &mut AsyncWindowContext, ms: u64) {
     cx.background_executor().timer(Duration::from_millis(ms)).await;
 }
 
-/// The field's scroll, caret x (from its left edge) and bounds `(x, y, w, h)`, as painted.
 fn state(f: &Entity<TextInput>, cx: &mut AsyncWindowContext) -> (f32, f32, (f32, f32, f32, f32)) {
     draw(cx);
     cx.update(|_, cx| {
@@ -96,12 +84,10 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
         return true;
     }
 
-    // Typing: the text scrolls, the caret on the right edge.
     let (s, x, (bx, by, bw, bh)) = state(&f, cx);
     report("typing past the edge scrolls with the caret", s > 0. && (x - bw).abs() < 1.5, format!("scroll={s} caret={x} width={bw}"));
     let end = s;
 
-    // ⌘←: the start; ⌘→: the end again.
     key(cx, "cmd-left");
     let (s, x, _) = state(&f, cx);
     report("⌘← shows the start", s == 0. && x == 0., format!("scroll={s} caret={x}"));
@@ -109,14 +95,12 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
     let (s, x, _) = state(&f, cx);
     report("⌘→ shows the end", (s - end).abs() < 0.5 && (x - bw).abs() < 1.5, format!("scroll={s} (end {end}) caret={x}"));
 
-    // ← inside the view: nothing scrolls.
     for _ in 0..5 {
         key(cx, "left");
     }
     let (s, x, _) = state(&f, cx);
     report("arrows inside the view leave the scroll", (s - end).abs() < 0.5 && x < bw && x > 0., format!("scroll={s} caret={x}"));
 
-    // A click in the scrolled text: the caret lands under the pointer.
     let at = point(px(bx + bw * 0.4), px(by + bh / 2.));
     mouse(cx, at, None, 0);
     mouse(cx, at, Some(true), 1);
@@ -129,7 +113,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
         format!("scroll={s} caret={x} want≈{} sel={sel:?}", bw * 0.4),
     );
 
-    // A drag resting past the left edge scrolls on its own, to the start.
     let from = point(px(bx + bw * 0.6), px(by + bh / 2.));
     mouse(cx, from, None, 0);
     mouse(cx, from, Some(true), 1);
@@ -146,7 +129,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
         format!("scroll {first} → {s} sel={sel:?}"),
     );
 
-    // A paste of long text (the clipboard put back after).
     let saved = cx.update(|_, cx| cx.read_from_clipboard()).ok().flatten();
     let _ = cx.update(|_, cx| cx.write_to_clipboard(ClipboardItem::new_string(format!("{LONG}x{LONG}"))));
     key(cx, "cmd-a");
@@ -159,8 +141,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
         None => cx.write_to_clipboard(ClipboardItem::new_string(String::new())),
     });
 
-    // Deleting at the end: the caret stays on the right edge (no empty room), down to a text
-    // that fits, which does not scroll.
     for _ in 0..20 {
         key(cx, "backspace");
     }
@@ -171,7 +151,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
     let (s, x, _) = state(&f, cx);
     report("a text that fits does not scroll", s == 0. && x > 0. && x < bw, format!("scroll={s} caret={x}"));
 
-    // Leaving the field: its start shows.
     typ(cx, LONG);
     let (s, _, _) = state(&f, cx);
     let _ = cx.update(|window, cx| window.focus(&tree.focus_handle(cx), cx));

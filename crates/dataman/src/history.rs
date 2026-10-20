@@ -1,23 +1,3 @@
-//! The sidebar's Favorites and History views (its rail picks one; `sidebar`), one panel shown
-//! either way: favorite queries (saved across connections, never pruned), or the query history
-//! of a connection, newest first, grouped by day, filterable by text and outcome. Each view
-//! keeps its own search. ↩ inserts at the cursor, ⌥↩ opens a new tab, ⌘↩ runs; double-click
-//! opens a new tab.
-//!
-//! Favorites can be filed in folders, drawn as the explorer draws its tree (disclosure
-//! chevrons, a folder filled while shut, children indented under it): the header's "+ folder"
-//! makes one (after the others) and names it in place, its menu's Rename names it again. A
-//! favorite dragged onto a folder (or a favorite in it) is filed there, the folder tinted on
-//! the way, and dragged anywhere else in the list it goes back to the top level; a folder
-//! dragged moves among the folders, as the explorer's connections do (a line marks the gap),
-//! and the store keeps that order. A search opens the folders holding a match. Deleting a
-//! folder deletes it with the queries in it: its menu row turns into a red "Sure? (deletes N
-//! queries)" that must be clicked again (an empty folder asks too, for one way of deleting);
-//! the pointer leaving that row, esc, a click elsewhere or a few seconds let it go.
-//!
-//! What is done to the favorites here (added, removed, renamed, filed, a folder made, renamed,
-//! moved or deleted) is reported to the workspace's undo (`undo`, `HistoryEvent::Did`).
-
 use std::cell::Cell;
 use std::collections::HashSet;
 use std::rc::Rc;
@@ -60,33 +40,20 @@ pub fn bind_keys(cx: &mut App) {
 }
 
 pub enum HistoryEvent {
-    /// Insert the statement at the editor's cursor.
     Insert(String),
-    /// A history entry in a new tab: its SQL, connection and database.
     OpenInTab(String, String, String),
-    /// A history entry run on its connection (a tab there, else a new one): its SQL, connection
-    /// and database.
     Run(String, String, String),
-    /// A favorite, in a new tab on its own connection; `true` also runs it.
     OpenFavorite(Favorite, bool),
-    /// Import Favorites…: `.sql` files picked in the panel, a favorite each.
     ImportFavorites,
-    /// A favorite was added, renamed or removed here (the tabs linked to one follow).
     FavoritesChanged,
-    /// Something undoable was done to the favorites or their folders (the workspace's undo).
     Did(Entry),
-    /// esc: the focus goes back to the editor.
     Close,
 }
 
-/// How many entries the History view lists, all connections together.
 const HISTORY_MAX: usize = 2000;
-/// The longest a favorite's name and a statement's line run before an ellipsis.
 const NAME_MAX: usize = 40;
 const SQL_MAX: usize = 90;
 
-/// A statement's line for its row: from a little before the search's match when the match is
-/// further in than a narrow panel shows (an ellipsis in front), cut at `max` characters.
 fn excerpt(flat: &str, q: &str, max: usize) -> String {
     const LEAD: usize = 12;
     match ui::find_ci(flat, q).map(|h| flat[..h.start].chars().count()) {
@@ -95,32 +62,22 @@ fn excerpt(flat: &str, q: &str, max: usize) -> String {
     }
 }
 
-/// `s` cut at `max` characters, an ellipsis in place of the rest.
 fn clip(s: &str, max: usize) -> String {
     if s.chars().count() > max { format!("{}…", s.chars().take(max).collect::<String>().trim_end()) } else { s.to_string() }
 }
 
-/// A statement's first line, flattened and capped, for a favorite's default name.
 pub(crate) fn fav_name(sql: &str) -> String {
     let flat: String = sql.trim_end_matches(';').split_whitespace().collect::<Vec<_>>().join(" ");
     if flat.chars().count() > 60 { format!("{}…", flat.chars().take(60).collect::<String>()) } else { flat }
 }
 
-/// A favorite's row, about (shutting folds rows from it when they were never measured).
 const FAV_ROW_H: f32 = 56.;
 
-/// A folder opening unfolds its favorites one after the other up to this many; the rest unfold
-/// with the last of them.
 const UNFOLD_STAGGERED: usize = 8;
 
-/// How far a favorite in a folder sits in from the folder's row: past its chevron, so the
-/// favorite's name lines up with the folder's icon (the explorer steps 12 pt a level).
 const NEST: f32 = 15.;
-/// The favorites' context menu, and its Move to folder submenu.
 const MENU_W: f32 = 220.;
 const SUB_W: f32 = 200.;
-/// How long a folder's "Sure?" waits before it gives way to Delete folder again (as a group's
-/// "Sure?" does, `split`).
 const DELETE_ASK: Duration = Duration::from_secs(3);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -134,35 +91,26 @@ enum Chip {
 enum Item {
     Day(SharedString),
     Entry(usize),
-    /// A folder of favorites: its index into `folders`, and whether its favorites are listed
-    /// under it (open, or a search found some).
     Folder { ix: usize, open: bool },
-    /// A favorite (index into `favorites`): indented under its folder when it is in one.
     Fav(usize),
 }
 
-/// A favorite on the move (dragged onto a folder, or out to the top level): its id.
 pub(crate) struct DraggedFav(pub(crate) String);
 
-/// A folder on the move among the folders: its id.
 pub(crate) struct DraggedFolder(pub(crate) String);
 
-/// Where a dragged favorite would land.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum DropAt {
     Folder(String),
     Top,
 }
 
-/// What is being named in place: a favorite (index into `favorites`) or a folder (its id).
 #[derive(Clone, PartialEq)]
 enum Naming {
     Fav(usize),
     Folder(String),
 }
 
-/// What a context menu is about: a history entry (index into `entries`), a favorite (index
-/// into `favorites`), a folder (its id), or the favorites as a whole (their header).
 #[derive(Clone, PartialEq)]
 enum MenuOn {
     Entry(usize),
@@ -176,22 +124,18 @@ enum Act {
     Run,
     Open,
     Rename,
-    /// To a folder (its id), or the top level.
     Move(Option<String>),
     Remove,
     NewFolder,
     DeleteFolder,
     Import,
-    /// A history entry saved as a favorite, or the favorite with its SQL removed.
     ToggleFavorite,
-    /// A history entry taken out of the history.
     RemoveEntry,
 }
 
 enum MenuEntry {
     Item { act: Act, icon: Icon, label: SharedString, detail: Option<SharedString>, key: Option<&'static str> },
     Sep,
-    /// Move to folder ▸: where it can go, the folder it is in checked (and inert).
     Sub { icon: Icon, label: SharedString, items: Vec<(Act, Icon, SharedString, bool)> },
 }
 
@@ -212,9 +156,6 @@ impl MenuEntry {
     }
 }
 
-/// A context menu (right-click, ⌃-click) open at `at`: the row under the pointer (`hi`), the
-/// submenu shown (the index of its entry) with its own highlighted row, and Delete folder
-/// pressed once (`ask`: it asks "Sure?" in its row until clicked again or let go).
 struct Menu {
     on: MenuOn,
     at: Point<Pixels>,
@@ -224,8 +165,6 @@ struct Menu {
     ask: Option<DeleteAsk>,
 }
 
-/// A folder's Delete pressed once: the wait after which it lets go, and its esc (both dropped
-/// with it, and with the menu).
 struct DeleteAsk {
     _timeout: gpui::Task<()>,
     _esc: gpui::Subscription,
@@ -236,55 +175,33 @@ type BoundsCell = Rc<Cell<Option<Bounds<Pixels>>>>;
 pub struct HistoryPanel {
     store: Entity<ConnStore>,
     focus: FocusHandle,
-    /// Every connection's history, newest first, each entry with its connection's id.
     entries: Vec<(String, HistoryEntry)>,
     favorites: Vec<Favorite>,
-    /// The favorites' folders, in the user's order (the store's).
     folders: Vec<Folder>,
-    /// The folders open (by id); a folder starts shut, like the explorer's.
     open_folders: HashSet<String>,
-    /// The folder last opened or shut (a click, a key), when, and which way: opening, its icon's
-    /// fill drains away and its favorites unfold one after the other (`motion::FLOOD`,
-    /// `FOLDER_ROW`); shutting, they fold away the last one first (`FOLDER_SHUT`) and the folder
-    /// is shut once they are gone (`shut_task`), listed until then.
     folding: Option<(String, std::time::Instant, bool)>,
     shut_task: Option<gpui::Task<()>>,
-    /// The natural heights of the favorites unfolding, measured as they lay out.
     unfold_h: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<String, f32>>>,
     items: Vec<Item>,
     shown: usize,
     selected: Option<usize>,
     chip: Chip,
-    /// The Favorites view (else the History one), as the sidebar's rail picks it.
     show_favorites: bool,
-    /// The other view's search, kept while this one shows.
     other_filter: String,
-    /// The status dropdown (All / OK / Error / Cancelled): open, and its button's bounds
-    /// (window coordinates), to place the popover under it.
     chip_menu: bool,
     chip_bounds: BoundsCell,
-    /// The header's "+ folder" button (the checks click it).
     new_folder_bounds: BoundsCell,
-    /// The History view's trash pressed once: it asks "Clear all?" until pressed again or a
-    /// few seconds pass; its bounds (the checks click it).
     clear_ask: Option<gpui::Task<()>>,
     clear_bounds: BoundsCell,
-    /// The context menu, and where its popover and submenu were last painted (a click in the
-    /// submenu is not "outside" the menu).
     menu: Option<Menu>,
     menu_bounds: BoundsCell,
     sub_bounds: BoundsCell,
-    /// A favorite or folder being renamed inline, and the field.
     renaming: Option<(Naming, Entity<TextInput>)>,
-    /// While a favorite is dragged: its id, and where it would land.
     dragging: Option<String>,
     drop_at: Option<DropAt>,
-    /// While a folder is dragged: its id, and the gap among the folders it would drop into
-    /// (`dataman_core::order`'s slot: 0 before the first, `folders.len()` after the last).
     dragging_folder: Option<String>,
     folder_drop: Option<usize>,
     filter: Entity<TextInput>,
-    /// The search, lowercase, as the list was last built from it (its rows mark the match).
     query: String,
     list: ListState,
 }
@@ -340,7 +257,6 @@ impl HistoryPanel {
         }
     }
 
-    /// The Favorites view (`true`) or the History one: each keeps its own search.
     pub fn set_favorites(&mut self, on: bool, cx: &mut Context<Self>) {
         if on == self.show_favorites {
             return;
@@ -359,13 +275,11 @@ impl HistoryPanel {
         self.show_favorites
     }
 
-    /// Puts text in the filter (the palette's "Search history").
     pub fn set_filter(&mut self, text: &str, cx: &mut Context<Self>) {
         self.filter.update(cx, |f, cx| f.set_text(text, cx));
         self.apply_filter(cx);
     }
 
-    /// Re-reads every connection's history and the favorites.
     pub fn reload(&mut self, cx: &mut Context<Self>) {
         let store = self.store.read(cx);
         let ids: Vec<String> = store.profiles.iter().map(|p| p.id.clone()).collect();
@@ -374,13 +288,11 @@ impl HistoryPanel {
         self.apply_filter(cx);
     }
 
-    /// Re-reads favorites only (after a toggle), keeping the history as is.
     pub(crate) fn reload_favorites(&mut self, cx: &mut Context<Self>) {
         self.read_favorites(cx);
         self.apply_filter(cx);
     }
 
-    /// The favorites and their folders from the store, the folders in the user's order.
     fn read_favorites(&mut self, cx: &App) {
         let core = &self.store.read(cx).core;
         self.favorites = core.favorites.list();
@@ -412,7 +324,6 @@ impl HistoryPanel {
         cx.emit(HistoryEvent::FavoritesChanged);
     }
 
-    /// History entry `entry_ix` out of its connection's history (an undo step).
     fn remove_entry(&mut self, entry_ix: usize, cx: &mut Context<Self>) {
         let Some((conn, e)) = self.entries.get(entry_ix).cloned() else { return };
         if let Ok(Some(line)) = self.store.read(cx).core.history.remove(&conn, &e) {
@@ -425,8 +336,6 @@ impl HistoryPanel {
         cx.notify();
     }
 
-    /// The trash: pressed once it asks "Clear all?"; again, every connection's history goes
-    /// (an undo step).
     fn clear_clicked(&mut self, cx: &mut Context<Self>) {
         if self.clear_ask.take().is_none() {
             self.clear_ask = Some(cx.spawn(async move |h, cx| {
@@ -460,10 +369,6 @@ impl HistoryPanel {
         cx.emit(HistoryEvent::FavoritesChanged);
     }
 
-    /// The favorites view, with favorite `id` selected and scrolled into view, the panel
-    /// focused (↑↓ ↩ work at once): the palette's pick, the "Saved as favorite" link. The
-    /// search is cleared so the favorite is listed, and its folder opened. False when it is not
-    /// saved (any more).
     pub fn focus_favorite(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
         self.read_favorites(cx);
         self.set_favorites(true, cx);
@@ -487,19 +392,14 @@ impl HistoryPanel {
         true
     }
 
-    /// The listed item of favorite `id`, if it is listed.
     fn fav_item(&self, id: &str) -> Option<usize> {
         self.items.iter().position(|it| matches!(it, Item::Fav(i) if self.favorites[*i].id == id))
     }
 
-    /// The listed item of folder `id`.
     fn folder_item(&self, id: &str) -> Option<usize> {
         self.items.iter().position(|it| matches!(it, Item::Folder { ix, .. } if self.folders[*ix].id == id))
     }
 
-    /// Starts editing a favorite's or a folder's name in place: ↩ confirms (`commit_rename`),
-    /// esc cancels (the `Close` action, intercepted while renaming), an empty name reverts to
-    /// the old one.
     fn start_naming(&mut self, naming: Naming, window: &mut Window, cx: &mut Context<Self>) {
         let name = match &naming {
             Naming::Fav(i) => self.favorites[*i].name.clone(),
@@ -555,26 +455,18 @@ impl HistoryPanel {
                     if let Some(from) = from.filter(|f| *f != name)
                         && let Ok(Some(_)) = favorites.rename_folder(id, &name)
                     {
-                        // Right after "+ folder" this is the new folder's name: one step with it
-                        // (`undo::UndoStack::push`).
                         let op = Op::FolderName { id: id.clone(), from: from.clone(), to: name.clone() };
                         cx.emit(HistoryEvent::Did(Entry::new(format!("Rename folder '{from}'"), op)));
                     }
                 }
             }
         }
-        // Back to the panel: ↑↓ go on from the row just named.
         self.refresh_keeping(cx);
         if let Naming::Fav(_) = naming {
             cx.emit(HistoryEvent::FavoritesChanged);
         }
     }
 
-    // ---------------------------------------------------------------------------------------
-    // Folders
-
-    /// The header's "+ folder": a folder named "New folder" (made unique), listed (the search
-    /// cleared, the favorites shown), selected, and its name in an inline field to type over.
     fn new_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Ok(d) = self.store.read(cx).core.favorites.add_folder("New folder") else { return };
         let index = self.store.read(cx).core.favorites.folders().iter().position(|f| f.id == d.id).unwrap_or(0);
@@ -595,11 +487,9 @@ impl HistoryPanel {
         self.start_naming(Naming::Folder(d.id), window, cx);
     }
 
-    /// Opens or shuts a folder; shutting the one holding the selection selects the folder.
     fn toggle_folder(&mut self, id: &str, cx: &mut Context<Self>) {
         let now = std::time::Instant::now();
         let animate = !cx.reduce_motion();
-        // Shutting: opened again before its favorites are gone, they unfold back.
         if self.shutting(id) {
             self.shut_task = None;
             self.folding = Some((id.to_string(), now, true));
@@ -621,7 +511,6 @@ impl HistoryPanel {
         if !animate {
             return self.shut_now(id, cx);
         }
-        // Listed until its favorites have folded away.
         self.folding = Some((id.to_string(), now, false));
         let wait = self.fold_time(id, false);
         let id = id.to_string();
@@ -632,7 +521,6 @@ impl HistoryPanel {
         cx.notify();
     }
 
-    /// Folder `id` shut, its favorites no longer listed.
     fn shut_now(&mut self, id: &str, cx: &mut Context<Self>) {
         if self.shutting(id) {
             self.folding = None;
@@ -642,12 +530,10 @@ impl HistoryPanel {
         self.refresh_keeping(cx);
     }
 
-    /// Folder `id` is shutting: its favorites folding away, still listed.
     fn shutting(&self, id: &str) -> bool {
         self.folding.as_ref().is_some_and(|(f, _, opening)| f == id && !opening)
     }
 
-    /// Deletes a folder and the favorites in it (asked first: `ask_delete`).
     fn delete_folder(&mut self, id: &str, cx: &mut Context<Self>) {
         if let Ok(Some(removed)) = self.store.read(cx).core.favorites.remove_folder(id) {
             let label = format!("Delete folder '{}'", removed.folder.name);
@@ -658,8 +544,6 @@ impl HistoryPanel {
         self.refresh_keeping(cx);
     }
 
-    /// Delete folder pressed once: its row asks "Sure?" until clicked again; esc or a few seconds
-    /// let it go (the pointer leaving the row and a click elsewhere too, `render_menu`).
     fn ask_delete(&mut self, cx: &mut Context<Self>) -> DeleteAsk {
         let timeout = cx.spawn(async move |this, cx| {
             cx.background_executor().timer(DELETE_ASK).await;
@@ -677,15 +561,12 @@ impl HistoryPanel {
         DeleteAsk { _timeout: timeout, _esc: esc }
     }
 
-    /// The "Sure?" gives way to Delete folder again.
     fn let_go_delete(&mut self, cx: &mut Context<Self>) {
         if self.menu.as_mut().and_then(|m| m.ask.take()).is_some() {
             cx.notify();
         }
     }
 
-    /// Files favorite `id` in a folder (`None`: the top level), opens that folder and selects
-    /// the favorite where it now is.
     fn move_favorite(&mut self, id: &str, to: Option<String>, cx: &mut Context<Self>) {
         let from = self.favorites.iter().find(|f| f.id == id).map(|f| (f.name.clone(), f.folder.clone()));
         if let (Some((name, from)), Ok(Some(_))) = (from, self.store.read(cx).core.favorites.move_to_folder(id, to.as_deref())) {
@@ -708,9 +589,6 @@ impl HistoryPanel {
         cx.notify();
     }
 
-    /// Where favorite `id` dragged to `pos` would land: the folder under the pointer (its row,
-    /// or a favorite in it), else the top level; `None` where it already is, or over the
-    /// history.
     fn drop_target(&self, id: &str, pos: Point<Pixels>) -> Option<DropAt> {
         let from = self.favorites.iter().find(|f| f.id == id)?.folder.clone();
         let mut at = DropAt::Top;
@@ -741,14 +619,10 @@ impl HistoryPanel {
         }
     }
 
-    /// Folders are reordered only while every one is listed (no search narrowing them).
     fn can_reorder(&self, cx: &App) -> bool {
         self.show_favorites && self.filter.read(cx).text().is_empty()
     }
 
-    /// The gap among the folders folder `id` dragged to `pos` points at, the explorer's way:
-    /// before or after a folder's row by its middle, after the folder anywhere over its
-    /// favorites, after the last folder over the top level; `None` where it would not move.
     fn folder_slot(&self, id: &str, pos: Point<Pixels>) -> Option<usize> {
         let from = self.folders.iter().position(|d| d.id == id)?;
         let at = |id: &str| self.folders.iter().position(|d| d.id == id);
@@ -768,7 +642,6 @@ impl HistoryPanel {
         dataman_core::order::moves(from, slot).then_some(slot)
     }
 
-    /// A folder dropped moves to the gap the line marks (and the store keeps the order).
     fn drop_folder(&mut self, id: &str, cx: &mut Context<Self>) {
         self.dragging_folder = None;
         let Some(slot) = self.folder_drop.take() else { return cx.notify() };
@@ -782,8 +655,6 @@ impl HistoryPanel {
         self.refresh_keeping(cx);
     }
 
-    /// The drop line on listed item `ix` while a folder is dragged: before a folder's row
-    /// (`false`), or after the last row of the last folder (`true`, its favorites included).
     fn folder_line(&self, ix: usize) -> Option<bool> {
         let slot = self.folder_drop?;
         let in_folders = |it: &Item| match it {
@@ -798,11 +669,6 @@ impl HistoryPanel {
         }
     }
 
-    // ---------------------------------------------------------------------------------------
-    // The list
-
-    /// The status filter's, and the search's: in the SQL, the connection's name (`names`, by
-    /// id, lowercase) or the database.
     fn matches(&self, (conn, e): &(String, HistoryEntry), q: &str, names: &std::collections::HashMap<String, String>) -> bool {
         let chip = match self.chip {
             Chip::All => true,
@@ -813,7 +679,6 @@ impl HistoryPanel {
         chip && (q.is_empty() || e.sql.to_lowercase().contains(q) || names.get(conn).is_some_and(|n| n.contains(q)) || e.database.to_lowercase().contains(q))
     }
 
-    /// Rebuilds the list, the selection back on the first row (the search's top match).
     fn apply_filter(&mut self, cx: &mut Context<Self>) {
         let q = self.filter.read(cx).text().trim().to_lowercase();
         self.query = q.clone();
@@ -821,8 +686,6 @@ impl HistoryPanel {
         let mut shown = 0;
         if self.show_favorites {
             let hit = |f: &Favorite| q.is_empty() || f.name.to_lowercase().contains(&q) || f.sql.to_lowercase().contains(&q);
-            // The folders first, as the explorer lists them; a search lists those holding a
-            // match (or named like it), open.
             for (ix, d) in self.folders.iter().enumerate() {
                 let named = !q.is_empty() && d.name.to_lowercase().contains(&q);
                 let found: Vec<usize> =
@@ -876,11 +739,8 @@ impl HistoryPanel {
         cx.notify();
     }
 
-    /// Re-reads the favorites and rebuilds the list, the same favorite or folder selected (a
-    /// folder opened or shut, a favorite moved or renamed), else the one now in its place.
     fn refresh_keeping(&mut self, cx: &mut Context<Self>) {
         let was = self.selected;
-        // (id, a favorite's rather than a folder's)
         let keep = match was.and_then(|s| self.items.get(s)) {
             Some(Item::Fav(i)) => self.favorites.get(*i).map(|f| (f.id.clone(), true)),
             Some(Item::Folder { ix, .. }) => self.folders.get(*ix).map(|d| (d.id.clone(), false)),
@@ -911,8 +771,6 @@ impl HistoryPanel {
         cx.notify();
     }
 
-    /// ← and →, as in the explorer: → opens the selected folder, ← shuts it, or, on a
-    /// favorite in a folder, goes up to the folder.
     fn fold(&mut self, open: bool, cx: &mut Context<Self>) {
         match self.selected.and_then(|s| self.items.get(s)) {
             Some(&Item::Folder { ix, open: is_open, .. }) if (is_open && !self.shutting(&self.folders[ix].id)) != open => {
@@ -934,7 +792,6 @@ impl HistoryPanel {
         let sql = match self.selected.and_then(|s| self.items.get(s)) {
             Some(Item::Entry(i)) => Some(self.entries[*i].1.sql.clone()),
             Some(Item::Fav(i)) => Some(self.favorites[*i].sql.clone()),
-            // ↩ on a folder opens or shuts it.
             Some(Item::Folder { ix, .. }) => {
                 let id = self.folders[*ix].id.clone();
                 self.toggle_folder(&id, cx);
@@ -947,7 +804,6 @@ impl HistoryPanel {
         }
     }
 
-    /// ⌥↩ and double-click: always a new tab.
     fn open_selected_in_tab(&mut self, cx: &mut Context<Self>) {
         match self.selected.and_then(|s| self.items.get(s)) {
             Some(Item::Entry(i)) => {
@@ -970,9 +826,6 @@ impl HistoryPanel {
         }
     }
 
-    // ---------------------------------------------------------------------------------------
-    // Rows
-
     fn render_item(&self, ix: usize, t: &Theme, focused: bool, cx: &mut Context<Self>) -> AnyElement {
         match &self.items[ix] {
             Item::Day(label) => div()
@@ -994,7 +847,6 @@ impl HistoryPanel {
         }
     }
 
-    /// How long folder `id`'s favorites take to unfold (`opening`) or fold away, staggered.
     fn fold_time(&self, id: &str, opening: bool) -> std::time::Duration {
         let rows = self.favorites.iter().filter(|f| f.folder.as_deref() == Some(id)).count().saturating_sub(1).min(UNFOLD_STAGGERED) as u32;
         if opening {
@@ -1004,14 +856,10 @@ impl HistoryPanel {
         }
     }
 
-    /// Whether a folder is still opening or shutting (its icon, its favorites moving).
     fn folding_moves(&self) -> bool {
         self.folding.as_ref().is_some_and(|(id, at, opening)| at.elapsed() < self.fold_time(id, *opening))
     }
 
-    /// Favorite `fav_i`'s row (item `ix`), unfolding while its folder opens: the favorites in
-    /// it grow to their height and fade in one a little after the other, the rows under them
-    /// sliding down.
     fn unfolding(&self, ix: usize, fav_i: usize, row: AnyElement) -> AnyElement {
         let f = &self.favorites[fav_i];
         let Some((_, at, opening)) = self.folding.as_ref().filter(|(d, ..)| f.folder.as_deref() == Some(d.as_str())) else { return row };
@@ -1026,7 +874,6 @@ impl HistoryPanel {
             }
             crate::motion::EASE.eval(raw.max(0.))
         } else {
-            // The last one first, up to the folder.
             let n = self.items[first + 1..].iter().take_while(|it| matches!(it, Item::Fav(i) if self.favorites[*i].folder == f.folder)).count();
             let from_end = (n - 1 - nth).min(UNFOLD_STAGGERED) as f32;
             let delay = from_end * crate::motion::FOLDER_SHUT_STAGGER.as_secs_f32() * 1e3;
@@ -1035,7 +882,6 @@ impl HistoryPanel {
         };
         let heights = self.unfold_h.clone();
         let id = f.id.clone();
-        // Shutting, a row not measured yet (scrolled into view) starts from its usual height.
         let h = heights.borrow().get(&id).copied().unwrap_or(if *opening { 0. } else { FAV_ROW_H });
         div()
             .w_full()
@@ -1080,11 +926,9 @@ impl HistoryPanel {
             Outcome::Cancelled => t.warn,
             Outcome::Ok => t.tx3,
         };
-        // Leading comment lines are not the statement.
         let body: Vec<&str> = e.sql.lines().skip_while(|l| l.trim().is_empty() || l.trim_start().starts_with("--")).collect();
         let src = if body.is_empty() { e.sql.clone() } else { body.join("\n") };
         let flat = excerpt(&src.split_whitespace().collect::<Vec<_>>().join(" "), &self.query, SQL_MAX);
-        // The verb in the keyword color, unless the search's match is in it.
         let (verb, rest) = match flat.split_once(' ') {
             Some((v, r)) if !v.starts_with('…') && ui::find_ci(&flat, &self.query).is_none_or(|h| h.start >= v.len()) => (Some(v.to_string()), format!(" {r}")),
             _ => (None, flat.clone()),
@@ -1102,7 +946,6 @@ impl HistoryPanel {
                     .flex()
                     .flex_col()
                     .gap(px(4.))
-                    // Neutral: blue is the explorer's selection.
                     .when(sel && focused, |d| d.bg(t.mark).border_1().border_color(t.edge))
                     .when(sel && !focused, |d| d.bg(t.prs))
                     .when(!sel, |d| d.hover(move |s| s.bg(hov)))
@@ -1117,8 +960,6 @@ impl HistoryPanel {
                         }
                         cx.notify();
                     }))
-                    // Right-click, and ⌃-click: the entry's menu (Run, Open in new tab, Add to
-                    // favorites, Remove from history).
                     .on_mouse_down(gpui::MouseButton::Right, cx.listener(move |h, ev: &gpui::MouseDownEvent, window, cx| {
                         cx.stop_propagation();
                         h.selected = Some(ix);
@@ -1177,7 +1018,6 @@ impl HistoryPanel {
             .into_any_element()
     }
 
-    /// The inline name field: the accent border, ↩ at its end (it confirms).
     fn name_field(input: Entity<TextInput>, t: &Theme) -> AnyElement {
         div()
             .flex_1()
@@ -1196,13 +1036,9 @@ impl HistoryPanel {
             .into_any_element()
     }
 
-    /// A folder's row, the explorer's way: the chevron, the folder (filled while shut), the
-    /// name; tinted in the accent while a favorite dragged over it would drop in. Dragged
-    /// itself, it moves among the folders (a line marks the gap, as among the connections).
     fn render_folder(&self, ix: usize, folder_ix: usize, open: bool, t: &Theme, focused: bool, cx: &mut Context<Self>) -> AnyElement {
         let d = &self.folders[folder_ix];
         let id = d.id.clone();
-        // Shutting: shut already, its favorites folding away under it.
         let open = open && !self.shutting(&id);
         let sel = self.selected == Some(ix);
         let dropping = cx.has_active_drag() && self.drop_at.as_ref() == Some(&DropAt::Folder(id.clone()));
@@ -1241,21 +1077,16 @@ impl HistoryPanel {
                     .when(!dropping && !sel, |d| d.hover(move |s| s.bg(hov)))
                     .when(dragged, |d| d.opacity(0.45))
                     .on_click(cx.listener(move |h, ev: &gpui::ClickEvent, window, cx| {
-                        // The rename field's clicks are its own; ⌃-click opened the menu.
                         if is_renaming || ev.modifiers().control {
                             return;
                         }
                         h.selected = Some(ix);
                         window.focus(&h.focus, cx);
-                        // A click opens or shuts it (the explorer's way); a double-click is
-                        // nothing more than its first click (Rename is in its menu).
                         if ev.click_count() >= 2 {
                             return cx.notify();
                         }
                         h.toggle_folder(&click_id, cx);
                     }))
-                    // Among the folders; not while its name is edited, nor while a search
-                    // lists only some of them.
                     .when(!is_renaming && reorder, |d| d.on_drag(DraggedFolder(id), move |_, _, _, cx| crate::dnd::ghost(ghost.clone(), None, cx)))
                     .on_mouse_down(gpui::MouseButton::Right, cx.listener(move |h, ev: &gpui::MouseDownEvent, _, cx| {
                         cx.stop_propagation();
@@ -1277,8 +1108,6 @@ impl HistoryPanel {
             .into_any_element()
     }
 
-    /// A folder's icon: filled while shut, an outline while open; opening, its fill drains
-    /// away, shutting, it fills back up (`motion::FLOOD`).
     fn folder_icon(&self, id: &str, open: bool, dropping: bool, t: &Theme) -> AnyElement {
         let fill = self.folding.as_ref().filter(|(f, ..)| f == id).and_then(|(_, at, opening)| crate::motion::folder_fill(*at, *opening));
         ui::folder_icon(open, fill, 14., if dropping { t.acc_t } else { t.tx3 })
@@ -1304,15 +1133,11 @@ impl HistoryPanel {
             None => ui::marked(t, clip(&f.name, NAME_MAX), &self.query).text_color(t.tx).into_any_element(),
         };
         let (fav_id, ghost) = (f.id.clone(), f.name.clone());
-        // A folder dragged after the last one: the line under its last favorite, as wide as a
-        // folder's row.
         let line = self.folder_line(ix).filter(|_| cx.has_active_drag());
         div()
             .relative()
             .pl(px(if nested { 6. + NEST } else { 6. }))
             .pr(px(6.))
-            // In a folder: a hairline under its chevron, down the folder's favorites (their
-            // cards are tall: the indent alone hardly tells where the folder ends).
             .when(nested, |d| d.child(div().absolute().top_0().bottom_0().left(px(18.5)).w(gpui::px(1.)).bg(t.line)))
             .child(
                 div()
@@ -1325,7 +1150,6 @@ impl HistoryPanel {
                     .when(sel && focused, |d| d.bg(t.mark).border_1().border_color(t.edge))
                     .when(sel && !focused, |d| d.bg(t.prs))
                     .when(!sel, |d| d.hover(move |s| s.bg(hov)))
-                    // Its place stays marked, dimmed, while its ghost is on the move.
                     .when(dragged, |d| d.opacity(0.45))
                     .on_click(cx.listener(move |h, ev: &gpui::ClickEvent, window, cx| {
                         // A click in the rename field belongs to the field: taking the
@@ -1340,11 +1164,8 @@ impl HistoryPanel {
                         }
                         cx.notify();
                     }))
-                    // Dragged onto a folder (or out of one); not while its name is edited
-                    // (a drag there selects text).
+                    // Not while its name is edited: a drag there selects text.
                     .when(!is_renaming, |d| d.on_drag(DraggedFav(fav_id), move |_, _, _, cx| crate::dnd::ghost(ghost.clone(), chip, cx)))
-                    // Right-click, and ⌃-click (the Mac convention): the favorite's
-                    // context menu (Run, Open, Rename, Move to folder, Remove…) at the pointer.
                     .on_mouse_down(gpui::MouseButton::Right, cx.listener(move |h, ev: &gpui::MouseDownEvent, _, cx| {
                         cx.stop_propagation();
                         h.selected = Some(ix);
@@ -1389,9 +1210,6 @@ impl HistoryPanel {
             .into_any_element()
     }
 
-    // ---------------------------------------------------------------------------------------
-    // The context menu
-
     fn open_menu(&mut self, on: MenuOn, at: Point<Pixels>, cx: &mut Context<Self>) {
         self.chip_menu = false;
         self.sub_bounds.set(None);
@@ -1399,13 +1217,6 @@ impl HistoryPanel {
         cx.notify();
     }
 
-    /// What a menu offers. A history entry: Run, Open in new tab (their keys on the selected
-    /// row), Add to favorites (Remove from favorites when saved), Remove from history. A
-    /// favorite: Run, Open in new tab, Rename, Move to folder ▸ (once there are folders), Remove, Import
-    /// favorites…; a folder: Rename, New folder, Delete folder (it says how many queries go
-    /// with it; pressed once, "Sure? (deletes N queries)" in its place); the star toggle: New
-    /// folder, Import favorites…. Sentence case here; the menu bar's File ▸ Import Favorites…
-    /// keeps the macOS title case.
     fn menu_entries(&self, on: &MenuOn) -> Vec<MenuEntry> {
         use MenuEntry as E;
         let import = E::item(Act::Import, Icon::Import, "Import favorites…", None);
@@ -1452,7 +1263,6 @@ impl HistoryPanel {
                 let delete = E::Item {
                     act: Act::DeleteFolder,
                     icon: Icon::Trash,
-                    // Its queries go with it: say how many.
                     label: match (asking, n) {
                         (false, _) => "Delete folder".into(),
                         (true, 0) => "Sure?".into(),
@@ -1503,7 +1313,6 @@ impl HistoryPanel {
             (Act::Move(to), Some((_, f))) => self.move_favorite(&f.id, to, cx),
             (Act::Remove, Some((i, _))) => self.remove_favorite(i, cx),
             (Act::NewFolder, _) => self.new_folder(window, cx),
-            // Pressed once it asks (the menu stays, its row red); again, the folder goes.
             (Act::DeleteFolder, _) => {
                 if let MenuOn::Folder(id) = &m.on {
                     if m.ask.is_some() {
@@ -1521,9 +1330,6 @@ impl HistoryPanel {
         cx.notify();
     }
 
-    /// The menu at the pointer, in the explorer's look (`grid_menu::row`: icon, label, a muted
-    /// detail, the key), and Move to folder's submenu beside it (to the left when the window
-    /// ends to its right: the panel is at the window's right edge).
     fn render_menu(&self, t: &Theme, window: &Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let Some(m) = &self.menu else { return vec![] };
         let entries = self.menu_entries(&m.on);
@@ -1588,7 +1394,6 @@ impl HistoryPanel {
             .font_family(crate::theme::mono())
             .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_mouse_down_out(cx.listener(move |h, ev: &gpui::MouseDownEvent, _, cx| {
-                // A click in the submenu is a click in the menu.
                 if h.menu.as_ref().is_some_and(|m| m.sub.is_some()) && sub_bounds.get().is_some_and(|b| b.contains(&ev.position)) {
                     return;
                 }
@@ -1657,9 +1462,6 @@ impl HistoryPanel {
         out
     }
 
-    /// Delete folder pressed once: its row (entry `i`), red, says "Sure? (deletes N queries)"
-    /// (the app's "Sure?", as a group's ×); clicked, the folder goes with them. The pointer
-    /// leaving the row lets it go.
     fn render_delete_ask(&self, i: usize, entries: &[MenuEntry], label: SharedString, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let (hov, prs) = (t.err.opacity(0.85), t.err.opacity(0.7));
         let top = PAD + entries[..i].iter().map(MenuEntry::h).sum::<f32>();
@@ -1693,11 +1495,6 @@ impl HistoryPanel {
             }))
     }
 
-    // ---------------------------------------------------------------------------------------
-    // The header's controls
-
-    /// The status filter (All / OK / Error / Cancelled), compact, in the app's picker style
-    /// (`chrome::render_conn_picker`): the History view's only.
     fn render_chip_dropdown(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let label = match self.chip {
             Chip::All => "All",
@@ -1756,8 +1553,6 @@ impl HistoryPanel {
         div().flex().flex_row().relative().on_children_prepainted(move |b, _, _| bounds.set(b.first().copied())).child(button).children(menu)
     }
 
-    /// The History view's trash, beside its status filter: pressed once it turns into a red
-    /// "Clear all?", pressed again it clears every connection's history (⌘Z brings it back).
     fn render_clear(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let asking = self.clear_ask.is_some();
         let (hov, prs) = (t.hov, t.prs);
@@ -1785,7 +1580,6 @@ impl HistoryPanel {
         div().flex().flex_row().on_children_prepainted(move |b, _, _| bounds.set(b.first().copied())).child(button)
     }
 
-    /// "+ folder" (the favorites only): a new folder, named in place.
     fn render_new_folder(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let (hov, prs) = (t.hov, t.prs);
         let button = div()
@@ -1806,11 +1600,6 @@ impl HistoryPanel {
         div().flex().flex_row().on_children_prepainted(move |b, _, _| bounds.set(b.first().copied())).child(button)
     }
 
-    // ---------------------------------------------------------------------------------------
-    // `history_check` (`--demo`): real mouse and key events need window-coordinate anchors and
-    // a way to read state a click cannot report back on its own.
-
-    /// A folder opening or shutting is still moving (its icon, its favorites).
     pub(crate) fn demo_folding(&self) -> bool {
         self.folding_moves()
     }
@@ -1819,20 +1608,14 @@ impl HistoryPanel {
         self.entries.len()
     }
 
-    /// Whether the history listed holds `sql` (a favorite run from its menu landed there).
     pub(crate) fn demo_has_entry(&self, sql: &str) -> bool {
         self.entries.iter().map(|(_, e)| e).any(|e| e.sql.trim().trim_end_matches(';') == sql.trim().trim_end_matches(';'))
     }
 
-    /// Favorites an entry directly (setup for a check: the star click itself is not what
-    /// `history-check` is testing).
     pub(crate) fn demo_favorite_entry(&mut self, entry_ix: usize, cx: &mut Context<Self>) {
         self.toggle_favorite(entry_ix, cx);
     }
 
-    /// Screenshots (`marks`, `marks-history`): the history (`favorites` false) with its first
-    /// entry selected, or two favorites with the first selected and the second being renamed
-    /// (the panel focused).
     pub(crate) fn demo_marks(&mut self, favorites: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.set_favorites(favorites, cx);
         if favorites {
@@ -1854,7 +1637,6 @@ impl HistoryPanel {
         cx.notify();
     }
 
-    /// Screenshots (`marks-search`): the search field focused, holding `text`.
     pub(crate) fn demo_search(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.filter.update(cx, |f, cx| f.set_text(text, cx));
         self.apply_filter(cx);
@@ -1865,7 +1647,6 @@ impl HistoryPanel {
         self.favorites.iter().map(|f| (f.id.clone(), f.name.clone())).collect()
     }
 
-    /// Each favorite's name and the name of the folder it is in.
     pub(crate) fn demo_filed(&self) -> Vec<(String, Option<String>)> {
         let folder = |id: &str| self.folders.iter().find(|d| d.id == id).map(|d| d.name.clone());
         self.favorites.iter().map(|f| (f.name.clone(), f.folder.as_deref().and_then(folder))).collect()
@@ -1875,8 +1656,6 @@ impl HistoryPanel {
         self.folders.iter().map(|d| (d.id.clone(), d.name.clone())).collect()
     }
 
-    /// The listed rows, as `▸ name` / `▾ name` for a folder, `name` for a favorite (indented
-    /// two spaces in a folder), `entry` for the history.
     pub(crate) fn demo_rows(&self) -> Vec<String> {
         self.items
             .iter()
@@ -1892,7 +1671,6 @@ impl HistoryPanel {
             .collect()
     }
 
-    /// The listed item of the favorite or folder named `name`.
     pub(crate) fn demo_item_named(&self, name: &str) -> Option<usize> {
         self.items.iter().position(|it| match it {
             Item::Folder { ix, .. } => self.folders[*ix].name == name,
@@ -1909,8 +1687,6 @@ impl HistoryPanel {
         self.show_favorites
     }
 
-    /// The selected favorite's id, its index among the listed items, and whether its row is
-    /// painted whole inside the list's viewport.
     pub(crate) fn demo_selected_favorite(&self) -> Option<(String, usize, bool)> {
         let ix = self.selected?;
         let Item::Fav(i) = self.items.get(ix)? else { return None };
@@ -1919,15 +1695,12 @@ impl HistoryPanel {
         Some((self.favorites[*i].id.clone(), ix, inside))
     }
 
-    /// Screenshots (`fav-menu`): the favorites listed.
     pub(crate) fn demo_show_favorites(&mut self, cx: &mut Context<Self>) {
         self.read_favorites(cx);
         self.set_favorites(true, cx);
         self.apply_filter(cx);
     }
 
-    /// Screenshots (`fav-menu`): the context menu of listed item `item_ix`, as a right-click in
-    /// its row opens it.
     pub(crate) fn demo_open_fav_menu(&mut self, item_ix: usize, cx: &mut Context<Self>) {
         if let (Some(Item::Fav(i)), Some(p)) = (self.items.get(item_ix), self.demo_item_point(item_ix)) {
             self.selected = Some(item_ix);
@@ -1936,7 +1709,6 @@ impl HistoryPanel {
         }
     }
 
-    /// Renames favorite `fav_ix` the way the inline field does (Rename, the text, ↩).
     pub(crate) fn demo_rename(&mut self, fav_ix: usize, name: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.start_rename(fav_ix, window, cx);
         if let Some((_, input)) = &self.renaming {
@@ -1953,8 +1725,6 @@ impl HistoryPanel {
         self.chip_menu
     }
 
-    /// The status dropdown button's bounds, in window coordinates (`None` before it is first
-    /// painted).
     pub(crate) fn demo_dropdown_bounds(&self) -> Option<Bounds<Pixels>> {
         self.chip_bounds.get()
     }
@@ -1967,7 +1737,6 @@ impl HistoryPanel {
         self.clear_bounds.get()
     }
 
-    /// The context menu of history entry `entry_ix`, as a right-click on its row opens it.
     pub(crate) fn demo_open_entry_menu(&mut self, entry_ix: usize, cx: &mut Context<Self>) {
         let Some(ix) = self.items.iter().position(|it| matches!(it, Item::Entry(i) if *i == entry_ix)) else { return };
         if let Some(p) = self.demo_item_point(ix) {
@@ -1976,7 +1745,6 @@ impl HistoryPanel {
         }
     }
 
-    /// The menu's rows' labels, separators as `—`.
     pub(crate) fn demo_menu_labels(&self) -> Vec<String> {
         let Some(m) = &self.menu else { return vec![] };
         self.menu_entries(&m.on).iter().map(|e| e.label().map_or("—".to_string(), str::to_string)).collect()
@@ -1990,8 +1758,6 @@ impl HistoryPanel {
         self.menu.is_some()
     }
 
-    /// The middle of the open menu's row labelled `label` (`sub`: the submenu's), as last
-    /// painted.
     pub(crate) fn demo_menu_point(&self, label: &str, sub: bool) -> Option<Point<Pixels>> {
         let m = self.menu.as_ref()?;
         let entries = self.menu_entries(&m.on);
@@ -2006,7 +1772,6 @@ impl HistoryPanel {
         Some(point(b.left() + px(30.), b.top() + px(top + ITEM_H / 2.)))
     }
 
-    /// Where a favorite being dragged would land: `"top"`, a folder's name, or `None`.
     pub(crate) fn demo_drop_at(&self) -> Option<String> {
         match self.drop_at.as_ref()? {
             DropAt::Top => Some("top".into()),
@@ -2014,8 +1779,6 @@ impl HistoryPanel {
         }
     }
 
-    /// The gap among the folders a folder being dragged would drop into, and the listed items
-    /// drawing the line that marks it (with `true` for a line under the item).
     pub(crate) fn demo_folder_drop(&self) -> Option<(usize, Vec<(usize, bool)>)> {
         let slot = self.folder_drop?;
         Some((slot, (0..self.items.len()).filter_map(|ix| self.folder_line(ix).map(|after| (ix, after))).collect()))
@@ -2028,7 +1791,6 @@ impl HistoryPanel {
         }
     }
 
-    /// The folder (its name) being renamed in place.
     pub(crate) fn demo_renaming_folder(&self) -> Option<String> {
         match &self.renaming {
             Some((Naming::Folder(id), _)) => self.folders.iter().find(|d| d.id == *id).map(|d| d.name.clone()),
@@ -2036,40 +1798,31 @@ impl HistoryPanel {
         }
     }
 
-    /// Whether the rename field itself (not the panel, not the row) actually holds the
-    /// keyboard focus: real typing only reaches it when this is true.
     pub(crate) fn demo_renaming_focused(&self, window: &Window, cx: &App) -> bool {
         self.renaming.as_ref().is_some_and(|(_, input)| input.focus_handle(cx).is_focused(window))
     }
 
-    /// A point inside the rename field, as last painted.
     pub(crate) fn demo_rename_field_point(&self, cx: &App) -> Option<Point<Pixels>> {
         let (x, y, w, h) = self.renaming.as_ref()?.1.read(cx).demo_bounds()?;
         Some(point(px(x + w * 0.5), px(y + h * 0.5)))
     }
 
-    /// A point inside item `item_ix` of the visible list (a day header, a history entry, a
-    /// folder or a favorite), in window coordinates; `None` before it is painted.
     pub(crate) fn demo_item_point(&self, item_ix: usize) -> Option<Point<Pixels>> {
         let b = self.list.bounds_for_item(item_ix)?;
-        // Past a nested favorite's indent.
         Some(point(b.origin.x + px(40.), b.origin.y + b.size.height * 0.5))
     }
 
-    /// The middle of the star of listed favorite `item_ix` (its Remove), as last painted.
     pub(crate) fn demo_star_point(&self, item_ix: usize) -> Option<Point<Pixels>> {
         let b = self.list.bounds_for_item(item_ix)?;
         // Past the row's 6 pt margin and 8 pt padding, the 20 pt star ends its first line.
         Some(point(b.right() - px(6. + 8. + 10.), b.top() + px(7. + 10.)))
     }
 
-    /// The list's own bounds (the checks drop below its last row).
     pub(crate) fn demo_list_bounds(&self) -> Bounds<Pixels> {
         self.list.viewport_bounds()
     }
 }
 
-/// A small square star toggle: outline unfavorited, filled (warn color) favorited.
 fn fav_button(t: &Theme, id: impl Into<gpui::ElementId>, favorited: bool) -> gpui::Stateful<gpui::Div> {
     let (hov, prs) = (t.hov, t.prs);
     let color = if favorited { t.warn } else { t.tx3 };
@@ -2089,7 +1842,6 @@ fn fmt_ms(ms: f64) -> String {
     if ms < 1000. { format!("{ms:.0} ms") } else { format!("{:.1} s", ms / 1000.) }
 }
 
-/// `[42703] column … does not exist` → `42703`.
 fn error_code(e: Option<&str>) -> Option<String> {
     let e = e?;
     let rest = e.strip_prefix('[')?;
@@ -2103,13 +1855,11 @@ impl Render for HistoryPanel {
         let filter_focused = self.filter.focus_handle(cx).is_focused(window);
         let favs = self.show_favorites;
         let total = if favs { self.favorites.len() } else { self.entries.len() };
-        // A folder opening or shutting: its icon and its favorites, frame by frame.
         if self.folding_moves() {
             window.request_animation_frame();
         } else if self.folding.as_ref().is_some_and(|f| f.2) {
             self.folding = None;
         }
-        // A drag that ended outside the panel leaves no drop behind.
         if !cx.has_active_drag() {
             self.drop_at = None;
             self.dragging = None;
@@ -2134,8 +1884,6 @@ impl Render for HistoryPanel {
                 .relative()
                 .flex()
                 .flex_col()
-                // A favorite dragged over the list: the folder it would drop into (its row, or
-                // a favorite in it), else the top level.
                 .on_drag_move(cx.listener(|h, ev: &gpui::DragMoveEvent<DraggedFav>, _, cx| {
                     let pos = ev.event.position;
                     let id = ev.drag(cx).0.clone();
@@ -2147,7 +1895,6 @@ impl Render for HistoryPanel {
                     }
                 }))
                 .on_drop(cx.listener(|h, d: &DraggedFav, _, cx| h.drop_favorite(&d.0, cx)))
-                // A folder dragged over the list: the gap among the folders it would drop into.
                 .on_drag_move(cx.listener(|h, ev: &gpui::DragMoveEvent<DraggedFolder>, _, cx| {
                     let pos = ev.event.position;
                     let id = ev.drag(cx).0.clone();
@@ -2160,7 +1907,6 @@ impl Render for HistoryPanel {
                 }))
                 .on_drop(cx.listener(|h, d: &DraggedFolder, _, cx| h.drop_folder(&d.0, cx)))
                 .child(list(self.list.clone(), cx.processor(move |h, ix: usize, _window, cx| h.render_item(ix, &theme, focused, cx))).flex_1())
-                // Out of its folder: the whole list is the drop target.
                 .when(top_drop, |d| d.child(div().absolute().inset_0().mx(px(6.)).border_1().border_color(t.acc.opacity(0.45))))
                 .into_any_element()
         };
@@ -2180,15 +1926,12 @@ impl Render for HistoryPanel {
             .on_action(cx.listener(|h, _: &OpenInTab, _, cx| h.open_selected_in_tab(cx)))
             .on_action(cx.listener(|h, _: &RunEntry, _, cx| h.run_selected(cx)))
             .on_action(cx.listener(|h, _: &Close, _, cx| {
-                // esc while renaming cancels the rename (the old name stays), with a menu open
-                // it shuts the menu; otherwise the focus goes back to the editor.
                 if h.renaming.take().is_some() || h.menu.take().is_some() {
                     cx.notify();
                 } else {
                     cx.emit(HistoryEvent::Close);
                 }
             }))
-            // The explorer's header and filter, on its glass: the view's name, its controls.
             .child(
                 div()
                     .id("history-head")
@@ -2202,7 +1945,6 @@ impl Render for HistoryPanel {
                     .gap(px(8.))
                     .child(div().flex_1().child(ui::caps(&t, if favs { "FAVORITES" } else { "HISTORY" })))
                     .when(favs, |d| {
-                        // A right click on the header: the favorites' menu (new folder, import).
                         d.child(self.render_new_folder(&t, cx)).on_mouse_down(gpui::MouseButton::Right, cx.listener(|h, ev: &gpui::MouseDownEvent, _, cx| {
                             h.open_menu(MenuOn::Panel, ev.position, cx);
                             cx.stop_propagation();
@@ -2224,13 +1966,10 @@ impl Render for HistoryPanel {
                     .relative()
                     .bg(t.hov)
                     .border_1()
-                    // A search field's focus is neutral, like the explorer filter's: the border
-                    // and its halo, the fill unchanged.
                     .border_color(if filter_focused { t.mark_b } else { t.field_b })
                     .when(filter_focused, |d| d.child(ui::halo_ring(t.mark)))
                     .child(icon(Icon::Search).size(px(13.)).text_color(t.tx3))
                     .child(div().flex_1().min_w_0().text_color(t.tx).child(self.filter.clone()))
-                    // How many match, only while searching (the explorer's way).
                     .when(!self.query.is_empty(), |d| {
                         d.child(div().flex_none().text_size(px(10.5)).text_color(t.tx3).whitespace_nowrap().child(format!("{} of {}", ui_count(self.shown), ui_count(total))))
                     }),

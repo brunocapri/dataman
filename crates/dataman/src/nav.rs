@@ -1,18 +1,11 @@
-//! Back / forward through the workspace, like a browser's: every jump (another tab, a table
-//! opened from the explorer, a reference followed, another result) remembers where the focus was;
-//! ⌃⌘← / ⌃⌘→, the mouse's side buttons and the title bar's arrows go back there and forth.
-
 use gpui::{Context, EntityId, Window};
 use dataman_core::batch::Key;
 
 use crate::app::{Region, Workspace};
 use crate::grid::GridSpot;
 
-/// Entries kept behind (and ahead).
 pub const CAP: usize = 100;
 
-/// The two stacks. A place is the same as another when `same` says so: a jump to where one
-/// already stands is no jump, and going back skips places that are where one is now.
 #[derive(Debug)]
 pub struct History<P> {
     back: Vec<P>,
@@ -32,7 +25,6 @@ impl<P> History<P> {
         History { back: Vec::new(), fwd: Vec::new(), cap }
     }
 
-    /// A jump away from `from`: it goes behind, what was ahead is gone.
     pub fn push(&mut self, from: P, same: impl Fn(&P, &P) -> bool) {
         self.fwd.clear();
         if let Some(top) = self.back.last_mut()
@@ -47,12 +39,10 @@ impl<P> History<P> {
         }
     }
 
-    /// Back from `here`: the last place still `alive` and not `here`; `here` goes ahead.
     pub fn back(&mut self, here: P, alive: impl Fn(&P) -> bool, same: impl Fn(&P, &P) -> bool) -> Option<P> {
         step(&mut self.back, &mut self.fwd, self.cap, here, alive, same)
     }
 
-    /// Forward from `here`, the mirror of `back`.
     pub fn forward(&mut self, here: P, alive: impl Fn(&P) -> bool, same: impl Fn(&P, &P) -> bool) -> Option<P> {
         step(&mut self.fwd, &mut self.back, self.cap, here, alive, same)
     }
@@ -65,7 +55,6 @@ impl<P> History<P> {
         self.fwd.iter().any(alive)
     }
 
-    /// Drops the places that went away (a closed tab).
     pub fn retain(&mut self, alive: impl Fn(&P) -> bool) {
         self.back.retain(&alive);
         self.fwd.retain(&alive);
@@ -91,8 +80,6 @@ fn step<P>(from: &mut Vec<P>, to: &mut Vec<P>, cap: usize, here: P, alive: impl 
     None
 }
 
-/// A place in the workspace: the tab, the region with the keys, the result on screen, the
-/// grid's cell and scroll, the editor's cursor.
 #[derive(Clone, Debug)]
 pub struct Place {
     pub tab: EntityId,
@@ -102,12 +89,10 @@ pub struct Place {
     pub cursor: Option<usize>,
 }
 
-/// Same tab, same result: the cell and the focus inside it do not make another place.
 pub fn same(a: &Place, b: &Place) -> bool {
     a.tab == b.tab && a.result == b.result
 }
 
-/// The workspace's history and whether a step is being taken (it records nothing).
 #[derive(Default)]
 pub struct Nav {
     pub history: History<Place>,
@@ -115,8 +100,6 @@ pub struct Nav {
 }
 
 impl Workspace {
-    /// Where the workspace stands now (`None` before the first tab). Without a window the
-    /// region is unknown and a step back leaves the focus where it is.
     pub(crate) fn nav_place(&self, window: Option<&Window>, cx: &gpui::App) -> Option<Place> {
         let tab = self.active_tab()?;
         let t = tab.read(cx);
@@ -129,7 +112,6 @@ impl Workspace {
         })
     }
 
-    /// Called before a jump: the place being left goes behind.
     pub(crate) fn nav_record(&mut self, window: Option<&Window>, cx: &gpui::App) {
         if self.nav.stepping {
             return;
@@ -148,7 +130,6 @@ impl Workspace {
         if forward { self.nav.history.can_forward(alive) } else { self.nav.history.can_back(alive) }
     }
 
-    /// ⌃⌘← / ⌃⌘→, the side buttons, the title bar's arrows.
     pub(crate) fn go(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(here) = self.nav_place(Some(window), cx) else { return };
         let tabs: Vec<EntityId> = self.tabs.iter().map(|t| t.entity_id()).collect();
@@ -184,7 +165,6 @@ impl Workspace {
         {
             editor.update(cx, |e, cx| e.set_cursor(c, cx));
         }
-        // A sheet that took the keys on the way in keeps them.
         let sheet = {
             let t = tab.read(cx);
             t.pending_run.is_some() || t.confirm.is_some() || t.params.is_some()
@@ -215,7 +195,6 @@ mod tests {
     #[test]
     fn back_and_forward() {
         let mut h = History::default();
-        // 1 → 2 → 3
         h.push(1, eq);
         h.push(2, eq);
         assert!(h.can_back(all) && !h.can_forward(all));
@@ -236,7 +215,6 @@ mod tests {
         h.push(2, eq);
         assert_eq!(h.back(3, all, eq), Some(2));
         assert!(h.can_forward(all));
-        // From 2 to 4: 3 is gone.
         h.push(2, eq);
         assert!(!h.can_forward(all));
         assert_eq!(h.back(4, all, eq), Some(2));
@@ -268,7 +246,6 @@ mod tests {
         assert_eq!(h.back(3, all, eq), Some(2));
         assert_eq!(h.back(2, all, eq), Some(1));
         assert_eq!(h.back(1, all, eq), None);
-        // Back skips where one stands.
         let mut h = History::default();
         h.push(1, eq);
         h.push(2, eq);

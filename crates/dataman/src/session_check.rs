@@ -1,13 +1,3 @@
-//! Demo stages of the saved session (`--demo`), in a session directory of their own (never the
-//! user's):
-//!
-//! - `session`: two tabs saved and the window's workspace rebuilt from them (screenshot);
-//! - `session-check`: the same, checked — a tab with rows, a script that stopped at an error,
-//!   the tab in front, the SQL, selection, rows, the error and its tab come back without
-//!   connecting, a tab's link to its favorite too; the restored result refuses grid edits; the
-//!   tab connects on its first run and runs there; a damaged session file opens a fresh
-//!   workspace. PASS/FAIL lines, exit code 1 on a failure.
-
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -44,7 +34,6 @@ async fn wait(cx: &mut AsyncWindowContext, mut done: impl FnMut(&mut AsyncWindow
     false
 }
 
-/// Runs `sql` in `tab` (`script`: the whole script, else the statement) and waits for its end.
 async fn run(ws: &Entity<Workspace>, tab: &Entity<QueryTab>, sql: &str, script: bool, cx: &mut AsyncWindowContext) {
     let ix = cx.update(|_, cx| ws.read(cx).tabs.iter().position(|t| t == tab)).ok().flatten().unwrap_or(0);
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.activate(ix, window, cx)));
@@ -59,7 +48,6 @@ async fn run(ws: &Entity<Workspace>, tab: &Entity<QueryTab>, sql: &str, script: 
     draw(cx);
 }
 
-/// The window's workspace rebuilt from the saved session, as at launch.
 fn relaunch(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> Entity<Workspace> {
     let core = cx.update(|_, cx| ws.read(cx).store.read(cx).core.clone()).unwrap();
     // The old one leaves quietly: it must not save over the new one later (on quit).
@@ -74,7 +62,6 @@ fn relaunch(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> Entity<Works
     ws
 }
 
-/// Runs a stage; `false` when a check failed.
 pub async fn run_stage(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContext) -> bool {
     let mut ok = true;
     let mut report = |name: &str, pass: bool, detail: String| {
@@ -83,19 +70,15 @@ pub async fn run_stage(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindow
         }
         ok &= pass;
     };
-    // A session directory of this run's own.
     let dir = std::env::temp_dir().join(format!("dataman-session-check-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let store = Arc::new(SessionStore::new(&dir));
     let _ = cx.update(|_, cx| cx.set_global(Sessions(Some(store.clone()))));
 
-    // The demo's tab already ran its query (a paused result past the row cap); a second tab
-    // runs a script that stops at its second statement.
     let first = cx.update(|_, cx| ws.read(cx).tabs[0].clone()).unwrap();
     wait(cx, |cx| cx.update(|_, cx| first.read(cx).run_phase().is_some_and(|p| p != Phase::Running)).unwrap_or(true)).await;
     let script = cx.update(|window, cx| ws.update(cx, |w, cx| w.new_tab(window, cx))).unwrap();
     run(ws, &script, "SELECT g AS n, 'line ' || g AS label FROM generate_series(1, 25) g;\nSELECT * FROM no_such_table_here;\nSELECT 3;", true, cx).await;
-    // The script's tab is linked to a favorite (⌘S saves into it): the link comes back.
     let fav = cx
         .update(|_, cx| {
             let core = ws.read(cx).store.read(cx).core.clone();
@@ -105,11 +88,9 @@ pub async fn run_stage(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindow
         })
         .ok()
         .flatten();
-    // The first tab in front, with a selection in its editor.
     let _ = cx.update(|window, cx| {
         ws.update(cx, |w, cx| {
             w.activate(0, window, cx);
-            // A wider sidebar on its history come back too, and the side it sits on.
             w.explorer_w = 300.;
             w.set_nav(dataman_core::layout::NavView::History, cx);
             w.layout = dataman_core::layout::PanelLayout::explorer_at(dataman_core::layout::Dock::Right);
@@ -138,7 +119,6 @@ pub async fn run_stage(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindow
     let written = store.load();
     report("the session is written (tabs and results files)", written.as_ref().is_some_and(|s| s.tabs.len() == before.0.len() && s.tabs.iter().all(|t| t.results.is_some())), format!("{written:?}"));
 
-    // Relaunch: the workspace rebuilt from the files, before any connection.
     let ws2 = relaunch(ws, cx);
     let back = wait(cx, |cx| {
         cx.update(|_, cx| ws2.read(cx).tabs.len() == before.0.len() && ws2.read(cx).tabs.iter().all(|t| t.read(cx).result().is_some())).unwrap_or(false)
@@ -199,7 +179,6 @@ pub async fn run_stage(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindow
         phase == Some(Phase::Failed) && error.as_deref().is_some_and(|m| m.contains("no_such_table_here")) && tabs >= 2 && shown_err && before.0[1].3 == Some(Phase::Failed),
         format!("phase {phase:?}, error {error:?}, {tabs} result tabs, error on screen {shown_err}"),
     );
-    // A snapshot: grid edits refuse it.
     let edit = cx.update(|_, cx| t1.read(cx).edit.clone()).unwrap();
     let _ = cx.update(|window, cx| {
         ws2.update(cx, |w, cx| w.activate(0, window, cx));
@@ -210,7 +189,6 @@ pub async fn run_stage(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindow
     let editing = cx.update(|_, cx| t1.read(cx).grid.read(cx).demo_editing()).unwrap_or(true);
     report("a restored result refuses grid edits", refused.is_some() && !editing, format!("{refused:?}"));
 
-    // The first run connects the tab's own connection and runs there.
     run(&ws2, &t1, "SELECT 40 + 2 AS answer", false, cx).await;
     wait(cx, |cx| {
         cx.update(|_, cx| {
@@ -230,7 +208,6 @@ pub async fn run_stage(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindow
     report("its first run connects its own connection and runs there", conn == before.0[0].2 && answer.as_deref() == Some("42") && live, format!("{conn:?} {answer:?}"));
 
     if stage == "session" {
-        // The screenshot: a fresh relaunch, the script's error in front.
         let ws3 = relaunch(&ws2, cx);
         wait(cx, |cx| cx.update(|_, cx| ws3.read(cx).tabs.iter().all(|t| t.read(cx).result().is_some())).unwrap_or(false)).await;
         let _ = cx.update(|window, cx| ws3.update(cx, |w, cx| w.activate(1, window, cx)));
@@ -240,7 +217,6 @@ pub async fn run_stage(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindow
         return ok;
     }
 
-    // A damaged session file: a fresh workspace, no panic.
     let _ = cx.update(|_, cx| {
         ws2.update(cx, |w, _| {
             w.session_off = true;

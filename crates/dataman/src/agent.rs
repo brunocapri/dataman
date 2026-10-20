@@ -1,19 +1,7 @@
-//! Agent tabs: where an agent works visibly. `open_query` (and `run_query` / `execute` while
-//! "Agent queries in tabs" is on) runs in one tab per connection and client, reused while it is
-//! free: its SQL goes into the editor, a read runs in that tab's own session (a read-only
-//! transaction of its own, never the user's tabs or transactions) and the agent gets the bounded
-//! view of the result while the whole result stays in the tab (several reads: a result tab each,
-//! every one in the agent's answer); a write runs on the agent's own
-//! backend (held for an approval when it needs one) and the tab shows it running, then its
-//! counts, its RETURNING rows and what became of it. A tab the user is busy in (an edited text,
-//! a run of their own, an open transaction, pending edits) is left alone: the agent gets another.
-//! The tab carries a small agent glyph; its statements are in the history as the agent's.
-//! A document engine's statement (MongoDB, the search engines, Redis) runs on the agent's side
-//! too: the tab's document view shows it running, then its documents, value or write.
-//! A draft (`open_query` with `run: false`) only puts its SQL in the tab, on the connection and
-//! database, with nothing from earlier runs left on screen: nothing runs until the user runs it,
-//! and then it runs as any statement of theirs (the guard, their read-only setting, their
-//! history). A draft the user has not run yet is theirs: only another draft may replace it.
+//! An agent's read runs in its tab's own read-only transaction, never the user's tabs or
+//! transactions. A tab the user is busy in (an edited text, a run of their own, an open
+//! transaction, pending edits) is left alone. A draft the user has not run yet is theirs: only
+//! another draft may replace it.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -32,16 +20,13 @@ use crate::conns::ConnState;
 use crate::mcp::{AppFront, FrontMsg};
 use crate::tab::QueryTab;
 
-/// Whose agent tab a tab is.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentTab {
     pub client: String,
     pub connection_id: String,
-    /// What the agent last put in the editor (another text: the user took the tab over).
     pub text: String,
 }
 
-/// What the tools send the agent tabs.
 pub(crate) enum TabMsg {
     Read { req: TabRead, reply: oneshot::Sender<Result<Outcome, Stop>> },
     ShowWrite { req: TabWrite, reply: oneshot::Sender<Option<u64>> },
@@ -51,8 +36,6 @@ pub(crate) enum TabMsg {
     DocDone { tab: u64, ran: Result<dataman_core::nosql::Ran, String> },
 }
 
-/// How long a read waits for its connection to open in the app (a write's tab waits less: the
-/// write itself does not wait for its tab).
 const CONNECT_FOR_READ: Duration = Duration::from_secs(60);
 const CONNECT_FOR_WRITE: Duration = Duration::from_secs(10);
 
@@ -116,17 +99,13 @@ pub(crate) fn arrived(m: TabMsg, cx: &mut App) {
     });
 }
 
-/// What a read waits for.
 enum Wait {
-    /// The results are ready (the run's statement count).
     Ready(usize),
     Timeout,
     Cancelled,
-    /// The tab was closed.
     Gone,
 }
 
-/// A JSON value as the grid's text (`None`: NULL).
 fn text_of(v: &serde_json::Value) -> Option<String> {
     match v {
         serde_json::Value::Null => None,
@@ -136,8 +115,6 @@ fn text_of(v: &serde_json::Value) -> Option<String> {
 }
 
 impl Workspace {
-    /// The app's connection for an agent's work, connected (its saved password, the Keychain)
-    /// when it is not yet, within `wait`.
     fn agent_connection(&mut self, id: &str, wait: Duration, cx: &mut Context<Self>) -> Task<Result<Arc<Connection>, String>> {
         if let Some(c) = self.store.read(cx).connection(id) {
             return Task::ready(Ok(c));
@@ -162,9 +139,6 @@ impl Workspace {
         })
     }
 
-    /// The client's agent tab for `conn`: a free one, else the empty tab in front, else a new
-    /// one opened behind the tab in front (the user's focus stays where it is). A `draft` may
-    /// take a tab holding a draft not run yet; nothing else may.
     fn agent_tab(&mut self, conn: Arc<Connection>, client: &str, database: &str, draft: bool, window: &mut Window, cx: &mut Context<Self>) -> Entity<QueryTab> {
         let id = conn.profile.id.clone();
         let mine = |t: &QueryTab| t.agent.as_ref().is_some_and(|a| a.client == client && a.connection_id == id);
@@ -225,8 +199,6 @@ impl Workspace {
                 let _ = reply.send(Err(Stop::Refused("the agent tab did not start the statement".into())));
                 return;
             };
-            // Every statement's result ready (enough rows, the end, a pause, a failure that
-            // stops the script), the agent's time limit, or its cancel.
             let deadline = Instant::now() + limits.timeout;
             let (what, results) = loop {
                 if req.cancel.is_cancelled() {
@@ -265,8 +237,8 @@ impl Workspace {
             };
             let _ = reply.send(answer);
             let Some(rs) = results.last().map(|(_, _, rs)| rs.clone()) else { return };
-            // A result past what the tab loads ahead pauses inside its read-only transaction:
-            // the rows loaded stay, the rest is read and dropped, and the transaction ends.
+            // A result past what the tab loads ahead pauses inside its read-only transaction: stop
+            // fetching so the transaction ends.
             let mut rx = rs.subscribe();
             while !rs.phase().is_finished() {
                 if rs.phase() == Phase::Paused {
@@ -301,8 +273,6 @@ impl Workspace {
         .detach();
     }
 
-    /// A document engine's statement in the client's agent tab, shown running until
-    /// [`Workspace::agent_doc_done`] (it runs on the agent's side). The answer names the tab.
     fn agent_show_doc(&mut self, req: TabWrite, reply: oneshot::Sender<Option<u64>>, window: &mut Window, cx: &mut Context<Self>) {
         let connect = self.agent_connection(&req.connection_id, CONNECT_FOR_WRITE, cx);
         cx.spawn_in(window, async move |w, cx| {
@@ -324,15 +294,12 @@ impl Workspace {
         .detach();
     }
 
-    /// What came of the statement a tab shows ([`Workspace::agent_show_doc`]).
     fn agent_doc_done(&mut self, tab: u64, ran: Result<dataman_core::nosql::Ran, String>, cx: &mut Context<Self>) {
         let Some(tab) = self.tabs.iter().find(|t| t.entity_id().as_u64() == tab).cloned() else { return };
         tab.update(cx, |t, cx| t.agent_doc_done(ran, cx));
         cx.notify();
     }
 
-    /// A draft: its SQL in the client's agent tab, on the connection (connected in the app if
-    /// it is not yet) and the database; nothing runs. The answer names the tab.
     fn agent_draft(&mut self, req: TabDraft, reply: oneshot::Sender<Result<Drafted, String>>, window: &mut Window, cx: &mut Context<Self>) {
         let connect = self.agent_connection(&req.connection_id, CONNECT_FOR_READ, cx);
         cx.spawn_in(window, async move |w, cx| {
@@ -355,7 +322,6 @@ impl Workspace {
         .detach();
     }
 
-    /// Ends the write a tab shows: its rows, counts and what became of it, and the history.
     fn agent_write_done(&mut self, tab: u64, sql: String, shown: WriteShown, cx: &mut Context<Self>) {
         let Some(tab) = self.tabs.iter().find(|t| t.entity_id().as_u64() == tab).cloned() else { return };
         let (rs, conn, database) = {

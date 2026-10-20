@@ -1,13 +1,3 @@
-//! Demo stages of the visual EXPLAIN (`--demo`), on the demo database:
-//!
-//! - `plan`: Explain Analyze of a join with a small `work_mem` (the sort and the hash spill),
-//!   the tree with its hot-node bars and the hints over it;
-//! - `plan-flame`: the same plan in the flame view;
-//! - `plan-details`: the details panel of a node with hints;
-//! - `plan-check`: the rules with real key events (⌘L and ⌥⌘L, the tree's keys, the flame,
-//!   a write rolled back alone and inside an open transaction, parameters, Copy as text, an
-//!   explain that fails), printed as PASS/FAIL lines; exit code 1 on a failure.
-
 use std::time::Duration;
 
 use gpui::{AsyncWindowContext, Entity, Focusable, Keystroke};
@@ -70,7 +60,6 @@ fn set(tab: &Entity<QueryTab>, text: &str, at: usize, cx: &mut AsyncWindowContex
     });
 }
 
-/// Runs `sql` in the tab and waits for it.
 async fn run_sql(tab: &Entity<QueryTab>, sql: &str, cx: &mut AsyncWindowContext) -> Option<String> {
     let _ = cx.update(|_, cx| tab.update(cx, |t, cx| t.run(vec![sql.to_string()], cx)));
     let (t2, want) = (tab.clone(), sql.to_string());
@@ -86,7 +75,6 @@ async fn run_sql(tab: &Entity<QueryTab>, sql: &str, cx: &mut AsyncWindowContext)
     .unwrap_or(None)
 }
 
-/// Waits until the plan view shows a parsed plan (`analyzed` as asked).
 async fn plan_up(tab: &Entity<QueryTab>, analyzed: bool, cx: &mut AsyncWindowContext) -> bool {
     let t2 = tab.clone();
     until(cx, 20_000, move |cx| {
@@ -101,14 +89,12 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
     if stage == "plan-check" {
         return check(&tab, cx).await;
     }
-    // The plan gets most of the column (the divider dragged up).
     let _ = cx.update(|_, cx| {
         ws.update(cx, |w, cx| {
             w.editor_frac = Some(0.22);
             cx.notify();
         })
     });
-    // A small work_mem: the sort and the hash go to disk, which the hints point at.
     run_sql(&tab, "SET work_mem = '64kB'", cx).await;
     set(&tab, SQL, SQL.find("SELECT").unwrap(), cx);
     key(cx, "cmd-alt-l");
@@ -144,7 +130,6 @@ async fn check(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> bool {
         .unwrap()
     };
 
-    // ⌘L: the plan in place of the grid, nothing run.
     set(tab, SQL, SQL.find("FROM").unwrap(), cx);
     key(cx, "cmd-l");
     let up = plan_up(tab, false, cx).await;
@@ -157,7 +142,6 @@ async fn check(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> bool {
     let text = cx.update(|_, cx| tab.read(cx).editor.read(cx).text().to_string()).unwrap();
     report("the editor keeps the statement as typed", text == SQL, text);
 
-    // The tree's keys.
     key(cx, "cmd-shift-g");
     let focused = cx.update(|window, cx| plan.focus_handle(cx).is_focused(window)).unwrap();
     report("⌘⇧G focuses the plan where the grid was", focused, String::new());
@@ -173,7 +157,6 @@ async fn check(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> bool {
     let n = i.as_ref().map_or(0, |i| i.2);
     report("← folds the root, → opens it", collapsed == 1 && open == n, format!("{collapsed} / {open} of {n}"));
 
-    // ⌥⌘L: times, totals and hints (a small work_mem spills).
     run_sql(tab, "SET work_mem = '64kB'", cx).await;
     set(tab, SQL, SQL.find("JOIN").unwrap(), cx);
     key(cx, "cmd-alt-l");
@@ -192,7 +175,6 @@ async fn check(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> bool {
     let _ = cx.update(|_, cx| plan.update(cx, |p, cx| p.set_mode(Mode::Tree, cx)));
     run_sql(tab, "RESET work_mem", cx).await;
 
-    // A write explained with ANALYZE is rolled back.
     run_sql(tab, "CREATE TEMP TABLE IF NOT EXISTS plan_t AS SELECT g AS id FROM generate_series(1, 100) g", cx).await;
     let del = "DELETE FROM plan_t WHERE id <= 50";
     set(tab, del, 0, cx);
@@ -212,7 +194,6 @@ async fn check(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> bool {
         format!("{op:?} rolled={rolled} count={count:?} idle={idle}"),
     );
 
-    // Inside an open transaction: a savepoint, the transaction's own work stays.
     run_sql(tab, "BEGIN", cx).await;
     run_sql(tab, "INSERT INTO plan_t VALUES (1000)", cx).await;
     set(tab, "DELETE FROM plan_t WHERE id > 0", 0, cx);
@@ -228,7 +209,6 @@ async fn check(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> bool {
     let end = cx.update(|_, cx| tab.update(cx, |t, cx| t.end_tx(false, cx))).unwrap();
     let _ = end.await;
 
-    // Parameters go through the same prompt.
     let q = "SELECT * FROM orders WHERE id = :id";
     set(tab, q, 0, cx);
     key(cx, "cmd-l");
@@ -249,7 +229,6 @@ async fn check(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> bool {
         format!("asked={asked} {bound:?}"),
     );
 
-    // Copy as text: PostgreSQL's own text format (the clipboard is restored after).
     let saved = cx.update(|_, cx| cx.read_from_clipboard()).unwrap();
     let _ = cx.update(|_, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(String::new())));
     let _ = cx.update(|window, cx| window.dispatch_action(Box::new(crate::app::CopyPlanText), cx));
@@ -264,7 +243,6 @@ async fn check(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> bool {
         copied,
     );
 
-    // A plan of 600 nodes: the tree stays quick (only the rows on screen are built).
     let big: String = (1..=300).map(|i| format!("SELECT {i} AS n, count(*) FROM customer WHERE id < {i}")).collect::<Vec<_>>().join("\nUNION ALL ");
     set(tab, &big, 0, cx);
     key(cx, "cmd-l");
@@ -291,13 +269,10 @@ async fn check(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> bool {
         format!("{nodes} nodes, {per_key:?} / {per_flame:?}"),
     );
 
-    // An explain that fails shows the error, pointing into the statement as typed.
     let bad = "SELECT * FROM orders WHERE nope = 1";
     set(tab, bad, 0, cx);
     key(cx, "cmd-l");
     let t2 = tab.clone();
-    // The tab has taken the failure in (its statement marked failed, the editor told), not just
-    // the result's phase changed on the core's thread.
     until(cx, 5_000, move |cx| t2.read(cx).result().is_some_and(|r| r.phase() == Phase::Failed) && t2.read(cx).failed_index().is_some()).await;
     let (plan_shown, at) = cx
         .update(|_, cx| {

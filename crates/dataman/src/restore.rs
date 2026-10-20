@@ -1,12 +1,3 @@
-//! The workspace kept between launches (`dataman_core::session`): saved a moment after each
-//! change (and when a result ends), and on quit; restored when the window opens, the tabs at
-//! once (in their editor groups) and their results as soon as they are read (off the UI thread).
-//! Restored tabs wait for their own connection: it connects when they run something (or from
-//! the explorer).
-//!
-//! `--demo`, the checks and the benchmarks never touch the user's session: they keep none
-//! unless `DATAMAN_SESSION_DIR` names a directory (the `session-check` stage sets its own).
-
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,10 +9,8 @@ use dataman_core::session::{Session, SessionStore, VERSION};
 use crate::app::Workspace;
 use crate::theme::metrics;
 
-/// How long the workspace stays unchanged before it is saved.
 pub const SAVE_AFTER: Duration = Duration::from_millis(1500);
 
-/// The session directory in use (`None`: sessions off).
 pub struct Sessions(pub Option<Arc<SessionStore>>);
 
 impl Global for Sessions {}
@@ -30,8 +19,6 @@ pub fn store(cx: &App) -> Option<Arc<SessionStore>> {
     cx.try_global::<Sessions>().and_then(|s| s.0.clone())
 }
 
-/// `DATAMAN_SESSION_DIR`, else the app's own (`~/.config/dataman/session`) — but none for
-/// the benchmarks and `--demo` without the variable.
 pub fn dir_for(dirs: &dataman_core::Dirs, throwaway: bool) -> Option<std::path::PathBuf> {
     match std::env::var_os("DATAMAN_SESSION_DIR").filter(|v| !v.is_empty()) {
         Some(d) => Some(d.into()),
@@ -41,12 +28,9 @@ pub fn dir_for(dirs: &dataman_core::Dirs, throwaway: bool) -> Option<std::path::
 }
 
 impl Workspace {
-    /// The saved workspace back (at startup): false when there is none, and the window opens
-    /// with one empty tab as before.
     pub(crate) fn restore_session(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let Some(store) = store(cx) else { return false };
         let Some(s) = store.load() else { return false };
-        // Where the panels sit, whatever else comes back.
         self.layout = s.layout.clone().normalized();
         if s.tabs.is_empty() {
             return false;
@@ -68,7 +52,6 @@ impl Workspace {
         }
         self.editor_frac = s.editor_frac.filter(|f| f.is_finite() && *f > 0. && *f < 1.);
         let active = s.active.min(self.tabs.len() - 1);
-        // The editor groups as they were (no motion: the window opens that way).
         if let Some(sp) = s.split.as_ref().and_then(|sp| sp.normalized(self.tabs.len(), active)) {
             let id = |i: usize| self.tabs[i].entity_id();
             self.split = Some(crate::split::Split {
@@ -80,7 +63,6 @@ impl Workspace {
         }
         self.activate(active, window, cx);
         self.set_nav(s.nav, cx);
-        // The results, read off the UI thread.
         let tabs: Vec<_> = files.iter().map(|(i, ..)| self.tabs[*i].downgrade()).collect();
         let jobs: Vec<_> = files.into_iter().map(|(_, f, shown, closed)| (f, shown, closed)).collect();
         cx.spawn(async move |_, cx| {
@@ -99,10 +81,6 @@ impl Workspace {
         true
     }
 
-    /// A new tab given a saved tab's script, title, table view, connection and database, and
-    /// favorite (a restored session's, a closed tab reopened by the undo): the connection is
-    /// taken at once when it is connected, else when the tab first runs; one that is gone leaves
-    /// the tab on the next one, as new tabs are; a favorite removed meanwhile is let go of.
     pub(crate) fn fill_tab(&mut self, tab: &gpui::Entity<crate::tab::QueryTab>, st: &dataman_core::session::TabState, cx: &mut Context<Self>) {
         let store = self.store.read(cx);
         let known: HashSet<&str> = store.profiles.iter().map(|p| p.id.as_str()).collect();
@@ -122,16 +100,12 @@ impl Workspace {
         });
     }
 
-    /// The workspace as the session keeps it, and the results files to write (tab, file name,
-    /// statements): only the tabs whose run changed since their file was written.
     fn session_snapshot(&mut self, cx: &mut Context<Self>) -> (Session, Vec<(String, Vec<dataman_core::session::SaveItem>)>) {
         let mut files = Vec::new();
         let mut tabs = Vec::new();
         let mut active = 0;
-        // Where each kept tab lands among the saved ones (the editor groups name them so).
         let mut saved_at = std::collections::HashMap::new();
         for (i, tab) in self.tabs.clone().into_iter().enumerate() {
-            // An activity monitor is a live view of a server, not a query: it does not come back.
             if tab.read(cx).monitor.is_some() {
                 continue;
             }
@@ -156,7 +130,6 @@ impl Workspace {
             }
             tabs.push(st);
         }
-        // A group left with only monitors reads as no split.
         let split = self.split.as_ref().and_then(|sp| {
             let at = |id: &gpui::EntityId| saved_at.get(id).copied();
             SplitState { right: sp.right.iter().filter_map(at).collect(), focus_right: sp.focus == Pane::Right, other: at(&sp.other).unwrap_or(usize::MAX), ratio: sp.ratio }
@@ -177,8 +150,6 @@ impl Workspace {
         (session, files)
     }
 
-    /// What a save would change, cheaply: the render compares it to the last one and saves a
-    /// moment after it changes (a cursor blink or a redraw changes nothing).
     pub(crate) fn session_fingerprint(&self, cx: &App) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -198,7 +169,6 @@ impl Workspace {
         h.finish()
     }
 
-    /// Saves a moment from now (each call pushes it back).
     pub(crate) fn schedule_session_save(&mut self, cx: &mut Context<Self>) {
         if store(cx).is_none() || self.session_off {
             return;
@@ -209,8 +179,6 @@ impl Workspace {
         }));
     }
 
-    /// Writes the session: off the UI thread, or (`now`: quitting, closing the window) before
-    /// returning.
     pub(crate) fn save_session(&mut self, now: bool, cx: &mut Context<Self>) {
         let Some(store) = store(cx).filter(|_| !self.session_off) else { return };
         self.session_task = None;

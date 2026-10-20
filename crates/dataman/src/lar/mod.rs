@@ -1,15 +1,3 @@
-//! LAR's panels (board page "LAR panels"): they light up only when `version()` says LAR and
-//! vanish on plain PostgreSQL (the registry filters them by the server's extensions).
-//!
-//! - `live`: SUBSCRIBE / LISTEN … AS run from the editor on their own connection; the grid
-//!   becomes live (fading highlights, scroll anchored) and the panel lists the streams.
-//!
-//! The other LAR panels of the boards (time ruler and past mode, A ⇄ B, row history, graph,
-//! search, engine health) were removed for now; `PanelRegistry` is where they would plug back
-//! in. The shell calls the small hooks below (`start_live`, `grid_override`, `result_bar`,
-//! `tab_indicator`, `status_text`, `workspace_actions`); the state of a tab lives in
-//! [`TabLar`] inside the tab.
-
 pub mod demo;
 pub mod grid;
 pub mod live;
@@ -32,28 +20,20 @@ use crate::theme::Theme;
 actions!(
     lar,
     [
-        /// ⌥P: pause or resume the tab's live query.
         PauseLive,
-        /// Stop the tab's live query.
         StopLive,
-        /// Start the tab's live query again after it ended.
         Resubscribe,
-        /// Keep the ended stream's rows as a plain snapshot.
         KeepSnapshot,
     ]
 );
 
 pub fn bind_keys(cx: &mut App) {
-    // ⌥P (pause / resume) is a remappable command (`keymap`).
     grid::bind_keys(cx);
 }
 
-/// LAR state of one query tab.
 #[derive(Default)]
 pub struct TabLar {
-    /// The live query shown instead of the grid.
     pub live: Option<LiveView>,
-    /// The last query that reads a table: "Insert SUBSCRIBE" in the live panel starts from it.
     pub last_query: Option<String>,
 }
 
@@ -72,7 +52,6 @@ pub fn register(cx: &mut App) {
     cx.global_mut::<crate::panels::PanelRegistry>().register(LivePanel);
 }
 
-/// The live queries panel (⌥1).
 struct LivePanel;
 
 impl ServerPanel for LivePanel {
@@ -98,9 +77,6 @@ impl ServerPanel for LivePanel {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Small shared helpers.
-
 pub fn workspace(window: &Window) -> Option<Entity<Workspace>> {
     window.root::<Workspace>().flatten()
 }
@@ -109,8 +85,7 @@ pub fn active_tab(ws: &WeakEntity<Workspace>, cx: &App) -> Option<Entity<QueryTa
     ws.upgrade().and_then(|w| w.read(cx).active_tab().cloned())
 }
 
-/// The tab a panel built for `conn` may act on: the active tab, only when it is on that same
-/// connection (a Live panel opened on LAR X must never act on a tab of another server).
+/// Only the active tab on that same connection: a panel on one server must never act on another's tab.
 pub fn target_tab(ws: &WeakEntity<Workspace>, conn: &Arc<Connection>, cx: &App) -> Option<Entity<QueryTab>> {
     active_tab(ws, cx).filter(|t| same_conn(t.read(cx).connection(), conn))
 }
@@ -119,7 +94,6 @@ pub fn same_conn(a: Option<&Arc<Connection>>, b: &Arc<Connection>) -> bool {
     a.is_some_and(|a| Arc::ptr_eq(a, b))
 }
 
-/// `#48 113`: commit numbers grouped by thin spaces, as the boards print them.
 pub fn fmt_commit(n: u64) -> String {
     let s = n.to_string();
     let mut out = String::from("#");
@@ -132,13 +106,10 @@ pub fn fmt_commit(n: u64) -> String {
     out
 }
 
-/// The table a simple query reads first (`FROM [schema.]table`).
 pub fn first_table(sql: &str) -> Option<String> {
-    // `FROM lar_history(…)`, `FROM (subquery)`: not a table.
     dataman_core::sql::first_table(sql)
 }
 
-/// `SUBSCRIBE …`, `COPY (SUBSCRIBE …) TO STDOUT` and `LISTEN ch AS …`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LiveStmt {
     Subscribe { query: String, copy_form: bool },
@@ -176,16 +147,10 @@ pub fn parse_live(sql: &str) -> Option<LiveStmt> {
     None
 }
 
-/// The statement without `--` line comments in front (a leading comment is common).
 fn strip_comments(sql: &str) -> String {
     sql.lines().filter(|l| !l.trim_start().starts_with("--")).collect::<Vec<_>>().join("\n")
 }
 
-// ---------------------------------------------------------------------------------------------
-// Hooks the shell calls.
-
-/// Before a statement runs in a tab: a live statement starts on its own connection and the
-/// tab shows it (`true`: nothing else to run). Plain PostgreSQL is untouched.
 pub fn start_live(tab: &mut QueryTab, sql: &str, cx: &mut Context<QueryTab>) -> bool {
     let Some(conn) = tab.connection().cloned().filter(|c| c.lar().is_some()) else { return false };
     if let Some(stmt) = parse_live(sql) {
@@ -195,7 +160,6 @@ pub fn start_live(tab: &mut QueryTab, sql: &str, cx: &mut Context<QueryTab>) -> 
         tab.lar.live = Some(LiveView { run, grid });
         return true;
     }
-    // Anything else gives the grid back (a live query in this tab stops when dropped).
     tab.lar.live = None;
     if first_table(sql).is_some() {
         tab.lar.last_query = Some(sql.trim().trim_end_matches(';').to_string());
@@ -203,24 +167,19 @@ pub fn start_live(tab: &mut QueryTab, sql: &str, cx: &mut Context<QueryTab>) -> 
     false
 }
 
-/// `sql` would start a live query in this tab (a LAR connection and a live statement).
 pub fn is_live(tab: &QueryTab, sql: &str) -> bool {
     tab.connection().is_some_and(|c| c.lar().is_some()) && parse_live(sql).is_some()
 }
 
-/// The tab's result grid is not on screen (live rows stand in its place): its grid edits must
-/// not be committed from there.
 pub fn hides_result(tab: &QueryTab) -> bool {
     tab.lar.live.is_some()
 }
 
-/// The live rows standing in for the result grid.
 pub fn grid_override(tab: &Entity<QueryTab>, cx: &mut App) -> Option<AnyElement> {
     let grid = tab.read(cx).lar.live.as_ref()?.grid.clone();
     Some(grid.into_any_element())
 }
 
-/// `● live` / `‖ live` / `■` in the title bar tab.
 pub fn tab_indicator(tab: &QueryTab, t: &Theme, cx: &App) -> Option<(SharedString, Hsla)> {
     use dataman_core::lar::live::SubState;
     if tab.is_running() || tab.is_cancelling() {
@@ -237,7 +196,6 @@ pub fn tab_indicator(tab: &QueryTab, t: &Theme, cx: &App) -> Option<(SharedStrin
     None
 }
 
-/// The status bar's LAR segment: `● live · 142 changes/s`.
 pub fn status_text(tab: &QueryTab, cx: &App) -> Option<(SharedString, Hsla)> {
     use crate::theme::ActiveTheme;
     use dataman_core::lar::live::SubState;
@@ -250,7 +208,6 @@ pub fn status_text(tab: &QueryTab, cx: &App) -> Option<(SharedString, Hsla)> {
     })
 }
 
-/// What the result bar shows for a live query.
 pub struct LarBar {
     pub state: ResultState,
     pub label: SharedString,
@@ -266,7 +223,6 @@ pub fn result_bar(tab: &Entity<QueryTab>, cx: &mut App) -> Option<LarBar> {
     tab.read(cx).lar.live().map(|l| l.read(cx).bar())
 }
 
-/// The LAR actions, handled on the workspace root.
 pub fn workspace_actions(d: Stateful<gpui::Div>, cx: &mut Context<Workspace>) -> Stateful<gpui::Div> {
     d.on_action(cx.listener(|w, _: &PauseLive, _, cx| {
             if let Some(l) = w.active_tab().and_then(|t| t.read(cx).lar.live().cloned()) {

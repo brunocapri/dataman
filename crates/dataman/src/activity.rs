@@ -1,21 +1,3 @@
-//! The activity monitor: a tab per connection (`Activity · name`) with four sections as
-//! segments, read by `dataman_core::activity`:
-//!
-//! - **Sessions**: `pg_stat_activity` in the result grid (sort, copy, find); idle and background
-//!   sessions hidden by default; long statements and idle transactions tinted; the state
-//!   colored; this process's backends marked `this app`;
-//! - **Locks**: the blocking tree, blockers at the top;
-//! - **Tables**: vacuum health and the bloat estimate (`~`);
-//! - **Statements**: `pg_stat_statements`, or its state in one line.
-//!
-//! Cancel, Terminate and Reset go through the tab's confirmation sheet (`TabConfirm::Monitor`);
-//! VACUUM / ANALYZE, Explain and Open in editor open a new tab. The selected session or statement
-//! shows in the side panel ([`ActivityDetails`]). A section the server does not report is not
-//! offered.
-//!
-//! Refresh: a timer that exists only while the monitor is on screen (its tab active, the window
-//! active) and the interval is not off. A read that changes nothing redraws nothing.
-
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -74,7 +56,6 @@ impl Section {
     }
 }
 
-/// How often the monitor reads while on screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Every {
     S1,
@@ -105,7 +86,6 @@ impl Every {
     }
 }
 
-/// Whether the server reports a section.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Avail {
     #[default]
@@ -114,7 +94,6 @@ pub enum Avail {
     No,
 }
 
-/// A signal or a reset waiting for the user's answer (the tab's confirmation sheet).
 #[derive(Clone, Debug)]
 pub enum Pending {
     Signal { signal: Signal, session: SessionRow, own: bool },
@@ -122,11 +101,9 @@ pub enum Pending {
 }
 
 pub enum ActivityEvent {
-    /// SQL for a new tab on the monitor's connection and database; `explain`: ⌘L there.
     OpenSql { sql: String, explain: bool },
     Confirm(Pending),
     Notice(String),
-    /// Show the details panel (↩, a double click) or toggle it (its button).
     Details { toggle: bool },
 }
 
@@ -139,24 +116,18 @@ pub struct ActivityView {
     pub section: Section,
     pub every: Every,
     visible: bool,
-    /// The interval's timer: only while visible and not off.
     ticker: Option<Task<()>>,
     inflight: bool,
-    /// Read again as soon as the read in flight lands (an action changed things).
     again: bool,
-    /// The first read asks every section, to know which ones the server reports.
     probed: bool,
     pub avail: [Avail; 4],
     sessions: Vec<SessionRow>,
-    /// The sessions in the grid (filtered), in result order.
     shown: Vec<SessionRow>,
     edges: Vec<LockEdge>,
     tree: Vec<TreeRow>,
     tables: Vec<TableRow>,
-    /// The next tables read computes the bloat estimate (the section opened, a manual refresh).
     bloat_due: bool,
     statements: Option<Statements>,
-    /// The demo's statements: the refresh leaves them alone.
     statements_fixed: bool,
     pub sessions_grid: Entity<ResultGrid>,
     pub tables_grid: Entity<ResultGrid>,
@@ -165,18 +136,14 @@ pub struct ActivityView {
     pub show_idle: bool,
     pub show_background: bool,
     th: Thresholds,
-    /// The selection: a session (Sessions, Locks), a table, a statement (by queryid or text).
     pub sel_pid: Option<i32>,
     sel_table: Option<(String, String)>,
     sel_stmt: Option<String>,
     pub details: Entity<ActivityDetails>,
-    /// Reads started, redraws asked for and renders (the idle checks).
     pub refreshes: u64,
     pub redraws: u64,
     pub renders: u64,
-    /// The tab has no connection (disconnected): nothing to show.
     pub detached: bool,
-    /// Bumped when the monitor moves to another connection: a read of the old one is dropped.
     generation: u64,
 }
 
@@ -261,8 +228,6 @@ impl ActivityView {
         }
     }
 
-    /// The tab is now on `conn` (reconnected, or another connection): everything is read
-    /// afresh there.
     pub fn rebind(&mut self, conn: Arc<Connection>, cx: &mut Context<Self>) {
         self.db = conn.database().to_string();
         self.conn = conn;
@@ -288,12 +253,10 @@ impl ActivityView {
         cx.notify();
     }
 
-    /// The tab title.
     pub fn title(&self) -> SharedString {
         format!("Activity · {}", self.conn.profile.name).into()
     }
 
-    /// What takes the keys when the monitor's tab comes to the front.
     pub fn focus_target(&self, cx: &App) -> FocusHandle {
         match self.section {
             Section::Sessions => self.sessions_grid.focus_handle(cx),
@@ -304,11 +267,6 @@ impl ActivityView {
         }
     }
 
-    // -----------------------------------------------------------------------------------------
-    // Refresh.
-
-    /// On screen or not (the tab in front and the window active): the timer runs only while it
-    /// is, and coming back reads at once.
     pub fn set_visible(&mut self, on: bool, cx: &mut Context<Self>) {
         if on == self.visible {
             return;
@@ -324,7 +282,6 @@ impl ActivityView {
         self.visible
     }
 
-    /// Whether the interval's timer exists now.
     pub fn ticking(&self) -> bool {
         self.ticker.is_some()
     }
@@ -350,7 +307,6 @@ impl ActivityView {
         }));
     }
 
-    /// Reads now (⌘R, after an action): the tables' bloat estimate too.
     pub fn refresh_now(&mut self, cx: &mut Context<Self>) {
         self.bloat_due = true;
         if self.inflight {
@@ -360,8 +316,7 @@ impl ActivityView {
         }
     }
 
-    /// Reads what the section on screen shows (every section the first time). Each read runs
-    /// on the core's threads; nothing waits on the UI thread.
+    /// Each read runs on the core's threads; nothing waits on the UI thread.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         if self.inflight {
             return;
@@ -409,7 +364,6 @@ impl ActivityView {
         .detach();
     }
 
-    /// Takes a read in; redraws only when something on screen changed.
     fn apply(&mut self, r: Read, cx: &mut Context<Self>) {
         let lar = self.conn.info.is_lar;
         let mut changed = false;
@@ -419,8 +373,6 @@ impl ActivityView {
             match res {
                 Ok(rows) => {
                     changed |= self.set_avail(Section::Sessions, Avail::Yes);
-                    // Only what is on screen counts: the grid's rows (an idle session's ages tick
-                    // even while it is hidden), the total, the blocking tree's sessions.
                     let q = self.filter.read(cx).text().trim().to_lowercase();
                     let shown = filter_sessions(&rows, self.show_idle, self.show_background, &q);
                     let th = self.th;
@@ -501,7 +453,6 @@ impl ActivityView {
             changed = true;
         }
         if changed || details_changed {
-            // The details panel redraws only when it is on screen.
             self.details.update(cx, |_, cx| cx.notify());
         }
         if changed {
@@ -510,8 +461,6 @@ impl ActivityView {
         }
     }
 
-    /// Whether a section is reported; true when that changed. A section that answered once
-    /// stays: a later failure (a dropped connection) keeps its rows.
     fn set_avail(&mut self, s: Section, a: Avail) -> bool {
         let cur = self.avail[s.ix()];
         if cur == a || (a == Avail::No && cur == Avail::Yes) {
@@ -521,15 +470,10 @@ impl ActivityView {
         true
     }
 
-    // -----------------------------------------------------------------------------------------
-    // The grids.
-
     fn owns(&self, s: &SessionRow) -> bool {
         s.is_self || self.conn.owns_backend(s.pid)
     }
 
-    /// The sessions the filter lets through, into the grid; the sort, scroll and selected
-    /// session stay.
     fn rebuild_sessions(&mut self, cx: &mut Context<Self>) {
         let q = self.filter.read(cx).text().trim().to_lowercase();
         self.shown = filter_sessions(&self.sessions, self.show_idle, self.show_background, &q);
@@ -566,8 +510,6 @@ impl ActivityView {
         self.swap_grid(&grid, rs, decor, move |snap, r| sel.as_ref() == keys.get(snap.source_row(r)), cx);
     }
 
-    /// Puts a fresh read in a grid as the old one was sorted, the selection on the row `is_sel`
-    /// picks.
     fn swap_grid(
         &mut self,
         grid: &Entity<ResultGrid>,
@@ -588,7 +530,6 @@ impl ActivityView {
         });
     }
 
-    /// A grid changed (a click, the keys): the selection follows its active row.
     fn on_grid(&mut self, cx: &mut Context<Self>) {
         let source = |g: &Entity<ResultGrid>, cx: &App| -> Option<usize> {
             let g = g.read(cx);
@@ -613,9 +554,6 @@ impl ActivityView {
         }
     }
 
-    // -----------------------------------------------------------------------------------------
-    // Selection and actions.
-
     pub fn set_section(&mut self, s: Section, window: &mut Window, cx: &mut Context<Self>) {
         if self.section == s {
             return;
@@ -623,7 +561,6 @@ impl ActivityView {
         self.section = s;
         match s {
             Section::Tables => self.bloat_due = true,
-            // A session picked in Locks is the one selected here.
             Section::Sessions => self.rebuild_sessions(cx),
             _ => {}
         }
@@ -647,7 +584,6 @@ impl ActivityView {
         self.sessions.iter().find(|s| s.pid == pid)
     }
 
-    /// The selected session (Sessions, Locks).
     pub fn selected_session(&self) -> Option<&SessionRow> {
         self.session(self.sel_pid?)
     }
@@ -665,7 +601,6 @@ impl ActivityView {
         self.tables.iter().find(|t| &t.schema == s && &t.name == n)
     }
 
-    /// The query of what is selected in the section on screen.
     fn selected_query(&self) -> Option<String> {
         match self.section {
             Section::Sessions | Section::Locks => self.selected_session()?.visible_query().map(str::to_string),
@@ -674,7 +609,6 @@ impl ActivityView {
         }
     }
 
-    /// Selects a session (Locks rows; the checks).
     pub fn select_pid(&mut self, pid: Option<i32>, cx: &mut Context<Self>) {
         self.sel_pid = pid;
         if self.section == Section::Sessions {
@@ -684,7 +618,6 @@ impl ActivityView {
         cx.notify();
     }
 
-    /// Cancel / Terminate the selected session: the confirmation sheet first.
     pub fn request_signal(&mut self, signal: Signal, cx: &mut Context<Self>) {
         let Some(s) = self.selected_session().cloned() else { return };
         let own = self.owns(&s);
@@ -697,7 +630,6 @@ impl ActivityView {
         }
     }
 
-    /// The sheet's answer: send it, say how it went, read again.
     pub fn run_pending(&mut self, p: Pending, cx: &mut Context<Self>) {
         match p {
             Pending::Signal { signal, session, .. } => {
@@ -751,8 +683,7 @@ impl ActivityView {
         }
     }
 
-    /// Explain (`explain`) or Open in editor: the query in a new tab; ⌘L there only when it
-    /// has no parameters (a normalized statement's `$1` has no value to give).
+    /// ⌘L there only when it has no parameters: a normalized statement's `$1` has no value to give.
     fn open_query(&mut self, explain: bool, cx: &mut Context<Self>) {
         if let Some(q) = self.selected_query() {
             let explain = explain && dataman_core::params::detect(&q).is_none();
@@ -783,14 +714,12 @@ impl ActivityView {
         self.select_pid(Some(self.tree[next].pid), cx);
     }
 
-    /// The demo's thresholds (its sessions are seconds old).
     pub fn set_thresholds(&mut self, th: Thresholds, cx: &mut Context<Self>) {
         self.th = th;
         self.rebuild_sessions(cx);
         cx.notify();
     }
 
-    /// The demo's statements (a server without the library loaded still gets its screenshot).
     pub fn demo_statements(&mut self, rows: Vec<StatementRow>, cx: &mut Context<Self>) {
         self.statements_fixed = true;
         self.avail[Section::Statements.ix()] = Avail::Yes;
@@ -799,7 +728,6 @@ impl ActivityView {
         cx.notify();
     }
 
-    /// The checks: the blocking tree and the sessions in the grid.
     pub fn tree(&self) -> &[TreeRow] {
         &self.tree
     }
@@ -817,7 +745,6 @@ impl ActivityView {
     }
 }
 
-/// One refresh's answers (each `None` when not asked).
 struct Read {
     probe: bool,
     sessions: Option<anyhow::Result<Vec<SessionRow>>>,
@@ -827,8 +754,6 @@ struct Read {
     bloat: bool,
 }
 
-/// A session as the grid and the tree show it: without the ages they never draw (how long it
-/// has been connected, in its state), but with the tint the state's age decides.
 fn on_screen(s: &SessionRow, th: &Thresholds) -> (SessionRow, Option<Severity>) {
     let mut c = s.clone();
     c.backend_age = None;
@@ -836,7 +761,6 @@ fn on_screen(s: &SessionRow, th: &Thresholds) -> (SessionRow, Option<Severity>) 
     (c, s.severity(th))
 }
 
-/// What identifies a statement across reads.
 fn stmt_key(r: &StatementRow) -> String {
     match &r.queryid {
         Some(id) => format!("{id}\u{1}{}\u{1}{}", r.user.as_deref().unwrap_or(""), r.db.as_deref().unwrap_or("")),
@@ -844,8 +768,6 @@ fn stmt_key(r: &StatementRow) -> String {
     }
 }
 
-/// The sessions the filter lets through: idle and background ones only when asked for, and
-/// those whose fields contain `q` (lowercase).
 pub(crate) fn filter_sessions(rows: &[SessionRow], idle: bool, background: bool, q: &str) -> Vec<SessionRow> {
     rows.iter()
         .filter(|r| (idle || !r.is_idle()) && (background || !r.is_background()) && (q.is_empty() || r.haystack().contains(q)))
@@ -853,13 +775,9 @@ pub(crate) fn filter_sessions(rows: &[SessionRow], idle: bool, background: bool,
         .collect()
 }
 
-/// The sections offered: the ones the server reported (all of them before the first read).
 pub(crate) fn offered(avail: &[Avail; 4]) -> Vec<Section> {
     SECTIONS.into_iter().filter(|s| avail[s.ix()] == Avail::Yes).collect()
 }
-
-// ---------------------------------------------------------------------------------------------
-// Results for the grid.
 
 fn info(name: &str, ty: &str, kind: Kind) -> ColumnInfo {
     ColumnInfo { name: name.into(), type_name: ty.into(), type_oid: 0, kind }
@@ -883,7 +801,6 @@ fn shown_as(text: String) -> CellDecor {
     CellDecor { text: Some(Some(text)), ..Default::default() }
 }
 
-/// A session's state, colored: active green, idle in a transaction amber, aborted red.
 pub(crate) fn state_tone(s: State) -> Tone {
     match s {
         State::Active => Tone::Ok,
@@ -894,7 +811,6 @@ pub(crate) fn state_tone(s: State) -> Tone {
     }
 }
 
-/// `Lock · transactionid`.
 fn wait_text(s: &SessionRow) -> String {
     match (s.wait_type.as_deref(), s.wait.as_deref()) {
         (Some(t), Some(w)) => format!("{t} · {w}"),
@@ -906,9 +822,6 @@ pub(crate) const S_APP: usize = 3;
 pub(crate) const S_STATE: usize = 5;
 const S_QUERY: usize = 11;
 
-/// The sessions as a result and its decorations: ages as `3m 05s` over their seconds (they sort
-/// as numbers), the state colored, this app's backends named so, long statements and idle
-/// transactions tinted, a withheld query muted.
 pub(crate) fn sessions_result(rows: &[SessionRow], own: &dyn Fn(&SessionRow) -> bool, th: &Thresholds) -> (Arc<ResultSet>, Decorations) {
     let cols = vec![
         info("pid", "int4", Kind::Int),
@@ -957,9 +870,6 @@ pub(crate) fn sessions_result(rows: &[SessionRow], own: &dyn Fn(&SessionRow) -> 
     (ResultSet::from_chunk("pg_stat_activity", cols, b.finish()), d)
 }
 
-/// Table health as a result: sizes and ages as text over their numbers, `never` for a table
-/// never vacuumed or analyzed, the estimate with `~`, a dead share or bloat past a fifth in
-/// amber.
 pub(crate) fn tables_result(rows: &[TableRow]) -> (Arc<ResultSet>, Decorations) {
     let cols = vec![
         info("schema", "name", Kind::Text),
@@ -1025,7 +935,6 @@ pub(crate) fn tables_result(rows: &[TableRow]) -> (Arc<ResultSet>, Decorations) 
     (ResultSet::from_chunk("pg_stat_user_tables", cols, b.finish()), d)
 }
 
-/// The statements as a result: times as `12.4 ms` over their milliseconds, the hit ratio.
 pub(crate) fn statements_result(rows: &[StatementRow]) -> (Arc<ResultSet>, Decorations) {
     let cols = vec![
         info("query", "text", Kind::Text),
@@ -1061,14 +970,10 @@ pub(crate) fn statements_result(rows: &[StatementRow]) -> (Arc<ResultSet>, Decor
     (ResultSet::from_chunk("pg_stat_statements", cols, b.finish()), d)
 }
 
-// ---------------------------------------------------------------------------------------------
-// Drawing.
-
 fn small(b: gpui::Stateful<gpui::Div>) -> gpui::Stateful<gpui::Div> {
     b.h(px(24.)).px(px(8.)).gap(px(6.)).text_size(px(11.5))
 }
 
-/// A filter chip (`idle`, `background`).
 fn chip(t: &Theme, id: &'static str, label: &'static str, on: bool) -> gpui::Stateful<gpui::Div> {
     let hov = t.hov;
     div()
@@ -1085,7 +990,6 @@ fn chip(t: &Theme, id: &'static str, label: &'static str, on: bool) -> gpui::Sta
         .child(label)
 }
 
-/// The `this app` mark.
 pub(crate) fn own_tag(t: &Theme) -> gpui::Div {
     div()
         .flex_none()
@@ -1165,7 +1069,6 @@ impl ActivityView {
                     m.set_filters(i, b, cx)
                 })))
         });
-        // The interval: one chip that steps 1s → 2s → 5s → off.
         let next = EVERY[(EVERY.iter().position(|e| *e == self.every).unwrap_or(0) + 1) % EVERY.len()];
         let every = chip(t, "act-every", self.every.label(), self.every != Every::Off)
             .on_click(cx.listener(move |m, _: &ClickEvent, _, cx| m.set_every(next, cx)));
@@ -1197,7 +1100,6 @@ impl ActivityView {
             return div().size_full().flex().items_center().justify_center().child(ui::empty_state(t, "[ NO WAITS ]", 15., None)).into_any_element();
         }
         let by_pid: HashMap<i32, &SessionRow> = self.sessions.iter().map(|s| (s.pid, s)).collect();
-        // What a blocker holds where its first waiter waits.
         let held: HashMap<i32, &LockEdge> = self.tree.iter().filter_map(|r| r.edge.as_ref()).fold(HashMap::new(), |mut m, e| {
             m.entry(e.blocker).or_insert(e);
             m
@@ -1304,7 +1206,6 @@ impl ActivityView {
                         .text_color(t.tx3)
                         .child(s.and_then(|s| s.query.as_deref().map(|q| q.split_whitespace().collect::<Vec<_>>().join(" "))).unwrap_or_default()),
                 )
-                // The blocker's own actions, on hover or when selected.
                 .when(top, |d| {
                     let shown = sel;
                     d.child(
@@ -1341,7 +1242,6 @@ impl ActivityView {
             .into_any_element()
     }
 
-    /// `pg_stat_statements · not loaded` and the template.
     fn render_statements_state(&self, t: &Theme, st: &Statements, cx: &mut Context<Self>) -> gpui::AnyElement {
         let (label, color) = match st {
             Statements::NotInstalled => ("not installed".to_string(), t.tx3),
@@ -1425,7 +1325,6 @@ impl ActivityView {
                     right.push(btn(id, label, on).on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.maintenance(m, cx))).into_any_element());
                 }
             }
-            // Without the extension's rows, only its state line: no actions.
             Section::Statements if !matches!(self.statements, Some(Statements::Rows(_))) => {}
             Section::Statements => {
                 if let Some(Statements::Rows(r)) = &self.statements {
@@ -1506,15 +1405,10 @@ impl Render for ActivityView {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// The details panel.
-
 pub enum DetailsEvent {
     Close,
 }
 
-/// The side panel: the selected session or statement, its full query in the editor's colors,
-/// its timings.
 pub struct ActivityDetails {
     monitor: WeakEntity<ActivityView>,
     scroll: ScrollHandle,
@@ -1684,18 +1578,12 @@ impl Render for ActivityDetails {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// The workspace's side: opening the tab, keeping its refresh in step with what is on screen,
-// the details panel.
-
 impl crate::app::Workspace {
-    /// The activity monitor of a connection: its tab if one is open, else a new one.
     pub(crate) fn open_activity(&mut self, conn_id: &str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(conn) = self.store.read(cx).connection(conn_id) else {
             self.notice("Connect first", cx);
             return;
         };
-        // Not offered where the engine has no monitor (its menu items are hidden too).
         if !conn.caps().activity {
             return;
         }
@@ -1753,15 +1641,11 @@ impl crate::app::Workspace {
         cx.notify();
     }
 
-    /// Each monitor reads only while it is on screen: its tab in front, on its connection, and
-    /// the window active (`assume_active` stands in for the window in the checks).
     pub(crate) fn sync_monitors(&mut self, window: &Window, cx: &mut Context<Self>) {
         let active_window = self.assume_active.unwrap_or_else(|| window.is_window_active());
         let first_run = self.first_run(cx);
         for (i, tab) in self.tabs.clone().into_iter().enumerate() {
             let Some(m) = tab.read(cx).monitor.clone() else { continue };
-            // The tab moved to another connection (reconnected, ⌥↩): the monitor follows it;
-            // disconnected, it rests.
             let conn = tab.read(cx).connection().cloned();
             match &conn {
                 Some(c) if !Arc::ptr_eq(c, &m.read(cx).conn) => m.update(cx, |m, cx| m.rebind(c.clone(), cx)),
@@ -1884,7 +1768,6 @@ mod tests {
         assert!(offered(&a).is_empty());
         a = [Avail::Yes, Avail::Yes, Avail::No, Avail::Yes];
         assert_eq!(offered(&a), vec![Section::Sessions, Section::Locks, Section::Statements]);
-        // LAR: nothing reported.
         assert!(offered(&[Avail::No; 4]).is_empty());
         assert_eq!(Every::S2.duration(), Some(Duration::from_secs(2)));
         assert_eq!(Every::Off.duration(), None);

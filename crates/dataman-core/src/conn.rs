@@ -1,5 +1,3 @@
-//! Connections, editor sessions and statement execution. The drivers are in [`crate::backend`].
-
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::Ordering as AtomicOrdering;
@@ -21,11 +19,6 @@ use crate::{Task, spawn};
 
 pub(crate) use crate::backend::{first_ok, text_rows};
 
-// ---------------------------------------------------------------------------------------------
-// Connection
-
-/// An open connection profile: server info, metadata sessions (one per database) and the
-/// schema cache. Editor tabs open [`Session`]s on it.
 pub struct Connection {
     pub profile: ConnectionProfile,
     pub info: ServerInfo,
@@ -34,18 +27,10 @@ pub struct Connection {
     rt: Handle,
     history: Arc<History>,
     meta: tokio::sync::Mutex<HashMap<String, Db>>,
-    /// The metadata connection negotiated TLS.
     tls_active: bool,
-    /// The SSH tunnel every connection of this profile goes through.
     tunnel: Option<Arc<crate::ssh::Tunnel>>,
-    /// Per-connection caches of the newer APIs (relationship graphs with inferred LAR links…),
-    /// keyed by (what, database, schema).
     pub(crate) caches: Mutex<HashMap<(&'static str, String, String), Arc<dyn std::any::Any + Send + Sync>>>,
-    /// The databases' own read-only settings, changed while connected
-    /// ([`Connection::set_read_only_for`]); the profile's `read_only` is the default.
     read_only_dbs: parking_lot::RwLock<std::collections::BTreeMap<String, bool>>,
-    /// The client of an engine without SQL ([`crate::nosql`]): such a connection has no
-    /// metadata sessions and no editor sessions.
     pub(crate) nosql: Option<crate::nosql::Client>,
 }
 
@@ -100,38 +85,26 @@ impl Connection {
         }))
     }
 
-    /// The engine this connection speaks to (LAR is a PostgreSQL engine).
     pub fn engine(&self) -> Engine {
         self.profile.engine
     }
 
-    /// The SQL dialect of its statements.
     pub fn dialect(&self) -> Dialect {
         self.profile.engine.dialect()
     }
 
-    /// What the engine can do beyond statements and tables.
     pub fn caps(&self) -> Caps {
         Caps::of(self.profile.engine)
     }
 
-    /// Whether `database` is read-only now: its own setting, else the connection's. Every write
-    /// path asks this (the editor, grid edits, imports, the MCP tools).
     pub fn read_only_for(&self, database: &str) -> bool {
         crate::config::read_only_in(self.profile.read_only, &self.read_only_dbs.read(), self.profile.engine, database)
     }
 
-    /// Changes `database`'s read-only state while connected (the explorer's toggle, saved to the
-    /// profile by the caller): checks see it at once, and each editor session on it sets its
-    /// server session to match before its next statement outside a transaction.
     pub fn set_read_only_for(&self, database: &str, on: bool) {
         crate::config::set_read_only_in(self.profile.read_only, &mut self.read_only_dbs.write(), self.profile.engine, database, on);
     }
 
-    /// The profile a new server session on `database` connects with: read-only as that database
-    /// is (PostgreSQL's `default_transaction_read_only`, MySQL's session READ ONLY); SQL
-    /// Server's `ApplicationIntent=ReadOnly` only when no database of the connection is writable
-    /// (`read_only_everywhere`).
     fn profile_for(&self, database: &str) -> ConnectionProfile {
         let mut p = self.profile.clone();
         p.read_only_databases = self.read_only_dbs.read().clone();
@@ -141,25 +114,20 @@ impl Connection {
         p
     }
 
-    /// Whether our connection to the server is encrypted (TLS was negotiated).
     pub fn tls_in_use(&self) -> bool {
         self.tls_active
     }
 
-    /// The connection goes through an SSH tunnel.
     pub fn tunneled(&self) -> bool {
         self.tunnel.is_some()
     }
 
-    /// Ends the SSH tunnel, if any: every session through it closes. Called on disconnect.
     pub fn close(&self) {
         if let Some(t) = &self.tunnel {
             t.close();
         }
     }
 
-    /// A new client on its own backend (exports, edits, live queries): never shared with an
-    /// editor tab, so its transactions and notifications are its own.
     pub(crate) async fn dedicated(&self, database: Option<&str>) -> Result<Dedicated> {
         let db = database.unwrap_or(self.database());
         backend::dedicated(&self.profile_for(db), self.password.as_deref(), Some(db), self.tunnel.as_deref()).await
@@ -169,13 +137,10 @@ impl Connection {
         &self.rt
     }
 
-    /// The database this connection was opened on.
     pub fn database(&self) -> &str {
         self.schema.default_database()
     }
 
-    /// The metadata client for `db`, connecting on first use (PostgreSQL does not query
-    /// across databases).
     pub(crate) async fn meta(&self, db: &str) -> Result<Db> {
         let mut g = self.meta.lock().await;
         if let Some(c) = g.get(db)
@@ -199,16 +164,12 @@ impl Connection {
         spawn(&self.rt, fut)
     }
 
-    /// Writes a statement that ran outside any session of this connection (an agent's write,
-    /// run on the agent's own backend and shown in its tab) to the connection's history.
     pub fn record_history(&self, entry: &HistoryEntry) {
         if let Err(e) = self.history.append(&self.profile.id, entry) {
             log::warn!("history: {e}");
         }
     }
 
-    /// A new editor session on `database` (the connection's own when `None`). It connects on
-    /// its first statement.
     pub fn session(self: &Arc<Self>, database: Option<&str>) -> Arc<Session> {
         Arc::new(Session {
             conn: self.clone(),
@@ -223,25 +184,13 @@ impl Connection {
     }
 }
 
-/// How [`Session::end_transaction`] ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TxEnd {
     Committed,
-    /// Rolled back, asked for or because the transaction had failed (a COMMIT of a failed
-    /// transaction is a rollback).
     RolledBack,
-    /// There was no transaction open.
     NoTransaction,
 }
 
-// ---------------------------------------------------------------------------------------------
-// Session
-
-/// One server session (one backend), used by one editor tab. Statements run one at a time.
-///
-/// Its transaction status is the server's (as the driver reads it, [`crate::tx`]). Statements
-/// autocommit; a `BEGIN` typed in the editor opens a transaction that stays open until
-/// [`Session::end_transaction`] (or a COMMIT / ROLLBACK typed in the editor).
 pub struct Session {
     conn: Arc<Connection>,
     pub database: String,
@@ -250,13 +199,10 @@ pub struct Session {
     current: Mutex<Option<Arc<ResultSet>>>,
     queue: Arc<tokio::sync::Mutex<()>>,
     tx: Arc<TxWatch>,
-    /// The read-only state the server session was put in (when it connected or since).
     ro_applied: Mutex<Option<bool>>,
 }
 
 impl Drop for Session {
-    /// A dropped session closes its connection: the server rolls back whatever transaction
-    /// it had open.
     fn drop(&mut self) {
         if let Some(rs) = self.current.lock().take()
             && !rs.phase().is_finished()
@@ -280,8 +226,6 @@ impl Session {
         self.current.lock().clone()
     }
 
-    /// The transaction state, as the server last reported it (idle once the connection is
-    /// gone: the server rolled back).
     pub fn tx(&self) -> TxState {
         if let Ok(g) = self.client.try_lock()
             && g.as_ref().is_some_and(|c| c.is_closed())
@@ -291,27 +235,18 @@ impl Session {
         self.tx.get()
     }
 
-    /// The backend's process id, once the session has connected.
     pub fn backend_pid(&self) -> Option<i32> {
         self.tx.pid()
     }
 
-    /// Runs one statement. Returns at once; the result fills in the background. A statement
-    /// still running (or paused with rows left) in this session is cancelled first; inside a
-    /// transaction a paused one is read to its end instead (a cancel would abort it).
     pub fn execute(self: &Arc<Self>, sql: impl Into<String>) -> Arc<ResultSet> {
         self.execute_with(sql, Vec::new())
     }
 
-    /// `execute` with values for `$1 … $n`, bound through the extended protocol in text format
-    /// (the server parses each as its parameter's type; `None` is NULL).
     pub fn execute_with(self: &Arc<Self>, sql: impl Into<String>, params: Vec<Option<String>>) -> Arc<ResultSet> {
         self.execute_opts(sql, params, false)
     }
 
-    /// `execute_with`, and with `rollback` inside a transaction that is rolled back once it ends
-    /// (a savepoint rolled back when a transaction is open): what it writes is undone, whatever
-    /// happens (Explain Analyze).
     pub fn execute_opts(self: &Arc<Self>, sql: impl Into<String>, params: Vec<Option<String>>, rollback: bool) -> Arc<ResultSet> {
         let rs = ResultSet::new(sql);
         if !params.is_empty() {
@@ -321,11 +256,8 @@ impl Session {
         self.start(rs)
     }
 
-    /// An agent's read (`client` names it in the history): checked by the caller with
-    /// `guard::agent_read_refusal`, run here in a read-only transaction of its own that is rolled
-    /// back once it ends (`BEGIN READ ONLY`; SQL Server, which has none, a plain one: the check is
-    /// what keeps it a read there, and on LAR, which does not enforce READ ONLY). Refused when a
-    /// transaction is open in the session.
+    /// SQL Server has no `BEGIN READ ONLY` and LAR does not enforce it: there the caller's check
+    /// is what keeps it a read.
     pub fn execute_agent(self: &Arc<Self>, sql: impl Into<String>, params: Vec<Option<String>>, client: &str) -> Arc<ResultSet> {
         let rs = ResultSet::new(sql);
         if !params.is_empty() {
@@ -337,8 +269,6 @@ impl Session {
         self.start(rs)
     }
 
-    /// Runs `rs` after the statement before it (stopped, or a paused one inside a transaction
-    /// read to its end).
     fn start(self: &Arc<Self>, rs: Arc<ResultSet>) -> Arc<ResultSet> {
         let prev = self.current.lock().replace(rs.clone());
         let this = self.clone();
@@ -374,9 +304,6 @@ impl Session {
         self.conn.rt.spawn(async move { this.stop(&rs).await });
     }
 
-    /// Ends the open transaction: COMMIT (`commit`) or ROLLBACK, after the statement holding
-    /// the session (a paused result is read to its end, never cancelled). Recorded in the
-    /// history like a statement.
     pub fn end_transaction(self: &Arc<Self>, commit: bool) -> Task<TxEnd> {
         let this = self.clone();
         spawn(&self.conn.rt, async move {
@@ -404,8 +331,6 @@ impl Session {
         })
     }
 
-    /// Stops a statement: one that has not reached the server yet never runs; one that is
-    /// running (or paused with rows in flight) gets a CancelRequest.
     async fn stop(&self, rs: &ResultSet) {
         use std::sync::atomic::Ordering;
         rs.abort();
@@ -432,7 +357,6 @@ impl Session {
         {
             return Ok(c.clone());
         }
-        // A new backend: the old one's transaction (if any) is gone.
         self.tx.closed();
         let p = self.conn.profile_for(&self.database);
         let (client, cancel) = backend::session(&p, self.conn.password.as_deref(), Some(&self.database), self.conn.tunnel.as_deref(), &self.tx).await?;
@@ -442,10 +366,6 @@ impl Session {
         Ok(client)
     }
 
-    /// The database's read-only state changed since the server session was set
-    /// ([`Connection::set_read_only_for`]): it follows before the next statement, outside a
-    /// transaction (PostgreSQL's `default_transaction_read_only`, MySQL's session READ ONLY;
-    /// SQL Server has no such setting and relies on the client-side refusal).
     async fn sync_read_only(&self, client: &Db) {
         let want = self.conn.read_only_for(&self.database);
         if *self.ro_applied.lock() == Some(want) || self.tx.get().status.is_open() {
@@ -458,7 +378,6 @@ impl Session {
         }
     }
 
-    /// Writes a statement Dataman ran for the user (COMMIT, ROLLBACK) to the history.
     fn record_text(&self, sql: &str, elapsed: Duration, error: Option<String>) {
         let entry = HistoryEntry {
             ts: chrono::Utc::now(),
@@ -475,8 +394,6 @@ impl Session {
         }
     }
 
-    /// Runs a statement Dataman puts around the user's (BEGIN, SAVEPOINT); on failure the
-    /// result fails with the server's error.
     async fn wrapper(&self, client: &Db, rs: &ResultSet, sql: &str) -> bool {
         match client.execute(sql).await {
             Ok(_) => true,
@@ -513,7 +430,6 @@ impl Session {
             });
             self.record(rs, Duration::ZERO);
         };
-        // Cancelled while connecting or queued: it must not run at all.
         if aborted() {
             return never_ran(rs);
         }
@@ -549,9 +465,6 @@ impl Session {
         };
         let started = Instant::now();
         self.tx.take_notices();
-        // A T-SQL batch returns any number of result sets: each after the first is a result of
-        // its own, linked from the one before (`ResultSet::next_result`); the last is finished
-        // here, and the statement goes to the history once.
         let last = Mutex::new(rs.clone());
         let on_pause = || {
             let cur = last.lock().clone();
@@ -590,13 +503,11 @@ impl Session {
         for m in self.tx.take_notices() {
             rs.push_message(m);
         }
-        // Running time: the pauses (the reader had what it asked for) are left out.
         let elapsed = started.elapsed().saturating_sub(rs.status().paused_time());
         // Undone before anyone sees the end: the transaction state is back to what it was.
         end_rollback(&client, dialect, wrap).await;
         let aborted = *rs.demand().borrow();
         let (phase, affected, error) = match r {
-            // `stop_fetching` drains the rest on purpose: the statement completed.
             Ran::Done(affected) => (if aborted.abort && !rs.status().partial { Phase::Cancelled } else { Phase::Done }, affected, None),
             Ran::Cancelled | Ran::NeverRan { .. } => (Phase::Cancelled, None, None),
             Ran::Failed(info) => (Phase::Failed, None, Some(info)),
@@ -620,14 +531,11 @@ impl Session {
         });
     }
 
-    /// Writes the statement to the history, once: when it first pauses with rows left (a big
-    /// SELECT whose rest is never fetched) or when it ends.
     fn record(&self, rs: &ResultSet, elapsed: Duration) {
         let st = rs.status();
         self.record_as(rs, elapsed, st.phase, st.affected, st.error);
     }
 
-    /// `record` with the final status given explicitly, before it is published.
     fn record_as(&self, rs: &ResultSet, elapsed: Duration, phase: Option<Phase>, affected: Option<u64>, error: Option<ErrorInfo>) {
         if rs.recorded.swap(true, std::sync::atomic::Ordering::AcqRel) {
             return;
@@ -652,7 +560,6 @@ impl Session {
     }
 }
 
-/// The savepoint a rolled-back statement runs under inside an open transaction.
 const ROLLBACK_SAVEPOINT: &str = "dataman_rollback";
 
 /// Ends the transaction (`Some(false)`) or savepoint (`Some(true)`) a rolled-back statement ran
@@ -668,5 +575,4 @@ async fn end_rollback(client: &Db, dialect: Dialect, wrap: Option<bool>) {
     }
 }
 
-/// The longest wait for the ReadyForQuery after an error (the connection is dying otherwise).
 const SETTLE: Duration = Duration::from_secs(5);

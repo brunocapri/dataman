@@ -1,12 +1,3 @@
-//! A document engine's results, in a query tab's result area (`nosql`): the statement's
-//! documents as a list beside the one selected, which edits in place as text (its types kept:
-//! `NumberLong(…)`, `ISODate(…)`) and saves back with Save (or ⌘↩ in it; ⌘S stays the
-//! favorites'); a command's answer as text; what a
-//! write changed. Pages of 50 documents step with ‹ ›.
-//!
-//! Writes ask first where SQL's do: on a production connection, and anything destructive
-//! (a `deleteMany({})`, a drop) anywhere. A read-only database refuses them in the core.
-
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -28,7 +19,6 @@ actions!(doc_view, [NextDocument, PrevDocument]);
 const CONTEXT: &str = "DocView";
 
 pub fn bind_keys(cx: &mut App) {
-    // ⌘S stays the favorites' (the detail saves with its button, or ⌘↩ in it).
     cx.bind_keys([
         KeyBinding::new("down", NextDocument, Some("DocList")),
         KeyBinding::new("up", PrevDocument, Some("DocList")),
@@ -36,26 +26,18 @@ pub fn bind_keys(cx: &mut App) {
 }
 
 pub enum DocEvent {
-    /// `use name`: the tab moves to that database.
     Use(String),
-    /// A statement finished (its result shows): the tab redraws its toolbar and title.
     Finished,
-    /// It could not be read or the server refused it: where in the tab's text (an offset), and
-    /// the message.
     Failed { stmt: std::ops::Range<usize>, at: Option<usize>, message: String },
 }
 
-/// The statement on screen, and its page.
 struct Last {
-    /// Its text and where it starts in the tab's editor.
     stmt: Stmt,
     page: Page,
     result: Result<Ran, Failed>,
-    /// Each document's one-line summary and its id as the shell writes it (computed once).
     lines: Vec<(SharedString, SharedString)>,
 }
 
-/// A run waiting for the user's yes (production, destructive).
 struct Confirm {
     stmt: Stmt,
     why: String,
@@ -63,39 +45,25 @@ struct Confirm {
 
 pub struct DocPane {
     conn: Arc<Connection>,
-    /// The database statements run in (`use` and the picker change it).
     pub db: String,
     focus: FocusHandle,
     list_focus: FocusHandle,
-    /// The run under way: dropping the task stops it (and the server's operation with it).
+    /// Dropping the task stops it (and the server's operation with it).
     running: Option<(gpui::Task<()>, Instant, Stmt)>,
     last: Option<Last>,
     selected: Option<usize>,
-    /// The selected document as text (edited in place); made at the first render.
     detail: Option<Entity<CodeEditor>>,
-    /// What the detail editor was given: it is dirty when its text differs.
     detail_base: String,
-    /// The detail holds a new document (Save inserts it).
     new_doc: bool,
     confirm: Option<Confirm>,
-    /// Delete was pressed once: the button asks "sure?" until pressed again or the selection
-    /// moves.
     delete_armed: bool,
-    /// Save on production was pressed once: the next press saves.
     save_armed: bool,
-    /// The document to select once the page reloads (the one just saved, or inserted).
     reselect: Option<Body>,
-    /// The list's scroll (the selection is kept in view).
     list_scroll: gpui::ScrollHandle,
-    /// The tab's result is zoomed (the bar's zoom button is lit).
     pub zoomed: bool,
     saving: bool,
-    /// A note under the detail's header: what the last save or delete did (red when it failed).
     note: Option<(String, bool)>,
-    /// The statements of the run still to come (several, run one after the other).
     queue: Vec<Stmt>,
-    /// The statement on its way is an agent's (it runs on the agent's side: the history says
-    /// so).
     agent: bool,
 }
 
@@ -107,8 +75,6 @@ impl Focusable for DocPane {
     }
 }
 
-/// One line for a document: its fields after `_id` (and the one its id is: a Redis entry's
-/// field or member), as `name: "Ana", age: 31, …`.
 fn summary(body: &Body, id: Option<&Body>) -> String {
     let id_json = match id {
         Some(Body::Json(j)) => Some(j.clone()),
@@ -143,7 +109,6 @@ fn summary(body: &Body, id: Option<&Body>) -> String {
     out
 }
 
-/// Where one document is saved: a search's hit to its own index (a pattern finds several).
 fn per_doc(source: Source, doc: Option<&nosql::Doc>) -> Source {
     match (source, doc.and_then(|d| d.index.clone())) {
         (Source::Search { .. }, Some(index)) => Source::Search { index },
@@ -151,13 +116,10 @@ fn per_doc(source: Source, doc: Option<&nosql::Doc>) -> Source {
     }
 }
 
-/// A document's id in the list: an ObjectId by its last characters (the detail has it whole),
-/// anything else as the shell writes it.
 fn id_text(id: &Body) -> String {
     match id {
         Body::Bson(nosql::bson::Bson::ObjectId(o)) => format!("…{}", &o.to_hex()[14..]),
         Body::Bson(nosql::bson::Bson::String(s)) => s.clone(),
-        // A search's _id, a Redis field or member: as it is, without quotes.
         Body::Json(serde_json::Value::String(s)) => s.clone(),
         other => other.inline(),
     }
@@ -189,12 +151,10 @@ impl DocPane {
         }
     }
 
-    /// When the running statement started.
     pub fn started(&self) -> Option<Instant> {
         self.running.as_ref().map(|(_, at, _)| *at)
     }
 
-    /// Time since the running statement started, or the last one's total.
     pub fn elapsed(&self) -> Option<Duration> {
         match (&self.running, &self.last) {
             (Some((_, at, _)), _) => Some(at.elapsed()),
@@ -208,17 +168,14 @@ impl DocPane {
         cx.notify();
     }
 
-    /// The statement on screen and its result, for the checks.
     pub fn shown(&self) -> Option<(&str, Result<&Ran, &Failed>)> {
         self.last.as_ref().map(|l| (l.stmt.sql.as_str(), l.result.as_ref()))
     }
 
-    /// The list takes the keys (a zoomed result: the editor is out of sight).
     pub fn list_focus(&self) -> FocusHandle {
         self.list_focus.clone()
     }
 
-    /// Checks: the selected document, and whether the list scrolled it into view.
     pub fn demo_selected(&self) -> Option<usize> {
         self.selected
     }
@@ -227,19 +184,16 @@ impl DocPane {
         self.select(ix, cx);
     }
 
-    /// The list's bounds and row `ix`'s on screen (scrolled), for the checks.
     pub fn demo_list_bounds(&self, ix: usize) -> Option<(gpui::Bounds<gpui::Pixels>, gpui::Bounds<gpui::Pixels>)> {
         // A child's bounds are its place in the content: the scroll moves it by the offset.
         let row = self.list_scroll.bounds_for_item(ix)?;
         Some((self.list_scroll.bounds(), gpui::Bounds { origin: row.origin + self.list_scroll.offset(), size: row.size }))
     }
 
-    /// Checks: the detail editor (made at the first render).
     pub fn demo_detail(&self) -> Option<Entity<CodeEditor>> {
         self.detail.clone()
     }
 
-    /// Checks: ⌘S, a page, whether a run waits for its confirmation, New.
     pub fn demo_save(&mut self, cx: &mut Context<Self>) {
         self.save(cx);
     }
@@ -256,12 +210,10 @@ impl DocPane {
         self.new_document(window, cx);
     }
 
-    /// Checks: what the last save or delete said.
     pub fn demo_note(&self) -> Option<(String, bool)> {
         self.note.clone()
     }
 
-    /// Stops the running statement (and the rest of the run).
     pub fn cancel(&mut self, cx: &mut Context<Self>) {
         self.queue.clear();
         if self.running.take().is_some() {
@@ -270,9 +222,6 @@ impl DocPane {
         }
     }
 
-    /// Runs statements from the tab's editor, one after the other (a failure stops the rest):
-    /// each result replaces the last, the last one's stays. Writes on production and
-    /// destructive statements wait for the user's yes, once for the whole run.
     pub fn run(&mut self, stmts: Vec<Stmt>, cx: &mut Context<Self>) {
         let mut stmts: Vec<Stmt> = stmts.into_iter().filter(|s| !s.sql.trim().is_empty()).collect();
         if stmts.is_empty() {
@@ -307,7 +256,6 @@ impl DocPane {
         self.start(first, Page::default(), false, cx);
     }
 
-    /// The confirmation's answer.
     pub fn resolve_confirm(&mut self, run: bool, cx: &mut Context<Self>) {
         match self.confirm.take() {
             Some(c) if run => self.start(c.stmt, Page::default(), false, cx),
@@ -316,7 +264,6 @@ impl DocPane {
         cx.notify();
     }
 
-    /// An agent's statement, run on its side: shown running until [`DocPane::show_done`].
     pub fn show_pending(&mut self, stmt: Stmt, cx: &mut Context<Self>) {
         self.queue.clear();
         self.confirm = None;
@@ -327,8 +274,6 @@ impl DocPane {
         cx.notify();
     }
 
-    /// What came of the agent's statement: its result as if it had run here (its pages are
-    /// read here, the agent's page size kept).
     pub fn show_done(&mut self, ran: Result<Ran, String>, cx: &mut Context<Self>) {
         let Some((_, _, stmt)) = &self.running else { return };
         let stmt = stmt.clone();
@@ -340,7 +285,6 @@ impl DocPane {
         self.finished(stmt, Page { skip: 0, limit }, r, cx);
     }
 
-    /// Nothing on screen (an agent's draft: the user runs it).
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         self.queue.clear();
         self.running = None;
@@ -353,12 +297,10 @@ impl DocPane {
         cx.notify();
     }
 
-    /// Runs `stmt`'s page `page`; `again` is the same statement's other page (or the page a save
-    /// reloads): a script's final cursor is read again, not the script.
+    /// `again`: a script's final cursor is read again, not the script.
     fn start(&mut self, stmt: Stmt, page: Page, again: bool, cx: &mut Context<Self>) {
         self.confirm = None;
         self.agent = false;
-        // Another statement (not the page a save reloads): its own detail, no old note.
         if self.last.as_ref().is_none_or(|l| l.stmt.sql != stmt.sql) {
             self.note = None;
         }
@@ -388,7 +330,6 @@ impl DocPane {
             Err(f) => cx.emit(DocEvent::Failed { stmt: stmt.at..stmt.at + stmt.sql.len(), at: f.at.map(|a| stmt.at + a), message: f.message.clone() }),
             _ => {}
         }
-        // The run goes on with its next statement (a failure ends it).
         let next = if result.is_ok() && !self.queue.is_empty() { Some(self.queue.remove(0)) } else { None };
         if result.is_err() {
             self.queue.clear();
@@ -401,7 +342,6 @@ impl DocPane {
                 .collect(),
             _ => Vec::new(),
         };
-        // The same statement's next page keeps the selection's place; another starts at the top.
         let same = self.last.as_ref().is_some_and(|l| l.stmt.sql == stmt.sql && l.page == page);
         let n = lines.len();
         // The document just saved keeps the selection wherever the page puts it now (a search's
@@ -445,7 +385,6 @@ impl DocPane {
         });
     }
 
-    /// The page `skip` of the statement on screen.
     fn go_page(&mut self, skip: u64, cx: &mut Context<Self>) {
         let Some(l) = &self.last else { return };
         let page = Page { skip, limit: l.page.limit };
@@ -459,7 +398,6 @@ impl DocPane {
         }
     }
 
-    /// What the detail shows: the selected document, a command's answer, a write's.
     fn detail_text(&self) -> String {
         let Some(l) = &self.last else { return String::new() };
         match &l.result {
@@ -470,8 +408,6 @@ impl DocPane {
         }
     }
 
-    /// The detail shows what is selected now (a save's note stays: the page it reloads shows
-    /// what was saved).
     fn load_detail(&mut self, cx: &mut Context<Self>) {
         let text = self.detail_text();
         self.detail_base = text.clone();
@@ -506,7 +442,6 @@ impl DocPane {
         cx.notify();
     }
 
-    /// A new document in the detail: Save inserts it.
     fn new_document(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.new_doc = true;
         self.delete_armed = false;
@@ -530,14 +465,12 @@ impl DocPane {
         cx.notify();
     }
 
-    /// ⌘S: the detail's text over the selected document (or as a new one), then the page again.
     fn save(&mut self, cx: &mut Context<Self>) {
         let Some(source) = self.docs().and_then(|d| d.source.clone()) else { return };
         let Some(text) = self.detail.as_ref().map(|d| d.read(cx).text().to_string()) else { return };
         if self.saving || !self.dirty(cx) {
             return;
         }
-        // Production asks first, as every write there does.
         if self.conn.profile.env.is_production() && !std::mem::take(&mut self.save_armed) {
             self.save_armed = true;
             self.note = Some(("This is production: Save again to write it".into(), true));
@@ -609,7 +542,6 @@ impl DocPane {
         .detach();
     }
 
-    /// The page on screen, read again (after a save or a delete).
     fn refresh(&mut self, cx: &mut Context<Self>) {
         if let Some(l) = &self.last {
             let (stmt, page) = (l.stmt.clone(), l.page);
@@ -640,7 +572,6 @@ impl DocPane {
             e.set_cursor(0, cx);
             e
         });
-        // ⌘↩ in the detail saves, as ⌘S does.
         cx.subscribe(&d, |p, _, ev: &EditorEvent, cx| match ev {
             EditorEvent::Run(_) | EditorEvent::RunAll(_) => p.save(cx),
             EditorEvent::Changed => cx.notify(),
@@ -652,9 +583,6 @@ impl DocPane {
         d
     }
 }
-
-// ---------------------------------------------------------------------------------------------
-// Drawing
 
 impl DocPane {
     fn render_bar(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
@@ -775,7 +703,6 @@ impl DocPane {
             .child(ui::vsep(t, 16.))
             .child(ghost("doc-copy").child(icon(Icon::Copy).size(px(13.)).text_color(t.tx2)).child("Copy").on_click(cx.listener(|p, _, _, cx| p.copy(cx))))
             .child({
-                // As the SQL result bar's: the result over the editor and the side panel.
                 let zoomed = self.zoomed;
                 let key = if zoomed { Some("esc".to_string()) } else { crate::keymap::key("zoom_result") };
                 ui::button(t, "doc-zoom", Btn::Ghost)
@@ -945,7 +872,6 @@ impl DocPane {
     }
 
     fn render_error(&self, f: &Failed, stmt: &Stmt, t: &Theme) -> impl IntoElement + use<> {
-        // Line and column in the tab's text, when the statement could not be read.
         let place = f.at.map(|a| {
             let before = &stmt.sql[..crate::tab::floor_char(&stmt.sql, a.min(stmt.sql.len()))];
             let line = before.matches('\n').count() + 1;
@@ -1018,10 +944,8 @@ impl Render for DocPane {
                 .child(div().text_color(t.ok).child("✓"))
                 .child(div().text_color(t.tx).child(summary.clone()))
                 .into_any_element(),
-            // A command's answer, a count, a write's details: the text, read-only in spirit.
             Some((Ok(_), _, _)) => div().size_full().relative().overflow_hidden().child(editor).into_any_element(),
         };
-        // A script's printed lines (the value it returned below them).
         let printed = match self.last.as_ref().map(|l| &l.result) {
             Some(Ok(r)) if !r.printed.is_empty() && self.running.is_none() => Some(self.render_printed(&r.printed, &t)),
             _ => None,
@@ -1050,7 +974,6 @@ mod tests {
         assert_eq!(summary(&Body::doc(d), None), "name: \"Ana\",  tags: [1],  n: NumberLong(3)");
         let j = serde_json::json!({ "a": 1, "b": { "c": 2 } });
         assert_eq!(summary(&Body::Json(j), None), "a: 1,  b: {1}");
-        // A Redis entry: its field is its id, not repeated.
         let e = serde_json::json!({ "field": "f1", "value": "v" });
         assert_eq!(summary(&Body::Json(e), Some(&Body::Json(serde_json::json!("f1")))), "value: \"v\"");
         assert_eq!(id_text(&Body::Json(serde_json::json!("f1"))), "f1");

@@ -1,15 +1,3 @@
-//! Live queries (board LiveQueries). `SUBSCRIBE …` or `LISTEN ch AS …` run from the editor on
-//! their own connection (LAR refuses them inside transactions and with AS OF); the tab's grid
-//! becomes live: rows that come in, change or go are highlighted and fade ("live row"),
-//! removed rows stay struck for 600 ms, and rows arriving above the view never move what the
-//! user is reading. The panel lists the streams of the connection with their rate, pause /
-//! resume, and the notification log of LISTEN, newest first.
-//!
-//! Performance: the stream's deltas are applied in the core; the UI looks at them at most every
-//! 33 ms (≤ 30 redraws/s whatever the delta rate) and only while they arrive. Each look is one
-//! pass over the rows under the core's lock, cloning only rows that changed. The rate
-//! sparkline samples once a second and stops sampling once it has gone flat.
-
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -26,12 +14,9 @@ use crate::app::Workspace;
 use crate::result_bar::ResultState;
 use crate::theme::ActiveTheme;
 
-/// The UI applies stream changes at most this often.
 const COALESCE: Duration = Duration::from_millis(33);
-/// Sparkline samples kept.
 const SAMPLES: usize = 40;
 
-/// One live row as the UI shows it.
 #[derive(Clone, Debug)]
 pub struct Entry {
     pub id: u64,
@@ -42,8 +27,6 @@ pub struct Entry {
     pub at: Option<Instant>,
 }
 
-/// A row of the stream at one look: `values` is `None` when the row did not change since the
-/// UI last saw it.
 #[derive(Clone, Debug)]
 pub struct LiveIn {
     pub key: Vec<Option<String>>,
@@ -53,10 +36,6 @@ pub struct LiveIn {
     pub at: Option<Instant>,
 }
 
-/// Brings the shown rows in line with the stream: changed rows are updated in place, rows that
-/// left are marked gone (and dropped 600 ms later), new rows go on top (`append_new`: at the
-/// end, for the first result). Returns how many rows were put on top, and how many changed
-/// (0: nothing to redraw).
 pub fn reconcile(entries: &mut Vec<Entry>, ins: Vec<LiveIn>, now: Instant, append_new: bool, next_id: &mut u64) -> (usize, usize) {
     let before = entries.len();
     entries.retain(|e| !(e.style == RowStyle::LiveGone && e.at.is_some_and(|a| now >= a + super::grid::GONE)));
@@ -118,16 +97,12 @@ enum Run {
     Sub(Arc<Subscription>),
     Listen(Arc<LiveListen>),
     Failed(String),
-    /// Stopped by the user while a new stream was being opened.
     Stopped,
 }
 
-/// A stream that lived at least this long (and delivered its first result) was healthy: LAR's
-/// idle cut after ~1 s. Shorter ones back off before the next try.
+/// LAR's idle cut comes after ~1 s: a stream that lived this long was healthy.
 const HEALTHY: Duration = Duration::from_millis(500);
 
-/// How long to wait before opening the stream again after `fails` short-lived streams in a row:
-/// at once after a healthy one, then 250 ms doubling up to 8 s.
 pub fn restart_delay(fails: u32) -> Duration {
     if fails == 0 {
         return Duration::ZERO;
@@ -140,7 +115,6 @@ fn cells(v: &[Option<String>]) -> Vec<Option<SharedString>> {
     v.iter().map(|v| v.clone().map(SharedString::from)).collect()
 }
 
-/// The row of a stream as the UI keys it: the key columns, or the whole row.
 fn key_of(key: &Option<Vec<usize>>, values: &[Option<String>]) -> Vec<Option<String>> {
     match key {
         Some(k) => k.iter().map(|&i| values.get(i).cloned().flatten()).collect(),
@@ -148,7 +122,6 @@ fn key_of(key: &Option<Vec<usize>>, values: &[Option<String>]) -> Vec<Option<Str
     }
 }
 
-/// The newest change the UI has looked at: (commit, latest local time within that commit).
 /// LAR may apply one commit in more than one batch, so the time tells them apart.
 type Watermark = (u64, Option<Instant>);
 
@@ -164,23 +137,20 @@ fn bump(w: &mut Watermark, ts: u64, at: Instant) {
     }
 }
 
-/// The core keeps this many recently removed rows (`LiveTable::removed`).
+/// Must match the core's `REMOVED_CAP` (`LiveTable::removed`).
 const REMOVED_KEPT: usize = 256;
 
-/// What changed in a stream since the last look.
 struct Delta {
     changed: Vec<(Vec<Option<String>>, Vec<Option<String>>, ChangeKind, Instant)>,
     removed: Vec<Vec<Option<String>>>,
     watermark: Watermark,
     total: usize,
-    /// More rows left than the core remembers: only a full look is right.
     lost: bool,
 }
 
 pub struct LiveRun {
     pub grid: Entity<LarGrid>,
     pub stmt: LiveStmt,
-    /// The statement as typed (Resubscribe runs it again).
     pub source_sql: String,
     pub since: chrono::DateTime<chrono::Local>,
     run: Run,
@@ -189,41 +159,27 @@ pub struct LiveRun {
     columns: Vec<String>,
     key: Option<Vec<usize>>,
     first: bool,
-    /// Column widths were measured on actual rows.
     measured: bool,
     last_apply: Option<Instant>,
     pub last_change: Option<chrono::DateTime<chrono::Local>>,
-    /// Deltas (SUBSCRIBE) or notifications (LISTEN) per second, one sample a second.
     pub rate: VecDeque<f32>,
     last_sample: Option<Instant>,
-    /// LISTEN: notifications seen at the last sample.
     listen_seen: u64,
-    /// The stream ended and the user kept its rows as a plain snapshot.
     snapshot: bool,
     ended_at: Option<chrono::DateTime<chrono::Local>>,
     conn: Arc<Connection>,
-    /// The user stopped the stream (otherwise a clean end is LAR's idle cut: resubscribe).
     user_stopped: bool,
-    /// Times the stream was opened again after LAR ended it.
     pub restarts: u32,
-    /// The rows of a new stream's first result are compared with what is shown.
     resumed: bool,
-    /// The user paused: kept across LAR's idle cut (the stream is opened again on resume).
     user_paused: bool,
-    /// A new stream is being opened after LAR ended the last one (shown as still live).
     restarting: bool,
-    /// When the current stream started, and short-lived streams in a row (backoff).
     sub_started: Option<Instant>,
     fast_fails: u32,
-    /// Live rows by key → entry id, and the newest change looked at (incremental looks).
     by_key: HashMap<Vec<Option<String>>, u64>,
     seen: Watermark,
-    /// The shown rows and the stream disagreed: the next look is a full one.
     needs_full: bool,
     rate_moved: bool,
-    /// Changes (or notifications) since the last sample.
     window: usize,
-    /// Looks at the stream since the last sample (`DATAMAN_TRACE_LIVE`).
     looks: usize,
     snapshot_changed: bool,
     _task: Option<Task<()>>,
@@ -304,7 +260,6 @@ impl LiveRun {
         me
     }
 
-    /// Opens the SUBSCRIBE (again, after LAR ended it).
     fn spawn_subscribe(&mut self, cx: &mut Context<Self>) {
         let (Some(lar), LiveStmt::Subscribe { query, copy_form }) = (self.conn.lar(), self.stmt.clone()) else { return };
         let task = lar.subscribe(&query, SubscribeOptions { key: None, copy_form });
@@ -322,7 +277,6 @@ impl LiveRun {
             let mut rx = sub.changes();
             let _ = this.update(cx, |r, cx| {
                 if r.user_stopped {
-                    // Stopped while it was opening.
                     let _ = sub.stop();
                     r.run = Run::Stopped;
                     r.restarting = false;
@@ -334,7 +288,6 @@ impl LiveRun {
                 r.run = Run::Sub(sub.clone());
                 r.restarting = false;
                 r.sub_started = Some(Instant::now());
-                // Paused while it was opening: the new stream starts paused too.
                 if r.user_paused {
                     sub.pause();
                 }
@@ -360,8 +313,6 @@ impl LiveRun {
     }
 
     pub fn state(&self) -> SubState {
-        // While LAR's idle cut is worked around (the stream reopened), the user still sees
-        // what they chose: live, or paused.
         let kept = if self.user_paused { SubState::Paused } else { SubState::Live };
         match &self.run {
             Run::Starting if self.restarting && !self.user_stopped => kept,
@@ -400,7 +351,6 @@ impl LiveRun {
         }
     }
 
-    /// The latest LISTEN result, abbreviated (`{"id": 48290, "total": 1290.00}, …`).
     pub fn latest_body(&self) -> Option<String> {
         let Run::Listen(l) = &self.run else { return None };
         let p = l.latest()?;
@@ -425,13 +375,10 @@ impl LiveRun {
         self.rate.back().copied().unwrap_or(0.)
     }
 
-    /// Whether the sparkline still moves (a sample a second until it has gone flat).
     fn sampling(&self) -> bool {
         self.rate.iter().any(|v| *v > 0.) && !matches!(self.state(), SubState::Ended { .. })
     }
 
-    /// One sparkline sample per elapsed second: the rows that changed (SUBSCRIBE) or the
-    /// notifications (LISTEN) in it.
     fn sample(&mut self, now: Instant) {
         if let Run::Listen(l) = &self.run {
             let n = l.received();
@@ -447,7 +394,6 @@ impl LiveRun {
             return;
         }
         self.rate_moved = self.window > 0 || self.rate.iter().any(|v| *v > 0.);
-        // `DATAMAN_TRACE_LIVE=1`: how often the UI looked at the stream (≤ 30/s by design).
         if std::env::var_os("DATAMAN_TRACE_LIVE").is_some() {
             eprintln!("live: {} looks, {} changes in the last {secs} s", self.looks, self.window);
             self.looks = 0;
@@ -463,8 +409,6 @@ impl LiveRun {
         self.last_sample = Some(t + Duration::from_secs(secs));
     }
 
-    /// LAR ended the stream cleanly (its idle cut): open it again, keeping the rows — at once
-    /// after a healthy stream, with a growing delay after streams that died young.
     fn schedule_restart(&mut self, immediate: bool, cx: &mut Context<Self>) {
         let healthy = immediate || (self.sub_started.is_some_and(|t| t.elapsed() >= HEALTHY) && matches!(&self.run, Run::Sub(s) if s.stats().batches > 0));
         self.fast_fails = if healthy { 0 } else { self.fast_fails + 1 };
@@ -487,7 +431,6 @@ impl LiveRun {
         }
     }
 
-    /// One look at the stream: reconcile the rows and hand them to the grid.
     fn apply(&mut self, cx: &mut Context<Self>) {
         // LAR ends an extended-protocol SUBSCRIBE after ~1 s without changes (it takes the
         // client's pipelined Sync for "the client left"): open it again, keeping the rows —
@@ -506,7 +449,6 @@ impl LiveRun {
         self.last_apply = Some(now);
         self.looks += 1;
         self.sample(now);
-        // Most looks touch a few rows of a big result: patch those only.
         if let Run::Sub(s) = &self.run
             && !self.first
             && !self.resumed
@@ -520,8 +462,6 @@ impl LiveRun {
         }
         let (ins, append) = match &self.run {
             Run::Sub(s) => {
-                // Nothing to compare until the stream's first result is in (a new or resumed
-                // stream starts empty).
                 if s.stats().batches == 0 && !self.first {
                     return;
                 }
@@ -550,7 +490,6 @@ impl LiveRun {
                                 None => r.values.clone(),
                             };
                             let (style, changed, at) = match &r.kind {
-                                // A resumed stream's first result: what changed in between.
                                 ChangeKind::Initial if resumed => match shown.get(&k) {
                                     None => (RowStyle::LiveNew, vec![], Some(now)),
                                     Some(v) if **v != r.values => (RowStyle::LiveChanged, v.iter().zip(&r.values).map(|(a, b)| a != b).collect(), Some(now)),
@@ -602,7 +541,6 @@ impl LiveRun {
                     .collect();
                 (ins, first)
             }
-            // Stopped while reopening: the rows stay as they are, marked stale below.
             Run::Stopped => (
                 self.entries
                     .iter()
@@ -627,14 +565,11 @@ impl LiveRun {
         if ended && self.ended_at.is_none() {
             self.ended_at = Some(chrono::Local::now());
         }
-        // Widths come from the values: measure again once the first rows are there.
         let first_cols = self.first || !self.measured;
         self.first = false;
         if first_cols {
             self.measured = !self.entries.is_empty();
         }
-        // Nothing new (an idle look, a resumed stream with the same rows): no redraw, except
-        // for the rate sparkline when it moved.
         if !dirty && !first_cols && ended == was_ended && !self.snapshot_changed {
             if self.rate_moved {
                 cx.notify();
@@ -667,8 +602,6 @@ impl LiveRun {
         cx.notify();
     }
 
-    /// The rows that changed since the last look (`None`: only a full look is right — more
-    /// rows left than the core remembers, or the counts disagree).
     fn delta(&self, s: &Subscription) -> Option<Delta> {
         let (seen, key) = (self.seen, self.key.clone());
         let d = s.with_table(|t| {
@@ -693,7 +626,6 @@ impl LiveRun {
         (!d.lost).then_some(d)
     }
 
-    /// Applies a delta to the shown rows and the grid, touching only the rows in it.
     fn apply_delta(&mut self, d: Delta, now: Instant, cx: &mut Context<Self>) {
         let mut patches: HashMap<u64, RowPatch> = HashMap::new();
         let mut fresh: Vec<Entry> = Vec::new();
@@ -701,7 +633,6 @@ impl LiveRun {
         let present: std::collections::HashSet<&Vec<Option<String>>> = d.changed.iter().map(|c| &c.0).collect();
         let mut gone_keys = Vec::new();
         for k in &d.removed {
-            // Removed, then back in the same look: it is one of the changed rows.
             if !present.contains(k)
                 && let Some(id) = self.by_key.remove(k)
             {
@@ -732,7 +663,6 @@ impl LiveRun {
         }
         self.seen = d.watermark;
         let changes = patches.len() + fresh.len();
-        // The shown rows: patch in one pass (dropping removed rows whose 600 ms are over).
         let pending = updates;
         let gone: std::collections::HashSet<u64> = patches.iter().filter(|(_, p)| p.style == RowStyle::LiveGone).map(|(id, _)| *id).collect();
         if !pending.is_empty() || !gone.is_empty() || self.entries.iter().any(|e| e.style == RowStyle::LiveGone) {
@@ -755,7 +685,6 @@ impl LiveRun {
             v.append(&mut self.entries);
             self.entries = v;
         }
-        // The counts must agree with the stream; if not, the next look is a full one.
         if self.by_key.len() != d.total {
             self.needs_full = true;
         }
@@ -786,7 +715,6 @@ impl LiveRun {
                 self.user_paused = false;
                 match &self.run {
                     Run::Sub(s) if s.state() == SubState::Paused => s.resume(),
-                    // LAR cut the stream while it was paused: open it again now.
                     Run::Sub(s) if matches!(s.state(), SubState::Ended { error: None }) => self.schedule_restart(true, cx),
                     _ => {}
                 }
@@ -806,7 +734,6 @@ impl LiveRun {
                 let _ = l.unlisten();
             }
             Run::Starting => {
-                // A restart was pending or opening: it is dropped (or stopped when it lands).
                 self.run = Run::Stopped;
                 self.restarting = false;
                 if self.ended_at.is_none() {
@@ -881,8 +808,6 @@ impl LiveRun {
     }
 }
 
-/// Waits for stream changes and applies them, at most every 33 ms; while the sparkline still
-/// moves it also wakes once a second to sample the rate. Ends with the stream.
 async fn watch_loop(this: WeakEntity<LiveRun>, rx: &mut tokio::sync::watch::Receiver<u64>, cx: &mut gpui::AsyncApp) {
     use std::pin::pin;
     use std::task::Poll;
@@ -909,15 +834,11 @@ async fn watch_loop(this: WeakEntity<LiveRun>, rx: &mut tokio::sync::watch::Rece
             cx.background_executor().timer(w).await;
         }
         if this.update(cx, |r, cx| r.apply(cx)).is_err() || !changed {
-            // The stream is gone: one last look to mark the rows stale.
             let _ = this.update(cx, |r, cx| r.apply(cx));
             break;
         }
     }
 }
-
-// ---------------------------------------------------------------------------------------------
-// The panel.
 
 pub struct LivePanel {
     conn: Arc<Connection>,
@@ -929,8 +850,6 @@ impl LivePanel {
         LivePanel { conn, ws }
     }
 
-    /// The live runs of this connection, with their tab index, title and tab (actions use the
-    /// tab itself: indices go stale when tabs close).
     fn runs(&self, cx: &App) -> Vec<(usize, SharedString, Entity<LiveRun>, Entity<crate::tab::QueryTab>)> {
         let Some(ws) = self.ws.upgrade() else { return vec![] };
         ws.read(cx)
@@ -1069,7 +988,6 @@ impl Render for LivePanel {
                             match act {
                                 0 => run2.update(cx, |r, cx| r.toggle_pause(cx)),
                                 1 => {
-                                    // Resubscribe in the tab that owns the stream.
                                     let sql = run2.read(cx).source_sql.clone();
                                     let _ = &p;
                                     owner2.update(cx, |t, cx| t.run(vec![sql], cx));
@@ -1092,7 +1010,6 @@ impl Render for LivePanel {
                         .child(since),
                 )
         });
-        // LISTEN notifications: the active tab's channel, or the first LISTEN of the connection.
         let listen = runs
             .iter()
             .find(|(i, _, r, _)| *i == active && r.read(cx).channel().is_some())
@@ -1186,7 +1103,6 @@ impl Render for LivePanel {
     }
 }
 
-/// The fresh-entry highlight of the log ("live row" on wall-clock times).
 fn fade_alpha_wall(at: chrono::DateTime<chrono::Utc>, now: Instant) -> f32 {
     let age = (chrono::Utc::now() - at).to_std().unwrap_or(Duration::ZERO);
     let start = now.checked_sub(age).unwrap_or(now);
@@ -1210,7 +1126,6 @@ mod tests {
         assert_eq!(top, 0);
         assert!(dirty > 0);
         assert_eq!(e.iter().map(|x| x.key[0].clone().unwrap()).collect::<Vec<_>>(), vec!["1", "2"]);
-        // A new row: on top; unchanged rows keep their ids.
         let (top, _) = reconcile(
             &mut e,
             vec![li("1", None, RowStyle::Plain, None), li("2", None, RowStyle::Plain, None), li("3", Some("c"), RowStyle::LiveNew, Some(t0))],
@@ -1219,7 +1134,6 @@ mod tests {
             &mut id,
         );
         assert_eq!(top, 1);
-        // An idle look changes nothing: no redraw.
         let (_, dirty) = reconcile(&mut e, vec![li("1", None, RowStyle::Plain, None), li("2", None, RowStyle::Plain, None), li("3", None, RowStyle::LiveNew, Some(t0))], t0, false, &mut id);
         assert_eq!(dirty, 0);
         assert_eq!(e[0].key[0].as_deref(), Some("3"));
@@ -1258,7 +1172,6 @@ mod tests {
         let mut w: Watermark = (0, None);
         assert!(newer(w, 10, t0));
         bump(&mut w, 10, t0);
-        // The same row again: not new. A later batch of the same commit: new.
         assert!(!newer(w, 10, t0));
         assert!(newer(w, 10, t1));
         assert!(!newer(w, 9, t1), "older commits were seen");

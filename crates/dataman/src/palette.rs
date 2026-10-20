@@ -1,15 +1,3 @@
-//! The command palette (⌘K; ⌘P opens it on tables and tabs), from the CommandPalette board.
-//!
-//! One field, six scopes (All, Commands `>`, Tables `@`, Tabs `#`, Favorites `*`, Connections
-//! `:`; ⇥ cycles, a leading prefix picks one), results in sections with the matched letters
-//! underlined; ↑↓ move, ↩ opens, ⌘↩ in a new tab, ⌥↩ `SELECT *` in place. A favorite is found
-//! by its name (fuzzy) or by a piece of its SQL; ↩ shows it in the favorites, ⌘↩ opens it.
-//!
-//! Opening does next to no I/O: the index is built from what is already in memory (the schema
-//! caches of the connected servers, the open tabs, the saved connections, the command list)
-//! and the favorites (re-read only if their file changed), and every keystroke ranks it again
-//! with [`fuzzy`], a pure function (< 1 ms for thousands of tables).
-
 use gpui::{
     Action, App, Context, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, KeyBinding, MouseButton,
     ScrollHandle, Window, actions, div, prelude::*,
@@ -42,11 +30,6 @@ pub fn bind_keys(cx: &mut App) {
     ]);
 }
 
-// ---------------------------------------------------------------------------------------------
-// Ranking
-
-/// A fuzzy match: higher scores rank first; `positions` are the byte offsets of the matched
-/// characters in the text (underlined in the list).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Match {
     pub score: i32,
@@ -60,10 +43,6 @@ fn is_boundary(prev: Option<char>, c: char) -> bool {
     }
 }
 
-/// Ranks `text` against `query` (case-insensitive): a prefix beats a word start beats a
-/// substring beats a subsequence; among equals, earlier and tighter matches win. `None` when
-/// the query's letters are not all in the text, in order. An empty query matches everything
-/// with score 0.
 pub fn fuzzy(query: &str, text: &str) -> Option<Match> {
     let q: Vec<char> = query.chars().flat_map(char::to_lowercase).filter(|c| !c.is_whitespace()).collect();
     if q.is_empty() {
@@ -73,7 +52,6 @@ pub fn fuzzy(query: &str, text: &str) -> Option<Match> {
     let lower: Vec<char> = chars.iter().map(|(_, c)| c.to_lowercase().next().unwrap_or(*c)).collect();
     let n = lower.len();
     let len_penalty = (n as i32).min(60);
-    // Contiguous occurrences: the best one (prefix, then word start, then earliest).
     let mut best: Option<(i32, usize)> = None;
     if q.len() <= n {
         for start in 0..=n - q.len() {
@@ -95,10 +73,8 @@ pub fn fuzzy(query: &str, text: &str) -> Option<Match> {
     if let Some((score, start)) = best {
         return Some(Match { score: score - len_penalty, positions: (start..start + q.len()).map(|i| chars[i].0).collect() });
     }
-    // Subsequence: each query letter at the next word start if there is one, else the next
-    // occurrence; when jumping to word starts skips letters the rest needs ("report 497 rev"
-    // in "Report 497 revenue": the second r is not the one of revenue), the next occurrence
-    // every time. Gaps cost; word starts earn.
+    // Word starts first; when that skips letters the rest needs ("report 497 rev" in
+    // "Report 497 revenue"), the next occurrence every time.
     subsequence(&q, &chars, &lower, true).or_else(|| subsequence(&q, &chars, &lower, false)).map(|(score, positions)| Match { score: score - len_penalty, positions })
 }
 
@@ -129,22 +105,16 @@ fn subsequence(q: &[char], chars: &[(usize, char)], lower: &[char], words: bool)
         last = Some(i);
         at = i + 1;
     }
-    // Letters scattered all over the text are noise, not a match.
     if gaps > 3 * q.len() {
         return None;
     }
     Some((score, positions))
 }
 
-/// `query` (case and runs of spaces aside) somewhere in a statement: a weak match, below any
-/// match on a name.
 fn sql_match(query: &str, sql: &str) -> Option<Match> {
     let q = query.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
     (!q.is_empty() && sql.to_lowercase().contains(&q)).then(|| Match { score: 100, positions: vec![] })
 }
-
-// ---------------------------------------------------------------------------------------------
-// Items
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scope {
@@ -154,7 +124,6 @@ pub enum Scope {
     Tabs,
     Favorites,
     Connections,
-    /// ⌘P: tables and tabs.
     Goto,
 }
 
@@ -191,7 +160,6 @@ pub enum Section {
     Favorites,
     Commands,
     Connections,
-    /// Disconnected servers: their tables are not indexed.
     Offline,
 }
 
@@ -206,7 +174,6 @@ impl Section {
             Section::Offline => "NOT CONNECTED",
         }
     }
-    /// Rows shown in the All scope (a specific scope shows up to `SCOPE_MAX`).
     fn all_cap(self) -> usize {
         match self {
             Section::Tables => 6,
@@ -221,7 +188,6 @@ impl Section {
 
 const SCOPE_MAX: usize = 80;
 
-/// Where a command runs: the workspace, or a region that must hold the focus first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Target {
     Workspace,
@@ -232,7 +198,6 @@ pub enum Target {
 pub enum ItemKind {
     Table { conn: String, db: String, schema: String, name: String },
     Tab(usize),
-    /// A favorite query, by id.
     Favorite { id: String },
     Command { action: Box<dyn Action>, target: Target },
     Connection { id: String },
@@ -258,9 +223,7 @@ pub struct Item {
     pub sub: String,
     pub key: String,
     pub icon: PaletteIcon,
-    /// LAR-only (violet).
     pub lar: bool,
-    /// Not available now (drawn dim; ↩ does nothing).
     pub disabled: bool,
 }
 
@@ -276,7 +239,6 @@ pub enum PaletteIcon {
 }
 
 impl Item {
-    /// `key` is shown unless the action is a remappable command: then its current key is.
     pub fn command(label: &str, sub: &str, key: &str, action: Box<dyn Action>, target: Target) -> Item {
         let key = crate::keymap::label_for_action(&*action).unwrap_or_else(|| key.to_string());
         Item {
@@ -292,34 +254,25 @@ impl Item {
     }
 }
 
-/// How an item was picked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OpenMode {
-    /// ↩
     Open,
-    /// ⌘↩
     NewTab,
-    /// ⌥↩ (`SELECT *` in the current tab).
     InPlace,
 }
 
 pub enum PaletteEvent {
     Pick(ItemKind, OpenMode),
-    /// "Search history" from the empty state.
     SearchHistory(String),
     Dismiss,
 }
 
-/// One ranked row (an index into the items).
 #[derive(Clone, Debug)]
 struct Hit {
     item: usize,
     m: Match,
 }
 
-/// Ranks `items` for `query` within `scope`: sections in a fixed order, each sorted by score
-/// (then shorter label, then name) and capped. Returns (section, hits) groups and how many
-/// matches the caps left out.
 fn rank(items: &[Item], query: &str, scope: Scope) -> (Vec<(Section, Vec<Hit>)>, usize) {
     let mut groups: Vec<(Section, Vec<Hit>)> = Vec::new();
     let mut hidden = 0;
@@ -327,8 +280,6 @@ fn rank(items: &[Item], query: &str, scope: Scope) -> (Vec<(Section, Vec<Hit>)>,
         if !scope.shows(section) {
             continue;
         }
-        // An empty query in All lists tabs, commands and connections, not every table or
-        // favorite.
         if query.is_empty() && scope == Scope::All && matches!(section, Section::Tables | Section::Favorites | Section::Offline) {
             continue;
         }
@@ -337,16 +288,13 @@ fn rank(items: &[Item], query: &str, scope: Scope) -> (Vec<(Section, Vec<Hit>)>,
             .enumerate()
             .filter(|(_, it)| it.section == section)
             .filter_map(|(i, it)| {
-                // Offline servers are listed whatever the query (their tables are unknown).
                 if section == Section::Offline {
                     return Some(Hit { item: i, m: Match { score: 0, positions: vec![] } });
                 }
                 let m = fuzzy(query, &it.label).or_else(|| {
-                    // A favorite's subtitle is its SQL: a piece of it, anywhere, ranked lower.
                     if section == Section::Favorites {
                         return sql_match(query, &it.sub);
                     }
-                    // `schema.table`, `conn db`: also match on the subtitle, ranked lower.
                     fuzzy(query, &it.sub).filter(|m| m.score >= 500 || query.is_empty()).map(|m| Match { score: m.score - 400, positions: vec![] })
                 })?;
                 Some(Hit { item: i, m })
@@ -372,9 +320,6 @@ fn rank(items: &[Item], query: &str, scope: Scope) -> (Vec<(Section, Vec<Hit>)>,
     (groups, hidden)
 }
 
-// ---------------------------------------------------------------------------------------------
-// The view
-
 pub struct Palette {
     focus: FocusHandle,
     input: gpui::Entity<TextInput>,
@@ -382,7 +327,6 @@ pub struct Palette {
     items: Vec<Item>,
     groups: Vec<(Section, Vec<Hit>)>,
     hidden: usize,
-    /// Index into the flattened hits.
     sel: usize,
     scroll: ScrollHandle,
 }
@@ -409,13 +353,11 @@ impl Palette {
         p
     }
 
-    /// Types into the field (demo screenshots).
     pub fn set_query(&mut self, q: &str, cx: &mut Context<Self>) {
         self.input.update(cx, |i, cx| i.set_text(q, cx));
         self.refilter(cx);
     }
 
-    /// The scope in effect and the query without its prefix.
     fn parsed(&self, cx: &App) -> (Scope, String) {
         let text = self.input.read(cx).text();
         let mut chars = text.chars();
@@ -455,7 +397,6 @@ impl Palette {
         cx.notify();
     }
 
-    /// The list child of hit `flat`: one header per group before its rows.
     fn row_of(&self, flat: usize) -> usize {
         let mut row = 0;
         let mut seen = 0;
@@ -470,9 +411,6 @@ impl Palette {
         row
     }
 
-    /// Checks: the selected hit's label, its index, how many hits are listed, how far the
-    /// list is scrolled, whether the selected row is inside the list's viewport, and the list's
-    /// bounds (window coordinates).
     pub(crate) fn demo_state(&self) -> (String, usize, usize, f32, bool, gpui::Bounds<gpui::Pixels>) {
         let label = self.selected().map(|h| self.items[h.item].label.clone()).unwrap_or_default();
         let view = self.scroll.bounds();
@@ -487,7 +425,6 @@ impl Palette {
         let i = SCOPES.iter().position(|(s, _, _)| *s == cur).unwrap_or(0) as isize;
         let n = SCOPES.len() as isize;
         self.scope = SCOPES[(i + d).rem_euclid(n) as usize].0;
-        // The prefix (if any) gives way to the chosen scope.
         self.input.update(cx, |i, cx| i.set_text(q, cx));
         self.refilter(cx);
     }
@@ -537,7 +474,6 @@ impl Palette {
             .when(!sel, |d| d.text_color(if it.disabled { t.tx4 } else { t.tx2 }).hover(move |s| s.bg(hov)))
             .child(icon_el)
             .child(div().flex_none().whitespace_nowrap().child(label))
-            // A command's sub only feeds the search; tables, tabs and connections show theirs.
             .child(
                 div()
                     .flex_1()
@@ -564,13 +500,11 @@ impl Palette {
     }
 }
 
-/// The label with the matched letters bold and underlined (accent; violet for LAR rows).
 fn highlighted(label: &str, positions: &[usize], mark: Hsla, line: Hsla) -> gpui::Div {
     let mut row = div().flex().flex_row();
     if positions.is_empty() {
         return row.child(label.to_string());
     }
-    // Runs of consecutive matched / unmatched characters.
     let mut runs: Vec<(bool, String)> = Vec::new();
     for (i, c) in label.char_indices() {
         let m = positions.binary_search(&i).is_ok();
@@ -765,19 +699,15 @@ mod tests {
         assert_eq!(fuzzy("ORD", "orders").unwrap().positions, vec![0, 1, 2]);
         assert_eq!(fuzzy("ord", "Order by column…").unwrap().positions, vec![0, 1, 2]);
         assert!(fuzzy("ord", "orders").unwrap().score > fuzzy("ord", "order_items").unwrap().score);
-        // An empty query matches anything.
         assert_eq!(fuzzy("", "x").unwrap().score, 0);
     }
 
     #[test]
     fn subsequence_prefers_word_starts() {
-        // "oi" → the o of order and the i of items, not the i in the middle of "orIginal".
         let m = fuzzy("oi", "order_items").unwrap();
         assert_eq!(m.positions, vec![0, 6]);
-        // Positions are byte offsets, also with multi-byte characters before them.
         let m = fuzzy("éo", "crème_éox").unwrap();
         assert_eq!(&"crème_éox"[m.positions[0]..m.positions[0] + 2], "é");
-        // camelCase boundaries count.
         assert_eq!(fuzzy("ct", "copyTsv").unwrap().positions, vec![0, 4]);
     }
 
@@ -795,18 +725,14 @@ mod tests {
         let (groups, hidden) = rank(&items, "ord", Scope::All);
         let sections: Vec<Section> = groups.iter().map(|g| g.0).collect();
         assert_eq!(sections, vec![Section::Tables, Section::Tabs, Section::Commands]);
-        // The exact, shortest name first; the All scope caps tables at 6.
         assert_eq!(items[groups[0].1[0].item].label, "orders");
         assert_eq!(groups[0].1.len(), 6);
         assert_eq!(hidden, 21 - 6);
-        // One scope: no tabs, no commands, more rows.
         let (groups, _) = rank(&items, "ord", Scope::Tables);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].1.len(), 21);
-        // ⌘P: tables and tabs.
         let (groups, _) = rank(&items, "ord", Scope::Goto);
         assert_eq!(groups.iter().map(|g| g.0).collect::<Vec<_>>(), vec![Section::Tables, Section::Tabs]);
-        // An empty query in All skips the tables.
         let (groups, _) = rank(&items, "", Scope::All);
         assert!(groups.iter().all(|g| g.0 != Section::Tables));
     }
@@ -824,7 +750,6 @@ mod tests {
         assert_eq!(top("marker_123", Scope::All).as_deref(), Some("Report 123 churn"), "a piece of the SQL");
         assert_eq!(top("Marker_123  AS", Scope::Favorites), None, "contiguous in the SQL, or nothing");
         assert_eq!(top("'marker_123' as", Scope::Favorites).as_deref(), Some("Report 123 churn"));
-        // An empty query lists them in their scope only.
         assert!(rank(&items, "", Scope::All).0.iter().all(|g| g.0 != Section::Favorites));
         assert_eq!(rank(&items, "", Scope::Favorites).0[0].1.len(), 2);
         assert_eq!(Scope::from_prefix('*'), Some(Scope::Favorites));
@@ -851,14 +776,10 @@ mod tests {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Workspace side: building the index and acting on a pick.
-
 use crate::app::{self, Workspace};
 use crate::conns::ConnState;
 
 impl Workspace {
-    /// ⌘K (`scope` All) or ⌘P (`Goto`). Builds the index from memory only.
     pub(crate) fn open_palette(&mut self, scope: Scope, window: &mut Window, cx: &mut Context<Self>) {
         if self.palette.is_some() {
             self.close_palette(window, cx);
@@ -908,7 +829,6 @@ impl Workspace {
                 }
             }
             ItemKind::Tab(i) => self.activate(i, window, cx),
-            // ↩ shows it in the favorites (selected, focused); ⌘↩ opens it in a tab.
             ItemKind::Favorite { id } => {
                 let fav = self.store.read(cx).core.favorites.list().into_iter().find(|f| f.id == id);
                 match (mode, fav) {
@@ -950,21 +870,17 @@ impl Workspace {
         cx.notify();
     }
 
-    /// ⌥↩ on a table: `SELECT * … LIMIT 1000` in the current tab (on that connection and database).
     fn select_star_in_place(&mut self, conn: &str, db: &str, schema: &str, name: &str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(c) = self.store.read(cx).connection(conn) else { return };
         let Some(tab) = self.active_tab().cloned() else { return };
         let sql = dataman_core::sqlgen::select_star_in(c.dialect(), schema, name, Some(1000));
-        // Another connection or database asks about the tab's open transaction first.
         self.retarget(&tab, c, Some(db.to_string()), Some(sql), window, cx);
     }
 
-    /// Everything the palette can find, from memory.
     pub(crate) fn palette_items(&self, cx: &App) -> Vec<Item> {
         let mut items = Vec::new();
         let store = self.store.read(cx);
         let active_conn = self.active_tab().and_then(|t| t.read(cx).connection().cloned());
-        // Tables and views of every connected server, from the schema caches.
         for p in &store.profiles {
             let Some(ConnState::Connected(c)) = store.states.get(&p.id) else { continue };
             let mut dbs = vec![c.database().to_string()];
@@ -992,7 +908,6 @@ impl Workspace {
                 }
             }
         }
-        // Open tabs.
         for (i, tab) in self.tabs.iter().enumerate() {
             let tr = tab.read(cx);
             let conn = tr.connection().map(|c| c.profile.name.clone()).unwrap_or_else(|| "no connection".into());
@@ -1016,7 +931,6 @@ impl Workspace {
                 disabled: false,
             });
         }
-        // Favorite queries: the name, then the statement (flattened) and where it runs.
         for f in store.core.favorites.list() {
             let flat = f.sql.split_whitespace().collect::<Vec<_>>().join(" ");
             let conn = f.connection_id.as_ref().and_then(|id| store.profile(id)).map(|p| p.name.clone());
@@ -1034,10 +948,8 @@ impl Workspace {
                 disabled: false,
             });
         }
-        // Commands, Undo and Redo first (they say what they would take back).
         items.extend(crate::undo::palette_items(self));
         items.extend(commands(active_conn.as_ref(), cx));
-        // Connections; the disconnected ones also say their tables are not indexed.
         for p in &store.profiles {
             let state = store.states.get(&p.id);
             let (sub, connected) = match state {
@@ -1074,7 +986,6 @@ impl Workspace {
     }
 }
 
-/// Every app action, with its shortcut (the same keys as the menus and the key map).
 fn commands(conn: Option<&std::sync::Arc<dataman_core::Connection>>, cx: &App) -> Vec<Item> {
     use crate::app::*;
     use Target::*;
@@ -1140,7 +1051,6 @@ fn commands(conn: Option<&std::sync::Arc<dataman_core::Connection>>, cx: &App) -
         c("Format SQL", "the selection, or the whole script", "⌥⇧F", Box::new(crate::editor::FormatSql), Editor),
         c("Go to definition", "the name under the cursor, in the explorer", "F12", Box::new(crate::editor::GoToDefinition), Editor),
         c("Open definition", "the name under the cursor, in a new tab", "⌥F12", Box::new(crate::editor::PeekDefinition), Editor),
-        // On whatever had the focus (the grid finds in its loaded rows), else the editor.
         c("Find", "", "⌘F", Box::new(crate::find::Find), Workspace),
         c("Find & replace", "", "⌥⌘F", Box::new(crate::find::FindReplace), Workspace),
         c("Find next", "", "⌘G", Box::new(crate::find::FindNext), Workspace),
@@ -1170,7 +1080,6 @@ fn commands(conn: Option<&std::sync::Arc<dataman_core::Connection>>, cx: &App) -
         c("Actual size", "zoom 100%", "⌘0", Box::new(ZoomReset), Workspace),
         c("Quit Dataman", "", "⌘Q", Box::new(Quit), Workspace),
     ];
-    // What the connection's engine cannot do is not offered at all.
     if let Some(caps) = conn.map(|c| c.caps()) {
         v.retain(|it| match it.label.as_str() {
             "Explain" | "Explain analyze" | "Copy plan as text" | "Plan: tree / flame" => caps.explain,
@@ -1197,7 +1106,6 @@ fn commands(conn: Option<&std::sync::Arc<dataman_core::Connection>>, cx: &App) -
             it.disabled = !on;
             v.push(it);
         }
-        // The LAR action that works on the active tab.
         let mut it = c("LAR · Pause / resume live", "the tab's SUBSCRIBE or LISTEN … AS", "⌥P", Box::new(crate::lar::PauseLive), Workspace);
         it.icon = PaletteIcon::Lar(crate::assets::Icon::Pause);
         it.lar = true;

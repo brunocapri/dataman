@@ -1,10 +1,5 @@
-//! Live tests of export, grid editing and the relationship graph (see `common` for the servers).
-
 mod common;
 use common::*;
-
-// ---------------------------------------------------------------------------------------------
-// Export
 
 mod export {
     use super::*;
@@ -44,7 +39,6 @@ mod export {
                 before / 1024,
                 peak / 1024
             );
-            // Flat memory: far below the size of the data.
             assert!(peak.saturating_sub(before) < 400 * 1024, "RSS grew {} MB", (peak - before) / 1024);
             std::fs::remove_file(&path).unwrap();
         }
@@ -65,7 +59,6 @@ mod export {
         assert!(s.cancelled);
         assert!(!path.exists());
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
-        // A runtime error midway leaves nothing behind either.
         let x = c.export_query(None, "SELECT 1 / (g - 5000) FROM generate_series(1, 10000) g", &path, ExportOptions::new(ExportFormat::Csv), None);
         let err = e.core.block_on(x.task).unwrap_err().to_string();
         assert!(err.contains("22012"), "{err}");
@@ -76,7 +69,6 @@ mod export {
 
     #[test]
     fn pg_query_export_cancel_before_the_first_row() {
-        // A slow statement: the cancel must not wait for its first row.
         let e = env();
         let Some(c) = pg(&e) else { return };
         let dir = tempfile::tempdir().unwrap();
@@ -90,7 +82,6 @@ mod export {
         assert!(s.cancelled);
         assert!(t.elapsed() < Duration::from_millis(1500), "{:?}", t.elapsed());
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
-        // The CancelRequest reached the server: nothing is left sleeping there.
         std::thread::sleep(Duration::from_millis(300));
         let rs = query(&e, &c, "SELECT count(*) FROM pg_stat_activity WHERE query = 'SELECT pg_sleep(4), 1' AND state = 'active'");
         assert_eq!(rs.snapshot().text(0, 0).as_deref(), Some("0"));
@@ -120,7 +111,6 @@ mod export {
         let text = std::fs::read_to_string(&path).unwrap();
         assert_eq!(text.matches("INSERT INTO copied (g, t, n, d) VALUES").count(), 200);
         assert!(text.contains("(200000, 'x200000', NULL, '"));
-        // The file loads back into PostgreSQL.
         let schema = "dataman_export_t";
         super::exec(&e, &c, &[&format!("DROP SCHEMA IF EXISTS {schema} CASCADE"), &format!("CREATE SCHEMA {schema}")]);
         let load = format!("SET search_path = {schema}; CREATE TABLE copied (g int, t text, n text, d date); {text}");
@@ -158,9 +148,6 @@ mod export {
         super::exec(&e, &c, &["DROP TABLE dataman_exp"]);
     }
 }
-
-// ---------------------------------------------------------------------------------------------
-// Grid editing
 
 mod edit {
     use super::*;
@@ -225,7 +212,6 @@ mod edit {
         assert_eq!(a.text(1, 1).as_deref(), Some("two"));
         assert_eq!(a.text(2, 0).as_deref(), Some("4"));
 
-        // Conflicts: someone else changes row 1 and deletes row 2 after we read them.
         let rs = query(&e, &c, &format!("SELECT * FROM {s}.p ORDER BY id"));
         let t = editable(target(&e, &c, &rs, None));
         exec(&e, &c, &[&format!("UPDATE {s}.p SET name = 'other' WHERE id = 1"), &format!("DELETE FROM {s}.p WHERE id = 2")]);
@@ -243,7 +229,6 @@ mod edit {
         assert_eq!(r.outcomes[1].outcome, Outcome::NotRun);
         eprintln!("conflict: {:?}", r.error);
 
-        // A failing statement rolls back the ones before it.
         let mut cs = ChangeSet::new();
         cs.edit(2, 1, CellValue::text("four"), CellValue::text("FOUR"));
         let i = cs.insert_row(6);
@@ -261,7 +246,6 @@ mod edit {
         let chk = query(&e, &c, &format!("SELECT name FROM {s}.p WHERE id = 4"));
         assert_eq!(chk.snapshot().text(0, 0).as_deref(), Some("four"));
 
-        // Read-only cases, with reasons.
         let why = read_only(target(&e, &c, &query(&e, &c, &format!("SELECT a.id, b.id FROM {s}.p a JOIN {s}.p b ON a.id = b.id")), None));
         assert!(why.contains("several tables"), "{why}");
         let why = read_only(target(&e, &c, &query(&e, &c, &format!("SELECT * FROM {s}.nokey")), None));
@@ -270,12 +254,10 @@ mod edit {
         assert!(why.contains("add it to the SELECT"), "{why}");
         let why = read_only(target(&e, &c, &query(&e, &c, &format!("SELECT count(*) FROM {s}.p")), None));
         eprintln!("count(*): {why}");
-        // A unique NOT NULL index works as the key; an explicit key overrides.
         let t = editable(target(&e, &c, &query(&e, &c, &format!("SELECT * FROM {s}.u")), None));
         assert_eq!(t.key_source, KeySource::UniqueIndex);
         let t = editable(target(&e, &c, &query(&e, &c, &format!("SELECT * FROM {s}.nokey")), Some(vec!["a".into()])));
         assert_eq!(t.key_source, KeySource::Explicit);
-        // Computed columns stay read-only.
         let t = editable(target(&e, &c, &query(&e, &c, &format!("SELECT id, upper(name) AS u, name AS n FROM {s}.p")), None));
         assert_eq!(t.columns, vec![Some("id".into()), None, Some("name".into())]);
         exec(&e, &c, &[&format!("DROP SCHEMA {s} CASCADE")]);
@@ -298,8 +280,6 @@ mod edit {
             &format!("CREATE TABLE {s}.odd (id int PRIMARY KEY, v text, j json[], x xml[], pa point[], dj {s}.dj, dpa {s}.dpa)"),
             &format!("INSERT INTO {s}.odd VALUES (1, 'a', ARRAY['{{}}'::json], ARRAY['<a/>'::xml], ARRAY[point(1,2)], '{{}}', ARRAY[point(3,4)]), (2, 'b', NULL, NULL, NULL, NULL, NULL)"),
         ]);
-        // A self-join behind a subquery or a CTE: one origin table for every column, still
-        // read-only (an edit keyed by the worker's id would write the boss's email into it).
         for sql in [
             format!("SELECT * FROM (SELECT w.id, w.name, m.email FROM {s}.emp w JOIN {s}.emp m ON m.id = w.manager) x"),
             format!("WITH x AS (SELECT w.id, w.name, m.email FROM {s}.emp w JOIN {s}.emp m ON m.id = w.manager) SELECT * FROM x"),
@@ -308,11 +288,9 @@ mod edit {
             let why = read_only(target(&e, &c, &rs, None));
             eprintln!("{sql} → read-only: {why}");
         }
-        // `TABLE t` is editable.
         let t = editable(target(&e, &c, &query(&e, &c, &format!("TABLE {s}.emp")), None));
         assert_eq!(t.table.name, "emp");
 
-        // A real key: the WHERE must match the stored float4.
         let rs = query(&e, &c, &format!("SELECT * FROM {s}.fk ORDER BY k"));
         let t = editable(target(&e, &c, &rs, None));
         let mut cs = ChangeSet::new();
@@ -326,7 +304,6 @@ mod edit {
         assert_eq!(a.snapshot().rows(), 1);
         assert_eq!(a.snapshot().text(0, 0).as_deref(), Some("A"));
 
-        // A DELETE checks the row first: changed → conflict, gone → conflict.
         let rs = query(&e, &c, &format!("SELECT * FROM {s}.emp ORDER BY id"));
         let t = editable(target(&e, &c, &rs, None));
         exec(&e, &c, &[&format!("UPDATE {s}.emp SET email = 'new@x' WHERE id = 2")]);
@@ -338,14 +315,11 @@ mod edit {
         exec(&e, &c, &[&format!("DELETE FROM {s}.emp WHERE id = 2")]);
         let r = e.core.block_on(c.apply_changes(None, cs.plan(&t, &rs.snapshot()).unwrap())).unwrap();
         assert!(matches!(r.outcomes[0].outcome, Outcome::Conflict { kind: ConflictKind::RowGone, .. }), "{r:?}");
-        // Unchanged: deleted.
         let mut cs = ChangeSet::new();
         cs.delete_row(0);
         let r = e.core.block_on(c.apply_changes(None, cs.plan(&t, &rs.snapshot()).unwrap())).unwrap();
         assert!(r.committed, "{r:?}");
 
-        // Arrays and domains of types without equality: left out of the checks, not failing
-        // the whole save with "could not identify an equality operator".
         let rs = query(&e, &c, &format!("SELECT * FROM {s}.odd ORDER BY id"));
         let t = editable(target(&e, &c, &rs, None));
         eprintln!("odd type names: {:?}", t.type_names);
@@ -397,7 +371,6 @@ mod edit {
         assert_eq!(a.text(1, 2).as_deref(), Some("2.25"));
         assert_eq!(a.text(2, 1).as_deref(), Some("four"));
 
-        // Conflicts, detected by re-reading by key.
         let rs = query(&e, &c, "SELECT * FROM dataman_ed ORDER BY id");
         exec(&e, &c, &["UPDATE dataman_ed SET name = 'other' WHERE id = 1", "DELETE FROM dataman_ed WHERE id = 2"]);
         let mut cs = ChangeSet::new();
@@ -416,25 +389,21 @@ mod edit {
         cs.delete_row(1);
         let r = e.core.block_on(c.apply_changes(None, cs.plan(&t, &rs.snapshot()).unwrap())).unwrap();
         assert!(matches!(r.outcomes[0].outcome, Outcome::Conflict { kind: ConflictKind::RowGone, .. }), "{r:?}");
-        // A DELETE of a row changed since it was read: re-read, conflict.
         let mut cs = ChangeSet::new();
         cs.delete_row(0);
         let r = e.core.block_on(c.apply_changes(None, cs.plan(&t, &rs.snapshot()).unwrap())).unwrap();
         assert!(!r.committed);
         assert!(matches!(&r.outcomes[0].outcome, Outcome::Conflict { kind: ConflictKind::Changed { column: Some(c), .. }, .. } if c == "name"), "{r:?}");
-        // Duplicate key.
         let mut cs = ChangeSet::new();
         let i = cs.insert_row(4);
         cs.set_inserted(i, 0, Some(CellValue::text("1")));
         let r = e.core.block_on(c.apply_changes(None, cs.plan(&t, &rs.snapshot()).unwrap())).unwrap();
         assert!(!r.committed);
         eprintln!("LAR duplicate insert: {:?}", r.outcomes[0].outcome);
-        // Historical results are read-only.
         let rs = query(&e, &c, "SELECT * FROM dataman_ed FOR SYSTEM_TIME AS OF 1");
         assert!(read_only(target(&e, &c, &rs, None)).contains("AS OF"));
         exec(&e, &c, &["DROP TABLE dataman_ed"]);
 
-        // A REAL key chosen by the caller: the cast literal matches the stored value.
         let rs = query(&e, &c, "SELECT * FROM dataman_edf ORDER BY k");
         let t = editable(target(&e, &c, &rs, Some(vec!["k".into()])));
         let mut cs = ChangeSet::new();
@@ -447,9 +416,6 @@ mod edit {
         exec(&e, &c, &["DROP TABLE dataman_edf"]);
     }
 }
-
-// ---------------------------------------------------------------------------------------------
-// Relationships (the links foreign-key navigation follows)
 
 mod relations {
     use super::*;
@@ -482,7 +448,6 @@ mod relations {
         assert_eq!((l.from_columns.clone(), l.to_columns.clone()), (vec!["customer".to_string()], vec!["id".to_string()]));
         assert_eq!(g.links.iter().filter(|l| l.to_table == "customer").count(), 2);
         assert_eq!(g.links.len(), 4);
-        // Cached.
         let t = Instant::now();
         let again = e.core.block_on(c.relationships(c.database(), s)).unwrap();
         assert!(Arc::ptr_eq(&g, &again) && t.elapsed() < Duration::from_millis(50));
@@ -498,7 +463,6 @@ mod relations {
             "CREATE TABLE strel_customers (id BIGINT PRIMARY KEY, name TEXT)",
             "CREATE TABLE strel_products (id BIGINT PRIMARY KEY, title TEXT)",
             "CREATE TABLE strel_orders (id BIGINT PRIMARY KEY, strel_customer BIGINT REFERENCES strel_customers(id), total DOUBLE PRECISION)",
-            // strel_product looks like a link by its name, but is a plain integer.
             "CREATE TABLE strel_items (id BIGINT PRIMARY KEY, strel_order_id BIGINT REFERENCES strel_orders(id), strel_product BIGINT, qty BIGINT)",
             "INSERT INTO strel_customers VALUES (1, 'Ana')",
             "INSERT INTO strel_orders VALUES (10, 1, 5.0), (11, 1, 6.0)",
@@ -511,7 +475,6 @@ mod relations {
         assert_eq!(mine.len(), 2, "{labels:?}");
         assert!(labels.contains(&"strel_orders.strel_customer → strel_customers".to_string()), "{labels:?}");
         assert!(labels.contains(&"strel_items.strel_order_id → strel_orders".to_string()), "{labels:?}");
-        // The target's key is inferred (an integer `id`).
         assert!(mine.iter().all(|l| l.inferred && l.to_columns == ["id"]));
         eprintln!("other links: {:?}", g.links.iter().filter(|l| !l.from_table.starts_with("strel_")).map(label).collect::<Vec<_>>());
         exec(&e, &c, &["DROP TABLE strel_items", "DROP TABLE strel_orders", "DROP TABLE strel_products", "DROP TABLE strel_customers"]);

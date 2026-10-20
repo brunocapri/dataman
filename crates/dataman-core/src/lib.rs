@@ -1,9 +1,3 @@
-//! Dataman's core: everything but the UI.
-//!
-//! The core owns a tokio runtime on its own threads. Every operation returns immediately with a
-//! [`Task`] (a one-shot channel) or a shared [`result::ResultSet`]; the UI awaits them on its own
-//! executor and never blocks.
-
 pub mod activity;
 pub mod backend;
 pub mod batch;
@@ -82,7 +76,6 @@ pub use secret::{Keychain, MemorySecrets, SecretStore};
 pub use server::{ServerExtension, ServerInfo};
 pub use settings::{Settings, SettingsStore, ThemePref, Translucency, UiFont};
 
-/// The result of a background operation, delivered over a one-shot channel.
 #[must_use]
 pub struct Task<T>(oneshot::Receiver<Result<T>>);
 
@@ -98,7 +91,6 @@ impl<T> Future for Task<T> {
 }
 
 impl<T> Task<T> {
-    /// Takes the result if it is already there.
     pub fn try_take(&mut self) -> Option<Result<T>> {
         self.0.try_recv().ok()
     }
@@ -124,17 +116,14 @@ pub struct Core {
     pub secrets: Arc<dyn SecretStore>,
     pub history: Arc<History>,
     pub favorites: Arc<FavoritesStore>,
-    /// The explorer's pinned tables.
     pub pins: PinStore,
     pub extensions: Vec<Arc<dyn ServerExtension>>,
-    /// Where to look passwords up when a connection has none saved (`~/.pgpass`, or
-    /// `PGPASSFILE`); `None` turns the lookup off.
     pub pgpass: Option<PathBuf>,
-    /// SSH passwords and passphrases typed this session but not saved (memory only).
+    // Memory only: never written to disk or the keychain.
     ssh_typed: Arc<Mutex<HashMap<String, String>>>,
 }
 
-/// Finds a connection's secrets off the UI thread: keychain reads and the pgpass file.
+// Off the UI thread: it reads the keychain and the pgpass file.
 #[derive(Clone)]
 struct Secrets {
     store: Arc<dyn SecretStore>,
@@ -143,7 +132,6 @@ struct Secrets {
 }
 
 impl Secrets {
-    /// The given password, the saved one, or a matching `~/.pgpass` line (PostgreSQL's only).
     fn password(&self, p: &ConnectionProfile, given: Option<String>) -> Result<Option<String>> {
         if given.is_some() {
             return Ok(given);
@@ -159,7 +147,6 @@ impl Secrets {
         Ok(self.pgpass.as_deref().and_then(|f| pgpass::lookup(f, &p.host, p.port, &p.database, &p.user)))
     }
 
-    /// The SSH password or key passphrase: given, typed earlier this session, or saved.
     fn ssh(&self, p: &ConnectionProfile, given: Option<String>) -> Result<Option<String>> {
         if p.ssh.as_ref().is_none_or(|s| s.auth == SshAuth::Agent) {
             return Ok(None);
@@ -177,7 +164,6 @@ impl Secrets {
     }
 }
 
-/// The tunnel a profile needs, opened (or `None` without SSH).
 async fn open_tunnel(p: &ConnectionProfile, ssh_secret: Option<String>, app_known_hosts: PathBuf) -> Result<Option<Arc<ssh::Tunnel>>> {
     match ssh::TunnelSpec::resolve(p, ssh_secret, &app_known_hosts) {
         Some(spec) => Ok(Some(ssh::Tunnel::open(spec).await?)),
@@ -185,21 +171,17 @@ async fn open_tunnel(p: &ConnectionProfile, ssh_secret: Option<String>, app_know
     }
 }
 
-/// Where an importable connection comes from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ImportSource {
     Service,
     Pgpass,
 }
 
-/// A connection `~/.pg_service.conf` or `~/.pgpass` describes.
 #[derive(Clone, Debug)]
 pub struct Importable {
     pub source: ImportSource,
     pub profile: ConnectionProfile,
-    /// A service's own password (pgpass lines keep theirs in the file: looked up on connect).
     pub password: Option<String>,
-    /// A saved connection already has these host, port, user and database.
     pub exists: bool,
 }
 
@@ -231,7 +213,6 @@ impl Core {
         self.rt.handle().clone()
     }
 
-    /// Runs a future on the core runtime and blocks for its result (tests and tools only).
     pub fn block_on<F: Future>(&self, f: F) -> F::Output {
         self.rt.block_on(f)
     }
@@ -240,16 +221,12 @@ impl Core {
         Secrets { store: self.secrets.clone(), pgpass: self.pgpass.clone(), ssh_typed: self.ssh_typed.clone() }
     }
 
-    /// The password to use: the given one, the saved one, or the one `~/.pgpass` has for it.
-    /// Reads the keychain and a file: not for the UI thread ([`Core::connect`] and
-    /// [`Core::test_connection`] resolve it in the background).
+    // Reads the keychain and a file: not for the UI thread.
     #[cfg(test)]
     pub fn password_for(&self, profile: &ConnectionProfile, given: Option<String>) -> Result<Option<String>> {
         self.resolver().password(profile, given)
     }
 
-    /// Saves a profile, and its password and SSH secret in the keychain when they should be
-    /// kept. An SSH secret that is not kept stays in memory for this session.
     pub fn save_connection(&self, profile: ConnectionProfile, password: Option<&str>, ssh_secret: Option<&str>) -> Result<()> {
         if profile.save_password {
             if let Some(p) = password {
@@ -280,9 +257,6 @@ impl Core {
         self.config.remove(id)
     }
 
-    /// Connects (through the SSH tunnel, if any), reads the server version, disconnects.
-    /// Returns the server info and the round-trip time of `SELECT version()`. Missing secrets
-    /// are looked up in the background (keychain, pgpass).
     pub fn test_connection(
         &self,
         profile: ConnectionProfile,
@@ -317,9 +291,6 @@ impl Core {
         })
     }
 
-    /// Opens a connection: the SSH tunnel when the profile has one, a metadata session, the
-    /// server info (LAR detection) and an empty schema cache. Editor sessions are opened later,
-    /// one per tab.
     pub fn connect(&self, profile: ConnectionProfile, password: Option<String>) -> Task<Arc<Connection>> {
         let handle = self.handle();
         let history = self.history.clone();
@@ -334,20 +305,17 @@ impl Core {
         })
     }
 
-    /// Trusts an SSH host key: written to Dataman's own known_hosts file.
     pub fn trust_host_key(&self, prompt: HostKeyPrompt) -> Task<()> {
         let file = self.dirs.known_hosts_file();
         spawn(&self.handle(), async move { Ok(prompt.trust(&file)?) })
     }
 
-    /// The connections the service files and `~/.pgpass` describe, services first.
     pub fn importable(&self) -> Task<Vec<Importable>> {
         let saved = self.config.connections();
         let pgpass = self.pgpass.clone();
         spawn(&self.handle(), async move { Ok(importable(&saved, pgpass.as_deref())) })
     }
 
-    /// Saves the chosen importable connections; returns their ids.
     pub fn import(&self, items: Vec<Importable>) -> Result<Vec<String>> {
         let mut ids = Vec::new();
         for mut it in items {
@@ -363,8 +331,6 @@ fn same_target(a: &ConnectionProfile, b: &ConnectionProfile) -> bool {
     (&a.host, a.port, &a.user, &a.database) == (&b.host, b.port, &b.user, &b.database)
 }
 
-/// Services (`PGSERVICEFILE` or `~/.pg_service.conf`, then `PGSYSCONFDIR`) and pgpass lines
-/// as profiles. A pgpass `*` host cannot be a connection; `*` elsewhere takes libpq's default.
 fn importable(saved: &[ConnectionProfile], pgpass_file: Option<&std::path::Path>) -> Vec<Importable> {
     let mut out: Vec<Importable> = Vec::new();
     for s in pgservice::all() {
@@ -415,7 +381,6 @@ mod tests {
         (p.host, p.port, p.user, p.database) = ("db.example".into(), 5432, "bruno".into(), "app".into());
         assert_eq!(core.password_for(&p, None).unwrap().as_deref(), Some("from-pgpass"));
         assert_eq!(core.password_for(&p, Some("typed".into())).unwrap().as_deref(), Some("typed"));
-        // A saved password wins over pgpass.
         p.save_password = true;
         core.save_connection(p.clone(), Some("saved"), None).unwrap();
         assert_eq!(core.password_for(&p, None).unwrap().as_deref(), Some("saved"));
@@ -423,7 +388,6 @@ mod tests {
         p.save_password = false;
         assert_eq!(core.password_for(&p, None).unwrap().as_deref(), Some("any"));
 
-        // Import: the `*` host line is skipped, `*` user/db take defaults; the saved one is marked.
         let mut saved = p.clone();
         saved.database = "app".into();
         let items = importable(&[saved], Some(&pass));
@@ -445,7 +409,6 @@ mod tests {
         assert!(!text.contains("ssh-pw") && !text.contains("db-pw"), "{text}");
         assert!(text.contains("[connection.ssh]"), "{text}");
         assert_eq!(core.resolver().ssh(&p, None).unwrap().as_deref(), Some("ssh-pw"));
-        // Not kept: out of the keychain, in memory for this session only.
         p.save_password = false;
         core.save_connection(p.clone(), None, Some("typed")).unwrap();
         assert_eq!(secrets.get(&p.ssh_secret_id()).unwrap(), None);

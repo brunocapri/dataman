@@ -1,8 +1,3 @@
-//! A Notification Center banner when the update check finds a new version while Dataman is in
-//! the background (UserNotifications: a bundle with an identifier is enough, no entitlement;
-//! macOS asks once whether Dataman may notify). Nothing when the app is in front (the title
-//! bar's notice says it), when it does not run from a bundle, or under `DATAMAN_NO_NOTIFY`.
-
 use gpui::App;
 
 pub fn update_available(version: &str, _cx: &App) {
@@ -34,8 +29,7 @@ mod imp {
         unsafe { msg_send![class!(NSString), stringWithUTF8String: c.as_ptr()] }
     }
 
-    /// Whether the app is in front, and runs from a bundle with an identifier (the notification
-    /// center raises an exception for a process without one).
+    /// The notification center raises an exception for a process without a bundle identifier.
     fn can_post() -> bool {
         let bundled = std::env::current_exe().ok().is_some_and(|e| dataman_core::update::bundle_of(&e).is_some());
         // SAFETY: AppKit's shared application and the main bundle, read on the main thread.

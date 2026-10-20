@@ -1,6 +1,3 @@
-//! PostgreSQL's catalog queries for the explorer's other objects (`schema::objects`), and the
-//! parsers of their rows. Pure functions, tested below.
-
 use std::collections::HashMap;
 
 use super::super::objects::{
@@ -13,7 +10,6 @@ pub fn in_schema(alias_ns: &str, schema: &str) -> String {
     format!("{alias_ns}.nspname = {}", lit(schema))
 }
 
-/// The per-kind count queries of a schema, by name.
 pub fn count_queries(schema: &str) -> [(&'static str, String); 4] {
     let w = in_schema("n", schema);
     [
@@ -49,7 +45,6 @@ pub fn count_queries(schema: &str) -> [(&'static str, String); 4] {
     ]
 }
 
-/// All four counts in one row.
 pub fn counts_sql(schema: &str) -> String {
     let parts: Vec<String> = count_queries(schema).iter().map(|(name, q)| format!("({q}) AS {name}")).collect();
     format!("SELECT {}", parts.join(", "))
@@ -112,7 +107,6 @@ pub fn parse_sequence(r: &[Option<String>]) -> Option<Sequence> {
     Some(Sequence { name: get(r, 0)?, type_name: get(r, 1), owned_by: get(r, 2).zip(get(r, 3)) })
 }
 
-/// Separates an enum's labels in one text column.
 const LABEL_SEP: char = '\u{1f}';
 
 pub fn types_sql(schema: &str) -> String {
@@ -152,7 +146,6 @@ pub fn triggers_sql(schema: &str) -> String {
     )
 }
 
-/// A trigger row: name, table, tgenabled, tgtype, definition.
 pub fn parse_trigger(r: &[Option<String>]) -> Option<Trigger> {
     Some(Trigger {
         name: get(r, 0)?,
@@ -163,8 +156,6 @@ pub fn parse_trigger(r: &[Option<String>]) -> Option<Trigger> {
     })
 }
 
-/// The pieces of a table's extras, each a query on its own: constraints, triggers, children,
-/// parent. Every row starts with a tag.
 pub fn extras_queries(oid: u32) -> [String; 4] {
     [
         format!(
@@ -188,13 +179,10 @@ pub fn extras_queries(oid: u32) -> [String; 4] {
     ]
 }
 
-/// The four pieces in one query.
 pub fn extras_sql(oid: u32) -> String {
     extras_queries(oid).join(" UNION ALL ")
 }
 
-/// Fills `t` from tagged rows (`c` constraint, `t` trigger, `p` child, `P` parent); `table` is
-/// the table's own name (for its triggers).
 pub fn parse_extras(rows: &Rows, table: &str, t: &mut TableExtras) {
     for r in rows {
         let Some(tag) = get(r, 0) else { continue };
@@ -246,7 +234,7 @@ pub fn stats_sql(schema: &str) -> [String; 3] {
     ]
 }
 
-/// Name → stats. A catalog that answers zero for every table (LAR) reports nothing: empty.
+// A catalog that answers zero for every table (LAR) reports nothing.
 pub fn parse_stats(rows: &Rows) -> HashMap<String, RelStats> {
     let mut m = HashMap::new();
     let mut any = false;
@@ -285,7 +273,6 @@ pub fn roles_sql() -> [&'static str; 2] {
     ]
 }
 
-/// A role row; the built-in `pg_*` roles are left out.
 pub fn parse_role(r: &[Option<String>]) -> Option<Role> {
     let name = get(r, 0)?;
     if name.starts_with("pg_") {
@@ -306,7 +293,6 @@ pub fn parse_role(r: &[Option<String>]) -> Option<Role> {
     })
 }
 
-/// The grants on a table (`table` given) or a schema: owner, grantee, privilege, grantable.
 pub fn privileges_sql(schema: &str, table: Option<&str>) -> Vec<String> {
     let grantee = "CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE pg_catalog.pg_get_userbyid(a.grantee) END";
     match table {
@@ -336,7 +322,6 @@ pub fn privileges_sql(schema: &str, table: Option<&str>) -> Vec<String> {
     }
 }
 
-/// `None` when the server reported no grant at all.
 pub fn parse_privileges(rows: &Rows, schema_level: bool) -> Option<Privileges> {
     let mut p = Privileges { schema_level, owner: None, grants: Vec::new() };
     for r in rows {
@@ -410,7 +395,6 @@ mod tests {
         assert!(parse_role(&row(&[Some("pg_monitor"), Some("f"), Some("f")])).is_none());
         let r = parse_role(&row(&[Some("app"), Some("f"), Some("t"), Some("f"), Some("f"), Some("f"), Some("t"), Some("f"), Some("10"), Some("infinity")])).unwrap();
         assert_eq!((r.login, r.superuser, r.conn_limit, r.valid_until), (true, false, 10, None));
-        // The short query (old servers): defaults.
         let r = parse_role(&row(&[Some("old"), Some("t"), Some("f")])).unwrap();
         assert_eq!((r.superuser, r.inherit, r.conn_limit), (true, true, -1));
     }
@@ -436,7 +420,6 @@ mod tests {
         assert_eq!(p[0].name, "events_2026_01");
         assert_eq!(partition_bound_summary(p[0].bound.as_deref().unwrap()), "FROM ('2026-01-01') TO ('2026-02-01')");
         assert_eq!(t.parent, Some(("s".into(), "all_events".into())));
-        // Pieces that were not reported stay None.
         let mut u = TableExtras::default();
         parse_extras(&vec![row(&[Some("t"), Some("x"), Some("O"), None, Some("4")])], "t", &mut u);
         assert!(u.constraints.is_none() && u.partitions.is_none() && u.triggers.is_some());
@@ -449,7 +432,6 @@ mod tests {
         assert_eq!(m["a"], RelStats { rows: Some(1200.), bytes: Some(98304) });
         assert_eq!(m["b"].rows, None, "never analyzed");
         assert_eq!(m["c"].bytes, None);
-        // All zeros (LAR): not reported.
         assert!(parse_stats(&vec![row(&[Some("a"), Some("0"), Some("0")]), row(&[Some("b"), Some("0"), Some("0")])]).is_empty());
     }
 

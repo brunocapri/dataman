@@ -1,5 +1,3 @@
-//! MySQL: every type decoded into the grid.
-
 mod common;
 
 use common::*;
@@ -43,7 +41,6 @@ fn every_type() {
         let t = |r: usize| snap.text(r, ix).map(|s| s.into_owned());
         eprintln!("{:6} {:?} | {:?} | {:?} | {:?} | {:?}", col.name, col.kind, t(0), t(1), t(2), t(3));
     }
-    // The text protocol (a CALL cannot be prepared) shows the same values as the binary one.
     run(&e, &sess, "CREATE PROCEDURE sel() SELECT * FROM ty ORDER BY id");
     let via_call = run(&e, &sess, "CALL sel()");
     let a = via_call.snapshot();

@@ -1,20 +1,7 @@
-//! The values typed in the document engines' editors and shown in their documents: JSON as
-//! people write it in a shell, read into [`Val`] and printed back.
-//!
-//! What it reads beyond JSON (mongosh's and Kibana's console forms): keys without quotes,
-//! `'single'` strings, trailing commas, `//` and `/* */` comments, `/regex/flags`, and the
-//! shell's constructors (`ObjectId("…")`, `ISODate("…")`, `new Date(…)`, `NumberLong(5)`,
-//! `NumberDecimal("1.5")`, `UUID("…")`, `Timestamp(1, 2)`, `MinKey()`…).
-//!
-//! [`to_bson`] and [`to_json`] turn a [`Val`] into what each driver sends; [`print_bson`] writes a
-//! MongoDB value back in the same form, so a document edited as text keeps its types (an
-//! `Int64` stays `NumberLong(…)`, a whole `Double` keeps its `.0`).
-
 use std::fmt::Write as _;
 
 use mongodb::bson::{self, Bson, Document};
 
-/// A value as typed.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Val {
     Null,
@@ -24,15 +11,12 @@ pub enum Val {
     Float(f64),
     Str(String),
     Arr(Vec<Val>),
-    /// Fields in the order written (a sort's keys depend on it).
+    // In the order written: a sort's keys depend on it.
     Obj(Vec<(String, Val)>),
-    /// A shell constructor and its arguments: `ObjectId("…")`, `NumberLong(5)`.
     Call(String, Vec<Val>),
-    /// `/pattern/flags`.
     Regex(String, String),
 }
 
-/// What could not be read, and where (a byte offset of the text parsed).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParseError {
     pub message: String,
@@ -47,7 +31,6 @@ impl std::fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
-/// Reads `text` as one value (only whitespace and comments around it).
 pub fn parse(text: &str) -> Result<Val, ParseError> {
     let mut p = Parser::new(text);
     let v = p.value()?;
@@ -58,8 +41,6 @@ pub fn parse(text: &str) -> Result<Val, ParseError> {
     Ok(v)
 }
 
-/// A cursor over shell text: values, and the names, dots and parentheses of a call chain
-/// (`db.users.find(…)`, read by `mql`).
 pub(crate) struct Parser<'a> {
     src: &'a str,
     pos: usize,
@@ -110,7 +91,6 @@ impl<'a> Parser<'a> {
         Some(c)
     }
 
-    /// Skips whitespace and comments.
     pub(crate) fn skip_ws(&mut self) {
         loop {
             match self.peek() {
@@ -136,7 +116,6 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Takes `c` (after whitespace) when it is next.
     pub(crate) fn eat(&mut self, c: char) -> bool {
         self.skip_ws();
         if self.peek() == Some(c) {
@@ -151,7 +130,6 @@ impl<'a> Parser<'a> {
         if self.eat(c) { Ok(()) } else { Err(self.error(format!("expected `{c}`"))) }
     }
 
-    /// A name (`[A-Za-z_$][A-Za-z0-9_$]*`), after whitespace.
     pub(crate) fn ident(&mut self) -> Option<&'a str> {
         self.skip_ws();
         let start = self.pos;
@@ -164,7 +142,6 @@ impl<'a> Parser<'a> {
         Some(&self.src[start..self.pos])
     }
 
-    /// Comma-separated values up to `close` (a trailing comma allowed); `(` or `[` already taken.
     pub(crate) fn list(&mut self, close: char) -> Result<Vec<Val>, ParseError> {
         let mut out = Vec::new();
         loop {
@@ -182,7 +159,6 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// A value; numbers may be arithmetic (`400 / 6378.1`, `7 * 24 * 3600`), as in the shell.
     pub(crate) fn value(&mut self) -> Result<Val, ParseError> {
         let v = self.primary()?;
         if !matches!(v, Val::Int(_) | Val::Float(_)) {
@@ -206,7 +182,6 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// A number, for arithmetic's right-hand side.
     fn numeric(&mut self) -> Result<Val, ParseError> {
         let at = self.pos;
         match self.primary()? {
@@ -215,7 +190,6 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// `a * b / c % d`, after `a`.
     fn product(&mut self, mut acc: Val) -> Result<Val, ParseError> {
         loop {
             let save = self.pos;
@@ -263,7 +237,6 @@ impl<'a> Parser<'a> {
             let key = match self.peek() {
                 Some('"' | '\'') => self.string()?,
                 Some(c) if is_ident_start(c) => {
-                    // `a.b` and `$a.b` keys without quotes (a dotted path in a filter).
                     let start = self.pos;
                     while self.peek().is_some_and(|c| is_ident_char(c) || c == '.') {
                         self.bump();
@@ -316,7 +289,6 @@ impl<'a> Parser<'a> {
                                 return Err(self.error("a \\u escape needs four hex digits"));
                             };
                             self.pos += 4;
-                            // A surrogate pair: the second half follows as another \u.
                             if (0xD800..0xDC00).contains(&code)
                                 && self.rest().starts_with("\\u")
                                 && let Ok(lo) = u32::from_str_radix(&self.rest()[2..].chars().take(4).collect::<String>(), 16)
@@ -420,7 +392,6 @@ impl<'a> Parser<'a> {
         raw.parse::<f64>().map(Val::Float).map_err(|_| ParseError { message: format!("`{raw}` is not a number"), at: start })
     }
 
-    /// `true`, `null`, `NaN`…, or a constructor call (`ObjectId("…")`, `new Date()`).
     fn word(&mut self) -> Result<Val, ParseError> {
         let start = self.pos;
         let mut name = self.ident().unwrap_or_default();
@@ -444,7 +415,6 @@ impl<'a> Parser<'a> {
     }
 }
 
-/// `a op b`: integers stay integers (a division that is not exact, or an overflow, is a float).
 fn arith(op: char, a: Val, b: Val) -> Val {
     let f = |v: &Val| match v {
         Val::Int(n) => *n as f64,
@@ -474,18 +444,11 @@ fn arith(op: char, a: Val, b: Val) -> Val {
     })
 }
 
-// ---------------------------------------------------------------------------------------------
-// To the drivers
-
-/// The extended JSON keys of MongoDB's values (`{"$oid": "…"}`): an object of one of them, as
-/// Compass and `mongoexport` write, is read as that value.
 const EXT_KEYS: &[&str] = &[
     "$oid", "$date", "$numberLong", "$numberInt", "$numberDouble", "$numberDecimal", "$binary", "$uuid", "$timestamp",
     "$minKey", "$maxKey", "$regularExpression", "$symbol", "$code",
 ];
 
-/// A [`Val`] as BSON: numbers that fit are `Int32`, larger ones `Int64`, decimals `Double`;
-/// constructors become their types.
 pub fn to_bson(v: &Val) -> Result<Bson, String> {
     Ok(match v {
         Val::Null => Bson::Null,
@@ -517,7 +480,6 @@ pub fn to_bson(v: &Val) -> Result<Bson, String> {
     })
 }
 
-/// A document (an object; anything else is refused with what it was).
 pub fn to_document(v: &Val) -> Result<Document, String> {
     match to_bson(v)? {
         Bson::Document(d) => Ok(d),
@@ -609,7 +571,6 @@ fn call_to_bson(name: &str, args: &[Val]) -> Result<Bson, String> {
     })
 }
 
-/// `2024-01-02`, `2024-01-02T03:04:05Z`, with or without a fraction or offset.
 pub(crate) fn parse_date(s: &str) -> Option<bson::DateTime> {
     use chrono::{DateTime, NaiveDate, NaiveDateTime};
     let s = s.trim();
@@ -625,8 +586,6 @@ pub(crate) fn parse_date(s: &str) -> Option<bson::DateTime> {
     Some(bson::DateTime::from_millis(d.and_hms_opt(0, 0, 0)?.and_utc().timestamp_millis()))
 }
 
-/// A [`Val`] as plain JSON (Elasticsearch, OpenSearch). The shell's MongoDB constructors have no
-/// JSON form here and are refused.
 pub fn to_json(v: &Val) -> Result<serde_json::Value, String> {
     use serde_json::Value as J;
     Ok(match v {
@@ -648,7 +607,6 @@ pub fn to_json(v: &Val) -> Result<serde_json::Value, String> {
     })
 }
 
-/// [`to_json`] that never fails (for the extended JSON check): what has no JSON form is null.
 fn to_json_lenient(v: &Val) -> serde_json::Value {
     match v {
         Val::Obj(fields) => serde_json::Value::Object(fields.iter().map(|(k, v)| (k.clone(), to_json_lenient(v))).collect()),
@@ -657,10 +615,6 @@ fn to_json_lenient(v: &Val) -> serde_json::Value {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Printing
-
-/// The BSON type's name, as `$type` and Compass call it.
 pub fn type_name(b: &Bson) -> &'static str {
     match b {
         Bson::Double(_) => "double",
@@ -686,7 +640,6 @@ pub fn type_name(b: &Bson) -> &'static str {
     }
 }
 
-/// A string as a JSON literal (double quotes, escapes).
 pub fn quote(s: &str) -> String {
     serde_json::to_string(s).unwrap_or_else(|_| format!("\"{s}\""))
 }
@@ -703,7 +656,6 @@ fn float_text(f: f64) -> String {
     }
 }
 
-/// A date as ISO 8601 in UTC with milliseconds (`2024-01-02T03:04:05.000Z`).
 pub fn date_text(d: &bson::DateTime) -> String {
     match chrono::DateTime::from_timestamp_millis(d.timestamp_millis()) {
         Some(t) => t.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
@@ -711,8 +663,6 @@ pub fn date_text(d: &bson::DateTime) -> String {
     }
 }
 
-/// A scalar in the shell's form (`ObjectId("…")`, `NumberLong(5)`, `"text"`); containers as
-/// `{…}` / `[…]` summaries.
 pub fn scalar_text(b: &Bson) -> String {
     match b {
         Bson::Double(f) => float_text(*f),
@@ -743,11 +693,8 @@ pub fn scalar_text(b: &Bson) -> String {
     }
 }
 
-/// How wide a line of scalars may get before an array breaks onto lines.
 const INLINE_MAX: usize = 72;
 
-/// A value in the shell's form, indented by two spaces per level: what the document view shows
-/// and what saving reads back ([`parse`] then [`to_bson`] give the same value).
 pub fn print_bson(b: &Bson) -> String {
     let mut out = String::new();
     write_bson(&mut out, b, 0);
@@ -836,7 +783,6 @@ mod tests {
         assert_eq!(e.at, 6, "{e:?}");
         assert!(parse("{a: foo}").unwrap_err().message.contains("quotes"));
         assert!(parse("'open").is_err());
-        // Arithmetic, as the shell evaluates it.
         assert_eq!(parse("400 / 6378.1").unwrap(), Val::Float(400. / 6378.1));
         assert_eq!(parse("[7 * 24 * 3600, 10 - 2 * 3, 9 / 3, 7 / 2, -1 + 1]").unwrap(), Val::Arr(vec![Val::Int(604800), Val::Int(4), Val::Int(3), Val::Float(3.5), Val::Int(0)]));
         assert_eq!(parse("{a: 1 /* note */, b: 2 // end\n}").unwrap(), Val::Obj(vec![("a".into(), Val::Int(1)), ("b".into(), Val::Int(2))]));
@@ -863,7 +809,6 @@ mod tests {
         assert!(matches!(d.get("dec"), Some(Bson::Decimal128(_))));
         assert!(matches!(d.get("u"), Some(Bson::Binary(b)) if b.bytes.len() == 16));
         assert!(matches!(d.get("ts"), Some(Bson::Timestamp(t)) if t.time == 10 && t.increment == 2));
-        // Extended JSON is read as its value; query operators stay documents.
         assert!(matches!(d.get("x"), Some(Bson::ObjectId(_))));
         assert!(matches!(d.get("q"), Some(Bson::Document(_))));
         assert!(to_document(&parse("[1]").unwrap()).unwrap_err().contains("array"));

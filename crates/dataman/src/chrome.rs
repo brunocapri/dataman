@@ -1,8 +1,3 @@
-//! The window chrome, drawn from the design boards: title bar with the query tabs
-//! (UiTitlebar), toolbar (UiToolbar), result bar (UiResultBar), status bar (UiStatusBar), the
-//! work surface layout, the side panel container, the error view (EditorError), toasts and the
-//! shortcuts sheet.
-
 use std::sync::Arc;
 
 use gpui::{
@@ -25,27 +20,17 @@ use crate::tab::{ItemState, QueryTab};
 use crate::theme::{ActiveTheme, PIXEL, Theme, metrics};
 use crate::ui::{self, Btn};
 
-/// Below this width a group's toolbar drops its keycaps (Run's, History's): the connection
-/// picker keeps room for its name.
 const COMPACT_W: f32 = 440.;
 
-/// The connection picker's least width: its chip, a few letters, the chevron.
 const PICKER_MIN: f32 = 64.;
 
-/// The least width a query tab gives way to before its strip scrolls.
 const TAB_MIN: f32 = 120.;
 
-/// What the toolbar and result bar need from a group's tab in front, read once per frame.
 struct TabView {
-    /// The editor group it is shown in, and whether that group has the focus (the popups, the
-    /// bounds the checks read and the focus ring are the focused group's).
     pane: Pane,
     focused: bool,
-    /// The group's editor and results are narrow (its toolbar drops the keycaps).
     compact: bool,
     conn: Option<Arc<Connection>>,
-    /// The tab's database, the connection a restored tab waits for, and the agent whose tab it
-    /// is (as its MCP client introduced itself).
     db: String,
     want: Option<(String, Option<String>)>,
     agent: Option<String>,
@@ -53,15 +38,12 @@ struct TabView {
     cancelling: bool,
     elapsed: Option<std::time::Duration>,
     batch: Vec<crate::tab::BatchItem>,
-    /// The result tabs of the run, and the one on screen.
     results: Vec<batch::Tab>,
     shown: Option<Key>,
-    /// The session's transaction (a typed BEGIN), and a COMMIT / ROLLBACK on its way.
     tx: TxState,
     ending: bool,
 }
 
-/// "Fetch all", with the planner's estimate of the rows left when there is one (`~30k`).
 pub(crate) fn fetch_all_label(rs: Option<&dataman_core::ResultSet>) -> SharedString {
     let left = rs.and_then(|r| r.row_estimate().map(|e| e.saturating_sub(r.rows() as u64))).filter(|n| *n > 0);
     match left {
@@ -91,8 +73,6 @@ fn tab_view(tab: &QueryTab, pane: Pane, focused: bool, compact: bool) -> TabView
     }
 }
 
-/// How long a transaction has been open, coarse enough that it changes once a minute: `<1m`,
-/// `12m`, `1h 05m`.
 pub(crate) fn fmt_tx_age(d: std::time::Duration) -> String {
     let m = d.as_secs() / 60;
     match m {
@@ -102,11 +82,8 @@ pub(crate) fn fmt_tx_age(d: std::time::Duration) -> String {
     }
 }
 
-/// An open transaction this long reads as a warning (locks held, a forgotten COMMIT).
 const TX_LONG: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
-/// The TX chip: `TX · 3 · 2m`, the accent while open, warning after a while, error fill when
-/// the transaction failed.
 pub(crate) fn tx_chip(t: &Theme, tx: &TxState, compact: bool) -> Div {
     let age = tx.since.map(|s| s.elapsed()).unwrap_or_default();
     let (fg, bg) = match tx.status {
@@ -133,8 +110,6 @@ pub(crate) fn tx_chip(t: &Theme, tx: &TxState, compact: bool) -> Div {
         .child(text)
 }
 
-/// What a statement of the messages tab produced: `120 rows`, `UPDATE 3`, `CREATE TABLE`,
-/// `42P01`.
 fn outcome_text(rs: &dataman_core::ResultSet, t: &Theme) -> (String, Hsla) {
     let st = rs.status();
     let rows = rs.rows();
@@ -153,8 +128,6 @@ fn outcome_text(rs: &dataman_core::ResultSet, t: &Theme) -> (String, Hsla) {
     }
 }
 
-/// What the results on screen printed: the run's when the messages tab is shown, else the
-/// shown result's.
 fn shown_messages(tab: &QueryTab) -> String {
     if tab.shown_key() == Some(Key::Messages) {
         messages::text(tab.batch_items().iter().filter_map(|b| b.rs.as_deref()))
@@ -163,7 +136,6 @@ fn shown_messages(tab: &QueryTab) -> String {
     }
 }
 
-/// The glyph and color of a result tab's state.
 fn state_glyph(t: &Theme, s: batch::State) -> (&'static str, Hsla) {
     match s {
         batch::State::Running => ("▶", t.acc),
@@ -176,31 +148,22 @@ fn state_glyph(t: &Theme, s: batch::State) -> (&'static str, Hsla) {
 }
 
 impl Workspace {
-    // -----------------------------------------------------------------------------------------
-    // Title bar.
-
     pub(crate) fn render_titlebar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let t = cx.theme();
-        // Tabs growing in, folding away, making room: one more frame while any moves. From the
-        // first frame on, new tabs grow in (not those restored at launch).
         if self.tab_motion.prune(std::time::Instant::now()) {
             window.request_animation_frame();
         }
         self.tab_motion.live = true;
-        // The bar's geometry follows the docks as they slide (⌘B, a panel moved; `dock_pass`):
-        // the header sits at the explorer's end of the bar, the tabs between.
         let title = self.title_now;
         let mirrored = title.header == Some(dataman_core::layout::Dock::Right);
         // The lights keep their size at any zoom: in zoomed points they take less room.
         let lights = metrics::lights_right_at(crate::theme::zoom());
-        // The toggle fills with the explorer, wherever it is; the tabs line up past the seam.
         let open = (self.explorer_now() / self.explorer_w.max(1.)).clamp(0., 1.);
         let logo = self.title_logo();
         let logo_bounds = self.logo_bounds.clone();
         if logo.is_none() {
             logo_bounds.set(None);
         }
-        // What the checks measure: the toggle, the arrows, the search, as laid out.
         let marks = self.title_marks.clone();
         marks.borrow_mut().clear();
         let mark = move |name: &'static str, el: AnyElement| {
@@ -213,14 +176,10 @@ impl Workspace {
             .child(el)
             .into_any_element()
         };
-        // First run: no query tabs until there is a connection.
         let first_run = self.first_run(cx);
-        // The query tabs: one strip, or one over each editor group (`split`).
         let strips: Vec<AnyElement> = if first_run { Vec::new() } else { self.render_strips(title.lead, title.seam, &t, cx) };
         let stop = |_: &gpui::MouseDownEvent, _: &mut Window, cx: &mut gpui::App| cx.stop_propagation();
         let tab_menu = self.render_tab_menu(&t, cx);
-        // The window's header, carried by the explorer: its toggle (the glyph mirrored on the
-        // right) and the back / forward arrows, by the traffic lights or at the right edge.
         let toggle = mark(
             "toggle",
             explorer_toggle(&t, open, mirrored)
@@ -242,7 +201,6 @@ impl Workspace {
             })
             .into_iter()
             .collect();
-        // The search (⌘K): at the far right, or past the lights when the header is there.
         let search = mark(
             "search",
             div()
@@ -263,8 +221,6 @@ impl Workspace {
                 .into_any_element(),
         );
         let (mut toggle, mut arrows, mut search) = (Some(toggle), arrows, Some(search));
-        // The left end: the traffic lights (16, 14; `metrics::LIGHTS_AT`), then the header (the
-        // toggle 14 pt after them, the arrows) or, mirrored, the search in the toggle's place.
         let left = div()
             .w(px(title.lead))
             .flex_none()
@@ -281,8 +237,6 @@ impl Workspace {
                 }
             })
             .child(div().flex_1());
-        // The right end, mirrored: the header over the explorer's column, its toggle at the
-        // window's edge; else the search.
         let right = if mirrored {
             div()
                 .w(px(title.trail))
@@ -298,8 +252,6 @@ impl Workspace {
         } else {
             div().ml(px(12.)).mr(px(10.)).flex_none().children(search.take()).into_any_element()
         };
-        // Laid over the top of the docks and the work column (app.rs), which run up to the
-        // window's top edge: the header sits on the explorer's glass, the tabs on the band's fill.
         div()
             .id("titlebar")
             .absolute()
@@ -311,7 +263,6 @@ impl Workspace {
             .flex_row()
             .items_center()
             .text_color(t.tx2)
-            // The editor groups' seam, from the window's top edge down (under the bar's own).
             .children(self.render_seam_line(cx))
             .on_mouse_down(MouseButton::Left, cx.listener(|w, _, _, _| w.title_drag = true))
             .on_mouse_up(MouseButton::Left, cx.listener(|w, _, _, _| w.title_drag = false))
@@ -328,8 +279,6 @@ impl Workspace {
             })
             .child(left)
             .children(logo.map(|r| {
-                // At the explorer column's outer side: its right edge on the left, its left edge
-                // on the right (the header's controls at the window's edge).
                 div()
                     .absolute()
                     .top_0()
@@ -346,16 +295,11 @@ impl Workspace {
             }))
             .children(strips)
             .when(first_run, |d| d.child(div().flex_1()))
-            // An update on offer: its notice, which opens the update sheet.
             .children(self.render_update_pill(&t, cx))
             .child(right)
             .children(tab_menu)
     }
 
-    /// Where the title bar's "DATAMAN" goes: it is the explorer's header, at the outer side of
-    /// the explorer's column wherever that is (the left dock's first column, the right dock's
-    /// last; stacked with the history or beside it), never over the history's own column.
-    /// `None` while the explorer is shut or too narrow for it beside the header's controls.
     pub(crate) fn title_logo(&self) -> Option<crate::dock::Rect> {
         use dataman_core::layout::{Dock, PanelId};
         let d = self.layout.place_of(PanelId::Explorer).dock;
@@ -363,17 +307,11 @@ impl Workspace {
         let col = self.frame_now.dock(d).cols.iter().find(explorer).map(|c| c.rect);
         match d {
             Dock::Left => col.filter(|r| r.w >= 120. && r.right() >= 230.),
-            // The arrows and the toggle at its right end.
             Dock::Right => col.filter(|r| r.w >= 190.),
         }
     }
 
-    /// The tab strips: one, or one over each editor group (`split`), the left one ending at the
-    /// groups' seam (`render_seam_line` paints its hairline between them). `side`: the room the
-    /// title bar keeps on the left (the traffic lights, the explorer toggle), `seam`: how open the left dock is (the first tab lines up past it).
     fn render_strips(&self, side: f32, seam: f32, t: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        // Past the seam the first tab lines up with the toolbar's Run button (the hairline + its
-        // 10 pt padding).
         let pad = 2. + 9. * seam;
         let Some(f) = self.split_now else {
             return vec![self.render_strip(Pane::Left, self.group(Pane::Left), None, pad, t, cx)];
@@ -383,7 +321,6 @@ impl Workspace {
         let left_w = (x - side).max(0.);
         let (left, right) = match &self.split {
             Some(_) => (self.group(Pane::Left), self.group(Pane::Right)),
-            // Folding away: every tab is in the group that stays, over its side.
             None if f.leaving == Pane::Right => (self.group(Pane::Left), Vec::new()),
             None => (Vec::new(), self.group(Pane::Left)),
         };
@@ -398,15 +335,9 @@ impl Workspace {
         v
     }
 
-    /// A group's strip: its tabs (`tabs`, indexes into `tabs`), scrolling sideways on their
-    /// own when they overflow, + for a new tab in that group, and at its end the group's × while
-    /// there are two. `width`: a fixed width (the left group's, up to the seam), else the room
-    /// left.
     fn render_strip(&self, pane: Pane, tabs: Vec<usize>, width: Option<f32>, pad: f32, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let stop = |_: &gpui::MouseDownEvent, _: &mut Window, cx: &mut gpui::App| cx.stop_propagation();
         let n = tabs.len();
-        // The tabs, and among them the ghosts of those closing and the gap a dragged one would
-        // land in (`tab_motion`); `is_tab` tells the tabs from the rest.
         let now = std::time::Instant::now();
         let m = &self.tab_motion;
         let ids: Vec<EntityId> = tabs.iter().map(|&i| self.tabs[i].entity_id()).collect();
@@ -427,8 +358,6 @@ impl Workspace {
         extra(&mut els, &mut is_tab, m.stray_ghosts(pane, &ids, t, now));
         let bounds = if pane == Pane::Left { self.tab_bounds.clone() } else { self.tab_bounds_right.clone() };
         let scroll = self.strip_scroll[pane.index()].clone();
-        // The tab in front came to the front since the last frame (a click, a new tab, ⌃Tab, a
-        // move): scrolled into view.
         let front = match &self.split {
             Some(_) => self.front_of(pane),
             None => self.active_tab(),
@@ -442,7 +371,6 @@ impl Workspace {
                 scroll.scroll_to_item(child);
             }
         }
-        // Pressed once, the × asks "Sure?" in its place.
         let control = self.split.is_some().then(|| {
             if self.close_arm.as_ref().is_some_and(|a| a.pane == pane) {
                 self.render_close_ask(pane, cx).into_any_element()
@@ -457,8 +385,8 @@ impl Workspace {
         let parts = self.strip_parts.clone();
         let offset = scroll.clone();
         let strip_tabs = div()
-            // Where each tab is, scrolled: the gap a dragged one points at (and the checks). The
-            // scroll handle has them (a tracked scroller hands its children's bounds nowhere else).
+            // The scroll handle has the tabs' bounds (a tracked scroller hands its children's bounds
+            // nowhere else).
             .on_children_prepainted(move |_, _, _| {
                 let dx = offset.offset().x;
                 *bounds.borrow_mut() = (0..offset.children_count())
@@ -478,7 +406,6 @@ impl Workspace {
             .flex_row()
             .items_center()
             .gap(px(2.))
-            // The wheel scrolls it sideways too (a vertical turn reads as a sideways one).
             .overflow_x_scroll()
             .track_scroll(&scroll)
             .children(els);
@@ -495,12 +422,10 @@ impl Workspace {
             .flex_row()
             .items_center()
             .overflow_hidden()
-            // A press on a group's strip gives that group the focus.
             .capture_any_mouse_down(cx.listener(move |w, _, window, cx| w.focus_pane(pane, window, cx)))
             .on_drag_move(cx.listener(move |w, ev: &gpui::DragMoveEvent<crate::app::DraggedTab>, _, cx| {
                 let pos = ev.event.position;
                 if !ev.bounds.contains(&pos) {
-                    // Over the other strip, or neither: this one's gap goes.
                     if w.tab_drop_pane == pane && w.tab_drop.is_some() {
                         w.tab_drop = None;
                         if let Some(id) = ev.dragged_item().downcast_ref::<crate::app::DraggedTab>().map(|d| d.0) {
@@ -513,7 +438,6 @@ impl Workspace {
                 let slot = (|| {
                     let id = ev.dragged_item().downcast_ref::<crate::app::DraggedTab>()?.0;
                     let members = w.group(pane);
-                    // From the other group, any gap moves it.
                     let from = members.iter().position(|&i| w.tabs[i].entity_id() == id);
                     let bounds = if pane == Pane::Left { w.tab_bounds.borrow() } else { w.tab_bounds_right.borrow() };
                     let mids: Vec<f32> = bounds.iter().take(members.len()).map(|b| b.center().x.pt()).collect();
@@ -545,14 +469,11 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// The color a tab wears: its connection's, or the one a restored tab waits for.
     fn tab_color(&self, tab: &QueryTab, t: &Theme, cx: &App) -> Hsla {
         let wanted = tab.want.as_ref().and_then(|(id, _)| self.store.read(cx).profile(id)).map(|p| t.profile_color(p));
         tab.connection().map(|c| t.profile_color(&c.profile)).or(wanted).unwrap_or(t.tx4)
     }
 
-    /// Tab `ix` closing (`group`: its group's tabs, in order): its ghost folds away where it
-    /// was (`tab_motion`).
     pub(crate) fn tab_folds_away(&mut self, ix: usize, group: &[EntityId], cx: &mut Context<Self>) {
         let id = self.tabs[ix].entity_id();
         let pane = self.pane_of(id);
@@ -574,7 +495,6 @@ impl Workspace {
         self.tab_motion.closed(id, gone, cx);
     }
 
-    /// Result tab `key` of `tab` closing: its ghost folds away where it was.
     pub(crate) fn result_folds_away(&mut self, tab: &gpui::Entity<QueryTab>, key: Key, cx: &mut Context<Self>) {
         let results = tab.read(cx).result_tabs();
         let Some(i) = results.iter().position(|r| r.key == key) else { return };
@@ -594,7 +514,6 @@ impl Workspace {
         self.tab_motion.result_closed(gone, cx);
     }
 
-    /// The gap a dragged tab would land in moved (`tab_drop`): the strips make room there.
     pub(crate) fn follow_tab_drop(&mut self, id: EntityId, cx: &mut Context<Self>) {
         let at = self.tab_drop.map(|s| (self.tab_drop_pane, s));
         let home = self.pane_of(id);
@@ -604,16 +523,13 @@ impl Workspace {
         self.tab_motion.follow_drop(id, width, at, cx);
     }
 
-    /// Tab `i` of a group's strip.
     fn render_tab(&self, i: usize, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        // In front of the focused group (the active tab), or of the other one.
         let focused_front = i == self.active;
         let other_front = self.split.as_ref().is_some_and(|s| s.other == self.tabs[i].entity_id());
         let active = focused_front || other_front;
         let tab = self.tabs[i].read(cx);
         let title = tab.title(cx);
         let conn = tab.connection().cloned();
-        // A restored tab waiting for its connection wears that connection's color already.
         let color = self.tab_color(tab, t, cx);
         let lar = conn.as_ref().is_some_and(|c| c.info.is_lar);
         let agent = tab.agent.is_some();
@@ -634,11 +550,8 @@ impl Workspace {
                 _ => (None, t.tx3),
             }
         };
-        // An open transaction outranks the last statement's glyph (a failed one says so itself).
         let show_tx = tx.status.is_open() && !has_lar_ind && !tab.is_running() && !tab.is_cancelling();
         let (ind, ind_color) = if show_tx { (None, ind_color) } else { (ind, ind_color) };
-        // A still glyph (the run failed, a paused result) gives way to the × under the pointer;
-        // a running clock stays (⌘W still closes the tab).
         let still = !has_lar_ind && !tab.is_running() && !tab.is_cancelling() && ind.is_some();
         let (hov, tx2) = (t.hov, t.tx2);
         // Identity, not position: tabs move when dragged.
@@ -667,7 +580,6 @@ impl Workspace {
                 }))
         };
         let end: AnyElement = match ind {
-            // The glyph, and the × in its place while the tab is hovered.
             Some(s) if still => div()
                 .flex_none()
                 .relative()
@@ -707,7 +619,6 @@ impl Workspace {
             .group(group.clone())
             .relative()
             .h(px(metrics::TAB_H))
-            // They give way down to a readable width, then the strip scrolls.
             .min_w(px(TAB_MIN))
             .max_w(px(220.))
             .flex_shrink_1()
@@ -717,15 +628,10 @@ impl Workspace {
             .flex_row()
             .items_center()
             .gap(px(7.))
-            // The tabs sit on the work column's own fill: the active one is a wash over it
-            // (Zeron's selected tab), the others light up on hover. With two editor groups the
-            // other group's tab in front is a lighter wash: the focus is told by the wash alone,
-            // never by a line.
+            // The focus is told by the wash alone, never by a line.
             .when(focused_front, |d| d.bg(t.prs).text_color(t.tx))
             .when(other_front, |d| d.bg(t.hov).text_color(t.tx2))
             .when(!active, |d| d.text_color(t.tx3).hover(move |s| s.bg(hov).text_color(tx2)))
-            // Not the title bar's window move: a press may start a drag (`dnd`); ⌃-click is the
-            // right click.
             .on_mouse_down(MouseButton::Left, cx.listener(move |w, ev: &gpui::MouseDownEvent, _, cx| {
                 cx.stop_propagation();
                 if ev.modifiers.control {
@@ -744,7 +650,6 @@ impl Workspace {
                     w.activate_tab(&activate, window, cx)
                 }
             }))
-            // A middle click (the wheel) closes it, like ⌘W and its ×, when released on it.
             .on_mouse_down(MouseButton::Middle, |_, _, cx| cx.stop_propagation())
             .on_mouse_up(MouseButton::Middle, cx.listener(move |w, _, window, cx| {
                 cx.stop_propagation();
@@ -760,8 +665,6 @@ impl Workspace {
             .child(end)
     }
 
-    /// A tab's right-click menu: Close, Close Others, Close to the Right (in its group), Add to
-    /// Favorites (⌘S on it), Open to the Side, Move to the other group.
     fn render_tab_menu(&self, t: &Theme, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
         let (id, at) = self.tab_menu?;
         let ix = self.tabs.iter().position(|t| t.entity_id() == id)?;
@@ -769,7 +672,6 @@ impl Workspace {
         let group = self.group(pane);
         let gi = group.iter().position(|&i| i == ix)?;
         let n = group.len();
-        // An activity monitor moves rather than copies: with one tab there is nothing to split.
         let alone = self.split.is_none() && self.tabs.len() < 2;
         let side_ok = !(alone && self.tabs[ix].read(cx).monitor.is_some());
         let move_label = match (self.split.is_some(), pane) {
@@ -777,7 +679,6 @@ impl Workspace {
             (true, Pane::Left) => "Move to the Right Group",
             (true, Pane::Right) => "Move to the Left Group",
         };
-        // ⌘S on that tab: a new favorite, or its own favorite updated.
         let fav_ok = Self::can_save_favorite(&self.tabs[ix], cx);
         let fav_label = if self.tabs[ix].read(cx).favorite.is_some() { "Update Favorite" } else { "Add to Favorites" };
         let item = |key: &'static str, label: &'static str, enabled: bool, f: fn(&mut Self, usize, &mut Window, &mut Context<Self>)| {
@@ -841,11 +742,7 @@ impl Workspace {
         Some(gpui::deferred(gpui::anchored().position(at).snap_to_window_with_margin(px(8.)).child(ui::menu_in("tab-menu-in", menu))).priority(3))
     }
 
-    // -----------------------------------------------------------------------------------------
-    // The work surface.
-
     pub(crate) fn render_work(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        // A tab drag that ended anywhere (dropped elsewhere, cancelled): no preview left.
         if !cx.has_active_drag() {
             self.editor_drop = None;
             self.editor_drop_glide = None;
@@ -859,9 +756,6 @@ impl Workspace {
             let group = div().id(("group", 0usize)).size_full().relative().child(body).children(preview);
             return div().size_full().child(self.editor_drop_target(group, Pane::Left, cx));
         };
-        // Two editor groups (`split`) side by side, a hairline between them. While the split
-        // opens or folds, the moving group keeps its full width inside, clipped, and rides the
-        // seam; the other one narrows or widens.
         let ((lw, _), (full_l, full_r)) = f.widths(c.w);
         let moving = f.open < 1.;
         let bounds = self.pane_bounds.clone();
@@ -869,8 +763,6 @@ impl Workspace {
         for pane in [Pane::Left, Pane::Right] {
             let (tab, focused) = self.pane_view(pane);
             let full = if pane == Pane::Left { full_l } else { full_r };
-            // Folding away, the group that stays is the only one already: its state (its strip)
-            // is the left group's; the folding one shows what it showed.
             let ghost = self.split.is_none() && pane == f.leaving;
             let state = if self.split.is_none() && !ghost { Pane::Left } else { pane };
             let body = tab.map(|tab| self.render_group(tab, state, focused, full, window, cx));
@@ -882,11 +774,9 @@ impl Workspace {
                 .relative()
                 .overflow_hidden()
                 .map(|d| if pane == Pane::Left { d.w(px(lw)).flex_none() } else { d.flex_1().min_w_0() })
-                // A press anywhere in a group gives it the focus.
                 .capture_any_mouse_down(cx.listener(move |w, _, window, cx| w.focus_pane(pane, window, cx)))
                 .children(body.map(|b| {
                     if clip {
-                        // Anchored on the seam side: it slides in and out with it.
                         div().absolute().top_0().bottom_0().w(px(full)).when(pane == Pane::Right, |d| d.left_0()).when(pane == Pane::Left, |d| d.right_0()).child(b).into_any_element()
                     } else {
                         b.into_any_element()
@@ -895,25 +785,19 @@ impl Workspace {
                 .children(preview);
             row = row.child(self.editor_drop_target(group, pane, cx));
             if pane == Pane::Left {
-                // Room for the seam; the title bar paints its hairline over it, from the window's
-                // top edge (`render_seam_line`).
                 row = row.child(div().w(px(crate::split::SEAM)).h_full().flex_none());
             }
         }
-        // The seam's grabber, over both groups (not while they move).
         if !moving && self.split.is_some() {
             row = row.child(self.render_seam(lw, cx));
         }
         row
     }
 
-    /// The messages list of group `pane` (each group has its own).
     fn messages_of(&self, pane: Pane) -> &crate::messages::Messages {
         if pane == Pane::Left { &self.messages } else { &self.messages_right }
     }
 
-    /// An editor group: `tab`'s Run row, editor and results (or its activity monitor);
-    /// `focused`: the group has the focus; `group_w`: its width.
     fn render_group(&mut self, tab: gpui::Entity<QueryTab>, pane: Pane, focused: bool, group_w: f32, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let t = cx.theme();
         let (editor, grid, has_run) = {
@@ -921,27 +805,20 @@ impl Workspace {
             (t.editor.clone(), t.grid.clone(), t.has_run)
         };
         let region = (self.focus_visible && focused).then(|| self.focused_region(window, cx)).flatten();
-        // The work column paints the translucent fill once (app.rs); the regions here are
-        // transparent, separated by straight hairlines, and flush: no corner to keep clear.
         let monitor = tab.read(cx).monitor.clone();
         let view = tab_view(tab.read(cx), pane, focused, group_w < COMPACT_W);
-        // The TX chip's age changes once a minute: one wake-up per minute while a transaction is
-        // open, none otherwise.
         if focused {
             self.schedule_tx_tick(view.tx.since.filter(|_| view.tx.status.is_open()), cx);
         }
-        // The result zoom: another side view opening ends it (that view shows).
         let side_now = crate::app::side_id(&self.side);
         if focused && tab.read(cx).zoomed && side_now.is_some() && side_now != tab.read(cx).zoom_side {
             self.toggle_result_zoom(window, cx);
         }
-        // 0: in place; 1: the result covers the Run row, the editor and the side panel.
         let zoom = if has_run && monitor.is_none() { self.zoom_frame(&tab, window, cx) } else { 0. };
         let rest = 1. - zoom;
         let covered = zoom >= 0.999;
         let mut main = div().flex_1().min_w_0().h_full().flex().flex_col();
         if let Some(m) = monitor {
-            // The activity monitor has the whole work surface (its own header and bar).
             main = main.child(m);
         } else if !has_run {
             main = main.child(self.render_toolbar(&view, &t, cx));
@@ -955,13 +832,10 @@ impl Workspace {
                     .children((region == Some(Region::Editor)).then(|| focus_ring(&t))),
             );
         } else {
-            // A document engine's tab: its document view takes the result area whole (its own
-            // bar, no result tabs).
             let doc = tab.read(cx).doc.clone();
             let failed_view = doc.is_none() && self.error_view_needed(&tab, cx);
             let live = crate::lar::grid_override(&tab, cx);
             let shows_plan = !failed_view && tab.read(cx).shows_plan(cx);
-            // A result without rows that printed: what it printed, in the grid's place.
             let log = match view.shown {
                 Some(Key::Stmt(i)) => tab.read(cx).result().filter(|r| crate::messages::shows_log(r)).map(|r| (i, r.clone())),
                 _ => None,
@@ -980,10 +854,8 @@ impl Workspace {
             } else if failed_view {
                 self.render_error_view(&tab, &t, cx).into_any_element()
             } else if let Some(g) = live {
-                // LAR: live rows replace the result grid.
                 g
             } else if shows_plan {
-                // An EXPLAIN: the plan in the grid's place.
                 tab.read(cx).plan.clone().into_any_element()
             } else if let Some((i, rs)) = log {
                 self.render_log(i, &rs, pane, &t, cx).into_any_element()
@@ -997,11 +869,8 @@ impl Workspace {
             } else {
                 self.render_result_bar(&tab, &view, &t, cx).into_any_element()
             };
-            // Zooming, the Run row, the editor and the divider fold up under the rising result
-            // (each keeps its height inside and is clipped from below); zoomed, they are gone.
             if !covered {
                 main = main
-                    // The Run row fades first (it is the thinnest), the editor with the fold.
                     .child(div().h(px(metrics::TOOLBAR_H * rest)).flex_none().overflow_hidden().when(zoom > 0., |d| d.opacity(rest * rest)).child(self.render_toolbar(&view, &t, cx)))
                     .child(
                         div()
@@ -1065,24 +934,18 @@ impl Workspace {
                                 .relative()
                                 .overflow_hidden()
                                 .child(grid_area)
-                                // Grid-edit cards (read-only reason, key picker) float over the grid.
                                 .when(doc.is_none(), |d| d.child(tab.read(cx).edit.clone()))
                                 .children((region == Some(Region::Grid)).then(|| focus_ring(&t))),
                         ),
                 ),
             );
         }
-        // The side panel is a dock's (`dock`): the zoom folds it there.
         div().size_full().flex().flex_row().child(main)
     }
-
-    // -----------------------------------------------------------------------------------------
-    // Toolbar.
 
     fn render_toolbar(&self, v: &TabView, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let timer = v.elapsed.map(fmt_clock).unwrap_or_else(|| "00:00.0".into());
         let busy = v.running || v.cancelling;
-        // Run: idle (accent), running (soft accent + timer), cancelling (muted).
         let run = {
             let b = if busy { ui::button(t, "tb-run", Btn::Ghost) } else { ui::button(t, "tb-run", Btn::Primary) };
             let run_key = crate::keymap::key("run_all");
@@ -1109,7 +972,6 @@ impl Workspace {
                 .children(key.filter(|_| !v.compact))
                 .on_click(cx.listener(|w, _, window, cx| w.run_active(window, cx)))
         };
-        // Cancel: only while something runs (it sits last in the row, so nothing moves).
         let cancel = busy.then(|| {
             let (glyph, label) = if v.cancelling { ("◌", "Cancel requested…") } else { ("■", "Cancel") };
             let b = if v.cancelling { ui::button(t, "tb-cancel", Btn::Ghost) } else { ui::button(t, "tb-cancel", Btn::Danger) };
@@ -1122,12 +984,10 @@ impl Workspace {
                 .on_click(cx.listener(|w, _, _, cx| w.cancel_active(cx)))
         });
         let picker = self.render_conn_picker(v, t, cx);
-        // An agent's tab: the agent's name (as its MCP client introduced itself) by the picker.
         let agent = v.agent.clone().map(|name| {
             let tip = format!("Made by {}", cut_chars(&name, 48));
             div()
                 .id("tb-agent")
-                // Its whole name (up to the cap): the picker beside it gives way first.
                 .flex_none()
                 .max_w(px(140.))
                 .h(px(18.))
@@ -1142,8 +1002,6 @@ impl Workspace {
                 .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(name))
                 .tooltip(ui::tooltip(tip, None, None))
         });
-        // Statements autocommit. A transaction opened with a typed BEGIN holds locks until it
-        // ends: while it is open, the TX chip with COMMIT and ROLLBACK.
         let tx_open = v.tx.status.is_open();
         let failed = v.tx.status == TxStatus::Failed;
         let tx_controls = tx_open.then(|| {
@@ -1172,7 +1030,6 @@ impl Workspace {
         let (parts, pane) = (self.toolbar_parts.clone(), v.pane);
         div()
             .on_children_prepainted(move |b, _, _| parts.borrow_mut()[pane.index()] = b)
-            // Never over the next group: what does not fit is cut at the group's edge.
             .overflow_hidden()
             .h(px(metrics::TOOLBAR_H))
             .flex_none()
@@ -1195,12 +1052,8 @@ impl Workspace {
             .children(lar)
     }
 
-    /// The connection and database the tab runs on, beside Run: the connection's color,
-    /// `name · database` cut with an ellipsis inside the control, a chevron. Its popup lists
-    /// the connected connections and their databases, the tab's checked.
     fn render_conn_picker(&self, v: &TabView, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let db = v.db.clone();
-        // A restored tab names the connection it waits for (it connects on the first run).
         let want = v.want.clone();
         let wanted = want.as_ref().and_then(|(id, db)| self.store.read(cx).profile(id).map(|p| (p.clone(), db.clone().unwrap_or_else(|| p.database.clone()))));
         let engine = v.conn.as_ref().map(|c| c.engine()).or_else(|| wanted.as_ref().map(|(p, _)| p.engine));
@@ -1212,7 +1065,6 @@ impl Workspace {
             (None, Some((p, db))) => (t.profile_color(&p), format!("{} · {db}", p.name).into()),
             (None, None) => (t.tx4, "No connection".into()),
         };
-        // A read-only database: a small lock after its name.
         let locked = match (&v.conn, &want) {
             (Some(c), _) => c.read_only_for(&db),
             (None, Some((id, d))) => self.store.read(cx).profile(id).is_some_and(|p| p.read_only_for(d.as_deref().unwrap_or(&p.database))),
@@ -1267,7 +1119,6 @@ impl Workspace {
                         .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(p.name.clone()))
                         .into_any_element(),
                 );
-                // A document engine's databases as the explorer last read them.
                 let dbs = if conn.engine().is_sql() {
                     conn.schema.cached_databases()
                 } else {
@@ -1277,7 +1128,6 @@ impl Workspace {
                 .unwrap_or_else(|| vec![conn.database().to_string()]);
                 for d in dbs {
                     let on = cur.as_deref() == Some(p.id.as_str()) && d == db;
-                    // The search engines have no databases: their one row is the connection's.
                     let label = if d.is_empty() {
                         "all indices".to_string()
                     } else if p.engine == dataman_core::Engine::Redis {
@@ -1294,7 +1144,6 @@ impl Workspace {
                     );
                 }
             }
-            // Under the button, its left edge on the button's.
             div().absolute().left_0().top(px(26.)).child(
                 gpui::deferred(
                     gpui::anchored().snap_to_window_with_margin(px(8.)).child(ui::menu_in("conn-menu-in", 
@@ -1316,9 +1165,6 @@ impl Workspace {
             )
         });
         let bounds = v.focused.then(|| self.picker_bounds.clone());
-        // It gives way first when the toolbar is narrow (cut with an ellipsis inside, down to
-        // its chip, a few letters and the chevron), never wider than its room: the wrapper is a
-        // flex row so the button shrinks with it.
         div()
             .relative()
             .min_w(px(PICKER_MIN))
@@ -1334,8 +1180,6 @@ impl Workspace {
             .children(menu)
     }
 
-    /// The LAR buttons, shown only on a LAR server: one violet button per registered panel
-    /// (today Live, ⌥1), lit while its panel is open.
     fn render_lar_buttons(&self, conn: &Arc<Connection>, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let open_id = match &self.side {
             Some(Side::Server(id, ..)) => Some(*id),
@@ -1367,9 +1211,6 @@ impl Workspace {
         }))
     }
 
-    // -----------------------------------------------------------------------------------------
-    // Result bar.
-
     fn result_state(&self, tab: &QueryTab, grid_sorting: bool, edit_pending: usize) -> ResultState {
         if tab.shown_key() == Some(Key::Messages) {
             return ResultState::Messages;
@@ -1399,7 +1240,6 @@ impl Workspace {
         }
     }
 
-    /// The result bar's `+`: a row at the end of the active result, its first field open.
     pub fn insert_row(&mut self, cx: &mut Context<Self>) {
         if let Some(tab) = self.active_tab() {
             let grid = tab.read(cx).grid.clone();
@@ -1416,7 +1256,6 @@ impl Workspace {
         let edit_note = edit.target_label().map(|l| format!("{l} · {}", edit.summary())).unwrap_or_else(|| edit.summary());
         let state = lar_bar.as_ref().map(|b| b.state).unwrap_or_else(|| self.result_state(tab.read(cx), sorting, edit_pending));
         let rs = tab.read(cx).result().cloned();
-        // Rows to add to (`+`): a result with columns, not a live grid's.
         let can_insert = lar_bar.is_none() && rs.as_ref().is_some_and(|r| r.columns().is_some_and(|c| !c.is_empty()));
         let summary = grid.update(cx, |g, _| g.selection_summary());
         let spec = state.spec();
@@ -1445,7 +1284,6 @@ impl Workspace {
             metrics_.push(("total", fmt_dur(total)));
         }
         if let Some(s) = &status {
-            // A partial result: what the server had in all.
             if state == ResultState::Partial
                 && let Some(n) = s.affected
             {
@@ -1478,7 +1316,6 @@ impl Workspace {
             }
             _ => (String::new(), false),
         };
-        // `command`: the keymap id whose current key the button shows.
         let action = |id: &'static str, label: SharedString, command: &'static str| {
             ui::button(t, id, Btn::Secondary)
                 .h(px(24.))
@@ -1509,7 +1346,6 @@ impl Workspace {
                 let label = if state == ResultState::Error { "Show in editor" } else { "Show error" };
                 actions.push(action("rb-show", label.into(), "jump_to_error").on_click(cx.listener(|w, _, window, cx| {
                     if let Some(tab) = w.active_tab().cloned() {
-                        // The editor must be in sight.
                         if tab.read(cx).zoomed {
                             w.toggle_result_zoom(window, cx);
                         }
@@ -1567,7 +1403,6 @@ impl Workspace {
                 })
                 .collect();
         }
-        // A table's page: `1–1,000 of ~1.2M` and the page arrows instead of the row count.
         let pager = {
             let tr = tab.read(cx);
             let finished = rs.as_ref().is_some_and(|r| r.phase().is_finished());
@@ -1590,7 +1425,6 @@ impl Workspace {
                         .text_color(t.tx3)
                         .when(!exact || counting, |d| d.cursor_pointer().hover(move |s| s.text_color(hov)))
                         .child(o)
-                        // An estimate: a click counts; while counting, a click stops it.
                         .on_click(cx.listener(move |w, _, _, cx| {
                             if let Some(tab) = w.active_tab().cloned() {
                                 tab.update(cx, |t, cx| if counting { t.stop_count(cx) } else if !exact { t.start_count(cx) });
@@ -1633,10 +1467,7 @@ impl Workspace {
             let tr = tab.read(cx);
             if tr.shown_key() == Some(Key::Messages) { tr.batch_items().iter().any(|b| b.rs.as_ref().is_some_and(|r| r.has_messages())) } else { rs.as_ref().is_some_and(|r| r.has_messages()) }
         };
-        // A copy a moment ago: "Copied", fading in and out (`motion::copied`).
         let copied = grid.read(cx).copied_at.and_then(|at| crate::motion::copied(at, std::time::Instant::now(), cx.reduce_motion()));
-        // Under the Copy button, its right edge on the button's (a zero-width point at the
-        // button's bottom-right corner anchors it; it flips above when there is no room).
         let copy_menu = copy_open.then(|| {
             div().absolute().right_0().top(px(26.)).child(gpui::deferred(
                 gpui::anchored().anchor(gpui::Anchor::TopRight).snap_to_window_with_margin(px(8.)).child(ui::menu_in("copy-menu-in", 
@@ -1647,7 +1478,6 @@ impl Workspace {
                             cx.notify();
                         }))
                         .child(ui::menu_item(t, "cp-tsv", "Copy as TSV", crate::keymap::key("copy_tsv").as_deref(), has_rows).on_click(cx.listener(|w, _, _, cx| w.copy_selection(CopyFormat::Tsv, false, cx))))
-                        // ⇧⌘C ("Copy with headers") is this one: TSV with its header row.
                         .child(ui::menu_item(t, "cp-tsv-hdr", "Copy as TSV with Headers", crate::keymap::key("copy_with_headers").as_deref(), has_rows).on_click(cx.listener(|w, _, _, cx| w.copy_selection(CopyFormat::Tsv, true, cx))))
                         .child(ui::menu_item(t, "cp-csv", "Copy as CSV", crate::keymap::key("copy_csv").as_deref(), has_rows).on_click(cx.listener(|w, _, _, cx| w.copy_selection(CopyFormat::Csv, false, cx))))
                         .child(ui::menu_item(t, "cp-csv-hdr", "Copy as CSV with Headers", None, has_rows).on_click(cx.listener(|w, _, _, cx| w.copy_selection(CopyFormat::Csv, true, cx))))
@@ -1670,12 +1500,10 @@ impl Workspace {
             .border_color(t.line)
             .text_color(t.tx2)
             .whitespace_nowrap()
-            // The left group gives way first when the bar is narrow (side panel open).
             .child(div().flex_1().min_w_0().overflow_hidden().flex().flex_row().items_center().gap(px(10.))
             .child(ui::pill(spec.glyph, label, fg, bg).when(state == ResultState::Cancelling, |d| d.border_1().border_color(t.warn)))
             .children(pager_el)
             .children(rows_text.map(|r| {
-                // "1 row", "1 row affected".
                 let rl = rows_label.unwrap_or(spec.rows_label);
                 let what = if r == "1" { rl.replacen("rows", "row", 1) } else { rl.to_string() };
                 div()
@@ -1715,8 +1543,6 @@ impl Workspace {
                     .relative()
                     .child(
                         ghost("rb-copy")
-                            // "Copied" takes the button's place for a moment: the button keeps
-                            // its room (invisible), so nothing moves.
                             .when(copied.is_some(), |d| d.invisible())
                             .child(icon(Icon::Copy).size(px(13.)).text_color(t.tx2))
                             .child("Copy")
@@ -1770,14 +1596,9 @@ impl Workspace {
             })
     }
 
-    // -----------------------------------------------------------------------------------------
-    // Result tabs: one per statement of a script that returned rows, a count, an error or a
-    // cancel, and the folded commands; over the result bar, only when there are several.
-
     fn render_result_strip(&self, id: EntityId, v: &TabView, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let hov = t.hov;
         let bounds = v.focused.then(|| self.result_tab_bounds.clone());
-        // Among the result tabs, the ghosts of those closing (`tab_motion`).
         let now = std::time::Instant::now();
         let mut els: Vec<AnyElement> = Vec::new();
         let mut is_tab: Vec<bool> = Vec::new();
@@ -1799,7 +1620,6 @@ impl Workspace {
                 };
                 let group: SharedString = format!("result-tab-{i}").into();
                 let (tx3, tx) = (t.tx3, t.tx);
-                // The editor tabs' close: a × that shows on hover.
                 let close = div()
                     .id(("close-result", i))
                     .flex_none()
@@ -1869,15 +1689,12 @@ impl Workspace {
             .children(els)
     }
 
-    /// The messages tab: every statement of the run, its outcome and time, and what it printed;
-    /// a click on one that has a tab of its own shows it.
     fn render_messages(&self, tab: &gpui::Entity<QueryTab>, v: &TabView, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let running = v.batch.iter().any(|b| b.state == ItemState::Running);
         self.messages_of(v.pane).sync(Of::Tab(tab.entity_id()), messages::tab_rows(&v.batch), running);
         self.render_message_list("messages", v.pane, t, cx)
     }
 
-    /// What a result without rows printed (statement `i`'s), in the grid's place.
     fn render_log(&self, i: usize, rs: &Arc<dataman_core::ResultSet>, pane: Pane, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         self.messages_of(pane).sync(Of::log(rs), messages::log_rows(i, rs), rs.phase() == Phase::Running);
         self.render_message_list("log", pane, t, cx)
@@ -1894,12 +1711,10 @@ impl Workspace {
             .child(gpui::list(self.messages_of(pane).list.clone(), cx.processor(move |w, ix: usize, _, cx| w.render_message_row(pane, ix, &theme, cx))).size_full())
     }
 
-    /// A row of the messages list: a statement of the messages tab, or a line it printed.
     fn render_message_row(&mut self, pane: Pane, ix: usize, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let (Some(row), Some(tab)) = (self.messages_of(pane).row(ix), self.pane_view(pane).0) else { return div().into_any_element() };
         let tr = tab.read(cx);
         let batch = tr.batch_items();
-        // Under a statement, a line lines up with its text.
         let indent = if matches!(self.messages_of(pane).of(), Some(Of::Tab(_))) { 64. } else { 0. };
         let line = |text: String, c: Hsla| div().pl(px(indent)).pr(px(8.)).py(px(2.)).text_color(c).child(text).into_any_element();
         let i = match row {
@@ -1966,8 +1781,6 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// Copies what the results on screen printed: the run's (the messages tab), else the
-    /// shown result's.
     pub(crate) fn copy_messages(&mut self, cx: &mut Context<Self>) {
         self.copy_menu = false;
         if let Some(tab) = self.active_tab().cloned() {
@@ -1989,9 +1802,6 @@ impl Workspace {
         }
         cx.notify();
     }
-
-    // -----------------------------------------------------------------------------------------
-    // Status bar.
 
     pub(crate) fn render_status(&self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let t = cx.theme();
@@ -2029,13 +1839,11 @@ impl Workspace {
             None => "not connected".into(),
         };
         let lar_status = tab.and_then(|t| crate::lar::status_text(t, cx));
-        // The connection's environment and read-only flag, when set.
         let env = conn.as_ref().map(|c| c.profile.env).filter(|e| !e.is_none()).map(|e| {
             div().text_color(if e.is_production() { t.err } else { t.tx2 }).child(e.label())
         });
         let db = tab.map(|t| t.database().to_string()).unwrap_or_default();
         let read_only = conn.as_ref().filter(|c| c.read_only_for(&db)).map(|_| div().text_color(t.tx2).child("read-only"));
-        // A strip of its own across the whole window, on the glass under both columns.
         div()
             .h(px(metrics::STATUS_H))
             .flex_none()
@@ -2074,10 +1882,6 @@ impl Workspace {
             .children(notice.map(|n| div().text_color(t.warn).child(n)))
     }
 
-    // -----------------------------------------------------------------------------------------
-    // Error view (EditorError): the server's message in full, the statement around the
-    // error, and the batch that stopped.
-
     fn error_view_needed(&self, tab: &gpui::Entity<QueryTab>, cx: &gpui::App) -> bool {
         tab.read(cx)
             .result()
@@ -2096,7 +1900,6 @@ impl Workspace {
         let diag_at = editor.diagnostic().and_then(|d| d.at);
         let token = editor.error_range();
         let code = err.code.clone().unwrap_or_default();
-        // Line and column of the error in the editor (1-based).
         // The offsets come from before any edit since: snapped to a character of the text now.
         let fc = crate::tab::floor_char;
         let place = diag_at.map(|at| {
@@ -2114,14 +1917,11 @@ impl Workspace {
         if let Some((l, c, _)) = place {
             where_.push(format!("line {l}, col {c}"));
         }
-        // The message, with its quoted names in the error color.
         let message = err.message.split('"').enumerate().map(|(i, part)| {
             if i % 2 == 1 { div().text_color(t.err).child(format!("\"{part}\"")) } else { div().child(part.to_string()) }
         });
-        // What the server added, when it did.
         let grid_rows: Vec<(&str, String)> =
             [("DETAIL", err.detail.clone()), ("HINT", err.hint.clone())].into_iter().filter_map(|(k, v)| v.map(|v| (k, v))).collect();
-        // The statement around the error: the line before, the line, and a caret line.
         let excerpt = place.map(|(line, _, at)| {
             let lines: Vec<&str> = text.split('\n').collect();
             let mut out: Vec<AnyElement> = Vec::new();
@@ -2161,7 +1961,6 @@ impl Workspace {
                     .child(div().text_color(t.err).child(format!("{}{}", " ".repeat(pad), "^".repeat(carets))))
                     .into_any_element(),
             );
-            // A long line stays in the card (the batch column is beside it).
             div()
                 .py(px(10.))
                 .overflow_hidden()
@@ -2302,8 +2101,6 @@ impl Workspace {
                         .justify_center()
                         .font_weight(FontWeight::SEMIBOLD)
                         .child(format!("Run from statement {}", from + 1))
-                        // No shortcut hint: ⌥⌘↩ in the editor runs from the cursor, not from the
-                        // statement that failed.
                         .on_click(cx.listener(move |w, _, _, cx| {
                             if let Some(tab) = w.active_tab().cloned() {
                                 tab.update(cx, |t, cx| t.run_from(from, cx));
@@ -2322,9 +2119,6 @@ impl Workspace {
             }
         }
     }
-
-    // -----------------------------------------------------------------------------------------
-    // Toasts (bottom-right, 4–6 s unless they need you) and the shortcuts sheet.
 
     pub(crate) fn render_toasts(&self, _window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let t = cx.theme();
@@ -2400,9 +2194,6 @@ impl Workspace {
         out
     }
 
-    /// "Discard N pending changes?": something would replace the result the grid edits were
-    /// made on (a statement, a resubscribe, a history entry). Nothing is lost
-    /// silently: esc / ↩ keep them, ⌘⌫ discards and runs.
     pub(crate) fn render_confirm_discard(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let tab = self.active_tab()?.read(cx);
         let p = tab.pending_run.as_ref()?;
@@ -2456,10 +2247,6 @@ impl Workspace {
         )
     }
 
-    /// The confirmation sheets: open transactions in the way of a close, a disconnect, a switch
-    /// of connection or database, a connection saved or deleted, or a quit (Commit / Rollback /
-    /// Cancel), or the active tab's run waiting for an answer: dangerous
-    /// statements (Run / Cancel) or a failed transaction (Rollback & run / Rollback / Cancel).
     pub(crate) fn render_tx_sheet(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         use crate::tab::{ConfirmChoice, TabConfirm};
         let t = cx.theme();
@@ -2574,9 +2361,6 @@ impl Workspace {
                             .into_any_element(),
                     );
                 }
-                // The activity monitor: Cancel / Terminate a session (marked when it is one of this
-                // app's), Reset the statistics. On production, Terminate reads like the guard's
-                // production sheet.
                 TabConfirm::Monitor(p) => {
                     use crate::activity::Pending;
                     use dataman_core::activity::Signal;
@@ -2615,7 +2399,6 @@ impl Workspace {
                     }
                 }
             }
-            // Where it runs: the connection, and its environment when set.
             footer = conn.map(|c| {
                 let env = c.profile.env;
                 div()
@@ -2687,15 +2470,13 @@ impl Workspace {
     }
 }
 
-/// An MCP client's name as the app shows it: its own words, control characters out, never
-/// empty (the client chooses it: it is shown, never trusted).
+/// The client chooses the name: it is shown, never trusted.
 pub(crate) fn agent_name(client: &str) -> String {
     let s: String = client.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
     let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
     if s.is_empty() { "agent".into() } else { cut_chars(&s, 64) }
 }
 
-/// At most `n` characters, an ellipsis for the rest.
 pub(crate) fn cut_chars(s: &str, n: usize) -> String {
     match s.char_indices().nth(n) {
         Some((at, _)) => format!("{}…", &s[..at]),
@@ -2703,10 +2484,6 @@ pub(crate) fn cut_chars(s: &str, n: usize) -> String {
     }
 }
 
-/// The title bar's explorer toggle (`icon_button`'s look): the sidebar glyph, its left part
-/// filled as far as the explorer is open (`open`, 0 to 1), so the fill sweeps in and out with
-/// the explorer's own slide (same tween, same easing; at once with "Reduce motion"). `mirrored`
-/// (the explorer in the right dock): the glyph and its fill from the right.
 fn explorer_toggle(t: &Theme, open: f32, mirrored: bool) -> gpui::Stateful<Div> {
     let (hov, prs, ink) = (t.hov, t.prs, t.tx3);
     // The glyph's outer pane in its 16 pt box (`sidebar.svg`: the frame from x 2.5 to 13.5 and y
@@ -2725,9 +2502,6 @@ fn explorer_toggle(t: &Theme, open: f32, mirrored: bool) -> gpui::Stateful<Div> 
         .child(div().relative().size(px(16.)).child(icon(glyph).size(px(16.)).text_color(ink)).child(pane))
 }
 
-/// The focus ring of a region: a 1 pt neutral line and a faint 2 pt band inside it (square:
-/// the regions are flush with each other and with the window's edges, so a ring outside would
-/// be cut off). Neutral, not the accent: blue is the selection's.
 pub(crate) fn focus_ring(t: &Theme) -> Div {
     div()
         .absolute()
@@ -2737,8 +2511,6 @@ pub(crate) fn focus_ring(t: &Theme) -> Div {
         .child(div().absolute().inset_0().border_2().border_color(t.focus_s))
 }
 
-/// A statement on a sheet: its first lines in a card (an ellipsis when there are more), and
-/// the object it acts on.
 pub(crate) fn code_block(t: &Theme, sql: &str, target: Option<&str>) -> Div {
     const LINES: usize = 5;
     let lines: Vec<&str> = sql.trim().lines().map(str::trim_end).collect();
@@ -2790,7 +2562,6 @@ pub(crate) fn toast(t: &Theme, accent: Hsla) -> Stateful<Div> {
         .occlude()
 }
 
-/// SQLSTATE → condition name, for the codes people meet most.
 fn condition_name(code: &str) -> &'static str {
     match code {
         "42703" => "undefined_column",

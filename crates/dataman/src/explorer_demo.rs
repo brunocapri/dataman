@@ -1,14 +1,3 @@
-//! Demo stages of the explorer's objects (`--demo`), against the demo database: the schema
-//! `dataman_shop` and the roles `dataman_reader` and `dataman_app`, created from
-//! `seeds/explorer.sql` at the start.
-//!
-//! - `tree-objects`: the schema's groups, with its tables (row estimates and sizes), functions
-//!   and types open, and the enum's labels (screenshot);
-//! - `tree-table`: `orders` with its constraints and triggers, `events` with its partitions
-//!   (screenshot);
-//! - `tree-filter`: the filter `order` over every loaded kind (screenshot);
-//! - `privileges`: the grant matrix of `orders` with `dataman_app` picked (screenshot).
-
 use std::time::Duration;
 
 use gpui::{AsyncWindowContext, Entity};
@@ -27,7 +16,6 @@ async fn pause(cx: &mut AsyncWindowContext, ms: u64) {
     cx.background_executor().timer(Duration::from_millis(ms)).await;
 }
 
-/// Waits (up to 10 s) for a row to be in the tree.
 async fn row(tree: &Entity<SchemaTree>, id: &str, cx: &mut AsyncWindowContext) -> bool {
     for _ in 0..200 {
         if cx.update(|_, cx| tree.read(cx).has_row(id)).unwrap_or(false) {
@@ -39,7 +27,6 @@ async fn row(tree: &Entity<SchemaTree>, id: &str, cx: &mut AsyncWindowContext) -
     false
 }
 
-/// Expands a node once it is there, and gives its children time to load.
 async fn expand(tree: &Entity<SchemaTree>, id: &str, cx: &mut AsyncWindowContext) {
     if row(tree, id, cx).await {
         let _ = cx.update(|_, cx| tree.update(cx, |t, cx| t.expand_id(id, cx)));
@@ -56,13 +43,11 @@ async fn collapse(tree: &Entity<SchemaTree>, id: &str, cx: &mut AsyncWindowConte
 pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &mut AsyncWindowContext) {
     crate::table_check::run_seed(ws, SEED, cx).await;
     let Ok(tree) = cx.update(|_, cx| ws.read(cx).tree.clone()) else { return };
-    // The seed changed the catalog: the connection's schema is read again.
     let _ = cx.update(|_, cx| tree.update(cx, |t, cx| t.refresh_connection(id, cx)));
     let c = format!("c:{id}");
     let s = format!("{c}/d:{db}/s:dataman_shop");
     let r = |n: &str| format!("{s}/r:{n}");
     if matches!(stage, "tree-objects" | "tree-table") {
-        // A wider explorer, as dragged: signatures and definitions get their room.
         let _ = cx.update(|_, cx| {
             ws.update(cx, |w, cx| {
                 w.explorer_w = 380.;
@@ -89,7 +74,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
             }
         }
         "tree-filter" => {
-            // Every kind loaded, then the filter.
             for g in ["tables", "functions", "sequences", "types", "triggers"] {
                 expand(&tree, &format!("{s}/{g}"), cx).await;
             }

@@ -1,19 +1,3 @@
-//! The panel docks (`dataman_core::layout`): the sidebar (the explorer's dock: its icon rail and
-//! view, `sidebar`) on one side of the work surface, the side panel (a server panel, a feature's
-//! sheet) on the other. The sidebar moves to the other side by dragging the grip on its top edge
-//! there (or from the palette, the menu on its header: "Move Sidebar to the Right", "Reset Panel
-//! Layout"); the side panel always goes opposite. Nothing else moves: no stacks, no columns.
-//!
-//! The geometry is computed here, once per frame, from the arrangement, the panels' sizes and
-//! how open each one is ([`frame`]); `render` lays the docks out with exactly these sizes. A
-//! drag's preview is the same computation for the arrangement the drop would make, so its
-//! translucent box is the very area the sidebar will take. While it is dragged, the pointer
-//! past the middle of the work surface picks the other dock ([`target_at`]). On the drop the old
-//! place folds shut while the new one opens (`motion::DOCK_MOVE`), the work surface and the
-//! side panel sliding along; with Reduce Motion it is simply there. Esc cancels the drag (`dnd`).
-//!
-//! Each panel keeps its own width (`explorer_w`, `side_w`), resized on its inner seam.
-
 use std::time::Instant;
 
 use dataman_core::layout::{Dock, PanelId, PanelLayout, Place};
@@ -27,28 +11,20 @@ use crate::ui;
 actions!(
     dock,
     [
-        /// The sidebar to the left (the default) or the right; the side panel goes opposite.
         MoveExplorerLeft,
         MoveExplorerRight,
-        /// The sidebar back on the left.
         ResetPanelLayout,
     ]
 );
 
-/// The work surface keeps at least this much width between the docks.
 pub const CENTER_MIN_W: f32 = 320.;
-/// The grip's hit area, centred on a panel's top edge, and its dot.
 const GRIP: (f32, f32) = (56., 10.);
 const GRIP_DOT: f32 = 6.;
-/// A seam's grabber: 8 pt straddling its hairline.
 const SEAM_HIT: f32 = 8.;
-/// The sidebar's header band (where its right-click menu opens).
 const HEAD_H: f32 = 34.;
 
-/// A panel on the move (GPUI's drag; the ghost is `dnd`'s).
 pub(crate) struct DraggedPanel(pub PanelId);
 
-/// A rectangle in points, in window coordinates.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Rect {
     pub x: f32,
@@ -75,9 +51,6 @@ impl Rect {
     }
 }
 
-/// What takes room in a column this frame: a panel, or the place a moving panel is leaving (a
-/// `ghost`, drawn empty), with how much of its room it takes (0 shut … 1 open) and its share of
-/// the column's height when open (`Column::share`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Slot {
     pub panel: PanelId,
@@ -86,7 +59,6 @@ pub struct Slot {
     pub share: f32,
 }
 
-/// The room the panels ask for: their widths.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Sizes {
     pub explorer_w: f32,
@@ -102,8 +74,6 @@ impl Sizes {
     }
 }
 
-/// A column as laid out: its area, the width its content keeps while it slides (the content is
-/// clipped, never reflowed), and each slot's area.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ColFrame {
     pub rect: Rect,
@@ -111,7 +81,6 @@ pub struct ColFrame {
     pub slots: Vec<(Slot, Rect)>,
 }
 
-/// A dock as laid out: its area and its columns, left to right.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct DockFrame {
     pub rect: Rect,
@@ -124,10 +93,8 @@ impl DockFrame {
     }
 }
 
-/// The window's docks and the work surface between them.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Frame {
-    /// In `Dock::ALL` order.
     pub docks: [DockFrame; 2],
     pub center: Rect,
 }
@@ -144,16 +111,11 @@ impl Frame {
         &self.docks[ix(d)]
     }
 
-    /// Where panel `p` is (not the place it is leaving); `None` while it is shut.
     pub fn panel(&self, p: PanelId) -> Option<Rect> {
         self.docks.iter().flat_map(|d| d.slots()).find(|(s, _)| s.panel == p && !s.ghost).map(|(_, r)| *r)
     }
 }
 
-/// The slots of each dock (`Dock::ALL` order), column by column: the arrangement's panels, each
-/// as open as `open` says, and those on the move (panel, where its ghost stands
-/// ([`ghost_place`]), progress 0 → 1) growing in their new place while a ghost shrinks in the
-/// old one.
 pub fn slots(layout: &PanelLayout, open: impl Fn(PanelId) -> f32, moves: &[(PanelId, Place, f32)]) -> [Vec<Vec<Slot>>; 2] {
     let mut out: [Vec<Vec<Slot>>; 2] = Default::default();
     for d in Dock::ALL {
@@ -169,7 +131,6 @@ pub fn slots(layout: &PanelLayout, open: impl Fn(PanelId) -> f32, moves: &[(Pane
         let cols = &mut out[ix(from.dock)];
         let weight = open(p).clamp(0., 1.) * (1. - k);
         match from.row.filter(|_| from.col < cols.len()) {
-            // Back in the stack it left, as tall as the panels it shared it with.
             Some(r) => {
                 let c = &mut cols[from.col];
                 let share = c.iter().map(|s| s.share).sum::<f32>() / c.len().max(1) as f32;
@@ -181,9 +142,6 @@ pub fn slots(layout: &PanelLayout, open: impl Fn(PanelId) -> f32, moves: &[(Pane
     out
 }
 
-/// Where the ghost of `p`, leaving its place in `old`, stands in `new`: stacked with the panels
-/// it shared a column with, wherever their column is now; a column of its own, right of the
-/// column that was left of it.
 pub fn ghost_place(old: &PanelLayout, new: &PanelLayout, p: PanelId) -> Place {
     let from = old.place_of(p);
     let cols = old.dock(from.dock);
@@ -198,16 +156,10 @@ pub fn ghost_place(old: &PanelLayout, new: &PanelLayout, p: PanelId) -> Place {
     }
 }
 
-/// Lays out the docks in a window of `view` (points): the left dock from the title bar down to
-/// the status bar at the window's left edge, the right one likewise at its right edge, the work
-/// surface between them. A column is as wide as its most open panel asks (each panel's width
-/// times its weight); its panels share its height in proportion to their weights and shares.
-/// The work surface keeps [`CENTER_MIN_W`] when it can.
 pub fn frame(view: (f32, f32), slots: [Vec<Vec<Slot>>; 2], sizes: &Sizes) -> Frame {
     let (w, h) = view;
     let top = metrics::TITLE_H;
     let body = (h - metrics::STATUS_H).max(top) - top;
-    // A shut panel takes no room; a column with none open is gone.
     let cols = slots.map(|d| d.into_iter().map(|c| c.into_iter().filter(|s| s.weight > 1e-3).collect::<Vec<_>>()).filter(|c| !c.is_empty()).collect::<Vec<_>>());
     let extent = |c: &[Slot]| c.iter().map(|s| s.weight.min(1.) * sizes.of(s.panel)).fold(0., f32::max);
     let full = |c: &[Slot]| c.iter().map(|s| sizes.of(s.panel)).fold(0., f32::max);
@@ -251,10 +203,6 @@ pub fn frame(view: (f32, f32), slots: [Vec<Vec<Slot>>; 2], sizes: &Sizes) -> Fra
     Frame { docks: [lay(left, lc, &widths[0]), lay(right, rc, &widths[1])], center }
 }
 
-/// The place the sidebar dragged to `pos` would drop in: the other dock, once the pointer is
-/// past the middle of the work surface toward it (`None`: still on its own side, or outside
-/// the work surface and the docks). `frame` is the arrangement at rest. The side panel is not
-/// dragged.
 pub fn target_at(frame: &Frame, layout: &PanelLayout, dragged: PanelId, pos: (f32, f32)) -> Option<Place> {
     if dragged != PanelId::Explorer {
         return None;
@@ -268,8 +216,6 @@ pub fn target_at(frame: &Frame, layout: &PanelLayout, dragged: PanelId, pos: (f3
     (to != layout.explorer_dock()).then(|| Place::column(to, 0))
 }
 
-/// A panel settling into a new place: where its ghost stands ([`ghost_place`]), and how far
-/// along it is.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct DockMove {
     pub panel: PanelId,
@@ -277,8 +223,6 @@ pub(crate) struct DockMove {
     pub progress: Progress,
 }
 
-/// A panel being dragged: the place the pointer picks (`None`: nowhere it could go), the area
-/// it would take there, and the preview's box as last drawn (it glides to a new area).
 #[derive(Clone, Debug)]
 pub(crate) struct PanelDrag {
     pub panel: PanelId,
@@ -288,10 +232,6 @@ pub(crate) struct PanelDrag {
     glide: Option<RectTween>,
 }
 
-/// How much each dock holds the explorer (0 … 1), eased along a move of it (`DOCK_MOVE`): the
-/// history beside it takes the explorer's glass and, in the left dock, the tab band slides over
-/// it (the header slot it had alone) as the explorer arrives, and back as it leaves. With Reduce
-/// Motion it is simply the arrangement's.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct ExplorerBlend {
     from: [f32; 2],
@@ -304,7 +244,6 @@ impl ExplorerBlend {
         Dock::ALL.map(|x| (x == d) as u8 as f32)
     }
 
-    /// Now, heading for `layout`'s, and whether it is still on its way.
     fn at(&mut self, layout: &PanelLayout, now: Instant) -> ([f32; 2], bool) {
         let to = Self::target(layout);
         match self.progress.and_then(|p| p.at(now)) {
@@ -316,8 +255,6 @@ impl ExplorerBlend {
         }
     }
 
-    /// The explorer changed docks: from wherever the blend is now (a move mid-way turns
-    /// around), or at once with Reduce Motion.
     fn start(&mut self, old: &PanelLayout, new: &PanelLayout, reduced: bool) {
         if Self::target(old) == Self::target(new) {
             return;
@@ -328,38 +265,21 @@ impl ExplorerBlend {
     }
 }
 
-/// The title bar's geometry this frame, from the docks' (`dock_pass`): the explorer carries the
-/// window's header (its toggle, the back / forward arrows, "DATAMAN") to its end of the bar, and
-/// the search goes to the other end (past the traffic lights when the explorer is on the right).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct TitleFrame {
-    /// The end of the bar with the header: the explorer's dock.
     pub header: Option<Dock>,
-    /// Where the tabs start: past the traffic lights and what sits by them, and past the left
-    /// dock's header columns (the explorer's; the history's when it is there alone). The history
-    /// beside the explorer is under the tab band instead.
     pub lead: f32,
-    /// How open those header columns are (0 … 1; the first tab lines up past their seam).
     pub seam: f32,
-    /// The room the header takes at the right end (the explorer in the right dock), else 0.
     pub trail: f32,
-    /// How much each dock holds the explorer ([`ExplorerBlend`]).
     pub joined: [f32; 2],
 }
 
-/// The least room the header keeps at its end of the bar, past the lights on the left (the
-/// toggle 14 pt after them, the two arrows) or at the right edge (the arrows, the toggle).
 pub const HEADER_MIN: f32 = 92.;
-/// The least room past the lights for the search, when it is on the left.
 pub const SEARCH_MIN: f32 = 96.;
 
-/// The title bar's geometry for a frame of the docks: `lights` is the traffic lights' right
-/// edge.
 pub fn title_frame(frame: &Frame, layout: &PanelLayout, joined: [f32; 2], lights: f32) -> TitleFrame {
     let header = layout.place_of(PanelId::Explorer).dock;
     let explorer = |c: &ColFrame| c.slots.iter().any(|(s, _)| s.panel == PanelId::Explorer);
-    // The left dock's header columns: the explorer's, and the history's as far as it is on its
-    // own there (the tab band slides over it as the explorer joins it).
     let k = |c: &ColFrame| if explorer(c) { 1. } else { 1. - joined[ix(Dock::Left)] };
     let left = &frame.dock(Dock::Left).cols;
     let edge: f32 = left.iter().map(|c| c.rect.w * k(c)).sum();
@@ -372,8 +292,6 @@ pub fn title_frame(frame: &Frame, layout: &PanelLayout, joined: [f32; 2], lights
     TitleFrame { header: Some(header), lead, seam: (edge / full.max(1.)).clamp(0., 1.), trail, joined }
 }
 
-/// This frame's docks: their geometry, the history's view on screen, and how much of it the
-/// result zoom leaves (1: all of it).
 pub(crate) struct DockPass {
     pub frame: Frame,
     pub side: Option<Side>,
@@ -382,14 +300,11 @@ pub(crate) struct DockPass {
 }
 
 impl DockPass {
-    /// The left dock's last column is the history's under the tab band (beside the explorer):
-    /// the work column's seam is that column's, under the band.
     pub fn band_left(&self) -> bool {
         self.title.joined[ix(Dock::Left)] > 0. && self.frame.dock(Dock::Left).cols.last().is_some_and(|c| !c.slots.iter().any(|(s, _)| s.panel == PanelId::Explorer))
     }
 }
 
-/// The docks' elements, for `render` to place.
 pub(crate) struct DockViews {
     pub left: Option<AnyElement>,
     pub right: Option<AnyElement>,
@@ -412,8 +327,6 @@ impl Workspace {
         (v.width.pt(), v.height.pt())
     }
 
-    /// `layout` at rest, with the panels open that are open now (what a drag measures): its
-    /// hit test, and the area of each place it offers.
     pub(crate) fn rest_frame(&self, layout: &PanelLayout, window: &Window) -> Frame {
         let side = self.frame_now.panel(PanelId::Side).is_some();
         let open = |p: PanelId| match p {
@@ -423,14 +336,9 @@ impl Workspace {
         frame(Self::view_pt(window), slots(layout, open, &[]), &self.sizes())
     }
 
-    /// This frame's geometry, with the panels sliding open or shut, the result zoom folding the
-    /// side panel away and the panels settling into new places; kept in `frame_now` (the title bar and the checks read it).
-    /// Asks for another frame while a panel moves. Called once per frame, before anything is
-    /// laid out.
+    /// Called once per frame, before anything is laid out.
     pub(crate) fn dock_pass(&mut self, first_run: bool, window: &mut Window, cx: &App) -> DockPass {
         let now = Instant::now();
-        // The side panel slides in and out (the view it last showed while it slides out); the
-        // zoomed result covers it too, folding it away with the editor.
         let slide = self.side_slide(window, cx);
         let tab = self.active_tab().cloned();
         let rest = tab.as_ref().filter(|t| t.read(cx).has_run && t.read(cx).monitor.is_none()).map_or(1., |t| 1. - self.zoom_now(t, cx));
@@ -467,7 +375,6 @@ impl Workspace {
         DockPass { frame, side: shown, side_rest: rest, title }
     }
 
-    /// What the dragged panel is called on its ghost and on the preview.
     fn panel_name(&self, p: PanelId) -> &'static str {
         match (p, &self.side) {
             (PanelId::Explorer, _) => "Sidebar",
@@ -476,22 +383,9 @@ impl Workspace {
         }
     }
 
-    /// The docks as elements, each from the window's top edge to the status bar (the title bar
-    /// is laid over them): each column holds its panels stacked, each slot clipping its panel,
-    /// which keeps the column's full width (anchored to the window's edge) so it never reflows
-    /// mid-slide.
-    ///
-    /// The explorer's column is the glass sidebar, the title band over it its header. The
-    /// history with it (stacked, or a column beside it) takes the same glass; a column of its own
-    /// beside the explorer starts under the tab band, which runs over it (the band's hairline,
-    /// red on production, and no seam through the band). Alone in a dock, the history has the
-    /// work column's fill: in the left dock the band over it is the header slot, in the right
-    /// one the tab band runs over it. Between the two the fill fades as the explorer comes and
-    /// goes (`TitleFrame::joined`). `production`: the work column's red accent.
     pub(crate) fn render_docks(&mut self, pass: &DockPass, production: bool, window: &mut Window, cx: &mut Context<Self>) -> DockViews {
         let t = cx.theme();
         let mut views: [Option<AnyElement>; 2] = Default::default();
-        // An empty dock lays out nothing: no stale bounds.
         *self.slot_bounds.borrow_mut() = pass.frame.docks.each_ref().map(|d| vec![Vec::new(); d.cols.len()]);
         for d in Dock::ALL {
             let df = pass.frame.dock(d);
@@ -504,10 +398,7 @@ impl Workspace {
             for (ci, col) in df.cols.iter().enumerate() {
                 let n = col.slots.len();
                 let glass = col.slots.iter().any(|(s, _)| s.panel == PanelId::Explorer);
-                // Out of the explorer's column, the history keeps the work column's fill (beside
-                // the explorer too: only stacked with it does it take the glass).
                 let fill = (!glass).then_some(t.panel);
-                // Under the tab band (not a header slot): no seam through the band beside it.
                 let band = !glass && (d == Dock::Right || joined > 0.);
                 let mut children = Vec::with_capacity(n);
                 for (i, (s, r)) in col.slots.iter().enumerate() {
@@ -528,9 +419,6 @@ impl Workspace {
                 };
                 // The last column takes what is left (no gap from rounding).
                 let last = ci + 1 == ncols;
-                // The seams: between columns, from the top (beside a header); the work column's
-                // own on the left (app.rs) unless this one is under the tab band, then this
-                // column's, under the band; on the right this column's, likewise.
                 let seam_l = ci > 0 || (d == Dock::Right && !band);
                 let body_l = ci == 0 && d == Dock::Right && band;
                 let body_r = last && d == Dock::Left && band;
@@ -541,7 +429,6 @@ impl Workspace {
                     .flex_col()
                     .border_color(t.line)
                     .when_some(fill, |b, f| b.bg(f))
-                    // The title band's hairline (red on production), as over the work column.
                     .when(!glass && !production, |b| b.border_t_1())
                     .when(!glass && production, |b| b.border_t_2().border_color(t.err))
                     .on_children_prepainted(record)
@@ -558,11 +445,8 @@ impl Workspace {
                         .when(!last, |c| c.w(px(col.rect.w)))
                         .when(last, |c| c.flex_1().min_w_0())
                         .when(seam_l, |c| c.border_l_1())
-                        // The title band over it: the header (glass), or the band's fill.
                         .child(div().h(px(metrics::TITLE_H)).flex_none().when(!glass, |b| b.bg(t.panel)))
                         .child(body)
-                        // The seam under the band: drawn over the edge (it takes no room, as the
-                        // work column's own would not have).
                         .when(body_l || body_r, |c| {
                             let line = div().absolute().top(px(metrics::TITLE_H)).bottom_0().w(px(1.)).bg(t.line);
                             c.child(if body_l { line.left_0() } else { line.right_0() })
@@ -570,7 +454,6 @@ impl Workspace {
                 );
             }
             let rect = df.rect;
-            // On the glass, from the window's top edge (the title bar is laid over it).
             let el = div().w(px(rect.w)).flex_none().h_full().overflow_hidden().flex().flex_row().children(cols);
             views[ix(d)] = Some(el.into_any_element());
         }
@@ -585,11 +468,9 @@ impl Workspace {
             Dock::Left => div().absolute().top_0().bottom_0().left_0().w(px(full)),
             Dock::Right => div().absolute().top_0().bottom_0().right_0().w(px(full)),
         };
-        // The one being dragged waits, dimmed, until it is dropped.
         let dragged = !s.ghost && self.panel_drag.as_ref().is_some_and(|g| g.panel == s.panel);
         let fade = if s.panel == PanelId::Side && !s.ghost { side_rest } else { 1. };
         let p = s.panel;
-        // A right click on the sidebar's header: its menu (move it, reset the layout).
         let head = r.y + HEAD_H;
         div()
             .relative()
@@ -605,7 +486,6 @@ impl Workspace {
             .child(inner.child(content))
             .when(fade < 1., |e| e.opacity(fade))
             .when(dragged, |e| e.opacity(0.4))
-            // Only the sidebar moves: the side panel has no grip.
             .when(!s.ghost && p == PanelId::Explorer, |e| {
                 e.on_mouse_down(MouseButton::Right, cx.listener(move |w, ev: &gpui::MouseDownEvent, _, cx| {
                     if ev.position.y.pt() < head {
@@ -619,8 +499,6 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// The grip on the sidebar's top edge: a dot that shows while it is hovered; dragging it
-    /// to the other side moves the sidebar there, a right click opens its menu.
     fn render_grip(&self, p: PanelId, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let label: SharedString = self.panel_name(p).into();
         let (line2, hov) = (t.line2, t.hov);
@@ -637,7 +515,6 @@ impl Workspace {
                 .cursor_grab()
                 .hover(move |s| s.bg(hov))
                 .tooltip(ui::tooltip(format!("Drag to move the {}", label.to_lowercase()), Some("right-click for more"), None))
-                // Not the panel's own press (a click in the tree, the history's selection).
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_mouse_down(MouseButton::Right, cx.listener(move |w, ev: &gpui::MouseDownEvent, _, cx| {
                     w.panel_menu = Some((p, ev.position));
@@ -649,8 +526,6 @@ impl Workspace {
         )
     }
 
-    /// The docks' seams, laid over everything (window coordinates; not while a panel moves):
-    /// each column's inner edge resizes it.
     pub(crate) fn render_seams(&self, frame: &Frame, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let mut out = Vec::new();
         for d in Dock::ALL {
@@ -677,8 +552,6 @@ impl Workspace {
         out
     }
 
-    /// Column `ci`'s inner seam dragged to `x` (window points): its open panels take the new
-    /// width, each within its own bounds.
     pub(crate) fn resize_column(&mut self, d: Dock, ci: usize, x: f32) {
         let Some(col) = self.frame_now.dock(d).cols.get(ci) else { return };
         let w = if d == Dock::Left { x - col.rect.x } else { col.rect.right() - x };
@@ -692,7 +565,6 @@ impl Workspace {
         }
     }
 
-    /// A dragged panel moved: the place under the pointer and the area it would take there.
     pub(crate) fn panel_drag_moved(&mut self, ev: &DragMoveEvent<DraggedPanel>, window: &mut Window, cx: &mut Context<Self>) {
         let p = ev.drag(cx).0;
         let pos = (ev.event.position.x.pt(), ev.event.position.y.pt());
@@ -702,7 +574,6 @@ impl Workspace {
         let reduced = cx.reduce_motion();
         let g = self.panel_drag.get_or_insert(PanelDrag { panel: p, target: None, preview: None, shown: None, glide: None });
         if g.panel != p || g.target != target || g.preview != preview {
-            // From one place to the next the box glides; it appears where it first points.
             g.glide = match (g.shown, preview) {
                 (Some(from), Some(_)) if !reduced && g.preview.is_some() => Some(RectTween::new(from.arr())),
                 _ => None,
@@ -714,7 +585,6 @@ impl Workspace {
         }
     }
 
-    /// The panel dropped: to the place the preview showed, if any.
     pub(crate) fn drop_panel(&mut self, p: PanelId, cx: &mut Context<Self>) {
         if let Some(to) = self.panel_drag.take().filter(|g| g.panel == p).and_then(|g| g.target) {
             self.move_panel(p, to, cx);
@@ -722,7 +592,6 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Panel `p` to place `to`: an undo step.
     pub(crate) fn move_panel(&mut self, p: PanelId, to: Place, cx: &mut Context<Self>) {
         let next = self.layout.moved(p, to);
         let from = self.layout.clone();
@@ -733,8 +602,6 @@ impl Workspace {
         }
     }
 
-    /// A new arrangement: each panel that changes dock (and `moved`, when it changes place in
-    /// its own) settles into its new place from the old one.
     pub(crate) fn set_layout(&mut self, next: PanelLayout, moved: Option<PanelId>, cx: &mut Context<Self>) {
         if next == self.layout {
             return;
@@ -754,8 +621,6 @@ impl Workspace {
         cx.notify();
     }
 
-    /// The palette's "Move Sidebar to the Left / Right": the sidebar there (shown if it was
-    /// shut), the side panel opposite.
     pub(crate) fn move_sidebar_to(&mut self, d: Dock, cx: &mut Context<Self>) {
         self.set_explorer_open(true, cx);
         if self.layout.explorer_dock() == d {
@@ -765,7 +630,6 @@ impl Workspace {
         self.notice(format!("Sidebar moved to the {}", d.name()), cx);
     }
 
-    /// The sidebar back on the left.
     pub(crate) fn reset_panel_layout(&mut self, cx: &mut Context<Self>) {
         self.panel_menu = None;
         let from = self.layout.clone();
@@ -776,16 +640,12 @@ impl Workspace {
         self.notice("Panel layout reset", cx);
     }
 
-    /// A drag let go of with esc (`dnd`): no preview, no drop.
     pub(crate) fn drag_cancelled(&mut self, cx: &mut Context<Self>) {
         self.panel_drag = None;
         self.tab_drop = None;
         cx.notify();
     }
 
-    /// The drop preview: a translucent box over exactly the area the dragged panel would take,
-    /// gliding from one place to the next. Gone with the drag (dropped, cancelled, or let go
-    /// elsewhere).
     pub(crate) fn render_drop_preview(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         if !cx.has_active_drag() {
             self.panel_drag = None;
@@ -821,7 +681,6 @@ impl Workspace {
                 .items_center()
                 .justify_center()
                 .overflow_hidden()
-                // What lands there, on an opaque badge (the box is over the grid's text).
                 .child(
                     div()
                         .px(px(8.))
@@ -835,8 +694,6 @@ impl Workspace {
         )
     }
 
-    /// The sidebar's right-click menu (on its header or its grip): move it to the other side, or
-    /// back home.
     pub(crate) fn render_panel_menu(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let (_, at) = self.panel_menu?;
         let t = cx.theme();
@@ -865,7 +722,6 @@ impl Workspace {
     }
 }
 
-/// The workspace's dock commands (the palette's entries).
 pub(crate) fn workspace_actions(d: gpui::Stateful<gpui::Div>, cx: &mut Context<Workspace>) -> gpui::Stateful<gpui::Div> {
     d.on_action(cx.listener(|w, _: &MoveExplorerLeft, _, cx| w.move_sidebar_to(Dock::Left, cx)))
         .on_action(cx.listener(|w, _: &MoveExplorerRight, _, cx| w.move_sidebar_to(Dock::Right, cx)))
@@ -894,15 +750,12 @@ mod tests {
         900. - metrics::TITLE_H - metrics::STATUS_H
     }
 
-    /// The default arrangement: the sidebar at the left from under the title bar to the status
-    /// bar, the side panel at the right, the work surface between them; mirrored, the other way.
     #[test]
     fn default_frame() {
         let f = rest(&PanelLayout::default(), true);
         assert!(near(f.panel(Explorer).unwrap(), Rect { x: 0., y: metrics::TITLE_H, w: 260., h: body() }));
         assert!(near(f.panel(S).unwrap(), Rect { x: 1040., y: metrics::TITLE_H, w: 360., h: body() }));
         assert!(near(f.center, Rect { x: 260., y: metrics::TITLE_H, w: 780., h: body() }));
-        // Shut: no room at all.
         let f = rest(&PanelLayout::default(), false);
         assert_eq!(f.panel(S), None);
         assert_eq!(f.dock(Dock::Right).rect.w, 0.);
@@ -910,13 +763,10 @@ mod tests {
         let m = rest(&PanelLayout::explorer_at(Dock::Right), true);
         assert!(near(m.panel(Explorer).unwrap(), Rect { x: 1140., y: metrics::TITLE_H, w: 260., h: body() }));
         assert!(near(m.panel(S).unwrap(), Rect { x: 0., y: metrics::TITLE_H, w: 360., h: body() }));
-        // Too wide for the window: the panels give way, the work surface keeps its least width.
         let narrow = frame((800., 900.), slots(&PanelLayout::default(), |_| 1., &[]), &SIZES);
         assert!((narrow.center.w - CENTER_MIN_W).abs() < 0.01);
     }
 
-    /// A move half-way: the old place half shut, the new one half open; done, it is exactly the
-    /// arrangement at rest.
     #[test]
     fn a_move_folds_one_place_and_opens_the_other() {
         let l = PanelLayout::explorer_at(Dock::Right);
@@ -929,8 +779,6 @@ mod tests {
         assert_eq!(done, rest(&l, true));
     }
 
-    /// The sidebar drops on the other side once the pointer is past the work surface's middle;
-    /// on its own side, outside the body or for the side panel: nowhere.
     #[test]
     fn drop_targets() {
         let l = PanelLayout::default();
@@ -945,13 +793,10 @@ mod tests {
         let fr = rest(&r, true);
         let mid = fr.center.x + fr.center.w / 2.;
         assert_eq!(target_at(&fr, &r, Explorer, (mid - 10., 400.)), Some(Place::column(Dock::Left, 0)));
-        // The preview is the area it takes once dropped there.
         let p = rest(&l.moved(Explorer, Place::column(Dock::Right, 0)), true).panel(Explorer).unwrap();
         assert!(near(p, Rect { x: 1140., y: metrics::TITLE_H, w: 260., h: body() }), "{p:?}");
     }
 
-    /// The header goes with the sidebar; the tabs start past the left dock (the side panel
-    /// alone there is the header slot).
     #[test]
     fn the_title_follows_the_explorer() {
         let lights = 70.;

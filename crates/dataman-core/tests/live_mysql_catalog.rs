@@ -1,8 +1,3 @@
-//! MySQL's catalog and the features built on it, against a real server (`DATAMAN_MYSQL`, see
-//! `common`): the explorer's levels and objects, DDL, foreign-key navigation, the table data
-//! view, grid editing with conflict checks, exports and the agents' bounded statements. Skips
-//! without a server.
-
 mod common;
 
 use common::*;
@@ -27,7 +22,6 @@ fn explorer_levels_and_objects() {
     let dbs = e.core.block_on(c.databases()).unwrap();
     assert!(dbs.iter().any(|d| d == db));
     assert!(dbs.iter().position(|d| d == "mysql") > dbs.iter().position(|d| d == db), "system databases last: {dbs:?}");
-    // The database is its own schema.
     assert_eq!(e.core.block_on(c.schemas(db)).unwrap(), vec![db.to_string()]);
     let rels = e.core.block_on(c.relations(db, db)).unwrap();
     let names: Vec<(&str, RelKind)> = rels.iter().map(|r| (r.name.as_str(), r.kind)).collect();
@@ -49,7 +43,6 @@ fn explorer_levels_and_objects() {
     assert_eq!(st.columns, vec!["status", "created_at"]);
     assert_eq!(st.definition.as_deref(), Some("CREATE INDEX orders_status_idx ON dataman_t_cat.orders (status, created_at)"));
 
-    // Routines, triggers, constraints.
     let counts = e.core.block_on(c.object_counts(db, db)).unwrap();
     assert_eq!((counts.functions, counts.triggers, counts.sequences), (Some(2), Some(1), None));
     let fs = e.core.block_on(c.functions(db, db)).unwrap();
@@ -70,20 +63,17 @@ fn explorer_levels_and_objects() {
     let stats = e.core.block_on(c.rel_stats(db, db)).unwrap();
     assert!(stats.get("customer").is_some_and(|s| s.bytes.is_some()));
 
-    // DDL from the server itself.
     let ddl = e.core.block_on(c.table_ddl(db, db, "orders")).unwrap();
     assert!(ddl.starts_with("-- dataman_t_cat.orders: generated from the catalog of dataman_t_cat\nCREATE TABLE `orders`"), "{ddl}");
     assert!(ddl.contains("CONSTRAINT `orders_customer_fk` FOREIGN KEY"));
     let v = e.core.block_on(c.view_definition(db, db, "v_order_customer")).unwrap().unwrap();
     assert!(v.contains("VIEW `v_order_customer` AS select"), "{v}");
 
-    // Autocomplete preload: the database's columns, with MySQL's type names.
     e.core.block_on(c.preload(db)).unwrap();
     let snap = c.schema.snapshot(db);
     assert_eq!(snap.dialect, Dialect::MySql);
     let r = snap.resolve(None, "Orders").expect("case-insensitive");
     assert!(snap.columns_of(r).iter().any(|c| c.name == "total" && c.type_name == "decimal(12,2)"));
-    // The explorer's columns after the preload still carry the key.
     let cols = e.core.block_on(c.columns(db, db, "orders")).unwrap();
     assert!(cols.iter().any(|c| c.name == "id" && c.primary_key), "{cols:?}");
     let cat = e.core.block_on(c.catalog(db)).unwrap();
@@ -100,7 +90,6 @@ fn foreign_keys_and_the_data_view() {
     let l = g.links.iter().find(|l| l.from_table == "item").unwrap();
     assert_eq!((l.from_columns.clone(), l.to_table.as_str(), l.to_columns.clone()), (vec!["order_id".to_string()], "orders", vec!["id".to_string()]));
 
-    // References named in the result itself: joins work.
     let rs = run(&e, &c, "SELECT i.product, i.order_id, o.customer_id, c.name FROM item i JOIN orders o ON o.id = i.order_id JOIN customer c ON c.id = o.customer_id ORDER BY i.order_id, i.line");
     let fk = e.core.block_on(c.foreign_keys(db, &rs)).unwrap();
     assert_eq!(fk.flags(), vec![false, true, true, false]);
@@ -110,7 +99,6 @@ fn foreign_keys_and_the_data_view() {
     assert_eq!(j.sql, "SELECT * FROM dataman_t_fk.customer WHERE id = 1;");
     assert_eq!(run(&e, &c, &j.sql).rows(), 1);
 
-    // The data view: paging, filters, sort, counts.
     let key = e.core.block_on(c.primary_key(db, db, "item")).unwrap();
     assert_eq!(key, vec!["order_id", "line"]);
     let mut v = TableView::new(db, "customer", vec!["id".into()], 2);
@@ -131,7 +119,6 @@ fn foreign_keys_and_the_data_view() {
     assert!(est.is_some(), "TABLE_ROWS after ANALYZE");
     let j = Filter::new("profile", Kind::Json, Op::Eq, "{\"city\": \"Denver\"}").sql_in(Dialect::MySql);
     assert_eq!(run(&e, &c, &format!("SELECT id FROM customer WHERE {j}")).snapshot().text(0, 0).as_deref(), Some("2"));
-    // Enum labels for the editor, from the column's type.
     let rs = run(&e, &c, "SELECT id, tier, tags FROM customer");
     assert_eq!(*e.core.block_on(c.result_enum_labels(db, &rs, 1)).unwrap(), vec!["bronze", "silver", "gold"]);
     assert!(e.core.block_on(c.result_enum_labels(db, &rs, 2)).unwrap().is_empty(), "SET is not an enum");
@@ -152,7 +139,6 @@ fn grid_edits_apply_in_a_transaction() {
     let snap = rs.snapshot();
     let col = |n: &str| rs.columns().unwrap().iter().position(|c| c.name == n).unwrap();
     let mut cs = ChangeSet::new();
-    // Text with a quote and a backslash, an enum, bytes, a datetime, NULL.
     cs.edit(0, col("name"), CellValue::text("Ana Smith"), CellValue::text("Zoë d'Arcy \\ S."));
     cs.edit(1, col("tier"), CellValue::text("silver"), CellValue::text("gold"));
     cs.edit(1, col("photo"), CellValue::Null, CellValue::text("\\xcafe"));
@@ -172,25 +158,20 @@ fn grid_edits_apply_in_a_transaction() {
     assert_eq!(a.text(3, 4), None);
     assert_eq!(a.rows(), 6);
 
-    // A conflict (the row changed since it was read) rolls everything back.
     let stale = rs.snapshot();
     let mut cs = ChangeSet::new();
     cs.edit(4, col("balance"), CellValue::text("12.00"), CellValue::text("13.00"));
     cs.edit(0, col("balance"), CellValue::text("1520.50"), CellValue::text("0"));
-    // Row 0's name changed above: the update guarded on it… only balance is checked here, so
-    // change balance behind the grid's back.
     query(&e, &c, "UPDATE customer SET balance = 1 WHERE id = 1");
     let r = e.core.block_on(c.apply_changes(Some(db), cs.plan(&t, &stale).unwrap())).unwrap();
     assert!(!r.committed);
     assert!(r.outcomes.iter().any(|o| matches!(&o.outcome, Outcome::Conflict { kind: ConflictKind::Changed { .. }, .. })), "{r:?}");
     assert_eq!(run(&e, &c, "SELECT balance FROM customer WHERE id = 5").snapshot().text(0, 0).as_deref(), Some("12.00"), "rolled back");
 
-    // A join is read-only; a view too.
     let j = run(&e, &c, "SELECT o.id, c.name FROM orders o JOIN customer c ON c.id = o.customer_id");
     assert!(matches!(e.core.block_on(c.edit_target(db, &j, None)).unwrap(), Editability::ReadOnly(_)));
     let v = run(&e, &c, "SELECT * FROM v_order_customer");
     assert!(matches!(e.core.block_on(c.edit_target(db, &v, None)).unwrap(), Editability::ReadOnly(_)));
-    // A composite key.
     let it = run(&e, &c, "SELECT * FROM `item`");
     match e.core.block_on(c.edit_target(db, &it, None)).unwrap() {
         Editability::Editable(t) => assert_eq!(t.key.iter().map(|k| k.name.as_str()).collect::<Vec<_>>(), vec!["order_id", "line"]),
@@ -205,7 +186,6 @@ fn exports_and_bounded_statements() {
     let Some(c) = mysql_seeded(&e, "dataman_t_mcp") else { return };
     let db = "dataman_t_mcp";
     let dir = tempfile::tempdir().unwrap();
-    // A query export through the binary protocol, then SQL INSERTs in MySQL's quoting.
     let path = dir.path().join("c.csv");
     let x = c.export_query(Some(db), "SELECT id, name, balance, created, birth_date FROM customer ORDER BY id", &path, ExportOptions::new(ExportFormat::Csv), None);
     let s = e.core.block_on(x.task).unwrap();
@@ -227,7 +207,6 @@ fn exports_and_bounded_statements() {
     let back = query(&e, &c, "SELECT name FROM dataman_t_mcp.copied WHERE id = 5");
     assert_eq!(back.snapshot().text(0, 0).as_deref(), Some("Eva \\ Brown"), "round trip");
 
-    // Agents: a bounded read (rows capped), a refused write, a write in a transaction.
     let lim = Limits { max_rows: 2, ..Default::default() };
     let never = std::future::pending::<()>();
     let o = e.core.block_on(c.bounded(Some(db), "SELECT id, name, profile FROM customer ORDER BY id", vec![], Mode::Read, lim, never)).unwrap();

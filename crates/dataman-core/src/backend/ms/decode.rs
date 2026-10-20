@@ -1,11 +1,3 @@
-//! SQL Server values into the grid's chunks: each column's [`Kind`] from its TDS type, and the
-//! cells as tiberius decodes them ([`ColumnData`]), written straight into the builder.
-//!
-//! Exact numbers stay exact: `decimal`/`numeric` are formatted from their scaled integer, and
-//! `money`/`smallmoney` (which tiberius hands over as `f64`) go back to their four decimals,
-//! exact up to ±100 billion (15 digits). Dates are the grid's integers (days, µs since 2000-01-01);
-//! `datetime2`'s seventh decimal (100 ns) is cut to µs; `datetimeoffset` is text as the server writes it (its stored offset, 100 ns kept).
-
 use std::fmt::Write as _;
 
 use tiberius::ColumnData;
@@ -14,16 +6,12 @@ use tiberius::ColumnType;
 use crate::result::{ChunkBuilder, ColumnInfo};
 use crate::value::{self, Kind};
 
-/// How one column's cells are decoded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Dec {
     pub kind: Kind,
-    /// `money` / `smallmoney`: an `f64` with four exact decimals.
     pub money: bool,
 }
 
-/// What the grid shows for a column, and the type's name as SQL Server writes it. The TDS
-/// metadata only has the wire type: a nullable `int` of any width is `intn`, named `int` here.
 pub(crate) fn kind_of(ty: ColumnType) -> (Kind, &'static str) {
     use ColumnType::*;
     match ty {
@@ -42,7 +30,6 @@ pub(crate) fn kind_of(ty: ColumnType) -> (Kind, &'static str) {
         Datetime2 => (Kind::Timestamp, "datetime2"),
         Daten => (Kind::Date, "date"),
         Timen => (Kind::Time, "time"),
-        // Text, as the server writes it: the offset stored with the value, the seventh decimal kept.
         DatetimeOffsetn => (Kind::Text, "datetimeoffset"),
         Guid => (Kind::Other, "uniqueidentifier"),
         BigVarChar => (Kind::Text, "varchar"),
@@ -55,7 +42,6 @@ pub(crate) fn kind_of(ty: ColumnType) -> (Kind, &'static str) {
         BigVarBin => (Kind::Bytes, "varbinary"),
         BigBinary => (Kind::Bytes, "binary"),
         Image => (Kind::Bytes, "image"),
-        // CLR types (hierarchyid, geography, geometry): their serialized bytes.
         Udt => (Kind::Bytes, "udt"),
         SSVariant => (Kind::Other, "sql_variant"),
         Null => (Kind::Text, "null"),
@@ -73,34 +59,24 @@ pub(crate) fn column_infos(cols: &[tiberius::Column]) -> (Vec<ColumnInfo>, Vec<D
     cols.iter().map(column_info).unzip()
 }
 
-// ---------------------------------------------------------------------------------------------
-// Dates
-
-/// 1900-01-01 (`datetime`'s and `smalldatetime`'s day 0) in days since 2000-01-01.
 const DAY_1900: i64 = -36_524;
-/// 0001-01-01 (`date`'s day 0) in days since 2000-01-01.
 const DAY_0001: i64 = -730_119;
 const DAY_US: i64 = 86_400_000_000;
 
-/// `date`: days since 0001-01-01 → the grid's days since 2000-01-01.
 fn date_days(d: tiberius::time::Date) -> i64 {
     d.days() as i64 + DAY_0001
 }
 
-/// `time(n)`: increments of 10^-n s since midnight → µs (the seventh decimal is cut).
 fn time_us(t: tiberius::time::Time) -> i64 {
     let (inc, scale) = (t.increments() as i64, t.scale() as u32);
     if scale >= 6 { inc / 10i64.pow(scale - 6) } else { inc * 10i64.pow(6 - scale) }
 }
 
-/// The seventh decimal (100 ns) of a `time(7)`, which the grid's µs integers cannot hold.
 fn tenth_micro(t: tiberius::time::Time) -> u8 {
     let (inc, scale) = (t.increments(), t.scale() as u32);
     if scale >= 7 { (inc % 10) as u8 } else { 0 }
 }
 
-/// Appends the seventh decimal `tenth` to the time ending `out[start..]` (`hh:mm:ss[.ffffff]`, or
-/// a timestamp ending so).
 fn add_tenth(out: &mut String, start: usize, tenth: u8) {
     if tenth == 0 {
         return;
@@ -115,7 +91,6 @@ fn add_tenth(out: &mut String, start: usize, tenth: u8) {
     out.push((b'0' + tenth) as char);
 }
 
-/// `us` as the grid writes a timestamp, with the seventh decimal `tenth` (0 when there is none).
 fn timestamp_text(us: i64, tenth: u8, out: &mut String) {
     let start = out.len();
     value::format_timestamp(us, out);
@@ -126,22 +101,16 @@ fn datetime2_us(dt: tiberius::time::DateTime2) -> i64 {
     date_days(dt.date()) * DAY_US + time_us(dt.time())
 }
 
-/// `datetime`: days since 1900 and 1/300 s ticks, rounded to the milliseconds SQL Server shows
-/// (`.003`, `.007`).
+/// 1/300 s ticks, rounded to the milliseconds SQL Server shows (`.003`, `.007`).
 fn datetime_us(dt: tiberius::time::DateTime) -> i64 {
     let ms = (dt.seconds_fragments() as i64 * 10 + 1) / 3;
     (dt.days() as i64 + DAY_1900) * DAY_US + ms * 1000
 }
 
-/// `smalldatetime`: days since 1900 and minutes.
 fn smalldatetime_us(dt: tiberius::time::SmallDateTime) -> i64 {
     (dt.days() as i64 + DAY_1900) * DAY_US + dt.seconds_fragments() as i64 * 60_000_000
 }
 
-// ---------------------------------------------------------------------------------------------
-// Text forms
-
-/// A decimal from its scaled integer: `12345`, scale 2 → `123.45`.
 pub(crate) fn decimal(value: i128, scale: u8, out: &mut String) {
     if scale == 0 {
         let _ = write!(out, "{value}");
@@ -156,13 +125,11 @@ pub(crate) fn decimal(value: i128, scale: u8, out: &mut String) {
     let _ = write!(out, "{}.{:0width$}", a / p, a % p, width = scale as usize);
 }
 
-/// `money` as tiberius reads it (the scaled integer divided by 10⁴, in an `f64`): the integer
-/// back, with its four decimals.
+/// tiberius reads `money` as an `f64` (the scaled integer divided by 10⁴): the integer back.
 fn money(v: f64, out: &mut String) {
     decimal((v * 1e4).round() as i128, 4, out);
 }
 
-/// A `real` the way it was written (`0.1`, not `0.10000000149011612`), as an `f64`.
 fn real(x: f32) -> f64 {
     let mut s = String::new();
     let _ = write!(s, "{x}");
@@ -177,11 +144,9 @@ fn hex(b: &[u8], out: &mut String) {
 }
 
 fn guid(u: &tiberius::Uuid, out: &mut String) {
-    // SQL Server prints them in upper case.
     let _ = write!(out, "{}", u.hyphenated().encode_upper(&mut uuid::Uuid::encode_buffer()));
 }
 
-/// Any value as text (`sql_variant` cells, catalog reads); false for NULL.
 pub(crate) fn text_into(v: &ColumnData<'_>, money_col: bool, out: &mut String) -> bool {
     match v {
         ColumnData::U8(Some(x)) => {
@@ -215,7 +180,6 @@ pub(crate) fn text_into(v: &ColumnData<'_>, money_col: bool, out: &mut String) -
         ColumnData::Date(Some(d)) => value::format_date(date_days(*d) as i32, out),
         ColumnData::DateTime2(Some(dt)) => timestamp_text(datetime2_us(*dt), tenth_micro(dt.time()), out),
         ColumnData::DateTimeOffset(Some(dto)) => {
-            // As the server wrote it: the local time and its offset.
             let off = dto.offset() as i64;
             timestamp_text(datetime2_us(dto.datetime2()) + off * 60_000_000, tenth_micro(dto.datetime2().time()), out);
             let a = off.unsigned_abs();
@@ -226,13 +190,11 @@ pub(crate) fn text_into(v: &ColumnData<'_>, money_col: bool, out: &mut String) -
     true
 }
 
-/// A value as plain text (catalog reads); `None` for NULL.
 pub(crate) fn value_text(v: &ColumnData<'_>, ty: ColumnType) -> Option<String> {
     let mut s = String::new();
     text_into(v, matches!(ty, ColumnType::Money | ColumnType::Money4), &mut s).then_some(s)
 }
 
-/// Pushes one cell into column `i`.
 pub(crate) fn push_value(b: &mut ChunkBuilder, i: usize, d: Dec, v: &ColumnData<'_>) {
     let int = |b: &mut ChunkBuilder, x: i64| match d.kind {
         Kind::Int => b.push_i64(i, x),
@@ -256,14 +218,11 @@ pub(crate) fn push_value(b: &mut ChunkBuilder, i: usize, d: Dec, v: &ColumnData<
         ColumnData::Date(Some(x)) if d.kind == Kind::Date => b.push_i64(i, date_days(*x)),
         ColumnData::Time(Some(t)) if d.kind == Kind::Time => b.push_i64(i, time_us(*t)),
         ColumnData::DateTimeOffset(Some(dto)) if d.kind == Kind::TimestampTz => b.push_i64(i, datetime2_us(dto.datetime2())),
-        // tiberius' typed NULLs (`I32(None)`…).
         v if is_null(v) => b.push_null(i),
         v => match d.kind.storage() {
             value::Storage::Text => b.push_text_with(i, |s| {
                 text_into(v, d.money, s);
             }),
-            // A value of another type than the column's (never in practice): NULL rather than
-            // a wrong number.
             _ => b.push_null(i),
         },
     }
@@ -304,7 +263,6 @@ mod tests {
         ColumnInfo { name: "c".into(), type_name: String::new(), type_oid: 0, kind }
     }
 
-    /// One cell through the builder, as the grid prints it.
     fn shown(ty: ColumnType, v: ColumnData<'static>) -> Option<String> {
         let (kind, _) = kind_of(ty);
         let mut b = ChunkBuilder::new(&[col(kind)]);
@@ -374,24 +332,20 @@ mod tests {
     #[test]
     fn dates_and_times() {
         use ColumnType as T;
-        // 2026-10-13 is 739_901 days after 0001-01-01.
         let day = Date::new(739_901);
         assert_eq!(shown(T::Daten, ColumnData::Date(Some(day))).as_deref(), Some("2026-10-13"));
         assert_eq!(shown(T::Daten, ColumnData::Date(Some(Date::new(0)))).as_deref(), Some("0001-01-01"));
         assert_eq!(shown(T::Daten, ColumnData::Date(Some(Date::new(3_652_058)))).as_deref(), Some("9999-12-31"));
-        // time(7): 100 ns increments; the seventh decimal goes.
         let t = Time::new(((9 * 3600 + 30 * 60) as u64) * 10_000_000 + 1_234_567, 7);
         assert_eq!(shown(T::Timen, ColumnData::Time(Some(t))).as_deref(), Some("09:30:00.123456"));
         assert_eq!(shown(T::Timen, ColumnData::Time(Some(Time::new(5, 1)))).as_deref(), Some("00:00:00.5"));
         let dt2 = DateTime2::new(day, Time::new(((23 * 3600 + 59 * 60 + 59) as u64) * 1000 + 250, 3));
         assert_eq!(shown(T::Datetime2, ColumnData::DateTime2(Some(dt2))).as_deref(), Some("2026-10-13 23:59:59.25"));
-        // datetime: 1/300 s ticks, shown as SQL Server rounds them.
-        let days_1900 = 46_306; // 2026-10-13
+        let days_1900 = 46_306;
         assert_eq!(shown(T::Datetimen, ColumnData::DateTime(Some(DateTime::new(days_1900, 300 * 3600 + 1)))).as_deref(), Some("2026-10-13 01:00:00.003"));
         assert_eq!(shown(T::Datetimen, ColumnData::DateTime(Some(DateTime::new(days_1900, 2)))).as_deref(), Some("2026-10-13 00:00:00.007"));
         assert_eq!(shown(T::Datetimen, ColumnData::DateTime(Some(DateTime::new(-53_690, 0)))).as_deref(), Some("1753-01-01 00:00:00"));
         assert_eq!(shown(T::Datetime4, ColumnData::SmallDateTime(Some(SmallDateTime::new(46_306, 61)))).as_deref(), Some("2026-10-13 01:01:00"));
-        // datetimeoffset: the UTC instant (the grid shows it in local time).
         let dto = DateTimeOffset::new(DateTime2::new(day, Time::new(12 * 3600, 0)), -180);
         let mut b = ChunkBuilder::new(&[col(Kind::TimestampTz)]);
         push_value(&mut b, 0, Dec { kind: Kind::TimestampTz, money: false }, &ColumnData::DateTimeOffset(Some(dto)));
@@ -402,12 +356,9 @@ mod tests {
             c => panic!("{c:?}"),
         }, &mut utc);
         assert_eq!(utc, "2026-10-13 12:00:00");
-        // As text (catalog reads, variants): the server's local time and its offset.
         assert_eq!(value_text(&ColumnData::DateTimeOffset(Some(dto)), T::DatetimeOffsetn).as_deref(), Some("2026-10-13 09:00:00 -03:00"));
     }
 
-    /// As text (a `datetimeoffset` column, `sql_variant`, the catalog) the 100 ns decimal stays,
-    /// and a datetimeoffset keeps the offset it was stored with.
     #[test]
     fn full_precision_text() {
         use ColumnType as T;

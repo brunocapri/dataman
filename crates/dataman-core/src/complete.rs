@@ -1,12 +1,3 @@
-//! Local autocomplete, signature help and go to definition: tables, columns, functions, types
-//! and keywords from the cached schema and catalog, no server trip.
-//!
-//! The statement under the cursor is read into scopes (`sql::scope`): CTE names and columns,
-//! subquery aliases and their columns, `JOIN … USING` and lateral sources all resolve. What is
-//! offered depends on where the cursor is: tables after FROM/JOIN/UPDATE/INTO, columns and
-//! functions in expressions, types after `::` and `CAST(… AS`, enum labels inside a string
-//! compared with an enum column, and keywords ranked by what usually comes next.
-
 use std::collections::HashSet;
 use std::ops::Range;
 
@@ -25,7 +16,6 @@ pub enum CandidateKind {
     Schema,
     Function,
     Type,
-    /// An enum label inside a string.
     Value,
     Keyword,
 }
@@ -34,35 +24,28 @@ pub enum CandidateKind {
 pub struct Candidate {
     pub label: String,
     pub kind: CandidateKind,
-    /// Column type, the schema of a table, a function's result type.
     pub detail: String,
-    /// Text inserted in place of `Completion::replace`.
     pub insert: String,
-    /// Where the cursor lands inside `insert` (`None`: after it), e.g. between a call's parens.
     pub caret: Option<usize>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Completion {
-    /// Byte range of the partial word being completed (empty at a fresh position).
     pub replace: Range<usize>,
     pub items: Vec<Candidate>,
 }
 
 pub const MAX_ITEMS: usize = 50;
 
-/// Keywords that start a statement.
 const START: &[&str] = &[
     "SELECT", "WITH", "INSERT", "UPDATE", "DELETE", "CREATE", "ALTER", "DROP", "EXPLAIN", "BEGIN", "COMMIT", "ROLLBACK",
     "SET", "SHOW", "TRUNCATE", "GRANT", "REVOKE", "VACUUM", "ANALYZE", "COPY", "CALL", "DO", "VALUES", "TABLE", "LISTEN",
     "NOTIFY", "SUBSCRIBE",
 ];
-/// After a source in FROM.
 const AFTER_SOURCE: &[&str] = &[
     "WHERE", "JOIN", "LEFT", "INNER", "RIGHT", "FULL", "CROSS", "NATURAL", "ON", "USING", "GROUP", "ORDER", "LIMIT", "AS",
     "UNION", "OFFSET", "HAVING", "WINDOW", "FOR", "LATERAL",
 ];
-/// Keywords that start an expression (when no operand is complete yet).
 const EXPR_START: &[&str] = &[
     "NOT", "EXISTS", "CASE", "NULL", "TRUE", "FALSE", "DISTINCT", "CAST", "INTERVAL", "ARRAY", "CURRENT_DATE",
     "CURRENT_TIMESTAMP", "CURRENT_USER", "SELECT",
@@ -72,7 +55,6 @@ const OBJECTS: &[&str] = &[
     "ROLE", "DATABASE", "OR", "UNIQUE", "TEMP", "TEMPORARY", "IF",
 ];
 
-/// What usually follows a complete operand in each clause.
 fn follow(clause: Clause) -> &'static [&'static str] {
     match clause {
         Clause::Select => &["FROM", "AS", "AND", "OR", "IS", "NOT", "IN", "LIKE", "ILIKE", "BETWEEN", "OVER", "FILTER", "INTO"],
@@ -92,15 +74,11 @@ fn follow(clause: Clause) -> &'static [&'static str] {
 }
 
 enum Ctx {
-    /// After `x.` (or `s.x.`): columns of a source or table, or a schema's tables.
     Qualified { schema: Option<String>, name: String },
     Tables,
     Types,
-    /// Inside `JOIN t USING (`.
     UsingCols,
-    /// Inside `INSERT INTO t (`.
     InsertCols,
-    /// `UPDATE t SET |`.
     SetTargets,
     Expr { clause: Clause, operand: bool, in_case: bool },
     AfterSource,
@@ -108,13 +86,11 @@ enum Ctx {
     Keywords(&'static [&'static str]),
 }
 
-/// Candidates for the cursor at byte `cursor` of `src`.
 pub fn complete(src: &str, cursor: usize, schema: &SchemaSnapshot) -> Completion {
     let cursor = cursor.min(src.len());
     let tokens = tokenize_in(src, schema.dialect);
     let empty = Completion { replace: cursor..cursor, items: vec![] };
 
-    // Inside a string: enum labels, if the string is compared with an enum column.
     if let Some(i) = tokens.iter().position(|t| t.start < cursor && (cursor < t.end || (cursor == t.end && unterminated_in(src, t, schema.dialect).is_some())))
         && matches!(tokens[i].kind, TokenKind::String | TokenKind::DollarString | TokenKind::LineComment | TokenKind::BlockComment | TokenKind::QuotedIdent)
     {
@@ -123,18 +99,15 @@ pub fn complete(src: &str, cursor: usize, schema: &SchemaSnapshot) -> Completion
         }
         return empty;
     }
-    // A line comment that ends right at the cursor.
     if tokens.iter().any(|t| t.end == cursor && t.kind == TokenKind::LineComment) {
         return empty;
     }
 
-    // The partial word ends at the cursor.
     let b = src.as_bytes();
     let mut ws = cursor;
     while ws > 0 && is_ident_cont(b[ws - 1]) {
         ws -= 1;
     }
-    // Do not complete right after a number like `1`, nor a parameter like `$1`.
     if ws < cursor && b[ws].is_ascii_digit() || ws > 0 && b[ws - 1] == b'$' {
         return empty;
     }
@@ -147,7 +120,6 @@ pub fn complete(src: &str, cursor: usize, schema: &SchemaSnapshot) -> Completion
     let scope_id = analysis.scope_at(ws).unwrap_or(0);
     let ctx = context(src, &before, d);
 
-    // (rank, order within a likely-keyword list, candidate)
     let mut items: Vec<(u8, u16, Candidate)> = Vec::new();
     let mut kw: Vec<(Candidate, u8, u16)> = Vec::new();
     let mut push = |c: Candidate, prio: u8| {
@@ -156,11 +128,9 @@ pub fn complete(src: &str, cursor: usize, schema: &SchemaSnapshot) -> Completion
         }
     };
     let keywords = |kw: &mut Vec<(Candidate, u8, u16)>, first: &[&str], rest: Option<u8>| {
-        // The likely ones first, in their list's order.
         let rank = |k: &str| first.iter().position(|f| *f == k);
         let prio = |i: usize| (i / 3).min(2) as u8;
         if partial.is_empty() && rest.is_some() {
-            // Forced at a fresh position: only the likely ones.
             for (i, k) in first.iter().enumerate() {
                 kw.push((keyword(k, partial), prio(i), i as u16));
             }
@@ -341,14 +311,12 @@ pub fn complete(src: &str, cursor: usize, schema: &SchemaSnapshot) -> Completion
             out.push(c);
         }
     }
-    // A lone exact match of what is already typed is noise.
     if out.len() == 1 && out[0].label == partial {
         out.clear();
     }
     Completion { replace: ws..cursor, items: out }
 }
 
-/// The significant tokens of the statement around byte `at` (between the top-level `;`s).
 fn statement_tokens(src: &str, tokens: &[Token], at: usize, d: Dialect) -> Vec<Token> {
     let mut seg = 0..src.len();
     for s in split_tokens_in(src, tokens, d.script()).iter().filter(|s| s.full.end > s.range.end) {
@@ -366,12 +334,10 @@ fn keyword(k: &str, partial: &str) -> Candidate {
     Candidate { label: k.to_string(), kind: CandidateKind::Keyword, detail: String::new(), insert: keyword_case(k, partial), caret: None }
 }
 
-/// The name a token denotes, as the scope analysis reads it (MySQL: backticks, no case).
 fn ident(d: Dialect, src: &str, t: &Token) -> String {
     if d == Dialect::Postgres { ident_value(src, t) } else { ident_value_in(src, t, d).to_lowercase() }
 }
 
-/// A name as inserted: quoted the way the connection's engine needs it.
 fn quoted(d: Dialect, name: &str) -> String {
     if d == Dialect::Postgres { quote_ident(name) } else { d.quote_ident(name) }
 }
@@ -383,7 +349,6 @@ fn column(d: Dialect, name: &str, ty: &str) -> Candidate {
 fn function(d: Dialect, f: &FuncSig) -> Candidate {
     let name = quoted(d, &f.name);
     let insert = format!("{name}()");
-    // Inside the parens, unless it takes no arguments at all.
     let caret = (!f.args.is_empty()).then_some(insert.len() - 1);
     let detail = f.result.strip_prefix("SETOF ").unwrap_or(&f.result).to_string();
     Candidate { label: f.name.clone(), kind: CandidateKind::Function, detail, insert, caret }
@@ -399,12 +364,10 @@ fn table_candidate(d: Dialect, r: &crate::schema::Relation, qualify: bool) -> Ca
     }
 }
 
-/// Keywords follow the case the user is typing in.
 fn keyword_case(k: &str, partial: &str) -> String {
     if partial.chars().any(|c| c.is_ascii_uppercase()) { k.to_string() } else { k.to_ascii_lowercase() }
 }
 
-/// 0 = exact-case prefix, 1 = prefix ignoring case, 2 = substring, 3 = subsequence.
 fn match_score(label: &str, partial: &str) -> Option<u8> {
     if partial.is_empty() || label.starts_with(partial) {
         return Some(0);
@@ -436,7 +399,6 @@ fn is_kw(src: &str, t: &Token, k: &str) -> bool {
     matches!(t.kind, TokenKind::Keyword | TokenKind::Ident) && eq_kw(t.text(src), k)
 }
 
-/// Index of the innermost `(` left open in `toks`.
 fn open_paren(src: &str, toks: &[&Token]) -> Option<usize> {
     let mut depth = 0;
     for (i, t) in toks.iter().enumerate().rev() {
@@ -477,7 +439,6 @@ fn context(src: &str, before: &[&Token], d: Dialect) -> Ctx {
             if p > 0 && is_kw(src, before[p - 1], "USING") {
                 return Ctx::UsingCols;
             }
-            // INSERT INTO [s.]t (
             let mut k = p;
             if k > 0 && is_name(before[k - 1]) {
                 k -= 1;
@@ -490,7 +451,6 @@ fn context(src: &str, before: &[&Token], d: Dialect) -> Ctx {
             }
         }
     }
-    // The clause keyword at the cursor's paren depth.
     let mut clause = Clause::Other;
     let mut clause_kw = "";
     let mut depth = 0;
@@ -571,8 +531,6 @@ fn context(src: &str, before: &[&Token], d: Dialect) -> Ctx {
     Ctx::Expr { clause, operand, in_case: cases > 0 }
 }
 
-/// Inside the string at `tokens[i]`: the labels of the enum column it is compared with
-/// (`col = '…'`, `col <> '…'`, `col IN ('a', '…'`).
 fn enum_labels(src: &str, tokens: &[Token], i: usize, cursor: usize, snap: &SchemaSnapshot) -> Option<Completion> {
     let cat = snap.catalog.as_ref()?;
     let t = tokens[i];
@@ -581,7 +539,6 @@ fn enum_labels(src: &str, tokens: &[Token], i: usize, cursor: usize, snap: &Sche
     }
     let sig: Vec<&Token> = tokens[..i].iter().filter(|t| !t.kind.is_trivia()).collect();
     let mut k = sig.len();
-    // Back over `'a', '…'` inside IN ( … ).
     let mut in_list = false;
     while k >= 2 && is_punct(src, sig[k - 1], ",") && sig[k - 2].kind == TokenKind::String {
         k -= 2;
@@ -599,7 +556,6 @@ fn enum_labels(src: &str, tokens: &[Token], i: usize, cursor: usize, snap: &Sche
     } else {
         return None;
     }
-    // The column: `name` or `qualifier.name`.
     if k == 0 || !is_name(sig[k - 1]) {
         return None;
     }
@@ -610,7 +566,6 @@ fn enum_labels(src: &str, tokens: &[Token], i: usize, cursor: usize, snap: &Sche
     let a: Analysis = scope::analyze_in(src, &stmt, d);
     let scope_id = a.scope_at(t.start).unwrap_or(0);
     let ty = if a.scopes.is_empty() { None } else { a.ref_type(scope_id, qualifier.as_deref(), &name, snap) }?;
-    // MySQL's labels are in the column's own type (`enum('a','b')`).
     let mysql;
     let labels: &[String] = match cat.enum_labels(&ty, &snap.search_path) {
         Some(l) => l,
@@ -645,23 +600,15 @@ fn enum_labels(src: &str, tokens: &[Token], i: usize, cursor: usize, snap: &Sche
     Some(Completion { replace, items })
 }
 
-// ---------------------------------------------------------------------------------------------
-// Signature help
-
-/// The function call around the cursor and the parameter being typed.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SignatureHelp {
     pub function: FuncSig,
     pub params: Vec<String>,
-    /// The parameter under the cursor (`None`: past the last one).
     pub active: Option<usize>,
-    /// How many overloads the name has.
     pub overloads: usize,
-    /// Byte offset of the call's `(`.
     pub paren: usize,
 }
 
-/// Signature help for the cursor at byte `cursor`, from already lexed `tokens` of `src`.
 pub fn signature_help(src: &str, tokens: &[Token], cursor: usize, snap: &SchemaSnapshot) -> Option<SignatureHelp> {
     let cat = snap.catalog.as_ref()?;
     let end = tokens.partition_point(|t| t.end <= cursor);
@@ -672,7 +619,6 @@ pub fn signature_help(src: &str, tokens: &[Token], cursor: usize, snap: &SchemaS
     {
         return None;
     }
-    // Right after an open string or comment, or a line comment.
     if let Some(t) = end.checked_sub(1).map(|i| &tokens[i])
         && t.end == cursor
         && (t.kind == TokenKind::LineComment || unterminated_in(src, t, snap.dialect).is_some())
@@ -697,7 +643,6 @@ pub fn signature_help(src: &str, tokens: &[Token], cursor: usize, snap: &SchemaS
             (TokenKind::Punct, ")") => depth += 1,
             (TokenKind::Punct, "(") if depth > 0 => depth -= 1,
             (TokenKind::Punct, "(") => {
-                // The name before the paren.
                 let mut j = i;
                 let prev = loop {
                     if j == 0 {
@@ -740,20 +685,13 @@ pub fn signature_help(src: &str, tokens: &[Token], cursor: usize, snap: &SchemaS
     None
 }
 
-// ---------------------------------------------------------------------------------------------
-// Go to definition
-
-/// What a name in the editor refers to.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Definition {
-    /// A table or view (and the column, when the name was one).
     Relation { schema: String, name: String, column: Option<String> },
     Function { schema: String, name: String, oid: u32 },
-    /// Defined in the text itself (a CTE): its name's byte range.
     Local(Range<usize>),
 }
 
-/// The definition of the name at byte `cursor` of `src`.
 pub fn definition_at(src: &str, cursor: usize, snap: &SchemaSnapshot) -> Option<Definition> {
     let tokens = tokenize_in(src, snap.dialect);
     let i = tokens.iter().position(|t| t.start <= cursor && cursor <= t.end && is_name(t) || t.start <= cursor && cursor < t.end && t.kind == TokenKind::Keyword)?;
@@ -763,7 +701,6 @@ pub fn definition_at(src: &str, cursor: usize, snap: &SchemaSnapshot) -> Option<
     let a = scope::analyze_in(src, &stmt, snap.dialect);
     let scope_id = a.scope_at(t.start).unwrap_or(0);
     let name = ident(snap.dialect, src, &t);
-    // A call.
     if next.is_some_and(|n| is_punct(src, n, "(")) {
         if let Some((schema, _, _)) = a.calls.iter().find(|c| c.2 == t.range()) {
             let f = snap.catalog.as_ref()?.functions_named(schema.as_deref(), &name).next()?;
@@ -779,7 +716,6 @@ pub fn definition_at(src: &str, cursor: usize, snap: &SchemaSnapshot) -> Option<
         let r = &snap.relations[r];
         Some(Definition::Relation { schema: r.schema.clone(), name: r.name.clone(), column })
     };
-    // A source's own name.
     for (si, s) in a.scopes.iter().enumerate() {
         for src_ in &s.sources {
             if src_.name_range.start <= t.start && t.end <= src_.name_range.end
@@ -794,7 +730,6 @@ pub fn definition_at(src: &str, cursor: usize, snap: &SchemaSnapshot) -> Option<
             }
         }
     }
-    // A column reference (or its qualifier).
     let to_def = |s: usize, idx: usize, column: Option<String>| -> Option<Definition> {
         match &a.scopes[s].sources[idx].kind {
             SourceKind::Table { schema: None, name: n } if a.visible_cte(s, n).is_some() => {
@@ -931,7 +866,6 @@ mod tests {
 
     #[test]
     fn statement_scope() {
-        // Columns come from the statement under the cursor only.
         let l = labels("select * from customer; select na| from orders;");
         assert!(!l.contains(&"name".to_string()));
     }
@@ -945,14 +879,12 @@ mod tests {
 
     #[test]
     fn ctes_and_subqueries_complete() {
-        // A CTE is a table after FROM, and its columns resolve through its alias.
         let l = labels("with big as (select id, total as t from orders) select * from b|");
         assert_eq!(l[0], "big");
         let l = labels("with big as (select id, total as t from orders) select b.| from big b");
         assert_eq!(l, vec!["t", "id"]);
         let l = labels("select x.| from (select p.id, c.name as who from orders p join customer c on c.id = p.customer) x");
         assert_eq!(l, vec!["id", "who"]);
-        // Unqualified: the subquery's own sources come first, the outer query's after.
         let l = labels("select * from customer c where exists (select 1 from orders p where tot|)");
         assert_eq!(l[0], "total");
         let l = labels("select * from customer c where exists (select 1 from orders p where p.customer = |)");

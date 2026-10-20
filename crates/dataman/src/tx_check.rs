@@ -1,21 +1,3 @@
-//! Demo stages of transactions and production safety (`--demo`), against the demo database.
-//! Nothing here is ever committed to the demo tables: the screenshots leave their transactions
-//! open and the process exits (the server rolls back); the check works on a temp table.
-//!
-//! - `tx`: a typed BEGIN, an UPDATE and a SELECT in the open transaction: the TX chip, Commit
-//!   and Rollback in the toolbar, the chip on the query tab (screenshot);
-//! - `tx-failed`: the transaction failed (a missing table) and the next run asks for Rollback
-//!   (screenshot);
-//! - `tx-close`: ⌘W on a tab with an open transaction (screenshot);
-//! - `guard`: `DELETE` without `WHERE` waits for confirmation (screenshot);
-//! - `prod`: a production connection: the red chip, tab dot and accent (screenshot);
-//! - `prod-guard`: an UPDATE on production waits for confirmation (screenshot);
-//! - `tx-check`: the rules with real key events (the guard sheet and its keys, statements
-//!   autocommit and no transaction controls show, a typed BEGIN ended with ⌃⌘↩ / ⌃⌘⌫, a failed
-//!   transaction and Rollback & run, the close and quit prompts, a read-only connection's
-//!   refusal, production's guard on DDL, another database, a save over the connection and a
-//!   delete with a transaction open), printed as PASS/FAIL lines; exit code 1 on a failure.
-
 use std::time::Duration;
 
 use gpui::{AsyncWindowContext, Entity, Focusable, Keystroke};
@@ -24,12 +6,10 @@ use dataman_core::{ConnectionProfile, Environment, TxStatus};
 use crate::app::Workspace;
 use crate::tab::{QueryTab, TabConfirm};
 
-/// The stages this module drives.
 pub fn is_stage(s: &str) -> bool {
     s.starts_with("tx") || s.starts_with("guard") || s.starts_with("prod")
 }
 
-/// The demo connection of a stage: production for `prod*`.
 pub fn prepare(stage: &str, p: &mut ConnectionProfile) {
     if stage.starts_with("prod") {
         p.name = "prod-orders".into();
@@ -51,7 +31,6 @@ fn key(cx: &mut AsyncWindowContext, k: &str) {
     });
 }
 
-/// A frame now: keys go to what the last frame drew (a sheet just raised, a dialog).
 fn draw(cx: &mut AsyncWindowContext) {
     let _ = cx.update(|window, cx| {
         window.refresh();
@@ -67,7 +46,6 @@ fn active(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> Entity<QueryTa
     cx.update(|_, cx| ws.read(cx).active_tab().unwrap().clone()).unwrap()
 }
 
-/// Waits until the tab is not running nor ending a transaction.
 async fn idle(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) {
     pause(cx, 60).await;
     for _ in 0..300 {
@@ -82,7 +60,6 @@ async fn idle(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) {
     }
 }
 
-/// Puts `sql` in the editor, focuses it and runs the statement (or the script).
 async fn type_run(tab: &Entity<QueryTab>, sql: &str, script: bool, cx: &mut AsyncWindowContext) {
     let editor = cx.update(|_, cx| tab.read(cx).editor.clone()).unwrap();
     let _ = cx.update(|window, cx| {
@@ -122,7 +99,6 @@ fn confirm(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> Option<&'stat
     .flatten()
 }
 
-/// A second connection of the demo server (read-only, production…): saved, connected, its id.
 async fn extra_connection(ws: &Entity<Workspace>, name: &str, f: impl FnOnce(&mut ConnectionProfile), cx: &mut AsyncWindowContext) -> Option<String> {
     let (mut p, pw) = crate::bench::bench_profile(None);
     p.name = name.into();
@@ -138,7 +114,6 @@ async fn extra_connection(ws: &Entity<Workspace>, name: &str, f: impl FnOnce(&mu
     None
 }
 
-/// Runs a stage; `false` when a check failed.
 pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContext) -> bool {
     let tab = active(ws, cx);
     match stage {
@@ -151,7 +126,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
         }
         "tx-failed" => {
             type_run(&tab, FAILED_SQL, true, cx).await;
-            // The next run: the server would refuse it, so the sheet offers Rollback.
             let _ = cx.update(|_, cx| tab.update(cx, |t, cx| t.run(vec!["SELECT p.id, p.status FROM orders p LIMIT 20".into()], cx)));
             true
         }
@@ -179,8 +153,6 @@ async fn check(ws: &Entity<Workspace>, tab: &Entity<QueryTab>, cx: &mut AsyncWin
     };
     type_run(tab, "CREATE TEMP TABLE tx_demo AS SELECT g AS id FROM generate_series(1, 5) g", false, cx).await;
 
-    // 1. The guard sheet: nothing runs until ⌘↩; esc cancels; a ⌘↩ held from the run does not
-    //    confirm it.
     type_run(tab, "DELETE FROM tx_demo", false, cx).await;
     let shown = confirm(tab, cx);
     let focused = cx.update(|window, cx| ws.read(cx).sheet_focus.is_focused(window)).unwrap_or(false);
@@ -201,7 +173,6 @@ async fn check(ws: &Entity<Workspace>, tab: &Entity<QueryTab>, cx: &mut AsyncWin
     report("with a WHERE it runs at once", confirm(tab, cx).is_none(), String::new());
     type_run(tab, "INSERT INTO tx_demo SELECT generate_series(1, 5)", false, cx).await;
 
-    // 2. Statements autocommit: nothing stays open, and ⌃⌘↩ / ⌃⌘⌫ have nothing to end.
     type_run(tab, "INSERT INTO tx_demo VALUES (6)", false, cx).await;
     report("a statement autocommits (no transaction left)", tx(tab, cx).0 == TxStatus::Idle, format!("{:?}", tx(tab, cx)));
     key(cx, "ctrl-cmd-backspace");
@@ -210,8 +181,6 @@ async fn check(ws: &Entity<Workspace>, tab: &Entity<QueryTab>, cx: &mut AsyncWin
     report("…and stays: ⌃⌘⌫ ends nothing", first_cell(tab, cx).as_deref() == Some("6"), format!("{:?}", first_cell(tab, cx)));
     type_run(tab, "DELETE FROM tx_demo WHERE id = 6", false, cx).await;
 
-    // A typed BEGIN opens a transaction: the TX chip and its Commit / Rollback, ⌃⌘⌫ rolls
-    // back, ⌃⌘↩ commits.
     type_run(tab, "BEGIN", false, cx).await;
     type_run(tab, "INSERT INTO tx_demo VALUES (6)", false, cx).await;
     report("BEGIN opens a transaction (TX 1)", tx(tab, cx) == (TxStatus::Open, 1), format!("{:?}", tx(tab, cx)));
@@ -226,7 +195,6 @@ async fn check(ws: &Entity<Workspace>, tab: &Entity<QueryTab>, cx: &mut AsyncWin
     idle(tab, cx).await;
     report("⌃⌘↩ commits", tx(tab, cx).0 == TxStatus::Idle, format!("{:?}", tx(tab, cx)));
 
-    // 3. A failed transaction: the next run offers Rollback (⌘⌫), or Rollback & run (⌘↩).
     type_run(tab, "BEGIN", false, cx).await;
     type_run(tab, "SELECT 1/0", false, cx).await;
     report("an error fails the transaction", tx(tab, cx).0 == TxStatus::Failed, format!("{:?}", tx(tab, cx)));
@@ -249,7 +217,6 @@ async fn check(ws: &Entity<Workspace>, tab: &Entity<QueryTab>, cx: &mut AsyncWin
     type_run(tab, "ROLLBACK", false, cx).await;
     report("ROLLBACK typed in the editor runs in a failed transaction", tx(tab, cx).0 == TxStatus::Idle, format!("{:?}", tx(tab, cx)));
 
-    // 4. Closing a tab with an open transaction asks; esc keeps it; ⌘↩ commits and closes.
     type_run(tab, "BEGIN", false, cx).await;
     type_run(tab, "INSERT INTO tx_demo VALUES (8)", false, cx).await;
     key(cx, "cmd-w");
@@ -258,7 +225,6 @@ async fn check(ws: &Entity<Workspace>, tab: &Entity<QueryTab>, cx: &mut AsyncWin
     key(cx, "escape");
     let (prompt, still) = cx.update(|_, cx| (ws.read(cx).tx_prompt.is_some(), ws.read(cx).tabs.contains(tab))).unwrap();
     report("esc keeps the tab and its transaction", !prompt && still && tx(tab, cx).0 == TxStatus::Open, format!("{prompt} {still}"));
-    // A quit asks once too (and is not carried out here).
     let quits = cx.update(|window, cx| ws.update(cx, |w, cx| w.request_quit(window, cx))).unwrap_or(true);
     let listed = cx.update(|_, cx| ws.read(cx).tx_prompt.as_ref().map(|p| p.tabs.len())).ok().flatten();
     report("quit with a transaction open asks, listing it", !quits && listed == Some(1), format!("{quits} {listed:?}"));
@@ -275,7 +241,6 @@ async fn check(ws: &Entity<Workspace>, tab: &Entity<QueryTab>, cx: &mut AsyncWin
     let closed = !cx.update(|_, cx| ws.read(cx).tabs.contains(tab)).unwrap_or(true);
     report("⌘↩ commits and closes", closed, String::new());
 
-    // 5. A read-only connection refuses writes before they reach the server.
     if let Some(ro) = extra_connection(ws, "read-only", |p| p.read_only = true, cx).await {
         let t = cx.update(|window, cx| ws.update(cx, |w, cx| w.open_sql_tab(&ro, None, "INSERT INTO orders (id) VALUES (-1)", true, window, cx))).ok().flatten();
         if let Some(t) = t {
@@ -293,7 +258,6 @@ async fn check(ws: &Entity<Workspace>, tab: &Entity<QueryTab>, cx: &mut AsyncWin
         report("read-only connection", false, "could not connect".into());
     }
 
-    // 6. Production: every write and DDL waits for the sheet; reads run.
     if let Some(prod) = extra_connection(ws, "production", |p| p.env = Environment::Production, cx).await {
         let t = cx.update(|window, cx| ws.update(cx, |w, cx| w.open_sql_tab(&prod, None, "SELECT 1", true, window, cx))).ok().flatten();
         if let Some(t) = t {
@@ -307,8 +271,6 @@ async fn check(ws: &Entity<Workspace>, tab: &Entity<QueryTab>, cx: &mut AsyncWin
         report("production connection", false, "could not connect".into());
     }
 
-    // 7. Another database, a save over the connection and a delete ask about the transaction
-    //    they would end, like a close.
     if let Some(id) = extra_connection(ws, "switch-save-delete", |_| {}, cx).await {
         let new_tab = |cx: &mut AsyncWindowContext| cx.update(|window, cx| ws.update(cx, |w, cx| w.open_sql_tab(&id, None, "", false, window, cx))).ok().flatten();
         let prompt = |cx: &mut AsyncWindowContext| {
@@ -318,7 +280,6 @@ async fn check(ws: &Entity<Workspace>, tab: &Entity<QueryTab>, cx: &mut AsyncWin
             type_run(&t, "BEGIN", false, cx).await;
             type_run(&t, "SELECT 1", false, cx).await;
             let conn = cx.update(|_, cx| t.read(cx).connection().cloned()).ok().flatten();
-            // A switch of database (⌥↩ on another database's table, the palette).
             if let Some(conn) = conn.clone() {
                 let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.retarget(&t, conn, Some("postgres".into()), None, window, cx)));
             }
@@ -335,7 +296,6 @@ async fn check(ws: &Entity<Workspace>, tab: &Entity<QueryTab>, cx: &mut AsyncWin
             let db = cx.update(|_, cx| t.read(cx).database().to_string()).unwrap_or_default();
             report("⌘⌫ rolls back and switches", db == "postgres" && prompt(cx).is_none() && tx(&t, cx).0 == TxStatus::Idle, format!("{db} {:?}", prompt(cx)));
 
-            // A save over the connection rebuilds its sessions.
             type_run(&t, "BEGIN", false, cx).await;
             type_run(&t, "SELECT 1", false, cx).await;
             let before = cx.update(|_, cx| t.read(cx).connection().cloned()).ok().flatten();
@@ -369,7 +329,6 @@ async fn check(ws: &Entity<Workspace>, tab: &Entity<QueryTab>, cx: &mut AsyncWin
             let dialog = cx.update(|_, cx| ws.read(cx).dialog.is_some()).unwrap_or(true);
             report("⌘↩ commits, saves and the tab takes the new connection", adopted && !dialog && tx(&t, cx).0 == TxStatus::Idle, format!("{adopted} {dialog}"));
 
-            // A delete lists the tabs whose transactions it ends (not one without).
             type_run(&t, "BEGIN", false, cx).await;
             type_run(&t, "SELECT 1", false, cx).await;
             let _idle_tab = new_tab(cx);

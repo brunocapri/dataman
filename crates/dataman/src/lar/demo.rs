@@ -1,11 +1,3 @@
-//! Demo stages of the live queries for `--demo` screenshots (`DATAMAN_SHOT_STAGE`), run against
-//! the LAR in `DATAMAN_BENCH_PG` with the `demo_orders` table (seeded by
-//! `seeds/lar-live-demo.py`). Each stage drives the real UI: runs the editor's SUBSCRIBE, opens
-//! the Live panel and writes to the server so the grid moves.
-//!
-//! `lar-live`, `lar-live-ended`, `lar-live-empty`, `lar-live-burst`; with `-light` in the light
-//! theme.
-
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -16,10 +8,8 @@ use crate::app::Workspace;
 
 const SUBSCRIBE: &str = "-- a delta every time the result changes: ts, diff, columns\nSUBSCRIBE SELECT id, demo_customer, status, total, updated_at\n          FROM demo_orders\n          WHERE id >= 49190;";
 
-/// A plain query: the empty Live panel offers to SUBSCRIBE to its table.
 const ORDERS: &str = "-- newest orders\nSELECT id, demo_customer, status, total, updated_at\nFROM   demo_orders\nWHERE  id >= 49190\nORDER  BY id DESC;";
 
-/// The editor text of a stage (`None`: not a LAR stage).
 pub fn sql(stage: &str) -> Option<String> {
     Some(match stage {
         "lar-live-empty" => ORDERS.to_string(),
@@ -28,7 +18,6 @@ pub fn sql(stage: &str) -> Option<String> {
     })
 }
 
-/// How long the stage needs before the capture.
 pub fn wait_ms(stage: &str) -> u64 {
     match stage {
         "lar-live" => 2500,
@@ -39,12 +28,10 @@ pub fn wait_ms(stage: &str) -> u64 {
     }
 }
 
-/// Runs a LAR stage (after the editor's statement ran). Returns false for other stages.
 pub fn stage(stage: &str, ws: &Entity<Workspace>, window: &mut Window, cx: &mut App) -> bool {
     if !stage.starts_with("lar-") {
         return false;
     }
-    // The "LAR detected" toast would cover the panel.
     ws.update(cx, |w, _| w.lar_toast = None);
     let ws = ws.clone();
     let stage = stage.to_string();
@@ -63,8 +50,6 @@ async fn sleep(cx: &mut AsyncWindowContext, ms: u64) {
     cx.background_executor().timer(Duration::from_millis(ms)).await;
 }
 
-/// Runs one statement to completion in the stage's own session (the writes that make the grid
-/// move), reporting failures.
 async fn exec(session: &Arc<Session>, sql: &str) {
     let rs = session.execute(sql);
     rs.wait_finished().await;
@@ -82,7 +67,6 @@ async fn run(stage: &str, ws: Entity<Workspace>, cx: &mut AsyncWindowContext) ->
         .session(None);
     match stage {
         "lar-live-burst" => {
-            // ~200 deltas/s for 3 s: 60 commits of 10 rows, one every 50 ms.
             exec(&session, "DELETE FROM demo_orders WHERE id >= 50000").await;
             sleep(cx, 500).await;
             for c in 0..60u64 {
@@ -98,7 +82,6 @@ async fn run(stage: &str, ws: Entity<Workspace>, cx: &mut AsyncWindowContext) ->
             exec(&session, "UPDATE demo_orders SET status = 'new', total = 84.9 WHERE id = 49200").await;
             cx.update(|window, cx| ws.update(cx, |w, cx| w.toggle_server_panel("live", window, cx))).map_err(e)?;
             if stage == "lar-live" {
-                // A second tab listening (JSON notifications), then back to the SUBSCRIBE tab.
                 cx.update(|window, cx| {
                     ws.update(cx, |w, cx| {
                         let first = w.active;

@@ -1,8 +1,3 @@
-//! `fk-nav-check` (`--demo`): back / forward (`nav`) driven with real events through the window —
-//! ⌘-click a reference and back to the very cell, ⌃⌘← ⌃⌘→, the mouse's side buttons, the title
-//! bar's arrows, a new jump dropping what was ahead, a closed tab skipped, ⌘← in the editor
-//! staying the line's start. PASS/FAIL lines like `fk-check`.
-
 use std::time::Duration;
 
 use gpui::{
@@ -60,8 +55,7 @@ fn spot(grid: &Entity<ResultGrid>, cx: &mut AsyncWindowContext) -> String {
     cx.update(|_, cx| format!("{:?}", grid.read(cx).spot())).unwrap()
 }
 
-/// The title bar's ‹ and › (chrome.rs: the explorer toggle 14 pt after the lights, 26 wide, then
-/// 4 pt and two 20 pt arrows), on the bar's middle line.
+/// chrome.rs: the explorer toggle 14 pt after the lights, 26 wide, then 4 pt and two 20 pt arrows.
 fn arrow(forward: bool) -> Point<Pixels> {
     let lights = metrics::lights_right_at(crate::theme::zoom());
     point(px(lights + if forward { 74. } else { 54. }), px(metrics::TITLE_H / 2.))
@@ -75,7 +69,6 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     };
     let src = active(ws, cx);
     let grid = cx.update(|_, cx| src.read(cx).grid.clone()).unwrap();
-    // The references of the result.
     let mut cols = None;
     for _ in 0..100 {
         cols = cx
@@ -98,7 +91,6 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let at = |cx: &mut AsyncWindowContext, r: usize, c: usize| cx.update(|_, cx| grid.read(cx).demo_cell_point(r, c)).unwrap();
     let _ = cx.update(|window, cx| window.focus(&grid.focus_handle(cx), cx));
 
-    // Scrolled down, a plain cell selected: the place left.
     let mid = at(cx, 2, plain);
     input(
         cx,
@@ -114,7 +106,6 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     pause(cx, 50).await;
     report("nothing behind at the start", can(ws, cx) == (false, false), format!("{:?}", can(ws, cx)));
 
-    // ⌘-click a reference: a new tab; the place left is the reference's cell, scrolled.
     let p = at(cx, 14, fk);
     click(cx, p, MouseButton::Left, Modifiers { platform: true, ..Default::default() });
     pause(cx, 400).await;
@@ -125,13 +116,10 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     report("⌘-click opens the referenced row in a new tab", dst != src, String::new());
     report("one step behind, none ahead", can(ws, cx) == (true, false), format!("{:?}", can(ws, cx)));
 
-    // ⌃⌘← (the focus on the new tab's grid or editor, not a text field). ⌘← on the grid is the
-    // row's first cell, never a step back.
     let g2 = cx.update(|_, cx| dst.read(cx).grid.clone()).unwrap();
     let _ = cx.update(|window, cx| window.focus(&g2.focus_handle(cx), cx));
     key(cx, "cmd-left");
     report("⌘← on the grid: no step back", active(ws, cx) == dst && can(ws, cx) == (true, false), format!("{:?}", can(ws, cx)));
-    // The source grid drifting while away (it does not on its own): the step puts it back.
     let _ = cx.update(|_, cx| grid.update(cx, |g, cx| g.select_cell(0, plain, cx)));
     key(cx, "ctrl-cmd-left");
     report("⌃⌘← goes back to the source tab", active(ws, cx) == src, String::new());
@@ -143,13 +131,11 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     key(cx, "ctrl-cmd-right");
     report("⌃⌘→ goes forward to the reference", active(ws, cx) == dst, String::new());
 
-    // The mouse's side buttons, anywhere in the window.
     side_button(cx, mid, NavigationDirection::Back);
     report("the back button goes back", active(ws, cx) == src, String::new());
     side_button(cx, point(px(600.), px(metrics::TITLE_H / 2.)), NavigationDirection::Forward);
     report("the forward button goes forward", active(ws, cx) == dst, String::new());
 
-    // The title bar's arrows.
     click(cx, arrow(false), MouseButton::Left, Modifiers::default());
     report("the ‹ arrow goes back", active(ws, cx) == src, String::new());
     click(cx, arrow(false), MouseButton::Left, Modifiers::default());
@@ -158,13 +144,11 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     report("the › arrow goes forward", active(ws, cx) == dst, String::new());
     click(cx, arrow(false), MouseButton::Left, Modifiers::default());
 
-    // A new jump after going back drops what was ahead.
     key(cx, "cmd-t");
     pause(cx, 50).await;
     let third = active(ws, cx);
     report("⌘T after going back: nothing ahead", third != src && third != dst && can(ws, cx) == (true, false), format!("{:?}", can(ws, cx)));
 
-    // ⌘← in the editor is the line's start.
     key(cx, "s");
     key(cx, "e");
     key(cx, "l");
@@ -172,17 +156,14 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     key(cx, "cmd-left");
     let cur = cx.update(|_, cx| editor.read(cx).selection_ends().1).unwrap();
     report("⌘← in the editor: the line's start, no step", active(ws, cx) == third && cur == 0, format!("cursor {cur}"));
-    // … while the side button still steps from there.
     side_button(cx, point(px(600.), px(300.)), NavigationDirection::Back);
     report("the back button from the editor", active(ws, cx) == src, String::new());
     side_button(cx, point(px(600.), px(300.)), NavigationDirection::Forward);
     report("… and forward to the editor", active(ws, cx) == third && region(ws, cx) == Some(Region::Editor), format!("{:?}", region(ws, cx)));
 
-    // A closed tab is skipped: close the source, back from the third lands nowhere.
     let ix = cx.update(|_, cx| ws.read(cx).tabs.iter().position(|t| *t == src)).unwrap().unwrap();
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.close_tab(ix, window, cx)));
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.activate_tab(&third, window, cx)));
-    // third → (activate) recorded the tab before; back skips the closed source.
     let before_back = active(ws, cx);
     side_button(cx, point(px(600.), px(300.)), NavigationDirection::Back);
     let now = active(ws, cx);

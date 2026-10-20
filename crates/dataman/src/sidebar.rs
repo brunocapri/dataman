@@ -1,13 +1,3 @@
-//! The sidebar: a narrow icon rail (Explorer, Favorites, History) at the window's edge and
-//! the view it picks beside it, all in the explorer's dock on its glass (`dock`). Moving the
-//! explorer to the other dock moves the whole sidebar; ⌘B and the title bar's toggle hide it
-//! whatever it shows, rail included.
-//!
-//! A click on an icon shows its view (the sidebar opening if it was shut) and puts the focus
-//! in it; on the icon already showing, it hides the sidebar. The Favorites and History views
-//! are one panel (`history`), each with its own search. ⌘S lights the Favorites icon for a
-//! moment (`motion::SAVED`); a click on it then opens the favorite just saved.
-
 use std::time::Instant;
 
 use dataman_core::layout::{Dock, NavView};
@@ -21,26 +11,22 @@ use crate::ui;
 actions!(
     sidebar,
     [
-        /// The sidebar open on a view, the focus in it (the palette, the View menu).
         ShowExplorer,
         ShowFavorites,
         ShowHistory,
     ]
 );
 
-/// The sidebar's commands.
 pub(crate) fn workspace_actions(d: gpui::Stateful<gpui::Div>, cx: &mut Context<Workspace>) -> gpui::Stateful<gpui::Div> {
     d.on_action(cx.listener(|w, _: &ShowExplorer, window, cx| w.show_nav(NavView::Explorer, window, cx)))
         .on_action(cx.listener(|w, _: &ShowFavorites, window, cx| w.show_nav(NavView::Favorites, window, cx)))
         .on_action(cx.listener(|w, _: &ShowHistory, window, cx| w.show_nav(NavView::History, window, cx)))
 }
 
-/// A rail icon's square, and its glyph.
 const ICON_BOX: f32 = 28.;
 const GLYPH: f32 = 15.;
 
 impl Workspace {
-    /// What the sidebar shows. The Favorites and History views share a panel, which follows.
     pub(crate) fn set_nav(&mut self, v: NavView, cx: &mut Context<Self>) {
         match v {
             NavView::Explorer => {}
@@ -58,14 +44,11 @@ impl Workspace {
         cx.notify();
     }
 
-    /// The sidebar open on `v`, the focus in it (the palette, the menus).
     pub(crate) fn show_nav(&mut self, v: NavView, window: &mut Window, cx: &mut Context<Self>) {
         self.set_nav(v, cx);
         self.focus_region(Region::Explorer, window, cx);
     }
 
-    /// The sidebar's history searched for connection `id` (the explorer's menu on a
-    /// connection): every connection's is listed, the search narrows it to that one's name.
     pub(crate) fn show_history_of(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
         let name = self.store.read(cx).profile(&id).map(|p| p.name.clone()).unwrap_or(id);
         self.set_nav(NavView::History, cx);
@@ -73,16 +56,13 @@ impl Workspace {
         self.focus_region(Region::Explorer, window, cx);
     }
 
-    /// Checks: the sidebar on the favorites, re-read.
     pub(crate) fn demo_favorites_view(&mut self, cx: &mut Context<Self>) {
         self.set_explorer_open(true, cx);
         self.set_nav(NavView::Favorites, cx);
         self.history.update(cx, |h, cx| h.demo_show_favorites(cx));
     }
 
-    /// A click on a rail icon: its view, or on the one showing, the sidebar hidden.
     pub(crate) fn rail_click(&mut self, v: NavView, window: &mut Window, cx: &mut Context<Self>) {
-        // Lit after ⌘S: the favorite just saved (even with the favorites showing).
         if v == NavView::Favorites
             && let Some(id) = self.saved_flash.as_ref().map(|f| f.id.clone())
         {
@@ -99,8 +79,6 @@ impl Workspace {
         self.show_nav(v, window, cx);
     }
 
-    /// ⌘S's "← added to favorites": over the whole window beside the rail's lit Favorites
-    /// icon, pointing at it, fading with it (no fill: nothing moves, nothing is covered).
     pub(crate) fn render_saved_hint(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         let f = self.saved_flash.as_ref().filter(|_| self.explorer_open)?;
         let a = crate::motion::SAVED.at(f.at, Instant::now(), cx.reduce_motion())?;
@@ -115,10 +93,7 @@ impl Workspace {
         Some(hint.into_any_element())
     }
 
-    /// The sidebar for the explorer's dock `d`: the rail at the window's edge, the view
-    /// beside it.
     pub(crate) fn render_sidebar(&mut self, d: Dock, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        // A check may switch the panel between its views directly: the rail follows.
         if self.view != NavView::Explorer {
             self.view = if self.history.read(cx).showing_favorites() { NavView::Favorites } else { NavView::History };
         }
@@ -128,7 +103,6 @@ impl Workspace {
         };
         let rail = self.render_rail(d, window, cx);
         let view = div().flex_1().min_w_0().h_full().child(view);
-        // A hairline under the title bar's header ("DATAMAN"), over the rail and the view.
         let row = div().size_full().flex().flex_row().border_t_1().border_color(cx.theme().line);
         match d {
             Dock::Left => row.child(rail).child(view),

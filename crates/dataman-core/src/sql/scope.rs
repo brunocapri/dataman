@@ -1,12 +1,3 @@
-//! What one statement names, read from its tokens: the query scopes (the statement, its
-//! subqueries, CTE bodies and set-operation arms), the sources each scope reads (tables,
-//! CTEs, subqueries, functions, `VALUES`), its select list, `JOIN … USING` columns, and every
-//! column reference with the clause it sits in.
-//!
-//! The reader is forgiving: an unfinished statement (the one being typed) still gives its
-//! scopes, and a construct it does not follow marks the scope "open", which makes every
-//! consumer (autocomplete, lint) cautious rather than wrong.
-
 use std::ops::Range;
 
 use super::lexer::{Token, TokenKind};
@@ -31,7 +22,6 @@ pub enum Clause {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum SourceKind {
-    /// `[schema.]name`: a table or view, or a CTE when unqualified and one is visible.
     Table { schema: Option<String>, name: String },
     Subquery(usize),
     Function(String),
@@ -42,14 +32,11 @@ pub enum SourceKind {
 pub struct Source {
     pub alias: Option<String>,
     pub kind: SourceKind,
-    /// The name as written (`public.orders`), for go to definition.
     pub name_range: Range<usize>,
-    /// `AS x (a, b)`.
     pub alias_columns: Option<Vec<String>>,
 }
 
 impl Source {
-    /// The name the scope knows it by: the alias, else the table's own name.
     pub fn visible_name(&self) -> Option<&str> {
         match (&self.alias, &self.kind) {
             (Some(a), _) => Some(a),
@@ -60,34 +47,24 @@ impl Source {
     }
 }
 
-/// One entry of a select list (or a `RETURNING` list).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Item {
-    /// `*` or `t.*`.
     Star(Option<String>),
     Named(String),
-    /// An expression without a usable name.
     Expr,
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct Scope {
-    /// Byte range the scope covers (an unfinished one runs to the end of the statement).
     pub range: Range<usize>,
-    /// The scope whose columns this one also sees (outer query).
     pub parent: Option<usize>,
-    /// Where CTE names are looked up next (a CTE body sees its siblings).
     pub cte_parent: Option<usize>,
     pub sources: Vec<Source>,
     pub items: Vec<Item>,
-    /// The column each item plainly is (`p.total AS t` → `(Some("p"), "total")`), for its type.
     pub item_refs: Vec<Option<(Option<String>, String)>>,
-    /// CTEs defined by this scope's `WITH`.
     pub ctes: Vec<usize>,
-    /// Columns merged by `JOIN … USING`.
     pub using: Vec<String>,
     pub natural: bool,
-    /// Something here was not understood (its sources may be incomplete).
     pub open: bool,
 }
 
@@ -99,20 +76,16 @@ pub struct Cte {
     pub name_range: Range<usize>,
 }
 
-/// A column named in an expression.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ColRef {
     pub scope: usize,
     pub qualifier: Option<String>,
     pub name: String,
-    /// The whole reference (`p.total`).
     pub range: Range<usize>,
-    /// Just the column name.
     pub name_range: Range<usize>,
     pub clause: Clause,
 }
 
-/// A column assigned or listed for a target table: `UPDATE t SET col = …`, `INSERT INTO t (col)`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TargetCol {
     pub scope: usize,
@@ -127,29 +100,19 @@ pub struct Analysis {
     pub ctes: Vec<Cte>,
     pub refs: Vec<ColRef>,
     pub targets: Vec<TargetCol>,
-    /// `JOIN` without `ON`/`USING` (from the join keyword to the end of its source).
     pub missing_on: Vec<Range<usize>>,
-    /// Function calls: the name (last part) and its byte range, with the schema when qualified.
     pub calls: Vec<(Option<String>, String, Range<usize>)>,
-    /// Column names compare without case (MySQL); the statement's names are read in lower case.
     pub ci: bool,
-    /// The reader met something it does not model ([`UNMODELED`] words, a source it could not
-    /// read, a scope left open, several statements run together without `;`): its sources and
-    /// references may be wrong, so nothing is checked against the schema (fail-open).
     pub unsure: bool,
-    /// Tables (lower case) the script creates, drops and re-creates or alters: the catalog's
-    /// columns for them may be out of date, so they are read as having unknown columns.
     pub distrust: std::collections::HashSet<String>,
 }
 
 impl Analysis {
-    /// Whether column name `a` (the catalog's, or one the statement wrote) is `b`.
     pub fn col_eq(&self, a: &str, b: &str) -> bool {
         if self.ci { a.eq_ignore_ascii_case(b) } else { a == b }
     }
 }
 
-/// Words that read like identifiers in expressions but are not column references.
 const NOT_COLUMNS: &[&str] = &[
     "precision", "varying", "zone", "at", "local", "localtime", "localtimestamp", "current_date", "current_time",
     "current_timestamp", "current_user", "current_role", "current_schema", "current_catalog", "session_user", "user",
@@ -163,20 +126,14 @@ const NOT_COLUMNS: &[&str] = &[
     "grouping", "cube", "rollup", "character", "utc_timestamp", "utc_date", "utc_time",
 ];
 
-/// Functions whose first argument is a date part (`DATEADD(day, 1, x)`), not a column.
 const DATE_PART_FUNCS: &[&str] = &["dateadd", "datediff", "datediff_big", "datepart", "datename", "datetrunc", "date_bucket", "timestampadd", "timestampdiff"];
 
-/// Functions whose arguments use keywords (`extract(year FROM x)`): bare words inside are not
-/// columns.
 const SPECIAL_ARGS: &[&str] = &[
     "extract", "overlay", "position", "substring", "trim", "normalize", "xmlelement", "xmlforest", "xmlparse",
     "xmlserialize", "xmltable", "json_table", "json_object", "json_array", "json_value", "json_query", "json_exists",
     "collation",
 ];
 
-/// Words of constructs the reader does not follow (T-SQL's APPLY, PIVOT, MERGE … OUTPUT, control
-/// flow and rowset functions; ordered-set aggregates; full-text and graph matches): a statement
-/// with one is marked [`Analysis::unsure`].
 pub const UNMODELED: &[&str] = &[
     "APPLY", "PIVOT", "UNPIVOT", "MERGE", "OUTPUT", "TRY", "CATCH", "IF", "ELSE", "WHILE", "BREAK", "CONTINUE", "GOTO",
     "RETURN", "THROW", "RAISERROR", "PRINT", "WAITFOR", "DECLARE", "EXEC", "EXECUTE", "CURSOR", "OPENJSON", "OPENROWSET",
@@ -184,9 +141,6 @@ pub const UNMODELED: &[&str] = &[
     "MATCH", "AGAINST",
 ];
 
-/// Whether the statement's tokens hold a construct the reader does not model (see
-/// [`Analysis::unsure`]): an [`UNMODELED`] word, a sequence's `NEXT VALUE FOR`, or more than one
-/// statement at depth 0 (T-SQL runs them together without `;`; `INSERT … SELECT` is one).
 fn unmodeled(src: &str, toks: &[Token], close: &[usize], dialect: Dialect) -> bool {
     let word = |i: usize, w: &str| toks.get(i).is_some_and(|t| matches!(t.kind, TokenKind::Keyword | TokenKind::Ident) && t.text(src).eq_ignore_ascii_case(w));
     let mut verbs: Vec<&str> = Vec::new();
@@ -195,7 +149,6 @@ fn unmodeled(src: &str, toks: &[Token], close: &[usize], dialect: Dialect) -> bo
         let t = toks[i];
         if matches!(t.kind, TokenKind::Keyword | TokenKind::Ident) {
             let w = t.text(src);
-            // MySQL's IF(cond, a, b) is a function.
             let function = dialect == Dialect::MySql && w.eq_ignore_ascii_case("IF") && toks.get(i + 1).is_some_and(|n| n.text(src) == "(");
             if !function && UNMODELED.iter().any(|u| w.eq_ignore_ascii_case(u)) {
                 return true;
@@ -206,7 +159,6 @@ fn unmodeled(src: &str, toks: &[Token], close: &[usize], dialect: Dialect) -> bo
             if w.eq_ignore_ascii_case("UPDATE") && word(i + 1, "STATISTICS") {
                 return true;
             }
-            // PostgreSQL: `OVERRIDING SYSTEM VALUE`, a CTE's `SEARCH … FIRST BY` and `CYCLE … SET`.
             if (w.eq_ignore_ascii_case("OVERRIDING") && (word(i + 1, "SYSTEM") || word(i + 1, "USER")) && word(i + 2, "VALUE"))
                 || (w.eq_ignore_ascii_case("SEARCH") && (word(i + 1, "DEPTH") || word(i + 1, "BREADTH")) && word(i + 2, "FIRST"))
                 || (w.eq_ignore_ascii_case("CYCLE") && i > 0 && toks[i - 1].text(src) == ")")
@@ -216,7 +168,6 @@ fn unmodeled(src: &str, toks: &[Token], close: &[usize], dialect: Dialect) -> bo
         }
         i += 1;
     }
-    // Depth 0 only: statement verbs, past subqueries and CTE bodies.
     let mut i = 0;
     while i < toks.len() {
         let t = toks[i];
@@ -239,10 +190,8 @@ fn unmodeled(src: &str, toks: &[Token], close: &[usize], dialect: Dialect) -> bo
     !(verbs.len() <= 1 || verbs == ["INSERT", "SELECT"])
 }
 
-/// The system columns every table has.
 pub const SYSTEM_COLUMNS: &[&str] = &["ctid", "xmin", "xmax", "cmin", "cmax", "tableoid", "oid"];
 
-/// Keywords that end a select list, a source or an expression clause.
 const CLAUSE_WORDS: &[&str] = &[
     "FROM", "WHERE", "GROUP", "HAVING", "WINDOW", "ORDER", "LIMIT", "OFFSET", "FETCH", "FOR", "UNION", "INTERSECT",
     "EXCEPT", "RETURNING", "INTO", "ON", "USING", "JOIN", "LEFT", "RIGHT", "FULL", "INNER", "CROSS", "NATURAL", "SET",
@@ -253,7 +202,6 @@ pub fn analyze(src: &str, toks: &[Token]) -> Analysis {
     analyze_in(src, toks, Dialect::Postgres)
 }
 
-/// [`analyze`] of tokens lexed in `dialect` (MySQL: backticks, names without case).
 pub fn analyze_in(src: &str, toks: &[Token], dialect: Dialect) -> Analysis {
     let toks: Vec<Token> = toks.iter().copied().filter(|t| !t.kind.is_trivia()).collect();
     let mut close = vec![usize::MAX; toks.len()];
@@ -277,7 +225,6 @@ pub fn analyze_in(src: &str, toks: &[Token], dialect: Dialect) -> Analysis {
             *c = n;
         }
     }
-    // MySQL and SQL Server compare names without case (their default collations).
     let unsure = unmodeled(src, &toks, &close, dialect);
     let mut p = P { src, t: &toks, close, a: Analysis { ci: dialect != Dialect::Postgres, ..Default::default() }, dialect, qualified: Vec::new() };
     if !toks.is_empty() {
@@ -290,12 +237,9 @@ pub fn analyze_in(src: &str, toks: &[Token], dialect: Dialect) -> Analysis {
 struct P<'a> {
     src: &'a str,
     t: &'a [Token],
-    /// Index of the matching `)` of each `(` (the token count when unclosed).
     close: Vec<usize>,
     a: Analysis,
     dialect: Dialect,
-    /// `SET a.col = …` targets (not PostgreSQL), with the qualifier that picks their source once
-    /// the statement's sources are known.
     qualified: Vec<(TargetCol, String)>,
 }
 
@@ -317,7 +261,6 @@ impl<'a> P<'a> {
     }
 
     fn is_name(&self, i: usize) -> bool {
-        // MySQL's `@variables` lex as identifiers: they are never columns or tables.
         self.t.get(i).is_some_and(|t| matches!(t.kind, TokenKind::Ident | TokenKind::QuotedIdent) && !t.text(self.src).starts_with('@'))
     }
 
@@ -328,7 +271,6 @@ impl<'a> P<'a> {
         }
     }
 
-    /// The end byte of a scope that spans tokens `lo..hi` (`hi` is its closing paren or the end).
     fn end_byte(&self, hi: usize) -> usize {
         self.t.get(hi).map_or(self.src.len(), |t| t.start)
     }
@@ -353,8 +295,6 @@ impl<'a> P<'a> {
         id
     }
 
-    /// `WITH [RECURSIVE] name [(cols)] AS [NOT] [MATERIALIZED] (query), …`; returns the index
-    /// after the list.
     fn with(&mut self, mut i: usize, hi: usize, id: usize) -> usize {
         if self.word(i, "RECURSIVE") {
             i += 1;
@@ -400,14 +340,12 @@ impl<'a> P<'a> {
         i
     }
 
-    /// Plain names separated by commas (a column list).
     fn name_list(&self, lo: usize, hi: usize) -> Vec<String> {
         (lo..hi).filter(|&k| self.is_name(k) || (self.t[k].kind == TokenKind::Keyword && !self.punct(k, ","))).map(|k| self.value(k)).collect()
     }
 
     fn body(&mut self, mut i: usize, hi: usize, id: usize) {
         let mut clause = Clause::Other;
-        // The source an UPDATE or DELETE writes to (its index).
         let mut dml: Option<usize> = None;
         while i < hi {
             let t = self.t[i];
@@ -423,14 +361,12 @@ impl<'a> P<'a> {
                         clause = Clause::Select;
                         continue;
                     }
-                    // `IS [NOT] DISTINCT FROM` is an operator.
                     "FROM" if !self.word(i.wrapping_sub(1), "DISTINCT") => {
                         i = self.from_list(i + 1, hi, id);
                         clause = Clause::From;
                         continue;
                     }
                     "USING" if clause == Clause::Other || clause == Clause::From => {
-                        // DELETE … USING a, b
                         i = self.from_list(i + 1, hi, id);
                         clause = Clause::From;
                         continue;
@@ -440,20 +376,16 @@ impl<'a> P<'a> {
                     "HAVING" => clause = Clause::Having,
                     "ORDER" => clause = Clause::OrderBy,
                     "WINDOW" => clause = Clause::Window,
-                    // T-SQL's `FOR XML | JSON …` options end the query.
                     "FOR" if self.dialect == Dialect::TSql && self.any_word(i + 1, &["XML", "JSON", "BROWSE"]) => {
                         i = hi;
                         continue;
                     }
-                    // `FOR [NO KEY] UPDATE | [KEY] SHARE [OF t, …] [NOWAIT | SKIP LOCKED]`: the
-                    // row-lock clause ends the query; none of its words is a column.
                     "FOR" if self.any_word(i + 1, &["UPDATE", "SHARE", "NO", "KEY"]) => {
                         clause = Clause::Other;
                         i = hi;
                         continue;
                     }
                     "LIMIT" | "OFFSET" | "FETCH" | "FOR" => clause = Clause::Other,
-                    // OFFSET n ROWS FETCH NEXT m ROWS ONLY
                     "NEXT" | "FIRST" if self.word(i.wrapping_sub(1), "FETCH") => {
                         i += 1;
                         continue;
@@ -470,10 +402,8 @@ impl<'a> P<'a> {
                     "VALUES" => clause = Clause::Values,
                     "UPDATE" => {
                         clause = Clause::Other;
-                        // Not ON CONFLICT DO UPDATE, nor a FOR [NO KEY] UPDATE lock.
                         if !self.any_word(i.wrapping_sub(1), &["DO", "FOR", "KEY"]) {
                             dml.get_or_insert(self.a.scopes[id].sources.len());
-                            // MySQL joins the tables it updates: `UPDATE a JOIN b ON … SET …`.
                             i = self.from_list(self.top(i + 1, hi), hi, id);
                             continue;
                         }
@@ -483,12 +413,10 @@ impl<'a> P<'a> {
                         clause = Clause::Set;
                         continue;
                     }
-                    // T-SQL and MySQL may leave INTO out.
                     "INTO" | "INSERT"
                         if (w == "INTO" && self.any_word(i.wrapping_sub(1), &["INSERT", "REPLACE", "IGNORE", "LOW_PRIORITY", "HIGH_PRIORITY", "DELAYED"])) || (w == "INSERT" && !self.word(i + 1, "INTO") && self.is_name(i + 1)) =>
                     {
                         i = self.insert_target(i + 1, hi, id);
-                        // INSERT … SELECT: the query reads its own sources.
                         if i < hi && self.starts_query(i) {
                             let end = (i..hi).find(|&k| self.word(k, "ON") && self.word(k + 1, "CONFLICT") || self.word(k, "RETURNING")).unwrap_or(hi);
                             let end = self.depth0(i, end, hi);
@@ -499,7 +427,6 @@ impl<'a> P<'a> {
                         continue;
                     }
                     "INTO" if clause == Clause::Select => {
-                        // SELECT … INTO new_table: skip the target.
                         clause = Clause::Other;
                         i += 1;
                         while i < hi && (self.is_name(i) || self.punct(i, ".") || self.any_word(i, &["TEMP", "TEMPORARY", "UNLOGGED", "TABLE"])) {
@@ -508,7 +435,6 @@ impl<'a> P<'a> {
                         continue;
                     }
                     "CONFLICT" => {
-                        // ON CONFLICT (cols) DO …: the conflict target's columns are the table's.
                         clause = Clause::Other;
                         if let Some(tgt) = self.a.scopes[id].sources.first().cloned() {
                             let mut ex = tgt;
@@ -552,7 +478,6 @@ impl<'a> P<'a> {
         self.settle_targets(id, dml);
     }
 
-    /// The index after T-SQL's `TOP (n) [PERCENT]` at `i` (an UPDATE's or DELETE's), else `i`.
     fn top(&self, mut i: usize, hi: usize) -> usize {
         if self.dialect == Dialect::TSql && self.word(i, "TOP") {
             i = if self.punct(i + 1, "(") { self.close[i + 1].min(hi) + 1 } else { i + 2 };
@@ -563,10 +488,6 @@ impl<'a> P<'a> {
         i
     }
 
-    /// The sources of an UPDATE or DELETE once all are known. Outside PostgreSQL the target may
-    /// name a source of the FROM that follows (`UPDATE av SET … FROM AgeVerifications av`, T-SQL;
-    /// `DELETE FROM t FROM t JOIN …`): it is that source, not a table of its own. A qualified
-    /// target (`SET av.State = …`) belongs to the source it names, and is left out when none.
     fn settle_targets(&mut self, id: usize, dml: Option<usize>) {
         if self.dialect != Dialect::Postgres
             && let Some(d) = dml
@@ -602,7 +523,6 @@ impl<'a> P<'a> {
         }
     }
 
-    /// `end` moved back to a token at the paren depth of `lo` (never inside a nested group).
     fn depth0(&self, lo: usize, end: usize, hi: usize) -> usize {
         let mut k = lo;
         while k < end.min(hi) {
@@ -619,8 +539,6 @@ impl<'a> P<'a> {
         end
     }
 
-    /// A parenthesized group at `i`: a subquery (its own scope) or an expression group.
-    /// Returns the index after it.
     fn paren(&mut self, i: usize, hi: usize, id: usize, clause: Clause, special: bool) -> usize {
         let j = self.close[i].min(hi);
         if self.starts_query(i + 1) {
@@ -631,7 +549,6 @@ impl<'a> P<'a> {
         j + 1
     }
 
-    /// Column references (and subqueries) in `lo..hi`.
     fn expr(&mut self, lo: usize, hi: usize, id: usize, clause: Clause, special: bool) {
         let mut i = lo;
         while i < hi {
@@ -647,7 +564,6 @@ impl<'a> P<'a> {
         }
     }
 
-    /// A name chain at `i` (`a`, `a.b`, `s.t.c`, `a.*`, `f(…)`): a column reference or a call.
     fn name_ref(&mut self, i: usize, hi: usize, id: usize, clause: Clause, special: bool) -> usize {
         let mut parts = vec![i];
         let mut k = i + 1;
@@ -655,7 +571,6 @@ impl<'a> P<'a> {
             parts.push(k + 1);
             k += 2;
         }
-        // `a.*`
         if self.punct(k, ".") && self.text(k + 1) == "*" {
             return k + 2;
         }
@@ -665,7 +580,6 @@ impl<'a> P<'a> {
             let schema = (parts.len() > 1).then(|| self.value(parts[parts.len() - 2]));
             self.a.calls.push((schema, name.clone(), self.t[last].range()));
             let sp = SPECIAL_ARGS.contains(&name.as_str());
-            // `DATEADD(day, …)`, T-SQL's `CONVERT(int, …)`: a date part or a type first.
             let keyword_first = DATE_PART_FUNCS.contains(&name.as_str()) || (self.dialect == Dialect::TSql && matches!(name.as_str(), "convert" | "try_convert" | "try_parse" | "parse"));
             if keyword_first && parts.len() == 1 && matches!(self.t.get(k + 1).map(|t| t.kind), Some(TokenKind::Ident | TokenKind::Keyword)) && self.punct(k + 2, ",") {
                 let j = self.close[k].min(hi);
@@ -678,14 +592,12 @@ impl<'a> P<'a> {
         let skip = special && parts.len() == 1
             || prev.is_some_and(|p| {
                 let s = p.text(self.src);
-                // Types, aliases, window and constraint names, collations, cursors, `:psql_var`.
                 s == "::"
                     || s == "."
                     || (p.kind == TokenKind::Punct && s == ":")
                     || (p.kind == TokenKind::Keyword && ["AS", "OVER", "CONSTRAINT", "COLLATE", "OF", "WINDOW", "CHARSET"].iter().any(|w| s.eq_ignore_ascii_case(w)))
             })
             || self.t.get(k).is_some_and(|t| t.kind == TokenKind::String || t.text(self.src) == "=>")
-            // MySQL's `CONVERT(x USING utf8mb4)`, `CHAR CHARACTER SET utf8mb4`: character sets, not columns.
             || (parts.len() == 1 && i >= 2 && prev.is_some_and(|p| p.text(self.src).eq_ignore_ascii_case("SET")) && self.t[i - 2].text(self.src).eq_ignore_ascii_case("CHARACTER"))
             || (parts.len() == 1 && prev.is_some_and(|p| p.text(self.src).eq_ignore_ascii_case("USING")) && !self.punct(k, "("))
             || (self.dialect == Dialect::TSql && parts.len() == 1 && self.punct(k, ":") && self.punct(k + 1, ":"))
@@ -705,7 +617,6 @@ impl<'a> P<'a> {
         k
     }
 
-    /// The items of a select (or RETURNING) list from `i`; returns where the list ends.
     fn select_list(&mut self, mut i: usize, hi: usize, id: usize, clause: Clause) -> usize {
         if self.word(i, "ALL") {
             i += 1;
@@ -717,13 +628,11 @@ impl<'a> P<'a> {
                 i = j + 1;
             }
         }
-        // MySQL's select modifiers.
         while self.any_word(i, &["DISTINCTROW", "HIGH_PRIORITY", "STRAIGHT_JOIN", "SQL_SMALL_RESULT", "SQL_BIG_RESULT", "SQL_BUFFER_RESULT", "SQL_NO_CACHE", "SQL_CACHE", "SQL_CALC_FOUND_ROWS"]) {
             i += 1;
         }
         let mut start = i;
         loop {
-            // The item ends at a depth-0 comma or a clause keyword.
             let mut k = start;
             while k < hi && !self.punct(k, ",") && !self.punct(k, ";") && !(self.is_clause_end(k) && !self.in_case(start, k)) {
                 if self.punct(k, "(") {
@@ -744,7 +653,6 @@ impl<'a> P<'a> {
         }
     }
 
-    /// Whether a CASE opened in `lo..k` is still open at `k` (its END comes later).
     fn in_case(&self, lo: usize, k: usize) -> bool {
         let mut depth = 0i32;
         let mut j = lo;
@@ -771,10 +679,8 @@ impl<'a> P<'a> {
                 .any(|w| self.word(k, w))
     }
 
-    /// One select item in `lo..hi`: its output name and the references in its expression.
     fn item(&mut self, lo: usize, hi: usize, id: usize, clause: Clause) {
         let n = hi - lo;
-        // T-SQL's `alias = expr`.
         if self.dialect == Dialect::TSql && n >= 3 && self.is_name(lo) && self.text(lo + 1) == "=" {
             let alias = self.value(lo);
             self.a.scopes[id].items.push(Item::Named(alias));
@@ -787,8 +693,6 @@ impl<'a> P<'a> {
         } else if n == 3 && self.is_name(lo) && self.punct(lo + 1, ".") && self.text(lo + 2) == "*" {
             Item::Star(Some(self.value(lo)))
         } else if n >= 3 && self.text(hi - 1) == "*" && self.punct(hi - 2, ".") {
-            // `(expr).*`, `s.col.*`: the fields of a composite, columns the reader cannot know
-            // (a star of no source).
             Item::Star(Some(String::new()))
         } else if n >= 2 && self.word(hi - 2, "AS") && (self.is_name(hi - 1) || self.t[hi - 1].kind == TokenKind::Keyword) {
             Item::Named(self.value(hi - 1))
@@ -798,7 +702,6 @@ impl<'a> P<'a> {
             && !matches!(self.t[hi - 2].kind, TokenKind::Operator)
             && !self.word(hi - 2, "AS")
         {
-            // `expr alias`
             Item::Named(self.value(hi - 1))
         } else if self.is_name(hi - 1) && (n == 1 || self.punct(hi - 2, ".")) {
             Item::Named(self.value(hi - 1))
@@ -811,7 +714,6 @@ impl<'a> P<'a> {
         } else {
             Item::Expr
         };
-        // The alias is not a reference.
         let alias_at = match &item {
             Item::Named(_) if n >= 2 && (self.word(hi - 2, "AS") || (self.is_name(hi - 1) && !self.punct(hi - 2, ".") && !matches!(self.t[hi - 2].kind, TokenKind::Operator))) => {
                 Some(if self.word(hi - 2, "AS") { hi - 2 } else { hi - 1 })
@@ -829,10 +731,8 @@ impl<'a> P<'a> {
         self.expr(lo, e, id, clause, false);
     }
 
-    /// `SET a = …, (b, c) = …` of an UPDATE: targets and references.
     fn set_list(&mut self, mut i: usize, hi: usize, id: usize) -> usize {
         loop {
-            // Target: a name (maybe `col.field` or `col[1]`) or a parenthesized list.
             if self.punct(i, "(") {
                 let j = self.close[i].min(hi);
                 for k in i + 1..j {
@@ -850,7 +750,6 @@ impl<'a> P<'a> {
                 self.target(i, id);
                 i += 1;
             }
-            // Up to `=`, then the value up to a depth-0 comma or a clause keyword.
             while i < hi && self.text(i) != "=" && !self.punct(i, ",") && !self.is_clause_end(i) {
                 i += 1;
             }
@@ -882,10 +781,8 @@ impl<'a> P<'a> {
         }
     }
 
-    /// `INSERT INTO [schema.]t [AS a] [(cols)]`; returns the index after it.
     fn insert_target(&mut self, i: usize, hi: usize, id: usize) -> usize {
         if !self.is_name(i) {
-            // A table variable (`INSERT INTO @v`), or not typed yet.
             self.a.scopes[id].open = true;
             return i;
         }
@@ -913,7 +810,6 @@ impl<'a> P<'a> {
         k
     }
 
-    /// `name` or `schema.name` at `i`: (schema, name, index after).
     fn qualified(&self, i: usize) -> (Option<String>, String, usize) {
         let mut parts = vec![self.value(i)];
         let mut k = i + 1;
@@ -923,7 +819,6 @@ impl<'a> P<'a> {
                 parts.push(self.value(k + 1));
                 k += 2;
             } else if self.dialect == Dialect::TSql && self.punct(k, ".") && self.punct(k + 1, ".") && self.is_name(k + 2) {
-                // `db..table`
                 gap = true;
                 parts.push(self.value(k + 2));
                 k += 3;
@@ -932,12 +827,10 @@ impl<'a> P<'a> {
             }
         }
         let name = parts.pop().unwrap_or_default();
-        // `db.schema.table`, `db..table`: another database's table, named by its prefix.
         let schema = if gap && parts.len() == 1 { Some(format!("{}..", parts[0])) } else if parts.is_empty() { None } else { Some(parts.join(".")) };
         (schema, name, k)
     }
 
-    /// A FROM list (sources, commas and joins); returns the index after it.
     fn from_list(&mut self, mut i: usize, hi: usize, id: usize) -> usize {
         i = self.source(i, hi, id);
         loop {
@@ -961,7 +854,6 @@ impl<'a> P<'a> {
             if self.any_word(k, &["INNER", "OUTER"]) {
                 k += 1;
             }
-            // T-SQL's join hint: `INNER LOOP JOIN`.
             if self.dialect == Dialect::TSql && k > i && self.any_word(k, &["LOOP", "HASH", "MERGE", "REMOTE"]) && self.word(k + 1, "JOIN") {
                 k += 1;
             }
@@ -1013,7 +905,6 @@ impl<'a> P<'a> {
                 .any(|w| self.word(k, w))
     }
 
-    /// One source at `i` with its alias; returns the index after it.
     fn source(&mut self, mut i: usize, hi: usize, id: usize) -> usize {
         while self.any_word(i, &["ONLY", "LATERAL"]) {
             i += 1;
@@ -1029,7 +920,6 @@ impl<'a> P<'a> {
                 let child = self.query(i + 1, j, Some(id), Some(id));
                 kind = SourceKind::Subquery(child);
             } else {
-                // A parenthesized join: its sources are this scope's.
                 let end = self.from_list(i + 1, j, id);
                 if end < j {
                     self.a.scopes[id].open = true;
@@ -1062,12 +952,9 @@ impl<'a> P<'a> {
                 kind = SourceKind::Table { schema, name };
             }
         } else if self.word(i, "VALUES") {
-            // (VALUES …) handled as a subquery; a bare VALUES here is unusual.
             self.a.scopes[id].open = true;
             return i;
         } else {
-            // Not a source the reader knows (T-SQL's `@table` variables, a placeholder): the
-            // scope's sources are incomplete.
             self.a.scopes[id].open = true;
             return i;
         }
@@ -1085,8 +972,6 @@ impl<'a> P<'a> {
         CLAUSE_WORDS.iter().any(|w| self.word(i, w))
     }
 
-    /// `[AS] alias [(cols)]` after a source, then `TABLESAMPLE` / `FOR SYSTEM_TIME AS OF`;
-    /// pushes the source (when `kind` is given).
     fn alias(&mut self, mut i: usize, hi: usize, id: usize, kind: Option<SourceKind>, start: usize) -> usize {
         let name_end = self.t.get(i.saturating_sub(1)).map_or(0, |t| t.end);
         let mut alias = None;
@@ -1120,7 +1005,6 @@ impl<'a> P<'a> {
                 i = self.close[i + 1] + 1;
             }
         }
-        // LAR: FOR SYSTEM_TIME AS OF <expr>
         if self.word(i, "FOR") && self.word(i + 1, "SYSTEM_TIME") {
             i += 2;
             while i < hi && !self.punct(i, ",") && !self.is_join_start(i) && !self.is_clause_end_strict(i) && !self.word(i, "ON") {
@@ -1135,11 +1019,7 @@ impl<'a> P<'a> {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Resolution against a schema snapshot.
-
 impl Analysis {
-    /// The innermost scope covering byte `at`.
     pub fn scope_at(&self, at: usize) -> Option<usize> {
         let mut best: Option<usize> = None;
         for (i, s) in self.scopes.iter().enumerate() {
@@ -1153,7 +1033,6 @@ impl Analysis {
         best.or(if self.scopes.is_empty() { None } else { Some(0) })
     }
 
-    /// The scope and its ancestors, innermost first.
     pub fn chain(&self, scope: usize) -> Vec<usize> {
         let mut out = vec![scope];
         let mut s = scope;
@@ -1167,7 +1046,6 @@ impl Analysis {
         out
     }
 
-    /// The CTE named `name` visible from `scope`.
     pub fn visible_cte(&self, scope: usize, name: &str) -> Option<usize> {
         let mut s = Some(scope);
         let mut guard = 0;
@@ -1184,7 +1062,6 @@ impl Analysis {
         None
     }
 
-    /// Every CTE visible from `scope`.
     pub fn visible_ctes(&self, scope: usize) -> Vec<usize> {
         let mut out = Vec::new();
         let mut s = Some(scope);
@@ -1200,7 +1077,6 @@ impl Analysis {
         out
     }
 
-    /// The columns a source gives, when they are known: (name, type).
     pub fn source_columns(&self, scope: usize, src: &Source, snap: &SchemaSnapshot) -> Option<Vec<(String, String)>> {
         self.source_columns_depth(scope, src, snap, 0)
     }
@@ -1253,7 +1129,6 @@ impl Analysis {
         }
     }
 
-    /// The output columns of a scope's select list, when every `*` can be expanded.
     #[cfg(test)]
     pub fn outputs(&self, scope: usize, snap: &SchemaSnapshot) -> Option<Vec<(String, String)>> {
         self.outputs_depth(scope, snap, 0)
@@ -1264,7 +1139,6 @@ impl Analysis {
             return None;
         }
         let s = &self.scopes[scope];
-        // No select list read (VALUES, or something not followed): unknown.
         if s.items.is_empty() {
             return None;
         }
@@ -1293,7 +1167,6 @@ impl Analysis {
         Some(out)
     }
 
-    /// The type of the column `[q.]n` of `scope`'s sources, when exactly one has it.
     fn type_of_ref(&self, scope: usize, q: Option<&str>, n: &str, snap: &SchemaSnapshot, depth: usize) -> Option<String> {
         let s = &self.scopes[scope];
         let mut found = None;
@@ -1310,7 +1183,6 @@ impl Analysis {
         found
     }
 
-    /// The source that `qualifier` names, visible from `scope` (innermost first): (scope, index).
     pub fn find_source(&self, scope: usize, qualifier: &str) -> Option<(usize, usize)> {
         for s in self.chain(scope) {
             let sc = &self.scopes[s];
@@ -1324,7 +1196,6 @@ impl Analysis {
         None
     }
 
-    /// The type of the column a reference names, when it resolves to exactly one known column.
     pub fn ref_type(&self, scope: usize, qualifier: Option<&str>, name: &str, snap: &SchemaSnapshot) -> Option<String> {
         match qualifier {
             Some(q) => {
@@ -1357,7 +1228,6 @@ impl Analysis {
     }
 }
 
-/// `quote_ident` for a name that may need it, re-exported for callers building SQL from scopes.
 pub fn quoted(name: &str) -> String {
     quote_ident(name)
 }
@@ -1401,9 +1271,7 @@ mod tests {
         assert_eq!(names(a.cte_columns(n, &s, 0)), vec!["x"]);
         let (sc, i) = a.find_source(main, "b").unwrap();
         assert_eq!(names(a.source_columns(sc, &a.scopes[sc].sources[i], &s)), vec!["id", "t"]);
-        // Types flow through: t is orders.total.
         assert_eq!(a.cte_columns(big, &s, 0).unwrap()[1].1, "numeric");
-        // A CTE body sees earlier CTEs.
         let a = an("with a as (select id from orders), b as (select id from a) select * from b");
         let b = a.visible_cte(0, "b").unwrap();
         assert_eq!(names(a.cte_columns(b, &s, 0)), vec!["id"]);
@@ -1416,10 +1284,8 @@ mod tests {
         let a = an("select x.* from (select p.*, c.name from orders p join customer c on c.id = p.customer) x");
         let (sc, i) = a.find_source(0, "x").unwrap();
         assert_eq!(names(a.source_columns(sc, &a.scopes[sc].sources[i], &s)), vec!["id", "customer", "total", "status", "name"]);
-        // Alias column lists rename.
         let a = an("select * from (select id, name from customer) as c(a, b)");
         assert_eq!(names(a.outputs(0, &s)), vec!["a", "b"]);
-        // Correlated subqueries see the outer sources.
         let a = an("select * from orders p where exists (select 1 from customer c where c.id = p.customer)");
         let inner = a.scopes.iter().position(|x| x.parent == Some(0)).unwrap();
         assert!(a.find_source(inner, "p").is_some() && a.find_source(inner, "c").is_some());
@@ -1436,7 +1302,6 @@ mod tests {
         let a = an(sql);
         assert_eq!(a.missing_on.len(), 1);
         assert_eq!(&sql[a.missing_on[0].clone()], "join customer c");
-        // NATURAL and CROSS need no ON; a function source is a source.
         let a = an("select * from orders natural join customer, generate_series(1, 3) g(n) cross join customer x");
         assert!(a.missing_on.is_empty() && a.scopes[0].natural);
         assert_eq!(a.scopes[0].sources[2].alias_columns, Some(vec!["n".into()]));
@@ -1478,7 +1343,6 @@ mod tests {
         let a = an("select id from orders union all select id from customer order by 1");
         assert_eq!(a.scopes.len(), 2);
         assert_eq!(a.scopes[1].sources[0].visible_name(), Some("customer"));
-        // Typing: unclosed parens and a trailing dot are fine.
         let a = an("select * from orders p where p.id in (select c.");
         assert!(a.scopes.len() >= 2);
         let a = an("with x as (select");

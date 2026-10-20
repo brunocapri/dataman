@@ -1,5 +1,3 @@
-//! MySQL: grid edits of every column type.
-
 mod common;
 
 use common::*;
@@ -65,7 +63,6 @@ fn edit_every_type() {
             "g" => continue,
             _ => continue,
         };
-        // Once to the new value, then back (the old value is the guard of the second).
         for (from, to) in [(old.clone().unwrap(), new.to_string())] {
             let rs = run(&e, &s, "SELECT * FROM `we``ird`");
             let snap = rs.snapshot();
@@ -80,7 +77,6 @@ fn edit_every_type() {
             }
         }
     }
-    // Every column edited again from what it shows now (the round trip of the displayed text).
     let rs = run(&e, &s, "SELECT * FROM `we``ird`");
     let snap = rs.snapshot();
     for (ix, col) in cols.iter().enumerate() {

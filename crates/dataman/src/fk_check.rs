@@ -1,16 +1,3 @@
-//! Demo stages of the grid's cell menu (`--demo`), driven with real mouse and key events through
-//! the window, as a user would:
-//!
-//! - `fk-menu-context`: the right-click menu of a reference (screenshot);
-//! - `fk-check`: every interaction rule, printed as PASS/FAIL lines (exit code 1 on a failure);
-//! - `fk-pop`: a click on a plain value, its pop (screenshot; `DATAMAN_POP_FREEZE_MS` holds it);
-//! - `fk-land`: ⌘-click on a reference, the new tab's key cell popping in yellow (screenshot);
-//! - `fk-pop-check`: the find-indicator rules (grid clicks, FK landing, ⌘' in the editor, the
-//!   explorer filter, reduce motion), PASS/FAIL like `fk-check`.
-//!
-//! The query is `SELECT * FROM orders ORDER BY id LIMIT 500` (the `dataman` PostgreSQL test
-//! database, `orders.customer → customer`); the first reference column is the one clicked.
-
 use std::time::Duration;
 
 use gpui::{AsyncWindowContext, Entity, Focusable, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, Pixels, Point, ScrollDelta, ScrollWheelEvent, TouchPhase, point, px};
@@ -62,7 +49,6 @@ fn grid_of(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> Entity<Result
     cx.update(|_, cx| ws.read(cx).active_tab().unwrap().read(cx).grid.clone()).unwrap()
 }
 
-/// Waits for the references of the result; the first reference column and a plain one.
 async fn columns(grid: &Entity<ResultGrid>, cx: &mut AsyncWindowContext) -> Option<(usize, usize)> {
     for _ in 0..100 {
         let found = cx.update(|_, cx| {
@@ -80,7 +66,6 @@ async fn columns(grid: &Entity<ResultGrid>, cx: &mut AsyncWindowContext) -> Opti
     None
 }
 
-/// Runs a stage; `false` when a check failed.
 pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContext) -> bool {
     let grid = grid_of(ws, cx);
     let Some((fk, plain)) = columns(&grid, cx).await else {
@@ -114,7 +99,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
     }
 }
 
-/// Redraws (the hidden window draws only when asked).
 fn draw(cx: &mut AsyncWindowContext) {
     let _ = cx.update(|window, cx| {
         window.refresh();
@@ -134,22 +118,17 @@ async fn pop_check(ws: &Entity<Workspace>, grid: &Entity<ResultGrid>, fk: usize,
     let at = |cx: &mut AsyncWindowContext, r: usize, c: usize| cx.update(|_, cx| grid.read(cx).demo_cell_point(r, c)).unwrap();
     let over = crate::motion::PopStyle::Find.duration().as_millis() as u64 + 50;
 
-    // 1. A plain click pops the value it selects, in the selection blue.
     let p = at(cx, 2, plain);
     click(cx, p, none);
     report("a click pops the selected value (Select)", pop(cx) == Some(((2, plain), Select)), format!("{:?}", pop(cx)));
-    // 2. Another value mid-pop: the pop restarts there.
     let q = at(cx, 3, plain);
     click(cx, q, none);
     report("a click mid-pop restarts it on the new value", pop(cx) == Some(((3, plain), Select)), format!("{:?}", pop(cx)));
-    // 3. It ends by itself.
     pause(cx, over).await;
     draw(cx);
     report("the pop ends by itself", pop(cx).is_none(), format!("{:?}", pop(cx)));
-    // 4. The value already selected: no pop.
     click(cx, q, none);
     report("a click on the selected value does not pop again", pop(cx).is_none(), format!("{:?}", pop(cx)));
-    // 5. Extending (⇧-click, drag) does not pop, and stops a running pop.
     let p = at(cx, 2, plain);
     click(cx, p, none);
     let shift = Modifiers { shift: true, ..Default::default() };
@@ -162,12 +141,10 @@ async fn pop_check(ws: &Entity<Workspace>, grid: &Entity<ResultGrid>, fk: usize,
     input(cx, PlatformInput::MouseMove(MouseMoveEvent { position: b, pressed_button: Some(MouseButton::Left), modifiers: none }));
     up(cx, b, MouseButton::Left, none, 1);
     report("a drag into a range drops the press's pop", started && pop(cx).is_none(), format!("{started} {:?}", pop(cx)));
-    // 6. The keys move without a pop (and a running pop does not follow).
     let p = at(cx, 2, plain);
     click(cx, p, none);
     key(cx, "down");
     report("arrow keys move without a pop", pop(cx).is_none(), format!("{:?}", pop(cx)));
-    // 7. A double click edits: no pop on the cell under the editor.
     let p4 = at(cx, 4, plain);
     down(cx, p4, MouseButton::Left, none, 1);
     up(cx, p4, MouseButton::Left, none, 1);
@@ -180,13 +157,11 @@ async fn pop_check(ws: &Entity<Workspace>, grid: &Entity<ResultGrid>, fk: usize,
         pause(cx, 100).await;
     }
     let _ = cx.update(|window, cx| window.focus(&grid.focus_handle(cx), cx));
-    // 8. A reference: the pop, but no menu (a plain click never opens it).
     let f2 = at(cx, 6, fk);
     click(cx, f2, none);
     let menu = cx.update(|_, cx| grid.read(cx).demo_menu()).unwrap();
     report("a click on a reference pops without opening a menu", pop(cx) == Some(((6, fk), Select)) && menu.is_none(), format!("{:?} {menu:?}", pop(cx)));
 
-    // 9. Reduce motion: no pop on a click, the explorer opens and shuts at once.
     pause(cx, over).await;
     let _ = cx.update(|_, cx| cx.set_reduce_motion(true));
     let p = at(cx, 7, plain);
@@ -214,7 +189,6 @@ async fn pop_check(ws: &Entity<Workspace>, grid: &Entity<ResultGrid>, fk: usize,
     pause(cx, 400).await;
     draw(cx);
 
-    // 10. ⌘-click on a reference: the new tab's key cell pops in yellow when the row arrives.
     let p = at(cx, 2, fk);
     let cmd = Modifiers { platform: true, ..Default::default() };
     click(cx, p, cmd);
@@ -237,7 +211,6 @@ async fn pop_check(ws: &Entity<Workspace>, grid: &Entity<ResultGrid>, fk: usize,
     }
     report("FK landing: the first row's key pops (Find)", landed == Some((0, "id".to_string(), Find)), format!("{landed:?}"));
 
-    // 11. ⌘' on an error: the token pops in yellow.
     let tab = cx.update(|_, cx| ws.read(cx).active_tab().unwrap().clone()).unwrap();
     let editor = cx.update(|_, cx| tab.read(cx).editor.clone()).unwrap();
     let sql = "SELECT nope_col FROM orders";
@@ -258,7 +231,6 @@ async fn pop_check(ws: &Entity<Workspace>, grid: &Entity<ResultGrid>, fk: usize,
     let want = sql.find("nope_col").map(|i| i..i + "nope_col".len());
     report("⌘' pops the error token (Find)", jumped && target == want, format!("{jumped} {target:?} vs {want:?}"));
 
-    // 12. The explorer filter: the first match pops once, not again for the same hit.
     let tree = cx.update(|_, cx| ws.read(cx).tree.clone()).unwrap();
     let first = cx
         .update(|_, cx| {
@@ -298,19 +270,15 @@ async fn check(ws: &Entity<Workspace>, grid: &Entity<ResultGrid>, fk: usize, pla
     let src = cx.update(|_, cx| ws.read(cx).active_tab().unwrap().clone()).unwrap();
     let src_rs = cx.update(|_, cx| src.read(cx).result().cloned()).unwrap();
 
-    // 1. A plain click on a reference: the cell is selected, nothing opens (the menu is right
-    // click or ⌥↓ only, ⌘-click goes straight there).
     let p = at(cx, 2, fk);
     click(cx, p, none);
     report("a plain click on a reference opens nothing", menu(cx).is_none(), format!("{:?}", menu(cx)));
     report("the click selects the cell", sel(cx) == Some(((2, fk), (2, fk))), format!("{:?}", sel(cx)));
 
-    // 2. Not a reference either: nothing opens.
     let q = at(cx, 2, plain);
     click(cx, q, none);
     report("a plain value opens nothing", menu(cx).is_none(), format!("{:?}", menu(cx)));
 
-    // 3. A drag selects a range and opens nothing.
     let (a, b) = (at(cx, 2, fk), at(cx, 5, fk));
     down(cx, a, MouseButton::Left, none, 1);
     input(cx, PlatformInput::MouseMove(MouseMoveEvent { position: point(b.x, (a.y + b.y) / 2.), pressed_button: Some(MouseButton::Left), modifiers: none }));
@@ -318,18 +286,13 @@ async fn check(ws: &Entity<Workspace>, grid: &Entity<ResultGrid>, fk: usize, pla
     up(cx, b, MouseButton::Left, none, 1);
     report("a drag selects a range, no menu", menu(cx).is_none() && sel(cx) == Some(((2, fk), (5, fk))), format!("{:?} {:?}", menu(cx), sel(cx)));
 
-    // 4. Shift-click extends the selection, no menu.
     click(cx, p, none);
     let shift = Modifiers { shift: true, ..Default::default() };
     let c0 = at(cx, 0, fk);
     click(cx, c0, shift);
     report("shift-click extends, no menu", menu(cx).is_none() && sel(cx) == Some(((2, fk), (0, fk))), format!("{:?} {:?}", menu(cx), sel(cx)));
 
-    // 5. A right-click menu (unlike a plain click) still closes on a scroll or on typing, and
-    // esc gives the keys back to the grid.
     right_click(cx, p);
-    // The wheel turns over the grid just left of the menu (which opens at the pointer and
-    // takes a wheel over itself).
     let p_now = at(cx, 2, fk);
     let p_now = point(p_now.x - px(30.), p_now.y);
     input(cx, PlatformInput::ScrollWheel(ScrollWheelEvent { position: p_now, delta: ScrollDelta::Pixels(point(px(0.), px(-22.))), modifiers: none, touch_phase: TouchPhase::Moved }));
@@ -344,7 +307,6 @@ async fn check(ws: &Entity<Workspace>, grid: &Entity<ResultGrid>, fk: usize, pla
     let grid_focused = cx.update(|window, cx| grid.focus_handle(cx).is_focused(window)).unwrap();
     report("esc closes it, the grid has the keys", menu(cx).is_none() && grid_focused, format!("{:?}", menu(cx)));
 
-    // 6. A double click edits the cell (no menu was open to close).
     let p3 = at(cx, 3, fk);
     down(cx, p3, MouseButton::Left, none, 1);
     up(cx, p3, MouseButton::Left, none, 1);
@@ -360,7 +322,6 @@ async fn check(ws: &Entity<Workspace>, grid: &Entity<ResultGrid>, fk: usize, pla
     }
     let _ = cx.update(|window, cx| window.focus(&grid.focus_handle(cx), cx));
 
-    // 7. Right click: "Go to …" and the copy items; on a plain value only the copy items.
     let p = at(cx, 2, fk);
     right_click(cx, p);
     let m = menu(cx);
@@ -382,7 +343,6 @@ async fn check(ws: &Entity<Workspace>, grid: &Entity<ResultGrid>, fk: usize, pla
         m.as_ref().is_some_and(|(_, l, _, _)| l == &["Copy value", "Copy with headers", "—", "Delete row"]),
         format!("{m:?}"),
     );
-    // Copy value puts the cell's text on the clipboard (the previous clipboard is restored).
     let saved = cx.update(|_, cx| cx.read_from_clipboard()).unwrap();
     let f = cx.update(|window, cx| grid.read(cx).menu_focus_handle().is_focused(window)).unwrap();
     report("the right-click menu takes the keys (opened on the press)", f, String::new());
@@ -391,7 +351,6 @@ async fn check(ws: &Entity<Workspace>, grid: &Entity<ResultGrid>, fk: usize, pla
     let copied = cx.update(|_, cx| cx.read_from_clipboard().and_then(|c| c.text())).unwrap();
     let want = cx.update(|_, cx| grid.read(cx).result().and_then(|r| r.snapshot().text(2, plain).map(|v| v.into_owned()))).unwrap();
     report("Copy value copies the cell", copied.is_some() && copied == want, format!("{copied:?} vs {want:?}"));
-    // Copy with headers: the selected column's name over its value.
     let q = at(cx, 2, plain);
     right_click(cx, q);
     key(cx, "down");
@@ -411,7 +370,6 @@ async fn check(ws: &Entity<Workspace>, grid: &Entity<ResultGrid>, fk: usize, pla
     if let Some(s) = saved {
         let _ = cx.update(|_, cx| cx.write_to_clipboard(s));
     }
-    // ⌃-click is the Mac's right click.
     let ctrl = Modifiers { control: true, ..Default::default() };
     let p = at(cx, 2, fk);
     click(cx, p, ctrl);
@@ -419,7 +377,6 @@ async fn check(ws: &Entity<Workspace>, grid: &Entity<ResultGrid>, fk: usize, pla
     report("⌃-click opens the right-click menu", m.as_ref().is_some_and(|(_, l, _, _)| l.len() == 6), format!("{m:?}"));
     key(cx, "escape");
 
-    // 8. ⌥↓ on the active reference, ↩ goes: a new tab on the same connection and database.
     let n0 = tabs(cx);
     let _ = cx.update(|window, cx| {
         grid.update(cx, |g, cx| g.select_cell(4, fk, cx));
@@ -457,7 +414,6 @@ async fn check(ws: &Entity<Workspace>, grid: &Entity<ResultGrid>, fk: usize, pla
     });
     report("the source tab keeps its result", src_same.unwrap_or(false), String::new());
 
-    // 9. ⌘-click goes straight there, without the menu.
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.activate_tab(&src, window, cx)));
     let _ = cx.update(|window, cx| {
         window.refresh();
@@ -470,7 +426,6 @@ async fn check(ws: &Entity<Workspace>, grid: &Entity<ResultGrid>, fk: usize, pla
     let n2 = tabs(cx);
     report("⌘-click opens the row without a menu", n2 == n1 + 1 && menu(cx).is_none(), format!("{n1} → {n2}"));
 
-    // 10. A click on the right-click menu's "Go to …" item goes too.
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.activate_tab(&src, window, cx)));
     let _ = cx.update(|window, cx| {
         window.refresh();

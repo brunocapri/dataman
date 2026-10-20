@@ -1,5 +1,3 @@
-//! MySQL: result sets of calls and multi-statement texts, odd statements.
-
 mod common;
 
 use common::*;
@@ -43,7 +41,6 @@ fn procedure_result_sets_each_get_a_result() {
     assert!(got.iter().all(|l| l.starts_with("Done")), "{got:#?}");
     assert_eq!((rs[0].rows(), rs[1].rows(), rs[2].rows()), (1, 1, 2));
     assert_eq!(rs[2].snapshot().text(1, 0).as_deref(), Some("w"));
-    // The next statement runs on the connection as usual.
     let rs = all(&e, &s, "SELECT @y AS y");
     assert_eq!(rs[0].snapshot().text(0, 0).as_deref(), Some("7"));
     exec_quiet(&e, &c0, &["DROP DATABASE dataman_mr2"]);

@@ -1,15 +1,3 @@
-//! The explorer: saved connections → databases → schemas → tables, views, materialized views,
-//! functions, sequences, types, triggers → columns, indexes, constraints, triggers,
-//! partitions; extensions under each database and roles under each connection. A `/` filter
-//! searches everything loaded. Tables pinned from their menu head their connection in a
-//! "pinned" group (`dataman_core::pins`), where they open and offer the same menu as in their
-//! schema.
-//!
-//! The tree is flattened into the list of visible rows and drawn with `uniform_list`, so a
-//! schema with thousands of tables expands without drawing them all. Every level loads on
-//! demand through the core's schema cache, one catalog query per node; a group the server
-//! reports empty (or does not report: LAR) is not shown.
-
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::sync::Arc;
@@ -49,30 +37,23 @@ actions!(
         Disconnect,
         FocusFilter,
         Escape,
-        /// ⇧F10 (and the palette's "Show row actions"): the context menu of the selected row.
         ShowRowActions,
         MenuUp,
         MenuDown,
         MenuLeft,
         MenuRight,
         MenuConfirm,
-        /// ⌥↩ on a Generate SQL item: insert at the cursor instead of a new tab.
         MenuConfirmAlt,
         MenuClose,
     ]
 );
 
-/// The key context of the open context menu (it holds the focus while open).
 const MENU_CONTEXT: &str = "ExplorerMenu";
-/// The hover group of a tree row (its ⋯ button shows on hover).
 const ROW_GROUP: &str = "tree-row";
-/// How far a row's meta moves left while its ⋯ button shows (the 16 pt button 3 pt from the
-/// row's right edge, the row's 8 pt padding, and a 3 pt gap).
 const MORE_ROOM: f32 = 14.;
 
 const CONTEXT: &str = "Explorer";
 
-/// The filter's first match pops once typing pauses this long (not on every keystroke).
 const POP_PAUSE: Duration = Duration::from_millis(150);
 
 pub fn bind_keys(cx: &mut App) {
@@ -86,7 +67,6 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-r", ReloadNode, c),
         KeyBinding::new("cmd-i", EditConnection, c),
         KeyBinding::new("cmd-backspace", Disconnect, c),
-        // In the filter field `/` types.
         KeyBinding::new("/", FocusFilter, Some("Explorer && !TextInput")),
         KeyBinding::new("escape", Escape, c),
         // The Mac convention for the keyboard context menu (PC keyboards' menu key does not
@@ -108,27 +88,18 @@ pub fn bind_keys(cx: &mut App) {
 }
 
 pub enum TreeEvent {
-    /// Double-click (or ↩) on a table or view.
     OpenRelation { conn: String, db: String, schema: String, name: String },
-    /// Double-click (or ↩) on a document engine's collection: its documents in a new tab.
     OpenCollection { conn: String, db: String, coll: String },
-    /// The selected connection changed.
     Selected(String),
-    /// Edit a connection (⌘I, or double-click on one that failed).
     EditConnection(String),
     NewConnection,
     Disconnect(String),
-    /// esc: back to the editor.
     FocusEditor,
-    /// A context menu action the workspace carries out (`alt`: ⌥ was held).
     RowAction { act: Act, target: Target, alt: bool },
-    /// A short message for the status bar ("Copied …").
     Notice(String),
-    /// Something undoable was done (a connection moved, a table pinned): the workspace's undo.
     Did(crate::undo::Entry),
 }
 
-/// The groups under a schema, in the order they are shown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum G {
     Tables,
@@ -143,7 +114,6 @@ enum G {
 impl G {
     const ALL: [G; 7] = [G::Tables, G::Views, G::MatViews, G::Functions, G::Sequences, G::Types, G::Triggers];
 
-    /// The last part of the group's row id.
     fn key(self) -> &'static str {
         match self {
             G::Tables => "tables",
@@ -163,7 +133,6 @@ impl G {
         }
     }
 
-    /// Which relations it lists (`None`: not a relation group).
     fn holds(self, k: RelKind) -> Option<bool> {
         match self {
             G::Tables => Some(!k.is_view()),
@@ -174,7 +143,6 @@ impl G {
     }
 }
 
-/// The groups under a table besides columns and indexes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Sub {
     Constraints,
@@ -188,28 +156,19 @@ enum Kind {
     Db { conn: String, db: String },
     Schema { conn: String, db: String, schema: String },
     Group { conn: String, db: String, schema: String, g: G },
-    /// The connection's roles.
     Roles { conn: String },
-    /// A database's extensions.
     Extensions { conn: String, db: String },
-    /// The connection's pinned tables (its rows are `Rel`s, as in their schema).
     Pinned { conn: String },
     Rel { conn: String, db: String, schema: String, name: String, kind: RelKind },
-    /// A partition or parent listed under a table: it opens like a table.
     RelRef { conn: String, db: String, schema: String, name: String },
     Columns { conn: String, db: String, schema: String, name: String },
     Indexes { conn: String, db: String, schema: String, name: String },
-    /// A table's constraints, triggers or partitions.
     TableSub { conn: String, db: String, schema: String, name: String, what: Sub },
     Column { name: String },
     Index { name: String, definition: Option<String> },
-    /// A function, sequence, type, enum label, trigger, constraint, extension or role.
     Object { conn: String, db: String, schema: String, name: String, what: Obj },
-    /// A document engine's database (MongoDB's): its collections below it.
     DocDb { conn: String, db: String },
-    /// A collection (or view) of documents.
     Coll { conn: String, db: String, name: String },
-    /// A failed load: clicking retries the node `retry`.
     Error { retry: String },
     Leaf,
 }
@@ -217,12 +176,9 @@ enum Kind {
 #[derive(Clone, Copy, PartialEq)]
 enum Tone {
     Normal,
-    /// A connected connection's name (semibold).
     Conn,
     ConnLar,
-    /// A connection that is not connected (off, failed): dim, regular weight.
     ConnOff,
-    /// A connection on its way up: gray, between off and connected.
     ConnWait,
     Muted,
     Italic,
@@ -246,27 +202,18 @@ struct Row {
     id: SharedString,
     depth: usize,
     label: SharedString,
-    /// Byte range of the filter match in `label`.
     hl: Option<Range<usize>>,
     tone: Tone,
     icon: Option<(Icon, Option<Hsla>)>,
-    /// No icon, but its room kept: a plain column's name lines up with a key column's.
     blank_icon: bool,
     chip: Option<Hsla>,
-    /// The chip faded (a connection that is not connected).
     chip_dim: bool,
-    /// The whole text on hover (a connection's error, a failed load's).
     tip: Option<SharedString>,
     lar: bool,
-    /// A connection through an SSH tunnel (a small glyph after the name).
     tunnel: bool,
-    /// A connection's engine: its logo before the name (when logos are on).
     logo: Option<dataman_core::Engine>,
-    /// A read-only database (a small lock after the name).
     lock: bool,
     meta: SharedString,
-    /// What the meta column shows when `meta` and the label do not both fit (a table's row
-    /// estimate without its size).
     meta_short: Option<SharedString>,
     meta_kind: Meta,
     expandable: bool,
@@ -331,29 +278,20 @@ impl Row {
     }
 }
 
-/// The open context menu.
 struct RowMenu {
-    /// The row it belongs to (`None`: the "nothing selected" menu).
     row: Option<SharedString>,
     target: Target,
     entries: Vec<Entry>,
-    /// Top-left corner, window coordinates.
     origin: (f32, f32),
-    /// The highlighted entry (keyboard and hover share it).
     hi: Option<usize>,
-    /// The open submenu (an entry index) and its highlighted item.
     sub: Option<usize>,
     sub_hi: Option<usize>,
 }
 
-/// Where a menu opens.
 #[derive(Clone, Copy, Debug)]
 pub enum MenuAnchor {
-    /// At the mouse (right-click, ctrl-click).
     Mouse(gpui::Point<gpui::Pixels>),
-    /// Under the row's label (the keyboard).
     Row,
-    /// Under the row's ⋯ button, aligned to its right.
     RowMore,
 }
 
@@ -363,44 +301,28 @@ pub struct SchemaTree {
     filter: Entity<TextInput>,
     rows: Vec<Row>,
     expanded: HashSet<String>,
-    /// The schema last opened or shut, when, and which way: its folder's fill drains away or
-    /// comes back (`motion::folder_fill`); its rows simply show or go.
     folder_turn: Option<(String, Instant, bool)>,
     loading: HashSet<String>,
     errors: HashMap<String, String>,
-    /// The row under the pointer (its meta steps aside for the ⋯ button).
     hovered: Option<SharedString>,
     selected: Option<SharedString>,
     scroll: UniformListScrollHandle,
-    /// Filter results: (matches, relations searched), and a near miss when nothing matched.
     filter_stats: Option<(usize, usize, Option<String>)>,
-    /// The open context menu.
     menu: Option<RowMenu>,
     menu_focus: FocusHandle,
     _menu_blur: Option<Subscription>,
-    /// The row whose menu a click outside just closed (a click on its ⋯ must not reopen it).
     menu_closed: Option<(Option<SharedString>, Instant)>,
-    /// Sum of the cache versions of the connections at the last rebuild.
     seen_version: u64,
-    /// Time spent in the last rebuild (shown by the tree benchmark).
     pub last_rebuild: std::time::Duration,
-    /// The find indicator on the first match's highlighted name (by row id).
     pop: Option<FindPop<SharedString>>,
-    /// Its frame for the rows being rendered (set in `render`).
     pop_now: Option<(SharedString, PopFrame)>,
-    /// The pending pop: restarted by every keystroke, it fires once typing pauses.
     pop_wait: Option<gpui::Task<()>>,
-    /// The match that popped last (row id, highlighted range): the same hit does not pop twice.
     popped: Option<(SharedString, Range<usize>)>,
-    /// A row to select once it exists (go to definition, while its levels load).
     reveal: Option<String>,
-    /// The gap among the connections a dragged one would drop into (`order::slot`).
     conn_drop: Option<usize>,
-    /// The connections' rows as last laid out, by row id (the checks).
     pub conn_bounds: std::rc::Rc<std::cell::RefCell<HashMap<SharedString, gpui::Bounds<gpui::Pixels>>>>,
 }
 
-/// A connection on the move in the explorer (GPUI's drag; `dnd`): its id.
 pub struct DraggedConn(pub String);
 
 impl EventEmitter<TreeEvent> for SchemaTree {}
@@ -426,12 +348,10 @@ fn gid(c: &str, db: &str, s: &str, g: G) -> String {
 fn rid(c: &str, db: &str, s: &str, n: &str) -> String {
     format!("c:{c}/d:{db}/s:{s}/r:{n}")
 }
-/// The "pinned" group. Unlike the other nodes it starts open: its id in `expanded` means the
-/// user closed it.
+/// Unlike the other nodes it starts open: its id in `expanded` means the user closed it.
 fn pinned_id(c: &str) -> String {
     format!("c:{c}/pinned")
 }
-/// A pinned table's row (its columns and indexes below it, as under its schema).
 pub fn pin_id(c: &str, db: &str, s: &str, n: &str) -> String {
     format!("c:{c}/pinned/d:{db}/s:{s}/r:{n}")
 }
@@ -448,13 +368,11 @@ impl SchemaTree {
         cx.subscribe(&filter, |t: &mut SchemaTree, _, ev: &InputEvent, cx| match ev {
             InputEvent::Changed => {
                 t.rebuild(cx);
-                // The first match is selected, so ↩ opens it.
                 if t.filtering(cx)
                     && let Some(r) = t.rows.iter().find(|r| r.hl.is_some())
                 {
                     t.selected = Some(r.id.clone());
                 }
-                // ... and it pops (Xcode's find yellow) once typing pauses.
                 t.pop_wait = Some(cx.spawn(async move |t, cx| {
                     cx.background_executor().timer(POP_PAUSE).await;
                     let _ = t.update(cx, |t, cx| t.pop_first_match(cx));
@@ -499,8 +417,6 @@ impl SchemaTree {
         t
     }
 
-    /// Go to definition: opens the explorer down to a table or view (and its column) and
-    /// selects it, loading the levels on the way.
     pub fn reveal_relation(&mut self, conn: &str, db: &str, schema: &str, name: &str, kind: RelKind, column: Option<&str>, cx: &mut Context<Self>) {
         let g = if kind == RelKind::View {
             G::Views
@@ -522,7 +438,6 @@ impl SchemaTree {
         self.reveal_path(path, target, cx);
     }
 
-    /// Go to definition: opens the explorer down to a function and selects it.
     pub fn reveal_function(&mut self, conn: &str, db: &str, schema: &str, oid: u32, cx: &mut Context<Self>) {
         let mut path = self.open_schema(conn, db, schema, cx);
         let g = gid(conn, db, schema, G::Functions);
@@ -530,9 +445,7 @@ impl SchemaTree {
         self.reveal_path(path, format!("{g}/f:{oid}"), cx);
     }
 
-    /// The connection, database and schema nodes (to expand) on the way to an object.
     fn open_schema(&mut self, conn: &str, db: &str, schema: &str, cx: &mut Context<Self>) -> Vec<(String, Kind)> {
-        // A filter would hide the path.
         if !self.filter.read(cx).text().is_empty() {
             self.filter.update(cx, |f, cx| f.set_text("", cx));
         }
@@ -543,8 +456,6 @@ impl SchemaTree {
         ]
     }
 
-    /// Expands every node of `path` (loading what is not cached) and selects `target` as soon
-    /// as its row exists.
     fn reveal_path(&mut self, path: Vec<(String, Kind)>, target: String, cx: &mut Context<Self>) {
         for (id, kind) in path {
             if self.expanded.insert(id.clone()) || !self.loading.contains(&id) {
@@ -556,12 +467,10 @@ impl SchemaTree {
         cx.notify();
     }
 
-    /// The selected row's id (checks).
     pub fn selected_id(&self) -> Option<&str> {
         self.selected.as_deref()
     }
 
-    /// Selects the pending revealed row once it is there.
     fn try_reveal(&mut self, cx: &mut Context<Self>) {
         let Some(id) = self.reveal.clone() else { return };
         if let Some(ix) = self.rows.iter().position(|r| r.id.as_ref() == id) {
@@ -578,12 +487,10 @@ impl SchemaTree {
         &self.scroll
     }
 
-    /// Whether the explorer (tree or filter) holds the focus.
     pub fn contains_focus(&self, window: &Window, cx: &App) -> bool {
         self.focus.contains_focused(window, cx) || self.filter.focus_handle(cx).is_focused(window)
     }
 
-    /// What the selected row is about (the import's default target).
     pub fn selected_target(&self, cx: &App) -> Option<Target> {
         let row = self.rows.get(self.selected_ix()?)?;
         self.target_for(row, cx)
@@ -621,7 +528,6 @@ impl SchemaTree {
             + self.store.read(cx).states.len() as u64
     }
 
-    /// Recomputes the visible rows from the cache and the expanded set.
     pub fn rebuild(&mut self, cx: &mut Context<Self>) {
         let t0 = std::time::Instant::now();
         self.seen_version = self.version(cx);
@@ -690,14 +596,10 @@ impl SchemaTree {
         }
     }
 
-    /// Loaded objects whose name contains the filter (relations, functions, sequences, types,
-    /// triggers, extensions, roles), each with its kind's icon, under their connection, database
-    /// and schema.
     fn build_filtered(&mut self, rows: &mut Vec<Row>, q: &str, t: &Theme, cx: &App) {
         let store = self.store.read(cx);
         let (mut matches, mut total) = (0usize, 0usize);
         let mut names: Vec<String> = Vec::new();
-        // The match of `q` in `name` (a byte range), or the name for "did you mean".
         let mut find = |name: &str, names: &mut Vec<String>| -> Option<Range<usize>> {
             total += 1;
             let m = match_range(name, q);
@@ -708,8 +610,6 @@ impl SchemaTree {
         };
         for p in &store.profiles {
             let Some(ConnState::Connected(conn)) = store.states.get(&p.id) else { continue };
-            // A document engine: its collections (indices, keys) as last read, under their
-            // database.
             if !conn.engine().is_sql() {
                 let c = p.id.as_str();
                 let mut block = Vec::new();
@@ -746,13 +646,10 @@ impl SchemaTree {
             }
             let cache = &conn.schema;
             let c = p.id.as_str();
-            // MySQL: no schema rows; a database's objects one level up.
             let flat = !conn.caps().schemas;
             let dd = usize::from(flat);
             let pg = conn.dialect() == dataman_core::sql::Dialect::Postgres;
             let mut block = Vec::new();
-            // Pinned tables that match, first (they are also under their schema when it is
-            // loaded: the same table matches twice, as it shows twice).
             let pinned: Vec<Row> = store
                 .core
                 .pins
@@ -868,8 +765,6 @@ impl SchemaTree {
         false
     }
 
-    /// The connection's pinned tables, first under it: a group that is open until closed, each
-    /// table opening (columns, indexes…) as it does in its schema.
     fn push_pinned(&self, rows: &mut Vec<Row>, c: &str, conn: &Arc<Connection>, pins: &[Pin], t: &Theme) {
         if pins.is_empty() {
             return;
@@ -892,8 +787,6 @@ impl SchemaTree {
         }
     }
 
-    /// A document engine's connection: its databases and their collections (MongoDB), as last
-    /// read from the server.
     fn push_docs(&self, rows: &mut Vec<Row>, c: &str, conn: &Arc<Connection>, t: &Theme) {
         let id = cid(c);
         let Some(items) = conn.cached_tree(None) else {
@@ -907,7 +800,6 @@ impl SchemaTree {
                 dataman_core::nosql::ItemKind::Database => {
                     let d = did(c, &it.name);
                     let open = self.expanded.contains(&d);
-                    // Redis' databases are numbers: `db0`, as its INFO says.
                     let label = if conn.engine() == dataman_core::Engine::Redis { format!("db{}", it.name) } else { it.name.clone() };
                     let mut row = Row::new(d.clone(), 1, label, Kind::DocDb { conn: c.into(), db: it.name.clone() })
                         .icon(Icon::Database)
@@ -953,7 +845,6 @@ impl SchemaTree {
             if !open || self.push_status(rows, &d, 2, t) {
                 continue;
             }
-            // MySQL: a database is its own schema; its groups go right under it.
             if !conn.caps().schemas {
                 self.push_schema(rows, c, &db, &db, conn, t, 2);
                 continue;
@@ -972,7 +863,6 @@ impl SchemaTree {
                 }
                 self.push_schema(rows, c, &db, &s, conn, t, 3);
             }
-            // The database's extensions, after its schemas.
             if let Some(exts) = cache.cached_extensions(&db).filter(|v| !v.is_empty()) {
                 let g = format!("{d}/extensions");
                 let open = self.expanded.contains(&g);
@@ -982,7 +872,6 @@ impl SchemaTree {
                 }
             }
         }
-        // The server's roles, after its databases (none reported: no group).
         if let Some(roles) = cache.cached_roles().filter(|v| !v.is_empty()) {
             let g = format!("{id}/roles");
             let open = self.expanded.contains(&g);
@@ -993,7 +882,6 @@ impl SchemaTree {
         }
     }
 
-    /// A schema's groups (at depth `d0`): each shown when the server reports something in it.
     #[allow(clippy::too_many_arguments)]
     fn push_schema(&self, rows: &mut Vec<Row>, c: &str, db: &str, s: &str, conn: &Arc<Connection>, t: &Theme, d0: usize) {
         let cache = &conn.schema;
@@ -1006,7 +894,6 @@ impl SchemaTree {
         let pg = conn.dialect() == dataman_core::sql::Dialect::Postgres;
         let start = rows.len();
         for g in G::ALL {
-            // The loaded list's length, else the schema's count.
             let n = match g {
                 G::Tables | G::Views | G::MatViews => rels.iter().filter(|r| g.holds(r.kind) == Some(true)).count() as u64,
                 G::Functions => functions.as_ref().map(|v| v.len() as u64).or(counts.functions).unwrap_or(0),
@@ -1024,7 +911,6 @@ impl SchemaTree {
                 continue;
             }
             if g.holds(RelKind::Table).is_some() {
-                // Sizes arrive after the names: the rows are there meanwhile.
                 let stats = cache.cached_stats(db, s);
                 for r in rels.iter().filter(|r| g.holds(r.kind) == Some(true)) {
                     let rv = rid(c, db, s, &r.name);
@@ -1068,8 +954,6 @@ impl SchemaTree {
         }
     }
 
-    /// A relation's columns, indexes and other groups, at depth `d` (their items one deeper),
-    /// under its row `base` (in its schema, or pinned).
     #[allow(clippy::too_many_arguments)]
     fn push_rel(&self, rows: &mut Vec<Row>, base: &str, c: &str, db: &str, s: &str, name: &str, conn: &Arc<Connection>, t: &Theme, d: usize) {
         let cols_id = format!("{base}/cols");
@@ -1128,8 +1012,6 @@ impl SchemaTree {
                 rows.push(if i.primary { row.icon_colored(Icon::Index, t.num) } else { row.icon(Icon::Index) });
             }
         }
-        // Constraints, triggers, partitions or the parent: loaded with the table, each shown
-        // when there is something in it.
         let Some(x) = conn.schema.cached_extras(db, s, name) else { return };
         let sub = |what: Sub| Kind::TableSub { conn: c.into(), db: db.into(), schema: s.into(), name: name.into(), what };
         if let Some(cons) = x.constraints.filter(|v| !v.is_empty()) {
@@ -1181,7 +1063,6 @@ impl SchemaTree {
         }
     }
 
-    /// Selects a row (and tells the workspace which connection that is).
     fn select(&mut self, ix: usize, cx: &mut Context<Self>) {
         let Some(row) = self.rows.get(ix) else { return };
         self.selected = Some(row.id.clone());
@@ -1192,7 +1073,6 @@ impl SchemaTree {
         cx.notify();
     }
 
-    /// Expands or collapses a node, loading its children when needed.
     pub fn toggle(&mut self, ix: usize, cx: &mut Context<Self>) {
         let Some(row) = self.rows.get(ix).cloned() else { return };
         self.select(ix, cx);
@@ -1221,7 +1101,6 @@ impl SchemaTree {
         if row.expandable && row.expanded != open {
             self.toggle(ix, cx);
         } else if !open {
-            // ← on a leaf or a collapsed node goes to its parent.
             if let Some(p) = (0..ix).rev().find(|&i| self.rows[i].depth < row.depth) {
                 self.select(p, cx);
             }
@@ -1246,9 +1125,8 @@ impl SchemaTree {
         cx.notify();
     }
 
-    /// A connection node left open while it was connecting (a click on it connects, then the
-    /// connection arrives): its databases load once it is connected. Without this the node
-    /// stayed on "loading…" until it was collapsed and opened again.
+    /// Without this a node left open while its connection came up stayed on "loading…" until it
+    /// was collapsed and opened again.
     fn load_connected(&mut self, cx: &mut Context<Self>) {
         let ids: Vec<String> = self.store.read(cx).profiles.iter().map(|p| p.id.clone()).collect();
         for c in ids {
@@ -1263,10 +1141,8 @@ impl SchemaTree {
         }
     }
 
-    /// Expands a node by id (benchmarks, restoring state).
     pub fn expand_id(&mut self, id: &str, cx: &mut Context<Self>) -> bool {
         let Some(ix) = self.rows.iter().position(|r| r.id.as_ref() == id) else {
-            // A connection that has no row yet (just saved): open it for when it shows.
             if id.starts_with("c:") && !id.contains('/') {
                 self.expanded.insert(id.to_string());
                 self.load_connected(cx);
@@ -1285,7 +1161,6 @@ impl SchemaTree {
         self.rows.iter().any(|r| r.id.as_ref() == id)
     }
 
-    /// Collapses a node by id (demo screenshots).
     pub fn collapse_id(&mut self, id: &str, cx: &mut Context<Self>) {
         if let Some(ix) = self.rows.iter().position(|r| r.id.as_ref() == id)
             && self.rows[ix].expanded
@@ -1294,28 +1169,22 @@ impl SchemaTree {
         }
     }
 
-    /// Selects a row by id (demo screenshots).
     pub fn select_id(&mut self, id: &str, cx: &mut Context<Self>) {
         if let Some(ix) = self.rows.iter().position(|r| r.id.as_ref() == id) {
             self.select(ix, cx);
         }
     }
 
-    /// Reads a connection's schema again (demo screenshots, after a seed).
     pub fn refresh_connection(&mut self, id: &str, cx: &mut Context<Self>) {
         self.refresh_conn(id.to_string(), cx);
     }
 
-    /// Types a filter (demo screenshots).
-    /// The filter field takes the keyboard focus (screenshots).
-    /// Checks: the first schema listed opened or shut; whether its folder started turning.
     pub fn demo_turn_schema(&mut self, cx: &mut Context<Self>) -> bool {
         let Some(ix) = self.rows.iter().position(|r| matches!(r.icon, Some((Icon::Schema, _)))) else { return false };
         self.toggle(ix, cx);
         self.folder_turn.is_some()
     }
 
-    /// Checks: a schema's folder is still turning.
     pub fn demo_folder_turning(&self) -> bool {
         self.folder_turn.as_ref().is_some_and(|(_, at, opening)| crate::motion::folder_fill(*at, *opening).is_some())
     }
@@ -1324,7 +1193,6 @@ impl SchemaTree {
         window.focus(&self.filter.focus_handle(cx), cx);
     }
 
-    /// Checks: the filter field.
     pub fn demo_filter(&self) -> Entity<TextInput> {
         self.filter.clone()
     }
@@ -1338,9 +1206,6 @@ impl SchemaTree {
         cx.notify();
     }
 
-    /// The filter's first match pops in Xcode's find yellow, on its highlighted name: called
-    /// once typing pauses (`POP_PAUSE`), and only when the first hit changed since the last pop
-    /// (another row, or more of its name matched). The row is scrolled into view.
     pub fn pop_first_match(&mut self, cx: &mut Context<Self>) {
         self.pop_wait = None;
         if !self.filtering(cx) {
@@ -1359,15 +1224,12 @@ impl SchemaTree {
         cx.notify();
     }
 
-    /// Checks: a connection row's name as drawn (its color, semibold or not), unselected.
     pub fn demo_conn_label(&self, conn_id: &str, cx: &App) -> Option<(Hsla, bool)> {
         let id = cid(conn_id);
         let r = self.rows.iter().find(|r| r.id.as_ref() == id)?;
         Some(label_style(r.tone, false, &cx.theme()))
     }
 
-    /// Checks: a connection row's label (as shown), whether its chip is faded, its hover text;
-    /// and the error row under it (its label and hover text), when there is one.
     pub fn demo_conn_row(&self, conn_id: &str) -> Option<(String, bool, Option<String>, Option<(String, Option<String>)>)> {
         let id = cid(conn_id);
         let r = self.rows.iter().find(|r| r.id.as_ref() == id)?;
@@ -1375,24 +1237,20 @@ impl SchemaTree {
         Some((r.label.to_string(), r.chip_dim, r.tip.as_ref().map(|t| t.to_string()), err))
     }
 
-    /// Checks: the engine whose logo a connection's row shows.
     pub fn demo_logo(&self, conn_id: &str) -> Option<dataman_core::Engine> {
         let id = cid(conn_id);
         self.rows.iter().find(|r| r.id.as_ref() == id)?.logo
     }
 
-    /// Checks: the labels of the rows under a node (its id's prefix), in order.
     pub fn demo_children(&self, id: &str) -> Vec<String> {
         let prefix = format!("{id}/");
         self.rows.iter().filter(|r| r.id.starts_with(&prefix)).map(|r| r.label.to_string()).collect()
     }
 
-    /// Checks: where a connection's row is (window coordinates), once painted.
     pub fn demo_conn_bounds(&self, conn_id: &str) -> Option<gpui::Bounds<gpui::Pixels>> {
         self.conn_bounds.borrow().get(cid(conn_id).as_str()).copied()
     }
 
-    /// Demo and live checks: the row whose match is popping now.
     pub fn demo_pop(&self) -> Option<SharedString> {
         self.pop.as_ref().filter(|p| p.frame(Instant::now()).is_some()).map(|p| p.target.clone())
     }
@@ -1411,7 +1269,6 @@ impl SchemaTree {
 
     fn load(&mut self, id: &str, kind: &Kind, cx: &mut Context<Self>) {
         let task: Option<Load> = match kind {
-            // A document engine: its databases, the connection's own opened right away.
             Kind::Conn { id: c } if self.conn(c, cx).is_some_and(|x| !x.engine().is_sql()) => {
                 let conn = self.conn(c, cx).expect("connected");
                 let db = conn.database().to_string();
@@ -1425,13 +1282,10 @@ impl SchemaTree {
                 let store = self.store.clone();
                 match self.conn(c, cx) {
                     Some(conn) => {
-                        // Open the connection's own database right away (its schemas and
-                        // extensions), with the server's roles.
                         let db = conn.database().to_string();
                         self.expanded.insert(did(c, &db));
                         let mut loads = vec![unit(conn.databases()), unit(conn.schemas(&db)), unit(conn.extensions(&db)), unit(conn.roles())];
                         if !conn.caps().schemas && !db.is_empty() {
-                            // MySQL: the database's tables and object counts (it is its schema).
                             loads.extend([unit(conn.relations(&db, &db)), unit(conn.object_counts(&db, &db))]);
                         }
                         Some(join_all(loads))
@@ -1446,15 +1300,11 @@ impl SchemaTree {
                 if c.caps().schemas {
                     join2(c.schemas(db), c.extensions(db))
                 } else {
-                    // MySQL: the database is the schema.
                     join_all(vec![unit(c.schemas(db)), unit(c.relations(db, db)), unit(c.object_counts(db, db))])
                 }
             }),
-            // The relations and, in one query, how many functions, sequences, types and
-            // triggers there are (empty groups are not shown).
             Kind::Schema { conn, db, schema } => self.conn(conn, cx).map(|c| join2(c.relations(db, schema), c.object_counts(db, schema))),
             Kind::Group { conn, db, schema, g } => self.conn(conn, cx).and_then(|c| match g {
-                // Row estimates and sizes of the whole schema, one query.
                 G::Tables | G::MatViews => Some(unit(c.rel_stats(db, schema))),
                 G::Views => None,
                 G::Functions => Some(unit(c.functions(db, schema))),
@@ -1465,7 +1315,6 @@ impl SchemaTree {
             Kind::Roles { conn } => self.conn(conn, cx).map(|c| unit(c.roles())),
             Kind::Extensions { conn, db } => self.conn(conn, cx).map(|c| unit(c.extensions(db))),
             Kind::Rel { conn, db, schema, name, .. } => {
-                // Columns open with the table.
                 let cols = format!("{id}/cols");
                 self.expanded.insert(cols);
                 self.conn(conn, cx).map(|c| join_all(vec![unit(c.columns(db, schema, name)), unit(c.indexes(db, schema, name)), unit(c.table_extras(db, schema, name))]))
@@ -1493,8 +1342,6 @@ impl SchemaTree {
         .detach();
     }
 
-    /// Refreshes the cached schema of the selected connection: everything below it collapses
-    /// and loads again from the catalog (the connection's own database reopens).
     pub fn refresh_selected(&mut self, cx: &mut Context<Self>) {
         if let Some(id) = self.selected_connection() {
             self.refresh_conn(id, cx);
@@ -1513,7 +1360,6 @@ impl SchemaTree {
         cx.notify();
     }
 
-    /// Forgets the expanded, loading and failed state of everything below `id`.
     fn collapse_below(&mut self, id: &str) {
         let prefix = format!("{id}/");
         self.expanded.retain(|e| !e.starts_with(&prefix));
@@ -1521,9 +1367,6 @@ impl SchemaTree {
         self.errors.retain(|e, _| !e.starts_with(&prefix));
     }
 
-    /// ⌘R in the explorer and the menus' Reload: reads the row's node again from the catalog —
-    /// the connection, a database, a schema (its tables and views) or a relation (its columns
-    /// and indexes). A leaf reloads its parent.
     pub fn reload_row(&mut self, ix: usize, cx: &mut Context<Self>) {
         let Some(row) = self.rows.get(ix).cloned() else { return };
         match &row.kind {
@@ -1540,8 +1383,6 @@ impl SchemaTree {
                 let Some(c) = self.conn(conn, cx) else { return };
                 c.schema.invalidate_schema(db, schema);
                 let id = sid(conn, db, schema);
-                // The groups stay open (their lists load again); the relations below them load
-                // again when reopened.
                 let rels = format!("{id}/r:");
                 self.expanded.retain(|e| !e.starts_with(&rels));
                 self.loading.retain(|e| !e.starts_with(&rels));
@@ -1571,7 +1412,6 @@ impl SchemaTree {
             | Kind::TableSub { conn, db, schema, name, .. } => {
                 let Some(c) = self.conn(conn, cx) else { return };
                 c.schema.invalidate_relation(db, schema, name);
-                // The relation's own row (in its schema, or pinned): a group's parent.
                 let id = match &row.kind {
                     Kind::Rel { .. } => row.id.to_string(),
                     _ => row.id.rsplit_once('/').map_or_else(|| rid(conn, db, schema, name), |(base, _)| base.to_string()),
@@ -1580,7 +1420,6 @@ impl SchemaTree {
                 self.expanded.insert(id.clone());
                 self.load(&id, &kind, cx);
             }
-            // The pinned tables' columns and indexes, read again.
             Kind::Pinned { conn } => {
                 let Some(c) = self.conn(conn, cx) else { return };
                 for p in self.store.read(cx).core.pins.of(conn) {
@@ -1609,8 +1448,6 @@ impl SchemaTree {
         cx.notify();
     }
 
-    /// ↩ / double-click: tables open as data in a new tab; the other objects do their menu's
-    /// default (a function's definition, a sequence's value…); other nodes toggle.
     fn open(&mut self, ix: usize, cx: &mut Context<Self>) {
         let Some(row) = self.rows.get(ix).cloned() else { return };
         match row.kind {
@@ -1641,7 +1478,6 @@ impl SchemaTree {
     }
 
     fn on_click(&mut self, ix: usize, ev: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
-        // ⌃-click opened the menu on mouse down.
         if ev.modifiers().control {
             return;
         }
@@ -1649,7 +1485,6 @@ impl SchemaTree {
         if ev.click_count() >= 2 {
             return self.open(ix, cx);
         }
-        // A single click on a row toggles it.
         self.toggle(ix, cx);
     }
 
@@ -1664,14 +1499,9 @@ impl SchemaTree {
         self.select(ix, cx);
     }
 
-    // -----------------------------------------------------------------------------------------
-    // The context menu
-
-    /// What the menu of a row is about (`None`: the row has no menu — loading, placeholders).
     fn target_for(&self, row: &Row, cx: &App) -> Option<Target> {
         let store = self.store.read(cx);
         let lar = |c: &str| matches!(store.states.get(c), Some(ConnState::Connected(x)) if x.info.is_lar);
-        // Read-only as the database is now (the live connection's setting, else the saved one).
         let ro = |c: &str, db: &str| match store.connection(c) {
             Some(x) => x.read_only_for(db),
             None => store.profile(c).is_some_and(|p| p.read_only_for(db)),
@@ -1725,7 +1555,6 @@ impl SchemaTree {
         })
     }
 
-    /// The engine of a menu's connection (from its profile: known while offline).
     fn target_engine(&self, t: &Target, cx: &App) -> dataman_core::config::Engine {
         let id = match t {
             Target::Conn { id, .. } => Some(id),
@@ -1737,18 +1566,14 @@ impl SchemaTree {
         id.and_then(|c| store.profile(c)).map(|p| p.engine).unwrap_or_default()
     }
 
-    /// What the engine of a menu's connection can do.
     fn target_caps(&self, t: &Target, cx: &App) -> dataman_core::Caps {
         dataman_core::Caps::of(self.target_engine(t, cx))
     }
 
-    /// The SQL dialect names are copied in.
     fn target_dialect(&self, t: &Target, cx: &App) -> dataman_core::sql::Dialect {
         self.target_engine(t, cx).dialect()
     }
 
-    /// Where row `ix` is drawn (window coordinates): left, top, right. A row scrolled out of
-    /// view is placed where scrolling it into view puts it.
     fn row_rect(&self, ix: usize) -> Option<(f32, f32, f32)> {
         let st = self.scroll.0.borrow();
         let b = st.base_handle.bounds();
@@ -1762,7 +1587,6 @@ impl SchemaTree {
         Some((left, y, left + b.size.width.pt() - 12.))
     }
 
-    /// Opens the menu of row `ix` (or the "nothing selected" menu), which becomes selected.
     pub fn open_menu(&mut self, ix: Option<usize>, at: MenuAnchor, window: &mut Window, cx: &mut Context<Self>) {
         let (row, target) = match ix.and_then(|i| self.rows.get(i).cloned()) {
             Some(r) => match self.target_for(&r, cx) {
@@ -1797,12 +1621,10 @@ impl SchemaTree {
             }
         };
         let enabled: Vec<bool> = entries.iter().map(Entry::enabled).collect();
-        // From the keyboard the first item is highlighted; from the mouse nothing is.
         let hi = if matches!(at, MenuAnchor::Mouse(_)) { None } else { menu::step(&enabled, None, 1) };
         self.menu = Some(RowMenu { row: row.map(|r| r.id), target, entries, origin, hi, sub: None, sub_hi: None });
         window.focus(&self.menu_focus, cx);
         if self._menu_blur.is_none() {
-            // The focus went elsewhere (a shortcut, another window): the menu goes away.
             self._menu_blur = Some(cx.on_focus_out(&self.menu_focus, window, |t, _, _, cx| {
                 if t.menu.take().is_some() {
                     cx.notify();
@@ -1812,7 +1634,6 @@ impl SchemaTree {
         cx.notify();
     }
 
-    /// Closes the menu; `refocus` gives the focus back to the tree (esc, a click outside).
     pub fn close_menu(&mut self, refocus: bool, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(m) = self.menu.take() {
             self.menu_closed = Some((m.row, Instant::now()));
@@ -1823,7 +1644,6 @@ impl SchemaTree {
         cx.notify();
     }
 
-    /// ⇧F10, the palette, the header's ⋯: the selected row's menu (the first row when none).
     pub fn show_row_actions(&mut self, at: Option<gpui::Point<gpui::Pixels>>, window: &mut Window, cx: &mut Context<Self>) {
         let ix = self.selected_ix().or((!self.rows.is_empty()).then_some(0));
         let anchor = match at {
@@ -1833,7 +1653,6 @@ impl SchemaTree {
         self.open_menu(ix, anchor, window, cx);
     }
 
-    /// A ⋯ click: opens the row's menu, or leaves it closed when that click just closed it.
     fn more_clicked(&mut self, ix: Option<usize>, at: Option<gpui::Point<gpui::Pixels>>, window: &mut Window, cx: &mut Context<Self>) {
         let row = ix.and_then(|i| self.rows.get(i)).map(|r| r.id.clone());
         let row = row.or_else(|| if ix.is_none() { self.selected.clone() } else { None });
@@ -1877,7 +1696,6 @@ impl SchemaTree {
         cx.notify();
     }
 
-    /// → (or ↩ on "Generate SQL ▸"): into the submenu.
     fn menu_enter_sub(&mut self, cx: &mut Context<Self>) -> bool {
         let Some(m) = self.menu.as_mut() else { return false };
         let Some(i) = m.hi else { return false };
@@ -1921,8 +1739,6 @@ impl SchemaTree {
         }
     }
 
-    /// Carries out a menu action: the tree's own (reload, copy, insert, connect, retry), or the
-    /// workspace's.
     fn run_menu(&mut self, act: Act, alt: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(m) = self.menu.take() else { return };
         window.focus(&self.focus, cx);
@@ -1982,9 +1798,6 @@ impl SchemaTree {
         cx.notify();
     }
 
-    /// Pins a table (its connection's "pinned" group opens on it) or unpins it, saved at once.
-    /// The selection stays on its row; unpinned from the group, it goes to the row that takes
-    /// the place of the one at `ix`.
     fn set_pinned(&mut self, pin: Pin, on: bool, ix: Option<usize>, cx: &mut Context<Self>) {
         let core = self.store.read(cx).core.clone();
         let engine = self.store.read(cx).profile(&pin.connection).map(|p| p.engine).unwrap_or_default();
@@ -2013,15 +1826,12 @@ impl SchemaTree {
         cx.notify();
     }
 
-    /// Checks: a row's middle (window coordinates), as last laid out.
     pub fn demo_row_point(&self, id: &str) -> Option<gpui::Point<gpui::Pixels>> {
         let ix = self.rows.iter().position(|r| r.id.as_ref() == id)?;
         let (left, top, right) = self.row_rect(ix)?;
         Some(point(px((left + right) / 2.), px(top + 11.)))
     }
 
-    /// Checks: the labels of a connection's rows in its "pinned" group, as shown (with their
-    /// meta).
     pub fn demo_pinned(&self, conn: &str) -> Vec<(String, String)> {
         let prefix = format!("{}/", pinned_id(conn));
         self.rows
@@ -2031,7 +1841,6 @@ impl SchemaTree {
             .collect()
     }
 
-    /// Checks: where item `act` of the open menu is (window coordinates, its middle).
     pub fn demo_menu_item_point(&self, act: Act) -> Option<gpui::Point<gpui::Pixels>> {
         let m = self.menu.as_ref()?;
         let i = m.entries.iter().position(|e| matches!(e, Entry::Item(it) if it.act == act))?;
@@ -2039,8 +1848,6 @@ impl SchemaTree {
         Some(point(px(m.origin.0 + 40.), px(y)))
     }
 
-    /// Demo screenshots: the menu of row `id` as the keyboard opens it (or at a point, as
-    /// right-click does), optionally with the Generate SQL ▸ submenu open on CREATE TABLE.
     pub fn demo_menu(&mut self, id: &str, sub: bool, mouse: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(ix) = self.rows.iter().position(|r| r.id.as_ref() == id) else { return };
         let at = match (mouse, self.row_rect(ix)) {
@@ -2051,7 +1858,6 @@ impl SchemaTree {
         self.demo_menu_highlight(sub, mouse, cx);
     }
 
-    /// Checks: the actions of the open menu, its submenus' included.
     pub fn demo_menu_acts(&self) -> Vec<Act> {
         let Some(m) = &self.menu else { return vec![] };
         m.entries
@@ -2064,7 +1870,6 @@ impl SchemaTree {
             .collect()
     }
 
-    /// Checks: whether the open menu's `act` has its check mark (`None`: not in the menu).
     pub fn demo_menu_checked(&self, act: Act) -> Option<bool> {
         let m = self.menu.as_ref()?;
         m.entries.iter().find_map(|e| match e {
@@ -2073,18 +1878,14 @@ impl SchemaTree {
         })
     }
 
-    /// Checks: chooses `act` in the open menu, as a click on it does.
     pub fn demo_menu_run(&mut self, act: Act, window: &mut Window, cx: &mut Context<Self>) {
         self.run_menu(act, false, window, cx);
     }
 
-    /// Checks: whether row `id` shows the read-only lock (`None`: no such row).
     pub fn demo_row_lock(&self, id: &str) -> Option<bool> {
         self.rows.iter().find(|r| r.id.as_ref() == id).map(|r| r.lock)
     }
 
-    /// The demo menu's highlight (again after the first frame: a pointer resting over the
-    /// window hovers an item as the menu appears).
     pub fn demo_menu_highlight(&mut self, sub: bool, mouse: bool, cx: &mut Context<Self>) {
         if let Some(m) = self.menu.as_mut() {
             if mouse {
@@ -2104,7 +1905,6 @@ impl SchemaTree {
         let t = cx.theme();
         let vp = window.viewport_size();
         let vp = (vp.width.pt(), vp.height.pt());
-        // The submenu's rectangle, so a click in it is not "outside" the menu.
         let sub = m.sub.and_then(|i| match m.entries.get(i) {
             Some(Entry::Sub { items, .. }) => {
                 let h = menu::sub_h(items);
@@ -2223,9 +2023,6 @@ impl SchemaTree {
         out
     }
 
-    /// Whether a row's label and full meta fit the tree's width, by the UI font's advance
-    /// (0.6 em: 7.2 pt per character of the 12 pt label, 6.6 of the 11 pt meta); the rest is the
-    /// row's padding, chevron, icon and gaps.
     fn fit_meta(&self, r: &Row) -> SharedString {
         let w = self.scroll.0.borrow().base_handle.bounds().size.width.pt();
         if w <= 0. || r.meta.is_empty() || matches!(r.meta_kind, Meta::NotReported) {
@@ -2240,9 +2037,6 @@ impl SchemaTree {
         }
     }
 
-    /// The gap among the connections a connection dragged over row `ix` points at: before or
-    /// after a connection's row by its middle, after the connection anywhere under it.
-    /// The gap a dragged connection would drop into (the checks).
     pub fn conn_drop(&self) -> Option<usize> {
         self.conn_drop
     }
@@ -2254,8 +2048,6 @@ impl SchemaTree {
         if top == ix { crate::dnd::slot_at(k, bounds, pos, false) } else { bounds.contains(&pos).then_some(k + 1) }
     }
 
-    /// A connection dropped in the explorer moves to the gap the line marks (and the file
-    /// keeps the order).
     fn drop_conn(&mut self, id: &str, cx: &mut Context<Self>) {
         let Some(slot) = self.conn_drop.take() else { return };
         let ids = |cx: &App| -> Vec<String> { self.store.read(cx).profiles.iter().map(|p| p.id.clone()).collect() };
@@ -2272,7 +2064,6 @@ impl SchemaTree {
 
     fn render_row(&self, ix: usize, t: &Theme, focused: bool, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let r = &self.rows[ix];
-        // Reordering: only the connections, and not while the filter narrows the list.
         let reorder = self.filter_stats.is_none();
         let drag_conn = match &r.kind {
             Kind::Conn { id } if reorder && r.depth == 0 => Some(id.clone()),
@@ -2304,7 +2095,6 @@ impl SchemaTree {
                         .flex_row()
                         .child(l[..h.start].to_string())
                         .child(
-                            // Neutral: blue is the selection's.
                             div()
                                 .relative()
                                 .bg(t.mark)
@@ -2319,8 +2109,6 @@ impl SchemaTree {
                 _ => div().child(l),
             }
         };
-        // The name has the room first: a table's size goes (its row estimate stays), a long
-        // signature or definition is cut.
         let meta_text = self.fit_meta(r);
         let meta = match r.meta_kind {
             _ if meta_text.is_empty() => None,
@@ -2353,7 +2141,6 @@ impl SchemaTree {
                 .when(!menu_here, |d| d.invisible().group_hover(ROW_GROUP, |s| s.visible()))
                 .hover(move |s| s.bg(prs))
                 .child(icon(Icon::More).size(px(12.)).text_color(tx2))
-                // Not a click on the row: no toggle, and the focus stays where the menu puts it.
                 .on_mouse_down(MouseButton::Left, |_, window, cx| {
                     window.prevent_default();
                     cx.stop_propagation();
@@ -2367,7 +2154,6 @@ impl SchemaTree {
         div()
             .w_full()
             .px(px(6.))
-            // Where the connections' rows are (the checks drag them).
             .when_some(conn_bounds, |d, (all, id)| d.on_children_prepainted(move |b, _, _| {
                 if let Some(b) = b.first() {
                     all.borrow_mut().insert(id.clone(), *b);
@@ -2422,7 +2208,6 @@ impl SchemaTree {
                     }
                 }
             }))
-            // Right-click, and ⌃-click (the Mac convention), open the row's menu at the pointer.
             .when(has_menu, |d| {
                 d.on_mouse_down(MouseButton::Right, cx.listener(move |t, ev: &MouseDownEvent, window, cx| {
                     t.open_menu(Some(ix), MenuAnchor::Mouse(ev.position), window, cx);
@@ -2446,8 +2231,6 @@ impl SchemaTree {
                 if i != Icon::Schema {
                     return icon(i).size(px(14.)).text_color(c).into_any_element();
                 }
-                // A folder is filled while shut and outlined while open, its fill draining or
-                // coming back as it turns.
                 let fill = self.folder_turn.as_ref().filter(|(id, ..)| *id == *r.id).and_then(|(_, at, opening)| crate::motion::folder_fill(*at, *opening));
                 ui::folder_icon(r.expanded, fill, 14., c)
             }))
@@ -2467,16 +2250,13 @@ impl SchemaTree {
             .when(r.tunnel, |d| d.child(icon(Icon::Tunnel).size(px(11.)).text_color(t.tx3)))
             .when(r.lock, |d| d.child(icon(Icon::Lock).flex_none().size(px(11.)).text_color(t.tx3)))
             .when(r.lar, |d| d.child(ui::lar_tag(t)))
-            // The ⋯ button covers the row's right end while it shows: the meta steps aside.
-            // (A hover style cannot move it: GPUI lays out before it knows the hover.)
+            // A hover style cannot move the meta: GPUI lays out before it knows the hover.
             .children(meta.map(|m| div().flex_none().when(has_menu && (menu_here || hovered), |d| d.mr(px(MORE_ROOM))).child(m)))
             .children(more)
             .children(line.map(|after| crate::dnd::drop_line(t, false, after))))
     }
 }
 
-/// A row's name: its color and whether it is semibold. Connected connections stand out; one
-/// that is not connected is gray and regular, a step lighter when selected.
 fn label_style(tone: Tone, sel: bool, t: &Theme) -> (Hsla, bool) {
     let bold = matches!(tone, Tone::Conn | Tone::ConnLar);
     let color = match tone {
@@ -2494,17 +2274,14 @@ fn label_style(tone: Tone, sel: bool, t: &Theme) -> (Hsla, bool) {
     (color, bold)
 }
 
-/// The find indicator over a matched name: Xcode's yellow box (2 pt wider than the text each
-/// side) with the name redrawn dark on top, both at the pop's scale. Deferred, so it paints
-/// after the tree and the enlarged box is not cut by the label's clip.
+/// Deferred, so it paints after the tree and the enlarged box is not cut by the label's clip.
 fn pop_overlay(text: String, f: PopFrame, t: &Theme) -> impl IntoElement + use<> {
     let (fill, ink) = (t.find.opacity(f.strength), t.find_tx.opacity(f.strength));
     deferred(
         gpui::canvas(
             |_, _, _| (),
             move |bounds, _, window, cx| {
-                // The row's face and size (the text style stack is not restored for a deferred
-                // paint); the span's height less its 1 pt underline is the text's line.
+                // The row's face and size: the text style stack is not restored for a deferred paint.
                 let run = gpui::TextRun {
                     len: text.len(),
                     font: gpui::font(crate::theme::mono()),
@@ -2524,9 +2301,6 @@ fn pop_overlay(text: String, f: PopFrame, t: &Theme) -> impl IntoElement + use<>
     )
 }
 
-/// A table, view or materialized view; tables and materialized views show their row estimate
-/// and total size once the group's sizes arrived (`~48k · 12 MB`, or just `~48k` when the name
-/// leaves no room).
 fn rel_row(c: &str, db: &str, s: &str, r: &dataman_core::schema::Relation, depth: usize, open: bool, stats: Option<&std::collections::HashMap<String, RelStats>>) -> Row {
     let icon = match r.kind {
         RelKind::View => Icon::View,
@@ -2549,9 +2323,6 @@ fn rel_row(c: &str, db: &str, s: &str, r: &dataman_core::schema::Relation, depth
     row
 }
 
-/// A pinned table: its kind's icon (as its schema has it once loaded, else as pinned) and
-/// where it lives; dimmed, `not found` and closed for good when its loaded schema no longer
-/// has it.
 fn pin_row(c: &str, conn: &Connection, p: &Pin, depth: usize, open: bool) -> Row {
     let (db, s) = (p.database.as_str(), p.schema.as_str());
     let listed = conn.schema.cached_relations(db, s);
@@ -2569,9 +2340,6 @@ fn pin_row(c: &str, conn: &Connection, p: &Pin, depth: usize, open: bool) -> Row
     if place.is_empty() { row } else { row.meta(place, Meta::Plain) }
 }
 
-/// Where a pinned table lives, as its row says: its schema (`public`), with the database when
-/// that is not the connection's own (`analytics.public`); on engines without schemas just the
-/// database, and nothing in the connection's own.
 fn pin_place(db: &str, schema: &str, home: &str, flat: bool) -> String {
     match (flat, db == home) {
         (true, true) => String::new(),
@@ -2581,7 +2349,6 @@ fn pin_place(db: &str, schema: &str, home: &str, flat: bool) -> String {
     }
 }
 
-/// `~48k · 12 MB` and, when both are known, the short form `~48k`.
 fn stats_meta(st: &RelStats) -> (String, Option<String>) {
     let rows = st.rows.map(approx_count);
     let size = st.bytes.map(human_size);
@@ -2593,14 +2360,10 @@ fn stats_meta(st: &RelStats) -> (String, Option<String>) {
     }
 }
 
-/// A group row: `functions 12`.
 fn group_row(id: &str, depth: usize, label: &'static str, n: usize, open: bool, kind: Kind) -> Row {
     Row::new(id.to_string(), depth, label, kind).icon(Icon::Group).meta(ui_count(n), Meta::Plain).expandable(open)
 }
 
-/// The meta column's text for `room` characters left by the label (`None`: it fits as is).
-/// The short form first (a table's estimate without its size); else the text cut with an
-/// ellipsis; with less than 8 characters of room it goes (the icon still says the kind).
 fn fit_meta_text(meta: &str, short: Option<&str>, room: i64) -> Option<String> {
     let n = meta.chars().count() as i64;
     if n <= room {
@@ -2612,13 +2375,10 @@ fn fit_meta_text(meta: &str, short: Option<&str>, room: i64) -> Option<String> {
     Some(if room < 8 { String::new() } else { clip(meta, room as usize) })
 }
 
-/// `s` cut to `n` characters, with an ellipsis.
 fn clip(s: &str, n: usize) -> String {
     if s.chars().count() <= n { s.to_string() } else { format!("{}…", s.chars().take(n - 1).collect::<String>()) }
 }
 
-/// `(int4, text) → int4` (procedures: just the arguments); types of the function's own schema
-/// lose their qualifier.
 fn function_meta(f: &dataman_core::schema::Function, schema: &str, pg: bool) -> String {
     let own = format!("{schema}.");
     let ty = |t: &str| short_type(t.strip_prefix(own.as_str()).unwrap_or(t), pg);
@@ -2647,7 +2407,6 @@ fn function_row(c: &str, db: &str, s: &str, f: &dataman_core::schema::Function, 
         .meta(function_meta(f, s, pg), Meta::Plain)
 }
 
-/// A sequence: the column that owns it (`orders.id`), else its type.
 fn sequence_row(c: &str, db: &str, s: &str, x: &dataman_core::schema::Sequence, depth: usize, pg: bool) -> Row {
     let meta = match (&x.owned_by, &x.type_name) {
         (Some((t, col)), _) => format!("{t}.{col}"),
@@ -2662,7 +2421,6 @@ fn type_id(c: &str, db: &str, s: &str, name: &str) -> String {
     format!("{}/t:{name}", gid(c, db, s, G::Types))
 }
 
-/// A type: `enum` (its labels as children), `composite`, `domain numeric(12,2)`.
 fn type_row(c: &str, db: &str, s: &str, x: &dataman_core::schema::UserType, depth: usize, open: bool, pg: bool) -> Row {
     let meta = match (&x.kind, &x.base) {
         (TypeKind::Domain, Some(b)) => format!("domain {}", short_type(b, pg)),
@@ -2672,8 +2430,6 @@ fn type_row(c: &str, db: &str, s: &str, x: &dataman_core::schema::UserType, dept
     if x.kind == TypeKind::Enum && !x.labels.is_empty() { row.expandable(open) } else { row }
 }
 
-/// A trigger: under the schema its table, under a table its events; a disabled one is dimmed
-/// and says `off`.
 fn trigger_row(id: String, c: &str, db: &str, s: &str, x: &dataman_core::schema::Trigger, depth: usize, in_schema: bool) -> Row {
     let what = Obj::Trigger { table: x.table.clone(), enabled: x.enabled, definition: x.definition.clone() };
     let base = if in_schema { x.table.clone() } else { x.events.clone() };
@@ -2681,12 +2437,10 @@ fn trigger_row(id: String, c: &str, db: &str, s: &str, x: &dataman_core::schema:
     if x.enabled {
         row.meta(clip(&base, 30), Meta::Plain)
     } else {
-        // `off` first: a cut keeps it.
         row.tone(Tone::Muted).meta(format!("off · {}", clip(&base, 24)), Meta::Off)
     }
 }
 
-/// An extension and its version (`1.5 → 1.6` when an update is available).
 fn extension_row(c: &str, db: &str, x: &dataman_core::schema::Extension, depth: usize) -> Row {
     let meta = match x.update() {
         Some(v) => format!("{} → {v}", x.version),
@@ -2698,7 +2452,6 @@ fn extension_row(c: &str, db: &str, x: &dataman_core::schema::Extension, depth: 
         .meta(clip(&meta, 24), Meta::Plain)
 }
 
-/// A role and its flags (`superuser · login`).
 fn role_row(c: &str, r: &dataman_core::schema::Role, depth: usize) -> Row {
     let flags: Vec<&str> = [(r.superuser, "superuser"), (r.login, "login")].into_iter().filter(|(on, _)| *on).map(|(_, f)| f).collect();
     Row::new(format!("{}/roles/{}", cid(c), r.name), depth, r.name.clone(), obj_kind(c, "", "", &r.name, Obj::Role))
@@ -2706,8 +2459,6 @@ fn role_row(c: &str, r: &dataman_core::schema::Role, depth: usize) -> Row {
         .meta(flags.join(" · "), Meta::Plain)
 }
 
-/// One menu row from the Components board: 26 pt, icon, label, right-aligned shortcut (or ▸);
-/// highlighted in accent; disabled in tx4 with a short reason in the right column.
 #[allow(clippy::too_many_arguments)]
 fn menu_row(
     t: &Theme,
@@ -2747,13 +2498,11 @@ fn menu_row(
         .when(on, |d| d.bg(t.acc))
         .child(icon(ic).size(px(14.)).text_color(icon_fg))
         .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().when(bold, |d| d.font_weight(FontWeight::SEMIBOLD)).child(label))
-        // A disabled item says why in the right column, in place of its shortcut.
         .children(disabled.or(key).map(|k| div().flex_none().text_size(px(11.)).text_color(key_fg).child(k)))
         .when(checked, |d| d.child(icon(Icon::Check).flex_none().size(px(12.)).text_color(if on { t.on_acc } else { t.tx2 })))
         .when(sub, |d| d.child(icon(Icon::ChevronRight).size(px(10.)).text_color(key_fg)))
 }
 
-/// A collection (a view in italics), with its estimated count; a Redis key with its type.
 fn coll_row(c: &str, db: &str, x: &dataman_core::nosql::Item, depth: usize) -> Row {
     let view = x.kind == dataman_core::nosql::ItemKind::View;
     let icon = match (&x.note, view) {
@@ -2778,7 +2527,6 @@ fn loading_row(id: &str, depth: usize) -> Row {
     Row::new(format!("{id}/loading"), depth, "loading…", Kind::Leaf).tone(Tone::Italic)
 }
 
-/// A failed load: the server's message, and "retry".
 fn error_row(id: &str, depth: usize, e: &str, retry: &str, t: &Theme) -> Row {
     let first = e.lines().next().unwrap_or(e);
     let mut r = Row::new(format!("{id}/err"), depth, first.to_string(), Kind::Error { retry: retry.to_string() })
@@ -2789,8 +2537,6 @@ fn error_row(id: &str, depth: usize, e: &str, retry: &str, t: &Theme) -> Row {
     r
 }
 
-/// `timestamp with time zone` → `timestamptz`: the short names the explorer shows on
-/// PostgreSQL (other engines keep their own names: `bigint`, `real`).
 fn short_type(t: &str, pg: bool) -> String {
     if !pg {
         return t.to_string();
@@ -2811,13 +2557,11 @@ fn short_type(t: &str, pg: bool) -> String {
     }
 }
 
-/// Where the (lowercase) filter `q` is in `name`, case aside: a byte range of `name`.
 fn match_range(name: &str, q: &str) -> Option<Range<usize>> {
     let i = name.to_lowercase().find(q)?;
     (name.is_char_boundary(i) && name.is_char_boundary(i + q.len())).then(|| i..i + q.len())
 }
 
-/// The loaded name closest to a filter that matched nothing ("did you mean orders?").
 fn nearest(q: &str, names: &[String]) -> Option<String> {
     let best = names.iter().map(|n| (edit_distance(q, &n.to_lowercase()), n)).min_by_key(|(d, n)| (*d, n.len()))?;
     (best.0 <= (q.chars().count() / 3).max(2)).then(|| best.1.clone())
@@ -2848,7 +2592,6 @@ fn join2<A: 'static, B: 'static>(a: dataman_core::Task<A>, b: dataman_core::Task
     join_all(vec![unit(a), unit(b)])
 }
 
-/// Every load (they run at once on the core); the first error.
 fn join_all(loads: Vec<Load>) -> Load {
     Box::pin(async move {
         let mut first = Ok(());
@@ -2866,13 +2609,11 @@ impl Render for SchemaTree {
         if self.version(cx) != self.seen_version {
             self.rebuild(cx);
         }
-        // A schema's folder turning: one more frame until its fill has drained or come back.
         match &self.folder_turn {
             Some((_, at, opening)) if crate::motion::folder_fill(*at, *opening).is_some() => window.request_animation_frame(),
             Some(_) => self.folder_turn = None,
             None => {}
         }
-        // The filter's find pop: this frame of it, and the next frame only while it runs.
         self.pop_now = match self.pop.as_ref().map(|p| (p.target.clone(), p.frame(Instant::now()))) {
             Some((id, Some(f))) => {
                 window.request_animation_frame();
@@ -2889,7 +2630,6 @@ impl Render for SchemaTree {
         let filter_focused = self.filter.focus_handle(cx).is_focused(window);
         let filtering = self.filtering(cx);
         let empty = self.store.read(cx).profiles.is_empty();
-        // How many match, only while searching.
         let filter_meta: Option<SharedString> = match &self.filter_stats {
             Some((m, total, _)) if filtering => Some(format!("{} of {}", ui_count(*m), ui_count(*total)).into()),
             _ => None,
@@ -2931,12 +2671,9 @@ impl Render for SchemaTree {
             .flex_row()
             .items_center()
             .gap(px(7.))
-            // The glass's own translucent wash, the same focused or not (the border and its
-            // halo show the focus); only the border is opaque, so it holds over any desktop.
             .relative()
             .bg(t.hov)
             .border_1()
-            // A search field's focus is neutral (blue is the tree's selection).
             .border_color(if filter_focused { t.mark_b } else { t.field_b })
             .when(filter_focused, |d| d.child(ui::halo_ring(t.mark)))
             .child(icon(Icon::Search).size(px(13.)).text_color(t.tx3))
@@ -2990,7 +2727,6 @@ impl Render for SchemaTree {
             .track_focus(&self.focus)
             .text_size(px(12.))
             .text_color(t.tx2)
-            // A connection dragged out of the explorer has no gap to drop into.
             .on_drag_move(cx.listener(|t, ev: &gpui::DragMoveEvent<DraggedConn>, _, cx| {
                 if !ev.bounds.contains(&ev.event.position) && t.conn_drop.take().is_some() {
                     cx.notify();
@@ -3060,7 +2796,6 @@ mod tests {
         assert_eq!(G::Views.holds(RelKind::MaterializedView), Some(false), "materialized views have their own group");
         assert_eq!(G::MatViews.holds(RelKind::MaterializedView), Some(true));
         assert_eq!(G::Functions.holds(RelKind::Table), None);
-        // The bench and the demos address the tables group by this id.
         assert_eq!(gid("c", "d", "s", G::Tables), "c:c/d:d/s:s/tables");
         assert_eq!(G::MatViews.label(), "materialized views");
     }
@@ -3075,7 +2810,6 @@ mod tests {
         m.insert("t".to_string(), st);
         let r = rel_row("c", "d", "s", &rel(RelKind::Table), 4, false, Some(&m));
         assert_eq!((r.meta.as_ref(), r.meta_short.as_ref().map(|s| s.as_ref())), ("~48k · 12 MB", Some("~48k")));
-        // Before the sizes arrive, and for views: nothing.
         assert!(rel_row("c", "d", "s", &rel(RelKind::Table), 4, false, None).meta.is_empty());
         assert!(rel_row("c", "d", "s", &rel(RelKind::View), 4, false, Some(&m)).meta.is_empty());
         assert_eq!(rel_row("c", "d", "s", &rel(RelKind::Foreign), 4, false, Some(&m)).meta.as_ref(), "foreign");
@@ -3086,11 +2820,8 @@ mod tests {
     fn pinned_rows_say_where_they_live() {
         assert_eq!(pin_place("app", "public", "app", false), "public");
         assert_eq!(pin_place("analytics", "public", "app", false), "analytics.public");
-        // MySQL: the database is the schema.
         assert_eq!(pin_place("shop", "shop", "shop", true), "");
         assert_eq!(pin_place("crm", "crm", "shop", true), "crm");
-        // Their own ids: never a schema row's, so both can be open at once; under the
-        // connection, so collapsing or reloading it takes them along.
         let p = pin_id("c", "d", "s", "orders");
         assert_ne!(p, rid("c", "d", "s", "orders"));
         assert!(p.starts_with(&format!("{}/", cid("c"))) && p.starts_with(&format!("{}/", pinned_id("c"))));

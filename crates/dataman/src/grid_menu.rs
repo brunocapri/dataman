@@ -1,9 +1,3 @@
-//! The result grid's cell menu: on a right click (or ⌥↓ on the active cell), foreign-key
-//! navigation ("Go to …") and copying; a ⌘-click on a reference goes straight there, without a
-//! menu. The rules and the items are plain data, tested here; the grid (`grid.rs`) opens, draws
-//! and runs it. Building a menu does no I/O: the references of a result are resolved once when
-//! it arrives (`dataman_core::fknav`).
-
 use gpui::{SharedString, div, prelude::*};
 use crate::theme::px;
 use dataman_core::fknav::FkJump;
@@ -14,28 +8,19 @@ use crate::tree_menu::{ITEM_H, PAD, SEP_H};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Item {
-    /// Open the referenced row in a new tab.
     Go(FkJump),
-    /// The clicked cell's text.
     CopyValue,
-    /// The selection as TSV under a row of its columns' names (⌥⌘C).
     CopyWithHeaders,
-    /// A table's data view: rows whose column equals this cell's value (`None`: IS NULL).
     FilterValue(usize, Option<String>),
-    // The header menu (result column indexes).
     SortAsc(usize),
     SortDesc(usize),
-    /// The filter popover for the column (data view).
     Filter(usize),
     Hide(usize),
-    /// Shows the hidden columns again (how many are hidden).
     ShowAll(usize),
-    /// Marks the selected rows for deletion (⌫); `restore` when they all are already.
     DeleteRows { n: usize, restore: bool },
 }
 
 impl Item {
-    /// (icon, label, detail) as the menu draws it.
     pub fn look(&self) -> (Icon, SharedString, Option<SharedString>) {
         match self {
             Item::Go(j) => (Icon::Table, j.label.clone().into(), Some(j.detail.clone().into())),
@@ -64,8 +49,6 @@ impl Item {
     }
 }
 
-/// The header menu of result column `col`: sort (the loaded rows; a table's data view on the
-/// server) and filter (data view), then hide and show the hidden ones.
 pub fn header_entries(col: usize, table: bool, hidden: usize, can_hide: bool) -> Vec<Entry> {
     let mut v = vec![Entry::Item(Item::SortAsc(col)), Entry::Item(Item::SortDesc(col))];
     if table {
@@ -83,7 +66,6 @@ pub fn header_entries(col: usize, table: bool, hidden: usize, can_hide: bool) ->
     v
 }
 
-/// A cell's context menu in a table's data view: "Filter by value" after the references.
 pub fn with_filter(mut entries: Vec<Entry>, col: usize, value: Option<String>) -> Vec<Entry> {
     let at = entries.iter().position(|e| matches!(e, Entry::Item(Item::CopyValue))).unwrap_or(entries.len());
     entries.insert(at, Entry::Item(Item::FilterValue(col, value)));
@@ -107,13 +89,9 @@ impl Entry {
     }
 }
 
-/// Wide enough for `Go to "customer"` and its `id = 42` beside it.
 pub const MENU_W: f32 = 300.;
-/// Gap between the clicked cell and the menu under it.
 pub const GAP: f32 = 2.;
 
-/// The menu of a cell: one "Go to" per reference it holds (usually one), then, for the context
-/// menu (right click), the copy items.
 pub fn entries(jumps: Vec<FkJump>, context: bool) -> Vec<Entry> {
     let mut v: Vec<Entry> = jumps.into_iter().map(|j| Entry::Item(Item::Go(j))).collect();
     if context {
@@ -126,7 +104,6 @@ pub fn entries(jumps: Vec<FkJump>, context: bool) -> Vec<Entry> {
     v
 }
 
-/// An editable result's context menu: "Delete row" (or "Restore row") last, after a separator.
 pub fn with_delete(mut entries: Vec<Entry>, n: usize, restore: bool) -> Vec<Entry> {
     if n == 0 {
         return entries;
@@ -142,8 +119,6 @@ pub fn menu_h(entries: &[Entry]) -> f32 {
     entries.iter().map(|e| if matches!(e, Entry::Sep) { SEP_H } else { ITEM_H }).sum::<f32>() + 2. * PAD
 }
 
-/// A ⌘-click on a cell, released on a single reference: goes straight there. A plain click
-/// (shift, the gutter, or no ⌘) never opens anything by itself.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Press {
     pub row: usize,
@@ -157,13 +132,9 @@ pub fn press(click_count: usize, shift: bool, cmd: bool, in_gutter: bool, row: u
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Release {
     Nothing,
-    /// A ⌘-click with exactly one reference: open it, no menu.
     Go,
 }
 
-/// What a mouse-up does. `press` is cleared by a drag; `single` is whether the selection is
-/// still that one cell; `jumps` is how many references the cell leads to (0 for a NULL or a
-/// column that is not a reference).
 pub fn release(press: Option<Press>, at: (usize, usize), single: bool, jumps: usize) -> Release {
     let Some(p) = press else { return Release::Nothing };
     if (p.row, p.col) != at || !single || jumps != 1 {
@@ -172,7 +143,6 @@ pub fn release(press: Option<Press>, at: (usize, usize), single: bool, jumps: us
     Release::Go
 }
 
-/// One menu row: icon, label, a muted detail (the key values), and the key column.
 pub fn row(
     t: &Theme,
     id: impl Into<gpui::ElementId>,
@@ -226,16 +196,13 @@ mod tests {
 
     #[test]
     fn items() {
-        // Left click: only the references.
         assert_eq!(entries(vec![j("customer")], false), vec![Entry::Item(Item::Go(j("customer")))]);
         assert!(entries(vec![], false).is_empty(), "no reference, no menu");
-        // Right click: references, a separator, the copy items.
         let ctx = entries(vec![j("customer"), j("account")], true);
         let copies = [Entry::Item(Item::CopyValue), Entry::Item(Item::CopyWithHeaders)];
         assert_eq!(ctx.len(), 5);
         assert_eq!(ctx[2], Entry::Sep);
         assert_eq!(ctx[3..], copies);
-        // Not a reference: just the copy items, no leading separator.
         assert_eq!(entries(vec![], true), copies.to_vec());
         assert_eq!(menu_h(&ctx), 4. * ITEM_H + SEP_H + 2. * PAD);
         assert_eq!(Item::CopyWithHeaders.look().1.as_ref(), "Copy with headers");
@@ -247,8 +214,6 @@ mod tests {
         assert_eq!(h[..3], [Entry::Item(Item::SortAsc(2)), Entry::Item(Item::SortDesc(2)), Entry::Item(Item::Filter(2))]);
         assert_eq!(h[3], Entry::Sep);
         assert_eq!(h[4], Entry::Item(Item::Hide(2)));
-        // Any grid: sort (local), no filter; the last visible column cannot go, but the hidden
-        // ones show.
         assert_eq!(
             header_entries(0, false, 3, false),
             vec![Entry::Item(Item::SortAsc(0)), Entry::Item(Item::SortDesc(0)), Entry::Sep, Entry::Item(Item::ShowAll(3))]
@@ -285,10 +250,8 @@ mod tests {
     fn what_a_release_does() {
         let p = Some(Press { row: 3, col: 2 });
         assert_eq!(release(p, (3, 2), true, 1), Release::Go);
-        // A choice to make, or nothing to go to: nothing (no menu to disambiguate).
         assert_eq!(release(p, (3, 2), true, 2), Release::Nothing);
         assert_eq!(release(p, (3, 2), true, 0), Release::Nothing);
-        // A drag (the press is cleared) or a range: nothing.
         assert_eq!(release(None, (3, 2), true, 1), Release::Nothing);
         assert_eq!(release(p, (3, 2), false, 1), Release::Nothing);
         assert_eq!(release(p, (4, 2), true, 1), Release::Nothing, "released on another cell");

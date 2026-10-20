@@ -1,10 +1,3 @@
-//! The plan view: an EXPLAIN result shown as a plan in place of the grid (a result tab
-//! kind). The node tree (collapsible, with connectors, the hot-node bars,
-//! the misestimate flags and the hint chips), the flame view of exclusive time, the details of
-//! the selected node and the hints over the tree. The plan is parsed off the UI thread
-//! (`dataman_core::explain`); the tree is a `uniform_list` (only the rows on screen are built)
-//! and the flame is one canvas, so plans of thousands of nodes stay smooth.
-
 use std::cell::Cell;
 use std::collections::HashSet;
 use std::rc::Rc;
@@ -45,16 +38,13 @@ const ROW_H: f32 = 22.;
 const INDENT: f32 = 14.;
 const FLAME_H: f32 = 18.;
 const DETAILS_W: f32 = 330.;
-/// The hints listed over the tree (the rest are on their rows).
 const HINTS_SHOWN: usize = 5;
-// Columns of the tree (analyzed / estimated).
 const BAR_W: f32 = 96.;
 const TIME_W: f32 = 68.;
 const ROWS_W: f32 = 118.;
 const LOOPS_W: f32 = 46.;
 const BUF_W: f32 = 108.;
 
-/// A node's box in the flame view: its span (fractions of the width) and its level.
 #[derive(Clone, Copy, Debug)]
 struct FlameBox {
     node: usize,
@@ -65,16 +55,13 @@ struct FlameBox {
 
 pub struct PlanView {
     focus: FocusHandle,
-    /// The EXPLAIN result on screen, and its plan once parsed.
     rs: Option<Arc<ResultSet>>,
     plan: Option<Arc<Plan>>,
     pub mode: Mode,
     collapsed: HashSet<usize>,
     selected: Option<usize>,
-    /// Visible rows (node indexes), and where each node's subtree ends.
     rows: Vec<usize>,
     ends: Vec<usize>,
-    /// The hint chips of each node.
     chips: Vec<Vec<(String, Rule)>>,
     flame: Vec<FlameBox>,
     flame_depth: u16,
@@ -89,7 +76,6 @@ impl Focusable for PlanView {
     }
 }
 
-/// The bar and flame color of a node by its share: hot, warm, or plain.
 pub fn heat(t: &Theme, share: f64) -> Hsla {
     if share >= 0.4 {
         t.err
@@ -100,7 +86,6 @@ pub fn heat(t: &Theme, share: f64) -> Hsla {
     }
 }
 
-/// The misestimate flag (`×42`), from 10× off.
 fn flag(t: &Theme, m: Option<explain::Misestimate>) -> Option<Div> {
     let m = m.filter(|m| m.factor >= 10.)?;
     let color = if m.factor >= 100. { t.err } else { t.warn };
@@ -141,8 +126,6 @@ impl PlanView {
         }
     }
 
-    /// The EXPLAIN result to show (`None`: none). Parsing runs in the background; the same
-    /// result again is free.
     pub fn set_result(&mut self, rs: Option<Arc<ResultSet>>, cx: &mut Context<Self>) {
         match (&self.rs, &rs) {
             (Some(a), Some(b)) if Arc::ptr_eq(a, b) => return,
@@ -170,7 +153,6 @@ impl PlanView {
         }));
     }
 
-    /// Shows `plan` (demo stages, tests): selects its hottest node.
     pub fn set_plan(&mut self, plan: Arc<Plan>, cx: &mut Context<Self>) {
         let n = plan.nodes.len();
         let mut size = vec![1usize; n];
@@ -201,12 +183,10 @@ impl PlanView {
         self.plan.as_ref()
     }
 
-    /// It shows `rs` (parsed or still parsing).
     pub fn is_for(&self, rs: &Arc<ResultSet>) -> bool {
         self.rs.as_ref().is_some_and(|r| Arc::ptr_eq(r, rs))
     }
 
-    /// The flame view has something to show (times or costs).
     pub fn has_flame(&self) -> bool {
         !self.flame.is_empty()
     }
@@ -220,13 +200,11 @@ impl PlanView {
         self.selected
     }
 
-    /// Rows the tree shows (folded subtrees left out).
     pub fn visible_rows(&self) -> usize {
         self.rows.len()
     }
 
     pub fn select(&mut self, i: usize, cx: &mut Context<Self>) {
-        // A node inside a collapsed subtree: open the way to it.
         if let Some(p) = &self.plan {
             let mut a = p.nodes.get(i).and_then(|n| n.parent);
             while let Some(x) = a {
@@ -299,11 +277,6 @@ impl PlanView {
         }
     }
 
-    // -----------------------------------------------------------------------------------------
-    // Drawing.
-
-    /// The connectors of a row: for each level above the node, whether a line goes on down
-    /// (`│`), and for the node itself whether it is the last of its siblings (`└` or `├`).
     fn guides(p: &Plan, i: usize) -> (Vec<bool>, bool) {
         let d = p.nodes[i].depth as usize;
         let mut cont = vec![false; d.saturating_sub(1)];
@@ -443,7 +416,6 @@ impl PlanView {
         row
     }
 
-    /// The share bar: a track with the node's part of the time (or cost), and the percent.
     fn bar(&self, share: f64, t: &Theme) -> Div {
         let c = heat(t, share);
         let fill = (share.clamp(0., 1.) * 56.) as f32;
@@ -472,7 +444,6 @@ impl PlanView {
             )
     }
 
-    /// `h 12k r 1.6k t 4.1k`: shared hits, shared reads, temp blocks (zeros left out).
     fn buffers(&self, n: &explain::Node, t: &Theme) -> Div {
         let b = n.buffers();
         let parts: Vec<(&str, f64)> = [("h", b.shared_hit), ("r", b.shared_read), ("t", b.temp_read + b.temp_written)].into_iter().filter(|(_, v)| *v > 0.).collect();
@@ -520,7 +491,6 @@ impl PlanView {
         d
     }
 
-    /// The findings over the tree: the costliest first; a click selects the node.
     fn render_hints(&self, p: &Plan, t: &Theme, cx: &mut Context<Self>) -> Option<Div> {
         if p.hints.is_empty() {
             return None;
@@ -609,7 +579,6 @@ impl PlanView {
                                     t.acc,
                                     gpui::BorderStyle::Solid,
                                 ));
-                                // The label, if a few characters fit (11 pt at the face's advance).
                                 let fits = ((bw - 8.) / (11. * crate::theme::advance())) as usize;
                                 if fits >= 4 {
                                     let v = if p2.analyzed { fmt_ms(n.excl_ms) } else { fmt_cost(n.excl_cost) };
@@ -724,14 +693,11 @@ trait Contrast {
 }
 
 impl Contrast for Hsla {
-    /// The heat color for text: the plain one reads as body text.
     fn max_contrast(self, t: &Theme) -> Hsla {
         if self == t.tx3 { t.tx } else { self }
     }
 }
 
-/// The flame boxes: each node spans its subtree's exclusive time (cost without ANALYZE), its
-/// children left to right under it, so the uncovered rest of a box is the node's own time.
 fn flame_layout(p: &Plan) -> (Vec<FlameBox>, u16) {
     let n = p.nodes.len();
     let own = |i: usize| if p.analyzed { p.nodes[i].excl_ms } else { p.nodes[i].excl_cost };
@@ -784,7 +750,6 @@ impl Render for PlanView {
             .on_action(cx.listener(|v, _: &Expand, _, cx| v.expand_or_child(cx)));
         let Some(p) = self.plan.clone() else { return root };
         if p.format == Format::Raw {
-            // Nothing to parse: the server's text as it came.
             return root.child(
                 div()
                     .id("plan-raw")
@@ -822,9 +787,6 @@ impl Render for PlanView {
         root.child(div().flex_1().min_w_0().h_full().flex().flex_col().children(self.render_hints(&p, &t, cx)).child(main)).child(self.render_details(&p, &t))
     }
 }
-
-// ---------------------------------------------------------------------------------------------
-// The result bar of a plan: what kind of plan, the totals, tree ⇄ flame, copy as text.
 
 impl crate::app::Workspace {
     pub(crate) fn render_plan_bar(&self, tab: &gpui::Entity<crate::tab::QueryTab>, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
@@ -942,11 +904,9 @@ mod tests {
         assert_eq!(depth, 2);
         let get = |i: usize| boxes.iter().find(|b| b.node == i).copied().unwrap();
         assert_eq!((get(0).x0, get(0).x1), (0., 1.));
-        // a: 6 of 10, from the left; the hash after it, b under the hash.
         assert!((get(1).x1 - 0.6).abs() < 1e-6);
         assert!((get(2).x0 - 0.6).abs() < 1e-6 && (get(2).x1 - 0.9).abs() < 1e-6);
         assert!((get(3).x0 - 0.6).abs() < 1e-6 && (get(3).x1 - 0.8).abs() < 1e-6);
-        // No numbers (a DataFusion tree): no flame.
         assert!(flame_layout(&plan("A: x\n  B: y")).0.is_empty());
     }
 
@@ -955,7 +915,6 @@ mod tests {
         let p = plan(r#"[{"Plan":{"Node Type":"Append","Plans":[
             {"Node Type":"Hash","Parent Relationship":"Member","Plans":[{"Node Type":"Result","Parent Relationship":"Outer"}]},
             {"Node Type":"Result","Parent Relationship":"Member"}]}}]"#);
-        // Hash is not the last child: the line under it goes on past its own child.
         assert_eq!(PlanView::guides(&p, 1), (vec![], false));
         assert_eq!(PlanView::guides(&p, 2), (vec![true], true));
         assert_eq!(PlanView::guides(&p, 3), (vec![], true));

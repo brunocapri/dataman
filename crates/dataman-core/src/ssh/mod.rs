@@ -1,12 +1,5 @@
-//! SSH tunnels (russh, pure Rust): a local listener on `127.0.0.1:0` whose every accepted
-//! socket becomes a `direct-tcpip` channel (or `direct-streamlocal` for a Unix socket) to the
-//! database, as seen from the SSH server. Postgres connects to the listener, so TLS, the
-//! CancelRequest and every later connection of the profile go through the same tunnel.
-//!
-//! The SSH session lives as long as the [`Tunnel`] (one per open connection), with keepalives.
-//! When it drops, the next connection through the tunnel reconnects it; the listener (and so
-//! the port the cancel tokens point at) never changes. [`Tunnel::close`] (or dropping it) ends
-//! the session.
+//! When the SSH session drops, the next connection through the tunnel reconnects it; the
+//! listener (and so the port the cancel tokens point at) never changes.
 
 pub mod config;
 pub mod known_hosts;
@@ -31,19 +24,12 @@ use known_hosts::Status;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const KEEPALIVE: Duration = Duration::from_secs(15);
 
-// ---------------------------------------------------------------------------------------------
-// Errors
-
-/// An unknown host key: what to show before trusting it.
 #[derive(Clone, Debug)]
 pub struct HostKeyPrompt {
-    /// `host` or `host:port`, as shown.
     pub host: String,
     pub hostname: String,
     pub port: u16,
-    /// `ssh-ed25519`, `ecdsa-sha2-nistp256`, `ssh-rsa`…
     pub algorithm: String,
-    /// `SHA256:…`, as `ssh` prints it.
     pub fingerprint: String,
     key: PublicKey,
 }
@@ -55,7 +41,6 @@ impl PartialEq for HostKeyPrompt {
 }
 
 impl HostKeyPrompt {
-    /// A prompt for `hostname:port` presenting `key` (`ssh-ed25519 AAAA…`, as in known_hosts).
     pub fn from_openssh(hostname: &str, port: u16, key: &str) -> Option<HostKeyPrompt> {
         let key = PublicKey::from_openssh(key).ok()?;
         Some(HostKeyPrompt {
@@ -68,14 +53,11 @@ impl HostKeyPrompt {
         })
     }
 
-    /// Remembers the key in `file` (Dataman's own known_hosts).
     pub fn trust(&self, file: &Path) -> std::io::Result<()> {
         known_hosts::append(file, &self.hostname, self.port, &self.key)
     }
 }
 
-/// Why a tunnel could not be opened; the message is short and keeps the server's or the
-/// library's own words.
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum SshError {
     #[error("SSH {} · unknown host key {} {}", .0.host, .0.algorithm, .0.fingerprint)]
@@ -118,13 +100,8 @@ fn channel_failure(f: &russh::ChannelOpenFailure) -> String {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// What to connect to
-
-/// How one hop authenticates.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HopAuth {
-    /// The agent's keys (only those of `keys` with IdentitiesOnly), then the unencrypted `keys`.
     Agent { keys: Vec<PathBuf>, only: bool },
     Key { path: PathBuf, passphrase: Option<String> },
     Password(Option<String>),
@@ -138,11 +115,9 @@ pub struct Hop {
     pub auth: HopAuth,
 }
 
-/// Where the database is, from the last hop.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Target {
     Tcp(String, u16),
-    /// The socket file (`/var/run/postgresql/.s.PGSQL.5432`).
     Unix(String),
 }
 
@@ -163,7 +138,6 @@ impl Target {
     }
 }
 
-/// A resolved tunnel: the jump hosts (ProxyJump), then the SSH host, then the database.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TunnelSpec {
     pub hops: Vec<Hop>,
@@ -171,7 +145,6 @@ pub struct TunnelSpec {
     pub known_hosts: Vec<PathBuf>,
 }
 
-/// `~/.ssh/id_ed25519`, `id_ecdsa`, `id_rsa`: what ssh tries without an IdentityFile.
 fn default_keys(home: &Path) -> Vec<PathBuf> {
     ["id_ed25519", "id_ecdsa", "id_rsa"].iter().map(|n| home.join(".ssh").join(n)).collect()
 }
@@ -184,15 +157,12 @@ fn expand_tilde(s: &str, home: &Path) -> PathBuf {
 }
 
 impl TunnelSpec {
-    /// From the profile's SSH settings, `~/.ssh/config` and the secret (password or
-    /// passphrase) the user gave or saved.
     pub fn resolve(p: &ConnectionProfile, secret: Option<String>, app_known_hosts: &Path) -> Option<TunnelSpec> {
         let s = p.ssh.as_ref()?;
         let home = config::home().unwrap_or_else(|| PathBuf::from("/"));
         Some(Self::resolve_with(s, secret, Target::of(p), known_hosts::default_files(app_known_hosts), &home, &crate::connstr::local_user(), config::resolve_default))
     }
 
-    /// [`resolve`](Self::resolve) with the ssh config lookup and the environment given.
     pub fn resolve_with(
         s: &SshSettings,
         secret: Option<String>,
@@ -241,10 +211,6 @@ impl TunnelSpec {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// One hop
-
-/// The russh handler: checks the server's key against known_hosts and says why it refused.
 struct Client {
     host: String,
     port: u16,
@@ -280,7 +246,6 @@ impl client::Handler for Client {
     }
 }
 
-/// `~/.ssh/known_hosts` instead of the full path, in messages.
 fn tilde(p: &Path) -> String {
     match config::home().and_then(|h| p.strip_prefix(h).ok().map(Path::to_path_buf)) {
         Some(rest) => format!("~/{}", rest.display()),
@@ -290,7 +255,7 @@ fn tilde(p: &Path) -> String {
 
 type Session = Handle<Client>;
 
-/// The algorithm family as known_hosts writes it (`ssh-rsa` for every RSA hash).
+/// known_hosts writes `ssh-rsa` for every RSA hash.
 fn family(a: &russh::keys::Algorithm) -> String {
     match a {
         russh::keys::Algorithm::Rsa { .. } => "ssh-rsa".into(),
@@ -383,7 +348,6 @@ async fn authenticate(s: &mut Session, hop: &Hop) -> Result<(), SshError> {
                     }
                 }
             }
-            // Then the identity files that need no passphrase.
             for path in keys.iter().filter(|p| p.exists()) {
                 let Ok(key) = russh::keys::load_secret_key(path, None) else { continue };
                 let key = Arc::new(key);
@@ -438,7 +402,6 @@ async fn authenticate(s: &mut Session, hop: &Hop) -> Result<(), SshError> {
     }
 }
 
-/// The public half of an identity file (its `.pub`, or the key itself when unencrypted).
 fn public_half(path: &Path) -> Option<PublicKey> {
     let mut pub_path = path.as_os_str().to_owned();
     pub_path.push(".pub");
@@ -447,10 +410,6 @@ fn public_half(path: &Path) -> Option<PublicKey> {
         .or_else(|| russh::keys::load_secret_key(path, None).ok().map(|k| k.public_key().clone()))
 }
 
-// ---------------------------------------------------------------------------------------------
-// The tunnel
-
-/// Every hop's session, the last one forwarding.
 struct Chain(Vec<Session>);
 
 impl Chain {
@@ -482,13 +441,10 @@ struct Shared {
     spec: TunnelSpec,
     chain: tokio::sync::Mutex<Option<Arc<Chain>>>,
     closed: AtomicBool,
-    /// Why the last forwarded connection could not be opened (the client only sees its socket
-    /// close).
     last_error: Mutex<Option<SshError>>,
 }
 
 impl Shared {
-    /// The live session, reconnected if it dropped.
     async fn chain(&self) -> Result<Arc<Chain>, SshError> {
         let mut g = self.chain.lock().await;
         if self.closed.load(Ordering::Acquire) {
@@ -533,7 +489,6 @@ impl Shared {
     }
 }
 
-/// An open tunnel: `local_addr()` reaches the database.
 pub struct Tunnel {
     local: SocketAddr,
     shared: Arc<Shared>,
@@ -542,8 +497,7 @@ pub struct Tunnel {
 }
 
 impl Tunnel {
-    /// Connects the SSH session (so its errors show now) and starts listening. Must run on a
-    /// tokio runtime.
+    /// Must run on a tokio runtime.
     pub async fn open(spec: TunnelSpec) -> Result<Arc<Tunnel>, SshError> {
         let target = spec.target.shown();
         let shared = Arc::new(Shared { spec, chain: tokio::sync::Mutex::new(None), closed: AtomicBool::new(false), last_error: Mutex::new(None) });
@@ -579,19 +533,15 @@ impl Tunnel {
         self.local
     }
 
-    /// Reconnects the SSH session if it dropped, with the reason when it cannot.
     pub async fn ensure(&self) -> Result<(), SshError> {
         *self.shared.last_error.lock() = None;
         self.shared.chain().await.map(|_| ())
     }
 
-    /// Why a connection through the tunnel failed, if the tunnel is what failed it (the SSH
-    /// server could not reach the database, say).
     pub fn take_error(&self) -> Option<SshError> {
         self.shared.last_error.lock().take()
     }
 
-    /// Stops listening and ends the SSH session (every connection through it closes).
     pub fn close(&self) {
         if self.shared.closed.swap(true, Ordering::AcqRel) {
             return;
@@ -631,14 +581,12 @@ mod tests {
         assert_eq!(t.hops[1].auth, HopAuth::Agent { keys: vec![PathBuf::from("/home/me/.ssh/prod")], only: true });
         assert_eq!(t.hops[0].auth, HopAuth::Agent { keys: default_keys(home), only: false });
 
-        // The profile's own fields win over the alias'.
         let s = SshSettings { host: "prod-db".into(), port: Some(22), user: "bruno".into(), auth: SshAuth::Key, key_file: "~/.ssh/other".into() };
         let t = TunnelSpec::resolve_with(&s, Some("pp".into()), Target::Tcp("db".into(), 5432), vec![], home, "me", cfg);
         let last = t.hops.last().unwrap();
         assert_eq!((last.port, last.user.as_str()), (22, "bruno"));
         assert_eq!(last.auth, HopAuth::Key { path: PathBuf::from("/home/me/.ssh/other"), passphrase: Some("pp".into()) });
 
-        // Not an alias: the name as written, port 22, the local user.
         let s = SshSettings { host: "plain.example".into(), auth: SshAuth::Password, ..Default::default() };
         let t = TunnelSpec::resolve_with(&s, Some("pw".into()), Target::Tcp("db".into(), 5432), vec![], home, "me", cfg);
         assert_eq!(t.hops, vec![Hop { host: "plain.example".into(), port: 22, user: "me".into(), auth: HopAuth::Password(Some("pw".into())) }]);

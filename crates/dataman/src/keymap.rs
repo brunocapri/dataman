@@ -1,11 +1,4 @@
-//! The remappable commands: each with a stable id (the key of `[keys]` in settings.toml), a
-//! label, its group on the ⌘? sheet, its default keystrokes and the context it is bound in.
-//! Text editing keys (arrows, ⌫, ⌥/⌘ movement in fields and the editor) stay fixed in their
-//! modules and are not listed here.
-//!
-//! The overrides live in a process-wide map ([`set_overrides`]); [`apply`] clears the keymap and
-//! binds everything again (the fixed keys, then the commands, so a remapped key wins in its
-//! context) and rebuilds the menu bar, so a change takes effect at once.
+// Command ids are the keys of `[keys]` in settings.toml: never rename one.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::RwLock;
@@ -14,8 +7,6 @@ use gpui::{Action, App, KeyBinding, Keystroke};
 
 use crate::app::*;
 
-/// Where a command's keys work, for the conflict check: the app's keys reach everything, the
-/// workspace's reach the editor and the grid, the editor's and the grid's never meet.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Scope {
     App,
@@ -43,7 +34,6 @@ pub struct Command {
     pub id: &'static str,
     pub label: &'static str,
     pub group: &'static str,
-    /// GPUI syntax; the first is the one shown.
     pub keys: &'static [&'static str],
     pub scope: Scope,
     context: Option<&'static str>,
@@ -60,11 +50,8 @@ pub const COMMANDS: &[Command] = &[
     c("new_connection", "New connection", "GLOBAL", Scope::Workspace, &["cmd-n"], || Box::new(NewConnection)),
     c("new_tab", "New query tab", "GLOBAL", Scope::Workspace, &["cmd-t"], || Box::new(NewTab)),
     c("close_tab", "Close tab", "GLOBAL", Scope::Workspace, &["cmd-w"], || Box::new(CloseTab)),
-    // The app's own undo (`undo`): outside text, where fields and the editor keep theirs. ⌘Z is
-    // the Mac's; ⌃Z too, as asked for.
     Command { context: Some(crate::undo::KEYS), ..c("undo", "Undo", "GLOBAL", Scope::Workspace, &["cmd-z", "ctrl-z"], || Box::new(crate::undo::Undo)) },
     Command { context: Some(crate::undo::KEYS), ..c("redo", "Redo", "GLOBAL", Scope::Workspace, &["cmd-shift-z", "ctrl-shift-z"], || Box::new(crate::undo::Redo)) },
-    // VS Code's: a copy of the tab in a second editor group (`split`).
     c("open_to_side", "Open to the side", "GLOBAL", Scope::Workspace, &["cmd-\\"], || Box::new(crate::split::OpenToSide)),
     c("next_tab", "Next tab", "GLOBAL", Scope::Workspace, &["ctrl-tab", "cmd-shift-]"], || Box::new(NextTab)),
     c("prev_tab", "Previous tab", "GLOBAL", Scope::Workspace, &["ctrl-shift-tab", "cmd-shift-["], || Box::new(PrevTab)),
@@ -84,7 +71,6 @@ pub const COMMANDS: &[Command] = &[
     c("toggle_side_panel", "Toggle side panel", "GLOBAL", Scope::Workspace, &["cmd-alt-b"], || Box::new(ToggleSidePanel)),
     c("open_sql_file", "Open .sql file", "GLOBAL", Scope::Workspace, &["cmd-o"], || Box::new(OpenSqlFile)),
     c("refresh", "Reload schema", "GLOBAL", Scope::Workspace, &["cmd-r"], || Box::new(Refresh)),
-    // Zoom works anywhere in the window, a sheet or a field included (like a browser's).
     c("zoom_in", "Zoom in", "GLOBAL", Scope::App, &["cmd-=", "cmd-+", "cmd-shift-="], || Box::new(ZoomIn)),
     c("zoom_out", "Zoom out", "GLOBAL", Scope::App, &["cmd--"], || Box::new(ZoomOut)),
     c("zoom_reset", "Actual size", "GLOBAL", Scope::App, &["cmd-0"], || Box::new(ZoomReset)),
@@ -99,7 +85,6 @@ pub const COMMANDS: &[Command] = &[
     c("explain", "Explain", "EDITOR", Scope::Workspace, &["cmd-l"], || Box::new(Explain)),
     c("explain_analyze", "Explain analyze", "EDITOR", Scope::Workspace, &["cmd-alt-l"], || Box::new(ExplainAnalyze)),
     c("cancel", "Cancel on server", "EDITOR", Scope::Workspace, &["cmd-."], || Box::new(Cancel)),
-    // ⌘⇧↩ runs the statement, so ⌃⌘ takes commit and rollback.
     c("commit_tx", "Commit", "EDITOR", Scope::Workspace, &["ctrl-cmd-enter"], || Box::new(CommitTx)),
     c("rollback_tx", "Rollback", "EDITOR", Scope::Workspace, &["ctrl-cmd-backspace"], || Box::new(RollbackTx)),
     c("next_result", "Next result", "EDITOR", Scope::Workspace, &["cmd-alt-]"], || Box::new(NextResult)),
@@ -111,8 +96,6 @@ pub const COMMANDS: &[Command] = &[
     c("jump_to_error", "Jump to error", "EDITOR", Scope::Workspace, &["cmd-'"], || Box::new(JumpToError)),
     c("use_explorer_connection", "Use explorer connection", "EDITOR", Scope::Workspace, &["alt-enter"], || Box::new(UseExplorerConnection)),
     c("favorite_query", "Favorite query", "EDITOR", Scope::Workspace, &["cmd-d"], || Box::new(FavoriteQuery)),
-    // ⌘S in the editor saves the script as (or into) the tab's favorite; on the grid it stays
-    // Review & commit (below): the editor and the grid never meet.
     c("save_favorite", "Save as favorite", "EDITOR", Scope::Editor, &["cmd-s"], || Box::new(SaveFavorite)),
     c("save_as", "Save as…", "EDITOR", Scope::Workspace, &["cmd-shift-s"], || Box::new(SaveAs)),
     c("copy_tsv", "Copy TSV", "GRID", Scope::Grid, &["cmd-c"], || Box::new(crate::grid::CopyTsv)),
@@ -124,14 +107,10 @@ pub const COMMANDS: &[Command] = &[
     c("prev_page", "Previous page", "GRID", Scope::Workspace, &["cmd-alt-left"], || Box::new(PrevPage)),
     c("fetch_more", "Fetch next rows", "GRID", Scope::Grid, &["cmd-down"], || Box::new(crate::grid::FetchMore)),
     c("fetch_all", "Fetch all", "GRID", Scope::Grid, &["cmd-shift-down"], || Box::new(crate::grid::FetchAll)),
-    // ⌘I also works from the cell editor (it keeps the typed value, then adds a row).
     Command { context: Some("ResultGrid"), ..c("insert_row", "Insert row", "GRID", Scope::Grid, &["cmd-i"], || Box::new(crate::grid::InsertRow)) },
-    // On the grid and in its cell editor (it keeps the typed value), not from the editor any more:
-    // there ⌘S is Save as favorite.
     Command { context: Some("ResultGrid"), ..c("review_changes", "Review & commit", "GRID", Scope::Grid, &["cmd-s"], || Box::new(ReviewChanges)) },
     c("discard_changes", "Discard edits", "GRID", Scope::Grid, &["cmd-backspace"], || Box::new(DiscardChanges)),
     c("export", "Export", "GRID", Scope::Workspace, &["cmd-e"], || Box::new(ExportResult)),
-    // On the grid only: in the editor ⇧⌘↩ runs the statement.
     c("zoom_result", "Zoom result", "GRID", Scope::Grid, &["cmd-shift-enter"], || Box::new(ToggleResultZoom)),
     c("cycle_focus", "Next region", "FOCUS", Scope::Workspace, &["f6"], || Box::new(CycleFocus)),
     c("cycle_focus_back", "Previous region", "FOCUS", Scope::Workspace, &["shift-f6"], || Box::new(CycleFocusBack)),
@@ -145,7 +124,6 @@ pub fn find(id: &str) -> Option<&'static Command> {
     COMMANDS.iter().find(|c| c.id == id)
 }
 
-/// One keystroke GPUI can bind (no chords, not a bare modifier), in its canonical spelling.
 pub fn parse(s: &str) -> Option<String> {
     let s = s.trim();
     if s.is_empty() || s.contains(char::is_whitespace) {
@@ -158,8 +136,6 @@ pub fn parse(s: &str) -> Option<String> {
     Some(k.unparse())
 }
 
-/// The keystrokes `cmd` is bound to under `overrides`: an empty override removes them, a valid
-/// one replaces them, an invalid one is ignored.
 pub fn effective_in(overrides: &BTreeMap<String, String>, cmd: &Command) -> Vec<String> {
     match overrides.get(cmd.id).map(|s| s.trim()) {
         Some("") => Vec::new(),
@@ -175,7 +151,6 @@ fn defaults(cmd: &Command) -> Vec<String> {
     cmd.keys.iter().filter_map(|k| parse(k)).collect()
 }
 
-/// The ids whose keys collide with another command's where both work.
 pub fn conflicts_in(overrides: &BTreeMap<String, String>) -> BTreeSet<&'static str> {
     let keys: Vec<Vec<String>> = COMMANDS.iter().map(|c| effective_in(overrides, c)).collect();
     let mut out = BTreeSet::new();
@@ -190,7 +165,6 @@ pub fn conflicts_in(overrides: &BTreeMap<String, String>) -> BTreeSet<&'static s
     out
 }
 
-/// The overrides that change something: known ids, valid or empty keystrokes, canonical.
 pub fn clean(overrides: &BTreeMap<String, String>) -> BTreeMap<String, String> {
     overrides
         .iter()
@@ -203,10 +177,6 @@ pub fn clean(overrides: &BTreeMap<String, String>) -> BTreeMap<String, String> {
         .collect()
 }
 
-/// A shortcut typed as text, as a keystroke in the canonical spelling: the symbols as the app
-/// shows them in any order (`⌘⇧p`, `⇧⌘P`, `⌃⌘↩`), or GPUI's names joined by `-` or `+`
-/// (`cmd-shift-p`, `cmd+k`). `None` for anything else, a bare word included: the settings
-/// search tries it beside the commands' names.
 pub fn parse_typed(s: &str) -> Option<String> {
     let s = s.trim().to_lowercase();
     let mut mods: Vec<&str> = Vec::new();
@@ -223,7 +193,6 @@ pub fn parse_typed(s: &str) -> Option<String> {
         rest = rest[c.len_utf8()..].trim_start();
     }
     if mods.is_empty() {
-        // GPUI's syntax needs a modifier name before a key: a bare word is not a shortcut.
         let gpui = match s.strip_suffix("++") {
             Some(head) => format!("{}-+", head.replace('+', "-")),
             None => s.replace('+', "-"),
@@ -251,7 +220,6 @@ pub fn parse_typed(s: &str) -> Option<String> {
     parse(&mods.join("-"))
 }
 
-/// "cmd-shift-c" → "⇧⌘C".
 pub fn label(keystroke: &str) -> String {
     let Ok(k) = Keystroke::parse(keystroke) else { return keystroke.to_string() };
     let m = k.modifiers;
@@ -295,22 +263,18 @@ pub fn set_overrides(map: BTreeMap<String, String>) {
     }
 }
 
-/// The keystrokes `id` is bound to now.
 pub fn effective(id: &str) -> Vec<String> {
     find(id).map(|c| OVERRIDES.read().map(|m| effective_in(&m, c)).unwrap_or_else(|_| defaults(c))).unwrap_or_default()
 }
 
-/// The shown key of `id` ("" when it has none).
 pub fn key_label(id: &str) -> String {
     effective(id).first().map(|k| label(k)).unwrap_or_default()
 }
 
-/// The shown key of `id`, if it has one (UI labels drop their keycap otherwise).
 pub fn key(id: &str) -> Option<String> {
     Some(key_label(id)).filter(|k| !k.is_empty())
 }
 
-/// The shown key of the command that dispatches `action`, if it is one.
 pub fn label_for_action(action: &dyn Action) -> Option<String> {
     COMMANDS.iter().find(|c| (c.action)().name() == action.name()).map(|c| key_label(c.id))
 }
@@ -319,8 +283,8 @@ pub fn conflicts() -> BTreeSet<&'static str> {
     conflicts_in(&overrides())
 }
 
-/// Every binding again: the modules' fixed keys, then the commands' effective keys (a later
-/// binding wins in the same context; a command's first key is bound last, the one menus show).
+/// The modules' fixed keys first, then the commands' (a later binding wins in the same
+/// context; a command's first key is bound last, the one menus show).
 pub fn bind_all(cx: &mut App) {
     cx.clear_key_bindings();
     crate::app::bind_keys(cx);
@@ -352,7 +316,6 @@ pub fn bind_all(cx: &mut App) {
     let map = overrides();
     let mut bindings = Vec::new();
     for cmd in COMMANDS {
-        // The result zoom works on a document view as on the grid (its list, its bar).
         let extra = (cmd.id == "zoom_result").then_some("DocView");
         for k in effective_in(&map, cmd).iter().rev() {
             for context in std::iter::once(cmd.context).chain(extra.map(Some)) {
@@ -366,7 +329,6 @@ pub fn bind_all(cx: &mut App) {
     cx.bind_keys(bindings);
 }
 
-/// New overrides: kept, every key bound again and the menu bar rebuilt.
 pub fn apply(map: BTreeMap<String, String>, cx: &mut App) {
     set_overrides(clean(&map));
     bind_all(cx);
@@ -417,9 +379,7 @@ mod tests {
         assert_eq!(effective_in(&map(&[("run", "")]), run), Vec::<String>::new());
         assert_eq!(effective_in(&map(&[("run", "cmd-k cmd-r")]), run), vec!["cmd-shift-enter"], "a chord is ignored");
         assert_eq!(effective_in(&map(&[("run", "nonsense-key-x")]), run), vec!["cmd-shift-enter"]);
-        // One override replaces every default.
         assert_eq!(effective_in(&map(&[("zoom_in", "cmd-u")]), find("zoom_in").unwrap()), vec!["cmd-u"]);
-        // Unknown ids, invalid keys and no-ops drop out; a removal stays.
         let kept = clean(&map(&[("nope", "cmd-j"), ("run", "bad-bad-x"), ("history", "cmd-y"), ("favorite_query", ""), ("export", "shift-cmd-j")]));
         assert_eq!(kept, map(&[("export", "cmd-shift-j"), ("favorite_query", "")]));
     }
@@ -428,12 +388,9 @@ mod tests {
     fn defaults_have_no_conflicts_and_new_copy_keys() {
         assert!(conflicts_in(&map(&[])).is_empty(), "{:?}", conflicts_in(&map(&[])));
         assert_eq!(effective_in(&map(&[]), find("copy_with_headers").unwrap()), vec!["cmd-shift-c"]);
-        // Canonical spelling: GPUI's order (ctrl alt cmd shift).
         assert_eq!(effective_in(&map(&[]), find("copy_csv").unwrap()), vec!["alt-cmd-c"]);
     }
 
-    /// ⌘↩ runs the script (the toolbar's Run), ⌘⇧↩ the statement; the ids keep their commands,
-    /// so an override saved before the swap still moves the same command.
     #[test]
     fn run_runs_the_script() {
         let script = find("run_all").unwrap();
@@ -447,19 +404,14 @@ mod tests {
 
     #[test]
     fn conflicts_only_where_both_work() {
-        // The grid and the editor never meet: ⌘C for Run does not collide with the grid's copy.
         assert!(conflicts_in(&map(&[("run", "cmd-c")])).is_empty());
-        // A workspace key reaches the editor: Run on ⌘T shadows New tab.
         assert_eq!(conflicts_in(&map(&[("run", "cmd-t")])), BTreeSet::from(["run", "new_tab"]));
-        // Two grid commands on one key.
         assert_eq!(conflicts_in(&map(&[("copy_csv", "cmd-c")])), BTreeSet::from(["copy_csv", "copy_tsv"]));
-        // Moving the other one away clears it.
         assert!(conflicts_in(&map(&[("copy_csv", "cmd-c"), ("copy_tsv", "cmd-alt-c")])).is_empty());
     }
 
     #[test]
     fn typed_shortcuts() {
-        // The shown symbols, in any order and case, and GPUI's names with - or +.
         for (typed, want) in [
             ("⌘k", "cmd-k"),
             ("⇧⌘P", "cmd-shift-p"),
@@ -476,12 +428,9 @@ mod tests {
         ] {
             assert_eq!(parse_typed(typed).as_deref(), Some(want), "{typed}");
         }
-        // Words, a lone symbol and broken spellings are not shortcuts.
         for typed in ["", "run", "copy csv", "⌘", "⇧⌘", "cmd-", "foo-bar"] {
             assert_eq!(parse_typed(typed), None, "{typed}");
         }
-        // Every shown label with a modifier reads back as its keystroke (a bare F6 is found by
-        // its label's text).
         for c in COMMANDS {
             for k in defaults(c).into_iter().filter(|k| k.contains('-')) {
                 assert_eq!(parse_typed(&label(&k)).as_deref(), Some(k.as_str()), "{} {k}", c.id);

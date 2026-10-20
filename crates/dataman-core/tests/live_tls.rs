@@ -1,34 +1,3 @@
-//! The editor session's own socket (and the ReadyForQuery sniffer on it) over TLS and through
-//! an SSH tunnel, for every sslmode: commit and rollback of a typed BEGIN, a failed transaction, the
-//! CancelRequest on a socket of the session's own, and a read-only connection. Each test skips
-//! unless its servers answer:
-//!
-//! ```sh
-//! # A CA and a server certificate for verify-full (SAN localhost and dataman-ssh-pg, no IP).
-//! T=/tmp/dataman-tls; mkdir -p $T/certs $T/keys
-//! cd $T/certs && openssl genrsa -out ca.key 2048 && openssl req -new -key ca.key -subj /CN=ca -out ca.csr
-//! printf 'basicConstraints=critical,CA:TRUE\nkeyUsage=critical,keyCertSign\n' > ca.ext
-//! openssl x509 -req -in ca.csr -signkey ca.key -days 30 -extfile ca.ext -out ca.crt
-//! openssl genrsa -out server.key 2048 && openssl req -new -key server.key -subj /CN=pg -out server.csr
-//! printf 'subjectAltName=DNS:localhost,DNS:dataman-ssh-pg\n' > server.ext
-//! openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial -days 30 -extfile server.ext -out server.crt
-//! docker network create dataman-ssh-net
-//! docker run -d --name dataman-ssh-pg --network dataman-ssh-net -p 127.0.0.1:54340:5432 \
-//!   -e POSTGRES_PASSWORD=dataman -v $T/certs:/certs:ro --entrypoint bash postgres:18 -c \
-//!   'mkdir -p /etc/ssl/s && install -o postgres -m 600 /certs/server.key /etc/ssl/s/ && install -m 644 /certs/server.crt /etc/ssl/s/ &&
-//!    exec docker-entrypoint.sh postgres -c ssl=on -c ssl_cert_file=/etc/ssl/s/server.crt -c ssl_key_file=/etc/ssl/s/server.key'
-//! # Debian's self-signed snakeoil certificate, for the verify-full refusal.
-//! docker run -d --name dataman-ssh-snakeoil -p 127.0.0.1:54341:5432 -e POSTGRES_PASSWORD=dataman postgres:18 \
-//!   -c ssl=on -c ssl_cert_file=/etc/ssl/certs/ssl-cert-snakeoil.pem -c ssl_key_file=/etc/ssl/private/ssl-cert-snakeoil.key
-//! # The sshd of tests/live_ssh.rs (dataman-sshd image, 127.0.0.1:2299, keys in $T/keys).
-//! DATAMAN_TLS_PG=127.0.0.1:54340 DATAMAN_TLS_CA=$T/certs/ca.crt DATAMAN_TLS_SNAKEOIL=127.0.0.1:54341 \
-//!   DATAMAN_SSH_KEYS=$T/keys cargo test --release -p dataman-core --test live_tls
-//! ```
-//!
-//! Direct tests connect to `localhost` (in the certificate); through the tunnel the database is
-//! `dataman-ssh-pg:5432`, reachable only from the SSH server's network. `DATAMAN_TLS_CA` becomes
-//! `SSL_CERT_FILE`, the only trust store verify-full reads then.
-
 use std::net::TcpStream;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
@@ -39,11 +8,8 @@ use dataman_core::result::Phase;
 use dataman_core::{Connection, Core, MemorySecrets, ResultSet, Session, SshError, TxEnd, TxStatus};
 
 struct Setup {
-    /// The TLS server, seen directly.
     direct: Option<(String, u16)>,
-    /// The SSH server and its keys.
     ssh: Option<((String, u16), PathBuf)>,
-    /// A CA that signed the server's certificate (verify-full).
     ca: bool,
     snakeoil: Option<(String, u16)>,
 }
@@ -102,7 +68,6 @@ enum Route {
     Ssh,
 }
 
-/// The profile for `route` and `mode`, or `None` (skip).
 fn profile(route: Route, mode: SslMode) -> Option<ConnectionProfile> {
     let s = setup();
     if mode == SslMode::VerifyFull && !s.ca {
@@ -133,7 +98,6 @@ fn ssh_error(e: &anyhow::Error) -> Option<SshError> {
     e.chain().find_map(|c| c.downcast_ref::<SshError>()).cloned()
 }
 
-/// Connects, trusting the SSH server's host key on first contact.
 fn connect(e: &Env, p: &ConnectionProfile) -> anyhow::Result<Arc<Connection>> {
     for _ in 0..3 {
         match e.core.block_on(e.core.connect(p.clone(), Some("dataman".into()))) {
@@ -167,7 +131,6 @@ fn end(e: &Env, s: &Arc<Session>, commit: bool) -> TxEnd {
     e.core.block_on(s.end_transaction(commit)).expect("end transaction")
 }
 
-/// Every transaction scenario on one route and sslmode.
 fn scenarios(route: Route, mode: SslMode) {
     let Some(p) = profile(route, mode) else { return };
     let e = env();
@@ -179,11 +142,9 @@ fn scenarios(route: Route, mode: SslMode) {
     ok(&e, &admin, &format!("DROP TABLE IF EXISTS {table}"));
     ok(&e, &admin, &format!("CREATE TABLE {table} (id int)"));
 
-    // The editor session's own socket negotiated what the sslmode asks for.
     let s = c.session(None);
     assert_eq!(ok(&e, &s, "SELECT ssl::text FROM pg_stat_ssl WHERE pid = pg_backend_pid()"), tls.to_string(), "session socket");
 
-    // A typed BEGIN: the status off ReadyForQuery, COMMIT and ROLLBACK.
     ok(&e, &s, "BEGIN");
     ok(&e, &s, &format!("INSERT INTO {table} VALUES (1)"));
     assert_eq!((s.tx().status, s.tx().statements), (TxStatus::Open, 1));
@@ -195,7 +156,6 @@ fn scenarios(route: Route, mode: SslMode) {
     assert_eq!(end(&e, &s, false), TxEnd::RolledBack);
     assert_eq!(ok(&e, &admin, &format!("SELECT count(*) FROM {table}")), "1");
 
-    // A failed transaction: refused until it ends; its COMMIT is a rollback.
     ok(&e, &s, "BEGIN");
     ok(&e, &s, "SELECT 1");
     assert_eq!(run(&e, &s, "SELECT 1/0").phase(), Phase::Failed);
@@ -205,8 +165,6 @@ fn scenarios(route: Route, mode: SslMode) {
     assert_eq!(end(&e, &s, true), TxEnd::RolledBack);
     assert_eq!(s.tx().status, TxStatus::Idle);
 
-    // The CancelRequest on a socket of the session's own (TLS and tunnel included), inside a
-    // transaction: the statement stops, the transaction fails, a rollback recovers it.
     ok(&e, &s, "BEGIN");
     let rs = s.execute("SELECT pg_sleep(20)");
     std::thread::sleep(Duration::from_millis(400));
@@ -220,7 +178,6 @@ fn scenarios(route: Route, mode: SslMode) {
     assert_eq!(ok(&e, &s, "SELECT 'after'"), "after");
     assert_eq!(s.tx().status, TxStatus::Idle);
 
-    // Read-only: the server refuses the write on the session's socket.
     let ro = ConnectionProfile { read_only: true, ..p.clone() };
     let rc = connect(&e, &ro).unwrap();
     let rs_ = rc.session(None);
@@ -254,8 +211,6 @@ matrix! {
     ssh_verify_full: Ssh, VerifyFull;
 }
 
-/// verify-full checks the name: `127.0.0.1` is not in the certificate, for the metadata
-/// connection and the session alike.
 #[test]
 fn verify_full_refuses_a_name_not_in_the_certificate() {
     let Some(mut p) = profile(Route::Direct, SslMode::VerifyFull) else { return };
@@ -266,8 +221,6 @@ fn verify_full_refuses_a_name_not_in_the_certificate() {
     eprintln!("verify-full, wrong name: {err}");
 }
 
-/// Debian's snakeoil certificate is self-signed for the image's build host: require works (no
-/// verification), verify-full refuses it.
 #[test]
 fn snakeoil_certificate() {
     let s = setup();

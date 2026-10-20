@@ -1,10 +1,3 @@
-//! Schema cache and introspection.
-//!
-//! Every level (databases → schemas → relations → columns/indexes) loads on demand and is
-//! cached. Each catalog read asks the engine's own catalog first (`pg_catalog`, in [`pg`]),
-//! then `information_schema`; when everything fails the level is empty and a note is kept. A
-//! PostgreSQL-compatible server with a partial catalog (LAR) degrades, it never breaks.
-
 pub mod catalog;
 mod model;
 pub(crate) mod ms;
@@ -33,9 +26,6 @@ use crate::sql::Dialect;
 
 type RelKey = (String, String);
 
-// The engine's catalog, read into the shared model (`model.rs`). A new engine adds its arm to
-// each; `information_schema`, which they all have, is the fallback where one fails.
-
 async fn read_databases(c: &Db) -> Result<Vec<String>> {
     match c {
         Db::Pg(_) => pg::databases(c).await,
@@ -44,7 +34,6 @@ async fn read_databases(c: &Db) -> Result<Vec<String>> {
     }
 }
 
-/// The schemas of the database `c` is connected to, `db` (MySQL: the database itself).
 async fn read_schemas(c: &Db, db: &str) -> Result<Vec<String>> {
     match c {
         Db::Pg(_) => pg::schemas(c).await,
@@ -91,23 +80,17 @@ struct DbCache {
     schemas: Option<Vec<String>>,
     relations: HashMap<String, Vec<Relation>>,
     columns: HashMap<RelKey, Vec<Column>>,
-    /// Relations whose columns came from `preload` only: names, types and nullability, without
-    /// keys or defaults.
     brief: HashSet<RelKey>,
     indexes: HashMap<RelKey, Vec<Index>>,
-    // The other objects (`objects.rs`), per schema unless said otherwise.
     counts: HashMap<String, ObjectCounts>,
     stats: HashMap<String, Arc<HashMap<String, RelStats>>>,
     functions: HashMap<String, Arc<Vec<Function>>>,
     sequences: HashMap<String, Arc<Vec<Sequence>>>,
     types: HashMap<String, Arc<Vec<UserType>>>,
     triggers: HashMap<String, Arc<Vec<Trigger>>>,
-    /// Per relation.
     extras: HashMap<RelKey, TableExtras>,
     extensions: Option<Vec<Extension>>,
-    /// Functions and types for the editor (`catalog.rs`).
     catalog: Option<Arc<Catalog>>,
-    /// The search path's columns are all loaded (`preload`).
     preloaded: bool,
 }
 
@@ -132,10 +115,8 @@ pub struct SchemaCache {
     dialect: Dialect,
     default_db: String,
     databases: RwLock<Option<Vec<String>>>,
-    /// The server's roles (they are not per database).
     roles: RwLock<Option<Vec<Role>>>,
     dbs: RwLock<HashMap<String, DbCache>>,
-    /// Things the server could not tell us (shown discreetly by the UI).
     notes: Mutex<Vec<String>>,
     version: AtomicU64,
     snapshots: Mutex<HashMap<String, (u64, Arc<SchemaSnapshot>)>>,
@@ -158,7 +139,6 @@ impl SchemaCache {
         Self::with_dialect(default_db, search_path, Dialect::Postgres)
     }
 
-    /// A cache whose snapshots carry `dialect` (what completion and lint read SQL as).
     pub fn with_dialect(default_db: String, search_path: Vec<String>, dialect: Dialect) -> SchemaCache {
         let mut dbs = HashMap::new();
         dbs.insert(default_db.clone(), DbCache { search_path: Some(search_path), ..Default::default() });
@@ -178,7 +158,6 @@ impl SchemaCache {
         &self.default_db
     }
 
-    /// Changes whenever something is added to or removed from the cache.
     pub fn version(&self) -> u64 {
         self.version.load(Ordering::Acquire)
     }
@@ -211,8 +190,6 @@ impl SchemaCache {
         self.dbs.read().get(db).and_then(|d| d.search_path.clone()).unwrap_or_else(|| vec!["public".into()])
     }
 
-    // Cached reads (no I/O).
-
     pub fn cached_databases(&self) -> Option<Vec<String>> {
         self.databases.read().clone()
     }
@@ -225,8 +202,6 @@ impl SchemaCache {
     pub fn cached_columns(&self, db: &str, schema: &str, rel: &str) -> Option<Vec<Column>> {
         self.dbs.read().get(db).and_then(|d| d.columns.get(&(schema.into(), rel.into())).cloned())
     }
-    /// The columns with their keys and defaults: `None` while only autocomplete's brief list
-    /// is cached ([`crate::Connection::columns`] loads the rest).
     pub fn cached_full_columns(&self, db: &str, schema: &str, rel: &str) -> Option<Vec<Column>> {
         let key = (schema.to_string(), rel.to_string());
         self.dbs.read().get(db).filter(|d| !d.brief.contains(&key)).and_then(|d| d.columns.get(&key).cloned())
@@ -235,7 +210,6 @@ impl SchemaCache {
         self.dbs.read().get(db).and_then(|d| d.indexes.get(&(schema.into(), rel.into())).cloned())
     }
 
-    /// Forgets a database's cached schema (or everything with `None`).
     pub fn invalidate(&self, db: Option<&str>) {
         match db {
             Some(db) => {
@@ -256,8 +230,6 @@ impl SchemaCache {
         self.bump();
     }
 
-    /// Forgets one schema's relations (their columns, indexes, constraints…) and its other
-    /// objects (the rest of `db` stays).
     pub fn invalidate_schema(&self, db: &str, schema: &str) {
         if let Some(d) = self.dbs.write().get_mut(db) {
             d.forget_schema(schema);
@@ -265,7 +237,6 @@ impl SchemaCache {
         self.bump();
     }
 
-    /// Forgets one relation's columns, indexes, constraints, triggers and partitions.
     pub fn invalidate_relation(&self, db: &str, schema: &str, rel: &str) {
         if let Some(d) = self.dbs.write().get_mut(db) {
             let key = (schema.to_string(), rel.to_string());
@@ -279,7 +250,6 @@ impl SchemaCache {
         self.bump();
     }
 
-    /// Everything cached for `db`, flattened for autocomplete. Memoized per cache version.
     pub fn snapshot(&self, db: &str) -> Arc<SchemaSnapshot> {
         let v = self.version();
         if let Some((sv, s)) = self.snapshots.lock().get(db)
@@ -338,7 +308,6 @@ impl Connection {
                 }
             };
             let mut v = v;
-            // (A MySQL connection may have no database of its own.)
             if !this.database().is_empty() && !v.iter().any(|d| d == this.database()) {
                 v.insert(0, this.database().to_string());
             }
@@ -500,12 +469,9 @@ impl Connection {
         })
     }
 
-    /// Background load for autocomplete: the schemas, the relations of the search path's
-    /// schemas, and all their columns in one catalog query.
     pub fn preload(self: &Arc<Self>, db: &str) -> Task<()> {
         let (this, db) = (self.clone(), db.to_string());
         self.spawn(async move {
-            // The engines without SQL have no catalog to load.
             if !this.engine().is_sql() {
                 return Ok(());
             }
@@ -596,7 +562,6 @@ mod tests {
         assert!(c.cached_relations("db", "public").is_none() && c.cached_columns("db", "public", "b").is_none());
         assert!(c.cached_relations("db", "s").is_some() && c.cached_columns("db", "s", "a").is_some());
         assert_eq!(c.cached_schemas("db").unwrap().len(), 2);
-        // Unknown databases are a no-op.
         c.invalidate_schema("nope", "public");
     }
 
@@ -612,7 +577,6 @@ mod tests {
             }
             d.brief.insert(("public".into(), "a".into()));
         }
-        // Autocomplete sees both; the explorer and templates wait for a's keys.
         assert!(c.cached_columns("db", "public", "a").is_some());
         assert!(c.cached_full_columns("db", "public", "a").is_none());
         assert!(c.cached_full_columns("db", "public", "b").is_some());

@@ -1,10 +1,3 @@
-//! MongoDB through the official driver: TLS on the process' rustls (ring), SSH tunnels (a direct
-//! connection to the forwarded port), `mongodb+srv://` seed lists.
-//!
-//! Reads go as commands (`find`, `aggregate` with one batch: a page and one more document, to know
-//! whether more follow), so a page never leaves a cursor open on the server. Writes go through
-//! the driver's helpers, which raise the server's write errors.
-
 use std::time::Duration;
 
 use anyhow::{Context as _, Result, anyhow};
@@ -20,15 +13,12 @@ use crate::ssh::Tunnel;
 
 pub(crate) struct Client {
     pub client: mongodb::Client,
-    /// The database tabs start on: the profile's, else `test` (as mongosh).
     pub default_db: String,
     pub tls_active: bool,
 }
 
-/// The longest a connection waits for a server to answer before it gives up.
 const SELECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The driver's options for a profile, through `tunnel` when one stands for the server.
 pub(crate) async fn options(p: &ConnectionProfile, password: Option<&str>, tunnel: Option<&Tunnel>) -> Result<ClientOptions> {
     let opt = |k: &str| p.options.get(k).map(|v| v.trim()).filter(|v| !v.is_empty());
     let srv = opt("srv").is_some_and(|v| v == "true" || v == "1");
@@ -52,7 +42,6 @@ pub(crate) async fn options(p: &ConnectionProfile, password: Option<&str>, tunne
                 .collect(),
         };
     }
-    // One host (or a tunnel): talk to it, whatever replica set it is in.
     let direct = match opt("directConnection") {
         Some(v) => v == "true",
         None => tunnel.is_some() || (o.hosts.len() == 1 && !srv && opt("replicaSet").is_none()),
@@ -65,7 +54,6 @@ pub(crate) async fn options(p: &ConnectionProfile, password: Option<&str>, tunne
         let mut c = Credential::default();
         c.username = Some(p.user.clone());
         c.password = password.map(str::to_string);
-        // Users live in `admin` unless the options say otherwise (a database's own users).
         c.source = Some(opt("authSource").unwrap_or("admin").to_string());
         if let Some(m) = opt("authMechanism") {
             c.mechanism = Some(m.parse().map_err(|e| anyhow!("authMechanism: {e}"))?);
@@ -88,7 +76,6 @@ pub(crate) async fn options(p: &ConnectionProfile, password: Option<&str>, tunne
     Ok(o)
 }
 
-/// Connects and checks the server answers (and the login is good): `ping`.
 pub(crate) async fn connect(p: &ConnectionProfile, password: Option<&str>, tunnel: Option<&Tunnel>) -> Result<Client> {
     let o = options(p, password, tunnel).await?;
     let tls_active = matches!(o.tls, Some(Tls::Enabled(_)));
@@ -106,13 +93,11 @@ pub(crate) async fn connect(p: &ConnectionProfile, password: Option<&str>, tunne
     Ok(Client { client, default_db, tls_active })
 }
 
-/// `MongoDB 8.0.3`.
 pub(crate) async fn version(c: &Client) -> Result<String> {
     let r = c.client.database("admin").run_command(doc! { "buildInfo": 1 }).await?;
     Ok(format!("MongoDB {}", r.get_str("version").unwrap_or("")).trim().to_string())
 }
 
-/// The server's message, without the driver's wrapping (`Kind: Command failed (…): msg`).
 pub(crate) fn message(e: &anyhow::Error) -> String {
     for c in e.chain() {
         if let Some(e) = c.downcast_ref::<mongodb::error::Error>() {
@@ -122,7 +107,6 @@ pub(crate) fn message(e: &anyhow::Error) -> String {
                 ErrorKind::Write(mongodb::error::WriteFailure::WriteError(w)) => w.message.clone(),
                 ErrorKind::Authentication { message, .. } => format!("authentication failed: {message}"),
                 ErrorKind::ServerSelection { message, .. } => {
-                    // The driver's long topology dump: the first line says it.
                     let first = message.split(", Topology:").next().unwrap_or(message);
                     format!("cannot reach the server: {first}")
                 }
@@ -133,12 +117,8 @@ pub(crate) fn message(e: &anyhow::Error) -> String {
     format!("{e:#}")
 }
 
-// ---------------------------------------------------------------------------------------------
-// The explorer
-
 pub(crate) async fn databases(c: &Client) -> Result<Vec<Item>> {
     let admin = c.client.database("admin");
-    // A user without listDatabases on the cluster still sees the databases it may use.
     let r = match admin.run_command(doc! { "listDatabases": 1 }).await {
         Ok(r) => r,
         Err(_) => admin.run_command(doc! { "listDatabases": 1, "authorizedDatabases": true, "nameOnly": true }).await.map_err(|e| anyhow!(message(&e.into())))?,
@@ -156,7 +136,6 @@ pub(crate) async fn databases(c: &Client) -> Result<Vec<Item>> {
                 .collect()
         })
         .unwrap_or_default();
-    // The connection's own database, even before it holds anything.
     if !out.iter().any(|i| i.name == c.default_db) {
         out.push(Item { name: c.default_db.clone(), kind: ItemKind::Database, count: None, size: None, note: None });
     }
@@ -178,7 +157,6 @@ pub(crate) async fn collections(c: &Client, db: &str) -> Result<Vec<Item>> {
         })
         .collect();
     items.sort_by(|a, b| (a.name.starts_with("system."), &a.name).cmp(&(b.name.starts_with("system."), &b.name)));
-    // Their estimated counts (metadata, no scan), a few at a time.
     let names: Vec<(String, bool)> = items.iter().map(|i| (i.name.clone(), i.kind == ItemKind::View)).collect();
     let counts: Vec<Option<u64>> = futures_util::stream::iter(names.into_iter().map(|(name, view)| {
         let d = d.clone();
@@ -208,11 +186,8 @@ fn number(b: Option<&Bson>) -> Option<f64> {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Statements
-
-/// A page never leaves a cursor open on the server (`singleBatch` is refused on views): what
-/// the first batch left is killed.
+// `singleBatch` is refused on views: what the first batch left is killed, so a page never
+// leaves a cursor open on the server.
 async fn close_cursor(d: &mongodb::Database, coll: &str, r: &Document) {
     if let Some(id) = r.get_document("cursor").ok().and_then(|c| c.get_i64("id").ok()).filter(|id| *id != 0) {
         let _ = d.run_command(doc! { "killCursors": coll, "cursors": [id] }).await;
@@ -240,7 +215,6 @@ fn cmd_err(e: mongodb::error::Error) -> anyhow::Error {
     anyhow!(message(&e.into()))
 }
 
-/// Runs `op` on `db`: its documents from `page`, a command's answer, or what a write changed.
 pub(crate) async fn run(c: &Client, db: &str, op: &Op, page: Page) -> Result<Output> {
     let d = c.client.database(db);
     Ok(match op {
@@ -254,7 +228,6 @@ pub(crate) async fn run(c: &Client, db: &str, op: &Op, page: Page) -> Result<Out
             Output::Value(Body::Bson(Bson::Array(names)))
         }
         Op::Find { coll, filter, projection, sort, skip, limit, one, options } => {
-            // The page inside the query's own skip and limit.
             let left = limit.map(|l| (l.unsigned_abs()).saturating_sub(page.skip));
             if left == Some(0) && !one {
                 let source = projection.is_none().then(|| Source::Mongo { db: db.into(), coll: coll.clone() });
@@ -284,7 +257,6 @@ pub(crate) async fn run(c: &Client, db: &str, op: &Op, page: Page) -> Result<Out
                     return None;
                 }
                 let mut q = doc! { "count": coll.clone(), "query": filter.clone(), "maxTimeMS": 3000 };
-                // The same documents as the page's (a collation changes what matches).
                 for k in ["collation", "hint"] {
                     if let Some(v) = options.get(k) {
                         q.insert(k, v.clone());
@@ -309,7 +281,6 @@ pub(crate) async fn run(c: &Client, db: &str, op: &Op, page: Page) -> Result<Out
         }
         Op::Aggregate { coll, pipeline } => {
             let mut stages = pipeline.clone();
-            // `$out` and `$merge` end a pipeline: nothing follows them (they return no documents).
             let writes = pipeline.last().is_some_and(|s| s.contains_key("$out") || s.contains_key("$merge"));
             if page.skip > 0 && !writes {
                 stages.push(doc! { "$skip": page.skip as i64 });
@@ -384,7 +355,6 @@ pub(crate) async fn run(c: &Client, db: &str, op: &Op, page: Page) -> Result<Out
             }
             for (k, v) in options {
                 match k.as_str() {
-                    // The shell's names for findAndModify's.
                     "returnDocument" => {
                         cmd.insert("new", v.as_str() == Some("after"));
                     }
@@ -494,7 +464,6 @@ pub(crate) async fn run(c: &Client, db: &str, op: &Op, page: Page) -> Result<Out
         Op::Command { doc, admin } => {
             let target = if *admin { c.client.database("admin") } else { d };
             let r = target.run_command(doc.clone()).await.map_err(cmd_err)?;
-            // A command that returns a cursor (find, aggregate): its documents.
             if r.get_document("cursor").is_ok_and(|c| c.contains_key("firstBatch")) && op.class() == WriteClass::Read {
                 let found = first_batch(&r);
                 let n = found.len();
@@ -506,14 +475,11 @@ pub(crate) async fn run(c: &Client, db: &str, op: &Op, page: Page) -> Result<Out
     })
 }
 
-/// A command's answer as the server sent it (a cursor's first batch left in it): the shell's
-/// `db.runCommand(…)` in a script.
 pub(crate) async fn command(c: &Client, db: &str, cmd: Document, admin: bool) -> Result<Document> {
     let target = c.client.database(if admin { "admin" } else { db });
     target.run_command(cmd).await.map_err(cmd_err)
 }
 
-/// How many documents `op` would change (counted with its filter, before it runs).
 pub(crate) async fn affects(c: &Client, db: &str, op: &Op) -> Result<Option<u64>> {
     let col = |coll: &str| c.client.database(db).collection::<Document>(coll);
     Ok(match op {
@@ -544,7 +510,6 @@ pub(crate) async fn affects(c: &Client, db: &str, op: &Op) -> Result<Option<u64>
     })
 }
 
-/// A write command's answer, its write errors raised as errors.
 async fn write_cmd(d: &mongodb::Database, cmd: Document) -> Result<Document> {
     let r = d.run_command(cmd).await.map_err(cmd_err)?;
     if let Ok(errs) = r.get_array("writeErrors")
@@ -558,8 +523,6 @@ async fn write_cmd(d: &mongodb::Database, cmd: Document) -> Result<Document> {
     Ok(r)
 }
 
-/// An update statement's options (`arrayFilters`, `collation`, `hint`) apart from the
-/// command's own (`let`, `comment`, `writeConcern`, `bypassDocumentValidation`).
 fn split_options(options: &Document) -> (Document, Document) {
     let (mut stmt, mut top) = (Document::new(), Document::new());
     for (k, v) in options {
@@ -579,7 +542,6 @@ struct Updated {
     upserted_id: Option<Bson>,
 }
 
-/// One update (or replacement) as the `update` command runs it, with its options.
 async fn update_cmd(d: &mongodb::Database, coll: &str, filter: &Document, u: Bson, many: bool, upsert: bool, options: &Document) -> Result<Updated> {
     let mut stmt = doc! { "q": filter.clone(), "u": u, "multi": many, "upsert": upsert };
     let (opts, top) = split_options(options);
@@ -597,11 +559,6 @@ fn plural(n: u64, noun: &str, verb: &str) -> String {
     format!("{n} {noun}{} {verb}", if n == 1 { "" } else { "s" })
 }
 
-// ---------------------------------------------------------------------------------------------
-// Documents
-
-/// Replaces the document `id` with `doc` (its `_id` kept), or inserts `doc` when `id` is `None`.
-/// The saved document's `_id`.
 pub(crate) async fn save(c: &Client, db: &str, coll: &str, id: Option<Bson>, mut doc: Document) -> Result<Bson> {
     let col = c.client.database(db).collection::<Document>(coll);
     match id {
@@ -611,7 +568,6 @@ pub(crate) async fn save(c: &Client, db: &str, coll: &str, id: Option<Bson>, mut
         }
         Some(id) => {
             match doc.get("_id") {
-                // Changing `_id` is a new document: MongoDB keeps `_id` immutable.
                 Some(new) if *new != id => return Err(anyhow!("_id cannot change (save it as a new document instead)")),
                 Some(_) => {}
                 None => {
@@ -635,8 +591,6 @@ pub(crate) async fn delete(c: &Client, db: &str, coll: &str, id: Bson) -> Result
     Ok(r.deleted_count)
 }
 
-/// The field paths of `n` sampled documents (`a`, `a.b`; arrays' documents under `a.b` too),
-/// most frequent first, each with the types seen.
 pub(crate) async fn sample_fields(c: &Client, db: &str, coll: &str, n: i64) -> Result<Vec<(String, Vec<&'static str>)>> {
     let r = c.client.database(db).run_command(doc! { "aggregate": coll, "pipeline": [{ "$sample": { "size": n } }], "cursor": {} }).await.map_err(cmd_err)?;
     let mut seen: Vec<(String, usize, Vec<&'static str>)> = Vec::new();
@@ -669,7 +623,6 @@ pub(crate) async fn sample_fields(c: &Client, db: &str, coll: &str, n: i64) -> R
     for d in first_batch(&r) {
         walk("", &d, &mut seen, 0);
     }
-    // `_id` first, then by how often, then by name.
     seen.sort_by(|a, b| (a.0 != "_id", std::cmp::Reverse(a.1), &a.0).cmp(&(b.0 != "_id", std::cmp::Reverse(b.1), &b.0)));
     Ok(seen.into_iter().map(|(p, _, t)| (p, t)).collect())
 }

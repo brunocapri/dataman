@@ -1,17 +1,7 @@
-//! libpq connection strings: `postgres://` / `postgresql://` URLs and `key=value` strings, as
-//! pasted from elsewhere, MySQL's `mysql://` (`mariadb://`) URLs, and SQL Server's
-//! `sqlserver://` URLs (`user@host/db?encrypt=…` or JDBC's `host:port;databaseName=…`) and
-//! ADO.NET strings (`Server=tcp:host,1433;Database=…;User Id=…`), MongoDB's `mongodb://` and
-//! `mongodb+srv://` URLs and Redis' `redis://` / `rediss://`. Only what a profile holds is kept
-//! (engine, host, port, user, database, password, sslmode, a driver's options); `service=` reads
-//! the service file first, as libpq does.
-
 use crate::config::{ConnectionProfile, Engine, SslMode};
 
-/// The parsed parameters; `None` where the string did not say.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ConnSpec {
-    /// MySQL for a `mysql://` URL; PostgreSQL otherwise.
     pub engine: Engine,
     pub host: Option<String>,
     pub port: Option<u16>,
@@ -20,15 +10,12 @@ pub struct ConnSpec {
     pub password: Option<String>,
     pub sslmode: Option<SslMode>,
     pub service: Option<String>,
-    /// SQL Server's `Encrypt` and `TrustServerCertificate`, read together into the sslmode.
     pub encrypt: Option<String>,
     pub trust_cert: Option<bool>,
-    /// A driver's own options (MongoDB's `authSource`, `replicaSet`, `srv`).
     pub options: std::collections::BTreeMap<String, String>,
 }
 
 impl ConnSpec {
-    /// Applies one SQL Server keyword (ADO.NET's, JDBC's or a URL's; `key` in lower case).
     pub fn set_mssql(&mut self, key: &str, value: &str) {
         let v = value.trim();
         let yes = || matches!(v.to_ascii_lowercase().as_str(), "true" | "yes" | "1");
@@ -39,7 +26,6 @@ impl ConnSpec {
                     Some((h, p)) => (h, p.trim().parse().ok()),
                     None => (v, None),
                 };
-                // `.` and `(local)` are this machine; `host\instance` keeps its instance.
                 let (h, instance) = match h.trim().split_once('\\') {
                     Some((h, i)) => (h, Some(i)),
                     None => (h.trim(), None),
@@ -62,8 +48,6 @@ impl ConnSpec {
         }
     }
 
-    /// SQL Server's `Encrypt` and `TrustServerCertificate` as a mode: no encryption (but the
-    /// login's), optional, or required, with the certificate trusted or verified.
     fn mssql_sslmode(&self) -> Option<SslMode> {
         let trust = self.trust_cert == Some(true);
         Some(match self.encrypt.as_deref() {
@@ -80,22 +64,17 @@ impl ConnSpec {
             _ => return None,
         })
     }
-    /// Applies one libpq keyword. Unknown keywords are ignored (`application_name`,
-    /// `connect_timeout`…); multi-host lists keep their first host.
     pub fn set(&mut self, key: &str, value: &str) {
         let first = || value.split(',').next().unwrap_or("").trim().to_string();
         match key {
             "host" => self.host = Some(first()).filter(|h| !h.is_empty()),
-            // A numeric address only stands in for the host when none is given.
             "hostaddr" if self.host.is_none() => self.host = Some(first()).filter(|h| !h.is_empty()),
             "port" => self.port = first().parse().ok(),
             "user" => self.user = Some(value.to_string()),
             "dbname" => self.database = Some(value.to_string()),
             "password" => self.password = Some(value.to_string()),
             "sslmode" => self.sslmode = sslmode(value),
-            // MySQL's `ssl-mode=REQUIRED` (Shell, Connector/J's `sslMode`).
             "ssl-mode" | "ssl_mode" | "sslMode" => self.sslmode = sslmode(&value.to_ascii_lowercase()),
-            // JDBC-style `ssl=true`; Connector/J's `useSSL`.
             "ssl" if value == "true" || value == "1" => self.sslmode = Some(SslMode::Require),
             "useSSL" => self.sslmode = Some(if value == "true" { SslMode::Require } else { SslMode::Disable }),
             "service" => self.service = Some(value.to_string()),
@@ -103,7 +82,6 @@ impl ConnSpec {
         }
     }
 
-    /// Applies one option of a MongoDB URL: TLS into the sslmode, the driver's own kept.
     pub fn set_mongo(&mut self, key: &str, value: &str) {
         let yes = matches!(value.to_ascii_lowercase().as_str(), "true" | "1" | "yes");
         match key {
@@ -124,7 +102,6 @@ impl ConnSpec {
         }
     }
 
-    /// Fills what this spec left out from `other` (a service definition).
     pub fn or(mut self, other: ConnSpec) -> ConnSpec {
         self.host = self.host.or(other.host);
         self.port = self.port.or(other.port);
@@ -135,8 +112,6 @@ impl ConnSpec {
         self
     }
 
-    /// A new profile with libpq's defaults where the spec is silent: host `localhost`, port
-    /// 5432, the local user, a database named after the user. The name is `db@host`.
     pub fn into_profile(self) -> (ConnectionProfile, Option<String>) {
         let mssql_mode = self.mssql_sslmode();
         let mut p = ConnectionProfile::new("");
@@ -150,7 +125,6 @@ impl ConnSpec {
                 p.database = self.database.filter(|d| !d.is_empty()).unwrap_or_else(|| p.user.clone());
             }
             _ => {
-                // `root` / `sa`, and the login's default database when the string does not say.
                 let user = self.engine.default_user();
                 p.user = self.user.filter(|u| !u.is_empty()).unwrap_or_else(|| user.into());
                 p.database = self.database.unwrap_or_default();
@@ -172,8 +146,8 @@ pub(crate) fn local_user() -> String {
     std::env::var("USER").or_else(|_| std::env::var("LOGNAME")).unwrap_or_else(|_| "postgres".into())
 }
 
-/// libpq's sslmode names; `allow` reads as `prefer` and `verify-ca` as `verify-full` (the
-/// closest modes Dataman has, never a weaker one for verify-ca). MySQL's names (lower case) too.
+/// `allow` reads as `prefer` and `verify-ca` as `verify-full`: the closest modes Dataman has,
+/// never a weaker one.
 pub fn sslmode(v: &str) -> Option<SslMode> {
     Some(match v {
         "disable" | "disabled" => SslMode::Disable,
@@ -184,11 +158,8 @@ pub fn sslmode(v: &str) -> Option<SslMode> {
     })
 }
 
-/// A URL or a `key=value` string, or `None` when `s` is neither.
 pub fn parse(s: &str) -> Option<ConnSpec> {
     let s = s.trim();
-    // JDBC's `jdbc:postgresql://`, `jdbc:mysql://`, `jdbc:mariadb://`: the URL after the prefix
-    // (user and password as query parameters, which `set` reads).
     let s = match s.strip_prefix("jdbc:") {
         Some(rest) if !rest.starts_with("sqlserver://") => rest,
         _ => s,
@@ -206,8 +177,6 @@ pub fn parse(s: &str) -> Option<ConnSpec> {
     }
 }
 
-/// After `sqlserver://`: JDBC's `host[\instance][:port][;key=value…]`, or a URL's
-/// `[user[:password]@]host[:port][/database][?key=value&…]`.
 fn parse_sqlserver(rest: &str) -> Option<ConnSpec> {
     let mut spec = ConnSpec { engine: Engine::SqlServer, ..Default::default() };
     let jdbc = rest.contains(';') || !(rest.contains('@') || rest.contains('/') || rest.contains('?'));
@@ -241,8 +210,6 @@ fn parse_sqlserver(rest: &str) -> Option<ConnSpec> {
     Some(spec)
 }
 
-/// ADO.NET's `Server=tcp:host,1433;Database=…;User Id=…;Password=…;Encrypt=True`: keywords
-/// without case, `;`-separated, values optionally in quotes. Needs a server keyword.
 pub fn parse_ado(s: &str) -> Option<ConnSpec> {
     let mut spec = ConnSpec { engine: Engine::SqlServer, ..Default::default() };
     let mut server = false;
@@ -253,8 +220,6 @@ pub fn parse_ado(s: &str) -> Option<ConnSpec> {
     server.then_some(spec)
 }
 
-/// The `key=value` pairs of an ADO.NET string (keys in lower case): a value in `'…'` or `"…"`
-/// keeps its `;` (a doubled quote is one).
 fn ado_pairs(s: &str) -> Option<Vec<(String, String)>> {
     let mut out = Vec::new();
     let mut chars = s.chars().peekable();
@@ -313,7 +278,6 @@ fn ado_pairs(s: &str) -> Option<Vec<(String, String)>> {
     }
 }
 
-/// [`parse`], resolved into a profile (a `service=` is looked up in the service files).
 pub fn parse_profile(s: &str) -> Option<(ConnectionProfile, Option<String>)> {
     let spec = parse(s)?;
     let spec = match &spec.service {
@@ -326,8 +290,6 @@ pub fn parse_profile(s: &str) -> Option<(ConnectionProfile, Option<String>)> {
     Some(spec.into_profile())
 }
 
-/// `postgresql://[user[:password]@][host][:port][,…][/dbname][?key=value&…]`, and the same
-/// shape with `mysql://` or `mariadb://`.
 pub fn parse_url(s: &str) -> Option<ConnSpec> {
     let (engine, rest) = if let Some(r) = s.strip_prefix("mongodb+srv://").or_else(|| s.strip_prefix("mongodb://")) {
         (Engine::MongoDb, r)
@@ -339,8 +301,6 @@ pub fn parse_url(s: &str) -> Option<ConnSpec> {
             None => (Engine::Postgres, s.strip_prefix("postgresql://").or_else(|| s.strip_prefix("postgres://"))?),
         }
     };
-    // A password with an unencoded `/` or `?` hides the `@` from the authority: take the last
-    // `@` when what comes before it reads as `user:password` (not `host:port`).
     let (userinfo, rest) = match rest.find(['/', '?']).filter(|&i| !rest[..i].contains('@')).and(rest.rfind('@')) {
         Some(at) => match rest[..at].split_once(':') {
             Some((_, pw)) if !pw.split(['/', '?']).next().is_some_and(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())) => (Some(&rest[..at]), &rest[at + 1..]),
@@ -360,7 +320,6 @@ pub fn parse_url(s: &str) -> Option<ConnSpec> {
     };
     let mut spec = ConnSpec { engine, ..Default::default() };
     if s.starts_with("mongodb+srv://") {
-        // A seed list in DNS: TLS on, verified, unless the string says otherwise.
         spec.options.insert("srv".into(), "true".into());
         spec.sslmode = Some(SslMode::VerifyFull);
     }
@@ -379,7 +338,6 @@ pub fn parse_url(s: &str) -> Option<ConnSpec> {
             spec.password = Some(decode(pw)?);
         }
     }
-    // The first of a host list (MongoDB keeps them all: its driver reads the list).
     let hostport = hosts.split(',').next().unwrap_or("");
     if engine == Engine::MongoDb && hosts.contains(',') {
         spec.host = Some(decode(hosts)?);
@@ -421,9 +379,6 @@ pub fn parse_url(s: &str) -> Option<ConnSpec> {
     Some(spec)
 }
 
-/// `host=db port=5432 dbname='my db' user=app`: libpq's keyword/value form. Values may be
-/// single-quoted, with `\'` and `\\` inside. Needs at least one known keyword, so arbitrary
-/// text with an `=` in it is not taken for a connection string.
 pub fn parse_kv(s: &str) -> Option<ConnSpec> {
     const KEYS: [&str; 9] = ["host", "hostaddr", "port", "user", "dbname", "password", "sslmode", "service", "ssl"];
     let mut spec = ConnSpec::default();
@@ -491,7 +446,6 @@ pub fn parse_kv(s: &str) -> Option<ConnSpec> {
     (known > 0).then_some(spec)
 }
 
-/// Percent-decoding; `None` on invalid UTF-8.
 fn decode(s: &str) -> Option<String> {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
@@ -529,26 +483,21 @@ mod tests {
         let s = url("postgresql://localhost");
         assert_eq!((s.host.as_deref(), s.port, s.user, s.password), (Some("localhost"), None, None, None));
 
-        // IPv6, a host list (first wins), extra parameters, a password with a colon.
         let s = url("postgresql://app:a:b@[::1]:5433,other:5434/db?application_name=x&connect_timeout=3");
         assert_eq!((s.host.as_deref(), s.port, s.password.as_deref()), (Some("::1"), Some(5433), Some("a:b")));
 
-        // Query parameters override and complete the authority.
         let s = url("postgresql:///mydb?host=/var/run/postgresql&port=5499&user=u&sslmode=verify-ca");
         assert_eq!((s.host.as_deref(), s.port, s.user.as_deref()), (Some("/var/run/postgresql"), Some(5499), Some("u")));
         assert_eq!((s.database.as_deref(), s.sslmode), (Some("mydb"), Some(SslMode::VerifyFull)));
 
-        // A percent-encoded socket directory as the host.
         let s = url("postgresql://%2Ftmp:5432/db");
         assert_eq!(s.host.as_deref(), Some("/tmp"));
 
-        // JDBC's ssl=true; a user without password; an @ in the password.
         let s = url("postgres://me@h/d?ssl=true");
         assert_eq!((s.user.as_deref(), s.password, s.sslmode), (Some("me"), None, Some(SslMode::Require)));
         let s = url("postgres://me:p@ss@h/d");
         assert_eq!((s.user.as_deref(), s.password.as_deref(), s.host.as_deref()), (Some("me"), Some("p@ss"), Some("h")));
 
-        // Unencoded `/` and `?` in the password; an @ later in the query is not the userinfo.
         let s = url("postgres://me:a/b?c@h:5433/d");
         assert_eq!((s.password.as_deref(), s.host.as_deref(), s.port, s.database.as_deref()), (Some("a/b?c"), Some("h"), Some(5433), Some("d")));
         let s = url("postgres://h:5432/db?application_name=a@b");
@@ -566,7 +515,6 @@ mod tests {
         let (p, _) = parse("mariadb://h").unwrap().into_profile();
         assert_eq!((p.engine, p.port, p.user.as_str(), p.database.as_str(), p.name.as_str()), (Engine::MySql, 3306, "root", "", "root@h"));
         assert_eq!(url("mysql://h/x?sslMode=VERIFY_IDENTITY").sslmode, Some(SslMode::VerifyFull));
-        // The URL Dataman copies parses back to the same fields.
         let mut q = ConnectionProfile::new("x");
         (q.engine, q.host, q.port, q.user, q.database, q.sslmode) = (Engine::MySql, "db".into(), 3310, "a@b".into(), "shop".into(), SslMode::Disable);
         assert_eq!(q.url(), "mysql://a%40b@db:3310/shop?ssl-mode=DISABLED");
@@ -576,7 +524,6 @@ mod tests {
 
     #[test]
     fn key_values() {
-        // libpq escapes with backslashes, not doubled quotes: 'it''s' is broken, as in libpq.
         assert!(parse("host=db.internal password='it''s' sslmode=disable").is_none());
         let s = url(r"host=db.internal port = 6543 dbname='my db' user=app password='it\'s \\ ok' sslmode=disable");
         assert_eq!((s.host.as_deref(), s.port, s.database.as_deref()), (Some("db.internal"), Some(6543), Some("my db")));
@@ -585,7 +532,6 @@ mod tests {
         assert_eq!(s.host.as_deref(), Some("/tmp"));
         let s = url("service=prod");
         assert_eq!(s.service.as_deref(), Some("prod"));
-        // Plain text is not a connection string.
         assert!(parse("hello world").is_none());
         assert!(parse("a=b").is_none());
         assert!(parse("my-database").is_none());
@@ -595,7 +541,6 @@ mod tests {
     #[test]
     fn sql_server_strings() {
         let p = |s: &str| parse(s).unwrap_or_else(|| panic!("{s}")).into_profile();
-        // ADO.NET.
         let (a, pw) = p("Server=tcp:db.example.com,14330;Initial Catalog=shop;User ID=app;Password='p;w';Encrypt=True;TrustServerCertificate=True");
         assert_eq!((a.engine, a.host.as_str(), a.port, a.database.as_str(), a.user.as_str()), (Engine::SqlServer, "db.example.com", 14330, "shop", "app"));
         assert_eq!((a.sslmode, pw.as_deref()), (SslMode::Require, Some("p;w")), "a quoted ; stays in its value");
@@ -603,14 +548,11 @@ mod tests {
         assert_eq!((a.host.as_str(), a.port, a.user.as_str(), a.sslmode), ("localhost\\SQLEXPRESS", 1433, "sa", SslMode::Disable));
         let (a, _) = p("server=h;encrypt=yes");
         assert_eq!(a.sslmode, SslMode::VerifyFull, "encrypted and the certificate checked");
-        // JDBC (and Prisma's sqlserver:// in the same form).
         let (a, pw) = p("jdbc:sqlserver://h:1500;databaseName=d;user=u;password=x;encrypt=true;trustServerCertificate=true");
         assert_eq!((a.host.as_str(), a.port, a.database.as_str(), a.user.as_str(), a.sslmode, pw.as_deref()), ("h", 1500, "d", "u", SslMode::Require, Some("x")));
-        // A URL.
         let (a, pw) = p("sqlserver://u%40x:s3cret@h:1433/d?encrypt=false");
         assert_eq!((a.host.as_str(), a.user.as_str(), a.database.as_str(), a.sslmode, pw.as_deref()), ("h", "u@x", "d", SslMode::Disable, Some("s3cret")));
         assert_eq!(p("sqlserver://h").0.port, 1433);
-        // Copy URL parses back.
         let mut q = ConnectionProfile::new("x");
         (q.engine, q.host, q.port, q.user, q.database, q.sslmode) = (Engine::SqlServer, "db".into(), 14330, "sa".into(), "shop".into(), SslMode::Require);
         assert_eq!(q.url(), "sqlserver://db:14330;database=shop;user=sa;encrypt=true;trustServerCertificate=true");
@@ -619,14 +561,10 @@ mod tests {
             let (r, _) = p(&q.url());
             assert_eq!((r.engine, r.host.as_str(), r.port, r.user.as_str(), r.database.as_str(), r.sslmode), (q.engine, "db", 14330, "sa", "shop", mode));
         }
-        // libpq's strings are not taken for ADO's.
         assert_eq!(parse("host=h dbname=d").unwrap().engine, Engine::Postgres);
         assert!(parse("a=1;b=2").is_none());
     }
 
-    /// The connection sheet's URL mode: one string per engine, the engine read from it, every
-    /// field filled and the password handed back apart (it goes to the Keychain, never into
-    /// the profile).
     #[test]
     fn one_string_per_engine() {
         let cases: [(&str, Engine, &str, u16, &str, &str, SslMode, Option<&str>); 10] = [
@@ -661,7 +599,6 @@ mod tests {
         let (p, _) = parse("host=/tmp port=5433").unwrap().into_profile();
         assert!(p.is_socket());
         assert_eq!(p.url(), format!("postgresql://{}@%2Ftmp:5433/{}?sslmode=prefer", p.user, p.database));
-        // The URL Dataman copies parses back to the same fields.
         let mut q = ConnectionProfile::new("x");
         (q.host, q.port, q.user, q.database, q.sslmode) = ("::1".into(), 6000, "a@b".into(), "d b".into(), SslMode::VerifyFull);
         let (r, pw) = parse(&q.url()).unwrap().into_profile();
@@ -676,11 +613,9 @@ mod tests {
         assert_eq!(p.sslmode, SslMode::VerifyFull);
         assert_eq!((p.options.get("authSource").map(String::as_str), p.options.get("replicaSet").map(String::as_str)), (Some("admin"), Some("rs0")));
         assert_eq!(p.url(), "mongodb://app@db.example:27018/shop?authSource=admin&replicaSet=rs0&tls=true");
-        // A seed list in DNS: TLS by default, no port.
         let (p, _) = parse_profile("mongodb+srv://u@cluster0.ab1.mongodb.net/?retryWrites=true").unwrap();
         assert_eq!((p.host.as_str(), p.sslmode, p.options.get("srv").map(String::as_str)), ("cluster0.ab1.mongodb.net", SslMode::VerifyFull, Some("true")));
         assert_eq!(p.url(), "mongodb+srv://u@cluster0.ab1.mongodb.net/");
-        // A replica set's host list stays whole.
         let (p, _) = parse_profile("mongodb://a:27017,b:27017/app").unwrap();
         assert_eq!((p.host.as_str(), p.database.as_str()), ("a:27017,b:27017", "app"));
         let (p, pw) = parse_profile("rediss://:pw@cache:6380/2").unwrap();

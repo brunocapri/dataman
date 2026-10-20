@@ -1,5 +1,3 @@
-//! Password storage: the macOS Keychain (via `keyring`), or memory in tests.
-
 use std::collections::HashMap;
 
 use anyhow::Result;
@@ -13,7 +11,7 @@ pub trait SecretStore: Send + Sync {
 
 pub const SERVICE: &str = "dataman";
 
-/// The system keychain: service `dataman`, account = connection id.
+// Service `dataman`, account = connection id: saved passwords are found by these.
 pub struct Keychain;
 
 impl SecretStore for Keychain {

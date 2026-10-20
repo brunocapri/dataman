@@ -1,8 +1,3 @@
-//! Small shared components from the Components board: keycaps, buttons, pills, chips,
-//! tooltips, segmented controls, checkboxes, menus, the modal card and the pixel-font tags.
-//!
-//! They are plain element builders (no state): callers add ids, handlers and layout.
-
 use gpui::{
     AnyView, App, Context, Div, ElementId, FontWeight, Hsla, IntoElement, ParentElement, Render, SharedString,
     Stateful, Styled, Window, div, prelude::*,
@@ -12,7 +7,6 @@ use crate::theme::px;
 use crate::assets::{Icon, icon};
 use crate::theme::{ActiveTheme, PIXEL, Theme};
 
-/// A keycap (`⌘↩`, `esc`): 18 pt, square, 10.5 pt.
 pub fn keycap(t: &Theme, text: impl Into<SharedString>) -> Div {
     div()
         .flex_none()
@@ -30,7 +24,6 @@ pub fn keycap(t: &Theme, text: impl Into<SharedString>) -> Div {
         .child(text.into())
 }
 
-/// The smaller keycap inside buttons (17 pt, 10 pt).
 pub fn keycap_sm(bg: Hsla, fg: Hsla, text: impl Into<SharedString>) -> Div {
     div()
         .flex_none()
@@ -46,12 +39,10 @@ pub fn keycap_sm(bg: Hsla, fg: Hsla, text: impl Into<SharedString>) -> Div {
         .child(text.into())
 }
 
-/// A shortcut hint after a label, in the label's color at 70 % (`Fetch all ⇧⌘↓`).
 pub fn key_hint(text: impl Into<SharedString>) -> Div {
     div().flex_none().text_size(px(10.5)).opacity(0.7).child(text.into())
 }
 
-/// The 8 pt connection color chip (square, a dark hairline inside).
 pub fn chip(color: Hsla, size: f32) -> Div {
     div()
         .flex_none()
@@ -61,8 +52,6 @@ pub fn chip(color: Hsla, size: f32) -> Div {
         .border_color(gpui::hsla(0., 0., 0., 0.25))
 }
 
-/// Where `q` (lowercase) first occurs in `text`, ignoring case (`None`: nowhere, or a text
-/// whose lowercase is not the same length).
 pub fn find_ci(text: &str, q: &str) -> Option<std::ops::Range<usize>> {
     if q.is_empty() {
         return None;
@@ -75,8 +64,6 @@ pub fn find_ci(text: &str, q: &str) -> Option<std::ops::Range<usize>> {
     Some(at..at + q.len())
 }
 
-/// `text` on one line with the search's match marked as the explorer marks its filter's hit
-/// (neutral: blue is the selection's), cut with an ellipsis where it runs out of room.
 pub fn marked(t: &Theme, text: String, q: &str) -> Div {
     let row = div().min_w_0().flex().flex_row().overflow_hidden().whitespace_nowrap();
     match find_ci(&text, q) {
@@ -88,22 +75,18 @@ pub fn marked(t: &Theme, text: String, q: &str) -> Div {
     }
 }
 
-/// The violet dot of a LAR server (6 pt).
 pub fn lar_dot(t: &Theme) -> Div {
     div().flex_none().size(px(6.)).rounded(px(3.)).bg(t.lar)
 }
 
-/// A caps section label (EXPLORER, HISTORY): 10.5 pt, tx3.
 pub fn caps(t: &Theme, text: impl Into<SharedString>) -> Div {
     div().flex_none().text_size(px(10.5)).text_color(t.tx3).child(text.into())
 }
 
-/// A pixel-font tag: `[ NO RESULT ]`, `[ EMPTY ]`.
 pub fn pixel(text: impl Into<SharedString>, size: f32, color: Hsla) -> Div {
     div().font_family(PIXEL).text_size(px(size)).line_height(px(size * 1.15)).text_color(color).child(text.into())
 }
 
-/// The `◆ LAR` badge (pixel font on violet). Badges are square, like buttons.
 pub fn lar_badge(t: &Theme, text: &'static str) -> Div {
     div()
         .flex_none()
@@ -118,7 +101,6 @@ pub fn lar_badge(t: &Theme, text: &'static str) -> Div {
         .child(text)
 }
 
-/// The small outlined `LAR` tag of explorer rows.
 pub fn lar_tag(t: &Theme) -> Div {
     div()
         .flex_none()
@@ -134,7 +116,6 @@ pub fn lar_tag(t: &Theme) -> Div {
         .child("LAR")
 }
 
-/// The dashed "not reported" pill: a catalog gap, never an error.
 pub fn not_reported(t: &Theme) -> Div {
     div()
         .flex_none()
@@ -150,7 +131,6 @@ pub fn not_reported(t: &Theme) -> Div {
         .child("not reported")
 }
 
-/// A state badge (`▶ RUNNING`, `‖ PAUSED`, `✓ DONE`…): 20 pt, square, caps 10.5 semibold.
 pub fn pill(glyph: &str, label: impl Into<SharedString>, fg: Hsla, bg: Hsla) -> Div {
     div()
         .flex_none()
@@ -170,18 +150,12 @@ pub fn pill(glyph: &str, label: impl Into<SharedString>, fg: Hsla, bg: Hsla) -> 
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Btn {
-    /// Accent fill (Run, Save & connect).
     Primary,
-    /// Hover-tinted with a ring (Fetch all, Test).
     Secondary,
-    /// Transparent (History, Cancel in dialogs).
     Ghost,
-    /// Error-tinted with an error ring (Cancel while running).
     Danger,
 }
 
-/// A 26 pt button (square, padding 0 9) with its hover and pressed states. Everything is
-/// square except the result grid's cell selection (and the dots and knobs, which are glyphs).
 pub fn button(t: &Theme, id: impl Into<ElementId>, kind: Btn) -> Stateful<Div> {
     let base = div()
         .id(id)
@@ -213,7 +187,6 @@ pub fn button(t: &Theme, id: impl Into<ElementId>, kind: Btn) -> Stateful<Div> {
     }
 }
 
-/// A square icon button (24 or 26 pt) in tx3 that lights up on hover.
 pub fn icon_button(t: &Theme, id: impl Into<ElementId>, i: Icon, box_size: f32, icon_size: f32) -> Stateful<Div> {
     let (hov, prs) = (t.hov, t.prs);
     icon_button_inert(t, id, i, box_size, icon_size).hover(move |s| s.bg(hov)).active(move |s| s.bg(prs))
@@ -233,9 +206,8 @@ pub fn icon_button_inert(t: &Theme, id: impl Into<ElementId>, i: Icon, box_size:
         .child(icon(i).size(px(icon_size)).text_color(t.tx3))
 }
 
-/// A focused field's halo: a 3 pt band of `color` just outside its 1 pt border, drawn as a
-/// border of its own (the field must be `relative`). Not a spread `BoxShadow`: GPUI paints a
-/// shadow under the whole box, which would also tint a translucent field's inside.
+/// Not a spread `BoxShadow`: GPUI paints a shadow under the whole box, which would also tint
+/// a translucent field's inside.
 pub fn halo_ring(color: Hsla) -> Div {
     // Absolute insets count from inside the field's border (1 pt at any zoom, like every
     // hairline); the band itself scales with the UI.
@@ -243,12 +215,10 @@ pub fn halo_ring(color: Hsla) -> Div {
     div().absolute().top(o).left(o).right(o).bottom(o).border(px(3.)).border_color(color)
 }
 
-/// A vertical separator (1 x 18, line2).
 pub fn vsep(t: &Theme, h: f32) -> Div {
     div().flex_none().w(px(1.)).h(px(h)).bg(t.line2)
 }
 
-/// A 14 pt checkbox.
 pub fn checkbox(t: &Theme, on: bool) -> Div {
     div()
         .flex_none()
@@ -260,12 +230,10 @@ pub fn checkbox(t: &Theme, on: bool) -> Div {
         .when(!on, |d| d.bg(t.field).border_1().border_color(t.line2))
 }
 
-/// The segmented control container (28 pt, field background, line2 ring; square, a button).
 pub fn segmented(t: &Theme) -> Div {
     div().flex().flex_row().h(px(28.)).p(px(2.)).bg(t.field).border_1().border_color(t.line2)
 }
 
-/// One segment; the selected one is a raised `pop` tile.
 pub fn segment(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedString>, on: bool) -> Stateful<Div> {
     let hov = t.hov;
     div()
@@ -281,12 +249,6 @@ pub fn segment(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedStrin
         .child(label.into())
 }
 
-/// A popover container (menus, autocomplete): pop background, square, the `line2` ring
-/// (no drop shadow).
-/// A disclosure chevron (a tree's node, a folder, a section): pointing right while shut, down
-/// while open, turning between the two on a spring as it opens or shuts. One that first
-/// appears (a row scrolled into view) is simply there. `id` tells it from the others under the
-/// same parent.
 pub fn disclosure(id: impl Into<ElementId>, open: bool, size: f32, color: Hsla) -> gpui::AnyElement {
     use gpui::{AnimationExt, SpringAnimation, Transformation, radians};
     crate::assets::icon(crate::assets::Icon::ChevronRight)
@@ -298,8 +260,6 @@ pub fn disclosure(id: impl Into<ElementId>, open: bool, size: f32, color: Hsla) 
         .into_any_element()
 }
 
-/// A dropdown's arrow: down while its menu is shut, turning up (on the same spring) while it
-/// is open.
 pub fn dropdown_arrow(id: impl Into<ElementId>, open: bool, size: f32, color: Hsla) -> gpui::AnyElement {
     use gpui::{AnimationExt, SpringAnimation, Transformation, radians};
     crate::assets::icon(crate::assets::Icon::ChevronDown)
@@ -311,9 +271,6 @@ pub fn dropdown_arrow(id: impl Into<ElementId>, open: bool, size: f32, color: Hs
         .into_any_element()
 }
 
-/// A menu (context menu, dropdown, popover) coming in: a quick fade as it settles the few
-/// points it starts above its place. Played once, when it opens (`id` must stay the same while
-/// it is open); never for the editor's completions. "Reduce motion": simply there.
 pub fn menu_in(id: impl Into<ElementId>, menu: impl IntoElement + 'static) -> gpui::AnyElement {
     use gpui::{Animation, AnimationExt};
     div()
@@ -325,9 +282,6 @@ pub fn menu_in(id: impl Into<ElementId>, menu: impl IntoElement + 'static) -> gp
         .into_any_element()
 }
 
-/// A folder's icon (the explorer's schemas, the favorites' folders): filled while shut, an
-/// outline while open; `fill` (`motion::folder_fill`) while it turns, the fill draining away or
-/// coming back from the bottom up.
 pub fn folder_icon(open: bool, fill: Option<f32>, size: f32, color: Hsla) -> gpui::AnyElement {
     let Some(level) = fill else {
         return icon(if open { Icon::Schema } else { Icon::SchemaFilled }).size(px(size)).text_color(color).into_any_element();
@@ -347,7 +301,6 @@ pub fn popover(t: &Theme) -> Div {
     div().bg(t.pop).shadow(t.ring()).p(px(4.)).occlude()
 }
 
-/// A 26 pt menu item with a right-aligned shortcut.
 pub fn menu_item(
     t: &Theme,
     id: impl Into<ElementId>,
@@ -374,7 +327,6 @@ pub fn menu_sep(t: &Theme) -> Div {
     div().h(px(1.)).mx(px(6.)).my(px(4.)).bg(t.line)
 }
 
-/// A tooltip: a title, an optional line of explanation and an optional keycap.
 pub struct Tooltip {
     title: SharedString,
     desc: Option<SharedString>,
@@ -411,7 +363,6 @@ impl Render for Tooltip {
     }
 }
 
-/// Builds a tooltip callback for `.tooltip(…)`.
 pub fn tooltip(
     title: impl Into<SharedString>,
     desc: Option<&str>,
@@ -426,17 +377,12 @@ pub fn tooltip(
     }
 }
 
-/// The widest a text tooltip gets, and the most lines it shows.
 pub const TIP_MAX_W: f32 = 360.;
 pub const TIP_LINES: usize = 14;
-/// The tooltip's mono 11.5 pt: an advance of about 0.6 em; its padding.
 const TIP_CHAR: f32 = 6.9;
 const TIP_PAD_X: f32 = 11.;
 const TIP_LINE_H: f32 = 17.;
 
-/// A long text cut to fit a tooltip: at most [`TIP_LINES`] lines of what fits in
-/// [`TIP_MAX_W`] (wrapped lines counted a little short, words wrap before the edge), the rest
-/// replaced by an ellipsis; and the width it needs (narrow texts get a narrow box).
 pub fn fit_tip(text: &str) -> (String, f32) {
     let per_line = ((TIP_MAX_W - 2. * TIP_PAD_X) / TIP_CHAR).floor() as usize;
     let wraps = (per_line * 17 / 20).max(1);
@@ -450,7 +396,6 @@ pub fn fit_tip(text: &str) -> (String, f32) {
         if lines + rows > TIP_LINES {
             let room = (TIP_LINES - lines) * wraps;
             if room == 0 {
-                // No line left: the ellipsis ends the last one.
                 out.pop();
             } else {
                 let cut: String = line.chars().take(room.saturating_sub(1)).collect();
@@ -468,9 +413,6 @@ pub fn fit_tip(text: &str) -> (String, f32) {
     (out, width(longest))
 }
 
-/// A tooltip for a long text (a connection's error): wrapped, at most [`TIP_MAX_W`] wide and
-/// [`TIP_LINES`] lines high, so it always fits the window (GPUI moves it left or above the
-/// pointer near the edges).
 pub struct TextTip {
     text: SharedString,
     width: f32,
@@ -496,7 +438,6 @@ impl Render for TextTip {
     }
 }
 
-/// Builds a [`TextTip`] callback for `.tooltip(…)`.
 pub fn text_tooltip(text: impl Into<SharedString>) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
     let (text, width) = fit_tip(&text.into());
     let text = SharedString::from(text);
@@ -506,12 +447,9 @@ pub fn text_tooltip(text: impl Into<SharedString>) -> impl Fn(&mut Window, &mut 
     }
 }
 
-/// A modal card (connection sheet, export, import, settings, confirmations): `pop`, square,
-/// the 1 pt ring, and clicks stop here (the scrim behind closes it).
 pub fn modal(t: &Theme, id: impl Into<ElementId>) -> Stateful<Div> {
     div()
         .id(id)
-        // Never past the window (a small one, or a zoomed UI): its own size is the most.
         .max_w(gpui::relative(0.96))
         .max_h(gpui::relative(0.94))
         .flex()
@@ -524,8 +462,6 @@ pub fn modal(t: &Theme, id: impl Into<ElementId>) -> Stateful<Div> {
         .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
 }
 
-/// A modal's header (the connection sheet's): an optional leading mark, the title, what else
-/// the sheet shows there (its target), and the close button, over a hairline.
 pub fn modal_header(t: &Theme, leading: Option<gpui::AnyElement>, title: impl Into<SharedString>, close: impl IntoElement) -> Div {
     modal_header_with(t, leading, title, None, close)
 }
@@ -554,12 +490,10 @@ pub fn modal_header_with(
         .child(close)
 }
 
-/// The × of a modal's header (add its `on_click`).
 pub fn modal_close(t: &Theme, id: impl Into<ElementId>) -> Stateful<Div> {
     icon_button(t, id, Icon::Close, 26., 14.)
 }
 
-/// A modal's footer: its buttons in a row under a hairline (no fill, see [`modal`]).
 pub fn modal_footer(t: &Theme) -> Div {
     div()
         .h(px(56.))
@@ -574,7 +508,6 @@ pub fn modal_footer(t: &Theme) -> Div {
         .border_color(t.line)
 }
 
-/// An empty-state block: a pixel tag and, at most, one short line.
 pub fn empty_state(t: &Theme, tag: &str, size: f32, msg: Option<SharedString>) -> Div {
     div()
         .flex()
@@ -590,8 +523,6 @@ pub fn empty_state(t: &Theme, tag: &str, size: f32, msg: Option<SharedString>) -
 mod tests {
     use super::*;
 
-    /// A short text gets a narrow box and stays whole; a huge one is cut to the line budget,
-    /// ends with an ellipsis and never asks for more than the widest box.
     #[test]
     fn text_tips_fit() {
         let (t, w) = fit_tip("connection refused");

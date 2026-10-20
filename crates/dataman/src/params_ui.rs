@@ -1,8 +1,3 @@
-//! The parameter prompt: running a statement with `$1 … $n` or `:name` asks for one value per
-//! parameter (with its type when the statement shows it), prefilled with the tab's last values.
-//! ↩ moves to the next field (and runs from the last), ⇥ / ⇧⇥ move between fields, ⌘↩ runs,
-//! esc cancels. `NULL` binds SQL NULL.
-
 use gpui::{App, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, KeyBinding, SharedString, Window, actions, div, prelude::*};
 use crate::theme::px;
 
@@ -38,7 +33,6 @@ pub struct ParamRow {
 pub struct ParamPrompt {
     pub rows: Vec<ParamRow>,
     focus: FocusHandle,
-    /// The field ↩ moves to (focused on the next render, which has the window).
     pending_focus: Option<usize>,
 }
 
@@ -51,7 +45,6 @@ impl Focusable for ParamPrompt {
 }
 
 impl ParamPrompt {
-    /// One row per (key, type hint, last value).
     pub fn new(params: Vec<(String, Option<String>, String)>, cx: &mut Context<Self>) -> Self {
         let mut rows = Vec::with_capacity(params.len());
         for (i, (key, hint, value)) in params.into_iter().enumerate() {
@@ -77,7 +70,6 @@ impl ParamPrompt {
         ParamPrompt { rows, focus: cx.focus_handle(), pending_focus: None }
     }
 
-    /// The values typed, by key.
     pub fn values(&self, cx: &App) -> Vec<(String, String)> {
         self.rows.iter().map(|r| (r.key.clone(), r.input.read(cx).text().to_string())).collect()
     }

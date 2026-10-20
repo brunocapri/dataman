@@ -1,14 +1,3 @@
-//! `dataman-mcp`: Dataman's MCP server.
-//!
-//! ```text
-//! dataman-mcp            stdio (claude mcp add dataman -- dataman-mcp)
-//! dataman-mcp --claude   prints the claude mcp add command for this binary
-//! ```
-//!
-//! While the app runs, every tool call goes to it through `app.sock`. Alone, it reads the app's
-//! files (`$XDG_CONFIG_HOME/dataman` or `~/.config/dataman`) and the Keychain. `DATAMAN_MCP_SECRETS=memory` keeps it off the Keychain (tests; passwords then
-//! come from pgpass only). Logs go to stderr (`DATAMAN_MCP_LOG=debug|info|warn`).
-
 use std::sync::Arc;
 
 use dataman_core::{Keychain, MemorySecrets, SecretStore};

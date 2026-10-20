@@ -1,10 +1,3 @@
-//! SQL Server's catalog (`sys.*`), read into the shared schema model. A connection's catalog
-//! views see the database it is connected to: the cache keeps one metadata connection per
-//! database, as for PostgreSQL.
-//!
-//! The builders return SQL and the parsers take its text rows (`backend::text_rows`): bits come
-//! as `1`/`0`, numbers as decimals.
-
 use std::collections::HashMap;
 
 use anyhow::Result;
@@ -16,17 +9,14 @@ use crate::sql::Dialect;
 
 const Q: Dialect = Dialect::TSql;
 
-/// A Unicode string literal: `N'…'` with quotes doubled.
 pub(crate) fn lit(s: &str) -> String {
     Q.quote_literal(s)
 }
 
-/// `[name]`, always bracketed (for `OBJECT_ID`'s argument).
 fn br(name: &str) -> String {
     format!("[{}]", name.replace(']', "]]"))
 }
 
-/// `OBJECT_ID(N'[schema].[name]')`.
 pub(crate) fn object_id(schema: &str, name: &str) -> String {
     format!("OBJECT_ID({})", lit(&format!("{}.{}", br(schema), br(name))))
 }
@@ -39,12 +29,10 @@ fn yes(r: &[Option<String>], i: usize) -> bool {
     matches!(get(r, i).as_deref(), Some("1" | "true"))
 }
 
-/// The system databases, listed after the user's.
 pub(crate) fn is_system_db(db: &str) -> bool {
     matches!(db, "master" | "model" | "msdb" | "tempdb")
 }
 
-/// The databases this login can open, the user's first (sorted), the system ones last.
 pub(super) async fn databases(c: &Db) -> Result<Vec<String>> {
     let rows = first_ok(
         c,
@@ -60,8 +48,6 @@ pub(super) async fn databases(c: &Db) -> Result<Vec<String>> {
     Ok(v)
 }
 
-/// The schemas of the connection's database: the user's (sorted, the fixed roles' own schemas
-/// and `guest` left out), then `INFORMATION_SCHEMA` and `sys`.
 pub(super) async fn schemas(c: &Db) -> Result<Vec<String>> {
     let rows = first_ok(c, &["SELECT name FROM sys.schemas WHERE schema_id < 16384 AND name <> N'guest'"]).await?;
     let mut v: Vec<String> = rows.into_iter().filter_map(|r| r.into_iter().next().flatten()).collect();
@@ -70,7 +56,6 @@ pub(super) async fn schemas(c: &Db) -> Result<Vec<String>> {
     Ok(v)
 }
 
-/// The tables and views of a schema (`sys` and `INFORMATION_SCHEMA` hold system views).
 pub(super) async fn relations(c: &Db, schema: &str) -> Result<Vec<Relation>> {
     let q = format!(
         "SELECT o.name, o.type FROM sys.all_objects o WHERE o.schema_id = SCHEMA_ID({}) AND o.type IN ('U', 'V')",
@@ -89,8 +74,6 @@ pub(super) async fn relations(c: &Db, schema: &str) -> Result<Vec<Relation>> {
         .collect())
 }
 
-/// A column's type as SQL Server writes it: `nvarchar(50)`, `varbinary(max)`, `decimal(10,2)`,
-/// `datetime2(3)`; `t` is `sys.types`, `c` `sys.columns` (or `sys.parameters`).
 pub(crate) const TYPE_SQL: &str = "CASE \
     WHEN t.is_user_defined = 1 THEN t.name \
     WHEN t.name = 'timestamp' THEN 'rowversion' \
@@ -100,8 +83,6 @@ pub(crate) const TYPE_SQL: &str = "CASE \
     WHEN t.name IN ('datetime2', 'time', 'datetimeoffset') AND c.scale <> 7 THEN t.name + '(' + CAST(c.scale AS varchar(3)) + ')' \
     ELSE t.name END";
 
-/// `((0))` → `0`, `(getdate())` → `getdate()`: the parentheses SQL Server keeps around a
-/// default's expression.
 pub(crate) fn unwrap_parens(s: &str) -> &str {
     let mut s = s.trim();
     while s.starts_with('(') && s.ends_with(')') && super::objects::balanced(&s[1..s.len() - 1]) {
@@ -110,8 +91,6 @@ pub(crate) fn unwrap_parens(s: &str) -> &str {
     s
 }
 
-/// What the explorer shows as a column's default: `IDENTITY(1,1)`, `AS (a * b) PERSISTED`, the
-/// default constraint's expression.
 fn default_of(identity: Option<String>, computed: Option<String>, persisted: bool, default: Option<String>) -> Option<String> {
     if let Some(i) = identity {
         return Some(format!("IDENTITY{i}"));
@@ -122,8 +101,6 @@ fn default_of(identity: Option<String>, computed: Option<String>, persisted: boo
     default.map(|d| unwrap_parens(&d).to_string())
 }
 
-/// A table's (or view's) columns in order, the primary key, identity, computed columns and
-/// defaults included.
 pub(crate) async fn columns(c: &Db, schema: &str, table: &str) -> Option<Vec<Column>> {
     let q = format!(
         "SELECT c.name, {TYPE_SQL}, c.is_nullable, \
@@ -155,9 +132,6 @@ pub(crate) async fn columns(c: &Db, schema: &str, table: &str) -> Option<Vec<Col
     )
 }
 
-/// A table's indexes: key columns in order (`DESC` marked), then the included ones; heaps
-/// (no index) left out. The ones behind a primary key or a unique constraint have no
-/// `CREATE INDEX` (they come with their constraint).
 pub(crate) async fn indexes(c: &Db, schema: &str, table: &str) -> Result<Vec<Index>> {
     let q = format!(
         "SELECT i.name, i.is_primary_key, i.is_unique, i.type_desc, col.name, ic.is_descending_key, ic.is_included_column, i.filter_definition, i.is_unique_constraint \
@@ -191,7 +165,6 @@ pub(crate) async fn indexes(c: &Db, schema: &str, table: &str) -> Result<Vec<Ind
             p.0.push(format!("{}{}", Q.quote_ident(&col), if yes(&r, 5) { " DESC" } else { "" }));
         }
     }
-    // A primary key or a unique constraint is its constraint (in the table's DDL).
     for ix in &mut out {
         if ix.primary || constraint.contains(&ix.name) {
             continue;
@@ -216,8 +189,6 @@ pub(crate) async fn indexes(c: &Db, schema: &str, table: &str) -> Result<Vec<Ind
     Ok(out)
 }
 
-/// Every column of the schemas in `list` (quoted literals, comma-separated), in
-/// `information_schema.columns`' layout: schema, table, column, type, `YES`/`NO`, position.
 pub(super) async fn columns_of_schemas(c: &Db, list: &str) -> Result<Vec<Vec<Option<String>>>> {
     let q = format!(
         "SELECT s.name, o.name, c.name, {TYPE_SQL}, CASE c.is_nullable WHEN 1 THEN 'YES' ELSE 'NO' END, c.column_id \
@@ -228,12 +199,6 @@ pub(super) async fn columns_of_schemas(c: &Db, list: &str) -> Result<Vec<Vec<Opt
     first_ok(c, &[&q]).await
 }
 
-// ---------------------------------------------------------------------------------------------
-// Routines
-
-/// The procedures and functions of the database (or of `schema`), one row per parameter:
-/// schema, name, type code, parameter name, parameter type, output, is the return value
-/// (`parameter_id` 0).
 pub(crate) fn routines_sql(schema: Option<&str>) -> String {
     let filter = schema.map(|s| format!(" AND o.schema_id = SCHEMA_ID({})", lit(s))).unwrap_or_default();
     format!(
@@ -246,7 +211,6 @@ pub(crate) fn routines_sql(schema: Option<&str>) -> String {
     )
 }
 
-/// The routines of [`routines_sql`]' rows, in order: their signatures.
 pub(crate) fn parse_routines(rows: &[Vec<Option<String>>]) -> Vec<super::FuncSig> {
     let mut out: Vec<super::FuncSig> = Vec::new();
     for r in rows {
@@ -280,8 +244,6 @@ pub(crate) fn parse_routines(rows: &[Vec<Option<String>>]) -> Vec<super::FuncSig
     out
 }
 
-/// A routine as the explorer lists it. SQL Server routines' object ids are not PostgreSQL oids:
-/// `n` (its place in the list) keeps them apart.
 pub(super) fn function_of(n: usize, sig: super::FuncSig) -> super::Function {
     let params = super::objects::split_args(&sig.args);
     let arg_types = params
@@ -300,15 +262,10 @@ pub(super) fn function_of(n: usize, sig: super::FuncSig) -> super::Function {
     }
 }
 
-/// A module's definition (procedure, function, view, trigger): the text it was created with.
 pub(crate) fn definition_sql(schema: &str, name: &str) -> String {
     format!("SELECT OBJECT_DEFINITION({})", object_id(schema, name))
 }
 
-// ---------------------------------------------------------------------------------------------
-// The explorer's other objects
-
-/// How many routines, sequences, user types and triggers a schema has (one query).
 pub(super) fn counts_sql(schema: &str) -> String {
     let s = format!("SCHEMA_ID({})", lit(schema));
     format!(
@@ -324,8 +281,7 @@ pub(super) fn parse_counts(r: &[Option<String>]) -> super::ObjectCounts {
     super::ObjectCounts { functions: n(0), sequences: n(1), types: n(2), triggers: n(3) }
 }
 
-/// Row counts and reserved sizes of a schema's tables (`dm_db_partition_stats`, which needs
-/// VIEW DATABASE STATE), else the row counts of `sys.partitions`.
+// `dm_db_partition_stats` needs VIEW DATABASE STATE: else the row counts of `sys.partitions`.
 pub(super) fn stats_sql(schema: &str) -> [String; 2] {
     let s = format!("SCHEMA_ID({})", lit(schema));
     [
@@ -357,7 +313,6 @@ pub(super) fn parse_sequence(r: &[Option<String>]) -> Option<super::Sequence> {
     Some(super::Sequence { name: get(r, 0)?, type_name: get(r, 1), owned_by: None })
 }
 
-/// A sequence's current value (`is_called`: it was ever used).
 pub(super) fn sequence_value_sql(schema: &str, name: &str) -> String {
     format!(
         "SELECT CAST(current_value AS nvarchar(40)), CASE WHEN last_used_value IS NULL THEN 0 ELSE 1 END FROM sys.sequences WHERE object_id = {}",
@@ -365,7 +320,6 @@ pub(super) fn sequence_value_sql(schema: &str, name: &str) -> String {
     )
 }
 
-/// Alias types (a base type, like a domain) and table types (columns, like a composite).
 pub(super) fn types_sql(schema: &str) -> String {
     format!(
         "SELECT c.name, c.is_table_type, CASE WHEN c.is_table_type = 1 THEN NULL ELSE {} END \
@@ -386,7 +340,6 @@ pub(super) fn parse_type(r: &[Option<String>]) -> Option<super::UserType> {
     })
 }
 
-/// An alias type's `CREATE TYPE … FROM base [NOT NULL]`, or a table type's columns.
 pub(super) fn type_definition_sql(schema: &str, name: &str) -> String {
     let id = format!("TYPE_ID({})", lit(&format!("{}.{}", br(schema), br(name))));
     format!(
@@ -440,9 +393,6 @@ pub(super) fn parse_trigger(r: &[Option<String>]) -> Option<super::Trigger> {
     })
 }
 
-/// A table's keys, foreign keys (with their actions) and checks, one row per column: name,
-/// kind (`PK`, `UQ`, `F`, `C`), column (a check's definition), referenced schema, table and
-/// column, update and delete actions.
 pub(crate) fn constraints_sql(schema: &str, table: &str) -> String {
     let id = object_id(schema, table);
     format!(
@@ -465,15 +415,12 @@ pub(crate) fn constraints_sql(schema: &str, table: &str) -> String {
     )
 }
 
-/// A table's `CREATE TABLE`, rebuilt from its columns ([`columns`]), constraints
-/// ([`parse_constraints`]) and indexes ([`indexes`]); the other indexes follow it.
 pub(crate) fn table_ddl(schema: &str, name: &str, cols: &[Column], cons: &[super::Constraint], idx: &[Index]) -> String {
     let mut lines: Vec<String> = cols
         .iter()
         .map(|c| {
             let n = Q.quote_ident(&c.name);
             match c.default.as_deref() {
-                // A computed column has no type of its own.
                 Some(d) if d.starts_with("AS ") => format!("{n} {d}"),
                 d => {
                     let mut s = format!("{n} {}", c.type_name);
@@ -505,8 +452,6 @@ pub(crate) fn table_ddl(schema: &str, name: &str, cols: &[Column], cons: &[super
     out
 }
 
-/// Constraints in PostgreSQL's `pg_get_constraintdef` form (`FOREIGN KEY (a) REFERENCES t(b)
-/// ON DELETE CASCADE`), which the explorer summarizes.
 pub(crate) fn parse_constraints(schema: &str, rows: &[Vec<Option<String>>]) -> Vec<super::Constraint> {
     use super::ConstraintKind::*;
     let mut out: Vec<super::Constraint> = Vec::new();

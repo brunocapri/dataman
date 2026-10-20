@@ -1,33 +1,16 @@
-//! What a statement does, read with the lexer (comments and strings never count), and the
-//! rules that ask before running the dangerous ones.
-//!
-//! [`classify`] gives a statement's [`Facts`]: its command, whether it reads, writes or changes
-//! the schema, its target, an `UPDATE`/`DELETE` without `WHERE` (in the statement or in one of
-//! its `WITH` queries), `ALTER … DROP`, transaction control, and whether it may run inside a
-//! transaction block. [`RULES`] is the table the confirmation sheet follows; [`review`] applies
-//! it to a script for a connection's environment, and [`read_only_refusal`] is the client-side
-//! refusal of a read-only connection.
-
 use crate::config::Environment;
 use crate::sql::{Dialect, Token, TokenKind, tokenize_in};
 
-/// What a statement does to the database, from least to most.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Effect {
-    /// Reads (`SELECT`, `SHOW`, `EXPLAIN`), or nothing at all.
     #[default]
     Read,
-    /// Session and maintenance commands: `SET`, `VACUUM`, `LISTEN`, `PREPARE`.
     Other,
-    /// Transaction control: `BEGIN`, `COMMIT`, `SAVEPOINT`.
     Tx,
-    /// Changes rows: `INSERT`, `UPDATE`, `DELETE`, `MERGE`, `TRUNCATE`, `COPY … FROM`, `CALL`.
     Write,
-    /// Changes the schema or the privileges: `CREATE`, `ALTER`, `DROP`, `GRANT`.
     Ddl,
 }
 
-/// A transaction-control command.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TxCmd {
     Begin,
@@ -36,40 +19,27 @@ pub enum TxCmd {
     Savepoint,
     Release,
     RollbackTo,
-    /// `PREPARE TRANSACTION`, `COMMIT PREPARED`, `ROLLBACK PREPARED`.
     Prepared,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Facts {
-    /// `UPDATE`, `DROP TABLE`, `ALTER TABLE`: the command, upper case.
     pub verb: String,
-    /// The strongest effect of the statement and its `WITH` queries.
     pub effect: Effect,
-    /// The table or object acted on, as written (`public.orders`).
     pub target: Option<String>,
-    /// An `UPDATE` or `DELETE` (the statement or one in a `WITH`) without a `WHERE`.
     pub no_where: bool,
-    /// An `UPDATE` or `DELETE` (the statement or one in a `WITH`) whose `WHERE` is always true
-    /// (`WHERE 1=1`, `WHERE true`, `WHERE id = id`, `… OR 1=1`): every row, as without one.
     pub trivial_where: bool,
-    /// A `MERGE` that may touch rows its source does not bound: `ON` always true, or `WHEN NOT
-    /// MATCHED BY SOURCE`.
     pub merge_unbounded: bool,
-    /// `ALTER … DROP`: what it drops, as written (`DROP COLUMN email`).
     pub alter_drop: Option<String>,
     pub tx: Option<TxCmd>,
-    /// Cannot run inside a transaction block (`VACUUM`, `CREATE DATABASE`, `… CONCURRENTLY`).
     pub outside_tx: bool,
 }
 
 impl Facts {
-    /// Writes rows or changes the schema.
     pub fn is_write(&self) -> bool {
         matches!(self.effect, Effect::Write | Effect::Ddl)
     }
 
-    /// Valid in a failed transaction (everything else is refused until it ends).
     pub fn ends_failed_tx(&self) -> bool {
         matches!(self.tx, Some(TxCmd::Rollback | TxCmd::RollbackTo | TxCmd::Commit | TxCmd::Prepared))
     }
@@ -103,7 +73,6 @@ impl<'a> Toks<'a> {
         Toks { src: self.src, t: &self.t[r], dialect: self.dialect }
     }
 
-    /// The index of the `)` closing the `(` at `open` (the end when unbalanced).
     fn close_of(&self, open: usize) -> usize {
         let mut depth = 0usize;
         for i in open..self.t.len() {
@@ -119,7 +88,6 @@ impl<'a> Toks<'a> {
         self.t.len()
     }
 
-    /// Indexes of the tokens outside any parentheses.
     fn top(&self) -> Vec<usize> {
         let mut depth = 0usize;
         let mut out = Vec::new();
@@ -139,8 +107,6 @@ impl<'a> Toks<'a> {
         self.top().into_iter().any(|i| self.is(i, w))
     }
 
-    /// A possibly qualified name at `i` (`schema.table`, `"Quoted"`), as written, and the index
-    /// after it.
     fn name(&self, mut i: usize) -> Option<(String, usize)> {
         if !self.is_name(i) {
             return None;
@@ -155,13 +121,11 @@ impl<'a> Toks<'a> {
         Some((s, i))
     }
 
-    /// Names separated by commas from `i` (`TRUNCATE a, b`), joined.
     fn names(&self, mut i: usize) -> Option<String> {
         let mut out = Vec::new();
         while let Some((n, next)) = self.name(i) {
             out.push(n);
             i = next;
-            // `TRUNCATE t *`: the star of the old inheritance syntax.
             if self.t.get(i).is_some_and(|t| t.text(self.src) == "*") {
                 i += 1;
             }
@@ -174,14 +138,10 @@ impl<'a> Toks<'a> {
     }
 }
 
-/// What `sql` (one statement) does, read as PostgreSQL.
 pub fn classify(sql: &str) -> Facts {
     classify_in(sql, Dialect::Postgres)
 }
 
-/// [`classify`] for a statement in `dialect` (its comments and strings lexed as the dialect's).
-/// A T-SQL batch may hold several statements without `;` between them: its facts are those of
-/// the statement the rules would ask about first, with the strongest effect of them all.
 pub fn classify_in(sql: &str, dialect: Dialect) -> Facts {
     // MySQL runs what its `/*! … */` comments hold.
     let sql = &*crate::sql::expand_exec_comments(sql, dialect);
@@ -197,10 +157,6 @@ pub fn classify_in(sql: &str, dialect: Dialect) -> Facts {
     combine(pieces)
 }
 
-/// The facts of a batch's statements together: those of the first one a rule asks about (the
-/// rules' order), else of the one with the strongest effect, else the first; the strongest
-/// effect, any transaction control (so a batch with `BEGIN TRAN` gets no implicit BEGIN), and
-/// whether one cannot run in a transaction.
 fn combine(pieces: Vec<Facts>) -> Facts {
     if pieces.len() <= 1 {
         return pieces.into_iter().next().unwrap_or_default();
@@ -221,7 +177,6 @@ fn combine(pieces: Vec<Facts>) -> Facts {
     f
 }
 
-/// The statements of a T-SQL batch (which need no `;` between them), as byte ranges of `sql`.
 pub fn tsql_statements(sql: &str) -> Vec<std::ops::Range<usize>> {
     let all: Vec<Token> = tokenize_in(sql, Dialect::TSql).into_iter().filter(|t| !t.kind.is_trivia()).collect();
     let t = Toks { src: sql, t: &all, dialect: Dialect::TSql };
@@ -237,8 +192,6 @@ pub fn tsql_statements(sql: &str) -> Vec<std::ops::Range<usize>> {
         .collect()
 }
 
-/// Whether a T-SQL statement returns rows: a SELECT (not `SELECT … INTO`), a procedure, or a
-/// write with an `OUTPUT` clause (not `OUTPUT … INTO`).
 pub fn tsql_returns_rows(sql: &str) -> bool {
     let all: Vec<Token> = tokenize_in(sql, Dialect::TSql).into_iter().filter(|t| !t.kind.is_trivia()).collect();
     let t = Toks { src: sql, t: &all, dialect: Dialect::TSql };
@@ -253,25 +206,16 @@ pub fn tsql_returns_rows(sql: &str) -> bool {
     }
 }
 
-/// Words that start a T-SQL statement (the ones that matter to the rules, and those that
-/// separate them).
 const TSQL_HEADS: &[&str] = &[
     "SELECT", "INSERT", "UPDATE", "DELETE", "MERGE", "TRUNCATE", "DROP", "CREATE", "ALTER", "EXEC", "EXECUTE", "BULK", "GRANT",
     "REVOKE", "DENY", "BEGIN", "COMMIT", "ROLLBACK", "SAVE", "DECLARE", "USE", "PRINT", "IF", "WHILE", "RETURN", "WAITFOR",
     "RAISERROR", "THROW", "DBCC", "BACKUP", "RESTORE", "KILL",
 ];
 
-/// The statements of a T-SQL batch, which need no `;` between them: one starts at a statement
-/// word outside parentheses unless the words before make it part of the one going on (`ALTER
-/// TABLE t DROP COLUMN`, `ON DELETE CASCADE`, `THEN UPDATE` in a MERGE, `INSERT … SELECT`,
-/// `UNION SELECT`, `CURSOR FOR SELECT`, a CTE's statement). The body of a procedure, function,
-/// trigger or view is part of its CREATE (it does not run).
 fn tsql_pieces(t: &Toks) -> Vec<std::ops::Range<usize>> {
     let mut out = Vec::new();
     let mut start = 0;
     let mut depth = 0usize;
-    // The current statement's first word, and whether a CTE or an INSERT still waits for its
-    // statement or its rows.
     let mut head = t.word(0).unwrap_or_default();
     let mut waiting = matches!(head.as_str(), "WITH" | "INSERT");
     let mut body = false;
@@ -304,7 +248,6 @@ fn tsql_pieces(t: &Toks) -> Vec<std::ops::Range<usize>> {
             };
             continue;
         }
-        // An INSERT with its rows.
         if head == "INSERT" && matches!(w.as_str(), "VALUES" | "DEFAULT") {
             waiting = false;
         }
@@ -337,11 +280,7 @@ fn tsql_pieces(t: &Toks) -> Vec<std::ops::Range<usize>> {
     out
 }
 
-/// A statement with its leading `WITH` queries: the main statement's facts, with the strongest
-/// effect of all, and the no-WHERE of any of them (that one's command and target shown).
 fn with_queries(t: &Toks) -> Facts {
-    // A parenthesized query (`(SELECT 1) UNION (SELECT 2)`, `(DELETE … RETURNING *)`) is read as
-    // its first part.
     let mut f = if t.punct(0, "(") {
         let close = t.close_of(0).min(t.t.len());
         with_queries(&t.sub(1..close))
@@ -371,7 +310,6 @@ fn with_queries_top(t: &Toks) -> Facts {
     }
     let mut ctes = Vec::new();
     loop {
-        // name [(columns)] AS [NOT] [MATERIALIZED] ( body )
         if !t.is_name(i) {
             break;
         }
@@ -408,7 +346,6 @@ fn with_queries_top(t: &Toks) -> Facts {
     f
 }
 
-/// Adds what a statement nested in `f` (a CTE's body) does to `f`'s facts.
 fn absorb(f: &mut Facts, c: Facts) {
     if c.no_where && !f.no_where {
         f.no_where = true;
@@ -430,8 +367,6 @@ fn absorb(f: &mut Facts, c: Facts) {
     }
 }
 
-/// Object words of `CREATE`/`DROP`/`ALTER` (`MATERIALIZED VIEW`, `FOREIGN TABLE`) and the
-/// modifiers before them.
 const OBJECT_WORDS: &[&str] = &[
     "TABLE", "VIEW", "MATERIALIZED", "INDEX", "SEQUENCE", "SCHEMA", "DATABASE", "FUNCTION", "PROCEDURE", "ROUTINE",
     "TRIGGER", "TYPE", "DOMAIN", "EXTENSION", "FOREIGN", "ROLE", "USER", "GROUP", "POLICY", "RULE", "OWNED", "BY",
@@ -443,8 +378,6 @@ const OBJECT_WORDS: &[&str] = &[
 const MODIFIERS: &[&str] =
     &["TEMP", "TEMPORARY", "UNLOGGED", "UNIQUE", "OR", "REPLACE", "ALTER", "GLOBAL", "LOCAL", "RECURSIVE", "TRUSTED", "CLUSTERED", "NONCLUSTERED"];
 
-/// `DROP [MATERIALIZED] VIEW [IF EXISTS] [CONCURRENTLY] name`: the command (with its object
-/// words), the target, and the index after the target.
 fn object_command(t: &Toks, first: &str) -> (String, Option<String>, Vec<String>) {
     let mut i = 1;
     let mut words = Vec::new();
@@ -460,7 +393,6 @@ fn object_command(t: &Toks, first: &str) -> (String, Option<String>, Vec<String>
         }
         break;
     }
-    // ALTER/DROP … IF EXISTS, CREATE … IF NOT EXISTS, CONCURRENTLY, ONLY.
     loop {
         if t.is(i, "IF") {
             i += 1;
@@ -482,13 +414,11 @@ fn object_command(t: &Toks, first: &str) -> (String, Option<String>, Vec<String>
     (verb, target, words)
 }
 
-/// One statement, without a leading `WITH`.
 fn statement(t: &Toks) -> Facts {
     let Some(v) = t.word(0) else { return Facts::default() };
     let mut f = Facts { verb: v.clone(), ..Default::default() };
     match v.as_str() {
         "SELECT" => {
-            // `SELECT … INTO new_table`: creates a table.
             let top = t.top();
             if let Some(&at) = top.iter().find(|&&i| t.is(i, "INTO")) {
                 f.effect = Effect::Ddl;
@@ -501,7 +431,6 @@ fn statement(t: &Toks) -> Facts {
             }
         }
         "TABLE" | "VALUES" | "SHOW" | "FETCH" | "MOVE" | "DECLARE" | "CLOSE" | "SUBSCRIBE" => {}
-        // MySQL's own reads and commands.
         "DESCRIBE" | "DESC" | "CHECK" | "CHECKSUM" | "HANDLER" if t.dialect == Dialect::MySql => {}
         "DO" if t.dialect == Dialect::MySql => {}
         "REPLACE" if t.dialect == Dialect::MySql => {
@@ -525,7 +454,6 @@ fn statement(t: &Toks) -> Facts {
         // system procedures that only report.
         "EXEC" | "EXECUTE" if t.dialect == Dialect::TSql => {
             let mut i = 1;
-            // `EXEC @rc = proc`.
             if t.t.get(1).is_some_and(|x| x.text(t.src).starts_with('@')) && t.t.get(2).is_some_and(|x| x.text(t.src) == "=") {
                 i = 3;
             }
@@ -542,7 +470,6 @@ fn statement(t: &Toks) -> Facts {
         "BEGIN" if t.dialect == Dialect::TSql && !(t.is(1, "TRAN") || t.is(1, "TRANSACTION") || t.is(1, "DISTRIBUTED")) => {}
         "SAVE" if t.dialect == Dialect::TSql => tx(&mut f, TxCmd::Savepoint),
         "ROLLBACK" if t.dialect == Dialect::TSql => {
-            // `ROLLBACK TRANSACTION savepoint` goes back to it.
             let mut i = 1;
             if t.is(i, "TRAN") || t.is(i, "TRANSACTION") || t.is(i, "WORK") {
                 i += 1;
@@ -598,7 +525,6 @@ fn statement(t: &Toks) -> Facts {
         "UPDATE" => {
             f.effect = Effect::Write;
             let mut i = top_clause(t, 1);
-            // PostgreSQL's ONLY; MySQL's LOW_PRIORITY and IGNORE.
             while t.is(i, "ONLY") || t.is(i, "LOW_PRIORITY") || t.is(i, "IGNORE") {
                 i += 1;
             }
@@ -705,7 +631,6 @@ fn statement(t: &Toks) -> Facts {
     f
 }
 
-/// T-SQL's `TOP (n) [PERCENT]` after `UPDATE`, `DELETE`, `MERGE`: the index after it.
 fn top_clause(t: &Toks, i: usize) -> usize {
     if t.dialect != Dialect::TSql || !t.is(i, "TOP") {
         return i;
@@ -717,7 +642,6 @@ fn top_clause(t: &Toks, i: usize) -> usize {
     j
 }
 
-/// SQL Server's system procedures that only report (an `EXEC` of anything else may write).
 const READ_ONLY_PROCEDURES: &[&str] = &[
     "sp_help", "sp_helptext", "sp_helpindex", "sp_helpconstraint", "sp_helpdb", "sp_helpuser", "sp_helprole", "sp_helpsrvrole",
     "sp_columns", "sp_tables", "sp_stored_procedures", "sp_who", "sp_who2", "sp_lock", "sp_spaceused", "sp_depends",
@@ -731,9 +655,6 @@ fn tx(f: &mut Facts, cmd: TxCmd) {
     f.outside_tx = cmd == TxCmd::Prepared && f.verb != "PREPARE";
 }
 
-/// `ALTER TABLE t DROP [COLUMN] x`, `… DROP CONSTRAINT c`: what is dropped. Not the column
-/// properties (`ALTER COLUMN x DROP DEFAULT`, `DROP NOT NULL`, `DROP IDENTITY`, `DROP
-/// EXPRESSION`), which lose no data.
 fn alter_drop(t: &Toks) -> Option<String> {
     const PROPERTIES: &[&str] = &["DEFAULT", "NOT", "IDENTITY", "EXPRESSION"];
     let top = t.top();
@@ -745,7 +666,6 @@ fn alter_drop(t: &Toks) -> Option<String> {
         if next.as_deref().is_some_and(|w| PROPERTIES.contains(&w)) {
             continue;
         }
-        // DROP [COLUMN|CONSTRAINT|…] [IF EXISTS] name
         let mut parts = vec!["DROP".to_string()];
         let mut j = i + 1;
         if let Some(w) = t.word(j).filter(|w| matches!(w.as_str(), "COLUMN" | "CONSTRAINT" | "ATTRIBUTE" | "VALUE")) {
@@ -763,14 +683,9 @@ fn alter_drop(t: &Toks) -> Option<String> {
     None
 }
 
-// ---------------------------------------------------------------------------------------------
-// Predicates that are always true
-
-/// Words that end a `WHERE` (the clauses after it, T-SQL's `ELSE` of an `IF`).
 const WHERE_END: &[&str] = &["RETURNING", "ORDER", "LIMIT", "OFFSET", "OPTION", "FOR", "GROUP", "HAVING", "WINDOW", "UNION", "EXCEPT", "INTERSECT", "ELSE"];
 
-/// Words of a predicate that are not column references (reserved words only: a column may be
-/// named `date` or `user`).
+/// Reserved words only: a column may be named `date` or `user`.
 const PREDICATE_WORDS: &[&str] = &[
     "AND", "OR", "NOT", "IS", "NULL", "TRUE", "FALSE", "UNKNOWN", "IN", "BETWEEN", "SYMMETRIC", "LIKE", "ILIKE", "SIMILAR", "TO", "ESCAPE",
     "EXISTS", "ANY", "ALL", "SOME", "CASE", "WHEN", "THEN", "ELSE", "END", "DISTINCT", "FROM", "COLLATE", "CURRENT_DATE", "CURRENT_TIME",
@@ -783,7 +698,6 @@ impl Toks<'_> {
         self.t.get(i).is_some_and(|t| t.kind == TokenKind::Operator && t.text(self.src) == o)
     }
 
-    /// The ranges between the top-level `word`s (`a OR b OR c`), or the whole when there is none.
     fn split_top(&self, word: &str) -> Vec<std::ops::Range<usize>> {
         let mut out = Vec::new();
         let mut start = 0;
@@ -797,7 +711,6 @@ impl Toks<'_> {
         out
     }
 
-    /// A token as compared between the two sides of `=`: names without their quotes and case.
     fn norm(&self, i: usize) -> String {
         let t = &self.t[i];
         let s = t.text(self.src);
@@ -808,8 +721,6 @@ impl Toks<'_> {
         }
     }
 
-    /// Whether the tokens name a column (anything but a predicate word, a function's name, a
-    /// type after `::` or `AS`, a literal's prefix, a parameter or a variable).
     fn has_column(&self) -> bool {
         (0..self.t.len()).any(|i| {
             let t = &self.t[i];
@@ -821,17 +732,12 @@ impl Toks<'_> {
                 return false;
             }
             let after_cast = i > 0 && (self.op(i - 1, "::") || self.is(i - 1, "AS"));
-            // `DATE '2020-01-01'`, `INTERVAL '1 day'`: a literal's type.
             let literal = self.t.get(i + 1).is_some_and(|n| n.kind == TokenKind::String);
             !(self.punct(i + 1, "(") || after_cast || literal)
         })
     }
 }
 
-/// Whether a predicate is always true (or holds no column at all, so either all rows or none):
-/// no column in it (`1=1`, `true`, `'a' = 'a'`, `now() > '2000-01-01'`, `@flag = 1`), `x = x`,
-/// a branch of a top-level `OR` that is, or every branch of a top-level `AND`. A heuristic: what
-/// it misses (`id > 0`, `id IS NOT NULL`) is what the agents' row limit is for.
 fn trivial(t: &Toks) -> bool {
     let n = t.t.len();
     if n == 0 {
@@ -851,7 +757,6 @@ fn trivial(t: &Toks) -> bool {
     if !t.has_column() {
         return true;
     }
-    // `a = a` (and `>=`, `<=`, `LIKE`): the same tokens on both sides.
     let top = t.top();
     for &i in &top {
         let cmp = t.op(i, "=") || t.op(i, ">=") || t.op(i, "<=") || t.op(i, "==") || t.is(i, "LIKE");
@@ -867,8 +772,6 @@ fn trivial(t: &Toks) -> bool {
     false
 }
 
-/// An `UPDATE`'s or `DELETE`'s `WHERE` is always true ([`trivial`]); false without one, or for
-/// `WHERE CURRENT OF cursor`.
 fn where_trivial(t: &Toks) -> bool {
     let top = t.top();
     let Some(k) = top.iter().position(|&i| t.is(i, "WHERE")) else { return false };
@@ -880,8 +783,6 @@ fn where_trivial(t: &Toks) -> bool {
     trivial(&t.sub(start..end.max(start)))
 }
 
-/// A `MERGE` whose `ON` is always true, or with a `WHEN NOT MATCHED BY SOURCE` (it changes the
-/// target's rows the source does not have: all of them, for an empty source).
 fn merge_unbounded(t: &Toks) -> bool {
     let top = t.top();
     if top.iter().any(|&i| t.is(i, "NOT") && t.is(i + 1, "MATCHED") && t.is(i + 2, "BY") && t.is(i + 3, "SOURCE")) {
@@ -893,28 +794,17 @@ fn merge_unbounded(t: &Toks) -> bool {
     trivial(&t.sub(start..end.max(start)))
 }
 
-// ---------------------------------------------------------------------------------------------
-// Rules
-
-/// Where a rule applies.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scope {
-    /// Every connection.
     Always,
-    /// Connections tagged production.
     Production,
 }
 
-/// What a rule looks for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Test {
-    /// An `UPDATE` or `DELETE` without `WHERE`.
     NoWhere,
-    /// The statement's first word.
     Command(&'static str),
-    /// `ALTER … DROP` (a column, a constraint).
     AlterDrop,
-    /// The statement's effect.
     Effect(Effect),
 }
 
@@ -925,8 +815,6 @@ pub struct Rule {
     pub test: Test,
 }
 
-/// The confirmation rules, the most specific first (the first that matches names the
-/// statement on the sheet).
 pub const RULES: &[Rule] = &[
     Rule { id: "no-where", scope: Scope::Always, test: Test::NoWhere },
     Rule { id: "truncate", scope: Scope::Always, test: Test::Command("TRUNCATE") },
@@ -936,13 +824,10 @@ pub const RULES: &[Rule] = &[
     Rule { id: "ddl", scope: Scope::Production, test: Test::Effect(Effect::Ddl) },
 ];
 
-/// A statement the sheet asks about.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Finding {
-    /// Its index in the script.
     pub index: usize,
     pub rule: &'static str,
-    /// `DELETE without WHERE`, `DROP TABLE`, `ALTER TABLE · DROP COLUMN email`, `UPDATE`.
     pub label: String,
     pub target: Option<String>,
 }
@@ -956,12 +841,10 @@ fn matches(test: Test, f: &Facts) -> bool {
     }
 }
 
-/// The first rule that asks about `sql` on a connection of `env`, if any.
 pub fn check(sql: &str, env: Environment) -> Option<(&'static Rule, Facts)> {
     check_in(sql, env, Dialect::Postgres)
 }
 
-/// [`check`] for a statement in `dialect`.
 pub fn check_in(sql: &str, env: Environment, dialect: Dialect) -> Option<(&'static Rule, Facts)> {
     let f = classify_in(sql, dialect);
     RULES
@@ -971,12 +854,10 @@ pub fn check_in(sql: &str, env: Environment, dialect: Dialect) -> Option<(&'stat
         .map(|r| (r, f))
 }
 
-/// The statements of a script the sheet asks about, in order.
 pub fn review<S: AsRef<str>>(stmts: &[S], env: Environment) -> Vec<Finding> {
     review_in(stmts, env, Dialect::Postgres)
 }
 
-/// [`review`] for a script in `dialect`.
 pub fn review_in<S: AsRef<str>>(stmts: &[S], env: Environment, dialect: Dialect) -> Vec<Finding> {
     stmts
         .iter()
@@ -993,12 +874,10 @@ pub fn review_in<S: AsRef<str>>(stmts: &[S], env: Environment, dialect: Dialect)
         .collect()
 }
 
-/// Why a read-only connection refuses `sql` before it reaches the server, if it does.
 pub fn read_only_refusal(sql: &str) -> Option<String> {
     read_only_refusal_in(sql, Dialect::Postgres)
 }
 
-/// [`read_only_refusal`] for a statement in `dialect`.
 pub fn read_only_refusal_in(sql: &str, dialect: Dialect) -> Option<String> {
     let f = classify_in(sql, dialect);
     f.is_write().then(|| format!("read-only connection: {} is not run", f.verb))
@@ -1018,33 +897,22 @@ pub const SIDE_EFFECT_FUNCTIONS: &[&str] = &[
     "pg_drop_replication_slot", "pg_create_physical_replication_slot", "pg_create_logical_replication_slot",
     "pg_logical_emit_message", "pg_replication_origin_create", "pg_replication_origin_drop", "pg_import_system_collations",
     "txid_current", "pg_current_xact_id",
-    // MySQL: named locks held past the transaction, server files, waits on replication.
     "get_lock", "release_lock", "release_all_locks", "load_file", "master_pos_wait", "source_pos_wait", "wait_for_executed_gtid_set",
-    // SQL Server: other servers and files (which may run anything there).
     "openrowset", "openquery", "opendatasource",
 ];
 
-/// T-SQL table hints that take locks a read must not hold (`WITH (UPDLOCK)`).
 const TSQL_LOCK_HINTS: &[&str] = &["UPDLOCK", "XLOCK", "HOLDLOCK", "TABLOCK", "TABLOCKX", "PAGLOCK", "ROWLOCK", "SERIALIZABLE", "REPEATABLEREAD"];
 
-/// Words that make a LAR built-in (`lar_*`) an administrative action rather than a read.
 const LAR_ACTION_WORDS: &[&str] = &[
     "backup", "restore", "create", "drop", "alter", "grant", "revoke", "user", "password", "warm", "compact", "checkpoint",
     "vacuum", "promote", "demote", "kill", "cancel", "terminate", "reset", "set", "flush", "import", "export", "write", "delete",
     "truncate", "reload", "shutdown", "failover", "join", "leave", "evict", "rotate",
 ];
 
-/// Why an agent's read-only statement is refused before it reaches the server, if it is. This
-/// is stricter than [`read_only_refusal`]: only reads run (`SELECT`, `WITH … SELECT`, `TABLE`,
-/// `VALUES`, `SHOW`, `EXPLAIN` without ANALYZE of a write), no row locks (`FOR UPDATE`), no
-/// transaction control, and no function with effects a read-only transaction would let through
-/// ([`SIDE_EFFECT_FUNCTIONS`], LAR's administrative `lar_*` built-ins).
 pub fn agent_read_refusal(sql: &str) -> Option<String> {
     agent_read_refusal_in(sql, Dialect::Postgres)
 }
 
-/// [`agent_read_refusal`] for a statement in `dialect` (MySQL's `DESCRIBE` reads too; its
-/// `LOCK IN SHARE MODE` is a row lock).
 pub fn agent_read_refusal_in(sql: &str, dialect: Dialect) -> Option<String> {
     let f = classify_in(sql, dialect);
     if f.verb.is_empty() {
@@ -1089,8 +957,6 @@ pub fn agent_read_refusal_in(sql: &str, dialect: Dialect) -> Option<String> {
     }
 }
 
-/// The first call to a function with effects outside the transaction ([`SIDE_EFFECT_FUNCTIONS`]
-/// but those in `allowed`) or to one of LAR's administrative built-ins (`true`).
 fn effect_call(t: &Toks, allowed: &[&str]) -> Option<(String, bool)> {
     for i in 0..t.t.len() {
         if !t.punct(i + 1, "(") || !matches!(t.t[i].kind, TokenKind::Ident | TokenKind::Keyword | TokenKind::QuotedIdent) {
@@ -1109,21 +975,11 @@ fn effect_call(t: &Toks, allowed: &[&str]) -> Option<(String, bool)> {
     None
 }
 
-// ---------------------------------------------------------------------------------------------
-// Agents' writes (the MCP permission tiers)
-
-/// What an agent's script does, for the MCP tiers (`write` runs `SafeWrite`; `full` asks a
-/// human about `Destructive`). Whatever is not understood is destructive.
+/// Whatever is not understood is destructive.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WriteClass {
-    /// Reads only.
     Read,
-    /// Rows changed within bounds: `INSERT`, `UPDATE` / `DELETE` with a `WHERE` that is not
-    /// always true, a `MERGE` its source bounds, row locks, a sequence's next value.
     SafeWrite,
-    /// Everything else that changes something: `UPDATE` / `DELETE` without a real `WHERE`,
-    /// `TRUNCATE`, DDL, privileges, procedures, `SELECT … INTO`, `COPY`, functions with outside
-    /// effects, session and server commands, control flow; the reasons, terse, in order.
     Destructive { reasons: Vec<String> },
 }
 
@@ -1144,34 +1000,24 @@ impl WriteClass {
     }
 }
 
-/// How an agent's write can be shown to a human before it commits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Preview {
-    /// Run in a transaction held open for the answer: its rows are counted and its RETURNING /
-    /// OUTPUT read, then it commits or rolls back.
     Held,
-    /// Asked about before it runs, then run in a transaction: DDL and `TRUNCATE` (a preview
-    /// would hold their exclusive locks while waiting, and MySQL and LAR commit them anyway),
-    /// procedures and functions with outside effects (which would act before the answer).
+    /// A preview would hold the exclusive locks of DDL and `TRUNCATE` while waiting, and MySQL and
+    /// LAR commit them anyway; procedures and functions with outside effects would act before the
+    /// answer.
     AskFirst,
-    /// Asked about before it runs, then run alone outside a transaction: `VACUUM`, `CREATE
-    /// INDEX CONCURRENTLY`, `CREATE DATABASE`, SQL Server's `ALTER DATABASE`.
     Outside,
 }
 
-/// Functions an agent's write may call: a sequence's next value, a notification, the
-/// transaction's id. The rest of [`SIDE_EFFECT_FUNCTIONS`] are destructive in writes too.
 pub const WRITE_OK_FUNCTIONS: &[&str] = &["nextval", "pg_notify", "txid_current", "pg_current_xact_id"];
 
-/// T-SQL session settings a write may change for its own batch.
 const TSQL_SESSION_SETTINGS: &[&str] = &[
     "NOCOUNT", "XACT_ABORT", "ANSI_NULLS", "ANSI_WARNINGS", "ANSI_PADDING", "ANSI_NULL_DFLT_ON", "QUOTED_IDENTIFIER", "ARITHABORT",
     "CONCAT_NULL_YIELDS_NULL", "NUMERIC_ROUNDABORT", "DATEFORMAT", "DATEFIRST", "LANGUAGE", "LOCK_TIMEOUT", "DEADLOCK_PRIORITY", "TEXTSIZE",
     "ROWCOUNT", "STATISTICS",
 ];
 
-/// The statements of a script as the tiers read them: split at `;` (and at T-SQL's `GO`
-/// lines), a T-SQL batch into its statements.
 pub fn agent_pieces(sql: &str, dialect: Dialect) -> Vec<String> {
     let mut out = Vec::new();
     for s in crate::sql::split_in(sql, dialect) {
@@ -1185,17 +1031,14 @@ pub fn agent_pieces(sql: &str, dialect: Dialect) -> Vec<String> {
     out
 }
 
-/// One statement's part in [`agent_write_class`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Piece {
-    /// Changes nothing and reads nothing: a T-SQL variable, a batch's session setting, PRINT.
     Neutral,
     Read,
     Safe,
     Destructive(String),
 }
 
-/// A T-SQL (or MySQL) variable, a T-SQL batch setting or a PRINT: nothing outside the batch.
 fn neutral(t: &Toks, f: &Facts) -> bool {
     let var = |i: usize| t.t.get(i).is_some_and(|x| x.kind == TokenKind::Ident && x.text(t.src).starts_with('@') && !x.text(t.src).starts_with("@@"));
     match (t.dialect, f.verb.as_str()) {
@@ -1232,7 +1075,6 @@ fn piece(sql: &str, dialect: Dialect) -> Piece {
     match f.effect {
         _ if neutral(&t, &f) => Piece::Neutral,
         Effect::Read if agent_read_refusal_in(sql, dialect).is_none() => Piece::Read,
-        // Row locks, a sequence's next value, T-SQL's lock hints: held only by its transaction.
         Effect::Read if matches!(f.verb.as_str(), "SELECT" | "TABLE" | "VALUES") => Piece::Safe,
         Effect::Write => match f.verb.as_str() {
             "INSERT" if dialect == Dialect::TSql && t.top().iter().any(|&i| t.is(i, "EXEC") || t.is(i, "EXECUTE")) => {
@@ -1245,8 +1087,6 @@ fn piece(sql: &str, dialect: Dialect) -> Piece {
     }
 }
 
-/// What an agent's script does ([`WriteClass`]), every statement of it read with the lexer of
-/// `dialect` (comments and strings never count; T-SQL's batches statement by statement).
 pub fn agent_write_class(sql: &str, dialect: Dialect) -> WriteClass {
     let mut safe = false;
     let mut reasons: Vec<String> = Vec::new();
@@ -1270,8 +1110,6 @@ pub fn agent_write_class(sql: &str, dialect: Dialect) -> WriteClass {
     }
 }
 
-/// How an agent's script can be previewed before it commits ([`Preview`]): the most cautious
-/// its statements need.
 pub fn agent_preview(sql: &str, dialect: Dialect) -> Preview {
     let mut out = Preview::Held;
     for p in agent_pieces(sql, dialect) {
@@ -1295,27 +1133,17 @@ pub fn agent_preview(sql: &str, dialect: Dialect) -> Preview {
     out
 }
 
-// ---------------------------------------------------------------------------------------------
-// Agents' allowed queries (a connection's MCP › Advanced)
-
-/// One token of a statement as the allowed queries compare it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum AllowTok {
-    /// A `?` of an entry: one value.
     Value,
-    /// A keyword or plain name (upper case), or anything else as written.
     Text(TokenKind, String),
 }
 
-/// A value [`AllowTok::Value`] stands for: a string, a number, a `$n` (or MySQL `?`) parameter.
 fn is_value(k: TokenKind) -> bool {
     matches!(k, TokenKind::String | TokenKind::DollarString | TokenKind::Number | TokenKind::Param)
 }
 
-/// The tokens of one statement for the comparison: comments and whitespace go, a trailing `;`
-/// goes, keywords and plain names are upper case; quoted names, strings and numbers stay as
-/// written. In an entry (`entry`) a `?` is a value (PostgreSQL lexes `=?` as one operator: its
-/// `?` is split off).
+/// PostgreSQL lexes `=?` as one operator: in an entry its `?` is split off.
 fn allow_tokens(sql: &str, dialect: Dialect, entry: bool) -> Vec<AllowTok> {
     let mut out = Vec::new();
     for t in tokenize_in(sql, dialect).into_iter().filter(|t| !t.kind.is_trivia()) {
@@ -1336,11 +1164,8 @@ fn allow_tokens(sql: &str, dialect: Dialect, entry: bool) -> Vec<AllowTok> {
     out
 }
 
-/// Whether `stmt` (one statement) is the one an allowed-queries `entry` names: the same tokens
-/// in the same order, case, spacing, comments and a trailing `;` aside; a `?` of the entry
-/// stands for exactly one value (a string, a number or a `$n` parameter, signed or not), never
-/// for a name, an expression or more SQL. So `DELETE FROM sessions WHERE expires < ?` allows
-/// `delete from sessions where expires < '2026-01-01'` and not `… < now() OR true`.
+/// A `?` of the entry stands for exactly one value (a string, a number or a `$n` parameter),
+/// never for a name, an expression or more SQL.
 pub fn allowlist_match(entry: &str, stmt: &str, dialect: Dialect) -> bool {
     let e = allow_tokens(entry, dialect, true);
     let s = allow_tokens(stmt, dialect, false);
@@ -1351,7 +1176,6 @@ pub fn allowlist_match(entry: &str, stmt: &str, dialect: Dialect) -> bool {
     for t in &e {
         match t {
             AllowTok::Value => {
-                // `-5`, `+1`: a sign and its number are one value.
                 if matches!(s.get(j), Some(AllowTok::Text(TokenKind::Operator, op)) if op == "-" || op == "+")
                     && matches!(s.get(j + 1), Some(AllowTok::Text(TokenKind::Number, _)))
                 {
@@ -1372,8 +1196,6 @@ pub fn allowlist_match(entry: &str, stmt: &str, dialect: Dialect) -> bool {
     j == s.len()
 }
 
-/// An allowed-queries entry as typed, checked: exactly one statement (as written, the trailing
-/// `;` dropped), not transaction control (every agent call is its own transaction).
 pub fn allowlist_entry(text: &str, dialect: Dialect) -> Result<String, String> {
     let pieces = agent_pieces(text, dialect);
     let stmt = match pieces.as_slice() {
@@ -1391,8 +1213,6 @@ pub fn allowlist_entry(text: &str, dialect: Dialect) -> Result<String, String> {
     Ok(stmt)
 }
 
-/// A script against the allowed queries: the entries its statements matched (each once, in
-/// the list's order), and the statements no entry allows.
 pub fn allowlisted(sql: &str, dialect: Dialect, allowed: &[String]) -> (Vec<String>, Vec<String>) {
     let mut used: Vec<usize> = Vec::new();
     let mut rest = Vec::new();
@@ -1407,8 +1227,6 @@ pub fn allowlisted(sql: &str, dialect: Dialect, allowed: &[String]) -> (Vec<Stri
     (used.into_iter().map(|i| allowed[i].clone()).collect(), rest)
 }
 
-/// The statements of a script an "Always allow" adds to the allowed queries: those that are not
-/// plain reads (reads run in every tier already), each as written.
 pub fn allowlist_candidates(sql: &str, dialect: Dialect) -> Vec<String> {
     agent_pieces(sql, dialect)
         .into_iter()
@@ -1421,8 +1239,6 @@ pub fn allowlist_candidates(sql: &str, dialect: Dialect) -> Vec<String> {
 mod tests {
     use super::*;
 
-    /// Allowed queries: token for token, case, spacing, comments and the `;` aside; `?` is one
-    /// value and nothing else; quoted names and strings as written.
     #[test]
     fn allowlist_matching() {
         use Dialect::{MySql as My, Postgres as Pg, TSql as Ms};
@@ -1449,19 +1265,15 @@ mod tests {
         ] {
             assert!(!allowlist_match(e, bad, Pg), "{bad}");
         }
-        // `=?` lexes as one operator: its `?` is still a value.
         assert!(allowlist_match("UPDATE t SET a=? WHERE id=?", "update t set a = 'x' where id = 7", Pg));
-        // Exact entries; strings and quoted names keep their case.
         assert!(allowlist_match("TRUNCATE audit_tmp;", "truncate AUDIT_TMP", Pg));
         assert!(!allowlist_match("UPDATE t SET s = 'Paid' WHERE id = 1", "UPDATE t SET s = 'paid' WHERE id = 1", Pg));
         assert!(!allowlist_match("DELETE FROM \"Users\" WHERE id = 1", "DELETE FROM \"users\" WHERE id = 1", Pg));
         assert!(!allowlist_match("", "SELECT 1", Pg) && !allowlist_match("  ;", "", Pg));
-        // Entries: one statement, never transaction control.
         assert_eq!(allowlist_entry("  TRUNCATE audit_tmp ; ", Pg).as_deref(), Ok("TRUNCATE audit_tmp"));
         assert!(allowlist_entry("DELETE FROM a; DELETE FROM b", Pg).unwrap_err().contains("one statement"));
         assert!(allowlist_entry("COMMIT", Pg).unwrap_err().contains("transaction control"));
         assert!(allowlist_entry(" -- nothing", Pg).is_err());
-        // Scripts: each statement on its own; reads are not candidates.
         let allowed = vec!["TRUNCATE audit_tmp".to_string(), e.to_string()];
         let (used, rest) = allowlisted("delete from sessions where expires_at < 9; SELECT 1; INSERT INTO t VALUES (1)", Pg, &allowed);
         assert_eq!(used, vec![e.to_string()]);
@@ -1525,34 +1337,27 @@ mod tests {
         assert!(!nw("DELETE FROM orders WHERE id = 1"));
         assert!(nw("UPDATE orders SET status = 'x'"));
         assert!(!nw("update orders set status = 'x' where id = 3"));
-        // Comments and strings are not code.
         assert!(nw("DELETE FROM orders -- WHERE id = 1"));
         assert!(nw("DELETE FROM orders /* WHERE id = 1 */"));
         assert!(nw("UPDATE t SET note = 'see WHERE clause'"));
         assert!(nw("UPDATE t SET note = $$ WHERE $$"));
         assert!(!nw("-- clean up\nDELETE FROM t\n WHERE done"));
-        // A WHERE in a subquery is not the statement's.
         assert!(nw("UPDATE t SET x = (SELECT max(y) FROM u WHERE u.id = 1)"));
         assert!(!nw("UPDATE t SET x = (SELECT 1) WHERE id IN (SELECT id FROM u WHERE z)"));
-        // DELETE … USING, UPDATE … FROM.
         assert!(nw("DELETE FROM t USING u"));
         assert!(!nw("DELETE FROM t USING u WHERE t.id = u.id"));
         assert!(nw("UPDATE t SET x = u.x FROM u"));
         assert!(!nw("UPDATE t SET x = u.x FROM u WHERE t.id = u.id"));
         assert!(!nw("DELETE FROM t WHERE CURRENT OF c"));
-        // RETURNING does not count.
         assert!(nw("DELETE FROM t RETURNING *"));
-        // Not an UPDATE: INSERT … ON CONFLICT DO UPDATE.
         assert!(!nw("INSERT INTO t VALUES (1) ON CONFLICT (id) DO UPDATE SET x = 1"));
         assert!(!nw("SELECT * FROM t"));
     }
 
     #[test]
     fn no_where_through_with() {
-        // The main statement after a CTE.
         assert!(nw("WITH old AS (SELECT id FROM t WHERE x) DELETE FROM u"));
         assert!(!nw("WITH old AS (SELECT id FROM t) DELETE FROM u WHERE id IN (SELECT id FROM old)"));
-        // A data-modifying CTE.
         let f = classify("WITH gone AS (DELETE FROM t RETURNING *) SELECT count(*) FROM gone");
         assert!(f.no_where);
         assert_eq!((f.verb.as_str(), f.target.as_deref(), f.effect), ("DELETE", Some("t"), Effect::Write));
@@ -1622,7 +1427,6 @@ mod tests {
         assert!(classify("PREPARE q AS SELECT 1").tx.is_none());
         assert!(classify("ROLLBACK").ends_failed_tx() && classify("rollback to s").ends_failed_tx());
         assert!(!classify("SELECT 1").ends_failed_tx());
-        // What cannot run inside a transaction block.
         assert!(!classify("SELECT 1").outside_tx);
         assert!(classify("VACUUM").outside_tx);
         assert!(classify("CREATE DATABASE x").outside_tx);
@@ -1673,7 +1477,6 @@ mod tests {
         assert!(read_only_refusal("EXPLAIN INSERT INTO t VALUES (1)").is_none());
     }
 
-    /// T-SQL: batches of statements without `;`, EXEC, SELECT INTO, TOP, transaction words.
     #[test]
     fn tsql() {
         let d = Dialect::TSql;
@@ -1695,15 +1498,12 @@ mod tests {
         assert_eq!(c("ROLLBACK TRANSACTION sp").tx, Some(TxCmd::RollbackTo));
         assert_eq!(c("ROLLBACK TRAN").tx, Some(TxCmd::Rollback));
         assert_eq!(c("UPDATE STATISTICS dbo.t").effect, Effect::Other);
-        // A batch: the statement the rules ask about first, the strongest effect, any
-        // transaction control.
         let f = c("DECLARE @n int = 3\nSELECT @n\nUPDATE dbo.t SET a = @n\nSELECT 1");
         assert_eq!((f.verb.as_str(), f.no_where, f.effect), ("UPDATE", true, Effect::Write));
         let f = c("SET NOCOUNT ON\nIF @x > 0 DELETE FROM t WHERE id = 1 ELSE DROP TABLE t");
         assert_eq!((f.verb.as_str(), f.target.as_deref()), ("DROP TABLE", Some("t")));
         let f = c("BEGIN TRANSACTION\nUPDATE t SET a = 1 WHERE id = 2");
         assert_eq!((f.effect, f.tx), (Effect::Write, Some(TxCmd::Begin)));
-        // What is part of a statement does not start one.
         assert_eq!(c("ALTER TABLE t DROP COLUMN email").alter_drop.as_deref(), Some("DROP COLUMN email"));
         assert_eq!(c("ALTER TABLE t ALTER COLUMN a int NOT NULL").verb, "ALTER TABLE");
         assert_eq!(c("ALTER TABLE t ADD CONSTRAINT f FOREIGN KEY (a) REFERENCES u (id) ON DELETE CASCADE").effect, Effect::Ddl);
@@ -1716,13 +1516,10 @@ mod tests {
         assert_eq!(c("GRANT SELECT, UPDATE ON t TO u").verb, "GRANT");
         assert_eq!(c("WITH c AS (SELECT 1 AS a) DELETE FROM t WHERE a IN (SELECT a FROM c)").verb, "DELETE");
         assert_eq!(c("INSERT INTO t VALUES (1) SELECT 1 DELETE FROM t").no_where, true);
-        // A body does not run when it is created.
         let f = c("CREATE PROCEDURE p AS BEGIN DELETE FROM t; DROP TABLE u; END");
         assert_eq!((f.verb.as_str(), f.no_where), ("CREATE PROCEDURE", false));
         assert_eq!(c("CREATE OR ALTER VIEW v AS SELECT * FROM t").verb, "CREATE VIEW");
-        // Strings and comments never count.
         assert_eq!(c("SELECT N'DROP TABLE t' -- DELETE FROM x\n/* UPDATE y */").effect, Effect::Read);
-        // Read-only connections and agents.
         assert!(read_only_refusal_in("EXEC dbo.p", d).is_some());
         assert!(read_only_refusal_in("SELECT 1 UPDATE t SET a = 1 WHERE b = 2", d).is_some());
         assert!(read_only_refusal_in("SELECT * FROM t WITH (NOLOCK)", d).is_none());
@@ -1739,14 +1536,10 @@ mod tests {
             let r = agent_read_refusal_in(bad, d).unwrap_or_else(|| panic!("{bad} must be refused"));
             assert!(r.contains(why), "{bad}: {r}");
         }
-        // The rules in a script of batches.
         let f = review_in(&["SELECT 1", "UPDATE t SET a = 1\nGO", "EXEC dbo.p"], Environment::Production, d);
         assert_eq!(f.iter().map(|f| f.rule).collect::<Vec<_>>(), ["no-where", "write"]);
     }
 
-    /// The agents' tiers: what is a read, a safe write or destructive, in every dialect, with
-    /// the evasions an agent (or a prompt injection) would try. `D(x)`: destructive, a reason
-    /// containing `x`.
     #[test]
     fn agent_write_corpus() {
         #[derive(Debug)]
@@ -1758,7 +1551,6 @@ mod tests {
         use Dialect::{MySql as My, Postgres as Pg, TSql as Ms};
         use W::*;
         let corpus: &[(Dialect, &str, W)] = &[
-            // Reads.
             (Pg, "SELECT * FROM t WHERE a = 'DELETE FROM x'", R),
             (Pg, "with a as (select 1) select * from a", R),
             (Pg, "EXPLAIN DELETE FROM t", R),
@@ -1768,7 +1560,6 @@ mod tests {
             (My, "DESCRIBE t", R),
             (Ms, "SELECT TOP (5) * FROM [dbo].[t] WITH (NOLOCK)", R),
             (Ms, "DECLARE @n int = 3\nSELECT @n", R),
-            // Safe writes.
             (Pg, "INSERT INTO t (a) VALUES (1)", S),
             (Pg, "INSERT INTO t SELECT * FROM u", S),
             (Pg, "INSERT INTO t VALUES (1) ON CONFLICT (id) DO UPDATE SET x = 1", S),
@@ -1799,7 +1590,6 @@ mod tests {
             (Ms, "UPDATE TOP (10) dbo.t SET a = 1 WHERE b = 2", S),
             (Ms, "SELECT * FROM t WITH (UPDLOCK) WHERE id = 1", S),
             (Ms, "DELETE FROM t OUTPUT deleted.* WHERE id = 7", S),
-            // No real WHERE.
             (Pg, "DELETE FROM t", D("DELETE without WHERE")),
             (Pg, "UPDATE t SET x = 'WHERE id = 1'", D("UPDATE without WHERE")),
             (Pg, "DELETE FROM t WHERE 1=1", D("always true")),
@@ -1828,7 +1618,6 @@ mod tests {
             (Ms, "DELETE FROM t OUTPUT deleted.* WHERE 1=1", D("always true")),
             (Ms, "MERGE t USING s ON 1=1 WHEN MATCHED THEN DELETE;", D("MERGE")),
             (Ms, "MERGE t USING s ON t.id = s.id WHEN NOT MATCHED BY SOURCE THEN DELETE;", D("MERGE")),
-            // DDL, privileges, TRUNCATE.
             (Pg, "TRUNCATE t", D("TRUNCATE")),
             (Pg, "DROP TABLE t", D("DROP TABLE")),
             (Pg, "dRoP tAbLe t", D("DROP TABLE")),
@@ -1844,7 +1633,6 @@ mod tests {
             (Ms, "SELECT * INTO #x FROM t", D("SELECT INTO")),
             (Ms, "ALTER DATABASE x SET SINGLE_USER", D("ALTER DATABASE")),
             (Ms, "DENY SELECT ON t TO u", D("DENY")),
-            // Chained, batched, hidden.
             (Pg, "DELETE FROM t WHERE id = 3; DROP TABLE t", D("DROP TABLE")),
             (Pg, "INSERT INTO a VALUES (1);DELETE FROM b", D("DELETE without WHERE")),
             (Pg, "DELETE/**/FROM t", D("DELETE without WHERE")),
@@ -1855,7 +1643,6 @@ mod tests {
             (Ms, "WHILE 1 = 1 DELETE TOP (1) FROM t WHERE id > 0", D("WHILE")),
             (Ms, "BEGIN TRY DELETE FROM t WHERE id = 1 END TRY BEGIN CATCH END CATCH", D("BEGIN")),
             (Ms, "WAITFOR DELAY '00:00:10'", D("WAITFOR")),
-            // Procedures and dynamic SQL.
             (Pg, "CALL p()", D("CALL")),
             (Pg, "DO $$ BEGIN DELETE FROM t; END $$", D("DO")),
             (Pg, "PREPARE q AS DELETE FROM t; EXECUTE q", D("PREPARE")),
@@ -1865,7 +1652,6 @@ mod tests {
             (Ms, "sp_executesql N'DELETE FROM t'", D("SP_EXECUTESQL")),
             (Ms, "EXEC dbo.purge @days = 30", D("EXEC")),
             (Ms, "INSERT INTO t EXEC dbo.p", D("INSERT … EXEC")),
-            // Functions with effects outside the transaction.
             (Pg, "SELECT pg_terminate_backend(pid) FROM pg_stat_activity", D("pg_terminate_backend()")),
             (Pg, "INSERT INTO t VALUES (pg_cancel_backend(1))", D("pg_cancel_backend()")),
             (Pg, "SELECT dblink_exec('host=x', 'DROP TABLE t')", D("dblink_exec()")),
@@ -1875,7 +1661,6 @@ mod tests {
             (Pg, "SELECT lar_backup('/tmp/b')", D("lar_backup()")),
             (My, "SELECT GET_LOCK('x', 10)", D("get_lock()")),
             (Ms, "SELECT * FROM OPENROWSET('SQLNCLI', 's', 'q')", D("openrowset()")),
-            // Files, session and server commands, transaction control.
             (Pg, "COPY t FROM '/etc/passwd'", D("COPY")),
             (Pg, "COPY t TO STDOUT", D("COPY")),
             (My, "LOAD DATA INFILE 'x' INTO TABLE t", D("LOAD DATA")),

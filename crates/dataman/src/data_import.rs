@@ -1,15 +1,3 @@
-//! Importing a file into a table (CSV, TSV, JSON, NDJSON, Parquet): the explorer's "Import
-//! data…" on a table (into it) or a schema (into a new table), the palette, File ▸ Import
-//! Data… and a file dropped on the window.
-//!
-//! The sheet shows the file, its format and (CSV/TSV) dialect, a preview of the first rows with
-//! each column's mapping (a target column or skip; a type for a new table), and the options
-//! (truncate first, stop or skip bad rows, one transaction). The preview is read off the UI
-//! thread (`import::preview_task`) and again when a dialect field changes. The load runs on a
-//! connection of its own (`Connection::import`); progress is polled at 4 Hz while it runs, never
-//! otherwise. Before it starts, the statements it will run go through the guard rules: truncate
-//! first everywhere, every write on production (the same sheet layout as the editor's).
-
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -48,26 +36,20 @@ pub fn bind_keys(cx: &mut App) {
 }
 
 pub enum DataImportEvent {
-    /// Hide the sheet (a running import keeps going in the background).
     Close,
-    /// Finished while hidden: a line for the status bar.
     Finished(String),
-    /// "View data" after a load: the table's data view.
     ViewData { conn: String, db: String, schema: String, table: String },
 }
 
-/// Where the rows go.
 #[derive(Clone)]
 pub struct DataTarget {
     pub conn_id: String,
     pub conn: Arc<Connection>,
     pub db: String,
     pub schema: String,
-    /// The table to load into; `None`: a new table in the schema.
     pub table: Option<String>,
 }
 
-/// A dialect field (a value with a menu of choices).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Field {
     Delimiter,
@@ -128,7 +110,6 @@ impl Field {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Menu {
     Field(Field),
-    /// A preview column's mapping.
     Column(usize),
 }
 
@@ -141,7 +122,6 @@ struct Job {
     progress: Arc<ImportProgress>,
     started: Instant,
     state: JobState,
-    /// The table it loads into (for "View data").
     table: String,
     _task: Option<Task<()>>,
     _tick: Option<Task<()>>,
@@ -151,26 +131,19 @@ pub struct DataImportView {
     focus: FocusHandle,
     target: DataTarget,
     path: PathBuf,
-    /// Chosen by the user (else detected).
     format: Option<ImportFormat>,
-    /// Changed by the user (else detected).
     dialect: Option<CsvDialect>,
     preview: Option<Preview>,
     loading: bool,
     error: Option<String>,
-    /// The existing table's columns.
     target_cols: Option<Vec<Column>>,
-    /// Per source column: the target column (existing table; index into `target_cols`), or for a
-    /// new table `Some(0)` = imported.
     map: Vec<Option<usize>>,
-    /// Per source column, a new table's types.
     types: Vec<PgType>,
     table_name: Entity<TextInput>,
     truncate: bool,
     skip: bool,
     one_tx: bool,
     menu: Option<Menu>,
-    /// The guard's findings, waiting for Run (⌘↩) or Cancel (esc).
     guard: Option<(Vec<Finding>, Vec<String>)>,
     job: Option<Job>,
     grid_scroll: ScrollHandle,
@@ -224,7 +197,6 @@ impl DataImportView {
             grid_scroll: ScrollHandle::new(),
             visible: true,
             _preview: None,
-            // Quitting mid-import stops it (one transaction rolls back).
             _quit: cx.on_app_quit(|v: &mut DataImportView, cx| {
                 let wait = v.is_running();
                 v.stop(cx);
@@ -259,7 +231,6 @@ impl DataImportView {
         self.target.table.is_none()
     }
 
-    /// Reads the preview again (a new file, format or dialect).
     fn reload(&mut self, cx: &mut Context<Self>) {
         self.loading = true;
         self.menu = None;
@@ -273,7 +244,6 @@ impl DataImportView {
                         let same_cols = v.preview.as_ref().is_some_and(|old| old.columns.len() == p.columns.len());
                         v.preview = Some(p);
                         v.error = None;
-                        // A dialect change that keeps the columns keeps the mapping too.
                         if !same_cols {
                             v.map.clear();
                         }
@@ -290,8 +260,6 @@ impl DataImportView {
         cx.notify();
     }
 
-    /// The default mapping (by name) and types (inferred), once the preview and (existing
-    /// table) its columns are in.
     fn apply_defaults(&mut self) {
         let Some(p) = &self.preview else { return };
         let n = p.columns.len();
@@ -356,7 +324,6 @@ impl DataImportView {
         .detach();
     }
 
-    /// The import as options, or what is missing.
     fn options(&self, cx: &App) -> Result<ImportOptions, String> {
         let p = self.preview.as_ref().ok_or("the file is still being read")?;
         let columns: Vec<ColumnMap> = if self.new_table() {
@@ -396,7 +363,6 @@ impl DataImportView {
         Ok(o)
     }
 
-    /// ⌘↩: the guard first (truncate, production), then the load.
     pub fn start(&mut self, cx: &mut Context<Self>) {
         if self.job.is_some() {
             return;
@@ -446,7 +412,6 @@ impl DataImportView {
                 cx.notify();
             });
         });
-        // Progress at 4 Hz while it runs.
         let tick = cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(Duration::from_millis(250)).await;
@@ -475,7 +440,6 @@ impl DataImportView {
         cx.notify();
     }
 
-    /// The status-bar line while it runs hidden.
     pub fn status_line(&self) -> Option<String> {
         let j = self.job.as_ref()?;
         if !matches!(j.state, JobState::Running) {
@@ -485,10 +449,6 @@ impl DataImportView {
         Some(format!("importing{pct} · {} rows", ui_count(j.progress.rows() as usize)))
     }
 
-    // -----------------------------------------------------------------------------------------
-    // Demo
-
-    /// Demo: the progress view with fixed numbers (no server writes).
     pub fn demo_progress(&mut self, cx: &mut Context<Self>) {
         let total = self.preview.as_ref().map(|p| p.file_bytes).unwrap_or(0).max(86 << 20);
         let progress = ImportProgress::fixed(412_300, total * 41 / 100, total);
@@ -503,7 +463,6 @@ impl DataImportView {
         cx.notify();
     }
 
-    /// Demo: a failed load at a line.
     pub fn demo_failed(&mut self, cx: &mut Context<Self>) {
         let mut report = failed_report(String::new());
         report.outcome = Outcome::Failed(dataman_core::import::ImportFailure {
@@ -529,7 +488,6 @@ impl DataImportView {
         cx.notify();
     }
 
-    /// Demo: the mapping menu of a column.
     pub fn demo_menu(&mut self, col: usize, cx: &mut Context<Self>) {
         self.menu = Some(Menu::Column(col));
         cx.notify();
@@ -542,9 +500,6 @@ impl DataImportView {
     pub fn demo_ready(&self) -> bool {
         self.preview.is_some() && !self.loading && (self.new_table() || self.target_cols.is_some())
     }
-
-    // -----------------------------------------------------------------------------------------
-    // Rendering
 
     fn render_progress(&self, j: &Job, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let p = &j.progress;
@@ -700,7 +655,6 @@ impl DataImportView {
             .into_any_element()
     }
 
-    /// The preview grid: the source columns, each with its mapping, and the first rows.
     fn render_grid(&self, p: &Preview, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let n = p.columns.len();
         let total_w = COL_W * n as f32;
@@ -792,7 +746,6 @@ impl DataImportView {
             .overflow_scroll()
             .track_scroll(&self.grid_scroll)
             .child(div().w(px(total_w)).flex().flex_col().children(rows));
-        // The mapping menu, under its column.
         let menu = match self.menu {
             Some(Menu::Column(i)) if i < n => Some(self.render_column_menu(i, offset_x, t, cx)),
             _ => None,
@@ -880,7 +833,6 @@ impl DataImportView {
                 items.push(
                     item(("di-col", j), c.name.clone(), Some(c.type_name.clone()), current == Some(j), t)
                         .on_click(cx.listener(move |v, _, _, cx| {
-                            // A target column feeds from one source: the other one is skipped.
                             for (k, m) in v.map.iter_mut().enumerate() {
                                 if k != i && *m == Some(j) {
                                     *m = None;
@@ -898,7 +850,6 @@ impl DataImportView {
         }
         let left = offset_x + px(COL_W * i as f32);
         let left = if left < px(0.) { px(0.) } else { left };
-        // Anchored at the grid's top-left corner, then moved under the column.
         div().absolute().top_0().left_0().child(deferred(
             anchored().child(ui::menu_in("di-col-menu-in", 
                 div().pl(left).pt(px(HEAD_H - 2.)).child(
@@ -919,7 +870,6 @@ impl DataImportView {
         .into_any_element()
     }
 
-    /// The guard's sheet over the import sheet: the statements it asks about, Run / Cancel.
     fn render_guard(&self, findings: &[Finding], stmts: &[String], t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let n = findings.len();
         let title: SharedString = match findings.first() {
@@ -995,7 +945,6 @@ impl DataImportView {
     }
 }
 
-/// A value on one line (the grid's cells are one line high).
 fn one_line(s: &str) -> String {
     let s: String = s.chars().take(200).collect();
     s.replace(['\n', '\r'], " ↵ ").replace('\t', " ")
@@ -1018,7 +967,6 @@ fn failed_report(message: String) -> ImportReport {
     }
 }
 
-/// The status bar's line when an import ends behind the sheet.
 pub fn finished_line(r: &ImportReport, table: &str) -> String {
     match &r.outcome {
         Outcome::Done if r.skipped > 0 => format!("Imported {} rows into {table} · {} skipped", ui_count(r.rows as usize), ui_count(r.skipped as usize)),
@@ -1061,7 +1009,6 @@ impl Render for DataImportView {
             ui::modal_close(&t, "di-close").on_click(cx.listener(|_, _, _, cx| cx.emit(DataImportEvent::Close))),
         );
 
-        // File and format.
         let detected = self.preview.as_ref().map(|p| p.format);
         let shown_format = self.format.or(detected);
         let file = div().flex_1().min_w_0().flex().flex_col().gap(px(6.)).child(ui::caps(&t, "FILE")).child(
@@ -1093,7 +1040,6 @@ impl Render for DataImportView {
         );
         let top = div().flex().flex_row().gap(px(16.)).child(file).child(formats);
 
-        // The dialect (CSV, TSV).
         let menu_open = self.menu;
         let dialect = self.preview.as_ref().filter(|p| p.format.is_delimited()).map(|p| {
             let d = self.dialect.clone().unwrap_or_else(|| p.dialect.clone());
@@ -1153,7 +1099,6 @@ impl Render for DataImportView {
             }))
         });
 
-        // A new table's name.
         let table = self.new_table().then(|| {
             div()
                 .flex()
@@ -1167,7 +1112,6 @@ impl Render for DataImportView {
                 .child(div().flex_1().flex().flex_col().gap(px(6.)).child(ui::caps(&t, "TABLE")).child(div().h(px(30.)).child(self.table_name.clone())))
         });
 
-        // The preview.
         let preview: AnyElement = match &self.preview {
             Some(p) => {
                 let count = match (p.total_rows, p.rows_exact) {
@@ -1209,7 +1153,6 @@ impl Render for DataImportView {
                 .into_any_element(),
         };
 
-        // Options.
         let check = |id: &'static str, label: &'static str, on: bool, danger: bool, enabled: bool, t: &Theme| {
             div()
                 .id(id)
@@ -1252,7 +1195,6 @@ impl Render for DataImportView {
                 })
             })));
 
-        // Scrolls when the window is short (or the UI zoomed); the footer stays.
         let body = div()
             .id("di-body")
             .flex_1()
@@ -1317,16 +1259,10 @@ impl Render for DataImportView {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Workspace side
-
 use crate::app::Workspace;
 use crate::tree_menu::Target;
 
 impl Workspace {
-    /// Where an import goes when nothing names it: the explorer's table (into it) or schema (a
-    /// new table), else the active tab's connection and database (a new table in the first
-    /// schema of its search path).
     pub(crate) fn import_target(&self, cx: &App) -> Result<DataTarget, &'static str> {
         let store = self.store.read(cx);
         let from_tree = self.tree.read(cx).selected_target(cx);
@@ -1344,9 +1280,7 @@ impl Workspace {
         Ok(DataTarget { conn_id, conn, db, schema, table })
     }
 
-    /// The palette, File ▸ Import Data… and the explorer: pick the file, then the sheet.
     pub(crate) fn import_data(&mut self, target: Option<DataTarget>, path: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
-        // A running import comes back to the front.
         if let Some(v) = self.data_import.clone()
             && v.read(cx).is_running()
         {
@@ -1368,7 +1302,6 @@ impl Workspace {
                 return;
             }
         };
-        // Not offered where the engine has no import (its menu items are hidden too).
         if !target.conn.caps().import {
             return;
         }
@@ -1390,7 +1323,6 @@ impl Workspace {
         }
     }
 
-    /// Files dropped on the window: the first one this sheet reads.
     pub(crate) fn drop_files(&mut self, paths: &gpui::ExternalPaths, window: &mut Window, cx: &mut Context<Self>) {
         let Some(p) = paths.paths().iter().find(|p| ImportFormat::is_importable(p)).cloned() else {
             if !paths.paths().is_empty() {
@@ -1430,7 +1362,6 @@ impl Workspace {
                 w.data_import = None;
                 w.modal_return = None;
                 let (conn, db, schema, table) = (conn.clone(), db.clone(), schema.clone(), table.clone());
-                // The explorer shows the new table on its next load.
                 if let Some(c) = w.store.read(cx).connection(&conn) {
                     c.schema.invalidate_schema(&db, &schema);
                 }
@@ -1438,7 +1369,6 @@ impl Workspace {
             }
         })
         .detach();
-        // The status bar shows a hidden import's progress.
         cx.observe(&v, |_, _, cx| cx.notify()).detach();
         self.data_import = Some(v);
         cx.notify();

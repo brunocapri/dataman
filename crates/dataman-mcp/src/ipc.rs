@@ -1,19 +1,7 @@
-//! The local channel from `dataman-mcp` (stdio) to the running app: while the app runs,
-//! the stdio binary forwards every `tools/call` to it, so the app's own hub runs the tool, with
-//! its agent tabs and a human to ask (the binary alone can ask nobody, so it refuses what needs
-//! approval). One Unix domain socket in the config directory, `app.sock`, mode 0600; a key
-//! made at each launch in `app.key` (0600, 256 bits) that every request carries, compared in
-//! constant time; the peer must be the socket's owner (the kernel's credentials). One request per
-//! connection, newline-delimited JSON:
-//!
-//! ```text
-//! → {"v":1,"key":"…","op":"call","tool":"execute","args":{…},"client":"claude-code"}
-//! ← {"ok":true,"result":{…CallToolResult…}}            (or {"ok":false,"error":"unauthorized"})
-//! ```
-//!
-//! The client closing its end cancels the call in the app. Without the app (no socket, a stale
-//! one, no key) the binary runs the call itself, headless; once a request was sent it never runs
-//! it again locally (a write must not run twice).
+//! One Unix domain socket in the config directory, `app.sock`, mode 0600; a key made at each
+//! launch in `app.key` (0600, 256 bits) that every request carries, compared in constant time;
+//! the peer must be the socket's owner. Once a request was sent the binary never runs it again
+//! locally (a write must not run twice).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -34,9 +22,7 @@ use crate::tool::Registry;
 pub const SOCKET: &str = "app.sock";
 pub const KEY: &str = "app.key";
 pub const VERSION: u32 = 1;
-/// The longest request line (a tool call's arguments).
 const MAX_LINE: u64 = 8 * 1024 * 1024;
-/// How long a connection may take to send its request.
 const READ_REQUEST: Duration = Duration::from_secs(5);
 
 pub fn socket_path(dirs: &Dirs) -> PathBuf {
@@ -59,7 +45,6 @@ pub struct Request {
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Op {
     Ping,
-    /// A tool call, as the stdio client received it.
     Call {
         tool: String,
         #[serde(default)]
@@ -73,7 +58,6 @@ pub struct Reply {
     pub ok: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-    /// The `CallToolResult`, as JSON.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
 }
@@ -94,7 +78,6 @@ fn same(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-/// A request line checked against the launch's key: its operation, or what to answer.
 pub fn authorize(line: &str, key: &str) -> Result<Op, String> {
     let r: Request = serde_json::from_str(line.trim()).map_err(|_| "bad request".to_string())?;
     if r.v != VERSION {
@@ -106,7 +89,6 @@ pub fn authorize(line: &str, key: &str) -> Result<Op, String> {
     Ok(r.op)
 }
 
-/// Writes `text` to a file only its owner can read or write.
 fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     let _ = std::fs::remove_file(path);
@@ -120,15 +102,8 @@ fn owner(path: &Path) -> std::io::Result<u32> {
     Ok(std::fs::metadata(path)?.uid())
 }
 
-// ---------------------------------------------------------------------------------------------
-// The app's side
-
-/// The hub and tools a call runs with: made on the first connection, not at launch (an idle
-/// app does nothing but wait on the socket).
 pub type Provide = Arc<dyn Fn() -> anyhow::Result<(Arc<Hub>, Arc<Registry>)> + Send + Sync>;
 
-/// The listening socket; dropping it (or [`IpcServer::stop`]) closes it and removes the socket
-/// and the key.
 pub struct IpcServer {
     path: PathBuf,
     key_file: PathBuf,
@@ -157,8 +132,7 @@ impl Drop for IpcServer {
     }
 }
 
-/// Listens on `app.sock` in `dirs` with a new key. Refuses to take over a socket another app
-/// is listening on; a stale one (a crash) is replaced. Blocking (a bind): off the UI thread.
+/// Blocking (a bind): off the UI thread. Never takes over a socket another app listens on.
 pub fn serve(dirs: &Dirs, provide: Provide) -> std::io::Result<IpcServer> {
     std::fs::create_dir_all(&dirs.config)?;
     let path = socket_path(dirs);
@@ -213,7 +187,6 @@ async fn write_reply(w: &mut (impl AsyncWriteExt + Unpin), r: &Reply) {
     let _ = w.flush().await;
 }
 
-/// One client: its request, checked, run; its end closing cancels the call.
 async fn connection(s: tokio::net::UnixStream, hub: Arc<Hub>, reg: Arc<Registry>, key: &str, uid: u32) {
     let peer = s.peer_cred().map(|c| c.uid()).ok();
     let (r, mut w) = s.into_split();
@@ -259,14 +232,9 @@ async fn connection(s: tokio::net::UnixStream, hub: Arc<Hub>, reg: Arc<Registry>
     write_reply(&mut w, &reply).await;
 }
 
-// ---------------------------------------------------------------------------------------------
-// The stdio binary's side
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CallError {
-    /// No app to reach (no socket, a stale one, no key): the call runs locally.
     Absent(String),
-    /// The app answered with a refusal (a bad key, an unknown tool).
     Refused(String),
     /// The request went out and the answer did not come back: never run again locally.
     Lost(String),
@@ -282,8 +250,6 @@ impl std::fmt::Display for CallError {
     }
 }
 
-/// Connects to the app with its key: the stream and the key, or why not (always
-/// [`CallError::Absent`]).
 async fn connect(dirs: &Dirs) -> Result<(tokio::net::UnixStream, String), CallError> {
     let path = socket_path(dirs);
     let absent = |e: String| CallError::Absent(e);
@@ -328,12 +294,10 @@ async fn request(dirs: &Dirs, op: Op, cancel: CancellationToken) -> Result<Reply
     Ok(reply)
 }
 
-/// Whether the app answers (with this launch's key).
 pub async fn ping(dirs: &Dirs) -> Result<(), CallError> {
     request(dirs, Op::Ping, CancellationToken::new()).await.map(|_| ())
 }
 
-/// Runs a tool call in the app.
 pub async fn call(dirs: &Dirs, tool: &str, args: Map<String, Value>, client: &str, cancel: CancellationToken) -> Result<CallToolResult, CallError> {
     let reply = request(dirs, Op::Call { tool: tool.to_string(), args, client: client.to_string() }, cancel).await?;
     let v = reply.result.ok_or_else(|| CallError::Lost("no result".into()))?;
@@ -372,8 +336,6 @@ mod tests {
         assert_eq!(authorize(r#"{"v":1,"op":"ping"}"#, &key).unwrap_err(), "bad request", "no key at all");
     }
 
-    /// The socket end to end: 0600 files, the key, a call run by the app's hub, a stale socket
-    /// replaced, a live one never taken over, everything gone after stop.
     #[test]
     fn socket_end_to_end() {
         use std::os::unix::fs::PermissionsExt;
@@ -381,7 +343,6 @@ mod tests {
         let dirs = Dirs::at(dir.path().join("dataman"));
         std::fs::create_dir_all(&dirs.config).unwrap();
         std::fs::write(dirs.connections_file(), "[[connection]]\nid = \"a\"\nname = \"alpha\"\nhost = \"h\"\nport = 1\nuser = \"u\"\ndatabase = \"d\"\n").unwrap();
-        // A stale socket file (a crashed app): replaced.
         drop(std::os::unix::net::UnixListener::bind(socket_path(&dirs)).unwrap());
         let hub = Hub::new(dirs.clone(), Arc::new(dataman_core::MemorySecrets::default())).unwrap();
         let reg = Arc::new(Registry::standard(None));
@@ -400,7 +361,6 @@ mod tests {
                 other => panic!("{other:?}"),
             };
             assert!(text.contains("alpha") && r.is_error != Some(true), "{text}");
-            // The wrong key, by hand.
             let s = tokio::net::UnixStream::connect(socket_path(&dirs)).await.unwrap();
             let (rd, mut w) = s.into_split();
             w.write_all(b"{\"v\":1,\"key\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"op\":\"ping\"}\n").await.unwrap();
@@ -410,7 +370,6 @@ mod tests {
             let err = call(&dirs, "nope", Map::new(), "ipc-test", CancellationToken::new()).await.unwrap_err();
             assert!(matches!(&err, CallError::Refused(e) if e.contains("unknown tool")), "{err:?}");
         });
-        // The audit line is the app's, with the client's name.
         let log = std::fs::read_to_string(dirs.mcp_audit_file()).unwrap();
         assert!(log.contains("\"client\":\"ipc-test\"") && log.contains("\"tool\":\"list_connections\""), "{log}");
         srv.stop();

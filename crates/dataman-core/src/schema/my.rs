@@ -1,7 +1,3 @@
-//! MySQL's catalog (`information_schema`), read into the shared schema model. A MySQL database is
-//! its own (only) schema: the cache keeps the usual levels, with the schema named after the
-//! database, and qualified names (`db.table`) are what MySQL writes anyway.
-
 use anyhow::Result;
 
 use super::{Column, Index, RelKind, Relation};
@@ -9,12 +5,11 @@ use crate::backend::Db;
 use crate::conn::first_ok;
 use crate::sql::Dialect;
 
-/// A string literal for MySQL (backslashes doubled).
+// MySQL reads backslash escapes in literals: backslashes doubled too.
 pub(crate) fn lit(s: &str) -> String {
     Dialect::MySql.quote_literal(s)
 }
 
-/// MySQL's own databases, listed after the user's.
 pub(crate) fn is_system(db: &str) -> bool {
     matches!(db, "mysql" | "information_schema" | "performance_schema" | "sys")
 }
@@ -23,7 +18,6 @@ fn get(r: &[Option<String>], i: usize) -> Option<String> {
     r.get(i).cloned().flatten()
 }
 
-/// The databases, the user's first (sorted), the system ones last.
 pub(super) async fn databases(c: &Db) -> Result<Vec<String>> {
     let rows = first_ok(c, &["SELECT SCHEMA_NAME FROM information_schema.SCHEMATA", "SHOW DATABASES"]).await?;
     let mut v: Vec<String> = rows.into_iter().filter_map(|r| r.into_iter().next().flatten()).collect();
@@ -32,7 +26,6 @@ pub(super) async fn databases(c: &Db) -> Result<Vec<String>> {
     Ok(v)
 }
 
-/// The tables and views of database `schema`.
 pub(super) async fn relations(c: &Db, schema: &str) -> Result<Vec<Relation>> {
     let q = format!("SELECT TABLE_NAME, TABLE_TYPE FROM information_schema.TABLES WHERE TABLE_SCHEMA = {}", lit(schema));
     Ok(first_ok(c, &[&q])
@@ -48,9 +41,8 @@ pub(super) async fn relations(c: &Db, schema: &str) -> Result<Vec<Relation>> {
         .collect())
 }
 
-/// A default as SQL: MySQL 8 reports literals bare (`new`), expressions as written
-/// (`CURRENT_TIMESTAMP`, `(uuid())`); `extra` says which (`DEFAULT_GENERATED`), and holds
-/// `auto_increment` and generated columns.
+// MySQL 8 reports literal defaults bare (`new`), expressions as written; `extra`
+// (`DEFAULT_GENERATED`) says which.
 fn default_of(default: Option<String>, extra: &str, generation: Option<String>) -> Option<String> {
     let extra = extra.to_ascii_lowercase();
     if extra.contains("auto_increment") {
@@ -72,7 +64,6 @@ fn default_of(default: Option<String>, extra: &str, generation: Option<String>) 
 
 const COLUMNS: &str = "SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT, COLUMN_KEY, EXTRA";
 
-/// A table's columns in order, the primary key and defaults included.
 pub(super) async fn columns(c: &Db, schema: &str, table: &str) -> Option<Vec<Column>> {
     let from = format!("FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = {} AND TABLE_NAME = {} ORDER BY ORDINAL_POSITION", lit(schema), lit(table));
     // GENERATION_EXPRESSION is MySQL 5.7+ and MariaDB 10.2+.
@@ -94,7 +85,6 @@ pub(super) async fn columns(c: &Db, schema: &str, table: &str) -> Option<Vec<Col
     )
 }
 
-/// A table's indexes (each column once, in key order).
 pub(super) async fn indexes(c: &Db, schema: &str, table: &str) -> Result<Vec<Index>> {
     let q = format!(
         "SELECT INDEX_NAME, NON_UNIQUE, COLUMN_NAME, INDEX_TYPE FROM information_schema.STATISTICS \
@@ -105,7 +95,6 @@ pub(super) async fn indexes(c: &Db, schema: &str, table: &str) -> Result<Vec<Ind
     let mut out: Vec<Index> = Vec::new();
     for r in first_ok(c, &[&q]).await? {
         let Some(name) = get(&r, 0) else { continue };
-        // An expression part (MySQL 8 functional indexes) has no column name.
         let col = get(&r, 2).unwrap_or_else(|| "(expression)".into());
         match out.last_mut() {
             Some(ix) if ix.name == name => ix.columns.push(col),
@@ -126,7 +115,6 @@ pub(super) async fn indexes(c: &Db, schema: &str, table: &str) -> Result<Vec<Ind
             }
         }
     }
-    // The definitions name the columns too, now that they are all known.
     for ix in &mut out {
         if let Some(d) = &mut ix.definition {
             let cols: Vec<String> = ix.columns.iter().map(|c| Dialect::MySql.quote_ident(c)).collect();
@@ -136,8 +124,6 @@ pub(super) async fn indexes(c: &Db, schema: &str, table: &str) -> Result<Vec<Ind
     Ok(out)
 }
 
-/// Every column of the databases in `list` (quoted literals, comma-separated), in
-/// `information_schema.columns`' layout: schema, table, column, type, `YES`/`NO`, position.
 pub(super) async fn columns_of_schemas(c: &Db, list: &str) -> Result<Vec<Vec<Option<String>>>> {
     let q = format!(
         "SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, ORDINAL_POSITION \
@@ -146,8 +132,6 @@ pub(super) async fn columns_of_schemas(c: &Db, list: &str) -> Result<Vec<Vec<Opt
     first_ok(c, &[&q]).await
 }
 
-/// The routines of database `db` with their parameters (`IN a int, OUT b text`), for the
-/// editor: schema, name, `FUNCTION`/`PROCEDURE`, result type, parameters.
 pub(crate) fn routines_sql(db: &str) -> String {
     format!(
         "SELECT r.ROUTINE_SCHEMA, r.ROUTINE_NAME, r.ROUTINE_TYPE, r.DTD_IDENTIFIER, \
@@ -173,10 +157,6 @@ pub(crate) fn parse_routine(r: &[Option<String>]) -> Option<super::FuncSig> {
     })
 }
 
-// ---------------------------------------------------------------------------------------------
-// The explorer's other objects
-
-/// How many routines and triggers a database has (one query).
 pub(super) fn counts_sql(schema: &str) -> String {
     let s = lit(schema);
     format!(
@@ -190,7 +170,6 @@ pub(super) fn parse_counts(r: &[Option<String>]) -> super::ObjectCounts {
     super::ObjectCounts { functions: n(0), sequences: None, types: None, triggers: n(1) }
 }
 
-/// Row estimates (`TABLE_ROWS`, InnoDB's sample) and sizes (data and indexes) of the tables.
 pub(super) fn stats_sql(schema: &str) -> String {
     format!(
         "SELECT TABLE_NAME, TABLE_ROWS, DATA_LENGTH + INDEX_LENGTH FROM information_schema.TABLES \
@@ -207,18 +186,13 @@ pub(super) fn parse_stats(rows: &[Vec<Option<String>>]) -> std::collections::Has
         .collect()
 }
 
-/// The routines of a database for the explorer: name, kind, parameters (with their types and
-/// modes), result type.
 pub(super) fn functions_sql(schema: &str) -> String {
     routines_sql(schema)
 }
 
-/// A routine as the explorer lists it. MySQL routines have no oid: `n` (its place in the list)
-/// keeps them apart.
 pub(super) fn parse_function(n: usize, r: &[Option<String>]) -> Option<super::Function> {
     let sig = parse_routine(r)?;
     let params = super::objects::split_args(&sig.args);
-    // `IN a int` → `int`; `b varchar(10)` → `varchar(10)`.
     let arg_types = params
         .iter()
         .filter(|p| !p.starts_with("OUT "))
@@ -238,12 +212,10 @@ pub(super) fn parse_function(n: usize, r: &[Option<String>]) -> Option<super::Fu
     })
 }
 
-/// `SHOW CREATE PROCEDURE|FUNCTION|TRIGGER|VIEW|TABLE db.name`.
 pub(crate) fn show_create(what: &str, schema: &str, name: &str) -> String {
     format!("SHOW CREATE {what} {}", Dialect::MySql.qualified(Some(schema), name))
 }
 
-/// The definition column of `SHOW CREATE …` (its place depends on the object), with a `;`.
 pub(crate) fn parse_show_create(what: &str, rows: &[Vec<Option<String>>]) -> Option<String> {
     let r = rows.first()?;
     let col = match what {
@@ -265,8 +237,6 @@ pub(super) fn table_triggers_sql(schema: &str, table: &str) -> String {
     format!("{TRIGGERS} WHERE TRIGGER_SCHEMA = {} AND EVENT_OBJECT_TABLE = {} ORDER BY ACTION_ORDER", lit(schema), lit(table))
 }
 
-/// A trigger with its definition rebuilt from the catalog (what `SHOW CREATE TRIGGER` says,
-/// without the DEFINER).
 pub(super) fn parse_trigger(r: &[Option<String>]) -> Option<super::Trigger> {
     let (name, table) = (get(r, 0)?, get(r, 1)?);
     let (timing, event) = (get(r, 2).unwrap_or_default(), get(r, 3).unwrap_or_default());
@@ -277,7 +247,6 @@ pub(super) fn parse_trigger(r: &[Option<String>]) -> Option<super::Trigger> {
     Some(super::Trigger { name, table, enabled: true, events: format!("{timing} {event}").to_lowercase(), definition })
 }
 
-/// A table's constraints: keys, foreign keys (with their actions), checks (MySQL 8.0.16+).
 pub(super) fn constraints_sql(schema: &str, table: &str) -> [String; 2] {
     let (s, t) = (lit(schema), lit(table));
     [
@@ -303,8 +272,6 @@ pub(super) fn constraints_sql(schema: &str, table: &str) -> [String; 2] {
     ]
 }
 
-/// Constraints in PostgreSQL's `pg_get_constraintdef` form (`FOREIGN KEY (a) REFERENCES t(b)
-/// ON DELETE CASCADE`), which the explorer summarizes.
 pub(super) fn parse_constraint(schema: &str, r: &[Option<String>]) -> Option<super::Constraint> {
     use super::ConstraintKind::*;
     let name = get(r, 0)?;

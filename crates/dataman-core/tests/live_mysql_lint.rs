@@ -1,5 +1,3 @@
-//! MySQL: valid statements must never get a lint error.
-
 mod common;
 
 use common::*;
@@ -122,7 +120,6 @@ fn lint_valid_statements() {
     assert!(bad.is_empty(), "\n{}", bad.join("\n"));
 }
 
-/// Reads are never classified as writes (a read-only connection refuses writes by this).
 #[test]
 fn reads_are_reads() {
     let mut bad = Vec::new();

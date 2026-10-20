@@ -1,12 +1,3 @@
-//! The main window (UiWindow), laid out like Zeron's shell: the glass painted once behind
-//! everything; two full-height columns, the explorer on the glass and the flush work column
-//! (tabs, toolbar, editor, divider, result bar, grid, side panel) with its translucent fill,
-//! split by one straight hairline; the title bar laid over both; the status bar under them.
-//! Overlays: the connection sheet, toasts, the shortcuts sheet.
-//!
-//! The chrome pieces are drawn in `chrome.rs`; this file holds the state, the actions and
-//! the layout.
-
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -46,19 +37,12 @@ actions!(
         Tab8,
         Tab9,
         NewConnection,
-        /// A new connection from the postgres:// URL or libpq string on the clipboard.
         NewConnectionFromClipboard,
-        /// The pg_service.conf / .pgpass import sheet.
         ImportConnections,
         EditConnection,
-        /// Favorites the statement under the cursor of the active tab.
         FavoriteQuery,
-        /// ⌘S: the editor's script into the tab's favorite (a new one, named after the tab, when
-        /// the tab has none yet).
         SaveFavorite,
-        /// ⇧⌘S: the editor's script to a `.sql` file (the save panel).
         SaveAs,
-        /// Adds each selected .sql file as a favorite.
         ImportFavorites,
         Cancel,
         Refresh,
@@ -76,7 +60,6 @@ actions!(
         GoTo,
         OpenSettings,
         ExportResult,
-        /// A file into the explorer's table (or a new table in its schema).
         ImportData,
         ReviewChanges,
         DiscardChanges,
@@ -85,85 +68,55 @@ actions!(
         ThemeDark,
         ThemeLight,
         ThemeSystem,
-        /// View ▸ Transparency: the blurred desktop shows through the window, or not.
         TranslucencyOn,
         TranslucencyOff,
-        /// View ▸ Font: the UI's monospace family.
         FontGeistMono,
         FontLilex,
         FontZedMono,
         FontJetBrainsMono,
-        /// View ▸ Zoom In / Zoom Out / Actual Size (⌘= ⌘- ⌘0): the whole UI's scale.
         ZoomIn,
         ZoomOut,
         ZoomReset,
-        /// ⌥1: the first LAR panel (live queries).
         LarPanel1,
         Quit,
-        /// The "discard pending edits?" sheet: keep them, run nothing.
         CancelPendingRun,
-        /// The "discard pending edits?" sheet: discard them and run.
         DiscardAndRun,
-        /// ⌥⌘] / ⌥⌘[: the next / previous result tab of a script.
         NextResult,
         PrevResult,
-        /// ⌥⌘→ / ⌥⌘←: the next / previous page of a table's data view.
         NextPage,
         PrevPage,
-        /// ⌃⌘↩ / ⌃⌘⌫: COMMIT / ROLLBACK a transaction opened with BEGIN.
         CommitTx,
         RollbackTx,
-        /// The confirmation sheets (dangerous statements, failed transaction, open transactions
-        /// on close or quit): ⌘↩ the main answer, ⌘⌫ roll back, esc cancel.
         SheetConfirm,
         SheetRollback,
         SheetCancel,
-        /// ⌘L: the plan of the statement under the cursor (EXPLAIN, JSON).
         Explain,
-        /// ⌥⌘L: EXPLAIN ANALYZE (runs it; on PostgreSQL inside a transaction rolled back).
         ExplainAnalyze,
-        /// The plan on screen as PostgreSQL's text format, to the clipboard.
         CopyPlanText,
-        /// The plan view: tree ⇄ flame.
         TogglePlanFlame,
-        /// The activity monitor of the active tab's connection (or the explorer's).
         OpenActivity,
-        /// The MCP server's log of tool calls, in the side panel.
         ToggleMcpLog,
-        /// Reads the update feed now.
         CheckForUpdates,
-        /// The update on offer: its sheet (version, notes, Install & Relaunch).
         ShowUpdate,
-        /// Replaces the app with the downloaded update and relaunches it.
         InstallUpdate,
-        /// Back / forward through the places visited (`nav`).
         GoBack,
         GoForward,
-        /// The result panel over the editor and the side panel, and back (the result bar's
-        /// zoom button; ⇧⌘↩ on the grid).
         ToggleResultZoom,
-        /// ⌘↩ on the grid of a zoomed result: the tab's script again (its editor is hidden).
         RunZoomed,
     ]
 );
 
-/// Frames the workspace has rendered (the idle checks: a window that does nothing renders
-/// none).
 pub static RENDERS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// The key context of the confirmation sheets.
 pub const SHEET_CONTEXT: &str = "TxSheet";
 
-/// The workspace's bindings: off while a modal (palette, Settings, export, connection sheet,
-/// a confirmation) has the keys, so ⌘W, ⌘T… cannot act behind it.
+/// Off while a modal has the keys, so ⌘W, ⌘T… cannot act behind it.
 pub const WORKSPACE_KEYS: &str = "Workspace && !Modal";
 
-/// The workspace's fixed keys; its commands (⌘T, ⌘W, ⌘B…) are remappable (`keymap`).
 pub fn bind_keys(cx: &mut App) {
     let w = Some(WORKSPACE_KEYS);
     cx.bind_keys([
         KeyBinding::new("escape", FocusEditor, w),
-        // The discard sheet: ↩ and esc keep the edits (the safe answer), ⌘⌫ discards.
         KeyBinding::new("escape", CancelPendingRun, Some("ConfirmDiscard")),
         KeyBinding::new("enter", CancelPendingRun, Some("ConfirmDiscard")),
         KeyBinding::new("cmd-backspace", DiscardAndRun, Some("ConfirmDiscard")),
@@ -171,29 +124,24 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-backspace", SheetRollback, Some(SHEET_CONTEXT)),
         KeyBinding::new("escape", SheetCancel, Some(SHEET_CONTEXT)),
     ]);
-    // Run's keys (⌘↩, or its override) on the grid re-run a zoomed tab's script.
     let grid = Some(crate::grid::GRID_KEYS);
     let run: Vec<KeyBinding> = crate::keymap::effective("run_all").iter().filter_map(|k| KeyBinding::load(k, Box::new(RunZoomed), grid.map(|c| gpui::KeyBindingContextPredicate::parse(c).unwrap().into()), false, None, &gpui::DummyKeyboardMapper).ok()).collect();
     cx.bind_keys(run);
 }
 
-/// What waits for the open transactions it would end.
 #[derive(Clone)]
 pub(crate) enum AfterTx {
     CloseTab(Entity<QueryTab>),
     CloseTabs(Vec<Entity<QueryTab>>),
     Disconnect(String),
     Reconnect(String),
-    /// The tab moves to another connection or database (and runs `run` there).
     Retarget { tab: Entity<QueryTab>, conn: Arc<Connection>, db: Option<String>, run: Option<String> },
-    /// The connection sheet saves over the connection: its sessions are rebuilt.
     SaveConnection(Entity<ConnDialog>),
     DeleteConnection(String),
     Quit,
 }
 
 impl AfterTx {
-    /// The word on the sheet's buttons: "Commit & {verb}".
     pub(crate) fn verb(&self) -> &'static str {
         match self {
             AfterTx::CloseTab(_) | AfterTx::CloseTabs(_) => "close",
@@ -207,20 +155,16 @@ impl AfterTx {
     }
 }
 
-/// A change that may end sessions, and so the transactions open in them.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Change<'a, K> {
     CloseTab(K),
-    /// Tab `tab` moves to another connection (`same_conn` false) or database.
     Retarget { tab: K, same_conn: bool, from_db: &'a str, to_db: &'a str },
     Disconnect(&'a str),
-    /// The connection sheet saves; a new connection has no sessions yet.
     Edit { id: &'a str, is_new: bool },
     Delete(&'a str),
     Quit,
 }
 
-/// The sessions `change` ends, if any.
 pub(crate) fn ends_of<K: Copy>(change: Change<'_, K>) -> Option<Ends<'_, K>> {
     match change {
         Change::CloseTab(k) => Some(Ends::Tab(k)),
@@ -231,27 +175,21 @@ pub(crate) fn ends_of<K: Copy>(change: Change<'_, K>) -> Option<Ends<'_, K>> {
     }
 }
 
-/// "Commit / Rollback / Cancel" for tabs with an open transaction, asked once.
 pub(crate) struct TxPrompt {
     pub tabs: Vec<Entity<QueryTab>>,
     pub then: AfterTx,
     pub busy: bool,
-    /// A COMMIT that failed (the tabs left are the ones it failed in).
     pub error: Option<String>,
 }
 
-/// What a close, a disconnect or a quit ends.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Ends<'a, K> {
     Tab(K),
-    /// Close Others, Close to the Right.
     Tabs(&'a [K]),
     Conn(&'a str),
     All,
 }
 
-/// The tabs that must be asked about first: among `tabs` (key, connection id, transaction
-/// open), the ones `what` ends that have a transaction open.
 pub(crate) fn tabs_holding<K: PartialEq + Copy>(tabs: &[(K, Option<&str>, bool)], what: Ends<K>) -> Vec<K> {
     tabs.iter()
         .filter(|(k, conn, open)| {
@@ -269,33 +207,21 @@ pub(crate) fn tabs_holding<K: PartialEq + Copy>(tabs: &[(K, Option<&str>, bool)]
 
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum Drag {
-    /// A dock column's inner seam (`dock`): its width.
     Dock(dataman_core::layout::Dock, usize),
     Split,
-    /// The seam between two editor groups (`split`).
     Groups,
 }
 
-/// A query tab on the move (GPUI's drag; `dnd`).
 pub(crate) struct DraggedTab(pub EntityId);
 
-/// What a side view belongs to. A view built for one connection or one tab must
-/// never act on another: when the active tab changes, `sync_bound_views` rebuilds it for the
-/// new tab's connection or hides it.
 #[derive(Clone)]
 pub(crate) enum Bound {
-    /// Built for one connection (LAR's panels): rebuilt or hidden when the active tab is on
-    /// another connection.
     Conn(Arc<Connection>),
-    /// Belongs to one tab (the grid-edit review): closes when another tab becomes active (or
-    /// that tab closes).
     Tab(EntityId),
-    /// About an explorer row (the privileges panel): stays whatever tab is active.
     Explorer,
 }
 
 impl Bound {
-    /// Whether the view may stay for a tab (`tab`, on `conn`).
     pub(crate) fn fits(&self, tab: Option<EntityId>, conn: Option<&Arc<Connection>>) -> bool {
         match self {
             Bound::Conn(c) => conn.is_some_and(|x| Arc::ptr_eq(x, c)),
@@ -305,16 +231,12 @@ impl Bound {
     }
 }
 
-/// What the side panel shows (`dock`: in the dock opposite the explorer).
 #[derive(Clone)]
 pub(crate) enum Side {
-    /// A registered server panel (LAR's live queries).
     Server(&'static str, AnyView, Bound),
-    /// A feature's sheet (the grid-edit review), by id.
     Feature(&'static str, AnyView, Bound),
 }
 
-/// Which side view is open, by name (what the result zoom remembers it covered).
 pub(crate) fn side_id(s: &Option<Side>) -> Option<&'static str> {
     match s {
         None => None,
@@ -322,9 +244,6 @@ pub(crate) fn side_id(s: &Option<Side>) -> Option<&'static str> {
     }
 }
 
-/// ⌘S's feedback, the sidebar rail's Favorites icon lighting up: the favorite it is about (a
-/// click on the icon opens it in the favorites), what it says, when it started
-/// (`motion::SAVED`).
 #[derive(Clone)]
 pub(crate) struct SavedFlash {
     pub id: String,
@@ -340,7 +259,6 @@ impl Side {
     }
 }
 
-/// The focusable regions, in F6 order.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Region {
     Explorer,
@@ -355,180 +273,103 @@ pub struct Workspace {
     pub active: usize,
     next_id: usize,
     pub(crate) dialog: Option<Entity<ConnDialog>>,
-    /// The import sheet (pg_service.conf, .pgpass).
     pub(crate) import: Option<Entity<crate::import_ui::ImportView>>,
-    /// The sidebar's Favorites and History views (one panel; `sidebar`).
     pub(crate) history: Entity<HistoryPanel>,
-    /// What the sidebar shows: the rail's selection.
     pub(crate) view: dataman_core::layout::NavView,
     pub(crate) welcome: Entity<Welcome>,
     pub(crate) side: Option<Side>,
-    /// What ⌥⌘B reopens.
     pub(crate) last_side: Option<Side>,
-    /// The connection new tabs use: the last one selected or connected.
     pub(crate) current_conn: Option<String>,
     pub(crate) explorer_open: bool,
     pub(crate) explorer_w: f32,
-    /// The explorer column sliding open or shut (⌘B, the title-bar button).
     explorer_tween: Option<crate::motion::WidthTween>,
     pub(crate) side_w: f32,
-    /// The side panel sliding open or shut, like the explorer.
     side_tween: Option<crate::motion::WidthTween>,
-    /// Whether the side panel showed something last frame, to see it open or shut, and what it
-    /// showed last (drawn while it slides out).
     side_was: bool,
     pub(crate) side_seen: Option<Side>,
-    /// Where each panel sits (`dock`), the panels settling into a new place, a panel being
-    /// dragged, the docks as laid out this frame, and a panel's right-click menu (the panel,
-    /// where the pointer was).
     pub(crate) layout: dataman_core::layout::PanelLayout,
     pub(crate) dock_moves: Vec<crate::dock::DockMove>,
     pub(crate) panel_drag: Option<crate::dock::PanelDrag>,
     pub(crate) frame_now: crate::dock::Frame,
-    /// The title bar's geometry this frame (`dock_pass`), and how much each dock holds the
-    /// explorer as it moves.
     pub(crate) title_now: crate::dock::TitleFrame,
     pub(crate) explorer_blend: crate::dock::ExplorerBlend,
     pub(crate) panel_menu: Option<(dataman_core::layout::PanelId, gpui::Point<gpui::Pixels>)>,
-    /// The docks' slots as last laid out, per dock and column (the checks hold them to
-    /// `frame_now`).
     pub(crate) slot_bounds: std::rc::Rc<std::cell::RefCell<[Vec<Vec<gpui::Bounds<gpui::Pixels>>>; 2]>>,
-    /// ⌘S's feedback on the rail, and the redraws of its fades.
     pub(crate) saved_flash: Option<SavedFlash>,
     saved_flash_task: Option<gpui::Task<()>>,
-    /// The rail's icons as last laid out (the checks click them).
     pub(crate) rail_bounds: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<dataman_core::layout::NavView, gpui::Bounds<gpui::Pixels>>>>,
-    /// Where the Favorites icon was last laid out (the checks click it).
     pub(crate) saved_bounds: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
-    /// The title bar's "DATAMAN" as last laid out (`title_logo`; the checks).
     pub(crate) logo_bounds: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
-    /// The title bar's toggle, arrows and search as last laid out, by name (the checks).
     pub(crate) title_marks: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<&'static str, gpui::Bounds<gpui::Pixels>>>>,
-    /// Editor height as a share of the work column (kept when the window resizes).
     pub(crate) editor_frac: Option<f32>,
     pub(crate) drag: Option<Drag>,
-    /// The query tabs' bounds as last laid out (the checks).
     pub(crate) tab_bounds: std::rc::Rc<std::cell::RefCell<Vec<gpui::Bounds<gpui::Pixels>>>>,
-    /// The gap a dragged tab would drop into (`order::slot`), while it is over the tabs, and the
-    /// group whose strip it is over.
     pub(crate) tab_drop: Option<usize>,
     pub(crate) tab_drop_pane: Pane,
-    /// The right group's tabs' bounds (`tab_bounds` holds the left group's).
     pub(crate) tab_bounds_right: std::rc::Rc<std::cell::RefCell<Vec<gpui::Bounds<gpui::Pixels>>>>,
-    /// Each group's strip (by `Pane::index`): its tabs scroll sideways on their own, the tab in
-    /// front scrolled into view when it changes (the one last seen); its parts as last laid out
-    /// (the tabs, +, the room after them, the group's ×: the checks).
     pub(crate) strip_scroll: [gpui::ScrollHandle; 2],
     pub(crate) strip_front: [std::cell::Cell<Option<EntityId>>; 2],
     pub(crate) strip_parts: std::rc::Rc<std::cell::RefCell<[Vec<gpui::Bounds<gpui::Pixels>>; 2]>>,
-    /// A tab dragged over a group's editor or results: the group and where it would land
-    /// (`split`), and its preview gliding between the zones.
     pub(crate) editor_drop: Option<(Pane, crate::split::DropZone)>,
     pub(crate) editor_drop_glide: Option<crate::split::DropGlide>,
-    /// Two editor groups side by side (`split`): the second one and the focus, the split opening
-    /// or folding, how it stands this frame, the group the next new tab goes to (`None`: the
-    /// focused one), ⌥ held on the last press (⌥-click opens to the side), and the groups as laid
-    /// out (the checks).
     pub(crate) split: Option<crate::split::Split>,
     pub(crate) split_move: Option<crate::split::SplitMove>,
     pub(crate) split_now: Option<crate::split::SplitFrame>,
     pub(crate) open_in: Option<Pane>,
     pub(crate) alt_press: bool,
     pub(crate) pane_bounds: std::rc::Rc<std::cell::RefCell<Vec<gpui::Bounds<gpui::Pixels>>>>,
-    /// A group's × pressed once: it asks "Sure?" in its place until confirmed or let go.
     pub(crate) close_arm: Option<crate::split::CloseArm>,
-    /// The groups' seam as last painted (the checks).
     pub(crate) seam_line: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
-    /// A tab's right-click menu: the tab and where the pointer was.
     pub(crate) tab_menu: Option<(EntityId, gpui::Point<gpui::Pixels>)>,
-    /// The tabs growing in, folding away, making room for one dragged (`tab_motion`).
     pub(crate) tab_motion: crate::tab_motion::TabMotion,
-    /// The result tabs' bounds as last laid out (the checks).
     pub(crate) result_tab_bounds: std::rc::Rc<std::cell::RefCell<Vec<gpui::Bounds<gpui::Pixels>>>>,
-    /// The messages tab, or the log of a result without rows, on screen (in the left group, and
-    /// in the right one).
     pub(crate) messages: crate::messages::Messages,
     pub(crate) messages_right: crate::messages::Messages,
-    /// The toolbar's connection picker: its popup is open; where the button is (the checks).
     pub(crate) conn_menu: bool,
     /// When a click outside shut the popup (the click on the button that follows must not
     /// open it again).
     pub(crate) conn_menu_shut: Option<Instant>,
     pub(crate) picker_bounds: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
-    /// Each group's toolbar as last laid out, by `Pane::index` (the checks).
     pub(crate) toolbar_parts: std::rc::Rc<std::cell::RefCell<[Vec<gpui::Bounds<gpui::Pixels>>; 2]>>,
-    /// A drag started on the empty title bar: the next move drags the window.
     pub(crate) title_drag: bool,
-    /// Show the focus ring (after keyboard navigation; a click hides it).
     pub(crate) focus_visible: bool,
     pub(crate) shortcuts_open: bool,
     pub(crate) copy_menu: bool,
-    /// The cancel toast was hidden for this request.
     pub(crate) cancel_toast_hidden: Option<Instant>,
-    /// "LAR detected on …" (connection name, when it appeared).
     pub(crate) lar_toast: Option<(String, Instant)>,
-    /// A short notice in the status bar (the command palette stub…).
     pub(crate) flash_notice: Option<(String, Instant)>,
-    /// The command palette (⌘K / ⌘P), the Settings sheet (⌘,) and the focus they give back.
     pub(crate) palette: Option<Entity<crate::palette::Palette>>,
     pub(crate) settings_view: Option<Entity<crate::settings_view::SettingsView>>,
     pub(crate) modal_return: Option<FocusHandle>,
-    /// The export dialog; kept while an export runs in the background.
     pub(crate) export: Option<Entity<crate::export_ui::ExportView>>,
-    /// The data import sheet; kept while an import runs in the background.
     pub(crate) data_import: Option<Entity<crate::data_import::DataImportView>>,
-    /// The value sheet of a JSON or array cell (`value_view`).
     pub(crate) value_view: Option<Entity<crate::value_view::ValueView>>,
-    /// The "discard pending edits?" sheet (shown while the active tab has a `pending_run`).
     pub(crate) confirm_focus: FocusHandle,
-    /// The "Delete connection?" sheet: the connection it asks about.
     pub(crate) confirm_delete: Option<String>,
     pub(crate) confirm_delete_focus: FocusHandle,
-    /// A table's filter popover and where it opens (window coordinates).
     pub(crate) filter_pop: Option<(Entity<crate::table_view::FilterPopover>, (f32, f32))>,
-    /// Open transactions in the way of a close, a disconnect or a quit.
     pub(crate) tx_prompt: Option<TxPrompt>,
-    /// The confirmation sheets' keys (guard, failed transaction, open transactions), and when
-    /// the sheet came up (a ⌘↩ still held from the run does not confirm it).
     pub(crate) sheet_focus: FocusHandle,
     sheet_at: Option<Instant>,
-    /// Wakes the toolbar when the open transaction's age shown changes (a minute boundary),
-    /// only while one is open: no ticking otherwise.
     tx_tick: Option<(Instant, gpui::Task<()>)>,
-    /// Stands in for the window's active state when the activity monitors decide whether they
-    /// are on screen (the checks); `None`: the window's own.
     pub(crate) assume_active: Option<bool>,
     focus: FocusHandle,
-    /// The MCP approval sheet's keys, and the focus it gives back.
     pub(crate) mcp_focus: FocusHandle,
     pub(crate) mcp_return: Option<FocusHandle>,
-    /// The sheet's Deny and Allow buttons as last laid out (the checks).
     pub(crate) mcp_buttons: std::rc::Rc<std::cell::RefCell<Vec<gpui::Bounds<gpui::Pixels>>>>,
-    /// The crash the last session left (its toast), and what its buttons last did.
     pub(crate) crash: Option<dataman_core::crash::Pending>,
     pub(crate) crash_note: Option<&'static str>,
-    /// The quit under way installs the update and relaunches.
     update_on_quit: bool,
-    /// The update sheet is up; its keys; the title bar's notice and the sheet's buttons as last
-    /// laid out (the checks).
     pub(crate) update_sheet: bool,
     pub(crate) update_focus: FocusHandle,
     pub(crate) update_pill_bounds: std::rc::Rc<std::cell::RefCell<Vec<gpui::Bounds<gpui::Pixels>>>>,
     pub(crate) update_button_bounds: std::rc::Rc<std::cell::RefCell<Vec<gpui::Bounds<gpui::Pixels>>>>,
-    /// The saved session: the save waiting for the workspace to settle, and what it last saw
-    /// (`restore`).
     pub(crate) session_task: Option<gpui::Task<()>>,
     session_fp: u64,
-    /// A workspace replaced in its window (the session checks): it saves nothing any more.
     pub(crate) session_off: bool,
-    /// Back / forward (`nav`).
     pub(crate) nav: crate::nav::Nav,
-    /// The result zoom moving (its tab), and the result panel's bounds as last painted (the
-    /// checks measure the zoom with them).
     pub(crate) zoom_tween: Option<(EntityId, crate::motion::ZoomTween)>,
     pub(crate) result_bounds: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
-    /// Undo and redo of what was done to the app's own things (`undo`), and the sizes a seam
-    /// drag started from (its step, once let go).
     pub(crate) undo: crate::undo::UndoStack,
     pub(crate) seam_from: Option<crate::undo::Sizes>,
 }
@@ -576,7 +417,6 @@ impl Workspace {
                     t.run(vec![sql.trim_end().trim_end_matches(';').to_string()], cx);
                 });
             }
-            // ⌥-click: in the other editor group.
             HistoryEvent::OpenFavorite(fav, run) => {
                 w.open_in = w.alt_aside(window);
                 w.open_favorite(fav.clone(), *run, window, cx);
@@ -585,17 +425,14 @@ impl Workspace {
             HistoryEvent::ImportFavorites => w.import_favorites(cx),
             HistoryEvent::FavoritesChanged => w.sync_favorite_tabs(cx),
             HistoryEvent::Did(e) => w.undo.push(e.clone()),
-            // esc: the view stays, the focus goes back to the editor.
             HistoryEvent::Close => {
                 w.focus_editor(window, cx);
                 cx.notify();
             }
         })
         .detach();
-        // The system appearance only matters with the "system" theme.
         cx.observe_window_appearance(window, |_, window, cx| theme::on_system_appearance(window, cx)).detach();
-        // macOS's "Reduce motion" may have been flipped while the app was in the background;
-        // an activity monitor reads only while the window is active.
+        // macOS's "Reduce motion" may have been flipped while the app was in the background.
         cx.observe_window_activation(window, |w: &mut Workspace, window, cx| {
             if window.is_window_active() {
                 crate::motion::apply_reduce_motion(cx);
@@ -605,7 +442,6 @@ impl Workspace {
         })
         .detach();
         let first = store.read(cx).profiles.first().map(|p| p.id.clone());
-        // Compact layout (Spec): at 1280 x 800 or less the explorer opens narrower.
         let compact = window.viewport_size().width.pt() <= 1280.;
         let mut w = Workspace {
             store,
@@ -712,12 +548,9 @@ impl Workspace {
             undo: Default::default(),
             seam_from: None,
         };
-        // Agents' writes over the app's MCP server ask in this window.
         crate::mcp::register(cx.weak_entity(), window.window_handle(), cx);
         // Esc lets go of any drag (`dnd`), before anything else hears it.
         crate::dnd::cancel_on_escape(cx.weak_entity(), cx);
-        // The window's close button with transactions open asks first, like ⌘Q; closing saves
-        // the session, and so does any quit.
         let this = cx.weak_entity();
         window.on_window_should_close(cx, move |window, cx| {
             this.update(cx, |w, cx| {
@@ -734,9 +567,7 @@ impl Workspace {
             async {}
         })
         .detach();
-        // Connections saved elsewhere (an agent through MCP, a hand edit) show up live.
         w.watch_connections(window, cx);
-        // Last session's tabs and results, or one empty tab.
         if !w.restore_session(window, cx) {
             w.new_tab(window, cx);
         }
@@ -774,7 +605,6 @@ impl Workspace {
                 }
                 cx.notify();
             }
-            // The sheet takes the keys now if the tab is in front, else when it comes back.
             TabEvent::ConfirmDiscard => {
                 if w.active_tab() == Some(tab) {
                     w.focus_confirm(window, cx);
@@ -803,7 +633,6 @@ impl Workspace {
                 let (def, peek) = (def.clone(), *peek);
                 w.go_to_definition(tab.clone(), def, peek, window, cx);
             }
-            // A restored tab's first run: its connection connects (`on_conn` hands it over).
             TabEvent::Connect(id) => match w.store.read(cx).connection(id) {
                 Some(conn) => tab.update(cx, |t, cx| t.adopt(conn, cx)),
                 None => {
@@ -828,7 +657,6 @@ impl Workspace {
         let grid = tab.read(cx).grid.clone();
         let from = tab.downgrade();
         cx.subscribe_in(&grid, window, move |w, _, ev: &GridEvent, window, cx| match ev {
-            // The eye of a JSON or array cell, or ⇧Space: its value sheet.
             GridEvent::ViewValue { row, col } => {
                 if let Some(cell) = from.upgrade().and_then(|t| t.read(cx).grid.read(cx).value_at(*row, *col)) {
                     w.open_value(cell, window, cx);
@@ -839,7 +667,6 @@ impl Workspace {
                     w.follow_reference(&from, j, window, cx);
                 }
             }
-            // A table's data view (`table_view`).
             GridEvent::ServerSort { col, dir } => {
                 if let Some(from) = from.upgrade() {
                     let (col, dir) = (*col, *dir);
@@ -853,7 +680,6 @@ impl Workspace {
                     from.update(cx, |t, cx| t.filter_value(col, value, cx));
                 }
             }
-            // Edits are the tab's (`edit_ui`).
             _ => {}
         })
         .detach();
@@ -874,11 +700,8 @@ impl Workspace {
         tab
     }
 
-    /// Closes tab `ix`; with a transaction open, asks Commit / Rollback / Cancel first.
     pub(crate) fn close_tab(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(tab) = self.tabs.get(ix).cloned() else { return };
-        // Pending grid edits are never dropped silently: the discard sheet first (on the tab, in
-        // front), then the close again (`TabEvent::Close`).
         if tab.read(cx).edit.read(cx).pending_count() > 0 {
             self.activate(ix, window, cx);
             tab.update(cx, |t, cx| t.guard_edits_as("close", |_, cx| cx.emit(TabEvent::Close), cx));
@@ -892,7 +715,6 @@ impl Workspace {
         self.close_tab_now(ix, window, cx);
     }
 
-    /// Closes tab `ix` at once, an undo step (Undo reopens it).
     fn close_tab_now(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         let title = self.tabs.get(ix).map(|t| t.read(cx).title(cx).to_string());
         if let (Some(c), Some(title)) = (self.close_tab_quietly(ix, window, cx), title) {
@@ -900,8 +722,6 @@ impl Workspace {
         }
     }
 
-    /// Closes tab `ix` at once, no step recorded: what it was, to reopen it (`None` for an
-    /// activity monitor).
     pub(crate) fn close_tab_quietly(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) -> Option<crate::undo::ClosedTab> {
         if ix >= self.tabs.len() {
             return None;
@@ -909,7 +729,6 @@ impl Workspace {
         let reopen = self.closing(ix, cx);
         let id = self.tabs[ix].entity_id();
         let pane = self.pane_of(id);
-        // In front of its group, the tab before it takes its place (else the one after it).
         let group: Vec<EntityId> = self.group(pane).into_iter().map(|i| self.tabs[i].entity_id()).collect();
         let next = dataman_core::groups::neighbour(&group, id);
         let mut front = self.active_tab().map(|t| t.entity_id());
@@ -921,7 +740,6 @@ impl Workspace {
         if let Some(s) = &mut self.split {
             s.right.retain(|k| *k != id);
             match next {
-                // Its group's last tab: the split closes, the other group's tab in front.
                 None => {
                     if front == Some(id) {
                         front = Some(s.other);
@@ -942,7 +760,6 @@ impl Workspace {
             self.new_tab(window, cx);
         }
         self.active = front.and_then(|f| self.tabs.iter().position(|t| t.entity_id() == f)).unwrap_or(0).min(self.tabs.len() - 1);
-        // The closed tab's review sheet goes with it.
         self.sync_bound_views(window, cx);
         self.focus_editor(window, cx);
         cx.notify();
@@ -956,8 +773,6 @@ impl Workspace {
             }
             self.enter_group_of(ix);
             self.active = ix;
-            // The connection the user works on now: a new tab opens on it (SQL or documents,
-            // as it is), whichever kind the other tabs are on.
             if let Some(id) = self.tabs[ix].read(cx).connection().map(|c| c.profile.id.clone()) {
                 self.current_conn = Some(id);
             }
@@ -976,7 +791,6 @@ impl Workspace {
         }
     }
 
-    /// The discard sheet takes the keys (esc / ↩ keep the edits); they go back after.
     fn focus_confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.confirm_focus.is_focused(window) {
             self.modal_return = window.focused(cx).filter(|f| *f != self.confirm_focus);
@@ -984,11 +798,9 @@ impl Workspace {
         }
     }
 
-    /// "Discard & run" (`discard`) or "Cancel" on the active tab's pending run.
     pub(crate) fn resolve_pending_run(&mut self, discard: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(tab) = self.active_tab().cloned() else { return };
         if !discard {
-            // A quit for an update that the edits held back is called off.
             self.update_on_quit = false;
         }
         tab.update(cx, |t, cx| t.resolve_pending_run(discard, cx));
@@ -999,8 +811,6 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Whether a modal (palette, Settings, export, connection sheet, discard sheet) is up: a
-    /// second one does not open over it (they share `modal_return`).
     pub(crate) fn modal_open(&self, cx: &App) -> bool {
         self.palette.is_some()
             || self.settings_view.is_some()
@@ -1016,10 +826,6 @@ impl Workspace {
             || cx.try_global::<crate::mcp::McpHost>().is_some_and(|h| !h.pending.is_empty())
     }
 
-    // -----------------------------------------------------------------------------------------
-    // Transactions and the confirmation sheets.
-
-    /// A sheet takes the keys (esc cancels); they go back after.
     pub(crate) fn focus_sheet(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.sheet_focus.is_focused(window) {
             self.modal_return = window.focused(cx).filter(|f| *f != self.sheet_focus);
@@ -1028,7 +834,6 @@ impl Workspace {
         self.sheet_at = Some(Instant::now());
     }
 
-    /// The active tab's parameter prompt takes the keys (its first field).
     pub(crate) fn focus_params(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(prompt) = self.active_tab().and_then(|t| t.read(cx).params.as_ref().map(|p| p.prompt.clone())) else { return };
         if self.modal_return.is_none() {
@@ -1037,7 +842,6 @@ impl Workspace {
         prompt.update(cx, |p, cx| p.focus_field(0, window, cx));
     }
 
-    /// The parameter prompt of the active tab, as a sheet over the window.
     pub(crate) fn render_param_sheet(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         let prompt = self.active_tab()?.read(cx).params.as_ref()?.prompt.clone();
         let t = cx.theme();
@@ -1058,8 +862,6 @@ impl Workspace {
         )
     }
 
-    /// F12 / ⌘-click: the object in the explorer (shown, expanded to it, selected); ⌥F12
-    /// (`peek`) also opens its definition in a new tab.
     pub(crate) fn go_to_definition(&mut self, tab: Entity<QueryTab>, def: dataman_core::complete::Definition, peek: bool, window: &mut Window, cx: &mut Context<Self>) {
         use crate::tree_menu::{Act, Gen, Obj, Target};
         use dataman_core::complete::Definition;
@@ -1103,8 +905,6 @@ impl Workspace {
         }
     }
 
-    /// When `what` would end open transactions, asks first (and does `then` after): true when
-    /// the prompt is up.
     fn ask_about_tx(&mut self, what: Ends<gpui::EntityId>, then: AfterTx, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let rows: Vec<(gpui::EntityId, Option<String>, bool)> = self
             .tabs
@@ -1129,11 +929,9 @@ impl Workspace {
         true
     }
 
-    /// ⌘Q, Quit in the menu, the window's close button: false when open transactions must be
-    /// answered for first (the prompt is up).
     pub(crate) fn request_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        // Pending grid edits are not kept by the session: the discard sheet first, then the
-        // quit again (`TabEvent::Quit`).
+        // Pending grid edits are not kept by the session: the discard sheet first, then the quit
+        // again (`TabEvent::Quit`).
         if let Some(ix) = self.tabs.iter().position(|t| t.read(cx).edit.read(cx).pending_count() > 0) {
             let tab = self.tabs[ix].clone();
             self.activate(ix, window, cx);
@@ -1147,9 +945,8 @@ impl Workspace {
         if std::mem::take(&mut self.update_on_quit)
             && let Some(install) = crate::updates::swap(cx)
         {
-            // The swap first (a second or two, off the UI thread); the app quits and reopens
-            // only once the new copy is in place, and stays open if it failed (the sheet says
-            // why, with Retry). The update check stage stops before the relaunch.
+            // The swap first, off the UI thread; the app quits and reopens only once the new copy is in
+            // place, and stays open if it failed.
             cx.spawn(async move |this, cx| match install.await {
                 Ok(app) => {
                     if cx.update(|cx| crate::updates::testing(cx)) {
@@ -1174,13 +971,10 @@ impl Workspace {
             .detach();
             return;
         }
-        // SSH tunnels end with the app (the sockets would close anyway).
         self.store.read(cx).close_all();
         cx.quit();
     }
 
-    /// The update downloaded and verified: quits like ⌘Q (open transactions are asked about,
-    /// over the update sheet), then swaps the app and opens the new one.
     pub(crate) fn install_update(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !matches!(crate::updates::state(cx), crate::updates::State::Ready { .. }) {
             return;
@@ -1189,13 +983,11 @@ impl Workspace {
         if self.request_quit(window, cx) {
             self.quit_now(cx);
         } else {
-            // The open-transactions prompt takes over; the title bar's notice brings it back.
             self.update_sheet = false;
             cx.notify();
         }
     }
 
-    /// Opens .sql files handed over by Finder (`file://` URLs), each in a new tab.
     pub(crate) fn open_urls(&mut self, urls: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {
         for url in urls {
             let Some(path) = file_url_path(&url) else { continue };
@@ -1209,8 +1001,6 @@ impl Workspace {
         }
     }
 
-    /// Disconnect from the explorer: open transactions on that connection are asked about
-    /// first.
     pub(crate) fn request_disconnect(&mut self, id: String, reconnect: bool, window: &mut Window, cx: &mut Context<Self>) {
         let then = if reconnect { AfterTx::Reconnect(id.clone()) } else { AfterTx::Disconnect(id.clone()) };
         if let Some(what) = ends_of::<EntityId>(Change::Disconnect(&id))
@@ -1241,8 +1031,6 @@ impl Workspace {
         }
     }
 
-    /// Points `tab` at `conn` and `db` (and runs `run` there). Another connection or database
-    /// means another session: an open transaction is asked about first.
     pub(crate) fn retarget(
         &mut self,
         tab: &Entity<QueryTab>,
@@ -1291,8 +1079,6 @@ impl Workspace {
         cx.notify();
     }
 
-    /// The connection sheet's Save over an existing connection: its sessions are rebuilt, so
-    /// their open transactions are asked about first.
     fn request_save_connection(&mut self, d: Entity<ConnDialog>, window: &mut Window, cx: &mut Context<Self>) {
         let (id, is_new) = {
             let d = d.read(cx);
@@ -1306,9 +1092,6 @@ impl Workspace {
         d.update(cx, |d, cx| d.save_now(cx));
     }
 
-    /// Deleting a connection (the explorer, the connection sheet): the transactions open on it
-    /// are asked about first, the sheet listing their tabs; else the plain confirmation (from
-    /// the explorer) or none (the sheet asked already).
     pub(crate) fn request_delete_connection(&mut self, id: String, confirmed: bool, window: &mut Window, cx: &mut Context<Self>) {
         if !confirmed && self.modal_open(cx) {
             return;
@@ -1334,9 +1117,6 @@ impl Workspace {
         cx.notify();
     }
 
-    /// The prompt's answer: commit (`Run`) or roll back every listed transaction, then go on;
-    /// a COMMIT that fails keeps the prompt up with its error (that tab's transaction is gone,
-    /// the others went through).
     pub(crate) fn resolve_tx_prompt(&mut self, choice: crate::tab::ConfirmChoice, window: &mut Window, cx: &mut Context<Self>) {
         use crate::tab::ConfirmChoice;
         let Some(p) = &mut self.tx_prompt else { return };
@@ -1365,7 +1145,6 @@ impl Workspace {
             let _ = this.update_in(cx, |w, window, cx| {
                 let Some(p) = &mut w.tx_prompt else { return };
                 p.busy = false;
-                // A failed ROLLBACK leaves nothing to keep: the transaction is gone anyway.
                 if !commit || failed.is_empty() {
                     let then = p.then.clone();
                     w.tx_prompt = None;
@@ -1382,7 +1161,6 @@ impl Workspace {
         cx.notify();
     }
 
-    /// The sheets' keys: the tab's run waiting for an answer, or the open-transactions prompt.
     pub(crate) fn sheet_answer(&mut self, choice: crate::tab::ConfirmChoice, window: &mut Window, cx: &mut Context<Self>) {
         use crate::tab::ConfirmChoice;
         // A ⌘↩ held from the run that raised the sheet does not confirm it.
@@ -1399,7 +1177,6 @@ impl Workspace {
         cx.notify();
     }
 
-    /// ⌃⌘↩ / ⌃⌘⌫ and the toolbar's buttons.
     pub(crate) fn end_active_tx(&mut self, commit: bool, cx: &mut Context<Self>) {
         let Some(tab) = self.active_tab().cloned() else { return };
         let (open, busy) = {
@@ -1412,8 +1189,6 @@ impl Workspace {
         tab.update(cx, |t, cx| t.end_tx(commit, cx)).detach();
     }
 
-    /// Asks for a redraw when the age of the active tab's open transaction shown in the toolbar
-    /// next changes (minute boundaries); nothing while none is open.
     pub(crate) fn schedule_tx_tick(&mut self, since: Option<Instant>, cx: &mut Context<Self>) {
         let Some(since) = since else {
             self.tx_tick = None;
@@ -1432,7 +1207,6 @@ impl Workspace {
         self.tx_tick = Some((next, task));
     }
 
-    /// Activates a tab by identity (indices go stale when tabs close).
     pub(crate) fn activate_tab(&mut self, tab: &Entity<QueryTab>, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(ix) = self.tabs.iter().position(|t| t == tab) {
             self.activate(ix, window, cx);
@@ -1440,15 +1214,12 @@ impl Workspace {
     }
 
     pub(crate) fn focus_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // First run: the welcome screen stands where the editor will be.
         if self.first_run(cx) {
             let f = self.welcome.focus_handle(cx);
             window.focus(&f, cx);
             return;
         }
         if let Some(t) = self.active_tab() {
-            // A monitor tab has no editor on screen: its list takes the keys; nor has a zoomed
-            // result: its grid takes them.
             let f = match &t.read(cx).monitor {
                 Some(m) => m.read(cx).focus_target(cx),
                 None if t.read(cx).zoomed && t.read(cx).has_run => match &t.read(cx).doc {
@@ -1461,10 +1232,6 @@ impl Workspace {
         }
     }
 
-    /// The tab a history entry goes to: for Run, the active tab when it is on the listed
-    /// connection, else another tab on it, else a new one; Open in tab: a new tab on it.
-    /// `None` (with a notice) when that connection is not connected.
-    /// `database`, when given, only applies to a freshly opened tab (not a reused one).
     fn tab_for_history(
         &mut self, listed: Option<String>, database: Option<String>, run: bool, window: &mut Window, cx: &mut Context<Self>,
     ) -> Option<Entity<QueryTab>> {
@@ -1512,7 +1279,6 @@ impl Workspace {
         self.open_dialog_with(profile, false, None, window, cx);
     }
 
-    /// Opens the connection sheet: editing `profile`, or a new one prefilled with it.
     pub fn open_dialog_with(
         &mut self,
         profile: Option<ConnectionProfile>,
@@ -1540,7 +1306,6 @@ impl Workspace {
                     let (id, pw) = (id.clone(), password.clone());
                     w.store.update(cx, |s, cx| s.connect(&id, pw, cx));
                 }
-                // The sheet stays up while open transactions are asked about.
                 DialogEvent::Save => return w.request_save_connection(d.clone(), window, cx),
                 DialogEvent::Delete(id) => return w.request_delete_connection(id.clone(), true, window, cx),
             }
@@ -1553,7 +1318,6 @@ impl Workspace {
         cx.notify();
     }
 
-    /// A new connection prefilled from the clipboard's connection string (URL or key=value).
     pub(crate) fn new_connection_from_clipboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let text = cx.read_from_clipboard().and_then(|c| c.text()).unwrap_or_default();
         match dataman_core::connstr::parse_profile(&text) {
@@ -1562,7 +1326,6 @@ impl Workspace {
         }
     }
 
-    /// The import sheet: services and pgpass lines to pick from.
     pub(crate) fn open_import(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.modal_open(cx) {
             return;
@@ -1588,8 +1351,6 @@ impl Workspace {
         cx.notify();
     }
 
-    /// The value sheet of a JSON or array cell (the grid's eye, ⇧Space); the keys go back to the
-    /// grid when it closes.
     pub(crate) fn open_value(&mut self, cell: crate::value_view::ValueCell, window: &mut Window, cx: &mut Context<Self>) {
         if self.modal_open(cx) {
             return;
@@ -1628,7 +1389,6 @@ impl Workspace {
         match ev {
             TreeEvent::Selected(id) => {
                 self.current_conn = Some(id.clone());
-                // A tab without a connection follows the explorer.
                 let conn = self.store.read(cx).connection(id);
                 if let (Some(tab), Some(conn)) = (self.active_tab().cloned(), conn) {
                     tab.update(cx, |t, cx| {
@@ -1638,7 +1398,6 @@ impl Workspace {
                     });
                 }
             }
-            // ⌥-click: in the other editor group.
             TreeEvent::OpenRelation { conn, db, schema, name } => {
                 self.open_in = self.alt_aside(window);
                 self.open_relation(conn, db, schema, name, window, cx);
@@ -1660,9 +1419,6 @@ impl Workspace {
         cx.notify();
     }
 
-    /// The default action on a table or view — explorer ↩ and double-click, the menu's bold
-    /// "View data", the palette: the relation's data view (`table_view`) in a new tab on that
-    /// connection and database: its first page, filters, a server-side sort, the total.
     pub(crate) fn open_relation(&mut self, conn: &str, db: &str, schema: &str, name: &str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(c) = self.store.read(cx).connection(conn) else {
             self.notice("Connect first", cx);
@@ -1675,7 +1431,6 @@ impl Workspace {
             t.set_database(db.to_string(), cx);
         });
         let page = self.store.read(cx).core.settings.get().page_size.max(1) as u64;
-        // The primary key orders the pages.
         let task = c.primary_key(db, schema, name);
         let (schema, name) = (schema.to_string(), name.to_string());
         cx.spawn_in(window, async move |_, cx| {
@@ -1685,9 +1440,6 @@ impl Workspace {
         .detach();
     }
 
-    /// "Go to …" on a reference in `from`'s grid: the referenced row in a new tab on the same
-    /// connection and database, run at once in that tab's own session (the source tab, its
-    /// result and its pending edits stay as they are).
     pub(crate) fn follow_reference(&mut self, from: &Entity<QueryTab>, j: &dataman_core::fknav::FkJump, window: &mut Window, cx: &mut Context<Self>) {
         let (conn, db) = {
             let t = from.read(cx);
@@ -1696,19 +1448,15 @@ impl Workspace {
         let Some(conn) = conn else { return };
         if let Some(tab) = self.open_sql_tab(&conn, Some(&db), &j.sql, true, window, cx) {
             tab.update(cx, |t, cx| t.set_title(j.title.clone(), j.sql.clone(), cx));
-            // Where it landed: the key of the first row pops (yellow) when the row arrives.
             let grid = tab.read(cx).grid.clone();
             grid.update(cx, |g, _| g.land_on(Some(j.key.clone()).filter(|k| !k.is_empty())));
         }
     }
 
-    /// Grid edits of a tab: the review sheet opens and closes in the side panel.
     fn on_edit(&mut self, edit: &Entity<crate::edit_ui::GridEdit>, ev: &crate::edit_ui::EditEvent, _: &mut Window, cx: &mut Context<Self>) {
         use crate::edit_ui::EditEvent;
         match ev {
             EditEvent::OpenReview => {
-                // Only for the active tab: a commit that failed in a background tab waits there
-                // (its result bar says "N PENDING"; ⌘S opens the review).
                 let tab = self.active_tab().filter(|t| t.read(cx).edit == *edit).map(|t| t.entity_id());
                 match tab {
                     Some(id) => {
@@ -1740,7 +1488,6 @@ impl Workspace {
         self.active_tab().map(|t| t.read(cx).edit.clone())
     }
 
-    /// ⌘, opens (or closes) the Settings sheet.
     pub(crate) fn toggle_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.settings_view.take().is_some() {
             match self.modal_return.take() {
@@ -1769,7 +1516,6 @@ impl Workspace {
         cx.notify();
     }
 
-    /// The Settings sheet open on one of its sections (`mcp`, `keyboard`…).
     pub(crate) fn open_settings_at(&mut self, section: &str, window: &mut Window, cx: &mut Context<Self>) {
         if self.settings_view.is_none() {
             self.toggle_settings(window, cx);
@@ -1795,13 +1541,9 @@ impl Workspace {
             ConnEvent::Connected(id) => {
                 self.current_conn = Some(id.clone());
                 let conn = self.store.read(cx).connection(id);
-                // Tabs without a connection adopt the new one, and so do tabs left on this
-                // profile's previous connection (edited: the new settings apply) unless they
-                // opened a transaction since or are running a statement on it.
                 for tab in self.tabs.clone() {
                     let conn = conn.clone();
                     tab.update(cx, |t, cx| {
-                        // A restored tab waits for its own connection.
                         if let Some((want, _)) = &t.want {
                             if want == id
                                 && let Some(c) = conn
@@ -1829,7 +1571,6 @@ impl Workspace {
                 });
             }
             ConnEvent::Failed { id, ssh: Some(err), .. } => {
-                // The tunnel needs the user: the sheet opens on the host key or the secret.
                 if self.dialog.is_none() {
                     self.open_dialog(Some(id.clone()), window, cx);
                     if let Some(d) = self.dialog.clone() {
@@ -1854,7 +1595,6 @@ impl Workspace {
         cx.notify();
     }
 
-    /// The "LAR detected" toast, for a few seconds.
     fn show_lar_toast(&mut self, name: String, cx: &mut Context<Self>) {
         let at = Instant::now();
         self.lar_toast = Some((name, at));
@@ -1870,7 +1610,6 @@ impl Workspace {
         .detach();
     }
 
-    /// A short message in the status bar (4 s).
     pub(crate) fn notice(&mut self, msg: impl Into<String>, cx: &mut Context<Self>) {
         let at = Instant::now();
         self.flash_notice = Some((msg.into(), at));
@@ -1887,12 +1626,9 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Opens or closes a registered server panel in the side panel (LAR's, from the toolbar or
-    /// ⌥1), at the panel's width when it gives one, bound to the tab's connection.
     pub(crate) fn toggle_server_panel(&mut self, id: &'static str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(conn) = self.active_tab().and_then(|t| t.read(cx).connection().cloned()) else { return };
         let Some(panel) = cx.try_global::<PanelRegistry>().and_then(|r| r.find(&conn.info, id)) else { return };
-        // Open for this connection: close it. Open for another one: rebuild.
         if matches!(&self.side, Some(Side::Server(pid, _, b)) if *pid == id && b.fits(None, Some(&conn))) {
             self.last_side = self.side.take();
         } else {
@@ -1905,10 +1641,6 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Keeps the side panel in line with the active tab (called on every tab
-    /// switch, close and connection change, and before each frame): a view built for another
-    /// connection is rebuilt for this tab's connection when it has that panel, or hidden; a
-    /// view that belongs to another tab closes; the history lists this tab's connection.
     pub(crate) fn sync_bound_views(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let tab = self.active_tab().cloned();
         let tab_id = tab.as_ref().map(|t| t.entity_id());
@@ -1933,14 +1665,11 @@ impl Workspace {
             }
             self.side = rebuilt.map(|(id, v, c)| Side::Server(id, v, Bound::Conn(c)));
         }
-        // ⌥⌘B must not bring back a view of another tab or connection.
         if self.last_side.as_ref().and_then(|s| s.bound()).is_some_and(|b| !fits(b)) {
             self.last_side = None;
         }
     }
 
-    /// ⌘O: one or more `.sql` files (the panel shows only those), each in a tab of its own on the
-    /// current connection and database, named after its file.
     pub(crate) fn open_sql_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let paths = crate::sql_picker::pick_sql_files(true, cx);
         cx.spawn_in(window, async move |this, cx| {
@@ -1950,7 +1679,6 @@ impl Workspace {
         .detach();
     }
 
-    /// Opens each file in a new tab (title = its file name); one that cannot be read says so.
     pub(crate) fn open_sql_paths(&mut self, paths: &[std::path::PathBuf], window: &mut Window, cx: &mut Context<Self>) {
         for path in paths {
             let text = match dataman_core::sql::read_script(path) {
@@ -1970,14 +1698,12 @@ impl Workspace {
         }
     }
 
-    /// The region that holds the focus.
     pub(crate) fn focused_region(&self, window: &Window, cx: &App) -> Option<Region> {
         if self.tree.read(cx).contains_focus(window, cx) {
             return Some(Region::Explorer);
         }
         if let Some(t) = self.active_tab() {
             let t = t.read(cx);
-            // A find bar sits beside its region's focus handle, and counts as that region.
             if t.editor.focus_handle(cx).contains_focused(window, cx) || t.editor.read(cx).find_has_focus(window, cx) {
                 return Some(Region::Editor);
             }
@@ -1995,8 +1721,6 @@ impl Workspace {
         None
     }
 
-    /// Opens or shuts the explorer, sliding it like Zeron's sidebar (from wherever it is now,
-    /// so a toggle mid-flight turns around smoothly).
     pub(crate) fn set_explorer_open(&mut self, open: bool, cx: &mut Context<Self>) {
         if open == self.explorer_open {
             return;
@@ -2004,14 +1728,10 @@ impl Workspace {
         let from = self.explorer_now();
         self.explorer_open = open;
         let to = self.explorer_target();
-        // Reduce motion: the column is simply there (or gone).
         self.explorer_tween = (!cx.reduce_motion()).then(|| crate::motion::WidthTween::panel(from, to, metrics::EXPLORER_W));
         cx.notify();
     }
 
-    /// Zooms the active tab's result panel over the editor (the Run row included) and the side
-    /// panel, or back; the explorer and the tabs stay. Animated from wherever it is now (a
-    /// toggle mid-flight turns around), at once with "Reduce motion".
     pub(crate) fn toggle_result_zoom(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(tab) = self.active_tab().cloned() else { return };
         if !tab.read(cx).has_run || tab.read(cx).monitor.is_some() {
@@ -2026,7 +1746,6 @@ impl Workspace {
         });
         self.zoom_tween = (!cx.reduce_motion()).then(|| (tab.entity_id(), crate::motion::ZoomTween::new(from)));
         if on {
-            // The editor goes out of sight: the keys go to the grid (a document view's list).
             let g = match &tab.read(cx).doc {
                 Some(d) => d.read(cx).list_focus(),
                 None => tab.read(cx).grid.focus_handle(cx),
@@ -2036,7 +1755,6 @@ impl Workspace {
         cx.notify();
     }
 
-    /// How far the tab's result is zoomed this frame (0 in place … 1 zoomed).
     pub(crate) fn zoom_now(&self, tab: &Entity<QueryTab>, cx: &App) -> f32 {
         let target = if tab.read(cx).zoomed { 1. } else { 0. };
         match self.zoom_tween {
@@ -2045,7 +1763,6 @@ impl Workspace {
         }
     }
 
-    /// [`Workspace::zoom_now`] for drawing: asks for the next frame while it moves.
     pub(crate) fn zoom_frame(&mut self, tab: &Entity<QueryTab>, window: &mut Window, cx: &App) -> f32 {
         let target = if tab.read(cx).zoomed { 1. } else { 0. };
         if let Some((id, z)) = self.zoom_tween {
@@ -2061,9 +1778,6 @@ impl Workspace {
         target
     }
 
-    /// The side panel's width this frame while it slides: in from its dock's edge when it
-    /// opens, out when it shuts (the explorer's tween); one view replacing another just
-    /// appears. `None` while there is nothing to draw. Called once per frame.
     pub(crate) fn side_slide(&mut self, window: &mut Window, cx: &App) -> Option<f32> {
         let open = self.side.is_some();
         if open != self.side_was {
@@ -2085,12 +1799,10 @@ impl Workspace {
         }
     }
 
-    /// Checks: the sidebar is sliding now.
     pub(crate) fn demo_explorer_sliding(&self) -> bool {
         self.explorer_tween.is_some_and(|t| t.at(self.explorer_target(), Instant::now()).is_some())
     }
 
-    /// Checks: the side panel is sliding now.
     pub(crate) fn demo_side_sliding(&self) -> bool {
         self.side_tween.is_some_and(|t| t.at(0., Instant::now()).is_some())
     }
@@ -2099,7 +1811,6 @@ impl Workspace {
         if self.explorer_open { self.explorer_w } else { 0. }
     }
 
-    /// The explorer column's width this frame.
     pub(crate) fn explorer_now(&self) -> f32 {
         let target = self.explorer_target();
         self.explorer_tween.and_then(|t| t.at(target, std::time::Instant::now())).unwrap_or(target)
@@ -2117,12 +1828,10 @@ impl Workspace {
             }
             Region::Editor => self.focus_editor(window, cx),
             Region::Grid => {
-                // ⌘⇧G before the first run: the grid is not on screen, the focus stays.
                 if !self.results_shown(cx) {
                     return;
                 }
                 if let Some(t) = self.active_tab() {
-                    // The plan view stands where the grid does.
                     let f = if t.read(cx).shows_plan(cx) { t.read(cx).plan.focus_handle(cx) } else { t.read(cx).grid.focus_handle(cx) };
                     window.focus(&f, cx);
                 }
@@ -2138,7 +1847,6 @@ impl Workspace {
             order.push(Region::Explorer);
         }
         order.push(Region::Editor);
-        // No result panel before the tab's first run: nothing to focus there.
         if self.results_shown(cx) {
             order.push(Region::Grid);
         }
@@ -2197,8 +1905,6 @@ impl Workspace {
         }
     }
 
-    /// The menu bar follows the engine of the active tab's connection (else the explorer's):
-    /// what it cannot do is left out of the menus.
     fn sync_menu_caps(&mut self, cx: &mut Context<Self>) {
         let conn = self.active_tab().and_then(|t| t.read(cx).connection().cloned());
         let engine = match conn {
@@ -2206,7 +1912,6 @@ impl Workspace {
             None => self.current_conn.as_ref().and_then(|id| self.store.read(cx).profile(id)).map(|p| p.engine).unwrap_or_default(),
         };
         let caps = dataman_core::Caps::of(engine);
-        // The menus were built for PostgreSQL's (everything) until told otherwise.
         let shown = cx.try_global::<crate::MenuCaps>().map_or(dataman_core::Caps::POSTGRES, |m| m.0);
         if shown != caps {
             cx.set_global(crate::MenuCaps(caps));
@@ -2214,7 +1919,6 @@ impl Workspace {
         }
     }
 
-    /// ⌘D: favorites the statement under the cursor of the active tab, on its connection.
     pub(crate) fn favorite_current_query(&mut self, cx: &mut Context<Self>) {
         let Some(t) = self.active_tab().cloned() else { return };
         let Some(stmt) = t.update(cx, |t, cx| t.editor.update(cx, |e, cx| e.current_statement(cx))) else { return };
@@ -2232,7 +1936,6 @@ impl Workspace {
         let store = self.store.read(cx).core.favorites.clone();
         let new = fav.id.clone();
         if let Ok(saved) = store.add(fav) {
-            // Saved already (the same statement): nothing to undo.
             if saved.id == new {
                 let ix = store.list().iter().position(|f| f.id == saved.id).unwrap_or(0);
                 self.did(format!("Add favorite '{}'", saved.name), crate::undo::Op::Favorite { fav: saved, ix, added: true });
@@ -2242,9 +1945,6 @@ impl Workspace {
         }
     }
 
-    /// Import Favorites…: each selected `.sql` file (the panel shows only those, several at
-    /// once) as a favorite named after the file, its content the SQL; one already there (the
-    /// same SQL) is skipped.
     pub(crate) fn import_favorites(&mut self, cx: &mut Context<Self>) {
         let rx = crate::sql_picker::pick_sql_files(true, cx);
         cx.spawn(async move |this, cx| {
@@ -2277,11 +1977,7 @@ impl Workspace {
         self.history.update(cx, |h, cx| h.reload_favorites(cx));
     }
 
-    /// A favorite in a tab (on its own connection and database; `run` also runs it), the tab
-    /// linked to it: titled with its name, ⌘S saves into it.
     pub(crate) fn open_favorite(&mut self, fav: Favorite, run: bool, window: &mut Window, cx: &mut Context<Self>) {
-        // Its connection not connected (yet): the tab opens now and takes the connection once it
-        // is up (`want`, as a restored tab), which connects here; a run waits for it.
         let offline = fav.connection_id.clone().filter(|id| self.store.read(cx).connection(id).is_none() && self.store.read(cx).profile(id).is_some());
         let tab = match &offline {
             Some(id) => {
@@ -2311,23 +2007,16 @@ impl Workspace {
         });
     }
 
-    /// ⌘S: the active tab's script into its favorite (name, connection and database kept), or,
-    /// when the tab has none, into a new favorite named after the tab (made unique), which the
-    /// tab is linked to from then on. "Saved as favorite →" / "Saved →" next to the History
-    /// button says so; a click there shows it in the favorites.
     pub(crate) fn save_favorite(&mut self, cx: &mut Context<Self>) {
         if let Some(tab) = self.active_tab().cloned() {
             self.save_favorite_of(&tab, cx);
         }
     }
 
-    /// Whether tab `tab` has a script to save as a favorite (not an activity monitor, not
-    /// empty).
     pub(crate) fn can_save_favorite(tab: &Entity<QueryTab>, cx: &App) -> bool {
         tab.read(cx).monitor.is_none() && !tab.read(cx).editor.read(cx).text().trim().is_empty()
     }
 
-    /// ⌘S on tab `tab` (its menu's Add to Favorites, whether or not it is in front).
     pub(crate) fn save_favorite_of(&mut self, tab: &Entity<QueryTab>, cx: &mut Context<Self>) {
         if !Self::can_save_favorite(tab, cx) {
             return;
@@ -2344,7 +2033,6 @@ impl Workspace {
             },
             None => None,
         };
-        // Not linked, or its favorite was removed meanwhile: a new one.
         let (fav, label) = match updated {
             Some(f) => (f, "saved to favorites"),
             None => {
@@ -2377,8 +2065,6 @@ impl Workspace {
         self.flash_saved(fav.id, label, cx);
     }
 
-    /// ⌘S's feedback: the rail's Favorites icon lit, fading in and out (`motion::SAVED`),
-    /// redrawn only while it changes; with the sidebar hidden (the rail with it), a notice.
     fn flash_saved(&mut self, id: String, label: &'static str, cx: &mut Context<Self>) {
         if !self.explorer_open {
             let mut said = label.to_string();
@@ -2405,9 +2091,6 @@ impl Workspace {
         cx.notify();
     }
 
-    /// The sidebar on its favorites, favorite `id` selected, scrolled into view and focused
-    /// (the sidebar slides in if it was shut): a palette pick, a click on the rail's lit
-    /// Favorites icon after ⌘S.
     pub(crate) fn show_favorite(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.set_nav(NavView::Favorites, cx);
         self.set_explorer_open(true, cx);
@@ -2418,7 +2101,6 @@ impl Workspace {
         cx.notify();
     }
 
-    /// The tabs linked to a favorite follow its rename, and let go of it once it is removed.
     pub(crate) fn sync_favorite_tabs(&mut self, cx: &mut Context<Self>) {
         let favorites = self.store.read(cx).core.favorites.list();
         for tab in self.tabs.clone() {
@@ -2433,9 +2115,6 @@ impl Workspace {
         }
     }
 
-    /// ⇧⌘S, Save As…: the active tab's script to a `.sql` file picked in the save panel
-    /// (proposed: the tab's title); the tab is named after the file (a favorite's tab keeps its
-    /// favorite's name).
     pub(crate) fn save_as(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(tab) = self.active_tab().cloned() else { return };
         if tab.read(cx).monitor.is_some() {
@@ -2462,10 +2141,8 @@ impl Workspace {
         }
     }
 
-    /// ⌘L / ⌥⌘L: Explain (Analyze) of the active tab's statement under the cursor.
     pub(crate) fn explain_active(&mut self, analyze: bool, cx: &mut Context<Self>) {
         if let Some(t) = self.active_tab().cloned() {
-            // Engines without a plan view (MySQL) leave the key alone.
             if t.read(cx).connection().is_some_and(|c| !c.caps().explain) {
                 return;
             }
@@ -2473,7 +2150,6 @@ impl Workspace {
         }
     }
 
-    /// "Copy as text": the plan on screen, as PostgreSQL prints it.
     pub(crate) fn copy_plan_text(&mut self, cx: &mut Context<Self>) {
         let Some(t) = self.active_tab().cloned() else { return };
         if !t.read(cx).shows_plan(cx) {
@@ -2491,7 +2167,6 @@ impl Workspace {
         .detach();
     }
 
-    /// The plan view's tree ⇄ flame.
     pub(crate) fn toggle_plan_flame(&mut self, cx: &mut Context<Self>) {
         let Some(t) = self.active_tab().cloned() else { return };
         if !t.read(cx).shows_plan(cx) {
@@ -2505,7 +2180,6 @@ impl Workspace {
         cx.notify();
     }
 
-    /// A click on a result tab.
     pub(crate) fn select_result(&mut self, key: dataman_core::batch::Key, cx: &mut Context<Self>) {
         if let Some(t) = self.active_tab().cloned() {
             if t.read(cx).shown_key() != Some(key) {
@@ -2515,7 +2189,6 @@ impl Workspace {
         }
     }
 
-    /// The toolbar's connection picker: opens (loading the databases not listed yet) or shuts.
     pub(crate) fn toggle_conn_menu(&mut self, cx: &mut Context<Self>) {
         if self.conn_menu_shut.take().is_some_and(|at| at.elapsed() < Duration::from_millis(300)) {
             return;
@@ -2535,8 +2208,6 @@ impl Workspace {
         cx.notify();
     }
 
-    /// A database picked in the connection picker: the active tab moves there (its session
-    /// ends: an open transaction is asked about first, like any switch).
     pub(crate) fn pick_target(&mut self, id: &str, db: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.conn_menu = false;
         cx.notify();
@@ -2551,7 +2222,6 @@ impl Workspace {
         self.retarget(&tab, conn, Some(db.to_string()), None, window, cx);
     }
 
-    /// The × of a result tab.
     pub(crate) fn close_result(&mut self, key: dataman_core::batch::Key, cx: &mut Context<Self>) {
         if let Some(t) = self.active_tab().cloned() {
             self.result_folds_away(&t, key, cx);
@@ -2559,7 +2229,6 @@ impl Workspace {
         }
     }
 
-    /// ⌥⌘] / ⌥⌘[.
     fn cycle_result(&mut self, forward: bool, cx: &mut Context<Self>) {
         if let Some(t) = self.active_tab().cloned() {
             if t.read(cx).result_tabs().len() > 1 {
@@ -2604,7 +2273,6 @@ impl Workspace {
         cx.notify();
     }
 
-    /// A seam let go: what it resized is one undo step.
     fn end_seam_drag(&mut self) {
         let Some(d) = self.drag.take() else { return };
         let Some(from) = self.seam_from.take() else { return };
@@ -2619,8 +2287,6 @@ impl Workspace {
         }
     }
 
-    /// A dragged tab dropped at the gap `slot` (`tab_drop`) of a group's strip moves there (into
-    /// that group, when it is the other one) and is the active one.
     pub(crate) fn drop_tab(&mut self, id: EntityId, window: &mut Window, cx: &mut Context<Self>) {
         self.tab_motion.landed();
         match self.tab_drop.take() {
@@ -2634,9 +2300,7 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Closes the tabs in `close` together; with transactions open in any, asks once first.
     pub(crate) fn close_tabs(&mut self, close: Vec<Entity<QueryTab>>, window: &mut Window, cx: &mut Context<Self>) {
-        // Tabs with pending grid edits stay open (closing one alone asks about them).
         let (kept, close): (Vec<_>, Vec<_>) = close.into_iter().partition(|t| t.read(cx).edit.read(cx).pending_count() > 0);
         if !kept.is_empty() {
             let n = kept.len();
@@ -2652,8 +2316,6 @@ impl Workspace {
         self.close_tabs_now(close, window, cx);
     }
 
-    /// Closes the tabs in `close` at once, one undo step for all of them (Undo reopens them; an
-    /// editor group closed comes back as a group).
     fn close_tabs_now(&mut self, close: Vec<Entity<QueryTab>>, window: &mut Window, cx: &mut Context<Self>) {
         let first = close.first().map(|t| t.read(cx).title(cx).to_string()).unwrap_or_default();
         let closed = self.close_tabs_quietly(close, window, cx);
@@ -2669,8 +2331,6 @@ impl Workspace {
         self.did(label, crate::undo::Op::Tabs { closed, reopened: vec![] });
     }
 
-    /// Closes the tabs in `close` at once, no step recorded: what they were, in the order they
-    /// closed.
     pub(crate) fn close_tabs_quietly(&mut self, close: Vec<Entity<QueryTab>>, window: &mut Window, cx: &mut Context<Self>) -> Vec<crate::undo::ClosedTab> {
         let active = self.active_tab().cloned();
         let mut closed = Vec::new();
@@ -2679,20 +2339,17 @@ impl Workspace {
                 closed.extend(self.close_tab_quietly(ix, window, cx));
             }
         }
-        // The active tab stays active when it is left.
         if let Some(ix) = active.and_then(|a| self.tabs.iter().position(|t| *t == a)) {
             self.activate(ix, window, cx);
         }
         closed
     }
 
-    /// Height of the work column below the toolbar (editor + divider + result bar + grid).
     pub(crate) fn work_column_h(&self, window: &Window) -> f32 {
         let h = window.viewport_size().height.pt();
         h - metrics::TITLE_H - metrics::STATUS_H - metrics::TOOLBAR_H
     }
 
-    /// `below`: the extra chrome under the divider (the result tabs strip, when shown).
     pub(crate) fn editor_h(&self, window: &Window, below: f32) -> f32 {
         let column = self.work_column_h(window);
         let compact = window.viewport_size().height.pt() <= 800.;
@@ -2702,23 +2359,19 @@ impl Workspace {
         h.clamp(metrics::EDITOR_MIN, max)
     }
 
-    /// Connection state for the benchmarks.
     pub fn connection_state(&self, id: &str, cx: &App) -> Option<ConnState> {
         self.store.read(cx).states.get(id).cloned()
     }
 
-    /// Whether the active tab shows its result panel (from its first run on).
     pub(crate) fn results_shown(&self, cx: &App) -> bool {
         self.active_tab().is_some_and(|t| t.read(cx).has_run)
     }
 
-    /// Whether there is anything to show but the welcome screen.
     pub(crate) fn first_run(&self, cx: &App) -> bool {
         self.store.read(cx).profiles.is_empty()
     }
 }
 
-/// The path of a `file://` URL (percent-decoded); a bare path passes through.
 pub(crate) fn file_url_path(url: &str) -> Option<std::path::PathBuf> {
     let rest = match url.strip_prefix("file://") {
         Some(r) => r.strip_prefix("localhost").unwrap_or(r),
@@ -2775,32 +2428,21 @@ impl Render for Workspace {
         // A connection change of the active tab (explorer, ⌥↩, palette, disconnect) lands
         // here before anything can act on a panel of the old connection.
         self.sync_bound_views(window, cx);
-        // An activity monitor reads only while its tab is in front.
         self.sync_monitors(window, cx);
         self.sync_menu_caps(cx);
-        // Anything the session keeps changed: save it once things settle (nothing to watch with
-        // sessions off: the checks and benchmarks).
         let fp = if crate::restore::store(cx).is_some() && !self.session_off { self.session_fingerprint(cx) } else { 0 };
         if fp != self.session_fp {
             self.session_fp = fp;
             self.schedule_session_save(cx);
         }
-        // The keyboard focus went into the other editor group: that group has the focus.
         self.sync_group_focus(window, cx);
         let t = cx.theme();
         let first_run = self.first_run(cx);
-        // The docks first (`dock`): the work surface and the title bar follow their geometry, and
-        // the editor groups (`split`) share the surface.
         let pass = self.dock_pass(first_run, window, cx);
         self.split_now = if first_run { None } else { self.split_frame(window) };
         let surface = if first_run { self.welcome.clone().into_any_element() } else { self.render_work(window, cx).into_any_element() };
-        // Zeron's shell: the left dock (the explorer) and the work column both run from the
-        // window's top edge to the status bar, with the title bar laid over them (transparent).
-        // The left dock sits on the glass; the work column paints its `panel` fill once, flush (no
-        // radius, no margin) to the window's right edge, and its left hairline is the seam; the
-        // right dock sits inside it.
-        // ⌘B slides the explorer (Zeron's sidebar tween): its content keeps the full width and is
-        // clipped, so the tree never reflows mid-flight. Frames are requested only while it moves.
+        // The explorer's content keeps the full width and is clipped while it slides, so the tree
+        // never reflows mid-flight. Frames are requested only while it moves.
         if let Some(tw) = self.explorer_tween {
             if tw.at(self.explorer_target(), std::time::Instant::now()).is_some() {
                 window.request_animation_frame();
@@ -2808,13 +2450,10 @@ impl Render for Workspace {
                 self.explorer_tween = None;
             }
         }
-        // A production connection: a thin red accent across the top of the work column.
         let production = !first_run && self.active_tab().and_then(|t| t.read(cx).connection().map(|c| c.profile.env.is_production())).unwrap_or(false);
         let docks = self.render_docks(&pass, production, window, cx);
         let left_w = pass.frame.dock(dataman_core::layout::Dock::Left).rect.w;
         let left_shown = left_w > 0.5;
-        // The history beside the explorer is under the tab band: the seam beside it is its own,
-        // under the band (`render_docks`); this one keeps its room, unseen.
         let seam = if pass.band_left() { gpui::transparent_black() } else { t.line };
         let moving = self.explorer_tween.is_some() || !self.dock_moves.is_empty();
         let work = div()
@@ -2823,15 +2462,12 @@ impl Render for Workspace {
             .h_full()
             .flex()
             .flex_col()
-            // The work column's fill (`bg` at 10 % over the glass, solid white in the light
-            // theme), painted here and only here: every region inside is transparent, so no
-            // overlap darkens. Under the title bar it carries the query tabs.
+            // The work column's fill, painted here and only here: every region inside is transparent,
+            // so no overlap darkens.
             .bg(t.panel)
             .when(left_shown, |d| d.border_l_1().border_color(seam))
             .overflow_hidden()
             .child(div().h(px(metrics::TITLE_H)).flex_none())
-            // The title band ends on a hairline over the work column (the toolbar and the editor
-            // start under it).
             .child(
                 div()
                     .flex_1()
@@ -2842,8 +2478,6 @@ impl Render for Workspace {
                     .when(production, |d| d.border_t_2().border_color(t.err))
                     .child(div().flex_1().min_w_0().h_full().flex().child(surface)),
             );
-        // The docks' resize grabbers on their seams, from under the title bar down (the bar
-        // keeps its drag area), painted over the columns; not while a panel moves.
         let seams = if moving { Vec::new() } else { self.render_seams(&pass.frame, cx) };
         div()
             .id("workspace")
@@ -2851,8 +2485,6 @@ impl Render for Workspace {
             .relative()
             .flex()
             .flex_col()
-            // The glass, once, behind the whole window: the work column's translucent fill sits
-            // on it too.
             .bg(t.glass)
             .text_color(t.tx)
             .font_family(mono())
@@ -2861,7 +2493,6 @@ impl Render for Workspace {
             .track_focus(&self.focus)
             .on_action(cx.listener(|w, _: &GoBack, window, cx| w.go(false, window, cx)))
             .on_action(cx.listener(|w, _: &GoForward, window, cx| w.go(true, window, cx)))
-            // The mouse's side buttons, anywhere in the window.
             .capture_any_mouse_down(cx.listener(|w, ev: &gpui::MouseDownEvent, window, cx| {
                 if let MouseButton::Navigate(d) = ev.button {
                     w.go(d == gpui::NavigationDirection::Forward, window, cx);
@@ -2875,7 +2506,6 @@ impl Render for Workspace {
                 let a = w.active;
                 w.close_tab(a, window, cx)
             }))
-            // The tabs of the focused editor group.
             .on_action(cx.listener(|w, _: &NextTab, window, cx| w.cycle_tab(true, window, cx)))
             .on_action(cx.listener(|w, _: &PrevTab, window, cx| w.cycle_tab(false, window, cx)))
             .on_action(cx.listener(|w, _: &Tab1, window, cx| w.activate_nth(Some(0), window, cx)))
@@ -2886,15 +2516,12 @@ impl Render for Workspace {
             .on_action(cx.listener(|w, _: &Tab6, window, cx| w.activate_nth(Some(5), window, cx)))
             .on_action(cx.listener(|w, _: &Tab7, window, cx| w.activate_nth(Some(6), window, cx)))
             .on_action(cx.listener(|w, _: &Tab8, window, cx| w.activate_nth(Some(7), window, cx)))
-            // ⌘9 is the last tab, as in browsers.
             .on_action(cx.listener(|w, _: &Tab9, window, cx| w.activate_nth(None, window, cx)))
             .on_action(cx.listener(|w, _: &NewConnection, window, cx| w.open_dialog(None, window, cx)))
             .on_action(cx.listener(|w, _: &EditConnection, window, cx| {
                 let id = w.current_conn.clone();
                 w.open_dialog(id, window, cx)
             }))
-            // Not while the history shares the explorer's dock (the explorer controls it): the
-            // key does nothing, the menu item and the palette's entry are off.
             .on_action(cx.listener(|w, _: &FavoriteQuery, _, cx| w.favorite_current_query(cx)))
             .on_action(cx.listener(|w, _: &SaveFavorite, _, cx| w.save_favorite(cx)))
             .on_action(cx.listener(|w, _: &SaveAs, window, cx| w.save_as(window, cx)))
@@ -2919,7 +2546,6 @@ impl Render for Workspace {
             .on_action(cx.listener(|w, _: &ToggleMcpLog, window, cx| w.toggle_mcp_log(window, cx)))
             .on_action(cx.listener(|w, _: &ToggleResultZoom, window, cx| w.toggle_result_zoom(window, cx)))
             .on_action(cx.listener(|w, _: &RunZoomed, window, cx| {
-                // Only a zoomed tab: its editor is out of sight, ⌘↩ runs its script again.
                 if w.active_tab().is_some_and(|t| t.read(cx).zoomed) {
                     w.run_active(window, cx);
                 } else {
@@ -2938,7 +2564,6 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(|w, _: &Refresh, _, cx| w.tree.update(cx, |t, cx| t.refresh_selected(cx))))
             .on_action(cx.listener(|w, _: &ToggleExplorer, window, cx| {
-                // Whatever view the sidebar shows hides with it: the focus leaves it too.
                 let inside = w.focused_region(window, cx) == Some(Region::Explorer);
                 w.set_explorer_open(!w.explorer_open, cx);
                 if !w.explorer_open && inside {
@@ -2971,14 +2596,12 @@ impl Render for Workspace {
                     cx.notify();
                     return;
                 }
-                // esc on the grid closes an edit card first.
                 if w.focused_region(window, cx) == Some(Region::Grid)
                     && let Some(e) = w.active_edit(cx)
                     && e.update(cx, |e, cx| e.dismiss_card(cx))
                 {
                     return;
                 }
-                // esc on a zoomed result: back in place (the editor shows again).
                 if w.focused_region(window, cx) == Some(Region::Grid) && w.active_tab().is_some_and(|t| t.read(cx).zoomed) {
                     return w.toggle_result_zoom(window, cx);
                 }
@@ -2987,8 +2610,6 @@ impl Render for Workspace {
             .on_action(cx.listener(|w, _: &CycleFocus, window, cx| w.cycle_focus(true, window, cx)))
             .on_action(cx.listener(|w, _: &CycleFocusBack, window, cx| w.cycle_focus(false, window, cx)))
             .on_action(cx.listener(|w, _: &JumpToError, window, cx| w.jump_to_error(window, cx)))
-            // Find… / Replace… from the menu or the palette with the focus outside the editor and
-            // the grid (they handle it themselves): the editor's bar.
             .on_action(cx.listener(|w, _: &crate::find::Find, window, cx| w.find_in_editor(false, window, cx)))
             .on_action(cx.listener(|w, _: &crate::find::FindReplace, window, cx| w.find_in_editor(true, window, cx)))
             .on_action(cx.listener(|w, _: &crate::find::FindNext, window, cx| w.find_step_in_editor(true, window, cx)))
@@ -3037,7 +2658,6 @@ impl Render for Workspace {
                 });
             }))
             .on_action(cx.listener(|w, _: &OpenSqlFile, window, cx| w.open_sql_file(window, cx)))
-            // The palette's "Show row actions" (in the explorer ⇧F10 is the tree's own).
             .on_action(cx.listener(|w, _: &crate::tree::ShowRowActions, window, cx| {
                 let was_open = w.explorer_open;
                 w.focus_region(Region::Explorer, window, cx);
@@ -3097,18 +2717,14 @@ impl Render for Workspace {
             }))
             .capture_key_down(cx.listener(|w, _, _, _| w.alt_press = false))
             .child(div().flex_1().min_h_0().relative().flex().flex_row().children(docks.left).child(work).children(docks.right).children(seams))
-            // A pane being resized keeps its cursor wherever the pointer goes.
             .children(self.drag.map(|d| {
                 let rows = matches!(d, Drag::Split);
                 let style = if rows { gpui::CursorStyle::ResizeRow } else { gpui::CursorStyle::ResizeColumn };
                 gpui::canvas(|_, _, _| {}, move |_, _, window, _| window.set_window_cursor_style(style)).absolute().size_0()
             }))
             .child(self.render_status(window, cx))
-            // The title bar over the top of both columns (it paints nothing but its tabs).
             .child(self.render_titlebar(window, cx))
-            // A 1 pt highlight along the top edge (dark theme), across the whole window.
             .when(t.is_dark(), |d| d.child(div().absolute().top_0().left_0().right_0().h(px(1.)).bg(gpui::hsla(0., 0., 1., 0.08))))
-            // A panel being dragged: where it would land.
             .children(self.render_drop_preview(window, cx))
             .children(self.render_saved_hint(window, cx))
             .children(self.render_panel_menu(cx))
@@ -3132,7 +2748,6 @@ impl Render for Workspace {
     }
 }
 
-/// `DATAMAN_TRACE_FRAMES=1`: prints renders slower than 1 ms (debugging frame budgets).
 pub(crate) struct TraceRender(&'static str, Instant);
 
 impl TraceRender {
@@ -3170,8 +2785,6 @@ mod tests {
         s.iter().map(|c| KeyContext::parse(c).unwrap()).collect()
     }
 
-    /// The real keymap resolution: keys that are bindings elsewhere type inside fields, and the
-    /// workspace's shortcuts are off behind a modal.
     #[test]
     fn fields_and_modals_keep_their_keys() {
         let keymap = Keymap::new(vec![
@@ -3191,8 +2804,6 @@ mod tests {
         assert!(hits("cmd-i", &["Workspace", "ResultGrid", "GridCellEditor", "TextInput"]), "⌘I still adds a row from the cell editor");
     }
 
-    /// ⌥⌘[ / ⌥⌘] cycle the result tabs from the editor, the grid and the cell editor, apart from
-    /// ⇧⌘[ / ⇧⌘] (query tabs), and not behind a modal.
     #[test]
     fn result_tab_keys() {
         let w = Some(WORKSPACE_KEYS);
@@ -3213,8 +2824,6 @@ mod tests {
         assert_eq!(first("cmd-alt-]", &["Workspace", "ConfirmDiscard Modal"]), None);
     }
 
-    /// ⌘L / ⌥⌘L explain from the editor, the grid and the plan view, not behind a modal; the
-    /// welcome screen keeps ⌘L for localhost; the plan view's arrows are its own.
     #[test]
     fn explain_keys() {
         let w = Some(WORKSPACE_KEYS);
@@ -3239,9 +2848,6 @@ mod tests {
         assert_eq!(first("escape", &["Workspace", "PlanView"]).as_deref(), Some("workspace::FocusEditor"));
     }
 
-    /// A table's pages (⌥⌘← →) work from the editor and the grid, not behind a modal; inside the
-    /// editor ⌥← → still move by word, and ⇧Space stays the value sheet's. The value editor's keys
-    /// belong to it.
     #[test]
     fn table_keys() {
         let w = Some(WORKSPACE_KEYS);
@@ -3270,9 +2876,6 @@ mod tests {
         assert_eq!(first("escape", &["Workspace", crate::table_view::POPOVER_CONTEXT, "TextInput"]).as_deref(), Some("table_filter::CloseFilter"));
     }
 
-    /// ⌃⌘↩ / ⌃⌘⌫ commit and roll back from the editor, the grid and the cell editor, apart from
-    /// ⌘↩ (run) and ⌘⌫ (the grid's discard); behind a sheet the sheet has ⌘↩ ⌘⌫ esc and the
-    /// workspace's keys are off.
     #[test]
     fn transaction_keys() {
         let w = Some(WORKSPACE_KEYS);
@@ -3302,16 +2905,12 @@ mod tests {
         assert_eq!(first("ctrl-cmd-enter", &sheet), None, "no commit behind a sheet");
     }
 
-    /// Which tabs a close, a disconnect or a quit must ask about: only those with a transaction
-    /// open, and only the ones it ends.
     #[test]
     fn close_prompt_asks_about_open_transactions() {
-        // (tab, connection, transaction open)
         let tabs = [(1, Some("prod"), true), (2, Some("prod"), false), (3, Some("dev"), true), (4, None, false)];
         assert_eq!(tabs_holding(&tabs, Ends::Tab(1)), [1]);
         assert!(tabs_holding(&tabs, Ends::Tab(2)).is_empty(), "no transaction: closes at once");
         assert!(tabs_holding(&tabs, Ends::Tab(4)).is_empty());
-        // Close Others / to the Right: the ones closed that hold a transaction.
         assert_eq!(tabs_holding(&tabs, Ends::Tabs(&[2, 3, 4])), [3]);
         assert!(tabs_holding(&tabs, Ends::Tabs(&[2, 4])).is_empty());
         assert_eq!(tabs_holding(&tabs, Ends::Conn("prod")), [1]);
@@ -3321,23 +2920,17 @@ mod tests {
         assert!(tabs_holding(&[(1, Some("a"), false)], Ends::All).is_empty());
     }
 
-    /// A switch of database or connection, a save over a connection and a delete ask about the
-    /// transactions they would end, and only those; the sheet's verb names what follows.
     #[test]
     fn switch_save_and_delete_ask_about_open_transactions() {
         let tabs = [(1, Some("prod"), true), (2, Some("prod"), false), (3, Some("dev"), true), (4, Some("prod"), true)];
         let asked = |c: Change<'_, i32>| ends_of(c).map(|e| tabs_holding(&tabs, e)).unwrap_or_default();
-        // Another database or connection: a new session, so the open transaction is asked about.
         assert_eq!(asked(Change::Retarget { tab: 1, same_conn: true, from_db: "app", to_db: "audit" }), [1]);
         assert_eq!(asked(Change::Retarget { tab: 1, same_conn: false, from_db: "app", to_db: "app" }), [1]);
-        // The same connection and database keep the session (the statement runs in the transaction).
         assert!(asked(Change::Retarget { tab: 1, same_conn: true, from_db: "app", to_db: "app" }).is_empty());
         assert!(asked(Change::Retarget { tab: 2, same_conn: true, from_db: "app", to_db: "audit" }).is_empty(), "none open");
-        // Saving over a connection rebuilds its sessions; a new one has none.
         assert_eq!(asked(Change::Edit { id: "prod", is_new: false }), [1, 4]);
         assert!(asked(Change::Edit { id: "prod", is_new: true }).is_empty());
         assert_eq!(asked(Change::Edit { id: "dev", is_new: false }), [3]);
-        // A delete lists every tab whose transaction it ends.
         assert_eq!(asked(Change::Delete("prod")), [1, 4]);
         assert!(asked(Change::Delete("staging")).is_empty());
         assert_eq!(asked(Change::Disconnect("dev")), [3]);
@@ -3347,7 +2940,6 @@ mod tests {
         assert_eq!(AfterTx::Disconnect("prod".into()).verb(), "disconnect");
     }
 
-    /// The TX chip's age changes once a minute (so a minute tick is enough).
     #[test]
     fn transaction_age_is_coarse() {
         use crate::chrome::fmt_tx_age;
@@ -3359,8 +2951,6 @@ mod tests {
         assert_eq!(fmt_tx_age(s(3600 + 5 * 60)), "1h 05m");
     }
 
-    /// ⌘S is Save as favorite in the editor and Review & commit on the grid and in its cell
-    /// editor; ⇧⌘S (Save As…) works from both; neither behind a modal.
     #[test]
     fn save_keys() {
         let w = Some(WORKSPACE_KEYS);
@@ -3379,15 +2969,12 @@ mod tests {
             assert_eq!(first("cmd-shift-s", ctx).as_deref(), Some("workspace::SaveAs"), "{ctx:?}");
         }
         assert_eq!(first("cmd-shift-s", &["Workspace", "Palette Modal", "TextInput"]), None);
-        // The registry binds them so.
         let save = crate::keymap::find("save_favorite").unwrap();
         let review = crate::keymap::find("review_changes").unwrap();
         assert_eq!((save.keys, review.keys), (&["cmd-s"][..], &["cmd-s"][..]));
         assert!(!save.scope.overlaps(review.scope), "the editor and the grid never meet");
     }
 
-    /// The explorer's context menu holds the keys while open: ↑↓ ↩ esc go to the menu, not to
-    /// the tree under it nor to the workspace (esc would jump to the editor).
     #[test]
     fn the_open_menu_takes_the_keys() {
         use crate::tree;
@@ -3413,8 +3000,6 @@ mod tests {
         assert_eq!(first("escape", &["Workspace", "Explorer"]).as_deref(), Some("explorer::Escape"));
     }
 
-    /// The find keys: ⇧⌘G and esc belong to an open bar only (else "focus the grid" and "back to
-    /// the editor"); inside the bar's field ↩ stays the field's (next match) and ⇧↩ is "previous".
     #[test]
     fn find_keys_resolve_by_context() {
         use crate::find;
@@ -3446,8 +3031,6 @@ mod tests {
         assert_eq!(first("shift-enter", &field).as_deref(), Some("find::FindPrevious"));
     }
 
-    /// The grid's cell menu (foreign-key "Go to …") the same way: ↑↓ ↩ esc ⌥↓ are the menu's
-    /// while it is open; other grid keys (←→, ⌘C) still reach the grid through it.
     #[test]
     fn the_cell_menu_takes_the_keys() {
         use crate::grid::{self, GRID_KEYS, MENU_CONTEXT};

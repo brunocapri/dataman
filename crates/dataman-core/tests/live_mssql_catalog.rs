@@ -1,8 +1,3 @@
-//! SQL Server's catalog and the features built on it, against a real server (`DATAMAN_MSSQL`,
-//! see `common`): the explorer's levels and objects, DDL, foreign-key navigation, the table data
-//! view, grid editing with conflict checks (a table with a trigger, identity, computed and
-//! rowversion columns), exports and the agents' bounded statements. Skips without a server.
-
 mod common;
 
 use common::*;
@@ -53,7 +48,6 @@ fn explorer_levels_and_objects() {
     assert_eq!(st.columns, vec!["status", "created_at"]);
     assert_eq!(st.definition.as_deref(), Some("CREATE NONCLUSTERED INDEX IX_orders_status ON dbo.orders (status, created_at DESC) INCLUDE (total)"));
 
-    // Routines, triggers, sequences, types, constraints.
     let counts = e.core.block_on(c.object_counts(db, "dbo")).unwrap();
     assert_eq!((counts.functions, counts.triggers, counts.sequences, counts.types), (Some(2), Some(1), Some(1), Some(2)));
     let fs = e.core.block_on(c.functions(db, "dbo")).unwrap();
@@ -86,7 +80,6 @@ fn explorer_levels_and_objects() {
     let stats = e.core.block_on(c.rel_stats(db, "dbo")).unwrap();
     assert_eq!(stats.get("customer").and_then(|s| s.rows), Some(5.0));
 
-    // DDL rebuilt from the catalog; views and modules as they were created.
     let ddl = e.core.block_on(c.table_ddl(db, "dbo", "item")).unwrap();
     assert!(ddl.starts_with("-- dbo.item: generated from the catalog of dataman_t_cat\nCREATE TABLE dbo.item (\n    order_id int NOT NULL,"), "{ddl}");
     assert!(ddl.contains("    subtotal AS ([qty]*[price]) PERSISTED,") && ddl.contains("CONSTRAINT FK_item_order FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE"), "{ddl}");
@@ -95,18 +88,15 @@ fn explorer_levels_and_objects() {
     let v = e.core.block_on(c.view_definition(db, "dbo", "v_order_customer")).unwrap().unwrap();
     assert!(v.starts_with("CREATE VIEW dbo.v_order_customer AS"), "{v}");
 
-    // Autocomplete: the default schema's columns, the routines, names compared without case.
     e.core.block_on(c.preload(db)).unwrap();
     let snap = c.schema.snapshot(db);
     assert_eq!(snap.dialect, Dialect::TSql);
     let r = snap.resolve(None, "ORDERS").expect("case-insensitive");
     assert!(snap.columns_of(r).iter().any(|c| c.name == "total" && c.type_name == "decimal(12,2)"));
-    // The explorer's columns after the preload still carry the key.
     let cols = e.core.block_on(c.columns(db, "dbo", "orders")).unwrap();
     assert!(cols.iter().any(|c| c.name == "id" && c.primary_key), "{cols:?}");
     let cat = e.core.block_on(c.catalog(db)).unwrap();
     assert_eq!(cat.functions_named(None, "customer_total").count(), 1);
-    // Another database of the same server: a metadata connection of its own.
     assert!(e.core.block_on(c.relations("master", "dbo")).is_ok());
     drop(c);
     mssql_drop(&e, db);
@@ -121,7 +111,6 @@ fn foreign_keys_and_the_data_view() {
     let l = g.links.iter().find(|l| l.from_table == "item").unwrap();
     assert_eq!((l.from_columns.clone(), l.to_table.as_str(), l.to_columns.clone()), (vec!["order_id".to_string()], "orders", vec!["id".to_string()]));
 
-    // References of a plain SELECT (TDS does not say where columns come from).
     let rs = on(&e, &c, "SELECT [line], order_id, product FROM [dbo].[item] ORDER BY order_id, line");
     let fk = e.core.block_on(c.foreign_keys(db, &rs)).unwrap();
     assert_eq!(fk.flags(), vec![false, true, false]);
@@ -131,7 +120,6 @@ fn foreign_keys_and_the_data_view() {
     assert_eq!(j.sql, "SELECT * FROM dbo.orders WHERE id = 1;");
     assert_eq!(on(&e, &c, &j.sql).rows(), 1);
 
-    // The data view: paging, filters, sort, counts.
     assert_eq!(e.core.block_on(c.primary_key(db, "dbo", "item")).unwrap(), vec!["order_id", "line"]);
     let mut v = TableView::new("dbo", "customer", vec!["id".into()], 2);
     v.dialect = Dialect::TSql;
@@ -151,7 +139,6 @@ fn foreign_keys_and_the_data_view() {
     let p = Filter::new("name", Kind::Text, Op::Contains, "%").sql_in(Dialect::TSql);
     assert_eq!(on(&e, &c, &format!("SELECT id FROM dbo.customer WHERE {p}")).rows(), 0, "a % is literal");
     assert_eq!(e.core.block_on(c.estimate_rows(db, "dbo", "customer")).unwrap(), Some(5));
-    // A heap pages without a key.
     let mut h = TableView::new("sales", "event", vec![], 2);
     h.dialect = Dialect::TSql;
     assert_eq!(on(&e, &c, &h.sql()).rows(), 2);
@@ -173,7 +160,6 @@ fn grid_edits_apply_in_a_transaction() {
     };
     assert_eq!((t.key_source, t.key[0].name.as_str(), t.dialect), (KeySource::PrimaryKey, "id", Dialect::TSql));
     let col = |n: &str| rs.columns().unwrap().iter().position(|c| c.name == n).unwrap();
-    // Identity and rowversion columns are written by the server.
     assert!(!t.is_editable(col("id")) && !t.is_editable(col("row_version")) && t.is_editable(col("name")));
     let snap = rs.snapshot();
     let mut cs = ChangeSet::new();
@@ -185,9 +171,7 @@ fn grid_edits_apply_in_a_transaction() {
     cs.edit(3, col("points"), CellValue::text("-9223372036854775808"), CellValue::Null);
     let i = cs.insert_row(snap.columns.len());
     cs.set_inserted(i, col("name"), Some(CellValue::text("New")));
-    // (SQL Server's UNIQUE takes one NULL only.)
     cs.set_inserted(i, col("email"), Some(CellValue::text("new@example.com")));
-    // The identity is the server's: a value typed there is left out.
     cs.set_inserted(i, col("id"), Some(CellValue::text("99")));
     cs.delete_row(4);
     let plan = cs.plan(&t, &snap).unwrap();
@@ -201,7 +185,6 @@ fn grid_edits_apply_in_a_transaction() {
     assert_eq!((a.text(2, 3).as_deref(), a.text(2, 4).as_deref()), (Some("2026-03-21 08:00:00.125"), Some("12.3456")));
     assert_eq!(a.text(3, 5), None);
     assert_eq!(a.rows(), 5, "one inserted, one deleted");
-    // A table with a trigger (no OUTPUT clause there): an insert and an update.
     let ord = on(&e, &c, "SELECT * FROM dbo.orders ORDER BY id");
     let ot = match e.core.block_on(c.edit_target(db, &ord, None)).unwrap() {
         Editability::Editable(t) => t,
@@ -218,7 +201,6 @@ fn grid_edits_apply_in_a_transaction() {
     let n = on(&e, &c, "SELECT COUNT(*) FROM dbo.orders WHERE created_at IS NOT NULL AND total = 7.5");
     assert_eq!(n.snapshot().text(0, 0).as_deref(), Some("1"), "the trigger ran");
 
-    // A conflict (the row changed since it was read) rolls everything back.
     let stale = after.clone();
     let st = on(&e, &c, "SELECT id, balance FROM dbo.customer ORDER BY id");
     let tt = match e.core.block_on(c.edit_target(db, &st, None)).unwrap() {
@@ -235,7 +217,6 @@ fn grid_edits_apply_in_a_transaction() {
     assert!(r.outcomes.iter().any(|o| matches!(&o.outcome, Outcome::Conflict { kind: ConflictKind::Changed { .. }, .. })), "{r:?}");
     assert_eq!(on(&e, &c, "SELECT balance FROM dbo.customer WHERE id = 2").snapshot().text(0, 0).as_deref(), Some("310.00"), "rolled back");
 
-    // A join, a view, a TOP: what is editable.
     let j = on(&e, &c, "SELECT o.id, c.name FROM dbo.orders o JOIN dbo.customer c ON c.id = o.customer_id");
     assert!(matches!(e.core.block_on(c.edit_target(db, &j, None)).unwrap(), Editability::ReadOnly(_)));
     let v = on(&e, &c, "SELECT * FROM dbo.v_order_customer");
@@ -264,7 +245,6 @@ fn exports_and_bounded_statements() {
     assert_eq!(s.rows, 5);
     let csv = std::fs::read_to_string(&path).unwrap();
     assert!(csv.lines().nth(1).unwrap().starts_with("1,Ana Smith,1520.50,2026-01-05 09:15:00.25,1990-04-12"), "{csv}");
-    // SQL INSERTs in T-SQL's quoting, run back.
     let rs = query(&e, &c, "SELECT id, name, photo, active, created, seen FROM dbo.customer ORDER BY id");
     let mut o = ExportOptions::new(ExportFormat::SqlInsert);
     o.table = "dbo.copied".into();
@@ -280,7 +260,6 @@ fn exports_and_bounded_statements() {
     let back = query(&e, &c, "SELECT a.name FROM dbo.copied a JOIN dbo.customer b ON b.id = a.id AND b.name = a.name AND b.active = a.active AND b.created = a.created AND (b.seen = a.seen OR b.seen IS NULL) AND (b.photo = a.photo OR b.photo IS NULL)");
     assert_eq!(back.rows(), 5, "round trip");
 
-    // Agents: a bounded read (rows capped), refused writes, a write in a transaction.
     let lim = Limits { max_rows: 2, ..Default::default() };
     let o = e.core.block_on(c.bounded(Some(db), "SELECT id, name, active FROM dbo.customer ORDER BY id", vec![], Mode::Read, lim, std::future::pending::<()>())).unwrap();
     assert_eq!(o.rows.len(), 2);

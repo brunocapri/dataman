@@ -1,13 +1,3 @@
-//! Demo stages of the find bars (`--demo`), driven with real key events through the window:
-//!
-//! - `find`: the editor's bar with its replace row, a query and a replacement (screenshot);
-//! - `find-grid`: the grid's bar on the loaded rows (screenshot);
-//! - `find-check`: the rules (open, count, next/previous around the ends, esc, ⇧⌘G, ⌘G with the
-//!   bar closed, Replace All as one undo step, `$1` groups, the grid's cells against the
-//!   snapshot, NULL), printed as PASS/FAIL lines; exit code 1 on a failure.
-//!
-//! They run on the default demo query (orders joined with their customer, `NULL AS nothing`).
-
 use std::time::{Duration, Instant};
 
 use gpui::{AsyncWindowContext, Entity, Focusable, Keystroke};
@@ -33,7 +23,6 @@ fn key(cx: &mut AsyncWindowContext, k: &str) {
     });
 }
 
-/// Types `s` one key at a time (letters, digits and `.` only).
 fn typ(cx: &mut AsyncWindowContext, s: &str) {
     for c in s.chars() {
         key(cx, &c.to_string());
@@ -52,7 +41,6 @@ fn parts(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> (Entity<CodeEdi
     .unwrap()
 }
 
-/// Waits for the first rows, then for the grid's search to land.
 async fn rows_loaded(grid: &Entity<ResultGrid>, cx: &mut AsyncWindowContext) {
     for _ in 0..100 {
         if cx.update(|_, cx| grid.read(cx).result().is_some_and(|r| r.rows() > 0 && r.phase() != dataman_core::Phase::Running)).unwrap_or(false) {
@@ -72,7 +60,6 @@ async fn grid_settled(grid: &Entity<ResultGrid>, cx: &mut AsyncWindowContext) {
     }
 }
 
-/// Runs a stage; `false` when a check failed.
 pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContext) -> bool {
     let (editor, grid) = parts(ws, cx);
     rows_loaded(&grid, cx).await;
@@ -106,8 +93,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
     }
 }
 
-/// The same search, cell by cell, straight from the snapshot: the first `rows` display rows,
-/// text containing `q` (any case), NULL for the query `null`.
 fn expect(grid: &Entity<ResultGrid>, rows: usize, q: &str, cx: &mut AsyncWindowContext) -> Vec<(u32, u32)> {
     cx.update(|_, cx| {
         let snap = grid.read(cx).result().unwrap().snapshot();
@@ -145,7 +130,6 @@ async fn check(ws: &Entity<Workspace>, editor: &Entity<CodeEditor>, grid: &Entit
         editor.update(cx, |e, cx| e.set_cursor(0, cx));
     });
 
-    // Editor.
     key(cx, "cmd-f");
     let (open, _, field, ..) = ed(cx);
     report("⌘F opens the editor's bar on its field", open && field, format!("open {open} field {field}"));
@@ -172,7 +156,6 @@ async fn check(ws: &Entity<Workspace>, editor: &Entity<CodeEditor>, grid: &Entit
     let (open, label, field, focused, ..) = ed(cx);
     report("⌘G with the bar closed reopens it on the last query, the focus stays", open && label == "2/6" && focused && !field, format!("{open} {label} {focused} {field}"));
 
-    // Replace All: one edit, one undo step.
     key(cx, "cmd-alt-f");
     key(cx, "tab");
     typ(cx, "o.");
@@ -186,7 +169,6 @@ async fn check(ws: &Entity<Workspace>, editor: &Entity<CodeEditor>, grid: &Entit
     let text = ed(cx).5;
     report("one ⌘Z undoes the whole Replace All", text == original, format!("{text:?}"));
 
-    // Regular expression with a group in the replacement.
     let _ = cx.update(|window, cx| {
         editor.update(cx, |e, cx| e.open_find(true, window, cx));
         bar.update(cx, |b, cx| {
@@ -206,7 +188,6 @@ async fn check(ws: &Entity<Workspace>, editor: &Entity<CodeEditor>, grid: &Entit
     key(cx, "cmd-z");
     report("…and undoes in one step", ed(cx).5 == original, String::new());
 
-    // Speed on a 2,000-line script: a new query, and a key typed with the bar open.
     let big: String = original.lines().cycle().take(2000).collect::<Vec<_>>().join("\n");
     let _ = cx.update(|window, cx| {
         editor.update(cx, |e, cx| e.set_text(&big, cx));
@@ -241,7 +222,6 @@ async fn check(ws: &Entity<Workspace>, editor: &Entity<CodeEditor>, grid: &Entit
     key(cx, "escape");
     let _ = cx.update(|_, cx| editor.update(cx, |e, cx| e.set_text(&original, cx)));
 
-    // Grid.
     let _ = cx.update(|window, cx| {
         window.focus(&grid.focus_handle(cx), cx);
         grid.update(cx, |g, cx| g.select_cell(0, 0, cx));
@@ -290,7 +270,6 @@ async fn check(ws: &Entity<Workspace>, editor: &Entity<CodeEditor>, grid: &Entit
         format!("{nulls} NULL of {covered} rows, {} cells", hits.len()),
     );
     key(cx, "escape");
-    // Hidden columns have no matches, and the matches follow the columns on screen.
     let id = cx.update(|_, cx| grid.read(cx).result().unwrap().columns().unwrap().iter().position(|c| c.name == "id")).unwrap().unwrap_or(0);
     let _ = cx.update(|_, cx| {
         grid.update(cx, |g, cx| {

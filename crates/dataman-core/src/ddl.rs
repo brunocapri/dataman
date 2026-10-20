@@ -1,18 +1,3 @@
-//! `CREATE TABLE` statements rebuilt from the catalog (the explorer's "Generate SQL ▸ CREATE
-//! TABLE"), and view definitions.
-//!
-//! PostgreSQL: columns with their types, collations, `NOT NULL`, defaults, identity and
-//! generated columns (owned sequences become `serial`), every primary key, unique, check,
-//! exclusion and foreign key constraint as the server prints it (`pg_get_constraintdef`), the
-//! other indexes (`pg_get_indexdef`), `UNLOGGED`, `PARTITION BY` and the comments. Partitions
-//! and inheritance children say so in a comment instead of `PARTITION OF` / `INHERITS`.
-//!
-//! LAR: its catalog lists columns and types but no keys, `NOT NULL` or defaults, so the
-//! statement has the columns and types and a comment that says what is missing.
-//!
-//! Nothing is fetched until asked: [`Connection::table_ddl`] reads the catalog once per call.
-//! [`render`] is a pure function of a [`TableDef`].
-
 use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
@@ -37,28 +22,20 @@ pub enum Generated {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ColumnDef {
     pub name: String,
-    /// `format_type` output (`numeric(12,2)`, `character varying(40)`).
     pub type_name: String,
-    /// `None` when the catalog does not say.
     pub not_null: Option<bool>,
-    /// The default expression (`pg_get_expr`), or a generated column's expression.
     pub default: Option<String>,
     pub identity: Option<Identity>,
     pub generated: Option<Generated>,
-    /// A collation other than the type's default (unquoted name).
     pub collation: Option<String>,
     pub comment: Option<String>,
-    /// An integer column fed by its own sequence (`serial`): the type becomes `serial` and the
-    /// `nextval` default goes away.
     pub serial: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ConstraintDef {
     pub name: String,
-    /// `p` primary key, `u` unique, `c` check, `x` exclusion, `f` foreign key.
     pub kind: char,
-    /// `pg_get_constraintdef`: `PRIMARY KEY (id)`, `FOREIGN KEY (a) REFERENCES s.t(id)`…
     pub definition: String,
 }
 
@@ -71,14 +48,10 @@ pub struct TableDef {
     pub unlogged: bool,
     pub columns: Vec<ColumnDef>,
     pub constraints: Vec<ConstraintDef>,
-    /// `pg_get_indexdef` of the indexes that do not back a constraint.
     pub indexes: Vec<String>,
-    /// `pg_get_partkeydef` of a partitioned table.
     pub partition_by: Option<String>,
     pub comment: Option<String>,
-    /// Whether the catalog reports keys, `NOT NULL` and defaults (not on LAR).
     pub keys_reported: bool,
-    /// Comment lines (catalog gaps, partitions…), without the `-- `.
     pub notes: Vec<String>,
 }
 
@@ -110,7 +83,7 @@ fn serial_type(type_name: &str) -> Option<&'static str> {
     }
 }
 
-/// A collation name, always quoted (`"C"` must not fold to `c`).
+/// Always quoted: `"C"` must not fold to `c`.
 fn quote_collation(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
@@ -137,7 +110,6 @@ fn column_line(c: &ColumnDef, keys: bool) -> String {
             }
         }
     }
-    // Identity and serial columns are NOT NULL by construction: saying it again is noise.
     if keys && c.not_null == Some(true) && c.identity.is_none() && !(serial && serial_type(&c.type_name).is_some()) {
         s.push_str(" NOT NULL");
     }
@@ -150,7 +122,6 @@ fn column_line(c: &ColumnDef, keys: bool) -> String {
     s
 }
 
-/// The statement text: a header comment, `CREATE TABLE`, the other indexes and the comments.
 pub fn render(t: &TableDef) -> String {
     let q = qualified(Some(&t.schema), &t.name);
     let mut out = String::new();
@@ -220,7 +191,6 @@ fn truthy(v: Option<String>) -> Option<bool> {
 }
 
 impl Connection {
-    /// `CREATE TABLE` for `schema.name` in `database`, from the catalog (read now, not cached).
     pub fn table_ddl(self: &Arc<Self>, database: &str, schema: &str, name: &str) -> Task<String> {
         let (this, db, schema, name) = (self.clone(), database.to_string(), schema.to_string(), name.to_string());
         self.spawn(async move {
@@ -232,8 +202,6 @@ impl Connection {
         })
     }
 
-    /// SQL Server has no `SHOW CREATE TABLE`: the statement is rebuilt from `sys.columns`, the
-    /// key, foreign key and check constraints and the other indexes.
     async fn ms_table_ddl(&self, db: &str, schema: &str, name: &str) -> Result<String> {
         use crate::schema::ms;
         let client = self.meta(db).await?;
@@ -241,7 +209,6 @@ impl Connection {
         if cols.is_empty() {
             anyhow::bail!("{schema}.{name} is not in the catalog");
         }
-        // A foreign key's target is written bare only in `dbo`, the default schema of a session.
         let home = if schema.eq_ignore_ascii_case("dbo") { "dbo" } else { "" };
         let cons = first_ok(&client, &[&ms::constraints_sql(schema, name)]).await.map(|r| ms::parse_constraints(home, &r)).unwrap_or_default();
         let idx = ms::indexes(&client, schema, name).await.unwrap_or_default();
@@ -254,7 +221,6 @@ impl Connection {
         ))
     }
 
-    /// MySQL's own `SHOW CREATE TABLE | VIEW`, under the same header as the rebuilt ones.
     async fn show_create(&self, what: &str, db: &str, schema: &str, name: &str) -> Result<String> {
         use crate::schema::my;
         let client = self.meta(db).await?;
@@ -264,15 +230,12 @@ impl Connection {
         Ok(format!("-- {}: generated from the catalog of {}\n{body}\n", d.qualified(Some(schema), name), d.quote_ident(db)))
     }
 
-    /// A view's definition as `CREATE OR REPLACE VIEW …` (`None` when the server does not report
-    /// it: LAR's `pg_get_viewdef` is NULL).
     pub fn view_definition(self: &Arc<Self>, database: &str, schema: &str, name: &str) -> Task<Option<String>> {
         let (this, db, schema, name) = (self.clone(), database.to_string(), schema.to_string(), name.to_string());
         self.spawn(async move {
             if this.engine() == crate::config::Engine::MySql {
                 return Ok(this.show_create("VIEW", &db, &schema, &name).await.ok());
             }
-            // The view as it was created (`OBJECT_DEFINITION`).
             if this.engine() == crate::config::Engine::SqlServer {
                 let client = this.meta(&db).await?;
                 let rows = first_ok(&client, &[&crate::schema::ms::definition_sql(&schema, &name)]).await?;
@@ -292,7 +255,6 @@ impl Connection {
         })
     }
 
-    /// Everything [`render`] needs, from the catalog.
     pub async fn table_def(&self, db: &str, schema: &str, name: &str) -> Result<TableDef> {
         let client = self.meta(db).await?;
         let mut t = TableDef::new(db, schema, name);
@@ -398,8 +360,7 @@ impl Connection {
             return Ok(t);
         }
 
-        // Constraints as the server prints them (NOT NULL constraints of PostgreSQL 18 are
-        // already on the columns).
+        // NOT NULL constraints of PostgreSQL 18 are already on the columns.
         let cons = format!(
             "SELECT conname, contype, pg_catalog.pg_get_constraintdef(oid, true) FROM pg_catalog.pg_constraint \
              WHERE conrelid = {oid} AND contype IN ('p','u','c','x','f') \
@@ -414,7 +375,6 @@ impl Connection {
             }
             Err(e) => t.notes.push(format!("constraints unavailable: {e}")),
         }
-        // The other indexes (those of constraints come with them).
         let idx = format!(
             "SELECT pg_catalog.pg_get_indexdef(i.indexrelid) FROM pg_catalog.pg_index i \
              JOIN pg_catalog.pg_class ic ON ic.oid = i.indexrelid WHERE i.indrelid = {oid} \
@@ -425,7 +385,6 @@ impl Connection {
             Ok(rows) => t.indexes = rows.iter().filter_map(|r| get(r, 0)).collect(),
             Err(e) => t.notes.push(format!("indexes unavailable: {e}")),
         }
-        // Partitions and inheritance children: said, not rebuilt.
         let parents = format!(
             "SELECT i.inhparent::pg_catalog.regclass::text, pg_catalog.pg_get_expr(c.relpartbound, c.oid) \
              FROM pg_catalog.pg_inherits i JOIN pg_catalog.pg_class c ON c.oid = i.inhrelid WHERE i.inhrelid = {oid} ORDER BY i.inhseqno"
@@ -491,7 +450,6 @@ COMMENT ON COLUMN shop.orders.status IS 'it''s the state';\n";
 
     #[test]
     fn serial_only_for_integer_types() {
-        // A text column with a sequence default keeps its type and default.
         let c = ColumnDef { serial: true, default: Some("nextval('s'::regclass)::text".into()), ..col("x", "text") };
         assert_eq!(column_line(&c, true), "x text DEFAULT nextval('s'::regclass)::text");
         let c = ColumnDef { serial: true, default: Some("nextval('s'::regclass)".into()), ..col("x", "bigint") };
@@ -506,7 +464,6 @@ COMMENT ON COLUMN shop.orders.status IS 'it''s the state';\n";
     fn lar_lists_columns_and_says_what_is_missing() {
         let mut t = TableDef::new("lar", "public", "demo_orders");
         t.keys_reported = false;
-        // Even if something slipped in, keys and NOT NULL are not printed when not reported.
         t.columns = vec![ColumnDef { not_null: Some(true), ..col("id", "bigint") }, col("total", "double precision")];
         t.constraints = vec![ConstraintDef { name: "k".into(), kind: 'p', definition: "PRIMARY KEY (id)".into() }];
         let sql = render(&t);

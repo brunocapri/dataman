@@ -1,12 +1,3 @@
-//! A table opened as data (explorer ↩, double click, "View data"): the tab's `SELECT` is built
-//! from a [`TableView`] (filters, server-side sort, page) and stays visible and editable in the
-//! editor, which shows the `WHERE`; editing it by hand turns the tab into a plain query tab.
-//!
-//! - [`TableData`]: the tab's part (the view, the statement it runs, the total).
-//! - [`FilterPopover`]: one column's filter (operator and value), from the header menu; on a
-//!   column that already has one, it edits it (or removes it).
-//! - The pager of the result bar, drawn by the workspace.
-
 use gpui::{
     App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, KeyBinding, MouseButton, Window,
     actions, div, prelude::*,
@@ -34,21 +25,14 @@ pub fn bind_keys(cx: &mut App) {
     ]);
 }
 
-/// The tab's table view.
 pub struct TableData {
     pub view: TableView,
-    /// The statement the editor holds for the view (with its `;`).
     pub sql: String,
-    /// The statement as run (without the `;`): results of this statement are the view's pages.
     pub stmt: String,
-    /// `pg_class.reltuples` of the table (unfiltered views only).
     pub estimate: Option<u64>,
-    /// The exact total under the current conditions, and the count statement it belongs to.
     pub total: Option<u64>,
     pub total_of: String,
-    /// The count running (dropping it cancels it on the server).
     pub counting: Option<(CountStop, gpui::Task<()>)>,
-    /// The user stopped the count of these conditions (⌘. or a click): not restarted for them.
     pub stopped: Option<String>,
 }
 
@@ -60,12 +44,10 @@ impl TableData {
     }
 }
 
-/// What the result bar shows for a page: `1–1,000 of ~1.2M`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Pager {
     pub first: u64,
     pub last: u64,
-    /// The total and whether it is exact (else the planner's estimate).
     pub total: Option<(u64, bool)>,
     pub counting: bool,
     pub prev: bool,
@@ -73,18 +55,15 @@ pub struct Pager {
 }
 
 impl Pager {
-    /// `1–1,000` (or `0` for an empty page).
     pub fn range(&self) -> String {
         if self.last < self.first { "0".into() } else { format!("{}–{}", ui_count(self.first as usize), ui_count(self.last as usize)) }
     }
 
-    /// `of 1,234,567` / `of ~1.2M`.
     pub fn of(&self) -> Option<String> {
         self.total.map(|(n, exact)| if exact { format!("of {}", ui_count(n as usize)) } else { format!("of ~{}", short_count(n)) })
     }
 }
 
-/// `1.2M`, `34k`, `950`.
 pub fn short_count(n: u64) -> String {
     match n {
         0..1_000 => n.to_string(),
@@ -96,20 +75,16 @@ pub fn short_count(n: u64) -> String {
     }
 }
 
-/// The pager of a page with `rows` rows (the result on screen is the view's).
 pub fn pager(d: &TableData, rows: usize, finished: bool) -> Pager {
     let mut p = pager_of(&d.view, d.estimate, d.total.filter(|_| d.total_of == d.view.count_sql()), rows, finished);
     p.counting = d.counting.is_some();
     p
 }
 
-/// The pager from its parts: the view, the table's estimate, the exact total of the view's
-/// conditions (if counted), and the page's rows.
 pub fn pager_of(view: &TableView, estimate: Option<u64>, exact: Option<u64>, rows: usize, finished: bool) -> Pager {
     let off = view.offset();
     let first = off + 1;
     let last = off + rows as u64;
-    // A short last page tells the total without counting.
     let known = if finished && (rows as u64) < view.page_size { Some(last) } else { None };
     let total = match (exact.or(known), estimate) {
         (Some(n), _) => Some((n, true)),
@@ -123,11 +98,7 @@ pub fn pager_of(view: &TableView, estimate: Option<u64>, exact: Option<u64>, row
     Pager { first, last, total, counting: false, prev: view.page > 0, next }
 }
 
-// ---------------------------------------------------------------------------------------------
-// The filter popover
-
 pub enum FilterEvent {
-    /// Add the filter, or replace filter `i`.
     Apply(Filter, Option<usize>),
     Remove(usize),
     Close,
@@ -140,7 +111,6 @@ pub struct FilterPopover {
     op: Op,
     input: Entity<TextInput>,
     focus: FocusHandle,
-    /// The filter being edited (its chip was clicked).
     editing: Option<usize>,
 }
 
@@ -272,13 +242,7 @@ impl Render for FilterPopover {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// The workspace's part: the popover.
-
 impl Workspace {
-    /// Opens the filter popover for result column `col` of the active tab's table view, its
-    /// top-left corner at `at`: filter `editing` of the view, else the column's own filter if it
-    /// has one (edited in place, with Remove), else a new one.
     pub(crate) fn open_filter(&mut self, col: usize, editing: Option<usize>, at: (f32, f32), window: &mut Window, cx: &mut Context<Self>) {
         let Some(tab) = self.active_tab().cloned() else { return };
         let (column, kind, type_name, existing) = {
@@ -326,7 +290,6 @@ impl Workspace {
         cx.notify();
     }
 
-    /// The popover, over everything (deferred).
     pub(crate) fn render_filter_popover(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         let (pop, at) = self.filter_pop.clone()?;
         Some(
@@ -364,26 +327,20 @@ mod tests {
 
     #[test]
     fn pages_and_totals() {
-        // First page of a big table: the estimate, more pages.
         let p = pg(data(0, 1000, false), 1000, true, Some(1_234_567), None);
         assert_eq!((p.range(), p.of()), ("1–1,000".to_string(), Some("of ~1.2M".to_string())));
         assert!(p.next && !p.prev);
-        // The count landed.
         let p = pg(data(2, 1000, false), 1000, true, Some(1_234_567), Some(1_234_000));
         assert_eq!((p.range(), p.of()), ("2,001–3,000".to_string(), Some("of 1,234,000".to_string())));
         assert!(p.next && p.prev);
-        // A short page is the last one, and gives the total.
         let p = pg(data(3, 1000, true), 17, true, None, None);
         assert_eq!(p.of(), Some("of 3,017".to_string()));
         assert!(!p.next);
-        // Filtered: no table estimate; a full page may have more after it.
         let p = pg(data(0, 1000, true), 1000, true, Some(5_000_000), None);
         assert_eq!(p.of(), None);
         assert!(p.next);
-        // An estimate below what is on screen is stale: not shown.
         let p = pg(data(1, 1000, false), 1000, true, Some(10), None);
         assert_eq!(p.of(), None);
-        // Empty.
         let p = pg(data(0, 1000, true), 0, true, None, None);
         assert_eq!((p.range(), p.of()), ("0".to_string(), Some("of 0".to_string())));
         assert_eq!(short_count(950), "950");

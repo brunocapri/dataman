@@ -1,27 +1,3 @@
-//! Visual EXPLAIN: the SQL the Explain commands send, the plan parsed from the server's answer
-//! (PostgreSQL's JSON, a text plan, or raw text), the inclusive and exclusive time (or cost) of
-//! every node, and the findings ([`hints`]). Pure: no I/O.
-//!
-//! ## Exclusive time
-//!
-//! PostgreSQL reports a node's `Actual Total Time` and `Actual Rows` per loop (averaged over
-//! loops), and a node run by parallel workers counts each participant's run as a loop. So:
-//!
-//! - **inclusive** = `Actual Total Time × Actual Loops / processes`, where `processes` is 1
-//!   outside a Gather and, inside one, the participants that ran the node (the workers of its
-//!   `Workers` list with loops, plus the leader when the node's loops exceed theirs; without
-//!   the list, `Workers Launched + 1` capped by the loops). Loops of the inner side of a nested
-//!   loop multiply; concurrent workers do not add up (wall clock, not CPU).
-//! - **exclusive** = inclusive − the inclusive of the children, clamped at 0, where an
-//!   `InitPlan` is charged to the node that reads its value (`(InitPlan 2).col1`, or `$0` on
-//!   PostgreSQL before 16; the deepest such node, else the parent) and a `CTE` is charged to the
-//!   `CTE Scan`s that read it, the slowest first (the scan that pulls the rows runs the CTE's
-//!   plan; the others read the stored rows). A `SubPlan` runs inside the node whose expression
-//!   holds it, its parent.
-//!
-//! Without ANALYZE the bars use cost: a node's total cost times its estimated loops (the outer
-//! rows of a nested loop, the rows a SubPlan runs for), less its children's.
-
 pub mod hints;
 mod text;
 
@@ -32,15 +8,9 @@ use crate::sql::tokenize;
 pub use hints::{Hint, Rule};
 pub use text::render_text;
 
-// ---------------------------------------------------------------------------------------------
-// The statements.
-
-/// The server a plan is asked of.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Target {
-    /// LAR: plain `EXPLAIN [ANALYZE]` (it has no options or JSON).
     pub lar: bool,
-    /// PostgreSQL's major version (0: unknown, taken as recent).
     pub major: u32,
 }
 
@@ -54,7 +24,6 @@ impl Target {
     }
 }
 
-/// The statement without its trailing `;` and blanks.
 pub fn statement(stmt: &str) -> &str {
     let mut s = stmt.trim();
     while let Some(x) = s.strip_suffix(';') {
@@ -63,8 +32,6 @@ pub fn statement(stmt: &str) -> &str {
     s
 }
 
-/// `EXPLAIN (…) stmt`: the Explain command (`analyze`: Explain Analyze, which runs it). A
-/// statement that is an EXPLAIN already runs as written.
 pub fn sql(stmt: &str, analyze: bool, t: Target) -> String {
     let stmt = statement(stmt);
     if is_explain(stmt) {
@@ -90,7 +57,6 @@ pub fn sql(stmt: &str, analyze: bool, t: Target) -> String {
     format!("EXPLAIN ({}) {stmt}", o.join(", "))
 }
 
-/// `EXPLAIN (FORMAT TEXT, …) stmt`: the plan as PostgreSQL prints it ("Copy as text").
 pub fn text_sql(stmt: &str, t: Target) -> String {
     let stmt = statement(stmt);
     if t.lar {
@@ -104,13 +70,10 @@ fn words(sql: &str) -> Vec<crate::sql::Token> {
     tokenize(sql).into_iter().filter(|t| !t.kind.is_trivia()).collect()
 }
 
-/// The statement starts with `EXPLAIN`.
 pub fn is_explain(sql: &str) -> bool {
     words(sql).first().is_some_and(|t| t.text(sql).eq_ignore_ascii_case("EXPLAIN"))
 }
 
-/// The options of an `EXPLAIN` (upper case, values dropped when true: `ANALYZE`, `FORMAT JSON`)
-/// and the byte offset of the statement it explains.
 fn options(sql: &str) -> Option<(Vec<String>, usize)> {
     let t = words(sql);
     if !t.first().is_some_and(|x| x.text(sql).eq_ignore_ascii_case("EXPLAIN")) {
@@ -125,7 +88,6 @@ fn options(sql: &str) -> Option<(Vec<String>, usize)> {
             let s = x.text(sql);
             i += 1;
             if s == ")" || s == "," {
-                // `ANALYZE false`, `ANALYZE off`: not on.
                 let off = cur.len() > 1 && matches!(cur[1].as_str(), "FALSE" | "OFF" | "0");
                 let on = cur.len() > 1 && matches!(cur[1].as_str(), "TRUE" | "ON" | "1");
                 if !cur.is_empty() && !off {
@@ -152,20 +114,14 @@ fn options(sql: &str) -> Option<(Vec<String>, usize)> {
     Some((opts, t.get(i).map_or(sql.len(), |x| x.start)))
 }
 
-/// The statement an `EXPLAIN` explains.
 pub fn inner(sql: &str) -> Option<&str> {
     options(sql).map(|(_, at)| sql[at..].trim())
 }
 
-/// The `EXPLAIN` runs its statement (`ANALYZE`).
 pub fn analyzes(sql: &str) -> bool {
     options(sql).is_some_and(|(o, _)| o.iter().any(|x| x == "ANALYZE" || x == "ANALYSE"))
 }
 
-// ---------------------------------------------------------------------------------------------
-// Formatting.
-
-/// `0.42 ms`, `12.3 ms`, `312 ms`, `1.25 s`, `2m 03s`.
 pub fn fmt_ms(ms: f64) -> String {
     match ms {
         m if m < 10. => format!("{m:.2} ms"),
@@ -179,7 +135,6 @@ pub fn fmt_ms(ms: f64) -> String {
     }
 }
 
-/// `7`, `9.96`, `12k`, `3.1M`, `1.2G`.
 pub fn fmt_count(n: f64) -> String {
     let short = |x: f64, unit: &str| {
         let s = if x < 10. { format!("{x:.1}") } else { format!("{x:.0}") };
@@ -194,7 +149,6 @@ pub fn fmt_count(n: f64) -> String {
     }
 }
 
-/// `25 kB`, `1.9 MB`, `2.3 GB` (from kilobytes, as EXPLAIN reports memory and disk).
 pub fn fmt_kb(kb: f64) -> String {
     match kb {
         k if k < 1024. => format!("{k:.0} kB"),
@@ -203,7 +157,6 @@ pub fn fmt_kb(kb: f64) -> String {
     }
 }
 
-/// A cost: `0.42`, `48.1`, `8926`, `29k`.
 pub fn fmt_cost(c: f64) -> String {
     match c {
         c if c < 100. => format!("{c:.2}"),
@@ -212,22 +165,13 @@ pub fn fmt_cost(c: f64) -> String {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// The plan.
-
-/// Where a plan came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Format {
-    /// PostgreSQL's `FORMAT JSON`: every property, times and hints.
     Json,
-    /// An indented text plan (PostgreSQL's `FORMAT TEXT`, a DataFusion plan): the tree and what
-    /// its lines say.
     Text,
-    /// Nothing to parse: the text as the server sent it.
     Raw,
 }
 
-/// Buffer counters of a node (blocks).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Buffers {
     pub shared_hit: f64,
@@ -246,36 +190,24 @@ impl Buffers {
     }
 }
 
-/// One plan node.
 #[derive(Clone, Debug)]
 pub struct Node {
     pub parent: Option<usize>,
     pub children: Vec<usize>,
     pub depth: u16,
-    /// `Seq Scan`, `Partial HashAggregate`, `Hash Left Join`, `Insert`.
     pub op: String,
-    /// `Seq Scan on orders p`, `Index Only Scan using customer_pkey on customer c`.
     pub title: String,
-    /// Every property the server reported but the children (`Plans`), in its order.
     pub raw: Map<String, Value>,
-    /// Participants that ran it (1 outside a Gather).
     pub procs: f64,
-    /// Time in the node and below it, per participant, in ms (0 without ANALYZE).
     pub incl_ms: f64,
-    /// Time in the node itself, in ms (0 without ANALYZE).
     pub excl_ms: f64,
-    /// Cost of the node itself, over its estimated loops.
     pub excl_cost: f64,
-    /// Its part of the plan's exclusive time (of the cost without ANALYZE), 0 to 1.
     pub share: f64,
 }
 
-/// How far the estimate was from what ran.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Misestimate {
-    /// ≥ 1.
     pub factor: f64,
-    /// More rows than estimated.
     pub under: bool,
 }
 
@@ -308,27 +240,22 @@ impl Node {
         self.num("Startup Cost")
     }
 
-    /// `Actual Total Time` (per loop).
     pub fn act_ms(&self) -> Option<f64> {
         self.num("Actual Total Time")
     }
 
-    /// `Outer`, `Inner`, `InitPlan`, `SubPlan`, `Member`.
     pub fn relationship(&self) -> Option<&str> {
         self.str("Parent Relationship")
     }
 
-    /// `InitPlan 1`, `CTE m`, `SubPlan 2`.
     pub fn subplan(&self) -> Option<&str> {
         self.str("Subplan Name")
     }
 
-    /// ANALYZE ran the plan and this node never ran (loops = 0).
     pub fn never_executed(&self) -> bool {
         self.loops() == Some(0.)
     }
 
-    /// Estimated against actual rows per loop (each at least 1).
     pub fn misestimate(&self) -> Option<Misestimate> {
         let (e, a) = (self.est_rows()?, self.act_rows()?);
         if self.never_executed() {
@@ -352,8 +279,6 @@ impl Node {
         }
     }
 
-    /// The properties for the details panel: (name, value), lists joined, each worker on a
-    /// line of its own.
     pub fn props(&self) -> Vec<(String, String)> {
         let mut out = Vec::new();
         for (k, v) in &self.raw {
@@ -377,7 +302,6 @@ impl Node {
         out
     }
 
-    /// Every text the node shows (conditions, outputs, keys): where InitPlan references are.
     fn mentions(&self, needle: &str, param: bool) -> bool {
         fn walk(v: &Value, f: &dyn Fn(&str) -> bool) -> bool {
             match v {
@@ -391,14 +315,12 @@ impl Node {
             if !param {
                 return s.contains(needle);
             }
-            // `$1` but not `$10`.
             s.match_indices(needle).any(|(i, m)| !s[i + m.len()..].starts_with(|c: char| c.is_ascii_digit()))
         };
         self.raw.iter().any(|(k, v)| k != "Subplan Name" && walk(v, &f))
     }
 }
 
-/// A JSON value as one line: numbers without a trailing `.0`, lists joined with `, `.
 pub fn value_text(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),
@@ -416,7 +338,6 @@ pub fn value_text(v: &Value) -> String {
     }
 }
 
-/// A trigger's time (`Triggers`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Trigger {
     pub name: String,
@@ -425,23 +346,19 @@ pub struct Trigger {
     pub calls: f64,
 }
 
-/// JIT compilation (`JIT`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Jit {
     pub functions: f64,
     pub total_ms: f64,
-    /// (phase, ms): generation, inlining, optimization, emission.
     pub phases: Vec<(String, f64)>,
 }
 
-/// What the plan says outside its nodes.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Totals {
     pub planning_ms: Option<f64>,
     pub execution_ms: Option<f64>,
     pub triggers: Vec<Trigger>,
     pub jit: Option<Jit>,
-    /// Settings that differ from the defaults (`SETTINGS`).
     pub settings: Vec<(String, String)>,
 }
 
@@ -455,21 +372,17 @@ impl Totals {
     }
 }
 
-/// A parsed plan: nodes in depth-first order (a node's subtree follows it).
 #[derive(Clone, Debug)]
 pub struct Plan {
     pub format: Format,
     pub nodes: Vec<Node>,
-    /// ANALYZE ran: times, actual rows and loops.
     pub analyzed: bool,
     pub totals: Totals,
     pub hints: Vec<Hint>,
-    /// The text it was parsed from.
     pub source: String,
 }
 
 impl Plan {
-    /// Parses the server's answer: JSON when it is JSON, else an indented text plan, else raw.
     pub fn parse(source: &str) -> Plan {
         let s = source.trim_start();
         if (s.starts_with('[') || s.starts_with('{'))
@@ -481,8 +394,6 @@ impl Plan {
         text::parse(source)
     }
 
-    /// The text of an EXPLAIN result: one JSON cell, the lines of a text plan, or (LAR,
-    /// DataFusion) the physical plan of its `plan_type` / `plan` rows.
     pub fn source_of(columns: &[String], rows: &[Vec<Option<String>>]) -> String {
         let col = |n: &str| columns.iter().position(|c| c.eq_ignore_ascii_case(n));
         if let (Some(t), Some(p)) = (col("plan_type"), col("plan")) {
@@ -545,14 +456,11 @@ impl Plan {
         Some(p)
     }
 
-    /// The index past `i`'s subtree.
     pub fn end_of(&self, i: usize) -> usize {
         let d = self.nodes[i].depth;
         self.nodes[i + 1..].iter().position(|n| n.depth <= d).map_or(self.nodes.len(), |k| i + 1 + k)
     }
 
-    /// The node is the last of its siblings (the tree's connectors: `└` rather than `├`, and no
-    /// line continues below it).
     pub fn is_last(&self, i: usize) -> bool {
         match self.nodes[i].parent {
             Some(p) => self.nodes[p].children.last() == Some(&i),
@@ -560,12 +468,10 @@ impl Plan {
         }
     }
 
-    /// The sum the shares are taken of: exclusive time (cost without ANALYZE).
     pub fn total(&self) -> f64 {
         if self.analyzed { self.nodes.iter().map(|n| n.excl_ms).sum() } else { self.nodes.iter().map(|n| n.excl_cost).sum() }
     }
 
-    /// Fills `procs`, `incl_ms`, `excl_ms`, `excl_cost` and `share`.
     pub(crate) fn compute(&mut self) {
         let n = self.nodes.len();
         if n == 0 {
@@ -573,7 +479,6 @@ impl Plan {
         }
         self.analyzed = self.nodes.iter().any(|x| x.act_ms().is_some());
         let ends: Vec<usize> = (0..n).map(|i| self.end_of(i)).collect();
-        // Participants: the Gather above sets how many processes may run the nodes below it.
         for root in 0..n {
             if self.nodes[root].parent.is_none() {
                 self.procs_from(root, None);
@@ -586,8 +491,6 @@ impl Plan {
                 _ => 0.,
             };
         }
-        // What each node's own time leaves out: its children, an InitPlan where it is read, a
-        // CTE in the scans that read it.
         let mut ded = vec![0f64; n];
         let mut ctes: Vec<(usize, usize, String)> = Vec::new();
         for p in 0..n {
@@ -628,7 +531,6 @@ impl Plan {
         for (i, x) in self.nodes.iter_mut().enumerate() {
             x.excl_ms = (x.incl_ms - ded[i]).max(0.);
         }
-        // Cost over the estimated loops, less the children's.
         let mut loops = vec![1f64; n];
         for p in 0..n {
             let kids = self.nodes[p].children.clone();
@@ -681,8 +583,6 @@ impl Plan {
         }
     }
 
-    /// The node that reads InitPlan `c`'s value, under its parent `p`: the deepest that mentions
-    /// it (`(InitPlan 2)`, or `$0` before PostgreSQL 16).
     fn reader_of(&self, p: usize, c: usize, name: &str, ends: &[usize]) -> Option<usize> {
         let base = name.split(" (").next().unwrap_or(name).trim();
         let mut needles: Vec<(String, bool)> = vec![(format!("({base})"), false)];
@@ -713,7 +613,6 @@ fn walk_json(o: &Map<String, Value>, parent: Option<usize>, depth: u16, out: &mu
     id
 }
 
-/// (operation, one-line title) of a JSON node, as PostgreSQL's text format names it.
 pub(crate) fn title_of(o: &Map<String, Value>) -> (String, String) {
     let s = |k: &str| o.get(k).and_then(Value::as_str);
     let ty = s("Node Type").unwrap_or("?");
@@ -804,7 +703,6 @@ mod tests {
         p.nodes.iter().find(|n| n.title == t).unwrap_or_else(|| panic!("no node {t}: {:?}", p.nodes.iter().map(|n| &n.title).collect::<Vec<_>>()))
     }
 
-    /// Without clamping, the exclusive times add up to the root's inclusive time.
     fn sums_to_root(p: &Plan) {
         let sum: f64 = p.nodes.iter().map(|n| n.excl_ms).sum();
         assert!(close(sum, p.nodes[0].incl_ms), "{sum} vs {}", p.nodes[0].incl_ms);
@@ -864,7 +762,6 @@ mod tests {
         assert_eq!(fixture("cte_initplan").nodes[5].title, "CTE Scan on m");
         assert_eq!(fixture("cte_initplan").nodes[6].title, "CTE Scan on m b");
         assert_eq!(fixture("insert_triggers").nodes[0].title, "Insert on orders");
-        // Depth-first order, parents and the last-child flags.
         let p = fixture("cte_initplan");
         assert_eq!(p.nodes[0].children, vec![1, 4, 6, 7]);
         assert_eq!(p.end_of(1), 4);
@@ -877,7 +774,6 @@ mod tests {
         assert!(p.analyzed);
         let procs: Vec<f64> = p.nodes.iter().map(|n| n.procs).collect();
         assert_eq!(procs, [1., 1., 3., 3., 3.]);
-        // Sort: 201.763 per loop × 3 loops / 3 participants.
         assert!(close(p.nodes[2].incl_ms, 201.763));
         assert!(close(p.nodes[1].excl_ms, 219.619 - 201.763), "the Gather's own time is its wait");
         assert!(close(p.nodes[3].excl_ms, 201.712 - 145.403));
@@ -891,18 +787,14 @@ mod tests {
     #[test]
     fn loops_multiply_and_workers_count_from_their_list() {
         let p = fixture("nested_loop");
-        // Gather (1 worker launched): the nested loop ran in the leader and the worker.
         assert_eq!(p.nodes[1].procs, 2.);
-        // The bitmap index scan ran once (the leader built the shared bitmap): not halved.
         assert_eq!(p.nodes[3].procs, 1.);
         assert!(close(p.nodes[3].incl_ms, 2.199));
-        // Inner side: 0.097 ms × 11,473 loops over 2 participants.
         let inner = 0.097 * 11473. / 2.;
         assert!(close(p.nodes[4].incl_ms, inner));
         assert!(close(p.nodes[1].excl_ms, 644.014 - 70.899 - inner));
         assert!(close(p.nodes[2].excl_ms, 70.899 - 2.199));
         sums_to_root(&p);
-        // Without the workers' list the Gather's count applies, capped by the loops.
         let mut q = p.clone();
         for n in &mut q.nodes {
             n.raw.remove("Workers");
@@ -915,7 +807,6 @@ mod tests {
     #[test]
     fn subplans_run_inside_their_parent() {
         let p = fixture("subplan");
-        // 499 runs of the correlated subquery inside the index-only scan's output.
         assert!(close(p.nodes[1].incl_ms, 0.026 * 499.));
         assert!(close(p.nodes[0].excl_ms, 13.243 - 0.026 * 499.));
         assert!(close(p.nodes[2].excl_ms, (0.025 - 0.001) * 499.));
@@ -931,11 +822,8 @@ mod tests {
         let cte = &p.nodes[1];
         let init2 = &p.nodes[4];
         assert_eq!(cte.subplan(), Some("CTE m"));
-        // The join's own time: its outer scan and its hash, nothing of the InitPlans.
         assert!(close(root.excl_ms, 14.248 - 13.696 - 0.499));
-        // b pulled the CTE's rows: the CTE's plan ran inside it.
         assert!(close(b.excl_ms, 0.));
-        // `(InitPlan 2).col1` is read in a's filter, below the Hash: charged there, not to the root.
         assert!(close(a.excl_ms, 0.478 - 0.444), "{}", a.excl_ms);
         assert!(close(init2.excl_ms, 0.444 - 0.106));
         assert!(close(cte.excl_ms, 13.723 - 12.735));
@@ -944,7 +832,6 @@ mod tests {
 
     #[test]
     fn old_initplan_params_and_parent_fallback() {
-        // PostgreSQL 15: `InitPlan 1 (returns $0)` read as `$0` by the scan below the root.
         let s = r#"[{"Plan":{"Node Type":"Result","Actual Total Time":5.0,"Actual Loops":1,"Plan Rows":1,"Actual Rows":1,"Total Cost":10,
             "Plans":[
               {"Node Type":"Aggregate","Parent Relationship":"InitPlan","Subplan Name":"InitPlan 1 (returns $0)","Actual Total Time":3.0,"Actual Loops":1,"Total Cost":5},
@@ -954,7 +841,6 @@ mod tests {
         let p = Plan::parse(s);
         assert!(close(p.nodes[2].excl_ms, 1.5), "{}", p.nodes[2].excl_ms);
         assert!(close(p.nodes[0].excl_ms, 0.5));
-        // Nobody reads it: the parent pays.
         let s2 = s.replace("(x > $0)", "(x > 1)");
         let p = Plan::parse(&s2);
         assert!(close(p.nodes[0].excl_ms, 0.), "5 - 3 - 4.5 clamps at 0");
@@ -970,7 +856,6 @@ mod tests {
         assert!(close(p.nodes[1].excl_cost, 47.91 - 4.51));
         assert!(close(p.nodes[0].excl_cost, 0.));
         assert!((p.nodes.iter().map(|n| n.share).sum::<f64>() - 1.).abs() < 1e-9);
-        // A nested loop's inner side counts once per outer row.
         let q = fixture("nested_loop");
         let inner_eff: f64 = 8.83 * 6708.;
         assert!(close(q.nodes[1].excl_cost, (61460.52 - 1490.53 - inner_eff).max(0.)));
@@ -1005,15 +890,12 @@ mod tests {
         assert!(get("Worker 1").unwrap().contains("Sort Space Used 2024"));
         assert!(get("Plans").is_none());
         assert_eq!(props.first().map(|(k, _)| k.as_str()), Some("Node Type"), "in the server's order");
-        // Misestimates.
         let m = fixture("misestimate").nodes[0].misestimate().unwrap();
         assert_eq!((m.factor, m.under), (200., true));
         assert_eq!(fixture("parallel").nodes[4].misestimate().unwrap().factor.round(), 1.);
         assert_eq!(fixture("estimate").nodes[0].misestimate(), None, "no actual rows without ANALYZE");
     }
 
-    /// A plan of 2,000 nodes (an Append of nested loops, some deep) parses and computes in a few
-    /// milliseconds, off the UI thread anyway.
     #[test]
     fn big_plans_parse_fast() {
         fn node(depth: usize, i: usize) -> String {
@@ -1029,7 +911,6 @@ mod tests {
                 depth * 2 + 1,
             )
         }
-        // Two trees of 1,023 nodes under one Append.
         let s = format!(r#"[{{"Plan":{{"Node Type":"Append","Actual Total Time":50.0,"Actual Loops":1,"Total Cost":100.0,"Plans":[{},{}]}}}}]"#, node(9, 1), node(9, 2));
         let t0 = std::time::Instant::now();
         let p = Plan::parse(&s);

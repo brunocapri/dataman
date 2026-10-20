@@ -9,7 +9,6 @@ publish.workspace = true
 anyhow.workspace = true
 gpui.workspace = true
 dataman-core.workspace = true
-# The MCP server's hub, serving `dataman-mcp`'s calls through the app's socket.
 dataman-mcp.workspace = true
 futures-util.workspace = true
 gpui_platform.workspace = true
@@ -21,16 +20,12 @@ log = "0.4"
 unicode-segmentation = "1"
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }
 
-# The macOS accessibility "Reduce motion" switch (GPUI does not read it); already in the tree
-# through gpui_macos.
+# objc2: GPUI does not read macOS's Reduce motion switch.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-# The completion handler of the `.sql` open panel (`sql_picker.rs`); in the tree through GPUI.
 block2 = "0.6"
-# GPUI's NSView, for the window blur where GPUI's does not work (`glass.rs`); in the tree
-# through GPUI.
 raw-window-handle = "0.6"
 
 [features]
-# Window captures rendered in-process (`--demo` with DATAMAN_SHOT=file.png); test builds only.
+# Test builds only.
 screenshots = ["gpui/test-support", "gpui_platform/test-support", "dep:image"]

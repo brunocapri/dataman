@@ -1,14 +1,3 @@
-//! The value sheet: the whole value of a JSON or array cell over the window, opened by the eye
-//! at the cell's right edge (`grid`: on the hovered cell and the selected one) or ⇧Space on the
-//! selected cell. JSON shows as a tree (each container opens and shuts; all at once from the
-//! toolbar) or as formatted text; a PostgreSQL array as its items. The header names the column,
-//! its type and the row; Copy takes the value; esc (or ⇧Space again) closes it. It only reads:
-//! editing stays the grid's (↩, a double click).
-//!
-//! What gets an eye ([`shape_of`]): typed JSON columns (`json`, `jsonb`, MySQL's `JSON`) whose
-//! value is an object or an array, and PostgreSQL array columns (`int4[]`, `text[]`…). Text
-//! that merely looks like JSON (SQL Server's `nvarchar`, a `text` column) does not.
-
 use std::time::Instant;
 
 use dataman_core::jsontree::{self, Doc, Node, Row, RowKey};
@@ -24,35 +13,27 @@ use crate::ui::{self, Btn};
 
 actions!(value_sheet, [CloseValue, CopyValue]);
 
-/// The sheet's key context.
 pub const CONTEXT: &str = "ValueSheet";
 
-/// Lines (tree rows or text lines) drawn at most: a huge value stays responsive; Copy still
-/// takes all of it.
 const MAX_LINES: usize = 2_000;
-/// A line of the body.
 const LINE: f32 = 20.;
 
 pub fn bind_keys(cx: &mut App) {
     let c = Some(CONTEXT);
     cx.bind_keys([
         KeyBinding::new("escape", CloseValue, c),
-        // The grid's key opens it, and closes it again (Quick Look's space).
         KeyBinding::new("shift-space", CloseValue, c),
         KeyBinding::new("space", CloseValue, c),
         KeyBinding::new("cmd-c", CopyValue, c),
     ]);
 }
 
-/// What a viewable value is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Shape {
     Json,
-    /// A PostgreSQL array (`{1,2,3}`).
     List,
 }
 
-/// The shape of a column's values, from its type: JSON, an array, or nothing to view.
 /// PostgreSQL names array types `_int4` (the driver's name) or `int4[]` (catalog text).
 pub fn shape_of(kind: Kind, type_name: &str) -> Option<Shape> {
     match kind {
@@ -62,8 +43,6 @@ pub fn shape_of(kind: Kind, type_name: &str) -> Option<Shape> {
     }
 }
 
-/// Whether a (non-NULL) value of such a column gets the eye: a JSON object or array (not a
-/// bare string or number), an array literal.
 pub fn viewable(kind: Kind, type_name: &str, value: &str) -> bool {
     let v = value.trim_start();
     match shape_of(kind, type_name) {
@@ -73,7 +52,6 @@ pub fn viewable(kind: Kind, type_name: &str, value: &str) -> bool {
     }
 }
 
-/// One cell for the sheet: its column, type, display row and value (as the grid shows it).
 #[derive(Clone, Debug, PartialEq)]
 pub struct ValueCell {
     pub column: String,
@@ -91,13 +69,9 @@ pub struct ValueView {
     focus: FocusHandle,
     cell: ValueCell,
     shape: Shape,
-    /// The value as a tree; `None` when it does not parse (its text is shown).
     doc: Option<Doc>,
-    /// The tree's rows below the root, as drawn (rebuilt when a container opens or shuts).
     rows: Vec<Row>,
-    /// The formatted text (JSON pretty-printed; an array as it came).
     pretty: String,
-    /// The Text tab (else the tree).
     text: bool,
     copied_at: Option<Instant>,
     _copied: Option<Task<()>>,
@@ -155,7 +129,6 @@ impl ValueView {
         cx.notify();
     }
 
-    /// What Copy takes: the formatted text on the Text tab, else the value as stored.
     fn copy_text(&self) -> &str {
         if self.text { &self.pretty } else { &self.cell.value }
     }
@@ -176,18 +149,14 @@ impl ValueView {
         cx.notify();
     }
 
-    /// Checks: every container open (`true`) or shut, as Expand all / Collapse all.
     pub fn demo_all(&mut self, open: bool, cx: &mut Context<Self>) {
         self.all(open, cx);
     }
 
-    /// Checks: the Text tab (`true`) or the tree, as its segments.
     pub fn demo_text(&mut self, text: bool, cx: &mut Context<Self>) {
         self.set_text(text, cx);
     }
 
-    /// Checks: the column shown, whether the tree is up, and the lines as drawn (tree rows as
-    /// `key: value`, indented two spaces a level; text lines as they are).
     pub fn demo_state(&self) -> (String, bool, Vec<String>) {
         let lines = if self.text {
             self.pretty.lines().map(str::to_string).collect()
@@ -197,7 +166,6 @@ impl ValueView {
         (self.cell.column.clone(), !self.text, lines)
     }
 
-    /// A row's value as drawn: containers as `{3}` / `[2]`; an array's strings without quotes.
     fn leaf_text(&self, r: &Row) -> String {
         if r.container || self.shape == Shape::Json {
             return r.value.clone();
@@ -209,7 +177,6 @@ impl ValueView {
         }
     }
 
-    /// The facts under the body: size, members, and whether it parsed.
     fn meta(&self) -> String {
         let bytes = self.cell.value.len();
         let size = if bytes >= 10_000 { format!("{:.1} KB", bytes as f64 / 1024.) } else { format!("{bytes} B") };
@@ -285,7 +252,6 @@ impl ValueView {
     }
 }
 
-/// A type as written in SQL: the driver's `_int8` is `int8[]`.
 fn type_label(type_name: &str) -> String {
     match type_name.strip_prefix('_') {
         Some(elem) => format!("{elem}[]"),
@@ -297,7 +263,6 @@ fn plural(n: usize) -> &'static str {
     if n == 1 { "" } else { "s" }
 }
 
-/// A row's key: an object member's name, an item's index.
 fn key_text(r: &Row) -> Option<String> {
     match &r.key {
         Some(RowKey::Key(k)) => Some(k.clone()),
@@ -315,7 +280,6 @@ fn json_color(t: &Theme, type_name: &str) -> Hsla {
     }
 }
 
-/// One line of pretty JSON with keys, strings, numbers and literals colored (it wraps).
 fn json_line(t: &Theme, line: &str) -> gpui::AnyElement {
     let base = TextRun { len: 0, font: font(crate::theme::mono()), color: t.tx3, background_color: None, underline: None, strikethrough: None };
     let mut runs: Vec<TextRun> = Vec::new();
@@ -402,7 +366,6 @@ impl Render for ValueView {
                     .child(ui::segment(&t, "vv-tree", tree_label, !text).when(!tree_ok, |d| d.opacity(0.4)).on_click(cx.listener(|v, _, _, cx| v.set_text(false, cx))))
                     .child(ui::segment(&t, "vv-text", "Text", text).on_click(cx.listener(|v, _, _, cx| v.set_text(true, cx)))),
             )
-            // Expand all / Collapse all, when something below the root opens and shuts.
             .when(!text && self.rows.iter().any(|r| r.container), |d| {
                 d.child(ui::button(&t, "vv-expand", Btn::Ghost).h(px(24.)).text_size(px(11.5)).child("Expand all").on_click(cx.listener(|v, _, _, cx| v.all(true, cx))))
                     .child(ui::button(&t, "vv-collapse", Btn::Ghost).h(px(24.)).text_size(px(11.5)).child("Collapse all").on_click(cx.listener(|v, _, _, cx| v.all(false, cx))))
@@ -496,8 +459,7 @@ impl Render for ValueView {
             .track_focus(&self.focus)
             .on_action(cx.listener(|_, _: &CloseValue, _, cx| cx.emit(ValueEvent::Close)))
             .on_action(cx.listener(|v, _: &CopyValue, _, cx| v.copy(cx)))
-            // A press on the scrim closes it (the card keeps its own presses); not the second
-            // press of a double click on the eye that opened it.
+            // Not the second press of a double click on the eye that opened it.
             .on_mouse_down(gpui::MouseButton::Left, cx.listener(|_, ev: &gpui::MouseDownEvent, _, cx| {
                 cx.stop_propagation();
                 if ev.click_count < 2 {

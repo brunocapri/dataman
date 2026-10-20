@@ -1,17 +1,4 @@
-//! Dataman's release tooling (`cargo run --release -p xtask -- <command>`):
-//!
-//! - `icon <svg> <out.icns>`: renders the icon at every size macOS wants and packs it with
-//!   `iconutil`.
-//! - `keygen`: a new ed25519 key for update signatures, written outside the repository (0600);
-//!   prints the public key for `DATAMAN_UPDATE_PUBKEY`.
-//! - `pubkey`: prints the public key of the current private key.
-//! - `sign <dmg> --url <url> --version <v> [--notes <file>] [--min-macos <v>]`: signs the DMG and
-//!   prints the feed JSON.
-//! - `verify <feed.json> <dmg> --pubkey <b64> [--version <v>]`: checks a published feed and its
-//!   DMG as the app would (size, signature, version).
-//!
-//! The private key: `DATAMAN_UPDATE_PRIVATE_KEY` (its base64, for CI secrets), else the file
-//! at `DATAMAN_UPDATE_KEY`, else `~/.config/dataman-release/update_ed25519.key`.
+//! The update signing key is written outside the repository (0600).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -44,9 +31,6 @@ fn run() -> Result<()> {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// The icon.
-
 fn icon(svg: &Path, out: &Path) -> Result<()> {
     let data = std::fs::read(svg).with_context(|| format!("reading {}", svg.display()))?;
     let tree = usvg::Tree::from_data(&data, &usvg::Options::default())?;
@@ -66,7 +50,6 @@ fn icon(svg: &Path, out: &Path) -> Result<()> {
         std::fs::create_dir_all(dir)?;
     }
     let st = Command::new("iconutil").args(["-c", "icns", "-o"]).arg(out).arg(&set).status()?;
-    // The 1024 px render, to look at.
     let preview = out.with_extension("png");
     std::fs::copy(set.join("icon_512x512@2x.png"), &preview)?;
     std::fs::remove_dir_all(&set)?;
@@ -76,9 +59,6 @@ fn icon(svg: &Path, out: &Path) -> Result<()> {
     println!("{} ({} bytes), preview {}", out.display(), std::fs::metadata(out)?.len(), preview.display());
     Ok(())
 }
-
-// ---------------------------------------------------------------------------------------------
-// Update signing.
 
 fn key_path() -> Result<PathBuf> {
     if let Some(p) = std::env::var_os("DATAMAN_UPDATE_KEY").filter(|p| !p.is_empty()) {
@@ -141,7 +121,7 @@ fn flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
     args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).map(String::as_str)
 }
 
-/// UTC "YYYY-MM-DDTHH:MM:SSZ" (days to civil date, Howard Hinnant's algorithm).
+/// Days to civil date: Howard Hinnant's algorithm.
 fn now_utc() -> String {
     let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
     let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
@@ -192,8 +172,6 @@ fn sign(dmg: &str, args: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// Checks a published feed against its DMG the way the app does: the size, the ed25519
-/// signature with the app's public key, and (with `--version`) the version.
 fn verify(feed: &str, dmg: &str, args: &[String]) -> Result<()> {
     let pubkey = flag(args, "--pubkey").context("--pubkey is required")?;
     let json: serde_json::Value = serde_json::from_slice(&std::fs::read(feed).with_context(|| format!("reading {feed}"))?).context("the feed is not JSON")?;

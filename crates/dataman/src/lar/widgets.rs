@@ -1,6 +1,3 @@
-//! Pieces the LAR boards repeat: the 40 pt panel header with its pixel-font title, caps
-//! section labels, sparklines, small and violet buttons.
-
 use gpui::{
     Div, ElementId, FontWeight, Hsla, ParentElement, SharedString, Stateful, Styled, div,
     prelude::*,
@@ -9,7 +6,6 @@ use crate::theme::px;
 
 use crate::theme::{PIXEL, Theme};
 
-/// The 40 pt header of a LAR side panel: pixel title in `color`, then whatever follows.
 pub fn header(t: &Theme, title: &str, color: Hsla) -> Div {
     div()
         .h(px(40.))
@@ -25,12 +21,10 @@ pub fn header(t: &Theme, title: &str, color: Hsla) -> Div {
         .child(div().font_family(PIXEL).text_size(px(13.)).text_color(color).child(SharedString::from(title.to_string())))
 }
 
-/// `NOTIFICATIONS · ch`: 10.5 pt caps in tx3.
 pub fn caps(t: &Theme, text: impl Into<SharedString>) -> Div {
     div().text_size(px(10.5)).text_color(t.tx3).child(text.into())
 }
 
-/// Vertical bars, oldest left (heights scaled to the largest value, at least 2 pt).
 pub fn sparkline(values: &[f32], color: Hsla, height: f32, gap: f32) -> Div {
     let max = values.iter().cloned().fold(0f32, f32::max);
     div().h(px(height)).flex().flex_row().items_end().gap(px(gap)).children(values.iter().map(move |v| {
@@ -39,7 +33,6 @@ pub fn sparkline(values: &[f32], color: Hsla, height: f32, gap: f32) -> Div {
     }))
 }
 
-/// A small secondary button (24 pt).
 pub fn small_btn(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedString>) -> Stateful<Div> {
     let (h, p) = (t.prs, t.line2);
     div()
@@ -62,7 +55,6 @@ pub fn small_btn(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedStr
         .child(label.into())
 }
 
-/// A violet 28 pt button (the state card's action).
 pub fn lar_btn(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedString>) -> Stateful<Div> {
     let h = t.lar_h;
     div()

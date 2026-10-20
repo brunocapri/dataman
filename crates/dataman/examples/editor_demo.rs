@@ -1,10 +1,3 @@
-//! The SQL editor alone in a window, with a fake schema for autocomplete.
-//!
-//! `EDITOR_BENCH=1` loads a ~5,000-line script, types a sample query one character per frame,
-//! prints keystroke-to-next-frame latency and quits (`EDITOR_LINES` changes the script size).
-//! `EDITOR_CHECK=1` drives editing actions through the real key dispatch, prints the results
-//! and quits.
-
 #[path = "../src/assets.rs"]
 #[allow(dead_code)]
 mod assets;
@@ -33,9 +26,7 @@ mod theme;
 #[allow(dead_code)]
 mod ui;
 
-/// What the find bar and the editor take from the grid.
 mod grid {
-    /// No grid here: the editor draws its own gutter width.
     #[derive(Clone, Default)]
     pub struct GutterShare;
 
@@ -215,7 +206,6 @@ impl Render for Demo {
 type Step = Box<dyn Fn(&Entity<CodeEditor>, &mut Window, &mut App)>;
 
 thread_local! {
-    /// A step asks the runner to wait this long (ms) before the next one.
     static DELAY: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
@@ -223,7 +213,6 @@ fn wait(ms: u64) -> Step {
     Box::new(move |_, _, _| DELAY.with(|d| d.set(ms)))
 }
 
-/// Prints PASS or FAIL for a condition on the editor, with what it saw.
 fn ok(label: &'static str, f: impl Fn(&CodeEditor) -> (bool, String) + 'static) -> Step {
     Box::new(move |ed, _, cx| {
         let (pass, seen) = f(ed.read(cx));
@@ -339,7 +328,6 @@ fn check(ed: Entity<CodeEditor>, window: &mut Window, cx: &mut App) {
         p("kw"),
         a(Cancel),
         p("escape"),
-        // Editor intelligence (item 8).
         f(|e, _, cx| {
             e.set_text("select o.id,o.total from orders o join customer c on c.id=o.customer where o.status='open' and o.total>10", cx);
             e.set_cursor(0, cx);
@@ -431,7 +419,6 @@ fn main() {
                         e.set_text(&text, cx);
                         e.set_schema(Arc::new(schema()), cx);
                         if !bench {
-                            // Show the error underline on a token, as after a failed statement.
                             if let Some(at) = text.find("\"Odd Column") {
                                 let d = editor::Diagnostic { stmt: at..at, at: Some(at), message: "42703 column \"Odd Column\" does not exist".into() };
                                 e.set_diagnostic(Some(d), cx);

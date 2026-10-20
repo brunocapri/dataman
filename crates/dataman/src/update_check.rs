@@ -1,23 +1,3 @@
-//! `update-check` (`--demo`): the update notice end to end, offline. A feed and a DMG served
-//! from 127.0.0.1 (a free port of the system's choosing), signed with a key made for the run,
-//! offer version 99.0.0 of a small stand-in bundle; the stage replaces a stand-in Dataman.app
-//! in a scratch folder (never this app, never /Applications) and does not relaunch.
-//!
-//! Checked, for a feed that offers nothing newer (and answers slowly): Check for Updates as the
-//! menu sends it shows the sheet's "Checking…", then "Dataman is up to date", closed by ↩; one
-//! asked for during an automatic check is still answered, and none is throttled; Settings ›
-//! About › Check now answers beside it ("Checking…" with the button off, then up to date and
-//! when), Settings staying open; the menu with Settings open shows it in About; an unreachable
-//! feed says why (beside Check now, and in the sheet with Try Again); under another sheet, and
-//! with no window left, an alert says it (recorded, not shown). With `DATAMAN_SHOT_DIR`, those
-//! steps are captured there. Then: the title bar's notice
-//! after a background check (and no sheet); the notice opens the sheet; Later closes it and
-//! hides the notice; a manual check brings the sheet back; Install & Relaunch (↩) shows the
-//! download's progress, and a DMG whose signature does not match is refused with Retry, the
-//! app untouched; Retry (after the feed is fixed) downloads, verifies and swaps in the new
-//! bundle: its version, a valid signature, no quarantine, nothing left beside it. PASS/FAIL
-//! lines, exit code 1 on a failure.
-
 use std::collections::HashMap;
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::net::TcpListener;
@@ -74,7 +54,6 @@ async fn pause(cx: &mut AsyncWindowContext, ms: u64) {
     cx.background_executor().timer(Duration::from_millis(ms)).await;
 }
 
-/// Polls `done` every 50 ms for up to `secs`, drawing in between.
 async fn wait(cx: &mut AsyncWindowContext, secs: u64, mut done: impl FnMut(&mut AsyncWindowContext) -> bool) -> bool {
     for _ in 0..secs * 20 {
         draw(cx);
@@ -86,14 +65,11 @@ async fn wait(cx: &mut AsyncWindowContext, secs: u64, mut done: impl FnMut(&mut 
     false
 }
 
-/// Check for Updates as the app menu sends it with the window in front (on the focused
-/// element, up to the workspace).
 fn menu_check(cx: &mut AsyncWindowContext) {
     let _ = cx.update(|window, cx| window.dispatch_action(Box::new(crate::app::CheckForUpdates), cx));
     draw(cx);
 }
 
-/// `DATAMAN_SHOT_DIR=dir`: the window now, as `dir/name.png`.
 fn snap(cx: &mut AsyncWindowContext, name: &str) {
     let Some(dir) = std::env::var_os("DATAMAN_SHOT_DIR") else { return };
     let path = Path::new(&dir).join(format!("{name}.png"));
@@ -105,8 +81,6 @@ fn state(cx: &mut AsyncWindowContext) -> State {
     cx.update(|_, cx| updates::state(cx)).unwrap_or(State::Idle)
 }
 
-/// A stand-in app bundle at `app`: an Info.plist with `version`, `/usr/bin/true` as its
-/// executable, signed ad hoc.
 fn stand_in(app: &Path, version: &str) -> anyhow::Result<()> {
     let macos = app.join("Contents/MacOS");
     std::fs::create_dir_all(&macos)?;
@@ -132,12 +106,10 @@ fn sh(cmd: &mut Command) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// What the server serves (path → body), and the requests it saw.
 #[derive(Clone, Default)]
 struct Site {
     files: Arc<Mutex<HashMap<String, Vec<u8>>>>,
     log: Arc<Mutex<Vec<String>>>,
-    /// Milliseconds before the feed answers (time to see "Checking…").
     feed_delay: Arc<AtomicU64>,
 }
 
@@ -150,8 +122,6 @@ impl Site {
         self.files.lock().unwrap().remove(path);
     }
 
-    /// Serves on a free loopback port; the body goes out in 12 slices 80 ms apart, so the
-    /// download's progress has time to show. Returns the port.
     fn serve(&self) -> anyhow::Result<u16> {
         let listener = TcpListener::bind("127.0.0.1:0")?;
         let port = listener.local_addr()?.port();
@@ -169,7 +139,6 @@ impl Site {
                     if reader.read_line(&mut line).is_err() {
                         return;
                     }
-                    // The rest of the request head.
                     let mut h = String::new();
                     while reader.read_line(&mut h).is_ok_and(|n| n > 2) {
                         h.clear();
@@ -223,7 +192,6 @@ fn plist_version(app: &Path) -> String {
     dataman_core::update::plist_value(app, "CFBundleShortVersionString").unwrap_or_default()
 }
 
-/// Runs the stage; `false` when a check failed.
 pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let mut ok = true;
     let mut report = |name: &str, pass: bool, detail: String| {
@@ -276,8 +244,6 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
         updates::set_ws_for_test(handle.map(|h| (ws.downgrade(), h)), cx);
     });
 
-    // Nothing newer, the feed slow to answer. Check for Updates as the menu sends it: the
-    // sheet says "Checking…", then "Dataman is up to date", and ↩ closes it.
     site.put("/feed.json", feed_json(crate::VERSION, &dmg_url, &dmg, key.sign(&dmg)));
     site.feed_delay.store(700, Ordering::Relaxed);
     let sheet_open = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).update_sheet).unwrap_or(false);
@@ -294,8 +260,6 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     press(cx, "enter");
     report("its OK (↩) closes it", buttons == 1 && !sheet_open(cx), format!("{buttons} buttons, sheet {}", sheet_open(cx)));
 
-    // Asked for while an automatic check runs: that check answers it (the request is never
-    // dropped because one is under way).
     let _ = cx.update(|_, cx| updates::check(false, cx));
     draw(cx);
     let was_auto = state(cx) == State::Checking && !sheet_open(cx);
@@ -306,8 +270,6 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let fresh = cx.update(|_, cx| updates::checked(cx).is_some_and(|c| c.at.elapsed().unwrap_or_default() < Duration::from_secs(5))).unwrap_or(false);
     report("a check asked for right after another still reads the feed (no throttle)", fresh, String::new());
 
-    // Settings › About › Check now answers beside the button, Settings staying open: off and
-    // "Checking…" while it runs, then up to date and when.
     let settings = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).settings_view.clone()).ok().flatten();
     let status = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).settings_view.as_ref().and_then(|v| v.read(cx).demo_update_status(cx))).ok().flatten().unwrap_or_default();
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.open_settings_at("about", window, cx)));
@@ -321,7 +283,6 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let checking = wait(cx, 3, |cx| state(cx) == State::Checking).await;
     let shown = status(cx);
     snap(cx, "check-settings-checking");
-    // A second click while it runs does nothing (the button is off).
     if let Some(p) = point {
         click(cx, p);
     }
@@ -333,7 +294,6 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     report("Check now is off while the check runs (one request for two clicks)", requests == 1, format!("{requests} requests"));
     report("no sheet over Settings for it", !sheet_open(cx) && settings(cx).is_some(), format!("sheet {}", sheet_open(cx)));
 
-    // The menu with Settings open on another section: About shows the check.
     if let Some(v) = settings(cx) {
         let _ = cx.update(|_, cx| v.update(cx, |v, cx| v.show_section("appearance", cx)));
     }
@@ -343,7 +303,6 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let said = wait(cx, 10, |cx| state(cx) == State::Idle && status(cx).starts_with("Dataman is up to date")).await;
     report("Check for Updates with Settings open: About says it", about && said && !sheet_open(cx), format!("about {about}, {:?}", status(cx)));
 
-    // The feed unreachable: the error, beside Check now and in the sheet (with Try Again).
     site.remove("/feed.json");
     if let Some(p) = point {
         click(cx, p);
@@ -363,7 +322,6 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     site.put("/feed.json", feed_json(crate::VERSION, &dmg_url, &dmg, key.sign(&dmg)));
     site.feed_delay.store(0, Ordering::Relaxed);
 
-    // Another sheet up: an alert says the outcome (recorded here instead of shown).
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.open_import(window, cx)));
     draw(cx);
     let alerts = |cx: &mut AsyncWindowContext| cx.update(|_, cx| cx.try_global::<updates::Updates>().map(|u| u.alerts.clone()).unwrap_or_default()).unwrap_or_default();
@@ -377,7 +335,6 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
         })
     });
 
-    // No window left (closed, the app still running): an alert of the app's own.
     let _ = cx.update(|_, cx| {
         updates::set_ws_for_test(None, cx);
         updates::check(true, cx);
@@ -386,7 +343,6 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     report("with no window: an alert of the app's own", alerted, format!("{:?}", alerts(cx)));
     let _ = cx.update(|_, cx| updates::set_ws_for_test(handle.map(|h| (ws.downgrade(), h)), cx));
 
-    // 99.0.0 on offer, its DMG signed by another key: the background check raises the notice.
     let wrong = ThrowawayKey::new().map(|k| k.sign(&dmg)).unwrap_or_default();
     site.put("/feed.json", feed_json(NEW, &dmg_url, &dmg, wrong));
     let _ = cx.update(|_, cx| updates::check(false, cx));
@@ -397,7 +353,6 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let label = cx.update(|_, cx| updates::notice_shown(cx) && updates::offered(cx).is_some_and(|f| f.version == NEW)).unwrap_or(false);
     report("the notice is for 99.0.0", label, String::new());
 
-    // The notice opens the sheet; Later closes it and hides the notice.
     if let Some(b) = pill {
         click(cx, b.center());
     }
@@ -411,12 +366,10 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let (closed, hidden) = cx.update(|_, cx| (!ws.read(cx).update_sheet, !updates::notice_shown(cx))).unwrap_or((false, false));
     report("Later closes the sheet and hides the notice", closed && hidden, format!("closed {closed}, hidden {hidden}"));
 
-    // A manual check brings it back.
     let _ = cx.update(|_, cx| updates::check(true, cx));
     let back = wait(cx, 10, |cx| cx.update(|_, cx| ws.read(cx).update_sheet && updates::notice_shown(cx)).unwrap_or(false)).await;
     report("Check for Updates opens the sheet again", back, format!("{:?}", state(cx)));
 
-    // ↩ installs: the progress shows, then the signature is refused, with Retry.
     press(cx, "enter");
     let mut progress = false;
     let failed = wait(cx, 20, |cx| {
@@ -440,7 +393,6 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let notice_failed = cx.update(|_, cx| updates::notice_shown(cx) && ws.read(cx).update_sheet).unwrap_or(false);
     report("the sheet stays up with the error", notice_failed, String::new());
 
-    // The feed fixed: Retry reads it again, downloads, verifies and swaps.
     site.put("/feed.json", feed_json(NEW, &dmg_url, &dmg, key.sign(&dmg)));
     draw(cx);
     let buttons = cx.update(|_, cx| ws.read(cx).update_button_bounds.borrow().clone()).unwrap_or_default();

@@ -1,34 +1,23 @@
-//! Building SQL text: identifiers, literals per [`Kind`], unambiguous (UTC) time literals.
-//!
-//! Used by export (`INSERT` statements), grid editing, search and the LAR helpers. Literals assume
-//! `standard_conforming_strings = on` (PostgreSQL's default since 9.1, and LAR's only mode):
-//! backslashes inside `'…'` are plain characters.
-//!
-//! Everything here writes PostgreSQL; quoting comes from [`Dialect`], whose other dialects these
-//! functions will take as a parameter when their engines arrive.
+// Literals assume `standard_conforming_strings = on` (PostgreSQL's default since 9.1, and LAR's
+// only mode): backslashes inside `'…'` are plain characters.
 
 use crate::result::{Cell, format_cell};
 use crate::schema::Column;
 use crate::sql::Dialect;
 use crate::value::{self, Kind};
 
-/// Quotes an identifier when PostgreSQL would fold or reject it unquoted (reserved words
-/// included): [`Dialect::quote_ident`] of PostgreSQL.
 pub fn quote_ident(name: &str) -> String {
     Dialect::Postgres.quote_ident(name)
 }
 
-/// `schema.table`, each part quoted when needed; no schema → just the table.
 pub fn qualified(schema: Option<&str>, name: &str) -> String {
     Dialect::Postgres.qualified(schema, name)
 }
 
-/// `'text'` with quotes doubled.
 pub fn quote_literal(s: &str) -> String {
     Dialect::Postgres.quote_literal(s)
 }
 
-/// A cell value given as text, or NULL: what the user typed in the grid.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum CellValue {
     Null,
@@ -47,7 +36,6 @@ impl CellValue {
         }
     }
 
-    /// The value of a cell as the grid displays it (timestamps in UTC, see [`cell_text_utc`]).
     pub fn from_cell(kind: Kind, cell: Cell<'_>) -> CellValue {
         match cell_text_utc(kind, cell) {
             Some(s) => CellValue::Text(s),
@@ -56,7 +44,6 @@ impl CellValue {
     }
 }
 
-/// Microseconds since 2000-01-01 UTC → `2024-01-02 03:04:05.5+00`.
 pub fn timestamptz_utc(micros: i64) -> String {
     let mut s = String::new();
     value::format_timestamp(micros, &mut s);
@@ -66,7 +53,6 @@ pub fn timestamptz_utc(micros: i64) -> String {
     s
 }
 
-/// Microseconds since 2000-01-01 UTC → RFC 3339 (`2024-01-02T03:04:05.5Z`).
 pub fn timestamptz_rfc3339(micros: i64) -> String {
     let mut s = String::new();
     value::format_timestamp(micros, &mut s);
@@ -80,8 +66,6 @@ pub fn timestamptz_rfc3339(micros: i64) -> String {
     s
 }
 
-/// A cell as text, like the grid, except `timestamptz`, which comes out in UTC (`+00`) so it
-/// does not depend on this machine's zone.
 pub fn cell_text_utc(kind: Kind, cell: Cell<'_>) -> Option<String> {
     match (kind, cell) {
         (_, Cell::Null) => None,
@@ -95,7 +79,6 @@ fn is_integer(s: &str) -> bool {
     !d.is_empty() && d.bytes().all(|c| c.is_ascii_digit())
 }
 
-/// A plain decimal number (what can go unquoted): `-12`, `3.5`, `1e+300`, `.5`.
 pub fn is_decimal(s: &str) -> bool {
     let s = s.strip_prefix('-').unwrap_or(s);
     let (mant, exp) = match s.find(['e', 'E']) {
@@ -116,15 +99,13 @@ pub fn is_decimal(s: &str) -> bool {
     }
 }
 
-/// The SQL literal for a stored cell of `kind`.
 #[cfg(test)]
 pub fn literal(kind: Kind, cell: Cell<'_>) -> String {
     literal_in(Dialect::Postgres, kind, cell)
 }
 
-/// `2024-01-02 03:04:05.5` → `2024-01-02T03:04:05.5`: T-SQL reads the `T` form the same way
-/// whatever the session's language and date format (`datetime` misreads the space form under
-/// some languages).
+/// T-SQL reads the `T` form the same way whatever the session's language and date format
+/// (`datetime` misreads the space form under some languages).
 fn tsql_time(s: &str) -> String {
     let mut out = match s.split_once(' ') {
         Some((date, time)) if date.len() == 10 && date.as_bytes().get(4) == Some(&b'-') => format!("{date}T{}", time.trim()),
@@ -149,8 +130,6 @@ fn tsql_time(s: &str) -> String {
     out
 }
 
-/// [`literal`] in `d` (MySQL: backslashes escaped, bytes as `X'…'`; T-SQL: `N'…'`, bits as
-/// `1`/`0`, bytes as `0x…`, times in the `T` form, a UTC offset as `+00:00`).
 pub fn literal_in(d: Dialect, kind: Kind, cell: Cell<'_>) -> String {
     let ms = d == Dialect::TSql;
     match cell {
@@ -179,27 +158,21 @@ pub fn literal_in(d: Dialect, kind: Kind, cell: Cell<'_>) -> String {
     }
 }
 
-/// The SQL literal for a value typed as text into a column of `kind`: numbers and booleans go
-/// unquoted when they look like one (so servers without implicit casts from text accept them),
-/// everything else is a quoted string the server converts.
 #[cfg(test)]
 pub fn value_literal(kind: Kind, v: &CellValue) -> String {
     value_literal_in(Dialect::Postgres, kind, v)
 }
 
-/// [`value_literal`] in `d`.
 pub fn value_literal_in(d: Dialect, kind: Kind, v: &CellValue) -> String {
     let mut out = String::new();
     push_value_literal_in(d, &mut out, kind, v.as_deref());
     out
 }
 
-/// [`value_literal`] appended to `out` (no allocation per value: the import's `INSERT`s).
 pub fn push_value_literal(out: &mut String, kind: Kind, v: Option<&str>) {
     push_value_literal_in(Dialect::Postgres, out, kind, v)
 }
 
-/// [`push_value_literal`] in `d`.
 pub fn push_value_literal_in(d: Dialect, out: &mut String, kind: Kind, v: Option<&str>) {
     let Some(s) = v else {
         out.push_str("NULL");
@@ -229,7 +202,6 @@ pub fn push_value_literal_in(d: Dialect, out: &mut String, kind: Kind, v: Option
     }
 }
 
-/// `\xdeadbeef` (how the grid shows bytes) → `deadbeef`.
 fn hex_bytes(s: &str) -> Option<&str> {
     let h = s.strip_prefix("\\x")?;
     (h.len() % 2 == 0 && h.bytes().all(|c| c.is_ascii_hexdigit())).then_some(h)
@@ -259,17 +231,14 @@ fn text_literal(d: Dialect, kind: Kind, s: &str) -> String {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Templates (the explorer's context menu). They only build text: nothing here runs SQL, and the
-// destructive ones start with a warning comment and are never run by the app.
+// Templates only build text: nothing here runs SQL, and the destructive ones start with a
+// warning comment and are never run by the app.
 
-/// `SELECT * FROM schema.table LIMIT n;` (no limit with `None`).
 #[cfg(test)]
 pub fn select_star(schema: &str, name: &str, limit: Option<u64>) -> String {
     select_star_in(Dialect::Postgres, schema, name, limit)
 }
 
-/// [`select_star`] in `d` (T-SQL: `SELECT TOP (n)`).
 pub fn select_star_in(d: Dialect, schema: &str, name: &str, limit: Option<u64>) -> String {
     match limit {
         Some(n) if d == Dialect::TSql => format!("SELECT TOP ({n}) * FROM {};", d.qualified(Some(schema), name)),
@@ -278,26 +247,20 @@ pub fn select_star_in(d: Dialect, schema: &str, name: &str, limit: Option<u64>) 
     }
 }
 
-/// `SELECT count(*) FROM schema.table;`
 #[cfg(test)]
 pub fn count_rows(schema: &str, name: &str) -> String {
     count_rows_in(Dialect::Postgres, schema, name)
 }
 
-/// [`count_rows`] in `d`.
 pub fn count_rows_in(d: Dialect, schema: &str, name: &str) -> String {
     format!("SELECT count(*) FROM {};", d.qualified(Some(schema), name))
 }
 
-/// A value of the column's type that the server accepts (a typed placeholder for templates).
-/// PostgreSQL's type names and MySQL's (`int unsigned`, `datetime(3)`, `enum(…)`).
 pub fn placeholder(type_name: &str) -> &'static str {
     let t = type_name.trim().to_ascii_lowercase();
     if t.ends_with("[]") {
         return "'{}'";
     }
-    // `numeric(12,2)` → `numeric`, `character varying(40)` → `character varying`, `int
-    // unsigned` → `int`.
     let base = t.split('(').next().unwrap_or("").trim();
     let base = base.trim_end_matches(" zerofill").trim_end_matches(" unsigned").trim_end_matches(" signed");
     match base {
@@ -322,8 +285,6 @@ pub fn placeholder(type_name: &str) -> &'static str {
     }
 }
 
-/// [`placeholder`] for a column of `d`: SQL Server's types and functions (`0` for a bit,
-/// `SYSDATETIME()` for a time, `N''` for text, `0x` for bytes).
 pub fn placeholder_in(d: Dialect, type_name: &str) -> &'static str {
     if d != Dialect::TSql {
         return placeholder(type_name);
@@ -344,7 +305,6 @@ pub fn placeholder_in(d: Dialect, type_name: &str) -> &'static str {
     }
 }
 
-/// `-- name type NOT NULL · default …`: what a template line stands for.
 fn column_note(c: &Column) -> String {
     let mut s = format!("{} {}", c.name, c.type_name);
     if c.nullable == Some(false) {
@@ -358,13 +318,11 @@ fn column_note(c: &Column) -> String {
     s
 }
 
-/// `SELECT a, b, … FROM schema.table;` with every column listed.
 #[cfg(test)]
 pub fn select_columns(schema: &str, name: &str, cols: &[Column]) -> String {
     select_columns_in(Dialect::Postgres, schema, name, cols)
 }
 
-/// [`select_columns`] in `d`.
 pub fn select_columns_in(d: Dialect, schema: &str, name: &str, cols: &[Column]) -> String {
     if cols.is_empty() {
         return select_star_in(d, schema, name, None);
@@ -373,7 +331,6 @@ pub fn select_columns_in(d: Dialect, schema: &str, name: &str, cols: &[Column]) 
     format!("SELECT {}\n  FROM {};", list.join(",\n       "), d.qualified(Some(schema), name))
 }
 
-/// Lines `value,  -- note`, the comments aligned.
 fn commented_values(values: &[(String, String)], indent: &str) -> String {
     let w = values.iter().map(|(v, _)| v.chars().count() + 1).max().unwrap_or(0);
     let last = values.len().saturating_sub(1);
@@ -388,15 +345,12 @@ fn commented_values(values: &[(String, String)], indent: &str) -> String {
         .join("\n")
 }
 
-/// `INSERT INTO schema.table (…) VALUES (…);` with a typed placeholder per column, `DEFAULT`
-/// where the column has a default (identity and generated columns included), and a comment
-/// with each column's type.
 #[cfg(test)]
 pub fn insert_template(schema: &str, name: &str, cols: &[Column]) -> String {
     insert_template_in(Dialect::Postgres, schema, name, cols)
 }
 
-/// [`insert_template`] in `d` (MySQL has no `DEFAULT VALUES`: `() VALUES ()`).
+/// MySQL has no `DEFAULT VALUES`: `() VALUES ()`.
 pub fn insert_template_in(d: Dialect, schema: &str, name: &str, cols: &[Column]) -> String {
     let qualified = |s: Option<&str>, n: &str| d.qualified(s, n);
     // SQL Server fills identity, computed and rowversion columns itself (naming them is an
@@ -428,9 +382,8 @@ pub fn insert_template_in(d: Dialect, schema: &str, name: &str, cols: &[Column])
     )
 }
 
-/// The row condition of UPDATE and DELETE templates: the primary key when the catalog reports
-/// one; else a column named `id` (said to be a guess); else `WHERE false`, which matches no row,
-/// so a template run as is never touches the whole table.
+/// No primary key and no `id` column: `WHERE false`, which matches no row, so a template run
+/// as is never touches the whole table.
 fn key_condition(d: Dialect, cols: &[Column]) -> String {
     let pk: Vec<&Column> = cols.iter().filter(|c| c.primary_key).collect();
     if !pk.is_empty() {
@@ -444,13 +397,11 @@ fn key_condition(d: Dialect, cols: &[Column]) -> String {
     }
 }
 
-/// `UPDATE schema.table SET … WHERE <pk> = …;`: every non-key column with a typed placeholder.
 #[cfg(test)]
 pub fn update_template(schema: &str, name: &str, cols: &[Column]) -> String {
     update_template_in(Dialect::Postgres, schema, name, cols)
 }
 
-/// [`update_template`] in `d`.
 pub fn update_template_in(d: Dialect, schema: &str, name: &str, cols: &[Column]) -> String {
     let generated = |c: &Column| {
         d == Dialect::TSql
@@ -465,19 +416,16 @@ pub fn update_template_in(d: Dialect, schema: &str, name: &str, cols: &[Column])
     format!("UPDATE {}\n   SET {}\n{}", d.qualified(Some(schema), name), sets, key_condition(d, cols))
 }
 
-/// `DELETE FROM schema.table WHERE <pk> = …;`
 #[cfg(test)]
 pub fn delete_template(schema: &str, name: &str, cols: &[Column]) -> String {
     delete_template_in(Dialect::Postgres, schema, name, cols)
 }
 
-/// [`delete_template`] in `d`.
 pub fn delete_template_in(d: Dialect, schema: &str, name: &str, cols: &[Column]) -> String {
     format!("DELETE FROM {}\n{}", d.qualified(Some(schema), name), key_condition(d, cols))
 }
 
-/// A view's definition as a statement: `CREATE OR REPLACE VIEW s.v AS …;` (materialized views
-/// cannot be replaced in place: `CREATE MATERIALIZED VIEW`, with a note).
+/// Materialized views cannot be replaced in place: `CREATE MATERIALIZED VIEW`, with a note.
 pub fn view_ddl(schema: &str, name: &str, materialized: bool, definition: &str) -> String {
     let body = definition.trim().trim_end_matches(';').trim_end();
     let q = qualified(Some(schema), name);
@@ -488,12 +436,10 @@ pub fn view_ddl(schema: &str, name: &str, materialized: bool, definition: &str) 
     }
 }
 
-/// `CREATE SCHEMA` template for database `db`.
 pub fn create_schema_template(db: &str) -> String {
     format!("-- A new schema in {}. Rename it, then run it with ⌘↩.\nCREATE SCHEMA new_schema;", quote_ident(db))
 }
 
-/// `CREATE TABLE` template in `schema` (LAR: no identity column, which it does not support).
 pub fn create_table_template(schema: &str, lar: bool) -> String {
     let q = qualified(Some(schema), "new_table");
     if lar {
@@ -509,7 +455,6 @@ pub fn create_table_template(schema: &str, lar: bool) -> String {
     }
 }
 
-/// `CREATE TABLE` template in MySQL database `schema`.
 pub fn create_table_template_mysql(schema: &str) -> String {
     let d = Dialect::MySql;
     format!(
@@ -519,7 +464,6 @@ pub fn create_table_template_mysql(schema: &str) -> String {
     )
 }
 
-/// `CREATE TABLE` template in SQL Server schema `schema`.
 pub fn create_table_template_tsql(schema: &str) -> String {
     let d = Dialect::TSql;
     format!(
@@ -529,13 +473,10 @@ pub fn create_table_template_tsql(schema: &str) -> String {
     )
 }
 
-/// The warning every destructive template starts with.
 fn danger(what: &str, statement: String) -> String {
     format!("-- ⚠ {what}\n-- Nothing has run. Review it, then run it yourself with ⌘↩.\n{statement}")
 }
 
-/// [`drop_database_template`] in `d` (MySQL drops it at once, whoever is connected; SQL Server
-/// refuses while sessions use it).
 pub fn drop_database_template_in(d: Dialect, db: &str) -> String {
     let q = d.quote_ident(db);
     match d {
@@ -550,13 +491,11 @@ pub fn drop_database_template_in(d: Dialect, db: &str) -> String {
     }
 }
 
-/// [`truncate_template`] in `d`.
 pub fn truncate_template_in(d: Dialect, schema: &str, name: &str) -> String {
     let q = d.qualified(Some(schema), name);
     danger(&format!("TRUNCATE deletes every row of {q} at once: no WHERE, no per-row triggers."), format!("TRUNCATE TABLE {q};"))
 }
 
-/// [`drop_table_template`] in `d`.
 pub fn drop_table_template_in(d: Dialect, schema: &str, name: &str) -> String {
     if d == Dialect::Postgres {
         return drop_table_template(schema, name);
@@ -565,7 +504,6 @@ pub fn drop_table_template_in(d: Dialect, schema: &str, name: &str) -> String {
     danger(&format!("DROP TABLE deletes {q} and its rows. Foreign keys that reference it make it fail."), format!("DROP TABLE {q};"))
 }
 
-/// [`drop_view_template`] in `d`.
 pub fn drop_view_template_in(d: Dialect, schema: &str, name: &str) -> String {
     if d == Dialect::Postgres {
         return drop_view_template(schema, name, false);
@@ -584,7 +522,7 @@ pub fn drop_database_template(db: &str) -> String {
     )
 }
 
-/// [`drop_schema_template`] in `d` (T-SQL has no CASCADE: the schema must be empty).
+/// T-SQL has no CASCADE: the schema must be empty.
 pub fn drop_schema_template_in(d: Dialect, schema: &str) -> String {
     if d != Dialect::TSql {
         return drop_schema_template(schema);
@@ -621,7 +559,6 @@ pub fn drop_view_template(schema: &str, name: &str, materialized: bool) -> Strin
     danger(&format!("DROP {kind} deletes {q}. Views that depend on it make it fail (CASCADE drops them too)."), format!("DROP {kind} {q};"))
 }
 
-/// The grantee a template names: the role picked in the privileges panel, or a name to edit.
 fn grantee(role: Option<&str>) -> String {
     match role {
         Some("PUBLIC") => "PUBLIC".to_string(),
@@ -630,7 +567,6 @@ fn grantee(role: Option<&str>) -> String {
     }
 }
 
-/// `GRANT … ON TABLE t` (or `ON SCHEMA s` when `table` is `None`) as a template.
 pub fn grant_template(schema: &str, table: Option<&str>, role: Option<&str>) -> String {
     let (on, privs, what) = match table {
         Some(t) => (format!("TABLE {}", qualified(Some(schema), t)), "SELECT, INSERT, UPDATE, DELETE", qualified(Some(schema), t)),
@@ -639,7 +575,6 @@ pub fn grant_template(schema: &str, table: Option<&str>, role: Option<&str>) -> 
     format!("-- Grant on {what}. Edit the privileges and the role, then run it with ⌘↩.\nGRANT {privs} ON {on} TO {};", grantee(role))
 }
 
-/// `REVOKE ALL ON …` as a template, with the destructive warning.
 pub fn revoke_template(schema: &str, table: Option<&str>, role: Option<&str>) -> String {
     let (on, what) = match table {
         Some(t) => (format!("TABLE {}", qualified(Some(schema), t)), qualified(Some(schema), t)),
@@ -652,17 +587,13 @@ pub fn revoke_template(schema: &str, table: Option<&str>, role: Option<&str>) ->
     )
 }
 
-/// A call of a function or procedure with a typed placeholder per argument:
-/// `SELECT s.f(…)`, `SELECT * FROM s.f(…)` for set-returning functions, `CALL s.p(…)`.
 pub fn function_call(schema: &str, f: &crate::schema::Function) -> String {
     function_call_in(Dialect::Postgres, schema, f)
 }
 
-/// [`function_call`] in `d`.
 pub fn function_call_in(d: Dialect, schema: &str, f: &crate::schema::Function) -> String {
     use crate::schema::FuncKind;
     let q = d.qualified(Some(schema), &f.name);
-    // T-SQL runs a procedure with EXEC and its arguments by name (`@a = …`).
     if d == Dialect::TSql && f.kind == FuncKind::Procedure {
         let params = crate::schema::objects::split_args(&f.identity);
         if params.is_empty() {
@@ -699,8 +630,6 @@ pub fn function_call_in(d: Dialect, schema: &str, f: &crate::schema::Function) -
     format!("{head}(\n{}\n);", commented_values(&values, "    "))
 }
 
-/// `ALTER SEQUENCE … RESTART` as a template; for an owned sequence, the `setval` that
-/// continues after the column's largest value.
 pub fn sequence_reset_template(schema: &str, name: &str, owned_by: Option<(&str, &str)>) -> String {
     let q = qualified(Some(schema), name);
     let mut s = danger(
@@ -719,12 +648,10 @@ pub fn sequence_reset_template(schema: &str, name: &str, owned_by: Option<(&str,
     s
 }
 
-/// `ALTER TABLE … ENABLE/DISABLE TRIGGER` as a template.
 pub fn trigger_toggle_template(schema: &str, table: &str, name: &str, enable: bool) -> String {
     trigger_toggle_template_in(Dialect::Postgres, schema, table, name, enable)
 }
 
-/// [`trigger_toggle_template`] in `d` (the same statement in T-SQL, its names quoted there).
 pub fn trigger_toggle_template_in(d: Dialect, schema: &str, table: &str, name: &str, enable: bool) -> String {
     let t = d.qualified(Some(schema), table);
     let n = d.quote_ident(name);
@@ -736,7 +663,6 @@ pub fn trigger_toggle_template_in(d: Dialect, schema: &str, table: &str, name: &
     }
 }
 
-/// [`sequence_reset_template`] in `d` (T-SQL: no owned sequences).
 pub fn sequence_reset_template_in(d: Dialect, schema: &str, name: &str, owned_by: Option<(&str, &str)>) -> String {
     if d == Dialect::Postgres {
         return sequence_reset_template(schema, name, owned_by);
@@ -745,7 +671,6 @@ pub fn sequence_reset_template_in(d: Dialect, schema: &str, name: &str, owned_by
     danger(&format!("RESTART sets {q} back to its start: new rows can collide with existing keys."), format!("ALTER SEQUENCE {q} RESTART;"))
 }
 
-/// `ALTER ROLE` options, commented out, to pick from.
 pub fn alter_role_template(name: &str) -> String {
     let r = quote_ident(name);
     format!(
@@ -760,14 +685,12 @@ pub fn alter_role_template(name: &str) -> String {
     )
 }
 
-/// `ALTER EXTENSION … UPDATE` as a template.
 pub fn extension_update_template(name: &str, to: Option<&str>) -> String {
     let e = quote_ident(name);
     let to = to.map(|v| format!(" TO {}", quote_literal(v))).unwrap_or_default();
     format!("-- Update {e}. Run it with ⌘↩.\nALTER EXTENSION {e} UPDATE{to};")
 }
 
-/// `SET search_path` for a tab opened on a schema (the schema first, then `public`).
 pub fn search_path_for(schema: &str) -> String {
     if schema == "public" {
         "SET search_path TO public;".to_string()
@@ -942,10 +865,8 @@ mod tests {
             "UPDATE public.orders\n   SET customer = 0,\n       total = 0,\n       \"Status\" = '',\n       at = now(),\n       tags = '{}'\n WHERE id = 0;"
         );
         assert_eq!(delete_template("public", "orders", &cols), "DELETE FROM public.orders\n WHERE id = 0;");
-        // A composite key: every part.
         let two = vec![col("a", "int", true, None, None), col("b", "text", true, None, None), col("v", "int", false, None, None)];
         assert_eq!(delete_template("s", "t", &two), "DELETE FROM s.t\n WHERE a = 0\n   AND b = '';");
-        // No key reported (LAR): `id` is a guess, said so; nothing like it → WHERE false.
         let lar = vec![col("id", "bigint", false, None, None), col("v", "text", false, None, None)];
         assert!(delete_template("s", "t", &lar).ends_with(" WHERE id = 0;  -- key guessed: the catalog reports no primary key"));
         let none = vec![col("v", "text", false, None, None)];
@@ -989,14 +910,12 @@ mod tests {
     #[test]
     fn object_templates() {
         use crate::schema::{FuncKind, Function};
-        // Grants: the picked role, or a name to edit; REVOKE warns first.
         assert!(grant_template("public", Some("orders"), Some("app")).ends_with("GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.orders TO app;"));
         assert!(grant_template("Sales", None, None).ends_with("GRANT USAGE ON SCHEMA \"Sales\" TO role_name;"));
         assert!(grant_template("s", Some("t"), Some("PUBLIC")).ends_with("TO PUBLIC;"));
         let r = revoke_template("public", Some("orders"), Some("app"));
         assert!(r.starts_with("-- ⚠ ") && r.contains("Nothing has run") && r.ends_with("REVOKE ALL ON TABLE public.orders FROM app;"), "{r}");
         assert!(revoke_template("s", None, None).ends_with("REVOKE ALL ON SCHEMA s FROM role_name;"));
-        // Calls.
         let f = |kind, set, identity: &str, types: &[&str]| Function {
             oid: 1,
             name: "f".into(),
@@ -1011,7 +930,6 @@ mod tests {
         assert_eq!(two, "SELECT s.f(\n    0,   -- a integer\n    ''   -- b text\n);");
         assert!(function_call("s", &f(FuncKind::Function, true, "", &[])).starts_with("SELECT * FROM s.f("));
         assert!(function_call("s", &f(FuncKind::Procedure, false, "x date", &["date"])).starts_with("CALL s.f(\n    CURRENT_DATE"));
-        // Sequences, triggers, roles, extensions.
         let seq = sequence_reset_template("public", "orders_id_seq", Some(("orders", "id")));
         assert!(seq.starts_with("-- ⚠ ") && seq.contains("ALTER SEQUENCE public.orders_id_seq RESTART;"), "{seq}");
         assert!(seq.contains("SELECT setval('public.orders_id_seq', (SELECT coalesce(max(id), 0) + 1 FROM public.orders), false);"), "{seq}");

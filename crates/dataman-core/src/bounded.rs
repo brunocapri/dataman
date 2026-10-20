@@ -1,23 +1,5 @@
-//! Bounded statements for agents (the MCP server, `dataman-mcp`): statements on a backend of their
-//! own, inside a transaction, with a row cap, a byte cap, a time limit and cancellation.
-//!
-//! - [`Mode::Read`]: one or more statements, each after [`guard::agent_read_refusal`], in
-//!   `BEGIN READ ONLY` … `ROLLBACK`. LAR accepts `READ ONLY` without enforcing it, so the
-//!   client-side check is what keeps a read a read on LAR; PostgreSQL enforces both. Every
-//!   result set is kept ([`Outcome::parts`]): the row cap applies to each, the byte cap to all
-//!   of them together (the statements after the one that reaches it do not run).
-//! - [`Mode::Write`]: one or more statements in `BEGIN` … `COMMIT` (all or nothing). With
-//!   [`Connection::bounded_held`] the transaction stays open after the statements, their counts
-//!   and RETURNING rows in hand, until a decision commits it or rolls it back (a human's answer
-//!   in the app, the agents' row limit).
-//! - [`Mode::Rollback`]: the same, always rolled back (EXPLAIN ANALYZE of a write).
-//! - [`Mode::Autocommit`]: one statement that cannot run in a transaction (`VACUUM`, `CREATE
-//!   INDEX CONCURRENTLY`), on its own, after a human allowed it.
-//!
-//! The time limit is `SET LOCAL statement_timeout` on the server and a timer here (LAR may not
-//! enforce the setting); when it fires, or the caller cancels, a CancelRequest goes out and the
-//! backend is dropped. A read that hits the row or byte cap stops reading and drops its backend
-//! instead of draining the rest. Backends that end cleanly go back to a small pool per database.
+//! LAR accepts `READ ONLY` without enforcing it: the client-side check is what keeps a read a
+//! read on LAR. LAR may not enforce `statement_timeout` either, so a local timer backs it.
 
 use std::future::Future;
 use std::sync::Arc;
@@ -29,8 +11,6 @@ use serde_json::Value;
 use tokio_postgres::types::{ToSql, Type};
 use tokio_postgres::{Client, SimpleQueryMessage};
 
-// The statements run on PostgreSQL's protocol (prepare, then the simple protocol when the server
-// cannot prepare); MySQL's version of `in_transaction` is `my_in_transaction`.
 use crate::backend::pg::{TextParam, column_infos, error_info, push_row};
 use crate::backend::{Dedicated, RowSource, ms, my};
 use crate::conn::Connection;
@@ -41,26 +21,18 @@ use crate::value::{Kind, Storage};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
-    /// `BEGIN READ ONLY` … `ROLLBACK`, after the agent read check.
     Read,
-    /// `BEGIN` … `COMMIT` (`ROLLBACK` on error).
     Write,
-    /// `BEGIN` … `ROLLBACK`: writes that must leave nothing behind.
     Rollback,
-    /// No transaction: one statement that cannot run inside one, committed as it runs.
     Autocommit,
 }
 
-/// Decides, once a write's statements ran and before anything is committed, whether it commits
-/// (`true`) or rolls back: it sees their counts and RETURNING rows.
 pub type Decide = Box<dyn FnOnce(&Outcome) -> futures_util::future::BoxFuture<'static, bool> + Send>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Limits {
     pub max_rows: usize,
-    /// Approximate size of the rows returned (their text).
     pub max_bytes: usize,
-    /// Longer text values are cut, ending in `…`.
     pub max_cell: usize,
     pub timeout: Duration,
 }
@@ -71,7 +43,6 @@ impl Default for Limits {
     }
 }
 
-/// Why rows stopped short.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Truncation {
     Rows,
@@ -93,19 +64,15 @@ pub struct Column {
     pub type_name: String,
 }
 
-/// One statement's command and count (`UPDATE` 3).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Done {
     pub verb: String,
     pub affected: Option<u64>,
 }
 
-/// One result set of a read: a statement's, or one of the several a T-SQL batch returns.
 #[derive(Clone, Debug, Default)]
 pub struct Part {
-    /// The statement that returned it (0-based, in the order they ran).
     pub statement: usize,
-    /// That statement (for a T-SQL batch's later result sets, the one most likely to return it).
     pub sql: String,
     pub columns: Vec<Column>,
     pub rows: Vec<Vec<Value>>,
@@ -116,28 +83,18 @@ pub struct Part {
 
 #[derive(Clone, Debug, Default)]
 pub struct Outcome {
-    /// The columns and rows of the last statement that returned rows (in [`Mode::Read`], of the
-    /// last result set).
     pub columns: Vec<Column>,
-    /// JSON values: numbers, booleans, `null` for NULL (an empty string stays `""`), embedded
-    /// `json`, text for the rest (numeric exactly, times as PostgreSQL prints them).
     pub rows: Vec<Vec<Value>>,
     pub truncated: Option<Truncation>,
-    /// Text values cut at `max_cell`.
     pub cut_cells: usize,
     pub bytes: usize,
     pub statements: Vec<Done>,
     pub elapsed: Duration,
-    /// The write was committed (a [`Mode::Write`] its decision allowed, or [`Mode::Autocommit`]).
     pub committed: bool,
-    /// [`Mode::Read`]: every result set, in order (the last one is also `columns` and `rows`).
-    /// Fewer statements than were sent when the byte cap stopped the read.
     pub parts: Vec<Part>,
 }
 
 impl Outcome {
-    /// Ends the result set being read as a [`Part`] (cut cells counted since `cut0`); the next
-    /// one starts empty (the byte count goes on: the cap is for all of them).
     fn end_part(&mut self, statement: usize, sql: &str, cut0: usize, elapsed: Duration) {
         self.parts.push(Part {
             statement,
@@ -150,28 +107,23 @@ impl Outcome {
         });
     }
 
-    /// Starts the next result set of a read.
     fn start_part(&mut self) {
         self.columns.clear();
         self.rows.clear();
         self.truncated = None;
     }
 
-    /// Rows of every result set (or of the one when there are no parts).
     pub fn total_rows(&self) -> usize {
         if self.parts.is_empty() { self.rows.len() } else { self.parts.iter().map(|p| p.rows.len()).sum() }
     }
 
-    /// Rows the statements changed, all together.
     pub fn affected(&self) -> u64 {
         self.statements.iter().filter_map(|d| d.affected).sum()
     }
 }
 
-/// Why a bounded run did not finish.
 #[derive(Debug, thiserror::Error)]
 pub enum Stop {
-    /// Refused before anything reached the server.
     #[error("refused: {0}")]
     Refused(String),
     #[error("timed out after {}", fmt_secs(*.0))]
@@ -188,22 +140,18 @@ fn fmt_secs(d: Duration) -> String {
     format!("{:.1} s", d.as_secs_f64())
 }
 
-/// The statements of `sql` (one at least), trimmed and without their `;`.
 pub fn statements(sql: &str) -> Vec<String> {
     statements_in(sql, Dialect::Postgres)
 }
 
-/// [`statements`] of a script in `dialect`.
 pub fn statements_in(sql: &str, dialect: Dialect) -> Vec<String> {
     crate::sql::split_in(sql, dialect).into_iter().map(|s| sql[s.range].trim().to_string()).filter(|s| !s.is_empty()).collect()
 }
 
-/// What refuses `stmts` in `mode` before anything is sent, if anything does.
 pub fn refusal(stmts: &[String], params: usize, mode: Mode, read_only_profile: bool) -> Option<String> {
     refusal_in(stmts, params, mode, read_only_profile, Dialect::Postgres)
 }
 
-/// [`refusal`] of statements in `dialect`.
 pub fn refusal_in(stmts: &[String], params: usize, mode: Mode, read_only_profile: bool, dialect: Dialect) -> Option<String> {
     if stmts.is_empty() {
         return Some("empty statement".into());
@@ -238,9 +186,7 @@ pub fn refusal_in(stmts: &[String], params: usize, mode: Mode, read_only_profile
     None
 }
 
-/// Extra time the local timer gives the server's own `statement_timeout` to answer first.
 const GRACE: Duration = Duration::from_millis(500);
-/// Idle backends kept per database.
 const POOL_SIZE: usize = 2;
 const POOL: &str = "agent-pool";
 
@@ -271,7 +217,6 @@ impl Connection {
             }
         }
         let d = self.dedicated(Some(db)).await?;
-        // Tells the activity monitor (and pg_stat_activity readers) who this is.
         if let Some(p) = d.pg() {
             let _ = p.client.simple_query("SET application_name = 'Dataman MCP'").await;
         }
@@ -289,9 +234,7 @@ impl Connection {
         }
     }
 
-    /// Runs `sql` bounded (see the module docs). `params` bind `$1 … $n` in text format (the
-    /// server parses each as its parameter's type; `None` is NULL): values are never spliced into
-    /// the SQL. `cancel` resolving stops the run (CancelRequest, backend dropped).
+    /// Values are never spliced into the SQL: `params` bind `$1 … $n` in text format.
     pub async fn bounded(
         &self,
         database: Option<&str>,
@@ -304,10 +247,6 @@ impl Connection {
         self.bounded_held(database, sql, params, mode, limits, cancel, None).await
     }
 
-    /// [`Connection::bounded`], and in [`Mode::Write`] the transaction held open after the
-    /// statements until `decide` answers (`None`: commit): COMMIT when it says so, ROLLBACK
-    /// otherwise, and ROLLBACK when `cancel` resolves meanwhile. The time limit covers the
-    /// statements, not the wait. `elapsed` is the statements' time.
     #[allow(clippy::too_many_arguments)]
     pub async fn bounded_held(
         &self,
@@ -349,7 +288,6 @@ impl Connection {
         };
         let elapsed = started.elapsed();
         let (r, reuse) = match ran {
-            // A read cut short at a cap: the backend goes, its transaction with it.
             Ok((o, false)) => (Ok(o), false),
             Ok((mut o, true)) => {
                 o.elapsed = elapsed;
@@ -371,7 +309,7 @@ impl Connection {
                 match finish(&d, dialect, mode, commit).await {
                     Ok(()) => {
                         o.committed = mode == Mode::Autocommit || (mode == Mode::Write && commit);
-                        // A session set up for one statement outside a transaction is not reused.
+                        // A session set up for one statement outside a transaction (its own statement_timeout) is not reused.
                         (if cancelled { Err(Stop::Cancelled) } else { Ok(o) }, mode != Mode::Autocommit)
                     }
                     Err((e, reuse)) => (Err(e), reuse),
@@ -381,8 +319,7 @@ impl Connection {
         };
         let r = match r {
             Ok(o) => Ok(o),
-            // The server's own `statement_timeout` answered first (MySQL: MAX_EXECUTION_TIME,
-            // MariaDB: max_statement_time).
+            // 57014 with "timeout": the server's own `statement_timeout` answered first.
             Err(Stop::Server(e)) if e.code.as_deref() == Some("57014") && e.message.contains("timeout") => Err(Stop::Timeout(limits.timeout)),
             Err(Stop::Server(e)) if matches!(e.code.as_deref(), Some("3024" | "1969")) => Err(Stop::Timeout(limits.timeout)),
             Err(e) => Err(e),
@@ -390,7 +327,6 @@ impl Connection {
         if reuse {
             self.agent_give(&db, ro, d);
         } else {
-            // A statement may still be running: stop it on the server, then let the backend go.
             if matches!(r, Err(Stop::Timeout(_) | Stop::Cancelled)) {
                 let _ = tokio::time::timeout(Duration::from_secs(2), d.cancel()).await;
             }
@@ -403,9 +339,6 @@ impl Connection {
     }
 }
 
-/// Ends what [`in_transaction`] (or its MySQL and SQL Server forms) left open: COMMIT
-/// (`commit`) or ROLLBACK; nothing in [`Mode::Autocommit`]. The flag of an error says whether
-/// the backend can be reused.
 async fn finish(d: &Dedicated, dialect: Dialect, mode: Mode, commit: bool) -> Result<(), Failed> {
     if mode == Mode::Autocommit {
         return Ok(());
@@ -418,10 +351,8 @@ async fn finish(d: &Dedicated, dialect: Dialect, mode: Mode, commit: bool) -> Re
     }
 }
 
-/// [`in_transaction`] on MySQL: `START TRANSACTION [READ ONLY]` (none in [`Mode::Autocommit`]),
-/// the session's statement time limit, the statements (prepared, or as text when the server will
-/// not prepare them). DDL commits on its own in MySQL: a write that changes the schema is not
-/// undone by a ROLLBACK (the agents' tiers ask before running it).
+/// DDL commits on its own in MySQL: a write that changes the schema is not undone by a
+/// ROLLBACK (the agents' tiers ask before running it).
 async fn my_in_transaction(c: &Arc<my::Client>, stmts: &[String], params: &[Option<String>], mode: Mode, limits: &Limits) -> Result<(Outcome, bool), Failed> {
     let server = |e: mysql_async::Error, sql: &str| Stop::Server(my::error_info_at(&e, sql));
     if mode != Mode::Autocommit {
@@ -448,7 +379,6 @@ async fn my_in_transaction(c: &Arc<my::Client>, stmts: &[String], params: &[Opti
         }
         match r {
             Ok(true) => {}
-            // A read cut short: the server is still sending; stop it, drop the connection.
             Ok(false) => {
                 let _ = tokio::time::timeout(Duration::from_secs(2), c.cancel()).await;
                 return Ok((out, false));
@@ -462,8 +392,6 @@ async fn my_in_transaction(c: &Arc<my::Client>, stmts: &[String], params: &[Opti
     Ok((out, true))
 }
 
-/// One MySQL statement into `out` (`more`: statements follow it). `Ok(false)`: a read stopped
-/// at a cap with rows left.
 async fn my_statement(c: &Arc<my::Client>, sql: &str, params: &[Option<String>], mode: Mode, more: bool, limits: &Limits, out: &mut Outcome) -> Result<bool, Stop> {
     let verb = guard::classify_in(sql, Dialect::MySql).verb;
     let (cols, mut rows) = my::query(c, sql, params).await.map_err(|e| Stop::Server(my::error_info_at(&e, sql)))?;
@@ -488,10 +416,8 @@ async fn my_statement(c: &Arc<my::Client>, sql: &str, params: &[Option<String>],
     Ok(true)
 }
 
-/// [`in_transaction`] on SQL Server: `BEGIN TRANSACTION` (none in [`Mode::Autocommit`]), the
-/// statements (bound through `sp_executesql` when they have parameters). SQL Server has neither
-/// read-only transactions nor a statement time limit: a read is a read by the client-side check,
-/// and the local timer cancels (an attention) and drops the connection.
+/// SQL Server has neither read-only transactions nor a statement time limit: a read is a read
+/// by the client-side check, and the local timer cancels and drops the connection.
 async fn ms_in_transaction(c: &Arc<ms::Client>, stmts: &[String], params: &[Option<String>], mode: Mode, limits: &Limits) -> Result<(Outcome, bool), Failed> {
     let server = |e: ms::MsError, sql: &str| Stop::Server(ms::error_info_at(&e, sql, 0));
     if mode != Mode::Autocommit {
@@ -507,7 +433,6 @@ async fn ms_in_transaction(c: &Arc<ms::Client>, stmts: &[String], params: &[Opti
         }
         match ms_statement(c, i, s, p, mode, !last, limits, &mut out).await {
             Ok(true) => {}
-            // A read cut short: the server is still sending; stop it, drop the connection.
             Ok(false) => {
                 let _ = tokio::time::timeout(Duration::from_secs(2), c.cancel()).await;
                 return Ok((out, false));
@@ -521,17 +446,12 @@ async fn ms_in_transaction(c: &Arc<ms::Client>, stmts: &[String], params: &[Opti
     Ok((out, true))
 }
 
-/// One SQL Server statement (statement `ix`; `more`: statements follow it) into `out`: a
-/// write's first result set and count; a read's every result set as a [`Part`] (a batch may
-/// return several). `Ok(false)`: a read stopped at a cap with rows left.
 #[allow(clippy::too_many_arguments)]
 async fn ms_statement(c: &Arc<ms::Client>, ix: usize, sql: &str, params: &[Option<String>], mode: Mode, more: bool, limits: &Limits, out: &mut Outcome) -> Result<bool, Stop> {
     let verb = guard::classify_in(sql, Dialect::TSql).verb;
     let (mut cols, mut rows) = ms::query(c, sql, params).await.map_err(|e| Stop::Server(ms::error_info_at(&e, sql, 0)))?;
     let returns_rows = !cols.is_empty();
     let read = mode == Mode::Read;
-    // Past the row cap a read goes on to what follows (the rest of this result set is dropped
-    // by `next_result`), unless nothing can follow.
     let several = read && crate::sql::split::may_return_more(sql);
     let label = |k: usize| if several { crate::sql::split::result_statement(sql, k).unwrap_or(sql).to_string() } else { sql.to_string() };
     let mut n = 0u64;
@@ -564,8 +484,6 @@ async fn ms_statement(c: &Arc<ms::Client>, ix: usize, sql: &str, params: &[Optio
                 cols = rows.columns(&next);
                 k += 1;
             }
-            // A write's later result sets are read and dropped; the batch's error (if any)
-            // comes after them.
             ms::Next::Columns(_) => loop {
                 match rows.next_result().await {
                     ms::Next::Columns(_) => continue,
@@ -586,8 +504,6 @@ async fn ms_statement(c: &Arc<ms::Client>, ix: usize, sql: &str, params: &[Optio
     Ok(true)
 }
 
-/// A statement's rows begin: its columns, no rows yet. A write keeps the last statement's rows
-/// only (its RETURNING), so its byte count starts again; a read's goes on across statements.
 fn start_rows(cols: &[ColumnInfo], mode: Mode, out: &mut Outcome) {
     out.columns = cols.iter().map(|c| Column { name: c.name.clone(), type_name: c.type_name.clone() }).collect();
     out.rows.clear();
@@ -599,20 +515,14 @@ fn start_rows(cols: &[ColumnInfo], mode: Mode, out: &mut Outcome) {
 
 enum Keep {
     Yes,
-    /// Past a cap in a write, or past a read's row cap with statements to follow: read on (or
-    /// skip to what follows), keep nothing.
     Skip,
-    /// Past a cap in a read: stop reading.
     Stop,
 }
 
-/// Whether a read past a cap stops (drops its backend) rather than goes on to the statements
-/// that follow (`more`): the byte cap is for all of them, the row cap for each.
 fn stops(mode: Mode, why: Truncation, more: bool) -> bool {
     mode == Mode::Read && (why == Truncation::Bytes || !more)
 }
 
-/// Adds the one row of `chunk` to `out` within the caps.
 fn keep_row(cols: &[ColumnInfo], chunk: &crate::result::Chunk, mode: Mode, more: bool, limits: &Limits, out: &mut Outcome) -> Keep {
     let past = |out: &mut Outcome, why: Truncation| {
         let why = *out.truncated.get_or_insert(why);
@@ -639,9 +549,6 @@ fn keep_row(cols: &[ColumnInfo], chunk: &crate::result::Chunk, mode: Mode, more:
 
 type Failed = (Stop, bool);
 
-/// BEGIN and the statements, the transaction left open for [`finish`]; `Ok((_, false))`: a
-/// read stopped at a cap (the backend must go). On an error the transaction is rolled back and
-/// the flag says whether the backend can be reused (it is idle, nothing in flight).
 async fn in_transaction(client: &Client, stmts: &[String], params: &[Option<String>], mode: Mode, limits: &Limits) -> Result<(Outcome, bool), Failed> {
     begin(client, mode, limits).await?;
     let mut out = Outcome::default();
@@ -658,7 +565,6 @@ async fn in_transaction(client: &Client, stmts: &[String], params: &[Option<Stri
         }
         match r {
             Ok(true) => {}
-            // A read cut short: the rest is never read; the backend is dropped (rolled back).
             Ok(false) => return Ok((out, false)),
             Err(e) => {
                 let ok = mode == Mode::Autocommit || client.simple_query("ROLLBACK").await.is_ok();
@@ -671,7 +577,6 @@ async fn in_transaction(client: &Client, stmts: &[String], params: &[Option<Stri
 
 async fn begin(client: &Client, mode: Mode, limits: &Limits) -> Result<(), Failed> {
     if mode == Mode::Autocommit {
-        // No transaction: the session's own limit (the backend is not reused after).
         let timeout = format!("SET statement_timeout = {}", limits.timeout.as_millis().max(1));
         let _ = client.simple_query(&timeout).await;
         return Ok(());
@@ -680,15 +585,12 @@ async fn begin(client: &Client, mode: Mode, limits: &Limits) -> Result<(), Faile
     client.simple_query(begin).await.map_err(|e| (Stop::Server(error_info(&e)), false))?;
     let timeout = format!("SET LOCAL statement_timeout = {}", limits.timeout.as_millis().max(1));
     if client.simple_query(&timeout).await.is_err() {
-        // A server without the setting: the local timer alone.
         client.simple_query("ROLLBACK").await.map_err(|e| (Stop::Server(error_info(&e)), false))?;
         client.simple_query(begin).await.map_err(|e| (Stop::Server(error_info(&e)), false))?;
     }
     Ok(())
 }
 
-/// Runs one statement into `out` (`more`: statements follow it). `Ok(false)`: a read stopped
-/// at a cap with rows left.
 async fn statement(client: &Client, sql: &str, params: &[Option<String>], mode: Mode, more: bool, limits: &Limits, out: &mut Outcome) -> Result<bool, Stop> {
     let verb = crate::guard::classify(sql).verb;
     let stmt = match client.prepare(sql).await {
@@ -701,14 +603,12 @@ async fn statement(client: &Client, sql: &str, params: &[Option<String>], mode: 
                 begin(client, mode, limits).await.map_err(|(e, _)| e)?;
             }
             return simple(client, sql, verb, mode, more, limits, out).await.map_err(|e2| {
-                // The prepare's error is the better one when both say the same thing.
                 let first = error_info(&e);
                 if e2.as_db_error().is_some_and(|d| Some(d.code().code()) == first.code.as_deref()) { Stop::Server(first) } else { Stop::Server(error_info(&e2)) }
             });
         }
         Err(e) => return Err(Stop::Server(error_info(&e))),
     };
-    // Types without a binary form (aclitem, extension types) come through the text protocol.
     if params.is_empty() && crate::backend::pg::needs_text(&stmt) {
         return simple(client, sql, verb, mode, more, limits, out).await.map_err(|e| Stop::Server(error_info(&e)));
     }
@@ -729,8 +629,6 @@ async fn statement(client: &Client, sql: &str, params: &[Option<String>], mode: 
             if stops(mode, why, more) {
                 return Ok(false);
             }
-            // A write's RETURNING (read to the end for the count), or a read with statements
-            // after it: keep nothing more.
             continue;
         }
         if out.rows.len() >= limits.max_rows {
@@ -765,7 +663,6 @@ async fn statement(client: &Client, sql: &str, params: &[Option<String>], mode: 
     Ok(true)
 }
 
-/// The simple protocol: text values only.
 async fn simple(client: &Client, sql: &str, verb: String, mode: Mode, more: bool, limits: &Limits, out: &mut Outcome) -> Result<bool, tokio_postgres::Error> {
     let stream = client.simple_query_raw(sql).await?;
     futures_util::pin_mut!(stream);
@@ -819,10 +716,6 @@ async fn simple(client: &Client, sql: &str, verb: String, mode: Mode, more: bool
     Ok(true)
 }
 
-/// The agent's bounded view of a result that runs elsewhere (its agent tab's session): the
-/// first rows within `limits`, as [`Connection::bounded`] would return them, in the server's
-/// order (a sort in the grid does not count). `truncated` when more rows exist or may (the
-/// result paused, still running, or kept partly).
 pub fn outcome_of(rs: &crate::result::ResultSet, limits: &Limits) -> Outcome {
     let snap = rs.snapshot();
     let st = rs.status();
@@ -860,10 +753,6 @@ pub fn outcome_of(rs: &crate::result::ResultSet, limits: &Limits) -> Outcome {
     out
 }
 
-/// [`outcome_of`] for every result set of a read that ran elsewhere (an agent tab's run of
-/// several statements, a T-SQL batch's result sets): each one a [`Part`] (statement index, its
-/// SQL, the result), the row cap for each, the byte cap for all of them together: the results
-/// after the one that reaches it are left out. The last part is also `columns` and `rows`.
 pub fn outcome_of_parts(sets: &[(usize, String, Arc<crate::result::ResultSet>)], limits: &Limits) -> Outcome {
     let mut out = Outcome::default();
     for (statement, sql, rs) in sets {
@@ -893,7 +782,6 @@ pub fn outcome_of_parts(sets: &[(usize, String, Arc<crate::result::ResultSet>)],
     out
 }
 
-/// A cell as JSON, its approximate size, and whether its text was cut.
 pub fn json_cell(kind: Kind, cell: Cell<'_>, max_cell: usize) -> (Value, usize, bool) {
     match cell {
         Cell::Null => (Value::Null, 4, false),
@@ -923,7 +811,6 @@ pub fn json_cell(kind: Kind, cell: Cell<'_>, max_cell: usize) -> (Value, usize, 
     }
 }
 
-/// `s` up to `max` characters, ending in `…` when cut.
 fn cut(s: &str, max: usize) -> (String, bool) {
     match s.char_indices().nth(max) {
         Some((at, _)) => (format!("{}…", &s[..at]), true),
@@ -950,7 +837,6 @@ mod tests {
         assert_eq!((v, c), (Value::String("café…".into()), true));
     }
 
-    /// The agent's view of a tab's result: the caps, NULL as null, cut text, more rows.
     #[test]
     fn outcome_of_a_result() {
         use crate::result::{ChunkBuilder, ResultSet};
@@ -977,12 +863,10 @@ mod tests {
         let o = outcome_of(&rs, &Limits { max_rows: 10, max_cell: 4, ..Limits::default() });
         assert_eq!((o.rows.len(), o.truncated, o.cut_cells), (5, None, 4));
         assert_eq!(o.rows[0][1], Value::String("xxxx…".into()));
-        // Still running: more may come.
         let live = ResultSet::new("SELECT 1");
         assert_eq!(outcome_of(&live, &Limits::default()).truncated, None, "no columns yet: nothing to cut");
     }
 
-    /// Several result sets: the row cap for each, the byte cap for all of them together.
     #[test]
     fn outcome_of_several_results() {
         use crate::result::{ChunkBuilder, ResultSet};
@@ -1000,7 +884,6 @@ mod tests {
         let shape: Vec<(usize, &str, usize, Option<Truncation>)> = o.parts.iter().map(|p| (p.statement, p.sql.as_str(), p.rows.len(), p.truncated)).collect();
         assert_eq!(shape, [(0, "SELECT a", 3, Some(Truncation::Rows)), (1, "SELECT b", 2, None), (2, "SELECT c", 3, Some(Truncation::Rows))]);
         assert_eq!((o.rows.len(), o.total_rows(), o.statements.len()), (3, 8, 3), "the last part is also the outcome's rows");
-        // Each row is ~100 bytes: 450 bytes hold 4 rows, the second set is cut, the third left out.
         let o = outcome_of_parts(&sets, &Limits { max_rows: 10, max_bytes: 450, ..Limits::default() });
         let shape: Vec<(usize, usize, Option<Truncation>)> = o.parts.iter().map(|p| (p.statement, p.rows.len(), p.truncated)).collect();
         assert_eq!(shape, [(0, 4, Some(Truncation::Bytes))]);
@@ -1013,7 +896,6 @@ mod tests {
     fn refusals() {
         let s = |x: &str| statements(x);
         assert_eq!(s("select 1; ; select 2;"), vec!["select 1", "select 2"]);
-        // Several reads run together; a write anywhere among them refuses them all.
         assert_eq!(refusal(&s("SELECT 1; SELECT 2; TABLE t"), 0, Mode::Read, false), None);
         assert!(refusal(&s("SELECT 1; DELETE FROM t; SELECT 2"), 0, Mode::Read, false).unwrap().starts_with("statement 2: DELETE is not a read"));
         assert!(refusal(&s("SELECT $1; SELECT 2"), 1, Mode::Read, false).unwrap().contains("single statement"));
@@ -1025,8 +907,6 @@ mod tests {
         assert!(refusal(&s("INSERT INTO t VALUES ($1); SELECT 1"), 1, Mode::Write, false).unwrap().contains("single statement"));
         assert_eq!(refusal(&s("INSERT INTO t VALUES (1); UPDATE t SET a = 2 WHERE b"), 0, Mode::Write, false), None);
         assert_eq!(refusal(&s("SELECT * FROM t WHERE id = $1"), 1, Mode::Read, false), None);
-        // Outside a transaction: one statement, never transaction control, never on a
-        // read-only database.
         assert_eq!(refusal(&s("VACUUM t"), 0, Mode::Autocommit, false), None);
         assert_eq!(refusal(&s("CREATE INDEX CONCURRENTLY i ON t (x)"), 0, Mode::Autocommit, false), None);
         assert!(refusal(&s("VACUUM a; VACUUM b"), 0, Mode::Autocommit, false).unwrap().contains("alone"));

@@ -1,7 +1,3 @@
-//! PostgreSQL (and LAR) through tokio-postgres: TLS, SSH tunnels, editor sessions on sockets of
-//! Dataman's own (their transaction status sniffed off the wire), cancel requests, and rows decoded
-//! from the binary protocol into the grid's chunks.
-
 pub(crate) mod sniff;
 
 use std::net::SocketAddr;
@@ -27,9 +23,6 @@ use crate::server::{self, ServerExtension, ServerInfo};
 use crate::tx::TxWatch;
 use crate::value::{self, Kind, RawCell, Storage};
 
-// ---------------------------------------------------------------------------------------------
-// TLS
-
 #[derive(Clone)]
 pub(crate) enum Tls {
     None,
@@ -43,7 +36,6 @@ mod no_verify {
     use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
     use std::sync::Arc;
 
-    /// libpq's `sslmode=prefer|require`: encrypt, but accept any certificate.
     #[derive(Debug)]
     pub struct NoVerify(pub Arc<CryptoProvider>);
 
@@ -87,8 +79,6 @@ fn tls_for(mode: SslMode) -> Result<Tls> {
     })
 }
 
-/// The TLS client config of a mode: none when disabled; the system's roots for verify-full;
-/// any certificate accepted otherwise (libpq's `prefer` and `require`). Redis' TLS too.
 pub(crate) fn rustls_config(mode: SslMode) -> Result<Option<rustls::ClientConfig>> {
     if mode == SslMode::Disable {
         return Ok(None);
@@ -111,8 +101,8 @@ pub(crate) fn rustls_config(mode: SslMode) -> Result<Option<rustls::ClientConfig
     Ok(Some(cfg))
 }
 
-/// Records whether the TLS handshake happened: with `sslmode=prefer` tokio-postgres only calls
-/// the connector when the server accepts TLS, and does not say so afterwards.
+/// With `sslmode=prefer` tokio-postgres only calls the connector when the server accepts TLS,
+/// and does not say so afterwards.
 mod tracked {
     use std::future::Future;
     use std::pin::Pin;
@@ -164,15 +154,9 @@ mod tracked {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Dedicated clients (metadata, exports, edits, live queries)
-
-/// A client on its own backend, with the notifications (`LISTEN`, LAR's `LISTEN … AS`) its
-/// connection receives.
 pub(crate) struct Dedicated {
     pub client: Arc<Client>,
     pub tls: Tls,
-    /// The connection negotiated TLS.
     pub tls_active: bool,
     pub notifications: tokio::sync::mpsc::UnboundedReceiver<Notification>,
 }
@@ -183,9 +167,7 @@ impl Dedicated {
     }
 }
 
-/// Drives a connection by polling its messages (instead of just awaiting it) so notifications
-/// reach `tx`. Notices go to the log. When it ends, a session's transaction is gone with it,
-/// and so is the backend's "this app" mark (`own`), which the task holds.
+/// Polls the connection's messages (instead of just awaiting it) so notifications reach `tx`.
 fn drive<S, T>(
     conn: tokio_postgres::Connection<S, T>,
     tx: Option<tokio::sync::mpsc::UnboundedSender<Notification>>,
@@ -207,7 +189,6 @@ fn drive<S, T>(
                 }
                 Ok(AsyncMessage::Notice(n)) => {
                     log::debug!("notice: {}", n.message());
-                    // An editor session shows them with the statement's result.
                     if let Some(w) = &watch {
                         w.push_notice(format!("{}: {}", n.severity(), n.message()));
                     }
@@ -226,31 +207,25 @@ fn drive<S, T>(
     });
 }
 
-/// Marks a backend of this process (`own`) for as long as its connection is driven.
 fn own_mark(p: &ConnectionProfile, slot: &Mutex<Option<crate::own::Mark>>, pid: Option<i32>) {
     if let Some(pid) = pid {
         *slot.lock() = Some(crate::own::mark(crate::own::server_key(p), pid));
     }
 }
 
-/// `pg_backend_pid()` of a fresh client (`None` where the server has no such function).
 async fn backend_pid(client: &Client) -> Option<i32> {
     let rows = text_rows(client, "SELECT pg_backend_pid()").await.ok()?;
     rows.first()?.first()?.as_deref()?.trim().parse().ok()
 }
 
-/// `default_transaction_read_only = on` for a read-only profile's connections. A server that
-/// refuses it (or, like LAR, accepts it without enforcing it) still gets the client-side
-/// refusal (`guard::read_only_refusal`).
+/// A server that refuses it (or, like LAR, accepts it without enforcing it) still gets the
+/// client-side refusal (`guard::read_only_refusal`).
 async fn set_read_only(client: &Client) {
     if let Err(e) = client.simple_query("SET default_transaction_read_only = on").await {
         log::debug!("default_transaction_read_only: {e}");
     }
 }
 
-/// [`connect_dedicated`] through the profile's tunnel, if any: its SSH session reconnected
-/// first when it dropped, and the tunnel's own reason when it is what failed (the SSH server
-/// could not reach the database), not just a reset socket.
 pub(crate) async fn connect_through(
     p: &ConnectionProfile,
     password: Option<&str>,
@@ -273,7 +248,6 @@ pub(crate) async fn connect_through(
     }
 }
 
-/// Connects to the profile's server, or to `via` (an SSH tunnel's local end) standing for it.
 /// Through a tunnel the profile's host still names the server for TLS (SNI, verify-full), and
 /// the cancel token points at the tunnel too, so a CancelRequest takes the same way.
 async fn connect_dedicated(p: &ConnectionProfile, password: Option<&str>, database: Option<&str>, via: Option<SocketAddr>) -> Result<Dedicated> {
@@ -295,7 +269,6 @@ async fn connect_dedicated(p: &ConnectionProfile, password: Option<&str>, databa
             client
         }
     };
-    // tokio-postgres keeps the BackendKeyData to itself: one round trip for the process id.
     own_mark(p, &mark, backend_pid(&client).await);
     if p.read_only {
         set_read_only(&client).await;
@@ -304,11 +277,8 @@ async fn connect_dedicated(p: &ConnectionProfile, password: Option<&str>, databa
     Ok(Dedicated { client: Arc::new(client), tls, tls_active, notifications })
 }
 
-/// The client configuration for a profile (and the sslmode in effect), through `via` when an
-/// SSH tunnel stands for the server.
 fn pg_config(p: &ConnectionProfile, password: Option<&str>, database: Option<&str>, via: Option<SocketAddr>) -> (tokio_postgres::Config, SslMode) {
     let mut cfg = tokio_postgres::Config::new();
-    // libpq never uses TLS on a Unix socket, whatever the sslmode says.
     let sslmode = if p.is_socket() { SslMode::Disable } else { p.sslmode };
     match via {
         Some(addr) => {
@@ -333,10 +303,6 @@ fn pg_config(p: &ConnectionProfile, password: Option<&str>, database: Option<&st
     (cfg, sslmode)
 }
 
-// ---------------------------------------------------------------------------------------------
-// Editor sessions: sockets Dataman opens itself, so the transaction status can be read off them
-
-/// A socket opened by Dataman (`connect_raw`), TCP or Unix.
 pub(crate) enum RawStream {
     Tcp(tokio::net::TcpStream),
     #[cfg(unix)]
@@ -379,8 +345,6 @@ impl tokio::io::AsyncWrite for RawStream {
     }
 }
 
-/// Where a session's server is: the profile's host and port (or its Unix socket), or the SSH
-/// tunnel's local end; the CancelRequest goes the same way.
 #[derive(Clone)]
 pub(crate) struct Reach {
     host: String,
@@ -394,7 +358,6 @@ impl Reach {
         Reach { host: p.host.clone(), port: p.port, socket: p.is_socket(), via }
     }
 
-    /// The name TLS checks the certificate against (SNI).
     fn domain(&self) -> &str {
         if self.socket { "localhost" } else { &self.host }
     }
@@ -422,7 +385,6 @@ impl Reach {
     }
 }
 
-/// Sends a session's CancelRequest on a socket of its own.
 #[derive(Clone)]
 pub(crate) struct Canceller {
     token: CancelToken,
@@ -445,8 +407,6 @@ impl Canceller {
     }
 }
 
-/// An editor session's client: on a socket of Dataman's own, wrapped so every ReadyForQuery's
-/// transaction status reaches `watch` (above TLS when there is TLS).
 async fn connect_session(
     p: &ConnectionProfile,
     password: Option<&str>,
@@ -475,7 +435,6 @@ async fn connect_session(
             client
         }
     };
-    // The process id went by in the BackendKeyData (no round trip).
     own_mark(p, &mark, watch.pid());
     if p.read_only {
         set_read_only(&client).await;
@@ -484,7 +443,6 @@ async fn connect_session(
     Ok((client, cancel))
 }
 
-/// [`connect_session`] through the profile's tunnel, like [`connect_through`].
 pub(crate) async fn connect_session_through(
     p: &ConnectionProfile,
     password: Option<&str>,
@@ -516,10 +474,6 @@ pub(crate) async fn cancel(token: &CancelToken, tls: &Tls) -> Result<()> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------------------------
-// Dataman's own statements
-
-/// Rows of a simple-protocol (text) query, every statement's.
 pub(crate) async fn text_rows(client: &Client, sql: &str) -> Result<Vec<Vec<Option<String>>>> {
     let msgs = client.simple_query(sql).await?;
     Ok(msgs
@@ -531,8 +485,6 @@ pub(crate) async fn text_rows(client: &Client, sql: &str) -> Result<Vec<Vec<Opti
         .collect())
 }
 
-/// Runs one statement through the simple protocol. With `max` set, rows past it are read and
-/// dropped (the second value says whether that happened).
 pub(crate) async fn text_query(client: &Client, sql: &str, max: Option<usize>) -> Result<(TextRows, bool)> {
     let stream = client.simple_query_raw(sql).await?;
     futures_util::pin_mut!(stream);
@@ -561,7 +513,6 @@ pub(crate) async fn text_query(client: &Client, sql: &str, max: Option<usize>) -
     Ok((out, truncated))
 }
 
-/// Runs `sql` through the simple protocol; the first command's count.
 pub(crate) async fn execute(client: &Client, sql: &str) -> Result<Option<u64>, tokio_postgres::Error> {
     let msgs = client.simple_query(sql).await?;
     Ok(msgs.iter().find_map(|m| match m {
@@ -570,8 +521,6 @@ pub(crate) async fn execute(client: &Client, sql: &str) -> Result<Option<u64>, t
     }))
 }
 
-/// Runs a prepared statement (binary results, no parameters; text for the types that have no
-/// binary form, see [`needs_text`]).
 pub(crate) async fn start(client: &Client, stmt: &Statement, columns: &[ColumnInfo], sql: &str) -> Result<Rows, tokio_postgres::Error> {
     if needs_text(stmt) {
         let stream = client.simple_query_raw(sql).await?;
@@ -581,18 +530,15 @@ pub(crate) async fn start(client: &Client, stmt: &Statement, columns: &[ColumnIn
     Ok(Rows::Pg(PgRows::new(stream, stmt, columns)))
 }
 
-/// Extension types the grid decodes from their binary form (`pgtypes`).
 const BINARY_DECODED: &[&str] = &["vector", "halfvec", "sparsevec", "hstore", "ltree", "lquery", "ltxtquery", "citext"];
 
-/// Types whose text is a name the server looks up (the binary form is the OID).
 const REG_TYPES: &[&str] = &[
     "regclass", "regproc", "regprocedure", "regoper", "regoperator", "regtype", "regnamespace", "regrole", "regconfig", "regdictionary",
     "regcollation",
 ];
 
-/// Whether a column type cannot be had in binary: `aclitem` has no binary output function (the
-/// server fails the whole query), and an extension type the grid has no decoder for would show
-/// as hex. Arrays, ranges, domains and composites count through what they hold.
+/// `aclitem` has no binary output function (the server fails the whole query), and an
+/// extension type the grid has no decoder for would show as hex.
 fn sendless(ty: &Type) -> bool {
     use tokio_postgres::types::Kind as K;
     match ty.kind() {
@@ -605,8 +551,6 @@ fn sendless(ty: &Type) -> bool {
     }
 }
 
-/// Whether the statement's rows come through the simple (text) protocol instead of the binary
-/// one: some column is [`sendless`].
 pub(crate) fn needs_text(stmt: &Statement) -> bool {
     stmt.columns().iter().any(|c| sendless(c.type_()))
 }
@@ -617,7 +561,6 @@ pub(crate) fn column_infos(stmt: &Statement) -> Vec<ColumnInfo> {
         .iter()
         .map(|c| {
             let mut kind = Kind::of(c.type_());
-            // Text results are kept as text where parsing them would be guesswork (times).
             if text && matches!(kind, Kind::Date | Kind::Time | Kind::Timestamp | Kind::TimestampTz) {
                 kind = Kind::Other;
             }
@@ -626,7 +569,6 @@ pub(crate) fn column_infos(stmt: &Statement) -> Vec<ColumnInfo> {
         .collect()
 }
 
-/// The first of `queries` that succeeds.
 async fn first_ok(client: &Client, queries: &[&str]) -> Result<Vec<Vec<Option<String>>>> {
     let mut last = None;
     for q in queries {
@@ -692,12 +634,6 @@ pub(crate) fn error_info(e: &tokio_postgres::Error) -> ErrorInfo {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Editor statements
-
-/// Prepares the statement and streams its binary rows; what the server cannot prepare (several
-/// statements at once, commands outside the extended protocol) runs through the simple protocol
-/// with text results.
 pub(crate) async fn run(
     client: &Client,
     rs: &Arc<ResultSet>,
@@ -746,8 +682,6 @@ pub(crate) async fn run(
             rs.update_status(|s| s.text_mode = true);
             executing();
             match fetch_simple(client, rs, started, on_pause).await {
-                // Inside a transaction the failed prepare already aborted it: the error
-                // worth showing is the prepare's own.
                 Err(e2) if e2.code() == Some(&tokio_postgres::error::SqlState::IN_FAILED_SQL_TRANSACTION) => {
                     rs.update_status(|s| s.text_mode = false);
                     Err(e)
@@ -766,18 +700,13 @@ pub(crate) async fn run(
     }
 }
 
-/// How a `COPY` statement talks to the client.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Copy {
-    /// `COPY … TO STDOUT`: text or CSV lines.
     Out,
-    /// `COPY … FROM STDIN`.
     In,
-    /// `COPY … TO STDOUT` in binary format.
     Binary,
 }
 
-/// Whether the statement is a `COPY` that sends or expects data over the connection.
 fn copy_channel(sql: &str) -> Option<Copy> {
     let toks: Vec<_> = crate::sql::tokenize(sql).into_iter().filter(|t| !t.kind.is_trivia()).collect();
     let word = |i: usize, w: &str| toks.get(i).is_some_and(|t| matches!(t.kind, crate::sql::TokenKind::Keyword | crate::sql::TokenKind::Ident) && t.text(sql).eq_ignore_ascii_case(w));
@@ -798,7 +727,6 @@ fn copy_channel(sql: &str) -> Option<Copy> {
     }
 }
 
-/// `COPY … TO STDOUT` as a one-column result: a row for each line the server sends.
 async fn fetch_copy_out(
     client: &Client,
     rs: &Arc<ResultSet>,
@@ -812,17 +740,14 @@ async fn fetch_copy_out(
     super::pump(&mut rows, rs, &cols, started, on_pause).await
 }
 
-/// The lines of a `COPY … TO STDOUT`, cut from the server's chunks.
 struct CopyRows {
     stream: Pin<Box<tokio_postgres::CopyOutStream>>,
-    /// The bytes of a line whose end has not come yet.
     partial: Vec<u8>,
     lines: std::collections::VecDeque<String>,
     ended: bool,
 }
 
 impl CopyRows {
-    /// Takes the next line, reading chunks until there is one (`None` at the end).
     async fn line(&mut self) -> Result<Option<String>, tokio_postgres::Error> {
         loop {
             if let Some(l) = self.lines.pop_front() {
@@ -908,8 +833,6 @@ async fn fetch_extended(
     super::pump(&mut rows, rs, &cols, started, on_pause).await
 }
 
-/// A statement's rows, decoded into the grid's chunks: binary, or text for types without a
-/// binary form.
 pub(crate) struct PgRows {
     src: PgSource,
     types: Vec<Type>,
@@ -930,7 +853,6 @@ impl PgRows {
         }
     }
 
-    /// Rows read as text: the numbers and booleans are parsed back, the rest is kept as written.
     pub(crate) fn text(stream: tokio_postgres::SimpleQueryStream, cols: &[ColumnInfo]) -> PgRows {
         PgRows { src: PgSource::Text { stream: Box::pin(stream), affected: None }, types: Vec::new(), storage: cols.iter().map(|c| c.kind.storage()).collect() }
     }
@@ -1015,7 +937,6 @@ impl RowSource for PgRows {
     }
 }
 
-/// A parameter value in text format: the server parses it as whatever type the parameter has.
 #[derive(Debug)]
 pub(crate) struct TextParam<'a>(pub(crate) Option<&'a str>);
 
@@ -1080,7 +1001,6 @@ async fn fetch_simple(
     let mut b: Option<ChunkBuilder> = None;
     let mut ncols = 0;
     let mut affected = None;
-    // The first statement's result is complete: later statements still run, but are not shown.
     let mut first_done = false;
     let mut demand = rs.demand();
     let mut draining = false;
@@ -1089,7 +1009,6 @@ async fn fetch_simple(
     while let Some(msg) = stream.as_mut().next().await {
         match msg? {
             SimpleQueryMessage::RowDescription(cols) => {
-                // Only the first result set is shown.
                 if b.is_none() && !first_done {
                     let info: Vec<ColumnInfo> = cols
                         .iter()

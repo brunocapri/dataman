@@ -1,17 +1,3 @@
-//! Checks before a statement runs, shown in the editor as it is typed (debounced, off the
-//! keystroke path): unknown tables and columns against the cached schema, ambiguous columns,
-//! `JOIN` without `ON`, unterminated strings and comments, and `UPDATE`/`DELETE` without
-//! `WHERE` (the guard's rule, as a warning).
-//!
-//! False positives are worse than misses: the schema rules only speak when the schema is loaded
-//! and the reference is fully understood. They stay quiet on names the script or the session
-//! creates (temp tables), CTEs, function sources, anything after `SET search_path`, LAR's
-//! catalog gaps, names the reader does not follow, and every statement that is not plain DML.
-//! A statement with anything the reader does not model (`Analysis::unsure`: APPLY, PIVOT,
-//! MERGE, OUTPUT, control flow, table variables, several statements without `;`…) gets no
-//! schema findings at all (fail-open); SQL Server's syntax is checked by the server instead
-//! (`SET PARSEONLY`, `Connection::parse_check`).
-
 use std::collections::HashSet;
 use std::ops::Range;
 
@@ -35,11 +21,9 @@ pub struct Lint {
 
 #[derive(Default)]
 pub struct LintContext<'a> {
-    /// The cached schema; `None` (or not loaded yet) turns the schema rules off.
     pub schema: Option<&'a SchemaSnapshot>,
-    /// A LAR server: its catalog does not list everything, so unknown tables are not reported.
+    // LAR's catalog does not list everything: unknown tables are not reported.
     pub lar: bool,
-    /// Relations the session created that the cache may not know (temp tables), lower case.
     pub known: Option<&'a HashSet<String>>,
 }
 
@@ -49,16 +33,13 @@ pub fn lint(src: &str, cx: &LintContext) -> Vec<Lint> {
     let mut out = Vec::new();
     for t in &tokens {
         if let Some(what) = unterminated_in(src, t, dialect) {
-            // From the opening quote to the end of its line.
             let end = src[t.start..].find('\n').map_or(src.len(), |n| t.start + n).max(t.start + 1).min(src.len());
             out.push(Lint { range: t.start..end, severity: Severity::Error, message: format!("unterminated {what}") });
         }
     }
     let stmts = split_tokens_in(src, &tokens, dialect.script());
     let created = created_in(src, &tokens, dialect);
-    // The script may change where unqualified names resolve.
     let search_path_set = src.to_ascii_lowercase().contains("search_path");
-    // `USE other_db` (MySQL, T-SQL) moves the names after it away from the cached schema.
     let mut switched = false;
     for s in &stmts {
         let from = tokens.partition_point(|t| t.start < s.range.start);
@@ -106,9 +87,6 @@ pub fn lint(src: &str, cx: &LintContext) -> Vec<Lint> {
     out
 }
 
-/// Whether the statement joins with `JOIN … ON` at its top level, not an outer or cross join: the
-/// join condition limits the rows an `UPDATE` or `DELETE` touches as a `WHERE` would (so the
-/// editor does not warn; the guard's own reading of such a statement stays strict).
 fn inner_join_on(src: &str, toks: &[Token]) -> bool {
     let word = |i: usize, w: &str| toks.get(i).is_some_and(|t| t.text(src).eq_ignore_ascii_case(w));
     let (mut depth, mut join, mut on) = (0i32, false, false);
@@ -128,9 +106,6 @@ fn inner_join_on(src: &str, toks: &[Token]) -> bool {
     join && on
 }
 
-/// A T-SQL statement's tokens without its query and table hints (`OPTION (MAXRECURSION 100)`,
-/// `orders p WITH (NOLOCK, INDEX(ix))`, OPENJSON's `WITH (…)` schema): their words are options,
-/// not columns. A CTE's `WITH name AS (` is not followed by a parenthesis.
 fn without_tsql_hints(src: &str, toks: Vec<Token>) -> Vec<Token> {
     let mut out = Vec::with_capacity(toks.len());
     let mut i = 0;
@@ -162,7 +137,6 @@ fn without_tsql_hints(src: &str, toks: Vec<Token>) -> Vec<Token> {
     out
 }
 
-/// [`created_names`] of a script in `dialect` (T-SQL's `#temp` tables, `[brackets]`).
 pub fn created_names_in(src: &str, dialect: Dialect) -> HashSet<String> {
     created_in(src, &tokenize_in(src, dialect), dialect)
 }
@@ -176,7 +150,6 @@ fn created_in(src: &str, tokens: &[Token], dialect: Dialect) -> HashSet<String> 
         if !matches!(t.kind, TokenKind::Ident | TokenKind::QuotedIdent | TokenKind::Keyword) {
             return None;
         }
-        // schema.name: the last part.
         while sig.get(i + 1).is_some_and(|d| d.text(src) == ".") && sig.get(i + 2).is_some() {
             i += 2;
         }
@@ -201,7 +174,6 @@ fn created_in(src: &str, tokens: &[Token], dialect: Dialect) -> HashSet<String> 
         if w(i, "RENAME") && w(i + 1, "TO") {
             out.extend(name_at(i + 2));
         }
-        // `ALTER TABLE [IF EXISTS] [ONLY] t …` changes its columns.
         if w(i, "ALTER") && w(i + 1, "TABLE") {
             let mut k = i + 2;
             while w(k, "IF") || w(k, "EXISTS") || w(k, "ONLY") {
@@ -217,7 +189,6 @@ fn unknown_tables(a: &Analysis, snap: &SchemaSnapshot, known: &dyn Fn(&str) -> b
     for (si, s) in a.scopes.iter().enumerate() {
         for src in &s.sources {
             let SourceKind::Table { schema, name } = &src.kind else { continue };
-            // T-SQL's temporary tables live in tempdb, out of the cache.
             if name.starts_with("pg_") || name.starts_with('#') || known(name) || (name.eq_ignore_ascii_case("dual") && schema.is_none()) {
                 continue;
             }
@@ -244,12 +215,9 @@ fn unknown_tables(a: &Analysis, snap: &SchemaSnapshot, known: &dyn Fn(&str) -> b
 }
 
 fn columns(a: &Analysis, snap: &SchemaSnapshot, lar: bool, out: &mut Vec<Lint>) {
-    // Output names (ORDER BY / GROUP BY may use them; a set operation's ORDER BY reads the
-    // first arm's) and every source name (a whole-row reference) are never unknown columns.
     let mut names: HashSet<&str> = HashSet::new();
     for s in &a.scopes {
         for (ix, i) in s.items.iter().enumerate() {
-            // An alias, not a plain column (`total` names itself and must still exist).
             if let Item::Named(n) = i
                 && s.item_refs.get(ix).cloned().flatten().is_none_or(|(_, c)| c != *n)
             {
@@ -300,9 +268,6 @@ fn columns(a: &Analysis, snap: &SchemaSnapshot, lar: bool, out: &mut Vec<Lint>) 
     }
 }
 
-/// An unqualified column resolved like the server does, innermost scope first: ambiguous when
-/// two known sources of the first scope that has it both have it, unknown when no scope has
-/// it and every source on the way is known. `None` when fine or unsure.
 fn unqualified(a: &Analysis, scope: usize, name: &str, _clause: Clause, snap: &SchemaSnapshot) -> Option<Lint> {
     for s in a.chain(scope) {
         let sc = &a.scopes[s];
@@ -311,7 +276,6 @@ fn unqualified(a: &Analysis, scope: usize, name: &str, _clause: Clause, snap: &S
         }
         let mut hits = 0;
         let mut unsure = false;
-        // `excluded` (ON CONFLICT) must be qualified: it never makes a name ambiguous.
         for src in sc.sources.iter().filter(|x| x.alias.as_deref() != Some("excluded")) {
             match a.source_columns(s, src, snap) {
                 Some(cols) if cols.is_empty() && matches!(src.kind, SourceKind::Table { .. }) => unsure = true,
@@ -396,7 +360,6 @@ mod tests {
     #[test]
     fn no_false_positives() {
         for sql in [
-            // CTEs, recursion, subqueries, USING, NATURAL, lateral, functions, VALUES.
             "with big as (select id, total as t from orders) select b.t, t from big b",
             "with recursive r(n) as (select 1 union all select n + 1 from r where n < 10) select n from r",
             "select x.who from (select c.name as who from customer c) x",
@@ -406,14 +369,11 @@ mod tests {
             "select value from orders p, jsonb_each(p.status) e",
             "select a, b from (values (1, 2)) v(a, b)",
             "select * from unnest(array[1, 2]) as u",
-            // Correlated subqueries and outer references.
             "select * from customer c where exists (select 1 from orders p where p.customer = c.id and total > 0)",
             "select id, (select count(*) from orders where customer = c.id) from customer c",
-            // Output aliases, set operations, positions.
             "select total * 2 as doubled from orders order by doubled",
             "select id as x from orders union select id from customer order by x",
             "select status, count(*) n from orders group by 1 having count(*) > 1 order by n desc",
-            // Expressions that look like names.
             "select extract(year from now()), current_date, now() at time zone 'utc', interval '1' day from orders",
             "select cast(total as double precision), total::numeric(10, 2), total::character varying from orders",
             "select count(*) filter (where status = 'x'), sum(total) over (partition by customer order by id) from orders",
@@ -430,25 +390,21 @@ mod tests {
             "select * from orders order by id offset 0 rows fetch next 10 rows only",
             "select * from orders order by id fetch first 5 rows with ties",
             "select status from orders group by grouping sets ((status), ())",
-            // Temp tables and objects the script creates, unknown schemas, catalogs.
             "create temp table t (a int); select a from t",
             "select * into temp tmp from orders; select * from tmp",
             "select * from pg_class",
             "select * from information_schema.tables",
             "select * from other.thing",
             "set search_path = other; select * from thing",
-            // DML shapes.
             "insert into orders (id, status) select id, name from customer on conflict (id) do update set status = excluded.status, total = total + 1",
             "update orders p set total = c.id from customer c where c.id = p.customer",
             "delete from orders p using customer c where c.id = p.customer",
             "insert into customer values (1, 'a') returning *",
             "insert into customer (id, name) values (default, 'x') on conflict on constraint customer_pkey do nothing",
-            // Not DML: bodies and DDL are not read.
             "create function f(a int) returns int language sql begin atomic select a + 1; end",
             "do $$ begin perform nope from ghost; end $$",
             "create view v as select nothing from nowhere",
             "explain select * from orders",
-            // Unfinished text while typing.
             "select * from orders p where p.",
             "select * from orders p join customer c on",
             "",
@@ -466,11 +422,9 @@ mod tests {
         assert!(l.is_empty(), "{l:?}");
         let l = lint("select * from nope", &LintContext { schema: None, ..Default::default() });
         assert!(l.is_empty());
-        // LAR: no unknown tables, no unqualified columns.
         let s = snap();
         let l = lint("select totl from nope", &LintContext { schema: Some(&s), lar: true, ..Default::default() });
         assert!(l.is_empty(), "{l:?}");
-        // Names the session created.
         let known: HashSet<String> = ["sess_tmp".to_string()].into();
         let l = lint("select * from sess_tmp", &LintContext { schema: Some(&s), known: Some(&known), ..Default::default() });
         assert!(l.is_empty());
@@ -484,7 +438,6 @@ mod tests {
             "CREATE TABLE #chk (a int);\nINSERT #chk VALUES (1);\nSELECT a FROM #chk\nGO",
             "SELECT * FROM orders ORDER BY id\n OFFSET 0 ROWS FETCH NEXT 1000 ROWS ONLY;",
             "SELECT TOP (5) [id], [total] FROM [orders] WHERE [status] = N'x'",
-            // The target named by its alias in the FROM that follows.
             "UPDATE p\nSET p.status = 3, -- review\n    p.total = GETUTCDATE()\nFROM orders p\nJOIN customer c ON c.id = p.customer\nWHERE p.status = 1  -- pending\n  AND c.name = 0\n  AND p.total < DATEADD(MINUTE, -@DelayMinutes, GETUTCDATE());",
             "UPDATE p SET status = 3 FROM orders p JOIN customer c ON c.id = p.customer WHERE c.id = 1",
             "UPDATE orders SET orders.total = 1 FROM orders JOIN customer c ON c.id = orders.customer WHERE c.id = 1",
@@ -493,7 +446,6 @@ mod tests {
             "UPDATE TOP (10) orders SET total = 0 WHERE id = 1",
             "DELETE TOP (5) FROM orders WHERE id = 1",
             "UPDATE orders SET orders.total = 0 WHERE id = 1",
-            // Query and table hints, FOR XML / JSON.
             "WITH r AS (SELECT id FROM orders UNION ALL SELECT p.id FROM orders p JOIN r ON p.customer = r.id)\nSELECT (SELECT COUNT(DISTINCT id) FROM r) AS n\nOPTION (MAXRECURSION 100);",
             "SELECT id FROM orders OPTION (RECOMPILE, MAXDOP 1, OPTIMIZE FOR UNKNOWN)",
             "SELECT p.id FROM orders p WITH (NOLOCK) JOIN customer c WITH (INDEX(ix_c), FORCESEEK) ON c.id = p.customer",
@@ -510,7 +462,6 @@ mod tests {
             .map(|l| l.message)
             .collect();
         assert_eq!(m, ["column \"sttus\" of relation \"p\" does not exist"]);
-        // MySQL updates joined tables.
         s.dialect = crate::sql::Dialect::MySql;
         for sql in ["UPDATE orders p JOIN customer c ON c.id = p.customer SET p.total = 1 WHERE c.id = 1", "UPDATE orders p SET p.total = 1 WHERE p.id = 1"] {
             let l = lint(sql, &LintContext { schema: Some(&s), ..Default::default() });
@@ -532,8 +483,6 @@ mod tests {
         assert!(l.is_empty(), "{l:?}");
     }
 
-    /// Fail-open on T-SQL the reader does not model: a corpus of real shapes against a schema
-    /// where every name they use exists gives no finding, while plain typos are still caught.
     #[test]
     fn tsql_corpus_fails_open() {
         let mut s = snap();
@@ -580,7 +529,6 @@ mod tests {
             let schema_findings: Vec<_> = l.iter().filter(|x| x.message.contains("does not exist") || x.message.contains("ambiguous")).collect();
             assert!(schema_findings.is_empty(), "{sql}\n  {l:?}");
         }
-        // Simple statements still get their typos.
         for (sql, want) in [
             ("SELECT totl FROM orders", "column \"totl\" does not exist"),
             ("SELECT p.totl FROM orders p WHERE p.id = 1", "column p.totl does not exist"),
@@ -591,7 +539,6 @@ mod tests {
             let m: Vec<String> = lint(sql, &LintContext { schema: Some(&s), ..Default::default() }).into_iter().map(|l| l.message).collect();
             assert_eq!(m, [want], "{sql}");
         }
-        // PostgreSQL's MERGE is not modelled either; MySQL's IF() is a function, not a block.
         s.dialect = crate::sql::Dialect::Postgres;
         let l = lint("MERGE INTO orders t USING customer c ON t.customer = c.id WHEN MATCHED THEN UPDATE SET total = 0", &LintContext { schema: Some(&s), ..Default::default() });
         assert!(l.iter().all(|x| !x.message.contains("does not exist")), "{l:?}");
@@ -599,7 +546,6 @@ mod tests {
         let m: Vec<String> = lint("SELECT IF(total > 0, 'a', 'b') AS k FROM orders WHERE totl = 1", &LintContext { schema: Some(&s), ..Default::default() }).into_iter().map(|l| l.message).collect();
         assert_eq!(m, ["column \"totl\" does not exist"]);
         s.dialect = crate::sql::Dialect::TSql;
-        // The syntax rules stay on in a statement the reader is unsure of.
         let m: Vec<String> = lint("SELECT c.id FROM customer c CROSS APPLY f(c.id) x JOIN orders p WHERE 'x", &LintContext { schema: Some(&s), ..Default::default() }).into_iter().map(|l| l.message).collect();
         assert!(m.iter().any(|x| x == "unterminated string"), "{m:?}");
     }

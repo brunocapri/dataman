@@ -1,9 +1,3 @@
-//! Live tests of the explorer's other objects (see `common` for the servers): a scratch schema
-//! with a function, a procedure, a materialized view, sequences, an enum, a domain, a
-//! composite, triggers, a check constraint, a partitioned table and grants to a scratch role;
-//! every loader and definition read back from PostgreSQL. LAR reports none of it: its groups
-//! stay empty. The schema and the role are dropped at the end.
-
 mod common;
 use common::*;
 
@@ -60,14 +54,12 @@ fn pg_every_kind() {
         };
     }
 
-    // Relations: the materialized view is its own kind; partitions are tables.
     let rels = run!(c.relations(&db, S)).unwrap();
     let kind = |n: &str| rels.iter().find(|r| r.name == n).map(|r| r.kind);
     assert_eq!(kind("order_totals"), Some(RelKind::MaterializedView));
     assert_eq!(kind("events"), Some(RelKind::Partitioned));
     assert_eq!(kind("events_2026_01"), Some(RelKind::Table));
 
-    // Counts, in one query.
     let n = run!(c.object_counts(&db, S)).unwrap();
     assert_eq!(n.functions, Some(4), "add, recent, archive, touch");
     assert_eq!(n.sequences, Some(3), "the identity's, the serial's and invoice_no");
@@ -85,7 +77,6 @@ fn pg_every_kind() {
     assert!(def.starts_with(&format!("CREATE OR REPLACE FUNCTION {S}.add(a integer, b integer)")), "{def}");
     let call = dataman_core::sqlgen::function_call(S, archive);
     assert!(call.starts_with(&format!("CALL {S}.archive(")), "{call}");
-    // The generated call runs (the placeholder is a valid date).
     exec(&e, &c, &[&call]);
 
     let seqs = run!(c.sequences(&db, S)).unwrap();
@@ -116,7 +107,6 @@ fn pg_every_kind() {
     assert!(!trg.iter().find(|t| t.name == "orders_audit").unwrap().enabled);
     assert!(touch.definition.as_deref().unwrap().starts_with("CREATE TRIGGER orders_touch BEFORE INSERT OR UPDATE"));
 
-    // A table's extras: constraints (PK, FK, check; NOT NULL left out), triggers.
     let x = run!(c.table_extras(&db, S, "orders")).unwrap();
     let cons = x.constraints.unwrap();
     let kinds: Vec<ConstraintKind> = cons.iter().map(|c| c.kind).collect();
@@ -126,7 +116,6 @@ fn pg_every_kind() {
     assert_eq!(x.triggers.unwrap().len(), 2);
     assert_eq!(x.partitions, Some(vec![]));
     assert_eq!(x.parent, None);
-    // Partitioned table and partition.
     let ev = run!(c.table_extras(&db, S, "events")).unwrap();
     let parts = ev.partitions.unwrap();
     assert_eq!(parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["events_2026_01", "events_2026_02"]);
@@ -134,15 +123,12 @@ fn pg_every_kind() {
     let p1 = run!(c.table_extras(&db, S, "events_2026_01")).unwrap();
     assert_eq!(p1.parent, Some((S.to_string(), "events".to_string())));
 
-    // Sizes and estimates, one query for the schema.
     let st = run!(c.rel_stats(&db, S)).unwrap();
     assert_eq!(st["customers"].rows, Some(500.));
     assert!(st["customers"].bytes.unwrap() > 8192);
     assert!(st.contains_key("order_totals"));
-    // A partitioned table adds up its partitions (the PostgreSQL 12+ query ran).
     assert!(st["events"].bytes.unwrap() > 0, "{:?}", st["events"]);
 
-    // Extensions and roles.
     let exts = run!(c.extensions(&db)).unwrap();
     let plpgsql = exts.iter().find(|x| x.name == "plpgsql").expect("plpgsql is always installed");
     assert_eq!(plpgsql.schema.as_deref(), Some("pg_catalog"));
@@ -156,7 +142,6 @@ fn pg_every_kind() {
     let rdef = run!(c.role_definition(ROLE)).unwrap().unwrap();
     assert!(rdef.starts_with(&format!("CREATE ROLE {ROLE} WITH\n    NOLOGIN")), "{rdef}");
 
-    // Privileges: the owner, the scratch role's grants, the schema's.
     let p = run!(c.privileges(&db, S, Some("orders"))).unwrap().unwrap();
     assert_eq!(p.owner.as_deref(), Some("postgres"));
     assert_eq!(p.roles()[0], "postgres");
@@ -167,14 +152,12 @@ fn pg_every_kind() {
     let sp = run!(c.privileges(&db, S, None)).unwrap().unwrap();
     assert_eq!(sp.cell(ROLE, "USAGE"), Cell::Yes);
     assert_eq!(sp.cell(ROLE, "CREATE"), Cell::No);
-    // The generated templates run (in a transaction that is rolled back).
     let g = dataman_core::sqlgen::grant_template(S, Some("orders"), Some(ROLE));
     let r = dataman_core::sqlgen::revoke_template(S, Some("orders"), Some(ROLE));
     let reset = dataman_core::sqlgen::sequence_reset_template(S, "orders_id_seq", Some(("orders", "id")));
     let toggle = dataman_core::sqlgen::trigger_toggle_template(S, "orders", "orders_audit", true);
     exec(&e, &c, &["BEGIN", &g, &r, &reset, &toggle, "ROLLBACK"]);
 
-    // Reloading a schema forgets its objects.
     c.schema.invalidate_schema(&db, S);
     assert!(c.schema.cached_functions(&db, S).is_none() && c.schema.cached_counts(&db, S).is_none());
     assert!(c.schema.cached_extras(&db, S, "orders").is_none() && c.schema.cached_stats(&db, S).is_none());
@@ -194,14 +177,12 @@ fn lar_reports_none_of_it() {
     }
     let rels = run!(c.relations(&db, "public")).unwrap();
     let n = run!(c.object_counts(&db, "public")).unwrap();
-    // Zero or not reported: the explorer hides both.
     for v in [n.functions, n.sequences, n.types, n.triggers] {
         assert!(v.unwrap_or(0) == 0, "{n:?}");
     }
     assert!(run!(c.functions(&db, "public")).unwrap().is_empty());
     assert!(run!(c.triggers(&db, "public")).unwrap().is_empty());
     assert!(run!(c.roles()).unwrap().is_empty(), "LAR's pg_roles is empty");
-    // Every table answers zero rows and zero bytes: not reported.
     assert!(run!(c.rel_stats(&db, "public")).unwrap().is_empty());
     if let Some(r) = rels.iter().find(|r| r.kind == RelKind::Table) {
         let x = run!(c.table_extras(&db, "public", &r.name)).unwrap();

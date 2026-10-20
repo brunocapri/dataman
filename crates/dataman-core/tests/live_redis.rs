@@ -1,12 +1,3 @@
-//! Redis against a real server: connecting (AUTH), the databases and their keys with types,
-//! commands and their replies, a key's value as entries (each type), paged, edited, added and
-//! deleted; `SELECT`; read-only connections; refused commands. Skips without a server:
-//!
-//! - `DATAMAN_REDIS` (default `127.0.0.1:63790`, `DATAMAN_REDIS_PASSWORD` default `dataman`:
-//!   `docker run -d --name dataman-redis -p 63790:6379 redis:7 --requirepass dataman`).
-//!
-//! Every test works in database 9 and empties it.
-
 mod common;
 
 use common::*;
@@ -63,7 +54,6 @@ fn keys_values_and_entries() {
     assert_eq!(c.database(), DB);
     ok(&e, &c, "FLUSHDB");
 
-    // Commands and their replies.
     assert_eq!(ok(&e, &c, "SET greeting \"hello world\""), Output::Written { affected: 1, summary: "OK".into(), detail: None });
     assert_eq!(ok(&e, &c, "GET nothing_here"), Output::Value(Body::Json(serde_json::Value::Null)));
     let mut fields = String::from("HSET user:1");
@@ -78,7 +68,6 @@ fn keys_values_and_entries() {
     assert_eq!(ok(&e, &c, "LLEN queue"), Output::Value(Body::Json(json!(4))));
     assert_eq!(ok(&e, &c, "SELECT 3"), Output::Use("3".into()));
 
-    // The explorer: database 9 with its key count, its keys with their types.
     let dbs = e.core.block_on(c.nosql_tree(None)).unwrap();
     assert!(dbs.iter().any(|d| d.name == DB && d.kind == ItemKind::Database && d.count == Some(5)), "{dbs:?}");
     let keys = e.core.block_on(c.nosql_tree(Some(DB))).unwrap();
@@ -86,7 +75,6 @@ fn keys_values_and_entries() {
     assert_eq!(names, [("board", Some("zset")), ("greeting", Some("string")), ("queue", Some("list")), ("tags", Some("set")), ("user:1", Some("hash"))]);
     assert_eq!(dataman_core::nosql::open_statement_for(&c, DB, "board"), "ZRANGE board 0 -1 WITHSCORES");
 
-    // A hash as entries, paged; one edited (renamed), one added, one deleted.
     let d = docs(run(&e, &c, "HGETALL user:1", Page { skip: 0, limit: 50 }).unwrap().output);
     assert_eq!((d.docs.len(), d.total, d.more), (50, Some(70), true));
     let src = d.source.clone().unwrap();
@@ -104,7 +92,6 @@ fn keys_values_and_entries() {
     assert_eq!(e.core.block_on(c.delete_document(&src, Body::Json(json!("new")))).unwrap(), 1);
     assert_eq!(ok(&e, &c, "HLEN user:1"), Output::Value(Body::Json(json!(70))));
 
-    // A list by index; a sorted set by member and score; a set; a string.
     let d = docs(ok(&e, &c, "LRANGE queue 0 -1"));
     assert_eq!(d.docs[1].body, Body::Json(json!({"index": 1, "value": "b"})));
     let lsrc = d.source.clone().unwrap();
@@ -122,22 +109,18 @@ fn keys_values_and_entries() {
     e.core.block_on(c.save_document(d.source.as_ref().unwrap(), d.docs[0].id.clone(), "{value: 'bye'}")).unwrap();
     assert_eq!(ok(&e, &c, "STRLEN greeting"), Output::Value(Body::Json(json!(3))));
 
-    // Errors: the server's, a type that is not the key's, a refused command, a quote not closed.
     assert!(run(&e, &c, "LPUSH greeting x", Page::default()).unwrap_err().message.contains("WRONGTYPE"));
     assert!(run(&e, &c, "HGETALL queue", Page::default()).unwrap_err().message.contains("is a list"));
     assert!(run(&e, &c, "SUBSCRIBE news", Page::default()).unwrap_err().message.contains("not supported"));
     assert!(run(&e, &c, "GET \"open", Page::default()).unwrap_err().at.is_some());
-    // MCP's count before a write.
     assert_eq!(e.core.block_on(c.nosql_affects(DB, "DEL a b c")).unwrap(), Some(3));
 
-    // Read-only: writes refused, reads run.
     let mut p = profile();
     p.read_only = true;
     let ro = connect(&e, p).unwrap();
     assert!(run(&e, &ro, "SET x 1", Page::default()).unwrap_err().message.contains("read-only"));
     assert!(run(&e, &ro, "GET greeting", Page::default()).is_ok());
 
-    // A wrong password says so.
     let err = e.core.block_on(e.core.connect(profile(), Some("wrong".into()))).err().expect("refused");
     assert!(format!("{err:#}").contains("authentication failed"), "{err:#}");
     ok(&e, &c, "FLUSHDB");

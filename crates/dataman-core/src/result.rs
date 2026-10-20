@@ -1,10 +1,3 @@
-//! A query result, filled in batches by the core and read by the UI.
-//!
-//! Rows live in immutable, columnar chunks. The fetch task appends chunks; readers take a
-//! [`Snapshot`] (an `Arc` clone, no lock held while drawing) and only format the cells they
-//! show. Fetching is driven by demand: the fetch task pauses once it is `PREFETCH` rows ahead of
-//! the last row the UI asked for, keeping the server-side stream open.
-
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::sync::Arc;
@@ -16,19 +9,15 @@ use tokio::sync::watch;
 
 use crate::value::{self, Kind, Storage};
 
-/// Rows per chunk.
 pub const CHUNK: usize = 1024;
-/// How far past the last requested row the fetcher reads before pausing.
 pub const PREFETCH: usize = 10_000;
 
 static PREFETCH_ROWS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(PREFETCH);
 
-/// Rows fetched past what is requested (the Settings sheet changes it; new demands use it).
 pub fn prefetch() -> usize {
     PREFETCH_ROWS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Sets [`prefetch`] (clamped to 1,024 – 1,000,000).
 pub fn set_prefetch(rows: usize) {
     PREFETCH_ROWS.store(rows.clamp(CHUNK, 1_000_000), std::sync::atomic::Ordering::Relaxed);
 }
@@ -46,13 +35,11 @@ pub enum ColData {
     Bool(Vec<bool>),
     I64(Vec<i64>),
     F64(Vec<f64>),
-    /// All values of the chunk in one string; `ends[i]` is where value `i` ends.
     Text { text: String, ends: Vec<u32> },
 }
 
 #[derive(Debug)]
 pub struct ColChunk {
-    /// Bit `i` set = row `i` is NULL.
     pub nulls: Vec<u64>,
     pub data: ColData,
 }
@@ -64,23 +51,17 @@ pub struct Chunk {
 }
 
 impl Chunk {
-    /// Cell `row` (0-based within the chunk) of column `col`.
     pub fn cell(&self, row: usize, col: usize) -> Cell<'_> {
         self.cols[col].get(row)
     }
 }
 
-/// Where a result column comes from, as the server's RowDescription says (PostgreSQL fills
-/// these for plain table columns; computed columns and servers that do not say leave `None`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ColumnOrigin {
     pub table_oid: Option<u32>,
-    /// The column's `attnum` in that table.
     pub column_id: Option<i16>,
 }
 
-/// The table column a result column shows, by name (MySQL reports it in each column's
-/// definition: database, original table and original column).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct NamedOrigin {
     pub schema: String,
@@ -88,7 +69,6 @@ pub struct NamedOrigin {
     pub column: String,
 }
 
-/// A borrowed cell.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Cell<'a> {
     Null,
@@ -119,7 +99,6 @@ impl ColChunk {
     }
 }
 
-/// Builds one chunk row by row.
 pub struct ChunkBuilder {
     kinds: Vec<Kind>,
     rows: usize,
@@ -200,7 +179,6 @@ impl ChunkBuilder {
         }
     }
 
-    /// Appends a text value; `f` writes it into the chunk's string directly.
     pub fn push_text_with(&mut self, col: usize, f: impl FnOnce(&mut String)) {
         self.mark(col, false);
         match &mut self.cols[col].data {
@@ -208,7 +186,6 @@ impl ChunkBuilder {
                 f(text);
                 ends.push(text.len() as u32);
             }
-            // Only reachable if a text value lands in a native column: store a default.
             ColData::Bool(v) => v.push(false),
             ColData::I64(v) => v.push(0),
             ColData::F64(v) => v.push(0.0),
@@ -226,7 +203,6 @@ impl ChunkBuilder {
         }
     }
 
-    /// Call after pushing one value into every column.
     pub fn end_row(&mut self) {
         self.rows += 1;
     }
@@ -241,9 +217,7 @@ impl ChunkBuilder {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Phase {
-    /// Waiting for the server (prepare, first rows).
     Running,
-    /// Enough rows loaded for now; the stream is open and more can be fetched.
     Paused,
     Done,
     Cancelled,
@@ -256,16 +230,13 @@ impl Phase {
     }
 }
 
-/// A server error, split into its parts.
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ErrorInfo {
     pub code: Option<String>,
     pub message: String,
     pub detail: Option<String>,
     pub hint: Option<String>,
-    /// 1-based character position in the statement, when the server reports one.
     pub position: Option<u32>,
-    /// `ERROR`, `FATAL`…, as the server says it.
     pub severity: Option<String>,
 }
 
@@ -288,24 +259,17 @@ impl std::fmt::Display for ErrorInfo {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Status {
     pub phase: Option<Phase>,
-    /// `INSERT 0 5` and friends: rows affected by a statement without result rows.
     pub affected: Option<u64>,
     pub first_row: Option<Duration>,
     pub elapsed: Option<Duration>,
     pub error: Option<ErrorInfo>,
-    /// The statement was run through the simple protocol (text results).
     pub text_mode: bool,
-    /// Only the rows loaded before [`ResultSet::stop_fetching`] were kept; the server finished
-    /// the statement and the rest was read and dropped.
     pub partial: bool,
-    /// Time spent [`Phase::Paused`] (waiting for the reader), not counted as running time.
     pub paused_for: Duration,
-    /// Since when it is paused, while it is.
     pub paused_since: Option<std::time::Instant>,
 }
 
 impl Status {
-    /// All the time spent paused, the current pause included.
     pub fn paused_time(&self) -> Duration {
         self.paused_for + self.paused_since.map_or(Duration::ZERO, |p| p.elapsed())
     }
@@ -313,7 +277,6 @@ impl Status {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Demand {
-    /// Keep at least this many rows loaded.
     pub rows: usize,
     pub all: bool,
     pub abort: bool,
@@ -322,7 +285,6 @@ pub struct Demand {
 #[derive(Default)]
 struct Chunks {
     list: Vec<Arc<Chunk>>,
-    /// `starts[i]` = global index of the first row of chunk `i`.
     starts: Vec<usize>,
     rows: usize,
 }
@@ -342,40 +304,23 @@ pub struct ResultSet {
     order: RwLock<Option<(usize, SortDir, Arc<Vec<u32>>)>>,
     status: Mutex<Status>,
     demand: watch::Sender<Demand>,
-    /// Bumped on every change readers may care about (rows, phase, order).
     version: watch::Sender<u64>,
-    /// Written to the history already (at the first pause, or at the end).
     pub(crate) recorded: std::sync::atomic::AtomicBool,
-    /// The statement reached the server for execution (a CancelRequest can only matter then).
     pub(crate) executing: std::sync::atomic::AtomicBool,
-    /// Values bound to `$1 … $n` (text format; `None` is NULL).
     params: OnceLock<Vec<Option<String>>>,
-    /// Runs inside a transaction (or a savepoint) that is rolled back: what it changes is undone
-    /// (Explain Analyze of a write).
     pub(crate) rollback: std::sync::atomic::AtomicBool,
-    /// That transaction is a read-only one (an agent's read in its tab).
     pub(crate) read_only: std::sync::atomic::AtomicBool,
-    /// Run for an agent (its client's name): the history says so.
     agent: OnceLock<String>,
-    /// The result set the same statement returned after this one (a T-SQL batch's): set before
-    /// this one finishes.
+    // Set before this one finishes, so whoever sees it finish finds it.
     next: OnceLock<Arc<ResultSet>>,
-    /// Read back from the saved session (`crate::session`): rows as they were, no stream
-    /// behind them, never edited in place.
     restored: bool,
-    /// What the server printed while this result was the statement's latest (SQL Server's
-    /// `PRINT`), in order, up to [`MESSAGE_CAP`]; and how many more came.
     messages: Mutex<(Arc<Vec<String>>, usize)>,
-    /// The planner's estimate of the statement's rows (asked once, when it first pauses:
-    /// [`ResultSet::ask_estimate`]); `None` inside when there is none.
     estimate: OnceLock<Option<u64>>,
     estimate_asked: std::sync::atomic::AtomicBool,
 }
 
-/// Server messages a result keeps (a `PRINT` in a loop must not fill the memory).
 pub const MESSAGE_CAP: usize = 10_000;
 
-/// An immutable view of the rows loaded so far (and of the sort order at that moment).
 #[derive(Clone)]
 pub struct Snapshot {
     pub columns: Arc<Vec<ColumnInfo>>,
@@ -386,13 +331,11 @@ pub struct Snapshot {
 impl Snapshot {
     pub fn rows(&self) -> usize {
         match &self.order {
-            // Rows that arrived after the sort are not in the permutation; show them after it.
             Some(o) => self.chunks.rows.max(o.len()),
             None => self.chunks.rows,
         }
     }
 
-    /// The storage row behind a display row.
     pub fn source_row(&self, row: usize) -> usize {
         match &self.order {
             Some(o) if row < o.len() => o[row] as usize,
@@ -409,24 +352,20 @@ impl Snapshot {
         (&c.list[i], row - c.starts[i])
     }
 
-    /// Cell at display row `row`, column `col`.
     pub fn cell(&self, row: usize, col: usize) -> Cell<'_> {
         let (chunk, i) = self.locate(self.source_row(row));
         chunk.cols[col].get(i)
     }
 
-    /// Cell at storage row `row` (arrival order, ignoring any sort).
     pub fn source_cell(&self, row: usize, col: usize) -> Cell<'_> {
         let (chunk, i) = self.locate(row);
         chunk.cols[col].get(i)
     }
 
-    /// Rows loaded, in arrival order (the sort permutation may lag behind them).
     pub fn source_rows(&self) -> usize {
         self.chunks.rows
     }
 
-    /// Display text (`None` = NULL).
     pub fn text(&self, row: usize, col: usize) -> Option<Cow<'_, str>> {
         format_cell(self.columns[col].kind, self.cell(row, col))
     }
@@ -445,8 +384,6 @@ pub fn format_cell(kind: Kind, cell: Cell<'_>) -> Option<Cow<'_, str>> {
     })
 }
 
-/// [`format_cell`] written into `out` (cleared first), for loops over many cells that reuse one
-/// buffer; false for NULL.
 pub fn format_cell_into(kind: Kind, cell: Cell<'_>, out: &mut String) -> bool {
     out.clear();
     match cell {
@@ -471,9 +408,7 @@ pub fn format_cell_into(kind: Kind, cell: Cell<'_>, out: &mut String) -> bool {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CopyFormat {
-    /// Tab-separated; NULL as `\N`, like `COPY … (FORMAT text)`.
     Tsv,
-    /// RFC 4180; NULL unquoted and empty, the empty string as `""`, like `COPY … (FORMAT csv)`.
     Csv,
 }
 
@@ -503,31 +438,24 @@ impl ResultSet {
         })
     }
 
-    /// The planner's estimate of the rows the statement returns, once known.
     pub fn row_estimate(&self) -> Option<u64> {
         self.estimate.get().copied().flatten()
     }
 
-    /// The estimate was answered (with a number or without).
     pub fn estimate_known(&self) -> bool {
         self.estimate.get().is_some()
     }
 
-    /// `true` the first time only: whoever gets it asks the server for the estimate.
     pub fn ask_estimate(&self) -> bool {
         !self.estimate_asked.swap(true, std::sync::atomic::Ordering::AcqRel)
     }
 
-    /// The estimate's answer (`None`: there is none); readers are told.
     pub fn set_estimate(&self, rows: Option<u64>) {
         if self.estimate.set(rows).is_ok() {
             self.bump();
         }
     }
 
-    /// A result of the saved session read back: its columns (and where they come from), its
-    /// rows in `chunks` and its final `status`. A snapshot: nothing streams into it and grid
-    /// edits refuse it until it runs again.
     pub(crate) fn restored(
         sql: String,
         columns: Vec<ColumnInfo>,
@@ -558,13 +486,10 @@ impl ResultSet {
         rs
     }
 
-    /// A result read back from the saved session (see [`ResultSet::restored`]).
     pub fn is_restored(&self) -> bool {
         self.restored
     }
 
-    /// The result set that followed this one in the same statement (a T-SQL batch returns any
-    /// number): known before this one's phase is final, so whoever sees it finish finds it.
     pub fn next_result(&self) -> Option<Arc<ResultSet>> {
         self.next.get().cloned()
     }
@@ -573,7 +498,6 @@ impl ResultSet {
         let _ = self.next.set(next);
     }
 
-    /// The server's messages (`PRINT`), and how many more came past [`MESSAGE_CAP`].
     pub fn messages(&self) -> (Arc<Vec<String>>, usize) {
         self.messages.lock().clone()
     }
@@ -582,7 +506,6 @@ impl ResultSet {
         !self.messages.lock().0.is_empty()
     }
 
-    /// A message the server sent while this result was the statement's latest.
     pub fn push_message(&self, m: String) {
         {
             let mut g = self.messages.lock();
@@ -595,12 +518,10 @@ impl ResultSet {
         self.bump();
     }
 
-    /// It ran inside a transaction (or savepoint) that was rolled back.
     pub fn rolled_back(&self) -> bool {
         self.rollback.load(std::sync::atomic::Ordering::Acquire)
     }
 
-    /// The values bound to the statement's parameters (empty: none).
     pub fn params(&self) -> &[Option<String>] {
         self.params.get().map_or(&[], Vec::as_slice)
     }
@@ -613,7 +534,6 @@ impl ResultSet {
         self.columns.get().cloned()
     }
 
-    /// Table and column of each result column, when the server reported them.
     pub fn origins(&self) -> Option<Arc<Vec<ColumnOrigin>>> {
         self.origins.get().cloned()
     }
@@ -622,8 +542,6 @@ impl ResultSet {
         let _ = self.origins.set(Arc::new(o));
     }
 
-    /// Database (schema), table and column of each result column by name, when the server
-    /// reported them so (MySQL's column definitions); `None` for computed columns.
     pub fn named_origins(&self) -> Option<Arc<Vec<Option<NamedOrigin>>>> {
         self.named_origins.get().cloned()
     }
@@ -661,7 +579,6 @@ impl ResultSet {
         self.order.read().as_ref().map(|o| (o.0, o.1))
     }
 
-    /// A receiver that changes whenever rows, phase or order change.
     pub fn subscribe(&self) -> watch::Receiver<u64> {
         self.version.subscribe()
     }
@@ -698,7 +615,6 @@ impl ResultSet {
         self.demand.subscribe()
     }
 
-    /// The UI shows rows up to `upto`: make sure the fetcher reads past it.
     pub fn request_rows(&self, upto: usize) {
         let want = upto.saturating_add(prefetch());
         self.demand.send_if_modified(|d| {
@@ -711,15 +627,11 @@ impl ResultSet {
         });
     }
 
-    /// Read everything (used before sorting, and by "fetch all").
     pub fn fetch_all(&self) {
         self.demand.send_if_modified(|d| !std::mem::replace(&mut d.all, true));
     }
 
-    /// Keeps the rows loaded so far and lets the statement finish without storing the rest: the
-    /// stream is read to its end and dropped, with no CancelRequest (a transaction stays
-    /// intact), and the result ends `Done` with `partial` set. Used when the next statement of a
-    /// script needs the session while this one is paused.
+    // Read to the end and dropped, no CancelRequest: a transaction stays intact.
     pub fn stop_fetching(&self) {
         if self.phase().is_finished() {
             return;
@@ -728,8 +640,6 @@ impl ResultSet {
         self.abort();
     }
 
-    /// A finished result built in memory (the activity monitor's lists): `columns` and the rows
-    /// of `chunk`, done.
     pub fn from_chunk(sql: impl Into<String>, columns: Vec<ColumnInfo>, chunk: Chunk) -> Arc<Self> {
         let rs = Self::new(sql);
         let _ = rs.columns.set(Arc::new(columns));
@@ -741,7 +651,6 @@ impl ResultSet {
         rs
     }
 
-    /// The agent (its client's name) this statement ran for, if one did.
     pub fn agent(&self) -> Option<&str> {
         self.agent.get().map(String::as_str)
     }
@@ -750,9 +659,6 @@ impl ResultSet {
         let _ = self.agent.set(client.to_string());
     }
 
-    /// A result that ran elsewhere (an agent's write, run on the agent's own backend) shown
-    /// here: still running until [`ResultSet::finish_with`] ends it. Never written to the
-    /// history by a session (whoever ran it records it).
     pub fn placeholder(sql: impl Into<String>, agent: Option<&str>) -> Arc<Self> {
         let rs = Self::new(sql);
         rs.recorded.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -762,8 +668,6 @@ impl ResultSet {
         rs
     }
 
-    /// Ends a [`ResultSet::placeholder`]: its rows (`columns` and `chunk`), the rows the
-    /// statements changed, what to say about it (messages), or its error.
     pub fn finish_with(&self, columns: Option<Vec<ColumnInfo>>, chunk: Option<Chunk>, affected: Option<u64>, messages: Vec<String>, error: Option<ErrorInfo>, elapsed: Duration) {
         if let Some(c) = columns {
             let _ = self.columns.set(Arc::new(c));
@@ -782,7 +686,6 @@ impl ResultSet {
         });
     }
 
-    /// A statement refused before it reached the server: a finished, failed result.
     pub fn refused(sql: impl Into<String>, error: ErrorInfo) -> Arc<Self> {
         let rs = Self::new(sql);
         rs.update_status(|s| {
@@ -793,7 +696,6 @@ impl ResultSet {
         rs
     }
 
-    /// Stop fetching and drop the rest of the result (the stream is drained after a cancel).
     pub fn abort(&self) {
         self.demand.send_if_modified(|d| !std::mem::replace(&mut d.abort, true));
     }
@@ -811,17 +713,11 @@ impl ResultSet {
         }
     }
 
-    /// Rows the current sort covers (`None`: not sorted). Rows that arrived after it show after
-    /// them, in arrival order, until the next [`ResultSet::sort`].
     pub fn sorted_rows(&self) -> Option<usize> {
         self.order.read().as_ref().map(|o| o.2.len())
     }
 
-    /// Sorts the loaded rows by `col`, stably, by the column's type: numbers by value, dates and
-    /// times in time order, text case-insensitively with digit runs by value
-    /// ([`value::cmp_natural`]; JSON and bytes byte by byte), NULLs last either way. `None`
-    /// restores the arrival order. Nothing is read from the server. CPU-bound: run it off the
-    /// UI thread.
+    // CPU-bound: run it off the UI thread.
     pub fn sort(&self, by: Option<(usize, SortDir)>) {
         let Some((col, dir)) = by else {
             *self.order.write() = None;
@@ -832,7 +728,6 @@ impl ResultSet {
         let Some(kind) = snap.columns.get(col).map(|c| c.kind) else { return };
         let n = snap.rows();
         let mut perm: Vec<u32> = (0..n as u32).collect();
-        // Pre-extract keys: much faster than locating chunks inside the comparator.
         enum Keys<'a> {
             I(Vec<Option<i64>>),
             F(Vec<Option<f64>>),
@@ -846,7 +741,6 @@ impl ResultSet {
             Storage::Bool => Keys::B(cells.map(|c| if let Cell::Bool(x) = c { Some(x) } else { None }).collect()),
             Storage::Text => Keys::T(cells.map(|c| if let Cell::Text(x) = c { Some(x) } else { None }).collect()),
         };
-        // NULLs last in both directions; only the values turn around.
         fn by_opt<T>(a: &Option<T>, b: &Option<T>, dir: SortDir, f: impl Fn(&T, &T) -> Ordering) -> Ordering {
             match (a, b) {
                 (None, None) => Ordering::Equal,
@@ -876,7 +770,6 @@ impl ResultSet {
         self.bump();
     }
 
-    /// Copies a rectangle of display rows × columns.
     pub fn copy(&self, rows: impl IntoIterator<Item = usize>, cols: &[usize], fmt: CopyFormat, header: bool) -> String {
         let snap = self.snapshot();
         let mut out = String::new();
@@ -970,7 +863,7 @@ mod tests {
             }
             b.end_row();
             if i == 1 {
-                rs.push_chunk(b.finish()); // chunks of uneven sizes
+                rs.push_chunk(b.finish());
             }
         }
         rs.push_chunk(b.finish());
@@ -1002,12 +895,10 @@ mod tests {
         rs.sort(Some((2, SortDir::Asc)));
         let s = rs.snapshot();
         let ids: Vec<_> = (0..4).map(|r| s.cell(r, 0)).collect();
-        // -1, 9.5, 10, NULL
         assert_eq!(ids, vec![Cell::Int(4), Cell::Int(1), Cell::Int(3), Cell::Int(2)]);
         assert_eq!(rs.sorted_rows(), Some(4));
         rs.sort(Some((1, SortDir::Desc)));
         let s = rs.snapshot();
-        // NULLs last when descending too.
         assert_eq!(s.text(0, 1).as_deref(), Some("c"));
         assert_eq!(s.text(3, 1), None);
         rs.sort(Some((2, SortDir::Desc)));
@@ -1019,8 +910,6 @@ mod tests {
         assert_eq!(rs.sorted_rows(), None);
     }
 
-    /// A million rows sort off the UI thread in well under a second or two (numbers, then text
-    /// with the natural order).
     #[test]
     fn sorting_a_million_rows() {
         let c = vec![
@@ -1052,9 +941,6 @@ mod tests {
         assert!(ints < std::time::Duration::from_secs(3) && text < std::time::Duration::from_secs(6), "{ints:?} {text:?}");
     }
 
-    /// Text sorts case-insensitively with numbers inside by value (a case-only tie by bytes);
-    /// equal values keep their arrival order both ways; rows that arrive after a sort follow it
-    /// until the next one.
     #[test]
     fn sorting_text_stable_and_late_rows() {
         let c = vec![

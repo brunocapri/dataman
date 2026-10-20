@@ -1,18 +1,3 @@
-//! Demo stages of a SQL Server connection (`--demo`), against the `dataman-mssql` test container
-//! (`bench::mssql_profile`; load `seeds/mssql.sql` first):
-//!
-//! - `mssql`: the explorer open on the database's schemas and `customer` as data (screenshot);
-//! - `mssql-script`: a script of two `GO` batches and three result sets (screenshot);
-//! - `mssql-print`, `mssql-print-tab`: what `PRINT` wrote, in the grid's place and in the
-//!   messages tab beside rows (screenshots);
-//! - `mssql-dialog`: the connection sheet on that connection, SQL Server picked (screenshot);
-//! - `mssql-check`: the rules with real keys and clicks where they matter (connect, the
-//!   explorer's schemas, a table's pages, filter and sort, a grid edit committed, an FK jump, a
-//!   script of GO batches with several result sets, an error on its line in the second batch,
-//!   the cancel of `WAITFOR`, a typed BEGIN TRANSACTION's commit and rollback, `PRINT` in the
-//!   grid's place and in the messages tab, the lint on `UPDATE alias … FROM`, and what SQL
-//!   Server hides), printed as PASS/FAIL lines; exit code 1 on a failure.
-
 use std::time::{Duration, Instant};
 
 use gpui::{AsyncWindowContext, Entity, Focusable, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, PlatformInput, Pixels, Point};
@@ -67,7 +52,6 @@ fn active(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> Entity<QueryTa
     cx.update(|_, cx| ws.read(cx).active_tab().unwrap().clone()).unwrap()
 }
 
-/// Waits until the tab's run is over (every result set of every batch).
 async fn finished(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) {
     pause(cx, 50).await;
     for _ in 0..400 {
@@ -98,7 +82,6 @@ fn cell(tab: &Entity<QueryTab>, row: usize, col: usize, cx: &mut AsyncWindowCont
     cx.update(|_, cx| tab.read(cx).result().filter(|r| row < r.rows()).and_then(|r| r.snapshot().text(row, col).map(|v| v.into_owned()))).ok().flatten()
 }
 
-/// Runs `sql` in the active tab (typed into its editor) and waits for it.
 async fn run_in(tab: &Entity<QueryTab>, text: &str, script: bool, cx: &mut AsyncWindowContext) {
     let before = cx.update(|_, cx| tab.read(cx).result().cloned()).ok().flatten();
     let _ = cx.update(|window, cx| {
@@ -112,7 +95,6 @@ async fn run_in(tab: &Entity<QueryTab>, text: &str, script: bool, cx: &mut Async
             }
         });
     });
-    // A new result first (the old one is finished too).
     for _ in 0..200 {
         let new = cx.update(|_, cx| tab.read(cx).result().is_some_and(|r| before.as_ref().is_none_or(|b| !std::sync::Arc::ptr_eq(b, r)))).unwrap_or(true);
         if new {
@@ -123,7 +105,6 @@ async fn run_in(tab: &Entity<QueryTab>, text: &str, script: bool, cx: &mut Async
     finished(tab, cx).await;
 }
 
-/// Opens `schema.table` as data (the explorer's ↩) and waits for its first page.
 async fn open(ws: &Entity<Workspace>, conn: &str, db: &str, schema: &str, table: &str, cx: &mut AsyncWindowContext) -> Entity<QueryTab> {
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.open_relation(conn, db, schema, table, window, cx)));
     let tab = active(ws, cx);
@@ -131,7 +112,6 @@ async fn open(ws: &Entity<Workspace>, conn: &str, db: &str, schema: &str, table:
     tab
 }
 
-/// Waits until the tab shows a finished page of its table.
 async fn page(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) {
     pause(cx, 50).await;
     for _ in 0..400 {
@@ -147,7 +127,6 @@ async fn page(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) {
     draw(cx);
 }
 
-/// A statement on a session of its own (setup and verification), its first cell.
 async fn direct(ws: &Entity<Workspace>, sql: &str, cx: &mut AsyncWindowContext) -> Option<String> {
     let conn = cx.update(|_, cx| ws.read(cx).active_tab().and_then(|t| t.read(cx).connection().cloned())).ok().flatten()?;
     let rs = conn.session(None).execute(sql.to_string());
@@ -165,7 +144,6 @@ async fn direct(ws: &Entity<Workspace>, sql: &str, cx: &mut AsyncWindowContext) 
     (!snap.columns.is_empty() && snap.rows() > 0).then(|| snap.text(0, 0).map(|v| v.into_owned())).flatten()
 }
 
-/// Opens the explorer down to `dbo`'s tables and `customer`'s columns, and the second schema.
 async fn explore(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWindowContext) {
     let tree = cx.update(|_, cx| ws.read(cx).tree.clone()).unwrap();
     let s = format!("c:{conn}/d:{db}/s:dbo");
@@ -180,7 +158,6 @@ async fn explore(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWin
     }
 }
 
-/// The script of the `mssql-script` stage and the check: two batches, three result sets.
 const SCRIPT: &str = "-- two batches, three result sets\nCREATE TABLE #chk (a int, b nvarchar(10));\nINSERT #chk VALUES (1, N'one'), (2, N'two');\nSELECT a, b FROM #chk ORDER BY a;\nSELECT COUNT(*) AS n FROM #chk\nGO\nSELECT N'café' AS c, SYSDATETIMEOFFSET() AS now_at\nGO";
 
 const PRINTS: &str = "DECLARE @i int = 1;\nWHILE @i <= 5\nBEGIN\n    PRINT CONCAT(N'Batch ', @i, N' of 5: ', @i * 200, N' rows');\n    SET @i += 1;\nEND\nPRINT N'Done.';";
@@ -229,7 +206,6 @@ async fn check(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWindo
         println!("{} {name}{}", if pass { "PASS" } else { "FAIL" }, if pass { String::new() } else { format!(" — {detail}") });
         ok &= pass;
     };
-    // 1. Connected: the engine, the version, the dialect.
     let tab = active(ws, cx);
     let info = cx.update(|_, cx| tab.read(cx).connection().map(|c| (c.engine(), c.info.version.clone(), c.dialect()))).ok().flatten();
     report(
@@ -238,7 +214,6 @@ async fn check(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWindo
         format!("{info:?}"),
     );
 
-    // 2. The explorer: database → schemas → tables, the objects of a schema.
     explore(ws, conn, db, cx).await;
     let tree = cx.update(|_, cx| ws.read(cx).tree.clone()).unwrap();
     let rows = |cx: &mut AsyncWindowContext, ids: &[String]| cx.update(|_, cx| ids.iter().map(|i| tree.read(cx).has_row(i)).collect::<Vec<_>>()).unwrap();
@@ -262,7 +237,6 @@ async fn check(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWindo
     report("its schemas: dbo, sales, sys", seen[1..4].iter().all(|x| *x), format!("{seen:?}"));
     report("tables, views, routines, sequences, types and triggers under dbo", seen[4..10].iter().all(|x| *x), format!("{seen:?}"));
     report("tables and their columns load", seen[10] && seen[11], format!("{seen:?}"));
-    // What SQL Server does not have here is not in the menus.
     let _ = cx.update(|window, cx| tree.update(cx, |t, cx| t.demo_menu(&format!("c:{conn}"), false, false, window, cx)));
     let conn_acts = cx.update(|_, cx| tree.read(cx).demo_menu_acts()).unwrap_or_default();
     let _ = cx.update(|window, cx| tree.update(cx, |t, cx| t.close_menu(false, window, cx)));
@@ -278,7 +252,6 @@ async fn check(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWindo
     let menu_caps = cx.update(|_, cx| cx.try_global::<crate::MenuCaps>().map(|m| m.0)).ok().flatten();
     report("the menu bar leaves out Explain and the activity monitor", menu_caps.is_some_and(|c| !c.explain && !c.activity && !c.import), format!("{menu_caps:?}"));
 
-    // 3. A table as data: the page's SELECT (OFFSET … FETCH), the estimate, T-SQL's quoting.
     let t = open(ws, conn, db, "dbo", "customer", cx).await;
     let s = sql(&t, cx);
     report("the data view's SELECT", s == "SELECT * FROM dbo.customer\n ORDER BY id\n OFFSET 0 ROWS FETCH NEXT 1000 ROWS ONLY;", s.clone());
@@ -296,7 +269,6 @@ async fn check(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWindo
     }
     report("the estimate comes from sys.partitions", est == Some(5), format!("{est:?}"));
 
-    // Filter and sort on the server.
     let tier = col(&t, "tier", cx);
     let _ = cx.update(|_, cx| t.update(cx, |t, cx| t.filter_value(tier, Some("2".into()), cx)));
     page(&t, cx).await;
@@ -309,7 +281,6 @@ async fn check(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWindo
     let s = sql(&t, cx);
     report("server-side sort", s.contains("ORDER BY balance DESC") && cell(&t, 0, 1, cx).as_deref() == Some("Ben Lewis"), s.clone());
 
-    // Paging: a table of 2,500 rows, ⌥⌘→, the count.
     direct(ws, "DROP TABLE IF EXISTS dbo.chk_many", cx).await;
     direct(ws, "CREATE TABLE dbo.chk_many (id int PRIMARY KEY, v nvarchar(10))", cx).await;
     direct(
@@ -337,7 +308,6 @@ async fn check(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWindo
     }
     report("COUNT_BIG(*) on its own connection", total == Some(2500), format!("{total:?}"));
 
-    // 4. A grid edit committed in a transaction (identity and rowversion are the server's).
     let t = open(ws, conn, db, "dbo", "customer", cx).await;
     let name = col(&t, "name", cx);
     let row_version = col(&t, "row_version", cx);
@@ -371,10 +341,7 @@ async fn check(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWindo
     report("the edit is committed", saved.as_deref() == Some("Ben O'Hara ü"), format!("{saved:?}"));
     report("the tab shows the row again", cell(&t, 1, name, cx).as_deref() == Some("Ben O'Hara ü"), format!("{:?}", cell(&t, 1, name, cx)));
 
-    // 5. A foreign key: ⌘-click on orders.customer_id opens the customer.
     let q = active(ws, cx);
-    // Run Statement on a statement using a variable declared above it: both go, no parameter
-    // prompt.
     run_in(&q, "DECLARE @n int = 2;\nSET @n = @n + 1;\nSELECT TOP (@n) id FROM dbo.orders ORDER BY id;", false, cx).await;
     let (prompt, rows) = cx.update(|_, cx| (q.read(cx).params.is_some(), q.read(cx).result().map_or(0, |r| r.rows()))).unwrap_or((true, 0));
     report("Run Statement runs a statement with the variables declared above it", !prompt && rows == 3, format!("prompt {prompt}, rows {rows}"));
@@ -399,8 +366,6 @@ async fn check(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWindo
     let s = sql(&landed, cx);
     report("⌘-click jumps to the referenced row", s == "SELECT * FROM dbo.customer WHERE id = 2;" && cell(&landed, 0, 0, cx).as_deref() == Some("2"), s.clone());
 
-    // 6. A script of two GO batches: every result set a result tab, the batch's temp table
-    // alive across its statements.
     run_in(&landed, SCRIPT, true, cx).await;
     let items = cx
         .update(|_, cx| {
@@ -416,7 +381,6 @@ async fn check(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWindo
     let tabs = cx.update(|_, cx| landed.read(cx).result_tabs().into_iter().map(|t| t.label).collect::<Vec<_>>()).unwrap_or_default();
     report("each result set has its tab", tabs.len() == 3, format!("{tabs:?}"));
 
-    // 7. An error in the second batch lands on its line there.
     let bad = "SELECT 1 AS one\nGO\nSELECT 2,\n       3\n  FROM WHERE x = 1\nGO";
     run_in(&landed, bad, true, cx).await;
     let editor = cx.update(|_, cx| landed.read(cx).editor.clone()).unwrap();
@@ -429,7 +393,6 @@ async fn check(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWindo
         format!("{at} {err:?}"),
     );
 
-    // 8. ⌘. stops a WAITFOR at once (an attention), and the tab goes on.
     let _ = cx.update(|window, cx| {
         let editor = landed.read(cx).editor.clone();
         editor.update(cx, |e, cx| {
@@ -447,11 +410,9 @@ async fn check(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWindo
     run_in(&landed, "SELECT 41 + 1", false, cx).await;
     report("the tab runs on after the cancel", cell(&landed, 0, 0, cx).as_deref() == Some("42"), format!("{:?}", cell(&landed, 0, 0, cx)));
 
-    // 9. A typed BEGIN TRANSACTION: the transaction state read after each batch.
     run_in(&landed, "BEGIN TRANSACTION", false, cx).await;
     run_in(&landed, "UPDATE dbo.customer SET balance = balance + 1 WHERE id = 3", false, cx).await;
     let open_tx = cx.update(|_, cx| landed.read(cx).tx().status).ok();
-    // The row is locked by the open transaction: another session skips it.
     let other = direct(ws, "SELECT COUNT(*) FROM dbo.customer WITH (READPAST) WHERE id = 3", cx).await;
     report("BEGIN TRANSACTION keeps the transaction open", open_tx == Some(TxStatus::Open) && other.as_deref() == Some("0"), format!("{open_tx:?} {other:?}"));
     let end = cx.update(|_, cx| landed.update(cx, |t, cx| t.end_tx(true, cx))).ok();
@@ -473,8 +434,6 @@ async fn check(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWindo
     let kept = direct(ws, "SELECT balance FROM dbo.customer WHERE id = 3", cx).await;
     report("Rollback undoes it", after == Some(TxStatus::Idle) && kept.as_deref() == Some("1.00"), format!("{after:?} {kept:?}"));
 
-    // 10. PRINT: a result without rows shows what it printed in the grid's place; beside rows
-    // it goes to the messages tab.
     run_in(&landed, "PRINT N'hello'\nRAISERROR('step %d', 10, 1, 2)", true, cx).await;
     let log = cx
         .update(|_, cx| (ws.read(cx).messages.of(), landed.read(cx).result().map(|r| r.messages().0.to_vec()), landed.read(cx).result_tabs().len()))
@@ -499,7 +458,6 @@ async fn check(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWindo
     let copied = cx.update(|_, cx| cx.read_from_clipboard().and_then(|c| c.text())).ok().flatten();
     report("Copy messages", copied.as_deref() == Some("before\nafter\n"), format!("{copied:?}"));
 
-    // 11. The lint reads T-SQL's UPDATE alias … FROM table alias.
     let editor = cx.update(|_, cx| landed.read(cx).editor.clone()).unwrap();
     let lints = async |text: &str, cx: &mut AsyncWindowContext| {
         let _ = cx.update(|_, cx| editor.update(cx, |e, cx| e.set_text(text, cx)));
@@ -511,9 +469,6 @@ async fn check(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWindo
     let typo = lints(&upd.replace("o.status = 'paid'", "o.sttus = 'paid'"), cx).await;
     report("UPDATE alias … FROM table alias is not an unknown table", clean.is_empty() && typo.len() == 1, format!("{clean:?} {typo:?}"));
 
-    // 12. The server's syntax check (SET PARSEONLY on a connection of its own), after typing
-    //     pauses: a typo gets the server's message as a squiggle, fixed it goes; the user's
-    //     recursive CTE with OPTION (MAXRECURSION) gets nothing at all.
     let settled = async |text: &str, want: &dyn Fn(&[String]) -> bool, cx: &mut AsyncWindowContext| {
         let _ = cx.update(|_, cx| editor.update(cx, |e, cx| e.set_text(text, cx)));
         let t0 = std::time::Instant::now();
@@ -535,7 +490,6 @@ async fn check(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWindo
     );
     println!("     server syntax check: squiggle {} ms after the last edit (600 ms pause included)", took.as_millis());
     let (fixed, _) = settled("SELECT * FROM dbo.orders",&|m| m.is_empty(), cx).await;
-    // Wait past the pause: the server's answer must not bring anything back.
     pause(cx, 900).await;
     let fixed2 = cx.update(|_, cx| editor.read(cx).lints().len()).unwrap_or(1);
     report("fixed, the squiggle goes", fixed.is_empty() && fixed2 == 0, format!("{fixed:?} {fixed2}"));

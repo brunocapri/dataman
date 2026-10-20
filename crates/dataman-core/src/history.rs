@@ -1,6 +1,3 @@
-//! Query history per connection: one JSON line per execution, appended; read per connection
-//! or for all of them, an entry taken out or the whole of it cleared, and either put back.
-
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
 
@@ -23,22 +20,18 @@ pub struct HistoryEntry {
     pub database: String,
     pub sql: String,
     pub duration_ms: f64,
-    /// Rows fetched, or rows affected for statements without a result.
     pub rows: Option<u64>,
     pub outcome: Outcome,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-    /// Who ran it when it was not the user: `agent` (an MCP client, through its agent tab).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
 }
 
-/// [`HistoryEntry::source`] of an agent's statements.
 pub const AGENT: &str = "agent";
 
 pub struct History {
     dir: PathBuf,
-    /// Serializes appends from concurrent sessions.
     lock: Mutex<()>,
 }
 
@@ -62,7 +55,6 @@ impl History {
         Ok(())
     }
 
-    /// The last `limit` entries, newest first. Unreadable lines are skipped.
     pub fn load(&self, connection_id: &str, limit: usize) -> Result<Vec<HistoryEntry>> {
         let f = match std::fs::File::open(self.file(connection_id)) {
             Ok(f) => f,
@@ -82,8 +74,6 @@ impl History {
         Ok(all.into_iter().rev().collect())
     }
 
-    /// Clears a connection's history and hands back what it held (`None`: it had none), for
-    /// [`Self::put_back`].
     pub fn take(&self, connection_id: &str) -> Result<Option<Vec<u8>>> {
         let _g = self.lock.lock();
         let file = self.file(connection_id);
@@ -96,7 +86,6 @@ impl History {
         Ok(Some(bytes))
     }
 
-    /// A history [`Self::take`] took, back: before anything appended since.
     pub fn put_back(&self, connection_id: &str, bytes: &[u8]) -> Result<()> {
         let _g = self.lock.lock();
         std::fs::create_dir_all(&self.dir)?;
@@ -113,8 +102,6 @@ impl History {
         Ok(())
     }
 
-    /// The last `limit` entries of every connection in `connection_ids`, newest first, each
-    /// with its connection's id.
     pub fn load_all(&self, connection_ids: &[String], limit: usize) -> Result<Vec<(String, HistoryEntry)>> {
         let mut all = Vec::new();
         for id in connection_ids {
@@ -125,8 +112,6 @@ impl History {
         Ok(all)
     }
 
-    /// Takes one entry out of a connection's history (the first line equal to it) and hands
-    /// back that line (`None`: it was not there), for [`Self::restore`].
     pub fn remove(&self, connection_id: &str, entry: &HistoryEntry) -> Result<Option<Vec<u8>>> {
         let _g = self.lock.lock();
         let file = self.file(connection_id);
@@ -152,8 +137,6 @@ impl History {
         Ok(taken)
     }
 
-    /// Lines [`Self::remove`] or [`Self::take`] took, back among what is there now, in the
-    /// order they ran.
     pub fn restore(&self, connection_id: &str, bytes: &[u8]) -> Result<()> {
         let _g = self.lock.lock();
         std::fs::create_dir_all(&self.dir)?;
@@ -165,7 +148,6 @@ impl History {
         };
         let text = String::from_utf8_lossy(bytes).into_owned() + &String::from_utf8_lossy(&now);
         let mut lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
-        // Unreadable lines keep their place at the start.
         let at = |l: &&str| serde_json::from_str::<HistoryEntry>(l).ok().map(|e| e.ts);
         lines.sort_by_key(at);
         let mut out = lines.join("\n");
@@ -210,7 +192,6 @@ mod tests {
             )
             .unwrap();
         }
-        // A torn line (crash mid-write) does not break loading.
         std::fs::OpenOptions::new().append(true).open(h.file("abc")).unwrap().write_all(b"{\"ts\":").unwrap();
         let got = h.load("abc", 3).unwrap();
         assert_eq!(got.iter().map(|e| e.sql.as_str()).collect::<Vec<_>>(), ["select 4", "select 3", "select 2"]);
@@ -220,7 +201,6 @@ mod tests {
         assert!(h.load("other", 3).unwrap().is_empty());
     }
 
-    /// A history taken (a connection deleted) comes back whole, before what was added since.
     #[test]
     fn take_and_put_back() {
         let dir = tempfile::tempdir().unwrap();
@@ -237,8 +217,6 @@ mod tests {
         assert_eq!(got.iter().map(|e| e.sql.as_str()).collect::<Vec<_>>(), ["select 3", "select 2", "select 1"]);
     }
 
-    /// Every connection's history, newest first; one entry taken out and put back in its place;
-    /// a whole history taken and restored among what ran since.
     #[test]
     fn all_connections_remove_and_restore() {
         let dir = tempfile::tempdir().unwrap();

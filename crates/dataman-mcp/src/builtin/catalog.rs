@@ -1,6 +1,3 @@
-//! Connections and the catalog: list_connections, list_schemas, list_tables, search_objects,
-//! describe_table, get_ddl, sample_rows.
-
 use std::sync::Arc;
 
 use dataman_core::bounded::{Limits, Mode};
@@ -98,7 +95,6 @@ fn kind_label(k: RelKind) -> &'static str {
     }
 }
 
-/// What a connection's statements are written in, and the tools that run them.
 fn language(e: dataman_core::Engine) -> &'static str {
     match e {
         dataman_core::Engine::Postgres | dataman_core::Engine::MySql | dataman_core::Engine::SqlServer => "sql",
@@ -155,7 +151,6 @@ fn list_connections(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> 
     })
 }
 
-/// The schemas to walk: the given one, or every non-system schema (search path first).
 async fn schemas_of(o: &Opened, only: Option<&str>, system: bool) -> Result<Vec<String>, ToolError> {
     if let Some(s) = only {
         return Ok(vec![s.to_string()]);
@@ -238,7 +233,6 @@ fn list_tables(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
     })
 }
 
-/// `SQL LIKE` against `s`, case-insensitively (the pattern is lower case already).
 fn like(s: &str, p: &str) -> bool {
     fn go(s: &[char], p: &[char]) -> bool {
         match p.first() {
@@ -253,12 +247,10 @@ fn like(s: &str, p: &str) -> bool {
     go(&s, &p)
 }
 
-/// `s` (any case) against a pattern from [`like_pattern`].
 pub fn like_matches(s: &str, p: &str) -> bool {
     like(s, p)
 }
 
-/// A substring becomes `%substring%`.
 pub fn like_pattern(p: &str) -> String {
     let p = p.trim().to_lowercase();
     if p.contains('%') { p } else { format!("%{p}%") }
@@ -317,8 +309,6 @@ fn search_objects(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
                 Err(e) => log::debug!("catalog search failed, walking the tree: {}", e.message()),
             }
         }
-        // LAR, MySQL (and catalogs without pg_proc / pg_type): walk the relations and their
-        // columns.
         cx.hub.fresh_schema(&o.profile.id, &o.database, &o.conn, false);
         let mut rows = Vec::new();
         let want = |k: &str| kinds.iter().any(|x| x == k);
@@ -355,8 +345,6 @@ fn search_objects(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
     })
 }
 
-/// A table or view by `name` or `schema.name`: the search path first, then every schema; exact
-/// names before case-insensitive ones.
 pub async fn find_relation(o: &Opened, name: &str) -> Result<Relation, ToolError> {
     let (schema, rel) = split_name(name);
     let schemas = schemas_of(o, schema.as_deref(), true).await?;
@@ -430,8 +418,6 @@ fn describe_table(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
     })
 }
 
-/// Indexes, constraints (foreign keys apart), triggers, partitions, and the foreign keys that
-/// point at the table.
 async fn pg_details(cx: &Call, o: &Opened, r: &Relation, out: &mut Map<String, Value>) -> Result<(), ToolError> {
     let (db, c) = (o.database.as_str(), &o.conn);
     let idx = c.indexes(db, &r.schema, &r.name).await.map_err(failed)?;
@@ -484,7 +470,6 @@ async fn pg_details(cx: &Call, o: &Opened, r: &Relation, out: &mut Map<String, V
     Ok(())
 }
 
-/// LAR declares no keys: the links Dataman infers (and confirms by probing) both ways.
 async fn lar_links(c: &Arc<Connection>, db: &str, r: &Relation, out: &mut Map<String, Value>) {
     let Ok(g) = c.relationships(db, &r.schema).await else { return };
     let fmt = |s: &str, t: &str, cols: &[String]| format!("{s}.{t}({})", cols.join(", "));

@@ -1,15 +1,3 @@
-//! Demo stages of the editor's intelligence (`--demo`), on the demo database:
-//!
-//! - `complete-sig`: a column completing inside a call, the call's signature above it;
-//! - `format` / `format-after`: a one-line query before and after ⌥⇧F;
-//! - `lint`: squiggles (unknown column, JOIN without ON, DELETE without WHERE, an open string)
-//!   with one message shown;
-//! - `params`: the parameter prompt of a statement with `:name` and `$1`, types inferred;
-//! - `intel-check`: the rules with real key events (signature help, a function's completion,
-//!   ⌥⇧F and its one undo step, the lint, the parameter prompt binding and remembering values,
-//!   F12 revealing in the explorer and ⌥F12 opening a definition), printed as PASS/FAIL lines;
-//!   exit code 1 on a failure.
-
 use std::time::Duration;
 
 use gpui::{AsyncWindowContext, Entity, Focusable, Keystroke};
@@ -65,7 +53,6 @@ fn tab(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> Entity<QueryTab> 
     cx.update(|_, cx| ws.read(cx).active_tab().unwrap().clone()).unwrap()
 }
 
-/// Waits (up to `ms`) until `ready`.
 async fn until(cx: &mut AsyncWindowContext, ms: u64, ready: impl Fn(&mut gpui::App) -> bool) -> bool {
     for _ in 0..ms / 50 {
         if cx.update(|_, cx| ready(cx)).unwrap_or(false) {
@@ -76,7 +63,6 @@ async fn until(cx: &mut AsyncWindowContext, ms: u64, ready: impl Fn(&mut gpui::A
     false
 }
 
-/// Puts `text` in the editor with the cursor at `at` (the end when `None`), focused.
 fn set(tab: &Entity<QueryTab>, text: &str, at: Option<usize>, cx: &mut AsyncWindowContext) {
     let _ = cx.update(|window, cx| {
         let editor = tab.read(cx).editor.clone();
@@ -90,7 +76,6 @@ fn set(tab: &Entity<QueryTab>, text: &str, at: Option<usize>, cx: &mut AsyncWind
 
 pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContext) -> bool {
     let tab = tab(ws, cx);
-    // The function catalog loads in the background on the tab's first schema refresh.
     let t2 = tab.clone();
     until(cx, 15_000, move |cx| {
         let t = t2.read(cx);
@@ -155,21 +140,18 @@ async fn check(ws: &Entity<Workspace>, tab: &Entity<QueryTab>, cx: &mut AsyncWin
     }).unwrap_or(false);
     report("the tab loads the function catalog", has_catalog, String::new());
 
-    // Signature help follows the argument being typed.
     set(tab, "SELECT ", None, cx);
     typ(cx, "date_trunc('day', ");
     let sig = cx.update(|_, cx| editor.read(cx).signature().map(|s| (s.function.name.clone(), s.active, s.overloads))).unwrap();
     report("signature help on the second argument", sig.as_ref().is_some_and(|s| s.0 == "date_trunc" && s.1 == Some(1) && s.2 >= 2), format!("{sig:?}"));
     key(cx, "escape");
 
-    // A function completes with its parens, the cursor between them.
     set(tab, "SELECT * FROM orders WHERE ", None, cx);
     typ(cx, "lowe");
     key(cx, "tab");
     let (t, sig) = cx.update(|_, cx| (editor.read(cx).text().to_string(), editor.read(cx).signature().map(|s| s.function.name.clone()))).unwrap();
     report("a function completes as name() with its signature", t.ends_with("lower()") && sig.as_deref() == Some("lower"), format!("{t:?} {sig:?}"));
 
-    // ⌥⇧F formats in one undo step.
     set(tab, "select p.id,c.name from orders p join customer c on c.id=p.customer where p.total>10", Some(0), cx);
     key(cx, "alt-shift-f");
     let f = text(cx);
@@ -178,13 +160,11 @@ async fn check(ws: &Entity<Workspace>, tab: &Entity<QueryTab>, cx: &mut AsyncWin
     let u = text(cx);
     report("one ⌘Z undoes the whole format", u.starts_with("select p.id,c.name"), format!("{u:?}"));
 
-    // The lint against the live schema, after typing stops.
     set(tab, "SELECT p.totl, c.name FROM orders p JOIN customer c ON c.id = p.customer;\nSELECT p.total, c.name FROM orders p JOIN customer c USING (id) WHERE status = 'x';", None, cx);
     pause(cx, 700).await;
     let lints: Vec<String> = cx.update(|_, cx| editor.read(cx).lints().iter().map(|l| l.message.clone()).collect()).unwrap();
     report("lint: a typo against the live schema, nothing else", lints == ["column p.totl does not exist"], format!("{lints:?}"));
 
-    // Parameters: the prompt asks, binds and remembers.
     set(tab, "SELECT $1::int + 1 AS n, :'name' AS name;", Some(0), cx);
     crate::editor::dispatch(cx, Box::new(crate::editor::RunStatement));
     pause(cx, 400).await;
@@ -228,7 +208,6 @@ async fn check(ws: &Entity<Workspace>, tab: &Entity<QueryTab>, cx: &mut AsyncWin
     let closed = cx.update(|_, cx| tab.read(cx).params.is_none()).unwrap_or(false);
     report("esc cancels the prompt", closed, String::new());
 
-    // F12 reveals in the explorer; ⌥F12 opens the definition in a new tab.
     let src = "SELECT c.name FROM customer c";
     set(tab, src, Some(src.find("customer").unwrap() + 2), cx);
     key(cx, "f12");

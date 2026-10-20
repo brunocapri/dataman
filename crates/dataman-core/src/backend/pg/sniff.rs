@@ -1,11 +1,3 @@
-//! The transaction status of an editor session, read off its socket.
-//!
-//! Every ReadyForQuery message carries the backend's transaction status: `I` idle, `T` inside a
-//! transaction block, `E` inside a failed one. tokio-postgres reads it and drops it, so the
-//! session's socket goes through [`Sniff`], which watches the backend's message frames go by
-//! (only the 5-byte headers are looked at; no copy) and hands each status to the session's
-//! [`TxWatch`]. Over TLS the sniffer sits above the TLS stream, where the messages are plain.
-
 use std::future::Future;
 use std::io;
 use std::pin::Pin;
@@ -17,28 +9,16 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use crate::tx::{Seen, TxWatch};
 
-/// The SSLRequest a client sends before the startup message when it may use TLS.
 const SSL_REQUEST: [u8; 8] = [0, 0, 0, 8, 0x04, 0xd2, 0x16, 0x2f];
 
-/// Follows the backend's message frames (a type byte, a 4-byte big-endian length that counts
-/// itself, the body) and reports each ErrorResponse (`E`), the status byte of each
-/// ReadyForQuery (`Z`) and the process id of the BackendKeyData (`K`).
 #[derive(Debug, Default)]
 pub(crate) struct Frames {
     head: [u8; 5],
-    /// Header bytes read so far; 5 while in a body.
     have: usize,
-    /// Body bytes left.
     left: usize,
-    /// Body bytes read so far.
     pos: usize,
-    /// The first bytes of a BackendKeyData body (the process id).
     key: [u8; 4],
-    /// The client's first write was an SSLRequest: the next byte read is the server's one-byte
-    /// answer, outside any frame.
     ssl_answer: bool,
-    /// The server said yes to TLS: what follows here is ciphertext (the TLS layer has its own
-    /// sniffer).
     off: bool,
     wrote: bool,
 }
@@ -101,7 +81,6 @@ impl Frames {
     }
 }
 
-/// A stream whose incoming backend messages are watched for ReadyForQuery.
 pub(crate) struct Sniff<S> {
     inner: S,
     frames: Frames,
@@ -149,8 +128,6 @@ impl<S: tokio_postgres::tls::TlsStream + Unpin> tokio_postgres::tls::TlsStream f
     }
 }
 
-/// A TLS connector whose stream is sniffed (the messages are plain above TLS), and which
-/// records whether the handshake happened.
 pub(crate) struct SniffTls<T> {
     pub inner: T,
     pub watch: Arc<TxWatch>,
@@ -204,8 +181,6 @@ mod tests {
         out
     }
 
-    /// An ErrorResponse is reported as soon as its header is in, before the ReadyForQuery that
-    /// follows it; a waiter is released by that ReadyForQuery (or the connection closing).
     #[test]
     fn error_then_ready() {
         let mut stream = msg(b'E', b"SERROR\0C57014\0\0");
@@ -250,7 +225,6 @@ mod tests {
         stream.extend(msg(b'Z', b"E"));
         stream.extend(msg(b'1', b""));
         stream.extend(msg(b'Z', b"I"));
-        // Whole, then every split point, then one byte at a time: the same statuses.
         assert_eq!(statuses(&mut Frames::default(), &[&stream]), b"TEI");
         for cut in 0..stream.len() {
             let (a, b) = stream.split_at(cut);
@@ -260,7 +234,6 @@ mod tests {
         assert_eq!(statuses(&mut Frames::default(), &bytes), b"TEI");
     }
 
-    /// The backend's process id comes from BackendKeyData, whatever the reads look like.
     #[test]
     fn backend_pid_in_any_split() {
         let mut stream = Vec::new();
@@ -296,17 +269,14 @@ mod tests {
 
     #[test]
     fn ssl_negotiation() {
-        // The server declines TLS: its `N` is outside any frame, then plain messages follow.
         let mut f = Frames::default();
         f.on_write(&SSL_REQUEST);
         let mut s = vec![b'N'];
         s.extend(msg(b'Z', b"I"));
         assert_eq!(statuses(&mut f, &[&s]), b"I");
-        // It accepts: the rest is ciphertext, ignored here.
         let mut f = Frames::default();
         f.on_write(&SSL_REQUEST);
         assert_eq!(statuses(&mut f, &[b"S", &msg(b'Z', b"T")]), b"");
-        // No SSLRequest (sslmode=disable): framed from the first byte.
         let mut f = Frames::default();
         f.on_write(&[0, 0, 0, 9, 0, 3, 0, 0, 0]);
         assert_eq!(statuses(&mut f, &[&msg(b'Z', b"I")]), b"I");

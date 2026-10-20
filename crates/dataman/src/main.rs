@@ -1,6 +1,3 @@
-//! Dataman: a native database client (PostgreSQL, MySQL, SQL Server; MongoDB, Elasticsearch,
-//! OpenSearch and Redis as documents), with extra panels for LAR servers.
-
 mod activity;
 mod activity_demo;
 mod agent;
@@ -95,27 +92,22 @@ use gpui::{
 use gpui_platform::application;
 use dataman_core::{Core, Dirs, Keychain, MemorySecrets, SecretStore, ThemePref};
 
-/// The app's version: `DATAMAN_VERSION` at build time (scripts/bundle.sh), else the crate's.
 pub const VERSION: &str = match option_env!("DATAMAN_VERSION") {
     Some(v) => v,
     None => env!("CARGO_PKG_VERSION"),
 };
 
-/// `DATAMAN_TRACE_STARTUP=1` prints where startup time goes.
 fn mark(t: Instant, what: &str) {
     if std::env::var_os("DATAMAN_TRACE_STARTUP").is_some() {
         eprintln!("startup: {what} at {:.1} ms", t.elapsed().as_secs_f64() * 1e3);
     }
 }
 
-/// The menus again (the app menu's update entries follow the update checker).
 pub(crate) fn refresh_menus(cx: &mut App) {
     let m = menus(cx);
     cx.set_menus(m);
 }
 
-/// What the active connection's engine can do: the menu bar leaves out the rest (Explain, the
-/// activity monitor and imports on MySQL). Set by the workspace when it changes.
 pub(crate) struct MenuCaps(pub dataman_core::Caps);
 
 impl gpui::Global for MenuCaps {}
@@ -129,7 +121,6 @@ fn menus(cx: &App) -> Vec<Menu> {
         app_menu.push(MenuItem::action(label, ShowUpdate));
     }
     if updates::enabled(cx) {
-        // While one runs (asked for or not), it says so; choosing it then waits for that one.
         let checking = updates::state(cx) == updates::State::Checking;
         app_menu.push(MenuItem::action(if checking { "Checking for Updates…" } else { "Check for Updates…" }, CheckForUpdates));
         app_menu.push(MenuItem::separator());
@@ -273,13 +264,10 @@ fn main() {
         println!("{VERSION}");
         return;
     }
-    // The panic hook and the in-memory log the crash report draws on (no I/O here).
     dataman_core::crash::install(dataman_core::crash::dir(), VERSION);
     log::info!("Dataman {VERSION}, macOS {}", std::env::consts::ARCH);
     let bench = bench::Mode::from_args(&args);
 
-    // Benchmarks use a throwaway config directory and in-memory secrets: they never touch the
-    // user's connections or Keychain.
     let (dirs, secrets): (Dirs, Arc<dyn SecretStore>) = match bench {
         Some(_) => (
             Dirs::at(std::env::temp_dir().join(format!("dataman-bench-{}", std::process::id()))),
@@ -295,12 +283,9 @@ fn main() {
         }
     };
 
-    // The workspace kept between launches; none for the benchmarks and `--demo` unless
-    // `DATAMAN_SESSION_DIR` asks for one.
     let session_dir = restore::dir_for(&dirs, bench.is_some());
     mark(t_main, "core ready");
     let app = application().with_assets(assets::Assets);
-    // .sql files opened from Finder (or `open -a`) arrive as file:// URLs, each in a new tab.
     let (open_tx, mut open_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<String>>();
     app.on_open_urls(move |urls| {
         let _ = open_tx.send(urls);
@@ -308,7 +293,6 @@ fn main() {
     mark(t_main, "platform ready");
     app.run(move |cx: &mut App| {
         mark(t_main, "app launched");
-        // `DATAMAN_FONT` (any spelling of a family) overrides the setting for one run (shots).
         let font = std::env::var("DATAMAN_FONT").ok().and_then(|f| dataman_core::UiFont::parse(&f)).unwrap_or(core.settings.get().font);
         theme::register_fonts(font, cx);
         mark(t_main, "fonts registered");
@@ -339,7 +323,6 @@ fn main() {
                 log::warn!("could not save the system font: {e:#}");
             }
         })));
-        // The UI zoom; `DATAMAN_ZOOM=1.25` overrides it for one run (shots) without saving.
         let zoom = std::env::var("DATAMAN_ZOOM").ok().and_then(|z| z.parse::<f32>().ok()).unwrap_or(core.settings.get().zoom);
         theme::init_zoom(zoom);
         let settings_core = core.clone();
@@ -354,29 +337,22 @@ fn main() {
                 log::warn!("could not save the translucency: {e:#}");
             }
         })));
-        // `translucency` in settings.toml (`DATAMAN_OPAQUE=1` forces it off) sets the window's
-        // background and the theme's glass, surface and cards: set before the theme.
+        // Set before the theme: it decides the window background and the theme's glass.
         let level = theme::effective_level(core.settings.get().translucency);
         cx.set_global(theme::WindowGlass { level });
         theme::init(pref, cx);
-        // The other preferences of the Settings sheet.
         let prefs = core.settings.get();
         editor::set_code_size(prefs.editor_font_size);
         editor::set_format_options(prefs.format_options());
         dataman_core::result::set_prefetch(prefs.prefetch_rows);
-        // Reduce motion: the setting, or macOS's accessibility switch (re-read on activation).
         motion::set_reduce_motion_pref(prefs.reduce_motion, cx);
         assets::set_logos(prefs.db_logos);
         cx.set_global(panels::PanelRegistry::default());
         cx.set_global(restore::Sessions(session_dir.clone().map(|d| Arc::new(dataman_core::session::SessionStore::new(d)))));
-        // LAR's panels: live queries.
         lar::register(cx);
-        // Every module's fixed keys and the commands, with `[keys]` from settings.toml.
         keymap::set_overrides(keymap::clean(&core.settings.get().keys));
         keymap::bind_all(cx);
         cx.on_action(|_: &app::Quit, cx| cx.quit());
-        // Check for Updates works with no window left too (the workspace's own handler runs
-        // while there is one); its outcome is then an alert.
         cx.on_action(|_: &app::CheckForUpdates, cx| updates::check(true, cx));
         updates::init(&core, cx);
         cx.set_menus(menus(cx));
@@ -390,15 +366,11 @@ fn main() {
                     titlebar: Some(TitlebarOptions {
                         title: Some("Dataman".into()),
                         appears_transparent: true,
-                        // The circles' top-left at (16, 14), centred on the title bar's middle
-                        // (lower in a zoomed, taller bar).
                         traffic_light_position: {
                             let (x, y) = theme::metrics::traffic_light_position_at(theme::zoom());
                             Some(point(px(x), px(y)))
                         },
                     }),
-                    // The title bar, explorer and status bar sit on the system blur; the app
-                    // draws only a tint over it (theme `glass`) and idles at 0 fps.
                     window_background: theme::background_for(level),
                     window_min_size: Some(size(px(min_w), px(min_h))),
                     app_owns_titlebar_drag: true,
@@ -413,12 +385,8 @@ fn main() {
         window
             .update(cx, |ws, window, cx| {
                 let weak = cx.weak_entity();
-                // Time to the first presented frame: from `main`, and from the launcher's clock
-                // when it passes one (that includes process start and dynamic loading).
                 window.on_next_frame(move |_, cx| {
-                    // The MCP socket (when agent access is on), the update check and last
-                    // session's crash report start after the first frame, off the UI thread:
-                    // they never delay the window.
+                    // After the first frame, off the UI thread: they never delay the window.
                     if bench.is_none() {
                         mcp::apply(&mcp_core, cx);
                         updates::start(weak.clone(), handle, cx);
@@ -445,7 +413,6 @@ fn main() {
                     }
                 });
                 let _ = ws;
-                // Dataman's own blur view, where GPUI's does not work (`glass`).
                 crate::glass::apply(level, window);
                 cx.activate(true);
             })

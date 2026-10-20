@@ -1,16 +1,3 @@
-//! `undo-check` (`--demo`): the app's undo and redo (`undo`), driven with real key events through
-//! the window — ⌘Z / ⌃Z and ⇧⌘Z / ⌃⇧Z with the focus on the explorer, the grid or the favorites —
-//! for each kind of step: a favorite added with ⌘D, renamed, removed with its star; a folder made
-//! and named (one step), a favorite dragged into it, the folder renamed, moved and deleted with
-//! its query (after its "Sure?"); a table pinned and unpinned; the connections reordered by a
-//! drag; a connection deleted (its saved password, history and pins back with it); a panel moved
-//! (the palette's move), the panel layout reset, a seam dragged; a tab closed with ⌘W and an
-//! editor group closed (reopened with their script and connection). Also: nothing to undo says
-//! so, a step whose favorite is gone is dropped with a notice, the palette names the next undo
-//! and redo, Edit ▸ Undo is the app's outside text, and in the SQL editor and a text field ⌘Z is
-//! the text's own undo (⌃Z nothing), the app's steps untouched. PASS/FAIL lines like
-//! `folders-check`; with `DATAMAN_SHOT_DIR`, `undo-notice.png` (the notice after an undo).
-
 use gpui::{AsyncWindowContext, Entity, Focusable, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, point, px};
 
 use crate::app::{Region, Workspace};
@@ -60,8 +47,6 @@ fn conn_ids(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> (Vec<String>
     .unwrap_or_default()
 }
 
-/// The focus on a region, the way the keys put it there: ⌘⇧E (the sidebar on the explorer),
-/// ⌘⇧G (from the editor: the keys always start somewhere).
 fn focus(ws: &Entity<Workspace>, r: Region, cx: &mut AsyncWindowContext) {
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.focus_editor(window, cx)));
     match r {
@@ -74,7 +59,6 @@ fn focus(ws: &Entity<Workspace>, r: Region, cx: &mut AsyncWindowContext) {
     }
 }
 
-/// The sidebar on the favorites, focused as a click on one of their rows focuses them.
 fn focus_favorites(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) {
     let _ = cx.update(|window, cx| {
         ws.update(cx, |w, cx| w.set_nav(NavView::Favorites, cx));
@@ -84,12 +68,10 @@ fn focus_favorites(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) {
     draw(cx);
 }
 
-/// The keys go to the favorites (and are outside text there).
 fn on_favorites(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     cx.update(|window, cx| ws.read(cx).history.focus_handle(cx).contains_focused(window, cx) && crate::undo::outside_text(window)).unwrap_or(false)
 }
 
-/// The keys go to `r` (and are outside text there).
 fn focused_on(ws: &Entity<Workspace>, r: Region, cx: &mut AsyncWindowContext) -> bool {
     cx.update(|window, cx| ws.read(cx).focused_region(window, cx) == Some(r) && crate::undo::outside_text(window)).unwrap_or(false)
 }
@@ -99,7 +81,6 @@ pub async fn run(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWin
     let history = cx.update(|_, cx| ws.read(cx).history.clone()).unwrap();
     let tree = cx.update(|_, cx| ws.read(cx).tree.clone()).unwrap();
     let core = cx.update(|_, cx| ws.read(cx).store.read(cx).core.clone()).unwrap();
-    // The demo's query has its rows (the grid can take the focus), the favorites are shown.
     for _ in 0..200 {
         if cx.update(|_, cx| ws.read(cx).active_tab().is_some_and(|t| t.read(cx).result().is_some_and(|rs| rs.rows() > 0))).unwrap_or(false) {
             break;
@@ -109,7 +90,6 @@ pub async fn run(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWin
     let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.set_nav(NavView::Favorites, cx)));
     pause(cx, 400).await;
 
-    // Nothing done yet: ⌘Z says so.
     focus(ws, Region::Explorer, cx);
     let on_explorer = focused_on(ws, Region::Explorer, cx);
     key(cx, "cmd-z");
@@ -126,7 +106,6 @@ pub async fn run(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWin
     r.0
 }
 
-/// ⌘D, a rename, the star; the palette's entries; a step whose favorite is gone.
 async fn favorites(ws: &Entity<Workspace>, history: &Entity<HistoryPanel>, r: &mut Report, cx: &mut AsyncWindowContext) {
     let sql = "SELECT 'undo-check' AS marker";
     let _ = cx.update(|window, cx| {
@@ -154,7 +133,6 @@ async fn favorites(ws: &Entity<Workspace>, history: &Entity<HistoryPanel>, r: &m
         added.contains(&"SELECT 'undo-check' AS marker".to_string()) && label.as_deref() == Some("Add favorite 'SELECT 'undo-check' AS marker'") && undone.is_empty() && said == "Undid: Add favorite 'SELECT 'undo-check' AS marker'",
         format!("added {added:?} label {label:?} undone {undone:?} notice {said:?}"),
     );
-    // The palette names what Redo would do.
     let items: Vec<(String, bool)> = cx.update(|_, cx| ws.read(cx).palette_items(cx).into_iter().filter(|i| i.label.starts_with("Undo") || i.label.starts_with("Redo")).map(|i| (i.label, i.disabled)).collect()).unwrap_or_default();
     r.check(
         "the palette offers \"Redo Add favorite …\" (and a dim Undo, nothing left)",
@@ -165,7 +143,6 @@ async fn favorites(ws: &Entity<Workspace>, history: &Entity<HistoryPanel>, r: &m
     let redone = fav_names(ws, cx);
     r.check("⇧⌘Z adds it again", redone == ["SELECT 'undo-check' AS marker"] && notice(ws, cx).starts_with("Redid: Add favorite"), format!("{redone:?} {:?}", notice(ws, cx)));
 
-    // A rename, undone and redone with ⌃Z / ⌃⇧Z on the favorites.
     let _ = cx.update(|window, cx| history.update(cx, |h, cx| h.demo_rename(0, "Marker", window, cx)));
     focus_favorites(ws, cx);
     let on_panel = on_favorites(ws, cx);
@@ -179,7 +156,6 @@ async fn favorites(ws: &Entity<Workspace>, history: &Entity<HistoryPanel>, r: &m
         format!("panel {on_panel} {back:?} {again:?}"),
     );
 
-    // Its star: removed, ⌘Z puts it back in its place.
     let _ = cx.update(|_, cx| {
         let core = ws.read(cx).store.read(cx).core.clone();
         let _ = core.favorites.add(dataman_core::Favorite::new("Second", "SELECT 2"));
@@ -207,7 +183,6 @@ async fn favorites(ws: &Entity<Workspace>, history: &Entity<HistoryPanel>, r: &m
         format!("star {star:?} {removed:?} {restored:?}"),
     );
 
-    // Renamed, then removed by other means (an agent): its undo is dropped with a notice.
     let _ = cx.update(|window, cx| history.update(cx, |h, cx| h.demo_rename(1, "Second renamed", window, cx)));
     let before = next_undo(ws, cx).0;
     let _ = cx.update(|_, cx| {
@@ -231,8 +206,6 @@ async fn favorites(ws: &Entity<Workspace>, history: &Entity<HistoryPanel>, r: &m
     );
 }
 
-/// "+ folder" named (one step), a favorite dragged in, renamed, moved, deleted after its
-/// "Sure?" (an empty one asks too).
 async fn folders(ws: &Entity<Workspace>, history: &Entity<HistoryPanel>, r: &mut Report, cx: &mut AsyncWindowContext) {
     let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.demo_favorites_view(cx)));
     draw(cx);
@@ -249,7 +222,6 @@ async fn folders(ws: &Entity<Workspace>, history: &Entity<HistoryPanel>, r: &mut
     let label = next_undo(ws, cx).0;
     r.check("\"+ folder\" named in place is one step: \"New folder 'Reports'\"", label.as_deref() == Some("New folder 'Reports'") && folder_names(ws, cx) == ["Reports"], format!("{label:?} {:?}", folder_names(ws, cx)));
 
-    // Marker dragged into it.
     if let (Some(from), Some(to)) = (named_point(history, "Marker", cx).await, named_point(history, "Reports", cx).await) {
         drag(cx, from, to, |_| {}).await;
     }
@@ -269,7 +241,6 @@ async fn folders(ws: &Entity<Workspace>, history: &Entity<HistoryPanel>, r: &mut
         format!("in {in_it:?} out {out:?} gone {gone:?} back {back:?} refiled {refiled:?}"),
     );
 
-    // Renamed from its menu.
     if let Some(p) = named_point(history, "Reports", cx).await {
         click(cx, p, MouseButton::Right, Modifiers::default());
         pause(cx, 30).await;
@@ -290,7 +261,6 @@ async fn folders(ws: &Entity<Workspace>, history: &Entity<HistoryPanel>, r: &mut
         format!("{renamed:?} {named_back:?} {:?}", folder_names(ws, cx)),
     );
 
-    // A second folder, moved above the first (the sidebar on the favorites again).
     focus_favorites(ws, cx);
     new_folder(cx);
     pause(cx, 30).await;
@@ -310,7 +280,6 @@ async fn folders(ws: &Entity<Workspace>, history: &Entity<HistoryPanel>, r: &mut
         format!("{moved:?} {order_back:?} {:?}", folder_names(ws, cx)),
     );
 
-    // Deleted after its "Sure?": the folder and its query go; ⌘Z brings both back, filed.
     if let Some(p) = named_point(history, "Monthly", cx).await {
         click(cx, p, MouseButton::Right, Modifiers::default());
         pause(cx, 30).await;
@@ -338,7 +307,6 @@ async fn folders(ws: &Entity<Workspace>, history: &Entity<HistoryPanel>, r: &mut
         format!("{redone:?} {:?}", folder_names(ws, cx)),
     );
 
-    // An empty folder asks too ("Sure?" alone), and goes.
     let mut asked = false;
     if let Some(p) = named_point(history, "Archive", cx).await {
         click(cx, p, MouseButton::Right, Modifiers::default());
@@ -352,7 +320,6 @@ async fn folders(ws: &Entity<Workspace>, history: &Entity<HistoryPanel>, r: &mut
     r.check("an empty folder asks \"Sure?\" too, then goes", asked && folder_names(ws, cx) == ["Monthly"], format!("asked {asked} {:?}", folder_names(ws, cx)));
 }
 
-/// Right-clicks explorer row `id` and picks `act` in its menu.
 async fn choose(tree: &Entity<crate::tree::SchemaTree>, id: &str, act: Act, cx: &mut AsyncWindowContext) {
     for _ in 0..40 {
         draw(cx);
@@ -370,11 +337,9 @@ async fn choose(tree: &Entity<crate::tree::SchemaTree>, id: &str, act: Act, cx: 
     }
 }
 
-/// A table pinned, then unpinned, from its menu.
 async fn pins(ws: &Entity<Workspace>, tree: &Entity<crate::tree::SchemaTree>, conn: &str, db: &str, r: &mut Report, cx: &mut AsyncWindowContext) {
     let rel = format!("c:{conn}/d:{db}/s:public/r:orders");
     let pinned = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).store.read(cx).core.pins.of(conn).into_iter().map(|p| p.name).collect::<Vec<_>>()).unwrap_or_default();
-    // The sidebar on the explorer, where the tree is.
     focus(ws, Region::Explorer, cx);
     choose(tree, &rel, Act::Pin, cx).await;
     let on = pinned(cx);
@@ -391,7 +356,6 @@ async fn pins(ws: &Entity<Workspace>, tree: &Entity<crate::tree::SchemaTree>, co
     r.check("unpinned: ⌃Z pins it back", off.is_empty() && pinned(cx) == ["orders"], format!("{off:?} {:?}", pinned(cx)));
 }
 
-/// The connections reordered by a drag; one deleted with its password, history and pins.
 async fn connections(ws: &Entity<Workspace>, tree: &Entity<crate::tree::SchemaTree>, core: &std::sync::Arc<dataman_core::Core>, conn: &str, db: &str, r: &mut Report, cx: &mut AsyncWindowContext) {
     let (mut p2, pw2) = crate::bench::bench_profile(None);
     p2.name = "second".into();
@@ -435,8 +399,6 @@ async fn connections(ws: &Entity<Workspace>, tree: &Entity<crate::tree::SchemaTr
         format!("before {before:?} moved {moved:?} back {back:?} again {again:?}"),
     );
 
-    // Deleted (its saved password, its history and a pinned table go with it): ⌃Z brings all of
-    // it back, at its place.
     let _ = cx.update(|_, _| {
         let entry = dataman_core::HistoryEntry { ts: chrono::Utc::now(), database: db.into(), sql: "SELECT 'second'".into(), duration_ms: 1., rows: Some(1), outcome: dataman_core::Outcome::Ok, error: None, source: None };
         let _ = core.history.append(&second, &entry);
@@ -468,7 +430,6 @@ async fn connections(ws: &Entity<Workspace>, tree: &Entity<crate::tree::SchemaTr
     r.check("⌃⇧Z deletes it again (password too), ⌘Z restores it again", redone == (false, None, 0, 0) && kept(cx) == had, format!("{:?}", (redone.0, redone.1.is_some())));
 }
 
-/// The sidebar moved to the right (the palette's move), the layout reset, a seam dragged.
 async fn panels(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowContext) {
     let layout = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).layout.clone()).unwrap();
     let home = layout(cx);
@@ -493,7 +454,6 @@ async fn panels(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCont
     key(cx, "ctrl-z");
     pause(cx, 400).await;
 
-    // The explorer's seam dragged 40 pt wider.
     let width = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).explorer_w).unwrap();
     let seam = cx.update(|_, cx| ws.read(cx).frame_now.dock(dataman_core::layout::Dock::Left).cols.first().map(|c| c.rect)).ok().flatten();
     let w0 = width(cx);
@@ -514,7 +474,6 @@ async fn panels(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCont
     );
 }
 
-/// A tab closed with ⌘W, an editor group closed (after its "Sure?").
 async fn tabs(ws: &Entity<Workspace>, conn: &str, r: &mut Report, cx: &mut AsyncWindowContext) {
     let sql = "SELECT 'reopened' AS tab";
     let state = |cx: &mut AsyncWindowContext| -> (usize, Option<(String, Option<String>)>, bool) {
@@ -526,7 +485,6 @@ async fn tabs(ws: &Entity<Workspace>, conn: &str, r: &mut Report, cx: &mut Async
         .unwrap_or_default()
     };
     let n0 = state(cx).0;
-    // New tabs take the demo's connection (the explorer's clicks above may have picked another).
     let _ = cx.update(|_, cx| ws.update(cx, |w, _| w.current_conn = Some(conn.to_string())));
     key(cx, "cmd-t");
     let _ = cx.update(|_, cx| {
@@ -549,8 +507,6 @@ async fn tabs(ws: &Entity<Workspace>, conn: &str, r: &mut Report, cx: &mut Async
     key(cx, "cmd-z");
     r.check("⇧⌘Z closes it again, ⌘Z reopens it again", reclosed.0 == n0 && reclosed.1.is_none() && state(cx).1.is_some(), format!("{reclosed:?} {:?}", state(cx)));
 
-    // To the side (⌘\), then that group closed: its × asks, again it closes; ⌘Z brings the group
-    // back with its tab.
     let _ = cx.update(|window, cx| {
         let ix = ws.read(cx).tabs.iter().position(|t| t.read(cx).editor.read(cx).text() == sql).unwrap_or(0);
         ws.update(cx, |w, cx| w.activate(ix, window, cx));
@@ -565,7 +521,6 @@ async fn tabs(ws: &Entity<Workspace>, conn: &str, r: &mut Report, cx: &mut Async
     pause(cx, 400).await;
     let folded = state(cx);
     let label = next_undo(ws, cx).0;
-    // (Its tab in front has no result: the grid is not on screen.)
     focus(ws, Region::Explorer, cx);
     key(cx, "cmd-z");
     pause(cx, 400).await;
@@ -583,7 +538,6 @@ async fn tabs(ws: &Entity<Workspace>, conn: &str, r: &mut Report, cx: &mut Async
     );
 }
 
-/// In the SQL editor and in a text field the keys are the text's; Edit ▸ Undo follows the focus.
 async fn text(ws: &Entity<Workspace>, tree: &Entity<crate::tree::SchemaTree>, r: &mut Report, cx: &mut AsyncWindowContext) {
     let steps = next_undo(ws, cx);
     let editor = cx.update(|_, cx| ws.read(cx).active_tab().unwrap().read(cx).editor.clone()).unwrap();
@@ -605,13 +559,11 @@ async fn text(ws: &Entity<Workspace>, tree: &Entity<crate::tree::SchemaTree>, r:
         typed == "SELECT 123" && ctrl == ("SELECT 123".to_string(), steps.clone()) && cmd == ("SELECT 1".to_string(), steps.clone()),
         format!("typed {typed:?} ctrl {ctrl:?} cmd {cmd:?} steps {steps:?}"),
     );
-    // Edit ▸ Undo in the editor: the text's too.
     typ(cx, "4");
     let _ = cx.update(|window, cx| window.dispatch_action(Box::new(crate::editor::Undo), cx));
     let menu = (cx.update(|_, cx| editor.read(cx).text().to_string()).unwrap(), next_undo(ws, cx));
     r.check("Edit ▸ Undo in the editor is its text's", menu == ("SELECT 1".to_string(), steps.clone()), format!("{menu:?}"));
 
-    // The explorer's filter: a text field.
     let field = cx.update(|_, cx| tree.read(cx).demo_filter()).unwrap();
     let _ = cx.update(|window, cx| tree.update(cx, |t, cx| t.demo_focus_filter(window, cx)));
     draw(cx);
@@ -631,7 +583,6 @@ async fn text(ws: &Entity<Workspace>, tree: &Entity<crate::tree::SchemaTree>, r:
     );
     key(cx, "escape");
 
-    // Edit ▸ Undo / Redo outside text: the app's.
     focus(ws, Region::Explorer, cx);
     let _ = cx.update(|window, cx| window.dispatch_action(Box::new(crate::editor::Undo), cx));
     let undone = next_undo(ws, cx);

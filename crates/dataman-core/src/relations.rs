@@ -1,13 +1,3 @@
-//! The links of a schema: what foreign-key navigation in the grid follows (`fknav.rs`).
-//!
-//! PostgreSQL says it in the catalog (`pg_constraint`). LAR does not: its catalog has no
-//! constraints at all, so links are *inferred*. For every integer column `X` of a table `T`, the
-//! tables whose names match `X` (`customer`, `customer_id`, `company_id` ↔ `customers`,
-//! `companies`…) are tried in order with a path projection, `SELECT X.c FROM T LIMIT 0`, where
-//! `c` is a column of the candidate that `T` does not have: LAR only accepts it when `X` is a
-//! link to that table. The target's key is inferred too (an integer `id`). Inferred links are
-//! marked as such and cached per connection.
-
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -24,21 +14,17 @@ pub struct Link {
     pub to_schema: String,
     pub to_table: String,
     pub to_columns: Vec<String>,
-    /// Found by probing (LAR), not read from a catalog.
     pub inferred: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RelationGraph {
-    /// Links starting in the schema (a PostgreSQL target may be in another one).
     pub links: Vec<Link>,
 }
 
-/// A LAR table, as link inference needs it.
 #[derive(Clone, Debug, PartialEq)]
 struct TableNode {
     name: String,
-    /// Name, type.
     columns: Vec<(String, String)>,
     primary_key: Option<String>,
 }
@@ -57,9 +43,6 @@ fn is_integer_type(t: &str) -> bool {
         "bigint" | "integer" | "smallint" | "int" | "int2" | "int4" | "int8" | "int64" | "bigserial" | "serial"
     )
 }
-
-// ---------------------------------------------------------------------------------------------
-// Link inference by name
 
 fn singulars(t: &str) -> Vec<String> {
     let mut v = vec![t.to_string()];
@@ -80,7 +63,6 @@ fn singulars(t: &str) -> Vec<String> {
     v
 }
 
-/// What a link column's name says about its target: `customer_id` → `customer`.
 fn bases(col: &str) -> Vec<String> {
     let c = col.to_lowercase();
     let mut v = vec![c.clone()];
@@ -102,8 +84,6 @@ fn bases(col: &str) -> Vec<String> {
     v
 }
 
-/// Tables a link column may point to, best first: exact name, then English singular/plural
-/// forms.
 fn link_candidates(col: &str, table: &str, tables: &[&str]) -> Vec<String> {
     let bs = bases(col);
     let mut ranked: Vec<(usize, usize, String)> = Vec::new();
@@ -137,8 +117,6 @@ fn link_candidates(col: &str, table: &str, tables: &[&str]) -> Vec<String> {
     ranked.into_iter().map(|r| r.2).collect()
 }
 
-/// The column to project through a candidate link: one the candidate has and the source table
-/// does not (and, if possible, the other candidates do not either).
 fn probe_column(cand: &TableNode, source: &TableNode, others: &[&TableNode]) -> String {
     let fresh: Vec<&str> = cand.columns.iter().map(|c| c.0.as_str()).filter(|c| !source.has(c)).collect();
     fresh
@@ -150,8 +128,6 @@ fn probe_column(cand: &TableNode, source: &TableNode, others: &[&TableNode]) -> 
 }
 
 impl Connection {
-    /// The links of `schema` in `database`. Cached per connection; PostgreSQL reads the
-    /// catalog, LAR probes (see the module docs).
     pub fn relationships(self: &Arc<Self>, database: &str, schema: &str) -> Task<Arc<RelationGraph>> {
         let (this, db, schema) = (self.clone(), database.to_string(), schema.to_string());
         self.spawn(async move {
@@ -213,8 +189,6 @@ impl Connection {
         Ok(g)
     }
 
-    /// MySQL: the foreign keys of the database's tables (`KEY_COLUMN_USAGE` with a referenced
-    /// table), their columns in key order.
     async fn my_graph(&self, db: &str, schema: &str) -> Result<RelationGraph> {
         let sql = format!(
             "SELECT TABLE_NAME, CONSTRAINT_NAME, COLUMN_NAME, REFERENCED_TABLE_SCHEMA, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME \
@@ -226,8 +200,6 @@ impl Connection {
         self.key_column_graph(db, schema, &sql).await
     }
 
-    /// SQL Server: the foreign keys of the schema's tables (`sys.foreign_keys`), their columns in
-    /// key order.
     async fn ms_graph(&self, db: &str, schema: &str) -> Result<RelationGraph> {
         let sql = format!(
             "SELECT OBJECT_NAME(fk.parent_object_id), fk.name, pc.name, SCHEMA_NAME(rt.schema_id), rt.name, rc.name \
@@ -243,8 +215,6 @@ impl Connection {
         self.key_column_graph(db, schema, &sql).await
     }
 
-    /// Links from rows of (table, constraint, column, referenced schema, table, column), one per
-    /// key column in order.
     async fn key_column_graph(&self, db: &str, schema: &str, sql: &str) -> Result<RelationGraph> {
         let client = self.meta(db).await?;
         let mut g = RelationGraph::default();
@@ -316,7 +286,6 @@ impl Connection {
     }
 }
 
-/// LAR's primary key, guessed: a single integer `id`, else `<table>_id` or `<singular>_id`.
 fn lar_key_guess(t: &TableNode) -> Option<String> {
     let int = |n: &str| t.columns.iter().find(|c| c.0 == n && is_integer_type(&c.1)).map(|c| c.0.clone());
     int("id").or_else(|| {
@@ -325,7 +294,6 @@ fn lar_key_guess(t: &TableNode) -> Option<String> {
     })
 }
 
-/// `a,"b,c",d` (from `quote_ident` joined by commas) → names.
 fn split_quoted_idents(s: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut cur = String::new();
@@ -361,7 +329,6 @@ mod tests {
         assert_eq!(link_candidates("region", "x", &tables), Vec::<String>::new());
         assert_eq!(link_candidates("address_id", "x", &tables), vec!["addresses"]);
         assert_eq!(link_candidates("qty", "items", &tables), Vec::<String>::new());
-        // A table never links to itself by name.
         assert!(link_candidates("order", "orders", &tables).is_empty());
     }
 

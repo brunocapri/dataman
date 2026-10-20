@@ -1,9 +1,3 @@
-//! Live tests of a table's data view (see `common` for the servers), on PostgreSQL in a scratch
-//! schema with an enum, json and jsonb, timestamptz and boolean columns (dropped at the end):
-//! the statements the filters, sort and pages build run and return the right rows, the count
-//! and its cancel, the estimate, enum labels, the primary key, and a JSON tree edit the server
-//! takes back.
-
 mod common;
 use common::*;
 use dataman_core::dataview::{Filter, Op, RowCount, TableView};
@@ -62,7 +56,6 @@ fn filters_sort_and_pages_on_the_server() {
         w.filters = vec![f];
         w
     };
-    // An enum, a boolean, a timestamptz, json and jsonb, quoted names, NULLs, lists, patterns.
     assert_eq!(run(&with(Filter::new("lvl", Kind::Text, Op::Eq, "high"))).len(), 33);
     assert_eq!(run(&with(Filter::new("lvl", Kind::Text, Op::In, "low, 'mid'"))).len(), 67);
     assert_eq!(run(&with(Filter::new("ok", Kind::Bool, Op::Eq, "true"))), (1..=100).filter(|i| i % 5 != 0 && i % 2 == 0).collect::<Vec<_>>());
@@ -77,7 +70,6 @@ fn filters_sort_and_pages_on_the_server() {
     assert_eq!(run(&with(Filter::new("Name", Kind::Text, Op::StartsWith, "IT'S 1"))).len(), 12, "case-insensitive prefix");
     assert_eq!(run(&with(Filter::new("id", Kind::Int, Op::Contains, "99"))), vec![99], "a number matched on its text");
     assert!(run(&with(Filter::new("id", Kind::Int, Op::In, ""))).is_empty());
-    // Sort on the server, across pages; the free-form WHERE with OR stays one condition.
     let mut s = v.clone();
     s.sort = Some(("at".into(), SortDir::Desc));
     s.page_size = 5;
@@ -88,7 +80,6 @@ fn filters_sort_and_pages_on_the_server() {
     s.page = 0;
     s.page_size = 100;
     assert_eq!(ids(&e, &c, &s.sql()), vec![99, 96, 9, 6, 3]);
-    // The count under the same conditions.
     let n = e.core.block_on(c.count_rows(c.database(), s.count_sql()).task).unwrap();
     assert_eq!(n, 5);
     let est = e.core.block_on(c.estimate_rows(c.database(), S, "Item")).unwrap();
@@ -100,7 +91,6 @@ fn filters_sort_and_pages_on_the_server() {
 fn counts_stop_and_enum_labels() {
     let e = env();
     let Some(c) = pg(&e) else { return };
-    // Dropping the handle cancels a long count on the server.
     let RowCount { task, stop } = c.count_rows(c.database(), "SELECT count(*) FROM pg_sleep(30)".into());
     let t0 = Instant::now();
     std::thread::sleep(Duration::from_millis(300));
@@ -108,7 +98,6 @@ fn counts_stop_and_enum_labels() {
     let r = e.core.block_on(async { tokio::time::timeout(Duration::from_secs(10), task).await.expect("the count did not stop") });
     assert!(r.is_err());
     assert!(t0.elapsed() < Duration::from_secs(10));
-    // Labels in their order; other types have none.
     let s = "dataman_dataview_enum";
     exec_quiet(&e, &c, &[&format!("DROP SCHEMA IF EXISTS {s} CASCADE")]);
     exec(&e, &c, &[&format!("CREATE SCHEMA {s}"), &format!("CREATE TYPE {s}.mood AS ENUM ('sad', 'ok', 'happy')"), &format!("CREATE TABLE {s}.t (m {s}.mood)")]);
@@ -152,7 +141,6 @@ fn json_tree_edits_round_trip_through_the_server() {
     let back = query(&e, &c, &format!("SELECT b, j, b = {}::jsonb FROM {s}.t", lit(&nb)));
     let snap = back.snapshot();
     assert_eq!(snap.text(0, 2).as_deref(), Some("true"), "the server reads the edited tree as written");
-    // json keeps the text as given; it parses back to the same tree.
     assert_eq!(jsontree::parse(&snap.text(0, 1).unwrap()).unwrap(), dj.root);
     assert!(snap.text(0, 0).unwrap().contains("\"Ana \\\"Lee\\\"\""));
     exec_quiet(&e, &c, &[&format!("DROP SCHEMA IF EXISTS {s} CASCADE")]);

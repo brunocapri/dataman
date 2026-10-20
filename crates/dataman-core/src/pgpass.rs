@@ -1,10 +1,5 @@
-//! `~/.pgpass` (or `PGPASSFILE`), read as libpq reads it: `host:port:database:user:password`
-//! lines, `*` matching anything, `\:` and `\\` escapes, `#` comments, the first matching line
-//! wins, and a file that group or others can read is ignored.
-
 use std::path::{Path, PathBuf};
 
-/// One line of the file.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
     pub host: String,
@@ -28,7 +23,6 @@ fn is_default_socket(host: &str) -> bool {
     host.is_empty() || matches!(host, "/tmp" | "/var/run/postgresql" | "/run/postgresql" | "/private/tmp")
 }
 
-/// `PGPASSFILE`, or `~/.pgpass`.
 pub fn default_path() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("PGPASSFILE").filter(|p| !p.is_empty()) {
         return Some(PathBuf::from(p));
@@ -36,7 +30,6 @@ pub fn default_path() -> Option<PathBuf> {
     std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".pgpass"))
 }
 
-/// Why a file was not used.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Skip {
     Missing,
@@ -45,7 +38,6 @@ pub enum Skip {
     Permissions(u32),
 }
 
-/// The file's lines, or why it is not read.
 pub fn read(path: &Path) -> Result<Vec<Entry>, Skip> {
     let meta = std::fs::metadata(path).map_err(|_| Skip::Missing)?;
     if !meta.is_file() {
@@ -64,7 +56,6 @@ pub fn read(path: &Path) -> Result<Vec<Entry>, Skip> {
     Ok(parse(&text))
 }
 
-/// The password of the first line that matches, as libpq looks it up.
 pub fn lookup(path: &Path, host: &str, port: u16, database: &str, user: &str) -> Option<String> {
     let entries = read(path).ok()?;
     find(&entries, host, port, database, user)
@@ -118,16 +109,12 @@ host\\:with\\:colons:5432:d:u:x:y:z\r
     fn libpq_matching() {
         let e = parse(FILE);
         assert_eq!(e.len(), 6, "{e:?}");
-        // First match wins, wildcards per field.
         assert_eq!(find(&e, "db.prod", 5432, "app", "bruno").as_deref(), Some("first"));
         assert_eq!(find(&e, "db.prod", 6543, "other", "bruno").as_deref(), Some("second"));
-        // Escaped colon and backslash in the password.
         assert_eq!(find(&e, "anything", 5432, "x", "postgres").as_deref(), Some(r"pg:pass\word"));
         assert_eq!(find(&e, "anything", 5433, "x", "postgres"), None);
-        // A socket in the default directory matches "localhost"; another one its own path.
         assert_eq!(find(&e, "/tmp", 5433, "x", "me").as_deref(), Some("local"));
         assert_eq!(find(&e, "/srv/pg", 5432, "x", "me").as_deref(), Some("socket"));
-        // Escaped colons in the host; unescaped colons stay in the password.
         assert_eq!(find(&e, "host:with:colons", 5432, "d", "u").as_deref(), Some("x:y:z"));
         assert_eq!(find(&e, "nowhere", 1, "d", "u"), None);
     }

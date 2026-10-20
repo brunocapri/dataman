@@ -1,47 +1,30 @@
-//! The results of a script run as tabs: one per statement that returned rows, a row count
-//! (INSERT / UPDATE / DELETE…), an error or a cancel; commands without rows (DDL, SET, BEGIN…)
-//! fold into one "messages" tab. A pure model: the UI keeps the result sets and draws the strip.
-//!
-//! Memory: only the run's last statement may stay paused with its stream open. An earlier one
-//! that pauses is closed with [`ResultSet::stop_fetching`] before the next runs: it keeps the
-//! rows loaded so far (one prefetch window) and the rest is read and dropped.
-
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::result::{Phase, ResultSet};
 use crate::sql::{first_table, statement_verb};
 
-/// Identity of a result tab, stable while the run grows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub enum Key {
-    /// Statement `i` (0-based) of the current run.
     Stmt(usize),
-    /// The commands of the run that folded.
     Messages,
 }
 
-/// The state glyph of a tab.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum State {
     Running,
     Paused,
     Done,
-    /// Done, keeping only the rows loaded before the next statement needed the session.
     Partial,
     Cancelled,
     Error,
 }
 
-/// What a started statement has produced so far.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Outcome {
     pub state: State,
-    /// The result has columns (`None`: not known yet, the server has not described it).
     pub cols: Option<bool>,
-    /// Rows affected, from the command tag.
     pub affected: Option<u64>,
-    /// The server printed something (`PRINT`).
     pub messages: bool,
 }
 
@@ -59,27 +42,22 @@ impl Outcome {
         Outcome { state, cols: rs.columns().map(|c| !c.is_empty()), affected: st.affected, messages: rs.has_messages() }
     }
 
-    /// Its messages show in its own place: a result without rows shows them instead.
     pub fn shows_messages(&self) -> bool {
         self.messages && self.cols != Some(true) && self.state != State::Error
     }
 }
 
-/// How a statement shows in the strip.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Rows,
     Affected,
     Error,
     Cancelled,
-    /// Folds into the messages tab.
     Command,
 }
 
-/// Commands that modify rows: their count gets a tab of its own (`2 · UPDATE 3`).
 const DML: &[&str] = &["INSERT", "UPDATE", "DELETE", "MERGE", "COPY"];
 
-/// Utility commands: no rows, nothing to look at but their tag.
 const COMMANDS: &[&str] = &[
     "CREATE", "DROP", "ALTER", "TRUNCATE", "SET", "RESET", "BEGIN", "START", "COMMIT", "END", "ROLLBACK", "ABORT", "SAVEPOINT",
     "RELEASE", "PREPARE", "DEALLOCATE", "GRANT", "REVOKE", "COMMENT", "VACUUM", "ANALYZE", "CLUSTER", "REINDEX", "LOCK",
@@ -91,8 +69,6 @@ fn first_word(verb: &str) -> &str {
     verb.split_whitespace().next().unwrap_or("")
 }
 
-/// How statement `sql` shows, given what it produced (`multi`: the run has several statements;
-/// a single statement never folds).
 pub fn kind(sql: &str, o: &Outcome, multi: bool) -> Kind {
     match o.state {
         State::Error => return Kind::Error,
@@ -115,16 +91,13 @@ pub fn kind(sql: &str, o: &Outcome, multi: bool) -> Kind {
     }
 }
 
-/// One tab of the strip.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Tab {
     pub key: Key,
-    /// 1-based statement number (none for the messages).
     pub number: Option<usize>,
     pub label: String,
     pub state: State,
     pub kind: Kind,
-    /// Messages: how many commands folded into it.
     pub folded: usize,
 }
 
@@ -139,7 +112,6 @@ fn short(s: String) -> String {
     out
 }
 
-/// `orders`, `UPDATE 3`, `CREATE TABLE`: the first table, else the command (with its count).
 pub fn label(sql: &str, o: &Outcome, kind: Kind) -> String {
     short(match kind {
         Kind::Affected | Kind::Command => tag(sql, o.affected),
@@ -147,8 +119,6 @@ pub fn label(sql: &str, o: &Outcome, kind: Kind) -> String {
     })
 }
 
-/// `UPDATE 3`, `CREATE TABLE`: the command, with its row count when it modifies rows (`SET` has
-/// a tag count of 0 that means nothing).
 pub fn tag(sql: &str, affected: Option<u64>) -> String {
     let verb = statement_verb(sql);
     match affected {
@@ -157,9 +127,6 @@ pub fn tag(sql: &str, affected: Option<u64>) -> String {
     }
 }
 
-/// The tabs of a run: statements in order (`None`: not started), then the messages tab when
-/// commands folded or the server printed beside rows or an error. Statements that did not run
-/// are left out.
 pub fn tabs(stmts: &[(&str, Option<Outcome>)]) -> Vec<Tab> {
     let multi = stmts.len() > 1;
     let mut out = Vec::new();
@@ -184,8 +151,6 @@ pub fn tabs(stmts: &[(&str, Option<Outcome>)]) -> Vec<Tab> {
     out
 }
 
-/// The tab to show when the user has not picked one: the error, else the latest statement with
-/// a tab of its own (the running one while it runs), else the messages.
 pub fn default_active(tabs: &[Tab]) -> Option<Key> {
     if let Some(t) = tabs.iter().find(|t| t.kind == Kind::Error) {
         return Some(t.key);
@@ -198,12 +163,10 @@ pub fn default_active(tabs: &[Tab]) -> Option<Key> {
         .map(|t| t.key)
 }
 
-/// The active tab: the user's pick while it exists, else [`default_active`].
 pub fn active(tabs: &[Tab], pick: Option<Key>) -> Option<Key> {
     pick.filter(|p| tabs.iter().any(|t| t.key == *p)).or_else(|| default_active(tabs))
 }
 
-/// The tab after (or before) `from`, wrapping around.
 pub fn cycle(tabs: &[Tab], from: Option<Key>, forward: bool) -> Option<Key> {
     let n = tabs.len();
     if n == 0 {
@@ -219,9 +182,6 @@ pub fn cycle(tabs: &[Tab], from: Option<Key>, forward: bool) -> Option<Key> {
     Some(tabs[j].key)
 }
 
-/// The view state the UI keeps for each result that is not on screen (selection, scroll,
-/// column widths…), by tab. A view is handed back only for the same result set: a statement
-/// that ran again starts fresh.
 pub struct Views<V> {
     map: HashMap<Key, (Arc<ResultSet>, V)>,
 }
@@ -244,12 +204,10 @@ impl<V> Views<V> {
         }
     }
 
-    /// The stored view of `rs`, wherever it is (something arrived late for it).
     pub fn of_result(&mut self, rs: &Arc<ResultSet>) -> Option<&mut V> {
         self.map.values_mut().find(|(r, _)| Arc::ptr_eq(r, rs)).map(|(_, v)| v)
     }
 
-    /// A new run: every view goes with the run it belonged to.
     pub fn clear(&mut self) {
         self.map.clear();
     }
@@ -295,7 +253,6 @@ mod tests {
         assert_eq!(labels(&t), ["1 · orders", "2 · UPDATE 3", "3 · nope"]);
         assert_eq!(t.iter().map(|t| t.kind).collect::<Vec<_>>(), [Kind::Rows, Kind::Affected, Kind::Error]);
         assert_eq!(t[2].state, State::Error);
-        // The error wins; statement 4 never ran and has no tab.
         assert_eq!(default_active(&t), Some(Key::Stmt(2)));
     }
 
@@ -313,7 +270,6 @@ mod tests {
         assert_eq!(t[1].folded, 4);
         assert_eq!(t[1].state, State::Running, "a folded command is running");
         assert_eq!(default_active(&t), Some(Key::Stmt(3)));
-        // Only commands: the messages tab is the one shown.
         let only = tabs(&stmts[..3]);
         assert_eq!(labels(&only), ["messages"]);
         assert_eq!(default_active(&only), Some(Key::Messages));
@@ -321,12 +277,10 @@ mod tests {
 
     #[test]
     fn printed_messages() {
-        // Without rows, a result shows what was printed itself: no messages tab.
         let t = tabs(&[("PRINT 'x'", printed(State::Done, None))]);
         assert_eq!(labels(&t), ["1 · PRINT"]);
         let t = tabs(&[("WHILE 1 = 1 PRINT 'x'", printed(State::Running, None))]);
         assert_eq!(labels(&t), ["1 · WHILE"]);
-        // Beside rows or an error, they go to the messages tab.
         let t = tabs(&[("PRINT 'a'; SELECT * FROM t", printed(State::Done, Some(true)))]);
         assert_eq!(labels(&t), ["1 · t", "messages"]);
         assert_eq!((t[1].folded, t[1].state, default_active(&t)), (0, State::Done, Some(Key::Stmt(0))));
@@ -399,7 +353,6 @@ mod tests {
         assert_eq!(v.len(), 2);
         v.remove(Key::Stmt(2));
         assert_eq!(v.len(), 1);
-        // A new run: the views go with the run.
         v.clear();
         assert!(v.is_empty());
     }

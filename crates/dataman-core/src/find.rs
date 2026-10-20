@@ -1,11 +1,3 @@
-//! Find and replace, without the UI: the matcher behind the editor's and the grid's find bars,
-//! replacement with capture groups, next/previous with wraparound, and the search over the
-//! loaded rows of a result.
-//!
-//! A query is a literal (case-insensitive unless asked) or a regular expression (the `regex`
-//! crate's syntax, `^`/`$` per line); "whole word" rejects a match with a word character
-//! (alphanumeric or `_`) right before or after it. Empty matches are never reported.
-
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -13,23 +5,17 @@ use regex::{Regex, RegexBuilder};
 
 use crate::result::{Cell, Snapshot, format_cell_into};
 
-/// The bar's toggles.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FindOptions {
-    /// Aa: match case (off = ignore case).
     pub case: bool,
-    /// ab: whole words only.
     pub word: bool,
-    /// .*: the query is a regular expression.
     pub regex: bool,
 }
 
-/// A compiled query.
 #[derive(Clone, Debug)]
 pub struct Matcher {
     re: Regex,
     opts: FindOptions,
-    /// A literal `NULL` query also finds NULL cells (they read `NULL` in the grid).
     null: bool,
 }
 
@@ -37,18 +23,15 @@ fn is_word(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
-/// The match `s..e` of `text` stands alone: no word character touches it on either side.
 fn whole_word(text: &str, s: usize, e: usize) -> bool {
     !text[..s].chars().next_back().is_some_and(is_word) && !text[e..].chars().next().is_some_and(is_word)
 }
 
-/// The offset of the character after `at`, or `None` at the end.
 fn after_char(text: &str, at: usize) -> Option<usize> {
     text[at..].chars().next().map(|c| at + c.len_utf8())
 }
 
 impl Matcher {
-    /// `Ok(None)` for an empty query; `Err` with the parser's message for a bad expression.
     pub fn new(query: &str, opts: FindOptions) -> Result<Option<Matcher>, String> {
         if query.is_empty() {
             return Ok(None);
@@ -68,7 +51,6 @@ impl Matcher {
         self.opts
     }
 
-    /// Every match of `text`, in order and disjoint.
     pub fn find_iter<'a>(&'a self, text: &'a str) -> impl Iterator<Item = Range<usize>> + 'a {
         let mut pos = Some(0);
         std::iter::from_fn(move || {
@@ -87,7 +69,6 @@ impl Matcher {
         })
     }
 
-    /// At most `cap` matches of `text`, and whether there were more.
     pub fn find_all(&self, text: &str, cap: usize) -> (Vec<Range<usize>>, bool) {
         let mut out = Vec::new();
         for m in self.find_iter(text) {
@@ -101,14 +82,11 @@ impl Matcher {
 
     pub fn is_match(&self, text: &str) -> bool {
         if !self.opts.word && !self.opts.regex {
-            // A non-empty literal never matches empty.
             return self.re.is_match(text);
         }
         self.find_iter(text).next().is_some()
     }
 
-    /// What replaces the match `m` of `text`: `rep` as typed for a literal query; for a regular
-    /// expression, with `$1`, `${name}` and `$$` expanded from the match's groups.
     pub fn expand(&self, text: &str, m: Range<usize>, rep: &str) -> String {
         if !self.opts.regex {
             return rep.to_string();
@@ -125,7 +103,6 @@ impl Matcher {
         out
     }
 
-    /// The edits of "Replace All" over `text`: sorted, disjoint, every match (no cap).
     pub fn replace_all(&self, text: &str, rep: &str) -> Vec<(Range<usize>, String)> {
         if !self.opts.regex {
             return self.find_iter(text).map(|m| (m, rep.to_string())).collect();
@@ -164,7 +141,6 @@ fn group_digits(rep: &str) -> String {
     out
 }
 
-/// `text` with sorted, disjoint `edits` applied in one pass.
 #[cfg(test)]
 pub fn apply_edits(text: &str, edits: &[(Range<usize>, String)]) -> String {
     let mut out = String::with_capacity(text.len());
@@ -178,8 +154,6 @@ pub fn apply_edits(text: &str, edits: &[(Range<usize>, String)]) -> String {
     out
 }
 
-/// The item after `at` in sorted `items` (by `key`), wrapping to the first: "find next" from the
-/// current selection or cell. An item equal to `at` is the current one and is skipped.
 pub fn next_index<T, K: Ord>(items: &[T], key: impl Fn(&T) -> K, at: K) -> Option<usize> {
     if items.is_empty() {
         return None;
@@ -188,7 +162,6 @@ pub fn next_index<T, K: Ord>(items: &[T], key: impl Fn(&T) -> K, at: K) -> Optio
     Some(if i == items.len() { 0 } else { i })
 }
 
-/// The item before `at`, wrapping to the last: "find previous".
 pub fn prev_index<T, K: Ord>(items: &[T], key: impl Fn(&T) -> K, at: K) -> Option<usize> {
     if items.is_empty() {
         return None;
@@ -197,7 +170,6 @@ pub fn prev_index<T, K: Ord>(items: &[T], key: impl Fn(&T) -> K, at: K) -> Optio
     Some(if i == 0 { items.len() - 1 } else { i - 1 })
 }
 
-/// The first item at or after `at`, wrapping to the first: where an incremental search lands.
 pub fn nearest_index<T, K: Ord>(items: &[T], key: impl Fn(&T) -> K, at: K) -> Option<usize> {
     if items.is_empty() {
         return None;
@@ -206,17 +178,12 @@ pub fn nearest_index<T, K: Ord>(items: &[T], key: impl Fn(&T) -> K, at: K) -> Op
     Some(if i == items.len() { 0 } else { i })
 }
 
-/// Matching cells of a result: (display row, column), row by row, left to right.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CellHits {
     pub cells: Vec<(u32, u32)>,
-    /// Stopped at the cap: there are more.
     pub capped: bool,
 }
 
-/// Searches display rows `rows` of `snap` (cells as the grid shows them: formatted numbers and
-/// times, the whole value), appending to `hits` up to `cap` cells. Checks `cancel` every 256
-/// rows: `false` when it was set (the query changed), with `hits` partly filled.
 pub fn search_rows(snap: &Snapshot, rows: Range<usize>, m: &Matcher, cap: usize, cancel: &AtomicBool, hits: &mut CellHits) -> bool {
     let kinds: Vec<_> = snap.columns.iter().map(|c| c.kind).collect();
     let mut buf = String::new();
@@ -263,10 +230,8 @@ mod tests {
         let t = "Select sel, SEL.x FROM t; -- a.b a+b";
         assert_eq!(all(&m("sel", false, false, false), t), vec![0..3, 7..10, 12..15]);
         assert_eq!(all(&m("sel", true, false, false), t), vec![7..10]);
-        // Literal: regex metacharacters are plain text.
         assert_eq!(all(&m("a.b", false, false, false), t), vec![29..32]);
         assert_eq!(all(&m("a+b", false, false, false), t), vec![33..36]);
-        // Unicode case folding.
         assert_eq!(all(&m("CAFÉ", false, false, false), "café"), vec![0..5]);
         assert!(Matcher::new("", FindOptions::default()).unwrap().is_none());
     }
@@ -275,7 +240,6 @@ mod tests {
     fn whole_words() {
         let t = "id, p.id, pid, id_x, (id)";
         assert_eq!(all(&m("id", false, true, false), t), vec![0..2, 6..8, 22..24]);
-        // A whole word starting inside a rejected match is still found.
         assert_eq!(all(&m("aa", false, true, false), "aaa aa"), vec![4..6]);
         assert_eq!(all(&m("a-a", false, true, false), "xa-a-a"), vec![3..6]);
         assert!(m("id", false, true, false).is_match("x id"));
@@ -286,10 +250,8 @@ mod tests {
     fn regexes() {
         let t = "select 1;\nselect 22;\nupdate x";
         assert_eq!(all(&m(r"\d+", false, false, true), t), vec![7..8, 17..19]);
-        // ^ and $ are per line.
         assert_eq!(all(&m("^select", false, false, true), t), vec![0..6, 10..16]);
         assert_eq!(all(&m(";$", false, false, true), t), vec![8..9, 19..20]);
-        // Empty matches are skipped (they would select nothing).
         assert_eq!(all(&m("x*", false, false, true), t), vec![28..29]);
         assert!(!m("q*", false, false, true).is_match("abc"));
         assert_eq!(all(&m("SELECT", true, false, true), t), Vec::<Range<usize>>::new());
@@ -304,13 +266,10 @@ mod tests {
         let edits = q.replace_all(t, "$2 of ${1}, $$");
         assert_eq!(edits, vec![(0..4, "id of p, $".to_string()), (6..12, "name of c, $".to_string())]);
         assert_eq!(apply_edits(t, &edits), "id of p, $, name of c, $");
-        // A literal query replaces with the text as typed, `$1` included.
         let lit = m("p.", false, false, false);
         assert_eq!(apply_edits("p.id p.x", &lit.replace_all("p.id p.x", "$1")), "$1id $1x");
-        // Case-insensitive regex groups.
         let ci = m("(sel)ect", false, false, true);
         assert_eq!(apply_edits("SELECT", &ci.replace_all("SELECT", "<$1>")), "<SEL>");
-        // `$1_p` is group 1 then `_p`; `$10` is group 10 (absent: empty); names still work.
         assert_eq!(apply_edits(t, &q.replace_all(t, "$1_$2")), "p_id, c_name");
         let named = m(r"(?P<t>\w+)\.\w+", false, false, true);
         assert_eq!(apply_edits(t, &named.replace_all(t, "$t!")), "p!, c!");
@@ -321,10 +280,8 @@ mod tests {
     fn next_previous_wrap() {
         let ms = vec![2..4, 10..12, 20..25];
         let key = |r: &Range<usize>| (r.start, r.end);
-        // From a caret: the first match at or after it.
         assert_eq!(next_index(&ms, key, (0, 0)), Some(0));
         assert_eq!(next_index(&ms, key, (10, 10)), Some(1));
-        // From the current match: the next one, then around.
         assert_eq!(next_index(&ms, key, (10, 12)), Some(2));
         assert_eq!(next_index(&ms, key, (20, 25)), Some(0));
         assert_eq!(next_index(&ms, key, (30, 30)), Some(0));
@@ -335,7 +292,6 @@ mod tests {
         assert_eq!(nearest_index(&ms, key, (11, 0)), Some(2));
         assert_eq!(nearest_index(&ms, key, (26, 0)), Some(0));
         assert_eq!(next_index(&Vec::<Range<usize>>::new(), key, (0, 0)), None);
-        // Grid cells, row-major.
         let cells = vec![(0u32, 2u32), (3, 0), (3, 1)];
         assert_eq!(next_index(&cells, |c| *c, (3, 0)), Some(2));
         assert_eq!(next_index(&cells, |c| *c, (3, 1)), Some(0));
@@ -370,7 +326,6 @@ mod tests {
     fn grid_hits_across_chunks_and_sort() {
         let rows: Vec<(i64, Option<&str>)> =
             vec![(10, Some("ana")), (11, None), (12, Some("Bruno")), (110, Some("")), (13, Some("analu")), (14, Some("x11"))];
-        // Chunks of 1, 3 and 2 rows.
         let rs = result(&rows, &[0, 3]);
         let snap = rs.snapshot();
         let no = AtomicBool::new(false);
@@ -379,26 +334,20 @@ mod tests {
             assert!(search_rows(snap, rows, q, 100, &no, &mut h));
             h.cells
         };
-        // Numbers match as shown; text in any chunk; "" and NULL never for text.
         assert_eq!(run(&m("11", false, false, false), &snap, 0..6), vec![(1, 0), (3, 0), (5, 1)]);
         assert_eq!(run(&m("an", false, false, false), &snap, 0..6), vec![(0, 1), (4, 1)]);
         assert_eq!(run(&m("ana", false, true, false), &snap, 0..6), vec![(0, 1)]);
         assert_eq!(run(&m("BRUNO", true, false, false), &snap, 0..6), Vec::<(u32, u32)>::new());
-        // A literal NULL finds the NULL cells (and text reading "null").
         assert_eq!(run(&m("null", false, false, false), &snap, 0..6), vec![(1, 1)]);
         assert_eq!(run(&m("nul", false, false, false), &snap, 0..6), Vec::<(u32, u32)>::new());
         assert_eq!(run(&m("NULL", false, false, true), &snap, 0..6), Vec::<(u32, u32)>::new());
-        // Incremental: a range of rows only.
         assert_eq!(run(&m("1", false, false, false), &snap, 4..6), vec![(4, 0), (5, 0), (5, 1)]);
-        // Sorted (110, 14, 13, 12, 11, 10): display rows, not storage rows.
         rs.sort(Some((0, SortDir::Desc)));
         let snap = rs.snapshot();
         assert_eq!(run(&m("11", false, false, false), &snap, 0..6), vec![(0, 0), (1, 1), (4, 0)]);
-        // The cap stops the search and says so.
         let mut h = CellHits::default();
         assert!(search_rows(&snap, 0..6, &m("1", false, false, false), 2, &no, &mut h));
         assert_eq!((h.cells.len(), h.capped), (2, true));
-        // Cancelled before the first row.
         let yes = AtomicBool::new(true);
         assert!(!search_rows(&snap, 0..6, &m("1", false, false, false), 10, &yes, &mut CellHits::default()));
     }

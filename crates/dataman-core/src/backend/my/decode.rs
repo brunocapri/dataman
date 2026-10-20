@@ -1,6 +1,3 @@
-//! MySQL values into the grid's chunks: each column's [`Kind`] from its type, flags and
-//! character set, and the cells of both protocols (text: every value as bytes; binary: typed).
-
 use std::fmt::Write as _;
 
 use mysql_async::consts::{ColumnFlags, ColumnType};
@@ -9,18 +6,14 @@ use mysql_async::{Column, Value};
 use crate::result::{ChunkBuilder, ColumnInfo};
 use crate::value::{self, Kind};
 
-/// The `binary` character set: BINARY, VARBINARY and BLOB columns (and BIT, GEOMETRY…).
 const BINARY_CHARSET: u16 = 63;
 
-/// How one column's cells are decoded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Dec {
     pub kind: Kind,
-    /// BIT: big-endian bytes, as an integer.
     pub bits: bool,
 }
 
-/// What the grid shows for a column, and the type's name as MySQL writes it.
 pub(crate) fn kind_of(ty: ColumnType, flags: ColumnFlags, charset: u16, length: u32) -> (Kind, String) {
     use ColumnType::*;
     let unsigned = flags.contains(ColumnFlags::UNSIGNED_FLAG);
@@ -31,7 +24,6 @@ pub(crate) fn kind_of(ty: ColumnType, flags: ColumnFlags, charset: u16, length: 
         MYSQL_TYPE_SHORT => (Kind::Int, u("smallint")),
         MYSQL_TYPE_INT24 => (Kind::Int, u("mediumint")),
         MYSQL_TYPE_LONG => (Kind::Int, u("int")),
-        // Unsigned BIGINT goes past i64: kept exact as a decimal.
         MYSQL_TYPE_LONGLONG if unsigned => (Kind::Numeric, "bigint unsigned".into()),
         MYSQL_TYPE_LONGLONG => (Kind::Int, "bigint".into()),
         MYSQL_TYPE_YEAR => (Kind::Int, "year".into()),
@@ -82,7 +74,6 @@ pub(crate) fn column_infos(cols: &[Column]) -> (Vec<ColumnInfo>, Vec<Dec>) {
     cols.iter().map(column_info).unzip()
 }
 
-/// The table column behind a result column (`None` for an expression).
 pub(crate) fn origin(c: &Column) -> Option<crate::result::NamedOrigin> {
     let (schema, table, column) = (c.schema_str(), c.org_table_str(), c.org_name_str());
     (!schema.is_empty() && !table.is_empty() && !column.is_empty()).then(|| crate::result::NamedOrigin {
@@ -92,7 +83,6 @@ pub(crate) fn origin(c: &Column) -> Option<crate::result::NamedOrigin> {
     })
 }
 
-/// A decimal integer (`-12`, `+7`); `None` for anything else.
 fn parse_i64(b: &[u8]) -> Option<i64> {
     let (neg, digits) = match b.first()? {
         b'-' => (true, &b[1..]),
@@ -116,7 +106,6 @@ fn num<T: std::str::FromStr>(b: &[u8]) -> Option<T> {
     std::str::from_utf8(b).ok()?.parse().ok()
 }
 
-/// `YYYY-MM-DD[ HH:MM:SS[.ffffff]]` → (y, m, d, h, mi, s, µs).
 fn parse_datetime(b: &[u8]) -> Option<(u16, u8, u8, u8, u8, u8, u32)> {
     let s = std::str::from_utf8(b).ok()?;
     let (date, time) = match s.split_once([' ', 'T']) {
@@ -138,7 +127,6 @@ fn parse_datetime(b: &[u8]) -> Option<(u16, u8, u8, u8, u8, u8, u32)> {
     Some((y, m, dd, h, mi, sec, us))
 }
 
-/// `[-]H+:MM:SS[.ffffff]` → ((h, m, s), µs), the sign on the hours.
 fn parse_hms(t: &str) -> Option<((i64, u8, u8), u32)> {
     let (main, frac) = match t.split_once('.') {
         Some((a, f)) => (a, Some(f)),
@@ -158,7 +146,6 @@ fn parse_hms(t: &str) -> Option<((i64, u8, u8), u32)> {
     Some(((h, m, s), us))
 }
 
-/// TIME text (`-838:59:59.5`) → signed microseconds.
 fn parse_time(b: &[u8]) -> Option<i64> {
     let s = std::str::from_utf8(b).ok()?;
     let (neg, t) = match s.strip_prefix('-') {
@@ -181,7 +168,6 @@ fn bits(b: &[u8]) -> u64 {
     b.iter().fold(0u64, |v, x| (v << 8) | *x as u64)
 }
 
-/// Pushes one cell of either protocol into column `i`.
 pub(crate) fn push_value(b: &mut ChunkBuilder, i: usize, d: Dec, v: &Value) {
     match v {
         Value::NULL => b.push_null(i),
@@ -226,9 +212,6 @@ pub(crate) fn push_value(b: &mut ChunkBuilder, i: usize, d: Dec, v: &Value) {
     }
 }
 
-/// A value the server sent as bytes: every value of the text protocol, strings and decimals of
-/// the binary one. What does not parse as the column's kind is kept: NULL for native storage
-/// (never in practice: the server formats these), text otherwise.
 fn push_bytes(b: &mut ChunkBuilder, i: usize, d: Dec, raw: &[u8]) {
     if d.bits {
         let v = bits(raw);
@@ -265,7 +248,6 @@ fn push_bytes(b: &mut ChunkBuilder, i: usize, d: Dec, raw: &[u8]) {
     }
 }
 
-/// A value as plain text (catalog reads); `None` for NULL.
 pub(crate) fn value_text(v: &Value) -> Option<String> {
     Some(match v {
         Value::NULL => return None,
@@ -302,7 +284,6 @@ mod tests {
         ColumnInfo { name: "c".into(), type_name: String::new(), type_oid: 0, kind }
     }
 
-    /// One cell through the builder, as the grid prints it.
     fn shown(kind: Kind, bits: bool, v: Value) -> Option<String> {
         let mut b = ChunkBuilder::new(&[col(kind)]);
         push_value(&mut b, 0, Dec { kind, bits }, &v);
@@ -365,7 +346,6 @@ mod tests {
         assert_eq!(shown(Kind::Int, false, Value::NULL), None);
     }
 
-    /// Zero and partial dates stay as written, and sort before every real date.
     #[test]
     fn zero_dates() {
         assert_eq!(text(Kind::Date, "0000-00-00").as_deref(), Some("0000-00-00"));

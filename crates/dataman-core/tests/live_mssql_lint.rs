@@ -1,5 +1,3 @@
-//! SQL Server: valid statements must never get a lint error.
-
 mod common;
 
 use common::*;
@@ -153,7 +151,6 @@ fn lint_valid_statements() {
         }
         known.extend(dataman_core::lint::created_names_in(src, Dialect::TSql));
     }
-    // The server agrees these parse (PARSEONLY), except the one that is obsolete syntax.
     let all = VALID.join("\nGO\n");
     let pc = e.core.block_on(c.parse_check(&db, all.clone())).unwrap();
     for x in &pc {
@@ -163,7 +160,6 @@ fn lint_valid_statements() {
     assert!(bad.is_empty(), "\n{}", bad.join("\n"));
 }
 
-/// Reads are never classified as writes (a read-only connection refuses writes by this).
 #[test]
 fn reads_are_reads() {
     let mut bad = Vec::new();

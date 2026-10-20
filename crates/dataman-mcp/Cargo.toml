@@ -21,7 +21,6 @@ chrono.workspace = true
 parking_lot.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 log = "0.4"
-# The official MCP SDK: server role over stdio; no macros (tools are a registry).
 rmcp = { version = "3.5.1", default-features = false, features = ["server", "transport-io"] }
 tokio-util = "0.7"
 futures-util.workspace = true

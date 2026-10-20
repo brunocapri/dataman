@@ -1,10 +1,6 @@
-//! Live tests of the generated `CREATE TABLE` / view statements (see `common` for the servers):
-//! the DDL of a table in one scratch schema, run in a second one, gives back the same DDL.
-
 mod common;
 use common::*;
 
-/// Runs every statement of a script (the generated DDL) in one session.
 fn run_script(e: &Env, c: &Arc<Connection>, script: &str) {
     let stmts: Vec<String> = dataman_core::sql::split(script).into_iter().map(|s| script[s.range].to_string()).collect();
     let refs: Vec<&str> = stmts.iter().map(String::as_str).collect();
@@ -67,10 +63,8 @@ fn pg_create_table_round_trip() {
     assert!(customers.contains("created timestamp with time zone NOT NULL DEFAULT now()"), "{customers}");
     assert!(ddl_a[2].contains(&format!("CREATE UNLOGGED TABLE {a}.scratch")), "{}", ddl_a[2]);
     assert!(ddl_a[3].contains("PARTITION BY RANGE (at)"), "{}", ddl_a[3]);
-    // The constraint indexes are not repeated as CREATE INDEX.
     assert_eq!(orders.matches("CREATE INDEX").count(), 1, "{orders}");
 
-    // Run it in the second schema: the DDL read back from there is the same.
     exec(&e, &c, &[&format!("CREATE SCHEMA {b}")]);
     for d in &ddl_a {
         run_script(&e, &c, &d.replace(a, b));
@@ -81,7 +75,6 @@ fn pg_create_table_round_trip() {
         assert_eq!(after.replace(b, a), *before, "round trip of {t}");
     }
 
-    // The view's definition runs too.
     let view = e.core.block_on(c.view_definition(&db, a, "big_orders")).unwrap().expect("a view definition");
     assert!(view.starts_with(&format!("CREATE OR REPLACE VIEW {a}.big_orders AS\n")), "{view}");
     run_script(&e, &c, &view.replace(a, b));

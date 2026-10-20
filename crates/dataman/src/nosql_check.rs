@@ -1,25 +1,3 @@
-//! `nosql-check` (`--demo`): a MongoDB connection beside the bench's PostgreSQL one, against the
-//! `dataman-mongo` test container (`DATAMAN_BENCH_MONGO`, `host:port:user:password`, default
-//! `127.0.0.1:27027:root:dataman`). The rules, printed as PASS/FAIL lines (exit code 1 on a
-//! failure):
-//!
-//! - the explorer: each connection's logo, MongoDB's databases and collections with counts;
-//! - a collection opens as documents in a tab of its own: the editor speaks MongoDB's shell, the
-//!   document view pages through them (50 at a time), a document edited and saved keeps its
-//!   types, a new one is inserted;
-//! - completions: collections after `db.`, fields inside a filter;
-//! - a new tab opens on the connection worked on last, SQL or documents as that one is; the
-//!   picker by Run moves a tab between the two and its view follows;
-//! - a destructive statement waits for a yes;
-//! - MongoDB's JavaScript: a script runs as one statement, its printed lines over its final
-//!   cursor's page, the next page reading the cursor again (the script's write ran once), `use`
-//!   moving the tab, a syntax error said;
-//! - an agent's `open_query` on MongoDB: its tab's document view shows the statement and its
-//!   result, a plain write runs unasked (tier full), a script's write waits for Allow, a draft
-//!   only places its text;
-//! - the connection sheet starts with the engines' grid; its search narrows it; the logos
-//!   setting hides them.
-
 use std::time::Duration;
 
 use gpui::{AsyncWindowContext, Entity, Keystroke};
@@ -34,14 +12,10 @@ pub fn is_stage(s: &str) -> bool {
     s == "nosql-check" || is_demo(s)
 }
 
-/// The screenshot stages: `nosql` (a collection's documents open, PostgreSQL beside it),
-/// `nosql-dialog` (the connection sheet's engines), `nosql-picker` (the picker by Run open),
-/// `nosql-es` (an Elasticsearch index's documents).
 pub fn is_demo(s: &str) -> bool {
     matches!(s, "nosql" | "nosql-dialog" | "nosql-form" | "nosql-picker" | "nosql-es" | "nosql-redis")
 }
 
-/// `DATAMAN_DEMO_DOC`: a statement typed into the open tab and run (the UX review's shots).
 async fn demo_statement(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) {
     let Ok(text) = std::env::var("DATAMAN_DEMO_DOC") else { return };
     let _ = cx.update(|window, cx| {
@@ -59,8 +33,6 @@ async fn demo_statement(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) {
     pause(cx, 400).await;
 }
 
-/// A screenshot stage: both connections, the collection open; stays open (`DATAMAN_SHOT`:
-/// captured, then quits).
 pub async fn demo(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContext) {
     let (mongo, mpw) = mongo_profile();
     let (pg, ppw) = crate::bench::bench_profile(None);
@@ -177,7 +149,6 @@ pub async fn demo(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowConte
     }
 }
 
-/// The MongoDB server of the check: `DATAMAN_BENCH_MONGO` (`host:port:user:password`).
 pub fn mongo_profile() -> (ConnectionProfile, String) {
     let spec = std::env::var("DATAMAN_BENCH_MONGO").unwrap_or_else(|_| "127.0.0.1:27027:root:dataman".into());
     let p: Vec<&str> = spec.split(':').collect();
@@ -194,7 +165,6 @@ pub fn mongo_profile() -> (ConnectionProfile, String) {
 
 const DB: &str = "dataman_ui";
 
-/// The Elasticsearch server of the check: `DATAMAN_BENCH_ES` (`host:port:user:password`).
 pub fn es_profile() -> (ConnectionProfile, String) {
     let spec = std::env::var("DATAMAN_BENCH_ES").unwrap_or_else(|_| "127.0.0.1:9201:elastic:dataman".into());
     let p: Vec<&str> = spec.split(':').collect();
@@ -211,7 +181,6 @@ pub fn es_profile() -> (ConnectionProfile, String) {
 
 const INDEX: &str = "dataman_ui_orders";
 
-/// The Redis server of the check: `DATAMAN_BENCH_REDIS` (`host:port:password`), database 7.
 pub fn redis_profile() -> (ConnectionProfile, String) {
     let spec = std::env::var("DATAMAN_BENCH_REDIS").unwrap_or_else(|_| "127.0.0.1:63790:dataman".into());
     let p: Vec<&str> = spec.split(':').collect();
@@ -226,7 +195,6 @@ pub fn redis_profile() -> (ConnectionProfile, String) {
     (prof, p.get(2).unwrap_or(&"").to_string())
 }
 
-/// The check's keys in database 7: a hash, a list, a sorted set, a string.
 async fn seed_redis(core: &std::sync::Arc<dataman_core::Core>, p: ConnectionProfile, pw: String, cx: &mut AsyncWindowContext) -> anyhow::Result<()> {
     let core = core.clone();
     cx.background_executor()
@@ -247,7 +215,6 @@ async fn seed_redis(core: &std::sync::Arc<dataman_core::Core>, p: ConnectionProf
         .await
 }
 
-/// The check's index: 75 orders.
 async fn seed_es(core: &std::sync::Arc<dataman_core::Core>, p: ConnectionProfile, pw: String, cx: &mut AsyncWindowContext) -> anyhow::Result<()> {
     let core = core.clone();
     cx.background_executor()
@@ -285,8 +252,6 @@ fn key(cx: &mut AsyncWindowContext, k: &str) {
     });
 }
 
-/// Types `text` into the active tab, runs it (⌘↩) and waits: the output on screen, and what
-/// the document view's detail shows.
 async fn run_text(ws: &Entity<Workspace>, text: &str, cx: &mut AsyncWindowContext) -> (Option<Result<Output, String>>, String) {
     let _ = cx.update(|_, cx| {
         if let Some(t) = ws.read(cx).active_tab().cloned() {
@@ -324,7 +289,6 @@ async fn until(cx: &mut AsyncWindowContext, secs: u64, mut ok: impl FnMut(&mut A
     ok(cx)
 }
 
-/// A statement's value on a connection of the check's own (out of the app's tabs), as text.
 async fn count(core: &std::sync::Arc<dataman_core::Core>, p: &ConnectionProfile, pw: &str, stmt: &str, cx: &mut AsyncWindowContext) -> Option<String> {
     let (core, p, pw, stmt) = (core.clone(), p.clone(), pw.to_string(), stmt.to_string());
     cx.background_executor()
@@ -346,8 +310,6 @@ fn connected(ws: &Entity<Workspace>, id: &str, cx: &mut AsyncWindowContext) -> b
     matches!(cx.update(|_, cx| ws.read(cx).connection_state(id, cx)).ok().flatten(), Some(ConnState::Connected(_)))
 }
 
-/// The active tab's document view: the statement on screen and how many documents it shows,
-/// the total, whether more follow.
 fn shown(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> Option<(String, usize, Option<u64>, bool)> {
     cx.update(|_, cx| {
         let tab = ws.read(cx).active_tab()?.read(cx);
@@ -376,7 +338,6 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let (mongo, mpw) = mongo_profile();
     let (pg, ppw) = crate::bench::bench_profile(None);
     let (mid, pid) = (mongo.id.clone(), pg.id.clone());
-    // The documents: 60 people in a database of the check's own.
     let core = cx.update(|_, cx| ws.read(cx).store.read(cx).core.clone()).unwrap();
     let seed = {
         let core = core.clone();
@@ -406,7 +367,6 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
         return false;
     }
 
-    // The explorer: logos, MongoDB's databases, then the collections with their counts.
     let tree = cx.update(|_, cx| ws.read(cx).tree.clone()).unwrap();
     let _ = cx.update(|_, cx| tree.update(cx, |t, cx| t.expand_id(&format!("c:{mid}"), cx)));
     let db_id = format!("c:{mid}/d:{DB}");
@@ -419,7 +379,6 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     check("each connection's row has its engine's logo", logos == (Some(Engine::MongoDb), Some(Engine::Postgres)), format!("{logos:?}"));
     check("MongoDB's own database opens on its collections", listed && children == ["empty", "people"], format!("{children:?}"));
 
-    // A collection opens as documents: the shell's language, the first 50 of 60.
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.open_collection(&mid, DB, "people", window, cx)));
     let got = until(cx, 10, |cx| idle(ws, cx) && shown(ws, cx).is_some()).await;
     let s = shown(ws, cx);
@@ -440,7 +399,6 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let _ = cx.update(|_, cx| doc.update(cx, |d, cx| d.demo_page(0, cx)));
     until(cx, 10, |cx| idle(ws, cx) && shown(ws, cx).is_some_and(|s| s.1 == 50)).await;
 
-    // A document edited as text and saved: its types kept.
     draw(cx);
     let detail = cx.update(|_, cx| doc.read(cx).demo_detail()).ok().flatten();
     let text = cx.update(|_, cx| detail.as_ref().map(|d| d.read(cx).text().to_string())).ok().flatten().unwrap_or_default();
@@ -469,7 +427,6 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
             .unwrap_or_default();
         check("Save writes the edited document, its types kept", saved && back.contains("\"name\": \"Ada\"") && back.contains("NumberLong(36)"), back);
     }
-    // A new document from the bar's New.
     let _ = cx.update(|window, cx| doc.update(cx, |p, cx| p.demo_new(window, cx)));
     if let Some(d) = &detail {
         let _ = cx.update(|_, cx| {
@@ -482,8 +439,6 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
         check("New inserts a document; the page shows the new total", inserted && s.as_ref().is_some_and(|s| s.2 == Some(61)), format!("{s:?}"));
     }
 
-    // The list follows the selection (↓ far down scrolls it into view), and a document saved
-    // stays selected after the page reloads, wherever it lands.
     let _ = cx.update(|window, cx| {
         let f = doc.read(cx).list_focus();
         window.focus(&f, cx);
@@ -511,7 +466,6 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
         check("after a save the same document stays selected", sel == Some(40) && now.contains(&id) && now.contains("zz "), format!("{sel:?} {id} {now}"));
     }
 
-    // The zoom: ⌘⇧↩ (the grid's key) with the documents focused, then esc, then the button.
     let _ = cx.update(|window, cx| {
         let f = doc.read(cx).list_focus();
         window.focus(&f, cx);
@@ -529,7 +483,6 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     draw(cx);
     check("the bar's zoom button does the same", by_button == Some(true), format!("{by_button:?}"));
 
-    // A destructive statement waits for the yes; no, and nothing ran.
     let tab = active(ws, cx).unwrap();
     let _ = cx.update(|_, cx| {
         let editor = tab.read(cx).editor.clone();
@@ -544,7 +497,6 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let s = shown(ws, cx);
     check("deleteMany({}) waits for a yes; Cancel runs nothing", asked && s.as_ref().is_some_and(|s| s.0 == "db.people.find({})"), format!("asked {asked}, {s:?}"));
 
-    // Completions: collections after `db.`, the sampled fields inside a filter.
     let _ = cx.update(|_, cx| {
         let editor = tab.read(cx).editor.clone();
         editor.update(cx, |e, cx| {
@@ -553,7 +505,6 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
         });
     });
     let first = cx.update(|_, cx| tab.read(cx).editor.read(cx).demo_completions()).unwrap_or_default();
-    // The fields arrive once the collection is sampled (the tab asks when the text names it).
     let mut fields = Vec::new();
     for _ in 0..40 {
         let _ = cx.update(|_, cx| {
@@ -571,14 +522,12 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     }
     check("completions: collections after db., fields inside a filter", first == ["people"] && fields.contains(&"age".to_string()), format!("{first:?} {fields:?}"));
 
-    // A new tab opens on the connection worked on last, as that connection is.
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| {
         w.new_tab(window, cx);
     }));
     let t2 = active(ws, cx).unwrap();
     let on_mongo = cx.update(|_, cx| (t2.read(cx).connection().map(|c| c.profile.id.clone()), t2.read(cx).doc.is_some())).unwrap();
     check("⌘T on the MongoDB tab: a documents tab on MongoDB", on_mongo == (Some(mid.clone()), true), format!("{on_mongo:?}"));
-    // On PostgreSQL's (the explorer's selection moves the current connection too).
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.pick_target(&pid, &pg.database, window, cx)));
     let sql_now = cx.update(|_, cx| (t2.read(cx).connection().map(|c| c.engine()), t2.read(cx).doc.is_some(), t2.read(cx).editor.read(cx).doc_lang())).unwrap();
     check("the picker moves a tab to PostgreSQL: SQL again, the grid's view", sql_now == (Some(Engine::Postgres), false, None), format!("{sql_now:?}"));
@@ -591,7 +540,6 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.pick_target(&mid, DB, window, cx)));
     let doc_now = cx.update(|_, cx| (t3.read(cx).connection().map(|c| c.engine()), t3.read(cx).doc.is_some(), t3.read(cx).editor.read(cx).doc_lang())).unwrap();
     check("and back to MongoDB from the picker: documents and the shell's language", doc_now == (Some(Engine::MongoDb), true, Some(Engine::MongoDb)), format!("{doc_now:?}"));
-    // `use other` moves the tab's database.
     let _ = cx.update(|_, cx| {
         let editor = t3.read(cx).editor.clone();
         editor.update(cx, |e, cx| {
@@ -603,7 +551,6 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let db_now = cx.update(|_, cx| t3.read(cx).database().to_string()).unwrap_or_default();
     check("use admin moves the tab to that database", db_now == "admin", db_now);
 
-    // The connection sheet: the engines first, the search narrows them, ↩ picks.
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.open_dialog(None, window, cx)));
     draw(cx);
     let d = cx.update(|_, cx| ws.read(cx).dialog.clone()).ok().flatten();
@@ -621,7 +568,6 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
         key(cx, "escape");
         pause(cx, 100).await;
     }
-    // Elasticsearch: its indices at the top of its row, one as documents, saved by its _id.
     let (es, epw) = es_profile();
     let eid = es.id.clone();
     if let Err(e) = seed_es(&core, es.clone(), epw.clone(), cx).await {
@@ -677,8 +623,6 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
         }
     }
 
-    // Redis: its databases, a database's keys with their types, a hash as entries edited one by
-    // one.
     let (rd, rpw) = redis_profile();
     let rid = rd.id.clone();
     if let Err(e) = seed_redis(&core, rd.clone(), rpw.clone(), cx).await {
@@ -735,7 +679,6 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let text = cx.update(|_, cx| ws.read(cx).active_tab().map(|t| t.read(cx).editor.read(cx).text().to_string())).ok().flatten().unwrap_or_default();
     check("a NoSQL favorite opens without a ;", text == "HGETALL user:1", text);
 
-    // The battery's fixes, as the app shows them (`tests/live_nosql_battery.rs` runs the rest).
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.open_collection(&mid, DB, "people", window, cx)));
     until(cx, 10, |cx| idle(ws, cx) && shown(ws, cx).is_some()).await;
     let (out, _) = run_text(ws, "db.people.find({name: 'PERSON 5'}).collation({locale: 'en', strength: 2})", cx).await;
@@ -759,8 +702,6 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let (_, detail) = run_text(ws, "INFO keyspace", cx).await;
     check("text replies show as text (INFO)", detail.starts_with("# Keyspace\n"), detail.chars().take(60).collect());
 
-    // MongoDB's JavaScript in a tab: one statement, all of it; what it printed over its final
-    // cursor's page; the next page reads the cursor again, not the script (its write ran once).
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.open_collection(&mid, DB, "people", window, cx)));
     until(cx, 10, |cx| idle(ws, cx) && shown(ws, cx).is_some()).await;
     let script = "let total = 0\ndb.people.find({}).forEach(p => { total += Number(p.age) })\nprint('ages', total)\ndb.marks.insertOne({at: new Date()})\ndb.people.find({}).sort({_id: 1})";
@@ -784,9 +725,6 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let (out, _) = run_text(ws, "let x = 1\nlet = = 2", cx).await;
     check("a script's syntax error says so", matches!(&out, Some(Err(m)) if m.contains("SyntaxError")), format!("{out:?}"));
 
-    // An agent's MongoDB statements in its tab (`open_query`): the document view shows them and
-    // their result; a script's write waits for the user's Allow; a draft only puts the text
-    // there.
     let _ = cx.update(|_, cx| {
         if let Some(t) = ws.read(cx).active_tab().cloned() {
             t.update(cx, |t, cx| t.set_database(DB.to_string(), cx));
@@ -833,7 +771,6 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
         check("a draft (run: false): the text in the tab, nothing run, nothing shown", !err && out.contains("drafted") && text == "db.marks.deleteMany({})" && on_tab.is_none() && marks.as_deref() == Some("4"), format!("{err} {out} {text:?} {on_tab:?} {marks:?}"));
     }
 
-    // The logos go with the setting.
     crate::assets::set_logos(false);
     let hidden = crate::assets::small_logo(Engine::MongoDb, 13.).is_none();
     crate::assets::set_logos(true);

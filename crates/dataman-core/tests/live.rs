@@ -1,9 +1,3 @@
-//! Tests against real servers. They run when the servers answer and skip otherwise:
-//!
-//! - `DATAMAN_PG`  (default `127.0.0.1:55432`, user `postgres`, the password in
-//!   `DATAMAN_PG_PASSWORD`, default `dataman`, db `dataman`, loaded with `seeds/postgres.sql`)
-//! - `DATAMAN_LAR` (default `127.0.0.1:5490`, user `lar`, db `lar`, no password)
-
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -87,7 +81,6 @@ fn detects_servers() {
 fn binary_decoding_matches_server_text() {
     let e = env();
     let Some(c) = pg(&e) else { return };
-    // Every column formatted from binary must equal the server's own text output.
     let sql = "SELECT 1::int2, 2::int4, 3::int8, 12345.6789::numeric(12,4), -0.5::numeric, 'NaN'::numeric, \
         'x'::text, ''::text, NULL::text, true, false, 'ab '::char(3), 'n'::name, \
         '2024-01-02'::date, 'infinity'::date, '03:04:05.5'::time, '2024-01-02 03:04:05.123'::timestamp, \
@@ -113,7 +106,6 @@ fn binary_decoding_matches_server_text() {
     for col in 0..b.columns.len() {
         let mut bv = b.text(0, col).map(|s| s.into_owned());
         let tv = t.text(0, col).map(|s| s.into_owned());
-        // Booleans print as true/false here, t/f in psql's text format.
         if let Some(v) = &bv
             && b.columns[col].type_name == "bool"
         {
@@ -130,7 +122,6 @@ fn batches_on_demand_and_fetch_all() {
     let s = c.session(None);
     let t0 = Instant::now();
     let rs = s.execute("SELECT g, md5(g::text) AS h, g % 7 = 0 AS seven FROM generate_series(1, 1000000) g");
-    // It pauses after the prefetch window, with the stream open.
     e.core.block_on(async {
         let mut rx = rs.subscribe();
         while rs.phase() != Phase::Paused {
@@ -138,14 +129,12 @@ fn batches_on_demand_and_fetch_all() {
         }
     });
     let first_pause = t0.elapsed();
-    // Recorded in the history at the first pause, not only when (if ever) it ends.
     let h = e.core.history.load(&c.profile.id, 10).unwrap();
     assert_eq!(h.len(), 1);
     assert!(h[0].rows.unwrap() >= PREFETCH as u64);
     let loaded = rs.rows();
     assert!(loaded >= PREFETCH && loaded < PREFETCH + 2 * dataman_core::result::CHUNK, "{loaded}");
     assert!(rs.status().first_row.is_some());
-    // Paused, the clock stops: the wait is not running time.
     std::thread::sleep(std::time::Duration::from_millis(400));
     assert!(rs.status().paused_time() >= std::time::Duration::from_millis(400), "{:?}", rs.status().paused_time());
     rs.request_rows(500_000);
@@ -186,12 +175,10 @@ fn cancel_and_supersede() {
     s.cancel();
     assert_eq!(finish(&e, &rs), Phase::Cancelled);
     assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
-    // The session is still usable.
     let rs = s.execute("SELECT 42");
     assert_eq!(finish(&e, &rs), Phase::Done);
     assert_eq!(rs.snapshot().text(0, 0).as_deref(), Some("42"));
 
-    // A paused big result is cancelled when the next statement runs in the same session.
     let big = s.execute("SELECT g FROM generate_series(1, 5000000) g");
     e.core.block_on(async {
         let mut rx = big.subscribe();
@@ -246,7 +233,6 @@ fn introspection_postgres() {
     let Some(c) = pg(&e) else { return };
     let dbs = e.core.block_on(c.databases()).unwrap();
     assert!(dbs.contains(&"dataman".to_string()), "{dbs:?}");
-    // The user's schemas first (the demo stages add some beside public), the system ones last.
     let schemas = e.core.block_on(c.schemas("dataman")).unwrap();
     let at = |name: &str| schemas.iter().position(|s| s == name);
     assert!(at("public").is_some() && at("public") < at("pg_catalog"), "{schemas:?}");
@@ -261,7 +247,6 @@ fn introspection_postgres() {
     let snap = c.schema.snapshot("dataman");
     let i = snap.resolve(None, "customer").unwrap();
     assert!(!snap.columns_of(i).is_empty());
-    // The explorer's columns after the preload still carry the key.
     let cols = e.core.block_on(c.columns("dataman", "public", "customer")).unwrap();
     assert!(cols.iter().any(|c| c.primary_key), "{cols:?}");
     assert!(c.schema.notes().is_empty(), "{:?}", c.schema.notes());
@@ -286,7 +271,6 @@ fn introspection_lar_degrades() {
     let i = snap.resolve(None, "demo_orders").unwrap();
     assert!(!snap.columns_of(i).is_empty());
 
-    // Queries run, and decode, on LAR too.
     let s = c.session(None);
     let rs = s.execute("SELECT id, status, total FROM demo_orders LIMIT 5");
     assert_eq!(finish(&e, &rs), Phase::Done, "{:?}", rs.status().error);
@@ -328,7 +312,6 @@ fn superseded_statement_never_runs() {
         let rs = setup.execute(sql);
         assert_eq!(finish(&e, &rs), Phase::Done, "{:?}", rs.status().error);
     }
-    // The INSERT waits behind pg_sleep and is replaced before it reaches the server.
     let s = c.session(None);
     let sleep = s.execute("SELECT pg_sleep(0.5)");
     let insert = s.execute("INSERT INTO dataman_abort_t VALUES (1)");
@@ -351,7 +334,6 @@ fn simple_protocol_shows_only_the_first_result() {
     assert!(rs.status().text_mode);
     assert_eq!(rs.rows(), 1);
     assert_eq!(rs.columns().unwrap()[0].name, "a");
-    // A runtime error after the columns are known is still reported.
     let rs = s.execute("SELECT 1/0 AS x");
     assert_eq!(finish(&e, &rs), Phase::Failed);
     assert_eq!(rs.status().error.unwrap().code.as_deref(), Some("22012"));

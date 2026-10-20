@@ -1,25 +1,12 @@
-//! The Dock icon follows the theme: the light variant (the disc on a white squircle) while the
-//! app is light (the Light theme, or Match System with macOS in light mode), the dark one
-//! otherwise. Set with `NSApplication.applicationIconImage` whenever the effective theme changes
-//! (`theme::init`, `theme::set_pref`, a change of the system appearance). The Finder's and
-//! Launchpad's icon is the bundle's, which macOS draws the same in both appearances.
-//!
-//! The light image is `AppIconLight.icns` in the bundle's Resources (`scripts/bundle.sh`); back
-//! to dark the bundle's own icon returns (`nil`). A build run from `target/` (no bundle) reads
-//! both from `packaging/` in the source tree, when it is there.
-
 use std::sync::Mutex;
 
-/// What the Dock shows now: `Some(true)` the light icon.
 static SHOWN: Mutex<Option<bool>> = Mutex::new(None);
 
-/// The Dock icon for a light (`light`) or a dark app. Cheap when nothing changes.
 pub fn follow(light: bool) {
     let Ok(mut shown) = SHOWN.lock() else { return };
     if *shown == Some(light) {
         return;
     }
-    // A bundled app starting dark already shows its own icon.
     if shown.is_none() && !light && imp::bundled() {
         *shown = Some(false);
         return;
@@ -29,7 +16,6 @@ pub fn follow(light: bool) {
     }
 }
 
-/// Checks: the variant the Dock shows (`None` before the first change).
 pub fn shown_light() -> Option<bool> {
     SHOWN.lock().ok().and_then(|s| *s)
 }
@@ -42,7 +28,6 @@ mod imp {
     use objc2::runtime::AnyObject;
     use objc2::{class, msg_send};
 
-    /// The source tree's packaging folder, for a build run from `target/<profile>/`.
     fn packaging() -> PathBuf {
         let exe = std::env::current_exe().unwrap_or_default();
         exe.ancestors().nth(3).map(|root| root.join("packaging")).unwrap_or_default()
@@ -54,7 +39,6 @@ mod imp {
         unsafe { msg_send![class!(NSString), stringWithUTF8String: c.as_ptr()] }
     }
 
-    /// The bundle's resource `name.ext`, if the app runs from a bundle that has it.
     fn resource(name: &str, ext: &str) -> Option<String> {
         // SAFETY: NSBundle's main bundle, any thread; a nil path is "not found".
         unsafe {
@@ -71,12 +55,10 @@ mod imp {
         }
     }
 
-    /// Running from a bundle with an icon of its own.
     pub fn bundled() -> bool {
         resource("AppIcon", "icns").is_some()
     }
 
-    /// The image file for a variant; `None` for the bundle's own (dark) icon.
     fn file(light: bool) -> Option<String> {
         if light {
             resource("AppIconLight", "icns").or_else(|| Some(packaging().join("AppIconLight.icns").to_string_lossy().into_owned()))
@@ -87,7 +69,6 @@ mod imp {
         }
     }
 
-    /// Sets the Dock icon; false when the image is missing (nothing changed).
     pub fn set(light: bool) -> bool {
         let path = file(light);
         if path.as_deref().is_some_and(|p| !std::path::Path::new(p).exists()) {

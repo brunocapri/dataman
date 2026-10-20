@@ -8,8 +8,6 @@ pub use lexer::{Token, TokenKind, tokenize, tokenize_in};
 pub use split::is_exec_comment;
 pub use split::{GoBatch, Statement, batches_in, go_batches, split, split_in, statement_at, statement_at_in};
 
-/// Quotes an identifier when PostgreSQL would fold or reject it unquoted (the lexer's keywords;
-/// SQL Dataman generates quotes through [`Dialect::quote_ident`], which knows every reserved word).
 pub fn quote_ident(name: &str) -> String {
     let plain = !name.is_empty()
         && name.bytes().next().is_some_and(|c| c.is_ascii_lowercase() || c == b'_')
@@ -18,18 +16,13 @@ pub fn quote_ident(name: &str) -> String {
     if plain { name.to_string() } else { format!("\"{}\"", name.replace('"', "\"\"")) }
 }
 
-/// The identifier a token denotes: unquoted names fold to lower case, quoted ones are taken
-/// verbatim.
 pub fn ident_value(src: &str, t: &Token) -> String {
     ident_value_in(src, t, Dialect::Postgres)
 }
 
-/// [`ident_value`] in `dialect`: `` `quoted` `` in MySQL, and unquoted names kept as written
-/// where the engine does not fold them.
 pub fn ident_value_in(src: &str, t: &Token, dialect: Dialect) -> String {
     let s = t.text(src);
     if t.kind == TokenKind::QuotedIdent {
-        // `U&"d\0061t\+000061"`: Unicode escapes (PostgreSQL's default escape character).
         if let Some(u) = s.strip_prefix("U&").or_else(|| s.strip_prefix("u&"))
             && u.starts_with('"')
         {
@@ -50,7 +43,6 @@ pub fn ident_value_in(src: &str, t: &Token, dialect: Dialect) -> String {
     }
 }
 
-/// Decodes `\XXXX`, `\+XXXXXX` and `\\` of a `U&` literal's body.
 fn unicode_escapes(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut rest = s;
@@ -75,10 +67,7 @@ fn unicode_escapes(s: &str) -> String {
     out
 }
 
-/// The table a simple query reads first (`FROM [schema.]table`), or `None` (`FROM f(…)`, a
-/// subquery, no `FROM`).
 pub fn first_table(sql: &str) -> Option<String> {
-    // T-SQL's `[names]` (nowhere else does a table name start with `[`).
     let d = if sql.contains('[') { Dialect::TSql } else { Dialect::Postgres };
     let toks: Vec<_> = tokenize_in(sql, d).into_iter().filter(|t| !t.kind.is_trivia()).collect();
     let i = toks.iter().position(|t| t.kind == TokenKind::Keyword && t.text(sql).eq_ignore_ascii_case("FROM"))?;
@@ -98,9 +87,7 @@ pub fn first_table(sql: &str) -> Option<String> {
     Some(name)
 }
 
-/// `UPDATE`, `CREATE TABLE`: the command of a statement (two words for DDL), upper case.
 pub fn statement_verb(sql: &str) -> String {
-    // `CREATE TEMP TABLE`, `CREATE OR REPLACE VIEW`: the object, not its modifiers.
     const MODIFIERS: &[&str] = &["TEMP", "TEMPORARY", "UNLOGGED", "UNIQUE", "OR", "REPLACE", "GLOBAL", "LOCAL", "IF", "RECURSIVE", "TRUSTED", "PROCEDURAL"];
     let mut words = sql
         .lines()
@@ -163,8 +150,6 @@ mod tests {
     }
 }
 
-/// A SQL file's text: UTF-8 without or with its signature, UTF-16 (what SSMS and Windows tools
-/// save), else the bytes read as Latin-1 (a legacy code page); never the byte order mark.
 pub fn decode_script(bytes: &[u8]) -> String {
     let utf16 = |b: &[u8], le: bool| {
         let units: Vec<u16> = b.chunks_exact(2).map(|c| if le { u16::from_le_bytes([c[0], c[1]]) } else { u16::from_be_bytes([c[0], c[1]]) }).collect();
@@ -181,14 +166,11 @@ pub fn decode_script(bytes: &[u8]) -> String {
     }
 }
 
-/// Reads a SQL file ([`decode_script`]).
 pub fn read_script(path: &std::path::Path) -> std::io::Result<String> {
     std::fs::read(path).map(|b| decode_script(&b))
 }
 
-/// MySQL's `/*! … */` (and `/*M! … */`) comments hold code the server runs: `sql` with them
-/// opened (their delimiters blanked, so every byte offset stays), for reading what a statement
-/// does. Other dialects, and texts without such a comment, come back as they are.
+/// Their delimiters are blanked, not removed, so every byte offset stays.
 pub fn expand_exec_comments(sql: &str, dialect: Dialect) -> std::borrow::Cow<'_, str> {
     if !dialect.script().exec_comments || !sql.contains("/*!") && !sql.contains("/*M!") {
         return std::borrow::Cow::Borrowed(sql);
@@ -199,7 +181,6 @@ pub fn expand_exec_comments(sql: &str, dialect: Dialect) -> std::borrow::Cow<'_,
         if t.kind != TokenKind::BlockComment || !is_exec_comment(text) || !text.ends_with("*/") || text.len() < 5 {
             continue;
         }
-        // `/*!` or `/*M!`, then the version digits.
         let head = if text.starts_with("/*!") { 3 } else { 4 };
         let digits = text.as_bytes()[head..].iter().take_while(|b| b.is_ascii_digit()).count();
         let blank = |out: &mut String, from: usize, to: usize| out.replace_range(from..to, &" ".repeat(to - from));

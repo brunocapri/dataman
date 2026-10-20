@@ -1,9 +1,3 @@
-//! Decoding PostgreSQL binary values and formatting them for display.
-//!
-//! Every column gets a [`Kind`] (how to display and sort it) and a storage class: integers,
-//! floats and booleans stay native (timestamps and dates as integers, formatted only when
-//! a cell is drawn); everything else is formatted once, at decode time, into text.
-
 use std::fmt::Write as _;
 
 use chrono::{DateTime, Local, NaiveDate, NaiveTime, TimeZone, Utc};
@@ -15,22 +9,15 @@ pub enum Kind {
     Bool,
     Int,
     Float,
-    /// `real`: stored as f64, printed with single precision (`0.1`, not `0.10000000149011612`).
     Float4,
-    /// Exact decimal kept as text; sorts numerically.
     Numeric,
     Text,
     Bytes,
-    /// Days since 2000-01-01.
     Date,
-    /// Microseconds since midnight.
     Time,
-    /// Microseconds since 2000-01-01 00:00:00.
     Timestamp,
-    /// Microseconds since 2000-01-01 00:00:00 UTC; shown in local time.
     TimestampTz,
     Json,
-    /// Formatted text of anything else (intervals, uuids, arrays, network types…).
     Other,
 }
 
@@ -52,7 +39,6 @@ impl Kind {
         }
     }
 
-    /// Numbers align right in the grid.
     pub fn is_numeric(self) -> bool {
         matches!(self, Kind::Int | Kind::Float | Kind::Float4 | Kind::Numeric)
     }
@@ -80,7 +66,6 @@ impl Kind {
     }
 }
 
-/// A cell as received: the raw binary value, `None` for NULL. Accepts every type.
 pub struct RawCell<'a>(pub Option<&'a [u8]>);
 
 impl<'a> FromSql<'a> for RawCell<'a> {
@@ -97,7 +82,6 @@ impl<'a> FromSql<'a> for RawCell<'a> {
 
 type BoxErr = Box<dyn std::error::Error + Sync + Send>;
 
-/// Native decoders for the integer-stored kinds.
 pub fn decode_i64(ty: &Type, raw: &[u8]) -> Result<i64, BoxErr> {
     Ok(match *ty {
         Type::INT2 => pt::int2_from_sql(raw)? as i64,
@@ -125,8 +109,6 @@ pub fn decode_f64(ty: &Type, raw: &[u8]) -> Result<f64, BoxErr> {
     })
 }
 
-/// Formats any binary value as PostgreSQL would print it (close to `psql`), appending to `out`.
-/// Never fails: undecodable values come out as `\x…` hex.
 pub fn format_binary(ty: &Type, raw: &[u8], out: &mut String) {
     if format_inner(ty, raw, out).is_err() {
         hex(raw, out);
@@ -228,7 +210,6 @@ fn format_value(ty: &Type, raw: &[u8], out: &mut String) -> Result<(), BoxErr> {
         }
         Type::VOID => {}
         Type::INT2_VECTOR | Type::OID_VECTOR => format_array(ty, raw, out, " ", false)?,
-        // pg_stats' value lists: an array of whatever the column holds.
         Type::ANYARRAY => format_array(ty, raw, out, ",", true)?,
         _ => match ty.kind() {
             PgKind::Array(_) => format_array(ty, raw, out, ",", true)?,
@@ -238,7 +219,6 @@ fn format_value(ty: &Type, raw: &[u8], out: &mut String) -> Result<(), BoxErr> {
             PgKind::Pseudo if *ty == Type::RECORD => format_record(raw, out, None)?,
             _ => match crate::pgtypes::format_special(ty, raw, out) {
                 Some(r) => r?,
-                // Text-like unknown types (citext…) usually send UTF-8; anything else is hex.
                 None => match std::str::from_utf8(raw) {
                     Ok(s) if s.chars().all(|c| !c.is_control() || matches!(c, '\n' | '\t' | '\r')) => out.push_str(s),
                     _ => return Err("unknown".into()),
@@ -269,7 +249,6 @@ fn format_array(ty: &Type, raw: &[u8], out: &mut String, sep: &str, braces: bool
         }
         return Ok(());
     }
-    // `[0:2]={1,2,3}`: dimensions that do not start at 1 are spelled out.
     if braces && bounds.iter().any(|b| b.1 != 1) {
         for (len, lo) in &bounds {
             let _ = write!(out, "[{lo}:{}]", lo + len - 1);
@@ -378,9 +357,8 @@ pub fn format_float(v: f64, single: bool, out: &mut String) {
     } else if v.is_infinite() {
         out.push_str(if v > 0.0 { "Infinity" } else { "-Infinity" });
     } else {
-        // Shortest round-trip digits, laid out like PostgreSQL's float4out/float8out: plain
-        // decimal, or exponent form when the exponent is below -4 or at least 6 (real) / 15
-        // (double precision).
+        // Laid out like PostgreSQL's float4out/float8out: exponent form when the exponent is below -4
+        // or at least 6 (real) / 15 (double precision).
         let sci = if single { format!("{:e}", v as f32) } else { format!("{v:e}") };
         let (mant, exp) = sci.split_once('e').unwrap_or((&sci, "0"));
         let exp: i32 = exp.parse().unwrap_or(0);
@@ -394,7 +372,6 @@ pub fn format_float(v: f64, single: bool, out: &mut String) {
     }
 }
 
-/// PostgreSQL's binary NUMERIC: ndigits, weight, sign, dscale, then base-10000 digits.
 pub fn format_numeric(raw: &[u8], out: &mut String) -> Result<(), BoxErr> {
     if raw.len() < 8 {
         return Err("numeric".into());
@@ -427,7 +404,6 @@ pub fn format_numeric(raw: &[u8], out: &mut String) -> Result<(), BoxErr> {
     if sign == 0x4000 && ndigits > 0 {
         out.push('-');
     }
-    // Integer part: groups 0..=weight.
     if weight < 0 {
         out.push('0');
     } else {
@@ -459,8 +435,7 @@ pub fn format_numeric(raw: &[u8], out: &mut String) -> Result<(), BoxErr> {
     Ok(())
 }
 
-/// The proleptic Gregorian date of a day number counted from 1970-01-01 (H. Hinnant's
-/// `civil_from_days`), as year (astronomical, 0 = 1 BC), month and day.
+/// H. Hinnant's `civil_from_days`.
 fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let z = z + 719_468;
     let era = z.div_euclid(146_097);
@@ -473,8 +448,6 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     ((yoe + era * 400) + (m <= 2) as i64, m, d)
 }
 
-/// `YYYY-MM-DD` of a day number counted from 2000-01-01; whether it is BC (the suffix is
-/// written by the caller, after the time).
 fn write_ymd(days: i64, out: &mut String) -> bool {
     let (y, m, d) = civil_from_days(days + 10_957);
     let bc = y <= 0;
@@ -502,8 +475,7 @@ fn frac(micros: u32, out: &mut String) {
     }
 }
 
-/// `HH:MM:SS[.ffffff]`; past 24 hours and below zero too (MySQL's TIME is a duration:
-/// `-838:59:59` … `838:59:59`).
+/// MySQL's TIME is a duration: `-838:59:59` … `838:59:59`.
 pub fn format_time(micros: i64, out: &mut String) {
     if micros < 0 {
         out.push('-');
@@ -515,15 +487,13 @@ pub fn format_time(micros: i64, out: &mut String) {
     frac(us, out);
 }
 
-// MySQL dates outside the calendar (`0000-00-00`, `2024-02-00`, `2024-02-31` where the SQL mode
-// allows them) go in `Date` and `Timestamp` columns as `ODD_DATE + packed parts`: far below any
-// PostgreSQL date (its minimum, 4713 BC, is about -2.1e17 µs from 2000), so they sort first
-// among themselves in calendar order, and print as the server wrote them.
+// MySQL dates outside the calendar (`0000-00-00`, `2024-02-31`) go in `Date` and `Timestamp`
+// columns as `ODD_DATE + packed parts`: far below any PostgreSQL date (4713 BC is about
+// -2.1e17 µs from 2000), so they sort first among themselves in calendar order.
 
 const ODD_DATE: i64 = i64::MIN + 1;
 const ODD_SPAN: i64 = 10_000 * 13 * 32 * 24 * 60 * 60 * 1_000_000;
 
-/// A date (and time) that is not on the calendar, as a `Date` / `Timestamp` cell value.
 pub fn odd_date(y: u16, m: u8, d: u8, h: u8, mi: u8, s: u8, us: u32) -> i64 {
     let parts = ((((((y.min(9999) as i64) * 13 + m.min(12) as i64) * 32 + d.min(31) as i64) * 24 + h.min(23) as i64) * 60
         + mi.min(59) as i64)
@@ -534,12 +504,10 @@ pub fn odd_date(y: u16, m: u8, d: u8, h: u8, mi: u8, s: u8, us: u32) -> i64 {
     ODD_DATE + parts
 }
 
-/// Whether a `Date` / `Timestamp` cell value is an [`odd_date`].
 pub fn is_odd_date(v: i64) -> bool {
     (ODD_DATE..ODD_DATE + ODD_SPAN).contains(&v)
 }
 
-/// Prints an [`odd_date`] (`with_time`: a DATETIME, `0000-00-00 00:00:00`).
 pub fn format_odd_date(v: i64, with_time: bool, out: &mut String) {
     let mut p = v - ODD_DATE;
     let us = p % 1_000_000;
@@ -554,7 +522,7 @@ pub fn format_odd_date(v: i64, with_time: bool, out: &mut String) {
     }
 }
 
-/// Days from 1970-01-01 of a proleptic Gregorian date (H. Hinnant's `days_from_civil`).
+/// H. Hinnant's `days_from_civil`.
 fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
     let era = y.div_euclid(400);
@@ -573,7 +541,6 @@ fn days_in_month(y: i64, m: i64) -> i64 {
     }
 }
 
-/// Days since 2000-01-01 (the `Date` cell value) of a calendar date; `None` off the calendar.
 pub fn date_days(y: u16, m: u8, d: u8) -> Option<i64> {
     let (y, m, d) = (y as i64, m as i64, d as i64);
     if y == 0 || !(1..=12).contains(&m) || d < 1 || d > days_in_month(y, m) {
@@ -582,12 +549,10 @@ pub fn date_days(y: u16, m: u8, d: u8) -> Option<i64> {
     Some(days_from_civil(y, m, d) - 10_957)
 }
 
-/// The `Date` cell value of a date's parts: its day number, or an [`odd_date`].
 pub fn date_cell(y: u16, m: u8, d: u8) -> i64 {
     date_days(y, m, d).unwrap_or_else(|| odd_date(y, m, d, 0, 0, 0, 0))
 }
 
-/// The `Timestamp` cell value (µs since 2000-01-01) of a date and time, or an [`odd_date`].
 pub fn timestamp_cell(y: u16, m: u8, d: u8, h: u8, mi: u8, s: u8, us: u32) -> i64 {
     match date_days(y, m, d) {
         Some(days) if h < 24 && mi < 60 && s < 60 && us < 1_000_000 => {
@@ -612,7 +577,6 @@ pub fn format_timestamp(micros: i64, out: &mut String) {
     }
 }
 
-/// Shown in the local zone (UTC beyond what chrono can convert).
 pub fn format_timestamptz(micros: i64, out: &mut String) {
     if micros == i64::MAX || micros == i64::MIN {
         return format_timestamp(micros, out);
@@ -649,7 +613,6 @@ fn format_offset(secs: i32, out: &mut String) {
     }
 }
 
-/// PostgreSQL's default `IntervalStyle = postgres` output.
 pub fn format_interval(months: i32, days: i32, micros: i64, out: &mut String) {
     // PostgreSQL 17's infinite intervals: every field at its extreme.
     if (months, days, micros) == (i32::MAX, i32::MAX, i64::MAX) {
@@ -685,7 +648,6 @@ pub fn format_interval(months: i32, days: i32, micros: i64, out: &mut String) {
     out.push_str(&parts.join(" "));
 }
 
-/// Compares two decimal strings numerically (`NaN` sorts last, like PostgreSQL).
 pub fn cmp_decimal(a: &str, b: &str) -> std::cmp::Ordering {
     use std::cmp::Ordering::*;
     fn class(s: &str) -> i8 {
@@ -706,7 +668,6 @@ pub fn cmp_decimal(a: &str, b: &str) -> std::cmp::Ordering {
         if fa && fb {
             unreachable!()
         }
-        // Finite numbers sit between -Infinity (-2) and Infinity (2).
         let ka = if fa { 0 } else { ra };
         let kb = if fb { 0 } else { rb };
         return ka.cmp(&kb);
@@ -733,8 +694,6 @@ pub fn cmp_decimal(a: &str, b: &str) -> std::cmp::Ordering {
     if na { mag.reverse() } else { mag }
 }
 
-/// The grid's order for text: case-insensitive, a run of digits by its value ("a2" before
-/// "a10", "007" with "7"), ties broken by the plain byte order so the order stays total.
 pub fn cmp_natural(a: &str, b: &str) -> std::cmp::Ordering {
     use std::cmp::Ordering::*;
     let (x, y) = (a.as_bytes(), b.as_bytes());
@@ -767,7 +726,6 @@ pub fn cmp_natural(a: &str, b: &str) -> std::cmp::Ordering {
             j += 1;
             continue;
         }
-        // Outside ASCII: a character each, by its lowercase.
         let (Some(p), Some(q)) = (a[i..].chars().next(), b[j..].chars().next()) else { break };
         let o = p.to_lowercase().cmp(q.to_lowercase());
         if o != Equal {
@@ -795,7 +753,6 @@ mod tests {
             f(&mut o);
             o
         };
-        // 0044-03-15 BC: the suffix goes after the time, as PostgreSQL prints it.
         let days = (days_from_civil(-43, 3, 15) - 10_957) as i32;
         assert_eq!(s(&|o| format_date(days, o)), "0044-03-15 BC");
         let micros = days as i64 * 86_400_000_000 + 10 * 3_600_000_000;
@@ -803,7 +760,6 @@ mod tests {
         assert_eq!(s(&|o| format_date(i32::MAX, o)), "infinity");
         assert_eq!(s(&|o| format_date(0, o)), "2000-01-01");
         assert_eq!(s(&|o| format_timestamp(-1, o)), "1999-12-31 23:59:59.999999");
-        // Past what chrono can hold.
         assert_eq!(s(&|o| format_date(106_751_982, o)), "294276-12-31");
     }
 

@@ -1,13 +1,5 @@
-//! Column types for a new table, inferred from a sample of the values.
-//!
-//! Every value rules out the types it does not parse as; the first type left in the order
-//! boolean, int8, numeric, float8, date, timestamptz, uuid, jsonb wins, and text when none is.
-//! Empty values and NULLs say nothing. Numbers with a leading zero (`007`, zip codes) stay
-//! text: a number column would drop the zero.
-
 use serde_json::Value;
 
-/// The column types offered for a new table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PgType {
     Int8,
@@ -40,7 +32,6 @@ impl PgType {
         PgType::Text,
     ];
 
-    /// The name in `CREATE TABLE`.
     pub fn sql(self) -> &'static str {
         match self {
             PgType::Int8 => "int8",
@@ -69,7 +60,6 @@ const UUID: u16 = 1 << 6;
 const JSON: u16 = 1 << 7;
 const ALL: u16 = INT | NUM | FLT | BOOL | DATE | TS | UUID | JSON;
 
-/// The types still possible for a column, narrowed value by value.
 #[derive(Clone, Copy, Debug)]
 pub struct Infer {
     mask: u16,
@@ -83,7 +73,6 @@ impl Default for Infer {
 }
 
 impl Infer {
-    /// A value as text.
     pub fn observe(&mut self, s: &str) {
         let s = s.trim();
         if s.is_empty() || self.mask == 0 {
@@ -96,8 +85,6 @@ impl Infer {
         self.mask &= kinds_of(s);
     }
 
-    /// A JSON value (NDJSON and JSON files): numbers and booleans by their JSON type, objects
-    /// and arrays as jsonb, strings by their text.
     pub fn observe_json(&mut self, v: &Value) {
         match v {
             Value::Null => {}
@@ -123,7 +110,6 @@ impl Infer {
         }
     }
 
-    /// Whether every value seen so far parses as `ty`.
     pub fn accepts(&self, ty: PgType) -> bool {
         let bit = match ty {
             PgType::Int8 => INT,
@@ -162,7 +148,6 @@ impl Infer {
     }
 }
 
-/// The types a (trimmed, non-empty) value parses as.
 fn kinds_of(s: &str) -> u16 {
     let mut m = 0;
     match s.to_ascii_lowercase().as_str() {
@@ -196,9 +181,7 @@ fn kinds_of(s: &str) -> u16 {
 }
 
 enum Num {
-    /// Fits int8.
     Int,
-    /// An integer too big for int8.
     Big,
     Decimal,
     Exp,
@@ -232,8 +215,6 @@ fn number(s: &str) -> Option<Num> {
     Some(if s.parse::<i64>().is_ok() { Num::Int } else { Num::Big })
 }
 
-/// `Some(true)`: an ISO date (`2024-03-01`); `Some(false)`: an ISO timestamp
-/// (`2024-03-01 10:20`, `T`, seconds, fractions, `Z` or `±hh[:mm]`).
 fn datetime(s: &str) -> Option<bool> {
     let b = s.as_bytes();
     if b.len() < 10 || b[4] != b'-' || b[7] != b'-' {

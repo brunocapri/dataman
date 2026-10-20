@@ -1,17 +1,3 @@
-//! Demo stages of a table's data view (`--demo`), against the demo database: `public.orders`
-//! (a million rows) and `dataman_demo.tickets` (enum, boolean, reference, timestamptz, date,
-//! jsonb, long text; created from `seeds/table.sql` at the start).
-//!
-//! - `table`: `orders` filtered (`status = paid`), sorted by `total` descending (screenshot);
-//! - `table-filter`: the filter popover on `total` (screenshot);
-//! - `table-menu`: `created_at` hidden, the header menu open (screenshot);
-//! - `json` / `datetime` / `enum`: the grid's value editors on `meta`, `opened_at`, `state`
-//!   (screenshots);
-//! - `table-check`: the rules with real mouse and key events (the editor's SQL, server-side sort
-//!   by a header click, pages with ⌥⌘→, filters, the free-form WHERE, the count against the
-//!   server, hide from the header menu, a JSON edit through the change set, the SQL
-//!   edited by hand), printed as PASS/FAIL lines; exit code 1 on a failure.
-
 use std::time::Duration;
 
 use gpui::{AsyncWindowContext, Entity, Focusable, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, PlatformInput, Pixels, Point, point, px};
@@ -24,7 +10,6 @@ use crate::tab::QueryTab;
 
 pub const SEED: &str = include_str!("../../../seeds/table.sql");
 
-/// The stages this module drives.
 pub fn is_stage(s: &str) -> bool {
     s.starts_with("table") || matches!(s, "json" | "datetime" | "enum")
 }
@@ -51,7 +36,6 @@ fn click(cx: &mut AsyncWindowContext, p: Point<Pixels>) {
     input(cx, PlatformInput::MouseUp(MouseUpEvent { button: MouseButton::Left, position: p, modifiers: m, click_count: 1 }));
 }
 
-/// The `n`-th click of a sequence at `p` (double, triple…): the clicks before it already landed.
 fn click_n(cx: &mut AsyncWindowContext, p: Point<Pixels>, n: usize) {
     let m = Modifiers::default();
     input(cx, PlatformInput::MouseDown(MouseDownEvent { button: MouseButton::Left, position: p, modifiers: m, click_count: n, first_mouse: false }));
@@ -69,12 +53,10 @@ fn draw(cx: &mut AsyncWindowContext) {
     });
 }
 
-/// Runs the seed on the active tab's connection (statement by statement).
 async fn seed(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) {
     run_seed(ws, SEED, cx).await;
 }
 
-/// Runs a seed script on the active tab's connection (statement by statement).
 pub(crate) async fn run_seed(ws: &Entity<Workspace>, script: &str, cx: &mut AsyncWindowContext) {
     let Some(conn) = cx.update(|_, cx| ws.read(cx).active_tab().and_then(|t| t.read(cx).connection().cloned())).ok().flatten() else { return };
     let session = conn.session(None);
@@ -96,12 +78,10 @@ pub(crate) async fn run_seed(ws: &Entity<Workspace>, script: &str, cx: &mut Asyn
     }
 }
 
-/// Opens `schema.table` as data (as the explorer's ↩ does) and waits for its first page.
 async fn open(ws: &Entity<Workspace>, conn: &str, db: &str, schema: &str, table: &str, cx: &mut AsyncWindowContext) -> Entity<QueryTab> {
     let _ = cx.update(|window, cx| {
         ws.update(cx, |w, cx| {
             w.open_relation(conn, db, schema, table, window, cx);
-            // The empty console the window opened with.
             if w.tabs.len() > 1 && w.tabs[0].read(cx).result().is_none() {
                 w.close_tab(0, window, cx);
                 let last = w.tabs.len() - 1;
@@ -114,7 +94,6 @@ async fn open(ws: &Entity<Workspace>, conn: &str, db: &str, schema: &str, table:
     tab
 }
 
-/// Waits until the tab shows a finished page of its table.
 async fn page(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) {
     pause(cx, 50).await;
     for _ in 0..400 {
@@ -141,7 +120,6 @@ fn sql(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> String {
     cx.update(|_, cx| tab.read(cx).editor.read(cx).text().to_string()).unwrap_or_default()
 }
 
-/// Runs a stage; `false` when a check failed.
 pub async fn run(ws: &Entity<Workspace>, stage: &str, conn: &str, db: &str, cx: &mut AsyncWindowContext) -> bool {
     let tickets = matches!(stage, "json" | "datetime" | "enum" | "table-check");
     if tickets {
@@ -155,7 +133,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, conn: &str, db: &str, cx: 
             page(&tab, cx).await;
             let _ = cx.update(|_, cx| tab.update(cx, |t, cx| t.table_sort(total, Some(SortDir::Desc), cx)));
             page(&tab, cx).await;
-            // The count of the filtered rows.
             for _ in 0..200 {
                 if cx.update(|_, cx| tab.read(cx).table.as_ref().is_some_and(|d| d.counting.is_none())).unwrap_or(true) {
                     break;
@@ -242,7 +219,6 @@ async fn check(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWindo
     let est = cx.update(|_, cx| tab.read(cx).table.as_ref().and_then(|d| d.estimate)).ok().flatten();
     report("the estimate comes from reltuples", est.is_some_and(|n| n > 900_000), format!("{est:?}"));
 
-    // A header click sorts on the server (asc, then desc).
     let total = col(&tab, "total", cx);
     let p = cx.update(|_, cx| grid.read(cx).demo_header_point(total)).unwrap();
     click(cx, p);
@@ -258,7 +234,6 @@ async fn check(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWindo
     report("the header shows the server's sort", max == Some((total, SortDir::Desc)), format!("{max:?}"));
     let _ = first;
 
-    // ⌥⌘→: the next page.
     let _ = cx.update(|window, cx| window.focus(&grid.focus_handle(cx), cx));
     key(cx, "cmd-alt-right");
     page(&tab, cx).await;
@@ -269,7 +244,6 @@ async fn check(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWindo
     page(&tab, cx).await;
     report("⌥⌘← goes back", sql(&tab, cx).ends_with("LIMIT 1000;"), sql(&tab, cx));
 
-    // Filters: by value; back to the first page.
     let status = col(&tab, "status", cx);
     let _ = cx.update(|_, cx| tab.update(cx, |t, cx| t.table_page(3, cx)));
     page(&tab, cx).await;
@@ -288,7 +262,6 @@ async fn check(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWindo
         .flatten();
     report("the server filtered the rows", all_paid == Some(true), format!("{all_paid:?}"));
 
-    // The count against a direct count(*).
     let mut total_rows = None;
     for _ in 0..400 {
         total_rows = cx.update(|_, cx| tab.read(cx).table.as_ref().filter(|d| d.counting.is_none()).and_then(|d| d.total)).ok().flatten();
@@ -313,13 +286,11 @@ async fn check(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWindo
     };
     report("the count matches count(*)", total_rows.is_some() && total_rows == expect, format!("{total_rows:?} vs {expect:?}"));
 
-    // ⌘. stops a count.
     let _ = cx.update(|_, cx| tab.update(cx, |t, cx| t.start_count(cx)));
     let _ = cx.update(|_, cx| tab.update(cx, |t, cx| t.cancel(cx)));
     let stopped = cx.update(|_, cx| tab.read(cx).table.as_ref().map(|d| (d.counting.is_none(), d.stopped.is_some()))).ok().flatten();
     report("⌘. stops the count", stopped == Some((true, true)), format!("{stopped:?}"));
 
-    // Hide from the header menu (a right click on the header).
     let created_at = col(&tab, "created_at", cx);
     let p = cx.update(|_, cx| grid.read(cx).demo_header_point(created_at)).unwrap();
     let m = Modifiers::default();
@@ -336,16 +307,12 @@ async fn check(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWindo
     let order2 = cx.update(|_, cx| grid.read(cx).display_order()).unwrap();
     report("the next page keeps the hidden column", order2 == order, format!("{order2:?}"));
 
-    // The inline cell editor (edit_ui/input.rs): double click selects the whole value, then
-    // word, line and (⌘Z/⇧⌘Z) undo rules shared with every text field in the app. `status` is
-    // plain text (not the key, not JSON, not a number that takes digits only): the text field.
     let customer = col(&tab, "status", cx);
     let edit = cx.update(|_, cx| tab.read(cx).edit.clone()).unwrap();
     let p = cx.update(|_, cx| grid.read(cx).demo_cell_point(2, customer)).unwrap();
     click_n(cx, p, 1);
     click_n(cx, p, 2);
     draw(cx);
-    // The target (table, key) resolves async on the tab's first edit.
     let mut editor = None;
     for _ in 0..40 {
         editor = cx.update(|_, cx| edit.read(cx).demo_cell_editor()).ok().flatten();
@@ -362,7 +329,6 @@ async fn check(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWindo
         let sel = cx.update(|_, cx| text.read(cx).demo_selected()).unwrap();
         report("…with the whole value selected", sel == (0..orig_len), format!("{sel:?} vs 0..{orig_len}"));
 
-        // Typing over the selection replaces it (one undo step covers all of it).
         let _ = cx.update(|window, cx| window.focus(&text.focus_handle(cx), cx));
         for c in ["f", "o", "o", "space", "b", "a", "r"] {
             key(cx, c);
@@ -400,7 +366,6 @@ async fn check(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWindo
         let at = cx.update(|_, cx| text.read(cx).demo_selected()).unwrap();
         report("⌘A selects everything", at == (0..7), format!("{at:?}"));
 
-        // Double and triple clicks inside the field: a word, then the whole value.
         let b = cx.update(|_, cx| text.read(cx).demo_bounds()).ok().flatten().unwrap_or_default();
         let left = point(px(b.0 + 2.), px(b.1 + b.3 / 2.));
         let right = point(px(b.0 + b.2 - 2.), px(b.1 + b.3 / 2.));
@@ -422,7 +387,6 @@ async fn check(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWindo
         report("escape cancels the edit, nothing pending", pending == 0, pending.to_string());
     }
 
-    // A JSON edit through the change set (the tickets table, editable by its key).
     let t2 = open(ws, conn, db, "dataman_demo", "tickets", cx).await;
     let meta = col(&t2, "meta", cx);
     let (g2, e2) = cx.update(|_, cx| (t2.read(cx).grid.clone(), t2.read(cx).edit.clone())).unwrap();
@@ -437,7 +401,6 @@ async fn check(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWindo
     if let Some(v) = v {
         let _ = cx.update(|window, cx| v.update(cx, |v, cx| v.demo_edit_first_leaf(window, cx)));
         draw(cx);
-        // Type over the selected leaf, ↩ keeps it, ⌘↩ applies.
         for c in "sms".chars() {
             key(cx, &c.to_string());
         }
@@ -454,7 +417,6 @@ async fn check(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWindo
         let _ = cx.update(|_, cx| e2.update(cx, |e, cx| e.discard_all(cx)));
     }
 
-    // Edited by hand: a plain query tab.
     let editor = cx.update(|_, cx| t2.read(cx).editor.clone()).unwrap();
     let _ = cx.update(|window, cx| {
         editor.update(cx, |e, cx| {

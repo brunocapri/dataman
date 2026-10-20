@@ -1,9 +1,3 @@
-//! Self-update end to end, without the app: two small signed `.app` bundles (0.1.0 installed
-//! in a scratch folder, 0.2.0 in a DMG made by hdiutil), a feed and the DMG served over HTTP
-//! from 127.0.0.1, then check → download → verify → install. A tampered DMG, a wrong size, a
-//! DMG whose app is not the version the feed claims and an unwritable folder are refused and
-//! leave the installed app alone. Never touches /Applications.
-
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -44,7 +38,6 @@ fn dmg(app_dir: &Path, out: &Path) {
     run(Command::new("hdiutil").args(["create", "-quiet", "-ov", "-fs", "HFS+", "-format", "UDZO", "-volname", "Dataman", "-srcfolder"]).arg(app_dir).arg(out));
 }
 
-/// Serves `root` over HTTP/1.0 until the process ends.
 fn serve(root: PathBuf) -> u16 {
     let l = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = l.local_addr().unwrap().port();
@@ -86,10 +79,8 @@ fn check_download_verify_install() {
     let kp = Ed25519KeyPair::from_pkcs8(doc.as_ref()).unwrap();
     let key = data_encoding::BASE64.encode(kp.public_key().as_ref());
 
-    // Installed: 0.1.0 in a scratch "Applications".
     let apps = t.join("Applications");
     let installed = app(&apps, "0.1.0");
-    // The update: 0.2.0, and a DMG whose app says 0.1.5 (a replay under a newer feed).
     let www = t.join("www");
     std::fs::create_dir_all(&www).unwrap();
     dmg(app(&t.join("v2"), "0.2.0").parent().unwrap(), &www.join("new.dmg"));
@@ -117,18 +108,15 @@ fn check_download_verify_install() {
         format!("{base}/{name}")
     };
     let good = feed_for("feed.json", "new.dmg", bytes.len(), &bytes, "0.2.0");
-    // Tampered bytes, signature of the real ones.
     let bad_sig = feed_for("tampered.json", "tampered.dmg", bytes.len(), &bytes, "0.2.0");
     let bad_size = feed_for("size.json", "new.dmg", bytes.len() + 10, &bytes, "0.2.0");
     let replay = feed_for("replay.json", "old.dmg", old.len(), &old, "0.2.0");
     let cache = t.join("cache");
 
-    // Not newer: nothing to do. Unreachable feed: an error, not a panic.
     let cfg = |url: &str, current: &str| UpdateConfig::new(Some(url), Some(&key), current).unwrap();
     assert_eq!(update::check(&cfg(&good, "0.2.0")).unwrap(), None);
     assert!(update::check(&cfg(&format!("{base}/missing.json"), "0.1.0")).is_err());
 
-    // Tampered and wrong size: refused, nothing left in the cache, the app untouched.
     for (url, err) in [(&bad_sig, "signature"), (&bad_size, "size")] {
         let c = cfg(url, "0.1.0");
         let feed = update::check(&c).unwrap().expect("offered");
@@ -136,7 +124,6 @@ fn check_download_verify_install() {
         assert!(e.contains(err), "{e}");
         assert_eq!(std::fs::read_dir(&cache).unwrap().count(), 0);
     }
-    // A validly signed DMG holding another version: downloaded, but the install refuses it.
     let c = cfg(&replay, "0.1.0");
     let feed = update::check(&c).unwrap().unwrap();
     let file = update::download(&c, &feed, &cache, &|_| {}).unwrap();
@@ -144,17 +131,14 @@ fn check_download_verify_install() {
     assert!(e.contains("0.1.5"), "{e}");
     assert_eq!(update::plist_value(&installed, "CFBundleShortVersionString").unwrap(), "0.1.0");
 
-    // The real one.
     let c = cfg(&good, "0.1.0");
     let feed = update::check(&c).unwrap().expect("0.2.0 offered");
     assert_eq!((feed.version.as_str(), feed.notes.as_str()), ("0.2.0", "Faster grid."));
-    // The download reports its progress, then the verification.
     let seen = std::sync::Mutex::new(Vec::new());
     let file = update::download(&c, &feed, &cache, &|p| seen.lock().unwrap().push(p)).unwrap();
     let seen = seen.into_inner().unwrap();
     assert!(matches!(seen.last(), Some(update::Phase::Verifying)), "{seen:?}");
     assert!(seen.contains(&update::Phase::Got(feed.size)), "{seen:?}");
-    // An unwritable folder is refused before anything moves.
     run(Command::new("chmod").arg("a-w").arg(&apps));
     let e = update::install(&file, &installed, &feed.version).unwrap_err().to_string();
     run(Command::new("chmod").arg("u+w").arg(&apps));
@@ -163,9 +147,7 @@ fn check_download_verify_install() {
     assert_eq!(update::plist_value(&installed, "CFBundleShortVersionString").unwrap(), "0.2.0");
     let out = Command::new(installed.join("Contents/MacOS/dataman")).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "0.2.0");
-    // Only the app is left in the folder: no staging copy, no old app.
     let names: Vec<String> = std::fs::read_dir(&apps).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
     assert_eq!(names, ["Dataman.app"]);
-    // A second download reuses the verified file.
     assert_eq!(update::download(&c, &feed, &cache, &|_| {}).unwrap(), file);
 }

@@ -1,16 +1,3 @@
-//! Exporting a result (Export board): ⌘E, the result bar's Export, the menu or the palette.
-//!
-//! The dialog picks a format (CSV, TSV, JSON, NDJSON, SQL INSERT, Parquet), the rows (all of the
-//! query, the rows fetched so far, or the grid selection) and the file (the native save panel,
-//! `cx.prompt_for_new_path`); the format's options sit in a closed Advanced section. While it
-//! runs the footer says so as text (rows so far), with Stop and "Run in background"; then what
-//! was written, and the sheet takes another format or file for the next export. The rows are
-//! polled from the export's atomics at 4 Hz while it runs, and nothing ticks once it ends.
-//!
-//! "All rows" of a paused result runs the statement again on its own connection and streams it
-//! to the file (`Connection::export_query`: flat memory for millions of rows) when the
-//! statement can run again safely; otherwise the grid's result fetches the rest as it writes.
-
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -44,11 +31,8 @@ pub fn bind_keys(cx: &mut App) {
 }
 
 pub enum ExportEvent {
-    /// Hide the dialog (a running export keeps going in the background).
     Close,
-    /// "Run ⌘↩" from the empty state.
     Run,
-    /// Finished while hidden: a line for the status bar.
     Finished(String),
 }
 
@@ -59,19 +43,13 @@ pub enum RowScope {
     Selection,
 }
 
-/// What is being exported.
 #[derive(Clone)]
 pub struct Source {
-    /// The tab's result; `None` for a whole table from the explorer (the statement streams on
-    /// its own connection).
     pub rs: Option<Arc<ResultSet>>,
-    /// The statement (the result's, or `SELECT * FROM table`).
     pub sql: String,
-    /// The column count when there is no result to ask (the explorer's cache, if loaded).
     pub columns: Option<usize>,
     pub conn: Arc<Connection>,
     pub db: String,
-    /// The grid selection: display rows and columns.
     pub selection: Option<(Vec<usize>, Vec<usize>)>,
 }
 
@@ -89,7 +67,6 @@ struct Job {
     _tick: Option<Task<()>>,
 }
 
-/// An option field (a value with a menu of choices).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Field {
     Header,
@@ -136,14 +113,11 @@ pub struct ExportView {
     opts: ExportOptions,
     scope: RowScope,
     path: PathBuf,
-    /// The user picked the file: changing the format no longer renames it.
     path_chosen: bool,
     menu: Option<Field>,
     table: gpui::Entity<TextInput>,
     job: Option<Job>,
-    /// The Advanced section (every option but the format, rows and file) is open.
     advanced: bool,
-    /// Checks: where the header's × was laid out.
     close_bounds: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
     pub visible: bool,
     _quit: gpui::Subscription,
@@ -157,7 +131,6 @@ impl Focusable for ExportView {
     }
 }
 
-/// `SELECT … FROM [schema.]name …` → `name` (for file and table names); `result` otherwise.
 pub fn base_name(sql: &str) -> String {
     let toks: Vec<String> = sql.split(|c: char| c.is_whitespace() || c == ';' || c == ',').filter(|s| !s.is_empty()).map(str::to_string).collect();
     let name = toks
@@ -171,7 +144,6 @@ pub fn base_name(sql: &str) -> String {
     if clean.is_empty() { "result".into() } else { clean }
 }
 
-/// `dir/name.ext`, or `name (2).ext`… when that file exists.
 pub fn unique_path(dir: &Path, stem: &str, ext: &str) -> PathBuf {
     let p = dir.join(format!("{stem}.{ext}"));
     if !p.exists() {
@@ -180,8 +152,6 @@ pub fn unique_path(dir: &Path, stem: &str, ext: &str) -> PathBuf {
     (2..1000).map(|i| dir.join(format!("{stem} ({i}).{ext}"))).find(|p| !p.exists()).unwrap_or(p)
 }
 
-/// A file stem without the ` (2)` that `unique_path` added (and nothing else: `events_2024`
-/// keeps its digits).
 pub fn strip_copy_suffix(stem: &str) -> &str {
     if let Some(open) = stem.rfind(" (")
         && let Some(n) = stem[open + 2..].strip_suffix(')')
@@ -193,9 +163,6 @@ pub fn strip_copy_suffix(stem: &str) -> &str {
     stem
 }
 
-/// A path chosen in the save panel, for another format: the same name with the new extension,
-/// unless that file exists (the user agreed to replace the name they picked, not this one):
-/// then the next free name beside it.
 pub fn with_format(chosen: &Path, ext: &str) -> (PathBuf, bool) {
     let p = chosen.with_extension(ext);
     if p == chosen || !p.exists() {
@@ -206,7 +173,6 @@ pub fn with_format(chosen: &Path, ext: &str) -> (PathBuf, bool) {
     (unique_path(&dir, strip_copy_suffix(stem), ext), true)
 }
 
-/// The line for the status bar when an export ends behind the dialog.
 fn finished_line(state: &JobState) -> String {
     match state {
         JobState::Done(s) if s.cancelled => "Export stopped · nothing written".to_string(),
@@ -224,7 +190,6 @@ fn finished_line(state: &JobState) -> String {
     }
 }
 
-/// `16.4 MB`.
 pub fn fmt_bytes(b: u64) -> String {
     let b = b as f64;
     if b < 1024. {
@@ -262,7 +227,6 @@ impl ExportView {
         .detach();
         let format = ExportFormat::Csv;
         let mut opts = ExportOptions::new(format);
-        // SQL INSERTs are written for the engine the rows come from.
         opts.dialect = source.as_ref().map(|s| s.conn.dialect()).unwrap_or_default();
         let scope = match &source {
             Some(s) if s.selection.as_ref().is_some_and(|(r, c)| r.len() * c.len() > 1) => RowScope::Selection,
@@ -313,14 +277,12 @@ impl ExportView {
     fn set_format(&mut self, f: ExportFormat, cx: &mut Context<Self>) {
         self.format = f;
         self.opts.format = f;
-        // TSV writes \N for NULL by default, CSV nothing.
         self.opts.null_text = None;
         self.menu = None;
         if !self.path_chosen {
             let stem = self.path.file_stem().and_then(|s| s.to_str()).map(|s| strip_copy_suffix(s).to_string()).unwrap_or_else(|| "result".into());
             self.path = self.default_path(&stem);
         } else {
-            // A taken name gets the next free one; the path field shows it.
             self.path = with_format(&self.path, f.extension()).0;
         }
         cx.notify();
@@ -396,7 +358,6 @@ impl ExportView {
         cx.spawn(async move |this, cx| {
             let Ok(Ok(Some(p))) = rx.await else { return };
             let _ = this.update(cx, |v, cx| {
-                // A typed extension picks the format.
                 if let Some(f) = ExportFormat::from_path(&p)
                     && f != v.format
                 {
@@ -412,13 +373,11 @@ impl ExportView {
         .detach();
     }
 
-    /// The source's facts for the scope list: loaded rows, paused, the selection.
     fn facts(&self) -> Option<(usize, bool, Option<(usize, usize)>)> {
         let s = self.source.as_ref()?;
         let sel = s.selection.as_ref().map(|(r, c)| (r.len(), c.len()));
         Some(match &s.rs {
             Some(rs) => (rs.rows(), rs.phase() == Phase::Paused, sel),
-            // A table: nothing loaded, everything streams.
             None => (0, true, None),
         })
     }
@@ -441,15 +400,14 @@ impl ExportView {
             if t.is_empty() { base_name(&src.sql) } else { t }
         };
         let Some(rs) = src.rs.clone() else {
-            // A table from the explorer: `SELECT * FROM it`, streamed on its own connection.
             let export = src.conn.export_query(Some(&src.db), src.sql.clone(), self.path.clone(), opts, None);
             self.track(export, cx);
             return;
         };
         let paused = rs.phase() == Phase::Paused;
         let export = match self.scope {
-            // Streaming re-runs the statement on its own connection; a sorted grid is written
-            // from the result instead, in the order it shows (the core waits for every row).
+            // A sorted grid is written from the result, in the order it shows: streaming re-runs
+            // the statement on its own connection.
             RowScope::All if paused && is_rerunnable(&src.sql) && rs.sort_state().is_none() => {
                 src.conn.export_query(Some(&src.db), src.sql.clone(), self.path.clone(), opts, None)
             }
@@ -469,7 +427,6 @@ impl ExportView {
         self.track(export, cx);
     }
 
-    /// Follows a started export: its progress at 4 Hz while it runs, the outcome at the end.
     fn track(&mut self, export: dataman_core::export::Export, cx: &mut Context<Self>) {
         let progress = export.progress.clone();
         let task = export.task;
@@ -488,7 +445,6 @@ impl ExportView {
                 cx.notify();
             });
         });
-        // Progress at 4 Hz while it runs: enough for the numbers, no busy redraw.
         let tick = cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(Duration::from_millis(250)).await;
@@ -511,7 +467,6 @@ impl ExportView {
         cx.notify();
     }
 
-    /// Demo: one format, all rows, into a temporary folder (deleted with the process's files).
     pub fn demo_start(&mut self, format: ExportFormat, cx: &mut Context<Self>) {
         self.set_format(format, cx);
         self.scope = RowScope::All;
@@ -520,7 +475,6 @@ impl ExportView {
         self.start(cx);
     }
 
-    /// Checks: the last export's outcome (`None` while none ran or one runs): its file and rows.
     pub fn demo_outcome(&self) -> Option<Result<(PathBuf, u64), String>> {
         match &self.job.as_ref()?.state {
             JobState::Running => None,
@@ -529,17 +483,14 @@ impl ExportView {
         }
     }
 
-    /// Checks: the centre of the header's ×, as last laid out.
     pub fn demo_close_point(&self) -> Option<gpui::Point<gpui::Pixels>> {
         self.close_bounds.get().map(|b| b.center())
     }
 
-    /// Checks: the footer's status line.
     pub fn demo_status(&self, cx: &App) -> Option<String> {
         self.status(&cx.theme()).map(|s| s.0)
     }
 
-    /// The status-bar line while it runs hidden.
     pub fn status_line(&self) -> Option<String> {
         let j = self.job.as_ref()?;
         if !matches!(j.state, JobState::Running) {
@@ -551,8 +502,6 @@ impl ExportView {
         Some(format!("exporting{pct} · {} rows{key}", ui_count(rows as usize)))
     }
 
-    /// The footer's status line (and its color): the rows so far while it runs, then what was
-    /// written, or why not.
     fn status(&self, t: &Theme) -> Option<(String, Hsla)> {
         let j = self.job.as_ref()?;
         Some(match &j.state {
@@ -577,7 +526,6 @@ impl Render for ExportView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme();
         let running = self.is_running();
-        // Only while one runs: once it ends the sheet takes another format, another file.
         let locked = running;
         let scrim = |inner: gpui::AnyElement, cx: &mut Context<Self>| {
             div()
@@ -600,7 +548,6 @@ impl Render for ExportView {
                 .on_action(cx.listener(|v, _: &StartExport, _, cx| v.start(cx)))
                 .on_action(cx.listener(|v, _: &StopExport, _, cx| v.stop(cx)))
                 .on_mouse_down(MouseButton::Left, cx.listener(|_, _, _, cx| cx.emit(ExportEvent::Close)))
-                // Down to the window's bottom, so a sheet taller than the room is held in it.
                 .child(div().absolute().top(px(70.)).left_0().right_0().bottom(px(12.)).flex().items_start().justify_center().child(inner))
         };
         let close_at = self.close_bounds.clone();
@@ -613,7 +560,6 @@ impl Render for ExportView {
                 .child(ui::modal_close(&t, "ex-close").on_click(cx.listener(|_, _, _, cx| cx.emit(ExportEvent::Close)))),
         );
         let sheet = ui::modal(&t, "export-sheet").w(px(640.)).overflow_hidden().child(header);
-        // Nothing to export (NextStates · EXPORT).
         let Some((loaded, paused, sel)) = self.facts() else {
             let card = sheet.child(
                 div()
@@ -724,7 +670,6 @@ impl Render for ExportView {
             _ => ncols.map(|n| format!("all {n}")).unwrap_or_else(|| "all".into()),
         };
         cells.push(info("COLUMNS", cols_txt, &t).into_any_element());
-        // Two columns of fields.
         let mut grid_rows: Vec<gpui::AnyElement> = Vec::new();
         let mut it = cells.into_iter();
         while let Some(a) = it.next() {
@@ -732,7 +677,6 @@ impl Render for ExportView {
             grid_rows.push(div().flex().flex_row().gap(px(16.)).child(div().flex_1().min_w_0().child(a)).child(div().flex_1().min_w_0().children(b)).into_any_element());
         }
         let table = src.rs.is_none();
-        // Counts only: what is known about each scope.
         let all_desc = if table || paused { String::new() } else { ui_count(loaded) };
         let scopes = [
             (RowScope::All, if table { "All rows of the table" } else { "All rows of the query" }, all_desc, true),
@@ -786,7 +730,6 @@ impl Render for ExportView {
                         .when(!locked, |d| d.on_click(cx.listener(|v, _, _, cx| v.choose_path(cx)))),
                 ),
         );
-        // Every other option, closed by default.
         let open = self.advanced;
         let advanced = div()
             .id("ex-advanced")
@@ -803,7 +746,6 @@ impl Render for ExportView {
                 v.menu = None;
                 cx.notify();
             }));
-        // Scrolls when the window is short (or the UI zoomed); the footer stays.
         let body = div()
             .id("ex-body")
             .flex_1()
@@ -819,8 +761,6 @@ impl Render for ExportView {
             .child(save)
             .child(advanced)
             .when(open, |d| d.children(grid_rows));
-        // The status as text on the left; while it runs Stop and Run in background, else
-        // Close and Export (again, another format if picked).
         let status = self.status(&t);
         let done_path = match self.job.as_ref().map(|j| &j.state) {
             Some(JobState::Done(s)) if !s.cancelled => Some(s.path.clone()),
@@ -859,7 +799,6 @@ impl Render for ExportView {
     }
 }
 
-/// `~/Downloads/x.csv`.
 pub(crate) fn tilde(p: &Path) -> String {
     let s = p.display().to_string();
     match std::env::var("HOME") {
@@ -868,13 +807,9 @@ pub(crate) fn tilde(p: &Path) -> String {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Workspace side
-
 use crate::app::Workspace;
 
 impl Workspace {
-    /// ⌘E: the running export if there is one, else a new dialog for the active tab's result.
     pub(crate) fn open_export(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(e) = self.export.clone()
             && e.read(cx).is_running()
@@ -904,7 +839,6 @@ impl Workspace {
         self.show_export(source, window, cx);
     }
 
-    /// The explorer's "Export…" on a table: the dialog set to stream `SELECT * FROM` it.
     pub(crate) fn export_table(&mut self, conn: &str, db: &str, schema: &str, name: &str, window: &mut Window, cx: &mut Context<Self>) {
         if self.export.as_ref().is_some_and(|e| e.read(cx).is_running()) {
             self.notice("An export is running: wait for it, or open it with ⌘E", cx);
@@ -952,7 +886,6 @@ impl Workspace {
             }
         })
         .detach();
-        // The status bar shows a hidden export's progress.
         cx.observe(&v, |_, _, cx| cx.notify()).detach();
         self.export = Some(v);
         cx.notify();
@@ -987,9 +920,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("dataman-export-fmt-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let chosen = dir.join("events_2024.csv");
-        // Nothing there: same name, new extension.
         assert_eq!(with_format(&chosen, "json"), (dir.join("events_2024.json"), false));
-        // An existing file is never taken over silently.
         std::fs::write(dir.join("events_2024.json"), "x").unwrap();
         assert_eq!(with_format(&chosen, "json"), (dir.join("events_2024 (2).json"), true));
         std::fs::remove_dir_all(&dir).unwrap();

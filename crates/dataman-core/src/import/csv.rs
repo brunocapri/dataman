@@ -1,10 +1,3 @@
-//! A streaming CSV / TSV reader over bytes, and the dialect detection of a file's first bytes.
-//!
-//! The reader keeps the raw bytes of one record at a time (fields as ranges into them, with
-//! whether each was quoted, so `""` and an empty field differ like in `COPY … CSV`) and the
-//! physical line each record starts on, for error reports. Decoding (UTF-8, Latin-1,
-//! Windows-1252) and the TSV escapes happen per field, in [`decode_field`].
-
 use std::io::{self, BufRead};
 
 use super::{CsvDialect, Encoding};
@@ -16,12 +9,10 @@ pub struct Field {
     pub quoted: bool,
 }
 
-/// One record: its bytes (quotes removed, doubled quotes collapsed) and its fields.
 #[derive(Clone, Debug, Default)]
 pub struct Record {
     pub buf: Vec<u8>,
     pub fields: Vec<Field>,
-    /// The physical line (1-based) the record starts on.
     pub line: u64,
 }
 
@@ -38,7 +29,6 @@ impl Record {
         self.fields.get(i).map(|f| (&self.buf[f.start..f.end], f.quoted))
     }
 
-    /// A line with nothing on it (one empty, unquoted field).
     pub fn is_blank(&self) -> bool {
         self.fields.len() == 1 && self.fields[0].start == self.fields[0].end && !self.fields[0].quoted
     }
@@ -49,7 +39,6 @@ enum State {
     Start,
     Unquoted,
     Quoted,
-    /// A quote inside a quoted field: the next byte says whether it was doubled.
     QuoteSeen,
 }
 
@@ -57,9 +46,7 @@ pub struct Reader<R> {
     inner: R,
     delim: u8,
     quote: Option<u8>,
-    /// The line the next record starts on.
     line: u64,
-    /// A CR at the end of the previous record: skip one LF.
     skip_lf: bool,
 }
 
@@ -68,8 +55,6 @@ impl<R: BufRead> Reader<R> {
         Reader { inner, delim, quote, line: 1, skip_lf: false }
     }
 
-    /// The next record, `false` at the end of the input. CR, LF and CRLF all end a record
-    /// (outside quotes); a quote that closes in the middle of a field keeps what follows.
     pub fn read(&mut self, rec: &mut Record) -> io::Result<bool> {
         rec.buf.clear();
         rec.fields.clear();
@@ -92,7 +77,6 @@ impl<R: BufRead> Reader<R> {
                 if !any {
                     return Ok(false);
                 }
-                // The last line had no line break (an unclosed quote ends here too).
                 rec.fields.push(Field { start: field_start, end: rec.buf.len(), quoted });
                 return Ok(true);
             }
@@ -111,7 +95,6 @@ impl<R: BufRead> Reader<R> {
                         }
                     }
                     State::Unquoted => {
-                        // Copy the run up to the next special byte at once.
                         let run = buf[i..].iter().position(|&c| c == delim || c == b'\n' || c == b'\r').unwrap_or(n - i);
                         rec.buf.extend_from_slice(&buf[i..i + run]);
                         i += run;
@@ -130,7 +113,6 @@ impl<R: BufRead> Reader<R> {
                             self.inner.consume(i);
                             return Ok(true);
                         } else {
-                            // CR: an LF may follow, possibly in the next buffer.
                             self.line += 1;
                             if i < n {
                                 if buf[i] == b'\n' {
@@ -164,7 +146,6 @@ impl<R: BufRead> Reader<R> {
                         } else if c == delim || c == b'\n' || c == b'\r' {
                             state = State::Unquoted;
                         } else {
-                            // Text after a closing quote: kept, like most readers do.
                             rec.buf.push(c);
                             state = State::Unquoted;
                             i += 1;
@@ -177,8 +158,6 @@ impl<R: BufRead> Reader<R> {
     }
 }
 
-/// Decodes one field into `out` (cleared first). `Ok(false)`: the field is NULL. `Err`: the
-/// bytes are not valid in the encoding.
 pub fn decode_field(raw: &[u8], quoted: bool, d: &CsvDialect, out: &mut String) -> Result<bool, ()> {
     out.clear();
     if !quoted && raw == d.null_text.as_bytes() {
@@ -212,7 +191,6 @@ pub fn decode_field(raw: &[u8], quoted: bool, d: &CsvDialect, out: &mut String) 
     Ok(true)
 }
 
-/// Windows-1252's 0x80–0x9F (the rest of its upper half is Latin-1).
 const CP1252: [char; 32] = [
     '€', '\u{81}', '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', '\u{8d}', 'Ž', '\u{8f}', '\u{90}', '‘', '’', '“', '”', '•', '–', '—',
     '˜', '™', 'š', '›', 'œ', '\u{9d}', 'ž', 'Ÿ',
@@ -227,12 +205,6 @@ pub fn decode(raw: &[u8], enc: Encoding, out: &mut String) -> Result<(), ()> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------------------------
-// Detection
-
-/// The encoding a sample suggests: UTF-8 when it decodes (a character cut at the sample's end
-/// does not count), else Windows-1252 when it has bytes in 0x80–0x9F (unused in Latin-1), else
-/// Latin-1.
 pub fn sniff_encoding(sample: &[u8], complete: bool) -> Encoding {
     match std::str::from_utf8(sample) {
         Ok(_) => Encoding::Utf8,
@@ -242,7 +214,6 @@ pub fn sniff_encoding(sample: &[u8], complete: bool) -> Encoding {
     }
 }
 
-/// Records of a sample with a dialect (at most `limit`).
 pub fn records(sample: &[u8], delim: u8, quote: Option<u8>, limit: usize) -> Vec<Record> {
     let mut r = Reader::new(sample, delim, quote);
     let mut out = Vec::new();
@@ -260,9 +231,6 @@ pub fn records(sample: &[u8], delim: u8, quote: Option<u8>, limit: usize) -> Vec
     out
 }
 
-/// The delimiter that splits the sample's lines most consistently into more than one field:
-/// for each candidate, the share of records with the most common field count, then that
-/// count. One column (no candidate splits anything) keeps the comma.
 pub fn sniff_delimiter(sample: &[u8], quote: Option<u8>) -> u8 {
     let mut best = (b',', 0.0f64, 0usize);
     for d in [b',', b';', b'\t', b'|'] {
@@ -286,7 +254,6 @@ pub fn sniff_delimiter(sample: &[u8], quote: Option<u8>) -> u8 {
     best.0
 }
 
-/// The quote character: `"` unless the sample has none and quotes fields with `'`.
 pub fn sniff_quote(sample: &[u8], delim: u8) -> Option<u8> {
     let starts = |q: u8| {
         sample.windows(2).filter(|w| (w[0] == delim || w[0] == b'\n') && w[1] == q).count() + usize::from(sample.first() == Some(&q))
@@ -294,9 +261,6 @@ pub fn sniff_quote(sample: &[u8], delim: u8) -> Option<u8> {
     if starts(b'"') == 0 && starts(b'\'') > 0 { Some(b'\'') } else { Some(b'"') }
 }
 
-/// Whether the first record is a header: in each column whose other values share a type, a
-/// first value that parses as nothing votes yes (one that parses votes no); with only text columns, a
-/// first row of distinct, non-empty names that do not reappear below is a header.
 pub fn sniff_header(recs: &[Vec<Option<String>>]) -> bool {
     use super::infer::{Infer, PgType};
     let Some((first, rest)) = recs.split_first() else { return true };
@@ -320,7 +284,6 @@ pub fn sniff_header(recs: &[Vec<Option<String>>]) -> bool {
             Some(h) if !h.is_empty() => one.observe(h),
             _ => continue,
         }
-        // A name parses as nothing; a value (even of a wider type: 2.5 over integers) does.
         if one.result() == PgType::Text { votes += 1 } else { votes -= 1 }
     }
     if votes != 0 {
@@ -337,7 +300,6 @@ mod tests {
     use super::*;
 
     fn parse(input: &[u8], delim: u8, quote: Option<u8>) -> Vec<(u64, Vec<(String, bool)>)> {
-        // A tiny buffer exercises every split across refills.
         let mut r = Reader::new(io::BufReader::with_capacity(3, input), delim, quote);
         let mut rec = Record::default();
         let mut out = Vec::new();
@@ -360,9 +322,7 @@ mod tests {
         let input = b"id,name,note\r\n1,\"a,b\",\"say \"\"hi\"\"\"\n2,\"two\nlines\",\r3,,\"\"\n4,x";
         let recs = parse(input, b',', Some(b'"'));
         assert_eq!(texts(&recs), vec![vec!["id", "name", "note"], vec!["1", "a,b", "say \"hi\""], vec!["2", "two\nlines", ""], vec!["3", "", ""], vec!["4", "x"]]);
-        // The physical line each record starts on (the quoted line break counts).
         assert_eq!(recs.iter().map(|r| r.0).collect::<Vec<_>>(), vec![1, 2, 3, 5, 6]);
-        // Quoted empty vs empty.
         assert_eq!(recs[3].1[1], ("".into(), false));
         assert_eq!(recs[3].1[2], ("".into(), true));
     }
@@ -374,7 +334,6 @@ mod tests {
         assert_eq!(parse(b"", b',', None).len(), 0);
         assert_eq!(texts(&parse(b"x,\n", b',', None)), vec![vec!["x", ""]]);
         assert_eq!(texts(&parse(b"x,", b',', None)), vec![vec!["x", ""]]);
-        // CRLF split across buffer refills.
         assert_eq!(texts(&parse(b"ab\r\ncd\r\n", b',', None)), vec![vec!["ab"], vec!["cd"]]);
     }
 
@@ -389,7 +348,6 @@ mod tests {
         assert!(!decode_field(recs[0].1[1].0.as_bytes(), false, &d, &mut s).unwrap(), "\\N is NULL");
         assert!(decode_field(recs[0].1[2].0.as_bytes(), false, &d, &mut s).unwrap());
         assert_eq!(s, "c\\d\ne");
-        // A quote is an ordinary byte without quoting.
         assert_eq!(texts(&parse(b"\"a\"\tb\n", b'\t', None)), vec![vec!["\"a\"", "b"]]);
     }
 
@@ -404,7 +362,6 @@ mod tests {
         s.clear();
         assert!(decode(&[0xe7], Encoding::Utf8, &mut s).is_err());
         assert_eq!(sniff_encoding("Zürich".as_bytes(), true), Encoding::Utf8);
-        // A UTF-8 character cut at the sample's end is still UTF-8.
         assert_eq!(sniff_encoding(&"Zürich".as_bytes()[..2], false), Encoding::Utf8);
         assert_eq!(sniff_encoding(&[b'a', 0xe7, b'b'], true), Encoding::Latin1);
         assert_eq!(sniff_encoding(&[b'a', 0x93, b'b', 0x94], true), Encoding::Windows1252);
@@ -422,7 +379,6 @@ mod tests {
         let rows = |v: &[&[&str]]| v.iter().map(|r| r.iter().map(|s| Some(s.to_string())).collect()).collect::<Vec<_>>();
         assert!(sniff_header(&rows(&[&["id", "price"], &["1", "2.5"], &["2", "3"]])));
         assert!(!sniff_header(&rows(&[&["7", "2.5"], &["1", "2.5"], &["2", "3"]])));
-        // Text only: distinct names that do not reappear.
         assert!(sniff_header(&rows(&[&["name", "city"], &["Ann", "Oslo"], &["Bea", "NYC"]])));
         assert!(!sniff_header(&rows(&[&["Ann", "Oslo"], &["Ann", "NYC"], &["Bea", "Oslo"]])));
     }

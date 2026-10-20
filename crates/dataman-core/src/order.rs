@@ -1,19 +1,11 @@
-//! Reordering a list by drag (query tabs, saved connections): the slot a pointer points at and
-//! the move a drop there makes. A slot is a gap: 0 before the first item, `n` after the last.
-
-/// The slot a pointer at `pos` points at among items whose middles are `mids` (in order): the
-/// gap before the first middle it has not passed.
 pub fn slot(mids: &[f32], pos: f32) -> usize {
     mids.iter().take_while(|m| pos > **m).count()
 }
 
-/// Whether item `from` dropped at `slot` moves (the gaps either side of it leave it in place).
 pub fn moves(from: usize, slot: usize) -> bool {
     slot != from && slot != from + 1
 }
 
-/// Moves item `from` to `slot` (counted before the move): the index it lands at, `None` when it
-/// stays where it is.
 pub fn move_to<T>(v: &mut Vec<T>, from: usize, slot: usize) -> Option<usize> {
     if from >= v.len() || slot > v.len() || !moves(from, slot) {
         return None;
@@ -48,7 +40,6 @@ mod tests {
         assert_eq!(v, ['d', 'b', 'c', 'a']);
         assert_eq!(move_to(&mut v, 1, 4), Some(3));
         assert_eq!(v, ['d', 'c', 'a', 'b']);
-        // Either side of itself, or out of range: nothing moves.
         assert_eq!(move_to(&mut v, 2, 2), None);
         assert_eq!(move_to(&mut v, 2, 3), None);
         assert_eq!(move_to(&mut v, 4, 0), None);

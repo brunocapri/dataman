@@ -1,5 +1,3 @@
-//! Saved connections and their live state, shared by the sidebar and the tabs.
-
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -15,8 +13,6 @@ pub enum ConnState {
 
 pub enum ConnEvent {
     Connected(String),
-    /// Connecting failed; `needs_password` when the server asked for one we do not have, `ssh`
-    /// when the tunnel needs the user (an unknown host key, a missing password or passphrase).
     Failed { id: String, needs_password: bool, ssh: Option<SshError> },
 }
 
@@ -36,7 +32,6 @@ impl ConnStore {
 
     pub fn reload(&mut self, cx: &mut Context<Self>) {
         let profiles = self.core.config.connections();
-        // A deleted connection's pinned tables go with it.
         for gone in self.profiles.iter().filter(|p| !profiles.iter().any(|n| n.id == p.id)) {
             let _ = self.core.pins.forget(&gone.id);
         }
@@ -44,7 +39,6 @@ impl ConnStore {
         cx.notify();
     }
 
-    /// Moves connection `from` to `slot` (a drag in the explorer) and saves the order to the file.
     pub fn reorder(&mut self, from: usize, slot: usize, cx: &mut Context<Self>) {
         if dataman_core::order::move_to(&mut self.profiles, from, slot).is_none() {
             return;
@@ -81,7 +75,6 @@ impl ConnStore {
             let _ = this.update(cx, |s, cx| {
                 match r {
                     Ok(c) => {
-                        // Autocomplete data loads in the background right away.
                         let db = c.database().to_string();
                         // (Dropping the task handle does not stop the work.)
                         let _ = c.preload(&db);
@@ -106,8 +99,6 @@ impl ConnStore {
         .detach();
     }
 
-    /// Forgets the connection and ends its SSH tunnel (tabs and live queries may still hold
-    /// the connection; nothing gets through the tunnel after this).
     pub fn disconnect(&mut self, id: &str, cx: &mut Context<Self>) {
         if let Some(ConnState::Connected(c)) = self.states.remove(id) {
             c.close();
@@ -115,14 +106,11 @@ impl ConnStore {
         cx.notify();
     }
 
-    /// Forgets the connection's state without closing it: tabs holding it (a transaction open)
-    /// keep working on it; the next connect opens a new one.
     pub fn forget(&mut self, id: &str, cx: &mut Context<Self>) {
         self.states.remove(id);
         cx.notify();
     }
 
-    /// Ends every SSH tunnel (quitting).
     pub fn close_all(&self) {
         for s in self.states.values() {
             if let ConnState::Connected(c) = s {
@@ -132,15 +120,10 @@ impl ConnStore {
     }
 }
 
-/// What became of a saved connection between two reads of the file.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Edited {
-    /// Unchanged, or only what agents may do (the MCP settings, read by no session).
     Same,
-    /// Only per-database read-only settings (and maybe the MCP ones): the live connection
-    /// follows without reconnecting.
     ReadOnlyDatabases,
-    /// Anything else: a live connection reconnects with the new settings.
     Settings,
     Removed,
 }
@@ -155,9 +138,6 @@ pub(crate) fn edited(old: &ConnectionProfile, new: Option<&ConnectionProfile>) -
 }
 
 impl crate::app::Workspace {
-    /// Follows `connections.toml` written by others (`dataman-mcp` running without the app, a
-    /// hand edit): its modification time once a second, read off the UI thread; the app's own
-    /// MCP calls also say so at once ([`crate::mcp::FrontMsg::ConnectionsChanged`]).
     pub(crate) fn watch_connections(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) {
         let core = self.store.read(cx).core.clone();
         cx.spawn_in(window, async move |this, cx| {
@@ -174,16 +154,13 @@ impl crate::app::Workspace {
         .detach();
     }
 
-    /// The file changed through this app's MCP server: read it now.
     pub(crate) fn connections_on_disk(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) {
         self.store.read(cx).core.config.refresh();
         self.connections_reloaded(window, cx);
     }
 
-    /// The saved connections as the file has them now: new ones show (the welcome screen
-    /// gives way to the workspace), removed ones go, and a live connection whose settings
-    /// changed reconnects with them, never ending a transaction: a tab with one open keeps
-    /// the old connection until it is done, the others move to the new one.
+    /// A live connection whose settings changed reconnects, never ending a transaction: a tab
+    /// with one open keeps the old connection until it is done.
     pub(crate) fn connections_reloaded(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) {
         let old = self.store.read(cx).profiles.clone();
         let new = self.store.read(cx).core.config.connections();
@@ -217,7 +194,6 @@ impl crate::app::Workspace {
                     });
                 }
                 (Edited::Removed, Some(ConnState::Connected(_))) if !held => self.disconnect(p.id.clone(), cx),
-                // A failed attempt was with the old settings.
                 (Edited::Settings | Edited::Removed, Some(ConnState::Failed(_))) => self.store.update(cx, |s, cx| s.forget(&p.id, cx)),
                 _ => {}
             }

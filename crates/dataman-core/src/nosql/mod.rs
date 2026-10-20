@@ -1,15 +1,3 @@
-//! The engines without SQL: MongoDB, Elasticsearch, OpenSearch and Redis.
-//!
-//! Their connections are [`Connection`]s like the others (a profile, server info, the SSH
-//! tunnel), holding a [`Client`] instead of SQL sessions. Tabs on them show documents and run the
-//! engine's own language ([`mql`] for MongoDB); the explorer lists what [`Connection::nosql_tree`]
-//! returns; documents are edited through [`Connection::save_document`] and its siblings. The
-//! drivers are in [`crate::backend`].
-//!
-//! Every value is a [`Body`]: BSON for MongoDB (its types survive an edit), JSON for the search
-//! engines. Statements are classified ([`crate::guard::WriteClass`]) before they run, as SQL is:
-//! a read-only connection refuses writes, production asks first, the MCP tiers apply.
-
 pub mod console;
 pub(crate) mod js;
 pub mod lang;
@@ -17,7 +5,6 @@ pub mod mql;
 pub mod redis;
 pub mod shell;
 
-/// BSON's types, for what reads MongoDB's documents.
 pub use mongodb::bson;
 
 use std::sync::Arc;
@@ -34,11 +21,9 @@ use crate::server::ServerInfo;
 use crate::ssh::Tunnel;
 use crate::{Task, spawn};
 
-/// A connection's client, one variant per driver.
 #[derive(Clone)]
 pub(crate) enum Client {
     Mongo(Arc<mongo::Client>),
-    /// Elasticsearch and OpenSearch.
     Search(Arc<search::Client>),
     Redis(Arc<rds::Client>),
 }
@@ -53,7 +38,6 @@ impl Client {
     }
 }
 
-/// Connects (through the tunnel, if any) and reads what the server is.
 pub(crate) async fn connect(p: &ConnectionProfile, password: Option<&str>, tunnel: Option<&Tunnel>) -> Result<(Client, ServerInfo)> {
     match p.engine {
         Engine::MongoDb => {
@@ -80,10 +64,6 @@ pub(crate) async fn connect(p: &ConnectionProfile, password: Option<&str>, tunne
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Values
-
-/// A document or a value of one: BSON (MongoDB) or JSON (the search engines).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Body {
     Bson(Bson),
@@ -95,17 +75,14 @@ impl Body {
         Body::Bson(Bson::Document(d))
     }
 
-    /// The editable text: the shell's form for BSON ([`shell::print_bson`]), indented JSON.
     pub fn text(&self) -> String {
         match self {
             Body::Bson(b) => shell::print_bson(b),
-            // A reply that is text (INFO, `_cat`): as it is, not as a JSON string.
             Body::Json(serde_json::Value::String(s)) => s.clone(),
             Body::Json(j) => serde_json::to_string_pretty(j).unwrap_or_default(),
         }
     }
 
-    /// One line (a scalar as the shell writes it; a container summarized).
     pub fn inline(&self) -> String {
         match self {
             Body::Bson(b) => shell::scalar_text(b),
@@ -115,7 +92,6 @@ impl Body {
         }
     }
 
-    /// As JSON (relaxed extended JSON for BSON: `{"$oid": "…"}`), for agents and exports.
     pub fn to_json(&self) -> serde_json::Value {
         match self {
             Body::Bson(b) => b.clone().into_relaxed_extjson(),
@@ -123,7 +99,6 @@ impl Body {
         }
     }
 
-    /// The tree the document view draws.
     pub fn node(&self) -> Node {
         match self {
             Body::Bson(b) => Node::of_bson(String::new(), b),
@@ -132,7 +107,6 @@ impl Body {
     }
 }
 
-/// What a value is, for its color in the document view.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NodeKind {
     Object,
@@ -141,21 +115,16 @@ pub enum NodeKind {
     Number,
     Bool,
     Null,
-    /// An ObjectId, a UUID: an identity.
     Id,
     Date,
-    /// Everything else (binary, regex, timestamps, keys).
     Other,
 }
 
-/// A field of a document as the document view shows it: its key, its value in one line (a
-/// container's count) and its own fields.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Node {
     pub key: String,
     pub kind: NodeKind,
     pub text: String,
-    /// The value's type name (`objectId`, `long`): shown beside it where types matter.
     pub type_name: &'static str,
     pub children: Vec<Node>,
 }
@@ -195,76 +164,50 @@ impl Node {
         Node { key, kind, text, type_name, children }
     }
 
-    /// Fields and items below it, all levels.
     pub fn count(&self) -> usize {
         self.children.iter().map(|c| 1 + c.count()).sum()
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Results
-
-/// Where a page of documents lives, so each can be saved back.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Source {
     Mongo { db: String, coll: String },
-    /// An index (empty: the documents' own, each saved to its `_index`).
     Search { index: String },
-    /// A Redis key's value, its entries (a hash's fields, a list's items…): `kind` is its type.
     Redis { db: String, key: String, kind: String },
 }
 
-/// One document of a result.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Doc {
-    /// Its identity (`_id`): saving replaces the document that has it.
     pub id: Option<Body>,
-    /// The index it lives in (a search's hits: an index pattern finds several).
     pub index: Option<String>,
     pub body: Body,
 }
 
-/// A page of documents.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Docs {
     pub docs: Vec<Doc>,
-    /// Where they can be saved (none for computed ones: an aggregation, a projection).
     pub source: Option<Source>,
-    /// How many there are in all, when known.
     pub total: Option<u64>,
-    /// The page's first document, counted from the query's own first.
     pub skip: u64,
-    /// More follow this page.
     pub more: bool,
 }
 
-/// What a statement returned.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Output {
     Docs(Docs),
-    /// A command's answer, a count, a list of names.
     Value(Body),
-    /// A write: how many documents it changed, in words, and the server's answer.
     Written { affected: u64, summary: String, detail: Option<Body> },
-    /// `use name`: the tab moves to that database.
     Use(String),
 }
 
-/// A statement that ran: its output, and how long it took.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Ran {
     pub output: Output,
     pub elapsed: Duration,
-    /// What it was, as classified before it ran.
     pub class: WriteClass,
-    /// A MongoDB script's (`js`): the lines it printed (`print`, `printjson`)…
     pub printed: Vec<String>,
-    /// …what each of its writes changed, in order…
     pub writes: Vec<String>,
-    /// …the database `db` ended on, when it moved there (`use`, `db = db.getSiblingDB(…)`)…
     pub moved: Option<String>,
-    /// …and its last value's cursor, for its other pages ([`Connection::rerun_nosql`]): the
-    /// script itself does not run again.
     pub rerun: Option<Rerun>,
 }
 
@@ -274,14 +217,12 @@ impl Ran {
     }
 }
 
-/// A script's final cursor: its query, read again for a page.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Rerun {
     db: String,
     op: mql::Op,
 }
 
-/// Why a statement did not run or failed: the message, and where in its text (parse errors).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Failed {
     pub message: String,
@@ -308,7 +249,6 @@ impl From<anyhow::Error> for Failed {
     }
 }
 
-/// The documents a page asks for: from `skip` (past the query's own skip), at most `limit`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Page {
     pub skip: u64,
@@ -321,11 +261,8 @@ impl Default for Page {
     }
 }
 
-/// The documents one page shows.
 pub const PAGE: usize = 50;
 
-/// A statement on its way; drop it or [`Running::cancel`] to stop it. A failure is a
-/// [`Failed`] (`downcast_ref`), with where in the text when it could not be read.
 pub struct Running {
     task: Task<Ran>,
     abort: tokio::task::AbortHandle,
@@ -365,7 +302,6 @@ where
     Running { task: Task(rx), abort: h.abort_handle() }
 }
 
-/// What a statement is, read without running it: `Err` when it cannot be read.
 pub fn classify(engine: Engine, text: &str) -> Result<WriteClass, Failed> {
     match engine {
         Engine::MongoDb => match mongo_text(text)? {
@@ -384,15 +320,11 @@ pub fn classify(engine: Engine, text: &str) -> Result<WriteClass, Failed> {
     }
 }
 
-/// A MongoDB text: one statement of the shell, or a script ([`js`]).
 enum MongoText {
     Statement(mql::Parsed),
     Script,
 }
 
-/// What the shell does with `text`: a statement it reads; else JavaScript when it is one (several
-/// statements, a declaration, a loop, a call chain the statement form has not: `forEach`), the
-/// statement's own error (where) otherwise.
 fn mongo_text(text: &str) -> Result<MongoText, Failed> {
     let e = match mql::parse(text) {
         Ok(p) => return Ok(MongoText::Statement(p)),
@@ -409,8 +341,7 @@ fn mongo_text(text: &str) -> Result<MongoText, Failed> {
     Err(e.into())
 }
 
-/// A script on its own thread (Boa's runtime is not `Send`), its calls to the server through
-/// the connection's runtime; stopped at its next call when the run is dropped or cancelled.
+// On its own thread: Boa's runtime is not `Send`.
 async fn run_script(conn: Arc<Connection>, client: Arc<mongo::Client>, db: String, text: String, class: WriteClass, page: Page) -> Result<js::Script, Failed> {
     use std::sync::atomic::{AtomicBool, Ordering};
     struct Server {
@@ -470,13 +401,10 @@ async fn run_script(conn: Arc<Connection>, client: Arc<mongo::Client>, db: Strin
     rx.await.unwrap_or_else(|_| Err(Failed { message: "the script stopped".into(), at: None }))
 }
 
-/// Whether `text` runs as a MongoDB script (JavaScript, [`js`]) rather than one statement: what
-/// it writes is known only as it runs ([`Connection::nosql_affects`] cannot count it first).
 pub fn is_script(engine: Engine, text: &str) -> bool {
     engine == Engine::MongoDb && matches!(mongo_text(text), Ok(MongoText::Script))
 }
 
-/// The statements of an editor's text (byte ranges), in the engine's language.
 pub fn statements(engine: Engine, text: &str) -> Vec<std::ops::Range<usize>> {
     match engine {
         Engine::MongoDb => mql::split(text),
@@ -490,7 +418,6 @@ pub fn statements(engine: Engine, text: &str) -> Vec<std::ops::Range<usize>> {
     }
 }
 
-/// The statement a tab runs first: a collection's documents (or a key's value).
 pub fn open_statement(engine: Engine, collection: &str) -> String {
     match engine {
         Engine::MongoDb => {
@@ -506,8 +433,6 @@ pub fn open_statement(engine: Engine, collection: &str) -> String {
     }
 }
 
-/// The statement a tab opens a tree row with: [`open_statement`], a Redis key's by its type
-/// (as the explorer last read it).
 pub fn open_statement_for(conn: &Connection, db: &str, name: &str) -> String {
     if conn.engine() == Engine::Redis {
         let kind = conn.cached_tree(Some(db)).and_then(|v| v.iter().find(|i| i.name == name).and_then(|i| i.note.clone())).unwrap_or_default();
@@ -516,8 +441,6 @@ pub fn open_statement_for(conn: &Connection, db: &str, name: &str) -> String {
     open_statement(conn.engine(), name)
 }
 
-/// A new document's text in the document view: an entry of a Redis value's type, else an
-/// empty object.
 pub fn new_template(source: &Source) -> String {
     match source {
         Source::Redis { kind, .. } => match kind.as_str() {
@@ -532,8 +455,6 @@ pub fn new_template(source: &Source) -> String {
     }
 }
 
-/// A collection's (a key's) count statement, by what the explorer last read (a Redis key's
-/// type).
 pub fn count_statement_for(conn: &Connection, db: &str, name: &str) -> String {
     if conn.engine() == Engine::Redis {
         let kind = conn.cached_tree(Some(db)).and_then(|v| v.iter().find(|i| i.name == name).and_then(|i| i.note.clone())).unwrap_or_default();
@@ -542,7 +463,6 @@ pub fn count_statement_for(conn: &Connection, db: &str, name: &str) -> String {
     count_statement(conn.engine(), name)
 }
 
-/// The statement that counts a collection's documents.
 pub fn count_statement(engine: Engine, collection: &str) -> String {
     match engine {
         Engine::MongoDb => open_statement(engine, collection).replace(".find({})", ".countDocuments({})"),
@@ -552,40 +472,27 @@ pub fn count_statement(engine: Engine, collection: &str) -> String {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// The explorer
-
-/// One entry of a document connection's tree.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Item {
     pub name: String,
     pub kind: ItemKind,
-    /// Documents (keys), when the server says cheaply.
     pub count: Option<u64>,
-    /// Bytes on disk, when the server says.
     pub size: Option<u64>,
-    /// What else the row says: a Redis key's type.
     pub note: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ItemKind {
-    /// Holds collections (a MongoDB database).
     Database,
     Collection,
     View,
 }
-
-// ---------------------------------------------------------------------------------------------
-// On a connection
 
 impl Connection {
     pub(crate) fn client(&self) -> Result<&Client, Failed> {
         self.nosql.as_ref().ok_or_else(|| Failed { message: format!("{} has no documents", self.engine().label()), at: None })
     }
 
-    /// Runs `text` (one statement of the engine's language) on `db`, the page `page` of its
-    /// documents. Refused before it reaches the server when it writes on a read-only database.
     pub fn run_nosql(self: &Arc<Self>, db: &str, text: &str, page: Page) -> Running {
         let (this, db, text) = (self.clone(), db.to_string(), text.to_string());
         running(self.handle(), async move {
@@ -640,7 +547,6 @@ impl Connection {
         })
     }
 
-    /// Another page of a script's final cursor ([`Ran::rerun`]): its query alone, read again.
     pub fn rerun_nosql(self: &Arc<Self>, r: &Rerun, page: Page) -> Running {
         let (this, r) = (self.clone(), r.clone());
         running(self.handle(), async move {
@@ -653,8 +559,6 @@ impl Connection {
         })
     }
 
-    /// The tree under `parent` (`None`: the connection's top level), read from the server
-    /// (and kept: [`Connection::cached_tree`]).
     pub fn nosql_tree(self: &Arc<Self>, parent: Option<&str>) -> Task<Vec<Item>> {
         let (this, parent) = (self.clone(), parent.map(str::to_string));
         spawn(self.handle(), async move {
@@ -663,7 +567,6 @@ impl Connection {
                     None => mongo::databases(&c).await?,
                     Some(db) => mongo::collections(&c, db).await?,
                 },
-                // No databases: the indices at the top, and for any database asked about.
                 Client::Search(c) => search::indices(&c).await?,
                 Client::Redis(c) => match &parent {
                     None => rds::databases(&c).await?,
@@ -675,18 +578,14 @@ impl Connection {
         })
     }
 
-    /// The tree under `parent` as last read ([`Connection::nosql_tree`]).
     pub fn cached_tree(&self, parent: Option<&str>) -> Option<Arc<Vec<Item>>> {
         self.caches.lock().get(&tree_key(parent)).cloned().and_then(|a| a.downcast::<Vec<Item>>().ok())
     }
 
-    /// Forgets the tree read so far (the explorer's reload).
     pub fn forget_tree(&self) {
         self.caches.lock().retain(|k, _| k.0 != "nosql-tree");
     }
 
-    /// Saves `text` (the document as edited) over the document `id` of `source`; `id: None`
-    /// inserts it. Returns the saved document's id.
     pub fn save_document(self: &Arc<Self>, source: &Source, id: Option<Body>, text: &str) -> Task<Body> {
         let (this, source, text) = (self.clone(), source.clone(), text.to_string());
         spawn(self.handle(), async move {
@@ -730,7 +629,6 @@ impl Connection {
         })
     }
 
-    /// Deletes the document `id` of `source`.
     pub fn delete_document(self: &Arc<Self>, source: &Source, id: Body) -> Task<u64> {
         let (this, source) = (self.clone(), source.clone());
         spawn(self.handle(), async move {
@@ -752,8 +650,6 @@ impl Connection {
         })
     }
 
-    /// The field paths of a collection (from a sample of its documents) and their types: the
-    /// editor's completions, an agent's `describe_table`.
     pub fn sample_fields(self: &Arc<Self>, db: &str, collection: &str) -> Task<Vec<(String, Vec<&'static str>)>> {
         let (this, db, coll) = (self.clone(), db.to_string(), collection.to_string());
         spawn(self.handle(), async move {
@@ -765,8 +661,6 @@ impl Connection {
         })
     }
 
-    /// How many documents a write would change, counted before it runs (its filter's matches;
-    /// an insert's documents); `None` for what changes no documents (a read, a drop).
     pub fn nosql_affects(self: &Arc<Self>, db: &str, text: &str) -> Task<Option<u64>> {
         let (this, db, text) = (self.clone(), db.to_string(), text.to_string());
         spawn(self.handle(), async move {
@@ -776,7 +670,6 @@ impl Connection {
                         let db = parsed.db.clone().unwrap_or(db);
                         mongo::affects(&c, &db, &parsed.op).await
                     }
-                    // A script's writes are known only as it runs.
                     MongoText::Script => Ok(None),
                 },
                 Client::Search(c) => search::affects(&c, &console::parse(&text).map_err(Failed::from)?).await,

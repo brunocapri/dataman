@@ -1,9 +1,5 @@
-//! PostgreSQL's functions and types for the editor (`schema::catalog`): `pg_proc` and `pg_type`.
-
 use super::super::catalog::{FuncSig, TypeEntry};
 
-/// `pg_proc` without the internals nobody calls (type I/O, operator implementations,
-/// handlers); the later variants are for older or partial catalogs.
 pub fn functions_sql() -> [String; 3] {
     let skip_types = ["internal", "cstring", "trigger", "event_trigger", "language_handler", "fdw_handler", "index_am_handler", "table_am_handler", "tsm_handler"]
         .iter()

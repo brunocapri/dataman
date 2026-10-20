@@ -1,10 +1,5 @@
-//! The `.sql` file pickers: the system open panel showing only `.sql` files, one or several at
-//! once (Open .sql file, Import favorites), and the save panel (Save As…). GPUI's
-//! `prompt_for_paths` has no file type filter at this revision, so on macOS the panels are
-//! AppKit's own `NSOpenPanel` / `NSSavePanel` (`allowedContentTypes` = the `sql` extension's
-//! type), begun as sheet-less panels with a completion handler: the UI keeps running while
-//! they are open. Checks hand them their paths instead ([`set_test_paths`],
-//! [`set_test_save_path`]).
+//! GPUI's `prompt_for_paths` has no file type filter at this revision, so on macOS the panels
+//! are AppKit's own `NSOpenPanel` / `NSSavePanel`.
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -15,17 +10,14 @@ use tokio::sync::oneshot;
 static TEST_PATHS: Mutex<Option<Vec<PathBuf>>> = Mutex::new(None);
 static TEST_SAVE: Mutex<Option<PathBuf>> = Mutex::new(None);
 
-/// Checks: the next pick answers with these paths, without a panel.
 pub fn set_test_paths(paths: Vec<PathBuf>) {
     *TEST_PATHS.lock().unwrap() = Some(paths);
 }
 
-/// Checks: the next save panel answers with this path, without a panel.
 pub fn set_test_save_path(path: PathBuf) {
     *TEST_SAVE.lock().unwrap() = Some(path);
 }
 
-/// A file name for `title` (a tab's): what a file name cannot hold dropped, `.sql` at the end.
 pub fn file_name_for(title: &str) -> String {
     let clean: String = title.chars().map(|c| if matches!(c, '/' | ':' | '\\') || c.is_control() { ' ' } else { c }).collect();
     let stem = clean.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -34,8 +26,6 @@ pub fn file_name_for(title: &str) -> String {
     if is_sql(std::path::Path::new(stem)) { stem.to_string() } else { format!("{stem}.sql") }
 }
 
-/// Asks where to save a `.sql` file, proposing `name`: the chosen path (ending in `.sql`),
-/// `None` when cancelled.
 pub fn pick_save_path(name: &str, cx: &App) -> oneshot::Receiver<Option<PathBuf>> {
     let (tx, rx) = oneshot::channel();
     if let Some(path) = TEST_SAVE.lock().unwrap().take() {
@@ -63,12 +53,10 @@ pub fn pick_save_path(name: &str, cx: &App) -> oneshot::Receiver<Option<PathBuf>
     rx
 }
 
-/// Whether `p` is a `.sql` file (any case).
 pub fn is_sql(p: &std::path::Path) -> bool {
     p.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("sql"))
 }
 
-/// Asks for `.sql` files (`multiple`: one or more): the chosen paths, empty when cancelled.
 pub fn pick_sql_files(multiple: bool, cx: &App) -> oneshot::Receiver<Vec<PathBuf>> {
     let (tx, rx) = oneshot::channel();
     if let Some(paths) = TEST_PATHS.lock().unwrap().take() {
@@ -95,8 +83,6 @@ pub fn pick_sql_files(multiple: bool, cx: &App) -> oneshot::Receiver<Vec<PathBuf
     rx
 }
 
-/// Demo stage `sql-panel`: opens the real panel, cancels it after a moment and prints whether
-/// the completion came back (empty), so the AppKit path is exercised without a user.
 pub async fn demo_panel(cx: &mut gpui::AsyncWindowContext) -> bool {
     let Ok(rx) = cx.update(|_, cx| pick_sql_files(true, cx)) else { return false };
     cx.background_executor().timer(std::time::Duration::from_millis(1200)).await;
@@ -131,7 +117,6 @@ mod imp {
         unsafe { msg_send![class!(NSString), stringWithUTF8String: c.as_ptr()] }
     }
 
-    /// Demo (`sql-panel`): cancels every open panel of the app, as its Cancel button does.
     pub fn cancel_panels() -> usize {
         let mut n = 0;
         // SAFETY: AppKit on the main thread; `windows` and `cancel:` as documented.
@@ -153,8 +138,6 @@ mod imp {
         n
     }
 
-    /// Only `.sql` files: the extension's content type (macOS 11+), else the extension itself.
-    ///
     /// SAFETY: `panel` is an `NSSavePanel` (or `NSOpenPanel`), on the main thread.
     unsafe fn allow_sql(panel: &AnyObject) {
         let ext = ns_string("sql");
@@ -175,8 +158,6 @@ mod imp {
         }
     }
 
-    /// The path of an `NSURL`, if it has one.
-    ///
     /// SAFETY: `url` is an `NSURL`.
     unsafe fn url_path(url: &AnyObject) -> Option<PathBuf> {
         unsafe {
@@ -187,7 +168,6 @@ mod imp {
         }
     }
 
-    /// Save As…: AppKit's save panel on `.sql` files, proposing `name`.
     pub fn save_panel(name: &str, tx: oneshot::Sender<Option<PathBuf>>) {
         // SAFETY: AppKit on the main thread (GPUI's UI thread calls this), with retained
         // objects only; the block is kept alive by the panel until it has run.

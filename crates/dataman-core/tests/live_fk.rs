@@ -1,7 +1,3 @@
-//! Live tests of foreign-key navigation (see `common` for the servers): which result columns are
-//! references, on PostgreSQL (origins + `pg_constraint`, joins included, a composite key in a
-//! scratch schema) and on LAR (inferred links, single-table SELECTs only).
-
 mod common;
 use common::*;
 use dataman_core::fknav::{ForeignKeys, jump};
@@ -26,22 +22,18 @@ fn jump_at(rs: &dataman_core::ResultSet, fk: &ForeignKeys, row: usize, col: usiz
 fn pg_references_from_origins() {
     let e = env();
     let Some(c) = pg(&e) else { return };
-    // A join: each column has its own table, so `o.customer` is still a reference.
     let (rs, fk) = fks(&e, &c, "SELECT o.id, o.customer, c.name, o.total * 2 AS doubled FROM orders o JOIN customer c ON c.id = o.customer ORDER BY o.id LIMIT 5");
     assert_eq!(fk.flags(), vec![false, true, false, false]);
     let j = jump_at(&rs, &fk, 0, 1).unwrap();
     let id = rs.snapshot().text(0, 1).unwrap().into_owned();
     assert_eq!(j.sql, format!("SELECT * FROM public.customer WHERE id = {id};"));
     assert_eq!(j.title, format!("customer · id = {id}"));
-    // The statement it builds runs and finds the row.
     let s = c.session(None);
     let r2 = s.execute(j.sql.trim_end_matches(';'));
     assert_eq!(e.core.block_on(r2.wait_finished()), Phase::Done);
     assert_eq!(r2.rows(), 1);
-    // No table columns: nothing.
     let (_, fk) = fks(&e, &c, "SELECT 1 AS customer, now()");
     assert!(fk.is_empty());
-    // A statement without columns.
     let (_, fk) = fks(&e, &c, "SET search_path TO public");
     assert!(fk.is_empty());
 }
@@ -68,9 +60,7 @@ fn pg_composite_key_in_a_scratch_schema() {
     let j = jump_at(&rs, &fk, 0, 1).unwrap();
     assert_eq!(j.sql, format!("SELECT * FROM {s}.\"Line\" WHERE order_id = 7 AND n = 2;"));
     assert_eq!(j.label, "Go to \"Line\"");
-    // A NULL part: nothing to go to.
     assert!(jump_at(&rs, &fk, 1, 2).is_none());
-    // Half of the key in the result: not a reference.
     let (_, fk) = fks(&e, &c, &format!("SELECT id, n FROM {s}.adjustment"));
     assert!(fk.is_empty());
     exec_quiet(&e, &c, &[&format!("DROP SCHEMA IF EXISTS {s} CASCADE")]);
@@ -80,7 +70,6 @@ fn pg_composite_key_in_a_scratch_schema() {
 fn lar_inferred_links() {
     let e = env();
     let Some(c) = lar(&e) else { return };
-    // Needs `demo_orders.demo_customer → demo_customers` (the scratch LAR's demo tables).
     let (rs, fk) = fks(&e, &c, "SELECT * FROM demo_orders LIMIT 3");
     let cols = rs.columns().unwrap();
     let Some(ci) = cols.iter().position(|c| c.name == "demo_customer") else {
@@ -97,7 +86,6 @@ fn lar_inferred_links() {
     let r2 = s.execute(j.sql.trim_end_matches(';'));
     assert_eq!(e.core.block_on(r2.wait_finished()), Phase::Done);
     assert_eq!(r2.rows(), 1);
-    // A join has no resolvable columns on LAR.
     let (_, fk) = fks(&e, &c, "SELECT o.demo_customer, c.id FROM demo_orders o JOIN demo_customers c ON c.id = o.demo_customer LIMIT 1");
     assert!(fk.is_empty());
 }
