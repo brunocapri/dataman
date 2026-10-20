@@ -640,8 +640,9 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
         draft_row.as_ref().is_some_and(|(what, sql, o)| what == "draft" && sql.as_deref() == Some(delete.as_str()) && *o == dataman_mcp::audit::Outcome::Ok),
         format!("{draft_row:?}"),
     );
-    // The panel slides in: let it land before clicking in it.
-    pause(cx, 400).await;
+    // Audit narrowed to the UPDATE: its row at the top, its menu right under the click.
+    let _ = cx.update(|_, cx| log.update(cx, |a, cx| a.search.update(cx, |s, cx| s.set_text(update.clone(), cx))));
+    pause(cx, 100).await;
     draw(cx);
     let Some(row) = cx.update(|_, cx| log.read(cx).demo_row_point(ix)).ok().flatten() else {
         check("the log row is painted", false, String::new());
