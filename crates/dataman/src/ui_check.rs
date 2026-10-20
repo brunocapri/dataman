@@ -499,6 +499,32 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     let saved_after = saved(cx);
     report("esc closes the sheet and nothing was saved", closed && saved_after == saved_before, format!("closed {closed}, {saved_before} → {saved_after}"));
 
+    // TLS follows the host until the user picks: opportunistic only on this machine.
+    let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.open_dialog(None, window, cx)));
+    draw(cx);
+    if let Some(d) = cx.update(|_, cx| ws.read(cx).dialog.clone()).ok().flatten() {
+        use dataman_core::config::{Engine, SslMode};
+        let tls = |cx: &mut AsyncWindowContext| cx.update(|_, cx| (d.read(cx).current(cx).0.sslmode, d.read(cx).demo_tls_note(cx).map(|n| n.0))).unwrap();
+        let _ = cx.update(|_, cx| d.update(cx, |d, cx| d.pick_engine(Engine::Postgres, cx)));
+        let _ = cx.update(|_, cx| d.update(cx, |d, cx| d.demo_host("db.example.com", cx)));
+        let remote = tls(cx);
+        let _ = cx.update(|_, cx| d.update(cx, |d, cx| d.demo_host("localhost", cx)));
+        let local = tls(cx);
+        report("a remote host starts with SSL required, localhost with prefer", remote == (SslMode::Require, None) && local == (SslMode::Prefer, None), format!("{remote:?} {local:?}"));
+        let _ = cx.update(|_, cx| d.update(cx, |d, cx| d.pick_engine(Engine::Redis, cx)));
+        let here = tls(cx);
+        let _ = cx.update(|_, cx| d.update(cx, |d, cx| d.demo_host("cache.example.com", cx)));
+        let there = tls(cx);
+        report("Redis: off on this machine, on across the network", here == (SslMode::Disable, None) && there == (SslMode::Require, None), format!("{here:?} {there:?}"));
+        let _ = cx.update(|_, cx| d.update(cx, |d, cx| d.demo_tls(SslMode::Disable, cx)));
+        let _ = cx.update(|_, cx| d.update(cx, |d, cx| d.demo_host("other.example.com", cx)));
+        draw(cx);
+        let off = tls(cx);
+        report("the user's off stays, with the warning that it is in clear", off == (SslMode::Disable, Some(true)), format!("{off:?}"));
+        key(cx, "escape");
+        pause(cx, 200).await;
+    }
+
     use dataman_core::UiFont;
     let ids = cx
         .update(|window, cx| {

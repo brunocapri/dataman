@@ -129,6 +129,26 @@ pub enum SslMode {
     VerifyFull,
 }
 
+/// This machine: a socket, a loopback address or a `localhost` name.
+pub fn is_local_host(host: &str) -> bool {
+    let h = host.trim().trim_start_matches('[').trim_end_matches(']').to_ascii_lowercase();
+    h.is_empty()
+        || h.starts_with('/')
+        || h == "localhost"
+        || h.ends_with(".localhost")
+        || h.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
+}
+
+/// What a new connection starts with until the user picks: opportunistic (`prefer`, which is
+/// plain text for the document engines) only on this machine, TLS required anywhere else.
+pub fn default_sslmode(engine: Engine, host: &str) -> SslMode {
+    match (is_local_host(host), engine.is_sql()) {
+        (false, _) => SslMode::Require,
+        (true, true) => SslMode::Prefer,
+        (true, false) => SslMode::Disable,
+    }
+}
+
 impl SslMode {
     pub const ALL: [SslMode; 4] = [SslMode::Disable, SslMode::Prefer, SslMode::Require, SslMode::VerifyFull];
 
@@ -635,6 +655,21 @@ fn save(path: &Path, connections: &[ConnectionProfile]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tls_defaults_follow_the_host() {
+        for h in ["", "localhost", "LOCALHOST", "127.0.0.1", "127.1.2.3", "::1", "[::1]", "/tmp", "db.localhost"] {
+            assert!(is_local_host(h), "{h}");
+            assert_eq!(default_sslmode(Engine::Postgres, h), SslMode::Prefer, "{h}");
+            assert_eq!(default_sslmode(Engine::Redis, h), SslMode::Disable, "{h}");
+        }
+        for h in ["db.example.com", "10.0.0.5", "192.168.1.2", "localhost.evil.com", "::2", "host.docker.internal"] {
+            assert!(!is_local_host(h), "{h}");
+            for e in Engine::ALL {
+                assert_eq!(default_sslmode(e, h), SslMode::Require, "{h} {e:?}");
+            }
+        }
+    }
 
     #[test]
     fn config_dir_is_private() {

@@ -290,6 +290,11 @@ pub fn parse_profile(s: &str) -> Option<(ConnectionProfile, Option<String>)> {
     Some(spec.into_profile())
 }
 
+/// Whether the string says how to use TLS (else the host decides the default).
+pub fn tls_given(s: &str) -> bool {
+    parse(s).is_some_and(|spec| spec.sslmode.is_some() || spec.mssql_sslmode().is_some())
+}
+
 pub fn parse_url(s: &str) -> Option<ConnSpec> {
     let (engine, rest) = if let Some(r) = s.strip_prefix("mongodb+srv://").or_else(|| s.strip_prefix("mongodb://")) {
         (Engine::MongoDb, r)

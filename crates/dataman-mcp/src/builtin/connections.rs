@@ -15,7 +15,7 @@ fn fields(s: Schema, mcp: Value) -> Schema {
         .prop("port", false, json!({"type": "integer", "minimum": 1, "maximum": 65535, "description": "Default: the engine's own (5432 / 3306 / 1433 / 27017 / 9200 / 6379)."}))
         .prop("password", false, json!({"type": "string", "maxLength": 1000, "description": "Saved to the Keychain; never echoed back."}))
         .prop("database", false, json!({"type": "string", "description": "Default: the user's name (postgres), empty (mysql, sql-server)."}))
-        .prop("sslmode", false, json!({"type": "string", "enum": ["disable", "prefer", "require", "verify-full"], "description": "Default prefer."}))
+        .prop("sslmode", false, json!({"type": "string", "enum": ["disable", "prefer", "require", "verify-full"], "description": "Default: prefer on this machine (localhost, a socket), require anywhere else."}))
         .prop("color", false, json!({"type": "string", "description": "A swatch name shown in the explorer and on tabs; default: picked from the id."}))
         .prop("env", false, json!({"type": "string", "enum": ["none", "dev", "staging", "production"], "description": "production asks before every write and DDL, and gets the red accent."}))
         .prop("read_only", false, json!({"type": "boolean", "description": "Sessions start with default_transaction_read_only on; Dataman also refuses writes client-side."}))
@@ -318,6 +318,11 @@ fn create_connection(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>>
         };
         profile.name = name;
         let password = apply(&mut profile, &a)?;
+        // TLS not asked for: opportunistic on this machine only, required anywhere else.
+        let tls_given = a.opt_str("sslmode").is_some() || a.opt_str("connection_string").is_some_and(dataman_core::connstr::tls_given);
+        if existing.is_none() && !tls_given {
+            profile.sslmode = dataman_core::default_sslmode(profile.engine, &profile.host);
+        }
         if let Some(old) = existing {
             no_loosening(old, &profile)?;
             allow_move(cx, old, &profile).await?;

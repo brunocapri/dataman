@@ -131,6 +131,8 @@ pub struct ConnDialog {
     password: Entity<TextInput>,
     database: Entity<TextInput>,
     sslmode: SslMode,
+    /// Picked by the user (or a pasted string, or a saved connection): the host no longer decides.
+    ssl_chosen: bool,
     save_password: bool,
     color: usize,
     env: Environment,
@@ -203,6 +205,9 @@ impl ConnDialog {
             cx.subscribe(e, move |d: &mut ConnDialog, input, ev: &InputEvent, cx| {
                 if matches!(ev, InputEvent::Changed) {
                     d.on_name_or_host(i, &input, cx);
+                    if i == 1 {
+                        d.follow_host(cx);
+                    }
                 }
             })
             .detach();
@@ -300,7 +305,8 @@ impl ConnDialog {
         ConnDialog {
             store,
             focus: cx.focus_handle(),
-            sslmode: profile.sslmode,
+            sslmode: if is_new && profile.sslmode == SslMode::Prefer { dataman_core::default_sslmode(profile.engine, &profile.host) } else { profile.sslmode },
+            ssl_chosen: !is_new || profile.sslmode != SslMode::Prefer,
             save_password: profile.save_password || is_new,
             color,
             env: profile.env,
@@ -412,7 +418,50 @@ impl ConnDialog {
             return;
         }
         let Some((p, pw)) = dataman_core::connstr::parse_profile(&text) else { return };
+        self.ssl_chosen = dataman_core::connstr::tls_given(&text);
         self.fill(&p, pw, which == 0, cx);
+    }
+
+    /// Across the network, said plainly when the password and data may travel in clear (a
+    /// warning when they surely do).
+    fn tls_note(&self, cx: &App) -> Option<(bool, &'static str)> {
+        let remote = self.entry != Entry::Url && !dataman_core::is_local_host(self.host.read(cx).text());
+        match (remote, self.sslmode, self.engine.is_sql()) {
+            (true, SslMode::Disable, _) => Some((true, "Not encrypted: data, and maybe the password, cross the network in clear.")),
+            (true, SslMode::Prefer, true) => Some((false, "Encrypted only if the server offers it; the server is not verified.")),
+            _ => None,
+        }
+    }
+
+    #[cfg(feature = "checks")]
+    pub fn demo_host(&mut self, host: &str, cx: &mut Context<Self>) {
+        self.host.update(cx, |t, cx| t.set_text(host, cx));
+        self.follow_host(cx);
+    }
+
+    #[cfg(feature = "checks")]
+    pub fn demo_tls(&mut self, m: SslMode, cx: &mut Context<Self>) {
+        self.sslmode = m;
+        self.ssl_chosen = true;
+        cx.notify();
+    }
+
+    #[cfg(feature = "checks")]
+    pub fn demo_tls_note(&self, cx: &App) -> Option<(bool, &'static str)> {
+        self.tls_note(cx)
+    }
+
+    /// Until the user picks, TLS follows the host: opportunistic only on this machine.
+    fn follow_host(&mut self, cx: &mut Context<Self>) {
+        if self.ssl_chosen {
+            return;
+        }
+        let host = self.host.read(cx).text().to_string();
+        let want = dataman_core::default_sslmode(self.engine, &host);
+        if want != self.sslmode {
+            self.sslmode = want;
+            cx.notify();
+        }
     }
 
     pub fn fill(&mut self, p: &ConnectionProfile, pw: Option<String>, name_too: bool, cx: &mut Context<Self>) {
@@ -432,7 +481,7 @@ impl ConnDialog {
         if let Some(pw) = pw {
             self.password.update(cx, |t, cx| t.set_text(pw, cx));
         }
-        self.sslmode = p.sslmode;
+        self.sslmode = if self.ssl_chosen { p.sslmode } else { dataman_core::default_sslmode(p.engine, &p.host) };
         self.paste_len = [self.name.read(cx).text().len(), self.host.read(cx).text().len()];
         if !matches!(self.test, Test::Testing { .. }) {
             self.test = Test::NotTested;
@@ -510,6 +559,7 @@ impl ConnDialog {
             self.auto_name = Some(p.name.clone());
         }
         let had_pw = pw.is_some();
+        self.ssl_chosen = dataman_core::connstr::tls_given(&text);
         self.fill(&p, pw, rename, cx);
         if !had_pw && self.pw_from_str {
             self.password.update(cx, |t, cx| t.set_text("", cx));
@@ -679,10 +729,11 @@ impl ConnDialog {
         if !e.is_postgres() && db == "postgres" {
             self.database.update(cx, |t, cx| t.set_text("", cx));
         }
-        if !e.is_sql() && self.sslmode == SslMode::Prefer {
+        if !self.ssl_chosen {
+            self.sslmode = dataman_core::default_sslmode(e, &text(&self.host, cx));
+        } else if !e.is_sql() && self.sslmode == SslMode::Prefer {
             self.sslmode = SslMode::Disable;
-        }
-        if e.is_sql() && !old.is_sql() && self.sslmode == SslMode::Disable {
+        } else if e.is_sql() && !old.is_sql() && self.sslmode == SslMode::Disable {
             self.sslmode = SslMode::Prefer;
         }
         let ph = match e {
@@ -1453,6 +1504,7 @@ impl Render for ConnDialog {
                 format!("tls-{label}"),
                 ui::segment(&t, m.label(), label, m == self.sslmode).on_click(cx.listener(move |d, _, _, cx| {
                     d.sslmode = m;
+                    d.ssl_chosen = true;
                     cx.notify();
                 })),
             )
@@ -1518,6 +1570,7 @@ impl Render for ConnDialog {
         let url = self.url(cx);
         let url2 = url.clone();
         let by_url = self.entry == Entry::Url;
+        let tls_note = self.tls_note(cx).map(|(warn, note)| (if warn { t.warn } else { t.tx3 }, note));
         let entry = ui::segmented(&t).h(px(24.)).children([(Entry::Fields, "Fields"), (Entry::Url, "URL")].map(|(e, label)| {
             ui::probe(format!("entry-{label}"), ui::segment(&t, ("entry", e as usize), label, e == self.entry).on_click(cx.listener(move |d, _, window, cx| d.set_entry(e, window, cx))))
         }));
@@ -1590,6 +1643,7 @@ impl Render for ConnDialog {
                                     .child(mcp),
                             ),
                     )
+                    .children(tls_note.map(|(c, note)| ui::probe("tls-note", div().mt(px(-6.)).text_size(px(11.)).text_color(c).child(note))))
                     .child(
                         div()
                             .flex()
