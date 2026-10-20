@@ -313,6 +313,8 @@ pub struct SchemaTree {
     _menu_blur: Option<Subscription>,
     menu_closed: Option<(Option<SharedString>, Instant)>,
     seen_version: u64,
+    /// Open nodes read again after their cache was dropped, with the cache version then.
+    reread: HashMap<String, u64>,
     pub last_rebuild: std::time::Duration,
     pop: Option<FindPop<SharedString>>,
     pop_now: Option<(SharedString, PopFrame)>,
@@ -404,6 +406,7 @@ impl SchemaTree {
             _menu_blur: None,
             menu_closed: None,
             seen_version: 0,
+            reread: HashMap::new(),
             last_rebuild: Default::default(),
             pop: None,
             pop_now: None,
@@ -543,6 +546,41 @@ impl SchemaTree {
         self.rows = rows;
         self.last_rebuild = t0.elapsed();
         self.try_reveal(cx);
+        self.reread_dropped(cx);
+    }
+
+    /// A statement that changes the schema (CREATE / DROP / ALTER in a tab) drops the database's
+    /// cache, and only what completion needs is read back: an open database or schema left
+    /// unread would stay empty. Read each once more.
+    fn reread_dropped(&mut self, cx: &mut Context<Self>) {
+        let mut todo = Vec::new();
+        for r in &self.rows {
+            if !r.expanded || self.loading.contains(r.id.as_ref()) || self.errors.contains_key(r.id.as_ref()) {
+                continue;
+            }
+            let dropped = match &r.kind {
+                Kind::Db { conn, db } => self.conn(conn, cx).is_some_and(|c| if c.caps().schemas { c.schema.cached_schemas(db).is_none() } else { c.schema.cached_relations(db, db).is_none() }),
+                Kind::Schema { conn, db, schema } => self.conn(conn, cx).is_some_and(|c| c.schema.cached_relations(db, schema).is_none()),
+                Kind::Group { conn, db, schema, g } => self.conn(conn, cx).is_some_and(|c| {
+                    let k = &c.schema;
+                    match g {
+                        G::Functions => k.cached_functions(db, schema).is_none(),
+                        G::Sequences => k.cached_sequences(db, schema).is_none(),
+                        G::Types => k.cached_types(db, schema).is_none(),
+                        G::Triggers => k.cached_triggers(db, schema).is_none(),
+                        G::Tables | G::Views | G::MatViews => false,
+                    }
+                }),
+                _ => false,
+            };
+            if dropped && self.reread.get(r.id.as_ref()) != Some(&self.seen_version) {
+                todo.push((r.id.to_string(), r.kind.clone()));
+            }
+        }
+        for (id, kind) in todo {
+            self.reread.insert(id.clone(), self.seen_version);
+            self.load(&id, &kind, cx);
+        }
     }
 
     fn conn_row(&self, p: &dataman_core::ConnectionProfile, state: Option<&ConnState>, open: bool, t: &Theme) -> Row {
@@ -885,7 +923,10 @@ impl SchemaTree {
     #[allow(clippy::too_many_arguments)]
     fn push_schema(&self, rows: &mut Vec<Row>, c: &str, db: &str, s: &str, conn: &Arc<Connection>, t: &Theme, d0: usize) {
         let cache = &conn.schema;
-        let Some(rels) = cache.cached_relations(db, s) else { return };
+        let Some(rels) = cache.cached_relations(db, s) else {
+            rows.push(loading_row(&sid(c, db, s), d0));
+            return;
+        };
         let counts = cache.cached_counts(db, s).unwrap_or_default();
         let functions = cache.cached_functions(db, s);
         let sequences = cache.cached_sequences(db, s);
