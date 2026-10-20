@@ -599,6 +599,37 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
             });
             let saved = until(cx, 10, |cx| cx.update(|_, cx| doc.read(cx).demo_note()).ok().flatten().is_some_and(|n| n.0 == "Saved")).await;
             until(cx, 5, |cx| idle(ws, cx)).await;
+            draw(cx);
+            let page = |cx: &mut AsyncWindowContext| {
+                cx.update(|_, cx| {
+                    let d = doc.read(cx);
+                    let (_, r) = d.shown()?;
+                    let docs = match &r.ok()?.output {
+                        Output::Docs(docs) => docs.clone(),
+                        _ => return None,
+                    };
+                    let detail = d.demo_detail().map(|e| e.read(cx).text().to_string()).unwrap_or_default();
+                    Some((docs, d.demo_selected(), detail))
+                })
+                .ok()
+                .flatten()
+            };
+            let after = page(cx);
+            let kept = after.as_ref().is_some_and(|(d, sel, detail)| {
+                d.docs.len() == 50 && *sel == Some(0) && d.docs[0].body.text().contains("returned") && detail.contains("returned")
+            });
+            check("an edited hit stays on the page, selected, as saved (Elasticsearch reorders what it reindexes)", saved && kept, format!("{:?}", after.as_ref().map(|(d, s, _)| (d.docs.len(), *s, d.docs.first().map(|x| x.body.text())))));
+            let _ = cx.update(|window, cx| doc.update(cx, |p, cx| p.demo_new(window, cx)));
+            draw(cx);
+            let _ = cx.update(|_, cx| {
+                d.update(cx, |e, cx| e.set_text("{\"n\": 1000, \"status\": \"inserted\"}", cx));
+                doc.update(cx, |p, cx| p.demo_save(cx));
+            });
+            let inserted = until(cx, 10, |cx| cx.update(|_, cx| doc.read(cx).demo_note()).ok().flatten().is_some_and(|n| n.0 == "Inserted")).await;
+            draw(cx);
+            let after = page(cx);
+            let first = after.as_ref().is_some_and(|(d, sel, _)| *sel == Some(0) && d.docs[0].body.text().contains("inserted") && d.total == Some(76));
+            check("a new hit shows first on the page, selected, counted", inserted && first, format!("{:?}", after.as_ref().map(|(d, s, _)| (d.total, *s, d.docs.first().map(|x| x.body.text())))));
             let tab = active(ws, cx).unwrap();
             let _ = cx.update(|_, cx| {
                 let editor = tab.read(cx).editor.clone();

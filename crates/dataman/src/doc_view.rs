@@ -109,6 +109,16 @@ fn summary(body: &Body, id: Option<&Body>) -> String {
     out
 }
 
+fn line(doc: &nosql::Doc) -> (SharedString, SharedString) {
+    (summary(&doc.body, doc.id.as_ref()).into(), doc.id.as_ref().map(id_text).unwrap_or_default().into())
+}
+
+enum SearchEdit {
+    Saved { ix: usize, body: Body },
+    Inserted(nosql::Doc),
+    Deleted { ix: usize },
+}
+
 fn per_doc(source: Source, doc: Option<&nosql::Doc>) -> Source {
     match (source, doc.and_then(|d| d.index.clone())) {
         (Source::Search { .. }, Some(index)) => Source::Search { index },
@@ -338,7 +348,7 @@ impl DocPane {
             Ok(Ran { output: Output::Docs(d), .. }) => d
                 .docs
                 .iter()
-                .map(|doc| (summary(&doc.body, doc.id.as_ref()).into(), doc.id.as_ref().map(id_text).unwrap_or_default().into()))
+                .map(line)
                 .collect(),
             _ => Vec::new(),
         };
@@ -488,6 +498,11 @@ impl DocPane {
         self.saving = true;
         let task = self.conn.save_document(&source, id, &text);
         let inserted = self.new_doc;
+        let at = self.selected;
+        let search_index = match &source {
+            Source::Search { index } => Some(index.clone()),
+            _ => None,
+        };
         cx.spawn(async move |this, cx| {
             let r = task.await;
             let _ = this.update(cx, |p, cx| {
@@ -495,8 +510,16 @@ impl DocPane {
                 match r {
                     Ok(id) => {
                         p.new_doc = false;
-                        p.reselect = Some(id);
-                        p.refresh(cx);
+                        let body = search_index.as_ref().and_then(|_| nosql::shell::parse(&text).ok()).and_then(|v| nosql::shell::to_json(&v).ok()).map(Body::Json);
+                        let edit = match (body, &search_index, inserted, at) {
+                            (Some(body), Some(index), true, _) => Some(SearchEdit::Inserted(nosql::Doc { id: Some(id.clone()), index: Some(index.clone()), body })),
+                            (Some(body), Some(_), false, Some(ix)) => Some(SearchEdit::Saved { ix, body }),
+                            _ => None,
+                        };
+                        if !edit.is_some_and(|e| p.edit_search_page(e, cx)) {
+                            p.reselect = Some(id);
+                            p.refresh(cx);
+                        }
                         p.note = Some((if inserted { "Inserted".into() } else { "Saved".into() }, false));
                     }
                     Err(e) => {
@@ -525,13 +548,17 @@ impl DocPane {
         let Some(doc) = self.selected.and_then(|i| self.docs()?.docs.get(i)).cloned() else { return };
         let Some(id) = doc.id.clone() else { return };
         let source = per_doc(source, Some(&doc));
+        let search = matches!(source, Source::Search { .. });
+        let at = self.selected;
         let task = self.conn.delete_document(&source, id);
         cx.spawn(async move |this, cx| {
             let r = task.await;
             let _ = this.update(cx, |p, cx| {
                 match r {
                     Ok(n) => {
-                        p.refresh(cx);
+                        if !(search && at.is_some_and(|ix| p.edit_search_page(SearchEdit::Deleted { ix }, cx))) {
+                            p.refresh(cx);
+                        }
                         p.note = Some((if n == 1 { "Deleted".into() } else { "Already gone".into() }, false));
                     }
                     Err(e) => p.note = Some((format!("{e:#}"), true)),
@@ -540,6 +567,43 @@ impl DocPane {
             });
         })
         .detach();
+    }
+
+    fn edit_search_page(&mut self, edit: SearchEdit, cx: &mut Context<Self>) -> bool {
+        let Some(l) = &mut self.last else { return false };
+        let Ok(Ran { output: Output::Docs(d), .. }) = &mut l.result else { return false };
+        let selected = match edit {
+            SearchEdit::Saved { ix, body } => {
+                let Some(doc) = d.docs.get_mut(ix) else { return false };
+                doc.body = body;
+                l.lines[ix] = line(doc);
+                ix
+            }
+            SearchEdit::Inserted(doc) => {
+                l.lines.insert(0, line(&doc));
+                d.docs.insert(0, doc);
+                d.total = d.total.map(|t| t + 1);
+                0
+            }
+            SearchEdit::Deleted { ix } => {
+                if ix >= d.docs.len() {
+                    return false;
+                }
+                d.docs.remove(ix);
+                l.lines.remove(ix);
+                d.total = d.total.map(|t| t.saturating_sub(1));
+                if d.docs.is_empty() {
+                    self.selected = None;
+                    self.load_detail(cx);
+                    return true;
+                }
+                ix.min(d.docs.len() - 1)
+            }
+        };
+        self.selected = Some(selected);
+        self.list_scroll.scroll_to_item(selected);
+        self.load_detail(cx);
+        true
     }
 
     fn refresh(&mut self, cx: &mut Context<Self>) {

@@ -88,8 +88,18 @@ fn exercise(engine: Engine) {
     assert_eq!(id, Body::Json(serde_json::json!("0")));
     let Output::Docs(d) = ok(&e, &c, &format!("GET /{idx}/_search\n{{query: {{term: {{name: 'Ada'}}}}}}")) else { panic!() };
     assert_eq!(d.docs.len(), 1);
+    let Output::Docs(d) = ok(&e, &c, &format!("GET /{idx}/_search\n{{query: {{match_all: {{}}}}}}")) else { panic!() };
+    assert_eq!(d.docs.len(), 50);
+    assert_ne!(d.docs[0].id, Some(Body::Json(serde_json::json!("0"))), "the edited document stayed first");
+    assert!(d.docs.iter().all(|x| x.id != Some(Body::Json(serde_json::json!("0")))), "the edited document is still on the first page");
+    let count = |q: &str| match ok(&e, &c, &format!("GET /{idx}/_count\n{{query: {{term: {{name: '{q}'}}}}}}")) {
+        Output::Value(Body::Json(v)) => v["count"].as_u64(),
+        o => panic!("{o:?}"),
+    };
     let new = e.core.block_on(c.save_document(&src, None, "{n: 500, name: 'new'}")).unwrap();
+    assert_eq!(count("new"), Some(1));
     assert_eq!(e.core.block_on(c.delete_document(&src, new)).unwrap(), 1);
+    assert_eq!(count("new"), Some(0));
     let err = e.core.block_on(c.save_document(&src, None, "[1, 2]")).unwrap_err();
     assert!(format!("{err:#}").contains("object"), "{err:#}");
 
