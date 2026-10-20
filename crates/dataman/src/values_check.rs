@@ -154,8 +154,14 @@ async fn type_cell(tab: &Entity<QueryTab>, row: usize, col: usize, text: &str, c
     let p = cx.update(|_, cx| grid.read(cx).demo_cell_point(row, col)).unwrap();
     click(cx, p);
     key(cx, "enter");
-    pause(cx, 50).await;
     let edit = cx.update(|_, cx| tab.read(cx).edit.clone()).unwrap();
+    // The first edit of a result asks the server about the table: the editor opens when it answers.
+    for _ in 0..100 {
+        pause(cx, 50).await;
+        if cx.update(|_, cx| edit.read(cx).demo_cell_editor().is_some() || edit.read(cx).demo_value_editor().is_some()).unwrap_or(false) {
+            break;
+        }
+    }
     let as_text = cx.update(|_, cx| edit.read(cx).demo_cell_editor().is_some() && edit.read(cx).demo_value_editor().is_none()).unwrap_or(false);
     key(cx, "cmd-a");
     typ(cx, text);
