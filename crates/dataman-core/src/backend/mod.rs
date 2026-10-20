@@ -5,6 +5,38 @@ pub(crate) mod pg;
 pub(crate) mod redis;
 pub(crate) mod search;
 
+/// Linux connects a socket to itself when nothing listens on a local port inside the ephemeral
+/// range: the connect takes that very port as its own and succeeds (a TCP simultaneous open),
+/// then the client waits for a server that is not there.
+pub(crate) fn refuse_self_connect(t: &tokio::net::TcpStream) -> std::io::Result<()> {
+    match (t.local_addr(), t.peer_addr()) {
+        (Ok(a), Ok(b)) if a == b => Err(std::io::Error::new(std::io::ErrorKind::ConnectionRefused, format!("nothing listens on {b}"))),
+        _ => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod self_connect {
+    #[test]
+    fn a_socket_connected_to_itself_is_refused() {
+        let s = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None).unwrap();
+        s.bind(&"127.0.0.1:0".parse::<std::net::SocketAddr>().unwrap().into()).unwrap();
+        let me = s.local_addr().unwrap();
+        // A simultaneous open with itself: what a busy ephemeral range does by chance.
+        if s.connect(&me).is_err() {
+            return;
+        }
+        let std: std::net::TcpStream = s.into();
+        std.set_nonblocking(true).unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let _guard = rt.enter();
+        let t = tokio::net::TcpStream::from_std(std).unwrap();
+        let err = super::refuse_self_connect(&t).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::ConnectionRefused);
+        assert!(err.to_string().contains("nothing listens on 127.0.0.1:"), "{err}");
+    }
+}
+
 /// rustls picks the process' crypto provider: ring, for every engine (two providers are
 /// compiled in: tiberius names aws-lc-rs as its fallback).
 pub(crate) fn install_tls_provider() {

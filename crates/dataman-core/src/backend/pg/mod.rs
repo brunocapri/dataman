@@ -378,6 +378,7 @@ impl Reach {
             .await
             .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "connection timed out"))??;
         if let RawStream::Tcp(t) = &s {
+            super::refuse_self_connect(t)?;
             let _ = t.set_nodelay(true);
             let _ = socket2::SockRef::from(t).set_keepalive(true);
         }

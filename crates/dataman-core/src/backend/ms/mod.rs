@@ -86,6 +86,7 @@ async fn dial(c: Config, via: Option<SocketAddr>, named: bool) -> Result<TClient
         None if named => <TcpStream as SqlBrowser>::connect_named(&c).await?,
         None => TcpStream::connect(c.get_addr()).await?,
     };
+    super::refuse_self_connect(&tcp)?;
     tcp.set_nodelay(true)?;
     let ka = socket2::TcpKeepalive::new().with_time(Duration::from_secs(60));
     let _ = socket2::SockRef::from(&tcp).set_tcp_keepalive(&ka);

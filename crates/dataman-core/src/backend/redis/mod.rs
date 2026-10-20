@@ -134,6 +134,7 @@ fn read_reply<'a>(io: &'a mut BufStream<Box<dyn Stream>>) -> std::pin::Pin<Box<d
 
 async fn open(d: &Dial) -> Result<Conn> {
     let tcp = tokio::time::timeout(Duration::from_secs(10), tokio::net::TcpStream::connect(d.addr)).await.map_err(|_| anyhow!("timed out connecting to {}", d.addr))??;
+    super::refuse_self_connect(&tcp)?;
     let _ = tcp.set_nodelay(true);
     let stream: Box<dyn Stream> = match &d.tls {
         Some((cfg, name)) => Box::new(tokio_rustls::TlsConnector::from(cfg.clone()).connect(name.clone(), tcp).await.context("TLS")?),
