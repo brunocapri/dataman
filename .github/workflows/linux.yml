@@ -39,7 +39,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: System packages
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends $DEPS
+        run: sudo apt-get update && xargs sudo apt-get install -y --no-install-recommends <<< "$DEPS"
       - name: Rust ${{ env.RUST_TOOLCHAIN }}
         run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal && rustup default "$RUST_TOOLCHAIN"
       - uses: Swatinem/rust-cache@v2
@@ -49,8 +49,9 @@ jobs:
         run: |
           cargo check --release --workspace --all-targets --features dataman/checks 2>&1 | tee check.log
           # The two `unused Result` warnings in the live sweeps are known; anything else fails.
-          n=$(grep -c '^warning: unused `Result`' check.log || true)
-          others=$(grep '^warning' check.log | grep -v 'unused `Result`\|generated [0-9]* warning\|future version of Rust' || true)
+          known="unused \`Result\`"
+          n=$(grep -c "^warning: $known" check.log || true)
+          others=$(grep '^warning' check.log | grep -v "$known\\|generated [0-9]* warning\\|future version of Rust" || true)
           [ -z "$others" ] || { echo "$others"; exit 1; }
           [ "$n" -le 2 ]
       - name: Tests, with a Secret Service for the password store
@@ -82,7 +83,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: System packages
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends $DEPS
+        run: sudo apt-get update && xargs sudo apt-get install -y --no-install-recommends <<< "$DEPS"
       - name: Rust ${{ env.RUST_TOOLCHAIN }}
         run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal && rustup default "$RUST_TOOLCHAIN"
       - uses: Swatinem/rust-cache@v2

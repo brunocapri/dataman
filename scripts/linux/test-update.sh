@@ -72,7 +72,8 @@ app_pids() { pgrep -f "appimage_extracted_[0-9a-f]*/usr/bin/dataman( |$)" || tru
 echo "update_feed = \"$base/tampered.json\"" > "$work/config/dataman/settings.toml"
 pid="$(run_app tampered)"
 wait_for 60 grep -q "update rejected" "$work/tampered.log" || { cat "$work/tampered.log"; fail "tampered AppImage not rejected"; }
-kill $(app_pids) "$pid" 2> /dev/null || true
+app_pids | xargs -r kill 2> /dev/null || true
+kill "$pid" 2> /dev/null || true
 wait "$pid" 2> /dev/null || true
 grep "update rejected" "$work/tampered.log" | sed 's/^/      /'
 [ "$(version_of "$app")" = $old ] || fail "the AppImage changed after a tampered download"

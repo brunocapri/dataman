@@ -75,7 +75,8 @@ rmdir "$app/usr/lib"
 # An AppImage marks its ELF header (bytes 8-10, "AI\2"), which emulators (Rosetta, qemu) refuse
 # to run: an unmarked copy runs anywhere. Only copies are unmarked, never what ships.
 runnable() {
-  local copy="$work/run-$(basename "$1")"
+  local copy
+  copy="$work/run-$(basename "$1")"
   cp "$1" "$copy"
   printf '\000\000\000' | dd of="$copy" bs=1 seek=8 count=3 conv=notrunc 2> /dev/null
   chmod +x "$copy"
