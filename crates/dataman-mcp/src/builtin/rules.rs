@@ -7,6 +7,7 @@ use std::collections::{HashMap, HashSet};
 use dataman_core::agent_nosql::{self, Shaped};
 use dataman_core::agent_sql::{self, Checked, Table};
 use dataman_core::privacy::{AgentRules, AgentView, Mask, Names, mask_value};
+use dataman_core::schema::{RelKind, ViewSourceKind};
 use dataman_core::{ConnectionProfile, bounded};
 use serde_json::{Value, json};
 
@@ -41,14 +42,63 @@ pub fn activity(p: &ConnectionProfile) -> Result<(), ToolError> {
     Err(ToolError::Refused(format!("server activity is off for agents on {} {why}", p.name)))
 }
 
-async fn lookup(o: &Opened, schema: Option<&str>, name: &str) -> Option<Table> {
+async fn lookup(o: &Opened, schema: Option<&str>, name: &str) -> Option<(Table, RelKind)> {
     let qualified = match schema {
         Some(s) => format!("{}.{}", dataman_core::sql::quote_ident(s), dataman_core::sql::quote_ident(name)),
         None => dataman_core::sql::quote_ident(name),
     };
     let r = super::catalog::find_relation(o, &qualified).await.ok()?;
     let cols = o.conn.columns(&o.database, &r.schema, &r.name).await.ok()?;
-    Some(Table { schema: r.schema, name: r.name, columns: cols.into_iter().map(|c| c.name).collect() })
+    Some((Table { schema: r.schema, name: r.name, columns: cols.into_iter().map(|c| c.name).collect() }, r.kind))
+}
+
+/// Whether the rules keep anything of this table from agents (the table, a column, or, in
+/// Masked data, a sensitive column).
+fn keeps(r: &AgentRules, t: &Table) -> bool {
+    let q = Names::Qualified;
+    !r.visible.table_visible(Some(&t.schema), &t.name, q)
+        || t.columns.iter().any(|c| r.visible.column_hidden(Some(&t.schema), &t.name, c, q))
+        || (r.view == AgentView::Masked && t.columns.iter().any(|c| r.sensitive_mask(Some(&t.schema), &t.name, c, q).is_some()))
+}
+
+const VIEW_DEPTH: usize = 64;
+
+/// A view reads what it is defined on, under its own names: through it an agent must not reach
+/// what the rules keep (`CREATE VIEW v AS SELECT password_hash AS h FROM users`). Followed down
+/// views of views; what cannot be followed is refused.
+pub async fn view_reads_kept(o: &Opened, r: &AgentRules, view: &Table, kind: RelKind) -> Result<(), String> {
+    let conn = &o.profile.name;
+    let mut todo = vec![(view.schema.clone(), view.name.clone(), kind)];
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    while let Some((schema, name, kind)) = todo.pop() {
+        if !matches!(kind, RelKind::View | RelKind::MaterializedView) || !seen.insert((schema.clone(), name.clone())) {
+            continue;
+        }
+        if seen.len() > VIEW_DEPTH {
+            return Err(format!("{} reads through more views than Dataman follows, and {conn} keeps some data from agents: query its tables directly", view.name));
+        }
+        let sources = o.conn.view_sources(&o.database, &schema, &name).await.map_err(|e| format!("Dataman could not check what {} reads ({e:#}), and {conn} keeps some data from agents", view.name))?;
+        for src in sources {
+            match src.kind {
+                ViewSourceKind::Function => {
+                    return Err(format!("{} calls {}(), a function of your database; agents cannot read it on {conn} while some data is kept from them", view.name, src.name));
+                }
+                ViewSourceKind::Unknown => {
+                    return Err(format!("{} reads {}, which Dataman cannot check, and {conn} keeps some data from agents", view.name, src.name));
+                }
+                ViewSourceKind::Relation => {
+                    let Some((t, k)) = lookup(o, Some(&src.schema), &src.name).await else {
+                        return Err(format!("{} reads {}.{}, which Dataman cannot check, and {conn} keeps some data from agents", view.name, src.schema, src.name));
+                    };
+                    if keeps(r, &t) {
+                        return Err(format!("{} reads {}.{}, which keeps data from agents on {conn}: query {} directly", view.name, t.schema, t.name, t.name));
+                    }
+                    todo.push((t.schema, t.name, k));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 async fn user_routines(o: &Opened) -> HashSet<String> {
@@ -74,8 +124,11 @@ pub async fn checked_sql(cx: &Call, a: &Args, p: &ConnectionProfile, sql: &str, 
     if restricted(r) {
         let o = cx.open(a, Need::Read).await?;
         for (s, n) in agent_sql::tables_named(sql, d) {
-            let t = lookup(&o, s.as_deref(), &n).await;
-            tables.insert((s, n), t);
+            let found = lookup(&o, s.as_deref(), &n).await;
+            if let Some((t, kind)) = &found {
+                view_reads_kept(&o, r, t, *kind).await.map_err(ToolError::Refused)?;
+            }
+            tables.insert((s, n), found.map(|(t, _)| t));
         }
         routines = user_routines(&o).await;
     }
@@ -88,11 +141,35 @@ pub async fn checked_sql(cx: &Call, a: &Args, p: &ConnectionProfile, sql: &str, 
     Ok(c)
 }
 
-/// Masked data: sensitive columns are masked in the agent's copy (the user's tab keeps them).
-pub fn mask_outcome(cx: &Call, out: &mut bounded::Outcome, masks: &[(String, Mask)]) {
+/// Cells are read this many characters past the agent's cut, so masks and sensitive types see
+/// whole values: a value cut first could leave a card number or a CPF too short to match, and a
+/// partial mask would show the cut's last characters, from inside the value.
+pub const TAIL: usize = 1024;
+
+fn privacy_on(cx: &Call, p: &ConnectionProfile) -> bool {
+    restricted(&p.mcp_rules) || !cx.hub.types(Some(p)).is_empty()
+}
+
+/// The limits a read runs with: cells TAIL characters longer where something may be masked;
+/// `mask_outcome` cuts them to `agent.max_cell` once masked.
+pub fn read_limits(cx: &Call, p: &ConnectionProfile, agent: bounded::Limits) -> bounded::Limits {
+    if privacy_on(cx, p) { bounded::Limits { max_cell: agent.max_cell.saturating_add(TAIL), ..agent } } else { agent }
+}
+
+fn cut_text(s: &str, max: usize) -> Option<String> {
+    s.char_indices().nth(max).map(|(at, _)| format!("{}…", &s[..at]))
+}
+
+/// Masks the agent's copy (the user's tab keeps the values), then cuts cells to the agent's size:
+/// sensitive columns in Masked data by name, and the switched-on sensitive types inside every
+/// cell, both on the whole value. A masked column's value longer than was read is hidden whole.
+pub fn mask_outcome(cx: &Call, p: &ConnectionProfile, out: &mut bounded::Outcome, masks: &[(String, Mask)], read: bounded::Limits, agent: bounded::Limits) {
     let key = cx.hub.mask_key();
+    let types = cx.hub.types(Some(p));
+    let mut counts = dataman_core::privacy::Counts::new();
     let mut used: Vec<(String, Mask)> = Vec::new();
-    let mut apply = |columns: &[bounded::Column], rows: &mut Vec<Vec<Value>>| {
+    let was_cut = |s: &str| read.max_cell > agent.max_cell && s.ends_with('…') && s.chars().count() == read.max_cell + 1;
+    let mut apply = |columns: &[bounded::Column], rows: &mut Vec<Vec<Value>>, cut_cells: &mut usize| {
         let at: Vec<(usize, Mask)> = columns.iter().enumerate().filter_map(|(i, c)| masks.iter().find(|(m, _)| m.eq_ignore_ascii_case(&c.name)).map(|(_, how)| (i, *how))).collect();
         for (i, how) in &at {
             let name = columns[*i].name.clone();
@@ -101,24 +178,51 @@ pub fn mask_outcome(cx: &Call, out: &mut bounded::Outcome, masks: &[(String, Mas
             }
         }
         for row in rows.iter_mut() {
-            for (i, how) in &at {
-                if let Some(v) = row.get_mut(*i)
-                    && !v.is_null()
-                {
+            for (i, v) in row.iter_mut().enumerate() {
+                if v.is_null() {
+                    continue;
+                }
+                if let Some((_, how)) = at.iter().find(|(c, _)| *c == i) {
                     let text = match &*v {
                         Value::String(s) => s.clone(),
                         other => other.to_string(),
                     };
-                    *v = Value::String(mask_value(*how, &text, &key));
+                    let how = if was_cut(&text) { Mask::Hidden } else { *how };
+                    *v = Value::String(mask_value(how, &text, &key));
+                    continue;
+                }
+                if read.max_cell == agent.max_cell {
+                    continue;
+                }
+                if let Value::String(s) = &*v {
+                    let earlier = was_cut(s);
+                    let scrubbed = types.scrub(s, &key, &mut counts).into_owned();
+                    *v = Value::String(match cut_text(&scrubbed, agent.max_cell) {
+                        Some(c) => {
+                            *cut_cells += usize::from(!earlier);
+                            c
+                        }
+                        None => scrubbed,
+                    });
+                } else if (v.is_object() || v.is_array()) && v.to_string().len() > agent.max_cell {
+                    // JSON past the agent's size comes as cut text, as it did before.
+                    let text = types.scrub(&v.to_string(), &key, &mut counts).into_owned();
+                    *v = Value::String(cut_text(&text, agent.max_cell).unwrap_or(text));
+                    *cut_cells += 1;
                 }
             }
         }
     };
-    if !masks.is_empty() {
-        apply(&out.columns, &mut out.rows);
-        for p in out.parts.iter_mut() {
-            apply(&p.columns, &mut p.rows);
-        }
+    let mut cut = out.cut_cells;
+    apply(&out.columns, &mut out.rows, &mut cut);
+    for part in out.parts.iter_mut() {
+        let mut c = part.cut_cells;
+        apply(&part.columns, &mut part.rows, &mut c);
+        part.cut_cells = c;
+    }
+    out.cut_cells = cut;
+    if !counts.is_empty() {
+        cx.note_masked_values(&counts);
     }
     cx.note_columns(out.columns.len());
     cx.note_masked_columns(&used);

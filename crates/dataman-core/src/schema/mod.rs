@@ -9,7 +9,7 @@ pub use catalog::{Catalog, FuncSig, TypeEntry};
 pub use model::{Column, Index, RelKind, Relation, SchemaSnapshot};
 pub use objects::{
     Constraint, ConstraintKind, Extension, FuncKind, Function, ObjectCounts, Partition, Privileges, RelStats, Role, Sequence, TableExtras,
-    Trigger, TypeKind, UserType,
+    Trigger, TypeKind, UserType, ViewSource, ViewSourceKind,
 };
 
 use std::collections::{HashMap, HashSet};

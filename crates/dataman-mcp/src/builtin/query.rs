@@ -89,10 +89,11 @@ async fn read(cx: &Call, a: &Args, open: bool) -> Result<Value, ToolError> {
     rules::structure_read(&target, &stmts)?;
     let checked = rules::checked_sql(cx, a, &target, sql, false).await?;
     let limits = cx.limits(a, 200);
+    let read = rules::read_limits(cx, &target, limits);
     let front = cx.tab_front(open);
     let shown = front.is_some();
-    let mut out = cx.read(a, &checked.sql, params, limits, front, a.opt_str("title").map(str::to_string)).await?;
-    rules::mask_outcome(cx, &mut out, &checked.masked);
+    let mut out = cx.read(a, &checked.sql, params, read, front, a.opt_str("title").map(str::to_string)).await?;
+    rules::mask_outcome(cx, &target, &mut out, &checked.masked, read, limits);
     cx.note_rows(out.total_rows());
     let mut v = read_json(&out, limits.max_rows, &stmts);
     rules::tell(&mut v, &checked, &cx.note().seen.masked);
@@ -286,7 +287,8 @@ async fn write(cx: &Call, a: &Args, open: bool) -> Result<Value, ToolError> {
     let title = a.opt_str("title").map(str::to_string);
     let target = cx.target(a, Need::Read)?;
     let checked = rules::checked_sql(cx, a, &target, sql, true).await?;
-    let r = cx.write(a, Write { sql: &checked.sql, judged: None, params, limits, rollback: false, visible, title }).await;
+    let read = rules::read_limits(cx, &target, limits);
+    let r = cx.write(a, Write { sql: &checked.sql, judged: None, params, limits: read, rollback: false, visible, title }).await;
     // DDL changes what the catalog tools see (even when it failed half-way on LAR, whose DDL is
     // not transactional).
     if let Ok(p) = cx.hub.profile(a.str("connection")?) {
@@ -298,7 +300,9 @@ async fn write(cx: &Call, a: &Args, open: bool) -> Result<Value, ToolError> {
             cx.hub.fresh_schema(&p.id, &db, &conn, true);
         }
     }
-    let out = r?.outcome;
+    let mut out = r?.outcome;
+    // RETURNING rows are the agent's copy too.
+    rules::mask_outcome(cx, &target, &mut out, &checked.masked, read, limits);
     {
         let affected = out.affected();
         cx.note_rows(affected as usize);

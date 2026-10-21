@@ -14,6 +14,21 @@ pub(super) fn get(r: &[Option<String>], i: usize) -> Option<String> {
     r.get(i).cloned().flatten().filter(|s| !s.is_empty())
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ViewSourceKind {
+    Relation,
+    Function,
+    /// Another database or server, a synonym, or what the server did not resolve.
+    Unknown,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ViewSource {
+    pub schema: String,
+    pub name: String,
+    pub kind: ViewSourceKind,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ObjectCounts {
     pub functions: Option<u64>,
@@ -512,6 +527,57 @@ impl Connection {
                 d.stats.insert(schema, m.clone());
             });
             Ok(m)
+        })
+    }
+
+    /// What a view (or materialized view) reads directly: relations, user functions, and what
+    /// the server cannot resolve. Never cached: a view can be replaced at any time.
+    pub fn view_sources(self: &Arc<Self>, db: &str, schema: &str, name: &str) -> Task<Vec<ViewSource>> {
+        let (this, db) = (self.clone(), db.to_string());
+        let d = self.dialect();
+        let (s, n) = (d.quote_literal(schema), d.quote_literal(name));
+        self.spawn(async move {
+            let sql = match this.engine() {
+                Engine::MySql => format!(
+                    "SELECT TABLE_SCHEMA, TABLE_NAME, 'relation' FROM information_schema.VIEW_TABLE_USAGE WHERE VIEW_SCHEMA = {s} AND VIEW_NAME = {n} \
+                     UNION ALL SELECT SPECIFIC_SCHEMA, SPECIFIC_NAME, 'function' FROM information_schema.VIEW_ROUTINE_USAGE WHERE TABLE_SCHEMA = {s} AND TABLE_NAME = {n}"
+                ),
+                Engine::SqlServer => format!(
+                    "SELECT COALESCE(d.referenced_schema_name, SCHEMA_NAME(o.schema_id)), d.referenced_entity_name, \
+                     CASE WHEN d.referenced_database_name IS NOT NULL OR d.referenced_server_name IS NOT NULL THEN 'remote' \
+                          WHEN ro.type IN ('U', 'V') THEN 'relation' WHEN ro.type IN ('FN', 'IF', 'TF', 'FS', 'FT', 'P', 'PC') THEN 'function' \
+                          WHEN ro.type = 'SN' THEN 'synonym' ELSE 'unknown' END \
+                     FROM sys.sql_expression_dependencies d JOIN sys.objects o ON o.object_id = d.referencing_id \
+                     LEFT JOIN sys.objects ro ON ro.object_id = d.referenced_id \
+                     WHERE SCHEMA_NAME(o.schema_id) = {s} AND o.name = {n} AND d.referenced_minor_id = 0"
+                ),
+                _ => format!(
+                    "SELECT DISTINCT rn.nspname, rc.relname, 'relation' FROM pg_rewrite r \
+                     JOIN pg_class v ON v.oid = r.ev_class JOIN pg_namespace vn ON vn.oid = v.relnamespace \
+                     JOIN pg_depend dp ON dp.classid = 'pg_rewrite'::regclass AND dp.objid = r.oid AND dp.refclassid = 'pg_class'::regclass \
+                     JOIN pg_class rc ON rc.oid = dp.refobjid JOIN pg_namespace rn ON rn.oid = rc.relnamespace \
+                     WHERE vn.nspname = {s} AND v.relname = {n} AND rc.oid <> v.oid \
+                     UNION ALL SELECT DISTINCT pn.nspname, p.proname, 'function' FROM pg_rewrite r \
+                     JOIN pg_class v ON v.oid = r.ev_class JOIN pg_namespace vn ON vn.oid = v.relnamespace \
+                     JOIN pg_depend dp ON dp.classid = 'pg_rewrite'::regclass AND dp.objid = r.oid AND dp.refclassid = 'pg_proc'::regclass \
+                     JOIN pg_proc p ON p.oid = dp.refobjid JOIN pg_namespace pn ON pn.oid = p.pronamespace \
+                     WHERE vn.nspname = {s} AND v.relname = {n}"
+                ),
+            };
+            let client = this.meta(&db).await?;
+            let rows = first_ok(&client, &[&sql]).await?;
+            Ok(rows
+                .iter()
+                .map(|r| ViewSource {
+                    schema: get(r, 0).unwrap_or_default(),
+                    name: get(r, 1).unwrap_or_default(),
+                    kind: match get(r, 2).as_deref() {
+                        Some("relation") => ViewSourceKind::Relation,
+                        Some("function") => ViewSourceKind::Function,
+                        _ => ViewSourceKind::Unknown,
+                    },
+                })
+                .collect())
         })
     }
 

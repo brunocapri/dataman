@@ -222,6 +222,9 @@ fn list_tables(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
                     more = true;
                     break 'outer;
                 }
+                if !view_open(&o, &r).await {
+                    continue;
+                }
                 let st = stats.get(&r.name);
                 rows.push(vec![
                     json!(s),
@@ -305,7 +308,39 @@ fn search_objects(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
             match cx.run(&o, SEARCH_SQL, params, Mode::Read, limits).await {
                 Ok(r) => {
                     let more = r.rows.len() > limit;
-                    let rows: Vec<Vec<Value>> = r.rows.into_iter().filter(|row| found_visible(&o, row)).take(limit).collect();
+                    let mut rows: Vec<Vec<Value>> = Vec::new();
+                    let mut views: std::collections::HashMap<(String, String), bool> = std::collections::HashMap::new();
+                    for row in r.rows.into_iter().filter(|row| found_visible(&o, row)) {
+                        if rows.len() >= limit {
+                            break;
+                        }
+                        // A view's own row, or one of its columns (`v.col`): kept with what the view reads.
+                        let (kind, schema, name) = (row[0].as_str().unwrap_or(""), row[1].as_str().unwrap_or(""), row[2].as_str().unwrap_or(""));
+                        let rel = match kind {
+                            "view" | "materialized_view" | "table" => Some(name.to_string()),
+                            "column" => name.rsplit_once('.').map(|(t, _)| t.to_string()),
+                            _ => None,
+                        };
+                        if let Some(rel) = rel {
+                            let key = (schema.to_string(), rel.clone());
+                            let open = match views.get(&key) {
+                                Some(v) => *v,
+                                None => {
+                                    let q = format!("{}.{}", dataman_core::sql::quote_ident(schema), dataman_core::sql::quote_ident(&rel));
+                                    let v = match find_relation(&o, &q).await {
+                                        Ok(r) => view_open(&o, &r).await,
+                                        Err(_) => !super::rules::restricted(&o.profile.mcp_rules),
+                                    };
+                                    views.insert(key, v);
+                                    v
+                                }
+                            };
+                            if !open {
+                                continue;
+                            }
+                        }
+                        rows.push(row);
+                    }
                     cx.note_rows(rows.len());
                     let mut v = table(&header, rows);
                     if more {
@@ -330,7 +365,7 @@ fn search_objects(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
                     RelKind::MaterializedView => "materialized_view",
                     _ => "table",
                 };
-                if !super::rules::table_visible(&o.profile, &s, &r.name) {
+                if !super::rules::table_visible(&o.profile, &s, &r.name) || !view_open(&o, &r).await {
                     continue;
                 }
                 if want(k) && like(&r.name, &pattern) {
@@ -380,7 +415,23 @@ async fn visible_relation(o: &Opened, name: &str) -> Result<Relation, ToolError>
     if !super::rules::table_visible(&o.profile, &r.schema, &r.name) {
         return Err(super::rules::not_visible(&o.profile, &r.name));
     }
+    view_check(o, &r).await.map_err(ToolError::Refused)?;
     Ok(r)
+}
+
+/// A view that reads what is kept from agents is kept too: its rows, its definition and the
+/// names of its columns (`v.password_hash`).
+async fn view_check(o: &Opened, r: &Relation) -> Result<(), String> {
+    if !super::rules::restricted(&o.profile.mcp_rules) || !matches!(r.kind, RelKind::View | RelKind::MaterializedView) {
+        return Ok(());
+    }
+    let cols = o.conn.columns(&o.database, &r.schema, &r.name).await.map_err(|e| format!("{e:#}"))?;
+    let t = dataman_core::agent_sql::Table { schema: r.schema.clone(), name: r.name.clone(), columns: cols.into_iter().map(|c| c.name).collect() };
+    super::rules::view_reads_kept(o, &o.profile.mcp_rules, &t, r.kind).await
+}
+
+async fn view_open(o: &Opened, r: &Relation) -> bool {
+    view_check(o, r).await.is_ok()
 }
 
 fn hidden_of(o: &Opened, r: &Relation, cols: &[dataman_core::schema::Column]) -> Vec<String> {
@@ -667,8 +718,9 @@ fn sample_rows(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
         };
         let limits = Limits { max_rows: n as usize, ..Limits::default() };
         let checked = super::rules::checked_sql(cx, &a, &o.profile, &sql, false).await?;
-        let mut out = cx.run(&o, &checked.sql, vec![], Mode::Read, limits).await?;
-        super::rules::mask_outcome(cx, &mut out, &checked.masked);
+        let read = super::rules::read_limits(cx, &o.profile, limits);
+        let mut out = cx.run(&o, &checked.sql, vec![], Mode::Read, read).await?;
+        super::rules::mask_outcome(cx, &o.profile, &mut out, &checked.masked, read, limits);
         cx.note_rows(out.rows.len());
         let mut v = result_json(&out, n as usize);
         super::rules::tell(&mut v, &checked, &cx.note().seen.masked);

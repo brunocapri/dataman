@@ -83,7 +83,7 @@ fn env(s: &str, settings: &str) -> Env {
             s,
             &format!("{my}[connection.mcp_rules]\nview = \"masked\"\nsensitive = [{{ col = \"customers.email\", how = \"hidden\" }}]\n[connection.mcp_rules.visible]\nitems = [{{ name = \"users.password_hash\", kind = \"column\" }}]\n"),
         ),
-        conn("ms", "DATAMAN_MSSQL", "127.0.0.1:14330", "sa", "tempdb", &format!("{ms}[connection.mcp_rules.visible]\nmode = \"only\"\nitems = [{{ name = \"dbo.{s}_open\", kind = \"table\" }}]\n"))
+        conn("ms", "DATAMAN_MSSQL", "127.0.0.1:14330", "sa", "tempdb", &format!("{ms}[connection.mcp_rules.visible]\nmode = \"only\"\nitems = [{{ name = \"dbo.{s}_open*\", kind = \"table\" }}]\n"))
             .replace("sslmode = \"disable\"", "sslmode = \"require\""),
         conn("msadmin", "DATAMAN_MSSQL", "127.0.0.1:14330", "sa", "tempdb", &format!("{ms}mcp = \"full\"")).replace("sslmode = \"disable\"", "sslmode = \"require\""),
         conn("mgadmin", "DATAMAN_MONGO", "127.0.0.1:27027", "root", s, &format!("{mg}mcp = \"full\"")),
@@ -328,6 +328,84 @@ fn postgres_privacy() {
     e.done();
 }
 
+/// Views read what they are defined on under their own names: through them nothing kept from
+/// agents may come back. Cells are masked whole before they are cut to the agent's size, and
+/// RETURNING rows are masked like any read.
+#[test]
+fn postgres_views_long_cells_and_returning() {
+    if !up("DATAMAN_PG", "127.0.0.1:55432") {
+        return;
+    }
+    let s = format!("mcp_privv_{}", std::process::id());
+    let e = env(&s, "");
+    let a = |x: Value| with("pgadmin", x);
+    let p = |x: Value| with("prod-pg", x);
+    let long_email = format!("{}@acme.com", "a".repeat(2500));
+    let card_at_cut = format!("{} 4242 4242 4242 4242 tail", "x".repeat(1990));
+    e.admin(
+        "execute",
+        a(json!({"sql": format!(
+            "CREATE SCHEMA {s}; \
+             CREATE TABLE {s}.users (id int PRIMARY KEY, name text, password_hash text); \
+             CREATE TABLE {s}.customers (id int PRIMARY KEY, email text, cpf text, city text); \
+             CREATE TABLE {s}.notes (id int PRIMARY KEY, body text); \
+             INSERT INTO {s}.users VALUES (1, 'Ana', 'secret-hash-1'); \
+             INSERT INTO {s}.customers VALUES (1, '{long_email}', '{}', 'Recife'), (2, 'bo@acme.com', 'not-a-cpf-7', 'Natal'); \
+             INSERT INTO {s}.notes VALUES (1, '{card_at_cut}'); \
+             CREATE VIEW {s}.v_renamed AS SELECT id, password_hash AS h FROM {s}.users; \
+             CREATE VIEW {s}.v_star AS SELECT * FROM {s}.users; \
+             CREATE VIEW {s}.v_of_v AS SELECT id, h FROM {s}.v_renamed; \
+             CREATE MATERIALIZED VIEW {s}.mv AS SELECT * FROM {s}.users; \
+             CREATE VIEW {s}.v_masked AS SELECT id, cpf AS c FROM {s}.customers; \
+             CREATE VIEW {s}.v_ok AS SELECT id, body FROM {s}.notes",
+            "z".repeat(5000)
+        )})),
+    );
+    let q = |sql: String| e.call("run_query", p(json!({"sql": sql})));
+
+    // (1) Views, materialized views and views of views over what is kept.
+    for v in ["v_renamed", "v_star", "v_of_v", "mv", "v_masked"] {
+        let err = q(format!("SELECT * FROM {s}.{v}")).unwrap_err();
+        assert!(err.contains("reads") && err.contains("keeps data from agents"), "{v}: {err}");
+        let err = e.err("sample_rows", p(json!({"table": format!("{s}.{v}")})));
+        assert!(err.contains("keeps data from agents"), "{v}: {err}");
+    }
+    let err = e.err("get_ddl", p(json!({"object": format!("{s}.v_renamed")})));
+    assert!(err.contains("keeps data from agents") && !err.contains("password_hash"), "{err}");
+    assert!(q(format!("SELECT count(*) FROM {s}.v_ok")).is_ok(), "a view over open data stays usable");
+    let found = e.ok("search_objects", p(json!({"pattern": "password"}))).to_string();
+    assert!(!found.contains("password_hash"), "the hidden column's name does not come back through a view: {found}");
+    let listed = names(&e.ok("list_tables", p(json!({"schema": s}))), 1);
+    assert!(listed.contains(&"v_ok".to_string()) && !listed.iter().any(|n| ["v_renamed", "v_star", "v_of_v", "mv", "v_masked"].contains(&n.as_str())), "{listed:?}");
+    assert!(e.err("describe_table", p(json!({"table": format!("{s}.v_star")}))).contains("keeps data from agents"));
+    assert!(e.ok("get_ddl", p(json!({"object": format!("{s}.v_ok")})))["ddl"].is_string());
+
+    // (2) Masked before the cut: a card number across the 2000-character cut, a long e-mail
+    // masked by its column, and a masked value longer than is read.
+    let body = q(format!("SELECT body FROM {s}.notes")).unwrap();
+    let cell = body["rows"][0][0].as_str().unwrap().to_string();
+    assert!(!cell.contains("4242 4242") && cell.contains("•••• 4242"), "the card is masked whole, then cut: …{}", &cell[cell.len().saturating_sub(40)..]);
+    assert!(cell.ends_with('…') && cell.chars().count() == 2001, "still cut to the agent's size: {}", cell.chars().count());
+    let r = q(format!("SELECT id, email, cpf FROM {s}.customers ORDER BY id")).unwrap();
+    assert_eq!(r["rows"][0][1], "a•••@acme.com", "the e-mail is masked whole, not its first 2000 characters");
+    assert_eq!(r["rows"][0][2], dataman_core::privacy::HIDDEN, "longer than is read: hidden whole");
+    assert!(r["rows"][1][2].as_str().unwrap().starts_with("‹h:"), "{}", r["rows"][1][2]);
+
+    // RETURNING rows are masked like a read.
+    match e.call("execute", p(json!({"sql": format!("UPDATE {s}.customers SET city = 'Olinda' WHERE id = 2 RETURNING id, cpf")}))) {
+        Ok(v) => {
+            let got = v["returning"]["rows"][0][1].as_str().unwrap_or_default().to_string();
+            assert!(got != "not-a-cpf-7" && got.starts_with("‹h:"), "RETURNING shows the masked value: {v}");
+        }
+        Err(e) => assert!(!e.contains("not-a-cpf-7"), "{e}"),
+    }
+    let agent: Vec<String> = e.audit().into_iter().filter(|x| x["connection"] == "prod-pg").map(|x| x.to_string()).collect();
+    assert!(!agent.is_empty() && agent.iter().all(|l| !l.contains("secret-hash-1") && !l.contains("not-a-cpf-7")), "nothing kept reaches the audit log: {agent:?}");
+
+    e.admin("execute", a(json!({"sql": format!("DROP SCHEMA {s} CASCADE")})));
+    e.done();
+}
+
 #[test]
 fn mysql_and_sql_server_privacy() {
     let s = format!("mcp_priv_{}", std::process::id());
@@ -337,23 +415,39 @@ fn mysql_and_sql_server_privacy() {
         e.admin("execute", with("myadmin", json!({"sql": format!("CREATE TABLE {s}.users (id int PRIMARY KEY, name text, password_hash text)")})));
         e.admin("execute", with("myadmin", json!({"sql": format!("CREATE TABLE {s}.customers (id int PRIMARY KEY, email text)")})));
         e.admin("execute", with("myadmin", json!({"sql": format!("INSERT INTO {s}.users VALUES (1, 'Ana', 'x'); INSERT INTO {s}.customers VALUES (1, 'ana@acme.com')")})));
+        e.admin("execute", with("myadmin", json!({"sql": format!("CREATE TABLE {s}.plain (id int)")})));
+        e.admin("execute", with("myadmin", json!({"sql": format!("CREATE VIEW {s}.v_users AS SELECT id, password_hash AS h FROM {s}.users")})));
+        e.admin("execute", with("myadmin", json!({"sql": format!("CREATE VIEW {s}.v_of_v AS SELECT h FROM {s}.v_users")})));
+        e.admin("execute", with("myadmin", json!({"sql": format!("CREATE VIEW {s}.v_ok AS SELECT id FROM {s}.plain")})));
         let m = |x: Value| with("my", x);
         let r = e.ok("run_query", m(json!({"sql": "SELECT * FROM users"})));
         assert_eq!(r["columns"].as_array().unwrap().len(), 2, "{r}");
         assert!(e.err("run_query", m(json!({"sql": "SELECT password_hash FROM users"}))).contains("hidden"));
         assert_eq!(e.ok("run_query", m(json!({"sql": "SELECT email FROM customers"})))["rows"][0][0], "‹hidden›");
+        // Views over kept data are kept too; over open data they stay usable.
+        for v in ["v_users", "v_of_v"] {
+            let err = e.err("run_query", m(json!({"sql": format!("SELECT * FROM {v}")})));
+            assert!(err.contains("keeps data from agents") && !err.contains("x'"), "{v}: {err}");
+        }
+        assert!(e.ok("run_query", m(json!({"sql": "SELECT * FROM v_ok"})))["rows"].is_array());
         e.admin("execute", with("myadmin", json!({"sql": format!("DROP DATABASE {s}")})));
         e.done();
     }
     if up("DATAMAN_MSSQL", "127.0.0.1:14330") {
         let e = env(&s, "");
         e.admin("execute", with("msadmin", json!({"sql": format!("CREATE TABLE dbo.{s}_open (id int); CREATE TABLE dbo.{s}_closed (id int)")})));
+        e.admin("execute", with("msadmin", json!({"sql": format!("CREATE VIEW dbo.{s}_open_v AS SELECT id FROM dbo.{s}_closed")})));
+        e.admin("execute", with("msadmin", json!({"sql": format!("CREATE VIEW dbo.{s}_open_ok AS SELECT id FROM dbo.{s}_open")})));
         let m = |x: Value| with("ms", x);
         assert!(e.ok("run_query", m(json!({"sql": format!("SELECT * FROM dbo.{s}_open")})))["rows"].is_array());
         assert!(e.err("run_query", m(json!({"sql": format!("SELECT * FROM dbo.{s}_closed")}))).contains("not visible"));
+        // A view visible by its name that reads a table kept from agents is kept too.
+        let err = e.err("run_query", m(json!({"sql": format!("SELECT * FROM dbo.{s}_open_v")})));
+        assert!(err.contains("keeps data from agents"), "{err}");
+        assert!(e.ok("run_query", m(json!({"sql": format!("SELECT * FROM dbo.{s}_open_ok")})))["rows"].is_array());
         let listed = names(&e.ok("list_tables", m(json!({"schema": "dbo"}))), 1);
-        assert!(listed.contains(&format!("{s}_open")) && !listed.contains(&format!("{s}_closed")), "{listed:?}");
-        e.admin("execute", with("msadmin", json!({"sql": format!("DROP TABLE dbo.{s}_open; DROP TABLE dbo.{s}_closed")})));
+        assert!(listed.contains(&format!("{s}_open")) && !listed.contains(&format!("{s}_closed")) && listed.contains(&format!("{s}_open_ok")) && !listed.contains(&format!("{s}_open_v")), "{listed:?}");
+        e.admin("execute", with("msadmin", json!({"sql": format!("DROP VIEW dbo.{s}_open_v; DROP VIEW dbo.{s}_open_ok; DROP TABLE dbo.{s}_open; DROP TABLE dbo.{s}_closed")})));
         e.done();
     }
 }
