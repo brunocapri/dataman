@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use dataman_core::bounded::{Limits, Mode};
 use dataman_core::guard;
-use dataman_core::sql::{TokenKind, tokenize};
+use dataman_core::sql::{Dialect, TokenKind, tokenize};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
@@ -174,7 +174,32 @@ fn valid_name(s: &str) -> bool {
     c.next().is_some_and(|f| f.is_ascii_lowercase()) && s.len() <= 64 && c.all(|x| x.is_ascii_lowercase() || x.is_ascii_digit() || x == '_')
 }
 
-pub fn check(d: &Def, taken: &[String]) -> Result<(), String> {
+/// The statement as `dialect` reads it: one statement, and in read mode a read.
+fn check_sql(d: &Def, dialect: Dialect) -> Result<String, String> {
+    let stmts = dataman_core::bounded::statements_in(&d.sql, dialect);
+    if stmts.len() != 1 {
+        return Err("sql must be exactly one statement".into());
+    }
+    match d.mode {
+        UserMode::Read => {
+            if let Some(r) = guard::agent_read_refusal_in(&stmts[0], dialect) {
+                return Err(format!("mode is read but {r}"));
+            }
+        }
+        UserMode::Write => {
+            let f = guard::classify_in(&stmts[0], dialect);
+            if f.tx.is_some() || f.outside_tx {
+                return Err(format!("{} cannot run in a tool's transaction", f.verb));
+            }
+        }
+    }
+    Ok(stmts[0].clone())
+}
+
+/// `dialect`: the SQL dialect of the tool's connection; `None` (connection "any", or one not
+/// saved) checks the statement as each engine reads it, and the call checks it again on the
+/// connection it runs on.
+pub fn check(d: &Def, taken: &[String], dialect: Option<Dialect>) -> Result<(), String> {
     if !valid_name(&d.name) {
         return Err("names are lower case letters, digits and _, starting with a letter (64 at most)".into());
     }
@@ -187,9 +212,16 @@ pub fn check(d: &Def, taken: &[String]) -> Result<(), String> {
     if d.connection.trim().is_empty() {
         return Err("connection is required (a connection name, or \"any\")".into());
     }
-    let stmts = dataman_core::bounded::statements(&d.sql);
-    if stmts.len() != 1 {
-        return Err("sql must be exactly one statement".into());
+    match dialect {
+        Some(dl) => {
+            check_sql(d, dl)?;
+        }
+        None => {
+            let all: Vec<Result<String, String>> = [Dialect::Postgres, Dialect::MySql, Dialect::TSql].into_iter().map(|dl| check_sql(d, dl)).collect();
+            if !all.iter().any(Result::is_ok) {
+                return Err(all.into_iter().find_map(Result::err).unwrap_or_default());
+            }
+        }
     }
     let n = max_placeholder(&d.sql);
     if n != d.params.len() {
@@ -208,23 +240,11 @@ pub fn check(d: &Def, taken: &[String]) -> Result<(), String> {
             p.bind(Some(&toml_to_json(def))).map_err(|e| format!("param {:?}: bad default: {e}", p.name))?;
         }
     }
-    match d.mode {
-        UserMode::Read => {
-            if let Some(r) = guard::agent_read_refusal(&stmts[0]) {
-                return Err(format!("mode is read but {r}"));
-            }
-        }
-        UserMode::Write => {
-            let f = guard::classify(&stmts[0]);
-            if f.tx.is_some() || f.outside_tx {
-                return Err(format!("{} cannot run in a tool's transaction", f.verb));
-            }
-        }
-    }
     Ok(())
 }
 
-pub fn load(text: &str, builtins: &[String]) -> (Vec<Arc<dyn Tool>>, Vec<String>) {
+/// `dialect_of`: the dialect of a saved connection, by name or id.
+pub fn load(text: &str, builtins: &[String], dialect_of: &dyn Fn(&str) -> Option<Dialect>) -> (Vec<Arc<dyn Tool>>, Vec<String>) {
     let file: File = match toml::from_str(text) {
         Ok(f) => f,
         Err(e) => return (Vec::new(), vec![format!("{e}")]),
@@ -233,7 +253,8 @@ pub fn load(text: &str, builtins: &[String]) -> (Vec<Arc<dyn Tool>>, Vec<String>
     let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
     let mut errors = Vec::new();
     for d in file.tool {
-        match check(&d, &taken) {
+        let dialect = if d.connection.eq_ignore_ascii_case("any") { None } else { dialect_of(&d.connection) };
+        match check(&d, &taken, dialect) {
             Ok(()) => {
                 taken.push(d.name.clone());
                 tools.push(Arc::new(UserTool::new(d)));
@@ -299,20 +320,35 @@ impl Tool for UserTool {
                 timeout: Duration::from_millis(self.def.timeout_ms.unwrap_or(30_000).clamp(100, 300_000)),
                 ..Limits::default()
             };
-            let out = match self.def.mode {
+            // The connection's own dialect, and its rules for agents, as for run_query and
+            // execute: a tool the user wrote runs for an agent, so what the rules keep stays kept.
+            let target = cx.target(&a, Need::Read)?;
+            if !target.engine.is_sql() {
+                return Err(ToolError::Invalid(format!("{} is not a SQL connection", target.name)));
+            }
+            let stmt = check_sql(&self.def, target.engine.dialect()).map_err(ToolError::Invalid)?;
+            let write = self.def.mode == UserMode::Write;
+            if !write {
+                crate::builtin::rules::structure_read(&target, std::slice::from_ref(&stmt))?;
+            }
+            let checked = crate::builtin::rules::checked_sql(cx, &a, &target, &self.def.sql, write).await?;
+            let read = crate::builtin::rules::read_limits(cx, &target, limits);
+            let mut out = match self.def.mode {
                 UserMode::Read => {
                     let o = cx.open(&a, Need::Read).await?;
-                    cx.run(&o, &self.def.sql, params, Mode::Read, limits).await?
+                    cx.run(&o, &checked.sql, params, Mode::Read, read).await?
                 }
                 // The same tiers as execute: what the template is decides, not the file.
                 UserMode::Write => {
                     let visible = cx.tab_front(false).is_some();
-                    let w = Write { sql: &self.def.sql, judged: None, params, limits, rollback: false, visible, title: Some(self.def.name.clone()) };
+                    let w = Write { sql: &checked.sql, judged: None, params, limits: read, rollback: false, visible, title: Some(self.def.name.clone()) };
                     cx.write(&a, w).await?.outcome
                 }
             };
+            crate::builtin::rules::mask_outcome(cx, &target, &mut out, &checked.masked, read, limits);
             cx.note_rows(out.rows.len());
             let mut v = crate::builtin::result_json(&out, limits.max_rows);
+            crate::builtin::rules::tell(&mut v, &checked, &cx.note().seen.masked);
             if self.def.mode == UserMode::Write {
                 v["statements"] = Value::Array(out.statements.iter().map(|d| json!([d.verb, d.affected])).collect());
                 v["committed"] = json!(true);
@@ -365,7 +401,7 @@ type = "int"
 
     #[test]
     fn parses_and_builds_schemas() {
-        let (tools, errors) = load(EXAMPLE, &["run_query".to_string()]);
+        let (tools, errors) = load(EXAMPLE, &["run_query".to_string()], &|_| None);
         assert!(errors.is_empty(), "{errors:?}");
         assert_eq!(tools.iter().map(|t| t.name()).collect::<Vec<_>>(), ["orders_by_customer", "close_order"]);
         let s = tools[0].schema();
@@ -385,7 +421,7 @@ type = "int"
 
     #[test]
     fn binding() {
-        let (tools, _) = load(EXAMPLE, &[]);
+        let (tools, _) = load(EXAMPLE, &[], &|_| None);
         let t = tools.into_iter().next().unwrap();
         let def = &EXAMPLE_DEF.with(|d| d.clone());
         let u = UserTool::new(def.clone());
@@ -415,7 +451,7 @@ type = "int"
     fn problems_are_reported() {
         let bad = |extra: &str| {
             let text = format!("[[tool]]\nname = \"t\"\ndescription = \"d\"\nconnection = \"c\"\n{extra}");
-            let (tools, errors) = load(&text, &["run_query".into()]);
+            let (tools, errors) = load(&text, &["run_query".into()], &|_| None);
             assert!(tools.is_empty(), "{extra}");
             errors.join("; ")
         };
@@ -426,9 +462,9 @@ type = "int"
         assert!(bad("sql = \"SELECT 1\"\nunknown = 1").contains("unknown field"));
         assert!(bad("sql = \"SELECT $1\"\n[[tool.param]]\nname = \"x\"\ntype = \"enum\"").contains("needs values"));
         assert!(bad("sql = \"SELECT $1\"\n[[tool.param]]\nname = \"x\"\ntype = \"int\"\ndefault = \"a\"").contains("bad default"));
-        let (_, e) = load("[[tool]]\nname = \"run_query\"\ndescription = \"d\"\nconnection = \"c\"\nsql = \"SELECT 1\"", &["run_query".into()]);
+        let (_, e) = load("[[tool]]\nname = \"run_query\"\ndescription = \"d\"\nconnection = \"c\"\nsql = \"SELECT 1\"", &["run_query".into()], &|_| None);
         assert!(e[0].contains("taken"), "{e:?}");
-        let (_, e) = load("[[tool]]\nname = \"Bad Name\"\ndescription = \"d\"\nconnection = \"c\"\nsql = \"SELECT 1\"", &[]);
+        let (_, e) = load("[[tool]]\nname = \"Bad Name\"\ndescription = \"d\"\nconnection = \"c\"\nsql = \"SELECT 1\"", &[], &|_| None);
         assert!(e[0].contains("lower case"), "{e:?}");
         assert_eq!(max_placeholder("SELECT $1, '$9', $2 -- $7"), 2, "strings and comments are not placeholders");
     }

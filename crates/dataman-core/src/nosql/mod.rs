@@ -308,7 +308,7 @@ pub fn classify(engine: Engine, text: &str) -> Result<WriteClass, Failed> {
             MongoText::Statement(p) => Ok(p.op.class()),
             MongoText::Script => js::class(text),
         },
-        Engine::Elasticsearch | Engine::OpenSearch => Ok(console::parse(text)?.class()),
+        e @ (Engine::Elasticsearch | Engine::OpenSearch) => Ok(console::parse(text)?.class_in(Some(e))),
         Engine::Redis => {
             let args = redis::parse(text)?;
             if let Some(why) = redis::refusal(&args) {
@@ -526,7 +526,7 @@ impl Connection {
                 }
                 Client::Search(c) => {
                     let req = console::parse(&text)?;
-                    let class = req.class();
+                    let class = req.class_in(Some(this.engine()));
                     if class.is_write() && this.read_only_for(&db) {
                         return Err(Failed { message: "this connection is read-only: writes are refused".into(), at: None });
                     }

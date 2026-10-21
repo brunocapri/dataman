@@ -1,7 +1,9 @@
 use std::ops::Range;
 
 use super::shell::{self, ParseError};
+use crate::Engine;
 use crate::guard::WriteClass;
+use crate::sql::Dialect;
 
 pub const METHODS: [&str; 6] = ["GET", "POST", "PUT", "DELETE", "HEAD", "PATCH"];
 
@@ -72,12 +74,19 @@ impl Request {
         segs.get(at + 1).copied()
     }
 
-    fn sql_writes(&self) -> bool {
+    /// Elasticsearch SQL nests block comments as PostgreSQL does; OpenSearch's SQL and PPL do
+    /// not, and take backquoted names, as MySQL does: there both readings count, the stronger
+    /// wins. Unknown: every reading.
+    fn sql_writes(&self, engine: Option<Engine>) -> bool {
         let q = match &self.body {
             Body::Json(b) => b["query"].as_str().unwrap_or(""),
             _ => "",
         };
-        crate::bounded::statements(q).iter().any(|s| crate::guard::classify(s).is_write())
+        let readings: &[Dialect] = match engine {
+            Some(Engine::Elasticsearch) => &[Dialect::Postgres],
+            _ => &[Dialect::Postgres, Dialect::MySql],
+        };
+        readings.iter().any(|&d| crate::bounded::statements_in(q, d).iter().any(|s| crate::guard::classify_in(s, d).is_write()))
     }
 
     pub fn is_search(&self) -> bool {
@@ -96,11 +105,17 @@ impl Request {
             || ep == "_search" && matches!(next, Some("scroll" | "template"))
     }
 
+    /// What the request does, its SQL read as any server would.
     pub fn class(&self) -> WriteClass {
+        self.class_in(None)
+    }
+
+    /// What the request does on `engine`'s server.
+    pub fn class_in(&self, engine: Option<Engine>) -> WriteClass {
         let destructive = |why: &str| WriteClass::Destructive { reasons: vec![why.to_string()] };
         let ep = self.endpoint().unwrap_or("");
         let segs = self.segments();
-        if self.sql() && self.sql_writes() {
+        if self.sql() && self.sql_writes(engine) {
             return destructive("SQL that writes");
         }
         if matches!(self.method.as_str(), "GET" | "POST") && self.reads() {

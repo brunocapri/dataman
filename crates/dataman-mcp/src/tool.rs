@@ -800,7 +800,13 @@ impl Registry {
         }
         g.stamp = stamp;
         let (tools, errors) = match std::fs::read_to_string(file) {
-            Ok(text) => crate::user::load(&text, &self.builtin_names()),
+            Ok(text) => {
+                // The tools file sits next to connections.toml: each tool's SQL is read in its
+                // connection's dialect.
+                let profiles = file.parent().and_then(|d| dataman_core::ConfigStore::open(&dataman_core::Dirs::at(d)).ok()).map(|s| s.connections()).unwrap_or_default();
+                let dialect_of = |c: &str| profiles.iter().find(|p| p.name == c || p.id == c).filter(|p| p.engine.is_sql()).map(|p| p.engine.dialect());
+                crate::user::load(&text, &self.builtin_names(), &dialect_of)
+            }
             Err(_) => (Vec::new(), Vec::new()),
         };
         for e in &errors {
