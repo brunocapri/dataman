@@ -750,7 +750,8 @@ impl AgentsPage {
                 self.selected = None;
             }
             Act::SensMask(i, m) => {
-                if let Some(id) = self.conn.clone() {
+                // Sensitive columns are inert outside Masked data.
+                if let Some(id) = self.conn.clone().filter(|id| self.core.config.get(id).is_some_and(|p| p.mcp_rules.view == dataman_core::privacy::AgentView::Masked)) {
                     self.edit_conn(&id, |p| {
                         if let Some(s) = p.mcp_rules.sensitive.get_mut(i) {
                             s.how = m;

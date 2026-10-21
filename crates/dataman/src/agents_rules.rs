@@ -528,6 +528,9 @@ impl AgentsPage {
                 sees_tip(),
             ))
             .child(seg(t, "agents-view", &views, r.view, false, cx, |v, view, cx| v.set_rule(|r| r.view = view, cx)));
+        // Sensitive columns mask in Masked data only: elsewhere the section is shown, dimmed and
+        // inert (no focus, click or key), and Use Masked data is the way back to editing.
+        let masked = r.view == AgentView::Masked;
         let sens_rows = r.sensitive.iter().enumerate().map(|(k, s)| {
             let id = SharedString::from(format!("agents-sens-mask-{k}"));
             let items: Vec<(SharedString, bool, Act)> = Mask::ALL.iter().map(|m| (m.label().into(), *m == s.how, Act::SensMask(k, *m))).collect();
@@ -548,17 +551,24 @@ impl AgentsPage {
                     div()
                         .children(ui::here(&SharedString::from(format!("agents-sens-check-{k}")).into()))
                         .id(SharedString::from(format!("agents-sens-check-{k}")))
-                        .child(checkbox(t, s.on, false))
-                        .on_click(cx.listener(move |v, _, _, cx| {
-                            v.set_rule(|r| {
-                                if let Some(s) = r.sensitive.get_mut(k) {
-                                    s.on = !s.on;
-                                }
-                            }, cx)
-                        })),
+                        .child(if masked || !s.on {
+                            checkbox(t, s.on, false)
+                        } else {
+                            // Checked but inert: the tick in the disabled grey, not the accent.
+                            div().flex_none().size(px(14.)).flex().items_center().justify_center().bg(t.line2).child(icon(Icon::Check).size(px(11.)).text_color(t.tx3))
+                        })
+                        .when(masked, |d| {
+                            d.on_click(cx.listener(move |v, _, _, cx| {
+                                v.set_rule(|r| {
+                                    if let Some(s) = r.sensitive.get_mut(k) {
+                                        s.on = !s.on;
+                                    }
+                                }, cx)
+                            }))
+                        }),
                 )
                 .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(if s.on { t.tx } else { t.tx3 }).child(s.col.clone()))
-                .child(
+                .when(masked, |d| d.child(
                     div()
                         .id(SharedString::from(format!("agents-sens-rm-{k}")))
                         .invisible()
@@ -574,15 +584,14 @@ impl AgentsPage {
                                 }
                             }, cx)
                         })),
-                )
+                ))
                 .child(
                     div()
                         .id(SharedString::from(format!("agents-sens-mask-btn-{k}")))
-                        .child(dropdown(t, self, id, s.how.label(), s.on))
-                        .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.open_menu(open.clone(), 120., items.clone(), cx))),
+                        .child(dropdown(t, self, id, s.how.label(), s.on && masked))
+                        .when(masked, |d| d.on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.open_menu(open.clone(), 120., items.clone(), cx)))),
                 )
         });
-        let masked = r.view == AgentView::Masked;
         let sensitive = div()
             .flex()
             .flex_col()
@@ -603,10 +612,9 @@ impl AgentsPage {
                             .children(ui::here(&"agents-scan".into()))
                             .id("agents-scan")
                             .text_size(px(11.5))
-                            .text_color(t.tx2)
-                            .hover(|s| s.opacity(0.75))
-                            .child("Scan again")
-                            .on_click(cx.listener(|v, _, _, cx| v.scan(cx))),
+                            .text_color(if masked { t.tx2 } else { t.tx4 })
+                            .when(masked, |d| d.hover(|s| s.opacity(0.75)).on_click(cx.listener(|v, _, _, cx| v.scan(cx))))
+                            .child("Scan again"),
                     ),
             )
             // Kept and editable in every mode, but they only mask in Masked data: say so, dimmed.
@@ -641,8 +649,28 @@ impl AgentsPage {
                     .flex_row()
                     .gap(px(8.))
                     .when(!masked, |d| d.opacity(0.55))
-                    .child(self.suggest_field(t, Which::Sensitive, field(t, "agents-field-sensitive", &self.sens_input, window, cx), window, cx))
-                    .child(ui::button(t, "agents-sens-add", ui::Btn::Secondary).h(px(28.)).px(px(10.)).child("Add").on_click(cx.listener(|v, _, _, cx| v.add_sensitive(cx)))),
+                    .when(masked, |d| {
+                        d.child(self.suggest_field(t, Which::Sensitive, field(t, "agents-field-sensitive", &self.sens_input, window, cx), window, cx))
+                            .child(ui::button(t, "agents-sens-add", ui::Btn::Secondary).h(px(28.)).px(px(10.)).child("Add").on_click(cx.listener(|v, _, _, cx| v.add_sensitive(cx))))
+                    })
+                    // No input at all while disabled: nothing to focus, click, type into or Tab to.
+                    .when(!masked, |d| {
+                        d.child(
+                            div()
+                                .children(ui::here(&"agents-field-sensitive".into()))
+                                .flex_1()
+                                .h(px(28.))
+                                .px(px(9.))
+                                .flex()
+                                .items_center()
+                                .bg(t.field)
+                                .border_1()
+                                .border_color(t.field_b)
+                                .text_color(t.tx4)
+                                .child(sens_place),
+                        )
+                        .child(div().children(ui::here(&"agents-sens-add".into())).flex_none().h(px(28.)).px(px(10.)).flex().items_center().border_1().border_color(t.line2).text_color(t.tx4).child("Add"))
+                    }),
             );
         let left = div().flex_1().min_w_0().flex().flex_col().gap(px(24.)).child(sees).child(sensitive);
         let modes: Vec<(VisibleMode, &str)> = [VisibleMode::Except, VisibleMode::Only].iter().map(|m| (*m, m.label())).collect();
@@ -747,6 +775,9 @@ impl AgentsPage {
     }
 
     pub(crate) fn add_sensitive(&mut self, cx: &mut Context<Self>) {
+        if self.selected_profile(cx).is_none_or(|p| p.mcp_rules.view != AgentView::Masked) {
+            return;
+        }
         let text = self.sens_input.read(cx).text().trim().to_string();
         if text.is_empty() {
             return;
@@ -778,7 +809,7 @@ impl AgentsPage {
     /// Suggests sensitive columns by name from the schema of the connected database (on your
     /// connection, never an agent's).
     pub(crate) fn scan(&mut self, cx: &mut Context<Self>) {
-        let Some(p) = self.selected_profile(cx) else { return };
+        let Some(p) = self.selected_profile(cx).filter(|p| p.mcp_rules.view == AgentView::Masked) else { return };
         if !p.engine.is_sql() {
             self.scan_note = Some("Scan reads SQL schemas; add fields by name here.".into());
             cx.notify();

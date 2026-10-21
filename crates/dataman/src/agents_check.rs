@@ -583,13 +583,35 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     pause(cx, 50).await;
     // Sensitive columns only mask in Masked data: kept and editable in the other modes, dimmed,
     // with a line that says so and switches to Masked data.
-    let kept = rules(&core, &pg.id).sensitive.len();
+    if let Some(mut p) = core.config.get(&pg.id).filter(|p| p.mcp_rules.sensitive.is_empty()) {
+        p.mcp_rules.sensitive.push(SensitiveCol { col: "users.email".into(), how: Mask::Partial, on: true });
+        let _ = core.config.upsert(p);
+        let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.store.update(cx, |s, cx| s.reload(cx))));
+        pause(cx, 50).await;
+    }
+    let kept = rules(&core, &pg.id).sensitive.clone();
     let mut unused = Vec::new();
+    let mut inert = Vec::new();
     for k in [0, 2, 1] {
         click_probe(&format!("agents-view-{k}"), cx);
         pause(cx, 50).await;
         unused.push(probed("agents-sens-unused", cx).is_some());
+        if k != 1 {
+            // Disabled for real: clicking the field and typing, Add, the × and a mask menu do nothing.
+            click_probe("agents-field-sensitive", cx);
+            typ(cx, "users.ssn");
+            key(cx, "enter");
+            click_probe("agents-sens-add", cx);
+            click_probe("agents-sens-mask-0", cx);
+            pause(cx, 50).await;
+            click_probe("agents-sens-mask-0:2", cx);
+            pause(cx, 50).await;
+            let focused = cx.update(|window, cx| gpui::Focusable::focus_handle(a.read(cx).sens_input.read(cx), cx).is_focused(window)).unwrap_or(true);
+            inert.push(rules(&core, &pg.id).sensitive == kept && !focused && probed("agents-sens-rm-0", cx).is_none() && !cx.update(|_, cx| a.read(cx).demo_menu_open()).unwrap_or(true));
+        }
     }
+    r.check("in Data and Structure only, Sensitive columns are disabled: no focus, typing, Add, removal or mask change", inert == [true, true] && !kept.is_empty(), format!("{inert:?} {:?}", rules(&core, &pg.id).sensitive));
+    let kept = kept.len();
     click_probe("agents-view-0", cx);
     pause(cx, 50).await;
     click_probe("agents-sens-use-masked", cx);
