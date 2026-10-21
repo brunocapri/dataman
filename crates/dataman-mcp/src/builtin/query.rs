@@ -1,6 +1,7 @@
 use dataman_core::bounded::{self, Limits, Mode};
 use dataman_core::explain::{self, Plan};
 use dataman_core::guard::{self, WriteClass};
+use dataman_core::sql::Dialect;
 use serde_json::{Map, Value, json};
 
 use super::{Builtin, confirm_prop, conn_schema, limits_props, ms, read_json, result_json, rules};
@@ -142,8 +143,8 @@ async fn draft(cx: &Call, a: &Args, sql: &str) -> Result<Value, ToolError> {
     Ok(json!({"drafted": true, "tab": d.tab, "connection": p.name, "database": d.database}))
 }
 
-fn one(sql: &str) -> Result<String, ToolError> {
-    let mut s = bounded::statements(sql);
+fn one(sql: &str, d: Dialect) -> Result<String, ToolError> {
+    let mut s = bounded::statements_in(sql, d);
     match s.len() {
         1 => Ok(s.pop().unwrap()),
         0 => Err(ToolError::Invalid("empty statement".into())),
@@ -208,7 +209,7 @@ fn plan_json(out: &bounded::Outcome, format: &str, rolled_back: bool) -> Value {
 /// are dropped when the statement had to be narrowed).
 async fn narrowed(cx: &Call, a: &Args, o: &Opened, stmt: String) -> Result<String, ToolError> {
     let inner = explain::inner(&stmt).map(str::to_string).unwrap_or_else(|| stmt.clone());
-    let writes = guard::classify(&inner).is_write();
+    let writes = guard::classify_in(&inner, o.profile.engine.dialect()).is_write();
     let c = rules::checked_sql(cx, a, &o.profile, &inner, writes).await?;
     Ok(if c.rewritten { c.sql } else { stmt })
 }
@@ -225,7 +226,7 @@ fn explain_plain(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
     Box::pin(async move {
         let o = cx.open(&a, Need::Read).await?;
         plans(&o)?;
-        let stmt = narrowed(cx, &a, &o, one(a.str("sql")?)?).await?;
+        let stmt = narrowed(cx, &a, &o, one(a.str("sql")?, o.profile.engine.dialect())?).await?;
         let sql = explain::sql(&stmt, false, explain::Target::of(&o.conn.info));
         if explain::analyzes(&sql) {
             return Err(ToolError::Invalid("this EXPLAIN runs the statement (ANALYZE): use explain_analyze".into()));
@@ -237,11 +238,11 @@ fn explain_plain(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
 
 fn explain_analyze(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
     Box::pin(async move {
-        let stmt = one(a.str("sql")?)?;
-        let inner = explain::inner(&stmt).map(str::to_string).unwrap_or_else(|| stmt.clone());
-        let writes = guard::classify(&inner).is_write();
-        let limits = plan_limits(cx.time_limit(&a).as_millis() as u64);
         let target = cx.target(&a, Need::Read)?;
+        let stmt = one(a.str("sql")?, target.engine.dialect())?;
+        let inner = explain::inner(&stmt).map(str::to_string).unwrap_or_else(|| stmt.clone());
+        let writes = guard::classify_in(&inner, target.engine.dialect()).is_write();
+        let limits = plan_limits(cx.time_limit(&a).as_millis() as u64);
         if target.mcp_rules.view == dataman_core::privacy::AgentView::Structure {
             return Err(ToolError::Refused(rules::structure_only(&target)));
         }

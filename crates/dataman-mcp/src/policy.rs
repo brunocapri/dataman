@@ -138,7 +138,7 @@ pub fn judge(enabled: bool, t: Target, sql: &str, allowed: &[String]) -> Judged 
     if t.read_only && class.is_write() {
         return Judged { verdict: Verdict::Refuse(READ_ONLY.into()), by: None, row_limit: true };
     }
-    let rest = dataman_core::guard::agent_write_class(&rest.join(";\n"), t.dialect);
+    let rest = dataman_core::guard::pieces_class(&rest, t.dialect);
     if !rest.is_write() {
         return Judged { verdict: Verdict::Run, by: Some(By::Allowlist(used)), row_limit: false };
     }
