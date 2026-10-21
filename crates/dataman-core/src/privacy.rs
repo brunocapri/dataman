@@ -1300,6 +1300,54 @@ impl AgentRules {
     pub fn time_limit(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.time_limit_s.unwrap_or(300).clamp(1, 300))
     }
+
+    /// The rules with each generated (computed) column protected as the strongest of the
+    /// columns it is computed from: hidden if any is hidden, else masked with the strongest
+    /// mask among them. Followed through generated columns computed from generated columns.
+    pub fn with_generated(&self, cols: &[Generated], names: Names) -> AgentRules {
+        let mut r = self.clone();
+        let rank = |m: Option<Mask>| match m {
+            None => 0,
+            Some(Mask::Partial) => 1,
+            Some(Mask::Hash) => 2,
+            Some(Mask::Hidden) => 3,
+        };
+        loop {
+            let mut changed = false;
+            for g in cols {
+                let s = Some(g.schema.as_str());
+                if r.visible.column_hidden(s, &g.table, &g.column, names) {
+                    continue;
+                }
+                let name = format!("{}.{}.{}", g.schema, g.table, g.column);
+                if g.from.iter().any(|d| r.visible.column_hidden(s, &g.table, d, names)) {
+                    r.visible.items.push(VisibleItem { name, kind: ItemKind::Column });
+                    changed = true;
+                    continue;
+                }
+                let strongest = g.from.iter().map(|d| r.sensitive_mask(s, &g.table, d, names)).max_by_key(|m| rank(*m)).flatten();
+                if rank(strongest) > rank(r.sensitive_mask(s, &g.table, &g.column, names))
+                    && let Some(how) = strongest
+                {
+                    // First: the first entry that matches a column is its mask.
+                    r.sensitive.insert(0, SensitiveCol { col: name, how, on: true });
+                    changed = true;
+                }
+            }
+            if !changed {
+                return r;
+            }
+        }
+    }
+}
+
+/// A generated (computed) column and the columns of its table its expression reads.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Generated {
+    pub schema: String,
+    pub table: String,
+    pub column: String,
+    pub from: Vec<String>,
 }
 
 // ---- Validators ----

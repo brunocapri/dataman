@@ -13,6 +13,7 @@ use crate::policy::Need;
 use crate::tool::{Args, BoxFut, Call, Registry, Schema, Tool, ToolError};
 
 pub use catalog::system_schema as catalog_system_schema;
+pub(crate) use catalog::view_open;
 
 pub type Handler =for<'a> fn(&'a Call, Args) -> BoxFut<'a, Result<Value, ToolError>>;
 

@@ -3,6 +3,7 @@ use std::fmt::Write as _;
 use std::sync::Arc;
 
 use dataman_core::McpAccess;
+use dataman_core::schema::{RelKind, Relation};
 use dataman_core::bounded::{Limits, Mode};
 use serde_json::{Value, json};
 
@@ -283,6 +284,26 @@ pub async fn read(cx: &Call, u: &Uri) -> Result<Arc<String>, ToolError> {
     let mut t = t;
     if restricted {
         visible_only(&o.profile, &mut t);
+        // Views that read what is kept are kept, as list_tables keeps them.
+        let mut kept: Vec<(String, String)> = Vec::new();
+        for (s, rels) in &t {
+            for (name, rel) in rels {
+                let kind = match rel.kind.as_str() {
+                    "view" => RelKind::View,
+                    "materialized view" => RelKind::MaterializedView,
+                    _ => continue,
+                };
+                let r = Relation { schema: s.clone(), name: name.clone(), kind, oid: None };
+                if !crate::builtin::view_open(&o, &r).await {
+                    kept.push((s.clone(), name.clone()));
+                }
+            }
+        }
+        for (s, name) in kept {
+            if let Some(rels) = t.get_mut(&s) {
+                rels.remove(&name);
+            }
+        }
     }
     let text = if u.json {
         serde_json::to_string(&as_json(&o, &t, truncated)).unwrap_or_default()

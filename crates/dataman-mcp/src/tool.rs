@@ -379,7 +379,10 @@ impl Call {
         };
         let database = args.opt_str("database").map(str::to_string).unwrap_or_else(|| conn.database().to_string());
         self.note.lock().database = Some(database.clone());
-        Ok(Opened { profile, conn, database })
+        let mut o = Opened { profile, conn, database };
+        // Every tool reads the rules from here: generated columns take their sources' protection.
+        o.profile.mcp_rules = crate::builtin::rules::effective_rules(self, &o).await?;
+        Ok(o)
     }
 
     pub fn enabled(&self) -> Result<(), ToolError> {

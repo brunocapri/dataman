@@ -241,6 +241,8 @@ fn postgres_values_stay_kept() {
              INSERT INTO {s}.users VALUES (1, 'Ana', 'ana@acme.com', 'hash-secret-1'); \
              INSERT INTO {s}.customers VALUES (1, 'Ana', 'ana@acme.com', 'cpf-secret-9', 'Recife', '12345678901234'); \
              INSERT INTO {s}.payments VALUES (1, 'card-secret'); \
+             CREATE VIEW {s}.v_kept AS SELECT id, password_hash AS h FROM {s}.users; \
+             CREATE VIEW {s}.v_open AS SELECT id, body FROM {s}.notes; \
              CREATE TABLE {s}.nums (id int, card bigint, doc numeric, meta jsonb); \
              INSERT INTO {s}.nums VALUES (1, 4242424242424242, 4242424242424242, '{{\"card\": 4242424242424242}}')"
         )})),
@@ -345,6 +347,8 @@ fn postgres_values_stay_kept() {
         clean(tool, &r);
         assert!(!r.to_string().contains("password_hash"), "{tool}: {r}");
     }
+    let listed = e.ok("list_tables", with("pp", json!({"schema": s}))).to_string();
+    assert!(listed.contains("v_open") && !listed.contains("v_kept"), "{listed}");
     let call = dataman_mcp::Call::new(e.server.hub.clone(), "privacy-test".into(), "stdio", "resources/read", CancellationToken::new());
     for json in [false, true] {
         let u = dataman_mcp::resources::parse(&dataman_mcp::resources::uri("pp", "dataman", json)).unwrap();
@@ -354,9 +358,11 @@ fn postgres_values_stay_kept() {
             let v: Value = serde_json::from_str(&text).unwrap();
             let mine = &v["schemas"][&s];
             assert!(mine["customers"].is_object() && mine["payments"].is_null(), "{mine}");
+            assert!(mine["v_open"].is_object() && mine["v_kept"].is_null(), "views follow list_tables: {mine}");
         } else {
             let mine = text.split(&format!("## {s}\n")).nth(1).unwrap().split("\n## ").next().unwrap();
             assert!(mine.contains("- customers [") && !mine.contains("- payments ["), "{mine}");
+            assert!(mine.contains("- v_open [") && !mine.contains("v_kept"), "views follow list_tables: {mine}");
         }
     }
     e.ok("add_favorite", with("pp", json!({"name": "pw fav", "sql": format!("SELECT password_hash FROM {s}.users")})));
@@ -853,4 +859,86 @@ fn audit_records_each_call() {
     e.admin("execute", with("pgadmin", json!({"sql": format!("DROP SCHEMA {s} CASCADE")})));
     e.nothing_kept_logged();
     e.done();
+}
+
+/// A generated (computed) column is protected as the strongest of the columns it is computed
+/// from, on every engine and through every tool: hidden from a hidden column, masked from a
+/// masked one.
+#[test]
+fn generated_columns_follow_their_sources() {
+    let s = format!("mcp_gen_{}", std::process::id());
+    let check = |e: &Env, c: &str, table: &str, star: &str| {
+        let q = |sql: String| e.call("run_query", with(c, json!({"sql": sql})));
+        let r = q(star.to_string()).unwrap_or_else(|err| panic!("{c}: {err}"));
+        let cols = r["columns"].to_string();
+        assert!(!cols.contains("pw") && cols.contains("email_up") && cols.contains("name_up"), "{c}: {r}");
+        let text = r.to_string();
+        assert!(!text.contains("ZED-SECRET") && !text.contains("zed-secret") && text.contains("ANA"), "{c}: {r}");
+        for col in ["pw_len", "pw_v"] {
+            if !(c == "mm" || c == "ss") || col == "pw_len" {
+                refused(col, q(format!("SELECT {col} FROM {table}")), "is hidden from agents");
+            }
+        }
+        let r = q(format!("SELECT email_up FROM {table}")).unwrap();
+        assert!(r["rows"][0][0].as_str().unwrap().starts_with("‹h:"), "{c}: masked as the strongest of its sources: {r}");
+        refused("computed", q(format!("SELECT lower(email_up) FROM {table}")), MASKED);
+        let sample = e.ok("sample_rows", with(c, json!({"table": table})));
+        assert!(!sample.to_string().contains("pw") && !sample.to_string().contains("ZED-SECRET"), "{c}: {sample}");
+        for (tool, args) in [("describe_table", json!({"table": table, "include_ddl": true})), ("get_ddl", json!({"object": table}))] {
+            let d = e.ok(tool, with(c, args)).to_string();
+            assert!(!d.contains("pw_len") && !d.contains("pw_v") && !d.contains("(pw") && !d.contains("`pw`") && !d.contains("[pw]"), "{c} {tool}: {d}");
+            assert!(d.contains("email_up"), "{c} {tool}: {d}");
+        }
+    };
+    if up(PG) {
+        let rules = "[connection.mcp_rules]\nview = \"masked\"\nsensitive = [{ col = \"gen.email\", how = \"hash\" }]\n[connection.mcp_rules.visible]\nitems = [{ name = \"gen.pw\", kind = \"column\" }]\n";
+        let e = env(&[conn("pgadmin", PG, "", "postgres", "dataman", "mcp = \"full\""), conn("pp", PG, "", "postgres", "dataman", rules)], "", None);
+        e.admin(
+            "execute",
+            with("pgadmin", json!({"sql": format!(
+                "CREATE SCHEMA {s}; CREATE TABLE {s}.gen (id int PRIMARY KEY, name text, email text, pw text, \
+                 pw_len int GENERATED ALWAYS AS (length(pw)) STORED, pw_v text GENERATED ALWAYS AS (pw || '!') VIRTUAL, \
+                 email_up text GENERATED ALWAYS AS (upper(email)) STORED, name_up text GENERATED ALWAYS AS (upper(name)) STORED); \
+                 INSERT INTO {s}.gen (id, name, email, pw) VALUES (1, 'Ana', 'zed-secret@acme.com', 'hash-secret-1')"
+            )})),
+        );
+        let table = format!("{s}.gen");
+        check(&e, "pp", &table, &format!("SELECT * FROM {table}"));
+        let call = dataman_mcp::Call::new(e.server.hub.clone(), "privacy-test".into(), "stdio", "resources/read", CancellationToken::new());
+        let u = dataman_mcp::resources::parse(&dataman_mcp::resources::uri("pp", "dataman", false)).unwrap();
+        let text = e.server.hub.core.block_on(dataman_mcp::resources::read(&call, &u)).unwrap();
+        assert!(text.contains("email_up") && !text.contains("pw_len") && !text.contains("pw_v"), "{text}");
+        e.admin("execute", with("pgadmin", json!({"sql": format!("DROP SCHEMA {s} CASCADE")})));
+        e.nothing_kept_logged();
+        e.done();
+    }
+    if up(MY) {
+        let rules = "[connection.mcp_rules]\nview = \"masked\"\nsensitive = [{ col = \"gen.email\", how = \"hash\" }]\n[connection.mcp_rules.visible]\nitems = [{ name = \"gen.pw\", kind = \"column\" }]\n";
+        let e = env(&[conn("myadmin", MY, "mysql", "root", "mysql", "mcp = \"full\""), conn("mm", MY, "mysql", "root", &s, rules)], "", None);
+        let a = |sql: String| e.admin("execute", with("myadmin", json!({"sql": sql})));
+        a(format!("CREATE DATABASE {s}"));
+        a(format!(
+            "CREATE TABLE {s}.gen (id int PRIMARY KEY, name varchar(50), email varchar(50), pw varchar(50), \
+             pw_len int AS (length(`pw`)) VIRTUAL, email_up varchar(50) AS (upper(email)) STORED, name_up varchar(50) AS (upper(name)) VIRTUAL)"
+        ));
+        a(format!("INSERT INTO {s}.gen (id, name, email, pw) VALUES (1, 'Ana', 'zed-secret@acme.com', 'hash-secret-1')"));
+        check(&e, "mm", "gen", "SELECT * FROM gen");
+        a(format!("DROP DATABASE {s}"));
+        e.nothing_kept_logged();
+        e.done();
+    }
+    if up(MS) {
+        let t = format!("{s}_gen");
+        let rules = format!("[connection.mcp_rules]\nview = \"masked\"\nsensitive = [{{ col = \"{t}.email\", how = \"hash\" }}]\n[connection.mcp_rules.visible]\nitems = [{{ name = \"{t}.pw\", kind = \"column\" }}]\n");
+        let e = env(&[conn("msadmin", MS, "sql-server", "sa", "tempdb", "mcp = \"full\""), conn("ss", MS, "sql-server", "sa", "tempdb", rules)], "", None);
+        e.admin("execute", with("msadmin", json!({"sql": format!(
+            "CREATE TABLE dbo.{t} (id int, name varchar(50), email varchar(50), pw varchar(50), pw_len AS (len(pw)), email_up AS (upper(email)) PERSISTED, name_up AS (upper(name))); \
+             INSERT INTO dbo.{t} (id, name, email, pw) VALUES (1, 'Ana', 'zed-secret@acme.com', 'hash-secret-1')"
+        )})));
+        let table = format!("dbo.{t}");
+        check(&e, "ss", &table, &format!("SELECT * FROM {table}"));
+        e.admin("execute", with("msadmin", json!({"sql": format!("DROP TABLE dbo.{t}")})));
+        e.nothing_kept_logged();
+        e.done();
+    }
 }

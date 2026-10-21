@@ -430,7 +430,7 @@ async fn view_check(o: &Opened, r: &Relation) -> Result<(), String> {
     super::rules::view_reads_kept(o, &o.profile.mcp_rules, &t, r.kind).await
 }
 
-async fn view_open(o: &Opened, r: &Relation) -> bool {
+pub(crate) async fn view_open(o: &Opened, r: &Relation) -> bool {
     view_check(o, r).await.is_ok()
 }
 
