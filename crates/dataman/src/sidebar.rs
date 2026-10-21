@@ -42,6 +42,9 @@ impl Workspace {
             NavView::Agents => {}
         }
         self.agents.update(cx, |a, cx| a.set_visible(v == NavView::Agents, cx));
+        if v == NavView::Agents && self.view != NavView::Agents {
+            self.before_agents = self.view;
+        }
         self.view = v;
         cx.notify();
     }
@@ -94,6 +97,13 @@ impl Workspace {
         let hint = div().absolute().top(y).h(gpui::px(18.)).flex().items_center().whitespace_nowrap().text_size(px(12.)).text_color(t.warn).opacity(a).child(text);
         let hint = if right { hint.right(window.viewport_size().width - x + gpui::px(8.)) } else { hint.left(star.right() + gpui::px(8.)) };
         Some(hint.into_any_element())
+    }
+
+    /// Showing a tab uncovers it: the Agents area gives the tabs back to the sidebar's earlier view.
+    pub(crate) fn leave_agents(&mut self, cx: &mut Context<Self>) {
+        if self.view == NavView::Agents {
+            self.set_nav(self.before_agents, cx);
+        }
     }
 
     /// The Agents area on one of its pages (the robot at the foot of the rail, Settings' MCP log).

@@ -501,4 +501,34 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.toggle_mcp_log(window, cx)));
     pause(cx, 50).await;
     r.check("the MCP log command opens Agents › Audit", shows(cx) && page(cx) == Page::Audit, format!("{:?}", page(cx)));
+
+    // Showing a tab uncovers it.
+    let active = cx.update(|_, cx| ws.read(cx).active).unwrap_or(0);
+    let tab = cx.update(|_, cx| ws.read(cx).tab_bounds.borrow().first().copied()).ok().flatten();
+    if let Some(b) = tab {
+        click(cx, centre(b));
+    }
+    pause(cx, 100).await;
+    let now = cx.update(|_, cx| ws.read(cx).active).unwrap_or(9);
+    r.check("in Agents, a click on the tab that was already active shows it", tab.is_some() && !shows(cx) && now == active, format!("{tab:?} {now}"));
+    let back_to = cx.update(|_, cx| ws.read(cx).view).ok();
+    r.check("… and the sidebar is back where it was", back_to == Some(dataman_core::layout::NavView::Explorer), format!("{back_to:?}"));
+    click_probe("rail-agents", cx);
+    pause(cx, 50).await;
+    key(cx, "cmd-t");
+    pause(cx, 100).await;
+    let tabs = cx.update(|_, cx| ws.read(cx).tabs.len()).unwrap_or(0);
+    r.check("⌘T from Agents opens the new tab in front", !shows(cx) && tabs >= 2, tabs);
+    click_probe("rail-agents", cx);
+    pause(cx, 50).await;
+    key(cx, "cmd-1");
+    pause(cx, 100).await;
+    let first = cx.update(|_, cx| ws.read(cx).active).unwrap_or(9);
+    r.check("⌘1 from Agents shows the first tab", !shows(cx) && first == 0, first);
+    click_probe("rail-agents", cx);
+    pause(cx, 50).await;
+    key(cx, "ctrl-tab");
+    pause(cx, 100).await;
+    let next = cx.update(|_, cx| ws.read(cx).active).unwrap_or(9);
+    r.check("⌃Tab from Agents shows the next tab", !shows(cx) && next == 1, next);
 }

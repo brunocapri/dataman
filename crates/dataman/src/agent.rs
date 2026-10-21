@@ -153,9 +153,13 @@ impl Workspace {
                 let tab = match pristine.cloned() {
                     Some(t) => t,
                     None => {
-                        let (prev, focus) = (self.active, window.focused(cx));
+                        // In the background: the user's tab, focus and view (Agents included) stay.
+                        let (prev, focus, view) = (self.active, window.focused(cx), self.view);
                         let t = self.new_tab(window, cx);
                         self.active = prev.min(self.tabs.len() - 1);
+                        if view == dataman_core::layout::NavView::Agents {
+                            self.set_nav(view, cx);
+                        }
                         self.sync_bound_views(window, cx);
                         if let Some(f) = focus {
                             window.focus(&f, cx);

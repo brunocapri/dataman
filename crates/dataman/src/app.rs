@@ -282,6 +282,8 @@ pub struct Workspace {
     pub(crate) history: Entity<HistoryPanel>,
     pub(crate) agents: Entity<crate::agents::AgentsPage>,
     pub(crate) view: dataman_core::layout::NavView,
+    /// The sidebar's view before the Agents area covered the tabs, to go back to.
+    pub(crate) before_agents: dataman_core::layout::NavView,
     pub(crate) welcome: Entity<Welcome>,
     pub(crate) side: Option<Side>,
     pub(crate) last_side: Option<Side>,
@@ -477,6 +479,7 @@ impl Workspace {
             side: None,
             last_side: None,
             view: NavView::Explorer,
+            before_agents: NavView::Explorer,
             current_conn: first,
             explorer_open: true,
             explorer_w: if compact { metrics::EXPLORER_COMPACT } else { metrics::EXPLORER_W },
@@ -608,6 +611,7 @@ impl Workspace {
     }
 
     pub fn new_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Entity<QueryTab> {
+        self.leave_agents(cx);
         let conn = self.current_conn.as_ref().and_then(|id| self.store.read(cx).connection(id));
         let id = self.next_id;
         self.next_id += 1;
@@ -794,6 +798,7 @@ impl Workspace {
 
     pub(crate) fn activate(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         if ix < self.tabs.len() {
+            self.leave_agents(cx);
             if ix != self.active {
                 self.nav_record(Some(window), cx);
             }
