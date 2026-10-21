@@ -175,7 +175,8 @@ impl AgentsPage {
                 .children(crate::assets::small_logo(p.engine, 14.))
                 .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx).child(p.name.clone()))
                 .child(div().text_size(px(11.)).text_color(if a == McpAccess::Full { t.warn } else { t.tx3 }).child(a.label()))
-                .on_click(cx.listener(move |v, _, _, cx| {
+                .on_click(cx.listener(move |v, _, window, cx| {
+                    v.focus_list(window, cx);
                     v.conn = Some(id.clone());
                     v.allow_error = None;
                     v.yolo_confirm = false;
@@ -183,7 +184,7 @@ impl AgentsPage {
                     cx.notify();
                 }))
         });
-        div().id("agents-conns").w(px(250.)).flex_none().py(px(4.)).flex().flex_col().overflow_y_scroll().border_r_1().border_color(t.line).children(rows).into_any_element()
+        div().id("agents-conns").w(px(250.)).flex_none().py(px(4.)).flex().flex_col().overflow_y_scroll().track_scroll(&self.conns_scroll).border_r_1().border_color(t.line).children(rows).into_any_element()
     }
 
     fn no_conns(&self, t: &Theme, title: &str) -> AnyElement {

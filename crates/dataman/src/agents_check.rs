@@ -322,6 +322,30 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     key(cx, "backspace");
     pause(cx, 50).await;
     r.check("an empty search shows everything again", shown(cx) == all, shown(cx));
+    // The lists answer the keys as the explorer and history do.
+    click_probe("agents-audit-row-0", cx);
+    pause(cx, 50).await;
+    let sel = |cx: &mut AsyncWindowContext| cx.update(|_, cx| a.read(cx).selected).ok().flatten();
+    key(cx, "down");
+    pause(cx, 50).await;
+    let down = sel(cx);
+    key(cx, "end");
+    pause(cx, 50).await;
+    let end = sel(cx);
+    key(cx, "home");
+    pause(cx, 50).await;
+    let home = sel(cx);
+    key(cx, "pagedown");
+    pause(cx, 50).await;
+    let paged = sel(cx);
+    r.check(
+        "Audit: ↓ selects the next call, End the last, Home the first, PageDown ten down",
+        down == Some(1) && end == Some(all - 1) && home == Some(0) && paged == Some(10.min(all - 1)),
+        format!("{down:?} {end:?} {home:?} {paged:?}"),
+    );
+    key(cx, "up");
+    pause(cx, 50).await;
+    r.check("… and ↑ the one before", sel(cx) == Some(9.min(all - 2)), format!("{:?}", sel(cx)));
 
     // Permissions, on the PostgreSQL connection the check saved.
     click_probe("agents-nav-permissions", cx);
@@ -329,6 +353,20 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     r.check("the nav opens Permissions", page(cx) == Page::Permissions, format!("{:?}", page(cx)));
     click_probe(&format!("agents-conn-{}", pg.name), cx);
     pause(cx, 50).await;
+    let order: Vec<String> = cx.update(|_, cx| a.read(cx).profiles(cx).into_iter().map(|p| p.id).collect()).unwrap_or_default();
+    let at = order.iter().position(|i| *i == pg.id).unwrap_or(0);
+    let conn = |cx: &mut AsyncWindowContext| cx.update(|_, cx| a.read(cx).conn.clone()).ok().flatten();
+    key(cx, "down");
+    pause(cx, 50).await;
+    let down = conn(cx);
+    key(cx, "up");
+    pause(cx, 50).await;
+    let up = conn(cx);
+    r.check(
+        "Permissions: ↓ and ↑ move through the connections, and the page follows",
+        down.as_ref() == order.get((at + 1).min(order.len() - 1)) && up.as_deref() == Some(pg.id.as_str()),
+        format!("{down:?} {up:?}"),
+    );
     click_probe("agents-tier-1", cx);
     pause(cx, 50).await;
     click_probe("agents-may-structure", cx);
@@ -372,6 +410,12 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
 
     // Privacy.
     click_probe("agents-nav-privacy", cx);
+    click_probe(&format!("agents-conn-{}", pg.name), cx);
+    pause(cx, 50).await;
+    key(cx, "home");
+    pause(cx, 50).await;
+    let first = cx.update(|_, cx| a.read(cx).conn.clone()).ok().flatten();
+    r.check("Privacy: Home goes to the first connection", first.as_ref() == order.first(), format!("{first:?}"));
     click_probe(&format!("agents-conn-{}", pg.name), cx);
     pause(cx, 50).await;
     click_probe("agents-view-1", cx);
@@ -437,6 +481,18 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     click_probe("agents-nav-types", cx);
     pause(cx, 100).await;
     r.check("Sensitive data lists the built-in and custom types", cx.update(|_, cx| a.read(cx).type_rows(cx).len()).unwrap_or(0) == dataman_core::privacy::BUILTINS.len() + 2, "");
+    click_probe("agents-type-row-cpf", cx);
+    pause(cx, 50).await;
+    key(cx, "down");
+    pause(cx, 50).await;
+    let tsel = cx.update(|_, cx| a.read(cx).type_sel).ok().flatten();
+    key(cx, "enter");
+    pause(cx, 50).await;
+    let flipped = core.settings.get().agent_types.global_on("cnpj");
+    key(cx, "enter");
+    pause(cx, 50).await;
+    let back = core.settings.get().agent_types.global_on("cnpj");
+    r.check("Sensitive data: ↓ moves to CNPJ, Enter switches it off and on", tsel == Some(1) && flipped == Some(false) && back == Some(true), format!("{tsel:?} {flipped:?} {back:?}"));
     click_probe("agents-field-name", cx);
     typ(cx, "Order ref");
     click_probe("agents-field-regex", cx);
@@ -531,4 +587,19 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     pause(cx, 100).await;
     let next = cx.update(|_, cx| ws.read(cx).active).unwrap_or(9);
     r.check("⌃Tab from Agents shows the next tab", !shows(cx) && next == 1, next);
+    click_probe("rail-agents", cx);
+    pause(cx, 50).await;
+    click_probe("agents-nav-audit", cx);
+    pause(cx, 50).await;
+    let before = cx.update(|_, cx| ws.read(cx).tabs.len()).unwrap_or(0);
+    key(cx, "home");
+    pause(cx, 50).await;
+    let state = cx.update(|window, cx| {
+        let a = a.read(cx);
+        (a.page, a.selected, a.selected.and_then(|i| a.entries.get(i)).map(|e| e.statement().is_some()), gpui::Focusable::focus_handle(a, cx).contains_focused(window, cx))
+    });
+    key(cx, "enter");
+    pause(cx, 150).await;
+    let after = cx.update(|_, cx| ws.read(cx).tabs.len()).unwrap_or(0);
+    r.check("Audit: Enter opens the selected call in a tab", !shows(cx) && after == before + 1, format!("{before} → {after} {state:?}"));
 }

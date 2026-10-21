@@ -72,6 +72,34 @@ pub enum AgentsEvent {
     ViewValue(crate::value_view::ValueCell),
 }
 
+gpui::actions!(agents_list, [ListUp, ListDown, ListPageUp, ListPageDown, ListFirst, ListLast, ListOpen]);
+
+/// The page's list keys, as the explorer and history have them; not in a field or the reply's grid.
+const LIST: &str = "AgentsPage && !TextInput && !ResultGrid";
+const PAGE_STEP: isize = 10;
+
+pub fn bind_keys(cx: &mut App) {
+    let c = Some(LIST);
+    cx.bind_keys([
+        crate::keymap::kb("up", ListUp, c),
+        crate::keymap::kb("down", ListDown, c),
+        crate::keymap::kb("pageup", ListPageUp, c),
+        crate::keymap::kb("pagedown", ListPageDown, c),
+        crate::keymap::kb("home", ListFirst, c),
+        crate::keymap::kb("end", ListLast, c),
+        crate::keymap::kb("cmd-up", ListFirst, c),
+        crate::keymap::kb("cmd-down", ListLast, c),
+        crate::keymap::kb("enter", ListOpen, c),
+    ]);
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Step {
+    By(isize),
+    First,
+    Last,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcomes {
     Any,
@@ -204,6 +232,13 @@ pub struct AgentsPage {
     pub(crate) received_rows: Option<(usize, u64)>,
     pub(crate) received_zoom: bool,
     pub(crate) received_closed: bool,
+    pub(crate) audit_scroll: gpui::ScrollHandle,
+    pub(crate) conns_scroll: gpui::ScrollHandle,
+    pub(crate) types_scroll: gpui::ScrollHandle,
+    /// Where each call's row sits among the Audit list's children (day headers come between).
+    audit_child: HashMap<usize, usize>,
+    pub(crate) types_offset: usize,
+    pub(crate) type_sel: Option<usize>,
     /// Sampled fields of collections and indices, for the suggestions (connection id and name).
     pub(crate) fields: HashMap<String, Vec<(String, String)>>,
     pub(crate) loading: BTreeSet<String>,
@@ -559,6 +594,12 @@ impl AgentsPage {
             received_rows: None,
             received_zoom: false,
             received_closed: false,
+            audit_scroll: gpui::ScrollHandle::new(),
+            conns_scroll: gpui::ScrollHandle::new(),
+            types_scroll: gpui::ScrollHandle::new(),
+            audit_child: HashMap::new(),
+            types_offset: 0,
+            type_sel: None,
             fields: HashMap::new(),
             loading: BTreeSet::new(),
         };
@@ -746,6 +787,73 @@ impl AgentsPage {
         cx.notify();
     }
 
+    /// Keyboard focus on the page's lists (a click on a row puts it there).
+    pub(crate) fn focus_list(&self, window: &mut Window, cx: &mut App) {
+        window.focus(&self.focus, cx);
+    }
+
+    fn list_step(&mut self, step: Step, cx: &mut Context<Self>) -> bool {
+        let next = |len: usize, cur: Option<usize>| -> Option<usize> {
+            if len == 0 {
+                return None;
+            }
+            Some(match (step, cur) {
+                (Step::First, _) => 0,
+                (Step::Last, _) => len - 1,
+                (Step::By(_), None) => 0,
+                (Step::By(d), Some(c)) => (c as isize + d).clamp(0, len as isize - 1) as usize,
+            })
+        };
+        match self.page {
+            Page::Audit => {
+                let shown = self.filtered(cx);
+                let cur = self.selected.and_then(|s| shown.iter().position(|&i| i == s));
+                let Some(n) = next(shown.len(), cur) else { return true };
+                self.selected = Some(shown[n]);
+                self.menu = None;
+                self.received_closed = false;
+                if let Some(&child) = self.audit_child.get(&shown[n]) {
+                    self.audit_scroll.scroll_to_item(child);
+                }
+            }
+            Page::Permissions | Page::Privacy => {
+                let all = self.profiles(cx);
+                let cur = self.conn.as_ref().and_then(|id| all.iter().position(|p| &p.id == id));
+                let Some(n) = next(all.len(), cur) else { return true };
+                self.conn = Some(all[n].id.clone());
+                self.allow_error = None;
+                self.yolo_confirm = false;
+                self.scan_note = None;
+                self.close_suggest(cx);
+                self.conns_scroll.scroll_to_item(n);
+            }
+            Page::Types => {
+                let len = self.type_rows(cx).len();
+                let Some(n) = next(len, self.type_sel) else { return true };
+                self.type_sel = Some(n);
+                self.types_scroll.scroll_to_item(n + self.types_offset);
+            }
+            Page::Home => return false,
+        }
+        cx.notify();
+        true
+    }
+
+    fn list_open(&mut self, cx: &mut Context<Self>) -> bool {
+        match self.page {
+            Page::Audit => match self.selected {
+                Some(i) => self.open_entry(i, cx),
+                None => return false,
+            },
+            Page::Types => match self.type_sel.and_then(|k| self.type_rows(cx).get(k).map(|r| r.id.clone())) {
+                Some(id) => self.flip_type(&id, cx),
+                None => return false,
+            },
+            _ => return false,
+        }
+        true
+    }
+
     fn open_entry(&mut self, i: usize, cx: &mut Context<Self>) {
         let Some(e) = self.entries.get(i) else { return };
         let Some(sql) = e.statement() else { return };
@@ -817,7 +925,10 @@ impl AgentsPage {
                 .when(!on, move |d| d.hover(move |s| s.bg(hov)))
                 .child(icon(p.icon()).size(px(14.)).text_color(if on { t.tx } else { t.tx3 }))
                 .child(div().flex_1().child(p.label()))
-                .on_click(cx.listener(move |v, _, _, cx| v.show(p, cx)))
+                .on_click(cx.listener(move |v, _, window, cx| {
+                    v.show(p, cx);
+                    v.focus_list(window, cx);
+                }))
         });
         div()
             .id("agents-nav")
@@ -1080,6 +1191,7 @@ impl AgentsPage {
         bounds.borrow_mut().clear();
         let mut day: Option<String> = None;
         let mut rows: Vec<AnyElement> = Vec::new();
+        self.audit_child.clear();
         for &i in &shown {
             let e = &self.entries[i];
             let d = day_label(e.ts);
@@ -1144,7 +1256,8 @@ impl AgentsPage {
                                 .child(div().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx2).child(one_line(&shown_agent_text(e.statement().unwrap_or(e.tool.as_str()), 400))))
                                 .child(div().text_size(px(11.)).overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(if bad { t.err } else { t.tx3 }).child(note)),
                         )
-                        .on_click(cx.listener(move |v, ev: &ClickEvent, _, cx| {
+                        .on_click(cx.listener(move |v, ev: &ClickEvent, window, cx| {
+                            v.focus_list(window, cx);
                             v.selected = Some(i);
                             v.menu = None;
                             v.received_closed = false;
@@ -1163,6 +1276,7 @@ impl AgentsPage {
                             }),
                         ),
                 );
+            self.audit_child.insert(i, rows.len());
             rows.push(row.into_any_element());
         }
         let list: AnyElement = if shown.is_empty() {
@@ -1175,7 +1289,7 @@ impl AgentsPage {
                 .child(if self.entries.is_empty() { "No calls yet." } else { "Nothing matches." })
                 .into_any_element()
         } else {
-            div().id("agents-audit-list").flex_1().min_w_0().overflow_y_scroll().flex().flex_col().children(rows).into_any_element()
+            div().id("agents-audit-list").flex_1().min_w_0().overflow_y_scroll().track_scroll(&self.audit_scroll).flex().flex_col().children(rows).into_any_element()
         };
         div()
             .size_full()
@@ -1825,6 +1939,13 @@ impl Render for AgentsPage {
         div()
             .id("agents-page")
             .key_context("AgentsPage")
+            .on_action(cx.listener(|v, _: &ListUp, _, cx| if !v.list_step(Step::By(-1), cx) { cx.propagate() }))
+            .on_action(cx.listener(|v, _: &ListDown, _, cx| if !v.list_step(Step::By(1), cx) { cx.propagate() }))
+            .on_action(cx.listener(|v, _: &ListPageUp, _, cx| if !v.list_step(Step::By(-PAGE_STEP), cx) { cx.propagate() }))
+            .on_action(cx.listener(|v, _: &ListPageDown, _, cx| if !v.list_step(Step::By(PAGE_STEP), cx) { cx.propagate() }))
+            .on_action(cx.listener(|v, _: &ListFirst, _, cx| if !v.list_step(Step::First, cx) { cx.propagate() }))
+            .on_action(cx.listener(|v, _: &ListLast, _, cx| if !v.list_step(Step::Last, cx) { cx.propagate() }))
+            .on_action(cx.listener(|v, _: &ListOpen, _, cx| if !v.list_open(cx) { cx.propagate() }))
             .on_action(cx.listener(|v, _: &crate::app::ToggleResultZoom, window, cx| {
                 if v.page == Page::Audit && v.received_rows.is_some() {
                     v.toggle_received_zoom(window, cx);

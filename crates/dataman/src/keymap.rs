@@ -271,6 +271,7 @@ pub fn bind_all(cx: &mut App) {
     crate::find::bind_keys(cx);
     crate::input::bind_keys(cx);
     crate::agents_suggest::bind_keys(cx);
+    crate::agents::bind_keys(cx);
     crate::tree::bind_keys(cx);
     crate::row_actions::bind_keys(cx);
     crate::history::bind_keys(cx);

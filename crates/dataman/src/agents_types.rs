@@ -180,8 +180,12 @@ impl AgentsPage {
         });
         let broken: Vec<&TypeRow> = rows.iter().filter(|r| r.broken.is_some() && r.on).collect();
         let notice = broken.first().map(|r| div().pb(px(6.)).text_size(px(11.5)).text_color(t.err).child(format!("{} has an invalid pattern. Reads are refused where it is on.", r.name)));
-        let list = rows.iter().map(|r| self.type_row(t, r, in_conn, cx));
-        let left = div().id("agents-types-list").flex_1().min_w_0().overflow_y_scroll().flex().flex_col().px(px(32.)).pt(px(8.)).pb(px(24.)).children(notice).children(list);
+        self.types_offset = notice.is_some() as usize;
+        if self.type_sel.is_some_and(|k| k >= rows.len()) {
+            self.type_sel = None;
+        }
+        let list = rows.iter().enumerate().map(|(k, r)| self.type_row(t, k, r, in_conn, cx));
+        let left = div().id("agents-types-list").flex_1().min_w_0().overflow_y_scroll().track_scroll(&self.types_scroll).flex().flex_col().px(px(32.)).pt(px(8.)).pb(px(24.)).children(notice).children(list);
         div()
             .size_full()
             .flex()
@@ -191,7 +195,7 @@ impl AgentsPage {
             .into_any_element()
     }
 
-    fn type_row(&self, t: &Theme, r: &TypeRow, in_conn: bool, cx: &mut Context<Self>) -> AnyElement {
+    fn type_row(&self, t: &Theme, k: usize, r: &TypeRow, in_conn: bool, cx: &mut Context<Self>) -> AnyElement {
         let mut tags: Vec<&str> = Vec::new();
         if r.custom {
             tags.push("custom");
@@ -221,7 +225,19 @@ impl AgentsPage {
                 .into_any_element()
         };
         let sw = SharedString::from(format!("agents-type-switch-{}", r.id));
+        let row_id = SharedString::from(format!("agents-type-row-{}", r.id));
+        let sel = self.type_sel == Some(k);
         div()
+            .children(ui::here(&row_id.clone().into()))
+            .id(row_id)
+            .on_click(cx.listener(move |v, _, window, cx| {
+                v.focus_list(window, cx);
+                v.type_sel = Some(k);
+                cx.notify();
+            }))
+            .when(sel, |d| d.bg(t.prs))
+            .px(px(8.))
+            .mx(px(-8.))
             .h(px(44.))
             .flex_none()
             .flex()
