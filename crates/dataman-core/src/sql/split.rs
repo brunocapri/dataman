@@ -13,8 +13,21 @@ pub fn split(src: &str) -> Vec<Statement> {
     split_tokens(src, &tokenize(src))
 }
 
+/// MySQL's statements are cut where the server cuts them, inside `/*! … */` too; a statement
+/// inside such a comment keeps the comment around it (and runs only where the server runs it).
 pub fn split_in(src: &str, dialect: Dialect) -> Vec<Statement> {
-    split_tokens_in(src, &tokenize_in(src, dialect), dialect.script())
+    let open = super::expand_exec_comments(src, dialect);
+    let mut out = split_tokens_in(&open, &tokenize_in(&open, dialect), dialect.script());
+    if open != src {
+        for t in tokenize_in(src, dialect).into_iter().filter(|t| t.kind == TokenKind::BlockComment && is_exec_comment(t.text(src))) {
+            let mut inside = out.iter_mut().filter(|s| s.range.start < t.end && t.start < s.range.end);
+            if let (Some(s), None) = (inside.next(), inside.next()) {
+                s.range = s.range.start.min(t.start)..s.range.end.max(t.end);
+                s.full = s.full.start.min(t.start)..s.full.end.max(t.end);
+            }
+        }
+    }
+    out
 }
 
 pub fn split_tokens(src: &str, tokens: &[Token]) -> Vec<Statement> {
@@ -23,10 +36,6 @@ pub fn split_tokens(src: &str, tokens: &[Token]) -> Vec<Statement> {
 
 fn delimiter_command(src: &str, t: &Token) -> Option<(String, usize)> {
     if !matches!(t.kind, TokenKind::Keyword | TokenKind::Ident) || !t.text(src).eq_ignore_ascii_case("DELIMITER") {
-        return None;
-    }
-    let line_start = src[..t.start].rfind('\n').map_or(0, |p| p + 1);
-    if !src[line_start..t.start].trim().is_empty() {
         return None;
     }
     let line_end = src[t.end..].find('\n').map_or(src.len(), |p| t.end + p);

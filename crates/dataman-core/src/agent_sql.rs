@@ -91,8 +91,8 @@ const ACTIVITY: &[&str] = &[
 /// The tables a statement names, to be looked up before `check` (schema as written, name).
 pub fn tables_named(sql: &str, dialect: Dialect) -> Vec<(Option<String>, String)> {
     let mut out = Vec::new();
-    for_each_statement(sql, dialect, |_, toks| {
-        let a = scope::analyze_in(sql, toks, dialect);
+    for_each_statement(sql, dialect, |text, _, toks| {
+        let a = scope::analyze_in(text, toks, dialect);
         for (i, s) in a.scopes.iter().enumerate() {
             for src in &s.sources {
                 if let SourceKind::Table { schema, name } = &src.kind
@@ -107,12 +107,16 @@ pub fn tables_named(sql: &str, dialect: Dialect) -> Vec<(Option<String>, String)
     out
 }
 
-fn for_each_statement(sql: &str, dialect: Dialect, mut f: impl FnMut(std::ops::Range<usize>, &[Token])) {
-    let tokens = tokenize_in(sql, dialect);
-    for s in crate::sql::split_in(sql, dialect) {
-        let toks: Vec<Token> = tokens.iter().filter(|t| t.start >= s.range.start && t.end <= s.range.end && !t.kind.is_trivia()).copied().collect();
-        if !toks.is_empty() {
-            f(s.range.clone(), &toks);
+/// In every text the server may run for `sql` (MySQL's `/*! … */` opened, and skipped where a
+/// version decides), whose offsets are the agent's.
+fn for_each_statement(sql: &str, dialect: Dialect, mut f: impl FnMut(&str, std::ops::Range<usize>, &[Token])) {
+    for text in crate::sql::exec_readings(sql, dialect) {
+        let tokens = tokenize_in(&text, dialect);
+        for s in crate::sql::split_in(&text, dialect) {
+            let toks: Vec<Token> = tokens.iter().filter(|t| t.start >= s.range.start && t.end <= s.range.end && !t.kind.is_trivia()).copied().collect();
+            if !toks.is_empty() {
+                f(&text, s.range.clone(), &toks);
+            }
         }
     }
 }
@@ -149,11 +153,11 @@ pub fn check(sql: &str, write: bool, cx: &Context) -> Result<Checked, String> {
     let mut edits: Vec<(std::ops::Range<usize>, String)> = Vec::new();
     let mut masked: Vec<(String, Mask)> = Vec::new();
     let mut err: Option<String> = None;
-    for_each_statement(sql, d, |range, toks| {
+    for_each_statement(sql, d, |text, range, toks| {
         if err.is_some() {
             return;
         }
-        if let Err(e) = statement(sql, range, toks, write, restricted, cx, &mut edits, &mut masked) {
+        if let Err(e) = statement(text, range, toks, write, restricted, cx, &mut edits, &mut masked) {
             err = Some(e);
         }
     });
@@ -167,6 +171,7 @@ pub fn check(sql: &str, write: bool, cx: &Context) -> Result<Checked, String> {
         return Ok(Checked { sql: sql.to_string(), rewritten: false, masked });
     }
     edits.sort_by_key(|(r, _)| std::cmp::Reverse(r.start));
+    edits.dedup();
     let mut out = sql.to_string();
     for (r, text) in edits {
         out.replace_range(r, &text);

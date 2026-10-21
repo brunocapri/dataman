@@ -142,19 +142,36 @@ pub fn classify(sql: &str) -> Facts {
     classify_in(sql, Dialect::Postgres)
 }
 
+/// A text is its strongest statement, in every text the server may run for it.
 pub fn classify_in(sql: &str, dialect: Dialect) -> Facts {
-    // MySQL runs what its `/*! … */` comments hold.
-    let sql = &*crate::sql::expand_exec_comments(sql, dialect);
-    let all: Vec<Token> = tokenize_in(sql, dialect).into_iter().filter(|t| !t.kind.is_trivia()).collect();
-    let mut t = Toks { src: sql, t: &all, dialect };
-    while t.t.last().is_some_and(|x| x.kind == TokenKind::Punct && x.text(sql) == ";") {
-        t.t = &t.t[..t.t.len() - 1];
+    let mut pieces = Vec::new();
+    for text in crate::sql::exec_readings(sql, dialect) {
+        let all = significant(&text, dialect);
+        let t = Toks { src: &text, t: &all, dialect };
+        pieces.extend(statements(&t).into_iter().map(|r| with_queries(&t.sub(r))).filter(|f| !f.verb.is_empty()));
     }
-    if dialect != Dialect::TSql {
-        return with_queries(&t);
-    }
-    let pieces: Vec<Facts> = tsql_pieces(&t).into_iter().map(|r| with_queries(&t.sub(r))).filter(|f| !f.verb.is_empty()).collect();
     combine(pieces)
+}
+
+fn significant(sql: &str, dialect: Dialect) -> Vec<Token> {
+    tokenize_in(sql, dialect).into_iter().filter(|t| !t.kind.is_trivia()).collect()
+}
+
+/// The statements of a text the server reads (one of `exec_readings`), as token ranges: where
+/// the splitter cuts it and, in T-SQL, where a statement starts without `;`. Every layer reads
+/// its statements from here.
+fn statements(t: &Toks) -> Vec<std::ops::Range<usize>> {
+    let mut out = Vec::new();
+    for s in crate::sql::split::split_tokens_in(t.src, t.t, t.dialect.script()) {
+        let from = t.t.partition_point(|x| x.start < s.range.start);
+        let to = t.t.partition_point(|x| x.end <= s.range.end);
+        if t.dialect == Dialect::TSql {
+            out.extend(tsql_pieces(&t.sub(from..to)).into_iter().map(|r| from + r.start..from + r.end));
+        } else {
+            out.push(from..to);
+        }
+    }
+    out
 }
 
 fn combine(pieces: Vec<Facts>) -> Facts {
@@ -178,18 +195,9 @@ fn combine(pieces: Vec<Facts>) -> Facts {
 }
 
 pub fn tsql_statements(sql: &str) -> Vec<std::ops::Range<usize>> {
-    let all: Vec<Token> = tokenize_in(sql, Dialect::TSql).into_iter().filter(|t| !t.kind.is_trivia()).collect();
+    let all = significant(sql, Dialect::TSql);
     let t = Toks { src: sql, t: &all, dialect: Dialect::TSql };
-    tsql_pieces(&t)
-        .into_iter()
-        .filter_map(|r| {
-            let mut toks = &all[r];
-            while toks.last().is_some_and(|x| x.kind == TokenKind::Punct && x.text(sql) == ";") {
-                toks = &toks[..toks.len() - 1];
-            }
-            Some(toks.first()?.start..toks.last()?.end)
-        })
-        .collect()
+    statements(&t).into_iter().filter(|r| !r.is_empty()).map(|r| all[r.start].start..all[r.end - 1].end).collect()
 }
 
 pub fn tsql_returns_rows(sql: &str) -> bool {
@@ -944,7 +952,24 @@ pub fn agent_read_refusal(sql: &str) -> Option<String> {
     agent_read_refusal_in(sql, Dialect::Postgres)
 }
 
+/// Each statement on its own, in every text the server may run: what follows a read in a T-SQL
+/// batch is no read for being there.
 pub fn agent_read_refusal_in(sql: &str, dialect: Dialect) -> Option<String> {
+    let mut any = false;
+    for text in crate::sql::exec_readings(sql, dialect) {
+        let all = significant(&text, dialect);
+        let t = Toks { src: &text, t: &all, dialect };
+        for r in statements(&t).into_iter().filter(|r| !r.is_empty()) {
+            any = true;
+            if let Some(e) = read_refusal(&text[all[r.start].start..all[r.end - 1].end], dialect) {
+                return Some(e);
+            }
+        }
+    }
+    (!any).then(|| "empty statement".into())
+}
+
+fn read_refusal(sql: &str, dialect: Dialect) -> Option<String> {
     let f = classify_in(sql, dialect);
     if f.verb.is_empty() {
         return Some("empty statement".into());
@@ -1062,7 +1087,8 @@ pub fn agent_pieces(sql: &str, dialect: Dialect) -> Vec<String> {
     out
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Weakest first.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Piece {
     Neutral,
     Read,
@@ -1084,8 +1110,13 @@ fn neutral(t: &Toks, f: &Facts) -> bool {
     }
 }
 
+/// The strongest of the texts the server may run.
 fn piece(sql: &str, dialect: Dialect) -> Piece {
-    let all: Vec<Token> = tokenize_in(sql, dialect).into_iter().filter(|t| !t.kind.is_trivia()).collect();
+    crate::sql::exec_readings(sql, dialect).iter().map(|text| piece_of(text, dialect)).max().unwrap_or(Piece::Neutral)
+}
+
+fn piece_of(sql: &str, dialect: Dialect) -> Piece {
+    let all = significant(sql, dialect);
     let t = Toks { src: sql, t: &all, dialect };
     if all.iter().all(|x| x.kind == TokenKind::Punct && x.text(sql) == ";") {
         return Piece::Neutral;
@@ -1122,10 +1153,16 @@ fn piece(sql: &str, dialect: Dialect) -> Piece {
 }
 
 pub fn agent_write_class(sql: &str, dialect: Dialect) -> WriteClass {
+    pieces_class(&agent_pieces(sql, dialect), dialect)
+}
+
+/// The class of pieces as `agent_pieces` cut them (what an allowlist leaves): joined again, a
+/// T-SQL routine would take in what follows it.
+pub fn pieces_class<S: AsRef<str>>(pieces: &[S], dialect: Dialect) -> WriteClass {
     let mut safe = false;
     let mut reasons: Vec<String> = Vec::new();
-    for p in agent_pieces(sql, dialect) {
-        match piece(&p, dialect) {
+    for p in pieces {
+        match piece(p.as_ref(), dialect) {
             Piece::Neutral | Piece::Read => {}
             Piece::Safe => safe = true,
             Piece::Destructive(r) => {
@@ -1145,26 +1182,26 @@ pub fn agent_write_class(sql: &str, dialect: Dialect) -> WriteClass {
 }
 
 pub fn agent_preview(sql: &str, dialect: Dialect) -> Preview {
-    let mut out = Preview::Held;
-    for p in agent_pieces(sql, dialect) {
-        let all: Vec<Token> = tokenize_in(&p, dialect).into_iter().filter(|t| !t.kind.is_trivia()).collect();
-        let t = Toks { src: &p, t: &all, dialect };
-        let f = classify_in(&p, dialect);
-        let this = if f.outside_tx {
-            Preview::Outside
-        } else if f.effect == Effect::Ddl
-            || matches!(f.effect, Effect::Other | Effect::Tx) && !neutral(&t, &f)
-            || matches!(f.verb.as_str(), "TRUNCATE" | "CALL" | "DO" | "EXEC" | "EXECUTE")
-            || effect_call(&t, WRITE_OK_FUNCTIONS).is_some()
-            || matches!(piece(&p, dialect), Piece::Destructive(r) if r == "INSERT … EXEC")
-        {
-            Preview::AskFirst
-        } else {
-            Preview::Held
-        };
-        out = out.max(this);
+    let pieces = agent_pieces(sql, dialect);
+    pieces.iter().flat_map(|p| crate::sql::exec_readings(p, dialect)).map(|p| preview_of(&p, dialect)).max().unwrap_or(Preview::Held)
+}
+
+fn preview_of(p: &str, dialect: Dialect) -> Preview {
+    let all = significant(p, dialect);
+    let t = Toks { src: p, t: &all, dialect };
+    let f = classify_in(p, dialect);
+    if f.outside_tx {
+        Preview::Outside
+    } else if f.effect == Effect::Ddl
+        || matches!(f.effect, Effect::Other | Effect::Tx) && !neutral(&t, &f)
+        || matches!(f.verb.as_str(), "TRUNCATE" | "CALL" | "DO" | "EXEC" | "EXECUTE")
+        || effect_call(&t, WRITE_OK_FUNCTIONS).is_some()
+        || matches!(piece_of(p, dialect), Piece::Destructive(r) if r == "INSERT … EXEC")
+    {
+        Preview::AskFirst
+    } else {
+        Preview::Held
     }
-    out
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1199,15 +1236,16 @@ fn allow_tokens(sql: &str, dialect: Dialect, entry: bool) -> Vec<AllowTok> {
 }
 
 /// A `?` of the entry stands for exactly one value (a string, a number or a `$n` parameter),
-/// never for a name, an expression or more SQL.
+/// never for a name, an expression or more SQL. Every text the server may run for the statement
+/// (MySQL's `/*! … */` opened, or skipped where a version decides) is the entry.
 pub fn allowlist_match(entry: &str, stmt: &str, dialect: Dialect) -> bool {
-    let e = allow_tokens(entry, dialect, true);
-    let s = allow_tokens(stmt, dialect, false);
-    if e.is_empty() {
-        return false;
-    }
+    let e = allow_tokens(&crate::sql::expand_exec_comments(entry, dialect), dialect, true);
+    !e.is_empty() && crate::sql::exec_readings(stmt, dialect).iter().all(|text| takes(&e, &allow_tokens(text, dialect, false)))
+}
+
+fn takes(e: &[AllowTok], s: &[AllowTok]) -> bool {
     let mut j = 0;
-    for t in &e {
+    for t in e {
         match t {
             AllowTok::Value => {
                 if matches!(s.get(j), Some(AllowTok::Text(TokenKind::Operator, op)) if op == "-" || op == "+")

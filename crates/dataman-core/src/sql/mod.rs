@@ -172,20 +172,40 @@ pub fn read_script(path: &std::path::Path) -> std::io::Result<String> {
 
 /// Their delimiters are blanked, not removed, so every byte offset stays.
 pub fn expand_exec_comments(sql: &str, dialect: Dialect) -> std::borrow::Cow<'_, str> {
+    open_exec_comments(sql, dialect, false)
+}
+
+/// The texts a MySQL server may run for `sql`: every `/*! … */` opened and, when a comment runs
+/// on some servers only (`/*!80000 …`, MariaDB's `/*M! …`), also with those skipped; which one
+/// runs is the server's to decide, so the agent layers read both. Offsets stay in each.
+pub fn exec_readings(sql: &str, dialect: Dialect) -> Vec<std::borrow::Cow<'_, str>> {
+    let open = open_exec_comments(sql, dialect, false);
+    let skipped = open_exec_comments(sql, dialect, true);
+    if skipped == open { vec![open] } else { vec![open, skipped] }
+}
+
+fn open_exec_comments(sql: &str, dialect: Dialect, skip_versioned: bool) -> std::borrow::Cow<'_, str> {
     if !dialect.script().exec_comments || !sql.contains("/*!") && !sql.contains("/*M!") {
         return std::borrow::Cow::Borrowed(sql);
     }
     let mut out = sql.to_string();
     for t in tokenize_in(sql, dialect) {
         let text = t.text(sql);
-        if t.kind != TokenKind::BlockComment || !is_exec_comment(text) || !text.ends_with("*/") || text.len() < 5 {
+        if t.kind != TokenKind::BlockComment || !is_exec_comment(text) {
             continue;
         }
         let head = if text.starts_with("/*!") { 3 } else { 4 };
         let digits = text.as_bytes()[head..].iter().take_while(|b| b.is_ascii_digit()).count();
         let blank = |out: &mut String, from: usize, to: usize| out.replace_range(from..to, &" ".repeat(to - from));
+        if skip_versioned && (head == 4 || digits > 0) {
+            blank(&mut out, t.start, t.end);
+            continue;
+        }
         blank(&mut out, t.start, t.start + head + digits);
-        blank(&mut out, t.end - 2, t.end);
+        // One left open runs to the end of the text, as far as Dataman can tell.
+        if text.len() >= head + digits + 2 && text.ends_with("*/") {
+            blank(&mut out, t.end - 2, t.end);
+        }
     }
     std::borrow::Cow::Owned(out)
 }
