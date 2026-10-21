@@ -11,6 +11,7 @@ use crate::agents_suggest::Which;
 use crate::assets::{Icon, icon};
 use crate::theme::{Theme, px};
 use crate::ui;
+use crate::ui::Tipped;
 
 /// One "Agents may" row: its name, what it covers on this engine, its rule's value, the tier it
 /// needs, and why it cannot be changed here (Privacy forces it off).
@@ -74,6 +75,29 @@ fn limits_tip() -> Tip {
         .item("Rows per write · 100", "A write that changes more rows waits for your Allow.")
         .item("Rows per read · 1k", "Most rows an agent gets back from one read.")
         .item("Size per read · 256 KB", "Most data from one read; past it the reply is cut and the agent is told.")
+}
+
+/// The two layers that mask values: the global Sensitive data types, in any value and every mode,
+/// and this connection's sensitive columns, whole, in Masked data only.
+pub(crate) fn sees_tip() -> Tip {
+    Tip::new("What the agent sees")
+        .lead("How much of this connection's data reaches an agent. Your own tabs always show everything.")
+        .item("Data", "Rows as stored, with Sensitive data types masked.")
+        .item("Masked data", "As Data, and the sensitive columns below are masked whole. Host, port and user aren't shown.")
+        .item("Structure only", "Tables, columns, types and query plans. No rows are read or written; only the structure changes Permissions allow. Host, port and user aren't shown.")
+        .lead("Sensitive data types (cards, e-mails, keys…) are one list for every connection, matched inside any value an agent receives, in every mode.")
+        .note("What Visible to agents hides stays hidden in every mode.")
+}
+
+pub(crate) fn sens_tip() -> Tip {
+    Tip::new("Sensitive columns")
+        .lead("This connection's columns masked whole when the agent sees Masked data. Sensitive data types still apply inside every value, in these columns and all others.")
+        .item("Hidden", "The value becomes ‹hidden›.")
+        .item("Partial", "Keeps the end: a•••@acme.com, •••• 4242.")
+        .item("Hash", "A stable code, ‹h:7Q2KX9RM4A›. The same value always gives the same code, so an agent can still match rows.")
+        .lead("Agents can select these columns as they are and filter on them in WHERE; they can't rename, group, sort or compute with them.")
+        .example("users.email · *ssn* (any column with ssn in its name)")
+        .note("Scan again suggests columns by their names. Check what it adds.")
 }
 
 fn read_from_tip() -> Tip {
@@ -364,7 +388,7 @@ impl AgentsPage {
             })
         });
         match (tip, live) {
-            (Some(tip), false) => row.tooltip(tip.view()).into_any_element(),
+            (Some(tip), false) => row.tip(tip.view()).into_any_element(),
             (_, false) => row.into_any_element(),
             _ => row.on_click(cx.listener(move |v, _, _, cx| v.set_rule(&flip, cx))).into_any_element(),
         }
@@ -502,12 +526,7 @@ impl AgentsPage {
                 t,
                 "agents-sees-tip",
                 "THE AGENT SEES",
-                Tip::new("What the agent sees")
-                    .lead("How much of this connection's data reaches an agent. Your own tabs always show everything.")
-                    .item("Data", "Rows as stored. Sensitive data types (cards, e-mails, keys…) are still masked inside any value.")
-                    .item("Masked data", "Rows come back with the sensitive columns below masked. The connection's host, port and user aren't shown to agents.")
-                    .item("Structure only", "Tables, columns, types and query plans. No rows are read or written; only the structure changes Permissions allow.")
-                    .note("What Visible to agents hides stays hidden in every mode."),
+                sees_tip(),
             ))
             .child(seg(t, "agents-view", &views, r.view, false, cx, |v, view, cx| v.set_rule(|r| r.view = view, cx)));
         let sens_rows = r.sensitive.iter().enumerate().map(|(k, s)| {
@@ -577,14 +596,7 @@ impl AgentsPage {
                         t,
                         "agents-sens-tip",
                         "SENSITIVE COLUMNS",
-                        Tip::new("Sensitive columns")
-                            .lead("Columns whose values are masked when the agent sees Masked data.")
-                            .item("Hidden", "The value becomes ‹hidden›.")
-                            .item("Partial", "Keeps the end: a•••@acme.com, •••• 4242.")
-                            .item("Hash", "A stable code, ‹h:7Q2KX9RM4A›. The same value always gives the same code, so an agent can still match rows.")
-                            .lead("Agents can select these columns as they are and filter on them in WHERE; they can't rename, group, sort or compute with them.")
-                            .example("users.email · *ssn* (any column with ssn in its name)")
-                            .note("Scan again suggests columns by their names. Check what it adds."),
+                        sens_tip(),
                     )))
                     .child(
                         div()

@@ -20,6 +20,7 @@ use crate::theme::{ActiveTheme, Theme};
 use crate::tree_menu::{ITEM_H, PAD, SEP_H};
 use crate::ui;
 use crate::undo::{Entry, Op};
+use crate::ui::Tipped;
 
 actions!(history_panel, [Prev, Next, Insert, OpenInTab, RunEntry, Close, Collapse, Expand]);
 
@@ -1714,7 +1715,7 @@ impl HistoryPanel {
             .when(asking, |d| d.text_color(t.err))
             .hover(move |s| s.bg(hov))
             .active(move |s| s.bg(prs))
-            .tooltip(ui::tooltip(if asking { "Click again to clear every connection's history" } else { "Clear history" }, None, None))
+            .tip(ui::tooltip(if asking { "Click again to clear every connection's history" } else { "Clear history" }, None, None))
             .child(icon(Icon::Trash).size(px(12.)).text_color(if asking { t.err } else { t.tx3 }))
             .when(asking, |d| d.child("Clear all?"))
             .on_click(cx.listener(|h, _: &gpui::ClickEvent, _, cx| h.clear_clicked(cx)));

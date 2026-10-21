@@ -10,6 +10,7 @@ use dataman_core::sqlgen;
 use crate::assets::{Icon, icon};
 use crate::theme::ActiveTheme;
 use crate::ui::{self, Btn};
+use crate::ui::Tipped;
 
 pub enum PrivilegesEvent {
     Template(String),
@@ -155,7 +156,7 @@ impl Render for PrivilegesPanel {
                             .flex()
                             .justify_center()
                             .child(SharedString::from(abbrev(c).to_string()))
-                            .tooltip(ui::tooltip(c.clone(), None, None))
+                            .tip(ui::tooltip(c.clone(), None, None))
                     }));
                 let owner = p.owner.clone();
                 let rows = p.roles().into_iter().enumerate().map(|(i, role)| {

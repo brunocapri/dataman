@@ -341,6 +341,17 @@ pub fn menu_sep(t: &Theme) -> Div {
     div().h(px(1.)).mx(px(6.)).my(px(4.)).bg(t.line)
 }
 
+/// Every tooltip in the app goes through here: it stays while the pointer is on it, so it can be
+/// read through, and goes once the pointer has left the control and the tooltip both (after a
+/// short grace to cross from one to the other).
+pub trait Tipped: StatefulInteractiveElement {
+    fn tip(self, build: impl Fn(&mut Window, &mut App) -> AnyView + 'static) -> Self {
+        self.hoverable_tooltip(build)
+    }
+}
+
+impl<E: StatefulInteractiveElement> Tipped for E {}
+
 pub struct Tooltip {
     title: SharedString,
     desc: Option<SharedString>,
@@ -351,6 +362,7 @@ impl Render for Tooltip {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme();
         div()
+            .children(here(&"tooltip".into()))
             .max_w(px(320.))
             .px(px(11.))
             .py(px(9.))
@@ -436,6 +448,7 @@ impl Render for TextTip {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme();
         div()
+            .children(here(&"tooltip".into()))
             .w(px(self.width))
             .max_h(px(TIP_LINES as f32 * TIP_LINE_H + 20.))
             .overflow_hidden()
@@ -549,6 +562,23 @@ mod tests {
         let (t, _) = fit_tip(&"line\n".repeat(40));
         assert_eq!(t.lines().count(), TIP_LINES);
         assert!(t.ends_with('…'));
+    }
+
+    /// A control's tooltip goes through `Tipped::tip`, never gpui's own, which vanishes as the
+    /// pointer moves onto it.
+    #[test]
+    fn every_tooltip_can_be_hovered() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut plain = Vec::new();
+        for e in std::fs::read_dir(&dir).unwrap().flatten() {
+            let text = std::fs::read_to_string(e.path()).unwrap_or_default();
+            for (n, line) in text.lines().enumerate() {
+                if line.contains(concat!(".tool", "tip(")) && !line.trim_start().starts_with("//") {
+                    plain.push(format!("{}:{}", e.file_name().to_string_lossy(), n + 1));
+                }
+            }
+        }
+        assert!(plain.is_empty(), "use .tip(…) (ui::Tipped): {plain:?}");
     }
 }
 

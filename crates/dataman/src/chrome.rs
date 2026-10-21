@@ -19,6 +19,7 @@ use crate::result_bar::{ResultState, role_colors};
 use crate::tab::{ItemState, QueryTab};
 use crate::theme::{ActiveTheme, PIXEL, Theme, metrics};
 use crate::ui::{self, Btn};
+use crate::ui::Tipped;
 
 const COMPACT_W: f32 = 440.;
 
@@ -380,7 +381,7 @@ impl Workspace {
                 self.render_close_ask(pane, cx).into_any_element()
             } else {
                 ui::icon_button(t, "close-group", Icon::Close, 22., 12.)
-                    .tooltip(ui::tooltip("Close group", Some("closes its tabs"), None))
+                    .tip(ui::tooltip("Close group", Some("closes its tabs"), None))
                     .on_mouse_down(MouseButton::Left, stop)
                     .on_click(cx.listener(move |w, _, window, cx| w.ask_close_group(pane, window, cx)))
                     .into_any_element()
@@ -1004,7 +1005,7 @@ impl Workspace {
                 .text_size(px(10.5))
                 .text_color(t.tx3)
                 .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(name))
-                .tooltip(ui::tooltip(tip, None, None))
+                .tip(ui::tooltip(tip, None, None))
         });
         let tx_open = v.tx.status.is_open();
         let failed = v.tx.status == TxStatus::Failed;
@@ -1539,7 +1540,7 @@ impl Workspace {
                         .px(px(0.))
                         .justify_center()
                         .child(icon(Icon::Plus).size(px(13.)).text_color(t.tx2))
-                        .tooltip(ui::tooltip("Add row", None, crate::keymap::key("insert_row").as_deref()))
+                        .tip(ui::tooltip("Add row", None, crate::keymap::key("insert_row").as_deref()))
                         .on_click(cx.listener(|w, _, _, cx| w.insert_row(cx))),
                 )
             })
@@ -1602,7 +1603,7 @@ impl Workspace {
                     .justify_center()
                     .when(zoomed, |d| d.bg(t.acc_s).text_color(t.acc_t).border_1().border_color(t.acc))
                     .child(icon(if zoomed { Icon::Collapse } else { Icon::Expand }).size(px(13.)).text_color(if zoomed { t.acc_t } else { t.tx2 }))
-                    .tooltip(ui::tooltip(if zoomed { "Exit zoom" } else { "Zoom result" }, None, key.as_deref()))
+                    .tip(ui::tooltip(if zoomed { "Exit zoom" } else { "Zoom result" }, None, key.as_deref()))
                     .on_click(cx.listener(|w, _, window, cx| w.toggle_result_zoom(window, cx)))
             })
     }

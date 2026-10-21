@@ -15,6 +15,7 @@ use crate::assets::{Icon, icon};
 use crate::input::{InputEvent, TextInput};
 use crate::theme::{self, ActiveTheme, Theme, metrics};
 use crate::ui;
+use crate::ui::Tipped;
 
 actions!(settings_sheet, [Close, NextSection, PrevSection]);
 
@@ -684,7 +685,7 @@ impl SettingsView {
                             .text_ellipsis()
                             .text_size(px(11.5))
                             .text_color(color)
-                            .when(err, |d| d.tooltip(ui::text_tooltip(s.clone())))
+                            .when(err, |d| d.tip(ui::text_tooltip(s.clone())))
                             .child(s)
                     }))
                     .when(enabled && offered, |d| {
@@ -1102,7 +1103,7 @@ impl Render for SettingsView {
                     .when(keys, |d| d.bg(t.acc_s))
                     .when(!keys, move |d| d.hover(move |s| s.bg(hov)))
                     .child(icon(Icon::Keyboard).size(px(14.)).text_color(if keys { t.acc } else { t.tx3 }))
-                    .tooltip(ui::text_tooltip(if keys { "Search by text" } else { "Search by shortcut" }))
+                    .tip(ui::text_tooltip(if keys { "Search by text" } else { "Search by shortcut" }))
                     .on_click(cx.listener(|v, _, window, cx| v.set_key_search(!v.key_search, window, cx))),
             )
         };

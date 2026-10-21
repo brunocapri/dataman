@@ -22,6 +22,7 @@ use crate::motion::{FindPop, PopFrame, PopStyle};
 use crate::theme::{ActiveTheme, Theme};
 use crate::tree_menu::{self as menu, Act, ConnPhase, Entry, Obj, Target};
 use crate::ui;
+use crate::ui::Tipped;
 
 actions!(
     explorer,
@@ -2297,7 +2298,7 @@ impl SchemaTree {
                 }))
             })
             .child(div().w(px(10.)).flex_none().flex().justify_center().children(chevron))
-            .when_some(r.tip.clone(), |d, tip| d.tooltip(ui::text_tooltip(tip)))
+            .when_some(r.tip.clone(), |d, tip| d.tip(ui::text_tooltip(tip)))
             .children(r.chip.map(|c| div().mx(px(3.)).when(r.chip_dim, |d| d.opacity(0.45)).child(ui::chip(c, 8.))))
             .children(r.logo.and_then(|e| crate::assets::small_logo(e, 13.)).map(|l| l.when(r.chip_dim, |d| d.opacity(0.5))))
             .children(r.icon.filter(|_| r.chip.is_none()).map(|(i, c)| {
@@ -2722,7 +2723,7 @@ impl Render for SchemaTree {
             .child(div().flex_1().child(ui::caps(&t, "EXPLORER")))
             .child(
                 ui::icon_button(&t, "x-new", Icon::Plus, 24., 14.)
-                    .tooltip(ui::tooltip("New connection", None, Some("⌘N")))
+                    .tip(ui::tooltip("New connection", None, Some("⌘N")))
                     .on_click(cx.listener(|_, _, _, cx| cx.emit(TreeEvent::NewConnection))),
             )
             .child(

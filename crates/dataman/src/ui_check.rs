@@ -1300,6 +1300,33 @@ async fn motion_checks(ws: &Entity<Workspace>, id: &str, cx: &mut AsyncWindowCon
     );
     let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.store.update(cx, |s, cx| s.forget(&off, cx))));
 
+    // Tooltips can be hovered: the pointer moved from the control onto the tooltip keeps it, and
+    // leaving both closes it.
+    let tip = |cx: &mut AsyncWindowContext| crate::check::probed("tooltip", cx);
+    let rail = crate::check::probed("rail-agents", cx);
+    if let Some(r) = rail {
+        crate::check::move_to(cx, crate::check::centre(r));
+    }
+    pause(cx, 800).await;
+    let shown = tip(cx);
+    if let (Some(r), Some(b)) = (rail, shown) {
+        let (from, to) = (crate::check::centre(r), crate::check::centre(b));
+        for k in 1..=4 {
+            crate::check::move_to(cx, point(from.x + (to.x - from.x) * (k as f32 / 4.), from.y + (to.y - from.y) * (k as f32 / 4.)));
+        }
+    }
+    pause(cx, 900).await;
+    let kept = tip(cx);
+    let win = cx.update(|window, _| window.viewport_size()).unwrap();
+    crate::check::move_to(cx, point(win.width * 0.6, win.height * 0.35));
+    pause(cx, 900).await;
+    let gone = tip(cx);
+    report(
+        "a tooltip stays while the pointer is on it, and closes once it leaves the control and the tooltip",
+        rail.is_some() && shown.is_some() && kept.is_some() && gone.is_none(),
+        format!("rail {rail:?} shown {shown:?} kept {kept:?} gone {gone:?}"),
+    );
+
     let motion = !cx.update(|_, cx| cx.reduce_motion()).unwrap_or(false);
     let sliding = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).demo_side_sliding()).unwrap_or(false);
     let history = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).side.is_some()).unwrap_or(false);

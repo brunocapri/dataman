@@ -13,6 +13,7 @@ use crate::assets::{Icon, icon};
 use crate::editor::{CodeEditor, EditorEvent, Stmt};
 use crate::theme::{ActiveTheme, Theme, metrics, px};
 use crate::ui::{self, Btn};
+use crate::ui::Tipped;
 
 actions!(doc_view, [NextDocument, PrevDocument]);
 
@@ -788,7 +789,7 @@ impl DocPane {
                     .justify_center()
                     .when(zoomed, |d| d.bg(t.acc_s).text_color(t.acc_t).border_1().border_color(t.acc))
                     .child(icon(if zoomed { Icon::Collapse } else { Icon::Expand }).size(px(13.)).text_color(if zoomed { t.acc_t } else { t.tx2 }))
-                    .tooltip(ui::tooltip(if zoomed { "Exit zoom" } else { "Zoom result" }, None, key.as_deref()))
+                    .tip(ui::tooltip(if zoomed { "Exit zoom" } else { "Zoom result" }, None, key.as_deref()))
                     .on_click(|_, window, cx| window.dispatch_action(Box::new(crate::app::ToggleResultZoom), cx))
             })
     }

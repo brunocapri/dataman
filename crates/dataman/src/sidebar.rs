@@ -7,6 +7,7 @@ use crate::app::{Region, Workspace};
 use crate::assets::{Icon, icon};
 use crate::theme::{ActiveTheme, metrics, px};
 use crate::ui;
+use crate::ui::Tipped;
 
 actions!(
     sidebar,
@@ -178,7 +179,7 @@ impl Workspace {
                         .when(on, |e| e.bg(t.prs))
                         .when_some(flash, |e, k| e.bg(t.warn.opacity(0.22 * k)))
                         .when(!on && flash.is_none(), move |e| e.hover(move |s| s.bg(hov)))
-                        .tooltip(ui::tooltip(tip, None, None))
+                        .tip(ui::tooltip(tip, None, None))
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .on_click(cx.listener(move |w, _, window, cx| w.rail_click(v, window, cx)))
                         .child(icon(glyph).size(px(GLYPH)).text_color(color)),
@@ -206,7 +207,7 @@ impl Workspace {
                     .justify_center()
                     .when(on, |e| e.bg(t.prs))
                     .when(!on, move |e| e.hover(move |s| s.bg(hov)))
-                    .tooltip(ui::tooltip("Agents", None, None))
+                    .tip(ui::tooltip("Agents", None, None))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(cx.listener(move |w, _, window, cx| {
                         if w.view == NavView::Agents {

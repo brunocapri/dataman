@@ -22,6 +22,7 @@ use crate::conns::ConnStore;
 use crate::input::{InputEvent, TextInput};
 use crate::theme::{ActiveTheme, Theme, mono, px};
 use crate::ui;
+use crate::ui::Tipped;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Page {
@@ -1597,7 +1598,7 @@ impl AgentsPage {
                     .justify_center()
                     .when(zoomed, |d| d.bg(t.acc_s).text_color(t.acc_t).border_1().border_color(t.acc))
                     .child(icon(if zoomed { Icon::Collapse } else { Icon::Expand }).size(px(13.)).text_color(if zoomed { t.acc_t } else { t.tx2 }))
-                    .tooltip(ui::tooltip(if zoomed { "Exit zoom" } else { "Zoom result" }, None, key.as_deref()))
+                    .tip(ui::tooltip(if zoomed { "Exit zoom" } else { "Zoom result" }, None, key.as_deref()))
                     .on_click(cx.listener(|v, _, window, cx| v.toggle_received_zoom(window, cx))),
             );
         let grid = div().border_1().border_color(t.line).child(self.received.clone());
@@ -1847,6 +1848,16 @@ impl Tip {
         self
     }
 
+    /// Everything it says, for checks.
+    #[cfg(feature = "checks")]
+    pub(crate) fn text(&self) -> String {
+        let parts = self.parts.iter().map(|p| match p {
+            TipPart::Lead(s) | TipPart::Code(s) | TipPart::Example(s) | TipPart::Note(s) => s.to_string(),
+            TipPart::Item(term, what) => format!("{term}: {what}"),
+        });
+        self.title.iter().map(|t| t.to_string()).chain(parts).collect::<Vec<_>>().join("\n")
+    }
+
     pub(crate) fn view(&self) -> impl Fn(&mut Window, &mut App) -> gpui::AnyView + 'static {
         let tip = self.clone();
         move |_, cx| {
@@ -1864,6 +1875,7 @@ pub(crate) fn label_tip(t: &Theme, id: &str, label: &str, tip: Tip) -> gpui::Div
 pub(crate) fn qmark(t: &Theme, id: &str, tip: Tip) -> gpui::Stateful<gpui::Div> {
     let hov = t.tx2;
     div()
+        .children(ui::here(&SharedString::from(id.to_string()).into()))
         .id(SharedString::from(id.to_string()))
         .flex_none()
         .size(px(15.))
@@ -1877,7 +1889,7 @@ pub(crate) fn qmark(t: &Theme, id: &str, tip: Tip) -> gpui::Stateful<gpui::Div> 
         .text_color(t.tx3)
         .hover(move |s| s.text_color(hov))
         .child("?")
-        .tooltip(tip.view())
+        .tip(tip.view())
 }
 
 pub(crate) struct TipView {
@@ -1902,6 +1914,7 @@ impl Render for TipView {
             TipPart::Note(s) => div().mt(px(2.)).pt(px(10.)).border_t_1().border_color(t.line).text_color(t.tx3).child(s.clone()).into_any_element(),
         });
         div()
+            .children(ui::here(&"tooltip".into()))
             .w(px(360.))
             .px(px(14.))
             .py(px(12.))

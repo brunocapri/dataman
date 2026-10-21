@@ -102,7 +102,7 @@ impl AgentsPage {
 
     pub(crate) fn render_types(&mut self, t: &Theme, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let rows = self.type_rows();
-        let head = self.header(t, "Sensitive data");
+        let head = self.header(t, "Sensitive data").child(qmark(t, "agents-types-tip", types_tip()));
         let broken: Vec<&TypeRow> = rows.iter().filter(|r| r.broken.is_some() && r.on).collect();
         let notice = broken.first().map(|r| div().pb(px(6.)).text_size(px(11.5)).text_color(t.err).child(format!("{} has an invalid pattern. Agent reads are refused while it is on.", r.name)));
         self.types_offset = notice.is_some() as usize;
@@ -430,5 +430,13 @@ fn type_tip(name: &str, rule: &str, example: Option<&str>, custom: bool) -> Tip 
         Some(e) => tip.example(e.to_string()),
         None => tip,
     };
-    tip.note("Recognized in cells, documents, keys, printed lines and errors, in every mode.")
+    tip.note("For every connection, in every mode: cells, documents, keys, printed lines and errors.")
+}
+
+pub(crate) fn types_tip() -> Tip {
+    Tip::new("Sensitive data")
+        .lead("Values agents never get as they are: one list for every connection.")
+        .item("Where", "Inside any value an agent receives (cells, documents, keys, printed lines and errors), in every mode: Data, Masked data and Structure only.")
+        .item("Masks", "Each type masks its matches as its menu says: Hidden, Partial or Hash.")
+        .note("Sensitive columns, in Privacy, mask one connection's columns whole, in Masked data only.")
 }

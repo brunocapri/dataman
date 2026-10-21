@@ -60,6 +60,7 @@ use crate::assets::Icon;
 use crate::input::{InputEvent, TextInput};
 use crate::theme::{ActiveTheme, SWATCHES, Theme};
 use crate::ui::{self, Btn};
+use crate::ui::Tipped;
 
 actions!(conn_dialog, [DialogSave, DialogTest, DialogCancel, NextField, PrevField, PickNext, PickPrev]);
 
@@ -1303,7 +1304,7 @@ impl ConnDialog {
                 .border_1()
                 .border_color(t.line)
                 .child(div().flex_1().min_w_0().py(px(4.)).text_size(px(11.5)).text_color(t.tx2).child(s.clone()))
-                .child(ui::icon_button(t, ("allowed-rm", i), Icon::Close, 22., 11.).tooltip(ui::text_tooltip("Remove")).on_click(cx.listener(move |d, _, _, cx| {
+                .child(ui::icon_button(t, ("allowed-rm", i), Icon::Close, 22., 11.).tip(ui::text_tooltip("Remove")).on_click(cx.listener(move |d, _, _, cx| {
                     if i < d.advanced.allowed.len() {
                         d.advanced.allowed.remove(i);
                     }
@@ -1507,7 +1508,7 @@ impl Render for ConnDialog {
             .child(crate::assets::logo(self.engine).size(px(16.)))
             .child(self.engine.label())
             .child(ui::dropdown_arrow("engine-chip-arrow", false, 9., t.tx3))
-            .tooltip(ui::text_tooltip("Change database"))
+            .tip(ui::text_tooltip("Change database"))
             .on_click(cx.listener(|d, _, window, cx| d.change_engine(window, cx)));
         let modes: Vec<(SslMode, &'static str)> = if self.engine.is_sql() { SslMode::ALL.iter().map(|m| (*m, m.label())).collect() } else { DOC_TLS.to_vec() };
         let ssl = ui::segmented(&t).children(modes.into_iter().map(|(m, label)| {

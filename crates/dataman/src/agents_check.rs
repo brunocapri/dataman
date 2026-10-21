@@ -664,6 +664,21 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     r.check("look-around is refused with the editor's message", problem.as_deref() == Some("Look-around isn't supported."), format!("{problem:?}"));
     click_probe("agents-type-cancel", cx);
 
+    let sees = crate::agents_rules::sees_tip().text();
+    r.check(
+        "The agent sees' tip names both layers: Sensitive data types in any value and every mode, the columns below in Masked data",
+        sees.contains("Data: Rows as stored, with Sensitive data types masked.")
+            && sees.contains("Masked data: As Data, and the sensitive columns below are masked whole.")
+            && sees.contains("one list for every connection, matched inside any value an agent receives, in every mode"),
+        sees.clone(),
+    );
+    let sens = crate::agents_rules::sens_tip().text();
+    let types = crate::agents_types::types_tip().text();
+    r.check(
+        "Sensitive columns' and Sensitive data's tips say which applies where",
+        sens.contains("Sensitive data types still apply inside every value") && types.contains("one list for every connection") && types.contains("Structure only") && probed("agents-types-tip", cx).is_some(),
+        format!("{sens}\n{types}"),
+    );
     // One list for every connection: no picker of connections, no reset, and a switch is global.
     let ids: Vec<String> = cx.update(|_, cx| a.read(cx).type_rows().into_iter().map(|t| t.id).collect()).unwrap_or_default();
     r.check("Sensitive data has no CPF or CNPJ, and starts with cards", ids.first().map(String::as_str) == Some("card") && !ids.iter().any(|i| i == "cpf" || i == "cnpj"), format!("{ids:?}"));

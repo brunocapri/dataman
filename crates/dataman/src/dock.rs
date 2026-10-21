@@ -7,6 +7,7 @@ use crate::app::{Drag, Side, Workspace};
 use crate::motion::{self, Progress, RectTween};
 use crate::theme::{ActiveTheme, Pt, Theme, metrics, px};
 use crate::ui;
+use crate::ui::Tipped;
 
 actions!(
     dock,
@@ -514,7 +515,7 @@ impl Workspace {
                 .items_center()
                 .cursor_grab()
                 .hover(move |s| s.bg(hov))
-                .tooltip(ui::tooltip(format!("Drag to move the {}", label.to_lowercase()), Some("right-click for more"), None))
+                .tip(ui::tooltip(format!("Drag to move the {}", label.to_lowercase()), Some("right-click for more"), None))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_mouse_down(MouseButton::Right, cx.listener(move |w, ev: &gpui::MouseDownEvent, _, cx| {
                     w.panel_menu = Some((p, ev.position));

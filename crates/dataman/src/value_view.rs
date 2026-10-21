@@ -11,6 +11,7 @@ use crate::assets::{Icon, icon};
 use crate::editor::{CodeEditor, EditorEvent};
 use crate::theme::{ActiveTheme, Theme, px};
 use crate::ui::{self, Btn};
+use crate::ui::Tipped;
 
 actions!(value_sheet, [CloseValue, CopyValue]);
 
@@ -486,7 +487,7 @@ impl Render for ValueView {
                             .child(icon(Icon::Copy).size(px(13.)).text_color(t.tx2))
                             .child("Copy")
                             .child(div().text_size(px(10.5)).opacity(0.6).child(crate::ui::keys_text("⌘C")))
-                            .tooltip(ui::tooltip("Copy", Some(copy_tip), None))
+                            .tip(ui::tooltip("Copy", Some(copy_tip), None))
                             .on_click(cx.listener(|v, _, _, cx| v.copy(cx))),
                     )
                     .children(copied.map(|a| {
@@ -529,7 +530,7 @@ impl Render for ValueView {
                         .when(!ok, |d| d.opacity(0.5))
                         .child("Apply")
                         .child(div().text_size(px(10.5)).font_weight(FontWeight::NORMAL).opacity(0.75).child(crate::ui::keys_text("⌘↩")))
-                        .tooltip(ui::tooltip("Apply", Some("A pending edit of the cell: commit it with the grid's other edits"), None))
+                        .tip(ui::tooltip("Apply", Some("A pending edit of the cell: commit it with the grid's other edits"), None))
                         .on_click(cx.listener(|v, _, _, cx| v.apply(cx))),
                 )
             });

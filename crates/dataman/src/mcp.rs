@@ -19,6 +19,7 @@ use crate::app::Workspace;
 use crate::app::{Bound, Side};
 use crate::theme::{ActiveTheme, Theme};
 use crate::ui::{self, Btn};
+use crate::ui::Tipped;
 
 actions!(mcp, [Allow, AlwaysAllow, Deny]);
 
@@ -547,7 +548,7 @@ impl Workspace {
                                     let tip = format!("Allow, and from now on let agents run {what} on {} without asking (connection › MCP › Advanced › Allowed queries)", req.connection);
                                     d.child(
                                         btn("mcp-always", Btn::Ghost, "Always Allow", "⌥⌘↩")
-                                            .tooltip(ui::text_tooltip(tip))
+                                            .tip(ui::text_tooltip(tip))
                                             .on_click(cx.listener(|w, _, window, cx| w.mcp_always_allow(window, cx))),
                                     )
                                 })
