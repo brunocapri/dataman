@@ -345,7 +345,7 @@ impl Tool for UserTool {
                     cx.write(&a, w).await?.outcome
                 }
             };
-            crate::builtin::rules::mask_outcome(cx, &target, &mut out, &checked.masked, read, limits);
+            crate::builtin::rules::mask_outcome(cx, &mut out, &checked.masked, read, limits);
             cx.note_rows(out.rows.len());
             let mut v = crate::builtin::result_json(&out, limits.max_rows);
             crate::builtin::rules::tell(&mut v, &checked, &cx.note().seen.masked);

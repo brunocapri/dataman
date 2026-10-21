@@ -42,27 +42,35 @@ impl Mask {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Validator {
     #[default]
     None,
     Luhn,
-    Cpf,
-    Cnpj,
     Iban,
     Entropy,
 }
 
+/// One no longer offered (an older version's) reads as none.
+impl<'de> Deserialize<'de> for Validator {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(d)?.as_str() {
+            "luhn" => Validator::Luhn,
+            "iban" => Validator::Iban,
+            "entropy" => Validator::Entropy,
+            _ => Validator::None,
+        })
+    }
+}
+
 impl Validator {
-    pub const ALL: [Validator; 6] = [Validator::None, Validator::Luhn, Validator::Cpf, Validator::Cnpj, Validator::Iban, Validator::Entropy];
+    pub const ALL: [Validator; 4] = [Validator::None, Validator::Luhn, Validator::Iban, Validator::Entropy];
 
     pub fn label(self) -> &'static str {
         match self {
             Validator::None => "None",
             Validator::Luhn => "Luhn",
-            Validator::Cpf => "CPF",
-            Validator::Cnpj => "CNPJ",
             Validator::Iban => "IBAN",
             Validator::Entropy => "Looks random",
         }
@@ -72,8 +80,6 @@ impl Validator {
         match self {
             Validator::None => true,
             Validator::Luhn => luhn(s),
-            Validator::Cpf => cpf(s),
-            Validator::Cnpj => cnpj(s),
             Validator::Iban => iban(s),
             Validator::Entropy => entropy(s) >= 3.5,
         }
@@ -93,7 +99,6 @@ enum Partial {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Norm {
     Digits,
-    Alnum,
     Lower,
     Exact,
 }
@@ -110,33 +115,12 @@ pub struct Builtin {
     validator: Validator,
     partial: Partial,
     norm: Norm,
+    /// Also looked for in a numeric value (a card kept in a bigint column); not where plain
+    /// numbers would match, as ten digits for a phone.
+    numbers: bool,
 }
 
 pub const BUILTINS: &[Builtin] = &[
-    Builtin {
-        id: "cpf",
-        name: "CPF",
-        rule: "11 digits with both check digits valid, not all the same digit.",
-        example: "123.456.789-09 → •••.•••.•89-09",
-        on: true,
-        mask: Mask::Partial,
-        pattern: r"\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b",
-        validator: Validator::Cpf,
-        partial: Partial::KeepLast(4),
-        norm: Norm::Digits,
-    },
-    Builtin {
-        id: "cnpj",
-        name: "CNPJ",
-        rule: "14 positions with valid check digits, the alphanumeric CNPJ included.",
-        example: "12.ABC.345/01DE-35 → ••.•••.•••/••DE-35",
-        on: true,
-        mask: Mask::Partial,
-        pattern: r"\b[0-9A-Z]{2}\.?[0-9A-Z]{3}\.?[0-9A-Z]{3}/?[0-9A-Z]{4}-?\d{2}\b",
-        validator: Validator::Cnpj,
-        partial: Partial::KeepLast(4),
-        norm: Norm::Alnum,
-    },
     Builtin {
         id: "card",
         name: "Card number",
@@ -148,6 +132,7 @@ pub const BUILTINS: &[Builtin] = &[
         validator: Validator::Luhn,
         partial: Partial::Card,
         norm: Norm::Digits,
+        numbers: true,
     },
     Builtin {
         id: "email",
@@ -160,18 +145,20 @@ pub const BUILTINS: &[Builtin] = &[
         validator: Validator::None,
         partial: Partial::Email,
         norm: Norm::Lower,
+        numbers: true,
     },
     Builtin {
         id: "phone",
         name: "Phone",
-        rule: "Brazilian mobile and landline numbers, with or without +55.",
-        example: "(81) 98765-4321 → (••) •••••-4321",
+        rule: "US and Canada numbers, with or without +1: (555) 123-4567, 555-123-4567, 555.123.4567, 5551234567. Ten bare digits count in text, not in number columns.",
+        example: "(555) 123-4567 → (•••) •••-4567",
         on: true,
         mask: Mask::Partial,
-        pattern: r"(?:\+55[ ]?)?(?:\(\d{2}\)[ ]?|\b\d{2}[ ])9?\d{4}[- ]\d{4}\b",
+        pattern: r"(?:\+1[ .-]?)?(?:\(\d{3}\)[ ]?|\b\d{3}[ .-])\d{3}[ .-]\d{4}\b|(?:\+1[ .-]?|\b)[2-9]\d{9}\b",
         validator: Validator::None,
         partial: Partial::KeepLast(4),
         norm: Norm::Digits,
+        numbers: false,
     },
     Builtin {
         id: "jwt",
@@ -184,6 +171,7 @@ pub const BUILTINS: &[Builtin] = &[
         validator: Validator::None,
         partial: Partial::KeepLast(4),
         norm: Norm::Exact,
+        numbers: true,
     },
     Builtin {
         id: "api-key",
@@ -196,6 +184,7 @@ pub const BUILTINS: &[Builtin] = &[
         validator: Validator::None,
         partial: Partial::KeepLast(4),
         norm: Norm::Exact,
+        numbers: true,
     },
     Builtin {
         id: "private-key",
@@ -208,6 +197,7 @@ pub const BUILTINS: &[Builtin] = &[
         validator: Validator::None,
         partial: Partial::KeepLast(0),
         norm: Norm::Exact,
+        numbers: true,
     },
     Builtin {
         id: "password-hash",
@@ -220,6 +210,7 @@ pub const BUILTINS: &[Builtin] = &[
         validator: Validator::None,
         partial: Partial::KeepLast(0),
         norm: Norm::Exact,
+        numbers: true,
     },
     Builtin {
         id: "ip",
@@ -232,6 +223,7 @@ pub const BUILTINS: &[Builtin] = &[
         validator: Validator::None,
         partial: Partial::KeepLast(4),
         norm: Norm::Lower,
+        numbers: true,
     },
 ];
 
@@ -296,20 +288,27 @@ impl CustomType {
     }
 }
 
-/// The sensitive data types, for every connection: only the differences from the defaults are
-/// written (`[agent_types]` in settings.toml).
+/// The sensitive data types, one list for every connection: only the differences from the
+/// defaults are written (`[agent_types]` in settings.toml).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TypeSettings {
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty", deserialize_with = "known_builtins")]
     pub builtin: BTreeMap<String, BuiltinOverride>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub custom: Vec<CustomType>,
 }
 
+/// Changes to a type an older version had (and this one dropped) are left behind on load.
+fn known_builtins<'de, D: serde::Deserializer<'de>>(d: D) -> Result<BTreeMap<String, BuiltinOverride>, D::Error> {
+    let mut m = BTreeMap::<String, BuiltinOverride>::deserialize(d)?;
+    m.retain(|id, _| builtin(id).is_some());
+    Ok(m)
+}
+
 pub const MAX_CUSTOM: usize = 50;
 pub const MAX_PATTERN: usize = 500;
 
-/// One row of the Sensitive data list, as it applies (global, or with a connection's switches).
+/// One row of the Sensitive data list.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TypeRow {
     pub id: String,
@@ -319,9 +318,7 @@ pub struct TypeRow {
     pub on: bool,
     pub mask: Mask,
     pub custom: bool,
-    /// The connection's switch differs from the global one.
-    pub changed_here: bool,
-    /// The pattern does not compile: reads are refused where it is on.
+    /// The pattern does not compile: reads are refused while it is on.
     pub broken: Option<String>,
 }
 
@@ -352,31 +349,25 @@ impl TypeSettings {
         }
     }
 
-    pub fn global_on(&self, id: &str) -> Option<bool> {
+    pub fn is_on(&self, id: &str) -> Option<bool> {
         if let Some(b) = builtin(id) {
             return Some(self.builtin_on(b));
         }
         self.custom.iter().find(|c| c.id == id).map(|c| c.on)
     }
 
-    /// The list as it applies: `overrides` are a connection's switches (empty for the global list).
-    pub fn rows(&self, overrides: &BTreeMap<String, bool>) -> Vec<TypeRow> {
+    pub fn rows(&self) -> Vec<TypeRow> {
         let mut rows: Vec<TypeRow> = BUILTINS
             .iter()
-            .map(|b| {
-                let global = self.builtin_on(b);
-                let on = overrides.get(b.id).copied().unwrap_or(global);
-                TypeRow { id: b.id.into(), name: b.name.into(), rule: b.rule.into(), example: b.example.into(), on, mask: self.builtin_mask(b), custom: false, changed_here: on != global, broken: None }
-            })
+            .map(|b| TypeRow { id: b.id.into(), name: b.name.into(), rule: b.rule.into(), example: b.example.into(), on: self.builtin_on(b), mask: self.builtin_mask(b), custom: false, broken: None })
             .collect();
         for c in &self.custom {
-            let on = overrides.get(&c.id).copied().unwrap_or(c.on);
             let mut rule = format!("Custom: {}", c.pattern);
             if c.validator != Validator::None {
                 rule.push_str(&format!(" · {}", c.validator.label()));
             }
             let broken = check_pattern(&c.pattern).err();
-            rows.push(TypeRow { id: c.id.clone(), name: c.name.clone(), rule, example: String::new(), on, mask: c.mask, custom: true, changed_here: on != c.on, broken });
+            rows.push(TypeRow { id: c.id.clone(), name: c.name.clone(), rule, example: String::new(), on: c.on, mask: c.mask, custom: true, broken });
         }
         rows
     }
@@ -510,6 +501,7 @@ struct Kind {
     partial: Partial,
     norm: Norm,
     token: String,
+    numbers: bool,
 }
 
 impl Kind {
@@ -524,6 +516,7 @@ impl Kind {
             partial: b.partial,
             norm: b.norm,
             token: HIDDEN.into(),
+            numbers: b.numbers,
         }
     }
 
@@ -540,6 +533,7 @@ impl Kind {
             partial: Partial::KeepLast(c.keep.min(6)),
             norm: Norm::Exact,
             token: format!("‹{}›", c.name.trim().to_lowercase()),
+            numbers: true,
         })
     }
 
@@ -548,7 +542,7 @@ impl Kind {
         for c in self.re.captures_iter(s) {
             let m = if self.group_v { c.name("v") } else { c.get(0) };
             let Some(m) = m.filter(|m| !m.is_empty()) else { continue };
-            if self.validator.accepts(m.as_str()) && (self.id != "card" || card_issuer(m.as_str())) {
+            if self.validator.accepts(m.as_str()) && (self.id != "card" || card_issuer(m.as_str())) && (self.id != "phone" || phone_alone(s, m.range())) {
                 out.push(m.range());
             }
         }
@@ -564,10 +558,21 @@ impl Kind {
     }
 }
 
+/// Ten bare digits are a phone only standing alone: not part of a decimal, a date, a range or a
+/// version, and not one digit repeated.
+fn phone_alone(s: &str, r: std::ops::Range<usize>) -> bool {
+    let m = &s[r.clone()];
+    if !m.bytes().all(|b| b.is_ascii_digit()) {
+        return true;
+    }
+    let joined = |c: Option<u8>| c.is_some_and(|c| b".,-/:".contains(&c));
+    let b = s.as_bytes();
+    !joined(r.start.checked_sub(1).map(|i| b[i])) && !joined(b.get(r.end).copied()) && !m.bytes().all(|c| c == m.as_bytes()[0])
+}
+
 fn normalize(v: &str, n: Norm) -> String {
     match n {
         Norm::Digits => v.chars().filter(char::is_ascii_digit).collect(),
-        Norm::Alnum => v.chars().filter(char::is_ascii_alphanumeric).map(|c| c.to_ascii_uppercase()).collect(),
         Norm::Lower => v.trim().to_lowercase(),
         Norm::Exact => v.to_string(),
     }
@@ -633,17 +638,16 @@ pub struct Types {
 }
 
 impl Types {
-    pub fn new(settings: &TypeSettings, overrides: &BTreeMap<String, bool>) -> Types {
-        let on = |id: &str, global: bool| overrides.get(id).copied().unwrap_or(global);
+    pub fn new(settings: &TypeSettings) -> Types {
         let mut kinds = Vec::new();
         let mut broken = Vec::new();
         for b in BUILTINS {
-            if on(b.id, settings.builtin_on(b)) {
+            if settings.builtin_on(b) {
                 kinds.push(Kind::builtin(b, settings.builtin_mask(b)));
             }
         }
         for c in settings.custom.iter().take(MAX_CUSTOM) {
-            if !on(&c.id, c.on) {
+            if !c.on {
                 continue;
             }
             match check_pattern(&c.pattern).ok().and_then(|_| Kind::custom(c).ok()) {
@@ -669,6 +673,10 @@ impl Types {
     }
 
     pub fn scrub<'a>(&self, s: &'a str, key: &HashKey, counts: &mut Counts) -> Cow<'a, str> {
+        self.scrub_as(s, false, key, counts)
+    }
+
+    fn scrub_as<'a>(&self, s: &'a str, number: bool, key: &HashKey, counts: &mut Counts) -> Cow<'a, str> {
         if self.kinds.is_empty() || s.len() < 5 {
             return Cow::Borrowed(s);
         }
@@ -676,6 +684,7 @@ impl Types {
             Some(set) => set.matches(s).into_iter().collect(),
             None => (0..self.kinds.len()).collect(),
         };
+        let candidates: Vec<usize> = candidates.into_iter().filter(|&k| !number || self.kinds[k].numbers).collect();
         if candidates.is_empty() {
             return Cow::Borrowed(s);
         }
@@ -724,9 +733,9 @@ impl Types {
                     *s = o;
                 }
             }
-            // A card or a CPF kept in a numeric column comes back as a number.
+            // A card kept in a numeric column comes back as a number.
             Value::Number(n) => {
-                if let Cow::Owned(o) = self.scrub(&n.to_string(), key, counts) {
+                if let Cow::Owned(o) = self.scrub_as(&n.to_string(), true, key, counts) {
                     *v = Value::String(o);
                 }
             }
@@ -1218,9 +1227,6 @@ pub struct AgentRules {
     pub visible: Visible,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sensitive: Vec<SensitiveCol>,
-    /// Sensitive data types switched differently here than in All connections.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub types: BTreeMap<String, bool>,
     #[serde(default = "yes", skip_serializing_if = "is_true")]
     pub structure: bool,
     #[serde(default = "yes", skip_serializing_if = "is_true")]
@@ -1253,7 +1259,6 @@ impl Default for AgentRules {
             view: AgentView::Data,
             visible: Visible::default(),
             sensitive: Vec::new(),
-            types: BTreeMap::new(),
             structure: true,
             code: true,
             activity: true,
@@ -1395,33 +1400,6 @@ fn card_issuer(s: &str) -> bool {
         || (d.starts_with("50") || (56..=69).contains(&p(2))) && (12..=19).contains(&len)
 }
 
-pub fn cpf(s: &str) -> bool {
-    let d = digits(s);
-    if d.len() != 11 || d.iter().all(|x| *x == d[0]) {
-        return false;
-    }
-    let check = |n: usize| {
-        let sum: u32 = (0..n).map(|i| d[i] * (n as u32 + 1 - i as u32)).sum();
-        let r = (sum * 10) % 11;
-        if r == 10 { 0 } else { r }
-    };
-    check(9) == d[9] && check(10) == d[10]
-}
-
-pub fn cnpj(s: &str) -> bool {
-    let v: Vec<u32> = s.chars().filter(|c| c.is_ascii_alphanumeric()).map(|c| c.to_ascii_uppercase() as u32 - 48).collect();
-    if v.len() != 14 || v[12] > 9 || v[13] > 9 || v.iter().all(|x| *x == v[0]) {
-        return false;
-    }
-    let check = |n: usize| {
-        let weights: Vec<u32> = if n == 12 { vec![5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2] } else { vec![6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2] };
-        let sum: u32 = (0..n).map(|i| v[i] * weights[i]).sum();
-        let r = sum % 11;
-        if r < 2 { 0 } else { 11 - r }
-    };
-    check(12) == v[12] && check(13) == v[13]
-}
-
 pub fn iban(s: &str) -> bool {
     let c: String = s.chars().filter(|c| c.is_ascii_alphanumeric()).map(|c| c.to_ascii_uppercase()).collect();
     if !(15..=34).contains(&c.len()) || !c[..2].chars().all(|x| x.is_ascii_alphabetic()) {
@@ -1467,9 +1445,6 @@ mod tests {
 
     #[test]
     fn validators() {
-        assert!(cpf("123.456.789-09") && cpf("12345678909") && !cpf("123.456.789-00") && !cpf("111.111.111-11"));
-        assert!(cnpj("11.222.333/0001-81") && !cnpj("11.222.333/0001-80"));
-        assert!(cnpj("12.ABC.345/01DE-35"), "alphanumeric CNPJ");
         assert!(luhn("4242 4242 4242 4242") && !luhn("4242 4242 4242 4241"));
         assert!(iban("GB82 WEST 1234 5698 7654 32") && !iban("GB82 WEST 1234 5698 7654 33"));
         assert!(entropy("aZ8kQ2pL9xW4mN7r") > 3.5 && entropy("aaaaaaaa") < 1.0);
@@ -1477,17 +1452,52 @@ mod tests {
 
     #[test]
     fn builtin_types_mask_in_any_value() {
-        let t = Types::new(&TypeSettings::default(), &BTreeMap::new());
-        let (s, c) = scrub(&t, "cliente 123.456.789-09 pagou com 4242 4242 4242 4242, ana@acme.com, (81) 98765-4321");
-        assert_eq!(s, "cliente •••.•••.•89-09 pagou com •••• 4242, a•••@acme.com, (••) •••••-4321");
-        assert_eq!((c["CPF"], c["Card number"], c["E-mail"], c["Phone"]), (1, 1, 1, 1));
-        assert_eq!(scrub(&t, "12.ABC.345/01DE-35").0, "••.•••.•••/••DE-35");
+        let t = Types::new(&TypeSettings::default());
+        let (s, c) = scrub(&t, "customer paid with 4242 4242 4242 4242, ana@acme.com, (555) 123-4567");
+        assert_eq!(s, "customer paid with •••• 4242, a•••@acme.com, (•••) •••-4567");
+        assert_eq!((c["Card number"], c["E-mail"], c["Phone"]), (1, 1, 1));
         assert_eq!(scrub(&t, "token sk_live_51HxABCDEFGHIJKLMN ok").0, "token ‹hidden› ok");
         assert_eq!(scrub(&t, "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abc").0, "Bearer ‹hidden›");
         assert_eq!(scrub(&t, "-----BEGIN RSA PRIVATE KEY-----\nMIIE\n-----END RSA PRIVATE KEY-----!").0, "‹hidden›!");
         assert_eq!(scrub(&t, "$2b$12$KixQ0aaaaaaaaaaaaaaaaa").0, "‹hidden›");
         assert_eq!(scrub(&t, "order 12345678901 x 4242424242424241").0, "order 12345678901 x 4242424242424241", "invalid check digits stay");
         assert_eq!(scrub(&t, "10.0.3.17").0, "10.0.3.17", "IP is off by default");
+    }
+
+    #[test]
+    fn us_phone_numbers() {
+        let t = Types::new(&TypeSettings::default());
+        for (raw, masked) in [
+            ("call (555) 123-4567 now", "call (•••) •••-4567 now"),
+            ("call (555)123-4567", "call (•••)•••-4567"),
+            ("555-123-4567", "•••-•••-4567"),
+            ("555.123.4567", "•••.•••.4567"),
+            ("+1 555 123 4567", "+• ••• ••• 4567"),
+            ("+1-555-123-4567", "+•-•••-•••-4567"),
+            ("tel 5551234567", "tel ••••••4567"),
+            ("tel +15551234567", "tel +•••••••4567"),
+        ] {
+            assert_eq!(scrub(&t, raw).0, masked, "{raw}");
+        }
+        for plain in [
+            "order 1234567890",
+            "at 1729500000",
+            "pi 3.1415926535",
+            "range 2024-5551234567",
+            "v5551234567.2",
+            "id 15551234567",
+            "id 55512345678",
+            "x 5555555555",
+            "zip 94107-1234",
+            "ssn 123-45-6789",
+            "on 2026-10-21",
+        ] {
+            assert_eq!(scrub(&t, plain).0, plain, "{plain}");
+        }
+        let mut v = serde_json::json!({"id": 5551234567u64, "card": 4242424242424242u64});
+        t.scrub_json(&mut v, &key(), &mut Counts::new(), Instant::now() + BUDGET).unwrap();
+        assert_eq!(v["id"], 5551234567u64, "ten digits in a number column are not a phone");
+        assert_eq!(v["card"], "•••• 4242", "a card in a number column still is a card");
     }
 
     #[test]
@@ -1501,31 +1511,47 @@ mod tests {
         let mut c = CustomType::new("Customer code", r"\bCUST-[0-9]{6}\b", Mask::Hash);
         c.id = "t_1".into();
         s.custom.push(c);
-        let mut v = CustomType::new("Senha", r"senha=(?P<v>\S+)", Mask::Hidden);
+        let mut v = CustomType::new("Password", r"password=(?P<v>\S+)", Mask::Hidden);
         v.id = "t_2".into();
         s.custom.push(v);
-        let t = Types::new(&s, &BTreeMap::new());
-        let (a, counts) = scrub(&t, "merge CUST-000017 into CUST-000930; senha=hunter2 host 10.0.3.17");
-        assert!(a.starts_with("merge ‹h:") && a.contains(" into ‹h:") && a.contains("senha=‹senha›") && !a.contains("10.0.3.17"), "{a}");
+        let t = Types::new(&s);
+        let (a, counts) = scrub(&t, "merge CUST-000017 into CUST-000930; password=hunter2 host 10.0.3.17");
+        assert!(a.starts_with("merge ‹h:") && a.contains(" into ‹h:") && a.contains("password=‹password›") && !a.contains("10.0.3.17"), "{a}");
         assert_eq!(counts["Customer code"], 2);
         assert_eq!(scrub(&t, "CUST-000017").0, scrub(&t, "CUST-000017").0, "hashes are deterministic");
         assert_ne!(scrub(&t, "CUST-000017").0, scrub(&t, "CUST-000018").0);
-        let off: BTreeMap<String, bool> = [("t_1".to_string(), false), ("phone".to_string(), false)].into();
-        let t = Types::new(&s, &off);
-        assert_eq!(scrub(&t, "CUST-000017 (81) 98765-4321").0, "CUST-000017 (81) 98765-4321");
-        let rows = s.rows(&off);
-        assert!(rows.iter().find(|r| r.id == "t_1").is_some_and(|r| !r.on && r.changed_here && r.custom));
-        assert!(rows.iter().find(|r| r.id == "cpf").is_some_and(|r| r.on && !r.changed_here));
+        s.custom[0].on = false;
+        s.set_builtin("phone", Some(false), None);
+        let t = Types::new(&s);
+        assert_eq!(scrub(&t, "CUST-000017 (555) 123-4567").0, "CUST-000017 (555) 123-4567");
+        let rows = s.rows();
+        assert!(rows.iter().find(|r| r.id == "t_1").is_some_and(|r| !r.on && r.custom));
+        assert!(rows.iter().find(|r| r.id == "phone").is_some_and(|r| !r.on && !r.custom));
+        assert!(rows.iter().find(|r| r.id == "card").is_some_and(|r| r.on));
+    }
+
+    #[test]
+    fn types_an_older_version_had_are_dropped_on_load() {
+        let old = "[builtin.cpf]\non = false\n[builtin.cnpj]\nmask = \"hash\"\n[builtin.email]\nmask = \"hash\"\n\n[[custom]]\nid = \"t_1\"\nname = \"Tax id\"\npattern = \"\\\\d{11}\"\nvalidator = \"cpf\"\n";
+        let s: TypeSettings = toml::from_str(old).unwrap();
+        assert_eq!(s.builtin.keys().collect::<Vec<_>>(), ["email"]);
+        assert_eq!(s.custom[0].validator, Validator::None);
+        let saved = toml::to_string(&s).unwrap();
+        assert!(!saved.contains("cpf") && !saved.contains("cnpj"), "{saved}");
+        let r: AgentRules = toml::from_str("view = \"masked\"\n[types]\nphone = false\n").unwrap();
+        assert_eq!(r.view, AgentView::Masked);
+        assert!(!toml::to_string(&r).unwrap().contains("phone"), "a connection's old switches are dropped");
+        assert!(BUILTINS.iter().all(|b| !b.id.contains("cpf") && !b.id.contains("cnpj")));
     }
 
     #[test]
     fn json_keys_and_values_and_budget() {
-        let t = Types::new(&TypeSettings::default(), &BTreeMap::new());
-        let mut v = serde_json::json!({"rows": [["ana@acme.com", 1]], "ana@acme.com": {"cpf": "123.456.789-09"}});
+        let t = Types::new(&TypeSettings::default());
+        let mut v = serde_json::json!({"rows": [["ana@acme.com", 1]], "ana@acme.com": {"card": "4242 4242 4242 4242"}});
         let mut c = Counts::new();
         t.scrub_json(&mut v, &key(), &mut c, Instant::now() + BUDGET).unwrap();
         let text = v.to_string();
-        assert!(!text.contains("ana@acme.com") && !text.contains("123.456.789-09"), "{text}");
+        assert!(!text.contains("ana@acme.com") && !text.contains("4242 4242 4242 4242"), "{text}");
         assert_eq!(c["E-mail"], 2);
         let mut big = serde_json::json!((0..5000).map(|i| format!("ana{i}@acme.com")).collect::<Vec<_>>());
         assert_eq!(t.scrub_json(&mut big, &key(), &mut c, Instant::now()), Err(Unfinished));
@@ -1534,8 +1560,8 @@ mod tests {
     #[test]
     #[ignore]
     fn scrub_speed() {
-        let t = Types::new(&TypeSettings::default(), &BTreeMap::new());
-        let mut v = serde_json::json!({"rows": (0..200).map(|i| vec![serde_json::json!("x".repeat(2000)), serde_json::json!(format!("ana{i}@acme.com 123.456.789-09"))]).collect::<Vec<_>>()});
+        let t = Types::new(&TypeSettings::default());
+        let mut v = serde_json::json!({"rows": (0..200).map(|i| vec![serde_json::json!("x".repeat(2000)), serde_json::json!(format!("ana{i}@acme.com (555) 123-4567"))]).collect::<Vec<_>>()});
         let t0 = Instant::now();
         t.scrub_json(&mut v, &key(), &mut Counts::new(), Instant::now() + std::time::Duration::from_secs(60)).unwrap();
         eprintln!("scrub 400 KB: {:?}", t0.elapsed());
@@ -1551,7 +1577,7 @@ mod tests {
         assert!(check_pattern(r"a\\1").is_ok(), "an escaped backslash is not a back-reference");
         assert!(check_pattern(r"(").is_err());
         let c = CustomType::new("Customer code", r"\bCUST-[0-9]{6}\b", Mask::Hash);
-        let t = test_pattern(&c, &["Pedido de CUST-004211 enviado", "merge CUST-000017 into CUST-000930", "ref CUST-42", "xCUST-123456"], &key()).unwrap();
+        let t = test_pattern(&c, &["Order CUST-004211 shipped", "merge CUST-000017 into CUST-000930", "ref CUST-42", "xCUST-123456"], &key()).unwrap();
         assert_eq!(t.matches, 3);
         assert!(t.lines[2].2.is_none() && t.lines[3].2.is_none());
         assert!(!t.broad, "half the lines is not most");
@@ -1561,8 +1587,8 @@ mod tests {
         let mut bad = CustomType::new("Broken", "(", Mask::Hidden);
         bad.id = "t_x".into();
         s.custom.push(bad);
-        assert_eq!(Types::new(&s, &BTreeMap::new()).broken, vec!["Broken".to_string()]);
-        assert!(s.rows(&BTreeMap::new()).last().unwrap().broken.is_some());
+        assert_eq!(Types::new(&s).broken, vec!["Broken".to_string()]);
+        assert!(s.rows().last().unwrap().broken.is_some());
     }
 
     #[test]
@@ -1633,7 +1659,7 @@ mod tests {
         assert_eq!(back.sensitive_mask(Some("public"), "users", "EMAIL", Names::Qualified), Some(Mask::Partial));
         assert_eq!(AgentRules { view: AgentView::Data, ..back.clone() }.sensitive_mask(None, "users", "email", Names::Qualified), None, "columns mask in Masked data only");
         assert_eq!(sensitive_name("password_hash"), Some(Mask::Hidden));
-        assert_eq!(sensitive_name("cpf"), Some(Mask::Hash));
+        assert_eq!(sensitive_name("ssn"), Some(Mask::Hash));
         assert_eq!(sensitive_name("email"), Some(Mask::Partial));
         assert_eq!(sensitive_name("created_at"), None);
         assert_eq!(RedisCat::of("KEYS"), RedisCat::Dangerous);
@@ -1648,7 +1674,7 @@ mod tests {
     #[test]
     fn partial_and_column_masks() {
         assert_eq!(mask_value(Mask::Partial, "ana@acme.com", &key()), "a•••@acme.com");
-        assert_eq!(mask_value(Mask::Partial, "98765-4321", &key()), "•••••-4321");
+        assert_eq!(mask_value(Mask::Partial, "555-123-4567", &key()), "•••-•••-4567");
         assert_eq!(mask_value(Mask::Partial, "abc", &key()), "•••");
         assert_eq!(mask_value(Mask::Hidden, "x", &key()), HIDDEN);
         assert!(mask_value(Mask::Hash, "x", &key()).starts_with("‹h:"));

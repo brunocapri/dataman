@@ -207,7 +207,7 @@ fn mongo(text: &str, write: bool, cx: &Context) -> Result<Shaped, String> {
     }
     let mut mask = Vec::new();
     if !sensitive.is_empty() {
-        // A find computes when its projection holds expressions (`{e: "$cpf"}`) or its filter
+        // A find computes when its projection holds expressions (`{e: "$ssn"}`) or its filter
         // does ($expr): their values, and their errors, would carry the field.
         let projects = matches!(op, mql::Op::Find { projection: Some(p), .. } if p.values().any(|v| !matches!(v, Bson::Int32(_) | Bson::Int64(_) | Bson::Double(_) | Bson::Boolean(_))));
         let plain = matches!(op, mql::Op::Find { .. } | mql::Op::Count { .. }) && !projects && !lower.contains("$expr");

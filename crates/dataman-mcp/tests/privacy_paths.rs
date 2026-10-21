@@ -62,7 +62,7 @@ const ES: (&str, &str) = ("DATAMAN_ES", "127.0.0.1:9201");
 const RD: (&str, &str) = ("DATAMAN_REDIS", "127.0.0.1:63790");
 
 /// Every value seeded below that agents must never get, nor the audit log keep.
-const SECRETS: &[&str] = &["hash-secret-1", "dflt-secret", "cpf-secret-9", "card-secret", "ssn-secret-1", "kid-secret", "4242cardsecret", "zed-secret", "pw-secret", "sess-secret", "closed-secret"];
+const SECRETS: &[&str] = &["hash-secret-1", "dflt-secret", "taxid-secret-9", "card-secret", "ssn-secret-1", "kid-secret", "4242cardsecret", "zed-secret", "pw-secret", "sess-secret", "closed-secret"];
 
 struct Conn<'a> {
     id: &'a str,
@@ -226,7 +226,7 @@ fn postgres_values_stay_kept() {
     let s = format!("mcp_paths_{}", std::process::id());
     let rules = format!(
         "mcp = \"write\"\n[connection.mcp_rules]\nview = \"masked\"\n\
-         sensitive = [{{ col = \"customers.email\", how = \"partial\" }}, {{ col = \"*cpf*\", how = \"hash\" }}, {{ col = \"users.password_hash\", how = \"partial\" }}]\n\
+         sensitive = [{{ col = \"customers.email\", how = \"partial\" }}, {{ col = \"*tax_id*\", how = \"hash\" }}, {{ col = \"users.password_hash\", how = \"partial\" }}]\n\
          [connection.mcp_rules.visible]\nitems = [{{ name = \"{s}.payments\", kind = \"table\" }}, {{ name = \"users.password_hash\", kind = \"column\" }}]\n"
     );
     let e = env(&[conn("pgadmin", PG, "", "postgres", "dataman", "mcp = \"full\""), conn("pp", PG, "", "postgres", "dataman", rules)], "", None);
@@ -235,11 +235,11 @@ fn postgres_values_stay_kept() {
         with("pgadmin", json!({"sql": format!(
             "CREATE SCHEMA {s}; \
              CREATE TABLE {s}.users (id int PRIMARY KEY, name text, email text, password_hash text DEFAULT 'dflt-secret' CHECK (password_hash <> 'chk')); \
-             CREATE TABLE {s}.customers (id int PRIMARY KEY, name text, email text, cpf text, city text, n text); \
+             CREATE TABLE {s}.customers (id int PRIMARY KEY, name text, email text, tax_id text, city text, n text); \
              CREATE TABLE {s}.payments (id int PRIMARY KEY, card text); \
              CREATE TABLE {s}.notes (id int PRIMARY KEY, body text); \
              INSERT INTO {s}.users VALUES (1, 'Ana', 'ana@acme.com', 'hash-secret-1'); \
-             INSERT INTO {s}.customers VALUES (1, 'Ana', 'ana@acme.com', 'cpf-secret-9', 'Recife', '12345678901234'); \
+             INSERT INTO {s}.customers VALUES (1, 'Ana', 'ana@acme.com', 'taxid-secret-9', 'Recife', '12345678901234'); \
              INSERT INTO {s}.payments VALUES (1, 'card-secret'); \
              CREATE VIEW {s}.v_kept AS SELECT id, password_hash AS h FROM {s}.users; \
              CREATE VIEW {s}.v_open AS SELECT id, body FROM {s}.notes; \
@@ -270,33 +270,33 @@ fn postgres_values_stay_kept() {
 
     // Masked values may not reach the reply under another name.
     for sql in [
-        format!("SELECT (SELECT cpf FROM {s}.customers LIMIT 1) AS x"),
-        format!("SELECT name FROM {s}.customers UNION ALL SELECT cpf FROM {s}.customers"),
-        format!("WITH x(c) AS (SELECT cpf FROM {s}.customers) SELECT c FROM x"),
-        format!("SELECT c FROM (SELECT cpf FROM {s}.customers) t(c)"),
-        format!("SELECT ARRAY(SELECT cpf FROM {s}.customers)"),
-        format!("SELECT t.x FROM {s}.customers c CROSS JOIN LATERAL (SELECT c.cpf) t(x)"),
-        format!("SELECT * FROM (VALUES ((SELECT cpf FROM {s}.customers LIMIT 1))) v(x)"),
-        format!("SELECT v FROM {s}.customers c, unnest(array[c.cpf]) u(v)"),
-        format!("SELECT substring(cpf FROM 1 FOR 3) FROM {s}.customers"),
-        format!("SELECT string_agg(cpf, ',') FROM {s}.customers"),
-        format!("SELECT count(DISTINCT cpf) FROM {s}.customers"),
-        format!("SELECT cpf, lag(cpf) OVER () FROM {s}.customers"),
-        format!("SELECT cpf FROM {s}.customers GROUP BY cpf"),
+        format!("SELECT (SELECT tax_id FROM {s}.customers LIMIT 1) AS x"),
+        format!("SELECT name FROM {s}.customers UNION ALL SELECT tax_id FROM {s}.customers"),
+        format!("WITH x(c) AS (SELECT tax_id FROM {s}.customers) SELECT c FROM x"),
+        format!("SELECT c FROM (SELECT tax_id FROM {s}.customers) t(c)"),
+        format!("SELECT ARRAY(SELECT tax_id FROM {s}.customers)"),
+        format!("SELECT t.x FROM {s}.customers c CROSS JOIN LATERAL (SELECT c.tax_id) t(x)"),
+        format!("SELECT * FROM (VALUES ((SELECT tax_id FROM {s}.customers LIMIT 1))) v(x)"),
+        format!("SELECT v FROM {s}.customers c, unnest(array[c.tax_id]) u(v)"),
+        format!("SELECT substring(tax_id FROM 1 FOR 3) FROM {s}.customers"),
+        format!("SELECT string_agg(tax_id, ',') FROM {s}.customers"),
+        format!("SELECT count(DISTINCT tax_id) FROM {s}.customers"),
+        format!("SELECT tax_id, lag(tax_id) OVER () FROM {s}.customers"),
+        format!("SELECT tax_id FROM {s}.customers GROUP BY tax_id"),
     ] {
         refused(&sql, q(sql.clone()), MASKED);
     }
     refused("column list", q(format!("SELECT d FROM {s}.customers c(a, b, e, d)")), "renamed by a column list");
-    refused("whole row of a subquery", q(format!("SELECT row_to_json(x) FROM (SELECT cpf FROM {s}.customers) x")), "whole rows");
+    refused("whole row of a subquery", q(format!("SELECT row_to_json(x) FROM (SELECT tax_id FROM {s}.customers) x")), "whole rows");
     refused("json_agg", q(format!("SELECT json_agg(c) FROM {s}.customers c")), "whole rows");
-    refused("ORDER BY 1", q(format!("SELECT cpf FROM {s}.customers ORDER BY 1")), "BY a position");
+    refused("ORDER BY 1", q(format!("SELECT tax_id FROM {s}.customers ORDER BY 1")), "BY a position");
     // Filters compare a masked column as it is: computed, it would also be quoted by errors.
     for sql in [
-        format!("SELECT id FROM {s}.customers WHERE cpf::regclass IS NULL"),
-        format!("SELECT id FROM {s}.customers WHERE CAST(cpf AS int) = 1"),
-        format!("SELECT id FROM {s}.customers WHERE to_date(cpf, 'YYYY') IS NULL"),
-        format!("SELECT id FROM {s}.customers WHERE cpf::text[] IS NULL"),
-        format!("SELECT id FROM {s}.customers WHERE cpf || '' = 'x'"),
+        format!("SELECT id FROM {s}.customers WHERE tax_id::regclass IS NULL"),
+        format!("SELECT id FROM {s}.customers WHERE CAST(tax_id AS int) = 1"),
+        format!("SELECT id FROM {s}.customers WHERE to_date(tax_id, 'YYYY') IS NULL"),
+        format!("SELECT id FROM {s}.customers WHERE tax_id::text[] IS NULL"),
+        format!("SELECT id FROM {s}.customers WHERE tax_id || '' = 'x'"),
     ] {
         refused(&sql, q(sql.clone()), MASKED);
     }
@@ -304,15 +304,15 @@ fn postgres_values_stay_kept() {
     assert!(err.contains("‹value›") && !err.contains("12345678901234"), "errors lose their values: {err}");
 
     // What stays usable.
-    let r = q(format!("SELECT c.id, c.cpf, c.email FROM {s}.customers c WHERE c.cpf LIKE 'c%' AND c.city IN ('Recife') ORDER BY c.id")).unwrap();
+    let r = q(format!("SELECT c.id, c.tax_id, c.email FROM {s}.customers c WHERE c.tax_id LIKE 't%' AND c.city IN ('Recife') ORDER BY c.id")).unwrap();
     clean("plain select", &r);
     assert!(r["rows"][0][1].as_str().unwrap().starts_with("‹h:") && r["rows"][0][2] == "a•••@acme.com", "{r}");
     for sql in [
-        format!("WITH x AS (SELECT id, cpf FROM {s}.customers) SELECT cpf FROM x"),
-        format!("SELECT cpf FROM {s}.customers UNION SELECT cpf FROM {s}.customers"),
-        format!("SELECT * FROM (SELECT cpf FROM {s}.customers) t"),
-        format!("SELECT id FROM {s}.customers WHERE id IN (SELECT id FROM {s}.customers WHERE cpf = 'x')"),
-        format!("SELECT id FROM {s}.customers WHERE cpf IN (SELECT cpf FROM {s}.customers)"),
+        format!("WITH x AS (SELECT id, tax_id FROM {s}.customers) SELECT tax_id FROM x"),
+        format!("SELECT tax_id FROM {s}.customers UNION SELECT tax_id FROM {s}.customers"),
+        format!("SELECT * FROM (SELECT tax_id FROM {s}.customers) t"),
+        format!("SELECT id FROM {s}.customers WHERE id IN (SELECT id FROM {s}.customers WHERE tax_id = 'x')"),
+        format!("SELECT id FROM {s}.customers WHERE tax_id IN (SELECT tax_id FROM {s}.customers)"),
     ] {
         let r = q(sql.clone()).unwrap_or_else(|err| panic!("{sql}: {err}"));
         clean(&sql, &r);
@@ -324,8 +324,8 @@ fn postgres_values_stay_kept() {
     refused("row oracle", x(format!("DELETE FROM {s}.users WHERE users::text LIKE '%h%' AND id = 99")), "whole rows");
     refused("unfollowed", x(format!("UPDATE {s}.users SET name = substring(password_hash FROM 1 FOR 30) WHERE id = 1")), "hidden");
     refused("INSERT … TABLE", x(format!("INSERT INTO {s}.notes TABLE {s}.notes")), "TABLE");
-    refused("INSERT … SELECT masked", x(format!("INSERT INTO {s}.notes (id, body) SELECT 10, cpf FROM {s}.customers")), MASKED);
-    refused("INSERT … VALUES masked", x(format!("INSERT INTO {s}.notes (id, body) VALUES (11, (SELECT cpf FROM {s}.customers LIMIT 1))")), MASKED);
+    refused("INSERT … SELECT masked", x(format!("INSERT INTO {s}.notes (id, body) SELECT 10, tax_id FROM {s}.customers")), MASKED);
+    refused("INSERT … VALUES masked", x(format!("INSERT INTO {s}.notes (id, body) VALUES (11, (SELECT tax_id FROM {s}.customers LIMIT 1))")), MASKED);
     let r = e.admin("run_query", with("pgadmin", json!({"sql": format!("SELECT (SELECT count(*) FROM {s}.notes), (SELECT name FROM {s}.users)")})));
     assert_eq!(r["rows"][0], json!([0, "Ana"]), "nothing was copied");
 
@@ -440,12 +440,12 @@ fn mongodb_values_stay_kept() {
     }
     let s = format!("mcp_paths_{}", std::process::id());
     let rules = format!(
-        "mcp = \"write\"\n[connection.mcp_rules]\nview = \"masked\"\nsensitive = [{{ col = \"customers.email\", how = \"partial\" }}, {{ col = \"customers.cpf\", how = \"hash\" }}]\n[connection.mcp_rules.visible]\nitems = [{{ name = \"{s}.payments\", kind = \"table\" }}, {{ name = \"users.ssn\", kind = \"column\" }}]\n"
+        "mcp = \"write\"\n[connection.mcp_rules]\nview = \"masked\"\nsensitive = [{{ col = \"customers.email\", how = \"partial\" }}, {{ col = \"customers.tax_id\", how = \"hash\" }}]\n[connection.mcp_rules.visible]\nitems = [{{ name = \"{s}.payments\", kind = \"table\" }}, {{ name = \"users.ssn\", kind = \"column\" }}]\n"
     );
     let e = env(&[conn("mgadmin", MG, "mongodb", "root", &s, "mcp = \"full\""), conn("mg", MG, "mongodb", "root", &s, rules)], "", None);
     let a = |q: &str| e.admin("nosql_execute", with("mgadmin", json!({"query": q})));
     a("db.users.insertOne({_id: 1, name: \"Ana\", ssn: \"ssn-secret-1\", kids: [{ssn: \"kid-secret\"}]})");
-    a("db.customers.insertOne({_id: 1, email: \"zed-secret@acme.com\", cpf: \"cpf-secret-9\", city: \"Recife\"})");
+    a("db.customers.insertOne({_id: 1, email: \"zed-secret@acme.com\", tax_id: \"taxid-secret-9\", city: \"Recife\"})");
     a("db.payments.insertOne({_id: 1, card: \"card-secret\"})");
     a("db.orders.insertOne({_id: 1, uid: 1, cid: 1, pid: 1})");
     a("db.createView(\"uview\", \"users\", [{$project: {s: \"$ssn\"}}])");
@@ -481,18 +481,18 @@ fn mongodb_values_stay_kept() {
         ("db.users.aggregate([{$project: {x: {$getField: {$concat: [\"s\", \"sn\"]}}}}])", "$getField"),
         ("db.customers.aggregate([{$project: {e: {$getField: {$concat: [\"c\", \"pf\"]}}}}])", "$getField"),
         ("db.users.find({$where: \"this['s'+'sn'] == 'x'\"})", "$where"),
-        ("db.customers.find({}, {e: \"$cpf\"})", MASKED),
-        ("db.customers.find({$expr: {$eq: [{$toInt: \"$cpf\"}, 1]}})", MASKED),
-        ("db.customers.distinct(\"cpf\")", MASKED),
+        ("db.customers.find({}, {e: \"$tax_id\"})", MASKED),
+        ("db.customers.find({$expr: {$eq: [{$toInt: \"$tax_id\"}, 1]}})", MASKED),
+        ("db.customers.distinct(\"tax_id\")", MASKED),
         ("db.uview.find({})", "view that reads users"),
         ("db.vv.find({})", "view that reads users"),
         ("db.orders.aggregate([{$lookup: {from: \"uview\", localField: \"uid\", foreignField: \"_id\", as: \"u\"}}])", "view that reads users"),
     ] {
         refused(t, q(t), want);
     }
-    let r = q("db.customers.find({cpf: \"x\"})").unwrap();
+    let r = q("db.customers.find({tax_id: \"x\"})").unwrap();
     clean("find", &r);
-    let r = q("db.customers.find({city: \"Recife\"}, {email: 1, cpf: 1})").unwrap();
+    let r = q("db.customers.find({city: \"Recife\"}, {email: 1, tax_id: 1})").unwrap();
     clean("find", &r);
     assert_eq!(r["documents"][0]["email"], "z•••@acme.com", "{r}");
     clean("users", &q("db.users.find({})").unwrap());
@@ -597,8 +597,8 @@ fn redis_values_stay_kept() {
 fn user_tools_follow_the_rules() {
     let tools = "[[tool]]\nname = \"all_users\"\ndescription = \"d\"\nconnection = \"pp\"\nsql = \"SELECT * FROM {s}.users\"\n\n\
                  [[tool]]\nname = \"hashes\"\ndescription = \"d\"\nconnection = \"pp\"\nsql = \"SELECT password_hash FROM {s}.users\"\n\n\
-                 [[tool]]\nname = \"cpfs\"\ndescription = \"d\"\nconnection = \"pp\"\nsql = \"SELECT id, cpf FROM {s}.customers\"\n\n\
-                 [[tool]]\nname = \"renamed\"\ndescription = \"d\"\nconnection = \"pp\"\nsql = \"SELECT upper(cpf) AS c FROM {s}.customers\"\n";
+                 [[tool]]\nname = \"tax_ids\"\ndescription = \"d\"\nconnection = \"pp\"\nsql = \"SELECT id, tax_id FROM {s}.customers\"\n\n\
+                 [[tool]]\nname = \"renamed\"\ndescription = \"d\"\nconnection = \"pp\"\nsql = \"SELECT upper(tax_id) AS c FROM {s}.customers\"\n";
     // Statements are read in their connection's dialect when the tools load.
     let d = |c: &str| match c {
         "my" => Some(dataman_core::Dialect::MySql),
@@ -618,22 +618,22 @@ fn user_tools_follow_the_rules() {
     }
     let s = format!("mcp_tools_{}", std::process::id());
     let rules = format!(
-        "[connection.mcp_rules]\nview = \"masked\"\nsensitive = [{{ col = \"*cpf*\", how = \"hash\" }}]\n[connection.mcp_rules.visible]\nitems = [{{ name = \"users.password_hash\", kind = \"column\" }}]\n"
+        "[connection.mcp_rules]\nview = \"masked\"\nsensitive = [{{ col = \"*tax_id*\", how = \"hash\" }}]\n[connection.mcp_rules.visible]\nitems = [{{ name = \"users.password_hash\", kind = \"column\" }}]\n"
     );
     let e = env(&[conn("pgadmin", PG, "", "postgres", "dataman", "mcp = \"full\""), conn("pp", PG, "", "postgres", "dataman", rules)], "", Some(&tools.replace("{s}", &s)));
     e.admin(
         "execute",
         with("pgadmin", json!({"sql": format!(
-            "CREATE SCHEMA {s}; CREATE TABLE {s}.users (id int, name text, password_hash text); CREATE TABLE {s}.customers (id int, cpf text); \
-             INSERT INTO {s}.users VALUES (1, 'Ana', 'hash-secret-1'); INSERT INTO {s}.customers VALUES (1, 'cpf-secret-9')"
+            "CREATE SCHEMA {s}; CREATE TABLE {s}.users (id int, name text, password_hash text); CREATE TABLE {s}.customers (id int, tax_id text); \
+             INSERT INTO {s}.users VALUES (1, 'Ana', 'hash-secret-1'); INSERT INTO {s}.customers VALUES (1, 'taxid-secret-9')"
         )})),
     );
     let r = e.ok("all_users", json!({}));
     clean("all_users", &r);
     assert!(!r.to_string().contains("password_hash") && r["narrowed"].is_string(), "{r}");
     refused("hashes", e.call("hashes", json!({})), "is hidden from agents");
-    let r = e.ok("cpfs", json!({}));
-    clean("cpfs", &r);
+    let r = e.ok("tax_ids", json!({}));
+    clean("tax_ids", &r);
     assert!(r["rows"][0][1].as_str().unwrap().starts_with("‹h:"), "{r}");
     refused("renamed", e.call("renamed", json!({})), MASKED);
     e.admin("execute", with("pgadmin", json!({"sql": format!("DROP SCHEMA {s} CASCADE")})));
@@ -737,28 +737,29 @@ fn rules_have_one_precedence() {
     let c = dataman_core::agent_sql::check("SELECT * FROM users", false, &cx).unwrap();
     assert!(!c.sql.contains("secret,") && c.sql.contains("(SELECT id FROM public.users)"), "{}", c.sql);
 
-    // Sensitive types: a connection's switch wins over All connections; a value matched by a
-    // built-in and a custom type gets the earliest, then longest, match, and on a tie the
-    // built-in's mask.
+    // Sensitive types: one list for every connection; a value matched by a built-in and a
+    // custom type gets the earliest, then longest, match, and on a tie the built-in's mask.
     let key = HashKey::fixed(b"k");
     let mut global = TypeSettings::default();
     global.custom.push(CustomType::new("Acme mail", r"[a-z]+@acme\.com", Mask::Hidden));
-    let id = global.custom[0].id.clone();
     let scrub = |t: &Types, s: &str| t.scrub(s, &key, &mut Default::default()).into_owned();
-    let all = Types::new(&global, &Default::default());
+    let all = Types::new(&global);
     assert_eq!(scrub(&all, "mail ana@acme.com"), "mail a•••@acme.com", "the built-in e-mail wins the tie");
     assert_eq!(scrub(&all, "mail x.ana@acme.com"), "mail x•••@acme.com", "the longer match wins");
-    let off = Types::new(&global, &[("email".to_string(), false)].into());
-    assert_eq!(scrub(&off, "mail ana@acme.com"), "mail ‹acme mail›", "e-mail switched off here, the custom type stays");
-    let none = Types::new(&global, &[("email".to_string(), false), (id.clone(), false)].into());
-    assert_eq!(scrub(&none, "mail ana@acme.com"), "mail ana@acme.com");
+    let mut off = global.clone();
+    off.set_builtin("email", Some(false), None);
+    assert_eq!(scrub(&Types::new(&off), "mail ana@acme.com"), "mail ‹acme mail›", "e-mail switched off, the custom type stays");
+    off.custom[0].on = false;
+    assert_eq!(scrub(&Types::new(&off), "mail ana@acme.com"), "mail ana@acme.com");
     let mut quiet = global.clone();
     quiet.custom[0].on = false;
-    assert_eq!(scrub(&Types::new(&quiet, &Default::default()), "mail ana@acme.com"), "mail a•••@acme.com");
-    assert_eq!(scrub(&Types::new(&quiet, &[(id, true), ("email".to_string(), false)].into()), "mail bob@acme.org ana@acme.com"), "mail bob@acme.org ‹acme mail›", "on here though off for All connections");
+    assert_eq!(scrub(&Types::new(&quiet), "mail ana@acme.com"), "mail a•••@acme.com");
+    // A connection saved with its own switches (an older version's) loads, and they do nothing.
+    let old: dataman_core::privacy::AgentRules = toml::from_str("[types]\nemail = false\n").unwrap();
+    assert!(old.is_default(), "{old:?}");
 }
 
-/// Custom patterns: what cannot be used is refused when saved, and refuses reads where it is on;
+/// Custom patterns: what cannot be used is refused when saved, and refuses reads while it is on;
 /// a pattern cannot hang a reply.
 #[test]
 fn custom_patterns_at_their_edges() {
@@ -778,7 +779,7 @@ fn custom_patterns_at_their_edges() {
     let mut slow = TypeSettings::default();
     slow.custom.push(CustomType::new("Slow", "(a+)+$x", Mask::Hidden));
     slow.custom.push(CustomType::new("Slow2", "(a|aa)+b", Mask::Hidden));
-    let t = Types::new(&slow, &Default::default());
+    let t = Types::new(&slow);
     assert!(t.broken.is_empty());
     let mut v = json!({"cell": "a".repeat(200_000)});
     let started = std::time::Instant::now();
@@ -787,9 +788,9 @@ fn custom_patterns_at_their_edges() {
     // A broken pattern switched on refuses reads; one switched off does not.
     let mut broken = TypeSettings::default();
     broken.custom.push(CustomType::new("Broken", "(", Mask::Hidden));
-    assert_eq!(Types::new(&broken, &Default::default()).broken, ["Broken"]);
+    assert_eq!(Types::new(&broken).broken, ["Broken"]);
     broken.custom[0].on = false;
-    assert!(Types::new(&broken, &Default::default()).broken.is_empty());
+    assert!(Types::new(&broken).broken.is_empty());
 }
 
 /// Rules and types are read again when the user changes them, while the server runs.
@@ -833,12 +834,12 @@ fn audit_records_each_call() {
         return;
     }
     let s = format!("mcp_audit_{}", std::process::id());
-    let rules = "mcp = \"full\"\n[connection.mcp_rules]\nview = \"masked\"\nsensitive = [{ col = \"*cpf*\", how = \"hash\" }]\n";
+    let rules = "mcp = \"full\"\n[connection.mcp_rules]\nview = \"masked\"\nsensitive = [{ col = \"*tax_id*\", how = \"hash\" }]\n";
     let e = env(&[conn("pgadmin", PG, "", "postgres", "dataman", "mcp = \"full\""), conn("pg", PG, "", "postgres", "dataman", rules)], "", None);
-    e.admin("execute", with("pgadmin", json!({"sql": format!("CREATE SCHEMA {s}; CREATE TABLE {s}.c (id int PRIMARY KEY, cpf text UNIQUE); INSERT INTO {s}.c VALUES (1, 'cpf-secret-9')")})));
+    e.admin("execute", with("pgadmin", json!({"sql": format!("CREATE SCHEMA {s}; CREATE TABLE {s}.c (id int PRIMARY KEY, tax_id text UNIQUE); INSERT INTO {s}.c VALUES (1, 'taxid-secret-9')")})));
     let client = "Agent\u{202E}x";
-    let _ = e.call_as(client, "run_query", with("pg", json!({"sql": format!("SELECT id, cpf FROM {s}.c")})));
-    let _ = e.call_as(client, "run_query", with("pg", json!({"sql": format!("SELECT upper(cpf) FROM {s}.c")})));
+    let _ = e.call_as(client, "run_query", with("pg", json!({"sql": format!("SELECT id, tax_id FROM {s}.c")})));
+    let _ = e.call_as(client, "run_query", with("pg", json!({"sql": format!("SELECT upper(tax_id) FROM {s}.c")})));
     let _ = e.call_as(client, "run_query", with("pg", json!({"sql": "SELECT 1/0"})));
     let _ = e.call_as(client, "run_query", json!({"sql": "SELECT 1"}));
     // A duplicate key: the error quotes the value; the log keeps it cleaned.
@@ -852,7 +853,7 @@ fn audit_records_each_call() {
         [("run_query", "ok"), ("run_query", "refused"), ("run_query", "error"), ("run_query", "invalid"), ("execute", "error"), ("execute", "refused")].map(|(a, b)| (a.to_string(), b.to_string())),
         "{mine:?}"
     );
-    assert_eq!(mine[0]["seen"]["masked"][0][0], "cpf", "{}", mine[0]);
+    assert_eq!(mine[0]["seen"]["masked"][0][0], "tax_id", "{}", mine[0]);
     assert_eq!(mine[5]["approval"]["decision"], "denied", "{}", mine[5]);
     assert!(mine[1]["error"].as_str().unwrap().contains(MASKED));
     assert!(mine[4]["error"].as_str().unwrap().contains("‹value›"), "{}", mine[4]);

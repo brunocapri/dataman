@@ -177,7 +177,6 @@ pub(crate) enum Act {
     When(When),
     SensMask(usize, Mask),
     TypeMask(String, Mask),
-    Scope(Option<String>),
     Validator(Validator),
     CopyQuery(usize),
     OpenTab(usize),
@@ -228,9 +227,7 @@ pub struct AgentsPage {
     pub(crate) sens_input: Entity<TextInput>,
     pub(crate) vis_input: Entity<TextInput>,
     pub(crate) scan_note: Option<String>,
-    pub(crate) scope: Option<String>,
     pub(crate) editor: TypeEditor,
-    pub(crate) name_hint: Option<String>,
     pub(crate) key: HashKey,
     pub(crate) suggest: crate::agents_suggest::Suggest,
     /// What the selected call's agent received, in the results grid; zoomed over the whole
@@ -556,9 +553,7 @@ impl AgentsPage {
             sens_input,
             vis_input,
             scan_note: None,
-            scope: None,
             editor: TypeEditor { editing: None, name, regex, mask: Mask::Hidden, more: false, validator: Validator::None, ignore_case: false, keep: 4, samples: Vec::new(), sample, confirm_delete: false },
-            name_hint: None,
             key,
             suggest: Default::default(),
             received,
@@ -749,10 +744,6 @@ impl AgentsPage {
                 }
             }
             Act::TypeMask(id, m) => self.set_type_mask(&id, m, cx),
-            Act::Scope(s) => {
-                self.scope = s;
-                self.name_hint = None;
-            }
             Act::Validator(v) => self.editor.validator = v,
             Act::CopyQuery(i) => {
                 if let Some(s) = self.entries.get(i).and_then(|e| e.statement()) {
@@ -816,7 +807,7 @@ impl AgentsPage {
             }
             Page::Mcp => return false,
             Page::Types => {
-                let len = self.type_rows(cx).len();
+                let len = self.type_rows().len();
                 let Some(n) = next(len, self.type_sel) else { return true };
                 self.type_sel = Some(n);
                 self.types_scroll.scroll_to_item(n + self.types_offset);
@@ -832,7 +823,7 @@ impl AgentsPage {
                 Some(i) => self.open_entry(i, cx),
                 None => return false,
             },
-            Page::Types => match self.type_sel.and_then(|k| self.type_rows(cx).get(k).map(|r| r.id.clone())) {
+            Page::Types => match self.type_sel.and_then(|k| self.type_rows().get(k).map(|r| r.id.clone())) {
                 Some(id) => self.flip_type(&id, cx),
                 None => return false,
             },

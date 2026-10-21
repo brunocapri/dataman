@@ -66,7 +66,7 @@ fn env(s: &str, settings: &str) -> Env {
     let rd = "engine = \"redis\"\nsave_password = true\n";
     let pg_rules = format!(
         "mcp = \"write\"\n[connection.mcp_rules]\nview = \"masked\"\nstructure = false\n\
-         sensitive = [{{ col = \"customers.email\", how = \"partial\" }}, {{ col = \"*cpf*\", how = \"hash\" }}, {{ col = \"customers.city\", how = \"hidden\", on = false }}]\n\
+         sensitive = [{{ col = \"customers.email\", how = \"partial\" }}, {{ col = \"*tax_id*\", how = \"hash\" }}, {{ col = \"customers.city\", how = \"hidden\", on = false }}]\n\
          types = {{ phone = false }}\n\
          [connection.mcp_rules.visible]\nitems = [{{ name = \"{s}.payments\", kind = \"table\" }}, {{ name = \"users.password_hash\", kind = \"column\" }}]\n"
     );
@@ -250,11 +250,11 @@ fn postgres_privacy() {
         a(json!({"sql": format!(
             "CREATE SCHEMA {s}; \
              CREATE TABLE {s}.users (id int PRIMARY KEY, name text, email text UNIQUE, password_hash text); \
-             CREATE TABLE {s}.customers (id int PRIMARY KEY, name text, email text, cpf text, city text, phone text); \
+             CREATE TABLE {s}.customers (id int PRIMARY KEY, name text, email text, tax_id text, city text, phone text); \
              CREATE TABLE {s}.payments (id int PRIMARY KEY, card text); \
              CREATE VIEW {s}.everything AS SELECT * FROM {s}.customers; \
              INSERT INTO {s}.users VALUES (1, 'Ana', 'ana@acme.com', '$2b$12$abcdefghijklmnopqrstuv'); \
-             INSERT INTO {s}.customers VALUES (1, 'Ana', 'ana@acme.com', '123.456.789-09', 'Recife', '(81) 98765-4321'); \
+             INSERT INTO {s}.customers VALUES (1, 'Ana', 'ana@acme.com', 'taxid-secret-3', 'Recife', '(555) 123-4567'); \
              INSERT INTO {s}.payments VALUES (1, '4242 4242 4242 4242')"
         )})),
     );
@@ -274,18 +274,18 @@ fn postgres_privacy() {
     assert!(q("SELECT * FROM pg_stat_activity".into()).unwrap_err().contains("server activity"));
 
     // Masked data: sensitive columns, and types inside any value.
-    let r = q(format!("SELECT id, name, email, cpf, city, phone FROM {s}.customers WHERE email LIKE 'ana%'")).unwrap();
+    let r = q(format!("SELECT id, name, email, tax_id, city, phone FROM {s}.customers WHERE email LIKE 'ana%'")).unwrap();
     let row = &r["rows"][0];
     assert_eq!(row[2], "a•••@acme.com");
     assert!(row[3].as_str().unwrap().starts_with("‹h:"), "{row}");
     assert_eq!(row[4], "Recife", "unchecked columns are not masked");
-    assert_eq!(row[5], "(81) 98765-4321", "phone is switched off on this connection");
+    assert_eq!(row[5], "(•••) •••-4567", "phone is masked in any value: the connection's old switch is gone");
     assert!(r["masked_columns"].to_string().contains("email (partial)"));
     let r = q(format!("SELECT name || ' <' || 'ana@acme.com' || '>' AS x FROM {s}.customers")).unwrap();
     assert_eq!(r["rows"][0][0], "Ana <a•••@acme.com>", "e-mails are masked inside any value");
     assert!(q(format!("SELECT upper(email) FROM {s}.customers")).unwrap_err().contains("masked for agents"));
     assert!(q(format!("SELECT email AS e FROM {s}.customers")).unwrap_err().contains("masked for agents"));
-    assert!(q(format!("SELECT cpf, count(*) FROM {s}.customers GROUP BY cpf")).unwrap_err().contains("masked for agents"));
+    assert!(q(format!("SELECT tax_id, count(*) FROM {s}.customers GROUP BY tax_id")).unwrap_err().contains("masked for agents"));
     let r = e.ok("sample_rows", p(json!({"table": format!("{s}.customers")})));
     assert_eq!(r["rows"][0][2], "a•••@acme.com");
 
@@ -347,16 +347,16 @@ fn postgres_views_long_cells_and_returning() {
         a(json!({"sql": format!(
             "CREATE SCHEMA {s}; \
              CREATE TABLE {s}.users (id int PRIMARY KEY, name text, password_hash text); \
-             CREATE TABLE {s}.customers (id int PRIMARY KEY, email text, cpf text, city text); \
+             CREATE TABLE {s}.customers (id int PRIMARY KEY, email text, tax_id text, city text); \
              CREATE TABLE {s}.notes (id int PRIMARY KEY, body text); \
              INSERT INTO {s}.users VALUES (1, 'Ana', 'secret-hash-1'); \
-             INSERT INTO {s}.customers VALUES (1, '{long_email}', '{}', 'Recife'), (2, 'bo@acme.com', 'not-a-cpf-7', 'Natal'); \
+             INSERT INTO {s}.customers VALUES (1, '{long_email}', '{}', 'Recife'), (2, 'bo@acme.com', 'not-a-taxid-7', 'Natal'); \
              INSERT INTO {s}.notes VALUES (1, '{card_at_cut}'); \
              CREATE VIEW {s}.v_renamed AS SELECT id, password_hash AS h FROM {s}.users; \
              CREATE VIEW {s}.v_star AS SELECT * FROM {s}.users; \
              CREATE VIEW {s}.v_of_v AS SELECT id, h FROM {s}.v_renamed; \
              CREATE MATERIALIZED VIEW {s}.mv AS SELECT * FROM {s}.users; \
-             CREATE VIEW {s}.v_masked AS SELECT id, cpf AS c FROM {s}.customers; \
+             CREATE VIEW {s}.v_masked AS SELECT id, tax_id AS c FROM {s}.customers; \
              CREATE VIEW {s}.v_ok AS SELECT id, body FROM {s}.notes",
             "z".repeat(5000)
         )})),
@@ -386,21 +386,21 @@ fn postgres_views_long_cells_and_returning() {
     let cell = body["rows"][0][0].as_str().unwrap().to_string();
     assert!(!cell.contains("4242 4242") && cell.contains("•••• 4242"), "the card is masked whole, then cut: …{}", &cell[cell.len().saturating_sub(40)..]);
     assert!(cell.ends_with('…') && cell.chars().count() == 2001, "still cut to the agent's size: {}", cell.chars().count());
-    let r = q(format!("SELECT id, email, cpf FROM {s}.customers ORDER BY id")).unwrap();
+    let r = q(format!("SELECT id, email, tax_id FROM {s}.customers ORDER BY id")).unwrap();
     assert_eq!(r["rows"][0][1], "a•••@acme.com", "the e-mail is masked whole, not its first 2000 characters");
     assert_eq!(r["rows"][0][2], dataman_core::privacy::HIDDEN, "longer than is read: hidden whole");
     assert!(r["rows"][1][2].as_str().unwrap().starts_with("‹h:"), "{}", r["rows"][1][2]);
 
     // RETURNING rows are masked like a read.
-    match e.call("execute", p(json!({"sql": format!("UPDATE {s}.customers SET city = 'Olinda' WHERE id = 2 RETURNING id, cpf")}))) {
+    match e.call("execute", p(json!({"sql": format!("UPDATE {s}.customers SET city = 'Olinda' WHERE id = 2 RETURNING id, tax_id")}))) {
         Ok(v) => {
             let got = v["returning"]["rows"][0][1].as_str().unwrap_or_default().to_string();
-            assert!(got != "not-a-cpf-7" && got.starts_with("‹h:"), "RETURNING shows the masked value: {v}");
+            assert!(got != "not-a-taxid-7" && got.starts_with("‹h:"), "RETURNING shows the masked value: {v}");
         }
-        Err(e) => assert!(!e.contains("not-a-cpf-7"), "{e}"),
+        Err(e) => assert!(!e.contains("not-a-taxid-7"), "{e}"),
     }
     let agent: Vec<String> = e.audit().into_iter().filter(|x| x["connection"] == "prod-pg").map(|x| x.to_string()).collect();
-    assert!(!agent.is_empty() && agent.iter().all(|l| !l.contains("secret-hash-1") && !l.contains("not-a-cpf-7")), "nothing kept reaches the audit log: {agent:?}");
+    assert!(!agent.is_empty() && agent.iter().all(|l| !l.contains("secret-hash-1") && !l.contains("not-a-taxid-7")), "nothing kept reaches the audit log: {agent:?}");
 
     e.admin("execute", a(json!({"sql": format!("DROP SCHEMA {s} CASCADE")})));
     e.done();

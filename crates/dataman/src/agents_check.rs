@@ -2,7 +2,6 @@
 //! segments, checkboxes, fields and menus), with what each writes read back from the saved
 //! connection and settings. The `agents-*` demo stages show its pages for screenshots.
 
-use std::collections::BTreeMap;
 
 use dataman_core::config::Engine;
 use dataman_core::privacy::{AgentView, CustomType, ItemKind, Mask, ReadFrom, SensitiveCol, VisibleItem};
@@ -28,7 +27,7 @@ fn seed_profiles(core: &Core) {
     let mut pg = profile("prod-pg", Engine::Postgres, Environment::Production, McpAccess::Write);
     let r = &mut pg.mcp_rules;
     r.view = AgentView::Masked;
-    for (col, how, on) in [("users.email", Mask::Partial, true), ("customers.cpf", Mask::Hash, true), ("customers.doc", Mask::Hash, true), ("customers.phone", Mask::Partial, true), ("orders.notes", Mask::Hidden, false)] {
+    for (col, how, on) in [("users.email", Mask::Partial, true), ("customers.ssn", Mask::Hash, true), ("customers.doc", Mask::Hash, true), ("customers.phone", Mask::Partial, true), ("orders.notes", Mask::Hidden, false)] {
         r.sensitive.push(SensitiveCol { col: col.into(), how, on });
     }
     for (name, kind) in [("public.payments", ItemKind::Table), ("audit.*", ItemKind::Schema), ("users.password_hash", ItemKind::Column), ("users.mfa_secret", ItemKind::Column)] {
@@ -37,7 +36,6 @@ fn seed_profiles(core: &Core) {
     r.structure = false;
     r.activity = false;
     (r.time_limit_s, r.read_rows, r.read_bytes) = (Some(30), Some(100), Some(64 * 1024));
-    r.types = BTreeMap::from([("phone".to_string(), false), ("t_cust01".to_string(), true)]);
     pg.mcp_row_limit = Some(100);
     pg.mcp_allowed = vec!["UPDATE orders SET status = ? WHERE id = ?".into(), "DELETE FROM sessions WHERE expires_at < now()".into()];
     let mut billing = profile("billing-mssql", Engine::SqlServer, Environment::Production, McpAccess::Read);
@@ -86,7 +84,7 @@ fn seed_audit(core: &Core) {
     type Row = (i64, &'static str, &'static str, &'static str, &'static str, Option<u64>, f64, Outcome, Option<&'static str>, Option<ApprovalNote>, Option<Seen>);
     let rows: Vec<Row> = vec![
         (2400, "Cursor", "search-es", "nosql_query", "GET _cat/indices", Some(6), 5., Outcome::Ok, None, None, None),
-        (1980, "Claude Code", "orders-mongo", "nosql_query", "db.customers.find({ city: \"Recife\" }).limit(20)", Some(20), 8., Outcome::Ok, None, None, None),
+        (1980, "Claude Code", "orders-mongo", "nosql_query", "db.customers.find({ city: \"Austin\" }).limit(20)", Some(20), 8., Outcome::Ok, None, None, None),
         (1614, "Codex", "cache-redis", "nosql_query", "KEYS *", None, 0.4, Outcome::Refused, Some("refused: KEYS never runs for agents"), None, None),
         (1530, "Codex", "cache-redis", "nosql_query", "SCAN 0 MATCH cart:* COUNT 100", Some(100), 3., Outcome::Ok, None, None, None),
         (1140, "Cursor", "analytics-mysql", "run_query", "SELECT * FROM events ORDER BY id DESC LIMIT 100", Some(100), 64., Outcome::Ok, None, None, seen(Some(9), &[], &[])),
@@ -94,7 +92,7 @@ fn seed_audit(core: &Core) {
         (360, "Cursor", "search-es", "nosql_query", "GET products/_search {\"query\":{\"match\":{\"name\":\"dock\"}}}", Some(20), 17., Outcome::Ok, None, None, None),
         (240, "Cursor", "analytics-mysql", "run_query", "SELECT date(created_at), count(*) FROM events GROUP BY 1", Some(30), 210., Outcome::Ok, None, None, seen(Some(2), &[], &[])),
         (113, "Claude Code", "orders-mongo", "nosql_query", "db.orders.aggregate([{ $match: { status: \"paid\" } }, { $group: { _id: \"$customer\", total: { $sum: \"$total\" } } }])", Some(500), 91., Outcome::Ok, None, None, seen(None, &[("customer.email", Mask::Partial)], &[])),
-        (77, "Claude Code", "prod-pg", "run_query", "SELECT id, name, email, cpf,\n       city, total\n  FROM customers\n WHERE city = 'Recife'\n LIMIT 40;", Some(40), 41., Outcome::Ok, None, None, seen(Some(6), &[("email", Mask::Partial), ("cpf", Mask::Hash)], &[("E-mail", 3)])),
+        (77, "Claude Code", "prod-pg", "run_query", "SELECT id, name, email, ssn,\n       city, total\n  FROM customers\n WHERE city = 'Austin'\n LIMIT 40;", Some(40), 41., Outcome::Ok, None, None, seen(Some(6), &[("email", Mask::Partial), ("ssn", Mask::Hash)], &[("E-mail", 3)])),
         (42, "Claude Code", "prod-pg", "execute", "INSERT INTO users (email) VALUES ($1)", None, 6., Outcome::Error, Some("23505 duplicate key value violates unique constraint \"users_email_key\" · Key (email)=(‹value›) already exists"), None, None),
         (24, "Claude Code", "prod-pg", "run_query", "SELECT upper(password) FROM users LIMIT 5", None, 0.3, Outcome::Refused, Some("refused: users.password is hidden from agents on prod-pg"), None, None),
         (12, "Claude Code", "prod-pg", "execute", "UPDATE orders SET status = $1 WHERE id = $2", Some(1), 12., Outcome::Ok, None, note(Decision::Approved, &["production"]), None),
@@ -123,7 +121,7 @@ fn seed_audit(core: &Core) {
             draft: false,
             favorite: None,
             allowed_by: None,
-            rewritten: (sql.starts_with("SELECT id, name, email")).then(|| "SELECT id, name, email, cpf, city, total FROM (SELECT id, name, email, cpf, city, total, created_at FROM public.customers) customers WHERE city = ? LIMIT ?".into()),
+            rewritten: (sql.starts_with("SELECT id, name, email")).then(|| "SELECT id, name, email, ssn, city, total FROM (SELECT id, name, email, ssn, city, total, created_at FROM public.customers) customers WHERE city = ? LIMIT ?".into()),
             seen,
         });
     }
@@ -134,16 +132,16 @@ fn demo_reply(ago: i64) -> Option<serde_json::Value> {
     use serde_json::json;
     Some(match ago {
         77 => json!({
-            "columns": [["id", "int4"], ["name", "text"], ["email", "text"], ["cpf", "text"], ["city", "text"], ["total", "numeric"]],
+            "columns": [["id", "int4"], ["name", "text"], ["email", "text"], ["ssn", "text"], ["city", "text"], ["total", "numeric"]],
             "rows": [
-                [1042, "Ana Souza", "a•••@acme.com", "‹h:7Q2KX9RM4A›", "Recife", "129.90"],
-                [1043, "Bruno Lima", "b•••@mail.com", "‹h:B4DN6WTE2Q›", "Recife", "88.00"],
-                [1051, "Carla Dias", "c•••@acme.com", "‹h:K3P9QX2M7A›", "Recife", "412.35"],
-                [1067, "Davi Rocha", "d•••@corp.io", "‹h:Q4M8ZP1R6T›", "Recife", "57.10"],
-                [1070, "Elisa Melo", "e•••@acme.com", "‹h:H2V7NC5K9W›", "Recife", "230.00"],
-                [1088, "Fábio Reis", "f•••@mail.com", "‹h:M6T3XQ8B1D›", "Recife", "19.99"]
+                [1042, "Ana Souza", "a•••@acme.com", "‹h:7Q2KX9RM4A›", "Austin", "129.90"],
+                [1043, "Bruno Lima", "b•••@mail.com", "‹h:B4DN6WTE2Q›", "Austin", "88.00"],
+                [1051, "Carla Dias", "c•••@acme.com", "‹h:K3P9QX2M7A›", "Austin", "412.35"],
+                [1067, "Davi Rocha", "d•••@corp.io", "‹h:Q4M8ZP1R6T›", "Austin", "57.10"],
+                [1070, "Elisa Melo", "e•••@acme.com", "‹h:H2V7NC5K9W›", "Austin", "230.00"],
+                [1088, "Fábio Reis", "f•••@mail.com", "‹h:M6T3XQ8B1D›", "Austin", "19.99"]
             ],
-            "row_count": 40, "masked_columns": ["email (partial)", "cpf (hash)"], "masked": {"E-mail": 3}, "ms": 41.0
+            "row_count": 40, "masked_columns": ["email (partial)", "ssn (hash)"], "masked": {"E-mail": 3}, "ms": 41.0
         }),
         113 => json!({"count": 3, "documents": [
             {"_id": "c-301", "total": 1820.5, "customer": {"name": "Ana Souza", "email": "a•••@acme.com"}},
@@ -201,14 +199,11 @@ pub fn demo(ws: &Entity<Workspace>, stage: &str, window: &mut gpui::Window, cx: 
                     a.detail_w = 5000.;
                 }
             }
-            if stage == "agents-types-conn" {
-                a.scope = id.clone();
-            }
             if page == Page::Types {
                 a.editor.name.update(cx, |i, cx| i.set_text("Customer code", cx));
                 a.editor.regex.update(cx, |i, cx| i.set_text(r"\bCUST-[0-9]{6}\b", cx));
                 a.editor.mask = Mask::Hash;
-                a.editor.samples = ["Pedido de CUST-004211 enviado", "merge CUST-000017 into CUST-000930", "ref CUST-42", "xCUST-123456"].map(String::from).to_vec();
+                a.editor.samples = ["Order CUST-004211 shipped", "merge CUST-000017 into CUST-000930", "ref CUST-42", "xCUST-123456"].map(String::from).to_vec();
             }
             cx.notify();
         });
@@ -621,19 +616,19 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     // Sensitive data.
     click_probe("agents-nav-types", cx);
     pause(cx, 100).await;
-    r.check("Sensitive data lists the built-in and custom types", cx.update(|_, cx| a.read(cx).type_rows(cx).len()).unwrap_or(0) == dataman_core::privacy::BUILTINS.len() + 2, "");
-    click_probe("agents-type-row-cpf", cx);
+    r.check("Sensitive data lists the built-in and custom types", cx.update(|_, cx| a.read(cx).type_rows().len()).unwrap_or(0) == dataman_core::privacy::BUILTINS.len() + 2, "");
+    click_probe("agents-type-row-card", cx);
     pause(cx, 50).await;
     key(cx, "down");
     pause(cx, 50).await;
     let tsel = cx.update(|_, cx| a.read(cx).type_sel).ok().flatten();
     key(cx, "enter");
     pause(cx, 50).await;
-    let flipped = core.settings.get().agent_types.global_on("cnpj");
+    let flipped = core.settings.get().agent_types.is_on("email");
     key(cx, "enter");
     pause(cx, 50).await;
-    let back = core.settings.get().agent_types.global_on("cnpj");
-    r.check("Sensitive data: ↓ moves to CNPJ, Enter switches it off and on", tsel == Some(1) && flipped == Some(false) && back == Some(true), format!("{tsel:?} {flipped:?} {back:?}"));
+    let back = core.settings.get().agent_types.is_on("email");
+    r.check("Sensitive data: ↓ moves to E-mail, Enter switches it off and on", tsel == Some(1) && flipped == Some(false) && back == Some(true), format!("{tsel:?} {flipped:?} {back:?}"));
     click_probe("agents-field-name", cx);
     typ(cx, "Order ref");
     click_probe("agents-field-regex", cx);
@@ -669,23 +664,18 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     r.check("look-around is refused with the editor's message", problem.as_deref() == Some("Look-around isn't supported."), format!("{problem:?}"));
     click_probe("agents-type-cancel", cx);
 
-    click_probe("agents-scope", cx);
-    pause(cx, 100).await;
-    let at = cx.update(|_, cx| a.read(cx).demo_menu_labels().iter().position(|l| *l == pg.name)).ok().flatten().unwrap_or(0);
-    click_probe(&format!("agents-scope:{at}"), cx);
-    pause(cx, 50).await;
+    // One list for every connection: no picker of connections, no reset, and a switch is global.
+    let ids: Vec<String> = cx.update(|_, cx| a.read(cx).type_rows().into_iter().map(|t| t.id).collect()).unwrap_or_default();
+    r.check("Sensitive data has no CPF or CNPJ, and starts with cards", ids.first().map(String::as_str) == Some("card") && !ids.iter().any(|i| i == "cpf" || i == "cnpj"), format!("{ids:?}"));
+    r.check("Sensitive data is one list: no connection picker, no Reset to global", probed("agents-scope", cx).is_none() && probed("agents-reset", cx).is_none(), "");
     click_probe("agents-type-switch-phone", cx);
     pause(cx, 50).await;
-    let types = rules(&core, &pg.id).types;
-    let row = cx.update(|_, cx| a.read(cx).type_rows(cx).into_iter().find(|t| t.id == "phone")).ok().flatten();
-    r.check(
-        "in a connection: Phone switched off there only, tagged changed here",
-        types.get("phone") == Some(&false) && row.as_ref().is_some_and(|t| !t.on && t.changed_here) && core.settings.get().agent_types.global_on("phone") == Some(true),
-        format!("{types:?}"),
-    );
-    click_probe("agents-reset", cx);
+    let off = core.settings.get().agent_types.is_on("phone") == Some(false);
+    click_probe("agents-type-switch-phone", cx);
     pause(cx, 50).await;
-    r.check("Reset to global clears the connection's switches", rules(&core, &pg.id).types.is_empty(), format!("{:?}", rules(&core, &pg.id).types));
+    r.check("Phone's switch turns it off and on for every connection", off && core.settings.get().agent_types.is_on("phone") == Some(true), "");
+    let tip = dataman_core::privacy::builtin("phone").map(|b| (b.rule, b.example)).unwrap_or_default();
+    r.check("Phone reads US numbers", tip.0.contains("(555) 123-4567") && tip.1.starts_with("(555) 123-4567"), format!("{tip:?}"));
 
     // MCP: the server's own page.
     click_probe("agents-nav-mcp", cx);

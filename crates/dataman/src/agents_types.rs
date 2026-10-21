@@ -1,53 +1,28 @@
 //! Agents › Sensitive data: the types recognized and masked inside any value an agent
-//! receives, for every connection (settings' `agent_types`), with each connection free to switch
-//! a type differently (`mcp_rules.types`). Masks and patterns stay global.
-
-use std::collections::BTreeMap;
+//! receives, one list for every connection (settings' `agent_types`).
 
 use dataman_core::privacy::{self, CustomType, Mask, TypeRow, Validator};
 use gpui::{AnyElement, App, ClickEvent, Context, Focusable, FontWeight, SharedString, StyledText, TextRun, Window, div, prelude::*};
 
 use crate::agents::{Act, AgentsPage, Tip, dropdown, field, qmark, seg, switch};
-use crate::assets::{Icon, icon};
 use crate::theme::{Theme, px};
 use crate::ui;
 
 impl AgentsPage {
-    fn overrides(&self, cx: &App) -> BTreeMap<String, bool> {
-        self.scope.as_ref().and_then(|id| self.store.read(cx).profile(id)).map(|p| p.mcp_rules.types.clone()).unwrap_or_default()
-    }
-
-    pub(crate) fn type_rows(&self, cx: &App) -> Vec<TypeRow> {
-        self.core.settings.get().agent_types.rows(&self.overrides(cx))
+    pub(crate) fn type_rows(&self) -> Vec<TypeRow> {
+        self.core.settings.get().agent_types.rows()
     }
 
     pub(crate) fn flip_type(&mut self, id: &str, cx: &mut Context<Self>) {
-        let types = self.core.settings.get().agent_types;
-        let Some(global) = types.global_on(id) else { return };
-        match self.scope.clone() {
-            None => {
-                let id = id.to_string();
-                self.edit_settings(|s| {
-                    if privacy::builtin(&id).is_some() {
-                        s.agent_types.set_builtin(&id, Some(!global), None);
-                    } else if let Some(c) = s.agent_types.custom.iter_mut().find(|c| c.id == id) {
-                        c.on = !c.on;
-                    }
-                }, cx);
+        let Some(on) = self.core.settings.get().agent_types.is_on(id) else { return };
+        let id = id.to_string();
+        self.edit_settings(|s| {
+            if privacy::builtin(&id).is_some() {
+                s.agent_types.set_builtin(&id, Some(!on), None);
+            } else if let Some(c) = s.agent_types.custom.iter_mut().find(|c| c.id == id) {
+                c.on = !c.on;
             }
-            Some(conn) => {
-                let now = self.overrides(cx).get(id).copied().unwrap_or(global);
-                let id = id.to_string();
-                // Only what differs from All connections is kept on the connection.
-                self.edit_conn(&conn, |p| {
-                    if !now == global {
-                        p.mcp_rules.types.remove(&id);
-                    } else {
-                        p.mcp_rules.types.insert(id, !now);
-                    }
-                }, cx);
-            }
-        }
+        }, cx);
     }
 
     pub(crate) fn set_type_mask(&mut self, id: &str, m: Mask, cx: &mut Context<Self>) {
@@ -59,12 +34,6 @@ impl AgentsPage {
                 c.mask = m;
             }
         }, cx);
-    }
-
-    pub(crate) fn reset_to_global(&mut self, cx: &mut Context<Self>) {
-        if let Some(conn) = self.scope.clone() {
-            self.edit_conn(&conn, |p| p.mcp_rules.types.clear(), cx);
-        }
     }
 
     pub(crate) fn edit_type(&mut self, id: Option<&str>, cx: &mut Context<Self>) {
@@ -128,63 +97,19 @@ impl AgentsPage {
     pub(crate) fn delete_type(&mut self, cx: &mut Context<Self>) {
         let Some(id) = self.editor.editing.clone() else { return };
         self.edit_settings(|s| s.agent_types.custom.retain(|c| c.id != id), cx);
-        // Connections' switches for a deleted type go with it.
-        for p in self.profiles(cx).into_iter().filter(|p| p.mcp_rules.types.contains_key(&id)) {
-            let id = id.clone();
-            self.edit_conn(&p.id, |p| {
-                p.mcp_rules.types.remove(&id);
-            }, cx);
-        }
         self.edit_type(None, cx);
     }
 
     pub(crate) fn render_types(&mut self, t: &Theme, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        if self.scope.as_ref().is_some_and(|id| self.store.read(cx).profile(id).is_none()) {
-            self.scope = None;
-        }
-        let in_conn = self.scope.is_some();
-        let rows = self.type_rows(cx);
-        let scope_name = self.scope.as_ref().and_then(|id| self.store.read(cx).profile(id)).map(|p| (p.name.clone(), p.engine));
-        let mut scopes: Vec<(SharedString, bool, Act)> = vec![("All connections".into(), self.scope.is_none(), Act::Scope(None))];
-        scopes.extend(self.profiles(cx).into_iter().map(|p| (p.name.clone().into(), self.scope.as_deref() == Some(p.id.as_str()), Act::Scope(Some(p.id)))));
-        let hov = t.hov;
-        let picker = div().relative().child(self.anchor("agents-scope")).child(
-            div()
-                .children(ui::here(&"agents-scope".into()))
-                .id("agents-scope")
-                .h(px(28.))
-                .px(px(10.))
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(px(8.))
-                .border_1()
-                .border_color(t.line2)
-                .hover(move |s| s.bg(hov))
-                .children(scope_name.as_ref().and_then(|(_, e)| crate::assets::small_logo(*e, 14.)))
-                .child(scope_name.as_ref().map(|(n, _)| n.clone()).unwrap_or_else(|| "All connections".into()))
-                .child(icon(Icon::ChevronDown).size(px(10.)).text_color(t.tx3))
-                .on_click(cx.listener(move |v, _, _, cx| v.open_menu("agents-scope", 220., scopes.clone(), cx))),
-        );
-        let head = self.header(t, "Sensitive data").child(div().flex_1()).child(picker).when(in_conn, |d| {
-            d.child(
-                div()
-                    .children(ui::here(&"agents-reset".into()))
-                    .id("agents-reset")
-                    .text_size(px(11.5))
-                    .text_color(t.tx2)
-                    .hover(|s| s.opacity(0.75))
-                    .child("Reset to global")
-                    .on_click(cx.listener(|v, _, _, cx| v.reset_to_global(cx))),
-            )
-        });
+        let rows = self.type_rows();
+        let head = self.header(t, "Sensitive data");
         let broken: Vec<&TypeRow> = rows.iter().filter(|r| r.broken.is_some() && r.on).collect();
-        let notice = broken.first().map(|r| div().pb(px(6.)).text_size(px(11.5)).text_color(t.err).child(format!("{} has an invalid pattern. Reads are refused where it is on.", r.name)));
+        let notice = broken.first().map(|r| div().pb(px(6.)).text_size(px(11.5)).text_color(t.err).child(format!("{} has an invalid pattern. Agent reads are refused while it is on.", r.name)));
         self.types_offset = notice.is_some() as usize;
         if self.type_sel.is_some_and(|k| k >= rows.len()) {
             self.type_sel = None;
         }
-        let list = rows.iter().enumerate().map(|(k, r)| self.type_row(t, k, r, in_conn, cx));
+        let list = rows.iter().enumerate().map(|(k, r)| self.type_row(t, k, r, cx));
         let left = div().id("agents-types-list").flex_1().min_w_0().overflow_y_scroll().track_scroll(&self.types_scroll).flex().flex_col().px(px(32.)).pt(px(8.)).pb(px(24.)).children(notice).children(list);
         div()
             .size_full()
@@ -195,35 +120,17 @@ impl AgentsPage {
             .into_any_element()
     }
 
-    fn type_row(&self, t: &Theme, k: usize, r: &TypeRow, in_conn: bool, cx: &mut Context<Self>) -> AnyElement {
-        let mut tags: Vec<&str> = Vec::new();
-        if r.custom {
-            tags.push("custom");
-        }
-        if in_conn && r.changed_here {
-            tags.push("changed here");
-        }
+    fn type_row(&self, t: &Theme, k: usize, r: &TypeRow, cx: &mut Context<Self>) -> AnyElement {
         let (flip_id, name_id, mask_id) = (r.id.clone(), r.id.clone(), SharedString::from(format!("agents-type-mask-{}", r.id)));
         let items: Vec<(SharedString, bool, Act)> = Mask::ALL.iter().map(|m| (m.label().into(), *m == r.mask, Act::TypeMask(r.id.clone(), *m))).collect();
         let open = mask_id.clone();
         let custom = r.custom;
-        let hinted = self.name_hint.as_deref() == Some(r.id.as_str());
         let tip_rule = if r.custom { r.rule.trim_start_matches("Custom: ").to_string() } else { r.rule.clone() };
         let example = (!r.example.is_empty()).then_some(r.example.as_str());
-        let mask: AnyElement = if in_conn {
-            div()
-                .id(SharedString::from(format!("agents-type-mask-off-{}", r.id)))
-                .opacity(0.55)
-                .child(dropdown(t, self, mask_id, r.mask.label(), false))
-                .tooltip(Tip::new("Masks are the same everywhere").lead("A type masks the same way in every connection, so a value hashes to the same code everywhere.").note("Change masks in All connections.").view())
-                .into_any_element()
-        } else {
-            div()
-                .id(SharedString::from(format!("agents-type-mask-btn-{}", r.id)))
-                .child(dropdown(t, self, mask_id, r.mask.label(), r.on))
-                .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.open_menu(open.clone(), 120., items.clone(), cx)))
-                .into_any_element()
-        };
+        let mask = div()
+            .id(SharedString::from(format!("agents-type-mask-btn-{}", r.id)))
+            .child(dropdown(t, self, mask_id, r.mask.label(), r.on))
+            .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.open_menu(open.clone(), 120., items.clone(), cx)));
         let sw = SharedString::from(format!("agents-type-switch-{}", r.id));
         let row_id = SharedString::from(format!("agents-type-row-{}", r.id));
         let sel = self.type_sel == Some(k);
@@ -260,37 +167,12 @@ impl AgentsPage {
                     .when(!r.on, |d| d.opacity(0.55))
                     .text_color(if r.broken.is_some() { t.err } else { t.tx })
                     .child(r.name.clone())
-                    .when(custom, |d| {
-                        d.on_click(cx.listener(move |v, _, _, cx| {
-                            if v.scope.is_some() {
-                                v.name_hint = Some(name_id.clone());
-                                cx.notify();
-                            } else {
-                                v.edit_type(Some(&name_id), cx);
-                            }
-                        }))
-                    }),
+                    .when(custom, |d| d.on_click(cx.listener(move |v, _, _, cx| v.edit_type(Some(&name_id), cx)))),
             )
             .child(div().when(!r.on, |d| d.opacity(0.55)).child(qmark(t, &format!("agents-type-tip-{}", r.id), type_tip(&r.name, &tip_rule, example, r.custom))))
-            .when(!tags.is_empty(), |d| d.child(div().text_size(px(11.)).text_color(t.tx3).child(tags.join(" · "))))
-            .when(hinted, |d| {
-                let id = r.id.clone();
-                d.child(
-                    div()
-                        .id("agents-edit-global")
-                        .text_size(px(11.))
-                        .text_color(t.tx2)
-                        .hover(|s| s.opacity(0.75))
-                        .child("Edit in All connections")
-                        .on_click(cx.listener(move |v, _, _, cx| {
-                            v.scope = None;
-                            v.name_hint = None;
-                            v.edit_type(Some(&id), cx);
-                        })),
-                )
-            })
+            .when(custom, |d| d.child(div().text_size(px(11.)).text_color(t.tx3).child("custom")))
             .child(div().flex_1())
-            .when(r.broken.is_some() && !in_conn, |d| {
+            .when(r.broken.is_some(), |d| {
                 let id = r.id.clone();
                 d.child(div().id(SharedString::from(format!("agents-fix-{}", r.id))).text_size(px(11.5)).text_color(t.err).child("Fix").on_click(cx.listener(move |v, _, _, cx| v.edit_type(Some(&id), cx))))
             })
@@ -334,7 +216,7 @@ impl AgentsPage {
                         Tip::new("Pattern")
                             .lead("Rust regex syntax, matched inside every value an agent receives. It runs in linear time, so no pattern can hang a reply.")
                             .item("Mask part of a match", "Name a group v and only it is masked:")
-                            .code("senha=(?P<v>\\S+)")
+                            .code("password=(?P<v>\\S+)")
                             .item("Not supported", "Look-around (?=…) and back-references \\1. A pattern that matches empty text is refused.")
                             .note("Up to 500 characters. Test lines below show what an agent would get."),
                     ))

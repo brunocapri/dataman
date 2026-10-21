@@ -9,9 +9,9 @@
 //! 4. The connection's rules for agents (Privacy, Permissions) refuse or narrow every statement
 //!    before any tier decision, and nothing below loosens them: hidden beats masked (a column
 //!    both hidden and masked is hidden), a sensitive column's rule masks it whole by its name
-//!    before the sensitive data types look inside values, and a type switched on or off for a
-//!    connection wins over All connections. Of two types matching the same text, the earliest
-//!    match wins, then the longest, then the built-in.
+//!    before the sensitive data types look inside values. The types are one list for every
+//!    connection (Sensitive data), with no per-connection switch. Of two types matching the
+//!    same text, the earliest match wins, then the longest, then the built-in.
 //! 5. Allowed queries and YOLO (advanced options) run without asking, on production and on a
 //!    read tier too.
 //! 6. Production asks for every write.

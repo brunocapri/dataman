@@ -627,7 +627,7 @@ mod tests {
             (None | Some("public"), "users") => t("public", "users", &["id", "name", "email", "password_hash", "created_at"]),
             (None | Some("public"), "orders") => t("public", "orders", &["id", "user_id", "total", "notes"]),
             (None | Some("public"), "payments") => t("public", "payments", &["id", "card"]),
-            (None | Some("public"), "customers") => t("public", "customers", &["id", "name", "email", "cpf", "city"]),
+            (None | Some("public"), "customers") => t("public", "customers", &["id", "name", "email", "ssn", "city"]),
             (Some("audit"), "log") => t("audit", "log", &["id", "what"]),
             _ => None,
         }
@@ -731,17 +731,17 @@ mod tests {
     fn masked_data_selects_and_filters_only() {
         let mut r = AgentRules { view: AgentView::Masked, ..Default::default() };
         r.sensitive.push(SensitiveCol { col: "customers.email".into(), how: Mask::Partial, on: true });
-        r.sensitive.push(SensitiveCol { col: "*cpf*".into(), how: Mask::Hash, on: true });
+        r.sensitive.push(SensitiveCol { col: "*ssn*".into(), how: Mask::Hash, on: true });
         r.sensitive.push(SensitiveCol { col: "orders.notes".into(), how: Mask::Hidden, on: false });
-        let c = run(&r, "SELECT id, name, email, cpf, city FROM customers WHERE city = 'Recife' AND email LIKE 'a%'", false).unwrap();
+        let c = run(&r, "SELECT id, name, email, ssn, city FROM customers WHERE city = 'Recife' AND email LIKE 'a%'", false).unwrap();
         assert!(!c.rewritten);
-        assert_eq!(c.masked, vec![("email".to_string(), Mask::Partial), ("cpf".to_string(), Mask::Hash)]);
+        assert_eq!(c.masked, vec![("email".to_string(), Mask::Partial), ("ssn".to_string(), Mask::Hash)]);
         assert_eq!(run(&r, "SELECT * FROM customers", false).unwrap().masked.len(), 2);
         for sql in [
             "SELECT upper(email) FROM customers",
             "SELECT email AS e FROM customers",
             "SELECT email, upper(email) FROM customers",
-            "SELECT cpf, count(*) FROM customers GROUP BY cpf",
+            "SELECT ssn, count(*) FROM customers GROUP BY ssn",
             "SELECT id FROM customers ORDER BY email",
             "SELECT c FROM customers c",
             "SELECT row_to_json(c) FROM customers c",

@@ -312,13 +312,11 @@ impl Hub {
         *self.approval_timeout.lock() = d;
     }
 
-    /// The sensitive data types switched on for a connection (`None`: All connections),
-    /// compiled once per settings change.
-    pub fn types(&self, p: Option<&ConnectionProfile>) -> Arc<Types> {
+    /// The sensitive data types switched on (one list for every connection), compiled once per
+    /// settings change.
+    pub fn types(&self) -> Arc<Types> {
         let settings = self.settings();
-        let empty = Default::default();
-        let overrides = p.map_or(&empty, |p| &p.mcp_rules.types);
-        let key = serde_json::to_string(&(&settings.agent_types, overrides)).unwrap_or_default();
+        let key = serde_json::to_string(&settings.agent_types).unwrap_or_default();
         let mut g = self.types.lock();
         if let Some(t) = g.get(&key) {
             return t.clone();
@@ -326,7 +324,7 @@ impl Hub {
         if g.len() > 64 {
             g.clear();
         }
-        let t = Arc::new(Types::new(&settings.agent_types, overrides));
+        let t = Arc::new(Types::new(&settings.agent_types));
         g.insert(key, t.clone());
         t
     }

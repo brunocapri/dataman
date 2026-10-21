@@ -504,7 +504,7 @@ impl AgentsPage {
                 "THE AGENT SEES",
                 Tip::new("What the agent sees")
                     .lead("How much of this connection's data reaches an agent. Your own tabs always show everything.")
-                    .item("Data", "Rows as stored. Sensitive data types (cards, CPF, keys…) are still masked inside any value.")
+                    .item("Data", "Rows as stored. Sensitive data types (cards, e-mails, keys…) are still masked inside any value.")
                     .item("Masked data", "Rows come back with the sensitive columns below masked. The connection's host, port and user aren't shown to agents.")
                     .item("Structure only", "Tables, columns, types and query plans. No rows are read or written; only the structure changes Permissions allow.")
                     .note("What Visible to agents hides stays hidden in every mode."),
@@ -583,7 +583,7 @@ impl AgentsPage {
                             .item("Partial", "Keeps the end: a•••@acme.com, •••• 4242.")
                             .item("Hash", "A stable code, ‹h:7Q2KX9RM4A›. The same value always gives the same code, so an agent can still match rows.")
                             .lead("Agents can select these columns as they are and filter on them in WHERE; they can't rename, group, sort or compute with them.")
-                            .example("users.email · *cpf* (any column with cpf in its name)")
+                            .example("users.email · *ssn* (any column with ssn in its name)")
                             .note("Scan again suggests columns by their names. Check what it adds."),
                     )))
                     .child(
