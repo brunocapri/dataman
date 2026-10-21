@@ -26,7 +26,7 @@ fn profile(name: &str, engine: Engine, env: Environment, tier: McpAccess) -> Con
 fn seed_profiles(core: &Core) {
     let mut pg = profile("prod-pg", Engine::Postgres, Environment::Production, McpAccess::Write);
     let r = &mut pg.mcp_rules;
-    r.view = AgentView::Masked;
+    r.view = if std::env::var("DATAMAN_SHOT_STAGE").is_ok_and(|s| s.starts_with("agents-privacy-data")) { AgentView::Data } else { AgentView::Masked };
     for (col, how, on) in [("users.email", Mask::Partial, true), ("customers.ssn", Mask::Hash, true), ("customers.doc", Mask::Hash, true), ("customers.phone", Mask::Partial, true), ("orders.notes", Mask::Hidden, false)] {
         r.sensitive.push(SensitiveCol { col: col.into(), how, on });
     }
@@ -162,7 +162,7 @@ fn id_of(name: &str, core: &Core) -> Option<String> {
     core.config.connections().into_iter().find(|p| p.name == name).map(|p| p.id)
 }
 
-/// `agents-audit[-zoom|-zooming|-wide]`, `agents-permissions[-mongo|-redis]`, `agents-privacy`,
+/// `agents-audit[-zoom|-zooming|-wide]`, `agents-privacy-data`, `agents-permissions[-mongo|-redis]`, `agents-privacy`,
 /// `agents-types[-conn]`, `agents-empty`: the page as the mockups draw it.
 pub fn is_demo(stage: &str) -> bool {
     stage.starts_with("agents-") && stage != "agents-check"
@@ -255,6 +255,19 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     r.check("a click on it opens the Agents area on Audit, with the agents' calls", shows(cx) && page(cx) == Page::Audit && loaded, format!("{:?}", page(cx)));
     let pages: Vec<&str> = Page::ALL.iter().map(|p| p.label()).collect();
     r.check("the area's pages: MCP first, then Audit, Permissions, Privacy, Sensitive data (no Home)", pages == ["MCP", "Audit", "Permissions", "Privacy", "Sensitive data"], format!("{pages:?}"));
+    // Sensitive data sits inside Privacy, as a folder's child in the explorer: indented, folded
+    // and unfolded by Privacy's chevron.
+    let (privacy, types) = (probed("agents-nav-privacy", cx), probed("agents-nav-types", cx));
+    click_probe("agents-nav-fold", cx);
+    pause(cx, 50).await;
+    let folded = probed("agents-nav-types", cx).is_none() && page(cx) == Page::Audit;
+    click_probe("agents-nav-fold", cx);
+    pause(cx, 50).await;
+    r.check(
+        "Sensitive data shows inside Privacy, right under it; Privacy's chevron folds and unfolds it",
+        privacy.zip(types).is_some_and(|(p, t)| (t.top() - p.bottom()).abs() < gpui::px(1.)) && folded && probed("agents-nav-types", cx).is_some(),
+        format!("{privacy:?} {types:?} folded {folded}"),
+    );
     let when = cx.update(|_, cx| a.read(cx).f_when).ok();
     r.check("Audit opens on all time, so older calls show at once", when == Some(crate::agents::When::All), format!("{when:?}"));
     let connected = cx.update(|_, cx| a.read(cx).connected_count()).unwrap_or(0);
@@ -554,6 +567,25 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     r.check("Privacy: Home goes to the first connection", first.as_ref() == order.first(), format!("{first:?}"));
     click_probe(&format!("agents-conn-{}", pg.name), cx);
     pause(cx, 50).await;
+    // Sensitive columns only mask in Masked data: kept and editable in the other modes, dimmed,
+    // with a line that says so and switches to Masked data.
+    let kept = rules(&core, &pg.id).sensitive.len();
+    let mut unused = Vec::new();
+    for k in [0, 2, 1] {
+        click_probe(&format!("agents-view-{k}"), cx);
+        pause(cx, 50).await;
+        unused.push(probed("agents-sens-unused", cx).is_some());
+    }
+    click_probe("agents-view-0", cx);
+    pause(cx, 50).await;
+    click_probe("agents-sens-use-masked", cx);
+    pause(cx, 50).await;
+    let pr = rules(&core, &pg.id);
+    r.check(
+        "Sensitive columns: a note in Data and Structure only, none in Masked data; its link switches to Masked; the list is kept",
+        unused == [true, true, false] && pr.view == AgentView::Masked && probed("agents-sens-unused", cx).is_none() && pr.sensitive.len() == kept,
+        format!("{unused:?} {:?} {} of {kept}", pr.view, pr.sensitive.len()),
+    );
     click_probe("agents-view-1", cx);
     pause(cx, 50).await;
     let pr = rules(&core, &pg.id);
@@ -666,17 +698,24 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
 
     let sees = crate::agents_rules::sees_tip().text();
     r.check(
-        "The agent sees' tip names both layers: Sensitive data types in any value and every mode, the columns below in Masked data",
-        sees.contains("Data: Rows as stored, with Sensitive data types masked.")
-            && sees.contains("Masked data: As Data, and the sensitive columns below are masked whole.")
-            && sees.contains("one list for every connection, matched inside any value an agent receives, in every mode"),
+        "The agent sees' tip: nothing masked in Data; in Masked data the types in everything and the columns below whole",
+        sees.contains("Data: Rows as stored. Nothing is masked.")
+            && sees.contains("Masked data: Values matching a Sensitive data type (cards, e-mails, keys…) are masked in everything the agent receives, and the sensitive columns below are masked whole."),
         sees.clone(),
     );
     let sens = crate::agents_rules::sens_tip().text();
     let types = crate::agents_types::types_tip().text();
+    let masked_conns = core.config.connections().iter().filter(|p| p.mcp_rules.view == AgentView::Masked).count();
+    let applies = cx.update(|_, cx| a.read(cx).profiles(cx).len()).unwrap_or(0);
     r.check(
-        "Sensitive columns' and Sensitive data's tips say which applies where",
-        sens.contains("Sensitive data types still apply inside every value") && types.contains("one list for every connection") && types.contains("Structure only") && probed("agents-types-tip", cx).is_some(),
+        "Sensitive columns' and Sensitive data's tips say where each applies; the page counts connections in Masked data",
+        sens.starts_with("Sensitive columns\nMasked data only")
+            && types.contains("whether or not their column is a Sensitive column")
+            && types.contains("Not on: Connections on Data or Structure only")
+            && probed("agents-types-tip", cx).is_some()
+            && probed("agents-types-applies", cx).is_some()
+            && masked_conns > 0
+            && applies > 0,
         format!("{sens}\n{types}"),
     );
     // One list for every connection: no picker of connections, no reset, and a switch is global.

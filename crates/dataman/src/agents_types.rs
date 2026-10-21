@@ -102,7 +102,18 @@ impl AgentsPage {
 
     pub(crate) fn render_types(&mut self, t: &Theme, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let rows = self.type_rows();
-        let head = self.header(t, "Sensitive data").child(qmark(t, "agents-types-tip", types_tip()));
+        let profiles = self.profiles(cx);
+        let n = profiles.iter().filter(|p| p.mcp_rules.view == privacy::AgentView::Masked).count();
+        let applies = match n {
+            0 => "No connection sees Masked data, so nothing is masked yet".to_string(),
+            1 => format!("Masks on 1 of {} connections: the one whose agent sees Masked data", profiles.len()),
+            n => format!("Masks on {n} of {} connections: those whose agent sees Masked data", profiles.len()),
+        };
+        let head = self
+            .header(t, "Sensitive data")
+            .child(qmark(t, "agents-types-tip", types_tip()))
+            .child(div().flex_1())
+            .child(div().children(ui::here(&"agents-types-applies".into())).text_size(px(11.5)).text_color(t.tx3).child(applies));
         let broken: Vec<&TypeRow> = rows.iter().filter(|r| r.broken.is_some() && r.on).collect();
         let notice = broken.first().map(|r| div().pb(px(6.)).text_size(px(11.5)).text_color(t.err).child(format!("{} has an invalid pattern. Agent reads are refused while it is on.", r.name)));
         self.types_offset = notice.is_some() as usize;
@@ -430,13 +441,14 @@ fn type_tip(name: &str, rule: &str, example: Option<&str>, custom: bool) -> Tip 
         Some(e) => tip.example(e.to_string()),
         None => tip,
     };
-    tip.note("For every connection, in every mode: cells, documents, keys, printed lines and errors.")
+    tip.note("On every connection whose agent sees Masked data: cells, documents, keys, printed lines and errors.")
 }
 
 pub(crate) fn types_tip() -> Tip {
     Tip::new("Sensitive data")
-        .lead("Values agents never get as they are: one list for every connection.")
-        .item("Where", "Inside any value an agent receives (cells, documents, keys, printed lines and errors), in every mode: Data, Masked data and Structure only.")
+        .lead("One list for every connection whose agent sees Masked data: matching values are masked in everything sent to the agent, whether or not their column is a Sensitive column.")
+        .item("Where", "Rows, documents, keys, printed lines, tool replies, schema resources and errors.")
+        .item("Not on", "Connections on Data or Structure only: nothing is masked there.")
         .item("Masks", "Each type masks its matches as its menu says: Hidden, Partial or Hash.")
-        .note("Sensitive columns, in Privacy, mask one connection's columns whole, in Masked data only.")
+        .note("Replies about no connection in particular, such as the list of connections or of favorites, aren't masked.")
 }

@@ -199,11 +199,18 @@ fn names(v: &Value, col: usize) -> Vec<String> {
 #[test]
 fn rules_hold_without_a_database() {
     let e = env("nodb", "[agent_types]\n[[agent_types.custom]]\nid = \"t_conn\"\nname = \"Conn\"\npattern = \"\\\\bprod-pg\\\\b\"\nmask = \"hidden\"\n");
-    // The final pass covers every tool: here a custom type masks a connection's name.
+    // The final pass covers every tool on a connection whose agent sees Masked data: here a custom
+    // type masks the connection's name. On Data nothing is masked, nor in a reply about no
+    // connection in particular.
+    let masked = e.ok("update_connection", json!({"connection": "prod-pg"}));
+    assert_eq!(masked["name"], "‹conn›", "{masked}");
+    assert!(masked["masked"]["Conn"].as_u64().is_some_and(|n| n >= 1), "the reply counts what was masked: {masked}");
+    let raw = e.ok("update_connection", json!({"connection": "pgadmin"}));
+    assert_eq!(raw["name"], "pgadmin", "{raw}");
+    assert!(raw.get("masked").is_none(), "{raw}");
     let conns = e.ok("list_connections", json!({}));
     let text = conns.to_string();
-    assert!(!text.contains("\"prod-pg\"") && text.contains("‹conn›"), "{text}");
-    assert_eq!(conns["masked"]["Conn"].as_u64().map(|n| n > 0), Some(true), "the reply counts what was masked");
+    assert!(text.contains("\"prod-pg\"") && !text.contains("‹conn›"), "{text}");
     let cols: Vec<&str> = conns["columns"].as_array().unwrap().iter().map(|c| c.as_str().unwrap()).collect();
     let at = |c: &str| cols.iter().position(|x| *x == c).unwrap();
     let rows = conns["rows"].as_array().unwrap();
@@ -219,7 +226,8 @@ fn rules_hold_without_a_database() {
 
     // A broken custom type that is on refuses reads.
     let broken = env("nodb", "[agent_types]\n[[agent_types.custom]]\nid = \"t_b\"\nname = \"Broken\"\npattern = \"(\"\nmask = \"hidden\"\n");
-    assert!(broken.err("list_connections", json!({})).contains("Broken has an invalid pattern"));
+    assert!(broken.err("update_connection", json!({"connection": "prod-pg"})).contains("Broken has an invalid pattern"));
+    assert!(broken.call("update_connection", json!({"connection": "pgadmin"})).is_ok(), "where nothing is masked, a broken type is no reason to refuse");
     broken.done();
 
     // Agents cannot loosen the rules: update_connection keeps them as they are.
@@ -283,6 +291,9 @@ fn postgres_privacy() {
     assert!(r["masked_columns"].to_string().contains("email (partial)"));
     let r = q(format!("SELECT name || ' <' || 'ana@acme.com' || '>' AS x FROM {s}.customers")).unwrap();
     assert_eq!(r["rows"][0][0], "Ana <a•••@acme.com>", "e-mails are masked inside any value");
+    let raw = e.ok("run_query", a(json!({"sql": "SELECT 'ana@acme.com' AS x, '4242 4242 4242 4242' AS card"})));
+    assert_eq!((raw["rows"][0][0].as_str(), raw["rows"][0][1].as_str()), (Some("ana@acme.com"), Some("4242 4242 4242 4242")), "on Data nothing is masked: {raw}");
+    assert!(raw.get("masked").is_none(), "{raw}");
     assert!(q(format!("SELECT upper(email) FROM {s}.customers")).unwrap_err().contains("masked for agents"));
     assert!(q(format!("SELECT email AS e FROM {s}.customers")).unwrap_err().contains("masked for agents"));
     assert!(q(format!("SELECT tax_id, count(*) FROM {s}.customers GROUP BY tax_id")).unwrap_err().contains("masked for agents"));

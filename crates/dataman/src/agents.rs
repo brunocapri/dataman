@@ -209,6 +209,8 @@ pub struct AgentsPage {
     pub(crate) store: Entity<ConnStore>,
     focus: FocusHandle,
     pub(crate) page: Page,
+    /// Privacy's row in the nav shows Sensitive data under it.
+    pub(crate) privacy_open: bool,
     visible: bool,
     pub(crate) entries: Vec<Entry>,
     loaded: bool,
@@ -535,6 +537,7 @@ impl AgentsPage {
             store,
             focus: cx.focus_handle(),
             page: Page::Audit,
+            privacy_open: true,
             visible: false,
             entries: Vec::new(),
             loaded: false,
@@ -628,6 +631,9 @@ impl AgentsPage {
     pub fn show(&mut self, page: Page, cx: &mut Context<Self>) {
         if self.page != page {
             self.menu = None;
+        }
+        if page == Page::Types {
+            self.privacy_open = true;
         }
         self.page = page;
         if page == Page::Audit {
@@ -885,25 +891,45 @@ impl AgentsPage {
     pub fn render_nav(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let t = cx.theme().clone();
         let n = self.connected_count();
-        let rows = Page::ALL.map(|p| {
-            let on = self.page == p && self.visible;
+        // A small tree, as the explorer draws one: Sensitive data sits inside Privacy.
+        let open = self.privacy_open;
+        let rows = Page::ALL.into_iter().filter(|p| *p != Page::Types || open).map(|p| {
+            let child = p == Page::Types;
+            // A folded Privacy stands for the page inside it.
+            let on = self.visible && (self.page == p || (p == Page::Privacy && !open && self.page == Page::Types));
             let id = SharedString::from(format!("agents-nav-{}", p.key()));
             let hov = t.hov;
+            let chevron = (p == Page::Privacy).then(|| {
+                div()
+                    .children(ui::here(&"agents-nav-fold".into()))
+                    .id("agents-nav-fold")
+                    .size(px(16.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(ui::disclosure("agents-nav-chev", open, 10., t.tx4))
+                    .on_click(cx.listener(|v, _, _, cx| {
+                        cx.stop_propagation();
+                        v.privacy_open = !v.privacy_open;
+                        cx.notify();
+                    }))
+            });
             div()
                 .children(ui::here(&id.clone().into()))
                 .id(id)
                 .h(px(28.))
-                .pl(px(14.))
+                .pl(px(6. + if child { 12. } else { 0. }))
                 .pr(px(12.))
                 .flex()
                 .flex_row()
                 .items_center()
-                .gap(px(10.))
+                .gap(px(6.))
                 .text_color(if on { t.tx } else { t.tx2 })
                 .when(on, |d| d.bg(t.prs))
                 .when(!on, move |d| d.hover(move |s| s.bg(hov)))
+                .child(div().w(px(16.)).flex_none().flex().justify_center().children(chevron))
                 .child(icon(p.icon()).size(px(14.)).text_color(if on { t.tx } else { t.tx3 }))
-                .child(div().flex_1().child(p.label()))
+                .child(div().flex_1().pl(px(4.)).child(p.label()))
                 .on_click(cx.listener(move |v, _, window, cx| {
                     v.show(p, cx);
                     v.focus_list(window, cx);

@@ -77,21 +77,20 @@ fn limits_tip() -> Tip {
         .item("Size per read · 256 KB", "Most data from one read; past it the reply is cut and the agent is told.")
 }
 
-/// The two layers that mask values: the global Sensitive data types, in any value and every mode,
-/// and this connection's sensitive columns, whole, in Masked data only.
+/// Masking happens in Masked data only, in two layers: the Sensitive data types inside every
+/// value, and this connection's sensitive columns whole.
 pub(crate) fn sees_tip() -> Tip {
     Tip::new("What the agent sees")
         .lead("How much of this connection's data reaches an agent. Your own tabs always show everything.")
-        .item("Data", "Rows as stored, with Sensitive data types masked.")
-        .item("Masked data", "As Data, and the sensitive columns below are masked whole. Host, port and user aren't shown.")
+        .item("Data", "Rows as stored. Nothing is masked.")
+        .item("Masked data", "Values matching a Sensitive data type (cards, e-mails, keys…) are masked in everything the agent receives, and the sensitive columns below are masked whole. Host, port and user aren't shown.")
         .item("Structure only", "Tables, columns, types and query plans. No rows are read or written; only the structure changes Permissions allow. Host, port and user aren't shown.")
-        .lead("Sensitive data types (cards, e-mails, keys…) are one list for every connection, matched inside any value an agent receives, in every mode.")
-        .note("What Visible to agents hides stays hidden in every mode.")
+        .note("In every mode, what Visible to agents hides stays hidden and errors don't quote values.")
 }
 
 pub(crate) fn sens_tip() -> Tip {
     Tip::new("Sensitive columns")
-        .lead("This connection's columns masked whole when the agent sees Masked data. Sensitive data types still apply inside every value, in these columns and all others.")
+        .lead("Masked data only: this connection's columns masked whole. The Sensitive data types also mask matching values in every column.")
         .item("Hidden", "The value becomes ‹hidden›.")
         .item("Partial", "Keeps the end: a•••@acme.com, •••• 4242.")
         .item("Hash", "A stable code, ‹h:7Q2KX9RM4A›. The same value always gives the same code, so an agent can still match rows.")
@@ -583,6 +582,7 @@ impl AgentsPage {
                         .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.open_menu(open.clone(), 120., items.clone(), cx))),
                 )
         });
+        let masked = r.view == AgentView::Masked;
         let sensitive = div()
             .flex()
             .flex_col()
@@ -609,14 +609,38 @@ impl AgentsPage {
                             .on_click(cx.listener(|v, _, _, cx| v.scan(cx))),
                     ),
             )
+            // Kept and editable in every mode, but they only mask in Masked data: say so, dimmed.
+            .when(!masked, |d| {
+                d.child(
+                    div()
+                        .children(ui::here(&"agents-sens-unused".into()))
+                        .flex()
+                        .flex_row()
+                        .flex_wrap()
+                        .gap(px(6.))
+                        .text_size(px(11.5))
+                        .text_color(t.tx2)
+                        .child("Used only when The agent sees is Masked data.")
+                        .child(
+                            div()
+                                .children(ui::here(&"agents-sens-use-masked".into()))
+                                .id("agents-sens-use-masked")
+                                .text_color(t.acc_t)
+                                .hover(|s| s.opacity(0.75))
+                                .child("Use Masked data")
+                                .on_click(cx.listener(|v, _, _, cx| v.set_rule(|r| r.view = AgentView::Masked, cx))),
+                        ),
+                )
+            })
             .children(self.scan_note.clone().map(|n| div().text_size(px(11.)).text_color(t.tx3).child(n)))
-            .child(div().flex().flex_col().children(sens_rows))
+            .child(div().flex().flex_col().when(!masked, |d| d.opacity(0.55)).children(sens_rows))
             .child(
                 div()
                     .mt(px(4.))
                     .flex()
                     .flex_row()
                     .gap(px(8.))
+                    .when(!masked, |d| d.opacity(0.55))
                     .child(self.suggest_field(t, Which::Sensitive, field(t, "agents-field-sensitive", &self.sens_input, window, cx), window, cx))
                     .child(ui::button(t, "agents-sens-add", ui::Btn::Secondary).h(px(28.)).px(px(10.)).child("Add").on_click(cx.listener(|v, _, _, cx| v.add_sensitive(cx)))),
             );

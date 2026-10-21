@@ -94,7 +94,7 @@ async fn read(cx: &Call, a: &Args, open: bool) -> Result<Value, ToolError> {
     let front = cx.tab_front();
     let shown = front.is_some();
     let mut out = cx.read(a, &checked.sql, params, read, front, a.opt_str("title").map(str::to_string)).await?;
-    rules::mask_outcome(cx, &mut out, &checked.masked, read, limits);
+    rules::mask_outcome(cx, &target, &mut out, &checked.masked, read, limits);
     cx.note_rows(out.total_rows());
     let mut v = read_json(&out, limits.max_rows, &stmts);
     rules::tell(&mut v, &checked, &cx.note().seen.masked);
@@ -303,7 +303,7 @@ async fn write(cx: &Call, a: &Args) -> Result<Value, ToolError> {
     }
     let mut out = r?.outcome;
     // RETURNING rows are the agent's copy too.
-    rules::mask_outcome(cx, &mut out, &checked.masked, read, limits);
+    rules::mask_outcome(cx, &target, &mut out, &checked.masked, read, limits);
     {
         let affected = out.affected();
         cx.note_rows(affected as usize);

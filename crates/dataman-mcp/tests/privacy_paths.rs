@@ -542,10 +542,11 @@ fn search_values_stay_kept() {
         clean(&t, &r);
         assert!(!r.to_string().contains("card"), "{t}: {r}");
     }
-    // Rules on columns only: a wildcard may stand for the index, so its rules apply.
+    // Rules on columns only: a wildcard may stand for the index, so its rules apply. The agent
+    // sees Data there, so the e-mail comes as stored: types mask in Masked data only.
     let r = q("esc", format!("GET {s}-c*/_search\n{{\"fields\": [\"*\"]}}")).unwrap();
-    clean("wildcard", &r);
-    assert!(r.to_string().contains("Ana") && !r.to_string().contains("card"), "{r}");
+    let text = r.to_string();
+    assert!(text.contains("Ana") && !text.contains("card") && text.contains("zed-secret@acme.com"), "{r}");
     let _ = e.call("nosql_execute", with("esadmin", json!({"query": format!("DELETE {s}-cust")})));
     e.human.allow.lock().extend([true; 2]);
     let _ = e.call("nosql_execute", with("esadmin", json!({"query": format!("DELETE {s}-pay1")})));
@@ -814,13 +815,15 @@ fn rule_changes_apply_at_once() {
     assert!(!e.call("run_query", with("conn-alpha", json!({"sql": "SELECT 1"}))).unwrap_err().contains("structure only"));
 
     let settings = |p: &str| format!("[agent_types]\n[[agent_types.custom]]\nid = \"t1\"\nname = \"Conn\"\npattern = \"{p}\"\nmask = \"hidden\"\n");
-    let names = || e.ok("list_connections", json!({})).to_string();
+    let names = || e.ok("update_connection", with("conn-alpha", json!({}))).to_string();
     std::fs::write(e.cfg().join("settings.toml"), settings("conn-alpha")).unwrap();
-    assert!(names().contains("‹conn›"));
+    assert!(!names().contains("‹conn›"), "the agent sees Data: nothing is masked");
+    write(profiles(&[conn("conn-alpha", nowhere, "", "postgres", "x", "mcp = \"read\"\n[connection.mcp_rules]\nview = \"masked\"\n")]));
+    assert!(names().contains("‹conn›"), "Masked data, read again: the type masks");
     std::fs::write(e.cfg().join("settings.toml"), settings("conn-zzz")).unwrap();
     assert!(!names().contains("‹conn›"), "the compiled types follow the new pattern");
     std::fs::write(e.cfg().join("settings.toml"), settings("(")).unwrap();
-    assert!(e.call("list_connections", json!({})).unwrap_err().contains("invalid pattern"));
+    assert!(e.call("update_connection", with("conn-alpha", json!({}))).unwrap_err().contains("invalid pattern"));
     e.done();
 }
 

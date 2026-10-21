@@ -329,6 +329,12 @@ impl Hub {
         t
     }
 
+    /// The types that mask what a call on `p` returns: all of them where its agent sees Masked
+    /// data, none on Data or Structure only (nor for a call on no connection).
+    pub fn types_for(&self, p: Option<&ConnectionProfile>) -> Arc<Types> {
+        if p.is_some_and(|p| p.mcp_rules.view == dataman_core::privacy::AgentView::Masked) { self.types() } else { Arc::new(Types::none()) }
+    }
+
     pub fn keep_reply(&self, id: &str, text: &str) {
         self.audit.write_reply(id, text);
     }

@@ -720,7 +720,7 @@ fn sample_rows(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
         let checked = super::rules::checked_sql(cx, &a, &o.profile, &sql, false).await?;
         let read = super::rules::read_limits(cx, &o.profile, limits);
         let mut out = cx.run(&o, &checked.sql, vec![], Mode::Read, read).await?;
-        super::rules::mask_outcome(cx, &mut out, &checked.masked, read, limits);
+        super::rules::mask_outcome(cx, &o.profile, &mut out, &checked.masked, read, limits);
         cx.note_rows(out.rows.len());
         let mut v = result_json(&out, n as usize);
         super::rules::tell(&mut v, &checked, &cx.note().seen.masked);

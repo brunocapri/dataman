@@ -217,7 +217,7 @@ pub async fn checked_sql(cx: &Call, a: &Args, p: &ConnectionProfile, sql: &str, 
 pub const TAIL: usize = 1024;
 
 fn privacy_on(cx: &Call, p: &ConnectionProfile) -> bool {
-    restricted(&p.mcp_rules) || !cx.hub.types().is_empty()
+    restricted(&p.mcp_rules) || !cx.hub.types_for(Some(p)).is_empty()
 }
 
 /// The limits a read runs with: cells TAIL characters longer where something may be masked;
@@ -231,11 +231,11 @@ fn cut_text(s: &str, max: usize) -> Option<String> {
 }
 
 /// Masks the agent's copy (the user's tab keeps the values), then cuts cells to the agent's size:
-/// sensitive columns in Masked data by name, and the switched-on sensitive types inside every
+/// in Masked data, sensitive columns by name and the switched-on sensitive types inside every
 /// cell, both on the whole value. A masked column's value longer than was read is hidden whole.
-pub fn mask_outcome(cx: &Call, out: &mut bounded::Outcome, masks: &[(String, Mask)], read: bounded::Limits, agent: bounded::Limits) {
+pub fn mask_outcome(cx: &Call, p: &ConnectionProfile, out: &mut bounded::Outcome, masks: &[(String, Mask)], read: bounded::Limits, agent: bounded::Limits) {
     let key = cx.hub.mask_key();
-    let types = cx.hub.types();
+    let types = cx.hub.types_for(Some(p));
     let mut counts = dataman_core::privacy::Counts::new();
     let mut used: Vec<(String, Mask)> = Vec::new();
     let was_cut = |s: &str| read.max_cell > agent.max_cell && s.ends_with('…') && s.chars().count() == read.max_cell + 1;

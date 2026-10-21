@@ -10,8 +10,10 @@
 //!    before any tier decision, and nothing below loosens them: hidden beats masked (a column
 //!    both hidden and masked is hidden), a sensitive column's rule masks it whole by its name
 //!    before the sensitive data types look inside values. The types are one list for every
-//!    connection (Sensitive data), with no per-connection switch. Of two types matching the
-//!    same text, the earliest match wins, then the longest, then the built-in.
+//!    connection (Sensitive data) and apply where the agent sees Masked data only: on Data and
+//!    Structure only nothing is masked (what Visible to agents hides stays hidden, and errors
+//!    lose the values they quote, in every mode). Of two types matching the same text, the
+//!    earliest match wins, then the longest, then the built-in.
 //! 5. Allowed queries and YOLO (advanced options) run without asking, on production and on a
 //!    read tier too.
 //! 6. Production asks for every write.
