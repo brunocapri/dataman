@@ -403,6 +403,7 @@ impl Workspace {
                 w.show_nav(NavView::Explorer, window, cx);
                 w.open_logged(&sql, connection.as_deref(), database.as_deref(), window, cx);
             }
+            crate::agents::AgentsEvent::ViewValue(cell) => w.open_value_as(cell.clone(), false, window, cx),
         })
         .detach();
         cx.subscribe_in(&tree, window, Self::on_tree).detach();
@@ -1411,6 +1412,16 @@ impl Workspace {
         // Editable unless the result is known not to be (the edit says why when it is not).
         let edit = self.active_tab().map(|t| t.read(cx).edit.clone());
         let editable = edit.as_ref().is_some_and(|e| e.read(cx).editable(cell.col) != Some(false)) && !self.active_tab().is_some_and(|t| t.read(cx).doc.is_some());
+        self.open_value_as(cell, editable, window, cx);
+    }
+
+    /// The value viewer for a cell; `editable` only for the active tab's own result.
+    pub(crate) fn open_value_as(&mut self, cell: crate::value_view::ValueCell, editable: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.modal_open(cx) {
+            return;
+        }
+        self.modal_return = window.focused(cx);
+        let edit = if editable { self.active_tab().map(|t| t.read(cx).edit.clone()) } else { None };
         let (row, col) = (cell.row, cell.col);
         let v = cx.new(|cx| crate::value_view::ValueView::new(cell, editable, window, cx));
         cx.subscribe_in(&v, window, move |w, _, ev: &crate::value_view::ValueEvent, window, cx| {

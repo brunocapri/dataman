@@ -68,6 +68,8 @@ impl Page {
 
 pub enum AgentsEvent {
     Open { sql: String, connection: Option<String>, database: Option<String> },
+    /// A cell of what the agent received, for the value viewer (read-only).
+    ViewValue(crate::value_view::ValueCell),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -195,6 +197,13 @@ pub struct AgentsPage {
     pub(crate) name_hint: Option<String>,
     pub(crate) key: HashKey,
     pub(crate) suggest: crate::agents_suggest::Suggest,
+    /// What the selected call's agent received, in the results grid; zoomed over the whole
+    /// Audit page or closed until another call is selected.
+    pub(crate) received: Entity<crate::grid::ResultGrid>,
+    received_for: Option<Option<String>>,
+    pub(crate) received_rows: Option<(usize, u64)>,
+    pub(crate) received_zoom: bool,
+    pub(crate) received_closed: bool,
     /// Sampled fields of collections and indices, for the suggestions (connection id and name).
     pub(crate) fields: HashMap<String, Vec<(String, String)>>,
     pub(crate) loading: BTreeSet<String>,
@@ -448,6 +457,15 @@ impl AgentsPage {
             InputEvent::Changed => v.update_suggest(crate::agents_suggest::Which::Visible, cx),
         })
         .detach();
+        let received = cx.new(crate::grid::ResultGrid::new);
+        cx.subscribe(&received, |_: &mut Self, g, ev: &crate::grid::GridEvent, cx| {
+            if let crate::grid::GridEvent::ViewValue { row, col } = ev
+                && let Some(cell) = g.read(cx).value_at(*row, *col)
+            {
+                cx.emit(AgentsEvent::ViewValue(cell));
+            }
+        })
+        .detach();
         let name = cx.new(|cx| TextInput::new(cx, "Customer code").bare());
         let regex = cx.new(|cx| TextInput::new(cx, "\\bCUST-[0-9]{6}\\b").bare());
         let sample = cx.new(|cx| TextInput::new(cx, "A line to test, then ↩").bare());
@@ -501,6 +519,11 @@ impl AgentsPage {
             name_hint: None,
             key,
             suggest: Default::default(),
+            received,
+            received_for: None,
+            received_rows: None,
+            received_zoom: false,
+            received_closed: false,
             fields: HashMap::new(),
             loading: BTreeSet::new(),
         };
@@ -978,6 +1001,16 @@ impl AgentsPage {
         if self.loaded && self.selected.is_none_or(|s| !shown.contains(&s)) {
             self.selected = shown.first().copied();
         }
+        self.sync_received(cx);
+        if self.received_zoom && self.received_rows.is_some() {
+            return div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .child(self.header(t, "Audit"))
+                .child(div().flex_1().min_h_0().flex().flex_col().border_t_1().border_color(t.line).px(px(32.)).py(px(16.)).child(self.received_panel(t, true, cx)))
+                .into_any_element();
+        }
         let search_focused = self.search.read(cx).focus_handle(cx).is_focused(window);
         let toolbar = div()
             .h(px(44.))
@@ -1079,6 +1112,7 @@ impl AgentsPage {
                         .on_click(cx.listener(move |v, ev: &ClickEvent, _, cx| {
                             v.selected = Some(i);
                             v.menu = None;
+                            v.received_closed = false;
                             if ev.click_count() >= 2 {
                                 v.open_entry(i, cx);
                             }
@@ -1167,7 +1201,10 @@ impl AgentsPage {
             grid = grid.child(div().flex().flex_row().gap(px(12.)).child(div().w(px(96.)).flex_none().child(k)).child(div().flex_1().min_w_0().child(v)));
         }
         let error = (e.outcome != Outcome::Ok).then(|| e.error.clone()).flatten();
-        let received: Option<AnyElement> = (e.outcome == Outcome::Ok).then(|| {
+        let received: Option<AnyElement> = (e.outcome == Outcome::Ok && !self.received_closed).then(|| {
+            if self.received_rows.is_some() {
+                return self.received_panel(t, false, cx);
+            }
             let body = match e.id.as_deref().and_then(|id| crate::mcp::reply_of(id, cx)) {
                 Some(r) => render_reply(t, &r),
                 None => div().text_size(px(11.)).line_height(px(16.)).text_color(t.tx3).child("Kept in memory only, while Dataman is open; this call's reply is no longer here.").into_any_element(),
@@ -1257,6 +1294,151 @@ impl AgentsPage {
 }
 
 const REPLY_ROWS: usize = 8;
+
+impl AgentsPage {
+    /// Puts the selected call's reply in the grid when it holds rows or documents.
+    fn sync_received(&mut self, cx: &mut Context<Self>) {
+        let entry = self.selected.and_then(|i| self.entries.get(i));
+        let id = entry.map(|e| e.id.clone());
+        if self.received_for == Some(id.clone().flatten()) && self.received_for.is_some() {
+            return;
+        }
+        let first = self.received_for.is_none();
+        self.received_for = Some(id.clone().flatten());
+        if !first {
+            self.received_closed = false;
+        }
+        let reply = id.flatten().and_then(|id| crate::mcp::reply_of(&id, cx));
+        let table = reply.as_deref().and_then(reply_table);
+        self.received_rows = table.as_ref().map(|(rs, total)| (rs.rows(), *total));
+        if table.is_none() {
+            self.received_zoom = false;
+        }
+        let rt = self.core.handle();
+        self.received.update(cx, |g, cx| g.set_result(table.map(|(rs, _)| rs), rt, cx));
+    }
+
+    pub(crate) fn toggle_received_zoom(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.page != Page::Audit || self.received_rows.is_none() {
+            return;
+        }
+        self.received_closed = false;
+        self.received_zoom = !self.received_zoom;
+        window.focus(&self.received.focus_handle(cx), cx);
+        cx.notify();
+    }
+
+    pub(crate) fn close_received(&mut self, cx: &mut Context<Self>) {
+        self.received_zoom = false;
+        self.received_closed = true;
+        cx.notify();
+    }
+
+    /// The reply in the results grid, with the results panel's zoom and a close.
+    fn received_panel(&self, t: &Theme, zoomed: bool, cx: &mut Context<Self>) -> AnyElement {
+        let (shown, total) = self.received_rows.unwrap_or((0, 0));
+        let count = if total as usize > shown { format!("{shown} of {total}") } else { plural(shown as u64, "row", "rows") };
+        let key = if zoomed { Some("esc".to_string()) } else { crate::keymap::key("zoom_result") };
+        let bar = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(6.))
+            .child(ui::caps(t, "WHAT THE AGENT RECEIVED"))
+            .child(div().flex_1())
+            .child(div().text_size(px(11.)).text_color(t.tx3).child(count))
+            .child(
+                ui::button(t, "agents-recv-zoom", ui::Btn::Ghost)
+                    .h(px(24.))
+                    .w(px(26.))
+                    .px(px(0.))
+                    .justify_center()
+                    .when(zoomed, |d| d.bg(t.acc_s).text_color(t.acc_t).border_1().border_color(t.acc))
+                    .child(icon(if zoomed { Icon::Collapse } else { Icon::Expand }).size(px(13.)).text_color(if zoomed { t.acc_t } else { t.tx2 }))
+                    .tooltip(ui::tooltip(if zoomed { "Exit zoom" } else { "Zoom result" }, None, key.as_deref()))
+                    .on_click(cx.listener(|v, _, window, cx| v.toggle_received_zoom(window, cx))),
+            )
+            .child(
+                ui::icon_button(t, "agents-recv-close", Icon::Close, 24., 12.)
+                    .tooltip(ui::tooltip("Close", Some("Comes back when you select another call."), None))
+                    .on_click(cx.listener(|v, _, _, cx| v.close_received(cx))),
+            );
+        let grid = div().border_1().border_color(t.line).child(self.received.clone());
+        let grid = if zoomed { grid.flex_1().min_h_0() } else { grid.h(px(260.)).flex_none() };
+        div()
+            .children(ui::here(&"agents-recv".into()))
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .when(zoomed, |d| d.size_full())
+            .child(bar)
+            .child(grid)
+            .into_any_element()
+    }
+}
+
+/// A reply's rows (or documents) as a result set for the grid, with the rows the reply counted.
+pub(crate) fn reply_table(text: &str) -> Option<(Arc<dataman_core::result::ResultSet>, u64)> {
+    use dataman_core::result::{ChunkBuilder, ColumnInfo, ResultSet};
+    use dataman_core::value::Kind;
+    use serde_json::Value;
+    let v: Value = serde_json::from_str(text).ok()?;
+    let result = v.get("results").and_then(|r| r.get(0)).unwrap_or(&v);
+    let (names, types, rows): (Vec<String>, Vec<String>, Vec<Vec<Value>>) = if let (Some(cols), Some(rows)) = (result.get("columns").and_then(Value::as_array), result.get("rows").and_then(Value::as_array)) {
+        let names = cols.iter().map(|c| c.get(0).and_then(Value::as_str).or(c.as_str()).unwrap_or("").to_string()).collect();
+        let types = cols.iter().map(|c| c.get(1).and_then(Value::as_str).unwrap_or("").to_string()).collect();
+        (names, types, rows.iter().map(|r| r.as_array().cloned().unwrap_or_default()).collect())
+    } else if let Some(docs) = result.get("documents").and_then(Value::as_array) {
+        let mut names: Vec<String> = Vec::new();
+        for d in docs {
+            match d.as_object() {
+                Some(m) => names.extend(m.keys().filter(|k| !names.contains(k)).cloned().collect::<Vec<_>>()),
+                None if !names.iter().any(|n| n == "value") => names.push("value".into()),
+                None => {}
+            }
+        }
+        names.truncate(64);
+        let rows = docs.iter().map(|d| names.iter().map(|n| d.as_object().map_or_else(|| d.clone(), |m| m.get(n).cloned().unwrap_or(Value::Null))).collect()).collect();
+        (names.clone(), vec![String::new(); names.len()], rows)
+    } else {
+        return None;
+    };
+    let kind_of = |k: usize| {
+        let vals: Vec<&Value> = rows.iter().filter_map(|r| r.get(k)).filter(|x| !x.is_null()).collect();
+        if vals.is_empty() {
+            Kind::Text
+        } else if vals.iter().all(|x| x.is_i64()) {
+            Kind::Int
+        } else if vals.iter().all(|x| x.is_number()) {
+            Kind::Float
+        } else if vals.iter().all(|x| x.is_boolean()) {
+            Kind::Bool
+        } else if vals.iter().any(|x| x.is_object() || x.is_array()) {
+            Kind::Json
+        } else {
+            Kind::Text
+        }
+    };
+    let cols: Vec<ColumnInfo> = names.iter().enumerate().map(|(k, n)| ColumnInfo { name: n.clone(), type_name: types.get(k).cloned().unwrap_or_default(), type_oid: 0, kind: kind_of(k) }).collect();
+    let mut b = ChunkBuilder::new(&cols);
+    for r in &rows {
+        for (k, c) in cols.iter().enumerate() {
+            match (r.get(k).unwrap_or(&Value::Null), c.kind) {
+                (Value::Null, _) => b.push_null(k),
+                (x, Kind::Int) => b.push_i64(k, x.as_i64().unwrap_or(0)),
+                (x, Kind::Float) => b.push_f64(k, x.as_f64().unwrap_or(0.)),
+                (x, Kind::Bool) => b.push_bool(k, x.as_bool().unwrap_or(false)),
+                (Value::String(s), _) => b.push_text(k, s),
+                (x, _) => b.push_text(k, &x.to_string()),
+            }
+        }
+        b.end_row();
+    }
+    let rs = ResultSet::new("");
+    let total = result.get("row_count").or(result.get("total")).and_then(Value::as_u64).unwrap_or(rows.len() as u64);
+    rs.finish_with(Some(cols), Some(b.finish()), None, Vec::new(), None, Duration::ZERO);
+    Some((rs, total))
+}
 
 /// A reply as the agent received it: rows as a small table, documents one per line, anything
 /// else as its JSON.
@@ -1608,6 +1790,21 @@ impl Render for AgentsPage {
         div()
             .id("agents-page")
             .key_context("AgentsPage")
+            .on_action(cx.listener(|v, _: &crate::app::ToggleResultZoom, window, cx| {
+                if v.page == Page::Audit && v.received_rows.is_some() {
+                    v.toggle_received_zoom(window, cx);
+                } else {
+                    cx.propagate();
+                }
+            }))
+            .on_action(cx.listener(|v, _: &crate::app::FocusEditor, window, cx| {
+                // Esc leaves the zoomed reply first, as it leaves a zoomed result.
+                if v.received_zoom {
+                    v.toggle_received_zoom(window, cx);
+                } else {
+                    cx.propagate();
+                }
+            }))
             .track_focus(&self.focus)
             .size_full()
             .flex()

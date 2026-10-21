@@ -197,6 +197,7 @@ pub fn demo(ws: &Entity<Workspace>, stage: &str, window: &mut gpui::Window, cx: 
             a.conn = id.clone();
             if page == Page::Audit {
                 a.selected = Some(3);
+                a.received_zoom = stage == "agents-audit-zoom";
             }
             if stage == "agents-types-conn" {
                 a.scope = id.clone();
@@ -264,6 +265,29 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
         reply.as_deref().is_some_and(|r| r.contains("a•••@acme.com") && r.contains("‹h:") && !r.contains("ana@")),
         format!("{reply:?}"),
     );
+    let rows = cx.update(|_, cx| a.read(cx).received_rows).ok().flatten();
+    r.check("the reply is in the results grid: 6 rows shown of the 40 sent", rows == Some((6, 40)), format!("{rows:?}"));
+    let zoom = |cx: &mut AsyncWindowContext| cx.update(|_, cx| a.read(cx).received_zoom).unwrap_or(false);
+    click_probe("agents-recv-zoom", cx);
+    pause(cx, 100).await;
+    r.check("its zoom button takes the whole Audit page", zoom(cx), "");
+    key(cx, "escape");
+    pause(cx, 100).await;
+    r.check("Esc leaves the zoom, as in a result", !zoom(cx), "");
+    key(cx, "cmd-shift-enter");
+    pause(cx, 100).await;
+    r.check("the result's zoom shortcut zooms it again", zoom(cx), "");
+    click_probe("agents-recv-zoom", cx);
+    pause(cx, 100).await;
+    r.check("… and the button restores it", !zoom(cx), "");
+    click_probe("agents-recv-close", cx);
+    pause(cx, 50).await;
+    let closed = cx.update(|_, cx| a.read(cx).received_closed).unwrap_or(false);
+    r.check("close hides it", closed, "");
+    click_probe("agents-audit-row-3", cx);
+    pause(cx, 50).await;
+    let back = cx.update(|_, cx| !a.read(cx).received_closed).unwrap_or(false);
+    r.check("selecting a call shows it again", back, "");
     let older = chrono::Utc::now() - chrono::Duration::days(3);
     let days = (crate::agents::day_label(chrono::Utc::now()), crate::agents::day_label(older), crate::agents::short_time(older));
     r.check("Audit groups calls by day: Today, then the weekday and date", days.0 == "Today" && days.1.contains(',') && days.2.len() <= 6, format!("{days:?}"));
