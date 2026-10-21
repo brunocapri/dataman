@@ -3,6 +3,7 @@
 //! connection and settings. The `agents-*` demo stages show its pages for screenshots.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use dataman_core::config::Engine;
 use dataman_core::privacy::{AgentView, CustomType, ItemKind, Mask, ReadFrom, SensitiveCol, VisibleItem};
@@ -77,7 +78,7 @@ fn seed_profiles(core: &Core) {
 }
 
 /// The calls of the mockups, newest first, at their distances from now.
-fn seed_audit(core: &Core) {
+fn seed_audit(core: &Arc<Core>, cx: &mut gpui::App) {
     let now = chrono::Utc::now();
     let note = |d: Decision, reasons: &[&str]| Some(ApprovalNote { decision: d, by: Some("bruno".into()), reasons: reasons.iter().map(|s| s.to_string()).collect(), rows: None });
     let seen = |columns: Option<u64>, masked: &[(&str, Mask)], values: &[(&str, u64)]| {
@@ -101,7 +102,12 @@ fn seed_audit(core: &Core) {
     ];
     let audit = Audit::new(core.dirs.mcp_audit_file());
     for (ago, client, conn, tool, sql, rows, ms, outcome, error, approval, seen) in rows {
+        let id = format!("demo-{ago}");
+        if let Some(r) = demo_reply(ago) {
+            crate::mcp::keep_reply(core, &id, &r.to_string(), cx);
+        }
         audit.write(&Entry {
+            id: Some(id),
             ts: now - chrono::Duration::seconds(ago),
             client: client.into(),
             transport: "stdio".into(),
@@ -124,6 +130,33 @@ fn seed_audit(core: &Core) {
     }
 }
 
+/// What the agent received in some of the mockups' calls, as the server sent it.
+fn demo_reply(ago: i64) -> Option<serde_json::Value> {
+    use serde_json::json;
+    Some(match ago {
+        77 => json!({
+            "columns": [["id", "int4"], ["name", "text"], ["email", "text"], ["cpf", "text"], ["city", "text"], ["total", "numeric"]],
+            "rows": [
+                [1042, "Ana Souza", "a•••@acme.com", "‹h:7Q2KX9RM4A›", "Recife", "129.90"],
+                [1043, "Bruno Lima", "b•••@mail.com", "‹h:B4DN6WTE2Q›", "Recife", "88.00"],
+                [1051, "Carla Dias", "c•••@acme.com", "‹h:K3P9QX2M7A›", "Recife", "412.35"],
+                [1067, "Davi Rocha", "d•••@corp.io", "‹h:Q4M8ZP1R6T›", "Recife", "57.10"],
+                [1070, "Elisa Melo", "e•••@acme.com", "‹h:H2V7NC5K9W›", "Recife", "230.00"],
+                [1088, "Fábio Reis", "f•••@mail.com", "‹h:M6T3XQ8B1D›", "Recife", "19.99"]
+            ],
+            "row_count": 40, "masked_columns": ["email (partial)", "cpf (hash)"], "masked": {"E-mail": 3}, "ms": 41.0
+        }),
+        113 => json!({"count": 3, "documents": [
+            {"_id": "c-301", "total": 1820.5, "customer": {"name": "Ana Souza", "email": "a•••@acme.com"}},
+            {"_id": "c-118", "total": 990.0, "customer": {"name": "Bruno Lima", "email": "b•••@mail.com"}},
+            {"_id": "c-207", "total": 744.9, "customer": {"name": "Carla Dias", "email": "c•••@acme.com"}}
+        ], "more": true, "ms": 91.0}),
+        12 => json!({"committed": true, "statements": [["UPDATE", 1]], "approved": {"by": "bruno", "reasons": ["production"]}, "ms": 12.0}),
+        240 => json!({"columns": [["date", "date"], ["count", "int8"]], "rows": [["2026-10-18", 4120], ["2026-10-19", 3987], ["2026-10-20", 1311]], "row_count": 30, "ms": 210.0}),
+        _ => return None,
+    })
+}
+
 fn agents(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> Entity<AgentsPage> {
     cx.update(|_, cx| ws.read(cx).agents.clone()).unwrap()
 }
@@ -142,7 +175,7 @@ pub fn demo(ws: &Entity<Workspace>, stage: &str, window: &mut gpui::Window, cx: 
     let core = ws.read(cx).store.read(cx).core.clone();
     seed_profiles(&core);
     if stage != "agents-empty" {
-        seed_audit(&core);
+        seed_audit(&core, cx);
     }
     ws.update(cx, |w, cx| w.store.update(cx, |s, cx| s.reload(cx)));
     let page = match stage {
@@ -193,7 +226,7 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     r.check("PostgreSQL connects", up.is_ok(), format!("{up:?}"));
     let core = core(ws, cx);
     seed_profiles(&core);
-    seed_audit(&core);
+    let _ = cx.update(|_, cx| seed_audit(&core, cx));
     let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.store.update(cx, |s, cx| s.reload(cx))));
     let a = agents(ws, cx);
     let page = |cx: &mut AsyncWindowContext| cx.update(|_, cx| a.read(cx).page).unwrap_or(Page::Home);
@@ -225,6 +258,15 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     r.check("its note: rows · columns · masked", note.0 == "40 rows · 6 columns · 2 masked" && !note.1, format!("{note:?}"));
     let decision = cx.update(|_, cx| crate::agents::decision_text(&a.read(cx).entries[3])).unwrap_or_default();
     r.check("its decision: Ran · read, no question", decision == "Ran · read, no question", &decision);
+    let reply = cx.update(|_, cx| a.read(cx).entries[3].id.clone().and_then(|id| crate::mcp::reply_of(&id, cx))).ok().flatten();
+    r.check(
+        "its detail shows what the agent received: the rows, masked as sent",
+        reply.as_deref().is_some_and(|r| r.contains("a•••@acme.com") && r.contains("‹h:") && !r.contains("ana@")),
+        format!("{reply:?}"),
+    );
+    let older = chrono::Utc::now() - chrono::Duration::days(3);
+    let days = (crate::agents::day_label(chrono::Utc::now()), crate::agents::day_label(older), crate::agents::short_time(older));
+    r.check("Audit groups calls by day: Today, then the weekday and date", days.0 == "Today" && days.1.contains(',') && days.2.len() <= 6, format!("{days:?}"));
     let denied = cx.update(|_, cx| crate::agents::audit_note(&a.read(cx).entries[7])).unwrap_or_default();
     r.check("a denial reads as denied by you, in the error color", denied.0.ends_with("denied by you") && denied.1, format!("{denied:?}"));
 
@@ -263,9 +305,22 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     r.check("the nav opens Permissions", page(cx) == Page::Permissions, format!("{:?}", page(cx)));
     click_probe(&format!("agents-conn-{}", pg.name), cx);
     pause(cx, 50).await;
+    click_probe("agents-tier-1", cx);
+    pause(cx, 50).await;
     click_probe("agents-may-structure", cx);
     pause(cx, 50).await;
-    r.check("Agents may › Change structure, off: saved on the connection", !rules(&core, &pg.id).structure, format!("{:?}", rules(&core, &pg.id)));
+    use crate::agents_rules::may_state;
+    r.check(
+        "on Read, Change structure is greyed (it needs Full) and a click changes nothing",
+        rules(&core, &pg.id).structure && may_state(McpAccess::Read, McpAccess::Full, true, false, false) == ("needs Full", false),
+        format!("{:?}", rules(&core, &pg.id).structure),
+    );
+    click_probe("agents-tier-3", cx);
+    pause(cx, 50).await;
+    r.check("on Full it asks you first", may_state(McpAccess::Full, McpAccess::Full, true, false, false) == ("asks you first", true), "");
+    click_probe("agents-may-structure", cx);
+    pause(cx, 50).await;
+    r.check("Agents may › Change structure, off: saved on the connection, and reads as never", !rules(&core, &pg.id).structure && may_state(McpAccess::Full, McpAccess::Full, false, false, false).0 == "never", format!("{:?}", rules(&core, &pg.id)));
     click_probe("agents-time-1", cx);
     click_probe("agents-rrows-2", cx);
     pause(cx, 50).await;
@@ -312,6 +367,36 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
         items.iter().any(|i| i.name == "public.payments" && i.kind == ItemKind::Table) && items.iter().any(|i| i.name == "users.password_hash" && i.kind == ItemKind::Column),
         format!("{items:?}"),
     );
+    // Suggestions under the fields, from the connection's schema.
+    click_probe("agents-field-visible", cx);
+    typ(cx, "pub");
+    let listed = until(cx, 5, |cx| cx.update(|_, cx| !a.read(cx).suggest.items.is_empty()).unwrap_or(false)).await;
+    let first = cx.update(|_, cx| a.read(cx).suggest.items.first().map(|c| c.text.clone())).ok().flatten();
+    r.check("Visible to agents suggests as you type (schemas and tables)", listed && first.as_deref().is_some_and(|f| f.starts_with("public")), format!("{first:?}"));
+    key(cx, "tab");
+    pause(cx, 50).await;
+    let taken = cx.update(|_, cx| a.read(cx).vis_input.read(cx).text().to_string()).unwrap_or_default();
+    r.check("Tab takes the highlighted suggestion into the field", Some(taken.as_str()) == first.as_deref(), &taken);
+    key(cx, "cmd-a");
+    key(cx, "backspace");
+    let table = cx
+        .update(|_, cx| {
+            let c = a.read(cx).store.read(cx).connection(&pg.id)?;
+            let db = c.database().to_string();
+            c.schema.cached_relations(&db, "public")?.into_iter().find(|r| !r.kind.is_view()).map(|r| r.name)
+        })
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    click_probe("agents-field-sensitive", cx);
+    typ(cx, &format!("{table}."));
+    let cols = until(cx, 5, |cx| cx.update(|_, cx| a.read(cx).suggest.items.first().is_some_and(|c| c.kind == ItemKind::Column)).unwrap_or(false)).await;
+    r.check("Sensitive columns: a table and a dot list its columns", cols, &table);
+    key(cx, "escape");
+    pause(cx, 50).await;
+    r.check("Esc closes the suggestions", cx.update(|_, cx| a.read(cx).suggest.which.is_none()).unwrap_or(false), "");
+    key(cx, "cmd-a");
+    key(cx, "backspace");
     click_probe("agents-field-sensitive", cx);
     typ(cx, "customer.email");
     click_probe("agents-sens-add", cx);

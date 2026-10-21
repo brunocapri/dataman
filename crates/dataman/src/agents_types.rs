@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use dataman_core::privacy::{self, CustomType, Mask, TypeRow, Validator};
 use gpui::{AnyElement, App, ClickEvent, Context, Focusable, FontWeight, SharedString, StyledText, TextRun, Window, div, prelude::*};
 
-use crate::agents::{Act, AgentsPage, dropdown, field, qmark, seg, switch};
+use crate::agents::{Act, AgentsPage, Tip, dropdown, field, qmark, seg, switch};
 use crate::assets::{Icon, icon};
 use crate::theme::{Theme, px};
 use crate::ui;
@@ -211,7 +211,7 @@ impl AgentsPage {
                 .id(SharedString::from(format!("agents-type-mask-off-{}", r.id)))
                 .opacity(0.55)
                 .child(dropdown(t, self, mask_id, r.mask.label(), false))
-                .tooltip(ui::tooltip("Masks are the same in every connection.", None, None))
+                .tooltip(Tip::new("Masks are the same everywhere").lead("A type masks the same way in every connection, so a value hashes to the same code everywhere.").note("Change masks in All connections.").view())
                 .into_any_element()
         } else {
             div()
@@ -255,7 +255,7 @@ impl AgentsPage {
                         }))
                     }),
             )
-            .child(div().when(!r.on, |d| d.opacity(0.55)).child(qmark(t, &format!("agents-type-tip-{}", r.id), &tip_rule, example, r.custom)))
+            .child(div().when(!r.on, |d| d.opacity(0.55)).child(qmark(t, &format!("agents-type-tip-{}", r.id), type_tip(&r.name, &tip_rule, example, r.custom))))
             .when(!tags.is_empty(), |d| d.child(div().text_size(px(11.)).text_color(t.tx3).child(tags.join(" · "))))
             .when(hinted, |d| {
                 let id = r.id.clone();
@@ -311,11 +311,29 @@ impl AgentsPage {
                     .flex()
                     .flex_col()
                     .gap(px(6.))
-                    .child(caps("REGEX"))
+                    .child(crate::agents::label_tip(
+                        t,
+                        "agents-regex-tip",
+                        "REGEX",
+                        Tip::new("Pattern")
+                            .lead("Rust regex syntax, matched inside every value an agent receives. It runs in linear time, so no pattern can hang a reply.")
+                            .item("Mask part of a match", "Name a group v and only it is masked:")
+                            .code("senha=(?P<v>\\S+)")
+                            .item("Not supported", "Look-around (?=…) and back-references \\1. A pattern that matches empty text is refused.")
+                            .note("Up to 500 characters. Test lines below show what an agent would get."),
+                    ))
                     .child(field(t, "agents-field-regex", &self.editor.regex, window, cx))
                     .children(problem.clone().map(|p| div().text_size(px(11.)).text_color(t.err).child(p))),
             )
-            .child(div().flex().flex_col().gap(px(8.)).child(caps("MASK")).child(seg(t, "agents-new-mask", &masks, self.editor.mask, false, cx, |v, m, _| v.editor.mask = m)));
+            .child(div().flex().flex_col().gap(px(8.)).child(crate::agents::label_tip(
+                t,
+                "agents-mask-tip",
+                "MASK",
+                Tip::new("Mask")
+                    .item("Hidden", "The match becomes the type's name, like ‹customer code›.")
+                    .item("Partial", "Keeps the last characters (4 by default; More options).")
+                    .item("Hash", "A stable code like ‹h:K3P9QX2M7A›: the same value gives the same code everywhere, so agents can still match it."),
+            )).child(seg(t, "agents-new-mask", &masks, self.editor.mask, false, cx, |v, m, _| v.editor.mask = m)));
         let more = self.editor.more;
         panel = panel.child(
             div()
@@ -495,4 +513,24 @@ impl AgentsPage {
             );
         panel.child(div().flex_1()).child(buttons).into_any_element()
     }
+}
+
+/// How a type is found, as its `?` shows it.
+fn type_tip(name: &str, rule: &str, example: Option<&str>, custom: bool) -> Tip {
+    let tip = Tip::new(format!("How {name} is found"));
+    let tip = if custom {
+        let (pattern, validator) = rule.split_once(" · ").map_or((rule, None), |(p, v)| (p, Some(v)));
+        let tip = tip.lead("Your pattern, matched inside every value an agent receives:").code(pattern.to_string());
+        match validator {
+            Some(v) => tip.item("Validator", format!("{v}: a match must also pass it.")),
+            None => tip,
+        }
+    } else {
+        tip.lead(rule.to_string())
+    };
+    let tip = match example {
+        Some(e) => tip.example(e.to_string()),
+        None => tip,
+    };
+    tip.note("Recognized in cells, documents, keys, printed lines and errors, in every mode.")
 }

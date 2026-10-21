@@ -33,6 +33,9 @@ impl Outcome {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Entry {
+    /// Ties the entry to the reply the app keeps in memory while it is open (never written).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     pub ts: chrono::DateTime<chrono::Utc>,
     pub client: String,
     pub transport: String,
@@ -251,6 +254,7 @@ mod tests {
         let a = Audit::new(dir.path().join("mcp-audit.jsonl"));
         for i in 0..5 {
             a.write(&Entry {
+                id: None,
                 ts: chrono::Utc::now(),
                 client: "claude-code".into(),
                 transport: "stdio".into(),
@@ -311,6 +315,7 @@ mod tests {
     fn full_statement_round_trips_and_old_lines_still_parse() {
         let sql = "UPDATE orders SET status = 'paid' WHERE id = 42";
         let e = Entry {
+            id: None,
             ts: chrono::Utc::now(),
             client: "claude-code".into(),
             transport: "stdio".into(),

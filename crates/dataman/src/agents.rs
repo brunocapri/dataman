@@ -194,6 +194,10 @@ pub struct AgentsPage {
     pub(crate) editor: TypeEditor,
     pub(crate) name_hint: Option<String>,
     pub(crate) key: HashKey,
+    pub(crate) suggest: crate::agents_suggest::Suggest,
+    /// Sampled fields of collections and indices, for the suggestions (connection id and name).
+    pub(crate) fields: HashMap<String, Vec<(String, String)>>,
+    pub(crate) loading: BTreeSet<String>,
 }
 
 impl EventEmitter<AgentsEvent> for AgentsPage {}
@@ -384,6 +388,23 @@ pub(crate) fn agents_of(entries: &[Entry]) -> Vec<AgentCard> {
     out
 }
 
+/// The day a call belongs to, as Audit groups them.
+pub(crate) fn day_label(ts: chrono::DateTime<chrono::Utc>) -> String {
+    let d = ts.with_timezone(&Local).date_naive();
+    match (Local::now().date_naive() - d).num_days() {
+        0 => "Today".into(),
+        1 => "Yesterday".into(),
+        2..=6 => d.format("%A, %b %-d").to_string(),
+        _ => d.format("%a, %b %-d, %Y").to_string(),
+    }
+}
+
+/// Today's calls by time, older ones by day.
+pub(crate) fn short_time(ts: chrono::DateTime<chrono::Utc>) -> String {
+    let l = ts.with_timezone(&Local);
+    if l.date_naive() == Local::now().date_naive() { l.format("%H:%M:%S").to_string() } else { l.format("%b %-d").to_string() }
+}
+
 fn fmt_ms(ms: f64) -> String {
     if ms < 1000. { format!("{ms:.0} ms") } else { format!("{:.1} s", ms / 1000.) }
 }
@@ -408,16 +429,23 @@ impl AgentsPage {
         })
         .detach();
         let sens_input = cx.new(|cx| TextInput::new(cx, "table.column or *pattern*").bare());
-        cx.subscribe(&sens_input, |v: &mut Self, _, ev: &InputEvent, cx| {
-            if let InputEvent::Submit = ev {
-                v.add_sensitive(cx);
+        cx.subscribe(&sens_input, |v: &mut Self, _, ev: &InputEvent, cx| match ev {
+            InputEvent::Submit => {
+                if !v.accept_suggest(cx) {
+                    v.add_sensitive(cx);
+                }
             }
+            InputEvent::Changed => v.update_suggest(crate::agents_suggest::Which::Sensitive, cx),
         })
         .detach();
         let vis_input = cx.new(|cx| TextInput::new(cx, "table, table.column or *").bare());
         cx.subscribe(&vis_input, |v: &mut Self, _, ev: &InputEvent, cx| match ev {
-            InputEvent::Submit => v.add_visible(cx),
-            InputEvent::Changed => cx.notify(),
+            InputEvent::Submit => {
+                if !v.accept_suggest(cx) {
+                    v.add_visible(cx);
+                }
+            }
+            InputEvent::Changed => v.update_suggest(crate::agents_suggest::Which::Visible, cx),
         })
         .detach();
         let name = cx.new(|cx| TextInput::new(cx, "Customer code").bare());
@@ -472,6 +500,9 @@ impl AgentsPage {
             editor: TypeEditor { editing: None, name, regex, mask: Mask::Hidden, more: false, validator: Validator::None, ignore_case: false, keep: 4, samples: Vec::new(), sample, confirm_delete: false },
             name_hint: None,
             key,
+            suggest: Default::default(),
+            fields: HashMap::new(),
+            loading: BTreeSet::new(),
         };
         v.poll(cx);
         v
@@ -859,7 +890,7 @@ impl AgentsPage {
                 .border_b_1()
                 .border_color(t.line)
                 .hover(move |s| s.bg(hov))
-                .child(col(62.).text_color(t.tx3).child(e.ts.with_timezone(&Local).format("%H:%M:%S").to_string()))
+                .child(col(62.).text_color(t.tx3).child(short_time(e.ts)))
                 .child(col(96.).text_color(t.tx).overflow_hidden().whitespace_nowrap().text_ellipsis().child(e.client.clone()))
                 .child(col(150.).child(e.connection.as_deref().map(|c| self.conn_label(t, c, cx).into_any_element()).unwrap_or_else(|| div().into_any_element())))
                 .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx2).child(one_line(e.statement().unwrap_or(""))))
@@ -944,7 +975,7 @@ impl AgentsPage {
 
     fn render_audit(&mut self, t: &Theme, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let shown = self.filtered(cx);
-        if self.selected.is_none_or(|s| !shown.contains(&s)) {
+        if self.loaded && self.selected.is_none_or(|s| !shown.contains(&s)) {
             self.selected = shown.first().copied();
         }
         let search_focused = self.search.read(cx).focus_handle(cx).is_focused(window);
@@ -979,14 +1010,36 @@ impl AgentsPage {
             .child(self.filter_button(t, "agents-f-when", self.f_when.label().into(), cx));
         let bounds = self.row_bounds.clone();
         bounds.borrow_mut().clear();
-        let rows = shown.iter().map(|&i| {
+        let mut day: Option<String> = None;
+        let mut rows: Vec<AnyElement> = Vec::new();
+        for &i in &shown {
             let e = &self.entries[i];
+            let d = day_label(e.ts);
+            if day.as_deref() != Some(d.as_str()) {
+                rows.push(
+                    div()
+                        .h(px(30.))
+                        .flex_none()
+                        .pl(px(32.))
+                        .flex()
+                        .items_end()
+                        .pb(px(6.))
+                        .border_b_1()
+                        .border_color(t.line)
+                        .text_size(px(11.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(t.tx2)
+                        .child(d.clone())
+                        .into_any_element(),
+                );
+                day = Some(d);
+            }
             let (note, bad) = audit_note(e);
             let sel = self.selected == Some(i);
             let hov = t.hov;
             let b = bounds.clone();
             let id = SharedString::from(format!("agents-audit-row-{i}"));
-            div()
+            let row = div()
                 .relative()
                 .child(gpui::canvas(move |r, _, _| { b.borrow_mut().insert(i, r); }, |_, _, _, _| {}).absolute().top_0().left_0().size_full())
                 .child(
@@ -1040,8 +1093,9 @@ impl AgentsPage {
                                 cx.stop_propagation();
                             }),
                         ),
-                )
-        });
+                );
+            rows.push(row.into_any_element());
+        }
         let list: AnyElement = if shown.is_empty() {
             div()
                 .flex_1()
@@ -1113,8 +1167,16 @@ impl AgentsPage {
             grid = grid.child(div().flex().flex_row().gap(px(12.)).child(div().w(px(96.)).flex_none().child(k)).child(div().flex_1().min_w_0().child(v)));
         }
         let error = (e.outcome != Outcome::Ok).then(|| e.error.clone()).flatten();
+        let received: Option<AnyElement> = (e.outcome == Outcome::Ok).then(|| {
+            let body = match e.id.as_deref().and_then(|id| crate::mcp::reply_of(id, cx)) {
+                Some(r) => render_reply(t, &r),
+                None => div().text_size(px(11.)).line_height(px(16.)).text_color(t.tx3).child("Kept in memory only, while Dataman is open; this call's reply is no longer here.").into_any_element(),
+            };
+            div().flex().flex_col().gap(px(8.)).child(ui::caps(t, "WHAT THE AGENT RECEIVED")).child(body).into_any_element()
+        });
         Some(
             div()
+                .id("agents-detail")
                 .w(px(420.))
                 .flex_none()
                 .flex()
@@ -1124,7 +1186,7 @@ impl AgentsPage {
                 .py(px(20.))
                 .border_l_1()
                 .border_color(t.line)
-                .overflow_hidden()
+                .overflow_y_scroll()
                 .child(
                     div()
                         .flex()
@@ -1134,13 +1196,13 @@ impl AgentsPage {
                         .text_color(t.tx3)
                         .child(div().text_color(t.tx).font_weight(FontWeight::SEMIBOLD).child(e.tool.clone()))
                         .child(div().flex_1())
-                        .child(format!("{} · {}", e.ts.with_timezone(&Local).format("%H:%M:%S"), fmt_ms(e.ms))),
+                        .child(format!("{} · {}", e.ts.with_timezone(&Local).format("%b %-d, %Y · %H:%M:%S"), fmt_ms(e.ms))),
                 )
                 .children(e.statement().map(&block))
                 .children(e.rewritten.as_deref().map(|r| div().flex().flex_col().gap(px(6.)).child(ui::caps(t, "REWRITTEN")).child(block(r))))
                 .child(grid)
                 .children(error.map(|m| div().text_size(px(11.5)).line_height(px(17.)).text_color(t.err).child(m)))
-                .child(div().flex_1())
+                .children(received)
                 .when(e.statement().is_some(), |d| {
                     d.child(
                         div().flex().child(
@@ -1194,17 +1256,194 @@ impl AgentsPage {
     }
 }
 
+const REPLY_ROWS: usize = 8;
+
+/// A reply as the agent received it: rows as a small table, documents one per line, anything
+/// else as its JSON.
+pub(crate) fn render_reply(t: &Theme, text: &str) -> AnyElement {
+    use serde_json::Value;
+    let Ok(v) = serde_json::from_str::<Value>(text) else {
+        return div().text_size(px(11.5)).line_height(px(17.)).text_color(t.tx2).child(text.chars().take(2000).collect::<String>()).into_any_element();
+    };
+    let result = v.get("results").and_then(|r| r.get(0)).unwrap_or(&v);
+    let cell = |x: &Value| match x {
+        Value::Null => "NULL".to_string(),
+        Value::String(s) => one_line(s),
+        other => one_line(&other.to_string()),
+    };
+    let foot = |shown: usize, total: Option<u64>, extra: Option<String>| {
+        let mut parts = Vec::new();
+        if let Some(n) = total.filter(|n| *n as usize > shown) {
+            parts.push(format!("{shown} of {n} shown"));
+        }
+        parts.extend(extra);
+        (!parts.is_empty()).then(|| div().text_size(px(11.)).text_color(t.tx3).child(parts.join(" · ")))
+    };
+    if let (Some(cols), Some(rows)) = (result.get("columns").and_then(Value::as_array), result.get("rows").and_then(Value::as_array)) {
+        let names: Vec<String> = cols.iter().map(|c| c.get(0).and_then(Value::as_str).or(c.as_str()).unwrap_or("").to_string()).collect();
+        let shown: Vec<Vec<String>> = rows.iter().take(REPLY_ROWS).map(|r| r.as_array().map(|a| a.iter().map(cell).collect()).unwrap_or_default()).collect();
+        let widths: Vec<f32> = (0..names.len())
+            .map(|k| {
+                let chars = shown.iter().filter_map(|r| r.get(k)).chain(std::iter::once(&names[k])).map(|s| s.chars().count()).max().unwrap_or(4).clamp(3, 18);
+                chars as f32 * 7.0 + 14.
+            })
+            .collect();
+        let line = |vals: Vec<String>, head: bool| {
+            div().h(px(22.)).flex().flex_row().items_center().border_b_1().border_color(t.line).children(vals.into_iter().enumerate().map(|(k, x)| {
+                let null = !head && x == "NULL";
+                div()
+                    .w(px(widths.get(k).copied().unwrap_or(60.)))
+                    .flex_none()
+                    .px(px(6.))
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .text_color(if head || null { t.tx3 } else { t.tx })
+                    .child(x)
+            }))
+        };
+        let total = result.get("row_count").and_then(Value::as_u64);
+        return div()
+            .flex()
+            .flex_col()
+            .gap(px(6.))
+            .child(
+                div()
+                    .id("agents-reply-table")
+                    .overflow_x_scroll()
+                    .border_1()
+                    .border_color(t.line)
+                    .bg(t.field)
+                    .text_size(px(11.5))
+                    .child(div().flex().flex_col().min_w(px(widths.iter().sum::<f32>())).child(line(names, true)).children(shown.into_iter().map(|r| line(r, false)))),
+            )
+            .children(foot(rows.len().min(REPLY_ROWS), total.or(Some(rows.len() as u64)), None))
+            .into_any_element();
+    }
+    if let Some(docs) = result.get("documents").and_then(Value::as_array) {
+        let lines = docs.iter().take(REPLY_ROWS).map(|d| div().whitespace_nowrap().overflow_hidden().text_ellipsis().text_color(t.tx).child(one_line(&d.to_string())));
+        return div()
+            .flex()
+            .flex_col()
+            .gap(px(6.))
+            .child(div().px(px(10.)).py(px(8.)).flex().flex_col().gap(px(4.)).bg(t.field).border_1().border_color(t.line).text_size(px(11.5)).children(lines))
+            .children(foot(docs.len().min(REPLY_ROWS), result.get("total").and_then(Value::as_u64).or(Some(docs.len() as u64)), None))
+            .into_any_element();
+    }
+    // A write: what each statement changed, who allowed it, and the RETURNING rows.
+    if v.get("committed").is_some() || v.get("written").is_some() {
+        let mut lines: Vec<String> = Vec::new();
+        for st in v.get("statements").and_then(Value::as_array).into_iter().flatten() {
+            let (verb, n) = (st.get(0).and_then(Value::as_str).unwrap_or("?"), st.get(1).and_then(Value::as_u64).unwrap_or(0));
+            lines.push(format!("{verb} · {}", plural(n, "row", "rows")));
+        }
+        if let Some(w) = v.get("written").and_then(Value::as_str) {
+            lines.push(format!("{w} · {}", plural(v.get("affected").and_then(Value::as_u64).unwrap_or(0), "row", "rows")));
+        }
+        if let Some(a) = v.get("approved") {
+            let by = a.get("by").and_then(Value::as_str).unwrap_or("you");
+            let why: Vec<&str> = a.get("reasons").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).collect();
+            lines.push(if why.is_empty() { format!("Allowed by {by}") } else { format!("Allowed by {by} · {}", why.join(", ")) });
+        }
+        let returning = v.get("returning").map(|r| render_reply(t, &r.to_string()));
+        return div()
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .child(div().px(px(10.)).py(px(8.)).flex().flex_col().gap(px(4.)).bg(t.field).border_1().border_color(t.line).text_size(px(11.5)).text_color(t.tx).children(lines.into_iter().map(|l| div().child(l))))
+            .children(returning.map(|r| div().flex().flex_col().gap(px(6.)).child(div().text_size(px(10.5)).text_color(t.tx3).child("RETURNING")).child(r)))
+            .into_any_element();
+    }
+    let pretty = serde_json::to_string_pretty(&v).unwrap_or_default();
+    let lines: Vec<&str> = pretty.lines().collect();
+    let more = lines.len().saturating_sub(16);
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(6.))
+        .child(
+            div()
+                .px(px(10.))
+                .py(px(8.))
+                .bg(t.field)
+                .border_1()
+                .border_color(t.line)
+                .text_size(px(11.5))
+                .line_height(px(17.))
+                .text_color(t.tx2)
+                .children(lines.into_iter().take(16).map(|l| div().whitespace_nowrap().overflow_hidden().child(l.to_string()))),
+        )
+        .when(more > 0, |d| d.child(div().text_size(px(11.)).text_color(t.tx3).child(format!("{more} more lines"))))
+        .into_any_element()
+}
+
 pub(crate) fn one_line(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// A label with a `?` whose hover shows a short explanation.
-pub(crate) fn label_tip(t: &Theme, id: &str, label: &str, rule: &str, example: Option<&str>) -> gpui::Div {
-    div().flex().flex_row().items_center().gap(px(6.)).child(ui::caps(t, label.to_string())).child(qmark(t, id, rule, example, false))
+/// A tooltip that reads as a small page: a bold title, a lead line, terms with what they mean,
+/// code, an example and a note set apart at the foot.
+#[derive(Clone, Default)]
+pub(crate) struct Tip {
+    title: Option<SharedString>,
+    parts: Vec<TipPart>,
 }
 
-pub(crate) fn qmark(t: &Theme, id: &str, rule: &str, example: Option<&str>, code: bool) -> gpui::Stateful<gpui::Div> {
-    let (rule, example) = (SharedString::from(rule.to_string()), example.map(|e| SharedString::from(e.to_string())));
+#[derive(Clone)]
+enum TipPart {
+    Lead(SharedString),
+    Item(SharedString, SharedString),
+    Code(SharedString),
+    Example(SharedString),
+    Note(SharedString),
+}
+
+impl Tip {
+    pub(crate) fn new(title: impl Into<SharedString>) -> Tip {
+        Tip { title: Some(title.into()), parts: Vec::new() }
+    }
+
+    pub(crate) fn lead(mut self, s: impl Into<SharedString>) -> Tip {
+        self.parts.push(TipPart::Lead(s.into()));
+        self
+    }
+
+    pub(crate) fn item(mut self, term: impl Into<SharedString>, what: impl Into<SharedString>) -> Tip {
+        self.parts.push(TipPart::Item(term.into(), what.into()));
+        self
+    }
+
+    pub(crate) fn code(mut self, s: impl Into<SharedString>) -> Tip {
+        self.parts.push(TipPart::Code(s.into()));
+        self
+    }
+
+    pub(crate) fn example(mut self, s: impl Into<SharedString>) -> Tip {
+        self.parts.push(TipPart::Example(s.into()));
+        self
+    }
+
+    pub(crate) fn note(mut self, s: impl Into<SharedString>) -> Tip {
+        self.parts.push(TipPart::Note(s.into()));
+        self
+    }
+
+    pub(crate) fn view(&self) -> impl Fn(&mut Window, &mut App) -> gpui::AnyView + 'static {
+        let tip = self.clone();
+        move |_, cx| {
+            let tip = tip.clone();
+            cx.new(|_| TipView { tip }).into()
+        }
+    }
+}
+
+/// A label with a `?` whose hover shows a `Tip`.
+pub(crate) fn label_tip(t: &Theme, id: &str, label: &str, tip: Tip) -> gpui::Div {
+    div().flex().flex_row().items_center().gap(px(6.)).child(ui::caps(t, label.to_string())).child(qmark(t, id, tip))
+}
+
+pub(crate) fn qmark(t: &Theme, id: &str, tip: Tip) -> gpui::Stateful<gpui::Div> {
+    let hov = t.tx2;
     div()
         .id(SharedString::from(id.to_string()))
         .flex_none()
@@ -1217,26 +1456,36 @@ pub(crate) fn qmark(t: &Theme, id: &str, rule: &str, example: Option<&str>, code
         .border_color(t.line2)
         .text_size(px(10.))
         .text_color(t.tx3)
+        .hover(move |s| s.text_color(hov))
         .child("?")
-        .tooltip(move |_, cx| {
-            let (rule, example) = (rule.clone(), example.clone());
-            cx.new(|_| RuleTip { rule, example, code }).into()
-        })
+        .tooltip(tip.view())
 }
 
-pub(crate) struct RuleTip {
-    rule: SharedString,
-    example: Option<SharedString>,
-    code: bool,
+pub(crate) struct TipView {
+    tip: Tip,
 }
 
-impl Render for RuleTip {
+impl Render for TipView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme();
+        let code_font = crate::editor::mono().family;
+        let parts = self.tip.parts.iter().map(|p| match p {
+            TipPart::Lead(s) => div().text_color(t.tx2).child(s.clone()).into_any_element(),
+            TipPart::Item(term, what) => div()
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .child(div().text_color(t.tx).font_weight(FontWeight::SEMIBOLD).child(term.clone()))
+                .child(div().text_color(t.tx2).child(what.clone()))
+                .into_any_element(),
+            TipPart::Code(s) => div().px(px(8.)).py(px(5.)).bg(t.field).border_1().border_color(t.line).font_family(code_font.clone()).text_color(t.tx).child(s.clone()).into_any_element(),
+            TipPart::Example(s) => div().flex().flex_col().gap(px(2.)).child(div().text_size(px(10.5)).text_color(t.tx3).child("EXAMPLE")).child(div().text_color(t.tx2).child(s.clone())).into_any_element(),
+            TipPart::Note(s) => div().mt(px(2.)).pt(px(10.)).border_t_1().border_color(t.line).text_color(t.tx3).child(s.clone()).into_any_element(),
+        });
         div()
-            .w(px(340.))
-            .px(px(12.))
-            .py(px(10.))
+            .w(px(360.))
+            .px(px(14.))
+            .py(px(12.))
             .bg(t.pop)
             .shadow(t.ring())
             .font_family(mono())
@@ -1244,9 +1493,9 @@ impl Render for RuleTip {
             .line_height(px(17.))
             .flex()
             .flex_col()
-            .gap(px(6.))
-            .child(div().text_color(t.tx).when(self.code, |d| d.font_family(crate::editor::mono().family)).child(self.rule.clone()))
-            .children(self.example.clone().map(|e| div().text_color(t.tx3).child(e)))
+            .gap(px(10.))
+            .children(self.tip.title.clone().map(|title| div().text_size(px(12.5)).text_color(t.tx).font_weight(FontWeight::BOLD).child(title)))
+            .children(parts)
     }
 }
 

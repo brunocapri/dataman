@@ -58,8 +58,12 @@ impl Server {
         cx.client_info().map(|i| i.name).unwrap_or_else(|| "unknown".into())
     }
 
-    fn audit(&self, call: &Call, started: Instant, outcome: Outcome, error: Option<String>) {
+    fn audit(&self, call: &Call, started: Instant, outcome: Outcome, error: Option<String>, reply: Option<&str>) {
         let mut n = call.note();
+        let id = uuid::Uuid::new_v4().simple().to_string();
+        if let Some(r) = reply {
+            self.hub.keep_reply(&id, r);
+        }
         // Passwords written into statements (and echoed in errors) stay out of the log.
         let engine = n.connection.as_deref().and_then(|c| self.hub.profile(c).ok()).map(|p| p.engine);
         let masked = |s: &str| match engine {
@@ -69,6 +73,7 @@ impl Server {
         n.sql = n.sql.as_deref().map(masked);
         let error = error.as_deref().map(dataman_core::mask::any).map(|c| c.into_owned());
         self.hub.audit.write(&Entry {
+            id: Some(id),
             ts: chrono::Utc::now(),
             client: call.client.clone(),
             transport: self.transport.into(),
@@ -130,13 +135,13 @@ impl Server {
         let r = self.privacy_pass(&call, r);
         match r {
             Ok(v) => {
-                self.audit(&call, started, Outcome::Ok, None);
                 let text = serde_json::to_string(&v).unwrap_or_default();
+                self.audit(&call, started, Outcome::Ok, None, Some(&text));
                 CallToolResult::success(vec![ContentBlock::text(text)])
             }
             Err(e) => {
                 let msg = e.message();
-                self.audit(&call, started, e.outcome(), Some(msg.clone()));
+                self.audit(&call, started, e.outcome(), Some(msg.clone()), None);
                 CallToolResult::error(vec![ContentBlock::text(msg)])
             }
         }
@@ -221,7 +226,7 @@ impl ServerHandler for Server {
         });
         match r {
             Ok(text) => {
-                self.audit(&call, started, Outcome::Ok, None);
+                self.audit(&call, started, Outcome::Ok, None, Some(&text));
                 let mime = if u.json { "application/json" } else { "text/markdown" };
                 let contents = ResourceContents::TextResourceContents { uri: req.uri.clone(), mime_type: Some(mime.into()), text, meta: None };
                 Ok(ReadResourceResult::new(vec![contents]).into())
@@ -229,7 +234,7 @@ impl ServerHandler for Server {
             Err(e) => {
                 let e = self.privacy_pass(&call, Err(e)).unwrap_err();
                 let msg = e.message();
-                self.audit(&call, started, e.outcome(), Some(msg.clone()));
+                self.audit(&call, started, e.outcome(), Some(msg.clone()), None);
                 Err(McpError::invalid_params(msg, None))
             }
         }

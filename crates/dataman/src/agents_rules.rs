@@ -5,19 +5,82 @@ use dataman_core::privacy::{self, AgentView, ItemKind, Mask, Names, ReadFrom, Re
 use dataman_core::{ConnectionProfile, Engine, McpAccess};
 use gpui::{AnyElement, ClickEvent, Context, SharedString, Window, div, prelude::*};
 
-use crate::agents::{Act, AgentsPage, checkbox, dropdown, field, label_tip, seg};
+use crate::agents::{Act, AgentsPage, Tip, checkbox, dropdown, field, label_tip, seg};
+use crate::agents_suggest::Which;
 use crate::assets::{Icon, icon};
 use crate::theme::{Theme, px};
 use crate::ui;
 
-/// One "Agents may" row: its name, what it covers on this engine, its rule's value, and why it
-/// cannot be changed here (when Privacy forces it off).
+/// One "Agents may" row: its name, what it covers on this engine, its rule's value, the tier it
+/// needs, and why it cannot be changed here (Privacy forces it off).
 struct May {
     id: &'static str,
     name: &'static str,
     what: String,
     on: bool,
-    forced: Option<&'static str>,
+    needs: McpAccess,
+    forced: Option<Tip>,
+}
+
+/// What a row does on the connection's tier, in a word or two (shown on its right).
+pub(crate) fn may_state(tier: McpAccess, needs: McpAccess, on: bool, forced: bool, prod: bool) -> (&'static str, bool) {
+    match () {
+        _ if tier == McpAccess::Off => ("MCP is off", false),
+        _ if forced => ("off · Privacy", false),
+        _ if tier < needs => (needs_label(needs), false),
+        _ if !on => ("never", true),
+        _ if needs == McpAccess::Full || (needs == McpAccess::Write && prod) => ("asks you first", true),
+        _ => ("allowed", true),
+    }
+}
+
+fn needs_label(a: McpAccess) -> &'static str {
+    match a {
+        McpAccess::Full => "needs Full",
+        McpAccess::Write => "needs Write",
+        _ => "needs Read",
+    }
+}
+
+fn forced_tip() -> Tip {
+    Tip::new("Off while data is kept from agents")
+        .lead("Server activity shows other sessions' statements and the values in them.")
+        .lead("It stays off while this connection hides or masks data in Privacy.")
+}
+
+fn tier_tip() -> Tip {
+    Tip::new("MCP tier")
+        .lead("How far agents can go on this connection.")
+        .item("Off", "Agents can't use it.")
+        .item("Read", "Reads only.")
+        .item("Write", "Also inserts, and updates or deletes with a real WHERE, up to Rows per write.")
+        .item("Full", "Also destructive statements (DROP, TRUNCATE, a DELETE without WHERE…). Each one waits for your Allow.")
+        .note("On production, every write waits for your Allow.")
+}
+
+fn may_tip() -> Tip {
+    Tip::new("Agents may")
+        .lead("Rules on top of the MCP tier: switch off what agents should never do here.")
+        .item("Checked", "Allowed as far as the tier lets. On the right: allowed, or asks you first.")
+        .item("Unchecked", "Never, even with your Allow.")
+        .item("Greyed", "The tier doesn't reach it (the right says which one it needs), or Privacy keeps it off.")
+}
+
+fn limits_tip() -> Tip {
+    Tip::new("Limits")
+        .lead("Per call, for agents only.")
+        .item("Time per call", "Longest a statement runs before it is stopped. An agent can ask for less.")
+        .item("Rows per write", "A write that changes more rows waits for your Allow. Default: Settings › MCP.")
+        .item("Rows per read", "Most rows an agent gets back from one read.")
+        .item("Size per read", "Most data from one read; past it the reply is cut and the agent is told.")
+}
+
+fn read_from_tip() -> Tip {
+    Tip::new("Read from")
+        .lead("Which members of the replica set answer agents' reads.")
+        .item("Primary", "Always the primary.")
+        .item("Prefer secondary", "A secondary when one is up, otherwise the primary. Keeps agents' load off the primary.")
+        .item("Secondary", "Secondaries only. Reads fail while none is up.")
 }
 
 fn activity_of(e: Engine) -> &'static str {
@@ -31,22 +94,30 @@ fn activity_of(e: Engine) -> &'static str {
     }
 }
 
-const FORCED: &str = "Off while some data is hidden or masked";
-
 fn mays(p: &ConnectionProfile) -> Vec<May> {
     let r = &p.mcp_rules;
+    // DDL and procedures are destructive (Full, asked); code in MongoDB and search reads is a read.
+    let code_needs = if p.engine.is_sql() { McpAccess::Full } else { McpAccess::Read };
     let (structure, code) = match p.engine {
         Engine::MongoDb => ("createIndex, drop, renameCollection, $out, $merge", "scripts, $where, $function, $accumulator, mapReduce"),
         Engine::Elasticsearch | Engine::OpenSearch => ("index creation and deletion, mappings, settings", "scripts, painless, runtime fields"),
         Engine::SqlServer => ("CREATE, ALTER, DROP, TRUNCATE, GRANT", "EXEC procedures, functions with side effects"),
         _ => ("CREATE, ALTER, DROP, TRUNCATE, GRANT", "DO blocks, CALL, functions with side effects"),
     };
-    let forced = r.activity_forced_off().then_some(FORCED);
+    let forced = r.activity_forced_off().then(forced_tip);
     vec![
-        May { id: "structure", name: "Change structure", what: structure.into(), on: r.structure, forced: None },
-        May { id: "code", name: "Run code", what: code.into(), on: r.code, forced: None },
-        May { id: "activity", name: "See server activity", what: activity_of(p.engine).into(), on: r.activity_on(), forced },
+        May { id: "structure", name: "Change structure", what: structure.into(), on: r.structure, needs: McpAccess::Full, forced: None },
+        May { id: "code", name: "Run code", what: code.into(), on: r.code, needs: code_needs, forced: None },
+        May { id: "activity", name: "See server activity", what: activity_of(p.engine).into(), on: r.activity_on(), needs: McpAccess::Read, forced },
     ]
+}
+
+fn redis_needs(c: RedisCat) -> McpAccess {
+    match c {
+        RedisCat::Read => McpAccess::Read,
+        RedisCat::Write | RedisCat::Keyspace | RedisCat::Pubsub => McpAccess::Write,
+        RedisCat::Scripting | RedisCat::Dangerous => McpAccess::Full,
+    }
 }
 
 fn tier_label(a: McpAccess) -> &'static str {
@@ -142,7 +213,7 @@ impl AgentsPage {
                 .flex()
                 .flex_col()
                 .gap(px(8.))
-                .child(ui::caps(t, "MCP"))
+                .child(label_tip(t, "agents-tier-tip", "MCP", tier_tip()))
                 .child(seg(t, "agents-tier", &tiers, p.mcp_access(), false, cx, |v, a, cx| {
                     if let Some(id) = v.conn.clone() {
                         v.edit_conn(&id, |p| p.mcp = Some(a), cx);
@@ -150,13 +221,18 @@ impl AgentsPage {
                 }))
                 .when(p.env.is_production(), |d| d.child(div().text_size(px(11.)).text_color(t.tx3).child("Production: every write asks."))),
         );
+        let tier = p.mcp_access();
+        let prod = p.env.is_production();
         let may_rows: Vec<AnyElement> = if p.engine == Engine::Redis {
             RedisCat::ALL
                 .iter()
                 .map(|c| {
                     let c = *c;
-                    let dangerous = c == RedisCat::Dangerous;
-                    self.may_row(t, &format!("agents-may-{}", c.label().trim_start_matches('@')), c.label(), c.examples(), r.redis.allows(c), dangerous.then_some("Never runs for agents"), cx, move |r| {
+                    let never = (c == RedisCat::Dangerous).then(|| {
+                        Tip::new("@dangerous never runs for agents").lead("FLUSHALL, FLUSHDB, CONFIG, DEBUG, KEYS and the like are refused whatever the tier, so an agent can't wipe or reconfigure the server.")
+                    });
+                    let id = format!("agents-may-{}", c.label().trim_start_matches('@'));
+                    self.may_row(t, &id, c.label(), c.examples(), r.redis.allows(c), redis_needs(c), tier, prod, never, cx, move |r| {
                         let on = r.redis.allows(c);
                         r.redis.set(c, !on);
                     })
@@ -167,7 +243,7 @@ impl AgentsPage {
                 .into_iter()
                 .map(|m| {
                     let id = m.id;
-                    self.may_row(t, &format!("agents-may-{id}"), m.name, &m.what, m.on, m.forced, cx, move |r| match id {
+                    self.may_row(t, &format!("agents-may-{id}"), m.name, &m.what, m.on, m.needs, tier, prod, m.forced, cx, move |r| match id {
                         "structure" => r.structure = !r.structure,
                         "code" => r.code = !r.code,
                         _ => r.activity = !r.activity,
@@ -175,10 +251,10 @@ impl AgentsPage {
                 })
                 .collect()
         };
-        left = left.child(div().flex().flex_col().gap(px(12.)).child(ui::caps(t, "AGENTS MAY")).children(may_rows));
+        left = left.child(div().flex().flex_col().gap(px(12.)).child(label_tip(t, "agents-may-tip", "AGENTS MAY", may_tip())).children(may_rows));
         if p.engine == Engine::MongoDb {
             let opts: Vec<(ReadFrom, &str)> = ReadFrom::ALL.iter().map(|f| (*f, f.label())).collect();
-            left = left.child(div().flex().flex_col().gap(px(8.)).child(ui::caps(t, "READ FROM")).child(seg(t, "agents-read-from", &opts, r.read_from.unwrap_or(ReadFrom::Primary), false, cx, |v, f, cx| {
+            left = left.child(div().flex().flex_col().gap(px(8.)).child(label_tip(t, "agents-read-from-tip", "READ FROM", read_from_tip())).child(seg(t, "agents-read-from", &opts, r.read_from.unwrap_or(ReadFrom::Primary), false, cx, |v, f, cx| {
                 v.set_rule(|r| r.read_from = (f != ReadFrom::Primary).then_some(f), cx);
             })));
         }
@@ -195,7 +271,7 @@ impl AgentsPage {
             .flex()
             .flex_col()
             .gap(px(12.))
-            .child(ui::caps(t, "LIMITS"))
+            .child(label_tip(t, "agents-limits-tip", "LIMITS", limits_tip()))
             .child(limit_row("Time per call", seg(t, "agents-time", &times, r.time_limit_s.unwrap_or(300), true, cx, |v, s, cx| v.set_rule(|r| r.time_limit_s = (s != 300).then_some(s), cx))))
             .child(limit_row("Rows per write", seg(t, "agents-wrows", &writes, p.mcp_row_limit.unwrap_or(0), true, cx, |v, n, cx| {
                 if let Some(id) = v.conn.clone() {
@@ -231,7 +307,21 @@ impl AgentsPage {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn may_row(&self, t: &Theme, id: &str, name: &str, what: &str, on: bool, forced: Option<&'static str>, cx: &mut Context<Self>, flip: impl Fn(&mut privacy::AgentRules) + 'static) -> AnyElement {
+    fn may_row(
+        &self,
+        t: &Theme,
+        id: &str,
+        name: &str,
+        what: &str,
+        on: bool,
+        needs: McpAccess,
+        tier: McpAccess,
+        prod: bool,
+        forced: Option<Tip>,
+        cx: &mut Context<Self>,
+        flip: impl Fn(&mut privacy::AgentRules) + 'static,
+    ) -> AnyElement {
+        let (state, live) = may_state(tier, needs, on, forced.is_some(), prod);
         let sid = SharedString::from(id.to_string());
         let row = div()
             .children(ui::here(&sid.clone().into()))
@@ -239,19 +329,29 @@ impl AgentsPage {
             .flex()
             .flex_row()
             .gap(px(10.))
-            .child(div().pt(px(1.)).child(checkbox(t, on && forced.is_none(), forced.is_some())))
+            .child(div().pt(px(1.)).child(checkbox(t, on && live, !live)))
             .child(
                 div()
+                    .flex_1()
                     .flex()
                     .flex_col()
                     .gap(px(2.))
                     .min_w_0()
-                    .child(div().text_color(if forced.is_some() { t.tx3 } else { t.tx }).child(name.to_string()))
+                    .child(div().text_color(if live { t.tx } else { t.tx3 }).child(name.to_string()))
                     .when(!what.is_empty(), |d| d.child(div().text_size(px(11.)).text_color(t.tx3).child(what.to_string()))),
-            );
-        match forced {
-            Some(why) => row.tooltip(ui::tooltip(why, None, None)).into_any_element(),
-            None => row.on_click(cx.listener(move |v, _, _, cx| v.set_rule(&flip, cx))).into_any_element(),
+            )
+            .child(div().pt(px(1.)).flex_none().text_size(px(11.)).text_color(t.tx3).child(state));
+        let tip = forced.or_else(|| {
+            (tier != McpAccess::Off && tier < needs).then(|| {
+                Tip::new(format!("{name} {}", needs_label(needs)))
+                    .lead(format!("This connection's MCP tier is {}; {} starts at {}.", tier_label(tier), name.to_lowercase(), tier_label(needs)))
+                    .note("Raise the tier above to use it. The box keeps your choice for when you do.")
+            })
+        });
+        match (tip, live) {
+            (Some(tip), false) => row.tooltip(tip.view()).into_any_element(),
+            (_, false) => row.into_any_element(),
+            _ => row.on_click(cx.listener(move |v, _, _, cx| v.set_rule(&flip, cx))).into_any_element(),
         }
     }
 
@@ -387,8 +487,12 @@ impl AgentsPage {
                 t,
                 "agents-sees-tip",
                 "THE AGENT SEES",
-                "Data: rows as stored. Masked data: sensitive columns masked, connection details hidden. Structure only: tables, columns and types, never rows.",
-                None,
+                Tip::new("What the agent sees")
+                    .lead("How much of this connection's data reaches an agent. Your own tabs always show everything.")
+                    .item("Data", "Rows as stored. Sensitive data types (cards, CPF, keys…) are still masked inside any value.")
+                    .item("Masked data", "Rows come back with the sensitive columns below masked. The connection's host, port and user aren't shown to agents.")
+                    .item("Structure only", "Tables, columns, types and query plans. No rows are read or written; only the structure changes Permissions allow.")
+                    .note("What Visible to agents hides stays hidden in every mode."),
             ))
             .child(seg(t, "agents-view", &views, r.view, false, cx, |v, view, cx| v.set_rule(|r| r.view = view, cx)));
         let sens_rows = r.sensitive.iter().enumerate().map(|(k, s)| {
@@ -454,7 +558,19 @@ impl AgentsPage {
                     .flex()
                     .flex_row()
                     .items_center()
-                    .child(div().flex_1().child(label_tip(t, "agents-sens-tip", "SENSITIVE COLUMNS", "Values are masked when the agent sees Masked data. The agent can still filter on these columns.", None)))
+                    .child(div().flex_1().child(label_tip(
+                        t,
+                        "agents-sens-tip",
+                        "SENSITIVE COLUMNS",
+                        Tip::new("Sensitive columns")
+                            .lead("Columns whose values are masked when the agent sees Masked data.")
+                            .item("Hidden", "The value becomes ‹hidden›.")
+                            .item("Partial", "Keeps the end: a•••@acme.com, •••• 4242.")
+                            .item("Hash", "A stable code, ‹h:7Q2KX9RM4A›. The same value always gives the same code, so an agent can still match rows.")
+                            .lead("Agents can select these columns as they are and filter on them in WHERE; they can't rename, group, sort or compute with them.")
+                            .example("users.email · *cpf* (any column with cpf in its name)")
+                            .note("Scan again suggests columns by their names. Check what it adds."),
+                    )))
                     .child(
                         div()
                             .children(ui::here(&"agents-scan".into()))
@@ -474,7 +590,7 @@ impl AgentsPage {
                     .flex()
                     .flex_row()
                     .gap(px(8.))
-                    .child(field(t, "agents-field-sensitive", &self.sens_input, window, cx).flex_1())
+                    .child(self.suggest_field(t, Which::Sensitive, field(t, "agents-field-sensitive", &self.sens_input, window, cx), window, cx))
                     .child(ui::button(t, "agents-sens-add", ui::Btn::Secondary).h(px(28.)).px(px(10.)).child("Add").on_click(cx.listener(|v, _, _, cx| v.add_sensitive(cx)))),
             );
         let left = div().flex_1().min_w_0().flex().flex_col().gap(px(24.)).child(sees).child(sensitive);
@@ -517,8 +633,13 @@ impl AgentsPage {
                         t,
                         "agents-vis-tip",
                         "VISIBLE TO AGENTS",
-                        "Dataman removes these from what agents can list, describe and query, and rewrites queries so hidden columns don't exist for them. Functions, copies of the data elsewhere and statements Dataman can't read are refused or not covered; only database permissions block everything.",
-                        None,
+                        Tip::new("Visible to agents")
+                            .lead("What exists for agents on this connection, in every mode.")
+                            .item("Everything except", "The list holds what is hidden. Tables created later are visible.")
+                            .item("Only these", "The list holds the tables and schemas agents can see. Everything else is hidden, tables created later too.")
+                            .lead("Hidden tables and schemas aren't listed, described or queryable. Hidden columns are removed: Dataman narrows each query so, for agents, they don't exist.")
+                            .example("public.payments (table) · audit.* (schema) · users.password_hash (column)")
+                            .note("Functions, copies of the data in other tables and statements Dataman can't read are refused or not covered. Only database permissions block everything."),
                     ))
                     .child(seg(t, "agents-vis-mode", &modes, r.visible.mode, false, cx, |v, m, cx| v.set_rule(|r| r.visible.mode = m, cx)))
                     .child(div().text_size(px(11.)).text_color(t.tx3).child("Left-out tables and columns are not listed, described or queryable.")),
@@ -530,7 +651,7 @@ impl AgentsPage {
                         .flex()
                         .flex_row()
                         .gap(px(8.))
-                        .child(field(t, "agents-field-visible", &self.vis_input, window, cx).flex_1())
+                        .child(self.suggest_field(t, Which::Visible, field(t, "agents-field-visible", &self.vis_input, window, cx), window, cx))
                         .child(ui::button(t, "agents-vis-add", ui::Btn::Secondary).h(px(28.)).px(px(10.)).child(verb).on_click(cx.listener(|v, _, _, cx| v.add_visible(cx)))),
                 ),
             );

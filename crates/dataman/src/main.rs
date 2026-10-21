@@ -6,6 +6,7 @@ mod agents;
 #[cfg(feature = "checks")]
 mod agents_check;
 mod agents_rules;
+mod agents_suggest;
 mod agents_types;
 mod app;
 mod assets;
