@@ -164,7 +164,7 @@ fn id_of(name: &str, core: &Core) -> Option<String> {
     core.config.connections().into_iter().find(|p| p.name == name).map(|p| p.id)
 }
 
-/// `agents-audit[-zoom]`, `agents-permissions[-mongo|-redis]`, `agents-privacy`,
+/// `agents-audit[-zoom|-zooming]`, `agents-permissions[-mongo|-redis]`, `agents-privacy`,
 /// `agents-types[-conn]`, `agents-empty`: the page as the mockups draw it.
 pub fn is_demo(stage: &str) -> bool {
     stage.starts_with("agents-") && stage != "agents-check"
@@ -197,7 +197,6 @@ pub fn demo(ws: &Entity<Workspace>, stage: &str, window: &mut gpui::Window, cx: 
             a.conn = id.clone();
             if page == Page::Audit {
                 a.selected = Some(3);
-                a.received_zoom = stage == "agents-audit-zoom";
             }
             if stage == "agents-types-conn" {
                 a.scope = id.clone();
@@ -214,6 +213,25 @@ pub fn demo(ws: &Entity<Workspace>, stage: &str, window: &mut gpui::Window, cx: 
     if page == Page::Types {
         let regex = ws.read(cx).agents.read(cx).editor.regex.clone();
         window.focus(&gpui::Focusable::focus_handle(regex.read(cx), cx), cx);
+    }
+    if stage == "agents-audit-zoom" || stage == "agents-audit-zooming" {
+        // Zooms once the reply is laid out, at once or on its way (DATAMAN_ZOOM_FREEZE holds it
+        // part of the way).
+        let (a, at_once) = (ws.read(cx).agents.clone(), stage == "agents-audit-zoom");
+        window
+            .spawn(cx, async move |cx| {
+                until(cx, 5, |cx| cx.update(|_, cx| a.read(cx).received_rows.is_some()).unwrap_or(false)).await;
+                pause(cx, 300).await;
+                let _ = cx.update(|window, cx| {
+                    a.update(cx, |a, cx| {
+                        a.toggle_received_zoom(window, cx);
+                        if at_once {
+                            a.received_tween = None;
+                        }
+                    })
+                });
+            })
+            .detach();
     }
 }
 
@@ -307,14 +325,31 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     click_probe("agents-recv-zoom", cx);
     pause(cx, 100).await;
     r.check("… and the button restores it", !zoom(cx), "");
-    click_probe("agents-recv-close", cx);
-    pause(cx, 50).await;
-    let closed = cx.update(|_, cx| a.read(cx).received_closed).unwrap_or(false);
-    r.check("close hides it", closed, "");
-    click_probe("agents-audit-row-3", cx);
-    pause(cx, 50).await;
-    let back = cx.update(|_, cx| !a.read(cx).received_closed).unwrap_or(false);
-    r.check("selecting a call shows it again", back, "");
+    pause(cx, 350).await;
+    r.check("it has no close: always there while a call with rows is selected", probed("agents-recv-close", cx).is_none() && probed("agents-recv", cx).is_some(), "");
+    // The zoom moves like a result's: the panel grows from its place in the detail over the page
+    // and shrinks back, each way part of the way after 60 ms, landed after the zoom's time.
+    let now = |cx: &mut AsyncWindowContext| cx.update(|_, cx| a.read(cx).received_now()).unwrap_or(-1.);
+    let moving = |cx: &mut AsyncWindowContext| cx.update(|_, cx| a.read(cx).received_tween.is_some()).unwrap_or(true);
+    let motion = !cx.update(|_, cx| cx.reduce_motion()).unwrap_or(false);
+    for (zoom_in, name) in [(true, "zooming in"), (false, "zooming out")] {
+        let before = probed("agents-recv", cx);
+        let t0 = std::time::Instant::now();
+        click_probe("agents-recv-zoom", cx);
+        pause(cx, 60).await;
+        let (mid, mid_b) = (now(cx), probed("agents-recv", cx));
+        let in_time = mid_possible(t0, crate::motion::ZOOM);
+        pause(cx, 320).await;
+        let after = probed("agents-recv", cx);
+        let end = if zoom_in { 1. } else { 0. };
+        let between = |m: f32, x: f32, y: f32| (x.min(y) + 1. ..x.max(y) - 1.).contains(&m);
+        let grew = before.zip(mid_b).zip(after).is_some_and(|((b, m), a)| between(m.top().as_f32(), b.top().as_f32(), a.top().as_f32()) && between(m.size.width.as_f32(), b.size.width.as_f32(), a.size.width.as_f32()));
+        r.check(
+            &format!("{name}, the reply moves part of the way, then lands"),
+            (!motion || !in_time || (mid > 0.05 && mid < 0.999 && grew)) && now(cx) == end && !moving(cx),
+            format!("mid {mid} end {} {before:?} → {mid_b:?} → {after:?}{}", now(cx), if in_time { "" } else { " (frames too slow for a mid-way sample)" }),
+        );
+    }
     let older = chrono::Utc::now() - chrono::Duration::days(3);
     let days = (crate::agents::day_label(chrono::Utc::now()), crate::agents::day_label(older));
     r.check("Audit groups calls by day: Today, then the weekday and date", days.0 == "Today" && days.1.contains(','), format!("{days:?}"));

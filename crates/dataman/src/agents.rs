@@ -1,5 +1,5 @@
 //! The Agents area, opened from the robot at the foot of the rail: who used Dataman through MCP
-//! and what they ran (Home, Audit), and per connection what agents may do (Permissions) and see
+//! and what they ran (MCP, Audit), and per connection what agents may do (Permissions) and see
 //! (Privacy), with the sensitive data types masked in everything an agent receives.
 
 use std::cell::RefCell;
@@ -234,12 +234,15 @@ pub struct AgentsPage {
     pub(crate) key: HashKey,
     pub(crate) suggest: crate::agents_suggest::Suggest,
     /// What the selected call's agent received, in the results grid; zoomed over the whole
-    /// Audit page or closed until another call is selected.
+    /// Audit page, growing from its place in the detail as a result grows over the editor.
     pub(crate) received: Entity<crate::grid::ResultGrid>,
     received_for: Option<Option<String>>,
     pub(crate) received_rows: Option<(usize, u64)>,
     pub(crate) received_zoom: bool,
-    pub(crate) received_closed: bool,
+    pub(crate) received_tween: Option<crate::motion::ZoomTween>,
+    /// Where the reply sits in the detail, and the page below the header it zooms over.
+    received_slot: Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
+    received_area: Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
     pub(crate) audit_scroll: gpui::ScrollHandle,
     pub(crate) conns_scroll: gpui::ScrollHandle,
     pub(crate) types_scroll: gpui::ScrollHandle,
@@ -554,7 +557,9 @@ impl AgentsPage {
             received_for: None,
             received_rows: None,
             received_zoom: false,
-            received_closed: false,
+            received_tween: None,
+            received_slot: Rc::default(),
+            received_area: Rc::default(),
             audit_scroll: gpui::ScrollHandle::new(),
             conns_scroll: gpui::ScrollHandle::new(),
             types_scroll: gpui::ScrollHandle::new(),
@@ -783,7 +788,6 @@ impl AgentsPage {
                 let Some(n) = next(shown.len(), cur) else { return true };
                 self.selected = Some(shown[n]);
                 self.menu = None;
-                self.received_closed = false;
                 if let Some(&child) = self.audit_child.get(&shown[n]) {
                     self.audit_scroll.scroll_to_item(child);
                 }
@@ -1003,13 +1007,29 @@ impl AgentsPage {
             self.selected = shown.first().copied();
         }
         self.sync_received(cx);
-        if self.received_zoom && self.received_rows.is_some() {
+        let zoom = self.received_frame(window);
+        let area = self.received_area.clone();
+        let measure_area = gpui::canvas(move |b, _, _| area.set(Some(b)), |_, _, _, _| {}).absolute().top_0().left_0().size_full();
+        if zoom >= 1. && self.received_rows.is_some() {
             return div()
                 .size_full()
                 .flex()
                 .flex_col()
                 .child(self.header(t, "Audit"))
-                .child(div().flex_1().min_h_0().flex().flex_col().border_t_1().border_color(t.line).px(px(32.)).py(px(16.)).child(self.received_panel(t, true, cx)))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .relative()
+                        .flex()
+                        .flex_col()
+                        .border_t_1()
+                        .border_color(t.line)
+                        .px(px(32.))
+                        .py(px(16.))
+                        .child(measure_area)
+                        .child(self.received_panel(t, true, true, cx)),
+                )
                 .into_any_element();
         }
         let search_focused = self.search.read(cx).focus_handle(cx).is_focused(window);
@@ -1115,7 +1135,6 @@ impl AgentsPage {
                             v.focus_list(window, cx);
                             v.selected = Some(i);
                             v.menu = None;
-                            v.received_closed = false;
                             if ev.click_count() >= 2 {
                                 v.open_entry(i, cx);
                             }
@@ -1155,17 +1174,75 @@ impl AgentsPage {
         } else {
             div().id("agents-audit-list").flex_1().min_w_0().overflow_y_scroll().track_scroll(&self.audit_scroll).flex().flex_col().children(rows).into_any_element()
         };
+        // On its way, the reply leaves an empty slot in the detail and grows from it over the
+        // page as the result grid grows over the editor: same time and curve.
+        let moving = zoom > 0. || self.received_tween.is_some();
+        let flight = moving.then(|| self.received_flight(t, zoom, cx)).flatten();
+        let fade = |d: gpui::Div| d.when(zoom > 0., |d| d.opacity(1. - zoom));
         div()
             .size_full()
             .flex()
             .flex_col()
             .child(self.header(t, "Audit"))
-            .child(toolbar)
-            .child(div().flex_1().min_h_0().flex().flex_row().border_t_1().border_color(t.line).child(list).children(self.render_detail(t, cx)))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .relative()
+                    .overflow_hidden()
+                    .flex()
+                    .flex_col()
+                    .child(measure_area)
+                    .child(fade(toolbar))
+                    .child(fade(div().flex_1().min_h_0().flex().flex_row().border_t_1().border_color(t.line)).child(list).children(self.render_detail(t, flight.is_some(), cx)))
+                    .children(flight),
+            )
             .into_any_element()
     }
 
-    fn render_detail(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+    /// The zoom's progress this frame, asking for the next while it moves.
+    fn received_frame(&mut self, window: &mut Window) -> f32 {
+        let target = if self.received_zoom { 1. } else { 0. };
+        match self.received_tween.map(|z| z.at(target, std::time::Instant::now())) {
+            Some(Some(p)) => {
+                window.request_animation_frame();
+                p
+            }
+            Some(None) => {
+                self.received_tween = None;
+                target
+            }
+            None => target,
+        }
+    }
+
+    /// The reply between its slot in the detail and the page below the header, `p` of the way.
+    fn received_flight(&self, t: &Theme, p: f32, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (slot, area) = (self.received_slot.get()?, self.received_area.get()?);
+        let lerp = |a: f32, b: f32| a + (b - a) * p;
+        // The slot sits 1px lower than the panel's own top: the zoomed page's border line.
+        let (x, y) = ((slot.left() - area.left()).as_f32(), (slot.top() - area.top()).as_f32() - 1.);
+        Some(
+            div()
+                .absolute()
+                .left(px(lerp(x, 0.)))
+                .top(px(lerp(y, 0.)))
+                .w(px(lerp(slot.size.width.as_f32(), area.size.width.as_f32())))
+                .h(px(lerp(slot.size.height.as_f32() + 1., area.size.height.as_f32())))
+                .px(px(lerp(0., 32.)))
+                .py(px(lerp(0., 16.)))
+                .flex()
+                .flex_col()
+                .overflow_hidden()
+                .bg(t.bg)
+                .border_t_1()
+                .border_color(t.line.opacity(p))
+                .child(self.received_panel(t, self.received_zoom, true, cx))
+                .into_any_element(),
+        )
+    }
+
+    fn render_detail(&self, t: &Theme, away: bool, cx: &mut Context<Self>) -> Option<AnyElement> {
         let i = self.selected?;
         let e = self.entries.get(i)?;
         let block = |text: &str| {
@@ -1214,9 +1291,15 @@ impl AgentsPage {
             grid = grid.child(div().flex().flex_row().gap(px(12.)).child(div().w(px(96.)).flex_none().child(k)).child(div().flex_1().min_w_0().child(v)));
         }
         let error = (e.outcome != Outcome::Ok).then(|| e.error.clone()).flatten();
-        let received: Option<AnyElement> = (e.outcome == Outcome::Ok && !self.received_closed).then(|| {
+        let received: Option<AnyElement> = (e.outcome == Outcome::Ok).then(|| {
             if self.received_rows.is_some() {
-                return self.received_panel(t, false, cx);
+                let slot = self.received_slot.clone();
+                let measure = gpui::canvas(move |b, _, _| slot.set(Some(b)), |_, _, _, _| {}).absolute().top_0().left_0().size_full();
+                let held = self.received_slot.get().map(|b| b.size.height).filter(|_| away);
+                return match held {
+                    Some(h) => div().relative().flex_none().h(h).child(measure).into_any_element(),
+                    None => div().relative().child(measure).child(self.received_panel(t, false, false, cx)).into_any_element(),
+                };
             }
             let note = |s: &str| div().text_size(px(11.)).line_height(px(16.)).text_color(t.tx3).child(s.to_string()).into_any_element();
             let body = match e.id.as_deref().map(|id| self.replies.get(id).cloned().unwrap_or(Kept::Reading)) {
@@ -1329,11 +1412,7 @@ impl AgentsPage {
         if kept == Some(Kept::Reading) {
             return;
         }
-        let first = self.received_for.is_none();
         self.received_for = Some(id.clone().flatten());
-        if !first {
-            self.received_closed = false;
-        }
         let table = match &kept {
             Some(Kept::Reply { text, cut: false }) => reply_table(text),
             _ => None,
@@ -1341,6 +1420,7 @@ impl AgentsPage {
         self.received_rows = table.as_ref().map(|(rs, total)| (rs.rows(), *total));
         if table.is_none() {
             self.received_zoom = false;
+            self.received_tween = None;
         }
         let rt = self.core.handle();
         self.received.update(cx, |g, cx| g.set_result(table.map(|(rs, _)| rs), rt, cx));
@@ -1383,20 +1463,22 @@ impl AgentsPage {
         if self.page != Page::Audit || self.received_rows.is_none() {
             return;
         }
-        self.received_closed = false;
+        let from = self.received_now();
         self.received_zoom = !self.received_zoom;
+        self.received_tween = (!cx.reduce_motion()).then(|| crate::motion::ZoomTween::new(from));
         window.focus(&self.received.focus_handle(cx), cx);
         cx.notify();
     }
 
-    pub(crate) fn close_received(&mut self, cx: &mut Context<Self>) {
-        self.received_zoom = false;
-        self.received_closed = true;
-        cx.notify();
+    /// How far the reply is zoomed, 0 in the detail to 1 over the page.
+    pub(crate) fn received_now(&self) -> f32 {
+        let target = if self.received_zoom { 1. } else { 0. };
+        self.received_tween.and_then(|z| z.at(target, std::time::Instant::now())).unwrap_or(target)
     }
 
-    /// The reply in the results grid, with the results panel's zoom and a close.
-    fn received_panel(&self, t: &Theme, zoomed: bool, cx: &mut Context<Self>) -> AnyElement {
+    /// The reply in the results grid, with the results panel's zoom. `fill` grows the grid to
+    /// the panel's height, zoomed or on its way.
+    fn received_panel(&self, t: &Theme, zoomed: bool, fill: bool, cx: &mut Context<Self>) -> AnyElement {
         let (shown, total) = self.received_rows.unwrap_or((0, 0));
         let count = if total as usize > shown { format!("{shown} of {total}") } else { plural(shown as u64, "row", "rows") };
         let key = if zoomed { Some("esc".to_string()) } else { crate::keymap::key("zoom_result") };
@@ -1418,20 +1500,15 @@ impl AgentsPage {
                     .child(icon(if zoomed { Icon::Collapse } else { Icon::Expand }).size(px(13.)).text_color(if zoomed { t.acc_t } else { t.tx2 }))
                     .tooltip(ui::tooltip(if zoomed { "Exit zoom" } else { "Zoom result" }, None, key.as_deref()))
                     .on_click(cx.listener(|v, _, window, cx| v.toggle_received_zoom(window, cx))),
-            )
-            .child(
-                ui::icon_button(t, "agents-recv-close", Icon::Close, 24., 12.)
-                    .tooltip(ui::tooltip("Close", Some("Comes back when you select another call."), None))
-                    .on_click(cx.listener(|v, _, _, cx| v.close_received(cx))),
             );
         let grid = div().border_1().border_color(t.line).child(self.received.clone());
-        let grid = if zoomed { grid.flex_1().min_h_0() } else { grid.h(px(260.)).flex_none() };
+        let grid = if fill { grid.flex_1().min_h_0() } else { grid.h(px(260.)).flex_none() };
         div()
             .children(ui::here(&"agents-recv".into()))
             .flex()
             .flex_col()
             .gap(px(8.))
-            .when(zoomed, |d| d.size_full())
+            .when(fill, |d| d.size_full())
             .child(bar)
             .child(grid)
             .into_any_element()
