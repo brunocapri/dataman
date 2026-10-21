@@ -222,21 +222,6 @@ pub(crate) fn shared(core: &Arc<Core>, cx: &mut App) -> Arc<Shared> {
     s
 }
 
-/// What the agent received in an audited call, while this app keeps it (in memory only; a
-/// call the headless server answered is not here).
-pub(crate) fn reply_of(id: &str, cx: &App) -> Option<Arc<str>> {
-    let s = cx.try_global::<McpHost>()?.shared.clone()?;
-    let g = s.hub.lock().unwrap();
-    g.as_ref()?.0.reply(id)
-}
-
-#[cfg(feature = "checks")]
-pub(crate) fn keep_reply(core: &Arc<Core>, id: &str, text: &str, cx: &mut App) {
-    if let Ok((hub, _)) = shared(core, cx).hub() {
-        hub.keep_reply(id, text);
-    }
-}
-
 pub fn stdio_binary() -> String {
     std::env::current_exe()
         .ok()

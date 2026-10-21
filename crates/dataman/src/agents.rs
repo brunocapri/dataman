@@ -25,7 +25,6 @@ use crate::ui;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Page {
-    Home,
     Audit,
     Permissions,
     Privacy,
@@ -33,11 +32,10 @@ pub enum Page {
 }
 
 impl Page {
-    pub const ALL: [Page; 5] = [Page::Home, Page::Audit, Page::Permissions, Page::Privacy, Page::Types];
+    pub const ALL: [Page; 4] = [Page::Audit, Page::Permissions, Page::Privacy, Page::Types];
 
     pub fn label(self) -> &'static str {
         match self {
-            Page::Home => "Home",
             Page::Audit => "Audit",
             Page::Permissions => "Permissions",
             Page::Privacy => "Privacy",
@@ -47,7 +45,6 @@ impl Page {
 
     pub fn key(self) -> &'static str {
         match self {
-            Page::Home => "home",
             Page::Audit => "audit",
             Page::Permissions => "permissions",
             Page::Privacy => "privacy",
@@ -57,7 +54,6 @@ impl Page {
 
     fn icon(self) -> Icon {
         match self {
-            Page::Home => Icon::Home,
             Page::Audit => Icon::Pulse,
             Page::Permissions => Icon::Shield,
             Page::Privacy => Icon::Padlock,
@@ -91,6 +87,14 @@ pub fn bind_keys(cx: &mut App) {
         crate::keymap::kb("cmd-down", ListLast, c),
         crate::keymap::kb("enter", ListOpen, c),
     ]);
+}
+
+/// A call's reply, as the log has it.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Kept {
+    Reading,
+    Reply { text: Arc<str>, cut: bool },
+    RotatedOut,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -239,6 +243,8 @@ pub struct AgentsPage {
     audit_child: HashMap<usize, usize>,
     pub(crate) types_offset: usize,
     pub(crate) type_sel: Option<usize>,
+    /// Replies read back from the log (`mcp-replies.jsonl`), by call id.
+    pub(crate) replies: HashMap<String, Kept>,
     /// Sampled fields of collections and indices, for the suggestions (connection id and name).
     pub(crate) fields: HashMap<String, Vec<(String, String)>>,
     pub(crate) loading: BTreeSet<String>,
@@ -326,32 +332,6 @@ fn masked_count(e: &Entry) -> u64 {
 }
 
 /// The one-word outcome of Home's table: nothing for a plain success.
-pub(crate) fn outcome_word(e: &Entry) -> (String, bool) {
-    if denied(e) {
-        return ("denied".into(), true);
-    }
-    match e.outcome {
-        Outcome::Ok => {
-            let w = match (&e.approval, &e.allowed_by) {
-                (Some(a), _) if a.decision == Decision::Approved => "allowed",
-                (_, Some(AllowedBy::Yolo)) => "yolo",
-                (_, Some(AllowedBy::Allowlist { .. })) => "allowed query",
-                _ if e.draft => "draft",
-                _ => "",
-            };
-            (w.into(), false)
-        }
-        Outcome::Refused if hidden_column_refusal(e) => ("refused · hidden column".into(), true),
-        Outcome::Refused if hidden_refusal(e) => ("refused · hidden".into(), true),
-        Outcome::Refused if masked_refusal(e) => ("refused · masked".into(), true),
-        Outcome::Refused => ("refused".into(), true),
-        Outcome::Cancelled => ("cancelled".into(), false),
-        Outcome::Timeout => ("timed out".into(), true),
-        Outcome::Invalid => ("invalid".into(), true),
-        Outcome::Error => ("error".into(), true),
-    }
-}
-
 /// The note under an Audit row; true when it reads in the error color.
 pub(crate) fn audit_note(e: &Entry) -> (String, bool) {
     if let Some(a) = e.approval.as_ref().filter(|a| matches!(a.decision, Decision::Denied | Decision::Timeout)) {
@@ -429,21 +409,9 @@ pub(crate) fn decision_text(e: &Entry) -> String {
     }
 }
 
-pub(crate) fn ago(ts: chrono::DateTime<chrono::Utc>) -> String {
-    let d = chrono::Utc::now() - ts;
-    if d >= CONNECTED {
-        return "idle".into();
-    }
-    match d.num_seconds().max(0) {
-        s if s < 60 => format!("{s} s ago"),
-        s => format!("{} min ago", s / 60),
-    }
-}
-
 pub(crate) struct AgentCard {
     pub(crate) name: String,
     pub(crate) last: chrono::DateTime<chrono::Utc>,
-    pub(crate) conns: Vec<String>,
 }
 
 pub(crate) fn agents_of(entries: &[Entry]) -> Vec<AgentCard> {
@@ -452,16 +420,11 @@ pub(crate) fn agents_of(entries: &[Entry]) -> Vec<AgentCard> {
         let card = match out.iter_mut().find(|c| c.name == e.client) {
             Some(c) => c,
             None => {
-                out.push(AgentCard { name: e.client.clone(), last: e.ts, conns: Vec::new() });
+                out.push(AgentCard { name: e.client.clone(), last: e.ts });
                 out.last_mut().unwrap()
             }
         };
         card.last = card.last.max(e.ts);
-        if let Some(c) = &e.connection
-            && !card.conns.contains(c)
-        {
-            card.conns.push(c.clone());
-        }
     }
     out.sort_by(|a, b| b.last.cmp(&a.last));
     out
@@ -564,7 +527,7 @@ impl AgentsPage {
             core,
             store,
             focus: cx.focus_handle(),
-            page: Page::Home,
+            page: Page::Audit,
             visible: false,
             entries: Vec::new(),
             loaded: false,
@@ -600,6 +563,7 @@ impl AgentsPage {
             audit_child: HashMap::new(),
             types_offset: 0,
             type_sel: None,
+            replies: HashMap::new(),
             fields: HashMap::new(),
             loading: BTreeSet::new(),
         };
@@ -656,7 +620,7 @@ impl AgentsPage {
             self.menu = None;
         }
         self.page = page;
-        if page == Page::Audit || page == Page::Home {
+        if page == Page::Audit {
             self.reload(cx);
         }
         cx.notify();
@@ -833,7 +797,6 @@ impl AgentsPage {
                 self.type_sel = Some(n);
                 self.types_scroll.scroll_to_item(n + self.types_offset);
             }
-            Page::Home => return false,
         }
         cx.notify();
         true
@@ -955,150 +918,6 @@ impl AgentsPage {
 
     // ---- Home ----
 
-    fn render_home(&mut self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let head = self.header(t, "Agents");
-        if self.entries.is_empty() {
-            let cmd = crate::mcp::stdio_command();
-            let copy = cmd.clone();
-            let body = div()
-                .flex_1()
-                .flex()
-                .flex_col()
-                .items_center()
-                .justify_center()
-                .gap(px(14.))
-                .when(self.loaded, |d| {
-                    d.child(div().text_size(px(13.)).text_color(t.tx2).child("No agent has connected yet."))
-                        .child(
-                            div()
-                                .max_w(px(720.))
-                                .flex()
-                                .flex_row()
-                                .items_center()
-                                .gap(px(8.))
-                                .child(div().min_w_0().px(px(10.)).py(px(6.)).bg(t.field).border_1().border_color(t.line).text_size(px(11.5)).text_color(t.tx).overflow_hidden().whitespace_nowrap().text_ellipsis().child(cmd))
-                                .child(ui::button(t, "agents-copy-cmd", ui::Btn::Secondary).h(px(28.)).child("Copy").on_click(cx.listener(move |_, _, _, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy.clone()))))),
-                        )
-                });
-            return div().size_full().flex().flex_col().child(head).child(body).into_any_element();
-        }
-        let cards: Vec<AnyElement> = agents_of(&self.entries)
-            .into_iter()
-            .take(6)
-            .map(|a| {
-                let when = ago(a.last);
-                let idle = when == "idle";
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .gap(px(10.))
-                    .px(px(16.))
-                    .py(px(14.))
-                    .border_1()
-                    .border_color(t.line)
-                    .when(idle, |d| d.opacity(0.55))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(8.))
-                            .child(div().text_size(px(13.)).font_weight(FontWeight::BOLD).text_color(t.tx).child(dataman_mcp::shown_client(&a.name)))
-                            .child(div().flex_1())
-                            .child(div().text_size(px(11.)).text_color(t.tx3).child(when)),
-                    )
-                    .child(div().flex().flex_row().flex_wrap().gap_x(px(14.)).gap_y(px(6.)).children(a.conns.iter().map(|c| self.conn_label(t, c, cx))))
-                    .into_any_element()
-            })
-            .collect();
-        let mut grid = div().flex().flex_col().gap(px(12.));
-        let mut it = cards.into_iter().peekable();
-        while it.peek().is_some() {
-            let mut row: Vec<AnyElement> = it.by_ref().take(3).collect();
-            while row.len() < 3 {
-                row.push(div().flex_1().into_any_element());
-            }
-            grid = grid.child(div().flex().flex_row().gap(px(12.)).children(row));
-        }
-        let col = |w: f32| div().flex_none().w(px(w));
-        let header = div()
-            .h(px(28.))
-            .flex_none()
-            .px(px(10.))
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(14.))
-            .border_b_1()
-            .border_color(t.line2)
-            .text_size(px(11.))
-            .text_color(t.tx3)
-            .child(col(62.).child("TIME"))
-            .child(col(96.).child("AGENT"))
-            .child(col(150.).child("CONNECTION"))
-            .child(div().flex_1().child("STATEMENT"))
-            .child(col(56.).flex().justify_end().child("ROWS"))
-            .child(col(56.).flex().justify_end().child("TOOK"))
-            .child(col(170.).child("OUTCOME"));
-        let rows = self.entries.iter().enumerate().filter(|(_, e)| e.statement().is_some()).take(40).map(|(i, e)| {
-            let (word, bad) = outcome_word(e);
-            let hov = t.hov;
-            let id = SharedString::from(format!("agents-home-row-{i}"));
-            div()
-                .children(ui::here(&id.clone().into()))
-                .id(id)
-                .h(px(30.))
-                .flex_none()
-                .px(px(10.))
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(px(14.))
-                .border_b_1()
-                .border_color(t.line)
-                .hover(move |s| s.bg(hov))
-                .child(col(62.).text_color(t.tx3).child(short_time(e.ts)))
-                .child(col(96.).text_color(t.tx).overflow_hidden().whitespace_nowrap().text_ellipsis().child(dataman_mcp::shown_client(&e.client)))
-                .child(col(150.).child(e.connection.as_deref().map(|c| self.conn_label(t, c, cx).into_any_element()).unwrap_or_else(|| div().into_any_element())))
-                .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx2).child(one_line(&shown_agent_text(e.statement().unwrap_or(""), 400))))
-                .child(col(56.).flex().justify_end().text_color(t.tx2).child(e.rows.map(|n| crate::grid::ui_count(n as usize)).unwrap_or_default()))
-                .child(col(56.).flex().justify_end().text_color(t.tx3).child(if e.outcome == Outcome::Ok { fmt_ms(e.ms) } else { String::new() }))
-                .child(col(170.).text_size(px(11.5)).text_color(if bad { t.err } else { t.tx3 }).overflow_hidden().whitespace_nowrap().text_ellipsis().child(word))
-                .on_click(cx.listener(move |v, _, _, cx| {
-                    v.f_agent = None;
-                    v.f_conn = None;
-                    v.f_outcome = Outcomes::Any;
-                    v.f_when = When::All;
-                    v.search.update(cx, |s, cx| s.set_text("", cx));
-                    v.selected = Some(i);
-                    v.show(Page::Audit, cx);
-                }))
-        });
-        div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .child(head)
-            .child(
-                div()
-                    .id("agents-home-body")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .flex()
-                    .flex_col()
-                    .gap(px(28.))
-                    .pt(px(8.))
-                    .px(px(32.))
-                    .pb(px(24.))
-                    .child(grid)
-                    .child(div().flex().flex_col().child(header).children(rows)),
-            )
-            .into_any_element()
-    }
-
     // ---- Audit ----
 
     fn filter_button(&self, t: &Theme, id: &'static str, label: String, cx: &mut Context<Self>) -> AnyElement {
@@ -1139,6 +958,33 @@ impl AgentsPage {
                     .child(icon(Icon::ChevronDown).size(px(10.)).text_color(t.tx3))
                     .on_click(cx.listener(move |v, _, _, cx| v.open_menu(id, 200., items.clone(), cx))),
             )
+            .into_any_element()
+    }
+
+    /// Before any agent called: how to connect one.
+    fn render_no_calls(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let cmd = crate::mcp::stdio_command();
+        let copy = cmd.clone();
+        div()
+            .flex_1()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap(px(14.))
+            .when(self.loaded, |d| {
+                d.child(div().text_size(px(13.)).text_color(t.tx2).child("No agent has connected yet."))
+                    .child(
+                        div()
+                            .max_w(px(720.))
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(8.))
+                            .child(div().min_w_0().px(px(10.)).py(px(6.)).bg(t.field).border_1().border_color(t.line).text_size(px(11.5)).text_color(t.tx).overflow_hidden().whitespace_nowrap().text_ellipsis().child(cmd))
+                            .child(ui::button(t, "agents-copy-cmd", ui::Btn::Secondary).h(px(28.)).child("Copy").on_click(cx.listener(move |_, _, _, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy.clone()))))),
+                    )
+            })
             .into_any_element()
     }
 
@@ -1279,15 +1125,10 @@ impl AgentsPage {
             self.audit_child.insert(i, rows.len());
             rows.push(row.into_any_element());
         }
-        let list: AnyElement = if shown.is_empty() {
-            div()
-                .flex_1()
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_color(t.tx3)
-                .child(if self.entries.is_empty() { "No calls yet." } else { "Nothing matches." })
-                .into_any_element()
+        let list: AnyElement = if self.entries.is_empty() {
+            self.render_no_calls(t, cx)
+        } else if shown.is_empty() {
+            div().flex_1().flex().items_center().justify_center().text_color(t.tx3).child("Nothing matches.").into_any_element()
         } else {
             div().id("agents-audit-list").flex_1().min_w_0().overflow_y_scroll().track_scroll(&self.audit_scroll).flex().flex_col().children(rows).into_any_element()
         };
@@ -1354,9 +1195,18 @@ impl AgentsPage {
             if self.received_rows.is_some() {
                 return self.received_panel(t, false, cx);
             }
-            let body = match e.id.as_deref().and_then(|id| crate::mcp::reply_of(id, cx)) {
-                Some(r) => render_reply(t, &r),
-                None => div().text_size(px(11.)).line_height(px(16.)).text_color(t.tx3).child("Kept in memory only, while Dataman is open; this call's reply is no longer here.").into_any_element(),
+            let note = |s: &str| div().text_size(px(11.)).line_height(px(16.)).text_color(t.tx3).child(s.to_string()).into_any_element();
+            let body = match e.id.as_deref().map(|id| self.replies.get(id).cloned().unwrap_or(Kept::Reading)) {
+                Some(Kept::Reply { text, cut }) => div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.))
+                    .child(render_reply(t, &text))
+                    .when(cut, |d| d.child(note(&format!("Longer than {} KB: the log keeps the first {} KB.", dataman_mcp::audit::REPLY_MAX / 1024, dataman_mcp::audit::REPLY_MAX / 1024))))
+                    .into_any_element(),
+                Some(Kept::Reading) => note("Reading the log…"),
+                Some(Kept::RotatedOut) => note("This reply was rotated out of the log."),
+                None => note("Logged before Dataman kept replies."),
             };
             div().flex().flex_col().gap(px(8.)).child(ui::caps(t, "WHAT THE AGENT RECEIVED")).child(body).into_any_element()
         });
@@ -1452,19 +1302,58 @@ impl AgentsPage {
         if self.received_for == Some(id.clone().flatten()) && self.received_for.is_some() {
             return;
         }
+        let kept = id.clone().flatten().map(|id| self.kept(&id, cx));
+        if kept == Some(Kept::Reading) {
+            return;
+        }
         let first = self.received_for.is_none();
         self.received_for = Some(id.clone().flatten());
         if !first {
             self.received_closed = false;
         }
-        let reply = id.flatten().and_then(|id| crate::mcp::reply_of(&id, cx));
-        let table = reply.as_deref().and_then(reply_table);
+        let table = match &kept {
+            Some(Kept::Reply { text, cut: false }) => reply_table(text),
+            _ => None,
+        };
         self.received_rows = table.as_ref().map(|(rs, total)| (rs.rows(), *total));
         if table.is_none() {
             self.received_zoom = false;
         }
         let rt = self.core.handle();
         self.received.update(cx, |g, cx| g.set_result(table.map(|(rs, _)| rs), rt, cx));
+    }
+
+    /// A call's reply from the log, read in the background the first time it is asked for.
+    pub(crate) fn kept(&mut self, id: &str, cx: &mut Context<Self>) -> Kept {
+        if let Some(k) = self.replies.get(id) {
+            return k.clone();
+        }
+        self.replies.insert(id.to_string(), Kept::Reading);
+        let (log, key) = (self.core.dirs.mcp_audit_file(), id.to_string());
+        let task = cx.background_spawn(async move { dataman_mcp::audit::reply(&log, &key) });
+        let key = id.to_string();
+        cx.spawn(async move |this, cx| {
+            let r = task.await;
+            let _ = this.update(cx, |v, cx| {
+                let k = match r {
+                    Some(r) => Kept::Reply { text: r.reply.into(), cut: r.cut },
+                    None => Kept::RotatedOut,
+                };
+                v.replies.insert(key, k);
+                v.received_for = None;
+                cx.notify();
+            });
+        })
+        .detach();
+        Kept::Reading
+    }
+
+    /// What a restart starts from: nothing read yet.
+    #[cfg(feature = "checks")]
+    pub(crate) fn forget_replies(&mut self, cx: &mut Context<Self>) {
+        self.replies.clear();
+        self.received_for = None;
+        cx.notify();
     }
 
     pub(crate) fn toggle_received_zoom(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1930,7 +1819,6 @@ impl Render for AgentsPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme().clone();
         let body = match self.page {
-            Page::Home => self.render_home(&t, cx),
             Page::Audit => self.render_audit(&t, window, cx),
             Page::Permissions => self.render_permissions(&t, window, cx),
             Page::Privacy => self.render_privacy(&t, window, cx),

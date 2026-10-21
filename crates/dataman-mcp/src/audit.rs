@@ -197,22 +197,71 @@ impl Audit {
     }
 
     fn append(&self, e: &Entry) -> std::io::Result<()> {
-        if let Some(dir) = self.path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        if std::fs::metadata(&self.path).is_ok_and(|m| m.len() > ROTATE_AT) {
-            let _ = std::fs::rename(&self.path, self.path.with_extension("1.jsonl"));
-        }
-        let mut line = serde_json::to_string(e).map_err(std::io::Error::other)?;
-        line.push('\n');
-        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&self.path)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = f.set_permissions(std::fs::Permissions::from_mode(0o600));
-        }
-        f.write_all(line.as_bytes())
+        append_line(&self.path, &serde_json::to_string(e).map_err(std::io::Error::other)?)
     }
+
+    /// What the agent received, as it left Dataman (after the privacy rules), next to the log.
+    pub fn write_reply(&self, id: &str, text: &str) {
+        let mut at = text.len().min(REPLY_MAX);
+        while !text.is_char_boundary(at) {
+            at -= 1;
+        }
+        let r = Reply { id: id.to_string(), ts: chrono::Utc::now(), cut: at < text.len(), reply: text[..at].to_string() };
+        let _g = self.lock.lock();
+        let path = replies_path(&self.path);
+        if let Err(err) = serde_json::to_string(&r).map_err(std::io::Error::other).and_then(|l| append_line(&path, &l)) {
+            log::warn!("audit replies {}: {err}", path.display());
+        }
+    }
+}
+
+/// One line, appended in a single write; past 8 MB the file moves to `.1.jsonl` (the one before
+/// goes), so a log and its rotated copy stay under 16 MB. 0600: the replies hold data.
+fn append_line(path: &Path, line: &str) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    if std::fs::metadata(path).is_ok_and(|m| m.len() > ROTATE_AT) {
+        let _ = std::fs::rename(path, path.with_extension("1.jsonl"));
+    }
+    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = f.set_permissions(std::fs::Permissions::from_mode(0o600));
+    }
+    f.write_all(format!("{line}\n").as_bytes())
+}
+
+/// A reply is kept up to 64 KB; `cut` says when it was longer.
+pub const REPLY_MAX: usize = 64 * 1024;
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Reply {
+    pub id: String,
+    pub ts: chrono::DateTime<chrono::Utc>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cut: bool,
+    pub reply: String,
+}
+
+pub fn replies_path(audit: &Path) -> PathBuf {
+    audit.with_file_name("mcp-replies.jsonl")
+}
+
+/// The reply logged for a call (by its entry's id), in the replies file or its rotated copy;
+/// None once it rotated out.
+pub fn reply(audit: &Path, id: &str) -> Option<Reply> {
+    let current = replies_path(audit);
+    let prefix = format!("{{\"id\":{}", serde_json::to_string(id).ok()?);
+    for p in [current.clone(), current.with_extension("1.jsonl")] {
+        let Ok(f) = std::fs::File::open(&p) else { continue };
+        let found = std::io::BufReader::new(f).lines().map_while(Result::ok).filter(|l| l.starts_with(&prefix)).last();
+        if let Some(r) = found.and_then(|l| serde_json::from_str(&l).ok()) {
+            return Some(r);
+        }
+    }
+    None
 }
 
 pub fn tail(path: &Path, n: usize) -> Vec<Entry> {
@@ -346,5 +395,46 @@ mod tests {
         let none: Entry = serde_json::from_str(r#"{"ts":"2026-10-14T12:00:00Z","client":"c","transport":"stdio","tool":"list_tables","ms":1,"outcome":"ok"}"#).unwrap();
         assert_eq!(none.statement(), None);
         assert!(full(&"x".repeat(QUERY_MAX + 1)).is_none());
+    }
+
+    #[test]
+    fn replies_next_to_the_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("mcp-audit.jsonl");
+        let a = Audit::new(log.clone());
+        a.write_reply("r1", r#"{"rows":[["a•••@acme.com"]]}"#);
+        let r = reply(&log, "r1").unwrap();
+        assert_eq!((r.reply.as_str(), r.cut), (r#"{"rows":[["a•••@acme.com"]]}"#, false));
+        assert!(reply(&log, "nope").is_none());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(replies_path(&log)).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        // Cut at 64 KB, on a character boundary, and said so.
+        let long = "é".repeat(REPLY_MAX);
+        a.write_reply("r2", &long);
+        let r = reply(&log, "r2").unwrap();
+        assert!(r.cut && r.reply.len() <= REPLY_MAX && r.reply.chars().all(|c| c == 'é'));
+        // Rotation keeps the newest and bounds the total; what rotated out is gone.
+        let chunk = "x".repeat(REPLY_MAX - 100);
+        for i in 0..300 {
+            a.write_reply(&format!("bulk{i}"), &chunk);
+        }
+        let size = |p: &Path| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+        let rp = replies_path(&log);
+        assert!(size(&rp) + size(&rp.with_extension("1.jsonl")) <= 2 * (ROTATE_AT + REPLY_MAX as u64 + 1024));
+        assert!(reply(&log, "bulk299").is_some() && reply(&log, "r1").is_none(), "the oldest rotated out");
+        // Several writers at once leave whole lines.
+        let a = std::sync::Arc::new(Audit::new(dir.path().join("other").join("mcp-audit.jsonl")));
+        let hs: Vec<_> = (0..4)
+            .map(|t| {
+                let a = a.clone();
+                std::thread::spawn(move || (0..50).for_each(|i| a.write_reply(&format!("t{t}-{i}"), &"y".repeat(5000))))
+            })
+            .collect();
+        hs.into_iter().for_each(|h| h.join().unwrap());
+        let text = std::fs::read_to_string(replies_path(a.path())).unwrap();
+        assert_eq!(text.lines().filter(|l| serde_json::from_str::<Reply>(l).is_ok()).count(), 200);
     }
 }

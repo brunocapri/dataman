@@ -3,7 +3,6 @@
 //! connection and settings. The `agents-*` demo stages show its pages for screenshots.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
 use dataman_core::config::Engine;
 use dataman_core::privacy::{AgentView, CustomType, ItemKind, Mask, ReadFrom, SensitiveCol, VisibleItem};
@@ -78,7 +77,7 @@ fn seed_profiles(core: &Core) {
 }
 
 /// The calls of the mockups, newest first, at their distances from now.
-fn seed_audit(core: &Arc<Core>, cx: &mut gpui::App) {
+fn seed_audit(core: &Core) {
     let now = chrono::Utc::now();
     let note = |d: Decision, reasons: &[&str]| Some(ApprovalNote { decision: d, by: Some("bruno".into()), reasons: reasons.iter().map(|s| s.to_string()).collect(), rows: None });
     let seen = |columns: Option<u64>, masked: &[(&str, Mask)], values: &[(&str, u64)]| {
@@ -104,7 +103,7 @@ fn seed_audit(core: &Arc<Core>, cx: &mut gpui::App) {
     for (ago, client, conn, tool, sql, rows, ms, outcome, error, approval, seen) in rows {
         let id = format!("demo-{ago}");
         if let Some(r) = demo_reply(ago) {
-            crate::mcp::keep_reply(core, &id, &r.to_string(), cx);
+            audit.write_reply(&id, &r.to_string());
         }
         audit.write(&Entry {
             id: Some(id),
@@ -165,7 +164,7 @@ fn id_of(name: &str, core: &Core) -> Option<String> {
     core.config.connections().into_iter().find(|p| p.name == name).map(|p| p.id)
 }
 
-/// `agents-home`, `agents-audit`, `agents-permissions[-mongo|-redis]`, `agents-privacy`,
+/// `agents-audit[-zoom]`, `agents-permissions[-mongo|-redis]`, `agents-privacy`,
 /// `agents-types[-conn]`, `agents-empty`: the page as the mockups draw it.
 pub fn is_demo(stage: &str) -> bool {
     stage.starts_with("agents-") && stage != "agents-check"
@@ -175,7 +174,7 @@ pub fn demo(ws: &Entity<Workspace>, stage: &str, window: &mut gpui::Window, cx: 
     let core = ws.read(cx).store.read(cx).core.clone();
     seed_profiles(&core);
     if stage != "agents-empty" {
-        seed_audit(&core, cx);
+        seed_audit(&core);
     }
     ws.update(cx, |w, cx| w.store.update(cx, |s, cx| s.reload(cx)));
     let page = match stage {
@@ -183,7 +182,7 @@ pub fn demo(ws: &Entity<Workspace>, stage: &str, window: &mut gpui::Window, cx: 
         s if s.starts_with("agents-permissions") => Page::Permissions,
         s if s.starts_with("agents-privacy") => Page::Privacy,
         s if s.starts_with("agents-types") => Page::Types,
-        _ => Page::Home,
+        _ => Page::Audit,
     };
     let conn = match stage {
         "agents-permissions-mongo" => "orders-mongo",
@@ -227,44 +226,69 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     r.check("PostgreSQL connects", up.is_ok(), format!("{up:?}"));
     let core = core(ws, cx);
     seed_profiles(&core);
-    let _ = cx.update(|_, cx| seed_audit(&core, cx));
+    seed_audit(&core);
     let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.store.update(cx, |s, cx| s.reload(cx))));
     let a = agents(ws, cx);
-    let page = |cx: &mut AsyncWindowContext| cx.update(|_, cx| a.read(cx).page).unwrap_or(Page::Home);
+    let page = |cx: &mut AsyncWindowContext| cx.update(|_, cx| a.read(cx).page).unwrap_or(Page::Audit);
     let shows = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).view == dataman_core::layout::NavView::Agents).unwrap_or(false);
 
     r.check("the robot sits at the foot of the rail", probed("rail-agents", cx).is_some(), "");
     click_probe("rail-agents", cx);
     let loaded = until(cx, 5, |cx| cx.update(|_, cx| a.read(cx).entries.len() >= 13).unwrap_or(false)).await;
-    r.check("a click on it opens the Agents area on Home, with the agents' calls", shows(cx) && page(cx) == Page::Home && loaded, format!("{:?}", page(cx)));
+    r.check("a click on it opens the Agents area on Audit, with the agents' calls", shows(cx) && page(cx) == Page::Audit && loaded, format!("{:?}", page(cx)));
+    let pages: Vec<&str> = Page::ALL.iter().map(|p| p.label()).collect();
+    r.check("the area has no Home: Audit, Permissions, Privacy, Sensitive data", pages == ["Audit", "Permissions", "Privacy", "Sensitive data"], format!("{pages:?}"));
     let connected = cx.update(|_, cx| a.read(cx).connected_count()).unwrap_or(0);
-    r.check("Home: two agents seen in the last minutes (Codex is idle)", connected == 2, connected);
-    let cards = cx.update(|_, cx| crate::agents::agents_of(&a.read(cx).entries).into_iter().map(|c| (c.name, crate::agents::ago(c.last))).collect::<Vec<_>>()).unwrap_or_default();
-    r.check(
-        "the agent cards: Claude Code seconds ago, Cursor minutes ago, Codex idle",
-        cards.len() == 3 && cards[0].0 == "Claude Code" && cards[0].1.ends_with("s ago") && cards[1].1.ends_with("min ago") && cards[2].1 == "idle",
-        format!("{cards:?}"),
-    );
-    let words = cx.update(|_, cx| a.read(cx).entries.iter().take(3).map(crate::agents::outcome_word).collect::<Vec<_>>()).unwrap_or_default();
-    r.check(
-        "outcomes: allowed, refused · hidden column (in the error color), an error",
-        words.first().is_some_and(|w| w.0 == "allowed" && !w.1) && words.get(1).is_some_and(|w| w.0 == "refused · hidden column" && w.1) && words.get(2).is_some_and(|w| w.1),
-        format!("{words:?}"),
-    );
-    click_probe("agents-home-row-3", cx);
+    r.check("its header counts two agents seen in the last minutes (Codex is idle)", connected == 2, connected);
+    click_probe("agents-audit-row-3", cx);
     pause(cx, 100).await;
     let sel = cx.update(|_, cx| a.read(cx).selected).ok().flatten();
-    r.check("a statement's row opens it in Audit", page(cx) == Page::Audit && sel == Some(3), format!("{:?} {sel:?}", page(cx)));
+    r.check("a click selects a call", page(cx) == Page::Audit && sel == Some(3), format!("{:?} {sel:?}", page(cx)));
     let note = cx.update(|_, cx| crate::agents::audit_note(&a.read(cx).entries[3])).unwrap_or_default();
     r.check("its note: rows · columns · masked", note.0 == "40 rows · 6 columns · 2 masked" && !note.1, format!("{note:?}"));
     let decision = cx.update(|_, cx| crate::agents::decision_text(&a.read(cx).entries[3])).unwrap_or_default();
     r.check("its decision: Ran · read, no question", decision == "Ran · read, no question", &decision);
-    let reply = cx.update(|_, cx| a.read(cx).entries[3].id.clone().and_then(|id| crate::mcp::reply_of(&id, cx))).ok().flatten();
-    r.check(
-        "its detail shows what the agent received: the rows, masked as sent",
-        reply.as_deref().is_some_and(|r| r.contains("a•••@acme.com") && r.contains("‹h:") && !r.contains("ana@")),
-        format!("{reply:?}"),
-    );
+    let kept = |cx: &mut AsyncWindowContext, i: usize| {
+        cx.update(|_, cx| {
+            let a = a.read(cx);
+            a.entries.get(i).and_then(|e| e.id.clone()).and_then(|id| a.replies.get(&id).cloned())
+        })
+        .ok()
+        .flatten()
+    };
+    let read = |k: &Option<crate::agents::Kept>| matches!(k, Some(crate::agents::Kept::Reply { .. }));
+    let text = |k: &Option<crate::agents::Kept>| match k {
+        Some(crate::agents::Kept::Reply { text, .. }) => text.to_string(),
+        _ => String::new(),
+    };
+    until(cx, 5, |cx| read(&kept(cx, 3))).await;
+    let reply = text(&kept(cx, 3));
+    r.check("its detail shows what the agent received, read from the log on disk: the rows, masked as sent", reply.contains("a•••@acme.com") && reply.contains("‹h:") && !reply.contains("ana@"), &reply);
+    // A restart: nothing in memory, the entries read again.
+    let _ = cx.update(|_, cx| {
+        a.update(cx, |a, cx| {
+            a.forget_replies(cx);
+            a.reload(cx);
+        })
+    });
+    let again = until(cx, 5, |cx| read(&kept(cx, 3))).await;
+    r.check("after a restart the reply is still there", again && text(&kept(cx, 3)) == reply, "");
+    let gone = cx.update(|_, cx| a.read(cx).entries.iter().position(|e| e.id.as_deref() == Some("demo-2400"))).ok().flatten().unwrap_or(0);
+    let _ = cx.update(|_, cx| {
+        a.update(cx, |a, cx| {
+            a.selected = Some(gone);
+            cx.notify();
+        })
+    });
+    let rotated = until(cx, 5, |cx| matches!(kept(cx, gone), Some(crate::agents::Kept::RotatedOut))).await;
+    r.check("a reply no longer in the log says it rotated out", rotated, format!("{:?}", kept(cx, gone)));
+    let _ = cx.update(|_, cx| {
+        a.update(cx, |a, cx| {
+            a.selected = Some(3);
+            cx.notify();
+        })
+    });
+    until(cx, 5, |cx| cx.update(|_, cx| a.read(cx).received_rows.is_some()).unwrap_or(false)).await;
     let rows = cx.update(|_, cx| a.read(cx).received_rows).ok().flatten();
     r.check("the reply is in the results grid: 6 rows shown of the 40 sent", rows == Some((6, 40)), format!("{rows:?}"));
     let zoom = |cx: &mut AsyncWindowContext| cx.update(|_, cx| a.read(cx).received_zoom).unwrap_or(false);

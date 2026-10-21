@@ -229,13 +229,7 @@ pub struct Hub {
     after_deny: Mutex<Duration>,
     types: Mutex<HashMap<String, Arc<Types>>>,
     mask_key: Mutex<HashKey>,
-    replies: Mutex<std::collections::VecDeque<(String, Arc<str>)>>,
 }
-
-/// Replies kept for Agents › Audit, in memory only: the last ones, each cut to a size the
-/// detail panel can show.
-const REPLIES: usize = 300;
-const REPLY_MAX: usize = 64 * 1024;
 
 pub const SCHEMA_TTL: Duration = Duration::from_secs(30);
 
@@ -244,7 +238,6 @@ impl Hub {
         let core = Core::new(dirs.clone(), secrets.clone())?;
         Ok(Arc::new(Hub {
             types: Mutex::new(HashMap::new()),
-            replies: Mutex::new(std::collections::VecDeque::new()),
             mask_key: Mutex::new(HashKey::stored(secrets)),
             audit: Audit::new(dirs.mcp_audit_file()),
             core,
@@ -339,20 +332,7 @@ impl Hub {
     }
 
     pub fn keep_reply(&self, id: &str, text: &str) {
-        let cut = match text.char_indices().nth(REPLY_MAX) {
-            Some((at, _)) => format!("{}…", &text[..at]),
-            None => text.to_string(),
-        };
-        let mut g = self.replies.lock();
-        if g.len() >= REPLIES {
-            g.pop_front();
-        }
-        g.push_back((id.to_string(), cut.into()));
-    }
-
-    /// What the agent received in the call logged with this id, while this process kept it.
-    pub fn reply(&self, id: &str) -> Option<Arc<str>> {
-        self.replies.lock().iter().rev().find(|(i, _)| i == id).map(|(_, r)| r.clone())
+        self.audit.write_reply(id, text);
     }
 
     pub fn mask_key(&self) -> HashKey {

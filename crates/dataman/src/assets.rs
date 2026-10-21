@@ -15,7 +15,6 @@ assets!(
     "icons/activity.svg",
     "icons/agent.svg",
     "icons/robot.svg",
-    "icons/home.svg",
     "icons/pulse.svg",
     "icons/shield.svg",
     "icons/padlock.svg",
@@ -178,7 +177,6 @@ pub enum Icon {
     WinMaximize,
     WinRestore,
     Robot,
-    Home,
     Pulse,
     Shield,
     Padlock,
@@ -257,7 +255,6 @@ impl Icon {
             Icon::WinMaximize => "icons/win-max.svg",
             Icon::WinRestore => "icons/win-restore.svg",
             Icon::Robot => "icons/robot.svg",
-            Icon::Home => "icons/home.svg",
             Icon::Pulse => "icons/pulse.svg",
             Icon::Shield => "icons/shield.svg",
             Icon::Padlock => "icons/padlock.svg",
@@ -320,7 +317,7 @@ mod tests {
             SchemaFilled, Group, Table, View, Key, Keyboard, Index, Search, Filter, Close, Check, Copy, Export, Import, Edit, Trash,
             Sidebar, SidebarRight, PanelRight, Expand, Collapse, Lock, Warning, Info, More, Tab, Command, Code, Hash, Plug,
             Tunnel, MatView, Function, Procedure, Sequence, Type, Label, Trigger, Extension, Role,
-            Constraint, Link, Partition, Activity, Star, StarFill, Pin, Agent, Live, Collection, Robot, Home, Pulse, Shield,
+            Constraint, Link, Partition, Activity, Star, StarFill, Pin, Agent, Live, Collection, Robot, Pulse, Shield,
             Padlock, Types, Column, GridTable,
         ];
         for i in all {
