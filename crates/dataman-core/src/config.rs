@@ -637,6 +637,11 @@ impl ConfigStore {
         })
     }
 
+    /// Several connections changed in one write.
+    pub fn edit_all(&self, f: impl FnOnce(&mut Vec<ConnectionProfile>)) -> Result<()> {
+        self.change(f)
+    }
+
     pub fn remove(&self, id: &str) -> Result<()> {
         self.change(|g| g.retain(|c| c.id != id))
     }

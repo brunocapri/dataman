@@ -30,11 +30,11 @@ pub enum Page {
     Permissions,
     Privacy,
     Types,
-    Mcp,
+    General,
 }
 
 impl Page {
-    pub const ALL: [Page; 5] = [Page::Mcp, Page::Audit, Page::Permissions, Page::Privacy, Page::Types];
+    pub const ALL: [Page; 5] = [Page::General, Page::Audit, Page::Permissions, Page::Privacy, Page::Types];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -42,7 +42,7 @@ impl Page {
             Page::Permissions => "Permissions",
             Page::Privacy => "Privacy",
             Page::Types => "Sensitive data",
-            Page::Mcp => "MCP",
+            Page::General => "General",
         }
     }
 
@@ -52,7 +52,7 @@ impl Page {
             Page::Permissions => "permissions",
             Page::Privacy => "privacy",
             Page::Types => "types",
-            Page::Mcp => "mcp",
+            Page::General => "general",
         }
     }
 
@@ -62,7 +62,7 @@ impl Page {
             Page::Permissions => Icon::Shield,
             Page::Privacy => Icon::Padlock,
             Page::Types => Icon::Types,
-            Page::Mcp => Icon::Plug,
+            Page::General => Icon::Plug,
         }
     }
 }
@@ -207,7 +207,12 @@ pub(crate) struct TypeEditor {
 pub struct AgentsPage {
     pub(crate) core: Arc<Core>,
     pub(crate) store: Entity<ConnStore>,
-    focus: FocusHandle,
+    pub(crate) focus: FocusHandle,
+    /// An agents settings file read and checked, waiting for the user's word.
+    pub(crate) import: Option<crate::agents_mcp::Import>,
+    pub(crate) import_focus: FocusHandle,
+    /// What the last export or import did.
+    pub(crate) settings_note: Option<String>,
     pub(crate) page: Page,
     /// Privacy's row in the nav shows Sensitive data under it.
     pub(crate) privacy_open: bool,
@@ -536,6 +541,9 @@ impl AgentsPage {
             core,
             store,
             focus: cx.focus_handle(),
+            import: None,
+            import_focus: cx.focus_handle(),
+            settings_note: None,
             page: Page::Audit,
             privacy_open: true,
             visible: false,
@@ -812,7 +820,7 @@ impl AgentsPage {
                 self.close_suggest(cx);
                 self.conns_scroll.scroll_to_item(n);
             }
-            Page::Mcp => return false,
+            Page::General => return false,
             Page::Types => {
                 let len = self.type_rows().len();
                 let Some(n) = next(len, self.type_sel) else { return true };
@@ -2061,7 +2069,7 @@ impl Render for AgentsPage {
             Page::Permissions => self.render_permissions(&t, window, cx),
             Page::Privacy => self.render_privacy(&t, window, cx),
             Page::Types => self.render_types(&t, window, cx),
-            Page::Mcp => self.render_mcp(&t, cx),
+            Page::General => self.render_general(&t, cx),
         };
         div()
             .id("agents-page")
@@ -2089,6 +2097,7 @@ impl Render for AgentsPage {
                 }
             }))
             .track_focus(&self.focus)
+            .relative()
             .size_full()
             .flex()
             .flex_col()
@@ -2097,5 +2106,6 @@ impl Render for AgentsPage {
             .text_color(t.tx)
             .child(body)
             .children(self.render_menu(&t, cx))
+            .children(self.render_import(&t, cx))
     }
 }

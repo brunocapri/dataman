@@ -162,7 +162,7 @@ fn id_of(name: &str, core: &Core) -> Option<String> {
     core.config.connections().into_iter().find(|p| p.name == name).map(|p| p.id)
 }
 
-/// `agents-audit[-zoom|-zooming|-wide]`, `agents-privacy-data`, `agents-permissions[-mongo|-redis]`, `agents-privacy`,
+/// `agents-audit[-zoom|-zooming|-wide]`, `agents-privacy-data`, `agents-general[-import]`, `agents-permissions[-mongo|-redis]`, `agents-privacy`,
 /// `agents-types[-conn]`, `agents-empty`: the page as the mockups draw it.
 pub fn is_demo(stage: &str) -> bool {
     stage.starts_with("agents-") && stage != "agents-check"
@@ -180,7 +180,7 @@ pub fn demo(ws: &Entity<Workspace>, stage: &str, window: &mut gpui::Window, cx: 
         s if s.starts_with("agents-permissions") => Page::Permissions,
         s if s.starts_with("agents-privacy") => Page::Privacy,
         s if s.starts_with("agents-types") => Page::Types,
-        s if s.starts_with("agents-mcp") => Page::Mcp,
+        s if s.starts_with("agents-mcp") || s.starts_with("agents-general") => Page::General,
         _ => Page::Audit,
     };
     let conn = match stage {
@@ -211,6 +211,20 @@ pub fn demo(ws: &Entity<Workspace>, stage: &str, window: &mut gpui::Window, cx: 
     if page == Page::Types {
         let regex = ws.read(cx).agents.read(cx).editor.regex.clone();
         window.focus(&gpui::Focusable::focus_handle(regex.read(cx), cx), cx);
+    }
+    if stage == "agents-general-import" {
+        // A file that gives agents more on prod-pg, and knows a connection this Mac doesn't.
+        let mut f = dataman_core::agents_config::export(&core.settings.get(), &core.config.connections());
+        if let Some(c) = f.connections.iter_mut().find(|c| c.name == "prod-pg") {
+            (c.mcp, c.rules.view, c.yolo) = (Some(McpAccess::Full), AgentView::Data, true);
+            c.rules.sensitive.retain(|s| s.col != "users.email");
+            c.rules.read_rows = Some(500);
+            c.allowed.push("DELETE FROM sessions WHERE expires_at < now()".into());
+        }
+        f.sensitive_data.set_builtin("phone", Some(false), None);
+        f.connections.push(dataman_core::agents_config::ConnRules { id: "elsewhere".into(), name: "warehouse".into(), engine: Engine::MySql, database: "dw".into(), mcp: None, row_limit: None, allowed: Vec::new(), yolo: false, rules: Default::default() });
+        let text = dataman_core::agents_config::to_text(&f);
+        ws.read(cx).agents.clone().update(cx, |a, cx| a.open_import(std::path::Path::new("dataman-agents.toml"), Ok(text), cx));
     }
     if stage == "agents-audit-zoom" || stage == "agents-audit-zooming" {
         // Zooms once the reply is laid out, at once or on its way (DATAMAN_ZOOM_FREEZE holds it
@@ -254,7 +268,7 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     let loaded = until(cx, 5, |cx| cx.update(|_, cx| a.read(cx).entries.len() >= 13).unwrap_or(false)).await;
     r.check("a click on it opens the Agents area on Audit, with the agents' calls", shows(cx) && page(cx) == Page::Audit && loaded, format!("{:?}", page(cx)));
     let pages: Vec<&str> = Page::ALL.iter().map(|p| p.label()).collect();
-    r.check("the area's pages: MCP first, then Audit, Permissions, Privacy, Sensitive data (no Home)", pages == ["MCP", "Audit", "Permissions", "Privacy", "Sensitive data"], format!("{pages:?}"));
+    r.check("the area's pages: General first, then Audit, Permissions, Privacy, Sensitive data (no Home)", pages == ["General", "Audit", "Permissions", "Privacy", "Sensitive data"], format!("{pages:?}"));
     // Sensitive data sits inside Privacy, as a folder's child in the explorer: indented, folded
     // and unfolded by Privacy's chevron.
     let (privacy, types) = (probed("agents-nav-privacy", cx), probed("agents-nav-types", cx));
@@ -731,16 +745,80 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     let tip = dataman_core::privacy::builtin("phone").map(|b| (b.rule, b.example)).unwrap_or_default();
     r.check("Phone reads US numbers", tip.0.contains("(555) 123-4567") && tip.1.starts_with("(555) 123-4567"), format!("{tip:?}"));
 
-    // MCP: the server's own page.
-    click_probe("agents-nav-mcp", cx);
+    // General: the server's own page.
+    click_probe("agents-nav-general", cx);
     pause(cx, 100).await;
-    r.check("Agents › MCP: agent access and the command that connects Claude Code", page(cx) == Page::Mcp && probed("agents-mcp-copy", cx).is_some() && probed("agents-mcp-access-1", cx).is_some(), "");
+    r.check("Agents › General: agent access and the command that connects Claude Code", page(cx) == Page::General && probed("agents-mcp-copy", cx).is_some() && probed("agents-mcp-access-1", cx).is_some(), "");
     click_probe("agents-mcp-access-0", cx);
     pause(cx, 50).await;
     let off = !core.settings.get().mcp_enabled;
     click_probe("agents-mcp-access-1", cx);
     pause(cx, 50).await;
     r.check("its Agent access switch is the global one", off && core.settings.get().mcp_enabled, "");
+
+    // Settings file: Export writes it; Import shows what would change, Cancel first when
+    // something loosens; Apply writes it all and logs it in Audit; a bad file changes nothing.
+    let dir = std::env::temp_dir().join(format!("dataman-agents-check-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let (out, loose, bad) = (dir.join("agents.toml"), dir.join("loose.toml"), dir.join("bad.toml"));
+    crate::agents_mcp::set_test_paths(Some(out.clone()), None);
+    click_probe("agents-export", cx);
+    let written = until(cx, 5, |_| out.exists()).await;
+    let text = std::fs::read_to_string(&out).unwrap_or_default();
+    r.check(
+        "Export writes the agents settings file: General, Sensitive data, each connection; no password or address",
+        written && text.contains("version = 1") && text.contains(&format!("id = \"{}\"", pg.id)) && text.contains("sensitive_data") && !text.lines().any(|l| l.trim_start().starts_with("password")) && !text.contains("host =") && !text.contains(&format!("\"{}\"", pg.host)) && probed("agents-file-note", cx).is_some(),
+        text.lines().take(12).collect::<Vec<_>>().join(" | "),
+    );
+    let mut f = dataman_core::agents_config::parse(&text).unwrap_or_else(|_| dataman_core::agents_config::export(&core.settings.get(), &core.config.connections()));
+    let before = rules(&core, &pg.id).view;
+    if let Some(c) = f.connections.iter_mut().find(|c| c.id == pg.id) {
+        c.rules.view = AgentView::Data;
+    }
+    f.connections.push(dataman_core::agents_config::ConnRules { id: "elsewhere".into(), name: "warehouse".into(), engine: Engine::MySql, database: "dw".into(), mcp: None, row_limit: None, allowed: Vec::new(), yolo: false, rules: Default::default() });
+    let _ = std::fs::write(&loose, dataman_core::agents_config::to_text(&f));
+    let import = |path: &std::path::Path, cx: &mut AsyncWindowContext| {
+        crate::agents_mcp::set_test_paths(None, Some(path.to_path_buf()));
+        click_probe("agents-import", cx);
+    };
+    let open = |cx: &mut AsyncWindowContext| cx.update(|_, cx| a.read(cx).import.is_some()).unwrap_or(false);
+    import(&loose, cx);
+    until(cx, 5, |cx| open(cx)).await;
+    let flags = cx.update(|_, cx| a.read(cx).import.as_ref().map(|i| (i.plan.loosens(), i.plan.not_found.clone()))).ok().flatten();
+    r.check(
+        "Import shows the summary: the loosening flagged, the connection not on this Mac listed",
+        probed("agents-import-loosens", cx).is_some() && probed("agents-import-missing", cx).is_some() && probed("agents-import-apply", cx).is_some() && flags.as_ref().is_some_and(|(l, nf)| *l && nf.len() == 1),
+        format!("{flags:?}"),
+    );
+    key(cx, "enter");
+    pause(cx, 50).await;
+    r.check("with a loosening, Enter is Cancel: nothing changes", !open(cx) && rules(&core, &pg.id).view == before, format!("{:?}", rules(&core, &pg.id).view));
+    import(&loose, cx);
+    until(cx, 5, |cx| open(cx)).await;
+    click_probe("agents-import-apply", cx);
+    pause(cx, 100).await;
+    let logged = std::fs::read_to_string(core.dirs.mcp_audit_file()).unwrap_or_default().lines().last().is_some_and(|l| l.contains("import_settings") && l.contains("\"ok\""));
+    r.check("Apply writes it and logs the import in Audit", !open(cx) && rules(&core, &pg.id).view == AgentView::Data && logged, format!("{:?} logged {logged}", rules(&core, &pg.id).view));
+    import(&out, cx);
+    until(cx, 5, |cx| open(cx)).await;
+    click_probe("agents-import-apply", cx);
+    pause(cx, 100).await;
+    r.check("importing the export brings the settings back", rules(&core, &pg.id).view == before, format!("{:?}", rules(&core, &pg.id).view));
+    let mut b = f.clone();
+    let mut wrong = CustomType::new("Bad", "(?=x)a", Mask::Hidden);
+    wrong.id = "t_bad".into();
+    b.sensitive_data.custom.push(wrong);
+    let _ = std::fs::write(&bad, dataman_core::agents_config::to_text(&b));
+    import(&bad, cx);
+    until(cx, 5, |cx| open(cx)).await;
+    r.check(
+        "a file with an invalid pattern is refused whole: its errors, no Apply",
+        probed("agents-import-errors", cx).is_some() && probed("agents-import-apply", cx).is_none() && !core.settings.get().agent_types.custom.iter().any(|c| c.id == "t_bad"),
+        "",
+    );
+    key(cx, "escape");
+    pause(cx, 50).await;
+    let _ = std::fs::remove_dir_all(&dir);
     click_probe("agents-nav-audit", cx);
     pause(cx, 50).await;
     let rail = probed("rail-agents", cx);
