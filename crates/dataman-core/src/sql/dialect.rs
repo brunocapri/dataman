@@ -17,6 +17,10 @@ pub struct LexRules {
     pub hash_comments: bool,
     pub mysql_quotes: bool,
     pub tsql_names: bool,
+    /// SQL Server reads every C0 control but NUL and Unicode's spaces as space.
+    pub unicode_spaces: bool,
+    /// A `--` comment ends at a bare `\r` too (PostgreSQL, SQL Server; MySQL's at `\n` only).
+    pub cr_ends_comment: bool,
 }
 
 impl LexRules {
@@ -28,6 +32,8 @@ impl LexRules {
         hash_comments: false,
         mysql_quotes: false,
         tsql_names: false,
+        unicode_spaces: false,
+        cr_ends_comment: true,
     };
     pub const MYSQL: LexRules = LexRules {
         dollar: false,
@@ -37,6 +43,8 @@ impl LexRules {
         hash_comments: true,
         mysql_quotes: true,
         tsql_names: false,
+        unicode_spaces: false,
+        cr_ends_comment: false,
     };
     pub const TSQL: LexRules = LexRules {
         dollar: false,
@@ -46,6 +54,8 @@ impl LexRules {
         hash_comments: false,
         mysql_quotes: false,
         tsql_names: true,
+        unicode_spaces: true,
+        cr_ends_comment: true,
     };
 }
 

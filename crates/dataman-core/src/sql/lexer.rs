@@ -54,14 +54,14 @@ pub fn tokenize_in(src: &str, dialect: Dialect) -> Vec<Token> {
         let start = i;
         let c = b[i];
         let kind = match c {
-            b' ' | b'\t' | b'\n' | b'\r' | 0x0c => {
-                while i < b.len() && matches!(b[i], b' ' | b'\t' | b'\n' | b'\r' | 0x0c) {
-                    i += 1;
+            _ if space_len(src, i, &rules) > 0 => {
+                while i < b.len() && space_len(src, i, &rules) > 0 {
+                    i += space_len(src, i, &rules);
                 }
                 TokenKind::Whitespace
             }
             b'-' if dash_comment(b, i, &rules) => {
-                while i < b.len() && b[i] != b'\n' {
+                while i < b.len() && b[i] != b'\n' && !(rules.cr_ends_comment && b[i] == b'\r') {
                     i += 1;
                 }
                 TokenKind::LineComment
@@ -92,7 +92,7 @@ pub fn tokenize_in(src: &str, dialect: Dialect) -> Vec<Token> {
                 match b.get(i) {
                     Some(&q @ (b'`' | b'\'' | b'"')) => i = quoted(b, i + 1, q, q != b'`'),
                     _ => {
-                        while i < b.len() && is_ident_cont(b[i]) {
+                        while i < b.len() && is_ident_cont(b[i]) && space_len(src, i, &rules) == 0 {
                             i += 1;
                         }
                     }
@@ -108,7 +108,7 @@ pub fn tokenize_in(src: &str, dialect: Dialect) -> Vec<Token> {
                 if b[i] == c {
                     i += 1;
                 }
-                while i < b.len() && is_ident_cont(b[i]) {
+                while i < b.len() && is_ident_cont(b[i]) && space_len(src, i, &rules) == 0 {
                     i += 1;
                 }
                 TokenKind::Ident
@@ -198,7 +198,7 @@ pub fn tokenize_in(src: &str, dialect: Dialect) -> Vec<Token> {
             }
             c if is_ident_start(c) => {
                 i += 1;
-                while i < b.len() && is_ident_cont(b[i]) {
+                while i < b.len() && is_ident_cont(b[i]) && space_len(src, i, &rules) == 0 {
                     i += 1;
                 }
                 if is_keyword_in(&src[start..i], dialect) { TokenKind::Keyword } else { TokenKind::Ident }
@@ -227,6 +227,20 @@ pub fn tokenize_in(src: &str, dialect: Dialect) -> Vec<Token> {
         out.push(Token { kind, start, end: i.min(b.len()) });
     }
     out
+}
+
+/// The length of the space at `i`, as the server reads it: `\v` is one everywhere (PostgreSQL
+/// 16+, MySQL, SQL Server); SQL Server's list was probed on 2022.
+fn space_len(src: &str, i: usize, rules: &LexRules) -> usize {
+    match src.as_bytes()[i] {
+        b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c => 1,
+        0x01..=0x1f if rules.unicode_spaces => 1,
+        0x80.. if rules.unicode_spaces && src.is_char_boundary(i) => match src[i..].chars().next() {
+            Some(c @ ('\u{85}' | '\u{a0}' | '\u{1680}' | '\u{2000}'..='\u{200b}' | '\u{2028}' | '\u{2029}' | '\u{202f}' | '\u{205f}' | '\u{3000}')) => c.len_utf8(),
+            _ => 0,
+        },
+        _ => 0,
+    }
 }
 
 fn dash_comment(b: &[u8], i: usize, rules: &LexRules) -> bool {
