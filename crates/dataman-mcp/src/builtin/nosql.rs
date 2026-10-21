@@ -161,7 +161,7 @@ pub(super) async fn query(cx: &Call, a: &Args, key: &str, open: bool) -> Result<
             return Err(ToolError::Refused("this statement writes: use nosql_execute".into()));
         }
     }
-    let shaped = rules::nosql_check(a, &target, text, false)?;
+    let shaped = rules::nosql_check(cx, a, &target, text, false).await?;
     let shown = Shown::new(cx, a, text, open).await?;
     let r = read(cx, a, text).await;
     shown.done(&r, r.as_ref().ok());
@@ -198,7 +198,7 @@ pub(super) async fn execute(cx: &Call, a: &Args, key: &str, open: bool) -> Resul
     cx.note_sql(text);
     let target = cx.target(a, Need::Write)?;
     let class = nosql::classify(target.engine, text).map_err(|f| ToolError::Invalid(f.message))?;
-    let shaped = rules::nosql_check(a, &target, text, true)?;
+    let shaped = rules::nosql_check(cx, a, &target, text, true).await?;
     let shown = Shown::new(cx, a, text, open).await?;
     let r = write(cx, a, text, &class, shown.tab).await;
     shown.done(&r, r.as_ref().ok());
@@ -354,7 +354,7 @@ pub(super) async fn sample(cx: &Call, o: &Opened, coll: &str, n: u64, random: bo
     m.insert("connection".into(), json!(o.profile.name));
     m.insert("database".into(), json!(o.database));
     let a = Args(m);
-    let shaped = rules::nosql_check(&a, &o.profile, &stmt, false)?;
+    let shaped = rules::nosql_check(cx, &a, &o.profile, &stmt, false).await?;
     let ran = run(cx, o, &stmt, Page { skip: 0, limit: n as usize }, Duration::from_secs(30)).await?;
     if let Output::Docs(d) = &ran.output {
         cx.note_rows(d.docs.len());

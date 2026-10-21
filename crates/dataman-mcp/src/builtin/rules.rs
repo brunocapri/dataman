@@ -239,10 +239,158 @@ pub fn tell(v: &mut Value, c: &Checked, masked: &[(String, Mask)]) {
     }
 }
 
-pub fn nosql_check(a: &Args, p: &ConnectionProfile, text: &str, write: bool) -> Result<Shaped, ToolError> {
+fn nosql_check_as(a: &Args, p: &ConnectionProfile, text: &str, write: bool, wide: bool) -> Result<Shaped, ToolError> {
     let database = a.opt_str("database").unwrap_or(&p.database);
-    let ctx = agent_nosql::Context { rules: &p.mcp_rules, connection: &p.name, engine: p.engine, database };
+    let ctx = agent_nosql::Context { rules: &p.mcp_rules, connection: &p.name, engine: p.engine, database, wide };
     agent_nosql::check(text, write, &ctx).map_err(ToolError::Refused)
+}
+
+/// The statement as the connection's rules let agents run it. Where something is kept, names
+/// that stand for other data are looked up first: a MongoDB view reads its collection under
+/// its own names, and an Elasticsearch/OpenSearch alias or data stream reads its indices.
+pub async fn nosql_check(cx: &Call, a: &Args, p: &ConnectionProfile, text: &str, write: bool) -> Result<Shaped, ToolError> {
+    let shaped = nosql_check_as(a, p, text, write, false)?;
+    let r = &p.mcp_rules;
+    if !restricted(r) || dataman_core::nosql::is_script(p.engine, text) {
+        return Ok(shaped);
+    }
+    match p.engine {
+        dataman_core::Engine::MongoDb => {
+            let database = a.opt_str("database").unwrap_or(&p.database).to_string();
+            let reads = agent_nosql::mongo_reads(text, &database);
+            if reads.is_empty() {
+                return Ok(shaped);
+            }
+            let o = cx.open(a, Need::Read).await?;
+            mongo_views(&o, r, reads).await.map_err(ToolError::Refused)?;
+            Ok(shaped)
+        }
+        dataman_core::Engine::Elasticsearch | dataman_core::Engine::OpenSearch => {
+            let o = cx.open(a, Need::Read).await?;
+            if es_aliases(&o, r, text).await.map_err(ToolError::Refused)? { nosql_check_as(a, p, text, write, true) } else { Ok(shaped) }
+        }
+        _ => Ok(shaped),
+    }
+}
+
+fn ran_docs(ran: &dataman_core::nosql::Ran) -> Vec<Value> {
+    use dataman_core::nosql::Output;
+    match &ran.output {
+        Output::Docs(d) => d.docs.iter().map(|x| x.body.to_json()).collect(),
+        Output::Value(b) => {
+            let v = b.to_json();
+            match v.pointer("/cursor/firstBatch") {
+                Some(Value::Array(a)) => a.clone(),
+                _ => vec![v],
+            }
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Views among the collections read, followed to what they read: a view over a collection that
+/// keeps something from agents is refused whole, as SQL views are.
+async fn mongo_views(o: &Opened, r: &AgentRules, reads: Vec<(String, String)>) -> Result<(), String> {
+    let conn = &o.profile.name;
+    let mut views: HashMap<String, Vec<(String, Value)>> = HashMap::new();
+    let mut todo = reads;
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    while let Some((db, coll)) = todo.pop() {
+        if !seen.insert((db.clone(), coll.clone())) {
+            continue;
+        }
+        if seen.len() > VIEW_DEPTH {
+            return Err(format!("{coll} reads through more views than Dataman follows, and {conn} keeps some data from agents"));
+        }
+        if !views.contains_key(&db) {
+            let stmt = "db.runCommand({listCollections: 1, filter: {type: \"view\"}})";
+            let ran = o.conn.run_nosql(&db, stmt, dataman_core::nosql::Page::default()).await.map_err(|e| format!("Dataman could not check the views of {db} ({e:#}), and {conn} keeps some data from agents"))?;
+            let found = ran_docs(&ran).into_iter().filter_map(|d| Some((d.get("name")?.as_str()?.to_string(), d.get("options").cloned().unwrap_or(Value::Null)))).collect();
+            views.insert(db.clone(), found);
+        }
+        let Some((_, options)) = views[&db].iter().find(|(n, _)| *n == coll) else { continue };
+        let on = options.get("viewOn").and_then(Value::as_str).unwrap_or_default().to_string();
+        let pipeline = options.get("pipeline").cloned().unwrap_or(Value::Array(Vec::new()));
+        let mut under = vec![(db.clone(), on)];
+        under.extend(agent_nosql::mongo_reads(&format!("db.x.aggregate({pipeline})"), &db).into_iter().filter(|(_, c)| c != "x"));
+        for (udb, u) in under {
+            if agent_nosql::mongo_keeps(r, &udb, &u) {
+                return Err(format!("{coll} is a view that reads {u}, which keeps data from agents on {conn}: query {u} directly"));
+            }
+            todo.push((udb, u));
+        }
+    }
+    Ok(())
+}
+
+/// Whether the request names an alias or a data stream; an alias over an index agents may not
+/// see is refused.
+async fn es_aliases(o: &Opened, r: &AgentRules, text: &str) -> Result<bool, String> {
+    let conn = &o.profile.name;
+    let Ok(req) = dataman_core::nosql::console::parse(text) else { return Ok(false) };
+    let path = req.path.split('?').next().unwrap_or("").trim_start_matches('/');
+    let first = path.split('/').next().unwrap_or("");
+    let mut names: Vec<String> = if first.starts_with('_') { Vec::new() } else { first.split(',').map(str::to_string).collect() };
+    let bodies: Vec<Value> = match &req.body {
+        dataman_core::nosql::console::Body::Json(v) => vec![v.clone()],
+        dataman_core::nosql::console::Body::Lines(l) => l.clone(),
+        dataman_core::nosql::console::Body::None => Vec::new(),
+    };
+    for b in &bodies {
+        for k in ["_index", "index"] {
+            let mut vals: Vec<&Value> = b.get(k).into_iter().collect();
+            if let Some(Value::Array(docs)) = b.get("docs") {
+                vals.extend(docs.iter().filter_map(|d| d.get(k)));
+            }
+            for v in vals {
+                match v {
+                    Value::String(x) => names.extend(x.split(',').map(str::to_string)),
+                    Value::Array(a) => names.extend(a.iter().filter_map(Value::as_str).map(str::to_string)),
+                    _ => {}
+                }
+            }
+        }
+    }
+    names.retain(|n| !n.is_empty() && !n.contains('*') && !n.starts_with('-') && n != "_all");
+    if names.is_empty() {
+        return Ok(false);
+    }
+    names.sort();
+    names.dedup();
+    let stmt = format!("GET _resolve/index/{}?expand_wildcards=all", names.join(","));
+    let ran = match o.conn.run_nosql("", &stmt, dataman_core::nosql::Page::default()).await {
+        Ok(r) => r,
+        // A name that does not exist resolves to nothing: the request itself will say so.
+        Err(e) if format!("{e:#}").contains("index_not_found") => return Ok(false),
+        Err(e) => return Err(format!("Dataman could not resolve {} ({e:#}), and {conn} keeps some data from agents", names.join(","))),
+    };
+    let v = ran_docs(&ran).into_iter().next().unwrap_or(Value::Null);
+    let names_of = |key: &str| -> Vec<(String, Vec<String>)> {
+        v.get(key)
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| {
+                        let n = x.get("name")?.as_str()?.to_string();
+                        let list = x.get("indices").or_else(|| x.get("backing_indices")).and_then(Value::as_array).map(|l| l.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default();
+                        Some((n, list))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let mut wide = false;
+    for (alias, indices) in names_of("aliases") {
+        if !names.contains(&alias) {
+            continue;
+        }
+        wide = true;
+        if let Some(i) = indices.iter().find(|i| !r.visible.table_visible(None, i, Names::Flat)) {
+            return Err(format!("{alias} is an alias of {i}, which is not visible to agents on {conn}"));
+        }
+    }
+    wide |= names_of("data_streams").iter().any(|(d, _)| names.contains(d));
+    Ok(wide)
 }
 
 /// Shapes a NoSQL reply; listings drop hidden names (databases for `show dbs`).
