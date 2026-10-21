@@ -790,12 +790,6 @@ impl Registry {
         self.tools.push(t);
     }
 
-    /// What is wrong in the user's tools file (mcp-tools.toml), as it was last read.
-    pub fn user_errors(&self) -> Vec<String> {
-        self.refresh();
-        self.user.lock().errors.clone()
-    }
-
     pub fn builtin_names(&self) -> Vec<String> {
         self.tools.iter().map(|t| t.name().to_string()).collect()
     }

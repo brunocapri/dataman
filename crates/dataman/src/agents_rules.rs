@@ -2,6 +2,7 @@
 //! (what they may see there). Both write the connection's `mcp_rules`; no MCP tool can.
 
 use dataman_core::privacy::{self, AgentView, ItemKind, Mask, Names, ReadFrom, RedisCat, SensitiveCol, Visible, VisibleItem, VisibleMode};
+use dataman_core::settings::{MCP_MAX_ROWS, MCP_WRITE_ROW_LIMIT};
 use dataman_core::{ConnectionProfile, Engine, McpAccess};
 use gpui::{AnyElement, ClickEvent, Context, SharedString, Window, div, prelude::*};
 
@@ -68,11 +69,11 @@ fn may_tip() -> Tip {
 
 fn limits_tip() -> Tip {
     Tip::new("Limits")
-        .lead("Per call, for agents only.")
-        .item("Time per call", "Longest a statement runs before it is stopped. An agent can ask for less.")
-        .item("Rows per write", "A write that changes more rows waits for your Allow. Default: 100.")
-        .item("Rows per read", "Most rows an agent gets back from one read. Default: 1,000.")
-        .item("Size per read", "Most data from one read; past it the reply is cut and the agent is told.")
+        .lead("Per call, for agents only. Until you pick another, each starts on its default.")
+        .item("Time per call · 5 min", "Longest a statement runs before it is stopped. An agent can ask for less.")
+        .item("Rows per write · 100", "A write that changes more rows waits for your Allow.")
+        .item("Rows per read · 1k", "Most rows an agent gets back from one read.")
+        .item("Size per read · 256 KB", "Most data from one read; past it the reply is cut and the agent is told.")
 }
 
 fn read_from_tip() -> Tip {
@@ -272,25 +273,28 @@ impl AgentsPage {
             }
             v
         };
-        let writes: Vec<(u64, String)> = std::iter::once((0, "Default".to_string())).chain(with(&privacy::WRITE_ROWS, p.mcp_row_limit).into_iter().map(|n| (n, count(n)))).collect();
+        let writes: Vec<(u64, String)> = with(&privacy::WRITE_ROWS, p.mcp_row_limit).into_iter().map(|n| (n, count(n))).collect();
         let writes: Vec<(u64, &str)> = writes.iter().map(|(v, l)| (*v, l.as_str())).collect();
-        let reads: Vec<(u64, String)> = std::iter::once((0, "Default".to_string())).chain(with(&privacy::READ_ROWS, r.read_rows).into_iter().map(|n| (n, count(n)))).collect();
+        let reads: Vec<(u64, String)> = with(&privacy::READ_ROWS, r.read_rows).into_iter().map(|n| (n, count(n))).collect();
         let reads: Vec<(u64, &str)> = reads.iter().map(|(v, l)| (*v, l.as_str())).collect();
-        let sizes: Vec<(u64, String)> = std::iter::once((0, "Default".to_string())).chain(privacy::READ_BYTES.iter().map(|n| (*n, kb(*n)))).collect();
+        let sizes: Vec<(u64, String)> = with(&privacy::READ_BYTES, r.read_bytes).into_iter().map(|n| (n, kb(n))).collect();
         let sizes: Vec<(u64, &str)> = sizes.iter().map(|(v, l)| (*v, l.as_str())).collect();
+        // The value that applies is the one selected; choosing the default stores nothing, so the
+        // connection keeps following it.
+        let (time_d, write_d, read_d, size_d) = (privacy::DEFAULT_TIME_LIMIT_S, MCP_WRITE_ROW_LIMIT, MCP_MAX_ROWS, privacy::DEFAULT_READ_BYTES);
         let limits = div()
             .flex()
             .flex_col()
             .gap(px(12.))
             .child(label_tip(t, "agents-limits-tip", "LIMITS", limits_tip()))
-            .child(limit_row("Time per call", seg(t, "agents-time", &times, r.time_limit_s.unwrap_or(300), true, cx, |v, s, cx| v.set_rule(|r| r.time_limit_s = (s != 300).then_some(s), cx))))
-            .child(limit_row("Rows per write", seg(t, "agents-wrows", &writes, p.mcp_row_limit.unwrap_or(0), true, cx, |v, n, cx| {
+            .child(limit_row("Time per call", seg(t, "agents-time", &times, r.time_limit_s.unwrap_or(time_d), true, cx, move |v, s, cx| v.set_rule(|r| r.time_limit_s = (s != time_d).then_some(s), cx))))
+            .child(limit_row("Rows per write", seg(t, "agents-wrows", &writes, p.mcp_row_limit.unwrap_or(write_d), true, cx, move |v, n, cx| {
                 if let Some(id) = v.conn.clone() {
-                    v.edit_conn(&id, |p| p.mcp_row_limit = (n != 0).then_some(n), cx);
+                    v.edit_conn(&id, |p| p.mcp_row_limit = (n != write_d).then_some(n), cx);
                 }
             })))
-            .child(limit_row("Rows per read", seg(t, "agents-rrows", &reads, r.read_rows.unwrap_or(0), true, cx, |v, n, cx| v.set_rule(|r| r.read_rows = (n != 0).then_some(n), cx))))
-            .child(limit_row("Size per read", seg(t, "agents-rbytes", &sizes, r.read_bytes.unwrap_or(0), true, cx, |v, n, cx| v.set_rule(|r| r.read_bytes = (n != 0).then_some(n), cx))));
+            .child(limit_row("Rows per read", seg(t, "agents-rrows", &reads, r.read_rows.unwrap_or(read_d), true, cx, move |v, n, cx| v.set_rule(|r| r.read_rows = (n != read_d).then_some(n), cx))))
+            .child(limit_row("Size per read", seg(t, "agents-rbytes", &sizes, r.read_bytes.unwrap_or(size_d), true, cx, move |v, n, cx| v.set_rule(|r| r.read_bytes = (n != size_d).then_some(n), cx))));
         let mut right = div().w(px(380.)).flex_none().flex().flex_col().gap(px(24.)).child(limits);
         if dataman_core::MCP_ADVANCED {
             if p.engine.is_sql() {

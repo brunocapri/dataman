@@ -1266,10 +1266,14 @@ impl Default for AgentRules {
     }
 }
 
-pub const TIME_LIMITS: [u64; 4] = [10, 30, 120, 300];
-pub const READ_ROWS: [u64; 3] = [20, 100, 500];
-pub const READ_BYTES: [u64; 2] = [64 * 1024, 16 * 1024];
-pub const WRITE_ROWS: [u64; 4] = [10, 100, 1000, 10_000];
+/// Permissions › Limits' choices, each list holding the value that applies when none is set.
+pub const TIME_LIMITS: [u64; 4] = [10, 30, 120, DEFAULT_TIME_LIMIT_S];
+pub const READ_ROWS: [u64; 4] = [20, 100, 500, crate::settings::MCP_MAX_ROWS];
+pub const READ_BYTES: [u64; 3] = [16 * 1024, 64 * 1024, DEFAULT_READ_BYTES];
+pub const WRITE_ROWS: [u64; 4] = [10, crate::settings::MCP_WRITE_ROW_LIMIT, 1000, 10_000];
+pub const DEFAULT_TIME_LIMIT_S: u64 = 300;
+/// What one read may return in all (bounded's own limit).
+pub const DEFAULT_READ_BYTES: u64 = 256 * 1024;
 
 impl AgentRules {
     pub fn is_default(&self) -> bool {
@@ -1298,7 +1302,7 @@ impl AgentRules {
     }
 
     pub fn time_limit(&self) -> std::time::Duration {
-        std::time::Duration::from_secs(self.time_limit_s.unwrap_or(300).clamp(1, 300))
+        std::time::Duration::from_secs(self.time_limit_s.unwrap_or(DEFAULT_TIME_LIMIT_S).clamp(1, DEFAULT_TIME_LIMIT_S))
     }
 
     /// The rules with each generated (computed) column protected as the strongest of the

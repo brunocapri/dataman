@@ -33,7 +33,7 @@ pub enum Page {
 }
 
 impl Page {
-    pub const ALL: [Page; 5] = [Page::Audit, Page::Permissions, Page::Privacy, Page::Types, Page::Mcp];
+    pub const ALL: [Page; 5] = [Page::Mcp, Page::Audit, Page::Permissions, Page::Privacy, Page::Types];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -247,8 +247,6 @@ pub struct AgentsPage {
     audit_child: HashMap<usize, usize>,
     pub(crate) types_offset: usize,
     pub(crate) type_sel: Option<usize>,
-    pub(crate) tool_sel: Option<usize>,
-    pub(crate) tools_scroll: gpui::ScrollHandle,
     /// Replies read back from the log (`mcp-replies.jsonl`), by call id.
     pub(crate) replies: HashMap<String, Kept>,
     /// Sampled fields of collections and indices, for the suggestions (connection id and name).
@@ -447,12 +445,6 @@ pub(crate) fn day_label(ts: chrono::DateTime<chrono::Utc>) -> String {
     }
 }
 
-/// Today's calls by time, older ones by day.
-pub(crate) fn short_time(ts: chrono::DateTime<chrono::Utc>) -> String {
-    let l = ts.with_timezone(&Local);
-    if l.date_naive() == Local::now().date_naive() { l.format("%H:%M:%S").to_string() } else { l.format("%b %-d").to_string() }
-}
-
 fn fmt_ms(ms: f64) -> String {
     if ms < 1000. { format!("{ms:.0} ms") } else { format!("{:.1} s", ms / 1000.) }
 }
@@ -569,8 +561,6 @@ impl AgentsPage {
             audit_child: HashMap::new(),
             types_offset: 0,
             type_sel: None,
-            tool_sel: None,
-            tools_scroll: gpui::ScrollHandle::new(),
             replies: HashMap::new(),
             fields: HashMap::new(),
             loading: BTreeSet::new(),
@@ -809,12 +799,7 @@ impl AgentsPage {
                 self.close_suggest(cx);
                 self.conns_scroll.scroll_to_item(n);
             }
-            Page::Mcp => {
-                let len = self.tool_rows(cx).0.len();
-                let Some(n) = next(len, self.tool_sel) else { return true };
-                self.tool_sel = Some(n);
-                self.tools_scroll.scroll_to_item(n + crate::agents_mcp::TOOLS_OFFSET);
-            }
+            Page::Mcp => return false,
             Page::Types => {
                 let len = self.type_rows(cx).len();
                 let Some(n) = next(len, self.type_sel) else { return true };
@@ -1861,7 +1846,7 @@ impl Render for AgentsPage {
             Page::Permissions => self.render_permissions(&t, window, cx),
             Page::Privacy => self.render_privacy(&t, window, cx),
             Page::Types => self.render_types(&t, window, cx),
-            Page::Mcp => self.render_mcp(&t, window, cx),
+            Page::Mcp => self.render_mcp(&t, cx),
         };
         div()
             .id("agents-page")

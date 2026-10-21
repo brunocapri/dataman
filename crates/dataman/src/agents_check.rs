@@ -238,7 +238,7 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     let loaded = until(cx, 5, |cx| cx.update(|_, cx| a.read(cx).entries.len() >= 13).unwrap_or(false)).await;
     r.check("a click on it opens the Agents area on Audit, with the agents' calls", shows(cx) && page(cx) == Page::Audit && loaded, format!("{:?}", page(cx)));
     let pages: Vec<&str> = Page::ALL.iter().map(|p| p.label()).collect();
-    r.check("the area has no Home: Audit, Permissions, Privacy, Sensitive data, MCP", pages == ["Audit", "Permissions", "Privacy", "Sensitive data", "MCP"], format!("{pages:?}"));
+    r.check("the area's pages: MCP first, then Audit, Permissions, Privacy, Sensitive data (no Home)", pages == ["MCP", "Audit", "Permissions", "Privacy", "Sensitive data"], format!("{pages:?}"));
     let when = cx.update(|_, cx| a.read(cx).f_when).ok();
     r.check("Audit opens on all time, so older calls show at once", when == Some(crate::agents::When::All), format!("{when:?}"));
     let connected = cx.update(|_, cx| a.read(cx).connected_count()).unwrap_or(0);
@@ -316,8 +316,8 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     let back = cx.update(|_, cx| !a.read(cx).received_closed).unwrap_or(false);
     r.check("selecting a call shows it again", back, "");
     let older = chrono::Utc::now() - chrono::Duration::days(3);
-    let days = (crate::agents::day_label(chrono::Utc::now()), crate::agents::day_label(older), crate::agents::short_time(older));
-    r.check("Audit groups calls by day: Today, then the weekday and date", days.0 == "Today" && days.1.contains(',') && days.2.len() <= 6, format!("{days:?}"));
+    let days = (crate::agents::day_label(chrono::Utc::now()), crate::agents::day_label(older));
+    r.check("Audit groups calls by day: Today, then the weekday and date", days.0 == "Today" && days.1.contains(','), format!("{days:?}"));
     let denied = cx.update(|_, cx| crate::agents::audit_note(&a.read(cx).entries[7])).unwrap_or_default();
     r.check("a denial reads as denied by you, in the error color", denied.0.ends_with("denied by you") && denied.1, format!("{denied:?}"));
 
@@ -416,11 +416,28 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     click_probe("agents-may-structure", cx);
     pause(cx, 50).await;
     r.check("Agents may › Change structure, off: saved on the connection, and reads as never", !rules(&core, &pg.id).structure && may_state(McpAccess::Full, McpAccess::Full, false, false, false).0 == "never", format!("{:?}", rules(&core, &pg.id)));
+    let chips = |p: &str, cx: &mut AsyncWindowContext| (0..8).filter(|k| probed(&format!("{p}-{k}"), cx).is_some()).count();
+    let counts = (chips("agents-wrows", cx), chips("agents-rrows", cx), chips("agents-rbytes", cx));
+    let unset = rules(&core, &pg.id);
+    r.check(
+        "Limits show real values only (no Default chip), each list holding its default",
+        counts == (4, 4, 3)
+            && dataman_core::privacy::WRITE_ROWS.contains(&dataman_core::settings::MCP_WRITE_ROW_LIMIT)
+            && dataman_core::privacy::READ_ROWS.contains(&dataman_core::settings::MCP_MAX_ROWS)
+            && dataman_core::privacy::READ_BYTES.contains(&dataman_core::privacy::DEFAULT_READ_BYTES)
+            && unset.read_rows.is_none(),
+        format!("{counts:?}"),
+    );
     click_probe("agents-time-1", cx);
-    click_probe("agents-rrows-2", cx);
+    click_probe("agents-rrows-1", cx);
     pause(cx, 50).await;
     let rr = rules(&core, &pg.id);
     r.check("Limits: 30 s per call, 100 rows per read", rr.time_limit_s == Some(30) && rr.read_rows == Some(100), format!("{:?} {:?}", rr.time_limit_s, rr.read_rows));
+    click_probe("agents-rrows-3", cx);
+    pause(cx, 50).await;
+    r.check("picking the default (1k) stores nothing: the connection follows the default again", rules(&core, &pg.id).read_rows.is_none(), format!("{:?}", rules(&core, &pg.id).read_rows));
+    click_probe("agents-rrows-1", cx);
+    pause(cx, 50).await;
     click_probe("agents-tier-2", cx);
     pause(cx, 50).await;
     let tier = core.config.get(&pg.id).map(|p| p.mcp_access());
@@ -582,20 +599,13 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     // MCP: the server's own page.
     click_probe("agents-nav-mcp", cx);
     pause(cx, 100).await;
-    let tools = cx.update(|_, cx| a.update(cx, |a, cx| a.tool_rows(cx).0)).unwrap_or_default();
-    r.check("Agents › MCP lists the tools agents can call", page(cx) == Page::Mcp && tools.iter().any(|t| t.name == "run_query" && !t.writes) && tools.iter().any(|t| t.name == "execute" && t.writes), tools.len());
-    r.check("… with the command that connects Claude Code", probed("agents-mcp-copy", cx).is_some(), "");
+    r.check("Agents › MCP: agent access and the command that connects Claude Code", page(cx) == Page::Mcp && probed("agents-mcp-copy", cx).is_some() && probed("agents-mcp-access-1", cx).is_some(), "");
     click_probe("agents-mcp-access-0", cx);
     pause(cx, 50).await;
     let off = !core.settings.get().mcp_enabled;
     click_probe("agents-mcp-access-1", cx);
     pause(cx, 50).await;
     r.check("its Agent access switch is the global one", off && core.settings.get().mcp_enabled, "");
-    key(cx, "home");
-    key(cx, "down");
-    pause(cx, 50).await;
-    let tsel = cx.update(|_, cx| a.read(cx).tool_sel).ok().flatten();
-    r.check("… and its tool list moves with the keys", tsel == Some(1), format!("{tsel:?}"));
     click_probe("agents-nav-audit", cx);
     pause(cx, 50).await;
     let rail = probed("rail-agents", cx);
