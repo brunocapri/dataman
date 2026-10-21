@@ -29,10 +29,11 @@ pub enum Page {
     Permissions,
     Privacy,
     Types,
+    Mcp,
 }
 
 impl Page {
-    pub const ALL: [Page; 4] = [Page::Audit, Page::Permissions, Page::Privacy, Page::Types];
+    pub const ALL: [Page; 5] = [Page::Audit, Page::Permissions, Page::Privacy, Page::Types, Page::Mcp];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -40,6 +41,7 @@ impl Page {
             Page::Permissions => "Permissions",
             Page::Privacy => "Privacy",
             Page::Types => "Sensitive data",
+            Page::Mcp => "MCP",
         }
     }
 
@@ -49,6 +51,7 @@ impl Page {
             Page::Permissions => "permissions",
             Page::Privacy => "privacy",
             Page::Types => "types",
+            Page::Mcp => "mcp",
         }
     }
 
@@ -58,6 +61,7 @@ impl Page {
             Page::Permissions => Icon::Shield,
             Page::Privacy => Icon::Padlock,
             Page::Types => Icon::Types,
+            Page::Mcp => Icon::Plug,
         }
     }
 }
@@ -243,6 +247,8 @@ pub struct AgentsPage {
     audit_child: HashMap<usize, usize>,
     pub(crate) types_offset: usize,
     pub(crate) type_sel: Option<usize>,
+    pub(crate) tool_sel: Option<usize>,
+    pub(crate) tools_scroll: gpui::ScrollHandle,
     /// Replies read back from the log (`mcp-replies.jsonl`), by call id.
     pub(crate) replies: HashMap<String, Kept>,
     /// Sampled fields of collections and indices, for the suggestions (connection id and name).
@@ -535,7 +541,7 @@ impl AgentsPage {
             f_agent: None,
             f_conn: None,
             f_outcome: Outcomes::Any,
-            f_when: When::Today,
+            f_when: When::All,
             selected: None,
             menu: None,
             anchors: Default::default(),
@@ -563,6 +569,8 @@ impl AgentsPage {
             audit_child: HashMap::new(),
             types_offset: 0,
             type_sel: None,
+            tool_sel: None,
+            tools_scroll: gpui::ScrollHandle::new(),
             replies: HashMap::new(),
             fields: HashMap::new(),
             loading: BTreeSet::new(),
@@ -751,6 +759,16 @@ impl AgentsPage {
         cx.notify();
     }
 
+    pub(crate) fn clear_filters(&mut self, cx: &mut Context<Self>) {
+        self.f_agent = None;
+        self.f_conn = None;
+        self.f_outcome = Outcomes::Any;
+        self.f_when = When::All;
+        self.search.update(cx, |i, cx| i.set_text("", cx));
+        self.selected = None;
+        cx.notify();
+    }
+
     /// Keyboard focus on the page's lists (a click on a row puts it there).
     pub(crate) fn focus_list(&self, window: &mut Window, cx: &mut App) {
         window.focus(&self.focus, cx);
@@ -790,6 +808,12 @@ impl AgentsPage {
                 self.scan_note = None;
                 self.close_suggest(cx);
                 self.conns_scroll.scroll_to_item(n);
+            }
+            Page::Mcp => {
+                let len = self.tool_rows(cx).0.len();
+                let Some(n) = next(len, self.tool_sel) else { return true };
+                self.tool_sel = Some(n);
+                self.tools_scroll.scroll_to_item(n + crate::agents_mcp::TOOLS_OFFSET);
             }
             Page::Types => {
                 let len = self.type_rows(cx).len();
@@ -1128,7 +1152,21 @@ impl AgentsPage {
         let list: AnyElement = if self.entries.is_empty() {
             self.render_no_calls(t, cx)
         } else if shown.is_empty() {
-            div().flex_1().flex().items_center().justify_center().text_color(t.tx3).child("Nothing matches.").into_any_element()
+            div()
+                .flex_1()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap(px(10.))
+                .child(div().text_color(t.tx3).child("Nothing matches these filters."))
+                .child(
+                    ui::button(t, "agents-clear-filters", ui::Btn::Secondary)
+                        .h(px(28.))
+                        .child("Clear filters")
+                        .on_click(cx.listener(|v, _, _, cx| v.clear_filters(cx))),
+                )
+                .into_any_element()
         } else {
             div().id("agents-audit-list").flex_1().min_w_0().overflow_y_scroll().track_scroll(&self.audit_scroll).flex().flex_col().children(rows).into_any_element()
         };
@@ -1823,6 +1861,7 @@ impl Render for AgentsPage {
             Page::Permissions => self.render_permissions(&t, window, cx),
             Page::Privacy => self.render_privacy(&t, window, cx),
             Page::Types => self.render_types(&t, window, cx),
+            Page::Mcp => self.render_mcp(&t, window, cx),
         };
         div()
             .id("agents-page")

@@ -602,9 +602,6 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                                 if let Some(y) = std::env::var("DATAMAN_SHOT_SCROLL").ok().and_then(|y| y.parse::<f32>().ok()) {
                                     v.demo_scroll(y);
                                 }
-                                if std::env::var_os("DATAMAN_SHOT_MCP_ADVANCED").is_some() {
-                                    v.demo_mcp_advanced(cx);
-                                }
                             });
                         }
                     }),

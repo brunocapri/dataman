@@ -126,8 +126,8 @@ struct Shown {
 }
 
 impl Shown {
-    async fn new(cx: &Call, a: &Args, text: &str, open: bool) -> Result<Shown, ToolError> {
-        let Some(front) = cx.tab_front(open) else { return Ok(Shown { front: None, tab: None }) };
+    async fn new(cx: &Call, a: &Args, text: &str) -> Result<Shown, ToolError> {
+        let Some(front) = cx.tab_front() else { return Ok(Shown { front: None, tab: None }) };
         let p = cx.target(a, Need::Read)?;
         let database = a.opt_str("database").map(str::to_string).unwrap_or_else(|| p.database.clone());
         let w = TabWrite { client: cx.client.clone(), connection_id: p.id.clone(), database, sql: text.to_string(), title: a.opt_str("title").map(str::to_string) };
@@ -162,7 +162,7 @@ pub(super) async fn query(cx: &Call, a: &Args, key: &str, open: bool) -> Result<
         }
     }
     let shaped = rules::nosql_check(cx, a, &target, text, false).await?;
-    let shown = Shown::new(cx, a, text, open).await?;
+    let shown = Shown::new(cx, a, text).await?;
     let r = read(cx, a, text).await;
     shown.done(&r, r.as_ref().ok());
     let ran = r?;
@@ -180,7 +180,7 @@ async fn read(cx: &Call, a: &Args, text: &str) -> Result<nosql::Ran, ToolError> 
         p = cx.hub.permit(&o.profile.id) => p,
         _ = cx.cancel.cancelled() => return Err(ToolError::Cancelled),
     };
-    let cap = (cx.hub.settings().mcp_max_rows.max(1) as u64).min(o.profile.mcp_rules.read_rows.unwrap_or(u64::MAX)).max(1);
+    let cap = o.profile.mcp_rules.read_rows.unwrap_or(dataman_core::settings::MCP_MAX_ROWS).max(1);
     let page = Page { skip: a.u64_or("skip", 0), limit: a.u64_or("max_rows", 50).clamp(1, cap.min(1000)) as usize };
     let ran = run(cx, &o, text, page, cx.time_limit(a)).await?;
     if let Output::Docs(d) = &ran.output {
@@ -199,7 +199,7 @@ pub(super) async fn execute(cx: &Call, a: &Args, key: &str, open: bool) -> Resul
     let target = cx.target(a, Need::Write)?;
     let class = nosql::classify(target.engine, text).map_err(|f| ToolError::Invalid(f.message))?;
     let shaped = rules::nosql_check(cx, a, &target, text, true).await?;
-    let shown = Shown::new(cx, a, text, open).await?;
+    let shown = Shown::new(cx, a, text).await?;
     let r = write(cx, a, text, &class, shown.tab).await;
     shown.done(&r, r.as_ref().ok());
     let ran = r?;

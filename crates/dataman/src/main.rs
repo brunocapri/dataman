@@ -5,6 +5,7 @@ mod agent;
 mod agents;
 #[cfg(feature = "checks")]
 mod agents_check;
+mod agents_mcp;
 mod agents_rules;
 mod agents_suggest;
 mod agents_types;
@@ -287,7 +288,7 @@ fn menus(cx: &App) -> Vec<Menu> {
             .into_iter()
             .chain(when(caps.activity, vec![MenuItem::action("Activity Monitor", OpenActivity)]))
             .chain([
-            MenuItem::action("MCP Log", ToggleMcpLog),
+            MenuItem::action("Agents", ToggleMcpLog),
             MenuItem::separator(),
             MenuItem::action("Focus Explorer", FocusExplorer),
             MenuItem::action("Focus Editor", FocusEditor),

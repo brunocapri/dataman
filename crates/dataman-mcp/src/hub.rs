@@ -344,7 +344,7 @@ impl Hub {
     }
 
     pub fn row_limit(&self, p: &ConnectionProfile) -> u64 {
-        p.mcp_row_limit.unwrap_or_else(|| self.settings().mcp_write_row_limit)
+        p.mcp_row_limit.unwrap_or(dataman_core::settings::MCP_WRITE_ROW_LIMIT)
     }
 
     pub fn profiles(&self) -> Arc<Vec<ConnectionProfile>> {

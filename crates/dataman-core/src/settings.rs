@@ -108,9 +108,6 @@ pub struct Settings {
     pub keyword_case: crate::format::KeywordCase,
     pub indent: u8,
     pub mcp_enabled: bool,
-    pub mcp_max_rows: usize,
-    pub mcp_write_row_limit: u64,
-    pub mcp_show_in_tabs: bool,
     pub update_check: bool,
     pub update_feed: Option<String>,
     pub crash_report_url: Option<String>,
@@ -135,7 +132,47 @@ fn de_types<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<crate
     Ok(toml::Value::deserialize(d).ok().and_then(|v| v.try_into().ok()).unwrap_or_default())
 }
 
+/// Rows an agent's write may change before it waits for the user, unless the connection says
+/// otherwise (Agents › Permissions › Limits).
 pub const MCP_WRITE_ROW_LIMIT: u64 = 100;
+
+/// Rows an agent may get back from one read, unless the connection says otherwise.
+pub const MCP_MAX_ROWS: u64 = 1000;
+
+/// Settings › MCP's global limits moved to each connection (Agents › Permissions › Limits): a
+/// value the user had changed goes to the connections without one of their own, then the old
+/// keys leave settings.toml (and with them "agent queries in tabs", now always on).
+pub fn migrate_mcp_limits(dirs: &Dirs, config: &crate::ConfigStore, settings: &SettingsStore) {
+    let Ok(text) = std::fs::read_to_string(dirs.settings_file()) else { return };
+    let Ok(t) = text.parse::<toml::Table>() else { return };
+    if !["mcp_write_row_limit", "mcp_max_rows", "mcp_show_in_tabs"].iter().any(|k| t.contains_key(*k)) {
+        return;
+    }
+    let int = |k: &str| t.get(k).and_then(toml::Value::as_integer).filter(|n| *n > 0).map(|n| n as u64);
+    let write = int("mcp_write_row_limit").filter(|n| *n != MCP_WRITE_ROW_LIMIT);
+    let read = int("mcp_max_rows").filter(|n| *n != MCP_MAX_ROWS);
+    for mut p in config.connections() {
+        let mut changed = false;
+        if let Some(w) = write
+            && p.mcp_row_limit.is_none()
+        {
+            p.mcp_row_limit = Some(w);
+            changed = true;
+        }
+        if let Some(r) = read
+            && p.mcp_rules.read_rows.is_none()
+        {
+            p.mcp_rules.read_rows = Some(r);
+            changed = true;
+        }
+        if changed && let Err(e) = config.upsert(p) {
+            log::warn!("moving MCP limits to a connection: {e:#}");
+        }
+    }
+    if let Err(e) = settings.update(|_| {}) {
+        log::warn!("settings: {e:#}");
+    }
+}
 
 pub const ZOOM_MIN: f32 = 0.8;
 pub const ZOOM_MAX: f32 = 2.0;
@@ -180,9 +217,6 @@ impl Default for Settings {
             keyword_case: crate::format::KeywordCase::Upper,
             indent: 2,
             mcp_enabled: true,
-            mcp_max_rows: 1000,
-            mcp_write_row_limit: MCP_WRITE_ROW_LIMIT,
-            mcp_show_in_tabs: true,
             update_check: true,
             update_feed: None,
             crash_report_url: None,
@@ -257,11 +291,38 @@ mod tests {
         std::fs::write(dirs.settings_file(), "theme = \"light\"\nmcp_enabled = false\nmcp_http = true\nmcp_port = 47321\nmcp_write_row_limit = 10\nmcp_show_in_tabs = false\n\n[keys]\n\"editor.run\" = \"cmd-r\"\n").unwrap();
         let st = SettingsStore::open(&dirs);
         let s = st.get();
-        assert_eq!((s.theme, s.mcp_enabled, s.mcp_write_row_limit, s.mcp_show_in_tabs), (ThemePref::Light, false, 10, false));
+        assert_eq!((s.theme, s.mcp_enabled), (ThemePref::Light, false));
         assert_eq!(s.keys.get("editor.run").map(String::as_str), Some("cmd-r"));
         st.update(|_| {}).unwrap();
         let text = std::fs::read_to_string(dirs.settings_file()).unwrap();
-        assert!(!text.contains("mcp_http") && !text.contains("mcp_port") && text.contains("mcp_write_row_limit = 10"), "{text}");
+        assert!(!text.contains("mcp_http") && !text.contains("mcp_port"), "{text}");
+    }
+
+    #[test]
+    fn mcp_limits_move_to_the_connections() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = Dirs::at(dir.path().join("dataman"));
+        std::fs::create_dir_all(&dirs.config).unwrap();
+        let config = crate::ConfigStore::open(&dirs).unwrap();
+        let own = crate::ConnectionProfile { mcp_row_limit: Some(7), ..crate::ConnectionProfile::new("own") };
+        let plain = crate::ConnectionProfile::new("plain");
+        config.upsert(own.clone()).unwrap();
+        config.upsert(plain.clone()).unwrap();
+        std::fs::write(dirs.settings_file(), "theme = \"light\"\nmcp_write_row_limit = 10\nmcp_max_rows = 5000\nmcp_show_in_tabs = false\n").unwrap();
+        let st = SettingsStore::open(&dirs);
+        migrate_mcp_limits(&dirs, &config, &st);
+        let got = |id: &str| config.get(id).unwrap();
+        assert_eq!((got(&own.id).mcp_row_limit, got(&own.id).mcp_rules.read_rows), (Some(7), Some(5000)), "a connection's own limit stays");
+        assert_eq!((got(&plain.id).mcp_row_limit, got(&plain.id).mcp_rules.read_rows), (Some(10), Some(5000)));
+        let text = std::fs::read_to_string(dirs.settings_file()).unwrap();
+        assert!(!text.contains("mcp_write_row_limit") && !text.contains("mcp_max_rows") && !text.contains("mcp_show_in_tabs") && text.contains("light"), "{text}");
+        // Defaults move nothing, and a second run finds nothing to do.
+        std::fs::write(dirs.settings_file(), "mcp_write_row_limit = 100\nmcp_max_rows = 1000\n").unwrap();
+        let fresh = crate::ConnectionProfile::new("fresh");
+        config.upsert(fresh.clone()).unwrap();
+        migrate_mcp_limits(&dirs, &config, &st);
+        migrate_mcp_limits(&dirs, &config, &st);
+        assert_eq!((got(&fresh.id).mcp_row_limit, got(&fresh.id).mcp_rules.read_rows), (None, None));
     }
 
     #[test]
@@ -282,11 +343,9 @@ mod tests {
         assert_eq!((s.editor_font_size, s.prefetch_rows, s.confirm_commit, s.export_dir), (13, 10_000, true, None));
         assert!(!s.reduce_motion, "motion is on unless asked otherwise");
         assert_eq!(s.page_size, 1000);
-        assert_eq!((s.mcp_enabled, s.mcp_max_rows), (true, 1000));
-        assert_eq!((s.mcp_write_row_limit, s.mcp_show_in_tabs), (100, true));
+        assert!(s.mcp_enabled);
         std::fs::write(dirs.settings_file(), "mcp_confirm_writes = false\nmcp_write_row_limit = 5\n").unwrap();
-        let m = SettingsStore::open(&dirs).get();
-        assert_eq!((m.mcp_write_row_limit, m.mcp_show_in_tabs, m.theme), (5, true, ThemePref::Dark));
+        assert_eq!(SettingsStore::open(&dirs).get().theme, ThemePref::Dark, "old keys do not upset the rest");
         assert_eq!((s.update_check, s.update_feed.as_deref(), s.crash_report_url.as_deref()), (true, None, None));
         assert_eq!(s.translucency, Translucency::Off);
         std::fs::write(dirs.settings_file(), "transparency = true\n").unwrap();

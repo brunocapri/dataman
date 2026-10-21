@@ -182,6 +182,7 @@ pub fn demo(ws: &Entity<Workspace>, stage: &str, window: &mut gpui::Window, cx: 
         s if s.starts_with("agents-permissions") => Page::Permissions,
         s if s.starts_with("agents-privacy") => Page::Privacy,
         s if s.starts_with("agents-types") => Page::Types,
+        s if s.starts_with("agents-mcp") => Page::Mcp,
         _ => Page::Audit,
     };
     let conn = match stage {
@@ -237,7 +238,9 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     let loaded = until(cx, 5, |cx| cx.update(|_, cx| a.read(cx).entries.len() >= 13).unwrap_or(false)).await;
     r.check("a click on it opens the Agents area on Audit, with the agents' calls", shows(cx) && page(cx) == Page::Audit && loaded, format!("{:?}", page(cx)));
     let pages: Vec<&str> = Page::ALL.iter().map(|p| p.label()).collect();
-    r.check("the area has no Home: Audit, Permissions, Privacy, Sensitive data", pages == ["Audit", "Permissions", "Privacy", "Sensitive data"], format!("{pages:?}"));
+    r.check("the area has no Home: Audit, Permissions, Privacy, Sensitive data, MCP", pages == ["Audit", "Permissions", "Privacy", "Sensitive data", "MCP"], format!("{pages:?}"));
+    let when = cx.update(|_, cx| a.read(cx).f_when).ok();
+    r.check("Audit opens on all time, so older calls show at once", when == Some(crate::agents::When::All), format!("{when:?}"));
     let connected = cx.update(|_, cx| a.read(cx).connected_count()).unwrap_or(0);
     r.check("its header counts two agents seen in the last minutes (Codex is idle)", connected == 2, connected);
     click_probe("agents-audit-row-3", cx);
@@ -346,6 +349,12 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     key(cx, "backspace");
     pause(cx, 50).await;
     r.check("an empty search shows everything again", shown(cx) == all, shown(cx));
+    click_probe("agents-field-search", cx);
+    typ(cx, "nothing-like-this");
+    pause(cx, 50).await;
+    click_probe("agents-clear-filters", cx);
+    pause(cx, 50).await;
+    r.check("Nothing matches offers Clear filters, which brings every call back", shown(cx) == all, shown(cx));
     // The lists answer the keys as the explorer and history do.
     click_probe("agents-audit-row-0", cx);
     pause(cx, 50).await;
@@ -570,6 +579,23 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     pause(cx, 50).await;
     r.check("Reset to global clears the connection's switches", rules(&core, &pg.id).types.is_empty(), format!("{:?}", rules(&core, &pg.id).types));
 
+    // MCP: the server's own page.
+    click_probe("agents-nav-mcp", cx);
+    pause(cx, 100).await;
+    let tools = cx.update(|_, cx| a.update(cx, |a, cx| a.tool_rows(cx).0)).unwrap_or_default();
+    r.check("Agents › MCP lists the tools agents can call", page(cx) == Page::Mcp && tools.iter().any(|t| t.name == "run_query" && !t.writes) && tools.iter().any(|t| t.name == "execute" && t.writes), tools.len());
+    r.check("… with the command that connects Claude Code", probed("agents-mcp-copy", cx).is_some(), "");
+    click_probe("agents-mcp-access-0", cx);
+    pause(cx, 50).await;
+    let off = !core.settings.get().mcp_enabled;
+    click_probe("agents-mcp-access-1", cx);
+    pause(cx, 50).await;
+    r.check("its Agent access switch is the global one", off && core.settings.get().mcp_enabled, "");
+    key(cx, "home");
+    key(cx, "down");
+    pause(cx, 50).await;
+    let tsel = cx.update(|_, cx| a.read(cx).tool_sel).ok().flatten();
+    r.check("… and its tool list moves with the keys", tsel == Some(1), format!("{tsel:?}"));
     click_probe("agents-nav-audit", cx);
     pause(cx, 50).await;
     let rail = probed("rail-agents", cx);

@@ -31,7 +31,6 @@ pub fn bind_keys(cx: &mut App) {
 
 pub enum SettingsEvent {
     Close,
-    ConnectionsChanged,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -78,19 +77,14 @@ enum Row {
     KeywordCase,
     Indent,
     McpAccess,
-    McpTabs,
-    McpWriteLimit,
-    McpRows,
     McpClaude,
-    McpLog,
-    McpConnections,
-    McpAdvanced,
+    McpAgents,
     Version,
     UpdateCheck,
     CrashReports,
 }
 
-const ROWS: [(Row, Section, &str, &str); 24] = [
+const ROWS: [(Row, Section, &str, &str); 19] = [
     (Row::Theme, Section::Appearance, "Theme", "dark light system"),
     (Row::Font, Section::Appearance, "Font", "typeface family monospace geist lilex zed jetbrains"),
     (Row::Translucency, Section::Appearance, "Window translucency", "transparency blur opaque"),
@@ -105,13 +99,8 @@ const ROWS: [(Row, Section, &str, &str); 24] = [
     (Row::ConfirmCommit, Section::Grid, "Review edits before commit", "commit edit sql"),
     (Row::ExportDir, Section::Export, "Default export folder", "downloads directory"),
     (Row::McpAccess, Section::Mcp, "Agent access", "mcp ai agents claude"),
-    (Row::McpTabs, Section::Mcp, "Agent queries in tabs", "mcp visible open query tab agent"),
-    (Row::McpWriteLimit, Section::Mcp, "Rows per write", "mcp limit approval blast radius write rows"),
-    (Row::McpRows, Section::Mcp, "Rows per call", "mcp limit max rows"),
     (Row::McpClaude, Section::Mcp, "Claude Code", "mcp add command stdio"),
-    (Row::McpLog, Section::Mcp, "Log", "mcp audit calls"),
-    (Row::McpConnections, Section::Mcp, "Connections", "mcp permission tier off read write full"),
-    (Row::McpAdvanced, Section::Mcp, "Advanced", "mcp advanced allowed queries allowlist yolo"),
+    (Row::McpAgents, Section::Mcp, "Agents", "mcp agents audit log permissions privacy sensitive limits rows tools tier allowed yolo"),
     (Row::Version, Section::About, "Version", "about update release"),
     (Row::UpdateCheck, Section::About, "Check for updates", "update automatic daily feed"),
     (Row::CrashReports, Section::About, "Crash reports", "crash logs panic diagnostics"),
@@ -121,24 +110,13 @@ impl Row {
     fn help(self) -> Option<&'static str> {
         Some(match self {
             Row::McpAccess => "Lets AI agents (Claude Code, Claude Desktop, any MCP client) use your connections. Off blocks every agent.",
-            Row::McpTabs => "Shows the agent's queries and their results in a tab of their own, so you see what it runs.",
-            Row::McpWriteLimit => "An agent's write changing more rows than this waits for your Allow before it commits.",
-            Row::McpRows => "The most rows an agent receives per query. The full result stays in its tab.",
             Row::McpClaude => "Copies the command that adds Dataman to Claude Code.",
+            Row::McpAgents => "What agents ran, and per connection what they may do and see.",
             _ => return None,
         })
     }
 }
 
-const MCP_TIERS: [(&str, &str); 4] = [
-    ("Off", "no access"),
-    ("Read", "queries only, in a read-only transaction"),
-    ("Write", "inserts, and updates or deletes with a real WHERE; anything destructive is refused"),
-    ("Full", "anything; destructive statements wait for your Allow"),
-];
-
-pub const MCP_ROW_CHOICES: [(usize, &str); 4] = [(200, "200"), (1_000, "1k"), (5_000, "5k"), (10_000, "10k")];
-pub const MCP_WRITE_CHOICES: [(u64, &str); 4] = [(10, "10"), (100, "100"), (1_000, "1k"), (10_000, "10k")];
 
 pub const PREFETCH_CHOICES: [(usize, &str); 4] = [(5_000, "5k"), (10_000, "10k"), (50_000, "50k"), (100_000, "100k")];
 pub const PAGE_CHOICES: [(usize, &str); 4] = [(200, "200"), (1_000, "1k"), (5_000, "5k"), (10_000, "10k")];
@@ -172,10 +150,6 @@ pub struct SettingsView {
     key_button_bounds: Rc<RefCell<Vec<Bounds<Pixels>>>>,
     check_now_bounds: Rc<RefCell<Vec<Bounds<Pixels>>>>,
     page_scroll: ScrollHandle,
-    mcp_advanced: bool,
-    allow_inputs: BTreeMap<String, gpui::Entity<TextInput>>,
-    allow_errors: BTreeMap<String, String>,
-    yolo_confirm: Option<String>,
     _intercept: gpui::Subscription,
 }
 
@@ -239,10 +213,6 @@ impl SettingsView {
             key_button_bounds: Default::default(),
             check_now_bounds: Default::default(),
             page_scroll: ScrollHandle::new(),
-            mcp_advanced: false,
-            allow_inputs: BTreeMap::new(),
-            allow_errors: BTreeMap::new(),
-            yolo_confirm: None,
             _intercept: intercept,
         }
     }
@@ -343,97 +313,9 @@ impl SettingsView {
         cx.notify();
     }
 
-    fn set_conn_mcp(&mut self, id: &str, access: dataman_core::McpAccess, cx: &mut Context<Self>) {
-        if let Some(mut p) = self.core.config.get(id) {
-            p.mcp = Some(access);
-            if let Err(e) = self.core.config.upsert(p) {
-                log::warn!("could not save the connection: {e:#}");
-            }
-            cx.emit(SettingsEvent::ConnectionsChanged);
-            cx.notify();
-        }
-    }
-
-    fn edit_conn(&mut self, id: &str, f: impl FnOnce(&mut dataman_core::ConnectionProfile), cx: &mut Context<Self>) {
-        if let Some(mut p) = self.core.config.get(id) {
-            f(&mut p);
-            if let Err(e) = self.core.config.upsert(p) {
-                log::warn!("could not save the connection: {e:#}");
-            }
-            cx.emit(SettingsEvent::ConnectionsChanged);
-            cx.notify();
-        }
-    }
-
-    fn toggle_mcp_advanced(&mut self, cx: &mut Context<Self>) {
-        self.mcp_advanced = !self.mcp_advanced;
-        self.yolo_confirm = None;
-        if self.mcp_advanced {
-            for p in self.core.config.connections() {
-                if self.allow_inputs.contains_key(&p.id) {
-                    continue;
-                }
-                let input = cx.new(|cx| TextInput::new(cx, "DELETE FROM sessions WHERE expires_at < ?"));
-                let id = p.id.clone();
-                cx.subscribe(&input, move |v: &mut Self, _, ev: &InputEvent, cx| match ev {
-                    InputEvent::Submit => v.add_allowed(&id, cx),
-                    InputEvent::Changed => {
-                        if v.allow_errors.remove(&id).is_some() {
-                            if let Some(i) = v.allow_inputs.get(&id) {
-                                i.update(cx, |i, _| i.error = false);
-                            }
-                            cx.notify();
-                        }
-                    }
-                })
-                .detach();
-                self.allow_inputs.insert(p.id, input);
-            }
-        }
-        cx.notify();
-    }
-
-    fn add_allowed(&mut self, id: &str, cx: &mut Context<Self>) {
-        let (Some(p), Some(input)) = (self.core.config.get(id), self.allow_inputs.get(id).cloned()) else { return };
-        let d = p.engine.dialect();
-        let text = input.read(cx).text().to_string();
-        let r = dataman_core::guard::allowlist_entry(&text, d).and_then(|e| {
-            if p.mcp_allowed.iter().any(|a| dataman_core::guard::allowlist_match(a, &e, d)) { Err("already allowed".to_string()) } else { Ok(e) }
-        });
-        match r {
-            Ok(e) => {
-                self.allow_errors.remove(id);
-                input.update(cx, |i, cx| {
-                    i.set_text("", cx);
-                    i.error = false;
-                });
-                self.edit_conn(id, |p| p.mcp_allowed.push(e), cx);
-            }
-            Err(e) => {
-                self.allow_errors.insert(id.to_string(), e);
-                input.update(cx, |i, _| i.error = true);
-                cx.notify();
-            }
-        }
-    }
-
-    fn toggle_yolo(&mut self, id: &str, cx: &mut Context<Self>) {
-        let Some(p) = self.core.config.get(id) else { return };
-        if p.mcp_yolo || self.yolo_confirm.as_deref() == Some(id) {
-            self.yolo_confirm = None;
-            self.edit_conn(id, |p| p.mcp_yolo = false, cx);
-        } else if p.env.is_production() {
-            self.yolo_confirm = Some(id.to_string());
-            cx.notify();
-        } else {
-            self.edit_conn(id, |p| p.mcp_yolo = true, cx);
-        }
-    }
-
     fn row_visible(&self, row: Row, cx: &App) -> bool {
         match row {
-            Row::McpTabs | Row::McpWriteLimit | Row::McpRows | Row::McpClaude | Row::McpConnections => self.settings.mcp_enabled,
-            Row::McpAdvanced => dataman_core::MCP_ADVANCED && self.settings.mcp_enabled,
+            Row::McpClaude => self.settings.mcp_enabled,
             Row::UpdateCheck => crate::updates::enabled(cx),
             _ => true,
         }
@@ -448,203 +330,6 @@ impl SettingsView {
             .child(if done { "Copied" } else { label })
             .when_some(text, |d, text| d.on_click(cx.listener(move |v, _, _, cx| v.copy(id, text.clone(), cx))))
             .into_any_element()
-    }
-
-    fn render_mcp_connections(&self, t: &Theme, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let profiles = self.core.config.connections();
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(2.))
-            .pb(px(14.))
-            .border_b_1()
-            .border_color(t.line)
-            .child(div().pb(px(6.)).child(ui::caps(t, "CONNECTIONS")))
-            .child(
-                div().pb(px(8.)).flex().flex_col().gap(px(2.)).text_size(px(10.5)).line_height(px(15.)).children(MCP_TIERS.map(|(name, what)| {
-                    div().flex().flex_row().gap(px(8.)).child(div().w(px(44.)).flex_none().text_color(t.tx2).child(name)).child(div().min_w_0().text_color(t.tx3).child(what))
-                })),
-            )
-            .child(div().pb(px(8.)).text_size(px(10.5)).line_height(px(15.)).text_color(t.tx3).child("On production, every write waits for your Allow. A read-only database refuses all writes."))
-            .children(profiles.into_iter().enumerate().map(|(i, p)| {
-                let cur = p.mcp_access();
-                let env = p.env;
-                let id = p.id.clone();
-                let on = cur != dataman_core::McpAccess::Off;
-                let allowed = match p.mcp_allowed_on().len() {
-                    0 => None,
-                    1 => Some("1 allowed query".to_string()),
-                    n => Some(format!("{n} allowed queries")),
-                };
-                div()
-                    .h(px(36.))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(10.))
-                    .child(ui::chip(t.profile_color(&p), 8.))
-                    .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx).child(p.name.clone()))
-                    .when(!env.is_none(), |d| d.child(div().flex_none().text_size(px(11.)).text_color(if env.is_production() { t.err } else { t.tx3 }).child(env.label())))
-                    .child(div().flex_1())
-                    .children(allowed.filter(|_| on).map(|a| div().flex_none().text_size(px(11.)).text_color(t.tx3).whitespace_nowrap().child(a)))
-                    .when(p.mcp_yolo_on(), |d| d.child(crate::conn_dialog::yolo_badge(t)))
-                    .child(ui::segmented(t).w(px(232.)).children(dataman_core::McpAccess::ALL.into_iter().map(|a| {
-                        let id = id.clone();
-                        ui::segment(t, ("mcp-conn", i * 4 + a as usize), a.label(), cur == a)
-                            .when(a >= dataman_core::McpAccess::Write && cur == a && env.is_production(), |d| d.text_color(t.err))
-                            .on_click(cx.listener(move |v, _, _, cx| v.set_conn_mcp(&id, a, cx)))
-                    })))
-            }))
-            .into_any_element()
-    }
-
-    fn render_mcp_advanced(&self, t: &Theme, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let profiles: Vec<_> = self.core.config.connections().into_iter().filter(|p| p.mcp_access() != dataman_core::McpAccess::Off).collect();
-        let open = self.mcp_advanced;
-        let allowed: usize = profiles.iter().map(|p| p.mcp_allowed.len()).sum();
-        let yolos = profiles.iter().filter(|p| p.mcp_yolo_on()).count();
-        let summary = match allowed {
-            0 => None,
-            1 => Some("1 allowed query".to_string()),
-            n => Some(format!("{n} allowed queries")),
-        };
-        let head = div()
-            .id("mcp-advanced")
-            .h(px(20.))
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(6.))
-            .cursor_pointer()
-            .child(ui::disclosure("mcp-advanced-chev", open, 11., t.tx3))
-            .child(ui::caps(t, "ADVANCED"))
-            .when(!open, |d| d.children(summary.map(|s| div().text_size(px(10.5)).text_color(t.tx3).child(s))))
-            .when(!open && yolos > 0, |d| d.child(crate::conn_dialog::yolo_badge(t)))
-            .on_click(cx.listener(|v, _, _, cx| v.toggle_mcp_advanced(cx)));
-        let mut col = div().flex().flex_col().gap(px(10.)).pb(px(14.)).border_b_1().border_color(t.line).child(head);
-        if !open {
-            return col.into_any_element();
-        }
-        let note = |text: &'static str| div().text_size(px(10.5)).line_height(px(15.)).text_color(t.tx3).child(text);
-        col = col.child(div().pl(px(17.)).child(note(
-            "Allowed queries run without asking, whatever the tier (never while it is off or the database is read-only). Each is one statement, matched statement by statement: the same words in the same order, case, spacing and comments aside; a ? stands for exactly one value, never for more SQL.",
-        )));
-        if profiles.is_empty() {
-            return col.child(div().pl(px(17.)).child(note("No connection gives agents access.")).into_any_element()).into_any_element();
-        }
-        for (i, p) in profiles.into_iter().enumerate() {
-            let id = p.id.clone();
-            let rows = p.mcp_allowed.iter().enumerate().map(|(k, s)| {
-                let id = id.clone();
-                div()
-                    .min_h(px(26.))
-                    .pl(px(10.))
-                    .pr(px(2.))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(8.))
-                    .bg(t.card)
-                    .border_1()
-                    .border_color(t.line)
-                    .child(div().flex_1().min_w_0().py(px(4.)).text_size(px(11.5)).text_color(t.tx2).child(s.clone()))
-                    .child(ui::icon_button(t, ("allowed-rm", i * 1000 + k), Icon::Close, 22., 11.).on_click(cx.listener(move |v, _, _, cx| {
-                        v.edit_conn(&id, |p| {
-                            if k < p.mcp_allowed.len() {
-                                p.mcp_allowed.remove(k);
-                            }
-                        }, cx)
-                    })))
-            });
-            let add = self.allow_inputs.get(&p.id).cloned().map(|input| {
-                let id = id.clone();
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_end()
-                    .gap(px(8.))
-                    .child(div().flex_1().child(input))
-                    .child(ui::button(t, ("allowed-add", i), ui::Btn::Secondary).h(px(28.)).px(px(10.)).child("Add").on_click(cx.listener(move |v, _, _, cx| v.add_allowed(&id, cx))))
-            });
-            let yolo = p.mcp_yolo;
-            let confirming = self.yolo_confirm.as_deref() == Some(p.id.as_str());
-            let switch = div()
-                .flex_none()
-                .w(px(26.))
-                .h(px(14.))
-                .relative()
-                .bg(if yolo { t.err } else { t.line2 })
-                .child(div().absolute().top(px(2.)).when(yolo, |d| d.right(px(2.))).when(!yolo, |d| d.left(px(2.))).size(px(10.)).rounded(px(5.)).bg(if yolo { gpui::white() } else { t.tx3 }));
-            let yolo_row = {
-                let id = id.clone();
-                div()
-                    .id(("yolo", i))
-                    .px(px(10.))
-                    .py(px(8.))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(10.))
-                    .border_1()
-                    .border_color(if yolo || confirming { t.err } else { t.line2 })
-                    .when(yolo, |d| d.bg(t.err_s))
-                    .cursor_pointer()
-                    .on_click(cx.listener(move |v, _, _, cx| v.toggle_yolo(&id, cx)))
-                    .child(switch)
-                    .child(div().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(t.err).child("YOLO"))
-                    .child(div().flex_1().min_w_0().text_size(px(11.)).text_color(t.tx2).child("agents run anything here, nobody asked (read-only still refuses writes)"))
-            };
-            let confirm = confirming.then(|| {
-                let (yes, no) = (id.clone(), id.clone());
-                div()
-                    .px(px(10.))
-                    .py(px(8.))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(10.))
-                    .bg(t.err_s)
-                    .border_1()
-                    .border_color(t.err)
-                    .child(div().flex_1().min_w_0().text_size(px(11.5)).line_height(px(17.)).text_color(t.tx).child("This connection is production: with YOLO, an agent can change or destroy its data and nobody is asked first."))
-                    .child(ui::button(t, ("yolo-cancel", i), ui::Btn::Ghost).h(px(26.)).child("Cancel").on_click(cx.listener(move |v, _, _, cx| {
-                        if v.yolo_confirm.as_deref() == Some(no.as_str()) {
-                            v.yolo_confirm = None;
-                            cx.notify();
-                        }
-                    })))
-                    .child(ui::button(t, ("yolo-confirm", i), ui::Btn::Danger).h(px(26.)).font_weight(FontWeight::SEMIBOLD).child("Turn On YOLO").on_click(cx.listener(move |v, _, _, cx| {
-                        v.yolo_confirm = None;
-                        v.edit_conn(&yes, |p| p.mcp_yolo = true, cx);
-                    })))
-            });
-            let env = p.env;
-            col = col.child(
-                div()
-                    .pl(px(17.))
-                    .pt(px(4.))
-                    .flex()
-                    .flex_col()
-                    .gap(px(6.))
-                    .child(
-                        div()
-                            .h(px(20.))
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(8.))
-                            .child(ui::chip(t.profile_color(&p), 8.))
-                            .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx).child(p.name.clone()))
-                            .when(!env.is_none(), |d| d.child(div().flex_none().text_size(px(11.)).text_color(if env.is_production() { t.err } else { t.tx3 }).child(env.label()))),
-                    )
-                    .children(rows)
-                    .children(add)
-                    .children(self.allow_errors.get(&p.id).cloned().map(|e| div().text_size(px(11.)).text_color(t.err).child(e)))
-                    .child(yolo_row)
-                    .children(confirm),
-            );
-        }
-        col.into_any_element()
     }
 
     pub fn show_update_status(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -669,13 +354,6 @@ impl SettingsView {
                 None => (format!("Dataman is up to date · checked {}", crate::updates::when(c.at)).into(), t.tx3, false),
                 Some(e) => (format!("Check failed: {e}").into(), t.err, true),
             }),
-        }
-    }
-
-    #[cfg(feature = "checks")]
-    pub fn demo_mcp_advanced(&mut self, cx: &mut Context<Self>) {
-        if !self.mcp_advanced {
-            self.toggle_mcp_advanced(cx);
         }
     }
 
@@ -984,8 +662,6 @@ impl SettingsView {
                     })
                     .into_any_element()
             }
-            Row::McpConnections => return self.render_mcp_connections(t, cx),
-            Row::McpAdvanced => return self.render_mcp_advanced(t, cx),
             Row::Version => {
                 use crate::updates::State;
                 let enabled = crate::updates::enabled(cx);
@@ -1054,33 +730,10 @@ impl SettingsView {
                     .child(ui::segment(t, "mcp-on", "On", on).on_click(cx.listener(|v, _, _, cx| v.set_mcp(|s| s.mcp_enabled = true, cx))))
                     .into_any_element()
             }
-            Row::McpTabs => {
-                let on = s.mcp_show_in_tabs;
-                ui::segmented(t)
-                    .child(ui::segment(t, "mcp-tabs-off", "Off", !on).on_click(cx.listener(|v, _, _, cx| v.save(|s| s.mcp_show_in_tabs = false, cx))))
-                    .child(ui::segment(t, "mcp-tabs-on", "On", on).on_click(cx.listener(|v, _, _, cx| v.save(|s| s.mcp_show_in_tabs = true, cx))))
-                    .into_any_element()
-            }
-            Row::McpWriteLimit => {
-                let cur = s.mcp_write_row_limit;
-                ui::segmented(t)
-                    .children(MCP_WRITE_CHOICES.into_iter().map(|(n, label)| {
-                        ui::segment(t, ("mwl", n as usize), label, cur == n).on_click(cx.listener(move |v, _, _, cx| v.save(|s| s.mcp_write_row_limit = n, cx)))
-                    }))
-                    .into_any_element()
-            }
-            Row::McpRows => {
-                let cur = s.mcp_max_rows;
-                ui::segmented(t)
-                    .children(MCP_ROW_CHOICES.into_iter().map(|(n, label)| {
-                        ui::segment(t, ("mr", n), label, cur == n).on_click(cx.listener(move |v, _, _, cx| v.save(|s| s.mcp_max_rows = n, cx)))
-                    }))
-                    .into_any_element()
-            }
             Row::McpClaude => self.copy_button(t, "copy-stdio", "Copy command", Some(crate::mcp::stdio_command()), cx),
-            Row::McpLog => ui::button(t, "open-mcp-log", ui::Btn::Secondary)
+            Row::McpAgents => ui::button(t, "open-agents", ui::Btn::Secondary)
                 .h(px(28.))
-                .child("Open")
+                .child("Open Agents")
                 .on_click(cx.listener(|_, _, window, cx| {
                     cx.emit(SettingsEvent::Close);
                     window.dispatch_action(Box::new(crate::app::ToggleMcpLog), cx);

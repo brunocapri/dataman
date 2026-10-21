@@ -70,8 +70,8 @@ fn limits_tip() -> Tip {
     Tip::new("Limits")
         .lead("Per call, for agents only.")
         .item("Time per call", "Longest a statement runs before it is stopped. An agent can ask for less.")
-        .item("Rows per write", "A write that changes more rows waits for your Allow. Default: Settings › MCP.")
-        .item("Rows per read", "Most rows an agent gets back from one read.")
+        .item("Rows per write", "A write that changes more rows waits for your Allow. Default: 100.")
+        .item("Rows per read", "Most rows an agent gets back from one read. Default: 1,000.")
         .item("Size per read", "Most data from one read; past it the reply is cut and the agent is told.")
 }
 
@@ -262,9 +262,19 @@ impl AgentsPage {
         let limit_row = |label: &str, el: gpui::Div| div().flex().flex_row().items_center().gap(px(12.)).child(div().flex_1().text_color(t.tx2).child(label.to_string())).child(el);
         let times: Vec<(u64, String)> = privacy::TIME_LIMITS.iter().map(|s| (*s, if *s < 60 { format!("{s} s") } else { format!("{} min", s / 60) })).collect();
         let times: Vec<(u64, &str)> = times.iter().map(|(v, l)| (*v, l.as_str())).collect();
-        let writes: Vec<(u64, String)> = std::iter::once((0, "Default".to_string())).chain(privacy::WRITE_ROWS.iter().map(|n| (*n, if *n >= 1000 { format!("{}k", n / 1000) } else { n.to_string() }))).collect();
+        let count = |n: u64| if n >= 1000 && n.is_multiple_of(1000) { format!("{}k", n / 1000) } else { n.to_string() };
+        // A value that came from the old global setting shows as a choice of its own.
+        let with = |list: &[u64], cur: Option<u64>| -> Vec<u64> {
+            let mut v = list.to_vec();
+            if let Some(c) = cur.filter(|c| !v.contains(c)) {
+                v.push(c);
+                v.sort();
+            }
+            v
+        };
+        let writes: Vec<(u64, String)> = std::iter::once((0, "Default".to_string())).chain(with(&privacy::WRITE_ROWS, p.mcp_row_limit).into_iter().map(|n| (n, count(n)))).collect();
         let writes: Vec<(u64, &str)> = writes.iter().map(|(v, l)| (*v, l.as_str())).collect();
-        let reads: Vec<(u64, String)> = std::iter::once((0, "Default".to_string())).chain(privacy::READ_ROWS.iter().map(|n| (*n, n.to_string()))).collect();
+        let reads: Vec<(u64, String)> = std::iter::once((0, "Default".to_string())).chain(with(&privacy::READ_ROWS, r.read_rows).into_iter().map(|n| (n, count(n)))).collect();
         let reads: Vec<(u64, &str)> = reads.iter().map(|(v, l)| (*v, l.as_str())).collect();
         let sizes: Vec<(u64, String)> = std::iter::once((0, "Default".to_string())).chain(privacy::READ_BYTES.iter().map(|n| (*n, kb(*n)))).collect();
         let sizes: Vec<(u64, &str)> = sizes.iter().map(|(v, l)| (*v, l.as_str())).collect();

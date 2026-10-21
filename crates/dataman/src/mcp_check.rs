@@ -332,10 +332,7 @@ pub(crate) async fn serve(ws: &Entity<Workspace>, id: &str, cx: &mut AsyncWindow
     core.config.upsert(p).ok()?;
     let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.store.update(cx, |s, cx| s.reload(cx))));
     core.settings
-        .update(|s| {
-            s.mcp_enabled = true;
-            s.mcp_show_in_tabs = true;
-        })
+        .update(|s| s.mcp_enabled = true)
         .ok()?;
     let _ = cx.update(|_, cx| crate::mcp::apply(&core, cx));
     let ipc = Arc::new(Ipc { dirs: core.dirs.clone() });
@@ -413,12 +410,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     let active_is_users = cx.update(|_, cx| ws.read(cx).active_tab() == Some(&agent)).unwrap_or(false);
     check("a tab the user edited is left alone: a new agent tab", !err && tabs.len() == 2 && text(&agent, cx) == edited && edited.ends_with(" x"), format!("{} tabs", tabs.len()));
     check("the new agent tab opens behind the user's", active_is_users, String::new());
-    let _ = core.settings.update(|s| s.mcp_show_in_tabs = false);
-    let second = tabs.last().cloned().unwrap();
-    let before = text(&second, cx);
-    let (err, out) = call(&agent_ipc,"run_query", json!({"connection": conn, "database": db, "sql": "SELECT 2 AS headless"})).await;
-    check("Agent queries in tabs off: run_query stays headless", !err && out.contains("headless") && text(&second, cx) == before && agent_tabs(ws, cx).len() == 2, out);
-    let _ = core.settings.update(|s| s.mcp_show_in_tabs = true);
 
     let several = "SELECT 1 AS one;\nSELECT 'two' AS two;\nSELECT generate_series(1, 4) AS n";
     let (err, out) = call(&agent_ipc, "open_query", json!({"connection": conn, "database": db, "sql": several, "max_rows": 2})).await;

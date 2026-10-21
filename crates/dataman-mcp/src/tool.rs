@@ -389,9 +389,9 @@ impl Call {
         if self.hub.settings().mcp_enabled { Ok(()) } else { Err(ToolError::Refused("MCP access is turned off in Dataman (Settings › MCP)".into())) }
     }
 
-    pub fn tab_front(&self, open: bool) -> Option<Arc<dyn Front>> {
-        let f = self.hub.front().filter(|f| f.tabs())?;
-        (open || self.hub.settings().mcp_show_in_tabs).then_some(f)
+    /// The app, when it is open: agents' statements always run in a tab there.
+    pub fn tab_front(&self) -> Option<Arc<dyn Front>> {
+        self.hub.front().filter(|f| f.tabs())
     }
 
     pub async fn read(&self, args: &Args, sql: &str, params: Vec<Option<String>>, limits: Limits, front: Option<Arc<dyn Front>>, title: Option<String>) -> Result<bounded::Outcome, ToolError> {
@@ -703,7 +703,7 @@ impl Call {
 
     pub fn limits(&self, args: &Args, default_rows: u64) -> Limits {
         let rules = self.rules_of(args);
-        let cap = (self.hub.settings().mcp_max_rows.max(1) as u64).min(rules.read_rows.unwrap_or(u64::MAX)).max(1);
+        let cap = rules.read_rows.unwrap_or(dataman_core::settings::MCP_MAX_ROWS).max(1);
         let base = Limits::default();
         Limits {
             max_rows: args.u64_or("max_rows", default_rows).clamp(1, cap) as usize,
@@ -788,6 +788,12 @@ impl Registry {
     pub fn register(&mut self, t: Arc<dyn Tool>) {
         assert!(!self.tools.iter().any(|x| x.name() == t.name()), "tool {} registered twice", t.name());
         self.tools.push(t);
+    }
+
+    /// What is wrong in the user's tools file (mcp-tools.toml), as it was last read.
+    pub fn user_errors(&self) -> Vec<String> {
+        self.refresh();
+        self.user.lock().errors.clone()
     }
 
     pub fn builtin_names(&self) -> Vec<String> {

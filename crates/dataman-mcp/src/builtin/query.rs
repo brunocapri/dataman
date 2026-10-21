@@ -91,7 +91,7 @@ async fn read(cx: &Call, a: &Args, open: bool) -> Result<Value, ToolError> {
     let checked = rules::checked_sql(cx, a, &target, sql, false).await?;
     let limits = cx.limits(a, 200);
     let read = rules::read_limits(cx, &target, limits);
-    let front = cx.tab_front(open);
+    let front = cx.tab_front();
     let shown = front.is_some();
     let mut out = cx.read(a, &checked.sql, params, read, front, a.opt_str("title").map(str::to_string)).await?;
     rules::mask_outcome(cx, &target, &mut out, &checked.masked, read, limits);
@@ -125,9 +125,9 @@ pub(super) async fn open(cx: &Call, a: Args) -> Result<Value, ToolError> {
     if reads {
         return read(cx, &a, true).await;
     }
-    let mut v = write(cx, &a, true).await?;
+    let mut v = write(cx, &a).await?;
     if let Some(m) = v.as_object_mut() {
-        m.insert("in_tab".into(), json!(cx.tab_front(true).is_some()));
+        m.insert("in_tab".into(), json!(cx.tab_front().is_some()));
     }
     Ok(v)
 }
@@ -274,17 +274,17 @@ fn execute(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
         if super::nosql::is_nosql(cx, &a) {
             return super::nosql::execute(cx, &a, "sql", false).await;
         }
-        write(cx, &a, false).await
+        write(cx, &a).await
     })
 }
 
-async fn write(cx: &Call, a: &Args, open: bool) -> Result<Value, ToolError> {
+async fn write(cx: &Call, a: &Args) -> Result<Value, ToolError> {
     let sql = a.str("sql")?;
     let params = a.params()?;
     // `confirm` from older clients is accepted and ignored: only the user's Allow in the app
     // lets a destructive write through.
     let limits = cx.limits(a, 50);
-    let visible = cx.tab_front(open).is_some();
+    let visible = cx.tab_front().is_some();
     let title = a.opt_str("title").map(str::to_string);
     let target = cx.target(a, Need::Read)?;
     let checked = rules::checked_sql(cx, a, &target, sql, true).await?;

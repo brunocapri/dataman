@@ -1048,7 +1048,7 @@ fn commands(conn: Option<&std::sync::Arc<dataman_core::Connection>>, cx: &App) -
         c("Save as…", "the script, to a .sql file", "⇧⌘S", Box::new(SaveAs), Workspace),
         c("Import favorites…", ".sql files, one favorite each", "", Box::new(ImportFavorites), Workspace),
         c("Activity monitor", "sessions, locks, tables, statements", "", Box::new(OpenActivity), Workspace),
-        c("MCP log", "agents' tool calls", "", Box::new(ToggleMcpLog), Workspace),
+        c("Agents", "audit, permissions, privacy, MCP", "", Box::new(ToggleMcpLog), Workspace),
         c("Toggle comment", "the selected lines", "⌘/", Box::new(crate::editor::ToggleComment), Editor),
         c("Format SQL", "the selection, or the whole script", "⌥⇧F", Box::new(crate::editor::FormatSql), Editor),
         c("Go to definition", "the name under the cursor, in the explorer", "F12", Box::new(crate::editor::GoToDefinition), Editor),

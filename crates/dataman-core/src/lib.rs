@@ -205,10 +205,13 @@ impl Core {
             .build()?;
         // Before any TLS: drivers that build their own TLS config take the process' provider.
         backend::install_tls_provider();
+        let config = ConfigStore::open(&dirs)?;
+        let settings = SettingsStore::open(&dirs);
+        settings::migrate_mcp_limits(&dirs, &config, &settings);
         Ok(Core {
             rt,
-            config: ConfigStore::open(&dirs)?,
-            settings: SettingsStore::open(&dirs),
+            config,
+            settings,
             history: Arc::new(History::new(dirs.history_dir())),
             favorites: Arc::new(FavoritesStore::open(&dirs)?),
             pins: PinStore::open(&dirs),

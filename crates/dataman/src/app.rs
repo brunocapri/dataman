@@ -1582,7 +1582,6 @@ impl Workspace {
                     w.toggle_settings(window, cx);
                 }
             }
-            crate::settings_view::SettingsEvent::ConnectionsChanged => w.store.update(cx, |s, cx| s.reload(cx)),
         })
         .detach();
         self.settings_view = Some(v);

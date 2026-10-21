@@ -132,12 +132,20 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     r.check("Export: Reset puts the default folder back", settings(ws, cx).export_dir.is_none(), format!("{:?}", settings(ws, cx).export_dir));
 
     section("MCP", cx);
+    click_probe("mcp-off", cx);
+    r.check("MCP: Off saved", !settings(ws, cx).mcp_enabled, "");
+    let hidden = probed("copy-stdio", cx).is_none();
     click_probe("mcp-on", cx);
-    click_probe("mcp-tabs-on", cx);
-    click_probe("mwl-1000", cx);
-    click_probe("mr-5000", cx);
-    let s = settings(ws, cx);
-    r.check("MCP: access, agent tabs, rows per write and per call saved", s.mcp_enabled && s.mcp_show_in_tabs && s.mcp_write_row_limit == 1_000 && s.mcp_max_rows == 5_000, format!("{} {} {} {}", s.mcp_enabled, s.mcp_show_in_tabs, s.mcp_write_row_limit, s.mcp_max_rows));
+    pause(cx, 50).await;
+    let rows = (probed("copy-stdio", cx).is_some(), probed("open-agents", cx).is_some(), probed("mwl-1000", cx).is_none(), probed("open-mcp-log", cx).is_none());
+    r.check("MCP: On, the Claude Code command and a way to Agents; the rest lives in Agents", settings(ws, cx).mcp_enabled && hidden && rows == (true, true, true, true), format!("{hidden} {rows:?}"));
+    click_probe("open-agents", cx);
+    pause(cx, 100).await;
+    let agents = cx.update(|_, cx| ws.read(cx).view == dataman_core::layout::NavView::Agents && ws.read(cx).settings_view.is_none()).unwrap_or(false);
+    r.check("Open Agents closes Settings on the Agents area", agents, "");
+    let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.show_nav(dataman_core::layout::NavView::Explorer, window, cx)));
+    let _ = toggle(cx);
+    section("MCP", cx);
     click_probe("mcp-off", cx);
 
     section("About", cx);
@@ -153,7 +161,7 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     let mine = settings(ws, cx);
     r.check(
         "a relaunch reads every choice back from settings.toml",
-        again.as_ref().is_ok_and(|s| s.theme == mine.theme && s.translucency == mine.translucency && s.page_size == 200 && s.indent == 4 && s.keyword_case == mine.keyword_case && !s.update_check && s.mcp_write_row_limit == 1_000),
+        again.as_ref().is_ok_and(|s| s.theme == mine.theme && s.translucency == mine.translucency && s.page_size == 200 && s.indent == 4 && s.keyword_case == mine.keyword_case && !s.update_check && !s.mcp_enabled),
         format!("{:?}", again.as_ref().map(|s| (s.page_size, s.indent, s.update_check)).map_err(|e| format!("{e:#}"))),
     );
 }

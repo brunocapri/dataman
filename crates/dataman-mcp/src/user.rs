@@ -314,7 +314,7 @@ impl Tool for UserTool {
                 }
             }
             let params = self.bind(&a)?;
-            let cap = cx.hub.settings().mcp_max_rows.max(1);
+            let cap = cx.rules_of(&a).read_rows.unwrap_or(dataman_core::settings::MCP_MAX_ROWS).max(1) as usize;
             let limits = Limits {
                 max_rows: self.def.max_rows.unwrap_or(200).clamp(1, cap),
                 timeout: Duration::from_millis(self.def.timeout_ms.unwrap_or(30_000).clamp(100, 300_000)),
@@ -340,7 +340,7 @@ impl Tool for UserTool {
                 }
                 // The same tiers as execute: what the template is decides, not the file.
                 UserMode::Write => {
-                    let visible = cx.tab_front(false).is_some();
+                    let visible = cx.tab_front().is_some();
                     let w = Write { sql: &checked.sql, judged: None, params, limits: read, rollback: false, visible, title: Some(self.def.name.clone()) };
                     cx.write(&a, w).await?.outcome
                 }
