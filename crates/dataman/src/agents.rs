@@ -243,6 +243,10 @@ pub struct AgentsPage {
     /// Where the reply sits in the detail, and the page below the header it zooms over.
     received_slot: Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
     received_area: Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
+    /// Audit's detail width as the seam left it; shown within `detail_shown`'s bounds.
+    pub(crate) detail_w: f32,
+    pub(crate) detail_drag: bool,
+    audit_body: Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
     pub(crate) audit_scroll: gpui::ScrollHandle,
     pub(crate) conns_scroll: gpui::ScrollHandle,
     pub(crate) types_scroll: gpui::ScrollHandle,
@@ -491,7 +495,11 @@ impl AgentsPage {
             InputEvent::Changed => v.update_suggest(crate::agents_suggest::Which::Visible, cx),
         })
         .detach();
-        let received = cx.new(crate::grid::ResultGrid::new);
+        let received = cx.new(|cx| {
+            let mut g = crate::grid::ResultGrid::new(cx);
+            g.tight_gutter();
+            g
+        });
         cx.subscribe(&received, |_: &mut Self, g, ev: &crate::grid::GridEvent, cx| {
             if let crate::grid::GridEvent::ViewValue { row, col } = ev
                 && let Some(cell) = g.read(cx).value_at(*row, *col)
@@ -560,6 +568,9 @@ impl AgentsPage {
             received_tween: None,
             received_slot: Rc::default(),
             received_area: Rc::default(),
+            detail_w: DETAIL_W,
+            detail_drag: false,
+            audit_body: Rc::default(),
             audit_scroll: gpui::ScrollHandle::new(),
             conns_scroll: gpui::ScrollHandle::new(),
             types_scroll: gpui::ScrollHandle::new(),
@@ -1179,6 +1190,7 @@ impl AgentsPage {
         let moving = zoom > 0. || self.received_tween.is_some();
         let flight = moving.then(|| self.received_flight(t, zoom, cx)).flatten();
         let fade = |d: gpui::Div| d.when(zoom > 0., |d| d.opacity(1. - zoom));
+        let body = self.audit_body.clone();
         div()
             .size_full()
             .flex()
@@ -1194,9 +1206,88 @@ impl AgentsPage {
                     .flex_col()
                     .child(measure_area)
                     .child(fade(toolbar))
-                    .child(fade(div().flex_1().min_h_0().flex().flex_row().border_t_1().border_color(t.line)).child(list).children(self.render_detail(t, flight.is_some(), cx)))
+                    .child(
+                        fade(div().flex_1().min_h_0().relative().flex().flex_row().border_t_1().border_color(t.line))
+                            .child(gpui::canvas(move |b, _, _| body.set(Some(b)), |_, _, _, _| {}).absolute().top_0().left_0().size_full())
+                            .child(list)
+                            .children(self.render_detail(t, flight.is_some(), cx))
+                            .children(self.selected.is_some().then(|| self.render_detail_seam(cx))),
+                    )
                     .children(flight),
             )
+            .into_any_element()
+    }
+
+    /// The detail as wide as the seam left it, within its bounds for the page's width now.
+    pub(crate) fn detail_shown(&self) -> f32 {
+        let max = self.audit_body.get().map_or(f32::MAX, |b| {
+            let w = b.size.width.as_f32();
+            (w / 2.).min(w - LIST_MIN).max(DETAIL_MIN)
+        });
+        self.detail_w.clamp(DETAIL_MIN, max)
+    }
+
+    /// The seam between the calls and the detail, as the editor groups' and the docks' seams:
+    /// a drag resizes, a double click restores the default.
+    fn render_detail_seam(&self, cx: &mut Context<Self>) -> AnyElement {
+        let this = cx.entity().downgrade();
+        let body = self.audit_body.clone();
+        let drag = self.detail_drag.then(|| {
+            gpui::canvas(
+                |_, _, _| {},
+                move |_, _, window, _| {
+                    let (moved, body) = (this.clone(), body.clone());
+                    window.on_mouse_event(move |ev: &gpui::MouseMoveEvent, phase, _, cx| {
+                        if phase != gpui::DispatchPhase::Bubble {
+                            return;
+                        }
+                        let held = ev.pressed_button == Some(MouseButton::Left);
+                        let right = body.get().map(|b| b.right());
+                        let _ = moved.update(cx, |v, cx| {
+                            match right {
+                                Some(r) if held => {
+                                    v.detail_w = (r - ev.position.x).as_f32();
+                                    v.detail_w = v.detail_shown();
+                                }
+                                _ => v.detail_drag = false,
+                            }
+                            cx.notify();
+                        });
+                    });
+                    let this = this.clone();
+                    window.on_mouse_event(move |ev: &gpui::MouseUpEvent, phase, _, cx| {
+                        if phase == gpui::DispatchPhase::Bubble && ev.button == MouseButton::Left {
+                            let _ = this.update(cx, |v, cx| {
+                                v.detail_drag = false;
+                                cx.notify();
+                            });
+                        }
+                    });
+                },
+            )
+            .absolute()
+            .size_0()
+        });
+        div()
+            .children(ui::here(&"agents-detail-seam".into()))
+            .id("agents-detail-seam")
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .right(px(self.detail_shown() - SEAM_HIT / 2.))
+            .w(px(SEAM_HIT))
+            .cursor_col_resize()
+            .on_mouse_down(MouseButton::Left, cx.listener(|v, ev: &gpui::MouseDownEvent, _, cx| {
+                cx.stop_propagation();
+                if ev.click_count == 2 {
+                    v.detail_w = DETAIL_W;
+                    v.detail_drag = false;
+                } else {
+                    v.detail_drag = true;
+                }
+                cx.notify();
+            }))
+            .children(drag)
             .into_any_element()
     }
 
@@ -1319,7 +1410,7 @@ impl AgentsPage {
         Some(
             div()
                 .id("agents-detail")
-                .w(px(420.))
+                .w(px(self.detail_shown()))
                 .flex_none()
                 .flex()
                 .flex_col()
@@ -1363,6 +1454,16 @@ impl AgentsPage {
     // ---- Check hooks: the same ones the old log panel had ----
 
     #[cfg(feature = "checks")]
+    pub(crate) fn demo_audit_w(&self) -> f32 {
+        self.audit_body.get().map_or(0., |b| b.size.width.as_f32())
+    }
+
+    #[cfg(feature = "checks")]
+    pub(crate) fn demo_received_area_w(&self) -> f32 {
+        self.received_area.get().map_or(0., |b| b.size.width.as_f32())
+    }
+
+    #[cfg(feature = "checks")]
     pub(crate) fn demo_entries(&self) -> &[Entry] {
         &self.entries
     }
@@ -1399,6 +1500,13 @@ impl AgentsPage {
 }
 
 const REPLY_ROWS: usize = 8;
+
+/// Audit's detail: its default width and narrowest, and the narrowest the calls may get; it
+/// never takes more than half the page.
+pub(crate) const DETAIL_W: f32 = 420.;
+pub(crate) const DETAIL_MIN: f32 = 340.;
+const LIST_MIN: f32 = 380.;
+const SEAM_HIT: f32 = 8.;
 
 impl AgentsPage {
     /// Puts the selected call's reply in the grid when it holds rows or documents.

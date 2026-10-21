@@ -32,6 +32,9 @@ impl Workspace {
         let Some(store) = store(cx) else { return false };
         let Some(s) = store.load() else { return false };
         self.layout = s.layout.clone().normalized();
+        if s.audit_detail_w.is_finite() && s.audit_detail_w > 0. {
+            self.agents.update(cx, |a, _| a.detail_w = s.audit_detail_w.max(crate::agents::DETAIL_MIN));
+        }
         if s.tabs.is_empty() {
             return false;
         }
@@ -100,7 +103,7 @@ impl Workspace {
         });
     }
 
-    fn session_snapshot(&mut self, cx: &mut Context<Self>) -> (Session, Vec<(String, Vec<dataman_core::session::SaveItem>)>) {
+    pub(crate) fn session_snapshot(&mut self, cx: &mut Context<Self>) -> (Session, Vec<(String, Vec<dataman_core::session::SaveItem>)>) {
         let mut files = Vec::new();
         let mut tabs = Vec::new();
         let mut active = 0;
@@ -147,6 +150,7 @@ impl Workspace {
             side_w: self.side_w,
             editor_frac: self.editor_frac,
             layout: self.layout.clone(),
+            audit_detail_w: self.agents.read(cx).detail_w,
         };
         (session, files)
     }
@@ -165,6 +169,7 @@ impl Workspace {
         }
         (self.active, self.explorer_open, self.explorer_w.to_bits(), self.side_w.to_bits(), self.view).hash(&mut h);
         self.editor_frac.map(f32::to_bits).hash(&mut h);
+        self.agents.read(cx).detail_w.to_bits().hash(&mut h);
         self.layout.hash(&mut h);
         self.split.as_ref().map(|s| (&s.right, s.focus, s.other, s.ratio.to_bits())).hash(&mut h);
         h.finish()

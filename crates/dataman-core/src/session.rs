@@ -33,6 +33,8 @@ pub struct Session {
     pub editor_frac: Option<f32>,
     pub layout: crate::layout::PanelLayout,
     pub split: Option<crate::groups::SplitState>,
+    /// Agents › Audit's detail beside the calls; 0 for its default.
+    pub audit_detail_w: f32,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

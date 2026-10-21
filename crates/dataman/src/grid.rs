@@ -340,6 +340,8 @@ pub struct ResultGrid {
     table: Option<TableMode>,
     preferred: Option<Vec<f32>>,
     gutter: Option<GutterShare>,
+    /// Row numbers as narrow as their digits, for a grid with no editor to line up with.
+    tight_gutter: bool,
     auto: Option<AutoScroll>,
     hover: Option<CellPos>,
     hover_eye: bool,
@@ -505,6 +507,7 @@ impl ResultGrid {
             table: None,
             preferred: None,
             gutter: None,
+            tight_gutter: false,
             hover: None,
             hover_eye: false,
             eyes: Vec::new(),
@@ -520,10 +523,18 @@ impl ResultGrid {
         self.gutter = Some(share);
     }
 
+    pub fn tight_gutter(&mut self) {
+        self.tight_gutter = true;
+    }
+
     fn gutter_need(&self, rows: usize) -> f32 {
         let offset = self.table.as_ref().map_or(0, |t| t.offset);
         let num_w = self.char_w * 11. / 12.;
         let digits = ((rows + offset).max(1) as f64).log10().floor() as usize + 1;
+        if self.tight_gutter {
+            // The numbers end 10 from the divider, as in the wide gutter.
+            return digits as f32 * num_w + 18.;
+        }
         (digits as f32 * num_w + 26.).max(GUTTER_MIN)
     }
 
@@ -1274,6 +1285,16 @@ impl ResultGrid {
     pub fn demo_cells_rect(&self) -> (f32, f32, f32, f32) {
         let g = self.geo;
         (g.bounds.origin.x.pt() + g.gutter, g.bounds.origin.y.pt() + HEADER_H, g.body_w, g.body_h)
+    }
+
+    #[cfg(feature = "checks")]
+    pub fn demo_gutter_w(&self) -> f32 {
+        self.geo.gutter
+    }
+
+    #[cfg(feature = "checks")]
+    pub fn demo_char_w(&self) -> f32 {
+        self.char_w
     }
 
     #[cfg(feature = "checks")]

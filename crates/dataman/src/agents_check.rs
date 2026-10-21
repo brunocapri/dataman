@@ -164,7 +164,7 @@ fn id_of(name: &str, core: &Core) -> Option<String> {
     core.config.connections().into_iter().find(|p| p.name == name).map(|p| p.id)
 }
 
-/// `agents-audit[-zoom|-zooming]`, `agents-permissions[-mongo|-redis]`, `agents-privacy`,
+/// `agents-audit[-zoom|-zooming|-wide]`, `agents-permissions[-mongo|-redis]`, `agents-privacy`,
 /// `agents-types[-conn]`, `agents-empty`: the page as the mockups draw it.
 pub fn is_demo(stage: &str) -> bool {
     stage.starts_with("agents-") && stage != "agents-check"
@@ -197,6 +197,9 @@ pub fn demo(ws: &Entity<Workspace>, stage: &str, window: &mut gpui::Window, cx: 
             a.conn = id.clone();
             if page == Page::Audit {
                 a.selected = Some(3);
+                if stage == "agents-audit-wide" {
+                    a.detail_w = 5000.;
+                }
             }
             if stage == "agents-types-conn" {
                 a.scope = id.clone();
@@ -350,6 +353,59 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
             format!("mid {mid} end {} {before:?} → {mid_b:?} → {after:?}{}", now(cx), if in_time { "" } else { " (frames too slow for a mid-way sample)" }),
         );
     }
+
+    // The reply's row numbers as narrow as their digits: no editor beside it to line up with.
+    let (gutter, digit) = cx.update(|_, cx| (a.read(cx).received.read(cx).demo_gutter_w(), a.read(cx).received.read(cx).demo_char_w() * 11. / 12.)).unwrap_or((0., 0.));
+    r.check("the reply's row numbers take one digit and a little padding", (gutter - (digit + 18.)).abs() < 0.5 && gutter < 30., format!("{gutter} for a {digit} digit"));
+
+    // The seam between the calls and the detail: dragged, held between the detail's narrowest
+    // and half the page; a double click restores it; the session keeps it.
+    let shown = |cx: &mut AsyncWindowContext| cx.update(|_, cx| a.read(cx).detail_shown()).unwrap_or(0.);
+    let page_w = cx.update(|_, cx| a.read(cx).demo_audit_w()).unwrap_or(0.);
+    let seam = probed("agents-detail-seam", cx);
+    r.check("Audit has a seam between the calls and the detail, at its default width", seam.is_some() && shown(cx) == crate::agents::DETAIL_W, format!("{seam:?} {}", shown(cx)));
+    let drag = |cx: &mut AsyncWindowContext, to: f32, count: usize| {
+        let Some(b) = probed("agents-detail-seam", cx) else { return };
+        let (from, y) = (centre(b).x, centre(b).y);
+        move_to(cx, centre(b));
+        input(cx, gpui::PlatformInput::MouseDown(gpui::MouseDownEvent { button: gpui::MouseButton::Left, position: gpui::point(from, y), modifiers: Default::default(), click_count: count, first_mouse: false }));
+        for k in 1..=4 {
+            let x = from + (gpui::px(to) - from) * (k as f32 / 4.);
+            input(cx, gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent { position: gpui::point(x, y), pressed_button: Some(gpui::MouseButton::Left), modifiers: Default::default() }));
+        }
+        input(cx, gpui::PlatformInput::MouseUp(gpui::MouseUpEvent { button: gpui::MouseButton::Left, position: gpui::point(gpui::px(to), y), modifiers: Default::default(), click_count: count }));
+    };
+    let x0 = seam.map_or(0., |b| centre(b).x.as_f32());
+    drag(cx, x0 - 80., 1);
+    r.check("dragging it left widens the detail by as much", (shown(cx) - (crate::agents::DETAIL_W + 80.)).abs() < 1., format!("{}", shown(cx)));
+    drag(cx, 0., 1);
+    r.check("… up to half the page", (shown(cx) - page_w / 2.).abs() < 1., format!("{} of {page_w}", shown(cx)));
+    drag(cx, x0 + 2000., 1);
+    r.check("dragging right stops at the detail's narrowest", shown(cx) == crate::agents::DETAIL_MIN, format!("{}", shown(cx)));
+    let _ = cx.update(|_, cx| a.update(cx, |a, _| a.detail_w = 5000.));
+    r.check("a width saved on a wider window still shows at most half the page", (shown(cx) - page_w / 2.).abs() < 1., format!("{} of {page_w}", shown(cx)));
+    let seam = probed("agents-detail-seam", cx);
+    if let Some(b) = seam {
+        click_with(cx, centre(b), gpui::MouseButton::Left, Default::default(), 2);
+    }
+    let dragging = cx.update(|_, cx| a.read(cx).detail_drag).unwrap_or(true);
+    r.check("a double click on the seam restores the default", shown(cx) == crate::agents::DETAIL_W && !dragging, format!("{}", shown(cx)));
+    drag(cx, x0 - 60., 1);
+    let saved = cx.update(|_, cx| ws.update(cx, |w, cx| w.session_snapshot(cx).0.audit_detail_w)).unwrap_or(0.);
+    r.check("the session keeps where the seam was left", (saved - (crate::agents::DETAIL_W + 60.)).abs() < 1., format!("{saved}"));
+    let back = probed("agents-recv-zoom", cx);
+    if let Some(b) = back {
+        click(cx, centre(b));
+    }
+    pause(cx, 400).await;
+    let zoomed = cx.update(|_, cx| a.read(cx).received_zoom && a.read(cx).received_tween.is_none()).unwrap_or(false);
+    let area = cx.update(|_, cx| a.read(cx).demo_received_area_w()).unwrap_or(0.);
+    r.check("the zoom still takes the whole page over the wider detail", zoomed && area > page_w - 1., format!("{area} of {page_w}"));
+    if let Some(b) = probed("agents-recv-zoom", cx) {
+        click(cx, centre(b));
+    }
+    pause(cx, 400).await;
+    let _ = cx.update(|_, cx| a.update(cx, |a, _| a.detail_w = crate::agents::DETAIL_W));
     let older = chrono::Utc::now() - chrono::Duration::days(3);
     let days = (crate::agents::day_label(chrono::Utc::now()), crate::agents::day_label(older));
     r.check("Audit groups calls by day: Today, then the weekday and date", days.0 == "Today" && days.1.contains(','), format!("{days:?}"));
