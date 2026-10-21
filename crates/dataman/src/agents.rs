@@ -224,17 +224,52 @@ fn denied(e: &Entry) -> bool {
     e.approval.as_ref().is_some_and(|a| matches!(a.decision, Decision::Denied | Decision::Timeout))
 }
 
-fn hidden_refusal(e: &Entry) -> bool {
-    e.error.as_deref().is_some_and(|m| m.contains("not visible to agents") || m.contains("is hidden from agents"))
+// Refusals quote names the agent wrote (`"x is hidden from agents" is not a table…`): a refusal
+// is told by its own fixed ending, after any name.
+
+fn hidden_column_refusal(e: &Entry) -> bool {
+    let conn = e.connection.as_deref().unwrap_or_default();
+    e.outcome == Outcome::Refused && e.error.as_deref().is_some_and(|m| m.ends_with(&format!(" is hidden from agents on {conn}")))
 }
 
+fn hidden_refusal(e: &Entry) -> bool {
+    let conn = e.connection.as_deref().unwrap_or_default();
+    hidden_column_refusal(e) || (e.outcome == Outcome::Refused && e.error.as_deref().is_some_and(|m| m.ends_with(&format!(" is not visible to agents on {conn}"))))
+}
+
+const MASKED_ENDINGS: &[&str] = &[
+    "select it as it is, or compare it as it is in a filter; it cannot be renamed, copied, grouped, sorted or computed",
+    "select it as it is or filter on it; it cannot be renamed, grouped, sorted or computed",
+    "find and filter on it; it cannot be grouped, sorted or computed",
+    "search and filter on it; it cannot be aggregated or sorted",
+];
+
 fn masked_refusal(e: &Entry) -> bool {
-    e.error.as_deref().is_some_and(|m| m.contains("is masked for agents"))
+    let conn = e.connection.as_deref().unwrap_or_default();
+    let marker = format!(" is masked for agents on {conn}: ");
+    e.outcome == Outcome::Refused && e.error.as_deref().and_then(|m| m.rfind(&marker).map(|at| &m[at + marker.len()..])).is_some_and(|rest| MASKED_ENDINGS.contains(&rest))
 }
 
 /// Refused by what agents may do on the connection (Permissions), not by its tier.
 fn permission_refusal(e: &Entry) -> bool {
-    e.error.as_deref().is_some_and(|m| ["never runs for agents", "is off for agents", "is off", "structure only"].iter().any(|k| m.contains(k)))
+    let conn = e.connection.as_deref().unwrap_or_default();
+    e.outcome == Outcome::Refused
+        && e.error.as_deref().is_some_and(|m| {
+            m.ends_with("(Dataman › Agents › Permissions)")
+                || m.ends_with(" never runs for agents")
+                || m.ends_with(&format!("is off for agents on {conn} while some data is kept from agents"))
+                || m.contains(&format!("refused: {conn} shows agents its structure only"))
+        })
+}
+
+/// What the agent wrote or named, as it may be shown: invisible and bidi characters made
+/// visible, runs of spaces and lines folded, and at most `max` characters.
+pub(crate) fn shown_agent_text(s: &str, max: usize) -> String {
+    let s = match s.char_indices().nth(max) {
+        Some((at, _)) => format!("{}…", &s[..at]),
+        None => s.to_string(),
+    };
+    dataman_mcp::shown_text(&s)
 }
 
 /// The refusal's own words, without the `refused: ` every refusal starts with.
@@ -271,7 +306,7 @@ pub(crate) fn outcome_word(e: &Entry) -> (String, bool) {
             };
             (w.into(), false)
         }
-        Outcome::Refused if e.error.as_deref().is_some_and(|m| m.contains("is hidden from agents")) => ("refused · hidden column".into(), true),
+        Outcome::Refused if hidden_column_refusal(e) => ("refused · hidden column".into(), true),
         Outcome::Refused if hidden_refusal(e) => ("refused · hidden".into(), true),
         Outcome::Refused if masked_refusal(e) => ("refused · masked".into(), true),
         Outcome::Refused => ("refused".into(), true),
@@ -323,9 +358,9 @@ pub(crate) fn audit_note(e: &Entry) -> (String, bool) {
             }
             (parts.join(" · "), false)
         }
-        Outcome::Refused => (format!("refused · {}", refusal_text(e)), true),
+        Outcome::Refused => (format!("refused · {}", one_line(&shown_agent_text(&refusal_text(e), 400))), true),
         Outcome::Cancelled => ("cancelled".into(), false),
-        _ => (e.error.clone().unwrap_or_else(|| e.outcome.label().into()), true),
+        _ => (e.error.as_deref().map_or_else(|| e.outcome.label().into(), |m| one_line(&shown_agent_text(m, 400))), true),
     }
 }
 
@@ -859,7 +894,7 @@ impl AgentsPage {
                             .flex_row()
                             .items_center()
                             .gap(px(8.))
-                            .child(div().text_size(px(13.)).font_weight(FontWeight::BOLD).text_color(t.tx).child(a.name.clone()))
+                            .child(div().text_size(px(13.)).font_weight(FontWeight::BOLD).text_color(t.tx).child(dataman_mcp::shown_client(&a.name)))
                             .child(div().flex_1())
                             .child(div().text_size(px(11.)).text_color(t.tx3).child(when)),
                     )
@@ -914,9 +949,9 @@ impl AgentsPage {
                 .border_color(t.line)
                 .hover(move |s| s.bg(hov))
                 .child(col(62.).text_color(t.tx3).child(short_time(e.ts)))
-                .child(col(96.).text_color(t.tx).overflow_hidden().whitespace_nowrap().text_ellipsis().child(e.client.clone()))
+                .child(col(96.).text_color(t.tx).overflow_hidden().whitespace_nowrap().text_ellipsis().child(dataman_mcp::shown_client(&e.client)))
                 .child(col(150.).child(e.connection.as_deref().map(|c| self.conn_label(t, c, cx).into_any_element()).unwrap_or_else(|| div().into_any_element())))
-                .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx2).child(one_line(e.statement().unwrap_or(""))))
+                .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx2).child(one_line(&shown_agent_text(e.statement().unwrap_or(""), 400))))
                 .child(col(56.).flex().justify_end().text_color(t.tx2).child(e.rows.map(|n| crate::grid::ui_count(n as usize)).unwrap_or_default()))
                 .child(col(56.).flex().justify_end().text_color(t.tx3).child(if e.outcome == Outcome::Ok { fmt_ms(e.ms) } else { String::new() }))
                 .child(col(170.).text_size(px(11.5)).text_color(if bad { t.err } else { t.tx3 }).overflow_hidden().whitespace_nowrap().text_ellipsis().child(word))
@@ -959,7 +994,7 @@ impl AgentsPage {
         let items: Vec<(SharedString, bool, Act)> = match id {
             "agents-f-agent" => {
                 let mut v = vec![("All agents".into(), self.f_agent.is_none(), Act::Agent(None))];
-                v.extend(agents_of(&self.entries).into_iter().map(|a| (a.name.clone().into(), self.f_agent.as_deref() == Some(a.name.as_str()), Act::Agent(Some(a.name)))));
+                v.extend(agents_of(&self.entries).into_iter().map(|a| (dataman_mcp::shown_client(&a.name).into(), self.f_agent.as_deref() == Some(a.name.as_str()), Act::Agent(Some(a.name)))));
                 v
             }
             "agents-f-conn" => {
@@ -1103,10 +1138,10 @@ impl AgentsPage {
                                         .flex_row()
                                         .items_center()
                                         .gap(px(10.))
-                                        .child(div().text_color(t.tx).child(e.client.clone()))
+                                        .child(div().text_color(t.tx).child(dataman_mcp::shown_client(&e.client)))
                                         .children(e.connection.as_deref().map(|c| self.conn_label(t, c, cx))),
                                 )
-                                .child(div().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx2).child(one_line(e.statement().unwrap_or(e.tool.as_str()))))
+                                .child(div().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx2).child(one_line(&shown_agent_text(e.statement().unwrap_or(e.tool.as_str()), 400))))
                                 .child(div().text_size(px(11.)).overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(if bad { t.err } else { t.tx3 }).child(note)),
                         )
                         .on_click(cx.listener(move |v, ev: &ClickEvent, _, cx| {
@@ -1185,7 +1220,7 @@ impl AgentsPage {
         let values = if seen.values.is_empty() { "—".to_string() } else { seen.values.iter().map(|(k, n)| format!("{n} {}", k.to_lowercase())).collect::<Vec<_>>().join(" · ") };
         let fact = |k: &str, v: String| [div().text_color(t.tx3).child(k.to_string()).into_any_element(), div().min_w_0().text_color(t.tx).child(v).into_any_element()];
         let facts: Vec<AnyElement> = [
-            fact("Agent", e.client.clone()),
+            fact("Agent", dataman_mcp::shown_client(&e.client)),
             fact("Connection", [e.connection.clone(), e.database.clone().filter(|d| !d.is_empty())].into_iter().flatten().collect::<Vec<_>>().join(" · ")),
             fact("Decision", decision_text(e)),
             fact("Sent", sent),
@@ -1235,10 +1270,10 @@ impl AgentsPage {
                         .child(div().flex_1())
                         .child(format!("{} · {}", e.ts.with_timezone(&Local).format("%b %-d, %Y · %H:%M:%S"), fmt_ms(e.ms))),
                 )
-                .children(e.statement().map(&block))
-                .children(e.rewritten.as_deref().map(|r| div().flex().flex_col().gap(px(6.)).child(ui::caps(t, "REWRITTEN")).child(block(r))))
+                .children(e.statement().map(|s| block(&shown_agent_text(s, 20_000))))
+                .children(e.rewritten.as_deref().map(|r| div().flex().flex_col().gap(px(6.)).child(ui::caps(t, "REWRITTEN")).child(block(&shown_agent_text(r, 20_000)))))
                 .child(grid)
-                .children(error.map(|m| div().text_size(px(11.5)).line_height(px(17.)).text_color(t.err).child(m)))
+                .children(error.map(|m| div().text_size(px(11.5)).line_height(px(17.)).text_color(t.err).child(shown_agent_text(&m, 2_000))))
                 .children(received)
                 .when(e.statement().is_some(), |d| {
                     d.child(

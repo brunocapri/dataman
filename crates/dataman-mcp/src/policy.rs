@@ -1,6 +1,22 @@
 //! What always wins: the global switch, the tier off and a read-only database, which refuses
 //! every write in every tier, allowed queries and YOLO included (read-only is the user's own
 //! safety switch). Nothing the agent sends (the old `confirm`) changes any of this.
+//!
+//! The one order, for every tool and engine (tested in `tests/privacy_paths.rs`):
+//! 1. MCP switched off in Settings: nothing runs.
+//! 2. The connection's tier off: nothing runs.
+//! 3. A read-only database: no write runs, whatever follows.
+//! 4. The connection's rules for agents (Privacy, Permissions) refuse or narrow every statement
+//!    before any tier decision, and nothing below loosens them: hidden beats masked (a column
+//!    both hidden and masked is hidden), a sensitive column's rule masks it whole by its name
+//!    before the sensitive data types look inside values, and a type switched on or off for a
+//!    connection wins over All connections. Of two types matching the same text, the earliest
+//!    match wins, then the longest, then the built-in.
+//! 5. Allowed queries and YOLO (advanced options) run without asking, on production and on a
+//!    read tier too.
+//! 6. Production asks for every write.
+//! 7. The tier: read refuses writes, write runs non-destructive ones within the row limit, full
+//!    asks for destructive ones.
 
 use dataman_core::guard::WriteClass;
 use dataman_core::sql::Dialect;
