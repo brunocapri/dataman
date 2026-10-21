@@ -1,7 +1,8 @@
 //! SQL as agents may run it on a connection with rules: tables and schemas hidden from agents
 //! are refused, tables with hidden columns are narrowed to a derived table of their visible
 //! columns (so `*`, whole rows and functions over them never see the rest), sensitive columns in
-//! Masked data can only be selected as they are or filtered on, and what Agents may do is held.
+//! Masked data can only be selected as they are (and reach the reply under their own names) or
+//! compared as they are in filters, and what Agents may do is held.
 //!
 //! Fail closed: a statement Dataman cannot follow on a connection that keeps something from
 //! agents is refused, never run unchecked.
@@ -12,7 +13,7 @@ use crate::guard::{self, Effect};
 use crate::privacy::{AgentRules, AgentView, Mask, Names};
 use crate::sql::Dialect;
 use crate::sql::lexer::{Token, TokenKind, tokenize_in};
-use crate::sql::scope::{self, Clause, Item, SourceKind};
+use crate::sql::scope::{self, Analysis, Clause, Item, Role, SourceKind};
 
 /// A table as the server knows it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -60,9 +61,29 @@ const DYNAMIC: &[&str] = &[
     "LO_GET",
     "QUERY_TO_XML",
     "QUERY_TO_XMLSCHEMA",
+    "QUERY_TO_XML_AND_XMLSCHEMA",
     "CURSOR_TO_XML",
+    "CURSOR_TO_XMLSCHEMA",
+    "TABLE_TO_XML",
+    "TABLE_TO_XMLSCHEMA",
+    "TABLE_TO_XML_AND_XMLSCHEMA",
+    "SCHEMA_TO_XML",
+    "SCHEMA_TO_XMLSCHEMA",
+    "SCHEMA_TO_XML_AND_XMLSCHEMA",
+    "DATABASE_TO_XML",
+    "DATABASE_TO_XMLSCHEMA",
+    "DATABASE_TO_XML_AND_XMLSCHEMA",
+    "TS_STAT",
+    "TS_REWRITE",
     "XPATH_TABLE",
 ];
+
+/// MySQL `SHOW` that tells nothing about tables, columns or their values.
+const MYSQL_SHOW_OK: &[&str] = &["VARIABLES", "WARNINGS", "ERRORS", "COLLATION", "CHARACTER", "CHARSET", "ENGINES", "COUNT"];
+
+/// Operators a sensitive column may stand next to in a filter: comparisons, nothing that
+/// computes a new value from it.
+const COMPARE: &[&str] = &["=", "==", "<>", "!=", "<", ">", "<=", ">=", "<=>", "~", "~*", "!~", "!~*"];
 
 const ACTIVITY: &[&str] = &[
     "pg_stat_activity",
@@ -130,7 +151,7 @@ fn activity_name(name: &str) -> bool {
     ACTIVITY.contains(&n.as_str()) || n.starts_with("dm_exec_") || n.starts_with("events_statements") || n.starts_with("events_waits")
 }
 
-fn stronger(a: Mask, b: Mask) -> Mask {
+pub fn stronger(a: Mask, b: Mask) -> Mask {
     let rank = |m: Mask| match m {
         Mask::Hidden => 2,
         Mask::Hash => 1,
@@ -224,6 +245,9 @@ fn statement(
     }
 
     // Visible to agents, and sensitive columns in Masked data.
+    if let Some(e) = table_command(sql, toks, d, verb == "INSERT") {
+        return Err(format!("{e} is not available to agents on {conn} while some data is kept from them: write SELECT … FROM, or use list_tables and describe_table"));
+    }
     if a.unsure {
         return Err(format!("Dataman could not follow this statement, and {conn} keeps some data from agents: write it more plainly"));
     }
@@ -247,6 +271,14 @@ fn statement(
                 SourceKind::Function(f) => {
                     if cx.routines.contains(&f.to_lowercase()) {
                         return Err(format!("{f}() is a function of your database; agents cannot call your functions on {conn} while some data is kept from them"));
+                    }
+                    // `sys.dm_db_stats_histogram(…)` and the like read the catalog and its statistics.
+                    let written = sql[src.name_range.clone()].split('(').next().unwrap_or("");
+                    let parts: Vec<String> = written.split('.').map(|p| p.trim().trim_matches(['"', '`', '[', ']']).to_lowercase()).collect();
+                    let catalog = parts.len() > 1 && CATALOG_SCHEMAS.contains(&parts[parts.len() - 2].as_str());
+                    let lower = f.to_lowercase();
+                    if catalog || lower.starts_with("pg_") || lower.starts_with("dm_") || lower.starts_with("fn_") {
+                        return Err(format!("{f}() reads the system catalog: on {conn} agents list and describe through list_tables, describe_table and search_objects"));
                     }
                     continue;
                 }
@@ -297,6 +329,7 @@ fn statement(
     }
     let any_hidden = narrowed.iter().any(|(_, _, n)| !n.hidden.is_empty());
     let reads = !write || facts.effect == Effect::Read;
+    let star_inside = toks.windows(4).any(|w| w[0].text(sql) == "(" && w[2].text(sql) == "." && w[3].text(sql) == "*");
     if any_hidden && !reads {
         let star = toks.windows(2).any(|w| w[0].text(sql).eq_ignore_ascii_case("RETURNING") && w[1].text(sql) == "*") || a.scopes.iter().any(|s| s.items.iter().any(|i| matches!(i, Item::Star(_))));
         if star {
@@ -304,6 +337,17 @@ fn statement(
         }
         if verb == "INSERT" && a.targets.is_empty() {
             return Err(format!("name the columns of this INSERT: some columns are hidden from agents on {conn}"));
+        }
+        // A write reads the table itself, not a narrowed copy: whole rows (`users::text`,
+        // `RETURNING users`) and columns named where Dataman does not follow them (inside
+        // `substring(… FROM …)` and the like) would carry the hidden values.
+        for (_, _, n) in narrowed.iter().filter(|(_, _, n)| !n.hidden.is_empty()) {
+            if star_inside || whole_row(&a, &n.table, &eq) {
+                return Err(format!("whole rows of {} are not available to agents on {conn}: some columns are hidden; name the columns", n.table.name));
+            }
+            if let Some(c) = unfollowed(&a, sql, toks, &n.hidden, &eq) {
+                return Err(format!("{}.{c} is hidden from agents on {conn}", n.table.name));
+            }
         }
     }
     // A table with hidden columns becomes a derived table of the others, under the same name.
@@ -328,18 +372,38 @@ fn statement(
     if rules.view != AgentView::Masked {
         return Ok(());
     }
-    // Masked data: a sensitive column is selected as it is (and masked by its name) or filtered on.
-    for (_, _, n) in narrowed.iter().filter(|(_, _, n)| !n.sensitive.is_empty()) {
+    // Masked data: a sensitive column is selected as it is, and comes back masked by its name, or
+    // compared as it is in a filter. Its value may not reach the reply under another name (an
+    // alias, a scalar subquery, a later UNION branch, a column list, FOR JSON), nor be copied
+    // into a table, nor be computed on: a function or a cast would also quote it in its errors.
+    let sensitive: Vec<&Narrowed> = narrowed.iter().map(|(_, _, n)| n).filter(|n| !n.sensitive.is_empty()).collect();
+    if sensitive.is_empty() {
+        return Ok(());
+    }
+    let calls = call_spans(sql, toks);
+    for n in &sensitive {
+        if let Some(src) = a.scopes.iter().flat_map(|s| &s.sources).find(|s| s.alias_columns.is_some() && matches!(&s.kind, SourceKind::Table { name, .. } if eq(name, &n.table.name))) {
+            return Err(format!("{} is renamed by a column list ({}): masked columns of {} cannot be renamed on {conn}", src.alias.as_deref().unwrap_or(&n.table.name), src.alias_columns.as_ref().map(|c| c.join(", ")).unwrap_or_default(), n.table.name));
+        }
+        let cols: Vec<String> = n.sensitive.iter().map(|(c, _)| c.clone()).collect();
         for (col, how) in &n.sensitive {
             let label = format!("{}.{col}", n.table.name);
-            let refuse = || format!("{label} is masked for agents on {conn}: select it as it is or filter on it; it cannot be renamed, grouped, sorted or computed");
-            if a.refs.iter().any(|r| eq(&r.name, col) && !matches!(r.clause, Clause::Select | Clause::Where | Clause::On | Clause::From)) {
+            let refuse = || format!("{label} is masked for agents on {conn}: select it as it is, or compare it as it is in a filter; it cannot be renamed, copied, grouped, sorted or computed");
+            if a.refs.iter().any(|r| eq(&r.name, col) && !matches!(r.clause, Clause::Select | Clause::Where | Clause::On)) {
                 return Err(refuse());
             }
             for (si, s) in a.scopes.iter().enumerate() {
                 let refs = a.refs.iter().filter(|r| r.scope == si && r.clause == Clause::Select && eq(&r.name, col)).count();
-                let bare = s.items.iter().zip(&s.item_refs).filter(|(item, r)| matches!((item, r), (Item::Named(out), Some((_, c))) if eq(out, col) && eq(c, col))).count();
-                if refs > bare {
+                let bare: Vec<usize> = s.items.iter().zip(&s.item_refs).enumerate().filter(|(_, (item, r))| matches!((item, r), (Item::Named(out), Some((_, c))) if eq(out, col) && eq(c, col))).map(|(i, _)| i).collect();
+                if refs > bare.len() {
+                    return Err(refuse());
+                }
+                if bare.iter().any(|&i| !reaches(&a, si, i, col, reads, &eq)) {
+                    return Err(refuse());
+                }
+            }
+            for r in a.refs.iter().filter(|r| eq(&r.name, col) && matches!(r.clause, Clause::Where | Clause::On)) {
+                if !compared(sql, toks, r.range.clone(), &calls) {
                     return Err(refuse());
                 }
             }
@@ -348,23 +412,194 @@ fn statement(
                 None => masked.push((col.clone(), *how)),
             }
         }
-        // Whole rows carry every column: `SELECT u`, `row_to_json(u)`, `to_jsonb(u.*)`.
-        let src_names: Vec<String> = a
-            .scopes
-            .iter()
-            .flat_map(|s| &s.sources)
-            .filter(|s| matches!(&s.kind, SourceKind::Table { name, .. } if eq(name, &n.table.name)))
-            .filter_map(|s| s.visible_name().map(str::to_string))
-            .collect();
-        if a.refs.iter().any(|r| r.qualifier.is_none() && src_names.iter().any(|x| eq(x, &r.name)) && !n.table.columns.iter().any(|c| eq(c, &r.name))) {
-            return Err(format!("whole rows of {} are not available to agents in Masked data on {conn}", n.table.name));
+        if let Some(c) = unfollowed(&a, sql, toks, &cols, &eq) {
+            return Err(format!("{}.{c} is masked for agents on {conn}: select it as it is, or compare it as it is in a filter; it cannot be renamed, copied, grouped, sorted or computed", n.table.name));
         }
-        let star_inside = toks.windows(4).any(|w| w[0].text(sql) == "(" && w[2].text(sql) == "." && w[3].text(sql) == "*");
-        if star_inside {
+        // Whole rows carry every column: `SELECT u`, `row_to_json(u)`, `to_jsonb(u.*)`, and so do
+        // the rows of a subquery or a WITH query that selects a masked column.
+        if star_inside || whole_row(&a, &n.table, &eq) || any_source_row(&a, &eq) {
             return Err(format!("whole rows of {} are not available to agents in Masked data on {conn}", n.table.name));
         }
     }
+    let by_position = positional_order(sql, toks);
+    if let Some(w) = by_position {
+        return Err(format!("{w} BY a position is not available to agents in Masked data on {conn}: name the columns (masked columns cannot be sorted or grouped)"));
+    }
+    if d == Dialect::TSql && toks.windows(2).any(|w| w[0].text(sql).eq_ignore_ascii_case("FOR") && ["JSON", "XML"].iter().any(|x| w[1].text(sql).eq_ignore_ascii_case(x))) {
+        return Err(format!("FOR JSON and FOR XML are not available to agents in Masked data on {conn}: masked columns come back masked only as columns"));
+    }
     Ok(())
+}
+
+/// `TABLE t` (a query: PostgreSQL, MySQL) and MySQL's `SHOW`, `DESCRIBE` and `EXPLAIN t`, which
+/// read a table or its definition whole, under names Dataman does not narrow.
+fn table_command(sql: &str, toks: &[Token], d: Dialect, insert: bool) -> Option<String> {
+    let w = |i: usize| toks.get(i).and_then(|t| word(sql, t)).unwrap_or_default();
+    for (i, t) in toks.iter().enumerate().filter(|_| d != Dialect::TSql) {
+        if word(sql, t).as_deref() != Some("TABLE") || toks.get(i + 1).is_none_or(|n| !matches!(n.kind, TokenKind::Ident | TokenKind::QuotedIdent | TokenKind::Keyword)) {
+            continue;
+        }
+        let query = match i.checked_sub(1).map(|p| toks[p]) {
+            None => true,
+            Some(p) if p.kind == TokenKind::Punct => matches!(p.text(sql), "(" | ")"),
+            Some(p) if matches!(p.kind, TokenKind::Ident | TokenKind::QuotedIdent) => insert,
+            Some(p) => matches!(word(sql, &p).as_deref(), Some("UNION" | "INTERSECT" | "EXCEPT" | "ALL" | "DISTINCT" | "AS")),
+        };
+        if query {
+            return Some(format!("TABLE {}", toks[i + 1].text(sql)));
+        }
+    }
+    if d != Dialect::MySql {
+        return None;
+    }
+    match w(0).as_str() {
+        "DESC" | "DESCRIBE" => Some(w(0)),
+        "SHOW" => {
+            let k = if matches!(w(1).as_str(), "GLOBAL" | "SESSION") { 2 } else { 1 };
+            (!MYSQL_SHOW_OK.contains(&w(k).as_str())).then(|| format!("SHOW {}", w(k)))
+        }
+        "EXPLAIN" if toks.get(1).is_some_and(|t| matches!(t.kind, TokenKind::Ident | TokenKind::QuotedIdent)) => Some("EXPLAIN of a table".into()),
+        _ => None,
+    }
+}
+
+/// An unqualified reference that names a source of `t` rather than one of its columns.
+fn whole_row(a: &Analysis, t: &Table, eq: &dyn Fn(&str, &str) -> bool) -> bool {
+    let src_names: Vec<&str> = a.scopes.iter().flat_map(|s| &s.sources).filter(|s| matches!(&s.kind, SourceKind::Table { name, .. } if eq(name, &t.name))).filter_map(|s| s.visible_name()).collect();
+    a.refs.iter().any(|r| r.qualifier.is_none() && src_names.iter().any(|x| eq(x, &r.name)) && !t.columns.iter().any(|c| eq(c, &r.name)))
+}
+
+/// A whole row of a subquery, a WITH query or a function: `row_to_json(x) FROM (SELECT …) x`.
+fn any_source_row(a: &Analysis, eq: &dyn Fn(&str, &str) -> bool) -> bool {
+    let mut names: Vec<&str> = a.scopes.iter().flat_map(|s| &s.sources).filter(|s| !matches!(s.kind, SourceKind::Table { .. })).filter_map(|s| s.visible_name()).collect();
+    names.extend(a.ctes.iter().map(|c| c.name.as_str()));
+    a.refs.iter().any(|r| r.qualifier.is_none() && names.iter().any(|x| eq(x, &r.name)))
+}
+
+/// Whether item `item` of scope `si`, a sensitive column selected as it is, reaches the reply
+/// under its own name (or only a filter).
+fn reaches(a: &Analysis, si: usize, item: usize, col: &str, reads: bool, eq: &dyn Fn(&str, &str) -> bool) -> bool {
+    let s = &a.scopes[si];
+    match s.role {
+        Role::Root => reads,
+        Role::Cte => a.ctes.iter().find(|c| c.scope == Some(si)).is_some_and(|c| c.columns.is_none()),
+        Role::Derived => a.scopes.iter().flat_map(|p| &p.sources).find(|x| x.kind == SourceKind::Subquery(si)).is_some_and(|x| x.alias_columns.is_none()),
+        Role::Branch(prev) => {
+            let mut first = prev;
+            while let Role::Branch(p) = a.scopes[first].role {
+                first = p;
+            }
+            matches!(a.scopes[first].items.get(item), Some(Item::Named(n)) if eq(n, col)) && reaches(a, first, item, col, reads, eq)
+        }
+        Role::Insert => false,
+        Role::Expr(c) => matches!(c, Clause::Where | Clause::On),
+    }
+}
+
+/// Words a parenthesis may follow in a filter without being a call's (or a cast's) arguments.
+const FILTER_WORDS: &[&str] = &["WHERE", "ON", "AND", "OR", "NOT", "IN", "WHEN", "THEN", "ELSE", "BETWEEN", "HAVING", "EXISTS", "ANY", "ALL", "SOME", "SELECT", "FROM", "JOIN", "AS", "LATERAL"];
+
+/// The byte spans of argument lists: function calls, and keyword forms such as `CAST(…)`.
+fn call_spans(sql: &str, toks: &[Token]) -> Vec<std::ops::Range<usize>> {
+    let mut out = Vec::new();
+    for i in 1..toks.len() {
+        let (p, t) = (toks[i - 1], toks[i]);
+        if t.kind != TokenKind::Punct || t.text(sql) != "(" || !matches!(p.kind, TokenKind::Ident | TokenKind::QuotedIdent | TokenKind::Keyword) {
+            continue;
+        }
+        if word(sql, &p).is_some_and(|w| FILTER_WORDS.contains(&w.as_str())) {
+            continue;
+        }
+        let mut depth = 0;
+        for t in &toks[i..] {
+            match t.text(sql) {
+                "(" if t.kind == TokenKind::Punct => depth += 1,
+                ")" if t.kind == TokenKind::Punct => {
+                    depth -= 1;
+                    if depth == 0 {
+                        out.push(toks[i].start..t.end);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+/// A column in a filter compared as it is: not inside a function call, a cast or arithmetic.
+fn compared(sql: &str, toks: &[Token], r: std::ops::Range<usize>, calls: &[std::ops::Range<usize>]) -> bool {
+    if calls.iter().any(|c| c.start < r.start && r.end < c.end) {
+        return false;
+    }
+    let (Some(p), Some(q)) = (toks.iter().position(|t| t.start == r.start), toks.iter().position(|t| t.end == r.end)) else {
+        return false;
+    };
+    let ok = |t: Option<&Token>| match t {
+        None => true,
+        Some(t) => match t.kind {
+            TokenKind::Operator => COMPARE.contains(&t.text(sql)),
+            TokenKind::Punct => matches!(t.text(sql), "(" | ")" | "," | ";"),
+            TokenKind::Keyword => !["COLLATE", "AT", "DIV", "MOD", "XOR", "MEMBER", "AS"].iter().any(|w| t.text(sql).eq_ignore_ascii_case(w)),
+            _ => false,
+        },
+    };
+    ok(p.checked_sub(1).map(|i| &toks[i])) && ok(toks.get(q + 1))
+}
+
+/// Identifiers that name one of `cols` where the analysis recorded no reference: inside
+/// `substring(x FROM …)`, `JSON_OBJECT(…)`, `extract(…)` and the like.
+fn unfollowed(a: &Analysis, sql: &str, toks: &[Token], cols: &[String], eq: &dyn Fn(&str, &str) -> bool) -> Option<String> {
+    for (i, t) in toks.iter().enumerate() {
+        if !matches!(t.kind, TokenKind::Ident | TokenKind::QuotedIdent) {
+            continue;
+        }
+        let v = t.text(sql).trim_matches(['"', '`', '[', ']']);
+        let Some(c) = cols.iter().find(|c| eq(c, v)) else { continue };
+        let known = a.refs.iter().any(|r| r.name_range == t.range())
+            || a.targets.iter().any(|x| x.range == t.range())
+            || a.refs.iter().any(|r| r.range.start <= t.start && t.end <= r.range.end)
+            || i.checked_sub(1).is_some_and(|p| word(sql, &toks[p]).as_deref() == Some("AS"));
+        if !known {
+            return Some(c.clone());
+        }
+    }
+    None
+}
+
+/// `ORDER BY 1` and `GROUP BY 2`: a sort by position names no column.
+fn positional_order(sql: &str, toks: &[Token]) -> Option<&'static str> {
+    for (i, w) in toks.windows(2).enumerate() {
+        let by = word(sql, &w[1]).as_deref() == Some("BY");
+        let what = match word(sql, &w[0]).as_deref() {
+            Some("ORDER") if by => "ORDER",
+            Some("GROUP") if by => "GROUP",
+            _ => continue,
+        };
+        let mut k = i + 2;
+        let mut depth = 0i32;
+        let mut item_start = true;
+        while let Some(t) = toks.get(k) {
+            match (t.kind, t.text(sql)) {
+                (TokenKind::Punct, "(") => depth += 1,
+                (TokenKind::Punct, ")") if depth == 0 => break,
+                (TokenKind::Punct, ")") => depth -= 1,
+                (TokenKind::Punct, ";") => break,
+                (TokenKind::Punct, ",") if depth == 0 => {
+                    item_start = true;
+                    k += 1;
+                    continue;
+                }
+                (TokenKind::Number, _) if depth == 0 && item_start => return Some(what),
+                (TokenKind::Keyword, x) if depth == 0 && ["LIMIT", "OFFSET", "FETCH", "FOR", "HAVING", "WINDOW", "UNION", "INTERSECT", "EXCEPT", "ORDER", "RETURNING"].iter().any(|c| x.eq_ignore_ascii_case(c)) => break,
+                _ => {}
+            }
+            item_start = false;
+            k += 1;
+        }
+    }
+    None
 }
 
 fn dots_outside_quotes(s: &str) -> usize {

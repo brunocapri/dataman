@@ -54,11 +54,30 @@ pub enum Item {
     Expr,
 }
 
+/// Where a scope's rows go.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Role {
+    /// The statement's own query.
+    #[default]
+    Root,
+    /// A WITH query's body.
+    Cte,
+    /// A set operation's later branch; its columns take the names of the branch before it.
+    Branch(usize),
+    /// A derived table in FROM.
+    Derived,
+    /// The rows of INSERT … SELECT.
+    Insert,
+    /// A subquery inside an expression of this clause of the parent.
+    Expr(Clause),
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Scope {
     pub range: Range<usize>,
     pub parent: Option<usize>,
     pub cte_parent: Option<usize>,
+    pub role: Role,
     pub sources: Vec<Source>,
     pub items: Vec<Item>,
     pub item_refs: Vec<Option<(Option<String>, String)>>,
@@ -325,6 +344,7 @@ impl<'a> P<'a> {
                 let j = self.close[i].min(hi);
                 let parent = self.a.scopes[id].parent;
                 let body = self.query(i + 1, j, parent, Some(id));
+                self.a.scopes[body].role = Role::Cte;
                 self.a.ctes[cte].scope = Some(body);
                 i = j + 1;
             } else {
@@ -420,7 +440,8 @@ impl<'a> P<'a> {
                         if i < hi && self.starts_query(i) {
                             let end = (i..hi).find(|&k| self.word(k, "ON") && self.word(k + 1, "CONFLICT") || self.word(k, "RETURNING")).unwrap_or(hi);
                             let end = self.depth0(i, end, hi);
-                            self.query(i, end, Some(id), Some(id));
+                            let rows = self.query(i, end, Some(id), Some(id));
+                            self.a.scopes[rows].role = Role::Insert;
                             i = end;
                         }
                         clause = Clause::Values;
@@ -454,7 +475,8 @@ impl<'a> P<'a> {
                             k += 1;
                         }
                         let parent = self.a.scopes[id].parent;
-                        self.query(k, hi, parent, Some(id));
+                        let next = self.query(k, hi, parent, Some(id));
+                        self.a.scopes[next].role = Role::Branch(id);
                         self.settle_targets(id, dml);
                         return;
                     }
@@ -542,7 +564,8 @@ impl<'a> P<'a> {
     fn paren(&mut self, i: usize, hi: usize, id: usize, clause: Clause, special: bool) -> usize {
         let j = self.close[i].min(hi);
         if self.starts_query(i + 1) {
-            self.query(i + 1, j, Some(id), Some(id));
+            let sub = self.query(i + 1, j, Some(id), Some(id));
+            self.a.scopes[sub].role = Role::Expr(clause);
         } else {
             self.expr(i + 1, j, id, clause, special);
         }
@@ -918,6 +941,7 @@ impl<'a> P<'a> {
             let j = self.close[i].min(hi);
             if self.starts_query(i + 1) {
                 let child = self.query(i + 1, j, Some(id), Some(id));
+                self.a.scopes[child].role = Role::Derived;
                 kind = SourceKind::Subquery(child);
             } else {
                 let end = self.from_list(i + 1, j, id);

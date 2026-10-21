@@ -724,6 +724,12 @@ impl Types {
                     *s = o;
                 }
             }
+            // A card or a CPF kept in a numeric column comes back as a number.
+            Value::Number(n) => {
+                if let Cow::Owned(o) = self.scrub(&n.to_string(), key, counts) {
+                    *v = Value::String(o);
+                }
+            }
             Value::Array(a) => {
                 for x in a {
                     self.walk(x, key, counts, deadline, n)?;
@@ -770,6 +776,10 @@ pub fn clean_error(msg: &str) -> Cow<'_, str> {
             (r#"(invalid input (?:syntax|value) for [^:]*: )"(?:[^"]|"")*""#, "$1\"‹value›\""),
             (r#"(value too long for type [^:\n]*: )"(?:[^"]|"")*""#, "$1\"‹value›\""),
             (r#"(out of range for type [^:\n]*: )"(?:[^"]|"")*""#, "$1\"‹value›\""),
+            (r#"(value )"(?:[^"]|"")*"( is out of range for type)"#, "$1\"‹value›\"$2"),
+            (r#"(malformed [a-z]+ literal: )"(?:[^"]|"")*""#, "$1\"‹value›\""),
+            (r#"(invalid value )"(?:[^"]|"")*"( for ")"#, "$1\"‹value›\"$2"),
+            (r#"(field value out of range: )"(?:[^"]|"")*""#, "$1\"‹value›\""),
             // MySQL
             (r"(Duplicate entry )'(?:[^'\\]|\\.|'')*'( for key)", "$1'‹value›'$2"),
             (r"(Incorrect [a-z ]+ value: )'(?:[^'\\]|\\.|'')*'", "$1'‹value›'"),
