@@ -121,6 +121,10 @@ const MY_GENERATED: &str = "SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, GENERA
 const LITE_GENERATED: &str = "SELECT 'main', m.name, p.name, m.sql FROM main.sqlite_master m JOIN pragma_table_xinfo(m.name, 'main') p \
   WHERE m.type = 'table' AND p.hidden IN (2, 3)";
 
+/// DuckDB's tables whose SQL has a generated column (its expression is read from there).
+const DUCK_GENERATED: &str = "SELECT schema_name, table_name, NULL, sql FROM duckdb_tables() \
+  WHERE database_name = current_database() AND NOT internal AND regexp_matches(sql, '\\bAS\\s*\\(', 'i')";
+
 const MS_GENERATED: &str = "SELECT s.name, t.name, c.name, d.name FROM sys.computed_columns c \
   JOIN sys.objects t ON t.object_id = c.object_id JOIN sys.schemas s ON s.schema_id = t.schema_id \
   JOIN sys.sql_expression_dependencies x ON x.referencing_id = c.object_id AND x.referencing_minor_id = c.column_id \
@@ -150,6 +154,7 @@ pub async fn generated_columns(cx: &Call, o: &Opened) -> Result<Vec<Generated>, 
         dataman_core::Engine::MySql => (MY_GENERATED, true),
         dataman_core::Engine::SqlServer => (MS_GENERATED, false),
         dataman_core::Engine::Sqlite => (LITE_GENERATED, true),
+        dataman_core::Engine::DuckDb => (DUCK_GENERATED, true),
         _ => return Ok(Vec::new()),
     };
     let limits = bounded::Limits { max_rows: 100_000, max_bytes: 32 * 1024 * 1024, max_cell: 64 * 1024, ..bounded::Limits::default() };
@@ -157,7 +162,21 @@ pub async fn generated_columns(cx: &Call, o: &Opened) -> Result<Vec<Generated>, 
     let out = o.conn.bounded(Some(&o.database), sql, vec![], bounded::Mode::Read, limits, cancel).await.map_err(|e| format!("{e}"))?;
     let text = |v: &Value| v.as_str().unwrap_or_default().to_string();
     let mut cols: Vec<Generated> = Vec::new();
-    for row in &out.rows {
+    // DuckDB: a row per table, its generated columns read from its SQL.
+    let rows: Vec<Vec<Value>> = if o.conn.engine() == dataman_core::Engine::DuckDb {
+        out.rows
+            .iter()
+            .flat_map(|row| {
+                dataman_core::schema::lite::generated_exprs(&text(&row[3]))
+                    .into_iter()
+                    .map(|(c, e)| vec![row[0].clone(), row[1].clone(), Value::String(c), Value::String(e)])
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    } else {
+        out.rows.clone()
+    };
+    for row in &rows {
         let (schema, table, column) = (text(&row[0]), text(&row[1]), text(&row[2]));
         let from = match o.conn.engine() {
             dataman_core::Engine::Sqlite => {

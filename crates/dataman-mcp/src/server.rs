@@ -218,8 +218,37 @@ impl ServerHandler for Server {
         let Some(u) = resources::parse(&req.uri) else {
             return Err(McpError::resource_not_found(format!("unknown resource {}", req.uri), None));
         };
+        let client = Self::client(&cx);
+        // Read in the app when it runs, as tools are: it holds the connections (a DuckDB file
+        // opens in one process only).
+        let r = match self.forward {
+            true => match crate::ipc::read(&self.hub.dirs, &req.uri, &client, cx.ct.clone()).await {
+                Ok(r) => r,
+                Err(crate::ipc::CallError::Absent(e)) => {
+                    log::debug!("reading {} here: {e}", req.uri);
+                    self.read_text(&req.uri, client, cx.ct.clone()).await
+                }
+                Err(e) => Err(e.to_string()),
+            },
+            false => self.read_text(&req.uri, client, cx.ct.clone()).await,
+        };
+        match r {
+            Ok(text) => {
+                let mime = if u.json { "application/json" } else { "text/markdown" };
+                let contents = ResourceContents::TextResourceContents { uri: req.uri.clone(), mime_type: Some(mime.into()), text, meta: None };
+                Ok(ReadResourceResult::new(vec![contents]).into())
+            }
+            Err(msg) => Err(McpError::invalid_params(msg, None)),
+        }
+    }
+}
+
+impl Server {
+    /// A resource's text as agents may read it (privacy applied, audited), or the error.
+    pub async fn read_text(&self, uri: &str, client: String, ct: tokio_util::sync::CancellationToken) -> Result<String, String> {
+        let Some(u) = resources::parse(uri) else { return Err(format!("unknown resource {uri}")) };
         let started = Instant::now();
-        let call = Call::new(self.hub.clone(), Self::client(&cx), self.transport, "resources/read", cx.ct.clone());
+        let call = Call::new(self.hub.clone(), client, self.transport, "resources/read", ct);
         let r = resources::read(&call, &u).await.and_then(|text| {
             let v = self.privacy_pass(&call, Ok(Value::String(text.to_string())))?;
             Ok(v.as_str().unwrap_or_default().to_string())
@@ -227,15 +256,13 @@ impl ServerHandler for Server {
         match r {
             Ok(text) => {
                 self.audit(&call, started, Outcome::Ok, None, Some(&text));
-                let mime = if u.json { "application/json" } else { "text/markdown" };
-                let contents = ResourceContents::TextResourceContents { uri: req.uri.clone(), mime_type: Some(mime.into()), text, meta: None };
-                Ok(ReadResourceResult::new(vec![contents]).into())
+                Ok(text)
             }
             Err(e) => {
                 let e = self.privacy_pass(&call, Err(e)).unwrap_err();
                 let msg = e.message();
                 self.audit(&call, started, e.outcome(), Some(msg.clone()), None);
-                Err(McpError::invalid_params(msg, None))
+                Err(msg)
             }
         }
     }

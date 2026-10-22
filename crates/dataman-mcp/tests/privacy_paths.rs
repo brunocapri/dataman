@@ -672,6 +672,67 @@ fn sqlite_values_stay_kept_and_nothing_leaves_the_file() {
     e.done();
 }
 
+/// DuckDB: kept stays kept, and no file is read or written through SQL by an agent, at any
+/// level, whatever the connection's own file access (ATTACH, read_csv, a file in FROM, COPY,
+/// INSTALL, SET).
+#[test]
+fn duckdb_values_stay_kept_and_no_file_is_reached() {
+    let files = tempfile::tempdir().unwrap();
+    let db = files.path().join("shop.duckdb");
+    dataman_core::import::create_database(Engine::DuckDb, &db).unwrap();
+    let secret_file = files.path().join("id_secret");
+    std::fs::write(&secret_file, "kid-secret\n").unwrap();
+    let rules = "[connection.mcp_rules]\nview = \"masked\"\nsensitive = [{ col = \"customers.email\", how = \"hash\" }]\n[connection.mcp_rules.visible]\nitems = [{ name = \"users.pw\", kind = \"column\" }]\n";
+    let text = [file_conn("duckadmin", "duckdb", &db, "mcp = \"full\""), file_conn("dd", "duckdb", &db, rules), file_conn("dr", "duckdb", &db, "mcp = \"read\""), file_conn("dw", "duckdb", &db, "mcp = \"full\"")].concat();
+    let e = env_with(&[], &text, "", None);
+    e.admin(
+        "execute",
+        with("duckadmin", json!({"sql": "CREATE TABLE users (id INTEGER PRIMARY KEY, name VARCHAR, pw VARCHAR, pw_len INTEGER GENERATED ALWAYS AS (length(pw)) VIRTUAL, name_up VARCHAR GENERATED ALWAYS AS (upper(name)) VIRTUAL); \
+            CREATE TABLE customers (id INTEGER PRIMARY KEY, name VARCHAR, email VARCHAR); \
+            INSERT INTO users (id, name, pw) VALUES (1, 'Ana', 'hash-secret-1'); INSERT INTO customers VALUES (1, 'Ana', 'zed-secret@acme.com')"})),
+    );
+    let q = |c: &str, sql: &str| e.call("run_query", with(c, json!({"sql": sql})));
+    let r = q("dd", "SELECT * FROM users").unwrap();
+    let cols = r["columns"].to_string();
+    assert!(!cols.contains("\"pw\"") && !cols.contains("pw_len") && cols.contains("name_up"), "{r}");
+    clean("duck select", &r);
+    refused("generated from a hidden column", q("dd", "SELECT pw_len FROM users"), "is hidden from agents");
+    for sql in ["DESCRIBE users", "SUMMARIZE users", "PRAGMA table_info('users')", "FROM users", "SELECT * FROM pragma_table_info('users')"] {
+        refused(sql, q("dd", sql), "is not available to agents on dd");
+    }
+    let r = q("dd", "SELECT id, email FROM customers").unwrap();
+    clean("duck masked", &r);
+    assert!(r["rows"][0][1].as_str().unwrap().starts_with("‹h:"), "{r}");
+    let out = files.path().join("out.csv");
+    let sneak = [
+        format!("SELECT * FROM read_csv('{}')", secret_file.display()),
+        format!("SELECT * FROM read_text('{}')", secret_file.display()),
+        format!("SELECT * FROM '{}'", secret_file.display()),
+        format!("SELECT * FROM users, \"{}\"", secret_file.display()),
+        "SELECT * FROM query('SELECT pw FROM users')".to_string(),
+        "SELECT * FROM glob('/etc/*')".to_string(),
+        format!("COPY users TO '{}'", out.display()),
+        format!("ATTACH '{}' AS x", files.path().join("x.duckdb").display()),
+        "INSTALL httpfs".to_string(),
+        "LOAD httpfs".to_string(),
+        "SET enable_external_access = true".to_string(),
+        format!("EXPORT DATABASE '{}'", files.path().join("dump").display()),
+    ];
+    for sql in &sneak {
+        assert!(q("dr", sql).is_err(), "read: {sql}");
+        e.human.allow.lock().extend([true; 4]);
+        let w = e.call("execute", with("dw", json!({"sql": sql})));
+        e.human.allow.lock().clear();
+        assert!(w.is_err(), "full, even allowed: {sql}: {w:?}");
+    }
+    assert!(!out.exists() && !files.path().join("x.duckdb").exists() && !files.path().join("dump").exists(), "nothing written outside");
+    refused("a write at read", e.call("execute", with("dr", json!({"sql": "UPDATE customers SET name = 'x' WHERE id = 1"}))), "");
+    assert!(e.call("execute", with("dw", json!({"sql": "UPDATE customers SET name = 'Ana B.' WHERE id = 1"}))).is_ok());
+    assert_eq!(q("dr", "SELECT name FROM customers WHERE id = 1").unwrap()["rows"][0][0], "Ana B.");
+    e.nothing_kept_logged();
+    e.done();
+}
+
 #[test]
 fn user_tools_follow_the_rules() {
     let tools = "[[tool]]\nname = \"all_users\"\ndescription = \"d\"\nconnection = \"pp\"\nsql = \"SELECT * FROM {s}.users\"\n\n\

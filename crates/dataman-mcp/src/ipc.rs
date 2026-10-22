@@ -51,6 +51,11 @@ pub enum Op {
         args: Map<String, Value>,
         client: String,
     },
+    /// A resource (`resources/read`).
+    Read {
+        uri: String,
+        client: String,
+    },
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -202,6 +207,15 @@ async fn connection(s: tokio::net::UnixStream, hub: Arc<Hub>, reg: Arc<Registry>
     let (tool, args, client) = match authorize(&line, key) {
         Err(e) => return write_reply(&mut w, &Reply::refused(e)).await,
         Ok(Op::Ping) => return write_reply(&mut w, &Reply { ok: true, ..Default::default() }).await,
+        Ok(Op::Read { uri, client }) => {
+            let server = Server::new(hub, reg, "stdio");
+            let r = server.read_text(&uri, client, CancellationToken::new()).await;
+            let reply = Reply { ok: true, error: None, result: Some(match r {
+                Ok(text) => serde_json::json!({"text": text}),
+                Err(e) => serde_json::json!({"error": e}),
+            }) };
+            return write_reply(&mut w, &reply).await;
+        }
         Ok(Op::Call { tool, args, client }) => (tool, args, client),
     };
     reg.refresh();
@@ -298,6 +312,17 @@ pub async fn ping(dirs: &Dirs) -> Result<(), CallError> {
     request(dirs, Op::Ping, CancellationToken::new()).await.map(|_| ())
 }
 
+/// A resource read in the app: its text, or the error the app's read ended with.
+pub async fn read(dirs: &Dirs, uri: &str, client: &str, cancel: CancellationToken) -> Result<Result<String, String>, CallError> {
+    let reply = request(dirs, Op::Read { uri: uri.to_string(), client: client.to_string() }, cancel).await?;
+    let v = reply.result.ok_or_else(|| CallError::Lost("no result".into()))?;
+    Ok(match (v.get("text").and_then(Value::as_str), v.get("error").and_then(Value::as_str)) {
+        (Some(t), _) => Ok(t.to_string()),
+        (None, Some(e)) => Err(e.to_string()),
+        _ => return Err(CallError::Lost("bad result".into())),
+    })
+}
+
 pub async fn call(dirs: &Dirs, tool: &str, args: Map<String, Value>, client: &str, cancel: CancellationToken) -> Result<CallToolResult, CallError> {
     let reply = request(dirs, Op::Call { tool: tool.to_string(), args, client: client.to_string() }, cancel).await?;
     let v = reply.result.ok_or_else(|| CallError::Lost("no result".into()))?;
@@ -315,6 +340,8 @@ mod tests {
         let s = serde_json::to_string(&r).unwrap();
         assert_eq!(serde_json::from_str::<Value>(&s).unwrap(), json!({"v": 1, "key": "k", "op": "call", "tool": "execute", "args": {"sql": "x"}, "client": "c"}));
         assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+        let rd = Request { v: 1, key: "k".into(), op: Op::Read { uri: "dataman://x/-/schema".into(), client: "c".into() } };
+        assert_eq!(serde_json::from_str::<Value>(&serde_json::to_string(&rd).unwrap()).unwrap(), json!({"v": 1, "key": "k", "op": "read", "uri": "dataman://x/-/schema", "client": "c"}));
         let p: Request = serde_json::from_str(r#"{"v":1,"key":"k","op":"ping"}"#).unwrap();
         assert_eq!(p.op, Op::Ping);
         let ok = Reply { ok: true, error: None, result: Some(json!({"content": []})) };
