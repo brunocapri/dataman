@@ -292,6 +292,34 @@ fn agents_stay_in_bounds() {
 }
 
 #[test]
+fn an_empty_file_becomes_a_new_database() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("touched.duckdb");
+    std::fs::File::create(&path).unwrap();
+    assert_eq!(dataman_core::import::detect_database(&path), Some(Engine::DuckDb), "by its extension");
+    let e = env();
+    let mut ro = profile(&path);
+    ro.read_only = true;
+    let err = e.core.block_on(e.core.connect(ro, None)).err().expect("read-only writes nothing");
+    assert!(format!("{err:#}").contains("is empty"), "{err:#}");
+    assert_eq!(std::fs::metadata(&path).unwrap().len(), 0, "left as it was");
+    let c = e.core.block_on(e.core.connect(profile(&path), None)).unwrap();
+    ok(&e, &c.session(None), "CREATE TABLE t (a INT); INSERT INTO t VALUES (1)");
+    assert_eq!(dataman_core::import::detect_database(&path), Some(Engine::DuckDb), "by its header now");
+    assert_eq!(col(&ok(&e, &c.session(None), "SELECT a FROM t"), 0), [s("1")]);
+}
+
+#[test]
+fn another_file_is_refused_by_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("shop.duckdb");
+    std::fs::write(&path, b"SQLite format 3\0and then some").unwrap();
+    let e = env();
+    let err = e.core.block_on(e.core.connect(profile(&path), None)).err().expect("not DuckDB");
+    assert!(format!("{err:#}").contains("is not a DuckDB database file"), "{err:#}");
+}
+
+#[test]
 fn file_access_can_be_turned_off() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("closed.duckdb");

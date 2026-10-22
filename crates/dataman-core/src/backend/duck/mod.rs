@@ -67,6 +67,18 @@ fn instance(path: &Path, read_only: bool, external: bool) -> Result<Arc<Instance
         }
         return Ok(i);
     }
+    // An empty file (`touch shop.duckdb`) holds no data, but DuckDB refuses it as "not a valid
+    // DuckDB database file": opened read-write it becomes a new database, as SQLite does with one.
+    let empty = std::fs::metadata(&key).is_ok_and(|m| m.len() == 0);
+    if empty && read_only {
+        bail!("{} is empty: it holds no DuckDB database yet (open it once without read-only to create one)", path.display());
+    }
+    if !empty && crate::import::detect_database(&key) != Some(crate::config::Engine::DuckDb) {
+        bail!("{} is not a DuckDB database file", path.display());
+    }
+    if empty {
+        std::fs::remove_file(&key).with_context(|| format!("replacing the empty {}", path.display()))?;
+    }
     let mut cfg = duckdb::Config::default()
         .access_mode(if read_only { duckdb::AccessMode::ReadOnly } else { duckdb::AccessMode::ReadWrite })?
         // Extensions not compiled in are never fetched nor loaded (the app's signature allows no
@@ -78,6 +90,9 @@ fn instance(path: &Path, read_only: bool, external: bool) -> Result<Arc<Instance
     }
     let root = duckdb::Connection::open_with_flags(&key, cfg).with_context(|| format!("opening {}", path.display()))?;
     root.query_row("SELECT 1", [], |_| Ok(())).with_context(|| format!("{} is not a DuckDB database", path.display()))?;
+    if empty {
+        root.execute_batch("CHECKPOINT").with_context(|| format!("creating {}", path.display()))?;
+    }
     let i = Arc::new(Instance { root: Mutex::new(root), read_only, external });
     map.insert(key, Arc::downgrade(&i));
     Ok(i)

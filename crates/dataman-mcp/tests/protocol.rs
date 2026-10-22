@@ -63,10 +63,17 @@ impl Mcp {
     }
 
     fn spawn_with(cfg: &std::path::Path, pgpass: &std::path::Path) -> Mcp {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_dataman-mcp"))
-            .env("XDG_CONFIG_HOME", cfg)
+        Mcp::spawn_cmd(Command::new(env!("CARGO_BIN_EXE_dataman-mcp")).env("XDG_CONFIG_HOME", cfg).env("PGPASSFILE", pgpass))
+    }
+
+    /// With `home` as the home folder: agents' files inside it need no Allow.
+    fn spawn_home(cfg: &std::path::Path, home: &std::path::Path) -> Mcp {
+        Mcp::spawn_cmd(Command::new(env!("CARGO_BIN_EXE_dataman-mcp")).env("XDG_CONFIG_HOME", cfg).env("PGPASSFILE", cfg.join("none")).env("HOME", home))
+    }
+
+    fn spawn_cmd(cmd: &mut Command) -> Mcp {
+        let mut child = cmd
             .env("DATAMAN_MCP_SECRETS", "memory")
-            .env("PGPASSFILE", pgpass)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -266,6 +273,28 @@ fn stdio_pgpass_wildcard_stays_home() {
     assert!(block_for(&toml, "agent pg").contains("agent_made = true"), "{toml}");
     let (err, text) = m.tool("run_query", json!({"connection": "agent pg", "sql": "SELECT 1"}));
     assert!(err && text.contains("password"), "no password for the agent's own server: {text}");
+}
+
+/// A touched, empty .duckdb is a new database: create_connection takes it, and the first
+/// connection writes DuckDB's header. A file of another kind is refused by name.
+#[test]
+fn stdio_create_connection_on_an_empty_duckdb_file() {
+    let cfg = config();
+    let home = tempfile::tempdir().unwrap();
+    let file = home.path().join("touched.duckdb");
+    std::fs::File::create(&file).unwrap();
+    let mut m = Mcp::spawn_home(cfg.path(), home.path());
+    m.call("initialize", json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}));
+    m.send(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
+    let (err, text) = m.tool("create_connection", json!({"name": "touched", "engine": "duckdb", "path": file.display().to_string()}));
+    assert!(!err, "{text}");
+    let (err, text) = m.tool("run_query", json!({"connection": "touched", "sql": "SELECT 42 AS answer"}));
+    assert!(!err && text.contains("42"), "{text}");
+    assert_eq!(dataman_core::import::detect_database(&file), Some(dataman_core::config::Engine::DuckDb), "a DuckDB file now");
+    let other = home.path().join("other.duckdb");
+    std::fs::write(&other, b"SQLite format 3\0and then some").unwrap();
+    let (err, text) = m.tool("create_connection", json!({"name": "other", "engine": "duckdb", "path": other.display().to_string()}));
+    assert!(err && text.contains("is not a DuckDB database"), "{text}");
 }
 
 #[test]
