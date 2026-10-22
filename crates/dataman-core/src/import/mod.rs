@@ -90,6 +90,22 @@ pub fn detect_database(path: &Path) -> Option<crate::config::Engine> {
     [Engine::Sqlite, Engine::DuckDb].into_iter().find(|e| e.file_extensions().contains(&ext.as_str()))
 }
 
+/// A new, empty database file (the sheet's New…): an empty file is an empty SQLite database;
+/// DuckDB writes its own header.
+pub fn create_database(engine: crate::config::Engine, path: &Path) -> Result<()> {
+    if path.exists() {
+        bail!("{} exists already", path.display());
+    }
+    match engine {
+        crate::config::Engine::Sqlite => {
+            std::fs::File::create(path).with_context(|| format!("creating {}", path.display()))?;
+            Ok(())
+        }
+        crate::config::Engine::DuckDb => crate::backend::duck::create(path),
+        e => bail!("{} is no file database", e.label()),
+    }
+}
+
 pub fn detect_format(path: &Path, head: &[u8]) -> ImportFormat {
     if head.starts_with(b"PAR1") {
         return ImportFormat::Parquet;

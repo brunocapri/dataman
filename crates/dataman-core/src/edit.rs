@@ -538,6 +538,12 @@ pub fn explain_error(e: &ErrorInfo) -> String {
         Some("SQLITE_BUSY" | "SQLITE_LOCKED") => "The database is locked: another tab or program holds a write transaction on this file; nothing was saved. Try again.",
         Some("SQLITE_READONLY") => "The file is read-only (or opened read-only): nothing was saved.",
         Some("SQLITE_INTERRUPT") => "Cancelled.",
+        Some("DUCKDB_CONSTRAINT_UNIQUE") => "Duplicate value: another row already has this value in a unique column or key.",
+        Some("DUCKDB_CONSTRAINT_NOTNULL") => "A required column (NOT NULL) has no value.",
+        Some("DUCKDB_CONSTRAINT_FOREIGNKEY") => "Foreign key: the row points to a row that does not exist, or other rows still point to it.",
+        Some("DUCKDB_CONSTRAINT_CHECK") => "A CHECK constraint rejected the value.",
+        Some("TransactionContext Error") => "A conflict with another transaction (or a read-only one); nothing was saved. Try again.",
+        Some("Conversion Error") => "A value is not valid for its column's type.",
         _ => "",
     };
     let mut s = String::new();
@@ -1022,9 +1028,18 @@ async fn lite_key(client: &Db, schema: &str, table: &str) -> Result<Vec<(bool, V
     Ok(keys)
 }
 
+/// The primary key, then UNIQUE constraints whose columns are all NOT NULL.
 async fn duck_key(client: &Db, schema: &str, table: &str) -> Result<Vec<(bool, Vec<String>)>> {
-    let _ = (client, schema, table);
-    Ok(Vec::new())
+    let rows = first_ok(client, &[&crate::schema::duck::keys_sql("", schema, table)]).await?;
+    Ok(rows
+        .into_iter()
+        .filter(|r| r.get(2).cloned().flatten().as_deref() == Some("true"))
+        .filter_map(|r| {
+            let primary = r.first().cloned().flatten().as_deref() == Some("true");
+            let cols: Vec<String> = r.get(1).cloned().flatten()?.split('\u{1f}').map(str::to_string).collect();
+            Some((primary, cols))
+        })
+        .collect())
 }
 
 async fn ms_generated(client: &Db, schema: &str, table: &str) -> BTreeSet<String> {

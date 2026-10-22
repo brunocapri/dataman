@@ -108,7 +108,9 @@ impl Connection {
     pub(crate) fn profile_for(&self, database: &str) -> ConnectionProfile {
         let mut p = self.profile.clone();
         p.read_only_databases = self.read_only_dbs.read().clone();
-        if p.engine != Engine::SqlServer {
+        // DuckDB opens a file in one mode for every connection: the profile's own (a database
+        // marked read-only is held to it by the client-side refusal).
+        if !matches!(p.engine, Engine::SqlServer | Engine::DuckDb) {
             p.read_only = p.read_only_for(database);
         }
         p

@@ -1,3 +1,4 @@
+pub(crate) mod duck;
 pub(crate) mod embed;
 pub(crate) mod lite;
 pub(crate) mod mongo;
@@ -161,6 +162,9 @@ pub fn server_error(e: &anyhow::Error) -> Option<ErrorInfo> {
         if let Some(e @ (rusqlite::Error::SqliteFailure(..) | rusqlite::Error::SqlInputError { .. })) = c.downcast_ref::<lite::LiteError>() {
             return Some(lite::error_info(e));
         }
+        if let Some(e @ duckdb::Error::DuckDBFailure(..)) = c.downcast_ref::<duck::DuckError>() {
+            return Some(duck::error_info(e));
+        }
         match c.downcast_ref::<mysql_async::Error>() {
             Some(e @ mysql_async::Error::Server(_)) => Some(my::error_info(e)),
             _ => None,
@@ -174,6 +178,7 @@ pub(crate) enum Db {
     My(Arc<my::Client>),
     Ms(Arc<ms::Client>),
     Lite(Arc<lite::Client>),
+    Duck(Arc<duck::Client>),
 }
 
 impl Db {
@@ -183,6 +188,7 @@ impl Db {
             Db::My(c) => c.is_closed(),
             Db::Ms(c) => c.is_closed(),
             Db::Lite(c) => c.is_closed(),
+            Db::Duck(c) => c.is_closed(),
         }
     }
 
@@ -192,6 +198,7 @@ impl Db {
             Db::My(c) => c.execute(sql).await.map_err(|e| my::error_info_at(&e, sql)),
             Db::Ms(c) => c.execute(sql).await.map_err(|e| ms::error_info_at(&e, sql, 0)),
             Db::Lite(c) => c.execute(sql).await.map_err(|e| lite::error_info_at(&e, sql)),
+            Db::Duck(c) => c.execute(sql).await.map_err(|e| duck::error_info_at(&e, sql)),
         }
     }
 
@@ -213,6 +220,10 @@ impl Db {
                 let columns = c.prepare(sql).await.map_err(|e| lite::error_info_at(&e, sql))?;
                 Ok(Prepared { stmt: PreparedStmt::Lite(c.clone(), sql.to_string(), columns.iter().map(|c| c.kind).collect()), columns })
             }
+            Db::Duck(c) => {
+                let columns = c.prepare(sql).await.map_err(|e| duck::error_info_at(&e, sql))?;
+                Ok(Prepared { stmt: PreparedStmt::Duck(c.clone(), sql.to_string()), columns })
+            }
         }
     }
 }
@@ -223,6 +234,7 @@ pub(crate) async fn text_rows(db: &Db, sql: &str) -> Result<Vec<Vec<Option<Strin
         Db::My(c) => Ok(c.text_rows(sql).await?),
         Db::Ms(c) => Ok(c.text_rows(sql).await?),
         Db::Lite(c) => Ok(c.text_rows(sql).await?),
+        Db::Duck(c) => Ok(c.text_rows(sql).await?),
     }
 }
 
@@ -245,6 +257,7 @@ pub(crate) enum Dedicated {
     My(Arc<my::Client>),
     Ms(Arc<ms::Client>),
     Lite(Arc<lite::Client>),
+    Duck(Arc<duck::Client>),
 }
 
 impl Dedicated {
@@ -254,6 +267,7 @@ impl Dedicated {
             Dedicated::My(c) => Db::My(c.clone()),
             Dedicated::Ms(c) => Db::Ms(c.clone()),
             Dedicated::Lite(c) => Db::Lite(c.clone()),
+            Dedicated::Duck(c) => Db::Duck(c.clone()),
         }
     }
 
@@ -262,7 +276,7 @@ impl Dedicated {
             Dedicated::Pg(d) => d.tls_active,
             Dedicated::My(c) => c.tls_active,
             Dedicated::Ms(c) => c.tls_active,
-            Dedicated::Lite(_) => false,
+            Dedicated::Lite(_) | Dedicated::Duck(_) => false,
         }
     }
 
@@ -272,27 +286,28 @@ impl Dedicated {
             Dedicated::My(c) => c.cancel().await,
             Dedicated::Ms(c) => c.cancel().await,
             Dedicated::Lite(c) => c.cancel().await,
+            Dedicated::Duck(c) => c.cancel().await,
         }
     }
 
     pub(crate) fn pg(&self) -> Option<&pg::Dedicated> {
         match self {
             Dedicated::Pg(d) => Some(d),
-            Dedicated::My(_) | Dedicated::Ms(_) | Dedicated::Lite(_) => None,
+            Dedicated::My(_) | Dedicated::Ms(_) | Dedicated::Lite(_) | Dedicated::Duck(_) => None,
         }
     }
 
     pub(crate) fn pg_mut(&mut self) -> Option<&mut pg::Dedicated> {
         match self {
             Dedicated::Pg(d) => Some(d),
-            Dedicated::My(_) | Dedicated::Ms(_) | Dedicated::Lite(_) => None,
+            Dedicated::My(_) | Dedicated::Ms(_) | Dedicated::Lite(_) | Dedicated::Duck(_) => None,
         }
     }
 
     pub(crate) fn into_pg(self) -> Result<pg::Dedicated> {
         match self {
             Dedicated::Pg(d) => Ok(d),
-            Dedicated::My(_) | Dedicated::Ms(_) | Dedicated::Lite(_) => Err(anyhow!("this needs a PostgreSQL connection")),
+            Dedicated::My(_) | Dedicated::Ms(_) | Dedicated::Lite(_) | Dedicated::Duck(_) => Err(anyhow!("this needs a PostgreSQL connection")),
         }
     }
 }
@@ -303,6 +318,7 @@ pub(crate) enum Canceller {
     My(my::Canceller),
     Ms(ms::Canceller),
     Lite(lite::Canceller),
+    Duck(duck::Canceller),
 }
 
 impl Canceller {
@@ -312,6 +328,7 @@ impl Canceller {
             Canceller::My(c) => c.cancel().await,
             Canceller::Ms(c) => c.cancel().await,
             Canceller::Lite(c) => c.cancel().await,
+            Canceller::Duck(c) => c.cancel().await,
         }
     }
 }
@@ -326,6 +343,7 @@ pub(crate) async fn dedicated(p: &ConnectionProfile, password: Option<&str>, dat
         Engine::MySql => Ok(Dedicated::My(my::connect(p, password, database, tunnel, None).await?)),
         Engine::SqlServer => Ok(Dedicated::Ms(ms::connect(p, password, database, tunnel, None).await?)),
         Engine::Sqlite => Ok(Dedicated::Lite(lite::connect(p, lite::Open { read_only: p.read_only, agent: None }, None).await?)),
+        Engine::DuckDb => Ok(Dedicated::Duck(duck::connect(p, database, None).await?)),
         e => Err(no_sql(e)),
     }
 }
@@ -354,6 +372,10 @@ pub(crate) async fn session(
             let c = lite::connect(p, lite::Open { read_only: p.read_only, agent: None }, Some(watch)).await?;
             Ok((Db::Lite(c.clone()), Canceller::Lite(c.canceller())))
         }
+        Engine::DuckDb => {
+            let c = duck::connect(p, database, Some(watch)).await?;
+            Ok((Db::Duck(c.clone()), Canceller::Duck(c.canceller())))
+        }
         e => Err(no_sql(e)),
     }
 }
@@ -364,6 +386,7 @@ pub(crate) async fn server_info(db: &Db, exts: &[Arc<dyn ServerExtension>]) -> R
         Db::My(c) => my::server_info(c, exts).await,
         Db::Ms(c) => ms::server_info(c, exts).await,
         Db::Lite(c) => lite::server_info(c, exts).await,
+        Db::Duck(c) => duck::server_info(c, exts).await,
     }
 }
 
@@ -373,6 +396,7 @@ pub(crate) async fn search_path(db: &Db, user: &str) -> Vec<String> {
         Db::My(c) => my::search_path(c).await,
         Db::Ms(c) => ms::search_path(c).await,
         Db::Lite(_) => vec!["main".into()],
+        Db::Duck(c) => duck::search_path(c).await,
     }
 }
 
@@ -394,6 +418,7 @@ enum PreparedStmt {
     My(Arc<my::Client>, mysql_async::Statement),
     Ms(parking_lot::Mutex<Option<ms::MsRows>>),
     Lite(Arc<lite::Client>, String, Vec<crate::value::Kind>),
+    Duck(Arc<duck::Client>, String),
 }
 
 impl Prepared {
@@ -411,6 +436,10 @@ impl Prepared {
                 Ok((_, rows)) => Ok(Rows::Lite(rows)),
                 Err(e) => Err(lite::error_info_at(&e, sql)),
             },
+            PreparedStmt::Duck(c, sql) => match c.stream(sql, &[]).await {
+                Ok((_, rows)) => Ok(Rows::Duck(rows)),
+                Err(e) => Err(duck::error_info_at(&e, sql)),
+            },
         }
     }
 }
@@ -420,6 +449,7 @@ pub(crate) enum Rows {
     My(my::MyRows),
     Ms(ms::MsRows),
     Lite(embed::Rows<lite::LiteError>),
+    Duck(embed::Rows<duck::DuckError>),
 }
 
 impl RowSource for Rows {
@@ -431,6 +461,7 @@ impl RowSource for Rows {
             Rows::My(r) => r.next_into(b).await.map_err(|e| my::error_info(&e)),
             Rows::Ms(r) => r.next_into(b).await.map_err(|e| ms::error_info(&e)),
             Rows::Lite(r) => r.next_into(b).await.map_err(|e| lite::error_info(&e)),
+            Rows::Duck(r) => r.next_into(b).await.map_err(|e| duck::error_info(&e)),
         }
     }
 
@@ -440,6 +471,7 @@ impl RowSource for Rows {
             Rows::My(r) => r.skip().await.map_err(|e| my::error_info(&e)),
             Rows::Ms(r) => r.skip().await.map_err(|e| ms::error_info(&e)),
             Rows::Lite(r) => r.skip().await.map_err(|e| lite::error_info(&e)),
+            Rows::Duck(r) => r.skip().await.map_err(|e| duck::error_info(&e)),
         }
     }
 
@@ -449,6 +481,7 @@ impl RowSource for Rows {
             Rows::My(r) => r.affected(),
             Rows::Ms(_) => None,
             Rows::Lite(r) => r.affected(),
+            Rows::Duck(r) => r.affected(),
         }
     }
 }
@@ -584,6 +617,7 @@ pub(crate) async fn run(
         Db::My(c) => my::run(c, rs, started, on_pause, aborted, next).await,
         Db::Ms(c) => ms::run(c, rs, started, on_pause, aborted, next).await,
         Db::Lite(c) => lite::run(c, rs, started, on_pause, aborted, next).await,
+        Db::Duck(c) => duck::run(c, rs, started, on_pause, aborted, next).await,
     }
 }
 

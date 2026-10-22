@@ -231,8 +231,7 @@ impl Connection {
     }
 
     async fn duck_graph(&self, db: &str, schema: &str) -> Result<RelationGraph> {
-        let _ = (db, schema);
-        Ok(RelationGraph::default())
+        self.key_column_graph(db, schema, &crate::schema::duck::foreign_keys_sql("", schema)).await
     }
 
     async fn key_column_graph(&self, db: &str, schema: &str, sql: &str) -> Result<RelationGraph> {

@@ -142,6 +142,7 @@ impl Connection {
                     (functions, Vec::new())
                 }
                 Db::Lite(_) => (super::lite::functions(&client).await, Vec::new()),
+                Db::Duck(_) => (super::duck::functions(&client).await, Vec::new()),
                 Db::Ms(_) => {
                     let functions = match first_ok(&client, &[&super::ms::routines_sql(None)]).await {
                         Ok(rows) => super::ms::parse_routines(&rows),

@@ -34,6 +34,7 @@ async fn read_databases(c: &Db) -> Result<Vec<String>> {
         Db::My(_) => my::databases(c).await,
         Db::Ms(_) => ms::databases(c).await,
         Db::Lite(_) => lite::databases(c).await,
+        Db::Duck(_) => duck::databases(c).await,
     }
 }
 
@@ -41,6 +42,7 @@ async fn read_schemas(c: &Db, db: &str) -> Result<Vec<String>> {
     match c {
         Db::Pg(_) => pg::schemas(c).await,
         Db::My(_) | Db::Lite(_) => Ok(vec![db.to_string()]),
+        Db::Duck(_) => duck::schemas(c, db).await,
         Db::Ms(_) => ms::schemas(c).await,
     }
 }
@@ -51,6 +53,7 @@ async fn read_relations(c: &Db, schema: &str) -> Result<Vec<Relation>> {
         Db::My(_) => my::relations(c, schema).await,
         Db::Ms(_) => ms::relations(c, schema).await,
         Db::Lite(_) => lite::relations(c, schema).await,
+        Db::Duck(_) => duck::relations(c, "", schema).await,
     }
 }
 
@@ -60,6 +63,7 @@ async fn read_columns(c: &Db, rel: &Relation) -> Option<Vec<Column>> {
         Db::My(_) => my::columns(c, &rel.schema, &rel.name).await,
         Db::Ms(_) => ms::columns(c, &rel.schema, &rel.name).await,
         Db::Lite(_) => lite::columns(c, &rel.schema, &rel.name).await,
+        Db::Duck(_) => duck::columns(c, "", &rel.schema, &rel.name).await,
     }
 }
 
@@ -69,6 +73,7 @@ async fn read_indexes(c: &Db, rel: &Relation, cols: &[Column]) -> Option<Result<
         Db::My(_) => Some(my::indexes(c, &rel.schema, &rel.name).await),
         Db::Ms(_) => Some(ms::indexes(c, &rel.schema, &rel.name).await),
         Db::Lite(_) => Some(lite::indexes(c, &rel.schema, &rel.name).await),
+        Db::Duck(_) => Some(duck::indexes(c, "", &rel.schema, &rel.name).await),
     }
 }
 
@@ -78,6 +83,7 @@ async fn read_columns_of_schemas(c: &Db, list: &str) -> Result<Vec<Vec<Option<St
         Db::My(_) => my::columns_of_schemas(c, list).await,
         Db::Ms(_) => ms::columns_of_schemas(c, list).await,
         Db::Lite(_) => lite::columns_of_schemas(c, list).await,
+        Db::Duck(_) => duck::columns_of_schemas(c, "", list).await,
     }
 }
 

@@ -19,6 +19,7 @@ pub(crate) const IN_FLIGHT: usize = 1024;
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Val {
     Null,
+    Bool(bool),
     Int(i64),
     Float(f64),
     Text(String),
@@ -30,6 +31,7 @@ impl Val {
         let mut s = String::new();
         match self {
             Val::Null => return None,
+            Val::Bool(b) => s.push_str(if *b { "true" } else { "false" }),
             Val::Int(v) => s = v.to_string(),
             Val::Float(f) => crate::value::format_float(*f, false, &mut s),
             Val::Text(t) => s.push_str(t),
@@ -54,6 +56,7 @@ pub(crate) fn push(b: &mut ChunkBuilder, i: usize, v: &Val) -> bool {
     let kind = b.kind(i);
     match (kind.storage(), v) {
         (_, Val::Null) => b.push_null(i),
+        (Storage::Bool, Val::Bool(x)) => b.push_bool(i, *x),
         (Storage::Bool, Val::Int(x @ (0 | 1))) => b.push_bool(i, *x == 1),
         (Storage::I64, Val::Int(x)) => b.push_i64(i, *x),
         (Storage::F64, Val::Float(x)) => b.push_f64(i, *x),

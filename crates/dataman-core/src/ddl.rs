@@ -243,9 +243,16 @@ impl Connection {
         Ok(Some(format!("-- {}: as stored in {}\n{}\n", Dialect::Sqlite.qualified(Some(schema), name), db, parts.join("\n\n"))))
     }
 
+    /// DuckDB keeps each table's and view's SQL; a table's indexes follow it.
     async fn duck_ddl(&self, kind: &str, db: &str, schema: &str, name: &str) -> Result<Option<String>> {
-        let _ = (kind, db, schema, name);
-        Ok(None)
+        use crate::schema::duck;
+        let client = self.meta(db).await?;
+        let Some(body) = first_ok(&client, &[&duck::definition_sql(kind, "", schema, name)]).await?.first().and_then(|r| get(r, 0)) else { return Ok(None) };
+        let mut parts = vec![format!("{};", body.trim_end().trim_end_matches(';'))];
+        if kind == "table" {
+            parts.extend(first_ok(&client, &[&duck::index_sql("", schema, name)]).await.unwrap_or_default().iter().filter_map(|r| get(r, 0)).map(|s| format!("{};", s.trim_end().trim_end_matches(';'))));
+        }
+        Ok(Some(format!("-- {}: as stored in {}\n{}\n", Dialect::DuckDb.qualified(Some(schema), name), db, parts.join("\n\n"))))
     }
 
     async fn show_create(&self, what: &str, db: &str, schema: &str, name: &str) -> Result<String> {

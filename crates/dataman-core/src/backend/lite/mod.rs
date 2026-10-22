@@ -239,6 +239,7 @@ impl rusqlite::ToSql for Bind<'_> {
     fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
         Ok(match self.0 {
             Val::Null => ToSqlOutput::Borrowed(ValueRef::Null),
+            Val::Bool(b) => ToSqlOutput::Borrowed(ValueRef::Integer(*b as i64)),
             Val::Int(v) => ToSqlOutput::Borrowed(ValueRef::Integer(*v)),
             Val::Float(f) => ToSqlOutput::Borrowed(ValueRef::Real(*f)),
             Val::Text(s) => ToSqlOutput::Borrowed(ValueRef::Text(s.as_bytes())),
@@ -299,7 +300,7 @@ fn kind_of_val(v: &Val) -> Kind {
         Val::Int(_) => Kind::Int,
         Val::Float(_) => Kind::Float,
         Val::Blob(_) => Kind::Bytes,
-        Val::Text(_) => Kind::Text,
+        Val::Text(_) | Val::Bool(_) => Kind::Text,
         Val::Null => Kind::Other,
     }
 }

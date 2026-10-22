@@ -12,7 +12,7 @@ use tokio_postgres::types::{ToSql, Type};
 use tokio_postgres::{Client, SimpleQueryMessage};
 
 use crate::backend::pg::{TextParam, column_infos, error_info, push_row};
-use crate::backend::{Dedicated, RowSource, lite, ms, my};
+use crate::backend::{Dedicated, RowSource, duck, lite, ms, my};
 use crate::conn::Connection;
 use crate::guard;
 use crate::result::{Cell, ChunkBuilder, ColumnInfo, ErrorInfo, format_cell};
@@ -244,7 +244,7 @@ impl Connection {
             Dedicated::My(c) => {
                 c.execute(&my_lexed_sql_mode()).await?;
             }
-            Dedicated::Ms(_) | Dedicated::Lite(_) => {}
+            Dedicated::Ms(_) | Dedicated::Lite(_) | Dedicated::Duck(_) => {}
         }
         Ok(d)
     }
@@ -291,6 +291,10 @@ impl Connection {
         if let Some(r) = refusal_in(&stmts, params.len(), mode, ro, dialect) {
             return Err(Stop::Refused(r));
         }
+        // Files and code outside the database are an agent's at no level.
+        if let Some(r) = guard::file_access(sql, dialect) {
+            return Err(Stop::Refused(r));
+        }
         // SQLite's readers run on connections that cannot write: a pool of their own.
         let ro = ro || (dialect == Dialect::Sqlite && mode == Mode::Read);
         let started = Instant::now();
@@ -306,6 +310,7 @@ impl Connection {
                     Dedicated::My(c) => my_in_transaction(c, &stmts, &params, mode, &limits).await,
                     Dedicated::Ms(c) => ms_in_transaction(c, &stmts, &params, mode, &limits).await,
                     Dedicated::Lite(c) => lite_in_transaction(c, &stmts, &params, mode, &limits).await,
+                    Dedicated::Duck(c) => duck_in_transaction(c, &stmts, &params, mode, &limits).await,
                 }
             };
             tokio::pin!(work);
@@ -378,7 +383,67 @@ async fn finish(d: &Dedicated, dialect: Dialect, mode: Mode, commit: bool) -> Re
         Dedicated::My(c) => c.execute(sql).await.map(|_| ()).map_err(|e| (Stop::Server(my::error_info_at(&e, sql)), !c.is_closed())),
         Dedicated::Ms(c) => c.execute(sql).await.map(|_| ()).map_err(|e| (Stop::Server(ms::error_info_at(&e, sql, 0)), !c.is_closed())),
         Dedicated::Lite(c) => c.execute(sql).await.map(|_| ()).map_err(|e| (Stop::Server(lite::error_info_at(&e, sql)), !c.is_closed())),
+        Dedicated::Duck(c) => c.execute(sql).await.map(|_| ()).map_err(|e| (Stop::Server(duck::error_info_at(&e, sql)), !c.is_closed())),
     }
+}
+
+/// DuckDB has no statement time limit either: the caller's timer interrupts. A read runs in a
+/// READ ONLY transaction, rolled back.
+async fn duck_in_transaction(c: &Arc<duck::Client>, stmts: &[String], params: &[Option<String>], mode: Mode, limits: &Limits) -> Result<(Outcome, bool), Failed> {
+    if mode != Mode::Autocommit {
+        let begin = if mode == Mode::Read { "BEGIN TRANSACTION READ ONLY" } else { "BEGIN TRANSACTION" };
+        c.execute(begin).await.map_err(|e| (Stop::Server(duck::error_info_at(&e, begin)), false))?;
+    }
+    let mut out = Outcome::default();
+    for (i, s) in stmts.iter().enumerate() {
+        let last = i + 1 == stmts.len();
+        let p = if last { params } else { &[] };
+        let (cut0, t0) = (out.cut_cells, Instant::now());
+        if mode == Mode::Read {
+            out.start_part();
+        }
+        let r = duck_statement(c, s, p, mode, !last, limits, &mut out).await;
+        if mode == Mode::Read && r.is_ok() {
+            out.end_part(i, s, cut0, t0.elapsed());
+        }
+        match r {
+            Ok(true) => {}
+            Ok(false) => {
+                let _ = c.cancel().await;
+                return Ok((out, false));
+            }
+            Err(e) => {
+                let ok = mode == Mode::Autocommit || c.execute("ROLLBACK").await.is_ok();
+                return Err((e, ok && !c.is_closed()));
+            }
+        }
+    }
+    Ok((out, true))
+}
+
+async fn duck_statement(c: &Arc<duck::Client>, sql: &str, params: &[Option<String>], mode: Mode, more: bool, limits: &Limits, out: &mut Outcome) -> Result<bool, Stop> {
+    let verb = guard::classify_in(sql, Dialect::DuckDb).verb;
+    let ((cols, _), mut rows) = c.stream(sql, params).await.map_err(|e| Stop::Server(duck::error_info_at(&e, sql)))?;
+    let returns_rows = !cols.is_empty();
+    if returns_rows {
+        start_rows(&cols, mode, out);
+    }
+    let mut b = ChunkBuilder::new(&cols);
+    loop {
+        let next = rows.next_into(&mut b).await.map_err(|e| Stop::Server(duck::error_info(&e)))?;
+        if !next {
+            break;
+        }
+        let chunk = b.finish();
+        let cols: Vec<ColumnInfo> = cols.iter().enumerate().map(|(i, c)| ColumnInfo { kind: b.kind(i), ..c.clone() }).collect();
+        match keep_row(&cols, &chunk, mode, more, limits, out) {
+            Keep::Yes | Keep::Skip => {}
+            Keep::Stop => return Ok(false),
+        }
+    }
+    let affected = rows.affected();
+    out.statements.push(Done { verb, affected: if returns_rows && mode == Mode::Read { None } else { affected } });
+    Ok(true)
 }
 
 /// SQLite has no statement time limit: the caller's timer interrupts. A read runs on a

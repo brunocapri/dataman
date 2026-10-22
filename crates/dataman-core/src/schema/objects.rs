@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::pg::objects as pg;
-use super::{RelKey, lit, lite, ms, my, parse_bool};
+use super::{RelKey, duck, lit, lite, ms, my, parse_bool};
 use crate::Task;
 use crate::config::Engine;
 use crate::conn::{Connection, first_ok};
@@ -735,7 +735,8 @@ impl Connection {
                 t.triggers = first_ok(&client, &[&lite::triggers_sql(&schema, Some(&rel))]).await.ok().map(|rows| rows.iter().filter_map(|r| lite::parse_trigger(r)).collect());
                 t.partitions = Some(Vec::new());
             } else if this.engine() == Engine::DuckDb {
-                t.constraints = Some(Vec::new());
+                let client = this.meta(&db).await?;
+                t.constraints = first_ok(&client, &[&duck::constraints_sql("", &schema, &rel)]).await.ok().map(|rows| rows.iter().filter_map(|r| duck::parse_constraint(&rel, r)).collect());
                 t.triggers = Some(Vec::new());
                 t.partitions = Some(Vec::new());
             } else if this.engine() == Engine::MySql {
