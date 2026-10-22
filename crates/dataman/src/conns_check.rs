@@ -97,7 +97,7 @@ const CASES: [Case; 7] = [
 ];
 
 /// File databases: no server, so the form is a file (Browse…, New…) instead of host and user.
-const FILE_CASES: [(Engine, &str); 1] = [(Engine::Sqlite, "sqlite")];
+const FILE_CASES: [(Engine, &str); 2] = [(Engine::Sqlite, "sqlite"), (Engine::DuckDb, "duck")];
 
 async fn file_engine(ws: &Entity<Workspace>, e: Engine, search: &str, r: &mut Report, cx: &mut AsyncWindowContext) {
     let label = e.label();

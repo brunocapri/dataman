@@ -165,6 +165,8 @@ pub struct ConnDialog {
     file: Entity<TextInput>,
     /// Picked with New…: the file is created when the connection is tested or saved.
     create_file: bool,
+    /// DuckDB: SQL may read and write files (`read_csv`, `COPY … TO`, ATTACH).
+    file_access: bool,
 }
 
 impl EventEmitter<DialogEvent> for ConnDialog {}
@@ -301,6 +303,7 @@ impl ConnDialog {
         let opts: Vec<String> = profile.options.iter().map(|(k, v)| format!("{k}={v}")).collect();
         let options = field(cx, "authSource=admin&replicaSet=rs0", &opts.join("&"));
         let file = field(cx, "~/data/app.sqlite", profile.path.as_deref().unwrap_or(""));
+        let file_access = profile.options.get(dataman_core::DUCKDB_EXTERNAL_ACCESS).is_none_or(|v| v != "false");
         let step = if profile.host == ConnectionProfile::new("").host && is_new && profile.name.is_empty() { Step::Engine } else { Step::Form };
         if step == Step::Engine {
             window.focus(&search.focus_handle(cx), cx);
@@ -348,6 +351,7 @@ impl ConnDialog {
             search,
             pick_hi: 0,
             options,
+            file_access,
             file,
             create_file: false,
         }
@@ -711,10 +715,7 @@ impl ConnDialog {
                 {
                     return Err(format!("the folder {} does not exist", dir.display()));
                 }
-                // An empty file is an empty SQLite database; DuckDB writes its header itself.
-                if self.engine == Engine::Sqlite {
-                    std::fs::File::create(&path).map_err(|e| format!("cannot create {}: {e}", path.display()))?;
-                }
+                dataman_core::import::create_database(self.engine, &path).map_err(|e| format!("{e:#}"))?;
             }
             if p.name.is_empty() {
                 p.name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "database".into());
@@ -763,7 +764,9 @@ impl ConnDialog {
             f.read_only_databases = p.read_only_databases;
             f.mcp_rules = p.mcp_rules;
             f.mcp_row_limit = p.mcp_row_limit;
-            f.options = p.options.into_iter().filter(|(k, _)| k.starts_with("duckdb.")).collect();
+            if self.engine == Engine::DuckDb && !self.file_access {
+                f.options.insert(dataman_core::DUCKDB_EXTERNAL_ACCESS.into(), "false".into());
+            }
             f.env = self.env;
             f.read_only = self.read_only;
             f.mcp = self.mcp;
@@ -1725,6 +1728,26 @@ impl Render for ConnDialog {
         let caption = |text: &'static str| div().text_size(px(10.)).text_color(t.tx3).child(text);
         let row = || div().flex().flex_row().gap(px(12.));
         let file_mode = self.is_file();
+        let file_access = div()
+            .id("file-access")
+            .h(px(28.))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(8.))
+            .text_size(px(11.5))
+            .text_color(t.tx2)
+            .cursor_pointer()
+            .child(ui::checkbox(&t, self.file_access))
+            .child("Allow SQL to read and write files")
+            .tip(ui::text_tooltip("read_csv, read_parquet, COPY … TO, ATTACH, EXPORT. Off, the database is all SQL can reach (agents never get files either way)."))
+            .on_click(cx.listener(|d, _, _, cx| {
+                d.file_access = !d.file_access;
+                if !matches!(d.test, Test::Testing { .. }) {
+                    d.test = Test::NotTested;
+                }
+                cx.notify();
+            }));
         let by_url = by_url && !file_mode;
         let file_button = |id: &'static str, label: &'static str| ui::button(&t, id, Btn::Secondary).h(px(30.)).px(px(10.)).child(label);
         let server: Vec<gpui::Div> = if file_mode {
@@ -1735,6 +1758,9 @@ impl Render for ConnDialog {
                     .child(ui::probe("file-browse", file_button("file-browse", "Browse…").on_click(cx.listener(|d, _, _, cx| d.browse_file(cx)))))
                     .child(ui::probe("file-new", file_button("file-new", "New…").on_click(cx.listener(|d, _, _, cx| d.new_file(cx))))),
             ]
+            .into_iter()
+            .chain((self.engine == Engine::DuckDb).then(|| row().child(ui::probe("file-access", file_access))))
+            .collect()
         } else if by_url {
             vec![row().items_end().child(self.field(&t, "URL", &self.conn_str, None)).child(ui::probe("save-pw", keychain))]
         } else {

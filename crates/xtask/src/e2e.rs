@@ -113,6 +113,7 @@ const STAGES: &[Stage] = &[
     st("mcp-tools-check", &[Pg, MySql, MsSql, Mongo, Es, OpenSearch, Redis], 400),
     st("agents-check", &[Pg], 200),
     st("sqlite-check", &[], 120),
+    st("duckdb-check", &[], 120),
     st("update-check", &[Pg], 300),
 ];
 
