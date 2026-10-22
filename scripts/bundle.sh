@@ -25,7 +25,7 @@ identity="${DATAMAN_SIGN_IDENTITY:--}"
 # bundle's minimum stays the one the binary says below.
 export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-11.0}"
 if [ -z "${DATAMAN_SKIP_BUILD:-}" ]; then
-  cargo build --release -p dataman -p dataman-mcp
+  cargo build --release -p dataman
 fi
 
 app="$dist/Dataman.app"
@@ -33,7 +33,10 @@ mkdir -p "$dist"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp target/release/dataman "$app/Contents/MacOS/dataman"
-cp target/release/dataman-mcp "$app/Contents/MacOS/dataman-mcp"
+# The MCP server is the app's binary started by that name: one copy of the code (DuckDB alone
+# is tens of MB), and one signature, so the passwords the app saved open in the server without a
+# Keychain prompt.
+ln -s dataman "$app/Contents/MacOS/dataman-mcp"
 cp packaging/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"
 # The Dock icon while the app is light (`dock_icon`).
 cp packaging/AppIconLight.icns "$app/Contents/Resources/AppIconLight.icns"
@@ -54,13 +57,9 @@ plutil -replace CFBundleVersion -string "$build" "$plist"
 plutil -replace LSMinimumSystemVersion -string "${minos:-11.0}" "$plist"
 plutil -lint -s "$plist"
 
-# Inside out: the helper, then the bundle (which signs the main executable). The helper shares
-# the app's identifier, so with a Developer ID both satisfy the same designated requirement and
-# the passwords the app saved open in the MCP server without a Keychain prompt.
 xattr -cr "$app"
 if [ "$identity" = "-" ]; then ts=(--timestamp=none); else ts=(--timestamp); fi
 sign=(codesign --force --options runtime "${ts[@]}" --entitlements packaging/entitlements.plist --sign "$identity")
-"${sign[@]}" --identifier "$bundle_id" "$app/Contents/MacOS/dataman-mcp"
 "${sign[@]}" "$app"
 codesign --verify --deep --strict "$app"
 

@@ -329,6 +329,10 @@ fn menus(cx: &App) -> Vec<Menu> {
 fn main() {
     let t_main = Instant::now();
     let args: Vec<String> = std::env::args().collect();
+    // The packages ship `dataman-mcp` as a link to this binary, not a second copy of everything.
+    if args.first().is_some_and(|a| std::path::Path::new(a).file_name().is_some_and(|n| n == "dataman-mcp")) {
+        dataman_mcp::cli::main();
+    }
     if args.iter().any(|a| a == "--version") {
         println!("{VERSION}");
         return;

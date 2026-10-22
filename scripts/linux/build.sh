@@ -67,7 +67,7 @@ if [ -z "${DATAMAN_SKIP_BUILD:-}" ]; then
   fi
   export CXXSTDLIB=""
   export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-Wl,-Bstatic -C link-arg=-lstdc++ -C link-arg=-Wl,-Bdynamic"
-  (cd "$root" && DATAMAN_VERSION="$version" cargo build --release --locked -p dataman -p dataman-mcp)
+  (cd "$root" && DATAMAN_VERSION="$version" cargo build --release --locked -p dataman)
 fi
 baked="$("$target/release/dataman" --version 2> /dev/null || true)"
 [ "$baked" = "$version" ] || die "the binary says '$baked', expected '$version' (rebuild with DATAMAN_VERSION=$version)"

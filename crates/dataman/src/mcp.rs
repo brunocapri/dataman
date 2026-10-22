@@ -223,17 +223,8 @@ pub(crate) fn shared(core: &Arc<Core>, cx: &mut App) -> Arc<Shared> {
     s
 }
 
-pub fn stdio_binary() -> String {
-    std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join("dataman-mcp")))
-        .filter(|p| p.exists())
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|| "dataman-mcp".into())
-}
-
 pub fn stdio_command() -> String {
-    let argv = dataman_mcp::stable_server_argv(&stdio_binary());
+    let argv = dataman_mcp::stable_server_argv(&dataman_mcp::server_binary());
     dataman_mcp::claude_stdio_command_with(&argv.iter().map(String::as_str).collect::<Vec<_>>())
 }
 

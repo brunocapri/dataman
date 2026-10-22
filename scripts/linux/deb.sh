@@ -19,8 +19,10 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 pkg="$work/dataman"
 mkdir -p "$pkg/DEBIAN" "$pkg/usr/bin" "$pkg/usr/share/applications" "$pkg/usr/share/metainfo" "$pkg/usr/share/doc/dataman" "$pkg/usr/share/mime/packages"
-install -m 0755 "$target/release/dataman" "$target/release/dataman-mcp" "$pkg/usr/bin/"
-strip "$pkg/usr/bin/dataman" "$pkg/usr/bin/dataman-mcp"
+install -m 0755 "$target/release/dataman" "$pkg/usr/bin/"
+strip "$pkg/usr/bin/dataman"
+# The MCP server is the app's binary started by that name.
+ln -s dataman "$pkg/usr/bin/dataman-mcp"
 install -m 0644 "$root/packaging/linux/dev.dataman.Dataman.desktop" "$pkg/usr/share/applications/"
 install -m 0644 "$root/packaging/linux/dev.dataman.Dataman.metainfo.xml" "$pkg/usr/share/metainfo/"
 install -m 0644 "$root/packaging/linux/dev.dataman.Dataman.xml" "$pkg/usr/share/mime/packages/"

@@ -1,5 +1,6 @@
 pub mod audit;
 pub mod builtin;
+pub mod cli;
 pub mod hub;
 pub mod ipc;
 pub mod policy;
@@ -46,6 +47,17 @@ fn shell_word(s: &str) -> String {
         return s.to_string();
     }
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// The server's binary: `dataman-mcp` beside the running one (in the packages, a link to the
+/// app's binary), or the running one when it is not there.
+pub fn server_binary() -> String {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("dataman-mcp")))
+        .filter(|p| p.exists())
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "dataman-mcp".into())
 }
 
 /// Run from an AppImage, the binary sits in a mount that changes on every launch: the stable

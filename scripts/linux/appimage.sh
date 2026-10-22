@@ -48,8 +48,10 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 app="$work/Dataman.AppDir"
 mkdir -p "$app/usr/bin" "$app/usr/lib" "$app/usr/share/applications" "$app/usr/share/metainfo" "$app/usr/share/mime/packages"
-cp "$target/release/dataman" "$target/release/dataman-mcp" "$app/usr/bin/"
-strip "$app/usr/bin/dataman" "$app/usr/bin/dataman-mcp"
+cp "$target/release/dataman" "$app/usr/bin/"
+strip "$app/usr/bin/dataman"
+# The MCP server is the app's binary started by that name.
+ln -s dataman "$app/usr/bin/dataman-mcp"
 cp "$root/packaging/linux/AppRun" "$app/AppRun"
 chmod +x "$app/AppRun"
 cp "$root/packaging/linux/dev.dataman.Dataman.desktop" "$app/"
@@ -66,7 +68,7 @@ ln -s dev.dataman.Dataman.png "$app/.DirIcon"
 # What the binaries link is on every X11 or Wayland desktop (the pure-Rust core brings the
 # rest): nothing is bundled, and a new link outside this list stops the release.
 system='^(libc|libm|libdl|libpthread|librt|libgcc_s|libxcb|libxkbcommon|libxkbcommon-x11|libfontconfig|libfreetype|ld-linux-[a-z0-9_-]+)\.so'
-for bin in dataman dataman-mcp; do
+for bin in dataman; do
   for lib in $(readelf -d "$app/usr/bin/$bin" | awk '/NEEDED/ {gsub(/[][]/, "", $5); print $5}'); do
     echo "$lib" | grep -Eq "$system" || die "$bin links $lib, not one every desktop has (bundle it, or drop it)"
   done
