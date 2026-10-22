@@ -217,7 +217,7 @@ pub fn check(d: &Def, taken: &[String], dialect: Option<Dialect>) -> Result<(), 
             check_sql(d, dl)?;
         }
         None => {
-            let all: Vec<Result<String, String>> = [Dialect::Postgres, Dialect::MySql, Dialect::TSql].into_iter().map(|dl| check_sql(d, dl)).collect();
+            let all: Vec<Result<String, String>> = [Dialect::Postgres, Dialect::MySql, Dialect::TSql, Dialect::Sqlite, Dialect::DuckDb].into_iter().map(|dl| check_sql(d, dl)).collect();
             if !all.iter().any(Result::is_ok) {
                 return Err(all.into_iter().find_map(Result::err).unwrap_or_default());
             }

@@ -10,8 +10,9 @@ use super::Builtin;
 use crate::tool::{Args, BoxFut, Call, Schema, ToolError};
 
 fn fields(s: Schema, mcp: Value) -> Schema {
-    s.prop("connection_string", false, json!({"type": "string", "description": "A full connection string (postgres://, mysql://, sqlserver:// URL, libpq key=value, ADO.NET); the fields given here override whatever it sets."}))
-        .prop("engine", false, json!({"type": "string", "enum": ["postgres", "lar", "mysql", "sql-server", "mongodb", "elasticsearch", "opensearch", "redis"], "description": "lar is the postgres wire protocol (default postgres)."}))
+    s.prop("connection_string", false, json!({"type": "string", "description": "A full connection string (postgres://, mysql://, sqlserver://, sqlite:///path, duckdb:///path URL, libpq key=value, ADO.NET); the fields given here override whatever it sets."}))
+        .prop("engine", false, json!({"type": "string", "enum": ["postgres", "lar", "mysql", "sql-server", "sqlite", "duckdb", "mongodb", "elasticsearch", "opensearch", "redis"], "description": "lar is the postgres wire protocol (default postgres); sqlite and duckdb are files (see path)."}))
+        .prop("path", false, json!({"type": "string", "description": "The database file of a sqlite or duckdb connection: an existing file (~ is the home folder). A file outside the home folder waits for the user's Allow."}))
         .prop("port", false, json!({"type": "integer", "minimum": 1, "maximum": 65535, "description": "Default: the engine's own (5432 / 3306 / 1433 / 27017 / 9200 / 6379)."}))
         .prop("password", false, json!({"type": "string", "maxLength": 1000, "description": "Saved to the system keyring (the macOS Keychain, the Secret Service on Linux); never echoed back."}))
         .prop("database", false, json!({"type": "string", "description": "Default: the user's name (postgres), empty (mysql, sql-server)."}))
@@ -31,7 +32,7 @@ pub fn tools() -> Vec<Builtin> {
     vec![
         Builtin {
             name: "create_connection",
-            description: "Saves a new database connection, for every engine Dataman speaks (postgres, mysql, sql-server, mongodb, elasticsearch, opensearch, redis; lar is a postgres connection, recognized automatically once connected). Fields directly, or connection_string (a postgres://, mysql://, sqlserver://, mongodb:// (+srv) or redis:// URL, a libpq key=value string, or an ADO.NET string); given fields win over whatever the string sets. A password goes to the system keyring only (the macOS Keychain, the Secret Service on Linux), never into connections.toml, this tool's response, or a log. Refuses to replace a connection of the same name unless overwrite is true.",
+            description: "Saves a new database connection, for every engine Dataman speaks (postgres, mysql, sql-server, sqlite, duckdb, mongodb, elasticsearch, opensearch, redis; lar is a postgres connection, recognized automatically once connected; sqlite and duckdb take a path to an existing file instead of host and user). Fields directly, or connection_string (a postgres://, mysql://, sqlserver://, mongodb:// (+srv) or redis:// URL, a libpq key=value string, or an ADO.NET string); given fields win over whatever the string sets. A password goes to the system keyring only (the macOS Keychain, the Secret Service on Linux), never into connections.toml, this tool's response, or a log. Refuses to replace a connection of the same name unless overwrite is true.",
             schema: fields(
                 Schema::new()
                     .prop("name", true, json!({"type": "string", "maxLength": 200, "description": "A short label; must be unique (case-insensitive) unless overwrite is true."}))
@@ -100,6 +101,8 @@ fn apply(profile: &mut ConnectionProfile, a: &Args) -> Result<Option<String>, To
     let mut password = None;
     if let Some(cs) = a.opt_str("connection_string") {
         let (p, pw) = dataman_core::connstr::parse_profile(cs).ok_or_else(|| ToolError::Invalid("could not parse connection_string".into()))?;
+        profile.path = p.path;
+        profile.read_only |= p.read_only && p.engine.is_file();
         profile.engine = p.engine;
         profile.host = p.host;
         profile.port = p.port;
@@ -168,7 +171,59 @@ fn apply(profile: &mut ConnectionProfile, a: &Args) -> Result<Option<String>, To
     if let Some(pw) = a.opt_str("password") {
         password = Some(pw.to_string());
     }
+    if let Some(p) = a.opt_str("path") {
+        profile.path = Some(p.trim().to_string()).filter(|p| !p.is_empty());
+    }
+    if profile.engine.is_file() {
+        // A file has no server: what a string or an older profile set for one goes.
+        if profile.ssh.is_some() || password.is_some() {
+            return Err(ToolError::Invalid(format!("a {} connection is a file: no password and no SSH tunnel", profile.engine.label())));
+        }
+        if a.opt_str("sslmode").is_some_and(|m| m != "disable") {
+            return Err(ToolError::Invalid(format!("a {} connection is a file: no TLS", profile.engine.label())));
+        }
+        profile.host.clear();
+        profile.port = 0;
+        profile.user.clear();
+        profile.database.clear();
+        profile.sslmode = SslMode::Disable;
+    } else {
+        profile.path = None;
+    }
     Ok(password)
+}
+
+/// Agents point a file connection at an existing database file only (never create one), and
+/// the user allows one outside the home folder.
+async fn check_file(cx: &Call, old: Option<&ConnectionProfile>, p: &ConnectionProfile) -> Result<(), ToolError> {
+    if !p.engine.is_file() {
+        return Ok(());
+    }
+    let shown = p.path.clone().unwrap_or_default();
+    if shown.trim().is_empty() {
+        return Err(ToolError::Invalid(format!("\"path\" is required for a {} connection", p.engine.label())));
+    }
+    let file = p.file_path();
+    if !file.is_absolute() {
+        return Err(ToolError::Invalid("\"path\" must be absolute (or start with ~)".into()));
+    }
+    if !file.is_file() {
+        return Err(ToolError::Refused(format!("{shown} does not exist: agents connect to existing database files only (a new one is created in the app)")));
+    }
+    if dataman_core::import::detect_database(&file) != Some(p.engine) {
+        return Err(ToolError::Refused(format!("{shown} is not a {} database", p.engine.label())));
+    }
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let canonical = std::fs::canonicalize(&file).unwrap_or(file);
+    let inside = home.and_then(|h| std::fs::canonicalize(h).ok()).is_some_and(|h| canonical.starts_with(&h));
+    let same = old.is_some_and(|o| o.engine.is_file() && std::fs::canonicalize(o.file_path()).is_ok_and(|c| c == canonical));
+    // A changed file of a saved connection was asked about already (a move).
+    let asked = old.is_some_and(|o| target_changed(o, p));
+    if !inside && !same && !asked {
+        let anchor = old.unwrap_or(p);
+        cx.ask_about(anchor, &format!("file: {}", canonical.display()), vec!["a database file outside the home folder".into()]).await?;
+    }
+    Ok(())
 }
 
 fn ssl_rank(m: SslMode) -> u8 {
@@ -201,7 +256,7 @@ fn no_loosening(old: &ConnectionProfile, new: &ConnectionProfile) -> Result<(), 
 }
 
 fn target_changed(old: &ConnectionProfile, new: &ConnectionProfile) -> bool {
-    new.engine != old.engine || new.host != old.host || new.port != old.port || new.user != old.user || new.ssh != old.ssh
+    new.engine != old.engine || new.host != old.host || new.port != old.port || new.user != old.user || new.ssh != old.ssh || new.path != old.path
 }
 
 fn ssh_text(p: &ConnectionProfile) -> String {
@@ -225,6 +280,7 @@ async fn allow_move(cx: &Call, old: &ConnectionProfile, new: &ConnectionProfile)
     line("port", old.port.to_string(), new.port.to_string());
     line("user", old.user.clone(), new.user.clone());
     line("ssh", ssh_text(old), ssh_text(new));
+    line("file", old.path.clone().unwrap_or_default(), new.path.clone().unwrap_or_default());
     cx.ask_about(old, &lines.join("\n"), vec!["moves the connection to another server".into()]).await
 }
 
@@ -283,6 +339,7 @@ fn changed_fields(old: &ConnectionProfile, new: &ConnectionProfile) -> Vec<&'sta
     f("read_only", old.read_only != new.read_only);
     f("mcp", old.mcp_access() != new.mcp_access());
     f("ssh", old.ssh != new.ssh);
+    f("path", old.path != new.path);
     v
 }
 
@@ -293,7 +350,12 @@ fn create_connection(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>>
         if name.is_empty() {
             return Err(ToolError::Invalid("\"name\" must not be empty".into()));
         }
-        if a.opt_str("connection_string").is_none() && (a.opt_str("host").is_none() || a.opt_str("user").is_none()) {
+        let file = a.opt_str("engine").and_then(Engine::parse).is_some_and(Engine::is_file)
+            || a.opt_str("connection_string").and_then(dataman_core::connstr::parse).is_some_and(|s| s.engine.is_file());
+        if file && a.opt_str("path").is_none() && a.opt_str("connection_string").is_none() {
+            return Err(ToolError::Invalid("\"path\" is required for a sqlite or duckdb connection".into()));
+        }
+        if !file && a.opt_str("connection_string").is_none() && (a.opt_str("host").is_none() || a.opt_str("user").is_none()) {
             return Err(ToolError::Invalid("\"host\" and \"user\" are required, directly or via connection_string".into()));
         }
         // The most an agent may grant through this tool is read: write stays an app-only choice,
@@ -327,6 +389,7 @@ fn create_connection(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>>
             no_loosening(old, &profile)?;
             allow_move(cx, old, &profile).await?;
         }
+        check_file(cx, existing, &profile).await?;
         settle_secrets(cx, existing, &mut profile, password)?;
         save(cx, &profile)?;
         Ok(json!({"id": profile.id, "name": profile.name, "overwritten": existing.is_some()}))
@@ -373,6 +436,7 @@ fn update_connection(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>>
             }
         }
         allow_move(cx, &old, &profile).await?;
+        check_file(cx, Some(&old), &profile).await?;
         cx.note_connection(&profile.name);
         let state = settle_secrets(cx, Some(&old), &mut profile, password)?;
         save(cx, &profile)?;
@@ -411,6 +475,26 @@ mod tests {
         apply(&mut r, &args(json!({"mcp": "read"}))).unwrap();
         assert_eq!(r.mcp, None);
         assert!(changed_fields(&old, &r).is_empty());
+    }
+
+    #[test]
+    fn file_connections() {
+        let mut p = ConnectionProfile::new("lite");
+        apply(&mut p, &args(json!({"engine": "sqlite", "path": "~/data/shop.sqlite"}))).unwrap();
+        assert_eq!((p.engine, p.path.as_deref(), p.host.as_str(), p.port, p.user.as_str(), p.sslmode), (Engine::Sqlite, Some("~/data/shop.sqlite"), "", 0, "", SslMode::Disable));
+        let mut q = ConnectionProfile::new("duck");
+        apply(&mut q, &args(json!({"connection_string": "duckdb:///w/x.duckdb?mode=ro"}))).unwrap();
+        assert_eq!((q.engine, q.path.as_deref(), q.read_only), (Engine::DuckDb, Some("/w/x.duckdb"), true));
+        let mut r = ConnectionProfile::new("lite");
+        assert!(apply(&mut r, &args(json!({"engine": "sqlite", "path": "/x.db", "password": "pw"}))).is_err(), "no password for a file");
+        let mut r = ConnectionProfile::new("lite");
+        assert!(apply(&mut r, &args(json!({"engine": "sqlite", "path": "/x.db", "ssh_host": "b"}))).is_err(), "no tunnel for a file");
+        let mut moved = p.clone();
+        apply(&mut moved, &args(json!({"path": "/elsewhere.sqlite"}))).unwrap();
+        assert!(target_changed(&p, &moved) && changed_fields(&p, &moved) == ["path"]);
+        let mut back = p.clone();
+        apply(&mut back, &args(json!({"engine": "postgres", "host": "h", "user": "u"}))).unwrap();
+        assert_eq!(back.path, None, "a server has no file");
     }
 
     #[test]

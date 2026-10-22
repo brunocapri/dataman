@@ -325,7 +325,7 @@ pub(crate) async fn dedicated(p: &ConnectionProfile, password: Option<&str>, dat
         Engine::Postgres => Ok(Dedicated::Pg(pg::connect_through(p, password, database, tunnel).await?)),
         Engine::MySql => Ok(Dedicated::My(my::connect(p, password, database, tunnel, None).await?)),
         Engine::SqlServer => Ok(Dedicated::Ms(ms::connect(p, password, database, tunnel, None).await?)),
-        Engine::Sqlite => Ok(Dedicated::Lite(lite::connect(p, lite::Open { read_only: p.read_only }, None).await?)),
+        Engine::Sqlite => Ok(Dedicated::Lite(lite::connect(p, lite::Open { read_only: p.read_only, agent: None }, None).await?)),
         e => Err(no_sql(e)),
     }
 }
@@ -351,7 +351,7 @@ pub(crate) async fn session(
             Ok((Db::Ms(c.clone()), Canceller::Ms(c.canceller())))
         }
         Engine::Sqlite => {
-            let c = lite::connect(p, lite::Open { read_only: p.read_only }, Some(watch)).await?;
+            let c = lite::connect(p, lite::Open { read_only: p.read_only, agent: None }, Some(watch)).await?;
             Ok((Db::Lite(c.clone()), Canceller::Lite(c.canceller())))
         }
         e => Err(no_sql(e)),

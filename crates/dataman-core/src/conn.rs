@@ -105,7 +105,7 @@ impl Connection {
         crate::config::set_read_only_in(self.profile.read_only, &mut self.read_only_dbs.write(), self.profile.engine, database, on);
     }
 
-    fn profile_for(&self, database: &str) -> ConnectionProfile {
+    pub(crate) fn profile_for(&self, database: &str) -> ConnectionProfile {
         let mut p = self.profile.clone();
         p.read_only_databases = self.read_only_dbs.read().clone();
         if p.engine != Engine::SqlServer {

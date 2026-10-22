@@ -722,6 +722,13 @@ const ARG_READ_PRAGMAS: &[&str] = &[
 /// PRAGMAs that act when merely named.
 const ACTING_PRAGMAS: &[&str] = &["incremental_vacuum", "optimize", "shrink_memory", "wal_checkpoint"];
 
+/// Whether `PRAGMA name` (with a value: `= v` or `(v)`) changes anything: the check SQLite's
+/// authorizer makes for agents' connections, by the classifier's own lists.
+pub fn pragma_sets(name: &str, valued: bool) -> bool {
+    let name = name.to_ascii_lowercase();
+    ACTING_PRAGMAS.contains(&name.as_str()) || (valued && !ARG_READ_PRAGMAS.contains(&name.as_str()))
+}
+
 /// `PRAGMA x = v` and `PRAGMA x(v)` set (but the report-only ones, which take a table); a bare
 /// `PRAGMA x` reads (SQLite) or switches a setting (DuckDB, but its reports).
 fn pragma(t: &Toks, f: &mut Facts) {

@@ -89,7 +89,7 @@ pub(crate) async fn generated_columns(c: &Db, schema: &str, table: &str) -> Hash
 
 /// `name … [GENERATED ALWAYS] AS (expr)` of each column definition in a `CREATE TABLE`, by
 /// lowercased name.
-pub(crate) fn generated_exprs(create: &str) -> HashMap<String, String> {
+pub fn generated_exprs(create: &str) -> HashMap<String, String> {
     let toks: Vec<_> = tokenize_in(create, Dialect::Sqlite).into_iter().filter(|t| !t.kind.is_trivia()).collect();
     let Some(open) = toks.iter().position(|t| t.text(create) == "(") else { return HashMap::new() };
     let mut out = HashMap::new();

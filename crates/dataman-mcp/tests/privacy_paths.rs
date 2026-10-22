@@ -89,10 +89,19 @@ fn profiles(conns: &[Conn]) -> String {
 }
 
 fn env(conns: &[Conn], settings: &str, tools: Option<&str>) -> Env {
+    env_with(conns, "", settings, tools)
+}
+
+/// File database connections (SQLite, DuckDB): no server, the file is the target.
+fn file_conn(id: &str, engine: &str, path: &std::path::Path, extra: &str) -> String {
+    format!("[[connection]]\nid = \"{id}\"\nname = \"{id}\"\nengine = \"{engine}\"\npath = \"{}\"\nsslmode = \"disable\"\n{extra}\n", path.display())
+}
+
+fn env_with(conns: &[Conn], files: &str, settings: &str, tools: Option<&str>) -> Env {
     let dir = tempfile::tempdir().unwrap();
     let cfg = dir.path().join("dataman");
     std::fs::create_dir_all(&cfg).unwrap();
-    std::fs::write(cfg.join("connections.toml"), profiles(conns)).unwrap();
+    std::fs::write(cfg.join("connections.toml"), format!("{}{files}", profiles(conns))).unwrap();
     std::fs::write(cfg.join("settings.toml"), settings).unwrap();
     let tools_file = tools.map(|t| {
         let f = cfg.join("mcp-tools.toml");
@@ -594,6 +603,75 @@ fn redis_values_stay_kept() {
 }
 
 /// User tools (mcp-tools.toml) run for agents: the connection's rules and dialect apply to them.
+/// SQLite: what is kept stays kept (columns, generated columns, PRAGMAs that describe a table,
+/// views), and nothing leaves the file (ATTACH, extensions, VACUUM INTO, writable_schema), at
+/// any level; writes stop at read and on a read-only connection.
+#[test]
+fn sqlite_values_stay_kept_and_nothing_leaves_the_file() {
+    let files = tempfile::tempdir().unwrap();
+    let db = files.path().join("shop.sqlite");
+    std::fs::File::create(&db).unwrap();
+    let rules = "[connection.mcp_rules]\nview = \"masked\"\nsensitive = [{ col = \"customers.email\", how = \"hash\" }]\n[connection.mcp_rules.visible]\nitems = [{ name = \"users.pw\", kind = \"column\" }, { name = \"payments\", kind = \"table\" }]\n";
+    let text = [
+        file_conn("liteadmin", "sqlite", &db, "mcp = \"full\""),
+        file_conn("ll", "sqlite", &db, rules),
+        file_conn("lr", "sqlite", &db, "mcp = \"read\""),
+        file_conn("lw", "sqlite", &db, "mcp = \"full\""),
+        file_conn("lro", "sqlite", &db, "mcp = \"full\"\nread_only = true"),
+    ]
+    .concat();
+    let e = env_with(&[], &text, "", None);
+    e.admin(
+        "execute",
+        with("liteadmin", json!({"sql": "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, pw TEXT DEFAULT 'dflt-secret', \
+            pw_len INT GENERATED ALWAYS AS (length(pw)) VIRTUAL, name_up TEXT GENERATED ALWAYS AS (upper(name)) STORED); \
+            CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT, email TEXT); CREATE TABLE payments (id INTEGER PRIMARY KEY, card TEXT); \
+            CREATE VIEW v_pw AS SELECT id, pw FROM users; \
+            INSERT INTO users (id, name, pw) VALUES (1, 'Ana', 'hash-secret-1'); INSERT INTO customers VALUES (1, 'Ana', 'zed-secret@acme.com'); \
+            INSERT INTO payments VALUES (1, 'card-secret')"})),
+    );
+    let q = |c: &str, sql: &str| e.call("run_query", with(c, json!({"sql": sql})));
+    let r = q("ll", "SELECT * FROM users").unwrap();
+    let cols = r["columns"].to_string();
+    assert!(!cols.contains("\"pw\"") && !cols.contains("pw_len") && cols.contains("name_up"), "{r}");
+    clean("lite select", &r);
+    refused("generated from a hidden column", q("ll", "SELECT pw_len FROM users"), "is hidden from agents");
+    refused("hidden table", q("ll", "SELECT * FROM payments"), "");
+    for sql in ["PRAGMA table_info(users)", "PRAGMA table_xinfo('payments')", "SELECT * FROM pragma_table_info('users')"] {
+        refused(sql, q("ll", sql), "is not available to agents on ll");
+    }
+    refused("a view over a hidden column", q("ll", "SELECT * FROM v_pw"), "");
+    let r = q("ll", "SELECT id, email FROM customers").unwrap();
+    clean("lite masked", &r);
+    assert!(r["rows"][0][1].as_str().unwrap().starts_with("‹h:"), "{r}");
+    refused("masked in an expression", q("ll", "SELECT upper(email) FROM customers"), MASKED);
+    let d = e.ok("describe_table", with("ll", json!({"table": "users", "include_ddl": true}))).to_string();
+    assert!(!d.contains("pw_len") && !d.contains("(pw") && d.contains("name_up"), "{d}");
+
+    // Nothing leaves the file, whatever the level.
+    let outside = files.path().join("copy.sqlite");
+    for c in ["lr", "lw"] {
+        for sql in [
+            format!("ATTACH DATABASE '{}' AS x", outside.display()),
+            "SELECT load_extension('/tmp/evil')".to_string(),
+            format!("VACUUM INTO '{}'", outside.display()),
+            "PRAGMA writable_schema = ON".to_string(),
+            "SELECT writefile('/tmp/x', 'y')".to_string(),
+        ] {
+            let r = if c == "lr" { q(c, &sql) } else { e.call("execute", with(c, json!({"sql": sql}))) };
+            assert!(r.is_err(), "{c}: {sql} ran: {r:?}");
+        }
+        assert!(!outside.exists(), "{c}: a file was written outside the database");
+    }
+    refused("a write at read", e.call("execute", with("lr", json!({"sql": "UPDATE customers SET name = 'x' WHERE id = 1"}))), "");
+    refused("a write on a read-only connection", e.call("execute", with("lro", json!({"sql": "UPDATE customers SET name = 'x' WHERE id = 1"}))), "");
+    let r = e.call("execute", with("lw", json!({"sql": "UPDATE customers SET name = 'Ana B.' WHERE id = 1"})));
+    assert!(r.is_ok(), "a plain write at full: {r:?}");
+    assert_eq!(q("lr", "SELECT name FROM customers WHERE id = 1").unwrap()["rows"][0][0], "Ana B.");
+    e.nothing_kept_logged();
+    e.done();
+}
+
 #[test]
 fn user_tools_follow_the_rules() {
     let tools = "[[tool]]\nname = \"all_users\"\ndescription = \"d\"\nconnection = \"pp\"\nsql = \"SELECT * FROM {s}.users\"\n\n\

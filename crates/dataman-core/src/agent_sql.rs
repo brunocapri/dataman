@@ -449,6 +449,23 @@ fn table_command(sql: &str, toks: &[Token], d: Dialect, insert: bool) -> Option<
             return Some(format!("TABLE {}", toks[i + 1].text(sql)));
         }
     }
+    // SQLite's and DuckDB's PRAGMAs (and their table functions) read a table's definition whole.
+    if matches!(d, Dialect::Sqlite | Dialect::DuckDb) {
+        if w(0) == "PRAGMA" {
+            return Some("PRAGMA".into());
+        }
+        if let Some(t) = toks.iter().enumerate().find(|(i, t)| word(sql, t).is_some_and(|x| x.starts_with("PRAGMA_")) && toks.get(i + 1).is_some_and(|n| n.text(sql) == "(")) {
+            return Some(format!("{}()", t.1.text(sql)));
+        }
+    }
+    if d == Dialect::DuckDb {
+        return match w(0).as_str() {
+            "DESCRIBE" | "SUMMARIZE" | "SHOW" => Some(w(0)),
+            // FROM-first and PIVOT statements are not narrowed.
+            "FROM" | "PIVOT" | "UNPIVOT" => Some(format!("{} first", w(0))),
+            _ => None,
+        };
+    }
     if d != Dialect::MySql {
         return None;
     }

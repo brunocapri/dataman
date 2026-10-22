@@ -771,6 +771,7 @@ impl AgentsPage {
         match p.engine {
             Engine::Postgres => out.push("public".into()),
             Engine::SqlServer => out.push("dbo".into()),
+            Engine::Sqlite | Engine::DuckDb => out.push("main".into()),
             _ => {}
         }
         out

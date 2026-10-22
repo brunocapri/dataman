@@ -138,8 +138,9 @@ fn list_connections(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> 
                 json!(p.env.label()),
                 json!(access.label()),
                 json!(p.read_only),
-                meta(json!(p.host)),
-                meta(json!(p.port)),
+                // A file database's "host" is its file.
+                meta(if p.engine.is_file() { json!(p.path) } else { json!(p.host) }),
+                meta(if p.engine.is_file() { Value::Null } else { json!(p.port) }),
                 json!(p.database),
                 meta(json!(p.user)),
                 meta(json!(p.ssh.is_some())),

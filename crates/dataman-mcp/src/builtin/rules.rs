@@ -35,6 +35,9 @@ pub fn structure_only(p: &ConnectionProfile) -> String {
 }
 
 pub fn activity(p: &ConnectionProfile) -> Result<(), ToolError> {
+    if !dataman_core::Caps::of(p.engine).activity {
+        return Err(ToolError::Invalid(format!("{} has no server activity to show", p.engine.label())));
+    }
     if p.mcp_rules.activity_on() {
         return Ok(());
     }
@@ -113,6 +116,11 @@ const MY_GENERATED: &str = "SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, GENERA
   WHERE (EXTRA LIKE '%VIRTUAL GENERATED%' OR EXTRA LIKE '%STORED GENERATED%') \
    AND TABLE_SCHEMA NOT IN ('mysql', 'sys', 'performance_schema', 'information_schema')";
 
+/// Each generated column with its table's `CREATE TABLE`, where its expression is (SQLite keeps
+/// no dependencies).
+const LITE_GENERATED: &str = "SELECT 'main', m.name, p.name, m.sql FROM main.sqlite_master m JOIN pragma_table_xinfo(m.name, 'main') p \
+  WHERE m.type = 'table' AND p.hidden IN (2, 3)";
+
 const MS_GENERATED: &str = "SELECT s.name, t.name, c.name, d.name FROM sys.computed_columns c \
   JOIN sys.objects t ON t.object_id = c.object_id JOIN sys.schemas s ON s.schema_id = t.schema_id \
   JOIN sys.sql_expression_dependencies x ON x.referencing_id = c.object_id AND x.referencing_minor_id = c.column_id \
@@ -141,6 +149,7 @@ pub async fn generated_columns(cx: &Call, o: &Opened) -> Result<Vec<Generated>, 
         dataman_core::Engine::Postgres => (PG_GENERATED, false),
         dataman_core::Engine::MySql => (MY_GENERATED, true),
         dataman_core::Engine::SqlServer => (MS_GENERATED, false),
+        dataman_core::Engine::Sqlite => (LITE_GENERATED, true),
         _ => return Ok(Vec::new()),
     };
     let limits = bounded::Limits { max_rows: 100_000, max_bytes: 32 * 1024 * 1024, max_cell: 64 * 1024, ..bounded::Limits::default() };
@@ -150,7 +159,15 @@ pub async fn generated_columns(cx: &Call, o: &Opened) -> Result<Vec<Generated>, 
     let mut cols: Vec<Generated> = Vec::new();
     for row in &out.rows {
         let (schema, table, column) = (text(&row[0]), text(&row[1]), text(&row[2]));
-        let from = if by_expression { expression_names(&text(&row[3])) } else { vec![text(&row[3])] };
+        let from = match o.conn.engine() {
+            dataman_core::Engine::Sqlite => {
+                let exprs = dataman_core::schema::lite::generated_exprs(&text(&row[3]));
+                // An expression that cannot be read counts as reading every column of the table.
+                exprs.get(&column.to_lowercase()).map(|e| expression_names(e)).unwrap_or_else(|| expression_names(&text(&row[3])))
+            }
+            _ if by_expression => expression_names(&text(&row[3])),
+            _ => vec![text(&row[3])],
+        };
         match cols.iter_mut().find(|g| g.schema == schema && g.table == table && g.column == column) {
             Some(g) => g.from.extend(from),
             None => cols.push(Generated { schema, table, column, from }),

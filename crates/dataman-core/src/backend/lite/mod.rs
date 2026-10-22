@@ -32,6 +32,68 @@ fn closed_error() -> LiteError {
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct Open {
     pub read_only: bool,
+    /// An agent's connection: escapes refused by SQLite itself (see [`harden`]).
+    pub agent: Option<Agent>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Agent {
+    Read,
+    Write,
+}
+
+/// SQLite itself refuses an agent what would leave the database or change it behind the
+/// classifier's back: no ATTACH (and no attached database at all), no extension or file
+/// function, no PRAGMA that sets anything for a reader, no write for a reader, no virtual table;
+/// defensive mode keeps `writable_schema` and the like from corrupting the file.
+fn harden(db: &rusqlite::Connection, agent: Agent) -> Result<()> {
+    use rusqlite::config::DbConfig;
+    use rusqlite::limits::Limit;
+    db.set_limit(Limit::SQLITE_LIMIT_ATTACHED, 0)?;
+    db.set_db_config(DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)?;
+    db.set_db_config(DbConfig::SQLITE_DBCONFIG_TRUSTED_SCHEMA, false)?;
+    db.authorizer(Some(move |ctx: rusqlite::hooks::AuthContext<'_>| authorize(agent, &ctx.action)))?;
+    Ok(())
+}
+
+pub(crate) fn authorize(agent: Agent, a: &rusqlite::hooks::AuthAction<'_>) -> rusqlite::hooks::Authorization {
+    use rusqlite::hooks::AuthAction as A;
+    use rusqlite::hooks::Authorization::{Allow, Deny};
+    let read = agent == Agent::Read;
+    match a {
+        A::Attach { .. } | A::Detach { .. } | A::CreateVtable { .. } | A::DropVtable { .. } => Deny,
+        A::Function { function_name } if crate::guard::SQLITE_EFFECT_FUNCTIONS.iter().any(|f| f.eq_ignore_ascii_case(function_name)) => Deny,
+        // Settings that weaken the file or the checks are not an agent's at any level.
+        A::Pragma { pragma_name, pragma_value } if pragma_value.is_some() && ["writable_schema", "trusted_schema", "journal_mode", "locking_mode", "query_only", "cell_size_check", "mmap_size"].iter().any(|p| p.eq_ignore_ascii_case(pragma_name)) => Deny,
+        A::Pragma { pragma_name, pragma_value } if read && crate::guard::pragma_sets(pragma_name, pragma_value.is_some()) => Deny,
+        A::Insert { .. }
+        | A::Update { .. }
+        | A::Delete { .. }
+        | A::CreateIndex { .. }
+        | A::CreateTable { .. }
+        | A::CreateTempIndex { .. }
+        | A::CreateTempTable { .. }
+        | A::CreateTempTrigger { .. }
+        | A::CreateTempView { .. }
+        | A::CreateTrigger { .. }
+        | A::CreateView { .. }
+        | A::DropIndex { .. }
+        | A::DropTable { .. }
+        | A::DropTempIndex { .. }
+        | A::DropTempTable { .. }
+        | A::DropTempTrigger { .. }
+        | A::DropTempView { .. }
+        | A::DropTrigger { .. }
+        | A::DropView { .. }
+        | A::AlterTable { .. }
+        | A::Reindex { .. }
+        | A::Analyze { .. }
+            if read =>
+        {
+            Deny
+        }
+        _ => Allow,
+    }
 }
 
 pub(crate) struct Conn {
@@ -60,6 +122,9 @@ fn open_file(path: &Path, how: Open) -> Result<rusqlite::Connection> {
     if how.read_only {
         // The file is opened read-only too; this says so in the error of a write.
         db.pragma_update(None, "query_only", true)?;
+    }
+    if let Some(agent) = how.agent {
+        harden(&db, agent)?;
     }
     // SQLite opens lazily: a file that is not a database fails here, not on the first query.
     db.query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(())).with_context(|| format!("{} is not a SQLite database", path.display()))?;
@@ -475,6 +540,41 @@ pub(crate) async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SQLite's own refusals for agents, under the classifier: what a reader's connection
+    /// and a writer's let through.
+    #[test]
+    fn agents_connections_refuse_escapes() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.sqlite");
+        let db = rusqlite::Connection::open(&path).unwrap();
+        db.execute_batch("CREATE TABLE t (a INTEGER); INSERT INTO t VALUES (1)").unwrap();
+        drop(db);
+        let p = ConnectionProfile::new_file(crate::config::Engine::Sqlite, path.to_string_lossy());
+        let other = dir.path().join("b.sqlite");
+        rt.block_on(async {
+            for (agent, ro) in [(Agent::Read, true), (Agent::Write, false)] {
+                let c = connect(&p, Open { read_only: ro, agent: Some(agent) }, None).await.unwrap();
+                for sql in [
+                    format!("ATTACH '{}' AS x", other.display()),
+                    "PRAGMA writable_schema = ON".into(),
+                    "PRAGMA trusted_schema = 1".into(),
+                    "SELECT load_extension('x')".into(),
+                    "CREATE VIRTUAL TABLE v USING fts5(a)".into(),
+                ] {
+                    assert!(c.execute(&sql).await.is_err(), "{agent:?}: {sql}");
+                }
+                assert!(c.text_rows("SELECT a FROM t").await.is_ok());
+                assert!(c.text_rows("PRAGMA table_info(t)").await.is_ok(), "{agent:?}");
+                let write = c.execute("INSERT INTO t VALUES (2)").await;
+                assert_eq!(write.is_ok(), agent == Agent::Write, "{agent:?}: {write:?}");
+                assert_eq!(c.execute("PRAGMA user_version = 7").await.is_ok(), agent == Agent::Write, "{agent:?}");
+                assert_eq!(c.execute("CREATE TEMP TABLE scratch (x)").await.is_ok(), agent == Agent::Write, "{agent:?}");
+            }
+        });
+        assert!(!other.exists());
+    }
 
     #[test]
     fn declared_types() {

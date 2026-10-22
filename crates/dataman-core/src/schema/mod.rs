@@ -1,6 +1,6 @@
 pub mod catalog;
 pub(crate) mod duck;
-pub(crate) mod lite;
+pub mod lite;
 mod model;
 pub(crate) mod ms;
 pub(crate) mod my;

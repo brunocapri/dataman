@@ -217,6 +217,8 @@ impl Connection {
         p
     }
 
+    /// A file database's agents get connections of their own make: read-only (and refusing
+    /// writes) for reads, refusing escapes for every level.
     async fn agent_take(&self, db: &str, ro: bool) -> anyhow::Result<Dedicated> {
         let pool = self.agent_pool(db, ro);
         loop {
@@ -227,7 +229,12 @@ impl Connection {
                 None => break,
             }
         }
-        let d = self.dedicated(Some(db)).await?;
+        let d = if self.engine() == crate::config::Engine::Sqlite {
+            let agent = if ro { lite::Agent::Read } else { lite::Agent::Write };
+            Dedicated::Lite(lite::connect(&self.profile_for(db), lite::Open { read_only: ro, agent: Some(agent) }, None).await?)
+        } else {
+            self.dedicated(Some(db)).await?
+        };
         // The guard lexes strings as these settings read them: the server must too.
         match &d {
             Dedicated::Pg(p) => {
@@ -284,6 +291,8 @@ impl Connection {
         if let Some(r) = refusal_in(&stmts, params.len(), mode, ro, dialect) {
             return Err(Stop::Refused(r));
         }
+        // SQLite's readers run on connections that cannot write: a pool of their own.
+        let ro = ro || (dialect == Dialect::Sqlite && mode == Mode::Read);
         let started = Instant::now();
         let mut d = tokio::select! {
             d = self.agent_take(&db, ro) => d.map_err(Stop::Other)?,
