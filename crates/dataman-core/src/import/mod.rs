@@ -70,6 +70,26 @@ impl ImportFormat {
     }
 }
 
+/// A database file by its first bytes (`.db` is anyone's extension): SQLite's header is
+/// `SQLite format 3\0`, DuckDB's has `DUCK` at byte 8. A missing or empty file counts by its
+/// extension (it would be created).
+pub fn detect_database(path: &Path) -> Option<crate::config::Engine> {
+    use crate::config::Engine;
+    let mut head = [0u8; 16];
+    let n = std::fs::File::open(path).and_then(|mut f| f.read(&mut head)).unwrap_or(0);
+    if n >= 16 && &head == b"SQLite format 3\0" {
+        return Some(Engine::Sqlite);
+    }
+    if n >= 12 && &head[8..12] == b"DUCK" {
+        return Some(Engine::DuckDb);
+    }
+    if n > 0 {
+        return None;
+    }
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    [Engine::Sqlite, Engine::DuckDb].into_iter().find(|e| e.file_extensions().contains(&ext.as_str()))
+}
+
 pub fn detect_format(path: &Path, head: &[u8]) -> ImportFormat {
     if head.starts_with(b"PAR1") {
         return ImportFormat::Parquet;
@@ -469,6 +489,25 @@ impl crate::Connection {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn database_files_by_header() {
+        use crate::config::Engine;
+        let dir = tempfile::tempdir().unwrap();
+        let lite = dir.path().join("x.data");
+        let mut h = b"SQLite format 3\0".to_vec();
+        h.extend([0u8; 84]);
+        std::fs::write(&lite, &h).unwrap();
+        assert_eq!(detect_database(&lite), Some(Engine::Sqlite));
+        let duck = dir.path().join("y.db");
+        std::fs::write(&duck, b"\0\0\0\0\0\0\0\0DUCK\x40\0\0\0").unwrap();
+        assert_eq!(detect_database(&duck), Some(Engine::DuckDb), "by its header, whatever the extension");
+        let csv = dir.path().join("z.db");
+        std::fs::write(&csv, "a,b\n1,2\n").unwrap();
+        assert_eq!(detect_database(&csv), None);
+        assert_eq!(detect_database(&dir.path().join("new.duckdb")), Some(Engine::DuckDb), "missing: by extension");
+        assert_eq!(detect_database(&dir.path().join("new.sql")), None);
+    }
+
     use super::*;
 
     #[test]

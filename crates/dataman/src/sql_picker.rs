@@ -29,6 +29,11 @@ pub fn file_name_for(title: &str) -> String {
 }
 
 pub fn pick_save_path(name: &str, cx: &App) -> oneshot::Receiver<Option<PathBuf>> {
+    pick_new_file(&["sql"], name, cx)
+}
+
+/// A new file's path (the save panel), with the first of `exts` added when it has none of them.
+pub fn pick_new_file(exts: &'static [&'static str], name: &str, cx: &App) -> oneshot::Receiver<Option<PathBuf>> {
     let (tx, rx) = oneshot::channel();
     if let Some(path) = TEST_SAVE.lock().unwrap().take() {
         let _ = tx.send(Some(path));
@@ -37,14 +42,14 @@ pub fn pick_save_path(name: &str, cx: &App) -> oneshot::Receiver<Option<PathBuf>
     #[cfg(target_os = "macos")]
     {
         let _ = cx;
-        imp::save_panel(name, tx);
+        imp::save_panel(exts, name, tx);
     }
     #[cfg(not(target_os = "macos"))]
     {
         let dir = std::env::current_dir().unwrap_or_default();
         let path = cx.prompt_for_new_path(&dir, Some(name));
         cx.spawn(async move |cx| {
-            let picked = picked(path.await, cx).map(|p| if is_sql(&p) { p } else { p.with_extension("sql") });
+            let picked = picked(path.await, cx).map(|p| if has_ext(&p, exts) { p } else { p.with_extension(exts[0]) });
             let _ = tx.send(picked);
         })
         .detach();
@@ -75,10 +80,20 @@ fn no_chooser(e: &anyhow::Error, cx: &mut App) {
 }
 
 pub fn is_sql(p: &std::path::Path) -> bool {
-    p.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("sql"))
+    has_ext(p, &["sql"])
+}
+
+pub fn has_ext(p: &std::path::Path, exts: &[&str]) -> bool {
+    p.extension().and_then(|e| e.to_str()).is_some_and(|e| exts.iter().any(|x| e.eq_ignore_ascii_case(x)))
 }
 
 pub fn pick_sql_files(multiple: bool, cx: &App) -> oneshot::Receiver<Vec<PathBuf>> {
+    pick_files(&["sql"], multiple, cx)
+}
+
+/// Existing files with one of `exts` (the open panel filters them on macOS; elsewhere what was
+/// picked is filtered after).
+pub fn pick_files(exts: &'static [&'static str], multiple: bool, cx: &App) -> oneshot::Receiver<Vec<PathBuf>> {
     let (tx, rx) = oneshot::channel();
     if let Some(paths) = TEST_PATHS.lock().unwrap().take() {
         let _ = tx.send(paths);
@@ -87,13 +102,13 @@ pub fn pick_sql_files(multiple: bool, cx: &App) -> oneshot::Receiver<Vec<PathBuf
     #[cfg(target_os = "macos")]
     {
         let _ = cx;
-        imp::open_panel(multiple, tx);
+        imp::open_panel(exts, multiple, tx);
     }
     #[cfg(not(target_os = "macos"))]
     {
         let paths = cx.prompt_for_paths(gpui::PathPromptOptions { files: true, directories: false, multiple, prompt: None });
         cx.spawn(async move |cx| {
-            let picked = picked(paths.await, cx).map(|p| p.into_iter().filter(|p| is_sql(p)).collect()).unwrap_or_default();
+            let picked = picked(paths.await, cx).map(|p| p.into_iter().filter(|p| has_ext(p, exts)).collect()).unwrap_or_default();
             let _ = tx.send(picked);
         })
         .detach();
@@ -159,21 +174,32 @@ mod imp {
     }
 
     /// SAFETY: `panel` is an `NSSavePanel` (or `NSOpenPanel`), on the main thread.
-    unsafe fn allow_sql(panel: &AnyObject) {
-        let ext = ns_string("sql");
+    unsafe fn allow(panel: &AnyObject, exts: &[&str]) {
         unsafe {
-            match AnyClass::get(c"UTType") {
-                Some(ut) => {
-                    let ty: Option<Retained<AnyObject>> = msg_send![ut, typeWithFilenameExtension: &*ext];
-                    if let Some(ty) = ty {
-                        let types: Retained<AnyObject> = msg_send![class!(NSArray), arrayWithObject: &*ty];
-                        let _: () = msg_send![panel, setAllowedContentTypes: &*types];
+            let list: Retained<AnyObject> = msg_send![class!(NSMutableArray), array];
+            let ut = AnyClass::get(c"UTType");
+            for e in exts {
+                let ext = ns_string(e);
+                match ut {
+                    Some(ut) => {
+                        let ty: Option<Retained<AnyObject>> = msg_send![ut, typeWithFilenameExtension: &*ext];
+                        if let Some(ty) = ty {
+                            let _: () = msg_send![&*list, addObject: &*ty];
+                        }
+                    }
+                    None => {
+                        let _: () = msg_send![&*list, addObject: &*ext];
                     }
                 }
-                None => {
-                    let types: Retained<AnyObject> = msg_send![class!(NSArray), arrayWithObject: &*ext];
-                    let _: () = msg_send![panel, setAllowedFileTypes: &*types];
-                }
+            }
+            let n: usize = msg_send![&*list, count];
+            if n == 0 {
+                return;
+            }
+            if ut.is_some() {
+                let _: () = msg_send![panel, setAllowedContentTypes: &*list];
+            } else {
+                let _: () = msg_send![panel, setAllowedFileTypes: &*list];
             }
         }
     }
@@ -188,13 +214,13 @@ mod imp {
         }
     }
 
-    pub fn save_panel(name: &str, tx: oneshot::Sender<Option<PathBuf>>) {
+    pub fn save_panel(exts: &[&str], name: &str, tx: oneshot::Sender<Option<PathBuf>>) {
         // SAFETY: AppKit on the main thread (GPUI's UI thread calls this), with retained
         // objects only; the block is kept alive by the panel until it has run.
         unsafe {
             let panel: Retained<AnyObject> = msg_send![class!(NSSavePanel), savePanel];
             let _: () = msg_send![&*panel, setCanCreateDirectories: Bool::YES];
-            allow_sql(&panel);
+            allow(&panel, exts);
             let n = ns_string(name);
             let _: () = msg_send![&*panel, setNameFieldStringValue: &*n];
             let tx = Cell::new(Some(tx));
@@ -212,7 +238,7 @@ mod imp {
         }
     }
 
-    pub fn open_panel(multiple: bool, tx: oneshot::Sender<Vec<PathBuf>>) {
+    pub fn open_panel(exts: &'static [&'static str], multiple: bool, tx: oneshot::Sender<Vec<PathBuf>>) {
         // SAFETY: AppKit on the main thread (GPUI's UI thread calls this), with retained
         // objects only; the block is kept alive by the panel until it has run.
         unsafe {
@@ -221,7 +247,7 @@ mod imp {
             let _: () = msg_send![&*panel, setCanChooseDirectories: Bool::NO];
             let _: () = msg_send![&*panel, setAllowsMultipleSelection: Bool::new(multiple)];
             let _: () = msg_send![&*panel, setResolvesAliases: Bool::YES];
-            allow_sql(&panel);
+            allow(&panel, exts);
             let tx = Cell::new(Some(tx));
             let p = panel.clone();
             let handler = RcBlock::new(move |response: isize| {
@@ -235,7 +261,7 @@ mod imp {
                         out.extend(url_path(&url));
                     }
                 }
-                let _ = tx.send(out.into_iter().filter(|p| super::is_sql(p)).collect());
+                let _ = tx.send(out.into_iter().filter(|p| super::has_ext(p, exts)).collect());
             });
             let _: () = msg_send![&*panel, beginWithCompletionHandler: &*handler];
         }

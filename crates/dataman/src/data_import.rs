@@ -1353,6 +1353,16 @@ impl Workspace {
     }
 
     pub(crate) fn drop_files(&mut self, paths: &gpui::ExternalPaths, window: &mut Window, cx: &mut Context<Self>) {
+        // A database file opens as a connection; a .sql file in a tab.
+        if let Some(db) = paths.paths().iter().find(|p| p.is_file() && dataman_core::import::detect_database(p).is_some()).cloned() {
+            self.open_database_path(&db, window, cx);
+            return;
+        }
+        let sql: Vec<PathBuf> = paths.paths().iter().filter(|p| crate::sql_picker::is_sql(p)).cloned().collect();
+        if !sql.is_empty() {
+            self.open_sql_paths(&sql, window, cx);
+            return;
+        }
         let Some(p) = paths.paths().iter().find(|p| ImportFormat::is_importable(p)).cloned() else {
             if !paths.paths().is_empty() {
                 self.notice("Drop a CSV, TSV, JSON, NDJSON or Parquet file to import it", cx);

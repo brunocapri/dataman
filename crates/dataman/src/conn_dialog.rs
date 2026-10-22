@@ -161,6 +161,10 @@ pub struct ConnDialog {
     search: Entity<TextInput>,
     pick_hi: usize,
     options: Entity<TextInput>,
+    /// A file database's file.
+    file: Entity<TextInput>,
+    /// Picked with New…: the file is created when the connection is tested or saved.
+    create_file: bool,
 }
 
 impl EventEmitter<DialogEvent> for ConnDialog {}
@@ -296,6 +300,7 @@ impl ConnDialog {
         .detach();
         let opts: Vec<String> = profile.options.iter().map(|(k, v)| format!("{k}={v}")).collect();
         let options = field(cx, "authSource=admin&replicaSet=rs0", &opts.join("&"));
+        let file = field(cx, "~/data/app.sqlite", profile.path.as_deref().unwrap_or(""));
         let step = if profile.host == ConnectionProfile::new("").host && is_new && profile.name.is_empty() { Step::Engine } else { Step::Form };
         if step == Step::Engine {
             window.focus(&search.focus_handle(cx), cx);
@@ -343,7 +348,54 @@ impl ConnDialog {
             search,
             pick_hi: 0,
             options,
+            file,
+            create_file: false,
         }
+    }
+
+    fn is_file(&self) -> bool {
+        self.engine.is_file()
+    }
+
+    /// The file picked (or typed) as the dialog shows it: `~` for the home folder.
+    pub fn set_file(&mut self, path: &std::path::Path, create: bool, cx: &mut Context<Self>) {
+        let shown = dataman_core::config::tilde(&path.to_string_lossy());
+        self.file.update(cx, |t, cx| t.set_text(shown, cx));
+        self.create_file = create;
+        let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let name = self.name.read(cx).text().trim().to_string();
+        if name.is_empty() || self.auto_name.as_deref() == Some(name.as_str()) {
+            self.name.update(cx, |t, cx| t.set_text(stem.clone(), cx));
+            self.auto_name = Some(stem);
+        }
+        if !matches!(self.test, Test::Testing { .. }) {
+            self.test = Test::NotTested;
+        }
+        cx.notify();
+    }
+
+    fn browse_file(&mut self, cx: &mut Context<Self>) {
+        let rx = crate::sql_picker::pick_files(self.engine.file_extensions(), false, cx);
+        cx.spawn(async move |this, cx| {
+            let Ok(paths) = rx.await else { return };
+            let Some(p) = paths.into_iter().next() else { return };
+            let _ = this.update(cx, |d, cx| d.set_file(&p, false, cx));
+        })
+        .detach();
+    }
+
+    fn new_file(&mut self, cx: &mut Context<Self>) {
+        let exts = self.engine.file_extensions();
+        let name = match self.name.read(cx).text().trim() {
+            "" => format!("database.{}", exts[0]),
+            n => format!("{n}.{}", exts[0]),
+        };
+        let rx = crate::sql_picker::pick_new_file(exts, &name, cx);
+        cx.spawn(async move |this, cx| {
+            let Ok(Some(p)) = rx.await else { return };
+            let _ = this.update(cx, |d, cx| d.set_file(&p, true, cx));
+        })
+        .detach();
     }
 
     #[cfg(feature = "checks")]
@@ -484,6 +536,10 @@ impl ConnDialog {
         }
         self.engine = p.engine;
         self.step = Step::Form;
+        if p.engine.is_file() {
+            self.file.update(cx, |t, cx| t.set_text(p.path.clone().unwrap_or_default(), cx));
+            self.read_only = p.read_only;
+        }
         let opts: Vec<String> = p.options.iter().map(|(k, v)| format!("{k}={v}")).collect();
         self.options.update(cx, |t, cx| t.set_text(opts.join("&"), cx));
         self.port.update(cx, |t, cx| t.set_placeholder(p.engine.default_port().to_string(), cx));
@@ -590,6 +646,13 @@ impl ConnDialog {
 
     fn inputs(&self) -> Vec<&Entity<TextInput>> {
         let mut v = vec![&self.name];
+        if self.is_file() {
+            v.push(&self.file);
+            if dataman_core::MCP_ADVANCED && self.advanced.open {
+                v.push(&self.advanced.input);
+            }
+            return v;
+        }
         if self.entry == Entry::Url {
             v.push(&self.conn_str);
         } else {
@@ -632,6 +695,32 @@ impl ConnDialog {
     }
 
     fn collect(&self, cx: &App) -> Result<(ConnectionProfile, Option<String>, Option<String>), String> {
+        if self.is_file() {
+            let mut p = self.fields(cx);
+            p.color = Some(SWATCHES[self.color].to_string());
+            let path = p.file_path();
+            if p.path.as_deref().is_none_or(|s| s.trim().is_empty()) {
+                return Err("file is required".into());
+            }
+            if !path.is_file() {
+                if !self.create_file {
+                    return Err(format!("{} does not exist (New… creates a database)", dataman_core::config::tilde(&path.to_string_lossy())));
+                }
+                if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty())
+                    && !dir.is_dir()
+                {
+                    return Err(format!("the folder {} does not exist", dir.display()));
+                }
+                // An empty file is an empty SQLite database; DuckDB writes its header itself.
+                if self.engine == Engine::Sqlite {
+                    std::fs::File::create(&path).map_err(|e| format!("cannot create {}: {e}", path.display()))?;
+                }
+            }
+            if p.name.is_empty() {
+                p.name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "database".into());
+            }
+            return Ok((p, None, None));
+        }
         if self.entry == Entry::Url && dataman_core::connstr::parse_profile(self.conn_str.read(cx).text()).is_none() {
             return Err("not a connection string".into());
         }
@@ -666,6 +755,23 @@ impl ConnDialog {
     fn fields(&self, cx: &App) -> ConnectionProfile {
         let mut p = self.profile.clone();
         let text = |e: &Entity<TextInput>| e.read(cx).text().trim().to_string();
+        if self.is_file() {
+            let mut f = ConnectionProfile::new_file(self.engine, text(&self.file));
+            f.id = p.id;
+            f.name = text(&self.name);
+            f.color = p.color;
+            f.read_only_databases = p.read_only_databases;
+            f.mcp_rules = p.mcp_rules;
+            f.mcp_row_limit = p.mcp_row_limit;
+            f.options = p.options.into_iter().filter(|(k, _)| k.starts_with("duckdb.")).collect();
+            f.env = self.env;
+            f.read_only = self.read_only;
+            f.mcp = self.mcp;
+            f.mcp_allowed = self.advanced.allowed.clone();
+            f.mcp_yolo = self.advanced.yolo;
+            f.save_password = false;
+            return f;
+        }
         p.name = text(&self.name);
         p.host = text(&self.host);
         p.user = text(&self.user);
@@ -706,6 +812,7 @@ impl ConnDialog {
         p.mcp_yolo = self.advanced.yolo;
         // Saved here, the user has seen where it goes.
         p.agent_made = false;
+        p.path = None;
         p.ssh = self.ssh.on.then(|| SshSettings {
             host: text(&self.ssh.host),
             port: text(&self.ssh.port).parse().ok(),
@@ -728,6 +835,32 @@ impl ConnDialog {
         }
         self.engine = e;
         let text = |i: &Entity<TextInput>, cx: &Context<Self>| i.read(cx).text().trim().to_string();
+        // A file and a server have nothing in common: the other one's fields are cleared.
+        if old.is_file() != e.is_file() {
+            if e.is_file() {
+                for i in [&self.host, &self.port, &self.user, &self.database, &self.password] {
+                    i.update(cx, |t, cx| t.set_text("", cx));
+                }
+                self.ssh.on = false;
+                self.entry = Entry::Fields;
+            } else {
+                self.file.update(cx, |t, cx| t.set_text("", cx));
+                self.create_file = false;
+            }
+        } else if e.is_file() && !text(&self.file, cx).is_empty() {
+            // SQLite and DuckDB files are not each other's.
+            self.file.update(cx, |t, cx| t.set_text("", cx));
+            self.create_file = false;
+        }
+        if e.is_file() {
+            let ph = format!("~/data/app.{}", e.file_extensions()[0]);
+            self.file.update(cx, |t, cx| t.set_placeholder(ph, cx));
+            if !matches!(self.test, Test::Testing { .. }) {
+                self.test = Test::NotTested;
+            }
+            cx.notify();
+            return;
+        }
         let port = text(&self.port, cx);
         if port.is_empty() || port == old.default_port().to_string() {
             self.port.update(cx, |t, cx| t.set_text(e.default_port().to_string(), cx));
@@ -772,6 +905,7 @@ impl ConnDialog {
         let core = self.store.read(cx).core.clone();
         let since = Instant::now();
         let target = match &p.ssh {
+            _ if p.engine.is_file() => dataman_core::config::tilde(p.path.as_deref().unwrap_or("")),
             Some(s) => format!("{}:{} via {}", p.host, p.port, s.host),
             None => format!("{}:{}", p.host, p.port),
         };
@@ -1590,7 +1724,18 @@ impl Render for ConnDialog {
         }));
         let caption = |text: &'static str| div().text_size(px(10.)).text_color(t.tx3).child(text);
         let row = || div().flex().flex_row().gap(px(12.));
-        let server: Vec<gpui::Div> = if by_url {
+        let file_mode = self.is_file();
+        let by_url = by_url && !file_mode;
+        let file_button = |id: &'static str, label: &'static str| ui::button(&t, id, Btn::Secondary).h(px(30.)).px(px(10.)).child(label);
+        let server: Vec<gpui::Div> = if file_mode {
+            vec![
+                row()
+                    .items_end()
+                    .child(self.field(&t, "FILE", &self.file, None))
+                    .child(ui::probe("file-browse", file_button("file-browse", "Browse…").on_click(cx.listener(|d, _, _, cx| d.browse_file(cx)))))
+                    .child(ui::probe("file-new", file_button("file-new", "New…").on_click(cx.listener(|d, _, _, cx| d.new_file(cx))))),
+            ]
+        } else if by_url {
             vec![row().items_end().child(self.field(&t, "URL", &self.conn_str, None)).child(ui::probe("save-pw", keychain))]
         } else {
             let db_label = if self.engine == Engine::Redis { "DB" } else { "DATABASE" };
@@ -1616,7 +1761,7 @@ impl Render for ConnDialog {
                 &t,
                 Some(ui::chip(color, 10.).into_any_element()),
                 title,
-                (!self.password_needed).then(|| entry.into_any_element()),
+                (!self.password_needed && !file_mode).then(|| entry.into_any_element()),
                 ui::modal_close(&t, "dlg-close").on_click(cx.listener(|_, _, _, cx| cx.emit(DialogEvent::Close))),
             ))
             .child(
@@ -1647,7 +1792,7 @@ impl Render for ConnDialog {
                             .flex_row()
                             .items_end()
                             .gap(px(16.))
-                            .when(!by_url, |d| d.child(div().flex().flex_col().gap(px(6.)).child(caption(if self.engine.is_sql() { "SSL" } else { "TLS" })).child(ssl)))
+                            .when(!by_url && !file_mode, |d| d.child(div().flex().flex_col().gap(px(6.)).child(caption(if self.engine.is_sql() { "SSL" } else { "TLS" })).child(ssl)))
                             .child(
                                 div()
                                     .flex()
@@ -1668,7 +1813,7 @@ impl Render for ConnDialog {
                             .child(ui::probe("read-only", read_only)),
                     )
                     .when(dataman_core::MCP_ADVANCED, |d| d.child(self.mcp_advanced(&t, cx)))
-                    .child(self.ssh_section(&t, cx))
+                    .when(!file_mode, |d| d.child(self.ssh_section(&t, cx)))
                     .when(!by_url, |d| {
                         d.child(
                             div()

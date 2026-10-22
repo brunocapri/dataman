@@ -2,12 +2,12 @@
 Type=Application
 Name=Dataman
 GenericName=Database Client
-Comment=PostgreSQL, MySQL, SQL Server, MongoDB, Redis, Elasticsearch and OpenSearch
+Comment=PostgreSQL, MySQL, SQL Server, SQLite, DuckDB, MongoDB, Redis, Elasticsearch and OpenSearch
 Exec=dataman %F
 Icon=dev.dataman.Dataman
 Terminal=false
 Categories=Development;Database;
-Keywords=sql;database;postgres;postgresql;mysql;sqlserver;mongodb;redis;elasticsearch;
-MimeType=application/sql;text/x-sql;
+Keywords=sql;database;postgres;postgresql;mysql;sqlserver;sqlite;duckdb;mongodb;redis;elasticsearch;
+MimeType=application/sql;text/x-sql;application/vnd.sqlite3;application/x-sqlite3;application/x-duckdb;
 StartupWMClass=dev.dataman.Dataman
 StartupNotify=true

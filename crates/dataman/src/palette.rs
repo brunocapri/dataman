@@ -965,7 +965,7 @@ impl Workspace {
                 kind: ItemKind::Connection { id: p.id.clone() },
                 section: Section::Connections,
                 label: p.name.clone(),
-                sub: format!("{}@{}:{} · {sub}", p.user, p.host, p.port),
+                sub: format!("{} · {sub}", where_of(p)),
                 key: String::new(),
                 icon: PaletteIcon::Connection,
                 lar,
@@ -976,7 +976,7 @@ impl Workspace {
                     kind: ItemKind::Connection { id: p.id.clone() },
                     section: Section::Offline,
                     label: p.name.clone(),
-                    sub: format!("{}@{}:{}", p.user, p.host, p.port),
+                    sub: where_of(p),
                     key: String::new(),
                     icon: PaletteIcon::Connection,
                     lar: false,
@@ -1025,6 +1025,7 @@ fn commands(conn: Option<&std::sync::Arc<dataman_core::Connection>>, cx: &App) -
         c("Show row actions", "the explorer's context menu for the selected row", "⇧F10", Box::new(crate::tree::ShowRowActions), Workspace),
         c("Reload schema", "of the explorer's connection", "⌘R", Box::new(Refresh), Workspace),
         c("Open .sql file…", "in a new tab", "⌘O", Box::new(OpenSqlFile), Workspace),
+        c("Open database file…", "a SQLite or DuckDB file", "", Box::new(crate::app::OpenDatabaseFile), Workspace),
         c("Export result…", "CSV, TSV, JSON, NDJSON, SQL INSERT, Parquet", "⌘E", Box::new(ExportResult), Workspace),
         c("Import data…", "CSV, TSV, JSON, NDJSON, Parquet", "", Box::new(ImportData), Workspace),
         c("Edit cell", "inline, in the grid", "↩", Box::new(crate::grid::EditCell), Grid),
@@ -1122,4 +1123,9 @@ fn commands(conn: Option<&std::sync::Arc<dataman_core::Connection>>, cx: &App) -
         }
     }
     v
+}
+
+/// Where a connection points: the file of a file database, else `user@host:port`.
+fn where_of(p: &dataman_core::ConnectionProfile) -> String {
+    if p.engine.is_file() { p.summary() } else { format!("{}@{}:{}", p.user, p.host, p.port) }
 }

@@ -96,9 +96,62 @@ const CASES: [Case; 7] = [
     Case { engine: Engine::Redis, search: "valkey" },
 ];
 
+/// File databases: no server, so the form is a file (Browse…, New…) instead of host and user.
+const FILE_CASES: [(Engine, &str); 1] = [(Engine::Sqlite, "sqlite")];
+
+async fn file_engine(ws: &Entity<Workspace>, e: Engine, search: &str, r: &mut Report, cx: &mut AsyncWindowContext) {
+    let label = e.label();
+    key(cx, "cmd-n");
+    pause(cx, 150).await;
+    let Some(d) = dialog(ws, cx) else {
+        r.check(&format!("{label}: ⌘N opens the connection sheet"), false, "no sheet");
+        return;
+    };
+    typ(cx, search);
+    key(cx, "enter");
+    pause(cx, 100).await;
+    let (step, picked) = cx.update(|_, cx| (d.read(cx).step(), d.read(cx).current(cx).0.engine)).unwrap();
+    let shown = |p: &str, cx: &mut AsyncWindowContext| probed(&format!("field-{p}"), cx).is_some();
+    let shape = shown("FILE", cx) && !shown("HOST", cx) && !shown("USER", cx) && !shown("PASSWORD", cx) && probed("file-new", cx).is_some();
+    r.check(&format!("{label}: typing \"{search}\" picks it, and its form is a file"), step == Step::Form && picked == e && shape, format!("{step:?} {picked:?} {shape}"));
+    let dir = std::env::temp_dir().join(format!("dataman-conns-{}-{}", e.slug(), std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let missing = dir.join(format!("missing.{}", e.file_extensions()[0]));
+    fill("FILE", &missing.to_string_lossy(), cx);
+    let s = test(&d, cx).await;
+    r.check(&format!("{label}: a missing file is refused, not created"), s.contains("does not exist") && !missing.exists(), &s);
+    let new = dir.join(format!("fresh.{}", e.file_extensions()[0]));
+    crate::sql_picker::set_test_save_path(new.clone());
+    click_probe("file-new", cx);
+    pause(cx, 150).await;
+    let name = cx.update(|_, cx| d.read(cx).current(cx).0.name).unwrap_or_default();
+    let s = test(&d, cx).await;
+    r.check(&format!("{label}: New… names it after the file and Test creates it"), s == "ok" && new.is_file() && name == "fresh", format!("{s} {name}"));
+    let id = cx.update(|_, cx| d.read(cx).profile_id().to_string()).unwrap();
+    click_probe("dlg-save", cx);
+    let up = connected(ws, &id, 20, cx).await;
+    let p = saved(ws, &id, cx);
+    r.check(
+        &format!("{label}: Save & connect keeps the file, no host or user"),
+        up.is_ok() && p.as_ref().is_some_and(|p| p.engine == e && p.path.is_some() && p.host.is_empty() && p.user.is_empty()),
+        format!("{up:?} {:?}", p.map(|p| (p.path, p.host))),
+    );
+    let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.open_dialog(Some(id.clone()), window, cx)));
+    pause(cx, 100).await;
+    click_probe("dlg-delete", cx);
+    click_probe("dlg-delete", cx);
+    pause(cx, 100).await;
+    let gone = saved(ws, &id, cx).is_none();
+    r.check(&format!("{label}: Delete forgets the connection, the file stays"), gone && new.is_file(), format!("gone {gone}"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowContext) {
     for case in &CASES {
         engine(ws, case, r, cx).await;
+    }
+    for (e, search) in FILE_CASES {
+        file_engine(ws, e, search, r, cx).await;
     }
     urls(ws, r, cx).await;
     ssh(ws, r, cx).await;

@@ -25,15 +25,17 @@ pub enum WelcomeEvent {
     AgentSetup,
     Prefill(ConnectionProfile, Option<String>),
     OpenFile,
+    OpenDatabase,
     Shortcuts,
 }
 
-const ITEMS: [(&str, &str); 6] = [
+const ITEMS: [(&str, &str); 7] = [
     ("New connection", "⌘N"),
     ("Add with an agent", ""),
     ("Paste a connection URL", "⌘V"),
     ("Connect to localhost:5432", "⌘L"),
     ("Open a .sql file", "⌘O"),
+    ("Open a database file", ""),
     ("Keyboard shortcuts", "⇧⌘/"),
 ];
 
@@ -72,6 +74,7 @@ impl Welcome {
                 cx.emit(WelcomeEvent::Prefill(p, None));
             }
             4 => cx.emit(WelcomeEvent::OpenFile),
+            5 => cx.emit(WelcomeEvent::OpenDatabase),
             _ => cx.emit(WelcomeEvent::Shortcuts),
         }
         cx.notify();

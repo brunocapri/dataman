@@ -1854,6 +1854,11 @@ impl SchemaTree {
                     copy(p.url(), cx);
                 }
             }
+            (Act::RevealFile, Target::Conn { id, .. }) => {
+                if let Some(p) = self.store.read(cx).profile(id).filter(|p| p.engine.is_file()) {
+                    cx.reveal_path(&p.file_path());
+                }
+            }
             (Act::Pin | Act::Unpin, Target::Rel { conn, db, schema, name, kind, .. }) => {
                 let pin = act == Act::Pin;
                 self.set_pinned(Pin::new(conn, db, schema, name, *kind), pin, ix, cx);

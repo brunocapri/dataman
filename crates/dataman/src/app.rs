@@ -67,6 +67,7 @@ actions!(
         ReviewChanges,
         DiscardChanges,
         OpenSqlFile,
+        OpenDatabaseFile,
         ToggleTheme,
         ThemeDark,
         ThemeLight,
@@ -1048,6 +1049,9 @@ impl Workspace {
     pub(crate) fn open_urls(&mut self, urls: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {
         for url in urls {
             let Some(path) = file_url_path(&url) else { continue };
+            if self.open_database_path(&path, window, cx) {
+                continue;
+            }
             match dataman_core::sql::read_script(&path) {
                 Ok(text) => {
                     let tab = self.new_tab(window, cx);
@@ -1454,6 +1458,7 @@ impl Workspace {
             WelcomeEvent::AgentSetup => self.open_settings_at("mcp", window, cx),
             WelcomeEvent::Prefill(p, pw) => self.open_dialog_with(Some(p.clone()), true, pw.clone(), window, cx),
             WelcomeEvent::OpenFile => self.open_sql_file(window, cx),
+            WelcomeEvent::OpenDatabase => self.open_database_file(window, cx),
             WelcomeEvent::Shortcuts => self.set_shortcuts(true, window, cx),
         }
     }
@@ -1781,6 +1786,45 @@ impl Workspace {
         if self.last_side.as_ref().and_then(|s| s.bound()).is_some_and(|b| !fits(b)) {
             self.last_side = None;
         }
+    }
+
+    /// A SQLite or DuckDB file, picked in the open panel.
+    pub(crate) fn open_database_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        const EXTS: &[&str] = &["sqlite", "sqlite3", "db", "db3", "duckdb", "ddb"];
+        let paths = crate::sql_picker::pick_files(EXTS, false, cx);
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(paths) = paths.await else { return };
+            let Some(p) = paths.into_iter().next() else { return };
+            let _ = this.update_in(cx, |w, window, cx| {
+                if !w.open_database_path(&p, window, cx) {
+                    w.notice(format!("{} is not a SQLite or DuckDB database", p.display()), cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// A database file from Finder, the command line, a drop or the open panel: its saved
+    /// connection is connected and shown, or a new one is offered (the dialog, filled in). False
+    /// when the file is no database.
+    pub(crate) fn open_database_path(&mut self, path: &std::path::Path, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(engine) = dataman_core::import::detect_database(path) else { return false };
+        let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        let saved = self.store.read(cx).profiles.iter().find(|p| p.engine.is_file() && std::fs::canonicalize(p.file_path()).is_ok_and(|c| c == canonical)).map(|p| p.id.clone());
+        match saved {
+            Some(id) => {
+                self.current_conn = Some(id.clone());
+                if !self.store.read(cx).states.contains_key(&id) {
+                    self.store.update(cx, |s, cx| s.connect(&id, None, cx));
+                }
+                cx.notify();
+            }
+            None => {
+                let shown = dataman_core::config::tilde(&canonical.to_string_lossy());
+                self.open_dialog_with(Some(ConnectionProfile::new_file(engine, shown)), true, None, window, cx);
+            }
+        }
+        true
     }
 
     pub(crate) fn open_sql_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2790,6 +2834,7 @@ impl Render for Workspace {
                 });
             }))
             .on_action(cx.listener(|w, _: &OpenSqlFile, window, cx| w.open_sql_file(window, cx)))
+            .on_action(cx.listener(|w, _: &OpenDatabaseFile, window, cx| w.open_database_file(window, cx)))
             .on_action(cx.listener(|w, _: &crate::tree::ShowRowActions, window, cx| {
                 let was_open = w.explorer_open;
                 w.focus_region(Region::Explorer, window, cx);

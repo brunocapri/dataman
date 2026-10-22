@@ -66,7 +66,8 @@ const fn st(name: &'static str, needs: &'static [Db], secs: u64) -> Stage {
 
 const SQL3: &[Db] = &[Pg, MySql, MsSql];
 
-/// Run in this order; every stage connects PostgreSQL first.
+/// Run in this order. Each stage starts the servers in its `needs` (none for the file
+/// databases) and connects what it drives itself.
 const STAGES: &[Stage] = &[
     st("newuser-check", SQL3, 300),
     st("connections-check", &[Pg, MySql, MsSql, Mongo, Es, OpenSearch, Redis, Ssh], 400),
@@ -111,6 +112,7 @@ const STAGES: &[Stage] = &[
     st("mcp-check", &[Pg], 300),
     st("mcp-tools-check", &[Pg, MySql, MsSql, Mongo, Es, OpenSearch, Redis], 400),
     st("agents-check", &[Pg], 200),
+    st("sqlite-check", &[], 120),
     st("update-check", &[Pg], 300),
 ];
 

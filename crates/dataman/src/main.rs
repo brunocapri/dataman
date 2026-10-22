@@ -71,6 +71,8 @@ mod input_check;
 #[cfg(target_os = "linux")]
 mod instance;
 #[cfg(feature = "checks")]
+mod lite_check;
+#[cfg(feature = "checks")]
 mod intel_demo;
 mod keymap;
 mod keys;
@@ -209,6 +211,7 @@ fn menus(cx: &App) -> Vec<Menu> {
             .chain(when(caps.import, vec![MenuItem::action("Import Data…", ImportData)]))
             .chain([
                 MenuItem::action("Open .sql File…", OpenSqlFile),
+                MenuItem::action("Open Database File…", OpenDatabaseFile),
                 MenuItem::action("Save as Favorite", SaveFavorite),
                 MenuItem::action("Save As…", SaveAs),
                 MenuItem::action("Import Favorites…", ImportFavorites),
@@ -382,6 +385,27 @@ fn main() {
         instance::listen(instance_socket, move |urls| {
             let _ = tx.send(urls);
         });
+    }
+    // `dataman shop.sqlite` (or a .sql file) from a terminal: as if opened from Finder.
+    #[cfg(target_os = "macos")]
+    if bench.is_none() {
+        let urls: Vec<String> = args
+            .iter()
+            .skip(1)
+            .filter(|a| !a.starts_with('-'))
+            .filter_map(|a| std::fs::canonicalize(a).ok())
+            .filter(|p| p.is_file())
+            .map(|p| {
+                let mut url = String::from("file://");
+                for b in p.to_string_lossy().bytes() {
+                    if b.is_ascii_alphanumeric() || b"/-._~".contains(&b) { url.push(b as char) } else { url.push_str(&format!("%{b:02X}")) }
+                }
+                url
+            })
+            .collect();
+        if !urls.is_empty() {
+            let _ = open_tx.send(urls);
+        }
     }
     app.on_open_urls(move |urls| {
         let _ = open_tx.send(urls);

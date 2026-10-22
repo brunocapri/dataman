@@ -63,6 +63,7 @@ pub enum Act {
     EditConnection,
     DuplicateConnection,
     CopyUrl,
+    RevealFile,
     DeleteConnection,
     CopyName,
     CopyQualified,
@@ -158,6 +159,7 @@ impl Entry {
 }
 
 pub const NOT_CONNECTED: &str = "connect first";
+pub const REVEAL: &str = if cfg!(target_os = "macos") { "Reveal in Finder" } else { "Show in Files" };
 pub const READ_ONLY: &str = "read-only";
 
 pub fn entries(t: &Target) -> Vec<Entry> {
@@ -188,6 +190,7 @@ pub fn entries(t: &Target) -> Vec<Entry> {
                 I(it(Act::EditConnection, "Edit connection…", Icon::Edit).key("⌘I")),
                 I(it(Act::DuplicateConnection, "Duplicate connection…", Icon::Copy)),
                 I(it(Act::CopyUrl, "Copy connection string", Icon::Copy)),
+                I(it(Act::RevealFile, REVEAL, Icon::Database)),
                 Sep,
                 I(it(Act::DeleteConnection, "Delete connection…", Icon::Trash).danger()),
             ]);
@@ -340,6 +343,16 @@ pub fn entries_for(t: &Target, caps: &Caps) -> Vec<Entry> {
             }
         }
     }
+    // SQLite has no TRUNCATE: the template is a DELETE without WHERE.
+    if !caps.truncate {
+        for e in &mut es {
+            if let Entry::Item(i) = e
+                && i.act == Act::Truncate
+            {
+                i.label = "Delete all rows…";
+            }
+        }
+    }
     let keep = |a: Act| match a {
         Act::Activity => caps.activity,
         Act::ImportData => caps.import,
@@ -349,6 +362,8 @@ pub fn entries_for(t: &Target, caps: &Caps) -> Vec<Entry> {
         Act::ExtensionInfo | Act::UpdateExtension => caps.extensions,
         Act::AlterRole => caps.roles,
         Act::CreateSchema | Act::DropSchema => caps.schemas,
+        Act::DropDatabase => caps.drop_database,
+        Act::RevealFile => caps.file,
         _ => true,
     };
     es.retain_mut(|e| match e {
