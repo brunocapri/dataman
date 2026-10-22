@@ -133,11 +133,16 @@ fn tsql_time(s: &str) -> String {
     out
 }
 
+/// SQL Server and SQLite write booleans as 1 and 0.
+fn bool_bits(d: Dialect) -> bool {
+    matches!(d, Dialect::TSql | Dialect::Sqlite)
+}
+
 pub fn literal_in(d: Dialect, kind: Kind, cell: Cell<'_>) -> String {
     let ms = d == Dialect::TSql;
     match cell {
         Cell::Null => "NULL".into(),
-        Cell::Bool(b) if ms => if b { "1" } else { "0" }.into(),
+        Cell::Bool(b) if bool_bits(d) => if b { "1" } else { "0" }.into(),
         Cell::Bool(b) => if b { "TRUE" } else { "FALSE" }.into(),
         Cell::Int(v) => match kind {
             Kind::Timestamp if ms && !value::is_odd_date(v) => d.quote_literal(&tsql_time(&format_cell(kind, cell).map(|s| s.into_owned()).unwrap_or_default())),
@@ -185,23 +190,28 @@ pub fn push_value_literal_in(d: Dialect, out: &mut String, kind: Kind, v: Option
     let ms = d == Dialect::TSql;
     match kind {
         Kind::Bool if matches!(t.len(), 1..=5) => match t.to_ascii_lowercase().as_str() {
-            "t" | "true" | "yes" | "y" | "on" | "1" => out.push_str(if ms { "1" } else { "TRUE" }),
-            "f" | "false" | "no" | "n" | "off" | "0" => out.push_str(if ms { "0" } else { "FALSE" }),
+            "t" | "true" | "yes" | "y" | "on" | "1" => out.push_str(if bool_bits(d) { "1" } else { "TRUE" }),
+            "f" | "false" | "no" | "n" | "off" | "0" => out.push_str(if bool_bits(d) { "0" } else { "FALSE" }),
             _ => push_quoted(d, out, s),
         },
         Kind::Int if is_integer(t) => out.push_str(t),
         Kind::Float | Kind::Float4 | Kind::Numeric if is_decimal(t) => out.push_str(t),
-        Kind::Bytes if d == Dialect::MySql && hex_bytes(t).is_some() => {
-            out.push_str("X'");
-            out.push_str(hex_bytes(t).unwrap_or_default());
-            out.push('\'');
-        }
+        Kind::Bytes if hex_bytes(t).and_then(|h| bytes_literal(d, h)).is_some() => out.push_str(&hex_bytes(t).and_then(|h| bytes_literal(d, h)).unwrap_or_default()),
         Kind::Bytes if ms && hex_bytes(t).is_some() => {
             out.push_str("0x");
             out.push_str(hex_bytes(t).unwrap_or_default());
         }
         Kind::Timestamp | Kind::TimestampTz if ms => push_quoted(d, out, &tsql_time(t)),
         _ => push_quoted(d, out, s),
+    }
+}
+
+/// `\\x…` hex as the dialect's blob literal (PostgreSQL's reads the hex text itself).
+fn bytes_literal(d: Dialect, hex: &str) -> Option<String> {
+    match d {
+        Dialect::MySql | Dialect::Sqlite => Some(format!("X'{hex}'")),
+        Dialect::DuckDb => Some(format!("from_hex('{hex}')")),
+        Dialect::TSql | Dialect::Postgres => None,
     }
 }
 
@@ -228,7 +238,7 @@ fn push_quoted(d: Dialect, out: &mut String, s: &str) {
 fn text_literal(d: Dialect, kind: Kind, s: &str) -> String {
     match kind {
         Kind::Numeric | Kind::Int | Kind::Float | Kind::Float4 if is_decimal(s) => s.to_string(),
-        Kind::Bytes if d == Dialect::MySql && hex_bytes(s).is_some() => format!("X'{}'", hex_bytes(s).unwrap_or_default()),
+        Kind::Bytes if hex_bytes(s).and_then(|h| bytes_literal(d, h)).is_some() => hex_bytes(s).and_then(|h| bytes_literal(d, h)).unwrap_or_default(),
         Kind::Bytes if d == Dialect::TSql && hex_bytes(s).is_some() => format!("0x{}", hex_bytes(s).unwrap_or_default()),
         _ => d.quote_literal(s),
     }
@@ -289,6 +299,17 @@ pub fn placeholder(type_name: &str) -> &'static str {
 }
 
 pub fn placeholder_in(d: Dialect, type_name: &str) -> &'static str {
+    if d == Dialect::Sqlite {
+        // SQLite has no now(), and its booleans are integers.
+        let t = type_name.trim().to_ascii_lowercase();
+        return match t.split('(').next().unwrap_or("").trim() {
+            "date" => "CURRENT_DATE",
+            "time" => "CURRENT_TIME",
+            "datetime" | "timestamp" => "CURRENT_TIMESTAMP",
+            "boolean" | "bool" => "0",
+            _ => placeholder(type_name),
+        };
+    }
     if d != Dialect::TSql {
         return placeholder(type_name);
     }
@@ -358,9 +379,11 @@ pub fn insert_template_in(d: Dialect, schema: &str, name: &str, cols: &[Column])
     let qualified = |s: Option<&str>, n: &str| d.qualified(s, n);
     // SQL Server fills identity, computed and rowversion columns itself (naming them is an
     // error, even with DEFAULT).
+    // SQLite has no `DEFAULT` in VALUES: a column with a default is left out instead.
     let generated = |c: &&Column| {
-        d == Dialect::TSql
-            && (c.default.as_deref().is_some_and(|x| x.starts_with("IDENTITY") || x.starts_with("AS ")) || matches!(c.type_name.as_str(), "timestamp" | "rowversion"))
+        (d == Dialect::TSql
+            && (c.default.as_deref().is_some_and(|x| x.starts_with("IDENTITY") || x.starts_with("AS ")) || matches!(c.type_name.as_str(), "timestamp" | "rowversion")))
+            || (d == Dialect::Sqlite && c.default.is_some())
     };
     let cols: Vec<&Column> = cols.iter().filter(|c| !generated(c)).collect();
     if cols.is_empty() {
@@ -467,6 +490,23 @@ pub fn create_table_template_mysql(schema: &str) -> String {
     )
 }
 
+pub fn create_table_template_sqlite() -> String {
+    format!(
+        "-- A new table. Edit the columns, then run it with {RUN_KEY}.\nCREATE TABLE new_table (\n    id         INTEGER PRIMARY KEY,\n    name       TEXT NOT NULL,\n    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP\n);"
+    )
+}
+
+pub fn create_table_template_duckdb(schema: &str) -> String {
+    let d = Dialect::DuckDb;
+    format!(
+        "-- A new table in {}. Edit the columns, then run it with {RUN_KEY}.\nCREATE SEQUENCE IF NOT EXISTS {};\nCREATE TABLE {} (\n    id         BIGINT PRIMARY KEY DEFAULT nextval('{}'),\n    name       VARCHAR NOT NULL,\n    created_at TIMESTAMP NOT NULL DEFAULT current_timestamp\n);",
+        d.quote_ident(schema),
+        d.qualified(Some(schema), "new_table_id"),
+        d.qualified(Some(schema), "new_table"),
+        d.qualified(Some(schema), "new_table_id").replace('\'', "''")
+    )
+}
+
 pub fn create_table_template_tsql(schema: &str) -> String {
     let d = Dialect::TSql;
     format!(
@@ -480,22 +520,28 @@ fn danger(what: &str, statement: String) -> String {
     format!("-- ⚠ {what}\n-- Nothing has run. Review it, then run it yourself with {RUN_KEY}.\n{statement}")
 }
 
-pub fn drop_database_template_in(d: Dialect, db: &str) -> String {
+/// None for file databases: the file is the database, and no statement deletes it.
+pub fn drop_database_template_in(d: Dialect, db: &str) -> Option<String> {
     let q = d.quote_ident(db);
-    match d {
+    Some(match d {
         Dialect::Postgres => drop_database_template(db),
         Dialect::MySql => danger(&format!("DROP DATABASE deletes {q} and everything in it, for good."), format!("DROP DATABASE {q};")),
+        Dialect::Sqlite | Dialect::DuckDb => return None,
         Dialect::TSql => danger(
             &format!(
                 "DROP DATABASE deletes {q} and everything in it, for good.\n-- It fails while sessions use {q}: ALTER DATABASE {q} SET SINGLE_USER WITH ROLLBACK IMMEDIATE ends them.\n-- Run it from another database (USE master)."
             ),
             format!("DROP DATABASE {q};"),
         ),
-    }
+    })
 }
 
 pub fn truncate_template_in(d: Dialect, schema: &str, name: &str) -> String {
     let q = d.qualified(Some(schema), name);
+    if d == Dialect::Sqlite {
+        // SQLite has no TRUNCATE: a DELETE without WHERE empties the table just as fast.
+        return danger(&format!("DELETE without WHERE deletes every row of {q}."), format!("DELETE FROM {q};"));
+    }
     danger(&format!("TRUNCATE deletes every row of {q} at once: no WHERE, no per-row triggers."), format!("TRUNCATE TABLE {q};"))
 }
 
@@ -742,8 +788,28 @@ mod tests {
         assert_eq!(placeholder("bigint unsigned"), "0");
         assert_eq!(placeholder("enum('a','b')"), "''");
         assert!(create_table_template_mysql("shop").contains("AUTO_INCREMENT"));
-        assert!(drop_database_template_in(my, "shop").ends_with("DROP DATABASE shop;"));
+        assert!(drop_database_template_in(my, "shop").unwrap().ends_with("DROP DATABASE shop;"));
         assert!(truncate_template_in(my, "s", "t").ends_with("TRUNCATE TABLE s.t;"));
+    }
+
+    #[test]
+    fn sqlite_and_duckdb_literals_and_templates() {
+        let (lite, duck) = (Dialect::Sqlite, Dialect::DuckDb);
+        assert_eq!(literal_in(lite, Kind::Bool, Cell::Bool(true)), "1");
+        assert_eq!(literal_in(duck, Kind::Bool, Cell::Bool(true)), "TRUE");
+        assert_eq!(value_literal_in(lite, Kind::Bytes, &CellValue::text("\\x00ff")), "X'00ff'");
+        assert_eq!(value_literal_in(duck, Kind::Bytes, &CellValue::text("\\x00ff")), "from_hex('00ff')");
+        assert_eq!(value_literal_in(lite, Kind::Bool, &CellValue::text("false")), "0");
+        assert_eq!(value_literal_in(lite, Kind::Text, &CellValue::text("it's \\")), "'it''s \\'");
+        assert!(drop_database_template_in(lite, "main").is_none() && drop_database_template_in(duck, "w").is_none());
+        assert!(truncate_template_in(lite, "main", "t").ends_with("DELETE FROM main.t;"));
+        assert!(truncate_template_in(duck, "main", "t").ends_with("TRUNCATE TABLE main.t;"));
+        let cols = vec![col("id", "INTEGER", true, Some(false), None), col("at", "TEXT", false, None, Some("CURRENT_TIMESTAMP")), col("ok", "BOOLEAN", false, None, None)];
+        let ins = insert_template_in(lite, "main", "t", &cols);
+        assert!(!ins.contains("DEFAULT") && ins.starts_with("INSERT INTO main.t (id, ok)"), "{ins}");
+        assert!(create_table_template_sqlite().contains("INTEGER PRIMARY KEY"));
+        assert!(create_table_template_duckdb("main").contains("nextval('main.new_table_id')"));
+        assert_eq!(placeholder_in(lite, "DATETIME"), "CURRENT_TIMESTAMP");
     }
 
     #[test]
@@ -777,7 +843,7 @@ mod tests {
         assert!(upd.contains("SET name = N''") && !upd.contains("row_version") && !upd.contains("sub =") && upd.ends_with("WHERE id = 0;"), "{upd}");
         assert!(delete_template_in(ms, "dbo", "t", &[col("x", "int", false, None, None)]).contains("WHERE 1 = 0;"));
         assert!(create_table_template_tsql("dbo").contains("IDENTITY(1, 1) PRIMARY KEY"));
-        assert!(drop_database_template_in(ms, "shop").contains("SINGLE_USER"));
+        assert!(drop_database_template_in(ms, "shop").unwrap().contains("SINGLE_USER"));
         assert!(drop_table_template_in(ms, "dbo", "t").ends_with("DROP TABLE dbo.t;"));
         assert_eq!(trigger_toggle_template_in(ms, "dbo", "orders", "trg x", true), format!("-- [trg x] fires again on dbo.orders. Run it with {RUN_KEY}.\nALTER TABLE dbo.orders ENABLE TRIGGER [trg x];"));
         let p = crate::schema::Function {

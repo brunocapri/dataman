@@ -4,7 +4,7 @@
 
 use dataman_core::sql::{Dialect, TokenKind, tokenize_in};
 
-pub const DIALECTS: [Dialect; 3] = [Dialect::Postgres, Dialect::MySql, Dialect::TSql];
+pub const DIALECTS: [Dialect; 5] = [Dialect::Postgres, Dialect::MySql, Dialect::TSql, Dialect::Sqlite, Dialect::DuckDb];
 
 /// Texts with no statement at all.
 pub const EMPTY: &[&str] = &["", "   ", "\n\t", ";", ";;", " ; ; ", "-- only a comment", "/* only */", "/* a */ ; -- b"];
@@ -219,6 +219,105 @@ pub const TSQL: &[&str] = &[
 ];
 
 /// Multi-statement texts the splitters must agree on.
+pub const SQLITE: &[&str] = &[
+    "SELECT 1",
+    "SELECT * FROM [weird;name] WHERE `a;b` = \"c;d\"",
+    "SELECT 'it''s; DELETE FROM t'",
+    "SELECT x'00ff'",
+    "SELECT * FROM t WHERE a = ? AND b = ?2 AND c = :c AND d = @d AND e = $e",
+    "SELECT 1 /* a /* b */ -- ; DELETE FROM t\n",
+    "SELECT * FROM t LIMIT 10 OFFSET 5",
+    "PRAGMA table_info(t)",
+    "PRAGMA main.table_info('t')",
+    "PRAGMA user_version",
+    "PRAGMA user_version = 3",
+    "PRAGMA writable_schema = ON",
+    "PRAGMA foreign_keys(0)",
+    "PRAGMA optimize",
+    "SELECT load_extension('evil')",
+    "SELECT readfile('/etc/passwd')",
+    "SELECT glob('a*', name) FROM t",
+    "ATTACH DATABASE '/tmp/x.db' AS x",
+    "DETACH x",
+    "VACUUM",
+    "VACUUM INTO '/tmp/copy.db'",
+    "REINDEX",
+    "ANALYZE",
+    "EXPLAIN QUERY PLAN SELECT * FROM t",
+    "INSERT INTO t (a) VALUES (1)",
+    "INSERT OR REPLACE INTO t (a) VALUES (1)",
+    "REPLACE INTO t (a) VALUES (1)",
+    "INSERT INTO t (a) VALUES (1) ON CONFLICT (a) DO UPDATE SET b = 2",
+    "UPDATE t SET a = 1 WHERE rowid = 2",
+    "UPDATE t SET a = 1",
+    "DELETE FROM t WHERE id = 3",
+    "DELETE FROM t",
+    "CREATE TABLE x (a INTEGER PRIMARY KEY, b TEXT) STRICT",
+    "CREATE TRIGGER tr AFTER INSERT ON t BEGIN UPDATE t SET b = 1 WHERE rowid = NEW.rowid; DELETE FROM u; END",
+    "DROP TABLE t",
+    "BEGIN IMMEDIATE",
+    "BEGIN EXCLUSIVE TRANSACTION",
+    "END TRANSACTION",
+    "COMMIT",
+    "ROLLBACK TO SAVEPOINT s",
+    "SAVEPOINT s",
+    "RELEASE s",
+    "WITH d AS (SELECT 1) SELECT * FROM d",
+];
+
+pub const DUCKDB: &[&str] = &[
+    "SELECT 1",
+    "SELECT [1, 2, 3][2], {'a': 1}.a, x::INT FROM t",
+    "SELECT 'it''s; DELETE FROM t'",
+    "SELECT $$a; DELETE FROM t$$",
+    "SELECT * FROM t WHERE a = ? AND b = ?",
+    "SELECT * FROM t WHERE a = $1",
+    "FROM t",
+    "FROM t SELECT a WHERE b > 1",
+    "DESCRIBE t",
+    "SUMMARIZE t",
+    "SUMMARIZE SELECT * FROM t",
+    "SHOW TABLES",
+    "PIVOT t ON a USING sum(b)",
+    "SELECT * FROM t QUALIFY row_number() OVER () = 1",
+    "SELECT * FROM read_csv('/etc/passwd')",
+    "SELECT * FROM read_parquet('s3://b/x.parquet')",
+    "SELECT * FROM 'data.csv'",
+    "SELECT * FROM \"data.parquet\"",
+    "SELECT * FROM t, '~/.ssh/id_ed25519'",
+    "SELECT * FROM query('DELETE FROM t')",
+    "SELECT * FROM glob('*')",
+    "COPY t TO '/tmp/out.csv'",
+    "COPY t FROM '/tmp/in.csv'",
+    "EXPORT DATABASE '/tmp/dump'",
+    "ATTACH '/tmp/other.duckdb' AS o",
+    "DETACH o",
+    "INSTALL httpfs",
+    "LOAD httpfs",
+    "SET enable_external_access = true",
+    "RESET threads",
+    "PRAGMA table_info('t')",
+    "PRAGMA enable_profiling",
+    "CHECKPOINT",
+    "CREATE MACRO m(a) AS a + 1",
+    "CREATE SECRET s (TYPE s3, KEY_ID 'x')",
+    "INSERT INTO t VALUES (1)",
+    "INSERT OR REPLACE INTO t VALUES (1)",
+    "UPDATE t SET a = 1 WHERE id = 2",
+    "UPDATE t SET a = 1",
+    "DELETE FROM t WHERE id = 3",
+    "DELETE FROM t",
+    "TRUNCATE t",
+    "CREATE TABLE x (a INT)",
+    "DROP TABLE t",
+    "BEGIN TRANSACTION",
+    "COMMIT",
+    "ROLLBACK",
+    "EXPLAIN SELECT 1",
+    "EXPLAIN ANALYZE DELETE FROM t",
+    "WITH d AS (SELECT 1) SELECT * FROM d",
+];
+
 pub const SCRIPTS: &[(Dialect, &str)] = &[
     (Dialect::Postgres, "SELECT 1; DELETE FROM t"),
     (Dialect::Postgres, "SELECT 1;\nSELECT 2;\n"),
@@ -236,6 +335,11 @@ pub const SCRIPTS: &[(Dialect, &str)] = &[
     (Dialect::TSql, "SELECT 1 SELECT 2; SELECT 3"),
     (Dialect::TSql, "CREATE PROCEDURE p AS BEGIN SELECT 1; DELETE FROM t; END\nGO\nSELECT 1"),
     (Dialect::TSql, "-- x\nGO\n"),
+    (Dialect::Sqlite, "SELECT 1; DELETE FROM t"),
+    (Dialect::Sqlite, "CREATE TRIGGER tr AFTER INSERT ON t BEGIN DELETE FROM u; END; SELECT 2"),
+    (Dialect::Sqlite, "SELECT [a;b] FROM t; PRAGMA user_version = 1"),
+    (Dialect::DuckDb, "SELECT 1; DELETE FROM t"),
+    (Dialect::DuckDb, "SELECT $x$;$x$; SELECT [1, 2]; ATTACH 'x.db'"),
 ];
 
 pub fn corpus(d: Dialect) -> &'static [&'static str] {
@@ -243,6 +347,8 @@ pub fn corpus(d: Dialect) -> &'static [&'static str] {
         Dialect::Postgres => POSTGRES,
         Dialect::MySql => MYSQL,
         Dialect::TSql => TSQL,
+        Dialect::Sqlite => SQLITE,
+        Dialect::DuckDb => DUCKDB,
     }
 }
 
@@ -318,6 +424,8 @@ pub fn variations(src: &str, d: Dialect) -> Vec<String> {
     ];
     match d {
         Dialect::MySql => out.push(replace(src, &sp, " # ;\n")),
+        // SQLite's comments do not nest.
+        Dialect::Sqlite => {}
         _ => out.push(replace(src, &sp, "/* a /* ; */ b */")),
     }
     out.retain(|v| v != src);

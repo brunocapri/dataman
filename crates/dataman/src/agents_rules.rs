@@ -114,7 +114,7 @@ fn activity_of(e: Engine) -> &'static str {
         Engine::SqlServer => "sys.dm_exec_sessions, sys.dm_tran_locks",
         Engine::MongoDb => "currentOp, serverStatus, profiler",
         Engine::Elasticsearch | Engine::OpenSearch => "_tasks, _nodes, _cat",
-        Engine::Redis => "",
+        Engine::Redis | Engine::Sqlite | Engine::DuckDb => "",
     }
 }
 
@@ -126,6 +126,8 @@ fn mays(p: &ConnectionProfile) -> Vec<May> {
         Engine::MongoDb => ("createIndex, drop, renameCollection, $out, $merge", "scripts, $where, $function, $accumulator, mapReduce"),
         Engine::Elasticsearch | Engine::OpenSearch => ("index creation and deletion, mappings, settings", "scripts, painless, runtime fields"),
         Engine::SqlServer => ("CREATE, ALTER, DROP, TRUNCATE, GRANT", "EXEC procedures, functions with side effects"),
+        Engine::Sqlite => ("CREATE, ALTER, DROP, VACUUM, PRAGMA settings", "functions with side effects"),
+        Engine::DuckDb => ("CREATE, ALTER, DROP, TRUNCATE, SET, macros", "CALL, functions with side effects"),
         _ => ("CREATE, ALTER, DROP, TRUNCATE, GRANT", "DO blocks, CALL, functions with side effects"),
     };
     let forced = r.activity_forced_off().then(forced_tip);

@@ -11,13 +11,13 @@ use crate::theme::{Pt, px};
 use dataman_core::config::Engine;
 use dataman_core::{ConnectionProfile, Environment, HostKeyPrompt, McpAccess, ServerInfo, SshAuth, SshError, SshSettings, SslMode};
 
-const ENGINES: [Engine; 7] = Engine::ALL;
+const ENGINES: [Engine; 9] = Engine::ALL;
 const SAVED_IN: &str = if cfg!(target_os = "macos") { "saved in Keychain" } else { "saved in keyring" };
 const SAVE_IN: &str = if cfg!(target_os = "macos") { "Save in Keychain" } else { "Save in keyring" };
 
 fn family_label(e: Engine) -> &'static str {
     match e {
-        Engine::Postgres | Engine::MySql | Engine::SqlServer => "Relational",
+        Engine::Postgres | Engine::MySql | Engine::SqlServer | Engine::Sqlite | Engine::DuckDb => "Relational",
         Engine::MongoDb => "Document",
         Engine::Elasticsearch | Engine::OpenSearch => "Search",
         Engine::Redis => "Key-value",
@@ -40,6 +40,8 @@ pub fn engines_matching(q: &str) -> Vec<Engine> {
                 Engine::Elasticsearch => "elasticsearch elastic es",
                 Engine::OpenSearch => "opensearch aws os",
                 Engine::Redis => "redis valkey cache",
+                Engine::Sqlite => "sqlite sqlite3 db file local embedded",
+                Engine::DuckDb => "duckdb duck analytics olap parquet file local",
             };
             let kind = if e.is_sql() { "sql relational" } else { "nosql" };
             format!("{words} {kind} {}", family_label(*e).to_lowercase()).split_whitespace().any(|w| w.starts_with(&q)) || (q.len() >= 3 && e.label().to_lowercase().contains(&q))

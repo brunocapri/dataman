@@ -235,6 +235,7 @@ async fn urls(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowContex
             Engine::Elasticsearch => format!("http://{}:{pw}@{}:{}", p.user, p.host, p.port),
             Engine::OpenSearch => format!("http://{}:{}", p.host, p.port),
             Engine::Redis => format!("redis://:{pw}@{}:{}/{}", p.host, p.port, p.database),
+            Engine::Sqlite | Engine::DuckDb => p.url(),
         };
         key(cx, "cmd-n");
         pause(cx, 150).await;

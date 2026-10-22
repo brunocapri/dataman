@@ -98,6 +98,8 @@ fn kind_label(k: RelKind) -> &'static str {
 fn language(e: dataman_core::Engine) -> &'static str {
     match e {
         dataman_core::Engine::Postgres | dataman_core::Engine::MySql | dataman_core::Engine::SqlServer => "sql",
+        dataman_core::Engine::Sqlite => "sql (SQLite)",
+        dataman_core::Engine::DuckDb => "sql (DuckDB)",
         dataman_core::Engine::MongoDb => "mongodb shell, statements or javascript (nosql_query / nosql_execute)",
         dataman_core::Engine::Elasticsearch | dataman_core::Engine::OpenSearch => "query dsl console (nosql_query / nosql_execute)",
         dataman_core::Engine::Redis => "redis commands (nosql_query / nosql_execute)",

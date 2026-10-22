@@ -26,6 +26,9 @@ pub fn detect_in(sql: &str, dialect: Dialect) -> Option<Prepared> {
     if dialect == Dialect::TSql {
         return detect_tsql(sql);
     }
+    if matches!(dialect, Dialect::Sqlite | Dialect::DuckDb) {
+        return detect_numbered(sql, dialect);
+    }
     if dialect != Dialect::MySql {
         return detect(sql);
     }
@@ -36,6 +39,51 @@ pub fn detect_in(sql: &str, dialect: Dialect) -> Option<Prepared> {
     }
     let n = sig.iter().filter(|t| t.kind == TokenKind::Param).count() as u32;
     (n > 0).then(|| Prepared { sql: sql.to_string(), params: (1..=n).map(|i| Param { key: format!("?{i}"), index: i, hint: None }).collect() })
+}
+
+/// SQLite (`?`, `?N`, `:x`, `@x`, `$x`) and DuckDB (`?`, `$N`), numbered as the engine does: a
+/// bare `?` or a new name takes one more than the largest number so far. Every one is rewritten
+/// to the dialect's `?N`/`$N`, so values bind by position alone.
+fn detect_numbered(sql: &str, d: Dialect) -> Option<Prepared> {
+    let sig: Vec<Token> = tokenize_in(sql, d).into_iter().filter(|t| !t.kind.is_trivia()).collect();
+    let first = sig.first()?.text(sql).to_ascii_uppercase();
+    if matches!(first.as_str(), "PREPARE" | "CREATE" | "EXECUTE" | "DEALLOCATE") {
+        return None;
+    }
+    let mut max = 0u32;
+    let mut named: Vec<(String, u32)> = Vec::new();
+    let mut at: Vec<(std::ops::Range<usize>, u32)> = Vec::new();
+    for t in sig.iter().filter(|t| t.kind == TokenKind::Param) {
+        let s = t.text(sql);
+        let n = if s == "?" {
+            max + 1
+        } else if let Some(n) = s.strip_prefix(['?', '$']).and_then(|n| n.parse::<u32>().ok()).filter(|n| *n > 0 && s.as_bytes()[1].is_ascii_digit()) {
+            n
+        } else {
+            match named.iter().find(|(k, _)| k == s) {
+                Some((_, n)) => *n,
+                None => {
+                    named.push((s.to_string(), max + 1));
+                    max + 1
+                }
+            }
+        };
+        max = max.max(n);
+        at.push((t.start..t.end, n));
+    }
+    if at.is_empty() {
+        return None;
+    }
+    let mut out = String::with_capacity(sql.len());
+    let mut pos = 0;
+    for (r, n) in &at {
+        out.push_str(&sql[pos..r.start]);
+        out.push_str(&d.placeholder(*n as usize));
+        pos = r.end;
+    }
+    out.push_str(&sql[pos..]);
+    let key = |n: u32| named.iter().find(|(_, k)| *k == n).map_or_else(|| d.placeholder(n as usize), |(k, _)| k.clone());
+    Some(Prepared { sql: out, params: (1..=max).map(|n| Param { key: key(n), index: n, hint: None }).collect() })
 }
 
 const TSQL_STATEMENT_WORDS: &[&str] = &[
@@ -311,6 +359,22 @@ mod tests {
         let mut p = detect_in("SELECT * FROM orders WHERE `Status` = ? AND id > ? LIMIT ?", Dialect::MySql).unwrap();
         infer(&mut p, &snap);
         assert_eq!(p.params.iter().map(|x| x.hint.clone().unwrap_or_default()).collect::<Vec<_>>(), vec!["varchar(20)", "int", "bigint"]);
+    }
+
+    #[test]
+    fn sqlite_and_duckdb_parameters() {
+        let p = detect_in("SELECT * FROM t WHERE a = ? AND b = :name AND c = ?5 AND d = ? AND e = :name AND f = '?' -- ?", Dialect::Sqlite).unwrap();
+        assert_eq!(p.sql, "SELECT * FROM t WHERE a = ?1 AND b = ?2 AND c = ?5 AND d = ?6 AND e = ?2 AND f = '?' -- ?");
+        assert_eq!(p.params.iter().map(|x| x.key.as_str()).collect::<Vec<_>>(), vec!["?1", ":name", "?3", "?4", "?5", "?6"]);
+        let p = detect_in("SELECT @a, $b, @a", Dialect::Sqlite).unwrap();
+        assert_eq!((p.sql.as_str(), p.params.len()), ("SELECT ?1, ?2, ?1", 2));
+        assert!(detect_in("CREATE TRIGGER x AFTER INSERT ON t BEGIN SELECT 1; END", Dialect::Sqlite).is_none());
+        assert!(detect_in("SELECT [a?], `b?`, \"c?\"", Dialect::Sqlite).is_none());
+        let p = detect_in("SELECT ?, ?, [1, 2][1:2] FROM t WHERE x = ?", Dialect::DuckDb).unwrap();
+        assert_eq!(p.sql, "SELECT $1, $2, [1, 2][1:2] FROM t WHERE x = $3");
+        let p = detect_in("SELECT $2, $1", Dialect::DuckDb).unwrap();
+        assert_eq!(p.params.iter().map(|x| x.key.as_str()).collect::<Vec<_>>(), vec!["$1", "$2"]);
+        assert!(detect_in("SELECT $$ ? $$, x::INT", Dialect::DuckDb).is_none());
     }
 
     #[test]

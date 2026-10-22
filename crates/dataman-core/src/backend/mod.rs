@@ -75,6 +75,10 @@ pub struct Caps {
     pub extensions: bool,
     pub roles: bool,
     pub privileges: bool,
+    /// A database can be dropped (a file database's file is not).
+    pub drop_database: bool,
+    /// `TRUNCATE` exists (SQLite empties a table with `DELETE`).
+    pub truncate: bool,
 }
 
 impl Caps {
@@ -94,6 +98,8 @@ impl Caps {
         extensions: true,
         roles: true,
         privileges: true,
+        drop_database: true,
+        truncate: true,
     };
 
     const BASIC: Caps = Caps {
@@ -112,6 +118,8 @@ impl Caps {
         extensions: false,
         roles: false,
         privileges: false,
+        drop_database: true,
+        truncate: true,
     };
 
     pub const NONE: Caps = Caps { schemas: false, ..Caps::BASIC };
@@ -129,6 +137,8 @@ impl Caps {
                 toggle_triggers: true,
                 ..Caps::BASIC
             },
+            Engine::Sqlite => Caps { schemas: false, transactional_ddl: true, explain: true, triggers: true, drop_database: false, truncate: false, ..Caps::BASIC },
+            Engine::DuckDb => Caps { transactional_ddl: true, explain: true, drop_database: false, ..Caps::BASIC },
             Engine::MongoDb | Engine::Elasticsearch | Engine::OpenSearch | Engine::Redis => Caps::NONE,
         }
     }
@@ -547,5 +557,9 @@ mod tests {
         assert!(!Caps::of(Engine::MySql).schemas && !Caps::of(Engine::MySql).transactional_ddl);
         let ms = Caps::of(Engine::SqlServer);
         assert!(ms.schemas && ms.functions && ms.triggers && !ms.copy_import && !ms.explain && !ms.roles);
+        let lite = Caps::of(Engine::Sqlite);
+        assert!(!lite.schemas && lite.explain && lite.triggers && lite.transactional_ddl && !lite.drop_database && !lite.truncate && !lite.import);
+        let duck = Caps::of(Engine::DuckDb);
+        assert!(duck.schemas && duck.explain && !duck.triggers && !duck.drop_database && duck.truncate && !duck.activity && !duck.functions);
     }
 }

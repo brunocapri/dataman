@@ -1841,6 +1841,8 @@ impl Workspace {
                         dataman_core::Engine::Elasticsearch => "ES",
                         dataman_core::Engine::OpenSearch => "OS",
                         dataman_core::Engine::Redis => "RDS",
+                        dataman_core::Engine::Sqlite => "LITE",
+                        dataman_core::Engine::DuckDb => "DUCK",
                     })
                     .into_any_element()
             }

@@ -92,6 +92,8 @@ assets!(
     "logos/postgres.svg",
     "logos/redis.svg",
     "logos/sql-server.svg",
+    "logos/sqlite.svg",
+    "logos/duckdb.svg",
     "art/welcome-dark.svg",
     "art/welcome-light.svg",
 );
@@ -288,6 +290,8 @@ pub fn logo(e: dataman_core::Engine) -> gpui::Img {
         dataman_core::Engine::Elasticsearch => "logos/elasticsearch.svg",
         dataman_core::Engine::OpenSearch => "logos/opensearch.svg",
         dataman_core::Engine::Redis => "logos/redis.svg",
+        dataman_core::Engine::Sqlite => "logos/sqlite.svg",
+        dataman_core::Engine::DuckDb => "logos/duckdb.svg",
     };
     gpui::img(path).flex_none()
 }

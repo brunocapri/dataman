@@ -410,6 +410,18 @@ mod tests {
     }
 
     #[test]
+    fn sqlite_trigger_bodies() {
+        let src = "CREATE TABLE t (a INTEGER, b TEXT);\nCREATE TRIGGER IF NOT EXISTS t_ai AFTER INSERT ON t FOR EACH ROW WHEN NEW.a > 0 BEGIN\n  UPDATE t SET b = CASE WHEN NEW.a > 1 THEN 'x' END WHERE rowid = NEW.rowid;\n  INSERT INTO log VALUES (NEW.a);\nEND;\nCREATE TEMP TRIGGER t2 BEFORE DELETE ON t BEGIN SELECT RAISE(ABORT, 'no'); END; SELECT [a;b] FROM t; SELECT 2";
+        let got: Vec<&str> = split_in(src, Dialect::Sqlite).into_iter().map(|s| &src[s.range]).collect();
+        assert_eq!(got.len(), 5, "{got:#?}");
+        assert!(got[1].starts_with("CREATE TRIGGER") && got[1].ends_with("INSERT INTO log VALUES (NEW.a);\nEND"), "{}", got[1]);
+        assert!(got[2].ends_with("RAISE(ABORT, 'no'); END"));
+        assert_eq!(&got[3..], ["SELECT [a;b] FROM t", "SELECT 2"]);
+        let duck: Vec<&str> = split_in("SELECT [1, 2]; BEGIN; SELECT 1; COMMIT", Dialect::DuckDb).into_iter().map(|s| s.range.len().to_string().leak() as &str).collect();
+        assert_eq!(duck.len(), 4);
+    }
+
+    #[test]
     fn tsql_batches_and_statements() {
         let d = Dialect::TSql;
         let src = "CREATE TABLE #t (a int)\nGO\n-- GO inside a comment\nINSERT #t VALUES (1); /* GO\n*/ SELECT 'GO\nGO'\n  go  \nSELECT 1\nGO 3\nSELECT [GO] FROM x\nGO -- the end";

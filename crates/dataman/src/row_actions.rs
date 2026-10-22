@@ -52,13 +52,18 @@ impl Workspace {
                     self.open_sql_tab(&conn, Some(&db), &sqlgen::create_schema_template(&db), false, window, cx);
                 }
                 Act::CreateTable => {
-                    self.open_sql_tab(&conn, Some(&db), &sqlgen::create_table_template_mysql(&db), false, window, cx);
+                    let sql = match self.conn_dialect(&conn, cx) {
+                        dataman_core::sql::Dialect::Sqlite => sqlgen::create_table_template_sqlite(),
+                        _ => sqlgen::create_table_template_mysql(&db),
+                    };
+                    self.open_sql_tab(&conn, Some(&db), &sql, false, window, cx);
                 }
                 // On the connection's own database: a database cannot drop itself (the item is
                 // disabled on that one).
                 Act::DropDatabase => {
-                    let sql = sqlgen::drop_database_template_in(self.conn_dialect(&conn, cx), &db);
-                    self.open_sql_tab(&conn, None, &sql, false, window, cx);
+                    if let Some(sql) = sqlgen::drop_database_template_in(self.conn_dialect(&conn, cx), &db) {
+                        self.open_sql_tab(&conn, None, &sql, false, window, cx);
+                    }
                 }
                 _ => {}
             },
@@ -81,6 +86,8 @@ impl Workspace {
                 Act::CreateTable => {
                     let sql = match self.conn_dialect(&conn, cx) {
                         dataman_core::sql::Dialect::TSql => sqlgen::create_table_template_tsql(&schema),
+                        dataman_core::sql::Dialect::Sqlite => sqlgen::create_table_template_sqlite(),
+                        dataman_core::sql::Dialect::DuckDb => sqlgen::create_table_template_duckdb(&schema),
                         _ => sqlgen::create_table_template(&schema, lar),
                     };
                     self.open_sql_tab(&conn, Some(&db), &sql, false, window, cx);

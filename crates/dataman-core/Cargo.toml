@@ -51,6 +51,16 @@ mongodb = { version = "3.9", default-features = false, features = ["compat-3-0-0
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots-no-provider", "http2"] }
 boa_engine = { version = "0.22", default-features = false }
+# File databases, compiled in (no system library). No `load_extension`: SQL can't load code.
+rusqlite = { version = "0.40", optional = true, features = ["bundled", "column_decltype", "column_metadata", "hooks", "limits"] }
+# rusqlite's own (its statement batches iterate with it).
+fallible-iterator-03 = { package = "fallible-iterator", version = "0.3", optional = true }
+duckdb = { version = "1.10506", optional = true, features = ["bundled", "json", "parquet"] }
+
+[features]
+default = ["sqlite", "duckdb"]
+sqlite = ["dep:rusqlite", "dep:fallible-iterator-03"]
+duckdb = ["dep:duckdb"]
 
 # Passwords: the Keychain on macOS, the Secret Service (GNOME Keyring, KWallet, KeePassXC) on
 # Linux through oo7 with the features GPUI's Linux platform already builds.

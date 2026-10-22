@@ -469,8 +469,34 @@ fn statement(t: &Toks) -> Facts {
         }
         "TABLE" | "VALUES" | "SHOW" | "FETCH" | "MOVE" | "DECLARE" | "CLOSE" | "SUBSCRIBE" => {}
         "DESCRIBE" | "DESC" | "CHECK" | "CHECKSUM" | "HANDLER" if t.dialect == Dialect::MySql => {}
-        "DO" if t.dialect == Dialect::MySql => {}
-        "REPLACE" if t.dialect == Dialect::MySql => {
+        "DESCRIBE" | "SUMMARIZE" | "FROM" | "PIVOT" | "UNPIVOT" if t.dialect == Dialect::DuckDb => {}
+        "PRAGMA" if is_file_dialect(t.dialect) => pragma(t, &mut f),
+        "ATTACH" | "DETACH" if is_file_dialect(t.dialect) => {
+            f.effect = Effect::Ddl;
+            f.outside_tx = true;
+        }
+        "INSTALL" | "LOAD" | "FORCE" | "SET" | "RESET" | "EXPORT" if t.dialect == Dialect::DuckDb => {
+            f.effect = Effect::Ddl;
+            if v == "FORCE" {
+                f.verb = "FORCE INSTALL".into();
+            } else if v == "EXPORT" {
+                f.verb = "EXPORT DATABASE".into();
+            }
+        }
+        "ANALYZE" | "CHECKPOINT" if is_file_dialect(t.dialect) => f.effect = Effect::Write,
+        "VACUUM" if is_file_dialect(t.dialect) => {
+            // `VACUUM INTO 'file'` writes a new file anywhere.
+            f.effect = if t.has_top("INTO") { Effect::Ddl } else { Effect::Write };
+            f.verb = if t.has_top("INTO") { "VACUUM INTO".into() } else { v.clone() };
+            f.outside_tx = true;
+        }
+        "COPY" if t.dialect == Dialect::DuckDb => {
+            f.effect = if t.has_top("TO") { Effect::Ddl } else { Effect::Write };
+            f.verb = if t.has_top("TO") { "COPY TO".into() } else { "COPY FROM".into() };
+            let (name, _) = t.name(1).unwrap_or_default();
+            f.target = (!name.is_empty()).then_some(name);
+        }
+        "REPLACE" if matches!(t.dialect, Dialect::MySql | Dialect::Sqlite) => {
             f.effect = Effect::Write;
             let i = (0..t.t.len()).find(|&i| t.is(i, "INTO")).map_or(1, |i| i + 1);
             f.target = t.name(i).map(|(n, _)| n);
@@ -668,6 +694,50 @@ fn statement(t: &Toks) -> Facts {
         _ => f.effect = Effect::Other,
     }
     f
+}
+
+fn is_file_dialect(d: Dialect) -> bool {
+    matches!(d, Dialect::Sqlite | Dialect::DuckDb)
+}
+
+/// PRAGMAs that only report, with or without an argument (SQLite and DuckDB names).
+const READ_PRAGMAS: &[&str] = &[
+    "application_id", "auto_vacuum", "automatic_index", "busy_timeout", "cache_size", "cache_spill", "case_sensitive_like",
+    "cell_size_check", "checkpoint_fullfsync", "collation_list", "compile_options", "data_version", "database_list", "database_size",
+    "defer_foreign_keys", "encoding", "foreign_key_check", "foreign_key_list", "foreign_keys", "freelist_count", "fullfsync",
+    "function_list", "functions", "hard_heap_limit", "ignore_check_constraints", "index_info", "index_list", "index_xinfo",
+    "integrity_check", "journal_mode", "journal_size_limit", "legacy_alter_table", "locking_mode", "max_page_count", "metadata_info",
+    "mmap_size", "module_list", "page_count", "page_size", "platform", "pragma_list", "query_only", "quick_check", "read_uncommitted",
+    "recursive_triggers", "reverse_unordered_selects", "schema_version", "secure_delete", "show", "show_databases", "show_tables",
+    "show_tables_expanded", "soft_heap_limit", "storage_info", "synchronous", "table_info", "table_list", "table_xinfo", "temp_store",
+    "threads", "trusted_schema", "user_agent", "user_version", "version", "wal_autocheckpoint", "writable_schema",
+];
+
+/// PRAGMAs whose argument names what to report on (a table, an index, a schema).
+const ARG_READ_PRAGMAS: &[&str] = &[
+    "foreign_key_check", "foreign_key_list", "index_info", "index_list", "index_xinfo", "integrity_check", "quick_check", "show",
+    "storage_info", "table_info", "table_list", "table_xinfo",
+];
+
+/// PRAGMAs that act when merely named.
+const ACTING_PRAGMAS: &[&str] = &["incremental_vacuum", "optimize", "shrink_memory", "wal_checkpoint"];
+
+/// `PRAGMA x = v` and `PRAGMA x(v)` set (but the report-only ones, which take a table); a bare
+/// `PRAGMA x` reads (SQLite) or switches a setting (DuckDB, but its reports).
+fn pragma(t: &Toks, f: &mut Facts) {
+    let mut i = 1;
+    if t.punct(i + 1, ".") {
+        i += 2;
+    }
+    let name = t.word(i).unwrap_or_default().to_ascii_lowercase();
+    f.verb = format!("PRAGMA {name}").trim_end().to_string();
+    let reads = READ_PRAGMAS.contains(&name.as_str());
+    let sets = t.op(i + 1, "=") || (t.punct(i + 1, "(") && !ARG_READ_PRAGMAS.contains(&name.as_str()));
+    f.effect = if sets || ACTING_PRAGMAS.contains(&name.as_str()) || (t.dialect == Dialect::DuckDb && !reads) {
+        Effect::Write
+    } else {
+        Effect::Read
+    };
 }
 
 fn top_clause(t: &Toks, i: usize) -> usize {
@@ -978,7 +1048,9 @@ fn read_refusal(sql: &str, dialect: Dialect) -> Option<String> {
         return Some(format!("transaction control ({}) is not allowed", f.verb));
     }
     let reads = matches!(f.verb.as_str(), "SELECT" | "TABLE" | "VALUES" | "SHOW" | "EXPLAIN")
-        || (dialect == Dialect::MySql && matches!(f.verb.as_str(), "DESCRIBE" | "DESC"));
+        || (dialect == Dialect::MySql && matches!(f.verb.as_str(), "DESCRIBE" | "DESC"))
+        || (dialect == Dialect::DuckDb && matches!(f.verb.as_str(), "DESCRIBE" | "SUMMARIZE" | "FROM" | "PIVOT" | "UNPIVOT"))
+        || (is_file_dialect(dialect) && f.verb.starts_with("PRAGMA "));
     if f.effect != Effect::Read || !reads {
         return Some(format!("{} is not a read; read-only access runs SELECT, WITH, TABLE, VALUES, SHOW and EXPLAIN", f.verb));
     }
@@ -1006,6 +1078,9 @@ fn read_refusal(sql: &str, dialect: Dialect) -> Option<String> {
             }
         }
     }
+    if let Some(e) = file_access_in(&t) {
+        return Some(e);
+    }
     match effect_call(&t, &[]) {
         Some((name, false)) => Some(format!("{name}() has effects outside a read-only transaction")),
         Some((name, true)) => Some(format!("{name}() is an administrative action")),
@@ -1013,7 +1088,93 @@ fn read_refusal(sql: &str, dialect: Dialect) -> Option<String> {
     }
 }
 
+/// SQLite functions that load code or touch files (the shell's; an application may register
+/// them too).
+pub const SQLITE_EFFECT_FUNCTIONS: &[&str] = &["load_extension", "readfile", "writefile", "edit", "fts3_tokenizer", "fsdir"];
+
+/// DuckDB reads (and runs) whatever these name: files, other databases, SQL in a string,
+/// secrets. Refused to agents at every level.
+pub const DUCKDB_FILE_FUNCTIONS: &[&str] = &[
+    "read_csv", "read_csv_auto", "csv_scan", "sniff_csv", "read_parquet", "parquet_scan", "parquet_metadata", "parquet_schema",
+    "parquet_file_metadata", "parquet_kv_metadata", "parquet_bloom_probe", "read_json", "read_json_auto", "read_json_objects",
+    "read_json_objects_auto", "read_ndjson", "read_ndjson_auto", "read_ndjson_objects", "json_scan", "read_text", "read_blob", "glob",
+    "read_xlsx", "st_read", "iceberg_scan", "iceberg_metadata", "iceberg_snapshots", "delta_scan", "sqlite_scan", "sqlite_attach",
+    "postgres_scan", "postgres_attach", "postgres_query", "mysql_scan", "mysql_query", "query", "query_table", "duckdb_secrets",
+    "which_secret", "getenv", "load_extension",
+];
+
+/// DuckDB statements and functions that reach files or other databases: `read_csv(…)`, a file
+/// named in FROM (`FROM 'x.csv'`, `FROM "x.parquet"`), COPY, ATTACH, INSTALL, EXPORT.
+pub fn file_access(sql: &str, dialect: Dialect) -> Option<String> {
+    if !is_file_dialect(dialect) {
+        return None;
+    }
+    for piece in agent_pieces(sql, dialect) {
+        let all = significant(&piece, dialect);
+        let t = Toks { src: &piece, t: &all, dialect };
+        let f = classify_in(&piece, dialect);
+        if matches!(f.verb.as_str(), "ATTACH" | "DETACH" | "INSTALL" | "FORCE INSTALL" | "LOAD" | "COPY TO" | "COPY FROM" | "EXPORT DATABASE" | "IMPORT" | "VACUUM INTO") {
+            return Some(format!("{} reaches files outside the database", f.verb));
+        }
+        if let Some(e) = file_access_in(&t) {
+            return Some(e);
+        }
+    }
+    None
+}
+
+fn file_access_in(t: &Toks) -> Option<String> {
+    let list = match t.dialect {
+        Dialect::DuckDb => DUCKDB_FILE_FUNCTIONS,
+        Dialect::Sqlite => SQLITE_EFFECT_FUNCTIONS,
+        _ => return None,
+    };
+    for i in 0..t.t.len() {
+        if t.punct(i + 1, "(") && matches!(t.t[i].kind, TokenKind::Ident | TokenKind::Keyword | TokenKind::QuotedIdent) {
+            let name = t.t[i].text(t.src).trim_matches(['"', '`', '[', ']']).to_ascii_lowercase();
+            if list.contains(&name.as_str()) {
+                return Some(format!("{name}() reaches files or code outside the database"));
+            }
+        }
+    }
+    if t.dialect != Dialect::DuckDb {
+        return None;
+    }
+    // A string (or a quoted name that looks like a path) where a table goes: DuckDB reads the file.
+    const CLAUSE_END: &[&str] = &["WHERE", "GROUP", "ORDER", "HAVING", "LIMIT", "QUALIFY", "WINDOW", "UNION", "EXCEPT", "INTERSECT", "ON", "USING", "SELECT", "SET", "VALUES", "RETURNING", "OFFSET"];
+    let mut in_from = false;
+    for i in 0..t.t.len() {
+        let tok = &t.t[i];
+        if let Some(w) = t.word(i) {
+            if matches!(w.as_str(), "FROM" | "JOIN" | "INTO" | "UPDATE" | "TABLE" | "DESCRIBE" | "SUMMARIZE" | "PIVOT" | "UNPIVOT") {
+                in_from = true;
+                continue;
+            }
+            if CLAUSE_END.contains(&w.as_str()) {
+                in_from = false;
+            }
+            continue;
+        }
+        // A qualified name (`s."x.csv"`) stands where its first part does.
+        let mut j = i;
+        while j >= 2 && t.punct(j - 1, ".") && matches!(t.t[j - 2].kind, TokenKind::Ident | TokenKind::QuotedIdent) {
+            j -= 2;
+        }
+        let at_table = j > 0 && (matches!(t.word(j - 1).as_deref(), Some("FROM" | "JOIN" | "INTO" | "UPDATE" | "TABLE" | "DESCRIBE" | "SUMMARIZE" | "PIVOT" | "UNPIVOT")) || (in_from && t.punct(j - 1, ",")));
+        let path_like = |s: &str| s.contains(['.', '/', '\\', '~', ':', '*']);
+        match tok.kind {
+            TokenKind::String | TokenKind::DollarString if at_table => return Some("a file named in FROM is read from disk".into()),
+            TokenKind::QuotedIdent if at_table && path_like(tok.text(t.src)) => return Some("a file named in FROM is read from disk".into()),
+            _ => {}
+        }
+    }
+    None
+}
+
 fn effect_call(t: &Toks, allowed: &[&str]) -> Option<(String, bool)> {
+    if let Some(e) = file_access_in(t) {
+        return Some((e.split_once("()").map_or(e.as_str(), |(f, _)| f).to_string(), false));
+    }
     for i in 0..t.t.len() {
         if !t.punct(i + 1, "(") || !matches!(t.t[i].kind, TokenKind::Ident | TokenKind::Keyword | TokenKind::QuotedIdent) {
             continue;
@@ -1123,7 +1284,7 @@ fn piece_of(sql: &str, dialect: Dialect) -> Piece {
     }
     let f = classify_in(sql, dialect);
     if let Some((name, _)) = effect_call(&t, WRITE_OK_FUNCTIONS) {
-        return Piece::Destructive(format!("{name}()"));
+        return Piece::Destructive(if name.contains(' ') { name } else { format!("{name}()") });
     }
     if f.tx.is_some() {
         return Piece::Destructive(format!("transaction control ({})", f.verb));
@@ -1282,6 +1443,10 @@ pub fn allowlist_entry(text: &str, dialect: Dialect) -> Result<String, String> {
     if f.tx.is_some() {
         return Err(format!("{} is transaction control: every agent call is its own transaction", f.verb));
     }
+    // A mark where DuckDB reads a file (`FROM ?`) would take any path.
+    if dialect == Dialect::DuckDb && file_access(&stmt.replace('?', "'x'"), dialect).is_some() {
+        return Err("a value cannot stand where DuckDB reads a file".into());
+    }
     Ok(stmt)
 }
 
@@ -1309,6 +1474,57 @@ pub fn allowlist_candidates(sql: &str, dialect: Dialect) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sqlite_and_duckdb_classes() {
+        let lite = Dialect::Sqlite;
+        let eff = |sql: &str, d: Dialect| classify_in(sql, d).effect;
+        assert_eq!(eff("PRAGMA table_info(t)", lite), Effect::Read);
+        assert_eq!(eff("PRAGMA main.index_list('t')", lite), Effect::Read);
+        assert_eq!(eff("PRAGMA user_version", lite), Effect::Read);
+        assert_eq!(eff("PRAGMA user_version = 3", lite), Effect::Write);
+        assert_eq!(eff("PRAGMA writable_schema = ON", lite), Effect::Write);
+        assert_eq!(eff("PRAGMA foreign_keys(0)", lite), Effect::Write);
+        assert_eq!(eff("PRAGMA optimize", lite), Effect::Write);
+        assert_eq!(eff("ATTACH '/tmp/x.db' AS x", lite), Effect::Ddl);
+        assert_eq!(eff("VACUUM INTO '/tmp/y.db'", lite), Effect::Ddl);
+        assert_eq!(eff("VACUUM", lite), Effect::Write);
+        assert_eq!(eff("REPLACE INTO t VALUES (1)", lite), Effect::Write);
+        assert_eq!(classify_in("BEGIN IMMEDIATE", lite).tx, Some(TxCmd::Begin));
+        for sql in ["PRAGMA writable_schema = 1", "ATTACH 'x' AS y", "VACUUM INTO 'z'", "SELECT load_extension('e')", "SELECT writefile('f', 'x')"] {
+            assert!(agent_read_refusal_in(sql, lite).is_some(), "{sql}");
+            assert!(read_only_refusal_in(sql, lite).is_some() || sql.starts_with("SELECT"), "{sql}");
+        }
+        assert!(agent_read_refusal_in("PRAGMA table_info(t)", lite).is_none());
+        assert!(agent_read_refusal_in("SELECT glob('a*', name) FROM t", lite).is_none(), "SQLite's glob() is a string function");
+        let duck = Dialect::DuckDb;
+        assert_eq!(eff("COPY t TO '/tmp/x.csv'", duck), Effect::Ddl);
+        assert_eq!(eff("SET threads = 2", duck), Effect::Ddl);
+        assert_eq!(eff("INSTALL httpfs", duck), Effect::Ddl);
+        assert_eq!(eff("PRAGMA enable_profiling", duck), Effect::Write);
+        assert_eq!(eff("PRAGMA table_info('t')", duck), Effect::Read);
+        for sql in ["DESCRIBE t", "SUMMARIZE t", "FROM t", "SHOW TABLES", "SELECT [1, 2] FROM t"] {
+            assert!(agent_read_refusal_in(sql, duck).is_none(), "{sql}: {:?}", agent_read_refusal_in(sql, duck));
+        }
+        for sql in [
+            "SELECT * FROM read_csv('/etc/passwd')",
+            "SELECT * FROM '~/.ssh/id_ed25519'",
+            "SELECT * FROM t JOIN 'x.parquet' USING (id)",
+            "SELECT * FROM t, \"y.csv\"",
+            "SELECT * FROM query('DELETE FROM t')",
+            "SELECT \"read_text\"('/etc/hosts')",
+        ] {
+            assert!(agent_read_refusal_in(sql, duck).is_some(), "{sql}");
+            assert!(file_access(sql, duck).is_some(), "{sql}");
+            assert!(agent_write_class(sql, duck).is_destructive(), "{sql}");
+        }
+        for sql in ["COPY t TO 'x'", "ATTACH 'x.db'", "INSTALL httpfs", "EXPORT DATABASE 'd'"] {
+            assert!(file_access(sql, duck).is_some(), "{sql}");
+        }
+        assert!(file_access("SELECT * FROM t WHERE name = 'x.csv'", duck).is_none());
+        assert!(allowlist_entry("SELECT * FROM ?", duck).is_err());
+        assert!(file_access("SELECT * FROM read_csv('x')", Dialect::Postgres).is_none());
+    }
+
     use super::*;
 
     #[test]

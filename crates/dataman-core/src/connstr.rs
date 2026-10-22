@@ -13,6 +13,9 @@ pub struct ConnSpec {
     pub encrypt: Option<String>,
     pub trust_cert: Option<bool>,
     pub options: std::collections::BTreeMap<String, String>,
+    /// A file database's file.
+    pub path: Option<String>,
+    pub read_only: bool,
 }
 
 impl ConnSpec {
@@ -113,6 +116,11 @@ impl ConnSpec {
     }
 
     pub fn into_profile(self) -> (ConnectionProfile, Option<String>) {
+        if self.engine.is_file() {
+            let mut p = ConnectionProfile::new_file(self.engine, self.path.unwrap_or_default());
+            p.read_only = self.read_only;
+            return (p, None);
+        }
         let mssql_mode = self.mssql_sslmode();
         let mut p = ConnectionProfile::new("");
         p.engine = self.engine;
@@ -160,6 +168,9 @@ pub fn sslmode(v: &str) -> Option<SslMode> {
 
 pub fn parse(s: &str) -> Option<ConnSpec> {
     let s = s.trim();
+    if let Some(spec) = parse_file(s) {
+        return Some(spec);
+    }
     let s = match s.strip_prefix("jdbc:") {
         Some(rest) if !rest.starts_with("sqlserver://") => rest,
         _ => s,
@@ -175,6 +186,54 @@ pub fn parse(s: &str) -> Option<ConnSpec> {
     } else {
         parse_kv(s)
     }
+}
+
+/// `sqlite:`, `sqlite3:`, `file:` and `duckdb:` URLs (`?mode=ro` opens read-only), and paths
+/// that end in a database file's extension.
+fn parse_file(s: &str) -> Option<ConnSpec> {
+    let schemes = [("sqlite:", Engine::Sqlite), ("sqlite3:", Engine::Sqlite), ("file:", Engine::Sqlite), ("duckdb:", Engine::DuckDb)];
+    let (engine, rest, url) = match schemes.iter().find(|(p, _)| s.len() > p.len() && s[..p.len()].eq_ignore_ascii_case(p)) {
+        Some((p, e)) => (*e, &s[p.len()..], true),
+        None => {
+            let lower = s.to_ascii_lowercase();
+            let ext = lower.rsplit_once('.').map(|(_, e)| e)?;
+            let engine = [Engine::Sqlite, Engine::DuckDb].into_iter().find(|e| e.file_extensions().contains(&ext))?;
+            if s.contains("://") || s.contains('\n') || s.contains('=') {
+                return None;
+            }
+            (engine, s, false)
+        }
+    };
+    let (path, query) = if url { rest.split_once('?').unwrap_or((rest, "")) } else { (rest, "") };
+    let path = if url {
+        // `sqlite:///abs`, `sqlite://localhost/abs`, `sqlite:/abs`, `sqlite:rel` and `file:rel`.
+        let p = match path.strip_prefix("//") {
+            Some(r) => match r.find('/') {
+                Some(0) => r,
+                Some(i) if r[..i].eq_ignore_ascii_case("localhost") => &r[i..],
+                // `sqlite://rel/x.db`: what many tools write for a relative path.
+                _ => r,
+            },
+            None => path,
+        };
+        decode(p)?
+    } else {
+        path.to_string()
+    };
+    if path.is_empty() {
+        return None;
+    }
+    let mut spec = ConnSpec { engine, path: Some(path), ..Default::default() };
+    for kv in query.split('&').filter(|kv| !kv.is_empty()) {
+        let (k, v) = kv.split_once('=').unwrap_or((kv, ""));
+        let (k, v) = (decode(k)?, decode(v)?);
+        match k.as_str() {
+            "mode" | "access_mode" => spec.read_only = matches!(v.to_ascii_lowercase().as_str(), "ro" | "read_only" | "readonly"),
+            "immutable" | "readonly" | "read_only" => spec.read_only |= matches!(v.as_str(), "1" | "true"),
+            _ => {}
+        }
+    }
+    Some(spec)
 }
 
 fn parse_sqlserver(rest: &str) -> Option<ConnSpec> {
@@ -476,6 +535,23 @@ fn decode(s: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn file_databases() {
+        let p = |s: &str| parse_profile(s).map(|(p, _)| (p.engine, p.path.unwrap_or_default(), p.read_only));
+        assert_eq!(p("sqlite:///tmp/a.db"), Some((Engine::Sqlite, "/tmp/a.db".into(), false)));
+        assert_eq!(p("sqlite://localhost/tmp/a%20b.db"), Some((Engine::Sqlite, "/tmp/a b.db".into(), false)));
+        assert_eq!(p("sqlite:data/app.sqlite3"), Some((Engine::Sqlite, "data/app.sqlite3".into(), false)));
+        assert_eq!(p("file:/tmp/a.db?mode=ro"), Some((Engine::Sqlite, "/tmp/a.db".into(), true)));
+        assert_eq!(p("duckdb:///tmp/w.duckdb"), Some((Engine::DuckDb, "/tmp/w.duckdb".into(), false)));
+        assert_eq!(p("~/Downloads/chinook.db"), Some((Engine::Sqlite, "~/Downloads/chinook.db".into(), false)));
+        assert_eq!(p("/data/warehouse.DUCKDB"), Some((Engine::DuckDb, "/data/warehouse.DUCKDB".into(), false)));
+        assert_eq!(p("Server=x;Database=foo.db").map(|t| t.0), Some(Engine::SqlServer));
+        assert_eq!(p("postgres://h/foo.db").map(|t| t.0), Some(Engine::Postgres));
+        let (prof, _) = parse_profile("sqlite:///tmp/chinook.db").unwrap();
+        assert_eq!((prof.name.as_str(), prof.host.as_str(), prof.port, prof.user.as_str()), ("chinook", "", 0, ""));
+        assert_eq!(parse_profile(&prof.url()).unwrap().0.path, prof.path);
+    }
+
     use super::*;
 
     fn url(s: &str) -> ConnSpec {

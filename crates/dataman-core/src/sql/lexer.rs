@@ -103,6 +103,36 @@ pub fn tokenize_in(src: &str, dialect: Dialect) -> Vec<Token> {
                 i = quoted(b, i + 1, b']', false);
                 TokenKind::QuotedIdent
             }
+            // SQLite's `[x]` ends at the first `]`: nothing is escaped inside.
+            b'[' if rules.bracket_names => {
+                i = b[i + 1..].iter().position(|&c| c == b']').map_or(b.len(), |p| i + 2 + p);
+                TokenKind::QuotedIdent
+            }
+            b'`' if rules.backtick_names => {
+                i = quoted(b, i + 1, b'`', false);
+                TokenKind::QuotedIdent
+            }
+            b'?' if rules.qmark_params => {
+                i += 1;
+                while i < b.len() && b[i].is_ascii_digit() {
+                    i += 1;
+                }
+                TokenKind::Param
+            }
+            b':' | b'@' | b'$' if rules.named_params && b.get(i + 1).is_some_and(|&n| is_ident_start(n) || (c != b'@' && n.is_ascii_digit())) => {
+                i += 1;
+                while i < b.len() && is_ident_cont(b[i]) && space_len(src, i, &rules) == 0 {
+                    i += 1;
+                }
+                // `$a::b(c)`: SQLite's Tcl-style names take `::` and a `(…)` suffix.
+                while b[i..].starts_with(b"::") && b.get(i + 2).is_some_and(|&n| is_ident_cont(n)) {
+                    i += 2;
+                    while i < b.len() && is_ident_cont(b[i]) {
+                        i += 1;
+                    }
+                }
+                TokenKind::Param
+            }
             b'@' | b'#' if rules.tsql_names && b.get(i + 1).is_some_and(|&n| is_ident_start(n) || n == c) => {
                 i += 1;
                 if b[i] == c {
@@ -209,6 +239,9 @@ pub fn tokenize_in(src: &str, dialect: Dialect) -> Vec<Token> {
                         || (b[i] == b'/' && b.get(i + 1) == Some(&b'*'))
                         || (rules.mysql_quotes && i > start && matches!(b[i], b'#' | b'`' | b'?' | b'@'))
                         || (rules.tsql_names && i > start && matches!(b[i], b'#' | b'@'))
+                        || (rules.qmark_params && i > start && b[i] == b'?')
+                        || (rules.named_params && i > start && b[i] == b'@')
+                        || (rules.backtick_names && b[i] == b'`')
                     {
                         break;
                     }
@@ -263,6 +296,7 @@ fn quoted(b: &[u8], i: usize, q: u8, backslash: bool) -> usize {
     quoted_end(b, i, q, backslash).unwrap_or(b.len())
 }
 
+
 fn quoted_end(b: &[u8], mut i: usize, q: u8, backslash: bool) -> Option<usize> {
     while i < b.len() {
         if backslash && b[i] == b'\\' {
@@ -311,6 +345,7 @@ pub fn unterminated_in(src: &str, t: &Token, dialect: Dialect) -> Option<&'stati
             let (open, q) = match b.first() {
                 Some(b'"') => (1, b'"'),
                 Some(b'[') => (1, b']'),
+                Some(b'`') => (1, b'`'),
                 _ => (3, b'"'),
             };
             quoted_end(b, open, q, false).is_none().then_some("quoted identifier")
@@ -433,6 +468,17 @@ pub const TSQL_KEYWORDS: &[&str] = &[
     "USE", "VARBINARY", "WAITFOR", "WHILE", "XML",
 ];
 
+pub const SQLITE_KEYWORDS: &[&str] = &[
+    "ATTACH", "AUTOINCREMENT", "BLOB", "DEFERRED", "DETACH", "EXCLUSIVE", "GLOB", "IGNORE", "IMMEDIATE", "INDEXED",
+    "INSTEAD", "PRAGMA", "RAISE", "REGEXP", "STRICT", "VIRTUAL", "WITHOUT",
+];
+
+pub const DUCKDB_KEYWORDS: &[&str] = &[
+    "ANTI", "ASOF", "ATTACH", "DESCRIBE", "DETACH", "EXCLUDE", "EXPORT", "GLOB", "HUGEINT", "IMPORT", "INSTALL",
+    "LOAD", "MACRO", "PIVOT", "PIVOT_LONGER", "PIVOT_WIDER", "PRAGMA", "QUALIFY", "SECRET", "SEMI", "SUMMARIZE",
+    "UNPIVOT", "USE",
+];
+
 pub fn is_keyword(word: &str) -> bool {
     in_list(KEYWORDS, word)
 }
@@ -442,6 +488,8 @@ pub fn is_keyword_in(word: &str, dialect: Dialect) -> bool {
         || match dialect {
             Dialect::MySql => in_list(MYSQL_KEYWORDS, word),
             Dialect::TSql => in_list(TSQL_KEYWORDS, word),
+            Dialect::Sqlite => in_list(SQLITE_KEYWORDS, word),
+            Dialect::DuckDb => in_list(DUCKDB_KEYWORDS, word),
             Dialect::Postgres => false,
         }
 }
@@ -472,9 +520,91 @@ mod tests {
 
     #[test]
     fn keywords_sorted() {
-        let mut v = KEYWORDS.to_vec();
-        v.sort();
-        assert_eq!(v, KEYWORDS);
+        for list in [KEYWORDS, MYSQL_KEYWORDS, TSQL_KEYWORDS, SQLITE_KEYWORDS, DUCKDB_KEYWORDS] {
+            assert!(list != SQLITE_KEYWORDS && list != DUCKDB_KEYWORDS || list.iter().all(|k| k.len() <= 17), "longer words are never looked up");
+            let mut v = list.to_vec();
+            v.sort();
+            assert_eq!(v, list);
+        }
+    }
+
+    #[test]
+    fn sqlite_and_duckdb_tokens() {
+        use TokenKind::*;
+        fn lite(src: &str) -> Vec<(TokenKind, &str)> {
+            tokenize_in(src, Dialect::Sqlite).into_iter().filter(|t| !t.kind.is_trivia()).map(|t| (t.kind, t.text(src))).collect()
+        }
+        assert_eq!(
+            lite("SELECT [a]]b], `c``d`, \"e\" FROM t WHERE x = ?2 AND y = :n AND z = @m AND w = $p::q(1) AND v = ? -- c\r\nAND"),
+            vec![
+                (Keyword, "SELECT"),
+                (QuotedIdent, "[a]"),
+                (Punct, "]"),
+                (Ident, "b"),
+                (Punct, "]"),
+                (Punct, ","),
+                (QuotedIdent, "`c``d`"),
+                (Punct, ","),
+                (QuotedIdent, "\"e\""),
+                (Keyword, "FROM"),
+                (Ident, "t"),
+                (Keyword, "WHERE"),
+                (Ident, "x"),
+                (Operator, "="),
+                (Param, "?2"),
+                (Keyword, "AND"),
+                (Ident, "y"),
+                (Operator, "="),
+                (Param, ":n"),
+                (Keyword, "AND"),
+                (Ident, "z"),
+                (Operator, "="),
+                (Param, "@m"),
+                (Keyword, "AND"),
+                (Ident, "w"),
+                (Operator, "="),
+                (Param, "$p::q"),
+                (Punct, "("),
+                (Number, "1"),
+                (Punct, ")"),
+                (Keyword, "AND"),
+                (Ident, "v"),
+                (Operator, "="),
+                (Param, "?"),
+                (Keyword, "AND"),
+            ]
+        );
+        assert_eq!(lite("/* a /* b */ c */")[0], (Ident, "c"), "SQLite's comments do not nest");
+        assert_eq!(lite("x'00ff' 'it''s'"), vec![(String, "x'00ff'"), (String, "'it''s'")]);
+        fn duck(src: &str) -> Vec<(TokenKind, &str)> {
+            tokenize_in(src, Dialect::DuckDb).into_iter().filter(|t| !t.kind.is_trivia()).map(|t| (t.kind, t.text(src))).collect()
+        }
+        assert_eq!(
+            duck("SELECT [1, 2][1], $1, ?, x::INT, $$a;b$$ FROM 'f.csv'"),
+            vec![
+                (Keyword, "SELECT"),
+                (Punct, "["),
+                (Number, "1"),
+                (Punct, ","),
+                (Number, "2"),
+                (Punct, "]"),
+                (Punct, "["),
+                (Number, "1"),
+                (Punct, "]"),
+                (Punct, ","),
+                (Param, "$1"),
+                (Punct, ","),
+                (Param, "?"),
+                (Punct, ","),
+                (Ident, "x"),
+                (Operator, "::"),
+                (Ident, "INT"),
+                (Punct, ","),
+                (DollarString, "$$a;b$$"),
+                (Keyword, "FROM"),
+                (String, "'f.csv'"),
+            ]
+        );
     }
 
     #[test]

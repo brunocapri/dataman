@@ -6,6 +6,8 @@ pub enum Dialect {
     Postgres,
     MySql,
     TSql,
+    Sqlite,
+    DuckDb,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -21,6 +23,14 @@ pub struct LexRules {
     pub unicode_spaces: bool,
     /// A `--` comment ends at a bare `\r` too (PostgreSQL, SQL Server; MySQL's at `\n` only).
     pub cr_ends_comment: bool,
+    /// `?` and `?NNN` are parameters (SQLite, DuckDB).
+    pub qmark_params: bool,
+    /// `:name`, `@name` and `$name` are parameters (SQLite).
+    pub named_params: bool,
+    /// `[x]` is a name, with none of T-SQL's `@x`/`#x` (SQLite).
+    pub bracket_names: bool,
+    /// `` `x` `` is a name while `"x"` stays one too (SQLite; MySQL's quotes are `mysql_quotes`).
+    pub backtick_names: bool,
 }
 
 impl LexRules {
@@ -34,6 +44,10 @@ impl LexRules {
         tsql_names: false,
         unicode_spaces: false,
         cr_ends_comment: true,
+        qmark_params: false,
+        named_params: false,
+        bracket_names: false,
+        backtick_names: false,
     };
     pub const MYSQL: LexRules = LexRules {
         dollar: false,
@@ -45,6 +59,10 @@ impl LexRules {
         tsql_names: false,
         unicode_spaces: false,
         cr_ends_comment: false,
+        qmark_params: false,
+        named_params: false,
+        bracket_names: false,
+        backtick_names: false,
     };
     pub const TSQL: LexRules = LexRules {
         dollar: false,
@@ -56,7 +74,30 @@ impl LexRules {
         tsql_names: true,
         unicode_spaces: true,
         cr_ends_comment: true,
+        qmark_params: false,
+        named_params: false,
+        bracket_names: false,
+        backtick_names: false,
     };
+    /// SQLite's tokenizer: `"x"`, `[x]` and `` `x` `` are names, `X'..'` a blob, `?`, `?N`, `:x`,
+    /// `@x` and `$x` parameters; comments do not nest and `--` ends at `\n`.
+    pub const SQLITE: LexRules = LexRules {
+        dollar: false,
+        escape_strings: false,
+        nested_comments: false,
+        double_colon: false,
+        hash_comments: false,
+        mysql_quotes: false,
+        tsql_names: false,
+        unicode_spaces: false,
+        cr_ends_comment: false,
+        qmark_params: true,
+        named_params: true,
+        bracket_names: true,
+        backtick_names: true,
+    };
+    /// PostgreSQL's rules (`$$`, `E''`, `::`, `$1`) plus `?` parameters.
+    pub const DUCKDB: LexRules = LexRules { qmark_params: true, ..LexRules::POSTGRES };
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -94,6 +135,8 @@ impl Dialect {
             Engine::Postgres => Dialect::Postgres,
             Engine::MySql => Dialect::MySql,
             Engine::SqlServer => Dialect::TSql,
+            Engine::Sqlite => Dialect::Sqlite,
+            Engine::DuckDb => Dialect::DuckDb,
             Engine::MongoDb | Engine::Elasticsearch | Engine::OpenSearch | Engine::Redis => Dialect::Postgres,
         }
     }
@@ -103,6 +146,8 @@ impl Dialect {
             Dialect::Postgres => LexRules::POSTGRES,
             Dialect::MySql => LexRules::MYSQL,
             Dialect::TSql => LexRules::TSQL,
+            Dialect::Sqlite => LexRules::SQLITE,
+            Dialect::DuckDb => LexRules::DUCKDB,
         }
     }
 
@@ -111,11 +156,20 @@ impl Dialect {
             Dialect::Postgres => ScriptRules { begin_atomic: true, go_batches: false, delimiter_command: false, routine_bodies: false, exec_comments: false },
             Dialect::MySql => ScriptRules { begin_atomic: false, go_batches: false, delimiter_command: true, routine_bodies: true, exec_comments: true },
             Dialect::TSql => ScriptRules { begin_atomic: false, go_batches: true, delimiter_command: false, routine_bodies: false, exec_comments: false },
+            // `CREATE TRIGGER … BEGIN …; …; END;` is one statement.
+            Dialect::Sqlite => ScriptRules { begin_atomic: false, go_batches: false, delimiter_command: false, routine_bodies: true, exec_comments: false },
+            Dialect::DuckDb => ScriptRules { begin_atomic: false, go_batches: false, delimiter_command: false, routine_bodies: false, exec_comments: false },
         }
     }
 
     pub fn folds_to_lower(self) -> bool {
         self == Dialect::Postgres
+    }
+
+    /// Names match whatever their case, quoted or not (SQLite, DuckDB): the case is kept, not
+    /// folded.
+    pub fn names_ignore_case(self) -> bool {
+        matches!(self, Dialect::Sqlite | Dialect::DuckDb)
     }
 
     pub fn quote_ident(self, name: &str) -> String {
@@ -131,6 +185,9 @@ impl Dialect {
             }
             Dialect::TSql => {
                 if plain_mixed_case(name, self) { name.to_string() } else { format!("[{}]", name.replace(']', "]]")) }
+            }
+            Dialect::Sqlite | Dialect::DuckDb => {
+                if plain_mixed_case(name, self) { name.to_string() } else { format!("\"{}\"", name.replace('"', "\"\"")) }
             }
         }
     }
@@ -166,20 +223,22 @@ impl Dialect {
             Dialect::Postgres => format!("${n}"),
             Dialect::MySql => "?".into(),
             Dialect::TSql => format!("@P{n}"),
+            Dialect::Sqlite => format!("?{n}"),
+            Dialect::DuckDb => format!("${n}"),
         }
     }
 
     pub fn page_clause(self, limit: u64, offset: u64) -> String {
         match self {
-            Dialect::Postgres | Dialect::MySql if offset == 0 => format!("LIMIT {limit}"),
-            Dialect::Postgres | Dialect::MySql => format!("LIMIT {limit} OFFSET {offset}"),
+            Dialect::Postgres | Dialect::MySql | Dialect::Sqlite | Dialect::DuckDb if offset == 0 => format!("LIMIT {limit}"),
+            Dialect::Postgres | Dialect::MySql | Dialect::Sqlite | Dialect::DuckDb => format!("LIMIT {limit} OFFSET {offset}"),
             Dialect::TSql => format!("OFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY"),
         }
     }
 
     pub fn returning(self) -> Returning {
         match self {
-            Dialect::Postgres => Returning::Clause,
+            Dialect::Postgres | Dialect::Sqlite | Dialect::DuckDb => Returning::Clause,
             Dialect::MySql => Returning::Reselect,
             Dialect::TSql => Returning::Output,
         }
@@ -188,7 +247,8 @@ impl Dialect {
     /// SQL Server only has `IS NOT DISTINCT FROM` since 2022: the long form works on every version.
     pub fn not_distinct(self, a: &str, b: &str) -> String {
         match self {
-            Dialect::Postgres => format!("{a} IS NOT DISTINCT FROM {b}"),
+            Dialect::Postgres | Dialect::DuckDb => format!("{a} IS NOT DISTINCT FROM {b}"),
+            Dialect::Sqlite => format!("{a} IS {b}"),
             Dialect::MySql => format!("{a} <=> {b}"),
             Dialect::TSql => format!("({a} = {b} OR ({a} IS NULL AND {b} IS NULL))"),
         }
@@ -199,19 +259,22 @@ impl Dialect {
             Dialect::Postgres => format!("{expr}::text"),
             Dialect::MySql => format!("CAST({expr} AS CHAR)"),
             Dialect::TSql => format!("CAST({expr} AS NVARCHAR(MAX))"),
+            Dialect::Sqlite => format!("CAST({expr} AS TEXT)"),
+            Dialect::DuckDb => format!("CAST({expr} AS VARCHAR)"),
         }
     }
 
+    /// SQLite's `LIKE` ignores case already (ASCII letters only).
     pub fn ilike(self) -> &'static str {
         match self {
-            Dialect::Postgres => "ILIKE",
-            Dialect::MySql | Dialect::TSql => "LIKE",
+            Dialect::Postgres | Dialect::DuckDb => "ILIKE",
+            Dialect::MySql | Dialect::TSql | Dialect::Sqlite => "LIKE",
         }
     }
 
     pub fn begin(self) -> &'static str {
         match self {
-            Dialect::Postgres => "BEGIN",
+            Dialect::Postgres | Dialect::Sqlite | Dialect::DuckDb => "BEGIN",
             Dialect::MySql => "START TRANSACTION",
             Dialect::TSql => "BEGIN TRANSACTION",
         }
@@ -221,7 +284,9 @@ impl Dialect {
         match self {
             Dialect::Postgres => Some("BEGIN READ ONLY"),
             Dialect::MySql => Some("START TRANSACTION READ ONLY"),
-            Dialect::TSql => None,
+            Dialect::DuckDb => Some("BEGIN TRANSACTION READ ONLY"),
+            // Read-only comes from the connection itself (opened read-only, `query_only`).
+            Dialect::TSql | Dialect::Sqlite => None,
         }
     }
 
@@ -233,27 +298,30 @@ impl Dialect {
             (Dialect::Postgres, false) => Some("SET default_transaction_read_only = off"),
             (Dialect::MySql, true) => Some("SET SESSION TRANSACTION READ ONLY"),
             (Dialect::MySql, false) => Some("SET SESSION TRANSACTION READ WRITE"),
-            (Dialect::TSql, _) => None,
+            (Dialect::Sqlite, true) => Some("PRAGMA query_only = ON"),
+            (Dialect::Sqlite, false) => Some("PRAGMA query_only = OFF"),
+            // DuckDB's is the whole database's (`access_mode`): the connection reopens.
+            (Dialect::TSql | Dialect::DuckDb, _) => None,
         }
     }
 
     pub fn commit(self) -> &'static str {
         match self {
-            Dialect::Postgres | Dialect::MySql => "COMMIT",
+            Dialect::Postgres | Dialect::MySql | Dialect::Sqlite | Dialect::DuckDb => "COMMIT",
             Dialect::TSql => "COMMIT TRANSACTION",
         }
     }
 
     pub fn rollback(self) -> &'static str {
         match self {
-            Dialect::Postgres | Dialect::MySql => "ROLLBACK",
+            Dialect::Postgres | Dialect::MySql | Dialect::Sqlite | Dialect::DuckDb => "ROLLBACK",
             Dialect::TSql => "ROLLBACK TRANSACTION",
         }
     }
 
     pub fn savepoint(self, name: &str) -> String {
         match self {
-            Dialect::Postgres | Dialect::MySql => format!("SAVEPOINT {name}"),
+            Dialect::Postgres | Dialect::MySql | Dialect::Sqlite | Dialect::DuckDb => format!("SAVEPOINT {name}"),
             Dialect::TSql => format!("SAVE TRANSACTION {name}"),
         }
     }
@@ -261,7 +329,7 @@ impl Dialect {
     /// T-SQL's savepoints cannot be released: back only.
     pub fn rollback_to(self, name: &str) -> String {
         match self {
-            Dialect::Postgres | Dialect::MySql => format!("ROLLBACK TO SAVEPOINT {name}; RELEASE SAVEPOINT {name}"),
+            Dialect::Postgres | Dialect::MySql | Dialect::Sqlite | Dialect::DuckDb => format!("ROLLBACK TO SAVEPOINT {name}; RELEASE SAVEPOINT {name}"),
             Dialect::TSql => format!("ROLLBACK TRANSACTION {name}"),
         }
     }

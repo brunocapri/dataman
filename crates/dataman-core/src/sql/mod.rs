@@ -67,8 +67,13 @@ fn unicode_escapes(s: &str) -> String {
     out
 }
 
+/// The dialect is a guess: a bracketed name after FROM (`[dbo].[t]`) is read as T-SQL's, while
+/// other brackets (DuckDB's `[1, 2]`, PostgreSQL's `a[1]`) leave PostgreSQL's rules.
 pub fn first_table(sql: &str) -> Option<String> {
-    let d = if sql.contains('[') { Dialect::TSql } else { Dialect::Postgres };
+    first_table_in(sql, Dialect::Postgres).or_else(|| if sql.contains('[') { first_table_in(sql, Dialect::TSql) } else { None })
+}
+
+pub fn first_table_in(sql: &str, d: Dialect) -> Option<String> {
     let toks: Vec<_> = tokenize_in(sql, d).into_iter().filter(|t| !t.kind.is_trivia()).collect();
     let i = toks.iter().position(|t| t.kind == TokenKind::Keyword && t.text(sql).eq_ignore_ascii_case("FROM"))?;
     let n = toks.get(i + 1)?;
@@ -124,6 +129,9 @@ mod tests {
     fn tables_and_verbs() {
         assert_eq!(first_table("select * from public.\"Orders\" o").as_deref(), Some("Orders"));
         assert_eq!(first_table("select 1"), None);
+        assert_eq!(first_table("SELECT * FROM [dbo].[Orders]").as_deref(), Some("Orders"));
+        assert_eq!(first_table("SELECT [1, 2] AS l FROM t").as_deref(), Some("t"), "a DuckDB list is no T-SQL name");
+        assert_eq!(first_table_in("SELECT * FROM `a b`", Dialect::Sqlite).as_deref(), Some("a b"));
         assert_eq!(first_table("select * from generate_series(1, 3)"), None);
         assert_eq!(statement_verb("-- c\ncreate table t (x int);"), "CREATE TABLE");
         assert_eq!(statement_verb("update t set x = 1"), "UPDATE");

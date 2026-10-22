@@ -22,6 +22,9 @@ pub enum Engine {
     #[serde(rename = "opensearch")]
     OpenSearch,
     Redis,
+    Sqlite,
+    #[serde(rename = "duckdb")]
+    DuckDb,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -32,8 +35,17 @@ pub enum Family {
 }
 
 impl Engine {
-    pub const ALL: [Engine; 7] =
-        [Engine::Postgres, Engine::MySql, Engine::SqlServer, Engine::MongoDb, Engine::Elasticsearch, Engine::OpenSearch, Engine::Redis];
+    pub const ALL: [Engine; 9] = [
+        Engine::Postgres,
+        Engine::MySql,
+        Engine::SqlServer,
+        Engine::Sqlite,
+        Engine::DuckDb,
+        Engine::MongoDb,
+        Engine::Elasticsearch,
+        Engine::OpenSearch,
+        Engine::Redis,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -44,6 +56,8 @@ impl Engine {
             Engine::Elasticsearch => "Elasticsearch",
             Engine::OpenSearch => "OpenSearch",
             Engine::Redis => "Redis",
+            Engine::Sqlite => "SQLite",
+            Engine::DuckDb => "DuckDB",
         }
     }
 
@@ -57,6 +71,8 @@ impl Engine {
             Engine::Elasticsearch => "elasticsearch",
             Engine::OpenSearch => "opensearch",
             Engine::Redis => "redis",
+            Engine::Sqlite => "sqlite",
+            Engine::DuckDb => "duckdb",
         }
     }
 
@@ -69,6 +85,8 @@ impl Engine {
             "mongo" => Some(Engine::MongoDb),
             "es" | "elastic" => Some(Engine::Elasticsearch),
             "os" => Some(Engine::OpenSearch),
+            "sqlite3" | "lite" => Some(Engine::Sqlite),
+            "duck" => Some(Engine::DuckDb),
             _ => None,
         };
         alias.or_else(|| Engine::ALL.into_iter().find(|e| e.slug() == s || e.label().eq_ignore_ascii_case(&s)))
@@ -82,6 +100,7 @@ impl Engine {
             Engine::MongoDb => 27017,
             Engine::Elasticsearch | Engine::OpenSearch => 9200,
             Engine::Redis => 6379,
+            Engine::Sqlite | Engine::DuckDb => 0,
         }
     }
 
@@ -92,13 +111,13 @@ impl Engine {
             Engine::SqlServer => "sa",
             Engine::Elasticsearch => "elastic",
             Engine::OpenSearch => "admin",
-            Engine::MongoDb | Engine::Redis => "",
+            Engine::MongoDb | Engine::Redis | Engine::Sqlite | Engine::DuckDb => "",
         }
     }
 
     pub fn family(self) -> Family {
         match self {
-            Engine::Postgres | Engine::MySql | Engine::SqlServer => Family::Sql,
+            Engine::Postgres | Engine::MySql | Engine::SqlServer | Engine::Sqlite | Engine::DuckDb => Family::Sql,
             Engine::MongoDb | Engine::Elasticsearch | Engine::OpenSearch => Family::Document,
             Engine::Redis => Family::KeyValue,
         }
@@ -110,6 +129,20 @@ impl Engine {
 
     pub fn dialect(self) -> crate::sql::Dialect {
         crate::sql::Dialect::of(self)
+    }
+
+    /// A database in a file on this machine: no server, host, user or password.
+    pub fn is_file(self) -> bool {
+        matches!(self, Engine::Sqlite | Engine::DuckDb)
+    }
+
+    /// The extensions its files usually have, the first one for new files.
+    pub fn file_extensions(self) -> &'static [&'static str] {
+        match self {
+            Engine::Sqlite => &["sqlite", "sqlite3", "db", "db3"],
+            Engine::DuckDb => &["duckdb", "ddb"],
+            _ => &[],
+        }
     }
 
     pub fn is_postgres(&self) -> bool {
@@ -143,6 +176,9 @@ pub fn is_local_host(host: &str) -> bool {
 /// plain text for the document engines) on this machine or through an SSH tunnel (already
 /// encrypted up to the bastion), TLS required anywhere else.
 pub fn default_sslmode(engine: Engine, host: &str, tunnel: bool) -> SslMode {
+    if engine.is_file() {
+        return SslMode::Disable;
+    }
     match (tunnel || is_local_host(host), engine.is_sql()) {
         (false, _) => SslMode::Require,
         (true, true) => SslMode::Prefer,
@@ -170,10 +206,17 @@ pub struct ConnectionProfile {
     /// Left out of the file for PostgreSQL, so files of older versions load unchanged.
     #[serde(default, skip_serializing_if = "Engine::is_postgres")]
     pub engine: Engine,
+    #[serde(default)]
     pub host: String,
+    #[serde(default)]
     pub port: u16,
+    #[serde(default)]
     pub user: String,
+    #[serde(default)]
     pub database: String,
+    /// The file of a file database (SQLite, DuckDB), as the user wrote it (`~` included).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
     #[serde(default)]
     pub sslmode: SslMode,
     #[serde(default)]
@@ -339,6 +382,7 @@ impl ConnectionProfile {
             port: 5432,
             user: "postgres".into(),
             database: "postgres".into(),
+            path: None,
             sslmode: SslMode::Prefer,
             save_password: false,
             color: None,
@@ -354,6 +398,26 @@ impl ConnectionProfile {
             options: BTreeMap::new(),
             agent_made: false,
         }
+    }
+
+    /// A file database: no host, port, user, TLS or tunnel. The name is the file's.
+    pub fn new_file(engine: Engine, path: impl Into<String>) -> Self {
+        let path = path.into();
+        let name = Path::new(&path).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let mut p = ConnectionProfile::new(name);
+        p.engine = engine;
+        p.host = String::new();
+        p.port = 0;
+        p.user = String::new();
+        p.database = String::new();
+        p.sslmode = SslMode::Disable;
+        p.path = Some(path);
+        p
+    }
+
+    /// The file, `~` expanded (an empty path for a server database).
+    pub fn file_path(&self) -> PathBuf {
+        expand_home(self.path.as_deref().unwrap_or(""))
     }
 
     pub fn read_only_for(&self, database: &str) -> bool {
@@ -399,6 +463,9 @@ impl ConnectionProfile {
     }
 
     pub fn summary(&self) -> String {
+        if self.engine.is_file() {
+            return tilde(self.path.as_deref().unwrap_or(""));
+        }
         format!("{}@{}:{}/{}", self.user, self.host, self.port, self.database)
     }
 
@@ -412,6 +479,13 @@ impl ConnectionProfile {
 
     /// Never with the password (it lives in the keychain).
     pub fn url(&self) -> String {
+        if self.engine.is_file() {
+            let path = self.file_path();
+            let path = if path.is_absolute() { path } else { std::env::current_dir().map(|d| d.join(&path)).unwrap_or(path) };
+            let enc: String = path.to_string_lossy().split('/').map(percent_encode).collect::<Vec<_>>().join("/");
+            let ro = if self.read_only { "?mode=ro" } else { "" };
+            return format!("{}://{enc}{ro}", self.engine.slug());
+        }
         let host = if self.is_socket() {
             percent_encode(&self.host)
         } else if self.host.contains(':') && !self.host.starts_with('[') {
@@ -472,6 +546,29 @@ impl ConnectionProfile {
             percent_encode(&self.database),
             self.sslmode.label()
         )
+    }
+}
+
+/// `~` and `~/…` are this user's home; anything else is the path as written.
+pub fn expand_home(path: &str) -> PathBuf {
+    let path = path.trim();
+    let home = || std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from);
+    match path.strip_prefix('~') {
+        Some("") => home().unwrap_or_else(|| PathBuf::from(path)),
+        Some(rest) if rest.starts_with('/') => match home() {
+            Some(h) => h.join(&rest[1..]),
+            None => PathBuf::from(path),
+        },
+        _ => PathBuf::from(path),
+    }
+}
+
+/// The path with this user's home shown as `~`.
+pub fn tilde(path: &str) -> String {
+    let expanded = expand_home(path);
+    match std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from) {
+        Some(h) if expanded.starts_with(&h) && expanded != h => format!("~/{}", expanded.strip_prefix(&h).unwrap_or(&expanded).display()),
+        _ => expanded.display().to_string(),
     }
 }
 
@@ -565,6 +662,9 @@ pub struct ConfigStore {
 
 struct Inner {
     connections: Vec<ConnectionProfile>,
+    /// Entries this version cannot read (an engine from a newer Dataman): kept as they are, and
+    /// written back on every save.
+    skipped: Vec<toml::Table>,
     stamp: Option<crate::stamp::FileStamp>,
 }
 
@@ -572,20 +672,43 @@ fn mtime(p: &Path) -> Option<crate::stamp::FileStamp> {
     crate::stamp::FileStamp::of(p)
 }
 
-fn read(path: &Path) -> Result<Vec<ConnectionProfile>> {
+type Loaded = (Vec<ConnectionProfile>, Vec<toml::Table>);
+
+fn read(path: &Path) -> Result<Loaded> {
     match std::fs::read_to_string(path) {
-        Ok(s) => Ok(toml::from_str::<File>(&s).with_context(|| format!("reading {}", path.display()))?.connections),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Ok(s) => parse_file(&s).with_context(|| format!("reading {}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Default::default()),
         Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
     }
+}
+
+/// Each connection on its own: one this version cannot read is skipped (and kept), not the file.
+fn parse_file(s: &str) -> Result<Loaded> {
+    let mut table: toml::Table = toml::from_str(s)?;
+    let mut out: Loaded = Default::default();
+    let Some(list) = table.remove("connection") else { return Ok(out) };
+    let toml::Value::Array(list) = list else { anyhow::bail!("`connection` is not a list") };
+    for v in list {
+        match v.clone().try_into::<ConnectionProfile>() {
+            Ok(c) => out.0.push(c),
+            Err(e) => {
+                let name = v.get("name").and_then(|n| n.as_str()).unwrap_or("?");
+                log::warn!("skipping the connection {name:?}, which this version cannot read ({e}); it stays in the file");
+                if let toml::Value::Table(t) = v {
+                    out.1.push(t);
+                }
+            }
+        }
+    }
+    Ok(out)
 }
 
 impl ConfigStore {
     pub fn open(dirs: &Dirs) -> Result<ConfigStore> {
         let path = dirs.connections_file();
         let stamp = mtime(&path);
-        let connections = read(&path)?;
-        Ok(ConfigStore { path, inner: Mutex::new(Inner { connections, stamp }) })
+        let (connections, skipped) = read(&path)?;
+        Ok(ConfigStore { path, inner: Mutex::new(Inner { connections, skipped, stamp }) })
     }
 
     pub fn connections(&self) -> Vec<ConnectionProfile> {
@@ -609,11 +732,14 @@ impl ConfigStore {
         }
         g.stamp = stamp;
         match read(path) {
-            Ok(c) if c != g.connections => {
+            Ok((c, skipped)) => {
+                g.skipped = skipped;
+                if c == g.connections {
+                    return false;
+                }
                 g.connections = c;
                 true
             }
-            Ok(_) => false,
             Err(e) => {
                 log::warn!("{e:#}");
                 false
@@ -625,7 +751,7 @@ impl ConfigStore {
         let mut g = self.inner.lock();
         Self::sync(&self.path, &mut g);
         f(&mut g.connections);
-        save(&self.path, &g.connections)?;
+        save(&self.path, &g.connections, &g.skipped)?;
         g.stamp = mtime(&self.path);
         Ok(())
     }
@@ -652,10 +778,18 @@ impl ConfigStore {
 }
 
 /// Writes atomically: a temporary file in the same directory, then `rename`.
-fn save(path: &Path, connections: &[ConnectionProfile]) -> Result<()> {
+fn save(path: &Path, connections: &[ConnectionProfile], skipped: &[toml::Table]) -> Result<()> {
     let dir = path.parent().context("config path has no parent")?;
     std::fs::create_dir_all(dir)?;
-    let text = toml::to_string_pretty(&File { connections: connections.to_vec() })?;
+    let text = if skipped.is_empty() {
+        toml::to_string_pretty(&File { connections: connections.to_vec() })?
+    } else {
+        let mut list: Vec<toml::Value> = connections.iter().map(toml::Value::try_from).collect::<Result<_, _>>()?;
+        list.extend(skipped.iter().cloned().map(toml::Value::Table));
+        let mut file = toml::Table::new();
+        file.insert("connection".into(), toml::Value::Array(list));
+        toml::to_string_pretty(&file)?
+    };
     let tmp = dir.join(format!(".connections.toml.{}", std::process::id()));
     std::fs::write(&tmp, text)?;
     std::fs::rename(&tmp, path)?;
@@ -675,7 +809,7 @@ mod tests {
         }
         for h in ["db.example.com", "10.0.0.5", "192.168.1.2", "localhost.evil.com", "::2", "host.docker.internal"] {
             assert!(!is_local_host(h), "{h}");
-            for e in Engine::ALL {
+            for e in Engine::ALL.into_iter().filter(|e| !e.is_file()) {
                 assert_eq!(default_sslmode(e, h, false), SslMode::Require, "{h} {e:?}");
                 // Through a tunnel the hop to the bastion is encrypted: as on this machine.
                 assert_eq!(default_sslmode(e, h, true), if e.is_sql() { SslMode::Prefer } else { SslMode::Disable }, "{h} {e:?} tunnel");
@@ -954,7 +1088,7 @@ mod tests {
         assert_eq!(ConfigStore::open(&dirs).unwrap().connections(), vec![pg, my, ms]);
         std::fs::write(dirs.connections_file(), "[[connection]]\nid = \"a\"\nname = \"n\"\nhost = \"h\"\nport = 1\nuser = \"u\"\ndatabase = \"d\"\n").unwrap();
         assert_eq!(ConfigStore::open(&dirs).unwrap().connections()[0].engine, Engine::Postgres);
-        assert_eq!(Engine::ALL.map(Engine::default_port), [5432, 3306, 1433, 27017, 9200, 9200, 6379]);
+        assert_eq!(Engine::ALL.map(Engine::default_port), [5432, 3306, 1433, 0, 0, 27017, 9200, 9200, 6379]);
     }
 
     #[test]
@@ -969,5 +1103,43 @@ mod tests {
         assert_eq!((c.len(), c[0].name.as_str(), c[0].port), (1, "lar", 5490));
         store.upsert(c[0].clone()).unwrap();
         assert!(!std::fs::read_to_string(dirs.connections_file()).unwrap().contains("metrics_url"));
+    }
+
+    #[test]
+    fn unreadable_connections_are_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = Dirs::at(dir.path().join("dataman"));
+        std::fs::create_dir_all(&dirs.config).unwrap();
+        let text = "[[connection]]\nid = \"a\"\nname = \"pg\"\nhost = \"h\"\nport = 1\nuser = \"u\"\ndatabase = \"d\"\n\n\
+                    [[connection]]\nid = \"b\"\nname = \"future\"\nengine = \"cockroach\"\nhost = \"h\"\nport = 2\nuser = \"u\"\ndatabase = \"d\"\n";
+        std::fs::write(dirs.connections_file(), text).unwrap();
+        let store = ConfigStore::open(&dirs).unwrap();
+        assert_eq!(store.connections().iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["pg"]);
+        store.upsert(ConnectionProfile::new_file(Engine::Sqlite, "~/data/app.sqlite")).unwrap();
+        let saved = std::fs::read_to_string(dirs.connections_file()).unwrap();
+        assert!(saved.contains("engine = \"cockroach\"") && saved.contains("name = \"future\""), "{saved}");
+        let again = ConfigStore::open(&dirs).unwrap().connections();
+        assert_eq!(again.len(), 2);
+        assert_eq!((again[1].engine, again[1].name.as_str(), again[1].path.as_deref()), (Engine::Sqlite, "app", Some("~/data/app.sqlite")));
+    }
+
+    #[test]
+    fn file_databases() {
+        for e in [Engine::Sqlite, Engine::DuckDb] {
+            assert!(e.is_file() && e.is_sql());
+            assert_eq!(Engine::parse(e.slug()), Some(e));
+            assert_eq!(default_sslmode(e, "", false), SslMode::Disable);
+        }
+        assert_eq!(Engine::parse("sqlite3"), Some(Engine::Sqlite));
+        assert_eq!(Engine::parse("duck"), Some(Engine::DuckDb));
+        let mut p = ConnectionProfile::new_file(Engine::DuckDb, "/data/my db.duckdb");
+        assert_eq!(p.name, "my db");
+        assert_eq!(p.url(), "duckdb:///data/my%20db.duckdb");
+        p.read_only = true;
+        assert_eq!(p.url(), "duckdb:///data/my%20db.duckdb?mode=ro");
+        assert_eq!(p.summary(), "/data/my db.duckdb");
+        let home = std::env::var("HOME").unwrap();
+        assert_eq!(expand_home("~/x.db"), PathBuf::from(&home).join("x.db"));
+        assert_eq!(tilde(&format!("{home}/x.db")), "~/x.db");
     }
 }

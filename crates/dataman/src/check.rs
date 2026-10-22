@@ -175,6 +175,11 @@ pub fn profile(engine: Engine) -> (ConnectionProfile, String) {
         Engine::MongoDb => crate::nosql_check::mongo_profile(),
         Engine::Elasticsearch => crate::nosql_check::es_profile(),
         Engine::Redis => crate::nosql_check::redis_profile(),
+        Engine::Sqlite | Engine::DuckDb => {
+            let ext = engine.file_extensions()[0];
+            let path = std::env::temp_dir().join(format!("dataman-check-{}.{ext}", std::process::id()));
+            (ConnectionProfile::new_file(engine, path.to_string_lossy()), String::new())
+        }
         Engine::OpenSearch => {
             let p = spec("DATAMAN_BENCH_OPENSEARCH", "127.0.0.1:9200");
             let mut prof = ConnectionProfile::new("opensearch-local");
