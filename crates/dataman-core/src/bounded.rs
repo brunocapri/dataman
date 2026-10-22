@@ -12,7 +12,7 @@ use tokio_postgres::types::{ToSql, Type};
 use tokio_postgres::{Client, SimpleQueryMessage};
 
 use crate::backend::pg::{TextParam, column_infos, error_info, push_row};
-use crate::backend::{Dedicated, RowSource, ms, my};
+use crate::backend::{Dedicated, RowSource, lite, ms, my};
 use crate::conn::Connection;
 use crate::guard;
 use crate::result::{Cell, ChunkBuilder, ColumnInfo, ErrorInfo, format_cell};
@@ -237,7 +237,7 @@ impl Connection {
             Dedicated::My(c) => {
                 c.execute(&my_lexed_sql_mode()).await?;
             }
-            Dedicated::Ms(_) => {}
+            Dedicated::Ms(_) | Dedicated::Lite(_) => {}
         }
         Ok(d)
     }
@@ -296,6 +296,7 @@ impl Connection {
                     Dedicated::Pg(p) => in_transaction(&p.client, &stmts, &params, mode, &limits).await,
                     Dedicated::My(c) => my_in_transaction(c, &stmts, &params, mode, &limits).await,
                     Dedicated::Ms(c) => ms_in_transaction(c, &stmts, &params, mode, &limits).await,
+                    Dedicated::Lite(c) => lite_in_transaction(c, &stmts, &params, mode, &limits).await,
                 }
             };
             tokio::pin!(work);
@@ -367,7 +368,69 @@ async fn finish(d: &Dedicated, dialect: Dialect, mode: Mode, commit: bool) -> Re
         Dedicated::Pg(p) => p.client.simple_query(sql).await.map(|_| ()).map_err(|e| (Stop::Server(error_info(&e)), !p.client.is_closed())),
         Dedicated::My(c) => c.execute(sql).await.map(|_| ()).map_err(|e| (Stop::Server(my::error_info_at(&e, sql)), !c.is_closed())),
         Dedicated::Ms(c) => c.execute(sql).await.map(|_| ()).map_err(|e| (Stop::Server(ms::error_info_at(&e, sql, 0)), !c.is_closed())),
+        Dedicated::Lite(c) => c.execute(sql).await.map(|_| ()).map_err(|e| (Stop::Server(lite::error_info_at(&e, sql)), !c.is_closed())),
     }
+}
+
+/// SQLite has no statement time limit: the caller's timer interrupts. A read runs on a
+/// connection that cannot write (opened read-only, `query_only`), inside a transaction that is
+/// rolled back.
+async fn lite_in_transaction(c: &Arc<lite::Client>, stmts: &[String], params: &[Option<String>], mode: Mode, limits: &Limits) -> Result<(Outcome, bool), Failed> {
+    if mode != Mode::Autocommit {
+        let begin = "BEGIN";
+        c.execute(begin).await.map_err(|e| (Stop::Server(lite::error_info_at(&e, begin)), false))?;
+    }
+    let mut out = Outcome::default();
+    for (i, s) in stmts.iter().enumerate() {
+        let last = i + 1 == stmts.len();
+        let p = if last { params } else { &[] };
+        let (cut0, t0) = (out.cut_cells, Instant::now());
+        if mode == Mode::Read {
+            out.start_part();
+        }
+        let r = lite_statement(c, s, p, mode, !last, limits, &mut out).await;
+        if mode == Mode::Read && r.is_ok() {
+            out.end_part(i, s, cut0, t0.elapsed());
+        }
+        match r {
+            Ok(true) => {}
+            Ok(false) => {
+                let _ = c.cancel().await;
+                return Ok((out, false));
+            }
+            Err(e) => {
+                let ok = mode == Mode::Autocommit || c.execute("ROLLBACK").await.is_ok();
+                return Err((e, ok && !c.is_closed()));
+            }
+        }
+    }
+    Ok((out, true))
+}
+
+async fn lite_statement(c: &Arc<lite::Client>, sql: &str, params: &[Option<String>], mode: Mode, more: bool, limits: &Limits, out: &mut Outcome) -> Result<bool, Stop> {
+    let verb = guard::classify_in(sql, Dialect::Sqlite).verb;
+    let ((cols, _), mut rows) = c.stream(sql, params, None).await.map_err(|e| Stop::Server(lite::error_info_at(&e, sql)))?;
+    let returns_rows = !cols.is_empty();
+    if returns_rows {
+        start_rows(&cols, mode, out);
+    }
+    let mut b = ChunkBuilder::new(&cols);
+    loop {
+        let next = rows.next_into(&mut b).await.map_err(|e| Stop::Server(lite::error_info(&e)))?;
+        if !next {
+            break;
+        }
+        let chunk = b.finish();
+        // A cell that turned its column to text: the column is text from here on.
+        let cols: Vec<ColumnInfo> = cols.iter().enumerate().map(|(i, c)| ColumnInfo { kind: b.kind(i), ..c.clone() }).collect();
+        match keep_row(&cols, &chunk, mode, more, limits, out) {
+            Keep::Yes | Keep::Skip => {}
+            Keep::Stop => return Ok(false),
+        }
+    }
+    let affected = rows.affected();
+    out.statements.push(Done { verb, affected: if returns_rows && mode == Mode::Read { None } else { affected } });
+    Ok(true)
 }
 
 /// DDL commits on its own in MySQL: a write that changes the schema is not undone by a

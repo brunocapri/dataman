@@ -141,6 +141,10 @@ impl Connection {
                 this.my_graph(&db, &schema).await?
             } else if this.engine() == crate::config::Engine::SqlServer {
                 this.ms_graph(&db, &schema).await?
+            } else if this.engine() == crate::config::Engine::Sqlite {
+                this.lite_graph(&db, &schema).await?
+            } else if this.engine() == crate::config::Engine::DuckDb {
+                this.duck_graph(&db, &schema).await?
             } else {
                 this.pg_graph(&db, &schema).await?
             };
@@ -213,6 +217,22 @@ impl Connection {
             crate::schema::ms::lit(schema)
         );
         self.key_column_graph(db, schema, &sql).await
+    }
+
+    /// A key that names no parent column references the parent's primary key, in its order.
+    async fn lite_graph(&self, db: &str, schema: &str) -> Result<RelationGraph> {
+        use crate::schema::lite::{USER_OBJECTS, ident, lit};
+        let sql = format!(
+            "SELECT m.name, f.id, f.\"from\", {s}, f.\"table\",                     COALESCE(f.\"to\", (SELECT p.name FROM pragma_table_info(f.\"table\", {s}) p WHERE p.pk = f.seq + 1))                FROM {si}.sqlite_master m JOIN pragma_foreign_key_list(m.name, {s}) f               WHERE m.type = 'table' AND m.{USER_OBJECTS}               ORDER BY m.name, f.id, f.seq",
+            s = lit(schema),
+            si = ident(schema),
+        );
+        self.key_column_graph(db, schema, &sql).await
+    }
+
+    async fn duck_graph(&self, db: &str, schema: &str) -> Result<RelationGraph> {
+        let _ = (db, schema);
+        Ok(RelationGraph::default())
     }
 
     async fn key_column_graph(&self, db: &str, schema: &str, sql: &str) -> Result<RelationGraph> {

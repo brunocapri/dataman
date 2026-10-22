@@ -330,6 +330,15 @@ impl ChangeSet {
 /// equals JSON.
 fn comparable(d: Dialect, type_name: &str) -> bool {
     let base = type_name.trim_start_matches('_');
+    // SQLite's REAL is a double, which reads back the decimal it prints exactly.
+    if d == Dialect::Sqlite {
+        return true;
+    }
+    if d == Dialect::DuckDb {
+        // FLOAT is single precision: it never equals the decimal it prints.
+        let t = base.to_ascii_uppercase();
+        return !matches!(t.as_str(), "FLOAT" | "FLOAT4" | "REAL") && !t.contains("[]") && !t.starts_with("STRUCT") && !t.starts_with("MAP") && !t.starts_with("UNION");
+    }
     if d == Dialect::TSql {
         // SQL Server cannot compare its old large types, XML and CLR types with `=`; floats
         // never equal the decimal they print, and the grid keeps time to the µs (datetime2's
@@ -521,6 +530,14 @@ pub fn explain_error(e: &ErrorInfo) -> String {
         Some("1792") => "The transaction is read-only.",
         Some("1290") => "The server is read-only: writes go to the primary.",
         Some("1317") => "Cancelled.",
+        Some("SQLITE_CONSTRAINT_UNIQUE" | "SQLITE_CONSTRAINT_PRIMARYKEY") => "Duplicate value: another row already has this value in a unique column or key.",
+        Some("SQLITE_CONSTRAINT_NOTNULL") => "A required column (NOT NULL) has no value.",
+        Some("SQLITE_CONSTRAINT_FOREIGNKEY") => "Foreign key: the row points to a row that does not exist, or other rows still point to it.",
+        Some("SQLITE_CONSTRAINT_CHECK") => "A CHECK constraint rejected the value.",
+        Some("SQLITE_CONSTRAINT_DATATYPE" | "SQLITE_MISMATCH") => "A value is not valid for its column's type.",
+        Some("SQLITE_BUSY" | "SQLITE_LOCKED") => "The database is locked: another tab or program holds a write transaction on this file; nothing was saved. Try again.",
+        Some("SQLITE_READONLY") => "The file is read-only (or opened read-only): nothing was saved.",
+        Some("SQLITE_INTERRUPT") => "Cancelled.",
         _ => "",
     };
     let mut s = String::new();
@@ -742,7 +759,7 @@ impl Connection {
                         let mut found = None;
                         for s in self.schema.search_path(db) {
                             if let Ok(rels) = self.relations(db, &s).await
-                                && rels.iter().any(|r| r.name == shape.table.name)
+                                && rels.iter().any(|r| same_name(dialect, &r.name, &shape.table.name))
                             {
                                 found = Some(s);
                                 break;
@@ -752,7 +769,7 @@ impl Connection {
                     }
                 };
                 let rel = match &schema {
-                    Some(s) => self.relations(db, s).await?.into_iter().find(|r| r.name == shape.table.name).map(|r| (s.clone(), r)),
+                    Some(s) => self.relations(db, s).await?.into_iter().find(|r| same_name(dialect, &r.name, &shape.table.name)).map(|r| (s.clone(), r)),
                     None => None,
                 };
                 if rel.is_some() || fresh {
@@ -785,6 +802,13 @@ impl Connection {
             if dialect == Dialect::TSql {
                 let own = ms_generated(&client, &schema, &rel.name).await;
                 generated = columns.iter().map(|c| c.as_ref().is_some_and(|n| own.contains(n))).collect();
+            }
+            // SQLite's and DuckDB's generated columns are read-only.
+            if matches!(dialect, Dialect::Sqlite | Dialect::DuckDb) {
+                generated = columns
+                    .iter()
+                    .map(|c| c.as_ref().and_then(|n| tcols_full.iter().find(|t| &t.name == n)).is_some_and(|t| t.default.as_deref().is_some_and(|d| d.starts_with("GENERATED"))))
+                    .collect();
             }
             let not_null = columns
                 .iter()
@@ -830,6 +854,10 @@ impl Connection {
                 my_key(&client, table.schema.as_deref().unwrap_or(db), &table.name).await
             } else if dialect == Dialect::TSql {
                 ms_key(&client, table.schema.as_deref().unwrap_or("dbo"), &table.name).await
+            } else if dialect == Dialect::Sqlite {
+                lite_key(&client, table.schema.as_deref().unwrap_or("main"), &table.name).await
+            } else if dialect == Dialect::DuckDb {
+                duck_key(&client, table.schema.as_deref().unwrap_or("main"), &table.name).await
             } else {
                 let Some(oid) = oid else { return ro("the table's catalog entry is unavailable, so its key is unknown") };
                 pg_key(&client, oid).await
@@ -945,6 +973,58 @@ async fn my_key(client: &Db, schema: &str, table: &str) -> Result<Vec<(bool, Vec
     let mut keys: Vec<(bool, Vec<String>)> = out.into_iter().filter(|(_, c, ok)| *ok && !c.is_empty()).map(|(p, c, _)| (p, c)).collect();
     keys.sort_by_key(|(p, c)| (!*p, c.len()));
     Ok(keys)
+}
+
+/// SQLite and DuckDB compare names whatever their case.
+fn same_name(d: Dialect, a: &str, b: &str) -> bool {
+    if d.names_ignore_case() { a.eq_ignore_ascii_case(b) } else { a == b }
+}
+
+/// The primary key, then unique indexes whose columns are all NOT NULL (no partial or
+/// expression index). A rowid table without a declared key has none (its `rowid` is not used).
+async fn lite_key(client: &Db, schema: &str, table: &str) -> Result<Vec<(bool, Vec<String>)>> {
+    use crate::schema::lite::lit;
+    let (t, s) = (lit(table), lit(schema));
+    let pk: Vec<String> = first_ok(client, &[&format!("SELECT name FROM pragma_table_info({t}, {s}) WHERE pk > 0 ORDER BY pk")])
+        .await?
+        .into_iter()
+        .filter_map(|r| r.into_iter().next().flatten())
+        .collect();
+    let rows = first_ok(
+        client,
+        &[&format!(
+            "SELECT il.name, ii.name, ti.\"notnull\" FROM pragma_index_list({t}, {s}) il JOIN pragma_index_info(il.name, {s}) ii \
+             LEFT JOIN pragma_table_info({t}, {s}) ti ON ti.name = ii.name \
+             WHERE il.\"unique\" = 1 AND il.partial = 0 AND il.origin <> 'pk' ORDER BY il.name, ii.seqno"
+        )],
+    )
+    .await?;
+    let mut uniques: Vec<(String, Vec<String>, bool)> = Vec::new();
+    for r in rows {
+        let get = |i: usize| r.get(i).cloned().flatten();
+        let Some(index) = get(0) else { continue };
+        if uniques.last().is_none_or(|u| u.0 != index) {
+            uniques.push((index, Vec::new(), true));
+        }
+        let e = uniques.last_mut().expect("pushed");
+        match get(1) {
+            Some(c) if get(2).as_deref() == Some("1") => e.1.push(c),
+            _ => e.2 = false,
+        }
+    }
+    let mut keys: Vec<(bool, Vec<String>)> = Vec::new();
+    if !pk.is_empty() {
+        keys.push((true, pk));
+    }
+    let mut u: Vec<Vec<String>> = uniques.into_iter().filter(|(_, c, ok)| *ok && !c.is_empty()).map(|(_, c, _)| c).collect();
+    u.sort_by_key(Vec::len);
+    keys.extend(u.into_iter().map(|c| (false, c)));
+    Ok(keys)
+}
+
+async fn duck_key(client: &Db, schema: &str, table: &str) -> Result<Vec<(bool, Vec<String>)>> {
+    let _ = (client, schema, table);
+    Ok(Vec::new())
 }
 
 async fn ms_generated(client: &Db, schema: &str, table: &str) -> BTreeSet<String> {

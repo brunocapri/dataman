@@ -115,8 +115,8 @@ pub fn parse_list(s: &str) -> Vec<Option<String>> {
     out
 }
 
-/// T-SQL's LIKE has no default escape and `[` is a character class there: the caller adds
-/// `ESCAPE '\'`.
+/// T-SQL's, SQLite's and DuckDB's LIKE have no default escape (and `[` is a character class in
+/// T-SQL): the caller adds `ESCAPE '\'`.
 fn like_escape(s: &str, d: Dialect) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
@@ -166,7 +166,8 @@ impl Filter {
                 let text = if self.kind == Kind::Text { col } else { d.text_cast(&col) };
                 let pat = like_escape(&v, d);
                 let pat = if self.op == Op::Contains { format!("%{pat}%") } else { format!("{pat}%") };
-                let escape = if d == Dialect::TSql { " ESCAPE '\\'" } else { "" };
+                // PostgreSQL's and MySQL's LIKE escape with `\` by default; the others need it said.
+                let escape = if matches!(d, Dialect::TSql | Dialect::Sqlite | Dialect::DuckDb) { " ESCAPE '\\'" } else { "" };
                 format!("{text} {} {}{escape}", d.ilike(), d.quote_literal(&pat))
             }
             Op::IsNull => format!("{col} IS NULL"),
@@ -296,6 +297,10 @@ pub struct CountStop(#[allow(dead_code)] tokio::sync::oneshot::Sender<()>);
 
 impl Connection {
     pub fn estimate_rows(self: &Arc<Self>, db: &str, schema: &str, table: &str) -> Task<Option<u64>> {
+        // A file database keeps no row estimate: the count is exact or absent.
+        if self.engine().is_file() {
+            return self.spawn(async { Ok(None) });
+        }
         let (this, db) = (self.clone(), db.to_string());
         let rel = quote_literal(&qualified(Some(schema), table));
         let my = match self.engine() {
@@ -359,6 +364,12 @@ impl Connection {
                   WHERE i.object_id = {} AND i.is_primary_key = 1 AND ic.is_included_column = 0 ORDER BY ic.key_ordinal",
                 ms::object_id(schema, table)
             )),
+            Engine::Sqlite => Some(format!(
+                "SELECT name FROM pragma_table_info({}, {}) WHERE pk > 0 ORDER BY pk",
+                crate::schema::lite::lit(table),
+                crate::schema::lite::lit(schema)
+            )),
+            Engine::DuckDb => Some(crate::schema::duck::primary_key_sql(schema, table)),
             _ => None,
         };
         if let Some(q) = other {
@@ -408,6 +419,9 @@ impl Connection {
 
     pub fn result_enum_labels(self: &Arc<Self>, db: &str, rs: &ResultSet, col: usize) -> Task<Arc<Vec<String>>> {
         let Some(info) = rs.columns().and_then(|c| c.get(col).cloned()) else { return self.spawn(async { Ok(Arc::new(Vec::new())) }) };
+        if self.engine().is_file() {
+            return self.spawn(async { Ok(Arc::new(Vec::new())) });
+        }
         if self.engine() != Engine::MySql {
             return self.enum_labels(db, info.type_oid);
         }

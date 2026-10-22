@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::pg::objects as pg;
-use super::{RelKey, lit, ms, my, parse_bool};
+use super::{RelKey, lit, lite, ms, my, parse_bool};
 use crate::Task;
 use crate::config::Engine;
 use crate::conn::{Connection, first_ok};
@@ -484,6 +484,12 @@ impl Connection {
                 Engine::SqlServer => {
                     first_ok(&client, &[&ms::counts_sql(&schema)]).await.ok().and_then(|rows| rows.first().map(|r| ms::parse_counts(r))).unwrap_or_default()
                 }
+                Engine::Sqlite => {
+                    let q = format!("SELECT count(*) FROM {}.sqlite_master WHERE type = 'trigger'", lite::ident(&schema));
+                    let n = first_ok(&client, &[&q]).await.ok().and_then(|rows| rows.first().and_then(|r| get(r, 0))).and_then(|s| s.parse().ok());
+                    ObjectCounts { functions: None, sequences: None, types: None, triggers: n }
+                }
+                Engine::DuckDb => ObjectCounts::default(),
                 _ => match first_ok(&client, &[&pg::counts_sql(&schema)]).await {
                     Ok(rows) => rows.first().map(|r| pg::parse_counts(r)).unwrap_or_default(),
                     // A server that cannot run the four together (LAR's planner): one by one.
@@ -502,6 +508,14 @@ impl Connection {
         self.spawn(async move {
             if let Some(s) = this.schema.cached_stats(&db, &schema) {
                 return Ok(s);
+            }
+            // A file database keeps no row counts or sizes per table.
+            if this.engine().is_file() {
+                let m = Arc::new(HashMap::new());
+                this.schema.with_db(&db, |d| {
+                    d.stats.insert(schema, m.clone());
+                });
+                return Ok(m);
             }
             let client = this.meta(&db).await?;
             let r = match this.engine() {
@@ -536,8 +550,22 @@ impl Connection {
         let (this, db) = (self.clone(), db.to_string());
         let d = self.dialect();
         let (s, n) = (d.quote_literal(schema), d.quote_literal(name));
+        let (schema, name) = (schema.to_string(), name.to_string());
         self.spawn(async move {
             let sql = match this.engine() {
+                Engine::Sqlite => {
+                    let client = this.meta(&db).await?;
+                    let q = format!("SELECT sql FROM {}.sqlite_master WHERE type = 'view' AND name = {}", lite::ident(&schema), lite::lit(&name));
+                    let Some(view) = first_ok(&client, &[&q]).await?.first().and_then(|r| get(r, 0)) else { return Ok(Vec::new()) };
+                    let known = this.load_relations(&db, &schema).await.unwrap_or_default();
+                    return Ok(lite::view_tables(&view)
+                        .into_iter()
+                        .filter_map(|t| known.iter().find(|r| r.name.eq_ignore_ascii_case(&t)))
+                        .map(|r| ViewSource { schema: schema.clone(), name: r.name.clone(), kind: ViewSourceKind::Relation })
+                        .collect());
+                }
+                // DuckDB keeps no dependencies either; its views are not read for them yet.
+                Engine::DuckDb => return Ok(Vec::new()),
                 Engine::MySql => format!(
                     "SELECT TABLE_SCHEMA, TABLE_NAME, 'relation' FROM information_schema.VIEW_TABLE_USAGE WHERE VIEW_SCHEMA = {s} AND VIEW_NAME = {n} \
                      UNION ALL SELECT SPECIFIC_SCHEMA, SPECIFIC_NAME, 'function' FROM information_schema.VIEW_ROUTINE_USAGE WHERE TABLE_SCHEMA = {s} AND TABLE_NAME = {n}"
@@ -600,6 +628,7 @@ impl Connection {
                     let rows = first_ok(&client, &[&ms::routines_sql(Some(&schema))]).await.unwrap_or_default();
                     ms::parse_routines(&rows).into_iter().enumerate().map(|(n, f)| ms::function_of(n, f)).collect()
                 }
+                Engine::Sqlite | Engine::DuckDb => Vec::new(),
                 _ => {
                     let qs = pg::functions_sql(&schema);
                     first_ok(&client, &[&qs[0], &qs[1]]).await.map(|rows| rows.iter().filter_map(|r| pg::parse_function(r)).collect()).unwrap_or_default()
@@ -623,7 +652,9 @@ impl Connection {
                 return Ok(Default::default());
             }
             let client = this.meta(&db).await?;
-            let v: Vec<Sequence> = if this.engine() == Engine::SqlServer {
+            let v: Vec<Sequence> = if this.engine().is_file() {
+                Vec::new()
+            } else if this.engine() == Engine::SqlServer {
                 first_ok(&client, &[&ms::sequences_sql(&schema)]).await.map(|rows| rows.iter().filter_map(|r| ms::parse_sequence(r)).collect()).unwrap_or_default()
             } else {
                 let qs = pg::sequences_sql(&schema);
@@ -644,6 +675,9 @@ impl Connection {
                 return Ok(v);
             }
             if !this.caps().types {
+                return Ok(Default::default());
+            }
+            if this.engine().is_file() {
                 return Ok(Default::default());
             }
             let client = this.meta(&db).await?;
@@ -671,6 +705,8 @@ impl Connection {
             let (q, parse): (String, fn(&[Option<String>]) -> Option<Trigger>) = match this.engine() {
                 Engine::MySql => (my::triggers_sql(&schema), my::parse_trigger),
                 Engine::SqlServer => (ms::triggers_sql(&schema), ms::parse_trigger),
+                Engine::Sqlite => (lite::triggers_sql(&schema, None), lite::parse_trigger),
+                Engine::DuckDb => return Ok(Default::default()),
                 _ => (pg::triggers_sql(&schema), pg::parse_trigger),
             };
             let v: Vec<Trigger> = first_ok(&client, &[&q]).await.map(|rows| rows.iter().filter_map(|r| parse(r)).collect()).unwrap_or_default();
@@ -693,7 +729,16 @@ impl Connection {
             }
             let oid = this.relation(&db, &schema, &rel).and_then(|r| r.oid);
             let mut t = TableExtras::default();
-            if this.engine() == Engine::MySql {
+            if this.engine() == Engine::Sqlite {
+                let client = this.meta(&db).await?;
+                t.constraints = Some(lite::constraints(&client, &schema, &rel).await);
+                t.triggers = first_ok(&client, &[&lite::triggers_sql(&schema, Some(&rel))]).await.ok().map(|rows| rows.iter().filter_map(|r| lite::parse_trigger(r)).collect());
+                t.partitions = Some(Vec::new());
+            } else if this.engine() == Engine::DuckDb {
+                t.constraints = Some(Vec::new());
+                t.triggers = Some(Vec::new());
+                t.partitions = Some(Vec::new());
+            } else if this.engine() == Engine::MySql {
                 let client = this.meta(&db).await?;
                 let qs = my::constraints_sql(&schema, &rel);
                 let mut cons: Vec<Constraint> = Vec::new();
@@ -788,6 +833,10 @@ impl Connection {
     }
 
     pub fn routine_definition(self: &Arc<Self>, db: &str, schema: &str, f: &Function) -> Task<Option<String>> {
+        if self.engine().is_file() {
+            let engine = self.engine();
+            return self.spawn(async move { Err(anyhow::anyhow!("{} has no stored routines", engine.label())) });
+        }
         if self.engine() == Engine::SqlServer {
             return self.module_definition(db, schema, &f.name);
         }
@@ -926,6 +975,7 @@ impl Connection {
 
     pub fn sequence_value(self: &Arc<Self>, db: &str, schema: &str, name: &str) -> Task<Option<(String, bool)>> {
         let q = match self.engine() {
+            e @ (Engine::Sqlite | Engine::DuckDb) => return self.spawn(async move { Err(anyhow::anyhow!("sequence values are not available on {}", e.label())) }),
             Engine::SqlServer => ms::sequence_value_sql(schema, name),
             _ => format!("SELECT last_value, is_called FROM {}", qualified(Some(schema), name)),
         };

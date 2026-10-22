@@ -12,11 +12,29 @@ pub use text::render_text;
 pub struct Target {
     pub lar: bool,
     pub major: u32,
+    pub kind: TargetKind,
+}
+
+/// The plan an engine prints: PostgreSQL's JSON (and LAR's), SQLite's `EXPLAIN QUERY PLAN` rows,
+/// DuckDB's text tree.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TargetKind {
+    #[default]
+    Postgres,
+    SqliteQueryPlan,
+    DuckText,
 }
 
 impl Target {
     pub fn of(info: &crate::ServerInfo) -> Target {
-        Target { lar: info.is_lar, major: info.major() }
+        let kind = if info.version.starts_with("SQLite ") {
+            TargetKind::SqliteQueryPlan
+        } else if info.version.starts_with("DuckDB ") {
+            TargetKind::DuckText
+        } else {
+            TargetKind::Postgres
+        };
+        Target { lar: info.is_lar, major: info.major(), kind }
     }
 
     fn at_least(&self, v: u32) -> bool {
@@ -36,6 +54,12 @@ pub fn sql(stmt: &str, analyze: bool, t: Target) -> String {
     let stmt = statement(stmt);
     if is_explain(stmt) {
         return stmt.to_string();
+    }
+    match t.kind {
+        // SQLite has no ANALYZE for a plan: the query plan is all it shows.
+        TargetKind::SqliteQueryPlan => return format!("EXPLAIN QUERY PLAN {stmt}"),
+        TargetKind::DuckText => return format!("EXPLAIN {}{stmt}", if analyze { "ANALYZE " } else { "" }),
+        TargetKind::Postgres => {}
     }
     if t.lar {
         return format!("EXPLAIN {}{stmt}", if analyze { "ANALYZE " } else { "" });
@@ -59,6 +83,11 @@ pub fn sql(stmt: &str, analyze: bool, t: Target) -> String {
 
 pub fn text_sql(stmt: &str, t: Target) -> String {
     let stmt = statement(stmt);
+    match t.kind {
+        TargetKind::SqliteQueryPlan => return format!("EXPLAIN QUERY PLAN {stmt}"),
+        TargetKind::DuckText => return format!("EXPLAIN {stmt}"),
+        TargetKind::Postgres => {}
+    }
     if t.lar {
         return format!("EXPLAIN {stmt}");
     }
@@ -396,6 +425,24 @@ impl Plan {
 
     pub fn source_of(columns: &[String], rows: &[Vec<Option<String>>]) -> String {
         let col = |n: &str| columns.iter().position(|c| c.eq_ignore_ascii_case(n));
+        // SQLite's EXPLAIN QUERY PLAN: one row per step, nested by `parent`.
+        if let (Some(id), Some(parent), Some(detail)) = (col("id"), col("parent"), col("detail")) {
+            let get = |r: &Vec<Option<String>>, i: usize| r.get(i).cloned().flatten().unwrap_or_default();
+            let mut depth: Vec<(String, usize)> = Vec::new();
+            let mut out = Vec::new();
+            for r in rows {
+                let p = get(r, parent);
+                let d = depth.iter().find(|(i, _)| *i == p).map_or(0, |(_, d)| d + 1);
+                depth.push((get(r, id), d));
+                out.push(format!("{}{}", "  ".repeat(d), get(r, detail)));
+            }
+            return out.join("\n");
+        }
+        // DuckDB's EXPLAIN: the physical plan's text.
+        if let (Some(k), Some(v)) = (col("explain_key"), col("explain_value")) {
+            let pick = rows.iter().find(|r| r.get(k).and_then(|x| x.as_deref()).is_some_and(|x| x.contains("physical") || x.contains("analyzed"))).or_else(|| rows.first());
+            return pick.and_then(|r| r.get(v).cloned().flatten()).unwrap_or_default();
+        }
         if let (Some(t), Some(p)) = (col("plan_type"), col("plan")) {
             let pick = rows
                 .iter()
@@ -710,12 +757,23 @@ mod tests {
 
     #[test]
     fn statements() {
-        let pg = Target { lar: false, major: 18 };
+        let pg = Target { lar: false, major: 18, ..Default::default() };
         assert_eq!(sql("select 1;\n", false, pg), "EXPLAIN (FORMAT JSON, VERBOSE, COSTS, SETTINGS) select 1");
         assert_eq!(sql(" delete from t ;; ", true, pg), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON, VERBOSE, SETTINGS, WAL) delete from t");
-        assert_eq!(sql("select 1", true, Target { lar: false, major: 12 }), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON, VERBOSE, SETTINGS) select 1");
-        assert_eq!(sql("select 1", false, Target { lar: false, major: 11 }), "EXPLAIN (FORMAT JSON, VERBOSE, COSTS) select 1");
-        assert_eq!(sql("select 1", true, Target { lar: true, major: 16 }), "EXPLAIN ANALYZE select 1");
+        assert_eq!(sql("select 1", true, Target { lar: false, major: 12, ..Default::default() }), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON, VERBOSE, SETTINGS) select 1");
+        assert_eq!(sql("select 1", false, Target { lar: false, major: 11, ..Default::default() }), "EXPLAIN (FORMAT JSON, VERBOSE, COSTS) select 1");
+        assert_eq!(sql("select 1", true, Target { lar: true, major: 16, ..Default::default() }), "EXPLAIN ANALYZE select 1");
+        let lite = Target { kind: TargetKind::SqliteQueryPlan, ..Default::default() };
+        assert_eq!(sql("select 1;", true, lite), "EXPLAIN QUERY PLAN select 1");
+        let duck = Target { kind: TargetKind::DuckText, ..Default::default() };
+        assert_eq!((sql("select 1", true, duck), text_sql("select 1", duck)), ("EXPLAIN ANALYZE select 1".into(), "EXPLAIN select 1".into()));
+        let cols = ["id", "parent", "notused", "detail"].map(String::from);
+        let rows = vec![
+            vec![Some("2".into()), Some("0".into()), Some("0".into()), Some("SCAN o".into())],
+            vec![Some("5".into()), Some("2".into()), Some("0".into()), Some("CORRELATED SCALAR SUBQUERY 1".into())],
+            vec![Some("9".into()), Some("5".into()), Some("0".into()), Some("SEARCH c USING INTEGER PRIMARY KEY (rowid=?)".into())],
+        ];
+        assert_eq!(Plan::source_of(&cols, &rows), "SCAN o\n  CORRELATED SCALAR SUBQUERY 1\n    SEARCH c USING INTEGER PRIMARY KEY (rowid=?)");
         assert_eq!(sql("explain analyze select 1;", false, pg), "explain analyze select 1", "an EXPLAIN runs as written");
         assert_eq!(text_sql("select 1;", pg), "EXPLAIN (FORMAT TEXT, VERBOSE, COSTS, SETTINGS) select 1");
         assert!(is_explain("-- c\n  EXPLAIN select 1"));

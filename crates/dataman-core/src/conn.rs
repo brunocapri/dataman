@@ -367,7 +367,14 @@ impl Session {
         if let Some(c) = g.as_ref()
             && !c.is_closed()
         {
-            return Ok(c.clone());
+            // A file database is opened read-only or not: a change of mind reopens it (between
+            // transactions only).
+            let stale = self.conn.engine().is_file()
+                && *self.ro_applied.lock() != Some(self.conn.read_only_for(&self.database))
+                && !self.tx.get().status.is_open();
+            if !stale {
+                return Ok(c.clone());
+            }
         }
         self.tx.closed();
         let p = self.conn.profile_for(&self.database);

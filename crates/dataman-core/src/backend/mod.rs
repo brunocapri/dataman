@@ -1,3 +1,5 @@
+pub(crate) mod embed;
+pub(crate) mod lite;
 pub(crate) mod mongo;
 pub(crate) mod ms;
 pub(crate) mod my;
@@ -79,6 +81,8 @@ pub struct Caps {
     pub drop_database: bool,
     /// `TRUNCATE` exists (SQLite empties a table with `DELETE`).
     pub truncate: bool,
+    /// The database is a file on this machine (it can be shown in Finder).
+    pub file: bool,
 }
 
 impl Caps {
@@ -100,6 +104,7 @@ impl Caps {
         privileges: true,
         drop_database: true,
         truncate: true,
+        file: false,
     };
 
     const BASIC: Caps = Caps {
@@ -120,6 +125,7 @@ impl Caps {
         privileges: false,
         drop_database: true,
         truncate: true,
+        file: false,
     };
 
     pub const NONE: Caps = Caps { schemas: false, ..Caps::BASIC };
@@ -137,8 +143,8 @@ impl Caps {
                 toggle_triggers: true,
                 ..Caps::BASIC
             },
-            Engine::Sqlite => Caps { schemas: false, transactional_ddl: true, explain: true, triggers: true, drop_database: false, truncate: false, ..Caps::BASIC },
-            Engine::DuckDb => Caps { transactional_ddl: true, explain: true, drop_database: false, ..Caps::BASIC },
+            Engine::Sqlite => Caps { schemas: false, transactional_ddl: true, explain: true, triggers: true, drop_database: false, truncate: false, file: true, ..Caps::BASIC },
+            Engine::DuckDb => Caps { transactional_ddl: true, explain: true, drop_database: false, file: true, ..Caps::BASIC },
             Engine::MongoDb | Engine::Elasticsearch | Engine::OpenSearch | Engine::Redis => Caps::NONE,
         }
     }
@@ -152,6 +158,9 @@ pub fn server_error(e: &anyhow::Error) -> Option<ErrorInfo> {
         if let Some(e @ ms::MsError::Server(_)) = c.downcast_ref::<ms::MsError>() {
             return Some(ms::error_info(e));
         }
+        if let Some(e @ (rusqlite::Error::SqliteFailure(..) | rusqlite::Error::SqlInputError { .. })) = c.downcast_ref::<lite::LiteError>() {
+            return Some(lite::error_info(e));
+        }
         match c.downcast_ref::<mysql_async::Error>() {
             Some(e @ mysql_async::Error::Server(_)) => Some(my::error_info(e)),
             _ => None,
@@ -164,6 +173,7 @@ pub(crate) enum Db {
     Pg(Arc<tokio_postgres::Client>),
     My(Arc<my::Client>),
     Ms(Arc<ms::Client>),
+    Lite(Arc<lite::Client>),
 }
 
 impl Db {
@@ -172,6 +182,7 @@ impl Db {
             Db::Pg(c) => c.is_closed(),
             Db::My(c) => c.is_closed(),
             Db::Ms(c) => c.is_closed(),
+            Db::Lite(c) => c.is_closed(),
         }
     }
 
@@ -180,6 +191,7 @@ impl Db {
             Db::Pg(c) => pg::execute(c, sql).await.map_err(|e| pg::error_info(&e)),
             Db::My(c) => c.execute(sql).await.map_err(|e| my::error_info_at(&e, sql)),
             Db::Ms(c) => c.execute(sql).await.map_err(|e| ms::error_info_at(&e, sql, 0)),
+            Db::Lite(c) => c.execute(sql).await.map_err(|e| lite::error_info_at(&e, sql)),
         }
     }
 
@@ -197,6 +209,10 @@ impl Db {
                 let (columns, rows) = ms::start(c, sql).await.map_err(|e| ms::error_info_at(&e, sql, 0))?;
                 Ok(Prepared { columns, stmt: PreparedStmt::Ms(parking_lot::Mutex::new(Some(rows))) })
             }
+            Db::Lite(c) => {
+                let columns = c.prepare(sql).await.map_err(|e| lite::error_info_at(&e, sql))?;
+                Ok(Prepared { stmt: PreparedStmt::Lite(c.clone(), sql.to_string(), columns.iter().map(|c| c.kind).collect()), columns })
+            }
         }
     }
 }
@@ -206,6 +222,7 @@ pub(crate) async fn text_rows(db: &Db, sql: &str) -> Result<Vec<Vec<Option<Strin
         Db::Pg(c) => pg::text_rows(c, sql).await,
         Db::My(c) => Ok(c.text_rows(sql).await?),
         Db::Ms(c) => Ok(c.text_rows(sql).await?),
+        Db::Lite(c) => Ok(c.text_rows(sql).await?),
     }
 }
 
@@ -227,6 +244,7 @@ pub(crate) enum Dedicated {
     Pg(pg::Dedicated),
     My(Arc<my::Client>),
     Ms(Arc<ms::Client>),
+    Lite(Arc<lite::Client>),
 }
 
 impl Dedicated {
@@ -235,6 +253,7 @@ impl Dedicated {
             Dedicated::Pg(d) => Db::Pg(d.client.clone()),
             Dedicated::My(c) => Db::My(c.clone()),
             Dedicated::Ms(c) => Db::Ms(c.clone()),
+            Dedicated::Lite(c) => Db::Lite(c.clone()),
         }
     }
 
@@ -243,6 +262,7 @@ impl Dedicated {
             Dedicated::Pg(d) => d.tls_active,
             Dedicated::My(c) => c.tls_active,
             Dedicated::Ms(c) => c.tls_active,
+            Dedicated::Lite(_) => false,
         }
     }
 
@@ -251,27 +271,28 @@ impl Dedicated {
             Dedicated::Pg(d) => d.cancel().await,
             Dedicated::My(c) => c.cancel().await,
             Dedicated::Ms(c) => c.cancel().await,
+            Dedicated::Lite(c) => c.cancel().await,
         }
     }
 
     pub(crate) fn pg(&self) -> Option<&pg::Dedicated> {
         match self {
             Dedicated::Pg(d) => Some(d),
-            Dedicated::My(_) | Dedicated::Ms(_) => None,
+            Dedicated::My(_) | Dedicated::Ms(_) | Dedicated::Lite(_) => None,
         }
     }
 
     pub(crate) fn pg_mut(&mut self) -> Option<&mut pg::Dedicated> {
         match self {
             Dedicated::Pg(d) => Some(d),
-            Dedicated::My(_) | Dedicated::Ms(_) => None,
+            Dedicated::My(_) | Dedicated::Ms(_) | Dedicated::Lite(_) => None,
         }
     }
 
     pub(crate) fn into_pg(self) -> Result<pg::Dedicated> {
         match self {
             Dedicated::Pg(d) => Ok(d),
-            Dedicated::My(_) | Dedicated::Ms(_) => Err(anyhow!("this needs a PostgreSQL connection")),
+            Dedicated::My(_) | Dedicated::Ms(_) | Dedicated::Lite(_) => Err(anyhow!("this needs a PostgreSQL connection")),
         }
     }
 }
@@ -281,6 +302,7 @@ pub(crate) enum Canceller {
     Pg(pg::Canceller),
     My(my::Canceller),
     Ms(ms::Canceller),
+    Lite(lite::Canceller),
 }
 
 impl Canceller {
@@ -289,6 +311,7 @@ impl Canceller {
             Canceller::Pg(c) => c.cancel().await,
             Canceller::My(c) => c.cancel().await,
             Canceller::Ms(c) => c.cancel().await,
+            Canceller::Lite(c) => c.cancel().await,
         }
     }
 }
@@ -302,6 +325,7 @@ pub(crate) async fn dedicated(p: &ConnectionProfile, password: Option<&str>, dat
         Engine::Postgres => Ok(Dedicated::Pg(pg::connect_through(p, password, database, tunnel).await?)),
         Engine::MySql => Ok(Dedicated::My(my::connect(p, password, database, tunnel, None).await?)),
         Engine::SqlServer => Ok(Dedicated::Ms(ms::connect(p, password, database, tunnel, None).await?)),
+        Engine::Sqlite => Ok(Dedicated::Lite(lite::connect(p, lite::Open { read_only: p.read_only }, None).await?)),
         e => Err(no_sql(e)),
     }
 }
@@ -326,6 +350,10 @@ pub(crate) async fn session(
             let c = ms::connect(p, password, database, tunnel, Some(watch)).await?;
             Ok((Db::Ms(c.clone()), Canceller::Ms(c.canceller())))
         }
+        Engine::Sqlite => {
+            let c = lite::connect(p, lite::Open { read_only: p.read_only }, Some(watch)).await?;
+            Ok((Db::Lite(c.clone()), Canceller::Lite(c.canceller())))
+        }
         e => Err(no_sql(e)),
     }
 }
@@ -335,6 +363,7 @@ pub(crate) async fn server_info(db: &Db, exts: &[Arc<dyn ServerExtension>]) -> R
         Db::Pg(c) => pg::server_info(c, exts).await,
         Db::My(c) => my::server_info(c, exts).await,
         Db::Ms(c) => ms::server_info(c, exts).await,
+        Db::Lite(c) => lite::server_info(c, exts).await,
     }
 }
 
@@ -343,6 +372,7 @@ pub(crate) async fn search_path(db: &Db, user: &str) -> Vec<String> {
         Db::Pg(c) => pg::search_path(c, user).await,
         Db::My(c) => my::search_path(c).await,
         Db::Ms(c) => ms::search_path(c).await,
+        Db::Lite(_) => vec!["main".into()],
     }
 }
 
@@ -363,6 +393,7 @@ enum PreparedStmt {
     Pg(Arc<tokio_postgres::Client>, tokio_postgres::Statement, String),
     My(Arc<my::Client>, mysql_async::Statement),
     Ms(parking_lot::Mutex<Option<ms::MsRows>>),
+    Lite(Arc<lite::Client>, String, Vec<crate::value::Kind>),
 }
 
 impl Prepared {
@@ -376,6 +407,10 @@ impl Prepared {
                 Some(r) => Ok(Rows::Ms(r)),
                 None => Err(ErrorInfo { message: "the statement already ran".into(), ..Default::default() }),
             },
+            PreparedStmt::Lite(c, sql, kinds) => match c.stream(sql, &[], Some(kinds.clone())).await {
+                Ok((_, rows)) => Ok(Rows::Lite(rows)),
+                Err(e) => Err(lite::error_info_at(&e, sql)),
+            },
         }
     }
 }
@@ -384,6 +419,7 @@ pub(crate) enum Rows {
     Pg(pg::PgRows),
     My(my::MyRows),
     Ms(ms::MsRows),
+    Lite(embed::Rows<lite::LiteError>),
 }
 
 impl RowSource for Rows {
@@ -394,6 +430,7 @@ impl RowSource for Rows {
             Rows::Pg(r) => r.next_into(b).await.map_err(|e| pg::error_info(&e)),
             Rows::My(r) => r.next_into(b).await.map_err(|e| my::error_info(&e)),
             Rows::Ms(r) => r.next_into(b).await.map_err(|e| ms::error_info(&e)),
+            Rows::Lite(r) => r.next_into(b).await.map_err(|e| lite::error_info(&e)),
         }
     }
 
@@ -402,6 +439,7 @@ impl RowSource for Rows {
             Rows::Pg(r) => r.skip().await.map_err(|e| pg::error_info(&e)),
             Rows::My(r) => r.skip().await.map_err(|e| my::error_info(&e)),
             Rows::Ms(r) => r.skip().await.map_err(|e| ms::error_info(&e)),
+            Rows::Lite(r) => r.skip().await.map_err(|e| lite::error_info(&e)),
         }
     }
 
@@ -410,6 +448,7 @@ impl RowSource for Rows {
             Rows::Pg(r) => r.affected(),
             Rows::My(r) => r.affected(),
             Rows::Ms(_) => None,
+            Rows::Lite(r) => r.affected(),
         }
     }
 }
@@ -544,6 +583,7 @@ pub(crate) async fn run(
         Db::Pg(c) => pg::run(c, rs, started, on_pause, aborted).await,
         Db::My(c) => my::run(c, rs, started, on_pause, aborted, next).await,
         Db::Ms(c) => ms::run(c, rs, started, on_pause, aborted, next).await,
+        Db::Lite(c) => lite::run(c, rs, started, on_pause, aborted, next).await,
     }
 }
 

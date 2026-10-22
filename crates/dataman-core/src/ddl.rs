@@ -5,6 +5,7 @@ use anyhow::{Context as _, Result};
 use crate::Task;
 use crate::conn::{Connection, first_ok};
 use crate::schema::RelKind;
+use crate::sql::Dialect;
 use crate::sqlgen::{qualified, quote_ident, quote_literal, view_ddl};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -197,6 +198,8 @@ impl Connection {
             match this.engine() {
                 crate::config::Engine::MySql => this.show_create("TABLE", &db, &schema, &name).await,
                 crate::config::Engine::SqlServer => this.ms_table_ddl(&db, &schema, &name).await,
+                crate::config::Engine::Sqlite => this.lite_ddl("table", &db, &schema, &name).await?.with_context(|| format!("{schema}.{name} is not in the catalog")),
+                crate::config::Engine::DuckDb => this.duck_ddl("table", &db, &schema, &name).await?.with_context(|| format!("{schema}.{name} is not in the catalog")),
                 _ => Ok(render(&this.table_def(&db, &schema, &name).await?)),
             }
         })
@@ -221,6 +224,30 @@ impl Connection {
         ))
     }
 
+    /// SQLite keeps each object's SQL as it was written: the table's, then its indexes' and
+    /// triggers'.
+    async fn lite_ddl(&self, kind: &str, db: &str, schema: &str, name: &str) -> Result<Option<String>> {
+        use crate::schema::lite::{ident, lit};
+        let client = self.meta(db).await?;
+        let q = format!(
+            "SELECT sql FROM {}.sqlite_master WHERE sql IS NOT NULL AND (name = {n} AND type = {k} OR {table} AND tbl_name = {n} AND type IN ('index', 'trigger'))              ORDER BY CASE type WHEN {k} THEN 0 WHEN 'index' THEN 1 ELSE 2 END, name",
+            ident(schema),
+            n = lit(name),
+            k = lit(kind),
+            table = if kind == "table" { "1" } else { "0" },
+        );
+        let parts: Vec<String> = first_ok(&client, &[&q]).await?.iter().filter_map(|r| get(r, 0)).map(|s| format!("{};", s.trim_end().trim_end_matches(';'))).collect();
+        if parts.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(format!("-- {}: as stored in {}\n{}\n", Dialect::Sqlite.qualified(Some(schema), name), db, parts.join("\n\n"))))
+    }
+
+    async fn duck_ddl(&self, kind: &str, db: &str, schema: &str, name: &str) -> Result<Option<String>> {
+        let _ = (kind, db, schema, name);
+        Ok(None)
+    }
+
     async fn show_create(&self, what: &str, db: &str, schema: &str, name: &str) -> Result<String> {
         use crate::schema::my;
         let client = self.meta(db).await?;
@@ -235,6 +262,12 @@ impl Connection {
         self.spawn(async move {
             if this.engine() == crate::config::Engine::MySql {
                 return Ok(this.show_create("VIEW", &db, &schema, &name).await.ok());
+            }
+            if this.engine() == crate::config::Engine::Sqlite {
+                return this.lite_ddl("view", &db, &schema, &name).await;
+            }
+            if this.engine() == crate::config::Engine::DuckDb {
+                return this.duck_ddl("view", &db, &schema, &name).await;
             }
             if this.engine() == crate::config::Engine::SqlServer {
                 let client = this.meta(&db).await?;

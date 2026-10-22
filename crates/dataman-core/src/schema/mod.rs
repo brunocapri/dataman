@@ -1,4 +1,6 @@
 pub mod catalog;
+pub(crate) mod duck;
+pub(crate) mod lite;
 mod model;
 pub(crate) mod ms;
 pub(crate) mod my;
@@ -31,13 +33,14 @@ async fn read_databases(c: &Db) -> Result<Vec<String>> {
         Db::Pg(_) => pg::databases(c).await,
         Db::My(_) => my::databases(c).await,
         Db::Ms(_) => ms::databases(c).await,
+        Db::Lite(_) => lite::databases(c).await,
     }
 }
 
 async fn read_schemas(c: &Db, db: &str) -> Result<Vec<String>> {
     match c {
         Db::Pg(_) => pg::schemas(c).await,
-        Db::My(_) => Ok(vec![db.to_string()]),
+        Db::My(_) | Db::Lite(_) => Ok(vec![db.to_string()]),
         Db::Ms(_) => ms::schemas(c).await,
     }
 }
@@ -47,6 +50,7 @@ async fn read_relations(c: &Db, schema: &str) -> Result<Vec<Relation>> {
         Db::Pg(_) => pg::relations(c, schema).await,
         Db::My(_) => my::relations(c, schema).await,
         Db::Ms(_) => ms::relations(c, schema).await,
+        Db::Lite(_) => lite::relations(c, schema).await,
     }
 }
 
@@ -55,6 +59,7 @@ async fn read_columns(c: &Db, rel: &Relation) -> Option<Vec<Column>> {
         Db::Pg(_) => pg::columns(c, rel.oid?).await,
         Db::My(_) => my::columns(c, &rel.schema, &rel.name).await,
         Db::Ms(_) => ms::columns(c, &rel.schema, &rel.name).await,
+        Db::Lite(_) => lite::columns(c, &rel.schema, &rel.name).await,
     }
 }
 
@@ -63,6 +68,7 @@ async fn read_indexes(c: &Db, rel: &Relation, cols: &[Column]) -> Option<Result<
         Db::Pg(_) => Some(pg::indexes(c, rel.oid?, cols).await),
         Db::My(_) => Some(my::indexes(c, &rel.schema, &rel.name).await),
         Db::Ms(_) => Some(ms::indexes(c, &rel.schema, &rel.name).await),
+        Db::Lite(_) => Some(lite::indexes(c, &rel.schema, &rel.name).await),
     }
 }
 
@@ -71,6 +77,7 @@ async fn read_columns_of_schemas(c: &Db, list: &str) -> Result<Vec<Vec<Option<St
         Db::Pg(_) => pg::columns_of_schemas(c, list).await,
         Db::My(_) => my::columns_of_schemas(c, list).await,
         Db::Ms(_) => ms::columns_of_schemas(c, list).await,
+        Db::Lite(_) => lite::columns_of_schemas(c, list).await,
     }
 }
 

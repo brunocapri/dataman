@@ -30,7 +30,7 @@ pub struct ColumnInfo {
     pub kind: Kind,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum ColData {
     Bool(Vec<bool>),
     I64(Vec<i64>),
@@ -38,7 +38,7 @@ pub enum ColData {
     Text { text: String, ends: Vec<u32> },
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct ColChunk {
     pub nulls: Vec<u64>,
     pub data: ColData,
@@ -79,6 +79,26 @@ pub enum Cell<'a> {
 }
 
 impl ColChunk {
+    /// The same cells as text, as `kind` shows them.
+    fn to_text(&self, kind: Kind, rows: usize) -> ColChunk {
+        if matches!(self.data, ColData::Text { .. }) {
+            return self.clone();
+        }
+        let (mut text, mut ends, mut cell) = (String::new(), Vec::with_capacity(rows), String::new());
+        for i in 0..rows {
+            // Booleans that turn to text are SQLite's integers: shown as stored.
+            let c = match self.get(i) {
+                Cell::Bool(b) => Cell::Int(b as i64),
+                c => c,
+            };
+            if format_cell_into(kind, c, &mut cell) {
+                text.push_str(&cell);
+            }
+            ends.push(text.len() as u32);
+        }
+        ColChunk { nulls: self.nulls.clone(), data: ColData::Text { text, ends } }
+    }
+
     fn is_null(&self, i: usize) -> bool {
         self.nulls[i / 64] >> (i % 64) & 1 == 1
     }
@@ -132,6 +152,27 @@ impl ChunkBuilder {
 
     pub fn kind(&self, col: usize) -> Kind {
         self.kinds[col]
+    }
+
+    /// From here on the column is text, the rows already in it too (a SQLite cell whose storage
+    /// class is not its column's type).
+    pub fn demote_to_text(&mut self, col: usize) {
+        if self.kinds[col].storage() == Storage::Text {
+            // Bytes are kept as text already (hex): only the kind changes.
+            self.kinds[col] = Kind::Text;
+            return;
+        }
+        // The row being built may hold this column's cell already: it is converted too.
+        let filled = self.cols[col].nulls.len() * 64;
+        let rows = match &self.cols[col].data {
+            ColData::Bool(v) => v.len(),
+            ColData::I64(v) => v.len(),
+            ColData::F64(v) => v.len(),
+            ColData::Text { ends, .. } => ends.len(),
+        }
+        .min(filled);
+        self.cols[col] = self.cols[col].to_text(self.kinds[col], rows);
+        self.kinds[col] = Kind::Text;
     }
 
     fn mark(&mut self, col: usize, null: bool) {
@@ -297,7 +338,7 @@ pub enum SortDir {
 
 pub struct ResultSet {
     pub sql: String,
-    columns: OnceLock<Arc<Vec<ColumnInfo>>>,
+    columns: RwLock<Option<Arc<Vec<ColumnInfo>>>>,
     origins: OnceLock<Arc<Vec<ColumnOrigin>>>,
     named_origins: OnceLock<Arc<Vec<Option<NamedOrigin>>>>,
     chunks: RwLock<Arc<Chunks>>,
@@ -416,7 +457,7 @@ impl ResultSet {
     pub fn new(sql: impl Into<String>) -> Arc<Self> {
         Arc::new(ResultSet {
             sql: sql.into(),
-            columns: OnceLock::new(),
+            columns: RwLock::new(None),
             origins: OnceLock::new(),
             named_origins: OnceLock::new(),
             chunks: RwLock::new(Arc::new(Chunks::default())),
@@ -469,7 +510,7 @@ impl ResultSet {
         rs.restored = true;
         let rs = Arc::new(rs);
         if !columns.is_empty() {
-            let _ = rs.columns.set(Arc::new(columns));
+            rs.set_columns_once(columns);
         }
         if let Some(o) = origins {
             rs.set_origins(o);
@@ -531,7 +572,55 @@ impl ResultSet {
     }
 
     pub fn columns(&self) -> Option<Arc<Vec<ColumnInfo>>> {
-        self.columns.get().cloned()
+        self.columns.read().clone()
+    }
+
+    fn set_columns_once(&self, cols: Vec<ColumnInfo>) {
+        let mut g = self.columns.write();
+        if g.is_none() {
+            *g = Some(Arc::new(cols));
+        }
+    }
+
+    /// The column becomes text, in the rows already here too: a SQLite column whose type its
+    /// cells do not all follow. A sort on it is dropped (text sorts otherwise).
+    pub(crate) fn demote_to_text(&self, col: usize) {
+        let kind = {
+            let mut g = self.columns.write();
+            let Some(cols) = g.as_mut() else { return };
+            let Some(c) = cols.get(col) else { return };
+            let kind = c.kind;
+            if kind == Kind::Text {
+                return;
+            }
+            Arc::make_mut(cols)[col].kind = Kind::Text;
+            if kind.storage() == Storage::Text {
+                drop(g);
+                self.bump();
+                return;
+            }
+            kind
+        };
+        {
+            let mut g = self.chunks.write();
+            let list = g
+                .list
+                .iter()
+                .map(|c| {
+                    let mut cols = c.cols.clone();
+                    cols[col] = c.cols[col].to_text(kind, c.rows);
+                    Arc::new(Chunk { rows: c.rows, cols })
+                })
+                .collect();
+            *g = Arc::new(Chunks { list, starts: g.starts.clone(), rows: g.rows });
+        }
+        {
+            let mut o = self.order.write();
+            if o.as_ref().is_some_and(|o| o.0 == col) {
+                *o = None;
+            }
+        }
+        self.bump();
     }
 
     pub fn origins(&self) -> Option<Arc<Vec<ColumnOrigin>>> {
@@ -551,7 +640,7 @@ impl ResultSet {
     }
 
     pub fn set_columns(&self, cols: Vec<ColumnInfo>) {
-        let _ = self.columns.set(Arc::new(cols));
+        self.set_columns_once(cols);
         self.bump();
     }
 
@@ -642,7 +731,7 @@ impl ResultSet {
 
     pub fn from_chunk(sql: impl Into<String>, columns: Vec<ColumnInfo>, chunk: Chunk) -> Arc<Self> {
         let rs = Self::new(sql);
-        let _ = rs.columns.set(Arc::new(columns));
+        rs.set_columns_once(columns);
         rs.push_chunk(chunk);
         rs.update_status(|s| {
             s.phase = Some(Phase::Done);
@@ -670,7 +759,7 @@ impl ResultSet {
 
     pub fn finish_with(&self, columns: Option<Vec<ColumnInfo>>, chunk: Option<Chunk>, affected: Option<u64>, messages: Vec<String>, error: Option<ErrorInfo>, elapsed: Duration) {
         if let Some(c) = columns {
-            let _ = self.columns.set(Arc::new(c));
+            self.set_columns_once(c);
         }
         if let Some(ch) = chunk {
             self.push_chunk(ch);
@@ -887,6 +976,36 @@ mod tests {
         assert_eq!(tsv, "id\tname\n3\tc\n1\t\\N\n2\t\n4\ta\\tb\n");
         let csv = rs.copy(0..4, &[1, 2], CopyFormat::Csv, false);
         assert_eq!(csv, "c,10\n,9.5\n\"\",\na\tb,-1\n");
+    }
+
+    #[test]
+    fn demoted_columns_keep_their_cells() {
+        let col = |n: &str, kind: Kind| ColumnInfo { name: n.into(), type_name: "INTEGER".into(), type_oid: 0, kind };
+        let cols = vec![col("a", Kind::Int), col("b", Kind::Float)];
+        let rs = ResultSet::new("x");
+        rs.set_columns(cols.clone());
+        let mut b = ChunkBuilder::new(&cols);
+        b.push_i64(0, 7);
+        b.push_f64(1, 1.5);
+        b.end_row();
+        rs.push_chunk(b.finish());
+        b.push_i64(0, 8);
+        b.push_null(1);
+        b.end_row();
+        b.push_null(0);
+        // A text cell in the integer column: the column turns to text mid-row.
+        b.demote_to_text(0);
+        rs.demote_to_text(0);
+        b.push_f64(1, 2.0);
+        b.end_row();
+        b.push_text(0, "abc");
+        b.push_f64(1, 3.0);
+        b.end_row();
+        rs.push_chunk(b.finish());
+        let s = rs.snapshot();
+        assert_eq!(s.columns[0].kind, Kind::Text);
+        assert_eq!((0..4).map(|r| s.cell(r, 0)).collect::<Vec<_>>(), vec![Cell::Text("7"), Cell::Text("8"), Cell::Null, Cell::Text("abc")]);
+        assert_eq!(s.cell(2, 1), Cell::Float(2.0));
     }
 
     #[test]
