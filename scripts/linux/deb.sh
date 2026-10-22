@@ -18,11 +18,12 @@ case "$arch" in x86_64) debarch=amd64 ;; aarch64) debarch=arm64 ;; *) die "unkno
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 pkg="$work/dataman"
-mkdir -p "$pkg/DEBIAN" "$pkg/usr/bin" "$pkg/usr/share/applications" "$pkg/usr/share/metainfo" "$pkg/usr/share/doc/dataman"
+mkdir -p "$pkg/DEBIAN" "$pkg/usr/bin" "$pkg/usr/share/applications" "$pkg/usr/share/metainfo" "$pkg/usr/share/doc/dataman" "$pkg/usr/share/mime/packages"
 install -m 0755 "$target/release/dataman" "$target/release/dataman-mcp" "$pkg/usr/bin/"
 strip "$pkg/usr/bin/dataman" "$pkg/usr/bin/dataman-mcp"
 install -m 0644 "$root/packaging/linux/dev.dataman.Dataman.desktop" "$pkg/usr/share/applications/"
 install -m 0644 "$root/packaging/linux/dev.dataman.Dataman.metainfo.xml" "$pkg/usr/share/metainfo/"
+install -m 0644 "$root/packaging/linux/dev.dataman.Dataman.xml" "$pkg/usr/share/mime/packages/"
 install -m 0644 "$root/LICENSE" "$pkg/usr/share/doc/dataman/copyright"
 for n in 128 256 512; do
   mkdir -p "$pkg/usr/share/icons/hicolor/${n}x${n}/apps"
@@ -40,10 +41,10 @@ Recommends: libvulkan1 | libegl1, xdg-desktop-portal, gnome-keyring | kwalletman
 Section: database
 Priority: optional
 Homepage: https://github.com/brunocapri/dataman
-Description: Database client for PostgreSQL, MySQL, SQL Server, MongoDB, Redis and search
- Dataman queries and edits PostgreSQL, MySQL, SQL Server, MongoDB, Redis, Elasticsearch
- and OpenSearch, with an MCP server (dataman-mcp) that lets agents use the saved
- connections under read-only defaults.
+Description: Database client for PostgreSQL, MySQL, SQL Server, SQLite, DuckDB, MongoDB, Redis and search
+ Dataman queries and edits PostgreSQL, MySQL, SQL Server, SQLite and DuckDB files,
+ MongoDB, Redis, Elasticsearch and OpenSearch, with an MCP server (dataman-mcp) that
+ lets agents use the saved connections under read-only defaults.
 EOF
 out="$dist/dataman_${version}_${debarch}.deb"
 rm -f "$out"

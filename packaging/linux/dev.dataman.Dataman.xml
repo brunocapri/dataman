@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- DuckDB's files for the desktop's MIME database (SQLite's, application/vnd.sqlite3, come with
+     shared-mime-info itself). -->
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-duckdb">
+    <comment>DuckDB database</comment>
+    <generic-icon name="application-x-generic"/>
+    <magic priority="60">
+      <match type="string" offset="8" value="DUCK"/>
+    </magic>
+    <glob pattern="*.duckdb"/>
+    <glob pattern="*.ddb"/>
+  </mime-type>
+</mime-info>

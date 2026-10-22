@@ -1,6 +1,8 @@
 //! Databases that run inside this process (SQLite, DuckDB). Their drivers block: each connection
 //! lives on a thread of its own, which runs the jobs the async side sends it, one at a time, and
 //! streams rows back through a channel as the MySQL reader does.
+// A build with neither file engine keeps the module, unused.
+#![cfg_attr(not(any(feature = "sqlite", feature = "duckdb")), allow(dead_code))]
 
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
@@ -19,6 +21,7 @@ pub(crate) const IN_FLIGHT: usize = 1024;
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Val {
     Null,
+    #[cfg_attr(not(feature = "duckdb"), allow(dead_code))]
     Bool(bool),
     Int(i64),
     Float(f64),

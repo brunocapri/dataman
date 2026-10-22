@@ -21,6 +21,9 @@ version="${DATAMAN_VERSION:-$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)}"
 build="${DATAMAN_BUILD:-$version}"
 identity="${DATAMAN_SIGN_IDENTITY:--}"
 
+# The C and C++ compiled in (SQLite, DuckDB) target the same macOS as the Rust code: the
+# bundle's minimum stays the one the binary says below.
+export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-11.0}"
 if [ -z "${DATAMAN_SKIP_BUILD:-}" ]; then
   cargo build --release -p dataman -p dataman-mcp
 fi

@@ -1,5 +1,14 @@
+// Without their feature, the file engines connect to nothing (and say so).
+#[cfg(feature = "duckdb")]
+pub(crate) mod duck;
+#[cfg(not(feature = "duckdb"))]
+#[path = "duck/off.rs"]
 pub(crate) mod duck;
 pub(crate) mod embed;
+#[cfg(feature = "sqlite")]
+pub(crate) mod lite;
+#[cfg(not(feature = "sqlite"))]
+#[path = "lite/off.rs"]
 pub(crate) mod lite;
 pub(crate) mod mongo;
 pub(crate) mod ms;
@@ -159,9 +168,11 @@ pub fn server_error(e: &anyhow::Error) -> Option<ErrorInfo> {
         if let Some(e @ ms::MsError::Server(_)) = c.downcast_ref::<ms::MsError>() {
             return Some(ms::error_info(e));
         }
+        #[cfg(feature = "sqlite")]
         if let Some(e @ (rusqlite::Error::SqliteFailure(..) | rusqlite::Error::SqlInputError { .. })) = c.downcast_ref::<lite::LiteError>() {
             return Some(lite::error_info(e));
         }
+        #[cfg(feature = "duckdb")]
         if let Some(e @ duckdb::Error::DuckDBFailure(..)) = c.downcast_ref::<duck::DuckError>() {
             return Some(duck::error_info(e));
         }

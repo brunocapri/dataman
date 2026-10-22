@@ -47,7 +47,7 @@ fetch "https://github.com/AppImage/type2-runtime/releases/download/$runtime_vers
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 app="$work/Dataman.AppDir"
-mkdir -p "$app/usr/bin" "$app/usr/lib" "$app/usr/share/applications" "$app/usr/share/metainfo"
+mkdir -p "$app/usr/bin" "$app/usr/lib" "$app/usr/share/applications" "$app/usr/share/metainfo" "$app/usr/share/mime/packages"
 cp "$target/release/dataman" "$target/release/dataman-mcp" "$app/usr/bin/"
 strip "$app/usr/bin/dataman" "$app/usr/bin/dataman-mcp"
 cp "$root/packaging/linux/AppRun" "$app/AppRun"
@@ -55,6 +55,7 @@ chmod +x "$app/AppRun"
 cp "$root/packaging/linux/dev.dataman.Dataman.desktop" "$app/"
 cp "$root/packaging/linux/dev.dataman.Dataman.desktop" "$app/usr/share/applications/"
 cp "$root/packaging/linux/dev.dataman.Dataman.metainfo.xml" "$app/usr/share/metainfo/"
+cp "$root/packaging/linux/dev.dataman.Dataman.xml" "$app/usr/share/mime/packages/"
 for n in 128 256 512; do
   mkdir -p "$app/usr/share/icons/hicolor/${n}x${n}/apps"
   convert "$root/packaging/AppIcon.png" -resize "${n}x${n}" "$app/usr/share/icons/hicolor/${n}x${n}/apps/dev.dataman.Dataman.png"
