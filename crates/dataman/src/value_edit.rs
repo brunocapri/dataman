@@ -182,7 +182,7 @@ impl ValueEditor {
                 subs.push(cx.subscribe_in(&editor, window, |e, _, ev: &EditorEvent, _, cx| match ev {
                     EditorEvent::Changed => e.reparse(cx),
                     EditorEvent::Run(_) | EditorEvent::RunAll(_) => e.apply(cx),
-                    EditorEvent::Definition { .. } => {}
+                    EditorEvent::Definition { .. } | EditorEvent::Notice(_) => {}
                 }));
                 State::Json(Box::new(JsonState { doc, raw, editor, error, sel: 0, field: None }))
             }
@@ -198,7 +198,7 @@ impl ValueEditor {
                         cx.notify();
                     }
                     EditorEvent::Run(_) | EditorEvent::RunAll(_) => e.apply(cx),
-                    EditorEvent::Definition { .. } => {}
+                    EditorEvent::Definition { .. } | EditorEvent::Notice(_) => {}
                 }));
                 State::Text(editor)
             }

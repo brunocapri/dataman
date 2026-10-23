@@ -47,6 +47,8 @@ mod find;
 mod find_check;
 #[cfg(feature = "checks")]
 mod fk_check;
+#[cfg(feature = "checks")]
+mod format_check;
 mod glass;
 #[cfg(feature = "checks")]
 mod mssql_check;
@@ -255,7 +257,7 @@ fn menus(cx: &App) -> Vec<Menu> {
             MenuItem::action("Replace…", find::FindReplace),
             MenuItem::separator(),
             MenuItem::action("Toggle Comment", editor::ToggleComment),
-            MenuItem::action("Format SQL", editor::FormatSql),
+            MenuItem::action("Format Query", editor::FormatQuery),
             MenuItem::separator(),
             MenuItem::action("Go to Definition", editor::GoToDefinition),
             MenuItem::action("Open Definition", editor::PeekDefinition),

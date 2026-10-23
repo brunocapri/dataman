@@ -1,4 +1,5 @@
 pub mod console;
+pub mod format;
 pub(crate) mod js;
 pub mod lang;
 pub mod mql;

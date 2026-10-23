@@ -74,7 +74,7 @@ actions!(
         Cancel,
         ShowCharacterPalette,
         RunFromHere,
-        FormatSql,
+        FormatQuery,
         GoToDefinition,
         PeekDefinition,
     ]
@@ -192,6 +192,7 @@ pub enum EditorEvent {
     RunAll(Vec<Stmt>),
     Changed,
     Definition { def: Definition, peek: bool },
+    Notice(String),
 }
 
 pub(crate) struct Buffer {
@@ -1175,13 +1176,29 @@ impl CodeEditor {
         };
     }
 
-    pub fn format_sql(&mut self, cx: &mut Context<Self>) {
-        if self.plain || self.buf.doc.is_some() {
+    /// The selection, or the whole text, as one undo step. A document engine's text that cannot
+    /// be formatted stays as it is, and says why in a `Notice`.
+    pub fn format_query(&mut self, cx: &mut Context<Self>) {
+        if self.plain {
             return;
         }
         let range = if self.sel.is_empty() { 0..self.buf.len() } else { self.sel.clone() };
         let old = self.buf.text[range.clone()].to_string();
-        let new = dataman_core::format::format_in(&old, &format_options(), self.buf.dialect);
+        let new = match self.buf.doc {
+            None => dataman_core::format::format_in(&old, &format_options(), self.buf.dialect),
+            Some(e) => match dataman_core::nosql::format::format(e, &old, &format_options()) {
+                Ok(f) => {
+                    if let Some(left) = f.left {
+                        cx.emit(EditorEvent::Notice(left));
+                    }
+                    f.text
+                }
+                Err(why) => {
+                    cx.emit(EditorEvent::Notice(format!("Not formatted: {why}")));
+                    return;
+                }
+            },
+        };
         if new == old {
             return;
         }
@@ -1215,8 +1232,8 @@ impl CodeEditor {
         self.after_edit(cx);
     }
 
-    fn format_action(&mut self, _: &FormatSql, _: &mut Window, cx: &mut Context<Self>) {
-        self.format_sql(cx);
+    fn format_action(&mut self, _: &FormatQuery, _: &mut Window, cx: &mut Context<Self>) {
+        self.format_query(cx);
     }
 
     fn definition_here(&self, offset: usize) -> Option<Definition> {

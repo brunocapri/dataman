@@ -95,7 +95,7 @@ pub const COMMANDS: &[Command] = &[
     c("rollback_tx", "Rollback", "EDITOR", Scope::Workspace, &["ctrl-cmd-backspace"], || Box::new(RollbackTx)),
     c("next_result", "Next result", "EDITOR", Scope::Workspace, &["cmd-alt-]"], || Box::new(NextResult)),
     c("prev_result", "Previous result", "EDITOR", Scope::Workspace, &["cmd-alt-["], || Box::new(PrevResult)),
-    c("format_sql", "Format SQL", "EDITOR", Scope::Editor, &["alt-shift-f"], || Box::new(crate::editor::FormatSql)),
+    c("format_sql", "Format query", "EDITOR", Scope::Editor, &["alt-shift-f"], || Box::new(crate::editor::FormatQuery)),
     c("toggle_comment", "Comment line", "EDITOR", Scope::Editor, &["cmd-/"], || Box::new(crate::editor::ToggleComment)),
     c("go_to_definition", "Go to definition", "EDITOR", Scope::Editor, &["f12"], || Box::new(crate::editor::GoToDefinition)),
     c("open_definition", "Open definition", "EDITOR", Scope::Editor, &["alt-f12"], || Box::new(crate::editor::PeekDefinition)),

@@ -335,12 +335,12 @@ fn check(ed: Entity<CodeEditor>, window: &mut Window, cx: &mut App) {
             e.set_text("select o.id,o.total from orders o join customer c on c.id=o.customer where o.status='open' and o.total>10", cx);
             e.set_cursor(0, cx);
         }),
-        a(FormatSql),
+        a(FormatQuery),
         ok("format", |e| {
             let want = "SELECT o.id, o.total\nFROM orders o\nJOIN customer c ON c.id = o.customer\nWHERE o.status = 'open'\n  AND o.total > 10";
             (e.text() == want, format!("{:?}", e.text()))
         }),
-        a(FormatSql),
+        a(FormatQuery),
         ok("format-idempotent", |e| (e.text().starts_with("SELECT o.id, o.total\nFROM"), format!("{:?}", &e.text()[..20]))),
         a(Undo),
         ok("format-one-undo", |e| (e.text().starts_with("select o.id,o.total"), format!("{:?}", &e.text()[..19]))),
@@ -436,6 +436,7 @@ fn main() {
                             EditorEvent::RunAll(stmts) => println!("RunAll ({}) {:?}", stmts.len(), stmts.iter().map(|s| s.sql.as_str()).collect::<Vec<_>>()),
                             EditorEvent::Changed => {}
                             EditorEvent::Definition { def, peek } => println!("Definition {def:?} peek={peek}"),
+                            EditorEvent::Notice(m) => println!("Notice {m}"),
                         })
                         .detach();
                         Demo {

@@ -1053,7 +1053,7 @@ fn commands(conn: Option<&std::sync::Arc<dataman_core::Connection>>, cx: &App) -
         c("Activity monitor", "sessions, locks, tables, statements", "", Box::new(OpenActivity), Workspace),
         c("Agents", "audit, permissions, privacy, MCP", "", Box::new(ToggleMcpLog), Workspace),
         c("Toggle comment", "the selected lines", "⌘/", Box::new(crate::editor::ToggleComment), Editor),
-        c("Format SQL", "the selection, or the whole script", "⌥⇧F", Box::new(crate::editor::FormatSql), Editor),
+        c("Format query", "the selection, or the whole script: SQL, MongoDB, the console, Redis", "⌥⇧F", Box::new(crate::editor::FormatQuery), Editor),
         c("Go to definition", "the name under the cursor, in the explorer", "F12", Box::new(crate::editor::GoToDefinition), Editor),
         c("Open definition", "the name under the cursor, in a new tab", "⌥F12", Box::new(crate::editor::PeekDefinition), Editor),
         c("Find", "", "⌘F", Box::new(crate::find::Find), Workspace),

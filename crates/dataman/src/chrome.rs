@@ -977,6 +977,9 @@ impl Workspace {
                 .children(key.filter(|_| !v.compact))
                 .on_click(cx.listener(|w, _, window, cx| w.run_active(window, cx)))
         };
+        let format = ui::icon_button(t, "tb-format", Icon::Format, 26., 15.)
+            .tip(ui::tooltip("Format query", Some("the selection, or the whole script"), crate::keymap::key("format_sql").as_deref()))
+            .on_click(cx.listener(|w, _, window, cx| w.format_active(window, cx)));
         let cancel = busy.then(|| {
             let (glyph, label) = if v.cancelling { ("◌", "Cancel requested…") } else { ("■", "Cancel") };
             let b = if v.cancelling { ui::button(t, "tb-cancel", Btn::Ghost) } else { ui::button(t, "tb-cancel", Btn::Danger) };
@@ -1048,6 +1051,7 @@ impl Workspace {
             .border_color(t.line)
             .text_color(t.tx2)
             .child(run)
+            .child(format)
             .child(picker)
             .children(agent)
             .when(tx_controls.is_some(), |d| d.child(ui::vsep(t, 18.).mx(px(4.))))

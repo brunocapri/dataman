@@ -29,6 +29,7 @@ pub enum TabEvent {
     Params,
     ParamsClosed,
     Definition { def: Definition, peek: bool },
+    Notice(String),
     Connect(String),
     Close,
     Quit,
@@ -184,6 +185,7 @@ impl QueryTab {
                 t.schedule_parse_check(cx);
             }
             EditorEvent::Definition { def, peek } => cx.emit(TabEvent::Definition { def: def.clone(), peek: *peek }),
+            EditorEvent::Notice(m) => cx.emit(TabEvent::Notice(m.clone())),
         })
         .detach();
         let mut t = QueryTab {

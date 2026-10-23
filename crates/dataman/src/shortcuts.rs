@@ -35,7 +35,7 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
             ("{commit_tx} · {rollback_tx}", "commit · rollback"),
             ("{prev_result} {next_result}", "previous · next result"),
             ("⌃Space", "complete"),
-            ("{format_sql}", "format SQL"),
+            ("{format_sql}", "format query"),
             ("{go_to_definition} · ⌘-click", "go to definition"),
             ("{open_definition}", "open definition"),
             ("{jump_to_error}", "jump to error"),

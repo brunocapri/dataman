@@ -665,6 +665,7 @@ impl Workspace {
                 let (def, peek) = (def.clone(), *peek);
                 w.go_to_definition(tab.clone(), def, peek, window, cx);
             }
+            TabEvent::Notice(m) => w.notice(m.clone(), cx),
             TabEvent::Connect(id) => match w.store.read(cx).connection(id) {
                 Some(conn) => tab.update(cx, |t, cx| t.adopt(conn, cx)),
                 None => {
@@ -2067,6 +2068,14 @@ impl Workspace {
             let e = t.read(cx).editor.clone();
             window.focus(&e.focus_handle(cx), cx);
             e.update(cx, |e, cx| e.run_script(cx));
+        }
+    }
+
+    pub(crate) fn format_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(t) = self.active_tab() {
+            let e = t.read(cx).editor.clone();
+            window.focus(&e.focus_handle(cx), cx);
+            e.update(cx, |e, cx| e.format_query(cx));
         }
     }
 
