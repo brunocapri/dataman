@@ -897,4 +897,143 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     pause(cx, 150).await;
     let after = cx.update(|_, cx| ws.read(cx).tabs.len()).unwrap_or(0);
     r.check("Audit: Enter opens the selected call in a tab", !shows(cx) && after == before + 1, format!("{before} → {after} {state:?}"));
+    check_clear(ws, &a, r, cx).await;
+}
+
+/// Audit › Clear…: each way asks first with the count of what goes, takes the replies with the
+/// calls, and the list, its filters and its selection follow. Last: it leaves the log empty.
+async fn check_clear(ws: &Entity<Workspace>, a: &Entity<AgentsPage>, r: &mut Report, cx: &mut AsyncWindowContext) {
+    use dataman_mcp::audit::{Clear, Recent};
+    let core = core(ws, cx);
+    let log = core.dirs.mcp_audit_file();
+    let now = chrono::Utc::now();
+    let audit = Audit::new(log.clone());
+    for days in [200, 120, 60, 45, 10] {
+        let id = format!("old-{days}");
+        audit.write_reply(&id, r#"{"rows":[]}"#);
+        audit.write(&Entry {
+            id: Some(id),
+            ts: now - chrono::Duration::days(days),
+            client: "Old Agent".into(),
+            transport: "stdio".into(),
+            tool: "run_query".into(),
+            connection: Some("old-pg".into()),
+            database: None,
+            sql: Some(format!("SELECT {days}")),
+            query: Some(format!("SELECT {days}")),
+            rows: Some(1),
+            ms: 1.,
+            outcome: Outcome::Ok,
+            error: None,
+            approval: None,
+            draft: false,
+            favorite: None,
+            allowed_by: None,
+            rewritten: None,
+            seen: None,
+        });
+    }
+    // A reply whose call rotated out long ago.
+    let orphan = dataman_mcp::audit::Reply { id: "orphan".into(), ts: now - chrono::Duration::days(300), cut: false, reply: "{}".into() };
+    if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(dataman_mcp::audit::replies_path(&log)) {
+        use std::io::Write;
+        let _ = writeln!(f, "{}", serde_json::to_string(&orphan).unwrap_or_default());
+    }
+    if !cx.update(|_, cx| ws.read(cx).view == dataman_core::layout::NavView::Agents).unwrap_or(false) {
+        click_probe("rail-agents", cx);
+    }
+    click_probe("agents-nav-audit", cx);
+    // The import sheet the steps before leave open (its Esc goes to the editor) covers the page.
+    let _ = cx.update(|_, cx| a.update(cx, |a, _| a.import = None));
+    let ids = |cx: &mut AsyncWindowContext| cx.update(|_, cx| a.read(cx).entries.iter().filter_map(|e| e.id.clone()).collect::<Vec<_>>()).unwrap_or_default();
+    let has = |cx: &mut AsyncWindowContext, id: &str| ids(cx).iter().any(|i| i == id);
+    let _ = cx.update(|_, cx| a.update(cx, |a, cx| a.reload(cx)));
+    until(cx, 5, |cx| has(cx, "old-10")).await;
+    let at = |cx: &mut AsyncWindowContext, id: &str| cx.update(|_, cx| a.read(cx).entries.iter().position(|e| e.id.as_deref() == Some(id))).ok().flatten();
+    let old45 = at(cx, "old-45");
+    let _ = cx.update(|_, cx| {
+        a.update(cx, |a, cx| {
+            a.f_agent = Some("Old Agent".into());
+            a.selected = old45;
+            cx.notify();
+        })
+    });
+    draw(cx);
+    click_probe("agents-clear", cx);
+    pause(cx, 50).await;
+    let labels = cx.update(|_, cx| a.read(cx).demo_menu_labels()).unwrap_or_default();
+    r.check(
+        "Audit › Clear… offers all, before a date, and keeping the last 30 days, 3 or 6 months",
+        labels == ["Clear All…", "Clear Before a Date…", "Keep Only the Last 30 Days…", "Keep Only the Last 3 Months…", "Keep Only the Last 6 Months…"],
+        format!("{labels:?}"),
+    );
+    let sheet = |cx: &mut AsyncWindowContext| cx.update(|_, cx| a.read(cx).clear.as_ref().map(|s| (s.what, s.count))).ok().flatten();
+    let on_disk = |id: &str| dataman_mcp::audit::tail(&log, 100_000).iter().any(|e| e.id.as_deref() == Some(id));
+    click_probe("agents-clear:3", cx);
+    let counted = until(cx, 5, |cx| sheet(cx).is_some_and(|(_, n)| n.is_some())).await;
+    r.check("Keep Only the Last 3 Months… asks first, counting the two older calls", counted && sheet(cx) == Some((Clear::Keep(Recent::Months3), Some(2))), format!("{:?}", sheet(cx)));
+    key(cx, "escape");
+    pause(cx, 100).await;
+    r.check("Esc keeps them: the sheet closes and nothing goes", sheet(cx).is_none() && on_disk("old-200") && has(cx, "old-200"), format!("{:?}", sheet(cx)));
+    click_probe("agents-clear", cx);
+    pause(cx, 50).await;
+    click_probe("agents-clear:3", cx);
+    until(cx, 5, |cx| sheet(cx).is_some_and(|(_, n)| n == Some(2))).await;
+    click_probe("agents-clear-delete", cx);
+    let gone = until(cx, 5, |cx| sheet(cx).is_none() && !has(cx, "old-200") && !has(cx, "old-120")).await;
+    let sel = |cx: &mut AsyncWindowContext| cx.update(|_, cx| a.read(cx).selected.and_then(|i| a.read(cx).entries.get(i)).and_then(|e| e.id.clone())).ok().flatten();
+    let filter = |cx: &mut AsyncWindowContext| cx.update(|_, cx| a.read(cx).f_agent.clone()).ok().flatten();
+    r.check(
+        "Delete takes the calls older than 3 months off the disk and the list at once",
+        gone && !on_disk("old-200") && !on_disk("old-120") && on_disk("old-60") && has(cx, "old-60"),
+        format!("{:?}", ids(cx)),
+    );
+    r.check(
+        "… with their replies and the orphan ones; the kept calls' replies stay",
+        dataman_mcp::audit::reply(&log, "old-200").is_none() && dataman_mcp::audit::reply(&log, "orphan").is_none() && dataman_mcp::audit::reply(&log, "old-60").is_some(),
+        "",
+    );
+    r.check("… and the filter and the selected call stay as they were", sel(cx).as_deref() == Some("old-45") && filter(cx).as_deref() == Some("Old Agent"), format!("{:?} {:?}", sel(cx), filter(cx)));
+    // Before a date: a calendar, a month back at first; the day picked stays.
+    click_probe("agents-clear", cx);
+    pause(cx, 50).await;
+    click_probe("agents-clear:1", cx);
+    until(cx, 5, |cx| sheet(cx).is_some_and(|(_, n)| n.is_some())).await;
+    let today = chrono::Local::now().date_naive();
+    let first = sheet(cx).map(|(w, _)| w);
+    r.check("Clear Before a Date… shows a calendar on the day a month back", first == Some(Clear::Before(today - chrono::Days::new(30))) && probed("agents-clear-calendar", cx).is_some(), format!("{first:?}"));
+    let tomorrow = today + chrono::Days::new(1);
+    let day = today - chrono::Days::new(20);
+    for d in [tomorrow, day] {
+        if probed(&format!("agents-clear-day-{d}"), cx).is_none() {
+            click_probe("agents-clear-next", cx);
+            pause(cx, 50).await;
+        }
+        click_probe(&format!("agents-clear-day-{d}"), cx);
+        pause(cx, 50).await;
+        if d == tomorrow {
+            let still = sheet(cx).map(|(w, _)| w);
+            r.check("a day still to come cannot be picked", still == first, format!("{still:?}"));
+        }
+    }
+    let picked = until(cx, 5, |cx| sheet(cx) == Some((Clear::Before(day), Some(2)))).await;
+    r.check("a click on a day picks it and counts again: the two calls before it", picked, format!("{:?}", sheet(cx)));
+    key(cx, "cmd-backspace");
+    let gone = until(cx, 5, |cx| sheet(cx).is_none() && !has(cx, "old-45")).await;
+    r.check("⌘⌫ deletes them; the day's later calls stay", gone && !on_disk("old-60") && !on_disk("old-45") && on_disk("old-10"), format!("{:?}", ids(cx)));
+    r.check("… and the selection, its call gone, moves to the first left under the filter", sel(cx).as_deref() == Some("old-10") && filter(cx).as_deref() == Some("Old Agent"), format!("{:?} {:?}", sel(cx), filter(cx)));
+    // Everything.
+    let all = dataman_mcp::audit::count_before(&log, chrono::Utc::now());
+    click_probe("agents-clear", cx);
+    pause(cx, 50).await;
+    click_probe("agents-clear:0", cx);
+    until(cx, 5, |cx| sheet(cx).is_some_and(|(_, n)| n.is_some())).await;
+    r.check("Clear All… counts every call in the log", sheet(cx) == Some((Clear::All, Some(all))) && all > 1, format!("{:?} of {all}", sheet(cx)));
+    click_probe("agents-clear-delete", cx);
+    let empty = until(cx, 5, |cx| sheet(cx).is_none() && ids(cx).is_empty()).await;
+    let replies = std::fs::read_to_string(dataman_mcp::audit::replies_path(&log)).unwrap_or_default();
+    r.check("Delete empties the audit and its replies", empty && dataman_mcp::audit::tail(&log, 10).is_empty() && replies.trim().is_empty(), format!("{:?} {}", ids(cx), replies.len()));
+    r.check("… and a filter on an agent no longer there goes, with the selection", filter(cx).is_none() && sel(cx).is_none(), format!("{:?} {:?}", filter(cx), sel(cx)));
+    let tools: Vec<String> = dataman_mcp::registry(&core.dirs).all().iter().map(|t| t.name().to_string()).collect();
+    r.check("no MCP tool clears or touches the audit", !tools.is_empty() && !tools.iter().any(|t| t.contains("audit") || t.contains("clear") || t.contains("prune")), format!("{tools:?}"));
 }

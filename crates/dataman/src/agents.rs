@@ -92,6 +92,7 @@ pub fn bind_keys(cx: &mut App) {
         crate::keymap::kb("cmd-down", ListLast, c),
         crate::keymap::kb("enter", ListOpen, c),
     ]);
+    crate::agents_clear::bind_keys(cx);
 }
 
 /// A call's reply, as the log has it.
@@ -181,6 +182,8 @@ pub(crate) enum Act {
     Validator(Validator),
     CopyQuery(usize),
     OpenTab(usize),
+    /// Audit › Clear…: None for everything.
+    Clear(Option<dataman_mcp::audit::Clear>),
 }
 
 pub(crate) struct Menu {
@@ -265,6 +268,11 @@ pub struct AgentsPage {
     /// Sampled fields of collections and indices, for the suggestions (connection id and name).
     pub(crate) fields: HashMap<String, Vec<(String, String)>>,
     pub(crate) loading: BTreeSet<String>,
+    /// Audit › Clear…'s sheet, while it asks.
+    pub(crate) clear: Option<crate::agents_clear::ClearSheet>,
+    pub(crate) clear_focus: FocusHandle,
+    /// The next read of the log drops agent and connection filters that match nothing left.
+    prune_filters: bool,
 }
 
 impl EventEmitter<AgentsEvent> for AgentsPage {}
@@ -589,6 +597,9 @@ impl AgentsPage {
             replies: HashMap::new(),
             fields: HashMap::new(),
             loading: BTreeSet::new(),
+            clear: None,
+            clear_focus: cx.focus_handle(),
+            prune_filters: false,
         };
         v.poll(cx);
         v
@@ -622,6 +633,14 @@ impl AgentsPage {
                 }
                 v.entries = entries;
                 v.loaded = true;
+                if std::mem::take(&mut v.prune_filters) {
+                    if v.f_agent.as_ref().is_some_and(|a| !v.entries.iter().any(|e| &e.client == a)) {
+                        v.f_agent = None;
+                    }
+                    if v.f_conn.as_ref().is_some_and(|c| !v.entries.iter().any(|e| e.connection.as_ref() == Some(c))) {
+                        v.f_conn = None;
+                    }
+                }
                 cx.notify();
             });
         })
@@ -769,9 +788,19 @@ impl AgentsPage {
                 }
             }
             Act::OpenTab(i) => self.open_entry(i, cx),
+            Act::Clear(what) => self.open_clear(what, window, cx),
         }
-        let _ = window;
         cx.notify();
+    }
+
+    /// After a clear: replies read before are dropped, and the next read keeps filters coherent
+    /// (the selection follows its call, or moves to the first one left).
+    pub(crate) fn cleared(&mut self) {
+        self.replies.clear();
+        self.received_for = None;
+        self.received_zoom = false;
+        self.received_tween = None;
+        self.prune_filters = true;
     }
 
     pub(crate) fn clear_filters(&mut self, cx: &mut Context<Self>) {
@@ -1101,7 +1130,16 @@ impl AgentsPage {
             .child(self.filter_button(t, "agents-f-agent", self.f_agent.clone().unwrap_or_else(|| "All agents".into()), cx))
             .child(self.filter_button(t, "agents-f-conn", self.f_conn.clone().unwrap_or_else(|| "All connections".into()), cx))
             .child(self.filter_button(t, "agents-f-outcome", self.f_outcome.label().into(), cx))
-            .child(self.filter_button(t, "agents-f-when", self.f_when.label().into(), cx));
+            .child(self.filter_button(t, "agents-f-when", self.f_when.label().into(), cx))
+            .child(div().flex_1())
+            .child(
+                div().relative().child(self.anchor("agents-clear")).child(
+                    ui::button(t, "agents-clear", ui::Btn::Secondary)
+                        .h(px(28.))
+                        .child("Clear…")
+                        .on_click(cx.listener(|v, _, _, cx| v.open_menu("agents-clear", 240., crate::agents_clear::menu_items(), cx))),
+                ),
+            );
         let bounds = self.row_bounds.clone();
         bounds.borrow_mut().clear();
         let mut day: Option<String> = None;
@@ -2110,5 +2148,6 @@ impl Render for AgentsPage {
             .child(body)
             .children(self.render_menu(&t, cx))
             .children(self.render_import(&t, cx))
+            .children(self.render_clear(&t, cx))
     }
 }
