@@ -98,7 +98,6 @@ mod newuser_check;
 #[cfg(feature = "checks")]
 mod nosql_check;
 mod notify;
-mod outline;
 mod palette;
 mod panels;
 mod params_ui;
@@ -259,6 +258,11 @@ fn menus(cx: &App) -> Vec<Menu> {
             MenuItem::separator(),
             MenuItem::action("Toggle Comment", editor::ToggleComment),
             MenuItem::action("Format Query", editor::FormatQuery),
+            MenuItem::separator(),
+            MenuItem::action("Fold", editor::Fold),
+            MenuItem::action("Unfold", editor::Unfold),
+            MenuItem::action("Fold All", editor::FoldAll),
+            MenuItem::action("Unfold All", editor::UnfoldAll),
             MenuItem::separator(),
             MenuItem::action("Go to Definition", editor::GoToDefinition),
             MenuItem::action("Open Definition", editor::PeekDefinition),

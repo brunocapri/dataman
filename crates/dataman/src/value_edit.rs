@@ -176,6 +176,7 @@ impl ValueEditor {
                 let pretty = if raw { text.to_string() } else { doc.root.pretty() };
                 let editor = cx.new(|cx| {
                     let mut e = CodeEditor::new(window, cx).plain();
+                    e.set_folding(true, cx);
                     e.set_text(&pretty, cx);
                     e
                 });
@@ -571,7 +572,7 @@ impl ValueEditor {
                     };
                     let value_el: gpui::AnyElement = match &editing {
                         Some((false, input)) => div().flex_1().min_w(px(60.)).child(input.clone()).into_any_element(),
-                        _ if r.container => div().flex_none().text_color(t.tx3).child(if r.expanded && r.len > 0 { r.count_text() } else { r.preview() }).into_any_element(),
+                        _ if r.container => div().flex_none().text_color(t.tx3).child(r.value.clone()).into_any_element(),
                         _ => div()
                             .id(("json-val", i))
                             .flex_1()
@@ -609,15 +610,9 @@ impl ValueEditor {
                                 .flex_none()
                                 .when(r.container, |d| {
                                     d.child(ui::disclosure(("json-chev", i), r.expanded, 10., t.tx3))
-                                        .on_click(cx.listener(move |e, ev: &ClickEvent, _, cx| {
+                                        .on_click(cx.listener(move |e, _: &ClickEvent, _, cx| {
                                             if let State::Json(j) = &mut e.state {
-                                                // ⌥: the whole subtree, folded or open with it.
-                                                if ev.modifiers().alt {
-                                                    let open = j.doc.collapsed.contains(&p_toggle);
-                                                    j.doc.set_subtree(&p_toggle, open);
-                                                } else {
-                                                    j.doc.toggle(&p_toggle);
-                                                }
+                                                j.doc.toggle(&p_toggle);
                                             }
                                             cx.notify();
                                         }))

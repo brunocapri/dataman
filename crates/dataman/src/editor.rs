@@ -16,6 +16,7 @@ use std::collections::HashSet;
 use dataman_core::complete::{Candidate, CandidateKind, Definition, SignatureHelp, complete, definition_at, signature_help};
 use dataman_core::find::{Matcher, nearest_index, next_index, prev_index};
 use dataman_core::format::{FormatOptions, KeywordCase};
+use dataman_core::jsontree::{self, Fold as FoldRegion};
 use dataman_core::lint::{Lint, LintContext, Severity, lint};
 use dataman_core::schema::SchemaSnapshot;
 use dataman_core::sql::split::{split_tokens_in, statement_at_in};
@@ -77,6 +78,13 @@ actions!(
         FormatQuery,
         GoToDefinition,
         PeekDefinition,
+        Fold,
+        Unfold,
+        FoldAll,
+        UnfoldAll,
+        FoldLevel1,
+        FoldLevel2,
+        FoldLevel3,
     ]
 );
 
@@ -198,6 +206,8 @@ pub enum EditorEvent {
 pub(crate) struct Buffer {
     text: String,
     lines: Vec<usize>,
+    /// The folded brackets' offsets, kept in step with the edits.
+    folded: Vec<usize>,
     tokens: Vec<Token>,
     dialect: Dialect,
     doc: Option<dataman_core::Engine>,
@@ -236,6 +246,7 @@ impl Buffer {
         let mut b = Buffer {
             text: text.to_string(),
             lines,
+            folded: Vec::new(),
             tokens: lex(text, dialect, doc),
             dialect,
             doc,
@@ -308,6 +319,13 @@ impl Buffer {
         self.non_ascii = self.non_ascii + count_non_ascii(new) - count_non_ascii(&self.text[range.clone()]);
         let (l0, l1) = (self.line_of(range.start), self.line_of(range.end));
         let delta = new.len() as isize - range.len() as isize;
+        // An edited bracket unfolds; those after the edit move with it.
+        self.folded.retain(|&o| o < range.start || o >= range.end);
+        for o in &mut self.folded {
+            if *o >= range.end {
+                *o = (*o as isize + delta) as usize;
+            }
+        }
         self.text.replace_range(range.clone(), new);
         let starts: Vec<usize> = new.match_indices('\n').map(|(i, _)| range.start + i + 1).collect();
         let n = starts.len();
@@ -735,7 +753,6 @@ struct EditorFind {
 struct Geometry {
     bounds: Bounds<Pixels>,
     origin_x: Pixels,
-    #[cfg(feature = "checks")]
     gutter_w: Pixels,
     text_width: Pixels,
     char_width: Pixels,
@@ -782,6 +799,13 @@ pub struct CodeEditor {
     known: Arc<HashSet<String>>,
     doc_hints: Arc<dataman_core::nosql::lang::Hints>,
     gutter: Option<crate::grid::GutterShare>,
+    /// `{…}` and `[…]` over lines fold, as in VS Code (documents, JSON).
+    folding: bool,
+    regions: Vec<FoldRegion>,
+    /// Display row → line; empty while nothing is folded (every line its own row).
+    rows: Vec<usize>,
+    /// This frame's fold controls: a gutter chevron or a folded line's ⋯, and the bracket.
+    fold_hits: Vec<(Bounds<Pixels>, usize)>,
     _blur: Subscription,
     _focus: Subscription,
 }
@@ -991,6 +1015,10 @@ impl CodeEditor {
             known: Arc::default(),
             doc_hints: Arc::default(),
             gutter: None,
+            folding: false,
+            regions: Vec::new(),
+            rows: Vec::new(),
+            fold_hits: Vec::new(),
             _blur: blur,
             _focus: on_focus,
         }
@@ -1015,6 +1043,7 @@ impl CodeEditor {
 
     pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
         self.buf = Buffer::new_lang(&normalize_newlines(text), self.buf.dialect, self.buf.doc);
+        self.refold();
         let end = self.buf.len();
         self.sel = end..end;
         self.reversed = false;
@@ -1053,6 +1082,10 @@ impl CodeEditor {
     }
 
     pub fn set_doc_lang(&mut self, engine: Option<dataman_core::Engine>, cx: &mut Context<Self>) {
+        if self.folding != engine.is_some() {
+            self.folding = engine.is_some();
+            self.refold();
+        }
         if self.buf.doc == engine {
             return;
         }
@@ -1496,6 +1529,7 @@ impl CodeEditor {
     }
 
     fn after_edit(&mut self, cx: &mut Context<Self>) {
+        self.refold();
         self.error = None;
         self.diagnostic = None;
         self.marks.clear();
@@ -1749,14 +1783,14 @@ impl CodeEditor {
             None => self.x_for(from, window),
         };
         self.goal_x = Some(x);
-        let target = self.buf.line_of(from) as isize + rows;
+        let target = self.row_of(self.buf.line_of(from)) as isize + rows;
         if target < 0 {
             return 0;
         }
-        if target as usize >= self.buf.line_count() {
+        if target as usize >= self.row_count() {
             return self.buf.len();
         }
-        let l = target as usize;
+        let l = self.line_at(target as usize);
         self.buf.line_start(l) + self.shape_plain(l, window).closest_index_for_x(x)
     }
 
@@ -1781,20 +1815,20 @@ impl CodeEditor {
 
     fn move_left(&mut self, _: &MoveLeft, _: &mut Window, cx: &mut Context<Self>) {
         let to = if self.sel.is_empty() { self.buf.prev_boundary(self.sel.start) } else { self.sel.start };
-        self.move_to(to, cx);
+        self.move_to(self.past_folds(to, false), cx);
     }
 
     fn move_right(&mut self, _: &MoveRight, _: &mut Window, cx: &mut Context<Self>) {
         let to = if self.sel.is_empty() { self.buf.next_boundary(self.sel.end) } else { self.sel.end };
-        self.move_to(to, cx);
+        self.move_to(self.past_folds(to, true), cx);
     }
 
     fn select_left(&mut self, _: &SelectLeft, _: &mut Window, cx: &mut Context<Self>) {
-        self.select_to(self.buf.prev_boundary(self.cursor()), cx);
+        self.select_to(self.past_folds(self.buf.prev_boundary(self.cursor()), false), cx);
     }
 
     fn select_right(&mut self, _: &SelectRight, _: &mut Window, cx: &mut Context<Self>) {
-        self.select_to(self.buf.next_boundary(self.cursor()), cx);
+        self.select_to(self.past_folds(self.buf.next_boundary(self.cursor()), true), cx);
     }
 
     fn move_up(&mut self, _: &MoveUp, window: &mut Window, cx: &mut Context<Self>) {
@@ -2337,10 +2371,10 @@ impl CodeEditor {
         let Some(g) = self.geo else { return 0 };
         let y = pos.y - g.bounds.top() - px(TOP_PAD) + self.scroll.y;
         let row = (y / line_height()).floor();
-        if row >= self.buf.line_count() as f32 {
+        if row >= self.row_count() as f32 {
             return self.buf.len();
         }
-        let l = row.max(0.) as usize;
+        let l = self.line_at(row.max(0.) as usize);
         let x = (pos.x - g.origin_x + self.scroll.x).max(px(0.));
         self.buf.line_start(l) + self.shape_plain(l, window).closest_index_for_x(x)
     }
@@ -2354,6 +2388,11 @@ impl CodeEditor {
     fn mouse_down(&mut self, ev: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.focus, cx);
         if self.bar_down(ev.position, cx) {
+            return;
+        }
+        if let Some(&(_, open)) = self.fold_hits.iter().find(|(b, _)| b.contains(&ev.position)) {
+            // ⌥: with every fold inside it.
+            self.toggle_fold(open, ev.modifiers.alt, cx);
             return;
         }
         self.menu = None;
@@ -2464,7 +2503,7 @@ impl CodeEditor {
     fn max_scroll(&self) -> (Pixels, Pixels) {
         let Some(g) = self.geo else { return (px(0.), px(0.)) };
         let lh = line_height();
-        let total = lh * self.buf.line_count() as f32;
+        let total = lh * self.row_count() as f32;
         let max_y = (total + px(TOP_PAD) - g.bounds.size.height + lh * 3.).max(px(0.));
         let max_x = (g.char_width * (self.buf.longest + 4) as f32 - g.text_width).max(px(0.));
         (max_x, max_y)
@@ -2512,7 +2551,9 @@ impl CodeEditor {
         let lh = line_height();
         let h = g.bounds.size.height;
         let c = self.cursor();
-        let top = lh * self.buf.line_of(c) as f32 + px(TOP_PAD);
+        // A jump into a fold (find, an error, a definition) opens it.
+        self.reveal(c);
+        let top = lh * self.row_of(self.buf.line_of(c)) as f32 + px(TOP_PAD);
         let margin = if h > lh * 8. { lh * 2. } else { px(0.) };
         if top - margin < self.scroll.y {
             self.scroll.y = top - margin;
@@ -2600,7 +2641,7 @@ impl CodeEditor {
         let t = cx.theme();
         let at = l.range.start.min(self.buf.len());
         let x = g.origin_x - self.scroll.x + self.x_for(at, window);
-        let y = g.bounds.top() + px(TOP_PAD) + line_height() * (self.buf.line_of(at) + 1) as f32 - self.scroll.y + px(2.);
+        let y = g.bounds.top() + px(TOP_PAD) + line_height() * (self.row_of(self.buf.line_of(at)) + 1) as f32 - self.scroll.y + px(2.);
         let color = if l.severity == Severity::Error { t.err } else { t.warn };
         Some(
             deferred(
@@ -2630,7 +2671,7 @@ impl CodeEditor {
         let t = cx.theme();
         let name_at = s.paren.saturating_sub(s.function.name.len()).min(self.buf.len());
         let x = g.origin_x - self.scroll.x + self.x_for(name_at, window);
-        let y = g.bounds.top() + px(TOP_PAD) + line_height() * self.buf.line_of(self.sel.end) as f32 - self.scroll.y - px(4.);
+        let y = g.bounds.top() + px(TOP_PAD) + line_height() * self.row_of(self.buf.line_of(self.sel.end)) as f32 - self.scroll.y - px(4.);
         let mut parts: Vec<(String, bool)> = vec![(format!("{}(", s.function.name), false)];
         for (i, p) in s.params.iter().enumerate() {
             if i > 0 {
@@ -2692,7 +2733,7 @@ impl CodeEditor {
             if x1 <= x0 {
                 continue;
             }
-            runs.push((*l, x + x0, x + x1));
+            runs.push((self.row_of(*l), x + x0, x + x1));
         }
         for (i, &(l, x0, x1)) in runs.iter().enumerate() {
             let y = g.bounds.top() + px(TOP_PAD) + lh * l as f32 - self.scroll.y;
@@ -2726,14 +2767,15 @@ impl CodeEditor {
         };
         let cw = ts.shape_line("0".into(), fs, &[run(1, t.tx)], None).width();
         let digits = self.buf.line_count().to_string().len();
-        let need = px(GUTTER_MIN).max(cw * digits as f32 + px(32.));
+        // Folding: room for a chevron between the numbers and the text.
+        let fold_w = if self.folding { px(6.) } else { px(0.) };
+        let need = px(GUTTER_MIN).max(cw * digits as f32 + px(32.) + fold_w);
         let gutter_w = self.gutter.as_ref().map_or(need, |g| px(g.editor(need.pt())));
         let text_bounds = Bounds::from_corners(point(bounds.left() + gutter_w, bounds.top()), bounds.bottom_right());
         let origin_x = text_bounds.left() + px(12.);
         let g = Geometry {
             bounds,
             origin_x,
-            #[cfg(feature = "checks")]
             gutter_w,
             text_width: text_bounds.size.width - px(12.),
             char_width: cw,
@@ -2750,12 +2792,17 @@ impl CodeEditor {
         self.clamp_scroll();
 
         let count = self.buf.line_count();
-        let first = (((self.scroll.y - px(TOP_PAD)) / lh).floor().max(0.) as usize).min(count);
-        let last = (first + (bounds.size.height / lh).ceil() as usize + 2).min(count);
+        let shown = self.row_count();
+        let first = (((self.scroll.y - px(TOP_PAD)) / lh).floor().max(0.) as usize).min(shown);
+        let last = (first + (bounds.size.height / lh).ceil() as usize + 2).min(shown);
         let cursor = self.cursor();
         let cursor_line = self.buf.line_of(cursor);
         let focused = self.focus.is_focused(window);
-        let y_of = |l: usize| bounds.top() + px(TOP_PAD) + lh * l as f32 - self.scroll.y;
+        // Rows are lines unless something is folded; `y_of` and `seen` take a line.
+        let fold_rows = &self.rows;
+        let row_of = |l: usize| if fold_rows.is_empty() { l } else { fold_rows.partition_point(|&x| x <= l).saturating_sub(1) };
+        let y_of = |l: usize| bounds.top() + px(TOP_PAD) + lh * row_of(l) as f32 - self.scroll.y;
+        let seen = |l: usize| (fold_rows.is_empty() || fold_rows.get(row_of(l)) == Some(&l)) && (first..last).contains(&row_of(l));
         let full_row = |l: usize, color: Hsla| {
             fill(Bounds::from_corners(point(bounds.left(), y_of(l)), point(bounds.right(), y_of(l) + lh)), color)
         };
@@ -2764,7 +2811,7 @@ impl CodeEditor {
         let num_size = px(11.5);
         let mut lines = Vec::with_capacity(last - first);
         let mut numbers = Vec::with_capacity(last - first);
-        for l in first..last {
+        for l in (first..last).map(|r| self.line_at(r)) {
             let text = display_text(self.buf.line(l));
             let runs = self.line_runs(t, l, text.len());
             let shaped = ts.shape_line(text, fs, &runs, None);
@@ -2772,7 +2819,7 @@ impl CodeEditor {
             let color = if l == cursor_line { t.tx } else { t.tx4 };
             let n: SharedString = (l + 1).to_string().into();
             let shaped_n = ts.shape_line(n.clone(), num_size, &[run(n.len(), color)], None);
-            numbers.push((point(bounds.left() + gutter_w - px(12.) - shaped_n.width(), y_of(l)), shaped_n));
+            numbers.push((point(bounds.left() + gutter_w - px(12.) - fold_w - shaped_n.width(), y_of(l)), shaped_n));
         }
 
         let mut rows = Vec::new();
@@ -2785,7 +2832,7 @@ impl CodeEditor {
             } else {
                 let a = (1. - p).powi(3);
                 let ls = lines_of(&range);
-                for l in first.max(*ls.start())..last.min(ls.end() + 1) {
+                for l in lines.iter().map(|(l, _)| *l).filter(|l| ls.contains(l)) {
                     rows.push(full_row(l, t.acc_s.opacity(a)));
                     rows.push(bar(l, t.acc.opacity(a)));
                 }
@@ -2796,7 +2843,7 @@ impl CodeEditor {
         let mut err_lines = None;
         if let Some(d) = &self.diagnostic {
             let ls = lines_of(&d.stmt);
-            for l in first.max(*ls.start())..last.min(ls.end() + 1) {
+            for l in lines.iter().map(|(l, _)| *l).filter(|l| ls.contains(l)) {
                 rows.push(full_row(l, t.err_line));
                 rows.push(bar(l, t.err));
             }
@@ -2805,7 +2852,7 @@ impl CodeEditor {
         let highlighted = |l: usize| {
             flash_lines.as_ref().is_some_and(|r| r.contains(&l)) || err_lines.as_ref().is_some_and(|r| r.contains(&l))
         };
-        if self.sel.is_empty() && (first..last).contains(&cursor_line) && !highlighted(cursor_line) {
+        if self.sel.is_empty() && seen(cursor_line) && !highlighted(cursor_line) {
             rows.insert(0, full_row(cursor_line, t.cur_line));
         }
 
@@ -2813,14 +2860,15 @@ impl CodeEditor {
         if let Some(f) = self.find.as_ref().filter(|f| f.open && !f.matches.is_empty())
             && first < last
         {
-            let (vs, ve) = (self.buf.line_start(first), self.buf.line_end(last - 1));
+            let (vs, ve) = (self.buf.line_start(self.line_at(first)), self.buf.line_end(self.line_at(last - 1)));
             let lo = f.matches.partition_point(|m| m.end <= vs);
             let hi = f.matches.partition_point(|m| m.start <= ve).max(lo);
             for m in f.matches[lo..hi].iter().filter(|m| **m != self.sel) {
-                let l0 = self.buf.line_of(m.start).max(first);
-                let l1 = self.buf.line_of(m.end).min(last - 1);
-                if l0 <= l1 {
-                    self.range_quads(m, &lines[l0 - first..=l1 - first], t.find_s, 0., &g, &mut backgrounds);
+                let ls = self.buf.line_of(m.start)..=self.buf.line_of(m.end);
+                let at = lines.partition_point(|(l, _)| l < ls.start());
+                let to = lines.partition_point(|(l, _)| l <= ls.end());
+                if at < to {
+                    self.range_quads(m, &lines[at..to], t.find_s, 0., &g, &mut backgrounds);
                 }
             }
         }
@@ -2858,7 +2906,7 @@ impl CodeEditor {
             while l + 1 < count && self.buf.line(l).trim().is_empty() {
                 l += 1;
             }
-            if !(first..last).contains(&l) {
+            if !seen(l) {
                 continue;
             }
             let (glyph, color) = match m {
@@ -2880,12 +2928,36 @@ impl CodeEditor {
             Some((point(origin_x - self.scroll.x + shaped.width() + px(24.), y_of(l)), line))
         });
 
-        let cursor_quad = (focused && self.blink_on && (first..last).contains(&cursor_line)).then(|| {
-            let shaped = &lines[cursor_line - first].1;
+        // The fold controls: a chevron by each foldable line, ⋯ after a folded one.
+        let mut fold_marks = Vec::new();
+        let mut fold_hits = Vec::new();
+        if self.folding {
+            for (l, shaped) in &lines {
+                let Some(r) = self.region_on(*l) else { continue };
+                let folded = self.is_folded(r.open);
+                let (glyph, color) = if folded { ("▸", t.tx2) } else { ("▾", t.tx4) };
+                let chev = ts.shape_line(glyph.into(), px(10.), &[run(glyph.len(), color)], None);
+                let cx0 = bounds.left() + gutter_w - px(15.);
+                fold_marks.push((point(cx0, y_of(*l)), chev));
+                fold_hits.push((Bounds::new(point(cx0 - px(2.), y_of(*l)), size(px(12.), lh)), r.open));
+                if folded {
+                    let dots = ts.shape_line("⋯".into(), fs, &[run("⋯".len(), t.tx3)], None);
+                    let x0 = origin_x - self.scroll.x + shaped.width() + px(4.);
+                    let pill = Bounds::new(point(x0, y_of(*l) + px(2.)), size(dots.width() + px(8.), lh - px(4.)));
+                    backgrounds.push(gpui::quad(pill, px(3.), t.hov, px(0.), gpui::transparent_black(), gpui::BorderStyle::Solid));
+                    fold_marks.push((point(x0 + px(4.), y_of(*l)), dots));
+                    fold_hits.push((pill, r.open));
+                }
+            }
+        }
+        self.fold_hits = fold_hits;
+
+        let cursor_quad = (focused && self.blink_on && seen(cursor_line)).then(|| {
+            let shaped = &lines.iter().find(|(l, _)| *l == cursor_line)?.1;
             let x = origin_x - self.scroll.x + shaped.x_for_index(cursor - self.buf.line_start(cursor_line));
             let color = if self.diagnostic.is_some() { t.err } else { t.acc };
-            fill(Bounds::new(point(x, y_of(cursor_line) + px(1.)), size(px(2.), lh - px(2.))), color)
-        });
+            Some(fill(Bounds::new(point(x, y_of(cursor_line) + px(1.)), size(px(2.), lh - px(2.))), color))
+        }).flatten();
 
         let lines = lines.into_iter().map(|(l, s)| (point(origin_x - self.scroll.x, y_of(l)), s)).collect();
         let gutter = Bounds::new(bounds.origin, size(gutter_w, bounds.size.height));
@@ -2909,6 +2981,7 @@ impl CodeEditor {
             marks,
             lens,
             backgrounds,
+            fold_marks,
             cursor: cursor_quad,
             pop,
         }
@@ -2929,7 +3002,7 @@ impl CodeEditor {
         let current = m.items.get(selected).cloned();
         let lh = line_height();
         let x = g.origin_x - self.scroll.x + self.x_for(start, window);
-        let y = g.bounds.top() + px(TOP_PAD) + lh * (self.buf.line_of(start) + 1) as f32 - self.scroll.y + px(4.);
+        let y = g.bounds.top() + px(TOP_PAD) + lh * (self.row_of(self.buf.line_of(start)) + 1) as f32 - self.scroll.y + px(4.);
         let tag = |k: CandidateKind| match k {
             CandidateKind::Column => ("col", t.typ, t.typ_s),
             CandidateKind::Table => ("tbl", t.acc, t.kw_s),
@@ -3102,6 +3175,199 @@ impl CodeEditor {
     }
 }
 
+/// Folding: `regions` are the text's multi-line brackets, `buf.folded` the folded ones, `rows`
+/// the lines left in sight.
+impl CodeEditor {
+    pub fn set_folding(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.folding = on;
+        self.refold();
+        cx.notify();
+    }
+
+    /// The folded brackets, to fold the same text the same way again (`set_folds`).
+    pub fn folds(&self) -> Vec<usize> {
+        self.buf.folded.clone()
+    }
+
+    pub fn set_folds(&mut self, folds: Vec<usize>, cx: &mut Context<Self>) {
+        self.buf.folded = folds;
+        self.refold();
+        self.keep_cursor_seen();
+        self.clamp_scroll();
+        cx.notify();
+    }
+
+    pub fn line_count(&self) -> usize {
+        self.buf.line_count()
+    }
+
+    fn refold(&mut self) {
+        if !self.folding {
+            self.regions.clear();
+            self.buf.folded.clear();
+            self.rows.clear();
+            return;
+        }
+        // A fold hides the lines between its brackets' lines: there must be one.
+        let buf = &self.buf;
+        self.regions = jsontree::folds(buf.text()).into_iter().filter(|r| buf.line_of(r.close) >= buf.line_of(r.open) + 2).collect();
+        let regions = &self.regions;
+        self.buf.folded.sort_unstable();
+        self.buf.folded.dedup();
+        self.buf.folded.retain(|o| regions.binary_search_by_key(o, |r| r.open).is_ok());
+        self.rebuild_rows();
+    }
+
+    fn rebuild_rows(&mut self) {
+        self.rows.clear();
+        if self.buf.folded.is_empty() {
+            return;
+        }
+        let mut hidden: Vec<(usize, usize)> = self
+            .buf
+            .folded
+            .iter()
+            .filter_map(|o| self.regions.binary_search_by_key(o, |r| r.open).ok())
+            .map(|i| (self.buf.line_of(self.regions[i].open) + 1, self.buf.line_of(self.regions[i].close)))
+            .collect();
+        hidden.sort_unstable();
+        let mut l = 0;
+        for (a, b) in hidden {
+            if a > l {
+                self.rows.extend(l..a);
+            }
+            l = l.max(b);
+        }
+        self.rows.extend(l..self.buf.line_count());
+    }
+
+    fn row_count(&self) -> usize {
+        if self.rows.is_empty() { self.buf.line_count() } else { self.rows.len() }
+    }
+
+    fn line_at(&self, row: usize) -> usize {
+        if self.rows.is_empty() { row } else { self.rows[row.min(self.rows.len() - 1)] }
+    }
+
+    /// A hidden line's row is its fold's.
+    fn row_of(&self, line: usize) -> usize {
+        if self.rows.is_empty() { line } else { self.rows.partition_point(|&l| l <= line).saturating_sub(1) }
+    }
+
+    fn hidden(&self, line: usize) -> bool {
+        !self.rows.is_empty() && self.line_at(self.row_of(line)) != line
+    }
+
+    /// The fold that starts on `line` (its first bracket there).
+    fn region_on(&self, line: usize) -> Option<FoldRegion> {
+        let (ls, le) = (self.buf.line_start(line), self.buf.line_end(line));
+        let i = self.regions.partition_point(|r| r.open < ls);
+        self.regions.get(i).filter(|r| r.open <= le).copied()
+    }
+
+    fn is_folded(&self, open: usize) -> bool {
+        self.buf.folded.binary_search(&open).is_ok()
+    }
+
+    fn set_fold(&mut self, open: usize, on: bool) {
+        match (self.buf.folded.binary_search(&open), on) {
+            (Err(i), true) => self.buf.folded.insert(i, open),
+            (Ok(i), false) => {
+                self.buf.folded.remove(i);
+            }
+            _ => {}
+        }
+    }
+
+    fn folds_changed(&mut self, cx: &mut Context<Self>) {
+        self.rebuild_rows();
+        self.keep_cursor_seen();
+        self.clamp_scroll();
+        cx.notify();
+    }
+
+    /// A cursor whose line folded away goes to the end of the fold's first line.
+    fn keep_cursor_seen(&mut self) {
+        let l = self.buf.line_of(self.cursor());
+        if self.hidden(l) {
+            let at = self.buf.line_end(self.line_at(self.row_of(l)));
+            self.set_sel(at, at);
+        }
+    }
+
+    fn toggle_fold(&mut self, open: usize, deep: bool, cx: &mut Context<Self>) {
+        let on = !self.is_folded(open);
+        match self.regions.iter().find(|r| r.open == open).copied() {
+            Some(r) if deep => {
+                for i in self.regions.iter().filter(|x| x.open >= r.open && x.close <= r.close).map(|x| x.open).collect::<Vec<_>>() {
+                    self.set_fold(i, on);
+                }
+            }
+            _ => self.set_fold(open, on),
+        }
+        self.folds_changed(cx);
+    }
+
+    /// Fold: the innermost open fold around the cursor's line; Unfold: the folded one on it, or
+    /// around it.
+    fn fold_here(&mut self, on: bool, cx: &mut Context<Self>) {
+        let l = self.buf.line_of(self.cursor());
+        let around = |r: &&FoldRegion| self.buf.line_of(r.open) <= l && l < self.buf.line_of(r.close);
+        let pick = self.regions.iter().filter(around).filter(|r| self.is_folded(r.open) != on).map(|r| r.open).last();
+        if let Some(open) = pick {
+            self.set_fold(open, on);
+            self.folds_changed(cx);
+        }
+    }
+
+    pub fn fold_all(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.buf.folded = if on { self.regions.iter().map(|r| r.open).collect() } else { Vec::new() };
+        self.folds_changed(cx);
+    }
+
+    /// Everything open, then each fold `n` deep folded (1: the outermost), as VS Code's Fold Level.
+    pub fn fold_level(&mut self, n: usize, cx: &mut Context<Self>) {
+        self.buf.folded = self.regions.iter().filter(|r| r.depth == n).map(|r| r.open).collect();
+        self.folds_changed(cx);
+    }
+
+    fn reveal(&mut self, offset: usize) {
+        let l = self.buf.line_of(offset);
+        if !self.hidden(l) {
+            return;
+        }
+        let (buf, regions) = (&self.buf, &self.regions);
+        let around: Vec<usize> = buf.folded.iter().copied().filter(|o| regions.iter().any(|r| r.open == *o && buf.line_of(r.open) < l && l < buf.line_of(r.close))).collect();
+        for o in around {
+            self.set_fold(o, false);
+        }
+        self.rebuild_rows();
+    }
+
+    /// ←/→ step over a fold rather than into it.
+    fn past_folds(&self, to: usize, forward: bool) -> usize {
+        let l = self.buf.line_of(to);
+        if !self.hidden(l) {
+            return to;
+        }
+        let row = self.row_of(l);
+        if forward { self.buf.line_start(self.line_at(row + 1)) } else { self.buf.line_end(self.line_at(row)) }
+    }
+
+    #[cfg(feature = "checks")]
+    pub fn demo_rows(&self) -> Vec<usize> {
+        (0..self.row_count()).map(|r| self.line_at(r)).collect()
+    }
+
+    /// A click on the chevron of `line`, with ⌥ or not.
+    #[cfg(feature = "checks")]
+    pub fn demo_toggle_fold(&mut self, line: usize, deep: bool, cx: &mut Context<Self>) {
+        if let Some(r) = self.region_on(line) {
+            self.toggle_fold(r.open, deep, cx);
+        }
+    }
+}
+
 impl EntityInputHandler for CodeEditor {
     fn text_for_range(
         &mut self,
@@ -3189,7 +3455,7 @@ impl EntityInputHandler for CodeEditor {
         let start = self.buf.from_utf16(range_utf16.start);
         let l = self.buf.line_of(start);
         let x = g.origin_x - self.scroll.x + self.x_for(start, window);
-        let y = g.bounds.top() + px(TOP_PAD) + line_height() * l as f32 - self.scroll.y;
+        let y = g.bounds.top() + px(TOP_PAD) + line_height() * self.row_of(l) as f32 - self.scroll.y;
         Some(Bounds::new(point(x, y), size(g.char_width, line_height())))
     }
 
@@ -3270,6 +3536,13 @@ impl Render for CodeEditor {
             .on_action(cx.listener(Self::format_action))
             .on_action(cx.listener(Self::go_to_definition_action))
             .on_action(cx.listener(Self::peek_definition_action))
+            .on_action(cx.listener(|e, _: &Fold, _, cx| e.fold_here(true, cx)))
+            .on_action(cx.listener(|e, _: &Unfold, _, cx| e.fold_here(false, cx)))
+            .on_action(cx.listener(|e, _: &FoldAll, _, cx| e.fold_all(true, cx)))
+            .on_action(cx.listener(|e, _: &UnfoldAll, _, cx| e.fold_all(false, cx)))
+            .on_action(cx.listener(|e, _: &FoldLevel1, _, cx| e.fold_level(1, cx)))
+            .on_action(cx.listener(|e, _: &FoldLevel2, _, cx| e.fold_level(2, cx)))
+            .on_action(cx.listener(|e, _: &FoldLevel3, _, cx| e.fold_level(3, cx)))
             .on_action(cx.listener(|e, _: &find::Find, w, cx| e.open_find(false, w, cx)))
             .on_action(cx.listener(|e, _: &find::FindReplace, w, cx| e.open_find(true, w, cx)))
             .on_action(cx.listener(|e, _: &find::FindNext, w, cx| e.find_step(true, w, cx)))
@@ -3298,6 +3571,8 @@ struct Prepainted {
     marks: Vec<(Point<Pixels>, ShapedLine)>,
     lens: Option<(Point<Pixels>, ShapedLine)>,
     backgrounds: Vec<PaintQuad>,
+    /// Gutter chevrons and the ⋯ of folded lines.
+    fold_marks: Vec<(Point<Pixels>, ShapedLine)>,
     cursor: Option<PaintQuad>,
     pop: Option<EditorPop>,
 }
@@ -3398,6 +3673,14 @@ impl Element for EditorElement {
         window.with_content_mask(Some(ContentMask { bounds: p.gutter }), |window| {
             for (origin, line) in p.numbers.iter().chain(&p.marks) {
                 line.paint(*origin, lh, TextAlign::Left, None, window, cx).ok();
+            }
+        });
+        window.with_content_mask(Some(ContentMask { bounds }), |window| {
+            for (origin, line) in &p.fold_marks {
+                // A ⋯ scrolled under the gutter stays hidden there.
+                if origin.x >= p.text_bounds.left() || origin.x < p.gutter.right() - px(12.) {
+                    line.paint(*origin, lh, TextAlign::Left, None, window, cx).ok();
+                }
             }
         });
         window.with_content_mask(Some(ContentMask { bounds }), |window| {

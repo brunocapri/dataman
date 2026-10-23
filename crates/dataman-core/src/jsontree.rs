@@ -8,8 +8,6 @@ pub enum Node {
     String(String),
     Array(Vec<Node>),
     Object(Vec<(String, Node)>),
-    /// A scalar JSON cannot spell (MongoDB's ObjectId, ISODate, NumberLong…), shown as written.
-    Other { text: String, type_name: &'static str },
 }
 
 pub type Path = Vec<usize>;
@@ -278,7 +276,6 @@ impl Node {
             Node::Null => out.push_str("null"),
             Node::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
             Node::Number(n) => out.push_str(n),
-            Node::Other { text, .. } => out.push_str(text),
             Node::String(s) => quote(s, out),
             Node::Array(a) if a.is_empty() => out.push_str("[]"),
             Node::Object(o) if o.is_empty() => out.push_str("{}"),
@@ -341,42 +338,6 @@ impl Node {
             Node::String(_) => "string",
             Node::Array(_) => "array",
             Node::Object(_) => "object",
-            Node::Other { type_name, .. } => type_name,
-        }
-    }
-
-    /// Nodes under this one (its members, theirs, …).
-    pub fn count(&self) -> usize {
-        match self {
-            Node::Array(a) => a.iter().map(|v| 1 + v.count()).sum(),
-            Node::Object(o) => o.iter().map(|(_, v)| 1 + v.count()).sum(),
-            _ => 0,
-        }
-    }
-
-    pub fn of_json(j: &serde_json::Value) -> Node {
-        use serde_json::Value as J;
-        match j {
-            J::Null => Node::Null,
-            J::Bool(b) => Node::Bool(*b),
-            J::Number(n) => Node::Number(n.to_string()),
-            J::String(s) => Node::String(s.clone()),
-            J::Array(a) => Node::Array(a.iter().map(Node::of_json).collect()),
-            J::Object(m) => Node::Object(m.iter().map(|(k, v)| (k.clone(), Node::of_json(v))).collect()),
-        }
-    }
-
-    /// The shell's notation for what JSON has no word for.
-    pub fn of_bson(b: &crate::nosql::bson::Bson) -> Node {
-        use crate::nosql::bson::Bson as B;
-        match b {
-            B::Null => Node::Null,
-            B::Boolean(v) => Node::Bool(*v),
-            B::Int32(_) | B::Double(_) => Node::Number(crate::nosql::shell::scalar_text(b)),
-            B::String(s) | B::Symbol(s) => Node::String(s.clone()),
-            B::Array(a) => Node::Array(a.iter().map(Node::of_bson).collect()),
-            B::Document(d) => Node::Object(d.iter().map(|(k, v)| (k.clone(), Node::of_bson(v))).collect()),
-            other => Node::Other { text: crate::nosql::shell::scalar_text(other), type_name: crate::nosql::shell::type_name(other) },
         }
     }
 
@@ -419,22 +380,6 @@ pub struct Row {
     pub type_name: &'static str,
     pub container: bool,
     pub expanded: bool,
-    /// A container's members.
-    pub len: usize,
-}
-
-impl Row {
-    /// What a container holds: "5 keys", "12 items".
-    pub fn count_text(&self) -> String {
-        let (one, many) = if self.type_name == "array" { ("item", "items") } else { ("key", "keys") };
-        format!("{} {}", self.len, if self.len == 1 { one } else { many })
-    }
-
-    /// A collapsed container's line: `{…} 5 keys`, `[…] 12 items`; an empty one is `{}` or `[]`.
-    pub fn preview(&self) -> String {
-        let (open, close) = if self.type_name == "array" { ('[', ']') } else { ('{', '}') };
-        if self.len == 0 { format!("{open}{close}") } else { format!("{open}…{close} {}", self.count_text()) }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -471,7 +416,7 @@ impl Doc {
             Node::Object(o) => format!("{{{}}}", o.len()),
             leaf => leaf.compact(),
         };
-        out.push(Row { path: path.clone(), depth, key, value, type_name: n.type_name(), container: n.is_container(), expanded, len: n.len() });
+        out.push(Row { path: path.clone(), depth, key, value, type_name: n.type_name(), container: n.is_container(), expanded });
         if !expanded {
             return;
         }
@@ -594,65 +539,76 @@ impl Doc {
     }
 
     pub fn collapse_all(&mut self) {
-        self.collapse_to_level(1);
-    }
-
-    /// Members `n` levels down from the root stay in sight: every container at depth `n` or
-    /// deeper is collapsed (1 shows the root's members, each folded).
-    pub fn collapse_to_level(&mut self, n: usize) {
-        let mut out = HashSet::new();
-        Self::containers(&self.root, &mut Vec::new(), &mut |p| {
-            if p.len() >= n.max(1) {
-                out.insert(p.to_vec());
+        fn walk(n: &Node, path: &mut Path, out: &mut HashSet<Path>) {
+            let kids: Vec<&Node> = match n {
+                Node::Array(a) => a.iter().collect(),
+                Node::Object(o) => o.iter().map(|(_, v)| v).collect(),
+                _ => return,
+            };
+            if !path.is_empty() {
+                out.insert(path.clone());
             }
-        });
-        self.collapsed = out;
-    }
-
-    /// The container at `path` and every one under it, open or folded together.
-    pub fn set_subtree(&mut self, path: &[usize], open: bool) {
-        if open {
-            self.collapsed.retain(|p| !p.starts_with(path));
-            return;
+            for (i, k) in kids.into_iter().enumerate() {
+                path.push(i);
+                walk(k, path, out);
+                path.pop();
+            }
         }
-        let Some(n) = self.root.get(path) else { return };
-        let mut at = path.to_vec();
-        let mut out = Vec::new();
-        Self::containers(n, &mut at, &mut |p| out.push(p.to_vec()));
-        // The root is never folded: its rows are the document.
-        self.collapsed.extend(out.into_iter().filter(|p| !p.is_empty()));
-    }
-
-    /// A fresh document's view: all of it, or two levels when that would be a long read.
-    pub fn open_default(&mut self) {
-        if self.root.count() > LARGE {
-            self.collapse_to_level(2);
-        } else {
-            self.collapsed.clear();
-        }
-    }
-
-    /// Every non-empty container at or under `n` (whose path is `path`).
-    fn containers(n: &Node, path: &mut Path, f: &mut impl FnMut(&[usize])) {
-        let kids: Vec<&Node> = match n {
-            Node::Array(a) => a.iter().collect(),
-            Node::Object(o) => o.iter().map(|(_, v)| v).collect(),
-            _ => return,
-        };
-        if kids.is_empty() {
-            return;
-        }
-        f(path);
-        for (i, k) in kids.into_iter().enumerate() {
-            path.push(i);
-            Self::containers(k, path, f);
-            path.pop();
-        }
+        self.collapsed.clear();
+        walk(&self.root, &mut Vec::new(), &mut self.collapsed);
     }
 }
 
-/// Past this many nodes a document opens two levels deep.
-pub const LARGE: usize = 200;
+/// A `{…}` or `[…]` that spans lines, for an editor to fold: byte offsets of its brackets, and
+/// its nesting (1 for the outermost).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Fold {
+    pub open: usize,
+    pub close: usize,
+    pub depth: usize,
+}
+
+/// The foldable brackets of JSON or JavaScript-like text (the MongoDB shell, a console body),
+/// in order of their opening bracket. Strings and comments are skipped; a bracket without its
+/// pair folds nothing.
+pub fn folds(text: &str) -> Vec<Fold> {
+    let b = text.as_bytes();
+    let mut out = Vec::new();
+    let mut open: Vec<(u8, usize)> = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            q @ (b'"' | b'\'' | b'`') => {
+                i += 1;
+                while i < b.len() && b[i] != q && !(q != b'`' && b[i] == b'\n') {
+                    i += if b[i] == b'\\' { 2 } else { 1 };
+                }
+            }
+            b'/' if b.get(i + 1) == Some(&b'/') => {
+                while i < b.len() && b[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'/' if b.get(i + 1) == Some(&b'*') => {
+                i = text[i + 2..].find("*/").map_or(b.len(), |e| i + 2 + e + 1);
+            }
+            c @ (b'{' | b'[') => open.push((c, i)),
+            c @ (b'}' | b']') => {
+                let want = if c == b'}' { b'{' } else { b'[' };
+                if open.last().is_some_and(|o| o.0 == want) {
+                    let (_, at) = open.pop().unwrap_or_default();
+                    if text[at..i].contains('\n') {
+                        out.push(Fold { open: at, close: i, depth: open.len() + 1 });
+                    }
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    out.sort_by_key(|f| f.open);
+    out
+}
 
 pub fn from_pg_array(text: &str) -> Option<Node> {
     let mut t = text.trim();
@@ -839,68 +795,17 @@ mod tests {
     }
 
     #[test]
-    fn levels_subtrees_and_previews() {
-        let mut d = Doc::parse(r#"{"a": {"b": [1, {"c": 2}], "e": []}, "d": 3, "f": [{"g": 1}]}"#).unwrap();
-        let keys = |d: &Doc| d.rows().iter().skip(1).map(|r| format!("{}{}", "-".repeat(r.depth - 1), r.path.iter().map(|i| i.to_string()).collect::<String>())).collect::<Vec<_>>();
-        d.collapse_to_level(1);
-        assert_eq!(keys(&d), ["0", "1", "2"]);
-        d.collapse_to_level(2);
-        assert_eq!(keys(&d), ["0", "-00", "-01", "1", "2", "-20"]);
-        assert!(!d.collapsed.contains(&vec![0, 1]), "an empty array has nothing to fold");
-        d.collapse_to_level(3);
-        assert_eq!(keys(&d), ["0", "-00", "--000", "--001", "-01", "1", "2", "-20", "--200"]);
-        let three = d.collapsed.clone();
-        d.collapse_to_level(0);
-        let zero = d.collapsed.clone();
-        d.collapse_to_level(1);
-        assert_eq!(zero, d.collapsed, "the root never folds");
-        assert!(three.len() < zero.len());
-
-        d.expand_all();
-        d.set_subtree(&[0], false);
-        assert_eq!(keys(&d), ["0", "1", "2", "-20", "--200"]);
-        d.toggle(&[0]);
-        assert_eq!(keys(&d), ["0", "-00", "-01", "1", "2", "-20", "--200"], "its members stay folded under it");
-        d.set_subtree(&[0], true);
-        assert_eq!(d.rows().len(), d.root.count() + 1);
-        d.set_subtree(&[], false);
-        assert_eq!(keys(&d), ["0", "1", "2"], "the whole document: down to its members");
-        d.set_subtree(&[], true);
-        assert!(d.collapsed.is_empty());
-
-        let rows = d.rows();
-        let by = |p: &[usize]| rows.iter().find(|r| r.path == p).unwrap().clone();
-        assert_eq!(by(&[0]).preview(), "{…} 2 keys");
-        assert_eq!(by(&[0, 0]).preview(), "[…] 2 items");
-        assert_eq!(by(&[2]).preview(), "[…] 1 item");
-        assert_eq!(by(&[0, 0, 1]).count_text(), "1 key");
-        assert_eq!(by(&[0, 1]).preview(), "[]");
-        assert_eq!(d.root.count(), 10);
-    }
-
-    #[test]
-    fn large_documents_open_two_levels_deep() {
-        let mut small = Doc::parse(r#"{"a": {"b": {"c": 1}}}"#).unwrap();
-        small.open_default();
-        assert!(small.collapsed.is_empty());
-        let items: Vec<String> = (0..LARGE).map(|i| format!(r#"{{"n": {i}, "tags": ["x"]}}"#)).collect();
-        let mut big = Doc::parse(&format!(r#"{{"items": [{}], "meta": {{"k": 1}}}}"#, items.join(","))).unwrap();
-        big.open_default();
-        let rows = big.rows();
-        assert_eq!(rows.iter().map(|r| r.depth).max(), Some(2), "the items in sight, each folded");
-        assert_eq!(rows.len(), 1 + 1 + LARGE + 1 + 1);
-    }
-
-    #[test]
-    fn bson_and_json_trees() {
-        use crate::nosql::bson::{self, Bson};
-        let oid = bson::oid::ObjectId::parse_str("6ad671d80bb7c7ed855e5c57").unwrap();
-        let b = Bson::Document(bson::doc! { "_id": oid, "n": 7, "big": Bson::Int64(3), "x": 1.5, "tags": ["a", Bson::Null], "ok": true });
-        let n = Node::of_bson(&b);
-        assert_eq!(n.compact(), r#"{"_id": ObjectId("6ad671d80bb7c7ed855e5c57"), "n": 7, "big": NumberLong(3), "x": 1.5, "tags": ["a", null], "ok": true}"#);
-        assert_eq!(n.get(&[0]).map(Node::type_name), Some("objectId"));
-        assert!(!n.get(&[2]).unwrap().is_container());
-        let j = Node::of_json(&serde_json::json!({"a": [1, "b", null, {"c": false}]}));
-        assert_eq!(j.compact(), r#"{"a": [1, "b", null, {"c": false}]}"#);
+    fn folds_span_lines_and_skip_strings() {
+        let text = "{\n  \"a\": {\"b\": 1},\n  \"c\": [\n    \"}{\", '[',\n    {\n      // ]\n      \"d\": 2 /* } */\n    }\n  ]\n}";
+        let f = folds(text);
+        let at = |s: &str| text.find(s).unwrap();
+        assert_eq!(f.len(), 3, "one-line brackets fold nothing: {f:?}");
+        assert_eq!(f[0], Fold { open: 0, close: text.len() - 1, depth: 1 });
+        assert_eq!((f[1].open, f[1].depth), (at("[\n"), 2));
+        assert_eq!(&text[f[1].close..f[1].close + 1], "]");
+        assert_eq!((f[2].open, f[2].depth), (at("{\n      //"), 3));
+        assert_eq!(f[2].close, at("}\n  ]"));
+        assert!(folds("{\n  \"a\": [1,\n 2}\n").is_empty(), "a bracket closed by the wrong one");
+        assert_eq!(folds("db.x.find({\n  a: `x\n}`\n})").len(), 1, "a template string spans lines");
     }
 }

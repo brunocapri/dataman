@@ -403,58 +403,6 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let detail = cx.update(|_, cx| doc.read(cx).demo_detail()).ok().flatten();
     let text = cx.update(|_, cx| detail.as_ref().map(|d| d.read(cx).text().to_string())).ok().flatten().unwrap_or_default();
     check("the first document shows in the shell's form", text.contains("\"_id\": 1") && text.contains("NumberLong(21)"), text.clone());
-
-    let outline = |cx: &mut AsyncWindowContext| cx.update(|_, cx| doc.read(cx).demo_outline(cx)).ok().flatten();
-    let lines = |cx: &mut AsyncWindowContext| cx.update(|_, cx| doc.read(cx).demo_outline(cx).map(|o| o.read(cx).demo_lines())).ok().flatten().unwrap_or_default();
-    let full = lines(cx);
-    check(
-        "the document shows as a tree, every key in sight, the shell's types",
-        full == ["_id: 1", "name: \"person 1\"", "age: NumberLong(21)", "tags: 1 item", "  0: \"t1\""],
-        format!("{full:?}"),
-    );
-    if let Some(o) = outline(cx) {
-        let _ = cx.update(|window, cx| {
-            window.focus(&gpui::Focusable::focus_handle(o.read(cx), cx), cx);
-            o.update(cx, |o, cx| o.demo_put(3, cx));
-        });
-        draw(cx);
-        key(cx, "left");
-        let folded = lines(cx);
-        key(cx, "right");
-        let open = lines(cx);
-        check("← folds the focused array to its preview, → opens it", folded.get(3).map(String::as_str) == Some("tags: […] 1 item") && folded.len() == 4 && open == full, format!("{folded:?} {open:?}"));
-        let _ = cx.update(|_, cx| o.update(cx, |o, cx| o.demo_click(3, true, cx)));
-        let deep = lines(cx);
-        let _ = cx.update(|_, cx| o.update(cx, |o, cx| o.demo_click(3, true, cx)));
-        check("⌥-click folds the subtree and opens it again", deep.len() == 4 && lines(cx) == full, format!("{deep:?}"));
-        let _ = cx.update(|_, cx| o.update(cx, |o, cx| o.level(1, cx)));
-        let _ = cx.update(|_, cx| doc.update(cx, |d, cx| d.demo_select(1, cx)));
-        draw(cx);
-        let other = lines(cx);
-        let _ = cx.update(|_, cx| doc.update(cx, |d, cx| d.demo_select(0, cx)));
-        draw(cx);
-        let back = lines(cx);
-        check(
-            "Collapse to level 1 stays with that document: another opens whole, the first comes back folded",
-            other.len() == 5 && other[0] == "_id: 2" && back.len() == 4 && back[3] == "tags: […] 1 item",
-            format!("{other:?} {back:?}"),
-        );
-        let _ = cx.update(|window, cx| {
-            window.focus(&gpui::Focusable::focus_handle(o.read(cx), cx), cx);
-            o.update(cx, |o, cx| o.demo_put(0, cx));
-        });
-        draw(cx);
-        key(cx, "left");
-        let in_list = cx.update(|window, cx| doc.read(cx).list_focus().is_focused(window)).unwrap_or(false);
-        key(cx, "right");
-        let in_tree = cx.update(|window, cx| gpui::Focusable::focus_handle(o.read(cx), cx).is_focused(window)).unwrap_or(false);
-        check("← on a top-level key goes back to the list, → from the list into the document", in_list && in_tree, format!("{in_list} {in_tree}"));
-        let _ = cx.update(|_, cx| o.update(cx, |o, cx| o.all(true, cx)));
-        let _ = cx.update(|window, cx| doc.update(cx, |d, cx| d.demo_set_tree(false, window, cx)));
-        let text_mode = outline(cx).is_none();
-        let _ = cx.update(|window, cx| doc.update(cx, |d, cx| d.demo_set_tree(true, window, cx)));
-        check("Text shows the editor, Tree the outline again", text_mode && outline(cx).is_some(), String::new());
-    }
     if let Some(d) = &detail {
         let edited = text.replace("\"person 1\"", "\"Ada\"").replace("NumberLong(21)", "NumberLong(36)");
         let _ = cx.update(|_, cx| {
@@ -573,6 +521,89 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
         pause(cx, 100).await;
     }
     check("completions: collections after db., fields inside a filter", first == ["people"] && fields.contains(&"age".to_string()), format!("{first:?} {fields:?}"));
+
+    // Folding, as in VS Code: the document's own text folds at its brackets.
+    let label = "x".repeat(80);
+    let items: Vec<String> = (0..40).map(|i| format!("{{n: {i}, label: '{label}'}}")).collect();
+    let seed = format!(
+        "db.nested.insertMany([{{_id: 1, profile: {{name: 'Ada Lovelace', address: {{street: '12 St James Square, a street long enough to wrap', city: 'London', zip: 'SW1Y 4JH'}}}}, orders: [{{n: 1, items: ['a long item name', 'another long item name', 'and a third one']}}]}}, {{_id: 2, profile: {{name: 'Grace Hopper', address: {{street: 'a street long enough to wrap the document', city: 'New York'}}}}}}, {{_id: 3, items: [{}]}}])",
+        items.join(", ")
+    );
+    run_text(ws, &seed, cx).await;
+    let (_, text) = run_text(ws, "db.nested.find({}).sort({_id: 1})", cx).await;
+    if let Some(d) = cx.update(|_, cx| doc.read(cx).demo_detail()).ok().flatten() {
+        let rows = |cx: &mut AsyncWindowContext| cx.update(|_, cx| d.read(cx).demo_rows()).unwrap_or_default();
+        let regions = dataman_core::jsontree::folds(&text);
+        let line_at = |o: usize| text[..o].matches('\n').count();
+        let lines = text.lines().count();
+        let hides = |depth: usize| regions.iter().filter(|r| r.depth == depth).map(|r| line_at(r.close) - line_at(r.open) - 1).sum::<usize>();
+        let all = rows(cx);
+        let profile = text.lines().position(|l| l.contains("\"profile\": {"));
+        let pr = profile.and_then(|p| regions.iter().find(|r| line_at(r.open) == p).copied());
+        check("a document's text opens whole, every line in sight", all.len() == lines && pr.is_some(), format!("{} of {lines}: {text}", all.len()));
+        if let (Some(p), Some(pr)) = (profile, pr) {
+            let pc = line_at(pr.close);
+            let _ = cx.update(|_, cx| d.update(cx, |e, cx| e.demo_toggle_fold(p, false, cx)));
+            draw(cx);
+            let folded = rows(cx);
+            check(
+                "the gutter's chevron folds an object: its first line and its closing bracket's stay, what is between hides",
+                folded.len() == lines - (pc - p - 1) && folded.contains(&p) && folded.contains(&pc) && !folded.contains(&(p + 1)),
+                format!("{folded:?}"),
+            );
+            let _ = cx.update(|_, cx| doc.update(cx, |p, cx| p.demo_select(1, cx)));
+            draw(cx);
+            let other = (rows(cx).len(), cx.update(|_, cx| d.read(cx).line_count()).unwrap_or(0));
+            let _ = cx.update(|_, cx| doc.update(cx, |p, cx| p.demo_select(0, cx)));
+            draw(cx);
+            check("the folds stay with their document: another opens whole, the first comes back folded", other.0 == other.1 && rows(cx) == folded, format!("{other:?} {:?}", rows(cx)));
+
+            let _ = cx.update(|_, cx| d.update(cx, |e, cx| e.demo_toggle_fold(0, true, cx)));
+            let root = rows(cx);
+            let _ = cx.update(|_, cx| d.update(cx, |e, cx| e.demo_toggle_fold(0, true, cx)));
+            check("⌥ on the chevron folds everything under it, and opens it all again", root == [0, lines - 1] && rows(cx).len() == lines, format!("{root:?}"));
+
+            let _ = cx.update(|_, cx| d.update(cx, |e, cx| e.fold_level(2, cx)));
+            let level = rows(cx);
+            check("Fold level 2 folds the document's members", level.len() == lines - hides(2) && hides(2) > 0, format!("{} of {lines}, {} hidden", level.len(), hides(2)));
+
+            let at = text.find("\"city\": \"London\"").unwrap_or(0);
+            let _ = cx.update(|window, cx| {
+                d.update(cx, |e, cx| {
+                    e.fold_all(false, cx);
+                    e.set_cursor(at, cx);
+                });
+                window.focus(&gpui::Focusable::focus_handle(d.read(cx), cx), cx);
+            });
+            draw(cx);
+            key(cx, "ctrl-shift-[");
+            let by_key = rows(cx);
+            let street = text.lines().position(|l| l.contains("\"address\": {")).unwrap_or(0);
+            key(cx, "ctrl-shift-]");
+            check(
+                "⌃⇧[ folds the object around the cursor (the address), ⌃⇧] opens it",
+                by_key.contains(&street) && !by_key.contains(&(street + 1)) && by_key.len() < lines && rows(cx).len() == lines,
+                format!("{by_key:?}"),
+            );
+
+            let _ = cx.update(|_, cx| {
+                d.update(cx, |e, cx| {
+                    e.demo_toggle_fold(p, false, cx);
+                    e.set_cursor(at, cx);
+                })
+            });
+            draw(cx);
+            check("a jump into a fold opens it", rows(cx).len() == lines, format!("{:?}", rows(cx)));
+        }
+        let _ = cx.update(|_, cx| doc.update(cx, |p, cx| p.demo_select(2, cx)));
+        draw(cx);
+        let (big, shown) = cx.update(|_, cx| (d.read(cx).text().to_string(), d.read(cx).demo_rows().len())).unwrap_or_default();
+        let at = |o: usize| big[..o].matches('\n').count();
+        let deep: Vec<_> = dataman_core::jsontree::folds(&big).into_iter().filter(|r| r.depth == 3).collect();
+        let long = big.lines().count();
+        let want = long - deep.iter().map(|r| at(r.close) - at(r.open) - 1).sum::<usize>();
+        check("a long document opens two levels deep: each item folded to its first line", long > 80 && deep.len() == 40 && shown == want, format!("{shown} of {long}, want {want}"));
+    }
 
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| {
         w.new_tab(window, cx);
