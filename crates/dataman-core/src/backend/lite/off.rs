@@ -26,12 +26,15 @@ impl std::fmt::Display for LiteError {
 
 impl std::error::Error for LiteError {}
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 #[allow(dead_code)]
 pub(crate) struct Open {
     pub read_only: bool,
     pub agent: Option<Agent>,
+    pub kept: Option<Kept>,
 }
+
+pub(crate) type Kept = std::sync::Arc<parking_lot::RwLock<crate::privacy::AgentRules>>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Agent {

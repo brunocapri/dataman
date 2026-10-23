@@ -29,12 +29,16 @@ fn closed_error() -> LiteError {
 }
 
 /// How a connection is opened.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct Open {
     pub read_only: bool,
     /// An agent's connection: escapes refused by SQLite itself (see [`harden`]).
     pub agent: Option<Agent>,
+    /// The connection's rules for agents, as they are now (the hub updates them on each call).
+    pub kept: Option<Kept>,
 }
+
+pub(crate) type Kept = Arc<parking_lot::RwLock<crate::privacy::AgentRules>>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Agent {
@@ -45,15 +49,37 @@ pub(crate) enum Agent {
 /// SQLite itself refuses an agent what would leave the database or change it behind the
 /// classifier's back: no ATTACH (and no attached database at all), no extension or file
 /// function, no PRAGMA that sets anything for a reader, no write for a reader, no virtual table;
-/// defensive mode keeps `writable_schema` and the like from corrupting the file.
-fn harden(db: &rusqlite::Connection, agent: Agent) -> Result<()> {
+/// defensive mode keeps `writable_schema` and the like from corrupting the file. What the rules
+/// keep from agents SQLite does not read for them either: a trigger their write fires, or a view,
+/// reads neither hidden nor masked columns (the statement itself was narrowed before).
+fn harden(db: &rusqlite::Connection, agent: Agent, kept: Option<Kept>) -> Result<()> {
     use rusqlite::config::DbConfig;
     use rusqlite::limits::Limit;
     db.set_limit(Limit::SQLITE_LIMIT_ATTACHED, 0)?;
     db.set_db_config(DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)?;
     db.set_db_config(DbConfig::SQLITE_DBCONFIG_TRUSTED_SCHEMA, false)?;
-    db.authorizer(Some(move |ctx: rusqlite::hooks::AuthContext<'_>| authorize(agent, &ctx.action)))?;
+    db.authorizer(Some(move |ctx: rusqlite::hooks::AuthContext<'_>| {
+        if let (Some(k), rusqlite::hooks::AuthAction::Read { table_name, column_name }) = (&kept, &ctx.action)
+            && reads_kept(&k.read(), ctx.database_name, table_name, column_name, ctx.accessor.is_some())
+        {
+            return rusqlite::hooks::Authorization::Deny;
+        }
+        authorize(agent, &ctx.action)
+    }))?;
     Ok(())
+}
+
+/// A read of a hidden table or column, or (inside a trigger or view) of a masked one.
+pub(crate) fn reads_kept(r: &crate::privacy::AgentRules, db: Option<&str>, table: &str, column: &str, inner: bool) -> bool {
+    use crate::privacy::Names;
+    // SQLite's own tables (the catalog Dataman reads) are not the user's data.
+    if table.starts_with("sqlite_") {
+        return false;
+    }
+    let schema = Some(db.unwrap_or("main"));
+    !r.visible.table_visible(schema, table, Names::Qualified)
+        || (!column.is_empty() && r.visible.column_hidden(schema, table, column, Names::Qualified))
+        || (inner && !column.is_empty() && r.sensitive_mask(schema, table, column, Names::Qualified).is_some())
 }
 
 pub(crate) fn authorize(agent: Agent, a: &rusqlite::hooks::AuthAction<'_>) -> rusqlite::hooks::Authorization {
@@ -63,8 +89,9 @@ pub(crate) fn authorize(agent: Agent, a: &rusqlite::hooks::AuthAction<'_>) -> ru
     match a {
         A::Attach { .. } | A::Detach { .. } | A::CreateVtable { .. } | A::DropVtable { .. } => Deny,
         A::Function { function_name } if crate::guard::SQLITE_EFFECT_FUNCTIONS.iter().any(|f| f.eq_ignore_ascii_case(function_name)) => Deny,
-        // Settings that weaken the file or the checks are not an agent's at any level.
-        A::Pragma { pragma_name, pragma_value } if pragma_value.is_some() && ["writable_schema", "trusted_schema", "journal_mode", "locking_mode", "query_only", "cell_size_check", "mmap_size"].iter().any(|p| p.eq_ignore_ascii_case(pragma_name)) => Deny,
+        // Settings that weaken the file or the checks, or hold for the whole process (heap limits,
+        // directories), are not an agent's at any level.
+        A::Pragma { pragma_name, pragma_value } if pragma_value.is_some() && ["writable_schema", "trusted_schema", "journal_mode", "locking_mode", "query_only", "cell_size_check", "mmap_size", "hard_heap_limit", "soft_heap_limit", "temp_store_directory", "data_store_directory"].iter().any(|p| p.eq_ignore_ascii_case(pragma_name)) => Deny,
         A::Pragma { pragma_name, pragma_value } if read && crate::guard::pragma_sets(pragma_name, pragma_value.is_some()) => Deny,
         A::Insert { .. }
         | A::Update { .. }
@@ -124,7 +151,7 @@ fn open_file(path: &Path, how: Open) -> Result<rusqlite::Connection> {
         db.pragma_update(None, "query_only", true)?;
     }
     if let Some(agent) = how.agent {
-        harden(&db, agent)?;
+        harden(&db, agent, how.kept)?;
     }
     // SQLite opens lazily: a file that is not a database fails here, not on the first query.
     db.query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(())).with_context(|| format!("{} is not a SQLite database", path.display()))?;
@@ -556,7 +583,7 @@ mod tests {
         let other = dir.path().join("b.sqlite");
         rt.block_on(async {
             for (agent, ro) in [(Agent::Read, true), (Agent::Write, false)] {
-                let c = connect(&p, Open { read_only: ro, agent: Some(agent) }, None).await.unwrap();
+                let c = connect(&p, Open { read_only: ro, agent: Some(agent), kept: None }, None).await.unwrap();
                 for sql in [
                     format!("ATTACH '{}' AS x", other.display()),
                     "PRAGMA writable_schema = ON".into(),

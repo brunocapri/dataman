@@ -1107,7 +1107,12 @@ pub const DUCKDB_FILE_FUNCTIONS: &[&str] = &[
     "read_json_objects_auto", "read_ndjson", "read_ndjson_auto", "read_ndjson_objects", "json_scan", "read_text", "read_blob", "glob",
     "read_xlsx", "st_read", "iceberg_scan", "iceberg_metadata", "iceberg_snapshots", "delta_scan", "sqlite_scan", "sqlite_attach",
     "postgres_scan", "postgres_attach", "postgres_query", "mysql_scan", "mysql_query", "query", "query_table", "duckdb_secrets",
-    "which_secret", "getenv", "load_extension",
+    "which_secret", "getenv", "load_extension", "read_duckdb", "parquet_full_metadata",
+    // SQL inside a string, and raw memory.
+    "json_execute_serialized_sql", "arrow_scan", "arrow_scan_dumb",
+    // The instance's state, which every connection to the file shares, and its logs (others' statements).
+    "enable_logging", "disable_logging", "truncate_duckdb_logs", "enable_profiling", "disable_profiling", "checkpoint", "force_checkpoint",
+    "duckdb_logs", "duckdb_logs_parsed", "duckdb_temporary_files", "duckdb_external_file_cache", "duckdb_prepared_statements",
 ];
 
 /// DuckDB statements and functions that reach files or other databases: `read_csv(…)`, a file
@@ -1123,6 +1128,11 @@ pub fn file_access(sql: &str, dialect: Dialect) -> Option<String> {
         if matches!(f.verb.as_str(), "ATTACH" | "DETACH" | "INSTALL" | "FORCE INSTALL" | "LOAD" | "COPY TO" | "COPY FROM" | "EXPORT DATABASE" | "IMPORT" | "VACUUM INTO") {
             return Some(format!("{} reaches files outside the database", f.verb));
         }
+        // A DuckDB file is one instance in the process: its settings (log and temp paths, memory,
+        // extensions, external access) are every connection's, the user's tabs included.
+        if dialect == Dialect::DuckDb && (matches!(f.verb.as_str(), "SET" | "RESET") || (f.verb.starts_with("PRAGMA") && f.effect != Effect::Read)) {
+            return Some(format!("{} changes the settings of the database file, which every connection to it shares", f.verb));
+        }
         if let Some(e) = file_access_in(&t) {
             return Some(e);
         }
@@ -1137,11 +1147,13 @@ fn file_access_in(t: &Toks) -> Option<String> {
         _ => return None,
     };
     for i in 0..t.t.len() {
-        if t.punct(i + 1, "(") && matches!(t.t[i].kind, TokenKind::Ident | TokenKind::Keyword | TokenKind::QuotedIdent) {
-            let name = t.t[i].text(t.src).trim_matches(['"', '`', '[', ']']).to_ascii_lowercase();
-            if list.contains(&name.as_str()) {
-                return Some(format!("{name}() reaches files or code outside the database"));
-            }
+        if !matches!(t.t[i].kind, TokenKind::Ident | TokenKind::Keyword | TokenKind::QuotedIdent) {
+            continue;
+        }
+        let name = t.t[i].text(t.src).trim_matches(['"', '`', '[', ']']).to_ascii_lowercase();
+        // DuckDB's `duckdb_…` functions are views too (`FROM duckdb_logs`).
+        if (t.punct(i + 1, "(") || name.starts_with("duckdb_")) && list.contains(&name.as_str()) {
+            return Some(format!("{name}() reaches files or code outside the database"));
         }
     }
     if t.dialect != Dialect::DuckDb {
@@ -1290,6 +1302,13 @@ fn piece_of(sql: &str, dialect: Dialect) -> Piece {
         return Piece::Neutral;
     }
     let f = classify_in(sql, dialect);
+    // What the user is asked to allow says so when it runs a program on the database server.
+    if f.verb.starts_with("COPY") && t.has_top("PROGRAM") {
+        return Piece::Destructive("COPY … PROGRAM (runs a command on the database server)".into());
+    }
+    if all.iter().any(|x| x.text(sql).trim_matches(['"', '[', ']']).eq_ignore_ascii_case("xp_cmdshell")) {
+        return Piece::Destructive("xp_cmdshell (runs a command on the database server)".into());
+    }
     if let Some((name, _)) = effect_call(&t, WRITE_OK_FUNCTIONS) {
         return Piece::Destructive(if name.contains(' ') { name } else { format!("{name}()") });
     }
@@ -1482,6 +1501,15 @@ pub fn allowlist_candidates(sql: &str, dialect: Dialect) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn commands_on_the_server_say_so() {
+        let reasons = |sql: &str, d: Dialect| agent_write_class(sql, d).reasons().join(", ");
+        assert!(reasons("COPY t TO PROGRAM 'rm -rf /'", Dialect::Postgres).contains("runs a command"), "{}", reasons("COPY t TO PROGRAM 'x'", Dialect::Postgres));
+        assert!(reasons("EXEC xp_cmdshell 'whoami'", Dialect::TSql).contains("runs a command"));
+        assert!(reasons("EXEC master..[xp_cmdshell] 'whoami'", Dialect::TSql).contains("runs a command"));
+        assert!(!reasons("COPY t TO STDOUT", Dialect::Postgres).contains("runs a command"));
+    }
+
+    #[test]
     fn sqlite_and_duckdb_classes() {
         let lite = Dialect::Sqlite;
         let eff = |sql: &str, d: Dialect| classify_in(sql, d).effect;
@@ -1524,9 +1552,27 @@ mod tests {
             assert!(file_access(sql, duck).is_some(), "{sql}");
             assert!(agent_write_class(sql, duck).is_destructive(), "{sql}");
         }
-        for sql in ["COPY t TO 'x'", "ATTACH 'x.db'", "INSTALL httpfs", "EXPORT DATABASE 'd'"] {
+        for sql in [
+            "COPY t TO 'x'",
+            "ATTACH 'x.db'",
+            "INSTALL httpfs",
+            "EXPORT DATABASE 'd'",
+            // SQL inside a string, another database file, the shared instance's settings and logs.
+            "SELECT * FROM json_execute_serialized_sql(json_serialize_sql('SELECT pw FROM users'))",
+            "SELECT * FROM read_duckdb('/tmp/other.duckdb')",
+            "SELECT * FROM duckdb_logs",
+            "SELECT * FROM duckdb_logs()",
+            "CALL enable_logging()",
+            "SET log_query_path = '/tmp/log.txt'",
+            "SET memory_limit = '1MB'",
+            "RESET threads",
+            "PRAGMA enable_profiling = 'query_tree'",
+            "PRAGMA enable_profiling",
+        ] {
             assert!(file_access(sql, duck).is_some(), "{sql}");
         }
+        assert!(file_access("PRAGMA table_info('t')", duck).is_none());
+        assert!(file_access("SELECT * FROM duckdb_tables()", duck).is_none(), "the catalog is for agent_sql to narrow");
         assert!(file_access("SELECT * FROM t WHERE name = 'x.csv'", duck).is_none());
         assert!(allowlist_entry("SELECT * FROM ?", duck).is_err());
         assert!(file_access("SELECT * FROM read_csv('x')", Dialect::Postgres).is_none());

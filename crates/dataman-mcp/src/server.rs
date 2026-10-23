@@ -149,9 +149,14 @@ impl Server {
 }
 
 pub fn describe(t: &dyn Tool) -> rmcp::model::Tool {
-    let ann = match t.need() {
-        Some(Need::Write) => ToolAnnotations::new().read_only(false).destructive(true).idempotent(false).open_world(false),
-        None if matches!(t.name(), "create_connection" | "update_connection") => ToolAnnotations::new().read_only(false).destructive(false).idempotent(true).open_world(false),
+    let ann = match (t.need(), t.name()) {
+        (Some(Need::Write), _) => ToolAnnotations::new().read_only(false).destructive(true).idempotent(false).open_world(false),
+        // They run writes too (through the tier, as execute does).
+        (_, "open_query" | "run_favorite") => ToolAnnotations::new().read_only(false).destructive(true).idempotent(false).open_world(false),
+        (_, "remove_favorite") => ToolAnnotations::new().read_only(false).destructive(true).idempotent(true).open_world(false),
+        (_, "create_connection" | "update_connection" | "add_favorite" | "rename_favorite" | "import_favorites") => {
+            ToolAnnotations::new().read_only(false).destructive(false).idempotent(true).open_world(false)
+        }
         _ => ToolAnnotations::new().read_only(true).destructive(false).idempotent(true).open_world(false),
     };
     rmcp::model::Tool::new(t.name().to_string(), t.description().to_string(), Arc::new(t.schema().0.clone())).with_annotations(ann)

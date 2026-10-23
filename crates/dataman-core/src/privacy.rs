@@ -1181,12 +1181,15 @@ impl RedisCat {
             "DEL" | "UNLINK" | "RENAME" | "RENAMENX" | "COPY" | "MOVE" | "EXPIRE" | "PEXPIRE" | "EXPIREAT" | "PEXPIREAT" | "PERSIST" | "TOUCH" | "OBJECT" | "DUMP" | "RESTORE" | "MIGRATE" => {
                 RedisCat::Keyspace
             }
-            "KEYS" | "FLUSHALL" | "FLUSHDB" | "CONFIG" | "DEBUG" | "SHUTDOWN" | "SAVE" | "BGSAVE" | "BGREWRITEAOF" | "REPLICAOF" | "SLAVEOF" | "MONITOR" | "SYNC" | "PSYNC" | "ACL" | "MODULE" | "FAILOVER" | "CLUSTER" | "SWAPDB" | "LASTSAVE" | "LATENCY" | "MEMORY" | "SORT" => {
+            "KEYS" | "FLUSHALL" | "FLUSHDB" | "CONFIG" | "DEBUG" | "SHUTDOWN" | "SAVE" | "BGSAVE" | "BGREWRITEAOF" | "REPLICAOF" | "SLAVEOF" | "MONITOR" | "SYNC" | "PSYNC" | "ACL" | "MODULE" | "FAILOVER" | "CLUSTER" | "SWAPDB" | "LASTSAVE" | "LATENCY" | "MEMORY" | "SORT" | "SORT_RO" => {
                 match c.as_str() {
-                    "CONFIG GET" | "CLUSTER INFO" | "CLUSTER NODES" | "ACL WHOAMI" | "LATENCY LATEST" | "MEMORY USAGE" | "MEMORY STATS" => RedisCat::Read,
+                    // Not CONFIG GET: the server's configuration holds its passwords (requirepass, masterauth).
+                    "CLUSTER INFO" | "CLUSTER NODES" | "ACL WHOAMI" | "LATENCY LATEST" | "MEMORY USAGE" | "MEMORY STATS" => RedisCat::Read,
                     _ => RedisCat::Dangerous,
                 }
             }
+            // SLOWLOG RESET clears the log; SLOWLOG GET and LEN read it.
+            "SLOWLOG" if !(c.starts_with("SLOWLOG GET") || c.starts_with("SLOWLOG LEN") || c.starts_with("SLOWLOG HELP")) => RedisCat::Dangerous,
             _ if crate::nosql::redis::is_read_command(&c) => RedisCat::Read,
             _ => RedisCat::Write,
         }
@@ -1663,7 +1666,10 @@ mod tests {
         assert_eq!(sensitive_name("email"), Some(Mask::Partial));
         assert_eq!(sensitive_name("created_at"), None);
         assert_eq!(RedisCat::of("KEYS"), RedisCat::Dangerous);
-        assert_eq!(RedisCat::of("CONFIG GET"), RedisCat::Read);
+        // The configuration holds requirepass: not for agents.
+        assert_eq!(RedisCat::of("CONFIG GET"), RedisCat::Dangerous);
+        assert_eq!(RedisCat::of("SLOWLOG RESET"), RedisCat::Dangerous);
+        assert_eq!(RedisCat::of("SLOWLOG GET"), RedisCat::Read);
         assert_eq!(RedisCat::of("HGETALL"), RedisCat::Read);
         assert_eq!(RedisCat::of("SET"), RedisCat::Write);
         assert_eq!(RedisCat::of("DEL"), RedisCat::Keyspace);

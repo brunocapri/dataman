@@ -127,7 +127,10 @@ fn run_favorite(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
             ix.iter()
                 .map(|&i| {
                     let f = &favorites[i];
-                    json!({"name": f.name, "connection": conn_name(f), "database": f.database, "sql": first_line(&f.sql)})
+                    // As list_favorites shows it: no SQL for a connection whose metadata is kept.
+                    let hidden = f.connection_id.as_ref().and_then(|id| profiles.iter().find(|p| p.id == *id)).is_some_and(super::rules::hides_metadata);
+                    let sql = if hidden { Value::Null } else { json!(first_line(&f.sql)) };
+                    json!({"name": f.name, "connection": conn_name(f), "database": f.database, "sql": sql})
                 })
                 .collect()
         };

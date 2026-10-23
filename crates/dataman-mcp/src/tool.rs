@@ -382,6 +382,7 @@ impl Call {
         let mut o = Opened { profile, conn, database };
         // Every tool reads the rules from here: generated columns take their sources' protection.
         o.profile.mcp_rules = crate::builtin::rules::effective_rules(self, &o).await?;
+        o.conn.set_agent_rules(&o.profile.mcp_rules);
         Ok(o)
     }
 

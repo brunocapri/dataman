@@ -206,8 +206,19 @@ pub async fn effective_rules(cx: &Call, o: &Opened) -> Result<AgentRules, ToolEr
     Ok(r.with_generated(&cols, Names::Qualified))
 }
 
-async fn user_routines(o: &Opened) -> HashSet<String> {
+/// DuckDB's macros (`CREATE MACRO`) are kept in the file: the user's functions, like any other.
+const DUCK_MACROS: &str = "SELECT DISTINCT function_name FROM duckdb_functions() WHERE NOT internal AND database_name = current_database()";
+
+async fn user_routines(cx: &Call, o: &Opened) -> HashSet<String> {
     let mut out = HashSet::new();
+    if o.conn.engine() == dataman_core::Engine::DuckDb {
+        let limits = bounded::Limits { max_rows: 100_000, max_bytes: 8 * 1024 * 1024, ..bounded::Limits::default() };
+        match o.conn.bounded(Some(&o.database), DUCK_MACROS, vec![], bounded::Mode::Read, limits, cx.cancel.clone().cancelled_owned()).await {
+            Ok(r) => out.extend(r.rows.iter().filter_map(|row| row.first()?.as_str().map(str::to_lowercase))),
+            Err(e) => log::debug!("macros of {}: {e:#}", o.database),
+        }
+        return out;
+    }
     let Ok(schemas) = super::catalog::schemas_of(o, None, false).await else {
         return out;
     };
@@ -236,7 +247,10 @@ pub async fn checked_sql(cx: &Call, a: &Args, p: &ConnectionProfile, sql: &str, 
             }
             tables.insert((s, n), found.map(|(t, _)| t));
         }
-        routines = user_routines(&o).await;
+        routines = user_routines(cx, &o).await;
+        if write {
+            triggers_keep_out(&o, sql).await?;
+        }
     }
     let find = |s: Option<&str>, n: &str| tables.get(&(s.map(str::to_string), n.to_string())).cloned().flatten();
     let ctx = agent_sql::Context { rules: &r, connection: &p.name, dialect: d, tables: &find, routines: &routines };
@@ -245,6 +259,37 @@ pub async fn checked_sql(cx: &Call, a: &Args, p: &ConnectionProfile, sql: &str, 
         cx.note_rewritten(&c.sql);
     }
     Ok(c)
+}
+
+/// A trigger runs with the whole database in reach: what its body reads and where it writes
+/// is not followed on a server, so an agent's write to a table with enabled triggers is refused
+/// while data is kept from agents (SQLite's own authorizer checks what its triggers read).
+async fn triggers_keep_out(o: &Opened, sql: &str) -> Result<(), ToolError> {
+    if !matches!(o.conn.engine(), dataman_core::Engine::Postgres | dataman_core::Engine::MySql | dataman_core::Engine::SqlServer) || o.conn.info.is_lar {
+        return Ok(());
+    }
+    let d = o.conn.dialect();
+    for s in bounded::statements_in(sql, d) {
+        let f = dataman_core::guard::classify_in(&s, d);
+        let Some(target) = f.target.filter(|_| f.effect == dataman_core::guard::Effect::Write) else { continue };
+        let unquote = |x: &str| x.trim().trim_matches(['"', '`', '[', ']']).to_string();
+        let (schema, name) = match target.rsplit_once('.') {
+            Some((s, n)) => (Some(unquote(s.rsplit('.').next().unwrap_or(s))), unquote(n)),
+            None => (None, unquote(&target)),
+        };
+        let Some((t, _)) = lookup(o, schema.as_deref(), &name).await else { continue };
+        match o.conn.triggers(&o.database, &t.schema).await {
+            Ok(all) if all.iter().any(|x| x.enabled && x.table.eq_ignore_ascii_case(&t.name)) => {
+                return Err(ToolError::Refused(format!(
+                    "{} has triggers, which run with the data kept from agents on {}: writes to it are the user's while some data is kept from agents",
+                    t.name, o.profile.name
+                )));
+            }
+            Ok(_) => {}
+            Err(e) => log::debug!("triggers of {}: {e:#}", t.schema),
+        }
+    }
+    Ok(())
 }
 
 /// Cells are read this many characters past the agent's cut, so masks and sensitive types see

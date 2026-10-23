@@ -112,7 +112,16 @@ const ACTIVITY: &[&str] = &[
 /// The tables a statement names, to be looked up before `check` (schema as written, name).
 pub fn tables_named(sql: &str, dialect: Dialect) -> Vec<(Option<String>, String)> {
     let mut out = Vec::new();
-    for_each_statement(sql, dialect, |text, _, toks| {
+    for_each_statement(sql, dialect, |text, range, toks| {
+        // DDL names its tables anywhere (ALTER TABLE t, CREATE INDEX … ON t, a macro's body):
+        // every name in it is looked up.
+        if guard::classify_in(&text[range], dialect).effect == Effect::Ddl {
+            for n in ddl_names(text, toks) {
+                if !out.contains(&n) {
+                    out.push(n);
+                }
+            }
+        }
         let a = scope::analyze_in(text, toks, dialect);
         for (i, s) in a.scopes.iter().enumerate() {
             for src in &s.sources {
@@ -140,6 +149,22 @@ fn for_each_statement(sql: &str, dialect: Dialect, mut f: impl FnMut(&str, std::
             }
         }
     }
+}
+
+/// The names in a statement, `a` or `s.a`, as `(schema, name)`.
+fn ddl_names(sql: &str, toks: &[Token]) -> Vec<(Option<String>, String)> {
+    let name = |t: &Token| matches!(t.kind, TokenKind::Ident | TokenKind::QuotedIdent | TokenKind::Keyword).then(|| t.text(sql).trim_matches(['"', '`', '[', ']']).to_string());
+    let mut out = Vec::new();
+    for (i, t) in toks.iter().enumerate() {
+        let Some(n) = name(t) else { continue };
+        out.push((None, n.clone()));
+        if toks.get(i + 1).is_some_and(|d| d.text(sql) == ".")
+            && let Some(m) = toks.get(i + 2).and_then(name)
+        {
+            out.push((Some(n), m));
+        }
+    }
+    out
 }
 
 fn word(sql: &str, t: &Token) -> Option<String> {
@@ -251,6 +276,25 @@ fn statement(
     if a.unsure {
         return Err(format!("Dataman could not follow this statement, and {conn} keeps some data from agents: write it more plainly"));
     }
+    // Renaming, dropping or rebuilding what is kept (a hidden table, a hidden or masked column)
+    // would take it out from under the rules, which go by name.
+    if facts.effect == Effect::Ddl {
+        let names = Names::Qualified;
+        let found = ddl_names(sql, toks);
+        for (schema, name) in &found {
+            let Some(t) = (cx.tables)(schema.as_deref(), name) else { continue };
+            if !rules.visible.table_visible(Some(&t.schema), &t.name, names) {
+                return Err(format!("{} is not visible to agents on {conn}", t.name));
+            }
+            let kept = t.columns.iter().find(|c| {
+                (rules.visible.column_hidden(Some(&t.schema), &t.name, c, names) || rules.sensitive_mask(Some(&t.schema), &t.name, c, names).is_some())
+                    && found.iter().any(|(_, n)| n.eq_ignore_ascii_case(c))
+            });
+            if let Some(c) = kept {
+                return Err(format!("{verb} names {}.{c}, which is kept from agents on {conn}: its structure is the user's to change", t.name));
+            }
+        }
+    }
     if let Some(w) = words.iter().flatten().find(|w| DYNAMIC.contains(&w.as_str())) {
         return Err(format!("{w} is not available to agents on {conn} while some data is kept from them"));
     }
@@ -277,8 +321,14 @@ fn statement(
                     let parts: Vec<String> = written.split('.').map(|p| p.trim().trim_matches(['"', '`', '[', ']']).to_lowercase()).collect();
                     let catalog = parts.len() > 1 && CATALOG_SCHEMAS.contains(&parts[parts.len() - 2].as_str());
                     let lower = f.to_lowercase();
-                    if catalog || lower.starts_with("pg_") || lower.starts_with("dm_") || lower.starts_with("fn_") {
+                    // DuckDB's `duckdb_tables()`, `duckdb_columns()`… hold definitions, defaults and
+                    // checks; SQLite's `pragma_table_info()` and the like too.
+                    if catalog || ["pg_", "dm_", "fn_", "duckdb_", "pragma_"].iter().any(|p| lower.starts_with(p)) {
                         return Err(format!("{f}() reads the system catalog: on {conn} agents list and describe through list_tables, describe_table and search_objects"));
+                    }
+                    // DuckDB's table macros that take a table by name read all of it.
+                    if cx.dialect == Dialect::DuckDb && matches!(lower.as_str(), "histogram" | "histogram_values" | "summary") {
+                        return Err(format!("{f}() reads a whole table by name: not available to agents on {conn} while some data is kept from them"));
                     }
                     continue;
                 }
@@ -668,6 +718,35 @@ mod tests {
         let routines: HashSet<String> = ["leak".to_string()].into();
         let cx = Context { rules: r, connection: "prod-pg", dialect: Dialect::Postgres, tables: &tables, routines: &routines };
         check(sql, write, &cx)
+    }
+
+    #[test]
+    fn ddl_keeps_its_hands_off_what_is_kept() {
+        let r = rules();
+        for sql in [
+            "ALTER TABLE users RENAME COLUMN password_hash TO note",
+            "ALTER TABLE users ADD COLUMN pw2 text GENERATED ALWAYS AS (\"password_hash\") STORED",
+            "ALTER TABLE public.payments RENAME TO pays",
+            "DROP TABLE payments",
+            "CREATE INDEX i ON users (password_hash)",
+        ] {
+            let e = run(&r, sql, true).unwrap_err();
+            assert!(e.contains("kept from agents") || e.contains("not visible"), "{sql}: {e}");
+        }
+        for sql in ["ALTER TABLE users ADD COLUMN nickname text", "CREATE INDEX i ON users (email)", "ALTER TABLE orders RENAME COLUMN notes TO memo"] {
+            assert!(run(&r, sql, true).is_ok(), "{sql}");
+        }
+    }
+
+    #[test]
+    fn duckdb_catalog_and_table_macros_are_refused() {
+        let r = rules();
+        let routines: HashSet<String> = ["m_pw".to_string()].into();
+        let cx = Context { rules: &r, connection: "duck", dialect: Dialect::DuckDb, tables: &tables, routines: &routines };
+        for sql in ["SELECT sql FROM duckdb_tables()", "SELECT * FROM duckdb_columns() WHERE table_name = 'users'", "FROM histogram(users, email)", "SELECT m_pw()", "SELECT * FROM pragma_table_info('users')"] {
+            assert!(check(sql, false, &cx).is_err(), "{sql}");
+        }
+        assert!(check("SELECT name FROM users", false, &cx).is_ok());
     }
 
     #[test]

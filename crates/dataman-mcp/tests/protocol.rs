@@ -139,6 +139,15 @@ fn stdio_session() {
     assert_eq!(rq["annotations"]["readOnlyHint"], true);
     let ex = tools.iter().find(|t| t["name"] == "execute").unwrap();
     assert_eq!(ex["annotations"]["destructiveHint"], true);
+    // What can write says so: open_query and run_favorite run writes through the tier, the
+    // favorites tools change the user's favorites.
+    let hint = |n: &str, k: &str| tools.iter().find(|t| t["name"] == n).unwrap()["annotations"][k].clone();
+    for n in ["open_query", "run_favorite", "remove_favorite"] {
+        assert_eq!((hint(n, "readOnlyHint"), hint(n, "destructiveHint")), (json!(false), json!(true)), "{n}");
+    }
+    for n in ["add_favorite", "rename_favorite", "import_favorites"] {
+        assert_eq!((hint(n, "readOnlyHint"), hint(n, "destructiveHint")), (json!(false), json!(false)), "{n}");
+    }
 
     let (err, text) = m.tool("list_connections", json!({}));
     assert!(!err, "{text}");

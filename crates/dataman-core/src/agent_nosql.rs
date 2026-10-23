@@ -411,6 +411,10 @@ fn search(text: &str, write: bool, cx: &Context) -> Result<Shaped, String> {
         return Err(format!("{path} is not available to agents on {conn} while some data is kept from them; list_tables lists the indices"));
     }
     for i in &indices {
+        // `cluster:index` is another cluster's index, which the rules (by name) do not reach.
+        if i.contains(':') {
+            return Err(format!("{i} is on another cluster: not available to agents on {conn} while some data is kept from them"));
+        }
         let wild = i.contains('*') || i == "_all" || i.starts_with('-');
         let ok = if wild {
             r.visible.mode == crate::privacy::VisibleMode::Only && r.visible.items.iter().any(|x| x.kind == crate::privacy::ItemKind::Table && x.name == *i)
@@ -438,7 +442,7 @@ fn search(text: &str, write: bool, cx: &Context) -> Result<Shaped, String> {
                 _ => return Err(format!("name the index plainly: some indices are kept from agents on {conn}")),
             };
             for i in list {
-                if i.contains('*') || i == "_all" || !r.visible.table_visible(None, i, names) {
+                if i.contains('*') || i.contains(':') || i == "_all" || !r.visible.table_visible(None, i, names) {
                     return Err(format!("{i} is not visible to agents on {conn}"));
                 }
                 if !indices.iter().any(|x| x == i) {

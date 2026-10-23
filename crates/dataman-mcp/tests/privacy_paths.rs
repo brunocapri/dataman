@@ -259,6 +259,19 @@ fn postgres_values_stay_kept() {
     let q = |sql: String| e.call("run_query", with("pp", json!({"sql": sql})));
     let x = |sql: String| e.call("execute", with("pp", json!({"sql": sql})));
 
+    // A trigger runs with the whole database in reach: the agent's write to its table is refused.
+    e.admin(
+        "execute",
+        with("pgadmin", json!({"sql": format!(
+            "CREATE TABLE {s}.notes_t (id int PRIMARY KEY, body text); \
+             CREATE FUNCTION {s}.copy_card() RETURNS trigger LANGUAGE plpgsql AS $f$ BEGIN NEW.body := (SELECT card FROM {s}.payments LIMIT 1); RETURN NEW; END $f$; \
+             CREATE TRIGGER copy_card BEFORE INSERT ON {s}.notes_t FOR EACH ROW EXECUTE FUNCTION {s}.copy_card()"
+        )})),
+    );
+    refused("a write firing a trigger", x(format!("INSERT INTO {s}.notes_t VALUES (1, 'x')")), "has triggers");
+    assert!(x(format!("INSERT INTO {s}.notes VALUES (99, 'plain')")).is_ok(), "a table without triggers takes the write");
+    assert!(x(format!("DELETE FROM {s}.notes WHERE id = 99")).is_ok());
+
     // Sensitive types inside numbers too: a card kept in a bigint, a numeric or a JSON number.
     let r = q(format!("SELECT card, doc, meta FROM {s}.nums")).unwrap();
     assert!(!r.to_string().contains("4242424242424242") && r["masked"].is_object(), "{r}");
@@ -598,6 +611,15 @@ fn redis_values_stay_kept() {
         refused(&t, e.call(tool, with("ro", json!({"query": t.clone()}))), "not visible");
     }
     assert_eq!(e.admin("nosql_query", with("rdadmin", json!({"query": format!("EXISTS {s}:open:dst {s}:open:z {s}:open:cp {s}:open:mv")})))["value"], 0, "nothing was copied");
+    // The server's configuration holds its password: not an agent's, on any connection.
+    for c in ["rd", "ro", "rdadmin"] {
+        for t in ["CONFIG GET requirepass".to_string(), "CONFIG GET *".into(), "SLOWLOG RESET".into(), format!("SORT_RO {s}:open:l GET {s}:closed:*")] {
+            for tool in ["nosql_query", "nosql_execute"] {
+                let r = e.call(tool, with(c, json!({"query": t})));
+                assert!(r.is_err(), "{c} {tool}: {t}: {r:?}");
+            }
+        }
+    }
     a(format!("DEL {s}:user:1 {s}:session:1 {s}:closed:set"));
     e.done();
 }
@@ -618,6 +640,7 @@ fn sqlite_values_stay_kept_and_nothing_leaves_the_file() {
         file_conn("lr", "sqlite", &db, "mcp = \"read\""),
         file_conn("lw", "sqlite", &db, "mcp = \"full\""),
         file_conn("lro", "sqlite", &db, "mcp = \"full\"\nread_only = true"),
+        file_conn("llw", "sqlite", &db, &format!("mcp = \"write\"\n{rules}")),
     ]
     .concat();
     let e = env_with(&[], &text, "", None);
@@ -663,6 +686,32 @@ fn sqlite_values_stay_kept_and_nothing_leaves_the_file() {
         }
         assert!(!outside.exists(), "{c}: a file was written outside the database");
     }
+    // A trigger the agent's write fires reads neither the hidden nor the masked for it.
+    e.admin(
+        "execute",
+        with("liteadmin", json!({"sql": "CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT); \
+            CREATE TRIGGER copy_card AFTER INSERT ON notes BEGIN UPDATE notes SET body = (SELECT card FROM payments LIMIT 1) WHERE id = NEW.id; END; \
+            CREATE TABLE notes2 (id INTEGER PRIMARY KEY, body TEXT); \
+            CREATE TRIGGER copy_email AFTER INSERT ON notes2 BEGIN UPDATE notes2 SET body = (SELECT email FROM customers LIMIT 1) WHERE id = NEW.id; END; \
+            CREATE TABLE notes3 (id INTEGER PRIMARY KEY, body TEXT); \
+            CREATE TRIGGER stamp AFTER INSERT ON notes3 BEGIN UPDATE notes3 SET body = 'seen ' || NEW.id WHERE id = NEW.id; END"})),
+    );
+    let w = |sql: &str| e.call("execute", with("llw", json!({"sql": sql})));
+    refused("a trigger reading a hidden table", w("INSERT INTO notes (id) VALUES (1)"), "prohibited");
+    refused("a trigger reading a masked column", w("INSERT INTO notes2 (id) VALUES (1)"), "prohibited");
+    assert!(w("INSERT INTO notes3 (id) VALUES (1)").is_ok(), "a trigger that reads nothing kept runs");
+    assert_eq!(q("lr", "SELECT count(*) FROM notes").unwrap()["rows"][0][0], 0, "the refused write rolled back");
+    // Settings that hold for the whole process are not an agent's, even at full.
+    for sql in ["PRAGMA hard_heap_limit = 1", "PRAGMA soft_heap_limit = 1", "PRAGMA temp_store_directory = '/tmp'"] {
+        assert!(e.call("execute", with("lw", json!({"sql": sql}))).is_err(), "{sql}");
+    }
+    assert!(q("lr", "SELECT count(*) FROM customers").is_ok(), "the heap limit stayed");
+    // The same file under a new name would leave the rules behind.
+    refused(
+        "a twin of a connection with rules",
+        e.call("create_connection", json!({"name": "twin", "engine": "sqlite", "path": db.display().to_string()})),
+        "ll already reaches this file",
+    );
     refused("a write at read", e.call("execute", with("lr", json!({"sql": "UPDATE customers SET name = 'x' WHERE id = 1"}))), "");
     refused("a write on a read-only connection", e.call("execute", with("lro", json!({"sql": "UPDATE customers SET name = 'x' WHERE id = 1"}))), "");
     let r = e.call("execute", with("lw", json!({"sql": "UPDATE customers SET name = 'Ana B.' WHERE id = 1"})));
@@ -689,9 +738,21 @@ fn duckdb_values_stay_kept_and_no_file_is_reached() {
         "execute",
         with("duckadmin", json!({"sql": "CREATE TABLE users (id INTEGER PRIMARY KEY, name VARCHAR, pw VARCHAR, pw_len INTEGER GENERATED ALWAYS AS (length(pw)) VIRTUAL, name_up VARCHAR GENERATED ALWAYS AS (upper(name)) VIRTUAL); \
             CREATE TABLE customers (id INTEGER PRIMARY KEY, name VARCHAR, email VARCHAR); \
-            INSERT INTO users (id, name, pw) VALUES (1, 'Ana', 'hash-secret-1'); INSERT INTO customers VALUES (1, 'Ana', 'zed-secret@acme.com')"})),
+            INSERT INTO users (id, name, pw) VALUES (1, 'Ana', 'hash-secret-1'); INSERT INTO customers VALUES (1, 'Ana', 'zed-secret@acme.com'); \
+            CREATE MACRO m_pw() AS (SELECT pw FROM users LIMIT 1)"})),
     );
     let q = |c: &str, sql: &str| e.call("run_query", with(c, json!({"sql": sql})));
+    // The user's macros, the catalog's definitions and SQL hidden in a string stay out of reach.
+    for sql in [
+        "SELECT m_pw()",
+        "SELECT sql FROM duckdb_tables()",
+        "SELECT column_default FROM duckdb_columns()",
+        "SELECT macro_definition FROM duckdb_functions() WHERE function_name = 'm_pw'",
+        "SELECT * FROM json_execute_serialized_sql(json_serialize_sql('SELECT pw FROM users'))",
+    ] {
+        refused(sql, q("dd", sql), "");
+    }
+    refused("a twin of a connection with rules", e.call("create_connection", json!({"name": "twin", "engine": "duckdb", "path": db.display().to_string()})), "already reaches this file");
     let r = q("dd", "SELECT * FROM users").unwrap();
     let cols = r["columns"].to_string();
     assert!(!cols.contains("\"pw\"") && !cols.contains("pw_len") && cols.contains("name_up"), "{r}");
@@ -716,6 +777,11 @@ fn duckdb_values_stay_kept_and_no_file_is_reached() {
         "INSTALL httpfs".to_string(),
         "LOAD httpfs".to_string(),
         "SET enable_external_access = true".to_string(),
+        // The instance is the user's too: its settings and logs are not an agent's.
+        format!("SET log_query_path = '{}'", files.path().join("log.txt").display()),
+        "SET memory_limit = '1MB'".to_string(),
+        "PRAGMA enable_profiling".to_string(),
+        "CALL enable_logging()".to_string(),
         format!("EXPORT DATABASE '{}'", files.path().join("dump").display()),
     ];
     for sql in &sneak {
@@ -725,7 +791,7 @@ fn duckdb_values_stay_kept_and_no_file_is_reached() {
         e.human.allow.lock().clear();
         assert!(w.is_err(), "full, even allowed: {sql}: {w:?}");
     }
-    assert!(!out.exists() && !files.path().join("x.duckdb").exists() && !files.path().join("dump").exists(), "nothing written outside");
+    assert!(!out.exists() && !files.path().join("x.duckdb").exists() && !files.path().join("dump").exists() && !files.path().join("log.txt").exists(), "nothing written outside");
     refused("a write at read", e.call("execute", with("dr", json!({"sql": "UPDATE customers SET name = 'x' WHERE id = 1"}))), "");
     assert!(e.call("execute", with("dw", json!({"sql": "UPDATE customers SET name = 'Ana B.' WHERE id = 1"}))).is_ok());
     assert_eq!(q("dr", "SELECT name FROM customers WHERE id = 1").unwrap()["rows"][0][0], "Ana B.");

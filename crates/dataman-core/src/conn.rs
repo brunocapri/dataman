@@ -32,6 +32,9 @@ pub struct Connection {
     pub(crate) caches: Mutex<HashMap<(&'static str, String, String), Arc<dyn std::any::Any + Send + Sync>>>,
     read_only_dbs: parking_lot::RwLock<std::collections::BTreeMap<String, bool>>,
     pub(crate) nosql: Option<crate::nosql::Client>,
+    /// The rules for agents as the last agent call read them: SQLite's agent connections check
+    /// what triggers and views read against them.
+    pub(crate) agent_rules: Arc<parking_lot::RwLock<crate::privacy::AgentRules>>,
 }
 
 impl Connection {
@@ -48,6 +51,7 @@ impl Connection {
             let schema = Arc::new(SchemaCache::with_dialect(info.database.clone(), Vec::new(), profile.engine.dialect()));
             return Ok(Arc::new(Connection {
                 read_only_dbs: parking_lot::RwLock::new(profile.read_only_databases.clone()),
+                agent_rules: Arc::new(parking_lot::RwLock::new(profile.mcp_rules.clone())),
                 tls_active: client.tls_active(),
                 nosql: Some(client),
                 profile,
@@ -71,6 +75,7 @@ impl Connection {
         let schema = Arc::new(SchemaCache::with_dialect(db, info.search_path.clone(), profile.engine.dialect()));
         Ok(Arc::new(Connection {
             read_only_dbs: parking_lot::RwLock::new(profile.read_only_databases.clone()),
+            agent_rules: Arc::new(parking_lot::RwLock::new(profile.mcp_rules.clone())),
             profile,
             info,
             schema,
@@ -87,6 +92,13 @@ impl Connection {
 
     pub fn engine(&self) -> Engine {
         self.profile.engine
+    }
+
+    /// The rules agents run under now (an agent call reads them fresh from the saved profile).
+    pub fn set_agent_rules(&self, r: &crate::privacy::AgentRules) {
+        if *self.agent_rules.read() != *r {
+            *self.agent_rules.write() = r.clone();
+        }
     }
 
     pub fn dialect(&self) -> Dialect {

@@ -101,6 +101,13 @@ fn apply(profile: &mut ConnectionProfile, a: &Args) -> Result<Option<String>, To
     let mut password = None;
     if let Some(cs) = a.opt_str("connection_string") {
         let (p, pw) = dataman_core::connstr::parse_profile(cs).ok_or_else(|| ToolError::Invalid("could not parse connection_string".into()))?;
+        // A string that says nothing of TLS keeps the connection's on the same server, and takes
+        // the default of another (create_connection picks the default for a new one).
+        if dataman_core::connstr::tls_given(cs) {
+            profile.sslmode = p.sslmode;
+        } else if !p.host.eq_ignore_ascii_case(&profile.host) {
+            profile.sslmode = dataman_core::default_sslmode(p.engine, &p.host, profile.ssh.is_some());
+        }
         profile.path = p.path;
         profile.read_only |= p.read_only && p.engine.is_file();
         profile.engine = p.engine;
@@ -108,7 +115,6 @@ fn apply(profile: &mut ConnectionProfile, a: &Args) -> Result<Option<String>, To
         profile.port = p.port;
         profile.user = p.user;
         profile.database = p.database;
-        profile.sslmode = p.sslmode;
         password = pw;
     }
     if let Some(e) = a.opt_str("engine") {
@@ -263,6 +269,31 @@ fn ssh_text(p: &ConnectionProfile) -> String {
     p.ssh.as_ref().map(|s| format!("{}@{}:{}", s.user, s.host, s.port.unwrap_or(22))).unwrap_or_else(|| "none".into())
 }
 
+/// A new connection to what a saved one already reaches (the same file, or the same server and
+/// user) would leave that one's protections behind: MCP off, Privacy, read-only, production. A
+/// file needs no password and a server may let the user in without one (~/.pgpass, peer or trust
+/// authentication), so the twin is refused: the agent uses the saved connection.
+fn no_twin(cx: &Call, p: &ConnectionProfile) -> Result<(), ToolError> {
+    let canonical = |q: &ConnectionProfile| std::fs::canonicalize(q.file_path()).ok();
+    let same = |q: &ConnectionProfile| {
+        if p.engine.is_file() || q.engine.is_file() {
+            return p.engine.is_file() && q.engine.is_file() && canonical(p).is_some_and(|c| Some(c) == canonical(q));
+        }
+        q.engine == p.engine && q.host.eq_ignore_ascii_case(&p.host) && q.port == p.port && q.user == p.user && q.ssh == p.ssh
+    };
+    let guarded = |q: &ConnectionProfile| {
+        q.mcp_access() == McpAccess::Off || !q.mcp_rules.is_default() || q.read_only || !q.read_only_databases.is_empty() || q.env == Environment::Production
+    };
+    if let Some(q) = cx.hub.profiles().iter().find(|q| q.id != p.id && same(q) && guarded(q)) {
+        return Err(ToolError::Refused(format!(
+            "{} already reaches this {} with protections a new connection would not have (MCP access, Privacy, read-only or production): use that connection, or ask the user to add another in Dataman",
+            q.name,
+            if p.engine.is_file() { "file" } else { "server as this user" }
+        )));
+    }
+    Ok(())
+}
+
 /// The user types this connection's password into Dataman: sending it to another server is
 /// the user's call (an agent could otherwise point a trusted connection at its own host).
 async fn allow_move(cx: &Call, old: &ConnectionProfile, new: &ConnectionProfile) -> Result<(), ToolError> {
@@ -388,6 +419,10 @@ fn create_connection(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>>
         if let Some(old) = existing {
             no_loosening(old, &profile)?;
             allow_move(cx, old, &profile).await?;
+        }
+        // A saved connection moved onto another's target was asked about above (allow_move).
+        if existing.is_none() {
+            no_twin(cx, &profile)?;
         }
         check_file(cx, existing, &profile).await?;
         settle_secrets(cx, existing, &mut profile, password)?;

@@ -231,7 +231,7 @@ impl Connection {
         }
         let d = if self.engine() == crate::config::Engine::Sqlite {
             let agent = if ro { lite::Agent::Read } else { lite::Agent::Write };
-            Dedicated::Lite(lite::connect(&self.profile_for(db), lite::Open { read_only: ro, agent: Some(agent) }, None).await?)
+            Dedicated::Lite(lite::connect(&self.profile_for(db), lite::Open { read_only: ro, agent: Some(agent), kept: Some(self.agent_rules.clone()) }, None).await?)
         } else {
             self.dedicated(Some(db)).await?
         };

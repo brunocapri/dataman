@@ -18,7 +18,7 @@ pub fn tools() -> Vec<Builtin> {
     vec![
         Builtin {
             name: "activity_sessions",
-            description: "Server sessions (pg_stat_activity). Rows: [pid, user, database, application, client, state, wait, xact_age_s, query_age_s, blocked_by, query] with ages in seconds and the query cut to 500 characters; this server's own MCP backends are left out. Idle sessions only with include_idle, background processes only with include_background.",
+            description: "PostgreSQL only. Server sessions (pg_stat_activity). Rows: [pid, user, database, application, client, state, wait, xact_age_s, query_age_s, blocked_by, query] with ages in seconds and the query cut to 500 characters; this server's own MCP backends are left out. Idle sessions only with include_idle, background processes only with include_background.",
             schema: conn_only()
                 .prop("include_idle", false, json!({"type": "boolean", "description": "Also idle sessions."}))
                 .prop("include_background", false, json!({"type": "boolean", "description": "Also background processes (autovacuum, walwriter…)."})),
@@ -27,21 +27,21 @@ pub fn tools() -> Vec<Builtin> {
         },
         Builtin {
             name: "activity_locks",
-            description: "Who blocks whom (pg_blocking_pids, pg_locks), as a tree: rows [depth, pid, waits_for, relation, waited_s, blocker_holds, sessions_behind] where depth 0 is a blocker that waits on nobody and each deeper row waits on the row above it; waits_for is the lock mode and type it asked for. Empty when nothing waits.",
+            description: "PostgreSQL only. Who blocks whom (pg_blocking_pids, pg_locks), as a tree: rows [depth, pid, waits_for, relation, waited_s, blocker_holds, sessions_behind] where depth 0 is a blocker that waits on nobody and each deeper row waits on the row above it; waits_for is the lock mode and type it asked for. Empty when nothing waits.",
             schema: conn_only(),
             need: Some(Need::Read),
             run: locks,
         },
         Builtin {
             name: "cancel_backend",
-            description: "Cancels the statement backend pid is running (pg_cancel_backend); the session stays. Needs the connection's MCP tier write or full; on a production connection it waits for the user's Allow in Dataman. Returns whether the server signalled it.",
+            description: "PostgreSQL only. Cancels the statement backend pid is running (pg_cancel_backend); the session stays. Needs the connection's MCP tier write or full; on a production connection it waits for the user's Allow in Dataman. Returns whether the server signalled it.",
             schema: pid_schema(),
             need: Some(Need::Write),
             run: cancel,
         },
         Builtin {
             name: "terminate_backend",
-            description: "Ends backend pid's session (pg_terminate_backend); its open transaction rolls back. Destructive: needs the connection's MCP tier full and waits for the user's Allow in Dataman. Returns whether the server signalled it.",
+            description: "PostgreSQL only. Ends backend pid's session (pg_terminate_backend); its open transaction rolls back. Destructive: needs the connection's MCP tier full and waits for the user's Allow in Dataman. Returns whether the server signalled it.",
             schema: pid_schema(),
             need: Some(Need::Write),
             run: terminate,

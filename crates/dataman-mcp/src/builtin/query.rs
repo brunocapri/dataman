@@ -37,7 +37,7 @@ pub fn tools() -> Vec<Builtin> {
         },
         Builtin {
             name: "explain",
-            description: "Shows the plan of one statement without running it: EXPLAIN (FORMAT JSON, VERBOSE, COSTS) on PostgreSQL, LAR's own plan on LAR. format: text (default, compact, as psql prints it) or json (PostgreSQL's plan). A write is planned, never run.",
+            description: "Shows the plan of one statement without running it: EXPLAIN (FORMAT JSON, VERBOSE, COSTS) on PostgreSQL, LAR's own plan on LAR, EXPLAIN QUERY PLAN on SQLite, EXPLAIN on DuckDB; MySQL and SQL Server have no plans here. format: text (default, compact, as psql prints it) or json (PostgreSQL's plan). A write is planned, never run.",
             schema: conn_schema()
                 .prop("sql", true, sql_prop("The statement to plan."))
                 .prop("params", false, params_schema())
@@ -47,7 +47,7 @@ pub fn tools() -> Vec<Builtin> {
         },
         Builtin {
             name: "explain_analyze",
-            description: "Runs one statement under EXPLAIN (ANALYZE, BUFFERS, …) and returns the plan with actual times, rows and loops, the totals, and hints (seq scans filtering most rows, sorts or hashes spilling to disk, nested loops with many loops, misestimates, missing workers). A read runs in a read-only transaction. A write (INSERT, UPDATE, DELETE, MERGE…) runs in a transaction that is always rolled back and follows the connection's MCP tier like execute: write allows non-destructive statements, full asks the user in Dataman for destructive ones, production always asks.",
+            description: "PostgreSQL, LAR and DuckDB (SQLite has no ANALYZE: its query plan only). Runs one statement under EXPLAIN (ANALYZE, BUFFERS, …) and returns the plan with actual times, rows and loops, the totals, and hints (seq scans filtering most rows, sorts or hashes spilling to disk, nested loops with many loops, misestimates, missing workers). A read runs in a read-only transaction. A write (INSERT, UPDATE, DELETE, MERGE…) runs in a transaction that is always rolled back and follows the connection's MCP tier like execute: write allows non-destructive statements, full asks the user in Dataman for destructive ones, production always asks.",
             schema: confirm_prop(
                 conn_schema()
                     .prop("sql", true, sql_prop("The statement to run and measure."))
