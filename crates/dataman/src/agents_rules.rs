@@ -164,6 +164,10 @@ fn placeholder(e: Engine) -> &'static str {
     }
 }
 
+/// The Privacy body width from which its two columns sit side by side: the padding, the left
+/// column at its narrowest (The agent sees' three segments), the gap and Visible to agents.
+const PRIVACY_SIDE_W: f32 = 32. * 2. + 300. + 40. + 360.;
+
 fn kb(n: u64) -> String {
     format!("{} KB", n / 1024)
 }
@@ -674,7 +678,6 @@ impl AgentsPage {
                         .child(div().children(ui::here(&"agents-sens-add".into())).flex_none().h(px(28.)).px(px(10.)).flex().items_center().border_1().border_color(t.line2).text_color(t.tx4).child("Add"))
                     }),
             );
-        let left = div().flex_1().min_w_0().flex().flex_col().gap(px(24.)).child(sees).child(sensitive);
         let modes: Vec<(VisibleMode, &str)> = [VisibleMode::Except, VisibleMode::Only].iter().map(|m| (*m, m.label())).collect();
         let typed = self.vis_input.read(cx).text().trim().to_string();
         let kind = Visible::kind_of(&typed, &self.schemas_of(&p, cx), names);
@@ -699,9 +702,7 @@ impl AgentsPage {
                     }, cx)
                 })))
         }).collect::<Vec<_>>();
-        let right = div()
-            .w(px(360.))
-            .flex_none()
+        let visible = div()
             .flex()
             .flex_col()
             .gap(px(24.))
@@ -736,6 +737,37 @@ impl AgentsPage {
                         .child(ui::button(t, "agents-vis-add", ui::Btn::Secondary).h(px(28.)).px(px(10.)).child(verb).on_click(cx.listener(|v, _, _, cx| v.add_visible(cx)))),
                 ),
             );
+        // Side by side while the body has the width, else one under the other. The width is the
+        // last frame's: a frame drawn on the wrong side of the line asks for another.
+        let side = self.privacy_body.get().is_none_or(|b| b.size.width.as_f32() >= PRIVACY_SIDE_W);
+        let measure = {
+            let slot = self.privacy_body.clone();
+            gpui::canvas(
+                move |b, window, _| {
+                    slot.set(Some(b));
+                    if (b.size.width.as_f32() >= PRIVACY_SIDE_W) != side {
+                        window.on_next_frame(|window, _| window.refresh());
+                    }
+                },
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+        };
+        let body = if side {
+            div()
+                .flex()
+                .flex_row()
+                .gap(px(40.))
+                .child(div().flex_1().min_w_0().flex().flex_col().gap(px(24.)).child(sees).child(sensitive))
+                .child(div().w(px(360.)).flex_none().child(visible))
+        } else {
+            // Stacked, each section under a rule, no wider than reads well.
+            let part = |d: gpui::Div| d.pt(px(24.)).border_t_1().border_color(t.line);
+            div().w_full().max_w(px(640.)).flex().flex_col().gap(px(24.)).child(sees).child(part(sensitive)).child(part(visible))
+        };
         div()
             .size_full()
             .flex()
@@ -750,7 +782,7 @@ impl AgentsPage {
                     .border_t_1()
                     .border_color(t.line)
                     .child(self.render_conn_list(t, cx))
-                    .child(div().id("agents-priv-body").flex_1().min_w_0().overflow_y_scroll().flex().flex_row().gap(px(40.)).px(px(32.)).py(px(24.)).child(left).child(right)),
+                    .child(div().id("agents-priv-body").relative().flex_1().min_w_0().overflow_y_scroll().flex().flex_col().px(px(32.)).py(px(24.)).child(measure).child(body)),
             )
             .into_any_element()
     }
