@@ -107,6 +107,8 @@ pub struct Settings {
     pub db_logos: bool,
     pub keyword_case: crate::format::KeywordCase,
     pub indent: u8,
+    /// ⌘S (and Save As…) formats the tab's text first.
+    pub format_on_save: bool,
     pub mcp_enabled: bool,
     pub update_check: bool,
     pub update_feed: Option<String>,
@@ -220,6 +222,7 @@ impl Default for Settings {
             db_logos: true,
             keyword_case: crate::format::KeywordCase::Upper,
             indent: 2,
+            format_on_save: true,
             mcp_enabled: true,
             update_check: true,
             update_feed: None,
@@ -381,7 +384,10 @@ mod tests {
         assert!(SettingsStore::open(&dirs).get().reduce_motion);
         let o = SettingsStore::open(&dirs).get().format_options();
         assert_eq!((o.keyword_case, o.indent), (crate::format::KeywordCase::Upper, 2));
-        SettingsStore::open(&dirs).update(|s| (s.keyword_case, s.indent) = (crate::format::KeywordCase::Lower, 4)).unwrap();
+        assert!(SettingsStore::open(&dirs).get().format_on_save);
+        SettingsStore::open(&dirs).update(|s| (s.keyword_case, s.indent, s.format_on_save) = (crate::format::KeywordCase::Lower, 4, false)).unwrap();
+        assert!(std::fs::read_to_string(dirs.settings_file()).unwrap().contains("format_on_save = false"));
+        assert!(!SettingsStore::open(&dirs).get().format_on_save);
         assert!(std::fs::read_to_string(dirs.settings_file()).unwrap().contains("keyword_case = \"lower\""));
         let o = SettingsStore::open(&dirs).get().format_options();
         assert_eq!((o.keyword_case, o.indent), (crate::format::KeywordCase::Lower, 4));

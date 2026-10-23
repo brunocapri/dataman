@@ -812,6 +812,16 @@ pub fn set_format_options(o: FormatOptions) {
     FORMAT.store(case | (o.indent as u32) << 4, std::sync::atomic::Ordering::Relaxed);
 }
 
+static FORMAT_ON_SAVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+pub fn set_format_on_save(on: bool) {
+    FORMAT_ON_SAVE.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn format_on_save() -> bool {
+    FORMAT_ON_SAVE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 fn format_options() -> FormatOptions {
     let v = FORMAT.load(std::sync::atomic::Ordering::Relaxed);
     let keyword_case = match v & 0xf {
@@ -1179,22 +1189,33 @@ impl CodeEditor {
     /// The selection, or the whole text, as one undo step. A document engine's text that cannot
     /// be formatted stays as it is, and says why in a `Notice`.
     pub fn format_query(&mut self, cx: &mut Context<Self>) {
+        let range = if self.sel.is_empty() { 0..self.buf.len() } else { self.sel.clone() };
+        self.format_range(range, true, cx);
+    }
+
+    /// Before a save: the whole text, and text that cannot be formatted is saved as it is.
+    pub fn format_for_save(&mut self, cx: &mut Context<Self>) {
+        self.format_range(0..self.buf.len(), false, cx);
+    }
+
+    fn format_range(&mut self, range: Range<usize>, tell: bool, cx: &mut Context<Self>) {
         if self.plain {
             return;
         }
-        let range = if self.sel.is_empty() { 0..self.buf.len() } else { self.sel.clone() };
         let old = self.buf.text[range.clone()].to_string();
         let new = match self.buf.doc {
             None => dataman_core::format::format_in(&old, &format_options(), self.buf.dialect),
             Some(e) => match dataman_core::nosql::format::format(e, &old, &format_options()) {
                 Ok(f) => {
-                    if let Some(left) = f.left {
+                    if let Some(left) = f.left.filter(|_| tell) {
                         cx.emit(EditorEvent::Notice(left));
                     }
                     f.text
                 }
                 Err(why) => {
-                    cx.emit(EditorEvent::Notice(format!("Not formatted: {why}")));
+                    if tell {
+                        cx.emit(EditorEvent::Notice(format!("Not formatted: {why}")));
+                    }
                     return;
                 }
             },

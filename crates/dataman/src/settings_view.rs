@@ -81,6 +81,7 @@ enum Row {
     ExportDir,
     KeywordCase,
     Indent,
+    FormatOnSave,
     McpAccess,
     McpClaude,
     McpAgents,
@@ -93,7 +94,7 @@ enum Row {
     CrashReports,
 }
 
-const ROWS: [(Row, Section, &str, &str); 23] = [
+const ROWS: [(Row, Section, &str, &str); 24] = [
     (Row::Theme, Section::Appearance, "Theme", "dark light system"),
     (Row::Font, Section::Appearance, "Font", "typeface family monospace geist lilex zed jetbrains"),
     (Row::Translucency, Section::Appearance, "Window translucency", "transparency blur opaque"),
@@ -103,6 +104,7 @@ const ROWS: [(Row, Section, &str, &str); 23] = [
     (Row::Panels, Section::Appearance, "Panels", "panel layout dock explorer history favorites move reset"),
     (Row::KeywordCase, Section::Editor, "Keyword case", "format formatter sql upper lower"),
     (Row::Indent, Section::Editor, "Indent", "format formatter spaces tab"),
+    (Row::FormatOnSave, Section::Editor, "Format on save", "format formatter save favorite cmd-s"),
     (Row::Prefetch, Section::Grid, "Rows fetched ahead", "prefetch fetch"),
     (Row::PageSize, Section::Grid, "Rows per table page", "page paging table data view"),
     (Row::ConfirmCommit, Section::Grid, "Review edits before commit", "commit edit sql"),
@@ -128,6 +130,7 @@ impl Row {
             Row::Projects => "File › Open Project keeps settings in a folder's .dataman/project.toml, for a team to version. Passwords and secrets never go there.",
             Row::ProjectShare => "Where both sides changed, the project wins. Each person's passwords stay in their own keychain.",
             Row::ProjectConnections => "Connections created while the project is open join it.",
+            Row::FormatOnSave => "⌘S and Save As… format the tab's text first, as Format Query does. Text that cannot be formatted is saved as written.",
             _ => return None,
         })
     }
@@ -540,6 +543,12 @@ impl SettingsView {
         crate::editor::set_format_options(self.settings.format_options());
     }
 
+    fn set_format_on_save(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.save(|s| s.format_on_save = on, cx);
+        crate::editor::set_format_on_save(on);
+        crate::refresh_menus(cx);
+    }
+
     fn set_logos(&mut self, on: bool, cx: &mut Context<Self>) {
         self.save(|s| s.db_logos = on, cx);
         crate::assets::set_logos(on);
@@ -721,6 +730,13 @@ impl SettingsView {
                     .children([2u8, 4].into_iter().map(|n| {
                         ui::segment(t, ("in", n as usize), n.to_string(), cur == n).on_click(cx.listener(move |v, _, _, cx| v.set_format(|s| s.indent = n, cx)))
                     }))
+                    .into_any_element()
+            }
+            Row::FormatOnSave => {
+                let on = s.format_on_save;
+                ui::segmented(t)
+                    .child(ui::segment(t, "fos-on", "Format", on).on_click(cx.listener(|v, _, _, cx| v.set_format_on_save(true, cx))))
+                    .child(ui::segment(t, "fos-off", "Save as written", !on).on_click(cx.listener(|v, _, _, cx| v.set_format_on_save(false, cx))))
                     .into_any_element()
             }
             Row::Prefetch => {

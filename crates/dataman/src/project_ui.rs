@@ -75,6 +75,8 @@ impl Workspace {
         }
         if s.settings {
             crate::editor::set_format_options(core.settings.get().format_options());
+            crate::editor::set_format_on_save(core.settings.get().format_on_save);
+            crate::refresh_menus(cx);
         }
         if let Some(v) = self.settings_view.clone() {
             v.update(cx, |v, cx| v.reload(cx));

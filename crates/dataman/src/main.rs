@@ -238,6 +238,7 @@ fn menus(cx: &App) -> Vec<Menu> {
             vec![
                 MenuItem::action("Save As…", SaveAs),
                 MenuItem::action("Save as Favorite", SaveFavorite),
+                MenuItem::action("Format on Save", ToggleFormatOnSave).checked(editor::format_on_save()),
                 MenuItem::action("Import Favorites…", ImportFavorites),
             ],
             vec![MenuItem::action("Close Tab", CloseTab)],
@@ -491,6 +492,7 @@ fn main() {
         let prefs = core.settings.get();
         editor::set_code_size(prefs.editor_font_size);
         editor::set_format_options(prefs.format_options());
+        editor::set_format_on_save(prefs.format_on_save);
         dataman_core::result::set_prefetch(prefs.prefetch_rows);
         motion::set_reduce_motion_pref(prefs.reduce_motion, cx);
         assets::set_logos(prefs.db_logos);

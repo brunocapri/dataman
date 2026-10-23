@@ -1049,6 +1049,7 @@ fn commands(conn: Option<&std::sync::Arc<dataman_core::Connection>>, cx: &App) -
         c("Favorite query", "the statement under the cursor", "⌘D", Box::new(FavoriteQuery), Workspace),
         c("Save as favorite", "the script, into the tab's favorite", "⌘S", Box::new(SaveFavorite), Workspace),
         c("Save as…", "the script, to a .sql file", "⇧⌘S", Box::new(SaveAs), Workspace),
+        c("Format on save", "on or off: ⌘S formats the script first", "", Box::new(ToggleFormatOnSave), Workspace),
         c("Import favorites…", ".sql files, one favorite each", "", Box::new(ImportFavorites), Workspace),
         c("Activity monitor", "sessions, locks, tables, statements", "", Box::new(OpenActivity), Workspace),
         c("Agents", "audit, permissions, privacy, MCP", "", Box::new(ToggleMcpLog), Workspace),

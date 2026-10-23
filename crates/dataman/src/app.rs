@@ -46,6 +46,7 @@ actions!(
         FavoriteQuery,
         SaveFavorite,
         SaveAs,
+        ToggleFormatOnSave,
         ImportFavorites,
         Cancel,
         Refresh,
@@ -2181,6 +2182,26 @@ impl Workspace {
         });
     }
 
+    fn format_before_save(tab: &Entity<QueryTab>, cx: &mut App) {
+        if crate::editor::format_on_save() {
+            let e = tab.read(cx).editor.clone();
+            e.update(cx, |e, cx| e.format_for_save(cx));
+        }
+    }
+
+    pub(crate) fn toggle_format_on_save(&mut self, cx: &mut Context<Self>) {
+        let on = !crate::editor::format_on_save();
+        if let Err(e) = self.store.read(cx).core.settings.update(|s| s.format_on_save = on) {
+            log::warn!("could not save the settings: {e:#}");
+        }
+        crate::editor::set_format_on_save(on);
+        if let Some(v) = self.settings_view.clone() {
+            v.update(cx, |v, cx| v.reload(cx));
+        }
+        crate::refresh_menus(cx);
+        self.notice(if on { "⌘S formats before it saves" } else { "⌘S saves without formatting" }, cx);
+    }
+
     pub(crate) fn save_favorite(&mut self, cx: &mut Context<Self>) {
         if let Some(tab) = self.active_tab().cloned() {
             self.save_favorite_of(&tab, cx);
@@ -2195,6 +2216,7 @@ impl Workspace {
         if !Self::can_save_favorite(tab, cx) {
             return;
         }
+        Self::format_before_save(tab, cx);
         let sql = tab.read(cx).editor.read(cx).text().trim().to_string();
         let store = self.store.read(cx).core.favorites.clone();
         let updated = match tab.read(cx).favorite.clone() {
@@ -2304,6 +2326,7 @@ impl Workspace {
     }
 
     pub(crate) fn write_sql_file(&mut self, tab: &Entity<QueryTab>, path: &std::path::Path, cx: &mut Context<Self>) {
+        Self::format_before_save(tab, cx);
         let text = tab.read(cx).editor.read(cx).text().to_string();
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("query.sql").to_string();
         match std::fs::write(path, &text) {
@@ -2712,6 +2735,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|w, _: &FavoriteQuery, _, cx| w.favorite_current_query(cx)))
             .on_action(cx.listener(|w, _: &SaveFavorite, _, cx| w.save_favorite(cx)))
             .on_action(cx.listener(|w, _: &SaveAs, window, cx| w.save_as(window, cx)))
+            .on_action(cx.listener(|w, _: &ToggleFormatOnSave, _, cx| w.toggle_format_on_save(cx)))
             .on_action(cx.listener(|w, _: &ImportFavorites, _, cx| w.import_favorites(cx)))
             .on_action(cx.listener(|w, _: &Cancel, _, cx| w.cancel_active(cx)))
             .on_action(cx.listener(|w, _: &NextResult, _, cx| w.cycle_result(true, cx)))
