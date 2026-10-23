@@ -2091,7 +2091,7 @@ checksum = "be1e0bca6c3637f992fc1cc7cbc52a78c1ef6db076dbf1059c4323d6a2048376"
 
 [[package]]
 name = "dataman"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "anyhow",
  "block2 0.6.2",
@@ -2114,7 +2114,7 @@ dependencies = [
 
 [[package]]
 name = "dataman-core"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "anyhow",
  "arrow-array",
@@ -2165,7 +2165,7 @@ dependencies = [
 
 [[package]]
 name = "dataman-mcp"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "anyhow",
  "chrono",
@@ -10465,7 +10465,7 @@ checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
 
 [[package]]
 name = "xtask"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "anyhow",
  "data-encoding",
