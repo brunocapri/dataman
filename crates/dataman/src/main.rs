@@ -183,6 +183,18 @@ pub(crate) struct MenuCaps(pub dataman_core::Caps);
 
 impl gpui::Global for MenuCaps {}
 
+/// The groups that have items, a separator between each.
+fn sections(groups: Vec<Vec<MenuItem>>) -> Vec<MenuItem> {
+    let mut out = Vec::new();
+    for g in groups.into_iter().filter(|g| !g.is_empty()) {
+        if !out.is_empty() {
+            out.push(MenuItem::separator());
+        }
+        out.extend(g);
+    }
+    out
+}
+
 fn menus(cx: &App) -> Vec<Menu> {
     use app::*;
     let caps = cx.try_global::<MenuCaps>().map_or(dataman_core::Caps::POSTGRES, |m| m.0);
@@ -204,29 +216,29 @@ fn menus(cx: &App) -> Vec<Menu> {
             MenuItem::separator(),
             MenuItem::action("Quit Dataman", Quit),
         ])),
-        Menu::new("File").items(
-            [
-                MenuItem::action("New Query Tab", NewTab),
+        // Groups of what belongs together, a separator between those that show.
+        Menu::new("File").items(sections(vec![
+            vec![MenuItem::action("New Query Tab", NewTab)],
+            vec![
                 MenuItem::action("New Connection…", NewConnection),
                 MenuItem::action("New Connection from Clipboard", NewConnectionFromClipboard),
                 MenuItem::action("Import Connections…", ImportConnections),
-            ]
-            .into_iter()
-            .chain(when(caps.import, vec![MenuItem::action("Import Data…", ImportData)]))
-            .chain([
-                MenuItem::action("Open .sql File…", OpenSqlFile),
-                MenuItem::action("Open Database File…", OpenDatabaseFile),
-            ])
-            .chain(when(projects.enabled, vec![MenuItem::action("Open Project…", OpenProject)]))
-            .chain(when(projects.open.is_some(), vec![MenuItem::action("Close Project", CloseProject)]))
-            .chain([
-                MenuItem::action("Save as Favorite", SaveFavorite),
+            ],
+            when(projects.enabled, vec![MenuItem::action("Open Project…", OpenProject)])
+                .into_iter()
+                .chain(when(projects.open.is_some(), vec![MenuItem::action("Close Project", CloseProject)]))
+                .collect(),
+            [MenuItem::action("Open .sql File…", OpenSqlFile), MenuItem::action("Open Database File…", OpenDatabaseFile)]
+                .into_iter()
+                .chain(when(caps.import, vec![MenuItem::action("Import Data…", ImportData)]))
+                .collect(),
+            vec![
                 MenuItem::action("Save As…", SaveAs),
+                MenuItem::action("Save as Favorite", SaveFavorite),
                 MenuItem::action("Import Favorites…", ImportFavorites),
-                MenuItem::separator(),
-                MenuItem::action("Close Tab", CloseTab),
-            ]),
-        ),
+            ],
+            vec![MenuItem::action("Close Tab", CloseTab)],
+        ])),
         Menu::new("Edit").items([
             MenuItem::os_action("Undo", editor::Undo, OsAction::Undo),
             MenuItem::os_action("Redo", editor::Redo, OsAction::Redo),
