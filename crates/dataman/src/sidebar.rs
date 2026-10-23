@@ -218,6 +218,21 @@ impl Workspace {
                     }))
                     .child(icon(Icon::Robot).size(px(16.)).text_color(if on { t.tx } else { t.tx3 })),
             );
+        let settings_on = self.settings_view.is_some();
+        let gear = div()
+            .children(ui::here(&"rail-settings".into()))
+            .id("rail-settings")
+            .flex_none()
+            .size(px(ICON_BOX))
+            .flex()
+            .items_center()
+            .justify_center()
+            .when(settings_on, |e| e.bg(t.prs))
+            .when(!settings_on, move |e| e.hover(move |s| s.bg(hov)))
+            .tip(ui::tooltip("Settings", None, crate::keymap::key("settings").as_deref()))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(cx.listener(|w, _, window, cx| w.toggle_settings(window, cx)))
+            .child(icon(Icon::Gear).size(px(GLYPH)).text_color(if settings_on { t.tx } else { t.tx3 }));
         div()
             .id("sidebar-rail")
             .w(px(metrics::RAIL_W))
@@ -235,5 +250,6 @@ impl Workspace {
             .children(icons)
             .child(div().flex_1())
             .child(robot)
+            .child(gear)
     }
 }

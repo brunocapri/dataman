@@ -32,6 +32,8 @@ pub fn bind_keys(cx: &mut App) {
 
 pub enum SettingsEvent {
     Close,
+    /// Settings › Project changed what is shared, and the sync that followed changed this side.
+    ProjectSynced(dataman_core::project::Synced),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -41,12 +43,13 @@ enum Section {
     Grid,
     Export,
     Mcp,
+    Project,
     Keyboard,
     About,
 }
 
-const SECTIONS: [Section; 7] =
-    [Section::Appearance, Section::Editor, Section::Grid, Section::Export, Section::Mcp, Section::Keyboard, Section::About];
+const SECTIONS: [Section; 8] =
+    [Section::Appearance, Section::Editor, Section::Grid, Section::Export, Section::Mcp, Section::Project, Section::Keyboard, Section::About];
 
 impl Section {
     fn label(self) -> &'static str {
@@ -56,6 +59,7 @@ impl Section {
             Section::Grid => "Results grid",
             Section::Export => "Export",
             Section::Mcp => "MCP",
+            Section::Project => "Project",
             Section::Keyboard => "Keyboard",
             Section::About => "About",
         }
@@ -80,12 +84,16 @@ enum Row {
     McpAccess,
     McpClaude,
     McpAgents,
+    Projects,
+    ProjectFolder,
+    ProjectShare,
+    ProjectConnections,
     Version,
     UpdateCheck,
     CrashReports,
 }
 
-const ROWS: [(Row, Section, &str, &str); 19] = [
+const ROWS: [(Row, Section, &str, &str); 23] = [
     (Row::Theme, Section::Appearance, "Theme", "dark light system"),
     (Row::Font, Section::Appearance, "Font", "typeface family monospace geist lilex zed jetbrains"),
     (Row::Translucency, Section::Appearance, "Window translucency", "transparency blur opaque"),
@@ -102,6 +110,10 @@ const ROWS: [(Row, Section, &str, &str); 19] = [
     (Row::McpAccess, Section::Mcp, "Agent access", "mcp ai agents claude"),
     (Row::McpClaude, Section::Mcp, "Claude Code", "mcp add command stdio"),
     (Row::McpAgents, Section::Mcp, "Agents", "mcp agents audit log permissions privacy sensitive limits rows tools tier allowed yolo"),
+    (Row::Projects, Section::Project, "Projects", "open project folder dataman team share version git"),
+    (Row::ProjectFolder, Section::Project, "Project folder", "open close project dataman folder"),
+    (Row::ProjectShare, Section::Project, "Shared in the project", "project share connections favorites agents privacy sensitive format team"),
+    (Row::ProjectConnections, Section::Project, "Project connections", "project share connections team"),
     (Row::Version, Section::About, "Version", "about update release"),
     (Row::UpdateCheck, Section::About, "Check for updates", "update automatic daily feed"),
     (Row::CrashReports, Section::About, "Crash reports", "crash logs panic diagnostics"),
@@ -113,6 +125,9 @@ impl Row {
             Row::McpAccess => "Lets AI agents (Claude Code, Claude Desktop, any MCP client) use your connections. Off blocks every agent.",
             Row::McpClaude => "Copies the command that adds Dataman to Claude Code.",
             Row::McpAgents => "What agents ran, and per connection what they may do and see.",
+            Row::Projects => "File › Open Project keeps settings in a folder's .dataman/project.toml, for a team to version. Passwords and secrets never go there.",
+            Row::ProjectShare => "Where both sides changed, the project wins. Each person's passwords stay in their own keychain.",
+            Row::ProjectConnections => "Connections created while the project is open join it.",
             _ => return None,
         })
     }
@@ -315,8 +330,12 @@ impl SettingsView {
     }
 
     fn row_visible(&self, row: Row, cx: &App) -> bool {
+        let open = self.core.project.info(&self.settings);
         match row {
             Row::McpClaude => self.settings.mcp_enabled,
+            Row::ProjectFolder => self.settings.project_enabled,
+            Row::ProjectShare => open.is_some(),
+            Row::ProjectConnections => open.is_some_and(|i| i.share.connections),
             Row::UpdateCheck => crate::updates::enabled(cx),
             _ => true,
         }
@@ -371,6 +390,98 @@ impl SettingsView {
         }
         self.settings = self.core.settings.get();
         cx.notify();
+    }
+
+    /// The settings as they are now (an open project's sync changed them).
+    pub fn reload(&mut self, cx: &mut Context<Self>) {
+        self.settings = self.core.settings.get();
+        cx.notify();
+    }
+
+    fn set_projects(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.save(|s| s.project_enabled = on, cx);
+        crate::project_ui::publish(&self.core, cx);
+        if on {
+            self.edit_project(|_, _| {}, cx);
+        }
+    }
+
+    fn edit_project(&mut self, f: impl FnOnce(&mut dataman_core::project::Share, &mut std::collections::BTreeSet<String>), cx: &mut Context<Self>) {
+        match self.core.project.edit(self.core.stores(), f) {
+            Ok(s) if s.local() => cx.emit(SettingsEvent::ProjectSynced(s)),
+            Ok(_) => {}
+            Err(e) => log::warn!("project: {e:#}"),
+        }
+        self.reload(cx);
+    }
+
+    fn render_project_share(&self, t: &Theme, cx: &mut Context<Self>) -> gpui::AnyElement {
+        use dataman_core::project::Share;
+        let share = self.core.project.info(&self.settings).map(|i| i.share).unwrap_or_default();
+        let parts: [(&'static str, &'static str, &'static str, bool, fn(&mut Share) -> &mut bool); 4] = [
+            ("project-share-connections", "Connections", "no passwords", share.connections, |s| &mut s.connections),
+            ("project-share-favorites", "Favorites", "saved on its connections", share.favorites, |s| &mut s.favorites),
+            ("project-share-agents", "Agents", "rules and sensitive data", share.agents, |s| &mut s.agents),
+            ("project-share-editor", "SQL format", "keyword case, indent, review", share.editor, |s| &mut s.editor),
+        ];
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(6.))
+            .children(parts.into_iter().map(|(id, label, what, on, field)| {
+                div()
+                    .children(ui::here(&id.into()))
+                    .id(id)
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(8.))
+                    .cursor_pointer()
+                    .child(ui::checkbox(t, on))
+                    .child(div().text_color(t.tx).child(label))
+                    .child(div().text_size(px(11.)).text_color(t.tx3).child(what))
+                    .on_click(cx.listener(move |v, _, _, cx| v.edit_project(move |s, _| *field(s) = !on, cx)))
+            }))
+            .into_any_element()
+    }
+
+    fn render_project_connections(&self, t: &Theme, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let members = self.core.project.info(&self.settings).map(|i| i.connections).unwrap_or_default();
+        let profiles = self.core.config.connections();
+        if profiles.is_empty() {
+            return div().text_size(px(11.5)).text_color(t.tx3).child("No connections yet").into_any_element();
+        }
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(6.))
+            .max_w(px(300.))
+            .children(profiles.into_iter().enumerate().map(|(i, p)| {
+                let on = members.contains(&p.id);
+                let id = p.id.clone();
+                div()
+                    .children(ui::here(&("project-conn", i).into()))
+                    .id(("project-conn", i))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(8.))
+                    .cursor_pointer()
+                    .child(ui::checkbox(t, on))
+                    .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx).child(p.name.clone()))
+                    .on_click(cx.listener(move |v, _, _, cx| {
+                        let id = id.clone();
+                        v.edit_project(
+                            move |_, m| {
+                                if !m.remove(&id) {
+                                    m.insert(id);
+                                }
+                            },
+                            cx,
+                        )
+                    }))
+            }))
+            .into_any_element()
     }
 
     fn set_theme(&mut self, pref: ThemePref, cx: &mut Context<Self>) {
@@ -732,6 +843,63 @@ impl SettingsView {
                     .into_any_element()
             }
             Row::McpClaude => self.copy_button(t, "copy-stdio", "Copy command", Some(crate::mcp::stdio_command()), cx),
+            Row::Projects => {
+                let on = s.project_enabled;
+                ui::segmented(t)
+                    .child(ui::segment(t, "projects-off", "Off", !on).on_click(cx.listener(|v, _, _, cx| v.set_projects(false, cx))))
+                    .child(ui::segment(t, "projects-on", "On", on).on_click(cx.listener(|v, _, _, cx| v.set_projects(true, cx))))
+                    .into_any_element()
+            }
+            Row::ProjectFolder => {
+                let info = self.core.project.info(s);
+                let shown: SharedString = match &info {
+                    Some(i) => dataman_core::config::tilde(&i.root.to_string_lossy()).into(),
+                    None => "None".into(),
+                };
+                let problem = info.as_ref().and_then(|i| i.problem.clone());
+                let dir = info.as_ref().map(|i| i.root.join(dataman_core::project::DIR));
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_end()
+                    .gap(px(6.))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(8.))
+                            .child(
+                                div()
+                                    .h(px(28.))
+                                    .max_w(px(260.))
+                                    .px(px(10.))
+                                    .flex()
+                                    .items_center()
+                                    .bg(t.field)
+                                    .border_1()
+                                    .border_color(t.field_b)
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .when(info.is_none(), |d| d.text_color(t.tx3))
+                                    .child(shown),
+                            )
+                            .child(ui::button(t, "project-open", ui::Btn::Secondary).h(px(28.)).child("Open…").on_click(|_, window, cx| {
+                                window.dispatch_action(Box::new(crate::app::OpenProject), cx)
+                            }))
+                            .when_some(dir, |d, dir| {
+                                d.child(ui::button(t, "project-show", ui::Btn::Ghost).h(px(28.)).child("Show").on_click(move |_, _, cx| cx.open_with_system(&dir)))
+                                    .child(ui::button(t, "project-close", ui::Btn::Ghost).h(px(28.)).child("Close").on_click(|_, window, cx| {
+                                        window.dispatch_action(Box::new(crate::app::CloseProject), cx)
+                                    }))
+                            }),
+                    )
+                    .children(problem.map(|p| div().max_w(px(420.)).text_size(px(11.)).text_color(t.err).child(p)))
+                    .into_any_element()
+            }
+            Row::ProjectShare => self.render_project_share(t, cx),
+            Row::ProjectConnections => self.render_project_connections(t, cx),
             Row::McpAgents => ui::button(t, "open-agents", ui::Btn::Secondary)
                 .h(px(28.))
                 .child("Open Agents")

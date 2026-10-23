@@ -245,6 +245,15 @@ impl FavoritesStore {
         Ok(true)
     }
 
+    /// Several favorites and folders changed in one write (an open project's sync).
+    pub fn edit_all(&self, f: impl FnOnce(&mut Vec<Favorite>, &mut Vec<Folder>)) -> Result<()> {
+        let _ = self.refresh();
+        let mut g = self.state.lock();
+        let Fresh { items, folders, .. } = &mut *g;
+        f(items, folders);
+        g.save(&self.path)
+    }
+
     pub fn move_to_folder(&self, id: &str, folder: Option<&str>) -> Result<Option<Favorite>> {
         let _ = self.refresh();
         let mut g = self.state.lock();

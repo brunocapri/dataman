@@ -114,6 +114,7 @@ const STAGES: &[Stage] = &[
     st("agents-check", &[Pg], 200),
     st("sqlite-check", &[], 120),
     st("duckdb-check", &[], 120),
+    st("project-check", &[], 120),
     st("update-check", &[Pg], 300),
 ];
 

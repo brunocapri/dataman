@@ -26,20 +26,29 @@ pub enum WelcomeEvent {
     Prefill(ConnectionProfile, Option<String>),
     OpenFile,
     OpenDatabase,
+    OpenProject,
     Shortcuts,
 }
 
-const ITEMS: [(&str, &str); 7] = [
+const ITEMS: [(&str, &str); 8] = [
     ("New connection", "⌘N"),
     ("Add with an agent", ""),
     ("Paste a connection URL", "⌘V"),
     ("Connect to localhost:5432", "⌘L"),
     ("Open a .sql file", "⌘O"),
     ("Open a database file", ""),
+    ("Open a project folder", ""),
     ("Keyboard shortcuts", "⇧⌘/"),
 ];
 
 const LOCALHOST: usize = 3;
+/// Shown while projects are on (Settings › Project).
+const PROJECT: usize = 6;
+
+fn shown(cx: &App) -> Vec<usize> {
+    let projects = crate::project_ui::projects(cx).enabled;
+    (0..ITEMS.len()).filter(|i| *i != PROJECT || projects).collect()
+}
 
 pub struct Welcome {
     focus: FocusHandle,
@@ -75,6 +84,7 @@ impl Welcome {
             }
             4 => cx.emit(WelcomeEvent::OpenFile),
             5 => cx.emit(WelcomeEvent::OpenDatabase),
+            PROJECT => cx.emit(WelcomeEvent::OpenProject),
             _ => cx.emit(WelcomeEvent::Shortcuts),
         }
         cx.notify();
@@ -100,7 +110,8 @@ impl Render for Welcome {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme();
         let art = if t.is_dark() { "art/welcome-dark.svg" } else { "art/welcome-light.svg" };
-        let menu = ITEMS.iter().enumerate().map(|(i, (label, key))| {
+        let menu = shown(cx).into_iter().map(|i| {
+            let (label, key) = ITEMS[i];
             let on = i == self.selected;
             let quiet = key.is_empty();
             let hov = t.hov;
@@ -117,8 +128,8 @@ impl Render for Welcome {
                 .when(!on, |d| d.text_color(if quiet { t.tx3 } else { t.tx2 }).hover(move |s| s.bg(hov)))
                 .on_click(cx.listener(move |w, _, _, cx| w.choose(i, cx)))
                 .child(div().w(px(12.)).text_size(px(10.)).text_color(t.acc).child(if on { "▶" } else { "" }))
-                .child(div().flex_1().text_size(px(if quiet { 12. } else { 13. })).child(*label))
-                .when(!quiet, |d| d.child(ui::keycap(&t, *key)))
+                .child(div().flex_1().text_size(px(if quiet { 12. } else { 13. })).child(label))
+                .when(!quiet, |d| d.child(ui::keycap(&t, key)))
         });
         // The whole work surface (transparent: the surface paints its fill).
         div()
@@ -129,11 +140,11 @@ impl Render for Welcome {
             .key_context("Welcome")
             .track_focus(&self.focus)
             .on_action(cx.listener(|w, _: &Up, _, cx| {
-                w.selected = w.selected.saturating_sub(1);
+                w.selected = shown(cx).into_iter().rev().find(|i| *i < w.selected).unwrap_or(w.selected);
                 cx.notify();
             }))
             .on_action(cx.listener(|w, _: &Down, _, cx| {
-                w.selected = (w.selected + 1).min(ITEMS.len() - 1);
+                w.selected = shown(cx).into_iter().find(|i| *i > w.selected).unwrap_or(w.selected);
                 cx.notify();
             }))
             .on_action(cx.listener(|w, _: &Choose, _, cx| {

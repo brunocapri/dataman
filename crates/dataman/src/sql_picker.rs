@@ -20,6 +20,11 @@ pub fn set_test_save_path(path: PathBuf) {
     *TEST_SAVE.lock().unwrap() = Some(path);
 }
 
+/// What a check stage set for the next picker to answer.
+pub fn take_test_paths() -> Option<Vec<PathBuf>> {
+    TEST_PATHS.lock().unwrap().take()
+}
+
 pub fn file_name_for(title: &str) -> String {
     let clean: String = title.chars().map(|c| if matches!(c, '/' | ':' | '\\') || c.is_control() { ' ' } else { c }).collect();
     let stem = clean.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -95,7 +100,7 @@ pub fn pick_sql_files(multiple: bool, cx: &App) -> oneshot::Receiver<Vec<PathBuf
 /// picked is filtered after).
 pub fn pick_files(exts: &'static [&'static str], multiple: bool, cx: &App) -> oneshot::Receiver<Vec<PathBuf>> {
     let (tx, rx) = oneshot::channel();
-    if let Some(paths) = TEST_PATHS.lock().unwrap().take() {
+    if let Some(paths) = take_test_paths() {
         let _ = tx.send(paths);
         return rx;
     }

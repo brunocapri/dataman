@@ -41,6 +41,7 @@ mod pgtypes;
 pub mod pgservice;
 pub mod pins;
 pub mod privacy;
+pub mod project;
 pub mod relations;
 pub mod result;
 pub mod rows;
@@ -126,6 +127,7 @@ pub struct Core {
     pub history: Arc<History>,
     pub favorites: Arc<FavoritesStore>,
     pub pins: PinStore,
+    pub project: project::ProjectStore,
     pub extensions: Vec<Arc<dyn ServerExtension>>,
     pub pgpass: Option<PathBuf>,
     // Memory only: never written to disk or the keychain.
@@ -217,12 +219,18 @@ impl Core {
             history: Arc::new(History::new(dirs.history_dir())),
             favorites: Arc::new(FavoritesStore::open(&dirs)?),
             pins: PinStore::open(&dirs),
+            project: project::ProjectStore::open(&dirs),
             dirs,
             secrets,
             extensions: server::default_extensions(),
             pgpass: pgpass::default_path(),
             ssh_typed: Default::default(),
         })
+    }
+
+    /// The local files an open project syncs with.
+    pub fn stores(&self) -> project::Stores<'_> {
+        project::Stores { config: &self.config, settings: &self.settings, favorites: &self.favorites }
     }
 
     pub fn handle(&self) -> Handle {

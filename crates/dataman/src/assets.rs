@@ -21,6 +21,7 @@ assets!(
     "icons/types.svg",
     "icons/column.svg",
     "icons/grid-table.svg",
+    "icons/gear.svg",
     "icons/braces.svg",
     "icons/arrow-right.svg",
     "icons/check.svg",
@@ -185,6 +186,7 @@ pub enum Icon {
     Types,
     Column,
     GridTable,
+    Gear,
 }
 
 impl Icon {
@@ -263,6 +265,7 @@ impl Icon {
             Icon::Types => "icons/types.svg",
             Icon::Column => "icons/column.svg",
             Icon::GridTable => "icons/grid-table.svg",
+            Icon::Gear => "icons/gear.svg",
         }
     }
 }

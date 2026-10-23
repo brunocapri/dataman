@@ -68,6 +68,8 @@ actions!(
         DiscardChanges,
         OpenSqlFile,
         OpenDatabaseFile,
+        OpenProject,
+        CloseProject,
         ToggleTheme,
         ThemeDark,
         ThemeLight,
@@ -596,6 +598,7 @@ impl Workspace {
         })
         .detach();
         w.watch_connections(window, cx);
+        w.watch_project(window, cx);
         if !w.restore_session(window, cx) {
             w.new_tab(window, cx);
         }
@@ -1459,6 +1462,7 @@ impl Workspace {
             WelcomeEvent::Prefill(p, pw) => self.open_dialog_with(Some(p.clone()), true, pw.clone(), window, cx),
             WelcomeEvent::OpenFile => self.open_sql_file(window, cx),
             WelcomeEvent::OpenDatabase => self.open_database_file(window, cx),
+            WelcomeEvent::OpenProject => self.open_project(window, cx),
             WelcomeEvent::Shortcuts => self.set_shortcuts(true, window, cx),
         }
     }
@@ -1587,6 +1591,7 @@ impl Workspace {
                     w.toggle_settings(window, cx);
                 }
             }
+            crate::settings_view::SettingsEvent::ProjectSynced(synced) => w.project_synced(*synced, window, cx),
         })
         .detach();
         self.settings_view = Some(v);
@@ -2835,6 +2840,8 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(|w, _: &OpenSqlFile, window, cx| w.open_sql_file(window, cx)))
             .on_action(cx.listener(|w, _: &OpenDatabaseFile, window, cx| w.open_database_file(window, cx)))
+            .on_action(cx.listener(|w, _: &OpenProject, window, cx| w.open_project(window, cx)))
+            .on_action(cx.listener(|w, _: &CloseProject, _, cx| w.close_project(cx)))
             .on_action(cx.listener(|w, _: &crate::tree::ShowRowActions, window, cx| {
                 let was_open = w.explorer_open;
                 w.focus_region(Region::Explorer, window, cx);

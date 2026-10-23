@@ -105,6 +105,9 @@ mod plan;
 #[cfg(feature = "checks")]
 mod plan_demo;
 mod privileges;
+#[cfg(feature = "checks")]
+mod project_check;
+mod project_ui;
 mod result_bar;
 mod row_actions;
 #[cfg(feature = "checks")]
@@ -183,6 +186,7 @@ impl gpui::Global for MenuCaps {}
 fn menus(cx: &App) -> Vec<Menu> {
     use app::*;
     let caps = cx.try_global::<MenuCaps>().map_or(dataman_core::Caps::POSTGRES, |m| m.0);
+    let projects = project_ui::projects(cx);
     let when = |on: bool, items: Vec<MenuItem>| if on { items } else { Vec::new() };
     let mut app_menu: Vec<MenuItem> = Vec::new();
     if let Some(label) = updates::menu_label(cx) {
@@ -212,6 +216,10 @@ fn menus(cx: &App) -> Vec<Menu> {
             .chain([
                 MenuItem::action("Open .sql File…", OpenSqlFile),
                 MenuItem::action("Open Database File…", OpenDatabaseFile),
+            ])
+            .chain(when(projects.enabled, vec![MenuItem::action("Open Project…", OpenProject)]))
+            .chain(when(projects.open.is_some(), vec![MenuItem::action("Close Project", CloseProject)]))
+            .chain([
                 MenuItem::action("Save as Favorite", SaveFavorite),
                 MenuItem::action("Save As…", SaveAs),
                 MenuItem::action("Import Favorites…", ImportFavorites),

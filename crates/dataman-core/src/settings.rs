@@ -111,6 +111,10 @@ pub struct Settings {
     pub update_check: bool,
     pub update_feed: Option<String>,
     pub crash_report_url: Option<String>,
+    /// File › Open Project (a folder's `.dataman/project.toml`); off hides it and stops syncing.
+    pub project_enabled: bool,
+    /// The open project's folder.
+    pub project: Option<String>,
     /// Sensitive data types for agents, in every connection (only changes are written).
     #[serde(skip_serializing_if = "crate::privacy::TypeSettings::is_unchanged", deserialize_with = "de_types")]
     pub agent_types: crate::privacy::TypeSettings,
@@ -220,6 +224,8 @@ impl Default for Settings {
             update_check: true,
             update_feed: None,
             crash_report_url: None,
+            project_enabled: true,
+            project: None,
             agent_types: Default::default(),
             keys: Default::default(),
         }

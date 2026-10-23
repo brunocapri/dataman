@@ -1026,6 +1026,8 @@ fn commands(conn: Option<&std::sync::Arc<dataman_core::Connection>>, cx: &App) -
         c("Reload schema", "of the explorer's connection", "⌘R", Box::new(Refresh), Workspace),
         c("Open .sql file…", "in a new tab", "⌘O", Box::new(OpenSqlFile), Workspace),
         c("Open database file…", "a SQLite or DuckDB file", "", Box::new(crate::app::OpenDatabaseFile), Workspace),
+        c("Open project…", "a folder's shared settings, in .dataman", "", Box::new(OpenProject), Workspace),
+        c("Close project", "keeps what it brought, stops syncing", "", Box::new(CloseProject), Workspace),
         c("Export result…", "CSV, TSV, JSON, NDJSON, SQL INSERT, Parquet", "⌘E", Box::new(ExportResult), Workspace),
         c("Import data…", "CSV, TSV, JSON, NDJSON, Parquet", "", Box::new(ImportData), Workspace),
         c("Edit cell", "inline, in the grid", "↩", Box::new(crate::grid::EditCell), Grid),
@@ -1091,6 +1093,12 @@ fn commands(conn: Option<&std::sync::Arc<dataman_core::Connection>>, cx: &App) -
             _ => true,
         });
     }
+    let projects = crate::project_ui::projects(cx);
+    v.retain(|it| match it.label.as_str() {
+        "Open project…" => projects.enabled,
+        "Close project" => projects.open.is_some(),
+        _ => true,
+    });
     if let Some(feed) = crate::updates::offered(cx) {
         let notes = feed.notes.lines().next().unwrap_or("").to_string();
         v.push(c(&format!("Update to {}…", feed.version), &notes, "", Box::new(ShowUpdate), Workspace));
