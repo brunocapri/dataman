@@ -403,6 +403,58 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let detail = cx.update(|_, cx| doc.read(cx).demo_detail()).ok().flatten();
     let text = cx.update(|_, cx| detail.as_ref().map(|d| d.read(cx).text().to_string())).ok().flatten().unwrap_or_default();
     check("the first document shows in the shell's form", text.contains("\"_id\": 1") && text.contains("NumberLong(21)"), text.clone());
+
+    let outline = |cx: &mut AsyncWindowContext| cx.update(|_, cx| doc.read(cx).demo_outline(cx)).ok().flatten();
+    let lines = |cx: &mut AsyncWindowContext| cx.update(|_, cx| doc.read(cx).demo_outline(cx).map(|o| o.read(cx).demo_lines())).ok().flatten().unwrap_or_default();
+    let full = lines(cx);
+    check(
+        "the document shows as a tree, every key in sight, the shell's types",
+        full == ["_id: 1", "name: \"person 1\"", "age: NumberLong(21)", "tags: 1 item", "  0: \"t1\""],
+        format!("{full:?}"),
+    );
+    if let Some(o) = outline(cx) {
+        let _ = cx.update(|window, cx| {
+            window.focus(&gpui::Focusable::focus_handle(o.read(cx), cx), cx);
+            o.update(cx, |o, cx| o.demo_put(3, cx));
+        });
+        draw(cx);
+        key(cx, "left");
+        let folded = lines(cx);
+        key(cx, "right");
+        let open = lines(cx);
+        check("← folds the focused array to its preview, → opens it", folded.get(3).map(String::as_str) == Some("tags: […] 1 item") && folded.len() == 4 && open == full, format!("{folded:?} {open:?}"));
+        let _ = cx.update(|_, cx| o.update(cx, |o, cx| o.demo_click(3, true, cx)));
+        let deep = lines(cx);
+        let _ = cx.update(|_, cx| o.update(cx, |o, cx| o.demo_click(3, true, cx)));
+        check("⌥-click folds the subtree and opens it again", deep.len() == 4 && lines(cx) == full, format!("{deep:?}"));
+        let _ = cx.update(|_, cx| o.update(cx, |o, cx| o.level(1, cx)));
+        let _ = cx.update(|_, cx| doc.update(cx, |d, cx| d.demo_select(1, cx)));
+        draw(cx);
+        let other = lines(cx);
+        let _ = cx.update(|_, cx| doc.update(cx, |d, cx| d.demo_select(0, cx)));
+        draw(cx);
+        let back = lines(cx);
+        check(
+            "Collapse to level 1 stays with that document: another opens whole, the first comes back folded",
+            other.len() == 5 && other[0] == "_id: 2" && back.len() == 4 && back[3] == "tags: […] 1 item",
+            format!("{other:?} {back:?}"),
+        );
+        let _ = cx.update(|window, cx| {
+            window.focus(&gpui::Focusable::focus_handle(o.read(cx), cx), cx);
+            o.update(cx, |o, cx| o.demo_put(0, cx));
+        });
+        draw(cx);
+        key(cx, "left");
+        let in_list = cx.update(|window, cx| doc.read(cx).list_focus().is_focused(window)).unwrap_or(false);
+        key(cx, "right");
+        let in_tree = cx.update(|window, cx| gpui::Focusable::focus_handle(o.read(cx), cx).is_focused(window)).unwrap_or(false);
+        check("← on a top-level key goes back to the list, → from the list into the document", in_list && in_tree, format!("{in_list} {in_tree}"));
+        let _ = cx.update(|_, cx| o.update(cx, |o, cx| o.all(true, cx)));
+        let _ = cx.update(|window, cx| doc.update(cx, |d, cx| d.demo_set_tree(false, window, cx)));
+        let text_mode = outline(cx).is_none();
+        let _ = cx.update(|window, cx| doc.update(cx, |d, cx| d.demo_set_tree(true, window, cx)));
+        check("Text shows the editor, Tree the outline again", text_mode && outline(cx).is_some(), String::new());
+    }
     if let Some(d) = &detail {
         let edited = text.replace("\"person 1\"", "\"Ada\"").replace("NumberLong(21)", "NumberLong(36)");
         let _ = cx.update(|_, cx| {

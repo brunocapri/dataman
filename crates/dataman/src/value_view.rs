@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use dataman_core::jsontree::{self, Doc, Node, Row, RowKey};
+use dataman_core::jsontree::{self, Node};
 use dataman_core::value::Kind;
 use gpui::{
     App, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, SharedString, StyledText, Task, TextRun,
@@ -9,6 +9,7 @@ use gpui::{
 
 use crate::assets::{Icon, icon};
 use crate::editor::{CodeEditor, EditorEvent};
+use crate::outline::JsonOutline;
 use crate::theme::{ActiveTheme, Theme, px};
 use crate::ui::{self, Btn};
 use crate::ui::Tipped;
@@ -78,8 +79,8 @@ pub struct ValueView {
     focus: FocusHandle,
     cell: ValueCell,
     shape: Shape,
-    doc: Option<Doc>,
-    rows: Vec<Row>,
+    root: Option<Node>,
+    outline: Entity<JsonOutline>,
     pretty: String,
     text: bool,
     copied_at: Option<Instant>,
@@ -128,9 +129,16 @@ impl ValueView {
         } else {
             (None, None)
         };
-        let mut v = ValueView { focus, cell, shape, doc: root.map(Doc::new), rows: Vec::new(), pretty, text, copied_at: None, _copied: None, edit, error: None, _edit_sub: sub };
-        v.refresh_rows();
-        v
+        let outline = cx.new(|cx| {
+            let mut o = JsonOutline::new(cx);
+            o.set_list(shape == Shape::List);
+            o.show("", root.clone(), cx);
+            o
+        });
+        if !text {
+            window.focus(&outline.focus_handle(cx), cx);
+        }
+        ValueView { focus, cell, shape, root, outline, pretty, text, copied_at: None, _copied: None, edit, error: None, _edit_sub: sub }
     }
 
     #[cfg(feature = "checks")]
@@ -163,32 +171,12 @@ impl ValueView {
         }
     }
 
-    fn refresh_rows(&mut self) {
-        self.rows = self.doc.as_ref().map(|d| d.rows().into_iter().skip(1).collect()).unwrap_or_default();
-    }
-
-    fn toggle(&mut self, path: &[usize], cx: &mut Context<Self>) {
-        if let Some(d) = &mut self.doc {
-            d.toggle(path);
-        }
-        self.refresh_rows();
-        cx.notify();
-    }
-
-    fn all(&mut self, open: bool, cx: &mut Context<Self>) {
-        if let Some(d) = &mut self.doc {
-            if open { d.expand_all() } else { d.collapse_all() }
-        }
-        self.refresh_rows();
-        cx.notify();
-    }
-
     fn set_text(&mut self, text: bool, window: &mut Window, cx: &mut Context<Self>) {
-        self.text = text || self.doc.is_none();
-        if self.text
-            && let Some(e) = &self.edit
-        {
-            window.focus(&e.focus_handle(cx), cx);
+        self.text = text || self.root.is_none();
+        match &self.edit {
+            Some(e) if self.text => window.focus(&e.focus_handle(cx), cx),
+            _ if !self.text => window.focus(&self.outline.focus_handle(cx), cx),
+            _ => {}
         }
         cx.notify();
     }
@@ -215,7 +203,7 @@ impl ValueView {
 
     #[cfg(feature = "checks")]
     pub fn demo_all(&mut self, open: bool, cx: &mut Context<Self>) {
-        self.all(open, cx);
+        self.outline.update(cx, |o, cx| o.all(open, cx));
     }
 
     #[cfg(feature = "checks")]
@@ -224,83 +212,25 @@ impl ValueView {
     }
 
     #[cfg(feature = "checks")]
-    pub fn demo_state(&self) -> (String, bool, Vec<String>) {
-        let lines = if self.text {
-            self.pretty.lines().map(str::to_string).collect()
-        } else {
-            self.rows.iter().map(|r| format!("{}{}{}", "  ".repeat(r.depth - 1), key_text(r).map(|k| format!("{k}: ")).unwrap_or_default(), self.leaf_text(r))).collect()
-        };
+    pub fn demo_state(&self, cx: &App) -> (String, bool, Vec<String>) {
+        let lines = if self.text { self.pretty.lines().map(str::to_string).collect() } else { self.outline.read(cx).demo_lines() };
         (self.cell.column.clone(), !self.text, lines)
-    }
-
-    fn leaf_text(&self, r: &Row) -> String {
-        if r.container || self.shape == Shape::Json {
-            return r.value.clone();
-        }
-        match self.doc.as_ref().and_then(|d| d.root.get(&r.path)) {
-            Some(Node::Null) => "NULL".into(),
-            Some(n) => n.edit_text(),
-            None => r.value.clone(),
-        }
     }
 
     fn meta(&self) -> String {
         let bytes = self.cell.value.len();
         let size = if bytes >= 10_000 { format!("{:.1} KB", bytes as f64 / 1024.) } else { format!("{bytes} B") };
-        let what = match (&self.doc, self.shape) {
-            (Some(d), Shape::Json) => match &d.root {
-                Node::Object(o) => format!("{} key{}", o.len(), plural(o.len())),
-                n => format!("{} item{}", n.len(), plural(n.len())),
-            },
-            (Some(d), Shape::List) => format!("{} item{}", d.root.len(), plural(d.root.len())),
+        let what = match (&self.root, self.shape) {
+            (Some(Node::Object(o)), Shape::Json) => format!("{} key{}", o.len(), plural(o.len())),
+            (Some(n), _) => format!("{} item{}", n.len(), plural(n.len())),
             (None, Shape::Json) => "not valid JSON".into(),
             (None, Shape::List) => "not an array literal".into(),
         };
         format!("{size} · {what}")
     }
 
-    fn render_tree(&self, t: &Theme, cx: &mut Context<Self>) -> Vec<gpui::AnyElement> {
-        let hov = t.hov;
-        self.rows
-            .iter()
-            .take(MAX_LINES)
-            .enumerate()
-            .map(|(i, r)| {
-                let path = r.path.clone();
-                let null = !r.container && self.doc.as_ref().and_then(|d| d.root.get(&r.path)).is_some_and(|n| matches!(n, Node::Null));
-                let color = if r.container { t.tx3 } else if null && self.shape == Shape::List { t.null } else { json_color(t, r.type_name) };
-                div()
-                    .id(("vv-row", i))
-                    .min_h(px(LINE))
-                    .pl(px(12. + (r.depth - 1) as f32 * 16.))
-                    .pr(px(14.))
-                    .flex()
-                    .flex_row()
-                    .items_start()
-                    .gap(px(6.))
-                    .hover(move |s| s.bg(hov))
-                    .child(
-                        div()
-                            .w(px(12.))
-                            .h(px(LINE))
-                            .flex_none()
-                            .flex()
-                            .items_center()
-                            .when(r.container, |d| d.child(ui::disclosure(("value-chev", i), r.expanded, 10., t.tx3))),
-                    )
-                    .children(key_text(r).map(|k| {
-                        let index = matches!(r.key, Some(RowKey::Index(_)));
-                        div().flex_none().text_color(if index { t.tx4 } else { t.typ }).child(format!("{k}:"))
-                    }))
-                    .child(div().flex_1().min_w_0().text_color(color).when(null && self.shape == Shape::List, |d| d.italic()).child(self.leaf_text(r)))
-                    .when(r.container, |d| d.cursor_pointer().on_click(cx.listener(move |v, _, _, cx| v.toggle(&path, cx))))
-                    .into_any_element()
-            })
-            .collect()
-    }
-
     fn render_text(&self, t: &Theme) -> Vec<gpui::AnyElement> {
-        let json = self.shape == Shape::Json && self.doc.is_some();
+        let json = self.shape == Shape::Json && self.root.is_some();
         self.pretty
             .lines()
             .take(MAX_LINES)
@@ -328,23 +258,6 @@ fn type_label(type_name: &str) -> String {
 
 fn plural(n: usize) -> &'static str {
     if n == 1 { "" } else { "s" }
-}
-
-fn key_text(r: &Row) -> Option<String> {
-    match &r.key {
-        Some(RowKey::Key(k)) => Some(k.clone()),
-        Some(RowKey::Index(i)) => Some(i.to_string()),
-        None => None,
-    }
-}
-
-fn json_color(t: &Theme, type_name: &str) -> Hsla {
-    match type_name {
-        "string" => t.str,
-        "number" => t.num,
-        "bool" => t.kw,
-        _ => t.tx3,
-    }
 }
 
 fn json_line(t: &Theme, line: &str) -> gpui::AnyElement {
@@ -397,7 +310,7 @@ impl Render for ValueView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme();
         let c = &self.cell;
-        let tree_ok = self.doc.is_some();
+        let tree_ok = self.root.is_some();
         let text = self.text;
         let header = ui::modal_header_with(
             &t,
@@ -433,16 +346,13 @@ impl Render for ValueView {
                     .child(ui::segment(&t, "vv-tree", tree_label, !text).when(!tree_ok, |d| d.opacity(0.4)).on_click(cx.listener(|v, _, window, cx| v.set_text(false, window, cx))))
                     .child(ui::segment(&t, "vv-text", "Text", text).on_click(cx.listener(|v, _, window, cx| v.set_text(true, window, cx)))),
             )
-            .when(!text && self.rows.iter().any(|r| r.container), |d| {
-                d.child(ui::button(&t, "vv-expand", Btn::Ghost).h(px(24.)).text_size(px(11.5)).child("Expand all").on_click(cx.listener(|v, _, _, cx| v.all(true, cx))))
-                    .child(ui::button(&t, "vv-collapse", Btn::Ghost).h(px(24.)).text_size(px(11.5)).child("Collapse all").on_click(cx.listener(|v, _, _, cx| v.all(false, cx))))
-            })
+            .children((!text).then(|| crate::outline::controls(&self.outline, &t, cx)).flatten())
             .child(div().flex_1())
             .child(div().text_size(px(11.)).text_color(t.tx3).child(self.meta()));
         let editing = text && self.edit.is_some();
-        let lines = if editing { Vec::new() } else if text { self.render_text(&t) } else { self.render_tree(&t, cx) };
-        let total = if text { self.pretty.lines().count() } else { self.rows.len() };
-        let more = (total > MAX_LINES).then(|| {
+        let lines = if text && !editing { self.render_text(&t) } else { Vec::new() };
+        let total = self.pretty.lines().count();
+        let more = (text && total > MAX_LINES).then(|| {
             div()
                 .px(px(14.))
                 .pt(px(6.))
@@ -450,7 +360,10 @@ impl Render for ValueView {
                 .text_color(t.tx3)
                 .child(format!("first {} of {} lines · Copy takes the whole value", crate::grid::ui_count(MAX_LINES), crate::grid::ui_count(total)))
         });
-        let empty = (lines.is_empty() && !text).then(|| div().px(px(14.)).text_color(t.tx3).child(if self.shape == Shape::List { "no items" } else { "empty" }));
+        let rows = self.outline.read(cx).len();
+        let empty = (rows == 0 && !text).then(|| div().px(px(14.)).text_color(t.tx3).child(if self.shape == Shape::List { "no items" } else { "empty" }));
+        // Only the rows in sight are laid out: the list needs its height.
+        let tree_h = (rows as f32 * LINE).clamp(80., 444.);
         let body = div()
             .id("vv-body")
             .mx(px(20.))
@@ -464,8 +377,9 @@ impl Render for ValueView {
             .text_size(px(12.))
             .line_height(px(LINE))
             .when(editing, |d| d.h(px(380.)).py(px(0.)))
-            .when(!editing, |d| d.overflow_y_scroll())
+            .when(text && !editing, |d| d.overflow_y_scroll())
             .when_some(self.edit.clone().filter(|_| editing), |d, e| d.child(e))
+            .when(!text && rows > 0, |d| d.child(div().h(px(tree_h)).child(self.outline.clone())))
             .children(lines)
             .children(empty)
             .children(more);

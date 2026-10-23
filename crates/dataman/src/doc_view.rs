@@ -7,15 +7,17 @@ use gpui::{
 };
 use dataman_core::Connection;
 use dataman_core::guard::WriteClass;
+use dataman_core::jsontree;
 use dataman_core::nosql::{self, Body, Docs, Failed, Output, Page, Ran, Source};
 
 use crate::assets::{Icon, icon};
 use crate::editor::{CodeEditor, EditorEvent, Stmt};
+use crate::outline::{JsonOutline, OutlineEvent};
 use crate::theme::{ActiveTheme, Theme, metrics, px};
 use crate::ui::{self, Btn};
 use crate::ui::Tipped;
 
-actions!(doc_view, [NextDocument, PrevDocument]);
+actions!(doc_view, [NextDocument, PrevDocument, IntoDocument]);
 
 const CONTEXT: &str = "DocView";
 
@@ -23,7 +25,10 @@ pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         crate::keymap::kb("down", NextDocument, Some("DocList")),
         crate::keymap::kb("up", PrevDocument, Some("DocList")),
+        crate::keymap::kb("right", IntoDocument, Some("DocList")),
     ]);
+    // The outline's keys, with the views that show one (this and the cell's value sheet).
+    crate::outline::bind_keys(cx);
 }
 
 pub enum DocEvent {
@@ -55,6 +60,9 @@ pub struct DocPane {
     selected: Option<usize>,
     detail: Option<Entity<CodeEditor>>,
     detail_base: String,
+    /// The document as a foldable tree; `tree` is whether it shows rather than the text.
+    outline: Entity<JsonOutline>,
+    tree: bool,
     new_doc: bool,
     confirm: Option<Confirm>,
     delete_armed: bool,
@@ -148,6 +156,8 @@ impl DocPane {
             selected: None,
             detail: None,
             detail_base: String::new(),
+            outline: cx.new(JsonOutline::new),
+            tree: true,
             new_doc: false,
             confirm: None,
             delete_armed: false,
@@ -208,6 +218,16 @@ impl DocPane {
     #[cfg(feature = "checks")]
     pub fn demo_detail(&self) -> Option<Entity<CodeEditor>> {
         self.detail.clone()
+    }
+
+    #[cfg(feature = "checks")]
+    pub fn demo_outline(&self, cx: &App) -> Option<Entity<JsonOutline>> {
+        self.tree_shown(cx).then(|| self.outline.clone())
+    }
+
+    #[cfg(feature = "checks")]
+    pub fn demo_set_tree(&mut self, tree: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_tree(tree, window, cx);
     }
 
     #[cfg(feature = "checks")]
@@ -429,7 +449,54 @@ impl DocPane {
         }
     }
 
+    /// The shown document as a tree, under the key its folds are remembered by.
+    fn detail_tree(&self) -> (String, Option<jsontree::Node>) {
+        let Some(l) = &self.last else { return (String::new(), None) };
+        let (key, body) = match &l.result {
+            Ok(Ran { output: Output::Docs(d), .. }) => match self.selected.and_then(|i| Some((i, d.docs.get(i)?))) {
+                Some((i, doc)) => {
+                    let key = match &doc.id {
+                        Some(id) => format!("{:?} {} {}", d.source, doc.index.as_deref().unwrap_or(""), id.to_json()),
+                        None => format!("{:?} {} #{}", d.source, l.stmt.sql, d.skip as usize + i),
+                    };
+                    (key, &doc.body)
+                }
+                None => return (String::new(), None),
+            },
+            Ok(Ran { output: Output::Value(v), .. }) | Ok(Ran { output: Output::Written { detail: Some(v), .. }, .. }) => (l.stmt.sql.clone(), v),
+            _ => return (String::new(), None),
+        };
+        let root = match body {
+            Body::Bson(b) => jsontree::Node::of_bson(b),
+            // A Redis string holding JSON unfolds as that JSON.
+            Body::Json(serde_json::Value::String(s)) => jsontree::parse(s).unwrap_or(jsontree::Node::Null),
+            Body::Json(j) => jsontree::Node::of_json(j),
+        };
+        (key, root.is_container().then_some(root))
+    }
+
+    fn tree_shown(&self, cx: &App) -> bool {
+        self.tree && !self.new_doc && !self.dirty(cx) && self.outline.read(cx).has_doc()
+    }
+
+    fn set_tree(&mut self, tree: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if tree && self.dirty(cx) {
+            return;
+        }
+        self.tree = tree;
+        if tree {
+            let o = self.outline.clone();
+            window.focus(&o.focus_handle(cx), cx);
+            o.update(cx, |o, cx| o.enter(cx));
+        } else if let Some(d) = &self.detail {
+            window.focus(&d.focus_handle(cx), cx);
+        }
+        cx.notify();
+    }
+
     fn load_detail(&mut self, cx: &mut Context<Self>) {
+        let (key, root) = self.detail_tree();
+        self.outline.update(cx, |o, cx| o.show(&key, root, cx));
         let text = self.detail_text();
         self.detail_base = text.clone();
         if let Some(d) = &self.detail {
@@ -655,6 +722,12 @@ impl DocPane {
             _ => {}
         })
         .detach();
+        cx.subscribe_in(&self.outline, window, |p, _, ev: &OutlineEvent, window, cx| match ev {
+            OutlineEvent::Leave if p.docs().is_some() => window.focus(&p.list_focus, cx),
+            OutlineEvent::Leave => {}
+            OutlineEvent::Edit => p.set_tree(false, window, cx),
+        })
+        .detach();
         self.detail_base = text;
         self.detail = Some(d.clone());
         d
@@ -861,6 +934,11 @@ impl DocPane {
             .track_scroll(&self.list_scroll)
             .on_action(cx.listener(|p, _: &NextDocument, _, cx| p.select(p.selected.map_or(0, |s| s + 1), cx)))
             .on_action(cx.listener(|p, _: &PrevDocument, _, cx| p.select(p.selected.map_or(0, |s| s.saturating_sub(1)), cx)))
+            .on_action(cx.listener(|p, _: &IntoDocument, window, cx| {
+                if p.tree_shown(cx) {
+                    p.set_tree(true, window, cx);
+                }
+            }))
             .size_full()
             .overflow_y_scroll()
             .py(px(4.))
@@ -870,16 +948,30 @@ impl DocPane {
 
     fn render_detail(&self, editor: Entity<CodeEditor>, editable: bool, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let dirty = self.dirty(cx);
+        let tree = self.tree_shown(cx);
         let title: String = if self.new_doc {
             "New document".into()
         } else {
             match (self.docs(), self.selected) {
                 (Some(d), Some(i)) if matches!(d.source, Some(Source::Redis { .. })) => format!("Entry {}", d.skip as usize + i + 1),
                 (Some(d), Some(i)) => format!("Document {}", d.skip as usize + i + 1),
-                _ => String::new(),
+                (Some(_), None) => String::new(),
+                (None, _) => "Result".into(),
             }
         };
-        let header = editable.then(|| {
+        let modes = (self.outline.read(cx).has_doc() && !self.new_doc).then(|| {
+            ui::segmented(t)
+                .w(px(108.))
+                .h(px(24.))
+                .child(
+                    ui::segment(t, "doc-tree", "Tree", tree)
+                        .when(dirty, |d| d.opacity(0.4))
+                        .when(dirty, |d| d.tip(ui::tooltip("Tree", Some("Save or revert the edit first"), None)))
+                        .on_click(cx.listener(|p, _, window, cx| p.set_tree(true, window, cx))),
+                )
+                .child(ui::segment(t, "doc-text", "Text", !tree).on_click(cx.listener(|p, _, window, cx| p.set_tree(false, window, cx))))
+        });
+        let buttons = editable.then(|| {
             let save = ui::button(t, "doc-save", if dirty { Btn::Primary } else { Btn::Secondary })
                 .h(px(24.))
                 .px(px(8.))
@@ -906,6 +998,9 @@ impl DocPane {
                     .child(if self.delete_armed { "Delete — sure?" } else { "Delete" })
                     .on_click(cx.listener(|p, _, _, cx| p.delete(cx)))
             });
+            div().flex().flex_row().items_center().gap(px(8.)).children(delete).children(revert).child(save)
+        });
+        let header = (editable || modes.is_some()).then(|| {
             div()
                 .h(px(34.))
                 .flex_none()
@@ -919,16 +1014,22 @@ impl DocPane {
                 .child(div().text_size(px(11.5)).font_weight(FontWeight::SEMIBOLD).text_color(t.tx).child(title))
                 .children(self.note.clone().map(|(n, err)| div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(11.)).text_color(if err { t.err } else { t.ok }).child(n)))
                 .child(div().flex_1())
-                .children(delete)
-                .children(revert)
-                .child(save)
+                .children(modes)
+                .children(buttons)
         });
-        div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .children(header)
-            .child(div().flex_1().min_h_0().relative().overflow_hidden().child(editor))
+        let body: gpui::AnyElement = if tree {
+            div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .children(crate::outline::controls(&self.outline, t, cx).map(|c| div().h(px(30.)).flex_none().px(px(8.)).flex().flex_row().items_center().child(c)))
+                .child(div().flex_1().min_h_0().child(self.outline.clone()))
+                .into_any_element()
+        } else {
+            div().flex_1().min_h_0().relative().overflow_hidden().child(editor).into_any_element()
+        };
+        div().size_full().flex().flex_col().children(header).child(body)
     }
 
     fn render_printed(&self, lines: &[String], t: &Theme) -> impl IntoElement + use<> {
@@ -1021,7 +1122,7 @@ impl Render for DocPane {
                 .child(div().text_color(t.ok).child("✓"))
                 .child(div().text_color(t.tx).child(summary.clone()))
                 .into_any_element(),
-            Some((Ok(_), _, _)) => div().size_full().relative().overflow_hidden().child(editor).into_any_element(),
+            Some((Ok(_), _, _)) => self.render_detail(editor, false, &t, cx).into_any_element(),
         };
         let printed = match self.last.as_ref().map(|l| &l.result) {
             Some(Ok(r)) if !r.printed.is_empty() && self.running.is_none() => Some(self.render_printed(&r.printed, &t)),

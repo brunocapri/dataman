@@ -96,6 +96,7 @@ mod newuser_check;
 #[cfg(feature = "checks")]
 mod nosql_check;
 mod notify;
+mod outline;
 mod palette;
 mod panels;
 mod params_ui;

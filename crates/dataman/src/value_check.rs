@@ -71,7 +71,7 @@ fn eye_on(grid: &Entity<ResultGrid>, cell: (usize, usize), cx: &mut AsyncWindowC
 }
 
 fn sheet(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> Option<(String, bool, Vec<String>)> {
-    cx.update(|_, cx| ws.read(cx).value_view.as_ref().map(|v| v.read(cx).demo_state())).ok().flatten()
+    cx.update(|_, cx| ws.read(cx).value_view.as_ref().map(|v| v.read(cx).demo_state(cx))).ok().flatten()
 }
 
 pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
