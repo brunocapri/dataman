@@ -15,7 +15,8 @@
 //!    lose the values they quote, in every mode). Of two types matching the same text, the
 //!    earliest match wins, then the longest, then the built-in.
 //! 5. Allowed queries and YOLO (advanced options) run without asking, on production and on a
-//!    read tier too.
+//!    read tier too; but never what reaches the database server's files or runs a program
+//!    there, which waits for the user's Allow on full and is refused below it.
 //! 6. Production asks for every write.
 //! 7. The tier: read refuses writes, write runs non-destructive ones within the row limit, full
 //!    asks for destructive ones.
@@ -138,6 +139,19 @@ pub struct Judged {
 pub fn judge(enabled: bool, t: Target, sql: &str, allowed: &[String]) -> Judged {
     let class = dataman_core::guard::agent_write_class(sql, t.dialect);
     let tier = |class: &WriteClass| Judged { verdict: write_verdict(enabled, t, class), by: None, row_limit: true };
+    // The database server's files and programs (on a local server: this Mac's, Dataman's own
+    // files and an open project's among them) wait for a human at every level: neither YOLO
+    // nor an allowed statement covers them, and a tier below full refuses them.
+    if let Some(why) = dataman_core::guard::server_file_access(sql, t.dialect) {
+        let mut reasons = match class {
+            WriteClass::Destructive { reasons } => reasons,
+            _ => Vec::new(),
+        };
+        if !reasons.contains(&why) {
+            reasons.insert(0, why);
+        }
+        return Judged { verdict: write_verdict(enabled, Target { yolo: false, ..t }, &WriteClass::Destructive { reasons }), by: None, row_limit: true };
+    }
     if t.yolo {
         let mut j = tier(&class);
         if j.verdict == Verdict::Run {

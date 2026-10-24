@@ -1125,6 +1125,14 @@ pub fn file_access(sql: &str, dialect: Dialect) -> Option<String> {
         let all = significant(&piece, dialect);
         let t = Toks { src: &piece, t: &all, dialect };
         let f = classify_in(&piece, dialect);
+        // A prepared statement is what it prepares (`PREPARE w AS COPY … TO …`, run by EXECUTE).
+        if dialect == Dialect::DuckDb
+            && t.is(0, "PREPARE")
+            && let Some(at) = (1..all.len()).find(|&i| t.is(i, "AS"))
+            && let Some(e) = all.get(at + 1).and_then(|x| file_access(&piece[x.start..], dialect))
+        {
+            return Some(e);
+        }
         if matches!(f.verb.as_str(), "ATTACH" | "DETACH" | "INSTALL" | "FORCE INSTALL" | "LOAD" | "COPY TO" | "COPY FROM" | "EXPORT DATABASE" | "IMPORT" | "VACUUM INTO") {
             return Some(format!("{} reaches files outside the database", f.verb));
         }
@@ -1135,6 +1143,69 @@ pub fn file_access(sql: &str, dialect: Dialect) -> Option<String> {
         }
         if let Some(e) = file_access_in(&t) {
             return Some(e);
+        }
+    }
+    None
+}
+
+/// What reaches the database server's own files, or runs a program there: on a server on this
+/// Mac, the user's own files (Dataman's, an open project's). Functions and procedures by name.
+const SERVER_FILE_FUNCTIONS: &[&str] = &[
+    "lo_import", "lo_export", "pg_file_write", "pg_file_rename", "pg_file_unlink", "pg_file_sync", "pg_read_file", "pg_read_binary_file",
+    "pg_ls_dir", "pg_stat_file", "pg_ls_logdir", "pg_ls_waldir", "pg_ls_tmpdir", "pg_ls_archive_statusdir", "load_file", "openrowset",
+    "opendatasource", "xp_cmdshell", "xp_dirtree", "xp_subdirs", "xp_fileexist", "xp_regwrite", "sp_oacreate", "sp_oamethod",
+    "sp_addextendedproc",
+];
+
+/// A server engine's statements that read or write files on the database server, or run a
+/// program there: COPY to or from a file or PROGRAM, ALTER SYSTEM (archive_command and the
+/// like), LOAD, SELECT … INTO OUTFILE / DUMPFILE, LOAD … INFILE, BULK INSERT, BACKUP / RESTORE,
+/// and the file functions and procedures. A file database's are [`file_access`]'s.
+pub fn server_file_access(sql: &str, dialect: Dialect) -> Option<String> {
+    if is_file_dialect(dialect) {
+        return None;
+    }
+    for piece in agent_pieces(sql, dialect) {
+        let all = significant(&piece, dialect);
+        let t = Toks { src: &piece, t: &all, dialect };
+        let first = t.word(0).unwrap_or_default();
+        let named = |i: usize| all.get(i).is_some_and(|x| matches!(x.kind, TokenKind::String | TokenKind::DollarString));
+        match dialect {
+            Dialect::Postgres => {
+                if first == "COPY" && t.top().into_iter().any(|i| (t.is(i, "TO") || t.is(i, "FROM")) && (t.is(i + 1, "PROGRAM") || named(i + 1))) {
+                    return Some("COPY with a file or a program on the database server".into());
+                }
+                if first == "ALTER" && t.is(1, "SYSTEM") {
+                    return Some("ALTER SYSTEM changes what the database server runs".into());
+                }
+                if first == "LOAD" {
+                    return Some("LOAD loads a library into the database server".into());
+                }
+            }
+            Dialect::MySql => {
+                for i in 0..all.len() {
+                    if t.is(i, "INTO") && (t.is(i + 1, "OUTFILE") || t.is(i + 1, "DUMPFILE")) {
+                        return Some(format!("INTO {} writes a file on the database server", t.word(i + 1).unwrap_or_default()));
+                    }
+                    if t.is(i, "INFILE") {
+                        return Some("LOAD … INFILE reads a file".into());
+                    }
+                }
+            }
+            Dialect::TSql if matches!(first.as_str(), "BULK" | "BACKUP" | "RESTORE") => {
+                return Some(format!("{first} reaches files on the database server"));
+            }
+            _ => {}
+        }
+        for i in 0..all.len() {
+            if !matches!(all[i].kind, TokenKind::Ident | TokenKind::Keyword | TokenKind::QuotedIdent) {
+                continue;
+            }
+            let name = all[i].text(&piece).trim_matches(['"', '`', '[', ']']).to_ascii_lowercase();
+            // T-SQL runs a procedure without parentheses (`EXEC master..xp_cmdshell 'x'`).
+            if SERVER_FILE_FUNCTIONS.contains(&name.as_str()) && (t.punct(i + 1, "(") || dialect == Dialect::TSql) {
+                return Some(format!("{name} reaches files or programs on the database server"));
+            }
         }
     }
     None
@@ -1507,6 +1578,52 @@ mod tests {
         assert!(reasons("EXEC xp_cmdshell 'whoami'", Dialect::TSql).contains("runs a command"));
         assert!(reasons("EXEC master..[xp_cmdshell] 'whoami'", Dialect::TSql).contains("runs a command"));
         assert!(!reasons("COPY t TO STDOUT", Dialect::Postgres).contains("runs a command"));
+    }
+
+    #[test]
+    fn server_files_and_programs() {
+        use Dialect::{DuckDb, MySql, Postgres, Sqlite, TSql};
+        for (d, sql) in [
+            (Postgres, "COPY t TO '/x/project.toml'"),
+            (Postgres, "COPY (SELECT 1) TO '/x' WITH (FORMAT csv)"),
+            (Postgres, "copy t to program 'id'"),
+            (Postgres, "COPY t FROM PROGRAM 'id'"),
+            (Postgres, "COPY t FROM $$/etc/passwd$$"),
+            (Postgres, "SELECT 1; SELECT lo_export(1, '/x')"),
+            (Postgres, "SELECT pg_catalog.pg_read_file('/x')"),
+            (Postgres, r#"SELECT "pg_file_write"('/x', 'y', false)"#),
+            (Postgres, "ALTER SYSTEM SET archive_command = 'id'"),
+            (Postgres, "LOAD '/tmp/x.so'"),
+            (MySql, "SELECT * FROM t INTO OUTFILE '/x'"),
+            (MySql, "select 1 into dumpfile '/x'"),
+            (MySql, "LOAD DATA LOCAL INFILE '/x' INTO TABLE t"),
+            (MySql, "LOAD XML INFILE '/x' INTO TABLE t"),
+            (MySql, "SELECT LOAD_FILE('/etc/passwd')"),
+            (TSql, "EXEC xp_cmdshell 'whoami'"),
+            (TSql, "EXEC master..[xp_cmdshell] 'whoami'"),
+            (TSql, r"SELECT * FROM OPENROWSET(BULK 'C:\x', SINGLE_CLOB) x"),
+            (TSql, r"BULK INSERT t FROM 'C:\x'"),
+            (TSql, r"BACKUP DATABASE app TO DISK = 'C:\x.bak'"),
+            (TSql, "EXEC sp_OACreate 'Scripting.FileSystemObject', @o OUT"),
+        ] {
+            assert!(server_file_access(sql, d).is_some(), "{d:?}: {sql}");
+        }
+        for (d, sql) in [
+            (Postgres, "COPY t TO STDOUT"),
+            (Postgres, "COPY t FROM STDIN"),
+            (Postgres, "SELECT * FROM t WHERE path = '/x' AND note = 'COPY t TO ''/x'''"),
+            (Postgres, "SELECT lo_export FROM t"),
+            (Postgres, "ALTER TABLE t ADD COLUMN program text"),
+            (MySql, "SELECT a INTO @x FROM t"),
+            (TSql, "SELECT * FROM t"),
+            (Sqlite, "VACUUM INTO '/x'"),
+            (DuckDb, "COPY t TO '/x'"),
+        ] {
+            assert!(server_file_access(sql, d).is_none(), "{d:?}: {sql}");
+        }
+        assert!(file_access("PREPARE w AS COPY t TO '/x'", DuckDb).is_some());
+        assert!(file_access("prepare w as select * from read_text('/x')", DuckDb).is_some());
+        assert!(file_access("PREPARE w AS SELECT 1", DuckDb).is_none());
     }
 
     #[test]

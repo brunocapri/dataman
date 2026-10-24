@@ -342,6 +342,17 @@ fn settle_secrets(cx: &Call, old: Option<&ConnectionProfile>, profile: &mut Conn
     Ok(state)
 }
 
+/// A connection of the open project is the team's: an agent's change would be written to the
+/// project's file as if the user made it, so none goes through, even one that tightens.
+fn of_project(cx: &Call, p: &ConnectionProfile) -> Result<(), ToolError> {
+    let settings = cx.hub.settings();
+    if dataman_core::project::Shared::of(&cx.hub.dirs, &settings).has_connection(&p.id) {
+        let root = settings.project.clone().unwrap_or_default();
+        return Err(ToolError::Refused(format!("{:?} belongs to the open project ({root}): change it in Dataman", p.name)));
+    }
+    Ok(())
+}
+
 fn save(cx: &Call, profile: &ConnectionProfile) -> Result<(), ToolError> {
     let store = ConfigStore::open(&cx.hub.dirs).map_err(failed)?;
     store.upsert(profile.clone()).map_err(failed)?;
@@ -405,8 +416,13 @@ fn create_connection(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>>
         if existing.is_some_and(|p| p.mcp_access() == McpAccess::Off) {
             return Err(ToolError::Refused("MCP access to this connection is off (connection settings › MCP); it is edited in Dataman only".into()));
         }
+        if let Some(p) = existing {
+            of_project(cx, p)?;
+        }
+        // What an agent saves is its own, a replaced connection too (the same id): never the
+        // project's, and its host is the agent's choice (no `*` line of ~/.pgpass goes there).
         let mut profile = match existing {
-            Some(p) => p.clone(),
+            Some(p) => ConnectionProfile { agent_made: true, ..p.clone() },
             None => ConnectionProfile { agent_made: true, ..ConnectionProfile::new(name.clone()) },
         };
         profile.name = name;
@@ -439,6 +455,7 @@ fn update_connection(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>>
         if old.mcp_access() == McpAccess::Off {
             return Err(ToolError::Refused("MCP access to this connection is off (connection settings › MCP); it is edited in Dataman only".into()));
         }
+        of_project(cx, &old)?;
         let mut profile = old.clone();
         if let Some(n) = a.opt_str("name") {
             let n = n.trim();
@@ -473,6 +490,8 @@ fn update_connection(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>>
         allow_move(cx, &old, &profile).await?;
         check_file(cx, Some(&old), &profile).await?;
         cx.note_connection(&profile.name);
+        // Moved by an agent: its host is the agent's choice from now on (see create_connection).
+        profile.agent_made |= target_changed(&old, &profile);
         let state = settle_secrets(cx, Some(&old), &mut profile, password)?;
         save(cx, &profile)?;
         Ok(json!({"id": profile.id, "name": profile.name, "changed": changed, "password": state}))

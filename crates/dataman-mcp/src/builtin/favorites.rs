@@ -79,6 +79,19 @@ fn favorites(cx: &Call) -> Vec<Favorite> {
     cx.hub.core.favorites.list().into_iter().filter(|f| visible(cx, f)).collect()
 }
 
+/// The open project's favorites (in its file, or saved on its connections, which join it at the
+/// next sync) are the team's: an agent's rename or removal would reach everyone as the user's.
+/// One the agent saved itself and the file does not hold stays the agent's to change.
+fn of_project(cx: &Call, f: &Favorite) -> Result<(), ToolError> {
+    let settings = cx.hub.settings();
+    let shared = dataman_core::project::Shared::of(&cx.hub.dirs, &settings);
+    if shared.favorites.contains(&f.id) || (!f.agent_made && shared.has_favorite(f)) {
+        let root = settings.project.clone().unwrap_or_default();
+        return Err(ToolError::Refused(format!("the favorite {:?} belongs to the open project ({root}): change it in Dataman", f.name)));
+    }
+    Ok(())
+}
+
 fn failed(e: anyhow::Error) -> ToolError {
     ToolError::Failed(format!("{e:#}"))
 }
@@ -119,9 +132,15 @@ fn run_favorite(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
         let profiles = cx.hub.profiles();
         let conn_name = |f: &Favorite| f.connection_id.as_ref().map(|id| profiles.iter().find(|p| p.id == *id).map(|p| p.name.clone()).unwrap_or_else(|| id.clone()));
         let names: Vec<&str> = favorites.iter().map(|f| f.name.as_str()).collect();
-        let found = match favorites.iter().position(|f| f.id == query) {
-            Some(i) => NameMatch::One(i),
-            None => dataman_core::favorites::match_name(&names, query),
+        let by_name = dataman_core::favorites::match_name(&names, query);
+        // An id runs its favorite only when no other favorite's name answers to it as well
+        // (anyone who writes a favorite, a project's file included, picks its id).
+        let found = match (favorites.iter().position(|f| f.id == query), by_name) {
+            (None, m) => m,
+            (Some(i), NameMatch::Nothing(_)) => NameMatch::One(i),
+            (Some(i), NameMatch::One(j)) if i == j => NameMatch::One(i),
+            (Some(i), NameMatch::One(j)) => NameMatch::Ambiguous(vec![i, j]),
+            (Some(i), NameMatch::Ambiguous(ix)) => NameMatch::Ambiguous(std::iter::once(i).chain(ix.into_iter().filter(|&j| j != i)).collect()),
         };
         let listed = |ix: &[usize]| -> Vec<Value> {
             ix.iter()
@@ -183,7 +202,8 @@ fn add_favorite(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
             Some(_) => Some(cx.target(&a, crate::policy::Need::Read)?.id),
             None => None,
         };
-        let mut fav = Favorite::new(name, sql);
+        // The agent's, never the project's (even on one of its connections).
+        let mut fav = Favorite { agent_made: true, ..Favorite::new(name, sql) };
         fav.connection_id = connection_id;
         fav.database = a.opt_str("database").map(str::to_string);
         let saved = cx.hub.core.favorites.add(fav).map_err(failed)?;
@@ -195,9 +215,10 @@ fn remove_favorite(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
     Box::pin(async move {
         cx.enabled()?;
         let id = a.str("id")?;
-        if !favorites(cx).iter().any(|f| f.id == id) {
+        let Some(f) = favorites(cx).into_iter().find(|f| f.id == id) else {
             return Ok(json!({"removed": id}));
-        }
+        };
+        of_project(cx, &f)?;
         cx.hub.core.favorites.remove(id).map_err(failed)?;
         Ok(json!({"removed": id}))
     })
@@ -211,10 +232,15 @@ fn rename_favorite(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
         if name.trim().is_empty() {
             return Err(ToolError::Invalid("\"name\" must not be empty".into()));
         }
-        if !favorites(cx).iter().any(|f| f.id == id) {
+        let Some(f) = favorites(cx).into_iter().find(|f| f.id == id) else {
             return Err(ToolError::Invalid(format!("no favorite with id {id:?}")));
-        }
-        match cx.hub.core.favorites.rename(id, name).map_err(failed)? {
+        };
+        of_project(cx, &f)?;
+        let renamed = cx.hub.core.favorites.edit(id, |f| {
+            f.name = name.to_string();
+            f.agent_made = true;
+        });
+        match renamed.map_err(failed)? {
             Some(f) => Ok(json!({"id": f.id, "name": f.name})),
             None => Err(ToolError::Invalid(format!("no favorite with id {id:?}"))),
         }
@@ -246,7 +272,7 @@ fn import_favorites(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> 
         for (path, _) in &files {
             let sql = std::fs::read_to_string(path).map_err(|e| ToolError::Invalid(format!("{:?}: {e}", path.display().to_string())))?;
             let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("favorite").to_string();
-            let saved = cx.hub.core.favorites.add(Favorite::new(name, sql)).map_err(failed)?;
+            let saved = cx.hub.core.favorites.add(Favorite { agent_made: true, ..Favorite::new(name, sql) }).map_err(failed)?;
             added.push(json!({"id": saved.id, "name": saved.name}));
         }
         Ok(json!({"added": added}))
