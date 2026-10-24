@@ -873,6 +873,7 @@ impl SettingsView {
                     None => "None".into(),
                 };
                 let problem = info.as_ref().and_then(|i| i.problem.clone());
+                let review = info.as_ref().and_then(|i| i.review.as_ref()).map(|r| r.loosened());
                 let dir = info.as_ref().map(|i| i.root.join(dataman_core::project::DIR));
                 div()
                     .flex()
@@ -912,6 +913,15 @@ impl SettingsView {
                             }),
                     )
                     .children(problem.map(|p| div().max_w(px(420.)).text_size(px(11.)).text_color(t.err).child(p)))
+                    .children(review.map(|n| {
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(8.))
+                            .child(div().max_w(px(340.)).text_size(px(11.)).text_color(t.warn).child(format!("Its file waits for your review ({n} loosen protection): nothing syncs until then.")))
+                            .child(ui::button(t, "project-review", ui::Btn::Secondary).h(px(24.)).child("Review…").on_click(|_, window, cx| window.dispatch_action(Box::new(crate::app::ReviewProject), cx)))
+                    }))
                     .into_any_element()
             }
             Row::ProjectShare => self.render_project_share(t, cx),

@@ -71,6 +71,7 @@ actions!(
         OpenDatabaseFile,
         OpenProject,
         CloseProject,
+        ReviewProject,
         ToggleTheme,
         ThemeDark,
         ThemeLight,
@@ -377,6 +378,9 @@ pub struct Workspace {
     update_on_quit: bool,
     pub(crate) update_sheet: bool,
     pub(crate) update_focus: FocusHandle,
+    pub(crate) project_review: Option<dataman_core::project::Review>,
+    pub(crate) project_review_focus: FocusHandle,
+    pub(crate) project_review_return: Option<FocusHandle>,
     pub(crate) update_pill_bounds: std::rc::Rc<std::cell::RefCell<Vec<gpui::Bounds<gpui::Pixels>>>>,
     pub(crate) update_button_bounds: std::rc::Rc<std::cell::RefCell<Vec<gpui::Bounds<gpui::Pixels>>>>,
     pub(crate) session_task: Option<gpui::Task<()>>,
@@ -567,6 +571,9 @@ impl Workspace {
             crash_note: None,
             update_on_quit: false,
             update_sheet: false,
+            project_review: None,
+            project_review_focus: cx.focus_handle(),
+            project_review_return: None,
             update_focus: cx.focus_handle(),
             update_pill_bounds: Default::default(),
             update_button_bounds: Default::default(),
@@ -860,6 +867,7 @@ impl Workspace {
             || self.confirm_delete.is_some()
             || self.tx_prompt.is_some()
             || self.update_sheet
+            || self.project_review.is_some()
             || cx.try_global::<crate::mcp::McpHost>().is_some_and(|h| !h.pending.is_empty())
     }
 
@@ -881,6 +889,7 @@ impl Workspace {
             ("delete", self.confirm_delete.is_some()),
             ("tx prompt", self.tx_prompt.is_some()),
             ("update", self.update_sheet),
+            ("project review", self.project_review.is_some()),
             ("mcp", cx.try_global::<crate::mcp::McpHost>().is_some_and(|h| !h.pending.is_empty())),
         ]
         .into_iter()
@@ -2875,6 +2884,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|w, _: &OpenDatabaseFile, window, cx| w.open_database_file(window, cx)))
             .on_action(cx.listener(|w, _: &OpenProject, window, cx| w.open_project(window, cx)))
             .on_action(cx.listener(|w, _: &CloseProject, _, cx| w.close_project(cx)))
+            .on_action(cx.listener(|w, _: &ReviewProject, window, cx| w.show_project_review(window, cx)))
             .on_action(cx.listener(|w, _: &crate::tree::ShowRowActions, window, cx| {
                 let was_open = w.explorer_open;
                 w.focus_region(Region::Explorer, window, cx);
@@ -2962,6 +2972,7 @@ impl Render for Workspace {
             .children(self.render_param_sheet(cx))
             .children(self.render_mcp_sheet(cx))
             .children(self.render_update_sheet(cx))
+            .children(self.render_project_review(cx))
             .children(self.render_app_menu(cx))
             .children(crate::csd::border(window, cx))
             .children(self.render_resize_edges(window))

@@ -815,6 +815,7 @@ impl ConnDialog {
         p.mcp_yolo = self.advanced.yolo;
         // Saved here, the user has seen where it goes.
         p.agent_made = false;
+        p.from_project = false;
         p.path = None;
         p.ssh = self.ssh.on.then(|| SshSettings {
             host: text(&self.ssh.host),

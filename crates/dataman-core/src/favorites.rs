@@ -20,11 +20,15 @@ pub struct Favorite {
     pub database: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folder: Option<String>,
+    /// Saved or changed by an agent (add_favorite, import_favorites, rename_favorite): it stays
+    /// this person's, never the open project's.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub agent_made: bool,
 }
 
 impl Favorite {
     pub fn new(name: impl Into<String>, sql: impl Into<String>) -> Favorite {
-        Favorite { id: uuid::Uuid::new_v4().simple().to_string(), name: name.into(), sql: sql.into(), connection_id: None, database: None, folder: None }
+        Favorite { id: uuid::Uuid::new_v4().simple().to_string(), name: name.into(), sql: sql.into(), connection_id: None, database: None, folder: None, agent_made: false }
     }
 }
 
@@ -165,6 +169,17 @@ impl FavoritesStore {
         Ok(Some(updated))
     }
 
+    /// One favorite changed in place (an agent's rename, marked `agent_made` with it).
+    pub fn edit(&self, id: &str, f: impl FnOnce(&mut Favorite)) -> Result<Option<Favorite>> {
+        let _ = self.refresh();
+        let mut g = self.state.lock();
+        let Some(x) = g.items.iter_mut().find(|x| x.id == id) else { return Ok(None) };
+        f(x);
+        let updated = x.clone();
+        g.save(&self.path)?;
+        Ok(Some(updated))
+    }
+
     pub fn update_sql(&self, id: &str, sql: &str) -> Result<Option<Favorite>> {
         let _ = self.refresh();
         let mut g = self.state.lock();
@@ -291,17 +306,39 @@ pub const MATCH_MIN: u32 = 45;
 pub const MATCH_GAP: u32 = 8;
 pub const MATCH_LIST: usize = 5;
 
+/// Characters that show nothing (zero-width, joiners, direction marks and overrides, the soft
+/// hyphen, variation selectors, tags): a name holding them reads as the name without them.
+fn invisible(c: char) -> bool {
+    matches!(c as u32,
+        0x00AD | 0x034F | 0x061C | 0x115F | 0x1160 | 0x17B4 | 0x17B5 | 0x180B..=0x180F | 0x200B..=0x200F | 0x202A..=0x202E
+        | 0x2060..=0x206F | 0x3164 | 0xFE00..=0xFE0F | 0xFEFF | 0xFFA0 | 0x1BCA0..=0x1BCA3 | 0xE0000..=0xE0FFF)
+}
+
+/// A letter of another script drawn like a Latin one (Cyrillic а, Greek ο…): the Latin letter.
+fn latin_look(c: char) -> char {
+    match c {
+        'а' => 'a', 'в' => 'b', 'с' => 'c', 'ԁ' => 'd', 'е' | 'ё' => 'e', 'һ' => 'h', 'і' | 'ӏ' => 'i', 'ј' => 'j', 'к' => 'k', 'м' => 'm',
+        'н' => 'h', 'о' => 'o', 'р' => 'p', 'ԛ' => 'q', 'г' => 'r', 'ѕ' => 's', 'т' => 't', 'у' => 'y', 'ԝ' => 'w', 'х' => 'x',
+        'α' => 'a', 'β' => 'b', 'ε' => 'e', 'η' => 'n', 'ι' => 'i', 'κ' => 'k', 'ν' => 'v', 'ο' => 'o', 'ρ' => 'p', 'τ' => 't', 'υ' => 'u',
+        'χ' => 'x', 'ω' => 'w', 'ϲ' => 'c', 'ı' => 'i', 'ȷ' => 'j', 'ɡ' => 'g', 'ℓ' => 'l',
+        c => c,
+    }
+}
+
+/// A name as matching compares it: compatibility forms folded (fullwidth, ligatures), accents
+/// and invisible characters dropped, look-alike letters of other scripts as the Latin ones,
+/// lowercase, words separated by one space. Two names that look the same fold the same.
 pub fn fold_name(s: &str) -> String {
     use unicode_normalization::UnicodeNormalization;
     let mut out = String::with_capacity(s.len());
     let mut space = false;
-    for c in s.nfd().filter(|c| !unicode_normalization::char::is_combining_mark(*c)) {
+    for c in s.nfkd().filter(|c| !unicode_normalization::char::is_combining_mark(*c) && !invisible(*c)) {
         if c.is_alphanumeric() {
             if space && !out.is_empty() {
                 out.push(' ');
             }
             space = false;
-            out.extend(c.to_lowercase());
+            out.extend(c.to_lowercase().map(latin_look));
         } else {
             space = true;
         }
@@ -480,6 +517,30 @@ mod tests {
         assert_eq!(match_name(&[], "x"), NameMatch::Nothing(vec![]));
         assert_eq!(match_name(&["daily", "Daily"], "daily"), NameMatch::Ambiguous(vec![0, 1]));
         assert_eq!(fold_name("  Crème-Brûlée  (v2) "), "creme brulee v2");
+    }
+
+    #[test]
+    fn look_alike_names_fold_the_same() {
+        let plain = fold_name("Daily report");
+        for s in [
+            "D\u{0430}ily report",
+            "D\u{0430}ily r\u{0435}p\u{043e}rt",
+            "Daily rep\u{03bf}rt",
+            "Dai\u{200b}ly report",
+            "Daily\u{200d} report",
+            "Daily \u{202e}report",
+            "Dai\u{ad}ly report",
+            "\u{ff24}\u{ff41}ily report",
+            "Daily report  ",
+            "  DAILY  REPORT",
+        ] {
+            assert_eq!(fold_name(s), plain, "{s:?}");
+            assert_eq!(match_name(&["Daily report", s], "Daily report"), NameMatch::Ambiguous(vec![0, 1]), "{s:?}");
+        }
+        assert_eq!(match_name(&["Daily report", "Daily reports"], "Daily report"), NameMatch::One(0));
+        assert_eq!(fold_name("Отчёт"), fold_name("отчет"), "another script still matches itself");
+        assert_eq!(match_name(&["Отчёт за день", "Top customers"], "отчет"), NameMatch::One(0));
+        assert_eq!(fold_name("ﬁnance"), "finance");
     }
 
     #[test]

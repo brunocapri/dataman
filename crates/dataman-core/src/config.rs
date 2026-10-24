@@ -250,6 +250,10 @@ pub struct ConnectionProfile {
     /// line that matches any host is not sent there.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub agent_made: bool,
+    /// Its address came from an open project's file (a teammate's choice): a `~/.pgpass` line
+    /// that matches any host is not sent there either. This person's own, never in the file.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub from_project: bool,
 }
 
 fn override_key<'a>(overrides: &'a BTreeMap<String, bool>, engine: Engine, database: &str) -> Option<&'a String> {
@@ -397,6 +401,7 @@ impl ConnectionProfile {
             mcp_rules: Default::default(),
             options: BTreeMap::new(),
             agent_made: false,
+            from_project: false,
         }
     }
 
@@ -790,9 +795,14 @@ fn save(path: &Path, connections: &[ConnectionProfile], skipped: &[toml::Table])
         file.insert("connection".into(), toml::Value::Array(list));
         toml::to_string_pretty(&file)?
     };
-    let tmp = dir.join(format!(".connections.toml.{}", std::process::id()));
-    std::fs::write(&tmp, text)?;
-    std::fs::rename(&tmp, path)?;
+    // This user's only: a secret driver option stays in it.
+    let tmp = dir.join(format!(".connections.toml.{}.{}", std::process::id(), uuid::Uuid::new_v4().simple()));
+    {
+        use std::io::Write as _;
+        use std::os::unix::fs::OpenOptionsExt as _;
+        std::fs::File::options().write(true).create_new(true).mode(0o600).open(&tmp)?.write_all(text.as_bytes())?;
+    }
+    std::fs::rename(&tmp, path).inspect_err(|_| _ = std::fs::remove_file(&tmp))?;
     Ok(())
 }
 

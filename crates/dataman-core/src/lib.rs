@@ -130,8 +130,9 @@ pub struct Core {
     pub project: project::ProjectStore,
     pub extensions: Vec<Arc<dyn ServerExtension>>,
     pub pgpass: Option<PathBuf>,
-    // Memory only: never written to disk or the keychain.
-    ssh_typed: Arc<Mutex<HashMap<String, String>>>,
+    // Memory only: never written to disk or the keychain. Kept with the tunnel it was typed
+    // for: one moved elsewhere (an open project's file, an agent) does not get it.
+    ssh_typed: Arc<Mutex<HashMap<String, (Option<SshSettings>, String)>>>,
 }
 
 // Off the UI thread: it reads the keychain and the pgpass file.
@@ -139,7 +140,7 @@ pub struct Core {
 struct Secrets {
     store: Arc<dyn SecretStore>,
     pgpass: Option<PathBuf>,
-    ssh_typed: Arc<Mutex<HashMap<String, String>>>,
+    ssh_typed: Arc<Mutex<HashMap<String, (Option<SshSettings>, String)>>>,
 }
 
 impl Secrets {
@@ -155,7 +156,11 @@ impl Secrets {
         if !p.engine.is_postgres() {
             return Ok(None);
         }
-        let lookup = if p.agent_made { pgpass::lookup_named_host } else { pgpass::lookup };
+        // A project's tunnel is a teammate's choice too: no pgpass line goes through it.
+        if p.from_project && p.ssh.is_some() {
+            return Ok(None);
+        }
+        let lookup = if p.agent_made || p.from_project { pgpass::lookup_named_host } else { pgpass::lookup };
         Ok(self.pgpass.as_deref().and_then(|f| lookup(f, &p.host, p.port, &p.database, &p.user)))
     }
 
@@ -166,7 +171,7 @@ impl Secrets {
         if given.is_some() {
             return Ok(given);
         }
-        if let Some(s) = self.ssh_typed.lock().get(&p.id) {
+        if let Some((_, s)) = self.ssh_typed.lock().get(&p.id).filter(|(ssh, _)| *ssh == p.ssh) {
             return Ok(Some(s.clone()));
         }
         if p.save_password {
@@ -230,7 +235,7 @@ impl Core {
 
     /// The local files an open project syncs with.
     pub fn stores(&self) -> project::Stores<'_> {
-        project::Stores { config: &self.config, settings: &self.settings, favorites: &self.favorites }
+        project::Stores { config: &self.config, settings: &self.settings, favorites: &self.favorites, secrets: &*self.secrets }
     }
 
     pub fn handle(&self) -> Handle {
@@ -265,7 +270,7 @@ impl Core {
         }
         match ssh_secret {
             Some(s) if !profile.save_password => {
-                self.ssh_typed.lock().insert(profile.id.clone(), s.to_string());
+                self.ssh_typed.lock().insert(profile.id.clone(), (profile.ssh.clone(), s.to_string()));
             }
             _ => {
                 self.ssh_typed.lock().remove(&profile.id);
@@ -437,7 +442,29 @@ mod tests {
         core.save_connection(p.clone(), None, Some("typed")).unwrap();
         assert_eq!(secrets.get(&p.ssh_secret_id()).unwrap(), None);
         assert_eq!(core.resolver().ssh(&p, None).unwrap().as_deref(), Some("typed"));
+        // Moved to another bastion (an open project's file): the typed secret stays behind.
+        let mut moved = p.clone();
+        moved.ssh.as_mut().unwrap().host = "bastion.attacker.example".into();
+        assert_eq!(core.resolver().ssh(&moved, None).unwrap(), None);
         core.remove_connection(&p.id).unwrap();
         assert_eq!(core.resolver().ssh(&p, None).unwrap(), None);
+    }
+
+    #[test]
+    fn a_projects_connection_takes_no_pgpass_wildcard_nor_a_line_through_its_tunnel() {
+        let dir = tempfile::tempdir().unwrap();
+        let pass = dir.path().join("pgpass");
+        std::fs::write(&pass, "db.example:5432:*:bruno:named\n*:*:*:*:any\n").unwrap();
+        #[cfg(unix)]
+        std::fs::set_permissions(&pass, <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600)).unwrap();
+        let mut core = Core::new(Dirs::at(dir.path().join("cfg")), Arc::new(MemorySecrets::default())).unwrap();
+        core.pgpass = Some(pass);
+        let mut p = ConnectionProfile::new("x");
+        (p.host, p.port, p.user, p.from_project) = ("evil.example".into(), 5432, "bruno".into(), true);
+        assert_eq!(core.password_for(&p, None).unwrap(), None, "the * line");
+        p.host = "db.example".into();
+        assert_eq!(core.password_for(&p, None).unwrap().as_deref(), Some("named"));
+        p.ssh = Some(SshSettings { host: "bastion.attacker.example".into(), auth: SshAuth::Agent, ..Default::default() });
+        assert_eq!(core.password_for(&p, None).unwrap(), None, "through the project's tunnel");
     }
 }

@@ -8,6 +8,8 @@ pub struct FileStamp {
     modified: Option<SystemTime>,
     len: u64,
     ino: u64,
+    /// A rewrite in place with its mtime put back (`touch -r`, `cp -p`) still moves the ctime.
+    changed: (i64, i64),
 }
 
 impl FileStamp {
@@ -15,9 +17,11 @@ impl FileStamp {
         let m = std::fs::metadata(path).ok()?;
         #[cfg(unix)]
         let ino = std::os::unix::fs::MetadataExt::ino(&m);
+        #[cfg(unix)]
+        let changed = (std::os::unix::fs::MetadataExt::ctime(&m), std::os::unix::fs::MetadataExt::ctime_nsec(&m));
         #[cfg(not(unix))]
-        let ino = 0;
-        Some(FileStamp { modified: m.modified().ok(), len: m.len(), ino })
+        let (ino, changed) = (0, (0, 0));
+        Some(FileStamp { modified: m.modified().ok(), len: m.len(), ino, changed })
     }
 }
 

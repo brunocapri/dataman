@@ -10,7 +10,7 @@ use dataman_core::format::KeywordCase;
 use dataman_core::project::{self, ProjectFile};
 
 use crate::app::Workspace;
-use crate::check::{Report, click_probe, core, draw, key, pause, typ, until};
+use crate::check::{Report, click_probe, core, draw, key, pause, probed, typ, until};
 
 fn snap(name: &str, cx: &mut AsyncWindowContext) {
     let Ok(dir) = std::env::var("DATAMAN_SHOT_DIR") else { return };
@@ -118,6 +118,40 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     let text = std::fs::read_to_string(project::file_in(&root)).unwrap_or_default();
     let keys = text.lines().filter(|l| !l.starts_with('#')).any(|l| l.contains("password"));
     r.check("no password in the file", !keys, &text);
+
+    // A hostile change to the file (anyone who can push to the repository): held for review,
+    // nothing of it applied, nothing written over it; Not now keeps it held, Apply anyway
+    // applies that file and logs it in Audit.
+    let before = core.config.get("team-shop");
+    let mut f = file(&root).unwrap();
+    f.connections[0].mcp = Some(dataman_core::McpAccess::Full);
+    f.connections[0].host = "db.attacker.example".into();
+    let hostile = f.to_text();
+    std::fs::write(project::file_in(&root), &hostile).unwrap();
+    let shown = until(cx, 5, |cx| probed("project-review-apply", cx).is_some()).await;
+    r.check("a file that widens agents' access asks first", shown && probed("project-review-loosens", cx).is_some(), "");
+    snap("review", cx);
+    let same = core.config.get("team-shop") == before && std::fs::read_to_string(project::file_in(&root)).unwrap_or_default() == hostile;
+    r.check("…and changes nothing until then, nor writes over the file", same, format!("{:?}", core.config.get("team-shop").map(|p| (p.mcp, p.host))));
+    click_probe("project-review-keep", cx);
+    let held = until(cx, 2, |cx| cx.update(|_, cx| ws.read(cx).project_review.is_none()).unwrap_or(false)).await;
+    r.check("Not now: still held, Settings › Project offers the review", held && core.project.review().is_some_and(|r| r.declined) && probed("project-review", cx).is_some(), "");
+    click_probe("project-review", cx);
+    let again = until(cx, 2, |cx| probed("project-review-apply", cx).is_some()).await;
+    key(cx, "escape");
+    let esc = until(cx, 2, |cx| cx.update(|_, cx| ws.read(cx).project_review.is_none()).unwrap_or(false)).await;
+    r.check("Review… shows it again; esc keeps it held", again && esc && core.config.get("team-shop") == before, "");
+    click_probe("project-review", cx);
+    until(cx, 2, |cx| probed("project-review-apply", cx).is_some()).await;
+    key(cx, "cmd-enter");
+    let applied = until(cx, 5, |_| core.config.get("team-shop").is_some_and(|p| p.mcp == Some(dataman_core::McpAccess::Full))).await;
+    let audit = std::fs::read_to_string(core.dirs.mcp_audit_file()).unwrap_or_default();
+    let p = core.config.get("team-shop");
+    r.check(
+        "⌘↩ applies that file, moves the connection without its saved password, logged in Audit",
+        applied && audit.contains("project_review") && p.as_ref().is_some_and(|p| p.host == "db.attacker.example" && !p.save_password && p.from_project),
+        format!("{:?}", p.map(|p| (p.mcp, p.host, p.save_password))),
+    );
 
     // Projects off: no menu item, no sync.
     click_probe("projects-off", cx);
