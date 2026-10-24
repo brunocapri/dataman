@@ -154,7 +154,7 @@ impl AgentsPage {
                 _ => None,
             };
             let Some(path) = path else { return };
-            let text = std::fs::read_to_string(&path);
+            let text = agents_config::read_file(&path);
             let _ = this.update_in(cx, |v, window, cx| {
                 v.open_import(&path, text, cx);
                 window.focus(&v.import_focus, cx);
@@ -166,11 +166,15 @@ impl AgentsPage {
     pub(crate) fn open_import(&mut self, path: &std::path::Path, text: std::io::Result<String>, cx: &mut Context<Self>) {
         let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
         let parsed = text.map_err(|e| vec![format!("Could not read the file: {e}")]).and_then(|t| agents_config::parse(&t));
-        let (file, errors) = match parsed {
+        let (mut file, mut errors) = match parsed {
             Ok(f) => (Some(f), Vec::new()),
             Err(e) => (None, e),
         };
         let plan = file.as_ref().map(|f| agents_config::plan(&self.core.settings.get(), &self.core.config.connections(), f)).unwrap_or_default();
+        // Two entries for one connection here: refused whole, like any other error.
+        if !plan.problems.is_empty() {
+            (file, errors) = (None, plan.problems.clone());
+        }
         self.import = Some(Import { name, file, plan, errors });
         self.menu = None;
         cx.notify();
@@ -184,9 +188,10 @@ impl AgentsPage {
 
     /// Writes the file's settings (all or nothing) and logs it in Audit as the user's own act.
     pub(crate) fn apply_import(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(Import { name, file: Some(f), .. }) = self.import.take() else { return };
+        let Some(Import { name, file: Some(f), plan, .. }) = self.import.take() else { return };
         let started = std::time::Instant::now();
-        let r = agents_config::import(&self.core.config, &self.core.settings, &f);
+        // Written only as the summary the user just reviewed shows it.
+        let r = agents_config::import(&self.core.config, &self.core.settings, &f, &plan);
         let user = dataman_mcp::audit::local_user();
         let (outcome, error, query, reasons) = match &r {
             Ok(p) => {

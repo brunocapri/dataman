@@ -826,6 +826,27 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     click_probe("agents-import-apply", cx);
     pause(cx, 100).await;
     r.check("importing the export brings the settings back", rules(&core, &pg.id).view == before, format!("{:?}", rules(&core, &pg.id).view));
+    // The summary is what gets written: a change made while it is open (an agent, a project
+    // sync, another window) makes Apply write nothing.
+    import(&loose, cx);
+    until(cx, 5, |cx| open(cx)).await;
+    let rows0 = rules(&core, &pg.id).read_rows;
+    if let Some(mut p) = core.config.get(&pg.id) {
+        p.mcp_rules.read_rows = Some(20);
+        let _ = core.config.upsert(p);
+    }
+    click_probe("agents-import-apply", cx);
+    pause(cx, 100).await;
+    let note = cx.update(|_, cx| a.read(cx).settings_note.clone()).ok().flatten().unwrap_or_default();
+    r.check(
+        "a change made while the summary is open: Apply writes nothing and says so",
+        !open(cx) && rules(&core, &pg.id).view == before && rules(&core, &pg.id).read_rows == Some(20) && note.contains("changed since"),
+        format!("{:?} {note}", rules(&core, &pg.id).view),
+    );
+    if let Some(mut p) = core.config.get(&pg.id) {
+        p.mcp_rules.read_rows = rows0;
+        let _ = core.config.upsert(p);
+    }
     let mut b = f.clone();
     let mut wrong = CustomType::new("Bad", "(?=x)a", Mask::Hidden);
     wrong.id = "t_bad".into();
