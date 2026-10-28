@@ -7,7 +7,7 @@ default-members = ["crates/dataman-core", "crates/dataman-mcp", "crates/dataman"
 
 [workspace.package]
 edition = "2024"
-version = "0.3.5"
+version = "0.3.6"
 license = "MIT"
 publish = false
 
