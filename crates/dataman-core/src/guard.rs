@@ -1008,13 +1008,17 @@ pub const SIDE_EFFECT_FUNCTIONS: &[&str] = &[
     "pg_advisory_lock_shared", "pg_try_advisory_lock", "pg_try_advisory_lock_shared", "pg_advisory_unlock", "pg_advisory_unlock_all",
     "pg_advisory_unlock_shared", "lo_import", "lo_export", "lo_unlink", "lo_create", "lo_creat", "lo_from_bytea", "lo_put", "lowrite",
     "pg_file_write", "pg_file_rename", "pg_file_unlink", "pg_file_sync", "pg_read_file", "pg_read_binary_file", "pg_ls_dir",
-    "pg_stat_file", "dblink", "dblink_exec", "dblink_connect", "dblink_connect_u", "dblink_send_query", "dblink_open", "pg_notify",
+    "pg_stat_file", "pg_ls_logdir", "pg_ls_waldir", "pg_ls_tmpdir", "pg_ls_archive_statusdir", "dblink", "dblink_exec", "dblink_connect",
+    "dblink_connect_u", "dblink_send_query", "dblink_open", "pg_notify",
     "nextval", "setval", "pg_stat_reset", "pg_stat_reset_shared", "pg_stat_reset_single_table_counters", "pg_stat_statements_reset",
     "pg_drop_replication_slot", "pg_create_physical_replication_slot", "pg_create_logical_replication_slot",
     "pg_logical_emit_message", "pg_replication_origin_create", "pg_replication_origin_drop", "pg_import_system_collations",
     "txid_current", "pg_current_xact_id", "set_config",
     "get_lock", "release_lock", "release_all_locks", "load_file", "master_pos_wait", "source_pos_wait", "wait_for_executed_gtid_set",
     "openrowset", "openquery", "opendatasource",
+    // SQL Server's file and program procedures: EXEC is no read anyway, named here so every
+    // server-file name is refused on reads too.
+    "xp_cmdshell", "xp_dirtree", "xp_subdirs", "xp_fileexist", "xp_regwrite", "sp_oacreate", "sp_oamethod", "sp_addextendedproc",
 ];
 
 const TSQL_LOCK_HINTS: &[&str] = &["UPDLOCK", "XLOCK", "HOLDLOCK", "TABLOCK", "TABLOCKX", "PAGLOCK", "ROWLOCK", "SERIALIZABLE", "REPEATABLEREAD"];
@@ -1607,6 +1611,22 @@ mod tests {
             (TSql, "EXEC sp_OACreate 'Scripting.FileSystemObject', @o OUT"),
         ] {
             assert!(server_file_access(sql, d).is_some(), "{d:?}: {sql}");
+        }
+        // Reads only reach the guard's read check, never the write path's: what lists the server's
+        // files is refused there too.
+        for (d, sql) in [
+            (Postgres, "SELECT * FROM pg_ls_waldir()"),
+            (Postgres, "SELECT * FROM pg_catalog.pg_ls_logdir()"),
+            (Postgres, "SELECT name FROM pg_ls_tmpdir() ORDER BY 1"),
+            (Postgres, "SELECT * FROM pg_ls_archive_statusdir()"),
+            (TSql, r"EXEC xp_dirtree 'C:\'"),
+            (TSql, r"EXEC master..xp_fileexist 'C:\x'"),
+            (TSql, r"EXEC xp_subdirs 'C:\'"),
+        ] {
+            assert!(agent_read_refusal_in(sql, d).is_some(), "{d:?}: {sql}");
+        }
+        for name in SERVER_FILE_FUNCTIONS {
+            assert!(SIDE_EFFECT_FUNCTIONS.contains(name), "{name} is refused on writes but not on reads");
         }
         for (d, sql) in [
             (Postgres, "COPY t TO STDOUT"),

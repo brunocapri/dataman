@@ -112,9 +112,13 @@ impl Server {
                 types.scrub_json(&mut v, &key, &mut counts, Instant::now() + BUDGET).map_err(|e| ToolError::Refused(e.to_string()))?;
                 if !counts.is_empty() {
                     call.note_masked_values(&counts);
-                    if let Some(m) = v.as_object_mut() {
-                        m.insert("masked".into(), serde_json::json!(counts));
-                    }
+                }
+                // What the tool masked already (cells, masked whole before they were cut) counts too.
+                let all = call.note().seen.values;
+                if !all.is_empty()
+                    && let Some(m) = v.as_object_mut()
+                {
+                    m.insert("masked".into(), serde_json::json!(all));
                 }
                 Ok(v)
             }

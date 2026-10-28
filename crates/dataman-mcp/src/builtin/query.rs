@@ -231,7 +231,7 @@ fn explain_plain(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
         if explain::analyzes(&sql) {
             return Err(ToolError::Invalid("this EXPLAIN runs the statement (ANALYZE): use explain_analyze".into()));
         }
-        let out = cx.run(&o, &sql, a.params()?, Mode::Read, plan_limits(30_000)).await?;
+        let out = cx.run(&o, &sql, a.params()?, Mode::Read, plan_limits(cx.time_limit(&a).as_millis() as u64)).await?;
         Ok(plan_json(&out, a.opt_str("format").unwrap_or("text"), false))
     })
 }

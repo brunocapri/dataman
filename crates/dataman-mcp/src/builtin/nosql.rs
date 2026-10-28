@@ -355,11 +355,11 @@ pub(super) async fn sample(cx: &Call, o: &Opened, coll: &str, n: u64, random: bo
     m.insert("database".into(), json!(o.database));
     let a = Args(m);
     let shaped = rules::nosql_check(cx, &a, &o.profile, &stmt, false).await?;
-    let ran = run(cx, o, &stmt, Page { skip: 0, limit: n as usize }, Duration::from_secs(30)).await?;
+    let ran = run(cx, o, &stmt, Page { skip: 0, limit: n as usize }, cx.time_limit(&a)).await?;
     if let Output::Docs(d) = &ran.output {
         cx.note_rows(d.docs.len());
     }
-    let mut v = output_json(&ran, MAX_BYTES);
+    let mut v = output_json(&ran, bytes_of(cx, &a));
     rules::nosql_shape(cx, &a, &o.profile, &stmt, &mut v, &shaped);
     Ok(v)
 }

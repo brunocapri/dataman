@@ -698,7 +698,9 @@ fn get_ddl(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
 fn sample_rows(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
     Box::pin(async move {
         let o = cx.open(&a, Need::Read).await?;
-        let n = a.u64_or("n", 10).clamp(1, 100);
+        // The connection's limits (Rows per read, Size per read, Time per call), as run_query's.
+        let limits = cx.limits(&a, a.u64_or("n", 10).clamp(1, 100));
+        let n = limits.max_rows as u64;
         if !o.conn.engine().is_sql() {
             return super::nosql::sample(cx, &o, a.str("table")?, n, a.bool("random")).await;
         }
@@ -719,7 +721,6 @@ fn sample_rows(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
         } else {
             format!("SELECT * FROM {table}{order} LIMIT {n}")
         };
-        let limits = Limits { max_rows: n as usize, ..Limits::default() };
         let checked = super::rules::checked_sql(cx, &a, &o.profile, &sql, false).await?;
         let read = super::rules::read_limits(cx, &o.profile, limits);
         let mut out = cx.run(&o, &checked.sql, vec![], Mode::Read, read).await?;

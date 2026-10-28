@@ -74,6 +74,7 @@ fn env(s: &str, settings: &str) -> Env {
         conn("pgadmin", "DATAMAN_PG", "127.0.0.1:55432", "postgres", "dataman", "mcp = \"full\""),
         conn("prod-pg", "DATAMAN_PG", "127.0.0.1:55432", "postgres", "dataman", &pg_rules),
         conn("structure-pg", "DATAMAN_PG", "127.0.0.1:55432", "postgres", "dataman", "mcp = \"write\"\n[connection.mcp_rules]\nview = \"structure\"\n"),
+        conn("limited-pg", "DATAMAN_PG", "127.0.0.1:55432", "postgres", "dataman", "[connection.mcp_rules]\nread_rows = 2\ntime_limit_s = 1\n"),
         conn("myadmin", "DATAMAN_MYSQL", "127.0.0.1:33306", "root", "mysql", &format!("{my}mcp = \"full\"")),
         conn(
             "my",
@@ -95,6 +96,7 @@ fn env(s: &str, settings: &str) -> Env {
             s,
             &format!("{mg}mcp = \"write\"\n[connection.mcp_rules]\nview = \"masked\"\ncode = false\nsensitive = [{{ col = \"customers.email\", how = \"partial\" }}]\n[connection.mcp_rules.visible]\nitems = [{{ name = \"{s}.payments\", kind = \"table\" }}, {{ name = \"users.ssn\", kind = \"column\" }}]\n"),
         ),
+        conn("limited-mg", "DATAMAN_MONGO", "127.0.0.1:27027", "root", s, &format!("{mg}[connection.mcp_rules]\nread_rows = 2\n")),
         conn("esadmin", "DATAMAN_ES", "127.0.0.1:9201", "elastic", "", &format!("{es}mcp = \"full\"")),
         conn("es", "DATAMAN_ES", "127.0.0.1:9201", "elastic", "", &format!("{es}[connection.mcp_rules.visible]\nitems = [{{ name = \"{s}-pay*\", kind = \"table\" }}, {{ name = \"{s}-cust.card\", kind = \"column\" }}]\n")),
         conn("rdadmin", "DATAMAN_REDIS", "127.0.0.1:63790", "", "9", &format!("{rd}mcp = \"full\"")),
@@ -120,7 +122,7 @@ fn env(s: &str, settings: &str) -> Env {
     for (ids, p) in [
         (&["myadmin", "my"][..], pw("DATAMAN_MYSQL_PASSWORD", "dataman-root")),
         (&["ms", "msadmin"][..], pw("DATAMAN_MSSQL_PASSWORD", "Dataman-sa-1!")),
-        (&["mg", "mgadmin"][..], pw("DATAMAN_MONGO_PASSWORD", "dataman")),
+        (&["mg", "mgadmin", "limited-mg"][..], pw("DATAMAN_MONGO_PASSWORD", "dataman")),
         (&["es", "esadmin"][..], pw("DATAMAN_ES_PASSWORD", "dataman")),
         (&["rd", "rdadmin"][..], pw("DATAMAN_REDIS_PASSWORD", "dataman")),
     ] {
@@ -223,6 +225,11 @@ fn rules_hold_without_a_database() {
     let err = e.err("run_query", json!({"connection": "structure-pg", "sql": "SELECT 1"}));
     assert!(err.contains("structure only"), "{err}");
     assert!(e.err("sample_rows", json!({"connection": "structure-pg", "table": "x"})).contains("structure only") || !up("DATAMAN_PG", "127.0.0.1:55432"));
+    // No rows through the write tools either: a read sent with a write is refused before it runs.
+    for (tool, sql) in [("execute", "SELECT 1"), ("open_query", "SET search_path = public; SELECT 1"), ("open_query", "CREATE TABLE t (a int); SELECT 1")] {
+        let err = e.err(tool, json!({"connection": "structure-pg", "sql": sql}));
+        assert!(err.contains("structure only"), "{tool} {sql}: {err}");
+    }
 
     // A broken custom type that is on refuses reads.
     let broken = env("nodb", "[agent_types]\n[[agent_types.custom]]\nid = \"t_b\"\nname = \"Broken\"\npattern = \"(\"\nmask = \"hidden\"\n");
@@ -291,6 +298,8 @@ fn postgres_privacy() {
     assert!(r["masked_columns"].to_string().contains("email (partial)"));
     let r = q(format!("SELECT name || ' <' || 'ana@acme.com' || '>' AS x FROM {s}.customers")).unwrap();
     assert_eq!(r["rows"][0][0], "Ana <a•••@acme.com>", "e-mails are masked inside any value");
+    let logged = e.audit().last().unwrap()["seen"]["values"].clone();
+    assert!(r["masked"] == json!({"E-mail": 1}) && r["masked"] == logged, "the reply counts every value masked in it, once, as the log does: {} vs {logged}", r["masked"]);
     let raw = e.ok("run_query", a(json!({"sql": "SELECT 'ana@acme.com' AS x, '4242 4242 4242 4242' AS card"})));
     assert_eq!((raw["rows"][0][0].as_str(), raw["rows"][0][1].as_str()), (Some("ana@acme.com"), Some("4242 4242 4242 4242")), "on Data nothing is masked: {raw}");
     assert!(raw.get("masked").is_none(), "{raw}");
@@ -459,6 +468,36 @@ fn mysql_and_sql_server_privacy() {
         let listed = names(&e.ok("list_tables", m(json!({"schema": "dbo"}))), 1);
         assert!(listed.contains(&format!("{s}_open")) && !listed.contains(&format!("{s}_closed")) && listed.contains(&format!("{s}_open_ok")) && !listed.contains(&format!("{s}_open_v")), "{listed:?}");
         e.admin("execute", with("msadmin", json!({"sql": format!("DROP VIEW dbo.{s}_open_v; DROP VIEW dbo.{s}_open_ok; DROP TABLE dbo.{s}_open; DROP TABLE dbo.{s}_closed")})));
+        e.done();
+    }
+}
+
+/// The connection's limits (Rows per read, Time per call) hold for samples as they do for run_query.
+#[test]
+fn limits_hold_for_samples() {
+    let s = format!("mcp_privl_{}", std::process::id());
+    if up("DATAMAN_PG", "127.0.0.1:55432") {
+        let e = env(&s, "");
+        let a = |x: Value| with("pgadmin", x);
+        let l = |x: Value| with("limited-pg", x);
+        e.admin(
+            "execute",
+            a(json!({"sql": format!("CREATE SCHEMA {s}; CREATE TABLE {s}.t (id int); INSERT INTO {s}.t SELECT generate_series(1, 5); CREATE VIEW {s}.slow AS SELECT 1 AS z FROM pg_sleep(3)")})),
+        );
+        let r = e.ok("sample_rows", l(json!({"table": format!("{s}.t"), "n": 10})));
+        assert_eq!(r["rows"].as_array().unwrap().len(), 2, "Rows per read: {r}");
+        let started = std::time::Instant::now();
+        let err = e.err("sample_rows", l(json!({"table": format!("{s}.slow")})));
+        assert!(started.elapsed() < Duration::from_millis(2500), "Time per call: {err}");
+        e.admin("execute", a(json!({"sql": format!("DROP SCHEMA {s} CASCADE")})));
+        e.done();
+    }
+    if up("DATAMAN_MONGO", "127.0.0.1:27027") {
+        let e = env(&s, "");
+        e.admin("nosql_execute", with("mgadmin", json!({"query": "db.t.insertMany([{_id: 1}, {_id: 2}, {_id: 3}, {_id: 4}, {_id: 5}])"})));
+        let r = e.ok("sample_rows", with("limited-mg", json!({"table": "t", "n": 10})));
+        assert_eq!(r["documents"].as_array().unwrap().len(), 2, "Rows per read: {r}");
+        e.admin("nosql_execute", with("mgadmin", json!({"query": "db.dropDatabase()"})));
         e.done();
     }
 }

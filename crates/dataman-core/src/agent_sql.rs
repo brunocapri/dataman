@@ -250,7 +250,10 @@ fn statement(
     if !rules.code && (matches!(verb.as_str(), "CALL" | "DO" | "EXEC" | "EXECUTE") || has("SP_EXECUTESQL")) {
         return Err(format!("running code ({verb}) is off for agents on {conn} (Dataman › Agents › Permissions)"));
     }
-    if write && rules.view == AgentView::Structure && facts.effect == Effect::Write {
+    // A read sent with a write (execute, open_query, a write tool) returns its rows too: only a
+    // plan is structure, as on the read tools.
+    let rows = facts.effect == Effect::Write || (facts.effect == Effect::Read && !(verb == "EXPLAIN" && !crate::explain::analyzes(text)));
+    if write && rules.view == AgentView::Structure && rows {
         return Err(format!("{conn} shows agents its structure only: rows are neither read nor written"));
     }
     let a = scope::analyze_in(sql, toks, d);
@@ -864,6 +867,11 @@ mod tests {
         let s = AgentRules { view: AgentView::Structure, ..Default::default() };
         assert!(run(&s, "INSERT INTO t VALUES (1)", true).unwrap_err().contains("structure only"));
         assert!(run(&s, "CREATE INDEX i ON t (a)", true).is_ok());
+        // A read sent as a write (execute, a write tool) returns its rows all the same.
+        for sql in ["SELECT * FROM t", "CREATE TABLE x (a int); SELECT * FROM t", "TABLE t", "WITH x AS (SELECT 1) SELECT * FROM x", "EXPLAIN ANALYZE SELECT * FROM t"] {
+            assert!(run(&s, sql, true).unwrap_err().contains("structure only"), "{sql}");
+        }
+        assert!(run(&s, "EXPLAIN SELECT * FROM t", true).is_ok(), "a plan is structure");
         let masked = AgentRules { view: AgentView::Masked, ..Default::default() };
         assert!(run(&masked, "SELECT * FROM pg_stat_activity", false).unwrap_err().contains("server activity"), "forced off while data is masked");
     }

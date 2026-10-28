@@ -320,7 +320,7 @@ pub fn mask_outcome(cx: &Call, p: &ConnectionProfile, out: &mut bounded::Outcome
     let mut counts = dataman_core::privacy::Counts::new();
     let mut used: Vec<(String, Mask)> = Vec::new();
     let was_cut = |s: &str| read.max_cell > agent.max_cell && s.ends_with('…') && s.chars().count() == read.max_cell + 1;
-    let mut apply = |columns: &[bounded::Column], rows: &mut Vec<Vec<Value>>, cut_cells: &mut usize| {
+    let mut apply = |columns: &[bounded::Column], rows: &mut Vec<Vec<Value>>, cut_cells: &mut usize, counts: &mut dataman_core::privacy::Counts| {
         let at: Vec<(usize, Mask)> = columns.iter().enumerate().filter_map(|(i, c)| masks.iter().find(|(m, _)| m.eq_ignore_ascii_case(&c.name)).map(|(_, how)| (i, *how))).collect();
         for (i, how) in &at {
             let name = columns[*i].name.clone();
@@ -347,7 +347,7 @@ pub fn mask_outcome(cx: &Call, p: &ConnectionProfile, out: &mut bounded::Outcome
                 }
                 if let Value::String(s) = &*v {
                     let earlier = was_cut(s);
-                    let scrubbed = types.scrub(s, &key, &mut counts).into_owned();
+                    let scrubbed = types.scrub(s, &key, counts).into_owned();
                     *v = Value::String(match cut_text(&scrubbed, agent.max_cell) {
                         Some(c) => {
                             *cut_cells += usize::from(!earlier);
@@ -357,18 +357,21 @@ pub fn mask_outcome(cx: &Call, p: &ConnectionProfile, out: &mut bounded::Outcome
                     });
                 } else if (v.is_object() || v.is_array()) && v.to_string().len() > agent.max_cell {
                     // JSON past the agent's size comes as cut text, as it did before.
-                    let text = types.scrub(&v.to_string(), &key, &mut counts).into_owned();
+                    let text = types.scrub(&v.to_string(), &key, counts).into_owned();
                     *v = Value::String(cut_text(&text, agent.max_cell).unwrap_or(text));
                     *cut_cells += 1;
                 }
             }
         }
     };
+    // The result is the last part again, and a reply carries one or the other: its values are
+    // counted once, with the parts.
     let mut cut = out.cut_cells;
-    apply(&out.columns, &mut out.rows, &mut cut);
+    let mut again = dataman_core::privacy::Counts::new();
+    apply(&out.columns, &mut out.rows, &mut cut, if out.parts.is_empty() { &mut counts } else { &mut again });
     for part in out.parts.iter_mut() {
         let mut c = part.cut_cells;
-        apply(&part.columns, &mut part.rows, &mut c);
+        apply(&part.columns, &mut part.rows, &mut c, &mut counts);
         part.cut_cells = c;
     }
     out.cut_cells = cut;
