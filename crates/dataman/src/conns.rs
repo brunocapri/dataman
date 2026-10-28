@@ -145,7 +145,15 @@ impl crate::app::Workspace {
                 cx.background_executor().timer(std::time::Duration::from_secs(1)).await;
                 let c = core.clone();
                 let changed = cx.background_executor().spawn(async move { c.config.refresh() }).await;
-                let alive = if changed { this.update_in(cx, |w, window, cx| w.connections_reloaded(window, cx)).is_ok() } else { this.upgrade().is_some() };
+                let alive = if changed {
+                    this.update_in(cx, |w, window, cx| {
+                        w.connections_reloaded(window, cx);
+                        w.check_outside_edits(window, cx);
+                    })
+                    .is_ok()
+                } else {
+                    this.upgrade().is_some()
+                };
                 if !alive {
                     break;
                 }

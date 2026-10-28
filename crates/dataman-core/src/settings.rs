@@ -2,11 +2,14 @@
 //! (⌘,). Every field has a serde default, so older files keep loading.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
+use crate::agents_config::Change;
+use crate::approved::{self, Approved, Kept, SettingsRules};
 use crate::config::Dirs;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -241,16 +244,32 @@ impl Dirs {
     }
 }
 
+/// Agent access and the sensitive data types an edit outside Dataman loosens wait for review
+/// (see [`crate::approved`]).
 pub struct SettingsStore {
     path: PathBuf,
-    current: Mutex<Settings>,
+    approved: Arc<Approved>,
+    current: Mutex<State>,
+}
+
+struct State {
+    /// As they apply.
+    settings: Settings,
+    /// The file's rules for agents and what they loosen, while held.
+    held: Option<(SettingsRules, Vec<Change>)>,
+    kept: Kept<SettingsRules>,
 }
 
 impl SettingsStore {
-    // A broken preferences file must never keep the app from starting.
+    /// The file taken as it is: for tests.
     pub fn open(dirs: &Dirs) -> SettingsStore {
+        SettingsStore::open_with(dirs, Approved::off())
+    }
+
+    // A broken preferences file must never keep the app from starting.
+    pub fn open_with(dirs: &Dirs, approved: Arc<Approved>) -> SettingsStore {
         let path = dirs.settings_file();
-        let current = match std::fs::read_to_string(&path) {
+        let mut settings = match std::fs::read_to_string(&path) {
             Ok(text) => {
                 let mut s = toml::from_str::<Settings>(&text).unwrap_or_else(|e| {
                     log::warn!("ignoring {}: {e}", path.display());
@@ -264,17 +283,76 @@ impl SettingsStore {
             }
             Err(_) => Settings::default(),
         };
-        SettingsStore { path, current: Mutex::new(current) }
+        let kept = approved.settings();
+        let mut held = None;
+        if kept.on() {
+            let file = SettingsRules::of(&settings);
+            let changes = approved::review_settings(kept.found(), &file);
+            if !changes.is_empty() {
+                kept.found().cloned().unwrap_or_else(|| SettingsRules::of(&Settings::default())).set(&mut settings);
+                held = Some((file, changes));
+            }
+        }
+        let mut state = State { settings, held, kept };
+        if matches!(state.kept, Kept::Missing) && state.held.is_none() {
+            let rules = SettingsRules::of(&state.settings);
+            match approved.set_settings(&rules) {
+                Ok(()) => state.kept = Kept::Found(rules),
+                Err(e) => log::warn!("the approved rules could not be saved: {e:#}"),
+            }
+        }
+        SettingsStore { path, approved, current: Mutex::new(state) }
     }
 
     pub fn get(&self) -> Settings {
-        self.current.lock().clone()
+        self.current.lock().settings.clone()
     }
 
+    /// What settings.toml loosens for agents that was not done in Dataman, waiting for review.
+    pub fn held(&self) -> Vec<Change> {
+        self.current.lock().held.as_ref().map(|(_, c)| c.clone()).unwrap_or_default()
+    }
+
+    /// What `f` changes of the rules for agents is approved; left alone, the file keeps what it
+    /// had, still held.
     pub fn update(&self, f: impl FnOnce(&mut Settings)) -> Result<()> {
         let mut g = self.current.lock();
-        f(&mut g);
-        save(&self.path, &g)
+        let before = SettingsRules::of(&g.settings);
+        let mut next = g.settings.clone();
+        f(&mut next);
+        let now = SettingsRules::of(&next);
+        let touched = now != before;
+        if touched && matches!(g.kept, Kept::Unreadable) {
+            anyhow::bail!("the approved rules could not be read from the {}: agent access and the sensitive data types cannot change now", crate::secret::STORE_NAME);
+        }
+        let held = g.held.as_ref().filter(|_| !touched).map(|(rules, _)| rules.clone());
+        if g.kept.writable() && held.is_none() && g.kept.found() != Some(&now) {
+            self.approved.set_settings(&now).context(format!("saving the approved rules in the {}", crate::secret::STORE_NAME))?;
+            g.kept = Kept::Found(now);
+        }
+        g.settings = next;
+        let mut file = g.settings.clone();
+        match held {
+            Some(rules) => rules.set(&mut file),
+            None => g.held = None,
+        }
+        save(&self.path, &file)
+    }
+
+    /// Applies what settings.toml loosens, as `reviewed` showed it.
+    pub fn accept(&self, reviewed: &[Change]) -> Result<()> {
+        let mut g = self.current.lock();
+        let Some((rules, changes)) = g.held.clone() else { return Ok(()) };
+        if changes != reviewed {
+            anyhow::bail!("settings.toml changed since: review it again");
+        }
+        if !g.kept.writable() {
+            anyhow::bail!("the approved rules could not be read from the {}", crate::secret::STORE_NAME);
+        }
+        self.approved.set_settings(&rules)?;
+        rules.set(&mut g.settings);
+        (g.kept, g.held) = (Kept::Found(rules), None);
+        save(&self.path, &g.settings)
     }
 }
 

@@ -7,6 +7,10 @@ pub trait SecretStore: Send + Sync {
     fn get(&self, connection_id: &str) -> Result<Option<String>>;
     fn set(&self, connection_id: &str, password: &str) -> Result<()>;
     fn delete(&self, connection_id: &str) -> Result<()>;
+    /// What is set stays after this process: the rules approved in Dataman can be kept here.
+    fn durable(&self) -> bool {
+        true
+    }
 }
 
 pub const SERVICE: &str = "dataman";
@@ -128,6 +132,10 @@ impl SecretStore for Keychain {
     fn delete(&self, id: &str) -> Result<()> {
         linux::delete(id)
     }
+
+    fn durable(&self) -> bool {
+        futures_lite::future::block_on(oo7::Keyring::new()).is_ok()
+    }
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
@@ -142,6 +150,10 @@ impl SecretStore for Keychain {
 
     fn delete(&self, _: &str) -> Result<()> {
         Ok(())
+    }
+
+    fn durable(&self) -> bool {
+        false
     }
 }
 
@@ -159,5 +171,8 @@ impl SecretStore for MemorySecrets {
     fn delete(&self, id: &str) -> Result<()> {
         self.0.lock().remove(id);
         Ok(())
+    }
+    fn durable(&self) -> bool {
+        false
     }
 }

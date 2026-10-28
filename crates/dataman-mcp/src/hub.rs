@@ -356,7 +356,7 @@ impl Hub {
         let stamp = mtime(&file);
         let mut g = self.profiles.lock();
         if g.stamp != stamp || stamp.is_none() {
-            match ConfigStore::open(&self.dirs) {
+            match ConfigStore::open_with(&self.dirs, self.core.approved.clone()) {
                 Ok(s) => g.value = Arc::new(s.connections()),
                 Err(e) => log::warn!("{e:#}"),
             }
@@ -370,7 +370,7 @@ impl Hub {
         let stamp = mtime(&file);
         let mut g = self.settings.lock();
         if g.stamp != stamp || stamp.is_none() {
-            g.value = Arc::new(SettingsStore::open(&self.dirs).get());
+            g.value = Arc::new(SettingsStore::open_with(&self.dirs, self.core.approved.clone()).get());
             g.stamp = stamp;
         }
         g.value.clone()

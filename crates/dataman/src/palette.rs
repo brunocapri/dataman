@@ -1028,6 +1028,7 @@ fn commands(conn: Option<&std::sync::Arc<dataman_core::Connection>>, cx: &App) -
         c("Open database file…", "a SQLite or DuckDB file", "", Box::new(crate::app::OpenDatabaseFile), Workspace),
         c("Open project…", "a folder's shared settings, in .dataman", "", Box::new(OpenProject), Workspace),
         c("Close project", "keeps what it brought, stops syncing", "", Box::new(CloseProject), Workspace),
+        c("Review edits made outside Dataman", "connections.toml or settings.toml, held until applied", "", Box::new(crate::outside_ui::ReviewOutsideEdits), Workspace),
         c("Export result…", "CSV, TSV, JSON, NDJSON, SQL INSERT, Parquet", "⌘E", Box::new(ExportResult), Workspace),
         c("Import data…", "CSV, TSV, JSON, NDJSON, Parquet", "", Box::new(ImportData), Workspace),
         c("Edit cell", "inline, in the grid", "↩", Box::new(crate::grid::EditCell), Grid),

@@ -3,10 +3,14 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+
+use crate::approved::{self, Approved, Kept};
+use crate::project::ConnReview;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -659,18 +663,59 @@ impl Dirs {
 }
 
 /// Other processes write the file too (`dataman-mcp` without the app, a hand edit): every
-/// change starts from the file as it is on disk, so nobody's write is lost.
+/// change starts from the file as it is on disk, so nobody's write is lost. What an edit made
+/// outside Dataman loosens or moves waits for review (see [`crate::approved`]).
 pub struct ConfigStore {
     path: PathBuf,
+    approved: Arc<Approved>,
     inner: Mutex<Inner>,
 }
 
 struct Inner {
+    /// As they apply: the file's, with the approved protections where it loosens them.
     connections: Vec<ConnectionProfile>,
+    held: Vec<ConnReview>,
+    /// As the file has them.
+    file: Vec<ConnectionProfile>,
+    kept: Kept<Vec<ConnectionProfile>>,
     /// Entries this version cannot read (an engine from a newer Dataman): kept as they are, and
     /// written back on every save.
     skipped: Vec<toml::Table>,
     stamp: Option<crate::stamp::FileStamp>,
+}
+
+impl Inner {
+    fn resolve(&mut self) {
+        let r = if self.kept.on() { approved::resolve(&self.file, self.kept.found().map(Vec::as_slice)) } else { approved::Resolved { connections: self.file.clone(), held: Vec::new() } };
+        (self.connections, self.held) = (r.connections, r.held);
+    }
+
+    fn held(&self, id: &str) -> bool {
+        self.held.iter().any(|h| h.id == id)
+    }
+
+    /// Approves the file's connections as they are now, but those held that `keep` does not take:
+    /// what was approved for them stays.
+    fn approve(&mut self, approved: &Approved, keep: impl Fn(&ConnectionProfile) -> bool) -> Result<()> {
+        if !self.kept.writable() {
+            return Ok(());
+        }
+        let old = self.kept.found().cloned().unwrap_or_default();
+        let list: Vec<ConnectionProfile> = self
+            .file
+            .iter()
+            .filter_map(|p| match old.iter().find(|a| a.id == p.id) {
+                Some(a) if self.held(&p.id) && !keep(p) => Some(a.clone()),
+                None if self.held(&p.id) && !keep(p) => None,
+                _ => Some(approved::protections_of(p)),
+            })
+            .collect();
+        if list != old || matches!(self.kept, Kept::Missing) {
+            approved.set_connections(&list)?;
+            self.kept = Kept::Found(list);
+        }
+        Ok(())
+    }
 }
 
 fn mtime(p: &Path) -> Option<crate::stamp::FileStamp> {
@@ -709,11 +754,27 @@ fn parse_file(s: &str) -> Result<Loaded> {
 }
 
 impl ConfigStore {
+    /// The file taken as it is: for tests, and for what only reads names.
     pub fn open(dirs: &Dirs) -> Result<ConfigStore> {
+        ConfigStore::open_with(dirs, Approved::off())
+    }
+
+    /// What an edit outside Dataman loosens waits for review against what `approved` keeps.
+    pub fn open_with(dirs: &Dirs, approved: Arc<Approved>) -> Result<ConfigStore> {
         let path = dirs.connections_file();
         let stamp = mtime(&path);
-        let (connections, skipped) = read(&path)?;
-        Ok(ConfigStore { path, inner: Mutex::new(Inner { connections, skipped, stamp }) })
+        let (file, skipped) = read(&path)?;
+        let kept = approved.connections();
+        let mut inner = Inner { connections: Vec::new(), held: Vec::new(), file, kept, skipped, stamp };
+        inner.resolve();
+        // The first time (or the item gone): what loosens nothing is approved as it is.
+        if matches!(inner.kept, Kept::Missing) {
+            match inner.approve(&approved, |_| false) {
+                Ok(()) => inner.resolve(),
+                Err(e) => log::warn!("the approved rules could not be saved: {e:#}"),
+            }
+        }
+        Ok(ConfigStore { path, approved, inner: Mutex::new(inner) })
     }
 
     pub fn connections(&self) -> Vec<ConnectionProfile> {
@@ -724,26 +785,32 @@ impl ConfigStore {
         self.inner.lock().connections.iter().find(|c| c.id == id).cloned()
     }
 
+    /// What the file loosens or moves that was not done in Dataman, waiting for review.
+    pub fn held(&self) -> Vec<ConnReview> {
+        self.inner.lock().held.clone()
+    }
+
     /// A file that does not parse (a hand edit half done) keeps the connections as they were.
     pub fn refresh(&self) -> bool {
         let mut g = self.inner.lock();
-        Self::sync(&self.path, &mut g)
+        Self::sync(&self.path, &self.approved, &mut g)
     }
 
-    fn sync(path: &Path, g: &mut Inner) -> bool {
+    fn sync(path: &Path, approved: &Approved, g: &mut Inner) -> bool {
         let stamp = mtime(path);
         if stamp == g.stamp {
             return false;
         }
         g.stamp = stamp;
         match read(path) {
-            Ok((c, skipped)) => {
+            Ok((file, skipped)) => {
                 g.skipped = skipped;
-                if c == g.connections {
-                    return false;
-                }
-                g.connections = c;
-                true
+                // Another process may have approved what it wrote.
+                g.kept = approved.connections();
+                let before = (std::mem::take(&mut g.connections), std::mem::take(&mut g.held));
+                g.file = file;
+                g.resolve();
+                (&g.connections, &g.held) != (&before.0, &before.1)
             }
             Err(e) => {
                 log::warn!("{e:#}");
@@ -752,12 +819,57 @@ impl ConfigStore {
         }
     }
 
+    /// `f` changes the connections as they apply: what it changes is approved, what it leaves
+    /// alone of a held connection stays in the file as the file had it, still held.
     fn change(&self, f: impl FnOnce(&mut Vec<ConnectionProfile>)) -> Result<()> {
         let mut g = self.inner.lock();
-        Self::sync(&self.path, &mut g);
-        f(&mut g.connections);
-        save(&self.path, &g.connections, &g.skipped)?;
+        Self::sync(&self.path, &self.approved, &mut g);
+        let before = g.connections.clone();
+        let mut next = before.clone();
+        f(&mut next);
+        let untouched = |n: &ConnectionProfile| before.iter().find(|b| b.id == n.id).is_some_and(|b| approved::protections_of(b) == approved::protections_of(n));
+        let mut file: Vec<ConnectionProfile> = next
+            .iter()
+            .map(|n| match g.file.iter().find(|p| p.id == n.id) {
+                Some(raw) if g.held(&n.id) && untouched(n) => approved::with_approved(n, &approved::protections_of(raw)),
+                _ => n.clone(),
+            })
+            .collect();
+        // Held and never approved: not shown, so not `f`'s to change.
+        let hidden: Vec<ConnectionProfile> = g.file.iter().filter(|p| g.held(&p.id) && !before.iter().any(|b| b.id == p.id) && !next.iter().any(|n| n.id == p.id)).cloned().collect();
+        file.extend(hidden);
+        let changed: Vec<String> = next.iter().filter(|n| !untouched(n)).map(|n| n.id.clone()).collect();
+        if matches!(g.kept, Kept::Unreadable) && !changed.is_empty() {
+            anyhow::bail!("the approved rules could not be read from the {}: a connection's protections cannot change now", crate::secret::STORE_NAME);
+        }
+        let old_file = std::mem::replace(&mut g.file, file);
+        // Approved first: a write that fails after it leaves the file stricter than what is kept.
+        if let Err(e) = g.approve(&self.approved, |p| changed.contains(&p.id)) {
+            g.file = old_file;
+            return Err(e.context(format!("saving the approved rules in the {}", crate::secret::STORE_NAME)));
+        }
+        save(&self.path, &g.file, &g.skipped)?;
         g.stamp = mtime(&self.path);
+        g.resolve();
+        Ok(())
+    }
+
+    /// Applies what the file loosens, as `reviewed` showed it; refused when it changed since.
+    pub fn accept(&self, reviewed: &[ConnReview]) -> Result<()> {
+        let mut g = self.inner.lock();
+        Self::sync(&self.path, &self.approved, &mut g);
+        if g.held != reviewed {
+            anyhow::bail!("connections.toml changed since: review it again");
+        }
+        if !g.kept.writable() {
+            anyhow::bail!("the approved rules could not be read from the {}", crate::secret::STORE_NAME);
+        }
+        let ids: Vec<String> = reviewed.iter().map(|r| r.id.clone()).collect();
+        g.approve(&self.approved, |p| ids.contains(&p.id))?;
+        // Written again, so that every process reads what is approved now.
+        save(&self.path, &g.file, &g.skipped)?;
+        g.stamp = mtime(&self.path);
+        g.resolve();
         Ok(())
     }
 

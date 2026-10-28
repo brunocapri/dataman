@@ -115,6 +115,7 @@ const STAGES: &[Stage] = &[
     st("sqlite-check", &[], 120),
     st("duckdb-check", &[], 120),
     st("project-check", &[], 120),
+    st("outside-check", &[], 120),
     st("format-check", &[Mongo], 120),
     st("update-check", &[Pg], 300),
 ];

@@ -381,6 +381,11 @@ pub struct Workspace {
     pub(crate) project_review: Option<dataman_core::project::Review>,
     pub(crate) project_review_focus: FocusHandle,
     pub(crate) project_review_return: Option<FocusHandle>,
+    pub(crate) outside_review: Option<crate::outside_ui::Outside>,
+    pub(crate) outside_review_focus: FocusHandle,
+    pub(crate) outside_review_return: Option<FocusHandle>,
+    /// Not now: not shown again until what waits changes.
+    pub(crate) outside_declined: Option<crate::outside_ui::Outside>,
     pub(crate) update_pill_bounds: std::rc::Rc<std::cell::RefCell<Vec<gpui::Bounds<gpui::Pixels>>>>,
     pub(crate) update_button_bounds: std::rc::Rc<std::cell::RefCell<Vec<gpui::Bounds<gpui::Pixels>>>>,
     pub(crate) session_task: Option<gpui::Task<()>>,
@@ -574,6 +579,10 @@ impl Workspace {
             project_review: None,
             project_review_focus: cx.focus_handle(),
             project_review_return: None,
+            outside_review: None,
+            outside_review_focus: cx.focus_handle(),
+            outside_review_return: None,
+            outside_declined: None,
             update_focus: cx.focus_handle(),
             update_pill_bounds: Default::default(),
             update_button_bounds: Default::default(),
@@ -607,6 +616,7 @@ impl Workspace {
         .detach();
         w.watch_connections(window, cx);
         w.watch_project(window, cx);
+        w.check_outside_edits(window, cx);
         if !w.restore_session(window, cx) {
             w.new_tab(window, cx);
         }
@@ -868,6 +878,7 @@ impl Workspace {
             || self.tx_prompt.is_some()
             || self.update_sheet
             || self.project_review.is_some()
+            || self.outside_review.is_some()
             || cx.try_global::<crate::mcp::McpHost>().is_some_and(|h| !h.pending.is_empty())
     }
 
@@ -890,6 +901,7 @@ impl Workspace {
             ("tx prompt", self.tx_prompt.is_some()),
             ("update", self.update_sheet),
             ("project review", self.project_review.is_some()),
+            ("outside review", self.outside_review.is_some()),
             ("mcp", cx.try_global::<crate::mcp::McpHost>().is_some_and(|h| !h.pending.is_empty())),
         ]
         .into_iter()
@@ -2885,6 +2897,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|w, _: &OpenProject, window, cx| w.open_project(window, cx)))
             .on_action(cx.listener(|w, _: &CloseProject, _, cx| w.close_project(cx)))
             .on_action(cx.listener(|w, _: &ReviewProject, window, cx| w.show_project_review(window, cx)))
+            .on_action(cx.listener(|w, _: &crate::outside_ui::ReviewOutsideEdits, window, cx| w.show_outside_review(window, cx)))
             .on_action(cx.listener(|w, _: &crate::tree::ShowRowActions, window, cx| {
                 let was_open = w.explorer_open;
                 w.focus_region(Region::Explorer, window, cx);
@@ -2973,6 +2986,7 @@ impl Render for Workspace {
             .children(self.render_mcp_sheet(cx))
             .children(self.render_update_sheet(cx))
             .children(self.render_project_review(cx))
+            .children(self.render_outside_review(cx))
             .children(self.render_app_menu(cx))
             .children(crate::csd::border(window, cx))
             .children(self.render_resize_edges(window))

@@ -302,6 +302,7 @@ pub fn bind_all(cx: &mut App) {
     crate::lar::bind_keys(cx);
     crate::update_ui::bind_keys(cx);
     crate::project_ui::bind_keys(cx);
+    crate::outside_ui::bind_keys(cx);
     let map = overrides();
     let mut bindings = Vec::new();
     for cmd in COMMANDS {

@@ -369,7 +369,7 @@ fn merged(mine: Option<&ConnectionProfile>, theirs: &ConnectionProfile, agents: 
 }
 
 /// What reaches a server, and with what: a change sends this person's password elsewhere.
-fn target(p: &ConnectionProfile) -> impl PartialEq + '_ {
+pub(crate) fn target(p: &ConnectionProfile) -> impl PartialEq + '_ {
     let options: Vec<(&String, &String)> = p.options.iter().filter(|(k, _)| !secret_option(k)).collect();
     (p.engine, p.host.to_ascii_lowercase(), p.port, &p.user, &p.ssh, options)
 }
@@ -410,7 +410,7 @@ fn ssh_text(p: &ConnectionProfile) -> String {
 }
 
 /// What `new` gives agents and the server over `old`, each line flagged when it loosens.
-fn protections(old: &ConnectionProfile, new: &ConnectionProfile) -> Vec<Change> {
+pub(crate) fn protections(old: &ConnectionProfile, new: &ConnectionProfile) -> Vec<Change> {
     let mut out = Vec::new();
     let mut push = |what: String, from: String, to: String, loosens: bool| {
         if from != to {
@@ -461,64 +461,85 @@ fn twin<'a>(local: &'a [ConnectionProfile], p: &ConnectionProfile) -> Option<&'a
 /// What a connection of the file does on this side that is this person's to decide; none
 /// when nothing in it loosens.
 fn review_conn(mine: Option<&ConnectionProfile>, next: &ConnectionProfile, local: &[ConnectionProfile], root: &Path) -> Option<ConnReview> {
+    let moved = mine.is_some_and(|m| moves(m, next, root));
+    let changes = match mine {
+        Some(old) => {
+            let mut changes = if moved { address_changes(old, next) } else { Vec::new() };
+            changes.extend(protections(old, next));
+            changes
+        }
+        None => arrival(next, local, Some(root)),
+    };
+    changes.iter().any(|c| c.loosens).then(|| ConnReview { id: next.id.clone(), name: next.name.clone(), new: mine.is_none(), moved, changes })
+}
+
+/// Where a connection now goes, line by line (each a loosening: the saved password was for the
+/// old place).
+pub(crate) fn address_changes(old: &ConnectionProfile, next: &ConnectionProfile) -> Vec<Change> {
+    let mut changes = Vec::new();
+    let mut push = |what: &str, from: String, to: String| {
+        if from != to {
+            changes.push(Change { what: what.into(), from, to, loosens: true });
+        }
+    };
+    push("Engine", old.engine.label().into(), next.engine.label().into());
+    push("Host", old.host.clone(), next.host.clone());
+    push("Port", old.port.to_string(), next.port.to_string());
+    push("User", old.user.clone(), next.user.clone());
+    push("SSH", ssh_text(old), ssh_text(next));
+    push("File", old.path.clone().unwrap_or_default(), next.path.clone().unwrap_or_default());
+    let keys: BTreeSet<&String> = old.options.keys().chain(next.options.keys()).filter(|k| !secret_option(k)).collect();
+    for k in keys {
+        let v = |p: &ConnectionProfile| p.options.get(k).cloned().unwrap_or_else(|| "—".into());
+        push(&format!("Option › {k}"), v(old), v(next));
+    }
+    changes
+}
+
+/// What a connection this person did not have gives agents and the server: against a fresh one,
+/// or against the connection of theirs that already reaches the same place. `root`: the
+/// project's folder, outside which a database file is flagged.
+pub(crate) fn arrival(next: &ConnectionProfile, local: &[ConnectionProfile], root: Option<&Path>) -> Vec<Change> {
     let mut changes = Vec::new();
     let mut push = |what: &str, from: String, to: String, loosens: bool| {
         if from != to {
             changes.push(Change { what: what.into(), from, to, loosens });
         }
     };
-    let moved = mine.is_some_and(|m| moves(m, next, root));
-    match mine {
-        Some(old) => {
-            if moved {
-                push("Engine", old.engine.label().into(), next.engine.label().into(), true);
-                push("Host", old.host.clone(), next.host.clone(), true);
-                push("Port", old.port.to_string(), next.port.to_string(), true);
-                push("User", old.user.clone(), next.user.clone(), true);
-                push("SSH", ssh_text(old), ssh_text(next), true);
-                push("File", old.path.clone().unwrap_or_default(), next.path.clone().unwrap_or_default(), true);
-                let keys: BTreeSet<&String> = old.options.keys().chain(next.options.keys()).filter(|k| !secret_option(k)).collect();
-                for k in keys {
-                    let v = |p: &ConnectionProfile| p.options.get(k).cloned().unwrap_or_else(|| "—".into());
-                    push(&format!("Option › {k}"), v(old), v(next), true);
-                }
-            }
-            changes.extend(protections(old, next));
-        }
-        None => {
-            if next.engine.is_file() && file_outside(next.path.as_deref().unwrap_or(""), root) {
-                push("File", "—".into(), format!("{} (outside the project's folder)", next.path.clone().unwrap_or_default()), true);
-            }
-            if let Some(q) = local.iter().find(|q| q.id != next.id && q.name.trim().eq_ignore_ascii_case(next.name.trim())) {
-                push("Name", "—".into(), format!("{}, as your connection {}", next.name, q.name), true);
-            }
-            // Agents name a connection by id first: an id that is one of this person's names
-            // would take that name's calls.
-            if let Some(q) = local.iter().find(|q| q.name.trim().eq_ignore_ascii_case(next.id.trim())) {
-                push("Id", "—".into(), format!("{}, the name of your connection", q.name), true);
-            }
-            if !next.engine.is_file() && next.host.starts_with('/') {
-                push("Host", "—".into(), format!("{} (a local socket: the server may let you in without a password)", next.host), true);
-            }
-            if let Some(v) = next.options.get("duckdb.external_access").filter(|v| v.as_str() != "false") {
-                push("Option › duckdb.external_access", "—".into(), v.clone(), true);
-            }
-            // TLS off where it would be on by default is flagged; prefer is what the dialog offers.
-            let tls = Some(crate::config::default_sslmode(next.engine, &next.host, next.ssh.is_some())).filter(|m| ssl_rank(*m) <= 1).unwrap_or(SslMode::Prefer);
-            let fresh = ConnectionProfile { env: next.env, engine: next.engine, sslmode: tls, ..ConnectionProfile::new(next.name.clone()) };
-            match twin(local, next) {
-                Some(q) => {
-                    let looser: Vec<Change> = protections(q, next).into_iter().filter(|c| c.loosens).collect();
-                    if !looser.is_empty() {
-                        push("Reaches", "—".into(), format!("what your connection {} does, with less protection", q.name), true);
-                    }
-                    changes.extend(looser);
-                }
-                None => changes.extend(protections(&fresh, next).into_iter().filter(|c| c.loosens)),
-            }
-        }
+    if let Some(root) = root
+        && next.engine.is_file()
+        && file_outside(next.path.as_deref().unwrap_or(""), root)
+    {
+        push("File", "—".into(), format!("{} (outside the project's folder)", next.path.clone().unwrap_or_default()), true);
     }
-    changes.iter().any(|c| c.loosens).then(|| ConnReview { id: next.id.clone(), name: next.name.clone(), new: mine.is_none(), moved, changes })
+    if let Some(q) = local.iter().find(|q| q.id != next.id && q.name.trim().eq_ignore_ascii_case(next.name.trim())) {
+        push("Name", "—".into(), format!("{}, as your connection {}", next.name, q.name), true);
+    }
+    // Agents name a connection by id first: an id that is one of this person's names
+    // would take that name's calls.
+    if let Some(q) = local.iter().find(|q| q.name.trim().eq_ignore_ascii_case(next.id.trim())) {
+        push("Id", "—".into(), format!("{}, the name of your connection", q.name), true);
+    }
+    if !next.engine.is_file() && next.host.starts_with('/') {
+        push("Host", "—".into(), format!("{} (a local socket: the server may let you in without a password)", next.host), true);
+    }
+    if let Some(v) = next.options.get("duckdb.external_access").filter(|v| v.as_str() != "false") {
+        push("Option › duckdb.external_access", "—".into(), v.clone(), true);
+    }
+    // TLS off where it would be on by default is flagged; prefer is what the dialog offers.
+    let tls = Some(crate::config::default_sslmode(next.engine, &next.host, next.ssh.is_some())).filter(|m| ssl_rank(*m) <= 1).unwrap_or(SslMode::Prefer);
+    let fresh = ConnectionProfile { env: next.env, engine: next.engine, sslmode: tls, ..ConnectionProfile::new(next.name.clone()) };
+    match twin(local, next) {
+        Some(q) => {
+            let looser: Vec<Change> = protections(q, next).into_iter().filter(|c| c.loosens).collect();
+            if !looser.is_empty() {
+                push("Reaches", "—".into(), format!("what your connection {} does, with less protection", q.name), true);
+            }
+            changes.extend(looser);
+        }
+        None => changes.extend(protections(&fresh, next).into_iter().filter(|c| c.loosens)),
+    }
+    changes
 }
 
 /// The project's file as this person's side would write it: `members` are its connections.

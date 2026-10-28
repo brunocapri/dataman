@@ -192,7 +192,7 @@ impl Workspace {
                 .iter()
                 .map(|c| {
                     k += 1;
-                    change_row(&t, k - 1, c)
+                    change_row(&t, "project-review-change", k - 1, c)
                 })
                 .collect();
             body = std::mem::replace(&mut body, div()).child(
@@ -319,9 +319,10 @@ impl Workspace {
     }
 }
 
-fn change_row(t: &Theme, k: usize, c: &Change) -> AnyElement {
+/// One line of a review: what, from, to, and whether it loosens. `prefix`: the checks' probe.
+pub(crate) fn change_row(t: &Theme, prefix: &str, k: usize, c: &Change) -> AnyElement {
     div()
-        .children(ui::here(&SharedString::from(format!("project-review-change-{k}")).into()))
+        .children(ui::here(&SharedString::from(format!("{prefix}-{k}")).into()))
         .flex()
         .flex_row()
         .items_center()

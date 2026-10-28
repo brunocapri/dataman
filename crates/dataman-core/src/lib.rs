@@ -1,5 +1,6 @@
 pub mod activity;
 pub mod agents_config;
+pub mod approved;
 pub mod agent_nosql;
 pub mod agent_sql;
 pub mod backend;
@@ -124,6 +125,8 @@ pub struct Core {
     pub config: ConfigStore,
     pub settings: SettingsStore,
     pub secrets: Arc<dyn SecretStore>,
+    /// The rules for agents and the server as approved in Dataman (see [`approved`]).
+    pub approved: Arc<approved::Approved>,
     pub history: Arc<History>,
     pub favorites: Arc<FavoritesStore>,
     pub pins: PinStore,
@@ -204,6 +207,11 @@ pub struct Importable {
 
 impl Core {
     pub fn new(dirs: Dirs, secrets: Arc<dyn SecretStore>) -> Result<Core> {
+        let approved = approved::Approved::kept_in(secrets.clone());
+        Core::with_approved(dirs, secrets, approved)
+    }
+
+    pub fn with_approved(dirs: Dirs, secrets: Arc<dyn SecretStore>, approved: Arc<approved::Approved>) -> Result<Core> {
         if let Err(e) = dirs.ensure_private() {
             log::warn!("{}: {e}", dirs.config.display());
         }
@@ -214,8 +222,8 @@ impl Core {
             .build()?;
         // Before any TLS: drivers that build their own TLS config take the process' provider.
         backend::install_tls_provider();
-        let config = ConfigStore::open(&dirs)?;
-        let settings = SettingsStore::open(&dirs);
+        let config = ConfigStore::open_with(&dirs, approved.clone())?;
+        let settings = SettingsStore::open_with(&dirs, approved.clone());
         settings::migrate_mcp_limits(&dirs, &config, &settings);
         Ok(Core {
             rt,
@@ -227,6 +235,7 @@ impl Core {
             project: project::ProjectStore::open(&dirs),
             dirs,
             secrets,
+            approved,
             extensions: server::default_extensions(),
             pgpass: pgpass::default_path(),
             ssh_typed: Default::default(),

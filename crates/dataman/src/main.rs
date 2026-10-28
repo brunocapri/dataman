@@ -99,6 +99,9 @@ mod newuser_check;
 #[cfg(feature = "checks")]
 mod nosql_check;
 mod notify;
+#[cfg(feature = "checks")]
+mod outside_check;
+mod outside_ui;
 mod palette;
 mod panels;
 mod params_ui;
@@ -397,7 +400,15 @@ fn main() {
         }
         (urls, socket)
     };
-    let core = match Core::new(dirs.clone(), secrets) {
+    // outside-check keeps the approved rules in its memory store, as the Keychain would.
+    #[cfg(feature = "checks")]
+    let approved = match bench {
+        Some(_) if std::env::var("DATAMAN_SHOT_STAGE").as_deref() == Ok("outside-check") => dataman_core::approved::Approved::always_in(secrets.clone()),
+        _ => dataman_core::approved::Approved::kept_in(secrets.clone()),
+    };
+    #[cfg(not(feature = "checks"))]
+    let approved = dataman_core::approved::Approved::kept_in(secrets.clone());
+    let core = match Core::with_approved(dirs.clone(), secrets, approved) {
         Ok(c) => Arc::new(c),
         Err(e) => {
             eprintln!("Dataman: {e:#}");

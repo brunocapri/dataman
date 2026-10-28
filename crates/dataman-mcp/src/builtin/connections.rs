@@ -354,7 +354,7 @@ fn of_project(cx: &Call, p: &ConnectionProfile) -> Result<(), ToolError> {
 }
 
 fn save(cx: &Call, profile: &ConnectionProfile) -> Result<(), ToolError> {
-    let store = ConfigStore::open(&cx.hub.dirs).map_err(failed)?;
+    let store = ConfigStore::open_with(&cx.hub.dirs, cx.hub.core.approved.clone()).map_err(failed)?;
     store.upsert(profile.clone()).map_err(failed)?;
     if let Some(f) = cx.hub.front() {
         f.connections_changed();
