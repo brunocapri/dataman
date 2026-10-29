@@ -347,7 +347,8 @@ fn postgres_through_an_ssh_tunnel() {
         c.expect("connected through the tunnel")
     };
     let user = agent_login::login_name(id);
-    exec(core, &admin, &format!("DROP ROLE IF EXISTS {user}"));
+    // A run that stopped half-way left it: gone first.
+    exec(core, &admin, &format!("DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{user}') THEN EXECUTE 'DROP OWNED BY {user}'; EXECUTE 'DROP ROLE {user}'; END IF; END $$"));
     let rv = core.block_on(live::review(&admin, &p, &Options::default())).unwrap();
     core.block_on(live::apply(&admin, &rv.plan, &p.database)).unwrap();
     e.secrets.set(&agent_login::secret_account(id), &rv.password).unwrap();
