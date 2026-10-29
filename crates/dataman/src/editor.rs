@@ -2950,6 +2950,7 @@ impl CodeEditor {
                 }
             }
         }
+        let fold_boxes = fold_hits.iter().map(|(b, _)| window.insert_hitbox(*b, HitboxBehavior::Normal)).collect();
         self.fold_hits = fold_hits;
 
         let cursor_quad = (focused && self.blink_on && seen(cursor_line)).then(|| {
@@ -2982,6 +2983,7 @@ impl CodeEditor {
             lens,
             backgrounds,
             fold_marks,
+            fold_boxes,
             cursor: cursor_quad,
             pop,
         }
@@ -3573,6 +3575,7 @@ struct Prepainted {
     backgrounds: Vec<PaintQuad>,
     /// Gutter chevrons and the ⋯ of folded lines.
     fold_marks: Vec<(Point<Pixels>, ShapedLine)>,
+    fold_boxes: Vec<Hitbox>,
     cursor: Option<PaintQuad>,
     pop: Option<EditorPop>,
 }
@@ -3681,6 +3684,9 @@ impl Element for EditorElement {
                 if origin.x >= p.text_bounds.left() || origin.x < p.gutter.right() - px(12.) {
                     line.paint(*origin, lh, TextAlign::Left, None, window, cx).ok();
                 }
+            }
+            for b in &p.fold_boxes {
+                window.set_cursor_style(CursorStyle::PointingHand, b);
             }
         });
         window.with_content_mask(Some(ContentMask { bounds }), |window| {

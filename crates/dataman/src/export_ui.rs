@@ -256,6 +256,13 @@ impl ExportView {
             }),
         };
         v.path = v.default_path(&name);
+        // AppKit's save panel takes a second to build the first time; doing it now, while the
+        // dialog is read, makes Choose… open at once.
+        cx.spawn(async move |_, cx| {
+            cx.background_executor().timer(Duration::from_millis(150)).await;
+            cx.update(|_| crate::sql_picker::warm_save_panel());
+        })
+        .detach();
         v
     }
 
@@ -727,22 +734,16 @@ impl Render for ExportView {
         }));
         let save = div().flex().flex_col().gap(px(6.)).child(ui::caps(&t, "SAVE TO")).child(
             div()
-                .h(px(28.))
-                .px(px(10.))
                 .flex()
                 .flex_row()
                 .items_center()
-                .gap(px(8.))
-                .bg(t.field)
-                .border_1()
-                .border_color(t.field_b)
-                .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(tilde(&self.path)))
+                .gap(px(10.))
+                .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx2).child(tilde(&self.path)))
                 .child(
-                    div()
-                        .id("ex-choose")
-                        .text_color(t.acc_t)
-                        .child("Choose…")
-                        .when(!locked, |d| d.on_click(cx.listener(|v, _, _, cx| v.choose_path(cx)))),
+                    ui::button(&t, "ex-choose", ui::Btn::Secondary)
+                        .when(!locked, |d| d.cursor_pointer().on_click(cx.listener(|v, _, _, cx| v.choose_path(cx))))
+                        .when(locked, |d| d.opacity(0.5))
+                        .child("Choose…"),
                 ),
         );
         let open = self.advanced;

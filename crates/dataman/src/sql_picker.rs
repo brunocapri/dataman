@@ -33,6 +33,16 @@ pub fn file_name_for(title: &str) -> String {
     if is_sql(std::path::Path::new(stem)) { stem.to_string() } else { format!("{stem}.sql") }
 }
 
+/// Builds and drops one save panel, so the first one the user opens shows without AppKit's
+/// one-time setup (about a second on macOS); elsewhere nothing.
+pub fn warm_save_panel() {
+    #[cfg(target_os = "macos")]
+    {
+        static WARM: std::sync::Once = std::sync::Once::new();
+        WARM.call_once(imp::warm_save_panel);
+    }
+}
+
 pub fn pick_save_path(name: &str, cx: &App) -> oneshot::Receiver<Option<PathBuf>> {
     pick_new_file(&["sql"], name, cx)
 }
@@ -216,6 +226,13 @@ mod imp {
             let path = path?;
             let c: *const std::ffi::c_char = msg_send![&*path, UTF8String];
             (!c.is_null()).then(|| PathBuf::from(CStr::from_ptr(c).to_string_lossy().into_owned()))
+        }
+    }
+
+    pub fn warm_save_panel() {
+        // SAFETY: AppKit on the main thread (GPUI's UI thread calls this); the panel is never shown.
+        unsafe {
+            let _panel: Retained<AnyObject> = msg_send![class!(NSSavePanel), savePanel];
         }
     }
 

@@ -2,8 +2,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    App, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, SharedString, Window,
-    actions, div, prelude::*,
+    App, ClipboardItem, Context, CursorStyle, DispatchPhase, Entity, EventEmitter, FocusHandle, Focusable, FontWeight,
+    MouseButton, MouseDownEvent, MouseMoveEvent, SharedString, Window, actions, div, prelude::*,
 };
 use dataman_core::Connection;
 use dataman_core::guard::WriteClass;
@@ -21,6 +21,9 @@ const CONTEXT: &str = "DocView";
 
 /// Past this many lines a document first shows two levels deep, the rest folded.
 const LONG_DOC: usize = 80;
+
+const LIST_MIN: f32 = 220.;
+const DETAIL_MIN: f32 = 260.;
 
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
@@ -67,6 +70,9 @@ pub struct DocPane {
     save_armed: bool,
     reselect: Option<Body>,
     list_scroll: gpui::ScrollHandle,
+    /// The document's share of the pane's width, beside the list; dragged by its left edge.
+    detail_frac: f32,
+    split_drag: bool,
     pub zoomed: bool,
     saving: bool,
     note: Option<(String, bool)>,
@@ -162,6 +168,8 @@ impl DocPane {
             save_armed: false,
             reselect: None,
             list_scroll: gpui::ScrollHandle::new(),
+            detail_frac: 0.5,
+            split_drag: false,
             zoomed: false,
             saving: false,
             note: None,
@@ -977,6 +985,33 @@ impl DocPane {
             .child(div().flex_1().min_h_0().relative().overflow_hidden().child(editor))
     }
 
+    /// While the seam is dragged: the pointer anywhere in the window moves it, the button's
+    /// release ends it.
+    fn split_tracker(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let me = cx.entity();
+        gpui::canvas(|_, _, _| {}, move |bounds, _, window, _| {
+            window.set_window_cursor_style(CursorStyle::ResizeLeftRight);
+            window.on_mouse_event(move |ev: &MouseMoveEvent, phase, _, cx| {
+                if phase != DispatchPhase::Bubble {
+                    return;
+                }
+                me.update(cx, |p, cx| {
+                    if ev.pressed_button != Some(MouseButton::Left) {
+                        p.split_drag = false;
+                    } else {
+                        let w = bounds.size.width;
+                        let lo = (px(DETAIL_MIN) / w).min(0.5);
+                        let hi = (1. - px(LIST_MIN) / w).max(0.5);
+                        p.detail_frac = ((bounds.right() - ev.position.x) / w).clamp(lo, hi);
+                    }
+                    cx.notify();
+                });
+            });
+        })
+        .absolute()
+        .size_full()
+    }
+
     fn render_printed(&self, lines: &[String], t: &Theme) -> impl IntoElement + use<> {
         div()
             .id("doc-printed")
@@ -1042,19 +1077,40 @@ impl Render for DocPane {
                 let show_detail = self.selected.is_some() || self.new_doc;
                 div()
                     .size_full()
+                    .relative()
                     .flex()
                     .flex_row()
-                    .child(div().flex_1().min_w(px(220.)).h_full().child(self.render_list(&d, &lines, &t, cx)))
+                    .child(div().flex_1().min_w(px(LIST_MIN)).h_full().child(self.render_list(&d, &lines, &t, cx)))
                     .when(show_detail, |row| {
+                        let seam = div()
+                            .id("doc-seam")
+                            .absolute()
+                            .left(px(-3.))
+                            .top_0()
+                            .bottom_0()
+                            .w(px(6.))
+                            .cursor(CursorStyle::ResizeLeftRight)
+                            .on_mouse_down(MouseButton::Left, cx.listener(|p, ev: &MouseDownEvent, _, cx| {
+                                if ev.click_count == 2 {
+                                    p.detail_frac = 0.5;
+                                } else {
+                                    p.split_drag = true;
+                                }
+                                cx.stop_propagation();
+                                cx.notify();
+                            }));
                         row.child(
                             div()
-                                .w(gpui::relative(0.5))
+                                .w(gpui::relative(self.detail_frac))
                                 .flex_none()
                                 .h_full()
+                                .relative()
                                 .border_l_1()
                                 .border_color(t.line)
-                                .child(self.render_detail(editor.clone(), editable, &t, cx)),
+                                .child(self.render_detail(editor.clone(), editable, &t, cx))
+                                .child(seam),
                         )
+                        .children(self.split_drag.then(|| self.split_tracker(cx)))
                     })
                     .into_any_element()
             }
@@ -1080,6 +1136,12 @@ impl Render for DocPane {
             .size_full()
             .flex()
             .flex_col()
+            .on_mouse_up(MouseButton::Left, cx.listener(|p, _, _, cx| {
+                if p.split_drag {
+                    p.split_drag = false;
+                    cx.notify();
+                }
+            }))
             .child(bar)
             .children(confirm)
             .children(printed)
