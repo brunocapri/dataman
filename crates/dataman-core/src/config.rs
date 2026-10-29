@@ -597,6 +597,49 @@ pub(crate) fn percent_encode(s: &str) -> String {
 struct File {
     #[serde(default, rename = "connection")]
     connections: Vec<ConnectionProfile>,
+    #[serde(default, rename = "folder", skip_serializing_if = "Vec::is_empty")]
+    folders: Vec<ConnFolder>,
+}
+
+/// A folder of the explorer: how this person arranges their connections on this machine. Optional
+/// in the file (one written before folders existed loads as is, one without folders is written
+/// as before), never in an open project's file, never a change to review: a connection's folder
+/// is not one of its settings.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnFolder {
+    pub id: String,
+    pub name: String,
+    /// One of the connection swatches, by name (as a connection's color).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    /// The connections in it, by id (their order is the explorer's).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub connections: Vec<String>,
+}
+
+impl ConnFolder {
+    pub fn new(name: &str, taken: &[ConnFolder]) -> ConnFolder {
+        let names: Vec<&str> = taken.iter().map(|d| d.name.as_str()).collect();
+        let base = if name.trim().is_empty() { "New folder" } else { name };
+        ConnFolder { id: uuid::Uuid::new_v4().simple().to_string(), name: crate::favorites::unique_name(base, &names), color: None, connections: Vec::new() }
+    }
+
+    pub fn holds(&self, conn: &str) -> bool {
+        self.connections.iter().any(|c| c == conn)
+    }
+}
+
+/// The folder holding `conn`, if any.
+pub fn folder_of<'a>(folders: &'a [ConnFolder], conn: &str) -> Option<&'a ConnFolder> {
+    folders.iter().find(|d| d.holds(conn))
+}
+
+/// Each connection in one folder at most (the first that lists it), each listed once.
+fn tidy_folders(folders: &mut [ConnFolder]) {
+    let mut seen = std::collections::HashSet::new();
+    for d in folders {
+        d.connections.retain(|c| seen.insert(c.clone()));
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -681,6 +724,7 @@ struct Inner {
     /// Entries this version cannot read (an engine from a newer Dataman): kept as they are, and
     /// written back on every save.
     skipped: Vec<toml::Table>,
+    folders: Vec<ConnFolder>,
     stamp: Option<crate::stamp::FileStamp>,
 }
 
@@ -722,7 +766,12 @@ fn mtime(p: &Path) -> Option<crate::stamp::FileStamp> {
     crate::stamp::FileStamp::of(p)
 }
 
-type Loaded = (Vec<ConnectionProfile>, Vec<toml::Table>);
+#[derive(Default)]
+struct Loaded {
+    connections: Vec<ConnectionProfile>,
+    skipped: Vec<toml::Table>,
+    folders: Vec<ConnFolder>,
+}
 
 fn read(path: &Path) -> Result<Loaded> {
     match std::fs::read_to_string(path) {
@@ -736,16 +785,21 @@ fn read(path: &Path) -> Result<Loaded> {
 fn parse_file(s: &str) -> Result<Loaded> {
     let mut table: toml::Table = toml::from_str(s)?;
     let mut out: Loaded = Default::default();
+    // A folder that does not read is only not shown: the connections are what matters.
+    if let Some(toml::Value::Array(list)) = table.remove("folder") {
+        out.folders = list.into_iter().filter_map(|v| v.try_into::<ConnFolder>().inspect_err(|e| log::warn!("skipping an explorer folder: {e}")).ok()).collect();
+        tidy_folders(&mut out.folders);
+    }
     let Some(list) = table.remove("connection") else { return Ok(out) };
     let toml::Value::Array(list) = list else { anyhow::bail!("`connection` is not a list") };
     for v in list {
         match v.clone().try_into::<ConnectionProfile>() {
-            Ok(c) => out.0.push(c),
+            Ok(c) => out.connections.push(c),
             Err(e) => {
                 let name = v.get("name").and_then(|n| n.as_str()).unwrap_or("?");
                 log::warn!("skipping the connection {name:?}, which this version cannot read ({e}); it stays in the file");
                 if let toml::Value::Table(t) = v {
-                    out.1.push(t);
+                    out.skipped.push(t);
                 }
             }
         }
@@ -763,9 +817,9 @@ impl ConfigStore {
     pub fn open_with(dirs: &Dirs, approved: Arc<Approved>) -> Result<ConfigStore> {
         let path = dirs.connections_file();
         let stamp = mtime(&path);
-        let (file, skipped) = read(&path)?;
+        let Loaded { connections: file, skipped, folders } = read(&path)?;
         let kept = approved.connections();
-        let mut inner = Inner { connections: Vec::new(), held: Vec::new(), file, kept, skipped, stamp };
+        let mut inner = Inner { connections: Vec::new(), held: Vec::new(), file, kept, skipped, folders, stamp };
         inner.resolve();
         // The first time (or the item gone): what loosens nothing is approved as it is.
         if matches!(inner.kept, Kept::Missing) {
@@ -803,14 +857,14 @@ impl ConfigStore {
         }
         g.stamp = stamp;
         match read(path) {
-            Ok((file, skipped)) => {
+            Ok(Loaded { connections: file, skipped, folders }) => {
                 g.skipped = skipped;
                 // Another process may have approved what it wrote.
                 g.kept = approved.connections();
-                let before = (std::mem::take(&mut g.connections), std::mem::take(&mut g.held));
+                let before = (std::mem::take(&mut g.connections), std::mem::take(&mut g.held), std::mem::replace(&mut g.folders, folders));
                 g.file = file;
                 g.resolve();
-                (&g.connections, &g.held) != (&before.0, &before.1)
+                (&g.connections, &g.held, &g.folders) != (&before.0, &before.1, &before.2)
             }
             Err(e) => {
                 log::warn!("{e:#}");
@@ -848,7 +902,13 @@ impl ConfigStore {
             g.file = old_file;
             return Err(e.context(format!("saving the approved rules in the {}", crate::secret::STORE_NAME)));
         }
-        save(&self.path, &g.file, &g.skipped)?;
+        // A connection gone leaves its folder.
+        let Inner { folders, file, skipped, .. } = &mut *g;
+        let skipped_id = |c: &str| skipped.iter().any(|t| t.get("id").and_then(|v| v.as_str()) == Some(c));
+        for d in folders.iter_mut() {
+            d.connections.retain(|c| file.iter().any(|p| p.id == *c) || skipped_id(c));
+        }
+        save(&self.path, &g.file, &g.skipped, &g.folders)?;
         g.stamp = mtime(&self.path);
         g.resolve();
         Ok(())
@@ -867,7 +927,7 @@ impl ConfigStore {
         let ids: Vec<String> = reviewed.iter().map(|r| r.id.clone()).collect();
         g.approve(&self.approved, |p| ids.contains(&p.id))?;
         // Written again, so that every process reads what is approved now.
-        save(&self.path, &g.file, &g.skipped)?;
+        save(&self.path, &g.file, &g.skipped, &g.folders)?;
         g.stamp = mtime(&self.path);
         g.resolve();
         Ok(())
@@ -892,19 +952,44 @@ impl ConfigStore {
     pub fn reorder(&self, ids: &[String]) -> Result<()> {
         self.change(|g| g.sort_by_key(|c| ids.iter().position(|i| *i == c.id).unwrap_or(usize::MAX)))
     }
+
+    /// The explorer's folders, in their order.
+    pub fn folders(&self) -> Vec<ConnFolder> {
+        self.inner.lock().folders.clone()
+    }
+
+    /// The folders changed in one write. The connections are written back as the file has them:
+    /// nothing of them changes, nothing is approved or held.
+    pub fn edit_folders(&self, f: impl FnOnce(&mut Vec<ConnFolder>)) -> Result<()> {
+        let mut g = self.inner.lock();
+        Self::sync(&self.path, &self.approved, &mut g);
+        let mut folders = g.folders.clone();
+        f(&mut folders);
+        tidy_folders(&mut folders);
+        if folders == g.folders {
+            return Ok(());
+        }
+        save(&self.path, &g.file, &g.skipped, &folders)?;
+        g.folders = folders;
+        g.stamp = mtime(&self.path);
+        Ok(())
+    }
 }
 
 /// Writes atomically: a temporary file in the same directory, then `rename`.
-fn save(path: &Path, connections: &[ConnectionProfile], skipped: &[toml::Table]) -> Result<()> {
+fn save(path: &Path, connections: &[ConnectionProfile], skipped: &[toml::Table], folders: &[ConnFolder]) -> Result<()> {
     let dir = path.parent().context("config path has no parent")?;
     std::fs::create_dir_all(dir)?;
     let text = if skipped.is_empty() {
-        toml::to_string_pretty(&File { connections: connections.to_vec() })?
+        toml::to_string_pretty(&File { connections: connections.to_vec(), folders: folders.to_vec() })?
     } else {
         let mut list: Vec<toml::Value> = connections.iter().map(toml::Value::try_from).collect::<Result<_, _>>()?;
         list.extend(skipped.iter().cloned().map(toml::Value::Table));
         let mut file = toml::Table::new();
         file.insert("connection".into(), toml::Value::Array(list));
+        if !folders.is_empty() {
+            file.insert("folder".into(), toml::Value::Array(folders.iter().map(toml::Value::try_from).collect::<Result<_, _>>()?));
+        }
         toml::to_string_pretty(&file)?
     };
     // This user's only: a secret driver option stays in it.
@@ -1018,6 +1103,73 @@ mod tests {
         store.reorder(&[c.id.clone(), b.id.clone()]).unwrap();
         assert_eq!(store.connections(), vec![c.clone(), b.clone(), a.clone()]);
         assert_eq!(ConfigStore::open(&dirs).unwrap().connections(), vec![c, b, a]);
+    }
+
+    #[test]
+    fn folders_are_optional_in_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = Dirs::at(dir.path().join("dataman"));
+        std::fs::create_dir_all(&dirs.config).unwrap();
+        // Written before folders existed: loads as is, everything at the top level.
+        let old = "[[connection]]\nid = \"a\"\nname = \"pg\"\nhost = \"h\"\nport = 1\nuser = \"u\"\ndatabase = \"d\"\n";
+        std::fs::write(dirs.connections_file(), old).unwrap();
+        let store = ConfigStore::open(&dirs).unwrap();
+        assert!(store.folders().is_empty());
+        assert_eq!(store.connections().len(), 1);
+        let b = ConnectionProfile::new("b");
+        store.upsert(b.clone()).unwrap();
+        let plain = std::fs::read_to_string(dirs.connections_file()).unwrap();
+        assert!(!plain.contains("folder"), "{plain}");
+
+        let mut work = ConnFolder::new("Work", &[]);
+        work.color = Some("mint".into());
+        work.connections = vec!["a".into(), b.id.clone()];
+        let side = ConnFolder::new("Work", std::slice::from_ref(&work));
+        assert_eq!(side.name, "Work 2", "names stay apart");
+        store.edit_folders(|f| f.extend([work.clone(), side.clone()])).unwrap();
+        let text = std::fs::read_to_string(dirs.connections_file()).unwrap();
+        assert!(text.contains("[[folder]]") && text.contains("color = \"mint\""), "{text}");
+        let again = ConfigStore::open(&dirs).unwrap();
+        assert_eq!(again.folders(), vec![work.clone(), side.clone()]);
+        assert_eq!(again.connections(), store.connections(), "the connections are as they were");
+        assert_eq!(folder_of(&again.folders(), &b.id).map(|d| d.name.as_str()), Some("Work"));
+
+        // A connection in two folders is in the first; one deleted leaves its folder.
+        store.edit_folders(|f| f[1].connections.push("a".into())).unwrap();
+        assert!(store.folders()[1].connections.is_empty());
+        store.remove(&b.id).unwrap();
+        assert_eq!(ConfigStore::open(&dirs).unwrap().folders()[0].connections, vec!["a".to_string()]);
+        // Saving the connections keeps the folders.
+        store.reorder(&["a".into()]).unwrap();
+        assert_eq!(ConfigStore::open(&dirs).unwrap().folders().len(), 2);
+
+        // Without folders the file is written as before.
+        store.edit_folders(Vec::clear).unwrap();
+        store.upsert(b.clone()).unwrap();
+        assert_eq!(std::fs::read_to_string(dirs.connections_file()).unwrap(), plain);
+    }
+
+    #[test]
+    fn folders_follow_other_writers_and_survive_unreadable_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = Dirs::at(dir.path().join("dataman"));
+        std::fs::create_dir_all(&dirs.config).unwrap();
+        let text = "[[connection]]\nid = \"a\"\nname = \"pg\"\nhost = \"h\"\nport = 1\nuser = \"u\"\ndatabase = \"d\"\n\n\
+                    [[connection]]\nid = \"b\"\nname = \"future\"\nengine = \"cockroach\"\nhost = \"h\"\nport = 2\nuser = \"u\"\ndatabase = \"d\"\n\n\
+                    [[folder]]\nid = \"f1\"\nname = \"Prod\"\nconnections = [\"a\", \"b\"]\n\n\
+                    [[folder]]\nname = \"no id: skipped\"\n";
+        std::fs::write(dirs.connections_file(), text).unwrap();
+        let app = ConfigStore::open(&dirs).unwrap();
+        assert_eq!(app.folders().iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), ["Prod"]);
+        app.upsert(ConnectionProfile::new("c")).unwrap();
+        let saved = std::fs::read_to_string(dirs.connections_file()).unwrap();
+        assert!(saved.contains("cockroach") && saved.contains("name = \"Prod\""), "{saved}");
+        assert_eq!(ConfigStore::open(&dirs).unwrap().folders()[0].connections, ["a", "b"], "a connection this version cannot read keeps its folder");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let other = ConfigStore::open(&dirs).unwrap();
+        other.edit_folders(|f| f[0].color = Some("rose".into())).unwrap();
+        assert!(app.refresh(), "a folder changed elsewhere is a change");
+        assert_eq!(app.folders()[0].color.as_deref(), Some("rose"));
     }
 
     #[test]

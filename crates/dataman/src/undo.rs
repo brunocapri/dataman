@@ -5,7 +5,7 @@ use dataman_core::groups::Pane;
 use dataman_core::layout::PanelLayout;
 use dataman_core::pins::Pin;
 use dataman_core::session::TabState;
-use dataman_core::{ConnectionProfile, Favorite};
+use dataman_core::{ConnFolder, ConnectionProfile, Favorite};
 use gpui::{Context, Entity, EntityId, Focusable, InteractiveElement, KeyBindingContextPredicate, Window, actions};
 
 use crate::app::{Region, Workspace};
@@ -40,6 +40,8 @@ pub(crate) struct DeletedConn {
     pub ssh_secret: Option<String>,
     pub history: Option<Vec<u8>>,
     pub pins: Vec<Pin>,
+    /// The explorer folder it was in.
+    pub folder: Option<String>,
 }
 
 #[derive(Clone, PartialEq)]
@@ -59,6 +61,8 @@ pub(crate) enum Op {
     FolderName { id: String, from: String, to: String },
     FolderOrder { from: Vec<String>, to: Vec<String> },
     ConnOrder { from: Vec<String>, to: Vec<String> },
+    /// The explorer's folders, as a whole (made, renamed, colored, deleted, a connection moved).
+    ConnFolders { from: Vec<ConnFolder>, to: Vec<ConnFolder> },
     ConnDeleted(Box<DeletedConn>),
     Pins { conn: String, from: Vec<Pin>, to: Vec<Pin> },
     Layout { from: PanelLayout, to: PanelLayout },
@@ -237,6 +241,11 @@ impl Workspace {
                 said(core.config.reorder(ids))?;
                 self.store.update(cx, |s, cx| s.reload(cx));
             }
+            Op::ConnFolders { from, to } => {
+                let next = if back { from.clone() } else { to.clone() };
+                said(self.store.update(cx, |s, cx| s.edit_folders(|f| *f = next, cx)))?;
+                self.tree.update(cx, |t, cx| t.folders_changed(cx));
+            }
             Op::ConnDeleted(d) => {
                 if back {
                     self.restore_connection(d, cx)?;
@@ -308,6 +317,7 @@ impl Workspace {
             (None, None)
         };
         let pins = core.pins.of(id);
+        let folder = store.folder_of(id).map(|d| d.id.clone());
         core.remove_connection(id)?;
         let history = core.history.take(id).ok().flatten();
         self.disconnect(id.to_string(), cx);
@@ -315,7 +325,7 @@ impl Workspace {
         if self.current_conn.as_deref() == Some(id) {
             self.current_conn = self.store.read(cx).profiles.first().map(|p| p.id.clone());
         }
-        Ok(DeletedConn { profile, order, password, ssh_secret, history, pins })
+        Ok(DeletedConn { profile, order, password, ssh_secret, history, pins, folder })
     }
 
     fn restore_connection(&mut self, d: &DeletedConn, cx: &mut Context<Self>) -> Applied {
@@ -330,6 +340,13 @@ impl Workspace {
             said(core.history.put_back(&id, h))?;
         }
         said(core.pins.set_of(&id, &d.pins))?;
+        if let Some(f) = &d.folder {
+            said(core.config.edit_folders(|all| {
+                if let Some(x) = all.iter_mut().find(|x| x.id == *f) {
+                    x.connections.push(id.clone());
+                }
+            }))?;
+        }
         self.store.update(cx, |s, cx| s.reload(cx));
         self.tree.update(cx, |t, cx| t.rebuild(cx));
         Ok(())

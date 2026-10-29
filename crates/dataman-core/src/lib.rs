@@ -73,7 +73,7 @@ use tokio::sync::oneshot;
 
 pub use backend::{Caps, server_error};
 pub use backend::duck::EXTERNAL_ACCESS as DUCKDB_EXTERNAL_ACCESS;
-pub use config::{ConfigStore, ConnectionProfile, Dirs, Engine, Environment, MCP_ADVANCED, McpAccess, SshAuth, SshSettings, SslMode, default_sslmode, is_local_host};
+pub use config::{ConfigStore, ConnFolder, ConnectionProfile, Dirs, Engine, Environment, MCP_ADVANCED, McpAccess, SshAuth, SshSettings, SslMode, default_sslmode, is_local_host};
 pub use sql::Dialect;
 pub use conn::TxEnd;
 pub use tx::{TxState, TxStatus};

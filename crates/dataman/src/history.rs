@@ -191,6 +191,9 @@ pub struct HistoryPanel {
     /// Connection (and database) the history is narrowed to, with the status chip.
     scope: Option<(String, Option<String>)>,
     scope_menu: bool,
+    /// The favorites folder shown and searched alone.
+    fav_scope: Option<String>,
+    fav_scope_menu: bool,
     show_favorites: bool,
     other_filter: String,
     chip_menu: bool,
@@ -243,6 +246,8 @@ impl HistoryPanel {
             chip: Chip::All,
             scope: None,
             scope_menu: false,
+            fav_scope: None,
+            fav_scope_menu: false,
             show_favorites: true,
             other_filter: String::new(),
             chip_menu: false,
@@ -305,6 +310,10 @@ impl HistoryPanel {
         let core = &self.store.read(cx).core;
         self.favorites = core.favorites.list();
         self.folders = core.favorites.folders();
+        if self.fav_scope.as_ref().is_some_and(|s| !self.folders.iter().any(|d| d.id == *s)) {
+            self.fav_scope = None;
+            self.fav_scope_menu = false;
+        }
     }
 
     fn is_favorited(&self, sql: &str) -> bool {
@@ -630,7 +639,89 @@ impl HistoryPanel {
     }
 
     fn can_reorder(&self, cx: &App) -> bool {
-        self.show_favorites && self.filter.read(cx).text().is_empty()
+        self.show_favorites && self.filter.read(cx).text().is_empty() && self.fav_scope.is_none()
+    }
+
+    /// The search field's folder chip, once there is a folder: a folder picked there is the only
+    /// one listed, and the only one searched.
+    fn render_fav_scope(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.show_favorites || self.folders.is_empty() {
+            return None;
+        }
+        let current = self.fav_scope.as_ref().and_then(|s| self.folders.iter().find(|d| d.id == *s));
+        let tip = match current {
+            Some(d) => ui::tooltip(format!("Only '{}'", d.name), Some("Favorites shows and searches this folder only"), None),
+            None => ui::tooltip("All folders".to_string(), Some("Pick a folder to show and search it only"), None),
+        };
+        let menu = self.fav_scope_menu.then(|| {
+            let pick = |f: Option<String>| {
+                cx.listener(move |h: &mut HistoryPanel, _: &gpui::ClickEvent, _, cx| {
+                    if let Some(f) = &f {
+                        h.open_folders.insert(f.clone());
+                    }
+                    h.fav_scope = f.clone();
+                    h.fav_scope_menu = false;
+                    h.apply_filter(cx);
+                })
+            };
+            let mut rows: Vec<AnyElement> = vec![ui::menu_item(t, "fscope:all", "All folders", self.fav_scope.is_none().then_some("✓"), true).cursor_pointer().on_click(pick(None)).into_any_element()];
+            rows.push(ui::menu_sep(t).into_any_element());
+            for d in &self.folders {
+                let on = self.fav_scope.as_deref() == Some(d.id.as_str());
+                rows.push(
+                    ui::menu_item(t, SharedString::from(format!("fscope:{}", d.id)), "", on.then_some("✓"), true)
+                        .relative()
+                        .cursor_pointer()
+                        .child(
+                            div()
+                                .absolute()
+                                .left(px(10.))
+                                .top_0()
+                                .bottom_0()
+                                .right(px(28.))
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(8.))
+                                .child(ui::folder_icon(true, None, 13., t.tx3))
+                                .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(d.name.clone())),
+                        )
+                        .on_click(pick(Some(d.id.clone())))
+                        .into_any_element(),
+                );
+            }
+            div().absolute().right_0().top(px(22.)).child(
+                gpui::deferred(
+                    gpui::anchored().anchor(gpui::Anchor::TopRight).snap_to_window_with_margin(px(8.)).child(ui::menu_in(
+                        "fscope-menu-in",
+                        ui::popover(t)
+                            .w(px(200.))
+                            .on_mouse_down_out(cx.listener(|h, _, _, cx| {
+                                h.fav_scope_menu = false;
+                                ui::menu_shut("fav-scope");
+                                cx.notify();
+                            }))
+                            .p(px(0.))
+                            .overflow_hidden()
+                            .child(div().id("fscope-menu").max_h(px(320.)).overflow_y_scroll().p(px(4.)).children(rows)),
+                    )),
+                )
+                .priority(3),
+            )
+        });
+        let chip = crate::tree::scope_chip(t, "fav-scope", current.map(|d| (d.name.as_str(), None)), self.fav_scope_menu, tip).on_click(cx.listener(|h, _, _, cx| {
+            if !h.fav_scope_menu && ui::menu_just_shut("fav-scope") {
+                return;
+            }
+            h.fav_scope_menu = !h.fav_scope_menu;
+            cx.notify();
+        }));
+        Some(div().flex_none().relative().child(chip).children(menu).into_any_element())
+    }
+
+    #[cfg(feature = "checks")]
+    pub(crate) fn demo_fav_scope(&self) -> (Option<String>, bool, usize) {
+        (self.fav_scope.as_ref().and_then(|s| self.folders.iter().find(|d| d.id == *s)).map(|d| d.name.clone()), self.fav_scope_menu, self.shown)
     }
 
     fn folder_slot(&self, id: &str, pos: Point<Pixels>) -> Option<usize> {
@@ -697,7 +788,7 @@ impl HistoryPanel {
         let mut shown = 0;
         if self.show_favorites {
             let hit = |f: &Favorite| q.is_empty() || f.name.to_lowercase().contains(&q) || f.sql.to_lowercase().contains(&q);
-            for (ix, d) in self.folders.iter().enumerate() {
+            for (ix, d) in self.folders.iter().enumerate().filter(|(_, d)| self.fav_scope.as_ref().is_none_or(|s| *s == d.id)) {
                 let named = !q.is_empty() && d.name.to_lowercase().contains(&q);
                 let found: Vec<usize> =
                     (0..self.favorites.len()).filter(|&i| self.favorites[i].folder.as_deref() == Some(d.id.as_str()) && (named || hit(&self.favorites[i]))).collect();
@@ -711,7 +802,7 @@ impl HistoryPanel {
                     items.extend(found.into_iter().map(Item::Fav));
                 }
             }
-            for (i, f) in self.favorites.iter().enumerate() {
+            for (i, f) in self.favorites.iter().enumerate().filter(|_| self.fav_scope.is_none()) {
                 if f.folder.is_none() && hit(f) {
                     items.push(Item::Fav(i));
                     shown += 1;
@@ -2151,7 +2242,8 @@ impl Render for HistoryPanel {
                     .child(div().flex_1().min_w_0().text_color(t.tx).child(self.filter.clone()))
                     .when(!self.query.is_empty(), |d| {
                         d.child(div().flex_none().text_size(px(10.5)).text_color(t.tx3).whitespace_nowrap().child(format!("{} of {}", ui_count(self.shown), ui_count(total))))
-                    }),
+                    })
+                    .children(self.render_fav_scope(&t, cx)),
             )
             .when(!favs, |d| {
                 d.child(

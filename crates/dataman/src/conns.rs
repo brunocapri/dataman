@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use gpui::{Context, EventEmitter};
-use dataman_core::{ConnectionProfile, Connection, Core, SshError};
+use dataman_core::{ConnFolder, ConnectionProfile, Connection, Core, SshError};
 
 #[derive(Clone)]
 pub enum ConnState {
@@ -19,6 +19,8 @@ pub enum ConnEvent {
 pub struct ConnStore {
     pub core: Arc<Core>,
     pub profiles: Vec<ConnectionProfile>,
+    /// The explorer's folders (none: the explorer as it always was).
+    pub folders: Vec<ConnFolder>,
     pub states: HashMap<String, ConnState>,
 }
 
@@ -27,7 +29,30 @@ impl EventEmitter<ConnEvent> for ConnStore {}
 impl ConnStore {
     pub fn new(core: Arc<Core>) -> Self {
         let profiles = core.config.connections();
-        ConnStore { core, profiles, states: HashMap::new() }
+        let folders = core.config.folders();
+        ConnStore { core, profiles, folders, states: HashMap::new() }
+    }
+
+    /// The folders changed in one write; Err said as is.
+    pub fn edit_folders(&mut self, f: impl FnOnce(&mut Vec<ConnFolder>), cx: &mut Context<Self>) -> anyhow::Result<()> {
+        let r = self.core.config.edit_folders(f);
+        self.folders = self.core.config.folders();
+        cx.notify();
+        r
+    }
+
+    /// The folders as another process (or an undo) left them.
+    pub fn reload_folders(&mut self, cx: &mut Context<Self>) {
+        let folders = self.core.config.folders();
+        if folders != self.folders {
+            self.folders = folders;
+            cx.notify();
+        }
+    }
+
+    /// The folder holding a connection.
+    pub fn folder_of(&self, conn: &str) -> Option<&ConnFolder> {
+        dataman_core::config::folder_of(&self.folders, conn)
     }
 
     pub fn reload(&mut self, cx: &mut Context<Self>) {
@@ -36,15 +61,14 @@ impl ConnStore {
             let _ = self.core.pins.forget(&gone.id);
         }
         self.profiles = profiles;
+        self.folders = self.core.config.folders();
         cx.notify();
     }
 
-    pub fn reorder(&mut self, from: usize, slot: usize, cx: &mut Context<Self>) {
-        if dataman_core::order::move_to(&mut self.profiles, from, slot).is_none() {
-            return;
-        }
-        let ids: Vec<String> = self.profiles.iter().map(|p| p.id.clone()).collect();
-        if let Err(e) = self.core.config.reorder(&ids) {
+    /// The connections in this order (by id), saved.
+    pub fn set_order(&mut self, ids: &[String], cx: &mut Context<Self>) {
+        self.profiles.sort_by_key(|p| ids.iter().position(|i| *i == p.id).unwrap_or(usize::MAX));
+        if let Err(e) = self.core.config.reorder(ids) {
             log::warn!("saving the connection order: {e:#}");
         }
         cx.notify();
@@ -170,6 +194,7 @@ impl crate::app::Workspace {
     /// A live connection whose settings changed reconnects, never ending a transaction: a tab
     /// with one open keeps the old connection until it is done.
     pub(crate) fn connections_reloaded(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) {
+        self.store.update(cx, |s, cx| s.reload_folders(cx));
         let old = self.store.read(cx).profiles.clone();
         let new = self.store.read(cx).core.config.connections();
         if old == new {

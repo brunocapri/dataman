@@ -4,11 +4,15 @@
 use dataman_core::Caps;
 use dataman_core::schema::RelKind;
 
+use gpui::{Hsla, SharedString};
+
 use crate::assets::Icon;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Target {
     Empty,
+    /// An explorer folder: `color` is its swatch's index.
+    Folder { id: String, name: String, color: Option<usize>, count: usize },
     Conn { id: String, name: String, state: ConnPhase },
     Db { conn: String, db: String, current: bool, lar: bool, ro: bool },
     Schema { conn: String, db: String, schema: String, lar: bool, ro: bool },
@@ -54,6 +58,16 @@ pub enum Gen {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Act {
     NewConnection,
+    NewFolder,
+    /// Into the n-th folder of the explorer as the menu listed them.
+    MoveToFolder(usize),
+    /// A new folder, the connection in it.
+    MoveToNewFolder,
+    RemoveFromFolder,
+    RenameFolder,
+    DeleteFolder,
+    /// A swatch by index, or none.
+    FolderColor(Option<usize>),
     Connect,
     Disconnect,
     Reconnect,
@@ -103,8 +117,10 @@ pub enum Act {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Item {
     pub act: Act,
-    pub label: &'static str,
+    pub label: SharedString,
     pub icon: Icon,
+    /// A color square in place of the icon (a folder's or a swatch).
+    pub dot: Option<Hsla>,
     pub key: Option<&'static str>,
     pub disabled: Option<&'static str>,
     pub bold: bool,
@@ -113,10 +129,14 @@ pub struct Item {
 }
 
 impl Item {
-    fn new(act: Act, label: &'static str, icon: Icon) -> Item {
-        Item { act, label, icon, key: None, disabled: None, bold: false, danger: false, checked: false }
+    pub fn new(act: Act, label: impl Into<SharedString>, icon: Icon) -> Item {
+        Item { act, label: label.into(), icon, dot: None, key: None, disabled: None, bold: false, danger: false, checked: false }
     }
-    fn checked(mut self, on: bool) -> Item {
+    pub fn dot(mut self, c: Option<Hsla>) -> Item {
+        self.dot = c;
+        self
+    }
+    pub fn checked(mut self, on: bool) -> Item {
         self.checked = on;
         self
     }
@@ -166,7 +186,15 @@ pub fn entries(t: &Target) -> Vec<Entry> {
     use Entry::{Item as I, Sep};
     let it = Item::new;
     match t {
-        Target::Empty => vec![I(it(Act::NewConnection, "New connection…", Icon::Plus).key("⌘N"))],
+        Target::Empty => vec![I(it(Act::NewConnection, "New connection…", Icon::Plus).key("⌘N")), I(it(Act::NewFolder, "New folder", Icon::Schema))],
+        Target::Folder { count, color, .. } => vec![
+            I(it(Act::RenameFolder, "Rename", Icon::Edit)),
+            Entry::Sub { label: "Color", icon: Icon::Label, items: color_items(*color) },
+            Sep,
+            I(it(Act::NewFolder, "New folder", Icon::Schema)),
+            Sep,
+            I(it(Act::DeleteFolder, if *count == 0 { "Delete folder" } else { "Delete folder (keeps its connections)" }, Icon::Trash).danger()),
+        ],
         Target::Conn { state, .. } => {
             let connected = *state == ConnPhase::Connected;
             let offline = (!connected).then_some(NOT_CONNECTED);
@@ -349,7 +377,7 @@ pub fn entries_for(t: &Target, caps: &Caps) -> Vec<Entry> {
             if let Entry::Item(i) = e
                 && i.act == Act::Truncate
             {
-                i.label = "Delete all rows…";
+                i.label = "Delete all rows…".into();
             }
         }
     }
@@ -385,6 +413,39 @@ pub fn entries_for(t: &Target, caps: &Caps) -> Vec<Entry> {
         out.pop();
     }
     out
+}
+
+/// A folder's colors: none, then the connection swatches (their squares are the theme's, set
+/// where the menu is drawn).
+fn color_items(current: Option<usize>) -> Vec<Item> {
+    let mut v = vec![Item::new(Act::FolderColor(None), "None", Icon::Close).checked(current.is_none())];
+    v.extend(crate::theme::SWATCHES.iter().enumerate().map(|(i, name)| {
+        let mut label = name.to_string();
+        label[..1].make_ascii_uppercase();
+        Item::new(Act::FolderColor(Some(i)), label, Icon::Label).checked(current == Some(i))
+    }));
+    v
+}
+
+/// A connection's "Move to folder": each folder (`current` is the one holding it), a new one,
+/// and out of its folder; before Delete.
+pub fn with_folders(mut es: Vec<Entry>, t: &Target, folders: &[(SharedString, Option<Hsla>)], current: Option<usize>) -> Vec<Entry> {
+    if !matches!(t, Target::Conn { .. }) {
+        return es;
+    }
+    let mut items: Vec<Item> = folders
+        .iter()
+        .enumerate()
+        .map(|(i, (name, color))| Item::new(Act::MoveToFolder(i), name.clone(), Icon::Schema).dot(*color).checked(current == Some(i)).off((current == Some(i)).then_some("here")))
+        .collect();
+    items.push(Item::new(Act::MoveToNewFolder, "New folder…", Icon::Plus));
+    items.push(Item::new(Act::RemoveFromFolder, "Remove from folder", Icon::Close).off(current.is_none().then_some("top level")));
+    let sub = Entry::Sub { label: "Move to folder", icon: Icon::Schema, items };
+    match es.iter().rposition(|e| matches!(e, Entry::Sep)) {
+        Some(i) => es.insert(i, sub),
+        None => es.push(sub),
+    }
+    es
 }
 
 pub fn with_pin(mut es: Vec<Entry>, t: &Target, pinned: bool) -> Vec<Entry> {
@@ -610,7 +671,7 @@ mod tests {
         let t = rel(RelKind::Table, false);
         let es = entries(&t);
         let Entry::Item(first) = &es[0] else { panic!() };
-        assert_eq!((first.act, first.label, first.bold, first.key), (Act::SelectTop, "Select 1000 rows", true, Some("↩")));
+        assert_eq!((first.act, first.label.as_ref(), first.bold, first.key), (Act::SelectTop, "Select 1000 rows", true, Some("↩")));
         let sub = es.iter().find_map(|e| if let Entry::Sub { items, .. } = e { Some(items.clone()) } else { None }).unwrap();
         assert_eq!(
             sub.iter().map(|i| i.act).collect::<Vec<_>>(),
@@ -668,14 +729,14 @@ mod tests {
             &[Some(Act::SelectTop), Some(Act::SelectAll), Some(Act::CountRows), Some(Act::OpenWithoutRunning), None, Some(Act::Pin), None]
         );
         let pin = es.iter().find_map(|e| if let Entry::Item(i) = e { (i.act == Act::Pin).then(|| i.clone()) } else { None }).unwrap();
-        assert_eq!((pin.label, pin.icon, pin.enabled(), pin.bold), ("Pin table", Icon::Pin, true, false));
+        assert_eq!((pin.label.as_ref(), pin.icon, pin.enabled(), pin.bold), ("Pin table", Icon::Pin, true, false));
         assert_eq!(es.len(), entries_for(&t, &pg).len() + 2);
         let un = with_pin(entries_for(&t, &pg), &t, true);
         assert!(flat(&un).contains(&Some(Act::Unpin)) && !flat(&un).contains(&Some(Act::Pin)));
         assert_eq!(default_act(&t), Some(Act::SelectTop));
         let v = rel(RelKind::View, false);
-        let labels: Vec<&str> = with_pin(entries(&v), &v, true).iter().filter_map(|e| if let Entry::Item(i) = e { Some(i.label) } else { None }).collect();
-        assert!(labels.contains(&"Unpin view"), "{labels:?}");
+        let labels: Vec<String> = with_pin(entries(&v), &v, true).iter().filter_map(|e| if let Entry::Item(i) = e { Some(i.label.to_string()) } else { None }).collect();
+        assert!(labels.iter().any(|l| l == "Unpin view"), "{labels:?}");
         for es in [&es, &un] {
             assert!(!matches!(es.first(), Some(Entry::Sep)) && !matches!(es.last(), Some(Entry::Sep)));
             assert!(!es.windows(2).any(|w| matches!(w, [Entry::Sep, Entry::Sep])));
@@ -695,7 +756,35 @@ mod tests {
         assert!(!item(&lar_ix, Act::CopyDefinition).enabled());
         assert_eq!(acts(&Target::Group), vec![Act::Reload]);
         assert_eq!(acts(&Target::Error), vec![Act::Retry]);
-        assert_eq!(acts(&Target::Empty), vec![Act::NewConnection]);
+        assert_eq!(acts(&Target::Empty), vec![Act::NewConnection, Act::NewFolder]);
+    }
+
+    #[test]
+    fn folders_in_the_menus() {
+        let d = Target::Folder { id: "f1".into(), name: "Work".into(), color: Some(2), count: 3 };
+        let a = acts(&d);
+        assert_eq!(a[..2], [Act::RenameFolder, Act::FolderColor(None)]);
+        assert_eq!(a.iter().filter(|x| matches!(x, Act::FolderColor(Some(_)))).count(), crate::theme::SWATCHES.len());
+        assert!(item(&d, Act::FolderColor(Some(2))).checked && !item(&d, Act::FolderColor(None)).checked);
+        assert_eq!(item(&d, Act::FolderColor(Some(2))).label.as_ref(), "Lime");
+        assert!(item(&d, Act::DeleteFolder).danger && item(&d, Act::DeleteFolder).label.contains("keeps"));
+        let pg = Caps::of(dataman_core::config::Engine::Postgres);
+        assert_eq!(entries_for(&d, &pg), entries(&d), "the Color submenu stays");
+
+        let c = conn(ConnPhase::Off);
+        let folders = [("Work".into(), None), ("Clients".into(), Some(gpui::hsla(0.5, 0.5, 0.5, 1.)))];
+        let es = with_folders(entries_for(&c, &pg), &c, &folders, Some(1));
+        let i = es.iter().position(|e| matches!(e, Entry::Sub { label: "Move to folder", .. })).unwrap();
+        assert!(matches!(es[i + 1], Entry::Sep) && matches!(&es[i + 2], Entry::Item(it) if it.act == Act::DeleteConnection));
+        let Entry::Sub { items, .. } = &es[i] else { unreachable!() };
+        let shown: Vec<(Act, bool)> = items.iter().map(|it| (it.act, it.enabled())).collect();
+        assert_eq!(shown, [(Act::MoveToFolder(0), true), (Act::MoveToFolder(1), false), (Act::MoveToNewFolder, true), (Act::RemoveFromFolder, true)]);
+        assert!(items[1].dot.is_some() && items[1].checked);
+        let loose = with_folders(entries_for(&c, &pg), &c, &[], None);
+        let Some(Entry::Sub { items, .. }) = loose.iter().find(|e| matches!(e, Entry::Sub { .. })) else { panic!() };
+        assert_eq!(items.iter().map(|it| (it.act, it.enabled())).collect::<Vec<_>>(), [(Act::MoveToNewFolder, true), (Act::RemoveFromFolder, false)]);
+        let r = rel(RelKind::Table, false);
+        assert_eq!(with_folders(entries_for(&r, &pg), &r, &folders, None), entries_for(&r, &pg));
     }
 
     #[test]

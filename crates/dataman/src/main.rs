@@ -18,6 +18,8 @@ mod bench;
 mod check;
 mod chrome;
 mod conn_dialog;
+#[cfg(feature = "checks")]
+mod conn_folders_check;
 mod conns;
 #[cfg(feature = "checks")]
 mod conns_check;
