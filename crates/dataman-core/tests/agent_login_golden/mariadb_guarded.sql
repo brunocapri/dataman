@@ -14,6 +14,10 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON `shop`.`orders` TO 'dataman_agent_a1b2c3
 -- tables with hidden or masked columns: only the others
 GRANT SELECT (`created_at`, `id`, `name`), INSERT (`created_at`, `id`, `name`), UPDATE (`created_at`, `id`, `name`), DELETE ON `shop`.`users` TO 'dataman_agent_a1b2c3d4'@'%';
 
+-- the views
+CREATE TABLE IF NOT EXISTS `dataman_agent_a1b2c3d4_views`.`dataman_views` (name VARCHAR(64) NOT NULL PRIMARY KEY, hash VARCHAR(64) NOT NULL);
+REPLACE INTO `dataman_agent_a1b2c3d4_views`.`dataman_views` (name, hash) VALUES ('shop__users', 'f82a2e7ec667');
+
 -- hidden: shop.audit_log → no grant at all
 
 -- ready: unlocked last

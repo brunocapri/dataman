@@ -456,7 +456,7 @@ fn twin<'a>(local: &'a [ConnectionProfile], p: &ConnectionProfile) -> Option<&'a
         if p.engine.is_file() || q.engine.is_file() {
             return p.engine.is_file() && q.engine.is_file() && canonical(p).is_some_and(|c| Some(c) == canonical(q));
         }
-        let host = |h: &str| h.trim().trim_end_matches('.').to_ascii_lowercase();
+        let host = |h: &str| if crate::config::is_local_host(h) { "localhost".to_string() } else { h.trim().trim_end_matches('.').to_ascii_lowercase() };
         q.engine == p.engine && host(&q.host) == host(&p.host) && q.port == p.port && q.user == p.user
     })
 }
@@ -534,7 +534,13 @@ pub(crate) fn arrival(next: &ConnectionProfile, local: &[ConnectionProfile], roo
     let fresh = ConnectionProfile { env: next.env, engine: next.engine, sslmode: tls, ..ConnectionProfile::new(next.name.clone()) };
     match twin(local, next) {
         Some(q) => {
-            let looser: Vec<Change> = protections(q, next).into_iter().filter(|c| c.loosens).collect();
+            let mut looser: Vec<Change> = protections(q, next).into_iter().filter(|c| c.loosens).collect();
+            // The twin of a connection agents reach as its agent login (or not at all) would let
+            // them in as the user.
+            if (q.agent_login.is_some() || q.agents_refused) && next.agent_login.is_none() {
+                let was = q.agent_login.as_ref().map_or_else(|| "none (agents refused)".to_string(), |l| l.user.clone());
+                looser.push(Change { what: "Agent login".into(), from: was, to: "your login".into(), loosens: true });
+            }
             if !looser.is_empty() {
                 push("Reaches", "—".into(), format!("what your connection {} does, with less protection", q.name), true);
             }

@@ -78,6 +78,16 @@ pub struct Desired {
     pub hidden: Vec<String>,
     pub not_granted: Vec<NotGranted>,
     pub salt: bool,
+    pub exposed: Vec<NotGranted>,
+}
+
+/// What closes a table (or columns) to every user of the database.
+fn revoke_public(o: &Open, cols: &[String]) -> String {
+    if cols.is_empty() {
+        format!("REVOKE SELECT ON OBJECT::{} FROM [public];", qual(&o.schema, &o.name))
+    } else {
+        format!("REVOKE SELECT ({}) ON OBJECT::{} FROM [public];", cols.iter().map(|c| q(c)).collect::<Vec<_>>().join(", "), qual(&o.schema, &o.name))
+    }
 }
 
 pub const DEFAULT_SCHEMA: &str = "dbo";
@@ -116,7 +126,7 @@ pub fn desired(spec: &Spec, inv: &Inventory, probe: &Probe) -> Desired {
             continue;
         }
         salt |= a.masked.iter().any(|(_, m)| *m == Mask::Hash);
-        let name = view_name(&a.schema, &a.name, DEFAULT_SCHEMA, 128);
+        let name = view_name(&a.schema, &a.name, DEFAULT_SCHEMA, 128, &views);
         let cols: Vec<String> = a.plain.iter().map(|c| q(c)).chain(a.masked.iter().map(|(c, m)| format!("{} AS {}", mask_expr(c, *m, &spec.space), q(c)))).collect();
         let body = format!("SELECT {} FROM {}", cols.join(", "), qual(&a.schema, &a.name));
         let hash = hash::sha256_hex(body.as_bytes())[..12].to_string();
@@ -144,7 +154,8 @@ pub fn desired(spec: &Spec, inv: &Inventory, probe: &Probe) -> Desired {
     }
     grants.sort();
     grants.dedup();
-    Desired { grants, views, access: ok, hidden, not_granted, salt }
+    let exposed = exposed(spec, inv, &revoke_public);
+    Desired { grants, views, access: ok, hidden, not_granted, salt, exposed }
 }
 
 fn rules(spec: &Spec, d: &Desired, probe: &Probe, prod: bool) -> Vec<RuleLine> {
@@ -226,7 +237,7 @@ pub fn create_plan(spec: &Spec, inv: &Inventory, probe: &Probe, password: &str, 
         steps.push(Step::sql(g, format!("ALTER LOGIN {u} DISABLE")));
         steps.push(Step::sql(g, format!("CREATE USER {u} FOR LOGIN {u} WITH DEFAULT_SCHEMA = [dbo]")));
     }
-    steps.push(Step::sql(g, format!("EXEC sys.sp_addextendedproperty @name = N'dataman', @value = {}, @level0type = N'USER', @level0name = {}", lit(&format!("{MARK} conn={}", spec.conn)), lit(&spec.user))));
+    steps.push(Step::sql(g, format!("EXEC sys.sp_addextendedproperty @name = N'dataman', @value = {}, @level0type = N'USER', @level0name = {}", lit(&mark_for(&spec.conn)), lit(&spec.user))));
     let fresh: Vec<&ViewDef> = d.views.iter().collect();
     if !fresh.is_empty() {
         steps.extend(view_steps(spec, &d, &fresh, &hash::hex(&hash::random_bytes(32)), true));
@@ -259,7 +270,8 @@ pub fn create_plan(spec: &Spec, inv: &Inventory, probe: &Probe, password: &str, 
 
 fn seal(spec: &Spec, d: Desired, probe: &Probe, steps: Vec<Step>, made: Vec<String>, prod: bool) -> Plan {
     let rules = rules(spec, &d, probe, prod);
-    Plan {
+    let exposed = d.exposed;
+    let plan = Plan {
         engine: Some(Engine::SqlServer),
         user: spec.user.clone(),
         space: spec.space.clone(),
@@ -268,6 +280,7 @@ fn seal(spec: &Spec, d: Desired, probe: &Probe, steps: Vec<Step>, made: Vec<Stri
         rules,
         lines: d.grants.iter().map(text).collect(),
         not_granted: d.not_granted,
+        exposed: Vec::new(),
         lacks: probe.lacks.clone(),
         notes: Vec::new(),
         made,
@@ -277,7 +290,8 @@ fn seal(spec: &Spec, d: Desired, probe: &Probe, steps: Vec<Step>, made: Vec<Stri
         manual: None,
         hash: String::new(),
     }
-    .seal()
+    .seal();
+    with_exposed(plan, exposed)
 }
 
 pub fn sync_plan(spec: &Spec, inv: &Inventory, probe: &Probe, have: &[Grant], have_views: &[(String, String)], schema_exists: bool, prod: bool) -> Plan {
@@ -409,7 +423,7 @@ pub(crate) async fn exists(db: &Db, user: &str, conn: &str) -> Result<Option<boo
     if !user_there && !login_there {
         return Ok(None);
     }
-    Ok(Some(user_there && mark.starts_with(MARK) && mark.contains(&format!("conn={conn}"))))
+    Ok(Some(user_there && marked_for(&mark, conn)))
 }
 
 pub(crate) async fn inventory(db: &Db) -> Result<Inventory> {
@@ -429,6 +443,25 @@ pub(crate) async fn inventory(db: &Db) -> Result<Inventory> {
             out.objects.push(Obj { schema: sch, name, kind: if view { ObjKind::View } else { ObjKind::Table }, columns: Vec::new(), grantable: one(&r[6]), owner: s(&r[5]), sequences: Vec::new() });
         }
         out.objects.last_mut().expect("pushed").columns.push(Col { name: s(&r[3]), generated: one(&r[4]) });
+    }
+    // What every user of the database may read (granted to public): the agent's user too.
+    let open = text_rows(
+        db,
+        "SELECT s.name, o.name, c.name FROM sys.database_permissions p JOIN sys.objects o ON o.object_id = p.major_id JOIN sys.schemas s ON s.schema_id = o.schema_id \
+         LEFT JOIN sys.columns c ON p.minor_id > 0 AND c.object_id = p.major_id AND c.column_id = p.minor_id \
+         WHERE p.class = 1 AND p.grantee_principal_id = 0 AND p.permission_name = 'SELECT' AND p.state IN ('G', 'W') AND o.type IN ('U', 'V') AND o.is_ms_shipped = 0 ORDER BY s.name, o.name",
+    )
+    .await?;
+    for r in open {
+        let (sch, name) = (s(&r[0]), s(&r[1]));
+        if out.open.last().is_none_or(|o: &Open| o.schema != sch || o.name != name) {
+            out.open.push(Open { schema: sch, name, columns: Vec::new(), whole: false });
+        }
+        let o = out.open.last_mut().expect("pushed");
+        match &r[2] {
+            Some(c) => o.columns.push(c.clone()),
+            None => o.whole = true,
+        }
     }
     Ok(out)
 }

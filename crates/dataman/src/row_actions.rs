@@ -521,6 +521,8 @@ impl Workspace {
                 None => core.connect(mine.clone(), password).await.map_err(|e| format!("{e:#}"))?,
             };
             let plan = live::removal(&admin, &mine, &login).await.map_err(|e| format!("{e:#}"))?;
+            // Its open sessions first: one would outlive the login otherwise.
+            let _ = live::end_sessions(&admin, &mine, &login.user).await;
             live::apply(&admin, &plan, &live::database_for(&mine, Some(&login))).await.map_err(|e| format!("{e:#}"))?;
             Ok::<String, String>(login.user)
         };
@@ -584,7 +586,7 @@ impl Workspace {
                                 .gap(px(10.))
                                 .cursor_pointer()
                                 .child(ui::checkbox(&t, on))
-                                .child(div().text_color(t.tx).child(format!("Also drop its agent login {user} on the server")))
+                                .child(div().flex_1().min_w_0().text_color(t.tx).line_height(px(18.)).child(format!("Also drop its agent login {user} on the server")))
                                 .on_click(cx.listener(|w, _, _, cx| {
                                     w.drop_agent_login = !w.drop_agent_login;
                                     cx.notify();

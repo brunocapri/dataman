@@ -76,6 +76,7 @@ pub struct Desired {
     pub hidden: Vec<String>,
     pub not_granted: Vec<NotGranted>,
     pub salt: bool,
+    pub exposed: Vec<NotGranted>,
 }
 
 pub fn desired(spec: &Spec, inv: &Inventory, probe: &Probe) -> Desired {
@@ -113,7 +114,7 @@ pub fn desired(spec: &Spec, inv: &Inventory, probe: &Probe) -> Desired {
         }
         if !a.masked.is_empty() {
             salt |= a.masked.iter().any(|(_, m)| *m == Mask::Hash);
-            let name = view_name(&a.schema, &a.name, "", 64);
+            let name = view_name(&a.schema, &a.name, "", 64, &views);
             let cols: Vec<String> = a.plain.iter().map(|c| q(c)).chain(a.masked.iter().map(|(c, m)| format!("{} AS {}", mask_expr(c, *m, &spec.space), q(c)))).collect();
             let body = format!("SELECT {} FROM {}", cols.join(", "), qual(&a.schema, &a.name));
             let hash = hash::sha256_hex(body.as_bytes())[..12].to_string();
@@ -135,7 +136,8 @@ pub fn desired(spec: &Spec, inv: &Inventory, probe: &Probe) -> Desired {
     }
     grants.sort();
     grants.dedup();
-    Desired { grants, views, access: ok, hidden, not_granted, salt }
+    let exposed = exposed(spec, inv, &|_, _| String::new());
+    Desired { grants, views, access: ok, hidden, not_granted, salt, exposed }
 }
 
 fn rules(spec: &Spec, d: &Desired, probe: &Probe, prod: bool) -> Vec<RuleLine> {
@@ -181,7 +183,7 @@ fn view_steps(spec: &Spec, d: &Desired, salt_hex: &str, create_db: bool, mariadb
     let g = format!("masked columns: views the agent reads instead ({})", d.views.len());
     let mut steps = Vec::new();
     if create_db {
-        let comment = if mariadb { format!(" COMMENT {}", lit(&format!("{MARK} conn={}", spec.conn))) } else { String::new() };
+        let comment = if mariadb { format!(" COMMENT {}", lit(&mark_for(&spec.conn))) } else { String::new() };
         steps.push(Step::sql(&g, format!("CREATE DATABASE {}{comment}", q(&spec.space))));
     }
     if d.salt {
@@ -216,6 +218,11 @@ fn create_user(spec: &Spec, password: &str, probe: &Probe) -> Step {
     if let Some(d) = spec.expires_days {
         tail.push_str(&format!(" PASSWORD EXPIRE INTERVAL {d} DAY"));
     }
+    // Its own password can't be changed by itself (it never knows the current one): only an
+    // admin's ALTER USER sets it (MariaDB lets a user change its own, said in the rules).
+    if !probe.flavor.mariadb {
+        tail.push_str(" PASSWORD REQUIRE CURRENT");
+    }
     tail.push_str(" ACCOUNT LOCK");
     if !probe.flavor.mariadb {
         tail.push_str(&format!(" ATTRIBUTE {}", lit(&serde_json::json!({"dataman": MARK, "conn": spec.conn}).to_string())));
@@ -229,9 +236,24 @@ fn create_user(spec: &Spec, password: &str, probe: &Probe) -> Step {
     Step::secret_sql(g, format!("CREATE USER {} {auth}{tail}", account(&spec.user)), format!("CREATE USER {} {shown}{tail}", account(&spec.user)))
 }
 
-fn view_marks(spec: &Spec, d: &Desired, gone: &[String], probe: &Probe) -> Option<Step> {
-    if probe.flavor.mariadb || (d.views.is_empty() && gone.is_empty()) {
-        return None;
+/// MariaDB has no user attributes: the views' hashes are kept in a table of Dataman's database
+/// (the agent is granted the views only).
+pub const MARIADB_MARKS: &str = "dataman_views";
+
+fn view_marks(spec: &Spec, d: &Desired, gone: &[String], probe: &Probe) -> Vec<Step> {
+    if d.views.is_empty() && gone.is_empty() {
+        return Vec::new();
+    }
+    if probe.flavor.mariadb {
+        let t = format!("{}.{}", q(&spec.space), q(MARIADB_MARKS));
+        let mut steps = vec![Step::sql("the views", format!("CREATE TABLE IF NOT EXISTS {t} (name VARCHAR(64) NOT NULL PRIMARY KEY, hash VARCHAR(64) NOT NULL)"))];
+        for g in gone {
+            steps.push(Step::sql("the views", format!("DELETE FROM {t} WHERE name = {}", lit(g))));
+        }
+        for v in &d.views {
+            steps.push(Step::sql("the views", format!("REPLACE INTO {t} (name, hash) VALUES ({}, {})", lit(&v.name), lit(&v.hash))));
+        }
+        return steps;
     }
     let mut m = serde_json::Map::new();
     for v in &d.views {
@@ -241,14 +263,16 @@ fn view_marks(spec: &Spec, d: &Desired, gone: &[String], probe: &Probe) -> Optio
         m.entry(g.clone()).or_insert(serde_json::Value::Null);
     }
     let attr = serde_json::json!({ "views": m }).to_string();
-    Some(Step::sql("the views", format!("ALTER USER {} ATTRIBUTE {}", account(&spec.user), lit(&attr))))
+    vec![Step::sql("the views", format!("ALTER USER {} ATTRIBUTE {}", account(&spec.user), lit(&attr)))]
 }
 
 pub fn create_plan(spec: &Spec, inv: &Inventory, probe: &Probe, password: &str, prod: bool) -> Plan {
     let d = desired(spec, inv, probe);
     let mut steps = vec![create_user(spec, password, probe)];
     let salt = hash::hex(&hash::random_bytes(32));
-    if !d.views.is_empty() {
+    // MariaDB's mark is its database's COMMENT: made even without a view to put there.
+    let make_db = !d.views.is_empty() || probe.flavor.mariadb;
+    if make_db {
         steps.extend(view_steps(spec, &d, &salt, true, probe.flavor.mariadb));
     }
     for (s, n, cols) in granted_objects(&d.grants) {
@@ -265,14 +289,15 @@ pub fn create_plan(spec: &Spec, inv: &Inventory, probe: &Probe, password: &str, 
         steps.push(Step::note("", format!("hidden: {} → no grant at all", short_list(&d.hidden))));
     }
     steps.push(Step::sql("ready: unlocked last", format!("ALTER USER {} ACCOUNT UNLOCK", account(&spec.user))));
-    let made = if d.views.is_empty() { Vec::new() } else { vec![format!("database:{}", spec.space)] };
+    let made = if make_db { vec![format!("database:{}", spec.space)] } else { Vec::new() };
     seal(spec, d, probe, steps, made, prod)
 }
 
 fn seal(spec: &Spec, d: Desired, probe: &Probe, steps: Vec<Step>, made: Vec<String>, prod: bool) -> Plan {
     let rules = rules(spec, &d, probe, prod);
     let notes = vec!["MySQL commits each statement as it runs: the login stays locked until the last one, so a half-made login can't be used.".to_string()];
-    Plan {
+    let exposed = d.exposed;
+    let plan = Plan {
         engine: Some(Engine::MySql),
         user: spec.user.clone(),
         space: spec.space.clone(),
@@ -281,6 +306,7 @@ fn seal(spec: &Spec, d: Desired, probe: &Probe, steps: Vec<Step>, made: Vec<Stri
         rules,
         lines: d.grants.iter().map(text).collect(),
         not_granted: d.not_granted,
+        exposed: Vec::new(),
         lacks: probe.lacks.clone(),
         notes,
         made,
@@ -290,7 +316,8 @@ fn seal(spec: &Spec, d: Desired, probe: &Probe, steps: Vec<Step>, made: Vec<Stri
         manual: None,
         hash: String::new(),
     }
-    .seal()
+    .seal();
+    with_exposed(plan, exposed)
 }
 
 pub fn sync_plan(spec: &Spec, inv: &Inventory, probe: &Probe, have: &[Grant], have_views: &[(String, String)], db_exists: bool, prod: bool) -> Plan {
@@ -311,9 +338,9 @@ pub fn sync_plan(spec: &Spec, inv: &Inventory, probe: &Probe, have: &[Grant], ha
         }
     }
     let fresh: Vec<&ViewDef> = d.views.iter().filter(|v| !have_views.iter().any(|(n, h)| *n == v.name && *h == v.hash)).collect();
-    if !fresh.is_empty() {
+    if !fresh.is_empty() || (probe.flavor.mariadb && !db_exists) {
         if !db_exists {
-            let comment = if probe.flavor.mariadb { format!(" COMMENT {}", lit(&format!("{MARK} conn={}", spec.conn))) } else { String::new() };
+            let comment = if probe.flavor.mariadb { format!(" COMMENT {}", lit(&mark_for(&spec.conn))) } else { String::new() };
             steps.push(Step::sql("views", format!("CREATE DATABASE {}{comment}", q(&spec.space))));
         }
         if d.salt {
@@ -337,7 +364,7 @@ pub fn sync_plan(spec: &Spec, inv: &Inventory, probe: &Probe, have: &[Grant], ha
     if !fresh.is_empty() || !gone.is_empty() {
         steps.extend(view_marks(spec, &d, &gone, probe));
     }
-    let made = if d.views.is_empty() && !db_exists { Vec::new() } else { vec![format!("database:{}", spec.space)] };
+    let made = if d.views.is_empty() && !db_exists && !probe.flavor.mariadb { Vec::new() } else { vec![format!("database:{}", spec.space)] };
     seal(spec, d, probe, steps, made, prod)
 }
 
@@ -350,6 +377,7 @@ pub fn remove_plan(user: &str, space: &str, views: &[String], salt: bool, drop_d
     }
     if salt {
         steps.push(Step::sql("Dataman's views", format!("DROP TABLE IF EXISTS {}.`salt`", q(space))));
+        steps.push(Step::sql("Dataman's views", format!("DROP TABLE IF EXISTS {}.{}", q(space), q(MARIADB_MARKS))));
     }
     if drop_db {
         steps.push(Step::sql("Dataman's views", format!("DROP DATABASE IF EXISTS {}", q(space))));
@@ -412,11 +440,11 @@ pub(crate) async fn exists(db: &Db, user: &str, conn: &str, mariadb: bool) -> Re
         return Ok(None);
     }
     let marked = if mariadb {
-        text_rows(db, &format!("SELECT SCHEMA_COMMENT FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = {}", lit(user)))
+        text_rows(db, &format!("SELECT SCHEMA_COMMENT FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = {}", lit(&space_of(user))))
             .await
             .ok()
             .and_then(|r| r.first().map(|x| s(&x[0])))
-            .is_some_and(|c| c.starts_with(MARK) && c.contains(&format!("conn={conn}")))
+            .is_some_and(|c| marked_for(&c, conn))
     } else {
         text_rows(db, &format!("SELECT ATTRIBUTE FROM information_schema.USER_ATTRIBUTES WHERE USER = {} AND HOST = '%'", lit(user)))
             .await
@@ -462,6 +490,11 @@ pub(crate) async fn inventory(db: &Db, login: &str) -> Result<Inventory> {
         let o = out.objects.last_mut().expect("pushed");
         o.columns.push(Col { name: col, generated: extra.to_ascii_uppercase().contains("GENERATED") });
     }
+    // Roles MySQL gives every account (the agent may SET ROLE them).
+    if let Ok(r) = text_rows(db, "SELECT @@global.mandatory_roles").await {
+        let roles = r.first().and_then(|x| x[0].clone()).unwrap_or_default();
+        out.open_roles = roles.split(',').map(str::trim).filter(|x| !x.is_empty()).map(str::to_string).collect();
+    }
     Ok(out)
 }
 
@@ -495,7 +528,12 @@ pub(crate) async fn have(db: &Db, user: &str, space: &str, mariadb: bool) -> Res
         out.push(Grant::Setting { name: "MAX_STATEMENT_TIME".into(), value: n.to_string() });
     }
     let mut views = Vec::new();
-    if !mariadb {
+    if mariadb {
+        let t = format!("{}.{}", q(space), q(MARIADB_MARKS));
+        for r in text_rows(db, &format!("SELECT name, hash FROM {t}")).await.unwrap_or_default() {
+            views.push((s(&r[0]), s(&r[1])));
+        }
+    } else {
         let attr = text_rows(db, &format!("SELECT ATTRIBUTE FROM information_schema.USER_ATTRIBUTES WHERE USER = {} AND HOST = '%'", lit(user))).await?;
         if let Some(v) = attr.first().map(|r| s(&r[0])).and_then(|a| serde_json::from_str::<serde_json::Value>(&a).ok())
             && let Some(m) = v["views"].as_object()
@@ -527,6 +565,7 @@ pub(crate) async fn made_here(db: &Db, space: &str) -> Result<(Vec<String>, bool
         match (s(&r[1]).as_str(), s(&r[0]).as_str()) {
             (t, n) if t.contains("VIEW") => views.push(n.to_string()),
             (_, "salt") => salt = true,
+            (_, MARIADB_MARKS) => salt = true,
             _ => other = true,
         }
     }

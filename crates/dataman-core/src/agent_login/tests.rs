@@ -26,6 +26,7 @@ fn inv_sql(schema: &str) -> Inventory {
             table(schema, "audit_log", &["id", "what"]),
             Obj { grantable: false, owner: "app_owner".into(), ..table(schema, "ledger", &["id", "amount"]) },
         ],
+        ..Default::default()
     }
 }
 
@@ -206,7 +207,7 @@ fn hostile_names_are_quoted_everywhere() {
         p.mcp_rules.view = AgentView::Masked;
         p.mcp_rules.sensitive.push(SensitiveCol { col: "*".into(), how: Mask::Hash, on: true });
         let schema = if engine == Engine::MySql { "sh\"op`db" } else { "pub]lic\"" };
-        let mut inv = Inventory { objects: evil.iter().map(|n| table(schema, n, &[n, "id"])).collect() };
+        let mut inv = Inventory { objects: evil.iter().map(|n| table(schema, n, &[n, "id"])).collect(), ..Default::default() };
         for o in &mut inv.objects {
             o.owner = "dbo".into();
         }
@@ -302,6 +303,7 @@ fn inv_docs() -> Inventory {
             Obj { kind: ObjKind::Collection, ..table("shop", "users", &["name", "email", "address.street"]) },
             Obj { kind: ObjKind::Collection, ..table("shop", "audit_log", &["what"]) },
         ],
+        ..Default::default()
     }
 }
 
@@ -473,4 +475,139 @@ fn plan_hash_is_stable_and_moves_with_the_grants() {
     let mut inv = inv_sql("public");
     inv.objects.push(table("public", "invoices", &["id"]));
     assert_ne!(pg::create_plan(&s, &inv, &probe_sql(), "x", false).hash, a.hash);
+}
+
+// ---- Red team ----
+
+#[test]
+fn a_mark_names_exactly_one_connection() {
+    // Ids that share their first letters share the login's name: the mark tells them apart.
+    assert_eq!(login_name("aupgcoll01"), login_name("aupgcoll01x"));
+    assert!(marked_for(&mark_for("aupgcoll01"), "aupgcoll01"));
+    assert!(!marked_for(&mark_for("aupgcoll01x"), "aupgcoll01"), "another connection whose id starts the same");
+    assert!(!marked_for(&mark_for("aupgcoll01"), "aupgcoll01x"));
+    assert!(!marked_for("dataman-managed v1 conn=aupgcoll01 or not", "aupgcoll01"));
+    assert!(!marked_for("", "aupgcoll01"));
+    assert!(redis::marker("aurd01x").contains("dataman-managed:aurd01x "));
+}
+
+#[test]
+fn another_tunnel_is_another_server() {
+    let mut p = conn(Engine::Postgres);
+    let direct = server_of(&p);
+    p.ssh = Some(crate::config::SshSettings { host: "bastion-a".into(), port: None, user: "jump".into(), auth: crate::config::SshAuth::Agent, key_file: String::new() });
+    let a = server_of(&p);
+    assert_ne!(a, direct, "the same host through a tunnel is the bastion's to resolve");
+    p.ssh.as_mut().unwrap().host = "bastion-b".into();
+    assert_ne!(server_of(&p), a, "another bastion");
+    p.ssh.as_mut().unwrap().host = "BASTION-A".into();
+    assert_eq!(server_of(&p), a, "the same bastion, its name's case aside");
+    p.ssh.as_mut().unwrap().port = Some(2222);
+    assert_ne!(server_of(&p), a);
+}
+
+#[test]
+fn view_names_never_clash() {
+    let mut p = guarded(Engine::Postgres);
+    // A table named as Dataman's salt, and two whose schema__table names are the same.
+    p.mcp_rules.sensitive.push(SensitiveCol { col: "salt.v".into(), how: Mask::Hash, on: true });
+    p.mcp_rules.sensitive.push(SensitiveCol { col: "*.secret".into(), how: Mask::Partial, on: true });
+    let s = compile(&p, "", &opts());
+    let inv = Inventory {
+        objects: [table("public", "salt", &["id", "v"]), table("a", "b__c", &["id", "secret"]), table("a__b", "c", &["id", "secret"]), table("A__B", "C", &["id", "secret"])].into_iter().map(|o| Obj { owner: "dbo".into(), ..o }).collect(),
+        ..Default::default()
+    };
+    for (engine, d) in [(Engine::Postgres, pg::desired(&s, &inv, &probe_sql()).views), (Engine::SqlServer, ms::desired(&s, &inv, &probe_sql()).views), (Engine::MySql, my::desired(&s, &inv, &probe_sql()).views)] {
+        let names: Vec<String> = d.iter().map(|v| v.name.to_ascii_lowercase()).collect();
+        assert_eq!(names.len(), 4, "{engine:?}: {names:?}");
+        let mut u = names.clone();
+        u.sort();
+        u.dedup();
+        assert_eq!(u.len(), 4, "{engine:?}: two tables, one view: {names:?}");
+        assert!(!names.iter().any(|n| RESERVED.contains(&n.as_str())), "{engine:?}: a view in the salt's place: {names:?}");
+    }
+}
+
+#[test]
+fn what_every_login_reads_is_said_not_claimed() {
+    let p = guarded(Engine::Postgres);
+    let s = compile(&p, "", &opts());
+    let mut inv = inv_sql("public");
+    // audit_log (hidden) and users' e-mail (masked) are PUBLIC's: the login reads them too.
+    inv.open = vec![
+        Open { schema: "public".into(), name: "audit_log".into(), columns: vec!["id".into(), "what".into()], whole: true },
+        Open { schema: "public".into(), name: "users".into(), columns: vec!["id".into(), "email".into()], whole: false },
+        Open { schema: "public".into(), name: "orders".into(), columns: Vec::new(), whole: true },
+    ];
+    for (engine, plan) in [
+        (Engine::Postgres, pg::create_plan(&s, &inv, &probe_sql(), "pw", false)),
+        (Engine::SqlServer, ms::create_plan(&compile(&guarded(Engine::SqlServer), "", &opts()), &Inventory { open: inv.open.iter().map(|o| Open { schema: "dbo".into(), ..o.clone() }).collect(), ..inv_sql("dbo") }, &probe_sql(), "pw", false)),
+    ] {
+        let objs: Vec<&str> = plan.exposed.iter().map(|e| e.object.as_str()).collect();
+        assert_eq!(plan.exposed.len(), 2, "{engine:?}: {objs:?}");
+        assert!(objs.iter().any(|o| o.ends_with("audit_log")) && objs.iter().any(|o| o.ends_with("users.email")), "{engine:?}: {objs:?}");
+        assert!(!objs.iter().any(|o| o.contains("orders")), "{engine:?}: open and visible is no leak");
+        let w = whos(&plan);
+        assert!(w.iter().any(|(r, who)| r.contains("readable by every login") && *who == Who::Dataman), "{engine:?}: {w:?}");
+        assert!(!w.iter().any(|(r, who)| (r.ends_with(" hidden") || r.ends_with(" masked")) && *who == Who::Database), "{engine:?}: not claimed as the database's: {w:?}");
+        let copy = plan.copy();
+        assert!(copy.contains("every login may read them") && copy.contains("FROM PUBLIC;") || copy.contains("FROM [public];"), "{engine:?}: {copy}");
+        // Not run: the user's to decide.
+        assert!(!plan.steps_run().any(|s| s.shown.contains("REVOKE SELECT")), "{engine:?}");
+    }
+    // Nothing open: nothing said.
+    assert!(pg::create_plan(&s, &inv_sql("public"), &probe_sql(), "pw", false).exposed.is_empty());
+    // MySQL: roles every account gets.
+    let mut minv = inv_sql("shop");
+    minv.open_roles = vec!["`app_read`@`%`".into()];
+    let plan = my::create_plan(&compile(&guarded(Engine::MySql), "", &opts()), &minv, &probe_sql(), "pw", false);
+    assert!(plan.exposed.iter().any(|e| e.object.contains("app_read")), "{:?}", plan.exposed);
+}
+
+#[test]
+fn mariadb_keeps_its_mark_and_its_views() {
+    let mut probe = probe_sql();
+    probe.flavor.mariadb = true;
+    // No masked column: no view, yet the database holding the mark is made (else the login
+    // could never be found as Dataman's again: no Verify, no rotation, no Remove).
+    let mut p = conn(Engine::MySql);
+    p.mcp = Some(McpAccess::Read);
+    let s = compile(&p, "", &opts());
+    let plan = my::create_plan(&s, &inv_sql("shop"), &probe, "pw", false);
+    assert!(plan.views.is_empty());
+    let shown = plan.shown();
+    assert!(shown.contains(&format!("CREATE DATABASE `{}` COMMENT 'dataman-managed v1 conn=a1b2c3d4e5f6'", s.space)), "{shown}");
+    assert!(plan.made.contains(&format!("database:{}", s.space)), "{:?}", plan.made);
+    // Its views' hashes are kept in Dataman's database: a sync then finds them in sync.
+    let g = guarded(Engine::MySql);
+    let gs = compile(&g, "", &opts());
+    let plan = my::create_plan(&gs, &inv_sql("shop"), &probe, "pw", false);
+    assert!(plan.shown().contains("REPLACE INTO `dataman_agent_a1b2c3d4_views`.`dataman_views`"), "{}", plan.shown());
+    let d = my::desired(&gs, &inv_sql("shop"), &probe);
+    let have_views: Vec<(String, String)> = d.views.iter().map(|v| (v.name.clone(), v.hash.clone())).collect();
+    let have: Vec<Grant> = d.grants.clone();
+    let sync = my::sync_plan(&gs, &inv_sql("shop"), &probe, &have, &have_views, true, false);
+    assert!(sync.steps_run().next().is_none(), "in sync: {}", sync.shown());
+    // Remove drops the marks table with the views, then the database.
+    let rm = my::remove_plan(&gs.user, &gs.space, &["shop__users".into()], true, true);
+    assert!(rm.shown().contains("DROP TABLE IF EXISTS `dataman_agent_a1b2c3d4_views`.`dataman_views`") && rm.shown().contains("DROP DATABASE IF EXISTS"), "{}", rm.shown());
+}
+
+#[test]
+fn mysql_agent_cant_change_its_own_password() {
+    let s = compile(&guarded(Engine::MySql), "", &opts());
+    let plan = my::create_plan(&s, &inv_sql("shop"), &probe_sql(), "pw", false);
+    assert!(plan.shown().contains("PASSWORD REQUIRE CURRENT"), "{}", plan.shown());
+}
+
+#[test]
+fn redis_slow_log_is_activity() {
+    let mut p = conn(Engine::Redis);
+    p.mcp = Some(McpAccess::Read);
+    p.mcp_rules.activity = false;
+    let (t, _) = redis::rules_for(&compile(&p, "", &opts()));
+    assert!(!t.iter().any(|x| x.starts_with("+slowlog")), "others' commands and their values: {t:?}");
+    p.mcp_rules.activity = true;
+    let (t, _) = redis::rules_for(&compile(&p, "", &opts()));
+    assert!(t.iter().any(|x| x == "+slowlog|get"), "{t:?}");
 }

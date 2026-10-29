@@ -1133,11 +1133,14 @@ impl ConnDialog {
     }
 
     pub fn save_now(&mut self, cx: &mut Context<Self>) {
-        let (p, pw, ssh_secret) = match self.collect(cx) {
+        let (mut p, pw, ssh_secret) = match self.collect(cx) {
             Ok(v) => v,
             Err(e) => return self.invalid(e, cx),
         };
         let core = self.store.read(cx).core.clone();
+        // Its agent login is the Database login page's: as saved now (made, rotated or removed
+        // while this dialog was open), never this dialog's copy, nor a copied connection's.
+        (p.agent_login, p.agents_refused) = core.config.get(&p.id).map(|c| (c.agent_login, c.agents_refused)).unwrap_or((None, false));
         if let Err(e) = core.save_connection(p.clone(), pw.as_deref(), ssh_secret.as_deref()) {
             self.test = Test::Invalid(format!("{e:#}"));
             cx.notify();

@@ -1,5 +1,5 @@
 -- the login, locked until the end (password sent as its hash, never in clear)
-CREATE USER 'dataman_agent_a1b2c3d4'@'%' IDENTIFIED WITH caching_sha2_password AS '$A$005$…' WITH MAX_USER_CONNECTIONS 4 ACCOUNT LOCK ATTRIBUTE '{"dataman":"dataman-managed v1","conn":"a1b2c3d4e5f6"}';
+CREATE USER 'dataman_agent_a1b2c3d4'@'%' IDENTIFIED WITH caching_sha2_password AS '$A$005$…' WITH MAX_USER_CONNECTIONS 4 PASSWORD REQUIRE CURRENT ACCOUNT LOCK ATTRIBUTE '{"dataman":"dataman-managed v1","conn":"a1b2c3d4e5f6"}';
 
 -- masked columns: views the agent reads instead (1)
 CREATE DATABASE `dataman_agent_a1b2c3d4_views`;

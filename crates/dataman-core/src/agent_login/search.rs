@@ -118,7 +118,7 @@ pub fn desired(spec: &Spec, inv: &Inventory, os: bool, fls: bool) -> Desired {
         lines.push(format!("cluster {c}"));
     }
     let role = if os {
-        json!({ "description": format!("{MARK} conn={}", spec.conn), "cluster_permissions": cluster, "index_permissions": entries })
+        json!({ "description": mark_for(&spec.conn), "cluster_permissions": cluster, "index_permissions": entries })
     } else {
         json!({ "cluster": cluster, "indices": entries, "metadata": { "dataman": MARK, "conn": spec.conn } })
     };
@@ -192,6 +192,7 @@ fn seal(spec: &Spec, d: Desired, probe: &Probe, steps: Vec<Step>, prod: bool) ->
         rules,
         lines: d.lines,
         not_granted: d.not_granted,
+        exposed: Vec::new(),
         lacks: probe.lacks.clone(),
         made: vec![format!("role:{}", spec.user)],
         granted: d.access.len(),

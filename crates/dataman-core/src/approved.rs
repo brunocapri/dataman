@@ -555,4 +555,32 @@ mod tests {
         m.outside().upsert(ConnectionProfile { agent_login: Some(crate::agent_login::test_login("dataman_agent_a", &a)), ..refused }).unwrap();
         assert!(m.dataman().held().iter().any(|h| h.changes.iter().any(|c| c.what == "Agent login")));
     }
+
+    #[test]
+    fn a_twin_of_an_agent_login_connection_waits() {
+        // Another connection to the same server as the same user, added outside Dataman: agents
+        // would reach it as the user, not as the login.
+        for (host, refused) in [("db.example.com", false), ("DB.example.com.", false), ("db.example.com", true)] {
+            let m = Mac::new();
+            let mut a = conn("a");
+            if refused {
+                a.agents_refused = true;
+            } else {
+                a.agent_login = Some(crate::agent_login::test_login("dataman_agent_a", &a));
+            }
+            m.dataman().upsert(a.clone()).unwrap();
+            let twin = ConnectionProfile { id: "twin".into(), name: "twin".into(), host: host.into(), ..conn("twin") };
+            m.outside().upsert(twin).unwrap();
+            let d = m.dataman();
+            assert!(d.held().iter().any(|h| h.id == "twin" && h.changes.iter().any(|c| c.what == "Agent login" && c.loosens)), "{host} {refused}: {:?}", d.held());
+            assert!(d.get("twin").is_none(), "not used meanwhile");
+        }
+        // This machine by any name.
+        let m = Mac::new();
+        let mut a = ConnectionProfile { host: "localhost".into(), ..conn("a") };
+        a.agent_login = Some(crate::agent_login::test_login("dataman_agent_a", &a));
+        m.dataman().upsert(a.clone()).unwrap();
+        m.outside().upsert(ConnectionProfile { id: "twin".into(), name: "twin".into(), host: "127.0.0.1".into(), ..conn("twin") }).unwrap();
+        assert!(m.dataman().held().iter().any(|h| h.id == "twin"), "127.0.0.1 is localhost");
+    }
 }

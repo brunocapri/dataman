@@ -284,13 +284,13 @@ async fn verify_sql(agent: &Arc<Connection>, spec: &Spec, inv: &Inventory, probe
             let col = a.and_then(|a| a.masked.first().map(|m| m.0.clone()).or_else(|| a.plain.first().cloned())).unwrap_or_default();
             let r = try_sql(top0(e, &sql_q(e, &col), &v.view)).await;
             out.push(check(format!("Reads {} through its view", v.table), r.is_ok(), r.err().map(|x| x.to_string()).unwrap_or_default()));
-            if let Some((m, _)) = a.and_then(|a| a.masked.first()) {
+            // What every login reads anyway (the review says so) is not tried.
+            if let Some((m, _)) = a.and_then(|a| a.masked.iter().find(|(m, _)| !inv.open_to_all(&a.schema, &a.name, Some(m)))) {
                 let r = try_sql(top0(e, &sql_q(e, m), &qual(&v.schema, &v.table))).await;
                 out.push(check(format!("Can't read {}.{m} unmasked", v.table), r.as_ref().is_err_and(|x| refused(e, x.code.as_deref(), &x.message)), r.err().map(|x| x.message).unwrap_or_else(|| "it read the real values".into())));
             }
         }
-        if let Some(a) = acc.iter().find(|a| !a.hidden.is_empty()) {
-            let h = &a.hidden[0];
+        if let Some((a, h)) = acc.iter().find_map(|a| a.hidden.iter().find(|h| !inv.open_to_all(&a.schema, &a.name, Some(h))).map(|h| (a, h))) {
             let r = try_sql(top0(e, &sql_q(e, h), &qual(&a.schema, &a.name))).await;
             out.push(check(format!("Can't read {}.{h} (hidden)", a.name), r.as_ref().is_err_and(|x| refused(e, x.code.as_deref(), &x.message)), r.err().map(|x| x.message).unwrap_or_else(|| "it read the hidden column".into())));
         }
@@ -300,7 +300,12 @@ async fn verify_sql(agent: &Arc<Connection>, spec: &Spec, inv: &Inventory, probe
         let r = try_sql(top0(e, "1", &qual(&a.schema, &a.name))).await;
         out.push(check(format!("Can't read {} (not granted)", a.label()), r.as_ref().is_err_and(|x| refused(e, x.code.as_deref(), &x.message)), r.err().map(|x| x.message).unwrap_or_else(|| "it read a table it was not granted".into())));
     }
-    if let Some(h) = hidden.first() {
+    let open_table = |h: &String| {
+        let name = h.split(" (").next().unwrap_or(h);
+        let (s, n) = name.split_once('.').unwrap_or(("", name));
+        inv.open_to_all(s, n, None)
+    };
+    if let Some(h) = hidden.iter().find(|h| !open_table(h)) {
         let name = h.split(" (").next().unwrap_or(h);
         let (s, n) = name.split_once('.').unwrap_or(("", name));
         let r = try_sql(top0(e, "1", &qual(s, n))).await;
@@ -444,7 +449,14 @@ pub struct Drift {
     pub inventory: Inventory,
 }
 
+/// `p` in the database the login was made in (its user and grants are there, whatever the
+/// connection's database is now).
+fn in_login_db(p: &ConnectionProfile, login: &AgentLogin) -> ConnectionProfile {
+    ConnectionProfile { database: database_for(p, Some(login)), ..p.clone() }
+}
+
 pub async fn drift(c: &Arc<Connection>, p: &ConnectionProfile, login: &AgentLogin, password: &str) -> Result<Drift> {
+    let p = &in_login_db(p, login);
     let (probe, persist) = probe(c, p).await?;
     if probe.exists != Some(true) {
         bail!("{} is not on the server as Dataman's any more: remove it in Dataman and create it again", login.user);
@@ -492,6 +504,7 @@ pub async fn drift(c: &Arc<Connection>, p: &ConnectionProfile, login: &AgentLogi
 
 /// Removing it: only what Dataman made, checked on the server first.
 pub async fn removal(c: &Arc<Connection>, p: &ConnectionProfile, login: &AgentLogin) -> Result<Plan> {
+    let p = &in_login_db(p, login);
     let user = &login.user;
     let space = space_of(user);
     let space = space.as_str();
@@ -569,6 +582,7 @@ pub fn removal_offline(p: &ConnectionProfile, login: &AgentLogin) -> Plan {
 /// A new password: the server first, then the caller keeps it (the old one stays in the
 /// Keychain until the new one is set here).
 pub async fn rotation(c: &Arc<Connection>, p: &ConnectionProfile, login: &AgentLogin, _old: &str, new: &str) -> Result<Plan> {
+    let p = &in_login_db(p, login);
     let user = &login.user;
     let expires = login.rotate_days.map(|d| d + GRACE_DAYS);
     let step = match p.engine {
@@ -591,6 +605,75 @@ pub async fn rotation(c: &Arc<Connection>, p: &ConnectionProfile, login: &AgentL
         bail!("{user} is not on the server as Dataman's: nothing to rotate");
     }
     Ok(Plan { engine: Some(p.engine), user: user.clone(), steps: vec![step], one_tx: p.engine.is_sql(), ..Default::default() })
+}
+
+/// Ends the sessions the login has open (after a new password or before it goes): a session
+/// opened with the old password would otherwise go on working. Returns how many it ended.
+/// MongoDB can't end another user's connections and Elasticsearch/OpenSearch keep none (each
+/// request carries the password): nothing to do there.
+pub async fn end_sessions(c: &Arc<Connection>, p: &ConnectionProfile, user: &str) -> Result<usize> {
+    Ok(match p.engine {
+        Engine::Postgres => {
+            let db = admin_db(c, Some(&p.database)).await?;
+            let kill = format!("SELECT count(*) FILTER (WHERE pg_terminate_backend(pid)) FROM pg_stat_activity WHERE usename = {} AND pid <> pg_backend_pid()", pg::lit(user));
+            let count = |r: Vec<Vec<Option<String>>>| r.first().and_then(|x| x[0].as_deref()).and_then(|n| n.parse().ok()).unwrap_or(0);
+            match text_rows(&db, &kill).await {
+                Ok(r) => count(r),
+                // A CREATEROLE admin (not a superuser) holds ADMIN on the role it made, not its
+                // privileges (PostgreSQL 16+): it takes them for this transaction only.
+                Err(e) if format!("{e:#}").contains("permission denied to terminate") => {
+                    let u = pg::q(user);
+                    db.execute("BEGIN").await.map_err(|e| anyhow!("{e}"))?;
+                    let r = async {
+                        db.execute(&format!("GRANT {u} TO CURRENT_USER WITH INHERIT TRUE")).await.map_err(|e| anyhow!("{e}"))?;
+                        let n = count(text_rows(&db, &kill).await?);
+                        db.execute(&format!("REVOKE {u} FROM CURRENT_USER")).await.map_err(|e| anyhow!("{e}"))?;
+                        Ok::<usize, anyhow::Error>(n)
+                    }
+                    .await;
+                    match r {
+                        Ok(n) => {
+                            db.execute("COMMIT").await.map_err(|e| anyhow!("{e}"))?;
+                            n
+                        }
+                        Err(e) => {
+                            let _ = db.execute("ROLLBACK").await;
+                            return Err(e);
+                        }
+                    }
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Engine::MySql => {
+            let db = admin_db(c, None).await?;
+            let ids = text_rows(&db, &format!("SELECT ID FROM information_schema.PROCESSLIST WHERE USER = {} AND ID <> CONNECTION_ID()", my::lit(user))).await?;
+            let mut n = 0;
+            for id in ids.iter().filter_map(|r| r[0].as_deref()).filter_map(|x| x.parse::<u64>().ok()) {
+                match db.execute(&format!("KILL {id}")).await {
+                    Ok(_) => n += 1,
+                    // Gone since it was listed.
+                    Err(e) if e.code.as_deref() == Some("1094") => {}
+                    Err(e) => bail!("{e}"),
+                }
+            }
+            n
+        }
+        Engine::SqlServer => {
+            let db = admin_db(c, Some(&p.database)).await?;
+            let r = text_rows(&db, &format!("SELECT COUNT(*) FROM sys.dm_exec_sessions WHERE login_name = {} AND session_id <> @@SPID", ms::lit(user))).await?;
+            db.execute(&format!("DECLARE @k NVARCHAR(MAX) = N''; SELECT @k += N'KILL ' + CAST(session_id AS NVARCHAR(10)) + N';' FROM sys.dm_exec_sessions WHERE login_name = {} AND session_id <> @@SPID; EXEC (@k)", ms::lit(user))).await.map_err(|e| anyhow!("{e}"))?;
+            r.first().and_then(|x| x[0].as_deref()).and_then(|n| n.parse().ok()).unwrap_or(0)
+        }
+        Engine::Redis => match nosql(c)? {
+            Client::Redis(r) => redis::call(r, &["CLIENT".into(), "KILL".into(), "USER".into(), user.to_string()]).await.ok().and_then(|x| match x {
+                crate::backend::redis::Reply::Int(n) => Some(n as usize),
+                _ => None,
+            }).unwrap_or(0),
+            _ => 0,
+        },
+        _ => 0,
+    })
 }
 
 /// The database a plan's statements run in.

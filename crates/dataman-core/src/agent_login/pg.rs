@@ -85,6 +85,16 @@ pub struct Desired {
     pub hidden: Vec<String>,
     pub not_granted: Vec<NotGranted>,
     pub salt: bool,
+    pub exposed: Vec<NotGranted>,
+}
+
+/// What closes a table (or columns) to every login.
+fn revoke_public(o: &Open, cols: &[String]) -> String {
+    if cols.is_empty() {
+        format!("REVOKE SELECT ON {} FROM PUBLIC;", qual(&o.schema, &o.name))
+    } else {
+        format!("REVOKE SELECT ({}) ON {} FROM PUBLIC;", cols.iter().map(|c| q(c)).collect::<Vec<_>>().join(", "), qual(&o.schema, &o.name))
+    }
 }
 
 pub const DEFAULT_SCHEMA: &str = "public";
@@ -135,7 +145,7 @@ pub fn desired(spec: &Spec, inv: &Inventory, probe: &Probe) -> Desired {
         }
         if !a.masked.is_empty() {
             salt |= a.masked.iter().any(|(_, m)| *m == Mask::Hash);
-            let name = view_name(&a.schema, &a.name, DEFAULT_SCHEMA, 63);
+            let name = view_name(&a.schema, &a.name, DEFAULT_SCHEMA, 63, &views);
             let cols: Vec<String> = a.plain.iter().map(|c| q(c)).chain(a.masked.iter().map(|(c, m)| format!("{} AS {}", mask_expr(c, *m, &spec.space), q(c)))).collect();
             let body = format!("SELECT {} FROM {}", cols.join(", "), qual(&a.schema, &a.name));
             let hash = hash::sha256_hex(body.as_bytes())[..12].to_string();
@@ -168,7 +178,8 @@ pub fn desired(spec: &Spec, inv: &Inventory, probe: &Probe) -> Desired {
     }
     grants.sort();
     grants.dedup();
-    Desired { grants, views, access: access_ok, hidden, not_granted, salt }
+    let exposed = exposed(spec, inv, &revoke_public);
+    Desired { grants, views, access: access_ok, hidden, not_granted, salt, exposed }
 }
 
 fn rules(spec: &Spec, d: &Desired, probe: &Probe, prod: bool) -> Vec<RuleLine> {
@@ -293,7 +304,7 @@ pub fn create_plan(spec: &Spec, inv: &Inventory, probe: &Probe, password: &str, 
     let g = "the login (password sent as a SCRAM verifier, never in clear)";
     let mut steps = vec![
         Step::secret_sql(g, role.replace("{}", &lit(&verifier)), role.replace("{}", "'SCRAM-SHA-256$4096:…'")),
-        Step::sql(g, format!("COMMENT ON ROLE {} IS {}", q(&spec.user), lit(&format!("{MARK} conn={}", spec.conn)))),
+        Step::sql(g, format!("COMMENT ON ROLE {} IS {}", q(&spec.user), lit(&mark_for(&spec.conn)))),
     ];
     let mut sorted = d.grants.clone();
     sorted.sort_by_key(|g| (order(g), g.clone()));
@@ -321,11 +332,12 @@ pub fn create_plan(spec: &Spec, inv: &Inventory, probe: &Probe, password: &str, 
 
 fn seal(spec: &Spec, d: Desired, probe: &Probe, steps: Vec<Step>, made: Vec<String>, prod: bool) -> Plan {
     let rules = rules(spec, &d, probe, prod);
+    let exposed = d.exposed;
     let mut notes = Vec::new();
     if !d.views.is_empty() {
         notes.push(format!("While the views exist, dropping or retyping a masked column of {} fails until Dataman's view goes (Remove login, or a sync after the rules change).", short_list(&d.views.iter().map(|v| v.map.table.clone()).collect::<Vec<_>>())));
     }
-    Plan {
+    let plan = Plan {
         engine: Some(Engine::Postgres),
         user: spec.user.clone(),
         space: spec.space.clone(),
@@ -334,6 +346,7 @@ fn seal(spec: &Spec, d: Desired, probe: &Probe, steps: Vec<Step>, made: Vec<Stri
         rules,
         lines: d.grants.iter().map(text).collect(),
         not_granted: d.not_granted,
+        exposed: Vec::new(),
         lacks: probe.lacks.clone(),
         notes,
         made,
@@ -343,7 +356,8 @@ fn seal(spec: &Spec, d: Desired, probe: &Probe, steps: Vec<Step>, made: Vec<Stri
         manual: None,
         hash: String::new(),
     }
-    .seal()
+    .seal();
+    with_exposed(plan, exposed)
 }
 
 /// A sync: what the role has against what the rules want, granted and revoked, and the views
@@ -493,8 +507,25 @@ pub(crate) async fn probe(db: &Db, user: &str, conn: &str) -> Result<Probe> {
     if managed_admin && !sup {
         p.notes.push("A managed PostgreSQL's admin role: it grants on the tables it owns or is a member of their owner.".into());
     }
+    // A function that runs as its owner, which every login may call, reaches what the agent
+    // login is not granted.
+    let definer = rows(
+        db,
+        "SELECT n.nspname || '.' || p.proname FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace \
+         WHERE p.prosecdef AND has_function_privilege('public', p.oid, 'EXECUTE') AND n.nspname NOT IN ('pg_catalog', 'information_schema') ORDER BY 1",
+    )
+    .await
+    .unwrap_or_default();
+    if !definer.is_empty() {
+        let names: Vec<String> = definer.iter().map(|r| s(&r[0])).collect();
+        p.notes.push(format!(
+            "{} SECURITY DEFINER: every login may call {} as its owner, the agent login too, reaching what it is not granted. Dataman refuses calls to them while Run code is off; REVOKE EXECUTE … FROM PUBLIC closes it in the database.",
+            short_list(&names),
+            if names.len() == 1 { "it" } else { "them" }
+        ));
+    }
     let e = rows(db, &format!("SELECT shobj_description(oid, 'pg_authid') FROM pg_roles WHERE rolname = {}", lit(user))).await?;
-    p.exists = e.first().map(|r| r[0].as_deref().is_some_and(|c| c.starts_with(MARK) && c.contains(&format!("conn={conn}"))));
+    p.exists = e.first().map(|r| r[0].as_deref().is_some_and(|c| marked_for(c, conn)));
     Ok(p)
 }
 
@@ -534,6 +565,19 @@ pub(crate) async fn inventory(db: &Db) -> Result<Inventory> {
             owner: s(&r[3]),
             sequences: s(&r[6]).split('\u{2}').filter(|x| !x.is_empty()).map(str::to_string).collect(),
         });
+    }
+    // What every login may read (granted to PUBLIC): the agent login too.
+    let open = rows(
+        db,
+        "SELECT n.nspname, c.relname, has_table_privilege('public', c.oid, 'SELECT'), \
+         (SELECT string_agg(a.attname, '\u{2}' ORDER BY a.attnum) FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped AND has_column_privilege('public', c.oid, a.attnum, 'SELECT')) \
+         FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
+         WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f') AND NOT c.relispartition AND has_any_column_privilege('public', c.oid, 'SELECT') \
+         AND n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname NOT LIKE 'pg\\_toast%' AND n.nspname NOT LIKE 'pg\\_temp%'",
+    )
+    .await?;
+    for r in open {
+        out.open.push(Open { schema: s(&r[0]), name: s(&r[1]), whole: yes(&r[2]), columns: s(&r[3]).split('\u{2}').filter(|c| !c.is_empty()).map(str::to_string).collect() });
     }
     Ok(out)
 }
@@ -617,5 +661,5 @@ pub(crate) async fn made_here(db: &Db, space: &str) -> Result<(Vec<String>, bool
 /// Whether the role named `user` is there, and marked for this connection.
 pub(crate) async fn exists(db: &Db, user: &str, conn: &str) -> Result<Option<bool>> {
     let e = rows(db, &format!("SELECT shobj_description(oid, 'pg_authid') FROM pg_roles WHERE rolname = {}", lit(user))).await?;
-    Ok(e.first().map(|r| r[0].as_deref().is_some_and(|c| c.starts_with(MARK) && c.contains(&format!("conn={conn}")))))
+    Ok(e.first().map(|r| r[0].as_deref().is_some_and(|c| marked_for(c, conn))))
 }

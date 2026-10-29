@@ -330,6 +330,26 @@ impl Core {
         })
     }
 
+    /// The connection of an agent login: `agent` (see `agent_login::live::agent_profile`) with
+    /// the login's own `password`, never the user's nor a `.pgpass` line; an SSH tunnel opens
+    /// with what `user` (the connection as the user keeps it) has for it.
+    pub fn connect_agent(&self, user: &ConnectionProfile, agent: ConnectionProfile, password: String) -> Task<Arc<Connection>> {
+        let handle = self.handle();
+        let history = self.history.clone();
+        let exts = self.extensions.clone();
+        let secrets = self.resolver();
+        let known = self.dirs.known_hosts_file();
+        let user = user.clone();
+        spawn(&self.handle(), async move {
+            if agent.id != user.id || agent.ssh != user.ssh {
+                anyhow::bail!("the agent login's connection is not this connection's");
+            }
+            let ssh_secret = secrets.ssh(&user, None)?;
+            let tunnel = open_tunnel(&agent, ssh_secret, known).await?;
+            Connection::open(handle, agent, Some(password), history, exts, tunnel).await
+        })
+    }
+
     pub fn connect(&self, profile: ConnectionProfile, password: Option<String>) -> Task<Arc<Connection>> {
         let handle = self.handle();
         let history = self.history.clone();

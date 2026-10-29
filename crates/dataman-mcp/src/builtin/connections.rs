@@ -279,14 +279,24 @@ fn no_twin(cx: &Call, p: &ConnectionProfile) -> Result<(), ToolError> {
         if p.engine.is_file() || q.engine.is_file() {
             return p.engine.is_file() && q.engine.is_file() && canonical(p).is_some_and(|c| Some(c) == canonical(q));
         }
-        q.engine == p.engine && q.host.eq_ignore_ascii_case(&p.host) && q.port == p.port && q.user == p.user && q.ssh == p.ssh
+        // This machine by any of its names (localhost, 127.0.0.1, ::1) is the same server.
+        let host = |h: &str| if dataman_core::config::is_local_host(h) { "localhost".to_string() } else { h.trim().trim_end_matches('.').to_ascii_lowercase() };
+        q.engine == p.engine && host(&q.host) == host(&p.host) && q.port == p.port && q.user == p.user && q.ssh == p.ssh
     };
+    // An agent login (or agents refused there) is a protection too: a twin would reach the
+    // server as the user, not as the login.
     let guarded = |q: &ConnectionProfile| {
-        q.mcp_access() == McpAccess::Off || !q.mcp_rules.is_default() || q.read_only || !q.read_only_databases.is_empty() || q.env == Environment::Production
+        q.mcp_access() == McpAccess::Off
+            || !q.mcp_rules.is_default()
+            || q.read_only
+            || !q.read_only_databases.is_empty()
+            || q.env == Environment::Production
+            || q.agent_login.is_some()
+            || q.agents_refused
     };
     if let Some(q) = cx.hub.profiles().iter().find(|q| q.id != p.id && same(q) && guarded(q)) {
         return Err(ToolError::Refused(format!(
-            "{} already reaches this {} with protections a new connection would not have (MCP access, Privacy, read-only or production): use that connection, or ask the user to add another in Dataman",
+            "{} already reaches this {} with protections a new connection would not have (MCP access, Privacy, read-only, production or its agent login): use that connection, or ask the user to add another in Dataman",
             q.name,
             if p.engine.is_file() { "file" } else { "server as this user" }
         )));
@@ -355,7 +365,11 @@ fn of_project(cx: &Call, p: &ConnectionProfile) -> Result<(), ToolError> {
 
 fn save(cx: &Call, profile: &ConnectionProfile) -> Result<(), ToolError> {
     let store = ConfigStore::open_with(&cx.hub.dirs, cx.hub.core.approved.clone()).map_err(failed)?;
-    store.upsert(profile.clone()).map_err(failed)?;
+    // The agent login is the user's, in Dataman only: as saved now (it may have been made or
+    // removed while this call waited for the user), never what the agent's copy says.
+    let mut profile = profile.clone();
+    (profile.agent_login, profile.agents_refused) = store.get(&profile.id).map(|c| (c.agent_login, c.agents_refused)).unwrap_or((None, false));
+    store.upsert(profile).map_err(failed)?;
     if let Some(f) = cx.hub.front() {
         f.connections_changed();
     }

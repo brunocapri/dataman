@@ -160,7 +160,12 @@ impl AgentsPage {
                         let new = agent_login::hash::password();
                         let plan = live::rotation(&admin, &p, &l, &old, &new).await.map_err(|e| format!("{e:#}"))?;
                         live::apply(&admin, &plan, &l.database).await.map_err(|e| format!("{e:#}"))?;
-                        core.secrets.set(&agent_login::secret_account(&p.id), &new).map_err(|e| format!("{e:#}"))
+                        core.secrets.set(&agent_login::secret_account(&p.id), &new).map_err(|e| format!("{e:#}"))?;
+                        // What logged in with the old password goes too.
+                        if let Err(e) = live::end_sessions(&admin, &p, &l.user).await {
+                            log::info!("the agent login's sessions from before its new password could not be ended: {e:#}");
+                        }
+                        Ok(())
                     })
                 },
                 move |v, r, cx| match r {
@@ -388,20 +393,24 @@ impl AgentsPage {
                     live::apply(&admin, &plan, &l.database).await.map_err(|e| format!("{e:#}"))?;
                     // The server first, then the Keychain: the old one stays until this works.
                     core.secrets.set(&agent_login::secret_account(&p.id), &new).map_err(|e| format!("the new password is set on the server but could not be kept in the {}: {e:#}; Rotate again", dataman_core::secret::STORE_NAME))?;
-                    Ok(())
+                    // Sessions opened with the old password would go on working: ended.
+                    Ok(live::end_sessions(&admin, &p, &l.user).await.err().map(|e| format!("{e:#}")))
                 })
             },
             |v, r, cx| {
                 v.login.busy = None;
                 match r {
-                    Ok(()) => {
+                    Ok(left) => {
                         let id = v.login.conn.clone().unwrap_or_default();
                         v.edit_conn(&id, |p| {
                             if let Some(l) = p.agent_login.as_mut() {
                                 l.rotated = Some(Utc::now());
                             }
                         }, cx);
-                        v.login.note = Some((true, "New password set; agents reconnect with it".into()));
+                        v.login.note = Some(match left {
+                            None => (true, "New password set; agents reconnect with it".into()),
+                            Some(e) => (false, format!("New password set, but the sessions opened with the old one could not be ended ({e}): they last until they disconnect")),
+                        });
                     }
                     Err(e) => v.login.note = Some((false, e)),
                 }
@@ -471,15 +480,27 @@ impl AgentsPage {
         *error = None;
         let plan = plan.clone();
         let db = live::database_for(p, p.agent_login.as_ref());
-        self.login_task(p, cx, move |_, admin, _| Box::pin(async move { live::apply(&admin, &plan, &db).await.map_err(|e| format!("{e:#}")) }), |v, r, cx| match r {
-            Ok(()) => v.login_forget(cx),
-            Err(e) => {
-                if let Some(Sheet::Remove { busy, error, .. }) = v.login.sheet.as_mut() {
-                    *busy = false;
-                    *error = Some(e);
+        let user = p.agent_login.as_ref().map(|l| l.user.clone()).unwrap_or_default();
+        self.login_task(
+            p,
+            cx,
+            move |_, admin, p| {
+                Box::pin(async move {
+                    // Its open sessions first: one would outlive the login otherwise.
+                    let _ = live::end_sessions(&admin, &p, &user).await;
+                    live::apply(&admin, &plan, &db).await.map_err(|e| format!("{e:#}"))
+                })
+            },
+            |v, r, cx| match r {
+                Ok(()) => v.login_forget(cx),
+                Err(e) => {
+                    if let Some(Sheet::Remove { busy, error, .. }) = v.login.sheet.as_mut() {
+                        *busy = false;
+                        *error = Some(e);
+                    }
                 }
-            }
-        });
+            },
+        );
     }
 
     /// Dataman forgets the login: its record and its Keychain password. Agents are refused here
@@ -695,7 +716,7 @@ impl AgentsPage {
                     .flex_row()
                     .items_start()
                     .gap(px(14.))
-                    .child(div().flex_1().flex().flex_col().gap(px(8.)).line_height(px(19.)).child(div().font_weight(FontWeight::SEMIBOLD).text_size(px(13.)).child(title)).child(div().text_color(t.tx2).child(text)))
+                    .child(div().flex_1().min_w_0().flex().flex_col().gap(px(8.)).line_height(px(19.)).child(div().font_weight(FontWeight::SEMIBOLD).text_size(px(13.)).child(title)).child(div().text_color(t.tx2).child(text)))
                     .children(mine)
                     .child(create),
             )
@@ -724,7 +745,7 @@ impl AgentsPage {
             .flex_row()
             .items_center()
             .gap(px(14.))
-            .child(div().flex_1().flex().flex_col().gap(px(4.)).child(div().font_weight(FontWeight::SEMIBOLD).text_size(px(13.)).child(format!("Waiting for {user} on the server"))).child(div().text_color(t.tx3).child("Run the script as an admin; Verify finds the login, logs in as it, and only then saves it.")))
+            .child(div().flex_1().min_w_0().flex().flex_col().gap(px(4.)).child(div().font_weight(FontWeight::SEMIBOLD).text_size(px(13.)).child(format!("Waiting for {user} on the server"))).child(div().text_color(t.tx3).child("Run the script as an admin; Verify finds the login, logs in as it, and only then saves it.")))
             .child(forget)
             .child(again)
             .child(verify)
@@ -854,6 +875,7 @@ impl AgentsPage {
                     .child(
                         div()
                             .flex_1()
+                            .min_w_0()
                             .flex()
                             .flex_col()
                             .gap(px(4.))
@@ -920,7 +942,7 @@ impl AgentsPage {
                 .border_b_1()
                 .border_color(t.line)
                 .line_height(px(17.))
-                .child(div().flex_1().flex().flex_col().child(div().child(r.rule.clone())).child(div().text_color(t.tx3).child(r.how.clone())))
+                .child(div().flex_1().min_w_0().flex().flex_col().child(div().child(r.rule.clone())).child(div().text_color(t.tx3).child(r.how.clone())))
                 .child(badge(t, r.who))
         });
         let warn_box = |text: String| div().border_1().border_color(t.warn).bg(t.warn_s).px(px(12.)).py(px(10.)).line_height(px(18.)).child(text);
@@ -947,6 +969,15 @@ impl AgentsPage {
                 if names.len() == 1 { "table" } else { "tables" },
                 rv.probe.login,
                 agent_login::short_list(&names),
+                if names.len() == 1 { "it" } else { "them" }
+            )));
+        }
+        if !plan.exposed.is_empty() {
+            let names: Vec<String> = plan.exposed.iter().map(|n| n.object.clone()).collect();
+            left = left.child(warn_box(format!(
+                "Every login may read {} ({}), the agent login too: the database won't keep {} from agents, only Dataman does. To close it, their owner runs the REVOKE lines marked below.",
+                agent_login::short_list(&names),
+                plan.exposed[0].reason,
                 if names.len() == 1 { "it" } else { "them" }
             )));
         }
@@ -1132,7 +1163,8 @@ enum Verified {
 
 /// Logs in as the agent with `pw` and runs Verify's checks; the connection is closed after.
 async fn verify_as_agent(core: &Arc<dataman_core::Core>, p: &ConnectionProfile, user: &str, pw: &str, rv: &live::Review) -> Result<Vec<live::Check>, String> {
-    let agent = core.connect(live::agent_profile(p, user), Some(pw.to_string())).await.map_err(|e| format!("cannot log in as {user}: {e:#}"))?;
+    let mine = ConnectionProfile { agent_login: None, ..p.clone() };
+    let agent = core.connect_agent(&mine, live::agent_profile(p, user), pw.to_string()).await.map_err(|e| format!("cannot log in as {user}: {e:#}"))?;
     let r = live::verify(&agent, &rv.spec, &rv.inventory, &rv.probe).await.map_err(|e| format!("{e:#}"));
     agent.close();
     r

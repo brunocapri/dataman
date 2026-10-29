@@ -14,10 +14,10 @@ use crate::backend::redis::Client;
 use crate::privacy::{ItemKind, VisibleMode};
 
 /// Reads Dataman allows that Redis files under `@dangerous` or `@admin`.
-const READS_BACK: &[&str] = &["+info", "+role", "+slowlog|get", "+slowlog|len", "+latency|latest", "+memory|usage", "+memory|stats", "+cluster|info", "+cluster|nodes", "+acl|whoami", "+select", "+ping", "+echo"];
+const READS_BACK: &[&str] = &["+info", "+role", "+latency|latest", "+memory|usage", "+memory|stats", "+cluster|info", "+cluster|nodes", "+acl|whoami", "+select", "+ping", "+echo"];
 
 pub fn marker(conn: &str) -> String {
-    format!("(%R~dataman-managed:{conn} -@all)")
+    format!("(%R~dataman-managed:{} -@all)", key_pattern(conn))
 }
 
 /// A Dataman glob (`*` any run, case ignored by Dataman) as a Redis key pattern: `?`, `[`, `]`
@@ -74,6 +74,10 @@ pub fn rules_for(spec: &Spec) -> (Vec<String>, bool) {
     if spec.activity {
         t.push("+client|list".into());
         t.push("+client|info".into());
+        // The slow log holds others' commands with their arguments: keys and values outside
+        // the agent's patterns. Server activity only.
+        t.push("+slowlog|get".into());
+        t.push("+slowlog|len".into());
     }
     (t, keys_held)
 }
@@ -247,7 +251,9 @@ async fn persistence(c: &Client) -> Persist {
 pub(crate) async fn exists(c: &Client, user: &str, conn: &str) -> Result<Option<bool>> {
     let list = call(c, &["ACL".into(), "LIST".into()]).await?.texts();
     let prefix = format!("user {user} ");
-    Ok(list.iter().find(|l| l.starts_with(&prefix)).map(|l| l.contains(&format!("dataman-managed:{conn}"))))
+    // The selector exactly: `%R~dataman-managed:<id>` (another id that starts the same is not this one).
+    let mark = format!("%R~dataman-managed:{}", key_pattern(conn));
+    Ok(list.iter().find(|l| l.starts_with(&prefix)).map(|l| l.split(|c: char| c.is_whitespace() || c == '(' || c == ')').any(|t| t == mark)))
 }
 
 /// The user's rules as Redis prints them, and those the rules want, made comparable: the want

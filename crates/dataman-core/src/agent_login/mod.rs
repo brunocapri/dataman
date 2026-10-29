@@ -35,6 +35,17 @@ pub const MARK: &str = "dataman-managed v1";
 
 pub const PREFIX: &str = "dataman_agent_";
 
+/// The mark Dataman puts on a login (or the place of its views) for connection `conn`.
+pub fn mark_for(conn: &str) -> String {
+    format!("{MARK} conn={conn}")
+}
+
+/// Whether `comment` is Dataman's mark for exactly this connection (another connection whose id
+/// starts the same, `conn=<id>x`, is not this one).
+pub fn marked_for(comment: &str, conn: &str) -> bool {
+    comment.trim() == mark_for(conn)
+}
+
 /// Engines with logins: SQLite and DuckDB have none (Dataman guards them inside the engine).
 pub fn supported(e: Engine) -> bool {
     !e.is_file()
@@ -73,7 +84,12 @@ pub fn pending_account(conn_id: &str) -> String {
 /// Where a connection reaches, as the agent login keeps it: the login's password only ever goes
 /// there (a connection moved since, by a hand edit or a project, refuses agents).
 pub fn server_of(p: &ConnectionProfile) -> String {
-    format!("{}://{}:{}", p.engine.slug(), p.host.trim().to_ascii_lowercase(), p.port)
+    let server = format!("{}://{}:{}", p.engine.slug(), p.host.trim().to_ascii_lowercase(), p.port);
+    // Through a tunnel, the host is the bastion's to resolve: another bastion is another server.
+    match &p.ssh {
+        Some(s) => format!("{server} via ssh://{}@{}:{}", s.user.trim(), s.host.trim().to_ascii_lowercase(), s.port.unwrap_or(22)),
+        None => server,
+    }
 }
 
 /// The agent login on a connection, as connections.toml keeps it (never its password).
@@ -285,6 +301,76 @@ impl Col {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Inventory {
     pub objects: Vec<Obj>,
+    /// What every login may read (granted to PUBLIC, SQL Server's `public`): the agent login
+    /// reads it too, whatever it is granted.
+    pub open: Vec<Open>,
+    /// Roles every account gets (MySQL's `mandatory_roles`), the agent login's too.
+    pub open_roles: Vec<String>,
+}
+
+/// A table every login may read, or some of its columns.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Open {
+    pub schema: String,
+    pub name: String,
+    /// The columns every login may read (all of them where the table itself is granted).
+    pub columns: Vec<String>,
+    pub whole: bool,
+}
+
+/// What the rules hide or mask that every login may read anyway: the database lets the agent
+/// login read it too (Dataman's own checks still keep it from agents). `revoke` is the SQL that
+/// closes it (run by its owner).
+pub fn exposed(spec: &Spec, inv: &Inventory, revoke: &dyn Fn(&Open, &[String]) -> String) -> Vec<NotGranted> {
+    let (acc, hidden) = access(spec, inv);
+    let mut out = Vec::new();
+    for o in &inv.open {
+        let label = if o.schema.is_empty() { o.name.clone() } else { format!("{}.{}", o.schema, o.name) };
+        if o.schema.starts_with(PREFIX) {
+            continue;
+        }
+        let is_hidden = hidden.iter().any(|h| *h == label || h.starts_with(&format!("{label} (")));
+        if is_hidden || !spec.rows {
+            let cols = if o.whole { Vec::new() } else { o.columns.clone() };
+            out.push(NotGranted { object: label.clone(), reason: format!("{} to every login (PUBLIC)", if o.whole { "granted" } else { "some columns granted" }), sql: vec![revoke(o, &cols)] });
+            continue;
+        }
+        let Some(a) = acc.iter().find(|a| a.schema == o.schema && a.name == o.name) else { continue };
+        let kept: Vec<String> = a.hidden.iter().cloned().chain(a.masked.iter().map(|(c, _)| c.clone())).filter(|c| o.whole || o.columns.contains(c)).collect();
+        if !kept.is_empty() {
+            let names: Vec<String> = kept.iter().map(|c| format!("{label}.{c}")).collect();
+            out.push(NotGranted { object: short_list(&names), reason: "hidden or masked, and granted to every login (PUBLIC)".into(), sql: vec![revoke(o, if o.whole { &[] } else { &kept })] });
+        }
+    }
+    if !inv.open_roles.is_empty() {
+        out.push(NotGranted {
+            object: format!("roles {}", inv.open_roles.join(", ")),
+            reason: "every account gets them (mandatory_roles) and may turn them on (SET ROLE)".into(),
+            sql: vec!["SET PERSIST mandatory_roles = '';".into()],
+        });
+    }
+    out
+}
+
+impl Inventory {
+    /// Every login may read `column` of `schema.name` (any column when `None`: the table).
+    pub fn open_to_all(&self, schema: &str, name: &str, column: Option<&str>) -> bool {
+        self.open.iter().any(|o| o.schema == schema && o.name == name && (o.whole || column.is_none_or(|c| o.columns.iter().any(|x| x == c))))
+    }
+}
+
+/// What [`exposed`] found, on the plan and in its rules: the database does not hold those.
+pub(crate) fn with_exposed(mut plan: Plan, exposed: Vec<NotGranted>) -> Plan {
+    if exposed.is_empty() {
+        return plan;
+    }
+    for r in plan.rules.iter_mut().filter(|r| r.who == Who::Database && (r.rule.ends_with(" hidden") || r.rule.ends_with(" masked") || r.rule.starts_with("Structure only") || r.rule.starts_with("Rows:"))) {
+        r.who = Who::Partly;
+    }
+    let names: Vec<String> = exposed.iter().map(|e| e.object.clone()).collect();
+    plan.rules.push(line(format!("{} readable by every login", short_list(&names)), "granted to PUBLIC: the agent login reads it too, only Dataman keeps it from agents", Who::Dataman));
+    plan.exposed = exposed;
+    plan
 }
 
 /// One table's (collection's, index's) access, from the rules.
@@ -568,6 +654,8 @@ pub struct Plan {
     pub one_tx: bool,
     pub rules: Vec<RuleLine>,
     pub not_granted: Vec<NotGranted>,
+    /// Hidden or masked, yet every login may read it: see [`exposed`].
+    pub exposed: Vec<NotGranted>,
     pub lacks: Vec<String>,
     pub notes: Vec<String>,
     pub made: Vec<String>,
@@ -633,6 +721,12 @@ impl Plan {
                 for l in lines {
                     out.push_str(&format!("{comment} {l}\n"));
                 }
+            }
+        }
+        if !self.exposed.is_empty() {
+            out.push_str(&format!("\n{comment} hidden or masked, yet every login may read them (the agent's too); to close that, their owner runs (not run):\n"));
+            for l in self.exposed.iter().flat_map(|n| &n.sql) {
+                out.push_str(&format!("{comment} {l}\n"));
             }
         }
         out
@@ -737,14 +831,20 @@ pub(crate) fn hidden_label(hidden: &[String]) -> String {
     if more > 0 { format!("{} and {more} more hidden", names.join(", ")) } else { format!("{} hidden", names.join(", ")) }
 }
 
+/// Names in Dataman's space that are not views of a table.
+pub(crate) const RESERVED: &[&str] = &["salt", "dataman_views"];
+
 /// `schema__table` (`table` alone in the default schema), cut with a hash where too long for
-/// the engine (`max` characters).
-pub(crate) fn view_name(schema: &str, table: &str, default_schema: &str, max: usize) -> String {
+/// the engine (`max` characters). A name another view of `taken` has (`a.b__c` and `a__b.c`,
+/// case aside) or Dataman's own (`salt`) gets the hash of `schema.table` too: two tables never
+/// share a view, and no view takes the salt's place.
+pub(crate) fn view_name(schema: &str, table: &str, default_schema: &str, max: usize, taken: &[ViewDef]) -> String {
     let base = if schema.is_empty() || schema.eq_ignore_ascii_case(default_schema) { table.to_string() } else { format!("{schema}__{table}") };
-    if base.chars().count() <= max {
+    let clash = |n: &str| RESERVED.iter().any(|r| r.eq_ignore_ascii_case(n)) || taken.iter().any(|v| v.name.eq_ignore_ascii_case(n));
+    if base.chars().count() <= max && !clash(&base) {
         return base;
     }
-    let h = &hash::sha256_hex(base.as_bytes())[..8];
+    let h = &hash::sha256_hex(format!("{schema}.{table}").as_bytes())[..8];
     let keep: String = base.chars().take(max.saturating_sub(9)).collect();
     format!("{keep}_{h}")
 }

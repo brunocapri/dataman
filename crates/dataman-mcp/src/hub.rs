@@ -399,7 +399,11 @@ impl Hub {
     /// The connection agents use: as its agent login when it has one (its password the
     /// Keychain's), never falling back to the user's own login when that fails.
     pub async fn connect(&self, p: &ConnectionProfile) -> Result<Arc<Connection>, String> {
-        refusal(p)?;
+        if let Err(e) = refusal(p) {
+            // What was open for it (as a login it no longer has) goes too.
+            self.forget(&p.id);
+            return Err(e);
+        }
         let stale = {
             let mut g = self.open.lock();
             if let Some((saved, c)) = g.get_mut(&p.id)
@@ -420,20 +424,21 @@ impl Hub {
         };
         if let Some(c) = stale {
             c.close();
+            // What it read of the schema came through that login (another one, or the user's).
+            self.forget_schema(&p.id);
         }
         // Agents' reads on MongoDB go where Permissions › Read from says.
         let mut agent = p.clone();
         if let Some(r) = p.mcp_rules.read_from.filter(|_| p.engine == dataman_core::Engine::MongoDb) {
             agent.options.insert("readPreference".into(), r.mongo().into());
         }
-        let (agent, password) = match &p.agent_login {
+        let task = match &p.agent_login {
             Some(l) => {
                 let pw = agent_login::live::password_of(&*self.core.secrets, &p.id, &l.user).map_err(|e| format!("{e:#}"))?;
-                (agent_login::live::agent_profile(&agent, &l.user), Some(pw))
+                self.core.connect_agent(p, agent_login::live::agent_profile(&agent, &l.user), pw)
             }
-            None => (agent, None),
+            None => self.core.connect(agent, None),
         };
-        let task = self.core.connect(agent, password);
         let as_login = p.agent_login.as_ref().map(|l| format!(" as its agent login {}", l.user)).unwrap_or_default();
         let never = if p.agent_login.is_some() { ". Agents are refused here until it connects: Dataman never uses your own login for them (Agents › Database login › Verify)" } else { "" };
         let c = match tokio::time::timeout(CONNECT_TIMEOUT, task).await {
@@ -482,6 +487,12 @@ impl Hub {
         if let Some((_, c)) = self.mine.lock().remove(id) {
             c.close();
         }
+        self.forget_schema(id);
+    }
+
+    fn forget_schema(&self, id: &str) {
+        self.snapshots.lock().retain(|(i, _, _), _| i != id);
+        self.refreshed.lock().retain(|(i, _), _| i != id);
     }
 
     pub fn connected(&self, id: &str) -> Option<Arc<Connection>> {
