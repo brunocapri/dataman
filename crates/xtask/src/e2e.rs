@@ -123,10 +123,17 @@ const STAGES: &[Stage] = &[
 struct Opts {
     only: Vec<String>,
     skip: Vec<String>,
+    /// Stages known to fail here (CI says why): they run and report, but do not fail the run.
+    known: Vec<String>,
     build: bool,
     fresh: bool,
     reset: bool,
     verbose: bool,
+    /// Runs a failed stage again (after reloading its seeds) up to this many times; one that
+    /// passes then counts as passed, reported as flaky.
+    retry: usize,
+    /// Only the databases, seeds and fixtures (for the live tests): no stage runs.
+    up_only: bool,
 }
 
 fn csv(args: &[String], name: &str) -> Vec<String> {
@@ -143,12 +150,15 @@ pub fn run(args: &[String]) -> Result<()> {
     let o = Opts {
         only: csv(args, "--only"),
         skip: csv(args, "--skip"),
+        known: csv(args, "--known-failing"),
         build: !args.iter().any(|a| a == "--no-build"),
         fresh: args.iter().any(|a| a == "--fresh"),
         reset: !args.iter().any(|a| a == "--no-reset"),
         verbose: args.iter().any(|a| a == "-v" || a == "--verbose"),
+        retry: crate::flag(args, "--retry").map(|n| n.parse()).transpose().context("--retry takes a number")?.unwrap_or(0),
+        up_only: args.iter().any(|a| a == "--up-only"),
     };
-    for n in o.only.iter().chain(&o.skip) {
+    for n in o.only.iter().chain(&o.skip).chain(&o.known) {
         if !STAGES.iter().any(|s| s.name == n) {
             bail!("no stage {n} (`xtask e2e --list`)");
         }
@@ -179,17 +189,39 @@ pub fn run(args: &[String]) -> Result<()> {
         reset(&root, &needs)?;
     }
     fixtures(&root)?;
+    if o.up_only {
+        println!("\n{} up, seeded", needs.iter().map(|d| d.service()).collect::<Vec<_>>().join(" "));
+        return Ok(());
+    }
     let stamp = crate::now_utc().replace([':', '-'], "");
     let dir = root.join("target/e2e").join(&stamp);
     std::fs::create_dir_all(&dir)?;
     step(&format!("{} stages, logs in {}", stages.len(), dir.display()));
     let mut rows = Vec::new();
+    let mut flaky: Vec<(&str, String)> = Vec::new();
     for s in &stages {
-        let r = run_stage(&root, &app, s, &dir, o.verbose)?;
+        let mut r = run_stage(&root, &app, s, &dir, o.verbose)?;
         let mark = if r.ok() { "✓" } else { "✗" };
         println!("{mark} {:<18} {:>4}/{:<4} {:>6.1}s{}", s.name, r.pass, r.pass + r.fail.len(), r.secs, r.note.as_deref().map(|n| format!("  {n}")).unwrap_or_default());
         for f in &r.fail {
             println!("    FAIL {f}");
+        }
+        for attempt in 1..=o.retry {
+            if r.ok() {
+                break;
+            }
+            if o.reset {
+                reset(&root, &s.needs.iter().copied().collect())?;
+            }
+            let again = dir.join(format!("retry{attempt}"));
+            std::fs::create_dir_all(&again)?;
+            let first = std::mem::replace(&mut r, run_stage(&root, &app, s, &again, o.verbose)?);
+            if r.ok() {
+                println!("~ {:<18} {:>4}/{:<4} {:>6.1}s  flaky: passed on retry {attempt}", s.name, r.pass, r.pass, r.secs);
+                flaky.push((s.name, first.fail.first().cloned().or(first.note).unwrap_or_default()));
+            } else {
+                println!("✗ {:<18} retry {attempt}: {}", s.name, r.fail.first().cloned().or(r.note.clone()).unwrap_or_default());
+            }
         }
         rows.push((s.name, r));
     }
@@ -201,8 +233,18 @@ pub fn run(args: &[String]) -> Result<()> {
         rows.len(),
         t0.elapsed().as_secs_f64()
     );
+    let (known, failed): (Vec<&str>, Vec<&str>) = failed.into_iter().partition(|n| o.known.iter().any(|k| k == n));
     if !failed.is_empty() {
         summary.push_str(&format!(" — failed: {}", failed.join(", ")));
+    }
+    if !known.is_empty() {
+        summary.push_str(&format!("\nknown failing here (not counted): {}", known.join(", ")));
+    }
+    for k in o.known.iter().filter(|k| rows.iter().any(|(n, r)| n == k && r.ok())) {
+        summary.push_str(&format!("\n{k} passed: it need not be --known-failing any more"));
+    }
+    for (name, why) in &flaky {
+        summary.push_str(&format!("\nflaky (passed on retry): {name}: {why}"));
     }
     println!("\n{summary}");
     std::fs::write(dir.join("summary.txt"), format!("{summary}\n"))?;

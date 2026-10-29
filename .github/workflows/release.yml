@@ -1,0 +1,295 @@
+# A release from a tag: push an annotated tag v<version> (its message is the release notes;
+# scripts/tag-release.sh makes it) and this builds, signs and notarizes the Mac app (universal),
+# builds the Linux AppImages and .debs (x86_64, aarch64), signs the update feed and publishes the
+# GitHub release: a draft until every file is up, the feed last, so apps never read a half-made
+# release (releases/latest skips drafts).
+#
+# Run by hand (Actions → Release → Run workflow) it is a dry run unless asked otherwise: the same
+# builds and signatures, uploaded as the run's artifacts, nothing published. Without the signing
+# secrets the dry run still builds: an ad hoc signed app, no notarization, a feed signed with a
+# throwaway key (each said in the log).
+#
+# Secrets (repository secrets): APPLE_CERT_P12_BASE64, APPLE_CERT_PASSWORD (Developer ID
+# Application certificate and key), APPLE_API_KEY_P8_BASE64, APPLE_API_KEY_ID,
+# APPLE_API_ISSUER_ID (App Store Connect API key for notarytool), DATAMAN_UPDATE_PRIVATE_KEY
+# (the update signing key, base64 PKCS#8 as scripts/keygen.sh writes it).
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and sign only; publish nothing (unchecked: publish, from a v* tag only)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_TOOLCHAIN: "1.99.0"
+  DEPS: >-
+    libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libxcb1-dev
+    libfontconfig-dev libfreetype-dev libegl1 libgl1-mesa-dri file imagemagick dpkg-dev
+
+jobs:
+  meta:
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      publish: ${{ steps.v.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        env:
+          DRY: ${{ github.ref_type != 'tag' || (github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
+        run: |
+          v="$(grep -m1 '^version = "' Cargo.toml | cut -d'"' -f2)"
+          [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::Cargo.toml's version '$v' is not x.y.z"; exit 1; }
+          publish=false
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            [ "$GITHUB_REF_NAME" = "v$v" ] || { echo "::error::the tag is $GITHUB_REF_NAME, Cargo.toml says $v"; exit 1; }
+            [ "$DRY" = true ] || publish=true
+          elif [ "$DRY" != true ]; then
+            echo "::error::only a v* tag publishes; run from the tag, or as a dry run"; exit 1
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "Dataman $v · $([ $publish = true ] && echo "publishing $GITHUB_REF_NAME" || echo "dry run: nothing is published")" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  macos:
+    needs: meta
+    runs-on: macos-14
+    timeout-minutes: 120
+    outputs:
+      minos: ${{ steps.app.outputs.minos }}
+    env:
+      V: ${{ needs.meta.outputs.version }}
+      PUBLISH: ${{ needs.meta.outputs.publish }}
+      DATAMAN_VERSION: ${{ needs.meta.outputs.version }}
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust ${{ env.RUST_TOOLCHAIN }} only
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update --target aarch64-apple-darwin,x86_64-apple-darwin
+          rustup default "$RUST_TOOLCHAIN"
+          rustup toolchain list | cut -d' ' -f1 | grep -v "^$RUST_TOOLCHAIN" | xargs -n1 rustup toolchain uninstall || true
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: macos-universal
+          save-if: false
+      - name: Signing keychain
+        env:
+          P12: ${{ secrets.APPLE_CERT_P12_BASE64 }}
+          P12_PW: ${{ secrets.APPLE_CERT_PASSWORD }}
+        run: |
+          if [ -z "$P12" ]; then
+            [ "$PUBLISH" != true ] || { echo "::error::APPLE_CERT_P12_BASE64 is not set: a release is never published unsigned"; exit 1; }
+            echo "::warning::No APPLE_CERT_P12_BASE64: the app gets an ad hoc signature and is not notarized (dry run)"
+            exit 0
+          fi
+          kc="$RUNNER_TEMP/signing.keychain-db"
+          kcpw="$(openssl rand -base64 24)"
+          security create-keychain -p "$kcpw" "$kc"
+          security set-keychain-settings -lut 21600 "$kc"
+          security unlock-keychain -p "$kcpw" "$kc"
+          printf '%s' "$P12" | base64 --decode > "$RUNNER_TEMP/devid.p12"
+          security import "$RUNNER_TEMP/devid.p12" -k "$kc" -P "$P12_PW" -f pkcs12 -T /usr/bin/codesign -T /usr/bin/security
+          rm -f "$RUNNER_TEMP/devid.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$kcpw" "$kc" > /dev/null
+          security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
+          identity="$(security find-identity -v -p codesigning "$kc" | sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -1)"
+          [ -n "$identity" ] || { echo "::error::no Developer ID Application identity in the .p12"; exit 1; }
+          echo "Signing as $identity"
+          echo "DATAMAN_SIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
+      - name: Notary key
+        env:
+          P8: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
+          KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          ISSUER: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          if [ -z "${DATAMAN_SIGN_IDENTITY:-}" ] || [ -z "$P8" ] || [ -z "$KEY_ID" ] || [ -z "$ISSUER" ]; then
+            [ "$PUBLISH" != true ] || { echo "::error::the notary key (APPLE_API_KEY_P8_BASE64, APPLE_API_KEY_ID, APPLE_API_ISSUER_ID) is not set: a release is always notarized"; exit 1; }
+            echo "::warning::No Developer ID or no App Store Connect API key: not notarized (dry run)"
+            exit 0
+          fi
+          printf '%s' "$P8" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8"
+          { echo "DATAMAN_NOTARY_KEY=$RUNNER_TEMP/AuthKey.p8"; echo "DATAMAN_NOTARY_KEY_ID=$KEY_ID"; echo "DATAMAN_NOTARY_ISSUER=$ISSUER"; } >> "$GITHUB_ENV"
+      - name: Universal binary
+        run: |
+          for t in aarch64-apple-darwin x86_64-apple-darwin; do
+            cargo build --release --locked -p dataman --target "$t"
+          done
+          mkdir -p target/release
+          lipo -create -output target/release/dataman target/aarch64-apple-darwin/release/dataman target/x86_64-apple-darwin/release/dataman
+          lipo -info target/release/dataman
+      - name: App and DMG (signed, notarized, stapled)
+        id: app
+        run: |
+          DATAMAN_SKIP_BUILD=1 scripts/bundle.sh
+          [ -z "${DATAMAN_NOTARY_KEY:-}" ] || scripts/notarize.sh dist/Dataman.app
+          # hdiutil now and then says "Resource busy" on the runners.
+          scripts/dmg.sh || { sleep 10; scripts/dmg.sh; }
+          [ -z "${DATAMAN_NOTARY_KEY:-}" ] || scripts/notarize.sh "dist/Dataman-$V.dmg"
+          codesign -dv dist/Dataman.app 2>&1 | grep -E "Authority|TeamIdentifier|Signature" || true
+          echo "minos=$(plutil -extract LSMinimumSystemVersion raw -o - dist/Dataman.app/Contents/Info.plist)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/Dataman-${{ needs.meta.outputs.version }}.dmg
+          if-no-files-found: error
+      - name: Clean up the keys
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2> /dev/null || true
+          rm -f "$RUNNER_TEMP/AuthKey.p8" "$RUNNER_TEMP/devid.p12"
+
+  linux:
+    name: linux (${{ matrix.arch }})
+    needs: meta
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-22.04, arch: x86_64 }
+          - { os: ubuntu-22.04-arm, arch: aarch64 }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    env:
+      DATAMAN_VERSION: ${{ needs.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: System packages
+        run: sudo apt-get update -qq && xargs sudo apt-get install -y -qq --no-install-recommends <<< "$DEPS"
+      - name: Rust ${{ env.RUST_TOOLCHAIN }} only
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update
+          rustup default "$RUST_TOOLCHAIN"
+          rustup toolchain list | cut -d' ' -f1 | grep -v "^$RUST_TOOLCHAIN" | xargs -r -n1 rustup toolchain uninstall
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: package-${{ matrix.arch }}
+          save-if: false
+      - name: AppImage and .deb
+        run: scripts/linux/build.sh ${{ matrix.arch }}
+      - name: The AppImage and the .deb start
+        run: |
+          img=$(ls dist/linux/*.AppImage)
+          [ "$(APPIMAGE_EXTRACT_AND_RUN=1 "$img" --version)" = "$DATAMAN_VERSION" ]
+          APPIMAGE_EXTRACT_AND_RUN=1 "$img" --mcp --version
+          sudo apt-get install -y -qq ./dist/linux/*.deb && dataman --version
+          ls -la dist/linux
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}
+          path: |
+            dist/linux/*.AppImage
+            dist/linux/*.deb
+          if-no-files-found: error
+
+  publish:
+    needs: [meta, macos, linux]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      V: ${{ needs.meta.outputs.version }}
+      TAG: v${{ needs.meta.outputs.version }}
+      MINOS: ${{ needs.macos.outputs.minos }}
+      PUBLISH: ${{ needs.meta.outputs.publish }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust ${{ env.RUST_TOOLCHAIN }}
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update
+          rustup default "$RUST_TOOLCHAIN"
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Release notes (the tag's message)
+        run: |
+          if [ "$PUBLISH" = true ]; then
+            # checkout keeps the tag but not its message.
+            git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+            git tag -l --format='%(contents)' "$TAG" | sed '/^-----BEGIN PGP SIGNATURE-----/,$d' > notes.md
+          fi
+          [ -s notes.md ] || echo "Dataman $V" > notes.md
+          cat notes.md
+      - name: xtask
+        run: cargo build --release --locked -p xtask
+      - name: Signed update feed (macOS + Linux)
+        env:
+          DATAMAN_UPDATE_PRIVATE_KEY: ${{ secrets.DATAMAN_UPDATE_PRIVATE_KEY }}
+        run: |
+          x=target/release/xtask
+          pub="$(grep -m1 'pub const DEFAULT_PUBKEY' crates/dataman/src/updates.rs | cut -d'"' -f2)"
+          if [ -z "$DATAMAN_UPDATE_PRIVATE_KEY" ]; then
+            [ "$PUBLISH" != true ] || { echo "::error::DATAMAN_UPDATE_PRIVATE_KEY is not set"; exit 1; }
+            echo "::warning::No DATAMAN_UPDATE_PRIVATE_KEY: the feed is signed with a throwaway key (dry run; the apps would refuse it)"
+            export DATAMAN_UPDATE_KEY="$RUNNER_TEMP/throwaway/update.key"
+            mkdir -p "$(dirname "$DATAMAN_UPDATE_KEY")"
+            pub="$($x keygen 2> /dev/null)"
+          fi
+          [ "$($x pubkey)" = "$pub" ] || { echo "::error::the update key is not the one the app trusts (DEFAULT_PUBKEY)"; exit 1; }
+          base="https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG"
+          dmg="dist/Dataman-$V.dmg"
+          args=(feed --version "$V" --notes notes.md --min-macos "$MINOS"
+            --asset macos-aarch64 "$dmg" "$base/Dataman-$V.dmg"
+            --asset macos-x86_64 "$dmg" "$base/Dataman-$V.dmg")
+          for a in x86_64 aarch64; do
+            args+=(--asset "linux-$a" "dist/Dataman-$V-$a.AppImage" "$base/Dataman-$V-$a.AppImage")
+          done
+          $x "${args[@]}" > dist/feed.json
+          $x verify dist/feed.json "$dmg" --pubkey "$pub" --version "$V"
+          for a in macos-aarch64 macos-x86_64; do $x verify dist/feed.json "$dmg" --pubkey "$pub" --version "$V" --asset "$a"; done
+          for a in x86_64 aarch64; do
+            $x verify dist/feed.json "dist/Dataman-$V-$a.AppImage" --pubkey "$pub" --version "$V" --asset "linux-$a"
+          done
+          cat dist/feed.json
+          { echo '### Assets'; echo '```'; (cd dist && ls -l); echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Everything, as a run artifact (dry run)
+        if: env.PUBLISH != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-dry-run
+          path: dist/
+      - name: GitHub release (a draft until every file is up; the feed last)
+        if: env.PUBLISH == 'true'
+        run: |
+          r=(--repo "$GITHUB_REPOSITORY")
+          gh release view "$TAG" "${r[@]}" > /dev/null 2>&1 && { echo "::error::the release $TAG exists"; exit 1; }
+          gh release create "$TAG" "${r[@]}" --draft --verify-tag --title "Dataman $V" --notes-file notes.md
+          gh release upload "$TAG" "${r[@]}" "dist/Dataman-$V.dmg" dist/Dataman-"$V"-*.AppImage dist/dataman_"$V"_*.deb
+          gh release upload "$TAG" "${r[@]}" dist/feed.json
+          gh release edit "$TAG" "${r[@]}" --draft=false --latest
+      - name: What the apps will read
+        if: env.PUBLISH == 'true'
+        run: |
+          x=target/release/xtask
+          pub="$(grep -m1 'pub const DEFAULT_PUBKEY' crates/dataman/src/updates.rs | cut -d'"' -f2)"
+          latest="https://github.com/$GITHUB_REPOSITORY/releases/latest/download/feed.json"
+          ok=""
+          for _ in $(seq 20); do
+            if curl -fsSL -o latest.json "$latest" && [ "$(jq -r .version latest.json)" = "$V" ]; then ok=1; break; fi
+            sleep 3
+          done
+          [ -n "$ok" ] || { echo "::error::$latest does not offer $V yet"; exit 1; }
+          curl -fsSL -o got.dmg "$(jq -r .url latest.json)"
+          $x verify latest.json got.dmg --pubkey "$pub" --version "$V"
+          for a in x86_64 aarch64; do
+            curl -fsSL -o "got-$a.AppImage" "$(jq -r ".assets[\"linux-$a\"].url" latest.json)"
+            $x verify latest.json "got-$a.AppImage" --pubkey "$pub" --version "$V" --asset "linux-$a"
+          done
+          echo "Released: $(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json url --jq .url)" | tee -a "$GITHUB_STEP_SUMMARY"
