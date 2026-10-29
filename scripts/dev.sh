@@ -24,7 +24,7 @@ if [ -z "$identity" ]; then
   identity=-
 fi
 
-export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-11.0}"
+# Same settings as a plain `cargo build --release`, so the two share what they compiled.
 if [ -z "${DATAMAN_SKIP_BUILD:-}" ]; then
   cargo build --release -p dataman
 fi
