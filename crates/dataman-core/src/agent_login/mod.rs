@@ -58,6 +58,13 @@ pub fn caps_sessions(e: Engine) -> bool {
     matches!(e, Engine::Postgres | Engine::MySql)
 }
 
+/// A server that speaks PostgreSQL's protocol but is another engine (MotherDuck, DuckDB or a
+/// server of its own behind the wire): no logins to make one among.
+pub const NO_LOGINS_NOTE: &str = "This server speaks PostgreSQL's protocol but has no logins of its own (no pg_roles), so Dataman can't create one here: agents use your login, held to the rules above.";
+
+/// MotherDuck's own way to narrow what its connection may do.
+pub const MOTHERDUCK_NOTE: &str = "On MotherDuck, a read-only token made in MotherDuck's settings can be saved as this connection's password to limit it.";
+
 /// Why the option is not there for a file database.
 pub const FILE_NOTE: &str = "SQLite and DuckDB have no logins. Dataman already opens them read-only for read agents and checks each statement inside the engine (SQLite's authorizer), so there is nothing to create.";
 
@@ -576,6 +583,8 @@ pub enum Manual {
     NoSecurity,
     /// Redis without ACL (before 6) or a managed Redis that blocks it.
     NoAcl(String),
+    /// PostgreSQL's protocol without its logins ([`NO_LOGINS_NOTE`]).
+    NoLogins,
 }
 
 /// What the user's login could do, before the plan.

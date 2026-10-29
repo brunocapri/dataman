@@ -589,6 +589,39 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
         format!("{limits:?} {section:?}"),
     );
     r.check("…off, it offers Create agent login; no recommendation line, no header button, no page of its own", probed("agents-login-create", cx).is_some() && probed("agents-login-nudge", cx).is_none() && probed("agents-perm-login", cx).is_none() && probed("agents-nav-login", cx).is_none(), "");
+    // A server that only speaks PostgreSQL's protocol (MotherDuck, by its host): no logins to
+    // make, said plainly, without connecting to it.
+    let mut md = profile("motherduck-pg", Engine::Postgres, Environment::None, McpAccess::Read);
+    md.host = "pg.us-east-1-aws.motherduck.com".into();
+    let md_id = md.id.clone();
+    let _ = core.config.upsert(md);
+    let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.store.update(cx, |s, cx| s.reload(cx))));
+    pause(cx, 50).await;
+    click_probe("agents-conn-motherduck-pg", cx);
+    pause(cx, 100).await;
+    let opened = cx.update(|_, cx| ws.read(cx).store.read(cx).connection(&md_id).is_some()).unwrap_or(true);
+    r.check(
+        "MotherDuck: the section says the server has no logins of its own and how to narrow it (a read-only token), with no Create and no connection opened",
+        probed("agents-login-pgwire", cx).is_some() && probed("agents-login-motherduck", cx).is_some() && probed("agents-login-create", cx).is_none() && probed("agents-login-note", cx).is_none() && !opened,
+        format!("opened {opened}"),
+    );
+    shoot("22-pgwire", cx);
+    // Another such server, found by its review (or by asking once where Dataman is connected):
+    // the same sentence, without the MotherDuck hint.
+    let _ = cx.update(|_, cx| a.update(cx, |a, cx| {
+        a.no_logins.insert(pg.id.clone());
+        cx.notify();
+    }));
+    click_probe(&format!("agents-conn-{}", pg.name), cx);
+    pause(cx, 100).await;
+    r.check("…another PostgreSQL-protocol server without logins: the sentence, no MotherDuck hint, no Create", probed("agents-login-pgwire", cx).is_some() && probed("agents-login-motherduck", cx).is_none() && probed("agents-login-create", cx).is_none(), "");
+    let _ = cx.update(|_, cx| a.update(cx, |a, cx| {
+        a.no_logins.clear();
+        cx.notify();
+    }));
+    let _ = core.config.remove(&md_id);
+    let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.store.update(cx, |s, cx| s.reload(cx))));
+    pause(cx, 50).await;
     click_probe("agents-tier-0", cx);
     pause(cx, 50).await;
     click_probe("agents-tier-2", cx);
@@ -1016,8 +1049,33 @@ async fn check_login(ws: &Entity<Workspace>, a: &Entity<AgentsPage>, pg: &Connec
         r.check("…and shows the verifier masked (what runs has the verifier, still not the password)", shown.contains("SCRAM-SHA-256$4096:…") && copy.contains("SCRAM-SHA-256$4096:") && !copy.contains("SCRAM-SHA-256$4096:…"), "");
         r.check("nothing the user's login lacks; the masked table gets its view", lacks.is_empty() && *views == 1, format!("{lacks:?} {views}"));
     }
-    // The modal: the options and what needs a hand beside the SQL, under a plain WHAT RUNS.
+    // The modal: one column, the SQL under a plain WHAT RUNS and the options under it.
     pause(cx, 100).await;
+    let (code, options) = (probed("agents-login-sql", cx), probed("agents-login-options", cx));
+    r.check(
+        "the modal is one column: the options sit below the SQL, as wide as it",
+        code.zip(options).is_some_and(|(c, o)| o.top() >= c.bottom() - gpui::px(1.) && (o.left() - c.left()).abs() < gpui::px(1.) && (o.right() - c.right()).abs() < gpui::px(1.)),
+        format!("{code:?} {options:?}"),
+    );
+    shoot("20-modal", cx);
+    // A long line runs on to the right: the code scrolls sideways (a trackpad's swipe).
+    let scroll = cx.update(|_, cx| a.read(cx).login.sql_scroll.clone()).ok();
+    let wide = scroll.as_ref().map(|s| s.max_offset().x).unwrap_or_default();
+    if let Some(c) = code {
+        move_to(cx, centre(c));
+        input(cx, gpui::PlatformInput::ScrollWheel(gpui::ScrollWheelEvent { position: centre(c), delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(-240.), gpui::px(0.))), modifiers: gpui::Modifiers::default(), touch_phase: gpui::TouchPhase::Moved }));
+    }
+    pause(cx, 100).await;
+    let moved = scroll.as_ref().map(|s| s.offset().x).unwrap_or_default();
+    r.check("WHAT RUNS scrolls sideways: its long lines are wider than the sheet, and a sideways swipe moves it", wide > gpui::px(0.) && moved < gpui::px(-1.), format!("max {wide:?} at {moved:?}"));
+    shoot("21-modal-scrolled", cx);
+    input(cx, gpui::PlatformInput::ScrollWheel(gpui::ScrollWheelEvent { position: code.map(centre).unwrap_or_default(), delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.), gpui::px(-200.))), modifiers: gpui::Modifiers::default(), touch_phase: gpui::TouchPhase::Moved }));
+    pause(cx, 100).await;
+    let down = scroll.as_ref().map(|s| s.offset().y).unwrap_or_default();
+    r.check("…and still scrolls down", down < gpui::px(-1.), format!("{down:?}"));
+    if let Some(s) = &scroll {
+        s.set_offset(gpui::Point::default());
+    }
     r.check(
         "the modal: no who-enforces column, no password or verify rows, no Copy SQL, no I'll run it myself",
         probed("agents-login-what", cx).is_some() && probed("agents-login-opt-rotate", cx).is_some() && ["agents-login-rules", "agents-login-opt-pw", "agents-login-opt-verify", "agents-login-copy", "agents-login-manual"].iter().all(|id| probed(id, cx).is_none()),
@@ -1100,6 +1158,9 @@ async fn check_login(ws: &Entity<Workspace>, a: &Entity<AgentsPage>, pg: &Connec
     .unwrap_or_default();
     r.check("Remove login… shows the exact SQL first (no password in it)", planned && rm.contains(&format!("DROP ROLE \"{user}\"")) && !rm.contains(&new), &rm);
     r.check("…under a plain WHAT RUNS, with no Copy SQL nor I'll run it myself", probed("agents-login-what", cx).is_some() && probed("agents-login-remove-copy", cx).is_none() && probed("agents-login-remove-manual", cx).is_none(), "");
+    let rm_code = probed("agents-login-remove-sql", cx);
+    let rm_scroll = cx.update(|_, cx| a.read(cx).login.sql_scroll.clone()).ok();
+    r.check("…in one column, the code scrolling as the create sheet's does", rm_code.is_some() && rm_scroll.is_some_and(|s| s.bounds().size.width > gpui::px(0.) && rm_code.is_some_and(|b| (s.bounds().left() - b.left()).abs() < gpui::px(1.))), format!("{rm_code:?}"));
     pause(cx, 200).await;
     shoot("06-remove", cx);
     click_probe("agents-login-remove-go", cx);

@@ -472,7 +472,43 @@ fn yes(v: &Option<String>) -> bool {
     matches!(v.as_deref(), Some("t" | "true" | "on" | "1"))
 }
 
+/// MotherDuck: by its hosts. It speaks PostgreSQL's protocol and has no logins of its own.
+pub fn motherduck(p: &ConnectionProfile) -> bool {
+    p.host.split(',').any(|h| h.trim().trim_end_matches('.').to_ascii_lowercase().ends_with("motherduck.com"))
+}
+
+/// The first catalog read failing as a missing pg_roles: the server speaks PostgreSQL's protocol
+/// but is another engine underneath, without logins. 42P01 is PostgreSQL's undefined table (and
+/// 3F000 a missing schema); other engines say it in words. Anything else (a lost connection, a
+/// permission) is an error like any other.
+pub fn no_roles(code: Option<&str>, message: &str) -> bool {
+    let m = message.to_ascii_lowercase();
+    let named = m.contains("pg_roles") || m.contains("pg_catalog");
+    let missing = ["does not exist", "not found", "no such", "unknown", "doesn't exist"].iter().any(|w| m.contains(w));
+    matches!(code, Some("42P01" | "3F000")) || (named && missing)
+}
+
+/// Whether the server has PostgreSQL's logins: false where pg_roles is missing or empty.
+pub(crate) async fn has_roles(db: &Db) -> Result<bool> {
+    match rows(db, "SELECT 1 FROM pg_roles LIMIT 1").await {
+        Ok(r) => Ok(!r.is_empty()),
+        Err(e) => {
+            let info = crate::backend::server_error(&e);
+            let (code, message) = (info.as_ref().and_then(|i| i.code.clone()), info.map_or_else(|| format!("{e:#}"), |i| i.message));
+            if no_roles(code.as_deref(), &message) { Ok(false) } else { Err(e) }
+        }
+    }
+}
+
+/// What a server without logins says, instead of what a login could do.
+fn no_logins_probe() -> Probe {
+    Probe { version: "PostgreSQL protocol".into(), manual: Some(Manual::NoLogins), lacks: vec![NO_LOGINS_NOTE.into()], ..Default::default() }
+}
+
 pub(crate) async fn probe(db: &Db, user: &str, conn: &str) -> Result<Probe> {
+    if !has_roles(db).await? {
+        return Ok(no_logins_probe());
+    }
     let r = rows(
         db,
         "SELECT current_user, r.rolsuper, r.rolcreaterole, current_setting('server_version_num'), pg_is_in_recovery(), \

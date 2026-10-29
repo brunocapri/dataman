@@ -611,3 +611,24 @@ fn redis_slow_log_is_activity() {
     let (t, _) = redis::rules_for(&compile(&p, "", &opts()));
     assert!(t.iter().any(|x| x == "+slowlog|get"), "{t:?}");
 }
+
+#[test]
+fn postgres_protocol_without_logins() {
+    // What servers that only speak PostgreSQL's protocol say to the first catalog read.
+    assert!(pg::no_roles(Some("42P01"), "relation \"pg_roles\" does not exist"));
+    assert!(pg::no_roles(None, "Catalog Error: Table with name pg_roles does not exist!\nDid you mean \"pg_class\"?"));
+    assert!(pg::no_roles(Some("XX000"), "relation pg_roles not found"));
+    assert!(pg::no_roles(Some("3F000"), "schema \"pg_catalog\" does not exist"));
+    // Real PostgreSQL's other failures stay errors: a permission, a lost connection, a timeout.
+    assert!(!pg::no_roles(Some("42501"), "permission denied for view pg_roles"));
+    assert!(!pg::no_roles(None, "connection closed"));
+    assert!(!pg::no_roles(Some("57014"), "canceling statement due to statement timeout"));
+    assert!(!pg::no_roles(Some(""), "relation \"orders\" does not exist"));
+    // MotherDuck, by its hosts.
+    let mut p = conn(Engine::Postgres);
+    assert!(!pg::motherduck(&p));
+    p.host = "pg.us-east-1-aws.motherduck.com".into();
+    assert!(pg::motherduck(&p));
+    p.host = "PG.MotherDuck.com.".into();
+    assert!(pg::motherduck(&p));
+}

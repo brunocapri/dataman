@@ -276,6 +276,9 @@ pub struct AgentsPage {
     prune_filters: bool,
     /// Permissions' database login section: the selected connection's agent login, its sheets.
     pub(crate) login: crate::agents_login::LoginUi,
+    /// Connections found to speak PostgreSQL's protocol without its logins (MotherDuck and the
+    /// like): agents use the user's login there.
+    pub(crate) no_logins: BTreeSet<String>,
 }
 
 impl EventEmitter<AgentsEvent> for AgentsPage {}
@@ -605,6 +608,7 @@ impl AgentsPage {
             clear_focus: cx.focus_handle(),
             prune_filters: false,
             login: Default::default(),
+            no_logins: BTreeSet::new(),
         };
         v.poll(cx);
         // Not in the checks' demo: its connections are made up.
