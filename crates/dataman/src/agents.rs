@@ -30,8 +30,6 @@ pub enum Page {
     Permissions,
     Privacy,
     Types,
-    /// Opened from Permissions (its header's Database login), not from the nav.
-    Login,
     General,
 }
 
@@ -44,7 +42,6 @@ impl Page {
             Page::Permissions => "Permissions",
             Page::Privacy => "Privacy",
             Page::Types => "Sensitive data",
-            Page::Login => "Database login",
             Page::General => "General",
         }
     }
@@ -55,7 +52,6 @@ impl Page {
             Page::Permissions => "permissions",
             Page::Privacy => "privacy",
             Page::Types => "types",
-            Page::Login => "login",
             Page::General => "general",
         }
     }
@@ -66,7 +62,6 @@ impl Page {
             Page::Permissions => Icon::Shield,
             Page::Privacy => Icon::Padlock,
             Page::Types => Icon::Types,
-            Page::Login => Icon::Role,
             Page::General => Icon::Plug,
         }
     }
@@ -264,6 +259,7 @@ pub struct AgentsPage {
     pub(crate) audit_scroll: gpui::ScrollHandle,
     pub(crate) conns_scroll: gpui::ScrollHandle,
     pub(crate) types_scroll: gpui::ScrollHandle,
+    pub(crate) perm_scroll: gpui::ScrollHandle,
     /// Where each call's row sits among the Audit list's children (day headers come between).
     audit_child: HashMap<usize, usize>,
     pub(crate) types_offset: usize,
@@ -278,7 +274,7 @@ pub struct AgentsPage {
     pub(crate) clear_focus: FocusHandle,
     /// The next read of the log drops agent and connection filters that match nothing left.
     prune_filters: bool,
-    /// Database login: the selected connection's agent login, its review and its sheets.
+    /// Permissions' database login section: the selected connection's agent login, its sheets.
     pub(crate) login: crate::agents_login::LoginUi,
 }
 
@@ -598,6 +594,7 @@ impl AgentsPage {
             audit_scroll: gpui::ScrollHandle::new(),
             conns_scroll: gpui::ScrollHandle::new(),
             types_scroll: gpui::ScrollHandle::new(),
+            perm_scroll: gpui::ScrollHandle::new(),
             audit_child: HashMap::new(),
             types_offset: 0,
             type_sel: None,
@@ -864,7 +861,7 @@ impl AgentsPage {
                 self.close_suggest(cx);
                 self.conns_scroll.scroll_to_item(n);
             }
-            Page::General | Page::Login => return false,
+            Page::General => return false,
             Page::Types => {
                 let len = self.type_rows().len();
                 let Some(n) = next(len, self.type_sel) else { return true };
@@ -947,8 +944,8 @@ impl AgentsPage {
         let open = self.privacy_open;
         let rows = Page::ALL.into_iter().filter(|p| *p != Page::Types || open).map(|p| {
             let child = p == Page::Types;
-            // A folded Privacy stands for the page inside it; Permissions for its Database login.
-            let on = self.visible && (self.page == p || (p == Page::Privacy && !open && self.page == Page::Types) || (p == Page::Permissions && self.page == Page::Login));
+            // A folded Privacy stands for the page inside it.
+            let on = self.visible && (self.page == p || (p == Page::Privacy && !open && self.page == Page::Types));
             let id = SharedString::from(format!("agents-nav-{}", p.key()));
             let hov = t.hov;
             let chevron = (p == Page::Privacy).then(|| {
@@ -2132,7 +2129,6 @@ impl Render for AgentsPage {
             Page::Permissions => self.render_permissions(&t, window, cx),
             Page::Privacy => self.render_privacy(&t, window, cx),
             Page::Types => self.render_types(&t, window, cx),
-            Page::Login => self.render_login(&t, window, cx),
             Page::General => self.render_general(&t, cx),
         };
         div()

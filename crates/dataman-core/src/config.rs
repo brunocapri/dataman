@@ -258,7 +258,7 @@ pub struct ConnectionProfile {
     /// that matches any host is not sent there either. This person's own, never in the file.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub from_project: bool,
-    /// The agents' own database login (Agents › Permissions › Database login): every agent call on this
+    /// The agents' own database login (Agents › Permissions, under Limits): every agent call on this
     /// connection connects as it. Its password is the Keychain's, never here; an older Dataman
     /// ignores it.
     #[serde(default, skip_serializing_if = "Option::is_none")]

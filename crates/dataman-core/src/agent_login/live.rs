@@ -461,7 +461,7 @@ pub async fn drift(c: &Arc<Connection>, p: &ConnectionProfile, login: &AgentLogi
     if probe.exists != Some(true) {
         bail!("{} is not on the server as Dataman's any more: remove it in Dataman and create it again", login.user);
     }
-    let o = Options { rotate_days: login.rotate_days, conn_limit: login.conn_limit, verify: true };
+    let o = Options { rotate_days: login.rotate_days, conn_limit: login.conn_limit };
     let mut spec = compile(p, &login.database, &o);
     spec.user = login.user.clone();
     let inventory = inventory(c, &spec, &probe).await?;
@@ -559,24 +559,6 @@ pub async fn removal(c: &Arc<Connection>, p: &ConnectionProfile, login: &AgentLo
         }
         _ => bail!("{FILE_NOTE}"),
     })
-}
-
-/// The SQL to drop it, without the server (it can't be reached): what Dataman recorded.
-pub fn removal_offline(p: &ConnectionProfile, login: &AgentLogin) -> Plan {
-    let user = &login.user;
-    let space = space_of(user);
-    let views: Vec<String> = login.views.iter().map(|v| v.view.rsplit('.').next().unwrap_or(&v.view).trim_matches(['"', '`', '[', ']']).to_string()).collect();
-    let made_space = login.made.iter().any(|m| m.starts_with("schema:") || m.starts_with("database:"));
-    match p.engine {
-        Engine::Postgres => pg::remove_plan(user, &space, &login.database, &[], &views, true, made_space, true),
-        Engine::MySql => my::remove_plan(user, &space, &views, true, made_space),
-        Engine::SqlServer => ms::remove_plan(user, &space, &views, true, made_space, false),
-        Engine::MongoDb => mongo::remove_plan(user, &login.views.iter().map(|v| (v.schema.clone(), v.view.clone())).collect::<Vec<_>>()),
-        Engine::Redis => redis::remove_plan(user, redis::Persist::AclFile),
-        Engine::Elasticsearch => search::remove_plan(user, false),
-        Engine::OpenSearch => search::remove_plan(user, true),
-        _ => Plan::default(),
-    }
 }
 
 /// A new password: the server first, then the caller keeps it (the old one stays in the
@@ -685,7 +667,7 @@ pub fn database_for(p: &ConnectionProfile, login: Option<&AgentLogin>) -> String
 pub fn password_of(secrets: &dyn crate::SecretStore, conn_id: &str, user: &str) -> Result<String> {
     match secrets.get(&secret_account(conn_id)) {
         Ok(Some(pw)) if !pw.is_empty() => Ok(pw),
-        Ok(_) => bail!("the agent login {user}'s password is not in the {}: agents are refused on this connection until it is set again (Agents › Permissions › Database login › Rotate password)", crate::secret::STORE_NAME),
+        Ok(_) => bail!("the agent login {user}'s password is not in the {}: agents are refused on this connection until it is set again (Agents › Permissions › Rotate password)", crate::secret::STORE_NAME),
         Err(e) => bail!("the agent login {user}'s password could not be read from the {}: {e:#}", crate::secret::STORE_NAME),
     }
 }

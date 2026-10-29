@@ -46,7 +46,7 @@ fn guarded(engine: Engine) -> ConnectionProfile {
 }
 
 fn opts() -> Options {
-    Options { rotate_days: None, conn_limit: Some(4), verify: true }
+    Options { rotate_days: None, conn_limit: Some(4) }
 }
 
 fn probe_sql() -> Probe {

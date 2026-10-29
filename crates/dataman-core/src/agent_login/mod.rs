@@ -83,11 +83,6 @@ pub fn secret_account(conn_id: &str) -> String {
     format!("agent:{conn_id}")
 }
 
-/// A password made for "I'll run it myself", until Verify finds the login.
-pub fn pending_account(conn_id: &str) -> String {
-    format!("agent-pending:{conn_id}")
-}
-
 /// Where a connection reaches, as the agent login keeps it: the login's password only ever goes
 /// there (a connection moved since, by a hand edit or a project, refuses agents).
 pub fn server_of(p: &ConnectionProfile) -> String {
@@ -161,12 +156,12 @@ pub struct ViewMap {
     pub masked: Vec<(String, Mask)>,
 }
 
-/// What a user picks in the review sheet.
+/// What a user picks in the review sheet. Creating always logs in as the new login to check it
+/// before it is kept.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Options {
     pub rotate_days: Option<u32>,
     pub conn_limit: Option<u32>,
-    pub verify: bool,
 }
 
 pub const ROTATE_DAYS: u32 = 90;
@@ -177,7 +172,7 @@ pub const GRACE_DAYS: u32 = 14;
 
 impl Default for Options {
     fn default() -> Self {
-        Options { rotate_days: Some(ROTATE_DAYS), conn_limit: Some(CONN_LIMIT), verify: true }
+        Options { rotate_days: Some(ROTATE_DAYS), conn_limit: Some(CONN_LIMIT) }
     }
 }
 
@@ -259,7 +254,7 @@ pub fn compile(p: &ConnectionProfile, database: &str, o: &Options) -> Spec {
 
 /// What of the rules the login depends on, hashed: another hash, the rules changed since.
 pub fn rules_hash(p: &ConnectionProfile, database: &str) -> String {
-    let s = compile(p, database, &Options { rotate_days: None, conn_limit: None, verify: false });
+    let s = compile(p, database, &Options { rotate_days: None, conn_limit: None });
     let mut r = s.rules.clone();
     // Limits Dataman alone holds do not change what is granted.
     (r.read_rows, r.read_bytes, r.read_from) = (None, None, None);

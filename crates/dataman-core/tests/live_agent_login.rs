@@ -96,7 +96,7 @@ fn first(r: &[Vec<Option<String>>]) -> String {
 }
 
 fn opts() -> Options {
-    Options { rotate_days: Some(90), conn_limit: Some(4), verify: true }
+    Options { rotate_days: Some(90), conn_limit: Some(4) }
 }
 
 fn guard(p: &mut ConnectionProfile) {

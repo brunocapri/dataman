@@ -440,7 +440,7 @@ impl Hub {
             None => self.core.connect(agent, None),
         };
         let as_login = p.agent_login.as_ref().map(|l| format!(" as its agent login {}", l.user)).unwrap_or_default();
-        let never = if p.agent_login.is_some() { ". Agents are refused here until it connects: Dataman never uses your own login for them (Agents › Permissions › Database login › Verify)" } else { "" };
+        let never = if p.agent_login.is_some() { ". Agents are refused here until it connects: Dataman never uses your own login for them (Agents › Permissions › Verify)" } else { "" };
         let c = match tokio::time::timeout(CONNECT_TIMEOUT, task).await {
             Ok(Ok(c)) => c,
             Ok(Err(e)) => return Err(format!("cannot connect to {}{as_login}: {e:#}{never}", p.name)),
@@ -521,7 +521,7 @@ impl Hub {
 pub fn refusal(p: &ConnectionProfile) -> Result<(), String> {
     match &p.agent_login {
         None if p.agents_refused => Err(format!(
-            "agents are refused on {}: its agent database login was removed. In Dataman, create a new one (Agents › Permissions › Database login) or let agents use your login there",
+            "agents are refused on {}: its agent database login was removed. In Dataman, create a new one (Agents › Permissions › Create agent login) or let agents use your login there",
             p.name
         )),
         Some(l) if l.server != agent_login::server_of(p) => Err(format!(

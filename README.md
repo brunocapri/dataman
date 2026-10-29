@@ -138,7 +138,7 @@ With the AppImage, use `"command": "/path/to/Dataman-x86_64.AppImage"` and `"arg
 
 Any other MCP client works the same way: give it the command above as a stdio server. The name the client reports is the one shown in Audit and on the Allow sheet.
 
-**Then give agents a database login of their own, on every connection they use.** In **Agents › Permissions › Database login**, **Create agent login…** shows the exact SQL, who enforces each rule, and what your login can't grant, then creates a login that holds what the connection's rules allow and nothing more. From then on every agent call on that connection runs as it, so the database itself refuses what the rules refuse, even if Dataman's own checks had a gap. Your own tabs keep using your login. See [The agent's database login](#the-agents-database-login).
+**Then give agents a database login of their own, on every connection they use.** In **Agents › Permissions**, under **Create db user based on these settings**, **Create agent login** shows the exact SQL and what your login can't grant, then creates a login that holds what the connection's rules allow and nothing more. From then on every agent call on that connection runs as it, so the database itself refuses what the rules refuse, even if Dataman's own checks had a gap. Your own tabs keep using your login. See [The agent's database login](#the-agents-database-login).
 
 ### Decide how far it goes, per connection
 
@@ -186,12 +186,12 @@ Start from the row that matches each connection:
 
 Two habits help on top of any of these:
 
-- **Create the agent's database login** (Agents › Permissions › Database login) on every connection agents use, and apply its changes when your rules change. The database's own permissions become the first wall and Dataman's rules the second; the review shows, rule by rule, which one holds it.
+- **Create the agent's database login** (Agents › Permissions › Create db user based on these settings) on every connection agents use, and apply its changes when your rules change. The database's own permissions become the first wall and Dataman's rules the second; [the table below](#the-agents-database-login) shows, rule by rule, which one holds it.
 - **Check Audit now and then.** It shows every call, which login ran it, what was refused and exactly what the agent received.
 
 ### Where the settings live
 
-Everything below lives in the **Agents** window: **General**, **Audit**, **Permissions** (with its **Database login** button), **Privacy** (with **Sensitive data** under it). Permissions, its Database login and Privacy are set per connection. General and Sensitive data apply to every connection.
+Everything below lives in the **Agents** window: **General**, **Audit**, **Permissions** (with the agents' database login under its limits), **Privacy** (with **Sensitive data** under it). Permissions, its database login and Privacy are set per connection. General and Sensitive data apply to every connection.
 
 ### How a call is decided
 
@@ -428,14 +428,15 @@ A login on the database just for agents, made from the connection's rules. Datam
 
 It is a ceiling, not a copy. Every check Dataman makes still applies on top of it: row limits, the real-`WHERE` rule, approvals, production, value masking and clean errors stay Dataman's.
 
-**Create it.** **Agents › Permissions › Database login › Create agent login…** first checks what your login can do. The review then shows:
+**Create it.** In **Agents › Permissions**, under the limits, **Create db user based on these settings › Create agent login** first checks what your login can do. The review then shows:
 
-- **Who enforces each rule:** `DATABASE`, `PARTLY` or `DATAMAN`, rule by rule, for this engine.
 - **What can't be granted:** tables your login doesn't own or can't grant on, with the lines their owner can run. Until then the agent doesn't see them.
-- **The exact SQL**, in one transaction where the engine has them, with **Copy SQL**. The password never shows: PostgreSQL gets a SCRAM verifier, MySQL and SQL Server a hash, Redis its SHA-256 and Elasticsearch and OpenSearch a bcrypt hash, so it doesn't land in the server's logs either. MongoDB alone takes the password itself, and only the copied script holds it.
-- **Options:** a 40-character password from the system's random source, rotated every 90 days, at most 4 sessions open at once (on PostgreSQL and MySQL, whose database turns away more), and a check that logs in as it before anything is saved.
+- **What runs:** the exact SQL (or commands), highlighted as the editor does, in one transaction where the engine has them. The password never shows: PostgreSQL gets a SCRAM verifier, MySQL and SQL Server a hash, Redis its SHA-256 and Elasticsearch and OpenSearch a bcrypt hash, so it doesn't land in the server's logs either. MongoDB alone takes the password itself, sent but never shown.
+- **Options:** rotate its password every 90 days, and at most 4 sessions open at once (on PostgreSQL and MySQL, whose database turns away more).
 
-**I'll run it myself** copies the script and saves nothing. Run it as an admin, then **Verify** finds the login, logs in as it and only then keeps it. On production the button says so and asks once more.
+The password is always 40 characters from the system's random source, kept in the Keychain; Dataman and its MCP connect with it on their own. Creating always logs in as the new login to check it before anything is saved: what fails is undone. Once it exists, the same section shows who agents connect as, with **Verify**, **Rotate password** and **Remove login…**, and the changes to apply when the rules change.
+
+On production the button says so and asks once more.
 
 **Only what exists now is granted.** A table created later is not, until the next sync, so a new table that matches a hidden pattern is never granted by itself. Dataman marks what it creates (a comment, an attribute, an extended property, a selector) and never changes or drops a login, role, schema or view it didn't create; one named like Dataman's but not marked stops the plan.
 
@@ -469,7 +470,7 @@ Masked columns go through views Dataman makes in a schema (a database on MySQL) 
 
 Dataman checks this first and says what is missing, before showing any SQL.
 
-**Managed clouds.** RDS, Aurora, Cloud SQL and Azure work with the admin user they give you (their admin roles are not superusers: they grant on the tables they own or are members of). A standby or replica can't take a new login: create it on the primary. **MongoDB Atlas** manages users only through Atlas: Dataman gives the custom role to paste there (or into the Atlas Admin API), and Verify picks the login up once it exists. ElastiCache, Memorystore and Azure Cache for Redis manage their users in their own consoles. Elasticsearch or OpenSearch without security have no users at all, and Dataman says so.
+**Managed clouds.** RDS, Aurora, Cloud SQL and Azure work with the admin user they give you (their admin roles are not superusers: they grant on the tables they own or are members of). A standby or replica can't take a new login: create it on the primary. **MongoDB Atlas** manages users only through Atlas, so Dataman can't create an agent login there. ElastiCache, Memorystore and Azure Cache for Redis manage their users in their own consoles. Elasticsearch or OpenSearch without security have no users at all, and Dataman says so.
 
 **When your rules change**, the card says the login drifted, with the changes it needs (`+` granted, `−` revoked) and **Apply**. Until you apply them, the login keeps its old grants and Dataman's stricter rules apply on top, so nothing new is exposed meanwhile. The changes come from what the server has now, not from what Dataman remembers: a grant someone added by hand shows up as one to revoke.
 

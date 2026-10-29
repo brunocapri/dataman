@@ -251,7 +251,7 @@ impl AgentsPage {
                     }
                 }))
                 .when(p.env.is_production(), |d| d.child(div().text_size(px(11.)).text_color(t.tx3).child("Production: every write asks.")))
-                .children(self.login_nudge(t, &p, cx)),
+                .children(self.login_refused_note(t, &p)),
         );
         let tier = p.mcp_access();
         let prod = p.env.is_production();
@@ -325,7 +325,9 @@ impl AgentsPage {
             })))
             .child(limit_row("Rows per read", seg(t, "agents-rrows", &reads, r.read_rows.unwrap_or(read_d), true, cx, move |v, n, cx| v.set_rule(|r| r.read_rows = (n != read_d).then_some(n), cx))))
             .child(limit_row("Size per read", seg(t, "agents-rbytes", &sizes, r.read_bytes.unwrap_or(size_d), true, cx, move |v, n, cx| v.set_rule(|r| r.read_bytes = (n != size_d).then_some(n), cx))));
-        let mut right = div().w(px(380.)).flex_none().flex().flex_col().gap(px(24.)).child(limits);
+        // Under the limits, the database login made from all of the above.
+        self.login_sync(&p, cx);
+        let mut right = div().w(px(380.)).flex_none().flex().flex_col().gap(px(24.)).child(limits).child(self.login_section(t, &p, cx));
         if dataman_core::MCP_ADVANCED {
             if p.engine.is_sql() {
                 right = right.child(self.render_allowed(t, &p, window, cx));
@@ -333,22 +335,11 @@ impl AgentsPage {
             right = right.child(self.render_yolo(t, &p, cx));
         }
         div()
+            .relative()
             .size_full()
             .flex()
             .flex_col()
-            .child(self.header(t, "Permissions").child(div().flex_1()).when(dataman_core::agent_login::supported(p.engine), |d| {
-                // The agents' own login on the server holds these rules too: a page of its own.
-                let id = p.id.clone();
-                d.child(
-                    ui::button(t, "agents-perm-login", ui::Btn::Secondary)
-                        .h(px(28.))
-                        .px(px(10.))
-                        .cursor_pointer()
-                        .child(icon(Icon::Role).size(px(13.)).text_color(t.tx2))
-                        .child("Database login")
-                        .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.show_login(&id, cx))),
-                )
-            }))
+            .child(self.header(t, "Permissions"))
             .child(
                 div()
                     .flex_1()
@@ -358,8 +349,9 @@ impl AgentsPage {
                     .border_t_1()
                     .border_color(t.line)
                     .child(self.render_conn_list(t, cx))
-                    .child(div().id("agents-perm-body").flex_1().min_w_0().overflow_y_scroll().flex().flex_row().gap(px(40.)).px(px(32.)).py(px(24.)).child(left).child(right)),
+                    .child(div().id("agents-perm-body").flex_1().min_w_0().overflow_y_scroll().track_scroll(&self.perm_scroll).flex().flex_row().gap(px(40.)).px(px(32.)).py(px(24.)).child(left).child(right)),
             )
+            .children(self.login_sheet(t, &p, cx))
             .into_any_element()
     }
 

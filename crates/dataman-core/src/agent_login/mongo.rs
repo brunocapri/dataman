@@ -300,7 +300,7 @@ pub(crate) async fn probe(c: &Client, p: &ConnectionProfile, user: &str) -> Resu
     if atlas(p) {
         probe.manual = Some(Manual::Atlas);
         probe.checks.push((false, "MongoDB Atlas: users only through Atlas".into()));
-        probe.lacks.push("Atlas creates users and roles only through its UI, CLI or Admin API: copy the role definition".into());
+        probe.lacks.push("Atlas creates users and roles only through its UI, CLI or Admin API, so Dataman can't create this login here".into());
         return Ok(probe);
     }
     let needed = ["createRole", "createUser", "grantRole", "dropRole", "dropUser"];
