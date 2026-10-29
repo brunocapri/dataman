@@ -118,6 +118,8 @@ With the AppImage, use `"command": "/path/to/Dataman-x86_64.AppImage"` and `"arg
 
 Any other MCP client works the same way: give it the command above as a stdio server. The name the client reports is the one shown in Audit and on the Allow sheet.
 
+**Then give agents a database login of their own, on every connection they use.** In **Agents › Database login**, **Create agent login…** shows the exact SQL, who enforces each rule, and what your login can't grant, then creates a login that holds what the connection's rules allow and nothing more. From then on every agent call on that connection runs as it, so the database itself refuses what the rules refuse, even if Dataman's own checks had a gap. Your own tabs keep using your login. See [The agent's database login](#the-agents-database-login).
+
 ### Decide how far it goes, per connection
 
 | Tier | What the agent can do |
@@ -154,35 +156,36 @@ Every setting is explained one by one in [Agent settings in detail](#agent-setti
 
 Start from the row that matches each connection:
 
-| Connection | Tier | The agent sees | Also |
-|---|---|---|---|
-| **Your local database** | write | Data | Use full only when you want the agent to change the schema. Each change still waits for your Allow. |
-| **Shared dev / staging** | write | Data | Safe writes run, and anything past 100 rows waits for your Allow. Destructive statements are refused. |
-| **Production, to debug with real data** | read | Masked data | Tag it production, click **Scan again** to mark sensitive columns, and hide secrets and credential tables outright. |
-| **Production, to write queries only** | read | Structure only | The agent sees tables, columns and plans, writes the query, and you run it yourself. |
-| **Anything you don't want agents near** | off | | Agents don't even see the connection's details. |
+| Connection | Tier | The agent sees | Database login | Also |
+|---|---|---|---|---|
+| **Your local database** | write | Data | Create it | Use full only when you want the agent to change the schema. Each change still waits for your Allow, and runs on your login. |
+| **Shared dev / staging** | write | Data | Create it | Safe writes run, and anything past 100 rows waits for your Allow. Destructive statements are refused. |
+| **Production, to debug with real data** | read | Masked data | Create it | Tag it production, click **Scan again** to mark sensitive columns, and hide secrets and credential tables outright. The login then reads masked columns through views and never the tables' hidden ones. |
+| **Production, to write queries only** | read | Structure only | Create it | The agent sees tables, columns and plans, writes the query, and you run it yourself. Its login is granted no table at all. |
+| **Anything you don't want agents near** | off | | | Agents don't even see the connection's details. |
 
 Two habits help on top of any of these:
 
-- **Give agents a connection of their own**, saved with a database user that can only read what they need. Dataman's rules are a second wall; the database's own permissions are the first.
-- **Check Audit now and then.** It shows every call, what was refused and exactly what the agent received.
+- **Create the agent's database login** (Agents › Database login) on every connection agents use, and apply its changes when your rules change. The database's own permissions become the first wall and Dataman's rules the second; the review shows, rule by rule, which one holds it.
+- **Check Audit now and then.** It shows every call, which login ran it, what was refused and exactly what the agent received.
 
 ### Where the settings live
 
-Everything below lives in the **Agents** window: **General**, **Audit**, **Permissions** and **Privacy** (with **Sensitive data** under it). Permissions and Privacy are set per connection. General and Sensitive data apply to every connection.
+Everything below lives in the **Agents** window: **General**, **Audit**, **Permissions**, **Privacy** (with **Sensitive data** under it) and **Database login**. Permissions, Privacy and Database login are set per connection. General and Sensitive data apply to every connection.
 
 ### How a call is decided
 
 Every call goes through these checks in order. The first one that refuses wins, and nothing further down can loosen what an earlier one decided.
 
-1. **Agent access is off.** Nothing runs.
-2. **The connection's tier is off.** Nothing runs on it.
-3. **The database is read-only.** No write runs, whatever the tier.
-4. **Privacy.** Hidden objects are refused, and queries are narrowed and masked before any tier decision.
-5. **Production.** Every write waits for your Allow.
-6. **The tier.** Read refuses writes, write runs safe writes within the row limit, and full asks before destructive ones.
+1. **The database, as the agent's own login.** On a connection with an agent login, every call runs as that login, and the database refuses whatever it was never granted, whatever the checks below decide. Without one, the agent runs as your login and this wall is your login's permissions.
+2. **Agent access is off.** Nothing runs.
+3. **The connection's tier is off.** Nothing runs on it.
+4. **The database is read-only.** No write runs, whatever the tier.
+5. **Privacy.** Hidden objects are refused, and queries are narrowed and masked before any tier decision.
+6. **Production.** Every write waits for your Allow.
+7. **The tier.** Read refuses writes, write runs safe writes within the row limit, and full asks before destructive ones. What you allow runs on your login, never the agent's.
 
-Nothing the agent sends can change this. There is no argument an agent can pass to skip a check.
+Nothing the agent sends can change this. There is no argument an agent can pass to skip a check, nor one that picks the login it runs as.
 
 ### General
 
@@ -399,11 +402,72 @@ You can turn built-ins off, change their masks, and add up to 50 types of your o
 
 Values shorter than 5 characters are never checked. A reply that cannot be checked within 100 ms is refused rather than sent unchecked. A custom pattern that is broken and switched on refuses every read on Masked connections until you fix it.
 
+### The agent's database login
+
+A login on the database just for agents, made from the connection's rules. Dataman creates it with your own login, keeps its password in the Keychain (the Secret Service on Linux), and connects as it for every agent call on that connection: every tool, the agent tabs, reconnects, other databases of the same server, server activity, the MongoDB shell, Redis and search. Your own tabs keep your login. What you allow on full (DDL, `TRUNCATE`, a procedure, ending a session) runs on your login after your Allow, so the agent's credential can never change structure.
+
+It is a ceiling, not a copy. Every check Dataman makes still applies on top of it: row limits, the real-`WHERE` rule, approvals, production, value masking and clean errors stay Dataman's.
+
+**Create it.** **Agents › Database login › Create agent login…** first checks what your login can do. The review then shows:
+
+- **Who enforces each rule:** `DATABASE`, `PARTLY` or `DATAMAN`, rule by rule, for this engine.
+- **What can't be granted:** tables your login doesn't own or can't grant on, with the lines their owner can run. Until then the agent doesn't see them.
+- **The exact SQL**, in one transaction where the engine has them, with **Copy SQL**. The password never shows: PostgreSQL gets a SCRAM verifier, MySQL and SQL Server a hash, Redis its SHA-256 and Elasticsearch and OpenSearch a bcrypt hash, so it doesn't land in the server's logs either. MongoDB alone takes the password itself, and only the copied script holds it.
+- **Options:** a 40-character password from the system's random source, rotated every 90 days, at most 4 connections, and a check that logs in as it before anything is saved.
+
+**I'll run it myself** copies the script and saves nothing. Run it as an admin, then **Verify** finds the login, logs in as it and only then keeps it. On production the button says so and asks once more.
+
+**Only what exists now is granted.** A table created later is not, until the next sync, so a new table that matches a hidden pattern is never granted by itself. Dataman marks what it creates (a comment, an attribute, an extended property, a selector) and never changes or drops a login, role, schema or view it didn't create; one named like Dataman's but not marked stops the plan.
+
+**What the database holds, per engine:**
+
+| Rule | PostgreSQL | MySQL · MariaDB | SQL Server | MongoDB | Redis | Elasticsearch · OpenSearch |
+|---|---|---|---|---|---|---|
+| Own login | `CREATE ROLE` | `CREATE USER` | login and user (a contained user on Azure SQL Database) | `createUser` with a custom role | `ACL SETUSER` | security user and role |
+| Rows: read, or read and write, no DDL | database: grants per table | database: grants per table | database: grants per table | database: role actions per collection | database: `+@read`, `+@write`, never `@dangerous` | database: index privileges |
+| Hidden table or collection | partly: no grant, but PostgreSQL lists every name | database: no grant, names hidden | database: no grant, names hidden | database: no privilege, not listed | partly: key patterns can only allow (Only these) | database: not in the role |
+| Hidden column or field | database: column grants | database: column grants | database: a view (column grants would show the names); on write, partly: the writes' column grants show them, and such a table takes no `INSERT` | partly: a view with `$project`; writes go to the collection | Dataman: no fields | database: field level security |
+| Masked column | database: `security_barrier` view | database: `DEFINER` view | database: view | partly: a view with `$set` (Hash shows as hidden) | Dataman | partly: OpenSearch `masked_fields` (a hash); Elasticsearch leaves the field out |
+| Time per call | partly: `statement_timeout` is a default | MariaDB: `MAX_STATEMENT_TIME`; MySQL: Dataman | Dataman | Dataman | Dataman | Dataman |
+| Server activity | database: `pg_read_all_stats` | database: `PROCESS` | database: `VIEW SERVER STATE` | database: `inprog` | database: `CLIENT LIST` | database: cluster monitor |
+| Run code off | Dataman (functions run for PUBLIC) | database: no `EXECUTE` | database: no `EXECUTE` | Dataman | database: no `@scripting` | Dataman |
+| Connections | `CONNECTION LIMIT` | `MAX_USER_CONNECTIONS` | Dataman | Dataman | Dataman | Dataman |
+| Rows per read and write, real `WHERE`, approvals, pattern masking | Dataman | Dataman | Dataman | Dataman | Dataman | Dataman |
+
+Masked columns go through views Dataman makes in a schema (a database on MySQL) named after the login (`dataman_agent_…_views`), and Dataman sends agents' reads of those tables there. A filter on a masked column then compares the masked value. On PostgreSQL, a view keeps you from dropping or retyping the masked columns it reads until a sync or Remove drops it.
+
+**What your login needs:**
+
+| Engine | To create it |
+|---|---|
+| PostgreSQL | `CREATEROLE` (or a superuser), and the right to grant on each table: its owner, a member of the owner, or `WITH GRANT OPTION`. `pg_read_all_stats` needs `ADMIN` on it from PostgreSQL 16. |
+| MySQL · MariaDB | `CREATE USER`, and `GRANT OPTION` with the privileges it grants. `CREATE` for the views' database. |
+| SQL Server | `ALTER ANY LOGIN` (securityadmin) and `ALTER ANY USER` (db_owner); db_owner on Azure SQL Database. |
+| MongoDB | `createRole`, `createUser`, `grantRole`, `dropRole`, `dropUser` on `admin` (userAdmin). |
+| Redis | `+acl` (the default user has it). Redis 7 or later. |
+| Elasticsearch · OpenSearch | `manage_security`; the security REST API on OpenSearch. Field level security needs a Platinum license (or a trial) on Elasticsearch. |
+
+Dataman checks this first and says what is missing, before showing any SQL.
+
+**Managed clouds.** RDS, Aurora, Cloud SQL and Azure work with the admin user they give you (their admin roles are not superusers: they grant on the tables they own or are members of). A standby or replica can't take a new login: create it on the primary. **MongoDB Atlas** manages users only through Atlas: Dataman gives the custom role to paste there (or into the Atlas Admin API), and Verify picks the login up once it exists. ElastiCache, Memorystore and Azure Cache for Redis manage their users in their own consoles. Elasticsearch or OpenSearch without security have no users at all, and Dataman says so.
+
+**When your rules change**, the card says the login drifted, with the changes it needs (`+` granted, `−` revoked) and **Apply**. Until you apply them, the login keeps its old grants and Dataman's stricter rules apply on top, so nothing new is exposed meanwhile. The changes come from what the server has now, not from what Dataman remembers: a grant someone added by hand shows up as one to revoke.
+
+**Rotate password** sets a new one on the server first, then in the Keychain, and agents reconnect with it. With rotation on, PostgreSQL and MySQL expire the password 14 days after it is due, so a forgotten login stops working on its own.
+
+**Remove login** shows the SQL first. It drops the login and everything Dataman made for it, revokes what it holds, and forgets its password. If the server can't be reached, or your login can't drop it, **Forget it in Dataman only** clears Dataman's side and shows the SQL to run later. Deleting the connection asks whether to drop its login on the server too, and does by default.
+
+**Agents are never moved to your login behind your back.** If the agent login can't connect (its password missing or wrong, the server unreachable, the connection pointed elsewhere since), agent calls are refused with the reason. After a Remove, agents are refused on that connection until you create a new login or choose **Let agents use my login**.
+
+**Edits made outside Dataman** can't add, change or remove an agent login: they wait for your review like any other loosening. Project files never carry one, and its password is never in any file.
+
+**SQLite and DuckDB** have no logins. Dataman already opens them read-only for read agents and checks each statement inside the engine (SQLite's authorizer), so the option doesn't show for them.
+
 ### Audit
 
 Every agent call is written to `~/.config/dataman/mcp-audit.jsonl`. What the agent received, after masking, goes to `mcp-replies.jsonl` next to it. Both files are readable only by you.
 
-- **Recorded:** time, agent, tool, connection and database, the statement, how long it took, how many rows, and the outcome (ran, refused, denied, timed out, failed). Also recorded: your decision on any Allow, the rewritten statement if Privacy narrowed it, and which columns and how many values were masked.
+- **Recorded:** time, agent, tool, connection and database, the statement, how long it took, how many rows, and the outcome (ran, refused, denied, timed out, failed). Also recorded: your decision on any Allow, the rewritten statement if Privacy narrowed it, which columns and how many values were masked, and the login it ran as (the agent login, or `you` for what you allowed).
 - **Never recorded:** passwords, which show as `••••••` even inside statements, bound parameter values, and values quoted in database errors.
 - **Size:** past 8 MB, the log rolls over once, so it never grows past about 16 MB.
 - **Clearing:** only from the Audit screen. You can clear everything, everything before a date, or everything older than 30 days, 3 months or 6 months. No agent tool can clear it.
