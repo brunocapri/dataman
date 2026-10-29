@@ -2,6 +2,13 @@
 
 use dataman_core::{Keychain, SecretStore};
 
+/// The item an older Dataman kept for this id, on its own.
+#[cfg(target_os = "macos")]
+fn own_item(id: &str) -> Option<Vec<u8>> {
+    use security_framework::passwords::{PasswordOptions, generic_password};
+    generic_password(PasswordOptions::new_generic_password(dataman_core::secret::SERVICE, id)).ok()
+}
+
 #[test]
 #[ignore]
 fn keychain_roundtrip() {
@@ -10,6 +17,8 @@ fn keychain_roundtrip() {
     assert_eq!(k.get(&id).unwrap(), None);
     k.set(&id, "s3cr3t naïve").unwrap();
     assert_eq!(k.get(&id).unwrap().as_deref(), Some("s3cr3t naïve"));
+    #[cfg(target_os = "macos")]
+    assert_eq!(own_item(&id), None, "kept in Dataman's one item, not an item of its own");
     k.set(&id, "other").unwrap();
     assert_eq!(k.get(&id).unwrap().as_deref(), Some("other"));
     k.delete(&id).unwrap();
@@ -48,4 +57,18 @@ fn agent_login_password_in_the_keychain() {
     k.delete(&secret_account(&id)).unwrap();
     assert!(live::password_of(&k, &id, "dataman_agent_x").is_err());
     k.delete(&id).unwrap();
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore]
+fn an_older_item_moves_into_the_vault() {
+    let id = format!("dataman-test-older-{}", std::process::id());
+    security_framework::passwords::set_generic_password(dataman_core::secret::SERVICE, &id, b"old").unwrap();
+    let k = Keychain;
+    assert_eq!(k.get(&id).unwrap().as_deref(), Some("old"));
+    assert_eq!(own_item(&id), None, "gone once moved");
+    assert_eq!(k.get(&id).unwrap().as_deref(), Some("old"));
+    k.delete(&id).unwrap();
+    assert_eq!(k.get(&id).unwrap(), None);
 }

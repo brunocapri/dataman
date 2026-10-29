@@ -67,7 +67,9 @@ duckdb = ["dep:duckdb"]
 # Passwords: the Keychain on macOS, the Secret Service (GNOME Keyring, KWallet, KeePassXC) on
 # Linux through oo7 with the features GPUI's Linux platform already builds.
 [target.'cfg(target_os = "macos")'.dependencies]
-keyring = { version = "3", features = ["apple-native"] }
+# One generic password holds them all (secret/vault.rs): its attributes are read without the secret.
+security-framework = "3"
+core-foundation = "0.10"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 oo7 = { version = "0.6", default-features = false, features = ["async-std", "native_crypto"] }

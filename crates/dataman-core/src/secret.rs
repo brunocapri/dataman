@@ -17,28 +17,34 @@ pub const SERVICE: &str = "dataman";
 
 pub const STORE_NAME: &str = if cfg!(target_os = "macos") { "Keychain" } else { "keyring" };
 
-// Service `dataman`, account = connection id: saved passwords are found by these.
+#[cfg(any(target_os = "macos", test))]
+mod vault;
+
+// Service `dataman`, account = connection id: saved passwords are found by these. On macOS they
+// all live in one Keychain item (see `vault`), the older per-connection items moving in when read.
 pub struct Keychain;
+
+#[cfg(target_os = "macos")]
+fn vault() -> &'static vault::Vault<vault::mac::Keychain> {
+    static VAULT: std::sync::OnceLock<vault::Vault<vault::mac::Keychain>> = std::sync::OnceLock::new();
+    VAULT.get_or_init(|| {
+        let lock = crate::config::Dirs::default_dirs().ok().map(|d| d.config.join("secrets.lock"));
+        vault::Vault::new(vault::mac::Keychain, lock)
+    })
+}
 
 #[cfg(target_os = "macos")]
 impl SecretStore for Keychain {
     fn get(&self, id: &str) -> Result<Option<String>> {
-        match keyring::Entry::new(SERVICE, id)?.get_password() {
-            Ok(p) => Ok(Some(p)),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(e) => Err(e.into()),
-        }
+        vault().get(id)
     }
 
     fn set(&self, id: &str, password: &str) -> Result<()> {
-        Ok(keyring::Entry::new(SERVICE, id)?.set_password(password)?)
+        vault().set(id, password)
     }
 
     fn delete(&self, id: &str) -> Result<()> {
-        match keyring::Entry::new(SERVICE, id)?.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(e) => Err(e.into()),
-        }
+        vault().delete(id)
     }
 }
 
