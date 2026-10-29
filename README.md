@@ -24,6 +24,26 @@ Claude Code and any other MCP client can work with your databases through it, an
 
 <br>
 
+## Contents
+
+- [Works with](#works-with)
+- [A proper GUI, before anything else](#a-proper-gui-before-anything-else)
+- [AI agents (MCP)](#ai-agents-mcp)
+  - [Connect an agent](#connect-an-agent)
+  - [Decide how far it goes, per connection](#decide-how-far-it-goes-per-connection)
+  - [Decide what it sees](#decide-what-it-sees)
+- [Agent settings in detail](#agent-settings-in-detail)
+  - [TL;DR: recommended settings](#tldr-recommended-settings)
+  - [How a call is decided](#how-a-call-is-decided)
+  - [General](#general) · [Permissions](#permissions) · [Privacy](#privacy) · [Sensitive data](#sensitive-data) · [Audit](#audit)
+  - [Agent tabs and drafts](#agent-tabs-and-drafts) · [When Dataman is closed](#when-dataman-is-closed)
+  - [Connections and favorites made by agents](#connections-and-favorites-made-by-agents) · [Edits made outside Dataman](#edits-made-outside-dataman)
+  - [Projects and agent rules](#projects-and-agent-rules) · [Your own tools](#your-own-tools)
+- [Projects](#projects)
+- [Install](#install)
+- [Build from source](#build-from-source)
+- [License](#license)
+
 ## Works with
 
 <table align="center">
