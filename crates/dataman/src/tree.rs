@@ -328,6 +328,8 @@ pub struct SchemaTree {
     popped: Option<(SharedString, Range<usize>)>,
     reveal: Option<String>,
     conn_drop: Option<ConnDrop>,
+    /// Where the dragged folder would land: before that folder, or after the last (None).
+    folder_drop: Option<Option<String>>,
     /// Folders the user shut (they start open).
     shut_folders: HashSet<String>,
     /// The folder the explorer shows and searches, alone.
@@ -340,6 +342,9 @@ pub struct SchemaTree {
 }
 
 pub struct DraggedConn(pub String);
+
+/// An explorer folder being dragged among the folders.
+pub struct DraggedFolder(pub String);
 
 /// Where a dragged connection lands.
 #[derive(Clone, Debug, PartialEq)]
@@ -440,6 +445,7 @@ impl SchemaTree {
             popped: None,
             reveal: None,
             conn_drop: None,
+            folder_drop: None,
             shut_folders: HashSet::new(),
             scope: None,
             scope_menu: false,
@@ -1670,12 +1676,15 @@ impl SchemaTree {
         };
         Some(match &row.kind {
             Kind::Folder { id } => {
-                let d = store.folders.iter().find(|d| d.id == *id)?;
+                let at = store.folders.iter().position(|d| d.id == *id)?;
+                let d = &store.folders[at];
                 Target::Folder {
                     id: id.clone(),
                     name: d.name.clone(),
                     color: d.color.as_deref().and_then(|c| crate::theme::SWATCHES.iter().position(|s| *s == c)),
                     count: store.profiles.iter().filter(|p| d.holds(&p.id)).count(),
+                    first: at == 0,
+                    last: at + 1 == store.folders.len(),
                 }
             }
             Kind::Conn { id } => Target::Conn {
@@ -1949,6 +1958,16 @@ impl SchemaTree {
             }
             (Act::RemoveFromFolder, Target::Conn { id, name, .. }) => self.move_to_folder(id, name, None, cx),
             (Act::RenameFolder, Target::Folder { id, .. }) => self.start_naming(id.clone(), window, cx),
+            (Act::MoveFolder(up), Target::Folder { id, .. }) => {
+                let folders = &self.store.read(cx).folders;
+                let before = folders.iter().position(|d| d.id == *id).and_then(|at| match up {
+                    true => at.checked_sub(1).map(|b| Some(folders[b].id.clone())),
+                    false => folders.get(at + 2).map(|d| Some(d.id.clone())).or((at + 1 < folders.len()).then_some(None)),
+                });
+                if let Some(before) = before {
+                    self.drop_folder_at(id, &before, cx);
+                }
+            }
             (Act::DeleteFolder, Target::Folder { id, name, .. }) => {
                 let id = id.clone();
                 self.change_folders(format!("Delete folder '{name}'"), |f| f.retain(|d| d.id != id), cx);
@@ -2485,6 +2504,11 @@ impl SchemaTree {
         self.conn_drop.clone()
     }
 
+    #[cfg(feature = "checks")]
+    pub fn demo_folder_drop(&self) -> Option<Option<String>> {
+        self.folder_drop.clone()
+    }
+
     /// What a drag over row `ix` would do: onto a folder's row, into it; on a connection's row
     /// (or one of its children), before or after it in its group. None when nothing would change.
     fn conn_target(&self, dragged: &str, ix: usize, bounds: &gpui::Bounds<gpui::Pixels>, pos: gpui::Point<gpui::Pixels>, cx: &App) -> Option<ConnDrop> {
@@ -2575,9 +2599,62 @@ impl SchemaTree {
         cx.notify();
     }
 
+    /// Where a dragged folder over row `ix` would land: over a folder's own row, before it (top
+    /// half) or after it; anywhere in a folder's block, after it; on the loose connections, after
+    /// the last folder. None when the order would not change.
+    fn folder_target(&self, dragged: &str, ix: usize, bounds: &gpui::Bounds<gpui::Pixels>, pos: gpui::Point<gpui::Pixels>, cx: &App) -> Option<Option<String>> {
+        if !bounds.contains(&pos) {
+            return None;
+        }
+        let r = self.rows.get(ix)?;
+        let before = match r.in_folder.as_deref() {
+            Some(f) if matches!(r.kind, Kind::Folder { .. }) && pos.y <= bounds.center().y => Some(f.to_string()),
+            Some(f) => {
+                let folders = &self.store.read(cx).folders;
+                folders.iter().skip_while(|d| d.id != f).nth(1).map(|d| d.id.clone())
+            }
+            None => None,
+        };
+        self.folder_order(dragged, &before, cx).map(|_| before)
+    }
+
+    /// The folders with `dragged` moved before `before` (or last); None when nothing changes.
+    fn folder_order(&self, dragged: &str, before: &Option<String>, cx: &App) -> Option<Vec<dataman_core::ConnFolder>> {
+        let old = &self.store.read(cx).folders;
+        let from = old.iter().position(|d| d.id == dragged)?;
+        let mut folders = old.clone();
+        let d = folders.remove(from);
+        let at = match before {
+            Some(b) if b == dragged => from,
+            Some(b) => folders.iter().position(|d| d.id == *b)?,
+            None => folders.len(),
+        };
+        folders.insert(at, d);
+        (folders != *old).then_some(folders)
+    }
+
+    fn drop_folder(&mut self, id: &str, cx: &mut Context<Self>) {
+        match self.folder_drop.take() {
+            Some(before) => self.drop_folder_at(id, &before, cx),
+            None => cx.notify(),
+        }
+    }
+
+    fn drop_folder_at(&mut self, id: &str, before: &Option<String>, cx: &mut Context<Self>) {
+        let Some(folders) = self.folder_order(id, before, cx) else { return cx.notify() };
+        let name = folders.iter().find(|d| d.id == id).map(|d| d.name.clone()).unwrap_or_default();
+        self.change_folders(format!("Move folder '{name}'"), |f| *f = folders, cx);
+    }
+
     /// The line a drop would draw at row `ix`: above it (false) or under it (true).
     fn drop_line_at(&self, ix: usize) -> Option<bool> {
         let r = &self.rows[ix];
+        if let Some(before) = &self.folder_drop {
+            return match before {
+                Some(b) => matches!(&r.kind, Kind::Folder { id } if id == b).then_some(false),
+                None => (r.in_folder.is_some() && !self.rows.get(ix + 1).is_some_and(|n| n.in_folder.is_some())).then_some(true),
+            };
+        }
         match self.conn_drop.as_ref()? {
             ConnDrop::At { before: Some(b), .. } => matches!(&r.kind, Kind::Conn { id } if id == b).then_some(false),
             ConnDrop::At { folder: None, before: None } => (ix + 1 == self.rows.len()).then_some(true),
@@ -2594,6 +2671,10 @@ impl SchemaTree {
         let reorder = self.filter_stats.is_none();
         let drag_conn = match &r.kind {
             Kind::Conn { id } if reorder => Some(id.clone()),
+            _ => None,
+        };
+        let drag_folder = match (&r.kind, &self.naming) {
+            (Kind::Folder { id }, naming) if reorder && self.scope.is_none() && naming.as_ref().is_none_or(|(f, _)| f != id) => Some(id.clone()),
             _ => None,
         };
         let dragging = reorder && cx.has_active_drag();
@@ -2718,14 +2799,32 @@ impl SchemaTree {
                 let (label, chip) = (r.label.clone(), r.chip);
                 d.on_drag(DraggedConn(id), move |_, _, _, cx| crate::dnd::ghost(label.clone(), chip, cx))
             })
+            .when_some(drag_folder, |d, id| {
+                let (label, chip) = (r.label.clone(), r.icon.and_then(|(_, c)| c));
+                d.on_drag(DraggedFolder(id), move |_, _, _, cx| crate::dnd::ghost(label.clone(), chip, cx))
+            })
             .when(reorder, |d| {
-                d.on_drag_move(cx.listener(move |t, ev: &gpui::DragMoveEvent<DraggedConn>, _, cx| {
+                d.on_drag_move(cx.listener(move |t, ev: &gpui::DragMoveEvent<DraggedFolder>, _, cx| {
+                    let pos = ev.event.position;
+                    if !ev.bounds.contains(&pos) {
+                        return;
+                    }
+                    let id = ev.drag(cx).0.clone();
+                    let target = t.folder_target(&id, ix, &ev.bounds, pos, cx);
+                    t.conn_drop = None;
+                    if target != t.folder_drop {
+                        t.folder_drop = target;
+                        cx.notify();
+                    }
+                }))
+                .on_drag_move(cx.listener(move |t, ev: &gpui::DragMoveEvent<DraggedConn>, _, cx| {
                     let pos = ev.event.position;
                     if !ev.bounds.contains(&pos) {
                         return;
                     }
                     let id = ev.drag(cx).0.clone();
                     let target = t.conn_target(&id, ix, &ev.bounds, pos, cx);
+                    t.folder_drop = None;
                     if target != t.conn_drop {
                         t.conn_drop = target;
                         cx.notify();
@@ -3377,6 +3476,25 @@ impl Render for SchemaTree {
                 }
             }))
             .on_drop(cx.listener(|t, d: &DraggedConn, _, cx| t.drop_conn(&d.0, cx)))
+            .on_drag_move(cx.listener(|t, ev: &gpui::DragMoveEvent<DraggedFolder>, _, cx| {
+                let pos = ev.event.position;
+                if !ev.bounds.contains(&pos) {
+                    if t.folder_drop.take().is_some() {
+                        cx.notify();
+                    }
+                    return;
+                }
+                // Under the last row: after the last folder.
+                if t.filter_stats.is_none() && t.below_rows(pos) {
+                    let id = ev.drag(cx).0.clone();
+                    let target = t.folder_order(&id, &None, cx).map(|_| None);
+                    if target != t.folder_drop {
+                        t.folder_drop = target;
+                        cx.notify();
+                    }
+                }
+            }))
+            .on_drop(cx.listener(|t, d: &DraggedFolder, _, cx| t.drop_folder(&d.0, cx)))
             .on_action(cx.listener(|t, _: &SelectPrev, _, cx| t.move_sel(-1, cx)))
             .on_action(cx.listener(|t, _: &SelectNext, _, cx| t.move_sel(1, cx)))
             .on_action(cx.listener(|t, _: &Expand, _, cx| {

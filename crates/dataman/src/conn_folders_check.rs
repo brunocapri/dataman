@@ -287,6 +287,32 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, r: &mut Report, cx: &mut A
     let back = folder_named(ws, "Dev", cx);
     r.check("⌘Z brings the folder back with its connection", back.is_some_and(|d| d.holds(&pg_id)), format!("{:?}", folders(ws, cx)));
 
+    // Reordering folders: a drag onto another folder's row (its top half) puts it before.
+    let order = |cx: &mut AsyncWindowContext| folders(ws, cx).into_iter().map(|d| d.name).collect::<Vec<_>>();
+    let live = folder_named(ws, "Live", cx);
+    let (from, to) = (row_point(&t, &fid(&dev.id), cx), row_point(&t, &fid(&live.as_ref().map(|d| d.id.clone()).unwrap_or_default()), cx));
+    let mut during = None;
+    if let (Some(from), Some(to)) = (from, to) {
+        crate::history_check::drag(cx, from, point(to.x, to.y - px(6.)), |cx| during = cx.update(|_, cx| t.read(cx).demo_folder_drop()).ok().flatten()).await;
+    }
+    let h = heads(&t, &names, cx);
+    r.check(
+        "a folder dragged onto another folder's row moves before it, with its connections",
+        during == Some(live.as_ref().map(|d| d.id.clone())) && order(cx) == ["Dev", "Live"] && h == ["Dev", format!("  {pg_name}").as_str(), "Live", "  Search", "Billing"],
+        format!("{during:?} {h:?}"),
+    );
+    focus_tree(&t, cx);
+    key(cx, "cmd-z");
+    r.check("⌘Z puts the folders back in their order", order(cx) == ["Live", "Dev"], format!("{:?}", order(cx)));
+    let up = menu(&t, &fid(&dev.id), Act::MoveFolder(true), cx).await;
+    let moved = order(cx);
+    let down = menu(&t, &fid(&dev.id), Act::MoveFolder(false), cx).await;
+    r.check(
+        "Move up / Move down on the folder's menu",
+        up && down && moved == ["Dev", "Live"] && order(cx) == ["Live", "Dev"],
+        format!("{moved:?} {:?}", order(cx)),
+    );
+
     for d in folders(ws, cx) {
         let _ = menu(&t, &fid(&d.id), Act::DeleteFolder, cx).await;
     }

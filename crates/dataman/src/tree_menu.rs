@@ -11,8 +11,8 @@ use crate::assets::Icon;
 #[derive(Clone, Debug, PartialEq)]
 pub enum Target {
     Empty,
-    /// An explorer folder: `color` is its swatch's index.
-    Folder { id: String, name: String, color: Option<usize>, count: usize },
+    /// An explorer folder: `color` is its swatch's index; `first`/`last` its place among them.
+    Folder { id: String, name: String, color: Option<usize>, count: usize, first: bool, last: bool },
     Conn { id: String, name: String, state: ConnPhase },
     Db { conn: String, db: String, current: bool, lar: bool, ro: bool },
     Schema { conn: String, db: String, schema: String, lar: bool, ro: bool },
@@ -65,6 +65,8 @@ pub enum Act {
     MoveToNewFolder,
     RemoveFromFolder,
     RenameFolder,
+    /// One place up or down among the folders.
+    MoveFolder(bool),
     DeleteFolder,
     /// A swatch by index, or none.
     FolderColor(Option<usize>),
@@ -187,9 +189,12 @@ pub fn entries(t: &Target) -> Vec<Entry> {
     let it = Item::new;
     match t {
         Target::Empty => vec![I(it(Act::NewConnection, "New connection…", Icon::Plus).key("⌘N")), I(it(Act::NewFolder, "New folder", Icon::Schema))],
-        Target::Folder { count, color, .. } => vec![
+        Target::Folder { count, color, first, last, .. } => vec![
             I(it(Act::RenameFolder, "Rename", Icon::Edit)),
             Entry::Sub { label: "Color", icon: Icon::Label, items: color_items(*color) },
+            Sep,
+            I(it(Act::MoveFolder(true), "Move up", Icon::ChevronUp).off(first.then_some("first"))),
+            I(it(Act::MoveFolder(false), "Move down", Icon::ChevronDown).off(last.then_some("last"))),
             Sep,
             I(it(Act::NewFolder, "New folder", Icon::Schema)),
             Sep,
@@ -761,13 +766,14 @@ mod tests {
 
     #[test]
     fn folders_in_the_menus() {
-        let d = Target::Folder { id: "f1".into(), name: "Work".into(), color: Some(2), count: 3 };
+        let d = Target::Folder { id: "f1".into(), name: "Work".into(), color: Some(2), count: 3, first: true, last: false };
         let a = acts(&d);
         assert_eq!(a[..2], [Act::RenameFolder, Act::FolderColor(None)]);
         assert_eq!(a.iter().filter(|x| matches!(x, Act::FolderColor(Some(_)))).count(), crate::theme::SWATCHES.len());
         assert!(item(&d, Act::FolderColor(Some(2))).checked && !item(&d, Act::FolderColor(None)).checked);
         assert_eq!(item(&d, Act::FolderColor(Some(2))).label.as_ref(), "Lime");
         assert!(item(&d, Act::DeleteFolder).danger && item(&d, Act::DeleteFolder).label.contains("keeps"));
+        assert!(!item(&d, Act::MoveFolder(true)).enabled() && item(&d, Act::MoveFolder(false)).enabled());
         let pg = Caps::of(dataman_core::config::Engine::Postgres);
         assert_eq!(entries_for(&d, &pg), entries(&d), "the Color submenu stays");
 
