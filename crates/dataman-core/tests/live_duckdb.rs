@@ -138,7 +138,16 @@ fn one_instance_per_file() {
     drop(d.c);
     drop(d.e);
     let e2 = env();
-    let c = e2.core.block_on(e2.core.connect(ro, None)).unwrap();
+    // The closed connection's threads let go of the instance a moment later.
+    let mut c = e2.core.block_on(e2.core.connect(ro.clone(), None));
+    for _ in 0..40 {
+        if c.is_ok() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+        c = e2.core.block_on(e2.core.connect(ro.clone(), None));
+    }
+    let c = c.unwrap();
     let rs = run(&e2, &c.session(None), "DELETE FROM note");
     assert_eq!(rs.phase(), Phase::Failed, "a read-only instance");
     assert_eq!(col(&ok(&e2, &c.session(None), "SELECT count(*) FROM note"), 0), [s("3")]);

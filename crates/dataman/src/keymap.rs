@@ -49,6 +49,13 @@ const fn c(id: &'static str, label: &'static str, group: &'static str, scope: Sc
 // ⌘↓ is Ctrl+End on Linux, the grid's last row there.
 const FETCH_MORE: &[&str] = &[if LINUX { "ctrl-down" } else { "cmd-down" }];
 const FETCH_ALL: &[&str] = &[if LINUX { "ctrl-shift-down" } else { "cmd-shift-down" }];
+// ⌘⇧[ ⌘⇧] would be Ctrl+Shift+[ ] on Linux, the editor's fold keys there (VS Code's): the tabs
+// step with Ctrl+PgUp/PgDn instead, and Fold all (⌃⌥[ ⌃⌥]) moves to Ctrl+Alt+Shift+[ ] so
+// that ⌥⌘[ ⌥⌘] (Ctrl+Alt+[ ]) stay the results'.
+const NEXT_TAB: &[&str] = if LINUX { &["ctrl-tab", "ctrl-pagedown"] } else { &["ctrl-tab", "cmd-shift-]"] };
+const PREV_TAB: &[&str] = if LINUX { &["ctrl-shift-tab", "ctrl-pageup"] } else { &["ctrl-shift-tab", "cmd-shift-["] };
+const FOLD_ALL: &[&str] = &[if LINUX { "ctrl-alt-shift-[" } else { "ctrl-alt-[" }];
+const UNFOLD_ALL: &[&str] = &[if LINUX { "ctrl-alt-shift-]" } else { "ctrl-alt-]" }];
 
 pub const COMMANDS: &[Command] = &[
     c("command_palette", "Command palette", "GLOBAL", Scope::Workspace, &["cmd-k"], || Box::new(CommandPalette)),
@@ -59,8 +66,8 @@ pub const COMMANDS: &[Command] = &[
     Command { context: Some(crate::undo::KEYS), ..c("undo", "Undo", "GLOBAL", Scope::Workspace, &["cmd-z", "ctrl-z"], || Box::new(crate::undo::Undo)) },
     Command { context: Some(crate::undo::KEYS), ..c("redo", "Redo", "GLOBAL", Scope::Workspace, &["cmd-shift-z", "ctrl-shift-z"], || Box::new(crate::undo::Redo)) },
     c("open_to_side", "Open to the side", "GLOBAL", Scope::Workspace, &["cmd-\\"], || Box::new(crate::split::OpenToSide)),
-    c("next_tab", "Next tab", "GLOBAL", Scope::Workspace, &["ctrl-tab", "cmd-shift-]"], || Box::new(NextTab)),
-    c("prev_tab", "Previous tab", "GLOBAL", Scope::Workspace, &["ctrl-shift-tab", "cmd-shift-["], || Box::new(PrevTab)),
+    c("next_tab", "Next tab", "GLOBAL", Scope::Workspace, NEXT_TAB, || Box::new(NextTab)),
+    c("prev_tab", "Previous tab", "GLOBAL", Scope::Workspace, PREV_TAB, || Box::new(PrevTab)),
     c("tab_1", "Tab 1", "GLOBAL", Scope::Workspace, &["cmd-1"], || Box::new(Tab1)),
     c("tab_2", "Tab 2", "GLOBAL", Scope::Workspace, &["cmd-2"], || Box::new(Tab2)),
     c("tab_3", "Tab 3", "GLOBAL", Scope::Workspace, &["cmd-3"], || Box::new(Tab3)),
@@ -100,8 +107,8 @@ pub const COMMANDS: &[Command] = &[
     // VS Code's (Windows, Linux): ⌥⌘[ and ⌥⌘] are the results' here, ⌘K the palette.
     c("fold", "Fold", "EDITOR", Scope::Editor, &["ctrl-shift-["], || Box::new(crate::editor::Fold)),
     c("unfold", "Unfold", "EDITOR", Scope::Editor, &["ctrl-shift-]"], || Box::new(crate::editor::Unfold)),
-    c("fold_all", "Fold all", "EDITOR", Scope::Editor, &["ctrl-alt-["], || Box::new(crate::editor::FoldAll)),
-    c("unfold_all", "Unfold all", "EDITOR", Scope::Editor, &["ctrl-alt-]"], || Box::new(crate::editor::UnfoldAll)),
+    c("fold_all", "Fold all", "EDITOR", Scope::Editor, FOLD_ALL, || Box::new(crate::editor::FoldAll)),
+    c("unfold_all", "Unfold all", "EDITOR", Scope::Editor, UNFOLD_ALL, || Box::new(crate::editor::UnfoldAll)),
     c("fold_level_1", "Fold level 1", "EDITOR", Scope::Editor, &["ctrl-alt-1"], || Box::new(crate::editor::FoldLevel1)),
     c("fold_level_2", "Fold level 2", "EDITOR", Scope::Editor, &["ctrl-alt-2"], || Box::new(crate::editor::FoldLevel2)),
     c("fold_level_3", "Fold level 3", "EDITOR", Scope::Editor, &["ctrl-alt-3"], || Box::new(crate::editor::FoldLevel3)),

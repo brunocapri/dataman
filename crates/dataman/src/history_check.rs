@@ -749,11 +749,19 @@ async fn folders(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     );
 
     click(cx, folder, MouseButton::Left, Modifiers::default());
-    pause(cx, 60).await;
+    // Read at once: the motion runs on the clock, and on a slow renderer a short pause can
+    // outlast it.
     let moving = cx.update(|_, cx| history.read(cx).demo_folding()).unwrap_or(false);
+    pause(cx, 60).await;
     snap("drain", cx);
-    pause(cx, 700).await;
-    let still = cx.update(|_, cx| history.read(cx).demo_folding()).unwrap_or(true);
+    let mut still = true;
+    for _ in 0..30 {
+        pause(cx, 100).await;
+        still = cx.update(|_, cx| history.read(cx).demo_folding()).unwrap_or(true);
+        if !still {
+            break;
+        }
+    }
     let shown = rows(&history, cx);
     report(
         &mut ok,
@@ -762,12 +770,18 @@ async fn folders(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
         format!("moving {moving}, still {still}, {shown:?}"),
     );
     click(cx, folder, MouseButton::Left, Modifiers::default());
-    pause(cx, 60).await;
     let during = rows(&history, cx);
     let moving = cx.update(|_, cx| history.read(cx).demo_folding()).unwrap_or(false);
+    pause(cx, 60).await;
     snap("shut", cx);
-    pause(cx, 400).await;
-    let after = rows(&history, cx);
+    let mut after = rows(&history, cx);
+    for _ in 0..30 {
+        if !after.contains(&"  Orders by day".to_string()) {
+            break;
+        }
+        pause(cx, 100).await;
+        after = rows(&history, cx);
+    }
     report(
         &mut ok,
         "a click shutting a folder folds its favorites away, then they are gone",

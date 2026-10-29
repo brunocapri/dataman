@@ -30,9 +30,17 @@ async fn eye(tab: &Entity<QueryTab>, row: usize, col: usize, cx: &mut AsyncWindo
     draw(cx);
     let p = cx.update(|_, cx| grid.read(cx).demo_cell_point(row, col)).ok()?;
     click(cx, p);
-    pause(cx, 80).await;
-    draw(cx);
-    cx.update(|_, cx| grid.read(cx).demo_eyes()).ok()?.into_iter().find(|(c, _)| *c == (row, col)).map(|(_, p)| p)
+    // The eye shows once the cell's kind and the table's editability are known (a round trip to
+    // the server): a cell with none stays without one for the whole wait.
+    for _ in 0..12 {
+        pause(cx, 80).await;
+        draw(cx);
+        let at = cx.update(|_, cx| grid.read(cx).demo_eyes()).ok()?.into_iter().find(|(c, _)| *c == (row, col)).map(|(_, p)| p);
+        if at.is_some() {
+            return at;
+        }
+    }
+    None
 }
 
 fn pending(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> usize {
