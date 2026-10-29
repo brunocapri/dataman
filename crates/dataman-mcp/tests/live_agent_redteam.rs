@@ -192,6 +192,15 @@ fn postgres_every_tool_runs_as_the_agent() {
     for x in e.audit().iter().filter(|x| x["database"].is_string()) {
         assert_eq!(x["login"], user.as_str(), "{x}");
     }
+    // The login's password: in the Keychain only, never in the audit, the files, nor a reply.
+    let pw = e.secrets.get(&agent_login::secret_account(id)).unwrap().unwrap();
+    let files: String = ["dataman/mcp-audit.jsonl", "dataman/connections.toml"].iter().map(|f| std::fs::read_to_string(e.dir.path().join(f)).unwrap_or_default()).collect();
+    assert!(!files.is_empty() && !files.contains(&pw), "the password leaked into a file");
+    e.secrets.set(&agent_login::secret_account(id), "wrong-password-0000000000").unwrap();
+    e.hub().close_all();
+    let err = e.call("run_query", json!({"connection": c, "sql": "SELECT 1"})).unwrap_err();
+    assert!(err.contains("never uses your own login") && !err.contains("wrong-password-0000000000") && !err.contains(&pw), "{err}");
+    e.secrets.set(&agent_login::secret_account(id), &pw).unwrap();
     // Nothing kept now: activity is the agents', as the agent login.
     p.mcp_rules = Default::default();
     core.config.upsert(p.clone()).unwrap();
@@ -295,4 +304,67 @@ fn an_update_never_undoes_the_agent_login_meanwhile() {
             assert!(err.contains("another server"), "{err}");
         }
     }
+}
+
+/// Through an SSH tunnel (DATAMAN_RT_SSH = the bastion, DATAMAN_RT_SSH_DB = PostgreSQL as the
+/// bastion reaches it): agents connect as the login through the user's own tunnel, its saved
+/// SSH password included; another bastion is another server (refused, the login's password
+/// never sent through it).
+#[test]
+fn postgres_through_an_ssh_tunnel() {
+    if !on() {
+        return;
+    }
+    let (Ok(ssh), Ok(db)) = (std::env::var("DATAMAN_RT_SSH"), std::env::var("DATAMAN_RT_SSH_DB")) else { return };
+    let (sh, sp) = ssh.rsplit_once(':').unwrap();
+    let (dh, dp) = db.rsplit_once(':').unwrap();
+    if !up(sh, sp.parse().unwrap()) {
+        return;
+    }
+    let ssh_pw = std::env::var("DATAMAN_RT_SSH_PASSWORD").unwrap_or_else(|_| "rt-ssh-pw".into());
+    let e = env();
+    let hub = e.hub().clone();
+    let core = &hub.core;
+    let id = "aumcpssh01";
+    let mut p = ConnectionProfile { host: dh.into(), port: dp.parse().unwrap(), user: "postgres".into(), database: "postgres".into(), sslmode: SslMode::Disable, save_password: true, ..ConnectionProfile::new(id) };
+    (p.id, p.name, p.mcp) = (id.into(), "tunnel".into(), Some(McpAccess::Read));
+    p.ssh = Some(dataman_core::SshSettings { host: sh.into(), port: Some(sp.parse().unwrap()), user: "rt".into(), auth: dataman_core::SshAuth::Password, key_file: String::new() });
+    core.save_connection(p.clone(), Some(&admin_pw()), Some(&ssh_pw)).unwrap();
+    let admin = {
+        let mut c = None;
+        for _ in 0..3 {
+            match core.block_on(core.connect(p.clone(), None)) {
+                Ok(x) => {
+                    c = Some(x);
+                    break;
+                }
+                Err(err) => match err.chain().find_map(|x| x.downcast_ref::<dataman_core::SshError>()).cloned() {
+                    Some(dataman_core::SshError::UnknownHostKey(prompt)) => core.block_on(core.trust_host_key(prompt)).unwrap(),
+                    _ => panic!("{err:#}"),
+                },
+            }
+        }
+        c.expect("connected through the tunnel")
+    };
+    let user = agent_login::login_name(id);
+    exec(core, &admin, &format!("DROP ROLE IF EXISTS {user}"));
+    let rv = core.block_on(live::review(&admin, &p, &Options::default())).unwrap();
+    core.block_on(live::apply(&admin, &rv.plan, &p.database)).unwrap();
+    e.secrets.set(&agent_login::secret_account(id), &rv.password).unwrap();
+    p.agent_login = Some(live::record(&p, &rv.plan, &Options::default()));
+    core.config.upsert(p.clone()).unwrap();
+    let who = e.ok("run_query", json!({"connection": id, "sql": "SELECT current_user"}));
+    assert_eq!(who["rows"][0][0], user.as_str(), "through the user's tunnel, as the login: {who}");
+    // Another bastion (an outside edit, or the user's own): refused before anything is sent.
+    let mut moved = p.clone();
+    moved.ssh.as_mut().unwrap().host = "203.0.113.9".into();
+    core.config.upsert(moved).unwrap();
+    let err = e.call("run_query", json!({"connection": id, "sql": "SELECT 1"})).unwrap_err();
+    assert!(err.contains("another server"), "{err}");
+    core.config.upsert(p.clone()).unwrap();
+    e.hub().close_all();
+    let plan = core.block_on(live::removal(&admin, &p, p.agent_login.as_ref().unwrap())).unwrap();
+    core.block_on(live::apply(&admin, &plan, &p.database)).unwrap();
+    admin.close();
+    std::mem::forget(e);
 }
