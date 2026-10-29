@@ -20,6 +20,13 @@ fn on() -> bool {
     std::env::var("DATAMAN_AGENT_LOGIN_LIVE").is_ok_and(|v| v == "1")
 }
 
+/// One test at a time: MySQL's and MongoDB's inventory is the whole server's, so another
+/// test's tables would show up in this one's drift.
+fn one_at_a_time() -> std::sync::MutexGuard<'static, ()> {
+    static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    ONE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 fn addr(var: &str, default: &str) -> (String, u16) {
     let v = std::env::var(var).unwrap_or_else(|_| default.into());
     let (h, p) = v.rsplit_once(':').unwrap();
@@ -165,6 +172,7 @@ fn postgres() {
     if !on() {
         return;
     }
+    let _one = one_at_a_time();
     let e = env();
     let (mut p, apw) = admin(Engine::Postgres, "aupgtest01");
     if !up(&p) {
@@ -271,6 +279,7 @@ fn postgres_createrole_admin() {
     if !on() {
         return;
     }
+    let _one = one_at_a_time();
     let e = env();
     let (mut p, apw) = admin(Engine::Postgres, "aupgadmin1");
     if !up(&p) {
@@ -326,6 +335,7 @@ fn mysql() {
     if !on() {
         return;
     }
+    let _one = one_at_a_time();
     let e = env();
     let (mut p, apw) = admin(Engine::MySql, "aumytest01");
     if !up(&p) {
@@ -416,6 +426,7 @@ fn sql_server() {
     if !on() {
         return;
     }
+    let _one = one_at_a_time();
     let e = env();
     let (mut p, apw) = admin(Engine::SqlServer, "aumstest01");
     if !up(&p) {
@@ -525,6 +536,7 @@ fn mongodb() {
     if !on() {
         return;
     }
+    let _one = one_at_a_time();
     let e = env();
     let (mut p, apw) = admin(Engine::MongoDb, "aumgtest01");
     if !up(&p) {
@@ -603,6 +615,7 @@ fn redis() {
     if !on() {
         return;
     }
+    let _one = one_at_a_time();
     let e = env();
     let (mut p, apw) = admin(Engine::Redis, "aurdtest01");
     if !up(&p) {
@@ -664,6 +677,7 @@ fn search_engine(engine: Engine, id: &str) {
     if !on() {
         return;
     }
+    let _one = one_at_a_time();
     let e = env();
     let (mut p, apw) = admin(engine, id);
     if !up(&p) {
@@ -738,4 +752,720 @@ fn elasticsearch() {
 #[test]
 fn opensearch() {
     search_engine(Engine::OpenSearch, "auostest01");
+}
+
+// ---- Red team: what an agent holding the login's password could try on the server itself ----
+
+/// Ends the login's sessions as Rotate and Remove do.
+fn end_sessions(e: &Env, admin: &Arc<Connection>, p: &ConnectionProfile, user: &str) -> usize {
+    e.core.block_on(live::end_sessions(admin, p, user)).unwrap_or_else(|x| panic!("{x:#}"))
+}
+
+#[test]
+fn postgres_redteam() {
+    if !on() {
+        return;
+    }
+    let _one = one_at_a_time();
+    let e = env();
+    let (mut p, apw) = admin(Engine::Postgres, "aupgrt0001");
+    if !up(&p) {
+        return;
+    }
+    p.database = "au_rt".into();
+    let user = agent_login::login_name(&p.id);
+    let space = agent_login::space_of(&user);
+    let root = connect(&e, &ConnectionProfile { database: "postgres".into(), ..p.clone() }, &apw).unwrap();
+    let rs = root.session(None);
+    for sql in [
+        "DROP DATABASE IF EXISTS au_rt WITH (FORCE)".to_string(),
+        format!("DROP ROLE IF EXISTS {user}"),
+        "DROP ROLE IF EXISTS dataman_agent_lookalike".into(),
+        "DROP ROLE IF EXISTS dataman_agent_aupgcoll".into(),
+        "CREATE DATABASE au_rt".into(),
+        "CREATE ROLE dataman_agent_lookalike LOGIN PASSWORD 'look'".into(),
+    ] {
+        ok(&e, &rs, &sql);
+    }
+    let a = connect(&e, &p, &apw).unwrap();
+    let s = a.session(None);
+    for sql in [
+        "CREATE EXTENSION IF NOT EXISTS dblink",
+        "CREATE TABLE users (id serial PRIMARY KEY, name text, email text, password_hash text)",
+        "INSERT INTO users (name, email, password_hash) VALUES ('Alice', 'alice@acme.com', 'h1'), ('Bob', 'bob@acme.com', 'h2')",
+        "CREATE TABLE secrets (id int, s text)",
+        "INSERT INTO secrets VALUES (1, 'top-secret')",
+        // Hidden, yet PUBLIC's: every login reads it (the review must say so).
+        "CREATE TABLE pub_leak (id int, s text)",
+        "INSERT INTO pub_leak VALUES (1, 'public-secret')",
+        "GRANT SELECT ON pub_leak TO PUBLIC",
+        "CREATE TABLE cols_leak (id int, pw text)",
+        "INSERT INTO cols_leak VALUES (1, 'col-secret')",
+        "GRANT SELECT (pw) ON cols_leak TO PUBLIC",
+        // Runs as its owner; PUBLIC may call it.
+        "CREATE FUNCTION leak_secrets() RETURNS text SECURITY DEFINER LANGUAGE sql AS 'SELECT string_agg(s, '','') FROM secrets'",
+        // Hostile names, and a table named as Dataman's salt.
+        r#"CREATE TABLE "we""ird" (id int, "e""mail" text)"#,
+        r#"INSERT INTO "we""ird" VALUES (1, 'carol@acme.com')"#,
+        r#"CREATE TABLE "x'; DROP ROLE postgres; --" (id int, s text)"#,
+        r#"INSERT INTO "x'; DROP ROLE postgres; --" VALUES (1, 'ok')"#,
+        r#"CREATE TABLE "ünïcødé_表" (id int, "naïve" text)"#,
+        "CREATE TABLE salt (id int, v text)",
+        "INSERT INTO salt VALUES (1, 'not-the-salt')",
+        "CREATE TABLE t_63_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa (id int, email text)",
+        "ANALYZE users",
+    ] {
+        ok(&e, &s, sql);
+    }
+    let lo = first(&ok(&e, &s, "SELECT lo_from_bytea(0, 'lo-secret')::text"));
+    p.mcp = Some(McpAccess::Write);
+    let r = &mut p.mcp_rules;
+    r.view = AgentView::Masked;
+    r.visible.items = ["secrets", "pub_leak"].iter().map(|n| VisibleItem { name: (*n).into(), kind: ItemKind::Table }).chain(["users.password_hash", "cols_leak.pw"].iter().map(|n| VisibleItem { name: (*n).into(), kind: ItemKind::Column })).collect();
+    r.sensitive = vec![
+        SensitiveCol { col: "users.email".into(), how: Mask::Partial, on: true },
+        SensitiveCol { col: "we\"ird.e\"mail".into(), how: Mask::Partial, on: true },
+        SensitiveCol { col: "salt.v".into(), how: Mask::Hash, on: true },
+        SensitiveCol { col: "*.email".into(), how: Mask::Partial, on: true },
+    ];
+    r.code = false;
+
+    let rv = e.core.block_on(live::review(&a, &p, &opts())).unwrap();
+    let exposed: Vec<&str> = rv.plan.exposed.iter().map(|x| x.object.as_str()).collect();
+    assert!(exposed.iter().any(|o| *o == "public.pub_leak") && exposed.iter().any(|o| o.contains("cols_leak.pw")), "what PUBLIC reads is said: {exposed:?}");
+    assert!(rv.plan.copy().contains("REVOKE SELECT ON \"public\".\"pub_leak\" FROM PUBLIC;"), "{}", rv.plan.copy());
+    assert!(rv.plan.notes.iter().any(|n| n.contains("public.leak_secrets") && n.contains("SECURITY DEFINER")), "{:?}", rv.plan.notes);
+    assert!(rv.plan.rules.iter().any(|l| l.rule.contains("readable by every login") && l.who == agent_login::Who::Dataman), "{:?}", rv.plan.rules);
+    let names: Vec<&str> = rv.plan.views.iter().map(|v| v.view.as_str()).collect();
+    assert!(!names.iter().any(|v| v.ends_with(".\"salt\"")), "no view in the salt's place: {names:?}");
+    let (login, password, rv) = create(&e, &a, &p);
+    let agent = as_agent(&e, &p, &user, &password).unwrap();
+    verify_all(&e, &agent, &rv);
+    let g = agent.session(None);
+    // Becoming someone else.
+    denied(&e, &g, "SET ROLE postgres");
+    denied(&e, &g, "SET SESSION AUTHORIZATION postgres");
+    denied(&e, &g, "SET ROLE pg_read_all_data");
+    // The server's files, programs, large objects, other connections.
+    denied(&e, &g, "SELECT pg_read_file('/etc/passwd')");
+    denied(&e, &g, "SELECT pg_ls_dir('.')");
+    denied(&e, &g, "COPY (SELECT 1) TO PROGRAM 'id'");
+    denied(&e, &g, "COPY secrets TO STDOUT");
+    denied(&e, &g, "SELECT lo_import('/etc/hosts')");
+    denied(&e, &g, &format!("SELECT lo_get({lo})"));
+    denied(&e, &g, &format!("SELECT lo_export({lo}, '/tmp/x')"));
+    let x = run(&e, &g, "SELECT dblink_connect('dbname=au_rt user=postgres')").unwrap_err();
+    assert!(x.contains("password"), "dblink needs a password the agent doesn't have: {x}");
+    denied(&e, &g, "SELECT * FROM dblink_connect_u('dbname=au_rt')");
+    // Hidden and masked, straight and sideways.
+    denied(&e, &g, "SELECT * FROM secrets");
+    denied(&e, &g, "SELECT email FROM users");
+    denied(&e, &g, "SELECT id FROM users WHERE email LIKE 'a%'");
+    denied(&e, &g, "UPDATE users SET name = name WHERE email LIKE 'a%'");
+    denied(&e, &g, "DELETE FROM users WHERE password_hash = 'h1'");
+    denied(&e, &g, "INSERT INTO users (name) VALUES ('x') RETURNING email");
+    assert!(ok(&e, &g, "SELECT most_common_vals FROM pg_stats WHERE tablename = 'users' AND attname IN ('password_hash', 'email')").is_empty(), "statistics of columns it can't read");
+    denied(&e, &g, &format!("SELECT * FROM {space}.salt"));
+    // A user table named salt: read through its own view, Dataman's salt untouched.
+    let v = ok(&e, &g, &format!("SELECT v FROM {} ORDER BY id", login.view_for("public", "salt").unwrap().view));
+    assert!(first(&v).starts_with("‹h:"), "{v:?}");
+    assert_eq!(first(&ok(&e, &s, "SELECT v FROM public.salt")), "not-the-salt");
+    // Hostile names: read through their views, nothing else ran.
+    let weird = login.view_for("public", "we\"ird").unwrap().view.clone();
+    assert_eq!(first(&ok(&e, &g, &format!("SELECT \"e\"\"mail\" FROM {weird}"))), "c•••@acme.com");
+    ok(&e, &g, r#"SELECT s FROM "x'; DROP ROLE postgres; --""#);
+    ok(&e, &g, r#"SELECT "naïve" FROM "ünïcødé_表""#);
+    assert_eq!(first(&ok(&e, &rs, "SELECT count(*) FROM pg_roles WHERE rolname = 'postgres'")), "1");
+    // What PUBLIC holds is the database's gap, said in the review: the login reads it.
+    assert_eq!(first(&ok(&e, &g, "SELECT s FROM pub_leak")), "public-secret");
+    assert_eq!(first(&ok(&e, &g, "SELECT pw FROM cols_leak")), "col-secret");
+    assert_eq!(first(&ok(&e, &g, "SELECT leak_secrets()")), "top-secret", "SECURITY DEFINER, said in the notes");
+    // No structure, no grants of its own.
+    denied(&e, &g, "CREATE TABLE public.mine (i int)");
+    denied(&e, &g, "CREATE SCHEMA mine");
+    // PostgreSQL takes a GRANT without the grant option with a warning, granting nothing.
+    let _ = run(&e, &g, "GRANT SELECT ON users TO PUBLIC");
+    assert_eq!(first(&ok(&e, &s, "SELECT has_table_privilege('public', 'users', 'SELECT')")), "false", "nothing was granted");
+    denied(&e, &g, "ALTER TABLE users ADD COLUMN x int");
+    denied(&e, &g, &format!("DROP VIEW {weird}"));
+    denied(&e, &g, &format!("CREATE OR REPLACE VIEW {weird} AS SELECT 1"));
+    denied(&e, &g, &format!("COMMENT ON ROLE {user} IS 'mine now'"));
+    denied(&e, &g, &format!("ALTER ROLE {user} CREATEROLE"));
+    denied(&e, &g, &format!("ALTER ROLE {user} CONNECTION LIMIT -1"));
+
+    // Drift: a table made since is not granted; Apply grants it, revokes a grant added by
+    // hand, and leaves alone what Dataman didn't make.
+    for sql in [
+        "CREATE TABLE later (id int)".to_string(),
+        "INSERT INTO later VALUES (7)".into(),
+        format!("GRANT SELECT ON secrets TO {user}"),
+        format!("CREATE VIEW {space}.lookalike AS SELECT 1 AS x"),
+    ] {
+        ok(&e, &s, &sql);
+    }
+    denied(&e, &g, "SELECT * FROM later");
+    assert_eq!(first(&ok(&e, &g, "SELECT s FROM secrets")), "top-secret", "the grant added by hand");
+    let d = e.core.block_on(live::drift(&a, &p, &login, &password)).unwrap();
+    assert!(d.changes.iter().any(|c| c.add && c.line.contains("later")), "{:?}", d.changes);
+    assert!(d.changes.iter().any(|c| !c.add && c.line.contains("secrets")), "{:?}", d.changes);
+    assert!(!d.plan.shown().contains("lookalike"), "{}", d.plan.shown());
+    e.core.block_on(live::apply(&a, &d.plan, &login.database)).unwrap();
+    assert_eq!(first(&ok(&e, &g, "SELECT id FROM later")), "7");
+    denied(&e, &g, "SELECT * FROM secrets");
+    assert_eq!(first(&ok(&e, &s, &format!("SELECT count(*) FROM pg_views WHERE schemaname = '{space}' AND viewname = 'lookalike'"))), "1", "unmarked: untouched");
+
+    // Two connections whose ids start alike share the login's name: the other one's login is
+    // not this one's (before: a prefix of the mark matched).
+    let mut twin = p.clone();
+    twin.id = "aupgrt0001x".into();
+    let rv2 = e.core.block_on(live::review(&a, &twin, &opts())).unwrap();
+    assert_eq!(rv2.probe.exists, Some(false), "marked for another connection");
+    assert!(e.core.block_on(live::removal(&a, &twin, &login)).is_err(), "Remove from the other connection is refused");
+
+    // Rotation: a session opened with the old password ends too.
+    let old_session = as_agent(&e, &p, &user, &password).unwrap();
+    let os = old_session.session(None);
+    ok(&e, &os, "SELECT 1");
+    let new = agent_login::hash::password();
+    let plan = e.core.block_on(live::rotation(&a, &p, &login, &password, &new)).unwrap();
+    e.core.block_on(live::apply(&a, &plan, &login.database)).unwrap();
+    assert!(run(&e, &os, "SELECT id FROM later").is_ok(), "before: a session from the old password goes on working");
+    assert!(end_sessions(&e, &a, &p, &user) >= 2, "the old sessions are ended");
+    assert!(run(&e, &os, "SELECT id FROM later").is_err(), "ended");
+    assert!(run(&e, &g, "SELECT id FROM later").is_err(), "ended");
+    assert!(as_agent(&e, &p, &user, &password).is_err(), "the old password no longer logs in");
+    let password = new;
+    drop((g, agent, os, old_session));
+
+    // Remove: everything Dataman made, nothing else.
+    let left = as_agent(&e, &p, &user, &password).unwrap();
+    let ls = left.session(None);
+    ok(&e, &ls, "SELECT 1");
+    end_sessions(&e, &a, &p, &user);
+    let plan = e.core.block_on(live::removal(&a, &p, &login)).unwrap();
+    e.core.block_on(live::apply(&a, &plan, &login.database)).unwrap_or_else(|x| panic!("{x:#}\n{}", plan.shown()));
+    assert!(run(&e, &ls, "SELECT 1").is_err(), "its last session went with it");
+    assert_eq!(first(&ok(&e, &rs, &format!("SELECT count(*) FROM pg_roles WHERE rolname = '{user}'"))), "0");
+    assert_eq!(first(&ok(&e, &rs, "SELECT count(*) FROM pg_roles WHERE rolname = 'dataman_agent_lookalike'")), "1");
+    // Its schema stays: something not Dataman's is in it.
+    assert_eq!(first(&ok(&e, &s, &format!("SELECT count(*) FROM pg_views WHERE schemaname = '{space}'"))), "1", "only the look-alike is left");
+    assert_eq!(first(&ok(&e, &s, "SELECT count(*) FROM pg_class WHERE relname = 'salt' AND relnamespace = 'public'::regnamespace")), "1");
+    drop((ls, left, s, a));
+    ok(&e, &rs, "DROP DATABASE IF EXISTS au_rt WITH (FORCE)");
+    ok(&e, &rs, "DROP ROLE IF EXISTS dataman_agent_lookalike");
+}
+
+#[test]
+fn mysql_redteam() {
+    if !on() {
+        return;
+    }
+    let _one = one_at_a_time();
+    let e = env();
+    let (mut p, apw) = admin(Engine::MySql, "aumyrt0001");
+    if !up(&p) {
+        return;
+    }
+    p.database = "au_rt".into();
+    let user = agent_login::login_name(&p.id);
+    let space = agent_login::space_of(&user);
+    let root = connect(&e, &ConnectionProfile { database: String::new(), ..p.clone() }, &apw).unwrap();
+    let rs = root.session(None);
+    for sql in [
+        "SET GLOBAL mandatory_roles = ''".to_string(),
+        "DROP DATABASE IF EXISTS au_rt".into(),
+        format!("DROP DATABASE IF EXISTS {space}"),
+        format!("DROP USER IF EXISTS '{user}'@'%'"),
+        "DROP ROLE IF EXISTS 'au_reader'".into(),
+        "CREATE DATABASE au_rt".into(),
+        "CREATE TABLE au_rt.users (id INT PRIMARY KEY, name VARCHAR(50), email VARCHAR(100), password_hash VARCHAR(100))".into(),
+        "INSERT INTO au_rt.users VALUES (1, 'Alice', 'alice@acme.com', 'h1')".into(),
+        "CREATE TABLE au_rt.secrets (id INT, s VARCHAR(50))".into(),
+        "INSERT INTO au_rt.secrets VALUES (1, 'top-secret')".into(),
+        "CREATE TABLE au_rt.`we``ird` (id INT, `e``mail` VARCHAR(100))".into(),
+        "INSERT INTO au_rt.`we``ird` VALUES (1, 'carol@acme.com')".into(),
+        "CREATE TABLE au_rt.`x'; DROP USER root; --` (id INT)".into(),
+        "CREATE TABLE au_rt.`ünï` (id INT, `naïve` VARCHAR(10))".into(),
+        "CREATE ROLE 'au_reader'".into(),
+        "GRANT SELECT ON au_rt.secrets TO 'au_reader'".into(),
+    ] {
+        ok(&e, &rs, &sql);
+    }
+    let a = connect(&e, &p, &apw).unwrap();
+    p.mcp = Some(McpAccess::Write);
+    let r = &mut p.mcp_rules;
+    r.view = AgentView::Masked;
+    r.visible.items = vec![VisibleItem { name: "secrets".into(), kind: ItemKind::Table }, VisibleItem { name: "users.password_hash".into(), kind: ItemKind::Column }];
+    r.sensitive = vec![SensitiveCol { col: "users.email".into(), how: Mask::Partial, on: true }, SensitiveCol { col: "we`ird.e`mail".into(), how: Mask::Partial, on: true }];
+    // A role every account gets: the review says the database can't keep the agent from it.
+    ok(&e, &rs, "SET GLOBAL mandatory_roles = 'au_reader'");
+    let rv = e.core.block_on(live::review(&a, &p, &opts())).unwrap();
+    assert!(rv.plan.exposed.iter().any(|x| x.object.contains("au_reader")), "{:?}", rv.plan.exposed);
+    assert!(rv.plan.shown().contains("PASSWORD REQUIRE CURRENT"));
+    let (login, password, rv) = create(&e, &a, &p);
+    let agent = as_agent(&e, &p, &user, &password).unwrap();
+    verify_all(&e, &agent, &rv);
+    let g = agent.session(None);
+    ok(&e, &g, "SET ROLE 'au_reader'");
+    assert_eq!(first(&ok(&e, &g, "SELECT s FROM au_rt.secrets")), "top-secret", "what mandatory_roles gives, said in the review");
+    ok(&e, &g, "SET ROLE NONE");
+    ok(&e, &rs, "SET GLOBAL mandatory_roles = ''");
+    drop(g);
+    drop(agent);
+    let agent = as_agent(&e, &p, &user, &password).unwrap();
+    let g = agent.session(None);
+    let x = run(&e, &g, "SET ROLE 'au_reader'").unwrap_err();
+    assert!(x.contains("not granted"), "{x}");
+    denied(&e, &g, "SELECT * FROM au_rt.secrets");
+    // Its own password: never by itself (it would then hold one Dataman doesn't).
+    let x = run(&e, &g, "ALTER USER USER() IDENTIFIED BY 'mine-now-123'").unwrap_err();
+    assert!(x.contains("current password") || x.contains("REPLACE"), "{x}");
+    let x = run(&e, &g, "SET PASSWORD = 'mine-now-123'").unwrap_err();
+    assert!(x.contains("current password") || x.contains("REPLACE"), "{x}");
+    // Files, other accounts, the grant tables.
+    assert_eq!(ok(&e, &g, "SELECT LOAD_FILE('/etc/passwd')")[0][0], None, "no FILE privilege");
+    denied(&e, &g, "SELECT 1 INTO OUTFILE '/tmp/au_out.txt'");
+    denied(&e, &g, "SELECT * FROM mysql.user");
+    denied(&e, &g, "SHOW GRANTS FOR 'root'@'%'");
+    denied(&e, &g, "CREATE USER 'x'@'%'");
+    denied(&e, &g, &format!("GRANT SELECT ON au_rt.users TO '{user}'@'%'"));
+    // Masked and hidden, sideways.
+    denied(&e, &g, "SELECT id FROM au_rt.users WHERE email = 'alice@acme.com'");
+    denied(&e, &g, "UPDATE au_rt.users SET name = name WHERE email LIKE 'a%'");
+    denied(&e, &g, "DELETE FROM au_rt.users WHERE password_hash = 'h1'");
+    let users = login.view_for("au_rt", "users").unwrap().view.clone();
+    assert!(ok(&e, &g, &format!("SELECT id FROM {users} WHERE email = 'alice@acme.com'")).is_empty(), "a filter on the view compares the masked value");
+    denied(&e, &g, &format!("CREATE OR REPLACE VIEW {users} AS SELECT 1"));
+    denied(&e, &g, &format!("ALTER USER '{user}'@'%' ATTRIBUTE '{{\"dataman\": \"x\"}}'"));
+    // Hostile names through their views.
+    let weird = login.view_for("au_rt", "we`ird").unwrap().view.clone();
+    assert_eq!(first(&ok(&e, &g, &format!("SELECT `e``mail` FROM {weird}"))), "c•••@acme.com");
+    ok(&e, &g, "SELECT id FROM au_rt.`x'; DROP USER root; --`");
+    ok(&e, &g, "SELECT `naïve` FROM au_rt.`ünï`");
+    assert_eq!(first(&ok(&e, &rs, "SELECT COUNT(*) FROM mysql.user WHERE User = 'root'")), "2");
+
+    // Drift: a table made since is not granted until Apply.
+    ok(&e, &rs, "CREATE TABLE au_rt.later (id INT)");
+    denied(&e, &g, "SELECT * FROM au_rt.later");
+    let d = e.core.block_on(live::drift(&a, &p, &login, &password)).unwrap();
+    assert!(d.changes.iter().any(|c| c.add && c.line.contains("later")), "{:?}", d.changes);
+    e.core.block_on(live::apply(&a, &d.plan, &login.database)).unwrap();
+    ok(&e, &g, "SELECT * FROM au_rt.later");
+
+    // Rotation: a session opened with the old password goes on working until it is ended.
+    let new = agent_login::hash::password();
+    let plan = e.core.block_on(live::rotation(&a, &p, &login, &password, &new)).unwrap();
+    e.core.block_on(live::apply(&a, &plan, &login.database)).unwrap();
+    assert!(run(&e, &g, "SELECT id FROM au_rt.later").is_ok(), "before: the old session still works");
+    assert!(end_sessions(&e, &a, &p, &user) >= 1);
+    assert!(run(&e, &g, "SELECT id FROM au_rt.later").is_err(), "ended");
+    assert!(as_agent(&e, &p, &user, &password).is_err());
+    let password = new;
+    drop((g, agent));
+
+    // Remove: a session left open would outlive the user (MySQL keeps it).
+    let left = as_agent(&e, &p, &user, &password).unwrap();
+    let ls = left.session(None);
+    ok(&e, &ls, "SELECT 1");
+    end_sessions(&e, &a, &p, &user);
+    let plan = e.core.block_on(live::removal(&a, &p, &login)).unwrap();
+    e.core.block_on(live::apply(&a, &plan, &login.database)).unwrap();
+    assert!(run(&e, &ls, "SELECT id FROM au_rt.later").is_err(), "ended with it");
+    assert_eq!(first(&ok(&e, &rs, &format!("SELECT COUNT(*) FROM mysql.user WHERE User = '{user}'"))), "0");
+    assert_eq!(first(&ok(&e, &rs, &format!("SELECT COUNT(*) FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = '{space}'"))), "0");
+    drop((ls, left, a));
+    ok(&e, &rs, "DROP DATABASE IF EXISTS au_rt");
+    ok(&e, &rs, "DROP ROLE IF EXISTS 'au_reader'");
+}
+
+/// A session left open after DROP USER: MySQL 8 refuses its next read (its privileges went
+/// with the user); Remove ends the login's sessions anyway.
+#[test]
+fn mysql_session_outlives_drop_user() {
+    if !on() {
+        return;
+    }
+    let _one = one_at_a_time();
+    let e = env();
+    let (p, apw) = admin(Engine::MySql, "aumyrt0002");
+    if !up(&p) {
+        return;
+    }
+    let root = connect(&e, &ConnectionProfile { database: String::new(), ..p.clone() }, &apw).unwrap();
+    let rs = root.session(None);
+    for sql in ["DROP USER IF EXISTS 'au_gone'@'%'", "CREATE DATABASE IF NOT EXISTS au_rt2", "CREATE TABLE IF NOT EXISTS au_rt2.t (id INT)", "CREATE USER 'au_gone'@'%' IDENTIFIED BY 'Gone-pw-123'", "GRANT SELECT ON au_rt2.t TO 'au_gone'@'%'"] {
+        ok(&e, &rs, sql);
+    }
+    let gone = connect(&e, &ConnectionProfile { user: "au_gone".into(), database: "au_rt2".into(), ..p.clone() }, "Gone-pw-123").unwrap();
+    let gs = gone.session(None);
+    ok(&e, &gs, "SELECT * FROM au_rt2.t");
+    ok(&e, &rs, "DROP USER 'au_gone'@'%'");
+    let after = run(&e, &gs, "SELECT * FROM au_rt2.t");
+    assert!(after.is_err(), "MySQL 8 checks a session's table privileges at each statement: {after:?}");
+    drop((gs, gone));
+    ok(&e, &rs, "DROP DATABASE IF EXISTS au_rt2");
+}
+
+#[test]
+fn sql_server_redteam() {
+    if !on() {
+        return;
+    }
+    let _one = one_at_a_time();
+    let e = env();
+    let (mut p, apw) = admin(Engine::SqlServer, "aumsrt0001");
+    if !up(&p) {
+        return;
+    }
+    p.database = "au_rt".into();
+    let user = agent_login::login_name(&p.id);
+    let root = connect(&e, &ConnectionProfile { database: "master".into(), ..p.clone() }, &apw).unwrap();
+    let rs = root.session(None);
+    for sql in [
+        "IF DB_ID('au_rt') IS NOT NULL BEGIN ALTER DATABASE au_rt SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE au_rt; END".to_string(),
+        format!("IF SUSER_ID('{user}') IS NOT NULL DROP LOGIN [{user}]"),
+        "CREATE DATABASE au_rt".into(),
+    ] {
+        ok(&e, &rs, &sql);
+    }
+    let a = connect(&e, &p, &apw).unwrap();
+    let s = a.session(None);
+    for sql in [
+        "CREATE TABLE dbo.users (id INT PRIMARY KEY, name NVARCHAR(50), email NVARCHAR(100), password_hash NVARCHAR(100))",
+        "INSERT INTO dbo.users VALUES (1, N'Alice', N'alice@acme.com', N'h1')",
+        "CREATE TABLE dbo.secrets (id INT, s NVARCHAR(50))",
+        "INSERT INTO dbo.secrets VALUES (1, N'top-secret')",
+        "CREATE TABLE dbo.pub_leak (id INT, s NVARCHAR(50))",
+        "INSERT INTO dbo.pub_leak VALUES (1, N'public-secret')",
+        "GRANT SELECT ON dbo.pub_leak TO public",
+        "CREATE TABLE dbo.[we]]ird] (id INT, [e]]mail] NVARCHAR(100))",
+        "INSERT INTO dbo.[we]]ird] VALUES (1, N'carol@acme.com')",
+        "CREATE TABLE dbo.[x'; DROP LOGIN sa; --] (id INT)",
+        "CREATE TABLE dbo.salt (id INT, v NVARCHAR(50))",
+    ] {
+        ok(&e, &s, sql);
+    }
+    ok(&e, &s, "CREATE PROCEDURE dbo.leak WITH EXECUTE AS OWNER AS SELECT s FROM dbo.secrets");
+    p.mcp = Some(McpAccess::Read);
+    let r = &mut p.mcp_rules;
+    r.view = AgentView::Masked;
+    r.visible.items = vec![VisibleItem { name: "secrets".into(), kind: ItemKind::Table }, VisibleItem { name: "pub_leak".into(), kind: ItemKind::Table }, VisibleItem { name: "users.password_hash".into(), kind: ItemKind::Column }];
+    r.sensitive = vec![SensitiveCol { col: "users.email".into(), how: Mask::Partial, on: true }, SensitiveCol { col: "we]ird.e]mail".into(), how: Mask::Partial, on: true }, SensitiveCol { col: "salt.v".into(), how: Mask::Hash, on: true }];
+    let rv = e.core.block_on(live::review(&a, &p, &opts())).unwrap();
+    assert!(rv.plan.exposed.iter().any(|x| x.object == "dbo.pub_leak"), "{:?}", rv.plan.exposed);
+    assert!(rv.plan.copy().contains("REVOKE SELECT ON OBJECT::[dbo].[pub_leak] FROM [public];"));
+    let (login, password, rv) = create(&e, &a, &p);
+    let agent = as_agent(&e, &p, &user, &password).unwrap();
+    verify_all(&e, &agent, &rv);
+    let g = agent.session(None);
+    // Becoming someone else, the server's shell and files.
+    denied(&e, &g, "EXECUTE AS LOGIN = 'sa'");
+    denied(&e, &g, "EXECUTE AS USER = 'dbo'");
+    denied(&e, &g, "EXEC master.dbo.xp_cmdshell 'whoami'");
+    denied(&e, &g, "SELECT * FROM OPENROWSET(BULK '/etc/passwd', SINGLE_CLOB) AS x");
+    denied(&e, &g, "EXEC dbo.leak");
+    denied(&e, &g, "ALTER LOGIN [sa] WITH PASSWORD = 'Mine-now-123'");
+    let x = run(&e, &g, &format!("ALTER LOGIN [{user}] WITH PASSWORD = 'Mine-now-123'")).unwrap_err();
+    assert!(x.contains("OLD_PASSWORD") || x.to_ascii_lowercase().contains("permission") || x.contains("15151"), "its own password needs the old one: {x}");
+    denied(&e, &g, "CREATE TABLE dbo.mine (i INT)");
+    denied(&e, &g, "GRANT SELECT ON dbo.users TO public");
+    denied(&e, &g, "ALTER ROLE db_owner ADD MEMBER [public]");
+    // Hidden and masked, sideways.
+    denied(&e, &g, "SELECT * FROM dbo.secrets");
+    denied(&e, &g, "SELECT email FROM dbo.users");
+    denied(&e, &g, "SELECT id FROM dbo.users WHERE email = N'alice@acme.com'");
+    assert!(ok(&e, &g, "SELECT name FROM sys.tables WHERE name = 'secrets'").is_empty(), "SQL Server hides it");
+    assert_eq!(ok(&e, &g, "SELECT OBJECT_ID('dbo.secrets')")[0][0], None);
+    let weird = login.view_for("dbo", "we]ird").unwrap().view.clone();
+    assert_eq!(first(&ok(&e, &g, &format!("SELECT [e]]mail] FROM {weird}"))), "c•••@acme.com");
+    let salt_view = login.view_for("dbo", "salt").unwrap().view.clone();
+    assert!(!salt_view.ends_with("[salt]"), "{salt_view}");
+    assert_eq!(first(&ok(&e, &rs, "SELECT COUNT(*) FROM sys.server_principals WHERE name = 'sa' AND is_disabled = 0")), "1");
+    // What public holds, said in the review.
+    assert_eq!(first(&ok(&e, &g, "SELECT s FROM dbo.pub_leak")), "public-secret");
+
+    // Rotation: the old password's sessions end.
+    let new = agent_login::hash::password();
+    let plan = e.core.block_on(live::rotation(&a, &p, &login, &password, &new)).unwrap();
+    e.core.block_on(live::apply(&a, &plan, &login.database)).unwrap();
+    let q = "SELECT id FROM dbo.[x'; DROP LOGIN sa; --]";
+    assert!(run(&e, &g, q).is_ok(), "before: the old session still works");
+    assert!(end_sessions(&e, &a, &p, &user) >= 1);
+    assert!(run(&e, &g, q).is_err(), "ended");
+    assert!(as_agent(&e, &p, &user, &password).is_err());
+    drop((g, agent));
+
+    // The connection's database changed since: Remove still finds the user where it was made.
+    let moved = ConnectionProfile { database: "master".into(), ..p.clone() };
+    let plan = e.core.block_on(live::removal(&a, &moved, &login)).unwrap();
+    assert!(plan.shown().contains(&format!("DROP USER IF EXISTS [{user}]")) && plan.shown().contains("DROP VIEW"), "{}", plan.shown());
+    e.core.block_on(live::apply(&a, &plan, &login.database)).unwrap();
+    assert_eq!(first(&ok(&e, &s, &format!("SELECT COUNT(*) FROM sys.database_principals WHERE name = '{user}'"))), "0", "its user went from au_rt");
+    assert_eq!(first(&ok(&e, &rs, &format!("SELECT COUNT(*) FROM sys.server_principals WHERE name = '{user}'"))), "0");
+    drop((s, a));
+    ok(&e, &rs, "ALTER DATABASE au_rt SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE au_rt;");
+}
+
+#[test]
+fn mongodb_redteam() {
+    if !on() {
+        return;
+    }
+    let _one = one_at_a_time();
+    let e = env();
+    let (mut p, apw) = admin(Engine::MongoDb, "aumgrt0001");
+    if !up(&p) {
+        return;
+    }
+    p.database = "au_rt".into();
+    let user = agent_login::login_name(&p.id);
+    let space = agent_login::space_of(&user);
+    let a = connect(&e, &p, &apw).unwrap();
+    for t in ["db.dropDatabase()".to_string(), format!("db.getSiblingDB('admin').runCommand({{dropUser: '{user}'}})"), format!("db.getSiblingDB('admin').runCommand({{dropRole: '{user}'}})")] {
+        let _ = nosql(&e, &a, "au_rt", &t);
+    }
+    for t in [
+        "db.orders.insertMany([{_id: 1, total: 10, customer_id: 1}])",
+        "db.users.insertMany([{_id: 1, name: 'Alice', email: 'alice@acme.com', password_hash: 'h1'}])",
+        "db.audit_log.insertOne({what: 'top-secret'})",
+    ] {
+        nosql(&e, &a, "au_rt", t).unwrap_or_else(|x| panic!("{t}: {x}"));
+    }
+    p.mcp = Some(McpAccess::Write);
+    let r = &mut p.mcp_rules;
+    r.view = AgentView::Masked;
+    r.visible.items = vec![VisibleItem { name: "audit_log".into(), kind: ItemKind::Table }, VisibleItem { name: "users.password_hash".into(), kind: ItemKind::Column }];
+    r.sensitive = vec![SensitiveCol { col: "users.email".into(), how: Mask::Partial, on: true }];
+    let (login, password, rv) = create(&e, &a, &p);
+    let agent = as_agent(&e, &p, &user, &password).unwrap();
+    verify_all(&e, &agent, &rv);
+    // The raw driver: Dataman's view mapping out of the way.
+    agent.set_agent_views(&[]);
+    let view = format!("{space}.users");
+    for (what, t) in [
+        ("$lookup into a hidden collection", "db.orders.aggregate([{$lookup: {from: 'audit_log', pipeline: [], as: 'x'}}])".to_string()),
+        ("$lookup into the masked collection itself", "db.orders.aggregate([{$lookup: {from: 'users', localField: 'customer_id', foreignField: '_id', as: 'u'}}])".into()),
+        ("$unionWith a hidden collection", "db.orders.aggregate([{$unionWith: 'audit_log'}])".into()),
+        ("$unionWith from its view", format!("db.getCollection('{view}').aggregate([{{$unionWith: 'users'}}])")),
+        ("$out into a new collection", "db.orders.aggregate([{$out: 'au_copy'}])".into()),
+        ("$merge into a hidden collection", "db.orders.aggregate([{$merge: {into: 'audit_log'}}])".into()),
+        ("a view of its own over users", "db.createView('mine', 'users', [])".into()),
+        ("system.users", "db.getSiblingDB('admin').getCollection('system.users').find({})".into()),
+        ("another user's info", "db.getSiblingDB('admin').runCommand({usersInfo: 'root', showCredentials: true})".into()),
+        ("its own password", format!("db.getSiblingDB('admin').runCommand({{updateUser: '{user}', pwd: 'mine-now'}})")),
+        ("its own roles", format!("db.getSiblingDB('admin').runCommand({{grantRolesToUser: '{user}', roles: ['root']}})")),
+        ("its role's privileges", format!("db.getSiblingDB('admin').runCommand({{updateRole: '{user}', privileges: []}})")),
+        ("collMod of its view", format!("db.runCommand({{collMod: '{view}', viewOn: 'users', pipeline: []}})")),
+        ("dropping its view", format!("db.getCollection('{view}').drop()")),
+        ("count of a hidden collection", "db.audit_log.countDocuments({})".into()),
+        ("distinct on the masked base", "db.users.distinct('email')".into()),
+        ("the base collection's stats", "db.runCommand({collStats: 'users'})".into()),
+        ("serverStatus", "db.getSiblingDB('admin').runCommand({serverStatus: 1})".into()),
+        ("getLog", "db.getSiblingDB('admin').runCommand({getLog: 'global'})".into()),
+    ] {
+        let r = nosql(&e, &agent, "au_rt", &t);
+        assert!(r.as_ref().is_err_and(|x| x.contains("not authorized") || x.contains("Unauthorized")), "{what}: {t} → {r:?}");
+    }
+    // Its view: the hidden field gone, the e-mail masked; filtering on it compares the mask.
+    let u = docs(&nosql(&e, &agent, "au_rt", &format!("db.getCollection('{view}').find({{email: 'alice@acme.com'}})")).unwrap());
+    assert!(u.is_empty(), "{u:?}");
+    let u = docs(&nosql(&e, &agent, "au_rt", &format!("db.getCollection('{view}').find({{password_hash: 'h1'}})")).unwrap());
+    assert!(u.is_empty(), "the hidden field is not there to filter on: {u:?}");
+    // Server-side JavaScript runs within its privileges (MongoDB can't turn it off per user).
+    let j = nosql(&e, &agent, "au_rt", "db.orders.find({$where: 'function() { return true }'})");
+    eprintln!("MongoDB $where as the agent: {:?}", j.as_ref().map(|_| "ran"));
+    // Rotation: MongoDB keeps a connection authenticated with the old password (it has no
+    // command to end another user's connections): a limitation, said in the report.
+    agent.set_agent_views(&login.views);
+    let new = agent_login::hash::password();
+    let plan = e.core.block_on(live::rotation(&a, &p, &login, &password, &new)).unwrap();
+    e.core.block_on(live::apply(&a, &plan, &login.database)).unwrap();
+    assert!(as_agent(&e, &p, &user, &password).is_err(), "the old password no longer logs in");
+    let still = nosql(&e, &agent, "au_rt", "db.orders.find({})");
+    eprintln!("MongoDB, a connection from before the rotation: {:?}", still.as_ref().map(|_| "still reads"));
+    drop(agent);
+    remove(&e, &a, &p, &login, &new);
+    let _ = nosql(&e, &a, "au_rt", "db.dropDatabase()");
+}
+
+#[test]
+fn redis_redteam() {
+    if !on() {
+        return;
+    }
+    let _one = one_at_a_time();
+    let e = env();
+    let (mut p, apw) = admin(Engine::Redis, "aurdrt0001");
+    if !up(&p) {
+        return;
+    }
+    let user = agent_login::login_name(&p.id);
+    let a = connect(&e, &p, &apw).unwrap();
+    for t in [format!("ACL DELUSER {user}"), "SET cache:1 one".into(), "SET secret:1 topsecret".into(), "RPUSH cache:list a".into(), "CONFIG SET slowlog-log-slower-than 0".into(), "SLOWLOG RESET".into()] {
+        nosql(&e, &a, "0", &t).unwrap_or_else(|x| panic!("{t}: {x}"));
+    }
+    p.mcp = Some(McpAccess::Read);
+    p.mcp_rules.activity = false;
+    p.mcp_rules.visible = dataman_core::privacy::Visible { mode: dataman_core::privacy::VisibleMode::Only, items: vec![VisibleItem { name: "cache:*".into(), kind: ItemKind::Table }] };
+    let (login, password, rv) = create(&e, &a, &p);
+    let agent = as_agent(&e, &p, &user, &password).unwrap();
+    verify_all(&e, &agent, &rv);
+    // The admin writes a secret while the slow log records everything.
+    nosql(&e, &a, "0", "SET secret:2 slowlog-secret").unwrap();
+    nosql(&e, &agent, "0", "GET cache:1").unwrap();
+    for t in [
+        "SLOWLOG GET 128",
+        "GET secret:1",
+        "TYPE secret:1",
+        "EXISTS secret:1",
+        "OBJECT ENCODING secret:1",
+        "MEMORY USAGE secret:1",
+        "DUMP secret:1",
+        "SORT cache:list BY nosort GET secret:*",
+        "SORT_RO cache:list BY nosort GET secret:*",
+        "SUBSCRIBE __keyspace@0__:secret:1",
+        "PSUBSCRIBE *",
+        "CLIENT TRACKING ON BCAST PREFIX secret:",
+        "CLIENT LIST",
+        "CLIENT KILL USER default",
+        "MONITOR",
+        "CONFIG GET *",
+        "ACL SETUSER default nopass",
+        format!("ACL SETUSER {user} ~*").as_str(),
+        "ACL GETUSER default",
+        "EVAL_RO \"return redis.call('GET', 'secret:1')\" 0",
+        "FCALL_RO f 0",
+        "FUNCTION LIST",
+        "MIGRATE 127.0.0.1 6380 secret:1 0 1000",
+        "DEBUG OBJECT cache:1",
+        "MODULE LIST",
+        "SCRIPT LOAD \"return 1\"",
+        "BGSAVE",
+        "COPY cache:1 secret:copy",
+        "LATENCY HISTOGRAM",
+    ] {
+        let r = nosql(&e, &agent, "0", t);
+        let text = format!("{r:?}");
+        assert!(!text.contains("topsecret") && !text.contains("slowlog-secret"), "{t}: {text}");
+        assert!(r.is_err(), "{t} should be refused by Redis: {text}");
+    }
+    // Key names outside its patterns: SCAN and RANDOMKEY show them (an ACL pattern only
+    // allows; said in the review as Dataman's).
+    let names = format!("{:?}", nosql(&e, &agent, "0", "SCAN 0 COUNT 1000"));
+    eprintln!("Redis SCAN as the agent: {}", if names.contains("secret:") { "lists names outside its patterns (known)" } else { "only its own" });
+    // Another database: the same patterns (Redis has no ACL per database).
+    nosql(&e, &a, "1", "SET secret:1 db1-secret").unwrap();
+    let r = nosql(&e, &agent, "1", "GET secret:1");
+    assert!(r.as_ref().is_err_and(|x| x.contains("NOPERM")), "{r:?}");
+    // Rotation: a connection from the old password is ended.
+    let new = agent_login::hash::password();
+    let plan = e.core.block_on(live::rotation(&a, &p, &login, &password, &new)).unwrap();
+    e.core.block_on(live::apply(&a, &plan, &login.database)).unwrap();
+    assert!(nosql(&e, &agent, "0", "GET cache:1").is_ok(), "before: the old connection still works");
+    assert!(end_sessions(&e, &a, &p, &user) >= 1);
+    let after = nosql(&e, &agent, "0", "GET cache:1");
+    assert!(after.is_err(), "ended: {after:?}");
+    assert!(as_agent(&e, &p, &user, &password).is_err(), "the old password no longer logs in");
+    drop(agent);
+    remove(&e, &a, &p, &login, &new);
+    for t in ["CONFIG SET slowlog-log-slower-than 10000", "DEL secret:1 secret:2 cache:1 cache:list", "SELECT 1"] {
+        let _ = nosql(&e, &a, "0", t);
+    }
+    let _ = nosql(&e, &a, "1", "DEL secret:1");
+}
+
+fn search_redteam(engine: Engine, id: &str) {
+    if !on() {
+        return;
+    }
+    let _one = one_at_a_time();
+    let e = env();
+    let (mut p, apw) = admin(engine, id);
+    if !up(&p) {
+        return;
+    }
+    let os = engine == Engine::OpenSearch;
+    let user = agent_login::login_name(&p.id);
+    let a = connect(&e, &p, &apw).unwrap();
+    let (ub, rb) = if os { ("/_plugins/_security/api/internalusers", "/_plugins/_security/api/roles") } else { ("/_security/user", "/_security/role") };
+    for t in [format!("DELETE {ub}/{user}"), format!("DELETE {rb}/{user}"), "DELETE /aurt_users".into(), "DELETE /aurt_audit".into(), "DELETE /aurt_copy".into()] {
+        let _ = nosql(&e, &a, "", &t);
+    }
+    for t in [
+        "PUT /aurt_users/_doc/1?refresh=true\n{\"name\": \"Alice\", \"email\": \"alice@acme.com\", \"password_hash\": \"hash-secret\"}",
+        "PUT /aurt_audit/_doc/1?refresh=true\n{\"what\": \"audit-secret\"}",
+        "POST /_aliases\n{\"actions\": [{\"add\": {\"index\": \"aurt_audit\", \"alias\": \"aurt_all\"}}, {\"add\": {\"index\": \"aurt_users\", \"alias\": \"aurt_all\"}}]}",
+    ] {
+        nosql(&e, &a, "", t).unwrap_or_else(|x| panic!("{t}: {x}"));
+    }
+    p.mcp = Some(McpAccess::Read);
+    p.mcp_rules.view = AgentView::Masked;
+    p.mcp_rules.visible = dataman_core::privacy::Visible {
+        mode: dataman_core::privacy::VisibleMode::Only,
+        items: vec![VisibleItem { name: "aurt_users".into(), kind: ItemKind::Table }, VisibleItem { name: "aurt_users.password_hash".into(), kind: ItemKind::Column }],
+    };
+    p.mcp_rules.sensitive = vec![SensitiveCol { col: "aurt_users.email".into(), how: Mask::Partial, on: true }];
+    let (login, password, rv) = create(&e, &a, &p);
+    let agent = as_agent(&e, &p, &user, &password).unwrap();
+    verify_all(&e, &agent, &rv);
+    let secret = |text: &str| text.contains("hash-secret") || text.contains("audit-secret") || text.contains("alice@acme.com");
+    for (what, t) in [
+        ("an aggregation on the hidden field", "POST /aurt_users/_search\n{\"size\": 0, \"aggs\": {\"x\": {\"terms\": {\"field\": \"password_hash.keyword\"}}}}"),
+        ("an aggregation on the masked field", "POST /aurt_users/_search\n{\"size\": 0, \"aggs\": {\"x\": {\"terms\": {\"field\": \"email.keyword\"}}}}"),
+        ("docvalue_fields", "POST /aurt_users/_search\n{\"docvalue_fields\": [\"password_hash.keyword\", \"email.keyword\"]}"),
+        ("stored_fields", "POST /aurt_users/_search\n{\"stored_fields\": [\"*\"], \"_source\": true}"),
+        ("highlight", "POST /aurt_users/_search\n{\"query\": {\"match\": {\"password_hash\": \"hash-secret\"}}, \"highlight\": {\"fields\": {\"*\": {}}}}"),
+        ("a term query on the hidden field", "POST /aurt_users/_search\n{\"query\": {\"term\": {\"password_hash.keyword\": \"hash-secret\"}}}"),
+        ("a wildcard over every index", "POST /aurt_*/_search\n{\"query\": {\"match_all\": {}}}"),
+        ("_all", "POST /_all/_search\n{\"query\": {\"match_all\": {}}}"),
+        ("the field's capabilities", "GET /aurt_users/_field_caps?fields=*"),
+        ("the mapping", "GET /aurt_users/_mapping"),
+        ("a document by id", "GET /aurt_users/_doc/1"),
+        ("_mget", "POST /_mget\n{\"docs\": [{\"_index\": \"aurt_users\", \"_id\": \"1\"}]}"),
+        ("term vectors", "GET /aurt_users/_termvectors/1?fields=password_hash,email"),
+    ] {
+        let r = nosql(&e, &agent, "", t);
+        let text = format!("{r:?}");
+        assert!(!secret(&text), "{what}: {t} → {text}");
+    }
+    for (what, t) in [
+        ("the hidden index", "POST /aurt_audit/_search"),
+        ("an alias over the hidden index", "POST /aurt_all/_search"),
+        ("_msearch into the hidden index", "POST /_msearch\n{\"index\": \"aurt_audit\"}\n{\"query\": {\"match_all\": {}}}"),
+        ("a document of the hidden index", "GET /aurt_audit/_doc/1"),
+        ("_reindex out of it", "POST /_reindex\n{\"source\": {\"index\": \"aurt_users\"}, \"dest\": {\"index\": \"aurt_copy\"}}"),
+        ("other users", if os { "GET /_plugins/_security/api/internalusers" } else { "GET /_security/user" }),
+        ("its role", if os { "PUT /_plugins/_security/api/roles/x\n{}" } else { "PUT /_security/role/x\n{}" }),
+        ("cluster settings", "PUT /_cluster/settings\n{\"persistent\": {\"cluster.routing.allocation.enable\": \"all\"}}"),
+        ("nodes", "GET /_nodes/stats"),
+        ("a script stored", "PUT /_scripts/x\n{\"script\": {\"lang\": \"painless\", \"source\": \"1\"}}"),
+    ] {
+        let r = nosql(&e, &agent, "", t);
+        let text = format!("{r:?}");
+        assert!(!secret(&text), "{what}: {t} → {text}");
+        let refused = r.as_ref().err().is_some_and(|x| x.contains("403") || x.contains("security_exception") || x.contains("unauthorized") || x.contains("no permissions") || x.contains("404") || x.contains("index_not_found"));
+        let empty = r.as_ref().is_ok_and(|o| !text.contains("\"_source\"") && !matches!(o, Output::Docs(d) if !d.docs.is_empty()));
+        assert!(refused || empty, "{what}: {t} → {text}");
+    }
+    if !os {
+        let r = nosql(&e, &agent, "", "POST /_sql?format=json\n{\"query\": \"SELECT * FROM aurt_audit\"}");
+        assert!(!secret(&format!("{r:?}")), "{r:?}");
+        let r = nosql(&e, &agent, "", "POST /_sql?format=json\n{\"query\": \"SELECT password_hash, email FROM aurt_users\"}");
+        assert!(!secret(&format!("{r:?}")), "{r:?}");
+    }
+    drop(agent);
+    remove(&e, &a, &p, &login, &password);
+    for t in ["DELETE /aurt_users", "DELETE /aurt_audit", "DELETE /aurt_copy"] {
+        let _ = nosql(&e, &a, "", t);
+    }
+}
+
+#[test]
+fn elasticsearch_redteam() {
+    search_redteam(Engine::Elasticsearch, "auesrt0001");
+}
+
+#[test]
+fn opensearch_redteam() {
+    search_redteam(Engine::OpenSearch, "auosrt0001");
 }
