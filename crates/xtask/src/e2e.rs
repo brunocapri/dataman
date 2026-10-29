@@ -1,6 +1,11 @@
 //! `xtask e2e`: the end-to-end suite. Brings up the databases of `e2e/compose.yaml` (reusing a
 //! server already listening on a port), reloads the seeds, then runs every check stage of
 //! `target/release/dataman --demo` one after the other and sums up their PASS/FAIL lines.
+//!
+//! Servers of one's own: `DATAMAN_E2E_<SERVICE>_PORT` (`DATAMAN_E2E_PG_PORT=57533`…) moves a
+//! service to another port of this machine (its seeds load into the container that publishes
+//! it), and `--no-compose` never starts or stops the compose services: a server that isn't up
+//! fails the run instead.
 
 use std::collections::BTreeSet;
 use std::io::{BufRead as _, BufReader, Write as _};
@@ -40,7 +45,12 @@ impl Db {
         }
     }
 
+    /// Where the service listens: its compose port, or `DATAMAN_E2E_<SERVICE>_PORT`.
     fn port(self) -> u16 {
+        let var = format!("DATAMAN_E2E_{}_PORT", self.service().to_ascii_uppercase());
+        if let Some(p) = std::env::var(&var).ok().and_then(|v| v.trim().parse().ok()) {
+            return p;
+        }
         match self {
             Pg => 55432,
             MySql => 33306,
@@ -127,6 +137,8 @@ struct Opts {
     fresh: bool,
     reset: bool,
     verbose: bool,
+    /// Never `docker compose`: the servers are the caller's own, already up.
+    no_compose: bool,
 }
 
 fn csv(args: &[String], name: &str) -> Vec<String> {
@@ -147,7 +159,11 @@ pub fn run(args: &[String]) -> Result<()> {
         fresh: args.iter().any(|a| a == "--fresh"),
         reset: !args.iter().any(|a| a == "--no-reset"),
         verbose: args.iter().any(|a| a == "-v" || a == "--verbose"),
+        no_compose: args.iter().any(|a| a == "--no-compose"),
     };
+    if o.no_compose && o.fresh {
+        bail!("--fresh recreates the compose services: not with --no-compose");
+    }
     for n in o.only.iter().chain(&o.skip) {
         if !STAGES.iter().any(|s| s.name == n) {
             bail!("no stage {n} (`xtask e2e --list`)");
@@ -173,7 +189,7 @@ pub fn run(args: &[String]) -> Result<()> {
     }
     let needs: BTreeSet<Db> = stages.iter().flat_map(|s| s.needs.iter().copied()).collect();
     step("databases");
-    up(&root, &needs, o.fresh)?;
+    up(&root, &needs, o.fresh, o.no_compose)?;
     if o.reset {
         step("seeds");
         reset(&root, &needs)?;
@@ -227,7 +243,7 @@ fn compose(root: &Path) -> Command {
     c
 }
 
-fn up(root: &Path, needs: &BTreeSet<Db>, fresh: bool) -> Result<()> {
+fn up(root: &Path, needs: &BTreeSet<Db>, fresh: bool, no_compose: bool) -> Result<()> {
     if needs.contains(&Ssh) {
         let keys = root.join("target/e2e/ssh");
         std::fs::create_dir_all(&keys)?;
@@ -251,6 +267,9 @@ fn up(root: &Path, needs: &BTreeSet<Db>, fresh: bool) -> Result<()> {
         } else {
             start.push(db.service());
         }
+    }
+    if !start.is_empty() && no_compose {
+        bail!("not up (--no-compose starts nothing): {}", start.join(" "));
     }
     if !start.is_empty() {
         println!("   starting {}", start.join(" "));
