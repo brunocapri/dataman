@@ -15,7 +15,7 @@ use crate::schema::SchemaCache;
 use crate::server::ServerInfo;
 use crate::sql::Dialect;
 use crate::tx::{TxState, TxStatus, TxWatch};
-use crate::{Task, spawn};
+use crate::{Cred, Task, spawn};
 
 pub(crate) use crate::backend::{first_ok, text_rows};
 
@@ -23,7 +23,8 @@ pub struct Connection {
     pub profile: ConnectionProfile,
     pub info: ServerInfo,
     pub schema: Arc<SchemaCache>,
-    password: Option<String>,
+    /// Asked on every dial: a cloud token expires, a new tab or database needs a fresh one.
+    cred: Cred,
     rt: Handle,
     history: Arc<History>,
     /// A catalog connection per database, each behind its own lock: one database slow to
@@ -46,10 +47,11 @@ impl Connection {
     pub(crate) async fn open(
         rt: Handle,
         profile: ConnectionProfile,
-        password: Option<String>,
+        cred: Cred,
         history: Arc<History>,
         tunnel: Option<Arc<crate::ssh::Tunnel>>,
     ) -> Result<Arc<Connection>> {
+        let password = cred.secret(&profile).await?;
         if !profile.engine.is_sql() {
             let (client, info) = crate::nosql::connect(&profile, password.as_deref(), tunnel.as_deref()).await?;
             let schema = Arc::new(SchemaCache::with_dialect(info.database.clone(), Vec::new(), profile.engine.dialect()));
@@ -61,7 +63,7 @@ impl Connection {
                 profile,
                 info,
                 schema,
-                password,
+                cred,
                 rt,
                 history,
                 meta: Mutex::new(HashMap::new()),
@@ -70,7 +72,8 @@ impl Connection {
                 agent_pools: Default::default(),
             }));
         }
-        let d = backend::dedicated(&profile, password.as_deref(), None, tunnel.as_deref()).await?;
+        let d = backend::dedicated(&profile, password.as_deref(), None, tunnel.as_deref()).await.map_err(|e| crate::cloudauth::explain(&profile, e))?;
+        drop(password);
         let (client, tls_active) = (d.db(), d.tls_active());
         drop(d);
         let info = backend::server_info(&client).await?;
@@ -84,7 +87,7 @@ impl Connection {
             profile,
             info,
             schema,
-            password,
+            cred,
             rt,
             history,
             meta: Mutex::new(meta.into_iter().map(|(k, v)| (k, Arc::new(tokio::sync::Mutex::new(Some(v))))).collect()),
@@ -158,7 +161,9 @@ impl Connection {
 
     pub(crate) async fn dedicated(&self, database: Option<&str>) -> Result<Dedicated> {
         let db = database.unwrap_or(self.database());
-        backend::dedicated(&self.profile_for(db), self.password.as_deref(), Some(db), self.tunnel.as_deref()).await
+        let p = self.profile_for(db);
+        let password = self.cred.secret(&p).await?;
+        backend::dedicated(&p, password.as_deref(), Some(db), self.tunnel.as_deref()).await.map_err(|e| crate::cloudauth::explain(&p, e))
     }
 
     pub fn handle(&self) -> &Handle {
@@ -416,7 +421,8 @@ impl Session {
         }
         self.tx.closed();
         let p = self.conn.profile_for(&self.database);
-        let (client, cancel) = backend::session(&p, self.conn.password.as_deref(), Some(&self.database), self.conn.tunnel.as_deref(), &self.tx).await?;
+        let password = self.conn.cred.secret(&p).await?;
+        let (client, cancel) = backend::session(&p, password.as_deref(), Some(&self.database), self.conn.tunnel.as_deref(), &self.tx).await.map_err(|e| crate::cloudauth::explain(&p, e))?;
         *self.cancel.lock() = Some(cancel);
         *self.ro_applied.lock() = Some(self.conn.read_only_for(&self.database));
         *g = Some(client.clone());

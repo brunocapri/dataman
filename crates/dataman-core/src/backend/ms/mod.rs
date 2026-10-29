@@ -65,10 +65,11 @@ fn config(p: &ConnectionProfile, password: Option<&str>, database: Option<&str>,
     if let Some(db) = database.filter(|d| !d.is_empty()).or(Some(p.database.as_str()).filter(|d| !d.is_empty())) {
         c.database(db);
     }
-    c.authentication(AuthMethod::sql_server(&p.user, password.unwrap_or("")));
+    // Entra ID: the access token in the login (TDS FedAuth); the user is the token's.
+    c.authentication(if p.auth.is_token() { AuthMethod::aad_token(password.unwrap_or("")) } else { AuthMethod::sql_server(&p.user, password.unwrap_or("")) });
     c.application_name("Dataman");
     c.encryption(level);
-    if p.sslmode != SslMode::VerifyFull {
+    if p.tls_mode() != SslMode::VerifyFull {
         c.trust_cert();
     }
     // `ApplicationIntent=ReadOnly`: routed to a readable secondary where there is one; only for
@@ -126,7 +127,7 @@ async fn open(p: &ConnectionProfile, password: Option<&str>, database: Option<&s
     let named = split_instance(&p.host).1.is_some();
     let mut last = None;
     let mut found = None;
-    for &level in levels(p.sslmode) {
+    for &level in levels(p.tls_mode()) {
         match dial(config(p, password, database, level), via, named).await {
             Ok(c) => {
                 found = Some((c, level != EncryptionLevel::Off));

@@ -332,6 +332,7 @@ fn shareable(p: &ConnectionProfile, agents: bool, root: &Path) -> ConnectionProf
     p.from_project = false;
     (p.agent_login, p.agents_refused) = (None, false);
     p.options.retain(|k, _| !secret_option(k));
+    p.auth = p.auth.shared();
     p.path = p.path.as_deref().map(|path| to_project_path(path, root));
     if !agents {
         (p.mcp, p.mcp_row_limit, p.mcp_allowed, p.mcp_yolo, p.mcp_rules) = (None, None, Vec::new(), false, Default::default());
@@ -351,6 +352,7 @@ fn merged(mine: Option<&ConnectionProfile>, theirs: &ConnectionProfile, agents: 
     p.options.retain(|k, _| !secret_option(k));
     match mine {
         Some(m) => {
+            p.auth = theirs.auth.with_personal(&m.auth);
             if !agents {
                 (p.mcp, p.mcp_row_limit, p.mcp_allowed, p.mcp_yolo, p.mcp_rules) = (m.mcp, m.mcp_row_limit, m.mcp_allowed.clone(), m.mcp_yolo, m.mcp_rules.clone());
             }
@@ -372,10 +374,11 @@ fn merged(mine: Option<&ConnectionProfile>, theirs: &ConnectionProfile, agents: 
     p
 }
 
-/// What reaches a server, and with what: a change sends this person's password elsewhere.
+/// What reaches a server, and with what: a change sends this person's password elsewhere, or
+/// a cloud token (one of a bearer kind is good for every database of theirs) where none went.
 pub(crate) fn target(p: &ConnectionProfile) -> impl PartialEq + '_ {
     let options: Vec<(&String, &String)> = p.options.iter().filter(|(k, _)| !secret_option(k)).collect();
-    (p.engine, p.host.to_ascii_lowercase(), p.port, &p.user, &p.ssh, options)
+    (p.engine, p.host.to_ascii_lowercase(), p.port, &p.user, &p.ssh, options, p.auth.kind())
 }
 
 /// To another server, tunnel or option, or to a database file outside the folder.
@@ -407,6 +410,23 @@ fn ssl_rank(m: SslMode) -> u8 {
 
 fn yes_no(b: bool) -> String {
     (if b { "yes" } else { "no" }).into()
+}
+
+/// The sign-in method, and where its token would go when that is not the cloud's own host (or
+/// through a tunnel): a bearer token is good for every database of this person's.
+fn sign_in_text(p: &ConnectionProfile) -> String {
+    let what = p.auth.shared().describe();
+    let kind = p.auth.kind();
+    if !p.auth.is_token() {
+        return what;
+    }
+    if !crate::cloudauth::host_allowed(kind, &p.host) {
+        return format!("{what}, its token sent to {} (not a known address of that cloud)", p.host);
+    }
+    if p.ssh.is_some() && kind != crate::config::AuthKind::AwsIam {
+        return format!("{what}, its token sent through the SSH tunnel");
+    }
+    what
 }
 
 fn ssh_text(p: &ConnectionProfile) -> String {
@@ -491,6 +511,7 @@ pub(crate) fn address_changes(old: &ConnectionProfile, next: &ConnectionProfile)
     push("Port", old.port.to_string(), next.port.to_string());
     push("User", old.user.clone(), next.user.clone());
     push("SSH", ssh_text(old), ssh_text(next));
+    push("Sign-in", old.auth.shared().describe(), sign_in_text(next));
     push("File", old.path.clone().unwrap_or_default(), next.path.clone().unwrap_or_default());
     let keys: BTreeSet<&String> = old.options.keys().chain(next.options.keys()).filter(|k| !secret_option(k)).collect();
     for k in keys {
@@ -523,6 +544,9 @@ pub(crate) fn arrival(next: &ConnectionProfile, local: &[ConnectionProfile], roo
     // would take that name's calls.
     if let Some(q) = local.iter().find(|q| q.name.trim().eq_ignore_ascii_case(next.id.trim())) {
         push("Id", "—".into(), format!("{}, the name of your connection", q.name), true);
+    }
+    if next.auth.is_token() && sign_in_text(next) != next.auth.shared().describe() {
+        push("Sign-in", "—".into(), sign_in_text(next), true);
     }
     if !next.engine.is_file() && next.host.starts_with('/') {
         push("Host", "—".into(), format!("{} (a local socket: the server may let you in without a password)", next.host), true);
@@ -1454,6 +1478,8 @@ mod tests {
             ("another engine", |p| p.engine = Engine::MySql),
             ("an SSH tunnel", |p| p.ssh = Some(SshSettings { host: "bastion.attacker.example".into(), port: None, user: "x".into(), auth: SshAuth::Agent, key_file: String::new() })),
             ("an option", |p| _ = p.options.insert("hostaddr".into(), "203.0.113.9".into())),
+            ("an Entra token instead of the password", |p| p.auth = crate::config::Auth::EntraId { tenant: None }),
+            ("a Google token instead of the password", |p| p.auth = crate::config::Auth::GoogleIam { account: None }),
         ];
         for (what, edit) in cases {
             let prod = guarded("prod");
@@ -1615,6 +1641,46 @@ mod tests {
         f.share.agents = false;
         let c = plan(&local, &f, None, &root);
         assert!(c.review.is_empty() && c.connections[0].mcp.is_none() && c.connections[0].from_project, "{c:?}");
+    }
+
+    #[test]
+    fn cloud_sign_in_from_the_file() {
+        use crate::config::Auth;
+        let (_d, root) = project_dir();
+        let local = Local::default();
+        let file = |p: ConnectionProfile| ProjectFile { connections: vec![p], ..export(&Local::default(), Share::default(), &BTreeSet::new(), &root) };
+        let held = |p: ConnectionProfile| plan(&local, &file(p), None, &root).review;
+        // A new connection signing in with Entra to Azure's own host: nothing to ask.
+        let mut azure = conn("azure");
+        (azure.host, azure.auth) = ("srv.postgres.database.azure.com".into(), Auth::EntraId { tenant: None });
+        assert!(held(azure.clone()).is_empty());
+        // To any other host, or through the file's tunnel, it waits.
+        let mut evil = azure.clone();
+        evil.host = "db.attacker.example".into();
+        let r = held(evil);
+        assert!(r.first().is_some_and(|r| r.changes.iter().any(|c| c.what == "Sign-in" && c.loosens && c.to.contains("db.attacker.example"))), "{r:?}");
+        let mut tunneled = azure.clone();
+        tunneled.ssh = Some(SshSettings { host: "bastion.attacker.example".into(), port: None, user: "x".into(), auth: SshAuth::Agent, key_file: String::new() });
+        assert!(held(tunneled).iter().any(|r| r.changes.iter().any(|c| c.what == "Sign-in")));
+        // A Cloud SQL IP is nobody's in particular: asked.
+        let mut gcp = conn("gcp");
+        (gcp.host, gcp.auth) = ("34.1.2.3".into(), Auth::GoogleIam { account: None });
+        assert!(!held(gcp).is_empty());
+
+        // Personal fields stay out of the file and stay mine.
+        let mut rds = conn("rds");
+        (rds.host, rds.auth) = ("db.abc.eu-west-1.rds.amazonaws.com".into(), Auth::AwsIam { profile: Some("bruno-dev".into()), region: Some("eu-west-1".into()) });
+        let shared = shareable(&rds, true, &root);
+        assert_eq!(shared.auth, Auth::AwsIam { profile: None, region: Some("eu-west-1".into()) });
+        let text = file(shared.clone()).to_text();
+        assert!(text.contains("method = \"aws-iam\"") && !text.contains("bruno-dev"), "{text}");
+        let back = merged(Some(&rds), &shared, true, &root);
+        assert_eq!(back.auth, rds.auth);
+        assert!(!moves(&rds, &back, &root));
+        // The file switching it to another method moves it.
+        let mut switched = shared.clone();
+        switched.auth = Auth::EntraId { tenant: None };
+        assert!(moves(&rds, &merged(Some(&rds), &switched, true, &root), &root));
     }
 
     #[test]

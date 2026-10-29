@@ -8,6 +8,7 @@ pub mod agent_sql;
 pub mod backend;
 pub mod batch;
 pub mod bounded;
+pub mod cloudauth;
 pub mod complete;
 pub mod config;
 pub mod conn;
@@ -74,7 +75,7 @@ use tokio::sync::oneshot;
 
 pub use backend::{Caps, ConnectError, needs_password, server_error, server_error_class};
 pub use backend::duck::EXTERNAL_ACCESS as DUCKDB_EXTERNAL_ACCESS;
-pub use config::{ConfigStore, ConnFolder, ConnectionProfile, Dirs, Engine, Environment, MCP_ADVANCED, McpAccess, SshAuth, SshSettings, SslMode, default_sslmode, is_local_host};
+pub use config::{Auth, AuthKind, ConfigStore, ConnFolder, ConnectionProfile, Dirs, Engine, Environment, MCP_ADVANCED, McpAccess, SshAuth, SshSettings, SslMode, default_sslmode, is_local_host};
 pub use engine::{EngineSpec, Nouns};
 pub use sql::Dialect;
 pub use conn::TxEnd;
@@ -171,6 +172,8 @@ pub struct Core {
     pub pins: PinStore,
     pub project: project::ProjectStore,
     pub pgpass: Option<PathBuf>,
+    /// Cloud tokens for connections that sign in through `az`, `aws` or `gcloud`.
+    pub cloud: cloudauth::TokenSource,
     // Memory only: never written to disk or the keychain. Kept with the tunnel it was typed
     // for: one moved elsewhere (an open project's file, an agent) does not get it.
     ssh_typed: Arc<Mutex<HashMap<String, (Option<SshSettings>, String)>>>,
@@ -182,9 +185,38 @@ struct Secrets {
     store: Arc<dyn SecretStore>,
     pgpass: Option<PathBuf>,
     ssh_typed: Arc<Mutex<HashMap<String, (Option<SshSettings>, String)>>>,
+    cloud: cloudauth::TokenSource,
+}
+
+/// What a connection signs in with, asked for on every new connection (a tab, another database):
+/// a password stays the same, a cloud token is the token source's (cached while it lasts).
+#[derive(Clone)]
+pub(crate) enum Cred {
+    Password(Option<String>),
+    Cloud(cloudauth::TokenSource),
+}
+
+impl Cred {
+    /// For a connection of `p` (its host, user and method).
+    pub(crate) async fn secret(&self, p: &ConnectionProfile) -> Result<Option<String>> {
+        match self {
+            Cred::Password(pw) => Ok(pw.clone()),
+            Cred::Cloud(src) => Ok(Some(src.token(p).await?)),
+        }
+    }
 }
 
 impl Secrets {
+    /// A cloud method never takes a password, typed or saved: the token source checks where the
+    /// connection goes before any token is made.
+    fn cred(&self, p: &ConnectionProfile, given: Option<String>) -> Result<Cred> {
+        if p.auth.is_token() {
+            cloudauth::guard(p)?;
+            return Ok(Cred::Cloud(self.cloud.clone()));
+        }
+        Ok(Cred::Password(self.password(p, given)?))
+    }
+
     fn password(&self, p: &ConnectionProfile, given: Option<String>) -> Result<Option<String>> {
         if given.is_some() {
             return Ok(given);
@@ -205,11 +237,11 @@ impl Secrets {
         Ok(self.pgpass.as_deref().and_then(|f| lookup(f, &p.host, p.port, &p.database, &p.user)))
     }
 
-    /// The password and the SSH secret, read on a blocking thread: the Keychain may wait for a
-    /// prompt (and on Linux runs a runtime of its own).
-    async fn both(&self, p: &ConnectionProfile, password: Option<String>, ssh: Option<String>) -> Result<(Option<String>, Option<String>)> {
+    /// What the connection signs in with and the SSH secret, read on a blocking thread: the
+    /// Keychain may wait for a prompt (and on Linux runs a runtime of its own).
+    async fn both(&self, p: &ConnectionProfile, password: Option<String>, ssh: Option<String>) -> Result<(Cred, Option<String>)> {
         let (this, p) = (self.clone(), p.clone());
-        tokio::task::spawn_blocking(move || Ok((this.password(&p, password)?, this.ssh(&p, ssh)?))).await?
+        tokio::task::spawn_blocking(move || Ok((this.cred(&p, password)?, this.ssh(&p, ssh)?))).await?
     }
 
     async fn ssh_only(&self, p: &ConnectionProfile) -> Result<Option<String>> {
@@ -298,6 +330,7 @@ impl Core {
             secrets,
             approved,
             pgpass: pgpass::default_path(),
+            cloud: Default::default(),
             ssh_typed: Default::default(),
         })
     }
@@ -316,7 +349,7 @@ impl Core {
     }
 
     fn resolver(&self) -> Secrets {
-        Secrets { store: self.secrets.clone(), pgpass: self.pgpass.clone(), ssh_typed: self.ssh_typed.clone() }
+        Secrets { store: self.secrets.clone(), pgpass: self.pgpass.clone(), ssh_typed: self.ssh_typed.clone(), cloud: self.cloud.clone() }
     }
 
     // Reads the keychain and a file: not for the UI thread.
@@ -364,7 +397,8 @@ impl Core {
         let secrets = self.resolver();
         let known = self.dirs.known_hosts_file();
         spawn(&self.handle(), async move {
-            let (password, ssh_secret) = secrets.both(&profile, password, ssh_secret).await?;
+            let (cred, ssh_secret) = secrets.both(&profile, password, ssh_secret).await?;
+            let password = cred.secret(&profile).await?;
             let tunnel = open_tunnel(&profile, ssh_secret, known).await?;
             if !profile.engine.is_sql() {
                 let t = std::time::Instant::now();
@@ -375,7 +409,7 @@ impl Core {
                 }
                 return Ok((r?.1, rtt));
             }
-            let d = backend::dedicated(&profile, password.as_deref(), None, tunnel.as_deref()).await?;
+            let d = backend::dedicated(&profile, password.as_deref(), None, tunnel.as_deref()).await.map_err(|e| cloudauth::explain(&profile, e))?;
             let t = std::time::Instant::now();
             let info = backend::server_info(&d.db()).await?;
             let rtt = t.elapsed();
@@ -402,7 +436,7 @@ impl Core {
             }
             let ssh_secret = secrets.ssh_only(&user).await?;
             let tunnel = open_tunnel(&agent, ssh_secret, known).await?;
-            Connection::open(handle, agent, Some(password), history, tunnel).await
+            Connection::open(handle, agent, Cred::Password(Some(password)), history, tunnel).await
         })
     }
 
@@ -412,10 +446,17 @@ impl Core {
         let secrets = self.resolver();
         let known = self.dirs.known_hosts_file();
         spawn(&self.handle(), async move {
-            let (password, ssh_secret) = secrets.both(&profile, password, None).await?;
+            let (cred, ssh_secret) = secrets.both(&profile, password, None).await?;
             let tunnel = open_tunnel(&profile, ssh_secret, known).await?;
-            Connection::open(handle, profile, password, history, tunnel).await
+            Connection::open(handle, profile, cred, history, tunnel).await
         })
+    }
+
+    /// The connection dialog's sign-in check: the cloud CLI asked for a token now, and who it
+    /// signs in as.
+    pub fn cloud_sign_in(&self, profile: ConnectionProfile) -> Task<cloudauth::SignedIn> {
+        let src = self.cloud.clone();
+        spawn(&self.handle(), async move { Ok(src.check(&profile).await?) })
     }
 
     pub fn trust_host_key(&self, prompt: HostKeyPrompt) -> Task<()> {
