@@ -130,6 +130,8 @@ impl ConnStore {
         self.states.insert(id.to_string(), ConnState::Connecting);
         let n = self.attempts.start(id);
         cx.notify();
+        // A cloud token has no password to ask for: its error says what to run instead.
+        let token = profile.auth.is_token();
         let task = self.core.connect(profile, password);
         let id = id.to_string();
         cx.spawn(async move |this, cx| {
@@ -160,7 +162,7 @@ impl ConnStore {
                             Some(s) => s.to_string(),
                             None => format!("{e:#}"),
                         };
-                        let needs_password = ssh.is_none() && dataman_core::needs_password(&e);
+                        let needs_password = ssh.is_none() && !token && dataman_core::needs_password(&e);
                         let ssh = ssh.filter(|s| matches!(s, SshError::UnknownHostKey(_) | SshError::SecretNeeded { .. }));
                         s.states.insert(id.clone(), ConnState::Failed(msg));
                         if !s.quiet.remove(&id) {

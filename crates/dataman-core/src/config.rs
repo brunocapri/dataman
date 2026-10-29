@@ -517,8 +517,24 @@ impl ConnectionProfile {
         if self.host.trim().is_empty() {
             return Err("host is required".into());
         }
-        if spec.form.user_required && self.user.trim().is_empty() {
+        // SQL Server's Entra token names its user itself.
+        let user_given = self.engine == Engine::SqlServer && self.auth.kind() == AuthKind::EntraId;
+        if spec.form.user_required && !user_given && self.user.trim().is_empty() {
             return Err("host and user are required".into());
+        }
+        if self.auth.is_token() && !self.engine.supports(self.auth.kind()) {
+            return Err(format!("{} does not sign in with {}", spec.label, self.auth.kind().label()));
+        }
+        let odd = match &self.auth {
+            Auth::EntraId { tenant } => [("tenant", tenant.as_deref()), ("", None)],
+            Auth::AwsIam { profile, region } => [("profile", profile.as_deref()), ("region", region.as_deref())],
+            Auth::GoogleIam { account } => [("account", account.as_deref()), ("", None)],
+            Auth::Password => [("", None), ("", None)],
+        }
+        .into_iter()
+        .find_map(|(what, v)| v.filter(|v| !crate::cloudauth::plain_value(v.trim())).map(|_| what));
+        if let Some(what) = odd {
+            return Err(format!("the {what} takes letters, digits and . _ @ : / + - only"));
         }
         if let Some(n) = spec.numbered_dbs
             && !self.database.is_empty()
