@@ -123,6 +123,7 @@ fn seed_audit(core: &Core) {
             allowed_by: None,
             rewritten: (sql.starts_with("SELECT id, name, email")).then(|| "SELECT id, name, email, ssn, city, total FROM (SELECT id, name, email, ssn, city, total, created_at FROM public.customers) customers WHERE city = ? LIMIT ?".into()),
             seen,
+            login: None,
         });
     }
 }
