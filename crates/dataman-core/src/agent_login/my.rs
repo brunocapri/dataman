@@ -162,8 +162,8 @@ fn rules(spec: &Spec, d: &Desired, probe: &Probe, prod: bool) -> Vec<RuleLine> {
     } else {
         v.push(line(time_label(spec.time_limit_s), "MySQL has no time limit per user", Who::Dataman));
     }
-    if spec.conn_limit.is_some() {
-        v.push(line("Connections", "MAX_USER_CONNECTIONS", Who::Database));
+    if let Some(n) = spec.conn_limit {
+        v.push(line(format!("At most {n} sessions at once"), "MAX_USER_CONNECTIONS", Who::Database));
     }
     v.extend(dataman_lines(spec, prod));
     v

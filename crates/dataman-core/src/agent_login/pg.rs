@@ -208,8 +208,8 @@ fn rules(spec: &Spec, d: &Desired, probe: &Probe, prod: bool) -> Vec<RuleLine> {
         v.push(line("No server activity", "pg_stat_activity hides others' statements", Who::Database));
     }
     v.push(line(time_label(spec.time_limit_s), "statement_timeout is only a default", Who::Partly));
-    if spec.conn_limit.is_some() {
-        v.push(line("Connections", "CONNECTION LIMIT", Who::Database));
+    if let Some(n) = spec.conn_limit {
+        v.push(line(format!("At most {n} sessions at once"), "CONNECTION LIMIT", Who::Database));
     }
     v.extend(dataman_lines(spec, prod));
     v

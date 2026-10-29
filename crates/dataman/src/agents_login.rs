@@ -1,4 +1,5 @@
-//! Agents › Database login: a login of the agents' own on each connection. Off, it shows what
+//! Agents › Permissions › Database login: a login of the agents' own on each connection, opened
+//! from Permissions' header (and its recommendation) with a way back. Off, it shows what
 //! the user's login could do (the probe); Create… opens the review (who enforces each rule, what
 //! can't be granted, the exact SQL, the options), then the login is created with the user's
 //! login, checked by logging in as it, and kept: its password in the Keychain, the rest on the
@@ -15,6 +16,7 @@ use dataman_core::{Connection, ConnectionProfile, McpAccess};
 use gpui::{AnyElement, ClickEvent, Context, FontWeight, Window, div, prelude::*};
 
 use crate::agents::{AgentsPage, Page, checkbox};
+use crate::assets::{Icon, icon};
 use crate::theme::{Theme, mono, px};
 use crate::ui;
 
@@ -32,6 +34,8 @@ pub(crate) struct LoginUi {
     /// "I'll run it myself": waiting for Verify to find the login.
     pub(crate) pending: Option<Plan>,
     pub(crate) sheet: Option<Sheet>,
+    /// Which Copy SQL says "Copied" now.
+    pub(crate) copied: ui::CopiedFlash,
 }
 
 pub(crate) enum Sheet {
@@ -548,7 +552,7 @@ impl AgentsPage {
         self.login_probe(p, cx);
     }
 
-    /// Opens the page on a connection (the Permissions nudge, the connection list).
+    /// Opens the page on a connection (Permissions' header button and its recommendation).
     pub(crate) fn show_login(&mut self, id: &str, cx: &mut Context<Self>) {
         self.conn = Some(id.to_string());
         self.login.conn = None;
@@ -581,12 +585,39 @@ impl AgentsPage {
                     "The login is a ceiling, not a copy: row limits, the real-WHERE rule, production approvals and value masking (cards, e-mails, keys inside any text) stay in Dataman. Statements an agent may only run after your Allow (DDL, TRUNCATE) run on your login after you click it, so the agent's own credential can never change structure.",
                 ),
             );
+        // Permissions › Database login: the way back is the crumb before it.
+        let hov = t.tx;
+        let back = div()
+            .children(ui::here(&"agents-login-back".into()))
+            .id("agents-login-back")
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(4.))
+            .text_color(t.tx3)
+            .cursor_pointer()
+            .hover(move |s| s.text_color(hov))
+            .child(icon(Icon::ChevronLeft).size(px(14.)).text_color(t.tx3))
+            .child("Permissions")
+            .on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.show(Page::Permissions, cx)));
+        let head = div()
+            .h(px(56.))
+            .flex_none()
+            .px(px(32.))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(10.))
+            .text_size(px(17.))
+            .child(back)
+            .child(div().text_color(t.tx4).child("›"))
+            .child(div().font_weight(FontWeight::BOLD).text_color(t.tx).child("Database login"));
         div()
             .relative()
             .size_full()
             .flex()
             .flex_col()
-            .child(self.header(t, "Database login"))
+            .child(head)
             .child(div().flex_1().min_h_0().flex().flex_row().border_t_1().border_color(t.line).child(self.render_conn_list(t, cx)).child(body))
             .children(self.login_sheet(t, &p, cx))
             .into_any_element()
@@ -729,7 +760,10 @@ impl AgentsPage {
         let pid = p.clone();
         let verify = ui::button(t, "agents-login-verify", ui::Btn::Primary).h(px(30.)).cursor_pointer().child(self.login.busy.clone().unwrap_or_else(|| "Verify".into())).on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_verify(&pid, cx)));
         let copy = self.login.pending.as_ref().map(|pl| pl.copy()).unwrap_or_default();
-        let again = ui::button(t, "agents-login-copy-again", ui::Btn::Secondary).h(px(28.)).cursor_pointer().child("Copy SQL").on_click(cx.listener(move |_, _: &ClickEvent, _, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy.clone()))));
+        let again = ui::copy_button(t, "agents-login-copy-again", ui::Btn::Secondary, "Copy SQL", self.login.copied.on("agents-login-copy-again", cx)).h(px(28.)).cursor_pointer().on_click(cx.listener(move |v, _: &ClickEvent, _, cx| {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy.clone()));
+            v.login.copied.start("agents-login-copy-again", cx);
+        }));
         let pid = p.id.clone();
         let forget = ui::button(t, "agents-login-forget-pending", ui::Btn::Ghost).h(px(28.)).cursor_pointer().child("Forget it").on_click(cx.listener(move |v, _: &ClickEvent, _, cx| {
             let _ = v.core.secrets.delete(&agent_login::pending_account(&pid));
@@ -817,7 +851,10 @@ impl AgentsPage {
                     .child(cell("Password", rotate_text, l.rotation_due(Utc::now()).is_some_and(|d| d <= 0), true))
                     .child(cell("Granted", format!("{} · {}", agent_login_count(l.granted, "table"), agent_login_count(views, "view")), false, false))
                     .child(cell("Not grantable", if l.not_granted == 0 { "none".into() } else { agent_login_count(l.not_granted, "table") }, l.not_granted > 0, false))
-                    .child(cell("Connections", l.conn_limit.map(|n| format!("at most {n}")).unwrap_or_else(|| "no cap".into()), false, false)),
+                    .child(cell("Sessions", match l.conn_limit {
+                        Some(n) if agent_login::caps_sessions(p.engine) => format!("at most {n} at once"),
+                        _ => "no cap".into(),
+                    }, false, false)),
             )
             .into_any_element()
     }
@@ -987,16 +1024,31 @@ impl AgentsPage {
         for n in &plan.notes {
             left = left.child(div().text_color(t.tx3).line_height(px(18.)).child(n.clone()));
         }
-        let opt_row = |id: &'static str, on: bool, text: String, fixed: bool| {
-            div().children(ui::here(&id.into())).id(id).flex().flex_row().items_center().gap(px(10.)).when(!fixed, |d| d.cursor_pointer()).child(checkbox(t, on, fixed)).child(div().text_color(if fixed { t.tx2 } else { t.tx }).child(text))
+        // A fixed option is on and stays on: its box ticked in the disabled grey, why under it.
+        let opt_row = |id: &'static str, on: bool, text: String, sub: Option<&str>, fixed: bool| {
+            div()
+                .children(ui::here(&id.into()))
+                .id(id)
+                .flex()
+                .flex_row()
+                .gap(px(10.))
+                .when(!fixed, |d| d.cursor_pointer())
+                .child(div().pt(px(1.)).children(on.then(|| ui::here(&gpui::SharedString::from(format!("{id}-on")).into())).flatten()).child(checkbox(t, on, fixed)))
+                .child(div().flex_1().min_w_0().flex().flex_col().gap(px(2.)).child(div().text_color(t.tx).child(text)).children(sub.map(|s| div().text_size(px(11.)).text_color(t.tx3).child(s.to_string()))))
         };
         let (p1, p2, p3) = (p.clone(), p.clone(), p.clone());
         left = left
             .child(ui::caps(t, "LOGIN"))
-            .child(opt_row("agents-login-opt-pw", true, format!("Generate a {}-character password, kept in the {}", agent_login::hash::PASSWORD_LEN, dataman_core::secret::STORE_NAME), true))
-            .child(opt_row("agents-login-opt-rotate", opts.rotate_days.is_some(), format!("Rotate it every {} days", agent_login::ROTATE_DAYS), false).on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_option(&p1, |o| o.rotate_days = if o.rotate_days.is_some() { None } else { Some(agent_login::ROTATE_DAYS) }, cx))))
-            .child(opt_row("agents-login-opt-conns", opts.conn_limit.is_some(), format!("At most {} connections", agent_login::CONN_LIMIT), false).on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_option(&p2, |o| o.conn_limit = if o.conn_limit.is_some() { None } else { Some(agent_login::CONN_LIMIT) }, cx))))
-            .child(opt_row("agents-login-opt-verify", opts.verify, "Verify by logging in as it before saving".into(), false).on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_option(&p3, |o| o.verify = !o.verify, cx))));
+            .child(opt_row("agents-login-opt-pw", true, format!("Generate a {}-character password, kept in the {}", agent_login::hash::PASSWORD_LEN, dataman_core::secret::STORE_NAME), Some("Always on: the login only ever has a password Dataman made"), true))
+            .child(opt_row("agents-login-opt-rotate", opts.rotate_days.is_some(), format!("Rotate it every {} days", agent_login::ROTATE_DAYS), None, false).on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_option(&p1, |o| o.rotate_days = if o.rotate_days.is_some() { None } else { Some(agent_login::ROTATE_DAYS) }, cx))));
+        // Only where the database itself turns the next session away.
+        if agent_login::caps_sessions(p.engine) {
+            left = left.child(
+                opt_row("agents-login-opt-conns", opts.conn_limit.is_some(), format!("At most {} sessions open at once", agent_login::CONN_LIMIT), Some("The database turns away more, so a runaway agent can't pile up open sessions"), false)
+                    .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_option(&p2, |o| o.conn_limit = if o.conn_limit.is_some() { None } else { Some(agent_login::CONN_LIMIT) }, cx))),
+            );
+        }
+        left = left.child(opt_row("agents-login-opt-verify", opts.verify, "Verify by logging in as it before saving".into(), None, false).on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_option(&p3, |o| o.verify = !o.verify, cx))));
         let script = rv.atlas.clone().unwrap_or_else(|| plan.shown());
         let copy_text = rv.atlas.clone().unwrap_or_else(|| plan.copy());
         let comment = |l: &str| l.starts_with("--") || l.starts_with('#') || l.starts_with("//");
@@ -1020,7 +1072,10 @@ impl AgentsPage {
                     .border_color(t.line)
                     .child(ui::caps(t, what))
                     .child(div().flex_1())
-                    .child(ui::button(t, "agents-login-copy", ui::Btn::Ghost).h(px(24.)).cursor_pointer().child("Copy SQL").on_click(cx.listener(move |_, _: &ClickEvent, _, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy_text.clone()))))),
+                    .child(ui::copy_button(t, "agents-login-copy", ui::Btn::Ghost, "Copy SQL", self.login.copied.on("agents-login-copy", cx)).h(px(24.)).cursor_pointer().on_click(cx.listener(move |v, _: &ClickEvent, _, cx| {
+                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy_text.clone()));
+                        v.login.copied.start("agents-login-copy", cx);
+                    }))),
             )
             .child(div().id("agents-login-sql").flex_1().min_h_0().overflow_scroll().px(px(16.)).py(px(12.)).font_family(mono()).text_size(px(11.5)).line_height(px(19.)).flex().flex_col().children(lines));
         let body = div().flex_1().min_w_0().flex().flex_row().child(left).child(right).into_any_element();
@@ -1105,7 +1160,10 @@ impl AgentsPage {
                     .border_color(t.line)
                     .child(ui::caps(t, "WHAT RUNS"))
                     .child(div().flex_1())
-                    .child(ui::button(t, "agents-login-remove-copy", ui::Btn::Ghost).h(px(24.)).cursor_pointer().child("Copy SQL").on_click(cx.listener(move |_, _: &ClickEvent, _, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy.clone()))))),
+                    .child(ui::copy_button(t, "agents-login-remove-copy", ui::Btn::Ghost, "Copy SQL", self.login.copied.on("agents-login-remove-copy", cx)).h(px(24.)).cursor_pointer().on_click(cx.listener(move |v, _: &ClickEvent, _, cx| {
+                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy.clone()));
+                        v.login.copied.start("agents-login-remove-copy", cx);
+                    }))),
             )
             .child(div().id("agents-login-remove-sql").flex_1().min_h_0().overflow_scroll().px(px(16.)).py(px(12.)).font_family(mono()).text_size(px(11.5)).line_height(px(19.)).flex().flex_col().children(lines));
         let body = div().flex_1().min_w_0().flex().flex_row().child(left).child(right).into_any_element();

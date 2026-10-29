@@ -185,7 +185,7 @@ fn rules(spec: &Spec, d: &Desired, probe: &Probe, prod: bool) -> Vec<RuleLine> {
     v.push(line(if spec.activity { "Server activity" } else { "No server activity" }, if spec.activity { "VIEW SERVER STATE" } else { "no VIEW SERVER STATE" }, Who::Database));
     v.push(line(time_label(spec.time_limit_s), "no time limit per login (Resource Governor only)", Who::Dataman));
     if spec.conn_limit.is_some() {
-        v.push(line("Connections", "no cap per login", Who::Dataman));
+        v.push(line("Sessions at once", "no cap per login", Who::Dataman));
     }
     v.extend(dataman_lines(spec, prod));
     v

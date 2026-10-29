@@ -1260,6 +1260,7 @@ fn capitalize(s: &str) -> String {
 pub struct ReviewPanel {
     pub edit: Entity<GridEdit>,
     focus: FocusHandle,
+    copied: ui::CopiedFlash,
 }
 
 impl Focusable for ReviewPanel {
@@ -1271,7 +1272,7 @@ impl Focusable for ReviewPanel {
 impl ReviewPanel {
     pub fn new(edit: Entity<GridEdit>, cx: &mut Context<Self>) -> Self {
         cx.observe(&edit, |_, _, cx| cx.notify()).detach();
-        ReviewPanel { edit, focus: cx.focus_handle() }
+        ReviewPanel { edit, focus: cx.focus_handle(), copied: Default::default() }
     }
 }
 
@@ -1484,11 +1485,13 @@ impl Render for ReviewPanel {
                     .flex_row()
                     .gap(px(6.))
                     .child(
-                        ui::button(&t, "rv-copy", Btn::Ghost)
+                        ui::copy_button(&t, "rv-copy", Btn::Ghost, "Copy SQL", self.copied.on("rv-copy", cx))
                             .h(px(24.))
                             .text_size(px(11.))
-                            .child("Copy SQL")
-                            .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(sql_copy.clone()))),
+                            .on_click(cx.listener(move |v, _, _, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(sql_copy.clone()));
+                                v.copied.start("rv-copy", cx);
+                            })),
                     )
                     .child(
                         ui::button(&t, "rv-open", Btn::Ghost)

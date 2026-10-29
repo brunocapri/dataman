@@ -30,12 +30,13 @@ pub enum Page {
     Permissions,
     Privacy,
     Types,
+    /// Opened from Permissions (its header's Database login), not from the nav.
     Login,
     General,
 }
 
 impl Page {
-    pub const ALL: [Page; 6] = [Page::General, Page::Audit, Page::Permissions, Page::Privacy, Page::Types, Page::Login];
+    pub const ALL: [Page; 5] = [Page::General, Page::Audit, Page::Permissions, Page::Privacy, Page::Types];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -946,8 +947,8 @@ impl AgentsPage {
         let open = self.privacy_open;
         let rows = Page::ALL.into_iter().filter(|p| *p != Page::Types || open).map(|p| {
             let child = p == Page::Types;
-            // A folded Privacy stands for the page inside it.
-            let on = self.visible && (self.page == p || (p == Page::Privacy && !open && self.page == Page::Types));
+            // A folded Privacy stands for the page inside it; Permissions for its Database login.
+            let on = self.visible && (self.page == p || (p == Page::Privacy && !open && self.page == Page::Types) || (p == Page::Permissions && self.page == Page::Login));
             let id = SharedString::from(format!("agents-nav-{}", p.key()));
             let hov = t.hov;
             let chevron = (p == Page::Privacy).then(|| {
@@ -2112,7 +2113,11 @@ pub(crate) fn switch(t: &Theme, on: bool) -> gpui::Div {
         .child(div().size(px(10.)).bg(if on { t.pop } else { t.tx3 }))
 }
 
+/// Disabled and on, it is checked but inert: the tick in the disabled grey, not the accent.
 pub(crate) fn checkbox(t: &Theme, on: bool, disabled: bool) -> gpui::Div {
+    if disabled && on {
+        return div().flex_none().size(px(14.)).flex().items_center().justify_center().bg(t.line2).child(icon(Icon::Check).size(px(11.)).text_color(t.tx3));
+    }
     if disabled {
         return div().flex_none().size(px(14.)).border_1().border_color(t.line2).opacity(0.5);
     }

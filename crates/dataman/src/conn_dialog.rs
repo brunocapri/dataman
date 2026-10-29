@@ -1138,7 +1138,7 @@ impl ConnDialog {
             Err(e) => return self.invalid(e, cx),
         };
         let core = self.store.read(cx).core.clone();
-        // Its agent login is the Database login page's: as saved now (made, rotated or removed
+        // Its agent login is Permissions › Database login's: as saved now (made, rotated or removed
         // while this dialog was open), never this dialog's copy, nor a copied connection's.
         (p.agent_login, p.agents_refused) = core.config.get(&p.id).map(|c| (c.agent_login, c.agents_refused)).unwrap_or((None, false));
         if let Err(e) = core.save_connection(p.clone(), pw.as_deref(), ssh_secret.as_deref()) {

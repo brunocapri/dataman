@@ -685,7 +685,7 @@ pub fn database_for(p: &ConnectionProfile, login: Option<&AgentLogin>) -> String
 pub fn password_of(secrets: &dyn crate::SecretStore, conn_id: &str, user: &str) -> Result<String> {
     match secrets.get(&secret_account(conn_id)) {
         Ok(Some(pw)) if !pw.is_empty() => Ok(pw),
-        Ok(_) => bail!("the agent login {user}'s password is not in the {}: agents are refused on this connection until it is set again (Agents › Database login › Rotate password)", crate::secret::STORE_NAME),
+        Ok(_) => bail!("the agent login {user}'s password is not in the {}: agents are refused on this connection until it is set again (Agents › Permissions › Database login › Rotate password)", crate::secret::STORE_NAME),
         Err(e) => bail!("the agent login {user}'s password could not be read from the {}: {e:#}", crate::secret::STORE_NAME),
     }
 }

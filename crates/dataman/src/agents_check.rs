@@ -272,8 +272,8 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     r.check("a click on it opens the Agents area on Audit, with the agents' calls", shows(cx) && page(cx) == Page::Audit && loaded, format!("{:?}", page(cx)));
     let pages: Vec<&str> = Page::ALL.iter().map(|p| p.label()).collect();
     r.check(
-        "the area's pages: General first, then Audit, Permissions, Privacy, Sensitive data, Database login (no Home)",
-        pages == ["General", "Audit", "Permissions", "Privacy", "Sensitive data", "Database login"],
+        "the area's pages: General first, then Audit, Permissions, Privacy, Sensitive data (no Home; Database login is inside Permissions)",
+        pages == ["General", "Audit", "Permissions", "Privacy", "Sensitive data"] && probed("agents-nav-login", cx).is_none(),
         format!("{pages:?}"),
     );
     // Sensitive data sits inside Privacy, as a folder's child in the explorer: indented, folded
@@ -587,8 +587,18 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     let on = cx.update(|_, cx| (a.read(cx).page, a.read(cx).conn.clone())).ok();
     r.check("the recommendation opens Database login on that connection", on == Some((Page::Login, Some(pg.id.clone()))), format!("{on:?}"));
     r.check("off, the page offers Create agent login…", probed("agents-login-create", cx).is_some(), "");
-    click_probe("agents-nav-permissions", cx);
+    r.check("…and has no row of its own in the nav", probed("agents-nav-login", cx).is_none(), "");
+    click_probe("agents-login-back", cx);
     pause(cx, 50).await;
+    let on = cx.update(|_, cx| (a.read(cx).page, a.read(cx).conn.clone())).ok();
+    r.check("its Permissions crumb goes back to Permissions on the same connection", on == Some((Page::Permissions, Some(pg.id.clone()))), format!("{on:?}"));
+    click_probe("agents-perm-login", cx);
+    pause(cx, 100).await;
+    let on = cx.update(|_, cx| (a.read(cx).page, a.read(cx).conn.clone())).ok();
+    r.check("Permissions' Database login button opens it on the selected connection", on == Some((Page::Login, Some(pg.id.clone()))) && probed("agents-login-create", cx).is_some(), format!("{on:?}"));
+    click_probe("agents-login-back", cx);
+    pause(cx, 50).await;
+    r.check("…and back again", page(cx) == Page::Permissions && probed("agents-perm-login", cx).is_some(), format!("{:?}", page(cx)));
     click_probe("agents-tier-0", cx);
     pause(cx, 50).await;
     r.check("with MCP off there is no recommendation", probed("agents-login-nudge", cx).is_none(), "");
@@ -988,7 +998,7 @@ async fn check_login(ws: &Entity<Workspace>, a: &Entity<AgentsPage>, pg: &Connec
     let id = pg.id.clone();
     let _ = cx.update(|window, cx| {
         ws.update(cx, |w, cx| {
-            w.show_agents(Page::Login, window, cx);
+            w.show_agents(Page::Permissions, window, cx);
             w.agents.update(cx, |a, cx| {
                 a.conn = Some(id.clone());
                 cx.notify();
@@ -996,8 +1006,10 @@ async fn check_login(ws: &Entity<Workspace>, a: &Entity<AgentsPage>, pg: &Connec
         })
     });
     pause(cx, 100).await;
+    click_probe("agents-perm-login", cx);
+    pause(cx, 100).await;
     let on = cx.update(|_, cx| (a.read(cx).page, a.read(cx).conn.clone())).ok();
-    r.check("Agents › Database login on the connection", on == Some((Page::Login, Some(pg.id.clone()))), format!("{on:?}"));
+    r.check("Agents › Permissions › Database login on the connection", on == Some((Page::Login, Some(pg.id.clone()))), format!("{on:?}"));
     let probed_ok = until(cx, 20, |cx| login_ui(a, cx, |l| matches!(l.probe, Some(Ok(_)))).unwrap_or(false)).await;
     r.check("Database login: the page checks what the user's login can do", probed_ok, format!("{:?}", login_ui(a, cx, |l| l.probe.as_ref().map(|p| p.as_ref().err().cloned()))));
     shoot("01-off", cx);
@@ -1017,6 +1029,38 @@ async fn check_login(ws: &Entity<Workspace>, a: &Entity<AgentsPage>, pg: &Connec
         r.check("the review's script never holds the password, nor does Copy SQL", !shown.contains(password.as_str()) && !copy.contains(password.as_str()), "");
         r.check("…and shows the verifier masked (Copy SQL has the verifier, still not the password)", shown.contains("SCRAM-SHA-256$4096:…") && copy.contains("SCRAM-SHA-256$4096:") && !copy.contains("SCRAM-SHA-256$4096:…"), "");
         r.check("nothing the user's login lacks; the masked table gets its view", lacks.is_empty() && *views == 1, format!("{lacks:?} {views}"));
+    }
+    // The password option is on and stays on; a click on it changes nothing.
+    let opts = |cx: &mut AsyncWindowContext| login_ui(a, cx, |l| match &l.sheet {
+        Some(Sheet::Create { opts, confirm, .. }) => Some((*opts, *confirm)),
+        _ => None,
+    }).flatten();
+    let before = opts(cx);
+    let pw_on = probed("agents-login-opt-pw-on", cx).is_some();
+    click_probe("agents-login-opt-pw", cx);
+    pause(cx, 50).await;
+    r.check("the generated password shows as on (ticked, inert), and a click on it changes nothing", pw_on && probed("agents-login-opt-pw-on", cx).is_some() && before.is_some() && opts(cx) == before, format!("{before:?} → {:?}", opts(cx)));
+    let sessions = login_ui(a, cx, |l| match &l.sheet {
+        Some(Sheet::Create { review: Some(Ok(rv)), .. }) => rv.plan.rules.iter().any(|x| x.rule == format!("At most {} sessions at once", agent_login::CONN_LIMIT) && x.who == agent_login::Who::Database),
+        _ => false,
+    }).unwrap_or(false);
+    r.check("PostgreSQL: at most 4 sessions open at once, held by the database (an option, and a rule in the review)", sessions && probed("agents-login-opt-conns-on", cx).is_some(), "");
+    // Copy SQL: the script on the clipboard, "Copied" in its place for a moment, then back.
+    let clip = cx.update(|_, cx| cx.read_from_clipboard()).ok().flatten();
+    set_clipboard("", cx);
+    click_probe("agents-login-copy", cx);
+    pause(cx, 50).await;
+    let copied = clipboard(cx);
+    let flash = |cx: &mut AsyncWindowContext| cx.update(|_, cx| a.read(cx).login.copied.on("agents-login-copy", cx).is_some()).unwrap_or(false);
+    let shown = flash(cx) && probed("agents-login-copy-copied", cx).is_some();
+    r.check("Copy SQL puts the script on the clipboard and says Copied", shown && review.as_ref().is_ok_and(|x| copied == x.1), format!("{} chars", copied.len()));
+    pause(cx, 50).await;
+    shoot("02-copied", cx);
+    pause(cx, 2100).await;
+    draw(cx);
+    r.check("…then reads Copy SQL again", !flash(cx) && probed("agents-login-copy-copied", cx).is_none() && probed("agents-login-copy", cx).is_some(), "");
+    if let Some(c) = clip {
+        let _ = cx.update(|_, cx| cx.write_to_clipboard(c));
     }
     pause(cx, 200).await;
     shoot("02-review", cx);
@@ -1080,6 +1124,18 @@ async fn check_login(ws: &Entity<Workspace>, a: &Entity<AgentsPage>, pg: &Connec
     })
     .unwrap_or_default();
     r.check("Remove login… shows the exact SQL first (no password in it)", planned && rm.contains(&format!("DROP ROLE \"{user}\"")) && !rm.contains(&new), &rm);
+    let clip = cx.update(|_, cx| cx.read_from_clipboard()).ok().flatten();
+    click_probe("agents-login-remove-copy", cx);
+    pause(cx, 50).await;
+    let want = login_ui(a, cx, |l| match &l.sheet {
+        Some(Sheet::Remove { plan: Some(Ok(p)), .. }) => p.copy(),
+        _ => String::new(),
+    })
+    .unwrap_or_default();
+    r.check("the removal's Copy SQL copies it and says Copied", !want.is_empty() && clipboard(cx) == want && probed("agents-login-remove-copy-copied", cx).is_some(), "");
+    if let Some(c) = clip {
+        let _ = cx.update(|_, cx| cx.write_to_clipboard(c));
+    }
     pause(cx, 200).await;
     shoot("06-remove", cx);
     click_probe("agents-login-remove-go", cx);

@@ -336,7 +336,19 @@ impl AgentsPage {
             .size_full()
             .flex()
             .flex_col()
-            .child(self.header(t, "Permissions"))
+            .child(self.header(t, "Permissions").child(div().flex_1()).when(dataman_core::agent_login::supported(p.engine), |d| {
+                // The agents' own login on the server holds these rules too: a page of its own.
+                let id = p.id.clone();
+                d.child(
+                    ui::button(t, "agents-perm-login", ui::Btn::Secondary)
+                        .h(px(28.))
+                        .px(px(10.))
+                        .cursor_pointer()
+                        .child(icon(Icon::Role).size(px(13.)).text_color(t.tx2))
+                        .child("Database login")
+                        .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.show_login(&id, cx))),
+                )
+            }))
             .child(
                 div()
                     .flex_1()
@@ -558,12 +570,7 @@ impl AgentsPage {
                     div()
                         .children(ui::here(&SharedString::from(format!("agents-sens-check-{k}")).into()))
                         .id(SharedString::from(format!("agents-sens-check-{k}")))
-                        .child(if masked || !s.on {
-                            checkbox(t, s.on, false)
-                        } else {
-                            // Checked but inert: the tick in the disabled grey, not the accent.
-                            div().flex_none().size(px(14.)).flex().items_center().justify_center().bg(t.line2).child(icon(Icon::Check).size(px(11.)).text_color(t.tx3))
-                        })
+                        .child(checkbox(t, s.on, !masked && s.on))
                         .when(masked, |d| {
                             d.on_click(cx.listener(move |v, _, _, cx| {
                                 v.set_rule(|r| {

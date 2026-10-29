@@ -51,6 +51,13 @@ pub fn supported(e: Engine) -> bool {
     !e.is_file()
 }
 
+/// Whether the database itself caps how many sessions the agent login holds open at once
+/// (`Options::conn_limit`): PostgreSQL's `CONNECTION LIMIT`, MySQL's `MAX_USER_CONNECTIONS`.
+/// The others have no cap per login.
+pub fn caps_sessions(e: Engine) -> bool {
+    matches!(e, Engine::Postgres | Engine::MySql)
+}
+
 /// Why the option is not there for a file database.
 pub const FILE_NOTE: &str = "SQLite and DuckDB have no logins. Dataman already opens them read-only for read agents and checks each statement inside the engine (SQLite's authorizer), so there is nothing to create.";
 
