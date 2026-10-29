@@ -468,6 +468,7 @@ impl Workspace {
         }
         self.modal_return = window.focused(cx);
         self.confirm_delete = Some(id);
+        self.drop_agent_login = true;
         window.focus(&self.confirm_delete_focus, cx);
         cx.notify();
     }
@@ -485,13 +486,52 @@ impl Workspace {
 
     pub(crate) fn delete_connection(&mut self, id: &str, cx: &mut Context<Self>) {
         let name = self.store.read(cx).profile(id).map(|p| p.name.clone()).unwrap_or_else(|| id.to_string());
+        let profile = self.store.read(cx).profile(id).cloned();
+        let dropping = profile.as_ref().filter(|p| self.drop_agent_login && p.agent_login.is_some()).cloned();
+        // The agent login goes from the server first, on the user's login (its password read
+        // before the connection's own goes from the Keychain).
+        if let Some(p) = dropping.clone() {
+            self.drop_agent_login_of(p, cx);
+        }
         match self.remove_connection(id, cx) {
-            Ok(d) => {
+            Ok(mut d) => {
+                if dropping.is_some() {
+                    // Undo brings the connection back without the login it no longer has.
+                    (d.profile.agent_login, d.profile.agents_refused, d.agent_password) = (None, true, None);
+                }
                 self.notice(format!("Deleted the connection {name}"), cx);
                 self.did(format!("Delete connection '{name}'"), crate::undo::Op::ConnDeleted(Box::new(d)));
             }
             Err(e) => self.notice(format!("Could not delete {name}: {e:#}"), cx),
         }
+    }
+
+    /// Drops `p`'s agent login on the server, in the background; the outcome is a notice.
+    fn drop_agent_login_of(&mut self, p: dataman_core::ConnectionProfile, cx: &mut Context<Self>) {
+        let core = self.store.read(cx).core.clone();
+        let open = self.store.read(cx).connection(&p.id);
+        let Some(login) = p.agent_login.clone() else { return };
+        let password = if p.save_password { core.secrets.get(&p.id).ok().flatten() } else { None };
+        let h = core.handle();
+        let fut = async move {
+            use dataman_core::agent_login::live;
+            let mine = dataman_core::ConnectionProfile { agent_login: None, ..p.clone() };
+            let admin = match open {
+                Some(c) => c,
+                None => core.connect(mine.clone(), password).await.map_err(|e| format!("{e:#}"))?,
+            };
+            let plan = live::removal(&admin, &mine, &login).await.map_err(|e| format!("{e:#}"))?;
+            live::apply(&admin, &plan, &live::database_for(&mine, Some(&login))).await.map_err(|e| format!("{e:#}"))?;
+            Ok::<String, String>(login.user)
+        };
+        cx.spawn(async move |w, cx| {
+            let r = h.spawn(fut).await.map_err(|e| e.to_string()).and_then(|r| r);
+            let _ = w.update(cx, |w, cx| match r {
+                Ok(user) => w.notice(format!("Dropped the agent login {user} on the server"), cx),
+                Err(e) => w.notice(format!("The agent login is still on the server (Dataman forgot it): {e}"), cx),
+            });
+        })
+        .detach();
     }
 
     pub(crate) fn render_confirm_delete(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -500,6 +540,7 @@ impl Workspace {
         let store = self.store.read(cx);
         let name = store.profile(id).map(|p| p.name.clone()).unwrap_or_else(|| id.clone());
         let summary = store.profile(id).map(|p| p.summary()).unwrap_or_default();
+        let agent = store.profile(id).and_then(|p| p.agent_login.as_ref()).map(|l| l.user.clone());
         let tabs = self.tabs.iter().filter(|tab| tab.read(cx).connection().is_some_and(|c| c.profile.id == *id)).count();
         let mut body = summary;
         if tabs > 0 {
@@ -530,6 +571,25 @@ impl Workspace {
                             ui::modal_close(&t, "dc-close").on_click(cx.listener(|w, _, window, cx| w.resolve_delete(false, window, cx))),
                         ))
                         .child(div().px(px(20.)).py(px(16.)).line_height(px(18.)).text_color(t.tx2).child(body))
+                        .children(agent.map(|user| {
+                            let on = self.drop_agent_login;
+                            div()
+                                .children(ui::here(&"dc-drop-agent".into()))
+                                .id("dc-drop-agent")
+                                .mx(px(20.))
+                                .mb(px(16.))
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(10.))
+                                .cursor_pointer()
+                                .child(ui::checkbox(&t, on))
+                                .child(div().text_color(t.tx).child(format!("Also drop its agent login {user} on the server")))
+                                .on_click(cx.listener(|w, _, _, cx| {
+                                    w.drop_agent_login = !w.drop_agent_login;
+                                    cx.notify();
+                                }))
+                        }))
                         .child(
                             ui::modal_footer(&t)
                                 .child(div().flex_1())

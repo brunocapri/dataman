@@ -160,6 +160,7 @@ impl Workspace {
             allowed_by: None,
             rewritten: None,
             seen: None,
+            login: None,
         });
         match result {
             Ok(s) => {

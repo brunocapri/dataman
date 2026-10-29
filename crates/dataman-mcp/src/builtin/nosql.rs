@@ -242,6 +242,7 @@ async fn write(cx: &Call, a: &Args, text: &str, class: &WriteClass, tab: Option<
     {
         cx.ask_human(&o, text, vec![why], n, false).await?;
     }
+    let o = cx.as_user(o, class).await?;
     let ran = run(cx, &o, text, Page::default(), cx.time_limit(a)).await?;
     if let Output::Written { affected, .. } = &ran.output {
         cx.note_rows(*affected as usize);

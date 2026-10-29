@@ -257,6 +257,7 @@ pub struct Note {
     pub allowed_by: Option<AllowedBy>,
     pub rewritten: Option<String>,
     pub seen: crate::audit::Seen,
+    pub login: Option<String>,
 }
 
 pub struct Write<'a> {
@@ -377,6 +378,9 @@ impl Call {
             c = self.hub.connect(&profile) => c.map_err(ToolError::Failed)?,
             _ = self.cancel.cancelled() => return Err(ToolError::Cancelled),
         };
+        if let Some(l) = &profile.agent_login {
+            self.note.lock().login = Some(l.user.clone());
+        }
         let database = args.opt_str("database").map(str::to_string).unwrap_or_else(|| conn.database().to_string());
         self.note.lock().database = Some(database.clone());
         let mut o = Opened { profile, conn, database };
@@ -384,6 +388,21 @@ impl Call {
         o.profile.mcp_rules = crate::builtin::rules::effective_rules(self, &o).await?;
         o.conn.set_agent_rules(&o.profile.mcp_rules);
         Ok(o)
+    }
+
+    /// What the user allowed in the app runs on their own login where the agent's can't run
+    /// it (DDL, TRUNCATE, a procedure, a terminated session): never before that Allow.
+    pub async fn as_user(&self, o: Opened, class: &WriteClass) -> Result<Opened, ToolError> {
+        let allowed = self.note.lock().approval.as_ref().is_some_and(|n| n.decision == Decision::Approved);
+        if o.profile.agent_login.is_none() || !class.is_destructive() || !allowed {
+            return Ok(o);
+        }
+        let conn = tokio::select! {
+            c = self.hub.connect_user(&o.profile) => c.map_err(ToolError::Failed)?,
+            _ = self.cancel.cancelled() => return Err(ToolError::Cancelled),
+        };
+        self.note.lock().login = Some("you".into());
+        Ok(Opened { conn, ..o })
     }
 
     pub fn enabled(&self) -> Result<(), ToolError> {
@@ -598,6 +617,7 @@ impl Call {
                 show(WriteShown::Failed(e.message()));
                 return Err(e);
             }
+            let o = self.as_user(o, &class).await?;
             return match self.run(&o, w.sql, w.params, mode, w.limits).await {
                 Ok(out) => {
                     show(WriteShown::Ran { outcome: out.clone(), note: None });
@@ -668,6 +688,7 @@ impl Call {
             return Err(e);
         }
         // Run again: committed only if it changes no more rows than the user saw.
+        let o = self.as_user(o, &class).await?;
         let allowed = c.affected;
         let grew: Arc<Mutex<Option<u64>>> = Arc::new(Mutex::new(None));
         let decide: bounded::Decide = {

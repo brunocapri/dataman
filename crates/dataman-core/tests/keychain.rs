@@ -31,3 +31,21 @@ fn keychain_entries_are_per_connection() {
     assert_eq!(k.get(&b).unwrap().as_deref(), Some("two"));
     k.delete(&b).unwrap();
 }
+
+/// The agent login's password: its own account next to the connection's, read the same way
+/// the MCP server reads it (`password_of`), and gone with Remove.
+#[test]
+#[ignore]
+fn agent_login_password_in_the_keychain() {
+    use dataman_core::agent_login::{live, secret_account};
+    let id = format!("dataman-test-conn-{}", std::process::id());
+    let k = Keychain;
+    k.set(&id, "the-users-password").unwrap();
+    assert!(live::password_of(&k, &id, "dataman_agent_x").is_err(), "the user's password is never the agent's");
+    k.set(&secret_account(&id), "the-agents-password").unwrap();
+    assert_eq!(live::password_of(&k, &id, "dataman_agent_x").unwrap(), "the-agents-password");
+    assert_eq!(k.get(&id).unwrap().as_deref(), Some("the-users-password"));
+    k.delete(&secret_account(&id)).unwrap();
+    assert!(live::password_of(&k, &id, "dataman_agent_x").is_err());
+    k.delete(&id).unwrap();
+}

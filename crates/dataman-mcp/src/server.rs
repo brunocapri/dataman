@@ -92,6 +92,7 @@ impl Server {
             allowed_by: n.allowed_by,
             rewritten: n.rewritten.as_deref().map(redact),
             seen: (!n.seen.is_empty()).then_some(n.seen),
+            login: n.login,
         });
     }
 

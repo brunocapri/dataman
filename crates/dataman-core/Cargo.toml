@@ -38,6 +38,8 @@ hmac = "0.13"
 sha1 = "0.11"
 data-encoding = "2"
 ring = "0.17"
+# The agent login's password for Elasticsearch and OpenSearch goes as a bcrypt hash, never in clear.
+bcrypt = { version = "0.18", default-features = false, features = ["std"] }
 semver = "1"
 libc = "0.2"
 # TLS through the same rustls on ring: no OpenSSL, no aws-lc.

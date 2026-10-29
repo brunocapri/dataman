@@ -182,7 +182,7 @@ impl AgentsPage {
         all.into_iter().find(|p| p.id == id)
     }
 
-    fn render_conn_list(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn render_conn_list(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let rows = self.profiles(cx).into_iter().map(|p| {
             let sel = self.conn.as_deref() == Some(p.id.as_str());
             let a = p.mcp_access();
@@ -217,7 +217,7 @@ impl AgentsPage {
         div().id("agents-conns").w(px(250.)).flex_none().py(px(4.)).flex().flex_col().overflow_y_scroll().track_scroll(&self.conns_scroll).border_r_1().border_color(t.line).children(rows).into_any_element()
     }
 
-    fn no_conns(&self, t: &Theme, title: &str) -> AnyElement {
+    pub(crate) fn no_conns(&self, t: &Theme, title: &str) -> AnyElement {
         div()
             .size_full()
             .flex()
@@ -250,7 +250,8 @@ impl AgentsPage {
                         v.edit_conn(&id, |p| p.mcp = Some(a), cx);
                     }
                 }))
-                .when(p.env.is_production(), |d| d.child(div().text_size(px(11.)).text_color(t.tx3).child("Production: every write asks."))),
+                .when(p.env.is_production(), |d| d.child(div().text_size(px(11.)).text_color(t.tx3).child("Production: every write asks.")))
+                .children(self.login_nudge(t, &p, cx)),
         );
         let tier = p.mcp_access();
         let prod = p.env.is_production();

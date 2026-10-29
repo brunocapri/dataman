@@ -30,11 +30,12 @@ pub enum Page {
     Permissions,
     Privacy,
     Types,
+    Login,
     General,
 }
 
 impl Page {
-    pub const ALL: [Page; 5] = [Page::General, Page::Audit, Page::Permissions, Page::Privacy, Page::Types];
+    pub const ALL: [Page; 6] = [Page::General, Page::Audit, Page::Permissions, Page::Privacy, Page::Types, Page::Login];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -42,6 +43,7 @@ impl Page {
             Page::Permissions => "Permissions",
             Page::Privacy => "Privacy",
             Page::Types => "Sensitive data",
+            Page::Login => "Database login",
             Page::General => "General",
         }
     }
@@ -52,6 +54,7 @@ impl Page {
             Page::Permissions => "permissions",
             Page::Privacy => "privacy",
             Page::Types => "types",
+            Page::Login => "login",
             Page::General => "general",
         }
     }
@@ -62,6 +65,7 @@ impl Page {
             Page::Permissions => Icon::Shield,
             Page::Privacy => Icon::Padlock,
             Page::Types => Icon::Types,
+            Page::Login => Icon::Role,
             Page::General => Icon::Plug,
         }
     }
@@ -273,6 +277,8 @@ pub struct AgentsPage {
     pub(crate) clear_focus: FocusHandle,
     /// The next read of the log drops agent and connection filters that match nothing left.
     prune_filters: bool,
+    /// Database login: the selected connection's agent login, its review and its sheets.
+    pub(crate) login: crate::agents_login::LoginUi,
 }
 
 impl EventEmitter<AgentsEvent> for AgentsPage {}
@@ -600,8 +606,13 @@ impl AgentsPage {
             clear: None,
             clear_focus: cx.focus_handle(),
             prune_filters: false,
+            login: Default::default(),
         };
         v.poll(cx);
+        // Not in the checks' demo: its connections are made up.
+        if !cfg!(feature = "checks") {
+            v.rotate_due(cx);
+        }
         v
     }
 
@@ -852,7 +863,7 @@ impl AgentsPage {
                 self.close_suggest(cx);
                 self.conns_scroll.scroll_to_item(n);
             }
-            Page::General => return false,
+            Page::General | Page::Login => return false,
             Page::Types => {
                 let len = self.type_rows().len();
                 let Some(n) = next(len, self.type_sel) else { return true };
@@ -1435,6 +1446,12 @@ impl AgentsPage {
         let facts: Vec<AnyElement> = [
             fact("Agent", dataman_mcp::shown_client(&e.client)),
             fact("Connection", [e.connection.clone(), e.database.clone().filter(|d| !d.is_empty())].into_iter().flatten().collect::<Vec<_>>().join(" · ")),
+            fact("Ran as", match (e.login.as_deref(), &e.connection) {
+                (Some("you"), _) => "your login (you allowed it)".to_string(),
+                (Some(l), _) => l.to_string(),
+                (None, Some(_)) => "your login".to_string(),
+                (None, None) => "—".to_string(),
+            }),
             fact("Decision", decision_text(e)),
             fact("Sent", sent),
             fact("Masked", masked),
@@ -2110,6 +2127,7 @@ impl Render for AgentsPage {
             Page::Permissions => self.render_permissions(&t, window, cx),
             Page::Privacy => self.render_privacy(&t, window, cx),
             Page::Types => self.render_types(&t, window, cx),
+            Page::Login => self.render_login(&t, window, cx),
             Page::General => self.render_general(&t, cx),
         };
         div()

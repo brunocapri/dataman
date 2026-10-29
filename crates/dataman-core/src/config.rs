@@ -258,6 +258,15 @@ pub struct ConnectionProfile {
     /// that matches any host is not sent there either. This person's own, never in the file.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub from_project: bool,
+    /// The agents' own database login (Agents › Database login): every agent call on this
+    /// connection connects as it. Its password is the Keychain's, never here; an older Dataman
+    /// ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_login: Option<crate::agent_login::AgentLogin>,
+    /// Agents are refused here: an agent login was removed, and this person has not said that
+    /// agents may use their own login again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub agents_refused: bool,
 }
 
 fn override_key<'a>(overrides: &'a BTreeMap<String, bool>, engine: Engine, database: &str) -> Option<&'a String> {
@@ -406,6 +415,8 @@ impl ConnectionProfile {
             options: BTreeMap::new(),
             agent_made: false,
             from_project: false,
+            agent_login: None,
+            agents_refused: false,
         }
     }
 
@@ -446,7 +457,16 @@ impl ConnectionProfile {
     }
 
     pub fn same_but_agents(&self, other: &ConnectionProfile) -> bool {
-        let strip = |p: &ConnectionProfile| ConnectionProfile { mcp: None, mcp_row_limit: None, mcp_allowed: Vec::new(), mcp_yolo: false, mcp_rules: Default::default(), ..p.clone() };
+        let strip = |p: &ConnectionProfile| ConnectionProfile {
+            mcp: None,
+            mcp_row_limit: None,
+            mcp_allowed: Vec::new(),
+            mcp_yolo: false,
+            mcp_rules: Default::default(),
+            agent_login: None,
+            agents_refused: false,
+            ..p.clone()
+        };
         strip(self) == strip(other)
     }
 

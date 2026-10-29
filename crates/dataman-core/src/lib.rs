@@ -1,4 +1,5 @@
 pub mod activity;
+pub mod agent_login;
 pub mod agents_config;
 pub mod approved;
 pub mod agent_nosql;

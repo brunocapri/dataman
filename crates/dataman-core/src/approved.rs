@@ -177,6 +177,18 @@ pub(crate) fn review(approved: Option<&ConnectionProfile>, next: &ConnectionProf
     push("Made by an agent", yes_no(old.agent_made), yes_no(now.agent_made), old.agent_made && !now.agent_made);
     push("From a project", yes_no(old.from_project), yes_no(now.from_project), old.from_project && !now.from_project);
     push("Database", old.database.clone(), now.database.clone(), false);
+    // Who agents connect as: another login (or none, so the user's own) is this person's call.
+    let login = |p: &ConnectionProfile| p.agent_login.as_ref().map(|l| (l.user.clone(), l.server.clone(), l.views.clone(), l.database.clone()));
+    let shown = |p: &ConnectionProfile| match &p.agent_login {
+        Some(l) => l.user.clone(),
+        None if p.agents_refused => "none (agents refused)".into(),
+        None => "your login".into(),
+    };
+    if login(&old) != login(&now) {
+        let tighter = now.agent_login.is_none() && now.agents_refused;
+        push("Agent login", shown(&old), shown(&now), !tighter);
+    }
+    push("Agents refused", yes_no(old.agents_refused), yes_no(now.agents_refused), old.agents_refused && !now.agents_refused && now.agent_login.is_none());
     // Whatever none of the lines above names (a secret option, a field of a newer version) is
     // not taken unseen.
     let mut named = ConnectionProfile {
@@ -192,6 +204,10 @@ pub(crate) fn review(approved: Option<&ConnectionProfile>, next: &ConnectionProf
         agent_made: old.agent_made,
         from_project: old.from_project,
         database: old.database.clone(),
+        agents_refused: old.agents_refused,
+        // Its own line above; its bookkeeping (when it was synced, verified, rotated) is not a
+        // protection.
+        agent_login: old.agent_login.clone(),
         ..now.clone()
     };
     if moved {
@@ -503,5 +519,40 @@ mod tests {
         // Tighter is taken as it is.
         SettingsStore::open(&m.dirs).update(|x| x.mcp_enabled = false).unwrap();
         assert!(!m.settings().get().mcp_enabled && m.settings().held().is_empty());
+    }
+
+    #[test]
+    fn an_agent_login_changed_outside_dataman_waits() {
+        let m = Mac::new();
+        let mut a = conn("a");
+        a.agent_login = Some(crate::agent_login::test_login("dataman_agent_a", &a));
+        m.dataman().upsert(a.clone()).unwrap();
+        let mine = || m.dataman().get("a").unwrap().agent_login.map(|l| l.user);
+        for (what, edit) in [
+            ("another login (agents would connect as root)", ConnectionProfile { agent_login: Some(crate::agent_login::test_login("root", &a)), ..a.clone() }),
+            ("no login: agents back on the user's", ConnectionProfile { agent_login: None, ..a.clone() }),
+        ] {
+            m.outside().upsert(edit).unwrap();
+            let d = m.dataman();
+            let h = d.held();
+            assert!(h.len() == 1 && h[0].changes.iter().any(|c| c.what == "Agent login" && c.loosens), "{what}: {h:?}");
+            assert_eq!(mine().as_deref(), Some("dataman_agent_a"), "{what}: the approved one applies meanwhile");
+        }
+        // Its bookkeeping (verified, synced) is not a protection.
+        m.outside().upsert(a.clone()).unwrap();
+        let mut b = a.clone();
+        b.agent_login.as_mut().unwrap().verified = Some(chrono::Utc::now());
+        m.outside().upsert(b).unwrap();
+        assert!(m.dataman().held().is_empty());
+        // Refused after a Remove: only Dataman lets agents use the user's login again.
+        let refused = ConnectionProfile { agent_login: None, agents_refused: true, ..a.clone() };
+        m.dataman().upsert(refused.clone()).unwrap();
+        m.outside().upsert(ConnectionProfile { agents_refused: false, ..refused.clone() }).unwrap();
+        let d = m.dataman();
+        assert!(d.held().iter().any(|h| h.changes.iter().any(|c| c.what == "Agents refused" && c.loosens)), "{:?}", d.held());
+        assert!(d.get("a").unwrap().agents_refused);
+        // An agent login added outside Dataman (its password is not in the Keychain anyway).
+        m.outside().upsert(ConnectionProfile { agent_login: Some(crate::agent_login::test_login("dataman_agent_a", &a)), ..refused }).unwrap();
+        assert!(m.dataman().held().iter().any(|h| h.changes.iter().any(|c| c.what == "Agent login")));
     }
 }

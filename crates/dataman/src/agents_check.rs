@@ -181,6 +181,7 @@ pub fn demo(ws: &Entity<Workspace>, stage: &str, window: &mut gpui::Window, cx: 
         s if s.starts_with("agents-privacy") => Page::Privacy,
         s if s.starts_with("agents-types") => Page::Types,
         s if s.starts_with("agents-mcp") || s.starts_with("agents-general") => Page::General,
+        s if s.starts_with("agents-login") => Page::Login,
         _ => Page::Audit,
     };
     let conn = match stage {
@@ -268,7 +269,11 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     let loaded = until(cx, 5, |cx| cx.update(|_, cx| a.read(cx).entries.len() >= 13).unwrap_or(false)).await;
     r.check("a click on it opens the Agents area on Audit, with the agents' calls", shows(cx) && page(cx) == Page::Audit && loaded, format!("{:?}", page(cx)));
     let pages: Vec<&str> = Page::ALL.iter().map(|p| p.label()).collect();
-    r.check("the area's pages: General first, then Audit, Permissions, Privacy, Sensitive data (no Home)", pages == ["General", "Audit", "Permissions", "Privacy", "Sensitive data"], format!("{pages:?}"));
+    r.check(
+        "the area's pages: General first, then Audit, Permissions, Privacy, Sensitive data, Database login (no Home)",
+        pages == ["General", "Audit", "Permissions", "Privacy", "Sensitive data", "Database login"],
+        format!("{pages:?}"),
+    );
     // Sensitive data sits inside Privacy, as a folder's child in the explorer: indented, folded
     // and unfolded by Privacy's chevron.
     let (privacy, types) = (probed("agents-nav-privacy", cx), probed("agents-nav-types", cx));
@@ -570,6 +575,23 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     pause(cx, 50).await;
     let rd = rules(&core, &redis).redis;
     r.check("Redis: @scripting back on; @dangerous cannot be turned on", rd.scripting && !rd.allows(dataman_core::privacy::RedisCat::Dangerous), format!("{rd:?}"));
+
+    // Database login: always recommended where agents may connect and no login exists yet.
+    click_probe(&format!("agents-conn-{}", pg.name), cx);
+    pause(cx, 50).await;
+    r.check("Permissions recommends a database login of the agents' own (the tier isn't off, there's none)", probed("agents-login-nudge", cx).is_some(), "");
+    click_probe("agents-login-nudge", cx);
+    pause(cx, 100).await;
+    let on = cx.update(|_, cx| (a.read(cx).page, a.read(cx).conn.clone())).ok();
+    r.check("the recommendation opens Database login on that connection", on == Some((Page::Login, Some(pg.id.clone()))), format!("{on:?}"));
+    r.check("off, the page offers Create agent login…", probed("agents-login-create", cx).is_some(), "");
+    click_probe("agents-nav-permissions", cx);
+    pause(cx, 50).await;
+    click_probe("agents-tier-0", cx);
+    pause(cx, 50).await;
+    r.check("with MCP off there is no recommendation", probed("agents-login-nudge", cx).is_none(), "");
+    click_probe("agents-tier-2", cx);
+    pause(cx, 50).await;
 
     // Privacy.
     click_probe("agents-nav-privacy", cx);
@@ -952,6 +974,7 @@ async fn check_clear(ws: &Entity<Workspace>, a: &Entity<AgentsPage>, r: &mut Rep
             allowed_by: None,
             rewritten: None,
             seen: None,
+            login: None,
         });
     }
     // A reply whose call rotated out long ago.

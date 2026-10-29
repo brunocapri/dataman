@@ -31,6 +31,9 @@ pub struct Context<'a> {
     pub tables: &'a dyn Fn(Option<&str>, &str) -> Option<Table>,
     /// User-defined functions and procedures (lower case names).
     pub routines: &'a HashSet<String>,
+    /// The agent login's views: reads of these tables go there (their masked columns come back
+    /// masked by the server; the login can't read the table's).
+    pub views: &'a [crate::agent_login::ViewMap],
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -403,10 +406,27 @@ fn statement(
             }
         }
     }
+    // Read through the agent login's view where it has one: the view holds the visible
+    // columns, the masked ones masked by the server.
+    let view_of = |t: &Table| cx.views.iter().find(|v| v.schema.eq_ignore_ascii_case(&t.schema) && v.table.eq_ignore_ascii_case(&t.name));
+    let mut on_view: Vec<String> = Vec::new();
+    if reads {
+        for (si, k, n) in &narrowed {
+            let Some(v) = view_of(&n.table) else { continue };
+            let src = &a.scopes[*si].sources[*k];
+            let mut text = v.view.clone();
+            if src.alias.is_none() {
+                text.push(' ');
+                text.push_str(&d.quote_ident(&n.table.name));
+            }
+            edits.push((src.name_range.clone(), text));
+            on_view.push(n.table.name.clone());
+        }
+    }
     // A table with hidden columns becomes a derived table of the others, under the same name.
     if any_hidden && reads {
         for (si, k, n) in &narrowed {
-            if n.hidden.is_empty() {
+            if n.hidden.is_empty() || on_view.contains(&n.table.name) {
                 continue;
             }
             let src = &a.scopes[*si].sources[*k];
@@ -459,6 +479,11 @@ fn statement(
                 if !compared(sql, toks, r.range.clone(), &calls) {
                     return Err(refuse());
                 }
+            }
+            // Masked by the server's view as the rules mask it: not masked twice.
+            let by_view = on_view.contains(&n.table.name) && view_of(&n.table).is_some_and(|v| v.masked.iter().any(|(c, m)| eq(c, col) && m == how));
+            if by_view {
+                continue;
             }
             match masked.iter_mut().find(|(c, _)| eq(c, col)) {
                 Some(m) => m.1 = stronger(m.1, *how),
@@ -719,7 +744,7 @@ mod tests {
 
     fn run(r: &AgentRules, sql: &str, write: bool) -> Result<Checked, String> {
         let routines: HashSet<String> = ["leak".to_string()].into();
-        let cx = Context { rules: r, connection: "prod-pg", dialect: Dialect::Postgres, tables: &tables, routines: &routines };
+        let cx = Context { rules: r, connection: "prod-pg", dialect: Dialect::Postgres, tables: &tables, routines: &routines, views: &[] };
         check(sql, write, &cx)
     }
 
@@ -745,7 +770,7 @@ mod tests {
     fn duckdb_catalog_and_table_macros_are_refused() {
         let r = rules();
         let routines: HashSet<String> = ["m_pw".to_string()].into();
-        let cx = Context { rules: &r, connection: "duck", dialect: Dialect::DuckDb, tables: &tables, routines: &routines };
+        let cx = Context { rules: &r, connection: "duck", dialect: Dialect::DuckDb, tables: &tables, routines: &routines, views: &[] };
         for sql in ["SELECT sql FROM duckdb_tables()", "SELECT * FROM duckdb_columns() WHERE table_name = 'users'", "FROM histogram(users, email)", "SELECT m_pw()", "SELECT * FROM pragma_table_info('users')"] {
             assert!(check(sql, false, &cx).is_err(), "{sql}");
         }

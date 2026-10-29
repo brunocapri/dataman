@@ -93,13 +93,13 @@ pub(crate) async fn connect(p: &ConnectionProfile, password: Option<&str>, tunne
     Ok(c)
 }
 
-enum Wire {
+pub(crate) enum Wire {
     Json(Value),
     Lines(Vec<Value>),
 }
 
 impl Client {
-    async fn call(&self, method: &str, path: &str, body: Option<Wire>) -> Result<Value> {
+    pub(crate) async fn call(&self, method: &str, path: &str, body: Option<Wire>) -> Result<Value> {
         let m = reqwest::Method::from_bytes(method.as_bytes())?;
         let mut r = self.http.request(m, format!("{}{path}", self.base)).timeout(Duration::from_secs(120));
         if let Some(a) = &self.auth {

@@ -938,7 +938,7 @@ fn rules_have_one_precedence() {
     };
     let tables = |_: Option<&str>, n: &str| (n == "users").then(|| dataman_core::agent_sql::Table { schema: "public".into(), name: "users".into(), columns: vec!["id".into(), "secret".into()] });
     let routines = Default::default();
-    let cx = dataman_core::agent_sql::Context { rules: &r, connection: "c", dialect: dataman_core::Dialect::Postgres, tables: &tables, routines: &routines };
+    let cx = dataman_core::agent_sql::Context { rules: &r, connection: "c", dialect: dataman_core::Dialect::Postgres, tables: &tables, routines: &routines, views: &[] };
     assert!(dataman_core::agent_sql::check("SELECT secret FROM users", false, &cx).unwrap_err().contains("hidden"), "hidden wins over masked");
     let c = dataman_core::agent_sql::check("SELECT * FROM users", false, &cx).unwrap();
     assert!(!c.sql.contains("secret,") && c.sql.contains("(SELECT id FROM public.users)"), "{}", c.sql);

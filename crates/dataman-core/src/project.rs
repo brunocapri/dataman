@@ -209,7 +209,7 @@ fn invisible(c: char) -> bool {
 pub const MAX_BYTES: usize = 2 * 1024 * 1024;
 
 /// Each person's own, never in the file.
-const PERSONAL: [&str; 3] = ["save_password", "agent_made", "from_project"];
+const PERSONAL: [&str; 5] = ["save_password", "agent_made", "from_project", "agent_login", "agents_refused"];
 
 /// A driver option that names a secret (a key's passphrase, a token…) stays local too.
 pub fn secret_option(key: &str) -> bool {
@@ -329,6 +329,7 @@ fn shareable(p: &ConnectionProfile, agents: bool, root: &Path) -> ConnectionProf
     p.save_password = false;
     p.agent_made = false;
     p.from_project = false;
+    (p.agent_login, p.agents_refused) = (None, false);
     p.options.retain(|k, _| !secret_option(k));
     p.path = p.path.as_deref().map(|path| to_project_path(path, root));
     if !agents {
@@ -344,6 +345,8 @@ fn merged(mine: Option<&ConnectionProfile>, theirs: &ConnectionProfile, agents: 
     let mut p = theirs.clone();
     p.path = theirs.path.as_deref().map(|path| from_project_path(path, root));
     p.agent_made = false;
+    // The agent login is this person's: a file can neither bring one nor take one away.
+    (p.agent_login, p.agents_refused) = mine.map(|m| (m.agent_login.clone(), m.agents_refused)).unwrap_or((None, false));
     p.options.retain(|k, _| !secret_option(k));
     match mine {
         Some(m) => {
@@ -1678,5 +1681,40 @@ mod tests {
         assert!(sh.has_favorite(&f));
         m.project.close(&m.settings).unwrap();
         assert_eq!(Shared::of(&dirs, &m.settings.get()), Shared::default());
+    }
+
+    #[test]
+    fn a_project_file_never_brings_redirects_or_takes_an_agent_login() {
+        let mut prod = guarded("prod");
+        prod.agent_login = Some(crate::agent_login::test_login("dataman_agent_mine", &prod));
+        let (_d, root, m) = shared(&prod);
+        let text = std::fs::read_to_string(file_in(&root)).unwrap();
+        assert!(!text.contains("agent_login") && !text.contains("dataman_agent_mine") && !text.contains("agents_refused"), "never in the file:\n{text}");
+        // The file names another login for it (agents would connect as that), then none.
+        let inject = |user: Option<&str>| {
+            let mut t: toml::Table = toml::from_str(&std::fs::read_to_string(file_in(&root)).unwrap()).unwrap();
+            let c = t.get_mut("connection").and_then(|v| v.as_array_mut()).and_then(|a| a.first_mut()).and_then(|v| v.as_table_mut()).unwrap();
+            match user {
+                Some(u) => _ = c.insert("agent_login".into(), toml::Value::try_from(crate::agent_login::test_login(u, &prod)).unwrap()),
+                None => _ = c.insert("agents_refused".into(), toml::Value::Boolean(false)),
+            }
+            c.insert("name".into(), toml::Value::String(format!("Prod {}", user.unwrap_or("x"))));
+            std::fs::write(file_in(&root), toml::to_string(&t).unwrap()).unwrap();
+        };
+        inject(Some("root"));
+        m.sync();
+        let got = m.config.get(&prod.id).unwrap();
+        assert_eq!(got.agent_login.as_ref().map(|l| l.user.as_str()), Some("dataman_agent_mine"), "the file can't redirect it");
+        inject(None);
+        m.sync();
+        assert_eq!(m.config.get(&prod.id).unwrap().agent_login, prod.agent_login, "nor take it away");
+        // A connection new to this person: whatever login the file says, none here.
+        let mut fresh = conn("fresh");
+        fresh.agent_login = Some(crate::agent_login::test_login("root", &fresh));
+        assert_eq!(merged(None, &fresh, true, &root).agent_login, None);
+        let mut mine = conn("fresh");
+        mine.agents_refused = true;
+        let back = merged(Some(&mine), &ConnectionProfile { agents_refused: false, ..fresh.clone() }, true, &root);
+        assert!(back.agents_refused && back.agent_login.is_none(), "refused stays refused");
     }
 }

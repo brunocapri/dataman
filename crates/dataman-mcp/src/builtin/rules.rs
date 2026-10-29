@@ -253,7 +253,8 @@ pub async fn checked_sql(cx: &Call, a: &Args, p: &ConnectionProfile, sql: &str, 
         }
     }
     let find = |s: Option<&str>, n: &str| tables.get(&(s.map(str::to_string), n.to_string())).cloned().flatten();
-    let ctx = agent_sql::Context { rules: &r, connection: &p.name, dialect: d, tables: &find, routines: &routines };
+    let views = p.agent_login.as_ref().map_or(&[][..], |l| l.views.as_slice());
+    let ctx = agent_sql::Context { rules: &r, connection: &p.name, dialect: d, tables: &find, routines: &routines, views };
     let c = agent_sql::check(sql, write, &ctx).map_err(ToolError::Refused)?;
     if c.rewritten {
         cx.note_rewritten(&c.sql);
@@ -616,11 +617,20 @@ pub fn hides_metadata(p: &ConnectionProfile) -> bool {
 }
 
 pub fn table_visible(p: &ConnectionProfile, schema: &str, name: &str) -> bool {
-    p.mcp_rules.visible.table_visible(Some(schema), name, Names::of(p.engine))
+    !agent_space(p, schema, name) && p.mcp_rules.visible.table_visible(Some(schema), name, Names::of(p.engine))
 }
 
 pub fn schema_visible(p: &ConnectionProfile, schema: &str) -> bool {
-    p.mcp_rules.visible.schema_visible(schema, Names::of(p.engine))
+    !agent_space(p, schema, "") && p.mcp_rules.visible.schema_visible(schema, Names::of(p.engine))
+}
+
+/// Where the agent login's views live (its schema, database, or MongoDB's name prefix): not
+/// listed, agents read those tables under their own names.
+fn agent_space(p: &ConnectionProfile, schema: &str, name: &str) -> bool {
+    p.agent_login.as_ref().is_some_and(|l| {
+        let space = dataman_core::agent_login::space_of(&l.user);
+        schema.eq_ignore_ascii_case(&space) || name.starts_with(&format!("{space}."))
+    })
 }
 
 pub fn column_hidden(p: &ConnectionProfile, schema: &str, table: &str, column: &str) -> bool {

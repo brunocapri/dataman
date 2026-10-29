@@ -711,6 +711,7 @@ pub fn demo_seed(core: &Arc<Core>, approval: bool, cx: &mut App) {
             allowed_by: (i == 7).then(|| AllowedBy::Allowlist { entries: vec!["UPDATE orders SET status = ? WHERE id = ?".into()] }),
             rewritten: None,
             seen: None,
+            login: None,
         });
     }
     if approval {
