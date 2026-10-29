@@ -18,7 +18,7 @@ use crate::tab::QueryTab;
 
 /// The stages that start with no connection and drive everything themselves.
 pub fn is_stage(s: &str) -> bool {
-    matches!(s, "connections-check" | "tabs-check" | "edit-check" | "explorer-check" | "export-check" | "import-check" | "settings-check" | "welcome-check" | "palette-check" | "nosql-engines-check" | "mcp-tools-check" | "dropdowns-check" | "history-filter-check" | "json-check" | "dates-check" | "agents-check" | "sqlite-check" | "duckdb-check" | "project-check" | "outside-check" | "format-check")
+    matches!(s, "connections-check" | "tabs-check" | "edit-check" | "explorer-check" | "export-check" | "import-check" | "settings-check" | "welcome-check" | "palette-check" | "nosql-engines-check" | "mcp-tools-check" | "dropdowns-check" | "history-filter-check" | "json-check" | "dates-check" | "agents-check" | "sqlite-check" | "duckdb-check" | "project-check" | "outside-check" | "format-check") || crate::conn_folders_check::is_stage(s)
 }
 
 pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContext) -> bool {
@@ -46,6 +46,7 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
         "project-check" => crate::project_check::run(ws, &mut r, cx).await,
         "outside-check" => crate::outside_check::run(ws, &mut r, cx).await,
         "format-check" => crate::format_check::run(ws, &mut r, cx).await,
+        s if crate::conn_folders_check::is_stage(s) => crate::conn_folders_check::run(ws, s, &mut r, cx).await,
         _ => {
             r.check("a known stage", false, stage);
         }

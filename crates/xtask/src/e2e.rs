@@ -94,6 +94,7 @@ const STAGES: &[Stage] = &[
     st("folders-check", &[Pg], 200),
     st("undo-check", &[Pg], 200),
     st("explorer-check", SQL3, 300),
+    st("explorer-folders-check", &[Pg], 200),
     st("fk-check", &[Pg], 200),
     st("fk-pop-check", &[Pg], 200),
     st("fk-nav-check", &[Pg], 200),

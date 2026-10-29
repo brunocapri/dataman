@@ -152,6 +152,8 @@ enum Sub {
 
 #[derive(Clone, Debug, PartialEq)]
 enum Kind {
+    /// An explorer folder (its connections are the rows under it).
+    Folder { id: String },
     Conn { id: String },
     Db { conn: String, db: String },
     Schema { conn: String, db: String, schema: String },
@@ -176,6 +178,7 @@ enum Kind {
 #[derive(Clone, Copy, PartialEq)]
 enum Tone {
     Normal,
+    Folder,
     Conn,
     ConnLar,
     ConnOff,
@@ -219,6 +222,8 @@ struct Row {
     expandable: bool,
     expanded: bool,
     kind: Kind,
+    /// The explorer folder whose block the row is in (its own row, its connections and theirs).
+    in_folder: Option<SharedString>,
 }
 
 impl Row {
@@ -244,6 +249,7 @@ impl Row {
             expandable: false,
             expanded: false,
             kind,
+            in_folder: None,
         }
     }
     fn icon(mut self, i: Icon) -> Row {
@@ -321,11 +327,33 @@ pub struct SchemaTree {
     pop_wait: Option<gpui::Task<()>>,
     popped: Option<(SharedString, Range<usize>)>,
     reveal: Option<String>,
-    conn_drop: Option<usize>,
+    conn_drop: Option<ConnDrop>,
+    /// Where the dragged folder would land: before that folder, or after the last (None).
+    folder_drop: Option<Option<String>>,
+    /// Folders the user shut (they start open).
+    shut_folders: HashSet<String>,
+    /// The folder the explorer shows and searches, alone.
+    scope: Option<String>,
+    scope_menu: bool,
+    /// A folder being named in place.
+    naming: Option<(String, Entity<TextInput>)>,
+    focus_back: bool,
     pub conn_bounds: std::rc::Rc<std::cell::RefCell<HashMap<SharedString, gpui::Bounds<gpui::Pixels>>>>,
 }
 
 pub struct DraggedConn(pub String);
+
+/// An explorer folder being dragged among the folders.
+pub struct DraggedFolder(pub String);
+
+/// Where a dragged connection lands.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ConnDrop {
+    /// Onto a folder's row: into that folder.
+    Into(String),
+    /// Among a group's connections (a folder's, or the top level's): before one, or at the end.
+    At { folder: Option<String>, before: Option<String> },
+}
 
 impl EventEmitter<TreeEvent> for SchemaTree {}
 
@@ -337,6 +365,9 @@ impl Focusable for SchemaTree {
 
 fn cid(id: &str) -> String {
     format!("c:{id}")
+}
+pub fn fid(id: &str) -> String {
+    format!("f:{id}")
 }
 fn did(c: &str, db: &str) -> String {
     format!("c:{c}/d:{db}")
@@ -414,6 +445,12 @@ impl SchemaTree {
             popped: None,
             reveal: None,
             conn_drop: None,
+            folder_drop: None,
+            shut_folders: HashSet::new(),
+            scope: None,
+            scope_menu: false,
+            naming: None,
+            focus_back: false,
             conn_bounds: Default::default(),
         };
         t.rebuild(cx);
@@ -536,6 +573,11 @@ impl SchemaTree {
 
     pub fn rebuild(&mut self, cx: &mut Context<Self>) {
         let t0 = std::time::Instant::now();
+        // A folder gone (deleted here, by an undo or in the file) takes the scope with it.
+        if self.scope.as_ref().is_some_and(|s| !self.store.read(cx).folders.iter().any(|d| d.id == *s)) {
+            self.scope = None;
+            self.scope_menu = false;
+        }
         self.seen_version = self.version(cx);
         let theme = cx.theme();
         let q = self.filter.read(cx).text().trim().to_lowercase();
@@ -615,25 +657,59 @@ impl SchemaTree {
         r
     }
 
+    /// The folders first (each with its connections, one level in), then the connections in
+    /// none; with a scope, that folder alone.
     fn build_tree(&self, rows: &mut Vec<Row>, t: &Theme, cx: &App) {
         let store = self.store.read(cx);
-        for p in &store.profiles {
-            let id = cid(&p.id);
-            let open = self.expanded.contains(&id);
-            let state = store.states.get(&p.id);
-            rows.push(self.conn_row(p, state, open, t));
+        for d in store.folders.iter().filter(|d| self.scope.as_ref().is_none_or(|s| *s == d.id)) {
+            let open = !self.shut_folders.contains(&d.id);
+            let n = store.profiles.iter().filter(|p| d.holds(&p.id)).count();
+            rows.push(self.folder_row(d, n, open, t));
             if !open {
                 continue;
             }
-            match state {
-                Some(ConnState::Connected(c)) if !c.engine().is_sql() => self.push_docs(rows, &p.id, c, t),
-                Some(ConnState::Connected(c)) => {
-                    self.push_pinned(rows, &p.id, c, &store.core.pins.of(&p.id), t);
-                    self.push_conn(rows, &p.id, c, t);
+            for p in store.profiles.iter().filter(|p| d.holds(&p.id)) {
+                let start = rows.len();
+                self.push_conn_block(rows, p, t, cx);
+                for r in &mut rows[start..] {
+                    r.depth += 1;
+                    r.in_folder = Some(d.id.clone().into());
                 }
-                Some(ConnState::Failed(e)) => rows.push(error_row(&id, 1, e, &id, t)),
-                _ => rows.push(loading_row(&id, 1)),
             }
+        }
+        if self.scope.is_some() {
+            return;
+        }
+        for p in store.profiles.iter().filter(|p| store.folder_of(&p.id).is_none()) {
+            self.push_conn_block(rows, p, t, cx);
+        }
+    }
+
+    fn folder_row(&self, d: &dataman_core::ConnFolder, n: usize, open: bool, t: &Theme) -> Row {
+        let color = folder_color(d, t);
+        let mut r = Row::new(fid(&d.id), 0, d.name.clone(), Kind::Folder { id: d.id.clone() }).tone(Tone::Folder).meta(n.to_string(), Meta::Plain).expandable(open);
+        r.icon = Some((Icon::Schema, color));
+        r.in_folder = Some(d.id.clone().into());
+        r
+    }
+
+    fn push_conn_block(&self, rows: &mut Vec<Row>, p: &dataman_core::ConnectionProfile, t: &Theme, cx: &App) {
+        let store = self.store.read(cx);
+        let id = cid(&p.id);
+        let open = self.expanded.contains(&id);
+        let state = store.states.get(&p.id);
+        rows.push(self.conn_row(p, state, open, t));
+        if !open {
+            return;
+        }
+        match state {
+            Some(ConnState::Connected(c)) if !c.engine().is_sql() => self.push_docs(rows, &p.id, c, t),
+            Some(ConnState::Connected(c)) => {
+                self.push_pinned(rows, &p.id, c, &store.core.pins.of(&p.id), t);
+                self.push_conn(rows, &p.id, c, t);
+            }
+            Some(ConnState::Failed(e)) => rows.push(error_row(&id, 1, e, &id, t)),
+            _ => rows.push(loading_row(&id, 1)),
         }
     }
 
@@ -649,7 +725,8 @@ impl SchemaTree {
             }
             m
         };
-        for p in &store.profiles {
+        let scope = self.scope.as_ref().and_then(|s| store.folders.iter().find(|d| d.id == *s));
+        for p in store.profiles.iter().filter(|p| scope.is_none_or(|d| d.holds(&p.id))) {
             let Some(ConnState::Connected(conn)) = store.states.get(&p.id) else { continue };
             if !conn.engine().is_sql() {
                 let c = p.id.as_str();
@@ -1128,6 +1205,20 @@ impl SchemaTree {
             return;
         }
         let id = row.id.to_string();
+        if let Kind::Folder { id: f } = &row.kind {
+            let opening = !row.expanded;
+            if opening {
+                self.shut_folders.remove(f);
+            } else {
+                self.shut_folders.insert(f.clone());
+            }
+            if !cx.reduce_motion() {
+                self.folder_turn = Some((id, Instant::now(), opening));
+            }
+            self.rebuild(cx);
+            cx.notify();
+            return;
+        }
         let opening = !self.expanded.remove(&id);
         if opening {
             self.expanded.insert(id.clone());
@@ -1387,7 +1478,7 @@ impl SchemaTree {
             Kind::Columns { conn, db, schema, name } => self.conn(conn, cx).map(|c| unit(c.columns(db, schema, name))),
             Kind::Indexes { conn, db, schema, name } => self.conn(conn, cx).map(|c| unit(c.indexes(db, schema, name))),
             Kind::TableSub { conn, db, schema, name, .. } => self.conn(conn, cx).map(|c| unit(c.table_extras(db, schema, name))),
-            Kind::Pinned { .. } | Kind::RelRef { .. } | Kind::Object { .. } | Kind::Column { .. } | Kind::Index { .. } | Kind::Coll { .. } | Kind::Error { .. } | Kind::Leaf => None,
+            Kind::Folder { .. } | Kind::Pinned { .. } | Kind::RelRef { .. } | Kind::Object { .. } | Kind::Column { .. } | Kind::Index { .. } | Kind::Coll { .. } | Kind::Error { .. } | Kind::Leaf => None,
         };
         let Some(task) = task else { return };
         let id = id.to_string();
@@ -1502,6 +1593,12 @@ impl SchemaTree {
                 self.load(&id, &row.kind, cx);
             }
             Kind::Error { retry } => return self.retry(retry.clone(), cx),
+            Kind::Folder { id } => {
+                let conns: Vec<String> = self.store.read(cx).folders.iter().find(|d| d.id == *id).map(|d| d.connections.clone()).unwrap_or_default();
+                for c in conns {
+                    self.refresh_conn(c, cx);
+                }
+            }
             Kind::Column { .. } | Kind::Index { .. } | Kind::RelRef { .. } | Kind::Object { .. } | Kind::Coll { .. } | Kind::Leaf => {
                 if let Some(p) = (0..ix).rev().find(|&i| self.rows[i].depth < row.depth) {
                     self.reload_row(p, cx);
@@ -1546,6 +1643,12 @@ impl SchemaTree {
         if crate::keymap::menu_click(&ev.modifiers()) {
             return;
         }
+        if let Some((f, _)) = &self.naming {
+            if self.rows.get(ix).is_some_and(|r| r.id.as_ref() == fid(f)) {
+                return;
+            }
+            self.commit_naming(cx);
+        }
         window.focus(&self.focus, cx);
         if ev.click_count() >= 2 {
             return self.open(ix, cx);
@@ -1554,7 +1657,7 @@ impl SchemaTree {
     }
 
     fn move_sel(&mut self, d: isize, cx: &mut Context<Self>) {
-        if self.rows.is_empty() {
+        if self.rows.is_empty() || self.naming.is_some() {
             return;
         }
         let ix = match self.selected_ix() {
@@ -1572,6 +1675,18 @@ impl SchemaTree {
             None => store.profile(c).is_some_and(|p| p.read_only_for(db)),
         };
         Some(match &row.kind {
+            Kind::Folder { id } => {
+                let at = store.folders.iter().position(|d| d.id == *id)?;
+                let d = &store.folders[at];
+                Target::Folder {
+                    id: id.clone(),
+                    name: d.name.clone(),
+                    color: d.color.as_deref().and_then(|c| crate::theme::SWATCHES.iter().position(|s| *s == c)),
+                    count: store.profiles.iter().filter(|p| d.holds(&p.id)).count(),
+                    first: at == 0,
+                    last: at + 1 == store.folders.len(),
+                }
+            }
             Kind::Conn { id } => Target::Conn {
                 id: id.clone(),
                 name: store.profile(id).map(|p| p.name.clone()).unwrap_or_default(),
@@ -1668,6 +1783,26 @@ impl SchemaTree {
             _ => false,
         };
         let entries = menu::with_pin(menu::entries_for(&target, &self.target_caps(&target, cx)), &target, pinned);
+        let entries = {
+            let theme = cx.theme();
+            let store = self.store.read(cx);
+            let folders: Vec<(SharedString, Option<Hsla>)> = store.folders.iter().map(|d| (d.name.clone().into(), folder_color(d, &theme))).collect();
+            let current = match &target {
+                Target::Conn { id, .. } => store.folders.iter().position(|d| d.holds(id)),
+                _ => None,
+            };
+            let mut es = menu::with_folders(entries, &target, &folders, current);
+            for e in &mut es {
+                if let Entry::Sub { items, .. } = e {
+                    for it in items.iter_mut() {
+                        if let Act::FolderColor(Some(i)) = it.act {
+                            it.dot = theme.swatches.get(i).copied();
+                        }
+                    }
+                }
+            }
+            es
+        };
         let vp = window.viewport_size();
         let vp = (vp.width.pt(), vp.height.pt());
         let h = menu::menu_h(&entries);
@@ -1814,6 +1949,38 @@ impl SchemaTree {
             cx.emit(TreeEvent::Notice(format!("Copied {shown}")));
         };
         match (act, &m.target) {
+            (Act::NewFolder, _) => self.new_folder(None, window, cx),
+            (Act::MoveToNewFolder, Target::Conn { id, .. }) => self.new_folder(Some(id.clone()), window, cx),
+            (Act::MoveToFolder(i), Target::Conn { id, name, .. }) => {
+                if let Some(d) = self.store.read(cx).folders.get(i).cloned() {
+                    self.move_to_folder(id, name, Some(&d), cx);
+                }
+            }
+            (Act::RemoveFromFolder, Target::Conn { id, name, .. }) => self.move_to_folder(id, name, None, cx),
+            (Act::RenameFolder, Target::Folder { id, .. }) => self.start_naming(id.clone(), window, cx),
+            (Act::MoveFolder(up), Target::Folder { id, .. }) => {
+                let folders = &self.store.read(cx).folders;
+                let before = folders.iter().position(|d| d.id == *id).and_then(|at| match up {
+                    true => at.checked_sub(1).map(|b| Some(folders[b].id.clone())),
+                    false => folders.get(at + 2).map(|d| Some(d.id.clone())).or((at + 1 < folders.len()).then_some(None)),
+                });
+                if let Some(before) = before {
+                    self.drop_folder_at(id, &before, cx);
+                }
+            }
+            (Act::DeleteFolder, Target::Folder { id, name, .. }) => {
+                let id = id.clone();
+                self.change_folders(format!("Delete folder '{name}'"), |f| f.retain(|d| d.id != id), cx);
+            }
+            (Act::FolderColor(c), Target::Folder { id, name, .. }) => {
+                let id = id.clone();
+                let swatch = c.and_then(|i| crate::theme::SWATCHES.get(i)).map(|s| s.to_string());
+                self.change_folders(format!("Color folder '{name}'"), |f| {
+                    if let Some(d) = f.iter_mut().find(|d| d.id == id) {
+                        d.color = swatch;
+                    }
+                }, cx);
+            }
             (Act::Reload, _) => {
                 if let Some(i) = ix {
                     self.reload_row(i, cx);
@@ -1866,6 +2033,210 @@ impl SchemaTree {
             (act, target) => cx.emit(TreeEvent::RowAction { act, target: target.clone(), alt }),
         }
         cx.notify();
+    }
+
+    /// Under the tree's last row, still in the list.
+    fn below_rows(&self, pos: gpui::Point<gpui::Pixels>) -> bool {
+        let st = self.scroll.0.borrow();
+        let b = st.base_handle.bounds();
+        if b.size.width.pt() <= 0. {
+            return false;
+        }
+        let end = b.origin.y.pt() + 2. + self.rows.len() as f32 * 22. + st.base_handle.offset().y.pt();
+        b.contains(&pos) && pos.y.pt() > end
+    }
+
+    /// One folder to show and search, or all of them.
+    pub fn set_scope(&mut self, folder: Option<String>, cx: &mut Context<Self>) {
+        if let Some(f) = &folder {
+            self.shut_folders.remove(f);
+        }
+        self.scope = folder;
+        self.scope_menu = false;
+        self.rebuild(cx);
+        if self.filtering(cx)
+            && let Some(r) = self.rows.iter().find(|r| r.hl.is_some())
+        {
+            self.selected = Some(r.id.clone());
+        }
+        cx.notify();
+    }
+
+    /// The search field's folder chip: shown once there is a folder. A folder picked there is
+    /// the only one the explorer shows, and the only one searched.
+    fn render_scope(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let folders = self.store.read(cx).folders.clone();
+        if folders.is_empty() {
+            return None;
+        }
+        let current = self.scope.as_ref().and_then(|s| folders.iter().find(|d| d.id == *s));
+        let tip = match current {
+            Some(d) => ui::tooltip(format!("Only '{}'", d.name), Some("The explorer shows and searches this folder's connections only"), None),
+            None => ui::tooltip("All folders".to_string(), Some("Pick a folder to show and search its connections only"), None),
+        };
+        let menu = self.scope_menu.then(|| {
+            let pick = |f: Option<String>| cx.listener(move |t: &mut SchemaTree, _: &ClickEvent, _, cx| t.set_scope(f.clone(), cx));
+            let mut rows: Vec<AnyElement> = vec![ui::menu_item(t, "xscope:all", "All folders", self.scope.is_none().then_some("✓"), true).cursor_pointer().on_click(pick(None)).into_any_element()];
+            rows.push(ui::menu_sep(t).into_any_element());
+            for d in &folders {
+                let on = self.scope.as_deref() == Some(d.id.as_str());
+                rows.push(
+                    ui::menu_item(t, SharedString::from(format!("xscope:{}", d.id)), "", on.then_some("✓"), true)
+                        .relative()
+                        .cursor_pointer()
+                        .child(
+                            div()
+                                .absolute()
+                                .left(px(10.))
+                                .top_0()
+                                .bottom_0()
+                                .right(px(28.))
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(8.))
+                                .child(ui::folder_icon(true, None, 13., folder_color(d, t).unwrap_or(t.tx3)))
+                                .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(d.name.clone())),
+                        )
+                        .on_click(pick(Some(d.id.clone())))
+                        .into_any_element(),
+                );
+            }
+            div().absolute().right_0().top(px(22.)).child(
+                deferred(
+                    anchored().anchor(gpui::Anchor::TopRight).snap_to_window_with_margin(px(8.)).child(ui::menu_in(
+                        "xscope-menu-in",
+                        ui::popover(t)
+                            .w(px(200.))
+                            .on_mouse_down_out(cx.listener(|t, _, _, cx| {
+                                t.scope_menu = false;
+                                ui::menu_shut("x-scope");
+                                cx.notify();
+                            }))
+                            .p(px(0.))
+                            .overflow_hidden()
+                            .child(div().id("xscope-menu").max_h(px(320.)).overflow_y_scroll().p(px(4.)).children(rows)),
+                    )),
+                )
+                .priority(3),
+            )
+        });
+        Some(div().flex_none().relative().child(scope_chip(t, "x-scope", current.map(|d| (d.name.as_str(), folder_color(d, t))), self.scope_menu, tip).on_click(cx.listener(|t, _, _, cx| {
+            if !t.scope_menu && ui::menu_just_shut("x-scope") {
+                return;
+            }
+            t.scope_menu = !t.scope_menu;
+            cx.notify();
+        }))).children(menu).into_any_element())
+    }
+
+    #[cfg(feature = "checks")]
+    pub fn demo_scope(&self) -> (Option<String>, bool) {
+        (self.scope.clone(), self.scope_menu)
+    }
+
+    #[cfg(feature = "checks")]
+    pub fn demo_naming(&self, cx: &App) -> Option<(String, String)> {
+        self.naming.as_ref().map(|(f, input)| (f.clone(), input.read(cx).text().to_string()))
+    }
+
+    #[cfg(feature = "checks")]
+    pub fn demo_rows(&self) -> Vec<(usize, String)> {
+        self.rows.iter().map(|r| (r.depth, r.label.to_string())).collect()
+    }
+
+    /// The folders changed in one write, undoable as one step.
+    fn change_folders(&mut self, label: String, f: impl FnOnce(&mut Vec<dataman_core::ConnFolder>), cx: &mut Context<Self>) {
+        let before = self.store.read(cx).folders.clone();
+        if let Err(e) = self.store.update(cx, |s, cx| s.edit_folders(f, cx)) {
+            cx.emit(TreeEvent::Notice(format!("Could not save the folders: {e:#}")));
+        }
+        let after = self.store.read(cx).folders.clone();
+        if after != before {
+            cx.emit(TreeEvent::Did(crate::undo::Entry::new(label, crate::undo::Op::ConnFolders { from: before, to: after })));
+        }
+        self.folders_changed(cx);
+    }
+
+    pub fn folders_changed(&mut self, cx: &mut Context<Self>) {
+        self.rebuild(cx);
+        cx.notify();
+    }
+
+    /// A connection into a folder (opened, so it is seen there), or out to the top level.
+    fn move_to_folder(&mut self, conn: &str, name: &str, to: Option<&dataman_core::ConnFolder>, cx: &mut Context<Self>) {
+        let label = match to {
+            Some(d) => format!("Move '{name}' to folder '{}'", d.name),
+            None => format!("Move '{name}' out of its folder"),
+        };
+        let (c, dest) = (conn.to_string(), to.map(|d| d.id.clone()));
+        if let Some(d) = &dest {
+            self.shut_folders.remove(d);
+        }
+        self.change_folders(label, |f| set_folder(f, &c, dest.as_deref()), cx);
+        if let Some(ix) = self.rows.iter().position(|r| r.id.as_ref() == cid(conn)) {
+            self.select(ix, cx);
+        }
+    }
+
+    /// A new folder (with `conn` in it), open, selected and named in place.
+    fn new_folder(&mut self, conn: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        let d = dataman_core::ConnFolder::new("New folder", &self.store.read(cx).folders);
+        let (id, label) = (d.id.clone(), format!("New folder '{}'", d.name));
+        self.change_folders(label, |f| {
+            f.push(d);
+            if let Some(c) = &conn {
+                set_folder(f, c, Some(id.as_str()));
+            }
+        }, cx);
+        if self.scope.is_some() {
+            self.scope = Some(id.clone());
+            self.rebuild(cx);
+        }
+        if let Some(ix) = self.rows.iter().position(|r| r.id.as_ref() == fid(&id)) {
+            self.select(ix, cx);
+            self.start_naming(id, window, cx);
+        }
+    }
+
+    fn start_naming(&mut self, folder: String, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(name) = self.store.read(cx).folders.iter().find(|d| d.id == folder).map(|d| d.name.clone()) else { return };
+        let input = cx.new(|cx| TextInput::new(cx, "name").bare());
+        input.update(cx, |i, cx| {
+            i.set_text(name, cx);
+            i.select_all(cx);
+        });
+        cx.subscribe(&input, |t: &mut SchemaTree, _, ev: &InputEvent, cx| {
+            if let InputEvent::Submit = ev {
+                t.commit_naming(cx);
+            }
+        })
+        .detach();
+        window.focus(&input.focus_handle(cx), cx);
+        self.naming = Some((folder, input));
+        // The row (or the tree's own track_focus) takes the focus back on this same click after
+        // this handler runs: the field reclaims it once the event is done.
+        cx.defer_in(window, |t, window, cx| {
+            if let Some((_, input)) = &t.naming {
+                window.focus(&input.focus_handle(cx), cx);
+            }
+        });
+        cx.notify();
+    }
+
+    fn commit_naming(&mut self, cx: &mut Context<Self>) {
+        let Some((id, input)) = self.naming.take() else { return };
+        let name = input.read(cx).text().trim().to_string();
+        let from = self.store.read(cx).folders.iter().find(|d| d.id == id).map(|d| d.name.clone());
+        match from {
+            Some(from) if !name.is_empty() && from != name => self.change_folders(format!("Rename folder '{from}'"), |f| {
+                if let Some(d) = f.iter_mut().find(|d| d.id == id) {
+                    d.name = name;
+                }
+            }, cx),
+            _ => cx.notify(),
+        }
+        self.focus_back = true;
     }
 
     fn set_pinned(&mut self, pin: Pin, on: bool, ix: Option<usize>, cx: &mut Context<Self>) {
@@ -1998,7 +2369,7 @@ impl SchemaTree {
                 Entry::Sep => items.push(ui::menu_sep(&t).into_any_element()),
                 Entry::Item(it) => {
                     let hi = m.hi == Some(i) && m.sub_hi.is_none();
-                    let el = menu_row(&t, ("menu-item", i), it.label, it.icon, it.key, it.disabled, it.bold, it.danger, it.checked, hi, false)
+                    let el = menu_row(&t, ("menu-item", i), it.label.clone(), it.icon, it.dot, it.key, it.disabled, it.bold, it.danger, it.checked, hi, false)
                         .on_hover(cx.listener(move |tr, h: &bool, _, cx| {
                             if let (true, Some(m)) = (*h, tr.menu.as_mut()) {
                                 m.hi = Some(i);
@@ -2018,7 +2389,7 @@ impl SchemaTree {
                 Entry::Sub { label, icon: ic, .. } => {
                     let open = m.sub == Some(i);
                     let hi = m.hi == Some(i) && m.sub_hi.is_none() || open && m.sub_hi.is_some();
-                    let el = menu_row(&t, ("menu-item", i), label, *ic, None, None, false, false, false, hi || open, true)
+                    let el = menu_row(&t, ("menu-item", i), (*label).into(), *ic, None, None, None, false, false, false, hi || open, true)
                         .on_hover(cx.listener(move |tr, h: &bool, _, cx| {
                             if let (true, Some(m)) = (*h, tr.menu.as_mut()) {
                                 m.hi = Some(i);
@@ -2075,7 +2446,7 @@ impl SchemaTree {
                 .map(|(j, it)| {
                     let hi = m.sub_hi == Some(j);
                     let act = it.act;
-                    let el = menu_row(&t, ("sub-item", j), it.label, it.icon, it.key, it.disabled, it.bold, it.danger, it.checked, hi, false).on_hover(cx.listener(
+                    let el = menu_row(&t, ("sub-item", j), it.label.clone(), it.icon, it.dot, it.key, it.disabled, it.bold, it.danger, it.checked, hi, false).on_hover(cx.listener(
                         move |tr, h: &bool, _, cx| {
                             if let (true, Some(m)) = (*h, tr.menu.as_mut()) {
                                 m.sub_hi = Some(j);
@@ -2116,47 +2487,203 @@ impl SchemaTree {
         }
     }
 
+    /// Where the dragged connection would land as a place in the connection order (the end:
+    /// their count); none onto a folder.
     #[cfg(feature = "checks")]
-    pub fn conn_drop(&self) -> Option<usize> {
-        self.conn_drop
+    pub fn conn_drop(&self, cx: &App) -> Option<usize> {
+        let profiles = &self.store.read(cx).profiles;
+        match self.conn_drop.as_ref()? {
+            ConnDrop::At { before: Some(b), .. } => profiles.iter().position(|p| p.id == *b),
+            ConnDrop::At { before: None, .. } => Some(profiles.len()),
+            ConnDrop::Into(_) => None,
+        }
     }
 
-    fn conn_slot(&self, ix: usize, bounds: &gpui::Bounds<gpui::Pixels>, pos: gpui::Point<gpui::Pixels>, cx: &App) -> Option<usize> {
-        let top = (0..=ix.min(self.rows.len().checked_sub(1)?)).rev().find(|&j| self.rows[j].depth == 0)?;
-        let Kind::Conn { id } = &self.rows[top].kind else { return None };
-        let k = self.store.read(cx).profiles.iter().position(|p| p.id == *id)?;
-        if top == ix { crate::dnd::slot_at(k, bounds, pos, false) } else { bounds.contains(&pos).then_some(k + 1) }
+    #[cfg(feature = "checks")]
+    pub fn demo_conn_drop(&self) -> Option<ConnDrop> {
+        self.conn_drop.clone()
+    }
+
+    #[cfg(feature = "checks")]
+    pub fn demo_folder_drop(&self) -> Option<Option<String>> {
+        self.folder_drop.clone()
+    }
+
+    /// What a drag over row `ix` would do: onto a folder's row, into it; on a connection's row
+    /// (or one of its children), before or after it in its group. None when nothing would change.
+    fn conn_target(&self, dragged: &str, ix: usize, bounds: &gpui::Bounds<gpui::Pixels>, pos: gpui::Point<gpui::Pixels>, cx: &App) -> Option<ConnDrop> {
+        if !bounds.contains(&pos) {
+            return None;
+        }
+        let head = (0..=ix.min(self.rows.len().checked_sub(1)?)).rev().find(|&j| matches!(self.rows[j].kind, Kind::Conn { .. } | Kind::Folder { .. }))?;
+        let drop = match &self.rows[head].kind {
+            Kind::Folder { id } => ConnDrop::Into(id.clone()),
+            Kind::Conn { id } => {
+                let store = self.store.read(cx);
+                let group = store.folder_of(id).map(|d| d.id.clone());
+                let past = head != ix || pos.y > bounds.center().y;
+                let before = if past {
+                    let same = |p: &&dataman_core::ConnectionProfile| store.folder_of(&p.id).map(|d| &d.id) == group.as_ref();
+                    store.profiles.iter().filter(same).skip_while(|p| p.id != *id).nth(1).map(|p| p.id.clone())
+                } else {
+                    Some(id.clone())
+                };
+                ConnDrop::At { folder: group, before }
+            }
+            _ => return None,
+        };
+        self.drop_result(dragged, &drop, cx).map(|_| drop)
+    }
+
+    /// The connection order and the folders after the drop; None when neither changes.
+    fn drop_result(&self, dragged: &str, drop: &ConnDrop, cx: &App) -> Option<(Vec<String>, Vec<dataman_core::ConnFolder>)> {
+        let store = self.store.read(cx);
+        let old: Vec<String> = store.profiles.iter().map(|p| p.id.clone()).collect();
+        let from = old.iter().position(|i| i == dragged)?;
+        let mut order = old.clone();
+        let mut folders = store.folders.clone();
+        match drop {
+            ConnDrop::Into(d) => set_folder(&mut folders, dragged, Some(d.as_str())),
+            ConnDrop::At { folder, before } => {
+                order.remove(from);
+                let group = |i: &String| dataman_core::config::folder_of(&folders, i).map(|d| d.id.clone()) == *folder;
+                let at = match before {
+                    Some(b) if b == dragged => from,
+                    Some(b) => order.iter().position(|i| i == b)?,
+                    None => match order.iter().rposition(group) {
+                        Some(last) => last + 1,
+                        None if folder.is_none() => order.len(),
+                        None => from,
+                    },
+                };
+                order.insert(at, dragged.to_string());
+                set_folder(&mut folders, dragged, folder.as_deref());
+            }
+        }
+        (order != old || folders != store.folders).then_some((order, folders))
     }
 
     fn drop_conn(&mut self, id: &str, cx: &mut Context<Self>) {
-        let Some(slot) = self.conn_drop.take() else { return };
-        let ids = |cx: &App| -> Vec<String> { self.store.read(cx).profiles.iter().map(|p| p.id.clone()).collect() };
-        let before = ids(cx);
-        let Some(from) = before.iter().position(|p| p == id) else { return };
-        let name = self.store.read(cx).profiles[from].name.clone();
-        self.store.update(cx, |s, cx| s.reorder(from, slot, cx));
-        let after = ids(cx);
-        if after != before {
-            cx.emit(TreeEvent::Did(crate::undo::Entry::new(format!("Move connection '{name}'"), crate::undo::Op::ConnOrder { from: before, to: after })));
+        let Some(drop) = self.conn_drop.take() else { return };
+        let Some((order, folders)) = self.drop_result(id, &drop, cx) else { return cx.notify() };
+        let store = self.store.read(cx);
+        let (old_order, old_folders): (Vec<String>, _) = (store.profiles.iter().map(|p| p.id.clone()).collect(), store.folders.clone());
+        let name = store.profile(id).map(|p| p.name.clone()).unwrap_or_default();
+        let into = match &drop {
+            ConnDrop::Into(d) | ConnDrop::At { folder: Some(d), .. } => store.folders.iter().find(|f| f.id == *d).map(|f| f.name.clone()),
+            ConnDrop::At { folder: None, .. } => None,
+        };
+        let moved_folder = folders != old_folders;
+        let mut ops = Vec::new();
+        if order != old_order {
+            self.store.update(cx, |s, cx| s.set_order(&order, cx));
+            ops.push(crate::undo::Op::ConnOrder { from: old_order, to: order });
         }
+        if moved_folder {
+            if let ConnDrop::Into(d) = &drop {
+                self.shut_folders.remove(d);
+            }
+            if let Err(e) = self.store.update(cx, |s, cx| s.edit_folders(|f| *f = folders.clone(), cx)) {
+                cx.emit(TreeEvent::Notice(format!("Could not save the folders: {e:#}")));
+            }
+            ops.push(crate::undo::Op::ConnFolders { from: old_folders, to: folders });
+        }
+        let label = match (moved_folder, into) {
+            (true, Some(f)) => format!("Move '{name}' to folder '{f}'"),
+            (true, None) => format!("Move '{name}' out of its folder"),
+            (false, _) => format!("Move connection '{name}'"),
+        };
+        let op = if ops.len() == 1 { ops.remove(0) } else { crate::undo::Op::Many(ops) };
+        cx.emit(TreeEvent::Did(crate::undo::Entry::new(label, op)));
+        self.rebuild(cx);
         cx.notify();
+    }
+
+    /// Where a dragged folder over row `ix` would land: over a folder's own row, before it (top
+    /// half) or after it; anywhere in a folder's block, after it; on the loose connections, after
+    /// the last folder. None when the order would not change.
+    fn folder_target(&self, dragged: &str, ix: usize, bounds: &gpui::Bounds<gpui::Pixels>, pos: gpui::Point<gpui::Pixels>, cx: &App) -> Option<Option<String>> {
+        if !bounds.contains(&pos) {
+            return None;
+        }
+        let r = self.rows.get(ix)?;
+        let before = match r.in_folder.as_deref() {
+            Some(f) if matches!(r.kind, Kind::Folder { .. }) && pos.y <= bounds.center().y => Some(f.to_string()),
+            Some(f) => {
+                let folders = &self.store.read(cx).folders;
+                folders.iter().skip_while(|d| d.id != f).nth(1).map(|d| d.id.clone())
+            }
+            None => None,
+        };
+        self.folder_order(dragged, &before, cx).map(|_| before)
+    }
+
+    /// The folders with `dragged` moved before `before` (or last); None when nothing changes.
+    fn folder_order(&self, dragged: &str, before: &Option<String>, cx: &App) -> Option<Vec<dataman_core::ConnFolder>> {
+        let old = &self.store.read(cx).folders;
+        let from = old.iter().position(|d| d.id == dragged)?;
+        let mut folders = old.clone();
+        let d = folders.remove(from);
+        let at = match before {
+            Some(b) if b == dragged => from,
+            Some(b) => folders.iter().position(|d| d.id == *b)?,
+            None => folders.len(),
+        };
+        folders.insert(at, d);
+        (folders != *old).then_some(folders)
+    }
+
+    fn drop_folder(&mut self, id: &str, cx: &mut Context<Self>) {
+        match self.folder_drop.take() {
+            Some(before) => self.drop_folder_at(id, &before, cx),
+            None => cx.notify(),
+        }
+    }
+
+    fn drop_folder_at(&mut self, id: &str, before: &Option<String>, cx: &mut Context<Self>) {
+        let Some(folders) = self.folder_order(id, before, cx) else { return cx.notify() };
+        let name = folders.iter().find(|d| d.id == id).map(|d| d.name.clone()).unwrap_or_default();
+        self.change_folders(format!("Move folder '{name}'"), |f| *f = folders, cx);
+    }
+
+    /// The line a drop would draw at row `ix`: above it (false) or under it (true).
+    fn drop_line_at(&self, ix: usize) -> Option<bool> {
+        let r = &self.rows[ix];
+        if let Some(before) = &self.folder_drop {
+            return match before {
+                Some(b) => matches!(&r.kind, Kind::Folder { id } if id == b).then_some(false),
+                None => (r.in_folder.is_some() && !self.rows.get(ix + 1).is_some_and(|n| n.in_folder.is_some())).then_some(true),
+            };
+        }
+        match self.conn_drop.as_ref()? {
+            ConnDrop::At { before: Some(b), .. } => matches!(&r.kind, Kind::Conn { id } if id == b).then_some(false),
+            ConnDrop::At { folder: None, before: None } => (ix + 1 == self.rows.len()).then_some(true),
+            ConnDrop::At { folder: Some(f), before: None } => {
+                let inside = |r: &Row| r.in_folder.as_deref() == Some(f.as_str());
+                (inside(r) && !self.rows.get(ix + 1).is_some_and(inside)).then_some(true)
+            }
+            ConnDrop::Into(_) => None,
+        }
     }
 
     fn render_row(&self, ix: usize, t: &Theme, focused: bool, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let r = &self.rows[ix];
         let reorder = self.filter_stats.is_none();
         let drag_conn = match &r.kind {
-            Kind::Conn { id } if reorder && r.depth == 0 => Some(id.clone()),
+            Kind::Conn { id } if reorder => Some(id.clone()),
             _ => None,
         };
-        let line = self.conn_drop.filter(|_| reorder && cx.has_active_drag()).and_then(|s| {
-            let profiles = &self.store.read(cx).profiles;
-            match &r.kind {
-                Kind::Conn { id } if r.depth == 0 && profiles.get(s).is_some_and(|p| p.id == *id) => Some(false),
-                _ if s == profiles.len() && ix + 1 == self.rows.len() => Some(true),
-                _ => None,
-            }
-        });
+        let drag_folder = match (&r.kind, &self.naming) {
+            (Kind::Folder { id }, naming) if reorder && self.scope.is_none() && naming.as_ref().is_none_or(|(f, _)| f != id) => Some(id.clone()),
+            _ => None,
+        };
+        let dragging = reorder && cx.has_active_drag();
+        let line = if dragging { self.drop_line_at(ix) } else { None };
+        let dropping = dragging && matches!((&r.kind, &self.conn_drop), (Kind::Folder { id }, Some(ConnDrop::Into(d))) if id == d);
+        let naming = match (&r.kind, &self.naming) {
+            (Kind::Folder { id }, Some((f, input))) if id == f => Some(input.clone()),
+            _ => None,
+        };
         let sel = self.selected.as_ref() == Some(&r.id);
         let (label_color, bold) = label_style(r.tone, sel, t);
         let hov = t.hov;
@@ -2165,7 +2692,19 @@ impl SchemaTree {
         let hovered = self.hovered.as_ref() == Some(&r.id);
         let chevron = r.expandable.then(|| ui::disclosure(gpui::ElementId::Name(format!("chev-{}", r.id).into()), r.expanded, 10., t.tx4));
         let pop = self.pop_now.as_ref().filter(|(id, _)| *id == r.id).map(|(_, f)| *f);
-        let label = {
+        let label = if let Some(input) = naming {
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .h(px(18.))
+                .border_1()
+                .border_color(t.acc)
+                .pl(px(4.))
+                .pr(px(2.))
+                .text_color(t.tx)
+                .child(div().flex_1().min_w_0().child(input))
+        } else {
             let l = r.label.to_string();
             match &r.hl {
                 Some(h) if h.end <= l.len() => {
@@ -2230,7 +2769,7 @@ impl SchemaTree {
                     t.more_clicked(Some(ix), None, window, cx);
                 }))
         });
-        let conn_bounds = (r.depth == 0).then(|| (self.conn_bounds.clone(), r.id.clone()));
+        let conn_bounds = (r.depth == 0 || matches!(r.kind, Kind::Conn { .. })).then(|| (self.conn_bounds.clone(), r.id.clone()));
         div()
             .w_full()
             .px(px(6.))
@@ -2251,25 +2790,43 @@ impl SchemaTree {
             .flex_row()
             .items_center()
             .gap(px(5.))
-            .when(sel && focused, |d| d.bg(t.acc_s).border_1().border_color(t.edge_acc))
-            .when(sel && !focused, |d| d.bg(t.prs))
-            .when(!sel, |d| d.hover(move |s| s.bg(hov)))
+            .when(dropping, |d| d.bg(t.acc_s).border_1().border_color(t.acc.opacity(0.45)))
+            .when(!dropping && sel && focused, |d| d.bg(t.acc_s).border_1().border_color(t.edge_acc))
+            .when(!dropping && sel && !focused, |d| d.bg(t.prs))
+            .when(!dropping && !sel, |d| d.hover(move |s| s.bg(hov)))
             .on_click(cx.listener(move |t, ev: &ClickEvent, window, cx| t.on_click(ix, ev, window, cx)))
             .when_some(drag_conn, |d, id| {
                 let (label, chip) = (r.label.clone(), r.chip);
                 d.on_drag(DraggedConn(id), move |_, _, _, cx| crate::dnd::ghost(label.clone(), chip, cx))
             })
+            .when_some(drag_folder, |d, id| {
+                let (label, chip) = (r.label.clone(), r.icon.and_then(|(_, c)| c));
+                d.on_drag(DraggedFolder(id), move |_, _, _, cx| crate::dnd::ghost(label.clone(), chip, cx))
+            })
             .when(reorder, |d| {
-                d.on_drag_move(cx.listener(move |t, ev: &gpui::DragMoveEvent<DraggedConn>, _, cx| {
+                d.on_drag_move(cx.listener(move |t, ev: &gpui::DragMoveEvent<DraggedFolder>, _, cx| {
                     let pos = ev.event.position;
                     if !ev.bounds.contains(&pos) {
                         return;
                     }
                     let id = ev.drag(cx).0.clone();
-                    let Some(from) = t.store.read(cx).profiles.iter().position(|p| p.id == id) else { return };
-                    let slot = t.conn_slot(ix, &ev.bounds, pos, cx).filter(|s| dataman_core::order::moves(from, *s));
-                    if slot != t.conn_drop {
-                        t.conn_drop = slot;
+                    let target = t.folder_target(&id, ix, &ev.bounds, pos, cx);
+                    t.conn_drop = None;
+                    if target != t.folder_drop {
+                        t.folder_drop = target;
+                        cx.notify();
+                    }
+                }))
+                .on_drag_move(cx.listener(move |t, ev: &gpui::DragMoveEvent<DraggedConn>, _, cx| {
+                    let pos = ev.event.position;
+                    if !ev.bounds.contains(&pos) {
+                        return;
+                    }
+                    let id = ev.drag(cx).0.clone();
+                    let target = t.conn_target(&id, ix, &ev.bounds, pos, cx);
+                    t.folder_drop = None;
+                    if target != t.conn_drop {
+                        t.conn_drop = target;
                         cx.notify();
                     }
                 }))
@@ -2312,7 +2869,7 @@ impl SchemaTree {
                     return icon(i).size(px(14.)).text_color(c).into_any_element();
                 }
                 let fill = self.folder_turn.as_ref().filter(|(id, ..)| *id == *r.id).and_then(|(_, at, opening)| crate::motion::folder_fill(*at, *opening));
-                ui::folder_icon(r.expanded, fill, 14., c)
+                ui::folder_icon(r.expanded, fill, 14., if dropping { t.acc_t } else { c })
             }))
             .when(r.blank_icon, |d| d.child(div().flex_none().size(px(14.))))
             .child(
@@ -2337,6 +2894,62 @@ impl SchemaTree {
     }
 }
 
+/// The scope chip at the right end of a search field: "All", or a folder's name cut short
+/// with its color.
+pub fn scope_chip(t: &Theme, id: &'static str, folder: Option<(&str, Option<Hsla>)>, open: bool, tip: impl Fn(&mut Window, &mut App) -> gpui::AnyView + 'static) -> gpui::Stateful<gpui::Div> {
+    let (hov, prs) = (t.hov, t.prs);
+    let label = match folder {
+        Some((name, _)) => short(name, 10),
+        None => "All".to_string(),
+    };
+    let dot = folder.and_then(|(_, c)| c);
+    div()
+        .children(ui::here(&id.into()))
+        .id(id)
+        .flex_none()
+        .h(px(20.))
+        .max_w(px(120.))
+        .px(px(6.))
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(5.))
+        .text_size(px(11.))
+        .whitespace_nowrap()
+        .border_1()
+        .cursor_pointer()
+        .when(open, |d| d.bg(prs).border_color(t.line2).text_color(t.tx))
+        .when(!open && folder.is_some(), |d| d.bg(t.acc_s).border_color(t.mark_b).text_color(t.tx).hover(move |s| s.bg(hov)))
+        .when(!open && folder.is_none(), |d| d.border_color(t.line).text_color(t.tx3).hover(move |s| s.bg(hov)))
+        .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+        .when(!open, |d| d.tip(tip))
+        .children(folder.map(|_| ui::folder_icon(true, None, 11., dot.unwrap_or(t.tx3))))
+        .child(label)
+        .child(ui::dropdown_arrow(SharedString::from(format!("{id}-arrow")), open, 7., t.tx3))
+}
+
+/// `conn` in folder `to` (out of any other), or in none.
+fn set_folder(folders: &mut [dataman_core::ConnFolder], conn: &str, to: Option<&str>) {
+    for d in folders.iter_mut() {
+        if Some(d.id.as_str()) == to {
+            if !d.holds(conn) {
+                d.connections.push(conn.to_string());
+            }
+        } else {
+            d.connections.retain(|c| c != conn);
+        }
+    }
+}
+
+pub fn folder_color(d: &dataman_core::ConnFolder, t: &Theme) -> Option<Hsla> {
+    d.color.as_deref().and_then(|c| crate::theme::SWATCHES.iter().position(|s| *s == c)).map(|i| t.swatches[i])
+}
+
+/// A name cut to `n` characters, an ellipsis ending it.
+pub fn short(name: &str, n: usize) -> String {
+    if name.chars().count() <= n { name.to_string() } else { format!("{}…", name.chars().take(n - 1).collect::<String>().trim_end()) }
+}
+
 fn label_style(tone: Tone, sel: bool, t: &Theme) -> (Hsla, bool) {
     let bold = matches!(tone, Tone::Conn | Tone::ConnLar);
     let color = match tone {
@@ -2350,6 +2963,7 @@ fn label_style(tone: Tone, sel: bool, t: &Theme) -> (Hsla, bool) {
         Tone::Muted | Tone::Italic => t.tx3,
         Tone::Error => t.err,
         Tone::Normal => t.tx2,
+        Tone::Folder => t.tx,
     };
     (color, bold)
 }
@@ -2543,8 +3157,9 @@ fn role_row(c: &str, r: &dataman_core::schema::Role, depth: usize) -> Row {
 fn menu_row(
     t: &Theme,
     id: impl Into<gpui::ElementId>,
-    label: &'static str,
+    label: SharedString,
     ic: Icon,
+    dot: Option<Hsla>,
     key: Option<&'static str>,
     disabled: Option<&'static str>,
     bold: bool,
@@ -2576,7 +3191,10 @@ fn menu_row(
         .whitespace_nowrap()
         .text_color(fg)
         .when(on, |d| d.bg(t.acc))
-        .child(icon(ic).size(px(14.)).text_color(icon_fg))
+        .child(match dot {
+            Some(c) => div().size(px(14.)).flex_none().flex().items_center().justify_center().child(ui::chip(c, 9.)).into_any_element(),
+            None => icon(ic).size(px(14.)).text_color(icon_fg).into_any_element(),
+        })
         .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().when(bold, |d| d.font_weight(FontWeight::SEMIBOLD)).child(label))
         .children(disabled.or(key).map(|k| div().flex_none().text_size(px(11.)).text_color(key_fg).child(crate::ui::keys_text(k))))
         .when(checked, |d| d.child(icon(Icon::Check).flex_none().size(px(12.)).text_color(if on { t.on_acc } else { t.tx2 })))
@@ -2705,6 +3323,9 @@ impl Render for SchemaTree {
             }
             None => None,
         };
+        if std::mem::take(&mut self.focus_back) {
+            window.focus(&self.focus, cx);
+        }
         let t = cx.theme();
         let focused = self.focus.contains_focused(window, cx);
         let filter_focused = self.filter.focus_handle(cx).is_focused(window);
@@ -2731,6 +3352,26 @@ impl Render for SchemaTree {
                     .tip(ui::tooltip("New connection", None, Some("⌘N")))
                     .on_click(cx.listener(|_, _, _, cx| cx.emit(TreeEvent::NewConnection))),
             )
+            .child({
+                let (hov, prs) = (t.hov, t.prs);
+                div()
+                    .children(ui::here(&"x-new-folder".into()))
+                    .id("x-new-folder")
+                    .flex_none()
+                    .h(px(24.))
+                    .px(px(4.))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(1.))
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(hov))
+                    .active(move |s| s.bg(prs))
+                    .tip(ui::tooltip("New folder", None, None))
+                    .child(icon(Icon::Plus).size(px(9.)).text_color(t.tx3))
+                    .child(icon(Icon::Schema).size(px(14.)).text_color(t.tx3))
+                    .on_click(cx.listener(|t, _, window, cx| t.new_folder(None, window, cx)))
+            })
             .child(
                 ui::icon_button(&t, "x-reload", Icon::Reload, 24., 14.)
                     .on_click(cx.listener(|t, _, _, cx| t.refresh_selected(cx))),
@@ -2758,7 +3399,8 @@ impl Render for SchemaTree {
             .when(filter_focused, |d| d.child(ui::halo_ring(t.mark)))
             .child(icon(Icon::Search).size(px(13.)).text_color(t.tx3))
             .child(div().flex_1().min_w_0().text_color(t.tx).child(self.filter.clone()))
-            .children(filter_meta.map(|m| div().flex_none().text_size(px(10.5)).text_color(t.tx3).whitespace_nowrap().child(m)));
+            .children(filter_meta.map(|m| div().flex_none().text_size(px(10.5)).text_color(t.tx3).whitespace_nowrap().child(m)))
+            .children(self.render_scope(&t, cx));
         let body: gpui::AnyElement = if empty {
             div()
                 .flex_1()
@@ -2797,6 +3439,13 @@ impl Render for SchemaTree {
             .track_scroll(&self.scroll)
             .flex_1()
             .pt(px(2.))
+            .on_mouse_down(MouseButton::Right, cx.listener(|t, ev: &MouseDownEvent, window, cx| {
+                if t.below_rows(ev.position) {
+                    t.open_menu(None, MenuAnchor::Mouse(ev.position), window, cx);
+                    window.prevent_default();
+                    cx.stop_propagation();
+                }
+            }))
             .into_any_element()
         };
         div()
@@ -2808,11 +3457,44 @@ impl Render for SchemaTree {
             .text_size(px(12.))
             .text_color(t.tx2)
             .on_drag_move(cx.listener(|t, ev: &gpui::DragMoveEvent<DraggedConn>, _, cx| {
-                if !ev.bounds.contains(&ev.event.position) && t.conn_drop.take().is_some() {
-                    cx.notify();
+                let pos = ev.event.position;
+                if !ev.bounds.contains(&pos) {
+                    if t.conn_drop.take().is_some() {
+                        cx.notify();
+                    }
+                    return;
+                }
+                // Under the last row: the end of the top level (out of any folder).
+                if t.filter_stats.is_none() && t.below_rows(pos) {
+                    let id = ev.drag(cx).0.clone();
+                    let end = ConnDrop::At { folder: None, before: None };
+                    let target = t.drop_result(&id, &end, cx).map(|_| end);
+                    if target != t.conn_drop {
+                        t.conn_drop = target;
+                        cx.notify();
+                    }
                 }
             }))
             .on_drop(cx.listener(|t, d: &DraggedConn, _, cx| t.drop_conn(&d.0, cx)))
+            .on_drag_move(cx.listener(|t, ev: &gpui::DragMoveEvent<DraggedFolder>, _, cx| {
+                let pos = ev.event.position;
+                if !ev.bounds.contains(&pos) {
+                    if t.folder_drop.take().is_some() {
+                        cx.notify();
+                    }
+                    return;
+                }
+                // Under the last row: after the last folder.
+                if t.filter_stats.is_none() && t.below_rows(pos) {
+                    let id = ev.drag(cx).0.clone();
+                    let target = t.folder_order(&id, &None, cx).map(|_| None);
+                    if target != t.folder_drop {
+                        t.folder_drop = target;
+                        cx.notify();
+                    }
+                }
+            }))
+            .on_drop(cx.listener(|t, d: &DraggedFolder, _, cx| t.drop_folder(&d.0, cx)))
             .on_action(cx.listener(|t, _: &SelectPrev, _, cx| t.move_sel(-1, cx)))
             .on_action(cx.listener(|t, _: &SelectNext, _, cx| t.move_sel(1, cx)))
             .on_action(cx.listener(|t, _: &Expand, _, cx| {
@@ -2850,7 +3532,17 @@ impl Render for SchemaTree {
                 let f = t.filter.focus_handle(cx);
                 window.focus(&f, cx);
             }))
-            .on_action(cx.listener(|t, _: &Escape, _, cx| t.clear_filter(cx)))
+            .on_action(cx.listener(|t, _: &Escape, window, cx| {
+                if t.naming.take().is_some() {
+                    window.focus(&t.focus, cx);
+                    cx.notify();
+                } else if t.scope_menu {
+                    t.scope_menu = false;
+                    cx.notify();
+                } else {
+                    t.clear_filter(cx);
+                }
+            }))
             .on_mouse_down(MouseButton::Left, cx.listener(|t, _, window, cx| {
                 if !t.filter.focus_handle(cx).is_focused(window) {
                     window.focus(&t.focus, cx);

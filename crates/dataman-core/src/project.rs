@@ -1243,6 +1243,31 @@ mod tests {
     }
 
     #[test]
+    fn explorer_folders_stay_on_this_machine() {
+        let (_d, root) = project_dir();
+        let alice = Machine::new();
+        alice.project.open_project(&root, alice.st()).unwrap();
+        let shop = conn("shop");
+        alice.config.upsert(shop.clone()).unwrap();
+        assert!(alice.sync().written);
+        let before = std::fs::read_to_string(file_in(&root)).unwrap();
+        let mut d = crate::config::ConnFolder::new("Clients", &[]);
+        d.color = Some("mint".into());
+        d.connections.push(shop.id.clone());
+        alice.config.edit_folders(|f| f.push(d)).unwrap();
+        let s = alice.sync();
+        assert!(!s.written && !s.review && !s.local(), "{s:?}");
+        assert_eq!(std::fs::read_to_string(file_in(&root)).unwrap(), before);
+        assert!(alice.project.review().is_none());
+        // A teammate's sync leaves Alice's folders alone.
+        let bob = Machine::new();
+        bob.project.open_project(&root, bob.st()).unwrap();
+        assert!(bob.config.folders().is_empty());
+        assert!(!alice.sync().written);
+        assert_eq!(alice.config.folders()[0].connections, vec![shop.id]);
+    }
+
+    #[test]
     fn a_team_shares_through_the_folder() {
         let (_d, root) = project_dir();
         let alice = Machine::new();

@@ -428,7 +428,7 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
             mouse_move(cx, p, true);
             draw(cx);
         }
-        during = cx.update(|_, cx| (cx.has_active_drag(), tree.read(cx).conn_drop())).unwrap_or_default();
+        during = cx.update(|_, cx| (cx.has_active_drag(), tree.read(cx).conn_drop(cx))).unwrap_or_default();
         up(cx, to);
         draw(cx);
     }
