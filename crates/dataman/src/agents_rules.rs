@@ -1,57 +1,31 @@
-//! Agents › Protection, two tabs on one list of connections: Permissions (what agents may do on
-//! a connection, and how much) and Privacy (what they may see there). Both write the
-//! connection's `mcp_rules`; no MCP tool can.
+//! Agents › Protection: one list of connections and, for the selected one, one page: how agents
+//! reach it (or its agent login, last), Access (what agents may do there, and how much) and
+//! Privacy (what they may see). Everything writes the connection's `mcp_rules`; no MCP tool can.
 
-use dataman_core::privacy::{self, AgentView, ItemKind, Mask, Names, ReadFrom, RedisCat, SensitiveCol, Visible, VisibleItem, VisibleMode};
+use dataman_core::privacy::{self, AgentView, ItemKind, Mask, Names, ReadFrom, SensitiveCol, Visible, VisibleItem, VisibleMode};
 use dataman_core::settings::{MCP_MAX_ROWS, MCP_WRITE_ROW_LIMIT};
 use dataman_core::{ConnectionProfile, Engine, McpAccess};
-use gpui::{AnyElement, ClickEvent, Context, SharedString, Window, div, prelude::*};
+use gpui::{AnyElement, ClickEvent, Context, FontWeight, SharedString, Window, div, prelude::*};
 
-use crate::agents::{Act, AgentsPage, Page, Tip, checkbox, dropdown, field, label_tip, seg};
+use crate::agents::{Act, AgentsPage, Tip, field, qmark};
 use crate::agents_suggest::Which;
 use crate::assets::{Icon, icon};
-use crate::theme::{Theme, metrics, px};
+use crate::theme::{Theme, px};
 use crate::ui;
-use crate::ui::Tipped;
 
 /// The connection list's width; Protection's title sits over it, in a column as wide.
 const CONNS_W: f32 = 250.;
+/// The sections' widest: wider, a line of help or a row of fields reads badly.
+pub(crate) const BODY_W: f32 = 720.;
+/// The body's top padding: a section brought to the top sits where the first one does.
+const BODY_TOP: f32 = 24.;
 
-/// One "Agents may" row: its name, what it covers on this engine, its rule's value, the tier it
-/// needs, and why it cannot be changed here (Privacy forces it off).
-struct May {
-    id: &'static str,
-    name: &'static str,
-    what: String,
-    on: bool,
-    needs: McpAccess,
-    forced: Option<Tip>,
-}
-
-/// What a row does on the connection's tier, in a word or two (shown on its right).
-pub(crate) fn may_state(tier: McpAccess, needs: McpAccess, on: bool, forced: bool, prod: bool) -> (&'static str, bool) {
-    match () {
-        _ if tier == McpAccess::Off => ("MCP is off", false),
-        _ if forced => ("off · Privacy", false),
-        _ if tier < needs => (needs_label(needs), false),
-        _ if !on => ("never", true),
-        _ if needs == McpAccess::Full || (needs == McpAccess::Write && prod) => ("asks you first", true),
-        _ => ("allowed", true),
-    }
-}
-
-fn needs_label(a: McpAccess) -> &'static str {
-    match a {
-        McpAccess::Full => "needs Full",
-        McpAccess::Write => "needs Write",
-        _ => "needs Read",
-    }
-}
-
-fn forced_tip() -> Tip {
-    Tip::new("Off while data is kept from agents")
-        .lead("Server activity shows other sessions' statements and the values in them.")
-        .lead("It stays off while this connection hides or masks data in Privacy.")
+/// A section of the page brought to its top once laid out (a link to the agent login, a stage).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Jump {
+    Privacy,
+    /// The agent login section, or the card that offers one at the top.
+    Login,
 }
 
 pub(crate) fn tier_tip() -> Tip {
@@ -64,20 +38,12 @@ pub(crate) fn tier_tip() -> Tip {
         .note("On production, every write waits for your Allow.")
 }
 
-fn may_tip() -> Tip {
-    Tip::new("Agents may")
-        .lead("Rules on top of the MCP tier: switch off what agents should never do here.")
-        .item("Checked", "Allowed as far as the tier lets. On the right: allowed, or asks you first.")
-        .item("Unchecked", "Never, even with your Allow.")
-        .item("Greyed", "The tier doesn't reach it (the right says which one it needs), or Privacy keeps it off.")
-}
-
 fn limits_tip() -> Tip {
     Tip::new("Limits")
         .lead("Per call, for agents only. Until you pick another, each starts on its default.")
         .item("Time per call · 5 min", "Longest a statement runs before it is stopped. An agent can ask for less. ∞ lets it ask for up to a day.")
-        .item("Rows per write · 100", "A write that changes more rows waits for your Allow. ∞: no write waits for its row count.")
-        .item("Rows per read · 1k", "Most rows an agent gets back from one read. ∞: as many as it asks for.")
+        .item("Rows per read · 1,000", "Most rows an agent gets back from one read. ∞: as many as it asks for.")
+        .item("Rows per write · 100", "A write that changes more rows waits for your Allow. ∞: no write waits for its row count. From the Write tier up.")
         .note("A read's size isn't limited: the rows are.")
 }
 
@@ -88,8 +54,8 @@ pub(crate) fn sees_tip() -> Tip {
         .lead("How much of this connection's data reaches an agent. Your own tabs always show everything.")
         .item("Data", "Rows as stored. Nothing is masked.")
         .item("Masked data", "Values a Mask recognizes (cards, e-mails, keys…) are masked in everything the agent receives, and the sensitive columns below are masked whole. Host, port and user aren't shown.")
-        .item("Structure only", "Tables, columns, types and query plans. No rows are read or written; only the structure changes Permissions allow. Host, port and user aren't shown.")
-        .note("In every mode, what Visible to agents hides stays hidden and errors don't quote values.")
+        .item("Structure only", "Tables, columns, types and query plans. No rows are read or written; only the structure changes the MCP tier allows. Host, port and user aren't shown.")
+        .note("In every mode, what Visibility hides stays hidden and errors don't quote values.")
 }
 
 pub(crate) fn sens_tip() -> Tip {
@@ -98,6 +64,7 @@ pub(crate) fn sens_tip() -> Tip {
         .item("Hidden", "The value becomes ‹hidden›.")
         .item("Partial", "Keeps the end: a•••@acme.com, •••• 4242.")
         .item("Hash", "A stable code, ‹h:7Q2KX9RM4A›. The same value always gives the same code, so an agent can still match rows.")
+        .item("Off", "Kept in the list, not masked.")
         .lead("Agents can select these columns as they are and filter on them in WHERE; they can't rename, group, sort or compute with them.")
         .example("users.email · *ssn* (any column with ssn in its name)")
         .note("Scan again suggests columns by their names. Check what it adds.")
@@ -111,43 +78,30 @@ fn read_from_tip() -> Tip {
         .item("Secondary", "Secondaries only. Reads fail while none is up.")
 }
 
-fn activity_of(e: Engine) -> &'static str {
+fn vis_tip(e: Engine) -> Tip {
+    let (one, many) = nouns(e);
+    Tip::new(format!("{} visibility", capitalized(one)))
+        .lead("What exists for agents on this connection, in every mode.")
+        .item("Everything except", format!("The list holds what is hidden. {} created later are visible.", capitalized(many)))
+        .item("Only these", format!("The list holds the {many} and schemas agents can see. Everything else is hidden, {many} created later too."))
+        .lead(format!("Hidden {many} and schemas aren't listed, described or queryable. Hidden columns are removed: Dataman narrows each query so, for agents, they don't exist."))
+        .example("public.payments (table) · audit.* (schema) · users.password_hash (column)")
+        .note("Functions, copies of the data in other tables and statements Dataman can't read are refused or not covered. Only database permissions block everything.")
+}
+
+/// What the engine calls a table, one and many.
+pub(crate) fn nouns(e: Engine) -> (&'static str, &'static str) {
     match e {
-        Engine::Postgres => "pg_stat_activity, pg_locks",
-        Engine::MySql => "processlist, performance_schema",
-        Engine::SqlServer => "sys.dm_exec_sessions, sys.dm_tran_locks",
-        Engine::MongoDb => "currentOp, serverStatus, profiler",
-        Engine::Elasticsearch | Engine::OpenSearch => "_tasks, _nodes, _cat",
-        Engine::Redis | Engine::Sqlite | Engine::DuckDb => "",
+        Engine::MongoDb => ("collection", "collections"),
+        Engine::Elasticsearch | Engine::OpenSearch => ("index", "indices"),
+        Engine::Redis => ("key", "keys"),
+        _ => ("table", "tables"),
     }
 }
 
-fn mays(p: &ConnectionProfile) -> Vec<May> {
-    let r = &p.mcp_rules;
-    // DDL and procedures are destructive (Full, asked); code in MongoDB and search reads is a read.
-    let code_needs = if p.engine.is_sql() { McpAccess::Full } else { McpAccess::Read };
-    let (structure, code) = match p.engine {
-        Engine::MongoDb => ("createIndex, drop, renameCollection, $out, $merge", "scripts, $where, $function, $accumulator, mapReduce"),
-        Engine::Elasticsearch | Engine::OpenSearch => ("index creation and deletion, mappings, settings", "scripts, painless, runtime fields"),
-        Engine::SqlServer => ("CREATE, ALTER, DROP, TRUNCATE, GRANT", "EXEC procedures, functions with side effects"),
-        Engine::Sqlite => ("CREATE, ALTER, DROP, VACUUM, PRAGMA settings", "functions with side effects"),
-        Engine::DuckDb => ("CREATE, ALTER, DROP, TRUNCATE, SET, macros", "CALL, functions with side effects"),
-        _ => ("CREATE, ALTER, DROP, TRUNCATE, GRANT", "DO blocks, CALL, functions with side effects"),
-    };
-    let forced = r.activity_forced_off().then(forced_tip);
-    vec![
-        May { id: "structure", name: "Change structure", what: structure.into(), on: r.structure, needs: McpAccess::Full, forced: None },
-        May { id: "code", name: "Run code", what: code.into(), on: r.code, needs: code_needs, forced: None },
-        May { id: "activity", name: "See server activity", what: activity_of(p.engine).into(), on: r.activity_on(), needs: McpAccess::Read, forced },
-    ]
-}
-
-fn redis_needs(c: RedisCat) -> McpAccess {
-    match c {
-        RedisCat::Read => McpAccess::Read,
-        RedisCat::Write | RedisCat::Keyspace | RedisCat::Pubsub => McpAccess::Write,
-        RedisCat::Scripting | RedisCat::Dangerous => McpAccess::Full,
-    }
+fn capitalized(s: &str) -> String {
+    let mut c = s.chars();
+    c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
 }
 
 fn tier_label(a: McpAccess) -> &'static str {
@@ -168,11 +122,150 @@ fn placeholder(e: Engine) -> &'static str {
     }
 }
 
-/// The Privacy body width from which its two columns sit side by side: the padding, the left
-/// column at its narrowest (The agent sees' three segments), the gap and Visible to agents.
-const PRIVACY_SIDE_W: f32 = 32. * 2. + 300. + 40. + 360.;
-/// The same for Permissions: the padding, Agents may at its narrowest, the gap and Limits.
-const PERMISSIONS_SIDE_W: f32 = 32. * 2. + 280. + 40. + 340.;
+fn time_label(s: u64) -> String {
+    match s {
+        privacy::UNLIMITED => "∞".into(),
+        s if s < 60 => format!("{s} s"),
+        s => format!("{} min", s / 60),
+    }
+}
+
+fn count_label(n: u64) -> String {
+    if n == privacy::UNLIMITED {
+        return "∞".into();
+    }
+    let s = n.to_string();
+    let mut out = String::new();
+    for (k, c) in s.chars().enumerate() {
+        if k > 0 && (s.len() - k).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Where the connection is, as the pane's header says it.
+fn place(p: &ConnectionProfile) -> String {
+    match () {
+        _ if p.engine.is_file() => p.summary(),
+        _ if p.is_socket() || p.port == 0 => p.host.clone(),
+        _ => format!("{}:{}", p.host, p.port),
+    }
+}
+
+/// A parent section: its title over one bordered group, its subsections divided by faint lines.
+pub(crate) fn section(t: &Theme, id: &str, title: &str, subs: Vec<gpui::Div>) -> gpui::Div {
+    let faint = t.grid_line;
+    div()
+        .children(ui::here(&SharedString::from(id.to_string()).into()))
+        .max_w(px(BODY_W))
+        .flex()
+        .flex_col()
+        .gap(px(12.))
+        .child(div().text_size(px(15.)).font_weight(FontWeight::BOLD).text_color(t.tx).child(title.to_string()))
+        .child(div().border_1().border_color(t.line).rounded(px(3.)).flex().flex_col().children(subs.into_iter().enumerate().map(move |(k, s)| s.px(px(20.)).py(px(18.)).when(k > 0, |d| d.border_t_1().border_color(faint)))))
+}
+
+/// A subsection: its title and `?`, the control below.
+pub(crate) fn sub(head: impl IntoElement) -> gpui::Div {
+    div().flex().flex_col().gap(px(10.)).child(head)
+}
+
+pub(crate) fn sub_title(t: &Theme, tip_id: &str, title: &str, tip: Tip) -> gpui::Div {
+    div().flex().flex_row().items_center().gap(px(7.)).text_size(px(12.5)).font_weight(FontWeight::SEMIBOLD).text_color(t.tx).child(title.to_string()).child(qmark(t, tip_id, tip).font_weight(FontWeight::NORMAL))
+}
+
+/// A bordered table: rows divided by faint lines.
+fn table(t: &Theme, rows: Vec<gpui::Stateful<gpui::Div>>) -> gpui::Div {
+    let faint = t.grid_line;
+    div().border_1().border_color(t.line).rounded(px(2.)).flex().flex_col().children(rows.into_iter().enumerate().map(move |(k, r)| r.when(k > 0, |d| d.border_t_1().border_color(faint))))
+}
+
+/// A row's × (remove), shown while the row is hovered.
+fn remove_x(t: &Theme, id: SharedString, row: SharedString) -> gpui::Stateful<gpui::Div> {
+    ui::icon_button(t, id, Icon::Close, 20., 9.).rounded(px(2.)).bg(t.hov).invisible().group_hover(row, |s| s.visible())
+}
+
+/// A muted line under a control: a state worth knowing (production, agents refused…).
+pub(crate) fn state_note(t: &Theme, text: impl Into<SharedString>) -> gpui::Div {
+    div().text_size(px(11.)).text_color(t.tx3).child(text.into())
+}
+
+/// The page's segmented control: one choice, told by its wash.
+fn choices<T: Copy + PartialEq + 'static>(t: &Theme, id: &str, opts: &[(T, &str)], on: T, cx: &mut Context<AgentsPage>, pick: impl Fn(&mut AgentsPage, T, &mut Context<AgentsPage>) + Clone + 'static) -> gpui::Div {
+    let segs = opts.iter().enumerate().map(|(k, (v, label))| {
+        let (v, pick) = (*v, pick.clone());
+        let sel = v == on;
+        let (hov, tx) = (t.hov, t.tx);
+        let sid = SharedString::from(format!("{id}-{k}"));
+        div()
+            .children(ui::here(&sid.clone().into()))
+            .id(sid)
+            .h(px(24.))
+            .px(px(14.))
+            .flex()
+            .items_center()
+            .rounded(px(1.))
+            .when(sel, |d| d.bg(t.prs).text_color(t.tx).font_weight(FontWeight::MEDIUM))
+            .when(!sel, move |d| d.text_color(t.tx2).cursor_pointer().hover(move |s| s.bg(hov).text_color(tx)))
+            .child(label.to_string())
+            .on_click(cx.listener(move |p, _, _, cx| {
+                pick(p, v, cx);
+                cx.notify();
+            }))
+    });
+    div().flex().child(div().flex().flex_row().gap(px(2.)).p(px(2.)).border_1().border_color(t.line2).rounded(px(2.)).children(segs))
+}
+
+/// How wide a popup button is: on its own, in a row of a table, or as wide as its column.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Fit {
+    Alone,
+    Row,
+    Fill,
+}
+
+/// A closed popup button: its value and a chevron.
+fn select(t: &Theme, page: &AgentsPage, id: SharedString, label: &str, enabled: bool, fit: Fit) -> gpui::Div {
+    let hov = t.hov;
+    let small = fit == Fit::Row;
+    let min = match fit {
+        Fit::Alone => 180.,
+        Fit::Row => 110.,
+        Fit::Fill => 0.,
+    };
+    div().relative().min_w(px(min)).when(fit == Fit::Fill, |d| d.flex_1()).when(fit != Fit::Fill, |d| d.flex_none()).child(page.anchor(id.clone())).child(
+        div()
+            .children(ui::here(&id.into()))
+            .h(px(if small { 26. } else { 28. }))
+            .px(px(if small { 8. } else { 10. }))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(12.))
+            .border_1()
+            .rounded(px(2.))
+            .when(enabled, |d| d.bg(t.field).border_color(t.line2).text_color(t.tx).hover(move |s| s.bg(hov)))
+            .when(!enabled, |d| d.bg(t.hov).border_color(t.line).text_color(t.tx3))
+            .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(label.to_string()))
+            .child(icon(Icon::ChevronDown).size(px(10.)).text_color(if enabled { t.tx2 } else { t.tx4 })),
+    )
+}
+
+/// What an agent gets for a value of `field`: a made-up one of its kind, masked as `how` says.
+fn masked_example(field: &str, how: Mask, key: &privacy::HashKey) -> String {
+    let f = field.to_ascii_lowercase();
+    let sample = match () {
+        _ if f.contains("mail") => "ana@acme.com",
+        _ if f.contains("phone") || f.contains("mobile") => "0415 555 4242",
+        _ if f.contains("card") => "4111 1111 1111 4242",
+        _ if f.contains("ssn") => "123-45-4242",
+        _ if f.contains("iban") => "DE89 3704 0044 0532 0130 42",
+        _ => "x7Kq2Lm9Rt4242",
+    };
+    privacy::mask_value(how, sample, key)
+}
 
 impl AgentsPage {
     pub(crate) fn selected_profile(&mut self, cx: &mut Context<Self>) -> Option<ConnectionProfile> {
@@ -191,6 +284,7 @@ impl AgentsPage {
             let hov = t.hov;
             let id = p.id.clone();
             let sid = SharedString::from(format!("agents-conn-{}", p.name));
+            let login = p.agent_login.is_some() && dataman_core::agent_login::supported(p.engine);
             div()
                 .children(ui::here(&sid.clone().into()))
                 .id(sid)
@@ -206,8 +300,11 @@ impl AgentsPage {
                 .when(sel, |d| d.bg(t.prs))
                 .when(!sel, move |d| d.hover(move |s| s.bg(hov)))
                 .children(crate::assets::small_logo(p.engine, 14.))
-                .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx).child(p.name.clone()))
-                .child(div().text_size(px(11.)).text_color(if a == McpAccess::Full { t.warn } else { t.tx3 }).child(a.label()))
+                .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx).child(p.name.clone()))
+                // Agents connect here as a login of their own.
+                .when(login, |d| d.child(div().children(ui::here(&SharedString::from(format!("agents-conn-key-{}", p.name)).into())).flex_none().child(icon(Icon::Key).size(px(12.)).text_color(t.ok))))
+                .child(div().flex_1())
+                .child(div().flex_none().text_size(px(11.)).text_color(if a == McpAccess::Full { t.warn } else { t.tx3 }).child(a.label()))
                 .on_click(cx.listener(move |v, _, window, cx| {
                     v.focus_list(window, cx);
                     v.conn = Some(id.clone());
@@ -220,34 +317,31 @@ impl AgentsPage {
         div().id("agents-conns").w(px(CONNS_W)).flex_none().py(px(4.)).flex().flex_col().overflow_y_scroll().track_scroll(&self.conns_scroll).border_r_1().border_color(t.line).children(rows).into_any_element()
     }
 
-    /// The page beside the connections: Protection's two tabs in a header of their own, their
-    /// words lined up with the content under them, then the tab's page. The open tab is told by
-    /// its wash, as the editor's tabs are.
-    fn protection_pane(&self, t: &Theme, body: gpui::Stateful<gpui::Div>, cx: &mut Context<Self>) -> gpui::Div {
-        let tabs = [Page::Permissions, Page::Privacy].into_iter().enumerate().map(|(k, p)| {
-            let on = self.page == p;
-            let (hov, tx2) = (t.hov, t.tx2);
-            let id = SharedString::from(format!("agents-protection-tab-{k}"));
-            div()
-                .children(ui::here(&id.clone().into()))
-                .id(id)
-                .h(px(metrics::TAB_H))
-                .px(px(12.))
-                .flex()
-                .items_center()
-                .cursor_pointer()
-                .when(on, |d| d.bg(t.prs).text_color(t.tx))
-                .when(!on, move |d| d.text_color(t.tx3).hover(move |s| s.bg(hov).text_color(tx2)))
-                .child(p.label())
-                .on_click(cx.listener(move |v, _, _, cx| v.show(p, cx)))
-        });
+    /// One bar over both columns, a single line under it: Protection over the connections, the
+    /// selected one's logo, name and place over the page.
+    fn protection_bar(&self, t: &Theme, p: Option<&ConnectionProfile>) -> gpui::Div {
         div()
-            .flex_1()
-            .min_w_0()
+            .h(px(52.))
+            .flex_none()
             .flex()
-            .flex_col()
-            .child(div().h(px(40.)).flex_none().pl(px(20.)).flex().flex_row().items_center().gap(px(2.)).border_b_1().border_color(t.line).children(tabs))
-            .child(body.flex_1().min_h_0())
+            .flex_row()
+            .border_b_1()
+            .border_color(t.line)
+            .child(div().w(px(CONNS_W)).flex_none().pl(px(32.)).pr(px(16.)).flex().items_center().border_r_1().border_color(t.line).text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(t.tx).child("Protection"))
+            .children(p.map(|p| {
+                div()
+                    .children(ui::here(&"agents-protection-conn".into()))
+                    .flex_1()
+                    .min_w_0()
+                    .px(px(32.))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(10.))
+                    .children(crate::assets::small_logo(p.engine, 15.))
+                    .child(div().flex_none().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(t.tx).child(p.name.clone()))
+                    .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx3).child(place(p)))
+            }))
     }
 
     fn no_conns(&self, t: &Theme) -> AnyElement {
@@ -255,106 +349,105 @@ impl AgentsPage {
             .size_full()
             .flex()
             .flex_col()
-            .child(self.header(t, "Protection"))
+            .child(self.protection_bar(t, None))
             .child(div().flex_1().flex().items_center().justify_center().text_color(t.tx3).child("No saved connections."))
             .into_any_element()
     }
 
-    /// Whether a Protection body of at least `min` wide has its columns side by side, and the
-    /// element that measures it. The width is the last frame's: a frame drawn on the wrong side
-    /// of the line asks for another.
-    fn side_by_side(&self, min: f32) -> (bool, gpui::Canvas<()>) {
-        let side = self.protection_body.get().is_none_or(|b| b.size.width.as_f32() >= min);
-        let slot = self.protection_body.clone();
-        let measure = gpui::canvas(
-            move |b, window, _| {
-                slot.set(Some(b));
-                if (b.size.width.as_f32() >= min) != side {
-                    window.on_next_frame(|window, _| window.refresh());
-                }
-            },
-            |_, _, _, _| {},
-        );
-        (side, measure)
-    }
-
-    fn set_rule(&mut self, f: impl FnOnce(&mut privacy::AgentRules), cx: &mut Context<Self>) {
+    pub(crate) fn set_rule(&mut self, f: impl FnOnce(&mut privacy::AgentRules), cx: &mut Context<Self>) {
         if let Some(id) = self.conn.clone() {
             self.edit_conn(&id, |p| f(&mut p.mcp_rules), cx);
         }
     }
 
-    // ---- Permissions ----
+    /// A popup button whose menu sets one value (an `Act` each).
+    #[allow(clippy::too_many_arguments)]
+    fn pick(&self, t: &Theme, id: &str, label: &str, enabled: bool, fit: Fit, width: f32, items: Vec<(SharedString, bool, Act)>, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
+        let sid = SharedString::from(id.to_string());
+        let el = div().id(SharedString::from(format!("{id}-btn"))).flex().when(fit == Fit::Fill, |d| d.w_full()).child(select(t, self, sid.clone(), label, enabled, fit));
+        if enabled { el.cursor_pointer().on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.open_menu(sid.clone(), width, items.clone(), cx))) } else { el }
+    }
 
-    pub(crate) fn render_permissions(&mut self, t: &Theme, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    /// Protection: how agents reach the connection, Access, Privacy, and its agent login last.
+    pub(crate) fn render_protection(&mut self, t: &Theme, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let Some(p) = self.selected_profile(cx) else { return self.no_conns(t) };
-        let r = p.mcp_rules.clone();
+        self.login_sync(&p, cx);
+        let card = self.login_card(t, &p, cx);
+        let access = self.access_section(t, &p, window, cx);
+        let privacy = self.privacy_section(t, &p, window, cx);
+        let login = self.login_section(t, &p, cx);
+        self.do_jump(card.is_some(), login.is_some(), window);
+        let body = div()
+            .id("agents-protection-body")
+            .flex_1()
+            .min_w_0()
+            .overflow_y_scroll()
+            .track_scroll(&self.protection_scroll)
+            .px(px(32.))
+            .pt(px(BODY_TOP))
+            .pb(px(48.))
+            .flex()
+            .flex_col()
+            .gap(px(44.))
+            .children(card)
+            .child(access)
+            .child(privacy)
+            .children(login);
+        div()
+            .relative()
+            .size_full()
+            .flex()
+            .flex_col()
+            .child(self.protection_bar(t, Some(&p)))
+            .child(div().flex_1().min_h_0().flex().flex_row().child(self.render_conn_list(t, cx)).child(body))
+            .children(self.login_sheet(t, &p, cx))
+            .into_any_element()
+    }
+
+    /// Brings the asked-for section to the top once the page is laid out (child bounds are laid
+    /// out unscrolled).
+    fn do_jump(&mut self, card: bool, login: bool, window: &mut Window) {
+        let Some(j) = self.jump else { return };
+        let ix = match j {
+            Jump::Privacy => 1 + card as usize,
+            Jump::Login if login => 2 + card as usize,
+            Jump::Login => 0,
+        };
+        let s = &self.protection_scroll;
+        match s.bounds_for_item(ix) {
+            Some(b) if s.bounds().size.height > gpui::px(0.) => {
+                let y = (s.bounds().top() + px(BODY_TOP) - b.top()).max(-s.max_offset().y).min(gpui::px(0.));
+                s.set_offset(gpui::point(gpui::px(0.), y));
+                self.jump = None;
+            }
+            _ => window.on_next_frame(|window, _| window.refresh()),
+        }
+    }
+
+    // ---- Access ----
+
+    fn access_section(&mut self, t: &Theme, p: &ConnectionProfile, window: &mut Window, cx: &mut Context<Self>) -> gpui::Div {
+        let r = &p.mcp_rules;
+        let tier = p.mcp_access();
         let tiers: Vec<(McpAccess, &str)> = McpAccess::ALL.iter().map(|a| (*a, tier_label(*a))).collect();
-        let mut left = div().flex_1().min_w_0().flex().flex_col().gap(px(24.)).child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(8.))
-                .child(label_tip(t, "agents-tier-tip", "MCP", tier_tip()))
-                .child(seg(t, "agents-tier", &tiers, p.mcp_access(), false, cx, |v, a, cx| {
+        let mut subs = vec![
+            sub(sub_title(t, "agents-tier-tip", "MCP", tier_tip()))
+                .child(choices(t, "agents-tier", &tiers, tier, cx, |v, a, cx| {
                     if let Some(id) = v.conn.clone() {
                         v.edit_conn(&id, |p| p.mcp = Some(a), cx);
                     }
                 }))
-                .when(p.env.is_production(), |d| d.child(div().text_size(px(11.)).text_color(t.tx3).child("Production: every write asks.")))
-                .children(self.login_refused_note(t, &p)),
-        );
-        let tier = p.mcp_access();
-        let prod = p.env.is_production();
-        let may_rows: Vec<AnyElement> = if p.engine == Engine::Redis {
-            RedisCat::ALL
-                .iter()
-                .map(|c| {
-                    let c = *c;
-                    let never = (c == RedisCat::Dangerous).then(|| {
-                        Tip::new("@dangerous never runs for agents").lead("FLUSHALL, FLUSHDB, CONFIG, DEBUG, KEYS and the like are refused whatever the tier, so an agent can't wipe or reconfigure the server.")
-                    });
-                    let id = format!("agents-may-{}", c.label().trim_start_matches('@'));
-                    self.may_row(t, &id, c.label(), c.examples(), r.redis.allows(c), redis_needs(c), tier, prod, never, cx, move |r| {
-                        let on = r.redis.allows(c);
-                        r.redis.set(c, !on);
-                    })
-                })
-                .collect()
-        } else {
-            mays(&p)
-                .into_iter()
-                .map(|m| {
-                    let id = m.id;
-                    self.may_row(t, &format!("agents-may-{id}"), m.name, &m.what, m.on, m.needs, tier, prod, m.forced, cx, move |r| match id {
-                        "structure" => r.structure = !r.structure,
-                        "code" => r.code = !r.code,
-                        _ => r.activity = !r.activity,
-                    })
-                })
-                .collect()
-        };
-        left = left.child(div().flex().flex_col().gap(px(12.)).child(label_tip(t, "agents-may-tip", "AGENTS MAY", may_tip())).children(may_rows));
+                .when(p.env.is_production(), |d| d.child(state_note(t, "Production: every write asks.")))
+                .children(self.login_refused_note(t, p)),
+        ];
         if p.engine == Engine::MongoDb {
-            let opts: Vec<(ReadFrom, &str)> = ReadFrom::ALL.iter().map(|f| (*f, f.label())).collect();
-            left = left.child(div().flex().flex_col().gap(px(8.)).child(label_tip(t, "agents-read-from-tip", "READ FROM", read_from_tip())).child(seg(t, "agents-read-from", &opts, r.read_from.unwrap_or(ReadFrom::Primary), false, cx, |v, f, cx| {
-                v.set_rule(|r| r.read_from = (f != ReadFrom::Primary).then_some(f), cx);
-            })));
+            let cur = r.read_from.unwrap_or(ReadFrom::Primary);
+            let items = ReadFrom::ALL.iter().map(|f| (f.label().into(), *f == cur, Act::ReadFrom(*f))).collect();
+            subs.push(sub(sub_title(t, "agents-read-from-tip", "Read from", read_from_tip())).child(self.pick(t, "agents-read-from", cur.label(), true, Fit::Alone, 180., items, cx)));
         }
-        // The label over its choices: side by side the five segments would not fit the column.
-        let limit_row = |label: &str, el: gpui::Div| div().flex().flex_col().gap(px(6.)).child(div().text_color(t.tx2).child(label.to_string())).child(el);
-        let time = |s: u64| match s {
-            privacy::UNLIMITED => "∞".to_string(),
-            s if s < 60 => format!("{s} s"),
-            s => format!("{} min", s / 60),
-        };
-        let count = |n: u64| match n {
-            privacy::UNLIMITED => "∞".to_string(),
-            n if n >= 1000 && n.is_multiple_of(1000) => format!("{}k", n / 1000),
-            n => n.to_string(),
-        };
         // A value that came from the old global setting (or a file) shows as a choice of its own,
-        // in order before ∞.
+        // in order before ∞. The value that applies is the one selected; choosing the default
+        // stores nothing, so the connection keeps following it.
         let with = |list: &[u64], cur: Option<u64>| -> Vec<u64> {
             let mut v = list.to_vec();
             if let Some(c) = cur.filter(|c| !v.contains(c)) {
@@ -363,111 +456,30 @@ impl AgentsPage {
             }
             v
         };
-        let times: Vec<(u64, String)> = with(&privacy::TIME_LIMITS, r.time_limit_s).into_iter().map(|s| (s, time(s))).collect();
-        let times: Vec<(u64, &str)> = times.iter().map(|(v, l)| (*v, l.as_str())).collect();
-        let writes: Vec<(u64, String)> = with(&privacy::WRITE_ROWS, p.mcp_row_limit).into_iter().map(|n| (n, count(n))).collect();
-        let writes: Vec<(u64, &str)> = writes.iter().map(|(v, l)| (*v, l.as_str())).collect();
-        let reads: Vec<(u64, String)> = with(&privacy::READ_ROWS, r.read_rows).into_iter().map(|n| (n, count(n))).collect();
-        let reads: Vec<(u64, &str)> = reads.iter().map(|(v, l)| (*v, l.as_str())).collect();
-        // The value that applies is the one selected; choosing the default stores nothing, so the
-        // connection keeps following it.
-        let (time_d, write_d, read_d) = (privacy::DEFAULT_TIME_LIMIT_S, MCP_WRITE_ROW_LIMIT, MCP_MAX_ROWS);
-        let limits = div()
-            .flex()
-            .flex_col()
-            .gap(px(14.))
-            .child(label_tip(t, "agents-limits-tip", "LIMITS", limits_tip()))
-            .child(limit_row("Time per call", seg(t, "agents-time", &times, r.time_limit_s.unwrap_or(time_d), true, cx, move |v, s, cx| v.set_rule(|r| r.time_limit_s = (s != time_d).then_some(s), cx))))
-            .child(limit_row("Rows per write", seg(t, "agents-wrows", &writes, p.mcp_row_limit.unwrap_or(write_d), true, cx, move |v, n, cx| {
-                if let Some(id) = v.conn.clone() {
-                    v.edit_conn(&id, |p| p.mcp_row_limit = (n != write_d).then_some(n), cx);
-                }
-            })))
-            .child(limit_row("Rows per read", seg(t, "agents-rrows", &reads, r.read_rows.unwrap_or(read_d), true, cx, move |v, n, cx| v.set_rule(|r| r.read_rows = (n != read_d).then_some(n), cx))));
-        let (side, measure) = self.side_by_side(PERMISSIONS_SIDE_W);
-        // Under the limits, the database login made from all of the above.
-        self.login_sync(&p, cx);
-        let mut right = div().flex().flex_col().gap(px(24.)).child(limits).child(self.login_section(t, &p, cx));
-        if dataman_core::MCP_ADVANCED {
-            if p.engine.is_sql() {
-                right = right.child(self.render_allowed(t, &p, window, cx));
-            }
-            right = right.child(self.render_yolo(t, &p, cx));
-        }
-        // Side by side while the body has the width, else one under the other.
-        let body = if side {
-            div().flex().flex_row().gap(px(40.)).child(left).child(right.w(px(340.)).flex_none())
-        } else {
-            div().w_full().max_w(px(640.)).flex().flex_col().gap(px(24.)).child(left.flex_none()).child(right.pt(px(24.)).border_t_1().border_color(t.line))
-        };
-        div()
-            .relative()
-            .size_full()
-            .flex()
-            .flex_col()
-            .child(self.header(t, "Protection"))
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .flex()
-                    .flex_row()
-                    .border_t_1()
-                    .border_color(t.line)
-                    .child(self.render_conn_list(t, cx))
-                    .child(self.protection_pane(t, div().id("agents-perm-body").relative().overflow_y_scroll().track_scroll(&self.perm_scroll).flex().flex_col().px(px(32.)).py(px(24.)).child(measure.absolute().top_0().left_0().size_full()).child(body), cx)),
-            )
-            .children(self.login_sheet(t, &p, cx))
-            .into_any_element()
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn may_row(
-        &self,
-        t: &Theme,
-        id: &str,
-        name: &str,
-        what: &str,
-        on: bool,
-        needs: McpAccess,
-        tier: McpAccess,
-        prod: bool,
-        forced: Option<Tip>,
-        cx: &mut Context<Self>,
-        flip: impl Fn(&mut privacy::AgentRules) + 'static,
-    ) -> AnyElement {
-        let (state, live) = may_state(tier, needs, on, forced.is_some(), prod);
-        let sid = SharedString::from(id.to_string());
+        let time = r.time_limit_s.unwrap_or(privacy::DEFAULT_TIME_LIMIT_S);
+        let reads = r.read_rows.unwrap_or(MCP_MAX_ROWS);
+        let writes = p.mcp_row_limit.unwrap_or(MCP_WRITE_ROW_LIMIT);
+        let time_items = with(&privacy::TIME_LIMITS, r.time_limit_s).into_iter().map(|s| (time_label(s).into(), s == time, Act::TimeLimit(s))).collect();
+        let read_items = with(&privacy::READ_ROWS, r.read_rows).into_iter().map(|n| (count_label(n).into(), n == reads, Act::ReadRows(n))).collect();
+        let write_items = with(&privacy::WRITE_ROWS, p.mcp_row_limit).into_iter().map(|n| (count_label(n).into(), n == writes, Act::WriteRows(n))).collect();
+        // Rows per write means nothing below the Write tier.
+        let writing = tier >= McpAccess::Write;
+        let limit = |label: &str, on: bool, el: gpui::Stateful<gpui::Div>| div().flex_1().min_w_0().flex().flex_col().gap(px(6.)).child(div().text_color(if on { t.tx2 } else { t.tx3 }).child(label.to_string())).child(el);
         let row = div()
-            .children(ui::here(&sid.clone().into()))
-            .id(sid)
             .flex()
             .flex_row()
-            .gap(px(10.))
-            .child(div().pt(px(1.)).child(checkbox(t, on && live, !live)))
-            .child(
-                div()
-                    .flex_1()
-                    .flex()
-                    .flex_col()
-                    .gap(px(2.))
-                    .min_w_0()
-                    .child(div().text_color(if live { t.tx } else { t.tx3 }).child(name.to_string()))
-                    .when(!what.is_empty(), |d| d.child(div().text_size(px(11.)).text_color(t.tx3).child(what.to_string()))),
-            )
-            .child(div().pt(px(1.)).flex_none().text_size(px(11.)).text_color(t.tx3).child(state));
-        let tip = forced.or_else(|| {
-            (tier != McpAccess::Off && tier < needs).then(|| {
-                Tip::new(format!("{name} {}", needs_label(needs)))
-                    .lead(format!("This connection's MCP tier is {}; {} starts at {}.", tier_label(tier), name.to_lowercase(), tier_label(needs)))
-                    .note("Raise the tier above to use it. The box keeps your choice for when you do.")
-            })
-        });
-        match (tip, live) {
-            (Some(tip), false) => row.tip(tip.view()).into_any_element(),
-            (_, false) => row.into_any_element(),
-            _ => row.cursor_pointer().on_click(cx.listener(move |v, _, _, cx| v.set_rule(&flip, cx))).into_any_element(),
+            .gap(px(16.))
+            .child(limit("Time per call", true, self.pick(t, "agents-time", &time_label(time), true, Fit::Fill, 150., time_items, cx)))
+            .child(limit("Rows per read", true, self.pick(t, "agents-rrows", &count_label(reads), true, Fit::Fill, 150., read_items, cx)))
+            .child(limit("Rows per write", writing, self.pick(t, "agents-wrows", &count_label(writes), writing, Fit::Fill, 150., write_items, cx)));
+        subs.push(sub(sub_title(t, "agents-limits-tip", "Limits", limits_tip())).child(row));
+        if dataman_core::MCP_ADVANCED {
+            if p.engine.is_sql() {
+                subs.push(div().child(self.render_allowed(t, p, window, cx)));
+            }
+            subs.push(div().child(self.render_yolo(t, p, cx)));
         }
+        section(t, "agents-access", "Access", subs)
     }
 
     fn render_allowed(&self, t: &Theme, p: &ConnectionProfile, window: &Window, cx: &mut Context<Self>) -> AnyElement {
@@ -584,10 +596,10 @@ impl AgentsPage {
 
     // ---- Privacy ----
 
-    pub(crate) fn render_privacy(&mut self, t: &Theme, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let Some(p) = self.selected_profile(cx) else { return self.no_conns(t) };
+    fn privacy_section(&mut self, t: &Theme, p: &ConnectionProfile, window: &mut Window, cx: &mut Context<Self>) -> gpui::Div {
         let r = p.mcp_rules.clone();
         let names = Names::of(p.engine);
+        let (one, _) = nouns(p.engine);
         let place = placeholder(p.engine);
         if self.vis_input.read(cx).text().is_empty() {
             self.vis_input.update(cx, |i, cx| i.set_placeholder(place, cx));
@@ -595,103 +607,100 @@ impl AgentsPage {
         let sens_place = if p.engine.is_sql() { "table.column or *pattern*" } else { "collection.field or *pattern*" };
         self.sens_input.update(cx, |i, cx| i.set_placeholder(sens_place, cx));
         let views: Vec<(AgentView, &str)> = AgentView::ALL.iter().map(|v| (*v, v.label())).collect();
-        let sees = div()
-            .flex()
-            .flex_col()
-            .gap(px(8.))
-            .child(label_tip(
-                t,
-                "agents-sees-tip",
-                "THE AGENT SEES",
-                sees_tip(),
-            ))
-            .child(seg(t, "agents-view", &views, r.view, false, cx, |v, view, cx| v.set_rule(|r| r.view = view, cx)));
-        // Sensitive columns mask in Masked data only: elsewhere the section is shown, dimmed and
+        let sees = sub(sub_title(t, "agents-sees-tip", "Agents see", sees_tip())).child(choices(t, "agents-view", &views, r.view, cx, |v, view, cx| v.set_rule(|r| r.view = view, cx)));
+
+        // Sensitive columns mask in Masked data only: elsewhere the table is shown, dimmed and
         // inert (no focus, click or key), and Use Masked data is the way back to editing.
         let masked = r.view == AgentView::Masked;
-        let sens_rows = r.sensitive.iter().enumerate().map(|(k, s)| {
-            let id = SharedString::from(format!("agents-sens-mask-{k}"));
-            let items: Vec<(SharedString, bool, Act)> = Mask::ALL.iter().map(|m| (m.label().into(), *m == s.how, Act::SensMask(k, *m))).collect();
-            let open = id.clone();
-            let hov = t.hov;
-            let rid = SharedString::from(format!("agents-sens-{k}"));
-            div()
-                .id(rid.clone())
-                .group(rid.clone())
-                .h(px(32.))
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(px(10.))
-                .border_b_1()
-                .border_color(t.line)
-                .child(
-                    div()
-                        .children(ui::here(&SharedString::from(format!("agents-sens-check-{k}")).into()))
-                        .id(SharedString::from(format!("agents-sens-check-{k}")))
-                        .child(checkbox(t, s.on, !masked && s.on))
-                        .when(masked, |d| {
-                            d.cursor_pointer().on_click(cx.listener(move |v, _, _, cx| {
-                                v.set_rule(|r| {
-                                    if let Some(s) = r.sensitive.get_mut(k) {
-                                        s.on = !s.on;
-                                    }
-                                }, cx)
-                            }))
-                        }),
-                )
-                .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(if s.on { t.tx } else { t.tx3 }).child(s.col.clone()))
-                .when(masked, |d| d.child(
-                    div()
-                        .id(SharedString::from(format!("agents-sens-rm-{k}")))
-                        .invisible()
-                        .group_hover(rid, |s| s.visible())
-                        .px(px(4.))
-                        .text_color(t.tx3)
-                        .hover(move |s| s.bg(hov))
-                        .cursor_pointer()
-                        .child("×")
-                        .on_click(cx.listener(move |v, _, _, cx| {
-                            v.set_rule(|r| {
-                                if k < r.sensitive.len() {
-                                    r.sensitive.remove(k);
-                                }
-                            }, cx)
-                        })),
-                ))
-                .child(
-                    div()
-                        .id(SharedString::from(format!("agents-sens-mask-btn-{k}")))
-                        .child(dropdown(t, self, id, s.how.label(), s.on && masked))
-                        .when(masked, |d| d.cursor_pointer().on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.open_menu(open.clone(), 120., items.clone(), cx)))),
-                )
-        });
-        let sensitive = div()
-            .flex()
-            .flex_col()
-            .gap(px(8.))
-            .child(
+        // By table (or collection), in the order each first appears; a pattern without a table
+        // goes under "Any table".
+        let mut groups: Vec<(String, Vec<usize>)> = Vec::new();
+        for (k, s) in r.sensitive.iter().enumerate() {
+            let g = s.col.rsplit_once('.').map(|(g, _)| g.to_string()).unwrap_or_default();
+            match groups.iter_mut().find(|(n, _)| *n == g) {
+                Some((_, ks)) => ks.push(k),
+                None => groups.push((g, vec![k])),
+            }
+        }
+        let mut rows: Vec<gpui::Stateful<gpui::Div>> = Vec::new();
+        for (g, ks) in groups {
+            let label = if g.is_empty() { format!("Any {one}") } else { g.clone() };
+            rows.push(
                 div()
+                    .id(SharedString::from(format!("agents-sens-group-{g}")))
+                    .h(px(34.))
+                    .px(px(12.))
                     .flex()
                     .flex_row()
                     .items_center()
-                    .child(div().flex_1().child(label_tip(
-                        t,
-                        "agents-sens-tip",
-                        "SENSITIVE COLUMNS",
-                        sens_tip(),
-                    )))
-                    .child(
-                        div()
-                            .children(ui::here(&"agents-scan".into()))
-                            .id("agents-scan")
-                            .text_size(px(11.5))
-                            .text_color(if masked { t.tx2 } else { t.tx4 })
-                            .when(masked, |d| d.cursor_pointer().hover(|s| s.opacity(0.75)).on_click(cx.listener(|v, _, _, cx| v.scan(cx))))
-                            .child("Scan again"),
-                    ),
-            )
-            // Kept and editable in every mode, but they only mask in Masked data: say so, dimmed.
+                    .gap(px(9.))
+                    .bg(t.alt)
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(icon(Icon::Table).size(px(14.)).text_color(t.tx3))
+                    .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(label)),
+            );
+            for k in ks {
+                let s = &r.sensitive[k];
+                let name = s.col.rsplit_once('.').map_or(s.col.as_str(), |(_, f)| f);
+                let id = SharedString::from(format!("agents-sens-mask-{k}"));
+                let mut items: Vec<(SharedString, bool, Act)> = Mask::ALL.iter().map(|m| (m.label().into(), s.on && *m == s.how, Act::SensMask(k, *m))).collect();
+                items.push(("Off".into(), !s.on, Act::SensOff(k)));
+                let example = if s.on { masked_example(name, s.how, &self.key) } else { "as stored".into() };
+                let rid = SharedString::from(format!("agents-sens-{k}"));
+                rows.push(
+                    div()
+                        .id(rid.clone())
+                        .group(rid.clone())
+                        .h(px(36.))
+                        .pl(px(34.))
+                        .pr(px(10.))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(9.))
+                        .child(icon(Icon::Column).size(px(13.)).text_color(t.tx3))
+                        .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(if s.on { t.tx } else { t.tx3 }).child(name.to_string()))
+                        .child(div().w(px(130.)).flex_none().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(11.)).text_color(t.tx3).child(example))
+                        .child(self.pick(t, &id, if s.on { s.how.label() } else { "Off" }, masked, Fit::Row, 120., items, cx))
+                        .when(masked, |d| {
+                            d.child(remove_x(t, SharedString::from(format!("agents-sens-rm-{k}")), rid.clone()).on_click(cx.listener(move |v, _, _, cx| {
+                                v.set_rule(|r| {
+                                    if k < r.sensitive.len() {
+                                        r.sensitive.remove(k);
+                                    }
+                                }, cx)
+                            })))
+                        })
+                        .when(!masked, |d| d.child(div().w(px(20.)).flex_none())),
+                );
+            }
+        }
+        let scan = div()
+            .children(ui::here(&"agents-scan".into()))
+            .id("agents-scan")
+            .ml_auto()
+            .font_weight(FontWeight::NORMAL)
+            .text_size(px(12.))
+            .text_color(if masked { t.tx2 } else { t.tx4 })
+            .when(masked, |d| d.cursor_pointer().hover(|s| s.opacity(0.75)).on_click(cx.listener(|v, _, _, cx| v.scan(cx))))
+            .child("Scan again");
+        let title = if p.engine.is_sql() { "Sensitive columns" } else { "Sensitive fields" };
+        let add = div()
+            .flex()
+            .flex_row()
+            .gap(px(10.))
+            .when(!masked, |d| d.opacity(0.55))
+            .when(masked, |d| {
+                d.child(self.suggest_field(t, Which::Sensitive, field(t, "agents-field-sensitive", &self.sens_input, window, cx).h(px(30.)), window, cx))
+                    .child(ui::button(t, "agents-sens-add", ui::Btn::Secondary).h(px(30.)).px(px(14.)).child("Add").on_click(cx.listener(|v, _, _, cx| v.add_sensitive(cx))))
+            })
+            // No input at all while disabled: nothing to focus, click, type into or Tab to.
+            .when(!masked, |d| {
+                d.child(div().children(ui::here(&"agents-field-sensitive".into())).flex_1().h(px(30.)).px(px(9.)).flex().items_center().bg(t.field).border_1().border_color(t.field_b).text_color(t.tx4).child(sens_place))
+                    .child(div().children(ui::here(&"agents-sens-add".into())).flex_none().h(px(30.)).px(px(14.)).flex().items_center().border_1().border_color(t.line2).text_color(t.tx4).child("Add"))
+            });
+        let sensitive = sub(sub_title(t, "agents-sens-tip", title, sens_tip()).child(scan))
+            // Kept and editable in every mode, but they only mask in Masked data: say so.
             .when(!masked, |d| {
                 d.child(
                     div()
@@ -702,7 +711,7 @@ impl AgentsPage {
                         .gap(px(6.))
                         .text_size(px(11.5))
                         .text_color(t.tx2)
-                        .child("Used only when The agent sees is Masked data.")
+                        .child("Used only when Agents see is Masked data.")
                         .child(
                             div()
                                 .children(ui::here(&"agents-sens-use-masked".into()))
@@ -715,129 +724,62 @@ impl AgentsPage {
                         ),
                 )
             })
-            .children(self.scan_note.clone().map(|n| div().text_size(px(11.)).text_color(t.tx3).child(n)))
-            .child(div().flex().flex_col().when(!masked, |d| d.opacity(0.55)).children(sens_rows))
-            .child(
-                div()
-                    .mt(px(4.))
-                    .flex()
-                    .flex_row()
-                    .gap(px(8.))
-                    .when(!masked, |d| d.opacity(0.55))
-                    .when(masked, |d| {
-                        d.child(self.suggest_field(t, Which::Sensitive, field(t, "agents-field-sensitive", &self.sens_input, window, cx), window, cx))
-                            .child(ui::button(t, "agents-sens-add", ui::Btn::Secondary).h(px(28.)).px(px(10.)).child("Add").on_click(cx.listener(|v, _, _, cx| v.add_sensitive(cx))))
-                    })
-                    // No input at all while disabled: nothing to focus, click, type into or Tab to.
-                    .when(!masked, |d| {
-                        d.child(
-                            div()
-                                .children(ui::here(&"agents-field-sensitive".into()))
-                                .flex_1()
-                                .h(px(28.))
-                                .px(px(9.))
-                                .flex()
-                                .items_center()
-                                .bg(t.field)
-                                .border_1()
-                                .border_color(t.field_b)
-                                .text_color(t.tx4)
-                                .child(sens_place),
-                        )
-                        .child(div().children(ui::here(&"agents-sens-add".into())).flex_none().h(px(28.)).px(px(10.)).flex().items_center().border_1().border_color(t.line2).text_color(t.tx4).child("Add"))
-                    }),
-            );
-        let modes: Vec<(VisibleMode, &str)> = [VisibleMode::Except, VisibleMode::Only].iter().map(|m| (*m, m.label())).collect();
+            .children(self.scan_note.clone().map(|n| state_note(t, n)))
+            .when(!rows.is_empty(), |d| d.child(table(t, rows).when(!masked, |d| d.opacity(0.55))))
+            .child(add);
+
+        // Visibility: the mode, then its entries, struck through while they are what's hidden.
+        let except = r.visible.mode == VisibleMode::Except;
         let typed = self.vis_input.read(cx).text().trim().to_string();
-        let kind = Visible::kind_of(&typed, &self.schemas_of(&p, cx), names);
+        let kind = Visible::kind_of(&typed, &self.schemas_of(p, cx), names);
         let verb = if r.visible.mode == VisibleMode::Only && kind != ItemKind::Column { "Show" } else { "Hide" };
-        let items = r.visible.items.iter().enumerate().map(|(k, it)| {
-            div()
-                .h(px(32.))
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(px(10.))
-                .border_b_1()
-                .border_color(t.line)
-                .child(icon(if it.kind == ItemKind::Column { Icon::Column } else { Icon::GridTable }).size(px(14.)).text_color(t.tx3))
-                .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx).child(it.name.clone()))
-                .child(div().text_size(px(11.)).text_color(t.tx3).child(it.kind.label()))
-                .child(ui::icon_button(t, SharedString::from(format!("agents-vis-rm-{k}")), Icon::Close, 20., 10.).on_click(cx.listener(move |v, _, _, cx| {
-                    v.set_rule(|r| {
-                        if k < r.visible.items.len() {
-                            r.visible.items.remove(k);
-                        }
-                    }, cx)
-                })))
-        }).collect::<Vec<_>>();
-        let visible = div()
-            .flex()
-            .flex_col()
-            .gap(px(24.))
-            .child(
+        let modes = [VisibleMode::Except, VisibleMode::Only].iter().map(|m| (m.label().into(), *m == r.visible.mode, Act::VisMode(*m))).collect();
+        let items: Vec<gpui::Stateful<gpui::Div>> = r
+            .visible
+            .items
+            .iter()
+            .enumerate()
+            .map(|(k, it)| {
+                let glyph = match (it.kind == ItemKind::Column, except) {
+                    (true, true) => Icon::ColumnOff,
+                    (true, false) => Icon::Column,
+                    (false, true) => Icon::TableOff,
+                    (false, false) => Icon::Table,
+                };
+                let rid = SharedString::from(format!("agents-vis-{k}"));
                 div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(8.))
-                    .child(label_tip(
-                        t,
-                        "agents-vis-tip",
-                        "VISIBLE TO AGENTS",
-                        Tip::new("Visible to agents")
-                            .lead("What exists for agents on this connection, in every mode.")
-                            .item("Everything except", "The list holds what is hidden. Tables created later are visible.")
-                            .item("Only these", "The list holds the tables and schemas agents can see. Everything else is hidden, tables created later too.")
-                            .lead("Hidden tables and schemas aren't listed, described or queryable. Hidden columns are removed: Dataman narrows each query so, for agents, they don't exist.")
-                            .example("public.payments (table) · audit.* (schema) · users.password_hash (column)")
-                            .note("Functions, copies of the data in other tables and statements Dataman can't read are refused or not covered. Only database permissions block everything."),
-                    ))
-                    .child(seg(t, "agents-vis-mode", &modes, r.visible.mode, false, cx, |v, m, cx| v.set_rule(|r| r.visible.mode = m, cx)))
-                    .child(div().text_size(px(11.)).text_color(t.tx3).child("Left-out tables and columns are not listed, described or queryable.")),
-            )
-            .child(
-                div().flex().flex_col().children(items).child(
-                    div()
-                        .mt(px(12.))
-                        .flex()
-                        .flex_row()
-                        .gap(px(8.))
-                        .child(self.suggest_field(t, Which::Visible, field(t, "agents-field-visible", &self.vis_input, window, cx), window, cx))
-                        .child(ui::button(t, "agents-vis-add", ui::Btn::Secondary).h(px(28.)).px(px(10.)).child(verb).on_click(cx.listener(|v, _, _, cx| v.add_visible(cx)))),
-                ),
-            );
-        // Side by side while the body has the width, else one under the other.
-        let (side, measure) = self.side_by_side(PRIVACY_SIDE_W);
-        let measure = measure.absolute().top_0().left_0().size_full();
-        let body = if side {
-            div()
-                .flex()
-                .flex_row()
-                .gap(px(40.))
-                .child(div().flex_1().min_w_0().flex().flex_col().gap(px(24.)).child(sees).child(sensitive))
-                .child(div().w(px(360.)).flex_none().child(visible))
-        } else {
-            // Stacked, each section under a rule, no wider than reads well.
-            let part = |d: gpui::Div| d.pt(px(24.)).border_t_1().border_color(t.line);
-            div().w_full().max_w(px(640.)).flex().flex_col().gap(px(24.)).child(sees).child(part(sensitive)).child(part(visible))
-        };
-        div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .child(self.header(t, "Protection"))
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
+                    .id(rid.clone())
+                    .group(rid.clone())
+                    .h(px(36.))
+                    .pl(px(12.))
+                    .pr(px(10.))
                     .flex()
                     .flex_row()
-                    .border_t_1()
-                    .border_color(t.line)
-                    .child(self.render_conn_list(t, cx))
-                    .child(self.protection_pane(t, div().id("agents-priv-body").relative().overflow_y_scroll().flex().flex_col().px(px(32.)).py(px(24.)).child(measure).child(body), cx)),
-            )
-            .into_any_element()
+                    .items_center()
+                    .gap(px(9.))
+                    .child(icon(glyph).size(px(if it.kind == ItemKind::Column { 13. } else { 14. })).text_color(t.tx3))
+                    .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx).child(it.name.clone()))
+                    .child(remove_x(t, SharedString::from(format!("agents-vis-rm-{k}")), rid).on_click(cx.listener(move |v, _, _, cx| {
+                        v.set_rule(|r| {
+                            if k < r.visible.items.len() {
+                                r.visible.items.remove(k);
+                            }
+                        }, cx)
+                    })))
+            })
+            .collect();
+        let visible = sub(sub_title(t, "agents-vis-tip", &format!("{} visibility", capitalized(one)), vis_tip(p.engine)))
+            .child(self.pick(t, "agents-vis-mode", r.visible.mode.label(), true, Fit::Alone, 180., modes, cx))
+            .when(!items.is_empty(), |d| d.child(table(t, items)))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap(px(10.))
+                    .child(self.suggest_field(t, Which::Visible, field(t, "agents-field-visible", &self.vis_input, window, cx).h(px(30.)), window, cx))
+                    .child(ui::button(t, "agents-vis-add", ui::Btn::Secondary).h(px(30.)).px(px(14.)).child(verb).on_click(cx.listener(|v, _, _, cx| v.add_visible(cx)))),
+            );
+        section(t, "agents-privacy", "Privacy", vec![sees, sensitive, visible])
     }
 
     /// The schemas (or MongoDB databases) known for a connection: from the schema cache when it

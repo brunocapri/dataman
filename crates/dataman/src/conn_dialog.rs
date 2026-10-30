@@ -1819,7 +1819,7 @@ impl Render for ConnDialog {
                                     .flex()
                                     .flex_col()
                                     .gap(px(6.))
-                                    .child(div().h(px(12.)).flex().flex_row().items_center().gap(px(6.)).child(caption("MCP")).child(crate::agents::qmark(&t, "conn-mcp-tip", crate::agents_rules::tier_tip().note("More per connection (rules, privacy, limits) in Agents › Permissions.")).size(px(12.)).rounded(px(6.)).text_size(px(8.5))).when(yolo_on, |d| d.child(yolo_badge(&t).h(px(12.)).px(px(4.)).text_size(px(9.)))))
+                                    .child(div().h(px(12.)).flex().flex_row().items_center().gap(px(6.)).child(caption("MCP")).child(crate::agents::qmark(&t, "conn-mcp-tip", crate::agents_rules::tier_tip().note("More per connection (rules, privacy, limits) in Agents › Protection.")).size(px(12.)).rounded(px(6.)).text_size(px(8.5))).when(yolo_on, |d| d.child(yolo_badge(&t).h(px(12.)).px(px(4.)).text_size(px(9.)))))
                                     .child(mcp),
                             ),
                     )

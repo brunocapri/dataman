@@ -1,6 +1,6 @@
 //! The Agents area, opened from the robot at the foot of the rail: who used Dataman through MCP
-//! and what they ran (MCP, Audit), and per connection what agents may do (Permissions) and see
-//! (Privacy), with the sensitive data types masked in everything an agent receives.
+//! and what they ran (MCP, Audit), and per connection what agents may do and see (Protection),
+//! with the sensitive data types masked in everything an agent receives.
 
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
@@ -27,52 +27,38 @@ use crate::ui::Tipped;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Page {
     Audit,
-    Permissions,
-    Privacy,
+    /// What agents may do on each connection and what they may see there, on one page.
+    Protection,
     Types,
     General,
 }
 
 impl Page {
-    /// The nav's rows: Protection holds Permissions and Privacy, as its tabs.
-    pub const NAV: [Page; 4] = [Page::General, Page::Permissions, Page::Audit, Page::Types];
+    /// The nav's rows.
+    pub const NAV: [Page; 4] = [Page::General, Page::Protection, Page::Audit, Page::Types];
 
     pub fn label(self) -> &'static str {
         match self {
             Page::Audit => "Audit",
-            Page::Permissions => "Permissions",
-            Page::Privacy => "Privacy",
+            Page::Protection => "Protection",
             Page::Types => "Masks",
             Page::General => "General",
-        }
-    }
-
-    /// Its row in the nav.
-    pub fn nav_label(self) -> &'static str {
-        match self {
-            Page::Permissions | Page::Privacy => "Protection",
-            p => p.label(),
         }
     }
 
     pub fn key(self) -> &'static str {
         match self {
             Page::Audit => "audit",
-            Page::Permissions | Page::Privacy => "protection",
+            Page::Protection => "protection",
             Page::Types => "masks",
             Page::General => "general",
         }
     }
 
-    /// One of Protection's tabs.
-    pub fn is_protection(self) -> bool {
-        matches!(self, Page::Permissions | Page::Privacy)
-    }
-
     fn icon(self) -> Icon {
         match self {
             Page::Audit => Icon::Pulse,
-            Page::Permissions | Page::Privacy => Icon::Shield,
+            Page::Protection => Icon::Shield,
             Page::Types => Icon::Types,
             Page::General => Icon::Plug,
         }
@@ -190,6 +176,13 @@ pub(crate) enum Act {
     Outcome(Outcomes),
     When(When),
     SensMask(usize, Mask),
+    /// A sensitive column kept, but not masked.
+    SensOff(usize),
+    ReadFrom(dataman_core::privacy::ReadFrom),
+    TimeLimit(u64),
+    ReadRows(u64),
+    WriteRows(u64),
+    VisMode(dataman_core::privacy::VisibleMode),
     TypeMask(String, Mask),
     Validator(Validator),
     CopyQuery(usize),
@@ -229,8 +222,6 @@ pub struct AgentsPage {
     /// What the last export or import did.
     pub(crate) settings_note: Option<String>,
     pub(crate) page: Page,
-    /// The Protection tab the nav goes back to.
-    pub(crate) protection_tab: Page,
     visible: bool,
     pub(crate) entries: Vec<Entry>,
     loaded: bool,
@@ -267,13 +258,13 @@ pub struct AgentsPage {
     pub(crate) detail_w: f32,
     pub(crate) detail_drag: bool,
     audit_body: Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
-    /// Protection's body, measured for its columns.
-    pub(crate) protection_body: Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
     /// The Audit list: only the rows in view are built.
     pub(crate) audit_list: gpui::ListState,
     pub(crate) conns_scroll: gpui::ScrollHandle,
     pub(crate) types_scroll: gpui::ScrollHandle,
-    pub(crate) perm_scroll: gpui::ScrollHandle,
+    pub(crate) protection_scroll: gpui::ScrollHandle,
+    /// A Protection section to bring to the top once it is laid out.
+    pub(crate) jump: Option<crate::agents_rules::Jump>,
     /// The Audit list's items: the calls shown, a day's header before each day's first.
     audit_items: Vec<AuditItem>,
     pub(crate) types_offset: usize,
@@ -288,7 +279,7 @@ pub struct AgentsPage {
     pub(crate) clear_focus: FocusHandle,
     /// The next read of the log drops agent and connection filters that match nothing left.
     prune_filters: bool,
-    /// Permissions' database login section: the selected connection's agent login, its sheets.
+    /// Protection's agent login: the selected connection's, its sheets.
     pub(crate) login: crate::agents_login::LoginUi,
     /// Connections found to speak PostgreSQL's protocol without its logins (MotherDuck and the
     /// like): agents use the user's login there.
@@ -576,8 +567,7 @@ impl AgentsPage {
             import: None,
             import_focus: cx.focus_handle(),
             settings_note: None,
-            page: Page::Permissions,
-            protection_tab: Page::Permissions,
+            page: Page::Protection,
             visible: false,
             entries: Vec::new(),
             loaded: false,
@@ -610,11 +600,11 @@ impl AgentsPage {
             detail_w: DETAIL_W,
             detail_drag: false,
             audit_body: Rc::default(),
-            protection_body: Rc::default(),
             audit_list: gpui::ListState::new(0, gpui::ListAlignment::Top, px(400.)),
             conns_scroll: gpui::ScrollHandle::new(),
             types_scroll: gpui::ScrollHandle::new(),
-            perm_scroll: gpui::ScrollHandle::new(),
+            protection_scroll: gpui::ScrollHandle::new(),
+            jump: None,
             audit_items: Vec::new(),
             types_offset: 0,
             type_sel: None,
@@ -690,9 +680,6 @@ impl AgentsPage {
     pub fn show(&mut self, page: Page, cx: &mut Context<Self>) {
         if self.page != page {
             self.menu = None;
-        }
-        if page.is_protection() {
-            self.protection_tab = page;
         }
         self.page = page;
         if page == Page::Audit {
@@ -801,11 +788,30 @@ impl AgentsPage {
                 if let Some(id) = self.conn.clone().filter(|id| self.core.config.get(id).is_some_and(|p| p.mcp_rules.view == dataman_core::privacy::AgentView::Masked)) {
                     self.edit_conn(&id, |p| {
                         if let Some(s) = p.mcp_rules.sensitive.get_mut(i) {
-                            s.how = m;
+                            (s.how, s.on) = (m, true);
                         }
                     }, cx);
                 }
             }
+            Act::SensOff(i) => {
+                if let Some(id) = self.conn.clone().filter(|id| self.core.config.get(id).is_some_and(|p| p.mcp_rules.view == dataman_core::privacy::AgentView::Masked)) {
+                    self.edit_conn(&id, |p| {
+                        if let Some(s) = p.mcp_rules.sensitive.get_mut(i) {
+                            s.on = false;
+                        }
+                    }, cx);
+                }
+            }
+            // Picking a default stores nothing, so the connection keeps following it.
+            Act::ReadFrom(f) => self.set_rule(|r| r.read_from = (f != dataman_core::privacy::ReadFrom::Primary).then_some(f), cx),
+            Act::TimeLimit(s) => self.set_rule(|r| r.time_limit_s = (s != dataman_core::privacy::DEFAULT_TIME_LIMIT_S).then_some(s), cx),
+            Act::ReadRows(n) => self.set_rule(|r| r.read_rows = (n != dataman_core::settings::MCP_MAX_ROWS).then_some(n), cx),
+            Act::WriteRows(n) => {
+                if let Some(id) = self.conn.clone() {
+                    self.edit_conn(&id, |p| p.mcp_row_limit = (n != dataman_core::settings::MCP_WRITE_ROW_LIMIT).then_some(n), cx);
+                }
+            }
+            Act::VisMode(m) => self.set_rule(|r| r.visible.mode = m, cx),
             Act::TypeMask(id, m) => self.set_type_mask(&id, m, cx),
             Act::Validator(v) => self.editor.validator = v,
             Act::CopyQuery(i) => {
@@ -867,7 +873,7 @@ impl AgentsPage {
                     self.audit_list.scroll_to_reveal_item(ix);
                 }
             }
-            Page::Permissions | Page::Privacy => {
+            Page::Protection => {
                 let all = self.profiles(cx);
                 let cur = self.conn.as_ref().and_then(|id| all.iter().position(|p| &p.id == id));
                 let Some(n) = next(all.len(), cur) else { return true };
@@ -960,7 +966,7 @@ impl AgentsPage {
     pub fn render_nav(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let t = cx.theme().clone();
         let rows = Page::NAV.into_iter().map(|p| {
-            let on = self.visible && (self.page == p || (p.is_protection() && self.page.is_protection()));
+            let on = self.visible && self.page == p;
             let id = SharedString::from(format!("agents-nav-{}", p.key()));
             let hov = t.hov;
             div()
@@ -978,10 +984,9 @@ impl AgentsPage {
                 .when(on, |d| d.bg(t.prs))
                 .when(!on, move |d| d.hover(move |s| s.bg(hov)))
                 .child(icon(p.icon()).size(px(14.)).text_color(if on { t.tx } else { t.tx3 }))
-                .child(div().flex_1().pl(px(4.)).child(p.nav_label()))
+                .child(div().flex_1().pl(px(4.)).child(p.label()))
                 .on_click(cx.listener(move |v, _, window, cx| {
-                    // Protection opens on the tab it was left on.
-                    v.show(if p.is_protection() { v.protection_tab } else { p }, cx);
+                    v.show(p, cx);
                     v.focus_list(window, cx);
                 }))
         });
@@ -2135,8 +2140,7 @@ impl Render for AgentsPage {
         let t = cx.theme().clone();
         let body = match self.page {
             Page::Audit => self.render_audit(&t, window, cx),
-            Page::Permissions => self.render_permissions(&t, window, cx),
-            Page::Privacy => self.render_privacy(&t, window, cx),
+            Page::Protection => self.render_protection(&t, window, cx),
             Page::Types => self.render_types(&t, window, cx),
             Page::General => self.render_general(&t, cx),
         };
