@@ -155,6 +155,7 @@ fn postgres_plan() {
     let plan = pg::create_plan(&s, &inv_sql("public"), &probe_sql(), "pw-not-shown", true);
     let shown = plan.shown();
     golden("pg_guarded.sql", &shown);
+    golden("pg_guarded.display.sql", &plan.display());
     assert!(!shown.contains("pw-not-shown") && !plan.copy().contains("pw-not-shown"), "the password never travels in clear");
     assert!(shown.contains("'SCRAM-SHA-256$4096:…'") && plan.copy().contains("SCRAM-SHA-256$4096:"));
     assert!(shown.contains("GRANT SELECT, INSERT, UPDATE, DELETE ON \"public\".\"orders\""), "{shown}");
@@ -185,6 +186,7 @@ fn postgres_read_tier_activity_and_structure() {
     let plan = pg::create_plan(&compile(&p, "", &opts()), &inv_sql("public"), &probe_sql(), "x", false);
     let shown = plan.shown();
     golden("pg_read_open.sql", &shown);
+    golden("pg_read_open.display.sql", &plan.display());
     assert!(!shown.contains("INSERT") && !shown.contains("SEQUENCE"), "{shown}");
     assert!(shown.contains("default_transaction_read_only = 'on'"));
     assert!(shown.contains("GRANT \"pg_read_all_stats\""), "activity on, nothing kept");
@@ -248,6 +250,7 @@ fn mysql_plan() {
     let plan = my::create_plan(&s, &inv_sql("shop"), &probe, "pw-not-shown", false);
     let shown = plan.shown();
     golden("mysql_guarded.sql", &shown);
+    golden("mysql_guarded.display.sql", &plan.display());
     assert!(!plan.copy().contains("pw-not-shown"));
     assert!(plan.copy().contains("IDENTIFIED WITH caching_sha2_password AS '$A$005$"));
     assert!(shown.contains("ACCOUNT LOCK") && plan.steps_run().last().unwrap().shown.ends_with("ACCOUNT UNLOCK;"), "unlocked last");
@@ -260,6 +263,7 @@ fn mysql_plan() {
     let plan = my::create_plan(&s, &inv_sql("shop"), &probe, "x", false);
     let shown = plan.shown();
     golden("mariadb_guarded.sql", &shown);
+    golden("mariadb_guarded.display.sql", &plan.display());
     assert!(plan.copy().contains("IDENTIFIED BY PASSWORD '*") && shown.contains("MAX_STATEMENT_TIME 30") && !shown.contains("ATTRIBUTE"));
     assert!(shown.contains("CREATE DATABASE `dataman_agent_a1b2c3d4_views` COMMENT 'dataman-managed v1 conn=a1b2c3d4e5f6'"));
     assert!(whos(&plan).iter().any(|(r, w)| r.contains("per call") && *w == Who::Database));
@@ -276,6 +280,7 @@ fn sql_server_plan() {
     let plan = ms::create_plan(&s, &inv, &probe_sql(), "pw-not-shown", false);
     let shown = plan.shown();
     golden("mssql_guarded.sql", &shown);
+    golden("mssql_guarded.display.sql", &plan.display());
     assert!(!plan.copy().contains("pw-not-shown") && plan.copy().contains("HASHED"));
     assert!(shown.contains("CREATE VIEW [dataman_agent_a1b2c3d4_views].[users]"), "{shown}");
     assert!(shown.contains("GRANT SELECT ([created_at], [id], [name]), UPDATE ([created_at], [id], [name]) ON OBJECT::[dbo].[users]") && shown.contains("GRANT DELETE ON OBJECT::[dbo].[users]"), "writes on the visible columns: {shown}");
@@ -314,6 +319,7 @@ fn mongo_plan() {
     let plan = mongo::create_plan(&s, &inv_docs(), &Probe { can_create: true, ..Default::default() }, "pw-not-shown", false);
     let shown = plan.shown();
     golden("mongo_guarded.js", &shown);
+    golden("mongo_guarded.display.js", &plan.display());
     assert!(!shown.contains("pw-not-shown") && plan.copy().contains("pw-not-shown"), "MongoDB takes the password: the copy alone has it");
     assert!(shown.contains("\"createRole\":\"dataman_agent_a1b2c3d4\""));
     assert!(shown.contains("\"create\":\"dataman_agent_a1b2c3d4_views.users\"") && shown.contains("\"password_hash\":0"), "the hidden field (named by the rules, not sampled) is projected out: {shown}");
@@ -339,6 +345,7 @@ fn redis_rules() {
     assert!(!t.iter().any(|x| x == "+@scripting" || x == "+@dangerous" || x == "+@all" || x == "allcommands"));
     let plan = redis::create_plan(&s, &Probe::default(), redis::Persist::AclFile, "pw-not-shown", false);
     golden("redis_read.txt", &plan.shown());
+    golden("redis_read.display.txt", &plan.display());
     assert!(!plan.copy().contains("pw-not-shown") && plan.copy().contains(&format!("#{}", hash::redis_sha("pw-not-shown"))));
     assert!(plan.shown().contains("ACL SAVE") && plan.shown().contains("(%R~dataman-managed:a1b2c3d4e5f6 -@all)"));
     // Only these: patterns. Everything except: the ACL can't, Dataman holds it.
@@ -373,6 +380,7 @@ fn search_roles() {
     assert!(!role.contains("audit_log"));
     let plan = search::create_plan(&s, &inv, &Probe { flavor: Flavor { superuser: true, ..Default::default() }, ..Default::default() }, "pw-not-shown", false);
     golden("es_guarded.txt", &plan.shown());
+    golden("es_guarded.display.txt", &plan.display());
     assert!(!plan.copy().contains("pw-not-shown") && plan.copy().contains("$2a$10$"));
     let os = search::desired(&s, &inv, true, true);
     let role = os.role.to_string();

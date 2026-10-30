@@ -820,7 +820,7 @@ impl AgentsPage {
             .flex()
             .flex_col()
             .when(warned, |d| d.child(div().flex_none().px(px(20.)).py(px(14.)).border_b_1().border_color(t.line).line_height(px(18.)).child(warn)))
-            .child(what_runs(t, "agents-login-sql", &plan.shown(), p.engine, &self.login.sql_scroll))
+            .child(what_runs(t, "agents-login-sql", &plan.display(), p.engine, &self.login.sql_scroll))
             .child(options)
             .into_any_element();
         let blocked = !plan.lacks.is_empty();
@@ -853,7 +853,7 @@ impl AgentsPage {
         let text = match plan {
             None => "Reading what Dataman made…".to_string(),
             Some(Err(_)) => String::new(),
-            Some(Ok(pl)) => pl.shown(),
+            Some(Ok(pl)) => pl.display(),
         };
         let unreachable = matches!(plan, Some(Err(_))) || error.is_some();
         let lead = "Drops the login and only what Dataman made for it (views, their schema or database, its role), revokes what it holds, and forgets its password. Nothing Dataman didn't make is touched. Agents are then refused here until you create a new login or let them use yours.";

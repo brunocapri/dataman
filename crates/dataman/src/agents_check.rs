@@ -1110,7 +1110,14 @@ async fn check_login(ws: &Entity<Workspace>, a: &Entity<AgentsPage>, pg: &Connec
     }
     pause(cx, 100).await;
     let moved = scroll.as_ref().map(|s| s.offset().x).unwrap_or_default();
-    r.check("WHAT RUNS scrolls sideways: its long lines are wider than the sheet, and a sideways swipe moves it", wide > gpui::px(0.) && moved < gpui::px(-1.), format!("max {wide:?} at {moved:?}"));
+    r.check("WHAT RUNS fits the sheet, or a sideways swipe moves it", wide <= gpui::px(0.) || moved < gpui::px(-1.), format!("max {wide:?} at {moved:?}"));
+    // Laid out to read: the view a column a line, the CASE a branch a line.
+    let display = cx.update(|_, cx| match &a.read(cx).login.sheet {
+        Some(Sheet::Create { review: Some(Ok(rv)), .. }) => rv.plan.display(),
+        _ => String::new(),
+    });
+    let display = display.unwrap_or_default();
+    r.check("WHAT RUNS breaks long statements into their clauses", display.contains(" AS\nSELECT\n  ") && display.contains("\n  CASE\n    WHEN ") && display.lines().all(|l| l.chars().count() <= 120), &display);
     shoot("21-modal-scrolled", cx);
     input(cx, gpui::PlatformInput::ScrollWheel(gpui::ScrollWheelEvent { position: code.map(centre).unwrap_or_default(), delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.), gpui::px(-200.))), modifiers: gpui::Modifiers::default(), touch_phase: gpui::TouchPhase::Moved }));
     pause(cx, 100).await;

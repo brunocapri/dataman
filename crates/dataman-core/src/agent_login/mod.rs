@@ -19,6 +19,7 @@ pub mod mongo;
 pub mod ms;
 pub mod my;
 pub mod pg;
+mod pretty;
 pub mod redis;
 pub mod search;
 
@@ -655,6 +656,13 @@ pub struct ViewDef {
     pub map: ViewMap,
 }
 
+#[derive(Clone, Copy)]
+enum Text {
+    Shown,
+    Copy,
+    Display,
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Plan {
     pub engine: Option<Engine>,
@@ -682,15 +690,21 @@ pub struct Plan {
 impl Plan {
     /// The script as the review shows it, grouped by purpose.
     pub fn shown(&self) -> String {
-        self.text(false)
+        self.text(Text::Shown)
     }
 
     /// The script as "Copy SQL" gives it.
     pub fn copy(&self) -> String {
-        self.text(true)
+        self.text(Text::Copy)
     }
 
-    fn text(&self, copy: bool) -> String {
+    /// [`Plan::shown`] laid out to read: long statements broken into their clauses, JSON
+    /// indented.
+    pub fn display(&self) -> String {
+        self.text(Text::Display)
+    }
+
+    fn text(&self, how: Text) -> String {
         let comment = match self.engine {
             Some(Engine::MongoDb) => "//",
             Some(Engine::Redis | Engine::Elasticsearch | Engine::OpenSearch) => "#",
@@ -712,13 +726,17 @@ impl Plan {
                 }
                 group = &s.group;
             }
-            let text = if copy { &s.copy } else { &s.shown };
+            let text = match how {
+                Text::Copy => s.copy.clone(),
+                Text::Display if s.action != Action::Note => pretty::step(self.engine, &s.shown),
+                Text::Shown | Text::Display => s.shown.clone(),
+            };
             if s.action == Action::Note {
                 for l in text.lines() {
                     out.push_str(&format!("{comment} {l}\n"));
                 }
             } else {
-                out.push_str(text);
+                out.push_str(&text);
                 out.push('\n');
             }
         }
