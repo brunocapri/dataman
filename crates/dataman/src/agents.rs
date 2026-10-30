@@ -34,33 +34,45 @@ pub enum Page {
 }
 
 impl Page {
-    pub const ALL: [Page; 5] = [Page::General, Page::Audit, Page::Permissions, Page::Privacy, Page::Types];
+    /// The nav's rows: Protection holds Permissions and Privacy, as its tabs.
+    pub const NAV: [Page; 4] = [Page::General, Page::Audit, Page::Permissions, Page::Types];
 
     pub fn label(self) -> &'static str {
         match self {
             Page::Audit => "Audit",
             Page::Permissions => "Permissions",
             Page::Privacy => "Privacy",
-            Page::Types => "Sensitive data",
+            Page::Types => "Masks",
             Page::General => "General",
+        }
+    }
+
+    /// Its row in the nav.
+    pub fn nav_label(self) -> &'static str {
+        match self {
+            Page::Permissions | Page::Privacy => "Protection",
+            p => p.label(),
         }
     }
 
     pub fn key(self) -> &'static str {
         match self {
             Page::Audit => "audit",
-            Page::Permissions => "permissions",
-            Page::Privacy => "privacy",
-            Page::Types => "types",
+            Page::Permissions | Page::Privacy => "protection",
+            Page::Types => "masks",
             Page::General => "general",
         }
+    }
+
+    /// One of Protection's tabs.
+    pub fn is_protection(self) -> bool {
+        matches!(self, Page::Permissions | Page::Privacy)
     }
 
     fn icon(self) -> Icon {
         match self {
             Page::Audit => Icon::Pulse,
-            Page::Permissions => Icon::Shield,
-            Page::Privacy => Icon::Padlock,
+            Page::Permissions | Page::Privacy => Icon::Shield,
             Page::Types => Icon::Types,
             Page::General => Icon::Plug,
         }
@@ -217,8 +229,8 @@ pub struct AgentsPage {
     /// What the last export or import did.
     pub(crate) settings_note: Option<String>,
     pub(crate) page: Page,
-    /// Privacy's row in the nav shows Sensitive data under it.
-    pub(crate) privacy_open: bool,
+    /// The Protection tab the nav goes back to.
+    pub(crate) protection_tab: Page,
     visible: bool,
     pub(crate) entries: Vec<Entry>,
     loaded: bool,
@@ -255,7 +267,8 @@ pub struct AgentsPage {
     pub(crate) detail_w: f32,
     pub(crate) detail_drag: bool,
     audit_body: Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
-    pub(crate) privacy_body: Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
+    /// Protection's body, measured for its columns.
+    pub(crate) protection_body: Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
     pub(crate) audit_scroll: gpui::ScrollHandle,
     pub(crate) conns_scroll: gpui::ScrollHandle,
     pub(crate) types_scroll: gpui::ScrollHandle,
@@ -282,9 +295,6 @@ impl Focusable for AgentsPage {
         self.focus.clone()
     }
 }
-
-/// Seen in the last five minutes: still at work.
-const CONNECTED: chrono::TimeDelta = chrono::TimeDelta::minutes(5);
 
 fn denied(e: &Entry) -> bool {
     e.approval.as_ref().is_some_and(|a| matches!(a.decision, Decision::Denied | Decision::Timeout))
@@ -554,7 +564,7 @@ impl AgentsPage {
             import_focus: cx.focus_handle(),
             settings_note: None,
             page: Page::Audit,
-            privacy_open: true,
+            protection_tab: Page::Permissions,
             visible: false,
             entries: Vec::new(),
             loaded: false,
@@ -587,7 +597,7 @@ impl AgentsPage {
             detail_w: DETAIL_W,
             detail_drag: false,
             audit_body: Rc::default(),
-            privacy_body: Rc::default(),
+            protection_body: Rc::default(),
             audit_scroll: gpui::ScrollHandle::new(),
             conns_scroll: gpui::ScrollHandle::new(),
             types_scroll: gpui::ScrollHandle::new(),
@@ -661,8 +671,8 @@ impl AgentsPage {
         if self.page != page {
             self.menu = None;
         }
-        if page == Page::Types {
-            self.privacy_open = true;
+        if page.is_protection() {
+            self.protection_tab = page;
         }
         self.page = page;
         if page == Page::Audit {
@@ -682,10 +692,6 @@ impl AgentsPage {
 
     pub(crate) fn engine_of(&self, name: &str, cx: &App) -> Option<Engine> {
         self.profile_named(name, cx).map(|p| p.engine)
-    }
-
-    pub(crate) fn connected_count(&self) -> usize {
-        agents_of(&self.entries).iter().filter(|a| chrono::Utc::now() - a.last < CONNECTED).count()
     }
 
     pub(crate) fn filtered(&self, cx: &App) -> Vec<usize> {
@@ -856,7 +862,10 @@ impl AgentsPage {
             Page::Types => {
                 let len = self.type_rows().len();
                 let Some(n) = next(len, self.type_sel) else { return true };
-                self.type_sel = Some(n);
+                // The editor follows the selection.
+                if let Some(id) = self.type_rows().get(n).map(|r| r.id.clone()) {
+                    self.select_type(&id, cx);
+                }
                 self.types_scroll.scroll_to_item(n + self.types_offset);
             }
         }
@@ -930,35 +939,15 @@ impl AgentsPage {
 
     pub fn render_nav(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let t = cx.theme().clone();
-        let n = self.connected_count();
-        // A small tree, as the explorer draws one: Sensitive data sits inside Privacy.
-        let open = self.privacy_open;
-        let rows = Page::ALL.into_iter().filter(|p| *p != Page::Types || open).map(|p| {
-            let child = p == Page::Types;
-            // A folded Privacy stands for the page inside it.
-            let on = self.visible && (self.page == p || (p == Page::Privacy && !open && self.page == Page::Types));
+        let rows = Page::NAV.into_iter().map(|p| {
+            let on = self.visible && (self.page == p || (p.is_protection() && self.page.is_protection()));
             let id = SharedString::from(format!("agents-nav-{}", p.key()));
             let hov = t.hov;
-            let chevron = (p == Page::Privacy).then(|| {
-                div()
-                    .children(ui::here(&"agents-nav-fold".into()))
-                    .id("agents-nav-fold")
-                    .size(px(16.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(ui::disclosure("agents-nav-chev", open, 10., t.tx4))
-                    .on_click(cx.listener(|v, _, _, cx| {
-                        cx.stop_propagation();
-                        v.privacy_open = !v.privacy_open;
-                        cx.notify();
-                    }))
-            });
             div()
                 .children(ui::here(&id.clone().into()))
                 .id(id)
                 .h(px(28.))
-                .pl(px(6. + if child { 12. } else { 0. }))
+                .pl(px(14.))
                 .pr(px(12.))
                 .flex()
                 .flex_row()
@@ -967,11 +956,11 @@ impl AgentsPage {
                 .text_color(if on { t.tx } else { t.tx2 })
                 .when(on, |d| d.bg(t.prs))
                 .when(!on, move |d| d.hover(move |s| s.bg(hov)))
-                .child(div().w(px(16.)).flex_none().flex().justify_center().children(chevron))
                 .child(icon(p.icon()).size(px(14.)).text_color(if on { t.tx } else { t.tx3 }))
-                .child(div().flex_1().pl(px(4.)).child(p.label()))
+                .child(div().flex_1().pl(px(4.)).child(p.nav_label()))
                 .on_click(cx.listener(move |v, _, window, cx| {
-                    v.show(p, cx);
+                    // Protection opens on the tab it was left on.
+                    v.show(if p.is_protection() { v.protection_tab } else { p }, cx);
                     v.focus_list(window, cx);
                 }))
         });
@@ -981,19 +970,7 @@ impl AgentsPage {
             .flex()
             .flex_col()
             .text_size(px(12.))
-            .child(
-                div()
-                    .h(px(34.))
-                    .flex_none()
-                    .pl(px(14.))
-                    .pr(px(12.))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(8.))
-                    .child(div().flex_1().text_size(px(11.)).text_color(t.tx2).child("AGENTS"))
-                    .child(div().text_size(px(11.)).text_color(t.tx3).child(format!("{n} connected"))),
-            )
+            .child(div().h(px(34.)).flex_none().pl(px(14.)).pr(px(12.)).flex().flex_row().items_center().child(div().flex_1().text_size(px(11.)).text_color(t.tx2).child("AGENTS")))
             .child(div().pt(px(2.)).pb(px(10.)).flex().flex_col().children(rows))
             .into_any_element()
     }

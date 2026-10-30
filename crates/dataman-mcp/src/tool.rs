@@ -354,8 +354,8 @@ impl Call {
 
     /// Time per call: what the agent asks (`timeout_ms`, 30 s by default) within the connection's limit.
     pub fn time_limit(&self, args: &Args) -> Duration {
-        let cap = self.rules_of(args).time_limit().as_millis() as u64;
-        Duration::from_millis(args.u64_or("timeout_ms", 30_000).min(cap).clamp(100, 300_000))
+        let cap = (self.rules_of(args).time_limit().as_millis() as u64).max(100);
+        Duration::from_millis(args.u64_or("timeout_ms", 30_000).clamp(100, cap))
     }
 
     pub fn target(&self, args: &Args, need: Need) -> Result<ConnectionProfile, ToolError> {
@@ -704,14 +704,9 @@ impl Call {
 
     pub fn limits(&self, args: &Args, default_rows: u64) -> Limits {
         let rules = self.rules_of(args);
-        let cap = rules.read_rows.unwrap_or(dataman_core::settings::MCP_MAX_ROWS).max(1);
-        let base = Limits::default();
-        Limits {
-            max_rows: args.u64_or("max_rows", default_rows).clamp(1, cap) as usize,
-            timeout: self.time_limit(args),
-            max_bytes: rules.read_bytes.map_or(base.max_bytes, |b| (b as usize).min(base.max_bytes)),
-            ..base
-        }
+        let cap = rules.read_cap().max(1);
+        // No size limit on a read: Rows per read and the cell length bound it.
+        Limits { max_rows: args.u64_or("max_rows", default_rows).clamp(1, cap).min(usize::MAX as u64) as usize, timeout: self.time_limit(args), max_bytes: usize::MAX, ..Limits::default() }
     }
 
     pub async fn run(&self, o: &Opened, sql: &str, params: Vec<Option<String>>, mode: Mode, limits: Limits) -> Result<bounded::Outcome, ToolError> {

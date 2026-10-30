@@ -298,7 +298,7 @@ fn postgres_tools() {
     let r = e.ok("run_query", c(json!({"sql": "SELECT g FROM generate_series(1, 5000) g", "max_rows": 100000})));
     assert_eq!(r["row_count"], 1000, "the settings' cap (1000) wins");
     let r = e.ok("run_query", c(json!({"sql": "SELECT repeat('x', 3000) AS big, g FROM generate_series(1, 200) g"})));
-    assert_eq!(r["truncated"], "bytes", "the byte cap");
+    assert_eq!((r["row_count"].as_u64(), r.get("truncated")), (Some(200), None), "no size limit on a read: its rows bound it");
     assert!(r["rows"][0][0].as_str().unwrap().ends_with('…') && r["cut_cells"].as_u64().unwrap() > 0);
     let r = e.ok("open_query", c(json!({"sql": format!("SELECT count(*) FROM {s}.orders"), "title": "orders"})));
     assert_eq!((r["rows"].clone(), r["in_tab"].as_bool()), (json!([[500]]), Some(false)));
@@ -526,10 +526,9 @@ fn several_reads() {
         let big = "SELECT repeat('x', 1000) AS t FROM generate_series(1, 150)";
         let r = e.ok("run_query", pg(json!({"sql": format!("{big}; {big}; SELECT 3"), "max_rows": 1000})));
         let res = r["results"].as_array().unwrap();
-        assert_eq!((res.len(), res[0]["row_count"].clone(), res[1]["truncated"].clone()), (2, json!(150), json!("bytes")), "{}", r["note"]);
-        assert!(res[1]["row_count"].as_u64().unwrap() < 150);
-        assert_eq!(r["truncated"], json!("bytes"));
-        assert!(r["note"].as_str().unwrap().contains("statement 3 not returned"), "{}", r["note"]);
+        // No size limit on reads: every statement comes back whole.
+        assert_eq!((res.len(), res[0]["row_count"].clone(), res[1]["row_count"].clone(), res[2]["rows"].clone()), (3, json!(150), json!(150), json!([[3]])));
+        assert!(r.get("truncated").is_none() && r.get("note").is_none(), "{r}");
     } else {
         eprintln!("skipping PostgreSQL: none at {h}:{p}");
     }

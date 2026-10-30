@@ -35,7 +35,7 @@ fn seed_profiles(core: &Core) {
     }
     r.structure = false;
     r.activity = false;
-    (r.time_limit_s, r.read_rows, r.read_bytes) = (Some(30), Some(100), Some(64 * 1024));
+    (r.time_limit_s, r.read_rows) = (Some(30), Some(100));
     pg.mcp_row_limit = Some(100);
     pg.mcp_allowed = vec!["UPDATE orders SET status = ? WHERE id = ?".into(), "DELETE FROM sessions WHERE expires_at < now()".into()];
     let mut billing = profile("billing-mssql", Engine::SqlServer, Environment::Production, McpAccess::Read);
@@ -49,7 +49,7 @@ fn seed_profiles(core: &Core) {
     let mut redis = profile("cache-redis", Engine::Redis, Environment::Dev, McpAccess::Full);
     let r = &mut redis.mcp_rules;
     (r.redis.keyspace, r.redis.scripting, r.redis.pubsub) = (false, false, false);
-    (r.time_limit_s, r.read_rows, r.read_bytes) = (Some(10), Some(500), Some(16 * 1024));
+    (r.time_limit_s, r.read_rows) = (Some(10), Some(500));
     redis.mcp_row_limit = Some(100);
     let all = [
         pg,
@@ -163,7 +163,7 @@ fn id_of(name: &str, core: &Core) -> Option<String> {
 }
 
 /// `agents-audit[-zoom|-zooming|-wide]`, `agents-privacy-data`, `agents-general[-import]`, `agents-permissions[-mongo|-redis]`, `agents-privacy`,
-/// `agents-types[-conn]`, `agents-empty`: the page as the mockups draw it.
+/// `agents-types[-conn|-card]`, `agents-empty`: the page as the mockups draw it (`-card`: Card number open in the editor).
 pub fn is_demo(stage: &str) -> bool {
     stage.starts_with("agents-") && stage != "agents-check"
 }
@@ -199,7 +199,9 @@ pub fn demo(ws: &Entity<Workspace>, stage: &str, window: &mut gpui::Window, cx: 
                     a.detail_w = 5000.;
                 }
             }
-            if page == Page::Types {
+            if stage == "agents-types-card" {
+                a.select_type("card", cx);
+            } else if page == Page::Types {
                 a.editor.name.update(cx, |i, cx| i.set_text("Customer code", cx));
                 a.editor.regex.update(cx, |i, cx| i.set_text(r"\bCUST-[0-9]{6}\b", cx));
                 a.editor.mask = Mask::Hash;
@@ -267,32 +269,37 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     click_probe("rail-agents", cx);
     let loaded = until(cx, 5, |cx| cx.update(|_, cx| a.read(cx).entries.len() >= 13).unwrap_or(false)).await;
     r.check("a click on it opens the Agents area on Audit, with the agents' calls", shows(cx) && page(cx) == Page::Audit && loaded, format!("{:?}", page(cx)));
-    let pages: Vec<&str> = Page::ALL.iter().map(|p| p.label()).collect();
-    r.check("the area's pages: General first, then Audit, Permissions, Privacy, Sensitive data (no Home)", pages == ["General", "Audit", "Permissions", "Privacy", "Sensitive data"], format!("{pages:?}"));
-    // Sensitive data sits inside Privacy, as a folder's child in the explorer: indented, folded
-    // and unfolded by Privacy's chevron.
-    let (privacy, types) = (probed("agents-nav-privacy", cx), probed("agents-nav-types", cx));
-    click_probe("agents-nav-fold", cx);
+    let pages: Vec<&str> = Page::NAV.iter().map(|p| p.nav_label()).collect();
+    r.check("the area's pages: General first, then Audit, Protection, Masks (no Home)", pages == ["General", "Audit", "Protection", "Masks"], format!("{pages:?}"));
+    // Permissions and Privacy are Protection's tabs; the nav goes back to the one left open.
+    click_probe("agents-nav-protection", cx);
     pause(cx, 50).await;
-    let folded = probed("agents-nav-types", cx).is_none() && page(cx) == Page::Audit;
-    click_probe("agents-nav-fold", cx);
+    let first = page(cx);
+    click_probe("agents-protection-tab-1", cx);
+    pause(cx, 50).await;
+    let tab = page(cx);
+    click_probe("agents-nav-audit", cx);
+    pause(cx, 50).await;
+    click_probe("agents-nav-protection", cx);
+    pause(cx, 50).await;
+    let back = page(cx);
+    click_probe("agents-protection-tab-0", cx);
+    click_probe("agents-nav-audit", cx);
     pause(cx, 50).await;
     r.check(
-        "Sensitive data shows inside Privacy, right under it; Privacy's chevron folds and unfolds it",
-        privacy.zip(types).is_some_and(|(p, t)| (t.top() - p.bottom()).abs() < gpui::px(1.)) && folded && probed("agents-nav-types", cx).is_some(),
-        format!("{privacy:?} {types:?} folded {folded}"),
+        "Protection opens on Permissions, its Privacy tab switches, and the nav goes back to the tab left open",
+        first == Page::Permissions && tab == Page::Privacy && back == Page::Privacy && probed("agents-nav-privacy", cx).is_none() && page(cx) == Page::Audit,
+        format!("{first:?} {tab:?} {back:?}"),
     );
     let when = cx.update(|_, cx| a.read(cx).f_when).ok();
     r.check("Audit opens on all time, so older calls show at once", when == Some(crate::agents::When::All), format!("{when:?}"));
-    let connected = cx.update(|_, cx| a.read(cx).connected_count()).unwrap_or(0);
-    r.check("its header counts two agents seen in the last minutes (Codex is idle)", connected == 2, connected);
     click_probe("agents-audit-row-3", cx);
     pause(cx, 100).await;
     let sel = cx.update(|_, cx| a.read(cx).selected).ok().flatten();
     r.check("a click selects a call", page(cx) == Page::Audit && sel == Some(3), format!("{:?} {sel:?}", page(cx)));
-    let note = cx.update(|_, cx| crate::agents::audit_note(&a.read(cx).entries[3])).unwrap_or_default();
+    let note = cx.update(|_, cx| a.read(cx).entries.get(3).map(crate::agents::audit_note)).ok().flatten().unwrap_or_default();
     r.check("its note: rows · columns · masked", note.0 == "40 rows · 6 columns · 2 masked" && !note.1, format!("{note:?}"));
-    let decision = cx.update(|_, cx| crate::agents::decision_text(&a.read(cx).entries[3])).unwrap_or_default();
+    let decision = cx.update(|_, cx| a.read(cx).entries.get(3).map(crate::agents::decision_text)).ok().flatten().unwrap_or_default();
     r.check("its decision: Ran · read, no question", decision == "Ran · read, no question", &decision);
     let kept = |cx: &mut AsyncWindowContext, i: usize| {
         cx.update(|_, cx| {
@@ -494,9 +501,9 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     r.check("… and ↑ the one before", sel(cx) == Some(9.min(all - 2)), format!("{:?}", sel(cx)));
 
     // Permissions, on the PostgreSQL connection the check saved.
-    click_probe("agents-nav-permissions", cx);
+    click_probe("agents-nav-protection", cx);
     pause(cx, 100).await;
-    r.check("the nav opens Permissions", page(cx) == Page::Permissions, format!("{:?}", page(cx)));
+    r.check("the nav opens Protection on Permissions", page(cx) == Page::Permissions, format!("{:?}", page(cx)));
     click_probe(&format!("agents-conn-{}", pg.name), cx);
     pause(cx, 50).await;
     let order: Vec<String> = cx.update(|_, cx| a.read(cx).profiles(cx).into_iter().map(|p| p.id).collect()).unwrap_or_default();
@@ -530,17 +537,24 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     pause(cx, 50).await;
     r.check("Agents may › Change structure, off: saved on the connection, and reads as never", !rules(&core, &pg.id).structure && may_state(McpAccess::Full, McpAccess::Full, false, false, false).0 == "never", format!("{:?}", rules(&core, &pg.id)));
     let chips = |p: &str, cx: &mut AsyncWindowContext| (0..8).filter(|k| probed(&format!("{p}-{k}"), cx).is_some()).count();
-    let counts = (chips("agents-wrows", cx), chips("agents-rrows", cx), chips("agents-rbytes", cx));
+    let counts = (chips("agents-time", cx), chips("agents-wrows", cx), chips("agents-rrows", cx), chips("agents-rbytes", cx));
     let unset = rules(&core, &pg.id);
     r.check(
-        "Limits show real values only (no Default chip), each list holding its default",
-        counts == (4, 4, 3)
+        "Limits show real values only (no Default chip), each list holding its default and ending on ∞; no Size per read",
+        counts == (5, 5, 5, 0)
             && dataman_core::privacy::WRITE_ROWS.contains(&dataman_core::settings::MCP_WRITE_ROW_LIMIT)
             && dataman_core::privacy::READ_ROWS.contains(&dataman_core::settings::MCP_MAX_ROWS)
-            && dataman_core::privacy::READ_BYTES.contains(&dataman_core::privacy::DEFAULT_READ_BYTES)
+            && [dataman_core::privacy::TIME_LIMITS[4], dataman_core::privacy::WRITE_ROWS[4], dataman_core::privacy::READ_ROWS[4]] == [dataman_core::privacy::UNLIMITED; 3]
             && unset.read_rows.is_none(),
         format!("{counts:?}"),
     );
+    click_probe("agents-rrows-4", cx);
+    click_probe("agents-wrows-4", cx);
+    pause(cx, 50).await;
+    let unlimited = (rules(&core, &pg.id).read_rows, core.config.get(&pg.id).and_then(|p| p.mcp_row_limit));
+    r.check("∞ is saved as no limit (0), for reads and for writes", unlimited == (Some(0), Some(0)), format!("{unlimited:?}"));
+    click_probe("agents-wrows-1", cx);
+    pause(cx, 50).await;
     click_probe("agents-time-1", cx);
     click_probe("agents-rrows-1", cx);
     pause(cx, 50).await;
@@ -572,7 +586,7 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     r.check("Redis: @scripting back on; @dangerous cannot be turned on", rd.scripting && !rd.allows(dataman_core::privacy::RedisCat::Dangerous), format!("{rd:?}"));
 
     // Privacy.
-    click_probe("agents-nav-privacy", cx);
+    click_probe("agents-protection-tab-1", cx);
     click_probe(&format!("agents-conn-{}", pg.name), cx);
     pause(cx, 50).await;
     key(cx, "home");
@@ -661,6 +675,9 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
         .flatten()
         .unwrap_or_default();
     click_probe("agents-field-sensitive", cx);
+    let shown = until(cx, 5, |cx| cx.update(|_, cx| a.read(cx).suggest.which == Some(crate::agents_suggest::Which::Sensitive)).unwrap_or(false)).await;
+    let n = cx.update(|_, cx| a.read(cx).suggest.items.len()).unwrap_or(0);
+    r.check("Sensitive columns: a click in the empty field lists suggestions at once, 8 at most", shown && (1..=8).contains(&n), n);
     typ(cx, &format!("{table}."));
     let cols = until(cx, 5, |cx| cx.update(|_, cx| a.read(cx).suggest.items.first().is_some_and(|c| c.kind == ItemKind::Column)).unwrap_or(false)).await;
     r.check("Sensitive columns: a table and a dot list its columns", cols, &table);
@@ -681,10 +698,10 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     pause(cx, 50).await;
     r.check("its mask menu sets Hash", rules(&core, &pg.id).sensitive.first().is_some_and(|s| s.how == Mask::Hash), "");
 
-    // Sensitive data.
-    click_probe("agents-nav-types", cx);
+    // Masks.
+    click_probe("agents-nav-masks", cx);
     pause(cx, 100).await;
-    r.check("Sensitive data lists the built-in and custom types", cx.update(|_, cx| a.read(cx).type_rows().len()).unwrap_or(0) == dataman_core::privacy::BUILTINS.len() + 2, "");
+    r.check("Masks lists the built-in and custom ones, then + to add one", cx.update(|_, cx| a.read(cx).type_rows().len()).unwrap_or(0) == dataman_core::privacy::BUILTINS.len() + 2 && probed("agents-type-add", cx).is_some(), "");
     click_probe("agents-type-row-card", cx);
     pause(cx, 50).await;
     key(cx, "down");
@@ -696,7 +713,33 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     key(cx, "enter");
     pause(cx, 50).await;
     let back = core.settings.get().agent_types.is_on("email");
-    r.check("Sensitive data: ↓ moves to E-mail, Enter switches it off and on", tsel == Some(1) && flipped == Some(false) && back == Some(true), format!("{tsel:?} {flipped:?} {back:?}"));
+    r.check("Masks: ↓ moves to E-mail, Enter switches it off and on", tsel == Some(1) && flipped == Some(false) && back == Some(true), format!("{tsel:?} {flipped:?} {back:?}"));
+    let opened = cx.update(|_, cx| (a.read(cx).editor.editing.clone(), a.read(cx).editor.name.read(cx).text().to_string(), a.read(cx).editor.regex.read(cx).text().to_string())).ok();
+    let email = dataman_core::privacy::builtin("email").map(|b| b.pattern().to_string());
+    r.check(
+        "the editor follows the selection: E-mail, a built-in mask, with its name and pattern",
+        opened.as_ref().is_some_and(|(id, name, re)| id.as_deref() == Some("email") && name == "E-mail" && Some(re) == email.as_ref()) && probed("agents-editor-title", cx).is_some(),
+        format!("{opened:?}"),
+    );
+    // A built-in mask changed, then reset to its default.
+    click_probe("agents-type-row-jwt", cx);
+    pause(cx, 50).await;
+    let _ = cx.update(|_, cx| a.update(cx, |a, cx| a.editor.name.update(cx, |i, cx| i.set_text("JWT token", cx))));
+    click_probe("agents-type-save", cx);
+    pause(cx, 50).await;
+    let types = core.settings.get().agent_types;
+    let jwt = dataman_core::privacy::builtin("jwt").map(|b| types.builtin_def(b).name);
+    let edited = types.builtin_edited("jwt");
+    click_probe("agents-type-delete", cx);
+    pause(cx, 50).await;
+    click_probe("agents-type-delete-yes", cx);
+    pause(cx, 50).await;
+    let reset = !core.settings.get().agent_types.builtin_edited("jwt");
+    r.check("a click on JWT opens it; Save renames it for every connection, Reset brings the default back", jwt.as_deref() == Some("JWT token") && edited && reset, format!("{jwt:?} {edited} {reset}"));
+    click_probe("agents-type-add", cx);
+    pause(cx, 50).await;
+    let fresh = cx.update(|_, cx| a.read(cx).editor.editing.is_none() && a.read(cx).editor.name.read(cx).text().is_empty()).unwrap_or(false);
+    r.check("+ opens an empty New mask", fresh, "");
     click_probe("agents-field-name", cx);
     typ(cx, "Order ref");
     click_probe("agents-field-regex", cx);
@@ -736,7 +779,7 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     r.check(
         "The agent sees' tip: nothing masked in Data; in Masked data the types in everything and the columns below whole",
         sees.contains("Data: Rows as stored. Nothing is masked.")
-            && sees.contains("Masked data: Values matching a Sensitive data type (cards, e-mails, keys…) are masked in everything the agent receives, and the sensitive columns below are masked whole."),
+            && sees.contains("Masked data: Values a Mask recognizes (cards, e-mails, keys…) are masked in everything the agent receives, and the sensitive columns below are masked whole."),
         sees.clone(),
     );
     let sens = crate::agents_rules::sens_tip().text();
@@ -744,7 +787,7 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     let masked_conns = core.config.connections().iter().filter(|p| p.mcp_rules.view == AgentView::Masked).count();
     let applies = cx.update(|_, cx| a.read(cx).profiles(cx).len()).unwrap_or(0);
     r.check(
-        "Sensitive columns' and Sensitive data's tips say where each applies; the page counts connections in Masked data",
+        "Sensitive columns' and Masks' tips say where each applies; the page says Masks apply to every connection in Masked data",
         sens.starts_with("Sensitive columns\nMasked data only")
             && types.contains("whether or not their column is a Sensitive column")
             && types.contains("Not on: Connections on Data or Structure only")
@@ -756,8 +799,8 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     );
     // One list for every connection: no picker of connections, no reset, and a switch is global.
     let ids: Vec<String> = cx.update(|_, cx| a.read(cx).type_rows().into_iter().map(|t| t.id).collect()).unwrap_or_default();
-    r.check("Sensitive data has no CPF or CNPJ, and starts with cards", ids.first().map(String::as_str) == Some("card") && !ids.iter().any(|i| i == "cpf" || i == "cnpj"), format!("{ids:?}"));
-    r.check("Sensitive data is one list: no connection picker, no Reset to global", probed("agents-scope", cx).is_none() && probed("agents-reset", cx).is_none(), "");
+    r.check("Masks has no CPF or CNPJ, and starts with cards", ids.first().map(String::as_str) == Some("card") && !ids.iter().any(|i| i == "cpf" || i == "cnpj"), format!("{ids:?}"));
+    r.check("Masks is one list: no connection picker, no Reset to global", probed("agents-scope", cx).is_none() && probed("agents-reset", cx).is_none(), "");
     click_probe("agents-type-switch-phone", cx);
     pause(cx, 50).await;
     let off = core.settings.get().agent_types.is_on("phone") == Some(false);
