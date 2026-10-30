@@ -452,10 +452,21 @@ async fn panels(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCont
     key(cx, "ctrl-z");
     r.check("Reset panel layout: ⌃Z brings the layout before it back", reset == home && layout(cx) == moved, String::new());
     key(cx, "ctrl-z");
-    pause(cx, 400).await;
 
     let width = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).explorer_w).unwrap();
-    let seam = cx.update(|_, cx| ws.read(cx).frame_now.dock(dataman_core::layout::Dock::Left).cols.first().map(|c| c.rect)).ok().flatten();
+    let seam_now = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).frame_now.dock(dataman_core::layout::Dock::Left).cols.first().map(|c| c.rect)).ok().flatten();
+    // The sidebar slides back to the left: drag its seam once it stands still (a slow renderer
+    // takes many times the animation, and a seam read mid-way lands the drag elsewhere).
+    let mut seam = None;
+    for _ in 0..80 {
+        pause(cx, 50).await;
+        draw(cx);
+        let now = seam_now(cx);
+        if now.is_some() && now == seam && layout(cx) == home {
+            break;
+        }
+        seam = now;
+    }
     let w0 = width(cx);
     if let Some(rect) = seam {
         let from = point(px(rect.right()), px(rect.y + rect.h / 2.));

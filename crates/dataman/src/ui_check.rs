@@ -388,11 +388,20 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     let mut turned = Vec::new();
     for name in ["schema-open", "schema-shut"] {
         let started = cx.update(|_, cx| tree.update(cx, |t, cx| t.demo_turn_schema(cx))).unwrap_or(false);
-        pause(cx, 80).await;
+        // Read at once: the fill runs on the clock, and a short pause can outlast it on a slow
+        // renderer.
         let moving = cx.update(|_, cx| tree.read(cx).demo_folder_turning()).unwrap_or(false);
+        pause(cx, 80).await;
         snap(name, cx);
-        pause(cx, 400).await;
-        let still = !cx.update(|_, cx| tree.read(cx).demo_folder_turning()).unwrap_or(true);
+        // Stops within a few frames of its length (a slow renderer's frames are far apart).
+        let mut still = false;
+        for _ in 0..40 {
+            pause(cx, 100).await;
+            still = !cx.update(|_, cx| tree.read(cx).demo_folder_turning()).unwrap_or(true);
+            if still {
+                break;
+            }
+        }
         turned.push(started && moving && still);
     }
     report("a schema opened or shut in the explorer: its folder's fill drains away or comes back, then stops", turned == [true, true], format!("{turned:?}"));

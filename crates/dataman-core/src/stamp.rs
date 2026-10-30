@@ -23,6 +23,13 @@ impl FileStamp {
         let (ino, changed) = (0, (0, 0));
         Some(FileStamp { modified: m.modified().ok(), len: m.len(), ino, changed })
     }
+
+    /// The file has not been written for a second: a stamp taken since tells every later write
+    /// apart. Until then a rewrite in place of the same length, in the same clock tick, shares
+    /// the whole stamp (times, inode), so only reading the file shows it.
+    pub fn settled(&self) -> bool {
+        self.modified.and_then(|t| t.elapsed().ok()).is_some_and(|age| age >= std::time::Duration::from_secs(1))
+    }
 }
 
 #[cfg(test)]

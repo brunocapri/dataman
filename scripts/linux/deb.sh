@@ -29,7 +29,7 @@ install -m 0644 "$root/packaging/linux/dev.dataman.Dataman.xml" "$pkg/usr/share/
 install -m 0644 "$root/LICENSE" "$pkg/usr/share/doc/dataman/copyright"
 for n in 128 256 512; do
   mkdir -p "$pkg/usr/share/icons/hicolor/${n}x${n}/apps"
-  convert "$root/packaging/AppIcon.png" -resize "${n}x${n}" "$pkg/usr/share/icons/hicolor/${n}x${n}/apps/dev.dataman.Dataman.png"
+  convert "${DATAMAN_ICON:-$root/packaging/AppIcon.png}" -resize "${n}x${n}" "$pkg/usr/share/icons/hicolor/${n}x${n}/apps/dev.dataman.Dataman.png"
 done
 size="$(du -sk "$pkg/usr" | cut -f1)"
 cat > "$pkg/DEBIAN/control" << EOF

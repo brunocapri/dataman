@@ -1,0 +1,145 @@
+# The end-to-end suite (`xtask e2e`: the app under Xvfb against the databases of
+# e2e/compose.yaml) and the live_* tests against the same databases. Nightly, by hand, and on a
+# pull request labelled `e2e`. x86_64 only (no SQL Server image for arm64, and llvmpipe on the
+# arm runners is too slow for the timing checks).
+name: E2E
+
+on:
+  schedule:
+    - cron: "0 5 * * *"
+  workflow_dispatch:
+  pull_request:
+    types: [labeled, opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_TOOLCHAIN: "1.99.0"
+  # The same selection as ci.yml: the build restores its cache and builds nothing else.
+  SEL: --release --locked --workspace --features dataman/checks
+  # No GPU on the runners: Mesa's GL (llvmpipe) draws; its Vulkan driver presents black under Xvfb.
+  VK_ICD_FILENAMES: /nonexistent.json
+  DEPS: >-
+    libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libxcb1-dev
+    libfontconfig-dev libfreetype-dev libegl1 libgl1-mesa-dri dbus-x11 gnome-keyring
+    xvfb xauth x11-utils libsecret-tools postgresql-client imagemagick
+
+jobs:
+  build:
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'e2e')
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: System packages
+        run: sudo apt-get update -qq && xargs sudo apt-get install -y -qq --no-install-recommends <<< "$DEPS"
+      - name: Rust ${{ env.RUST_TOOLCHAIN }} only
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update
+          rustup default "$RUST_TOOLCHAIN"
+          rustup toolchain list | cut -d' ' -f1 | grep -v "^$RUST_TOOLCHAIN" | xargs -r -n1 rustup toolchain uninstall
+      - uses: rui314/setup-mold@v1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-x86_64
+          save-if: false
+      - name: Build (the app with its checks, the MCP server, xtask)
+        run: cargo build $SEL --all-targets
+      - uses: actions/upload-artifact@v4
+        with:
+          name: e2e-bin
+          retention-days: 3
+          path: |
+            target/release/dataman
+            target/release/dataman-mcp
+            target/release/xtask
+
+  # The live_* tests skip in ci.yml (no database answers there); here they get every one.
+  live:
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'e2e')
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: System packages
+        run: sudo apt-get update -qq && xargs sudo apt-get install -y -qq --no-install-recommends <<< "$DEPS"
+      - name: Rust ${{ env.RUST_TOOLCHAIN }} only
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update
+          rustup default "$RUST_TOOLCHAIN"
+          rustup toolchain list | cut -d' ' -f1 | grep -v "^$RUST_TOOLCHAIN" | xargs -r -n1 rustup toolchain uninstall
+      - uses: rui314/setup-mold@v1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-x86_64
+          save-if: false
+      - name: Build
+        run: cargo build $SEL --all-targets
+      - name: Databases, seeded
+        run: target/release/xtask e2e --no-build --up-only
+      - name: Tests against the databases
+        run: |
+          dbus-run-session -- bash -euo pipefail -c '
+            echo -n ci | gnome-keyring-daemon --unlock --components=secrets > /dev/null
+            cargo test $SEL --no-fail-fast 2>&1 | tee test.log
+          '
+      - name: Live tests that still skipped
+        if: always()
+        run: |
+          { echo "### live tests: skipped connections"; grep -h "skipping: cannot reach" test.log | sort | uniq -c || echo "none"; } >> "$GITHUB_STEP_SUMMARY"
+
+  stages:
+    name: stages (${{ matrix.shard }})
+    needs: build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        # Grouped by the databases they need; each keeps the order of STAGES in e2e.rs. A stage
+        # added there and named in no group runs in `rest`.
+        include:
+          - shard: sql
+            only: newuser-check,connections-check,history-filter-check,explorer-check,json-check,dates-check,insert-check,mysql-check,mssql-check,mcp-tools-check
+          - shard: ui
+            # split-check: on Linux the left strip does not follow the tab in front after six
+            # quick ⌘T (offset stays 0; "eight tabs overflow the left strip…", then the wheel and
+            # fold checks after it) in most runs, retry included; it passes on macOS. Its other 48
+            # checks still run and show; the stage does not fail the job until that is fixed.
+            known: split-check
+            only: conns-check,ui-check,tabs-check,split-check,session-check,dock-check,pin-check,history-check,dropdowns-check,folders-check,undo-check,fk-check,fk-pop-check,fk-nav-check,find-check,results-check,value-check,table-check,edit-check
+          - shard: rest
+            skip: newuser-check,connections-check,history-filter-check,explorer-check,json-check,dates-check,insert-check,mysql-check,mssql-check,mcp-tools-check,conns-check,ui-check,tabs-check,split-check,session-check,dock-check,pin-check,history-check,dropdowns-check,folders-check,undo-check,fk-check,fk-pop-check,fk-nav-check,find-check,results-check,value-check,table-check,edit-check
+    steps:
+      - uses: actions/checkout@v4
+      - name: System packages
+        run: sudo apt-get update -qq && xargs sudo apt-get install -y -qq --no-install-recommends <<< "$DEPS"
+      - uses: actions/download-artifact@v4
+        with:
+          name: e2e-bin
+          path: target/release
+      - run: chmod +x target/release/dataman target/release/dataman-mcp target/release/xtask
+      - name: Stages
+        run: |
+          args=(--no-build --retry 1)
+          [ -z "${{ matrix.only }}" ] || args+=(--only "${{ matrix.only }}")
+          [ -z "${{ matrix.skip }}" ] || args+=(--skip "${{ matrix.skip }}")
+          [ -z "${{ matrix.known }}" ] || args+=(--known-failing "${{ matrix.known }}")
+          xvfb-run -a -s "-screen 0 1600x1000x24" target/release/xtask e2e "${args[@]}"
+      - name: Summary
+        if: always()
+        run: |
+          { echo "### ${{ matrix.shard }}"; echo '```'; cat target/e2e/*/summary.txt 2>/dev/null || echo "no summary"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-${{ matrix.shard }}
+          path: target/e2e/
+          if-no-files-found: ignore

@@ -72,5 +72,28 @@ fi
 baked="$("$target/release/dataman" --version 2> /dev/null || true)"
 [ "$baked" = "$version" ] || die "the binary says '$baked', expected '$version' (rebuild with DATAMAN_VERSION=$version)"
 mkdir -p "$dist"
+# The icon: packaging/AppIcon.png is made by scripts/icon.sh (macOS) and not committed; on a fresh
+# checkout (CI) the 1024 px PNG inside packaging/AppIcon.icns is the same picture.
+export DATAMAN_ICON="${DATAMAN_ICON:-$root/packaging/AppIcon.png}"
+if [ ! -f "$DATAMAN_ICON" ]; then
+  DATAMAN_ICON="$(mktemp -d)/AppIcon.png"
+  python3 -I - "$root/packaging/AppIcon.icns" "$DATAMAN_ICON" << 'PY'
+import struct, sys
+data = open(sys.argv[1], "rb").read()
+assert data[:4] == b"icns", "not an icns file"
+i, best = 8, None
+while i + 8 <= len(data):
+    n = struct.unpack(">I", data[i + 4:i + 8])[0]
+    body = data[i + 8:i + n]
+    if body[:8] == b"\x89PNG\r\n\x1a\n":
+        w = struct.unpack(">I", body[16:20])[0]
+        if best is None or w > best[0]:
+            best = (w, body)
+    i += max(n, 8)
+assert best, "no PNG in the icns"
+open(sys.argv[2], "wb").write(best[1])
+print(f"icon: the {best[0]} px PNG of {sys.argv[1]}")
+PY
+fi
 DATAMAN_TARGET="$target" "$root/scripts/linux/appimage.sh" "$arch" "$version" "$dist"
 DATAMAN_TARGET="$target" "$root/scripts/linux/deb.sh" "$arch" "$version" "$dist"

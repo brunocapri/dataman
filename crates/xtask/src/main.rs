@@ -31,7 +31,7 @@ fn run() -> Result<()> {
         Some("verify") if args.len() >= 3 => verify(&args[1], &args[2], &args[3..]),
         Some("e2e") => e2e::run(&args[1..]),
         _ => bail!(
-            "usage: xtask icon <svg> <out.icns> | keygen [--force] | pubkey | sign <dmg> --url <url> --version <v> [--notes <file>] [--min-macos <v>] | feed --version <v> [--notes <file>] [--min-macos <v>] (--asset <os-arch> <file> <url>)… | verify <feed.json> <file> --pubkey <b64> [--version <v>] [--asset <os-arch>] | e2e [--list] [--only a,b] [--skip a,b] [--no-build] [--no-reset] [--fresh] [-v]"
+            "usage: xtask icon <svg> <out.icns> | keygen [--force] | pubkey | sign <dmg> --url <url> --version <v> [--notes <file>] [--min-macos <v>] | feed --version <v> [--notes <file>] [--min-macos <v>] (--asset <os-arch> <file> <url>)… | verify <feed.json> <file> --pubkey <b64> [--version <v>] [--asset <os-arch>] | e2e [--list] [--only a,b] [--skip a,b] [--no-build] [--no-reset] [--fresh] [--retry <n>] [--known-failing a,b] [--up-only] [-v]"
         ),
     }
 }

@@ -1008,7 +1008,7 @@ impl ProjectStore {
             return Err(e);
         }
         let stamp = FileStamp::of(&path);
-        let theirs = if stamp.is_some() && stamp == g.stamp {
+        let theirs = if stamp.is_some_and(|s| s.settled()) && stamp == g.stamp {
             g.base.clone()
         } else {
             // A file that does not parse (a merge half done) is never written over.
