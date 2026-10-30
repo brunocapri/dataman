@@ -5,7 +5,11 @@
 use dataman_core::privacy::{self, AgentView, ItemKind, Mask, Names, ReadFrom, SensitiveCol, Visible, VisibleItem, VisibleMode};
 use dataman_core::settings::{MCP_MAX_ROWS, MCP_WRITE_ROW_LIMIT};
 use dataman_core::{ConnectionProfile, Engine, McpAccess};
-use gpui::{AnyElement, ClickEvent, Context, FontWeight, SharedString, Window, div, prelude::*};
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
+
+use gpui::{Animation, AnimationExt, AnyElement, ClickEvent, Context, FontWeight, SharedString, Window, canvas, div, prelude::*};
 
 use crate::agents::{Act, AgentsPage, Tip, field, qmark};
 use crate::agents_suggest::Which;
@@ -177,9 +181,66 @@ pub(crate) fn sub_title(t: &Theme, tip_id: &str, title: &str, tip: Tip) -> gpui:
 }
 
 /// A bordered table: rows divided by faint lines.
-fn table(t: &Theme, rows: Vec<gpui::Stateful<gpui::Div>>) -> gpui::Div {
+fn table(t: &Theme, rows: Vec<AnyElement>) -> gpui::Div {
     let faint = t.grid_line;
-    div().border_1().border_color(t.line).rounded(px(2.)).flex().flex_col().children(rows.into_iter().enumerate().map(move |(k, r)| r.when(k > 0, |d| d.border_t_1().border_color(faint))))
+    div().border_1().border_color(t.line).rounded(px(2.)).flex().flex_col().children(rows.into_iter().enumerate().map(move |(k, r)| div().when(k > 0, |d| d.border_t_1().border_color(faint)).child(r)))
+}
+
+const GROW: Duration = Duration::from_millis(220);
+const FADE: Duration = Duration::from_millis(200);
+const SLIDE: Duration = Duration::from_millis(180);
+
+/// A row that just appeared grows to its height and fades in; any other is drawn as it is.
+fn grow(row: gpui::Stateful<gpui::Div>, h: f32, key: &str, new: bool) -> AnyElement {
+    if !new {
+        return row.into_any_element();
+    }
+    row.overflow_hidden()
+        .with_animation(SharedString::from(format!("agents-in-{key}")), Animation::new(GROW).with_easing(gpui::ease_out_quint()), move |d, k| d.h(px(h * k)).opacity(k))
+        .into_any_element()
+}
+
+/// Between the dimmed look (what agents see is not Masked data) and the full one: at once, or
+/// fading when what agents see has just changed.
+fn dim(el: gpui::Div, id: &'static str, masked: bool, fading: bool) -> AnyElement {
+    if !fading {
+        return el.when(!masked, |d| d.opacity(0.55)).into_any_element();
+    }
+    el.with_animation((id, masked as usize), Animation::new(FADE).with_easing(gpui::ease_out_quint()), move |d, k| d.opacity(if masked { 0.55 + 0.45 * k } else { 1. - 0.45 * k }))
+        .into_any_element()
+}
+
+thread_local! {
+    /// Each `choices` control as laid out last frame (its origin, and each segment's place and
+    /// size), the choice it showed and the one its wash slides from.
+    static SEGS: RefCell<HashMap<String, Segs>> = RefCell::new(HashMap::new());
+}
+
+#[derive(Default)]
+struct Segs {
+    origin: Option<(f32, f32)>,
+    spans: Vec<Option<(f32, f32, f32, f32)>>,
+    on: usize,
+    from: usize,
+}
+
+fn seg_record(id: &str, k: Option<usize>, b: gpui::Bounds<gpui::Pixels>) {
+    SEGS.with(|s| {
+        if let Some(e) = s.borrow_mut().get_mut(id) {
+            let (x, y, w, h) = (f32::from(b.origin.x), f32::from(b.origin.y), f32::from(b.size.width), f32::from(b.size.height));
+            match k {
+                Some(k) if k < e.spans.len() => e.spans[k] = Some((x, y, w, h)),
+                Some(_) => {}
+                None => e.origin = Some((x, y)),
+            }
+        }
+    });
+}
+
+/// An absolutely placed, empty canvas reporting where it was laid out.
+fn seg_probe(id: &str, k: Option<usize>) -> gpui::Canvas<()> {
+    let id = id.to_string();
+    canvas(move |b, _, _| seg_record(&id, k, b), |_, _, _, _| {}).absolute().top_0().left_0().size_full()
 }
 
 /// A row's × (remove), shown while the row is hovered.
@@ -193,7 +254,37 @@ pub(crate) fn state_note(t: &Theme, text: impl Into<SharedString>) -> gpui::Div 
 }
 
 /// The page's segmented control: one choice, told by its wash.
+/// When the choice changes, its wash slides over from the one before (once the segments have
+/// been laid out, so their places are known).
 fn choices<T: Copy + PartialEq + 'static>(t: &Theme, id: &str, opts: &[(T, &str)], on: T, cx: &mut Context<AgentsPage>, pick: impl Fn(&mut AgentsPage, T, &mut Context<AgentsPage>) + Clone + 'static) -> gpui::Div {
+    let on_ix = opts.iter().position(|(v, _)| *v == on).unwrap_or(0);
+    let (from, slide) = SEGS.with(|s| {
+        let mut s = s.borrow_mut();
+        let e = s.entry(id.to_string()).or_insert_with(|| Segs { on: on_ix, from: on_ix, ..Default::default() });
+        if e.on != on_ix {
+            (e.from, e.on) = (e.on, on_ix);
+        }
+        if e.spans.len() != opts.len() {
+            e.spans = vec![None; opts.len()];
+        }
+        let at = |k: usize| Some((e.spans.get(k).copied().flatten()?, e.origin?)).map(|((x, y, w, h), (ox, oy))| (x - ox, y - oy, w, h));
+        (e.from, at(e.from).zip(at(on_ix)))
+    });
+    let wash = slide.map(|((x0, _, w0, _), (x1, y1, w1, h1))| {
+        let time = if cx.reduce_motion() { Duration::from_millis(1) } else { SLIDE };
+        div()
+            .absolute()
+            .top(px(y1))
+            .h(px(h1))
+            .left(px(x1))
+            .w(px(w1))
+            .rounded(px(1.))
+            .bg(t.prs)
+            .with_animation(SharedString::from(format!("{id}-wash-{from}-{on_ix}")), Animation::new(time).with_easing(gpui::ease_out_quint()), move |d, k| {
+                d.left(px(x0 + (x1 - x0) * k)).w(px(w0 + (w1 - w0) * k))
+            })
+    });
+    let washed = wash.is_some();
     let segs = opts.iter().enumerate().map(|(k, (v, label))| {
         let (v, pick) = (*v, pick.clone());
         let sel = v == on;
@@ -201,13 +292,15 @@ fn choices<T: Copy + PartialEq + 'static>(t: &Theme, id: &str, opts: &[(T, &str)
         let sid = SharedString::from(format!("{id}-{k}"));
         div()
             .children(ui::here(&sid.clone().into()))
+            .child(seg_probe(id, Some(k)))
             .id(sid)
+            .relative()
             .h(px(24.))
             .px(px(14.))
             .flex()
             .items_center()
             .rounded(px(1.))
-            .when(sel, |d| d.bg(t.prs).text_color(t.tx).font_weight(FontWeight::MEDIUM))
+            .when(sel, |d| d.when(!washed, |d| d.bg(t.prs)).text_color(t.tx).font_weight(FontWeight::MEDIUM))
             .when(!sel, move |d| d.text_color(t.tx2).cursor_pointer().hover(move |s| s.bg(hov).text_color(tx)))
             .child(label.to_string())
             .on_click(cx.listener(move |p, _, _, cx| {
@@ -215,7 +308,20 @@ fn choices<T: Copy + PartialEq + 'static>(t: &Theme, id: &str, opts: &[(T, &str)
                 cx.notify();
             }))
     });
-    div().flex().child(div().flex().flex_row().gap(px(2.)).p(px(2.)).border_1().border_color(t.line2).rounded(px(2.)).children(segs))
+    div().flex().child(
+        div()
+            .relative()
+            .flex()
+            .flex_row()
+            .gap(px(2.))
+            .p(px(2.))
+            .border_1()
+            .border_color(t.line2)
+            .rounded(px(2.))
+            .child(seg_probe(id, None))
+            .children(wash)
+            .children(segs),
+    )
 }
 
 /// How wide a popup button is: on its own, in a row of a table, or as wide as its column.
@@ -596,6 +702,38 @@ impl AgentsPage {
 
     // ---- Privacy ----
 
+    /// The rows (by key) that appeared since this connection's page was last drawn: added,
+    /// scanned or taken from a suggestion. None on its first showing.
+    fn arrivals(&mut self, conn: &str, keys: Vec<String>, reduced: bool) -> HashSet<String> {
+        let now = Instant::now();
+        if self.rows_seen.0 != conn {
+            self.rows_new.clear();
+        } else if !reduced {
+            for k in keys.iter().filter(|k| !self.rows_seen.1.contains(*k)) {
+                self.rows_new.insert(k.clone(), now);
+            }
+        }
+        self.rows_seen = (conn.to_string(), keys.into_iter().collect());
+        self.rows_new.retain(|_, at| now.duration_since(*at) < GROW * 3);
+        self.rows_new.keys().cloned().collect()
+    }
+
+    /// When what agents see last changed on this connection (not on coming to it).
+    fn view_changed(&mut self, conn: &str, view: AgentView) -> Option<Instant> {
+        match &mut self.view_seen {
+            Some((c, v, at)) if c == conn => {
+                if *v != view {
+                    (*v, *at) = (view, Some(Instant::now()));
+                }
+                *at
+            }
+            _ => {
+                self.view_seen = Some((conn.to_string(), view, None));
+                None
+            }
+        }
+    }
+
     fn privacy_section(&mut self, t: &Theme, p: &ConnectionProfile, window: &mut Window, cx: &mut Context<Self>) -> gpui::Div {
         let r = p.mcp_rules.clone();
         let names = Names::of(p.engine);
@@ -622,10 +760,17 @@ impl AgentsPage {
                 None => groups.push((g, vec![k])),
             }
         }
-        let mut rows: Vec<gpui::Stateful<gpui::Div>> = Vec::new();
+        let reduced = cx.reduce_motion();
+        let fading = !reduced && self.view_changed(&p.id, r.view).is_some_and(|at| at.elapsed() < FADE * 2);
+        let mut keys: Vec<String> = groups.iter().map(|(g, _)| format!("g:{g}")).collect();
+        keys.extend(r.sensitive.iter().map(|s| format!("s:{}", s.col)));
+        keys.extend(r.visible.items.iter().map(|i| format!("v:{}", i.name)));
+        let new = self.arrivals(&p.id, keys, reduced);
+        let mut rows: Vec<AnyElement> = Vec::new();
         for (g, ks) in groups {
             let label = if g.is_empty() { format!("Any {one}") } else { g.clone() };
-            rows.push(
+            let key = format!("g:{g}");
+            rows.push(grow(
                 div()
                     .id(SharedString::from(format!("agents-sens-group-{g}")))
                     .h(px(34.))
@@ -638,7 +783,10 @@ impl AgentsPage {
                     .font_weight(FontWeight::SEMIBOLD)
                     .child(icon(Icon::Table).size(px(14.)).text_color(t.tx3))
                     .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(label)),
-            );
+                34.,
+                &key,
+                new.contains(&key),
+            ));
             for k in ks {
                 let s = &r.sensitive[k];
                 let name = s.col.rsplit_once('.').map_or(s.col.as_str(), |(_, f)| f);
@@ -647,7 +795,8 @@ impl AgentsPage {
                 items.push(("Off".into(), !s.on, Act::SensOff(k)));
                 let example = if s.on { masked_example(name, s.how, &self.key) } else { "as stored".into() };
                 let rid = SharedString::from(format!("agents-sens-{k}"));
-                rows.push(
+                let key = format!("s:{}", s.col);
+                rows.push(grow(
                     div()
                         .id(rid.clone())
                         .group(rid.clone())
@@ -672,7 +821,10 @@ impl AgentsPage {
                             })))
                         })
                         .when(!masked, |d| d.child(div().w(px(20.)).flex_none())),
-                );
+                    36.,
+                    &key,
+                    new.contains(&key),
+                ));
             }
         }
         let scan = div()
@@ -689,7 +841,6 @@ impl AgentsPage {
             .flex()
             .flex_row()
             .gap(px(10.))
-            .when(!masked, |d| d.opacity(0.55))
             .when(masked, |d| {
                 d.child(self.suggest_field(t, Which::Sensitive, field(t, "agents-field-sensitive", &self.sens_input, window, cx).h(px(30.)), window, cx))
                     .child(ui::button(t, "agents-sens-add", ui::Btn::Secondary).h(px(30.)).px(px(14.)).child("Add").on_click(cx.listener(|v, _, _, cx| v.add_sensitive(cx))))
@@ -699,11 +850,11 @@ impl AgentsPage {
                 d.child(div().children(ui::here(&"agents-field-sensitive".into())).flex_1().h(px(30.)).px(px(9.)).flex().items_center().bg(t.field).border_1().border_color(t.field_b).text_color(t.tx4).child(sens_place))
                     .child(div().children(ui::here(&"agents-sens-add".into())).flex_none().h(px(30.)).px(px(14.)).flex().items_center().border_1().border_color(t.line2).text_color(t.tx4).child("Add"))
             });
+        let add = dim(add, "agents-sens-add-dim", masked, fading);
         let sensitive = sub(sub_title(t, "agents-sens-tip", title, sens_tip()).child(scan))
             // Kept and editable in every mode, but they only mask in Masked data: say so.
             .when(!masked, |d| {
-                d.child(
-                    div()
+                let note = div()
                         .children(ui::here(&"agents-sens-unused".into()))
                         .flex()
                         .flex_row()
@@ -721,11 +872,11 @@ impl AgentsPage {
                                 .hover(|s| s.opacity(0.75))
                                 .child("Use Masked data")
                                 .on_click(cx.listener(|v, _, _, cx| v.set_rule(|r| r.view = AgentView::Masked, cx))),
-                        ),
-                )
+                        );
+                d.child(if fading { note.with_animation("agents-sens-unused-in", Animation::new(FADE).with_easing(gpui::ease_out_quint()), |d, k| d.opacity(k)).into_any_element() } else { note.into_any_element() })
             })
             .children(self.scan_note.clone().map(|n| state_note(t, n)))
-            .when(!rows.is_empty(), |d| d.child(table(t, rows).when(!masked, |d| d.opacity(0.55))))
+            .when(!rows.is_empty(), |d| d.child(dim(table(t, rows), "agents-sens-dim", masked, fading)))
             .child(add);
 
         // Visibility: the mode, then its entries, struck through while they are what's hidden.
@@ -734,7 +885,7 @@ impl AgentsPage {
         let kind = Visible::kind_of(&typed, &self.schemas_of(p, cx), names);
         let verb = if r.visible.mode == VisibleMode::Only && kind != ItemKind::Column { "Show" } else { "Hide" };
         let modes = [VisibleMode::Except, VisibleMode::Only].iter().map(|m| (m.label().into(), *m == r.visible.mode, Act::VisMode(*m))).collect();
-        let items: Vec<gpui::Stateful<gpui::Div>> = r
+        let items: Vec<AnyElement> = r
             .visible
             .items
             .iter()
@@ -747,7 +898,8 @@ impl AgentsPage {
                     (false, false) => Icon::Table,
                 };
                 let rid = SharedString::from(format!("agents-vis-{k}"));
-                div()
+                let key = format!("v:{}", it.name);
+                let row = div()
                     .id(rid.clone())
                     .group(rid.clone())
                     .h(px(36.))
@@ -765,7 +917,8 @@ impl AgentsPage {
                                 r.visible.items.remove(k);
                             }
                         }, cx)
-                    })))
+                    })));
+                grow(row, 36., &key, new.contains(&key))
             })
             .collect();
         let visible = sub(sub_title(t, "agents-vis-tip", &format!("{} visibility", capitalized(one)), vis_tip(p.engine)))

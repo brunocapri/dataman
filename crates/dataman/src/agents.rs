@@ -265,6 +265,12 @@ pub struct AgentsPage {
     pub(crate) protection_scroll: gpui::ScrollHandle,
     /// A Protection section to bring to the top once it is laid out.
     pub(crate) jump: Option<crate::agents_rules::Jump>,
+    /// Protection's rows as last drawn for a connection, and the ones that appeared since (added,
+    /// scanned, taken from a suggestion): those grow in.
+    pub(crate) rows_seen: (String, std::collections::HashSet<String>),
+    pub(crate) rows_new: std::collections::HashMap<String, std::time::Instant>,
+    /// What agents see on the connection shown, and when it last changed: what hangs on it fades.
+    pub(crate) view_seen: Option<(String, dataman_core::privacy::AgentView, Option<std::time::Instant>)>,
     /// The Audit list's items: the calls shown, a day's header before each day's first.
     audit_items: Vec<AuditItem>,
     pub(crate) types_offset: usize,
@@ -605,6 +611,9 @@ impl AgentsPage {
             types_scroll: gpui::ScrollHandle::new(),
             protection_scroll: gpui::ScrollHandle::new(),
             jump: None,
+            rows_seen: Default::default(),
+            rows_new: Default::default(),
+            view_seen: None,
             audit_items: Vec::new(),
             types_offset: 0,
             type_sel: None,
