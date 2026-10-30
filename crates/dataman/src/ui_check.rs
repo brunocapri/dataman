@@ -1298,13 +1298,13 @@ async fn motion_checks(ws: &Entity<Workspace>, id: &str, cx: &mut AsyncWindowCon
     let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.store.update(cx, |s, cx| s.forget(&off, cx))));
 
     // Tooltips can be hovered: the pointer moved from the control onto the tooltip keeps it, and
-    // leaving both closes it.
+    // leaving both closes it. Quickly: shown within 400 ms, gone 300 ms after the pointer left.
     let tip = |cx: &mut AsyncWindowContext| crate::check::probed("tooltip", cx);
     let rail = crate::check::probed("rail-agents", cx);
     if let Some(r) = rail {
         crate::check::move_to(cx, crate::check::centre(r));
     }
-    pause(cx, 800).await;
+    pause(cx, 400).await;
     let shown = tip(cx);
     if let (Some(r), Some(b)) = (rail, shown) {
         let (from, to) = (crate::check::centre(r), crate::check::centre(b));
@@ -1316,10 +1316,10 @@ async fn motion_checks(ws: &Entity<Workspace>, id: &str, cx: &mut AsyncWindowCon
     let kept = tip(cx);
     let win = cx.update(|window, _| window.viewport_size()).unwrap();
     crate::check::move_to(cx, point(win.width * 0.6, win.height * 0.35));
-    pause(cx, 900).await;
+    pause(cx, 300).await;
     let gone = tip(cx);
     report(
-        "a tooltip stays while the pointer is on it, and closes once it leaves the control and the tooltip",
+        "a tooltip shows within 400 ms, stays while the pointer is on it, and closes 300 ms after it leaves the control and the tooltip",
         rail.is_some() && shown.is_some() && kept.is_some() && gone.is_none(),
         format!("rail {rail:?} shown {shown:?} kept {kept:?} gone {gone:?}"),
     );

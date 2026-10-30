@@ -1,5 +1,9 @@
+use std::cell::Cell;
+use std::rc::Rc;
+use std::time::{Duration, Instant};
+
 use gpui::{
-    AnyView, App, Context, Div, ElementId, FontWeight, Hsla, IntoElement, ParentElement, Render, SharedString,
+    AnyView, App, Bounds, Context, Div, ElementId, FontWeight, Hsla, IntoElement, ParentElement, Pixels, Render, SharedString,
     Stateful, Styled, Window, div, prelude::*,
 };
 use crate::theme::px;
@@ -447,14 +451,71 @@ pub fn menu_sep(t: &Theme) -> Div {
 
 /// Every tooltip in the app goes through here: it stays while the pointer is on it, so it can be
 /// read through, and goes once the pointer has left the control and the tooltip both (after a
-/// short grace to cross from one to the other).
-pub trait Tipped: StatefulInteractiveElement {
+/// short grace to cross from one to the other). Right after one was shown, the next shows at once.
+pub trait Tipped: StatefulInteractiveElement + ParentElement {
     fn tip(self, build: impl Fn(&mut Window, &mut App) -> AnyView + 'static) -> Self {
-        self.hoverable_tooltip(build)
+        let anchor: Rc<Cell<Option<Bounds<Pixels>>>> = Rc::default();
+        let at = anchor.clone();
+        let warm = TIP_SEEN.with(Cell::get).is_some_and(|seen| seen.elapsed() < TIP_WARM);
+        self.child(gpui::canvas(move |b, _, _| at.set(Some(b)), |_, _, _, _| {}).absolute().top_0().left_0().size_full())
+            .tooltip_show_delay(if warm { Duration::ZERO } else { TIP_SHOW })
+            .hoverable_tooltip(move |window, cx| {
+                let inner = build(window, cx);
+                let anchor = anchor.clone();
+                cx.new(|_| TipHost { inner, anchor, own: Rc::default(), left: None }).into()
+            })
     }
 }
 
-impl<E: StatefulInteractiveElement> Tipped for E {}
+impl<E: StatefulInteractiveElement + ParentElement> Tipped for E {}
+
+/// How long the pointer rests on a control before its tooltip shows, how long a tooltip waits for
+/// the pointer to cross onto it, and how soon after one the next shows at once.
+const TIP_SHOW: Duration = Duration::from_millis(300);
+const TIP_GRACE: Duration = Duration::from_millis(150);
+const TIP_WARM: Duration = Duration::from_millis(500);
+
+thread_local! {
+    /// When a tooltip was last on screen.
+    static TIP_SEEN: Cell<Option<Instant>> = const { Cell::new(None) };
+}
+
+/// A tooltip as gpui shows it: gpui keeps a hoverable one half a second after the pointer has
+/// left, so this hides it itself once the pointer has been off the control and the tooltip both
+/// for the grace.
+struct TipHost {
+    inner: AnyView,
+    anchor: Rc<Cell<Option<Bounds<Pixels>>>>,
+    own: Rc<Cell<Option<Bounds<Pixels>>>>,
+    left: Option<Instant>,
+}
+
+impl Render for TipHost {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let at = window.mouse_position();
+        let over = |b: &Cell<Option<Bounds<Pixels>>>| b.get().is_some_and(|b| b.contains(&at));
+        if over(&self.anchor) || over(&self.own) {
+            self.left = None;
+        } else if self.left.is_none() {
+            self.left = Some(Instant::now());
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(TIP_GRACE).await;
+                let _ = this.update(cx, |_, cx| cx.notify());
+            })
+            .detach();
+        }
+        if self.left.is_some_and(|l| l.elapsed() >= TIP_GRACE) {
+            return div().into_any_element();
+        }
+        TIP_SEEN.with(|s| s.set(Some(Instant::now())));
+        let own = self.own.clone();
+        div()
+            .relative()
+            .child(gpui::canvas(move |b, _, _| own.set(Some(b)), |_, _, _, _| {}).absolute().top_0().left_0().size_full())
+            .child(self.inner.clone())
+            .into_any_element()
+    }
+}
 
 pub struct Tooltip {
     title: SharedString,
