@@ -312,6 +312,8 @@ pub struct Workspace {
     saved_flash_task: Option<gpui::Task<()>>,
     pub(crate) rail_bounds: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<dataman_core::layout::NavView, gpui::Bounds<gpui::Pixels>>>>,
     pub(crate) saved_bounds: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
+    pub(crate) rail_fill: crate::sidebar::RailFill,
+    fades: crate::fades::Fades,
     pub(crate) logo_bounds: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
     pub(crate) title_marks: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<&'static str, gpui::Bounds<gpui::Pixels>>>>,
     pub(crate) editor_frac: Option<f32>,
@@ -515,6 +517,8 @@ impl Workspace {
             saved_flash_task: None,
             saved_bounds: Default::default(),
             rail_bounds: Default::default(),
+            rail_fill: Default::default(),
+            fades: Default::default(),
             logo_bounds: Default::default(),
             title_marks: Default::default(),
             editor_frac: None,
@@ -927,6 +931,43 @@ impl Workspace {
             self.modal_return = window.focused(cx);
         }
         prompt.update(cx, |p, cx| p.focus_field(0, window, cx));
+    }
+
+    /// The modal layers, in stacking order, each fading in (and the views out).
+    fn render_modals(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Vec<gpui::AnyElement> {
+        let reduced = crate::motion::still(cx);
+        let views: [(&'static str, Option<gpui::AnyView>); 6] = [
+            ("dialog", self.dialog.clone().map(Into::into)),
+            ("import", self.import.clone().map(Into::into)),
+            ("settings", self.settings_view.clone().map(Into::into)),
+            ("export", self.export.clone().filter(|e| e.read(cx).visible).map(Into::into)),
+            ("data-import", self.data_import.clone().filter(|e| e.read(cx).visible).map(Into::into)),
+            ("value", self.value_view.clone().map(Into::into)),
+        ];
+        let mut out: Vec<gpui::AnyElement> = Vec::new();
+        for (key, v) in views {
+            if key == "settings" {
+                let shortcuts = self.shortcuts_open.then(|| self.render_shortcuts(cx).into_any_element());
+                out.extend(self.fades.element("shortcuts", shortcuts, reduced, window));
+            }
+            out.extend(self.fades.view(key, v, reduced, window));
+        }
+        out.extend(self.palette.clone().map(|p| p.into_any_element()));
+        out.extend(self.render_filter_popover(cx));
+        let sheets = [
+            ("confirm-discard", self.render_confirm_discard(cx)),
+            ("confirm-delete", self.render_confirm_delete(cx)),
+            ("tx-sheet", self.render_tx_sheet(cx)),
+            ("param-sheet", self.render_param_sheet(cx)),
+            ("mcp-sheet", self.render_mcp_sheet(cx)),
+            ("update-sheet", self.render_update_sheet(cx)),
+            ("project-review", self.render_project_review(cx)),
+            ("outside-review", self.render_outside_review(cx)),
+        ];
+        for (key, el) in sheets {
+            out.extend(self.fades.element(key, el, reduced, window));
+        }
+        out
     }
 
     pub(crate) fn render_param_sheet(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
@@ -2713,6 +2754,7 @@ impl Render for Workspace {
                     .child(div().flex_1().min_w_0().h_full().flex().child(surface)),
             );
         let seams = if moving { Vec::new() } else { self.render_seams(&pass.frame, cx) };
+        let modals = self.render_modals(window, cx);
         div()
             .id("workspace")
             .size_full()
@@ -2973,23 +3015,7 @@ impl Render for Workspace {
             .children(self.render_panel_menu(cx))
             .children(self.render_toasts(window, cx))
             .children(self.render_crash_toast(cx))
-            .children(self.dialog.clone())
-            .children(self.import.clone())
-            .children(self.shortcuts_open.then(|| self.render_shortcuts(cx)))
-            .children(self.settings_view.clone())
-            .children(self.export.clone().filter(|e| e.read(cx).visible))
-            .children(self.data_import.clone().filter(|e| e.read(cx).visible))
-            .children(self.value_view.clone())
-            .children(self.palette.clone())
-            .children(self.render_filter_popover(cx))
-            .children(self.render_confirm_discard(cx))
-            .children(self.render_confirm_delete(cx))
-            .children(self.render_tx_sheet(cx))
-            .children(self.render_param_sheet(cx))
-            .children(self.render_mcp_sheet(cx))
-            .children(self.render_update_sheet(cx))
-            .children(self.render_project_review(cx))
-            .children(self.render_outside_review(cx))
+            .children(modals)
             .children(self.render_app_menu(cx))
             .children(crate::csd::border(window, cx))
             .children(self.render_resize_edges(window))

@@ -187,6 +187,10 @@ pub struct HistoryPanel {
     items: Vec<Item>,
     shown: usize,
     selected: Option<usize>,
+    /// Favorites picked together (shift-click a range, ⌘-click one more): moved, dragged and
+    /// removed as one.
+    picked: Vec<String>,
+    pick_anchor: Option<String>,
     chip: Chip,
     /// Connection (and database) the history is narrowed to, with the status chip.
     scope: Option<(String, Option<String>)>,
@@ -243,6 +247,8 @@ impl HistoryPanel {
             items: vec![],
             shown: 0,
             selected: None,
+            picked: vec![],
+            pick_anchor: None,
             chip: Chip::All,
             scope: None,
             scope_menu: false,
@@ -310,6 +316,8 @@ impl HistoryPanel {
         let core = &self.store.read(cx).core;
         self.favorites = core.favorites.list();
         self.folders = core.favorites.folders();
+        let favorites = &self.favorites;
+        self.picked.retain(|id| favorites.iter().any(|f| f.id == *id));
         if self.fav_scope.as_ref().is_some_and(|s| !self.folders.iter().any(|d| d.id == *s)) {
             self.fav_scope = None;
             self.fav_scope_menu = false;
@@ -378,12 +386,64 @@ impl HistoryPanel {
     }
 
     fn remove_favorite(&mut self, fav_ix: usize, cx: &mut Context<Self>) {
-        let id = self.favorites[fav_ix].id.clone();
-        if let Ok(Some((ix, fav))) = self.store.read(cx).core.favorites.take(&id) {
-            cx.emit(HistoryEvent::Did(Entry::new(format!("Remove favorite '{}'", fav.name), Op::Favorite { fav, ix, added: false })));
+        let ids = self.picked_with(&self.favorites[fav_ix].id);
+        let store = self.store.read(cx).core.favorites.clone();
+        let mut ops = Vec::new();
+        let mut last = String::new();
+        for id in &ids {
+            if let Ok(Some((ix, fav))) = store.take(id) {
+                last = fav.name.clone();
+                ops.push(Op::Favorite { fav, ix, added: false });
+            }
         }
+        match ops.len() {
+            0 => {}
+            1 => cx.emit(HistoryEvent::Did(Entry::new(format!("Remove favorite '{last}'"), ops.remove(0)))),
+            n => cx.emit(HistoryEvent::Did(Entry::new(format!("Remove {n} favorites"), Op::Many(ops)))),
+        }
+        self.picked.clear();
         self.refresh_keeping(cx);
         cx.emit(HistoryEvent::FavoritesChanged);
+    }
+
+    /// The favorites an action on `id` takes: every picked one when `id` is among them.
+    fn picked_with(&self, id: &str) -> Vec<String> {
+        if self.picked.len() > 1 && self.picked.iter().any(|p| p == id) {
+            self.favorites.iter().filter(|f| self.picked.contains(&f.id)).map(|f| f.id.clone()).collect()
+        } else {
+            vec![id.to_string()]
+        }
+    }
+
+    /// A click on the favorite at item `ix`: shift picks the range from the last plain click,
+    /// ⌘ adds or drops this one, a plain click starts over from it.
+    fn pick(&mut self, ix: usize, m: &gpui::Modifiers) {
+        let Some(Item::Fav(i)) = self.items.get(ix) else { return };
+        let id = self.favorites[*i].id.clone();
+        if m.shift {
+            let from = self.pick_anchor.as_deref().and_then(|a| self.fav_item(a)).or(self.selected).unwrap_or(ix);
+            let (lo, hi) = (from.min(ix), from.max(ix));
+            self.picked = (lo..=hi).filter_map(|j| match self.items[j] {
+                Item::Fav(f) => Some(self.favorites[f].id.clone()),
+                _ => None,
+            }).collect();
+        } else if m.platform {
+            if self.picked.is_empty()
+                && let Some(Item::Fav(cur)) = self.selected.and_then(|s| self.items.get(s))
+            {
+                self.picked.push(self.favorites[*cur].id.clone());
+            }
+            match self.picked.iter().position(|p| *p == id) {
+                Some(at) => {
+                    self.picked.remove(at);
+                }
+                None => self.picked.push(id.clone()),
+            }
+            self.pick_anchor = Some(id);
+        } else {
+            self.picked.clear();
+            self.pick_anchor = Some(id);
+        }
     }
 
     pub fn focus_favorite(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
@@ -587,14 +647,29 @@ impl HistoryPanel {
     }
 
     fn move_favorite(&mut self, id: &str, to: Option<String>, cx: &mut Context<Self>) {
-        let from = self.favorites.iter().find(|f| f.id == id).map(|f| (f.name.clone(), f.folder.clone()));
-        if let (Some((name, from)), Ok(Some(_))) = (from, self.store.read(cx).core.favorites.move_to_folder(id, to.as_deref())) {
-            let place = match to.as_ref().and_then(|d| self.folders.iter().find(|f| f.id == *d)) {
-                Some(d) => format!("'{}'", d.name),
-                None => "the top level".into(),
-            };
-            let op = Op::FavoriteFolder { id: id.to_string(), from, to: to.clone() };
-            cx.emit(HistoryEvent::Did(Entry::new(format!("Move '{name}' to {place}"), op)));
+        let ids = self.picked_with(id);
+        let store = self.store.read(cx).core.favorites.clone();
+        let mut ops = Vec::new();
+        let mut name = String::new();
+        for id in &ids {
+            let Some(f) = self.favorites.iter().find(|f| f.id == *id) else { continue };
+            if f.folder == to {
+                continue;
+            }
+            let (n, from) = (f.name.clone(), f.folder.clone());
+            if let Ok(Some(_)) = store.move_to_folder(id, to.as_deref()) {
+                name = n;
+                ops.push(Op::FavoriteFolder { id: id.clone(), from, to: to.clone() });
+            }
+        }
+        let place = match to.as_ref().and_then(|d| self.folders.iter().find(|f| f.id == *d)) {
+            Some(d) => format!("'{}'", d.name),
+            None => "the top level".into(),
+        };
+        match ops.len() {
+            0 => {}
+            1 => cx.emit(HistoryEvent::Did(Entry::new(format!("Move '{name}' to {place}"), ops.remove(0)))),
+            n => cx.emit(HistoryEvent::Did(Entry::new(format!("Move {n} favorites to {place}"), Op::Many(ops)))),
         }
         if let Some(d) = &to {
             self.open_folders.insert(d.clone());
@@ -609,7 +684,9 @@ impl HistoryPanel {
     }
 
     fn drop_target(&self, id: &str, pos: Point<Pixels>) -> Option<DropAt> {
-        let from = self.favorites.iter().find(|f| f.id == id)?.folder.clone();
+        self.favorites.iter().find(|f| f.id == id)?;
+        let ids = self.picked_with(id);
+        let homes: Vec<Option<String>> = self.favorites.iter().filter(|f| ids.contains(&f.id)).map(|f| f.folder.clone()).collect();
         let mut at = DropAt::Top;
         for (ix, it) in self.items.iter().enumerate() {
             if !self.list.bounds_for_item(ix).is_some_and(|b| b.contains(&pos)) {
@@ -622,10 +699,10 @@ impl HistoryPanel {
             };
             break;
         }
-        let already = match &at {
+        let already = homes.iter().all(|from| match &at {
             DropAt::Top => from.is_none(),
             DropAt::Folder(d) => from.as_deref() == Some(d.as_str()),
-        };
+        });
         (!already).then_some(at)
     }
 
@@ -868,6 +945,7 @@ impl HistoryPanel {
         }
         let cur = self.selected.and_then(|s| picks.iter().position(|&e| e == s)).unwrap_or(0);
         let next = (cur as isize + d).clamp(0, picks.len() as isize - 1) as usize;
+        self.picked.clear();
         self.selected = Some(picks[next]);
         self.list.scroll_to_reveal_item(picks[next]);
         cx.notify();
@@ -1182,6 +1260,7 @@ impl HistoryPanel {
                         if is_renaming || crate::keymap::menu_click(&ev.modifiers()) {
                             return;
                         }
+                        h.picked.clear();
                         h.selected = Some(ix);
                         window.focus(&h.focus, cx);
                         if ev.click_count() >= 2 {
@@ -1217,7 +1296,7 @@ impl HistoryPanel {
 
     fn render_fav(&self, ix: usize, fav_i: usize, t: &Theme, focused: bool, cx: &mut Context<Self>) -> AnyElement {
         let f = &self.favorites[fav_i];
-        let sel = self.selected == Some(ix);
+        let sel = self.selected == Some(ix) || (self.picked.len() > 1 && self.picked.contains(&f.id));
         let profile = f.connection_id.as_ref().and_then(|id| self.store.read(cx).profile(id));
         let conn_name = profile.map(|p| p.name.clone());
         let chip = profile.map(|p| t.profile_color(p));
@@ -1234,7 +1313,8 @@ impl HistoryPanel {
             Some(input) => Self::name_field(input, t),
             None => ui::marked(t, clip(&f.name, NAME_MAX), &self.query).text_color(t.tx).into_any_element(),
         };
-        let (fav_id, ghost) = (f.id.clone(), f.name.clone());
+        let together = self.picked_with(&f.id).len();
+        let (fav_id, ghost) = (f.id.clone(), if together > 1 { format!("{together} favorites") } else { f.name.clone() });
         let line = self.folder_line(ix).filter(|_| cx.has_active_drag());
         div()
             .relative()
@@ -1259,9 +1339,11 @@ impl HistoryPanel {
                         if is_renaming || crate::keymap::menu_click(&ev.modifiers()) {
                             return;
                         }
+                        let m = ev.modifiers();
+                        h.pick(ix, &m);
                         h.selected = Some(ix);
                         window.focus(&h.focus, cx);
-                        if ev.click_count() >= 2 {
+                        if ev.click_count() >= 2 && !m.shift && !m.platform {
                             h.open_selected_in_tab(cx);
                         }
                         cx.notify();
@@ -1270,14 +1352,12 @@ impl HistoryPanel {
                     .when(!is_renaming, |d| d.on_drag(DraggedFav(fav_id), move |_, _, _, cx| crate::dnd::ghost(ghost.clone(), chip, cx)))
                     .on_mouse_down(gpui::MouseButton::Right, cx.listener(move |h, ev: &gpui::MouseDownEvent, _, cx| {
                         cx.stop_propagation();
-                        h.selected = Some(ix);
-                        h.open_menu(MenuOn::Fav(fav_i), ev.position, cx);
+                        h.menu_on_fav(ix, fav_i, ev.position, cx);
                     }))
                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |h, ev: &gpui::MouseDownEvent, _, cx| {
                         if crate::keymap::menu_click(&ev.modifiers) {
                             cx.stop_propagation();
-                            h.selected = Some(ix);
-                            h.open_menu(MenuOn::Fav(fav_i), ev.position, cx);
+                            h.menu_on_fav(ix, fav_i, ev.position, cx);
                         }
                     }))
                     .child(
@@ -1288,17 +1368,31 @@ impl HistoryPanel {
                             .gap(px(8.))
                             .text_size(px(11.))
                             .child(div().flex_1().min_w_0().flex().flex_row().child(name))
-                            .children(conn_name.map(|n| div().flex_none().text_color(t.tx3).child(clip(&n, 20))))
-                            .child(fav_button(t, ("fav-remove", ix), true).on_click(cx.listener(
+                            .child(fav_button(t, ("fav-remove", ix), true).my(px(-4.)).mr(px(-4.)).on_click(cx.listener(
                                 move |h, _: &gpui::ClickEvent, _, cx| {
                                     cx.stop_propagation();
                                     h.remove_favorite(fav_i, cx);
                                 },
                             ))),
                     )
+                    // The connection line as History draws it: its colour, then name · database.
+                    .children(conn_name.map(|n| {
+                        let place = match &f.database {
+                            Some(db) => format!("{n} · {db}"),
+                            None => n,
+                        };
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(6.))
+                            .text_size(px(11.))
+                            .text_color(t.tx3)
+                            .children(chip.map(|c| ui::chip(c, 7.)))
+                            .child(ui::marked(t, clip(&place, NAME_MAX), &self.query))
+                    }))
                     .child(
                         div()
-                            .pl(px(20.))
                             .min_w_0()
                             .flex()
                             .flex_row()
@@ -1310,6 +1404,15 @@ impl HistoryPanel {
             )
             .children(line.map(|after| crate::dnd::drop_line(t, false, after).mx(px(6.))))
             .into_any_element()
+    }
+
+    /// The menu of a favorite: of all the picked ones when it is among them.
+    fn menu_on_fav(&mut self, ix: usize, fav_i: usize, at: Point<Pixels>, cx: &mut Context<Self>) {
+        if !self.picked.contains(&self.favorites[fav_i].id) {
+            self.picked.clear();
+        }
+        self.selected = Some(ix);
+        self.open_menu(MenuOn::Fav(fav_i), at, cx);
     }
 
     fn open_menu(&mut self, on: MenuOn, at: Point<Pixels>, cx: &mut Context<Self>) {
@@ -1339,6 +1442,8 @@ impl HistoryPanel {
             }
             MenuOn::Fav(i) => {
                 let Some(f) = self.favorites.get(*i) else { return vec![] };
+                let ids = self.picked_with(&f.id);
+                let homes: Vec<Option<&str>> = self.favorites.iter().filter(|f| ids.contains(&f.id)).map(|f| f.folder.as_deref()).collect();
                 let mut v = vec![
                     E::item(Act::Run, Icon::Run, "Run", Some("⌘↩")),
                     E::item(Act::Open, Icon::Tab, "Open in new tab", Some("⌥↩")),
@@ -1347,16 +1452,21 @@ impl HistoryPanel {
                 ];
                 if !self.folders.is_empty() {
                     let mut items = Vec::new();
-                    if f.folder.is_some() {
+                    if homes.iter().any(|h| h.is_some()) {
                         items.push((Act::Move(None), Icon::ChevronUp, SharedString::from("Top level"), false));
                     }
                     for d in &self.folders {
-                        let here = f.folder.as_deref() == Some(d.id.as_str());
+                        let here = homes.iter().all(|h| *h == Some(d.id.as_str()));
                         items.push((Act::Move(Some(d.id.clone())), Icon::Schema, d.name.clone().into(), here));
                     }
-                    v.push(E::Sub { icon: Icon::Schema, label: "Move to folder".into(), items });
+                    let label = if ids.len() > 1 { format!("Move {} to folder", ids.len()) } else { "Move to folder".into() };
+                    v.push(E::Sub { icon: Icon::Schema, label: label.into(), items });
                 }
-                v.extend([E::Sep, E::item(Act::Remove, Icon::Trash, "Remove", None), E::Sep, import]);
+                let remove = match ids.len() {
+                    1 => E::item(Act::Remove, Icon::Trash, "Remove", None),
+                    n => E::Item { act: Act::Remove, icon: Icon::Trash, label: format!("Remove {n} favorites").into(), detail: None, key: None },
+                };
+                v.extend([E::Sep, remove, E::Sep, import]);
                 v
             }
             MenuOn::Folder(id) => {
@@ -1610,6 +1720,7 @@ impl HistoryPanel {
         let button = div()
             .children(ui::here(&"history-chip".into()))
             .id("history-chip")
+            .cursor_pointer()
             .h(px(24.))
             .px(px(8.))
             .flex()
@@ -1687,6 +1798,7 @@ impl HistoryPanel {
         let button = div()
             .children(ui::here(&"history-scope".into()))
             .id("history-scope")
+            .cursor_pointer()
             .h(px(24.))
             .min_w_0()
             .flex_1()
@@ -1792,6 +1904,7 @@ impl HistoryPanel {
         let (hov, prs) = (t.hov, t.prs);
         let button = div()
             .id("history-clear")
+            .cursor_pointer()
             .h(px(24.))
             .min_w(px(24.))
             .px(px(if asking { 7. } else { 0. }))
@@ -1825,6 +1938,7 @@ impl HistoryPanel {
             .flex_row()
             .items_center()
             .gap(px(1.))
+            .cursor_pointer()
             .hover(move |s| s.bg(hov))
             .active(move |s| s.bg(prs))
             .child(icon(Icon::Plus).size(px(10.)).text_color(t.tx3))
@@ -2095,7 +2209,7 @@ impl HistoryPanel {
 
 fn fav_button(t: &Theme, id: impl Into<gpui::ElementId>, favorited: bool) -> gpui::Stateful<gpui::Div> {
     let (hov, prs) = (t.hov, t.prs);
-    let color = if favorited { t.warn } else { t.tx3 };
+    let color = if favorited { t.tx } else { t.tx3 };
     div()
         .id(id)
         .flex_none()
@@ -2103,6 +2217,7 @@ fn fav_button(t: &Theme, id: impl Into<gpui::ElementId>, favorited: bool) -> gpu
         .flex()
         .items_center()
         .justify_center()
+        .cursor_pointer()
         .hover(move |s| s.bg(hov))
         .active(move |s| s.bg(prs))
         .child(icon(if favorited { Icon::StarFill } else { Icon::Star }).size(px(12.)).text_color(color))

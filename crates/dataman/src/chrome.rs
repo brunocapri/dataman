@@ -535,7 +535,6 @@ impl Workspace {
         let tab = self.tabs[i].read(cx);
         let title = tab.title(cx);
         let conn = tab.connection().cloned();
-        let color = self.tab_color(tab, t, cx);
         let lar = conn.as_ref().is_some_and(|c| c.info.is_lar);
         let agent = tab.agent.is_some();
         let phase = tab.run_phase();
@@ -574,6 +573,7 @@ impl Workspace {
                 .items_center()
                 .justify_center()
                 .text_size(px(13.))
+                .cursor_pointer()
                 .hover(move |s| s.text_color(tx_c))
                 .child("×")
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -649,7 +649,7 @@ impl Workspace {
                 w.tab_menu = Some((drag_id, ev.position));
                 cx.notify();
             }))
-            .on_drag(crate::app::DraggedTab(drag_id), move |_, _, _, cx| crate::dnd::ghost(ghost_label.clone(), Some(color), cx))
+            .on_drag(crate::app::DraggedTab(drag_id), move |_, _, _, cx| crate::dnd::ghost(ghost_label.clone(), None, cx))
             .on_click(cx.listener(move |w, ev: &gpui::ClickEvent, window, cx| {
                 if !crate::keymap::menu_click(&ev.modifiers()) {
                     w.activate_tab(&activate, window, cx)
@@ -662,8 +662,7 @@ impl Workspace {
                     w.close_tab(ix, window, cx);
                 }
             }))
-            .child(ui::chip(color, 8.))
-            .when(lar, |d| d.child(ui::lar_dot(t).ml(px(-3.))))
+            .when(lar, |d| d.child(ui::lar_dot(t)))
             .when(agent, |d| d.child(icon(Icon::Agent).size(px(11.)).ml(px(-2.)).text_color(if active { t.tx2 } else { t.tx3 })))
             .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(title))
             .when(show_tx, |d| d.child(tx_chip(t, &tx, true)))

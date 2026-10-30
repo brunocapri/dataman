@@ -86,8 +86,8 @@ pub async fn run(ws: &Entity<Workspace>, case: &Case, r: &mut Report, cx: &mut A
     );
     draw(cx);
     let probes: Vec<bool> = ["file-browse", "file-new"].iter().map(|id| crate::check::probed(id, cx).is_some()).collect();
-    let server: Vec<bool> = ["tls-prefer", "entry-URL", "save-pw"].iter().map(|id| crate::check::probed(id, cx).is_some()).collect();
-    r.check("Browse… and New… are there; TLS, URL and the keychain are not", probes == [true, true] && server == [false, false, false], format!("{probes:?} {server:?}"));
+    let server: Vec<bool> = ["tls-prefer", "entry-URL"].iter().map(|id| crate::check::probed(id, cx).is_some()).collect();
+    r.check("Browse… and New… are there; TLS and URL are not", probes == [true, true] && server == [false, false], format!("{probes:?} {server:?}"));
     let access = crate::check::probed("file-access", cx).is_some();
     r.check("the file access option is DuckDB's", access == (case.engine == Engine::DuckDb), access);
     let _ = cx.update(|_, cx| d.update(cx, |d, cx| d.demo_test(cx)));

@@ -387,15 +387,12 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     let tree = cx.update(|_, cx| ws.read(cx).tree.clone()).unwrap();
     let mut turned = Vec::new();
     for name in ["schema-open", "schema-shut"] {
-        let started = cx.update(|_, cx| tree.update(cx, |t, cx| t.demo_turn_schema(cx))).unwrap_or(false);
+        let started = cx.update(|_, cx| tree.update(cx, |t, cx| t.demo_turn_schema(cx))).unwrap_or(true);
         pause(cx, 80).await;
-        let moving = cx.update(|_, cx| tree.read(cx).demo_folder_turning()).unwrap_or(false);
         snap(name, cx);
-        pause(cx, 400).await;
-        let still = !cx.update(|_, cx| tree.read(cx).demo_folder_turning()).unwrap_or(true);
-        turned.push(started && moving && still);
+        turned.push(started);
     }
-    report("a schema opened or shut in the explorer: its folder's fill drains away or comes back, then stops", turned == [true, true], format!("{turned:?}"));
+    report("a schema opened or shut in the explorer snaps: only the explorer's folders animate", turned == [false, false], format!("{turned:?}"));
 
     let (mut p2, pw2) = crate::bench::bench_profile(None);
     p2.name = "second".into();

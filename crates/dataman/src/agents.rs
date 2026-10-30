@@ -2049,7 +2049,7 @@ pub(crate) fn seg<T: Copy + PartialEq + 'static>(
             .items_center()
             .text_size(px(if small { 11.5 } else { 12. }))
             .when(sel, |d| d.bg(t.prs).text_color(t.tx).border_1().border_color(t.line2))
-            .when(!sel, move |d| d.text_color(t.tx2).hover(move |s| s.bg(hov)))
+            .when(!sel, move |d| d.text_color(t.tx2).cursor_pointer().hover(move |s| s.bg(hov)))
             .child(label.to_string())
             .on_click(cx.listener(move |p, _, _, cx| {
                 pick(p, v, cx);
@@ -2078,17 +2078,8 @@ pub(crate) fn dropdown(t: &Theme, page: &AgentsPage, id: SharedString, label: &s
     )
 }
 
-pub(crate) fn switch(t: &Theme, on: bool) -> gpui::Div {
-    div()
-        .flex_none()
-        .w(px(28.))
-        .h(px(16.))
-        .p(px(2.))
-        .flex()
-        .flex_row()
-        .when(on, |d| d.bg(t.tx2).justify_end())
-        .when(!on, |d| d.border_1().border_color(t.field_b))
-        .child(div().size(px(10.)).bg(if on { t.pop } else { t.tx3 }))
+pub(crate) fn switch(t: &Theme, id: impl Into<SharedString>, on: bool) -> gpui::AnyElement {
+    ui::switch_track(t, id, on)
 }
 
 /// Disabled and on, it is checked but inert: the tick in the disabled grey, not the accent.

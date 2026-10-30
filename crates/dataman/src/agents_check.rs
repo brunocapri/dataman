@@ -869,11 +869,11 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     // General: the server's own page.
     click_probe("agents-nav-general", cx);
     pause(cx, 100).await;
-    r.check("Agents › General: agent access and the command that connects Claude Code", page(cx) == Page::General && probed("agents-mcp-copy", cx).is_some() && probed("agents-mcp-access-1", cx).is_some(), "");
-    click_probe("agents-mcp-access-0", cx);
+    r.check("Agents › General: agent access and the command that connects Claude Code", page(cx) == Page::General && probed("agents-mcp-copy", cx).is_some() && probed("agents-mcp-access", cx).is_some(), "");
+    click_probe("agents-mcp-access-off", cx);
     pause(cx, 50).await;
     let off = !core.settings.get().mcp_enabled;
-    click_probe("agents-mcp-access-1", cx);
+    click_probe("agents-mcp-access-on", cx);
     pause(cx, 50).await;
     r.check("its Agent access switch is the global one", off && core.settings.get().mcp_enabled, "");
 

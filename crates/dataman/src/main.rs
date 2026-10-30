@@ -46,6 +46,7 @@ mod explorer_demo;
 #[cfg(feature = "checks")]
 mod export_check;
 mod export_ui;
+mod fades;
 mod find;
 #[cfg(feature = "checks")]
 mod find_check;

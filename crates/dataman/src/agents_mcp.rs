@@ -8,7 +8,7 @@ use dataman_core::agents_config::{self, AgentsFile, Change, Plan};
 use dataman_mcp::audit::{ApprovalNote, Audit, Decision, Entry, Outcome};
 use gpui::{AnyElement, Context, FontWeight, KeyDownEvent, SharedString, Window, div, prelude::*};
 
-use crate::agents::{AgentsPage, Tip, label_tip, seg};
+use crate::agents::{AgentsPage, Tip, label_tip};
 use crate::theme::{Theme, px};
 use crate::ui;
 
@@ -50,7 +50,7 @@ impl AgentsPage {
                     .item("On", "Each connection then follows its own MCP tier, privacy and limits (Permissions, Privacy).")
                     .item("Off", "Every agent call is refused. The same switch as Settings › MCP."),
             ))
-            .child(seg(t, "agents-mcp-access", &[(false, "Off"), (true, "On")], on, false, cx, |v, on, cx| v.edit_settings(|s| s.mcp_enabled = on, cx)));
+            .child(ui::switch(t, "agents-mcp-access", on).on_click(cx.listener(move |v, _, _, cx| v.edit_settings(move |s| s.mcp_enabled = !on, cx))));
         let cmd = crate::mcp::stdio_command();
         let copy = cmd.clone();
         let connect = div()

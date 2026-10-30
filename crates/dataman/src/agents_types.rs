@@ -216,9 +216,9 @@ impl AgentsPage {
             .child(
                 div()
                     .children(ui::here(&sw.clone().into()))
-                    .id(sw)
+                    .id(sw.clone())
                     .when(!r.on, |d| d.opacity(0.55))
-                    .child(switch(t, r.on))
+                    .child(switch(t, sw, r.on))
                     .on_click(cx.listener(move |v, _, _, cx| v.flip_type(&flip_id, cx))),
             )
             .child(

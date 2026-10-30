@@ -166,6 +166,8 @@ pub struct SettingsView {
     reset_all_bounds: Rc<RefCell<Vec<Bounds<Pixels>>>>,
     key_search: bool,
     key_query: Option<String>,
+    /// The Keyboard section's own search: commands by name, group or key as typed.
+    key_filter: gpui::Entity<TextInput>,
     key_button_bounds: Rc<RefCell<Vec<Bounds<Pixels>>>>,
     check_now_bounds: Rc<RefCell<Vec<Bounds<Pixels>>>>,
     page_scroll: ScrollHandle,
@@ -193,6 +195,14 @@ impl SettingsView {
         let system_font_query = cx.new(|cx| TextInput::new(cx, "Filter installed fonts").bare());
         cx.subscribe(&system_font_query, |_, _, ev: &InputEvent, cx| {
             if matches!(ev, InputEvent::Changed) {
+                cx.notify();
+            }
+        })
+        .detach();
+        let key_filter = cx.new(|cx| TextInput::new(cx, "Search shortcuts").bare());
+        cx.subscribe(&key_filter, |v: &mut Self, _, ev: &InputEvent, cx| {
+            if matches!(ev, InputEvent::Changed) {
+                v.scroll_to_top();
                 cx.notify();
             }
         })
@@ -229,6 +239,7 @@ impl SettingsView {
             reset_all_bounds: Default::default(),
             key_search: false,
             key_query: None,
+            key_filter,
             key_button_bounds: Default::default(),
             check_now_bounds: Default::default(),
             page_scroll: ScrollHandle::new(),
@@ -245,7 +256,17 @@ impl SettingsView {
         self.key_query = None;
         self.recording = None;
         self.search.update(cx, |i, cx| i.set_text("", cx));
-        let target = if on { self.focus.clone() } else { self.search.focus_handle(cx) };
+        self.key_filter.update(cx, |i, cx| i.set_text("", cx));
+        if on {
+            self.section = Section::Keyboard;
+        }
+        let target = if on {
+            self.focus.clone()
+        } else if self.section == Section::Keyboard {
+            self.key_filter.focus_handle(cx)
+        } else {
+            self.search.focus_handle(cx)
+        };
         window.focus(&target, cx);
         self.scroll_to_top();
         cx.notify();
@@ -674,9 +695,8 @@ impl SettingsView {
             }
             Row::Translucency => {
                 let on = s.translucency.is_on();
-                ui::segmented(t)
-                    .child(ui::segment(t, "tr-off", "Off", !on).on_click(cx.listener(|v, _, w, cx| v.set_translucency(Translucency::Off, w, cx))))
-                    .child(ui::segment(t, "tr-on", "On", on).on_click(cx.listener(|v, _, w, cx| v.set_translucency(Translucency::On, w, cx))))
+                ui::switch(t, "tr", on)
+                    .on_click(cx.listener(move |v, _, w, cx| v.set_translucency(if on { Translucency::Off } else { Translucency::On }, w, cx)))
                     .into_any_element()
             }
             Row::FontSize => {
@@ -697,19 +717,12 @@ impl SettingsView {
                     .items_center()
                     .gap(px(10.))
                     .when(system && !on, |d| d.child(div().text_size(px(11.)).text_color(t.tx3).whitespace_nowrap().child(if crate::keymap::LINUX { "on in the desktop" } else { "on in macOS" })))
-                    .child(
-                        ui::segmented(t)
-                            .child(ui::segment(t, "rm-off", "Animate", !on).on_click(cx.listener(|v, _, _, cx| v.set_reduce_motion(false, cx))))
-                            .child(ui::segment(t, "rm-on", "Reduce", on).on_click(cx.listener(|v, _, _, cx| v.set_reduce_motion(true, cx)))),
-                    )
+                    .child(ui::switch(t, "rm", on).on_click(cx.listener(move |v, _, _, cx| v.set_reduce_motion(!on, cx))))
                     .into_any_element()
             }
             Row::DbLogos => {
                 let on = s.db_logos;
-                ui::segmented(t)
-                    .child(ui::segment(t, "logos-off", "Hide", !on).on_click(cx.listener(|v, _, _, cx| v.set_logos(false, cx))))
-                    .child(ui::segment(t, "logos-on", "Show", on).on_click(cx.listener(|v, _, _, cx| v.set_logos(true, cx))))
-                    .into_any_element()
+                ui::switch(t, "logos", on).on_click(cx.listener(move |v, _, _, cx| v.set_logos(!on, cx))).into_any_element()
             }
             Row::Panels => ui::button(t, "reset-panels", ui::Btn::Secondary)
                 .h(px(28.))
@@ -734,10 +747,7 @@ impl SettingsView {
             }
             Row::FormatOnSave => {
                 let on = s.format_on_save;
-                ui::segmented(t)
-                    .child(ui::segment(t, "fos-on", "Format", on).on_click(cx.listener(|v, _, _, cx| v.set_format_on_save(true, cx))))
-                    .child(ui::segment(t, "fos-off", "Save as written", !on).on_click(cx.listener(|v, _, _, cx| v.set_format_on_save(false, cx))))
-                    .into_any_element()
+                ui::switch(t, "fos", on).on_click(cx.listener(move |v, _, _, cx| v.set_format_on_save(!on, cx))).into_any_element()
             }
             Row::Prefetch => {
                 let cur = s.prefetch_rows;
@@ -757,10 +767,7 @@ impl SettingsView {
             }
             Row::ConfirmCommit => {
                 let on = s.confirm_commit;
-                ui::segmented(t)
-                    .child(ui::segment(t, "cc-on", "Review first", on).on_click(cx.listener(|v, _, _, cx| v.save(|s| s.confirm_commit = true, cx))))
-                    .child(ui::segment(t, "cc-off", "Commit at once", !on).on_click(cx.listener(|v, _, _, cx| v.save(|s| s.confirm_commit = false, cx))))
-                    .into_any_element()
+                ui::switch(t, "cc", on).on_click(cx.listener(move |v, _, _, cx| v.save(|s| s.confirm_commit = !on, cx))).into_any_element()
             }
             Row::ExportDir => {
                 let dir: SharedString = s.export_dir.clone().unwrap_or_else(|| dataman_core::os::downloads_dir().map(|d| crate::export_ui::tilde(&d)).unwrap_or_else(|| "~/Downloads".into())).into();
@@ -837,10 +844,7 @@ impl SettingsView {
             }
             Row::UpdateCheck => {
                 let on = s.update_check;
-                ui::segmented(t)
-                    .child(ui::segment(t, "upd-daily", "Daily", on).on_click(cx.listener(|v, _, _, cx| v.set_update_check(true, cx))))
-                    .child(ui::segment(t, "upd-off", "Off", !on).on_click(cx.listener(|v, _, _, cx| v.set_update_check(false, cx))))
-                    .into_any_element()
+                ui::switch(t, "upd", on).on_click(cx.listener(move |v, _, _, cx| v.set_update_check(!on, cx))).into_any_element()
             }
             Row::CrashReports => ui::button(t, "crash-folder", ui::Btn::Secondary)
                 .h(px(28.))
@@ -853,18 +857,12 @@ impl SettingsView {
                 .into_any_element(),
             Row::McpAccess => {
                 let on = s.mcp_enabled;
-                ui::segmented(t)
-                    .child(ui::segment(t, "mcp-off", "Off", !on).on_click(cx.listener(|v, _, _, cx| v.set_mcp(|s| s.mcp_enabled = false, cx))))
-                    .child(ui::segment(t, "mcp-on", "On", on).on_click(cx.listener(|v, _, _, cx| v.set_mcp(|s| s.mcp_enabled = true, cx))))
-                    .into_any_element()
+                ui::switch(t, "mcp", on).on_click(cx.listener(move |v, _, _, cx| v.set_mcp(move |s| s.mcp_enabled = !on, cx))).into_any_element()
             }
             Row::McpClaude => self.copy_button(t, "copy-stdio", "Copy command", Some(crate::mcp::stdio_command()), cx),
             Row::Projects => {
                 let on = s.project_enabled;
-                ui::segmented(t)
-                    .child(ui::segment(t, "projects-off", "Off", !on).on_click(cx.listener(|v, _, _, cx| v.set_projects(false, cx))))
-                    .child(ui::segment(t, "projects-on", "On", on).on_click(cx.listener(|v, _, _, cx| v.set_projects(true, cx))))
-                    .into_any_element()
+                ui::switch(t, "projects", on).on_click(cx.listener(move |v, _, _, cx| v.set_projects(!on, cx))).into_any_element()
             }
             Row::ProjectFolder => {
                 let info = self.core.project.info(s);
@@ -1047,6 +1045,46 @@ impl SettingsView {
 
     fn commands_on(key: Option<&str>) -> Vec<&'static crate::keymap::Command> {
         crate::keymap::COMMANDS.iter().filter(|c| key.is_none_or(|k| crate::keymap::effective(c.id).iter().any(|e| e == k))).collect()
+    }
+
+    /// The Keyboard section's search: type to find commands, or press the keyboard button and
+    /// then a shortcut to find what it runs.
+    fn render_key_bar(&self, t: &Theme, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let keys = self.key_search;
+        let hov = t.hov;
+        let bounds = self.key_button_bounds.clone();
+        let key_button = div().flex_none().on_children_prepainted(move |b, _, _| *bounds.borrow_mut() = b).child(
+            div()
+                .id("settings-key-search")
+                .size(px(22.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .when(keys, |d| d.bg(t.acc_s))
+                .when(!keys, move |d| d.hover(move |s| s.bg(hov)))
+                .child(icon(Icon::Keyboard).size(px(14.)).text_color(if keys { t.acc } else { t.tx3 }))
+                .tip(ui::text_tooltip(if keys { "Search by text" } else { "Search by shortcut" }))
+                .on_click(cx.listener(|v, _, window, cx| v.set_key_search(!v.key_search, window, cx))),
+        );
+        div()
+            .id("settings-key-bar")
+            .flex_none()
+            .h(px(30.))
+            .pl(px(8.))
+            .pr(px(4.))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(8.))
+            .bg(t.hov)
+            .border_1()
+            .border_color(if keys { t.acc } else { t.field_b })
+            .text_color(t.tx)
+            .child(icon(Icon::Search).size(px(13.)).text_color(t.tx3))
+            .child(div().flex_1().min_w_0().map(|d| if keys { d.child(self.render_key_query(t)) } else { d.child(self.key_filter.clone()) }))
+            .child(key_button)
+            .into_any_element()
     }
 
     fn render_key_query(&self, t: &Theme) -> gpui::AnyElement {
@@ -1246,6 +1284,9 @@ impl Render for SettingsView {
                     }
                     v.section = s;
                     v.search.update(cx, |i, cx| i.set_text("", cx));
+                    if s == Section::Keyboard {
+                        window.focus(&v.key_filter.focus_handle(cx), cx);
+                    }
                     v.scroll_to_top();
                     cx.notify();
                 }))
@@ -1258,10 +1299,17 @@ impl Render for SettingsView {
             Some(k) => format!("Commands on {k}").into(),
             None => "Keyboard".into(),
         };
+        let key_bar = (keys || (!searching && self.section == Section::Keyboard)).then(|| self.render_key_bar(&t, cx));
         if keys {
             let cmds = Self::commands_on(self.key_query.as_deref());
             if !cmds.is_empty() {
                 page.push(self.render_commands(cmds, true, &t, cx));
+            }
+        } else if key_bar.is_some() && !searching {
+            let kq = self.key_filter.read(cx).text().trim().to_lowercase();
+            let cmds = Self::matching_commands(&kq);
+            if !cmds.is_empty() {
+                page.push(self.render_commands(cmds, !kq.is_empty(), &t, cx));
             }
         } else {
             for (row, section, label, words) in ROWS {
@@ -1271,7 +1319,7 @@ impl Render for SettingsView {
                 }
             }
             let cmds = Self::matching_commands(&q);
-            let show_keys = (!searching && self.section == Section::Keyboard) || (searching && !cmds.is_empty());
+            let show_keys = searching && !cmds.is_empty();
             if show_keys {
                 if searching {
                     page.push(ui::caps(&t, "KEYBOARD").into_any_element());
@@ -1283,24 +1331,9 @@ impl Render for SettingsView {
             let free = key_label.map(|k| SharedString::from(format!("No command uses {k}.")));
             page.push(div().pt(px(80.)).flex().justify_center().child(ui::empty_state(&t, "[ NO MATCH ]", 20., free)).into_any_element());
         }
-        let key_button = {
-            let hov = t.hov;
-            let bounds = self.key_button_bounds.clone();
-            div().flex_none().on_children_prepainted(move |b, _, _| *bounds.borrow_mut() = b).child(
-                div()
-                    .id("settings-key-search")
-                    .size(px(20.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .cursor_pointer()
-                    .when(keys, |d| d.bg(t.acc_s))
-                    .when(!keys, move |d| d.hover(move |s| s.bg(hov)))
-                    .child(icon(Icon::Keyboard).size(px(14.)).text_color(if keys { t.acc } else { t.tx3 }))
-                    .tip(ui::text_tooltip(if keys { "Search by text" } else { "Search by shortcut" }))
-                    .on_click(cx.listener(|v, _, window, cx| v.set_key_search(!v.key_search, window, cx))),
-            )
-        };
+        if let Some(bar) = key_bar {
+            page.insert(0, bar);
+        }
         let scrolled = self.page_scroll.offset().y < px(0.);
         let glass = t.glass;
         let sheet = ui::modal(&t, "settings-sheet")
@@ -1333,11 +1366,10 @@ impl Render for SettingsView {
                             .gap(px(8.))
                             .bg(t.hov)
                             .border_1()
-                            .border_color(if keys { t.acc } else { t.field_b })
+                            .border_color(t.field_b)
                             .text_color(t.tx)
                             .child(icon(Icon::Search).size(px(13.)).text_color(t.tx3))
-                            .child(div().flex_1().min_w_0().map(|d| if keys { d.child(self.render_key_query(&t)) } else { d.child(self.search.clone()) }))
-                            .child(key_button),
+                            .child(div().flex_1().min_w_0().child(self.search.clone())),
                     )
                     .children(nav),
             )
@@ -1407,6 +1439,11 @@ impl Render for SettingsView {
             .key_context("SettingsSheet Modal")
             .track_focus(&self.focus)
             .on_action(cx.listener(|v, _: &Close, window, cx| {
+                if v.section == Section::Keyboard && !v.key_filter.read(cx).text().is_empty() {
+                    v.key_filter.update(cx, |i, cx| i.set_text("", cx));
+                    window.focus(&v.key_filter.focus_handle(cx), cx);
+                    return;
+                }
                 if !v.search.read(cx).text().is_empty() {
                     v.search.update(cx, |i, cx| i.set_text("", cx));
                     window.focus(&v.search.focus_handle(cx), cx);

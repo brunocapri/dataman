@@ -54,7 +54,7 @@ fn forced_tip() -> Tip {
         .lead("It stays off while this connection hides or masks data in Privacy.")
 }
 
-fn tier_tip() -> Tip {
+pub(crate) fn tier_tip() -> Tip {
     Tip::new("MCP tier")
         .lead("How far agents can go on this connection.")
         .item("Off", "Agents can't use it.")
@@ -545,7 +545,7 @@ impl AgentsPage {
                     .items_center()
                     .gap(px(12.))
                     .child(div().flex_1().flex().flex_col().gap(px(3.)).child(div().text_color(if on { t.err } else { t.tx }).child("YOLO")).child(div().text_size(px(11.)).text_color(t.tx3).child("Writes run without asking.")))
-                    .child(crate::agents::switch(t, on).w(px(30.)))
+                    .child(crate::agents::switch(t, "agents-yolo-switch", on))
                     .on_click(cx.listener(|v, _, _, cx| {
                         let Some(p) = v.selected_profile(cx) else { return };
                         // On production YOLO takes a second, explicit yes.

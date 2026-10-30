@@ -27,6 +27,50 @@ pub(crate) fn workspace_actions(d: gpui::Stateful<gpui::Div>, cx: &mut Context<W
 const ICON_BOX: f32 = 28.;
 const GLYPH: f32 = 15.;
 
+/// The rail's selected icon is drawn filled: it floods in when picked and drains when left.
+#[derive(Default)]
+pub(crate) struct RailFill {
+    seen: Option<(NavView, bool)>,
+    view: Option<(NavView, Instant)>,
+    gear: Option<Instant>,
+}
+
+impl RailFill {
+    fn track(&mut self, view: NavView, gear: bool, reduced: bool) {
+        if let Some((v, g)) = self.seen.filter(|_| !reduced) {
+            if v != view {
+                self.view = Some((v, Instant::now()));
+            }
+            if g != gear {
+                self.gear = Some(Instant::now());
+            }
+        }
+        self.seen = Some((view, gear));
+    }
+
+    /// How full `v`'s icon is, while it still moves.
+    fn level(&self, v: NavView, on: bool) -> Option<f32> {
+        let (from, at) = self.view?;
+        (on || v == from).then(|| crate::motion::folder_fill(at, !on)).flatten()
+    }
+
+    fn gear_level(&self, on: bool) -> Option<f32> {
+        crate::motion::folder_fill(self.gear?, !on)
+    }
+
+    fn moving(&self) -> bool {
+        let busy = |at: Instant| at.elapsed() < crate::motion::FLOOD;
+        self.view.is_some_and(|(_, at)| busy(at)) || self.gear.is_some_and(busy)
+    }
+}
+
+fn rail_icon(outline: Icon, filled: Icon, on: bool, level: Option<f32>, size: f32, color: gpui::Hsla) -> AnyElement {
+    match level {
+        Some(level) => ui::flood_icon(outline, filled, level, size, color),
+        None => icon(if on { filled } else { outline }).size(px(size)).text_color(color).into_any_element(),
+    }
+}
+
 impl Workspace {
     pub(crate) fn set_nav(&mut self, v: NavView, cx: &mut Context<Self>) {
         match v {
@@ -95,7 +139,7 @@ impl Workspace {
         let right = self.layout.explorer_dock() == Dock::Right;
         let text = if right { format!("{} →", f.label) } else { format!("← {}", f.label) };
         let (x, y) = (star.origin.x, star.origin.y + star.size.height / 2. - gpui::px(9.));
-        let hint = div().absolute().top(y).h(gpui::px(18.)).flex().items_center().whitespace_nowrap().text_size(px(12.)).text_color(t.warn).opacity(a).child(text);
+        let hint = div().absolute().top(y).h(gpui::px(18.)).flex().items_center().whitespace_nowrap().text_size(px(12.)).text_color(t.tx).opacity(a).child(text);
         let hint = if right { hint.right(window.viewport_size().width - x + gpui::px(8.)) } else { hint.left(star.right() + gpui::px(8.)) };
         Some(hint.into_any_element())
     }
@@ -141,21 +185,27 @@ impl Workspace {
         }
         let bounds = self.rail_bounds.clone();
         let saved = self.saved_bounds.clone();
+        let settings_on = self.settings_view.is_some();
+        self.rail_fill.track(self.view, settings_on, crate::motion::still(cx));
+        if self.rail_fill.moving() {
+            window.request_animation_frame();
+        }
+        let fill = &self.rail_fill;
         let icons = NavView::ALL.map(|v| {
             let on = self.view == v;
             let flash = lit.filter(|_| v == NavView::Favorites);
-            let glyph = match v {
-                NavView::Explorer => Icon::Database,
-                NavView::Favorites if flash.is_some() => Icon::StarFill,
-                NavView::Favorites => Icon::Star,
-                NavView::History => Icon::History,
-                NavView::Agents => Icon::Robot,
+            let (outline, filled) = match v {
+                NavView::Explorer => (Icon::Database, Icon::DatabaseFill),
+                NavView::Favorites => (Icon::Star, Icon::StarFill),
+                NavView::History => (Icon::History, Icon::HistoryFill),
+                NavView::Agents => (Icon::Robot, Icon::RobotFill),
             };
             let color = match flash {
-                Some(_) => t.warn,
+                Some(_) => t.tx,
                 None if on => t.tx,
                 None => t.tx3,
             };
+            let glyph = rail_icon(outline, filled, on || flash.is_some(), fill.level(v, on).filter(|_| flash.is_none()), GLYPH, color);
             let hov = t.hov;
             let (bounds, saved) = (bounds.clone(), saved.clone());
             let tip = if flash.is_some() { said } else { v.label() };
@@ -176,13 +226,14 @@ impl Workspace {
                         .flex()
                         .items_center()
                         .justify_center()
+                        .cursor_pointer()
                         .when(on, |e| e.bg(t.prs))
-                        .when_some(flash, |e, k| e.bg(t.warn.opacity(0.22 * k)))
+                        .when_some(flash, |e, k| e.bg(t.tx.opacity(0.14 * k)))
                         .when(!on && flash.is_none(), move |e| e.hover(move |s| s.bg(hov)))
                         .tip(ui::tooltip(tip, None, None))
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .on_click(cx.listener(move |w, _, window, cx| w.rail_click(v, window, cx)))
-                        .child(icon(glyph).size(px(GLYPH)).text_color(color)),
+                        .child(glyph),
                 )
         });
         let on = self.view == NavView::Agents;
@@ -205,6 +256,7 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .justify_center()
+                    .cursor_pointer()
                     .when(on, |e| e.bg(t.prs))
                     .when(!on, move |e| e.hover(move |s| s.bg(hov)))
                     .tip(ui::tooltip("Agents", None, None))
@@ -216,9 +268,8 @@ impl Workspace {
                             w.show_nav(NavView::Agents, window, cx);
                         }
                     }))
-                    .child(icon(Icon::Robot).size(px(16.)).text_color(if on { t.tx } else { t.tx3 })),
+                    .child(rail_icon(Icon::Robot, Icon::RobotFill, on, fill.level(NavView::Agents, on), 16., if on { t.tx } else { t.tx3 })),
             );
-        let settings_on = self.settings_view.is_some();
         let gear = div()
             .children(ui::here(&"rail-settings".into()))
             .id("rail-settings")
@@ -227,12 +278,13 @@ impl Workspace {
             .flex()
             .items_center()
             .justify_center()
+            .cursor_pointer()
             .when(settings_on, |e| e.bg(t.prs))
             .when(!settings_on, move |e| e.hover(move |s| s.bg(hov)))
             .tip(ui::tooltip("Settings", None, crate::keymap::key("settings").as_deref()))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(cx.listener(|w, _, window, cx| w.toggle_settings(window, cx)))
-            .child(icon(Icon::Gear).size(px(GLYPH)).text_color(if settings_on { t.tx } else { t.tx3 }));
+            .child(rail_icon(Icon::Gear, Icon::GearFill, settings_on, fill.gear_level(settings_on), GLYPH, if settings_on { t.tx } else { t.tx3 }));
         div()
             .id("sidebar-rail")
             .w(px(metrics::RAIL_W))

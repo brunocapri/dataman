@@ -174,7 +174,8 @@ pub fn button(t: &Theme, id: impl Into<ElementId>, kind: Btn) -> Stateful<Div> {
         .items_center()
         .gap(px(7.))
         .text_size(px(12.))
-        .whitespace_nowrap();
+        .whitespace_nowrap()
+        .cursor_pointer();
     match kind {
         Btn::Primary => {
             let (h, p) = (t.acc_h, t.acc_p);
@@ -254,7 +255,7 @@ impl CopiedFlash {
 
 pub fn icon_button(t: &Theme, id: impl Into<ElementId>, i: Icon, box_size: f32, icon_size: f32) -> Stateful<Div> {
     let (hov, prs) = (t.hov, t.prs);
-    icon_button_inert(t, id, i, box_size, icon_size).hover(move |s| s.bg(hov)).active(move |s| s.bg(prs))
+    icon_button_inert(t, id, i, box_size, icon_size).cursor_pointer().hover(move |s| s.bg(hov)).active(move |s| s.bg(prs))
 }
 
 /// [`icon_button`] without its hover and press tints (a disabled one: GPUI takes one hover
@@ -297,6 +298,41 @@ pub fn checkbox(t: &Theme, on: bool) -> Div {
         .when(!on, |d| d.bg(t.field).border_1().border_color(t.line2))
 }
 
+/// The on/off switch's look: the knob slides and the track fills as it turns. `id` keys the motion.
+pub fn switch_track(t: &Theme, id: impl Into<SharedString>, on: bool) -> gpui::AnyElement {
+    use gpui::{AnimationExt, SpringAnimation};
+    let (fill, edge, knob_on, knob_off) = (t.tx2, t.field_b, t.pop, t.tx3);
+    let id: SharedString = id.into();
+    div()
+        .flex_none()
+        .relative()
+        .w(px(28.))
+        .h(px(16.))
+        .with_spring(ElementId::Name(format!("{id}-knob").into()), SpringAnimation::new(crate::motion::TURN).to(on), move |d, k| {
+            let k = k.0.clamp(0., 1.);
+            let knob = |c: Hsla, a: f32| div().absolute().top(px(3.)).left(px(3. + 12. * k)).size(px(10.)).bg(c).opacity(a);
+            d.child(div().absolute().inset_0().border_1().border_color(edge).opacity(1. - k))
+                .child(div().absolute().inset_0().bg(fill).opacity(k))
+                .child(knob(knob_off, 1. - k))
+                .child(knob(knob_on, k))
+        })
+        .into_any_element()
+}
+
+/// An on/off switch to click. Checks find it as `id`, and as `{id}-on` while it is off and
+/// `{id}-off` while it is on (what a click there does).
+pub fn switch(t: &Theme, id: impl Into<SharedString>, on: bool) -> Stateful<Div> {
+    let id: SharedString = id.into();
+    let action: ElementId = SharedString::from(format!("{id}-{}", if on { "off" } else { "on" })).into();
+    div()
+        .children(here(&action))
+        .children(here(&ElementId::Name(id.clone())))
+        .id(ElementId::Name(id.clone()))
+        .flex_none()
+        .cursor_pointer()
+        .child(switch_track(t, id, on))
+}
+
 pub fn segmented(t: &Theme) -> Div {
     div().flex().flex_row().h(px(28.)).p(px(2.)).bg(t.field).border_1().border_color(t.line2)
 }
@@ -314,7 +350,7 @@ pub fn segment(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedStrin
         .justify_center()
         .text_size(px(11.5))
         .when(on, |d| d.bg(t.pop).text_color(t.tx).border_1().border_color(t.line2))
-        .when(!on, |d| d.text_color(t.tx3).hover(move |s| s.bg(hov)))
+        .when(!on, |d| d.text_color(t.tx3).cursor_pointer().hover(move |s| s.bg(hov)))
         .child(label.into())
 }
 
@@ -327,6 +363,11 @@ pub fn disclosure(id: impl Into<ElementId>, open: bool, size: f32, color: Hsla) 
             svg.with_transformation(Transformation::rotate(radians(k.0 * std::f32::consts::FRAC_PI_2)))
         })
         .into_any_element()
+}
+
+/// A disclosure chevron that turns at once.
+pub fn disclosure_still(open: bool, size: f32, color: Hsla) -> gpui::AnyElement {
+    crate::assets::icon(if open { crate::assets::Icon::ChevronDown } else { crate::assets::Icon::ChevronRight }).size(px(size)).text_color(color).into_any_element()
 }
 
 pub fn dropdown_arrow(id: impl Into<ElementId>, open: bool, size: f32, color: Hsla) -> gpui::AnyElement {
@@ -352,9 +393,14 @@ pub fn menu_in(id: impl Into<ElementId>, menu: impl IntoElement + 'static) -> gp
 }
 
 pub fn folder_icon(open: bool, fill: Option<f32>, size: f32, color: Hsla) -> gpui::AnyElement {
-    let Some(level) = fill else {
-        return icon(if open { Icon::Schema } else { Icon::SchemaFilled }).size(px(size)).text_color(color).into_any_element();
-    };
+    match fill {
+        Some(level) => flood_icon(Icon::Schema, Icon::SchemaFilled, level, size, color),
+        None => icon(if open { Icon::Schema } else { Icon::SchemaFilled }).size(px(size)).text_color(color).into_any_element(),
+    }
+}
+
+/// An outline icon with its filled twin rising from the bottom, `level` of the way up.
+pub fn flood_icon(outline: Icon, filled: Icon, level: f32, size: f32, color: Hsla) -> gpui::AnyElement {
     let filled = div()
         .absolute()
         .left_0()
@@ -362,8 +408,8 @@ pub fn folder_icon(open: bool, fill: Option<f32>, size: f32, color: Hsla) -> gpu
         .w(px(size))
         .h(px(size * level))
         .overflow_hidden()
-        .child(icon(Icon::SchemaFilled).absolute().left_0().bottom_0().size(px(size)).text_color(color));
-    div().relative().flex_none().size(px(size)).child(icon(Icon::Schema).size(px(size)).text_color(color)).child(filled).into_any_element()
+        .child(icon(filled).absolute().left_0().bottom_0().size(px(size)).text_color(color));
+    div().relative().flex_none().size(px(size)).child(icon(outline).size(px(size)).text_color(color)).child(filled).into_any_element()
 }
 
 pub fn popover(t: &Theme) -> Div {
@@ -389,7 +435,7 @@ pub fn menu_item(
         .gap(px(10.))
         .text_size(px(12.))
         .text_color(if enabled { t.tx } else { t.tx4 })
-        .when(enabled, |d| d.hover(move |s| s.bg(acc).text_color(on_acc)))
+        .when(enabled, |d| d.cursor_pointer().hover(move |s| s.bg(acc).text_color(on_acc)))
         .child(div().flex_1().child(label.into()))
         .children(key.map(|k| div().text_size(px(11.)).opacity(0.7).child(k.to_string())))
 }

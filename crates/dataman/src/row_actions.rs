@@ -41,7 +41,7 @@ pub fn bind_keys(cx: &mut App) {
 impl Workspace {
     pub(crate) fn on_row_action(&mut self, act: Act, target: Target, alt: bool, window: &mut Window, cx: &mut Context<Self>) {
         match target {
-            Target::Empty if act == Act::NewConnection => self.open_dialog(None, window, cx),
+            Target::Empty | Target::Header if act == Act::NewConnection => self.open_dialog(None, window, cx),
             Target::Conn { id, .. } => self.conn_action(act, id, window, cx),
             Target::Db { conn, db, .. } => match act {
                 Act::ToggleReadOnly => self.toggle_read_only(&conn, &db, cx),

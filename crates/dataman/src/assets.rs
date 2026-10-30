@@ -15,12 +15,14 @@ assets!(
     "icons/activity.svg",
     "icons/agent.svg",
     "icons/robot.svg",
+    "icons/robot-fill.svg",
     "icons/pulse.svg",
     "icons/shield.svg",
     "icons/types.svg",
     "icons/column.svg",
     "icons/grid-table.svg",
     "icons/gear.svg",
+    "icons/gear-fill.svg",
     "icons/braces.svg",
     "icons/arrow-right.svg",
     "icons/check.svg",
@@ -36,6 +38,7 @@ assets!(
     "icons/constraint.svg",
     "icons/copy.svg",
     "icons/database.svg",
+    "icons/database-fill.svg",
     "icons/edit.svg",
     "icons/export.svg",
     "icons/extension.svg",
@@ -45,6 +48,7 @@ assets!(
     "icons/group.svg",
     "icons/hash.svg",
     "icons/history.svg",
+    "icons/history-fill.svg",
     "icons/import.svg",
     "icons/index.svg",
     "icons/info.svg",
@@ -187,6 +191,10 @@ pub enum Icon {
     GridTable,
     Gear,
     Format,
+    DatabaseFill,
+    HistoryFill,
+    RobotFill,
+    GearFill,
 }
 
 impl Icon {
@@ -266,6 +274,10 @@ impl Icon {
             Icon::GridTable => "icons/grid-table.svg",
             Icon::Gear => "icons/gear.svg",
             Icon::Format => "icons/format.svg",
+            Icon::DatabaseFill => "icons/database-fill.svg",
+            Icon::HistoryFill => "icons/history-fill.svg",
+            Icon::RobotFill => "icons/robot-fill.svg",
+            Icon::GearFill => "icons/gear-fill.svg",
         }
     }
 }
@@ -325,7 +337,7 @@ mod tests {
             Sidebar, SidebarRight, PanelRight, Expand, Collapse, Lock, Warning, Info, More, Tab, Command, Code, Hash, Plug,
             Tunnel, MatView, Function, Procedure, Sequence, Type, Label, Trigger, Extension, Role,
             Constraint, Link, Partition, Activity, Star, StarFill, Pin, Agent, Live, Collection, Robot, Pulse, Shield,
-            Types, Column, GridTable,
+            Types, Column, GridTable, Gear, Format, DatabaseFill, HistoryFill, RobotFill, GearFill,
         ];
         for i in all {
             let bytes = Assets.load(i.path()).unwrap().unwrap_or_else(|| panic!("{} missing", i.path()));

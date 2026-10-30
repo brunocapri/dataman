@@ -432,6 +432,12 @@ pub fn copied_redraws(reduced: bool) -> Vec<Duration> {
     COPIED.redraws(reduced)
 }
 
+/// No motion that moves or covers things: reduce motion is on, or a check stage is clicking
+/// and drawing right after each change.
+pub fn still(cx: &gpui::App) -> bool {
+    cx.reduce_motion() || (cfg!(feature = "checks") && std::env::var_os("DATAMAN_SHOT_STAGE").is_some())
+}
+
 pub struct ReduceMotionPref(pub bool);
 
 impl Global for ReduceMotionPref {}

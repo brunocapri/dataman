@@ -13,7 +13,6 @@ use dataman_core::{ConnectionProfile, Environment, HostKeyPrompt, McpAccess, Ser
 
 const ENGINES: [Engine; 9] = Engine::ALL;
 const SAVED_IN: &str = if cfg!(target_os = "macos") { "saved in Keychain" } else { "saved in keyring" };
-const SAVE_IN: &str = if cfg!(target_os = "macos") { "Save in Keychain" } else { "Save in keyring" };
 
 fn family_label(e: Engine) -> &'static str {
     match e {
@@ -138,7 +137,6 @@ pub struct ConnDialog {
     sslmode: SslMode,
     /// Picked by the user (or a pasted string, or a saved connection): the host no longer decides.
     ssl_chosen: bool,
-    save_password: bool,
     color: usize,
     env: Environment,
     read_only: bool,
@@ -147,6 +145,11 @@ pub struct ConnDialog {
     ssh: SshFields,
     entry: Entry,
     conn_str: Entity<TextInput>,
+    /// The form's natural height as last laid out, the height it is shown at, and the tween
+    /// between them when the form grows or shrinks.
+    body_measured: std::rc::Rc<std::cell::Cell<f32>>,
+    body_h: Option<f32>,
+    body_tween: Option<crate::motion::WidthTween>,
     auto_name: Option<String>,
     pw_from_str: bool,
     paste_len: [usize; 2],
@@ -320,7 +323,6 @@ impl ConnDialog {
             focus: cx.focus_handle(),
             sslmode: if is_new && profile.sslmode == SslMode::Prefer { dataman_core::default_sslmode(profile.engine, &profile.host, profile.ssh.is_some()) } else { profile.sslmode },
             ssl_chosen: !is_new || profile.sslmode != SslMode::Prefer,
-            save_password: profile.save_password || is_new,
             color,
             env: profile.env,
             read_only: profile.read_only,
@@ -338,6 +340,9 @@ impl ConnDialog {
             ssh,
             entry: Entry::Fields,
             conn_str,
+            body_measured: Default::default(),
+            body_h: None,
+            body_tween: None,
             auto_name: None,
             pw_from_str: false,
             paste_len,
@@ -807,7 +812,8 @@ impl ConnDialog {
         } else {
             Default::default()
         };
-        p.save_password = self.save_password;
+        // Every password goes to the Keychain; one left empty is asked for when connecting.
+        p.save_password = true;
         p.env = self.env;
         p.read_only = self.read_only;
         p.mcp = self.mcp;
@@ -1350,7 +1356,7 @@ impl ConnDialog {
             .items_center()
             .gap(px(8.))
             .cursor_pointer()
-            .child(ui::checkbox(t, s.on))
+            .child(ui::switch_track(t, "ssh-switch", s.on))
             .child(div().text_size(px(10.)).text_color(if s.on { t.tx2 } else { t.tx3 }).child("SSH"))
             .on_click(cx.listener(|d, _, window, cx| {
                 d.ssh.on = !d.ssh.on;
@@ -1700,26 +1706,10 @@ impl Render for ConnDialog {
             .text_size(px(11.5))
             .text_color(t.tx2)
             .cursor_pointer()
-            .child(ui::checkbox(&t, self.read_only))
+            .child(ui::switch_track(&t, "read-only-switch", self.read_only))
             .child("Read-only")
             .on_click(cx.listener(|d, _, _, cx| {
                 d.read_only = !d.read_only;
-                cx.notify();
-            }));
-        let keychain = div()
-            .id("save-pw")
-            .h(px(30.))
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(8.))
-            .text_size(px(11.5))
-            .text_color(t.tx2)
-            .cursor_pointer()
-            .child(ui::checkbox(&t, self.save_password))
-            .child(SAVE_IN)
-            .on_click(cx.listener(|d, _, _, cx| {
-                d.save_password = !d.save_password;
                 cx.notify();
             }));
         let url = self.url(cx);
@@ -1742,7 +1732,7 @@ impl Render for ConnDialog {
             .text_size(px(11.5))
             .text_color(t.tx2)
             .cursor_pointer()
-            .child(ui::checkbox(&t, self.file_access))
+            .child(ui::switch_track(&t, "file-access-switch", self.file_access))
             .child("Allow SQL to read and write files")
             .tip(ui::text_tooltip("read_csv, read_parquet, COPY … TO, ATTACH, EXPORT. Off, the database is all SQL can reach (agents never get files either way)."))
             .on_click(cx.listener(|d, _, _, cx| {
@@ -1766,7 +1756,7 @@ impl Render for ConnDialog {
             .chain((self.engine == Engine::DuckDb).then(|| row().child(ui::probe("file-access", file_access))))
             .collect()
         } else if by_url {
-            vec![row().items_end().child(self.field(&t, "URL", &self.conn_str, None)).child(ui::probe("save-pw", keychain))]
+            vec![row().items_end().child(self.field(&t, "URL", &self.conn_str, None))]
         } else {
             let db_label = if self.engine == Engine::Redis { "DB" } else { "DATABASE" };
             let user_label = if self.engine.is_sql() { "USER" } else { "USER (OPTIONAL)" };
@@ -1775,8 +1765,7 @@ impl Render for ConnDialog {
                 row().child(self.field(&t, user_label, &self.user, None)).when(self.has_database(), |r| r.child(self.field(&t, db_label, &self.database, None))),
                 row()
                     .items_end()
-                    .child(self.field(&t, "PASSWORD", &self.password, (pw_focused || self.password_needed).then_some(t.acc_t)))
-                    .child(ui::probe("save-pw", keychain)),
+                    .child(self.field(&t, "PASSWORD", &self.password, (pw_focused || self.password_needed).then_some(t.acc_t))),
             ];
             if self.engine == Engine::MongoDb {
                 v.push(row().child(self.field(&t, "OPTIONS", &self.options, None)));
@@ -1784,6 +1773,19 @@ impl Render for ConnDialog {
             v
         };
         let max_h = window.viewport_size().height.pt() - crate::theme::metrics::TITLE_H - 32.;
+        let reduced = crate::motion::still(cx);
+        let body_h = self.body_height(reduced, window);
+        let measured = self.body_measured.clone();
+        // Fields and URL fade in as they swap.
+        let server = div().flex().flex_col().gap(px(14.)).children(server);
+        let server = if reduced {
+            server.into_any_element()
+        } else {
+            use gpui::AnimationExt;
+            server
+                .with_animation(("dlg-server", self.entry as usize), gpui::Animation::new(std::time::Duration::from_millis(160)).with_easing(gpui::ease_out_quint()), |d, k| d.opacity(k))
+                .into_any_element()
+        };
         let card = ui::modal(&t, "conn-dialog")
             .w(px(600.))
             .max_h(px(max_h))
@@ -1800,6 +1802,17 @@ impl Render for ConnDialog {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
+                    .child(
+                div()
+                    .when_some(body_h, |d, h| d.h(px(h)).overflow_hidden())
+                    .on_children_prepainted(move |b, _, _| {
+                        if let Some(b) = b.first() {
+                            measured.set(b.size.height.pt());
+                        }
+                    })
+                    .child(
+                div()
+                    .flex_none()
                     .px(px(20.))
                     .pt(px(16.))
                     .flex()
@@ -1815,7 +1828,7 @@ impl Render for ConnDialog {
                             .when(!by_url, |d| d.child(div().flex().flex_col().gap(px(6.)).child(caption("ENGINE")).child(ui::probe("engine-chip", engine))))
                             .child(div().flex().flex_col().gap(px(6.)).child(caption("COLOR")).child(swatches)),
                     )
-                    .children(server)
+                    .child(server)
                     .child(
                         div()
                             .flex()
@@ -1828,7 +1841,7 @@ impl Render for ConnDialog {
                                     .flex()
                                     .flex_col()
                                     .gap(px(6.))
-                                    .child(div().h(px(12.)).flex().flex_row().items_center().gap(px(6.)).child(caption("MCP")).when(yolo_on, |d| d.child(yolo_badge(&t).h(px(12.)).px(px(4.)).text_size(px(9.)))))
+                                    .child(div().h(px(12.)).flex().flex_row().items_center().gap(px(6.)).child(caption("MCP")).child(crate::agents::qmark(&t, "conn-mcp-tip", crate::agents_rules::tier_tip().note("More per connection (rules, privacy, limits) in Agents › Permissions.")).size(px(12.)).rounded(px(6.)).text_size(px(8.5))).when(yolo_on, |d| d.child(yolo_badge(&t).h(px(12.)).px(px(4.)).text_size(px(9.)))))
                                     .child(mcp),
                             ),
                     )
@@ -1867,6 +1880,8 @@ impl Render for ConnDialog {
                     })
                     .children(self.result_box(&t))
                     .children(self.host_key_box(&t, cx)),
+                    ),
+                    ),
             )
             .child(
                 ui::modal_footer(&t)
@@ -1915,6 +1930,33 @@ impl Render for ConnDialog {
 }
 
 impl ConnDialog {
+    /// The height the form is drawn at: what it measured, reached by a tween when that changes.
+    fn body_height(&mut self, reduced: bool, window: &mut Window) -> Option<f32> {
+        let m = self.body_measured.get();
+        if m <= 0. {
+            return None;
+        }
+        let now = std::time::Instant::now();
+        match self.body_h {
+            Some(prev) if (prev - m).abs() > 0.5 && !reduced => {
+                let from = self.body_tween.and_then(|tw| tw.at(prev, now)).unwrap_or(prev);
+                self.body_tween = Some(crate::motion::WidthTween::panel(from, m, 240.));
+            }
+            _ => {}
+        }
+        self.body_h = Some(m);
+        match self.body_tween.and_then(|tw| tw.at(m, now)) {
+            Some(h) => {
+                window.request_animation_frame();
+                Some(h)
+            }
+            None => {
+                self.body_tween = None;
+                Some(m)
+            }
+        }
+    }
+
     fn wrap(&self, card: gpui::Stateful<gpui::Div>, t: &Theme, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
         div()
             .id("conn-dialog-backdrop")
