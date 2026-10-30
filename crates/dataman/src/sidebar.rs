@@ -27,7 +27,7 @@ pub(crate) fn workspace_actions(d: gpui::Stateful<gpui::Div>, cx: &mut Context<W
 const ICON_BOX: f32 = 28.;
 const GLYPH: f32 = 15.;
 
-/// The rail's selected icon is drawn filled: it floods in when picked and drains when left.
+/// The rail's selected icon is drawn filled: the fill fades in when picked and out when left.
 #[derive(Default)]
 pub(crate) struct RailFill {
     seen: Option<(NavView, bool)>,
@@ -48,25 +48,31 @@ impl RailFill {
         self.seen = Some((view, gear));
     }
 
-    /// How full `v`'s icon is, while it still moves.
+    /// How far `v`'s fill has faded in, while it still moves.
     fn level(&self, v: NavView, on: bool) -> Option<f32> {
         let (from, at) = self.view?;
-        (on || v == from).then(|| crate::motion::folder_fill(at, !on)).flatten()
+        (on || v == from).then(|| crate::motion::icon_fade(at, on)).flatten()
     }
 
     fn gear_level(&self, on: bool) -> Option<f32> {
-        crate::motion::folder_fill(self.gear?, !on)
+        crate::motion::icon_fade(self.gear?, on)
     }
 
     fn moving(&self) -> bool {
-        let busy = |at: Instant| at.elapsed() < crate::motion::FLOOD;
+        let busy = |at: Instant| at.elapsed() < crate::motion::ICON_FADE;
         self.view.is_some_and(|(_, at)| busy(at)) || self.gear.is_some_and(busy)
     }
 }
 
 fn rail_icon(outline: Icon, filled: Icon, on: bool, level: Option<f32>, size: f32, color: gpui::Hsla) -> AnyElement {
     match level {
-        Some(level) => ui::flood_icon(outline, filled, level, size, color),
+        Some(level) => div()
+            .relative()
+            .flex_none()
+            .size(px(size))
+            .child(div().absolute().inset_0().opacity(1. - level).child(icon(outline).size(px(size)).text_color(color)))
+            .child(div().absolute().inset_0().opacity(level).child(icon(filled).size(px(size)).text_color(color)))
+            .into_any_element(),
         None => icon(if on { filled } else { outline }).size(px(size)).text_color(color).into_any_element(),
     }
 }

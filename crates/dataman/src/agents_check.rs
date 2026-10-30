@@ -271,11 +271,11 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     r.check("the robot sits at the foot of the rail", probed("rail-agents", cx).is_some(), "");
     click_probe("rail-agents", cx);
     let loaded = until(cx, 5, |cx| cx.update(|_, cx| a.read(cx).entries.len() >= 13).unwrap_or(false)).await;
-    r.check("a click on it opens the Agents area on Audit, with the agents' calls", shows(cx) && page(cx) == Page::Audit && loaded, format!("{:?}", page(cx)));
+    r.check("a click on it opens the Agents area on Protection, with the agents' calls loaded", shows(cx) && page(cx) == Page::Permissions && loaded, format!("{:?}", page(cx)));
     let pages: Vec<&str> = Page::NAV.iter().map(|p| p.nav_label()).collect();
     r.check(
-        "the area's pages: General first, then Audit, Protection, Masks (no Home; Database login is inside Permissions)",
-        pages == ["General", "Audit", "Protection", "Masks"] && probed("agents-nav-login", cx).is_none(),
+        "the area's pages: General first, then Protection, Audit, Masks (no Home; Database login is inside Permissions)",
+        pages == ["General", "Protection", "Audit", "Masks"] && probed("agents-nav-login", cx).is_none(),
         format!("{pages:?}"),
     );
     // Permissions and Privacy are Protection's tabs; the nav goes back to the one left open.

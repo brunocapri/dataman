@@ -1516,20 +1516,6 @@ impl SchemaTree {
         }
     }
 
-    /// Every folder open, and every connected connection with it.
-    fn expand_all(&mut self, cx: &mut Context<Self>) {
-        self.shut_folders.clear();
-        let ids: Vec<String> = self.store.read(cx).profiles.iter().map(|p| p.id.clone()).filter(|id| self.conn(id, cx).is_some()).collect();
-        for id in ids {
-            let root = cid(&id);
-            if self.expanded.insert(root.clone()) {
-                self.load(&root, &Kind::Conn { id }, cx);
-            }
-        }
-        self.rebuild(cx);
-        cx.notify();
-    }
-
     /// Everything shut: the folders, and every node open under them.
     fn collapse_all(&mut self, cx: &mut Context<Self>) {
         self.shut_folders = self.store.read(cx).folders.iter().map(|d| d.id.clone()).collect();
@@ -2078,7 +2064,6 @@ impl SchemaTree {
                     self.reload_row(i, cx);
                 }
             }
-            (Act::ExpandAll, _) => self.expand_all(cx),
             (Act::CollapseAll, _) => self.collapse_all(cx),
             (Act::Retry, _) => {
                 if let Some(Kind::Error { retry }) = ix.map(|i| self.rows[i].kind.clone()) {
@@ -2899,7 +2884,6 @@ impl SchemaTree {
                 }
             }))
             .child(div()
-            .cursor_pointer()
             .id(ix)
             .group(ROW_GROUP)
             .relative()
@@ -2915,6 +2899,7 @@ impl SchemaTree {
             .when(!dropping && sel && focused, |d| d.bg(t.acc_s).border_1().border_color(t.edge_acc))
             .when(!dropping && sel && !focused, |d| d.bg(t.prs))
             .when(!dropping && !sel, |d| d.hover(move |s| s.bg(hov)))
+            .cursor_pointer()
             .on_click(cx.listener(move |t, ev: &ClickEvent, window, cx| t.on_click(ix, ev, window, cx)))
             .when_some(drag_conn, |d, id| {
                 let n = if picked { self.picked.len() } else { 1 };
@@ -3298,7 +3283,6 @@ fn menu_row(
     } else if on {
         t.on_acc
     } else if danger {
-        .when(disabled.is_none(), |d| d.cursor_pointer())
         t.err
     } else {
         t.tx3
@@ -3314,6 +3298,7 @@ fn menu_row(
         .gap(px(10.))
         .whitespace_nowrap()
         .text_color(fg)
+        .when(disabled.is_none(), |d| d.cursor_pointer())
         .when(on, |d| d.bg(t.acc))
         .child(match dot {
             Some(c) => div().size(px(14.)).flex_none().flex().items_center().justify_center().child(ui::chip(c, 9.)).into_any_element(),
@@ -3482,26 +3467,11 @@ impl Render for SchemaTree {
                     .tip(ui::tooltip("New connection", None, Some("⌘N")))
                     .on_click(cx.listener(|_, _, _, cx| cx.emit(TreeEvent::NewConnection))),
             )
-            .child({
-                let (hov, prs) = (t.hov, t.prs);
-                div()
-                    .children(ui::here(&"x-new-folder".into()))
-                    .id("x-new-folder")
-                    .flex_none()
-                    .h(px(24.))
-                    .px(px(4.))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(1.))
-                    .cursor_pointer()
-                    .hover(move |s| s.bg(hov))
-                    .active(move |s| s.bg(prs))
+            .child(
+                ui::icon_button(&t, "x-new-folder", Icon::Schema, 24., 14.)
                     .tip(ui::tooltip("New folder", None, None))
-                    .child(icon(Icon::Plus).size(px(9.)).text_color(t.tx3))
-                    .child(icon(Icon::Schema).size(px(14.)).text_color(t.tx3))
-                    .on_click(cx.listener(|t, _, window, cx| t.new_folder(vec![], window, cx)))
-            })
+                    .on_click(cx.listener(|t, _, window, cx| t.new_folder(vec![], window, cx))),
+            )
             .child(
                 ui::icon_button(&t, "x-more", Icon::More, 24., 14.)
                     .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())

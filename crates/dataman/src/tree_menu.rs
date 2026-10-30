@@ -61,7 +61,6 @@ pub enum Gen {
 pub enum Act {
     NewConnection,
     NewFolder,
-    ExpandAll,
     CollapseAll,
     /// Into the n-th folder of the explorer as the menu listed them.
     MoveToFolder(usize),
@@ -197,7 +196,6 @@ pub fn entries(t: &Target) -> Vec<Entry> {
             I(it(Act::NewConnection, "New connection…", Icon::Plus).key("⌘N")),
             I(it(Act::NewFolder, "New folder", Icon::Schema)),
             Sep,
-            I(it(Act::ExpandAll, "Expand all", Icon::Expand)),
             I(it(Act::CollapseAll, "Collapse all", Icon::Collapse)),
             Sep,
             I(it(Act::Reload, "Refresh", Icon::Reload).key("⌘R")),
@@ -775,7 +773,7 @@ mod tests {
         assert_eq!(acts(&Target::Group), vec![Act::Reload]);
         assert_eq!(acts(&Target::Error), vec![Act::Retry]);
         assert_eq!(acts(&Target::Empty), vec![Act::NewConnection, Act::NewFolder]);
-        assert_eq!(acts(&Target::Header), vec![Act::NewConnection, Act::NewFolder, Act::ExpandAll, Act::CollapseAll, Act::Reload]);
+        assert_eq!(acts(&Target::Header), vec![Act::NewConnection, Act::NewFolder, Act::CollapseAll, Act::Reload]);
     }
 
     #[test]

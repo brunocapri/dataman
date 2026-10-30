@@ -35,7 +35,7 @@ pub enum Page {
 
 impl Page {
     /// The nav's rows: Protection holds Permissions and Privacy, as its tabs.
-    pub const NAV: [Page; 4] = [Page::General, Page::Audit, Page::Permissions, Page::Types];
+    pub const NAV: [Page; 4] = [Page::General, Page::Permissions, Page::Audit, Page::Types];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -269,12 +269,13 @@ pub struct AgentsPage {
     audit_body: Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
     /// Protection's body, measured for its columns.
     pub(crate) protection_body: Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
-    pub(crate) audit_scroll: gpui::ScrollHandle,
+    /// The Audit list: only the rows in view are built.
+    pub(crate) audit_list: gpui::ListState,
     pub(crate) conns_scroll: gpui::ScrollHandle,
     pub(crate) types_scroll: gpui::ScrollHandle,
     pub(crate) perm_scroll: gpui::ScrollHandle,
-    /// Where each call's row sits among the Audit list's children (day headers come between).
-    audit_child: HashMap<usize, usize>,
+    /// The Audit list's items: the calls shown, a day's header before each day's first.
+    audit_items: Vec<AuditItem>,
     pub(crate) types_offset: usize,
     pub(crate) type_sel: Option<usize>,
     /// Replies read back from the log (`mcp-replies.jsonl`), by call id.
@@ -471,6 +472,12 @@ pub(crate) fn agents_of(entries: &[Entry]) -> Vec<AgentCard> {
     out
 }
 
+#[derive(Clone, Debug, PartialEq)]
+enum AuditItem {
+    Day(String),
+    Call(usize),
+}
+
 /// The day a call belongs to, as Audit groups them.
 pub(crate) fn day_label(ts: chrono::DateTime<chrono::Utc>) -> String {
     let d = ts.with_timezone(&Local).date_naive();
@@ -569,7 +576,7 @@ impl AgentsPage {
             import: None,
             import_focus: cx.focus_handle(),
             settings_note: None,
-            page: Page::Audit,
+            page: Page::Permissions,
             protection_tab: Page::Permissions,
             visible: false,
             entries: Vec::new(),
@@ -604,11 +611,11 @@ impl AgentsPage {
             detail_drag: false,
             audit_body: Rc::default(),
             protection_body: Rc::default(),
-            audit_scroll: gpui::ScrollHandle::new(),
+            audit_list: gpui::ListState::new(0, gpui::ListAlignment::Top, px(400.)),
             conns_scroll: gpui::ScrollHandle::new(),
             types_scroll: gpui::ScrollHandle::new(),
             perm_scroll: gpui::ScrollHandle::new(),
-            audit_child: HashMap::new(),
+            audit_items: Vec::new(),
             types_offset: 0,
             type_sel: None,
             replies: HashMap::new(),
@@ -856,8 +863,8 @@ impl AgentsPage {
                 let Some(n) = next(shown.len(), cur) else { return true };
                 self.selected = Some(shown[n]);
                 self.menu = None;
-                if let Some(&child) = self.audit_child.get(&shown[n]) {
-                    self.audit_scroll.scroll_to_item(child);
+                if let Some(ix) = self.audit_items.iter().position(|it| *it == AuditItem::Call(shown[n])) {
+                    self.audit_list.scroll_to_reveal_item(ix);
                 }
             }
             Page::Permissions | Page::Privacy => {
@@ -1132,98 +1139,18 @@ impl AgentsPage {
                         .on_click(cx.listener(|v, _, _, cx| v.open_menu("agents-clear", 240., crate::agents_clear::menu_items(), cx))),
                 ),
             );
-        let bounds = self.row_bounds.clone();
-        bounds.borrow_mut().clear();
+        self.row_bounds.borrow_mut().clear();
+        let mut items = Vec::with_capacity(shown.len() + 8);
         let mut day: Option<String> = None;
-        let mut rows: Vec<AnyElement> = Vec::new();
-        self.audit_child.clear();
         for &i in &shown {
-            let e = &self.entries[i];
-            let d = day_label(e.ts);
+            let d = day_label(self.entries[i].ts);
             if day.as_deref() != Some(d.as_str()) {
-                rows.push(
-                    div()
-                        .h(px(30.))
-                        .flex_none()
-                        .pl(px(32.))
-                        .flex()
-                        .items_end()
-                        .pb(px(6.))
-                        .border_b_1()
-                        .border_color(t.line)
-                        .text_size(px(11.))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(t.tx2)
-                        .child(d.clone())
-                        .into_any_element(),
-                );
+                items.push(AuditItem::Day(d.clone()));
                 day = Some(d);
             }
-            let (note, bad) = audit_note(e);
-            let sel = self.selected == Some(i);
-            let hov = t.hov;
-            let b = bounds.clone();
-            let id = SharedString::from(format!("agents-audit-row-{i}"));
-            let row = div()
-                .relative()
-                .child(gpui::canvas(move |r, _, _| { b.borrow_mut().insert(i, r); }, |_, _, _, _| {}).absolute().top_0().left_0().size_full())
-                .child(
-                    div()
-                        .children(ui::here(&id.clone().into()))
-                        .id(id)
-                        .flex()
-                        .flex_row()
-                        .gap(px(12.))
-                        .pl(px(32.))
-                        .pr(px(24.))
-                        .py(px(10.))
-                        .border_b_1()
-                        .border_color(t.line)
-                        .cursor_pointer()
-                        .when(sel, |d| d.bg(t.prs))
-                        .when(!sel, move |d| d.hover(move |s| s.bg(hov)))
-                        .child(div().w(px(58.)).flex_none().text_color(t.tx3).child(e.ts.with_timezone(&Local).format("%H:%M:%S").to_string()))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .flex()
-                                .flex_col()
-                                .gap(px(4.))
-                                .child(
-                                    div()
-                                        .flex()
-                                        .flex_row()
-                                        .items_center()
-                                        .gap(px(10.))
-                                        .child(div().text_color(t.tx).child(dataman_mcp::shown_client(&e.client)))
-                                        .children(e.connection.as_deref().map(|c| self.conn_label(t, c, cx))),
-                                )
-                                .child(div().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx2).child(one_line(&shown_agent_text(e.statement().unwrap_or(e.tool.as_str()), 400))))
-                                .child(div().text_size(px(11.)).overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(if bad { t.err } else { t.tx3 }).child(note)),
-                        )
-                        .on_click(cx.listener(move |v, ev: &ClickEvent, window, cx| {
-                            v.focus_list(window, cx);
-                            v.selected = Some(i);
-                            v.menu = None;
-                            if ev.click_count() >= 2 {
-                                v.open_entry(i, cx);
-                            }
-                            cx.notify();
-                        }))
-                        .on_mouse_down(
-                            MouseButton::Right,
-                            cx.listener(move |v, ev: &gpui::MouseDownEvent, _, cx| {
-                                v.selected = Some(i);
-                                let items = vec![("Copy Query".into(), false, Act::CopyQuery(i)), ("Open in Tab".into(), false, Act::OpenTab(i))];
-                                v.open_menu_at("agents-row-menu", ev.position, 180., items, cx);
-                                cx.stop_propagation();
-                            }),
-                        ),
-                );
-            self.audit_child.insert(i, rows.len());
-            rows.push(row.into_any_element());
+            items.push(AuditItem::Call(i));
         }
+        self.set_audit_items(items);
         let list: AnyElement = if self.entries.is_empty() {
             self.render_no_calls(t, cx)
         } else if shown.is_empty() {
@@ -1243,7 +1170,8 @@ impl AgentsPage {
                 )
                 .into_any_element()
         } else {
-            div().id("agents-audit-list").flex_1().min_w_0().overflow_y_scroll().track_scroll(&self.audit_scroll).flex().flex_col().children(rows).into_any_element()
+            let theme = t.clone();
+            gpui::list(self.audit_list.clone(), cx.processor(move |v, ix: usize, _, cx| v.render_audit_item(ix, &theme, cx))).flex_1().min_w_0().into_any_element()
         };
         // On its way, the reply leaves an empty slot in the detail and grows from it over the
         // page as the result grid grows over the editor: same time and curve.
@@ -1393,6 +1321,106 @@ impl AgentsPage {
         )
     }
 
+    /// The list's items as they are now, the list keeping its place when they change.
+    fn set_audit_items(&mut self, items: Vec<AuditItem>) {
+        if items == self.audit_items {
+            return;
+        }
+        let top = self.audit_list.logical_scroll_top();
+        self.audit_list.reset(items.len());
+        self.audit_list.scroll_to(top);
+        self.audit_items = items;
+    }
+
+    fn render_audit_item(&self, ix: usize, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let i = match self.audit_items.get(ix) {
+            Some(AuditItem::Call(i)) => *i,
+            Some(AuditItem::Day(d)) => {
+                return div()
+                    .w_full()
+                    .h(px(30.))
+                    .flex_none()
+                    .pl(px(32.))
+                    .flex()
+                    .items_end()
+                    .pb(px(6.))
+                    .border_b_1()
+                    .border_color(t.line)
+                    .text_size(px(11.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(t.tx2)
+                    .child(d.clone())
+                    .into_any_element();
+            }
+            None => return div().into_any_element(),
+        };
+        let Some(e) = self.entries.get(i) else { return div().into_any_element() };
+        let (note, bad) = audit_note(e);
+        let sel = self.selected == Some(i);
+        let hov = t.hov;
+        let b = self.row_bounds.clone();
+        let id = SharedString::from(format!("agents-audit-row-{i}"));
+        let row = div()
+            .w_full()
+            .relative()
+            .child(gpui::canvas(move |r, _, _| { b.borrow_mut().insert(i, r); }, |_, _, _, _| {}).absolute().top_0().left_0().size_full())
+            .child(
+                div()
+                    .children(ui::here(&id.clone().into()))
+                    .id(id)
+                    .flex()
+                    .flex_row()
+                    .gap(px(12.))
+                    .pl(px(32.))
+                    .pr(px(24.))
+                    .py(px(10.))
+                    .border_b_1()
+                    .border_color(t.line)
+                    .cursor_pointer()
+                    .when(sel, |d| d.bg(t.prs))
+                    .when(!sel, move |d| d.hover(move |s| s.bg(hov)))
+                    .child(div().w(px(58.)).flex_none().text_color(t.tx3).child(e.ts.with_timezone(&Local).format("%H:%M:%S").to_string()))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap(px(4.))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap(px(10.))
+                                    .child(div().text_color(t.tx).child(dataman_mcp::shown_client(&e.client)))
+                                    .children(e.connection.as_deref().map(|c| self.conn_label(t, c, cx))),
+                            )
+                            .child(div().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx2).child(one_line(&shown_agent_text(e.statement().unwrap_or(e.tool.as_str()), 400))))
+                            .child(div().text_size(px(11.)).overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(if bad { t.err } else { t.tx3 }).child(note)),
+                    )
+                    .on_click(cx.listener(move |v, ev: &ClickEvent, window, cx| {
+                        v.focus_list(window, cx);
+                        v.selected = Some(i);
+                        v.menu = None;
+                        if ev.click_count() >= 2 {
+                            v.open_entry(i, cx);
+                        }
+                        cx.notify();
+                    }))
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |v, ev: &gpui::MouseDownEvent, _, cx| {
+                            v.selected = Some(i);
+                            let items = vec![("Copy Query".into(), false, Act::CopyQuery(i)), ("Open in Tab".into(), false, Act::OpenTab(i))];
+                            v.open_menu_at("agents-row-menu", ev.position, 180., items, cx);
+                            cx.stop_propagation();
+                        }),
+                    ),
+            );
+        row.into_any_element()
+    }
+
     fn render_detail(&self, t: &Theme, away: bool, cx: &mut Context<Self>) -> Option<AnyElement> {
         let i = self.selected?;
         let e = self.entries.get(i)?;
@@ -1407,7 +1435,8 @@ impl AgentsPage {
                 .flex_col()
                 .text_size(px(12.))
                 .line_height(px(19.))
-                .children(crate::editor::highlighted_lines(t, text).into_iter().take(14).map(|(s, runs)| {
+                // Only the lines shown are coloured: a call can be a long script.
+                .children(crate::editor::highlighted_lines(t, head_lines(text, 14)).into_iter().take(14).map(|(s, runs)| {
                     if s.is_empty() { div().h(px(19.)).into_any_element() } else { div().whitespace_nowrap().overflow_hidden().child(StyledText::new(s).with_runs(runs)).into_any_element() }
                 }))
         };
@@ -1869,6 +1898,11 @@ pub(crate) fn render_reply(t: &Theme, text: &str) -> AnyElement {
         )
         .when(more > 0, |d| d.child(div().text_size(px(11.)).text_color(t.tx3).child(format!("{more} more lines"))))
         .into_any_element()
+}
+
+/// The first `n` lines of `s`.
+fn head_lines(s: &str, n: usize) -> &str {
+    s.match_indices('\n').nth(n.saturating_sub(1)).map_or(s, |(at, _)| &s[..at])
 }
 
 pub(crate) fn one_line(s: &str) -> String {

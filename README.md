@@ -191,7 +191,7 @@ Two habits help on top of any of these:
 
 ### Where the settings live
 
-Everything below lives in the **Agents** window: **General**, **Audit**, **Protection** (with two tabs, **Permissions**, which holds the agents' database login under its limits, and **Privacy**) and **Masks**. Permissions, its database login and Privacy are set per connection. General and Masks apply to every connection.
+Everything below lives in the **Agents** window: **General**, **Protection** (where it opens, with two tabs, **Permissions**, which holds the agents' database login under its limits, and **Privacy**), **Audit** and **Masks**. Permissions, its database login and Privacy are set per connection. General and Masks apply to every connection.
 
 ### How a call is decided
 

@@ -5,12 +5,13 @@
 //! rules change it drifts: the changes are shown and applied on request. Verify, Rotate password
 //! and Remove login (only what Dataman made, after confirmation) follow, in the same section.
 
+use std::cell::RefCell;
 use std::sync::Arc;
 
 use chrono::Utc;
 use dataman_core::agent_login::{self, AgentLogin, Manual, Options, Plan, live};
 use dataman_core::{Connection, ConnectionProfile, Engine};
-use gpui::{AnyElement, ClickEvent, Context, FontWeight, StyledText, div, prelude::*};
+use gpui::{AnyElement, ClickEvent, Context, FontWeight, Hsla, SharedString, StyledText, TextRun, div, prelude::*};
 
 use crate::agents::{AgentsPage, Page, Tip, checkbox, label_tip};
 use crate::theme::{Theme, mono, px};
@@ -31,6 +32,17 @@ pub(crate) struct LoginUi {
     pub(crate) sheet: Option<Sheet>,
     /// The sheet's WHAT RUNS, scrolled both ways.
     pub(crate) sql_scroll: gpui::ScrollHandle,
+    /// WHAT RUNS as last laid out and coloured.
+    what: RefCell<Option<WhatRuns>>,
+}
+
+/// WHAT RUNS's lines, made again only when the plan, its engine or the theme changes: a script
+/// can run to hundreds of lines, too many to lay out and colour on every frame.
+struct WhatRuns {
+    key: (String, Engine, [Hsla; 3]),
+    lines: Vec<(SharedString, Vec<TextRun>)>,
+    /// The longest line, always laid out so the code is as wide as it, wherever it's scrolled.
+    widest: usize,
 }
 
 pub(crate) enum Sheet {
@@ -820,7 +832,7 @@ impl AgentsPage {
             .flex()
             .flex_col()
             .when(warned, |d| d.child(div().flex_none().px(px(20.)).py(px(14.)).border_b_1().border_color(t.line).line_height(px(18.)).child(warn)))
-            .child(what_runs(t, "agents-login-sql", &plan.display(), p.engine, &self.login.sql_scroll))
+            .child(self.what_runs(t, "agents-login-sql", Ok(plan), p.engine))
             .child(options)
             .into_any_element();
         let blocked = !plan.lacks.is_empty();
@@ -851,9 +863,9 @@ impl AgentsPage {
         let user = p.agent_login.as_ref().map(|l| l.user.clone()).unwrap_or_default();
         let title = format!("Remove {user} from {}", p.name);
         let text = match plan {
-            None => "Reading what Dataman made…".to_string(),
-            Some(Err(_)) => String::new(),
-            Some(Ok(pl)) => pl.display(),
+            None => Err("Reading what Dataman made…"),
+            Some(Err(_)) => Err(""),
+            Some(Ok(pl)) => Ok(pl),
         };
         let unreachable = matches!(plan, Some(Err(_))) || error.is_some();
         let lead = "Drops the login and only what Dataman made for it (views, their schema or database, its role), revokes what it holds, and forgets its password. Nothing Dataman didn't make is touched. Agents are then refused here until you create a new login or let them use yours.";
@@ -869,7 +881,7 @@ impl AgentsPage {
                 .child(div().text_color(t.tx2).child("Can't reach the server, or your login can't drop it? Dataman can forget it on its own side: the login stays on the server until an admin drops it."))
                 .child(div().flex().flex_row().child(ui::button(t, "agents-login-forget", ui::Btn::Danger).h(px(28.)).cursor_pointer().child("Forget it in Dataman only").on_click(cx.listener(|v, _: &ClickEvent, _, cx| v.login_forget(cx)))));
         }
-        let body = div().flex_1().min_w_0().flex().flex_col().child(head).child(what_runs(t, "agents-login-remove-sql", &text, p.engine, &self.login.sql_scroll)).into_any_element();
+        let body = div().flex_1().min_w_0().flex().flex_col().child(head).child(self.what_runs(t, "agents-login-remove-sql", text, p.engine)).into_any_element();
         let ready = matches!(plan, Some(Ok(_))) && !busy;
         let label = match (busy, p.env.is_production(), confirm) {
             (true, _, _) => "Removing…".to_string(),
@@ -890,36 +902,70 @@ impl AgentsPage {
     }
 }
 
-/// A sheet's "WHAT RUNS": the statements as the editor colours them in the engine's language,
-/// scrolled both ways (a long line runs on to the right instead of being cut).
-fn what_runs(t: &Theme, id: &'static str, text: &str, engine: dataman_core::Engine, scroll: &gpui::ScrollHandle) -> AnyElement {
-    let lines = crate::editor::highlighted_lines_in(t, text, engine).into_iter().map(|(s, runs)| if s.is_empty() { div().h(px(19.)) } else { div().whitespace_nowrap().child(StyledText::new(s).with_runs(runs)) });
-    div()
-        .flex_1()
-        .min_h_0()
-        .min_w_0()
-        .flex()
-        .flex_col()
-        .child(div().h(px(40.)).flex_none().px(px(20.)).flex().flex_row().items_center().border_b_1().border_color(t.line).child(div().children(ui::here(&"agents-login-what".into())).child(ui::caps(t, "WHAT RUNS"))))
-        .child(
-            div()
-                .children(ui::here(&id.into()))
-                .id(id)
-                .flex_1()
-                .min_h_0()
-                .overflow_scroll()
-                .track_scroll(scroll)
-                .flex()
-                .flex_col()
-                // Each line as wide as it is: the scroll's content is the widest.
-                .items_start()
-                .font_family(mono())
-                .text_size(px(11.5))
-                .line_height(px(19.))
-                .child(div().min_w_full().px(px(20.)).py(px(12.)).flex().flex_col().children(lines)),
-        )
-        .into_any_element()
+impl AgentsPage {
+    /// A sheet's "WHAT RUNS": the plan (or a line in its place) as the editor colours it in the
+    /// engine's language, scrolled both ways (a long line runs on to the right instead of being
+    /// cut). Only the lines in view are laid out.
+    fn what_runs(&self, t: &Theme, id: &'static str, plan: Result<&Plan, &str>, engine: Engine) -> AnyElement {
+        let key = (plan.map_or_else(str::to_string, Plan::shown), engine, [t.tx, t.kw, t.str]);
+        let mut what = self.login.what.borrow_mut();
+        if what.as_ref().is_none_or(|w| w.key != key) {
+            let text = plan.map_or_else(str::to_string, Plan::display);
+            let lines = crate::editor::highlighted_lines_in(t, &text, engine);
+            let widest = (0..lines.len()).max_by_key(|&i| lines[i].0.chars().count()).unwrap_or(0);
+            *what = Some(WhatRuns { key, lines, widest });
+        }
+        let what = what.as_ref().expect("made above");
+        // The lines in view and a screenful either side; before the first layout, a sheet's worth.
+        let (row, pad, scroll) = (px(19.), px(12.), &self.login.sql_scroll);
+        let view = scroll.bounds().size.height;
+        let first = (((-scroll.offset().y - pad).as_f32() / row.as_f32()).max(0.) as usize).saturating_sub(WHAT_OVERSCAN);
+        let count = if view > gpui::px(0.) { (view.as_f32() / row.as_f32()).ceil() as usize + 2 * WHAT_OVERSCAN } else { 80 };
+        let n = what.lines.len();
+        let (first, last) = (first.min(n), (first + count).min(n));
+        let line = |(s, runs): &(SharedString, Vec<TextRun>)| if s.is_empty() { div().h(row) } else { div().whitespace_nowrap().child(StyledText::new(s.clone()).with_runs(runs.clone())) };
+        let widest = (!(first..last).contains(&what.widest)).then(|| what.lines.get(what.widest).map(|l| line(l).h_0().overflow_hidden())).flatten();
+        div()
+            .flex_1()
+            .min_h_0()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .child(div().h(px(40.)).flex_none().px(px(20.)).flex().flex_row().items_center().border_b_1().border_color(t.line).child(div().children(ui::here(&"agents-login-what".into())).child(ui::caps(t, "WHAT RUNS"))))
+            .child(
+                div()
+                    .children(ui::here(&id.into()))
+                    .id(id)
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_scroll()
+                    .track_scroll(scroll)
+                    .flex()
+                    .flex_col()
+                    // Each line as wide as it is: the scroll's content is the widest.
+                    .items_start()
+                    .font_family(mono())
+                    .text_size(px(11.5))
+                    .line_height(row)
+                    .child(
+                        div()
+                            .min_w_full()
+                            .px(px(20.))
+                            .py(pad)
+                            .flex()
+                            .flex_col()
+                            .children(widest)
+                            .child(div().flex_none().h(row * first as f32))
+                            .children(what.lines[first..last].iter().map(line))
+                            .child(div().flex_none().h(row * (n - last) as f32)),
+                    ),
+            )
+            .into_any_element()
+    }
 }
+
+/// Lines laid out above and below WHAT RUNS's view, so a fast scroll doesn't show a blank edge.
+const WHAT_OVERSCAN: usize = 20;
 
 enum Verified {
     Gone,
