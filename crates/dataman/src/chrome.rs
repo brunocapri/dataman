@@ -215,6 +215,7 @@ impl Workspace {
                 .items_center()
                 .gap(px(6.))
                 .text_color(t.tx3)
+                .cursor_pointer()
                 .on_mouse_down(MouseButton::Left, stop)
                 .on_click(cx.listener(|w, _, window, cx| w.open_palette(crate::palette::Scope::All, window, cx)))
                 .child(icon(Icon::Search).size(px(14.)).text_color(t.tx3))
@@ -637,6 +638,7 @@ impl Workspace {
             .when(focused_front, |d| d.bg(t.prs).text_color(t.tx))
             .when(other_front, |d| d.bg(t.hov).text_color(t.tx2))
             .when(!active, |d| d.text_color(t.tx3).hover(move |s| s.bg(hov).text_color(tx2)))
+            .cursor_pointer()
             .on_mouse_down(MouseButton::Left, cx.listener(move |w, ev: &gpui::MouseDownEvent, _, cx| {
                 cx.stop_propagation();
                 if crate::keymap::menu_click(&ev.modifiers) {
@@ -1095,6 +1097,7 @@ impl Workspace {
             .gap(px(6.))
             .text_size(px(11.5))
             .text_color(if v.conn.is_some() { t.tx2 } else { t.tx3 })
+            .cursor_pointer()
             .when(open, |d| d.bg(prs))
             .when(!open, |d| d.hover(move |s| s.bg(hov)))
             .child(div().flex_none().size(px(7.)).bg(color))
@@ -1210,6 +1213,7 @@ impl Workspace {
                 .gap(px(6.))
                 .border_1()
                 .text_size(px(11.5))
+                .cursor_pointer()
                 .when(on, |d| d.bg(t.lar).border_color(t.lar).text_color(t.on_lar).font_weight(FontWeight::SEMIBOLD))
                 .when(!on, |d| d.bg(t.lar_s).border_color(t.lar_r).text_color(t.lar_t).hover(move |s| s.bg(hov)))
                 .children(known.map(|b| icon(b.2).size(px(14.)).text_color(if on { t.on_lar } else { t.lar_t })))
@@ -1577,6 +1581,7 @@ impl Workspace {
                             .text_size(px(11.5))
                             .text_color(t.ok)
                             .opacity(a)
+                            .cursor_pointer()
                             .child(icon(Icon::Check).size(px(12.)).text_color(t.ok))
                             .child("Copied")
                             .on_click(cx.listener(|w, _, _, cx| {
@@ -1646,6 +1651,7 @@ impl Workspace {
                     .text_color(gpui::transparent_black())
                     .group_hover(group.clone(), move |s| s.text_color(tx3))
                     .hover(move |s| s.text_color(tx))
+                    .cursor_pointer()
                     .child("×")
                     .on_click(cx.listener(move |w, _, _, cx| {
                         cx.stop_propagation();
@@ -1664,6 +1670,7 @@ impl Workspace {
                     .gap(px(6.))
                     .when(active, |d| d.bg(t.prs))
                     .when(!active, |d| d.hover(move |s| s.bg(hov)))
+                    .cursor_pointer()
                     .child(div().w(px(10.)).text_center().text_size(px(if messages { 12. } else { 9.5 })).text_color(gc).child(g))
                     .children(r.number.map(|n| div().text_color(t.tx3).child(format!("{n} ·"))))
                     .child(div().text_color(label_c).child(r.label.clone()))
@@ -1886,6 +1893,7 @@ impl Workspace {
                 div()
                     .id("export-status")
                     .text_color(t.acc_t)
+                    .cursor_pointer()
                     .child(l)
                     .on_click(cx.listener(|w, _, window, cx| w.open_export(window, cx)))
             }))
@@ -1893,6 +1901,7 @@ impl Workspace {
                 div()
                     .id("import-status")
                     .text_color(t.acc_t)
+                    .cursor_pointer()
                     .child(l)
                     .on_click(cx.listener(|w, _, window, cx| w.import_data(None, None, window, cx)))
             }))
@@ -2508,6 +2517,7 @@ fn explorer_toggle(t: &Theme, open: f32, mirrored: bool) -> gpui::Stateful<Div> 
         .flex()
         .items_center()
         .justify_center()
+        .cursor_pointer()
         .hover(move |s| s.bg(hov))
         .active(move |s| s.bg(prs))
         .child(div().relative().size(px(16.)).child(icon(glyph).size(px(16.)).text_color(ink)).child(pane))

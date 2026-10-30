@@ -724,7 +724,7 @@ impl DataImportView {
                         .child(div().flex_1().min_w_0().whitespace_nowrap().overflow_hidden().text_ellipsis().text_color(if on { t.acc_t } else { t.tx4 }).child(label))
                         .child(ui::dropdown_arrow(("di-map-arrow", i), open, 9., t.tx4))
                         .when(!locked, |d| {
-                            d.on_click(cx.listener(move |v, _, _, cx| {
+                            d.cursor_pointer().on_click(cx.listener(move |v, _, _, cx| {
                                 if v.menu.is_none() && ui::menu_just_shut(&format!("import-{:?}", Menu::Column(i))) {
                                     return;
                                 }
@@ -802,6 +802,7 @@ impl DataImportView {
                 .gap(px(8.))
                 .text_size(px(12.))
                 .text_color(t.tx)
+                .cursor_pointer()
                 .hover(move |s| s.bg(acc).text_color(on_acc))
                 .child(div().w(px(12.)).text_size(px(11.)).child(if checked { "✓" } else { "" }))
                 .child(div().flex_1().min_w_0().whitespace_nowrap().overflow_hidden().text_ellipsis().child(label))
@@ -1053,13 +1054,13 @@ impl Render for DataImportView {
                     self.path.parent().map(tilde).unwrap_or_default(),
                 ))
                 .children(self.preview.as_ref().map(|p| div().flex_none().text_color(t.tx3).child(fmt_bytes(p.file_bytes))))
-                .child(div().id("di-choose").flex_none().text_color(t.acc_t).child("Choose…").when(!locked, |d| d.on_click(cx.listener(|v, _, _, cx| v.choose_file(cx))))),
+                .child(div().id("di-choose").flex_none().text_color(t.acc_t).child("Choose…").when(!locked, |d| d.cursor_pointer().on_click(cx.listener(|v, _, _, cx| v.choose_file(cx))))),
         );
         let formats = div().flex_none().flex().flex_col().gap(px(6.)).child(ui::caps(&t, "FORMAT")).child(
             ui::segmented(&t).w(px(330.)).children(ImportFormat::ALL.into_iter().map(|f| {
                 ui::segment(&t, f.label(), f.label(), shown_format == Some(f))
-                    .when(locked, |d| d.opacity(0.6))
-                    .when(!locked, |d| d.on_click(cx.listener(move |v, _, _, cx| v.set_format(f, cx))))
+                    .when(locked, |d| d.opacity(0.6).cursor_default())
+                    .when(!locked, |d| d.cursor_pointer().on_click(cx.listener(move |v, _, _, cx| v.set_format(f, cx))))
             })),
         );
         let top = div().flex().flex_row().gap(px(16.)).child(file).child(formats);
@@ -1115,7 +1116,7 @@ impl Render for DataImportView {
                             .child(div().min_w_0().whitespace_nowrap().overflow_hidden().text_ellipsis().child(choices.get(ix).copied().unwrap_or("")))
                             .child(ui::dropdown_arrow(gpui::ElementId::Name(format!("{}-arrow", f.label()).into()), open, 9., t.tx3))
                             .when(!locked, |d| {
-                                d.on_click(cx.listener(move |v, _, _, cx| {
+                                d.cursor_pointer().on_click(cx.listener(move |v, _, _, cx| {
                                     if v.menu.is_none() && ui::menu_just_shut(&format!("import-{:?}", Menu::Field(f))) {
                                         return;
                                     }
@@ -1201,14 +1202,14 @@ impl Render for DataImportView {
             .gap(px(20.))
             .when(!self.new_table(), |d| {
                 d.child(check("di-truncate", "Truncate first", self.truncate, true, can_truncate, &t).when(can_truncate, |d| {
-                    d.on_click(cx.listener(|v, _, _, cx| {
+                    d.cursor_pointer().on_click(cx.listener(|v, _, _, cx| {
                         v.truncate = !v.truncate;
                         cx.notify();
                     }))
                 }))
             })
             .child(check("di-tx", "One transaction", self.one_tx, false, !locked, &t).when(!locked, |d| {
-                d.on_click(cx.listener(|v, _, _, cx| {
+                d.cursor_pointer().on_click(cx.listener(|v, _, _, cx| {
                     v.one_tx = !v.one_tx;
                     cx.notify();
                 }))
@@ -1216,8 +1217,8 @@ impl Render for DataImportView {
             .child(div().flex_1())
             .child(div().text_size(px(10.5)).text_color(t.tx3).child("ON ERROR"))
             .child(ui::segmented(&t).w(px(190.)).children([("Stop", false), ("Skip rows", true)].into_iter().map(|(label, skip)| {
-                ui::segment(&t, label, label, self.skip == skip).when(!locked, |d| {
-                    d.on_click(cx.listener(move |v, _, _, cx| {
+                ui::segment(&t, label, label, self.skip == skip).when(locked, |d| d.cursor_default()).when(!locked, |d| {
+                    d.cursor_pointer().on_click(cx.listener(move |v, _, _, cx| {
                         v.skip = skip;
                         cx.notify();
                     }))

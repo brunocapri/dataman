@@ -188,6 +188,7 @@ impl Render for FilterPopover {
                 .when(on, |d| d.bg(acc_s).text_color(t.tx).border_1().border_color(t.acc))
                 .when(!on, |d| d.text_color(t.tx2).bg(hov).hover(move |s| s.bg(prs)))
                 .child(o.label())
+                .cursor_pointer()
                 .on_click(cx.listener(move |p, _: &ClickEvent, window, cx| p.set_op(o, window, cx)))
         });
         let editing = self.editing;

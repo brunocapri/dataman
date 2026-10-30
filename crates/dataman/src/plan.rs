@@ -335,6 +335,7 @@ impl PlanView {
                 .justify_center()
                 .text_size(px(9.))
                 .text_color(t.tx3)
+                .cursor_pointer()
                 .child(ui::disclosure(("plan-chev", i), open, 9., t.tx3))
                 .on_mouse_down(MouseButton::Left, cx.listener(move |v, _, _, cx| {
                     cx.stop_propagation();
@@ -372,6 +373,7 @@ impl PlanView {
             .text_size(px(12.))
             .when(sel, |d| d.bg(if focused { t.sel } else { t.hov }))
             .when(!sel, |d| d.hover(move |s| s.bg(hov)))
+            .cursor_pointer()
             .on_mouse_down(MouseButton::Left, cx.listener(move |v, ev: &MouseDownEvent, window, cx| {
                 window.focus(&v.focus, cx);
                 if ev.click_count == 2 {

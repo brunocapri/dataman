@@ -1129,6 +1129,7 @@ impl HistoryPanel {
                     .when(sel && focused, |d| d.bg(t.mark).border_1().border_color(t.edge))
                     .when(sel && !focused, |d| d.bg(t.prs))
                     .when(!sel, |d| d.hover(move |s| s.bg(hov)))
+                    .cursor_pointer()
                     .on_click(cx.listener(move |h, ev: &gpui::ClickEvent, window, cx| {
                         if crate::keymap::menu_click(&ev.modifiers()) {
                             return;
@@ -1256,6 +1257,7 @@ impl HistoryPanel {
                     .when(!dropping && sel && !focused, |d| d.bg(t.prs))
                     .when(!dropping && !sel, |d| d.hover(move |s| s.bg(hov)))
                     .when(dragged, |d| d.opacity(0.45))
+                    .when(!is_renaming, |d| d.cursor_pointer())
                     .on_click(cx.listener(move |h, ev: &gpui::ClickEvent, window, cx| {
                         if is_renaming || crate::keymap::menu_click(&ev.modifiers()) {
                             return;
@@ -1333,6 +1335,7 @@ impl HistoryPanel {
                     .when(sel && !focused, |d| d.bg(t.prs))
                     .when(!sel, |d| d.hover(move |s| s.bg(hov)))
                     .when(dragged, |d| d.opacity(0.45))
+                    .when(!is_renaming, |d| d.cursor_pointer())
                     .on_click(cx.listener(move |h, ev: &gpui::ClickEvent, window, cx| {
                         // A click in the rename field belongs to the field: taking the
                         // focus back to the panel here would swallow what is typed next.

@@ -126,6 +126,7 @@ impl Render for Welcome {
                 .gap(px(14.))
                 .when(on, |d| d.bg(t.acc_s).border_1().border_color(t.acc).text_color(t.tx))
                 .when(!on, |d| d.text_color(if quiet { t.tx3 } else { t.tx2 }).hover(move |s| s.bg(hov)))
+                .cursor_pointer()
                 .on_click(cx.listener(move |w, _, _, cx| w.choose(i, cx)))
                 .child(div().w(px(12.)).text_size(px(10.)).text_color(t.acc).child(if on { "▶" } else { "" }))
                 .child(div().flex_1().text_size(px(if quiet { 12. } else { 13. })).child(label))

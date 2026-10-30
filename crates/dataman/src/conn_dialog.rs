@@ -1625,6 +1625,7 @@ impl Render for ConnDialog {
                 .items_center()
                 .justify_center()
                 .when(on, |d| d.border_2().border_color(c))
+                .cursor_pointer()
                 .on_click(cx.listener(move |d, _, _, cx| {
                     d.color = i;
                     cx.notify();

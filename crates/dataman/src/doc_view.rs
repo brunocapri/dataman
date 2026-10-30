@@ -903,6 +903,7 @@ impl DocPane {
                 .child(div().w(px(28.)).flex_none().text_right().text_color(t.tx4).child((base + i + 1).to_string()))
                 .when(!id.is_empty(), |d| d.child(div().flex_none().max_w(px(240.)).overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.num).child(id.clone())))
                 .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx2).child(sum.clone()))
+                .cursor_pointer()
                 .on_click(cx.listener(move |p, _, window, cx| {
                     window.focus(&p.list_focus, cx);
                     p.select(i, cx);

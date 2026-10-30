@@ -164,6 +164,7 @@ pub fn row(
         .gap(px(10.))
         .whitespace_nowrap()
         .text_color(fg)
+        .cursor_pointer()
         .when(hi, |d| d.bg(t.acc))
         .child(icon(ic).size(px(14.)).text_color(if hi { t.on_acc } else { t.tx3 }))
         .child(div().flex_none().child(label))

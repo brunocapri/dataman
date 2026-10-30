@@ -174,6 +174,7 @@ impl Render for PrivilegesPanel {
                         .items_center()
                         .when(picked, |d| d.bg(t.acc_s))
                         .when(!picked, |d| d.hover(move |s| s.bg(hov)))
+                        .cursor_pointer()
                         .on_click(cx.listener(move |p, _: &ClickEvent, _, cx| {
                             p.picked = if p.picked.as_deref() == Some(r2.as_str()) { None } else { Some(r2.clone()) };
                             cx.notify();

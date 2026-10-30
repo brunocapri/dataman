@@ -349,8 +349,9 @@ pub fn segment(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedStrin
         .items_center()
         .justify_center()
         .text_size(px(11.5))
+        .cursor_pointer()
         .when(on, |d| d.bg(t.pop).text_color(t.tx).border_1().border_color(t.line2))
-        .when(!on, |d| d.text_color(t.tx3).cursor_pointer().hover(move |s| s.bg(hov)))
+        .when(!on, |d| d.text_color(t.tx3).hover(move |s| s.bg(hov)))
         .child(label.into())
 }
 

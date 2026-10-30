@@ -2899,6 +2899,7 @@ impl SchemaTree {
                 }
             }))
             .child(div()
+            .cursor_pointer()
             .id(ix)
             .group(ROW_GROUP)
             .relative()
@@ -3297,6 +3298,7 @@ fn menu_row(
     } else if on {
         t.on_acc
     } else if danger {
+        .when(disabled.is_none(), |d| d.cursor_pointer())
         t.err
     } else {
         t.tx3

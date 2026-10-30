@@ -488,6 +488,7 @@ impl Palette {
                     .when(it.section != Section::Commands, |d| d.child(it.sub.clone())),
             )
             .child(div().flex_none().text_size(px(11.)).text_color(t.tx3).child(it.key.clone()))
+            .cursor_pointer()
             .on_click(cx.listener(move |p, ev: &gpui::ClickEvent, _, cx| {
                 let mode = if ev.modifiers().secondary() {
                     OpenMode::NewTab
@@ -545,6 +546,7 @@ impl Render for Palette {
                 .when(!on, |d| d.text_color(t.tx3).hover(move |st| st.bg(hov)))
                 .child(name)
                 .child(div().text_size(px(10.5)).opacity(0.6).child(prefix))
+                .cursor_pointer()
                 .on_click(cx.listener(move |p, _, _, cx| {
                     p.scope = s;
                     let (_, q) = p.parsed(cx);

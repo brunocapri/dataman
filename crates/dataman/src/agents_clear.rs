@@ -206,7 +206,7 @@ impl AgentsPage {
                     .when(sel, |c| c.bg(t.prs).border_1().border_color(t.line2))
                     .when(!sel && !future, move |c| c.hover(move |s| s.bg(hov)))
                     .child(d.day().to_string())
-                    .when(!future, |c| c.on_click(cx.listener(move |v, _, _, cx| v.pick_clear_day(d, cx))))
+                    .when(!future, |c| c.cursor_pointer().on_click(cx.listener(move |v, _, _, cx| v.pick_clear_day(d, cx))))
                     .into_any_element()
             }))
         });

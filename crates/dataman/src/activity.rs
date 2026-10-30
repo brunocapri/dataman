@@ -992,6 +992,7 @@ fn chip(t: &Theme, id: &'static str, label: &'static str, on: bool) -> gpui::Sta
         .items_center()
         .border_1()
         .text_size(px(11.))
+        .cursor_pointer()
         .when(on, |d| d.bg(t.prs).text_color(t.tx).border_color(t.line2))
         .when(!on, |d| d.text_color(t.tx3).border_color(t.line).hover(move |s| s.bg(hov)))
         .child(label)
@@ -1179,6 +1180,7 @@ impl ActivityView {
                 .text_size(px(12.))
                 .when(sel, |d| d.bg(t.sel))
                 .when(!sel, |d| d.hover(move |s| s.bg(hov)))
+                .cursor_pointer()
                 .on_click(cx.listener(move |m, ev: &ClickEvent, window, cx| {
                     window.focus(&m.locks_focus, cx);
                     m.select_pid(Some(pid), cx);

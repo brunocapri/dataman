@@ -3049,6 +3049,7 @@ impl CodeEditor {
                 .gap(px(8.))
                 .when(on, |d| d.bg(t.acc_s).border_1().border_color(t.acc).text_color(t.tx))
                 .when(!on, |d| d.text_color(t.tx2))
+                .cursor_pointer()
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _: &MouseDownEvent, _, cx| {

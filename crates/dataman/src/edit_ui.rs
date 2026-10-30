@@ -351,6 +351,7 @@ impl Render for CellEditor {
                     .text_size(px(9.5))
                     .when(null, |d| d.bg(t.acc).text_color(t.on_acc))
                     .when(!null, |d| d.bg(t.hov).text_color(t.tx3).border_1().border_color(t.line2))
+                    .cursor_pointer()
                     .child("NULL")
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(cx.listener(|e, _, _, cx| e.toggle_null(cx))),
@@ -1371,6 +1372,7 @@ impl Render for ReviewPanel {
                         .text_size(px(11.))
                         .text_color(t.tx3)
                         .hover(|s| s.text_color(gpui::white().opacity(0.9)))
+                        .cursor_pointer()
                         .child("undo")
                         .on_click(move |_, _, cx| edit.update(cx, |e, cx| e.undo(at, cx))),
                 )

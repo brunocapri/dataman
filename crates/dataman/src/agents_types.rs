@@ -156,6 +156,7 @@ impl AgentsPage {
             .items_center()
             .gap(px(10.))
             .text_color(t.tx2)
+            .cursor_pointer()
             .when(adding, |d| d.bg(t.prs).text_color(t.tx))
             .when(!adding, move |d| d.hover(move |s| s.bg(hov)))
             .child(div().w(px(28.)).flex().justify_center().child(icon(Icon::Plus).size(px(13.)).text_color(t.tx3)))
@@ -189,6 +190,7 @@ impl AgentsPage {
         let mask = div()
             .id(SharedString::from(format!("agents-type-mask-btn-{}", r.id)))
             .child(dropdown(t, self, mask_id, r.mask.label(), r.on))
+            .cursor_pointer()
             .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.open_menu(open.clone(), 120., items.clone(), cx)));
         let sw = SharedString::from(format!("agents-type-switch-{}", r.id));
         let row_id = SharedString::from(format!("agents-type-row-{}", r.id));
@@ -197,6 +199,7 @@ impl AgentsPage {
         div()
             .children(ui::here(&row_id.clone().into()))
             .id(row_id)
+            .cursor_pointer()
             .on_click(cx.listener(move |v, _, window, cx| {
                 v.focus_list(window, cx);
                 v.select_type(&row_of, cx);
@@ -219,6 +222,7 @@ impl AgentsPage {
                     .id(sw.clone())
                     .when(!r.on, |d| d.opacity(0.55))
                     .child(switch(t, sw, r.on))
+                    .cursor_pointer()
                     .on_click(cx.listener(move |v, _, _, cx| v.flip_type(&flip_id, cx))),
             )
             .child(
@@ -237,7 +241,7 @@ impl AgentsPage {
             .child(div().flex_1())
             .when(r.broken.is_some(), |d| {
                 let id = r.id.clone();
-                d.child(div().id(SharedString::from(format!("agents-fix-{}", r.id))).flex_none().text_size(px(11.5)).text_color(t.err).child("Fix").on_click(cx.listener(move |v, _, _, cx| v.select_type(&id, cx))))
+                d.child(div().id(SharedString::from(format!("agents-fix-{}", r.id))).flex_none().text_size(px(11.5)).text_color(t.err).cursor_pointer().child("Fix").on_click(cx.listener(move |v, _, _, cx| v.select_type(&id, cx))))
             })
             .child(div().flex_none().when(!r.on, |d| d.opacity(0.55)).child(mask))
             .into_any_element()
@@ -330,6 +334,7 @@ impl AgentsPage {
                 .gap(px(6.))
                 .text_size(px(11.5))
                 .text_color(t.tx2)
+                .cursor_pointer()
                 .child("More options")
                 .child(ui::disclosure("agents-more-arrow", more, 10., t.tx3))
                 .on_click(cx.listener(|v, _, _, cx| {
@@ -353,7 +358,7 @@ impl AgentsPage {
                             .items_center()
                             .gap(px(12.))
                             .child(div().flex_1().text_color(t.tx2).child("Validator"))
-                            .child(div().id("agents-validator-btn").child(dropdown(t, self, "agents-validator".into(), self.editor.validator.label(), true).w(px(130.))).on_click(cx.listener(move |v, _: &ClickEvent, _, cx| {
+                            .child(div().id("agents-validator-btn").cursor_pointer().child(dropdown(t, self, "agents-validator".into(), self.editor.validator.label(), true).w(px(130.))).on_click(cx.listener(move |v, _: &ClickEvent, _, cx| {
                                 v.open_menu("agents-validator", 150., vals.clone(), cx)
                             }))),
                     )
@@ -364,6 +369,7 @@ impl AgentsPage {
                             .flex_row()
                             .items_center()
                             .gap(px(10.))
+                            .cursor_pointer()
                             .child(crate::agents::checkbox(t, self.editor.ignore_case, false))
                             .child(div().text_color(t.tx2).child("Ignore case"))
                             .on_click(cx.listener(|v, _, _, cx| {
@@ -419,6 +425,7 @@ impl AgentsPage {
                         .invisible()
                         .group_hover(rid, |s| s.visible())
                         .text_color(t.tx3)
+                        .cursor_pointer()
                         .child("×")
                         .on_click(cx.listener(move |v, _, _, cx| {
                             if k < v.editor.samples.len() {
@@ -473,6 +480,7 @@ impl AgentsPage {
                         .id("agents-type-delete")
                         .text_size(px(11.5))
                         .text_color(t.err)
+                        .cursor_pointer()
                         .child(verb)
                         .on_click(cx.listener(|v, _, _, cx| {
                             v.editor.confirm_delete = true;

@@ -202,6 +202,7 @@ impl AgentsPage {
                 .flex_row()
                 .items_center()
                 .gap(px(8.))
+                .cursor_pointer()
                 .when(sel, |d| d.bg(t.prs))
                 .when(!sel, move |d| d.hover(move |s| s.bg(hov)))
                 .children(crate::assets::small_logo(p.engine, 14.))
@@ -234,6 +235,7 @@ impl AgentsPage {
                 .px(px(12.))
                 .flex()
                 .items_center()
+                .cursor_pointer()
                 .when(on, |d| d.bg(t.prs).text_color(t.tx))
                 .when(!on, move |d| d.text_color(t.tx3).hover(move |s| s.bg(hov).text_color(tx2)))
                 .child(p.label())
@@ -464,7 +466,7 @@ impl AgentsPage {
         match (tip, live) {
             (Some(tip), false) => row.tip(tip.view()).into_any_element(),
             (_, false) => row.into_any_element(),
-            _ => row.on_click(cx.listener(move |v, _, _, cx| v.set_rule(&flip, cx))).into_any_element(),
+            _ => row.cursor_pointer().on_click(cx.listener(move |v, _, _, cx| v.set_rule(&flip, cx))).into_any_element(),
         }
     }
 
@@ -546,6 +548,7 @@ impl AgentsPage {
                     .gap(px(12.))
                     .child(div().flex_1().flex().flex_col().gap(px(3.)).child(div().text_color(if on { t.err } else { t.tx }).child("YOLO")).child(div().text_size(px(11.)).text_color(t.tx3).child("Writes run without asking.")))
                     .child(crate::agents::switch(t, "agents-yolo-switch", on))
+                    .cursor_pointer()
                     .on_click(cx.listener(|v, _, _, cx| {
                         let Some(p) = v.selected_profile(cx) else { return };
                         // On production YOLO takes a second, explicit yes.
@@ -628,7 +631,7 @@ impl AgentsPage {
                         .id(SharedString::from(format!("agents-sens-check-{k}")))
                         .child(checkbox(t, s.on, !masked && s.on))
                         .when(masked, |d| {
-                            d.on_click(cx.listener(move |v, _, _, cx| {
+                            d.cursor_pointer().on_click(cx.listener(move |v, _, _, cx| {
                                 v.set_rule(|r| {
                                     if let Some(s) = r.sensitive.get_mut(k) {
                                         s.on = !s.on;
@@ -646,6 +649,7 @@ impl AgentsPage {
                         .px(px(4.))
                         .text_color(t.tx3)
                         .hover(move |s| s.bg(hov))
+                        .cursor_pointer()
                         .child("×")
                         .on_click(cx.listener(move |v, _, _, cx| {
                             v.set_rule(|r| {
@@ -659,7 +663,7 @@ impl AgentsPage {
                     div()
                         .id(SharedString::from(format!("agents-sens-mask-btn-{k}")))
                         .child(dropdown(t, self, id, s.how.label(), s.on && masked))
-                        .when(masked, |d| d.on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.open_menu(open.clone(), 120., items.clone(), cx)))),
+                        .when(masked, |d| d.cursor_pointer().on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.open_menu(open.clone(), 120., items.clone(), cx)))),
                 )
         });
         let sensitive = div()
@@ -683,7 +687,7 @@ impl AgentsPage {
                             .id("agents-scan")
                             .text_size(px(11.5))
                             .text_color(if masked { t.tx2 } else { t.tx4 })
-                            .when(masked, |d| d.hover(|s| s.opacity(0.75)).on_click(cx.listener(|v, _, _, cx| v.scan(cx))))
+                            .when(masked, |d| d.cursor_pointer().hover(|s| s.opacity(0.75)).on_click(cx.listener(|v, _, _, cx| v.scan(cx))))
                             .child("Scan again"),
                     ),
             )
@@ -704,6 +708,7 @@ impl AgentsPage {
                                 .children(ui::here(&"agents-sens-use-masked".into()))
                                 .id("agents-sens-use-masked")
                                 .text_color(t.acc_t)
+                                .cursor_pointer()
                                 .hover(|s| s.opacity(0.75))
                                 .child("Use Masked data")
                                 .on_click(cx.listener(|v, _, _, cx| v.set_rule(|r| r.view = AgentView::Masked, cx))),

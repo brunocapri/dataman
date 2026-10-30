@@ -616,7 +616,7 @@ impl Render for ExportView {
                 .when(!on, |d| d.bg(t.hov).text_color(t.tx2).border_color(t.line).hover(move |s| s.bg(hov)))
                 .when(locked, |d| d.opacity(0.6))
                 .child(div().text_size(px(12.5)).font_weight(FontWeight::SEMIBOLD).child(label))
-                .when(!locked, |d| d.on_click(cx.listener(move |v, _, _, cx| v.set_format(f, cx)))))
+                .when(!locked, |d| d.cursor_pointer().on_click(cx.listener(move |v, _, _, cx| v.set_format(f, cx)))))
         })));
         let menu_open = self.menu;
         let field = |v: &Self, f: Field, t: &Theme, cx: &mut Context<Self>| {
@@ -667,7 +667,7 @@ impl Render for ExportView {
                         .child(value)
                         .child(ui::dropdown_arrow(gpui::ElementId::Name(format!("{}-arrow", f.label()).into()), open, 9., t.tx3))
                         .when(!locked, |d| {
-                            d.on_click(cx.listener(move |v, _, _, cx| {
+                            d.cursor_pointer().on_click(cx.listener(move |v, _, _, cx| {
                                 if v.menu.is_none() && ui::menu_just_shut(&format!("export-{f:?}")) {
                                     return;
                                 }
@@ -726,7 +726,7 @@ impl Render for ExportView {
                 .child(div().flex_none().child(name))
                 .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_right().text_size(px(11.)).text_color(t.tx3).child(desc))
                 .when(enabled && !locked, |d| {
-                    d.on_click(cx.listener(move |v, _, _, cx| {
+                    d.cursor_pointer().on_click(cx.listener(move |v, _, _, cx| {
                         v.scope = s;
                         cx.notify();
                     }))

@@ -507,6 +507,7 @@ impl ValueEditor {
                     .when(!on, |d| d.text_color(if null { t.null } else { t.tx }).hover(move |s| s.bg(hov)))
                     .when(null, |d| d.italic())
                     .child(label)
+                    .cursor_pointer()
                     .on_click(cx.listener(move |e, _: &ClickEvent, _, cx| {
                         if let State::Enum { hi, .. } = &mut e.state {
                             *hi = i;
@@ -560,6 +561,7 @@ impl ValueEditor {
                                 .flex_none()
                                 .text_color(t.typ)
                                 .child(format!("\"{k}\""))
+                                .cursor_pointer()
                                 .on_click(cx.listener(move |e, ev: &ClickEvent, window, cx| {
                                     if ev.click_count() >= 1 {
                                         e.begin_field(p_key.clone(), true, window, cx);
@@ -582,6 +584,7 @@ impl ValueEditor {
                             .text_ellipsis()
                             .text_color(json_color(t, r.type_name))
                             .child(r.value.clone())
+                            .cursor_pointer()
                             .on_click(cx.listener(move |e, _: &ClickEvent, window, cx| e.begin_field(p_val.clone(), false, window, cx)))
                             .into_any_element(),
                     };
@@ -597,6 +600,7 @@ impl ValueEditor {
                         .gap(px(6.))
                         .when(on, |d| d.bg(sel_bg))
                         .when(!on, |d| d.hover(move |s| s.bg(hov)))
+                        .cursor_pointer()
                         .on_mouse_down(MouseButton::Left, cx.listener(move |e, _, _, cx| {
                             if let State::Json(j) = &mut e.state {
                                 j.sel = i;
@@ -610,6 +614,7 @@ impl ValueEditor {
                                 .flex_none()
                                 .when(r.container, |d| {
                                     d.child(ui::disclosure(("json-chev", i), r.expanded, 10., t.tx3))
+                                        .cursor_pointer()
                                         .on_click(cx.listener(move |e, _: &ClickEvent, _, cx| {
                                             if let State::Json(j) = &mut e.state {
                                                 j.doc.toggle(&p_toggle);
@@ -679,6 +684,7 @@ impl Render for ValueEditor {
                         .when(null, |d| d.bg(t.acc).text_color(t.on_acc))
                         .when(!null, |d| d.bg(t.hov).text_color(t.tx3).border_1().border_color(t.line2))
                         .child("NULL")
+                        .cursor_pointer()
                         .on_click(cx.listener(|e, _: &ClickEvent, _, cx| e.toggle_null(cx))),
                 ))
                 .child(div().flex_1())

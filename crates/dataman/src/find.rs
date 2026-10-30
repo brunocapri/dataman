@@ -212,6 +212,7 @@ impl Render for FindBar {
                 .items_center()
                 .justify_center()
                 .text_size(px(11.))
+                .cursor_pointer()
                 .when(on, |d| d.bg(t.acc_s).text_color(t.acc_t))
                 .when(!on, |d| d.text_color(t.tx3).hover(move |s| s.bg(hov)).active(move |s| s.bg(prs)))
                 .child(label)
