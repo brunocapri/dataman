@@ -130,8 +130,6 @@ pub const COMMANDS: &[Command] = &[
     c("cycle_focus_back", "Previous region", "FOCUS", Scope::Workspace, &["shift-f6"], || Box::new(CycleFocusBack)),
     c("focus_explorer", "Explorer", "FOCUS", Scope::Workspace, &["cmd-shift-e"], || Box::new(FocusExplorer)),
     c("focus_grid", "Grid", "FOCUS", Scope::Workspace, &["cmd-shift-g"], || Box::new(FocusGrid)),
-    c("lar_live", "Live queries", "◆ LAR", Scope::Workspace, &["alt-1"], || Box::new(LarPanel1)),
-    c("lar_pause", "Pause · resume live", "◆ LAR", Scope::Workspace, &["alt-p"], || Box::new(crate::lar::PauseLive)),
 ];
 
 pub fn find(id: &str) -> Option<&'static Command> {
@@ -299,7 +297,6 @@ pub fn bind_all(cx: &mut App) {
     crate::plan::bind_keys(cx);
     crate::activity::bind_keys(cx);
     crate::mcp::bind_keys(cx);
-    crate::lar::bind_keys(cx);
     crate::update_ui::bind_keys(cx);
     crate::project_ui::bind_keys(cx);
     crate::outside_ui::bind_keys(cx);

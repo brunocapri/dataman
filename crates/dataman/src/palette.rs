@@ -223,7 +223,6 @@ pub struct Item {
     pub sub: String,
     pub key: String,
     pub icon: PaletteIcon,
-    pub lar: bool,
     pub disabled: bool,
 }
 
@@ -235,7 +234,6 @@ pub enum PaletteIcon {
     Favorite,
     Command,
     Connection,
-    Lar(Icon),
 }
 
 impl Item {
@@ -248,7 +246,6 @@ impl Item {
             sub: sub.into(),
             key,
             icon: PaletteIcon::Command,
-            lar: false,
             disabled: false,
         }
     }
@@ -449,20 +446,17 @@ impl Palette {
         let it = &self.items[hit.item];
         let sel = flat == self.sel;
         let icon_el = {
-            let (ic, color) = match it.icon {
-                PaletteIcon::Table => (Icon::Table, None),
-                PaletteIcon::View => (Icon::View, None),
-                PaletteIcon::Tab => (Icon::Tab, None),
-                PaletteIcon::Favorite => (Icon::Star, None),
-                PaletteIcon::Command => (Icon::Command, None),
-                PaletteIcon::Connection => (Icon::Database, None),
-                PaletteIcon::Lar(i) => (i, Some(t.lar)),
+            let ic = match it.icon {
+                PaletteIcon::Table => Icon::Table,
+                PaletteIcon::View => Icon::View,
+                PaletteIcon::Tab => Icon::Tab,
+                PaletteIcon::Favorite => Icon::Star,
+                PaletteIcon::Command => Icon::Command,
+                PaletteIcon::Connection => Icon::Database,
             };
-            let c = color.unwrap_or(if it.lar { t.lar } else if sel { t.tx } else { t.tx3 });
-            icon(ic).size(px(15.)).text_color(c)
+            icon(ic).size(px(15.)).text_color(if sel { t.tx } else { t.tx3 })
         };
-        let (mark, line) = if it.lar { (t.lar_t, t.lar) } else { (t.tx, t.acc) };
-        let label = highlighted(&it.label, &hit.m.positions, mark, line);
+        let label = highlighted(&it.label, &hit.m.positions, t.tx, t.acc);
         let hov = t.hov;
         div()
             .id(("pal", flat))
@@ -661,6 +655,7 @@ impl Render for Palette {
             .on_action(cx.listener(|p, _: &OpenNewTab, _, cx| p.pick(OpenMode::NewTab, cx)))
             .on_action(cx.listener(|p, _: &OpenInPlace, _, cx| p.pick(OpenMode::InPlace, cx)))
             .on_mouse_down(MouseButton::Left, cx.listener(|_, _, _, cx| cx.emit(PaletteEvent::Dismiss)))
+            .child(ui::esc_closes(Some("Palette"), cx.listener(|_, _: &Dismiss, _, cx| cx.emit(PaletteEvent::Dismiss))))
             .child(div().absolute().top(px(84.)).left_0().right_0().bottom(px(12.)).flex().items_start().justify_center().child(sheet))
     }
 }
@@ -677,7 +672,6 @@ mod tests {
             sub: String::new(),
             key: String::new(),
             icon: PaletteIcon::Tab,
-            lar: false,
             disabled: false,
         }
     }
@@ -906,7 +900,6 @@ impl Workspace {
                         sub: format!("{} · {db}.{}{}", p.name, r.schema, if r.kind.is_view() { " · view" } else { "" }),
                         key: String::new(),
                         icon: if r.kind.is_view() { PaletteIcon::View } else { PaletteIcon::Table },
-                        lar: c.info.is_lar,
                         disabled: false,
                     });
                 }
@@ -931,7 +924,6 @@ impl Workspace {
                 sub: format!("{conn}{state}{}", if i == self.active { " · current" } else { "" }),
                 key: if i < 8 { crate::keymap::key_label(&format!("tab_{}", i + 1)) } else { String::new() },
                 icon: PaletteIcon::Tab,
-                lar: tr.connection().is_some_and(|c| c.info.is_lar),
                 disabled: false,
             });
         }
@@ -948,7 +940,6 @@ impl Workspace {
                 },
                 key: String::new(),
                 icon: PaletteIcon::Favorite,
-                lar: false,
                 disabled: false,
             });
         }
@@ -962,7 +953,6 @@ impl Workspace {
                 Some(ConnState::Failed(_)) => ("failed".to_string(), false),
                 None => ("not connected".to_string(), false),
             };
-            let lar = matches!(state, Some(ConnState::Connected(c)) if c.info.is_lar);
             items.push(Item {
                 kind: ItemKind::Connection { id: p.id.clone() },
                 section: Section::Connections,
@@ -970,7 +960,6 @@ impl Workspace {
                 sub: format!("{} · {sub}", where_of(p)),
                 key: String::new(),
                 icon: PaletteIcon::Connection,
-                lar,
                 disabled: false,
             });
             if !connected {
@@ -981,7 +970,6 @@ impl Workspace {
                     sub: where_of(p),
                     key: String::new(),
                     icon: PaletteIcon::Connection,
-                    lar: false,
                     disabled: false,
                 });
             }
@@ -1109,22 +1097,6 @@ fn commands(conn: Option<&std::sync::Arc<dataman_core::Connection>>, cx: &App) -
     }
     if crate::updates::enabled(cx) {
         v.push(c("Check for updates…", crate::VERSION, "", Box::new(CheckForUpdates), Workspace));
-    }
-    if let Some(conn) = conn.filter(|c| c.info.is_lar) {
-        let registry = cx.try_global::<crate::panels::PanelRegistry>();
-        let actions: [Box<dyn Action>; 1] = [Box::new(LarPanel1)];
-        for ((id, label, ic, key, what), a) in crate::panels::LAR_BUTTONS.into_iter().zip(actions) {
-            let on = registry.is_some_and(|r| r.find(&conn.info, id).is_some());
-            let mut it = c(&format!("LAR · {label}"), if on { what } else { "coming in a later phase" }, key, a, Workspace);
-            it.icon = PaletteIcon::Lar(ic);
-            it.lar = true;
-            it.disabled = !on;
-            v.push(it);
-        }
-        let mut it = c("LAR · Pause / resume live", "the tab's SUBSCRIBE or LISTEN … AS", "⌥P", Box::new(crate::lar::PauseLive), Workspace);
-        it.icon = PaletteIcon::Lar(crate::assets::Icon::Pause);
-        it.lar = true;
-        v.push(it);
     }
     if crate::keymap::LINUX {
         // No menu bar there: what only it reached.

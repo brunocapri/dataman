@@ -52,7 +52,6 @@ pub struct TableDef {
     pub indexes: Vec<String>,
     pub partition_by: Option<String>,
     pub comment: Option<String>,
-    pub keys_reported: bool,
     pub notes: Vec<String>,
 }
 
@@ -69,7 +68,6 @@ impl TableDef {
             indexes: vec![],
             partition_by: None,
             comment: None,
-            keys_reported: true,
             notes: vec![],
         }
     }
@@ -89,7 +87,7 @@ fn quote_collation(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
 
-fn column_line(c: &ColumnDef, keys: bool) -> String {
+fn column_line(c: &ColumnDef) -> String {
     let serial = c.serial && c.identity.is_none() && c.generated.is_none();
     let ty = match serial.then(|| serial_type(&c.type_name)).flatten() {
         Some(s) => s.to_string(),
@@ -111,7 +109,7 @@ fn column_line(c: &ColumnDef, keys: bool) -> String {
             }
         }
     }
-    if keys && c.not_null == Some(true) && c.identity.is_none() && !(serial && serial_type(&c.type_name).is_some()) {
+    if c.not_null == Some(true) && c.identity.is_none() && !(serial && serial_type(&c.type_name).is_some()) {
         s.push_str(" NOT NULL");
     }
     if c.generated.is_none() && c.identity.is_none() && !(serial && serial_type(&c.type_name).is_some())
@@ -127,9 +125,6 @@ pub fn render(t: &TableDef) -> String {
     let q = qualified(Some(&t.schema), &t.name);
     let mut out = String::new();
     out.push_str(&format!("-- {q}: generated from the catalog of {}\n", quote_ident(&t.database)));
-    if !t.keys_reported {
-        out.push_str("-- This server's catalog does not report keys, NOT NULL or defaults: only columns and types follow.\n");
-    }
     for n in &t.notes {
         out.push_str(&format!("-- {n}\n"));
     }
@@ -138,10 +133,8 @@ pub fn render(t: &TableDef) -> String {
         _ if t.unlogged => "UNLOGGED TABLE",
         _ => "TABLE",
     };
-    let mut lines: Vec<String> = t.columns.iter().map(|c| column_line(c, t.keys_reported)).collect();
-    if t.keys_reported {
-        lines.extend(t.constraints.iter().map(|c| format!("CONSTRAINT {} {}", quote_ident(&c.name), c.definition)));
-    }
+    let mut lines: Vec<String> = t.columns.iter().map(column_line).collect();
+    lines.extend(t.constraints.iter().map(|c| format!("CONSTRAINT {} {}", quote_ident(&c.name), c.definition)));
     out.push_str(&format!("CREATE {kind} {q} ("));
     if lines.is_empty() {
         out.push(')');
@@ -298,7 +291,6 @@ impl Connection {
     pub async fn table_def(&self, db: &str, schema: &str, name: &str) -> Result<TableDef> {
         let client = self.meta(db).await?;
         let mut t = TableDef::new(db, schema, name);
-        t.keys_reported = !self.info.is_lar;
         let where_rel = format!(
             "FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
              WHERE n.nspname = {} AND c.relname = {}",
@@ -315,13 +307,11 @@ impl Connection {
         t.kind = get(&rel, 1).and_then(|k| RelKind::from_relkind(&k)).unwrap_or(RelKind::Table);
         t.unlogged = get(&rel, 2).as_deref() == Some("u");
         let is_partition = truthy(get(&rel, 3)) == Some(true);
-        if t.keys_reported {
-            t.partition_by = get(&rel, 4).filter(|_| t.kind == RelKind::Partitioned);
-            t.comment = get(&rel, 5);
-        }
+        t.partition_by = get(&rel, 4).filter(|_| t.kind == RelKind::Partitioned);
+        t.comment = get(&rel, 5);
 
         // Columns: the full query (PostgreSQL 12+), then without generated columns (10+), then the
-        // bare catalog (LAR), then information_schema.
+        // bare catalog, then information_schema.
         let cols_from = format!(
             "FROM pg_catalog.pg_attribute a \
              JOIN pg_catalog.pg_type ty ON ty.oid = a.atttypid \
@@ -343,8 +333,7 @@ impl Connection {
             "SELECT a.attname, pg_catalog.format_type(a.atttypid, a.atttypmod), a.attnotnull, a.attnum \
              FROM pg_catalog.pg_attribute a WHERE a.attrelid = {oid} AND a.attnum > 0 ORDER BY a.attnum"
         );
-        let queries: Vec<&str> = if t.keys_reported { vec![&q12, &q10, &bare] } else { vec![&bare] };
-        match first_ok(&client, &queries).await {
+        match first_ok(&client, &[&q12, &q10, &bare]).await {
             Ok(rows) if rows.first().is_some_and(|r| r.len() >= 9) => {
                 for r in rows {
                     let Some(name) = get(&r, 0) else { continue };
@@ -377,8 +366,7 @@ impl Connection {
             Ok(rows) if !rows.is_empty() => {
                 for r in rows {
                     let Some(name) = get(&r, 0) else { continue };
-                    let not_null = if t.keys_reported { truthy(get(&r, 2)) } else { None };
-                    t.columns.push(ColumnDef { name, type_name: get(&r, 1).unwrap_or_default(), not_null, ..Default::default() });
+                    t.columns.push(ColumnDef { name, type_name: get(&r, 1).unwrap_or_default(), not_null: truthy(get(&r, 2)), ..Default::default() });
                 }
             }
             _ => {
@@ -390,16 +378,11 @@ impl Connection {
                 );
                 for r in first_ok(&client, &[&is]).await.context("columns unavailable")? {
                     let Some(name) = get(&r, 0) else { continue };
-                    let not_null = if t.keys_reported { truthy(get(&r, 2)).map(|n| !n) } else { None };
-                    let default = if t.keys_reported { get(&r, 3) } else { None };
-                    t.columns.push(ColumnDef { name, type_name: get(&r, 1).unwrap_or_default(), not_null, default, ..Default::default() });
+                    let not_null = truthy(get(&r, 2)).map(|n| !n);
+                    t.columns.push(ColumnDef { name, type_name: get(&r, 1).unwrap_or_default(), not_null, default: get(&r, 3), ..Default::default() });
                 }
             }
         }
-        if !t.keys_reported {
-            return Ok(t);
-        }
-
         // NOT NULL constraints of PostgreSQL 18 are already on the columns.
         let cons = format!(
             "SELECT conname, contype, pg_catalog.pg_get_constraintdef(oid, true) FROM pg_catalog.pg_constraint \
@@ -491,28 +474,13 @@ COMMENT ON COLUMN shop.orders.status IS 'it''s the state';\n";
     #[test]
     fn serial_only_for_integer_types() {
         let c = ColumnDef { serial: true, default: Some("nextval('s'::regclass)::text".into()), ..col("x", "text") };
-        assert_eq!(column_line(&c, true), "x text DEFAULT nextval('s'::regclass)::text");
+        assert_eq!(column_line(&c), "x text DEFAULT nextval('s'::regclass)::text");
         let c = ColumnDef { serial: true, default: Some("nextval('s'::regclass)".into()), ..col("x", "bigint") };
-        assert_eq!(column_line(&c, true), "x bigserial");
+        assert_eq!(column_line(&c), "x bigserial");
         let c = ColumnDef { identity: Some(Identity::ByDefault), not_null: Some(true), ..col("x", "integer") };
-        assert_eq!(column_line(&c, true), "x integer GENERATED BY DEFAULT AS IDENTITY");
+        assert_eq!(column_line(&c), "x integer GENERATED BY DEFAULT AS IDENTITY");
         let c = ColumnDef { generated: Some(Generated::Virtual), default: Some("(a + 1)".into()), ..col("x", "integer") };
-        assert_eq!(column_line(&c, true), "x integer GENERATED ALWAYS AS ((a + 1)) VIRTUAL");
-    }
-
-    #[test]
-    fn lar_lists_columns_and_says_what_is_missing() {
-        let mut t = TableDef::new("lar", "public", "demo_orders");
-        t.keys_reported = false;
-        t.columns = vec![ColumnDef { not_null: Some(true), ..col("id", "bigint") }, col("total", "double precision")];
-        t.constraints = vec![ConstraintDef { name: "k".into(), kind: 'p', definition: "PRIMARY KEY (id)".into() }];
-        let sql = render(&t);
-        assert_eq!(
-            sql,
-            "-- public.demo_orders: generated from the catalog of lar\n\
--- This server's catalog does not report keys, NOT NULL or defaults: only columns and types follow.\n\
-CREATE TABLE public.demo_orders (\n    id bigint,\n    total double precision\n);\n"
-        );
+        assert_eq!(column_line(&c), "x integer GENERATED ALWAYS AS ((a + 1)) VIRTUAL");
     }
 
     #[test]

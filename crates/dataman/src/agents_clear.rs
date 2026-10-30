@@ -271,6 +271,7 @@ impl AgentsPage {
                 .on_action(cx.listener(|v, _: &KeepCalls, window, cx| v.close_clear(window, cx)))
                 .on_action(cx.listener(|v, _: &DeleteCalls, _, cx| v.confirm_clear(cx)))
                 .on_mouse_down(gpui::MouseButton::Left, cx.listener(|v, _, window, cx| v.close_clear(window, cx)))
+                .child(ui::esc_closes(Some(SHEET), cx.listener(|v, _: &KeepCalls, window, cx| v.close_clear(window, cx))))
                 .flex()
                 .items_center()
                 .justify_center()

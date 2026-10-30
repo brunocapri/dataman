@@ -16,10 +16,10 @@ pub enum Target {
     /// An explorer folder: `color` is its swatch's index; `first`/`last` its place among them.
     Folder { id: String, name: String, color: Option<usize>, count: usize, first: bool, last: bool },
     Conn { id: String, name: String, state: ConnPhase },
-    Db { conn: String, db: String, current: bool, lar: bool, ro: bool },
-    Schema { conn: String, db: String, schema: String, lar: bool, ro: bool },
+    Db { conn: String, db: String, current: bool, ro: bool },
+    Schema { conn: String, db: String, schema: String, ro: bool },
     Group,
-    Rel { conn: String, db: String, schema: String, name: String, kind: RelKind, lar: bool, ro: bool },
+    Rel { conn: String, db: String, schema: String, name: String, kind: RelKind, ro: bool },
     Column { name: String },
     Index { name: String, definition: Option<String> },
     Object { conn: String, db: String, schema: String, name: String, what: Obj },
@@ -252,29 +252,29 @@ pub fn entries(t: &Target) -> Vec<Entry> {
                 .danger()
                 .off(current.then_some("in use"))),
         ],
-        Target::Schema { lar, ro, .. } => vec![
+        Target::Schema { ro, .. } => vec![
             I(it(Act::NewTab, "New query tab", Icon::Tab)),
             I(it(Act::Reload, "Reload", Icon::Reload).key("⌘R")),
             I(it(Act::CopyName, "Copy name", Icon::Copy)),
-            I(it(Act::Privileges, "Privileges", Icon::Lock).off(lar.then_some("not reported"))),
+            I(it(Act::Privileges, "Privileges", Icon::Lock)),
             Sep,
             I(it(Act::CreateTable, "Create table…", Icon::Table)),
             I(it(Act::ImportData, "Import data…", Icon::Import).off(ro.then_some(READ_ONLY))),
             I(it(Act::DropSchema, "Drop schema…", Icon::Trash).danger()),
         ],
-        Target::Rel { kind, lar, .. } if kind.is_view() => vec![
+        Target::Rel { kind, .. } if kind.is_view() => vec![
             I(it(Act::SelectTop, "Select 1000 rows", Icon::Run).key("↩").bold()),
             I(it(Act::CountRows, "Count rows", Icon::Hash)),
             Sep,
             I(it(Act::CopyName, "Copy name", Icon::Copy)),
             I(it(Act::CopyQualified, "Copy qualified name", Icon::Copy)),
             Sep,
-            I(it(Act::ShowDefinition, "Show definition", Icon::Code).off(lar.then_some("not reported"))),
+            I(it(Act::ShowDefinition, "Show definition", Icon::Code)),
             I(it(Act::Generate(Gen::Select), "Generate SELECT", Icon::Code)),
             Sep,
             I(it(Act::DropView, "Drop view…", Icon::Trash).danger()),
         ],
-        Target::Rel { lar, ro, .. } => vec![
+        Target::Rel { ro, .. } => vec![
             I(it(Act::SelectTop, "Select 1000 rows", Icon::Run).key("↩").bold()),
             I(it(Act::SelectAll, "Select all rows", Icon::Run)),
             I(it(Act::CountRows, "Count rows", Icon::Hash)),
@@ -296,7 +296,7 @@ pub fn entries(t: &Target) -> Vec<Entry> {
             },
             I(it(Act::Export, "Export…", Icon::Export)),
             I(it(Act::ImportData, "Import data…", Icon::Import).off(ro.then_some(READ_ONLY))),
-            I(it(Act::Privileges, "Privileges", Icon::Lock).off(lar.then_some("not reported"))),
+            I(it(Act::Privileges, "Privileges", Icon::Lock)),
             I(it(Act::Reload, "Reload", Icon::Reload).key("⌘R")),
             Sep,
             I(it(Act::Truncate, "Truncate…", Icon::Trash).danger()),
@@ -586,8 +586,8 @@ mod tests {
         Target::Conn { id: "c1".into(), name: "local".into(), state }
     }
 
-    fn rel(kind: RelKind, lar: bool) -> Target {
-        Target::Rel { conn: "c1".into(), db: "app".into(), schema: "public".into(), name: "orders".into(), kind, lar, ro: false }
+    fn rel(kind: RelKind) -> Target {
+        Target::Rel { conn: "c1".into(), db: "app".into(), schema: "public".into(), name: "orders".into(), kind, ro: false }
     }
 
     #[test]
@@ -617,8 +617,8 @@ mod tests {
 
     #[test]
     fn database_menu_guards_the_current_database() {
-        let cur = Target::Db { conn: "c1".into(), db: "app".into(), current: true, lar: false, ro: false };
-        let other = Target::Db { conn: "c1".into(), db: "old".into(), current: false, lar: false, ro: true };
+        let cur = Target::Db { conn: "c1".into(), db: "app".into(), current: true, ro: false };
+        let other = Target::Db { conn: "c1".into(), db: "old".into(), current: false, ro: true };
         assert_eq!(item(&cur, Act::DropDatabase).disabled, Some("in use"));
         assert!(item(&other, Act::DropDatabase).enabled());
         assert_eq!(acts(&other), vec![Act::NewTab, Act::Reload, Act::CopyName, Act::ToggleReadOnly, Act::CreateSchema, Act::DropDatabase]);
@@ -628,24 +628,22 @@ mod tests {
 
     #[test]
     fn schema_menu() {
-        let s = Target::Schema { conn: "c1".into(), db: "app".into(), schema: "public".into(), lar: false, ro: false };
+        let s = Target::Schema { conn: "c1".into(), db: "app".into(), schema: "public".into(), ro: false };
         assert_eq!(acts(&s), vec![Act::NewTab, Act::Reload, Act::CopyName, Act::Privileges, Act::CreateTable, Act::ImportData, Act::DropSchema]);
         assert!(item(&s, Act::DropSchema).danger);
         assert!(item(&s, Act::Privileges).enabled() && item(&s, Act::ImportData).enabled());
-        let lar = Target::Schema { conn: "c1".into(), db: "app".into(), schema: "public".into(), lar: true, ro: false };
-        assert_eq!(item(&lar, Act::Privileges).disabled, Some("not reported"));
-        let ro = Target::Schema { conn: "c1".into(), db: "app".into(), schema: "public".into(), lar: false, ro: true };
+        let ro = Target::Schema { conn: "c1".into(), db: "app".into(), schema: "public".into(), ro: true };
         assert_eq!(item(&ro, Act::ImportData).disabled, Some(READ_ONLY));
         assert!(item(&ro, Act::CreateTable).enabled());
     }
 
     #[test]
     fn import_on_tables_only() {
-        let t = rel(RelKind::Table, false);
+        let t = rel(RelKind::Table);
         assert!(item(&t, Act::ImportData).enabled());
-        let ro = Target::Rel { conn: "c1".into(), db: "app".into(), schema: "public".into(), name: "orders".into(), kind: RelKind::Table, lar: false, ro: true };
+        let ro = Target::Rel { conn: "c1".into(), db: "app".into(), schema: "public".into(), name: "orders".into(), kind: RelKind::Table, ro: true };
         assert_eq!(item(&ro, Act::ImportData).disabled, Some(READ_ONLY));
-        assert!(!acts(&rel(RelKind::View, false)).contains(&Act::ImportData));
+        assert!(!acts(&rel(RelKind::View)).contains(&Act::ImportData));
     }
 
     fn obj(what: Obj) -> Target {
@@ -676,7 +674,7 @@ mod tests {
         assert_eq!(item(&e, Act::UpdateExtension).disabled, Some("up to date"));
         assert!(item(&obj(Obj::Extension { update: Some("1.6".into()) }), Act::UpdateExtension).enabled());
         assert_eq!(acts(&obj(Obj::Role)), vec![Act::ShowDefinition, Act::AlterRole, Act::CopyName]);
-        assert_eq!(default_act(&rel(RelKind::Table, false)), Some(Act::SelectTop));
+        assert_eq!(default_act(&rel(RelKind::Table)), Some(Act::SelectTop));
         for t in [f, s, on, e] {
             assert!(menu_h(&entries(&t)) < 600. - 2. * MARGIN - 40.);
         }
@@ -684,7 +682,7 @@ mod tests {
 
     #[test]
     fn table_menu_has_the_default_first_and_generate_sql_as_a_submenu() {
-        let t = rel(RelKind::Table, false);
+        let t = rel(RelKind::Table);
         let es = entries(&t);
         let Entry::Item(first) = &es[0] else { panic!() };
         assert_eq!((first.act, first.label.as_ref(), first.bold, first.key), (Act::SelectTop, "Select 1000 rows", true, Some("↩")));
@@ -696,17 +694,15 @@ mod tests {
         for a in [Act::SelectAll, Act::CountRows, Act::OpenWithoutRunning, Act::CopyName, Act::CopyQualified, Act::Export, Act::ImportData, Act::Privileges, Act::Reload] {
             assert!(item(&t, a).enabled(), "{a:?}");
         }
-        assert_eq!(item(&rel(RelKind::Table, true), Act::Privileges).disabled, Some("not reported"));
         assert!(item(&t, Act::Truncate).danger && item(&t, Act::DropTable).danger);
         assert_eq!(es.iter().filter(|e| matches!(e, Entry::Item(i) if i.bold)).count(), 1);
         assert!(matches!(es.last(), Some(Entry::Item(i)) if i.act == Act::DropTable));
-        assert!(acts(&rel(RelKind::Partitioned, false)).contains(&Act::Truncate));
-        assert_eq!(acts(&rel(RelKind::Table, true)), acts(&t));
+        assert!(acts(&rel(RelKind::Partitioned)).contains(&Act::Truncate));
     }
 
     #[test]
     fn view_menu() {
-        let v = rel(RelKind::View, false);
+        let v = rel(RelKind::View);
         assert_eq!(
             acts(&v),
             vec![
@@ -721,9 +717,7 @@ mod tests {
         );
         assert!(item(&v, Act::ShowDefinition).enabled());
         assert!(item(&v, Act::SelectTop).bold);
-        let lar = rel(RelKind::View, true);
-        assert!(item(&lar, Act::ShowDefinition).disabled.unwrap().starts_with("not reported"));
-        assert!(acts(&rel(RelKind::MaterializedView, false)).contains(&Act::DropView));
+        assert!(acts(&rel(RelKind::MaterializedView)).contains(&Act::DropView));
         assert!(!acts(&v).contains(&Act::Truncate));
     }
 
@@ -738,7 +732,7 @@ mod tests {
                 })
                 .collect()
         };
-        let t = rel(RelKind::Table, false);
+        let t = rel(RelKind::Table);
         let es = with_pin(entries_for(&t, &pg), &t, false);
         assert_eq!(
             &flat(&es)[..7],
@@ -750,7 +744,7 @@ mod tests {
         let un = with_pin(entries_for(&t, &pg), &t, true);
         assert!(flat(&un).contains(&Some(Act::Unpin)) && !flat(&un).contains(&Some(Act::Pin)));
         assert_eq!(default_act(&t), Some(Act::SelectTop));
-        let v = rel(RelKind::View, false);
+        let v = rel(RelKind::View);
         let labels: Vec<String> = with_pin(entries(&v), &v, true).iter().filter_map(|e| if let Entry::Item(i) = e { Some(i.label.to_string()) } else { None }).collect();
         assert!(labels.iter().any(|l| l == "Unpin view"), "{labels:?}");
         for es in [&es, &un] {
@@ -768,8 +762,8 @@ mod tests {
         assert_eq!(acts(&Target::Column { name: "id".into() }), vec![Act::CopyName]);
         let ix = Target::Index { name: "i".into(), definition: Some("CREATE INDEX i ON t (a)".into()) };
         assert!(item(&ix, Act::CopyDefinition).enabled());
-        let lar_ix = Target::Index { name: "i".into(), definition: None };
-        assert!(!item(&lar_ix, Act::CopyDefinition).enabled());
+        let bare = Target::Index { name: "i".into(), definition: None };
+        assert!(!item(&bare, Act::CopyDefinition).enabled());
         assert_eq!(acts(&Target::Group), vec![Act::Reload]);
         assert_eq!(acts(&Target::Error), vec![Act::Retry]);
         assert_eq!(acts(&Target::Empty), vec![Act::NewConnection, Act::NewFolder]);
@@ -801,13 +795,13 @@ mod tests {
         let loose = with_folders(entries_for(&c, &pg), &c, &[], None);
         let Some(Entry::Sub { items, .. }) = loose.iter().find(|e| matches!(e, Entry::Sub { .. })) else { panic!() };
         assert_eq!(items.iter().map(|it| (it.act, it.enabled())).collect::<Vec<_>>(), [(Act::MoveToNewFolder, true), (Act::RemoveFromFolder, false)]);
-        let r = rel(RelKind::Table, false);
+        let r = rel(RelKind::Table);
         assert_eq!(with_folders(entries_for(&r, &pg), &r, &folders, None), entries_for(&r, &pg));
     }
 
     #[test]
     fn every_menu_fits_a_small_window() {
-        for t in [conn(ConnPhase::Connected), rel(RelKind::Table, false), rel(RelKind::View, false)] {
+        for t in [conn(ConnPhase::Connected), rel(RelKind::Table), rel(RelKind::View)] {
             assert!(menu_h(&entries(&t)) < 600. - 2. * MARGIN - 40., "{t:?}");
         }
     }
@@ -825,10 +819,10 @@ mod tests {
                 })
                 .collect()
         };
-        let db = Target::Db { conn: "c1".into(), db: "shop".into(), current: false, lar: false, ro: false };
+        let db = Target::Db { conn: "c1".into(), db: "shop".into(), current: false, ro: false };
         assert_eq!(flat(entries_for(&db, &my)), vec![Act::NewTab, Act::Reload, Act::CopyName, Act::ToggleReadOnly, Act::CreateTable, Act::DropDatabase]);
         assert_eq!(flat(entries_for(&db, &pg)), acts(&db), "PostgreSQL unchanged");
-        let t = flat(entries_for(&rel(RelKind::Table, false), &my));
+        let t = flat(entries_for(&rel(RelKind::Table), &my));
         assert!(!t.contains(&Act::ImportData) && !t.contains(&Act::Privileges) && t.contains(&Act::Export));
         let c = flat(entries_for(&conn(ConnPhase::Connected), &my));
         assert!(!c.contains(&Act::Activity) && c.contains(&Act::History));
@@ -838,7 +832,7 @@ mod tests {
         assert!(!matches!(es.last(), Some(Entry::Sep)) && !es.windows(2).any(|w| matches!(w, [Entry::Sep, Entry::Sep])));
         let ms = Caps::of(dataman_core::config::Engine::SqlServer);
         assert!(flat(entries_for(&db, &ms)).contains(&Act::CreateSchema));
-        let t = flat(entries_for(&rel(RelKind::Table, false), &ms));
+        let t = flat(entries_for(&rel(RelKind::Table), &ms));
         assert!(!t.contains(&Act::ImportData) && !t.contains(&Act::Privileges) && t.contains(&Act::Export));
         assert!(!flat(entries_for(&conn(ConnPhase::Connected), &ms)).contains(&Act::Activity));
         assert!(flat(entries_for(&tr, &ms)).contains(&Act::DisableTrigger));
@@ -855,7 +849,7 @@ mod tests {
         assert_eq!(step(&en, Some(0), -1), Some(4), "wraps back");
         assert_eq!(step(&[false, false], None, 1), None);
         assert_eq!(step(&[], None, 1), None);
-        let es = entries(&rel(RelKind::Table, false));
+        let es = entries(&rel(RelKind::Table));
         let enabled: Vec<bool> = es.iter().map(Entry::enabled).collect();
         let mut at = None;
         for _ in 0..es.len() * 2 {
@@ -880,7 +874,7 @@ mod tests {
 
     #[test]
     fn heights_add_up() {
-        let es = entries(&Target::Schema { conn: "c".into(), db: "d".into(), schema: "s".into(), lar: false, ro: false });
+        let es = entries(&Target::Schema { conn: "c".into(), db: "d".into(), schema: "s".into(), ro: false });
         assert_eq!(menu_h(&es), 7. * ITEM_H + SEP_H + 2. * PAD);
         assert_eq!(entry_top(&es, 0), PAD);
         assert_eq!(entry_top(&es, 5), PAD + 4. * ITEM_H + SEP_H);

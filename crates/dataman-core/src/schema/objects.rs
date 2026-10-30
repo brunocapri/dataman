@@ -492,7 +492,7 @@ impl Connection {
                 Engine::DuckDb => ObjectCounts::default(),
                 _ => match first_ok(&client, &[&pg::counts_sql(&schema)]).await {
                     Ok(rows) => rows.first().map(|r| pg::parse_counts(r)).unwrap_or_default(),
-                    // A server that cannot run the four together (LAR's planner): one by one.
+                    // A server that cannot run the four together: one by one.
                     Err(_) => each_count(&client, &schema).await,
                 },
             };

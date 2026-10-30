@@ -165,6 +165,7 @@ impl Workspace {
                 .items_center()
                 .justify_center()
                 .on_mouse_down(MouseButton::Left, cx.listener(move |w, _, window, cx| later(w, window, cx)))
+                .child(ui::esc_closes(Some(SHEET), cx.listener(move |w, _: &UpdateLater, window, cx| later(w, window, cx))))
                 .child(card)
                 .into_any_element(),
         )

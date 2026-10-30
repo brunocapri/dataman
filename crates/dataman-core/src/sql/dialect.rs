@@ -199,9 +199,9 @@ impl Dialect {
         }
     }
 
-    /// PostgreSQL's `standard_conforming_strings` (the default, and LAR's only mode) and T-SQL keep
-    /// backslashes plain; MySQL's default mode escapes them. T-SQL's are Unicode (`N'…'`): a plain
-    /// `'…'` goes through the database's code page.
+    /// PostgreSQL's `standard_conforming_strings` (the default) and T-SQL keep backslashes plain;
+    /// MySQL's default mode escapes them. T-SQL's are Unicode (`N'…'`): a plain `'…'` goes
+    /// through the database's code page.
     pub fn quote_literal(self, s: &str) -> String {
         let mut out = String::with_capacity(s.len() + 3);
         if self == Dialect::TSql {

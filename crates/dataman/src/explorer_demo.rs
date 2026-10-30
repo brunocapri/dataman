@@ -89,7 +89,6 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
                 schema: "dataman_shop".into(),
                 name: "orders".into(),
                 kind: dataman_core::schema::RelKind::Table,
-                lar: false,
                 ro: false,
             };
             let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.on_row_action(Act::Privileges, target, false, window, cx)));

@@ -183,6 +183,7 @@ impl Workspace {
                 .on_action(cx.listener(|w, _: &OutsideKeep, window, cx| w.close_outside_review(false, window, cx)))
                 .on_action(cx.listener(|w, _: &OutsideApply, window, cx| w.close_outside_review(true, window, cx)))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .child(ui::esc_closes(Some(SHEET), cx.listener(|w, _: &OutsideKeep, window, cx| w.close_outside_review(false, window, cx))))
                 .flex()
                 .items_center()
                 .justify_center()

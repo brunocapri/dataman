@@ -14,8 +14,8 @@ pub fn tools() -> Vec<Builtin> {
     vec![
         Builtin {
             name: "list_connections",
-            description: "Lists Dataman's saved database connections. Each row: name (pass it as `connection` to the other tools), env (none/dev/staging/production), mcp tier (off: unusable; read: reads only; write: non-destructive writes; full: destructive writes too, each after the user's Allow in the app), read_only, host, port, database, user, ssh (tunnelled), is_lar and version (known once connected; probe: true connects first), row_limit (rows a write may change before it waits for the user), allowed (statements the user lets run without asking in any tier, matched token for token with ? for one value; null: none), yolo (anything runs without asking; read-only still refuses writes). engine (postgres, mysql, sql-server, mongodb…), language (sql, or the engine's own: use nosql_query / nosql_execute). LAR has no EXPLAIN and no declared keys. Never returns passwords.",
-            schema: crate::tool::Schema::new().prop("probe", false, json!({"type": "boolean", "description": "Connect to each usable connection first to fill is_lar and version."})),
+            description: "Lists Dataman's saved database connections. Each row: name (pass it as `connection` to the other tools), env (none/dev/staging/production), mcp tier (off: unusable; read: reads only; write: non-destructive writes; full: destructive writes too, each after the user's Allow in the app), read_only, host, port, database, user, ssh (tunnelled), version (known once connected; probe: true connects first), row_limit (rows a write may change before it waits for the user), allowed (statements the user lets run without asking in any tier, matched token for token with ? for one value; null: none), yolo (anything runs without asking; read-only still refuses writes). engine (postgres, mysql, sql-server, mongodb…), language (sql, or the engine's own: use nosql_query / nosql_execute). Never returns passwords.",
+            schema: crate::tool::Schema::new().prop("probe", false, json!({"type": "boolean", "description": "Connect to each usable connection first to fill version."})),
             need: None,
             run: list_connections,
         },
@@ -48,7 +48,7 @@ pub fn tools() -> Vec<Builtin> {
         },
         Builtin {
             name: "describe_table",
-            description: "Describes a table or view: columns (name, type, not_null, default, pk), primary key, foreign keys both ways (foreign_keys: its own, as constraint definitions; referenced_by: other tables pointing at it), indexes with definitions, check/unique constraints, triggers, partitions or parent, estimated rows and size; the CREATE statement with include_ddl. On LAR, keys are inferred from names and marked inferred.",
+            description: "Describes a table or view: columns (name, type, not_null, default, pk), primary key, foreign keys both ways (foreign_keys: its own, as constraint definitions; referenced_by: other tables pointing at it), indexes with definitions, check/unique constraints, triggers, partitions or parent, estimated rows and size; the CREATE statement with include_ddl.",
             schema: conn_schema()
                 .prop("table", true, json!({"type": "string", "description": "Name or schema.name (unqualified names follow the search_path)."}))
                 .prop("include_ddl", false, json!({"type": "boolean", "description": "Add the CREATE TABLE / CREATE VIEW statement."})),
@@ -126,9 +126,9 @@ fn list_connections(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> 
             if conn.is_none() && probe && usable {
                 conn = cx.hub.connect(p).await.ok();
             }
-            let (is_lar, version) = match &conn {
-                Some(c) => (json!(c.info.is_lar), json!(c.info.version.split(" on ").next().unwrap_or_default())),
-                None => (Value::Null, Value::Null),
+            let version = match &conn {
+                Some(c) => json!(c.info.version.split(" on ").next().unwrap_or_default()),
+                None => Value::Null,
             };
             // Agents that do not see the data do not learn where it lives either.
             let hide = super::rules::hides_metadata(p);
@@ -144,7 +144,6 @@ fn list_connections(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> 
                 json!(p.database),
                 meta(json!(p.user)),
                 meta(json!(p.ssh.is_some())),
-                is_lar,
                 version,
                 if access >= McpAccess::Write && !p.mcp_yolo_on() { json!(cx.hub.row_limit(p)) } else { Value::Null },
                 if p.mcp_allowed_on().is_empty() { Value::Null } else { json!(p.mcp_allowed_on()) },
@@ -154,7 +153,7 @@ fn list_connections(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> 
                 super::rules::summary(p),
             ]);
         }
-        Ok(table(&["name", "env", "mcp", "read_only", "host", "port", "database", "user", "ssh", "is_lar", "version", "row_limit", "allowed", "yolo", "engine", "language", "agents"], rows))
+        Ok(table(&["name", "env", "mcp", "read_only", "host", "port", "database", "user", "ssh", "version", "row_limit", "allowed", "yolo", "engine", "language", "agents"], rows))
     })
 }
 
@@ -305,7 +304,7 @@ fn search_objects(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
             _ => KINDS.iter().map(|s| s.to_string()).collect(),
         };
         let header = ["kind", "schema", "name", "detail"];
-        if !o.conn.info.is_lar && o.conn.engine().is_postgres() {
+        if o.conn.engine().is_postgres() {
             let params = vec![Some(pattern.clone()), Some(format!("{{{}}}", kinds.join(","))), Some((limit + 1).to_string())];
             let limits = Limits { max_rows: limit + 1, ..Limits::default() };
             match cx.run(&o, SEARCH_SQL, params, Mode::Read, limits).await {
@@ -504,11 +503,7 @@ fn describe_table(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
         if !pk.is_empty() {
             out.insert("primary_key".into(), json!(pk));
         }
-        if c.info.is_lar {
-            lar_links(c, db, &r, &mut out).await;
-        } else {
-            pg_details(cx, &o, &r, &mut out).await?;
-        }
+        pg_details(cx, &o, &r, &mut out).await?;
         if a.bool("include_ddl") {
             out.insert("ddl".into(), json!(super::rules::ddl_without(&ddl_of(c, db, &r).await?, &hidden)));
         }
@@ -607,29 +602,6 @@ async fn pg_details(cx: &Call, o: &Opened, r: &Relation, out: &mut Map<String, V
         out.insert("parent".into(), json!(format!("{s}.{n}")));
     }
     Ok(())
-}
-
-async fn lar_links(c: &Arc<Connection>, db: &str, r: &Relation, out: &mut Map<String, Value>) {
-    let Ok(g) = c.relationships(db, &r.schema).await else { return };
-    let fmt = |s: &str, t: &str, cols: &[String]| format!("{s}.{t}({})", cols.join(", "));
-    let own: Vec<Value> = g
-        .links
-        .iter()
-        .filter(|l| l.from_table == r.name && l.from_schema == r.schema)
-        .map(|l| json!({"columns": l.from_columns, "references": fmt(&l.to_schema, &l.to_table, &l.to_columns), "inferred": l.inferred}))
-        .collect();
-    let refs: Vec<Value> = g
-        .links
-        .iter()
-        .filter(|l| l.to_table == r.name && l.to_schema == r.schema)
-        .map(|l| json!({"from": fmt(&l.from_schema, &l.from_table, &l.from_columns), "columns": l.to_columns, "inferred": l.inferred}))
-        .collect();
-    if !own.is_empty() {
-        out.insert("foreign_keys".into(), Value::Array(own));
-    }
-    if !refs.is_empty() {
-        out.insert("referenced_by".into(), Value::Array(refs));
-    }
 }
 
 async fn ddl_of(c: &Arc<Connection>, db: &str, r: &Relation) -> Result<String, ToolError> {

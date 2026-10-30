@@ -83,7 +83,6 @@ mod lite_check;
 mod intel_demo;
 mod keymap;
 mod keys;
-mod lar;
 mod mcp;
 #[cfg(feature = "checks")]
 mod mcp_check;
@@ -107,7 +106,6 @@ mod notify;
 mod outside_check;
 mod outside_ui;
 mod palette;
-mod panels;
 mod params_ui;
 #[cfg(feature = "checks")]
 mod pin_check;
@@ -516,11 +514,10 @@ fn main() {
         dataman_core::result::set_prefetch(prefs.prefetch_rows);
         motion::set_reduce_motion_pref(prefs.reduce_motion, cx);
         assets::set_logos(prefs.db_logos);
-        cx.set_global(panels::PanelRegistry::default());
         cx.set_global(restore::Sessions(session_dir.clone().map(|d| Arc::new(dataman_core::session::SessionStore::new(d)))));
-        lar::register(cx);
         keymap::set_overrides(keymap::clean(&core.settings.get().keys));
         keymap::bind_all(cx);
+        ui::close_modals_on_escape(cx);
         cx.on_action(|_: &app::Quit, cx| cx.quit());
         cx.on_action(|_: &app::CheckForUpdates, cx| updates::check(true, cx));
         updates::init(&core, cx);

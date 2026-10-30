@@ -379,7 +379,7 @@ impl Workspace {
     fn panel_name(&self, p: PanelId) -> &'static str {
         match (p, &self.side) {
             (PanelId::Explorer, _) => "Sidebar",
-            (PanelId::Side, Some(Side::Server(id, ..) | Side::Feature(id, ..))) => id,
+            (PanelId::Side, Some(Side::Feature(id, ..))) => id,
             (PanelId::Side, None) => "Side panel",
         }
     }
@@ -406,7 +406,7 @@ impl Workspace {
                     let content: AnyElement = match (s.ghost, s.panel, &pass.side) {
                         (true, ..) => div().into_any_element(),
                         (false, PanelId::Explorer, _) => self.render_sidebar(d, window, cx),
-                        (false, PanelId::Side, Some(Side::Server(_, v, _) | Side::Feature(_, v, _))) => v.clone().into_any_element(),
+                        (false, PanelId::Side, Some(Side::Feature(_, v, _))) => v.clone().into_any_element(),
                         (false, PanelId::Side, None) => div().into_any_element(),
                     };
                     children.push(self.render_slot(d, i, n, *s, *r, col.full, content, pass.side_rest, &t, cx));

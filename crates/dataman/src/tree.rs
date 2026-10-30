@@ -180,7 +180,6 @@ enum Tone {
     Normal,
     Folder,
     Conn,
-    ConnLar,
     ConnOff,
     ConnWait,
     Muted,
@@ -195,8 +194,6 @@ enum Meta {
     Warn,
     Err,
     Off,
-    LarState,
-    NotReported,
     Link,
 }
 
@@ -212,7 +209,6 @@ struct Row {
     chip: Option<Hsla>,
     chip_dim: bool,
     tip: Option<SharedString>,
-    lar: bool,
     tunnel: bool,
     logo: Option<dataman_core::Engine>,
     lock: bool,
@@ -239,7 +235,6 @@ impl Row {
             chip: None,
             chip_dim: false,
             tip: None,
-            lar: false,
             tunnel: false,
             logo: None,
             lock: false,
@@ -338,9 +333,6 @@ pub struct SchemaTree {
     folder_drop: Option<Option<String>>,
     /// Folders the user shut (they start open).
     shut_folders: HashSet<String>,
-    /// The folder the explorer shows and searches, alone.
-    scope: Option<String>,
-    scope_menu: bool,
     /// A folder being named in place.
     naming: Option<(String, Entity<TextInput>)>,
     focus_back: bool,
@@ -455,8 +447,6 @@ impl SchemaTree {
             conn_drop: None,
             folder_drop: None,
             shut_folders: HashSet::new(),
-            scope: None,
-            scope_menu: false,
             naming: None,
             focus_back: false,
             conn_bounds: Default::default(),
@@ -581,11 +571,6 @@ impl SchemaTree {
 
     pub fn rebuild(&mut self, cx: &mut Context<Self>) {
         let t0 = std::time::Instant::now();
-        // A folder gone (deleted here, by an undo or in the file) takes the scope with it.
-        if self.scope.as_ref().is_some_and(|s| !self.store.read(cx).folders.iter().any(|d| d.id == *s)) {
-            self.scope = None;
-            self.scope_menu = false;
-        }
         self.seen_version = self.version(cx);
         let theme = cx.theme();
         let q = self.filter.read(cx).text().trim().to_lowercase();
@@ -637,17 +622,14 @@ impl SchemaTree {
     }
 
     fn conn_row(&self, p: &dataman_core::ConnectionProfile, state: Option<&ConnState>, open: bool, t: &Theme) -> Row {
-        let lar = matches!(state, Some(ConnState::Connected(c)) if c.info.is_lar);
         let (glyph, meta) = match state {
             Some(ConnState::Connecting) => ("◐", Meta::Warn),
-            Some(ConnState::Connected(_)) if lar => ("●", Meta::LarState),
             Some(ConnState::Connected(_)) => ("●", Meta::Ok),
             Some(ConnState::Failed(_)) => ("✕", Meta::Err),
             None => ("○", Meta::Off),
         };
         let mut r = Row::new(cid(&p.id), 0, p.name.clone(), Kind::Conn { id: p.id.clone() })
             .tone(match state {
-                Some(ConnState::Connected(_)) if lar => Tone::ConnLar,
                 Some(ConnState::Connected(_)) => Tone::Conn,
                 Some(ConnState::Connecting) => Tone::ConnWait,
                 _ => Tone::ConnOff,
@@ -659,17 +641,16 @@ impl SchemaTree {
         if let Some(ConnState::Failed(e)) = state {
             r.tip = Some(e.clone().into());
         }
-        r.lar = lar;
         r.tunnel = p.ssh.is_some();
         r.logo = Some(p.engine);
         r
     }
 
     /// The folders first (each with its connections, one level in), then the connections in
-    /// none; with a scope, that folder alone.
+    /// none.
     fn build_tree(&self, rows: &mut Vec<Row>, t: &Theme, cx: &App) {
         let store = self.store.read(cx);
-        for d in store.folders.iter().filter(|d| self.scope.as_ref().is_none_or(|s| *s == d.id)) {
+        for d in &store.folders {
             let open = !self.shut_folders.contains(&d.id);
             let n = store.profiles.iter().filter(|p| d.holds(&p.id)).count();
             rows.push(self.folder_row(d, n, open, t));
@@ -684,9 +665,6 @@ impl SchemaTree {
                     r.in_folder = Some(d.id.clone().into());
                 }
             }
-        }
-        if self.scope.is_some() {
-            return;
         }
         for p in store.profiles.iter().filter(|p| store.folder_of(&p.id).is_none()) {
             self.push_conn_block(rows, p, t, cx);
@@ -733,8 +711,7 @@ impl SchemaTree {
             }
             m
         };
-        let scope = self.scope.as_ref().and_then(|s| store.folders.iter().find(|d| d.id == *s));
-        for p in store.profiles.iter().filter(|p| scope.is_none_or(|d| d.holds(&p.id))) {
+        for p in &store.profiles {
             let Some(ConnState::Connected(conn)) = store.states.get(&p.id) else { continue };
             if !conn.engine().is_sql() {
                 let c = p.id.as_str();
@@ -1087,7 +1064,6 @@ impl SchemaTree {
     fn push_rel(&self, rows: &mut Vec<Row>, base: &str, c: &str, db: &str, s: &str, name: &str, conn: &Arc<Connection>, t: &Theme, d: usize) {
         let cols_id = format!("{base}/cols");
         let idx_id = format!("{base}/idx");
-        let lar = conn.info.is_lar;
         // Autocomplete's brief columns have no keys: wait for the full list (`columns`).
         let cols = conn.schema.cached_full_columns(db, s, name);
         let open = self.expanded.contains(&cols_id);
@@ -1113,17 +1089,13 @@ impl SchemaTree {
         }
         let idx = conn.schema.cached_indexes(db, s, name);
         let open = self.expanded.contains(&idx_id);
-        let gap = lar && idx.as_ref().is_some_and(|i| i.is_empty());
-        let mut row = Row::new(idx_id.clone(), d, "indexes", Kind::Indexes { conn: c.into(), db: db.into(), schema: s.into(), name: name.into() })
-            .icon(Icon::Group)
-            .expandable(open && !gap);
-        row = if gap {
-            row.meta("not reported", Meta::NotReported)
-        } else {
-            row.meta(idx.as_ref().map(|c| c.len().to_string()).unwrap_or_default(), Meta::Plain)
-        };
-        rows.push(row);
-        if open && !gap && !self.push_status(rows, &idx_id, d + 1, t) {
+        rows.push(
+            Row::new(idx_id.clone(), d, "indexes", Kind::Indexes { conn: c.into(), db: db.into(), schema: s.into(), name: name.into() })
+                .icon(Icon::Group)
+                .meta(idx.as_ref().map(|c| c.len().to_string()).unwrap_or_default(), Meta::Plain)
+                .expandable(open),
+        );
+        if open && !self.push_status(rows, &idx_id, d + 1, t) {
             let idx = idx.unwrap_or_default();
             if idx.is_empty() {
                 rows.push(Row::new(format!("{idx_id}/none"), d + 1, "no indexes", Kind::Leaf).tone(Tone::Italic));
@@ -1740,7 +1712,6 @@ impl SchemaTree {
 
     fn target_for(&self, row: &Row, cx: &App) -> Option<Target> {
         let store = self.store.read(cx);
-        let lar = |c: &str| matches!(store.states.get(c), Some(ConnState::Connected(x)) if x.info.is_lar);
         let ro = |c: &str, db: &str| match store.connection(c) {
             Some(x) => x.read_only_for(db),
             None => store.profile(c).is_some_and(|p| p.read_only_for(db)),
@@ -1772,10 +1743,9 @@ impl SchemaTree {
                 conn: conn.clone(),
                 db: db.clone(),
                 current: store.connection(conn).is_some_and(|c| c.database() == db),
-                lar: lar(conn),
                 ro: ro(conn, db),
             },
-            Kind::Schema { conn, db, schema } => Target::Schema { conn: conn.clone(), db: db.clone(), schema: schema.clone(), lar: lar(conn), ro: ro(conn, db) },
+            Kind::Schema { conn, db, schema } => Target::Schema { conn: conn.clone(), db: db.clone(), schema: schema.clone(), ro: ro(conn, db) },
             Kind::Group { .. }
             | Kind::Columns { .. }
             | Kind::Indexes { .. }
@@ -1784,7 +1754,7 @@ impl SchemaTree {
             | Kind::Extensions { .. }
             | Kind::Pinned { .. } => Target::Group,
             Kind::Rel { conn, db, schema, name, kind } => {
-                Target::Rel { conn: conn.clone(), db: db.clone(), schema: schema.clone(), name: name.clone(), kind: *kind, lar: lar(conn), ro: ro(conn, db) }
+                Target::Rel { conn: conn.clone(), db: db.clone(), schema: schema.clone(), name: name.clone(), kind: *kind, ro: ro(conn, db) }
             }
             Kind::RelRef { conn, db, schema, name } => {
                 let kind = store
@@ -1792,7 +1762,7 @@ impl SchemaTree {
                     .and_then(|c| c.schema.cached_relations(db, schema))
                     .and_then(|v| v.into_iter().find(|r| &r.name == name).map(|r| r.kind))
                     .unwrap_or(RelKind::Table);
-                Target::Rel { conn: conn.clone(), db: db.clone(), schema: schema.clone(), name: name.clone(), kind, lar: lar(conn), ro: ro(conn, db) }
+                Target::Rel { conn: conn.clone(), db: db.clone(), schema: schema.clone(), name: name.clone(), kind, ro: ro(conn, db) }
             }
             Kind::Object { conn, db, schema, name, what } => {
                 Target::Object { conn: conn.clone(), db: db.clone(), schema: schema.clone(), name: name.clone(), what: what.clone() }
@@ -2125,95 +2095,6 @@ impl SchemaTree {
         b.contains(&pos) && pos.y.pt() > end
     }
 
-    /// One folder to show and search, or all of them.
-    pub fn set_scope(&mut self, folder: Option<String>, cx: &mut Context<Self>) {
-        if let Some(f) = &folder {
-            self.shut_folders.remove(f);
-        }
-        self.scope = folder;
-        self.scope_menu = false;
-        self.rebuild(cx);
-        if self.filtering(cx)
-            && let Some(r) = self.rows.iter().find(|r| r.hl.is_some())
-        {
-            self.selected = Some(r.id.clone());
-        }
-        cx.notify();
-    }
-
-    /// The search field's folder chip: shown once there is a folder. A folder picked there is
-    /// the only one the explorer shows, and the only one searched.
-    fn render_scope(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let folders = self.store.read(cx).folders.clone();
-        if folders.is_empty() {
-            return None;
-        }
-        let current = self.scope.as_ref().and_then(|s| folders.iter().find(|d| d.id == *s));
-        let tip = match current {
-            Some(d) => ui::tooltip(format!("Only '{}'", d.name), Some("The explorer shows and searches this folder's connections only"), None),
-            None => ui::tooltip("All folders".to_string(), Some("Pick a folder to show and search its connections only"), None),
-        };
-        let menu = self.scope_menu.then(|| {
-            let pick = |f: Option<String>| cx.listener(move |t: &mut SchemaTree, _: &ClickEvent, _, cx| t.set_scope(f.clone(), cx));
-            let mut rows: Vec<AnyElement> = vec![ui::menu_item(t, "xscope:all", "All folders", self.scope.is_none().then_some("✓"), true).cursor_pointer().on_click(pick(None)).into_any_element()];
-            rows.push(ui::menu_sep(t).into_any_element());
-            for d in &folders {
-                let on = self.scope.as_deref() == Some(d.id.as_str());
-                rows.push(
-                    ui::menu_item(t, SharedString::from(format!("xscope:{}", d.id)), "", on.then_some("✓"), true)
-                        .relative()
-                        .cursor_pointer()
-                        .child(
-                            div()
-                                .absolute()
-                                .left(px(10.))
-                                .top_0()
-                                .bottom_0()
-                                .right(px(28.))
-                                .flex()
-                                .flex_row()
-                                .items_center()
-                                .gap(px(8.))
-                                .child(ui::folder_icon(true, None, 13., folder_color(d, t).unwrap_or(t.tx3)))
-                                .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(d.name.clone())),
-                        )
-                        .on_click(pick(Some(d.id.clone())))
-                        .into_any_element(),
-                );
-            }
-            div().absolute().right_0().top(px(22.)).child(
-                deferred(
-                    anchored().anchor(gpui::Anchor::TopRight).snap_to_window_with_margin(px(8.)).child(ui::menu_in(
-                        "xscope-menu-in",
-                        ui::popover(t)
-                            .w(px(200.))
-                            .on_mouse_down_out(cx.listener(|t, _, _, cx| {
-                                t.scope_menu = false;
-                                ui::menu_shut("x-scope");
-                                cx.notify();
-                            }))
-                            .p(px(0.))
-                            .overflow_hidden()
-                            .child(div().id("xscope-menu").max_h(px(320.)).overflow_y_scroll().p(px(4.)).children(rows)),
-                    )),
-                )
-                .priority(3),
-            )
-        });
-        Some(div().flex_none().relative().child(scope_chip(t, "x-scope", current.map(|d| (d.name.as_str(), folder_color(d, t))), self.scope_menu, tip).on_click(cx.listener(|t, _, _, cx| {
-            if !t.scope_menu && ui::menu_just_shut("x-scope") {
-                return;
-            }
-            t.scope_menu = !t.scope_menu;
-            cx.notify();
-        }))).children(menu).into_any_element())
-    }
-
-    #[cfg(feature = "checks")]
-    pub fn demo_scope(&self) -> (Option<String>, bool) {
-        (self.scope.clone(), self.scope_menu)
-    }
-
     #[cfg(feature = "checks")]
     pub fn demo_naming(&self, cx: &App) -> Option<(String, String)> {
         self.naming.as_ref().map(|(f, input)| (f.clone(), input.read(cx).text().to_string()))
@@ -2275,10 +2156,6 @@ impl SchemaTree {
                 set_folder(f, c, Some(id.as_str()));
             }
         }, cx);
-        if self.scope.is_some() {
-            self.scope = Some(id.clone());
-            self.rebuild(cx);
-        }
         if let Some(ix) = self.rows.iter().position(|r| r.id.as_ref() == fid(&id)) {
             self.select(ix, cx);
             self.start_naming(id, window, cx);
@@ -2561,10 +2438,10 @@ impl SchemaTree {
 
     fn fit_meta(&self, r: &Row) -> SharedString {
         let w = self.scroll.0.borrow().base_handle.bounds().size.width.pt();
-        if w <= 0. || r.meta.is_empty() || matches!(r.meta_kind, Meta::NotReported) {
+        if w <= 0. || r.meta.is_empty() {
             return r.meta.clone();
         }
-        let extra = if r.chip.is_some() || r.lar || r.tunnel || r.lock { 40. } else { 0. };
+        let extra = if r.chip.is_some() || r.tunnel || r.lock { 40. } else { 0. };
         let em = crate::theme::advance();
         let room = w - 65. - extra - r.depth as f32 * 12. - r.label.chars().count() as f32 * 12. * em;
         match fit_meta_text(&r.meta, r.meta_short.as_ref().map(|s| s.as_ref()), (room / (11. * em)).floor() as i64) {
@@ -2773,7 +2650,7 @@ impl SchemaTree {
             _ => None,
         };
         let drag_folder = match (&r.kind, &self.naming) {
-            (Kind::Folder { id }, naming) if reorder && self.scope.is_none() && naming.as_ref().is_none_or(|(f, _)| f != id) => Some(id.clone()),
+            (Kind::Folder { id }, naming) if reorder && naming.as_ref().is_none_or(|(f, _)| f != id) => Some(id.clone()),
             _ => None,
         };
         let dragging = reorder && cx.has_active_drag();
@@ -2835,14 +2712,12 @@ impl SchemaTree {
         let meta_text = self.fit_meta(r);
         let meta = match r.meta_kind {
             _ if meta_text.is_empty() => None,
-            Meta::NotReported => Some(ui::not_reported(t).into_any_element()),
             k => {
                 let color = match k {
                     Meta::Ok => t.ok,
                     Meta::Warn => t.warn,
                     Meta::Err => t.err,
                     Meta::Off => t.tx4,
-                    Meta::LarState => t.lar,
                     Meta::Link => t.acc_t,
                     _ => t.tx3,
                 };
@@ -2994,46 +2869,11 @@ impl SchemaTree {
             )
             .when(r.tunnel, |d| d.child(icon(Icon::Tunnel).size(px(11.)).text_color(t.tx3)))
             .when(r.lock, |d| d.child(icon(Icon::Lock).flex_none().size(px(11.)).text_color(t.tx3)))
-            .when(r.lar, |d| d.child(ui::lar_tag(t)))
             // A hover style cannot move the meta: GPUI lays out before it knows the hover.
             .children(meta.map(|m| div().flex_none().when(has_menu && (menu_here || hovered), |d| d.mr(px(MORE_ROOM))).child(m)))
             .children(more)
             .children(line.map(|after| crate::dnd::drop_line(t, false, after))))
     }
-}
-
-/// The scope chip at the right end of a search field: "All", or a folder's name cut short
-/// with its color.
-pub fn scope_chip(t: &Theme, id: &'static str, folder: Option<(&str, Option<Hsla>)>, open: bool, tip: impl Fn(&mut Window, &mut App) -> gpui::AnyView + 'static) -> gpui::Stateful<gpui::Div> {
-    let (hov, prs) = (t.hov, t.prs);
-    let label = match folder {
-        Some((name, _)) => short(name, 10),
-        None => "All".to_string(),
-    };
-    let dot = folder.and_then(|(_, c)| c);
-    div()
-        .children(ui::here(&id.into()))
-        .id(id)
-        .flex_none()
-        .h(px(20.))
-        .max_w(px(120.))
-        .px(px(6.))
-        .flex()
-        .flex_row()
-        .items_center()
-        .gap(px(5.))
-        .text_size(px(11.))
-        .whitespace_nowrap()
-        .border_1()
-        .cursor_pointer()
-        .when(open, |d| d.bg(prs).border_color(t.line2).text_color(t.tx))
-        .when(!open && folder.is_some(), |d| d.bg(t.acc_s).border_color(t.mark_b).text_color(t.tx).hover(move |s| s.bg(hov)))
-        .when(!open && folder.is_none(), |d| d.border_color(t.line).text_color(t.tx3).hover(move |s| s.bg(hov)))
-        .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
-        .when(!open, |d| d.tip(tip))
-        .children(folder.map(|_| ui::folder_icon(true, None, 11., dot.unwrap_or(t.tx3))))
-        .child(label)
-        .child(ui::dropdown_arrow(SharedString::from(format!("{id}-arrow")), open, 7., t.tx3))
 }
 
 /// `conn` in folder `to` (out of any other), or in none.
@@ -3053,13 +2893,8 @@ pub fn folder_color(d: &dataman_core::ConnFolder, t: &Theme) -> Option<Hsla> {
     d.color.as_deref().and_then(|c| crate::theme::SWATCHES.iter().position(|s| *s == c)).map(|i| t.swatches[i])
 }
 
-/// A name cut to `n` characters, an ellipsis ending it.
-pub fn short(name: &str, n: usize) -> String {
-    if name.chars().count() <= n { name.to_string() } else { format!("{}…", name.chars().take(n - 1).collect::<String>().trim_end()) }
-}
-
 fn label_style(tone: Tone, sel: bool, t: &Theme) -> (Hsla, bool) {
-    let bold = matches!(tone, Tone::Conn | Tone::ConnLar);
+    let bold = tone == Tone::Conn;
     let color = match tone {
         Tone::ConnOff if sel => t.tx3,
         Tone::ConnOff => t.tx4,
@@ -3067,7 +2902,6 @@ fn label_style(tone: Tone, sel: bool, t: &Theme) -> (Hsla, bool) {
         Tone::ConnWait => t.tx3,
         _ if sel => t.tx,
         Tone::Conn => t.tx,
-        Tone::ConnLar => t.lar_t,
         Tone::Muted | Tone::Italic => t.tx3,
         Tone::Error => t.err,
         Tone::Normal => t.tx2,
@@ -3495,8 +3329,7 @@ impl Render for SchemaTree {
             .when(filter_focused, |d| d.child(ui::halo_ring(t.mark)))
             .child(icon(Icon::Search).size(px(13.)).text_color(t.tx3))
             .child(div().flex_1().min_w_0().text_color(t.tx).child(self.filter.clone()))
-            .children(filter_meta.map(|m| div().flex_none().text_size(px(10.5)).text_color(t.tx3).whitespace_nowrap().child(m)))
-            .children(self.render_scope(&t, cx));
+            .children(filter_meta.map(|m| div().flex_none().text_size(px(10.5)).text_color(t.tx3).whitespace_nowrap().child(m)));
         let body: gpui::AnyElement = if empty {
             div()
                 .flex_1()
@@ -3631,9 +3464,6 @@ impl Render for SchemaTree {
             .on_action(cx.listener(|t, _: &Escape, window, cx| {
                 if t.naming.take().is_some() {
                     window.focus(&t.focus, cx);
-                    cx.notify();
-                } else if t.scope_menu {
-                    t.scope_menu = false;
                     cx.notify();
                 } else {
                     t.clear_filter(cx);

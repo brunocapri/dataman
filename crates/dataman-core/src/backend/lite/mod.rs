@@ -16,7 +16,7 @@ use super::embed::{self, Columns, Sink, Val, Worker};
 use super::Ran;
 use crate::config::ConnectionProfile;
 use crate::result::{ColumnInfo, ErrorInfo, NamedOrigin, ResultSet};
-use crate::server::{ServerExtension, ServerInfo};
+use crate::server::ServerInfo;
 use crate::tx::{Seen, TxWatch};
 use crate::value::Kind;
 
@@ -446,12 +446,11 @@ impl Canceller {
     }
 }
 
-pub(crate) async fn server_info(client: &Client, exts: &[Arc<dyn ServerExtension>]) -> Result<ServerInfo> {
+pub(crate) async fn server_info(client: &Client) -> Result<ServerInfo> {
     let rows = client.text_rows("SELECT sqlite_version()").await?;
     let v = rows.into_iter().next().and_then(|r| r.into_iter().next().flatten()).unwrap_or_default();
     let mut info = ServerInfo { version: format!("SQLite {v}"), database: "main".into(), user: String::new(), ..Default::default() };
     info.search_path = vec!["main".into()];
-    info.extensions = exts.iter().filter(|e| e.detect(&info)).map(|e| e.id()).collect();
     Ok(info)
 }
 

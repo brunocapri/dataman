@@ -66,7 +66,7 @@ use anyhow::{Result, anyhow};
 
 use crate::config::{ConnectionProfile, Engine};
 use crate::result::{CHUNK, ChunkBuilder, ColumnInfo, Demand, ErrorInfo, Phase, ResultSet};
-use crate::server::{ServerExtension, ServerInfo};
+use crate::server::ServerInfo;
 use crate::ssh::Tunnel;
 use crate::tx::TxWatch;
 
@@ -314,13 +314,6 @@ impl Dedicated {
             Dedicated::My(_) | Dedicated::Ms(_) | Dedicated::Lite(_) | Dedicated::Duck(_) => None,
         }
     }
-
-    pub(crate) fn into_pg(self) -> Result<pg::Dedicated> {
-        match self {
-            Dedicated::Pg(d) => Ok(d),
-            Dedicated::My(_) | Dedicated::Ms(_) | Dedicated::Lite(_) | Dedicated::Duck(_) => Err(anyhow!("this needs a PostgreSQL connection")),
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -391,13 +384,13 @@ pub(crate) async fn session(
     }
 }
 
-pub(crate) async fn server_info(db: &Db, exts: &[Arc<dyn ServerExtension>]) -> Result<ServerInfo> {
+pub(crate) async fn server_info(db: &Db) -> Result<ServerInfo> {
     match db {
-        Db::Pg(c) => pg::server_info(c, exts).await,
-        Db::My(c) => my::server_info(c, exts).await,
-        Db::Ms(c) => ms::server_info(c, exts).await,
-        Db::Lite(c) => lite::server_info(c, exts).await,
-        Db::Duck(c) => duck::server_info(c, exts).await,
+        Db::Pg(c) => pg::server_info(c).await,
+        Db::My(c) => my::server_info(c).await,
+        Db::Ms(c) => ms::server_info(c).await,
+        Db::Lite(c) => lite::server_info(c).await,
+        Db::Duck(c) => duck::server_info(c).await,
     }
 }
 

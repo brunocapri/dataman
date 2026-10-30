@@ -4,7 +4,7 @@ use anyhow::Result;
 
 use crate::Task;
 use crate::conn::{Connection, first_ok};
-use crate::sqlgen::{qualified, quote_ident, quote_literal};
+use crate::sqlgen::quote_literal;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Link {
@@ -14,7 +14,6 @@ pub struct Link {
     pub to_schema: String,
     pub to_table: String,
     pub to_columns: Vec<String>,
-    pub inferred: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -22,110 +21,7 @@ pub struct RelationGraph {
     pub links: Vec<Link>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-struct TableNode {
-    name: String,
-    columns: Vec<(String, String)>,
-    primary_key: Option<String>,
-}
-
-impl TableNode {
-    fn has(&self, column: &str) -> bool {
-        self.columns.iter().any(|c| c.0 == column)
-    }
-}
-
 const CACHE: &str = "relations";
-
-fn is_integer_type(t: &str) -> bool {
-    matches!(
-        t.to_ascii_lowercase().as_str(),
-        "bigint" | "integer" | "smallint" | "int" | "int2" | "int4" | "int8" | "int64" | "bigserial" | "serial"
-    )
-}
-
-fn singulars(t: &str) -> Vec<String> {
-    let mut v = vec![t.to_string()];
-    let mut add = |s: String| {
-        if !s.is_empty() && !v.contains(&s) {
-            v.push(s);
-        }
-    };
-    if let Some(b) = t.strip_suffix("ies") {
-        add(format!("{b}y"));
-    }
-    if let Some(b) = t.strip_suffix("es") {
-        add(b.to_string());
-    }
-    if let Some(b) = t.strip_suffix('s') {
-        add(b.to_string());
-    }
-    v
-}
-
-fn bases(col: &str) -> Vec<String> {
-    let c = col.to_lowercase();
-    let mut v = vec![c.clone()];
-    for suf in ["_id", "_fk", "_ref", "_key", "id"] {
-        if let Some(b) = c.strip_suffix(suf)
-            && b.len() >= 2
-        {
-            v.push(b.trim_end_matches('_').to_string());
-        }
-    }
-    for pre in ["id_", "fk_", "ref_"] {
-        if let Some(b) = c.strip_prefix(pre)
-            && b.len() >= 2
-        {
-            v.push(b.to_string());
-        }
-    }
-    v.dedup();
-    v
-}
-
-fn link_candidates(col: &str, table: &str, tables: &[&str]) -> Vec<String> {
-    let bs = bases(col);
-    let mut ranked: Vec<(usize, usize, String)> = Vec::new();
-    for t in tables {
-        if t.eq_ignore_ascii_case(table) {
-            continue;
-        }
-        let lt = t.to_lowercase();
-        let sing = singulars(&lt);
-        let mut best = None;
-        for (bi, b) in bs.iter().enumerate() {
-            let score = if &lt == b {
-                Some(0)
-            } else if sing.iter().skip(1).any(|s| s == b) {
-                Some(1)
-            } else {
-                None
-            };
-            if let Some(s) = score {
-                let key = (s, bi);
-                if best.is_none_or(|x| key < x) {
-                    best = Some(key);
-                }
-            }
-        }
-        if let Some((s, bi)) = best {
-            ranked.push((s, bi, t.to_string()));
-        }
-    }
-    ranked.sort();
-    ranked.into_iter().map(|r| r.2).collect()
-}
-
-fn probe_column(cand: &TableNode, source: &TableNode, others: &[&TableNode]) -> String {
-    let fresh: Vec<&str> = cand.columns.iter().map(|c| c.0.as_str()).filter(|c| !source.has(c)).collect();
-    fresh
-        .iter()
-        .find(|c| !others.iter().any(|o| o.name != cand.name && o.has(c)))
-        .or(fresh.first())
-        .map(|c| c.to_string())
-        .unwrap_or_else(|| cand.primary_key.clone().unwrap_or_else(|| "id".into()))
-}
 
 impl Connection {
     pub fn relationships(self: &Arc<Self>, database: &str, schema: &str) -> Task<Arc<RelationGraph>> {
@@ -135,9 +31,7 @@ impl Connection {
             if let Some(g) = this.caches.lock().get(&key).cloned().and_then(|a| a.downcast::<RelationGraph>().ok()) {
                 return Ok(g);
             }
-            let g = if this.info.is_lar {
-                this.lar_graph(&db, &schema).await?
-            } else if this.engine() == crate::config::Engine::MySql {
+            let g = if this.engine() == crate::config::Engine::MySql {
                 this.my_graph(&db, &schema).await?
             } else if this.engine() == crate::config::Engine::SqlServer {
                 this.ms_graph(&db, &schema).await?
@@ -187,7 +81,6 @@ impl Connection {
                 to_schema,
                 to_table,
                 to_columns: split(get(4)),
-                inferred: false,
             });
         }
         Ok(g)
@@ -256,61 +149,12 @@ impl Connection {
                     to_schema,
                     to_table,
                     to_columns: vec![to_col],
-                    inferred: false,
                 }),
             }
             last = Some(key);
         }
         Ok(g)
     }
-
-    async fn lar_graph(self: &Arc<Self>, db: &str, schema: &str) -> Result<RelationGraph> {
-        let mut tables = Vec::new();
-        for r in self.relations(db, schema).await?.iter().filter(|r| !r.kind.is_view()) {
-            let cols = self.columns(db, schema, &r.name).await.unwrap_or_default();
-            let mut t = TableNode {
-                name: r.name.clone(),
-                columns: cols.iter().map(|c| (c.name.clone(), c.type_name.clone())).collect(),
-                primary_key: None,
-            };
-            t.primary_key = lar_key_guess(&t);
-            tables.push(t);
-        }
-        let client = self.meta(db).await?;
-        let names: Vec<&str> = tables.iter().map(|t| t.name.as_str()).collect();
-        let mut g = RelationGraph::default();
-        for t in &tables {
-            for (c, _) in t.columns.iter().filter(|(c, ty)| is_integer_type(ty) && t.primary_key.as_ref() != Some(c)) {
-                let cands = link_candidates(c, &t.name, &names);
-                let cand_nodes: Vec<&TableNode> = cands.iter().filter_map(|n| tables.iter().find(|t| &t.name == n)).collect();
-                for cand in &cand_nodes {
-                    let col = probe_column(cand, t, &cand_nodes);
-                    let sql = format!("SELECT {}.{} FROM {} LIMIT 0", quote_ident(c), quote_ident(&col), qualified(Some(schema), &t.name));
-                    if crate::conn::text_rows(&client, &sql).await.is_ok() {
-                        g.links.push(Link {
-                            from_schema: schema.into(),
-                            from_table: t.name.clone(),
-                            from_columns: vec![c.clone()],
-                            to_schema: schema.into(),
-                            to_table: cand.name.clone(),
-                            to_columns: cand.primary_key.iter().cloned().collect(),
-                            inferred: true,
-                        });
-                        break;
-                    }
-                }
-            }
-        }
-        Ok(g)
-    }
-}
-
-fn lar_key_guess(t: &TableNode) -> Option<String> {
-    let int = |n: &str| t.columns.iter().find(|c| c.0 == n && is_integer_type(&c.1)).map(|c| c.0.clone());
-    int("id").or_else(|| {
-        let lt = t.name.to_lowercase();
-        singulars(&lt).iter().find_map(|s| int(&format!("{s}_id")))
-    })
 }
 
 fn split_quoted_idents(s: &str) -> Vec<String> {
@@ -338,23 +182,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn candidates_by_name() {
-        let tables = ["clients", "customers", "orders", "items", "products", "status", "category", "companies", "addresses"];
-        assert_eq!(link_candidates("customer", "orders", &tables), vec!["customers"]);
-        assert_eq!(link_candidates("client_id", "orders", &tables), vec!["clients"]);
-        assert_eq!(link_candidates("product_id", "items", &tables), vec!["products"]);
-        assert_eq!(link_candidates("category", "products", &tables), vec!["category"]);
-        assert_eq!(link_candidates("company", "x", &tables), vec!["companies"]);
-        assert_eq!(link_candidates("region", "x", &tables), Vec::<String>::new());
-        assert_eq!(link_candidates("address_id", "x", &tables), vec!["addresses"]);
-        assert_eq!(link_candidates("qty", "items", &tables), Vec::<String>::new());
-        assert!(link_candidates("order", "orders", &tables).is_empty());
-    }
-
-    #[test]
-    fn helpers() {
+    fn quoted_idents() {
         assert_eq!(split_quoted_idents("id,\"Name \"\"x\"\"\",b"), vec!["id", "Name \"x\"", "b"]);
-        let t = TableNode { name: "categories".into(), columns: vec![("category_id".into(), "bigint".into())], primary_key: None };
-        assert_eq!(lar_key_guess(&t).as_deref(), Some("category_id"));
     }
 }

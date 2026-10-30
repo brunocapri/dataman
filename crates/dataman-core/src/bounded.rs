@@ -1,5 +1,6 @@
-//! LAR accepts `READ ONLY` without enforcing it: the client-side check is what keeps a read a
-//! read on LAR. LAR may not enforce `statement_timeout` either, so a local timer backs it.
+//! The client-side check is what keeps a read a read on a server that accepts `READ ONLY`
+//! without enforcing it. A server may not enforce `statement_timeout` either, so a local timer
+//! backs it.
 
 use std::future::Future;
 use std::sync::Arc;

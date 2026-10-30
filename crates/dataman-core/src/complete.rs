@@ -40,7 +40,7 @@ pub const MAX_ITEMS: usize = 50;
 const START: &[&str] = &[
     "SELECT", "WITH", "INSERT", "UPDATE", "DELETE", "CREATE", "ALTER", "DROP", "EXPLAIN", "BEGIN", "COMMIT", "ROLLBACK",
     "SET", "SHOW", "TRUNCATE", "GRANT", "REVOKE", "VACUUM", "ANALYZE", "COPY", "CALL", "DO", "VALUES", "TABLE", "LISTEN",
-    "NOTIFY", "SUBSCRIBE",
+    "NOTIFY",
 ];
 const AFTER_SOURCE: &[&str] = &[
     "WHERE", "JOIN", "LEFT", "INNER", "RIGHT", "FULL", "CROSS", "NATURAL", "ON", "USING", "GROUP", "ORDER", "LIMIT", "AS",

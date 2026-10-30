@@ -144,12 +144,12 @@ impl<T> Kept<T> {
 /// A connection's protections: all of it but its name, its color and whether its password is
 /// saved, which are only this person's to see.
 pub fn protections_of(p: &ConnectionProfile) -> ConnectionProfile {
-    ConnectionProfile { name: String::new(), color: None, save_password: false, ..p.clone() }
+    ConnectionProfile { name: String::new(), color: None, color_picked: false, save_password: false, ..p.clone() }
 }
 
 /// `p` with the protections approved for it.
 pub(crate) fn with_approved(p: &ConnectionProfile, approved: &ConnectionProfile) -> ConnectionProfile {
-    ConnectionProfile { id: p.id.clone(), name: p.name.clone(), color: p.color.clone(), save_password: p.save_password, ..approved.clone() }
+    ConnectionProfile { id: p.id.clone(), name: p.name.clone(), color: p.color.clone(), color_picked: p.color_picked, save_password: p.save_password, ..approved.clone() }
 }
 
 /// What `next` has over what was approved for it (none approved: a connection this person did

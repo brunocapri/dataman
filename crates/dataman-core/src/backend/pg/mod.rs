@@ -18,8 +18,7 @@ use self::sniff::{Sniff, SniffTls};
 use super::{Ran, RowSource, Rows, wait_for_demand, wants_more};
 use crate::config::{ConnectionProfile, SslMode};
 use crate::result::{ChunkBuilder, ColumnInfo, ColumnOrigin, ErrorInfo, ResultSet};
-use crate::rows::TextRows;
-use crate::server::{self, ServerExtension, ServerInfo};
+use crate::server::{self, ServerInfo};
 use crate::tx::TxWatch;
 use crate::value::{self, Kind, RawCell, Storage};
 
@@ -218,8 +217,8 @@ async fn backend_pid(client: &Client) -> Option<i32> {
     rows.first()?.first()?.as_deref()?.trim().parse().ok()
 }
 
-/// A server that refuses it (or, like LAR, accepts it without enforcing it) still gets the
-/// client-side refusal (`guard::read_only_refusal`).
+/// A server that refuses it (or accepts it without enforcing it) still gets the client-side
+/// refusal (`guard::read_only_refusal`).
 async fn set_read_only(client: &Client) {
     if let Err(e) = client.simple_query("SET default_transaction_read_only = on").await {
         log::debug!("default_transaction_read_only: {e}");
@@ -486,34 +485,6 @@ pub(crate) async fn text_rows(client: &Client, sql: &str) -> Result<Vec<Vec<Opti
         .collect())
 }
 
-pub(crate) async fn text_query(client: &Client, sql: &str, max: Option<usize>) -> Result<(TextRows, bool)> {
-    let stream = client.simple_query_raw(sql).await?;
-    futures_util::pin_mut!(stream);
-    let mut out = TextRows::default();
-    let mut first = true;
-    let mut truncated = false;
-    while let Some(m) = stream.as_mut().next().await {
-        match m? {
-            SimpleQueryMessage::RowDescription(cols) if first => {
-                out.columns = cols.iter().map(|c| c.name().to_string()).collect();
-            }
-            SimpleQueryMessage::Row(r) if first => {
-                if max.is_some_and(|m| out.rows.len() >= m) {
-                    truncated = true;
-                    continue;
-                }
-                if out.columns.is_empty() {
-                    out.columns = r.columns().iter().map(|c| c.name().to_string()).collect();
-                }
-                out.rows.push((0..r.len()).map(|i| r.get(i).map(str::to_string)).collect());
-            }
-            SimpleQueryMessage::CommandComplete(_) => first = false,
-            _ => {}
-        }
-    }
-    Ok((out, truncated))
-}
-
 pub(crate) async fn execute(client: &Client, sql: &str) -> Result<Option<u64>, tokio_postgres::Error> {
     let msgs = client.simple_query(sql).await?;
     Ok(msgs.iter().find_map(|m| match m {
@@ -590,7 +561,7 @@ async fn first_ok(client: &Client, queries: &[&str]) -> Result<Vec<Vec<Option<St
     Err(last.unwrap_or_else(|| anyhow::anyhow!("no query")))
 }
 
-pub(crate) async fn server_info(client: &Client, exts: &[Arc<dyn ServerExtension>]) -> Result<ServerInfo> {
+pub(crate) async fn server_info(client: &Client) -> Result<ServerInfo> {
     let row = first_ok(client, &["SELECT version(), current_database(), current_user", "SELECT version()"])
         .await?
         .into_iter()
@@ -598,9 +569,7 @@ pub(crate) async fn server_info(client: &Client, exts: &[Arc<dyn ServerExtension
         .context("version() returned no row")?;
     let get = |i: usize| row.get(i).cloned().flatten().unwrap_or_default();
     let mut info = ServerInfo { version: get(0), database: get(1), user: get(2), ..Default::default() };
-    info.is_lar = server::detect_lar(&info.version);
     info.search_path = search_path(client, &info.user).await;
-    info.extensions = exts.iter().filter(|e| e.detect(&info)).map(|e| e.id()).collect();
     Ok(info)
 }
 

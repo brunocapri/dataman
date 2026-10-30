@@ -387,8 +387,7 @@ pub(crate) async fn run(
         progress.finished.store(true, Ordering::Release);
         report
     };
-    // A read-only connection never writes, LAR included (it accepts READ ONLY without
-    // enforcing it).
+    // A read-only connection never writes.
     if conn.read_only_for(db.as_deref().unwrap_or(conn.database())) {
         report.outcome = Outcome::Failed(refused("25006", "read-only database: the import is not run"));
         return finish(report, &progress);
@@ -437,7 +436,7 @@ pub(crate) async fn run(
         copy: None,
         insert_head: opts.insert_head(),
         one_tx,
-        savepoints: one_tx && (skip || method == Method::Insert || conn.info.is_lar),
+        savepoints: one_tx && (skip || method == Method::Insert),
     };
 
     let setup = async {
@@ -562,11 +561,6 @@ pub(crate) async fn run(
             if one_tx {
                 report.rolled_back = true;
                 loaded = 0;
-                // LAR's DDL is not transactional: the table created for this import stays
-                // after the ROLLBACK; drop it (TRUNCATE cannot be undone there either).
-                if opts.create && conn.info.is_lar {
-                    let _ = loader.exec(&format!("DROP TABLE {}", opts.qualified())).await;
-                }
             }
         }
     }

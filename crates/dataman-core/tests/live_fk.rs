@@ -65,27 +65,3 @@ fn pg_composite_key_in_a_scratch_schema() {
     assert!(fk.is_empty());
     exec_quiet(&e, &c, &[&format!("DROP SCHEMA IF EXISTS {s} CASCADE")]);
 }
-
-#[test]
-fn lar_inferred_links() {
-    let e = env();
-    let Some(c) = lar(&e) else { return };
-    let (rs, fk) = fks(&e, &c, "SELECT * FROM demo_orders LIMIT 3");
-    let cols = rs.columns().unwrap();
-    let Some(ci) = cols.iter().position(|c| c.name == "demo_customer") else {
-        eprintln!("skipping: no demo_orders.demo_customer on this LAR");
-        return;
-    };
-    assert!(fk.is_fk(ci), "{:?}", fk.flags());
-    let t = &fk.targets(ci)[0];
-    assert!(t.inferred);
-    let j = jump_at(&rs, &fk, 0, ci).unwrap();
-    assert!(j.sql.starts_with("SELECT * FROM public.demo_customers WHERE id = "), "{}", j.sql);
-    assert!(j.detail.ends_with("· inferred"));
-    let s = c.session(None);
-    let r2 = s.execute(j.sql.trim_end_matches(';'));
-    assert_eq!(e.core.block_on(r2.wait_finished()), Phase::Done);
-    assert_eq!(r2.rows(), 1);
-    let (_, fk) = fks(&e, &c, "SELECT o.demo_customer, c.id FROM demo_orders o JOIN demo_customers c ON c.id = o.demo_customer LIMIT 1");
-    assert!(fk.is_empty());
-}

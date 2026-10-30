@@ -155,7 +155,7 @@ impl Workspace {
             self.nav_record(Some(window), cx);
             self.enter_group_of(ix);
             self.active = ix;
-            self.sync_bound_views(window, cx);
+            self.sync_bound_views(cx);
             cx.notify();
         }
     }

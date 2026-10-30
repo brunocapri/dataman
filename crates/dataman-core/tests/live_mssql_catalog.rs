@@ -214,7 +214,7 @@ fn grid_edits_apply_in_a_transaction() {
     on(&e, &c, "UPDATE dbo.customer SET balance = 2 WHERE id = 1");
     let r = e.core.block_on(c.apply_changes(Some(db), cs.plan(&tt, &st.snapshot()).unwrap())).unwrap();
     assert!(!r.committed);
-    assert!(r.outcomes.iter().any(|o| matches!(&o.outcome, Outcome::Conflict { kind: ConflictKind::Changed { .. }, .. })), "{r:?}");
+    assert!(r.outcomes.iter().any(|o| matches!(&o.outcome, Outcome::Conflict { kind: ConflictKind::Changed, .. })), "{r:?}");
     assert_eq!(on(&e, &c, "SELECT balance FROM dbo.customer WHERE id = 2").snapshot().text(0, 0).as_deref(), Some("310.00"), "rolled back");
 
     let j = on(&e, &c, "SELECT o.id, c.name FROM dbo.orders o JOIN dbo.customer c ON c.id = o.customer_id");

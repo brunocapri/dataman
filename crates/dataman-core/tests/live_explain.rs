@@ -34,7 +34,7 @@ fn explain_and_analyze_on_postgres() {
     let e = env();
     let Some(c) = pg(&e) else { return };
     let t = Target::of(&c.info);
-    assert!(!t.lar && t.major >= 12, "{t:?}");
+    assert!(t.major >= 12, "{t:?}");
     let s = c.session(None);
     let rs = run(&e, &s, &explain::sql(JOIN, false, t));
     let p = plan_of(&rs);
@@ -124,32 +124,4 @@ fn parameters_bind_to_the_explain() {
     let p = plan_of(&rs);
     assert_eq!(p.nodes[0].title, "Index Scan using orders_pkey on orders");
     assert_eq!(p.nodes[0].str("Index Cond"), Some("(orders.id = '42'::bigint)"));
-}
-
-#[test]
-fn lar_answers_explain() {
-    let e = env();
-    let Some(c) = lar(&e) else { return };
-    let t = Target::of(&c.info);
-    assert!(t.lar);
-    let sql = explain::sql("SELECT 1", false, t);
-    assert_eq!(sql, "EXPLAIN SELECT 1", "plain EXPLAIN: LAR has no options");
-    let s = c.session(None);
-    for analyze in [false, true] {
-        let rs = s.execute(explain::sql("SELECT 1", analyze, t));
-        match finish(&e, &rs) {
-            Phase::Failed => {
-                let err = rs.status().error.unwrap();
-                eprintln!("LAR EXPLAIN (analyze={analyze}): {} {}", err.code.as_deref().unwrap_or(""), err.message);
-                assert_eq!(err.code.as_deref(), Some("0A000"));
-            }
-            Phase::Done => {
-                let p = plan_of(&rs);
-                assert!(matches!(p.format, Format::Text | Format::Raw));
-                assert!(p.hints.is_empty());
-            }
-            other => panic!("{other:?}"),
-        }
-    }
-    assert_eq!(s.tx().status, TxStatus::Idle);
 }

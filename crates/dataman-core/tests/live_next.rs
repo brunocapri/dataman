@@ -119,39 +119,11 @@ mod export {
         assert_eq!(rs.snapshot().text(0, 0).as_deref(), Some("200000"));
         super::exec(&e, &c, &[&format!("DROP SCHEMA {schema} CASCADE")]);
     }
-
-    #[test]
-    fn lar_export() {
-        let e = env();
-        let Some(c) = lar(&e) else { return };
-        let dir = tempfile::tempdir().unwrap();
-        super::exec_quiet(&e, &c, &["DROP TABLE dataman_exp"]);
-        super::exec(
-            &e,
-            &c,
-            &[
-                "CREATE TABLE dataman_exp (id BIGINT PRIMARY KEY, name TEXT, price DOUBLE PRECISION, ok BOOLEAN, at TIMESTAMPTZ, due DATE, b BYTEA, emb VECTOR(3))",
-                "INSERT INTO dataman_exp VALUES (1, 'a''b', 1.5, true, '2026-01-02T03:04:05Z', '2026-01-02', '\\xdead', '[1,0,0]'), (2, NULL, NULL, NULL, NULL, NULL, NULL, NULL)",
-            ],
-        );
-        let path = dir.path().join("l.parquet");
-        let x = c.export_query(None, "SELECT * FROM dataman_exp ORDER BY id", &path, ExportOptions::new(ExportFormat::Parquet), None);
-        assert_eq!(e.core.block_on(x.task).unwrap().rows, 2);
-        let path = dir.path().join("l.json");
-        let x = c.export_query(None, "SELECT * FROM dataman_exp ORDER BY id", &path, ExportOptions::new(ExportFormat::Json), None);
-        e.core.block_on(x.task).unwrap();
-        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        eprintln!("LAR json export: {v}");
-        assert_eq!(v[0]["name"], "a'b");
-        assert_eq!(v[0]["at"], "2026-01-02T03:04:05Z");
-        assert_eq!(v[1]["price"], serde_json::Value::Null);
-        super::exec(&e, &c, &["DROP TABLE dataman_exp"]);
-    }
 }
 
 mod edit {
     use super::*;
-    use dataman_core::edit::{CellValue, ChangeSet, ConflictCheck, ConflictKind, EditTarget, Editability, KeySource, Outcome, preview};
+    use dataman_core::edit::{CellValue, ChangeSet, ConflictKind, EditTarget, Editability, KeySource, Outcome, preview};
 
     fn target(e: &Env, c: &Arc<Connection>, rs: &Arc<dataman_core::ResultSet>, key: Option<Vec<String>>) -> Editability {
         e.core.block_on(c.edit_target(c.database(), rs, key)).unwrap()
@@ -187,7 +159,6 @@ mod edit {
         let rs = query(&e, &c, &format!("SELECT * FROM {s}.p ORDER BY id"));
         let t = editable(target(&e, &c, &rs, None));
         assert_eq!(t.key_source, KeySource::PrimaryKey);
-        assert_eq!(t.check, ConflictCheck::Predicate);
         assert_eq!(t.table.name, "p");
         assert!(t.columns.iter().all(|c| c.is_some()), "{:?}", t.columns);
         let snap = rs.snapshot();
@@ -219,7 +190,7 @@ mod edit {
         cs.edit(0, 1, CellValue::text("ONE"), CellValue::text("mine"));
         let r = e.core.block_on(c.apply_changes(None, cs.plan(&t, &rs.snapshot()).unwrap())).unwrap();
         assert!(!r.committed);
-        assert!(matches!(r.outcomes[0].outcome, Outcome::Conflict { kind: ConflictKind::Changed { .. }, .. }), "{r:?}");
+        assert!(matches!(r.outcomes[0].outcome, Outcome::Conflict { kind: ConflictKind::Changed, .. }), "{r:?}");
         let mut cs = ChangeSet::new();
         cs.edit(2, 1, CellValue::text("four"), CellValue::text("4!"));
         cs.edit(1, 1, CellValue::text("two"), CellValue::text("2!"));
@@ -311,7 +282,7 @@ mod edit {
         cs.delete_row(1);
         let r = e.core.block_on(c.apply_changes(None, cs.plan(&t, &rs.snapshot()).unwrap())).unwrap();
         assert!(!r.committed);
-        assert!(matches!(r.outcomes[0].outcome, Outcome::Conflict { kind: ConflictKind::Changed { .. }, .. }), "{r:?}");
+        assert!(matches!(r.outcomes[0].outcome, Outcome::Conflict { kind: ConflictKind::Changed, .. }), "{r:?}");
         exec(&e, &c, &[&format!("DELETE FROM {s}.emp WHERE id = 2")]);
         let r = e.core.block_on(c.apply_changes(None, cs.plan(&t, &rs.snapshot()).unwrap())).unwrap();
         assert!(matches!(r.outcomes[0].outcome, Outcome::Conflict { kind: ConflictKind::RowGone, .. }), "{r:?}");
@@ -335,95 +306,10 @@ mod edit {
         assert!(r.committed, "{r:#?}");
         exec(&e, &c, &[&format!("DROP SCHEMA {s} CASCADE")]);
     }
-
-    #[test]
-    fn lar_edit_apply_and_conflicts() {
-        let e = env();
-        let Some(c) = lar(&e) else { return };
-        exec_quiet(&e, &c, &["DROP TABLE dataman_ed", "DROP TABLE dataman_edf"]);
-        // (Created before the first edit_target, which caches the table list.)
-        exec(&e, &c, &["CREATE TABLE dataman_edf (k REAL, v TEXT)", "INSERT INTO dataman_edf VALUES (0.1, 'a'), (0.3, 'b')"]);
-        exec(&e, &c, &[
-            "CREATE TABLE dataman_ed (id BIGINT PRIMARY KEY, name TEXT, total DOUBLE PRECISION, at TIMESTAMPTZ)",
-            "INSERT INTO dataman_ed VALUES (1, 'one', 1.5, '2026-01-01T10:00:00Z'), (2, NULL, 2, NULL), (3, 'three', 3, NULL)",
-        ]);
-        let rs = query(&e, &c, "SELECT * FROM dataman_ed ORDER BY id");
-        eprintln!("LAR origins: {:?}", rs.origins());
-        let t = editable(target(&e, &c, &rs, None));
-        assert_eq!(t.key_source, KeySource::Guessed);
-        assert_eq!(t.check, ConflictCheck::Reread);
-        let mut cs = ChangeSet::new();
-        cs.edit(0, 1, CellValue::text("one"), CellValue::text("ONE"));
-        cs.edit(0, 3, CellValue::text("x"), CellValue::text("2026-02-02T00:00:00Z"));
-        cs.edit(1, 2, CellValue::text("2"), CellValue::text("2.25"));
-        let i = cs.insert_row(4);
-        cs.set_inserted(i, 0, Some(CellValue::text("4")));
-        cs.set_inserted(i, 1, Some(CellValue::text("four")));
-        cs.delete_row(2);
-        let plan = cs.plan(&t, &rs.snapshot()).unwrap();
-        eprintln!("{}", preview(&plan));
-        let r = e.core.block_on(c.apply_changes(None, plan)).unwrap();
-        assert!(r.committed, "{r:#?}");
-        let a = query(&e, &c, "SELECT id, name, total FROM dataman_ed ORDER BY id");
-        let a = a.snapshot();
-        assert_eq!(a.rows(), 3);
-        assert_eq!(a.text(0, 1).as_deref(), Some("ONE"));
-        assert_eq!(a.text(1, 2).as_deref(), Some("2.25"));
-        assert_eq!(a.text(2, 1).as_deref(), Some("four"));
-
-        let rs = query(&e, &c, "SELECT * FROM dataman_ed ORDER BY id");
-        exec(&e, &c, &["UPDATE dataman_ed SET name = 'other' WHERE id = 1", "DELETE FROM dataman_ed WHERE id = 2"]);
-        let mut cs = ChangeSet::new();
-        cs.edit(0, 1, CellValue::text("ONE"), CellValue::text("mine"));
-        let r = e.core.block_on(c.apply_changes(None, cs.plan(&t, &rs.snapshot()).unwrap())).unwrap();
-        assert!(!r.committed);
-        match &r.outcomes[0].outcome {
-            Outcome::Conflict { kind: ConflictKind::Changed { column, found, .. }, message } => {
-                assert_eq!(column.as_deref(), Some("name"));
-                assert_eq!(found.as_deref(), Some("other"));
-                eprintln!("LAR conflict: {message}");
-            }
-            o => panic!("{o:?}"),
-        }
-        let mut cs = ChangeSet::new();
-        cs.delete_row(1);
-        let r = e.core.block_on(c.apply_changes(None, cs.plan(&t, &rs.snapshot()).unwrap())).unwrap();
-        assert!(matches!(r.outcomes[0].outcome, Outcome::Conflict { kind: ConflictKind::RowGone, .. }), "{r:?}");
-        let mut cs = ChangeSet::new();
-        cs.delete_row(0);
-        let r = e.core.block_on(c.apply_changes(None, cs.plan(&t, &rs.snapshot()).unwrap())).unwrap();
-        assert!(!r.committed);
-        assert!(matches!(&r.outcomes[0].outcome, Outcome::Conflict { kind: ConflictKind::Changed { column: Some(c), .. }, .. } if c == "name"), "{r:?}");
-        let mut cs = ChangeSet::new();
-        let i = cs.insert_row(4);
-        cs.set_inserted(i, 0, Some(CellValue::text("1")));
-        let r = e.core.block_on(c.apply_changes(None, cs.plan(&t, &rs.snapshot()).unwrap())).unwrap();
-        assert!(!r.committed);
-        eprintln!("LAR duplicate insert: {:?}", r.outcomes[0].outcome);
-        let rs = query(&e, &c, "SELECT * FROM dataman_ed FOR SYSTEM_TIME AS OF 1");
-        assert!(read_only(target(&e, &c, &rs, None)).contains("AS OF"));
-        exec(&e, &c, &["DROP TABLE dataman_ed"]);
-
-        let rs = query(&e, &c, "SELECT * FROM dataman_edf ORDER BY k");
-        let t = editable(target(&e, &c, &rs, Some(vec!["k".into()])));
-        let mut cs = ChangeSet::new();
-        cs.edit(0, 1, CellValue::text("a"), CellValue::text("A"));
-        let plan = cs.plan(&t, &rs.snapshot()).unwrap();
-        eprintln!("LAR real key: {}", preview(&plan));
-        let r = e.core.block_on(c.apply_changes(None, plan)).unwrap();
-        eprintln!("LAR real key: {r:?}");
-        assert!(r.committed, "{r:#?}");
-        exec(&e, &c, &["DROP TABLE dataman_edf"]);
-    }
 }
 
 mod relations {
     use super::*;
-    use dataman_core::relations::Link;
-
-    fn label(l: &Link) -> String {
-        format!("{}.{} → {}", l.from_table, l.from_columns.join(","), l.to_table)
-    }
 
     #[test]
     fn postgres_catalog() {
@@ -441,7 +327,7 @@ mod relations {
             &format!("ANALYZE {s}.customer"),
         ]);
         let g = e.core.block_on(c.relationships(c.database(), s)).unwrap();
-        assert!(g.links.iter().all(|l| !l.inferred && l.from_schema == s && l.to_schema == s));
+        assert!(g.links.iter().all(|l| l.from_schema == s && l.to_schema == s));
         let l = g.links.iter().find(|l| l.from_table == "item" && l.to_table == "batch").unwrap();
         assert_eq!((l.from_columns.clone(), l.to_columns.clone()), (vec!["la".to_string(), "lb".into()], vec!["a".to_string(), "b".into()]));
         let l = g.links.iter().find(|l| l.from_table == "orders").unwrap();
@@ -452,31 +338,5 @@ mod relations {
         let again = e.core.block_on(c.relationships(c.database(), s)).unwrap();
         assert!(Arc::ptr_eq(&g, &again) && t.elapsed() < Duration::from_millis(50));
         exec(&e, &c, &[&format!("DROP SCHEMA {s} CASCADE")]);
-    }
-
-    #[test]
-    fn lar_inferred_links() {
-        let e = env();
-        let Some(c) = lar(&e) else { return };
-        exec_quiet(&e, &c, &["DROP TABLE strel_items", "DROP TABLE strel_orders", "DROP TABLE strel_products", "DROP TABLE strel_customers"]);
-        exec(&e, &c, &[
-            "CREATE TABLE strel_customers (id BIGINT PRIMARY KEY, name TEXT)",
-            "CREATE TABLE strel_products (id BIGINT PRIMARY KEY, title TEXT)",
-            "CREATE TABLE strel_orders (id BIGINT PRIMARY KEY, strel_customer BIGINT REFERENCES strel_customers(id), total DOUBLE PRECISION)",
-            "CREATE TABLE strel_items (id BIGINT PRIMARY KEY, strel_order_id BIGINT REFERENCES strel_orders(id), strel_product BIGINT, qty BIGINT)",
-            "INSERT INTO strel_customers VALUES (1, 'Ana')",
-            "INSERT INTO strel_orders VALUES (10, 1, 5.0), (11, 1, 6.0)",
-        ]);
-        let t = Instant::now();
-        let g = e.core.block_on(c.relationships(c.database(), "public")).unwrap();
-        eprintln!("LAR graph: {} links in {:?}", g.links.len(), t.elapsed());
-        let mine: Vec<&Link> = g.links.iter().filter(|l| l.from_table.starts_with("strel_")).collect();
-        let labels: Vec<String> = mine.iter().map(|l| label(l)).collect();
-        assert_eq!(mine.len(), 2, "{labels:?}");
-        assert!(labels.contains(&"strel_orders.strel_customer → strel_customers".to_string()), "{labels:?}");
-        assert!(labels.contains(&"strel_items.strel_order_id → strel_orders".to_string()), "{labels:?}");
-        assert!(mine.iter().all(|l| l.inferred && l.to_columns == ["id"]));
-        eprintln!("other links: {:?}", g.links.iter().filter(|l| !l.from_table.starts_with("strel_")).map(label).collect::<Vec<_>>());
-        exec(&e, &c, &["DROP TABLE strel_items", "DROP TABLE strel_orders", "DROP TABLE strel_products", "DROP TABLE strel_customers"]);
     }
 }

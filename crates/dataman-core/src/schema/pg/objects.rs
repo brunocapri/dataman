@@ -234,7 +234,7 @@ pub fn stats_sql(schema: &str) -> [String; 3] {
     ]
 }
 
-// A catalog that answers zero for every table (LAR) reports nothing.
+// A catalog that answers zero for every table reports nothing.
 pub fn parse_stats(rows: &Rows) -> HashMap<String, RelStats> {
     let mut m = HashMap::new();
     let mut any = false;

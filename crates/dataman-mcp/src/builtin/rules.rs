@@ -199,7 +199,7 @@ pub async fn generated_columns(cx: &Call, o: &Opened) -> Result<Vec<Generated>, 
 /// columns they are computed from.
 pub async fn effective_rules(cx: &Call, o: &Opened) -> Result<AgentRules, ToolError> {
     let r = &o.profile.mcp_rules;
-    if !restricted(r) || !o.conn.engine().is_sql() || o.conn.info.is_lar {
+    if !restricted(r) || !o.conn.engine().is_sql() {
         return Ok(r.clone());
     }
     let cols = generated_columns(cx, o).await.map_err(|e| ToolError::Failed(format!("Dataman could not read the generated columns of {} ({e}), and {} keeps some data from agents", o.database, o.profile.name)))?;
@@ -266,7 +266,7 @@ pub async fn checked_sql(cx: &Call, a: &Args, p: &ConnectionProfile, sql: &str, 
 /// is not followed on a server, so an agent's write to a table with enabled triggers is refused
 /// while data is kept from agents (SQLite's own authorizer checks what its triggers read).
 async fn triggers_keep_out(o: &Opened, sql: &str) -> Result<(), ToolError> {
-    if !matches!(o.conn.engine(), dataman_core::Engine::Postgres | dataman_core::Engine::MySql | dataman_core::Engine::SqlServer) || o.conn.info.is_lar {
+    if !matches!(o.conn.engine(), dataman_core::Engine::Postgres | dataman_core::Engine::MySql | dataman_core::Engine::SqlServer) {
         return Ok(());
     }
     let d = o.conn.dialect();

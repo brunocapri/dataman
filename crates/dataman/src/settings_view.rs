@@ -247,6 +247,21 @@ impl SettingsView {
         }
     }
 
+    /// Esc: a search typed is cleared first, then the sheet closes.
+    fn close(&mut self, _: &Close, window: &mut Window, cx: &mut Context<Self>) {
+        if self.section == Section::Keyboard && !self.key_filter.read(cx).text().is_empty() {
+            self.key_filter.update(cx, |i, cx| i.set_text("", cx));
+            window.focus(&self.key_filter.focus_handle(cx), cx);
+            return;
+        }
+        if !self.search.read(cx).text().is_empty() {
+            self.search.update(cx, |i, cx| i.set_text("", cx));
+            window.focus(&self.search.focus_handle(cx), cx);
+            return;
+        }
+        cx.emit(SettingsEvent::Close)
+    }
+
     fn scroll_to_top(&self) {
         self.page_scroll.set_offset(gpui::point(px(0.), px(0.)));
     }
@@ -1122,7 +1137,6 @@ impl SettingsView {
         let mut ix = 0usize;
         let mut sections: Vec<gpui::AnyElement> = Vec::new();
         for (title, cmds) in groups {
-            let lar = title.starts_with('◆');
             let mut rows: Vec<gpui::AnyElement> = Vec::new();
             let also = self.key_query.as_deref().filter(|_| self.key_search).map(crate::keymap::label);
             for c in cmds {
@@ -1139,7 +1153,6 @@ impl SettingsView {
                     .min_w(px(30.))
                     .justify_center()
                     .cursor_pointer()
-                    .when(lar, |d| d.text_color(t.lar_t).border_color(t.lar_r))
                     .when(conflicts.contains(id), |d| d.text_color(t.err))
                     .when(rec, |d| d.bg(t.acc_s).border_color(t.acc).text_color(t.acc_t))
                     .on_click(cx.listener(move |v, _, window, cx| v.start_recording(id, window, cx)));
@@ -1188,7 +1201,7 @@ impl SettingsView {
                     .flex()
                     .flex_col()
                     .gap(px(2.))
-                    .child(div().pb(px(6.)).text_size(px(10.5)).text_color(if lar { t.lar } else { t.tx3 }).child(title))
+                    .child(div().pb(px(6.)).text_size(px(10.5)).text_color(t.tx3).child(title))
                     .children(rows)
                     .into_any_element(),
             );
@@ -1440,22 +1453,12 @@ impl Render for SettingsView {
             .bg(t.scrim)
             .key_context("SettingsSheet Modal")
             .track_focus(&self.focus)
-            .on_action(cx.listener(|v, _: &Close, window, cx| {
-                if v.section == Section::Keyboard && !v.key_filter.read(cx).text().is_empty() {
-                    v.key_filter.update(cx, |i, cx| i.set_text("", cx));
-                    window.focus(&v.key_filter.focus_handle(cx), cx);
-                    return;
-                }
-                if !v.search.read(cx).text().is_empty() {
-                    v.search.update(cx, |i, cx| i.set_text("", cx));
-                    window.focus(&v.search.focus_handle(cx), cx);
-                    return;
-                }
-                cx.emit(SettingsEvent::Close)
-            }))
+            .on_action(cx.listener(Self::close))
             .on_action(cx.listener(|v, _: &NextSection, _, cx| v.step_section(1, cx)))
             .on_action(cx.listener(|v, _: &PrevSection, _, cx| v.step_section(-1, cx)))
             .on_mouse_down(MouseButton::Left, cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::Close)))
+            // A shortcut being recorded (or searched by its keys) takes Esc itself.
+            .child(if self.recording.is_some() || self.key_search { ui::esc_kept() } else { ui::esc_closes(Some("SettingsSheet"), cx.listener(Self::close)) })
             .child(sheet)
     }
 }

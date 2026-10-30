@@ -558,6 +558,7 @@ impl Render for ValueView {
                     cx.emit(ValueEvent::Close);
                 }
             }))
+            .child(ui::esc_closes(Some("ValueSheet"), cx.listener(|_, _: &CloseValue, _, cx| cx.emit(ValueEvent::Close))))
             .child(card)
     }
 }

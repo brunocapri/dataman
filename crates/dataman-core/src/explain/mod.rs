@@ -10,12 +10,11 @@ pub use text::render_text;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Target {
-    pub lar: bool,
     pub major: u32,
     pub kind: TargetKind,
 }
 
-/// The plan an engine prints: PostgreSQL's JSON (and LAR's), SQLite's `EXPLAIN QUERY PLAN` rows,
+/// The plan an engine prints: PostgreSQL's JSON, SQLite's `EXPLAIN QUERY PLAN` rows,
 /// DuckDB's text tree.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TargetKind {
@@ -34,7 +33,7 @@ impl Target {
         } else {
             TargetKind::Postgres
         };
-        Target { lar: info.is_lar, major: info.major(), kind }
+        Target { major: info.major(), kind }
     }
 
     fn at_least(&self, v: u32) -> bool {
@@ -61,9 +60,6 @@ pub fn sql(stmt: &str, analyze: bool, t: Target) -> String {
         TargetKind::DuckText => return format!("EXPLAIN {}{stmt}", if analyze { "ANALYZE " } else { "" }),
         TargetKind::Postgres => {}
     }
-    if t.lar {
-        return format!("EXPLAIN {}{stmt}", if analyze { "ANALYZE " } else { "" });
-    }
     let mut o: Vec<&str> = Vec::new();
     if analyze {
         o.extend(["ANALYZE", "BUFFERS"]);
@@ -87,9 +83,6 @@ pub fn text_sql(stmt: &str, t: Target) -> String {
         TargetKind::SqliteQueryPlan => return format!("EXPLAIN QUERY PLAN {stmt}"),
         TargetKind::DuckText => return format!("EXPLAIN {stmt}"),
         TargetKind::Postgres => {}
-    }
-    if t.lar {
-        return format!("EXPLAIN {stmt}");
     }
     let settings = if t.at_least(12) { ", SETTINGS" } else { "" };
     format!("EXPLAIN (FORMAT TEXT, VERBOSE, COSTS{settings}) {stmt}")
@@ -757,12 +750,11 @@ mod tests {
 
     #[test]
     fn statements() {
-        let pg = Target { lar: false, major: 18, ..Default::default() };
+        let pg = Target { major: 18, ..Default::default() };
         assert_eq!(sql("select 1;\n", false, pg), "EXPLAIN (FORMAT JSON, VERBOSE, COSTS, SETTINGS) select 1");
         assert_eq!(sql(" delete from t ;; ", true, pg), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON, VERBOSE, SETTINGS, WAL) delete from t");
-        assert_eq!(sql("select 1", true, Target { lar: false, major: 12, ..Default::default() }), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON, VERBOSE, SETTINGS) select 1");
-        assert_eq!(sql("select 1", false, Target { lar: false, major: 11, ..Default::default() }), "EXPLAIN (FORMAT JSON, VERBOSE, COSTS) select 1");
-        assert_eq!(sql("select 1", true, Target { lar: true, major: 16, ..Default::default() }), "EXPLAIN ANALYZE select 1");
+        assert_eq!(sql("select 1", true, Target { major: 12, ..Default::default() }), "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON, VERBOSE, SETTINGS) select 1");
+        assert_eq!(sql("select 1", false, Target { major: 11, ..Default::default() }), "EXPLAIN (FORMAT JSON, VERBOSE, COSTS) select 1");
         let lite = Target { kind: TargetKind::SqliteQueryPlan, ..Default::default() };
         assert_eq!(sql("select 1;", true, lite), "EXPLAIN QUERY PLAN select 1");
         let duck = Target { kind: TargetKind::DuckText, ..Default::default() };

@@ -324,12 +324,6 @@ pub struct Theme {
     pub acc_h: Hsla,
     pub acc_p: Hsla,
     pub on_acc: Hsla,
-    pub lar: Hsla,
-    pub lar_s: Hsla,
-    pub lar_r: Hsla,
-    pub lar_t: Hsla,
-    pub lar_h: Hsla,
-    pub on_lar: Hsla,
     pub ok: Hsla,
     pub ok_s: Hsla,
     pub warn: Hsla,
@@ -365,7 +359,6 @@ pub struct Theme {
     pub typ: Hsla,
     pub cm: Hsla,
     pub op: Hsla,
-    pub lkw: Hsla,
     pub param: Hsla,
     pub kw_s: Hsla,
     pub func_s: Hsla,
@@ -428,12 +421,6 @@ impl Theme {
             acc_h: c(0x5f8bff),
             acc_p: c(0x3d6ae6),
             on_acc: c(0xffffff),
-            lar: c(0xa47bff),
-            lar_s: ca(0xa47bff, 0.15),
-            lar_r: ca(0xa47bff, 0.35),
-            lar_t: c(0xcdb7ff),
-            lar_h: c(0xb28eff),
-            on_lar: c(0x0b0716),
             ok: c(0x5be49b),
             ok_s: ca(0x5be49b, 0.12),
             warn: c(0xff9f43),
@@ -466,7 +453,6 @@ impl Theme {
             typ: c(0x56d4f5),
             cm: c(0x666c8a),
             op: c(0xa7acc2),
-            lkw: c(0xb892ff),
             param: c(0xffb86b),
             kw_s: ca(0x7aa2ff, 0.16),
             func_s: ca(0xff8fd0, 0.14),
@@ -515,12 +501,6 @@ impl Theme {
             acc_h: c(0x4570ff),
             acc_p: c(0x2449e0),
             on_acc: c(0xffffff),
-            lar: c(0x7a4dff),
-            lar_s: ca(0x7a4dff, 0.10),
-            lar_r: ca(0x7a4dff, 0.30),
-            lar_t: c(0x5b30dd),
-            lar_h: c(0x8a62ff),
-            on_lar: c(0xffffff),
             ok: c(0x0e8f50),
             ok_s: ca(0x0e8f50, 0.10),
             warn: c(0xb45a00),
@@ -553,7 +533,6 @@ impl Theme {
             typ: c(0x087fa3),
             cm: c(0x8e94a8),
             op: c(0x4a5068),
-            lkw: c(0x6b3cf0),
             param: c(0xb05a00),
             kw_s: ca(0x2f5bff, 0.10),
             func_s: ca(0xb0287a, 0.10),
@@ -591,7 +570,7 @@ impl Theme {
     }
 
     pub fn profile_color(&self, p: &dataman_core::ConnectionProfile) -> Hsla {
-        if p.env.is_production() { self.err } else { self.conn_color(p.color.as_deref(), &p.id) }
+        if p.prod_red() { self.err } else { self.conn_color(p.color.as_deref(), &p.id) }
     }
 
     pub fn conn_color(&self, swatch: Option<&str>, id: &str) -> Hsla {

@@ -34,11 +34,6 @@ pub fn pg_password() -> String {
     std::env::var("DATAMAN_PG_PASSWORD").unwrap_or_else(|_| "dataman".into())
 }
 
-fn lar_profile() -> ConnectionProfile {
-    let (host, port) = addr("DATAMAN_LAR", "127.0.0.1:5490");
-    ConnectionProfile { host, port, user: "lar".into(), database: "lar".into(), sslmode: SslMode::Disable, ..ConnectionProfile::new("lar") }
-}
-
 fn connect(e: &Env, p: ConnectionProfile, pw: Option<&str>) -> Option<Arc<Connection>> {
     match e.core.block_on(e.core.connect(p.clone(), pw.map(str::to_string))) {
         Ok(c) => Some(c),
@@ -51,10 +46,6 @@ fn connect(e: &Env, p: ConnectionProfile, pw: Option<&str>) -> Option<Arc<Connec
 
 pub fn pg(e: &Env) -> Option<Arc<Connection>> {
     connect(e, pg_profile(), Some(&pg_password()))
-}
-
-pub fn lar(e: &Env) -> Option<Arc<Connection>> {
-    connect(e, lar_profile(), None)
 }
 
 pub fn mysql_profile(database: &str) -> ConnectionProfile {

@@ -16,7 +16,6 @@ use crate::conns::ConnState;
 use crate::conns::{ConnEvent, ConnStore};
 use crate::grid::GridEvent;
 use crate::history::{HistoryEvent, HistoryPanel};
-use crate::panels::PanelRegistry;
 use crate::tab::{QueryTab, TabEvent};
 use crate::theme::{self, ActiveTheme, metrics, mono};
 use crate::tree::{SchemaTree, TreeEvent};
@@ -85,7 +84,6 @@ actions!(
         ZoomIn,
         ZoomOut,
         ZoomReset,
-        LarPanel1,
         Quit,
         CancelPendingRun,
         DiscardAndRun,
@@ -226,15 +224,13 @@ pub(crate) struct DraggedTab(pub EntityId);
 
 #[derive(Clone)]
 pub(crate) enum Bound {
-    Conn(Arc<Connection>),
     Tab(EntityId),
     Explorer,
 }
 
 impl Bound {
-    pub(crate) fn fits(&self, tab: Option<EntityId>, conn: Option<&Arc<Connection>>) -> bool {
+    pub(crate) fn fits(&self, tab: Option<EntityId>) -> bool {
         match self {
-            Bound::Conn(c) => conn.is_some_and(|x| Arc::ptr_eq(x, c)),
             Bound::Tab(id) => tab == Some(*id),
             Bound::Explorer => true,
         }
@@ -243,14 +239,13 @@ impl Bound {
 
 #[derive(Clone)]
 pub(crate) enum Side {
-    Server(&'static str, AnyView, Bound),
     Feature(&'static str, AnyView, Bound),
 }
 
 pub(crate) fn side_id(s: &Option<Side>) -> Option<&'static str> {
     match s {
         None => None,
-        Some(Side::Server(n, ..) | Side::Feature(n, ..)) => Some(n),
+        Some(Side::Feature(n, ..)) => Some(n),
     }
 }
 
@@ -264,7 +259,7 @@ pub(crate) struct SavedFlash {
 impl Side {
     fn bound(&self) -> Option<&Bound> {
         match self {
-            Side::Server(_, _, b) | Side::Feature(_, _, b) => Some(b),
+            Side::Feature(_, _, b) => Some(b),
         }
     }
 }
@@ -353,7 +348,6 @@ pub struct Workspace {
     pub(crate) shortcuts_focus: FocusHandle,
     pub(crate) copy_menu: bool,
     pub(crate) cancel_toast_hidden: Option<Instant>,
-    pub(crate) lar_toast: Option<(String, Instant)>,
     pub(crate) flash_notice: Option<(String, Instant)>,
     file_drag: Option<gpui::ExternalPaths>,
     pub(crate) palette: Option<Entity<crate::palette::Palette>>,
@@ -556,7 +550,6 @@ impl Workspace {
             shortcuts_focus: cx.focus_handle(),
             copy_menu: false,
             cancel_toast_hidden: None,
-            lar_toast: None,
             flash_notice: None,
             file_drag: None,
             palette: None,
@@ -754,7 +747,7 @@ impl Workspace {
         self.place_new_tab(tab.entity_id(), prev, cx);
         self.tab_motion.opened(tab.entity_id(), cx);
         self.active = self.tabs.len() - 1;
-        self.sync_bound_views(window, cx);
+        self.sync_bound_views(cx);
         window.focus(&editor.focus_handle(cx), cx);
         cx.notify();
         tab
@@ -820,7 +813,7 @@ impl Workspace {
             self.new_tab(window, cx);
         }
         self.active = front.and_then(|f| self.tabs.iter().position(|t| t.entity_id() == f)).unwrap_or(0).min(self.tabs.len() - 1);
-        self.sync_bound_views(window, cx);
+        self.sync_bound_views(cx);
         self.focus_editor(window, cx);
         cx.notify();
         reopen
@@ -837,7 +830,7 @@ impl Workspace {
             if let Some(id) = self.tabs[ix].read(cx).connection().map(|c| c.profile.id.clone()) {
                 self.current_conn = Some(id);
             }
-            self.sync_bound_views(window, cx);
+            self.sync_bound_views(cx);
             self.focus_editor(window, cx);
             if self.tabs[ix].read(cx).pending_run.is_some() {
                 self.focus_confirm(window, cx);
@@ -1001,14 +994,13 @@ impl Workspace {
         let id = conn.profile.id.clone();
         let snap = conn.schema.snapshot(&db);
         self.set_explorer_open(true, cx);
-        let lar = conn.info.is_lar;
         let ro = conn.read_only_for(&db);
         match def {
             Definition::Relation { schema, name, column } => {
                 let kind = snap.resolve(Some(&schema), &name).map(|i| snap.relations[i].kind).unwrap_or(dataman_core::schema::RelKind::Table);
                 self.tree.update(cx, |t, cx| t.reveal_relation(&id, &db, &schema, &name, kind, column.as_deref(), cx));
                 if peek {
-                    let target = Target::Rel { conn: id, db, schema, name, kind, lar, ro };
+                    let target = Target::Rel { conn: id, db, schema, name, kind, ro };
                     let act = if kind.is_view() { Act::ShowDefinition } else { Act::Generate(Gen::CreateTable) };
                     self.on_row_action(act, target, false, window, cx);
                 }
@@ -1709,11 +1701,6 @@ impl Workspace {
                         }
                     });
                 }
-                if let Some(c) = &conn
-                    && c.info.is_lar
-                {
-                    self.show_lar_toast(c.profile.name.clone(), cx);
-                }
                 let cid = format!("c:{id}");
                 self.tree.update(cx, |t, cx| {
                     t.expand_id(&cid, cx);
@@ -1742,21 +1729,6 @@ impl Workspace {
             }
         }
         cx.notify();
-    }
-
-    fn show_lar_toast(&mut self, name: String, cx: &mut Context<Self>) {
-        let at = Instant::now();
-        self.lar_toast = Some((name, at));
-        cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(Duration::from_secs(6)).await;
-            let _ = this.update(cx, |w, cx| {
-                if w.lar_toast.as_ref().is_some_and(|(_, t)| *t == at) {
-                    w.lar_toast = None;
-                    cx.notify();
-                }
-            });
-        })
-        .detach();
     }
 
     /// An empty canvas whose paint listens for the mouse up that ends a file drag, wherever the
@@ -1816,44 +1788,20 @@ impl Workspace {
         cx.notify();
     }
 
-    pub(crate) fn toggle_server_panel(&mut self, id: &'static str, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(conn) = self.active_tab().and_then(|t| t.read(cx).connection().cloned()) else { return };
-        let Some(panel) = cx.try_global::<PanelRegistry>().and_then(|r| r.find(&conn.info, id)) else { return };
-        if matches!(&self.side, Some(Side::Server(pid, _, b)) if *pid == id && b.fits(None, Some(&conn))) {
-            self.last_side = self.side.take();
-        } else {
-            if let Some(w) = panel.width() {
-                self.side_w = w.clamp(metrics::SIDE_MIN, metrics::SIDE_MAX);
-            }
-            let view = panel.build(conn.clone(), window, cx);
-            self.side = Some(Side::Server(id, view, Bound::Conn(conn)));
-        }
-        cx.notify();
-    }
-
-    pub(crate) fn sync_bound_views(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let tab = self.active_tab().cloned();
-        let tab_id = tab.as_ref().map(|t| t.entity_id());
-        let conn = tab.as_ref().and_then(|t| t.read(cx).connection().cloned());
-        let fits = |b: &Bound| b.fits(tab_id, conn.as_ref());
+    pub(crate) fn sync_bound_views(&mut self, cx: &mut Context<Self>) {
+        let tab_id = self.active_tab().map(|t| t.entity_id());
+        let fits = |b: &Bound| b.fits(tab_id);
         if let Some(side) = self.side.clone()
             && let Some(b) = side.bound()
             && !fits(b)
         {
-            let rebuilt = match (&side, b, &conn) {
-                (Side::Server(id, ..), Bound::Conn(_), Some(c)) => cx
-                    .try_global::<PanelRegistry>()
-                    .and_then(|r| r.find(&c.info, id))
-                    .map(|p| (*id, p.build(c.clone(), window, cx), c.clone())),
-                _ => None,
-            };
             if let Side::Feature("review", v, _) = &side
                 && let Ok(r) = v.clone().downcast::<crate::edit_ui::ReviewPanel>()
             {
                 let edit = r.read(cx).edit.clone();
                 edit.update(cx, |e, _| e.review_open = false);
             }
-            self.side = rebuilt.map(|(id, v, c)| Side::Server(id, v, Bound::Conn(c)));
+            self.side = None;
         }
         if self.last_side.as_ref().and_then(|s| s.bound()).is_some_and(|b| !fits(b)) {
             self.last_side = None;
@@ -2694,9 +2642,10 @@ impl Render for Workspace {
         let _trace = TraceRender::new("workspace render");
         RENDERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         crate::ui::clear_probes();
+        crate::ui::esc_frame(window);
         // A connection change of the active tab (explorer, ⌥↩, palette, disconnect) lands
         // here before anything can act on a panel of the old connection.
-        self.sync_bound_views(window, cx);
+        self.sync_bound_views(cx);
         self.sync_monitors(window, cx);
         self.sync_menu_caps(cx);
         let fp = if crate::restore::store(cx).is_some() && !self.session_off { self.session_fingerprint(cx) } else { 0 };
@@ -2909,16 +2858,6 @@ impl Render for Workspace {
                 // On production the edits are writes like any other: always reviewed first.
                 let production = w.active_tab().and_then(|t| t.read(cx).connection().map(|c| c.profile.env.is_production())).unwrap_or(false);
                 let confirm = w.store.read(cx).core.settings.get().confirm_commit || production;
-                // Never commit edits that are not on screen (a live grid hides the result they
-                // were made on).
-                if let Some(tab) = w.active_tab()
-                    && crate::lar::hides_result(tab.read(cx))
-                {
-                    if tab.read(cx).edit.read(cx).pending_count() > 0 {
-                        w.notice("The pending edits belong to a result that is not shown: nothing was committed", cx);
-                    }
-                    return;
-                }
                 if let Some(e) = w.active_edit(cx) {
                     e.update(cx, |e, cx| e.review(confirm, window, cx));
                 }
@@ -2974,7 +2913,6 @@ impl Render for Workspace {
             .on_action(cx.listener(|_, _: &ZoomIn, w, cx| theme::set_zoom(theme::zoom_step(theme::zoom(), 1), w, cx)))
             .on_action(cx.listener(|_, _: &ZoomOut, w, cx| theme::set_zoom(theme::zoom_step(theme::zoom(), -1), w, cx)))
             .on_action(cx.listener(|_, _: &ZoomReset, w, cx| theme::set_zoom(1.0, w, cx)))
-            .on_action(cx.listener(|w, _: &LarPanel1, window, cx| w.toggle_server_panel(crate::panels::LAR_BUTTONS[0].0, window, cx)))
             .on_action(cx.listener(|w, _: &Quit, window, cx| {
                 if w.request_quit(window, cx) {
                     w.quit_now(cx);
@@ -2989,7 +2927,6 @@ impl Render for Workspace {
             .on_action(cx.listener(|w, _: &ImportConnections, window, cx| w.open_import(window, cx)))
             .on_action(cx.listener(|w, _: &CancelPendingRun, window, cx| w.resolve_pending_run(false, window, cx)))
             .on_action(cx.listener(|w, _: &DiscardAndRun, window, cx| w.resolve_pending_run(true, window, cx)))
-            .map(|d| crate::lar::workspace_actions(d, cx))
             .map(|d| crate::dock::workspace_actions(d, cx))
             .map(|d| crate::sidebar::workspace_actions(d, cx))
             .map(|d| crate::split::workspace_actions(d, cx))

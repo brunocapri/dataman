@@ -1,8 +1,8 @@
 //! `explorer-folders-check`: the explorer's optional folders (made from the header, named in
 //! place, a connection moved in by its menu and by a drag, out to the top level, colored,
-//! deleted with its connections kept, undone), the keys over folder rows, the search field's
-//! folder chip in the explorer and in Favorites, and connections.toml written as before once no
-//! folder is left. The `*-shot` stages set the same scenes up for screenshots.
+//! deleted with its connections kept, undone), the keys over folder rows, a search over every
+//! folder (no folder chip), Favorites narrowed to a connection, and connections.toml written as
+//! before once no folder is left. The `*-shot` stages set the same scenes up for screenshots.
 
 use gpui::{AsyncWindowContext, Entity, Focusable, Modifiers, MouseButton, point, px};
 use dataman_core::config::Engine;
@@ -13,7 +13,7 @@ use crate::tree::{ConnDrop, SchemaTree, fid};
 use crate::tree_menu::Act;
 
 pub fn is_stage(s: &str) -> bool {
-    matches!(s, "explorer-folders-check" | "explorer-folders-shot" | "explorer-scope-shot" | "fav-scope-shot")
+    matches!(s, "explorer-folders-check" | "explorer-folders-shot" | "fav-scope-shot")
 }
 
 fn tree(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> Entity<SchemaTree> {
@@ -115,7 +115,7 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, r: &mut Report, cx: &mut A
         return;
     }
     match stage {
-        "explorer-folders-shot" | "explorer-scope-shot" => return scene(ws, &pg_id, stage, cx).await,
+        "explorer-folders-shot" => return scene(ws, &pg_id, cx).await,
         "fav-scope-shot" => return fav_scope(ws, r, true, cx).await,
         _ => {}
     }
@@ -148,7 +148,7 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, r: &mut Report, cx: &mut A
         format!("{:?} {:?}", folders(ws, cx), heads(&t, &names, cx)),
     );
     let Some(prod) = prod else { return };
-    r.check("a folder: the search field shows its folder chip (All)", probed("x-scope", cx).is_some(), "");
+    r.check("a folder: still no folder chip in the search field", probed("x-scope", cx).is_none(), "");
 
     // Into the folder through the connection's menu.
     let moved = menu(&t, &format!("c:{billing}"), Act::MoveToFolder(0), cx).await;
@@ -240,19 +240,7 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, r: &mut Report, cx: &mut A
     );
     let Some(dev) = dev else { return };
 
-    // The search chip: a folder picked there is the only one shown and searched.
-    let opened = click_probe("x-scope", cx);
-    pause(cx, 150).await;
-    let menu_open = cx.update(|_, cx| t.read(cx).demo_scope().1).unwrap_or(false);
-    r.check("a click on the chip opens its folder list", opened && menu_open, "");
-    let picked = click_probe(&format!("xscope:{}", dev.id), cx);
-    pause(cx, 100).await;
-    let (scope, still) = cx.update(|_, cx| t.read(cx).demo_scope()).unwrap_or_default();
-    r.check(
-        "a folder picked: the explorer shows that folder alone",
-        picked && scope.as_deref() == Some(dev.id.as_str()) && !still && heads(&t, &names, cx) == ["Dev", format!("  {pg_name}").as_str()],
-        format!("{scope:?} {:?}", heads(&t, &names, cx)),
-    );
+    // No folder chip: the search runs over every folder.
     let _ = cx.update(|_, cx| t.update(cx, |t, cx| t.expand_id(&format!("c:{pg_id}"), cx)));
     let public = format!("c:{pg_id}/d:{}/s:public", pg.database);
     until(cx, 10, |cx| cx.update(|_, cx| t.read(cx).has_row(&public)).unwrap_or(false)).await;
@@ -260,27 +248,17 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, r: &mut Report, cx: &mut A
     pause(cx, 500).await;
     let _ = cx.update(|_, cx| t.update(cx, |t, cx| t.set_filter("orders", cx)));
     let found = until(cx, 10, |cx| rows(&t, cx).iter().any(|r| r.trim_start() == "orders")).await;
-    let _ = cx.update(|_, cx| t.update(cx, |t, cx| t.set_scope(Some(prod.id.clone()), cx)));
-    let elsewhere = rows(&t, cx);
-    let _ = cx.update(|_, cx| t.update(cx, |t, cx| t.set_scope(None, cx)));
-    let all = rows(&t, cx);
-    r.check(
-        "the search runs in the picked folder only: found in Dev, nothing in Live, found again with All",
-        found && !elsewhere.iter().any(|r| r.trim_start() == "orders") && all.iter().any(|r| r.trim_start() == "orders"),
-        format!("{elsewhere:?} / {all:?}"),
-    );
+    r.check("the search runs over every folder: found in Dev", found && probed("x-scope", cx).is_none(), format!("{:?}", rows(&t, cx)));
     let _ = cx.update(|_, cx| t.update(cx, |t, cx| t.set_filter("", cx)));
 
-    // Deleting a folder keeps its connections; a scope on it goes back to All.
-    let _ = cx.update(|_, cx| t.update(cx, |t, cx| t.set_scope(Some(dev.id.clone()), cx)));
+    // Deleting a folder keeps its connections.
     let deleted = menu(&t, &fid(&dev.id), Act::DeleteFolder, cx).await;
-    let (scope, _) = cx.update(|_, cx| t.read(cx).demo_scope()).unwrap_or_default();
     let h = heads(&t, &names, cx);
     let kept = cx.update(|_, cx| ws.read(cx).store.read(cx).profiles.len()).unwrap_or(0);
     r.check(
-        "Delete folder: gone, its connection back at the top level (nothing deleted), the chip back on All",
-        deleted && folder_named(ws, "Dev", cx).is_none() && scope.is_none() && kept == 3 && h == ["Live", "  Search", pg_name.as_str(), "Billing"],
-        format!("{scope:?} {h:?} {kept}"),
+        "Delete folder: gone, its connection back at the top level (nothing deleted)",
+        deleted && folder_named(ws, "Dev", cx).is_none() && kept == 3 && h == ["Live", "  Search", pg_name.as_str(), "Billing"],
+        format!("{h:?} {kept}"),
     );
     focus_tree(&t, cx);
     key(cx, "cmd-z");
@@ -327,23 +305,35 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, r: &mut Report, cx: &mut A
     fav_scope(ws, r, false, cx).await;
 }
 
-/// Favorites in two folders and one at the top level: the search field's chip lists the
-/// folders, and a folder picked is the only one listed and searched.
+/// A folder's or a favorite's row, without its arrow or indent.
+fn bare(rows: Vec<String>) -> Vec<String> {
+    rows.into_iter().map(|r| r.trim_start_matches(['▾', '▸', ' ']).to_string()).collect()
+}
+
+/// Favorites on two connections (and one on none), in folders and at the top level: the
+/// connection dropdown under the search field narrows them as History's narrows its runs.
 async fn fav_scope(ws: &Entity<Workspace>, r: &mut Report, shot: bool, cx: &mut AsyncWindowContext) {
     let history = cx.update(|_, cx| ws.read(cx).history.clone()).unwrap();
-    let conn = cx.update(|_, cx| ws.read(cx).store.read(cx).profiles.first().map(|p| p.id.clone())).ok().flatten();
+    let pg = cx.update(|_, cx| ws.read(cx).store.read(cx).profiles.first().map(|p| p.id.clone())).ok().flatten();
+    let other = add_saved(ws, &[("Reporting", Some("mint"))], cx).first().cloned();
+    let (Some(pg), Some(other)) = (pg, other) else {
+        r.check("the favorites' connections", false, "");
+        return;
+    };
     let _ = cx.update(|_, cx| {
         let core = ws.read(cx).store.read(cx).core.clone();
         let reports = core.favorites.add_folder("Monthly reports").ok();
         let ops = core.favorites.add_folder("Ops").ok();
-        for (name, sql, folder) in [
-            ("Orders by day", "SELECT date_trunc('day', created) AS day, count(*) FROM orders GROUP BY 1 ORDER BY 1", &reports),
-            ("Revenue by month", "SELECT date_trunc('month', created), sum(total) FROM orders GROUP BY 1 ORDER BY 1", &reports),
-            ("Locks waiting", "SELECT * FROM pg_locks WHERE NOT granted", &ops),
-            ("Top customers", "SELECT customer, count(*) FROM orders GROUP BY 1 ORDER BY 2 DESC LIMIT 10", &None),
+        for (name, sql, conn, db, folder) in [
+            ("Orders by day", "SELECT date_trunc('day', created) AS day, count(*) FROM orders GROUP BY 1 ORDER BY 1", Some(&other), Some("sales"), &reports),
+            ("Revenue by month", "SELECT date_trunc('month', created), sum(total) FROM orders GROUP BY 1 ORDER BY 1", Some(&other), Some("finance"), &reports),
+            ("Locks waiting", "SELECT * FROM pg_locks WHERE NOT granted", Some(&pg), None, &ops),
+            ("Top customers", "SELECT customer, count(*) FROM orders GROUP BY 1 ORDER BY 2 DESC LIMIT 10", Some(&pg), None, &None),
+            ("Scratch", "SELECT 1", None, None, &None),
         ] {
             let mut f = dataman_core::Favorite::new(name, sql);
-            f.connection_id = conn.clone();
+            f.connection_id = conn.cloned();
+            f.database = db.map(str::to_string);
             f.folder = folder.as_ref().map(|d| d.id.clone());
             let _ = core.favorites.add(f);
         }
@@ -353,56 +343,57 @@ async fn fav_scope(ws: &Entity<Workspace>, r: &mut Report, shot: bool, cx: &mut 
     pause(cx, 300).await;
     draw(cx);
     let listed = crate::history_check::rows(&history, cx);
-    r.check("Favorites with folders: its search field shows the folder chip", probed("fav-scope", cx).is_some(), format!("{listed:?}"));
+    let all = cx.update(|_, cx| history.read(cx).demo_fav_scope().0.is_none()).unwrap_or(false);
+    r.check("Favorites: the connection dropdown under the search field, on All connections", probed("fav-scope", cx).is_some() && all, format!("{listed:?}"));
     let opened = click_probe("fav-scope", cx);
     pause(cx, 150).await;
-    let ops = cx.update(|_, cx| ws.read(cx).store.read(cx).core.favorites.folders().into_iter().find(|d| d.name == "Ops")).ok().flatten();
-    let reports = cx.update(|_, cx| ws.read(cx).store.read(cx).core.favorites.folders().into_iter().find(|d| d.name == "Monthly reports")).ok().flatten();
-    let (Some(ops), Some(reports)) = (ops, reports) else {
-        r.check("the favorites' folders", false, "");
-        return;
-    };
     if shot {
-        let _ = click_probe(&format!("fscope:{}", reports.id), cx);
-        pause(cx, 200).await;
-        let _ = cx.update(|window, cx| history.update(cx, |h, cx| h.demo_search("by", window, cx)));
-        pause(cx, 400).await;
         shoot(cx);
         return;
     }
     let menu_open = cx.update(|_, cx| history.read(cx).demo_fav_scope().1).unwrap_or(false);
-    r.check("a click on it opens the folder list", opened && menu_open, "");
-    let picked = click_probe(&format!("fscope:{}", ops.id), cx);
+    let listed = probed(&format!("fscope:{pg}"), cx).is_some() && probed(&format!("fscope:{other}"), cx).is_some() && probed(&format!("fscope:{other}:sales"), cx).is_some();
+    r.check("a click opens it: every connection, each with its favorites' databases", opened && menu_open && listed, "");
+    let picked = click_probe(&format!("fscope:{pg}"), cx);
     pause(cx, 100).await;
-    let shown = crate::history_check::rows(&history, cx);
+    let shown = bare(crate::history_check::rows(&history, cx));
     let (scope, still, _) = cx.update(|_, cx| history.read(cx).demo_fav_scope()).unwrap_or_default();
     r.check(
-        "a folder picked: Favorites lists that folder alone",
-        picked && scope.as_deref() == Some("Ops") && !still && shown == ["▾ Ops", "  Locks waiting"],
+        "a connection picked: Favorites lists its favorites alone (a folder of only others' goes)",
+        picked && scope == Some((pg.clone(), None)) && !still && shown.iter().any(|r| r == "Ops") && shown.iter().any(|r| r == "Top customers") && !shown.iter().any(|r| r == "Monthly reports" || r == "Scratch"),
         format!("{scope:?} {shown:?}"),
     );
     let _ = cx.update(|window, cx| history.update(cx, |h, cx| h.demo_search("orders", window, cx)));
-    let none = crate::history_check::rows(&history, cx);
-    let _ = cx.update(|window, cx| history.update(cx, |h, cx| h.demo_search("locks", window, cx)));
     let some = crate::history_check::rows(&history, cx);
-    r.check("the search runs in that folder only", none.is_empty() && some == ["▾ Ops", "  Locks waiting"], format!("{none:?} / {some:?}"));
+    r.check("the search runs in that connection only", some == ["Top customers"], format!("{some:?}"));
     let _ = cx.update(|window, cx| history.update(cx, |h, cx| h.demo_search("", window, cx)));
-    let _ = cx.update(|_, cx| {
-        let core = ws.read(cx).store.read(cx).core.clone();
-        let _ = core.favorites.remove_folder(&ops.id);
-        history.update(cx, |h, cx| h.reload_favorites(cx));
-    });
-    let (scope, _, _) = cx.update(|_, cx| history.read(cx).demo_fav_scope()).unwrap_or_default();
-    let back = crate::history_check::rows(&history, cx);
+    click_probe("fav-scope", cx);
+    pause(cx, 150).await;
+    let picked = click_probe(&format!("fscope:{other}:sales"), cx);
+    pause(cx, 100).await;
+    let shown = bare(crate::history_check::rows(&history, cx));
     r.check(
-        "its folder deleted, the chip goes back to All and everything is listed",
-        scope.is_none() && back.contains(&"Top customers".to_string()) && back.iter().any(|r| r.ends_with("Monthly reports")),
+        "a database picked: that database's favorites alone",
+        picked && !shown.is_empty() && shown.iter().all(|r| r == "Monthly reports" || r == "Orders by day"),
+        format!("{shown:?}"),
+    );
+    let history_scope = cx.update(|_, cx| history.read(cx).demo_scope().0).ok().flatten();
+    r.check("History's own connection filter is left as it was", history_scope.is_none(), format!("{history_scope:?}"));
+    click_probe("fav-scope", cx);
+    pause(cx, 150).await;
+    let picked = click_probe("fscope:all", cx);
+    pause(cx, 100).await;
+    let (scope, _, _) = cx.update(|_, cx| history.read(cx).demo_fav_scope()).unwrap_or_default();
+    let back = bare(crate::history_check::rows(&history, cx));
+    r.check(
+        "All connections: everything is listed again, a favorite of no connection too",
+        picked && scope.is_none() && ["Monthly reports", "Ops", "Top customers", "Scratch"].iter().all(|n| back.iter().any(|r| r == n)),
         format!("{scope:?} {back:?}"),
     );
 }
 
-/// Two colored folders (one open, one shut) and loose connections; with the chip's list open.
-async fn scene(ws: &Entity<Workspace>, pg_id: &str, stage: &str, cx: &mut AsyncWindowContext) {
+/// Two colored folders (one open, one shut) and loose connections.
+async fn scene(ws: &Entity<Workspace>, pg_id: &str, cx: &mut AsyncWindowContext) {
     let t = tree(ws, cx);
     let ids = add_saved(ws, &[("billing-eu", Some("coral")), ("billing-us", Some("sand")), ("search-prod", Some("mint")), ("analytics", None), ("staging", Some("sky")), ("local-dev", Some("slate"))], cx);
     let _ = cx.update(|_, cx| {
@@ -422,10 +413,6 @@ async fn scene(ws: &Entity<Workspace>, pg_id: &str, stage: &str, cx: &mut AsyncW
     });
     pause(cx, 1200).await;
     let _ = cx.update(|_, cx| t.update(cx, |t, cx| t.select_id(&format!("c:{}", ids[0]), cx)));
-    if stage == "explorer-scope-shot" {
-        click_probe("x-scope", cx);
-        pause(cx, 300).await;
-    }
     pause(cx, 400).await;
     shoot(cx);
 }

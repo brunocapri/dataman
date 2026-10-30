@@ -98,13 +98,6 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
         ],
     ),
     (
-        "◆ LAR",
-        &[
-            ("{lar_live}", "live queries"),
-            ("{lar_pause}", "pause · resume live"),
-        ],
-    ),
-    (
         "FIND",
         &[
             ("⌘F", "find in editor · grid"),
@@ -149,7 +142,7 @@ pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
     ),
 ];
 
-const COLUMNS: &[&[usize]] = &[&[0, 9, 8], &[1, 7], &[2, 11], &[3, 4, 10], &[5, 6]];
+const COLUMNS: &[&[usize]] = &[&[0, 8, 7], &[1, 6], &[2, 10], &[3, 4, 9], &[5]];
 
 fn resolve_with(template: &str, key: impl Fn(&str) -> String) -> String {
     let mut out = String::new();
@@ -179,13 +172,12 @@ pub fn keys(template: &str) -> String {
 }
 
 fn group(t: &Theme, title: &str, keys: &[(&str, &str)]) -> Div {
-    let lar = title.starts_with('◆');
     let rows: Vec<(String, &str)> = keys.iter().map(|(k, d)| (self::keys(k), *d)).filter(|(k, _)| !k.is_empty()).collect();
     div()
         .flex()
         .flex_col()
         .gap(px(2.))
-        .child(div().pb(px(8.)).text_size(px(10.5)).text_color(if lar { t.lar } else { t.tx3 }).child(title.to_string()))
+        .child(div().pb(px(8.)).text_size(px(10.5)).text_color(t.tx3).child(title.to_string()))
         .children(rows.into_iter().map(|(k, d)| {
             div()
                 .min_h(px(26.))
@@ -196,7 +188,7 @@ fn group(t: &Theme, title: &str, keys: &[(&str, &str)]) -> Div {
                 .border_b_1()
                 .border_color(t.line)
                 .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(11.5)).text_color(t.tx2).child(d.to_string()))
-                .child(div().flex_none().child(ui::keycap(t, k).when(lar, |d| d.text_color(t.lar_t).border_color(t.lar_r))))
+                .child(div().flex_none().child(ui::keycap(t, k)))
         }))
 }
 

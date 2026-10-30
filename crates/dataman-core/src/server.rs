@@ -1,13 +1,9 @@
-use std::sync::Arc;
-
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ServerInfo {
     pub version: String,
     pub database: String,
     pub user: String,
     pub search_path: Vec<String>,
-    pub is_lar: bool,
-    pub extensions: Vec<&'static str>,
 }
 
 impl ServerInfo {
@@ -23,40 +19,6 @@ impl ServerInfo {
         let v = self.version.split_whitespace().nth(1).unwrap_or("");
         v.chars().take_while(char::is_ascii_digit).collect::<String>().parse().unwrap_or(0)
     }
-
-    pub fn has(&self, extension: &str) -> bool {
-        self.extensions.contains(&extension)
-    }
-}
-
-pub fn detect_lar(version: &str) -> bool {
-    version.contains("(LAR)")
-}
-
-pub trait ServerExtension: Send + Sync {
-    fn id(&self) -> &'static str;
-    fn name(&self) -> &'static str;
-    fn detect(&self, info: &ServerInfo) -> bool;
-}
-
-pub struct LarExtension;
-
-pub const LAR: &str = "lar";
-
-impl ServerExtension for LarExtension {
-    fn id(&self) -> &'static str {
-        LAR
-    }
-    fn name(&self) -> &'static str {
-        "LAR"
-    }
-    fn detect(&self, info: &ServerInfo) -> bool {
-        detect_lar(&info.version)
-    }
-}
-
-pub fn default_extensions() -> Vec<Arc<dyn ServerExtension>> {
-    vec![Arc::new(LarExtension)]
 }
 
 pub fn parse_search_path(s: &str, user: &str) -> Vec<String> {
@@ -73,13 +35,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn lar_detection() {
-        let mut info = ServerInfo { version: "PostgreSQL 16.6 (LAR)".into(), ..Default::default() };
-        assert!(LarExtension.detect(&info));
+    fn versions() {
+        let mut info = ServerInfo { version: "PostgreSQL 16.6 on x86_64".into(), ..Default::default() };
         assert_eq!(info.short_version(), "PostgreSQL 16.6");
         assert_eq!(info.major(), 16);
         info.version = "PostgreSQL 18.6 (Debian 18.6-1.pgdg13+2) on aarch64-unknown-linux-gnu".into();
-        assert!(!LarExtension.detect(&info));
         assert_eq!(info.major(), 18);
         info.version = "PostgreSQL 9.6.24 on x86_64".into();
         assert_eq!(info.major(), 9);
@@ -92,7 +52,7 @@ mod tests {
     #[test]
     fn search_paths() {
         assert_eq!(parse_search_path("{public,app}", "u"), vec!["public", "app"]);
-        assert_eq!(parse_search_path("[public]", "lar"), vec!["public"]);
+        assert_eq!(parse_search_path("[public]", "app"), vec!["public"]);
         assert_eq!(parse_search_path("\"$user\", public", "bruno"), vec!["bruno", "public"]);
     }
 }

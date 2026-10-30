@@ -169,22 +169,3 @@ fn statements_presence() {
     drop(s);
     exec(&e, &c, &[&format!("DROP DATABASE {db} WITH (FORCE)")]);
 }
-
-#[test]
-fn lar_reports_little() {
-    let e = env();
-    let Some(c) = lar(&e) else { return };
-    assert!(c.info.is_lar);
-    let db = c.database().to_string();
-    let sessions = e.core.block_on(c.activity_sessions(&db));
-    let locks = e.core.block_on(c.activity_locks(&db));
-    let tables = e.core.block_on(c.activity_tables(&db, true));
-    let statements = e.core.block_on(c.activity_statements(&db));
-    eprintln!("LAR: sessions {:?}, locks {:?}, tables {:?}, statements {:?}", sessions.as_ref().map(Vec::len).map_err(|e| e.to_string()), locks.as_ref().map(Vec::len).map_err(|e| e.to_string()), tables.as_ref().map(Vec::len).map_err(|e| e.to_string()), statements.as_ref().map_err(|e| e.to_string()));
-    assert!(sessions.is_err(), "no pg_stat_activity");
-    assert!(locks.is_err(), "no pg_locks");
-    assert!(tables.is_ok_and(|t| t.is_empty()), "pg_stat_user_tables answers, empty");
-    assert!(!matches!(statements, Ok(Statements::Rows(_))));
-    let s = c.session(None);
-    run(&e, &s, "SELECT 1");
-}

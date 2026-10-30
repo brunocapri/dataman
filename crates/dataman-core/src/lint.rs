@@ -22,8 +22,6 @@ pub struct Lint {
 #[derive(Default)]
 pub struct LintContext<'a> {
     pub schema: Option<&'a SchemaSnapshot>,
-    // LAR's catalog does not list everything: unknown tables are not reported.
-    pub lar: bool,
     pub known: Option<&'a HashSet<String>>,
 }
 
@@ -76,10 +74,10 @@ pub fn lint(src: &str, cx: &LintContext) -> Vec<Lint> {
             && !a.scopes.is_empty()
         {
             let known = |n: &str| created.contains(&n.to_lowercase()) || cx.known.is_some_and(|k| k.contains(&n.to_lowercase()));
-            if !cx.lar && !search_path_set {
+            if !search_path_set {
                 unknown_tables(&a, snap, &known, &mut out);
             }
-            columns(&a, snap, cx.lar, &mut out);
+            columns(&a, snap, &mut out);
         }
     }
     out.sort_by(|a, b| a.range.start.cmp(&b.range.start).then(a.range.end.cmp(&b.range.end)));
@@ -214,7 +212,7 @@ fn unknown_tables(a: &Analysis, snap: &SchemaSnapshot, known: &dyn Fn(&str) -> b
     }
 }
 
-fn columns(a: &Analysis, snap: &SchemaSnapshot, lar: bool, out: &mut Vec<Lint>) {
+fn columns(a: &Analysis, snap: &SchemaSnapshot, out: &mut Vec<Lint>) {
     let mut names: HashSet<&str> = HashSet::new();
     for s in &a.scopes {
         for (ix, i) in s.items.iter().enumerate() {
@@ -249,7 +247,7 @@ fn columns(a: &Analysis, snap: &SchemaSnapshot, lar: bool, out: &mut Vec<Lint>) 
                 }
             }
             None => {
-                if lar || names.contains(r.name.as_str()) {
+                if names.contains(r.name.as_str()) {
                     continue;
                 }
                 if let Some(l) = unqualified(a, r.scope, &r.name, r.clause, snap) {
@@ -423,8 +421,6 @@ mod tests {
         let l = lint("select * from nope", &LintContext { schema: None, ..Default::default() });
         assert!(l.is_empty());
         let s = snap();
-        let l = lint("select totl from nope", &LintContext { schema: Some(&s), lar: true, ..Default::default() });
-        assert!(l.is_empty(), "{l:?}");
         let known: HashSet<String> = ["sess_tmp".to_string()].into();
         let l = lint("select * from sess_tmp", &LintContext { schema: Some(&s), known: Some(&known), ..Default::default() });
         assert!(l.is_empty());

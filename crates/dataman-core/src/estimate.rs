@@ -27,7 +27,7 @@ impl Connection {
             return;
         }
         let dialect = self.dialect();
-        if !rs.params().is_empty() || self.info.is_lar || !estimable(&rs.sql, dialect) || (self.engine() == Engine::MySql && !mysql_explains_safely(&self.info.version)) {
+        if !rs.params().is_empty() || !estimable(&rs.sql, dialect) || (self.engine() == Engine::MySql && !mysql_explains_safely(&self.info.version)) {
             rs.set_estimate(None);
             return;
         }

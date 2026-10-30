@@ -795,7 +795,6 @@ pub struct CodeEditor {
     /// Bumped on every buffer change: a lint of an older text is dropped.
     rev: u64,
     hover: Option<usize>,
-    lar: bool,
     known: Arc<HashSet<String>>,
     doc_hints: Arc<dataman_core::nosql::lang::Hints>,
     gutter: Option<crate::grid::GutterShare>,
@@ -889,7 +888,6 @@ fn outline_corners(above: Option<(f32, f32)>, run: (f32, f32), below: Option<(f3
     ]
 }
 
-const LAR_WORDS: &[&str] = &["SYSTEM_TIME", "SUBSCRIBE", "LISTEN", "LAR_HISTORY"];
 const TYPE_WORDS: &[&str] = &[
     "bigint", "bool", "boolean", "bytea", "date", "float4", "float8", "int", "int2", "int4", "int8", "integer",
     "interval", "json", "jsonb", "numeric", "text", "timestamp", "timestamptz", "uuid", "varchar", "vector",
@@ -897,7 +895,6 @@ const TYPE_WORDS: &[&str] = &[
 
 fn token_color(t: &Theme, kind: TokenKind, word: &str, next_is_paren: bool) -> Hsla {
     match kind {
-        TokenKind::Keyword | TokenKind::Ident if LAR_WORDS.iter().any(|w| w.eq_ignore_ascii_case(word)) => t.lkw,
         TokenKind::Keyword | TokenKind::Ident if TYPE_WORDS.iter().any(|w| w.eq_ignore_ascii_case(word)) => t.typ,
         TokenKind::Ident if next_is_paren => t.func,
         TokenKind::Keyword => t.kw,
@@ -1021,7 +1018,6 @@ impl CodeEditor {
             server_lints: Vec::new(),
             rev: 0,
             hover: None,
-            lar: false,
             known: Arc::default(),
             doc_hints: Arc::default(),
             gutter: None,
@@ -1117,13 +1113,6 @@ impl CodeEditor {
         self.doc_hints = hints;
     }
 
-    pub fn set_server(&mut self, lar: bool, cx: &mut Context<Self>) {
-        if self.lar != lar {
-            self.lar = lar;
-            self.schedule_lint(cx);
-        }
-    }
-
     pub fn set_known(&mut self, known: Arc<HashSet<String>>, cx: &mut Context<Self>) {
         self.known = known;
         self.schedule_lint(cx);
@@ -1152,14 +1141,14 @@ impl CodeEditor {
         let rev = self.rev;
         self.lint_task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(LINT_DELAY).await;
-            let Ok(Some((text, schema, lar, known))) =
-                this.update(cx, |e, _| (e.rev == rev).then(|| (e.buf.text.clone(), e.schema.clone(), e.lar, e.known.clone())))
+            let Ok(Some((text, schema, known))) =
+                this.update(cx, |e, _| (e.rev == rev).then(|| (e.buf.text.clone(), e.schema.clone(), e.known.clone())))
             else {
                 return;
             };
             let found = cx
                 .background_executor()
-                .spawn(async move { lint(&text, &LintContext { schema: Some(&schema), lar, known: Some(&known) }) })
+                .spawn(async move { lint(&text, &LintContext { schema: Some(&schema), known: Some(&known) }) })
                 .await;
             let _ = this.update(cx, |e, cx| {
                 if e.rev == rev && e.local_lints != found {

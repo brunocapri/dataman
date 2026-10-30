@@ -15,7 +15,7 @@ use self::decode::Dec;
 use super::{Ran, RowSource};
 use crate::config::{ConnectionProfile, SslMode};
 use crate::result::{ChunkBuilder, ColumnInfo, ErrorInfo, ResultSet};
-use crate::server::{ServerExtension, ServerInfo};
+use crate::server::ServerInfo;
 use crate::tx::{Seen, TxWatch};
 
 type MyError = mysql_async::Error;
@@ -468,13 +468,12 @@ pub(crate) fn version_label(v: &str) -> String {
     }
 }
 
-pub(crate) async fn server_info(client: &Client, exts: &[Arc<dyn ServerExtension>]) -> Result<ServerInfo> {
+pub(crate) async fn server_info(client: &Client) -> Result<ServerInfo> {
     let rows = client.text_rows("SELECT VERSION(), DATABASE(), SUBSTRING_INDEX(CURRENT_USER(), '@', 1)").await?;
     let row = rows.into_iter().next().context("VERSION() returned no row")?;
     let get = |i: usize| row.get(i).cloned().flatten().unwrap_or_default();
     let mut info = ServerInfo { version: version_label(&get(0)), database: get(1), user: get(2), ..Default::default() };
     info.search_path = if info.database.is_empty() { vec![] } else { vec![info.database.clone()] };
-    info.extensions = exts.iter().filter(|e| e.detect(&info)).map(|e| e.id()).collect();
     Ok(info)
 }
 

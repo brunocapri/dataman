@@ -1,5 +1,5 @@
-// Literals assume `standard_conforming_strings = on` (PostgreSQL's default since 9.1, and LAR's
-// only mode): backslashes inside `'…'` are plain characters.
+// Literals assume `standard_conforming_strings = on` (PostgreSQL's default since 9.1): backslashes
+// inside `'…'` are plain characters.
 
 use crate::result::{Cell, format_cell};
 use crate::schema::Column;
@@ -466,19 +466,12 @@ pub fn create_schema_template(db: &str) -> String {
     format!("-- A new schema in {}. Rename it, then run it with {RUN_KEY}.\nCREATE SCHEMA new_schema;", quote_ident(db))
 }
 
-pub fn create_table_template(schema: &str, lar: bool) -> String {
+pub fn create_table_template(schema: &str) -> String {
     let q = qualified(Some(schema), "new_table");
-    if lar {
-        format!(
-            "-- A new table in {}. Edit the columns, then run it with {RUN_KEY}.\nCREATE TABLE {q} (\n    id         bigint PRIMARY KEY,\n    name       text NOT NULL,\n    created_at timestamp\n);",
-            quote_ident(schema)
-        )
-    } else {
-        format!(
-            "-- A new table in {}. Edit the columns, then run it with {RUN_KEY}.\nCREATE TABLE {q} (\n    id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n    name       text NOT NULL,\n    created_at timestamptz NOT NULL DEFAULT now()\n);",
-            quote_ident(schema)
-        )
-    }
+    format!(
+        "-- A new table in {}. Edit the columns, then run it with {RUN_KEY}.\nCREATE TABLE {q} (\n    id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n    name       text NOT NULL,\n    created_at timestamptz NOT NULL DEFAULT now()\n);",
+        quote_ident(schema)
+    )
 }
 
 pub fn create_table_template_mysql(schema: &str) -> String {
@@ -936,8 +929,8 @@ mod tests {
         assert_eq!(delete_template("public", "orders", &cols), "DELETE FROM public.orders\n WHERE id = 0;");
         let two = vec![col("a", "int", true, None, None), col("b", "text", true, None, None), col("v", "int", false, None, None)];
         assert_eq!(delete_template("s", "t", &two), "DELETE FROM s.t\n WHERE a = 0\n   AND b = '';");
-        let lar = vec![col("id", "bigint", false, None, None), col("v", "text", false, None, None)];
-        assert!(delete_template("s", "t", &lar).ends_with(" WHERE id = 0;  -- key guessed: the catalog reports no primary key"));
+        let keyless = vec![col("id", "bigint", false, None, None), col("v", "text", false, None, None)];
+        assert!(delete_template("s", "t", &keyless).ends_with(" WHERE id = 0;  -- key guessed: the catalog reports no primary key"));
         let none = vec![col("v", "text", false, None, None)];
         let u = update_template("s", "t", &none);
         assert!(u.contains("SET v = ''") && u.contains(" WHERE false;"), "{u}");
@@ -967,9 +960,8 @@ mod tests {
     #[test]
     fn creation_templates() {
         assert!(create_schema_template("dataman").ends_with("CREATE SCHEMA new_schema;"));
-        let pg = create_table_template("public", false);
+        let pg = create_table_template("public");
         assert!(pg.contains("CREATE TABLE public.new_table (") && pg.contains("GENERATED ALWAYS AS IDENTITY"));
-        assert!(!create_table_template("public", true).contains("IDENTITY"));
         assert_eq!(search_path_for("public"), "SET search_path TO public;");
         assert_eq!(search_path_for("Sales"), "SET search_path TO \"Sales\", public;");
         assert_eq!(view_ddl("public", "v", false, " SELECT 1 AS x;"), "CREATE OR REPLACE VIEW public.v AS\nSELECT 1 AS x;");

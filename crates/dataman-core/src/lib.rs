@@ -29,7 +29,6 @@ pub mod http;
 pub mod import;
 pub mod jsontree;
 pub mod layout;
-pub mod lar;
 pub mod lint;
 pub mod nosql;
 pub mod os;
@@ -46,7 +45,6 @@ pub mod privacy;
 pub mod project;
 pub mod relations;
 pub mod result;
-pub mod rows;
 pub mod schema;
 pub mod secret;
 pub mod server;
@@ -85,7 +83,7 @@ pub use history::{History, HistoryEntry, Outcome};
 pub use pins::PinStore;
 pub use result::{Phase, ResultSet};
 pub use secret::{Keychain, MemorySecrets, SecretStore};
-pub use server::{ServerExtension, ServerInfo};
+pub use server::ServerInfo;
 pub use settings::{Settings, SettingsStore, ThemePref, Translucency, UiFont};
 
 #[must_use]
@@ -132,7 +130,6 @@ pub struct Core {
     pub favorites: Arc<FavoritesStore>,
     pub pins: PinStore,
     pub project: project::ProjectStore,
-    pub extensions: Vec<Arc<dyn ServerExtension>>,
     pub pgpass: Option<PathBuf>,
     // Memory only: never written to disk or the keychain. Kept with the tunnel it was typed
     // for: one moved elsewhere (an open project's file, an agent) does not get it.
@@ -237,7 +234,6 @@ impl Core {
             dirs,
             secrets,
             approved,
-            extensions: server::default_extensions(),
             pgpass: pgpass::default_path(),
             ssh_typed: Default::default(),
         })
@@ -302,7 +298,6 @@ impl Core {
         password: Option<String>,
         ssh_secret: Option<String>,
     ) -> Task<(ServerInfo, std::time::Duration)> {
-        let exts = self.extensions.clone();
         let secrets = self.resolver();
         let known = self.dirs.known_hosts_file();
         spawn(&self.handle(), async move {
@@ -320,7 +315,7 @@ impl Core {
             }
             let d = backend::dedicated(&profile, password.as_deref(), None, tunnel.as_deref()).await?;
             let t = std::time::Instant::now();
-            let info = backend::server_info(&d.db(), &exts).await?;
+            let info = backend::server_info(&d.db()).await?;
             let rtt = t.elapsed();
             drop(d);
             if let Some(t) = tunnel {
@@ -336,7 +331,6 @@ impl Core {
     pub fn connect_agent(&self, user: &ConnectionProfile, agent: ConnectionProfile, password: String) -> Task<Arc<Connection>> {
         let handle = self.handle();
         let history = self.history.clone();
-        let exts = self.extensions.clone();
         let secrets = self.resolver();
         let known = self.dirs.known_hosts_file();
         let user = user.clone();
@@ -346,21 +340,20 @@ impl Core {
             }
             let ssh_secret = secrets.ssh(&user, None)?;
             let tunnel = open_tunnel(&agent, ssh_secret, known).await?;
-            Connection::open(handle, agent, Some(password), history, exts, tunnel).await
+            Connection::open(handle, agent, Some(password), history, tunnel).await
         })
     }
 
     pub fn connect(&self, profile: ConnectionProfile, password: Option<String>) -> Task<Arc<Connection>> {
         let handle = self.handle();
         let history = self.history.clone();
-        let exts = self.extensions.clone();
         let secrets = self.resolver();
         let known = self.dirs.known_hosts_file();
         spawn(&self.handle(), async move {
             let password = secrets.password(&profile, password)?;
             let ssh_secret = secrets.ssh(&profile, None)?;
             let tunnel = open_tunnel(&profile, ssh_secret, known).await?;
-            Connection::open(handle, profile, password, history, exts, tunnel).await
+            Connection::open(handle, profile, password, history, tunnel).await
         })
     }
 

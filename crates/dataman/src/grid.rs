@@ -3045,7 +3045,6 @@ pub enum Tone {
     Err,
     Info,
     Acc,
-    Lar,
     Muted,
 }
 
@@ -3056,7 +3055,6 @@ pub fn tone_soft(t: &Theme, tone: Tone) -> Hsla {
         Tone::Err => t.err_s,
         Tone::Info => t.info_s,
         Tone::Acc => t.acc_s,
-        Tone::Lar => t.lar_s,
         Tone::Muted => t.hov,
     }
 }
@@ -3068,7 +3066,6 @@ pub fn tone_strong(t: &Theme, tone: Tone) -> Hsla {
         Tone::Err => t.err,
         Tone::Info => t.info,
         Tone::Acc => t.acc,
-        Tone::Lar => t.lar,
         Tone::Muted => t.tx3,
     }
 }

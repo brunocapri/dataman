@@ -19,7 +19,7 @@ use super::embed::{self, Columns, Sink, Val, Worker};
 use crate::config::ConnectionProfile;
 use crate::guard::TxCmd;
 use crate::result::{ColumnInfo, ErrorInfo, ResultSet};
-use crate::server::{ServerExtension, ServerInfo};
+use crate::server::ServerInfo;
 use crate::sql::Dialect;
 use crate::tx::{Seen, TxWatch};
 use crate::value::Kind;
@@ -546,14 +546,13 @@ impl Canceller {
     }
 }
 
-pub(crate) async fn server_info(client: &Client, exts: &[Arc<dyn ServerExtension>]) -> Result<ServerInfo> {
+pub(crate) async fn server_info(client: &Client) -> Result<ServerInfo> {
     let rows = client.text_rows("SELECT version(), current_database(), current_schema()").await?;
     let row = rows.into_iter().next().context("version() returned no row")?;
     let get = |i: usize| row.get(i).cloned().flatten().unwrap_or_default();
     let v = get(0);
     let mut info = ServerInfo { version: format!("DuckDB {}", v.trim_start_matches('v')), database: get(1), user: String::new(), ..Default::default() };
     info.search_path = vec![Some(get(2)).filter(|s| !s.is_empty()).unwrap_or_else(|| "main".into())];
-    info.extensions = exts.iter().filter(|e| e.detect(&info)).map(|e| e.id()).collect();
     Ok(info)
 }
 

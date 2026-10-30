@@ -1268,13 +1268,7 @@ impl Render for DataImportView {
             .bg(t.scrim)
             .key_context("DataImport Modal")
             .track_focus(&self.focus)
-            .on_action(cx.listener(|v, _: &CloseDataImport, _, cx| {
-                if v.guard.take().is_some() || v.menu.take().is_some() {
-                    cx.notify();
-                } else {
-                    cx.emit(DataImportEvent::Close)
-                }
-            }))
+            .on_action(cx.listener(Self::close_esc))
             .on_action(cx.listener(|v, _: &StartDataImport, _, cx| v.start(cx)))
             .on_action(cx.listener(|v, _: &StopDataImport, _, cx| v.stop(cx)))
             .on_mouse_down(MouseButton::Left, cx.listener(|v, _, _, cx| {
@@ -1286,6 +1280,18 @@ impl Render for DataImportView {
             }))
             .child(div().absolute().top(px(40.)).left_0().right_0().bottom(px(12.)).flex().items_start().justify_center().child(sheet.child(header).child(body).child(footer)))
             .children(guard)
+            .child(ui::esc_closes(Some("DataImport"), cx.listener(Self::close_esc)))
+    }
+}
+
+impl DataImportView {
+    /// Esc: the guard or an open menu shuts first, then the sheet.
+    fn close_esc(&mut self, _: &CloseDataImport, _: &mut Window, cx: &mut Context<Self>) {
+        if self.guard.take().is_some() || self.menu.take().is_some() {
+            cx.notify();
+        } else {
+            cx.emit(DataImportEvent::Close)
+        }
     }
 }
 

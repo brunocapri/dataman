@@ -105,19 +105,3 @@ fn parameters_bind_through_the_extended_protocol() {
     assert_eq!(rs.phase(), Phase::Failed);
     assert_eq!(rs.status().error.unwrap().code.as_deref(), Some("22P02"));
 }
-
-#[test]
-fn lar_catalog_degrades_quietly() {
-    let e = env();
-    let Some(c) = lar(&e) else { return };
-    let db = c.database().to_string();
-    let cat = wait(&e, c.catalog(&db));
-    eprintln!("LAR catalog: {} functions, {} types", cat.functions.len(), cat.types.len());
-    wait(&e, c.preload(&db));
-    let snap = c.schema.snapshot(&db);
-    let l = lint("select x from lar_not_in_catalog", &LintContext { schema: Some(&snap), lar: true, ..Default::default() });
-    assert!(l.is_empty(), "LAR gaps are not reported: {l:?}");
-    let rs = c.session(None).execute_with("SELECT $1::bigint + 1", vec![Some("1".into())]);
-    finish(&e, &rs);
-    eprintln!("LAR $1 binding: {:?} {:?}", rs.phase(), rs.status().error);
-}

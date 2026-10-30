@@ -366,7 +366,6 @@ impl ActivityView {
     }
 
     fn apply(&mut self, r: Read, cx: &mut Context<Self>) {
-        let lar = self.conn.info.is_lar;
         let mut changed = false;
         let mut sessions_changed = false;
         let mut details_changed = false;
@@ -403,8 +402,6 @@ impl ActivityView {
         }
         if let Some(res) = r.tables {
             match res {
-                // LAR answers `pg_stat_user_tables` with no rows for its tables: not reported.
-                Ok(rows) if lar && rows.is_empty() => changed |= self.set_avail(Section::Tables, Avail::No),
                 Ok(mut rows) => {
                     changed |= self.set_avail(Section::Tables, Avail::Yes);
                     if !r.bloat {
@@ -427,8 +424,6 @@ impl ActivityView {
         }
         if let Some(res) = r.statements.filter(|_| !self.statements_fixed) {
             match res {
-                // LAR has no extensions to create: the section is not offered.
-                Ok(_) if lar => changed |= self.set_avail(Section::Statements, Avail::No),
                 Ok(st) => {
                     changed |= self.set_avail(Section::Statements, Avail::Yes);
                     if self.statements.as_ref() != Some(&st) {

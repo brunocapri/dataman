@@ -42,7 +42,7 @@ impl Fades {
     }
 
     /// A modal that is a view: it fades in, and when it closes it is drawn a moment longer,
-    /// fading out (and taking no clicks).
+    /// fading out (and taking no clicks, nor Esc).
     pub fn view(&mut self, key: &'static str, v: Option<AnyView>, reduced: bool, window: &mut Window) -> Option<AnyElement> {
         if let Some(v) = v {
             self.closing.remove(key);
@@ -65,6 +65,6 @@ impl Fades {
         window.request_animation_frame();
         // A cover over it: what was clicked to close it cannot be clicked again.
         let cover = div().absolute().top_0().left_0().right_0().bottom_0().occlude();
-        Some(layer(last.clone().into_any_element(), k).child(cover).into_any_element())
+        Some(layer(crate::ui::esc_muted(last.clone().into_any_element()), k).child(cover).into_any_element())
     }
 }

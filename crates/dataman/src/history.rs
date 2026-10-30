@@ -194,10 +194,10 @@ pub struct HistoryPanel {
     chip: Chip,
     /// Connection (and database) the history is narrowed to, with the status chip.
     scope: Option<(String, Option<String>)>,
+    /// The connection dropdown's menu, of whichever list shows.
     scope_menu: bool,
-    /// The favorites folder shown and searched alone.
-    fav_scope: Option<String>,
-    fav_scope_menu: bool,
+    /// Connection (and database) the favorites are narrowed to.
+    fav_scope: Option<(String, Option<String>)>,
     show_favorites: bool,
     other_filter: String,
     chip_menu: bool,
@@ -253,7 +253,6 @@ impl HistoryPanel {
             scope: None,
             scope_menu: false,
             fav_scope: None,
-            fav_scope_menu: false,
             show_favorites: true,
             other_filter: String::new(),
             chip_menu: false,
@@ -318,10 +317,11 @@ impl HistoryPanel {
         self.folders = core.favorites.folders();
         let favorites = &self.favorites;
         self.picked.retain(|id| favorites.iter().any(|f| f.id == *id));
-        if self.fav_scope.as_ref().is_some_and(|s| !self.folders.iter().any(|d| d.id == *s)) {
-            self.fav_scope = None;
-            self.fav_scope_menu = false;
-        }
+    }
+
+    /// In the favorites' connection (and database), or no connection is picked.
+    fn fav_in_scope(&self, f: &Favorite) -> bool {
+        self.fav_scope.as_ref().is_none_or(|(c, d)| f.connection_id.as_ref() == Some(c) && d.as_ref().is_none_or(|d| f.database.as_ref() == Some(d)))
     }
 
     fn is_favorited(&self, sql: &str) -> bool {
@@ -455,6 +455,9 @@ impl HistoryPanel {
         self.renaming = None;
         if let Some(d) = self.favorites.iter().find(|f| f.id == id).and_then(|f| f.folder.clone()) {
             self.open_folders.insert(d);
+        }
+        if self.favorites.iter().find(|f| f.id == id).is_some_and(|f| !self.fav_in_scope(f)) {
+            self.fav_scope = None;
         }
         self.filter.update(cx, |f, cx| f.set_text("", cx));
         self.apply_filter(cx);
@@ -719,88 +722,6 @@ impl HistoryPanel {
         self.show_favorites && self.filter.read(cx).text().is_empty() && self.fav_scope.is_none()
     }
 
-    /// The search field's folder chip, once there is a folder: a folder picked there is the only
-    /// one listed, and the only one searched.
-    fn render_fav_scope(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if !self.show_favorites || self.folders.is_empty() {
-            return None;
-        }
-        let current = self.fav_scope.as_ref().and_then(|s| self.folders.iter().find(|d| d.id == *s));
-        let tip = match current {
-            Some(d) => ui::tooltip(format!("Only '{}'", d.name), Some("Favorites shows and searches this folder only"), None),
-            None => ui::tooltip("All folders".to_string(), Some("Pick a folder to show and search it only"), None),
-        };
-        let menu = self.fav_scope_menu.then(|| {
-            let pick = |f: Option<String>| {
-                cx.listener(move |h: &mut HistoryPanel, _: &gpui::ClickEvent, _, cx| {
-                    if let Some(f) = &f {
-                        h.open_folders.insert(f.clone());
-                    }
-                    h.fav_scope = f.clone();
-                    h.fav_scope_menu = false;
-                    h.apply_filter(cx);
-                })
-            };
-            let mut rows: Vec<AnyElement> = vec![ui::menu_item(t, "fscope:all", "All folders", self.fav_scope.is_none().then_some("✓"), true).cursor_pointer().on_click(pick(None)).into_any_element()];
-            rows.push(ui::menu_sep(t).into_any_element());
-            for d in &self.folders {
-                let on = self.fav_scope.as_deref() == Some(d.id.as_str());
-                rows.push(
-                    ui::menu_item(t, SharedString::from(format!("fscope:{}", d.id)), "", on.then_some("✓"), true)
-                        .relative()
-                        .cursor_pointer()
-                        .child(
-                            div()
-                                .absolute()
-                                .left(px(10.))
-                                .top_0()
-                                .bottom_0()
-                                .right(px(28.))
-                                .flex()
-                                .flex_row()
-                                .items_center()
-                                .gap(px(8.))
-                                .child(ui::folder_icon(true, None, 13., t.tx3))
-                                .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(d.name.clone())),
-                        )
-                        .on_click(pick(Some(d.id.clone())))
-                        .into_any_element(),
-                );
-            }
-            div().absolute().right_0().top(px(22.)).child(
-                gpui::deferred(
-                    gpui::anchored().anchor(gpui::Anchor::TopRight).snap_to_window_with_margin(px(8.)).child(ui::menu_in(
-                        "fscope-menu-in",
-                        ui::popover(t)
-                            .w(px(200.))
-                            .on_mouse_down_out(cx.listener(|h, _, _, cx| {
-                                h.fav_scope_menu = false;
-                                ui::menu_shut("fav-scope");
-                                cx.notify();
-                            }))
-                            .p(px(0.))
-                            .overflow_hidden()
-                            .child(div().id("fscope-menu").max_h(px(320.)).overflow_y_scroll().p(px(4.)).children(rows)),
-                    )),
-                )
-                .priority(3),
-            )
-        });
-        let chip = crate::tree::scope_chip(t, "fav-scope", current.map(|d| (d.name.as_str(), None)), self.fav_scope_menu, tip).on_click(cx.listener(|h, _, _, cx| {
-            if !h.fav_scope_menu && ui::menu_just_shut("fav-scope") {
-                return;
-            }
-            h.fav_scope_menu = !h.fav_scope_menu;
-            cx.notify();
-        }));
-        Some(div().flex_none().relative().child(chip).children(menu).into_any_element())
-    }
-
-    #[cfg(feature = "checks")]
-    pub(crate) fn demo_fav_scope(&self) -> (Option<String>, bool, usize) {
-        (self.fav_scope.as_ref().and_then(|s| self.folders.iter().find(|d| d.id == *s)).map(|d| d.name.clone()), self.fav_scope_menu, self.shown)
-    }
-
     fn folder_slot(&self, id: &str, pos: Point<Pixels>) -> Option<usize> {
         let from = self.folders.iter().position(|d| d.id == id)?;
         let at = |id: &str| self.folders.iter().position(|d| d.id == id);
@@ -865,11 +786,15 @@ impl HistoryPanel {
         let mut shown = 0;
         if self.show_favorites {
             let hit = |f: &Favorite| q.is_empty() || f.name.to_lowercase().contains(&q) || f.sql.to_lowercase().contains(&q);
-            for (ix, d) in self.folders.iter().enumerate().filter(|(_, d)| self.fav_scope.as_ref().is_none_or(|s| *s == d.id)) {
+            for (ix, d) in self.folders.iter().enumerate() {
                 let named = !q.is_empty() && d.name.to_lowercase().contains(&q);
-                let found: Vec<usize> =
-                    (0..self.favorites.len()).filter(|&i| self.favorites[i].folder.as_deref() == Some(d.id.as_str()) && (named || hit(&self.favorites[i]))).collect();
+                let held = |i: &usize| self.favorites[*i].folder.as_deref() == Some(d.id.as_str());
+                let found: Vec<usize> = (0..self.favorites.len()).filter(|i| held(i) && self.fav_in_scope(&self.favorites[*i]) && (named || hit(&self.favorites[*i]))).collect();
                 if !q.is_empty() && !named && found.is_empty() {
+                    continue;
+                }
+                // Narrowed to a connection: a folder of only others' favorites goes too.
+                if self.fav_scope.is_some() && found.is_empty() && (0..self.favorites.len()).any(|i| held(&i)) {
                     continue;
                 }
                 let open = !q.is_empty() || self.open_folders.contains(&d.id);
@@ -879,8 +804,8 @@ impl HistoryPanel {
                     items.extend(found.into_iter().map(Item::Fav));
                 }
             }
-            for (i, f) in self.favorites.iter().enumerate().filter(|_| self.fav_scope.is_none()) {
-                if f.folder.is_none() && hit(f) {
+            for (i, f) in self.favorites.iter().enumerate() {
+                if f.folder.is_none() && self.fav_in_scope(f) && hit(f) {
                     items.push(Item::Fav(i));
                     shown += 1;
                 }
@@ -1777,12 +1702,15 @@ impl HistoryPanel {
     }
 
     /// Connection · database, as the editor's picker shows them: every saved connection, each
-    /// with the databases its history ran on.
+    /// with the databases its history (or its favorites) ran on.
     fn render_scope_dropdown(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let favs = self.show_favorites;
+        let scope = if favs { &self.fav_scope } else { &self.scope };
+        let (id, item) = if favs { ("fav-scope", "fscope") } else { ("history-scope", "hscope") };
         let store = self.store.read(cx);
         let profile = |id: &str| store.profiles.iter().find(|p| p.id == id);
         let db_label = |p: &dataman_core::ConnectionProfile, d: &str| if p.engine == dataman_core::Engine::Redis { format!("db{d}") } else { d.to_string() };
-        let (color, logo, label): (gpui::Hsla, Option<dataman_core::Engine>, SharedString) = match &self.scope {
+        let (color, logo, label): (gpui::Hsla, Option<dataman_core::Engine>, SharedString) = match scope {
             None => (t.tx4, None, "All connections".into()),
             Some((c, d)) => match profile(c) {
                 Some(p) => (
@@ -1799,8 +1727,8 @@ impl HistoryPanel {
         let open = self.scope_menu;
         let (hov, prs) = (t.hov, t.prs);
         let button = div()
-            .children(ui::here(&"history-scope".into()))
-            .id("history-scope")
+            .children(ui::here(&id.into()))
+            .id(id)
             .cursor_pointer()
             .h(px(24.))
             .min_w_0()
@@ -1814,12 +1742,12 @@ impl HistoryPanel {
             .border_1()
             .when(open, |d| d.bg(prs).border_color(t.line2).text_color(t.tx))
             .when(!open, |d| d.text_color(t.tx3).border_color(t.line).hover(move |s| s.bg(hov)))
-            .when(self.scope.is_some(), |d| d.child(div().flex_none().size(px(7.)).bg(color)))
+            .when(scope.is_some(), |d| d.child(div().flex_none().size(px(7.)).bg(color)))
             .children(logo.and_then(|e| crate::assets::small_logo(e, 12.)))
             .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(label))
             .child(ui::dropdown_arrow("history-scope-arrow", open, 8., t.tx3))
-            .on_click(cx.listener(|h, _, _, cx| {
-                if !h.scope_menu && ui::menu_just_shut("history-scope") {
+            .on_click(cx.listener(move |h, _, _, cx| {
+                if !h.scope_menu && ui::menu_just_shut(id) {
                     return;
                 }
                 h.scope_menu = !h.scope_menu;
@@ -1828,24 +1756,32 @@ impl HistoryPanel {
             }));
         let menu = open.then(|| {
             let mut dbs: std::collections::BTreeMap<&str, std::collections::BTreeSet<&str>> = Default::default();
-            for (c, e) in &self.entries {
-                dbs.entry(c.as_str()).or_default().insert(e.database.as_str());
+            if favs {
+                for f in &self.favorites {
+                    if let Some(c) = &f.connection_id {
+                        dbs.entry(c.as_str()).or_default().insert(f.database.as_deref().unwrap_or_default());
+                    }
+                }
+            } else {
+                for (c, e) in &self.entries {
+                    dbs.entry(c.as_str()).or_default().insert(e.database.as_str());
+                }
             }
             let pick = |scope: Option<(String, Option<String>)>| {
                 cx.listener(move |h: &mut HistoryPanel, _: &gpui::ClickEvent, _, cx| {
-                    h.scope = scope.clone();
+                    *if favs { &mut h.fav_scope } else { &mut h.scope } = scope.clone();
                     h.scope_menu = false;
                     h.apply_filter(cx);
                 })
             };
             let mut rows: Vec<AnyElement> = vec![
-                ui::menu_item(t, "hscope:all", "All connections", self.scope.is_none().then_some("✓"), true).on_click(pick(None)).into_any_element(),
+                ui::menu_item(t, SharedString::from(format!("{item}:all")), "All connections", scope.is_none().then_some("✓"), true).on_click(pick(None)).into_any_element(),
             ];
             for p in &store.profiles {
                 rows.push(ui::menu_sep(t).into_any_element());
                 let whole = Some((p.id.clone(), None));
                 rows.push(
-                    ui::menu_item(t, SharedString::from(format!("hscope:{}", p.id)), "", (self.scope == whole).then_some("✓"), true)
+                    ui::menu_item(t, SharedString::from(format!("{item}:{}", p.id)), "", (*scope == whole).then_some("✓"), true)
                         .child(
                             div()
                                 .absolute()
@@ -1868,7 +1804,7 @@ impl HistoryPanel {
                 for d in dbs.get(p.id.as_str()).into_iter().flatten().filter(|d| !d.is_empty()) {
                     let this = Some((p.id.clone(), Some(d.to_string())));
                     rows.push(
-                        ui::menu_item(t, SharedString::from(format!("hscope:{}:{d}", p.id)), db_label(p, d), (self.scope == this).then_some("✓"), true)
+                        ui::menu_item(t, SharedString::from(format!("{item}:{}:{d}", p.id)), db_label(p, d), (*scope == this).then_some("✓"), true)
                             .pl(px(25.))
                             .on_click(pick(this))
                             .into_any_element(),
@@ -1881,9 +1817,9 @@ impl HistoryPanel {
                         "scope-menu-in",
                         ui::popover(t)
                             .w(px(240.))
-                            .on_mouse_down_out(cx.listener(|h, _, _, cx| {
+                            .on_mouse_down_out(cx.listener(move |h, _, _, cx| {
                                 h.scope_menu = false;
-                                ui::menu_shut("history-scope");
+                                ui::menu_shut(id);
                                 cx.notify();
                             }))
                             .p(px(0.))
@@ -1900,6 +1836,11 @@ impl HistoryPanel {
     #[cfg(feature = "checks")]
     pub(crate) fn demo_scope(&self) -> (Option<(String, Option<String>)>, bool, usize) {
         (self.scope.clone(), self.scope_menu, self.shown)
+    }
+
+    #[cfg(feature = "checks")]
+    pub(crate) fn demo_fav_scope(&self) -> (Option<(String, Option<String>)>, bool, usize) {
+        (self.fav_scope.clone(), self.scope_menu, self.shown)
     }
 
     fn render_clear(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
@@ -2360,24 +2301,21 @@ impl Render for HistoryPanel {
                     .child(div().flex_1().min_w_0().text_color(t.tx).child(self.filter.clone()))
                     .when(!self.query.is_empty(), |d| {
                         d.child(div().flex_none().text_size(px(10.5)).text_color(t.tx3).whitespace_nowrap().child(format!("{} of {}", ui_count(self.shown), ui_count(total))))
-                    })
-                    .children(self.render_fav_scope(&t, cx)),
+                    }),
             )
-            .when(!favs, |d| {
-                d.child(
-                    div()
-                        .mx(px(8.))
-                        .mb(px(6.))
-                        .flex_none()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(4.))
-                        .child(self.render_chip_dropdown(&t, cx))
-                        .child(self.render_scope_dropdown(&t, cx))
-                        .child(self.render_clear(&t, cx)),
-                )
-            })
+            .child(
+                div()
+                    .mx(px(8.))
+                    .mb(px(6.))
+                    .flex_none()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(4.))
+                    .when(!favs, |d| d.child(self.render_chip_dropdown(&t, cx)))
+                    .child(self.render_scope_dropdown(&t, cx))
+                    .when(!favs, |d| d.child(self.render_clear(&t, cx))),
+            )
             .child(body)
             .children(self.render_menu(&t, window, cx))
     }

@@ -83,20 +83,3 @@ fn pg_create_table_round_trip() {
 
     exec(&e, &c, &[&format!("DROP SCHEMA {a} CASCADE"), &format!("DROP SCHEMA {b} CASCADE")]);
 }
-
-#[test]
-fn lar_create_table_lists_columns_only() {
-    let e = env();
-    let Some(c) = lar(&e) else { return };
-    let t = "dataman_ddl_probe";
-    exec_quiet(&e, &c, &[&format!("DROP TABLE {t}")]);
-    exec(&e, &c, &[&format!("CREATE TABLE {t} (id bigint PRIMARY KEY, name text NOT NULL, at timestamp)")]);
-    let db = c.database().to_string();
-    let ddl = e.core.block_on(c.table_ddl(&db, "public", t));
-    exec_quiet(&e, &c, &[&format!("DROP TABLE {t}")]);
-    let ddl = ddl.unwrap();
-    eprintln!("{ddl}");
-    assert!(ddl.contains("does not report keys, NOT NULL or defaults"), "{ddl}");
-    assert!(ddl.contains(&format!("CREATE TABLE public.{t} (\n    id bigint,\n    name text,\n")), "{ddl}");
-    assert!(!ddl.contains("NOT NULL,") && !ddl.contains("PRIMARY KEY"), "{ddl}");
-}

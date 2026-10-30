@@ -16,7 +16,7 @@ pub fn tools() -> Vec<Builtin> {
     vec![
         Builtin {
             name: "run_query",
-            description: "Runs read-only SQL (SELECT, WITH … SELECT, TABLE, VALUES, SHOW, EXPLAIN) inside a read-only transaction that is rolled back. Writes, row locks, transaction control and functions with side effects are refused before reaching the server (also on LAR, which does not enforce READ ONLY). One statement returns {columns: [[name, type]], rows: [[…]], row_count, truncated?, ms}: JSON values, null is SQL NULL (distinct from \"\"), numeric/dates/times as text, json embedded. Several reads separated by ; (or a T-SQL batch returning several result sets) return {results: [{statement, sql, columns, rows, row_count, truncated?, ms}], statements, ms}. At most max_rows rows (default 200) per result; text over 2000 chars is cut with …. Pass values as params ($1, $2, …; one statement only).",
+            description: "Runs read-only SQL (SELECT, WITH … SELECT, TABLE, VALUES, SHOW, EXPLAIN) inside a read-only transaction that is rolled back. Writes, row locks, transaction control and functions with side effects are refused before reaching the server. One statement returns {columns: [[name, type]], rows: [[…]], row_count, truncated?, ms}: JSON values, null is SQL NULL (distinct from \"\"), numeric/dates/times as text, json embedded. Several reads separated by ; (or a T-SQL batch returning several result sets) return {results: [{statement, sql, columns, rows, row_count, truncated?, ms}], statements, ms}. At most max_rows rows (default 200) per result; text over 2000 chars is cut with …. Pass values as params ($1, $2, …; one statement only).",
             schema: limits_props(conn_schema().prop("sql", true, sql_prop("Read-only statements, separated by ;.")).prop("params", false, params_schema()), 200),
             need: Some(Need::Read),
             run: run_query,
@@ -37,7 +37,7 @@ pub fn tools() -> Vec<Builtin> {
         },
         Builtin {
             name: "explain",
-            description: "Shows the plan of one statement without running it: EXPLAIN (FORMAT JSON, VERBOSE, COSTS) on PostgreSQL, LAR's own plan on LAR, EXPLAIN QUERY PLAN on SQLite, EXPLAIN on DuckDB; MySQL and SQL Server have no plans here. format: text (default, compact, as psql prints it) or json (PostgreSQL's plan). A write is planned, never run.",
+            description: "Shows the plan of one statement without running it: EXPLAIN (FORMAT JSON, VERBOSE, COSTS) on PostgreSQL, EXPLAIN QUERY PLAN on SQLite, EXPLAIN on DuckDB; MySQL and SQL Server have no plans here. format: text (default, compact, as psql prints it) or json (PostgreSQL's plan). A write is planned, never run.",
             schema: conn_schema()
                 .prop("sql", true, sql_prop("The statement to plan."))
                 .prop("params", false, params_schema())
@@ -47,7 +47,7 @@ pub fn tools() -> Vec<Builtin> {
         },
         Builtin {
             name: "explain_analyze",
-            description: "PostgreSQL, LAR and DuckDB (SQLite has no ANALYZE: its query plan only). Runs one statement under EXPLAIN (ANALYZE, BUFFERS, …) and returns the plan with actual times, rows and loops, the totals, and hints (seq scans filtering most rows, sorts or hashes spilling to disk, nested loops with many loops, misestimates, missing workers). A read runs in a read-only transaction. A write (INSERT, UPDATE, DELETE, MERGE…) runs in a transaction that is always rolled back and follows the connection's MCP tier like execute: write allows non-destructive statements, full asks the user in Dataman for destructive ones, production always asks.",
+            description: "PostgreSQL and DuckDB (SQLite has no ANALYZE: its query plan only). Runs one statement under EXPLAIN (ANALYZE, BUFFERS, …) and returns the plan with actual times, rows and loops, the totals, and hints (seq scans filtering most rows, sorts or hashes spilling to disk, nested loops with many loops, misestimates, missing workers). A read runs in a read-only transaction. A write (INSERT, UPDATE, DELETE, MERGE…) runs in a transaction that is always rolled back and follows the connection's MCP tier like execute: write allows non-destructive statements, full asks the user in Dataman for destructive ones, production always asks.",
             schema: confirm_prop(
                 conn_schema()
                     .prop("sql", true, sql_prop("The statement to run and measure."))
@@ -290,8 +290,7 @@ async fn write(cx: &Call, a: &Args) -> Result<Value, ToolError> {
     let checked = rules::checked_sql(cx, a, &target, sql, true).await?;
     let read = rules::read_limits(cx, &target, limits);
     let r = cx.write(a, Write { sql: &checked.sql, judged: None, params, limits: read, rollback: false, visible, title }).await;
-    // DDL changes what the catalog tools see (even when it failed half-way on LAR, whose DDL is
-    // not transactional).
+    // DDL changes what the catalog tools see (even when it failed half-way).
     if let Ok(p) = cx.hub.profile(a.str("connection")?) {
         let d = p.engine.dialect();
         if bounded::statements_in(sql, d).iter().any(|s| guard::classify_in(s, d).effect == guard::Effect::Ddl)

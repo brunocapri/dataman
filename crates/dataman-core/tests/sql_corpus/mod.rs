@@ -34,7 +34,6 @@ pub const POSTGRES: &[&str] = &[
     "SELECT \"pg_terminate_backend\"(42)",
     "SELECT nextval('s')",
     "SELECT set_config('standard_conforming_strings', 'off', false)",
-    "SELECT lar_backup_create('x')",
     "SELECT * INTO new_t FROM t",
     "SELECT a INTO TEMP x FROM t",
     "WITH d AS (DELETE FROM t WHERE id = 1 RETURNING *) SELECT * FROM d",

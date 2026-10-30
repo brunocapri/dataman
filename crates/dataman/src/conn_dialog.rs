@@ -32,7 +32,7 @@ pub fn engines_matching(q: &str) -> Vec<Engine> {
                 return true;
             }
             let words = match e {
-                Engine::Postgres => "postgresql postgres pg lar",
+                Engine::Postgres => "postgresql postgres pg",
                 Engine::MySql => "mysql mariadb",
                 Engine::SqlServer => "sql server mssql azure microsoft",
                 Engine::MongoDb => "mongodb mongo atlas",
@@ -138,6 +138,8 @@ pub struct ConnDialog {
     /// Picked by the user (or a pasted string, or a saved connection): the host no longer decides.
     ssl_chosen: bool,
     color: usize,
+    /// A swatch was clicked (now or before): `color` outranks production's red.
+    color_picked: bool,
     env: Environment,
     read_only: bool,
     mcp: Option<McpAccess>,
@@ -324,6 +326,7 @@ impl ConnDialog {
             sslmode: if is_new && profile.sslmode == SslMode::Prefer { dataman_core::default_sslmode(profile.engine, &profile.host, profile.ssh.is_some()) } else { profile.sslmode },
             ssl_chosen: !is_new || profile.sslmode != SslMode::Prefer,
             color,
+            color_picked: profile.color_picked,
             env: profile.env,
             read_only: profile.read_only,
             mcp: profile.mcp,
@@ -706,7 +709,7 @@ impl ConnDialog {
     fn collect(&self, cx: &App) -> Result<(ConnectionProfile, Option<String>, Option<String>), String> {
         if self.is_file() {
             let mut p = self.fields(cx);
-            p.color = Some(SWATCHES[self.color].to_string());
+            (p.color, p.color_picked) = (Some(SWATCHES[self.color].to_string()), self.color_picked);
             let path = p.file_path();
             if p.path.as_deref().is_none_or(|s| s.trim().is_empty()) {
                 return Err("file is required".into());
@@ -733,7 +736,7 @@ impl ConnDialog {
         let mut p = self.fields(cx);
         let port = self.port.read(cx).text().trim().to_string();
         p.port = if port.is_empty() { p.engine.default_port() } else { port.parse().map_err(|_| "port must be a number".to_string())? };
-        p.color = Some(SWATCHES[self.color].to_string());
+        (p.color, p.color_picked) = (Some(SWATCHES[self.color].to_string()), self.color_picked);
         if p.name.is_empty() {
             p.name = format!("{}@{}", if p.database.is_empty() { &p.user } else { &p.database }, p.host);
         }
@@ -1253,7 +1256,7 @@ impl ConnDialog {
     }
 
     fn result_box(&self, t: &Theme) -> Option<gpui::Div> {
-        let (glyph, gcolor, title, body, bg, ring, lar): (&str, Hsla, String, String, Hsla, Hsla, bool) = match &self.test {
+        let (glyph, gcolor, title, body, bg, ring): (&str, Hsla, String, String, Hsla, Hsla) = match &self.test {
             Test::NotTested => return None,
             Test::Testing { since, target } => (
                 "◌",
@@ -1262,22 +1265,10 @@ impl ConnDialog {
                 String::new(),
                 t.hov,
                 t.line2,
-                false,
             ),
-            Test::Ok { info, ms } if info.is_lar => (
-                "●",
-                t.ok,
-                format!("Connected in {} · {}", fmt_ms(*ms), info.version_line()),
-                String::new(),
-                t.lar_s,
-                t.lar,
-                true,
-            ),
-            Test::Ok { info, ms } => {
-                ("●", t.ok, format!("Connected in {} · {}", fmt_ms(*ms), info.short_version()), String::new(), t.ok_s, t.line2, false)
-            }
-            Test::Failed { title, body, .. } => ("✕", t.err, title.clone(), body.clone(), t.err_s, t.err, false),
-            Test::Invalid(msg) => ("✕", t.err, msg.clone(), String::new(), t.err_s, t.err, false),
+            Test::Ok { info, ms } => ("●", t.ok, format!("Connected in {} · {}", fmt_ms(*ms), info.short_version()), String::new(), t.ok_s, t.line2),
+            Test::Failed { title, body, .. } => ("✕", t.err, title.clone(), body.clone(), t.err_s, t.err),
+            Test::Invalid(msg) => ("✕", t.err, msg.clone(), String::new(), t.err_s, t.err),
             Test::HostKey(_) => return None,
         };
         Some(
@@ -1302,8 +1293,7 @@ impl ConnDialog {
                     .gap(px(2.))
                     .child(div().text_color(t.tx).child(title))
                     .children(body.lines().map(|l| div().text_color(t.tx2).child(l.to_string())).collect::<Vec<_>>()),
-            )
-            .when(lar, |d| d.child(ui::lar_badge(t, "◆ LAR").h(px(18.)).text_size(px(12.)))),
+            ),
         )
     }
 
@@ -1556,20 +1546,6 @@ pub fn ssh_error(e: &anyhow::Error) -> Option<SshError> {
     e.chain().find_map(|c| c.downcast_ref::<SshError>()).cloned()
 }
 
-impl ServerInfoExt for ServerInfo {
-    fn version_line(&self) -> String {
-        let mut v = self.short_version();
-        if self.is_lar {
-            v.push_str(" (LAR)");
-        }
-        v
-    }
-}
-
-trait ServerInfoExt {
-    fn version_line(&self) -> String;
-}
-
 fn fmt_ms(ms: f64) -> String {
     if ms < 10. { format!("{ms:.1} ms") } else { format!("{ms:.0} ms") }
 }
@@ -1606,7 +1582,8 @@ impl Render for ConnDialog {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme();
         let testing = matches!(self.test, Test::Testing { .. });
-        let color = if self.env.is_production() { t.err } else { t.swatches[self.color] };
+        let red = self.env.is_production() && !self.color_picked;
+        let color = if red { t.err } else { t.swatches[self.color] };
         let title: SharedString = if self.password_needed {
             format!("Password needed · {}", self.profile.name).into()
         } else if self.is_new {
@@ -1617,7 +1594,7 @@ impl Render for ConnDialog {
         let pw_focused = self.password.focus_handle(cx).is_focused(window);
         let swatches = div().h(px(30.)).flex().flex_row().items_center().gap(px(6.)).children((0..SWATCHES.len()).map(|i| {
             let c = t.swatches[i];
-            let on = i == self.color;
+            let on = i == self.color && !red;
             let swatch = div()
                 .id(("swatch", i))
                 .size(px(22.))
@@ -1627,7 +1604,7 @@ impl Render for ConnDialog {
                 .when(on, |d| d.border_2().border_color(c))
                 .cursor_pointer()
                 .on_click(cx.listener(move |d, _, _, cx| {
-                    d.color = i;
+                    (d.color, d.color_picked) = (i, true);
                     cx.notify();
                 }))
                 .child(div().size(px(if on { 14. } else { 18. })).bg(c));
@@ -1978,6 +1955,7 @@ impl ConnDialog {
             .on_action(cx.listener(|d, _: &NextField, window, cx| d.focus_field(1, window, cx)))
             .on_action(cx.listener(|d, _: &PrevField, window, cx| d.focus_field(-1, window, cx)))
             .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(ui::esc_closes(Some("ConnDialog"), cx.listener(|d, _: &DialogCancel, _, cx| d.cancel(cx))))
             .child(card)
     }
 }

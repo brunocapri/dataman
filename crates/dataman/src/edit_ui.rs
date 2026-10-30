@@ -710,11 +710,6 @@ impl GridEdit {
                         cx.notify();
                         return;
                     }
-                    if target.check == dataman_core::edit::ConflictCheck::Reread && target.key.iter().any(|k| k.result_col == col) {
-                        self.card = Some(Card::Note(format!("{} is the key", snap.columns[col].name)));
-                        cx.notify();
-                        return;
-                    }
                 }
                 let orig = match at {
                     RowRef::Stored(s) => CellValue::from_cell(snap.columns[col].kind, snap.source_cell(s, col)),
@@ -742,11 +737,6 @@ impl GridEdit {
         if let RowRef::Stored(s) = at {
             if self.model.changes.is_deleted(s) {
                 self.card = Some(Card::Note("Marked for deletion".into()));
-                cx.notify();
-                return;
-            }
-            if target.check == dataman_core::edit::ConflictCheck::Reread && target.key.iter().any(|k| k.result_col == col) {
-                self.card = Some(Card::Note(format!("{} is the key", cols[col].name)));
                 cx.notify();
                 return;
             }
@@ -1076,12 +1066,12 @@ impl Render for GridEdit {
         let (tag, tag_tone, title, body): (&str, Tone, String, String) = match &card {
             Card::Checking => ("CHECKING", Tone::Muted, "Reading the table and key…".into(), String::new()),
             Card::ReadOnly { reason, .. } => ("READ-ONLY", Tone::Muted, capitalize(reason), String::new()),
-            Card::PickKey => ("KEY", Tone::Lar, "Key column".into(), String::new()),
+            Card::PickKey => ("KEY", Tone::Acc, "Key column".into(), String::new()),
             Card::Note(n) => ("NOTE", Tone::Warn, n.clone(), String::new()),
         };
         let (fg, bg) = match tag_tone {
             Tone::Warn => (t.warn, t.warn_s),
-            Tone::Lar => (t.lar_t, t.lar_s),
+            Tone::Acc => (t.acc_t, t.acc_s),
             _ => (t.tx2, t.hov),
         };
         let mut actions: Vec<gpui::AnyElement> = Vec::new();
@@ -1222,8 +1212,7 @@ impl GridEdit {
 
     #[cfg(feature = "checks")]
     pub fn demo_fill(&mut self, keep_editing: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let (Some(snap), TargetState::Ready(target)) = (self.snapshot(), &self.target) else { return };
-        let own_id = target.check == dataman_core::edit::ConflictCheck::Reread;
+        let (Some(snap), TargetState::Ready(_)) = (self.snapshot(), &self.target) else { return };
         self.cancel_cell(window, cx);
         let cols = snap.columns.clone();
         let col = |n: &str| cols.iter().position(|c| c.name == n);
@@ -1234,9 +1223,6 @@ impl GridEdit {
         }
         self.model.toggle_delete(&[RowRef::Stored(6)]);
         let i = self.model.insert();
-        if own_id && let Some(c) = col("id") {
-            self.model.set(RowRef::New(i), c, CellValue::Null, Some(CellValue::text("142")));
-        }
         for (n, v) in [("sku", "AUD-0142"), ("name", "Nimbus earbuds"), ("category", "audio"), ("price", "159.00"), ("stock", "60"), ("active", "true")] {
             if let Some(c) = col(n) {
                 self.model.set(RowRef::New(i), c, CellValue::Null, Some(CellValue::text(v)));
@@ -1404,7 +1390,7 @@ impl Render for ReviewPanel {
                 "Nothing was committed".to_string()
             };
             let changed = r.outcomes.iter().find_map(|o| match &o.outcome {
-                Outcome::Conflict { kind: ConflictKind::Changed { .. }, .. } => Some(()),
+                Outcome::Conflict { kind: ConflictKind::Changed, .. } => Some(()),
                 _ => None,
             });
             div()

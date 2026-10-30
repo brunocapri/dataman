@@ -1144,6 +1144,14 @@ async fn check_login(ws: &Entity<Workspace>, a: &Entity<AgentsPage>, pg: &Connec
     pause(cx, 200).await;
     shoot("02-review", cx);
     shoot("11-modal", cx);
+    // Esc closes it as Cancel does (nothing made, the page stays); opened again to go on.
+    key(cx, "escape");
+    pause(cx, 100).await;
+    let shut = login_ui(a, cx, |l| l.sheet.is_none()).unwrap_or(false);
+    r.check("Esc closes the create modal as Cancel does: nothing made, still on Permissions", shut && core.config.get(&pg.id).is_some_and(|p| p.agent_login.is_none()) && page(cx) == Page::Permissions, "");
+    click_probe("agents-login-create", cx);
+    until(cx, 30, |cx| login_ui(a, cx, |l| matches!(l.sheet, Some(Sheet::Create { review: Some(Ok(_)), .. }))).unwrap_or(false)).await;
+    pause(cx, 100).await;
     click_probe("agents-login-go", cx);
     let made = until(cx, 30, |_| core.config.get(&pg.id).is_some_and(|p| p.agent_login.is_some())).await;
     let rec = core.config.get(&pg.id).and_then(|p| p.agent_login);
@@ -1213,6 +1221,13 @@ async fn check_login(ws: &Entity<Workspace>, a: &Entity<AgentsPage>, pg: &Connec
     r.check("…in one column, the code scrolling as the create sheet's does", rm_code.is_some() && rm_scroll.is_some_and(|s| s.bounds().size.width > gpui::px(0.) && rm_code.is_some_and(|b| (s.bounds().left() - b.left()).abs() < gpui::px(1.))), format!("{rm_code:?}"));
     pause(cx, 200).await;
     shoot("06-remove", cx);
+    key(cx, "escape");
+    pause(cx, 100).await;
+    let shut = login_ui(a, cx, |l| l.sheet.is_none()).unwrap_or(false);
+    r.check("Esc closes Remove login as Cancel does: the login stays", shut && core.config.get(&pg.id).is_some_and(|p| p.agent_login.is_some()), "");
+    click_probe("agents-login-remove", cx);
+    until(cx, 20, |cx| login_ui(a, cx, |l| matches!(l.sheet, Some(Sheet::Remove { plan: Some(Ok(_)), .. }))).unwrap_or(false)).await;
+    pause(cx, 100).await;
     click_probe("agents-login-remove-go", cx);
     let gone = until(cx, 30, |_| core.config.get(&pg.id).is_some_and(|p| p.agent_login.is_none() && p.agents_refused)).await;
     r.check("removed: the record and its Keychain item go, agents are refused here", gone && core.secrets.get(&agent_login::secret_account(&pg.id)).ok().flatten().is_none(), "");

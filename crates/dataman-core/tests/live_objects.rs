@@ -164,31 +164,3 @@ fn pg_every_kind() {
 
     exec(&e, &c, &cleanup);
 }
-
-#[test]
-fn lar_reports_none_of_it() {
-    let e = env();
-    let Some(c) = lar(&e) else { return };
-    let db = c.database().to_string();
-    macro_rules! run {
-        ($t:expr) => {
-            e.core.block_on($t)
-        };
-    }
-    let rels = run!(c.relations(&db, "public")).unwrap();
-    let n = run!(c.object_counts(&db, "public")).unwrap();
-    for v in [n.functions, n.sequences, n.types, n.triggers] {
-        assert!(v.unwrap_or(0) == 0, "{n:?}");
-    }
-    assert!(run!(c.functions(&db, "public")).unwrap().is_empty());
-    assert!(run!(c.triggers(&db, "public")).unwrap().is_empty());
-    assert!(run!(c.roles()).unwrap().is_empty(), "LAR's pg_roles is empty");
-    assert!(run!(c.rel_stats(&db, "public")).unwrap().is_empty());
-    if let Some(r) = rels.iter().find(|r| r.kind == RelKind::Table) {
-        let x = run!(c.table_extras(&db, "public", &r.name)).unwrap();
-        for v in [x.constraints.map(|v| v.len()), x.triggers.map(|v| v.len()), x.partitions.map(|v| v.len())] {
-            assert!(v.unwrap_or(0) == 0, "{r:?}");
-        }
-        assert!(run!(c.privileges(&db, "public", Some(&r.name))).unwrap().is_none());
-    }
-}

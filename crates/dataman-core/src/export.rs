@@ -380,7 +380,7 @@ pub fn is_rerunnable(sql: &str) -> bool {
     }
     !toks.iter().any(|t| {
         matches!(t.kind, TokenKind::Keyword | TokenKind::Ident)
-            && matches!(t.text(sql).to_ascii_uppercase().as_str(), "INSERT" | "UPDATE" | "DELETE" | "MERGE" | "INTO" | "SUBSCRIBE" | "LISTEN")
+            && matches!(t.text(sql).to_ascii_uppercase().as_str(), "INSERT" | "UPDATE" | "DELETE" | "MERGE" | "INTO" | "LISTEN")
     })
 }
 

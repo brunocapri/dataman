@@ -467,7 +467,7 @@ fn statement(t: &Toks) -> Facts {
                 f.target = t.name(i).map(|(n, _)| n);
             }
         }
-        "TABLE" | "VALUES" | "SHOW" | "FETCH" | "MOVE" | "DECLARE" | "CLOSE" | "SUBSCRIBE" => {}
+        "TABLE" | "VALUES" | "SHOW" | "FETCH" | "MOVE" | "DECLARE" | "CLOSE" => {}
         "DESCRIBE" | "DESC" | "CHECK" | "CHECKSUM" | "HANDLER" if t.dialect == Dialect::MySql => {}
         "DESCRIBE" | "SUMMARIZE" | "FROM" | "PIVOT" | "UNPIVOT" if t.dialect == Dialect::DuckDb => {}
         "PRAGMA" if is_file_dialect(t.dialect) => pragma(t, &mut f),
@@ -1000,8 +1000,7 @@ pub fn read_only_refusal_in(sql: &str, dialect: Dialect) -> Option<String> {
 }
 
 /// Functions with effects that a read-only transaction does not stop (signals, files, locks
-/// held past the transaction, other servers) or that only PostgreSQL stops there (LAR does not
-/// enforce READ ONLY).
+/// held past the transaction, other servers) or that only PostgreSQL stops there.
 pub const SIDE_EFFECT_FUNCTIONS: &[&str] = &[
     "pg_terminate_backend", "pg_cancel_backend", "pg_reload_conf", "pg_rotate_logfile", "pg_switch_wal", "pg_create_restore_point",
     "pg_promote", "pg_wal_replay_pause", "pg_wal_replay_resume", "pg_log_backend_memory_contexts", "pg_advisory_lock",
@@ -1022,12 +1021,6 @@ pub const SIDE_EFFECT_FUNCTIONS: &[&str] = &[
 ];
 
 const TSQL_LOCK_HINTS: &[&str] = &["UPDLOCK", "XLOCK", "HOLDLOCK", "TABLOCK", "TABLOCKX", "PAGLOCK", "ROWLOCK", "SERIALIZABLE", "REPEATABLEREAD"];
-
-const LAR_ACTION_WORDS: &[&str] = &[
-    "backup", "restore", "create", "drop", "alter", "grant", "revoke", "user", "password", "warm", "compact", "checkpoint",
-    "vacuum", "promote", "demote", "kill", "cancel", "terminate", "reset", "set", "flush", "import", "export", "write", "delete",
-    "truncate", "reload", "shutdown", "failover", "join", "leave", "evict", "rotate",
-];
 
 pub fn agent_read_refusal(sql: &str) -> Option<String> {
     agent_read_refusal_in(sql, Dialect::Postgres)
@@ -1092,11 +1085,7 @@ fn read_refusal(sql: &str, dialect: Dialect) -> Option<String> {
     if let Some(e) = file_access_in(&t) {
         return Some(e);
     }
-    match effect_call(&t, &[]) {
-        Some((name, false)) => Some(format!("{name}() has effects outside a read-only transaction")),
-        Some((name, true)) => Some(format!("{name}() is an administrative action")),
-        None => None,
-    }
+    effect_call(&t, &[]).map(|name| format!("{name}() has effects outside a read-only transaction"))
 }
 
 /// SQLite functions that load code or touch files (the shell's; an application may register
@@ -1265,9 +1254,9 @@ fn file_access_in(t: &Toks) -> Option<String> {
     None
 }
 
-fn effect_call(t: &Toks, allowed: &[&str]) -> Option<(String, bool)> {
+fn effect_call(t: &Toks, allowed: &[&str]) -> Option<String> {
     if let Some(e) = file_access_in(t) {
-        return Some((e.split_once("()").map_or(e.as_str(), |(f, _)| f).to_string(), false));
+        return Some(e.split_once("()").map_or(e.as_str(), |(f, _)| f).to_string());
     }
     for i in 0..t.t.len() {
         if !t.punct(i + 1, "(") || !matches!(t.t[i].kind, TokenKind::Ident | TokenKind::Keyword | TokenKind::QuotedIdent) {
@@ -1275,12 +1264,7 @@ fn effect_call(t: &Toks, allowed: &[&str]) -> Option<(String, bool)> {
         }
         let name = t.t[i].text(t.src).trim_matches(['"', '`', '[', ']']).to_ascii_lowercase();
         if SIDE_EFFECT_FUNCTIONS.contains(&name.as_str()) && !allowed.contains(&name.as_str()) {
-            return Some((name, false));
-        }
-        if let Some(rest) = name.strip_prefix("lar_")
-            && rest.split('_').any(|w| LAR_ACTION_WORDS.contains(&w))
-        {
-            return Some((name, true));
+            return Some(name);
         }
     }
     None
@@ -1314,8 +1298,8 @@ impl WriteClass {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Preview {
     Held,
-    /// A preview would hold the exclusive locks of DDL and `TRUNCATE` while waiting, and MySQL and
-    /// LAR commit them anyway; procedures and functions with outside effects would act before the
+    /// A preview would hold the exclusive locks of DDL and `TRUNCATE` while waiting, and MySQL
+    /// commits them anyway; procedures and functions with outside effects would act before the
     /// answer.
     AskFirst,
     Outside,
@@ -1384,7 +1368,7 @@ fn piece_of(sql: &str, dialect: Dialect) -> Piece {
     if all.iter().any(|x| x.text(sql).trim_matches(['"', '[', ']']).eq_ignore_ascii_case("xp_cmdshell")) {
         return Piece::Destructive("xp_cmdshell (runs a command on the database server)".into());
     }
-    if let Some((name, _)) = effect_call(&t, WRITE_OK_FUNCTIONS) {
+    if let Some(name) = effect_call(&t, WRITE_OK_FUNCTIONS) {
         return Piece::Destructive(if name.contains(' ') { name } else { format!("{name}()") });
     }
     if f.tx.is_some() {
@@ -1773,7 +1757,6 @@ mod tests {
             "EXPLAIN (ANALYZE OFF, COSTS) DELETE FROM t",
             "EXPLAIN (ANALYZE FALSE) DELETE FROM t",
             "EXPLAIN (COSTS OFF) DELETE FROM t",
-            "SELECT lar_history('t')",
             "SELECT pg_sleep(0.1)",
             "SELECT format('for update')",
             "SELECT current_setting('standard_conforming_strings')",
@@ -1804,8 +1787,6 @@ mod tests {
             ("SELECT nextval('s')", "effects"),
             ("SELECT \"pg_reload_conf\"()", "effects"),
             ("SELECT set_config('role', 'postgres', false)", "effects"),
-            ("SELECT lar_backup('/tmp/b')", "administrative"),
-            ("SELECT lar_create_user('x', 'y')", "administrative"),
         ] {
             let r = agent_read_refusal(bad).unwrap_or_else(|| panic!("{bad} must be refused"));
             assert!(r.contains(why), "{bad}: {r}");
@@ -2040,7 +2021,6 @@ mod tests {
             (Pg, "SELECT * FROM t WHERE a = 'DELETE FROM x'", R),
             (Pg, "with a as (select 1) select * from a", R),
             (Pg, "EXPLAIN DELETE FROM t", R),
-            (Pg, "SELECT lar_history('t')", R),
             (Pg, "-- only a comment", R),
             (My, "SELECT SLEEP(1)", R),
             (My, "DESCRIBE t", R),
@@ -2144,7 +2124,6 @@ mod tests {
             (Pg, "UPDATE t SET a = lo_import('/etc/passwd') WHERE id = 1", D("lo_import()")),
             (Pg, "SELECT setval('s', 1)", D("setval()")),
             (Pg, "SELECT pg_advisory_lock(1)", D("pg_advisory_lock()")),
-            (Pg, "SELECT lar_backup('/tmp/b')", D("lar_backup()")),
             (My, "SELECT GET_LOCK('x', 10)", D("get_lock()")),
             (Ms, "SELECT * FROM OPENROWSET('SQLNCLI', 's', 'q')", D("openrowset()")),
             (Pg, "COPY t FROM '/etc/passwd'", D("COPY")),

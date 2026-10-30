@@ -10,11 +10,10 @@ use dataman_core::groups::Pane;
 use dataman_core::result::{CopyFormat, Phase};
 use dataman_core::{Connection, TxState, TxStatus};
 
-use crate::app::{Drag, Region, Side, Workspace, fmt_dur};
+use crate::app::{Drag, Region, Workspace, fmt_dur};
 use crate::assets::{Icon, icon};
 use crate::grid::{fmt_clock, statement_verb, ui_count};
 use crate::messages::{self, Of, Row as MessageRow};
-use crate::panels::{LAR_BUTTONS, PanelRegistry};
 use crate::result_bar::{ResultState, role_colors};
 use crate::tab::{ItemState, QueryTab};
 use crate::theme::{ActiveTheme, PIXEL, Theme, metrics};
@@ -535,16 +534,10 @@ impl Workspace {
         let active = focused_front || other_front;
         let tab = self.tabs[i].read(cx);
         let title = tab.title(cx);
-        let conn = tab.connection().cloned();
-        let lar = conn.as_ref().is_some_and(|c| c.info.is_lar);
         let agent = tab.agent.is_some();
         let phase = tab.run_phase();
         let tx = tab.tx();
-        let lar_ind = crate::lar::tab_indicator(tab, t, cx);
-        let has_lar_ind = lar_ind.is_some();
-        let (ind, ind_color): (Option<SharedString>, Hsla) = if let Some((s, c)) = lar_ind {
-            (Some(s), c)
-        } else if tab.is_cancelling() {
+        let (ind, ind_color): (Option<SharedString>, Hsla) = if tab.is_cancelling() {
             (Some("◌ cancel…".into()), t.warn)
         } else if tab.is_running() {
             (Some(format!("▶ {}", tab.elapsed().map(fmt_clock).unwrap_or_else(|| "00:00.0".into())).into()), t.acc)
@@ -555,9 +548,9 @@ impl Workspace {
                 _ => (None, t.tx3),
             }
         };
-        let show_tx = tx.status.is_open() && !has_lar_ind && !tab.is_running() && !tab.is_cancelling();
+        let show_tx = tx.status.is_open() && !tab.is_running() && !tab.is_cancelling();
         let (ind, ind_color) = if show_tx { (None, ind_color) } else { (ind, ind_color) };
-        let still = !has_lar_ind && !tab.is_running() && !tab.is_cancelling() && ind.is_some();
+        let still = !tab.is_running() && !tab.is_cancelling() && ind.is_some();
         let (hov, tx2) = (t.hov, t.tx2);
         // Identity, not position: tabs move when dragged.
         let entity = self.tabs[i].clone();
@@ -664,7 +657,6 @@ impl Workspace {
                     w.close_tab(ix, window, cx);
                 }
             }))
-            .when(lar, |d| d.child(ui::lar_dot(t)))
             .when(agent, |d| d.child(icon(Icon::Agent).size(px(11.)).ml(px(-2.)).text_color(if active { t.tx2 } else { t.tx3 })))
             .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(title))
             .when(show_tx, |d| d.child(tx_chip(t, &tx, true)))
@@ -840,7 +832,6 @@ impl Workspace {
         } else {
             let doc = tab.read(cx).doc.clone();
             let failed_view = doc.is_none() && self.error_view_needed(&tab, cx);
-            let live = crate::lar::grid_override(&tab, cx);
             let shows_plan = !failed_view && tab.read(cx).shows_plan(cx);
             let log = match view.shown {
                 Some(Key::Stmt(i)) => tab.read(cx).result().filter(|r| crate::messages::shows_log(r)).map(|r| (i, r.clone())),
@@ -859,8 +850,6 @@ impl Workspace {
                 self.render_messages(&tab, &view, &t, cx).into_any_element()
             } else if failed_view {
                 self.render_error_view(&tab, &t, cx).into_any_element()
-            } else if let Some(g) = live {
-                g
             } else if shows_plan {
                 tab.read(cx).plan.clone().into_any_element()
             } else if let Some((i, rs)) = log {
@@ -1035,7 +1024,6 @@ impl Workspace {
                 .child(commit)
                 .child(rollback)
         });
-        let lar = v.conn.as_ref().filter(|c| c.info.is_lar).map(|c| self.render_lar_buttons(c, t, cx));
         let (parts, pane) = (self.toolbar_parts.clone(), v.pane);
         div()
             .on_children_prepainted(move |b, _, _| parts.borrow_mut()[pane.index()] = b)
@@ -1052,14 +1040,13 @@ impl Workspace {
             .border_color(t.line)
             .text_color(t.tx2)
             .child(run)
-            .child(format)
             .child(picker)
             .children(agent)
             .when(tx_controls.is_some(), |d| d.child(ui::vsep(t, 18.).mx(px(4.))))
             .children(tx_controls)
             .children(cancel)
             .child(div().flex_1())
-            .children(lar)
+            .child(format)
     }
 
     fn render_conn_picker(&self, v: &TabView, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
@@ -1110,49 +1097,75 @@ impl Workspace {
             let store = self.store.read(cx);
             let cur = v.conn.as_ref().map(|c| c.profile.id.clone());
             let mut rows: Vec<AnyElement> = Vec::new();
-            for p in &store.profiles {
-                let Some(conn) = store.connection(&p.id) else { continue };
-                if !rows.is_empty() {
-                    rows.push(ui::menu_sep(t).into_any_element());
+            let live: Vec<_> = store.profiles.iter().filter(|p| store.connection(&p.id).is_some()).collect();
+            // As the explorer groups them: a folder's header (never a pick), its connections a level in.
+            for (folder, profiles) in crate::conns::grouped(&store.folders, &live) {
+                let indent = if folder.is_some() { 12. } else { 0. };
+                if let Some(f) = folder {
+                    if !rows.is_empty() {
+                        rows.push(ui::menu_sep(t).into_any_element());
+                    }
+                    rows.push(
+                        div()
+                            .h(px(24.))
+                            .px(px(10.))
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(7.))
+                            .text_size(px(11.))
+                            .text_color(t.tx2)
+                            .child(ui::folder_icon(true, None, 12., crate::tree::folder_color(f, t).unwrap_or(t.tx3)))
+                            .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(f.name.clone()))
+                            .into_any_element(),
+                    );
                 }
-                rows.push(
-                    div()
-                        .h(px(24.))
-                        .px(px(10.))
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(8.))
-                        .text_size(px(11.))
-                        .text_color(t.tx3)
-                        .child(div().flex_none().size(px(7.)).bg(t.profile_color(p)))
-                        .children(crate::assets::small_logo(p.engine, 12.))
-                        .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(p.name.clone()))
-                        .into_any_element(),
-                );
-                let dbs = if conn.engine().is_sql() {
-                    conn.schema.cached_databases()
-                } else {
-                    conn.cached_tree(None).map(|v| v.iter().filter(|i| i.kind == dataman_core::nosql::ItemKind::Database).map(|i| i.name.clone()).collect())
-                }
-                .filter(|v: &Vec<String>| !v.is_empty())
-                .unwrap_or_else(|| vec![conn.database().to_string()]);
-                for d in dbs {
-                    let on = cur.as_deref() == Some(p.id.as_str()) && d == db;
-                    let label = if d.is_empty() {
-                        "all indices".to_string()
-                    } else if p.engine == dataman_core::Engine::Redis {
-                        format!("db{d}")
+                for (i, p) in profiles.into_iter().enumerate() {
+                    let Some(conn) = store.connection(&p.id) else { continue };
+                    if !rows.is_empty() && (folder.is_none() || i > 0) {
+                        rows.push(ui::menu_sep(t).ml(px(6. + indent)).into_any_element());
+                    }
+                    rows.push(
+                        div()
+                            .h(px(24.))
+                            .pl(px(10. + indent))
+                            .pr(px(10.))
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(8.))
+                            .text_size(px(11.))
+                            .text_color(t.tx3)
+                            .child(div().flex_none().size(px(7.)).bg(t.profile_color(p)))
+                            .children(crate::assets::small_logo(p.engine, 12.))
+                            .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(p.name.clone()))
+                            .when(p.env.is_production(), |d| d.child(div().flex_none().text_size(px(9.)).text_color(t.tx4).opacity(0.6).child("PROD")))
+                            .into_any_element(),
+                    );
+                    let dbs = if conn.engine().is_sql() {
+                        conn.schema.cached_databases()
                     } else {
-                        d.clone()
-                    };
-                    let (id, pick) = (p.id.clone(), d.clone());
-                    rows.push(ui::probe(
-                        format!("pick:{}:{d}", p.id),
-                        ui::menu_item(t, SharedString::from(format!("pick:{}:{d}", p.id)), label, on.then_some("✓"), true)
-                            .pl(px(25.))
-                            .on_click(cx.listener(move |w, _, window, cx| w.pick_target(&id, &pick, window, cx))),
-                    ));
+                        conn.cached_tree(None).map(|v| v.iter().filter(|i| i.kind == dataman_core::nosql::ItemKind::Database).map(|i| i.name.clone()).collect())
+                    }
+                    .filter(|v: &Vec<String>| !v.is_empty())
+                    .unwrap_or_else(|| vec![conn.database().to_string()]);
+                    for d in dbs {
+                        let on = cur.as_deref() == Some(p.id.as_str()) && d == db;
+                        let label = if d.is_empty() {
+                            "all indices".to_string()
+                        } else if p.engine == dataman_core::Engine::Redis {
+                            format!("db{d}")
+                        } else {
+                            d.clone()
+                        };
+                        let (id, pick) = (p.id.clone(), d.clone());
+                        rows.push(ui::probe(
+                            format!("pick:{}:{d}", p.id),
+                            ui::menu_item(t, SharedString::from(format!("pick:{}:{d}", p.id)), label, on.then_some("✓"), true)
+                                .pl(px(25. + indent))
+                                .on_click(cx.listener(move |w, _, window, cx| w.pick_target(&id, &pick, window, cx))),
+                        ));
+                    }
                 }
             }
             div().absolute().left_0().top(px(26.)).child(
@@ -1189,38 +1202,6 @@ impl Workspace {
             })
             .child(button)
             .children(menu)
-    }
-
-    fn render_lar_buttons(&self, conn: &Arc<Connection>, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let open_id = match &self.side {
-            Some(Side::Server(id, ..)) => Some(*id),
-            _ => None,
-        };
-        let panels = cx.try_global::<PanelRegistry>().map(|r| r.for_server(&conn.info)).unwrap_or_default();
-        div().flex().flex_row().items_center().gap(px(4.)).children(panels.into_iter().map(|p| {
-            let id = p.id();
-            let known = LAR_BUTTONS.iter().find(|b| b.0 == id);
-            let on = open_id == Some(id);
-            let hov = t.lar_r;
-            div()
-                .id(id)
-                .h(px(26.))
-                .pl(px(8.))
-                .pr(px(7.))
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(px(6.))
-                .border_1()
-                .text_size(px(11.5))
-                .cursor_pointer()
-                .when(on, |d| d.bg(t.lar).border_color(t.lar).text_color(t.on_lar).font_weight(FontWeight::SEMIBOLD))
-                .when(!on, |d| d.bg(t.lar_s).border_color(t.lar_r).text_color(t.lar_t).hover(move |s| s.bg(hov)))
-                .children(known.map(|b| icon(b.2).size(px(14.)).text_color(if on { t.on_lar } else { t.lar_t })))
-                .child(p.title())
-                .children(known.and_then(|b| crate::keymap::key(&format!("lar_{}", b.0))).map(|k| div().text_size(px(11.)).opacity(0.7).child(k)))
-                .on_click(cx.listener(move |w, _, window, cx| w.toggle_server_panel(id, window, cx)))
-        }))
     }
 
     fn result_state(&self, tab: &QueryTab, grid_sorting: bool, edit_pending: usize) -> ResultState {
@@ -1262,19 +1243,18 @@ impl Workspace {
     fn render_result_bar(&self, tab: &gpui::Entity<QueryTab>, v: &TabView, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let grid = tab.read(cx).grid.clone();
         let sorting = grid.read(cx).is_sorting();
-        let lar_bar = crate::lar::result_bar(tab, cx);
         let edit = tab.read(cx).edit.read(cx);
         let edit_pending = edit.pending_count();
         let edit_note = edit.target_label().map(|l| format!("{l} · {}", edit.summary())).unwrap_or_else(|| edit.summary());
-        let state = lar_bar.as_ref().map(|b| b.state).unwrap_or_else(|| self.result_state(tab.read(cx), sorting, edit_pending));
+        let state = self.result_state(tab.read(cx), sorting, edit_pending);
         let rs = tab.read(cx).result().cloned();
-        let can_insert = lar_bar.is_none() && rs.as_ref().is_some_and(|r| r.columns().is_some_and(|c| !c.is_empty()));
+        let can_insert = rs.as_ref().is_some_and(|r| r.columns().is_some_and(|c| !c.is_empty()));
         let summary = grid.update(cx, |g, _| g.selection_summary());
         let spec = state.spec();
         let (fg, bg) = role_colors(t, spec.role);
         let status = rs.as_ref().map(|r| r.status());
         let rows = rs.as_ref().map(|r| r.rows()).unwrap_or(0);
-        let mut label: SharedString = match state {
+        let label: SharedString = match state {
             ResultState::Affected => rs.as_ref().map(|r| statement_verb(&r.sql)).unwrap_or_else(|| "DONE".into()).into(),
             ResultState::Edit => format!("{edit_pending} PENDING").into(),
             _ => spec.label.into(),
@@ -1312,7 +1292,7 @@ impl Workspace {
         }
         let failed_ix = tab.read(cx).failed_index();
         let n = v.batch.len();
-        let (mut note, mut note_err): (String, bool) = match state {
+        let (note, note_err): (String, bool) = match state {
             ResultState::Done | ResultState::Text => (summary.map(|s| s.to_string()).unwrap_or_default(), false),
             ResultState::Edit => (edit_note, false),
             ResultState::Error => {
@@ -1396,24 +1376,6 @@ impl Workspace {
                 );
             }
             _ => {}
-        }
-        let mut rows_label: Option<&'static str> = None;
-        if let Some(b) = lar_bar {
-            label = b.label;
-            rows_text = b.rows;
-            rows_label = b.rows_label;
-            metrics_ = b.metrics;
-            note = b.note;
-            note_err = b.note_err;
-            actions = b
-                .actions
-                .into_iter()
-                .map(|(id, label, key, act)| {
-                    action(id, label.into(), key)
-                        .on_click(move |_, window, cx| window.dispatch_action(act.boxed_clone(), cx))
-                        .into_any_element()
-                })
-                .collect();
         }
         let pager = {
             let tr = tab.read(cx);
@@ -1517,7 +1479,7 @@ impl Workspace {
             .child(ui::pill(spec.glyph, label, fg, bg).when(state == ResultState::Cancelling, |d| d.border_1().border_color(t.warn)))
             .children(pager_el)
             .children(rows_text.map(|r| {
-                let rl = rows_label.unwrap_or(spec.rows_label);
+                let rl = spec.rows_label;
                 let what = if r == "1" { rl.replacen("rows", "row", 1) } else { rl.to_string() };
                 div()
                     .flex()
@@ -1830,39 +1792,32 @@ impl Workspace {
         let tab = self.active_tab().map(|t| t.read(cx));
         let conn = tab.and_then(|t| t.connection().cloned());
         let notice = tab.and_then(|t| t.notice.clone());
-        let badge: Option<AnyElement> = conn.as_ref().map(|c| {
-            if c.info.is_lar {
-                ui::lar_badge(&t, "◆ LAR").into_any_element()
-            } else {
-                div()
-                    .h(px(17.))
-                    .px(px(6.))
-                    .flex()
-                    .items_center()
-                    .bg(t.hov)
-                    .border_1()
-                    .border_color(t.edge)
-                    .text_color(t.tx2)
-                    .child(match c.profile.engine {
-                        dataman_core::Engine::Postgres => "PG",
-                        dataman_core::Engine::MySql => "MY",
-                        dataman_core::Engine::SqlServer => "MS",
-                        dataman_core::Engine::MongoDb => "MDB",
-                        dataman_core::Engine::Elasticsearch => "ES",
-                        dataman_core::Engine::OpenSearch => "OS",
-                        dataman_core::Engine::Redis => "RDS",
-                        dataman_core::Engine::Sqlite => "LITE",
-                        dataman_core::Engine::DuckDb => "DUCK",
-                    })
-                    .into_any_element()
-            }
+        let badge = conn.as_ref().map(|c| {
+            div()
+                .h(px(17.))
+                .px(px(6.))
+                .flex()
+                .items_center()
+                .bg(t.hov)
+                .border_1()
+                .border_color(t.edge)
+                .text_color(t.tx2)
+                .child(match c.profile.engine {
+                    dataman_core::Engine::Postgres => "PG",
+                    dataman_core::Engine::MySql => "MY",
+                    dataman_core::Engine::SqlServer => "MS",
+                    dataman_core::Engine::MongoDb => "MDB",
+                    dataman_core::Engine::Elasticsearch => "ES",
+                    dataman_core::Engine::OpenSearch => "OS",
+                    dataman_core::Engine::Redis => "RDS",
+                    dataman_core::Engine::Sqlite => "LITE",
+                    dataman_core::Engine::DuckDb => "DUCK",
+                })
         });
         let version: SharedString = match &conn {
-            Some(c) if c.info.is_lar => format!("{} (LAR)", c.info.short_version()).into(),
             Some(c) => c.info.short_version().into(),
             None => "not connected".into(),
         };
-        let lar_status = tab.and_then(|t| crate::lar::status_text(t, cx));
         let env = conn.as_ref().map(|c| c.profile.env).filter(|e| !e.is_none()).map(|e| {
             div().text_color(if e.is_production() { t.err } else { t.tx2 }).child(e.label())
         });
@@ -1886,7 +1841,6 @@ impl Workspace {
             .child(div().flex().flex_row().items_center().gap(px(8.)).children(badge).child(version))
             .children(env)
             .children(read_only)
-            .children(lar_status.map(|(s, c)| div().text_color(c).child(s)))
             .child(div().flex_1())
             .children(self.flash_notice.as_ref().map(|(m, _)| div().text_color(t.tx2).child(m.clone())))
             .children(self.export.as_ref().filter(|e| !e.read(cx).visible).and_then(|e| e.read(cx).status_line()).map(|l| {
@@ -2188,35 +2142,6 @@ impl Workspace {
                     .into_any_element(),
             );
         }
-        if let Some((name, _)) = &self.lar_toast {
-            let top = metrics::TITLE_H + metrics::TOOLBAR_H + 12.;
-            out.push(
-                toast(&t, t.lar)
-                    .right(px(22.))
-                    .top(px(top))
-                    .w(px(360.))
-                    .border_1()
-                    .border_color(t.lar)
-                    .child(ui::lar_badge(&t, "◆").h(px(18.)))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .gap(px(6.))
-                            .text_size(px(11.5))
-                            .line_height(px(17.))
-                            .child(div().text_color(t.tx).font_weight(FontWeight::SEMIBOLD).child(format!("LAR detected on {name}")))
-                            .child(div().flex().flex_row().gap(px(10.)).text_size(px(10.5)).text_color(t.tx3).children(LAR_BUTTONS.iter().map(|(id, _, _, _, what)| {
-                                let name = what.split_once(':').map(|(n, _)| n).unwrap_or(what).to_lowercase();
-                                let key = crate::keymap::key_label(&format!("lar_{id}"));
-                                div().flex().flex_row().gap(px(4.)).child(div().text_color(t.lar_t).child(key)).child(name)
-                            }))),
-                    )
-                    .into_any_element(),
-            );
-        }
         out
     }
 
@@ -2240,6 +2165,7 @@ impl Workspace {
                 .items_center()
                 .justify_center()
                 .on_mouse_down(MouseButton::Left, cx.listener(|w, _, window, cx| w.resolve_pending_run(false, window, cx)))
+                .child(ui::esc_closes(Some("ConfirmDiscard"), cx.listener(|w, _: &crate::app::CancelPendingRun, window, cx| w.resolve_pending_run(false, window, cx))))
                 .child(
                     ui::modal(&t, "confirm-discard-card")
                         .w(px(440.))
@@ -2453,6 +2379,7 @@ impl Workspace {
                 .items_center()
                 .justify_center()
                 .on_mouse_down(MouseButton::Left, cx.listener(|w, _, window, cx| w.sheet_answer(ConfirmChoice::Cancel, window, cx)))
+                .child(ui::esc_closes(Some(crate::app::SHEET_CONTEXT), cx.listener(|w, _: &crate::app::SheetCancel, window, cx| w.sheet_answer(ConfirmChoice::Cancel, window, cx))))
                 .child(
                     ui::modal(&t, "tx-sheet-card")
                         .w(px(520.))
@@ -2486,6 +2413,7 @@ impl Workspace {
             .key_context("Shortcuts")
             .on_action(cx.listener(|w, _: &crate::app::CloseShortcuts, window, cx| w.set_shortcuts(false, window, cx)))
             .on_mouse_down(MouseButton::Left, cx.listener(|w, _, window, cx| w.set_shortcuts(false, window, cx)))
+            .child(ui::esc_closes(Some("Shortcuts"), cx.listener(|w, _: &crate::app::CloseShortcuts, window, cx| w.set_shortcuts(false, window, cx))))
             .child(crate::shortcuts::sheet(&t, ui::modal_close(&t, "shortcuts-close").on_click(cx.listener(|w, _, window, cx| w.set_shortcuts(false, window, cx)))))
     }
 }

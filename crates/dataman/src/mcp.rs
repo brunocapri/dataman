@@ -483,6 +483,7 @@ impl Workspace {
                 .on_action(cx.listener(|w, _: &Allow, window, cx| w.mcp_answer(true, window, cx)))
                 .when(dataman_core::MCP_ADVANCED && !req.allowable.is_empty(), |d| d.on_action(cx.listener(|w, _: &AlwaysAllow, window, cx| w.mcp_always_allow(window, cx))))
                 .on_action(cx.listener(|w, _: &Deny, window, cx| w.mcp_answer(false, window, cx)))
+                .child(ui::esc_closes(Some(SHEET), cx.listener(|w, _: &Deny, window, cx| w.mcp_answer(false, window, cx))))
                 .flex()
                 .items_center()
                 .justify_center()
@@ -671,7 +672,7 @@ pub fn demo_seed(core: &Arc<Core>, approval: bool, cx: &mut App) {
         ("list_tables", Some("local pg"), None, Some(12), 8.1, Outcome::Ok, None, None),
         ("describe_table", Some("local pg"), None, None, 14.6, Outcome::Ok, None, None),
         ("open_query", Some("local pg"), Some("SELECT status, count(*) FROM orders WHERE created_at > ? GROUP BY status"), Some(4), 23.9, Outcome::Ok, None, None),
-        ("run_query", Some("lar"), Some("DELETE FROM orders WHERE id = ?"), None, 0.2, Outcome::Refused, Some("refused: DELETE is not a read"), None),
+        ("run_query", Some("local pg"), Some("DELETE FROM orders WHERE id = ?"), None, 0.2, Outcome::Refused, Some("refused: DELETE is not a read"), None),
         ("explain_analyze", Some("local pg"), Some("SELECT * FROM orders WHERE customer = $1"), None, 41.3, Outcome::Ok, None, None),
         ("run_query", Some("local pg"), Some("SELECT pg_sleep(?)"), None, 30001.0, Outcome::Timeout, Some("timed out after 30.0 s"), None),
         ("execute", Some("shop"), Some("UPDATE orders SET status = ? WHERE id = ?"), Some(1), 12.2, Outcome::Ok, None, None),

@@ -56,14 +56,12 @@ assets!(
     "icons/keyboard.svg",
     "icons/label.svg",
     "icons/link.svg",
-    "icons/live.svg",
     "icons/lock.svg",
     "icons/matview.svg",
     "icons/menu.svg",
     "icons/more.svg",
     "icons/panel-right.svg",
     "icons/partition.svg",
-    "icons/pause.svg",
     "icons/pin.svg",
     "icons/plug.svg",
     "icons/plus.svg",
@@ -119,7 +117,6 @@ impl AssetSource for Assets {
 pub enum Icon {
     Run,
     Stop,
-    Pause,
     History,
     Plus,
     Reload,
@@ -177,7 +174,6 @@ pub enum Icon {
     StarFill,
     Pin,
     Agent,
-    Live,
     Collection,
     Menu,
     WinMinimize,
@@ -202,7 +198,6 @@ impl Icon {
         match self {
             Icon::Run => "icons/arrow-right.svg",
             Icon::Stop => "icons/stop.svg",
-            Icon::Pause => "icons/pause.svg",
             Icon::History => "icons/history.svg",
             Icon::Plus => "icons/plus.svg",
             Icon::Reload => "icons/reload.svg",
@@ -260,7 +255,6 @@ impl Icon {
             Icon::StarFill => "icons/star-fill.svg",
             Icon::Pin => "icons/pin.svg",
             Icon::Agent => "icons/agent.svg",
-            Icon::Live => "icons/live.svg",
             Icon::Collection => "icons/braces.svg",
             Icon::Menu => "icons/menu.svg",
             Icon::WinMinimize => "icons/win-min.svg",
@@ -332,11 +326,11 @@ mod tests {
     fn every_icon_is_embedded() {
         use Icon::*;
         let all = [
-            Run, Stop, Pause, History, Plus, Reload, ChevronRight, ChevronDown, ChevronUp, ChevronLeft, Database, Schema,
+            Run, Stop, History, Plus, Reload, ChevronRight, ChevronDown, ChevronUp, ChevronLeft, Database, Schema,
             SchemaFilled, Group, Table, View, Key, Keyboard, Index, Search, Filter, Close, Check, Copy, Export, Import, Edit, Trash,
             Sidebar, SidebarRight, PanelRight, Expand, Collapse, Lock, Warning, Info, More, Tab, Command, Code, Hash, Plug,
             Tunnel, MatView, Function, Procedure, Sequence, Type, Label, Trigger, Extension, Role,
-            Constraint, Link, Partition, Activity, Star, StarFill, Pin, Agent, Live, Collection, Robot, Pulse, Shield,
+            Constraint, Link, Partition, Activity, Star, StarFill, Pin, Agent, Collection, Robot, Pulse, Shield,
             Types, Column, GridTable, Gear, Format, DatabaseFill, HistoryFill, RobotFill, GearFill,
         ];
         for i in all {

@@ -173,7 +173,7 @@ impl Workspace {
                         if view == dataman_core::layout::NavView::Agents {
                             self.set_nav(view, cx);
                         }
-                        self.sync_bound_views(window, cx);
+                        self.sync_bound_views(cx);
                         if let Some(f) = focus {
                             window.focus(&f, cx);
                         }

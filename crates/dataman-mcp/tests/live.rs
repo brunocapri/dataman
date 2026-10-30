@@ -67,7 +67,6 @@ fn env() -> Env {
     let cfg = dir.path().join("dataman");
     std::fs::create_dir_all(&cfg).unwrap();
     let (ph, pp) = addr("DATAMAN_PG", "127.0.0.1:55432");
-    let (lh, lp) = addr("DATAMAN_LAR", "127.0.0.1:5490");
     let (mh, mp) = addr("DATAMAN_MYSQL", "127.0.0.1:33306");
     let (sh, sp) = addr("DATAMAN_MSSQL", "127.0.0.1:14330");
     let (gh, gp) = addr("DATAMAN_MONGO", "127.0.0.1:27027");
@@ -83,9 +82,6 @@ fn env() -> Env {
         conn("pgw", &ph, pp, "postgres", "dataman", "mcp = \"write\""),
         conn("pgf", &ph, pp, "postgres", "dataman", "mcp = \"full\""),
         conn("pgprod", &ph, pp, "postgres", "dataman", "env = \"production\"\nmcp = \"full\""),
-        conn("lar", &lh, lp, "lar", "lar", ""),
-        conn("larw", &lh, lp, "lar", "lar", "mcp = \"write\""),
-        conn("larf", &lh, lp, "lar", "lar", "mcp = \"full\""),
         conn("myw", &mh, mp, "root", "mysql", &format!("{my}mcp = \"write\"")),
         conn("myf", &mh, mp, "root", "mysql", &format!("{my}mcp = \"full\"")),
         conn("msw", &sh, sp, "sa", "tempdb", &format!("{ms}mcp = \"write\"\nmcp_row_limit = 3")).replace("sslmode = \"disable\"", "sslmode = \"require\""),
@@ -597,71 +593,6 @@ fn run_favorite_by_name() {
     let log = e.audit();
     let line = log.iter().find(|l| l["tool"] == "run_favorite" && l["favorite"] == "Orders by day").unwrap();
     assert_eq!((line["connection"].as_str(), line["sql"].as_str(), line["outcome"].as_str()), (Some("pg"), Some("SELECT ? AS day"), Some("ok")));
-    leak(e);
-}
-
-#[test]
-fn lar_tools() {
-    let (h, p) = addr("DATAMAN_LAR", "127.0.0.1:5490");
-    if !up(&h, p) {
-        eprintln!("skipping: no LAR at {h}:{p}");
-        return;
-    }
-    use Answer::*;
-    let e = env();
-    let t = format!("mcp_live_{}", std::process::id());
-    let list = e.ok("list_connections", json!({"probe": true}));
-    let lar = list["rows"].as_array().unwrap().iter().find(|r| r[0] == "lar").unwrap().clone();
-    assert_eq!(lar[9], true, "is_lar: {lar}");
-
-    // LAR accepts READ ONLY without enforcing it: Dataman refuses before sending, in every
-    // shape a write can take.
-    for sql in [
-        format!("CREATE TABLE {t} (id bigint)"),
-        format!("INSERT INTO {t} VALUES (1)"),
-        format!("WITH x AS (DELETE FROM {t} RETURNING *) SELECT * FROM x"),
-        format!("SELECT 1; DELETE FROM {t}"),
-        format!("/* SELECT */ DELETE FROM {t}"),
-        "SELECT lar_backup('/tmp/x')".to_string(),
-    ] {
-        let err = e.err("run_query", json!({"connection": "lar", "sql": sql}));
-        assert!(err.contains("not a read") || err.contains("administrative") || err.contains("one statement"), "{sql}: {err}");
-        let err = e.err("execute", json!({"connection": "lar", "sql": sql}));
-        assert!(err.contains("reads only"), "{sql}: {err}");
-    }
-    let err = e.err("execute", json!({"connection": "larw", "sql": format!("CREATE TABLE {t} (id bigint)")}));
-    assert!(err.contains("destructive"), "{err}");
-    e.answer(&[Allow]);
-    e.ok("execute", json!({"connection": "larf", "sql": format!("CREATE TABLE {t} (id bigint, name text)")}));
-    assert_eq!(e.asked()[0].affected, None, "DDL is asked about before it runs");
-    let r = e.ok("execute", json!({"connection": "larw", "sql": format!("INSERT INTO {t} VALUES (1, 'a'), (2, NULL), (3, '')")}));
-    assert_eq!(r["statements"][0], json!(["INSERT", 3]));
-    let r = e.ok("run_query", json!({"connection": "lar", "sql": format!("SELECT id, name FROM {t} ORDER BY id")}));
-    assert_eq!(r["rows"], json!([[1, "a"], [2, null], [3, ""]]));
-    e.answer(&[Deny]);
-    assert!(e.err("execute", json!({"connection": "larf", "sql": format!("DELETE FROM {t}")})).contains("rolled back"));
-    assert_eq!(e.asked()[0].affected, Some(3));
-    assert_eq!(e.count("lar", &format!("SELECT count(*) FROM {t}")), json!(3), "LAR rolled the DELETE back");
-    e.answer(&[Deny]);
-    assert!(e.err("execute", json!({"connection": "larf", "sql": format!("TRUNCATE {t}")})).contains("denied"));
-    assert_eq!(e.asked()[0].affected, None);
-    assert_eq!(e.count("lar", &format!("SELECT count(*) FROM {t}")), json!(3));
-    let r = e.ok("run_query", json!({"connection": "lar", "sql": format!("SELECT id FROM {t} ORDER BY id"), "max_rows": 2}));
-    assert_eq!((r["row_count"].as_u64(), r["truncated"].as_str()), (Some(2), Some("rows")));
-    let r = e.ok("list_tables", json!({"connection": "lar"}));
-    assert!(r["rows"].as_array().unwrap().iter().any(|x| x[1] == json!(t)), "{r}");
-    let d = e.ok("describe_table", json!({"connection": "lar", "table": t}));
-    assert_eq!(d["columns"][0]["name"], "id");
-    let r = e.ok("search_objects", json!({"connection": "lar", "pattern": &t[..12]}));
-    assert!(r["rows"].as_array().unwrap().iter().any(|x| x[0] == "table" && x[2] == json!(t)), "{r}");
-    let r = e.ok("sample_rows", json!({"connection": "lar", "table": t, "n": 2}));
-    assert_eq!(r["row_count"], 2);
-    let call = dataman_mcp::Call::new(e.server.hub.clone(), "t".into(), "stdio", "resources/read", CancellationToken::new());
-    let md = e.server.hub.core.block_on(dataman_mcp::resources::read(&call, &dataman_mcp::resources::parse("dataman://lar/lar/schema").unwrap())).unwrap();
-    assert!(md.contains(&format!("- {t} [table")), "{md}");
-    assert!(e.err("execute", json!({"connection": "larw", "sql": format!("DROP TABLE {t}"), "confirm": true})).contains("destructive"));
-    e.answer(&[Allow]);
-    e.ok("execute", json!({"connection": "larf", "sql": format!("DROP TABLE {t}")}));
     leak(e);
 }
 

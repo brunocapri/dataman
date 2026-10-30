@@ -244,9 +244,36 @@ impl crate::app::Workspace {
     }
 }
 
+/// `profiles` as the explorer groups them: each folder with its own (in `profiles`' order), then
+/// those in none. Empty groups left out.
+pub fn grouped<'a>(folders: &'a [ConnFolder], profiles: &[&'a ConnectionProfile]) -> Vec<(Option<&'a ConnFolder>, Vec<&'a ConnectionProfile>)> {
+    let loose = profiles.iter().copied().filter(|p| dataman_core::config::folder_of(folders, &p.id).is_none()).collect();
+    folders
+        .iter()
+        .map(|d| (Some(d), profiles.iter().copied().filter(|p| d.holds(&p.id)).collect()))
+        .chain([(None, loose)])
+        .filter(|(_, v): &(_, Vec<_>)| !v.is_empty())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn grouped_as_the_explorer() {
+        let [a, b, c, d] = ["a", "b", "c", "d"].map(ConnectionProfile::new);
+        let mut work = ConnFolder::new("Work", &[]);
+        work.connections = vec![c.id.clone(), a.id.clone()];
+        let mut empty = ConnFolder::new("Empty", &[]);
+        empty.connections = vec!["gone".into()];
+        let folders = [empty, work];
+        let g = grouped(&folders, &[&a, &b, &c, &d]);
+        let names: Vec<(Option<&str>, Vec<&str>)> = g.iter().map(|(f, v)| (f.map(|f| f.name.as_str()), v.iter().map(|p| p.name.as_str()).collect())).collect();
+        assert_eq!(names, [(Some("Work"), vec!["a", "c"]), (None, vec!["b", "d"])]);
+        assert_eq!(grouped(&[], &[&b]).len(), 1);
+        assert!(grouped(&folders, &[]).is_empty());
+    }
 
     #[test]
     fn what_an_edit_is() {

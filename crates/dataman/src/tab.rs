@@ -115,7 +115,6 @@ pub struct QueryTab {
     schema_version: u64,
     parse_task: Option<gpui::Task<()>>,
     _watch: Option<Task<()>>,
-    pub lar: crate::lar::TabLar,
     pub pending_run: Option<PendingRun>,
     pub has_run: bool,
     fixed_title: Option<(SharedString, String)>,
@@ -211,7 +210,6 @@ impl QueryTab {
             schema_version: 0,
             parse_task: None,
             _watch: None,
-            lar: Default::default(),
             pending_run: None,
             has_run: false,
             fixed_title: None,
@@ -270,9 +268,6 @@ impl QueryTab {
     }
 
     pub fn result_tabs(&self) -> Vec<batch::Tab> {
-        if self.lar.live.is_some() {
-            return Vec::new();
-        }
         let stmts: Vec<(&str, Option<Outcome>)> =
             self.batch.iter().map(|b| (b.label.as_deref().unwrap_or(&b.sql), b.rs.as_deref().map(Outcome::of))).collect();
         let mut tabs = batch::tabs(&stmts);
@@ -337,12 +332,12 @@ impl QueryTab {
         let Some(stmt) = self.editor.update(cx, |e, cx| e.current_statement(cx)) else { return };
         let target = self.conn.as_ref().map(|c| explain::Target::of(&c.info)).unwrap_or_default();
         let sql = explain::sql(&stmt.sql, analyze, target);
-        let rollback = !target.lar && explain::analyzes(&sql) && !explain::is_explain(&stmt.sql);
+        let rollback = explain::analyzes(&sql) && !explain::is_explain(&stmt.sql);
         self.run_stmts(vec![Stmt { at: stmt.at, sql, params: Vec::new(), rollback }], cx);
     }
 
     pub fn shows_plan(&self, cx: &gpui::App) -> bool {
-        self.lar.live.is_none() && self.shown_rs.as_ref().is_some_and(|rs| self.plan.read(cx).is_for(rs))
+        self.shown_rs.as_ref().is_some_and(|rs| self.plan.read(cx).is_for(rs))
     }
 
     fn sync_plan(&mut self, cx: &mut Context<Self>) {
@@ -356,7 +351,7 @@ impl QueryTab {
         let rs = self.shown_rs.clone();
         let target = self.conn.as_ref().map(|c| explain::Target::of(&c.info)).unwrap_or_default();
         let ask = match (&rs, &self.session) {
-            (Some(rs), Some(s)) if plan.format == explain::Format::Json && !plan.analyzed && !target.lar => {
+            (Some(rs), Some(s)) if plan.format == explain::Format::Json && !plan.analyzed => {
                 explain::inner(&rs.sql).map(|inner| (s.clone(), explain::text_sql(inner, target), rs.params().to_vec()))
             }
             _ => None,
@@ -550,20 +545,15 @@ impl QueryTab {
             return;
         }
         self.release_session();
-        let lar = conn.as_ref().is_some_and(|c| c.info.is_lar);
         if conn.is_some() {
             self.want = None;
             self.waiting = None;
         }
         self.conn = conn;
-        self.lar = Default::default();
         self.database = None;
         self.schema_version = 0;
         self.known.clear();
-        self.editor.update(cx, |e, cx| {
-            e.set_server(lar, cx);
-            e.set_known(Arc::default(), cx);
-        });
+        self.editor.update(cx, |e, cx| e.set_known(Arc::default(), cx));
         self.sync_doc(cx);
         self.refresh_schema(cx);
         cx.notify();
@@ -956,7 +946,6 @@ impl QueryTab {
             && self.edit.read(cx).pending_count() == 0
             && self.monitor.is_none()
             && self.table.is_none()
-            && self.lar.live.is_none()
             && self.editor.read(cx).text() == a.text.as_str()
     }
 
@@ -1141,14 +1130,12 @@ impl QueryTab {
         let agent = self.agent_run.clone();
         let (Some(ix), Some(session)) = (self.queue.pop_front(), self.session.clone()) else { return };
         let sql = self.batch[ix].sql.clone();
-        // A read-only database refuses writes before they reach the server (LAR accepts READ
-        // ONLY without enforcing it, SQL Server has no such session setting); a script stops
-        // there, like on an error. Asked per statement: a toggle in the explorer counts at once.
+        // A read-only database refuses writes before they reach the server (SQL Server has no
+        // such session setting); a script stops there, like on an error. Asked per statement: a
+        // toggle in the explorer counts at once.
         let read_only = session.connection().read_only_for(&session.database);
         let refusal = if read_only { guard::read_only_refusal_in(&sql, self.dialect()) } else { None };
-        let refusal = refusal.map(|m| (Some("25006".to_string()), m)).or_else(|| {
-            (self.batch.len() > 1 && crate::lar::is_live(self, &sql)).then(|| (None, "SUBSCRIBE and LISTEN … AS run alone, not in a script".to_string()))
-        });
+        let refusal = refusal.map(|m| (Some("25006".to_string()), m));
         if let Some((code, message)) = refusal {
             let err = ErrorInfo { code, message, ..Default::default() };
             let rs = ResultSet::refused(sql, err);
@@ -1157,14 +1144,6 @@ impl QueryTab {
             self.started = Some(Instant::now());
             self.on_finished(cx);
             self.sync_active(cx);
-            cx.notify();
-            return;
-        }
-        if crate::lar::start_live(self, &sql, cx) {
-            self.batch[ix].state = ItemState::Ok;
-            self.update_marks(cx);
-            cx.emit(TabEvent::Finished);
-            self.next(cx);
             cx.notify();
             return;
         }
@@ -1660,7 +1639,7 @@ impl QueryTab {
 
     pub fn save_items(&self) -> Vec<dataman_core::session::SaveItem> {
         use dataman_core::session::ItemState as S;
-        if self.lar.live.is_some() || self.monitor.is_some() {
+        if self.monitor.is_some() {
             return Vec::new();
         }
         self.batch

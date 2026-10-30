@@ -1,7 +1,3 @@
-//! LAR does not accept `IS NOT DISTINCT FROM` in writes (verified: `0A000 not supported`), so
-//! there the row is first re-read by its key (allowed inside a transaction even after writing
-//! the table) and compared.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -38,14 +34,7 @@ impl TableRef {
 pub enum KeySource {
     PrimaryKey,
     UniqueIndex,
-    Guessed,
     Explicit,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ConflictCheck {
-    Predicate,
-    Reread,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -62,7 +51,6 @@ pub struct EditTarget {
     pub columns: Vec<Option<String>>,
     pub kinds: Vec<Kind>,
     pub type_names: Vec<String>,
-    pub check: ConflictCheck,
     pub not_null: Vec<bool>,
     pub dialect: Dialect,
     pub generated: Vec<bool>,
@@ -210,16 +198,12 @@ impl ChangeSet {
             let (kw, _) = key_where(row)?;
             let mut sets = Vec::new();
             let mut checks = Vec::new();
-            let mut expect = Vec::new();
             for (&col, e) in edits {
                 let Some(name) = target.columns.get(col).cloned().flatten() else {
                     return Err(format!("column {} is computed and cannot be edited", col + 1));
                 };
                 if target.generated.get(col).copied().unwrap_or(false) {
                     return Err(format!("{name} is written by the server and cannot be edited"));
-                }
-                if target.key.iter().any(|k| k.result_col == col) && target.check == ConflictCheck::Reread {
-                    return Err(format!("LAR cannot change a primary key ({name}): delete the row and insert a new one"));
                 }
                 let kind = target.kinds[col];
                 sets.push(format!("{} = {}", quote_ident(&name), value_literal_in(d, kind, &e.new)));
@@ -229,26 +213,12 @@ impl ChangeSet {
                         None => format!("{} IS NULL", quote_ident(&name)),
                         Some(t) => d.not_distinct(&quote_ident(&name), &compare_literal(d, kind, &t)),
                     });
-                    expect.push((name.clone(), col, Value::from(cell)));
                 }
             }
             let mut sql = format!("UPDATE {table} SET {} WHERE {kw}", sets.join(", "));
-            let mut reread = None;
-            match target.check {
-                ConflictCheck::Predicate => {
-                    for c in &checks {
-                        sql.push_str(" AND ");
-                        sql.push_str(c);
-                    }
-                }
-                ConflictCheck::Reread if !expect.is_empty() => {
-                    let cols = expect.iter().map(|(n, _, _)| quote_ident(n)).collect::<Vec<_>>().join(", ");
-                    reread = Some(Reread {
-                        sql: format!("SELECT {cols} FROM {table} WHERE {kw}"),
-                        expect: expect.iter().map(|(n, _, v)| (n.clone(), v.clone())).collect(),
-                    });
-                }
-                ConflictCheck::Reread => {}
+            for c in &checks {
+                sql.push_str(" AND ");
+                sql.push_str(c);
             }
             out.push(PlannedChange {
                 kind: ChangeKind::Update,
@@ -256,7 +226,6 @@ impl ChangeSet {
                 insert: None,
                 sql,
                 exists_sql: Some(format!("SELECT 1 FROM {table} WHERE {kw}")),
-                reread,
                 key: kw,
             });
         }
@@ -277,14 +246,13 @@ impl ChangeSet {
             } else {
                 format!("INSERT INTO {table} ({}) VALUES ({})", cols.join(", "), lits.join(", "))
             };
-            out.push(PlannedChange { kind: ChangeKind::Insert, row: None, insert: Some(i), sql, exists_sql: None, reread: None, key: String::new() });
+            out.push(PlannedChange { kind: ChangeKind::Insert, row: None, insert: Some(i), sql, exists_sql: None, key: String::new() });
         }
         for &row in &self.deletes {
             let (kw, _) = key_where(row)?;
             // Like an UPDATE, a DELETE must not remove a row someone changed since it was read:
             // every column the grid shows (and can compare) must still hold what it showed.
             let mut checks = Vec::new();
-            let mut expect = Vec::new();
             for (col, name) in target.columns.iter().enumerate() {
                 let Some(name) = name else { continue };
                 if target.key.iter().any(|k| k.result_col == col) || !delete_checkable(d, target.kinds[col], &target.type_names[col]) {
@@ -295,22 +263,11 @@ impl ChangeSet {
                     None => format!("{} IS NULL", quote_ident(name)),
                     Some(t) => d.not_distinct(&quote_ident(name), &compare_literal(d, target.kinds[col], &t)),
                 });
-                expect.push((name.clone(), Value::from(cell)));
             }
             let mut sql = format!("DELETE FROM {table} WHERE {kw}");
-            let mut reread = None;
-            match target.check {
-                ConflictCheck::Predicate => {
-                    for c in &checks {
-                        sql.push_str(" AND ");
-                        sql.push_str(c);
-                    }
-                }
-                ConflictCheck::Reread if !expect.is_empty() => {
-                    let cols = expect.iter().map(|(n, _)| quote_ident(n)).collect::<Vec<_>>().join(", ");
-                    reread = Some(Reread { sql: format!("SELECT {cols} FROM {table} WHERE {kw}"), expect });
-                }
-                ConflictCheck::Reread => {}
+            for c in &checks {
+                sql.push_str(" AND ");
+                sql.push_str(c);
             }
             out.push(PlannedChange {
                 kind: ChangeKind::Delete,
@@ -318,7 +275,6 @@ impl ChangeSet {
                 insert: None,
                 sql,
                 exists_sql: Some(format!("SELECT 1 FROM {table} WHERE {kw}")),
-                reread,
                 key: kw,
             });
         }
@@ -420,30 +376,11 @@ impl PartialEq for Value {
     }
 }
 
-impl Value {
-    pub fn display(&self, kind: Kind) -> String {
-        let c = match self {
-            Value::Null => Cell::Null,
-            Value::Bool(b) => Cell::Bool(*b),
-            Value::Int(v) => Cell::Int(*v),
-            Value::Float(f) => Cell::Float(*f),
-            Value::Text(s) => Cell::Text(s),
-        };
-        cell_text_utc(kind, c).unwrap_or_else(|| "NULL".into())
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChangeKind {
     Update,
     Insert,
     Delete,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct Reread {
-    pub sql: String,
-    pub expect: Vec<(String, Value)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -453,18 +390,12 @@ pub struct PlannedChange {
     pub insert: Option<usize>,
     pub sql: String,
     pub exists_sql: Option<String>,
-    pub reread: Option<Reread>,
     pub key: String,
 }
 
 pub fn preview(changes: &[PlannedChange]) -> String {
     let mut s = String::new();
     for c in changes {
-        if let Some(r) = &c.reread {
-            s.push_str("-- check: ");
-            s.push_str(&r.sql);
-            s.push('\n');
-        }
         s.push_str(&c.sql);
         s.push_str(";\n");
     }
@@ -474,7 +405,7 @@ pub fn preview(changes: &[PlannedChange]) -> String {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ConflictKind {
     RowGone,
-    Changed { column: Option<String>, expected: Option<String>, found: Option<String> },
+    Changed,
     NotUnique(u64),
 }
 
@@ -557,10 +488,6 @@ pub fn explain_error(e: &ErrorInfo) -> String {
     s
 }
 
-fn cell_eq(a: &Value, b: Cell<'_>) -> bool {
-    *a == Value::from(b)
-}
-
 impl Connection {
     pub fn apply_changes(self: &Arc<Self>, database: Option<&str>, changes: Vec<PlannedChange>) -> Task<ApplyReport> {
         let (this, db) = (self.clone(), database.map(str::to_string));
@@ -579,45 +506,6 @@ impl Connection {
             }
             let mut failure: Option<String> = None;
             for (i, c) in changes.iter().enumerate() {
-                if let Some(r) = &c.reread {
-                    match crate::rows::typed_query(client, &r.sql, 2).await {
-                        Err(info) => {
-                            let message = explain_error(&info);
-                            outcomes[i].outcome = Outcome::Failed { error: info, message: message.clone() };
-                            failure = Some(message);
-                            break;
-                        }
-                        Ok(rows) if rows.is_empty() => {
-                            let message = format!("The row with {} is gone (deleted or changed by someone else).", c.key);
-                            outcomes[i].outcome = Outcome::Conflict { kind: ConflictKind::RowGone, message: message.clone() };
-                            failure = Some(message);
-                            break;
-                        }
-                        Ok(rows) => {
-                            let mismatch = r.expect.iter().enumerate().find(|(j, (_, v))| !cell_eq(v, rows.cell(0, *j)));
-                            if let Some((j, (name, v))) = mismatch {
-                                let kind = rows.columns[j].kind;
-                                let found = rows.text(0, j);
-                                let expected = match v {
-                                    Value::Null => None,
-                                    v => Some(v.display(kind)),
-                                };
-                                let message = format!(
-                                    "Row with {}: {name} is now {} (the grid showed {}). Reload before saving.",
-                                    c.key,
-                                    found.clone().unwrap_or_else(|| "NULL".into()),
-                                    expected.clone().unwrap_or_else(|| "NULL".into())
-                                );
-                                outcomes[i].outcome = Outcome::Conflict {
-                                    kind: ConflictKind::Changed { column: Some(name.clone()), expected, found },
-                                    message: message.clone(),
-                                };
-                                failure = Some(message);
-                                break;
-                            }
-                        }
-                    }
-                }
                 let n = match client.execute(&c.sql).await {
                     Ok(n) => n.unwrap_or(0),
                     Err(info) => {
@@ -634,7 +522,7 @@ impl Connection {
                     };
                     let (kind, message) = if exists {
                         (
-                            ConflictKind::Changed { column: None, expected: None, found: None },
+                            ConflictKind::Changed,
                             format!("The row with {} was changed by someone else since it was read. Reload before saving.", c.key),
                         )
                     } else {
@@ -700,9 +588,8 @@ impl Connection {
             Ok(s) => s,
             Err(reason) => return Ok(Editability::ReadOnly(reason)),
         };
-        let check = if self.info.is_lar { ConflictCheck::Reread } else { ConflictCheck::Predicate };
         let client = self.meta(db).await?;
-        if !self.info.is_lar && dialect == Dialect::Postgres {
+        if dialect == Dialect::Postgres {
             resolve_base_types(&client, &cols, &mut type_names).await;
         }
         if let Some(named) = rs.named_origins() {
@@ -838,23 +725,6 @@ impl Connection {
                 return ro("no key column given");
             }
             (k, KeySource::Explicit)
-        } else if self.info.is_lar {
-            let int = |n: &str| {
-                position(n).filter(|&i| kinds[i] == Kind::Int).map(|_| n.to_string())
-            };
-            let guess = int("id").or_else(|| int(&format!("{}_id", table.name))).or_else(|| {
-                let t = table.name.trim_end_matches('s');
-                int(&format!("{t}_id"))
-            });
-            match guess {
-                Some(g) => (vec![g], KeySource::Guessed),
-                None => {
-                    return Ok(Editability::ReadOnly(format!(
-                        "LAR does not report primary keys: no integer `id` column in the result to use as the key of {} (choose the key column)",
-                        table.name
-                    )));
-                }
-            }
         } else {
             let keys = if dialect == Dialect::MySql {
                 my_key(&client, table.schema.as_deref().unwrap_or(db), &table.name).await
@@ -906,7 +776,7 @@ impl Connection {
                 None => return Ok(Editability::ReadOnly(format!("key column {n} is not in the result: add it to the SELECT to edit"))),
             }
         }
-        Ok(Editability::Editable(EditTarget { table, key, key_source: source, columns, kinds, type_names, check, not_null, dialect: self.dialect(), generated }))
+        Ok(Editability::Editable(EditTarget { table, key, key_source: source, columns, kinds, type_names, not_null, dialect: self.dialect(), generated }))
     }
 }
 
@@ -1433,7 +1303,7 @@ mod tests {
         assert_eq!(key_literal(Dialect::MySql, Kind::Text, Cell::Text("a\\b")), "'a\\\\b'");
     }
 
-    fn target(check: ConflictCheck) -> (EditTarget, Snapshot) {
+    fn target() -> (EditTarget, Snapshot) {
         let c = |n: &str, t: &str, k| ColumnInfo { name: n.into(), type_name: t.into(), type_oid: 0, kind: k };
         let cols = vec![c("id", "int8", Kind::Int), c("name", "text", Kind::Text), c("total", "float8", Kind::Float), c("x", "int8", Kind::Int)];
         let rs = ResultSet::new("select");
@@ -1457,7 +1327,6 @@ mod tests {
             columns: vec![Some("id".into()), Some("name".into()), Some("total".into()), None],
             kinds: cols.iter().map(|c| c.kind).collect(),
             type_names: cols.iter().map(|c| c.type_name.clone()).collect(),
-            check,
             not_null: vec![true, false, false, false],
             dialect: Dialect::Postgres,
             generated: vec![false; 4],
@@ -1467,7 +1336,7 @@ mod tests {
 
     #[test]
     fn change_set_and_plan() {
-        let (t, snap) = target(ConflictCheck::Predicate);
+        let (t, snap) = target();
         let mut cs = ChangeSet::new();
         cs.edit(0, 1, CellValue::text("a'b"), CellValue::text("fresh"));
         cs.edit(0, 2, CellValue::text("0.1"), CellValue::text("2.5"));
@@ -1496,29 +1365,6 @@ mod tests {
         let mut bad = ChangeSet::new();
         bad.edit(0, 3, CellValue::text("1"), CellValue::text("2"));
         assert!(bad.plan(&t, &snap).unwrap_err().contains("computed"));
-    }
-
-    #[test]
-    fn lar_plan_rereads() {
-        let (t, snap) = target(ConflictCheck::Reread);
-        let mut cs = ChangeSet::new();
-        cs.edit(1, 1, CellValue::Null, CellValue::text("y"));
-        let plan = cs.plan(&t, &snap).unwrap();
-        assert_eq!(plan[0].sql, "UPDATE public.\"Orders\" SET name = 'y' WHERE id = 11");
-        let r = plan[0].reread.as_ref().unwrap();
-        assert_eq!(r.sql, "SELECT name FROM public.\"Orders\" WHERE id = 11");
-        assert_eq!(r.expect, vec![("name".to_string(), Value::Null)]);
-        assert!(preview(&plan).starts_with("-- check: SELECT name"));
-        let mut pk = ChangeSet::new();
-        pk.edit(0, 0, CellValue::text("10"), CellValue::text("99"));
-        assert!(pk.plan(&t, &snap).unwrap_err().contains("primary key"));
-        let mut del = ChangeSet::new();
-        del.delete_row(0);
-        let plan = del.plan(&t, &snap).unwrap();
-        assert_eq!(plan[0].sql, "DELETE FROM public.\"Orders\" WHERE id = 10");
-        let r = plan[0].reread.as_ref().unwrap();
-        assert_eq!(r.sql, "SELECT name, total FROM public.\"Orders\" WHERE id = 10");
-        assert_eq!(r.expect, vec![("name".to_string(), Value::Text("a'b".into())), ("total".to_string(), Value::Float(0.1))]);
     }
 
     #[test]

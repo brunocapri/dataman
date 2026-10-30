@@ -30,7 +30,6 @@ pub struct FkTarget {
     pub to_table: String,
     pub to_columns: Vec<String>,
     pub from_cols: Vec<usize>,
-    pub inferred: bool,
 }
 
 impl FkTarget {
@@ -82,21 +81,15 @@ pub fn resolve(sources: &[Option<ColumnSource>], links: &[Link]) -> ForeignKeys 
             .collect()
     };
     for l in links {
-        let to_columns = match (l.to_columns.is_empty(), l.inferred) {
-            (false, _) => l.to_columns.clone(),
-            (true, true) if l.from_columns.len() == 1 => vec!["id".to_string()],
-            _ => continue,
-        };
-        if to_columns.len() != l.from_columns.len() || l.from_columns.is_empty() {
+        if l.to_columns.len() != l.from_columns.len() || l.from_columns.is_empty() {
             continue;
         }
         let target = |from_cols: Vec<usize>| FkTarget {
             from_schema: l.from_schema.clone(),
             to_schema: l.to_schema.clone(),
             to_table: l.to_table.clone(),
-            to_columns: to_columns.clone(),
+            to_columns: l.to_columns.clone(),
             from_cols,
-            inferred: l.inferred,
         };
         if let [c] = l.from_columns.as_slice() {
             for i in positions(&l.from_schema, &l.from_table, c) {
@@ -147,9 +140,8 @@ pub fn jump_in(t: &FkTarget, values: &[(Kind, Cell<'_>)], d: Dialect) -> Option<
     let cond = t.to_columns.iter().zip(&lits).map(|(c, v)| format!("{} = {v}", d.quote_ident(c))).collect::<Vec<_>>().join(" AND ");
     let sql = format!("SELECT * FROM {} WHERE {cond};", d.qualified(Some(&t.to_schema), &t.to_table));
     let shown = t.to_columns.iter().zip(&lits).map(|(c, v)| format!("{c} = {}", shorten(v))).collect::<Vec<_>>().join(", ");
-    let detail = if t.inferred { format!("{shown} · inferred") } else { shown.clone() };
     let key = t.to_columns.first().cloned().unwrap_or_default();
-    Some(FkJump { sql, title: format!("{} · {shown}", t.to_table), label: t.label(), detail, key })
+    Some(FkJump { sql, title: format!("{} · {shown}", t.to_table), label: t.label(), detail: shown, key })
 }
 
 impl Connection {
@@ -190,7 +182,7 @@ impl Connection {
         }
         let origins = rs.origins().unwrap_or_default();
         let oids: BTreeSet<u32> = origins.iter().filter_map(|o| o.table_oid).collect();
-        if !self.info.is_lar && !oids.is_empty() {
+        if !oids.is_empty() {
             if let Some(s) = self.sources_from_catalog(db, &origins, &oids).await {
                 return s;
             }
@@ -250,7 +242,7 @@ impl Connection {
 mod tests {
     use super::*;
 
-    fn link(from: &str, cols: &[&str], to: &str, to_cols: &[&str], inferred: bool) -> Link {
+    fn link(from: &str, cols: &[&str], to: &str, to_cols: &[&str]) -> Link {
         Link {
             from_schema: "public".into(),
             from_table: from.into(),
@@ -258,7 +250,6 @@ mod tests {
             to_schema: "public".into(),
             to_table: to.into(),
             to_columns: to_cols.iter().map(|c| c.to_string()).collect(),
-            inferred,
         }
     }
 
@@ -269,7 +260,7 @@ mod tests {
     #[test]
     fn single_column_keys() {
         let sources = [src("orders", "id"), src("orders", "customer"), src("orders", "total"), src("customer", "name")];
-        let links = [link("orders", &["customer"], "customer", &["id"], false), link("item", &["order_id"], "orders", &["id"], false)];
+        let links = [link("orders", &["customer"], "customer", &["id"]), link("item", &["order_id"], "orders", &["id"])];
         let fk = resolve(&sources, &links);
         assert_eq!(fk.flags(), vec![false, true, false, false]);
         let t = &fk.targets(1)[0];
@@ -279,13 +270,13 @@ mod tests {
         let fk = resolve(&twice, &links);
         assert_eq!(fk.targets(0)[0].from_cols, vec![0]);
         assert_eq!(fk.targets(1)[0].from_cols, vec![1]);
-        let two = [link("orders", &["customer"], "customer", &["id"], false), link("orders", &["customer"], "account", &["id"], false)];
+        let two = [link("orders", &["customer"], "customer", &["id"]), link("orders", &["customer"], "account", &["id"])];
         assert_eq!(resolve(&[src("orders", "customer")], &two).targets(0).len(), 2);
     }
 
     #[test]
     fn composite_keys_need_every_column_once() {
-        let l = [link("item", &["order_id", "line"], "order_line", &["order_id", "n"], false)];
+        let l = [link("item", &["order_id", "line"], "order_line", &["order_id", "n"])];
         let both = [src("item", "line"), src("item", "qty"), src("item", "order_id")];
         let fk = resolve(&both, &l);
         assert_eq!(fk.flags(), vec![true, false, true]);
@@ -297,23 +288,11 @@ mod tests {
 
     #[test]
     fn unknown_sources_and_other_tables_are_not_references() {
-        let l = [link("orders", &["customer"], "customer", &["id"], false)];
+        let l = [link("orders", &["customer"], "customer", &["id"])];
         assert!(resolve(&[None, None], &l).is_empty());
         assert!(resolve(&[src("invoice", "customer")], &l).is_empty());
         assert!(resolve(&[Some(ColumnSource::new("archive", "orders", "customer"))], &l).is_empty());
         assert!(resolve(&[], &l).is_empty());
-    }
-
-    #[test]
-    fn lar_links_lead_to_the_id() {
-        let l = [link("orders", &["customer"], "customer", &[], true)];
-        let fk = resolve(&[src("orders", "customer")], &l);
-        let t = &fk.targets(0)[0];
-        assert!(t.inferred);
-        assert_eq!(t.to_columns, vec!["id".to_string()]);
-        let j = jump(t, &[(Kind::Int, Cell::Int(42))]).unwrap();
-        assert_eq!(j.detail, "id = 42 · inferred");
-        assert!(resolve(&[src("orders", "customer")], &[link("orders", &["customer"], "customer", &[], false)]).is_empty());
     }
 
     #[test]
@@ -324,7 +303,6 @@ mod tests {
             to_table: "customer".into(),
             to_columns: vec!["id".into()],
             from_cols: vec![1],
-            inferred: false,
         };
         let j = jump(&t, &[(Kind::Int, Cell::Int(42))]).unwrap();
         assert_eq!(j.sql, "SELECT * FROM public.customer WHERE id = 42;");

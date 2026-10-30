@@ -22,10 +22,6 @@ fn pg_profile() -> ConnectionProfile {
     profile("DATAMAN_PG", "127.0.0.1:55432", "postgres", "dataman")
 }
 
-fn lar_profile() -> ConnectionProfile {
-    profile("DATAMAN_LAR", "127.0.0.1:5490", "lar", "lar")
-}
-
 fn open(e: &Env, p: ConnectionProfile, pw: Option<&str>) -> Option<Arc<Connection>> {
     match e.core.block_on(e.core.connect(p.clone(), pw.map(str::to_string))) {
         Ok(c) => Some(c),
@@ -234,38 +230,4 @@ fn read_only_on_postgres() {
     let report = e.core.block_on(c.apply_changes(None, Vec::new())).unwrap();
     assert!(!report.committed && report.error.is_some_and(|m| m.contains("read-only")));
     exec(&e, &w, &["DROP TABLE public.dataman_ro"]);
-}
-
-#[test]
-fn transactions_and_read_only_on_lar() {
-    let e = env();
-    let Some(w) = open(&e, lar_profile(), None) else { return };
-    exec_quiet(&e, &w, &["DROP TABLE dataman_tx_lar"]);
-    exec(&e, &w, &["CREATE TABLE dataman_tx_lar (id int, v text)"]);
-    let s = w.session(None);
-    ok(&e, &s, "BEGIN");
-    ok(&e, &s, "INSERT INTO dataman_tx_lar VALUES (1, 'a')");
-    assert_eq!((s.tx().status, s.tx().statements), (TxStatus::Open, 1));
-    assert_eq!(end(&e, &s, true), TxEnd::Committed);
-    ok(&e, &s, "BEGIN");
-    ok(&e, &s, "INSERT INTO dataman_tx_lar VALUES (2, 'b')");
-    assert_eq!(end(&e, &s, false), TxEnd::RolledBack);
-    assert_eq!(count(&e, &w, "SELECT count(*) FROM dataman_tx_lar"), "1");
-    ok(&e, &s, "BEGIN");
-    assert_eq!(run(&e, &s, "SELECT 1/0").phase(), Phase::Failed);
-    assert_eq!(s.tx().status, TxStatus::Failed);
-    assert_eq!(end(&e, &s, false), TxEnd::RolledBack);
-    assert_eq!(s.tx().status, TxStatus::Idle);
-    drop(s);
-
-    // Read-only: LAR accepts `SET default_transaction_read_only = on` and does not enforce it.
-    // The client-side refusal is what keeps a read-only LAR connection read-only.
-    let mut p = lar_profile();
-    p.read_only = true;
-    let Some(c) = open(&e, p, None) else { return };
-    let s = c.session(None);
-    let rs = run(&e, &s, "INSERT INTO dataman_tx_lar VALUES (3, 'c')");
-    eprintln!("LAR, read-only session, INSERT: {:?} {:?}", rs.phase(), rs.status().error.map(|e| e.message));
-    assert!(guard::read_only_refusal("INSERT INTO dataman_tx_lar VALUES (3, 'c')").is_some());
-    exec(&e, &w, &["DROP TABLE dataman_tx_lar"]);
 }

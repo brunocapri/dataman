@@ -15,7 +15,6 @@ pub enum ResultState {
     ErrPartial,
     Text,
     Sorting,
-    Live,
     Edit,
     Partial,
     Messages,
@@ -30,7 +29,6 @@ pub enum Role {
     Ok,
     Warn,
     Err,
-    Lar,
 }
 
 pub struct Spec {
@@ -55,7 +53,6 @@ impl ResultState {
             ResultState::ErrPartial => s("✕", "ERROR AFTER ROWS", Role::Err, "rows received"),
             ResultState::Text => s("≡", "TEXT PROTOCOL", Role::Plain, "rows"),
             ResultState::Sorting => s("↕", "SORTING", Role::Acc, "rows"),
-            ResultState::Live => s("●", "LIVE", Role::Lar, "rows"),
             ResultState::Edit => s("✎", "PENDING", Role::Warn, "rows"),
             ResultState::Partial => s("◐", "PARTIAL", Role::Info, "rows kept"),
             ResultState::Messages => s("≡", "MESSAGES", Role::Plain, "statements"),
@@ -72,6 +69,5 @@ pub fn role_colors(t: &Theme, r: Role) -> (Hsla, Hsla) {
         Role::Ok => (t.ok, t.ok_s),
         Role::Warn => (t.warn, t.warn_s),
         Role::Err => (t.err, t.err_s),
-        Role::Lar => (t.lar, t.lar_s),
     }
 }

@@ -156,7 +156,7 @@ fn stdio_session() {
     assert_eq!(rows.len(), 4);
     assert_eq!(rows[1].as_array().unwrap()[0..3], [json!("prod"), json!("production"), json!("off")], "production defaults to off and shows nothing else");
     assert!(rows[1][4].is_null());
-    assert_eq!((rows[2][2].as_str(), rows[2][11].as_u64()), (Some("write"), Some(100)), "the tier and its row limit");
+    assert_eq!((rows[2][2].as_str(), rows[2][10].as_u64()), (Some("write"), Some(100)), "the tier and its row limit");
     assert_eq!(rows[3][2], "full");
     assert!(!text.to_lowercase().contains("password"));
 

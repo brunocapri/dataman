@@ -85,45 +85,12 @@ pub fn marked(t: &Theme, text: String, q: &str) -> Div {
     }
 }
 
-pub fn lar_dot(t: &Theme) -> Div {
-    div().flex_none().size(px(6.)).rounded(px(3.)).bg(t.lar)
-}
-
 pub fn caps(t: &Theme, text: impl Into<SharedString>) -> Div {
     div().flex_none().text_size(px(10.5)).text_color(t.tx3).child(text.into())
 }
 
 pub fn pixel(text: impl Into<SharedString>, size: f32, color: Hsla) -> Div {
     div().font_family(PIXEL).text_size(px(size)).line_height(px(size * 1.15)).text_color(color).child(text.into())
-}
-
-pub fn lar_badge(t: &Theme, text: &'static str) -> Div {
-    div()
-        .flex_none()
-        .h(px(17.))
-        .px(px(6.))
-        .flex()
-        .items_center()
-        .bg(t.lar)
-        .text_color(t.on_lar)
-        .font_family(PIXEL)
-        .text_size(px(11.5))
-        .child(text)
-}
-
-pub fn lar_tag(t: &Theme) -> Div {
-    div()
-        .flex_none()
-        .h(px(15.))
-        .px(px(4.))
-        .flex()
-        .items_center()
-        .border_1()
-        .border_color(t.lar)
-        .bg(t.lar_s)
-        .text_color(t.lar_t)
-        .text_size(px(9.5))
-        .child("LAR")
 }
 
 pub fn not_reported(t: &Theme) -> Div {
@@ -686,6 +653,72 @@ pub fn modal_close(t: &Theme, id: impl Into<ElementId>) -> Stateful<Div> {
     icon_button(t, id, Icon::Close, 26., 14.)
 }
 
+/// A modal layer laid out this frame: what Esc does to it.
+struct EscLayer {
+    window: gpui::WindowId,
+    /// The layer's key context: with the focus under it, its own Esc binding answers.
+    keys: Option<&'static str>,
+    /// None while the layer listens for a key (a shortcut being recorded): Esc is its own.
+    close: Option<std::rc::Rc<dyn Fn(&mut Window, &mut App)>>,
+}
+
+thread_local! {
+    static ESC_LAYERS: std::cell::RefCell<Vec<EscLayer>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Called as the window renders: only the modals this frame lays out answer Esc.
+pub fn esc_frame(window: &Window) {
+    let id = window.window_handle().window_id();
+    ESC_LAYERS.with(|l| l.borrow_mut().retain(|e| e.window != id));
+}
+
+fn esc_layer(keys: Option<&'static str>, close: Option<std::rc::Rc<dyn Fn(&mut Window, &mut App)>>) -> gpui::AnyElement {
+    gpui::canvas(move |_, window, _| ESC_LAYERS.with(|l| l.borrow_mut().push(EscLayer { window: window.window_handle().window_id(), keys, close })), |_, _, _, _| {})
+        .absolute()
+        .size_0()
+        .into_any_element()
+}
+
+/// A modal layer's child: Esc does what `close` does (the layer's Cancel), wherever the keys
+/// are. Layers register as they lay out, so the last is the topmost. With the focus under `keys`
+/// (the layer's key context) its own Esc binding answers instead, so a menu in it shuts first.
+pub fn esc_closes<E: Default + 'static>(keys: Option<&'static str>, close: impl Fn(&E, &mut Window, &mut App) + 'static) -> gpui::AnyElement {
+    esc_layer(keys, Some(std::rc::Rc::new(move |window: &mut Window, cx: &mut App| close(&E::default(), window, cx))))
+}
+
+/// A modal layer listening for a key: Esc goes to it, and closes nothing.
+pub fn esc_kept() -> gpui::AnyElement {
+    esc_layer(None, None)
+}
+
+/// A modal fading out: drawn, but no longer answering Esc.
+pub fn esc_muted(el: gpui::AnyElement) -> gpui::AnyElement {
+    let from = std::rc::Rc::new(std::cell::Cell::new(0));
+    let to = from.clone();
+    let mark = gpui::canvas(move |_, _, _| from.set(ESC_LAYERS.with(|l| l.borrow().len())), |_, _, _, _| {}).absolute().size_0();
+    let cut = gpui::canvas(move |_, _, _| ESC_LAYERS.with(|l| l.borrow_mut().truncate(to.get())), |_, _, _, _| {}).absolute().size_0();
+    div().absolute().top_0().left_0().right_0().bottom_0().child(mark).child(el).child(cut).into_any_element()
+}
+
+/// Esc closes the topmost modal. An interceptor runs before any binding and key handler, so
+/// nothing under a modal hears it; registered before the drag's (`dnd`), which goes first.
+pub fn close_modals_on_escape(cx: &mut App) {
+    cx.intercept_keystrokes(|ev, window, cx| {
+        if ev.keystroke.key != "escape" || ev.keystroke.modifiers.modified() || cx.has_active_drag() {
+            return;
+        }
+        let id = window.window_handle().window_id();
+        let Some((keys, close)) = ESC_LAYERS.with(|l| l.borrow().iter().rev().find(|e| e.window == id).map(|e| (e.keys, e.close.clone()))) else { return };
+        let Some(close) = close else { return };
+        if keys.is_some_and(|k| ev.context_stack.iter().any(|c| c.contains(k))) {
+            return;
+        }
+        cx.stop_propagation();
+        close(window, cx);
+    })
+    .detach();
+}
+
 pub fn modal_footer(t: &Theme) -> Div {
     div()
         .h(px(56.))
@@ -744,6 +777,26 @@ mod tests {
             }
         }
         assert!(plain.is_empty(), "use .tip(…) (ui::Tipped): {plain:?}");
+    }
+
+    /// Every modal layer (a scrim) answers Esc through `esc_closes`, as many as it has scrims.
+    /// app.rs's param sheet holds the prompt (params_ui), which answers for it.
+    #[test]
+    fn every_modal_answers_esc() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut deaf = Vec::new();
+        for e in std::fs::read_dir(&dir).unwrap().flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            let text = std::fs::read_to_string(e.path()).unwrap_or_default();
+            let scrims = text.matches(concat!(".bg(t.", "scrim)")).count();
+            let answers = text.matches(concat!("esc_", "closes(")).count() + usize::from(name == "params_ui.rs");
+            // data_import.rs: its guard is drawn inside the sheet's own layer.
+            let layers = scrims - usize::from(name == "data_import.rs" && scrims > 0) - usize::from(name == "app.rs" && scrims > 0);
+            if answers < layers {
+                deaf.push(format!("{name}: {layers} layers, {answers} answer Esc"));
+            }
+        }
+        assert!(deaf.is_empty(), "a modal Esc cannot close (ui::esc_closes): {deaf:?}");
     }
 }
 

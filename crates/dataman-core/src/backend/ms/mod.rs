@@ -18,7 +18,7 @@ use self::decode::Dec;
 use super::{Ran, RowSource};
 use crate::config::{ConnectionProfile, SslMode};
 use crate::result::{ChunkBuilder, ColumnInfo, ErrorInfo, Phase, ResultSet};
-use crate::server::{ServerExtension, ServerInfo};
+use crate::server::ServerInfo;
 use crate::sql::split::{GoBatch, go_batches};
 use crate::tx::{Seen, TxWatch};
 
@@ -574,7 +574,7 @@ pub(crate) fn version_label(product_version: &str, engine_edition: i32) -> Strin
     }
 }
 
-pub(crate) async fn server_info(client: &Client, exts: &[Arc<dyn ServerExtension>]) -> Result<ServerInfo> {
+pub(crate) async fn server_info(client: &Client) -> Result<ServerInfo> {
     let rows = client
         .text_rows(
             "SELECT CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(128)), CAST(SERVERPROPERTY('EngineEdition') AS int), \
@@ -587,7 +587,6 @@ pub(crate) async fn server_info(client: &Client, exts: &[Arc<dyn ServerExtension
     let mut info = ServerInfo { version: version_label(&get(0), edition), database: get(2), user: get(3), ..Default::default() };
     let schema = get(4);
     info.search_path = if schema.is_empty() { vec!["dbo".into()] } else { vec![schema] };
-    info.extensions = exts.iter().filter(|e| e.detect(&info)).map(|e| e.id()).collect();
     Ok(info)
 }
 

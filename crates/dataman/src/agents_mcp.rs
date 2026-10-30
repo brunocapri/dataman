@@ -349,6 +349,7 @@ impl AgentsPage {
                     }
                     cx.stop_propagation();
                 }))
+                .child(ui::esc_closes(None, cx.listener(|v, _: &(), window, cx| v.close_import(window, cx))))
                 .flex()
                 .items_center()
                 .justify_center()

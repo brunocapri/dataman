@@ -83,7 +83,7 @@ impl Engine {
     pub fn parse(s: &str) -> Option<Engine> {
         let s = s.trim().to_ascii_lowercase();
         let alias = match s.as_str() {
-            "pg" | "postgresql" | "lar" => Some(Engine::Postgres),
+            "pg" | "postgresql" => Some(Engine::Postgres),
             "mariadb" => Some(Engine::MySql),
             "mssql" | "sqlserver" | "sql_server" => Some(Engine::SqlServer),
             "mongo" => Some(Engine::MongoDb),
@@ -227,12 +227,15 @@ pub struct ConnectionProfile {
     pub save_password: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
+    /// `color` is this person's pick (the dialog writes one either way): it outranks production's
+    /// red. Absent in older files, where production stays red.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub color_picked: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ssh: Option<SshSettings>,
     #[serde(default, skip_serializing_if = "Environment::is_none")]
     pub env: Environment,
-    /// Dataman refuses writes before they reach the server: LAR accepts READ ONLY without
-    /// enforcing it.
+    /// Dataman refuses writes before they reach the server.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub read_only: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -403,6 +406,7 @@ impl ConnectionProfile {
             sslmode: SslMode::Prefer,
             save_password: false,
             color: None,
+            color_picked: false,
             ssh: None,
             env: Environment::None,
             read_only: false,
@@ -421,6 +425,11 @@ impl ConnectionProfile {
     }
 
     /// A file database: no host, port, user, TLS or tunnel. The name is the file's.
+    /// Painted production's red: production, and no colour of this person's own.
+    pub fn prod_red(&self) -> bool {
+        self.env.is_production() && !self.color_picked
+    }
+
     pub fn new_file(engine: Engine, path: impl Into<String>) -> Self {
         let path = path.into();
         let name = Path::new(&path).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
@@ -1045,6 +1054,19 @@ mod tests {
     }
 
     #[test]
+    fn production_red_yields_to_a_picked_color() {
+        // An older file: the dialog wrote a colour nobody picked, production stays red.
+        let old: ConnectionProfile = toml::from_str("id = \"a\"\nname = \"Prod\"\ncolor = \"blue\"\nenv = \"production\"\n").unwrap();
+        assert!(old.prod_red() && !old.color_picked);
+        let picked = ConnectionProfile { color_picked: true, ..old.clone() };
+        assert!(!picked.prod_red());
+        let text = toml::to_string(&picked).unwrap();
+        assert!(text.contains("color_picked = true"), "{text}");
+        assert!(!toml::to_string(&old).unwrap().contains("color_picked"));
+        assert!(!ConnectionProfile { env: Environment::Staging, ..old }.prod_red());
+    }
+
+    #[test]
     fn config_dir_is_private() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
@@ -1069,7 +1091,7 @@ mod tests {
         p.port = 55432;
         p.save_password = true;
         store.upsert(p.clone()).unwrap();
-        let mut q = ConnectionProfile::new("lar");
+        let mut q = ConnectionProfile::new("staging");
         q.sslmode = SslMode::Disable;
         store.upsert(q.clone()).unwrap();
         p.name = "renamed".into();
@@ -1390,11 +1412,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let dirs = Dirs::at(dir.path().join("dataman"));
         std::fs::create_dir_all(&dirs.config).unwrap();
-        let old = "[[connection]]\nid = \"a1\"\nname = \"lar\"\nhost = \"127.0.0.1\"\nport = 5490\nuser = \"lar\"\ndatabase = \"lar\"\nmetrics_url = \"http://127.0.0.1:9187/metrics\"\n";
+        let old = "[[connection]]\nid = \"a1\"\nname = \"old\"\nhost = \"127.0.0.1\"\nport = 5490\nuser = \"app\"\ndatabase = \"app\"\nmetrics_url = \"http://127.0.0.1:9187/metrics\"\n";
         std::fs::write(dirs.connections_file(), old).unwrap();
         let store = ConfigStore::open(&dirs).unwrap();
         let c = store.connections();
-        assert_eq!((c.len(), c[0].name.as_str(), c[0].port), (1, "lar", 5490));
+        assert_eq!((c.len(), c[0].name.as_str(), c[0].port), (1, "old", 5490));
         store.upsert(c[0].clone()).unwrap();
         assert!(!std::fs::read_to_string(dirs.connections_file()).unwrap().contains("metrics_url"));
     }

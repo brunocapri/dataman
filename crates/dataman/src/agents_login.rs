@@ -712,14 +712,17 @@ impl AgentsPage {
             .into_any_element()
     }
 
+    /// The sheet's ✕ and Esc: nothing while it creates or removes (that can't be stopped).
+    fn login_close(&mut self, cx: &mut Context<Self>) {
+        if !matches!(self.login.sheet, Some(Sheet::Create { busy: true, .. } | Sheet::Remove { busy: true, .. })) {
+            self.login.sheet = None;
+            cx.notify();
+        }
+    }
+
     pub(crate) fn login_sheet(&self, t: &Theme, p: &ConnectionProfile, cx: &mut Context<Self>) -> Option<AnyElement> {
         let sheet = self.login.sheet.as_ref()?;
-        let close = cx.listener(|v, _: &ClickEvent, _, cx| {
-            if !matches!(v.login.sheet, Some(Sheet::Create { busy: true, .. } | Sheet::Remove { busy: true, .. })) {
-                v.login.sheet = None;
-                cx.notify();
-            }
-        });
+        let close = cx.listener(|v, _: &ClickEvent, _, cx| v.login_close(cx));
         let (title, body, footer) = match sheet {
             Sheet::Create { review, opts, confirm, busy, error } => self.create_sheet(t, p, review.as_ref(), *opts, *confirm, *busy, error.as_deref(), cx),
             Sheet::Remove { plan, confirm, busy, error } => self.remove_sheet(t, p, plan.as_ref(), *confirm, *busy, error.as_deref(), cx),
@@ -734,6 +737,7 @@ impl AgentsPage {
                 .flex()
                 .items_center()
                 .justify_center()
+                .child(ui::esc_closes(None, cx.listener(|v, _: &(), _, cx| v.login_close(cx))))
                 .child(
                     ui::modal(t, "agents-login-card")
                         .w(px(1040.))

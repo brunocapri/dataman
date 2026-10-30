@@ -34,11 +34,6 @@ fn pg_profile() -> ConnectionProfile {
     }
 }
 
-fn lar_profile() -> ConnectionProfile {
-    let (host, port) = addr("DATAMAN_LAR", "127.0.0.1:5490");
-    ConnectionProfile { host, port, user: "lar".into(), database: "lar".into(), sslmode: SslMode::Disable, ..ConnectionProfile::new("lar") }
-}
-
 fn connect(e: &Env, p: ConnectionProfile, pw: Option<&str>) -> Option<Arc<Connection>> {
     match e.core.block_on(e.core.connect(p.clone(), pw.map(str::to_string))) {
         Ok(c) => Some(c),
@@ -54,10 +49,6 @@ fn pg(e: &Env) -> Option<Arc<Connection>> {
     connect(e, pg_profile(), Some(&pw))
 }
 
-fn lar(e: &Env) -> Option<Arc<Connection>> {
-    connect(e, lar_profile(), None)
-}
-
 fn finish(e: &Env, rs: &dataman_core::ResultSet) -> Phase {
     e.core.block_on(async { tokio::time::timeout(Duration::from_secs(60), rs.wait_finished()).await.expect("timeout") })
 }
@@ -65,16 +56,9 @@ fn finish(e: &Env, rs: &dataman_core::ResultSet) -> Phase {
 #[test]
 fn detects_servers() {
     let e = env();
-    if let Some(c) = pg(&e) {
-        assert!(!c.info.is_lar, "{}", c.info.version);
-        assert!(c.info.version.starts_with("PostgreSQL"));
-        assert_eq!(c.info.database, "dataman");
-        assert!(c.info.extensions.is_empty());
-    }
-    if let Some(c) = lar(&e) {
-        assert!(c.info.is_lar, "{}", c.info.version);
-        assert_eq!(c.info.extensions, vec!["lar"]);
-    }
+    let Some(c) = pg(&e) else { return };
+    assert!(c.info.version.starts_with("PostgreSQL"));
+    assert_eq!(c.info.database, "dataman");
 }
 
 #[test]
@@ -250,57 +234,6 @@ fn introspection_postgres() {
     let cols = e.core.block_on(c.columns("dataman", "public", "customer")).unwrap();
     assert!(cols.iter().any(|c| c.primary_key), "{cols:?}");
     assert!(c.schema.notes().is_empty(), "{:?}", c.schema.notes());
-}
-
-#[test]
-fn introspection_lar_degrades() {
-    let e = env();
-    let Some(c) = lar(&e) else { return };
-    let dbs = e.core.block_on(c.databases()).unwrap();
-    assert!(dbs.contains(&"lar".to_string()), "{dbs:?}");
-    let schemas = e.core.block_on(c.schemas("lar")).unwrap();
-    assert!(schemas.contains(&"public".to_string()), "{schemas:?}");
-    let rels = e.core.block_on(c.relations("lar", "public")).unwrap();
-    assert!(rels.iter().any(|r| r.name == "demo_orders"), "{rels:?}");
-    let cols = e.core.block_on(c.columns("lar", "public", "demo_orders")).unwrap();
-    assert!(cols.iter().any(|c| c.name == "id" && c.type_name == "bigint"), "{cols:?}");
-    let idx = e.core.block_on(c.indexes("lar", "public", "demo_orders")).unwrap();
-    eprintln!("LAR demo_orders indexes: {idx:?}; notes: {:?}", c.schema.notes());
-    e.core.block_on(c.preload("lar")).unwrap();
-    let snap = c.schema.snapshot("lar");
-    let i = snap.resolve(None, "demo_orders").unwrap();
-    assert!(!snap.columns_of(i).is_empty());
-
-    let s = c.session(None);
-    let rs = s.execute("SELECT id, status, total FROM demo_orders LIMIT 5");
-    assert_eq!(finish(&e, &rs), Phase::Done, "{:?}", rs.status().error);
-    assert_eq!(rs.rows(), 5);
-    eprintln!("LAR text_mode={} columns={:?}", rs.status().text_mode, rs.columns().unwrap());
-    let rs = s.execute("SELECT version()");
-    assert_eq!(finish(&e, &rs), Phase::Done);
-    assert_eq!(rs.snapshot().text(0, 0).as_deref(), Some("PostgreSQL 16.6 (LAR)"));
-}
-
-#[test]
-fn lar_big_result_and_cancel() {
-    let e = env();
-    let Some(c) = lar(&e) else { return };
-    let s = c.session(None);
-    let t0 = Instant::now();
-    let rs = s.execute("SELECT * FROM demo_orders");
-    e.core.block_on(async {
-        let mut rx = rs.subscribe();
-        while !matches!(rs.phase(), Phase::Paused) && !rs.phase().is_finished() {
-            rx.changed().await.unwrap();
-        }
-    });
-    eprintln!("LAR: first {} rows of demo_orders in {:?} ({:?})", rs.rows(), t0.elapsed(), rs.phase());
-    let t = Instant::now();
-    s.cancel();
-    let p = finish(&e, &rs);
-    eprintln!("LAR: cancel of a paused result → {p:?} in {:?}", t.elapsed());
-    let rs = s.execute("SELECT 1");
-    assert_eq!(finish(&e, &rs), Phase::Done, "{:?}", rs.status().error);
 }
 
 #[test]

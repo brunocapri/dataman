@@ -158,14 +158,7 @@ async fn read_walk(o: &Opened) -> Result<(Tree, bool), ToolError> {
             rel.columns = cols.into_iter().map(|x| (x.name, x.type_name, x.primary_key, x.nullable == Some(false))).collect();
             if let Some(g) = &links {
                 for l in g.links.iter().filter(|l| l.from_table == r.name) {
-                    rel.fks.push(format!(
-                        "({}) → {}.{}({}){}",
-                        l.from_columns.join(", "),
-                        l.to_schema,
-                        l.to_table,
-                        l.to_columns.join(", "),
-                        if l.inferred { " inferred" } else { "" }
-                    ));
+                    rel.fks.push(format!("({}) → {}.{}({})", l.from_columns.join(", "), l.to_schema, l.to_table, l.to_columns.join(", ")));
                 }
             }
             t.entry(s.clone()).or_default().insert(r.name, rel);
@@ -272,7 +265,7 @@ pub async fn read(cx: &Call, u: &Uri) -> Result<Arc<String>, ToolError> {
     if !restricted && let Some(s) = cx.hub.snapshots.lock().get(&key) {
         return Ok(s.clone());
     }
-    let (t, truncated) = if o.conn.info.is_lar || !o.conn.engine().is_postgres() {
+    let (t, truncated) = if !o.conn.engine().is_postgres() {
         read_walk(&o).await?
     } else {
         match read_pg(cx, &o).await {

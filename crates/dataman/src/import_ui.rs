@@ -235,6 +235,7 @@ impl Render for ImportView {
             .on_action(cx.listener(|v, _: &ImportConfirm, _, cx| v.confirm(cx)))
             .on_action(cx.listener(|_, _: &ImportCancel, _, cx| cx.emit(ImportEvent::Close)))
             .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(ui::esc_closes(Some("ImportSheet"), cx.listener(|_, _: &ImportCancel, _, cx| cx.emit(ImportEvent::Close))))
             .child(card)
     }
 }

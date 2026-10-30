@@ -282,7 +282,7 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
     let bad_pw = stage == "dialog-fail";
     let password = pw.clone();
     connect(&ws, prof, pw, cx);
-    let default_sql = crate::lar::demo::sql(&stage).unwrap_or_else(|| match stage.as_str() {
+    let default_sql = match stage.as_str() {
         "error" | "error-pop" => "-- shipping backfill (3 statements)\nSELECT count(*) FROM orders;\n\nUPDATE orders p\n   SET status = s.delivered_at\n  FROM orders s\n WHERE s.id = p.id;\n\nSELECT count(*) FROM customer;".to_string(),
         "edit" | "edit-review" | "edit-commit" | "edit-conflict" => "SELECT * FROM dataman_scratch.products ORDER BY id;".to_string(),
         "export-done" => "SELECT * FROM dataman_scratch.products ORDER BY id;".to_string(),
@@ -299,7 +299,7 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
         "edit-readonly" => "SELECT p.id, p.status, c.name FROM orders p JOIN customer c ON c.id = p.customer LIMIT 50;".to_string(),
         "cancelling" => "-- full scan, then a long wait\nSELECT p.customer, count(*), sum(p.total)\nFROM   orders p\nGROUP  BY p.customer\nORDER  BY sum(p.total) DESC;".to_string(),
         _ => "-- orders with their customer, newest first\nSELECT p.id, p.status, p.total, p.address, c.name, NULL AS nothing, '' AS empty\nFROM   orders p\nJOIN   customer c ON c.id = p.customer\nORDER  BY p.id;".to_string(),
-    });
+    };
     let sql = std::env::var("DATAMAN_DEMO_SQL").unwrap_or(default_sql);
     window
         .spawn(cx, async move |cx| {
@@ -659,31 +659,10 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                     }
                     "tree-delete" => ws.update(cx, |w, cx| w.on_row_action(crate::tree_menu::Act::DeleteConnection, crate::tree_menu::Target::Conn { id: id.clone(), name: String::new(), state: crate::tree_menu::ConnPhase::Connected }, false, window, cx)),
                     "tree-ddl" => ws.update(cx, |w, cx| {
-                        let target = crate::tree_menu::Target::Rel { conn: id.clone(), db: db.clone(), schema: "public".into(), name: "orders".into(), kind: dataman_core::schema::RelKind::Table, lar: false, ro: false };
+                        let target = crate::tree_menu::Target::Rel { conn: id.clone(), db: db.clone(), schema: "public".into(), name: "orders".into(), kind: dataman_core::schema::RelKind::Table, ro: false };
                         w.on_row_action(crate::tree_menu::Act::Generate(crate::tree_menu::Gen::CreateTable), target, false, window, cx);
                     }),
-                    s if s.starts_with("fk-")
-                        || s.starts_with("find")
-                        || s.starts_with("results")
-                        || crate::mysql_check::is_stage(s)
-                        || crate::mssql_check::is_stage(s)
-                        || crate::table_check::is_stage(s)
-                        || crate::tx_check::is_stage(s)
-                        || crate::insert_check::is_stage(s)
-                        || crate::import_demo::is_stage(s)
-                        || crate::intel_demo::is_stage(s)
-                        || crate::plan_demo::is_stage(s)
-                        || crate::activity_demo::is_stage(s)
-                        || crate::ui_check::is_stage(s)
-                        || crate::dock_check::is_stage(s)
-                        || crate::split_check::is_stage(s)
-                        || crate::session_check::is_stage(s)
-                        || crate::history_check::is_stage(s)
-                        || crate::mcp_check::is_stage(s)
-                        || crate::explorer_demo::is_stage(s) => {}
-                    other => {
-                        crate::lar::demo::stage(other, &ws, window, cx);
-                    }
+                    _ => {}
                 }
             });
             if stage.starts_with("edit") && stage != "edit-readonly" {
@@ -961,7 +940,7 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                     tree.update(cx, |t, cx| t.demo_menu_highlight(true, false, cx));
                 });
             }
-            sleep(cx, if stage.starts_with("dialog-") { 1500 } else { 500 } + crate::lar::demo::wait_ms(&stage)).await;
+            sleep(cx, if stage.starts_with("dialog-") { 1500 } else { 500 }).await;
             if let Some((x, y)) = std::env::var("DATAMAN_SHOT_HOVER").ok().and_then(|v| v.split_once(',').and_then(|(x, y)| Some((x.parse::<f32>().ok()?, y.parse::<f32>().ok()?)))) {
                 for wait in [900, 300] {
                     let _ = cx.update(|window, cx| {

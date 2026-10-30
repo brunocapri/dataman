@@ -9,7 +9,7 @@ use super::Ran;
 use super::embed::{self, Columns};
 use crate::config::ConnectionProfile;
 use crate::result::{ColumnInfo, ErrorInfo, ResultSet};
-use crate::server::{ServerExtension, ServerInfo};
+use crate::server::ServerInfo;
 use crate::tx::TxWatch;
 use crate::value::Kind;
 
@@ -88,7 +88,7 @@ impl Canceller {
     }
 }
 
-pub(crate) async fn server_info(c: &Client, _: &[Arc<dyn ServerExtension>]) -> Result<ServerInfo> {
+pub(crate) async fn server_info(c: &Client) -> Result<ServerInfo> {
     match *c {}
 }
 

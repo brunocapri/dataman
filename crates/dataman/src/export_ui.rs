@@ -538,6 +538,17 @@ impl ExportView {
     }
 }
 
+impl ExportView {
+    /// Esc: an open menu shuts first, then the sheet.
+    fn close_esc(&mut self, _: &CloseExport, _: &mut Window, cx: &mut Context<Self>) {
+        if self.menu.take().is_some() {
+            cx.notify();
+        } else {
+            cx.emit(ExportEvent::Close)
+        }
+    }
+}
+
 impl Render for ExportView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme();
@@ -554,16 +565,11 @@ impl Render for ExportView {
                 .bg(t.scrim)
                 .key_context("ExportDialog Modal")
                 .track_focus(&self.focus)
-                .on_action(cx.listener(|v, _: &CloseExport, _, cx| {
-                    if v.menu.take().is_some() {
-                        cx.notify();
-                    } else {
-                        cx.emit(ExportEvent::Close)
-                    }
-                }))
+                .on_action(cx.listener(Self::close_esc))
                 .on_action(cx.listener(|v, _: &StartExport, _, cx| v.start(cx)))
                 .on_action(cx.listener(|v, _: &StopExport, _, cx| v.stop(cx)))
                 .on_mouse_down(MouseButton::Left, cx.listener(|_, _, _, cx| cx.emit(ExportEvent::Close)))
+                .child(ui::esc_closes(Some("ExportDialog"), cx.listener(Self::close_esc)))
                 .child(div().absolute().top(px(70.)).left_0().right_0().bottom(px(12.)).flex().items_start().justify_center().child(inner))
         };
         let close_at = self.close_bounds.clone();

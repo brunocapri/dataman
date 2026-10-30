@@ -131,6 +131,7 @@ impl Render for ParamPrompt {
             .on_action(cx.listener(|p, _: &PrevField, w, cx| p.step(-1, w, cx)))
             .on_action(cx.listener(|_, _: &RunParams, _, cx| cx.emit(ParamEvent::Run)))
             .on_action(cx.listener(|_, _: &CancelParams, _, cx| cx.emit(ParamEvent::Cancel)))
+            .child(ui::esc_closes(Some(CONTEXT), cx.listener(|_, _: &CancelParams, _, cx| cx.emit(ParamEvent::Cancel))))
             .w(px(440.))
             .child(ui::modal_header(&t, None, "Parameters", ui::modal_close(&t, "pp-close").on_click(cx.listener(|_, _, _, cx| cx.emit(ParamEvent::Cancel)))))
             .child(div().px(px(20.)).py(px(16.)).flex().flex_col().gap(px(6.)).children(rows))

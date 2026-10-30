@@ -12,7 +12,7 @@ use crate::config::{ConnectionProfile, Engine};
 use crate::history::{History, HistoryEntry, Outcome};
 use crate::result::{ErrorInfo, Phase, ResultSet};
 use crate::schema::SchemaCache;
-use crate::server::{ServerExtension, ServerInfo};
+use crate::server::ServerInfo;
 use crate::sql::Dialect;
 use crate::tx::{TxState, TxStatus, TxWatch};
 use crate::{Task, spawn};
@@ -43,7 +43,6 @@ impl Connection {
         profile: ConnectionProfile,
         password: Option<String>,
         history: Arc<History>,
-        exts: Vec<Arc<dyn ServerExtension>>,
         tunnel: Option<Arc<crate::ssh::Tunnel>>,
     ) -> Result<Arc<Connection>> {
         if !profile.engine.is_sql() {
@@ -68,7 +67,7 @@ impl Connection {
         let d = backend::dedicated(&profile, password.as_deref(), None, tunnel.as_deref()).await?;
         let (client, tls_active) = (d.db(), d.tls_active());
         drop(d);
-        let info = backend::server_info(&client, &exts).await?;
+        let info = backend::server_info(&client).await?;
         let db = if info.database.is_empty() { profile.database.clone() } else { info.database.clone() };
         let mut meta = HashMap::new();
         meta.insert(db.clone(), client);
@@ -290,8 +289,7 @@ impl Session {
         self.start(rs)
     }
 
-    /// SQL Server has no `BEGIN READ ONLY` and LAR does not enforce it: there the caller's check
-    /// is what keeps it a read.
+    /// SQL Server has no `BEGIN READ ONLY`: there the caller's check is what keeps it a read.
     pub fn execute_agent(self: &Arc<Self>, sql: impl Into<String>, params: Vec<Option<String>>, client: &str) -> Arc<ResultSet> {
         let rs = ResultSet::new(sql);
         if !params.is_empty() {

@@ -67,7 +67,7 @@ impl Workspace {
                 }
                 _ => {}
             },
-            Target::Schema { conn, db, schema, lar, .. } => match act {
+            Target::Schema { conn, db, schema, .. } => match act {
                 Act::ImportData => self.import_into(&conn, &db, &schema, None, window, cx),
                 Act::NewTab => {
                     if schema == "public" || self.conn_dialect(&conn, cx) != dataman_core::sql::Dialect::Postgres {
@@ -88,7 +88,7 @@ impl Workspace {
                         dataman_core::sql::Dialect::TSql => sqlgen::create_table_template_tsql(&schema),
                         dataman_core::sql::Dialect::Sqlite => sqlgen::create_table_template_sqlite(),
                         dataman_core::sql::Dialect::DuckDb => sqlgen::create_table_template_duckdb(&schema),
-                        _ => sqlgen::create_table_template(&schema, lar),
+                        _ => sqlgen::create_table_template(&schema),
                     };
                     self.open_sql_tab(&conn, Some(&db), &sql, false, window, cx);
                 }
@@ -563,6 +563,7 @@ impl Workspace {
                 .items_center()
                 .justify_center()
                 .on_mouse_down(MouseButton::Left, cx.listener(|w, _, window, cx| w.resolve_delete(false, window, cx)))
+                .child(ui::esc_closes(Some(CONFIRM), cx.listener(|w, _: &CancelDeleteConnection, window, cx| w.resolve_delete(false, window, cx))))
                 .child(
                     ui::modal(&t, "confirm-delete-card")
                         .w(px(440.))
