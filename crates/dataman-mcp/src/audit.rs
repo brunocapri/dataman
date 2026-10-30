@@ -67,6 +67,10 @@ pub struct Entry {
     pub rewritten: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seen: Option<Seen>,
+    /// The database login the call ran as, where it was not the user's own (the connection's
+    /// agent login); `you` for what the user allowed that ran on their login.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login: Option<String>,
 }
 
 /// What the agent received, past the privacy rules.
@@ -519,6 +523,7 @@ mod tests {
                 },
                 rewritten: None,
                 seen: None,
+                login: None,
             });
         }
         let text = std::fs::read_to_string(a.path()).unwrap();
@@ -571,6 +576,7 @@ mod tests {
             allowed_by: None,
             rewritten: None,
             seen: None,
+            login: None,
         };
         let line = serde_json::to_string(&e).unwrap();
         let back: Entry = serde_json::from_str(&line).unwrap();
@@ -647,6 +653,7 @@ mod tests {
             allowed_by: None,
             rewritten: None,
             seen: None,
+            login: None,
         }
     }
 

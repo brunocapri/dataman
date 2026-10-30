@@ -7,6 +7,7 @@ mod agents;
 mod agents_check;
 mod agents_clear;
 mod agents_mcp;
+mod agents_login;
 mod agents_rules;
 mod agents_suggest;
 mod agents_types;

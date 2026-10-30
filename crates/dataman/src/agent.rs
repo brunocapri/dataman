@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures_util::future::BoxFuture;
-use gpui::{App, Context, Entity, Task, Window};
+use gpui::{App, AppContext as _, Context, Entity, Task, Window};
 use dataman_core::bounded::{self, Outcome, Stop};
 use dataman_core::result::{ChunkBuilder, ColumnInfo, ErrorInfo, Phase};
 use dataman_core::value::Kind;
@@ -115,12 +115,25 @@ fn text_of(v: &serde_json::Value) -> Option<String> {
 }
 
 impl Workspace {
-    fn agent_connection(&mut self, id: &str, wait: Duration, cx: &mut Context<Self>) -> Task<Result<Arc<Connection>, String>> {
+    /// The connection an agent's statement runs on in its tab: the connection's agent login
+    /// when it has one (never the user's instead), else the user's own connection. A draft is
+    /// the user's to run: `as_agent` false.
+    fn agent_connection(&mut self, id: &str, wait: Duration, as_agent: bool, cx: &mut Context<Self>) -> Task<Result<Arc<Connection>, String>> {
+        let Some(profile) = self.store.read(cx).profile(id).cloned() else {
+            return Task::ready(Err("the connection is not in Dataman".into()));
+        };
+        if as_agent && (profile.agent_login.is_some() || profile.agents_refused) {
+            let core = self.store.read(cx).core.clone();
+            let shared = crate::mcp::shared(&core, cx);
+            return cx.background_spawn(async move {
+                let (hub, _) = shared.hub().map_err(|e| format!("{e:#}"))?;
+                let h = hub.handle();
+                let p = profile.clone();
+                h.spawn(async move { hub.connect(&p).await }).await.map_err(|e| e.to_string())?
+            });
+        }
         if let Some(c) = self.store.read(cx).connection(id) {
             return Task::ready(Ok(c));
-        }
-        if self.store.read(cx).profile(id).is_none() {
-            return Task::ready(Err("the connection is not in Dataman".into()));
         }
         self.store.update(cx, |s, cx| s.connect(id, None, cx));
         let (store, id) = (self.store.clone(), id.to_string());
@@ -184,7 +197,7 @@ impl Workspace {
     }
 
     fn agent_read(&mut self, req: TabRead, reply: oneshot::Sender<Result<Outcome, Stop>>, window: &mut Window, cx: &mut Context<Self>) {
-        let connect = self.agent_connection(&req.connection_id, CONNECT_FOR_READ, cx);
+        let connect = self.agent_connection(&req.connection_id, CONNECT_FOR_READ, true, cx);
         cx.spawn_in(window, async move |w, cx| {
             let conn = match connect.await {
                 Ok(c) => c,
@@ -258,7 +271,7 @@ impl Workspace {
     }
 
     fn agent_show_write(&mut self, req: TabWrite, reply: oneshot::Sender<Option<u64>>, window: &mut Window, cx: &mut Context<Self>) {
-        let connect = self.agent_connection(&req.connection_id, CONNECT_FOR_WRITE, cx);
+        let connect = self.agent_connection(&req.connection_id, CONNECT_FOR_WRITE, true, cx);
         cx.spawn_in(window, async move |w, cx| {
             let Ok(conn) = connect.await else {
                 let _ = reply.send(None);
@@ -278,7 +291,7 @@ impl Workspace {
     }
 
     fn agent_show_doc(&mut self, req: TabWrite, reply: oneshot::Sender<Option<u64>>, window: &mut Window, cx: &mut Context<Self>) {
-        let connect = self.agent_connection(&req.connection_id, CONNECT_FOR_WRITE, cx);
+        let connect = self.agent_connection(&req.connection_id, CONNECT_FOR_WRITE, true, cx);
         cx.spawn_in(window, async move |w, cx| {
             let Ok(conn) = connect.await else {
                 let _ = reply.send(None);
@@ -305,7 +318,7 @@ impl Workspace {
     }
 
     fn agent_draft(&mut self, req: TabDraft, reply: oneshot::Sender<Result<Drafted, String>>, window: &mut Window, cx: &mut Context<Self>) {
-        let connect = self.agent_connection(&req.connection_id, CONNECT_FOR_READ, cx);
+        let connect = self.agent_connection(&req.connection_id, CONNECT_FOR_READ, false, cx);
         cx.spawn_in(window, async move |w, cx| {
             let conn = match connect.await {
                 Ok(c) => c,

@@ -15,6 +15,28 @@ pub(crate) struct Client {
     pub client: mongodb::Client,
     pub default_db: String,
     pub tls_active: bool,
+    /// An agent login's views: `(database, collection, view)`. Its reads of the collection go
+    /// to the view (the login has no `find` on the collection itself).
+    pub views: parking_lot::RwLock<Vec<(String, String, String)>>,
+}
+
+impl Client {
+    /// The read `op` on its view, where the agent login reads `op`'s collection through one.
+    fn on_view(&self, db: &str, op: &Op) -> Option<Op> {
+        let views = self.views.read();
+        let view = |coll: &str| views.iter().find(|(d, c, _)| d == db && c == coll).map(|v| v.2.clone());
+        let mut op = op.clone();
+        match &mut op {
+            Op::Find { coll, .. } | Op::Distinct { coll, .. } => *coll = view(coll)?,
+            Op::Aggregate { coll: Some(coll), .. } => *coll = view(coll)?,
+            Op::Count { coll, filter } => {
+                *coll = view(coll)?;
+                filter.get_or_insert_with(Document::new);
+            }
+            _ => return None,
+        }
+        Some(op)
+    }
 }
 
 const SELECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -102,7 +124,7 @@ pub(crate) async fn connect(p: &ConnectionProfile, password: Option<&str>, tunne
         }
         return Err(anyhow!(message(&e.into())));
     }
-    Ok(Client { client, default_db, tls_active })
+    Ok(Client { client, default_db, tls_active, views: Default::default() })
 }
 
 pub(crate) async fn version(c: &Client) -> Result<String> {
@@ -159,7 +181,12 @@ pub(crate) async fn databases(c: &Client) -> Result<Vec<Item>> {
 
 pub(crate) async fn collections(c: &Client, db: &str) -> Result<Vec<Item>> {
     let d = c.client.database(db);
-    let r = d.run_command(doc! { "listCollections": 1, "authorizedCollections": true, "nameOnly": false }).await.map_err(|e| anyhow!(message(&e.into())))?;
+    // A user without listCollections (an agent login) may list what it can use by name only;
+    // the name and type are all that is read here.
+    let r = match d.run_command(doc! { "listCollections": 1, "authorizedCollections": true, "nameOnly": false }).await {
+        Ok(r) => r,
+        Err(_) => d.run_command(doc! { "listCollections": 1, "authorizedCollections": true, "nameOnly": true }).await.map_err(|e| anyhow!(message(&e.into())))?,
+    };
     let batch = r.get_document("cursor").and_then(|c| c.get_array("firstBatch")).cloned().unwrap_or_default();
     let mut items: Vec<Item> = batch
         .iter()
@@ -230,6 +257,8 @@ fn cmd_err(e: mongodb::error::Error) -> anyhow::Error {
 }
 
 pub(crate) async fn run(c: &Client, db: &str, op: &Op, page: Page) -> Result<Output> {
+    let mapped = c.on_view(db, op);
+    let op = mapped.as_ref().unwrap_or(op);
     let d = c.client.database(db);
     Ok(match op {
         Op::Use(name) => Output::Use(name.clone()),

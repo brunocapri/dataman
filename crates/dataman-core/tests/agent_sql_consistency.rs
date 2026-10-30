@@ -319,7 +319,7 @@ fn privacy_rewrite_keeps_statements() {
     for view in [AgentView::Data, AgentView::Masked] {
         let r = rules(view);
         for d in DIALECTS {
-            let cx = Context { rules: &r, connection: "c", dialect: d, tables: &tables, routines: &routines };
+            let cx = Context { rules: &r, connection: "c", dialect: d, tables: &tables, routines: &routines, views: &[] };
             let mut texts = texts(d);
             texts.extend(["SELECT * FROM users", "SELECT u.* FROM users u JOIN t ON t.id = u.id; SELECT 2", "SELECT ssn FROM users WHERE id = 1"].map(String::from));
             for t in texts {
@@ -405,7 +405,7 @@ fn regressions_keep_their_reading() {
     let r = rules(AgentView::Masked);
     let routines = HashSet::new();
     let tables = |_: Option<&str>, name: &str| Some(Table { schema: "app".into(), name: name.into(), columns: ["id", "ssn", "secret"].map(String::from).to_vec() });
-    let cx = Context { rules: &r, connection: "c", dialect: d, tables: &tables, routines: &routines };
+    let cx = Context { rules: &r, connection: "c", dialect: d, tables: &tables, routines: &routines, views: &[] };
     for sql in ["SELECT /*! ssn AS x */ FROM users", "SELECT id /*!99999 , ssn AS x */ FROM users", "SELECT id /*! , secret */ FROM users"] {
         if let Ok(c) = agent_sql::check(sql, false, &cx) {
             fails.push(format!("privacy takes {sql:?} as {:?}", c.sql));

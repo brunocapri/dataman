@@ -195,6 +195,63 @@ pub fn button(t: &Theme, id: impl Into<ElementId>, kind: Btn) -> Stateful<Div> {
     }
 }
 
+/// "Copy SQL" and the like: the copy icon and its label, then "Copied" with a check in the same
+/// place for a moment, as the value viewer's Copy. `copied` is that moment's opacity
+/// ([`CopiedFlash::on`]); the button stays clickable under it.
+pub fn copy_button(t: &Theme, id: impl Into<ElementId>, kind: Btn, label: impl Into<SharedString>, copied: Option<f32>) -> Stateful<Div> {
+    let id = id.into();
+    let done: ElementId = SharedString::from(format!("{id}-copied")).into();
+    let fg = if kind == Btn::Primary { t.on_acc } else { t.tx2 };
+    button(t, id, kind)
+        .relative()
+        .child(div().flex().flex_row().items_center().gap(px(5.)).when(copied.is_some(), |d| d.invisible()).child(icon(Icon::Copy).size(px(13.)).text_color(fg)).child(label.into()))
+        .children(copied.map(|a| {
+            div()
+                .children(here(&done))
+                .absolute()
+                .inset_0()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_center()
+                .gap(px(4.))
+                .text_color(t.ok)
+                .opacity(a)
+                .child(icon(Icon::Check).size(px(12.)).text_color(t.ok))
+                .child("Copied")
+        }))
+}
+
+/// Which copy button says "Copied", and since when; `motion::copied` holds it and fades it.
+#[derive(Default)]
+pub struct CopiedFlash {
+    at: Option<(SharedString, std::time::Instant)>,
+    _redraws: Option<gpui::Task<()>>,
+}
+
+impl CopiedFlash {
+    /// `id`'s moment starts now (another button's ends), redrawing `V` while it holds and fades.
+    pub fn start<V: 'static>(&mut self, id: impl Into<SharedString>, cx: &mut Context<V>) {
+        let start = std::time::Instant::now();
+        self.at = Some((id.into(), start));
+        let redraws = crate::motion::copied_redraws(cx.reduce_motion());
+        self._redraws = Some(cx.spawn(async move |v, cx| {
+            for at in redraws {
+                cx.background_executor().timer(at.saturating_sub(start.elapsed())).await;
+                if v.update(cx, |_, cx| cx.notify()).is_err() {
+                    return;
+                }
+            }
+        }));
+        cx.notify();
+    }
+
+    /// `id`'s "Copied" opacity while it shows.
+    pub fn on(&self, id: &str, cx: &App) -> Option<f32> {
+        self.at.as_ref().filter(|(at, _)| at == id).and_then(|(_, since)| crate::motion::copied(*since, std::time::Instant::now(), cx.reduce_motion()))
+    }
+}
+
 pub fn icon_button(t: &Theme, id: impl Into<ElementId>, i: Icon, box_size: f32, icon_size: f32) -> Stateful<Div> {
     let (hov, prs) = (t.hov, t.prs);
     icon_button_inert(t, id, i, box_size, icon_size).hover(move |s| s.bg(hov)).active(move |s| s.bg(prs))

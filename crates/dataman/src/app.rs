@@ -362,6 +362,8 @@ pub struct Workspace {
     pub(crate) value_view: Option<Entity<crate::value_view::ValueView>>,
     pub(crate) confirm_focus: FocusHandle,
     pub(crate) confirm_delete: Option<String>,
+    /// The delete sheet also drops the connection's agent login on the server (the default).
+    pub(crate) drop_agent_login: bool,
     pub(crate) confirm_delete_focus: FocusHandle,
     pub(crate) filter_pop: Option<(Entity<crate::table_view::FilterPopover>, (f32, f32))>,
     pub(crate) tx_prompt: Option<TxPrompt>,
@@ -561,6 +563,7 @@ impl Workspace {
             data_import: None,
             confirm_focus: cx.focus_handle(),
             confirm_delete: None,
+            drop_agent_login: true,
             confirm_delete_focus: cx.focus_handle(),
             filter_pop: None,
             tx_prompt: None,

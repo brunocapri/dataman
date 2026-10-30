@@ -39,12 +39,20 @@ impl Reply {
         }
     }
 
-    fn text(&self) -> Option<String> {
+    pub(crate) fn text(&self) -> Option<String> {
         match self {
             Reply::Simple(s) => Some(s.clone()),
             Reply::Bulk(Some(b)) => Some(String::from_utf8_lossy(b).into_owned()),
             Reply::Int(n) => Some(n.to_string()),
             _ => None,
+        }
+    }
+
+    /// An array's items as text (one that is not text left out).
+    pub(crate) fn texts(&self) -> Vec<String> {
+        match self {
+            Reply::Array(Some(a)) => a.iter().filter_map(Reply::text).collect(),
+            _ => Vec::new(),
         }
     }
 

@@ -272,6 +272,7 @@ pub struct AgentsPage {
     pub(crate) audit_scroll: gpui::ScrollHandle,
     pub(crate) conns_scroll: gpui::ScrollHandle,
     pub(crate) types_scroll: gpui::ScrollHandle,
+    pub(crate) perm_scroll: gpui::ScrollHandle,
     /// Where each call's row sits among the Audit list's children (day headers come between).
     audit_child: HashMap<usize, usize>,
     pub(crate) types_offset: usize,
@@ -286,6 +287,11 @@ pub struct AgentsPage {
     pub(crate) clear_focus: FocusHandle,
     /// The next read of the log drops agent and connection filters that match nothing left.
     prune_filters: bool,
+    /// Permissions' database login section: the selected connection's agent login, its sheets.
+    pub(crate) login: crate::agents_login::LoginUi,
+    /// Connections found to speak PostgreSQL's protocol without its logins (MotherDuck and the
+    /// like): agents use the user's login there.
+    pub(crate) no_logins: BTreeSet<String>,
 }
 
 impl EventEmitter<AgentsEvent> for AgentsPage {}
@@ -601,6 +607,7 @@ impl AgentsPage {
             audit_scroll: gpui::ScrollHandle::new(),
             conns_scroll: gpui::ScrollHandle::new(),
             types_scroll: gpui::ScrollHandle::new(),
+            perm_scroll: gpui::ScrollHandle::new(),
             audit_child: HashMap::new(),
             types_offset: 0,
             type_sel: None,
@@ -610,8 +617,14 @@ impl AgentsPage {
             clear: None,
             clear_focus: cx.focus_handle(),
             prune_filters: false,
+            login: Default::default(),
+            no_logins: BTreeSet::new(),
         };
         v.poll(cx);
+        // Not in the checks' demo: its connections are made up.
+        if !cfg!(feature = "checks") {
+            v.rotate_due(cx);
+        }
         v
     }
 
@@ -1412,6 +1425,12 @@ impl AgentsPage {
         let facts: Vec<AnyElement> = [
             fact("Agent", dataman_mcp::shown_client(&e.client)),
             fact("Connection", [e.connection.clone(), e.database.clone().filter(|d| !d.is_empty())].into_iter().flatten().collect::<Vec<_>>().join(" · ")),
+            fact("Ran as", match (e.login.as_deref(), &e.connection) {
+                (Some("you"), _) => "your login (you allowed it)".to_string(),
+                (Some(l), _) => l.to_string(),
+                (None, Some(_)) => "your login".to_string(),
+                (None, None) => "—".to_string(),
+            }),
             fact("Decision", decision_text(e)),
             fact("Sent", sent),
             fact("Masked", masked),
@@ -2072,7 +2091,11 @@ pub(crate) fn switch(t: &Theme, on: bool) -> gpui::Div {
         .child(div().size(px(10.)).bg(if on { t.pop } else { t.tx3 }))
 }
 
+/// Disabled and on, it is checked but inert: the tick in the disabled grey, not the accent.
 pub(crate) fn checkbox(t: &Theme, on: bool, disabled: bool) -> gpui::Div {
+    if disabled && on {
+        return div().flex_none().size(px(14.)).flex().items_center().justify_center().bg(t.line2).child(icon(Icon::Check).size(px(11.)).text_color(t.tx3));
+    }
     if disabled {
         return div().flex_none().size(px(14.)).border_1().border_color(t.line2).opacity(0.5);
     }

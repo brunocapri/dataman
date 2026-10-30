@@ -220,6 +220,7 @@ impl AgentsPage {
             allowed_by: None,
             rewritten: None,
             seen: None,
+            login: None,
         });
         self.settings_note = Some(match r {
             Ok(p) => format!("Imported {name}: {} {}.", p.changes(), if p.changes() == 1 { "change" } else { "changes" }),

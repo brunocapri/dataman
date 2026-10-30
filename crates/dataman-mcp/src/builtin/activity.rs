@@ -145,6 +145,7 @@ fn signal(cx: &Call, a: Args, s: Signal) -> BoxFut<'_, Result<Value, ToolError>>
             return Err(ToolError::Refused("that backend is Dataman's own".into()));
         }
         cx.gate(&o, &class, &sql, None).await?;
+        let o = cx.as_user(o, &class).await?;
         let ok = o.conn.signal_backend(&o.database, pid, s).await.map_err(failed)?;
         Ok(json!({"pid": pid, "signalled": ok}))
     })

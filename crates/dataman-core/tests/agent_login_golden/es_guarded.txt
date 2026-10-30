@@ -1,0 +1,59 @@
+# the role: indices and fields the agent may use
+PUT /_security/role/dataman_agent_a1b2c3d4
+{
+  "cluster": [
+    "cluster:monitor/main"
+  ],
+  "indices": [
+    {
+      "names": [
+        "orders"
+      ],
+      "privileges": [
+        "read",
+        "view_index_metadata",
+        "index",
+        "delete"
+      ]
+    },
+    {
+      "names": [
+        "users"
+      ],
+      "privileges": [
+        "read",
+        "view_index_metadata"
+      ],
+      "field_security": {
+        "grant": [
+          "*"
+        ],
+        "except": [
+          "password_hash",
+          "password_hash.*",
+          "email",
+          "email.*"
+        ]
+      }
+    }
+  ],
+  "metadata": {
+    "dataman": "dataman-managed v1",
+    "conn": "a1b2c3d4e5f6"
+  }
+}
+
+# the login (its password sent as a bcrypt hash)
+PUT /_security/user/dataman_agent_a1b2c3d4
+{
+  "password_hash": "$2a$10$…",
+  "roles": [
+    "dataman_agent_a1b2c3d4"
+  ],
+  "metadata": {
+    "dataman": "dataman-managed v1",
+    "conn": "a1b2c3d4e5f6"
+  }
+}
+
+# hidden: audit_log → not in the role

@@ -12,6 +12,7 @@ use gpui::{AsyncWindowContext, Entity};
 use crate::agents::{AgentsPage, Page};
 use crate::app::Workspace;
 use crate::check::*;
+use std::time::Duration;
 
 fn profile(name: &str, engine: Engine, env: Environment, tier: McpAccess) -> ConnectionProfile {
     let mut p = ConnectionProfile::new(name);
@@ -123,6 +124,7 @@ fn seed_audit(core: &Core) {
             allowed_by: None,
             rewritten: (sql.starts_with("SELECT id, name, email")).then(|| "SELECT id, name, email, ssn, city, total FROM (SELECT id, name, email, ssn, city, total, created_at FROM public.customers) customers WHERE city = ? LIMIT ?".into()),
             seen,
+            login: None,
         });
     }
 }
@@ -181,6 +183,7 @@ pub fn demo(ws: &Entity<Workspace>, stage: &str, window: &mut gpui::Window, cx: 
         s if s.starts_with("agents-privacy") => Page::Privacy,
         s if s.starts_with("agents-types") => Page::Types,
         s if s.starts_with("agents-mcp") || s.starts_with("agents-general") => Page::General,
+        s if s.starts_with("agents-login") => Page::Permissions,
         _ => Page::Audit,
     };
     let conn = match stage {
@@ -270,7 +273,11 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     let loaded = until(cx, 5, |cx| cx.update(|_, cx| a.read(cx).entries.len() >= 13).unwrap_or(false)).await;
     r.check("a click on it opens the Agents area on Audit, with the agents' calls", shows(cx) && page(cx) == Page::Audit && loaded, format!("{:?}", page(cx)));
     let pages: Vec<&str> = Page::NAV.iter().map(|p| p.nav_label()).collect();
-    r.check("the area's pages: General first, then Audit, Protection, Masks (no Home)", pages == ["General", "Audit", "Protection", "Masks"], format!("{pages:?}"));
+    r.check(
+        "the area's pages: General first, then Audit, Protection, Masks (no Home; Database login is inside Permissions)",
+        pages == ["General", "Audit", "Protection", "Masks"] && probed("agents-nav-login", cx).is_none(),
+        format!("{pages:?}"),
+    );
     // Permissions and Privacy are Protection's tabs; the nav goes back to the one left open.
     click_probe("agents-nav-protection", cx);
     pause(cx, 50).await;
@@ -584,6 +591,55 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     pause(cx, 50).await;
     let rd = rules(&core, &redis).redis;
     r.check("Redis: @scripting back on; @dangerous cannot be turned on", rd.scripting && !rd.allows(dataman_core::privacy::RedisCat::Dangerous), format!("{rd:?}"));
+
+    // The database login: a section of Permissions under Limits, its ? saying what it does.
+    click_probe(&format!("agents-conn-{}", pg.name), cx);
+    pause(cx, 50).await;
+    let (limits, section) = (probed("agents-limits-tip", cx), probed("agents-login-section", cx));
+    let tip = crate::agents_login::login_tip().text();
+    r.check(
+        "Permissions: \"Create db user based on these settings\" sits under Limits, with a ? that says what it does",
+        limits.zip(section).is_some_and(|(l, s)| s.top() > l.bottom() && s.left() <= l.left() && s.right() >= l.right()) && probed("agents-login-tip", cx).is_some() && tip.contains(dataman_core::secret::STORE_NAME) && tip.contains("refuses what the rules refuse"),
+        format!("{limits:?} {section:?}"),
+    );
+    r.check("…off, it offers Create agent login; no recommendation line, no header button, no page of its own", probed("agents-login-create", cx).is_some() && probed("agents-login-nudge", cx).is_none() && probed("agents-perm-login", cx).is_none() && probed("agents-nav-login", cx).is_none(), "");
+    // A server that only speaks PostgreSQL's protocol (MotherDuck, by its host): no logins to
+    // make, said plainly, without connecting to it.
+    let mut md = profile("motherduck-pg", Engine::Postgres, Environment::None, McpAccess::Read);
+    md.host = "pg.us-east-1-aws.motherduck.com".into();
+    let md_id = md.id.clone();
+    let _ = core.config.upsert(md);
+    let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.store.update(cx, |s, cx| s.reload(cx))));
+    pause(cx, 50).await;
+    click_probe("agents-conn-motherduck-pg", cx);
+    pause(cx, 100).await;
+    let opened = cx.update(|_, cx| ws.read(cx).store.read(cx).connection(&md_id).is_some()).unwrap_or(true);
+    r.check(
+        "MotherDuck: the section says the server has no logins of its own and how to narrow it (a read-only token), with no Create and no connection opened",
+        probed("agents-login-pgwire", cx).is_some() && probed("agents-login-motherduck", cx).is_some() && probed("agents-login-create", cx).is_none() && probed("agents-login-note", cx).is_none() && !opened,
+        format!("opened {opened}"),
+    );
+    shoot("22-pgwire", cx);
+    // Another such server, found by its review (or by asking once where Dataman is connected):
+    // the same sentence, without the MotherDuck hint.
+    let _ = cx.update(|_, cx| a.update(cx, |a, cx| {
+        a.no_logins.insert(pg.id.clone());
+        cx.notify();
+    }));
+    click_probe(&format!("agents-conn-{}", pg.name), cx);
+    pause(cx, 100).await;
+    r.check("…another PostgreSQL-protocol server without logins: the sentence, no MotherDuck hint, no Create", probed("agents-login-pgwire", cx).is_some() && probed("agents-login-motherduck", cx).is_none() && probed("agents-login-create", cx).is_none(), "");
+    let _ = cx.update(|_, cx| a.update(cx, |a, cx| {
+        a.no_logins.clear();
+        cx.notify();
+    }));
+    let _ = core.config.remove(&md_id);
+    let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.store.update(cx, |s, cx| s.reload(cx))));
+    pause(cx, 50).await;
+    click_probe("agents-tier-0", cx);
+    pause(cx, 50).await;
+    click_probe("agents-tier-2", cx);
+    pause(cx, 50).await;
 
     // Privacy.
     click_probe("agents-protection-tab-1", cx);
@@ -962,6 +1018,258 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     let after = cx.update(|_, cx| ws.read(cx).tabs.len()).unwrap_or(0);
     r.check("Audit: Enter opens the selected call in a tab", !shows(cx) && after == before + 1, format!("{before} → {after} {state:?}"));
     check_clear(ws, &a, r, cx).await;
+    check_login(ws, &a, &pg, &pw, r, cx).await;
+}
+
+/// A shot of the window as it is now, where `DATAMAN_SHOT_DIR` says (screenshots builds).
+fn shoot(name: &str, cx: &mut AsyncWindowContext) {
+    let Ok(dir) = std::env::var("DATAMAN_SHOT_DIR") else { return };
+    let path = format!("{dir}/{name}.png");
+    let _ = cx.update(|window, cx| {
+        window.refresh();
+        window.draw(cx).clear(cx);
+        crate::bench::capture(window, &path, cx);
+    });
+}
+
+fn login_ui<T>(a: &Entity<AgentsPage>, cx: &mut AsyncWindowContext, f: impl FnOnce(&crate::agents_login::LoginUi) -> T) -> Option<T> {
+    cx.update(|_, cx| f(&a.read(cx).login)).ok()
+}
+
+/// Database login, driven through Permissions' section on a real PostgreSQL: Create from the
+/// review (the password never in the script, always verified before it is kept), the server's
+/// identity as the in-app hub connects, Verify,
+/// Rotate (the old password refused), Remove with its SQL (agents refused after), then a
+/// connection deleted with its login dropped on the server.
+async fn check_login(ws: &Entity<Workspace>, a: &Entity<AgentsPage>, pg: &ConnectionProfile, pw: &str, r: &mut Report, cx: &mut AsyncWindowContext) {
+    use dataman_core::agent_login::{self, live};
+    use crate::agents_login::Sheet;
+    use crate::theme::ActiveTheme;
+    let core = core(ws, cx);
+    let page = |cx: &mut AsyncWindowContext| cx.update(|_, cx| a.read(cx).page).unwrap_or(Page::Audit);
+    let user = agent_login::login_name(&pg.id);
+    // A leftover of an earlier run on this server goes first.
+    let _ = sql(&core, pg, pw, &format!("DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{user}') THEN EXECUTE 'DROP OWNED BY {user}'; EXECUTE 'DROP ROLE {user}'; END IF; END $$"), cx).await;
+    let _ = sql(&core, pg, pw, &format!("DROP SCHEMA IF EXISTS {}_views CASCADE", user), cx).await;
+    let _ = sql(&core, pg, pw, "CREATE TABLE IF NOT EXISTS public.au_ui_users (id int PRIMARY KEY, name text, email text, password_hash text)", cx).await;
+    let _ = sql(&core, pg, pw, "INSERT INTO public.au_ui_users VALUES (1, 'Ana', 'ana@acme.co', 'h1') ON CONFLICT DO NOTHING", cx).await;
+    if let Some(mut p) = core.config.get(&pg.id) {
+        p.mcp = Some(McpAccess::Write);
+        p.mcp_rules = Default::default();
+        p.mcp_rules.view = AgentView::Masked;
+        p.mcp_rules.sensitive.push(SensitiveCol { col: "au_ui_users.email".into(), how: Mask::Partial, on: true });
+        p.mcp_rules.visible.items.push(VisibleItem { name: "au_ui_users.password_hash".into(), kind: ItemKind::Column });
+        (p.agent_login, p.agents_refused) = (None, false);
+        let _ = core.config.upsert(p);
+    }
+    let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.store.update(cx, |s, cx| s.reload(cx))));
+    // A link to the login (from elsewhere in the app) lands on Permissions, at its section.
+    let id = pg.id.clone();
+    let _ = cx.update(|window, cx| {
+        ws.update(cx, |w, cx| {
+            w.show_agents(Page::Audit, window, cx);
+            w.agents.update(cx, |a, cx| a.show_login(&id, cx));
+        })
+    });
+    pause(cx, 100).await;
+    let on = cx.update(|_, cx| (a.read(cx).page, a.read(cx).conn.clone())).ok();
+    r.check("a link to the database login lands on Permissions on the connection, its section in view", on == Some((Page::Permissions, Some(pg.id.clone()))) && probed("agents-login-section", cx).is_some(), format!("{on:?}"));
+    shoot("01-off", cx);
+    let width = cx.update(|window, _| window.viewport_size().width).ok();
+    let create = probed("agents-login-create", cx);
+    r.check("the section's Create agent login is inside the window", create.zip(width).is_some_and(|(b, w)| b.right() <= w), format!("{create:?} in {width:?}"));
+    click_probe("agents-login-create", cx);
+    let reviewed = until(cx, 30, |cx| login_ui(a, cx, |l| matches!(l.sheet, Some(Sheet::Create { review: Some(_), .. }))).unwrap_or(false)).await;
+    let review = login_ui(a, cx, |l| match &l.sheet {
+        Some(Sheet::Create { review: Some(Ok(rv)), .. }) => Ok((rv.plan.shown(), rv.plan.copy(), rv.password.clone(), rv.plan.lacks.clone(), rv.plan.views.len())),
+        Some(Sheet::Create { review: Some(Err(e)), .. }) => Err(e.clone()),
+        _ => Err("no review".into()),
+    })
+    .unwrap_or_else(|| Err("gone".into()));
+    r.check("Create agent login opens the create modal at once: the plan over what exists now", reviewed && review.is_ok() && page(cx) == Page::Permissions, format!("{:?}", review.as_ref().err()));
+    if let Ok((shown, copy, password, lacks, views)) = &review {
+        r.check("the script never holds the password, shown or as it runs", !shown.contains(password.as_str()) && !copy.contains(password.as_str()), "");
+        r.check("…and shows the verifier masked (what runs has the verifier, still not the password)", shown.contains("SCRAM-SHA-256$4096:…") && copy.contains("SCRAM-SHA-256$4096:") && !copy.contains("SCRAM-SHA-256$4096:…"), "");
+        r.check("nothing the user's login lacks; the masked table gets its view", lacks.is_empty() && *views == 1, format!("{lacks:?} {views}"));
+    }
+    // The modal: one column, the SQL under a plain WHAT RUNS and the options under it.
+    pause(cx, 100).await;
+    let (code, options) = (probed("agents-login-sql", cx), probed("agents-login-options", cx));
+    r.check(
+        "the modal is one column: the options sit below the SQL, as wide as it",
+        code.zip(options).is_some_and(|(c, o)| o.top() >= c.bottom() - gpui::px(1.) && (o.left() - c.left()).abs() < gpui::px(1.) && (o.right() - c.right()).abs() < gpui::px(1.)),
+        format!("{code:?} {options:?}"),
+    );
+    shoot("20-modal", cx);
+    // A long line runs on to the right: the code scrolls sideways (a trackpad's swipe).
+    let scroll = cx.update(|_, cx| a.read(cx).login.sql_scroll.clone()).ok();
+    let wide = scroll.as_ref().map(|s| s.max_offset().x).unwrap_or_default();
+    if let Some(c) = code {
+        move_to(cx, centre(c));
+        input(cx, gpui::PlatformInput::ScrollWheel(gpui::ScrollWheelEvent { position: centre(c), delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(-240.), gpui::px(0.))), modifiers: gpui::Modifiers::default(), touch_phase: gpui::TouchPhase::Moved }));
+    }
+    pause(cx, 100).await;
+    let moved = scroll.as_ref().map(|s| s.offset().x).unwrap_or_default();
+    r.check("WHAT RUNS fits the sheet, or a sideways swipe moves it", wide <= gpui::px(0.) || moved < gpui::px(-1.), format!("max {wide:?} at {moved:?}"));
+    // Laid out to read: the view a column a line, the CASE a branch a line.
+    let display = cx.update(|_, cx| match &a.read(cx).login.sheet {
+        Some(Sheet::Create { review: Some(Ok(rv)), .. }) => rv.plan.display(),
+        _ => String::new(),
+    });
+    let display = display.unwrap_or_default();
+    r.check("WHAT RUNS breaks long statements into their clauses", display.contains(" AS\nSELECT\n  ") && display.contains("\n  CASE\n    WHEN ") && display.lines().all(|l| l.chars().count() <= 120), &display);
+    shoot("21-modal-scrolled", cx);
+    input(cx, gpui::PlatformInput::ScrollWheel(gpui::ScrollWheelEvent { position: code.map(centre).unwrap_or_default(), delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.), gpui::px(-200.))), modifiers: gpui::Modifiers::default(), touch_phase: gpui::TouchPhase::Moved }));
+    pause(cx, 100).await;
+    let down = scroll.as_ref().map(|s| s.offset().y).unwrap_or_default();
+    r.check("…and still scrolls down", down < gpui::px(-1.), format!("{down:?}"));
+    if let Some(s) = &scroll {
+        s.set_offset(gpui::Point::default());
+    }
+    r.check(
+        "the modal: no who-enforces column, no password or verify rows, no Copy SQL, no I'll run it myself",
+        probed("agents-login-what", cx).is_some() && probed("agents-login-opt-rotate", cx).is_some() && ["agents-login-rules", "agents-login-opt-pw", "agents-login-opt-verify", "agents-login-copy", "agents-login-manual"].iter().all(|id| probed(id, cx).is_none()),
+        "",
+    );
+    let colours = review.as_ref().ok().and_then(|x| cx.update(|_, cx| {
+        let t = cx.theme().clone();
+        crate::editor::highlighted_lines_in(&t, &x.0, Engine::Postgres).iter().flat_map(|(_, runs)| runs.iter().map(|r| r.color)).filter(|c| *c == t.kw || *c == t.str || *c == t.cm).map(|c| format!("{c:?}")).collect::<std::collections::BTreeSet<_>>().len()
+    }).ok());
+    r.check("WHAT RUNS is highlighted as the editor colours SQL (keywords, strings, comments)", colours == Some(3), format!("{colours:?}"));
+    let sessions = login_ui(a, cx, |l| match &l.sheet {
+        Some(Sheet::Create { review: Some(Ok(rv)), .. }) => rv.plan.rules.iter().any(|x| x.rule == format!("At most {} sessions at once", agent_login::CONN_LIMIT) && x.who == agent_login::Who::Database),
+        _ => false,
+    }).unwrap_or(false);
+    r.check("PostgreSQL: at most 4 sessions open at once, held by the database (an option, and a rule the plan holds)", sessions && probed("agents-login-opt-conns-on", cx).is_some(), "");
+    pause(cx, 200).await;
+    shoot("02-review", cx);
+    shoot("11-modal", cx);
+    click_probe("agents-login-go", cx);
+    let made = until(cx, 30, |_| core.config.get(&pg.id).is_some_and(|p| p.agent_login.is_some())).await;
+    let rec = core.config.get(&pg.id).and_then(|p| p.agent_login);
+    r.check("Create login: made on the server, verified, kept on the connection", made && rec.as_ref().is_some_and(|l| l.verified.is_some() && l.user == user), format!("{rec:?} {:?}", login_ui(a, cx, |l| l.note.clone())));
+    r.check("…always by logging in as it first: its checks ran and held", login_ui(a, cx, |l| !l.checks.is_empty() && l.checks.iter().all(|c| c.ok)).unwrap_or(false), format!("{:?}", login_ui(a, cx, |l| l.checks.len())));
+    r.check("…its password in the Keychain (account agent:<id>), never in connections.toml", core.secrets.get(&agent_login::secret_account(&pg.id)).ok().flatten().is_some() && !std::fs::read_to_string(core.dirs.connections_file()).unwrap_or_default().contains(review.as_ref().map(|x| x.2.as_str()).unwrap_or("-")), "");
+    r.check("the card says who agents connect as", until(cx, 5, |cx| probed("agents-login-as", cx).is_some()).await, "");
+    r.check("…shown in Permissions' section with Verify, Rotate password and Remove login…", page(cx) == Page::Permissions && ["agents-login-section", "agents-login-verify", "agents-login-rotate", "agents-login-remove"].iter().all(|id| probed(id, cx).is_some()), "");
+    pause(cx, 200).await;
+    shoot("03-created", cx);
+    shoot("10-perm-section", cx);
+    // The in-app hub (the agents' tabs and the MCP) connects as the login.
+    let p = core.config.get(&pg.id).unwrap_or_else(|| pg.clone());
+    let shared = cx.update(|_, cx| crate::mcp::shared(&core, cx)).ok();
+    let who = match shared.map(|s| s.hub()) {
+        Some(Ok((hub, _))) => {
+            let h = hub.handle();
+            let p2 = p.clone();
+            cx.background_executor()
+                .spawn(async move {
+                    let c = h.block_on(hub.connect(&p2))?;
+                    let rs = c.session(None).execute("SELECT current_user || ' ' || session_user");
+                    rs.fetch_all();
+                    for _ in 0..400 {
+                        if rs.phase().is_finished() {
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(25));
+                    }
+                    Ok::<String, String>(rs.snapshot().text(0, 0).map(|t| t.into_owned()).unwrap_or_default())
+                })
+                .await
+        }
+        _ => Err("no hub".into()),
+    };
+    r.check("the in-app hub connects as the agent login (current_user and session_user)", who.as_deref() == Ok(&format!("{user} {user}")), format!("{who:?}"));
+    click_probe("agents-login-verify", cx);
+    let verified = until(cx, 30, |cx| login_ui(a, cx, |l| l.note.as_ref().is_some_and(|(ok, n)| *ok && n.contains("Verified"))).unwrap_or(false)).await;
+    r.check("Verify logs in as it and every check holds", verified && login_ui(a, cx, |l| !l.checks.is_empty() && l.checks.iter().all(|c| c.ok)).unwrap_or(false), format!("{:?}", login_ui(a, cx, |l| (l.note.clone(), l.checks.iter().filter(|c| !c.ok).map(|c| c.what.clone()).collect::<Vec<_>>()))));
+    pause(cx, 200).await;
+    shoot("04-verified", cx);
+    let old = core.secrets.get(&agent_login::secret_account(&pg.id)).ok().flatten().unwrap_or_default();
+    click_probe("agents-login-rotate", cx);
+    let rotated = until(cx, 30, |cx| login_ui(a, cx, |l| l.note.as_ref().is_some_and(|(_, n)| n.contains("New password"))).unwrap_or(false)).await;
+    let new = core.secrets.get(&agent_login::secret_account(&pg.id)).ok().flatten().unwrap_or_default();
+    r.check("Rotate password: a new one in the Keychain, the old one's sessions ended", rotated && !new.is_empty() && new != old && login_ui(a, cx, |l| l.note.as_ref().is_some_and(|(ok, _)| *ok)).unwrap_or(false), format!("{:?}", login_ui(a, cx, |l| l.note.clone())));
+    let mut as_old = live::agent_profile(&p, &user);
+    as_old.id = format!("{}-old", p.id);
+    let old_in = cx.background_executor().spawn({
+        let core = core.clone();
+        async move { core.block_on(core.connect(as_old, Some(old))).map(|_| ()).map_err(|e| format!("{e:#}")) }
+    }).await;
+    r.check("…and the old password no longer logs in", old_in.is_err(), format!("{old_in:?}"));
+    pause(cx, 200).await;
+    shoot("05-rotated", cx);
+    click_probe("agents-login-remove", cx);
+    let planned = until(cx, 20, |cx| login_ui(a, cx, |l| matches!(l.sheet, Some(Sheet::Remove { plan: Some(_), .. }))).unwrap_or(false)).await;
+    let rm = login_ui(a, cx, |l| match &l.sheet {
+        Some(Sheet::Remove { plan: Some(Ok(p)), .. }) => p.shown(),
+        _ => String::new(),
+    })
+    .unwrap_or_default();
+    r.check("Remove login… shows the exact SQL first (no password in it)", planned && rm.contains(&format!("DROP ROLE \"{user}\"")) && !rm.contains(&new), &rm);
+    r.check("…under a plain WHAT RUNS, with no Copy SQL nor I'll run it myself", probed("agents-login-what", cx).is_some() && probed("agents-login-remove-copy", cx).is_none() && probed("agents-login-remove-manual", cx).is_none(), "");
+    let rm_code = probed("agents-login-remove-sql", cx);
+    let rm_scroll = cx.update(|_, cx| a.read(cx).login.sql_scroll.clone()).ok();
+    r.check("…in one column, the code scrolling as the create sheet's does", rm_code.is_some() && rm_scroll.is_some_and(|s| s.bounds().size.width > gpui::px(0.) && rm_code.is_some_and(|b| (s.bounds().left() - b.left()).abs() < gpui::px(1.))), format!("{rm_code:?}"));
+    pause(cx, 200).await;
+    shoot("06-remove", cx);
+    click_probe("agents-login-remove-go", cx);
+    let gone = until(cx, 30, |_| core.config.get(&pg.id).is_some_and(|p| p.agent_login.is_none() && p.agents_refused)).await;
+    r.check("removed: the record and its Keychain item go, agents are refused here", gone && core.secrets.get(&agent_login::secret_account(&pg.id)).ok().flatten().is_none(), "");
+    let roles = sql1(&core, pg, pw, &format!("SELECT count(*) FROM pg_roles WHERE rolname = '{user}'"), cx).await;
+    r.check("…and the role is gone from the server", roles.as_deref() == Some("0"), format!("{roles:?}"));
+    r.check("the refused section offers to let agents use the user's login (explicitly)", until(cx, 5, |cx| probed("agents-login-mine", cx).is_some()).await, "");
+    r.check("…and the tier says agents are refused here", probed("agents-login-refused", cx).is_some(), "");
+    pause(cx, 200).await;
+    shoot("07-refused", cx);
+
+    // A connection deleted with its agent login: the delete sheet offers to drop it (checked).
+    let mut other = pg.clone();
+    other.id = format!("{}x2", pg.id);
+    other.name = "au-ui-delete".into();
+    other.agent_login = None;
+    let _ = core.save_connection(other.clone(), Some(pw), None);
+    let other_user = agent_login::login_name(&other.id);
+    let made2 = cx.background_executor().spawn({
+        let (core, other) = (core.clone(), other.clone());
+        async move {
+            let admin = core.block_on(core.connect(other.clone(), None)).map_err(|e| format!("{e:#}"))?;
+            let rv = core.block_on(live::review(&admin, &other, &agent_login::Options::default())).map_err(|e| format!("{e:#}"))?;
+            if !rv.plan.lacks.is_empty() {
+                return Err(format!("{:?}", rv.plan.lacks));
+            }
+            core.block_on(live::apply(&admin, &rv.plan, &other.database)).map_err(|e| format!("{e:#}"))?;
+            core.secrets.set(&agent_login::secret_account(&other.id), &rv.password).map_err(|e| format!("{e:#}"))?;
+            let rec = live::record(&other, &rv.plan, &agent_login::Options::default());
+            core.config.upsert(ConnectionProfile { agent_login: Some(rec), ..other.clone() }).map_err(|e| format!("{e:#}"))
+        }
+    }).await;
+    r.check("a second connection with its own agent login", made2.is_ok(), format!("{made2:?}"));
+    let _ = cx.update(|window, cx| {
+        ws.update(cx, |w, cx| {
+            w.store.update(cx, |s, cx| s.reload(cx));
+            w.ask_delete_connection(other.id.clone(), window, cx);
+        })
+    });
+    let asked = until(cx, 5, |cx| probed("dc-drop-agent", cx).is_some()).await;
+    r.check("deleting it asks to also drop its agent login on the server (checked)", asked && cx.update(|_, cx| ws.read(cx).drop_agent_login).unwrap_or(false), "");
+    let (row, sheet) = (probed("dc-drop-agent", cx), probed("dc-delete", cx));
+    r.check("…its line wraps inside the sheet", row.zip(sheet).is_some_and(|(r, d)| r.right() <= d.right() + gpui::px(1.)), format!("{row:?} {sheet:?}"));
+    pause(cx, 200).await;
+    shoot("08-delete", cx);
+    click_probe("dc-delete", cx);
+    let dropped = until(cx, 30, |_| core.config.get(&other.id).is_none()).await;
+    let mut left = String::new();
+    for _ in 0..60 {
+        left = sql1(&core, pg, pw, &format!("SELECT count(*) FROM pg_roles WHERE rolname = '{other_user}'"), cx).await.unwrap_or_default();
+        if left == "0" {
+            break;
+        }
+        pause(cx, 250).await;
+    }
+    r.check("…the connection goes, its login dropped on the server and its Keychain item gone", dropped && left == "0" && core.secrets.get(&agent_login::secret_account(&other.id)).ok().flatten().is_none(), format!("roles left: {left}"));
+    pause(cx, 300).await;
+    shoot("09-deleted", cx);
 }
 
 /// Audit › Clear…: each way asks first with the count of what goes, takes the replies with the
@@ -995,6 +1303,7 @@ async fn check_clear(ws: &Entity<Workspace>, a: &Entity<AgentsPage>, r: &mut Rep
             allowed_by: None,
             rewritten: None,
             seen: None,
+            login: None,
         });
     }
     // A reply whose call rotated out long ago.

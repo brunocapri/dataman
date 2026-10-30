@@ -40,6 +40,8 @@ pub(crate) struct DeletedConn {
     pub ssh_secret: Option<String>,
     pub history: Option<Vec<u8>>,
     pub pins: Vec<Pin>,
+    /// Its agent login's password, put back with it (none once the login was dropped).
+    pub agent_password: Option<String>,
     /// The explorer folder it was in.
     pub folder: Option<String>,
 }
@@ -317,15 +319,18 @@ impl Workspace {
             (None, None)
         };
         let pins = core.pins.of(id);
+        let agent_account = dataman_core::agent_login::secret_account(id);
+        let agent_password = core.secrets.get(&agent_account).ok().flatten();
         let folder = store.folder_of(id).map(|d| d.id.clone());
         core.remove_connection(id)?;
+        let _ = core.secrets.delete(&agent_account);
         let history = core.history.take(id).ok().flatten();
         self.disconnect(id.to_string(), cx);
         self.store.update(cx, |s, cx| s.reload(cx));
         if self.current_conn.as_deref() == Some(id) {
             self.current_conn = self.store.read(cx).profiles.first().map(|p| p.id.clone());
         }
-        Ok(DeletedConn { profile, order, password, ssh_secret, history, pins, folder })
+        Ok(DeletedConn { profile, order, password, ssh_secret, history, pins, agent_password, folder })
     }
 
     fn restore_connection(&mut self, d: &DeletedConn, cx: &mut Context<Self>) -> Applied {
@@ -335,6 +340,9 @@ impl Workspace {
         }
         let core = self.store.read(cx).core.clone();
         said(core.save_connection(d.profile.clone(), d.password.as_deref(), d.ssh_secret.as_deref()))?;
+        if let (Some(pw), Some(_)) = (&d.agent_password, &d.profile.agent_login) {
+            said(core.secrets.set(&dataman_core::agent_login::secret_account(&id), pw))?;
+        }
         said(core.config.reorder(&d.order))?;
         if let Some(h) = &d.history {
             said(core.history.put_back(&id, h))?;

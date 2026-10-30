@@ -911,8 +911,18 @@ fn token_color(t: &Theme, kind: TokenKind, word: &str, next_is_paren: bool) -> H
 }
 
 pub(crate) fn highlighted_lines(t: &Theme, sql: &str) -> Vec<(SharedString, Vec<TextRun>)> {
+    lines_of(t, sql, |s| tokenize(s))
+}
+
+/// [`highlighted_lines`] in an engine's own language: its SQL dialect, or the MongoDB shell,
+/// Redis commands and search requests as the editor colours them.
+pub(crate) fn highlighted_lines_in(t: &Theme, text: &str, engine: dataman_core::Engine) -> Vec<(SharedString, Vec<TextRun>)> {
+    lines_of(t, text, |s| if engine.is_sql() { tokenize_in(s, engine.dialect()) } else { dataman_core::nosql::lang::tokenize(engine, s) })
+}
+
+fn lines_of(t: &Theme, sql: &str, lex: impl Fn(&str) -> Vec<Token>) -> Vec<(SharedString, Vec<TextRun>)> {
     let clean: String = sql.chars().map(|c| if c.is_ascii_control() && c != '\n' { ' ' } else { c }).collect();
-    let toks = tokenize(&clean);
+    let toks = lex(&clean);
     let base = TextRun { len: 0, font: mono(), color: t.tx, background_color: None, underline: None, strikethrough: None };
     let mut lines = vec![(String::new(), Vec::<TextRun>::new())];
     for (i, tok) in toks.iter().enumerate() {

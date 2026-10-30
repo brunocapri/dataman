@@ -184,7 +184,7 @@ impl AgentsPage {
         all.into_iter().find(|p| p.id == id)
     }
 
-    fn render_conn_list(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn render_conn_list(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let rows = self.profiles(cx).into_iter().map(|p| {
             let sel = self.conn.as_deref() == Some(p.id.as_str());
             let a = p.mcp_access();
@@ -299,7 +299,8 @@ impl AgentsPage {
                         v.edit_conn(&id, |p| p.mcp = Some(a), cx);
                     }
                 }))
-                .when(p.env.is_production(), |d| d.child(div().text_size(px(11.)).text_color(t.tx3).child("Production: every write asks."))),
+                .when(p.env.is_production(), |d| d.child(div().text_size(px(11.)).text_color(t.tx3).child("Production: every write asks.")))
+                .children(self.login_refused_note(t, &p)),
         );
         let tier = p.mcp_access();
         let prod = p.env.is_production();
@@ -382,7 +383,9 @@ impl AgentsPage {
             })))
             .child(limit_row("Rows per read", seg(t, "agents-rrows", &reads, r.read_rows.unwrap_or(read_d), true, cx, move |v, n, cx| v.set_rule(|r| r.read_rows = (n != read_d).then_some(n), cx))));
         let (side, measure) = self.side_by_side(PERMISSIONS_SIDE_W);
-        let mut right = div().flex().flex_col().gap(px(24.)).child(limits);
+        // Under the limits, the database login made from all of the above.
+        self.login_sync(&p, cx);
+        let mut right = div().flex().flex_col().gap(px(24.)).child(limits).child(self.login_section(t, &p, cx));
         if dataman_core::MCP_ADVANCED {
             if p.engine.is_sql() {
                 right = right.child(self.render_allowed(t, &p, window, cx));
@@ -396,6 +399,7 @@ impl AgentsPage {
             div().w_full().max_w(px(640.)).flex().flex_col().gap(px(24.)).child(left.flex_none()).child(right.pt(px(24.)).border_t_1().border_color(t.line))
         };
         div()
+            .relative()
             .size_full()
             .flex()
             .flex_col()
@@ -409,8 +413,9 @@ impl AgentsPage {
                     .border_t_1()
                     .border_color(t.line)
                     .child(self.render_conn_list(t, cx))
-                    .child(self.protection_pane(t, div().id("agents-perm-body").relative().overflow_y_scroll().flex().flex_col().px(px(32.)).py(px(24.)).child(measure.absolute().top_0().left_0().size_full()).child(body), cx)),
+                    .child(self.protection_pane(t, div().id("agents-perm-body").relative().overflow_y_scroll().track_scroll(&self.perm_scroll).flex().flex_col().px(px(32.)).py(px(24.)).child(measure.absolute().top_0().left_0().size_full()).child(body), cx)),
             )
+            .children(self.login_sheet(t, &p, cx))
             .into_any_element()
     }
 
@@ -621,12 +626,7 @@ impl AgentsPage {
                     div()
                         .children(ui::here(&SharedString::from(format!("agents-sens-check-{k}")).into()))
                         .id(SharedString::from(format!("agents-sens-check-{k}")))
-                        .child(if masked || !s.on {
-                            checkbox(t, s.on, false)
-                        } else {
-                            // Checked but inert: the tick in the disabled grey, not the accent.
-                            div().flex_none().size(px(14.)).flex().items_center().justify_center().bg(t.line2).child(icon(Icon::Check).size(px(11.)).text_color(t.tx3))
-                        })
+                        .child(checkbox(t, s.on, !masked && s.on))
                         .when(masked, |d| {
                             d.on_click(cx.listener(move |v, _, _, cx| {
                                 v.set_rule(|r| {

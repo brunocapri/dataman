@@ -10,6 +10,7 @@ use parking_lot::Mutex;
 use tokio::sync::Semaphore;
 
 use crate::audit::Audit;
+use dataman_core::agent_login;
 use dataman_core::privacy::{HashKey, Types};
 
 pub const PER_CONNECTION: usize = 2;
@@ -219,6 +220,8 @@ pub struct Hub {
     profiles: Mutex<Fresh<Vec<ConnectionProfile>>>,
     settings: Mutex<Fresh<Settings>>,
     open: Mutex<HashMap<String, (ConnectionProfile, Arc<Connection>)>>,
+    /// The user's own login, where an agent login is in use: for what the user allowed only.
+    mine: Mutex<HashMap<String, (ConnectionProfile, Arc<Connection>)>>,
     limits: Mutex<HashMap<String, Arc<Semaphore>>>,
     global: Arc<Semaphore>,
     front: Mutex<Option<Arc<dyn Front>>>,
@@ -245,6 +248,7 @@ impl Hub {
             profiles: Mutex::new(Fresh { stamp: None, value: Arc::new(Vec::new()) }),
             settings: Mutex::new(Fresh { stamp: None, value: Arc::new(Settings::default()) }),
             open: Mutex::new(HashMap::new()),
+            mine: Mutex::new(HashMap::new()),
             limits: Mutex::new(HashMap::new()),
             global: Arc::new(Semaphore::new(GLOBAL)),
             front: Mutex::new(None),
@@ -393,11 +397,19 @@ impl Hub {
         }
     }
 
+    /// The connection agents use: as its agent login when it has one (its password the
+    /// Keychain's), never falling back to the user's own login when that fails.
     pub async fn connect(&self, p: &ConnectionProfile) -> Result<Arc<Connection>, String> {
+        if let Err(e) = refusal(p) {
+            // What was open for it (as a login it no longer has) goes too.
+            self.forget(&p.id);
+            return Err(e);
+        }
         let stale = {
             let mut g = self.open.lock();
             if let Some((saved, c)) = g.get_mut(&p.id)
                 && saved != p
+                && (&saved.agent_login, saved.agents_refused) == (&p.agent_login, p.agents_refused)
                 && (ConnectionProfile { read_only_databases: p.read_only_databases.clone(), ..saved.clone() }).same_but_agents(p)
             {
                 for db in saved.read_only_databases.keys().chain(p.read_only_databases.keys()) {
@@ -413,20 +425,75 @@ impl Hub {
         };
         if let Some(c) = stale {
             c.close();
+            // What it read of the schema came through that login (another one, or the user's).
+            self.forget_schema(&p.id);
         }
         // Agents' reads on MongoDB go where Permissions › Read from says.
         let mut agent = p.clone();
         if let Some(r) = p.mcp_rules.read_from.filter(|_| p.engine == dataman_core::Engine::MongoDb) {
             agent.options.insert("readPreference".into(), r.mongo().into());
         }
-        let task = self.core.connect(agent, None);
+        let task = match &p.agent_login {
+            Some(l) => {
+                let pw = agent_login::live::password_of(&*self.core.secrets, &p.id, &l.user).map_err(|e| format!("{e:#}"))?;
+                self.core.connect_agent(p, agent_login::live::agent_profile(&agent, &l.user), pw)
+            }
+            None => self.core.connect(agent, None),
+        };
+        let as_login = p.agent_login.as_ref().map(|l| format!(" as its agent login {}", l.user)).unwrap_or_default();
+        let never = if p.agent_login.is_some() { ". Agents are refused here until it connects: Dataman never uses your own login for them (Agents › Permissions › Verify)" } else { "" };
         let c = match tokio::time::timeout(CONNECT_TIMEOUT, task).await {
             Ok(Ok(c)) => c,
-            Ok(Err(e)) => return Err(format!("cannot connect to {}: {e:#}", p.name)),
-            Err(_) => return Err(format!("cannot connect to {}: timed out", p.name)),
+            Ok(Err(e)) => return Err(format!("cannot connect to {}{as_login}: {e:#}{never}", p.name)),
+            Err(_) => return Err(format!("cannot connect to {}{as_login}: timed out{never}", p.name)),
         };
+        if let Some(l) = &p.agent_login {
+            c.set_agent_views(&l.views);
+        }
         self.open.lock().insert(p.id.clone(), (p.clone(), c.clone()));
         Ok(c)
+    }
+
+    /// The user's own login, for what the user allowed in the app that the agent's login may
+    /// not run (DDL, TRUNCATE, a procedure…). Only after that Allow.
+    pub async fn connect_user(&self, p: &ConnectionProfile) -> Result<Arc<Connection>, String> {
+        if p.agent_login.is_none() {
+            return self.connect(p).await;
+        }
+        {
+            let g = self.mine.lock();
+            if let Some((saved, c)) = g.get(&p.id)
+                && saved.same_but_agents(p)
+            {
+                return Ok(c.clone());
+            }
+        }
+        let task = self.core.connect(ConnectionProfile { agent_login: None, ..p.clone() }, None);
+        let c = match tokio::time::timeout(CONNECT_TIMEOUT, task).await {
+            Ok(Ok(c)) => c,
+            Ok(Err(e)) => return Err(format!("cannot connect to {} as you, for what you allowed: {e:#}", p.name)),
+            Err(_) => return Err(format!("cannot connect to {} as you: timed out", p.name)),
+        };
+        if let Some((_, old)) = self.mine.lock().insert(p.id.clone(), (p.clone(), c.clone())) {
+            old.close();
+        }
+        Ok(c)
+    }
+
+    /// Drops what is open for a connection (its agent login changed or went).
+    pub fn forget(&self, id: &str) {
+        if let Some((_, c)) = self.open.lock().remove(id) {
+            c.close();
+        }
+        if let Some((_, c)) = self.mine.lock().remove(id) {
+            c.close();
+        }
+        self.forget_schema(id);
+    }
+
+    fn forget_schema(&self, id: &str) {
+        self.snapshots.lock().retain(|(i, _, _), _| i != id);
+        self.refreshed.lock().retain(|(i, _), _| i != id);
     }
 
     pub fn connected(&self, id: &str) -> Option<Arc<Connection>> {
@@ -444,6 +511,25 @@ impl Hub {
         for (_, (_, c)) in self.open.lock().drain() {
             c.close();
         }
+        for (_, (_, c)) in self.mine.lock().drain() {
+            c.close();
+        }
+    }
+}
+
+/// Why agents can't use a connection's login now: its agent login was removed (and the user
+/// has not let agents use their own), or the connection moved since the login was made.
+pub fn refusal(p: &ConnectionProfile) -> Result<(), String> {
+    match &p.agent_login {
+        None if p.agents_refused => Err(format!(
+            "agents are refused on {}: its agent database login was removed. In Dataman, create a new one (Agents › Permissions › Create agent login) or let agents use your login there",
+            p.name
+        )),
+        Some(l) if l.server != agent_login::server_of(p) => Err(format!(
+            "agents are refused on {}: it now points at another server than its agent login {} was made on. In Dataman, remove the agent login and create it again",
+            p.name, l.user
+        )),
+        _ => Ok(()),
     }
 }
 

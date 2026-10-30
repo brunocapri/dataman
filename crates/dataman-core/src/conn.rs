@@ -101,6 +101,14 @@ impl Connection {
         }
     }
 
+    /// An agent login's views: MongoDB's reads of those collections go to them (SQL's are
+    /// rewritten with the statement).
+    pub fn set_agent_views(&self, views: &[crate::agent_login::ViewMap]) {
+        if let Some(crate::nosql::Client::Mongo(m)) = &self.nosql {
+            *m.views.write() = views.iter().map(|v| (v.schema.clone(), v.table.clone(), v.view.clone())).collect();
+        }
+    }
+
     pub fn dialect(&self) -> Dialect {
         self.profile.engine.dialect()
     }
