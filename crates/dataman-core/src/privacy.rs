@@ -231,12 +231,46 @@ pub fn builtin(id: &str) -> Option<&'static Builtin> {
     BUILTINS.iter().find(|b| b.id == id)
 }
 
+impl Builtin {
+    pub fn pattern(&self) -> &'static str {
+        self.pattern
+    }
+
+    pub fn validator(&self) -> Validator {
+        self.validator
+    }
+
+    /// Partial's characters left at the end (cards and e-mails keep 4 their own way).
+    pub fn keep(&self) -> u8 {
+        match self.partial {
+            Partial::KeepLast(n) => n,
+            Partial::Card | Partial::Email => 4,
+        }
+    }
+
+    /// The type as it ships, in the editor's shape.
+    pub fn as_custom(&self) -> CustomType {
+        CustomType { id: self.id.into(), name: self.name.into(), pattern: self.pattern.into(), mask: self.mask, keep: self.keep(), validator: self.validator, ignore_case: false, on: self.on }
+    }
+}
+
+/// A built-in type as the user changed it: each field only when it differs from the default.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BuiltinOverride {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mask: Option<Mask>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pattern: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validator: Option<Validator>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ignore_case: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep: Option<u8>,
 }
 
 fn four() -> u8 {
@@ -318,6 +352,8 @@ pub struct TypeRow {
     pub on: bool,
     pub mask: Mask,
     pub custom: bool,
+    /// A built-in type whose definition the user changed.
+    pub edited: bool,
     /// The pattern does not compile: reads are refused while it is on.
     pub broken: Option<String>,
 }
@@ -333,6 +369,51 @@ impl TypeSettings {
 
     pub fn builtin_mask(&self, b: &Builtin) -> Mask {
         self.builtin.get(b.id).and_then(|o| o.mask).unwrap_or(b.mask)
+    }
+
+    /// A built-in type as it applies: the default with the user's changes.
+    pub fn builtin_def(&self, b: &Builtin) -> CustomType {
+        let d = b.as_custom();
+        let Some(o) = self.builtin.get(b.id) else { return d };
+        CustomType {
+            name: o.name.clone().unwrap_or(d.name),
+            pattern: o.pattern.clone().unwrap_or(d.pattern),
+            mask: o.mask.unwrap_or(d.mask),
+            keep: o.keep.unwrap_or(d.keep),
+            validator: o.validator.unwrap_or(d.validator),
+            ignore_case: o.ignore_case.unwrap_or(d.ignore_case),
+            on: o.on.unwrap_or(d.on),
+            id: d.id,
+        }
+    }
+
+    /// Stores a built-in type's definition (name, pattern, mask and options) as the editor
+    /// holds it; what matches the default is not written. Its switch stays as it is.
+    pub fn set_builtin_def(&mut self, c: &CustomType) {
+        let Some(b) = builtin(&c.id) else { return };
+        let d = b.as_custom();
+        let mut o = self.builtin.remove(b.id).unwrap_or_default();
+        o.name = (c.name.trim() != d.name && !c.name.trim().is_empty()).then(|| c.name.trim().to_string());
+        o.pattern = (c.pattern != d.pattern).then(|| c.pattern.clone());
+        o.mask = (c.mask != d.mask).then_some(c.mask);
+        o.keep = (c.keep != d.keep).then_some(c.keep);
+        o.validator = (c.validator != d.validator).then_some(c.validator);
+        o.ignore_case = (c.ignore_case != d.ignore_case).then_some(c.ignore_case);
+        if o != BuiltinOverride::default() {
+            self.builtin.insert(b.id.to_string(), o);
+        }
+    }
+
+    /// The definition back to the default; the switch stays as it is.
+    pub fn reset_builtin(&mut self, id: &str) {
+        if let Some(o) = self.builtin.remove(id).and_then(|o| o.on).map(|on| BuiltinOverride { on: Some(on), ..Default::default() }) {
+            self.builtin.insert(id.to_string(), o);
+        }
+    }
+
+    /// Its definition differs from the default (not counting the switch).
+    pub fn builtin_edited(&self, id: &str) -> bool {
+        self.builtin.get(id).is_some_and(|o| BuiltinOverride { on: None, ..o.clone() } != BuiltinOverride::default())
     }
 
     pub fn set_builtin(&mut self, id: &str, on: Option<bool>, mask: Option<Mask>) {
@@ -359,7 +440,14 @@ impl TypeSettings {
     pub fn rows(&self) -> Vec<TypeRow> {
         let mut rows: Vec<TypeRow> = BUILTINS
             .iter()
-            .map(|b| TypeRow { id: b.id.into(), name: b.name.into(), rule: b.rule.into(), example: b.example.into(), on: self.builtin_on(b), mask: self.builtin_mask(b), custom: false, broken: None })
+            .map(|b| {
+                let d = self.builtin_def(b);
+                // A pattern of the user's is shown as theirs; the default's rule and example no longer tell.
+                let mine = d.pattern != b.pattern;
+                let (rule, example) = if mine { (format!("Custom: {}", d.pattern), String::new()) } else { (b.rule.into(), b.example.into()) };
+                let broken = mine.then(|| check_pattern(&d.pattern).err()).flatten();
+                TypeRow { id: b.id.into(), name: d.name, rule, example, on: d.on, mask: d.mask, custom: false, edited: self.builtin_edited(b.id), broken }
+            })
             .collect();
         for c in &self.custom {
             let mut rule = format!("Custom: {}", c.pattern);
@@ -367,7 +455,7 @@ impl TypeSettings {
                 rule.push_str(&format!(" · {}", c.validator.label()));
             }
             let broken = check_pattern(&c.pattern).err();
-            rows.push(TypeRow { id: c.id.clone(), name: c.name.clone(), rule, example: String::new(), on: c.on, mask: c.mask, custom: true, broken });
+            rows.push(TypeRow { id: c.id.clone(), name: c.name.clone(), rule, example: String::new(), on: c.on, mask: c.mask, custom: true, edited: false, broken });
         }
         rows
     }
@@ -418,7 +506,11 @@ pub struct Tested {
 
 pub fn test_pattern(t: &CustomType, lines: &[&str], key: &HashKey) -> Result<Tested, String> {
     check_pattern(&t.pattern)?;
-    let kind = Kind::custom(t).map_err(|e| e.to_string())?;
+    let kind = match builtin(&t.id) {
+        Some(b) => Kind::builtin(b, t),
+        None => Kind::custom(t),
+    }
+    .map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     let mut matches = 0;
     let mut hit_lines = 0;
@@ -505,19 +597,23 @@ struct Kind {
 }
 
 impl Kind {
-    fn builtin(b: &Builtin, mask: Mask) -> Kind {
-        Kind {
+    /// A built-in type with the user's changes (`d`, from `builtin_def`): its card, e-mail and
+    /// phone checks stay, and Partial keeps its own style until the characters kept change.
+    fn builtin(b: &Builtin, d: &CustomType) -> Result<Kind, regex::Error> {
+        let re = compile(&d.pattern, d.ignore_case)?;
+        let group_v = re.capture_names().any(|n| n == Some("v"));
+        Ok(Kind {
             id: b.id.into(),
-            name: b.name.into(),
-            re: compile(b.pattern, false).expect("built-in pattern"),
-            group_v: false,
-            validator: b.validator,
-            mask,
-            partial: b.partial,
+            name: d.name.clone(),
+            re,
+            group_v,
+            validator: d.validator,
+            mask: d.mask,
+            partial: if d.keep == b.keep() { b.partial } else { Partial::KeepLast(d.keep.min(6)) },
             norm: b.norm,
             token: HIDDEN.into(),
             numbers: b.numbers,
-        }
+        })
     }
 
     fn custom(c: &CustomType) -> Result<Kind, regex::Error> {
@@ -642,8 +738,13 @@ impl Types {
         let mut kinds = Vec::new();
         let mut broken = Vec::new();
         for b in BUILTINS {
-            if settings.builtin_on(b) {
-                kinds.push(Kind::builtin(b, settings.builtin_mask(b)));
+            let d = settings.builtin_def(b);
+            if !d.on {
+                continue;
+            }
+            match (d.pattern == b.pattern || check_pattern(&d.pattern).is_ok()).then(|| Kind::builtin(b, &d).ok()).flatten() {
+                Some(k) => kinds.push(k),
+                None => broken.push(d.name.clone()),
             }
         }
         for c in settings.custom.iter().take(MAX_CUSTOM) {
@@ -1243,8 +1344,6 @@ pub struct AgentRules {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub read_rows: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub read_bytes: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub read_from: Option<ReadFrom>,
 }
 
@@ -1268,20 +1367,26 @@ impl Default for AgentRules {
             redis: RedisCats::default(),
             time_limit_s: None,
             read_rows: None,
-            read_bytes: None,
             read_from: None,
         }
     }
 }
 
-/// Permissions › Limits' choices, each list holding the value that applies when none is set.
-pub const TIME_LIMITS: [u64; 4] = [10, 30, 120, DEFAULT_TIME_LIMIT_S];
-pub const READ_ROWS: [u64; 4] = [20, 100, 500, crate::settings::MCP_MAX_ROWS];
-pub const READ_BYTES: [u64; 3] = [16 * 1024, 64 * 1024, DEFAULT_READ_BYTES];
-pub const WRITE_ROWS: [u64; 4] = [10, crate::settings::MCP_WRITE_ROW_LIMIT, 1000, 10_000];
+/// Permissions › Limits' choices, each list holding the value that applies when none is set
+/// and ending on no limit at all.
+pub const TIME_LIMITS: [u64; 5] = [10, 30, 120, DEFAULT_TIME_LIMIT_S, UNLIMITED];
+pub const READ_ROWS: [u64; 5] = [20, 100, 500, crate::settings::MCP_MAX_ROWS, UNLIMITED];
+pub const WRITE_ROWS: [u64; 5] = [10, crate::settings::MCP_WRITE_ROW_LIMIT, 1000, 10_000, UNLIMITED];
 pub const DEFAULT_TIME_LIMIT_S: u64 = 300;
-/// What one read may return in all (bounded's own limit).
-pub const DEFAULT_READ_BYTES: u64 = 256 * 1024;
+/// A limit of 0 is none: ∞ in Permissions › Limits.
+pub const UNLIMITED: u64 = 0;
+/// Time per call ∞: a statement still stops after a day, so nothing holds a connection forever.
+pub const NO_TIME_LIMIT_S: u64 = 24 * 3600;
+
+/// A row limit as a count, ∞ as the largest.
+pub fn row_cap(limit: u64) -> u64 {
+    if limit == UNLIMITED { u64::MAX } else { limit }
+}
 
 impl AgentRules {
     pub fn is_default(&self) -> bool {
@@ -1310,7 +1415,15 @@ impl AgentRules {
     }
 
     pub fn time_limit(&self) -> std::time::Duration {
-        std::time::Duration::from_secs(self.time_limit_s.unwrap_or(DEFAULT_TIME_LIMIT_S).clamp(1, DEFAULT_TIME_LIMIT_S))
+        match self.time_limit_s.unwrap_or(DEFAULT_TIME_LIMIT_S) {
+            UNLIMITED => std::time::Duration::from_secs(NO_TIME_LIMIT_S),
+            s => std::time::Duration::from_secs(s.clamp(1, DEFAULT_TIME_LIMIT_S)),
+        }
+    }
+
+    /// Rows per read as a count (∞ as the largest).
+    pub fn read_cap(&self) -> u64 {
+        row_cap(self.read_rows.unwrap_or(crate::settings::MCP_MAX_ROWS))
     }
 
     /// The rules with each generated (computed) column protected as the strongest of the
@@ -1465,6 +1578,26 @@ mod tests {
         assert_eq!(scrub(&t, "$2b$12$KixQ0aaaaaaaaaaaaaaaaa").0, "‹hidden›");
         assert_eq!(scrub(&t, "order 12345678901 x 4242424242424241").0, "order 12345678901 x 4242424242424241", "invalid check digits stay");
         assert_eq!(scrub(&t, "10.0.3.17").0, "10.0.3.17", "IP is off by default");
+    }
+
+    #[test]
+    fn builtin_types_edited() {
+        let mut ts = TypeSettings::default();
+        let card = builtin("card").unwrap();
+        ts.set_builtin_def(&CustomType { name: "Cards".into(), ..card.as_custom() });
+        let (s, c) = scrub(&Types::new(&ts), "paid 4242 4242 4242 4242");
+        assert_eq!((s.as_str(), c.get("Cards")), ("paid •••• 4242", Some(&1)), "renamed: the card's own partial style stays");
+        ts.set_builtin_def(&CustomType { keep: 2, ..ts.builtin_def(card) });
+        assert_eq!(scrub(&Types::new(&ts), "paid 4242 4242 4242 4242").0, "paid •••• •••• •••• ••42");
+        ts.set_builtin_def(&CustomType { pattern: "(?=x)".into(), ..ts.builtin_def(card) });
+        let t = Types::new(&ts);
+        assert_eq!((t.broken.clone(), ts.rows()[0].broken.is_some()), (vec!["Cards".to_string()], true), "a broken pattern is reported, as a custom type's");
+        ts.set_builtin("card", Some(false), None);
+        ts.reset_builtin("card");
+        assert!(!ts.builtin_edited("card") && !ts.builtin_on(card) && ts.builtin_def(card) == CustomType { on: false, ..card.as_custom() }, "reset keeps the switch");
+        ts.set_builtin_def(&card.as_custom());
+        ts.set_builtin("card", Some(true), None);
+        assert!(ts.is_unchanged(), "the defaults store nothing");
     }
 
     #[test]

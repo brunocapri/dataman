@@ -58,7 +58,7 @@ pub fn result_json(o: &bounded::Outcome, max_rows: usize) -> Value {
         m.insert("truncated".into(), json!(t.label()));
         let hint = match t {
             bounded::Truncation::Rows => format!("more rows exist past {max_rows}; narrow with WHERE/LIMIT or raise max_rows"),
-            bounded::Truncation::Bytes => "the result passed ~256 KB; select fewer columns or rows".into(),
+            bounded::Truncation::Bytes => "the result grew too large; select fewer columns or rows".into(),
         };
         m.insert("note".into(), json!(hint));
     }
@@ -96,7 +96,7 @@ pub fn read_json(o: &bounded::Outcome, max_rows: usize, statements: &[String]) -
     if o.parts.last().is_some_and(|p| p.truncated == Some(bounded::Truncation::Bytes)) && reached < statements.len() {
         m.insert("truncated".into(), json!("bytes"));
         let rest = if reached + 1 == statements.len() { format!("statement {}", statements.len()) } else { format!("statements {}–{}", reached + 1, statements.len()) };
-        m.insert("note".into(), json!(format!("the results passed ~256 KB in all at statement {reached}: {rest} not returned; run them on their own or select less")));
+        m.insert("note".into(), json!(format!("the results grew too large at statement {reached}: {rest} not returned; run them on their own or select less")));
     }
     m.insert("ms".into(), json!(ms(o.elapsed)));
     Value::Object(m)
@@ -159,7 +159,7 @@ pub fn confirm_prop(s: Schema) -> Schema {
 
 pub fn limits_props(s: Schema, default_rows: u64) -> Schema {
     s.prop("max_rows", false, json!({"type": "integer", "minimum": 1, "maximum": 100000, "description": format!("Most rows returned (default {default_rows}; the app's setting caps it, 1000 by default).")}))
-        .prop("timeout_ms", false, json!({"type": "integer", "minimum": 100, "maximum": 300000, "description": "Statement time limit in ms (default 30000)."}))
+        .prop("timeout_ms", false, json!({"type": "integer", "minimum": 100, "maximum": 86400000, "description": "Statement time limit in ms (default 30000; the connection's Time per call caps it, 5 min by default)."}))
 }
 
 #[cfg(test)]

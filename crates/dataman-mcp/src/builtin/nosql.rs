@@ -11,7 +11,6 @@ use crate::hub::{Front, TabWrite};
 use crate::policy::Need;
 use crate::tool::{Args, BoxFut, Call, Opened, ToolError};
 
-const MAX_BYTES: usize = 256 * 1024;
 
 fn query_prop() -> Value {
     json!({"type": "string", "maxLength": 200000, "description": "One statement in the connection's language (list_connections' language). MongoDB's shell: db.users.find({age: {$gt: 30}}).sort({name: 1}).limit(20), db.orders.aggregate([...]), db.users.countDocuments({}), show collections; or a mongosh script (JavaScript: const/let, new Date(), Date.now(), loops, functions, cursor.forEach / toArray / map, print / printjson; the last value is the result, a cursor's as documents; printed lines come back as printed). A script's writes (by method name and written-out filter) decide its tier before it runs, and every call is held to that as it runs. Elasticsearch / OpenSearch, Kibana's console: a method line, then the JSON body on the next lines (GET /orders/_search, newline, {\"query\": {\"match\": {\"status\": \"paid\"}}}), or GET _cat/indices. Redis: one command as redis-cli takes it (HGETALL user:1, SCAN 0 MATCH user:* COUNT 100, SET k v EX 60)."})
@@ -21,19 +20,19 @@ pub fn tools() -> Vec<Builtin> {
     vec![
         Builtin {
             name: "nosql_query",
-            description: "Reads from a MongoDB, Elasticsearch, OpenSearch or Redis connection in its own language (one statement). Redis: read commands (GET, HGETALL, LRANGE, SCAN, TYPE, INFO…; a key's whole value comes back as entries). MongoDB: find/findOne with sort, skip, limit, projection; aggregate (without $out/$merge); countDocuments, distinct, getIndexes, stats; show dbs / collections; read commands. Elasticsearch / OpenSearch: GET requests, _search, _count, _msearch, _mget, _cat/…. Writes are refused here (use nosql_execute). Returns {documents: [...], count, total?, more, printed?, ms} (MongoDB's as relaxed extended JSON, a search's hits as their _source) or {value, ms} for counts, aggregations and other answers. At most max_rows documents (default 50) and ~256 KB.",
+            description: "Reads from a MongoDB, Elasticsearch, OpenSearch or Redis connection in its own language (one statement). Redis: read commands (GET, HGETALL, LRANGE, SCAN, TYPE, INFO…; a key's whole value comes back as entries). MongoDB: find/findOne with sort, skip, limit, projection; aggregate (without $out/$merge); countDocuments, distinct, getIndexes, stats; show dbs / collections; read commands. Elasticsearch / OpenSearch: GET requests, _search, _count, _msearch, _mget, _cat/…. Writes are refused here (use nosql_execute). Returns {documents: [...], count, total?, more, printed?, ms} (MongoDB's as relaxed extended JSON, a search's hits as their _source) or {value, ms} for counts, aggregations and other answers. At most max_rows documents (default 50).",
             schema: conn_schema()
                 .prop("query", true, query_prop())
                 .prop("max_rows", false, json!({"type": "integer", "minimum": 1, "maximum": 1000, "description": "Most documents returned (default 50)."}))
                 .prop("skip", false, json!({"type": "integer", "minimum": 0, "description": "Documents to skip past the statement's own skip (paging)."}))
-                .prop("timeout_ms", false, json!({"type": "integer", "minimum": 100, "maximum": 300000, "description": "Time limit in ms (default 30000)."})),
+                .prop("timeout_ms", false, json!({"type": "integer", "minimum": 100, "maximum": 86400000, "description": "Time limit in ms (default 30000; the connection's Time per call caps it, 5 min by default)."})),
             need: Some(Need::Read),
             run: nosql_query,
         },
         Builtin {
             name: "nosql_execute",
             description: "Writes to a MongoDB, Elasticsearch, OpenSearch or Redis connection in its own language (one statement: insertOne, updateMany…; PUT /idx/_doc/1, _delete_by_query…; SET, HSET, DEL…), as the connection's MCP tier allows (set by the user in Dataman; default read). Tier write: inserts and updates/deletes with a filter or query, changing at most the row limit (counted before it runs; more waits for the user's Allow); anything destructive (no filter, match_all, drops, index creation and deletion, settings, other commands) is refused. Tier full: destructive statements wait for the user's Allow in the app. On production every write waits for the user. A MongoDB script that writes waits for the user's Allow (its writes cannot be counted before it runs). Returns {written, affected, detail?, ms}, or a script's last value with writes: [what each write changed] and printed.",
-            schema: confirm_prop(conn_schema().prop("query", true, query_prop()).prop("timeout_ms", false, json!({"type": "integer", "minimum": 100, "maximum": 300000, "description": "Time limit in ms (default 30000)."}))),
+            schema: confirm_prop(conn_schema().prop("query", true, query_prop()).prop("timeout_ms", false, json!({"type": "integer", "minimum": 100, "maximum": 86400000, "description": "Time limit in ms (default 30000; the connection's Time per call caps it, 5 min by default)."}))),
             need: Some(Need::Write),
             run: nosql_execute,
         },
@@ -51,10 +50,6 @@ fn failed(e: anyhow::Error) -> ToolError {
     }
 }
 
-fn bytes_of(cx: &Call, a: &Args) -> usize {
-    cx.rules_of(a).read_bytes.map_or(MAX_BYTES, |b| (b as usize).min(MAX_BYTES))
-}
-
 async fn run(cx: &Call, o: &Opened, text: &str, page: Page, timeout: Duration) -> Result<nosql::Ran, ToolError> {
     let r = o.conn.run_nosql(&o.database, text, page);
     tokio::select! {
@@ -66,32 +61,18 @@ async fn run(cx: &Call, o: &Opened, text: &str, page: Page, timeout: Duration) -
     }
 }
 
-fn output_json(ran: &nosql::Ran, max_bytes: usize) -> Value {
+/// No size limit on the documents: Rows per read bounds them.
+fn output_json(ran: &nosql::Ran) -> Value {
     let mut m = Map::new();
     match &ran.output {
         Output::Docs(d) => {
-            let mut bytes = 0;
-            let mut docs = Vec::new();
-            let mut cut = false;
-            for doc in &d.docs {
-                let v = doc.body.to_json();
-                bytes += v.to_string().len();
-                if bytes > max_bytes && !docs.is_empty() {
-                    cut = true;
-                    break;
-                }
-                docs.push(v);
-            }
+            let docs: Vec<Value> = d.docs.iter().map(|doc| doc.body.to_json()).collect();
             m.insert("count".into(), json!(docs.len()));
             m.insert("documents".into(), Value::Array(docs));
             if let Some(t) = d.total {
                 m.insert("total".into(), json!(t));
             }
-            m.insert("more".into(), json!(d.more || cut));
-            if cut {
-                m.insert("truncated".into(), json!("bytes"));
-                m.insert("note".into(), json!(format!("the documents passed ~{} KB; project fewer fields or lower max_rows", max_bytes / 1024)));
-            }
+            m.insert("more".into(), json!(d.more));
         }
         Output::Value(v) => {
             m.insert("value".into(), v.to_json());
@@ -166,7 +147,7 @@ pub(super) async fn query(cx: &Call, a: &Args, key: &str, open: bool) -> Result<
     let r = read(cx, a, text).await;
     shown.done(&r, r.as_ref().ok());
     let ran = r?;
-    let mut v = output_json(&ran, bytes_of(cx, a));
+    let mut v = output_json(&ran);
     rules::nosql_shape(cx, a, &target, text, &mut v, &shaped);
     if open && let Some(m) = v.as_object_mut() {
         m.insert("in_tab".into(), json!(shown.tab.is_some()));
@@ -203,7 +184,7 @@ pub(super) async fn execute(cx: &Call, a: &Args, key: &str, open: bool) -> Resul
     let r = write(cx, a, text, &class, shown.tab).await;
     shown.done(&r, r.as_ref().ok());
     let ran = r?;
-    let mut v = output_json(&ran, bytes_of(cx, a));
+    let mut v = output_json(&ran);
     rules::nosql_shape(cx, a, &target, text, &mut v, &shaped);
     if let Some(m) = v.as_object_mut() {
         if let Some(n) = cx.note().approval.filter(|n| n.decision == crate::audit::Decision::Approved) {
@@ -360,7 +341,7 @@ pub(super) async fn sample(cx: &Call, o: &Opened, coll: &str, n: u64, random: bo
     if let Output::Docs(d) = &ran.output {
         cx.note_rows(d.docs.len());
     }
-    let mut v = output_json(&ran, bytes_of(cx, &a));
+    let mut v = output_json(&ran);
     rules::nosql_shape(cx, &a, &o.profile, &stmt, &mut v, &shaped);
     Ok(v)
 }

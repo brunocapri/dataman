@@ -1,17 +1,21 @@
-//! Agents › Permissions (what agents may do on a connection, and how much) and Agents › Privacy
-//! (what they may see there). Both write the connection's `mcp_rules`; no MCP tool can.
+//! Agents › Protection, two tabs on one list of connections: Permissions (what agents may do on
+//! a connection, and how much) and Privacy (what they may see there). Both write the
+//! connection's `mcp_rules`; no MCP tool can.
 
 use dataman_core::privacy::{self, AgentView, ItemKind, Mask, Names, ReadFrom, RedisCat, SensitiveCol, Visible, VisibleItem, VisibleMode};
 use dataman_core::settings::{MCP_MAX_ROWS, MCP_WRITE_ROW_LIMIT};
 use dataman_core::{ConnectionProfile, Engine, McpAccess};
 use gpui::{AnyElement, ClickEvent, Context, SharedString, Window, div, prelude::*};
 
-use crate::agents::{Act, AgentsPage, Tip, checkbox, dropdown, field, label_tip, seg};
+use crate::agents::{Act, AgentsPage, Page, Tip, checkbox, dropdown, field, label_tip, seg};
 use crate::agents_suggest::Which;
 use crate::assets::{Icon, icon};
-use crate::theme::{Theme, px};
+use crate::theme::{Theme, metrics, px};
 use crate::ui;
 use crate::ui::Tipped;
+
+/// The connection list's width; Protection's title sits over it, in a column as wide.
+const CONNS_W: f32 = 250.;
 
 /// One "Agents may" row: its name, what it covers on this engine, its rule's value, the tier it
 /// needs, and why it cannot be changed here (Privacy forces it off).
@@ -71,26 +75,26 @@ fn may_tip() -> Tip {
 fn limits_tip() -> Tip {
     Tip::new("Limits")
         .lead("Per call, for agents only. Until you pick another, each starts on its default.")
-        .item("Time per call · 5 min", "Longest a statement runs before it is stopped. An agent can ask for less.")
-        .item("Rows per write · 100", "A write that changes more rows waits for your Allow.")
-        .item("Rows per read · 1k", "Most rows an agent gets back from one read.")
-        .item("Size per read · 256 KB", "Most data from one read; past it the reply is cut and the agent is told.")
+        .item("Time per call · 5 min", "Longest a statement runs before it is stopped. An agent can ask for less. ∞ lets it ask for up to a day.")
+        .item("Rows per write · 100", "A write that changes more rows waits for your Allow. ∞: no write waits for its row count.")
+        .item("Rows per read · 1k", "Most rows an agent gets back from one read. ∞: as many as it asks for.")
+        .note("A read's size isn't limited: the rows are.")
 }
 
-/// Masking happens in Masked data only, in two layers: the Sensitive data types inside every
+/// Masking happens in Masked data only, in two layers: the Masks inside every
 /// value, and this connection's sensitive columns whole.
 pub(crate) fn sees_tip() -> Tip {
     Tip::new("What the agent sees")
         .lead("How much of this connection's data reaches an agent. Your own tabs always show everything.")
         .item("Data", "Rows as stored. Nothing is masked.")
-        .item("Masked data", "Values matching a Sensitive data type (cards, e-mails, keys…) are masked in everything the agent receives, and the sensitive columns below are masked whole. Host, port and user aren't shown.")
+        .item("Masked data", "Values a Mask recognizes (cards, e-mails, keys…) are masked in everything the agent receives, and the sensitive columns below are masked whole. Host, port and user aren't shown.")
         .item("Structure only", "Tables, columns, types and query plans. No rows are read or written; only the structure changes Permissions allow. Host, port and user aren't shown.")
         .note("In every mode, what Visible to agents hides stays hidden and errors don't quote values.")
 }
 
 pub(crate) fn sens_tip() -> Tip {
     Tip::new("Sensitive columns")
-        .lead("Masked data only: this connection's columns masked whole. The Sensitive data types also mask matching values in every column.")
+        .lead("Masked data only: this connection's columns masked whole. The Masks also mask matching values in every column.")
         .item("Hidden", "The value becomes ‹hidden›.")
         .item("Partial", "Keeps the end: a•••@acme.com, •••• 4242.")
         .item("Hash", "A stable code, ‹h:7Q2KX9RM4A›. The same value always gives the same code, so an agent can still match rows.")
@@ -167,10 +171,8 @@ fn placeholder(e: Engine) -> &'static str {
 /// The Privacy body width from which its two columns sit side by side: the padding, the left
 /// column at its narrowest (The agent sees' three segments), the gap and Visible to agents.
 const PRIVACY_SIDE_W: f32 = 32. * 2. + 300. + 40. + 360.;
-
-fn kb(n: u64) -> String {
-    format!("{} KB", n / 1024)
-}
+/// The same for Permissions: the padding, Agents may at its narrowest, the gap and Limits.
+const PERMISSIONS_SIDE_W: f32 = 32. * 2. + 280. + 40. + 340.;
 
 impl AgentsPage {
     pub(crate) fn selected_profile(&mut self, cx: &mut Context<Self>) -> Option<ConnectionProfile> {
@@ -214,17 +216,64 @@ impl AgentsPage {
                     cx.notify();
                 }))
         });
-        div().id("agents-conns").w(px(250.)).flex_none().py(px(4.)).flex().flex_col().overflow_y_scroll().track_scroll(&self.conns_scroll).border_r_1().border_color(t.line).children(rows).into_any_element()
+        div().id("agents-conns").w(px(CONNS_W)).flex_none().py(px(4.)).flex().flex_col().overflow_y_scroll().track_scroll(&self.conns_scroll).border_r_1().border_color(t.line).children(rows).into_any_element()
     }
 
-    pub(crate) fn no_conns(&self, t: &Theme, title: &str) -> AnyElement {
+    /// The page beside the connections: Protection's two tabs in a header of their own, their
+    /// words lined up with the content under them, then the tab's page. The open tab is told by
+    /// its wash, as the editor's tabs are.
+    fn protection_pane(&self, t: &Theme, body: gpui::Stateful<gpui::Div>, cx: &mut Context<Self>) -> gpui::Div {
+        let tabs = [Page::Permissions, Page::Privacy].into_iter().enumerate().map(|(k, p)| {
+            let on = self.page == p;
+            let (hov, tx2) = (t.hov, t.tx2);
+            let id = SharedString::from(format!("agents-protection-tab-{k}"));
+            div()
+                .children(ui::here(&id.clone().into()))
+                .id(id)
+                .h(px(metrics::TAB_H))
+                .px(px(12.))
+                .flex()
+                .items_center()
+                .when(on, |d| d.bg(t.prs).text_color(t.tx))
+                .when(!on, move |d| d.text_color(t.tx3).hover(move |s| s.bg(hov).text_color(tx2)))
+                .child(p.label())
+                .on_click(cx.listener(move |v, _, _, cx| v.show(p, cx)))
+        });
+        div()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .child(div().h(px(40.)).flex_none().pl(px(20.)).flex().flex_row().items_center().gap(px(2.)).border_b_1().border_color(t.line).children(tabs))
+            .child(body.flex_1().min_h_0())
+    }
+
+    fn no_conns(&self, t: &Theme) -> AnyElement {
         div()
             .size_full()
             .flex()
             .flex_col()
-            .child(self.header(t, title))
+            .child(self.header(t, "Protection"))
             .child(div().flex_1().flex().items_center().justify_center().text_color(t.tx3).child("No saved connections."))
             .into_any_element()
+    }
+
+    /// Whether a Protection body of at least `min` wide has its columns side by side, and the
+    /// element that measures it. The width is the last frame's: a frame drawn on the wrong side
+    /// of the line asks for another.
+    fn side_by_side(&self, min: f32) -> (bool, gpui::Canvas<()>) {
+        let side = self.protection_body.get().is_none_or(|b| b.size.width.as_f32() >= min);
+        let slot = self.protection_body.clone();
+        let measure = gpui::canvas(
+            move |b, window, _| {
+                slot.set(Some(b));
+                if (b.size.width.as_f32() >= min) != side {
+                    window.on_next_frame(|window, _| window.refresh());
+                }
+            },
+            |_, _, _, _| {},
+        );
+        (side, measure)
     }
 
     fn set_rule(&mut self, f: impl FnOnce(&mut privacy::AgentRules), cx: &mut Context<Self>) {
@@ -236,7 +285,7 @@ impl AgentsPage {
     // ---- Permissions ----
 
     pub(crate) fn render_permissions(&mut self, t: &Theme, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let Some(p) = self.selected_profile(cx) else { return self.no_conns(t, "Permissions") };
+        let Some(p) = self.selected_profile(cx) else { return self.no_conns(t) };
         let r = p.mcp_rules.clone();
         let tiers: Vec<(McpAccess, &str)> = McpAccess::ALL.iter().map(|a| (*a, tier_label(*a))).collect();
         let mut left = div().flex_1().min_w_0().flex().flex_col().gap(px(24.)).child(
@@ -290,32 +339,41 @@ impl AgentsPage {
                 v.set_rule(|r| r.read_from = (f != ReadFrom::Primary).then_some(f), cx);
             })));
         }
-        let limit_row = |label: &str, el: gpui::Div| div().flex().flex_row().items_center().gap(px(12.)).child(div().flex_1().text_color(t.tx2).child(label.to_string())).child(el);
-        let times: Vec<(u64, String)> = privacy::TIME_LIMITS.iter().map(|s| (*s, if *s < 60 { format!("{s} s") } else { format!("{} min", s / 60) })).collect();
-        let times: Vec<(u64, &str)> = times.iter().map(|(v, l)| (*v, l.as_str())).collect();
-        let count = |n: u64| if n >= 1000 && n.is_multiple_of(1000) { format!("{}k", n / 1000) } else { n.to_string() };
-        // A value that came from the old global setting shows as a choice of its own.
+        // The label over its choices: side by side the five segments would not fit the column.
+        let limit_row = |label: &str, el: gpui::Div| div().flex().flex_col().gap(px(6.)).child(div().text_color(t.tx2).child(label.to_string())).child(el);
+        let time = |s: u64| match s {
+            privacy::UNLIMITED => "∞".to_string(),
+            s if s < 60 => format!("{s} s"),
+            s => format!("{} min", s / 60),
+        };
+        let count = |n: u64| match n {
+            privacy::UNLIMITED => "∞".to_string(),
+            n if n >= 1000 && n.is_multiple_of(1000) => format!("{}k", n / 1000),
+            n => n.to_string(),
+        };
+        // A value that came from the old global setting (or a file) shows as a choice of its own,
+        // in order before ∞.
         let with = |list: &[u64], cur: Option<u64>| -> Vec<u64> {
             let mut v = list.to_vec();
             if let Some(c) = cur.filter(|c| !v.contains(c)) {
                 v.push(c);
-                v.sort();
+                v.sort_by_key(|n| privacy::row_cap(*n));
             }
             v
         };
+        let times: Vec<(u64, String)> = with(&privacy::TIME_LIMITS, r.time_limit_s).into_iter().map(|s| (s, time(s))).collect();
+        let times: Vec<(u64, &str)> = times.iter().map(|(v, l)| (*v, l.as_str())).collect();
         let writes: Vec<(u64, String)> = with(&privacy::WRITE_ROWS, p.mcp_row_limit).into_iter().map(|n| (n, count(n))).collect();
         let writes: Vec<(u64, &str)> = writes.iter().map(|(v, l)| (*v, l.as_str())).collect();
         let reads: Vec<(u64, String)> = with(&privacy::READ_ROWS, r.read_rows).into_iter().map(|n| (n, count(n))).collect();
         let reads: Vec<(u64, &str)> = reads.iter().map(|(v, l)| (*v, l.as_str())).collect();
-        let sizes: Vec<(u64, String)> = with(&privacy::READ_BYTES, r.read_bytes).into_iter().map(|n| (n, kb(n))).collect();
-        let sizes: Vec<(u64, &str)> = sizes.iter().map(|(v, l)| (*v, l.as_str())).collect();
         // The value that applies is the one selected; choosing the default stores nothing, so the
         // connection keeps following it.
-        let (time_d, write_d, read_d, size_d) = (privacy::DEFAULT_TIME_LIMIT_S, MCP_WRITE_ROW_LIMIT, MCP_MAX_ROWS, privacy::DEFAULT_READ_BYTES);
+        let (time_d, write_d, read_d) = (privacy::DEFAULT_TIME_LIMIT_S, MCP_WRITE_ROW_LIMIT, MCP_MAX_ROWS);
         let limits = div()
             .flex()
             .flex_col()
-            .gap(px(12.))
+            .gap(px(14.))
             .child(label_tip(t, "agents-limits-tip", "LIMITS", limits_tip()))
             .child(limit_row("Time per call", seg(t, "agents-time", &times, r.time_limit_s.unwrap_or(time_d), true, cx, move |v, s, cx| v.set_rule(|r| r.time_limit_s = (s != time_d).then_some(s), cx))))
             .child(limit_row("Rows per write", seg(t, "agents-wrows", &writes, p.mcp_row_limit.unwrap_or(write_d), true, cx, move |v, n, cx| {
@@ -323,23 +381,29 @@ impl AgentsPage {
                     v.edit_conn(&id, |p| p.mcp_row_limit = (n != write_d).then_some(n), cx);
                 }
             })))
-            .child(limit_row("Rows per read", seg(t, "agents-rrows", &reads, r.read_rows.unwrap_or(read_d), true, cx, move |v, n, cx| v.set_rule(|r| r.read_rows = (n != read_d).then_some(n), cx))))
-            .child(limit_row("Size per read", seg(t, "agents-rbytes", &sizes, r.read_bytes.unwrap_or(size_d), true, cx, move |v, n, cx| v.set_rule(|r| r.read_bytes = (n != size_d).then_some(n), cx))));
+            .child(limit_row("Rows per read", seg(t, "agents-rrows", &reads, r.read_rows.unwrap_or(read_d), true, cx, move |v, n, cx| v.set_rule(|r| r.read_rows = (n != read_d).then_some(n), cx))));
+        let (side, measure) = self.side_by_side(PERMISSIONS_SIDE_W);
         // Under the limits, the database login made from all of the above.
         self.login_sync(&p, cx);
-        let mut right = div().w(px(380.)).flex_none().flex().flex_col().gap(px(24.)).child(limits).child(self.login_section(t, &p, cx));
+        let mut right = div().flex().flex_col().gap(px(24.)).child(limits).child(self.login_section(t, &p, cx));
         if dataman_core::MCP_ADVANCED {
             if p.engine.is_sql() {
                 right = right.child(self.render_allowed(t, &p, window, cx));
             }
             right = right.child(self.render_yolo(t, &p, cx));
         }
+        // Side by side while the body has the width, else one under the other.
+        let body = if side {
+            div().flex().flex_row().gap(px(40.)).child(left).child(right.w(px(340.)).flex_none())
+        } else {
+            div().w_full().max_w(px(640.)).flex().flex_col().gap(px(24.)).child(left.flex_none()).child(right.pt(px(24.)).border_t_1().border_color(t.line))
+        };
         div()
             .relative()
             .size_full()
             .flex()
             .flex_col()
-            .child(self.header(t, "Permissions"))
+            .child(self.header(t, "Protection"))
             .child(
                 div()
                     .flex_1()
@@ -349,7 +413,7 @@ impl AgentsPage {
                     .border_t_1()
                     .border_color(t.line)
                     .child(self.render_conn_list(t, cx))
-                    .child(div().id("agents-perm-body").flex_1().min_w_0().overflow_y_scroll().track_scroll(&self.perm_scroll).flex().flex_row().gap(px(40.)).px(px(32.)).py(px(24.)).child(left).child(right)),
+                    .child(self.protection_pane(t, div().id("agents-perm-body").relative().overflow_y_scroll().track_scroll(&self.perm_scroll).flex().flex_col().px(px(32.)).py(px(24.)).child(measure.absolute().top_0().left_0().size_full()).child(body), cx)),
             )
             .children(self.login_sheet(t, &p, cx))
             .into_any_element()
@@ -518,7 +582,7 @@ impl AgentsPage {
     // ---- Privacy ----
 
     pub(crate) fn render_privacy(&mut self, t: &Theme, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let Some(p) = self.selected_profile(cx) else { return self.no_conns(t, "Privacy") };
+        let Some(p) = self.selected_profile(cx) else { return self.no_conns(t) };
         let r = p.mcp_rules.clone();
         let names = Names::of(p.engine);
         let place = placeholder(p.engine);
@@ -737,25 +801,9 @@ impl AgentsPage {
                         .child(ui::button(t, "agents-vis-add", ui::Btn::Secondary).h(px(28.)).px(px(10.)).child(verb).on_click(cx.listener(|v, _, _, cx| v.add_visible(cx)))),
                 ),
             );
-        // Side by side while the body has the width, else one under the other. The width is the
-        // last frame's: a frame drawn on the wrong side of the line asks for another.
-        let side = self.privacy_body.get().is_none_or(|b| b.size.width.as_f32() >= PRIVACY_SIDE_W);
-        let measure = {
-            let slot = self.privacy_body.clone();
-            gpui::canvas(
-                move |b, window, _| {
-                    slot.set(Some(b));
-                    if (b.size.width.as_f32() >= PRIVACY_SIDE_W) != side {
-                        window.on_next_frame(|window, _| window.refresh());
-                    }
-                },
-                |_, _, _, _| {},
-            )
-            .absolute()
-            .top_0()
-            .left_0()
-            .size_full()
-        };
+        // Side by side while the body has the width, else one under the other.
+        let (side, measure) = self.side_by_side(PRIVACY_SIDE_W);
+        let measure = measure.absolute().top_0().left_0().size_full();
         let body = if side {
             div()
                 .flex()
@@ -772,7 +820,7 @@ impl AgentsPage {
             .size_full()
             .flex()
             .flex_col()
-            .child(self.header(t, "Privacy"))
+            .child(self.header(t, "Protection"))
             .child(
                 div()
                     .flex_1()
@@ -782,7 +830,7 @@ impl AgentsPage {
                     .border_t_1()
                     .border_color(t.line)
                     .child(self.render_conn_list(t, cx))
-                    .child(div().id("agents-priv-body").relative().flex_1().min_w_0().overflow_y_scroll().flex().flex_col().px(px(32.)).py(px(24.)).child(measure).child(body)),
+                    .child(self.protection_pane(t, div().id("agents-priv-body").relative().overflow_y_scroll().flex().flex_col().px(px(32.)).py(px(24.)).child(measure).child(body), cx)),
             )
             .into_any_element()
     }

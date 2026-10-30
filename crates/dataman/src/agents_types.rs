@@ -1,10 +1,12 @@
-//! Agents › Sensitive data: the types recognized and masked inside any value an agent
-//! receives, one list for every connection (settings' `agent_types`).
+//! Agents › Masks: the types recognized and masked inside any value an agent receives, one list
+//! for every connection (settings' `agent_types`). A click on one, built-in or yours, opens it in
+//! the editor on the right; + at the end of the list starts a new one.
 
 use dataman_core::privacy::{self, CustomType, Mask, TypeRow, Validator};
 use gpui::{AnyElement, App, ClickEvent, Context, Focusable, FontWeight, SharedString, StyledText, TextRun, Window, div, prelude::*};
 
 use crate::agents::{Act, AgentsPage, Tip, dropdown, field, qmark, seg, switch};
+use crate::assets::{Icon, icon};
 use crate::theme::{Theme, px};
 use crate::ui;
 
@@ -37,7 +39,11 @@ impl AgentsPage {
     }
 
     pub(crate) fn edit_type(&mut self, id: Option<&str>, cx: &mut Context<Self>) {
-        let c = id.and_then(|id| self.core.settings.get().agent_types.custom.into_iter().find(|c| c.id == id));
+        let types = self.core.settings.get().agent_types;
+        let c = id.and_then(|id| match privacy::builtin(id) {
+            Some(b) => Some(types.builtin_def(b)),
+            None => types.custom.into_iter().find(|c| c.id == id),
+        });
         let e = &mut self.editor;
         e.confirm_delete = false;
         match c {
@@ -78,12 +84,18 @@ impl AgentsPage {
         c
     }
 
+    /// The editor's mask saved, and kept open on it.
     pub(crate) fn save_type(&mut self, cx: &mut Context<Self>) {
         let c = self.drafted(cx);
         if c.name.is_empty() || privacy::check_pattern(&c.pattern).is_err() {
             return;
         }
+        let id = c.id.clone();
         self.edit_settings(|s| {
+            if privacy::builtin(&c.id).is_some() {
+                s.agent_types.set_builtin_def(&c);
+                return;
+            }
             let n = s.agent_types.custom.len();
             match s.agent_types.custom.iter_mut().find(|x| x.id == c.id) {
                 Some(x) => *x = CustomType { on: x.on, ..c },
@@ -91,37 +103,71 @@ impl AgentsPage {
                 None => {}
             }
         }, cx);
-        self.edit_type(None, cx);
+        self.select_type(&id, cx);
     }
 
+    /// Selects a mask in the list and opens it in the editor.
+    pub(crate) fn select_type(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.type_sel = self.type_rows().iter().position(|r| r.id == id);
+        self.edit_type(self.type_sel.is_some().then_some(id), cx);
+    }
+
+    /// A mask of yours deleted; a built-in one back to how it ships.
     pub(crate) fn delete_type(&mut self, cx: &mut Context<Self>) {
         let Some(id) = self.editor.editing.clone() else { return };
+        if privacy::builtin(&id).is_some() {
+            self.edit_settings(|s| s.agent_types.reset_builtin(&id), cx);
+            self.select_type(&id, cx);
+            return;
+        }
         self.edit_settings(|s| s.agent_types.custom.retain(|c| c.id != id), cx);
+        self.type_sel = None;
         self.edit_type(None, cx);
     }
 
     pub(crate) fn render_types(&mut self, t: &Theme, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let rows = self.type_rows();
         let profiles = self.profiles(cx);
-        let n = profiles.iter().filter(|p| p.mcp_rules.view == privacy::AgentView::Masked).count();
-        let applies = match n {
-            0 => "No connection sees Masked data, so nothing is masked yet".to_string(),
-            1 => format!("Masks on 1 of {} connections: the one whose agent sees Masked data", profiles.len()),
-            n => format!("Masks on {n} of {} connections: those whose agent sees Masked data", profiles.len()),
-        };
+        let any = profiles.iter().any(|p| p.mcp_rules.view == privacy::AgentView::Masked);
+        let applies = if any { "Applied to every connection whose Privacy is Masked data" } else { "Applied to every connection whose Privacy is Masked data (none is yet)" };
         let head = self
-            .header(t, "Sensitive data")
+            .header(t, "Masks")
             .child(qmark(t, "agents-types-tip", types_tip()))
-            .child(div().flex_1())
-            .child(div().children(ui::here(&"agents-types-applies".into())).text_size(px(11.5)).text_color(t.tx3).child(applies));
+            .child(div().flex_1().min_w(px(12.)))
+            .child(div().children(ui::here(&"agents-types-applies".into())).min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(11.5)).text_color(t.tx3).child(applies));
         let broken: Vec<&TypeRow> = rows.iter().filter(|r| r.broken.is_some() && r.on).collect();
         let notice = broken.first().map(|r| div().pb(px(6.)).text_size(px(11.5)).text_color(t.err).child(format!("{} has an invalid pattern. Agent reads are refused while it is on.", r.name)));
         self.types_offset = notice.is_some() as usize;
         if self.type_sel.is_some_and(|k| k >= rows.len()) {
             self.type_sel = None;
         }
-        let list = rows.iter().enumerate().map(|(k, r)| self.type_row(t, k, r, cx));
-        let left = div().id("agents-types-list").flex_1().min_w_0().overflow_y_scroll().track_scroll(&self.types_scroll).flex().flex_col().px(px(32.)).pt(px(8.)).pb(px(24.)).children(notice).children(list);
+        let list: Vec<AnyElement> = rows.iter().map(|r| self.type_row(t, r, cx)).collect();
+        let adding = self.editor.editing.is_none();
+        let hov = t.hov;
+        let add = div()
+            .children(ui::here(&"agents-type-add".into()))
+            .id("agents-type-add")
+            .px(px(8.))
+            .mx(px(-8.))
+            .h(px(44.))
+            .flex_none()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(10.))
+            .text_color(t.tx2)
+            .when(adding, |d| d.bg(t.prs).text_color(t.tx))
+            .when(!adding, move |d| d.hover(move |s| s.bg(hov)))
+            .child(div().w(px(28.)).flex().justify_center().child(icon(Icon::Plus).size(px(13.)).text_color(t.tx3)))
+            .child("New mask")
+            .on_click(cx.listener(|v, _, window, cx| {
+                v.type_sel = None;
+                v.edit_type(None, cx);
+                let name = v.editor.name.clone();
+                window.focus(&name.read(cx).focus_handle(cx), cx);
+            }));
+        // The list keeps room for a row's name; the editor gives way down to its narrowest.
+        let left = div().id("agents-types-list").flex_1().min_w(px(380.)).overflow_y_scroll().track_scroll(&self.types_scroll).flex().flex_col().px(px(32.)).pt(px(8.)).pb(px(24.)).children(notice).children(list).child(add);
         div()
             .size_full()
             .flex()
@@ -131,12 +177,14 @@ impl AgentsPage {
             .into_any_element()
     }
 
-    fn type_row(&self, t: &Theme, k: usize, r: &TypeRow, cx: &mut Context<Self>) -> AnyElement {
-        let (flip_id, name_id, mask_id) = (r.id.clone(), r.id.clone(), SharedString::from(format!("agents-type-mask-{}", r.id)));
+    fn type_row(&self, t: &Theme, r: &TypeRow, cx: &mut Context<Self>) -> AnyElement {
+        let (flip_id, row_of, mask_id) = (r.id.clone(), r.id.clone(), SharedString::from(format!("agents-type-mask-{}", r.id)));
         let items: Vec<(SharedString, bool, Act)> = Mask::ALL.iter().map(|m| (m.label().into(), *m == r.mask, Act::TypeMask(r.id.clone(), *m))).collect();
         let open = mask_id.clone();
         let custom = r.custom;
-        let tip_rule = if r.custom { r.rule.trim_start_matches("Custom: ").to_string() } else { r.rule.clone() };
+        // A pattern of yours (a custom mask's, or a built-in one's you changed) shows as a pattern.
+        let yours = r.rule.starts_with("Custom: ");
+        let tip_rule = r.rule.trim_start_matches("Custom: ").to_string();
         let example = (!r.example.is_empty()).then_some(r.example.as_str());
         let mask = div()
             .id(SharedString::from(format!("agents-type-mask-btn-{}", r.id)))
@@ -144,16 +192,17 @@ impl AgentsPage {
             .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.open_menu(open.clone(), 120., items.clone(), cx)));
         let sw = SharedString::from(format!("agents-type-switch-{}", r.id));
         let row_id = SharedString::from(format!("agents-type-row-{}", r.id));
-        let sel = self.type_sel == Some(k);
+        let sel = self.editor.editing.as_deref() == Some(r.id.as_str());
+        let hov = t.hov;
         div()
             .children(ui::here(&row_id.clone().into()))
             .id(row_id)
             .on_click(cx.listener(move |v, _, window, cx| {
                 v.focus_list(window, cx);
-                v.type_sel = Some(k);
-                cx.notify();
+                v.select_type(&row_of, cx);
             }))
             .when(sel, |d| d.bg(t.prs))
+            .when(!sel, move |d| d.hover(move |s| s.bg(hov)))
             .px(px(8.))
             .mx(px(-8.))
             .h(px(44.))
@@ -161,7 +210,7 @@ impl AgentsPage {
             .flex()
             .flex_row()
             .items_center()
-            .gap(px(14.))
+            .gap(px(10.))
             .border_b_1()
             .border_color(t.line)
             .child(
@@ -175,25 +224,30 @@ impl AgentsPage {
             .child(
                 div()
                     .id(SharedString::from(format!("agents-type-name-{}", r.id)))
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
                     .when(!r.on, |d| d.opacity(0.55))
                     .text_color(if r.broken.is_some() { t.err } else { t.tx })
-                    .child(r.name.clone())
-                    .when(custom, |d| d.on_click(cx.listener(move |v, _, _, cx| v.edit_type(Some(&name_id), cx)))),
+                    .child(r.name.clone()),
             )
-            .child(div().when(!r.on, |d| d.opacity(0.55)).child(qmark(t, &format!("agents-type-tip-{}", r.id), type_tip(&r.name, &tip_rule, example, r.custom))))
-            .when(custom, |d| d.child(div().text_size(px(11.)).text_color(t.tx3).child("custom")))
+            .child(div().flex_none().when(!r.on, |d| d.opacity(0.55)).child(qmark(t, &format!("agents-type-tip-{}", r.id), type_tip(&r.name, &tip_rule, example, yours))))
+            .when(custom || r.edited, |d| d.child(div().flex_none().text_size(px(11.)).text_color(t.tx3).child(if custom { "custom" } else { "edited" })))
             .child(div().flex_1())
             .when(r.broken.is_some(), |d| {
                 let id = r.id.clone();
-                d.child(div().id(SharedString::from(format!("agents-fix-{}", r.id))).text_size(px(11.5)).text_color(t.err).child("Fix").on_click(cx.listener(move |v, _, _, cx| v.edit_type(Some(&id), cx))))
+                d.child(div().id(SharedString::from(format!("agents-fix-{}", r.id))).flex_none().text_size(px(11.5)).text_color(t.err).child("Fix").on_click(cx.listener(move |v, _, _, cx| v.select_type(&id, cx))))
             })
-            .child(div().when(!r.on, |d| d.opacity(0.55)).child(mask))
+            .child(div().flex_none().when(!r.on, |d| d.opacity(0.55)).child(mask))
             .into_any_element()
     }
 
     fn render_editor(&mut self, t: &Theme, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let c = self.drafted(cx);
         let editing = self.editor.editing.is_some();
+        let built_in = self.editor.editing.as_deref().is_some_and(|id| privacy::builtin(id).is_some());
+        let edited = self.editor.editing.as_deref().is_some_and(|id| self.core.settings.get().agent_types.builtin_edited(id));
         let full = !editing && self.core.settings.get().agent_types.custom.len() >= privacy::MAX_CUSTOM;
         let problem = (!c.pattern.is_empty()).then(|| privacy::check_pattern(&c.pattern).err()).flatten();
         let samples: Vec<&str> = self.editor.samples.iter().map(String::as_str).collect();
@@ -204,7 +258,8 @@ impl AgentsPage {
         let mut panel = div()
             .id("agents-editor")
             .w(px(400.))
-            .flex_none()
+            .min_w(px(300.))
+            .flex_shrink(1.)
             .flex()
             .flex_col()
             .gap(px(16.))
@@ -213,7 +268,28 @@ impl AgentsPage {
             .border_l_1()
             .border_color(t.line)
             .overflow_y_scroll()
-            .child(div().text_size(px(13.)).font_weight(FontWeight::BOLD).child(if editing { "Edit type" } else { "New type" }))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.))
+                    .child(caps(if built_in { "BUILT-IN MASK" } else if editing { "YOUR MASK" } else { "NEW MASK" }))
+                    .child(
+                        div()
+                            .children(ui::here(&"agents-editor-title".into()))
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .text_size(px(13.))
+                            .font_weight(FontWeight::BOLD)
+                            .child(match &self.editor.editing {
+                                Some(_) if !c.name.is_empty() => c.name.clone(),
+                                Some(_) => "Unnamed".into(),
+                                None => "New mask".into(),
+                            }),
+                    ),
+            )
             .child(div().flex().flex_col().gap(px(6.)).child(caps("NAME")).child(field(t, "agents-field-name", &self.editor.name, window, cx)))
             .child(
                 div()
@@ -379,38 +455,44 @@ impl AgentsPage {
                 .when(broad, |d| d.child(div().text_size(px(11.)).text_color(t.warn).child("Matches most of these lines; it may be too broad."))),
         );
         if full {
-            panel = panel.child(div().text_size(px(11.)).text_color(t.tx3).child(format!("{} custom types at most.", privacy::MAX_CUSTOM)));
+            panel = panel.child(div().text_size(px(11.)).text_color(t.tx3).child(format!("{} masks of yours at most.", privacy::MAX_CUSTOM)));
         }
         let confirm = self.editor.confirm_delete;
+        // Yours can be deleted; a built-in one goes back to its default once changed.
+        let removable = editing && (!built_in || edited);
+        let (verb, ask) = if built_in { ("Reset", format!("Reset {} to its default?", c.name)) } else { ("Delete", format!("Delete {}?", c.name)) };
         let buttons = div()
             .flex()
             .flex_row()
             .items_center()
             .gap(px(8.))
-            .when(editing && !confirm, |d| {
+            .when(removable && !confirm, |d| {
                 d.child(
                     div()
                         .children(ui::here(&"agents-type-delete".into()))
                         .id("agents-type-delete")
                         .text_size(px(11.5))
                         .text_color(t.err)
-                        .child("Delete")
+                        .child(verb)
                         .on_click(cx.listener(|v, _, _, cx| {
                             v.editor.confirm_delete = true;
                             cx.notify();
                         })),
                 )
             })
-            .when(editing && confirm, |d| {
-                d.child(div().text_size(px(11.5)).text_color(t.err).child(format!("Delete {}?", c.name)))
-                    .child(ui::button(t, "agents-type-delete-yes", ui::Btn::Danger).h(px(24.)).child("Delete").on_click(cx.listener(|v, _, _, cx| v.delete_type(cx))))
+            .when(removable && confirm, |d| {
+                d.child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(11.5)).text_color(t.err).child(ask))
+                    .child(ui::button(t, "agents-type-delete-yes", ui::Btn::Danger).h(px(24.)).child(verb).on_click(cx.listener(|v, _, _, cx| v.delete_type(cx))))
                     .child(ui::button(t, "agents-type-delete-no", ui::Btn::Ghost).h(px(24.)).child("Keep").on_click(cx.listener(|v, _, _, cx| {
                         v.editor.confirm_delete = false;
                         cx.notify();
                     })))
             })
-            .child(div().flex_1())
-            .child(ui::button(t, "agents-type-cancel", ui::Btn::Ghost).h(px(28.)).px(px(10.)).text_color(t.tx).child("Cancel").on_click(cx.listener(|v, _, _, cx| v.edit_type(None, cx))))
+            .when(!confirm, |d| d.child(div().flex_1()))
+            .child(ui::button(t, "agents-type-cancel", ui::Btn::Ghost).h(px(28.)).px(px(10.)).text_color(t.tx).child("Cancel").on_click(cx.listener(|v, _, _, cx| {
+                v.type_sel = None;
+                v.edit_type(None, cx);
+            })))
             .child(
                 ui::button(t, "agents-type-save", if ok { ui::Btn::Primary } else { ui::Btn::Secondary })
                     .h(px(28.))
@@ -445,10 +527,11 @@ fn type_tip(name: &str, rule: &str, example: Option<&str>, custom: bool) -> Tip 
 }
 
 pub(crate) fn types_tip() -> Tip {
-    Tip::new("Sensitive data")
-        .lead("One list for every connection whose agent sees Masked data: matching values are masked in everything sent to the agent, whether or not their column is a Sensitive column.")
+    Tip::new("Masks")
+        .lead("One list for every connection whose Privacy is Masked data: matching values are masked in everything sent to the agent, whether or not their column is a Sensitive column.")
         .item("Where", "Rows, documents, keys, printed lines, tool replies, schema resources and errors.")
         .item("Not on", "Connections on Data or Structure only: nothing is masked there.")
-        .item("Masks", "Each type masks its matches as its menu says: Hidden, Partial or Hash.")
+        .item("How", "Each one masks its matches as its menu says: Hidden, Partial or Hash.")
+        .item("Edit", "Click one, built-in or yours, to change it on the right; + adds one.")
         .note("Replies about no connection in particular, such as the list of connections or of favorites, aren't masked.")
 }

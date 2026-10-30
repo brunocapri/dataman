@@ -115,9 +115,9 @@ enum Shape {
     Builtins(&'static Shape),
 }
 
-const ON_MASK: Shape = Shape::Fields(&[("on", Shape::Any), ("mask", Shape::Any)]);
+const BUILTIN: Shape = Shape::Fields(&[("on", Shape::Any), ("mask", Shape::Any), ("name", Shape::Any), ("pattern", Shape::Any), ("validator", Shape::Any), ("ignore_case", Shape::Any), ("keep", Shape::Any)]);
 const CUSTOM: Shape = Shape::Fields(&[("id", Shape::Any), ("name", Shape::Any), ("pattern", Shape::Any), ("mask", Shape::Any), ("keep", Shape::Any), ("validator", Shape::Any), ("ignore_case", Shape::Any), ("on", Shape::Any)]);
-const TYPES: Shape = Shape::Fields(&[("builtin", Shape::Builtins(&ON_MASK)), ("custom", Shape::Each(&CUSTOM))]);
+const TYPES: Shape = Shape::Fields(&[("builtin", Shape::Builtins(&BUILTIN)), ("custom", Shape::Each(&CUSTOM))]);
 const ITEM: Shape = Shape::Fields(&[("name", Shape::Any), ("kind", Shape::Any)]);
 const SENSITIVE: Shape = Shape::Fields(&[("col", Shape::Any), ("how", Shape::Any), ("on", Shape::Any)]);
 const REDIS: Shape = Shape::Fields(&[("read", Shape::Any), ("write", Shape::Any), ("keyspace", Shape::Any), ("scripting", Shape::Any), ("pubsub", Shape::Any)]);
@@ -131,6 +131,7 @@ const RULES: Shape = Shape::Fields(&[
     ("redis", REDIS),
     ("time_limit_s", Shape::Any),
     ("read_rows", Shape::Any),
+    // Size per read, gone since reads have no size limit: an older file's value is ignored.
     ("read_bytes", Shape::Any),
     ("read_from", Shape::Any),
 ]);
@@ -206,6 +207,13 @@ pub fn parse(text: &str) -> Result<AgentsFile, Vec<String>> {
     if f.sensitive_data.custom.len() > privacy::MAX_CUSTOM {
         errs.push(format!("Sensitive data: {} custom types, {} at most.", f.sensitive_data.custom.len(), privacy::MAX_CUSTOM));
     }
+    for (id, o) in &f.sensitive_data.builtin {
+        if let Some(p) = &o.pattern
+            && let Err(e) = privacy::check_pattern(p)
+        {
+            errs.push(format!("Sensitive data › {}: {e}", privacy::builtin(id).map_or(id.as_str(), |b| b.name)));
+        }
+    }
     for (i, c) in f.sensitive_data.custom.iter().enumerate() {
         let name = if c.name.trim().is_empty() { format!("custom type {}", i + 1) } else { c.name.clone() };
         if c.name.trim().is_empty() {
@@ -237,18 +245,16 @@ pub fn parse(text: &str) -> Result<AgentsFile, Vec<String>> {
             }
         }
         let r = &c.rules;
-        let bad = |v: Option<u64>, max: u64| v.is_some_and(|n| n == 0 || n > max);
+        // 0 is no limit (∞).
+        let bad = |v: Option<u64>, max: u64| v.is_some_and(|n| n > max);
         if bad(r.time_limit_s, 24 * 3600) {
-            errs.push(format!("{at}: time per call must be 1 s to 24 h."));
+            errs.push(format!("{at}: time per call must be up to 24 h, or 0 for no limit."));
         }
         if bad(r.read_rows, 1_000_000) {
-            errs.push(format!("{at}: rows per read must be 1 to 1,000,000."));
-        }
-        if bad(r.read_bytes, 64 * 1024 * 1024) {
-            errs.push(format!("{at}: size per read must be 1 byte to 64 MB."));
+            errs.push(format!("{at}: rows per read must be up to 1,000,000, or 0 for no limit."));
         }
         if bad(c.row_limit, 100_000_000) {
-            errs.push(format!("{at}: rows per write must be at least 1."));
+            errs.push(format!("{at}: rows per write must be up to 100,000,000, or 0 for no limit."));
         }
         if r.sensitive.iter().any(|s| s.col.trim().is_empty()) || r.visible.items.iter().any(|i| i.name.trim().is_empty()) {
             errs.push(format!("{at}: an empty column or table name."));
@@ -333,8 +339,9 @@ fn shielding(v: AgentView) -> u8 {
     }
 }
 
-fn bytes(n: u64) -> String {
-    if n >= 1024 * 1024 { format!("{} MB", n / (1024 * 1024)) } else if n >= 1024 { format!("{} KB", n / 1024) } else { format!("{n} B") }
+/// A limit as the change list shows it: ∞ for none.
+fn limit(n: u64, unit: &str) -> String {
+    if n == privacy::UNLIMITED { "∞".into() } else { format!("{n}{unit}") }
 }
 
 pub fn conn_changes(p: &ConnectionProfile, c: &ConnRules) -> Vec<Change> {
@@ -419,13 +426,11 @@ pub fn conn_changes(p: &ConnectionProfile, c: &ConnRules) -> Vec<Change> {
         push(what, yes_no(a), yes_no(b), b && !a);
     }
     let time = |r: &AgentRules| r.time_limit_s.unwrap_or(privacy::DEFAULT_TIME_LIMIT_S);
-    push("Time per call", format!("{} s", time(r0)), format!("{} s", time(r1)), time(r1) > time(r0));
+    push("Time per call", limit(time(r0), " s"), limit(time(r1), " s"), r1.time_limit() > r0.time_limit());
     let rows = |r: &AgentRules| r.read_rows.unwrap_or(MCP_MAX_ROWS);
-    push("Rows per read", rows(r0).to_string(), rows(r1).to_string(), rows(r1) > rows(r0));
-    let size = |r: &AgentRules| r.read_bytes.unwrap_or(privacy::DEFAULT_READ_BYTES);
-    push("Size per read", bytes(size(r0)), bytes(size(r1)), size(r1) > size(r0));
+    push("Rows per read", limit(rows(r0), ""), limit(rows(r1), ""), r1.read_cap() > r0.read_cap());
     let (w0, w1) = (p.mcp_row_limit.unwrap_or(MCP_WRITE_ROW_LIMIT), c.row_limit.unwrap_or(MCP_WRITE_ROW_LIMIT));
-    push("Rows per write", w0.to_string(), w1.to_string(), w1 > w0);
+    push("Rows per write", limit(w0, ""), limit(w1, ""), privacy::row_cap(w1) > privacy::row_cap(w0));
     // Reads moved toward the primary: the user kept agents' load (and reads) off it.
     let rf = |r: &AgentRules| r.read_from.map_or("default".to_string(), |f| f.label().to_string());
     let away = |r: &AgentRules| match r.read_from {
@@ -452,22 +457,26 @@ pub fn type_changes(t0: &TypeSettings, t1: &TypeSettings) -> Vec<Change> {
         }
     };
     let on = |b: bool| (if b { "on" } else { "off" }).to_string();
+    // A pattern can match less than it did: count a change as a loosening.
+    let rule = |t: &privacy::CustomType| {
+        let keep = if t.mask == Mask::Partial { format!(" (last {})", t.keep) } else { String::new() };
+        format!("{} · {}{keep} · {}{}", t.pattern, t.mask.label(), t.validator.label(), if t.ignore_case { " · any case" } else { "" })
+    };
     for b in privacy::BUILTINS {
         let (a, z) = (t0.builtin_on(b), t1.builtin_on(b));
         push(format!("Sensitive data › {}", b.name), on(a), on(z), a && !z);
         let (m0, m1) = (t0.builtin_mask(b), t1.builtin_mask(b));
         push(format!("Sensitive data › {} mask", b.name), m0.label().into(), m1.label().into(), z && strength(m1) < strength(m0));
+        let (d0, d1) = (t0.builtin_def(b), t1.builtin_def(b));
+        push(format!("Sensitive data › {} name", b.name), d0.name.clone(), d1.name.clone(), false);
+        let (r0, r1) = (rule(&privacy::CustomType { mask: d1.mask, ..d0 }), rule(&d1));
+        push(format!("Sensitive data › {} pattern", b.name), r0.clone(), r1.clone(), z && r0 != r1);
     }
     for c in &t0.custom {
         match t1.custom.iter().find(|x| x.id == c.id) {
             None => push(format!("Sensitive data › {}", c.name), on(c.on), "removed".into(), c.on),
             Some(x) => {
                 push(format!("Sensitive data › {}", c.name), on(c.on), on(x.on), c.on && !x.on);
-                // A pattern can match less than it did: count a change as a loosening.
-                let rule = |t: &privacy::CustomType| {
-                    let keep = if t.mask == Mask::Partial { format!(" (last {})", t.keep) } else { String::new() };
-                    format!("{} · {}{keep} · {}{}", t.pattern, t.mask.label(), t.validator.label(), if t.ignore_case { " · any case" } else { "" })
-                };
                 push(format!("Sensitive data › {} pattern", c.name), rule(c), rule(x), x.on && rule(c) != rule(x));
             }
         }
@@ -692,7 +701,7 @@ mod tests {
         rich(&config, &settings);
         let mut f = export(&settings.get(), &config.connections());
         f.sensitive_data.custom[0].pattern = "(?=x)abc".into();
-        f.connections[0].rules.read_rows = Some(0);
+        f.connections[0].rules.read_rows = Some(2_000_000);
         let errs = parse(&to_text(&f)).unwrap_err();
         assert!(errs.iter().any(|e| e.contains("Customer code") && e.contains("Look-around")), "{errs:?}");
         assert!(errs.iter().any(|e| e.contains("rows per read")), "{errs:?}");
@@ -809,11 +818,12 @@ mod tests {
         lim.mcp_row_limit = Some(10);
         lim.mcp_rules.time_limit_s = Some(10);
         lim.mcp_rules.read_rows = Some(20);
-        lim.mcp_rules.read_bytes = Some(16 * 1024);
         cases.push(("rows per write back to the default", lim.clone(), Box::new(|c| c.row_limit = None)));
         cases.push(("time per call back to the default", lim.clone(), Box::new(|c| c.rules.time_limit_s = None)));
         cases.push(("rows per read back to the default", lim.clone(), Box::new(|c| c.rules.read_rows = None)));
-        cases.push(("size per read back to the default", lim.clone(), Box::new(|c| c.rules.read_bytes = None)));
+        cases.push(("rows per read to no limit", lim.clone(), Box::new(|c| c.rules.read_rows = Some(privacy::UNLIMITED))));
+        cases.push(("time per call to no limit", lim.clone(), Box::new(|c| c.rules.time_limit_s = Some(privacy::UNLIMITED))));
+        cases.push(("rows per write to no limit", lim.clone(), Box::new(|c| c.row_limit = Some(privacy::UNLIMITED))));
         let mut w = ConnectionProfile::new("w");
         w.mcp = Some(McpAccess::Write);
         w.mcp_allowed = vec!["DELETE FROM sessions WHERE id = ?".into()];
@@ -863,6 +873,8 @@ mod tests {
         assert!(flagged(&|t| t.custom[0].on = false));
         assert!(flagged(&|t| t.custom.clear()));
         assert!(flagged(&|t| t.set_builtin("card", Some(false), None)));
+        assert!(flagged(&|t| t.set_builtin_def(&privacy::CustomType { pattern: r"\b4242\b".into(), ..privacy::builtin("card").unwrap().as_custom() })), "a built-in type's pattern changed");
+        assert!(!flagged(&|t| t.set_builtin_def(&privacy::CustomType { name: "Cards".into(), ..privacy::builtin("card").unwrap().as_custom() })), "renaming loosens nothing");
         assert!(flagged(&|t| t.set_builtin("email", None, Some(Mask::Partial))) || privacy::builtin("email").is_some_and(|b| b.mask == Mask::Partial));
         assert!(!flagged(&|t| t.custom.push(CustomType { on: false, ..CustomType::new("Off", "x+", Mask::Hidden) })), "a type added off gives nothing");
     }
@@ -991,14 +1003,13 @@ mod tests {
             redis: privacy::RedisCats { read: false, write: false, keyspace: false, scripting: false, pubsub: false },
             time_limit_s: Some(10),
             read_rows: Some(20),
-            read_bytes: Some(1024),
             read_from: Some(privacy::ReadFrom::Secondary),
         };
         let custom = CustomType { id: "t_x".into(), name: "X".into(), pattern: "x+".into(), mask: Mask::Partial, keep: 2, validator: privacy::Validator::Luhn, ignore_case: true, on: false };
         let f = AgentsFile {
             version: VERSION,
             general: General { agent_access: false },
-            sensitive_data: TypeSettings { builtin: [("card".to_string(), privacy::BuiltinOverride { on: Some(false), mask: Some(Mask::Hash) })].into(), custom: vec![custom] },
+            sensitive_data: TypeSettings { builtin: [("card".to_string(), privacy::BuiltinOverride { on: Some(false), mask: Some(Mask::Hash), name: Some("Card".into()), pattern: Some(r"\d{16}".into()), validator: Some(privacy::Validator::Iban), ignore_case: Some(true), keep: Some(2) })].into(), custom: vec![custom] },
             connections: vec![ConnRules { id: "a".into(), name: "a".into(), engine: Engine::Postgres, database: "d".into(), mcp: Some(McpAccess::Full), row_limit: Some(5), allowed: vec!["DELETE FROM t WHERE id = ?".into()], yolo: true, rules }],
         };
         let text = to_text(&f);

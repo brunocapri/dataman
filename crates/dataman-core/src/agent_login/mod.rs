@@ -264,7 +264,7 @@ pub fn rules_hash(p: &ConnectionProfile, database: &str) -> String {
     let s = compile(p, database, &Options { rotate_days: None, conn_limit: None });
     let mut r = s.rules.clone();
     // Limits Dataman alone holds do not change what is granted.
-    (r.read_rows, r.read_bytes, r.read_from) = (None, None, None);
+    (r.read_rows, r.read_from) = (None, None);
     if s.engine != Engine::Redis {
         r.redis = RedisCats::default();
     }

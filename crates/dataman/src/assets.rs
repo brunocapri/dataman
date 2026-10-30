@@ -17,7 +17,6 @@ assets!(
     "icons/robot.svg",
     "icons/pulse.svg",
     "icons/shield.svg",
-    "icons/padlock.svg",
     "icons/types.svg",
     "icons/column.svg",
     "icons/grid-table.svg",
@@ -183,7 +182,6 @@ pub enum Icon {
     Robot,
     Pulse,
     Shield,
-    Padlock,
     Types,
     Column,
     GridTable,
@@ -263,7 +261,6 @@ impl Icon {
             Icon::Robot => "icons/robot.svg",
             Icon::Pulse => "icons/pulse.svg",
             Icon::Shield => "icons/shield.svg",
-            Icon::Padlock => "icons/padlock.svg",
             Icon::Types => "icons/types.svg",
             Icon::Column => "icons/column.svg",
             Icon::GridTable => "icons/grid-table.svg",
@@ -328,7 +325,7 @@ mod tests {
             Sidebar, SidebarRight, PanelRight, Expand, Collapse, Lock, Warning, Info, More, Tab, Command, Code, Hash, Plug,
             Tunnel, MatView, Function, Procedure, Sequence, Type, Label, Trigger, Extension, Role,
             Constraint, Link, Partition, Activity, Star, StarFill, Pin, Agent, Live, Collection, Robot, Pulse, Shield,
-            Padlock, Types, Column, GridTable,
+            Types, Column, GridTable,
         ];
         for i in all {
             let bytes = Assets.load(i.path()).unwrap().unwrap_or_else(|| panic!("{} missing", i.path()));

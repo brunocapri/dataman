@@ -602,11 +602,9 @@ pub fn summary(p: &ConnectionProfile) -> Value {
     if let Some(s) = r.time_limit_s {
         m.insert("time_limit_s".into(), json!(s));
     }
+    // 0: no limit.
     if let Some(n) = r.read_rows {
         m.insert("rows_per_read".into(), json!(n));
-    }
-    if let Some(b) = r.read_bytes {
-        m.insert("bytes_per_read".into(), json!(b));
     }
     Value::Object(m)
 }

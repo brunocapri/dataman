@@ -35,7 +35,7 @@ Claude Code and any other MCP client can work with your databases through it, an
 - [Agent settings in detail](#agent-settings-in-detail)
   - [TL;DR: recommended settings](#tldr-recommended-settings)
   - [How a call is decided](#how-a-call-is-decided)
-  - [General](#general) · [Permissions](#permissions) · [Privacy](#privacy) · [Sensitive data](#sensitive-data) · [Audit](#audit)
+  - [General](#general) · [Permissions](#permissions) · [Privacy](#privacy) · [Masks](#masks) · [Audit](#audit)
   - [Agent tabs and drafts](#agent-tabs-and-drafts) · [When Dataman is closed](#when-dataman-is-closed)
   - [Connections and favorites made by agents](#connections-and-favorites-made-by-agents) · [Edits made outside Dataman](#edits-made-outside-dataman)
   - [Projects and agent rules](#projects-and-agent-rules) · [Your own tools](#your-own-tools)
@@ -191,7 +191,7 @@ Two habits help on top of any of these:
 
 ### Where the settings live
 
-Everything below lives in the **Agents** window: **General**, **Audit**, **Permissions** (with the agents' database login under its limits), **Privacy** (with **Sensitive data** under it). Permissions, its database login and Privacy are set per connection. General and Sensitive data apply to every connection.
+Everything below lives in the **Agents** window: **General**, **Audit**, **Protection** (with two tabs, **Permissions**, which holds the agents' database login under its limits, and **Privacy**) and **Masks**. Permissions, its database login and Privacy are set per connection. General and Masks apply to every connection.
 
 ### How a call is decided
 
@@ -304,10 +304,11 @@ See server activity is forced off while Privacy hides or masks anything, because
 
 | Limit | Default | Choices | When it is reached |
 |---|---|---|---|
-| **Time per call** | 5 min | 10 s, 30 s, 2 min, 5 min | The call fails as timed out and returns no rows. This is a ceiling: agents ask for 30 s unless they ask for more. |
-| **Rows per write** | 100 | 10 to 10k | Rolled back, then you are asked (see Write above). |
-| **Rows per read** | 1k | 20 to 1k | The result is cut, with a note telling the agent more rows exist. |
-| **Size per read** | 256 KB | 16, 64, 256 KB | The result is cut there. Single cells over 2,000 characters are always shortened. |
+| **Time per call** | 5 min | 10 s, 30 s, 2 min, 5 min, ∞ | The call fails as timed out and returns no rows. This is a ceiling: agents ask for 30 s unless they ask for more. ∞ lets them ask for up to a day. |
+| **Rows per write** | 100 | 10 to 10k, ∞ | Rolled back, then you are asked (see Write above). With ∞ no write waits for its row count. |
+| **Rows per read** | 1k | 20 to 1k, ∞ | The result is cut, with a note telling the agent more rows exist. With ∞ agents get as many as they ask for. |
+
+A read's size is not limited, only its rows; single cells over 2,000 characters are always shortened.
 
 At most 2 agent statements run at once per connection, and 8 in total.
 
@@ -332,7 +333,7 @@ SQLite and DuckDB never let an agent touch other files, not even with your Allow
 **Masked data.** On top of Data:
 
 - **Sensitive columns** are replaced whole, by column name.
-- **Sensitive data types** are searched for in every other value of every reply, including errors and JSON keys, and masked where they are found. Each reply tells the agent how many values of each type were masked, as `masked: {"E-mail": 1}`.
+- **Masks** are searched for in every other value of every reply, including errors and JSON keys, and masked where they are found. Each reply tells the agent how many values of each type were masked, as `masked: {"E-mail": 1}`.
 - **Hidden connection details:** `list_connections` no longer shows the host, port, user or SSH settings.
 - **No server activity.** It is turned off for agents.
 
@@ -399,7 +400,7 @@ These apply only when the agent sees **Masked data**.
 
 > **What masking does not stop:** filters can still probe a value, for example `WHERE email LIKE 'a%'` or a `BETWEEN` on a salary. Masking keeps values out of replies. To keep a column out of reach entirely, hide it.
 
-### Sensitive data
+### Masks
 
 These are value patterns searched in every reply, on every connection where the agent sees Masked data. One list covers every connection.
 
@@ -414,7 +415,7 @@ These are value patterns searched in every reply, on every connection where the 
 | Password hash | on | Hidden | bcrypt, argon2, scrypt, pbkdf2, crypt |
 | IP address | off | Hash | IPv4 and IPv6 |
 
-You can turn built-ins off, change their masks, and add up to 50 types of your own:
+Click a mask, built-in or yours, to edit it on the right: name, pattern, mask and options. A changed built-in can be reset to its default. **+** at the end of the list adds one of your own, up to 50:
 
 - **Pattern:** a regex. Look-around and back-references are not supported. A named group `v` masks only that part.
 - **Validator:** optional. Luhn, IBAN, or "looks random" (high entropy).

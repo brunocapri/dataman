@@ -525,7 +525,9 @@ fn main() {
         updates::init(&core, cx);
         cx.set_menus(menus(cx));
 
-        let bounds = Bounds::centered(None, size(px(1400.), px(900.)), cx);
+        // Check stages can draw a narrower window (DATAMAN_SHOT_WIDTH, down to the smallest).
+        let width = if cfg!(feature = "checks") { std::env::var("DATAMAN_SHOT_WIDTH").ok().and_then(|w| w.parse::<f32>().ok()).unwrap_or(1400.) } else { 1400. };
+        let bounds = Bounds::centered(None, size(px(width.max(theme::metrics::MIN_WINDOW.0)), px(900.)), cx);
         let (min_w, min_h) = theme::metrics::MIN_WINDOW;
         let window = cx
             .open_window(

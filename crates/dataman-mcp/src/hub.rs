@@ -351,8 +351,9 @@ impl Hub {
         *self.mask_key.lock() = k;
     }
 
+    /// Rows per write as a count (∞ as the largest).
     pub fn row_limit(&self, p: &ConnectionProfile) -> u64 {
-        p.mcp_row_limit.unwrap_or(dataman_core::settings::MCP_WRITE_ROW_LIMIT)
+        dataman_core::privacy::row_cap(p.mcp_row_limit.unwrap_or(dataman_core::settings::MCP_WRITE_ROW_LIMIT))
     }
 
     pub fn profiles(&self) -> Arc<Vec<ConnectionProfile>> {

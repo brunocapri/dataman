@@ -1,7 +1,8 @@
 //! Suggestions under Privacy's two fields (Sensitive columns, Visible to agents): schemas, tables
 //! and columns (collections, indices and fields on the document engines) from what the explorer
 //! already read of the connection, fetching the rest in the background. A lean cousin of the
-//! editor's completion: ↑ ↓ to move, Tab or ↩ to take one, Esc to close.
+//! editor's completion: ↑ ↓ to move, Tab or ↩ to take one, Esc to close. A click in an empty
+//! field lists what fits it already (in Sensitive columns, the columns that look sensitive).
 
 use dataman_core::Engine;
 use dataman_core::nosql::ItemKind as TreeKind;
@@ -41,6 +42,8 @@ pub(crate) struct Suggest {
     pub which: Option<Which>,
     pub items: Vec<Choice>,
     pub sel: usize,
+    /// The field last asked, listed again once what it waits for is read.
+    pub asked: Option<Which>,
 }
 
 fn rank(name: &str, q: &str) -> Option<u8> {
@@ -67,16 +70,17 @@ impl AgentsPage {
         }
     }
 
-    /// Reads the field again and lists what fits it.
+    /// Reads the field again and lists what fits it (an empty field too).
     pub(crate) fn update_suggest(&mut self, w: Which, cx: &mut Context<Self>) {
         let text = self.input_of(w).read(cx).text().trim().to_string();
-        let items = if text.is_empty() { Vec::new() } else { self.choices(w, &text, cx) };
+        let items = self.choices(w, &text, cx);
         let sel = if self.suggest.which == Some(w) { self.suggest.sel.min(items.len().saturating_sub(1)) } else { 0 };
-        self.suggest = Suggest { which: (!items.is_empty()).then_some(w), items, sel };
+        self.suggest = Suggest { which: (!items.is_empty()).then_some(w), items, sel, asked: Some(w) };
         cx.notify();
     }
 
     pub(crate) fn close_suggest(&mut self, cx: &mut Context<Self>) {
+        self.suggest.asked = None;
         if self.suggest.which.take().is_some() {
             cx.notify();
         }
@@ -187,6 +191,33 @@ impl AgentsPage {
                         }
                     }
                 }
+                // An empty Sensitive columns: the columns that look sensitive by their names, then
+                // the tables.
+                None if w == Which::Sensitive && tail.is_empty() => {
+                    let mut unread = false;
+                    for (s, t) in &tables {
+                        match conn.schema.cached_columns(&db, s, t) {
+                            Some(cols) => {
+                                for c in cols.iter().filter(|c| dataman_core::privacy::sensitive_name(&c.name).is_some()) {
+                                    push(Some(0), Choice { text: format!("{t}.{}", c.name), kind: ItemKind::Column, detail: c.type_name.clone() });
+                                }
+                            }
+                            None => unread = true,
+                        }
+                    }
+                    if unread {
+                        self.load(&p.id, "preload", cx, {
+                            let (conn, db) = (conn.clone(), db.clone());
+                            async move {
+                                let _ = conn.preload(&db).await;
+                                Ok(())
+                            }
+                        });
+                    }
+                    for (_, t) in &tables {
+                        push(Some(1), Choice { text: format!("{t}."), kind: ItemKind::Table, detail: "table".into() });
+                    }
+                }
                 None => {
                     for (s, t) in &tables {
                         let text = if w == Which::Visible { format!("{s}.{t}") } else { format!("{t}.") };
@@ -254,7 +285,12 @@ impl AgentsPage {
                 }
             }
         }
-        out.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.text.len().cmp(&b.1.text.len())).then(a.1.text.cmp(&b.1.text)));
+        // Best first, then shortest; an empty field keeps the tables' order.
+        if text.is_empty() {
+            out.sort_by_key(|a| a.0);
+        } else {
+            out.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.text.len().cmp(&b.1.text.len())).then(a.1.text.cmp(&b.1.text)));
+        }
         out.into_iter().take(MAX).map(|(_, c)| c).collect()
     }
 
@@ -279,7 +315,8 @@ impl AgentsPage {
 
     fn refresh_suggest(&mut self, cx: &mut Context<Self>) {
         for w in [Which::Sensitive, Which::Visible] {
-            if self.suggest.which == Some(w) || !self.input_of(w).read(cx).text().trim().is_empty() {
+            // Only the field still asking: Esc (or a choice taken) stops a late read reopening it.
+            if self.suggest.which == Some(w) || self.suggest.asked == Some(w) {
                 self.update_suggest(w, cx);
             }
         }
@@ -322,6 +359,12 @@ impl AgentsPage {
             .flex_1()
             .relative()
             .when(open, |d| d.key_context(CONTEXT))
+            // A click in the field lists what fits it, before anything is typed.
+            .capture_any_mouse_down(cx.listener(move |v, _, _, cx| {
+                if v.suggest.which != Some(w) {
+                    v.update_suggest(w, cx);
+                }
+            }))
             .on_action(cx.listener(|v, _: &CloseSuggest, _, cx| v.close_suggest(cx)))
             .capture_key_down(cx.listener(move |v, ev: &KeyDownEvent, _, cx| {
                 if v.suggest_key(w, ev, cx) {
