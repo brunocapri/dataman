@@ -28,7 +28,7 @@ fn seed_profiles(core: &Core) {
     let mut pg = profile("prod-pg", Engine::Postgres, Environment::Production, McpAccess::Write);
     let r = &mut pg.mcp_rules;
     r.view = if std::env::var("DATAMAN_SHOT_STAGE").is_ok_and(|s| s.starts_with("agents-privacy-data")) { AgentView::Data } else { AgentView::Masked };
-    for (col, how, on) in [("users.email", Mask::Partial, true), ("customers.ssn", Mask::Hash, true), ("customers.doc", Mask::Hash, true), ("customers.phone", Mask::Partial, true), ("orders.notes", Mask::Hidden, false)] {
+    for (col, how, on) in [("users.email", Mask::Partial, true), ("customers.ssn", Mask::Hash, true), ("customers.doc", Mask::Hash, true), ("customers.phone", Mask::Partial, true), ("orders.notes", Mask::Hidden, true)] {
         r.sensitive.push(SensitiveCol { col: col.into(), how, on });
     }
     for (name, kind) in [("public.payments", ItemKind::Table), ("audit.*", ItemKind::Schema), ("users.password_hash", ItemKind::Column), ("users.mfa_secret", ItemKind::Column)] {
@@ -793,6 +793,9 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
         .ok()
         .flatten()
         .unwrap_or_default();
+    // The empty field lists again, above it now (the page's bottom): closed before the click.
+    key(cx, "escape");
+    pause(cx, 50).await;
     tap(&a, "agents-field-sensitive", cx).await;
     let shown = until(cx, 5, |cx| cx.update(|_, cx| a.read(cx).suggest.which == Some(crate::agents_suggest::Which::Sensitive)).unwrap_or(false)).await;
     let n = cx.update(|_, cx| a.read(cx).suggest.items.len()).unwrap_or(0);

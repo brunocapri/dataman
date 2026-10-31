@@ -44,6 +44,13 @@ pub(crate) struct Suggest {
     pub sel: usize,
     /// The field last asked, listed again once what it waits for is read.
     pub asked: Option<Which>,
+    pub scroll: gpui::ScrollHandle,
+}
+
+thread_local! {
+    /// Each field's top and bottom in the window as laid out last frame: the list opens on the
+    /// side with room for it.
+    static FIELD_AT: std::cell::Cell<[Option<(f32, f32)>; 2]> = const { std::cell::Cell::new([None; 2]) };
 }
 
 fn rank(name: &str, q: &str) -> Option<u8> {
@@ -75,7 +82,9 @@ impl AgentsPage {
         let text = self.input_of(w).read(cx).text().trim().to_string();
         let items = self.choices(w, &text, cx);
         let sel = if self.suggest.which == Some(w) { self.suggest.sel.min(items.len().saturating_sub(1)) } else { 0 };
-        self.suggest = Suggest { which: (!items.is_empty()).then_some(w), items, sel, asked: Some(w) };
+        let scroll = self.suggest.scroll.clone();
+        scroll.scroll_to_item(sel);
+        self.suggest = Suggest { which: (!items.is_empty()).then_some(w), items, sel, asked: Some(w), scroll };
         cx.notify();
     }
 
@@ -120,6 +129,7 @@ impl AgentsPage {
             "escape" => self.close_suggest(cx),
             _ => return false,
         }
+        self.suggest.scroll.scroll_to_item(self.suggest.sel);
         cx.notify();
         true
     }
@@ -355,9 +365,34 @@ impl AgentsPage {
                     cx.stop_propagation();
                 }))
         });
+        // Below the field when the list fits there (or fits better than above), scrolling when
+        // it doesn't fit either way.
+        let slot = w as usize;
+        let full = self.suggest.items.len() as f32 * 26. + 8.;
+        let vh = f32::from(window.viewport_size().height);
+        let (up, room) = match FIELD_AT.with(|f| f.get()[slot]) {
+            Some((top, bottom)) => {
+                let (below, above) = (vh - bottom - 12., top - 12.);
+                if full > below && above > below { (true, above) } else { (false, below) }
+            }
+            None => (false, full),
+        };
+        let probe = gpui::canvas(
+            move |b, _, _| {
+                FIELD_AT.with(|f| {
+                    let mut a = f.get();
+                    a[slot] = Some((f32::from(b.top()), f32::from(b.bottom())));
+                    f.set(a);
+                })
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .size_full();
         div()
             .flex_1()
             .relative()
+            .child(probe)
             .when(open, |d| d.key_context(CONTEXT))
             // A click in the field lists what fits it, before anything is typed.
             .capture_any_mouse_down(cx.listener(move |v, _, _, cx| {
@@ -381,9 +416,13 @@ impl AgentsPage {
                                 Which::Visible => "agents-suggest-visible",
                             })
                             .absolute()
-                            .top(px(31.))
+                            .when(!up, |d| d.top(px(31.)))
+                            .when(up, |d| d.bottom(px(31.)))
                             .left_0()
                             .right_0()
+                            .max_h(px(full.min(room.max(26. * 3. + 8.))))
+                            .overflow_y_scroll()
+                            .track_scroll(&self.suggest.scroll)
                             .py(px(4.))
                             .bg(t.pop)
                             .shadow(t.ring())

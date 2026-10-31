@@ -27,7 +27,7 @@ impl Mask {
 
     pub fn label(self) -> &'static str {
         match self {
-            Mask::Hidden => "Hidden",
+            Mask::Hidden => "Redacted",
             Mask::Partial => "Partial",
             Mask::Hash => "Hash",
         }

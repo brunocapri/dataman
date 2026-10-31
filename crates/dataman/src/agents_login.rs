@@ -521,6 +521,7 @@ impl AgentsPage {
             .child(qmark(t, "agents-login-tip", login_tip()));
         let mut card = div()
             .children(ui::here(&"agents-login-section".into()))
+            .w_full()
             .max_w(px(BODY_W))
             .flex()
             .flex_col()
@@ -712,7 +713,10 @@ impl AgentsPage {
                 let n = d.changes.len();
                 let pid = p.clone();
                 let label = self.login.busy.clone().unwrap_or_else(|| if n == 1 { "Apply 1 change".into() } else { format!("Apply {n} changes") });
-                let lines = d.changes.iter().map(|c| {
+                // A few lines tell what kind of change it is; Apply runs them all.
+                const SHOWN: usize = 4;
+                let more = n.saturating_sub(SHOWN);
+                let lines = d.changes.iter().take(SHOWN).map(|c| {
                     div()
                         .flex()
                         .flex_row()
@@ -721,7 +725,7 @@ impl AgentsPage {
                         .child(div().flex_1().min_w_0().text_color(t.tx2).child(c.line.clone()))
                 });
                 col.child(div().text_color(t.tx2).child("Until they run, the login keeps its old grants. Dataman already applies the new rules on top, so nothing new is exposed meanwhile."))
-                    .child(div().px(px(12.)).py(px(10.)).border_1().border_color(t.warn.opacity(0.4)).bg(t.warn_s).rounded(px(2.)).flex().flex_col().gap(px(4.)).font_family(mono()).text_size(px(11.)).children(lines))
+                    .child(div().px(px(12.)).py(px(10.)).border_1().border_color(t.warn.opacity(0.4)).bg(t.warn_s).rounded(px(2.)).flex().flex_col().gap(px(4.)).font_family(mono()).text_size(px(11.)).children(lines).when(more > 0, |d| d.child(div().text_color(t.tx3).child(if more == 1 { "and 1 more".to_string() } else { format!("and {more} more") }))))
                     .child(div().flex().flex_row().child(ui::button(t, "agents-login-apply", ui::Btn::Primary).h(px(30.)).px(px(14.)).font_weight(FontWeight::SEMIBOLD).child(label).on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_apply_drift(&pid, cx)))))
             }
         }

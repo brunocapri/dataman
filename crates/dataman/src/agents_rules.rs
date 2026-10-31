@@ -65,10 +65,9 @@ pub(crate) fn sees_tip() -> Tip {
 pub(crate) fn sens_tip() -> Tip {
     Tip::new("Sensitive columns")
         .lead("Masked data only: this connection's columns masked whole. The Masks also mask matching values in every column.")
-        .item("Hidden", "The value becomes ‹hidden›.")
+        .item("Redacted", "Nothing of the value is kept: agents get ‹hidden›.")
         .item("Partial", "Keeps the end: a•••@acme.com, •••• 4242.")
         .item("Hash", "A stable code, ‹h:7Q2KX9RM4A›. The same value always gives the same code, so an agent can still match rows.")
-        .item("Off", "Kept in the list, not masked.")
         .lead("Agents can select these columns as they are and filter on them in WHERE; they can't rename, group, sort or compute with them.")
         .example("users.email · *ssn* (any column with ssn in its name)")
         .note("Scan again suggests columns by their names. Check what it adds.")
@@ -163,6 +162,9 @@ pub(crate) fn section(t: &Theme, id: &str, title: &str, subs: Vec<gpui::Div>) ->
     let faint = t.grid_line;
     div()
         .children(ui::here(&SharedString::from(id.to_string()).into()))
+        // A width of its own (not just a cap): laid out from content alone, the page's text is
+        // measured over and over, every frame of a scroll.
+        .w_full()
         .max_w(px(BODY_W))
         .flex()
         .flex_col()
@@ -198,6 +200,18 @@ fn grow(row: gpui::Stateful<gpui::Div>, h: f32, key: &str, new: bool) -> AnyElem
     row.overflow_hidden()
         .with_animation(SharedString::from(format!("agents-in-{key}")), Animation::new(GROW).with_easing(gpui::ease_out_quint()), move |d, k| d.h(px(h * k)).opacity(k))
         .into_any_element()
+}
+
+/// A row on its way out: it shrinks to nothing and fades.
+fn shrink(row: gpui::Stateful<gpui::Div>, h: f32, key: &str) -> AnyElement {
+    row.overflow_hidden()
+        .with_animation(SharedString::from(format!("agents-out-{key}")), Animation::new(GROW).with_easing(gpui::ease_out_quint()), move |d, k| d.h(px(h * (1. - k))).opacity(1. - k))
+        .into_any_element()
+}
+
+/// A row that just appeared grows in, one that is being removed shrinks away.
+fn motion(row: gpui::Stateful<gpui::Div>, h: f32, key: &str, new: &HashSet<String>, leaving: &HashSet<String>) -> AnyElement {
+    if leaving.contains(key) { shrink(row, h, key) } else { grow(row, h, key, new.contains(key)) }
 }
 
 /// Between the dimmed look (what agents see is not Masked data) and the full one: at once, or
@@ -244,6 +258,11 @@ fn seg_probe(id: &str, k: Option<usize>) -> gpui::Canvas<()> {
 }
 
 /// A row's × (remove), shown while the row is hovered.
+/// Add or Hide with nothing typed: drawn, not clickable.
+fn off_button(t: &Theme, id: &'static str, label: &'static str) -> AnyElement {
+    div().children(ui::here(&id.into())).flex_none().h(px(30.)).px(px(14.)).flex().items_center().border_1().border_color(t.line2).text_size(px(12.)).text_color(t.tx4).child(label).into_any_element()
+}
+
 fn remove_x(t: &Theme, id: SharedString, row: SharedString) -> gpui::Stateful<gpui::Div> {
     ui::icon_button(t, id, Icon::Close, 20., 9.).rounded(px(2.)).bg(t.hov).invisible().group_hover(row, |s| s.visible())
 }
@@ -370,7 +389,11 @@ fn masked_example(field: &str, how: Mask, key: &privacy::HashKey) -> String {
         _ if f.contains("iban") => "DE89 3704 0044 0532 0130 42",
         _ => "x7Kq2Lm9Rt4242",
     };
-    privacy::mask_value(how, sample, key)
+    match how {
+        // Shown as dots, like Partial's: the agent gets ‹hidden› (the tip says so).
+        Mask::Hidden => "••••••••".into(),
+        _ => privacy::mask_value(how, sample, key),
+    }
 }
 
 impl AgentsPage {
@@ -718,6 +741,28 @@ impl AgentsPage {
         self.rows_new.keys().cloned().collect()
     }
 
+    /// Removes a row once it has shrunk away (at once under reduced motion). Rows go by name,
+    /// so others added or removed meanwhile don't shift which one goes.
+    fn leave(&mut self, key: String, cx: &mut Context<Self>, remove: impl FnOnce(&mut privacy::AgentRules) + 'static) {
+        if cx.reduce_motion() {
+            return self.set_rule(remove, cx);
+        }
+        let Some(id) = self.conn.clone() else { return };
+        if !self.rows_leaving.insert(key.clone()) {
+            return;
+        }
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(GROW).await;
+            let _ = this.update(cx, |v, cx| {
+                v.rows_leaving.remove(&key);
+                v.edit_conn(&id, |p| remove(&mut p.mcp_rules), cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     /// When what agents see last changed on this connection (not on coming to it).
     fn view_changed(&mut self, conn: &str, view: AgentView) -> Option<Instant> {
         match &mut self.view_seen {
@@ -770,7 +815,12 @@ impl AgentsPage {
         for (g, ks) in groups {
             let label = if g.is_empty() { format!("Any {one}") } else { g.clone() };
             let key = format!("g:{g}");
-            rows.push(grow(
+            // The header goes with its last column.
+            let mut going = HashSet::new();
+            if ks.iter().all(|k| self.rows_leaving.contains(&format!("s:{}", r.sensitive[*k].col))) {
+                going.insert(key.clone());
+            }
+            rows.push(motion(
                 div()
                     .id(SharedString::from(format!("agents-sens-group-{g}")))
                     .h(px(34.))
@@ -785,18 +835,19 @@ impl AgentsPage {
                     .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(label)),
                 34.,
                 &key,
-                new.contains(&key),
+                &new,
+                &going,
             ));
             for k in ks {
                 let s = &r.sensitive[k];
                 let name = s.col.rsplit_once('.').map_or(s.col.as_str(), |(_, f)| f);
                 let id = SharedString::from(format!("agents-sens-mask-{k}"));
-                let mut items: Vec<(SharedString, bool, Act)> = Mask::ALL.iter().map(|m| (m.label().into(), s.on && *m == s.how, Act::SensMask(k, *m))).collect();
-                items.push(("Off".into(), !s.on, Act::SensOff(k)));
+                // An older version's Off still reads Off, but isn't offered.
+                let items: Vec<(SharedString, bool, Act)> = Mask::ALL.iter().map(|m| (m.label().into(), s.on && *m == s.how, Act::SensMask(k, *m))).collect();
                 let example = if s.on { masked_example(name, s.how, &self.key) } else { "as stored".into() };
                 let rid = SharedString::from(format!("agents-sens-{k}"));
                 let key = format!("s:{}", s.col);
-                rows.push(grow(
+                rows.push(motion(
                     div()
                         .id(rid.clone())
                         .group(rid.clone())
@@ -812,18 +863,17 @@ impl AgentsPage {
                         .child(div().w(px(130.)).flex_none().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(11.)).text_color(t.tx3).child(example))
                         .child(self.pick(t, &id, if s.on { s.how.label() } else { "Off" }, masked, Fit::Row, 120., items, cx))
                         .when(masked, |d| {
+                            let (key, col) = (key.clone(), s.col.clone());
                             d.child(remove_x(t, SharedString::from(format!("agents-sens-rm-{k}")), rid.clone()).on_click(cx.listener(move |v, _, _, cx| {
-                                v.set_rule(|r| {
-                                    if k < r.sensitive.len() {
-                                        r.sensitive.remove(k);
-                                    }
-                                }, cx)
+                                let col = col.clone();
+                                v.leave(key.clone(), cx, move |r| r.sensitive.retain(|s| s.col != col))
                             })))
                         })
                         .when(!masked, |d| d.child(div().w(px(20.)).flex_none())),
                     36.,
                     &key,
-                    new.contains(&key),
+                    &new,
+                    &self.rows_leaving,
                 ));
             }
         }
@@ -837,18 +887,19 @@ impl AgentsPage {
             .when(masked, |d| d.cursor_pointer().hover(|s| s.opacity(0.75)).on_click(cx.listener(|v, _, _, cx| v.scan(cx))))
             .child("Scan again");
         let title = if p.engine.is_sql() { "Sensitive columns" } else { "Sensitive fields" };
+        let sens_empty = self.sens_input.read(cx).text().trim().is_empty();
         let add = div()
             .flex()
             .flex_row()
             .gap(px(10.))
             .when(masked, |d| {
                 d.child(self.suggest_field(t, Which::Sensitive, field(t, "agents-field-sensitive", &self.sens_input, window, cx).h(px(30.)), window, cx))
-                    .child(ui::button(t, "agents-sens-add", ui::Btn::Secondary).h(px(30.)).px(px(14.)).child("Add").on_click(cx.listener(|v, _, _, cx| v.add_sensitive(cx))))
+                    .child(if sens_empty { off_button(t, "agents-sens-add", "Add") } else { ui::button(t, "agents-sens-add", ui::Btn::Secondary).h(px(30.)).px(px(14.)).child("Add").on_click(cx.listener(|v, _, _, cx| v.add_sensitive(cx))).into_any_element() })
             })
             // No input at all while disabled: nothing to focus, click, type into or Tab to.
             .when(!masked, |d| {
                 d.child(div().children(ui::here(&"agents-field-sensitive".into())).flex_1().h(px(30.)).px(px(9.)).flex().items_center().bg(t.field).border_1().border_color(t.field_b).text_color(t.tx4).child(sens_place))
-                    .child(div().children(ui::here(&"agents-sens-add".into())).flex_none().h(px(30.)).px(px(14.)).flex().items_center().border_1().border_color(t.line2).text_color(t.tx4).child("Add"))
+                    .child(off_button(t, "agents-sens-add", "Add"))
             });
         let add = dim(add, "agents-sens-add-dim", masked, fading);
         let sensitive = sub(sub_title(t, "agents-sens-tip", title, sens_tip()).child(scan))
@@ -911,14 +962,14 @@ impl AgentsPage {
                     .gap(px(9.))
                     .child(icon(glyph).size(px(if it.kind == ItemKind::Column { 13. } else { 14. })).text_color(t.tx3))
                     .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx).child(it.name.clone()))
-                    .child(remove_x(t, SharedString::from(format!("agents-vis-rm-{k}")), rid).on_click(cx.listener(move |v, _, _, cx| {
-                        v.set_rule(|r| {
-                            if k < r.visible.items.len() {
-                                r.visible.items.remove(k);
-                            }
-                        }, cx)
-                    })));
-                grow(row, 36., &key, new.contains(&key))
+                    .child(remove_x(t, SharedString::from(format!("agents-vis-rm-{k}")), rid).on_click({
+                        let (key, name) = (key.clone(), it.name.clone());
+                        cx.listener(move |v, _, _, cx| {
+                            let name = name.clone();
+                            v.leave(key.clone(), cx, move |r| r.visible.items.retain(|i| i.name != name))
+                        })
+                    }));
+                motion(row, 36., &key, &new, &self.rows_leaving)
             })
             .collect();
         let visible = sub(sub_title(t, "agents-vis-tip", &format!("{} visibility", capitalized(one)), vis_tip(p.engine)))
@@ -930,7 +981,7 @@ impl AgentsPage {
                     .flex_row()
                     .gap(px(10.))
                     .child(self.suggest_field(t, Which::Visible, field(t, "agents-field-visible", &self.vis_input, window, cx).h(px(30.)), window, cx))
-                    .child(ui::button(t, "agents-vis-add", ui::Btn::Secondary).h(px(30.)).px(px(14.)).child(verb).on_click(cx.listener(|v, _, _, cx| v.add_visible(cx)))),
+                    .child(if typed.is_empty() { off_button(t, "agents-vis-add", verb) } else { ui::button(t, "agents-vis-add", ui::Btn::Secondary).h(px(30.)).px(px(14.)).child(verb).on_click(cx.listener(|v, _, _, cx| v.add_visible(cx))).into_any_element() }),
             );
         section(t, "agents-privacy", "Privacy", vec![sees, sensitive, visible])
     }

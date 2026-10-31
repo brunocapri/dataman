@@ -319,7 +319,7 @@ impl AgentsPage {
                 "agents-mask-tip",
                 "MASK",
                 Tip::new("Mask")
-                    .item("Hidden", "The match becomes the type's name, like ‹customer code›.")
+                    .item("Redacted", "The match becomes the type's name, like ‹customer code›.")
                     .item("Partial", "Keeps the last characters (4 by default; More options).")
                     .item("Hash", "A stable code like ‹h:K3P9QX2M7A›: the same value gives the same code everywhere, so agents can still match it."),
             )).child(seg(t, "agents-new-mask", &masks, self.editor.mask, false, cx, |v, m, _| v.editor.mask = m)));

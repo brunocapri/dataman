@@ -176,8 +176,6 @@ pub(crate) enum Act {
     Outcome(Outcomes),
     When(When),
     SensMask(usize, Mask),
-    /// A sensitive column kept, but not masked.
-    SensOff(usize),
     ReadFrom(dataman_core::privacy::ReadFrom),
     TimeLimit(u64),
     ReadRows(u64),
@@ -269,6 +267,8 @@ pub struct AgentsPage {
     /// scanned, taken from a suggestion): those grow in.
     pub(crate) rows_seen: (String, std::collections::HashSet<String>),
     pub(crate) rows_new: std::collections::HashMap<String, std::time::Instant>,
+    /// Rows removed but still shrinking away, by key; the rule drops them once they're gone.
+    pub(crate) rows_leaving: std::collections::HashSet<String>,
     /// What agents see on the connection shown, and when it last changed: what hangs on it fades.
     pub(crate) view_seen: Option<(String, dataman_core::privacy::AgentView, Option<std::time::Instant>)>,
     /// The Audit list's items: the calls shown, a day's header before each day's first.
@@ -613,6 +613,7 @@ impl AgentsPage {
             jump: None,
             rows_seen: Default::default(),
             rows_new: Default::default(),
+            rows_leaving: Default::default(),
             view_seen: None,
             audit_items: Vec::new(),
             types_offset: 0,
@@ -798,15 +799,6 @@ impl AgentsPage {
                     self.edit_conn(&id, |p| {
                         if let Some(s) = p.mcp_rules.sensitive.get_mut(i) {
                             (s.how, s.on) = (m, true);
-                        }
-                    }, cx);
-                }
-            }
-            Act::SensOff(i) => {
-                if let Some(id) = self.conn.clone().filter(|id| self.core.config.get(id).is_some_and(|p| p.mcp_rules.view == dataman_core::privacy::AgentView::Masked)) {
-                    self.edit_conn(&id, |p| {
-                        if let Some(s) = p.mcp_rules.sensitive.get_mut(i) {
-                            s.on = false;
                         }
                     }, cx);
                 }
