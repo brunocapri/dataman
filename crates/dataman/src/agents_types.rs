@@ -5,7 +5,8 @@
 use dataman_core::privacy::{self, CustomType, Mask, TypeRow, Validator};
 use gpui::{AnyElement, App, ClickEvent, Context, Focusable, FontWeight, SharedString, StyledText, TextRun, Window, div, prelude::*};
 
-use crate::agents::{Act, AgentsPage, Tip, dropdown, field, qmark, seg, switch};
+use crate::agents::{Act, AgentsPage, Tip, dropdown, field, qmark, switch};
+use crate::agents_rules::choices;
 use crate::assets::{Icon, icon};
 use crate::theme::{Theme, px};
 use crate::ui;
@@ -322,7 +323,7 @@ impl AgentsPage {
                     .item("Redacted", "The match becomes the type's name, like ‹customer code›.")
                     .item("Partial", "Keeps the last characters (4 by default; More options).")
                     .item("Hash", "A stable code like ‹h:K3P9QX2M7A›: the same value gives the same code everywhere, so agents can still match it."),
-            )).child(seg(t, "agents-new-mask", &masks, self.editor.mask, false, cx, |v, m, _| v.editor.mask = m)));
+            )).child(choices(t, "agents-new-mask", &masks, self.editor.mask, cx, |v, m, _| v.editor.mask = m)));
         let more = self.editor.more;
         panel = panel.child(
             div()
@@ -378,7 +379,7 @@ impl AgentsPage {
                             })),
                     )
                     .when(self.editor.mask == Mask::Partial, |d| {
-                        d.child(div().flex().flex_row().items_center().gap(px(12.)).child(div().flex_1().text_color(t.tx2).child("Keep last")).child(seg(t, "agents-keep", &keeps, self.editor.keep, true, cx, |v, n, _| v.editor.keep = n)))
+                        d.child(div().flex().flex_row().items_center().gap(px(12.)).child(div().flex_1().text_color(t.tx2).child("Keep last")).child(choices(t, "agents-keep", &keeps, self.editor.keep, cx, |v, n, _| v.editor.keep = n)))
                     }),
             );
         }

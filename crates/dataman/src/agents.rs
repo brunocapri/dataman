@@ -2068,57 +2068,31 @@ pub(crate) fn field(t: &Theme, id: &'static str, input: &Entity<TextInput>, wind
         .child(div().flex_1().min_w_0().child(input.clone()))
 }
 
-/// The page's own segmented control: compact segments as wide as their words.
-pub(crate) fn seg<T: Copy + PartialEq + 'static>(
-    t: &Theme,
-    id: &str,
-    opts: &[(T, &str)],
-    on: T,
-    small: bool,
-    cx: &mut Context<AgentsPage>,
-    pick: impl Fn(&mut AgentsPage, T, &mut Context<AgentsPage>) + Clone + 'static,
-) -> gpui::Div {
-    let segs = opts.iter().enumerate().map(|(k, (v, label))| {
-        let (v, pick) = (*v, pick.clone());
-        let sel = v == on;
-        let hov = t.hov;
-        let sid = SharedString::from(format!("{id}-{k}"));
-        div()
-            .children(ui::here(&sid.clone().into()))
-            .id(sid)
-            .h(px(if small { 20. } else { 22. }))
-            .px(px(if small { 7. } else { 10. }))
-            .flex()
-            .items_center()
-            .text_size(px(if small { 11.5 } else { 12. }))
-            .when(sel, |d| d.bg(t.prs).text_color(t.tx).border_1().border_color(t.line2))
-            .when(!sel, move |d| d.text_color(t.tx2).cursor_pointer().hover(move |s| s.bg(hov)))
-            .child(label.to_string())
-            .on_click(cx.listener(move |p, _, _, cx| {
-                pick(p, v, cx);
-                cx.notify();
-            }))
-    });
-    div().flex().child(div().flex().flex_row().p(px(2.)).border_1().border_color(t.line2).bg(t.field).children(segs))
+/// The mask dropdown (112 pt): a closed popup button.
+pub(crate) fn dropdown(t: &Theme, page: &AgentsPage, id: SharedString, label: &str, enabled: bool) -> gpui::Div {
+    let open = page.menu.as_ref().is_some_and(|m| m.id == id);
+    let arrow = SharedString::from(format!("{id}-arrow"));
+    div().relative().w(px(112.)).flex_none().child(page.anchor(id.clone())).child(select_box(t, id, label, enabled, open, arrow))
 }
 
-/// The mask dropdown (96 pt): a closed popup button.
-pub(crate) fn dropdown(t: &Theme, page: &AgentsPage, id: SharedString, label: &str, enabled: bool) -> gpui::Div {
-    div().relative().w(px(96.)).flex_none().child(page.anchor(id.clone())).child(
-        div()
-            .children(ui::here(&id.clone().into()))
-            .h(px(24.))
-            .px(px(8.))
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(6.))
-            .border_1()
-            .border_color(t.line2)
-            .text_color(if enabled { t.tx } else { t.tx3 })
-            .child(div().flex_1().child(label.to_string()))
-            .child(icon(Icon::ChevronDown).size(px(9.)).text_color(t.tx3)),
-    )
+/// A popup button as the rest of Dataman draws one (Export's, Import's): its arrow turns while
+/// the menu is open.
+pub(crate) fn select_box(t: &Theme, id: SharedString, label: &str, enabled: bool, open: bool, arrow: SharedString) -> gpui::Div {
+    let hov = t.hov;
+    div()
+        .children(ui::here(&id.into()))
+        .h(px(28.))
+        .px(px(10.))
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(10.))
+        .bg(t.field)
+        .border_1()
+        .when(enabled, |d| d.border_color(if open { t.acc } else { t.field_b }).text_color(t.tx).hover(move |s| s.bg(hov)))
+        .when(!enabled, |d| d.border_color(t.line).text_color(t.tx3))
+        .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(label.to_string()))
+        .child(ui::dropdown_arrow(arrow, open, 9., if enabled { t.tx3 } else { t.tx4 }))
 }
 
 pub(crate) fn switch(t: &Theme, id: impl Into<SharedString>, on: bool) -> gpui::AnyElement {

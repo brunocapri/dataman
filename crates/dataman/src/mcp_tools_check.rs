@@ -15,9 +15,9 @@ use dataman_core::config::{ConnectionProfile, Engine};
 use crate::app::Workspace;
 use crate::check::*;
 
-const TOOLS: [&str; 26] = [
+const TOOLS: [&str; 27] = [
     "list_connections", "list_schemas", "list_tables", "search_objects", "describe_table", "get_ddl", "sample_rows",
-    "create_connection", "update_connection",
+    "create_connection", "update_connection", "create_agent_login",
     "run_query", "open_query", "explain", "explain_analyze", "execute",
     "list_favorites", "run_favorite", "add_favorite", "remove_favorite", "rename_favorite", "import_favorites",
     "nosql_query", "nosql_execute",
@@ -196,7 +196,7 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     names.sort();
     let mut want: Vec<String> = TOOLS.iter().map(|s| s.to_string()).collect();
     want.sort();
-    r.check("dataman-mcp over stdio: initialize, and tools/list has all 26 tools", i["serverInfo"]["name"].is_string() && names == want, format!("{names:?}"));
+    r.check("dataman-mcp over stdio: initialize, and tools/list has all 27 tools", i["serverInfo"]["name"].is_string() && names == want, format!("{names:?}"));
 
     let listed = call(&client, "list_connections", json!({}), cx).await;
     r.check("list_connections (through the app) lists the app's connections", profiles.iter().all(|(_, p, _)| listed.1.contains(&p.name)), short(&listed));
@@ -352,6 +352,36 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     r.check("create_connection saves a connection the app lists", !res.0 && made, short(&res));
     let res = call(&client, "update_connection", json!({"connection": "e2e by agent", "name": "e2e renamed by agent"}), cx).await;
     r.check("update_connection renames it", !res.0 && core.config.connections().into_iter().any(|p| p.name == "e2e renamed by agent"), short(&res));
+
+    // An agent login an agent asks for: made from the rules, only after Allow, checked, its
+    // password never in the reply nor on the sheet.
+    let rx = start(&client, "create_agent_login", json!({"connection": pg.name}));
+    let asked = sheet_answer(ws, true, cx).await.unwrap_or_default();
+    let res = rx.await.unwrap_or((true, String::new()));
+    pause(cx, 200).await;
+    let made = core.config.get(&pg.id).and_then(|p| p.agent_login);
+    let pw = core.secrets.get(&dataman_core::agent_login::secret_account(&pg.id)).ok().flatten().unwrap_or_default();
+    r.check("create_agent_login waits for Allow (the sheet shows what runs), then creates the login and checks it", asked.contains("CREATE ROLE") && !res.0 && made.as_ref().is_some_and(|l| l.verified.is_some()), format!("{} {}", asked.len(), short(&res)));
+    r.check("…its password in the Keychain, never in the reply nor on the sheet", !pw.is_empty() && !res.1.contains(&pw) && !asked.contains(&pw), format!("{}", pw.len()));
+    let res = call(&client, "create_agent_login", json!({"connection": pg.name}), cx).await;
+    r.check("…and asking again is refused: it already has one", res.0 && res.1.contains("already has"), short(&res));
+    if let Some(l) = made {
+        let (core2, prof, pw2) = (core.clone(), ConnectionProfile { agent_login: None, ..pg.clone() }, pgpw.clone());
+        let gone = cx
+            .background_executor()
+            .spawn(async move {
+                let c = core2.block_on(core2.connect(prof.clone(), Some(pw2))).map_err(|e| format!("{e:#}"))?;
+                let plan = core2.block_on(dataman_core::agent_login::live::removal(&c, &prof, &l)).map_err(|e| format!("{e:#}"))?;
+                core2.block_on(dataman_core::agent_login::live::apply(&c, &plan, &prof.database)).map_err(|e| format!("{e:#}"))
+            })
+            .await;
+        let _ = core.secrets.delete(&dataman_core::agent_login::secret_account(&pg.id));
+        if let Some(mut p) = core.config.get(&pg.id) {
+            p.agent_login = None;
+            let _ = core.config.upsert(p);
+        }
+        r.check("…removed again after", gone.is_ok(), format!("{gone:?}"));
+    }
 
     let _ = sql(&core, &pg, &pgpw, "DROP SCHEMA IF EXISTS e2e_mcp CASCADE", cx).await;
     drop(client);

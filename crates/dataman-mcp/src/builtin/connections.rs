@@ -354,7 +354,7 @@ fn settle_secrets(cx: &Call, old: Option<&ConnectionProfile>, profile: &mut Conn
 
 /// A connection of the open project is the team's: an agent's change would be written to the
 /// project's file as if the user made it, so none goes through, even one that tightens.
-fn of_project(cx: &Call, p: &ConnectionProfile) -> Result<(), ToolError> {
+pub(super) fn of_project(cx: &Call, p: &ConnectionProfile) -> Result<(), ToolError> {
     let settings = cx.hub.settings();
     if dataman_core::project::Shared::of(&cx.hub.dirs, &settings).has_connection(&p.id) {
         let root = settings.project.clone().unwrap_or_default();

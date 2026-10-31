@@ -4,6 +4,7 @@
 
 use dataman_core::privacy::{self, AgentView, ItemKind, Mask, Names, ReadFrom, SensitiveCol, Visible, VisibleItem, VisibleMode};
 use dataman_core::settings::{MCP_MAX_ROWS, MCP_WRITE_ROW_LIMIT};
+use dataman_core::nosql::ItemKind as TreeKind;
 use dataman_core::{ConnectionProfile, Engine, McpAccess};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -70,7 +71,7 @@ pub(crate) fn sens_tip() -> Tip {
         .item("Hash", "A stable code, ‹h:7Q2KX9RM4A›. The same value always gives the same code, so an agent can still match rows.")
         .lead("Agents can select these columns as they are and filter on them in WHERE; they can't rename, group, sort or compute with them.")
         .example("users.email · *ssn* (any column with ssn in its name)")
-        .note("Scan again suggests columns by their names. Check what it adds.")
+        .note("Scan again adds the columns (on documents, the fields) that look sensitive by their names. Check what it adds.")
 }
 
 fn read_from_tip() -> Tip {
@@ -191,6 +192,8 @@ fn table(t: &Theme, rows: Vec<AnyElement>) -> gpui::Div {
 const GROW: Duration = Duration::from_millis(220);
 const FADE: Duration = Duration::from_millis(200);
 const SLIDE: Duration = Duration::from_millis(180);
+/// Collections (or indices) Scan again samples, at most.
+const SCAN_MAX: usize = 200;
 
 /// A row that just appeared grows to its height and fades in; any other is drawn as it is.
 fn grow(row: gpui::Stateful<gpui::Div>, h: f32, key: &str, new: bool) -> AnyElement {
@@ -275,7 +278,7 @@ pub(crate) fn state_note(t: &Theme, text: impl Into<SharedString>) -> gpui::Div 
 /// The page's segmented control: one choice, told by its wash.
 /// When the choice changes, its wash slides over from the one before (once the segments have
 /// been laid out, so their places are known).
-fn choices<T: Copy + PartialEq + 'static>(t: &Theme, id: &str, opts: &[(T, &str)], on: T, cx: &mut Context<AgentsPage>, pick: impl Fn(&mut AgentsPage, T, &mut Context<AgentsPage>) + Clone + 'static) -> gpui::Div {
+pub(crate) fn choices<T: Copy + PartialEq + 'static>(t: &Theme, id: &str, opts: &[(T, &str)], on: T, cx: &mut Context<AgentsPage>, pick: impl Fn(&mut AgentsPage, T, &mut Context<AgentsPage>) + Clone + 'static) -> gpui::Div {
     let on_ix = opts.iter().position(|(v, _)| *v == on).unwrap_or(0);
     let (from, slide) = SEGS.with(|s| {
         let mut s = s.borrow_mut();
@@ -297,8 +300,9 @@ fn choices<T: Copy + PartialEq + 'static>(t: &Theme, id: &str, opts: &[(T, &str)
             .h(px(h1))
             .left(px(x1))
             .w(px(w1))
-            .rounded(px(1.))
-            .bg(t.prs)
+            .bg(t.pop)
+            .border_1()
+            .border_color(t.line2)
             .with_animation(SharedString::from(format!("{id}-wash-{from}-{on_ix}")), Animation::new(time).with_easing(gpui::ease_out_quint()), move |d, k| {
                 d.left(px(x0 + (x1 - x0) * k)).w(px(w0 + (w1 - w0) * k))
             })
@@ -307,20 +311,24 @@ fn choices<T: Copy + PartialEq + 'static>(t: &Theme, id: &str, opts: &[(T, &str)
     let segs = opts.iter().enumerate().map(|(k, (v, label))| {
         let (v, pick) = (*v, pick.clone());
         let sel = v == on;
-        let (hov, tx) = (t.hov, t.tx);
+        let hov = t.hov;
         let sid = SharedString::from(format!("{id}-{k}"));
+        // As ui::segment draws it; the wash (when it can slide) is the chosen one's face.
         div()
             .children(ui::here(&sid.clone().into()))
             .child(seg_probe(id, Some(k)))
             .id(sid)
             .relative()
-            .h(px(24.))
-            .px(px(14.))
+            .h_full()
+            .px(px(12.))
             .flex()
             .items_center()
-            .rounded(px(1.))
-            .when(sel, |d| d.when(!washed, |d| d.bg(t.prs)).text_color(t.tx).font_weight(FontWeight::MEDIUM))
-            .when(!sel, move |d| d.text_color(t.tx2).cursor_pointer().hover(move |s| s.bg(hov).text_color(tx)))
+            .justify_center()
+            .text_size(px(11.5))
+            .border_1()
+            .border_color(gpui::transparent_black())
+            .when(sel, |d| d.when(!washed, |d| d.bg(t.pop).border_color(t.line2)).text_color(t.tx))
+            .when(!sel, move |d| d.text_color(t.tx3).cursor_pointer().hover(move |s| s.bg(hov)))
             .child(label.to_string())
             .on_click(cx.listener(move |p, _, _, cx| {
                 pick(p, v, cx);
@@ -332,11 +340,11 @@ fn choices<T: Copy + PartialEq + 'static>(t: &Theme, id: &str, opts: &[(T, &str)
             .relative()
             .flex()
             .flex_row()
-            .gap(px(2.))
+            .h(px(28.))
             .p(px(2.))
+            .bg(t.field)
             .border_1()
             .border_color(t.line2)
-            .rounded(px(2.))
             .child(seg_probe(id, None))
             .children(wash)
             .children(segs),
@@ -353,29 +361,14 @@ enum Fit {
 
 /// A closed popup button: its value and a chevron.
 fn select(t: &Theme, page: &AgentsPage, id: SharedString, label: &str, enabled: bool, fit: Fit) -> gpui::Div {
-    let hov = t.hov;
-    let small = fit == Fit::Row;
     let min = match fit {
         Fit::Alone => 180.,
         Fit::Row => 110.,
         Fit::Fill => 0.,
     };
-    div().relative().min_w(px(min)).when(fit == Fit::Fill, |d| d.flex_1()).when(fit != Fit::Fill, |d| d.flex_none()).child(page.anchor(id.clone())).child(
-        div()
-            .children(ui::here(&id.into()))
-            .h(px(if small { 26. } else { 28. }))
-            .px(px(if small { 8. } else { 10. }))
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(12.))
-            .border_1()
-            .rounded(px(2.))
-            .when(enabled, |d| d.bg(t.field).border_color(t.line2).text_color(t.tx).hover(move |s| s.bg(hov)))
-            .when(!enabled, |d| d.bg(t.hov).border_color(t.line).text_color(t.tx3))
-            .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(label.to_string()))
-            .child(icon(Icon::ChevronDown).size(px(10.)).text_color(if enabled { t.tx2 } else { t.tx4 })),
-    )
+    let open = page.menu.as_ref().is_some_and(|m| m.id == id);
+    let arrow = SharedString::from(format!("{id}-arrow"));
+    div().relative().min_w(px(min)).when(fit == Fit::Fill, |d| d.flex_1()).when(fit != Fit::Fill, |d| d.flex_none()).child(page.anchor(id.clone())).child(crate::agents::select_box(t, id, label, enabled, open, arrow))
 }
 
 /// What an agent gets for a value of `field`: a made-up one of its kind, masked as `how` says.
@@ -1044,8 +1037,8 @@ impl AgentsPage {
     /// connection, never an agent's).
     pub(crate) fn scan(&mut self, cx: &mut Context<Self>) {
         let Some(p) = self.selected_profile(cx).filter(|p| p.mcp_rules.view == AgentView::Masked) else { return };
-        if !p.engine.is_sql() {
-            self.scan_note = Some("Scan reads SQL schemas; add fields by name here.".into());
+        if p.engine == Engine::Redis {
+            self.scan_note = Some("Redis keys have no fields to scan; add them by name here.".into());
             cx.notify();
             return;
         }
@@ -1056,20 +1049,34 @@ impl AgentsPage {
         };
         self.scan_note = Some("Scanning…".into());
         cx.notify();
-        let id = p.id.clone();
+        let (id, unit) = (p.id.clone(), if p.engine.is_sql() { "column" } else { "field" });
         cx.spawn(async move |this, cx| {
             let db = conn.database().to_string();
-            let _ = conn.preload(&db).await;
-            let snap = conn.schema.snapshot(&db);
             let mut found: Vec<(String, Mask)> = Vec::new();
-            for (rel, cols) in &snap.columns {
-                let Some(r) = snap.relations.get(*rel) else { continue };
-                if r.kind.is_view() {
-                    continue;
+            if conn.engine().is_sql() {
+                let _ = conn.preload(&db).await;
+                let snap = conn.schema.snapshot(&db);
+                for (rel, cols) in &snap.columns {
+                    let Some(r) = snap.relations.get(*rel) else { continue };
+                    if r.kind.is_view() {
+                        continue;
+                    }
+                    for c in cols {
+                        if let Some(m) = privacy::sensitive_name(&c.name) {
+                            found.push((format!("{}.{}", r.name, c.name), m));
+                        }
+                    }
                 }
-                for c in cols {
-                    if let Some(m) = privacy::sensitive_name(&c.name) {
-                        found.push((format!("{}.{}", r.name, c.name), m));
+            } else {
+                // Documents have no schema: the fields of a sample of each collection (or index),
+                // a nested one by the last part of its path.
+                let parent = (conn.engine() == Engine::MongoDb).then_some(db.as_str());
+                let colls = conn.nosql_tree(parent).await.unwrap_or_default();
+                for c in colls.iter().filter(|c| c.kind == TreeKind::Collection && !c.name.starts_with('.') && !c.name.starts_with("system.")).take(SCAN_MAX) {
+                    for (path, _) in conn.sample_fields(&db, &c.name).await.unwrap_or_default() {
+                        if let Some(m) = privacy::sensitive_name(path.rsplit('.').next().unwrap_or(&path)) {
+                            found.push((format!("{}.{path}", c.name), m));
+                        }
                     }
                 }
             }
@@ -1085,10 +1092,10 @@ impl AgentsPage {
                     }
                 }, cx);
                 v.scan_note = Some(match (found.len(), added) {
-                    (0, _) => "No column looks sensitive by its name.".into(),
+                    (0, _) => format!("No {unit} looks sensitive by its name."),
                     (_, 0) => "Nothing new found.".into(),
-                    (_, 1) => "1 column added.".into(),
-                    (_, n) => format!("{n} columns added."),
+                    (_, 1) => format!("1 {unit} added."),
+                    (_, n) => format!("{n} {unit}s added."),
                 });
                 cx.notify();
             });

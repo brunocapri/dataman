@@ -165,8 +165,8 @@ fn id_of(name: &str, core: &Core) -> Option<String> {
 }
 
 /// `agents-audit[-zoom|-zooming|-wide]`, `agents-privacy-data`, `agents-general[-import]`, `agents-permissions[-mongo|-redis]`, `agents-privacy`,
-/// `agents-protection-login[-drift]`, `agents-types[-conn|-card]`, `agents-empty`: the page as the mockups draw it (`-card`: Card number open in
-/// the editor; `agents-privacy`: Protection scrolled to Privacy; `-login`: prod-pg with an agent login, `-drift` with its rules changed since).
+/// `agents-protection-login[-drift|-changes]`, `agents-types[-conn|-card]`, `agents-empty`: the page as the mockups draw it (`-card`: Card number open in
+/// the editor; `agents-privacy`: Protection scrolled to Privacy; `-login`: prod-pg with an agent login, `-drift` with its rules changed since, `-changes` its View changes open).
 pub fn is_demo(stage: &str) -> bool {
     stage.starts_with("agents-") && stage != "agents-check"
 }
@@ -178,7 +178,7 @@ pub fn demo(ws: &Entity<Workspace>, stage: &str, window: &mut gpui::Window, cx: 
         seed_audit(&core);
     }
     if stage.starts_with("agents-protection-login") {
-        demo_login(&core, stage.ends_with("-drift"));
+        demo_login(&core, stage.ends_with("-drift") || stage.ends_with("-changes"));
     }
     ws.update(cx, |w, cx| w.store.update(cx, |s, cx| s.reload(cx)));
     let page = match stage {
@@ -211,11 +211,14 @@ pub fn demo(ws: &Entity<Workspace>, stage: &str, window: &mut gpui::Window, cx: 
             if stage.starts_with("agents-protection-login") {
                 a.jump = Some(crate::agents_rules::Jump::Login);
             }
-            if stage == "agents-protection-login-drift"
+            if matches!(stage, "agents-protection-login-drift" | "agents-protection-login-changes")
                 && let Some(p) = id.as_ref().and_then(|id| core.config.get(id))
             {
                 let lines = [(false, "GRANT SELECT ON public.audit_log TO dataman_agent"), (true, "REVOKE SELECT ON public.audit_log FROM dataman_agent"), (true, "GRANT SELECT ON dataman_agent_views.users TO dataman_agent")];
                 a.demo_drift(&p, lines.iter().map(|(add, l)| dataman_core::agent_login::Change { add: *add, line: l.to_string() }).collect());
+                if stage.ends_with("-changes") {
+                    a.demo_changes();
+                }
             }
             if stage == "agents-types-card" {
                 a.select_type("card", cx);

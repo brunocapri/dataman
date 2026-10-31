@@ -50,6 +50,8 @@ struct WhatRuns {
 pub(crate) enum Sheet {
     Create { review: Option<Result<live::Review, String>>, opts: Options, confirm: bool, busy: bool, error: Option<String> },
     Remove { plan: Option<Result<Plan, String>>, confirm: bool, busy: bool, error: Option<String> },
+    /// The drift: what changes on the login, and what runs for it.
+    Changes,
 }
 
 /// The user's own connection: the open one, else one opened with what Dataman keeps.
@@ -246,33 +248,7 @@ impl AgentsPage {
             p,
             cx,
             move |core, admin, p| {
-                Box::pin(async move {
-                    live::apply(&admin, &rv.plan, &p.database).await.map_err(|e| format!("{e:#}"))?;
-                    let account = agent_login::secret_account(&p.id);
-                    core.secrets.set(&account, &rv.password).map_err(|e| format!("the login was created but its password could not be kept in the {}: {e:#}", dataman_core::secret::STORE_NAME))?;
-                    let mut rec = live::record(&p, &rv.plan, &opts);
-                    // Always checked by logging in as it before it is kept: what fails is undone.
-                    let checks = verify_as_agent(&core, &p, &rec.user, &rv.password, &rv).await;
-                    if let Ok(c) = &checks
-                        && c.iter().all(|x| x.ok)
-                    {
-                        rec.verified = Some(Utc::now());
-                        return Ok((rec, checks.unwrap_or_default(), None));
-                    }
-                    let why = match &checks {
-                        Ok(c) => c.iter().filter(|x| !x.ok).map(|x| format!("{}: {}", x.what, x.detail)).collect::<Vec<_>>().join("; "),
-                        Err(e) => e.clone(),
-                    };
-                    let undone = match live::removal(&admin, &p, &rec).await {
-                        Ok(plan) => live::apply(&admin, &plan, &p.database).await.is_ok(),
-                        Err(_) => false,
-                    };
-                    if undone {
-                        let _ = core.secrets.delete(&account);
-                        return Err(format!("logging in as {} did not go as the rules say ({why}); it was removed again", rec.user));
-                    }
-                    Ok((rec, checks.unwrap_or_default(), Some(format!("logging in as it did not go as the rules say: {why}"))))
-                })
+                Box::pin(async move { live::create(&core, &admin, &p, &rv, &opts).await })
             },
             |v, r, cx| match r {
                 Ok((rec, checks, warn)) => {
@@ -316,7 +292,7 @@ impl AgentsPage {
                     }
                     let pw = live::password_of(&*core.secrets, &p.id, &user).map_err(|e| format!("{e:#}"))?;
                     let rv = live::review(&admin, &p, &Options::default()).await.map_err(|e| format!("{e:#}"))?;
-                    Ok(Verified::Checked(verify_as_agent(&core, &p, &user, &pw, &rv).await?))
+                    Ok(Verified::Checked(live::verify_as(&core, &p, &user, &pw, &rv).await?))
                 })
             },
             |v, r, cx| {
@@ -713,20 +689,20 @@ impl AgentsPage {
                 let n = d.changes.len();
                 let pid = p.clone();
                 let label = self.login.busy.clone().unwrap_or_else(|| if n == 1 { "Apply 1 change".into() } else { format!("Apply {n} changes") });
-                // A few lines tell what kind of change it is; Apply runs them all.
-                const SHOWN: usize = 4;
-                let more = n.saturating_sub(SHOWN);
-                let lines = d.changes.iter().take(SHOWN).map(|c| {
-                    div()
-                        .flex()
-                        .flex_row()
-                        .gap(px(8.))
-                        .child(div().flex_none().text_color(if c.add { t.ok } else { t.err }).child(if c.add { "+" } else { "−" }))
-                        .child(div().flex_1().min_w_0().text_color(t.tx2).child(c.line.clone()))
-                });
+                let view = ui::button(t, "agents-login-changes", ui::Btn::Secondary).h(px(30.)).px(px(14.)).cursor_pointer().child("View changes").on_click(cx.listener(|v, _: &ClickEvent, _, cx| {
+                    v.login.sheet = Some(Sheet::Changes);
+                    v.login.sql_scroll.set_offset(gpui::Point::default());
+                    cx.notify();
+                }));
                 col.child(div().text_color(t.tx2).child("Until they run, the login keeps its old grants. Dataman already applies the new rules on top, so nothing new is exposed meanwhile."))
-                    .child(div().px(px(12.)).py(px(10.)).border_1().border_color(t.warn.opacity(0.4)).bg(t.warn_s).rounded(px(2.)).flex().flex_col().gap(px(4.)).font_family(mono()).text_size(px(11.)).children(lines).when(more > 0, |d| d.child(div().text_color(t.tx3).child(if more == 1 { "and 1 more".to_string() } else { format!("and {more} more") }))))
-                    .child(div().flex().flex_row().child(ui::button(t, "agents-login-apply", ui::Btn::Primary).h(px(30.)).px(px(14.)).font_weight(FontWeight::SEMIBOLD).child(label).on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_apply_drift(&pid, cx)))))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .gap(px(10.))
+                            .child(view)
+                            .child(ui::button(t, "agents-login-apply", ui::Btn::Primary).h(px(30.)).px(px(14.)).font_weight(FontWeight::SEMIBOLD).child(label).on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_apply_drift(&pid, cx)))),
+                    )
             }
         }
     }
@@ -745,6 +721,7 @@ impl AgentsPage {
         let (title, body, footer) = match sheet {
             Sheet::Create { review, opts, confirm, busy, error } => self.create_sheet(t, p, review.as_ref(), *opts, *confirm, *busy, error.as_deref(), cx),
             Sheet::Remove { plan, confirm, busy, error } => self.remove_sheet(t, p, plan.as_ref(), *confirm, *busy, error.as_deref(), cx),
+            Sheet::Changes => self.changes_sheet(t, p, cx)?,
         };
         Some(
             div()
@@ -881,6 +858,57 @@ impl AgentsPage {
         (title, body, footer)
     }
 
+    /// View changes: the login's grants as a diff (− what goes, + what comes), beside what runs.
+    fn changes_sheet(&self, t: &Theme, p: &ConnectionProfile, cx: &mut Context<Self>) -> Option<(String, AnyElement, AnyElement)> {
+        let Some(Ok(d)) = &self.login.drift else { return None };
+        let user = p.agent_login.as_ref().map(|l| l.user.clone()).unwrap_or_default();
+        let n = d.changes.len();
+        let (gone, new) = (d.changes.iter().filter(|c| !c.add).count(), d.changes.iter().filter(|c| c.add).count());
+        let line = |c: &agent_login::Change| {
+            let (sign, fg, bg) = if c.add { ("+", t.ok, t.ok_s) } else { ("−", t.err, t.err_s) };
+            div().flex_none().min_h(px(22.)).px(px(20.)).py(px(2.)).flex().flex_row().gap(px(10.)).bg(bg).child(div().flex_none().w(px(8.)).text_color(fg).child(sign)).child(div().flex_1().min_w_0().text_color(t.tx).child(c.line.clone()))
+        };
+        // What goes first, then what comes, as a diff reads.
+        let lines = d.changes.iter().filter(|c| !c.add).chain(d.changes.iter().filter(|c| c.add)).map(line);
+        let count = |k: usize, sign: &str, color| div().text_color(color).child(format!("{sign}{k}"));
+        let diff = div()
+            .w(px(460.))
+            .flex_none()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .border_r_1()
+            .border_color(t.line)
+            .child(
+                div()
+                    .h(px(40.))
+                    .flex_none()
+                    .px(px(20.))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(10.))
+                    .border_b_1()
+                    .border_color(t.line)
+                    .child(ui::caps(t, "CHANGES"))
+                    .child(div().ml_auto().flex().flex_row().gap(px(8.)).font_family(mono()).text_size(px(11.)).child(count(gone, "−", t.err)).child(count(new, "+", t.ok))),
+            )
+            .child(div().children(ui::here(&"agents-login-diff".into())).id("agents-login-diff").flex_1().min_h_0().overflow_y_scroll().py(px(10.)).flex().flex_col().gap(px(2.)).font_family(mono()).text_size(px(11.5)).line_height(px(18.)).children(lines));
+        let body = div().flex_1().min_w_0().flex().flex_row().child(diff).child(self.what_runs(t, "agents-login-drift-sql", Ok(&d.plan), p.engine)).into_any_element();
+        let pid = p.clone();
+        let label = if n == 1 { "Apply 1 change".to_string() } else { format!("Apply {n} changes") };
+        let apply = ui::button(t, "agents-login-changes-apply", ui::Btn::Primary).h(px(30.)).px(px(14.)).font_weight(FontWeight::SEMIBOLD).cursor_pointer().child(label).on_click(cx.listener(move |v, _: &ClickEvent, _, cx| {
+            v.login.sheet = None;
+            v.login_apply_drift(&pid, cx);
+        }));
+        let close = ui::button(t, "agents-login-changes-close", ui::Btn::Ghost).h(px(30.)).cursor_pointer().child("Close").on_click(cx.listener(|v, _: &ClickEvent, _, cx| {
+            v.login.sheet = None;
+            cx.notify();
+        }));
+        let say = div().flex_1().min_w_0().text_color(t.tx3).child(format!("Runs as your login, then {user} has what the rules allow now."));
+        Some((format!("Changes to {user}"), body, ui::modal_footer(t).child(say).child(close).child(apply).into_any_element()))
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn remove_sheet(&self, t: &Theme, p: &ConnectionProfile, plan: Option<&Result<Plan, String>>, confirm: bool, busy: bool, error: Option<&str>, cx: &mut Context<Self>) -> (String, AnyElement, AnyElement) {
         let user = p.agent_login.as_ref().map(|l| l.user.clone()).unwrap_or_default();
@@ -992,8 +1020,16 @@ impl AgentsPage {
     /// The demo stages: `p`'s login drifted from its rules, `changes` read from the server.
     pub(crate) fn demo_drift(&mut self, p: &ConnectionProfile, changes: Vec<agent_login::Change>) {
         let now = agent_login::rules_hash(p, &p.agent_login.as_ref().map(|l| l.database.clone()).unwrap_or_default());
-        let drift = live::Drift { plan: Default::default(), changes, probe: Default::default(), spec: agent_login::compile(p, "", &Options::default()), inventory: Default::default() };
+        // What runs: the lines themselves, as the plan of a real drift holds them.
+        let steps = changes.iter().map(|c| agent_login::Step { action: agent_login::Action::Sql(c.line.clone()), shown: format!("{};", c.line), copy: format!("{};", c.line), group: "Grants".into() }).collect();
+        let plan = Plan { engine: Some(p.engine), steps, one_tx: true, ..Default::default() };
+        let drift = live::Drift { plan, changes, probe: Default::default(), spec: agent_login::compile(p, "", &Options::default()), inventory: Default::default() };
         self.login = LoginUi { conn: Some(p.id.clone()), drift: Some(Ok(drift)), drift_rules: Some(now), ..Default::default() };
+    }
+
+    /// The demo's View changes, open.
+    pub(crate) fn demo_changes(&mut self) {
+        self.login.sheet = Some(Sheet::Changes);
     }
 }
 
@@ -1003,15 +1039,6 @@ const WHAT_OVERSCAN: usize = 20;
 enum Verified {
     Gone,
     Checked(Vec<live::Check>),
-}
-
-/// Logs in as the agent with `pw` and runs Verify's checks; the connection is closed after.
-async fn verify_as_agent(core: &Arc<dataman_core::Core>, p: &ConnectionProfile, user: &str, pw: &str, rv: &live::Review) -> Result<Vec<live::Check>, String> {
-    let mine = ConnectionProfile { agent_login: None, ..p.clone() };
-    let agent = core.connect_agent(&mine, live::agent_profile(p, user), pw.to_string()).await.map_err(|e| format!("cannot log in as {user}: {e:#}"))?;
-    let r = live::verify(&agent, &rv.spec, &rv.inventory, &rv.probe).await.map_err(|e| format!("{e:#}"));
-    agent.close();
-    r
 }
 
 fn prod_tag(t: &Theme) -> gpui::Div {

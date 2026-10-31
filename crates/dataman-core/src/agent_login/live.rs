@@ -189,6 +189,48 @@ pub fn record(p: &ConnectionProfile, plan: &Plan, o: &Options) -> AgentLogin {
     }
 }
 
+/// Logs in as `user` with `pw` and runs Verify's checks; the connection is closed after.
+pub async fn verify_as(core: &crate::Core, p: &ConnectionProfile, user: &str, pw: &str, rv: &Review) -> std::result::Result<Vec<Check>, String> {
+    let mine = ConnectionProfile { agent_login: None, ..p.clone() };
+    let agent = core.connect_agent(&mine, agent_profile(p, user), pw.to_string()).await.map_err(|e| format!("cannot log in as {user}: {e:#}"))?;
+    let r = verify(&agent, &rv.spec, &rv.inventory, &rv.probe).await.map_err(|e| format!("{e:#}"));
+    agent.close();
+    r
+}
+
+/// Create, once the user said yes to the review: runs its plan on the user's login (`admin`),
+/// keeps the password in the Keychain, and logs in as the new login to check it. A login that
+/// fails the check is removed again; where removing fails too it is kept, with why (the third).
+pub async fn create(core: &crate::Core, admin: &Arc<Connection>, p: &ConnectionProfile, rv: &Review, o: &Options) -> std::result::Result<(AgentLogin, Vec<Check>, Option<String>), String> {
+    if let Some(l) = rv.plan.lacks.first() {
+        return Err(format!("can't create it: {l}"));
+    }
+    apply(admin, &rv.plan, &p.database).await.map_err(|e| format!("{e:#}"))?;
+    let account = secret_account(&p.id);
+    core.secrets.set(&account, &rv.password).map_err(|e| format!("the login was created but its password could not be kept in the {}: {e:#}", crate::secret::STORE_NAME))?;
+    let mut rec = record(p, &rv.plan, o);
+    let checks = verify_as(core, p, &rec.user, &rv.password, rv).await;
+    if let Ok(c) = &checks
+        && c.iter().all(|x| x.ok)
+    {
+        rec.verified = Some(Utc::now());
+        return Ok((rec, checks.unwrap_or_default(), None));
+    }
+    let why = match &checks {
+        Ok(c) => c.iter().filter(|x| !x.ok).map(|x| format!("{}: {}", x.what, x.detail)).collect::<Vec<_>>().join("; "),
+        Err(e) => e.clone(),
+    };
+    let undone = match removal(admin, p, &rec).await {
+        Ok(plan) => apply(admin, &plan, &p.database).await.is_ok(),
+        Err(_) => false,
+    };
+    if undone {
+        let _ = core.secrets.delete(&account);
+        return Err(format!("logging in as {} did not go as the rules say ({why}); it was removed again", rec.user));
+    }
+    Ok((rec, checks.unwrap_or_default(), Some(format!("logging in as it did not go as the rules say: {why}"))))
+}
+
 /// The profile agents connect with: the agent login, its password given by the caller (never
 /// the user's, nor a `.pgpass` line).
 pub fn agent_profile(p: &ConnectionProfile, user: &str) -> ConnectionProfile {
