@@ -136,7 +136,6 @@ fn env(s: &str, settings: &str) -> Env {
         h.core.pgpass = Some(pgpass);
         Arc::new(h)
     };
-    hub.set_mask_key(dataman_core::privacy::HashKey::fixed(b"privacy-test"));
     let human = Arc::new(Human::default());
     hub.set_front(Some(human.clone()));
     hub.set_approval_timeout(Duration::from_millis(600));
@@ -292,7 +291,7 @@ fn postgres_privacy() {
     let r = q(format!("SELECT id, name, email, tax_id, city, phone FROM {s}.customers WHERE email LIKE 'ana%'")).unwrap();
     let row = &r["rows"][0];
     assert_eq!(row[2], "a•••@acme.com");
-    assert!(row[3].as_str().unwrap().starts_with("‹h:"), "{row}");
+    assert!(row[3].as_str() == Some("‹hidden›"), "{row}");
     assert_eq!(row[4], "Recife", "unchecked columns are not masked");
     assert_eq!(row[5], "(•••) •••-4567", "phone is masked in any value: the connection's old switch is gone");
     assert!(r["masked_columns"].to_string().contains("email (partial)"));
@@ -409,13 +408,13 @@ fn postgres_views_long_cells_and_returning() {
     let r = q(format!("SELECT id, email, tax_id FROM {s}.customers ORDER BY id")).unwrap();
     assert_eq!(r["rows"][0][1], "a•••@acme.com", "the e-mail is masked whole, not its first 2000 characters");
     assert_eq!(r["rows"][0][2], dataman_core::privacy::HIDDEN, "longer than is read: hidden whole");
-    assert!(r["rows"][1][2].as_str().unwrap().starts_with("‹h:"), "{}", r["rows"][1][2]);
+    assert!(r["rows"][1][2].as_str() == Some("‹hidden›"), "{}", r["rows"][1][2]);
 
     // RETURNING rows are masked like a read.
     match e.call("execute", p(json!({"sql": format!("UPDATE {s}.customers SET city = 'Olinda' WHERE id = 2 RETURNING id, tax_id")}))) {
         Ok(v) => {
             let got = v["returning"]["rows"][0][1].as_str().unwrap_or_default().to_string();
-            assert!(got != "not-a-taxid-7" && got.starts_with("‹h:"), "RETURNING shows the masked value: {v}");
+            assert!(got != "not-a-taxid-7" && got == "‹hidden›", "RETURNING shows the masked value: {v}");
         }
         Err(e) => assert!(!e.contains("not-a-taxid-7"), "{e}"),
     }

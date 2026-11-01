@@ -29,9 +29,19 @@ fn present(f: &str) -> Value {
 pub fn mask_expr(f: &str, m: Mask) -> Value {
     let v = format!("${f}");
     let masked = match m {
-        // No hash in an aggregation: hidden instead (Dataman still hashes on top).
-        Mask::Hidden | Mask::Hash => json!("‹hidden›"),
-        Mask::Partial => json!({ "$let": {
+        Mask::Hidden => json!("‹hidden›"),
+        Mask::Partial(k) if k != Keep::DEFAULT => {
+            let (first, last) = (k.first as i64, k.last as i64);
+            json!({ "$let": {
+                "vars": { "s": { "$convert": { "input": v, "to": "string", "onError": "", "onNull": "" } } },
+                "in": { "$cond": [
+                    { "$gte": [{ "$strLenCP": "$$s" }, 2 * (first + last)] },
+                    { "$concat": [{ "$substrCP": ["$$s", 0, first] }, "••••", { "$substrCP": ["$$s", { "$subtract": [{ "$strLenCP": "$$s" }, last] }, last] }] },
+                    "••••"
+                ] }
+            } })
+        }
+        Mask::Partial(_) => json!({ "$let": {
             "vars": { "s": { "$convert": { "input": v, "to": "string", "onError": "", "onNull": "" } } },
             "in": { "$cond": [
                 { "$gt": [{ "$indexOfCP": ["$$s", "@"] }, 0] },

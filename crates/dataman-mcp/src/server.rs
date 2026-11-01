@@ -104,14 +104,13 @@ impl Server {
     fn privacy_pass(&self, call: &Call, r: Result<Value, ToolError>) -> Result<Value, ToolError> {
         let profile = call.note().connection.as_deref().and_then(|c| self.hub.profile(c).ok());
         let types = self.hub.types_for(profile.as_ref());
-        let key = self.hub.mask_key();
         let mut counts = Counts::new();
         match r {
             Ok(mut v) => {
                 if !types.broken.is_empty() {
                     return Err(ToolError::Refused(format!("{} has an invalid pattern, and reads are refused while it is on (Dataman › Agents › Sensitive data)", types.broken.join(", "))));
                 }
-                types.scrub_json(&mut v, &key, &mut counts, Instant::now() + BUDGET).map_err(|e| ToolError::Refused(e.to_string()))?;
+                types.scrub_json(&mut v, &mut counts, Instant::now() + BUDGET).map_err(|e| ToolError::Refused(e.to_string()))?;
                 if !counts.is_empty() {
                     call.note_masked_values(&counts);
                 }
@@ -126,7 +125,7 @@ impl Server {
             }
             Err(e) => Err(e.map_text(|m| {
                 let clean = clean_error(m);
-                types.scrub(&clean, &key, &mut counts).into_owned()
+                types.scrub(&clean, &mut counts).into_owned()
             })),
         }
     }

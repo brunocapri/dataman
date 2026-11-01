@@ -57,16 +57,18 @@ fn revoke_sql(g: &Grant, user: &str) -> Option<String> {
     })
 }
 
-pub fn mask_expr(col: &str, m: Mask, space: &str) -> String {
+pub fn mask_expr(col: &str, m: Mask) -> String {
     let c = format!("CAST({} AS NVARCHAR(4000))", q(col));
     match m {
         Mask::Hidden => "N'‹hidden›'".into(),
-        Mask::Partial => format!(
+        Mask::Partial(k) if k == Keep::DEFAULT => format!(
             "CASE WHEN {c} IS NULL THEN NULL WHEN CHARINDEX(N'@', {c}) > 0 THEN LEFT({c}, 1) + N'•••@' + SUBSTRING({c}, CHARINDEX(N'@', {c}) + 1, 4000) WHEN LEN({c}) >= 8 THEN N'•••• ' + RIGHT({c}, 4) ELSE N'••••' END"
         ),
-        Mask::Hash => format!(
-            "CASE WHEN {c} IS NULL THEN NULL ELSE N'‹h:' + LOWER(LEFT(CONVERT(VARCHAR(64), HASHBYTES('SHA2_256', CONCAT({c}, (SELECT v FROM {}.[salt]))), 2), 12)) + N'›' END",
-            q(space)
+        Mask::Partial(k) => format!(
+            "CASE WHEN {c} IS NULL THEN NULL WHEN LEN({c}) >= {} THEN LEFT({c}, {}) + N'••••' + RIGHT({c}, {}) ELSE N'••••' END",
+            2 * (k.first as u32 + k.last as u32),
+            k.first,
+            k.last
         ),
     }
 }
@@ -77,7 +79,6 @@ pub struct Desired {
     pub access: Vec<Access>,
     pub hidden: Vec<String>,
     pub not_granted: Vec<NotGranted>,
-    pub salt: bool,
     pub exposed: Vec<NotGranted>,
 }
 
@@ -95,7 +96,6 @@ pub const DEFAULT_SCHEMA: &str = "dbo";
 pub fn desired(spec: &Spec, inv: &Inventory, probe: &Probe) -> Desired {
     let (all, hidden) = access(spec, inv);
     let (mut grants, mut views, mut not_granted, mut ok) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-    let mut salt = false;
     for a in all {
         if !spec.rows {
             continue;
@@ -125,9 +125,8 @@ pub fn desired(spec: &Spec, inv: &Inventory, probe: &Probe) -> Desired {
             });
             continue;
         }
-        salt |= a.masked.iter().any(|(_, m)| *m == Mask::Hash);
         let name = view_name(&a.schema, &a.name, DEFAULT_SCHEMA, 128, &views);
-        let cols: Vec<String> = a.plain.iter().map(|c| q(c)).chain(a.masked.iter().map(|(c, m)| format!("{} AS {}", mask_expr(c, *m, &spec.space), q(c)))).collect();
+        let cols: Vec<String> = a.plain.iter().map(|c| q(c)).chain(a.masked.iter().map(|(c, m)| format!("{} AS {}", mask_expr(c, *m), q(c)))).collect();
         let body = format!("SELECT {} FROM {}", cols.join(", "), qual(&a.schema, &a.name));
         let hash = hash::sha256_hex(body.as_bytes())[..12].to_string();
         let create = format!("CREATE VIEW {} AS {body}", qual(&spec.space, &name));
@@ -155,7 +154,7 @@ pub fn desired(spec: &Spec, inv: &Inventory, probe: &Probe) -> Desired {
     grants.sort();
     grants.dedup();
     let exposed = exposed(spec, inv, &revoke_public);
-    Desired { grants, views, access: ok, hidden, not_granted, salt, exposed }
+    Desired { grants, views, access: ok, hidden, not_granted, exposed }
 }
 
 fn rules(spec: &Spec, d: &Desired, probe: &Probe, prod: bool) -> Vec<RuleLine> {
@@ -201,20 +200,12 @@ fn group_of(g: &Grant, spec: &Spec, d: &Desired) -> String {
     }
 }
 
-fn view_steps(spec: &Spec, d: &Desired, fresh: &[&ViewDef], salt_hex: &str, create_schema: bool) -> Vec<Step> {
+fn view_steps(spec: &Spec, d: &Desired, fresh: &[&ViewDef], create_schema: bool) -> Vec<Step> {
     let g = format!("hidden or masked columns: views the agent reads instead ({})", d.views.len());
     let mut steps = Vec::new();
     if create_schema {
         steps.push(Step::sql(&g, format!("CREATE SCHEMA {} AUTHORIZATION [dbo]", q(&spec.space))));
         steps.push(Step::sql(&g, format!("EXEC sys.sp_addextendedproperty @name = N'dataman', @value = {}, @level0type = N'SCHEMA', @level0name = {}", lit(MARK), lit(&spec.space))));
-    }
-    if d.salt {
-        steps.push(Step::sql(&g, format!("IF OBJECT_ID({}) IS NULL CREATE TABLE {}.[salt] (v NVARCHAR(128) NOT NULL)", lit(&format!("{}.[salt]", q(&spec.space))), q(&spec.space))));
-        steps.push(Step::secret_sql(
-            &g,
-            format!("IF NOT EXISTS (SELECT 1 FROM {0}.[salt]) INSERT INTO {0}.[salt] VALUES (N'{salt_hex}')", q(&spec.space)),
-            format!("INSERT INTO {}.[salt] VALUES (<random salt>)", q(&spec.space)),
-        ));
     }
     for v in fresh {
         steps.push(Step::sql(&g, v.create.clone()));
@@ -240,7 +231,7 @@ pub fn create_plan(spec: &Spec, inv: &Inventory, probe: &Probe, password: &str, 
     steps.push(Step::sql(g, format!("EXEC sys.sp_addextendedproperty @name = N'dataman', @value = {}, @level0type = N'USER', @level0name = {}", lit(&mark_for(&spec.conn)), lit(&spec.user))));
     let fresh: Vec<&ViewDef> = d.views.iter().collect();
     if !fresh.is_empty() {
-        steps.extend(view_steps(spec, &d, &fresh, &hash::hex(&hash::random_bytes(32)), true));
+        steps.extend(view_steps(spec, &d, &fresh, true));
     }
     // SQL Server takes column lists and whole-table permissions in separate GRANTs.
     let (cols, whole): (Vec<Grant>, Vec<Grant>) = d.grants.iter().filter(|g| matches!(g, Grant::Table { .. } | Grant::Column { .. })).cloned().partition(|g| matches!(g, Grant::Column { .. }));
@@ -309,7 +300,7 @@ pub fn sync_plan(spec: &Spec, inv: &Inventory, probe: &Probe, have: &[Grant], ha
     }
     let fresh: Vec<&ViewDef> = d.views.iter().filter(|v| !have_views.iter().any(|(n, h)| *n == v.name && *h == v.hash)).collect();
     if !fresh.is_empty() {
-        steps.extend(view_steps(spec, &d, &fresh, &hash::hex(&hash::random_bytes(32)), !schema_exists));
+        steps.extend(view_steps(spec, &d, &fresh, !schema_exists));
     }
     let remade: Vec<&String> = fresh.iter().map(|v| &v.name).collect();
     for g in d.grants.iter().filter(|g| !have.contains(g) || matches!(g, Grant::Table { schema, name, .. } if *schema == spec.space && remade.contains(&name))) {

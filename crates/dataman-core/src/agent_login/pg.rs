@@ -62,18 +62,19 @@ fn revoke_sql(g: &Grant, user: &str, db: &str) -> Option<String> {
     })
 }
 
-/// A masked column, as the view shows it. `salt`: reads the secret salt only the view's owner
-/// can read.
-pub fn mask_expr(col: &str, m: Mask, space: &str) -> String {
+/// A masked column, as the view shows it. Partial as it ships keeps e-mails' domains.
+pub fn mask_expr(col: &str, m: Mask) -> String {
     let c = format!("{}::text", q(col));
     match m {
         Mask::Hidden => "'‹hidden›'::text".into(),
-        Mask::Partial => format!(
+        Mask::Partial(k) if k == Keep::DEFAULT => format!(
             "CASE WHEN {c} IS NULL THEN NULL WHEN strpos({c}, '@') > 0 THEN left({c}, 1) || '•••@' || split_part({c}, '@', 2) WHEN length({c}) >= 8 THEN '•••• ' || right({c}, 4) ELSE '••••' END"
         ),
-        Mask::Hash => format!(
-            "CASE WHEN {c} IS NULL THEN NULL ELSE '‹h:' || left(encode(sha256(convert_to({c}, 'UTF8') || (SELECT v FROM {}.salt)), 'hex'), 12) || '›' END",
-            q(space)
+        Mask::Partial(k) => format!(
+            "CASE WHEN {c} IS NULL THEN NULL WHEN length({c}) >= {} THEN left({c}, {}) || '••••' || right({c}, {}) ELSE '••••' END",
+            2 * (k.first as u32 + k.last as u32),
+            k.first,
+            k.last
         ),
     }
 }
@@ -84,7 +85,6 @@ pub struct Desired {
     pub access: Vec<Access>,
     pub hidden: Vec<String>,
     pub not_granted: Vec<NotGranted>,
-    pub salt: bool,
     pub exposed: Vec<NotGranted>,
 }
 
@@ -104,7 +104,6 @@ pub fn desired(spec: &Spec, inv: &Inventory, probe: &Probe) -> Desired {
     let mut grants = vec![Grant::Database(format!("CONNECT ON DATABASE {}", q(&spec.database)))];
     let (mut views, mut not_granted, mut access_ok) = (Vec::new(), Vec::new(), Vec::new());
     let mut schemas = BTreeSet::new();
-    let mut salt = false;
     let verbs: &[&str] = if spec.write { &["SELECT", "INSERT", "UPDATE", "DELETE"] } else { &["SELECT"] };
     for a in all {
         if !spec.rows {
@@ -144,9 +143,8 @@ pub fn desired(spec: &Spec, inv: &Inventory, probe: &Probe) -> Desired {
             }
         }
         if !a.masked.is_empty() {
-            salt |= a.masked.iter().any(|(_, m)| *m == Mask::Hash);
             let name = view_name(&a.schema, &a.name, DEFAULT_SCHEMA, 63, &views);
-            let cols: Vec<String> = a.plain.iter().map(|c| q(c)).chain(a.masked.iter().map(|(c, m)| format!("{} AS {}", mask_expr(c, *m, &spec.space), q(c)))).collect();
+            let cols: Vec<String> = a.plain.iter().map(|c| q(c)).chain(a.masked.iter().map(|(c, m)| format!("{} AS {}", mask_expr(c, *m), q(c)))).collect();
             let body = format!("SELECT {} FROM {}", cols.join(", "), qual(&a.schema, &a.name));
             let hash = hash::sha256_hex(body.as_bytes())[..12].to_string();
             let create = format!("CREATE VIEW {} WITH (security_barrier) AS {body}", qual(&spec.space, &name));
@@ -179,7 +177,7 @@ pub fn desired(spec: &Spec, inv: &Inventory, probe: &Probe) -> Desired {
     grants.sort();
     grants.dedup();
     let exposed = exposed(spec, inv, &revoke_public);
-    Desired { grants, views, access: access_ok, hidden, not_granted, salt, exposed }
+    Desired { grants, views, access: access_ok, hidden, not_granted, exposed }
 }
 
 fn rules(spec: &Spec, d: &Desired, probe: &Probe, prod: bool) -> Vec<RuleLine> {
@@ -215,20 +213,12 @@ fn rules(spec: &Spec, d: &Desired, probe: &Probe, prod: bool) -> Vec<RuleLine> {
     v
 }
 
-fn space_steps(spec: &Spec, d: &Desired, salt_hex: &str, create_schema: bool) -> Vec<Step> {
+fn space_steps(spec: &Spec, d: &Desired, create_schema: bool) -> Vec<Step> {
     let mut steps = Vec::new();
     let g = format!("masked columns: views the agent reads instead ({})", d.views.len());
     if create_schema {
         steps.push(Step::sql(&g, format!("CREATE SCHEMA {}", q(&spec.space))));
         steps.push(Step::sql(&g, format!("COMMENT ON SCHEMA {} IS {}", q(&spec.space), lit(MARK))));
-    }
-    if d.salt {
-        steps.push(Step::sql(&g, format!("CREATE TABLE IF NOT EXISTS {}.salt (v bytea NOT NULL)", q(&spec.space))));
-        steps.push(Step::secret_sql(
-            &g,
-            format!("INSERT INTO {0}.salt SELECT decode('{salt_hex}', 'hex') WHERE NOT EXISTS (SELECT 1 FROM {0}.salt)", q(&spec.space)),
-            format!("INSERT INTO {}.salt VALUES (<random salt>)", q(&spec.space)),
-        ));
     }
     for v in &d.views {
         steps.extend(view_steps(spec, v, &g));
@@ -313,7 +303,7 @@ pub fn create_plan(spec: &Spec, inv: &Inventory, probe: &Probe, password: &str, 
     steps.extend(grant_steps(spec, &d, &first));
     steps.extend(object_steps(spec, &d, &sorted, false));
     if !d.views.is_empty() {
-        steps.extend(space_steps(spec, &d, &hash::hex(&hash::random_bytes(32)), true));
+        steps.extend(space_steps(spec, &d, true));
         let space: Vec<Grant> = sorted.iter().filter(|g| matches!(g, Grant::Schema { .. }) && in_space(g)).cloned().collect();
         steps.extend(grant_steps(spec, &d, &space));
         steps.extend(object_steps(spec, &d, &sorted, true));
@@ -381,15 +371,6 @@ pub fn sync_plan(spec: &Spec, inv: &Inventory, probe: &Probe, have: &[Grant], ha
     if !d.views.is_empty() && !schema_exists {
         steps.push(Step::sql(gv, format!("CREATE SCHEMA {}", q(&spec.space))));
         steps.push(Step::sql(gv, format!("COMMENT ON SCHEMA {} IS {}", q(&spec.space), lit(MARK))));
-    }
-    if d.salt {
-        steps.push(Step::sql(gv, format!("CREATE TABLE IF NOT EXISTS {}.salt (v bytea NOT NULL)", q(&spec.space))));
-        let salt = hash::hex(&hash::random_bytes(32));
-        steps.push(Step::secret_sql(
-            gv,
-            format!("INSERT INTO {0}.salt SELECT decode('{salt}', 'hex') WHERE NOT EXISTS (SELECT 1 FROM {0}.salt)", q(&spec.space)),
-            format!("INSERT INTO {}.salt VALUES (<random salt>) -- if empty", q(&spec.space)),
-        ));
     }
     for v in d.views.iter().filter(|v| !have_views.iter().any(|(n, h)| *n == v.name && *h == v.hash)) {
         steps.extend(view_steps(spec, v, gv));

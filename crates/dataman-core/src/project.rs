@@ -1519,7 +1519,7 @@ mod tests {
     fn sensitive_types_and_the_commit_review_wait_too() {
         let (_d, root) = project_dir();
         let m = Machine::new();
-        m.settings.update(|s| s.agent_types.custom.push(crate::privacy::CustomType::new("Customer code", r"\bCUST-[0-9]{6}\b", Mask::Hash))).unwrap();
+        m.settings.update(|s| s.agent_types.custom.push(crate::privacy::CustomType::new("Customer code", r"\bCUST-[0-9]{6}\b", Mask::Hidden))).unwrap();
         m.project.open_project(&root, m.st()).unwrap();
         let types = m.settings.get().agent_types;
         hostile(&root, |f| f.agents = Some(AgentsPrefs::default()));

@@ -6,39 +6,102 @@
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use regex::{Regex, RegexBuilder, RegexSet, RegexSetBuilder};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+/// The characters Partial leaves of a sensitive column's value: the first and the last.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Keep {
+    pub first: u8,
+    pub last: u8,
+}
+
+impl Keep {
+    /// Also the e-mail look (`a•••@acme.com`) while unchanged.
+    pub const DEFAULT: Keep = Keep { first: 0, last: 4 };
+    pub const MAX: u8 = 8;
+}
+
+impl Default for Keep {
+    fn default() -> Keep {
+        Keep::DEFAULT
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Mask {
     #[default]
     Hidden,
-    Partial,
-    Hash,
+    /// What a sensitive column keeps; the sensitive data types keep their own `keep`.
+    Partial(Keep),
 }
 
 impl Mask {
-    pub const ALL: [Mask; 3] = [Mask::Hidden, Mask::Partial, Mask::Hash];
+    pub const PARTIAL: Mask = Mask::Partial(Keep::DEFAULT);
+    pub const ALL: [Mask; 2] = [Mask::Hidden, Mask::PARTIAL];
 
     pub fn label(self) -> &'static str {
         match self {
             Mask::Hidden => "Redacted",
-            Mask::Partial => "Partial",
-            Mask::Hash => "Hash",
+            Mask::Partial(_) => "Partial",
         }
     }
 
     pub fn key(self) -> &'static str {
         match self {
             Mask::Hidden => "hidden",
-            Mask::Partial => "partial",
-            Mask::Hash => "hash",
+            Mask::Partial(_) => "partial",
         }
+    }
+
+    pub fn is_partial(self) -> bool {
+        matches!(self, Mask::Partial(_))
+    }
+
+    /// Partial keeping `k`; Redacted stays as it is.
+    pub fn keeping(self, k: Keep) -> Mask {
+        match self {
+            Mask::Hidden => Mask::Hidden,
+            Mask::Partial(_) => Mask::Partial(k),
+        }
+    }
+
+    pub fn kept(self) -> Keep {
+        match self {
+            Mask::Partial(k) => k,
+            Mask::Hidden => Keep::DEFAULT,
+        }
+    }
+}
+
+/// Written `hidden`, `partial`, or `partial:first:last` when other characters are kept.
+impl Serialize for Mask {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Mask::Hidden => s.serialize_str("hidden"),
+            Mask::Partial(k) if *k == Keep::DEFAULT => s.serialize_str("partial"),
+            Mask::Partial(k) => s.serialize_str(&format!("partial:{}:{}", k.first, k.last)),
+        }
+    }
+}
+
+/// Anything else (an older version's `hash`) reads as Redacted: never weaker than meant.
+impl<'de> Deserialize<'de> for Mask {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        let mut it = s.split(':');
+        Ok(match (it.next(), it.next(), it.next(), it.next()) {
+            (Some("partial"), None, None, None) => Mask::PARTIAL,
+            (Some("partial"), Some(f), Some(l), None) => match (f.parse::<u8>(), l.parse::<u8>()) {
+                (Ok(first), Ok(last)) => Mask::Partial(Keep { first: first.min(Keep::MAX), last: last.min(Keep::MAX) }),
+                _ => Mask::Hidden,
+            },
+            _ => Mask::Hidden,
+        })
     }
 }
 
@@ -88,19 +151,12 @@ impl Validator {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Partial {
-    /// Every letter and digit but the last `n` becomes •; separators stay.
-    KeepLast(u8),
+    /// Every letter and digit but the first and last kept becomes •; separators stay.
+    Ends(Keep),
     /// `•••• 4242`.
     Card,
     /// `a•••@acme.com`.
     Email,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Norm {
-    Digits,
-    Lower,
-    Exact,
 }
 
 pub struct Builtin {
@@ -114,7 +170,6 @@ pub struct Builtin {
     pattern: &'static str,
     validator: Validator,
     partial: Partial,
-    norm: Norm,
     /// Also looked for in a numeric value (a card kept in a bigint column); not where plain
     /// numbers would match, as ten digits for a phone.
     numbers: bool,
@@ -127,11 +182,10 @@ pub const BUILTINS: &[Builtin] = &[
         rule: "13–19 digits passing Luhn, with a known issuer prefix.",
         example: "4242 4242 4242 4242 → •••• 4242",
         on: true,
-        mask: Mask::Partial,
+        mask: Mask::PARTIAL,
         pattern: r"\b(?:\d[ -]?){12,18}\d\b",
         validator: Validator::Luhn,
         partial: Partial::Card,
-        norm: Norm::Digits,
         numbers: true,
     },
     Builtin {
@@ -140,11 +194,10 @@ pub const BUILTINS: &[Builtin] = &[
         rule: "A practical RFC 5322 address.",
         example: "ana@acme.com → a•••@acme.com",
         on: true,
-        mask: Mask::Partial,
+        mask: Mask::PARTIAL,
         pattern: r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)*\.[A-Za-z]{2,}\b",
         validator: Validator::None,
         partial: Partial::Email,
-        norm: Norm::Lower,
         numbers: true,
     },
     Builtin {
@@ -153,11 +206,10 @@ pub const BUILTINS: &[Builtin] = &[
         rule: "US and Canada numbers, with or without +1: (555) 123-4567, 555-123-4567, 555.123.4567, 5551234567. Ten bare digits count in text, not in number columns.",
         example: "(555) 123-4567 → (•••) •••-4567",
         on: true,
-        mask: Mask::Partial,
+        mask: Mask::PARTIAL,
         pattern: r"(?:\+1[ .-]?)?(?:\(\d{3}\)[ ]?|\b\d{3}[ .-])\d{3}[ .-]\d{4}\b|(?:\+1[ .-]?|\b)[2-9]\d{9}\b",
         validator: Validator::None,
-        partial: Partial::KeepLast(4),
-        norm: Norm::Digits,
+        partial: Partial::Ends(Keep { first: 0, last: 4 }),
         numbers: false,
     },
     Builtin {
@@ -169,8 +221,7 @@ pub const BUILTINS: &[Builtin] = &[
         mask: Mask::Hidden,
         pattern: r"\beyJ[A-Za-z0-9_\-]{5,}\.eyJ[A-Za-z0-9_\-]{5,}\.[A-Za-z0-9_\-]*",
         validator: Validator::None,
-        partial: Partial::KeepLast(4),
-        norm: Norm::Exact,
+        partial: Partial::Ends(Keep { first: 0, last: 4 }),
         numbers: true,
     },
     Builtin {
@@ -182,8 +233,7 @@ pub const BUILTINS: &[Builtin] = &[
         mask: Mask::Hidden,
         pattern: r"\b(?:AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{30,}|xox[abposr]-[A-Za-z0-9\-]{10,}|[sr]k_(?:live|test)_[A-Za-z0-9]{10,}|sk-ant-[A-Za-z0-9_\-]{10,}|sk-(?:proj-)?[A-Za-z0-9]{20,}|AIza[0-9A-Za-z_\-]{35}|glpat-[A-Za-z0-9_\-]{20})",
         validator: Validator::None,
-        partial: Partial::KeepLast(4),
-        norm: Norm::Exact,
+        partial: Partial::Ends(Keep { first: 0, last: 4 }),
         numbers: true,
     },
     Builtin {
@@ -195,8 +245,7 @@ pub const BUILTINS: &[Builtin] = &[
         mask: Mask::Hidden,
         pattern: r"(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
         validator: Validator::None,
-        partial: Partial::KeepLast(0),
-        norm: Norm::Exact,
+        partial: Partial::Ends(Keep { first: 0, last: 0 }),
         numbers: true,
     },
     Builtin {
@@ -208,21 +257,19 @@ pub const BUILTINS: &[Builtin] = &[
         mask: Mask::Hidden,
         pattern: r"\$(?:2[abxy]|argon2(?:id|i|d)|scrypt|pbkdf2[-_a-z0-9]*|[156])\$[^\s'\x22]{8,}",
         validator: Validator::None,
-        partial: Partial::KeepLast(0),
-        norm: Norm::Exact,
+        partial: Partial::Ends(Keep { first: 0, last: 0 }),
         numbers: true,
     },
     Builtin {
         id: "ip",
         name: "IP address",
         rule: "IPv4 and IPv6.",
-        example: "10.0.3.17 → ‹h:Q4M8…›",
+        example: "10.0.3.17 → ‹hidden›",
         on: false,
-        mask: Mask::Hash,
+        mask: Mask::Hidden,
         pattern: r"\b(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\b|\b(?:[0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}\b|\b(?:[0-9A-Fa-f]{1,4}:){1,6}:(?:[0-9A-Fa-f]{1,4}:){0,5}[0-9A-Fa-f]{1,4}\b",
         validator: Validator::None,
-        partial: Partial::KeepLast(4),
-        norm: Norm::Lower,
+        partial: Partial::Ends(Keep { first: 0, last: 4 }),
         numbers: true,
     },
 ];
@@ -243,7 +290,7 @@ impl Builtin {
     /// Partial's characters left at the end (cards and e-mails keep 4 their own way).
     pub fn keep(&self) -> u8 {
         match self.partial {
-            Partial::KeepLast(n) => n,
+            Partial::Ends(k) => k.last,
             Partial::Card | Partial::Email => 4,
         }
     }
@@ -504,7 +551,7 @@ pub struct Tested {
     pub broad: bool,
 }
 
-pub fn test_pattern(t: &CustomType, lines: &[&str], key: &HashKey) -> Result<Tested, String> {
+pub fn test_pattern(t: &CustomType, lines: &[&str]) -> Result<Tested, String> {
     check_pattern(&t.pattern)?;
     let kind = match builtin(&t.id) {
         Some(b) => Kind::builtin(b, t),
@@ -525,7 +572,7 @@ pub fn test_pattern(t: &CustomType, lines: &[&str], key: &HashKey) -> Result<Tes
             let mut at = 0;
             for r in &spans {
                 s.push_str(&l[at..r.start]);
-                s.push_str(&kind.mask_text(&l[r.clone()], key));
+                s.push_str(&kind.mask_text(&l[r.clone()]));
                 at = r.end;
             }
             s.push_str(&l[at..]);
@@ -535,50 +582,6 @@ pub fn test_pattern(t: &CustomType, lines: &[&str], key: &HashKey) -> Result<Tes
     }
     let n = out.len();
     Ok(Tested { lines: out, matches, broad: n >= 2 && hit_lines * 2 > n })
-}
-
-/// The key of Hash masks (HMAC-SHA256), fetched once and only when a Hash mask is needed.
-#[derive(Clone)]
-pub struct HashKey {
-    key: Arc<OnceLock<ring::hmac::Key>>,
-    load: Arc<dyn Fn() -> Vec<u8> + Send + Sync>,
-}
-
-impl HashKey {
-    pub fn new(load: impl Fn() -> Vec<u8> + Send + Sync + 'static) -> HashKey {
-        HashKey { key: Arc::new(OnceLock::new()), load: Arc::new(load) }
-    }
-
-    /// Kept in the Keychain (or the platform's keyring) as `agents-mask-key`, made on first use.
-    pub fn stored(secrets: Arc<dyn crate::SecretStore>) -> HashKey {
-        HashKey::new(move || {
-            const ACCOUNT: &str = "agents-mask-key";
-            if let Ok(Some(k)) = secrets.get(ACCOUNT)
-                && let Ok(b) = data_encoding::BASE64.decode(k.as_bytes())
-                && b.len() == 32
-            {
-                return b;
-            }
-            let mut b = [0u8; 32];
-            ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut b).expect("random");
-            if let Err(e) = secrets.set(ACCOUNT, &data_encoding::BASE64.encode(&b)) {
-                log::warn!("mask key not saved: {e:#}");
-            }
-            b.to_vec()
-        })
-    }
-
-    pub fn fixed(bytes: &[u8]) -> HashKey {
-        let b = bytes.to_vec();
-        HashKey::new(move || b.clone())
-    }
-
-    pub fn hash(&self, normalized: &str) -> String {
-        let key = self.key.get_or_init(|| ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &(self.load)()));
-        let tag = ring::hmac::sign(key, normalized.as_bytes());
-        let b32 = data_encoding::BASE32_NOPAD.encode(tag.as_ref());
-        format!("‹h:{}›", &b32[..10])
-    }
 }
 
 pub const HIDDEN: &str = "‹hidden›";
@@ -591,7 +594,6 @@ struct Kind {
     validator: Validator,
     mask: Mask,
     partial: Partial,
-    norm: Norm,
     token: String,
     numbers: bool,
 }
@@ -609,8 +611,7 @@ impl Kind {
             group_v,
             validator: d.validator,
             mask: d.mask,
-            partial: if d.keep == b.keep() { b.partial } else { Partial::KeepLast(d.keep.min(6)) },
-            norm: b.norm,
+            partial: if d.keep == b.keep() { b.partial } else { Partial::Ends(Keep { first: 0, last: d.keep.min(6) }) },
             token: HIDDEN.into(),
             numbers: b.numbers,
         })
@@ -626,8 +627,7 @@ impl Kind {
             group_v,
             validator: c.validator,
             mask: c.mask,
-            partial: Partial::KeepLast(c.keep.min(6)),
-            norm: Norm::Exact,
+            partial: Partial::Ends(Keep { first: 0, last: c.keep.min(6) }),
             token: format!("‹{}›", c.name.trim().to_lowercase()),
             numbers: true,
         })
@@ -645,11 +645,10 @@ impl Kind {
         out
     }
 
-    fn mask_text(&self, v: &str, key: &HashKey) -> String {
+    fn mask_text(&self, v: &str) -> String {
         match self.mask {
             Mask::Hidden => self.token.clone(),
-            Mask::Hash => key.hash(&normalize(v, self.norm)),
-            Mask::Partial => partial(v, self.partial),
+            Mask::Partial(_) => partial(v, self.partial),
         }
     }
 }
@@ -666,29 +665,21 @@ fn phone_alone(s: &str, r: std::ops::Range<usize>) -> bool {
     !joined(r.start.checked_sub(1).map(|i| b[i])) && !joined(b.get(r.end).copied()) && !m.bytes().all(|c| c == m.as_bytes()[0])
 }
 
-fn normalize(v: &str, n: Norm) -> String {
-    match n {
-        Norm::Digits => v.chars().filter(char::is_ascii_digit).collect(),
-        Norm::Lower => v.trim().to_lowercase(),
-        Norm::Exact => v.to_string(),
-    }
-}
-
 fn partial(v: &str, p: Partial) -> String {
     match p {
         Partial::Email => match v.split_once('@') {
             Some((user, domain)) => format!("{}•••@{domain}", user.chars().next().unwrap_or('•')),
-            None => partial(v, Partial::KeepLast(4)),
+            None => partial(v, Partial::Ends(Keep::DEFAULT)),
         },
         Partial::Card => {
             let digits: Vec<char> = v.chars().filter(char::is_ascii_digit).collect();
             let last: String = digits[digits.len().saturating_sub(4)..].iter().collect();
             format!("•••• {last}")
         }
-        Partial::KeepLast(n) => {
+        Partial::Ends(k) => {
             let total = v.chars().filter(|c| c.is_alphanumeric()).count();
             // Short values would show most of themselves.
-            let keep = if total < 2 * n as usize { 0 } else { n as usize };
+            let (first, last) = if total < 2 * (k.first as usize + k.last as usize) { (0, 0) } else { (k.first as usize, k.last as usize) };
             let mut seen = 0;
             v.chars()
                 .map(|c| {
@@ -696,7 +687,7 @@ fn partial(v: &str, p: Partial) -> String {
                         return c;
                     }
                     seen += 1;
-                    if seen > total - keep { c } else { '•' }
+                    if seen <= first || seen > total - last { c } else { '•' }
                 })
                 .collect()
         }
@@ -704,12 +695,11 @@ fn partial(v: &str, p: Partial) -> String {
 }
 
 /// A sensitive column's mask, for a whole value.
-pub fn mask_value(how: Mask, v: &str, key: &HashKey) -> String {
+pub fn mask_value(how: Mask, v: &str) -> String {
     match how {
         Mask::Hidden => HIDDEN.into(),
-        Mask::Hash => key.hash(&normalize(v, Norm::Exact)),
-        Mask::Partial if v.contains('@') => partial(v, Partial::Email),
-        Mask::Partial => partial(v, Partial::KeepLast(4)),
+        Mask::Partial(k) if k == Keep::DEFAULT && v.contains('@') => partial(v, Partial::Email),
+        Mask::Partial(k) => partial(v, Partial::Ends(k)),
     }
 }
 
@@ -773,11 +763,11 @@ impl Types {
         self.kinds.is_empty()
     }
 
-    pub fn scrub<'a>(&self, s: &'a str, key: &HashKey, counts: &mut Counts) -> Cow<'a, str> {
-        self.scrub_as(s, false, key, counts)
+    pub fn scrub<'a>(&self, s: &'a str, counts: &mut Counts) -> Cow<'a, str> {
+        self.scrub_as(s, false, counts)
     }
 
-    fn scrub_as<'a>(&self, s: &'a str, number: bool, key: &HashKey, counts: &mut Counts) -> Cow<'a, str> {
+    fn scrub_as<'a>(&self, s: &'a str, number: bool, counts: &mut Counts) -> Cow<'a, str> {
         if self.kinds.is_empty() || s.len() < 5 {
             return Cow::Borrowed(s);
         }
@@ -806,7 +796,7 @@ impl Types {
             }
             let kind = &self.kinds[k];
             out.push_str(&s[at..r.start]);
-            out.push_str(&kind.mask_text(&s[r.clone()], key));
+            out.push_str(&kind.mask_text(&s[r.clone()]));
             *counts.entry(kind.name.clone()).or_default() += 1;
             at = r.end;
         }
@@ -815,40 +805,40 @@ impl Types {
     }
 
     /// Every string and object key, in place. Past `deadline` the whole reply is refused.
-    pub fn scrub_json(&self, v: &mut Value, key: &HashKey, counts: &mut Counts, deadline: Instant) -> Result<(), Unfinished> {
+    pub fn scrub_json(&self, v: &mut Value, counts: &mut Counts, deadline: Instant) -> Result<(), Unfinished> {
         if self.kinds.is_empty() {
             return Ok(());
         }
         let mut n = 0u32;
-        self.walk(v, key, counts, deadline, &mut n)
+        self.walk(v, counts, deadline, &mut n)
     }
 
-    fn walk(&self, v: &mut Value, key: &HashKey, counts: &mut Counts, deadline: Instant, n: &mut u32) -> Result<(), Unfinished> {
+    fn walk(&self, v: &mut Value, counts: &mut Counts, deadline: Instant, n: &mut u32) -> Result<(), Unfinished> {
         *n += 1;
         if n.is_multiple_of(64) && Instant::now() > deadline {
             return Err(Unfinished);
         }
         match v {
             Value::String(s) => {
-                if let Cow::Owned(o) = self.scrub(s, key, counts) {
+                if let Cow::Owned(o) = self.scrub(s, counts) {
                     *s = o;
                 }
             }
             // A card kept in a numeric column comes back as a number.
             Value::Number(n) => {
-                if let Cow::Owned(o) = self.scrub_as(&n.to_string(), true, key, counts) {
+                if let Cow::Owned(o) = self.scrub_as(&n.to_string(), true, counts) {
                     *v = Value::String(o);
                 }
             }
             Value::Array(a) => {
                 for x in a {
-                    self.walk(x, key, counts, deadline, n)?;
+                    self.walk(x, counts, deadline, n)?;
                 }
             }
             Value::Object(m) => {
                 let renamed: Vec<(String, String)> = m
                     .keys()
-                    .filter_map(|k| match self.scrub(k, key, counts) {
+                    .filter_map(|k| match self.scrub(k, counts) {
                         Cow::Owned(clean) => Some((k.clone(), clean)),
                         Cow::Borrowed(_) => None,
                     })
@@ -859,7 +849,7 @@ impl Types {
                     }
                 }
                 for x in m.values_mut() {
-                    self.walk(x, key, counts, deadline, n)?;
+                    self.walk(x, counts, deadline, n)?;
                 }
             }
             _ => {}
@@ -1168,7 +1158,7 @@ pub fn sensitive_match(entry: &str, schema: Option<&str>, table: &str, column: &
 /// Column names that usually hold personal data (English and Portuguese), for Scan again.
 pub fn sensitive_name(column: &str) -> Option<Mask> {
     static RE: OnceLock<(Regex, Regex, Regex)> = OnceLock::new();
-    let (hidden, hash, partial) = RE.get_or_init(|| {
+    let (hidden, ids, partial) = RE.get_or_init(|| {
         let r = |p: &str| RegexBuilder::new(p).case_insensitive(true).build().expect("name rule");
         (
             r(r"(^|_)(password|passwd|senha|secret|segredo|token|api_?key|private_?key|mfa|otp|salt)(_|$|hash)"),
@@ -1176,12 +1166,10 @@ pub fn sensitive_name(column: &str) -> Option<Mask> {
             r(r"(^|_)(e_?mail|phone|telefone|celular|mobile|birth|nascimento|birthday|salario|salary|endereco|address|street|rua|cep|zip)(_|$)"),
         )
     });
-    if hidden.is_match(column) {
+    if hidden.is_match(column) || ids.is_match(column) {
         Some(Mask::Hidden)
-    } else if hash.is_match(column) {
-        Some(Mask::Hash)
     } else if partial.is_match(column) {
-        Some(Mask::Partial)
+        Some(Mask::PARTIAL)
     } else {
         None
     }
@@ -1433,9 +1421,8 @@ impl AgentRules {
         let mut r = self.clone();
         let rank = |m: Option<Mask>| match m {
             None => 0,
-            Some(Mask::Partial) => 1,
-            Some(Mask::Hash) => 2,
-            Some(Mask::Hidden) => 3,
+            Some(Mask::Partial(_)) => 1,
+            Some(Mask::Hidden) => 2,
         };
         loop {
             let mut changed = false;
@@ -1550,13 +1537,10 @@ pub fn entropy(s: &str) -> f64 {
 mod tests {
     use super::*;
 
-    fn key() -> HashKey {
-        HashKey::fixed(b"test-key")
-    }
 
     fn scrub(t: &Types, s: &str) -> (String, Counts) {
         let mut c = Counts::new();
-        (t.scrub(s, &key(), &mut c).into_owned(), c)
+        (t.scrub(s, &mut c).into_owned(), c)
     }
 
     #[test]
@@ -1631,7 +1615,7 @@ mod tests {
             assert_eq!(scrub(&t, plain).0, plain, "{plain}");
         }
         let mut v = serde_json::json!({"id": 5551234567u64, "card": 4242424242424242u64});
-        t.scrub_json(&mut v, &key(), &mut Counts::new(), Instant::now() + BUDGET).unwrap();
+        t.scrub_json(&mut v, &mut Counts::new(), Instant::now() + BUDGET).unwrap();
         assert_eq!(v["id"], 5551234567u64, "ten digits in a number column are not a phone");
         assert_eq!(v["card"], "•••• 4242", "a card in a number column still is a card");
     }
@@ -1640,11 +1624,11 @@ mod tests {
     fn switches_masks_and_custom_types() {
         let mut s = TypeSettings::default();
         s.set_builtin("ip", Some(true), None);
-        s.set_builtin("email", None, Some(Mask::Hash));
+        s.set_builtin("email", None, Some(Mask::Hidden));
         assert_eq!(s.builtin.len(), 2);
-        s.set_builtin("email", None, Some(Mask::Partial));
+        s.set_builtin("email", None, Some(Mask::PARTIAL));
         assert_eq!(s.builtin.len(), 1, "back to the default is no override");
-        let mut c = CustomType::new("Customer code", r"\bCUST-[0-9]{6}\b", Mask::Hash);
+        let mut c = CustomType::new("Customer code", r"\bCUST-[0-9]{6}\b", Mask::Hidden);
         c.id = "t_1".into();
         s.custom.push(c);
         let mut v = CustomType::new("Password", r"password=(?P<v>\S+)", Mask::Hidden);
@@ -1652,10 +1636,8 @@ mod tests {
         s.custom.push(v);
         let t = Types::new(&s);
         let (a, counts) = scrub(&t, "merge CUST-000017 into CUST-000930; password=hunter2 host 10.0.3.17");
-        assert!(a.starts_with("merge ‹h:") && a.contains(" into ‹h:") && a.contains("password=‹password›") && !a.contains("10.0.3.17"), "{a}");
+        assert!(a.starts_with("merge ‹customer code› into ‹customer code›") && a.contains("password=‹password›") && !a.contains("10.0.3.17"), "{a}");
         assert_eq!(counts["Customer code"], 2);
-        assert_eq!(scrub(&t, "CUST-000017").0, scrub(&t, "CUST-000017").0, "hashes are deterministic");
-        assert_ne!(scrub(&t, "CUST-000017").0, scrub(&t, "CUST-000018").0);
         s.custom[0].on = false;
         s.set_builtin("phone", Some(false), None);
         let t = Types::new(&s);
@@ -1685,12 +1667,12 @@ mod tests {
         let t = Types::new(&TypeSettings::default());
         let mut v = serde_json::json!({"rows": [["ana@acme.com", 1]], "ana@acme.com": {"card": "4242 4242 4242 4242"}});
         let mut c = Counts::new();
-        t.scrub_json(&mut v, &key(), &mut c, Instant::now() + BUDGET).unwrap();
+        t.scrub_json(&mut v, &mut c, Instant::now() + BUDGET).unwrap();
         let text = v.to_string();
         assert!(!text.contains("ana@acme.com") && !text.contains("4242 4242 4242 4242"), "{text}");
         assert_eq!(c["E-mail"], 2);
         let mut big = serde_json::json!((0..5000).map(|i| format!("ana{i}@acme.com")).collect::<Vec<_>>());
-        assert_eq!(t.scrub_json(&mut big, &key(), &mut c, Instant::now()), Err(Unfinished));
+        assert_eq!(t.scrub_json(&mut big, &mut c, Instant::now()), Err(Unfinished));
     }
 
     #[test]
@@ -1699,7 +1681,7 @@ mod tests {
         let t = Types::new(&TypeSettings::default());
         let mut v = serde_json::json!({"rows": (0..200).map(|i| vec![serde_json::json!("x".repeat(2000)), serde_json::json!(format!("ana{i}@acme.com (555) 123-4567"))]).collect::<Vec<_>>()});
         let t0 = Instant::now();
-        t.scrub_json(&mut v, &key(), &mut Counts::new(), Instant::now() + std::time::Duration::from_secs(60)).unwrap();
+        t.scrub_json(&mut v, &mut Counts::new(), Instant::now() + std::time::Duration::from_secs(60)).unwrap();
         eprintln!("scrub 400 KB: {:?}", t0.elapsed());
     }
 
@@ -1712,13 +1694,13 @@ mod tests {
         assert!(check_pattern(r"\bCUST-[0-9]{6}\b").is_ok());
         assert!(check_pattern(r"a\\1").is_ok(), "an escaped backslash is not a back-reference");
         assert!(check_pattern(r"(").is_err());
-        let c = CustomType::new("Customer code", r"\bCUST-[0-9]{6}\b", Mask::Hash);
-        let t = test_pattern(&c, &["Order CUST-004211 shipped", "merge CUST-000017 into CUST-000930", "ref CUST-42", "xCUST-123456"], &key()).unwrap();
+        let c = CustomType::new("Customer code", r"\bCUST-[0-9]{6}\b", Mask::Hidden);
+        let t = test_pattern(&c, &["Order CUST-004211 shipped", "merge CUST-000017 into CUST-000930", "ref CUST-42", "xCUST-123456"]).unwrap();
         assert_eq!(t.matches, 3);
         assert!(t.lines[2].2.is_none() && t.lines[3].2.is_none());
         assert!(!t.broad, "half the lines is not most");
         let wide = CustomType::new("Digits", r"[0-9]+", Mask::Hidden);
-        assert!(test_pattern(&wide, &["a1", "b2", "c"], &key()).unwrap().broad);
+        assert!(test_pattern(&wide, &["a1", "b2", "c"]).unwrap().broad);
         let mut s = TypeSettings::default();
         let mut bad = CustomType::new("Broken", "(", Mask::Hidden);
         bad.id = "t_x".into();
@@ -1785,18 +1767,18 @@ mod tests {
         let r = AgentRules::default();
         assert_eq!(toml::to_string(&r).unwrap().trim(), "", "defaults write nothing");
         let mut r = AgentRules { view: AgentView::Masked, structure: false, time_limit_s: Some(30), read_from: Some(ReadFrom::SecondaryPreferred), ..Default::default() };
-        r.sensitive.push(SensitiveCol { col: "users.email".into(), how: Mask::Partial, on: true });
+        r.sensitive.push(SensitiveCol { col: "users.email".into(), how: Mask::PARTIAL, on: true });
         r.visible.items.push(VisibleItem { name: "public.payments".into(), kind: ItemKind::Table });
         r.redis.scripting = false;
         let text = toml::to_string(&r).unwrap();
         let back: AgentRules = toml::from_str(&text).unwrap();
         assert_eq!(back, r, "{text}");
         assert!(back.restricted() && !back.activity_on() && back.activity);
-        assert_eq!(back.sensitive_mask(Some("public"), "users", "EMAIL", Names::Qualified), Some(Mask::Partial));
+        assert_eq!(back.sensitive_mask(Some("public"), "users", "EMAIL", Names::Qualified), Some(Mask::PARTIAL));
         assert_eq!(AgentRules { view: AgentView::Data, ..back.clone() }.sensitive_mask(None, "users", "email", Names::Qualified), None, "columns mask in Masked data only");
         assert_eq!(sensitive_name("password_hash"), Some(Mask::Hidden));
-        assert_eq!(sensitive_name("ssn"), Some(Mask::Hash));
-        assert_eq!(sensitive_name("email"), Some(Mask::Partial));
+        assert_eq!(sensitive_name("ssn"), Some(Mask::Hidden));
+        assert_eq!(sensitive_name("email"), Some(Mask::PARTIAL));
         assert_eq!(sensitive_name("created_at"), None);
         assert_eq!(RedisCat::of("KEYS"), RedisCat::Dangerous);
         // The configuration holds requirepass: not for agents.
@@ -1812,10 +1794,22 @@ mod tests {
 
     #[test]
     fn partial_and_column_masks() {
-        assert_eq!(mask_value(Mask::Partial, "ana@acme.com", &key()), "a•••@acme.com");
-        assert_eq!(mask_value(Mask::Partial, "555-123-4567", &key()), "•••-•••-4567");
-        assert_eq!(mask_value(Mask::Partial, "abc", &key()), "•••");
-        assert_eq!(mask_value(Mask::Hidden, "x", &key()), HIDDEN);
-        assert!(mask_value(Mask::Hash, "x", &key()).starts_with("‹h:"));
+        assert_eq!(mask_value(Mask::PARTIAL, "ana@acme.com"), "a•••@acme.com");
+        assert_eq!(mask_value(Mask::PARTIAL, "555-123-4567"), "•••-•••-4567");
+        assert_eq!(mask_value(Mask::PARTIAL, "abc"), "•••");
+        assert_eq!(mask_value(Mask::Hidden, "x"), HIDDEN);
+        let keep = |first, last| Mask::Partial(Keep { first, last });
+        assert_eq!(mask_value(keep(2, 2), "ana@acme.com"), "an•@••••.•om");
+        assert_eq!(mask_value(keep(0, 4), "ana@acme.com"), "a•••@acme.com", "as it ships: the e-mail look");
+        assert_eq!(mask_value(keep(1, 0), "555-123-4567"), "5••-•••-••••");
+        assert_eq!(mask_value(keep(3, 3), "12345"), "•••••", "too short to keep that much");
+        assert_eq!(mask_value(keep(0, 0), "secret"), "••••••");
+        let read = |s: &str| serde_json::from_value::<Mask>(serde_json::json!(s)).unwrap();
+        assert_eq!(read("hash"), Mask::Hidden, "an older version's Hash reads as Redacted");
+        assert_eq!(read("partial"), Mask::PARTIAL);
+        assert_eq!(read("partial:2:3"), keep(2, 3));
+        assert_eq!(read("partial:x:3"), Mask::Hidden);
+        assert_eq!(serde_json::to_value(keep(2, 3)).unwrap(), "partial:2:3");
+        assert_eq!(serde_json::to_value(Mask::PARTIAL).unwrap(), "partial", "unchanged reads as before");
     }
 }

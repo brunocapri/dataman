@@ -401,7 +401,7 @@ fn postgres_masked_through_views() {
     }
     p.mcp = Some(McpAccess::Read);
     p.mcp_rules.view = dataman_core::privacy::AgentView::Masked;
-    p.mcp_rules.sensitive.push(dataman_core::privacy::SensitiveCol { col: "users.email".into(), how: dataman_core::privacy::Mask::Partial, on: true });
+    p.mcp_rules.sensitive.push(dataman_core::privacy::SensitiveCol { col: "users.email".into(), how: dataman_core::privacy::Mask::PARTIAL, on: true });
     p.mcp_rules.visible.items.push(dataman_core::privacy::VisibleItem { name: "users.password_hash".into(), kind: dataman_core::privacy::ItemKind::Column });
     let e = env();
     let seed = ["CREATE TABLE public.users (id int PRIMARY KEY, name text, email text, password_hash text)", "INSERT INTO public.users VALUES (1, 'Ana', 'ana@acme.co', 'h1')"];

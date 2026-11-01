@@ -58,14 +58,19 @@ fn revoke_sql(g: &Grant, user: &str) -> Option<String> {
     })
 }
 
-pub fn mask_expr(col: &str, m: Mask, space: &str) -> String {
+pub fn mask_expr(col: &str, m: Mask) -> String {
     let c = format!("CAST({} AS CHAR)", q(col));
     match m {
         Mask::Hidden => "'‹hidden›'".into(),
-        Mask::Partial => format!(
+        Mask::Partial(k) if k == Keep::DEFAULT => format!(
             "CASE WHEN {c} IS NULL THEN NULL WHEN LOCATE('@', {c}) > 0 THEN CONCAT(LEFT({c}, 1), '•••@', SUBSTRING_INDEX({c}, '@', -1)) WHEN CHAR_LENGTH({c}) >= 8 THEN CONCAT('•••• ', RIGHT({c}, 4)) ELSE '••••' END"
         ),
-        Mask::Hash => format!("CASE WHEN {c} IS NULL THEN NULL ELSE CONCAT('‹h:', LEFT(SHA2(CONCAT({c}, (SELECT v FROM {}.`salt`)), 256), 12), '›') END", q(space)),
+        Mask::Partial(k) => format!(
+            "CASE WHEN {c} IS NULL THEN NULL WHEN CHAR_LENGTH({c}) >= {} THEN CONCAT(LEFT({c}, {}), '••••', RIGHT({c}, {})) ELSE '••••' END",
+            2 * (k.first as u32 + k.last as u32),
+            k.first,
+            k.last
+        ),
     }
 }
 
@@ -75,14 +80,12 @@ pub struct Desired {
     pub access: Vec<Access>,
     pub hidden: Vec<String>,
     pub not_granted: Vec<NotGranted>,
-    pub salt: bool,
     pub exposed: Vec<NotGranted>,
 }
 
 pub fn desired(spec: &Spec, inv: &Inventory, probe: &Probe) -> Desired {
     let (all, hidden) = access(spec, inv);
     let (mut grants, mut views, mut not_granted, mut ok) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-    let mut salt = false;
     for a in all {
         if !spec.rows {
             continue;
@@ -113,9 +116,8 @@ pub fn desired(spec: &Spec, inv: &Inventory, probe: &Probe) -> Desired {
             }
         }
         if !a.masked.is_empty() {
-            salt |= a.masked.iter().any(|(_, m)| *m == Mask::Hash);
             let name = view_name(&a.schema, &a.name, "", 64, &views);
-            let cols: Vec<String> = a.plain.iter().map(|c| q(c)).chain(a.masked.iter().map(|(c, m)| format!("{} AS {}", mask_expr(c, *m, &spec.space), q(c)))).collect();
+            let cols: Vec<String> = a.plain.iter().map(|c| q(c)).chain(a.masked.iter().map(|(c, m)| format!("{} AS {}", mask_expr(c, *m), q(c)))).collect();
             let body = format!("SELECT {} FROM {}", cols.join(", "), qual(&a.schema, &a.name));
             let hash = hash::sha256_hex(body.as_bytes())[..12].to_string();
             let create = format!("CREATE SQL SECURITY DEFINER VIEW {} AS {body}", qual(&spec.space, &name));
@@ -137,7 +139,7 @@ pub fn desired(spec: &Spec, inv: &Inventory, probe: &Probe) -> Desired {
     grants.sort();
     grants.dedup();
     let exposed = exposed(spec, inv, &|_, _| String::new());
-    Desired { grants, views, access: ok, hidden, not_granted, salt, exposed }
+    Desired { grants, views, access: ok, hidden, not_granted, exposed }
 }
 
 fn rules(spec: &Spec, d: &Desired, probe: &Probe, prod: bool) -> Vec<RuleLine> {
@@ -179,20 +181,12 @@ fn group_of(g: &Grant, spec: &Spec, d: &Desired) -> String {
     }
 }
 
-fn view_steps(spec: &Spec, d: &Desired, salt_hex: &str, create_db: bool, mariadb: bool) -> Vec<Step> {
+fn view_steps(spec: &Spec, d: &Desired, create_db: bool, mariadb: bool) -> Vec<Step> {
     let g = format!("masked columns: views the agent reads instead ({})", d.views.len());
     let mut steps = Vec::new();
     if create_db {
         let comment = if mariadb { format!(" COMMENT {}", lit(&mark_for(&spec.conn))) } else { String::new() };
         steps.push(Step::sql(&g, format!("CREATE DATABASE {}{comment}", q(&spec.space))));
-    }
-    if d.salt {
-        steps.push(Step::sql(&g, format!("CREATE TABLE IF NOT EXISTS {}.`salt` (v VARBINARY(64) NOT NULL)", q(&spec.space))));
-        steps.push(Step::secret_sql(
-            &g,
-            format!("INSERT INTO {0}.`salt` SELECT UNHEX('{salt_hex}') FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM {0}.`salt`)", q(&spec.space)),
-            format!("INSERT INTO {}.`salt` VALUES (<random salt>)", q(&spec.space)),
-        ));
     }
     for v in &d.views {
         steps.push(Step::sql(&g, v.create.clone()));
@@ -269,11 +263,10 @@ fn view_marks(spec: &Spec, d: &Desired, gone: &[String], probe: &Probe) -> Vec<S
 pub fn create_plan(spec: &Spec, inv: &Inventory, probe: &Probe, password: &str, prod: bool) -> Plan {
     let d = desired(spec, inv, probe);
     let mut steps = vec![create_user(spec, password, probe)];
-    let salt = hash::hex(&hash::random_bytes(32));
     // MariaDB's mark is its database's COMMENT: made even without a view to put there.
     let make_db = !d.views.is_empty() || probe.flavor.mariadb;
     if make_db {
-        steps.extend(view_steps(spec, &d, &salt, true, probe.flavor.mariadb));
+        steps.extend(view_steps(spec, &d, true, probe.flavor.mariadb));
     }
     for (s, n, cols) in granted_objects(&d.grants) {
         let group = if s == spec.space { "the views".to_string() } else if cols { "tables with hidden or masked columns: only the others".to_string() } else { format!("tables the agent may use ({})", d.access.len()) };
@@ -342,15 +335,6 @@ pub fn sync_plan(spec: &Spec, inv: &Inventory, probe: &Probe, have: &[Grant], ha
         if !db_exists {
             let comment = if probe.flavor.mariadb { format!(" COMMENT {}", lit(&mark_for(&spec.conn))) } else { String::new() };
             steps.push(Step::sql("views", format!("CREATE DATABASE {}{comment}", q(&spec.space))));
-        }
-        if d.salt {
-            let salt = hash::hex(&hash::random_bytes(32));
-            steps.push(Step::sql("views", format!("CREATE TABLE IF NOT EXISTS {}.`salt` (v VARBINARY(64) NOT NULL)", q(&spec.space))));
-            steps.push(Step::secret_sql(
-                "views",
-                format!("INSERT INTO {0}.`salt` SELECT UNHEX('{salt}') FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM {0}.`salt`)", q(&spec.space)),
-                format!("INSERT INTO {}.`salt` VALUES (<random salt>) -- if empty", q(&spec.space)),
-            ));
         }
         for v in &fresh {
             steps.push(Step::sql("views", v.create.replacen("CREATE ", "CREATE OR REPLACE ", 1)));

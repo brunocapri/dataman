@@ -302,7 +302,7 @@ fn rules(view: AgentView) -> AgentRules {
     AgentRules {
         view,
         visible: Visible { mode: VisibleMode::Except, items: vec![VisibleItem { name: "*.secret".into(), kind: ItemKind::Column }] },
-        sensitive: vec![SensitiveCol { col: "ssn".into(), how: Mask::Partial, on: true }],
+        sensitive: vec![SensitiveCol { col: "ssn".into(), how: Mask::PARTIAL, on: true }],
         ..Default::default()
     }
 }

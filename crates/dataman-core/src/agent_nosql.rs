@@ -11,7 +11,7 @@ use std::sync::OnceLock;
 
 use crate::Engine;
 use crate::nosql::{console, mql, redis};
-use crate::privacy::{AgentRules, AgentView, HashKey, Mask, Names, RedisCat, glob, mask_value, sensitive_match};
+use crate::privacy::{AgentRules, AgentView, Mask, Names, RedisCat, glob, mask_value, sensitive_match};
 
 /// What to do to what comes back.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -671,22 +671,22 @@ impl Shaped {
 
 /// Applies `Shaped` to a reply: hidden fields go, sensitive fields are masked, and in listings
 /// the names `visible` refuses are dropped. Returns the masked field names.
-pub fn shape(v: &mut Value, s: &Shaped, key: &HashKey, visible: &dyn Fn(&str) -> bool) -> Vec<(String, Mask)> {
+pub fn shape(v: &mut Value, s: &Shaped, visible: &dyn Fn(&str) -> bool) -> Vec<(String, Mask)> {
     let mut masked = Vec::new();
     if let Some(how) = s.whole
         && let Some(x) = v.get_mut("value")
     {
-        mask_all(x, how, key);
+        mask_all(x, how);
         masked.extend(s.mask.iter().cloned());
     }
-    walk(v, s, key, &mut masked);
+    walk(v, s, &mut masked);
     if s.listing {
         drop_names(v, visible);
     }
     masked
 }
 
-fn walk(v: &mut Value, s: &Shaped, key: &HashKey, masked: &mut Vec<(String, Mask)>) {
+fn walk(v: &mut Value, s: &Shaped, masked: &mut Vec<(String, Mask)>) {
     match v {
         Value::Array(a) => {
             // Redis replies hold a hash as [field, value, field, value…].
@@ -700,7 +700,7 @@ fn walk(v: &mut Value, s: &Shaped, key: &HashKey, masked: &mut Vec<(String, Mask
                     }
                     if let Some((_, how)) = s.mask.iter().find(|(p, _)| glob(p, &f)) {
                         let val = a[i + 1].as_str().unwrap_or("").to_string();
-                        a[i + 1] = Value::String(mask_value(*how, &val, key));
+                        a[i + 1] = Value::String(mask_value(*how, &val));
                         if !masked.iter().any(|(m, _)| *m == f) {
                             masked.push((f, *how));
                         }
@@ -716,25 +716,25 @@ fn walk(v: &mut Value, s: &Shaped, key: &HashKey, masked: &mut Vec<(String, Mask
                     && let Some((_, how)) = s.mask.iter().find(|(p, _)| glob(p, &f))
                     && let Some(v) = x.get_mut("value")
                 {
-                    mask_all(v, *how, key);
+                    mask_all(v, *how);
                     if !masked.iter().any(|(m, _)| *m == f) {
                         masked.push((f, *how));
                     }
                     continue;
                 }
-                walk(x, s, key, masked);
+                walk(x, s, masked);
             }
         }
         Value::Object(m) => {
             m.retain(|k, _| !s.strip.iter().any(|p| key_is(p, k)));
             for (k, x) in m.iter_mut() {
                 if let Some((_, how)) = s.mask.iter().find(|(p, _)| key_is(p, k)) {
-                    mask_all(x, *how, key);
+                    mask_all(x, *how);
                     if !masked.iter().any(|(f, _)| f == k) {
                         masked.push((k.clone(), *how));
                     }
                 } else {
-                    walk(x, s, key, masked);
+                    walk(x, s, masked);
                 }
             }
         }
@@ -742,13 +742,13 @@ fn walk(v: &mut Value, s: &Shaped, key: &HashKey, masked: &mut Vec<(String, Mask
     }
 }
 
-fn mask_all(v: &mut Value, how: Mask, key: &HashKey) {
+fn mask_all(v: &mut Value, how: Mask) {
     match v {
         Value::Null => {}
-        Value::String(x) => *x = mask_value(how, x, key),
-        Value::Array(a) => a.iter_mut().for_each(|x| mask_all(x, how, key)),
-        Value::Object(m) => m.values_mut().for_each(|x| mask_all(x, how, key)),
-        other => *other = Value::String(mask_value(how, &other.to_string(), key)),
+        Value::String(x) => *x = mask_value(how, x),
+        Value::Array(a) => a.iter_mut().for_each(|x| mask_all(x, how)),
+        Value::Object(m) => m.values_mut().for_each(|x| mask_all(x, how)),
+        other => *other = Value::String(mask_value(how, &other.to_string())),
     }
 }
 
@@ -808,7 +808,7 @@ mod tests {
         let s = check("db.users.find({city: \"Recife\"})", false, &c).unwrap();
         assert_eq!(s.strip, vec!["ssn".to_string()]);
         let mut out = json!({"documents": [{"_id": 1, "name": "Ana", "ssn": "123", "nested": {"ssn": "x"}}]});
-        shape(&mut out, &s, &HashKey::fixed(b"k"), &|_| true);
+        shape(&mut out, &s, &|_| true);
         assert_eq!(out, json!({"documents": [{"_id": 1, "name": "Ana", "nested": {}}]}));
         assert!(check("const x = db.users.find(); x", false, &c).unwrap_err().contains("scripts are not available"));
         let other = Context { database: "analytics", ..cx(&r, Engine::MongoDb) };
@@ -816,20 +816,20 @@ mod tests {
         let s = check("show collections", false, &c).unwrap();
         assert!(s.listing);
         let mut out = json!({"documents": [{"name": "orders"}, {"name": "payments"}]});
-        shape(&mut out, &s, &HashKey::fixed(b"k"), &|n| r.visible.table_visible(Some("shop"), n, Names::Qualified));
+        shape(&mut out, &s, &|n| r.visible.table_visible(Some("shop"), n, Names::Qualified));
         assert_eq!(out, json!({"documents": [{"name": "orders"}]}));
     }
 
     #[test]
     fn mongo_masked_and_permissions() {
         let mut r = AgentRules { view: AgentView::Masked, ..Default::default() };
-        r.sensitive.push(SensitiveCol { col: "customers.email".into(), how: Mask::Partial, on: true });
+        r.sensitive.push(SensitiveCol { col: "customers.email".into(), how: Mask::PARTIAL, on: true });
         let c = cx(&r, Engine::MongoDb);
         let s = check("db.customers.find({email: /@acme/})", false, &c).unwrap();
         let mut out = json!({"documents": [{"email": "ana@acme.com", "city": "Recife"}]});
-        let m = shape(&mut out, &s, &HashKey::fixed(b"k"), &|_| true);
+        let m = shape(&mut out, &s, &|_| true);
         assert_eq!(out["documents"][0]["email"], "a•••@acme.com");
-        assert_eq!(m, vec![("email".to_string(), Mask::Partial)]);
+        assert_eq!(m, vec![("email".to_string(), Mask::PARTIAL)]);
         assert!(check("db.customers.aggregate([{$group: {_id: \"$email\"}}])", false, &c).unwrap_err().contains("masked"));
         assert!(check("db.customers.find({}).sort({email: 1})", false, &c).unwrap_err().contains("masked"));
         assert!(check("db.customers.distinct(\"email\")", false, &c).is_err());
@@ -863,7 +863,7 @@ mod tests {
         assert_eq!(s.strip, vec!["card".to_string()]);
         let s = check("GET _cat/indices?format=json", false, &c).unwrap();
         let mut out = json!({"value": [{"index": "orders"}, {"index": "payments-2026"}]});
-        shape(&mut out, &s, &HashKey::fixed(b"k"), &|n| r.visible.table_visible(None, n, Names::Flat));
+        shape(&mut out, &s, &|n| r.visible.table_visible(None, n, Names::Flat));
         assert_eq!(out, json!({"value": [{"index": "orders"}]}));
         let p = AgentRules { structure: false, code: false, activity: false, ..Default::default() };
         let c = cx(&p, Engine::OpenSearch);
@@ -892,11 +892,11 @@ mod tests {
         assert!(check("RANDOMKEY", false, &c).is_err());
         let s = check("HGETALL user:1", false, &c).unwrap();
         let mut out = json!({"value": ["name", "Ana", "password", "x"]});
-        shape(&mut out, &s, &HashKey::fixed(b"k"), &|_| true);
+        shape(&mut out, &s, &|_| true);
         assert_eq!(out, json!({"value": ["name", "Ana"]}));
         let s = check("SCAN 0 MATCH * COUNT 100", false, &c).unwrap();
         let mut out = json!({"value": ["0", ["user:1", "session:2"]]});
-        shape(&mut out, &s, &HashKey::fixed(b"k"), &|n| v.visible.table_visible(None, n, Names::Flat));
+        shape(&mut out, &s, &|n| v.visible.table_visible(None, n, Names::Flat));
         assert_eq!(out, json!({"value": ["0", ["user:1"]]}));
     }
 }

@@ -11,7 +11,7 @@ use tokio::sync::Semaphore;
 
 use crate::audit::Audit;
 use dataman_core::agent_login;
-use dataman_core::privacy::{HashKey, Types};
+use dataman_core::privacy::Types;
 
 pub const PER_CONNECTION: usize = 2;
 pub const GLOBAL: usize = 8;
@@ -231,17 +231,15 @@ pub struct Hub {
     asks: Arc<Mutex<Asks>>,
     after_deny: Mutex<Duration>,
     types: Mutex<HashMap<String, Arc<Types>>>,
-    mask_key: Mutex<HashKey>,
 }
 
 pub const SCHEMA_TTL: Duration = Duration::from_secs(30);
 
 impl Hub {
     pub fn new(dirs: Dirs, secrets: Arc<dyn SecretStore>) -> anyhow::Result<Arc<Hub>> {
-        let core = Core::new(dirs.clone(), secrets.clone())?;
+        let core = Core::new(dirs.clone(), secrets)?;
         Ok(Arc::new(Hub {
             types: Mutex::new(HashMap::new()),
-            mask_key: Mutex::new(HashKey::stored(secrets)),
             audit: Audit::new(dirs.mcp_audit_file()),
             core,
             dirs,
@@ -341,14 +339,6 @@ impl Hub {
 
     pub fn keep_reply(&self, id: &str, text: &str) {
         self.audit.write_reply(id, text);
-    }
-
-    pub fn mask_key(&self) -> HashKey {
-        self.mask_key.lock().clone()
-    }
-
-    pub fn set_mask_key(&self, k: HashKey) {
-        *self.mask_key.lock() = k;
     }
 
     /// Rows per write as a count (∞ as the largest).

@@ -28,7 +28,7 @@ fn seed_profiles(core: &Core) {
     let mut pg = profile("prod-pg", Engine::Postgres, Environment::Production, McpAccess::Write);
     let r = &mut pg.mcp_rules;
     r.view = if std::env::var("DATAMAN_SHOT_STAGE").is_ok_and(|s| s.starts_with("agents-privacy-data")) { AgentView::Data } else { AgentView::Masked };
-    for (col, how, on) in [("users.email", Mask::Partial, true), ("customers.ssn", Mask::Hash, true), ("customers.doc", Mask::Hash, true), ("customers.phone", Mask::Partial, true), ("orders.notes", Mask::Hidden, true)] {
+    for (col, how, on) in [("users.email", Mask::PARTIAL, true), ("customers.ssn", Mask::Hidden, true), ("customers.doc", Mask::Hidden, true), ("customers.phone", Mask::Partial(dataman_core::privacy::Keep { first: 2, last: 2 }), true), ("orders.notes", Mask::Hidden, true)] {
         r.sensitive.push(SensitiveCol { col: col.into(), how, on });
     }
     for (name, kind) in [("public.payments", ItemKind::Table), ("audit.*", ItemKind::Schema), ("users.password_hash", ItemKind::Column), ("users.mfa_secret", ItemKind::Column)] {
@@ -67,7 +67,7 @@ fn seed_profiles(core: &Core) {
         }
     }
     let _ = core.settings.update(|s| {
-        let mut cust = CustomType::new("Customer code", r"\bCUST-[0-9]{6}\b", Mask::Hash);
+        let mut cust = CustomType::new("Customer code", r"\bCUST-[0-9]{6}\b", Mask::Hidden);
         (cust.id, cust.on) = ("t_cust01".into(), false);
         let mut badge = CustomType::new("Employee badge", r"\bEMP[0-9]{5}\b", Mask::Hidden);
         badge.id = "t_badge1".into();
@@ -92,8 +92,8 @@ fn seed_audit(core: &Core) {
         (750, "Claude Code", "prod-pg", "execute", "DELETE FROM sessions WHERE expires_at < now()", None, 2104., Outcome::Refused, Some("refused: denied in Dataman (18,204 rows, over the 1k limit); rolled back"), note(Decision::Denied, &["18,204 rows, over the 1k limit"]), None),
         (360, "Cursor", "search-es", "nosql_query", "GET products/_search {\"query\":{\"match\":{\"name\":\"dock\"}}}", Some(20), 17., Outcome::Ok, None, None, None),
         (240, "Cursor", "analytics-mysql", "run_query", "SELECT date(created_at), count(*) FROM events GROUP BY 1", Some(30), 210., Outcome::Ok, None, None, seen(Some(2), &[], &[])),
-        (113, "Claude Code", "orders-mongo", "nosql_query", "db.orders.aggregate([{ $match: { status: \"paid\" } }, { $group: { _id: \"$customer\", total: { $sum: \"$total\" } } }])", Some(500), 91., Outcome::Ok, None, None, seen(None, &[("customer.email", Mask::Partial)], &[])),
-        (77, "Claude Code", "prod-pg", "run_query", "SELECT id, name, email, ssn,\n       city, total\n  FROM customers\n WHERE city = 'Austin'\n LIMIT 40;", Some(40), 41., Outcome::Ok, None, None, seen(Some(6), &[("email", Mask::Partial), ("ssn", Mask::Hash)], &[("E-mail", 3)])),
+        (113, "Claude Code", "orders-mongo", "nosql_query", "db.orders.aggregate([{ $match: { status: \"paid\" } }, { $group: { _id: \"$customer\", total: { $sum: \"$total\" } } }])", Some(500), 91., Outcome::Ok, None, None, seen(None, &[("customer.email", Mask::PARTIAL)], &[])),
+        (77, "Claude Code", "prod-pg", "run_query", "SELECT id, name, email, ssn,\n       city, total\n  FROM customers\n WHERE city = 'Austin'\n LIMIT 40;", Some(40), 41., Outcome::Ok, None, None, seen(Some(6), &[("email", Mask::PARTIAL), ("ssn", Mask::Hidden)], &[("E-mail", 3)])),
         (42, "Claude Code", "prod-pg", "execute", "INSERT INTO users (email) VALUES ($1)", None, 6., Outcome::Error, Some("23505 duplicate key value violates unique constraint \"users_email_key\" · Key (email)=(‹value›) already exists"), None, None),
         (24, "Claude Code", "prod-pg", "run_query", "SELECT upper(password) FROM users LIMIT 5", None, 0.3, Outcome::Refused, Some("refused: users.password is hidden from agents on prod-pg"), None, None),
         (12, "Claude Code", "prod-pg", "execute", "UPDATE orders SET status = $1 WHERE id = $2", Some(1), 12., Outcome::Ok, None, note(Decision::Approved, &["production"]), None),
@@ -136,12 +136,12 @@ fn demo_reply(ago: i64) -> Option<serde_json::Value> {
         77 => json!({
             "columns": [["id", "int4"], ["name", "text"], ["email", "text"], ["ssn", "text"], ["city", "text"], ["total", "numeric"]],
             "rows": [
-                [1042, "Ana Souza", "a•••@acme.com", "‹h:7Q2KX9RM4A›", "Austin", "129.90"],
-                [1043, "Bruno Lima", "b•••@mail.com", "‹h:B4DN6WTE2Q›", "Austin", "88.00"],
-                [1051, "Carla Dias", "c•••@acme.com", "‹h:K3P9QX2M7A›", "Austin", "412.35"],
-                [1067, "Davi Rocha", "d•••@corp.io", "‹h:Q4M8ZP1R6T›", "Austin", "57.10"],
-                [1070, "Elisa Melo", "e•••@acme.com", "‹h:H2V7NC5K9W›", "Austin", "230.00"],
-                [1088, "Fábio Reis", "f•••@mail.com", "‹h:M6T3XQ8B1D›", "Austin", "19.99"]
+                [1042, "Ana Souza", "a•••@acme.com", "‹hidden›", "Austin", "129.90"],
+                [1043, "Bruno Lima", "b•••@mail.com", "‹hidden›", "Austin", "88.00"],
+                [1051, "Carla Dias", "c•••@acme.com", "‹hidden›", "Austin", "412.35"],
+                [1067, "Davi Rocha", "d•••@corp.io", "‹hidden›", "Austin", "57.10"],
+                [1070, "Elisa Melo", "e•••@acme.com", "‹hidden›", "Austin", "230.00"],
+                [1088, "Fábio Reis", "f•••@mail.com", "‹hidden›", "Austin", "19.99"]
             ],
             "row_count": 40, "masked_columns": ["email (partial)", "ssn (hash)"], "masked": {"E-mail": 3}, "ms": 41.0
         }),
@@ -225,7 +225,7 @@ pub fn demo(ws: &Entity<Workspace>, stage: &str, window: &mut gpui::Window, cx: 
             } else if page == Page::Types {
                 a.editor.name.update(cx, |i, cx| i.set_text("Customer code", cx));
                 a.editor.regex.update(cx, |i, cx| i.set_text(r"\bCUST-[0-9]{6}\b", cx));
-                a.editor.mask = Mask::Hash;
+                a.editor.mask = Mask::Hidden;
                 a.editor.samples = ["Order CUST-004211 shipped", "merge CUST-000017 into CUST-000930", "ref CUST-42", "xCUST-123456"].map(String::from).to_vec();
             }
             cx.notify();
@@ -406,7 +406,7 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     };
     until(cx, 5, |cx| read(&kept(cx, 3))).await;
     let reply = text(&kept(cx, 3));
-    r.check("its detail shows what the agent received, read from the log on disk: the rows, masked as sent", reply.contains("a•••@acme.com") && reply.contains("‹h:") && !reply.contains("ana@"), &reply);
+    r.check("its detail shows what the agent received, read from the log on disk: the rows, masked as sent", reply.contains("a•••@acme.com") && reply.contains("‹hidden›") && !reply.contains("ana@"), &reply);
     // A restart: nothing in memory, the entries read again.
     let _ = cx.update(|_, cx| {
         a.update(cx, |a, cx| {
@@ -720,7 +720,7 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     // Sensitive columns only mask in Masked data: kept and editable in the other modes, dimmed,
     // with a line that says so and switches to Masked data.
     if let Some(mut p) = core.config.get(&pg.id).filter(|p| p.mcp_rules.sensitive.is_empty()) {
-        p.mcp_rules.sensitive.push(SensitiveCol { col: "users.email".into(), how: Mask::Partial, on: true });
+        p.mcp_rules.sensitive.push(SensitiveCol { col: "users.email".into(), how: Mask::PARTIAL, on: true });
         let _ = core.config.upsert(p);
         let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.store.update(cx, |s, cx| s.reload(cx))));
         pause(cx, 50).await;
@@ -816,12 +816,32 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     tap(&a, "agents-sens-add", cx).await;
     pause(cx, 50).await;
     let sens = rules(&core, &pg.id).sensitive;
-    r.check("Sensitive columns: customer.email added, Partial, on", sens.iter().any(|s| s.col == "customer.email" && s.how == Mask::Partial && s.on), format!("{sens:?}"));
+    r.check("Sensitive columns: customer.email added, Partial, on", sens.iter().any(|s| s.col == "customer.email" && s.how == Mask::PARTIAL && s.on), format!("{sens:?}"));
     tap(&a, "agents-sens-mask-0", cx).await;
     pause(cx, 100).await;
-    tap(&a, "agents-sens-mask-0:2", cx).await;
+    r.check("its mask menu offers Redacted and Partial only", cx.update(|_, cx| a.read(cx).menu.as_ref().map(|m| m.items.len())).ok().flatten() == Some(2), "");
+    let first_shown = probed("agents-sens-first-0", cx).is_some() && probed("agents-sens-last-0", cx).is_some();
+    r.check("Partial shows First and Last beside it", first_shown, "");
+    tap(&a, "agents-sens-mask-0:0", cx).await;
     pause(cx, 50).await;
-    r.check("its mask menu sets Hash", rules(&core, &pg.id).sensitive.first().is_some_and(|s| s.how == Mask::Hash), "");
+    r.check("its mask menu sets Redacted, and First and Last go", rules(&core, &pg.id).sensitive.first().is_some_and(|s| s.how == Mask::Hidden) && probed("agents-sens-first-0", cx).is_none(), "");
+    tap(&a, "agents-sens-mask-0", cx).await;
+    pause(cx, 100).await;
+    tap(&a, "agents-sens-mask-0:1", cx).await;
+    pause(cx, 50).await;
+    tap(&a, "agents-sens-first-0", cx).await;
+    pause(cx, 100).await;
+    tap(&a, "agents-sens-first-0:2", cx).await;
+    pause(cx, 50).await;
+    tap(&a, "agents-sens-last-0", cx).await;
+    pause(cx, 100).await;
+    tap(&a, "agents-sens-last-0:3", cx).await;
+    pause(cx, 50).await;
+    let how = rules(&core, &pg.id).sensitive.first().map(|s| s.how);
+    shoot("sensitive-keep", cx);
+    r.check("Partial keeps the first 2 and the last 3 as picked", how == Some(Mask::Partial(dataman_core::privacy::Keep { first: 2, last: 3 })), format!("{how:?}"));
+    let stored = std::fs::read_to_string(core.dirs.connections_file()).unwrap_or_default();
+    r.check("…and is saved as partial:2:3", stored.contains("partial:2:3"), "");
 
     // Masks.
     click_probe("agents-nav-masks", cx);
@@ -880,7 +900,7 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
             let a = a.read(cx);
             let c = a.drafted(cx);
             let samples: Vec<&str> = a.editor.samples.iter().map(String::as_str).collect();
-            dataman_core::privacy::test_pattern(&c, &samples, &a.key).ok().map(|t| (t.matches, t.lines.iter().map(|l| (l.1.len(), l.2.clone())).collect::<Vec<_>>()))
+            dataman_core::privacy::test_pattern(&c, &samples).ok().map(|t| (t.matches, t.lines.iter().map(|l| (l.1.len(), l.2.clone())).collect::<Vec<_>>()))
         })
         .ok()
         .flatten();
@@ -1126,7 +1146,7 @@ async fn check_login(ws: &Entity<Workspace>, a: &Entity<AgentsPage>, pg: &Connec
         p.mcp = Some(McpAccess::Write);
         p.mcp_rules = Default::default();
         p.mcp_rules.view = AgentView::Masked;
-        p.mcp_rules.sensitive.push(SensitiveCol { col: "au_ui_users.email".into(), how: Mask::Partial, on: true });
+        p.mcp_rules.sensitive.push(SensitiveCol { col: "au_ui_users.email".into(), how: Mask::PARTIAL, on: true });
         p.mcp_rules.visible.items.push(VisibleItem { name: "au_ui_users.password_hash".into(), kind: ItemKind::Column });
         (p.agent_login, p.agents_refused) = (None, false);
         let _ = core.config.upsert(p);

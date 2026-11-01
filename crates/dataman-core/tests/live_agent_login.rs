@@ -104,7 +104,7 @@ fn guard(p: &mut ConnectionProfile) {
     let r = &mut p.mcp_rules;
     r.view = AgentView::Masked;
     r.visible.items = vec![VisibleItem { name: "audit_log".into(), kind: ItemKind::Table }, VisibleItem { name: "users.password_hash".into(), kind: ItemKind::Column }];
-    r.sensitive = vec![SensitiveCol { col: "users.email".into(), how: Mask::Partial, on: true }];
+    r.sensitive = vec![SensitiveCol { col: "users.email".into(), how: Mask::PARTIAL, on: true }];
     r.structure = false;
     r.code = false;
     r.time_limit_s = Some(30);
@@ -710,7 +710,7 @@ fn search_engine(engine: Engine, id: &str) {
             VisibleItem { name: "au_users.password_hash".into(), kind: ItemKind::Column },
         ],
     };
-    p.mcp_rules.sensitive = vec![SensitiveCol { col: "au_users.email".into(), how: Mask::Partial, on: true }];
+    p.mcp_rules.sensitive = vec![SensitiveCol { col: "au_users.email".into(), how: Mask::PARTIAL, on: true }];
     let (login, password, rv) = create(&e, &a, &p);
     let agent = as_agent(&e, &p, &user, &password).unwrap();
     verify_all(&e, &agent, &rv);
@@ -823,10 +823,10 @@ fn postgres_redteam() {
     r.view = AgentView::Masked;
     r.visible.items = ["secrets", "pub_leak"].iter().map(|n| VisibleItem { name: (*n).into(), kind: ItemKind::Table }).chain(["users.password_hash", "cols_leak.pw"].iter().map(|n| VisibleItem { name: (*n).into(), kind: ItemKind::Column })).collect();
     r.sensitive = vec![
-        SensitiveCol { col: "users.email".into(), how: Mask::Partial, on: true },
-        SensitiveCol { col: "we\"ird.e\"mail".into(), how: Mask::Partial, on: true },
-        SensitiveCol { col: "salt.v".into(), how: Mask::Hash, on: true },
-        SensitiveCol { col: "*.email".into(), how: Mask::Partial, on: true },
+        SensitiveCol { col: "users.email".into(), how: Mask::PARTIAL, on: true },
+        SensitiveCol { col: "we\"ird.e\"mail".into(), how: Mask::PARTIAL, on: true },
+        SensitiveCol { col: "salt.v".into(), how: Mask::Hidden, on: true },
+        SensitiveCol { col: "*.email".into(), how: Mask::PARTIAL, on: true },
     ];
     r.code = false;
 
@@ -868,7 +868,7 @@ fn postgres_redteam() {
     denied(&e, &g, &format!("SELECT * FROM {space}.salt"));
     // A user table named salt: read through its own view, Dataman's salt untouched.
     let v = ok(&e, &g, &format!("SELECT v FROM {} ORDER BY id", login.view_for("public", "salt").unwrap().view));
-    assert!(first(&v).starts_with("‹h:"), "{v:?}");
+    assert_eq!(first(&v), "‹hidden›", "{v:?}");
     assert_eq!(first(&ok(&e, &s, "SELECT v FROM public.salt")), "not-the-salt");
     // Hostile names: read through their views, nothing else ran.
     let weird = login.view_for("public", "we\"ird").unwrap().view.clone();
@@ -996,7 +996,7 @@ fn mysql_redteam() {
     let r = &mut p.mcp_rules;
     r.view = AgentView::Masked;
     r.visible.items = vec![VisibleItem { name: "secrets".into(), kind: ItemKind::Table }, VisibleItem { name: "users.password_hash".into(), kind: ItemKind::Column }];
-    r.sensitive = vec![SensitiveCol { col: "users.email".into(), how: Mask::Partial, on: true }, SensitiveCol { col: "we`ird.e`mail".into(), how: Mask::Partial, on: true }];
+    r.sensitive = vec![SensitiveCol { col: "users.email".into(), how: Mask::PARTIAL, on: true }, SensitiveCol { col: "we`ird.e`mail".into(), how: Mask::PARTIAL, on: true }];
     // A role every account gets: the review says the database can't keep the agent from it.
     ok(&e, &rs, "SET GLOBAL mandatory_roles = 'au_reader'");
     let rv = e.core.block_on(live::review(&a, &p, &opts())).unwrap();
@@ -1150,7 +1150,7 @@ fn sql_server_redteam() {
     let r = &mut p.mcp_rules;
     r.view = AgentView::Masked;
     r.visible.items = vec![VisibleItem { name: "secrets".into(), kind: ItemKind::Table }, VisibleItem { name: "pub_leak".into(), kind: ItemKind::Table }, VisibleItem { name: "users.password_hash".into(), kind: ItemKind::Column }];
-    r.sensitive = vec![SensitiveCol { col: "users.email".into(), how: Mask::Partial, on: true }, SensitiveCol { col: "we]ird.e]mail".into(), how: Mask::Partial, on: true }, SensitiveCol { col: "salt.v".into(), how: Mask::Hash, on: true }];
+    r.sensitive = vec![SensitiveCol { col: "users.email".into(), how: Mask::PARTIAL, on: true }, SensitiveCol { col: "we]ird.e]mail".into(), how: Mask::PARTIAL, on: true }, SensitiveCol { col: "salt.v".into(), how: Mask::Hidden, on: true }];
     let rv = e.core.block_on(live::review(&a, &p, &opts())).unwrap();
     assert!(rv.plan.exposed.iter().any(|x| x.object == "dbo.pub_leak"), "{:?}", rv.plan.exposed);
     assert!(rv.plan.copy().contains("REVOKE SELECT ON OBJECT::[dbo].[pub_leak] FROM [public];"));
@@ -1235,7 +1235,7 @@ fn mongodb_redteam() {
     let r = &mut p.mcp_rules;
     r.view = AgentView::Masked;
     r.visible.items = vec![VisibleItem { name: "audit_log".into(), kind: ItemKind::Table }, VisibleItem { name: "users.password_hash".into(), kind: ItemKind::Column }];
-    r.sensitive = vec![SensitiveCol { col: "users.email".into(), how: Mask::Partial, on: true }];
+    r.sensitive = vec![SensitiveCol { col: "users.email".into(), how: Mask::PARTIAL, on: true }];
     let (login, password, rv) = create(&e, &a, &p);
     let agent = as_agent(&e, &p, &user, &password).unwrap();
     verify_all(&e, &agent, &rv);
@@ -1404,7 +1404,7 @@ fn search_redteam(engine: Engine, id: &str) {
         mode: dataman_core::privacy::VisibleMode::Only,
         items: vec![VisibleItem { name: "aurt_users".into(), kind: ItemKind::Table }, VisibleItem { name: "aurt_users.password_hash".into(), kind: ItemKind::Column }],
     };
-    p.mcp_rules.sensitive = vec![SensitiveCol { col: "aurt_users.email".into(), how: Mask::Partial, on: true }];
+    p.mcp_rules.sensitive = vec![SensitiveCol { col: "aurt_users.email".into(), how: Mask::PARTIAL, on: true }];
     let (login, password, rv) = create(&e, &a, &p);
     let agent = as_agent(&e, &p, &user, &password).unwrap();
     verify_all(&e, &agent, &rv);

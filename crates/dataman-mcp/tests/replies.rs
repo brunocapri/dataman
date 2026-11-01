@@ -61,7 +61,6 @@ fn replies_hold_only_what_the_agent_received() {
         h.core.pgpass = Some(pgpass);
         Arc::new(h)
     };
-    hub.set_mask_key(dataman_core::privacy::HashKey::fixed(b"replies-test"));
     hub.set_front(Some(Arc::new(Yes)));
     let srv = Server::new(hub, Arc::new(Registry::standard(None)), "stdio");
     call(

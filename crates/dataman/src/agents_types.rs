@@ -256,7 +256,7 @@ impl AgentsPage {
         let full = !editing && self.core.settings.get().agent_types.custom.len() >= privacy::MAX_CUSTOM;
         let problem = (!c.pattern.is_empty()).then(|| privacy::check_pattern(&c.pattern).err()).flatten();
         let samples: Vec<&str> = self.editor.samples.iter().map(String::as_str).collect();
-        let tested = (problem.is_none() && !c.pattern.is_empty()).then(|| privacy::test_pattern(&c, &samples, &self.key).ok()).flatten();
+        let tested = (problem.is_none() && !c.pattern.is_empty()).then(|| privacy::test_pattern(&c, &samples).ok()).flatten();
         let ok = !c.name.is_empty() && !c.pattern.is_empty() && problem.is_none() && !full;
         let caps = |s: &str| ui::caps(t, s.to_string());
         let masks: Vec<(Mask, &str)> = Mask::ALL.iter().map(|m| (*m, m.label())).collect();
@@ -321,8 +321,7 @@ impl AgentsPage {
                 "MASK",
                 Tip::new("Mask")
                     .item("Redacted", "The match becomes the type's name, like ‹customer code›.")
-                    .item("Partial", "Keeps the last characters (4 by default; More options).")
-                    .item("Hash", "A stable code like ‹h:K3P9QX2M7A›: the same value gives the same code everywhere, so agents can still match it."),
+                    .item("Partial", "Keeps the last characters (4 by default; More options)."),
             )).child(choices(t, "agents-new-mask", &masks, self.editor.mask, cx, |v, m, _| v.editor.mask = m)));
         let more = self.editor.more;
         panel = panel.child(
@@ -378,7 +377,7 @@ impl AgentsPage {
                                 cx.notify();
                             })),
                     )
-                    .when(self.editor.mask == Mask::Partial, |d| {
+                    .when(self.editor.mask.is_partial(), |d| {
                         d.child(div().flex().flex_row().items_center().gap(px(12.)).child(div().flex_1().text_color(t.tx2).child("Keep last")).child(choices(t, "agents-keep", &keeps, self.editor.keep, cx, |v, n, _| v.editor.keep = n)))
                     }),
             );
@@ -540,7 +539,7 @@ pub(crate) fn types_tip() -> Tip {
         .lead("One list for every connection whose Privacy is Masked data: matching values are masked in everything sent to the agent, whether or not their column is a Sensitive column.")
         .item("Where", "Rows, documents, keys, printed lines, tool replies, schema resources and errors.")
         .item("Not on", "Connections on Data or Structure only: nothing is masked there.")
-        .item("How", "Each one masks its matches as its menu says: Hidden, Partial or Hash.")
+        .item("How", "Each one masks its matches as its menu says: Redacted or Partial.")
         .item("Edit", "Click one, built-in or yours, to change it on the right; + adds one.")
         .note("Replies about no connection in particular, such as the list of connections or of favorites, aren't masked.")
 }

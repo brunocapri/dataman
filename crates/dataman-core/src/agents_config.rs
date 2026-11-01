@@ -325,9 +325,8 @@ fn yes_no(b: bool) -> String {
 /// How much a mask keeps from the agent: Hidden keeps all, Partial the least.
 fn strength(m: Mask) -> u8 {
     match m {
-        Mask::Hidden => 2,
-        Mask::Hash => 1,
-        Mask::Partial => 0,
+        Mask::Hidden => 1,
+        Mask::Partial(_) => 0,
     }
 }
 
@@ -459,7 +458,7 @@ pub fn type_changes(t0: &TypeSettings, t1: &TypeSettings) -> Vec<Change> {
     let on = |b: bool| (if b { "on" } else { "off" }).to_string();
     // A pattern can match less than it did: count a change as a loosening.
     let rule = |t: &privacy::CustomType| {
-        let keep = if t.mask == Mask::Partial { format!(" (last {})", t.keep) } else { String::new() };
+        let keep = if t.mask.is_partial() { format!(" (last {})", t.keep) } else { String::new() };
         format!("{} · {}{keep} · {}{}", t.pattern, t.mask.label(), t.validator.label(), if t.ignore_case { " · any case" } else { "" })
     };
     for b in privacy::BUILTINS {
@@ -640,7 +639,7 @@ mod tests {
         p.mcp_row_limit = Some(10);
         p.mcp_allowed = vec!["UPDATE orders SET status = ? WHERE id = ?".into()];
         p.mcp_rules.view = AgentView::Masked;
-        p.mcp_rules.sensitive.push(SensitiveCol { col: "users.email".into(), how: Mask::Hash, on: true });
+        p.mcp_rules.sensitive.push(SensitiveCol { col: "users.email".into(), how: Mask::Hidden, on: true });
         p.mcp_rules.visible.items.push(VisibleItem { name: "users.password_hash".into(), kind: ItemKind::Column });
         p.mcp_rules.structure = false;
         p.mcp_rules.read_rows = Some(100);
@@ -653,7 +652,7 @@ mod tests {
             .update(|s| {
                 s.mcp_enabled = false;
                 s.agent_types.set_builtin("ip", Some(true), Some(Mask::Hidden));
-                s.agent_types.custom.push(CustomType::new("Customer code", r"\bCUST-[0-9]{6}\b", Mask::Hash));
+                s.agent_types.custom.push(CustomType::new("Customer code", r"\bCUST-[0-9]{6}\b", Mask::Hidden));
             })
             .unwrap();
     }
@@ -685,12 +684,10 @@ mod tests {
     fn the_file_holds_no_secret() {
         let (_d, dirs, config, settings) = setup();
         rich(&config, &settings);
-        let key = crate::privacy::HashKey::fixed(b"mask-key-secret-123");
         let text = to_text(&export(&settings.get(), &config.connections()));
-        for secret in ["db.internal.example", "app_owner", "mask-key-secret-123", "password = "] {
+        for secret in ["db.internal.example", "app_owner", "password = "] {
             assert!(!text.contains(secret), "{secret} in {text}");
         }
-        assert!(!text.contains(&key.hash("x")[3..10]));
         assert!(text.contains("version = 1") && text.contains("prod-pg") && text.contains("engine = \"postgres\""), "{text}");
         let _ = dirs;
     }
@@ -741,7 +738,7 @@ mod tests {
         c.mcp = Some(McpAccess::Full);
         c.rules.view = AgentView::Data;
         c.rules.visible.items.clear();
-        c.rules.sensitive[0].how = Mask::Partial;
+        c.rules.sensitive[0].how = Mask::PARTIAL;
         c.rules.read_rows = Some(500);
         c.yolo = true;
         c.allowed.push("DELETE FROM sessions".into());
@@ -799,10 +796,10 @@ mod tests {
         cases.push(("Everything except [secret, x] to Only these [x]: x shows", p.clone(), Box::new(|c| c.rules.visible = privacy::Visible { mode: VisibleMode::Only, items: vec![item("x", ItemKind::Table)] })));
         let mut m = ConnectionProfile::new("m");
         m.mcp_rules.view = AgentView::Masked;
-        m.mcp_rules.sensitive = vec![col("users.email", Mask::Hidden), col("*mail*", Mask::Partial)];
+        m.mcp_rules.sensitive = vec![col("users.email", Mask::Hidden), col("*mail*", Mask::PARTIAL)];
         cases.push(("sensitive entries reordered: the first match wins", m.clone(), Box::new(|c| c.rules.sensitive.reverse())));
-        m.mcp_rules.sensitive = vec![col("users.email", Mask::Hash)];
-        cases.push(("a weaker entry put before a stronger one", m.clone(), Box::new(|c| c.rules.sensitive.insert(0, col("*mail*", Mask::Partial)))));
+        m.mcp_rules.sensitive = vec![col("users.email", Mask::Hidden)];
+        cases.push(("a weaker entry put before a stronger one", m.clone(), Box::new(|c| c.rules.sensitive.insert(0, col("*mail*", Mask::PARTIAL)))));
         cases.push(("a sensitive column turned off", m.clone(), Box::new(|c| c.rules.sensitive[0].on = false)));
         cases.push(("a sensitive column renamed", m.clone(), Box::new(|c| c.rules.sensitive[0].col = "users.e_mail".into())));
         let mut r = ConnectionProfile::new("r");
@@ -859,7 +856,7 @@ mod tests {
     #[test]
     fn every_loosening_of_the_sensitive_types_is_flagged() {
         let mut t0 = TypeSettings::default();
-        let mut ct = CustomType::new("Code", r"\bC-[0-9]{6}\b", Mask::Partial);
+        let mut ct = CustomType::new("Code", r"\bC-[0-9]{6}\b", Mask::PARTIAL);
         ct.ignore_case = true;
         t0.custom.push(ct);
         let flagged = |edit: &dyn Fn(&mut TypeSettings)| {
@@ -875,7 +872,7 @@ mod tests {
         assert!(flagged(&|t| t.set_builtin("card", Some(false), None)));
         assert!(flagged(&|t| t.set_builtin_def(&privacy::CustomType { pattern: r"\b4242\b".into(), ..privacy::builtin("card").unwrap().as_custom() })), "a built-in type's pattern changed");
         assert!(!flagged(&|t| t.set_builtin_def(&privacy::CustomType { name: "Cards".into(), ..privacy::builtin("card").unwrap().as_custom() })), "renaming loosens nothing");
-        assert!(flagged(&|t| t.set_builtin("email", None, Some(Mask::Partial))) || privacy::builtin("email").is_some_and(|b| b.mask == Mask::Partial));
+        assert!(flagged(&|t| t.set_builtin("email", None, Some(Mask::PARTIAL))) || privacy::builtin("email").is_some_and(|b| b.mask == Mask::PARTIAL));
         assert!(!flagged(&|t| t.custom.push(CustomType { on: false, ..CustomType::new("Off", "x+", Mask::Hidden) })), "a type added off gives nothing");
     }
 
@@ -996,7 +993,7 @@ mod tests {
         let rules = AgentRules {
             view: AgentView::Masked,
             visible: privacy::Visible { mode: VisibleMode::Only, items: vec![item("public.t", ItemKind::Table)] },
-            sensitive: vec![SensitiveCol { col: "t.c".into(), how: Mask::Hash, on: false }],
+            sensitive: vec![SensitiveCol { col: "t.c".into(), how: Mask::Hidden, on: false }],
             structure: false,
             code: false,
             activity: false,
@@ -1005,11 +1002,11 @@ mod tests {
             read_rows: Some(20),
             read_from: Some(privacy::ReadFrom::Secondary),
         };
-        let custom = CustomType { id: "t_x".into(), name: "X".into(), pattern: "x+".into(), mask: Mask::Partial, keep: 2, validator: privacy::Validator::Luhn, ignore_case: true, on: false };
+        let custom = CustomType { id: "t_x".into(), name: "X".into(), pattern: "x+".into(), mask: Mask::PARTIAL, keep: 2, validator: privacy::Validator::Luhn, ignore_case: true, on: false };
         let f = AgentsFile {
             version: VERSION,
             general: General { agent_access: false },
-            sensitive_data: TypeSettings { builtin: [("card".to_string(), privacy::BuiltinOverride { on: Some(false), mask: Some(Mask::Hash), name: Some("Card".into()), pattern: Some(r"\d{16}".into()), validator: Some(privacy::Validator::Iban), ignore_case: Some(true), keep: Some(2) })].into(), custom: vec![custom] },
+            sensitive_data: TypeSettings { builtin: [("card".to_string(), privacy::BuiltinOverride { on: Some(false), mask: Some(Mask::Hidden), name: Some("Card".into()), pattern: Some(r"\d{16}".into()), validator: Some(privacy::Validator::Iban), ignore_case: Some(true), keep: Some(2) })].into(), custom: vec![custom] },
             connections: vec![ConnRules { id: "a".into(), name: "a".into(), engine: Engine::Postgres, database: "d".into(), mcp: Some(McpAccess::Full), row_limit: Some(5), allowed: vec!["DELETE FROM t WHERE id = ?".into()], yolo: true, rules }],
         };
         let text = to_text(&f);

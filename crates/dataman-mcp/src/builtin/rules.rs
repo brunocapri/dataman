@@ -316,7 +316,6 @@ fn cut_text(s: &str, max: usize) -> Option<String> {
 /// in Masked data, sensitive columns by name and the switched-on sensitive types inside every
 /// cell, both on the whole value. A masked column's value longer than was read is hidden whole.
 pub fn mask_outcome(cx: &Call, p: &ConnectionProfile, out: &mut bounded::Outcome, masks: &[(String, Mask)], read: bounded::Limits, agent: bounded::Limits) {
-    let key = cx.hub.mask_key();
     let types = cx.hub.types_for(Some(p));
     let mut counts = dataman_core::privacy::Counts::new();
     let mut used: Vec<(String, Mask)> = Vec::new();
@@ -340,7 +339,7 @@ pub fn mask_outcome(cx: &Call, p: &ConnectionProfile, out: &mut bounded::Outcome
                         other => other.to_string(),
                     };
                     let how = if was_cut(&text) { Mask::Hidden } else { *how };
-                    *v = Value::String(mask_value(how, &text, &key));
+                    *v = Value::String(mask_value(how, &text));
                     continue;
                 }
                 if read.max_cell == agent.max_cell {
@@ -348,7 +347,7 @@ pub fn mask_outcome(cx: &Call, p: &ConnectionProfile, out: &mut bounded::Outcome
                 }
                 if let Value::String(s) = &*v {
                     let earlier = was_cut(s);
-                    let scrubbed = types.scrub(s, &key, counts).into_owned();
+                    let scrubbed = types.scrub(s, counts).into_owned();
                     *v = Value::String(match cut_text(&scrubbed, agent.max_cell) {
                         Some(c) => {
                             *cut_cells += usize::from(!earlier);
@@ -358,7 +357,7 @@ pub fn mask_outcome(cx: &Call, p: &ConnectionProfile, out: &mut bounded::Outcome
                     });
                 } else if (v.is_object() || v.is_array()) && v.to_string().len() > agent.max_cell {
                     // JSON past the agent's size comes as cut text, as it did before.
-                    let text = types.scrub(&v.to_string(), &key, counts).into_owned();
+                    let text = types.scrub(&v.to_string(), counts).into_owned();
                     *v = Value::String(cut_text(&text, agent.max_cell).unwrap_or(text));
                     *cut_cells += 1;
                 }
@@ -563,7 +562,7 @@ pub fn nosql_shape(cx: &Call, a: &Args, p: &ConnectionProfile, text: &str, v: &m
     let visible = |n: &str| {
         if dbs { r.visible.schema_visible(n, names) } else { r.visible.table_visible((names == Names::Qualified).then_some(db.as_str()), n, names) }
     };
-    let masked = agent_nosql::shape(v, s, &cx.hub.mask_key(), &visible);
+    let masked = agent_nosql::shape(v, s, &visible);
     cx.note_masked_columns(&masked);
     if !masked.is_empty()
         && let Some(m) = v.as_object_mut()

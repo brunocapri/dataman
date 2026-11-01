@@ -181,9 +181,8 @@ fn activity_name(name: &str) -> bool {
 
 pub fn stronger(a: Mask, b: Mask) -> Mask {
     let rank = |m: Mask| match m {
-        Mask::Hidden => 2,
-        Mask::Hash => 1,
-        Mask::Partial => 0,
+        Mask::Hidden => 1,
+        Mask::Partial(_) => 0,
     };
     if rank(a) >= rank(b) { a } else { b }
 }
@@ -854,12 +853,12 @@ mod tests {
     #[test]
     fn masked_data_selects_and_filters_only() {
         let mut r = AgentRules { view: AgentView::Masked, ..Default::default() };
-        r.sensitive.push(SensitiveCol { col: "customers.email".into(), how: Mask::Partial, on: true });
-        r.sensitive.push(SensitiveCol { col: "*ssn*".into(), how: Mask::Hash, on: true });
+        r.sensitive.push(SensitiveCol { col: "customers.email".into(), how: Mask::PARTIAL, on: true });
+        r.sensitive.push(SensitiveCol { col: "*ssn*".into(), how: Mask::Hidden, on: true });
         r.sensitive.push(SensitiveCol { col: "orders.notes".into(), how: Mask::Hidden, on: false });
         let c = run(&r, "SELECT id, name, email, ssn, city FROM customers WHERE city = 'Recife' AND email LIKE 'a%'", false).unwrap();
         assert!(!c.rewritten);
-        assert_eq!(c.masked, vec![("email".to_string(), Mask::Partial), ("ssn".to_string(), Mask::Hash)]);
+        assert_eq!(c.masked, vec![("email".to_string(), Mask::PARTIAL), ("ssn".to_string(), Mask::Hidden)]);
         assert_eq!(run(&r, "SELECT * FROM customers", false).unwrap().masked.len(), 2);
         for sql in [
             "SELECT upper(email) FROM customers",

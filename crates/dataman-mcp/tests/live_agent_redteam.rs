@@ -139,7 +139,7 @@ fn postgres_every_tool_runs_as_the_agent() {
     p.name = "rt".into();
     p.mcp = Some(McpAccess::Full);
     p.mcp_rules.view = dataman_core::privacy::AgentView::Masked;
-    p.mcp_rules.sensitive.push(dataman_core::privacy::SensitiveCol { col: "users.email".into(), how: dataman_core::privacy::Mask::Partial, on: true });
+    p.mcp_rules.sensitive.push(dataman_core::privacy::SensitiveCol { col: "users.email".into(), how: dataman_core::privacy::Mask::PARTIAL, on: true });
     core.save_connection(p.clone(), Some("Owner-pw-1"), None).unwrap();
     {
         let admin = core.block_on(core.connect(p.clone(), None)).unwrap();

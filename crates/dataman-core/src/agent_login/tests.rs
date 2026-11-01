@@ -38,7 +38,7 @@ fn guarded(engine: Engine) -> ConnectionProfile {
     r.view = AgentView::Masked;
     r.visible.items.push(VisibleItem { name: "audit_log".into(), kind: ItemKind::Table });
     r.visible.items.push(VisibleItem { name: "users.password_hash".into(), kind: ItemKind::Column });
-    r.sensitive.push(SensitiveCol { col: "users.email".into(), how: Mask::Partial, on: true });
+    r.sensitive.push(SensitiveCol { col: "users.email".into(), how: Mask::PARTIAL, on: true });
     r.structure = false;
     r.code = false;
     r.time_limit_s = Some(30);
@@ -170,7 +170,7 @@ fn postgres_plan() {
     assert!(!shown.contains("TRUNCATE") && !shown.contains("CREATE ON") && !shown.contains("ALTER DEFAULT PRIVILEGES"));
     assert!(shown.starts_with("BEGIN;\n") && shown.contains("COMMIT;"));
     assert_eq!(plan.views.len(), 1);
-    assert_eq!(plan.views[0].masked, vec![("email".to_string(), Mask::Partial)]);
+    assert_eq!(plan.views[0].masked, vec![("email".to_string(), Mask::PARTIAL)]);
     let w = whos(&plan);
     assert!(w.contains(&("public.audit_log hidden".into(), Who::Partly)), "{w:?}");
     assert!(w.iter().any(|(r, who)| r.contains("password_hash hidden") && *who == Who::Database));
@@ -207,7 +207,7 @@ fn hostile_names_are_quoted_everywhere() {
     for engine in [Engine::Postgres, Engine::MySql, Engine::SqlServer] {
         let mut p = conn(engine);
         p.mcp_rules.view = AgentView::Masked;
-        p.mcp_rules.sensitive.push(SensitiveCol { col: "*".into(), how: Mask::Hash, on: true });
+        p.mcp_rules.sensitive.push(SensitiveCol { col: "*".into(), how: Mask::Hidden, on: true });
         let schema = if engine == Engine::MySql { "sh\"op`db" } else { "pub]lic\"" };
         let mut inv = Inventory { objects: evil.iter().map(|n| table(schema, n, &[n, "id"])).collect(), ..Default::default() };
         for o in &mut inv.objects {
@@ -518,8 +518,8 @@ fn another_tunnel_is_another_server() {
 fn view_names_never_clash() {
     let mut p = guarded(Engine::Postgres);
     // A table named as Dataman's salt, and two whose schema__table names are the same.
-    p.mcp_rules.sensitive.push(SensitiveCol { col: "salt.v".into(), how: Mask::Hash, on: true });
-    p.mcp_rules.sensitive.push(SensitiveCol { col: "*.secret".into(), how: Mask::Partial, on: true });
+    p.mcp_rules.sensitive.push(SensitiveCol { col: "salt.v".into(), how: Mask::Hidden, on: true });
+    p.mcp_rules.sensitive.push(SensitiveCol { col: "*.secret".into(), how: Mask::PARTIAL, on: true });
     let s = compile(&p, "", &opts());
     let inv = Inventory {
         objects: [table("public", "salt", &["id", "v"]), table("a", "b__c", &["id", "secret"]), table("a__b", "c", &["id", "secret"]), table("A__B", "C", &["id", "secret"])].into_iter().map(|o| Obj { owner: "dbo".into(), ..o }).collect(),
@@ -639,4 +639,17 @@ fn postgres_protocol_without_logins() {
     assert!(pg::motherduck(&p));
     p.host = "PG.MotherDuck.com.".into();
     assert!(pg::motherduck(&p));
+}
+
+#[test]
+fn partial_keeps_what_the_column_says() {
+    let k = Mask::Partial(crate::privacy::Keep { first: 2, last: 3 });
+    let e = pg::mask_expr("c", k);
+    assert!(e.contains(r#"left("c"::text, 2)"#) && e.contains(r#"right("c"::text, 3)"#) && e.contains(">= 10") && !e.contains('@'), "{e}");
+    let e = my::mask_expr("c", k);
+    assert!(e.contains("LEFT(CAST(`c` AS CHAR), 2)") && e.contains("RIGHT(CAST(`c` AS CHAR), 3)"), "{e}");
+    let e = ms::mask_expr("c", k);
+    assert!(e.contains("LEFT(CAST([c] AS NVARCHAR(4000)), 2)") && e.contains("RIGHT(CAST([c] AS NVARCHAR(4000)), 3)"), "{e}");
+    assert!(pg::mask_expr("c", Mask::PARTIAL).contains("'•••@'"), "as it ships: the e-mail look, the same views as before");
+    assert!(mongo::mask_expr("c", k).to_string().contains("\"$substrCP\":[\"$$s\",0,2]"));
 }

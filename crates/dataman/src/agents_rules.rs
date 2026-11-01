@@ -2,7 +2,7 @@
 //! reach it (or its agent login, last), Access (what agents may do there, and how much) and
 //! Privacy (what they may see). Everything writes the connection's `mcp_rules`; no MCP tool can.
 
-use dataman_core::privacy::{self, AgentView, ItemKind, Mask, Names, ReadFrom, SensitiveCol, Visible, VisibleItem, VisibleMode};
+use dataman_core::privacy::{self, AgentView, ItemKind, Keep, Mask, Names, ReadFrom, SensitiveCol, Visible, VisibleItem, VisibleMode};
 use dataman_core::settings::{MCP_MAX_ROWS, MCP_WRITE_ROW_LIMIT};
 use dataman_core::nosql::ItemKind as TreeKind;
 use dataman_core::{ConnectionProfile, Engine, McpAccess};
@@ -67,8 +67,7 @@ pub(crate) fn sens_tip() -> Tip {
     Tip::new("Sensitive columns")
         .lead("Masked data only: this connection's columns masked whole. The Masks also mask matching values in every column.")
         .item("Redacted", "Nothing of the value is kept: agents get ‹hidden›.")
-        .item("Partial", "Keeps the end: a•••@acme.com, •••• 4242.")
-        .item("Hash", "A stable code, ‹h:7Q2KX9RM4A›. The same value always gives the same code, so an agent can still match rows.")
+        .item("Partial", "Keeps the characters you pick at the start (First) and the end (Last), the rest becomes •. As it comes, the last 4: •••-•••-4567, and e-mails as a•••@acme.com.")
         .lead("Agents can select these columns as they are and filter on them in WHERE; they can't rename, group, sort or compute with them.")
         .example("users.email · *ssn* (any column with ssn in its name)")
         .note("Scan again adds the columns (on documents, the fields) that look sensitive by their names. Check what it adds.")
@@ -356,6 +355,8 @@ pub(crate) fn choices<T: Copy + PartialEq + 'static>(t: &Theme, id: &str, opts: 
 enum Fit {
     Alone,
     Row,
+    /// A number in a row (Partial's First and Last).
+    Small,
     Fill,
 }
 
@@ -364,6 +365,7 @@ fn select(t: &Theme, page: &AgentsPage, id: SharedString, label: &str, enabled: 
     let min = match fit {
         Fit::Alone => 180.,
         Fit::Row => 110.,
+        Fit::Small => 74.,
         Fit::Fill => 0.,
     };
     let open = page.menu.as_ref().is_some_and(|m| m.id == id);
@@ -372,7 +374,7 @@ fn select(t: &Theme, page: &AgentsPage, id: SharedString, label: &str, enabled: 
 }
 
 /// What an agent gets for a value of `field`: a made-up one of its kind, masked as `how` says.
-fn masked_example(field: &str, how: Mask, key: &privacy::HashKey) -> String {
+fn masked_example(field: &str, how: Mask) -> String {
     let f = field.to_ascii_lowercase();
     let sample = match () {
         _ if f.contains("mail") => "ana@acme.com",
@@ -385,7 +387,7 @@ fn masked_example(field: &str, how: Mask, key: &privacy::HashKey) -> String {
     match how {
         // Shown as dots, like Partial's: the agent gets ‹hidden› (the tip says so).
         Mask::Hidden => "••••••••".into(),
-        _ => privacy::mask_value(how, sample, key),
+        _ => privacy::mask_value(how, sample),
     }
 }
 
@@ -480,6 +482,26 @@ impl AgentsPage {
         if let Some(id) = self.conn.clone() {
             self.edit_conn(&id, |p| f(&mut p.mcp_rules), cx);
         }
+    }
+
+    /// Partial's characters kept at the start and at the end; the same room left empty
+    /// otherwise, so the masks line up.
+    fn keep_picks(&self, t: &Theme, k: usize, s: &SensitiveCol, enabled: bool, cx: &mut Context<Self>) -> gpui::Div {
+        let row = div().w(px(154.)).flex_none().flex().flex_row().gap(px(6.));
+        let Mask::Partial(keep) = s.how else { return row };
+        if !s.on {
+            return row;
+        }
+        let items = |first: bool| -> Vec<(SharedString, bool, Act)> {
+            (0..=Keep::MAX)
+                .map(|n| {
+                    let to = if first { Keep { first: n, ..keep } } else { Keep { last: n, ..keep } };
+                    (n.to_string().into(), to == keep, Act::SensKeep(k, to))
+                })
+                .collect()
+        };
+        row.child(self.pick(t, &format!("agents-sens-first-{k}"), &format!("First {}", keep.first), enabled, Fit::Small, 74., items(true), cx))
+            .child(self.pick(t, &format!("agents-sens-last-{k}"), &format!("Last {}", keep.last), enabled, Fit::Small, 74., items(false), cx))
     }
 
     /// A popup button whose menu sets one value (an `Act` each).
@@ -837,7 +859,7 @@ impl AgentsPage {
                 let id = SharedString::from(format!("agents-sens-mask-{k}"));
                 // An older version's Off still reads Off, but isn't offered.
                 let items: Vec<(SharedString, bool, Act)> = Mask::ALL.iter().map(|m| (m.label().into(), s.on && *m == s.how, Act::SensMask(k, *m))).collect();
-                let example = if s.on { masked_example(name, s.how, &self.key) } else { "as stored".into() };
+                let example = if s.on { masked_example(name, s.how) } else { "as stored".into() };
                 let rid = SharedString::from(format!("agents-sens-{k}"));
                 let key = format!("s:{}", s.col);
                 rows.push(motion(
@@ -855,6 +877,7 @@ impl AgentsPage {
                         .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(if s.on { t.tx } else { t.tx3 }).child(name.to_string()))
                         .child(div().w(px(130.)).flex_none().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(11.)).text_color(t.tx3).child(example))
                         .child(self.pick(t, &id, if s.on { s.how.label() } else { "Off" }, masked, Fit::Row, 120., items, cx))
+                        .child(self.keep_picks(t, k, s, masked, cx))
                         .when(masked, |d| {
                             let (key, col) = (key.clone(), s.col.clone());
                             d.child(remove_x(t, SharedString::from(format!("agents-sens-rm-{k}")), rid.clone()).on_click(cx.listener(move |v, _, _, cx| {

@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use dataman_core::privacy::{self, CustomType, HashKey, Mask, TypeSettings, Types};
+use dataman_core::privacy::{self, CustomType, Mask, TypeSettings, Types};
 use dataman_core::{Dirs, Engine, Environment, McpAccess, MemorySecrets, SecretStore};
 use dataman_mcp::policy::{self, Need, Target, Verdict};
 use dataman_mcp::{Approval, Front, Hub, Registry, Server};
@@ -132,7 +132,6 @@ fn env_with(conns: &[Conn], files: &str, settings: &str, tools: Option<&str>) ->
         h.core.pgpass = Some(pgpass);
         Arc::new(h)
     };
-    hub.set_mask_key(HashKey::fixed(b"privacy-test"));
     let human = Arc::new(Human::default());
     hub.set_front(Some(human.clone()));
     hub.set_approval_timeout(Duration::from_millis(600));
@@ -328,7 +327,7 @@ fn postgres_values_stay_kept() {
     // What stays usable.
     let r = q(format!("SELECT c.id, c.tax_id, c.email FROM {s}.customers c WHERE c.tax_id LIKE 't%' AND c.city IN ('Recife') ORDER BY c.id")).unwrap();
     clean("plain select", &r);
-    assert!(r["rows"][0][1].as_str().unwrap().starts_with("‹h:") && r["rows"][0][2] == "a•••@acme.com", "{r}");
+    assert!(r["rows"][0][1].as_str() == Some("‹hidden›") && r["rows"][0][2] == "a•••@acme.com", "{r}");
     for sql in [
         format!("WITH x AS (SELECT id, tax_id FROM {s}.customers) SELECT tax_id FROM x"),
         format!("SELECT tax_id FROM {s}.customers UNION SELECT tax_id FROM {s}.customers"),
@@ -426,7 +425,7 @@ fn mysql_and_sql_server_values_stay_kept() {
         assert_eq!(r["columns"].as_array().unwrap().len(), 2, "{r}");
         let r = q("SELECT id, email FROM customers WHERE email LIKE 'z%'").unwrap();
         clean("mysql select", &r);
-        assert!(r["rows"][0][1].as_str().unwrap().starts_with("‹h:"), "{r}");
+        assert!(r["rows"][0][1].as_str() == Some("‹hidden›"), "{r}");
         assert!(q("SHOW VARIABLES LIKE 'version'").is_ok(), "SHOW of settings stays");
         a(format!("DROP DATABASE {s}"));
         e.nothing_kept_logged();
@@ -596,7 +595,7 @@ fn redis_values_stay_kept() {
     for t in [format!("HGET {s}:user:1 email"), format!("HMGET {s}:user:1 email name"), format!("HGETALL {s}:user:1"), format!("HSCAN {s}:user:1 0")] {
         let r = q("rd", t.clone()).unwrap_or_else(|err| panic!("{t}: {err}"));
         clean(&t, &r);
-        assert!(r.to_string().contains("‹h:"), "{t}: {r}");
+        assert!(r.to_string().contains("‹hidden›"), "{t}: {r}");
     }
     refused("HVALS", q("rd", format!("HVALS {s}:user:1")), "HMGET");
     refused("OBJECT", q("rd", format!("OBJECT ENCODING {s}:session:1")), "not visible");
@@ -666,7 +665,7 @@ fn sqlite_values_stay_kept_and_nothing_leaves_the_file() {
     refused("a view over a hidden column", q("ll", "SELECT * FROM v_pw"), "");
     let r = q("ll", "SELECT id, email FROM customers").unwrap();
     clean("lite masked", &r);
-    assert!(r["rows"][0][1].as_str().unwrap().starts_with("‹h:"), "{r}");
+    assert!(r["rows"][0][1].as_str() == Some("‹hidden›"), "{r}");
     refused("masked in an expression", q("ll", "SELECT upper(email) FROM customers"), MASKED);
     let d = e.ok("describe_table", with("ll", json!({"table": "users", "include_ddl": true}))).to_string();
     assert!(!d.contains("pw_len") && !d.contains("(pw") && d.contains("name_up"), "{d}");
@@ -763,7 +762,7 @@ fn duckdb_values_stay_kept_and_no_file_is_reached() {
     }
     let r = q("dd", "SELECT id, email FROM customers").unwrap();
     clean("duck masked", &r);
-    assert!(r["rows"][0][1].as_str().unwrap().starts_with("‹h:"), "{r}");
+    assert!(r["rows"][0][1].as_str() == Some("‹hidden›"), "{r}");
     let out = files.path().join("out.csv");
     let sneak = [
         format!("SELECT * FROM read_csv('{}')", secret_file.display()),
@@ -840,7 +839,7 @@ fn user_tools_follow_the_rules() {
     refused("hashes", e.call("hashes", json!({})), "is hidden from agents");
     let r = e.ok("tax_ids", json!({}));
     clean("tax_ids", &r);
-    assert!(r["rows"][0][1].as_str().unwrap().starts_with("‹h:"), "{r}");
+    assert!(r["rows"][0][1].as_str() == Some("‹hidden›"), "{r}");
     refused("renamed", e.call("renamed", json!({})), MASKED);
     e.admin("execute", with("pgadmin", json!({"sql": format!("DROP SCHEMA {s} CASCADE")})));
     e.nothing_kept_logged();
@@ -933,7 +932,7 @@ fn rules_have_one_precedence() {
     let r = dataman_core::privacy::AgentRules {
         view: dataman_core::privacy::AgentView::Masked,
         visible: dataman_core::privacy::Visible { mode: dataman_core::privacy::VisibleMode::Except, items: vec![dataman_core::privacy::VisibleItem { name: "users.secret".into(), kind: dataman_core::privacy::ItemKind::Column }] },
-        sensitive: vec![dataman_core::privacy::SensitiveCol { col: "users.secret".into(), how: Mask::Partial, on: true }],
+        sensitive: vec![dataman_core::privacy::SensitiveCol { col: "users.secret".into(), how: Mask::PARTIAL, on: true }],
         ..Default::default()
     };
     let tables = |_: Option<&str>, n: &str| (n == "users").then(|| dataman_core::agent_sql::Table { schema: "public".into(), name: "users".into(), columns: vec!["id".into(), "secret".into()] });
@@ -945,10 +944,9 @@ fn rules_have_one_precedence() {
 
     // Sensitive types: one list for every connection; a value matched by a built-in and a
     // custom type gets the earliest, then longest, match, and on a tie the built-in's mask.
-    let key = HashKey::fixed(b"k");
     let mut global = TypeSettings::default();
     global.custom.push(CustomType::new("Acme mail", r"[a-z]+@acme\.com", Mask::Hidden));
-    let scrub = |t: &Types, s: &str| t.scrub(s, &key, &mut Default::default()).into_owned();
+    let scrub = |t: &Types, s: &str| t.scrub(s, &mut Default::default()).into_owned();
     let all = Types::new(&global);
     assert_eq!(scrub(&all, "mail ana@acme.com"), "mail a•••@acme.com", "the built-in e-mail wins the tie");
     assert_eq!(scrub(&all, "mail x.ana@acme.com"), "mail x•••@acme.com", "the longer match wins");
@@ -980,7 +978,7 @@ fn custom_patterns_at_their_edges() {
     // Matches everything: allowed, flagged as broad by the editor's test, masks every value.
     privacy::check_pattern(".+").unwrap();
     let all = CustomType::new("All", ".+", Mask::Hidden);
-    assert!(privacy::test_pattern(&all, &["a b c", "d e f"], &HashKey::fixed(b"k")).unwrap().broad);
+    assert!(privacy::test_pattern(&all, &["a b c", "d e f"]).unwrap().broad);
     // Backtracking patterns run in linear time: a long value is checked well within budget.
     let mut slow = TypeSettings::default();
     slow.custom.push(CustomType::new("Slow", "(a+)+$x", Mask::Hidden));
@@ -989,7 +987,7 @@ fn custom_patterns_at_their_edges() {
     assert!(t.broken.is_empty());
     let mut v = json!({"cell": "a".repeat(200_000)});
     let started = std::time::Instant::now();
-    let r = t.scrub_json(&mut v, &HashKey::fixed(b"k"), &mut Default::default(), std::time::Instant::now() + privacy::BUDGET);
+    let r = t.scrub_json(&mut v, &mut Default::default(), std::time::Instant::now() + privacy::BUDGET);
     assert!(r.is_ok() && started.elapsed() < privacy::BUDGET * 2, "{:?}", started.elapsed());
     // A broken pattern switched on refuses reads; one switched off does not.
     let mut broken = TypeSettings::default();
@@ -1089,7 +1087,7 @@ fn generated_columns_follow_their_sources() {
             }
         }
         let r = q(format!("SELECT email_up FROM {table}")).unwrap();
-        assert!(r["rows"][0][0].as_str().unwrap().starts_with("‹h:"), "{c}: masked as the strongest of its sources: {r}");
+        assert!(r["rows"][0][0].as_str() == Some("‹hidden›"), "{c}: masked as the strongest of its sources: {r}");
         refused("computed", q(format!("SELECT lower(email_up) FROM {table}")), MASKED);
         let sample = e.ok("sample_rows", with(c, json!({"table": table})));
         assert!(!sample.to_string().contains("pw") && !sample.to_string().contains("ZED-SECRET"), "{c}: {sample}");

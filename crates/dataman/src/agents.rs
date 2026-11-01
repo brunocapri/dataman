@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Local;
-use dataman_core::privacy::{HashKey, Mask, Validator};
+use dataman_core::privacy::{Keep, Mask, Validator};
 use dataman_core::{ConnectionProfile, Core, Engine};
 use dataman_mcp::audit::{AllowedBy, Decision, Entry, Outcome};
 use gpui::{
@@ -176,6 +176,7 @@ pub(crate) enum Act {
     Outcome(Outcomes),
     When(When),
     SensMask(usize, Mask),
+    SensKeep(usize, Keep),
     ReadFrom(dataman_core::privacy::ReadFrom),
     TimeLimit(u64),
     ReadRows(u64),
@@ -193,7 +194,7 @@ pub(crate) struct Menu {
     pub(crate) id: SharedString,
     at: Point<Pixels>,
     width: f32,
-    items: Vec<(SharedString, bool, Act)>,
+    pub(crate) items: Vec<(SharedString, bool, Act)>,
 }
 
 pub(crate) struct TypeEditor {
@@ -240,7 +241,6 @@ pub struct AgentsPage {
     pub(crate) vis_input: Entity<TextInput>,
     pub(crate) scan_note: Option<String>,
     pub(crate) editor: TypeEditor,
-    pub(crate) key: HashKey,
     pub(crate) suggest: crate::agents_suggest::Suggest,
     /// What the selected call's agent received, in the results grid; zoomed over the whole
     /// Audit page, growing from its place in the detail as a result grows over the editor.
@@ -560,11 +560,6 @@ impl AgentsPage {
         })
         .detach();
         cx.observe(&store, |_, _, cx| cx.notify()).detach();
-        let key = if cfg!(feature = "checks") && std::env::var_os("DATAMAN_SHOT_STAGE").is_some() {
-            HashKey::fixed(b"dataman-checks")
-        } else {
-            HashKey::stored(core.secrets.clone())
-        };
         let conn = store.read(cx).profiles.first().map(|p| p.id.clone());
         let mut v = AgentsPage {
             core,
@@ -594,7 +589,6 @@ impl AgentsPage {
             vis_input,
             scan_note: None,
             editor: TypeEditor { editing: None, name, regex, mask: Mask::Hidden, more: false, validator: Validator::None, ignore_case: false, keep: 4, samples: Vec::new(), sample, confirm_delete: false },
-            key,
             suggest: Default::default(),
             received,
             received_for: None,
@@ -798,7 +792,17 @@ impl AgentsPage {
                 if let Some(id) = self.conn.clone().filter(|id| self.core.config.get(id).is_some_and(|p| p.mcp_rules.view == dataman_core::privacy::AgentView::Masked)) {
                     self.edit_conn(&id, |p| {
                         if let Some(s) = p.mcp_rules.sensitive.get_mut(i) {
-                            (s.how, s.on) = (m, true);
+                            // Partial again keeps the characters it kept.
+                            (s.how, s.on) = (m.keeping(s.how.kept()), true);
+                        }
+                    }, cx);
+                }
+            }
+            Act::SensKeep(i, k) => {
+                if let Some(id) = self.conn.clone().filter(|id| self.core.config.get(id).is_some_and(|p| p.mcp_rules.view == dataman_core::privacy::AgentView::Masked)) {
+                    self.edit_conn(&id, |p| {
+                        if let Some(s) = p.mcp_rules.sensitive.get_mut(i) {
+                            s.how = s.how.keeping(k);
                         }
                     }, cx);
                 }
