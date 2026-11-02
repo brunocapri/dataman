@@ -133,7 +133,6 @@ pub fn user_dir(text: &str, key: &str, home: &std::path::Path) -> Option<PathBuf
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
 
     #[test]
     fn os_release_values() {
@@ -145,7 +144,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn xdg_user_dirs() {
+        use std::path::Path;
         let home = Path::new("/home/u");
         let t = "# comment\nXDG_DESKTOP_DIR=\"$HOME/Desktop\"\nXDG_DOWNLOAD_DIR=\"$HOME/Téléchargements\"\n";
         assert_eq!(user_dir(t, "XDG_DOWNLOAD_DIR", home), Some(PathBuf::from("/home/u/Téléchargements")));
