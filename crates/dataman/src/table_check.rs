@@ -264,7 +264,11 @@ async fn check(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWindo
 
     let mut total_rows = None;
     for _ in 0..400 {
-        total_rows = cx.update(|_, cx| tab.read(cx).table.as_ref().filter(|d| d.counting.is_none()).and_then(|d| d.total)).ok().flatten();
+        // The total of the filtered view, not the one still kept from before the filter.
+        total_rows = cx
+            .update(|_, cx| tab.read(cx).table.as_ref().filter(|d| d.counting.is_none() && d.total_of == d.view.count_sql()).and_then(|d| d.total))
+            .ok()
+            .flatten();
         if total_rows.is_some() {
             break;
         }
