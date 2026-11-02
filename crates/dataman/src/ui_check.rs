@@ -1341,8 +1341,14 @@ async fn motion_checks(ws: &Entity<Workspace>, id: &str, cx: &mut AsyncWindowCon
     }
     let at_once = tip(cx);
     let hovered = cx.update(|window, _| window.is_window_hovered()).unwrap_or(false);
+    let stats0 = crate::ui::tip_stats();
     crate::check::until(cx, 3, |cx| tip(cx).is_some()).await;
     let shown = tip(cx);
+    // Where it stands when none showed: the pointer, the control now, the last input, the hosts.
+    let why = cx
+        .update(|window, _| (window.mouse_position(), window.last_input_was_keyboard(), window.is_window_active()))
+        .map(|(at, keyboard, active)| format!("pointer {at:?}, keyboard {keyboard}, active {active}, rail now {:?}, tips {stats0:?} → {:?}", crate::check::probed("rail-agents", cx), crate::ui::tip_stats()))
+        .unwrap_or_default();
     if let (Some(r), Some(b)) = (rail, shown) {
         let (from, to) = (crate::check::centre(r), crate::check::centre(b));
         for k in 1..=4 {
@@ -1357,7 +1363,7 @@ async fn motion_checks(ws: &Entity<Workspace>, id: &str, cx: &mut AsyncWindowCon
     report(
         "a tooltip shows after a short rest, stays while the pointer is on it, and closes soon after it leaves the control and the tooltip",
         rail.is_some() && at_once.is_none() && shown.is_some() && kept.is_some() && gone,
-        format!("rail {rail:?} at once {at_once:?} shown {shown:?} kept {kept:?} gone {gone}; window {win:?}, hovered {hovered}"),
+        format!("rail {rail:?} at once {at_once:?} shown {shown:?} kept {kept:?} gone {gone}; window {win:?}, hovered {hovered}; {why}"),
     );
 
     let motion = !cx.update(|_, cx| cx.reduce_motion()).unwrap_or(false);
