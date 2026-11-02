@@ -39,9 +39,25 @@ pub(crate) struct Instance {
     root: Mutex<duckdb::Connection>,
     read_only: bool,
     external: bool,
+    /// Dropped after `root`: the file is listed until its database is closed (DuckDB
+    /// checkpoints then), so it is never opened twice, in this process, at the same time.
+    _listed: Listed,
 }
 
+/// The files open in this process; an entry whose instance is gone is one still closing.
 static REGISTRY: Mutex<Option<HashMap<PathBuf, Weak<Instance>>>> = Mutex::new(None);
+
+struct Listed(PathBuf);
+
+impl Drop for Listed {
+    fn drop(&mut self) {
+        if let Some(map) = REGISTRY.lock().as_mut()
+            && map.get(&self.0).is_some_and(|w| w.strong_count() == 0)
+        {
+            map.remove(&self.0);
+        }
+    }
+}
 
 fn canonical(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
@@ -54,19 +70,31 @@ fn instance(path: &Path, read_only: bool, external: bool) -> Result<Arc<Instance
         bail!("{} does not exist", path.display());
     }
     let key = canonical(path);
-    // A connection just closed lets go of the file when its thread ends: a moment to wait for
-    // that before another mode is refused.
-    let until = Instant::now() + std::time::Duration::from_secs(1);
+    // A connection just closed lets go of the file when its thread ends, and its database once
+    // closed: a moment to wait for that before another mode is refused, longer for a close.
+    let start = Instant::now();
     let mut g = loop {
         let mut g = REGISTRY.lock();
         let map = g.get_or_insert_with(HashMap::new);
-        map.retain(|_, w| w.strong_count() > 0);
-        let Some(i) = map.get(&key).and_then(Weak::upgrade) else { break g };
+        let found = match map.get(&key) {
+            None => break g,
+            Some(w) => w.upgrade(),
+        };
+        // Never an instance's last reference dropped with the registry locked (its drop locks it).
+        drop(g);
+        let waited = start.elapsed();
+        let Some(i) = found else {
+            if waited < std::time::Duration::from_secs(10) {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                continue;
+            }
+            bail!("{} is still being closed by another connection: try again", path.display());
+        };
         if i.read_only == read_only && i.external == external {
             return Ok(i);
         }
-        if Instant::now() < until {
-            drop((i, g));
+        if waited < std::time::Duration::from_secs(1) {
+            drop(i);
             std::thread::sleep(std::time::Duration::from_millis(20));
             continue;
         }
@@ -103,7 +131,7 @@ fn instance(path: &Path, read_only: bool, external: bool) -> Result<Arc<Instance
     if empty {
         root.execute_batch("CHECKPOINT").with_context(|| format!("creating {}", path.display()))?;
     }
-    let i = Arc::new(Instance { root: Mutex::new(root), read_only, external });
+    let i = Arc::new(Instance { root: Mutex::new(root), read_only, external, _listed: Listed(key.clone()) });
     map.insert(key, Arc::downgrade(&i));
     Ok(i)
 }
