@@ -139,7 +139,7 @@ impl Workspace {
                 .flex_col()
                 .gap(px(4.))
                 .line_height(px(18.))
-                .child(div().text_color(t.tx2).child("Another program changed connections.toml or settings.toml, not Dataman: it gives agents or this Mac more than you approved, or sends connections elsewhere. What you approved applies until you apply this."))
+                .child(div().text_color(t.tx2).child(format!("Another program changed connections.toml or settings.toml, not Dataman: it gives agents or {} more than you approved, or sends connections elsewhere. What you approved applies until you apply this.", dataman_core::os::THIS_MACHINE)))
                 .child(div().children(ui::here(&"outside-review-loosens".into())).text_color(t.warn).child(format!("{} loosen protection", o.loosened()))),
         );
         let mut k = 0;

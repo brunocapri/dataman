@@ -14,7 +14,7 @@ fn fields(s: Schema, mcp: Value) -> Schema {
         .prop("engine", false, json!({"type": "string", "enum": ["postgres", "mysql", "sql-server", "sqlite", "duckdb", "mongodb", "elasticsearch", "opensearch", "redis"], "description": "Default postgres; sqlite and duckdb are files (see path)."}))
         .prop("path", false, json!({"type": "string", "description": "The database file of a sqlite or duckdb connection: an existing file (~ is the home folder). A file outside the home folder waits for the user's Allow."}))
         .prop("port", false, json!({"type": "integer", "minimum": 1, "maximum": 65535, "description": "Default: the engine's own (5432 / 3306 / 1433 / 27017 / 9200 / 6379)."}))
-        .prop("password", false, json!({"type": "string", "maxLength": 1000, "description": "Saved to the system keyring (the macOS Keychain, the Secret Service on Linux); never echoed back."}))
+        .prop("password", false, json!({"type": "string", "maxLength": 1000, "description": "Saved to the system keyring (the macOS Keychain, the Secret Service on Linux, the Credential Manager on Windows); never echoed back."}))
         .prop("database", false, json!({"type": "string", "description": "Default: the user's name (postgres), empty (mysql, sql-server)."}))
         .prop("sslmode", false, json!({"type": "string", "enum": ["disable", "prefer", "require", "verify-full"], "description": "Default: prefer on this machine (localhost, a socket) or through an SSH tunnel, require anywhere else."}))
         .prop("color", false, json!({"type": "string", "description": "A swatch name shown in the explorer and on tabs; default: picked from the id."}))

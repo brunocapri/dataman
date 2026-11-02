@@ -307,7 +307,7 @@ impl AgentsPage {
                         .children(ui::here(&"agents-import-missing".into()))
                         .text_size(px(11.5))
                         .text_color(t.tx3)
-                        .child(format!("Not on this Mac, left out: {}.", imp.plan.not_found.join(", "))),
+                        .child(format!("Not on {}, left out: {}.", dataman_core::os::THIS_MACHINE, imp.plan.not_found.join(", "))),
                 );
             }
         }

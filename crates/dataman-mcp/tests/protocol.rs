@@ -360,7 +360,7 @@ fn stdio_favorites_and_create_connection() {
     assert!(err && text.contains("not a .sql file"), "{text}");
     // Reading files of this Mac waits for the user's Allow: without the app, nothing is read.
     let (err, text) = m.tool("import_favorites", json!({"paths": [sql_path.display().to_string()]}));
-    assert!(err && text.contains("reads a file on this Mac") && text.contains("open the app"), "{text}");
+    assert!(err && text.contains(&format!("reads a file on {}", dataman_core::os::THIS_MACHINE)) && text.contains("open the app"), "{text}");
     let (err, text) = m.tool("list_favorites", json!({}));
     assert!(!err && !text.contains("customers"), "{text}");
     let (err, text) = m.tool("import_favorites", json!({"paths": [files.path().join("folder.sql").display().to_string()]}));

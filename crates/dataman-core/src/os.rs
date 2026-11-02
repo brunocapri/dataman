@@ -11,6 +11,8 @@ pub const NAME: &str = if cfg!(target_os = "macos") {
 };
 
 pub const LINUX: bool = cfg!(target_os = "linux");
+/// How the copy names the machine Dataman runs on.
+pub const THIS_MACHINE: &str = if cfg!(target_os = "macos") { "this Mac" } else { "this computer" };
 pub const WINDOWS: bool = cfg!(windows);
 
 #[cfg(target_os = "macos")]
