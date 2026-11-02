@@ -662,13 +662,13 @@ impl Connection {
         })
     }
 
-    /// One value of a field (a dotted path) that isn't null, as text; MongoDB only.
-    pub fn sample_field_value(self: &Arc<Self>, db: &str, collection: &str, path: &str) -> Task<Option<String>> {
+    /// Up to `n` values of a field (a dotted path) that aren't null, as text; MongoDB only.
+    pub fn sample_field_values(self: &Arc<Self>, db: &str, collection: &str, path: &str, n: i64) -> Task<Vec<String>> {
         let (this, db, coll, path) = (self.clone(), db.to_string(), collection.to_string(), path.to_string());
         spawn(self.handle(), async move {
             match this.client()?.clone() {
-                Client::Mongo(c) => mongo::sample_value(&c, &db, &coll, &path).await,
-                Client::Search(_) | Client::Redis(_) => Ok(None),
+                Client::Mongo(c) => mongo::sample_values(&c, &db, &coll, &path, n).await,
+                Client::Search(_) | Client::Redis(_) => Ok(Vec::new()),
             }
         })
     }

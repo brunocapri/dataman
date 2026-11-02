@@ -1,6 +1,7 @@
 //! Protection › Sensitive columns › Edit: how one column is masked (Redacted, or Partial with the
-//! characters kept at the start and at the end), with what an agent would get from a value read
-//! from the column itself (a made-up one when none can be read). Nothing is saved before Save.
+//! characters kept at the start and at the end), with the column as an agent would get it: a few
+//! of its own values in a results grid (a made-up one when none can be read). Nothing is saved
+//! before Save.
 
 use dataman_core::privacy::{self, AgentView, Keep, Mask, Names};
 use dataman_core::{ConnectionProfile, Engine};
@@ -8,19 +9,33 @@ use gpui::{AnyElement, ClickEvent, Context, FontWeight, SharedString, div, prelu
 
 use crate::agents::AgentsPage;
 use crate::agents_rules::{choices, masked_example};
-use crate::theme::{Theme, mono, px};
+use crate::theme::{Theme, px};
 use crate::ui;
 
 /// The sheet's column (as the rules name it) and the mask being picked.
 pub(crate) struct SensEdit {
     pub(crate) col: String,
     pub(crate) how: Mask,
-    /// A value of the column and the table it was read from, once read.
-    pub(crate) sample: Option<(String, String)>,
+    /// Values of the column and the table they were read from, once read.
+    pub(crate) sample: Option<(Vec<String>, String)>,
 }
 
 /// Long values are cut: the preview shows how the mask looks, not the whole value.
 const SAMPLE_MAX: usize = 80;
+/// The rows the preview reads and shows.
+const SAMPLE_ROWS: u32 = 6;
+const GRID_ROW_H: f32 = 22.;
+const GRID_HEAD_H: f32 = 28.;
+/// The grid keeps its horizontal scrollbar's lane under the rows.
+const GRID_BAR: f32 = 10.;
+
+/// A value as the preview shows it: Redacted as dots, like the row's example.
+fn shown(how: Mask, v: &str) -> String {
+    match how {
+        Mask::Hidden => "••••••••".into(),
+        how => privacy::mask_value(how, v),
+    }
+}
 
 /// The row's words for a mask: `Partial · first 2, last 3`.
 pub(crate) fn summary(how: Mask) -> String {
@@ -38,11 +53,25 @@ impl AgentsPage {
             self.read_sample(&p, &col, cx);
         }
         self.sens_edit = Some(SensEdit { col, how, sample: None });
+        self.sync_sens_grid(cx);
         cx.notify();
     }
 
-    /// The first value that isn't null of the first column the entry matches (a pattern too),
-    /// read only while connected; MongoDB's fields by their path.
+    /// The preview grid: the column under its own name, masked as picked.
+    pub(crate) fn sync_sens_grid(&mut self, cx: &mut Context<Self>) {
+        let Some(e) = self.sens_edit.as_ref() else { return };
+        let field = e.col.rsplit_once('.').map_or(e.col.as_str(), |(_, f)| f).to_string();
+        let rows: Vec<serde_json::Value> = match &e.sample {
+            Some((vals, _)) => vals.iter().map(|v| serde_json::json!([shown(e.how, v)])).collect(),
+            None => vec![serde_json::json!([masked_example(&field, e.how)])],
+        };
+        let reply = serde_json::json!({ "columns": [[field, ""]], "rows": rows }).to_string();
+        let (table, rt) = (crate::agents::reply_table(&reply).map(|(rs, _)| rs), self.core.handle());
+        self.sens_grid.update(cx, |g, cx| g.set_result(table, rt, cx));
+    }
+
+    /// Values that aren't null of the first column the entry matches (a pattern too), read only
+    /// while connected; MongoDB's fields by their path.
     fn read_sample(&mut self, p: &ConnectionProfile, col: &str, cx: &mut Context<Self>) {
         let Some(conn) = self.store.read(cx).connection(&p.id) else { return };
         let (col, engine) = (col.to_string(), p.engine);
@@ -57,22 +86,26 @@ impl AgentsPage {
                     Some((r.schema.clone(), r.name.clone(), c.name.clone()))
                 });
                 match at {
-                    Some((schema, table, c)) => conn.sample_column_value(&db, &schema, &table, &c).await.ok().flatten().map(|v| (v, table)),
+                    Some((schema, table, c)) => conn.sample_column_values(&db, &schema, &table, &c, SAMPLE_ROWS).await.ok().map(|v| (v, table)),
                     None => None,
                 }
             } else if engine == Engine::MongoDb && !col.contains('*') {
                 match col.split_once('.') {
-                    Some((coll, path)) => conn.sample_field_value(&db, coll, path).await.ok().flatten().map(|v| (v, coll.to_string())),
+                    Some((coll, path)) => conn.sample_field_values(&db, coll, path, SAMPLE_ROWS as i64).await.ok().map(|v| (v, coll.to_string())),
                     None => None,
                 }
             } else {
                 None
             };
-            let Some((v, from)) = found.filter(|(v, _)| !v.trim().is_empty()) else { return };
-            let v: String = v.chars().take(SAMPLE_MAX).collect();
+            let Some((vals, from)) = found else { return };
+            let vals: Vec<String> = vals.into_iter().filter(|v| !v.trim().is_empty()).map(|v| v.chars().take(SAMPLE_MAX).collect()).collect();
+            if vals.is_empty() {
+                return;
+            }
             let _ = this.update(cx, |page, cx| {
                 if let Some(e) = page.sens_edit.as_mut().filter(|e| e.col == col) {
-                    e.sample = Some((v, from));
+                    e.sample = Some((vals, from));
+                    page.sync_sens_grid(cx);
                     cx.notify();
                 }
             });
@@ -100,16 +133,12 @@ impl AgentsPage {
 
     pub(crate) fn sens_sheet(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
         let e = self.sens_edit.as_ref()?;
-        let field = e.col.rsplit_once('.').map_or(e.col.as_str(), |(_, f)| f);
         let masks: Vec<(Mask, &str)> = Mask::ALL.iter().map(|m| (*m, m.label())).collect();
         let counts: Vec<(u8, String)> = (0..=Keep::MAX).map(|n| (n, n.to_string())).collect();
         let counts: Vec<(u8, &str)> = counts.iter().map(|(n, s)| (*n, s.as_str())).collect();
         let keep = e.how.kept();
-        let (got, from) = match (&e.sample, e.how) {
-            (_, Mask::Hidden) => (privacy::HIDDEN.to_string(), None),
-            (Some((v, table)), how) => (privacy::mask_value(how, v), Some(format!("a value of {table}"))),
-            (None, how) => (masked_example(field, how), None),
-        };
+        let from = e.sample.as_ref().map(|(_, table)| format!("from {table}"));
+        let shown_rows = e.sample.as_ref().map_or(1, |(v, _)| v.len()) as f32;
         let line = |label: &str, control: AnyElement| div().flex().flex_row().items_center().gap(px(16.)).child(div().w(px(84.)).flex_none().text_color(t.tx2).child(label.to_string())).child(control);
         let body = div()
             .p(px(20.))
@@ -118,17 +147,18 @@ impl AgentsPage {
             .gap(px(16.))
             .child(line(
                 "Mask",
-                choices(t, "agents-sens-edit-mask", &masks, Mask::ALL.into_iter().find(|m| m.is_partial() == e.how.is_partial()).unwrap_or(Mask::Hidden), cx, |v, m, _| {
+                choices(t, "agents-sens-edit-mask", &masks, Mask::ALL.into_iter().find(|m| m.is_partial() == e.how.is_partial()).unwrap_or(Mask::Hidden), cx, |v, m, cx| {
                     if let Some(e) = v.sens_edit.as_mut() {
                         // Back to Partial keeps the characters picked before.
                         e.how = m.keeping(e.how.kept());
                     }
+                    v.sync_sens_grid(cx);
                 })
                 .into_any_element(),
             ))
             .when(e.how.is_partial(), |d| {
-                d.child(line("Keep first", choices(t, "agents-sens-edit-first", &counts, keep.first, cx, |v, n, _| set_keep(v, |k| k.first = n)).into_any_element()))
-                    .child(line("Keep last", choices(t, "agents-sens-edit-last", &counts, keep.last, cx, |v, n, _| set_keep(v, |k| k.last = n)).into_any_element()))
+                d.child(line("Keep first", choices(t, "agents-sens-edit-first", &counts, keep.first, cx, |v, n, cx| set_keep(v, |k| k.first = n, cx)).into_any_element()))
+                    .child(line("Keep last", choices(t, "agents-sens-edit-last", &counts, keep.last, cx, |v, n, cx| set_keep(v, |k| k.last = n, cx)).into_any_element()))
             })
             .child(
                 div()
@@ -145,23 +175,7 @@ impl AgentsPage {
                             .child(div().text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).text_color(t.tx3).child("AGENTS GET"))
                             .children(from.map(|f| div().children(ui::here(&"agents-sens-edit-from".into())).id("agents-sens-edit-from").text_size(px(11.)).text_color(t.tx4).child(f))),
                     )
-                    .child(
-                        div()
-                            .id("agents-sens-edit-example")
-                            .h(px(34.))
-                            .px(px(10.))
-                            .flex()
-                            .items_center()
-                            .bg(t.field)
-                            .border_1()
-                            .border_color(t.line2)
-                            .font_family(mono())
-                            .text_size(px(12.5))
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .text_ellipsis()
-                            .child(got),
-                    ),
+                    .child(div().children(ui::here(&"agents-sens-edit-example".into())).h(px(GRID_HEAD_H + GRID_ROW_H * shown_rows + GRID_BAR + 2.)).border_1().border_color(t.line).child(self.sens_grid.clone())),
             );
         let footer = ui::modal_footer(t)
             .child(div().flex_1())
@@ -190,10 +204,11 @@ impl AgentsPage {
     }
 }
 
-fn set_keep(v: &mut AgentsPage, f: impl FnOnce(&mut Keep)) {
+fn set_keep(v: &mut AgentsPage, f: impl FnOnce(&mut Keep), cx: &mut Context<AgentsPage>) {
     if let Some(e) = v.sens_edit.as_mut() {
         let mut k = e.how.kept();
         f(&mut k);
         e.how = e.how.keeping(k);
     }
+    v.sync_sens_grid(cx);
 }

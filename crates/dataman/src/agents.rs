@@ -239,6 +239,8 @@ pub struct AgentsPage {
     pub(crate) vis_input: Entity<TextInput>,
     pub(crate) scan_note: Option<String>,
     pub(crate) sens_edit: Option<crate::agents_sens::SensEdit>,
+    /// Sensitive columns › Edit's preview: the column as agents get it.
+    pub(crate) sens_grid: Entity<crate::grid::ResultGrid>,
     pub(crate) editor: TypeEditor,
     pub(crate) suggest: crate::agents_suggest::Suggest,
     /// What the selected call's agent received, in the results grid; zoomed over the whole
@@ -541,6 +543,11 @@ impl AgentsPage {
             }
         })
         .detach();
+        let sens_grid = cx.new(|cx| {
+            let mut g = crate::grid::ResultGrid::new(cx);
+            g.tight_gutter();
+            g
+        });
         let name = cx.new(|cx| TextInput::new(cx, "Customer code").bare());
         let regex = cx.new(|cx| TextInput::new(cx, "\\bCUST-[0-9]{6}\\b").bare());
         let sample = cx.new(|cx| TextInput::new(cx, "A line to test, then ↩").bare());
@@ -588,6 +595,7 @@ impl AgentsPage {
             vis_input,
             scan_note: None,
             sens_edit: None,
+            sens_grid,
             editor: TypeEditor { editing: None, name, regex, mask: Mask::Hidden, more: false, validator: Validator::None, ignore_case: false, keep: 4, samples: Vec::new(), sample, confirm_delete: false },
             suggest: Default::default(),
             received,
