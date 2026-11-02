@@ -2588,6 +2588,8 @@ pub(crate) fn file_url_path(url: &str) -> Option<std::path::PathBuf> {
     let rest = match url.strip_prefix("file://") {
         Some(r) => r.strip_prefix("localhost").unwrap_or(r),
         None if url.starts_with('/') => url,
+        // `C:\a\b.sql` as it was given.
+        None if cfg!(windows) && std::path::Path::new(url).is_absolute() => return Some(url.into()),
         None => return None,
     };
     // `file://host/x` names another machine's file: never a path relative to ours.
@@ -2609,8 +2611,21 @@ pub(crate) fn file_url_path(url: &str) -> Option<std::path::PathBuf> {
             i += 1;
         }
     }
-    use std::os::unix::ffi::OsStringExt as _;
-    Some(std::ffi::OsString::from_vec(out).into())
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt as _;
+        Some(std::ffi::OsString::from_vec(out).into())
+    }
+    // `/C:/a/b.sql` → `C:\a\b.sql`.
+    #[cfg(windows)]
+    {
+        let s = String::from_utf8(out).ok()?;
+        let s = match s.strip_prefix('/') {
+            Some(r) if r.as_bytes().get(1) == Some(&b':') => r,
+            _ => &s,
+        };
+        Some(s.replace('/', "\\").into())
+    }
 }
 
 /// A statement as an editor shows it: SQL ends with `;`; the other engines' languages have no
