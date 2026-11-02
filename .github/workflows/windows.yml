@@ -9,10 +9,11 @@ on:
 permissions:
   contents: read
 
-# A run takes over an hour: the one under way finishes, the newest push waits its turn.
+# A run takes over an hour. On a pull request the newest push cancels the run under way; on
+# main each push runs to the end.
 concurrency:
   group: windows-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -60,7 +61,11 @@ jobs:
           # in the live sweeps. Anything else fails.
           others=$(grep ': warning: ' check.log | grep -v '^vendor[/\\]tiberius' | grep -v 'live_\(pg\|mysql\)_sweep.rs.*unused `Result`' | sort -u || true)
           [ -z "$others" ] || { echo "new warnings:"; echo "$others"; exit 1; }
+      - name: Build the tests
+        run: cargo test --release --workspace --no-run
+      # Built above, they take minutes: a test that hangs fails here, by name, not at the job's end.
       - name: Tests, the Credential Manager's too
+        timeout-minutes: 20
         run: |
           cargo test --release --workspace --no-fail-fast
           if ($LASTEXITCODE -ne 0) { exit 1 }
