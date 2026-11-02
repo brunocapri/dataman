@@ -69,10 +69,17 @@ struct Stage {
     name: &'static str,
     needs: &'static [Db],
     secs: u64,
+    /// Why it does not apply on this platform, when it does not: listed, not run, not failed.
+    away: Option<&'static str>,
 }
 
 const fn st(name: &'static str, needs: &'static [Db], secs: u64) -> Stage {
-    Stage { name, needs, secs }
+    Stage { name, needs, secs, away: None }
+}
+
+/// The app updates itself on macOS and Linux; on Windows the installer updates it.
+const fn not_on_windows(s: Stage, why: &'static str) -> Stage {
+    Stage { away: if cfg!(windows) { Some(why) } else { None }, ..s }
 }
 
 const SQL3: &[Db] = &[Pg, MySql, MsSql];
@@ -129,7 +136,7 @@ const STAGES: &[Stage] = &[
     st("project-check", &[], 120),
     st("outside-check", &[], 120),
     st("format-check", &[Mongo], 120),
-    st("update-check", &[Pg], 300),
+    not_on_windows(st("update-check", &[Pg], 300), "no self-update on Windows: the installer updates the app"),
 ];
 
 struct Opts {
@@ -150,7 +157,8 @@ fn csv(args: &[String], name: &str) -> Vec<String> {
 pub fn run(args: &[String]) -> Result<()> {
     if args.iter().any(|a| a == "--list") {
         for s in STAGES {
-            println!("{:<18} {}", s.name, s.needs.iter().map(|d| d.service()).collect::<Vec<_>>().join(" "));
+            let away = s.away.map(|w| format!("  (not here: {w})")).unwrap_or_default();
+            println!("{:<18} {}{away}", s.name, s.needs.iter().map(|d| d.service()).collect::<Vec<_>>().join(" "));
         }
         return Ok(());
     }
@@ -171,10 +179,10 @@ pub fn run(args: &[String]) -> Result<()> {
             bail!("no stage {n} (`xtask e2e --list`)");
         }
     }
-    let stages: Vec<&Stage> = STAGES
+    let (stages, away): (Vec<&Stage>, Vec<&Stage>) = STAGES
         .iter()
         .filter(|s| (o.only.is_empty() || o.only.iter().any(|n| n == s.name)) && !o.skip.iter().any(|n| n == s.name))
-        .collect();
+        .partition(|s| s.away.is_none());
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize()?;
     // Windows canonicalizes to `\\?\C:\...`: docker compose resolves its bind mounts against
     // the working directory, and takes that prefix's colons for mount separators.
@@ -207,6 +215,9 @@ pub fn run(args: &[String]) -> Result<()> {
     let dir = root.join("target/e2e").join(&stamp);
     std::fs::create_dir_all(&dir)?;
     step(&format!("{} stages, logs in {}", stages.len(), dir.display()));
+    for s in &away {
+        println!("– {:<18} not here: {}", s.name, s.away.unwrap_or_default());
+    }
     let mut rows = Vec::new();
     for s in &stages {
         let r = run_stage(&root, &app, s, &dir, o.verbose)?;
@@ -227,6 +238,9 @@ pub fn run(args: &[String]) -> Result<()> {
     );
     if !failed.is_empty() {
         summary.push_str(&format!(" — failed: {}", failed.join(", ")));
+    }
+    if !away.is_empty() {
+        summary.push_str(&format!(" — not on this platform: {}", away.iter().map(|s| s.name).collect::<Vec<_>>().join(", ")));
     }
     println!("\n{summary}");
     std::fs::write(dir.join("summary.txt"), format!("{summary}\n"))?;
