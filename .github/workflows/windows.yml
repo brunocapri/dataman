@@ -58,7 +58,7 @@ jobs:
           [ -z "$others" ] || { echo "new warnings:"; echo "$others"; exit 1; }
       - name: Tests, the Credential Manager's too
         run: |
-          cargo test --release --workspace
+          cargo test --release --workspace --no-fail-fast
           if ($LASTEXITCODE -ne 0) { exit 1 }
           cargo test --release -p dataman-core --test keychain -- --ignored
           if ($LASTEXITCODE -ne 0) { exit 1 }
