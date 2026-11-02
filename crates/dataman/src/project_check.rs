@@ -44,7 +44,7 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     let dir = std::env::temp_dir().join(format!("dataman-project-check-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join(project::DIR)).unwrap();
-    let root = std::fs::canonicalize(&dir).unwrap();
+    let root = dataman_core::os::canonical(&dir).unwrap();
     let db = root.join("shop.sqlite");
     let _ = dataman_core::import::create_database(Engine::Sqlite, &db);
     // What a teammate committed: the database file relative to the folder, no password.

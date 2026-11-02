@@ -58,10 +58,7 @@ cp "$root/packaging/linux/dev.dataman.Dataman.desktop" "$app/"
 cp "$root/packaging/linux/dev.dataman.Dataman.desktop" "$app/usr/share/applications/"
 cp "$root/packaging/linux/dev.dataman.Dataman.metainfo.xml" "$app/usr/share/metainfo/"
 cp "$root/packaging/linux/dev.dataman.Dataman.xml" "$app/usr/share/mime/packages/"
-for n in 128 256 512; do
-  mkdir -p "$app/usr/share/icons/hicolor/${n}x${n}/apps"
-  convert "$root/packaging/AppIcon.png" -resize "${n}x${n}" "$app/usr/share/icons/hicolor/${n}x${n}/apps/dev.dataman.Dataman.png"
-done
+"$root/scripts/linux/icons.sh" "$app"
 cp "$app/usr/share/icons/hicolor/256x256/apps/dev.dataman.Dataman.png" "$app/dev.dataman.Dataman.png"
 ln -s dev.dataman.Dataman.png "$app/.DirIcon"
 

@@ -658,7 +658,7 @@ pub fn effective_level(level: Translucency) -> Translucency {
 
 /// GPUI blurs behind a Linux window on KWin (Wayland) only; elsewhere "transparent" is see-through.
 pub fn translucency_works() -> bool {
-    !crate::keymap::LINUX
+    !crate::keymap::NOT_MAC
         || (std::env::var_os("WAYLAND_DISPLAY").is_some() && std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|d| d.to_ascii_uppercase().contains("KDE")))
 }
 

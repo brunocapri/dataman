@@ -39,9 +39,25 @@ pub(crate) struct Instance {
     root: Mutex<duckdb::Connection>,
     read_only: bool,
     external: bool,
+    /// Dropped after `root`: the file is listed until its database is closed (DuckDB
+    /// checkpoints then), so it is never opened twice, in this process, at the same time.
+    _listed: Listed,
 }
 
+/// The files open in this process; an entry whose instance is gone is one still closing.
 static REGISTRY: Mutex<Option<HashMap<PathBuf, Weak<Instance>>>> = Mutex::new(None);
+
+struct Listed(PathBuf);
+
+impl Drop for Listed {
+    fn drop(&mut self) {
+        if let Some(map) = REGISTRY.lock().as_mut()
+            && map.get(&self.0).is_some_and(|w| w.strong_count() == 0)
+        {
+            map.remove(&self.0);
+        }
+    }
+}
 
 fn canonical(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
@@ -54,19 +70,41 @@ fn instance(path: &Path, read_only: bool, external: bool) -> Result<Arc<Instance
         bail!("{} does not exist", path.display());
     }
     let key = canonical(path);
-    let mut g = REGISTRY.lock();
-    let map = g.get_or_insert_with(HashMap::new);
-    map.retain(|_, w| w.strong_count() > 0);
-    if let Some(i) = map.get(&key).and_then(Weak::upgrade) {
+    // A connection just closed lets go of the file when its thread ends, and its database once
+    // closed: a moment to wait for that before another mode is refused, longer for a close.
+    let start = Instant::now();
+    let mut g = loop {
+        let mut g = REGISTRY.lock();
+        let map = g.get_or_insert_with(HashMap::new);
+        let found = match map.get(&key) {
+            None => break g,
+            Some(w) => w.upgrade(),
+        };
+        // Never an instance's last reference dropped with the registry locked (its drop locks it).
+        drop(g);
+        let waited = start.elapsed();
+        let Some(i) = found else {
+            if waited < std::time::Duration::from_secs(10) {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                continue;
+            }
+            bail!("{} is still being closed by another connection: try again", path.display());
+        };
+        if i.read_only == read_only && i.external == external {
+            return Ok(i);
+        }
+        if waited < std::time::Duration::from_secs(1) {
+            drop(i);
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            continue;
+        }
         if i.read_only != read_only {
             let held = if i.read_only { "read-only" } else { "read-write" };
             bail!("{} is already open {held} in another connection: close that one first", path.display());
         }
-        if i.external != external {
-            bail!("{} is already open with file access {} in another connection: close that one first", path.display(), if i.external { "on" } else { "off" });
-        }
-        return Ok(i);
-    }
+        bail!("{} is already open with file access {} in another connection: close that one first", path.display(), if i.external { "on" } else { "off" });
+    };
+    let map = g.get_or_insert_with(HashMap::new);
     // An empty file (`touch shop.duckdb`) holds no data, but DuckDB refuses it as "not a valid
     // DuckDB database file": opened read-write it becomes a new database, as SQLite does with one.
     let empty = std::fs::metadata(&key).is_ok_and(|m| m.len() == 0);
@@ -93,7 +131,7 @@ fn instance(path: &Path, read_only: bool, external: bool) -> Result<Arc<Instance
     if empty {
         root.execute_batch("CHECKPOINT").with_context(|| format!("creating {}", path.display()))?;
     }
-    let i = Arc::new(Instance { root: Mutex::new(root), read_only, external });
+    let i = Arc::new(Instance { root: Mutex::new(root), read_only, external, _listed: Listed(key.clone()) });
     map.insert(key, Arc::downgrade(&i));
     Ok(i)
 }
@@ -116,6 +154,9 @@ pub(crate) struct Conn {
     watch: Option<Arc<TxWatch>>,
     /// DuckDB does not say: the transaction's state as the statements run left it.
     tx: u8,
+    /// Held by the thread that holds `db`, dropped after it: the file counts as open until its
+    /// last connection is closed, not when the client lets go of the thread.
+    _instance: Arc<Instance>,
 }
 
 impl Conn {
@@ -141,7 +182,6 @@ pub(crate) struct Client {
     interrupt: Arc<duckdb::InterruptHandle>,
     busy: Arc<AtomicBool>,
     watch: Option<Arc<TxWatch>>,
-    _instance: Arc<Instance>,
 }
 
 impl Drop for Client {
@@ -174,6 +214,7 @@ pub(crate) async fn connect(p: &ConnectionProfile, database: Option<&str>, watch
     let (read_only, external) = (p.read_only, external_access(p));
     let inst = tokio::task::spawn_blocking(move || instance(&path, read_only, external)).await??;
     let root = inst.root.lock().try_clone()?;
+    let held = inst.clone();
     let catalog = database.filter(|d| !d.is_empty()).map(str::to_string);
     let w = watch.cloned();
     let worker = Worker::start("duckdb", move || {
@@ -183,11 +224,12 @@ pub(crate) async fn connect(p: &ConnectionProfile, database: Option<&str>, watch
                 root.execute_batch(&format!("USE {}", Dialect::DuckDb.quote_ident(c)))?;
             }
         }
-        Ok(Conn { db: root, watch: w, tx: b'I' })
+        Ok(Conn { db: root, watch: w, tx: b'I', _instance: held })
     })
     .await?;
     let interrupt = worker.call(|c| c.db.interrupt_handle()).await.ok_or_else(|| anyhow!("the DuckDB connection closed"))?;
-    Ok(Arc::new(Client { worker, interrupt, busy: Arc::new(AtomicBool::new(false)), watch: watch.cloned(), _instance: inst }))
+    drop(inst);
+    Ok(Arc::new(Client { worker, interrupt, busy: Arc::new(AtomicBool::new(false)), watch: watch.cloned() }))
 }
 
 impl Client {

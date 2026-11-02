@@ -4,7 +4,7 @@ pub fn update_available(version: &str, cx: &App) {
     if std::env::var_os("DATAMAN_NO_NOTIFY").is_some() {
         return;
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(not(target_os = "linux"))]
     let _ = cx;
     #[cfg(target_os = "linux")]
     if cx.active_window().is_some() {

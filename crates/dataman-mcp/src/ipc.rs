@@ -2,6 +2,10 @@
 //! launch in `app.key` (0600, 256 bits) that every request carries, compared in constant time;
 //! the peer must be the socket's owner. Once a request was sent the binary never runs it again
 //! locally (a write must not run twice).
+//!
+//! On Windows a named pipe in place of the socket: its name, random at each launch, is in
+//! `app.sock` (the folder is in the user's profile, which only they can read), so no other user
+//! can squat the name or find the pipe; remote clients are refused.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -95,16 +99,45 @@ pub fn authorize(line: &str, key: &str) -> Result<Op, String> {
 }
 
 fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     let _ = std::fs::remove_file(path);
-    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(path)?;
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
+    let mut f = o.open(path)?;
     std::io::Write::write_all(&mut f, text.as_bytes())?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+    #[cfg(unix)]
+    std::fs::set_permissions(path, <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600))?;
+    Ok(())
 }
 
+#[cfg(unix)]
 fn owner(path: &Path) -> std::io::Result<u32> {
     use std::os::unix::fs::MetadataExt;
     Ok(std::fs::metadata(path)?.uid())
+}
+
+/// The pipe the running app listens on, from `app.sock`.
+#[cfg(windows)]
+fn pipe_name(dirs: &Dirs) -> std::io::Result<String> {
+    let name = std::fs::read_to_string(socket_path(dirs))?.trim().to_string();
+    if !name.starts_with(r"\\.\pipe\dataman-") {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "not a Dataman pipe"));
+    }
+    Ok(name)
+}
+
+/// Opens the pipe, waiting a little while every instance is busy.
+#[cfg(windows)]
+async fn open_pipe(name: &str) -> std::io::Result<tokio::net::windows::named_pipe::NamedPipeClient> {
+    const ERROR_PIPE_BUSY: i32 = 231;
+    let until = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        match tokio::net::windows::named_pipe::ClientOptions::new().open(name) {
+            Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) && std::time::Instant::now() < until => tokio::time::sleep(Duration::from_millis(20)).await,
+            r => return r,
+        }
+    }
 }
 
 pub type Provide = Arc<dyn Fn() -> anyhow::Result<(Arc<Hub>, Arc<Registry>)> + Send + Sync>;
@@ -126,7 +159,12 @@ impl IpcServer {
         }
         let _ = std::fs::remove_file(&self.key_file);
         // Wakes the accept so its thread sees the flag, then the socket goes.
+        #[cfg(unix)]
         let _ = std::os::unix::net::UnixStream::connect(&self.path);
+        #[cfg(windows)]
+        if let Ok(name) = std::fs::read_to_string(&self.path) {
+            let _ = std::fs::OpenOptions::new().read(true).write(true).open(name.trim());
+        }
         let _ = std::fs::remove_file(&self.path);
     }
 }
@@ -138,6 +176,7 @@ impl Drop for IpcServer {
 }
 
 /// Blocking (a bind): off the UI thread. Never takes over a socket another app listens on.
+#[cfg(unix)]
 pub fn serve(dirs: &Dirs, provide: Provide) -> std::io::Result<IpcServer> {
     dirs.ensure_private()?;
     let path = socket_path(dirs);
@@ -178,9 +217,71 @@ pub fn serve(dirs: &Dirs, provide: Provide) -> std::io::Result<IpcServer> {
             let rt = hub.handle();
             rt.spawn(async move {
                 let Ok(s) = tokio::net::UnixStream::from_std(s) else { return };
-                connection(s, hub, reg, &key, uid).await;
+                let peer = s.peer_cred().map(|c| c.uid()).ok();
+                let (r, mut w) = s.into_split();
+                if peer != Some(uid) {
+                    return write_reply(&mut w, &Reply::refused("unauthorized")).await;
+                }
+                connection(r, w, hub, reg, &key).await;
             });
         }
+    })?;
+    Ok(IpcServer { path, key_file, stop })
+}
+
+/// Blocking: off the UI thread. Never takes over a pipe another app listens on.
+#[cfg(windows)]
+pub fn serve(dirs: &Dirs, provide: Provide) -> std::io::Result<IpcServer> {
+    use tokio::net::windows::named_pipe::ServerOptions;
+    dirs.ensure_private()?;
+    let path = socket_path(dirs);
+    if let Ok(name) = pipe_name(dirs)
+        && std::fs::OpenOptions::new().read(true).write(true).open(&name).is_ok()
+    {
+        return Err(std::io::Error::new(std::io::ErrorKind::AddrInUse, "another Dataman is listening"));
+    }
+    let name = format!(r"\\.\pipe\dataman-{}", new_key());
+    // The pipe's own runtime: it accepts; each connection runs on the hub's, as on Unix.
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+    let create = |first: bool| ServerOptions::new().first_pipe_instance(first).reject_remote_clients(true).create(&name);
+    let mut server = rt.block_on(async { create(true) })?;
+    let key = new_key();
+    let key_file = key_path(dirs);
+    write_private(&key_file, &key)?;
+    write_private(&path, &name)?;
+    let stop = Arc::new(AtomicBool::new(false));
+    let flag = stop.clone();
+    let name2 = name.clone();
+    std::thread::Builder::new().name("mcp-ipc".into()).spawn(move || {
+        rt.block_on(async move {
+            loop {
+                let connected = server.connect().await;
+                if flag.load(Ordering::Acquire) {
+                    break;
+                }
+                let next = match ServerOptions::new().reject_remote_clients(true).create(&name2) {
+                    Ok(n) => n,
+                    Err(e) => {
+                        log::warn!("the MCP pipe: {e}");
+                        break;
+                    }
+                };
+                let s = std::mem::replace(&mut server, next);
+                if connected.is_err() {
+                    continue;
+                }
+                let (r, mut w) = tokio::io::split(s);
+                let (hub, reg) = match provide() {
+                    Ok(x) => x,
+                    Err(e) => {
+                        tokio::spawn(async move { write_reply(&mut w, &Reply::refused(format!("{e:#}"))).await });
+                        continue;
+                    }
+                };
+                let key = key.clone();
+                hub.handle().spawn(async move { connection(r, w, hub, reg, &key).await });
+            }
+        })
     })?;
     Ok(IpcServer { path, key_file, stop })
 }
@@ -192,12 +293,7 @@ async fn write_reply(w: &mut (impl AsyncWriteExt + Unpin), r: &Reply) {
     let _ = w.flush().await;
 }
 
-async fn connection(s: tokio::net::UnixStream, hub: Arc<Hub>, reg: Arc<Registry>, key: &str, uid: u32) {
-    let peer = s.peer_cred().map(|c| c.uid()).ok();
-    let (r, mut w) = s.into_split();
-    if peer != Some(uid) {
-        return write_reply(&mut w, &Reply::refused("unauthorized")).await;
-    }
+async fn connection(r: impl tokio::io::AsyncRead + Unpin, mut w: impl AsyncWriteExt + Unpin, hub: Arc<Hub>, reg: Arc<Registry>, key: &str) {
     let mut r = BufReader::new(r);
     let mut line = String::new();
     let read = tokio::time::timeout(READ_REQUEST, (&mut r).take(MAX_LINE).read_line(&mut line)).await;
@@ -264,6 +360,7 @@ impl std::fmt::Display for CallError {
     }
 }
 
+#[cfg(unix)]
 async fn connect(dirs: &Dirs) -> Result<(tokio::net::UnixStream, String), CallError> {
     let path = socket_path(dirs);
     let absent = |e: String| CallError::Absent(e);
@@ -280,9 +377,18 @@ async fn connect(dirs: &Dirs) -> Result<(tokio::net::UnixStream, String), CallEr
     Ok((s, key))
 }
 
+#[cfg(windows)]
+async fn connect(dirs: &Dirs) -> Result<(tokio::net::windows::named_pipe::NamedPipeClient, String), CallError> {
+    let absent = |e: String| CallError::Absent(e);
+    let key = std::fs::read_to_string(key_path(dirs)).map_err(|e| absent(format!("no key: {e}")))?.trim().to_string();
+    let name = pipe_name(dirs).map_err(|e| absent(format!("no pipe: {e}")))?;
+    let s = open_pipe(&name).await.map_err(|e| absent(e.to_string()))?;
+    Ok((s, key))
+}
+
 async fn request(dirs: &Dirs, op: Op, cancel: CancellationToken) -> Result<Reply, CallError> {
     let (s, key) = connect(dirs).await?;
-    let (r, mut w) = s.into_split();
+    let (r, mut w) = tokio::io::split(s);
     let mut line = serde_json::to_string(&Request { v: VERSION, key, op }).map_err(|e| CallError::Absent(e.to_string()))?;
     line.push('\n');
     if let Err(e) = w.write_all(line.as_bytes()).await {
@@ -365,17 +471,21 @@ mod tests {
 
     #[test]
     fn socket_end_to_end() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let dirs = Dirs::at(dir.path().join("dataman"));
         std::fs::create_dir_all(&dirs.config).unwrap();
         std::fs::write(dirs.connections_file(), "[[connection]]\nid = \"a\"\nname = \"alpha\"\nhost = \"h\"\nport = 1\nuser = \"u\"\ndatabase = \"d\"\n").unwrap();
+        #[cfg(unix)]
         drop(std::os::unix::net::UnixListener::bind(socket_path(&dirs)).unwrap());
+        #[cfg(windows)]
+        std::fs::write(socket_path(&dirs), r"\\.\pipe\dataman-left-over").unwrap();
         let hub = Hub::new(dirs.clone(), Arc::new(dataman_core::MemorySecrets::default())).unwrap();
         let reg = Arc::new(Registry::standard(None));
         let (h, r) = (hub.clone(), reg.clone());
         let srv = serve(&dirs, Arc::new(move || Ok((h.clone(), r.clone())))).unwrap();
+        #[cfg(unix)]
         for p in [socket_path(&dirs), key_path(&dirs)] {
+            use std::os::unix::fs::PermissionsExt;
             assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600, "{}", p.display());
         }
         assert!(serve(&dirs, Arc::new(|| anyhow::bail!("unused"))).is_err(), "a listening app is never taken over");
@@ -388,8 +498,11 @@ mod tests {
                 other => panic!("{other:?}"),
             };
             assert!(text.contains("alpha") && r.is_error != Some(true), "{text}");
+            #[cfg(unix)]
             let s = tokio::net::UnixStream::connect(socket_path(&dirs)).await.unwrap();
-            let (rd, mut w) = s.into_split();
+            #[cfg(windows)]
+            let s = open_pipe(&pipe_name(&dirs).unwrap()).await.unwrap();
+            let (rd, mut w) = tokio::io::split(s);
             w.write_all(b"{\"v\":1,\"key\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"op\":\"ping\"}\n").await.unwrap();
             let mut back = String::new();
             BufReader::new(rd).read_line(&mut back).await.unwrap();

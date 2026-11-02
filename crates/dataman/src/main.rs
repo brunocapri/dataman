@@ -1,3 +1,6 @@
+// No console window behind the app on Windows; `attach_console` gives a terminal its output.
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 mod activity;
 #[cfg(feature = "checks")]
 mod activity_demo;
@@ -77,7 +80,7 @@ mod import_ui;
 mod input;
 #[cfg(feature = "checks")]
 mod input_check;
-#[cfg(target_os = "linux")]
+#[cfg(not(target_os = "macos"))]
 mod instance;
 #[cfg(feature = "checks")]
 mod lite_check;
@@ -115,6 +118,7 @@ mod plan;
 #[cfg(feature = "checks")]
 mod plan_demo;
 mod privileges;
+mod prompt;
 #[cfg(feature = "checks")]
 mod project_check;
 mod project_ui;
@@ -362,11 +366,29 @@ fn menus(cx: &App) -> Vec<Menu> {
     ]
 }
 
+/// A GUI program has no console: started from one, its output goes there (`dataman --version`);
+/// started with pipes (an MCP client, the check stages), it already has them.
+#[cfg(windows)]
+fn attach_console() {
+    use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole, GetStdHandle, STD_OUTPUT_HANDLE};
+    // SAFETY: plain Win32 calls with no pointers.
+    unsafe {
+        let out = GetStdHandle(STD_OUTPUT_HANDLE);
+        if out.is_null() || out == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+            AttachConsole(ATTACH_PARENT_PROCESS);
+        }
+    }
+}
+
 fn main() {
     let t_main = Instant::now();
+    #[cfg(windows)]
+    attach_console();
     let args: Vec<String> = std::env::args().collect();
-    // The packages ship `dataman-mcp` as a link to this binary, not a second copy of everything.
-    if args.first().is_some_and(|a| std::path::Path::new(a).file_name().is_some_and(|n| n == "dataman-mcp")) {
+    // The packages ship `dataman-mcp` as a link to this binary, not a second copy of everything;
+    // `dataman --mcp` is the AppImage's command, the same from a package (`dataman-mcp.exe` on
+    // Windows is a binary of its own: a console program).
+    if args.first().is_some_and(|a| std::path::Path::new(a).file_stem().is_some_and(|n| n == "dataman-mcp")) || args.get(1).is_some_and(|a| a == "--mcp") {
         dataman_mcp::cli::main();
     }
     if args.iter().any(|a| a == "--version") {
@@ -395,7 +417,7 @@ fn main() {
         }
         None => (Dirs::default_dirs().expect("no home directory"), Arc::new(Keychain)),
     };
-    #[cfg(target_os = "linux")]
+    #[cfg(not(target_os = "macos"))]
     let (launch_urls, instance_socket) = {
         let urls = instance::urls_from_args(&args);
         let socket = instance::socket_path(&dirs);
@@ -424,7 +446,7 @@ fn main() {
     mark(t_main, "core ready");
     let app = application().with_assets(assets::Assets);
     let (open_tx, mut open_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<String>>();
-    #[cfg(target_os = "linux")]
+    #[cfg(not(target_os = "macos"))]
     if bench.is_none() {
         if !launch_urls.is_empty() {
             let _ = open_tx.send(launch_urls);
@@ -527,6 +549,9 @@ fn main() {
         keymap::set_overrides(keymap::clean(&core.settings.get().keys));
         keymap::bind_all(cx);
         ui::close_modals_on_escape(cx);
+        if keymap::NOT_MAC {
+            cx.set_prompt_builder(prompt::build);
+        }
         cx.on_action(|_: &app::Quit, cx| cx.quit());
         cx.on_action(|_: &app::CheckForUpdates, cx| updates::check(true, cx));
         updates::init(&core, cx);
@@ -552,7 +577,7 @@ fn main() {
                     window_min_size: Some(size(px(min_w), px(min_h))),
                     app_owns_titlebar_drag: true,
                     app_id: Some(APP_ID.into()),
-                    window_decorations: crate::keymap::LINUX.then(|| match std::env::var("DATAMAN_DECORATIONS").as_deref() {
+                    window_decorations: cfg!(target_os = "linux").then(|| match std::env::var("DATAMAN_DECORATIONS").as_deref() {
                         Ok("server") => gpui::WindowDecorations::Server,
                         _ => gpui::WindowDecorations::Client,
                     }),
@@ -560,7 +585,19 @@ fn main() {
                 },
                 |window, cx| cx.new(|cx| app::Workspace::new(core.clone(), window, cx)),
             )
-            .expect("cannot open the window");
+            .unwrap_or_else(|e| {
+                // No Vulkan or OpenGL driver to draw with: say what to install, not a panic.
+                if cfg!(target_os = "linux") {
+                    eprintln!(
+                        "dataman: cannot open the window: {e:#}\n\
+                         Dataman draws with Vulkan or OpenGL (EGL): install your GPU's Vulkan driver \
+                         (mesa-vulkan-drivers on Debian, Ubuntu and Fedora; vulkan-radeon or vulkan-intel on Arch), \
+                         or libegl1 with Mesa."
+                    );
+                    std::process::exit(1);
+                }
+                panic!("cannot open the window: {e:#}")
+            });
         mark(t_main, "window opened");
         let mcp_core = core.clone();
         let handle: gpui::AnyWindowHandle = window.into();
@@ -577,7 +614,7 @@ fn main() {
                         cx.spawn(async move |cx| {
                             while let Some(urls) = open_rx.recv().await {
                                 let _ = handle.update(cx, |_, window, cx| {
-                                    if crate::keymap::LINUX {
+                                    if crate::keymap::NOT_MAC {
                                         window.activate_window();
                                     }
                                     let _ = weak.update(cx, |w, cx| w.open_urls(urls, window, cx));

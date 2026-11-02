@@ -36,15 +36,20 @@ pub fn claude_stdio_command(bin: &str) -> String {
     claude_stdio_command_with(&[bin])
 }
 
-/// The server's command line (the binary and its arguments), quoted for a POSIX shell.
+/// The server's command line (the binary and its arguments), quoted for a POSIX shell (for
+/// cmd and PowerShell on Windows).
 pub fn claude_stdio_command_with(argv: &[&str]) -> String {
     let words: Vec<String> = argv.iter().map(|a| shell_word(a)).collect();
     format!("claude mcp add dataman -- {}", words.join(" "))
 }
 
 fn shell_word(s: &str) -> String {
-    if !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"/._-+=:@%,".contains(&b)) {
+    if !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"/._-+=:@%,".contains(&b) || (cfg!(windows) && b == b'\\')) {
         return s.to_string();
+    }
+    // A Windows path has no `"` in it.
+    if cfg!(windows) {
+        return format!("\"{}\"", s.replace('"', ""));
     }
     format!("'{}'", s.replace('\'', "'\\''"))
 }
@@ -54,7 +59,7 @@ fn shell_word(s: &str) -> String {
 pub fn server_binary() -> String {
     std::env::current_exe()
         .ok()
-        .and_then(|p| p.parent().map(|d| d.join("dataman-mcp")))
+        .and_then(|p| p.parent().map(|d| d.join(format!("dataman-mcp{}", std::env::consts::EXE_SUFFIX))))
         .filter(|p| p.exists())
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| "dataman-mcp".into())
@@ -72,10 +77,18 @@ pub fn stable_server_argv(bin: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     #[test]
+    #[cfg(unix)]
     fn claude_commands() {
         assert_eq!(super::claude_stdio_command("/usr/local/bin/dataman-mcp"), "claude mcp add dataman -- /usr/local/bin/dataman-mcp");
         assert_eq!(super::claude_stdio_command("/Applications/My Apps/Dataman.app/x"), "claude mcp add dataman -- '/Applications/My Apps/Dataman.app/x'");
         assert_eq!(super::claude_stdio_command("/home/o'neil/$x `y`"), "claude mcp add dataman -- '/home/o'\\''neil/$x `y`'");
         assert_eq!(super::claude_stdio_command_with(&["/home/u/Apps/Dataman-x86_64.AppImage", "--mcp"]), "claude mcp add dataman -- /home/u/Apps/Dataman-x86_64.AppImage --mcp");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn claude_commands() {
+        assert_eq!(super::claude_stdio_command(r"C:\Users\u\AppData\Local\Programs\Dataman\dataman-mcp.exe"), r"claude mcp add dataman -- C:\Users\u\AppData\Local\Programs\Dataman\dataman-mcp.exe");
+        assert_eq!(super::claude_stdio_command(r"C:\Program Files\Dataman\dataman-mcp.exe"), r#"claude mcp add dataman -- "C:\Program Files\Dataman\dataman-mcp.exe""#);
     }
 }

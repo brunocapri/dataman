@@ -133,6 +133,8 @@ fn one_instance_per_file() {
     off.options.insert(dataman_core::DUCKDB_EXTERNAL_ACCESS.into(), "false".into());
     assert!(e.core.block_on(e.core.connect(off, None)).is_err(), "another file-access mode");
     drop(other);
+    // Every instance gone before the file opens again: Windows locks it per handle.
+    drop(e);
     d.c.close();
     let path = d.path.clone();
     drop(d.c);

@@ -47,8 +47,8 @@ const fn c(id: &'static str, label: &'static str, group: &'static str, scope: Sc
 }
 
 // ⌘↓ is Ctrl+End on Linux, the grid's last row there.
-const FETCH_MORE: &[&str] = &[if LINUX { "ctrl-down" } else { "cmd-down" }];
-const FETCH_ALL: &[&str] = &[if LINUX { "ctrl-shift-down" } else { "cmd-shift-down" }];
+const FETCH_MORE: &[&str] = &[if NOT_MAC { "ctrl-down" } else { "cmd-down" }];
+const FETCH_ALL: &[&str] = &[if NOT_MAC { "ctrl-shift-down" } else { "cmd-shift-down" }];
 
 pub const COMMANDS: &[Command] = &[
     c("command_palette", "Command palette", "GLOBAL", Scope::Workspace, &["cmd-k"], || Box::new(CommandPalette)),
@@ -432,7 +432,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
+    #[cfg(not(target_os = "macos"))]
     fn linux_keys_and_labels() {
         for (mac, linux, shown) in [
             ("cmd-shift-c", "ctrl-shift-c", "Ctrl+Shift+C"),
@@ -442,6 +442,11 @@ mod tests {
             ("ctrl-cmd-left", "alt-left", "Alt+←"),
             ("cmd-alt-right", "alt-pagedown", "Alt+PgDn"),
             ("cmd-alt-l", "ctrl-shift-l", "Ctrl+Shift+L"),
+            ("cmd-shift-[", "ctrl-pageup", "Ctrl+PgUp"),
+            ("cmd-shift-]", "ctrl-pagedown", "Ctrl+PgDn"),
+            ("cmd-alt-[", "alt-[", "Alt+["),
+            ("cmd-alt-]", "alt-]", "Alt+]"),
+            ("ctrl-shift-[", "ctrl-shift-[", "Ctrl+Shift+["),
             ("cmd-left", "home", "Home"),
             ("cmd-shift-right", "shift-end", "Shift+End"),
             ("cmd-up", "ctrl-home", "Ctrl+Home"),
@@ -467,7 +472,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
+    #[cfg(not(target_os = "macos"))]
     fn linux_defaults_leave_the_desktop_its_keys() {
         for c in COMMANDS {
             for k in defaults(c) {

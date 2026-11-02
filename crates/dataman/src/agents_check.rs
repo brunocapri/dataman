@@ -516,8 +516,16 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     if let Some(b) = back {
         click(cx, centre(b));
     }
-    pause(cx, 400).await;
-    let zoomed = cx.update(|_, cx| a.read(cx).received_zoom && a.read(cx).received_tween.is_none()).unwrap_or(false);
+    // The zoom tweens over frames: waited for, so a slow renderer sees its end too.
+    let mut zoomed = false;
+    for _ in 0..40 {
+        pause(cx, 100).await;
+        draw(cx);
+        zoomed = cx.update(|_, cx| a.read(cx).received_zoom && a.read(cx).received_tween.is_none()).unwrap_or(false);
+        if zoomed {
+            break;
+        }
+    }
     let area = cx.update(|_, cx| a.read(cx).demo_received_area_w()).unwrap_or(0.);
     r.check("the zoom still takes the whole page over the wider detail", zoomed && area > page_w - 1., format!("{area} of {page_w}"));
     if let Some(b) = probed("agents-recv-zoom", cx) {
@@ -1506,8 +1514,9 @@ async fn check_clear(ws: &Entity<Workspace>, a: &Entity<AgentsPage>, r: &mut Rep
     let tomorrow = today + chrono::Days::new(1);
     let day = today - chrono::Days::new(20);
     for d in [tomorrow, day] {
+        // Tomorrow may sit a month on; the day 20 back, then, a month behind (early in a month).
         if probed(&format!("agents-clear-day-{d}"), cx).is_none() {
-            click_probe("agents-clear-next", cx);
+            click_probe(if d == tomorrow { "agents-clear-next" } else { "agents-clear-prev" }, cx);
             pause(cx, 50).await;
         }
         click_probe(&format!("agents-clear-day-{d}"), cx);

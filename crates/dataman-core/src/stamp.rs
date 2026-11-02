@@ -1,8 +1,9 @@
 use std::path::Path;
 use std::time::SystemTime;
 
-/// What tells another process's write apart: Linux file times move by a clock tick, so two
-/// writes in one tick share an mtime; the writes replace the file, so the inode changes.
+/// What tells another process's write apart: Linux and Windows file times move by a clock tick,
+/// so two writes in one tick share an mtime; the writes replace the file, so the inode (the
+/// NTFS file index) changes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FileStamp {
     modified: Option<SystemTime>,
@@ -19,9 +20,45 @@ impl FileStamp {
         let ino = std::os::unix::fs::MetadataExt::ino(&m);
         #[cfg(unix)]
         let changed = (std::os::unix::fs::MetadataExt::ctime(&m), std::os::unix::fs::MetadataExt::ctime_nsec(&m));
-        #[cfg(not(unix))]
+        // The NTFS file index and change time: what the inode and ctime are on Unix.
+        #[cfg(windows)]
+        let (ino, changed) = windows_ids(path).unwrap_or((0, (0, 0)));
+        #[cfg(not(any(unix, windows)))]
         let (ino, changed) = (0, (0, 0));
         Some(FileStamp { modified: m.modified().ok(), len: m.len(), ino, changed })
+    }
+
+    /// Written over a second ago. A write in place within the same clock tick, the same length,
+    /// leaves the stamp as it was: a stamp still fresh is no proof, so its file is read again
+    /// (git's "racily clean").
+    pub fn settled(&self) -> bool {
+        self.modified.and_then(|m| m.elapsed().ok()).is_some_and(|d| d >= std::time::Duration::from_secs(1))
+    }
+}
+
+#[cfg(windows)]
+fn windows_ids(path: &Path) -> Option<(u64, (i64, i64))> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, FILE_BASIC_INFO, FILE_FLAG_BACKUP_SEMANTICS, FileBasicInfo, GetFileInformationByHandle, GetFileInformationByHandleEx,
+    };
+    // No access asked: metadata only, whoever else has the file open.
+    let f = std::fs::OpenOptions::new().access_mode(0).custom_flags(FILE_FLAG_BACKUP_SEMANTICS).open(path).ok()?;
+    let h = f.as_raw_handle();
+    // SAFETY: a valid handle and out-structures of the sizes given.
+    unsafe {
+        let mut info: BY_HANDLE_FILE_INFORMATION = std::mem::zeroed();
+        if GetFileInformationByHandle(h, &mut info) == 0 {
+            return None;
+        }
+        let mut basic: FILE_BASIC_INFO = std::mem::zeroed();
+        if GetFileInformationByHandleEx(h, FileBasicInfo, (&mut basic as *mut FILE_BASIC_INFO).cast(), std::mem::size_of::<FILE_BASIC_INFO>() as u32) == 0 {
+            return None;
+        }
+        let ino = (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow);
+        // 100 ns ticks.
+        Some((ino, (basic.ChangeTime / 10_000_000, (basic.ChangeTime % 10_000_000) * 100)))
     }
 }
 
@@ -54,5 +91,6 @@ mod tests {
         std::fs::write(&tmp, "b").unwrap();
         std::fs::rename(&tmp, &p).unwrap();
         assert_ne!(FileStamp::of(&p), Some(a), "same length, maybe the same mtime: the inode differs");
+        assert!(!FileStamp::of(&p).unwrap().settled(), "just written");
     }
 }

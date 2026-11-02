@@ -30,6 +30,16 @@ raw-window-handle = "0.6"
 [target.'cfg(target_os = "linux")'.dependencies]
 notify-rust = "4"
 
+# The title bar's move loop, the animation switch, a console for `--version` and `--mcp`.
+[target.'cfg(windows)'.dependencies]
+raw-window-handle = "0.6"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
+
+# The icon and version in the Windows exe.
+
+[build-dependencies]
+embed-resource = "3"
+
 [[example]]
 name = "editor_demo"
 required-features = ["checks"]

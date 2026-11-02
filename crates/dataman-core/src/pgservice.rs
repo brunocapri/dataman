@@ -13,8 +13,10 @@ pub fn files() -> Vec<PathBuf> {
     match std::env::var_os("PGSERVICEFILE").filter(|p| !p.is_empty()) {
         Some(p) => v.push(PathBuf::from(p)),
         None => {
-            if let Some(h) = std::env::var_os("HOME") {
-                v.push(PathBuf::from(h).join(".pg_service.conf"));
+            // libpq's place on Windows: %APPDATA%\postgresql\.pg_service.conf.
+            let user = if cfg!(windows) { crate::os::app_data().map(|d| d.join("postgresql")) } else { crate::os::home() };
+            if let Some(h) = user {
+                v.push(h.join(".pg_service.conf"));
             }
         }
     }

@@ -162,6 +162,8 @@ async fn check(ws: &Entity<Workspace>, tab: &Entity<QueryTab>, cx: &mut AsyncWin
     type_run(tab, "SELECT count(*) FROM tx_demo", false, cx).await;
     report("nothing was deleted", first_cell(tab, cx).as_deref() == Some("5"), format!("{:?}", first_cell(tab, cx)));
     type_run(tab, "DELETE FROM tx_demo", false, cx).await;
+    // The sheet just came up: a slow renderer may take longer than the guard to get here.
+    cx.update(|window, cx| ws.update(cx, |ws, cx| ws.focus_sheet(window, cx))).ok();
     key(cx, "cmd-enter");
     report("a ⌘↩ right after the run does not confirm", confirm(tab, cx) == Some("guard"), format!("{:?}", confirm(tab, cx)));
     pause(cx, 400).await;

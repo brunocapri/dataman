@@ -32,13 +32,17 @@ struct Client {
 
 impl Client {
     fn start(config: &std::path::Path) -> Result<Client, String> {
-        let bin = std::env::current_exe().map_err(|e| e.to_string())?.with_file_name("dataman-mcp");
+        let bin = std::env::current_exe().map_err(|e| e.to_string())?.with_file_name(format!("dataman-mcp{}", std::env::consts::EXE_SUFFIX));
         // The binary finds the app under $XDG_CONFIG_HOME/dataman: there, a link to this run's
         // own config directory.
         let home = std::env::temp_dir().join(format!("dataman-e2e-xdg-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
         std::fs::create_dir_all(&home).map_err(|e| e.to_string())?;
+        #[cfg(unix)]
         std::os::unix::fs::symlink(config, home.join("dataman")).map_err(|e| e.to_string())?;
+        // A junction needs no privilege, unlike a symbolic link.
+        #[cfg(windows)]
+        Command::new("cmd").args(["/C", "mklink", "/J"]).arg(home.join("dataman")).arg(config).output().map_err(|e| e.to_string())?;
         let mut child = Command::new(&bin)
             .env("XDG_CONFIG_HOME", &home)
             .env("DATAMAN_MCP_SECRETS", "memory")

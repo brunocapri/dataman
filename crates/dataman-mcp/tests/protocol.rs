@@ -68,7 +68,7 @@ impl Mcp {
 
     /// With `home` as the home folder: agents' files inside it need no Allow.
     fn spawn_home(cfg: &std::path::Path, home: &std::path::Path) -> Mcp {
-        Mcp::spawn_cmd(Command::new(env!("CARGO_BIN_EXE_dataman-mcp")).env("XDG_CONFIG_HOME", cfg).env("PGPASSFILE", cfg.join("none")).env("HOME", home))
+        Mcp::spawn_cmd(Command::new(env!("CARGO_BIN_EXE_dataman-mcp")).env("XDG_CONFIG_HOME", cfg).env("PGPASSFILE", cfg.join("none")).env("HOME", home).env("USERPROFILE", home))
     }
 
     fn spawn_cmd(cmd: &mut Command) -> Mcp {
@@ -261,12 +261,12 @@ fn stdio_favorites_of_closed_connections() {
 /// password in clear); the user's own connections keep libpq's behavior.
 #[test]
 fn stdio_pgpass_wildcard_stays_home() {
-    use std::os::unix::fs::PermissionsExt;
     let cfg = config();
     let pgpass = cfg.path().join("pgpass");
     let pw = std::env::var("DATAMAN_PG_PASSWORD").unwrap_or_else(|_| "dataman".into());
     std::fs::write(&pgpass, format!("*:*:*:postgres:{pw}\n")).unwrap();
-    std::fs::set_permissions(&pgpass, std::fs::Permissions::from_mode(0o600)).unwrap();
+    #[cfg(unix)]
+    std::fs::set_permissions(&pgpass, <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600)).unwrap();
     let mut m = Mcp::spawn_with(cfg.path(), &pgpass);
     m.call("initialize", json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}));
     m.send(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
@@ -360,11 +360,11 @@ fn stdio_favorites_and_create_connection() {
     assert!(err && text.contains("not a .sql file"), "{text}");
     // Reading files of this Mac waits for the user's Allow: without the app, nothing is read.
     let (err, text) = m.tool("import_favorites", json!({"paths": [sql_path.display().to_string()]}));
-    assert!(err && text.contains("reads a file on this Mac") && text.contains("open the app"), "{text}");
+    assert!(err && text.contains(&format!("reads a file on {}", dataman_core::os::THIS_MACHINE)) && text.contains("open the app"), "{text}");
     let (err, text) = m.tool("list_favorites", json!({}));
     assert!(!err && !text.contains("customers"), "{text}");
     let (err, text) = m.tool("import_favorites", json!({"paths": [files.path().join("folder.sql").display().to_string()]}));
-    assert!(err && text.contains("No such file"), "{text}");
+    assert!(err && (text.contains("No such file") || text.contains("cannot find the file")), "{text}");
 
     let (err, text) = m.tool("create_connection", json!({"name": "new1", "host": "db.internal", "user": "bob", "password": "s3cret"}));
     assert!(!err, "{text}");
@@ -697,6 +697,7 @@ fn stdio_hands_calls_to_the_app() {
     .unwrap();
     let pgpass = cfg.path().join("pgpass");
     std::fs::write(&pgpass, "127.0.0.1:55432:*:postgres:dataman\n").unwrap();
+    #[cfg(unix)]
     std::fs::set_permissions(&pgpass, <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600)).unwrap();
     let hub = dataman_mcp::Hub::new(dataman_core::Dirs::at(&dir), Arc::new(dataman_core::MemorySecrets::default())).unwrap();
     let hub = {

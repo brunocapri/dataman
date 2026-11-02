@@ -184,7 +184,7 @@ impl Workspace {
                 .flex_col()
                 .gap(px(4.))
                 .line_height(px(18.))
-                .child(div().text_color(t.tx2).child("Its .dataman/project.toml gives agents or this Mac more than they have now, or sends connections elsewhere. Nothing of it is applied, and the file is not synced, until you apply it."))
+                .child(div().text_color(t.tx2).child(format!("Its .dataman/project.toml gives agents or {} more than they have now, or sends connections elsewhere. Nothing of it is applied, and the file is not synced, until you apply it.", dataman_core::os::THIS_MACHINE)))
                 .child(div().children(ui::here(&"project-review-loosens".into())).text_color(t.warn).child(format!("{} loosen protection", r.loosened()))),
         );
         let mut k = 0;

@@ -50,6 +50,9 @@ async fn table_page(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) {
 }
 
 fn open_url(ws: &Entity<Workspace>, path: &std::path::Path, cx: &mut AsyncWindowContext) {
+    #[cfg(not(target_os = "macos"))]
+    let url = crate::instance::file_url(path);
+    #[cfg(target_os = "macos")]
     let url = format!("file://{}", path.display());
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.open_urls(vec![url], window, cx)));
 }
@@ -77,7 +80,7 @@ pub async fn run(ws: &Entity<Workspace>, case: &Case, r: &mut Report, cx: &mut A
     };
     let (p, _) = cx.update(|_, cx| d.read(cx).current(cx)).unwrap();
     // The app keeps the file's canonical path (`/private/var/…` for `/var/…` on macOS).
-    let canonical = std::fs::canonicalize(&file).unwrap_or_else(|_| file.clone());
+    let canonical = dataman_core::os::canonical(&file).unwrap_or_else(|_| file.clone());
     let shown = dataman_core::config::tilde(&canonical.to_string_lossy());
     r.check(
         &format!("the sheet is a {label} one, with the file and its name"),

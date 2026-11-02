@@ -45,6 +45,7 @@ fn setup() -> &'static Setup {
             let home = std::env::temp_dir().join(format!("dataman-tls-home-{}", std::process::id()));
             let _ = std::fs::create_dir_all(home.join(".ssh"));
             std::env::set_var("HOME", &home);
+            std::env::set_var("USERPROFILE", &home);
             std::env::remove_var("SSH_AUTH_SOCK");
         }
         Setup { direct, ssh, ca: ca.is_some(), snakeoil }

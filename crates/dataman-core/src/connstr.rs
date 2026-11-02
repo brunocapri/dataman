@@ -220,6 +220,12 @@ fn parse_file(s: &str) -> Option<ConnSpec> {
     } else {
         path.to_string()
     };
+    // `sqlite:///C:/a.db` on Windows: a drive, not the root.
+    #[cfg(windows)]
+    let path = match path.strip_prefix('/') {
+        Some(r) if r.as_bytes().get(1) == Some(&b':') => r.replace('/', "\\"),
+        _ => path,
+    };
     if path.is_empty() {
         return None;
     }
@@ -536,6 +542,17 @@ fn decode(s: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     #[test]
+    #[cfg(windows)]
+    fn windows_file_databases() {
+        let p = |s: &str| parse_profile(s).map(|(p, _)| (p.engine, p.path.unwrap_or_default(), p.read_only));
+        assert_eq!(p("sqlite:///C:/data/a%20b.db"), Some((Engine::Sqlite, r"C:\data\a b.db".into(), false)));
+        assert_eq!(p(r"C:\data\shop.duckdb"), Some((Engine::DuckDb, r"C:\data\shop.duckdb".into(), false)));
+        let prof = crate::config::ConnectionProfile::new_file(Engine::Sqlite, r"C:\data\a b.db");
+        assert_eq!(prof.url(), "sqlite:///C%3A/data/a%20b.db");
+        assert_eq!(p(&prof.url()).map(|t| t.1), Some(r"C:\data\a b.db".into()), "the URL reads back");
+    }
+
+    #[test]
     fn file_databases() {
         let p = |s: &str| parse_profile(s).map(|(p, _)| (p.engine, p.path.unwrap_or_default(), p.read_only));
         assert_eq!(p("sqlite:///tmp/a.db"), Some((Engine::Sqlite, "/tmp/a.db".into(), false)));
@@ -547,7 +564,8 @@ mod tests {
         assert_eq!(p("/data/warehouse.DUCKDB"), Some((Engine::DuckDb, "/data/warehouse.DUCKDB".into(), false)));
         assert_eq!(p("Server=x;Database=foo.db").map(|t| t.0), Some(Engine::SqlServer));
         assert_eq!(p("postgres://h/foo.db").map(|t| t.0), Some(Engine::Postgres));
-        let (prof, _) = parse_profile("sqlite:///tmp/chinook.db").unwrap();
+        // On Windows `/tmp/chinook.db` is on the current drive (`windows_file_databases`).
+        let (prof, _) = parse_profile(if cfg!(windows) { "sqlite:///C:/tmp/chinook.db" } else { "sqlite:///tmp/chinook.db" }).unwrap();
         assert_eq!((prof.name.as_str(), prof.host.as_str(), prof.port, prof.user.as_str()), ("chinook", "", 0, ""));
         assert_eq!(parse_profile(&prof.url()).unwrap().0.path, prof.path);
     }

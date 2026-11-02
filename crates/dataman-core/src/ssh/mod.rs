@@ -150,7 +150,7 @@ fn default_keys(home: &Path) -> Vec<PathBuf> {
 }
 
 fn expand_tilde(s: &str, home: &Path) -> PathBuf {
-    match s.strip_prefix("~/") {
+    match s.strip_prefix("~/").or_else(|| s.strip_prefix("~\\").filter(|_| cfg!(windows))) {
         Some(rest) => home.join(rest),
         None => PathBuf::from(s),
     }
@@ -248,7 +248,7 @@ impl client::Handler for Client {
 
 fn tilde(p: &Path) -> String {
     match config::home().and_then(|h| p.strip_prefix(h).ok().map(Path::to_path_buf)) {
-        Some(rest) => format!("~/{}", rest.display()),
+        Some(rest) => format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display()),
         None => p.display().to_string(),
     }
 }
@@ -321,6 +321,23 @@ async fn rsa_hash(s: &Session, key: &PublicKey) -> Option<HashAlg> {
     }
 }
 
+type Agent = AgentClient<Box<dyn russh::keys::agent::client::AgentStream + Send + Unpin>>;
+
+/// The SSH agent: SSH_AUTH_SOCK's on Unix; on Windows the one SSH_AUTH_SOCK names (a pipe),
+/// else Windows' own OpenSSH agent, else Pageant.
+async fn agent() -> Option<Agent> {
+    #[cfg(unix)]
+    return AgentClient::connect_env().await.ok().map(AgentClient::dynamic);
+    #[cfg(windows)]
+    {
+        let pipe = std::env::var("SSH_AUTH_SOCK").ok().filter(|p| p.starts_with(r"\\.\pipe\")).unwrap_or_else(|| r"\\.\pipe\openssh-ssh-agent".into());
+        if let Ok(Ok(a)) = tokio::time::timeout(Duration::from_secs(2), AgentClient::connect_named_pipe(&pipe)).await {
+            return Some(a.dynamic());
+        }
+        AgentClient::connect_pageant().await.ok().map(AgentClient::dynamic)
+    }
+}
+
 async fn authenticate(s: &mut Session, hop: &Hop) -> Result<(), SshError> {
     let host = shown(&hop.host, hop.port);
     let user = hop.user.clone();
@@ -333,7 +350,7 @@ async fn authenticate(s: &mut Session, hop: &Hop) -> Result<(), SshError> {
     let mut remaining: Option<russh::MethodSet> = None;
     match &hop.auth {
         HopAuth::Agent { keys, only } => {
-            if let Ok(mut agent) = AgentClient::connect_env().await {
+            if let Some(mut agent) = agent().await {
                 let wanted: Vec<PublicKey> = if *only { keys.iter().filter_map(|k| public_half(k)).collect() } else { vec![] };
                 for id in agent.request_identities().await.unwrap_or_default() {
                     let AgentIdentity::PublicKey { key, .. } = id else { continue };

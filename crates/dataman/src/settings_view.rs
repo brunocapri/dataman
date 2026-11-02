@@ -748,7 +748,7 @@ impl SettingsView {
                     .flex_row()
                     .items_center()
                     .gap(px(10.))
-                    .when(system && !on, |d| d.child(div().text_size(px(11.)).text_color(t.tx3).whitespace_nowrap().child(if crate::keymap::LINUX { "on in the desktop" } else { "on in macOS" })))
+                    .when(system && !on, |d| d.child(div().text_size(px(11.)).text_color(t.tx3).whitespace_nowrap().child(if crate::keymap::NOT_MAC { "on in the desktop" } else { "on in macOS" })))
                     .child(ui::switch(t, "rm", on).on_click(cx.listener(move |v, _, _, cx| v.set_reduce_motion(!on, cx))))
                     .into_any_element()
             }
@@ -1001,7 +1001,7 @@ impl SettingsView {
                     .flex_col()
                     .gap(px(3.))
                     .child(div().text_color(t.tx).child(label))
-                    .children(row.help().map(|h| div().text_size(px(10.5)).line_height(px(15.)).text_color(t.tx3).child(h))),
+                    .children(row.help().map(|h| div().text_size(px(10.5)).line_height(px(15.)).text_color(t.tx3).child(crate::ui::keys_text(h)))),
             )
             .child(control)
             .into_any_element()

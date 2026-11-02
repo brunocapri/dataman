@@ -5,10 +5,15 @@
 //! through `ditto`, which keeps signatures and attributes.
 //!
 //! The feed's top-level download is the macOS one (the only one older Macs read); `assets`
-//! holds every platform's, keyed `<os>-<arch>` (`macos-aarch64`, `linux-x86_64`).
+//! holds every platform's, keyed `<os>-<arch>` (`macos-aarch64`, `linux-x86_64`,
+//! `windows-x86_64`: the installer, `xtask feed --asset windows-x86_64 <setup.exe> <url>`).
+//! Windows reads its own asset only and has no self-update yet: a newer one is announced, and
+//! installing it is left to its installer.
 
 use std::collections::BTreeMap;
+#[cfg(unix)]
 use std::ffi::CString;
+#[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -70,6 +75,10 @@ pub fn installed_app() -> Result<PathBuf, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     if cfg!(target_os = "macos") {
         return bundle_of(&exe).ok_or_else(|| "Not running from Dataman.app".to_string());
+    }
+    if cfg!(windows) {
+        let _ = exe;
+        return Err("Updates on Windows: install the new version from the release page".into());
     }
     match std::env::var_os("APPIMAGE").map(PathBuf::from) {
         Some(img) if img.is_file() => Ok(img),
@@ -298,6 +307,12 @@ pub fn bundle_of(exe: &Path) -> Option<PathBuf> {
     (macos.file_name()? == "MacOS" && contents.file_name()? == "Contents" && app.extension()? == "app").then(|| app.to_path_buf())
 }
 
+#[cfg(windows)]
+fn writable(p: &Path) -> bool {
+    std::fs::metadata(p).is_ok_and(|m| !m.permissions().readonly())
+}
+
+#[cfg(unix)]
 fn writable(p: &Path) -> bool {
     let Ok(c) = CString::new(p.as_os_str().as_bytes()) else { return false };
     // SAFETY: a valid NUL-terminated path.
@@ -461,7 +476,7 @@ pub fn relaunch_after_exit(app: &Path) -> Result<()> {
 /// The AppImage is one file: the new one is staged beside it (same filesystem), its own
 /// `--version` must say the feed's version, then one rename replaces the old. The running copy
 /// keeps its mount of the old file.
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 pub fn install(download: &Path, app: &Path, want: &str) -> Result<()> {
     use std::os::unix::fs::PermissionsExt as _;
     check_writable(app)?;
@@ -488,7 +503,7 @@ pub fn install(download: &Path, app: &Path, want: &str) -> Result<()> {
 
 /// What a downloaded (and verified) AppImage says it is; extracted rather than mounted, so no
 /// FUSE is needed for it.
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 fn artifact_version(file: &Path) -> Result<String> {
     let mut child = Command::new(file)
         .arg("--version")
@@ -518,7 +533,7 @@ fn artifact_version(file: &Path) -> Result<String> {
 }
 
 /// The environment goes with the process (no LaunchServices in between, as on macOS).
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 pub fn relaunch_after_exit(app: &Path) -> Result<()> {
     Command::new("/bin/sh")
         .arg("-c")
@@ -535,6 +550,18 @@ pub fn relaunch_after_exit(app: &Path) -> Result<()> {
         .stderr(Stdio::null())
         .spawn()
         .context("relaunch")?;
+    Ok(())
+}
+
+/// No self-update on Windows yet (`installed_app` says so before anything is downloaded).
+#[cfg(windows)]
+pub fn install(_: &Path, _: &Path, _: &str) -> Result<()> {
+    bail!("updates on Windows come with the installer")
+}
+
+#[cfg(windows)]
+pub fn relaunch_after_exit(app: &Path) -> Result<()> {
+    Command::new(app).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().context("relaunch")?;
     Ok(())
 }
 
@@ -557,6 +584,12 @@ mod tests {
         let linux = f.clone().for_platform("linux-x86_64").unwrap();
         assert_eq!((linux.url.as_str(), linux.size, linux.ed25519.as_str(), linux.version.as_str()), ("https://x/Dataman-x86_64.AppImage", 20, "l", "0.4.0"));
         assert_eq!(f.clone().for_platform("linux-aarch64"), None);
+        assert_eq!(f.clone().for_platform("windows-x86_64"), None, "never the Mac's or Linux's download on Windows");
+        let with_windows = r#"{"version":"0.4.0","assets":{"linux-x86_64":{"url":"https://x/a.AppImage","size":3,"ed25519":"s"},
+            "windows-x86_64":{"url":"https://x/Dataman-0.4.0-windows-x86_64-setup.exe","size":4,"ed25519":"w"}}}"#;
+        let w: Feed = serde_json::from_str(with_windows).unwrap();
+        assert_eq!(w.clone().for_platform("windows-x86_64").map(|f| f.url), Some("https://x/Dataman-0.4.0-windows-x86_64-setup.exe".into()));
+        assert_eq!(w.for_platform("windows-aarch64"), None);
         assert_eq!(f.for_platform("macos-aarch64").map(|f| f.size), Some(10));
         let linux_only = r#"{"version":"0.4.0","assets":{"linux-aarch64":{"url":"https://x/a.AppImage","size":3,"ed25519":"s"}}}"#;
         let f: Feed = serde_json::from_str(linux_only).unwrap();
@@ -577,7 +610,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
     fn an_appimage_update_replaces_the_file() {
         use std::os::unix::fs::PermissionsExt as _;
         let dir = std::env::temp_dir().join(format!("dataman-appimage-test-{}", std::process::id()));

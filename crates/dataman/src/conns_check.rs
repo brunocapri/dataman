@@ -21,6 +21,9 @@ fn status(d: &Entity<ConnDialog>, cx: &mut AsyncWindowContext) -> String {
 
 /// Clicks Test and waits for its verdict.
 async fn test(d: &Entity<ConnDialog>, cx: &mut AsyncWindowContext) -> String {
+    // The form tweens to a new height when a row comes or goes (a verdict cleared): a slow
+    // renderer's press and release, a frame apart, would find Test moved under the pointer.
+    until(cx, 3, |cx| cx.update(|_, cx| d.read(cx).demo_still()).unwrap_or(true)).await;
     click_probe("dlg-test", cx);
     until(cx, 20, |cx| status(d, cx) != "testing" && status(d, cx) != "untested").await;
     status(d, cx)

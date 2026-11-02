@@ -322,7 +322,7 @@ pub struct Workspace {
     pub(crate) tab_drop_pane: Pane,
     pub(crate) tab_bounds_right: std::rc::Rc<std::cell::RefCell<Vec<gpui::Bounds<gpui::Pixels>>>>,
     pub(crate) strip_scroll: [gpui::ScrollHandle; 2],
-    pub(crate) strip_front: [std::cell::Cell<Option<EntityId>>; 2],
+    pub(crate) strip_front: [std::cell::Cell<(Option<EntityId>, bool)>; 2],
     pub(crate) strip_parts: std::rc::Rc<std::cell::RefCell<[Vec<gpui::Bounds<gpui::Pixels>>; 2]>>,
     pub(crate) editor_drop: Option<(Pane, crate::split::DropZone)>,
     pub(crate) editor_drop_glide: Option<crate::split::DropGlide>,
@@ -1848,8 +1848,8 @@ impl Workspace {
     /// when the file is no database.
     pub(crate) fn open_database_path(&mut self, path: &std::path::Path, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let Some(engine) = dataman_core::import::detect_database(path) else { return false };
-        let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-        let saved = self.store.read(cx).profiles.iter().find(|p| p.engine.is_file() && std::fs::canonicalize(p.file_path()).is_ok_and(|c| c == canonical)).map(|p| p.id.clone());
+        let canonical = dataman_core::os::canonical(path).unwrap_or_else(|_| path.to_path_buf());
+        let saved = self.store.read(cx).profiles.iter().find(|p| p.engine.is_file() && dataman_core::os::canonical(p.file_path()).is_ok_and(|c| c == canonical)).map(|p| p.id.clone());
         match saved {
             Some(id) => {
                 self.current_conn = Some(id.clone());
@@ -2623,6 +2623,8 @@ pub(crate) fn file_url_path(url: &str) -> Option<std::path::PathBuf> {
     let rest = match url.strip_prefix("file://") {
         Some(r) => r.strip_prefix("localhost").unwrap_or(r),
         None if url.starts_with('/') => url,
+        // `C:\a\b.sql` as it was given.
+        None if cfg!(windows) && std::path::Path::new(url).is_absolute() => return Some(url.into()),
         None => return None,
     };
     // `file://host/x` names another machine's file: never a path relative to ours.
@@ -2644,8 +2646,21 @@ pub(crate) fn file_url_path(url: &str) -> Option<std::path::PathBuf> {
             i += 1;
         }
     }
-    use std::os::unix::ffi::OsStringExt as _;
-    Some(std::ffi::OsString::from_vec(out).into())
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt as _;
+        Some(std::ffi::OsString::from_vec(out).into())
+    }
+    // `/C:/a/b.sql` → `C:\a\b.sql`.
+    #[cfg(windows)]
+    {
+        let s = String::from_utf8(out).ok()?;
+        let s = match s.strip_prefix('/') {
+            Some(r) if r.as_bytes().get(1) == Some(&b':') => r,
+            _ => &s,
+        };
+        Some(s.replace('/', "\\").into())
+    }
 }
 
 /// A statement as an editor shows it: SQL ends with `;`; the other engines' languages have no

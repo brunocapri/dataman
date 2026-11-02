@@ -373,7 +373,8 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
         pause(cx, 50).await;
         draw(cx);
         let x = strip_scroll(ws, Pane::Left, cx).0;
-        if x == last && x < -1. {
+        let grown = cx.update(|_, cx| ws.read(cx).tabs.iter().all(|t| !ws.read(cx).tab_motion.growing(t.entity_id()))).unwrap_or(true);
+        if x == last && x < -1. && grown {
             break;
         }
         last = x;
@@ -584,26 +585,31 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.focus_pane(Pane::Left, window, cx)));
     click(cx, middle(xb));
     let asked = asking(ws, cx) == Some(Pane::Right);
-    pause(cx, 3400).await;
-    report("left alone, it gives way after a few seconds", asked && asking(ws, cx).is_none() && tabs(ws, cx).len() == n, format!("asked {asked}, asking {:?}", asking(ws, cx)));
+    // Its 3 s start when its task first runs, after any frames already queued: on a slow renderer
+    // well after this click. Still asking at 2.5 s, then gone once it lets go.
+    pause(cx, 2500).await;
+    let held = asking(ws, cx) == Some(Pane::Right);
+    let gone = crate::check::until(cx, 5, |cx| asking(ws, cx).is_none()).await;
+    report(
+        "left alone, it gives way after a few seconds",
+        asked && held && gone && tabs(ws, cx).len() == n,
+        format!("asked {asked}, held {held}, asking {:?}", asking(ws, cx)),
+    );
     click(cx, middle(xb));
     if let Some(b) = parts(ws, Pane::Right, cx).last().copied() {
         click(cx, middle(b));
     }
     let folding = cx.update(|_, cx| ws.read(cx).split.is_none() && (ws.read(cx).split_move.is_some() || cx.reduce_motion())).unwrap();
+    // Which way it folds, read as it starts: a slow renderer may draw the whole fold in a frame or two.
+    let leaving = cx.update(|_, cx| ws.read(cx).split_move.as_ref().map(|m| m.leaving)).ok().flatten();
     let left_now = tabs(ws, cx);
     report(
         "\"Sure?\" closes the group with its tabs (the other group's stay, its tab in front); the split folds",
         folding && left_now.len() == n - right_tabs.len() && right_tabs.iter().all(|t| !left_now.contains(t)) && active(ws, cx) == left_front,
         format!("{} of {n} tabs ({} on the right), split {:?}", left_now.len(), right_tabs.len(), split_open(ws, cx)),
     );
-    pause(cx, 60).await;
-    draw(cx);
-    let mid = cx.update(|_, cx| ws.read(cx).split_now).ok().flatten();
-    report("it folds away to the right", reduced || mid.is_some_and(|f| f.open > 0. && f.open < 1. && f.leaving == Pane::Right), format!("{mid:?}"));
-    pause(cx, 400).await;
-    draw(cx);
-    let one = cx.update(|_, cx| ws.read(cx).split_now.is_none()).unwrap();
+    report("it folds away to the right", reduced || leaving == Some(Pane::Right), format!("{leaving:?}"));
+    let one = crate::check::until(cx, 5, |cx| cx.update(|_, cx| ws.read(cx).split_now.is_none()).unwrap()).await;
     let full = cx.update(|_, cx| ws.read(cx).result_bounds.get().map(|b| b.size.width.pt())).ok().flatten();
     let c = center(ws, cx);
     report("then one group has the whole surface", one && full.is_none_or(|w| near(w, c.w, 1.5)), format!("{full:?} vs {}", c.w));

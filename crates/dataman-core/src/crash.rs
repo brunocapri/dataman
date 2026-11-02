@@ -25,16 +25,19 @@ pub fn dir() -> PathBuf {
     if crate::os::LINUX {
         return crate::os::state_home().unwrap_or_else(std::env::temp_dir).join("dataman/logs");
     }
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
+    if crate::os::WINDOWS {
+        return crate::os::local_app_data().unwrap_or_else(std::env::temp_dir).join("dataman").join("logs");
+    }
+    let home = crate::os::home().unwrap_or_else(std::env::temp_dir);
     home.join("Library/Logs/Dataman")
 }
 
-/// Linux keeps no per-app crash reports: an empty folder there.
+/// Linux and Windows keep no per-app crash reports Dataman reads: an empty folder there.
 pub fn system_dir() -> PathBuf {
-    if crate::os::LINUX {
+    if !cfg!(target_os = "macos") {
         return dir().join("system");
     }
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
+    let home = crate::os::home().unwrap_or_else(std::env::temp_dir);
     home.join("Library/Logs/DiagnosticReports")
 }
 

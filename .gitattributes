@@ -1,0 +1,9 @@
+# LF everywhere, Windows checkouts too: golden files are compared byte for byte.
+* text=auto eol=lf
+*.ico binary
+*.icns binary
+*.png binary
+*.ttf binary
+# Kept byte for byte as committed.
+vendor/** -text
+crates/dataman/assets/fonts/*.txt -text

@@ -37,6 +37,7 @@ fn setup() -> Option<&'static Setup> {
         // SAFETY: set once, before any test reads the environment.
         unsafe {
             std::env::set_var("HOME", &home);
+            std::env::set_var("USERPROFILE", &home);
             std::env::remove_var("SSH_AUTH_SOCK");
         }
         Some(Setup { keys, ssh, home })
@@ -280,6 +281,7 @@ fn changed_host_key_is_refused() {
 }
 
 #[test]
+#[cfg(unix)]
 fn unix_socket_host() {
     let (pg_host, pg_port) = ("127.0.0.1", 55432u16);
     if TcpStream::connect_timeout(&format!("{pg_host}:{pg_port}").parse().unwrap(), Duration::from_secs(1)).is_err() {

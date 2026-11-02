@@ -152,14 +152,14 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
         println!("FAIL the favorite row has no bounds");
         return false;
     };
-    if crate::keymap::LINUX {
+    if crate::keymap::NOT_MAC {
         click(cx, row, MouseButton::Right, Modifiers::default());
     } else {
         click(cx, row, MouseButton::Left, Modifiers { control: true, ..Default::default() });
     }
     pause(cx, 30).await;
     let menu_open = cx.update(|_, cx| history.read(cx).demo_fav_menu_open()).unwrap_or(false);
-    report(if crate::keymap::LINUX { "a right click opens the favorite's context menu" } else { "⌃-click opens the favorite's context menu" }, menu_open, String::new());
+    report(if crate::keymap::NOT_MAC { "a right click opens the favorite's context menu" } else { "⌃-click opens the favorite's context menu" }, menu_open, String::new());
     menu_click(&history, "Rename", cx);
     pause(cx, 30).await;
     let renaming = cx.update(|_, cx| history.read(cx).demo_renaming_index()).unwrap();
@@ -748,9 +748,14 @@ async fn folders(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
         format!("{shut:?} / {opened:?} / {shut_again:?}"),
     );
 
+    // Started by this click (a slow renderer may take the whole fold to draw the click).
+    let started = |opening: bool, t0: std::time::Instant, cx: &mut AsyncWindowContext| {
+        cx.update(|_, cx| history.read(cx).demo_fold_start()).ok().flatten().is_some_and(|(at, o)| at >= t0 && o == opening)
+    };
+    let t0 = std::time::Instant::now();
     click(cx, folder, MouseButton::Left, Modifiers::default());
+    let moving = started(true, t0, cx);
     pause(cx, 60).await;
-    let moving = cx.update(|_, cx| history.read(cx).demo_folding()).unwrap_or(false);
     snap("drain", cx);
     pause(cx, 700).await;
     let still = cx.update(|_, cx| history.read(cx).demo_folding()).unwrap_or(true);
@@ -761,13 +766,12 @@ async fn folders(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
         moving && !still && shown.contains(&"  Orders by day".to_string()),
         format!("moving {moving}, still {still}, {shown:?}"),
     );
+    let t0 = std::time::Instant::now();
     click(cx, folder, MouseButton::Left, Modifiers::default());
-    pause(cx, 60).await;
+    let moving = started(false, t0, cx);
     let during = rows(&history, cx);
-    let moving = cx.update(|_, cx| history.read(cx).demo_folding()).unwrap_or(false);
     snap("shut", cx);
-    pause(cx, 400).await;
-    let after = rows(&history, cx);
+    let after = folded(cx).await;
     report(
         &mut ok,
         "a click shutting a folder folds its favorites away, then they are gone",
@@ -897,14 +901,16 @@ async fn folders(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     key(cx, "escape");
     let esc = (menu_at(&history, "Delete folder", false, cx).is_some(), state(cx).2);
     let _ = menu_click(&history, "Delete folder", cx);
-    pause(cx, 3300).await;
-    draw(cx);
-    let waited = menu_at(&history, "Delete folder", false, cx).is_some();
+    // Its 3 s start when its task first runs, after any frames already queued: on a slow renderer
+    // well after this click. Still asking at 2.5 s, then back once it lets go.
+    pause(cx, 2500).await;
+    let held = menu_at(&history, sure, false, cx).is_some();
+    let waited = crate::check::until(cx, 5, |cx| menu_at(&history, "Delete folder", false, cx).is_some()).await;
     report(
         &mut ok,
         "the \"Sure?\" gives way to Delete folder when the pointer leaves it, on esc (the menu stays) and after a few seconds",
-        left && again && esc == (true, true) && waited && state(cx).0 == ["Reports", "Old stuff"],
-        format!("left {left} again {again} esc {esc:?} waited {waited}"),
+        left && again && esc == (true, true) && held && waited && state(cx).0 == ["Reports", "Old stuff"],
+        format!("left {left} again {again} esc {esc:?} held {held} waited {waited}"),
     );
 
     let _ = menu_click(&history, "Delete folder", cx);

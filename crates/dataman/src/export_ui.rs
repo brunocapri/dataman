@@ -805,7 +805,7 @@ impl Render for ExportView {
                 .child(ui::button(&t, "ex-stop", Btn::Danger).h(px(28.)).child("Stop").child(ui::key_hint("⌘.")).on_click(cx.listener(|v, _, _, cx| v.stop(cx))));
         } else {
             if let Some(p) = done_path {
-                footer = footer.child(ui::button(&t, "ex-reveal", Btn::Ghost).h(px(28.)).child(if crate::keymap::LINUX { "Show in Folder" } else { "Reveal in Finder" }).on_click(move |_, _, cx| cx.reveal_path(&p)));
+                footer = footer.child(ui::button(&t, "ex-reveal", Btn::Ghost).h(px(28.)).child(if crate::keymap::NOT_MAC { "Show in Folder" } else { "Reveal in Finder" }).on_click(move |_, _, cx| cx.reveal_path(&p)));
             }
             let close = if self.job.is_some() { "Close" } else { "Cancel" };
             footer = footer.child(ui::button(&t, "ex-cancel", Btn::Ghost).h(px(28.)).child(close).on_click(cx.listener(|_, _, _, cx| cx.emit(ExportEvent::Close)))).child(ui::probe(
@@ -825,8 +825,8 @@ impl Render for ExportView {
 
 pub(crate) fn tilde(p: &Path) -> String {
     let s = p.display().to_string();
-    match std::env::var("HOME") {
-        Ok(h) if s.starts_with(&h) => format!("~{}", &s[h.len()..]),
+    match dataman_core::os::home().map(|h| h.display().to_string()) {
+        Some(h) if s.starts_with(&h) => format!("~{}", &s[h.len()..]),
         _ => s,
     }
 }

@@ -12,7 +12,13 @@ use dataman_core::config::Engine;
 use dataman_core::{ConnectionProfile, Environment, HostKeyPrompt, McpAccess, ServerInfo, SshAuth, SshError, SshSettings, SslMode};
 
 const ENGINES: [Engine; 9] = Engine::ALL;
-const SAVED_IN: &str = if cfg!(target_os = "macos") { "saved in Keychain" } else { "saved in keyring" };
+const SAVED_IN: &str = if cfg!(target_os = "macos") {
+    "saved in Keychain"
+} else if cfg!(windows) {
+    "saved in Credential Manager"
+} else {
+    "saved in keyring"
+};
 
 fn family_label(e: Engine) -> &'static str {
     match e {
@@ -1106,6 +1112,12 @@ impl ConnDialog {
     #[cfg(feature = "checks")]
     pub fn demo_save(&mut self, cx: &mut Context<Self>) {
         self.save(cx);
+    }
+
+    /// The form at the height it measured, not growing or shrinking to it.
+    #[cfg(feature = "checks")]
+    pub fn demo_still(&self) -> bool {
+        self.body_tween.is_none() && self.body_h.is_some_and(|h| (h - self.body_measured.get()).abs() <= 0.5)
     }
 
     #[cfg(feature = "checks")]

@@ -15,7 +15,13 @@ pub trait SecretStore: Send + Sync {
 
 pub const SERVICE: &str = "dataman";
 
-pub const STORE_NAME: &str = if cfg!(target_os = "macos") { "Keychain" } else { "keyring" };
+pub const STORE_NAME: &str = if cfg!(target_os = "macos") {
+    "Keychain"
+} else if cfg!(windows) {
+    "Credential Manager"
+} else {
+    "keyring"
+};
 
 #[cfg(any(target_os = "macos", test))]
 mod vault;
@@ -144,7 +150,136 @@ impl SecretStore for Keychain {
     }
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+/// Windows' Credential Manager: a generic credential per secret, `dataman:<id>`, the password as
+/// UTF-8, saved for this user on this machine. A credential holds at most 2560 bytes: a longer
+/// secret (the approved rules of many connections) continues in `dataman:<id>:<n>`, n = 1…, and
+/// the first one's comment counts the parts.
+#[cfg(windows)]
+mod windows {
+    use anyhow::{Context as _, Result};
+    use windows_sys::Win32::Foundation::{ERROR_NOT_FOUND, GetLastError};
+    use windows_sys::Win32::Security::Credentials::{CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC, CREDENTIALW, CredDeleteW, CredFree, CredReadW, CredWriteW};
+
+    use super::SERVICE;
+
+    pub const PART: usize = 2560; // CRED_MAX_CREDENTIAL_BLOB_SIZE
+    const PARTS: &str = "dataman parts: ";
+
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain([0]).collect()
+    }
+
+    fn target(id: &str, part: usize) -> String {
+        if part == 0 { format!("{SERVICE}:{id}") } else { format!("{SERVICE}:{id}:{part}") }
+    }
+
+    fn last_error() -> std::io::Error {
+        std::io::Error::from_raw_os_error(unsafe { GetLastError() } as i32)
+    }
+
+    /// The blob and the comment; `None`: no such credential.
+    fn read(target: &str) -> Result<Option<(Vec<u8>, String)>> {
+        let t = wide(target);
+        let mut p: *mut CREDENTIALW = std::ptr::null_mut();
+        if unsafe { CredReadW(t.as_ptr(), CRED_TYPE_GENERIC, 0, &mut p) } == 0 {
+            if unsafe { GetLastError() } == ERROR_NOT_FOUND {
+                return Ok(None);
+            }
+            return Err(last_error()).with_context(|| format!("reading {target} in the Credential Manager"));
+        }
+        let c = unsafe { &*p };
+        let blob = if c.CredentialBlob.is_null() { Vec::new() } else { unsafe { std::slice::from_raw_parts(c.CredentialBlob, c.CredentialBlobSize as usize) }.to_vec() };
+        let comment = if c.Comment.is_null() {
+            String::new()
+        } else {
+            let n = (0..).take_while(|&i| unsafe { *c.Comment.add(i) } != 0).count();
+            String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(c.Comment, n) })
+        };
+        unsafe { CredFree(p.cast()) };
+        Ok(Some((blob, comment)))
+    }
+
+    fn write(target: &str, blob: &[u8], comment: &str, user: &str) -> Result<()> {
+        let (mut t, mut c, mut u) = (wide(target), wide(comment), wide(user));
+        let mut blob = blob.to_vec();
+        let cred = CREDENTIALW {
+            Type: CRED_TYPE_GENERIC,
+            TargetName: t.as_mut_ptr(),
+            Comment: c.as_mut_ptr(),
+            CredentialBlobSize: blob.len() as u32,
+            CredentialBlob: blob.as_mut_ptr(),
+            Persist: CRED_PERSIST_LOCAL_MACHINE,
+            UserName: u.as_mut_ptr(),
+            ..unsafe { std::mem::zeroed() }
+        };
+        if unsafe { CredWriteW(&cred, 0) } == 0 {
+            return Err(last_error()).with_context(|| format!("saving {target} in the Credential Manager"));
+        }
+        Ok(())
+    }
+
+    fn remove(target: &str) -> Result<()> {
+        let t = wide(target);
+        if unsafe { CredDeleteW(t.as_ptr(), CRED_TYPE_GENERIC, 0) } == 0 && unsafe { GetLastError() } != ERROR_NOT_FOUND {
+            return Err(last_error()).with_context(|| format!("removing {target} from the Credential Manager"));
+        }
+        Ok(())
+    }
+
+    fn parts(comment: &str) -> usize {
+        comment.strip_prefix(PARTS).and_then(|n| n.parse().ok()).unwrap_or(1).max(1)
+    }
+
+    pub fn get(id: &str) -> Result<Option<String>> {
+        let Some((mut data, comment)) = read(&target(id, 0))? else { return Ok(None) };
+        for n in 1..parts(&comment) {
+            let (more, _) = read(&target(id, n))?.with_context(|| format!("part {n} of {} is missing from the Credential Manager", target(id, 0)))?;
+            data.extend(more);
+        }
+        Ok(Some(String::from_utf8(data).context("the saved password is not text")?))
+    }
+
+    pub fn set(id: &str, password: &str) -> Result<()> {
+        let was = read(&target(id, 0))?.map_or(0, |(_, c)| parts(&c));
+        let chunks: Vec<&[u8]> = if password.is_empty() { vec![&[]] } else { password.as_bytes().chunks(PART).collect() };
+        // The continuations first: the first part, written last, says how many there are.
+        for (n, chunk) in chunks.iter().enumerate().skip(1) {
+            write(&target(id, n), chunk, "", id)?;
+        }
+        let comment = if chunks.len() > 1 { format!("{PARTS}{}", chunks.len()) } else { String::new() };
+        write(&target(id, 0), chunks[0], &comment, id)?;
+        for n in chunks.len()..was {
+            remove(&target(id, n))?;
+        }
+        Ok(())
+    }
+
+    pub fn delete(id: &str) -> Result<()> {
+        let was = read(&target(id, 0))?.map_or(1, |(_, c)| parts(&c));
+        remove(&target(id, 0))?;
+        for n in 1..was {
+            remove(&target(id, n))?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+impl SecretStore for Keychain {
+    fn get(&self, id: &str) -> Result<Option<String>> {
+        windows::get(id)
+    }
+
+    fn set(&self, id: &str, password: &str) -> Result<()> {
+        windows::set(id, password)
+    }
+
+    fn delete(&self, id: &str) -> Result<()> {
+        windows::delete(id)
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 impl SecretStore for Keychain {
     fn get(&self, _: &str) -> Result<Option<String>> {
         Ok(None)
