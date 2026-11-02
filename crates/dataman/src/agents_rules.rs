@@ -2,7 +2,7 @@
 //! reach it (or its agent login, last), Access (what agents may do there, and how much) and
 //! Privacy (what they may see). Everything writes the connection's `mcp_rules`; no MCP tool can.
 
-use dataman_core::privacy::{self, AgentView, ItemKind, Keep, Mask, Names, ReadFrom, SensitiveCol, Visible, VisibleItem, VisibleMode};
+use dataman_core::privacy::{self, AgentView, ItemKind, Mask, Names, ReadFrom, SensitiveCol, Visible, VisibleItem, VisibleMode};
 use dataman_core::settings::{MCP_MAX_ROWS, MCP_WRITE_ROW_LIMIT};
 use dataman_core::nosql::ItemKind as TreeKind;
 use dataman_core::{ConnectionProfile, Engine, McpAccess};
@@ -265,8 +265,24 @@ fn off_button(t: &Theme, id: &'static str, label: &'static str) -> AnyElement {
     div().children(ui::here(&id.into())).flex_none().h(px(30.)).px(px(14.)).flex().items_center().border_1().border_color(t.line2).text_size(px(12.)).text_color(t.tx4).child(label).into_any_element()
 }
 
+/// A row's ×, as a tab's: there only while the row is hovered (the row lights up), brighter
+/// under the pointer.
 fn remove_x(t: &Theme, id: SharedString, row: SharedString) -> gpui::Stateful<gpui::Div> {
-    ui::icon_button(t, id, Icon::Close, 20., 9.).rounded(px(2.)).bg(t.hov).invisible().group_hover(row, |s| s.visible())
+    let (tx3, tx) = (t.tx3, t.tx);
+    div()
+        .children(ui::here(&id.clone().into()))
+        .id(id)
+        .flex_none()
+        .size(px(16.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .text_size(px(13.))
+        .cursor_pointer()
+        .hover(move |s| s.text_color(tx))
+        .child("×")
+        .text_color(gpui::transparent_black())
+        .group_hover(row, move |s| s.text_color(tx3))
 }
 
 /// A muted line under a control: a state worth knowing (production, agents refused…).
@@ -350,13 +366,10 @@ pub(crate) fn choices<T: Copy + PartialEq + 'static>(t: &Theme, id: &str, opts: 
     )
 }
 
-/// How wide a popup button is: on its own, in a row of a table, or as wide as its column.
+/// How wide a popup button is: on its own, or as wide as its column.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Fit {
     Alone,
-    Row,
-    /// A number in a row (Partial's First and Last).
-    Small,
     Fill,
 }
 
@@ -364,8 +377,6 @@ enum Fit {
 fn select(t: &Theme, page: &AgentsPage, id: SharedString, label: &str, enabled: bool, fit: Fit) -> gpui::Div {
     let min = match fit {
         Fit::Alone => 180.,
-        Fit::Row => 110.,
-        Fit::Small => 74.,
         Fit::Fill => 0.,
     };
     let open = page.menu.as_ref().is_some_and(|m| m.id == id);
@@ -374,7 +385,7 @@ fn select(t: &Theme, page: &AgentsPage, id: SharedString, label: &str, enabled: 
 }
 
 /// What an agent gets for a value of `field`: a made-up one of its kind, masked as `how` says.
-fn masked_example(field: &str, how: Mask) -> String {
+pub(crate) fn masked_example(field: &str, how: Mask) -> String {
     let f = field.to_ascii_lowercase();
     let sample = match () {
         _ if f.contains("mail") => "ana@acme.com",
@@ -484,26 +495,6 @@ impl AgentsPage {
         }
     }
 
-    /// Partial's characters kept at the start and at the end; the same room left empty
-    /// otherwise, so the masks line up.
-    fn keep_picks(&self, t: &Theme, k: usize, s: &SensitiveCol, enabled: bool, cx: &mut Context<Self>) -> gpui::Div {
-        let row = div().w(px(154.)).flex_none().flex().flex_row().gap(px(6.));
-        let Mask::Partial(keep) = s.how else { return row };
-        if !s.on {
-            return row;
-        }
-        let items = |first: bool| -> Vec<(SharedString, bool, Act)> {
-            (0..=Keep::MAX)
-                .map(|n| {
-                    let to = if first { Keep { first: n, ..keep } } else { Keep { last: n, ..keep } };
-                    (n.to_string().into(), to == keep, Act::SensKeep(k, to))
-                })
-                .collect()
-        };
-        row.child(self.pick(t, &format!("agents-sens-first-{k}"), &format!("First {}", keep.first), enabled, Fit::Small, 74., items(true), cx))
-            .child(self.pick(t, &format!("agents-sens-last-{k}"), &format!("Last {}", keep.last), enabled, Fit::Small, 74., items(false), cx))
-    }
-
     /// A popup button whose menu sets one value (an `Act` each).
     #[allow(clippy::too_many_arguments)]
     fn pick(&self, t: &Theme, id: &str, label: &str, enabled: bool, fit: Fit, width: f32, items: Vec<(SharedString, bool, Act)>, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
@@ -545,6 +536,7 @@ impl AgentsPage {
             .child(self.protection_bar(t, Some(&p)))
             .child(div().flex_1().min_h_0().flex().flex_row().child(self.render_conn_list(t, cx)).child(body))
             .children(self.login_sheet(t, &p, cx))
+            .children(self.sens_sheet(t, cx))
             .into_any_element()
     }
 
@@ -856,17 +848,19 @@ impl AgentsPage {
             for k in ks {
                 let s = &r.sensitive[k];
                 let name = s.col.rsplit_once('.').map_or(s.col.as_str(), |(_, f)| f);
-                let id = SharedString::from(format!("agents-sens-mask-{k}"));
+                let id = SharedString::from(format!("agents-sens-edit-{k}"));
                 // An older version's Off still reads Off, but isn't offered.
-                let items: Vec<(SharedString, bool, Act)> = Mask::ALL.iter().map(|m| (m.label().into(), s.on && *m == s.how, Act::SensMask(k, *m))).collect();
+                let how = if s.on { crate::agents_sens::summary(s.how) } else { "Off".into() };
                 let example = if s.on { masked_example(name, s.how) } else { "as stored".into() };
                 let rid = SharedString::from(format!("agents-sens-{k}"));
+                let hov = t.hov;
                 let key = format!("s:{}", s.col);
                 rows.push(motion(
                     div()
                         .id(rid.clone())
                         .group(rid.clone())
                         .h(px(36.))
+                        .hover(move |s| s.bg(hov))
                         .pl(px(34.))
                         .pr(px(10.))
                         .flex()
@@ -876,8 +870,16 @@ impl AgentsPage {
                         .child(icon(Icon::Column).size(px(13.)).text_color(t.tx3))
                         .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(if s.on { t.tx } else { t.tx3 }).child(name.to_string()))
                         .child(div().w(px(130.)).flex_none().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(11.)).text_color(t.tx3).child(example))
-                        .child(self.pick(t, &id, if s.on { s.how.label() } else { "Off" }, masked, Fit::Row, 120., items, cx))
-                        .child(self.keep_picks(t, k, s, masked, cx))
+                        .child(div().w(px(180.)).flex_none().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(12.)).text_color(if s.on { t.tx2 } else { t.tx3 }).child(how))
+                        .child({
+                            let edit = ui::button(t, id.clone(), ui::Btn::Secondary).h(px(26.)).px(px(10.)).text_size(px(12.)).child("Edit");
+                            if masked {
+                                let (col, how) = (s.col.clone(), s.how);
+                                edit.on_click(cx.listener(move |v, _, _, cx| v.open_sens_edit(col.clone(), how, cx))).into_any_element()
+                            } else {
+                                edit.opacity(0.4).cursor_default().into_any_element()
+                            }
+                        })
                         .when(masked, |d| {
                             let (key, col) = (key.clone(), s.col.clone());
                             d.child(remove_x(t, SharedString::from(format!("agents-sens-rm-{k}")), rid.clone()).on_click(cx.listener(move |v, _, _, cx| {
@@ -885,7 +887,7 @@ impl AgentsPage {
                                 v.leave(key.clone(), cx, move |r| r.sensitive.retain(|s| s.col != col))
                             })))
                         })
-                        .when(!masked, |d| d.child(div().w(px(20.)).flex_none())),
+                        .when(!masked, |d| d.child(div().w(px(16.)).flex_none())),
                     36.,
                     &key,
                     &new,
@@ -966,10 +968,12 @@ impl AgentsPage {
                 };
                 let rid = SharedString::from(format!("agents-vis-{k}"));
                 let key = format!("v:{}", it.name);
+                let hov = t.hov;
                 let row = div()
                     .id(rid.clone())
                     .group(rid.clone())
                     .h(px(36.))
+                    .hover(move |s| s.bg(hov))
                     .pl(px(12.))
                     .pr(px(10.))
                     .flex()

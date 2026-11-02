@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Local;
-use dataman_core::privacy::{Keep, Mask, Validator};
+use dataman_core::privacy::{Mask, Validator};
 use dataman_core::{ConnectionProfile, Core, Engine};
 use dataman_mcp::audit::{AllowedBy, Decision, Entry, Outcome};
 use gpui::{
@@ -175,8 +175,6 @@ pub(crate) enum Act {
     Conn(Option<String>),
     Outcome(Outcomes),
     When(When),
-    SensMask(usize, Mask),
-    SensKeep(usize, Keep),
     ReadFrom(dataman_core::privacy::ReadFrom),
     TimeLimit(u64),
     ReadRows(u64),
@@ -240,6 +238,7 @@ pub struct AgentsPage {
     pub(crate) sens_input: Entity<TextInput>,
     pub(crate) vis_input: Entity<TextInput>,
     pub(crate) scan_note: Option<String>,
+    pub(crate) sens_edit: Option<crate::agents_sens::SensEdit>,
     pub(crate) editor: TypeEditor,
     pub(crate) suggest: crate::agents_suggest::Suggest,
     /// What the selected call's agent received, in the results grid; zoomed over the whole
@@ -588,6 +587,7 @@ impl AgentsPage {
             sens_input,
             vis_input,
             scan_note: None,
+            sens_edit: None,
             editor: TypeEditor { editing: None, name, regex, mask: Mask::Hidden, more: false, validator: Validator::None, ignore_case: false, keep: 4, samples: Vec::new(), sample, confirm_delete: false },
             suggest: Default::default(),
             received,
@@ -786,26 +786,6 @@ impl AgentsPage {
             Act::When(w) => {
                 self.f_when = w;
                 self.selected = None;
-            }
-            Act::SensMask(i, m) => {
-                // Sensitive columns are inert outside Masked data.
-                if let Some(id) = self.conn.clone().filter(|id| self.core.config.get(id).is_some_and(|p| p.mcp_rules.view == dataman_core::privacy::AgentView::Masked)) {
-                    self.edit_conn(&id, |p| {
-                        if let Some(s) = p.mcp_rules.sensitive.get_mut(i) {
-                            // Partial again keeps the characters it kept.
-                            (s.how, s.on) = (m.keeping(s.how.kept()), true);
-                        }
-                    }, cx);
-                }
-            }
-            Act::SensKeep(i, k) => {
-                if let Some(id) = self.conn.clone().filter(|id| self.core.config.get(id).is_some_and(|p| p.mcp_rules.view == dataman_core::privacy::AgentView::Masked)) {
-                    self.edit_conn(&id, |p| {
-                        if let Some(s) = p.mcp_rules.sensitive.get_mut(i) {
-                            s.how = s.how.keeping(k);
-                        }
-                    }, cx);
-                }
             }
             // Picking a default stores nothing, so the connection keeps following it.
             Act::ReadFrom(f) => self.set_rule(|r| r.read_from = (f != dataman_core::privacy::ReadFrom::Primary).then_some(f), cx),
