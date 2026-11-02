@@ -259,8 +259,14 @@ async fn ddl_round_trip(ws: &Entity<Workspace>, e: Engine, connected: Option<(da
     expand(&t, &format!("c:{}/d:{}", p.id, p.database), cx).await;
     expand(&t, &s, cx).await;
     expand(&t, &format!("{s}/tables"), cx).await;
+    // The engine before left its own CREATE TABLE in the editor: wait for this one's.
+    let was = editor_text(ws, cx);
     let opened = menu(&t, &format!("{s}/r:e2e_ddl"), Act::Generate(Gen::CreateTable), cx).await;
-    until(cx, 10, |cx| editor_text(ws, cx).contains("CREATE TABLE")).await;
+    until(cx, 10, |cx| {
+        let t = editor_text(ws, cx);
+        t != was && t.contains("CREATE TABLE")
+    })
+    .await;
     let ddl = editor_text(ws, cx);
     let _ = sql(&core, &p, &pw, drop, cx).await;
     let ran = run_editor(ws, cx).await;
