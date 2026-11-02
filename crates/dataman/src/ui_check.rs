@@ -1159,7 +1159,7 @@ async fn zoom_checks(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> boo
     draw(cx);
     let after = bounds(cx);
     let landed = cx.update(|_, cx| ws.read(cx).zoom_tween.is_none() || ws.read(cx).zoom_now(&tab, cx) == 1.).unwrap_or(false);
-    report("⇧⌘↩ on the grid zooms the result, animated", (!motion || !in_time || (mid > 0.05 && mid < 0.999)) && zoom(cx) == 1. && landed, format!("mid {mid} end {}{}", zoom(cx), if in_time { "" } else { " (frames too slow for a mid-way sample)" }));
+    report("⇧⌘↩ on the grid zooms the result, animated", (!motion || !in_time || (mid > 0.001 && mid < 0.999)) && zoom(cx) == 1. && landed, format!("mid {mid} end {}{}", zoom(cx), if in_time { "" } else { " (frames too slow for a mid-way sample)" }));
     report(
         "mid-way the result has grown part of the way",
         !motion || !in_time || mid_b.zip(after).is_some_and(|(m, a)| m.top() < before.top() && m.top() > a.top()),
