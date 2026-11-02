@@ -32,10 +32,11 @@ fn edges_drawn(window: &Window) -> bool {
 pub fn start_move(window: &Window) {
     #[cfg(windows)]
     {
-        use raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
         use windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
         use windows_sys::Win32::UI::WindowsAndMessaging::{HTCAPTION, SendMessageW, WM_NCLBUTTONDOWN};
-        if let Ok(h) = window.window_handle()
+        // GPUI's own `window_handle` is another thing: raw-window-handle's, by its trait.
+        if let Ok(h) = HasWindowHandle::window_handle(window)
             && let RawWindowHandle::Win32(w) = h.as_raw()
         {
             unsafe {
