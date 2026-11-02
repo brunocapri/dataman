@@ -192,14 +192,16 @@ impl Site {
                         return;
                     }
                     let slow = body.len() > 4096;
-                    let step = if slow { body.len().div_ceil(12) } else { body.len().max(1) };
+                    // About two and a half seconds for a download: long enough for a slow
+                    // renderer's frames to catch it part way.
+                    let step = if slow { body.len().div_ceil(24) } else { body.len().max(1) };
                     for chunk in body.chunks(step) {
                         if stream.write_all(chunk).is_err() {
                             return;
                         }
                         let _ = stream.flush();
                         if slow {
-                            std::thread::sleep(Duration::from_millis(80));
+                            std::thread::sleep(Duration::from_millis(100));
                         }
                     }
                 });
@@ -455,17 +457,21 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     site.put("/feed.json", feed_json(NEW, &dmg_url, &dmg, key.sign(&dmg)));
     draw(cx);
     let buttons = cx.update(|_, cx| ws.read(cx).update_button_bounds.borrow().clone()).unwrap_or_default();
+    // Every state as it is set: polling, a slow renderer's frames can step over the short ones.
+    let seen = std::rc::Rc::new(std::cell::Cell::new(false));
+    let _steps = cx.update(|_, cx| {
+        let seen = seen.clone();
+        cx.observe_global::<updates::Updates>(move |cx| {
+            if matches!(updates::state(cx), State::Working { step: Step::Verifying | Step::Installing, .. } | State::Ready { .. }) {
+                seen.set(true);
+            }
+        })
+    });
     if let Some(b) = buttons.get(1) {
         click(cx, b.center());
     }
-    let mut verifying = false;
-    let installed = wait(cx, 30, |cx| {
-        if matches!(state(cx), State::Working { step: Step::Verifying | Step::Installing, .. } | State::Ready { .. }) {
-            verifying = true;
-        }
-        cx.update(|_, cx| cx.try_global::<updates::Updates>().is_some_and(|u| u.installed.is_some())).unwrap_or(false)
-    })
-    .await;
+    let installed = wait(cx, 30, |cx| cx.update(|_, cx| cx.try_global::<updates::Updates>().is_some_and(|u| u.installed.is_some())).unwrap_or(false)).await;
+    let verifying = seen.get();
     report("Retry downloads, verifies and installs", installed, format!("{:?}", state(cx)));
     report("the steps after the download show (verifying / installing)", verifying, String::new());
     report("the bundle is now 99.0.0", plist_version(&target) == NEW, plist_version(&target));

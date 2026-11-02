@@ -22,7 +22,7 @@ env:
     libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libxcb1-dev
     libfontconfig-dev libfreetype-dev libegl1 libgl1-mesa-dri
     xvfb xauth x11-utils dbus-x11 gnome-keyring libsecret-tools postgresql-client
-    imagemagick dpkg-dev file
+    dpkg-dev file
 
 jobs:
   test:
@@ -56,7 +56,8 @@ jobs:
           [ "$n" -le 2 ]
       - name: Tests, with a Secret Service for the password store
         run: |
-          dbus-run-session -- bash -c '
+          # -e: a failing `cargo test` fails the step, not only the last command.
+          dbus-run-session -- bash -ec '
             echo -n ci | gnome-keyring-daemon --unlock --components=secrets > /dev/null
             cargo test --release --workspace
             cargo test --release -p dataman-core --test keychain -- --ignored'

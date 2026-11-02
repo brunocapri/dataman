@@ -965,7 +965,7 @@ impl SettingsView {
                     .flex_col()
                     .gap(px(3.))
                     .child(div().text_color(t.tx).child(label))
-                    .children(row.help().map(|h| div().text_size(px(10.5)).line_height(px(15.)).text_color(t.tx3).child(h))),
+                    .children(row.help().map(|h| div().text_size(px(10.5)).line_height(px(15.)).text_color(t.tx3).child(crate::ui::keys_text(h)))),
             )
             .child(control)
             .into_any_element()

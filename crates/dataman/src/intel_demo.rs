@@ -161,8 +161,18 @@ async fn check(ws: &Entity<Workspace>, tab: &Entity<QueryTab>, cx: &mut AsyncWin
     report("one ⌘Z undoes the whole format", u.starts_with("select p.id,c.name"), format!("{u:?}"));
 
     set(tab, "SELECT p.totl, c.name FROM orders p JOIN customer c ON c.id = p.customer;\nSELECT p.total, c.name FROM orders p JOIN customer c USING (id) WHERE status = 'x';", None, cx);
-    pause(cx, 700).await;
-    let lints: Vec<String> = cx.update(|_, cx| editor.read(cx).lints().iter().map(|l| l.message.clone()).collect()).unwrap();
+    // The lint waits for typing to settle, then runs off the main thread: waited for, so a slow
+    // machine sees it too.
+    let mut lints: Vec<String> = Vec::new();
+    for _ in 0..50 {
+        pause(cx, 100).await;
+        lints = cx.update(|_, cx| editor.read(cx).lints().iter().map(|l| l.message.clone()).collect()).unwrap();
+        if !lints.is_empty() {
+            pause(cx, 200).await;
+            lints = cx.update(|_, cx| editor.read(cx).lints().iter().map(|l| l.message.clone()).collect()).unwrap();
+            break;
+        }
+    }
     report("lint: a typo against the live schema, nothing else", lints == ["column p.totl does not exist"], format!("{lints:?}"));
 
     set(tab, "SELECT $1::int + 1 AS n, :'name' AS name;", Some(0), cx);

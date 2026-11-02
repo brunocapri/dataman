@@ -368,9 +368,12 @@ impl Workspace {
             None => self.active_tab(),
         }
         .map(|t| t.entity_id());
+        // Followed while the front tab grows, and once more on the frame it stops (its full
+        // width): a slow renderer's last growing frame can be well short of it.
         let seen = &self.strip_front[pane.index()];
-        if seen.get() != front || front.is_some_and(|f| m.growing(f)) {
-            seen.set(front);
+        let growing = front.is_some_and(|f| m.growing(f));
+        if seen.get() != (front, growing) || growing {
+            seen.set((front, growing));
             let gi = front.and_then(|f| ids.iter().position(|&i| i == f));
             if let Some(child) = gi.and_then(|gi| is_tab.iter().enumerate().filter(|(_, t)| **t).nth(gi).map(|(c, _)| c)) {
                 scroll.scroll_to_item(child);
@@ -1842,7 +1845,7 @@ impl Workspace {
             .children(env)
             .children(read_only)
             .child(div().flex_1())
-            .children(self.flash_notice.as_ref().map(|(m, _)| div().text_color(t.tx2).child(m.clone())))
+            .children(self.flash_notice.as_ref().map(|(m, _)| div().text_color(t.tx2).child(crate::ui::keys_text(m.clone()))))
             .children(self.export.as_ref().filter(|e| !e.read(cx).visible).and_then(|e| e.read(cx).status_line()).map(|l| {
                 div()
                     .id("export-status")

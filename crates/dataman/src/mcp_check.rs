@@ -580,8 +580,10 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
         }
         pause(cx, 10).await;
     }
+    // The moment it appears: the frame that shows it, then the key with no frame in between (two
+    // of a slow renderer's frames outlast the guard).
     draw(cx);
-    key(cx, "cmd-enter");
+    let _ = cx.update(|window, cx| window.dispatch_keystroke(crate::keymap::keystroke("cmd-enter"), cx));
     pause(cx, 100).await;
     check("⌘↩ the moment a sheet appears does not allow it", up && sheet_open(cx), String::new());
     pause(cx, crate::mcp::ALLOW_AFTER.as_millis() as u64).await;

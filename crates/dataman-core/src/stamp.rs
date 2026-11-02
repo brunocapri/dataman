@@ -1,8 +1,9 @@
 use std::path::Path;
 use std::time::SystemTime;
 
-/// What tells another process's write apart: Linux file times move by a clock tick, so two
-/// writes in one tick share an mtime; the writes replace the file, so the inode changes.
+/// What tells another process's write apart: Linux and Windows file times move by a clock tick,
+/// so two writes in one tick share an mtime; the writes replace the file, so the inode (the
+/// NTFS file index) changes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FileStamp {
     modified: Option<SystemTime>,
@@ -10,14 +11,7 @@ pub struct FileStamp {
     ino: u64,
     /// A rewrite in place with its mtime put back (`touch -r`, `cp -p`) still moves the ctime.
     changed: (i64, i64),
-    /// Windows' file times move by a clock tick (up to ~16 ms) and an in-place rewrite keeps the
-    /// file index: there a small file's contents tell the writes apart (0 elsewhere).
-    content: u64,
 }
-
-/// The files stamped are Dataman's own (connections, settings, a project, favorites): small.
-#[cfg(windows)]
-const HASHED_UP_TO: u64 = 4 << 20;
 
 impl FileStamp {
     pub fn of(path: &Path) -> Option<FileStamp> {
@@ -31,18 +25,14 @@ impl FileStamp {
         let (ino, changed) = windows_ids(path).unwrap_or((0, (0, 0)));
         #[cfg(not(any(unix, windows)))]
         let (ino, changed) = (0, (0, 0));
-        #[cfg(windows)]
-        let content = if m.is_file() && m.len() <= HASHED_UP_TO {
-            use std::hash::{Hash as _, Hasher as _};
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            std::fs::read(path).ok()?.hash(&mut h);
-            h.finish()
-        } else {
-            0
-        };
-        #[cfg(not(windows))]
-        let content = 0;
-        Some(FileStamp { modified: m.modified().ok(), len: m.len(), ino, changed, content })
+        Some(FileStamp { modified: m.modified().ok(), len: m.len(), ino, changed })
+    }
+
+    /// Written over a second ago. A write in place within the same clock tick, the same length,
+    /// leaves the stamp as it was: a stamp still fresh is no proof, so its file is read again
+    /// (git's "racily clean").
+    pub fn settled(&self) -> bool {
+        self.modified.and_then(|m| m.elapsed().ok()).is_some_and(|d| d >= std::time::Duration::from_secs(1))
     }
 }
 
@@ -88,15 +78,6 @@ mod tests {
         std::fs::write(&tmp, "b").unwrap();
         std::fs::rename(&tmp, &p).unwrap();
         assert_ne!(FileStamp::of(&p), Some(a), "same length, maybe the same mtime: the inode differs");
-    }
-
-    #[test]
-    fn a_file_rewritten_in_place_at_once_is_a_new_stamp() {
-        let dir = tempfile::tempdir().unwrap();
-        let p = dir.path().join("f");
-        std::fs::write(&p, "mcp = \"read\"").unwrap();
-        let a = FileStamp::of(&p).unwrap();
-        std::fs::write(&p, "mcp = \"full\"").unwrap();
-        assert_ne!(FileStamp::of(&p), Some(a), "same length, same file, maybe the same tick");
+        assert!(!FileStamp::of(&p).unwrap().settled(), "just written");
     }
 }

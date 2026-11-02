@@ -318,7 +318,7 @@ pub struct Workspace {
     pub(crate) tab_drop_pane: Pane,
     pub(crate) tab_bounds_right: std::rc::Rc<std::cell::RefCell<Vec<gpui::Bounds<gpui::Pixels>>>>,
     pub(crate) strip_scroll: [gpui::ScrollHandle; 2],
-    pub(crate) strip_front: [std::cell::Cell<Option<EntityId>>; 2],
+    pub(crate) strip_front: [std::cell::Cell<(Option<EntityId>, bool)>; 2],
     pub(crate) strip_parts: std::rc::Rc<std::cell::RefCell<[Vec<gpui::Bounds<gpui::Pixels>>; 2]>>,
     pub(crate) editor_drop: Option<(Pane, crate::split::DropZone)>,
     pub(crate) editor_drop_glide: Option<crate::split::DropGlide>,

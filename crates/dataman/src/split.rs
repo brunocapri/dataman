@@ -203,7 +203,7 @@ impl Workspace {
         }
         self.strip_scroll[1] = gpui::ScrollHandle::new();
         for f in &self.strip_front {
-            f.set(None);
+            f.set((None, false));
         }
     }
 

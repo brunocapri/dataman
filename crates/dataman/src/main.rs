@@ -117,6 +117,7 @@ mod plan;
 #[cfg(feature = "checks")]
 mod plan_demo;
 mod privileges;
+mod prompt;
 #[cfg(feature = "checks")]
 mod project_check;
 mod project_ui;
@@ -383,8 +384,10 @@ fn main() {
     #[cfg(windows)]
     attach_console();
     let args: Vec<String> = std::env::args().collect();
-    // The packages ship `dataman-mcp` as a link to this binary, not a second copy of everything.
-    if args.first().is_some_and(|a| std::path::Path::new(a).file_stem().is_some_and(|n| n == "dataman-mcp")) {
+    // The packages ship `dataman-mcp` as a link to this binary, not a second copy of everything;
+    // `dataman --mcp` is the AppImage's command, the same from a package (`dataman-mcp.exe` on
+    // Windows is a binary of its own: a console program).
+    if args.first().is_some_and(|a| std::path::Path::new(a).file_stem().is_some_and(|n| n == "dataman-mcp")) || args.get(1).is_some_and(|a| a == "--mcp") {
         dataman_mcp::cli::main();
     }
     if args.iter().any(|a| a == "--version") {
@@ -538,6 +541,9 @@ fn main() {
         keymap::set_overrides(keymap::clean(&core.settings.get().keys));
         keymap::bind_all(cx);
         ui::close_modals_on_escape(cx);
+        if keymap::NOT_MAC {
+            cx.set_prompt_builder(prompt::build);
+        }
         cx.on_action(|_: &app::Quit, cx| cx.quit());
         cx.on_action(|_: &app::CheckForUpdates, cx| updates::check(true, cx));
         updates::init(&core, cx);
@@ -571,7 +577,19 @@ fn main() {
                 },
                 |window, cx| cx.new(|cx| app::Workspace::new(core.clone(), window, cx)),
             )
-            .expect("cannot open the window");
+            .unwrap_or_else(|e| {
+                // No Vulkan or OpenGL driver to draw with: say what to install, not a panic.
+                if cfg!(target_os = "linux") {
+                    eprintln!(
+                        "dataman: cannot open the window: {e:#}\n\
+                         Dataman draws with Vulkan or OpenGL (EGL): install your GPU's Vulkan driver \
+                         (mesa-vulkan-drivers on Debian, Ubuntu and Fedora; vulkan-radeon or vulkan-intel on Arch), \
+                         or libegl1 with Mesa."
+                    );
+                    std::process::exit(1);
+                }
+                panic!("cannot open the window: {e:#}")
+            });
         mark(t_main, "window opened");
         let mcp_core = core.clone();
         let handle: gpui::AnyWindowHandle = window.into();

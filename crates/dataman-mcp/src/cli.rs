@@ -45,6 +45,8 @@ pub fn main() -> ! {
                 println!("{}", crate::claude_stdio_command_with(&argv.iter().map(String::as_str).collect::<Vec<_>>()));
                 std::process::exit(0);
             }
+            // `dataman --mcp` comes here with its flag.
+            "--mcp" => {}
             "-h" | "--help" => usage(),
             _ => usage(),
         }

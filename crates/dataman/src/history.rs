@@ -1897,6 +1897,12 @@ impl HistoryPanel {
         self.folding_moves()
     }
 
+    /// When the latest fold started and whether it opens.
+    #[cfg(feature = "checks")]
+    pub(crate) fn demo_fold_start(&self) -> Option<(std::time::Instant, bool)> {
+        self.folding.as_ref().map(|(_, at, opening)| (*at, *opening))
+    }
+
     #[cfg(feature = "checks")]
     pub(crate) fn demo_entry_count(&self) -> usize {
         self.entries.len()
