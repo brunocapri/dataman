@@ -373,13 +373,13 @@ async fn check(ws: &Entity<Workspace>, grid: &Entity<ResultGrid>, fk: usize, pla
     let ctrl = Modifiers { control: true, ..Default::default() };
     let p = at(cx, 2, fk);
     // ⌃-click is the right click on macOS; on Linux Ctrl-click is the ⌘-click.
-    if crate::keymap::LINUX {
+    if crate::keymap::NOT_MAC {
         right_click(cx, p);
     } else {
         click(cx, p, ctrl);
     }
     let m = menu(cx);
-    report(if crate::keymap::LINUX { "a right click opens the menu" } else { "⌃-click opens the right-click menu" }, m.as_ref().is_some_and(|(_, l, _, _)| l.len() == 6), format!("{m:?}"));
+    report(if crate::keymap::NOT_MAC { "a right click opens the menu" } else { "⌃-click opens the right-click menu" }, m.as_ref().is_some_and(|(_, l, _, _)| l.len() == 6), format!("{m:?}"));
     key(cx, "escape");
 
     let n0 = tabs(cx);

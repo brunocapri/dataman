@@ -1098,7 +1098,7 @@ fn commands(conn: Option<&std::sync::Arc<dataman_core::Connection>>, cx: &App) -
     if crate::updates::enabled(cx) {
         v.push(c("Check for updates…", crate::VERSION, "", Box::new(CheckForUpdates), Workspace));
     }
-    if crate::keymap::LINUX {
+    if crate::keymap::NOT_MAC {
         // No menu bar there: what only it reached.
         v.push(c("Go to table or tab", "", "", Box::new(GoTo), Workspace));
         v.push(c("Next region", "explorer → editor → grid", "", Box::new(CycleFocus), Workspace));

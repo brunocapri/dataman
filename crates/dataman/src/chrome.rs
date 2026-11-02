@@ -270,12 +270,12 @@ impl Workspace {
             .on_mouse_move(cx.listener(|w, _, window, _| {
                 if w.title_drag {
                     w.title_drag = false;
-                    window.start_window_move();
+                    crate::csd::start_move(window);
                 }
             }))
             .on_click(|ev, window, _| {
                 if ev.click_count() != 2 {
-                } else if !crate::keymap::LINUX {
+                } else if !crate::keymap::NOT_MAC {
                     window.titlebar_double_click();
                 } else if window.window_controls().maximize && window.is_resizable() {
                     window.zoom_window();

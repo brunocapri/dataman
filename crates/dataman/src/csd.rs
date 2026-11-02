@@ -1,6 +1,7 @@
 //! The window frame Linux leaves to the app (client-side decorations): window buttons in the
 //! title bar, thin resize edges along the border, and a menu in place of the macOS menu bar.
-//! The frame adds no inset: the app's layout keeps the whole window.
+//! The frame adds no inset: the app's layout keeps the whole window. On Windows GPUI hides the
+//! title bar and keeps the resize border and shadow: the buttons and the menu are ours there too.
 
 use gpui::{
     AnyElement, App, Context, CursorStyle, Decorations, MouseButton, ResizeEdge, Tiling, Window, WindowButton, WindowButtonLayout, div,
@@ -9,7 +10,7 @@ use gpui::{
 
 use crate::app::Workspace;
 use crate::assets::Icon;
-use crate::keymap::LINUX;
+use crate::keymap::NOT_MAC;
 use crate::theme::{ActiveTheme, Theme, px};
 use crate::ui;
 
@@ -17,9 +18,34 @@ pub const BUTTON: f32 = 28.;
 const EDGE: f32 = 4.;
 const CORNER: f32 = 10.;
 
-/// Our own frame is drawn: Linux, client-side decorations, not full screen.
+/// Our own window buttons are drawn: Linux with client-side decorations, Windows; not full screen.
 pub fn drawn(window: &Window) -> bool {
-    LINUX && matches!(window.window_decorations(), Decorations::Client { .. }) && !window.is_fullscreen()
+    !window.is_fullscreen() && (cfg!(windows) || NOT_MAC && matches!(window.window_decorations(), Decorations::Client { .. }))
+}
+
+/// The resize edges and the hairline too (Windows keeps its own border).
+fn edges_drawn(window: &Window) -> bool {
+    !cfg!(windows) && drawn(window)
+}
+
+/// The title bar starts moving the window: Windows' own move loop there (GPUI's is a no-op).
+pub fn start_move(window: &Window) {
+    #[cfg(windows)]
+    {
+        use raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{HTCAPTION, SendMessageW, WM_NCLBUTTONDOWN};
+        if let Ok(h) = window.window_handle()
+            && let RawWindowHandle::Win32(w) = h.as_raw()
+        {
+            unsafe {
+                ReleaseCapture();
+                SendMessageW(w.hwnd.get() as _, WM_NCLBUTTONDOWN, HTCAPTION as usize, 0);
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    window.start_window_move();
 }
 
 fn tiling(window: &Window) -> Tiling {
@@ -49,7 +75,7 @@ fn buttons(side: [Option<WindowButton>; 3], window: &Window) -> Vec<WindowButton
 /// The title bar's room before its first control: the traffic lights on macOS, the window
 /// buttons the desktop puts on the left on Linux.
 pub fn lead(window: &Window, cx: &App) -> f32 {
-    if !LINUX {
+    if !NOT_MAC {
         return crate::theme::metrics::lights_right_at(crate::theme::zoom());
     }
     if !drawn(window) {
@@ -103,7 +129,7 @@ impl Workspace {
 
     /// The menu button and the right-hand window buttons.
     pub(crate) fn render_window_buttons_right(&self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if !LINUX {
+        if !NOT_MAC {
             return None;
         }
         let t = cx.theme();
@@ -171,7 +197,7 @@ impl Workspace {
 
     /// Resize handles along the border (none on a tiled edge).
     pub(crate) fn render_resize_edges(&self, window: &Window) -> Vec<AnyElement> {
-        if !drawn(window) || !window.is_resizable() || window.is_maximized() {
+        if !edges_drawn(window) || !window.is_resizable() || window.is_maximized() {
             return Vec::new();
         }
         let tl = tiling(window);
@@ -220,7 +246,7 @@ impl Workspace {
 /// The frame's hairline on a window that floats (a tiled or maximized one meets its
 /// neighbours edge to edge).
 pub fn border(window: &Window, cx: &App) -> Option<AnyElement> {
-    if !drawn(window) || window.is_maximized() || tiling(window).is_tiled() {
+    if !edges_drawn(window) || window.is_maximized() || tiling(window).is_tiled() {
         return None;
     }
     let t = cx.theme();

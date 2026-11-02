@@ -31,7 +31,7 @@ pub fn keycap(t: &Theme, text: impl Into<SharedString>) -> Div {
 /// Key text as this platform names keys (`keymap::glyphs`).
 pub fn keys_text(text: impl Into<SharedString>) -> SharedString {
     let s = text.into();
-    if crate::keymap::LINUX { crate::keymap::glyphs(&s).into() } else { s }
+    if crate::keymap::NOT_MAC { crate::keymap::glyphs(&s).into() } else { s }
 }
 
 pub fn keycap_sm(bg: Hsla, fg: Hsla, text: impl Into<SharedString>) -> Div {

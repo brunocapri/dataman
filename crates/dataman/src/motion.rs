@@ -520,7 +520,17 @@ fn kde_instant(kdeglobals: &str) -> bool {
     false
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+/// Windows' "Animation effects" switch (Settings › Accessibility › Visual effects).
+#[cfg(windows)]
+pub fn system_reduce_motion() -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SPI_GETCLIENTAREAANIMATION, SystemParametersInfoW};
+    let mut on: i32 = 1;
+    // SAFETY: SPI_GETCLIENTAREAANIMATION writes one BOOL.
+    let ok = unsafe { SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, (&mut on as *mut i32).cast(), 0) } != 0;
+    ok && on == 0
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 pub fn system_reduce_motion() -> bool {
     false
 }

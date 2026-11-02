@@ -47,8 +47,8 @@ const fn c(id: &'static str, label: &'static str, group: &'static str, scope: Sc
 }
 
 // ⌘↓ is Ctrl+End on Linux, the grid's last row there.
-const FETCH_MORE: &[&str] = &[if LINUX { "ctrl-down" } else { "cmd-down" }];
-const FETCH_ALL: &[&str] = &[if LINUX { "ctrl-shift-down" } else { "cmd-shift-down" }];
+const FETCH_MORE: &[&str] = &[if NOT_MAC { "ctrl-down" } else { "cmd-down" }];
+const FETCH_ALL: &[&str] = &[if NOT_MAC { "ctrl-shift-down" } else { "cmd-shift-down" }];
 
 pub const COMMANDS: &[Command] = &[
     c("command_palette", "Command palette", "GLOBAL", Scope::Workspace, &["cmd-k"], || Box::new(CommandPalette)),
@@ -432,7 +432,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
+    #[cfg(not(target_os = "macos"))]
     fn linux_keys_and_labels() {
         for (mac, linux, shown) in [
             ("cmd-shift-c", "ctrl-shift-c", "Ctrl+Shift+C"),
@@ -467,7 +467,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
+    #[cfg(not(target_os = "macos"))]
     fn linux_defaults_leave_the_desktop_its_keys() {
         for c in COMMANDS {
             for k in defaults(c) {

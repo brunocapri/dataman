@@ -1,14 +1,15 @@
 use gpui::{Action, KeyBinding, Keystroke};
 
-pub const LINUX: bool = cfg!(target_os = "linux");
+/// Linux and Windows: Ctrl for ⌘, key names for glyphs, a frame and menu of the app's own.
+pub const NOT_MAC: bool = cfg!(not(target_os = "macos"));
 
-/// The keymap is written as on macOS (and so are `[keys]` in settings.toml); on Linux ⌘ is
+/// The keymap is written as on macOS (and so are `[keys]` in settings.toml); on Linux and Windows ⌘ is
 /// Ctrl, with the desktop's own text keys (⌘←/→ Home/End, ⌘↑/↓ Ctrl+Home/End, ⌥←/→ ⌥⌫ ⌥⌦ by
 /// word with Ctrl, ⌘⌫ Ctrl+Shift+⌫), and where Ctrl would take a key from something else the
 /// key moves: ⌃⌘←/→ (back, forward) to Alt+←/→, ⌃⌘↩/⌫ (commit, rollback) to Alt+Shift+↩/⌫, ⌥⌘←/→ (pages) to Alt+PgUp/PgDn, ⌥⌘L to Ctrl+Shift+L (Ctrl+Alt+L locks
 /// the screen).
 pub fn native(s: &str) -> String {
-    if !LINUX {
+    if !NOT_MAC {
         return s.to_string();
     }
     let Ok(k) = Keystroke::parse(s) else { return s.to_string() };
@@ -62,7 +63,7 @@ pub fn native_chosen(s: &str) -> String {
 
 /// ⌃-click is a right click on macOS; on Linux Ctrl-click is the ⌘-click (`Modifiers::secondary`).
 pub fn menu_click(m: &gpui::Modifiers) -> bool {
-    !LINUX && m.control
+    !NOT_MAC && m.control
 }
 
 /// A binding in this platform's keys (`native`).
@@ -84,7 +85,7 @@ pub fn label(keystroke: &str) -> String {
 
 /// A key already in this platform's keys (`native`), as this platform shows it.
 pub fn label_native(keystroke: &str) -> String {
-    if LINUX {
+    if NOT_MAC {
         return linux_label(keystroke);
     }
     let Ok(k) = Keystroke::parse(keystroke) else { return keystroke.to_string() };
@@ -172,7 +173,7 @@ const MODS: &str = "⌃⌥⇧⌘";
 
 /// Text holding macOS key glyphs (⌘↩, ⇧⌘G · ⇧↩, ⌘-click) in this platform's key names.
 pub fn glyphs(s: &str) -> String {
-    if !LINUX || !s.chars().any(|c| "⌃⌥⇧⌘↩⌫⌦⇥⇞⇟↖↘".contains(c)) {
+    if !NOT_MAC || !s.chars().any(|c| "⌃⌥⇧⌘↩⌫⌦⇥⇞⇟↖↘".contains(c)) {
         return s.to_string();
     }
     s.split(' ').map(glyph_token).collect::<Vec<_>>().join(" ")
@@ -233,7 +234,7 @@ mod tests {
 
     #[test]
     fn glyph_text() {
-        let cases: &[(&str, &str)] = if LINUX {
+        let cases: &[(&str, &str)] = if NOT_MAC {
             &[
                 ("⌘↩", "Ctrl+Enter"),
                 ("⇧⌘G · ⇧↩", "Ctrl+Shift+G · Shift+Enter"),

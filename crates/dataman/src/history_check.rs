@@ -152,14 +152,14 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
         println!("FAIL the favorite row has no bounds");
         return false;
     };
-    if crate::keymap::LINUX {
+    if crate::keymap::NOT_MAC {
         click(cx, row, MouseButton::Right, Modifiers::default());
     } else {
         click(cx, row, MouseButton::Left, Modifiers { control: true, ..Default::default() });
     }
     pause(cx, 30).await;
     let menu_open = cx.update(|_, cx| history.read(cx).demo_fav_menu_open()).unwrap_or(false);
-    report(if crate::keymap::LINUX { "a right click opens the favorite's context menu" } else { "⌃-click opens the favorite's context menu" }, menu_open, String::new());
+    report(if crate::keymap::NOT_MAC { "a right click opens the favorite's context menu" } else { "⌃-click opens the favorite's context menu" }, menu_open, String::new());
     menu_click(&history, "Rename", cx);
     pause(cx, 30).await;
     let renaming = cx.update(|_, cx| history.read(cx).demo_renaming_index()).unwrap();
