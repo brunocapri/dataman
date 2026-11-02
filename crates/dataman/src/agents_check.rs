@@ -516,8 +516,16 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     if let Some(b) = back {
         click(cx, centre(b));
     }
-    pause(cx, 400).await;
-    let zoomed = cx.update(|_, cx| a.read(cx).received_zoom && a.read(cx).received_tween.is_none()).unwrap_or(false);
+    // The zoom tweens over frames: waited for, so a slow renderer sees its end too.
+    let mut zoomed = false;
+    for _ in 0..40 {
+        pause(cx, 100).await;
+        draw(cx);
+        zoomed = cx.update(|_, cx| a.read(cx).received_zoom && a.read(cx).received_tween.is_none()).unwrap_or(false);
+        if zoomed {
+            break;
+        }
+    }
     let area = cx.update(|_, cx| a.read(cx).demo_received_area_w()).unwrap_or(0.);
     r.check("the zoom still takes the whole page over the wider detail", zoomed && area > page_w - 1., format!("{area} of {page_w}"));
     if let Some(b) = probed("agents-recv-zoom", cx) {

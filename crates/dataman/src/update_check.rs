@@ -192,14 +192,16 @@ impl Site {
                         return;
                     }
                     let slow = body.len() > 4096;
-                    let step = if slow { body.len().div_ceil(12) } else { body.len().max(1) };
+                    // About two and a half seconds for a download: long enough for a slow
+                    // renderer's frames to catch it part way.
+                    let step = if slow { body.len().div_ceil(24) } else { body.len().max(1) };
                     for chunk in body.chunks(step) {
                         if stream.write_all(chunk).is_err() {
                             return;
                         }
                         let _ = stream.flush();
                         if slow {
-                            std::thread::sleep(Duration::from_millis(80));
+                            std::thread::sleep(Duration::from_millis(100));
                         }
                     }
                 });
