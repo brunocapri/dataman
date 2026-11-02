@@ -73,6 +73,7 @@ jobs:
           cargo test --release --workspace --test keychain -- --ignored
           if ($LASTEXITCODE -ne 0) { exit 1 }
       - name: Package (.zip and installer)
+        id: package
         run: scripts\windows\package.ps1
       - name: The app starts and draws
         run: scripts\windows\smoke.ps1
@@ -124,9 +125,10 @@ jobs:
           cargo run --release -p xtask -- e2e --no-compose --only sqlite-check,duckdb-check,project-check,outside-check
           if ($LASTEXITCODE -ne 0) { exit 1 }
       # The runner's own PostgreSQL in place of the compose container: the stages that need
-      # nothing else.
+      # nothing else. It runs when the stages above fail too, so its results still show, but
+      # never without the app the package step built.
       - name: End-to-end on PostgreSQL
-        if: matrix.arch == 'x86_64' && !cancelled()
+        if: matrix.arch == 'x86_64' && !cancelled() && steps.package.outcome == 'success'
         run: |
           $svc = Get-Service -Name "postgresql*" | Select-Object -First 1
           Set-Service $svc.Name -StartupType Manual
