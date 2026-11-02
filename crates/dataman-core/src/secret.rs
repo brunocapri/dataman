@@ -157,7 +157,8 @@ impl SecretStore for Keychain {
 #[cfg(windows)]
 mod windows {
     use anyhow::{Context as _, Result};
-    use windows_sys::Win32::Foundation::{ERROR_NOT_FOUND, GetLastError};
+    use windows_sys::Win32::Foundation::{ERROR_NOT_FOUND, GetLastError, HANDLE, WAIT_ABANDONED, WAIT_OBJECT_0};
+    use windows_sys::Win32::System::Threading::{CreateMutexW, INFINITE, ReleaseMutex, WaitForSingleObject};
     use windows_sys::Win32::Security::Credentials::{CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC, CREDENTIALW, CredDeleteW, CredFree, CredReadW, CredWriteW};
 
     use super::SERVICE;
@@ -230,16 +231,32 @@ mod windows {
         comment.strip_prefix(PARTS).and_then(|n| n.parse().ok()).unwrap_or(1).max(1)
     }
 
-    /// One call at a time: a secret of several parts is read and written whole, and writes made
-    /// at once from two threads were seen lost (two of them, read back at once as missing).
-    static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    /// One call at a time across every Dataman process (the app, each `dataman-mcp`) and thread:
+    /// a secret of several parts is read and written whole, never half of one write and half of
+    /// another. Two tests writing their own credentials at once once read them back missing.
+    struct One(HANDLE);
 
-    fn one() -> std::sync::MutexGuard<'static, ()> {
-        ONE.lock().unwrap_or_else(|e| e.into_inner())
+    impl Drop for One {
+        fn drop(&mut self) {
+            unsafe { ReleaseMutex(self.0) };
+        }
+    }
+
+    fn one() -> Result<One> {
+        static MUTEX: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+        let h = *MUTEX.get_or_init(|| unsafe { CreateMutexW(std::ptr::null(), 0, wide("Local\\dataman-credentials").as_ptr()) } as usize) as HANDLE;
+        if h.is_null() {
+            return Err(last_error()).context("the Credential Manager's lock");
+        }
+        // Abandoned: a process died holding it, and the lock is ours now.
+        match unsafe { WaitForSingleObject(h, INFINITE) } {
+            WAIT_OBJECT_0 | WAIT_ABANDONED => Ok(One(h)),
+            _ => Err(last_error()).context("the Credential Manager's lock"),
+        }
     }
 
     pub fn get(id: &str) -> Result<Option<String>> {
-        let _one = one();
+        let _one = one()?;
         let Some((mut data, comment)) = read(&target(id, 0))? else { return Ok(None) };
         for n in 1..parts(&comment) {
             let (more, _) = read(&target(id, n))?.with_context(|| format!("part {n} of {} is missing from the Credential Manager", target(id, 0)))?;
@@ -249,7 +266,7 @@ mod windows {
     }
 
     pub fn set(id: &str, password: &str) -> Result<()> {
-        let _one = one();
+        let _one = one()?;
         let was = read(&target(id, 0))?.map_or(0, |(_, c)| parts(&c));
         let chunks: Vec<&[u8]> = if password.is_empty() { vec![&[]] } else { password.as_bytes().chunks(PART).collect() };
         // The continuations first: the first part, written last, says how many there are.
@@ -265,7 +282,7 @@ mod windows {
     }
 
     pub fn delete(id: &str) -> Result<()> {
-        let _one = one();
+        let _one = one()?;
         let was = read(&target(id, 0))?.map_or(1, |(_, c)| parts(&c));
         remove(&target(id, 0))?;
         for n in 1..was {
