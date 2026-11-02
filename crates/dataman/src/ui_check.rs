@@ -1340,6 +1340,7 @@ async fn motion_checks(ws: &Entity<Workspace>, id: &str, cx: &mut AsyncWindowCon
         crate::check::move_to(cx, crate::check::centre(r));
     }
     let at_once = tip(cx);
+    let hovered = cx.update(|window, _| window.is_window_hovered()).unwrap_or(false);
     crate::check::until(cx, 3, |cx| tip(cx).is_some()).await;
     let shown = tip(cx);
     if let (Some(r), Some(b)) = (rail, shown) {
@@ -1356,7 +1357,7 @@ async fn motion_checks(ws: &Entity<Workspace>, id: &str, cx: &mut AsyncWindowCon
     report(
         "a tooltip shows after a short rest, stays while the pointer is on it, and closes soon after it leaves the control and the tooltip",
         rail.is_some() && at_once.is_none() && shown.is_some() && kept.is_some() && gone,
-        format!("rail {rail:?} at once {at_once:?} shown {shown:?} kept {kept:?} gone {gone}"),
+        format!("rail {rail:?} at once {at_once:?} shown {shown:?} kept {kept:?} gone {gone}; window {win:?}, hovered {hovered}"),
     );
 
     let motion = !cx.update(|_, cx| cx.reduce_motion()).unwrap_or(false);
