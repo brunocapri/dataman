@@ -1465,8 +1465,8 @@ mod tests {
         p.read_only = true;
         assert_eq!(p.url(), "duckdb:///data/my%20db.duckdb?mode=ro");
         assert_eq!(p.summary(), "/data/my db.duckdb");
-        let home = std::env::var("HOME").unwrap();
+        let home = crate::os::home().unwrap().display().to_string();
         assert_eq!(expand_home("~/x.db"), PathBuf::from(&home).join("x.db"));
-        assert_eq!(tilde(&format!("{home}/x.db")), "~/x.db");
+        assert_eq!(tilde(&format!("{home}/x.db")), format!("~{}x.db", std::path::MAIN_SEPARATOR));
     }
 }

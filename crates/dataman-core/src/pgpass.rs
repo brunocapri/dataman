@@ -105,11 +105,11 @@ mod tests {
 
     #[test]
     fn named_host_lines_only() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let f = dir.path().join("pgpass");
         std::fs::write(&f, "db.corp:5432:*:app:exact\n*:*:*:postgres:anyhost\n").unwrap();
-        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o600)).unwrap();
+        #[cfg(unix)]
+        std::fs::set_permissions(&f, <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600)).unwrap();
         assert_eq!(lookup(&f, "evil.example", 5432, "x", "postgres").as_deref(), Some("anyhost"));
         assert_eq!(lookup_named_host(&f, "evil.example", 5432, "x", "postgres"), None, "a * line never goes to a host an agent picked");
         assert_eq!(lookup_named_host(&f, "db.corp", 5432, "x", "app").as_deref(), Some("exact"));

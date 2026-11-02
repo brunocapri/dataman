@@ -45,6 +45,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.arch }}
+          # A red run still leaves its dependencies built for the next one.
+          cache-on-failure: true
       - name: Check (no new warnings)
         shell: bash
         run: |

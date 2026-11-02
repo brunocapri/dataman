@@ -376,6 +376,7 @@ impl Reach {
         let s = tokio::time::timeout(Duration::from_secs(10), connect)
             .await
             .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "connection timed out"))??;
+        #[cfg_attr(not(unix), allow(irrefutable_let_patterns))]
         if let RawStream::Tcp(t) = &s {
             super::refuse_self_connect(t)?;
             let _ = t.set_nodelay(true);

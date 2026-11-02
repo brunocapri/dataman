@@ -1534,6 +1534,7 @@ mod tests {
         assert!(m.settings.get().confirm_commit);
     }
 
+    #[cfg(unix)]
     #[test]
     fn new_connections_that_reach_further_wait_for_review() {
         let (_d, root) = project_dir();
@@ -1647,6 +1648,7 @@ mod tests {
         assert!(format!("{:#}", ProjectFile::parse(&huge).unwrap_err()).contains("at most"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_linked_dataman_folder_or_file_is_never_synced_through() {
         for linked in [DIR, FILE] {
