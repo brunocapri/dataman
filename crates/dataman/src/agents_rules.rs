@@ -6,11 +6,10 @@ use dataman_core::privacy::{self, AgentView, ItemKind, Mask, Names, ReadFrom, Se
 use dataman_core::settings::{MCP_MAX_ROWS, MCP_WRITE_ROW_LIMIT};
 use dataman_core::nosql::ItemKind as TreeKind;
 use dataman_core::{ConnectionProfile, Engine, McpAccess};
-use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
-use gpui::{Animation, AnimationExt, AnyElement, ClickEvent, Context, FontWeight, SharedString, Window, canvas, div, prelude::*};
+use gpui::{Animation, AnimationExt, AnyElement, ClickEvent, Context, FontWeight, SharedString, Window, div, prelude::*};
 
 use crate::agents::{Act, AgentsPage, Tip, field, qmark};
 use crate::agents_suggest::Which;
@@ -173,6 +172,19 @@ pub(crate) fn section(t: &Theme, id: &str, title: &str, subs: Vec<gpui::Div>) ->
         .child(div().border_1().border_color(t.line).rounded(px(3.)).flex().flex_col().children(subs.into_iter().enumerate().map(move |(k, s)| s.px(px(20.)).py(px(18.)).when(k > 0, |d| d.border_t_1().border_color(faint)))))
 }
 
+/// Protection's sections: the title, then the subsections with no box around them, a line between.
+pub(crate) fn flat_section(t: &Theme, id: &str, title: &str, subs: Vec<gpui::Div>) -> gpui::Div {
+    div()
+        .children(ui::here(&SharedString::from(id.to_string()).into()))
+        .w_full()
+        .max_w(px(BODY_W))
+        .flex()
+        .flex_col()
+        .gap(px(12.))
+        .child(div().text_size(px(15.)).font_weight(FontWeight::BOLD).text_color(t.tx).child(title.to_string()))
+        .child(div().flex().flex_col().children(subs.into_iter().enumerate().map(|(k, s)| s.py(px(18.)).when(k == 0, |d| d.pt(px(6.))).when(k > 0, |d| d.border_t_1().border_color(t.line)))))
+}
+
 /// A subsection: its title and `?`, the control below.
 pub(crate) fn sub(head: impl IntoElement) -> gpui::Div {
     div().flex().flex_col().gap(px(10.)).child(head)
@@ -190,7 +202,6 @@ fn table(t: &Theme, rows: Vec<AnyElement>) -> gpui::Div {
 
 const GROW: Duration = Duration::from_millis(220);
 const FADE: Duration = Duration::from_millis(200);
-const SLIDE: Duration = Duration::from_millis(180);
 /// Collections (or indices) Scan again samples, at most.
 const SCAN_MAX: usize = 200;
 
@@ -226,39 +237,6 @@ fn dim(el: gpui::Div, id: &'static str, masked: bool, fading: bool) -> AnyElemen
         .into_any_element()
 }
 
-thread_local! {
-    /// Each `choices` control as laid out last frame (its origin, and each segment's place and
-    /// size), the choice it showed and the one its wash slides from.
-    static SEGS: RefCell<HashMap<String, Segs>> = RefCell::new(HashMap::new());
-}
-
-#[derive(Default)]
-struct Segs {
-    origin: Option<(f32, f32)>,
-    spans: Vec<Option<(f32, f32, f32, f32)>>,
-    on: usize,
-    from: usize,
-}
-
-fn seg_record(id: &str, k: Option<usize>, b: gpui::Bounds<gpui::Pixels>) {
-    SEGS.with(|s| {
-        if let Some(e) = s.borrow_mut().get_mut(id) {
-            let (x, y, w, h) = (f32::from(b.origin.x), f32::from(b.origin.y), f32::from(b.size.width), f32::from(b.size.height));
-            match k {
-                Some(k) if k < e.spans.len() => e.spans[k] = Some((x, y, w, h)),
-                Some(_) => {}
-                None => e.origin = Some((x, y)),
-            }
-        }
-    });
-}
-
-/// An absolutely placed, empty canvas reporting where it was laid out.
-fn seg_probe(id: &str, k: Option<usize>) -> gpui::Canvas<()> {
-    let id = id.to_string();
-    canvas(move |b, _, _| seg_record(&id, k, b), |_, _, _, _| {}).absolute().top_0().left_0().size_full()
-}
-
 /// A row's × (remove), shown while the row is hovered.
 /// Add or Hide with nothing typed: drawn, not clickable.
 fn off_button(t: &Theme, id: &'static str, label: &'static str) -> AnyElement {
@@ -291,47 +269,15 @@ pub(crate) fn state_note(t: &Theme, text: impl Into<SharedString>) -> gpui::Div 
 }
 
 /// The page's segmented control: one choice, told by its wash.
-/// When the choice changes, its wash slides over from the one before (once the segments have
-/// been laid out, so their places are known).
 pub(crate) fn choices<T: Copy + PartialEq + 'static>(t: &Theme, id: &str, opts: &[(T, &str)], on: T, cx: &mut Context<AgentsPage>, pick: impl Fn(&mut AgentsPage, T, &mut Context<AgentsPage>) + Clone + 'static) -> gpui::Div {
-    let on_ix = opts.iter().position(|(v, _)| *v == on).unwrap_or(0);
-    let (from, slide) = SEGS.with(|s| {
-        let mut s = s.borrow_mut();
-        let e = s.entry(id.to_string()).or_insert_with(|| Segs { on: on_ix, from: on_ix, ..Default::default() });
-        if e.on != on_ix {
-            (e.from, e.on) = (e.on, on_ix);
-        }
-        if e.spans.len() != opts.len() {
-            e.spans = vec![None; opts.len()];
-        }
-        let at = |k: usize| Some((e.spans.get(k).copied().flatten()?, e.origin?)).map(|((x, y, w, h), (ox, oy))| (x - ox, y - oy, w, h));
-        (e.from, at(e.from).zip(at(on_ix)))
-    });
-    let wash = slide.map(|((x0, _, w0, _), (x1, y1, w1, h1))| {
-        let time = if cx.reduce_motion() { Duration::from_millis(1) } else { SLIDE };
-        div()
-            .absolute()
-            .top(px(y1))
-            .h(px(h1))
-            .left(px(x1))
-            .w(px(w1))
-            .bg(t.pop)
-            .border_1()
-            .border_color(t.line2)
-            .with_animation(SharedString::from(format!("{id}-wash-{from}-{on_ix}")), Animation::new(time).with_easing(gpui::ease_out_quint()), move |d, k| {
-                d.left(px(x0 + (x1 - x0) * k)).w(px(w0 + (w1 - w0) * k))
-            })
-    });
-    let washed = wash.is_some();
     let segs = opts.iter().enumerate().map(|(k, (v, label))| {
         let (v, pick) = (*v, pick.clone());
         let sel = v == on;
         let hov = t.hov;
         let sid = SharedString::from(format!("{id}-{k}"));
-        // As ui::segment draws it; the wash (when it can slide) is the chosen one's face.
+        // As ui::segment draws it.
         div()
             .children(ui::here(&sid.clone().into()))
-            .child(seg_probe(id, Some(k)))
             .id(sid)
             .relative()
             .h_full()
@@ -342,7 +288,7 @@ pub(crate) fn choices<T: Copy + PartialEq + 'static>(t: &Theme, id: &str, opts: 
             .text_size(px(11.5))
             .border_1()
             .border_color(gpui::transparent_black())
-            .when(sel, |d| d.when(!washed, |d| d.bg(t.pop).border_color(t.line2)).text_color(t.tx))
+            .when(sel, |d| d.bg(t.pop).border_color(t.line2).text_color(t.tx))
             .when(!sel, move |d| d.text_color(t.tx3).cursor_pointer().hover(move |s| s.bg(hov)))
             .child(label.to_string())
             .on_click(cx.listener(move |p, _, _, cx| {
@@ -360,8 +306,6 @@ pub(crate) fn choices<T: Copy + PartialEq + 'static>(t: &Theme, id: &str, opts: 
             .bg(t.field)
             .border_1()
             .border_color(t.line2)
-            .child(seg_probe(id, None))
-            .children(wash)
             .children(segs),
     )
 }
@@ -380,8 +324,7 @@ fn select(t: &Theme, page: &AgentsPage, id: SharedString, label: &str, enabled: 
         Fit::Fill => 0.,
     };
     let open = page.menu.as_ref().is_some_and(|m| m.id == id);
-    let arrow = SharedString::from(format!("{id}-arrow"));
-    div().relative().min_w(px(min)).when(fit == Fit::Fill, |d| d.flex_1()).when(fit != Fit::Fill, |d| d.flex_none()).child(page.anchor(id.clone())).child(crate::agents::select_box(t, id, label, enabled, open, arrow))
+    div().relative().min_w(px(min)).when(fit == Fit::Fill, |d| d.flex_1()).when(fit != Fit::Fill, |d| d.flex_none()).child(page.anchor(id.clone())).child(crate::agents::select_box(t, id, label, enabled, open))
 }
 
 /// How Redacted reads in the page's examples.
@@ -426,7 +369,7 @@ impl AgentsPage {
             div()
                 .children(ui::here(&sid.clone().into()))
                 .id(sid)
-                .h(px(34.))
+                .h(px(28.))
                 .flex_none()
                 .pl(px(32.))
                 .pr(px(16.))
@@ -435,7 +378,7 @@ impl AgentsPage {
                 .items_center()
                 .gap(px(8.))
                 .cursor_pointer()
-                .map(|d| ui::selectable(d, t, sel, focused))
+                .map(|d| ui::selectable_flat(d, t, sel, focused))
                 .when(!sel, move |d| d.hover(move |s| s.bg(hov)))
                 .children(crate::assets::small_logo(p.engine, 14.))
                 .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx).child(p.name.clone()))
@@ -452,7 +395,7 @@ impl AgentsPage {
                     cx.notify();
                 }))
         });
-        div().id("agents-conns").w(px(CONNS_W)).flex_none().py(px(4.)).flex().flex_col().overflow_y_scroll().track_scroll(&self.conns_scroll).border_r_1().border_color(t.line).children(rows).into_any_element()
+        div().id("agents-conns").w(px(CONNS_W)).flex_none().py(px(4.)).flex().flex_col().gap(px(6.)).overflow_y_scroll().track_scroll(&self.conns_scroll).border_r_1().border_color(t.line).children(rows).into_any_element()
     }
 
     /// One bar over both columns, a single line under it: Protection over the connections, the
@@ -471,7 +414,8 @@ impl AgentsPage {
                     .children(ui::here(&"agents-protection-conn".into()))
                     .flex_1()
                     .min_w_0()
-                    .px(px(32.))
+                    .pl(px(32.))
+                    .pr(px(crate::agents::CLOSE_ROOM))
                     .flex()
                     .flex_row()
                     .items_center()
@@ -618,7 +562,7 @@ impl AgentsPage {
             }
             subs.push(div().child(self.render_yolo(t, p, cx)));
         }
-        section(t, "agents-access", "Access", subs)
+        flat_section(t, "agents-access", "Access", subs)
     }
 
     fn render_allowed(&self, t: &Theme, p: &ConnectionProfile, window: &Window, cx: &mut Context<Self>) -> AnyElement {
@@ -1006,7 +950,7 @@ impl AgentsPage {
                     .child(self.suggest_field(t, Which::Visible, field(t, "agents-field-visible", &self.vis_input, window, cx).h(px(30.)), window, cx))
                     .child(if typed.is_empty() { off_button(t, "agents-vis-add", verb) } else { ui::button(t, "agents-vis-add", ui::Btn::Secondary).h(px(30.)).px(px(14.)).child(verb).on_click(cx.listener(|v, _, _, cx| v.add_visible(cx))).into_any_element() }),
             );
-        section(t, "agents-privacy", "Privacy", vec![sees, sensitive, visible])
+        flat_section(t, "agents-privacy", "Privacy", vec![sees, sensitive, visible])
     }
 
     /// The schemas (or MongoDB databases) known for a connection: from the schema cache when it

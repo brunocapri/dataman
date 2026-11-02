@@ -1086,15 +1086,12 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     pause(cx, 50).await;
     r.check("the MCP log command opens Agents › Audit", shows(cx) && page(cx) == Page::Audit, format!("{:?}", page(cx)));
 
-    // Showing a tab uncovers it.
+    // No tabs over Agents; the header's × closes it.
     let active = cx.update(|_, cx| ws.read(cx).active).unwrap_or(0);
-    let tab = cx.update(|_, cx| ws.read(cx).tab_bounds.borrow().first().copied()).ok().flatten();
-    if let Some(b) = tab {
-        click(cx, centre(b));
-    }
+    let closed = click_probe("agents-close", cx);
     pause(cx, 100).await;
     let now = cx.update(|_, cx| ws.read(cx).active).unwrap_or(9);
-    r.check("in Agents, a click on the tab that was already active shows it", tab.is_some() && !shows(cx) && now == active, format!("{tab:?} {now}"));
+    r.check("in Agents, the header's × closes it on the tab that was active", closed && !shows(cx) && now == active, format!("{closed} {now}"));
     let back_to = cx.update(|_, cx| ws.read(cx).view).ok();
     r.check("… and the sidebar is back where it was", back_to == Some(dataman_core::layout::NavView::Explorer), format!("{back_to:?}"));
     click_probe("rail-agents", cx);

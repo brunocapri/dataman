@@ -9,7 +9,7 @@ use gpui::{
 use crate::theme::px;
 
 use crate::assets::{Icon, icon};
-use crate::theme::{ActiveTheme, PIXEL, Theme};
+use crate::theme::{ActiveTheme, BANNER, Theme};
 
 pub fn keycap(t: &Theme, text: impl Into<SharedString>) -> Div {
     div()
@@ -89,8 +89,8 @@ pub fn caps(t: &Theme, text: impl Into<SharedString>) -> Div {
     div().flex_none().text_size(px(10.5)).text_color(t.tx3).child(text.into())
 }
 
-pub fn pixel(text: impl Into<SharedString>, size: f32, color: Hsla) -> Div {
-    div().font_family(PIXEL).text_size(px(size)).line_height(px(size * 1.15)).text_color(color).child(text.into())
+pub fn banner(text: impl Into<SharedString>, size: f32, color: Hsla) -> Div {
+    div().font_family(BANNER).text_size(px(size)).line_height(px(size * 1.15)).text_color(color).child(text.into())
 }
 
 pub fn not_reported(t: &Theme) -> Div {
@@ -444,6 +444,12 @@ pub fn selectable<E: Styled>(e: E, t: &Theme, sel: bool, focused: bool) -> E {
     if sel { e.bg(sel_bg(t, focused)) } else { e }
 }
 
+/// The same row with the wash alone, no blue hairline: the Agents area's lists.
+pub fn selectable_flat<E: Styled>(e: E, t: &Theme, sel: bool, focused: bool) -> E {
+    let e = e.border_1().border_color(gpui::transparent_black());
+    if sel { e.bg(sel_bg(t, focused)) } else { e }
+}
+
 /// The selected row's wash alone, for a row whose border is taken (a separator line).
 pub fn sel_bg(t: &Theme, focused: bool) -> Hsla {
     if focused { t.acc_s } else { t.prs }
@@ -777,7 +783,7 @@ pub fn empty_state(t: &Theme, tag: &str, size: f32, msg: Option<SharedString>) -
         .items_center()
         .gap(px(10.))
         .text_center()
-        .child(pixel(SharedString::from(tag.to_string()), size, t.tx4))
+        .child(banner(SharedString::from(tag.to_string()), size, t.tx4))
         .children(msg.map(|m| div().text_color(t.tx2).line_height(px(18.)).child(m)))
 }
 

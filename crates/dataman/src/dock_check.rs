@@ -112,14 +112,6 @@ fn laid_right(ws: &Entity<Workspace>, d: Dock, cx: &mut AsyncWindowContext) -> b
     laid.len() == want.len() && laid.iter().zip(&want).all(|(a, b)| near(*a, *b, 1.5))
 }
 
-fn logo(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> Option<Rect> {
-    cx.update(|_, cx| ws.read(cx).logo_bounds.get()).ok().flatten().map(|b| Rect { x: b.origin.x.pt(), y: b.origin.y.pt(), w: b.size.width.pt(), h: b.size.height.pt() })
-}
-
-fn logo_over(l: Option<Rect>, c: Rect) -> bool {
-    l.is_some_and(|l| l.x >= c.x && (l.right() - (c.right() - 14.)).abs() < 1.5)
-}
-
 fn view_w(cx: &mut AsyncWindowContext) -> f32 {
     cx.update(|window, _| window.viewport_size().width.pt()).unwrap()
 }
@@ -170,8 +162,6 @@ pub async fn run(ws: &Entity<Workspace>, _stage: &str, cx: &mut AsyncWindowConte
         icons.iter().all(|r| r.is_some_and(|r| r.x >= 0. && r.right() <= metrics::RAIL_W && r.y >= metrics::TITLE_H)) && icons.windows(2).all(|p| p[0].unwrap().y < p[1].unwrap().y),
         format!("{icons:?}"),
     );
-    let logo0 = logo(ws, cx);
-    report("\"DATAMAN\" sits over the sidebar, at its right edge", logo_over(logo0, explorer), format!("{logo0:?} {explorer:?}"));
     let toolbar = cx.update(|_, cx| ws.read(cx).palette_items(cx).iter().any(|i| i.key == "⌘Y")).unwrap();
     report("no ⌘Y any more", !toolbar, String::new());
 

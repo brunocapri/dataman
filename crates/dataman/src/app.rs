@@ -306,9 +306,7 @@ pub struct Workspace {
     saved_flash_task: Option<gpui::Task<()>>,
     pub(crate) rail_bounds: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<dataman_core::layout::NavView, gpui::Bounds<gpui::Pixels>>>>,
     pub(crate) saved_bounds: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
-    pub(crate) rail_fill: crate::sidebar::RailFill,
     fades: crate::fades::Fades,
-    pub(crate) logo_bounds: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
     pub(crate) title_marks: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<&'static str, gpui::Bounds<gpui::Pixels>>>>,
     pub(crate) editor_frac: Option<f32>,
     pub(crate) drag: Option<Drag>,
@@ -416,6 +414,7 @@ impl Workspace {
                 w.open_logged(&sql, connection.as_deref(), database.as_deref(), window, cx);
             }
             crate::agents::AgentsEvent::ViewValue(cell) => w.open_value_as(cell.clone(), false, window, cx),
+            crate::agents::AgentsEvent::Close => w.show_nav(w.before_agents, window, cx),
         })
         .detach();
         cx.subscribe_in(&tree, window, Self::on_tree).detach();
@@ -505,9 +504,7 @@ impl Workspace {
             saved_flash_task: None,
             saved_bounds: Default::default(),
             rail_bounds: Default::default(),
-            rail_fill: Default::default(),
             fades: Default::default(),
-            logo_bounds: Default::default(),
             title_marks: Default::default(),
             editor_frac: None,
             drag: None,

@@ -16,7 +16,7 @@ use crate::grid::{fmt_clock, statement_verb, ui_count};
 use crate::messages::{self, Of, Row as MessageRow};
 use crate::result_bar::{ResultState, role_color};
 use crate::tab::{ItemState, QueryTab};
-use crate::theme::{ActiveTheme, PIXEL, Theme, metrics};
+use crate::theme::{ActiveTheme, Theme, metrics};
 use crate::ui::{self, Btn};
 use crate::ui::Tipped;
 
@@ -158,11 +158,6 @@ impl Workspace {
         // The lights keep their size at any zoom: in zoomed points they take less room.
         let lights = crate::csd::lead(window, cx);
         let open = (self.explorer_now() / self.explorer_w.max(1.)).clamp(0., 1.);
-        let logo = self.title_logo();
-        let logo_bounds = self.logo_bounds.clone();
-        if logo.is_none() {
-            logo_bounds.set(None);
-        }
         let marks = self.title_marks.clone();
         marks.borrow_mut().clear();
         let mark = move |name: &'static str, el: AnyElement| {
@@ -176,7 +171,9 @@ impl Workspace {
             .into_any_element()
         };
         let first_run = self.first_run(cx);
-        let strips: Vec<AnyElement> = if first_run { Vec::new() } else { self.render_strips(title.lead, title.seam, &t, cx) };
+        // The Agents area takes the whole work surface: no tabs over it.
+        let tabless = first_run || self.view == dataman_core::layout::NavView::Agents;
+        let strips: Vec<AnyElement> = if tabless { Vec::new() } else { self.render_strips(title.lead, title.seam, &t, cx) };
         let stop = |_: &gpui::MouseDownEvent, _: &mut Window, cx: &mut gpui::App| cx.stop_propagation();
         let tab_menu = self.render_tab_menu(&t, cx);
         let toggle = mark(
@@ -264,34 +261,12 @@ impl Workspace {
                 }
             })
             .child(left)
-            .children(logo.map(|r| {
-                div()
-                    .absolute()
-                    .top_0()
-                    .h_full()
-                    .left(px(r.x))
-                    .w(px(r.w))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_end()
-                    .pr(px(14.))
-                    .on_children_prepainted(move |b, _, _| logo_bounds.set(b.first().copied()))
-                    .child(div().font_family(PIXEL).text_size(px(13.)).text_color(t.tx3).child("DATAMAN"))
-            }))
             .children(strips)
-            .when(first_run, |d| d.child(div().flex_1()))
+            .when(tabless, |d| d.child(div().flex_1()))
             .children(self.render_update_pill(&t, cx))
             .child(right)
             .children(self.render_window_buttons_right(window, cx))
             .children(tab_menu)
-    }
-
-    pub(crate) fn title_logo(&self) -> Option<crate::dock::Rect> {
-        use dataman_core::layout::{Dock, PanelId};
-        let explorer = |c: &&crate::dock::ColFrame| c.slots.iter().any(|(s, _)| s.panel == PanelId::Explorer && s.weight >= 0.5);
-        let col = self.frame_now.dock(Dock::Left).cols.iter().find(explorer).map(|c| c.rect);
-        col.filter(|r| r.w >= 120. && r.right() >= 230.)
     }
 
     fn render_strips(&self, side: f32, seam: f32, t: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
@@ -861,6 +836,8 @@ impl Workspace {
             }
             // Zoomed, the divider stays at the result's top: dragged down, it brings the editor back.
             let split_tab = tab.entity_id();
+            let splitting = matches!(self.drag, Some(Drag::Split(_)));
+            let grip = t.line2;
             main = main.child(
                 div()
                     .h(px(metrics::DIVIDER))
@@ -873,7 +850,9 @@ impl Workspace {
                     .border_t_1()
                     .border_b_1()
                     .border_color(t.line)
-                    .child(div().w(px(32.)).h(px(3.)).bg(t.line2))
+                    .group("splitter")
+                    // The grip shows under the pointer and while dragged.
+                    .child(div().w(px(32.)).h(px(3.)).when(splitting, |d| d.bg(t.line2)).group_hover("splitter", move |s| s.bg(grip)))
                     .child(
                         div()
                             .id("splitter")

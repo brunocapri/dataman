@@ -591,7 +591,7 @@ impl Render for ExportView {
                     .items_center()
                     .gap(px(10.))
                     .gap(px(18.))
-                    .child(ui::pixel("[ NO RESULT ]", 22., t.tx4))
+                    .child(ui::banner("[ NO RESULT ]", 22., t.tx4))
                     .child(
                         div()
                             .flex()
