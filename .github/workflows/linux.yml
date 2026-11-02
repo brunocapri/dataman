@@ -56,7 +56,8 @@ jobs:
           [ "$n" -le 2 ]
       - name: Tests, with a Secret Service for the password store
         run: |
-          dbus-run-session -- bash -c '
+          # -e: a failing `cargo test` fails the step, not only the last command.
+          dbus-run-session -- bash -ec '
             echo -n ci | gnome-keyring-daemon --unlock --components=secrets > /dev/null
             cargo test --release --workspace
             cargo test --release -p dataman-core --test keychain -- --ignored'
