@@ -230,7 +230,16 @@ mod windows {
         comment.strip_prefix(PARTS).and_then(|n| n.parse().ok()).unwrap_or(1).max(1)
     }
 
+    /// One call at a time: a secret of several parts is read and written whole, and writes made
+    /// at once from two threads were seen lost (two of them, read back at once as missing).
+    static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn one() -> std::sync::MutexGuard<'static, ()> {
+        ONE.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     pub fn get(id: &str) -> Result<Option<String>> {
+        let _one = one();
         let Some((mut data, comment)) = read(&target(id, 0))? else { return Ok(None) };
         for n in 1..parts(&comment) {
             let (more, _) = read(&target(id, n))?.with_context(|| format!("part {n} of {} is missing from the Credential Manager", target(id, 0)))?;
@@ -240,6 +249,7 @@ mod windows {
     }
 
     pub fn set(id: &str, password: &str) -> Result<()> {
+        let _one = one();
         let was = read(&target(id, 0))?.map_or(0, |(_, c)| parts(&c));
         let chunks: Vec<&[u8]> = if password.is_empty() { vec![&[]] } else { password.as_bytes().chunks(PART).collect() };
         // The continuations first: the first part, written last, says how many there are.
@@ -255,6 +265,7 @@ mod windows {
     }
 
     pub fn delete(id: &str) -> Result<()> {
+        let _one = one();
         let was = read(&target(id, 0))?.map_or(1, |(_, c)| parts(&c));
         remove(&target(id, 0))?;
         for n in 1..was {
