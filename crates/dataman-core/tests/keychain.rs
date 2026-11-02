@@ -49,6 +49,33 @@ fn keychain_keeps_a_long_secret() {
     }
 }
 
+/// Six processes at once (the app and its `dataman-mcp`s do that), each saving, reading and
+/// removing its own secrets, every third one in several parts: nothing lost or mixed.
+#[cfg(windows)]
+#[test]
+#[ignore]
+fn keychain_many_processes_at_once() {
+    if let Ok(n) = std::env::var("DATAMAN_KEYCHAIN_CHILD") {
+        let k = Keychain;
+        for i in 0..100 {
+            let id = format!("dataman-test-p{n}-{i}-{}", std::process::id());
+            let v = format!("{n}.{i};").repeat(if i % 3 == 0 { 700 } else { 1 });
+            k.set(&id, &v).unwrap();
+            assert_eq!(k.get(&id).unwrap().as_deref(), Some(v.as_str()), "{id}");
+            k.delete(&id).unwrap();
+            assert_eq!(k.get(&id).unwrap(), None, "{id}");
+        }
+        return;
+    }
+    let me = std::env::current_exe().unwrap();
+    let kids: Vec<_> = (0..6)
+        .map(|n| std::process::Command::new(&me).args(["--ignored", "--exact", "keychain_many_processes_at_once"]).env("DATAMAN_KEYCHAIN_CHILD", n.to_string()).spawn().unwrap())
+        .collect();
+    for mut kid in kids {
+        assert!(kid.wait().unwrap().success());
+    }
+}
+
 #[test]
 #[ignore]
 fn keychain_entries_are_per_connection() {
