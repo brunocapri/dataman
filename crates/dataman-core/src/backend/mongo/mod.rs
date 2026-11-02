@@ -636,6 +636,17 @@ pub(crate) async fn delete(c: &Client, db: &str, coll: &str, id: Bson) -> Result
     Ok(r.deleted_count)
 }
 
+pub(crate) async fn sample_value(c: &Client, db: &str, coll: &str, path: &str) -> Result<Option<String>> {
+    let mut found = Document::new();
+    found.insert(path, doc! { "$exists": true, "$ne": Bson::Null });
+    let pipeline = vec![doc! { "$match": found }, doc! { "$limit": 1 }, doc! { "$project": { "_id": 0, "v": format!("${path}") } }];
+    let r = c.client.database(db).run_command(doc! { "aggregate": coll, "pipeline": pipeline, "cursor": {} }).await.map_err(cmd_err)?;
+    Ok(first_batch(&r).into_iter().next().and_then(|d| d.get("v").cloned()).map(|v| match v {
+        Bson::String(s) => s,
+        other => other.to_string(),
+    }))
+}
+
 pub(crate) async fn sample_fields(c: &Client, db: &str, coll: &str, n: i64) -> Result<Vec<(String, Vec<&'static str>)>> {
     let r = c.client.database(db).run_command(doc! { "aggregate": coll, "pipeline": [{ "$sample": { "size": n } }], "cursor": {} }).await.map_err(cmd_err)?;
     let mut seen: Vec<(String, usize, Vec<&'static str>)> = Vec::new();

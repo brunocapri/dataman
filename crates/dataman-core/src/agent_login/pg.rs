@@ -71,8 +71,8 @@ pub fn mask_expr(col: &str, m: Mask) -> String {
             "CASE WHEN {c} IS NULL THEN NULL WHEN strpos({c}, '@') > 0 THEN left({c}, 1) || '•••@' || split_part({c}, '@', 2) WHEN length({c}) >= 8 THEN '•••• ' || right({c}, 4) ELSE '••••' END"
         ),
         Mask::Partial(k) => format!(
-            "CASE WHEN {c} IS NULL THEN NULL WHEN length({c}) >= {} THEN left({c}, {}) || '••••' || right({c}, {}) ELSE '••••' END",
-            2 * (k.first as u32 + k.last as u32),
+            "CASE WHEN {c} IS NULL THEN NULL WHEN length({c}) > {} THEN left({c}, {}) || '••••' || right({c}, {}) ELSE '••••' END",
+            k.first as u32 + k.last as u32,
             k.first,
             k.last
         ),

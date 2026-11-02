@@ -35,7 +35,7 @@ pub fn mask_expr(f: &str, m: Mask) -> Value {
             json!({ "$let": {
                 "vars": { "s": { "$convert": { "input": v, "to": "string", "onError": "", "onNull": "" } } },
                 "in": { "$cond": [
-                    { "$gte": [{ "$strLenCP": "$$s" }, 2 * (first + last)] },
+                    { "$gt": [{ "$strLenCP": "$$s" }, first + last] },
                     { "$concat": [{ "$substrCP": ["$$s", 0, first] }, "••••", { "$substrCP": ["$$s", { "$subtract": [{ "$strLenCP": "$$s" }, last] }, last] }] },
                     "••••"
                 ] }

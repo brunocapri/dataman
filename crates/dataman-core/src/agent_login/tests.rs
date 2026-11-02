@@ -645,7 +645,7 @@ fn postgres_protocol_without_logins() {
 fn partial_keeps_what_the_column_says() {
     let k = Mask::Partial(crate::privacy::Keep { first: 2, last: 3 });
     let e = pg::mask_expr("c", k);
-    assert!(e.contains(r#"left("c"::text, 2)"#) && e.contains(r#"right("c"::text, 3)"#) && e.contains(">= 10") && !e.contains('@'), "{e}");
+    assert!(e.contains(r#"left("c"::text, 2)"#) && e.contains(r#"right("c"::text, 3)"#) && e.contains("> 5") && !e.contains('@'), "{e}");
     let e = my::mask_expr("c", k);
     assert!(e.contains("LEFT(CAST(`c` AS CHAR), 2)") && e.contains("RIGHT(CAST(`c` AS CHAR), 3)"), "{e}");
     let e = ms::mask_expr("c", k);

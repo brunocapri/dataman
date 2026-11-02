@@ -848,6 +848,16 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     let stored = std::fs::read_to_string(core.dirs.connections_file()).unwrap_or_default();
     r.check("…saved as partial:2:3", stored.contains("partial:2:3"), "");
     shoot("sensitive-row", cx);
+    // customer.email is in the bench's public schema: its sheet masks a value read from it.
+    let connected = cx.update(|_, cx| a.read(cx).store.read(cx).connection(&pg.id).is_some()).unwrap_or(false);
+    let k = rules(&core, &pg.id).sensitive.iter().position(|s| s.col == "customer.email").unwrap_or(0);
+    tap(&a, &format!("agents-sens-edit-{k}"), cx).await;
+    let read = until(cx, 5, |cx| cx.update(|_, cx| a.read(cx).sens_edit.as_ref().is_some_and(|e| e.sample.is_some())).unwrap_or(false)).await;
+    pause(cx, 100).await;
+    r.check("connected, the sheet shows the mask on a value read from the column", !connected || (read && probed("agents-sens-edit-from", cx).is_some()), format!("connected {connected}, read {read}"));
+    shoot("sensitive-real", cx);
+    key(cx, "escape");
+    pause(cx, 50).await;
 
     // Masks.
     click_probe("agents-nav-masks", cx);

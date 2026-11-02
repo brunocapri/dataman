@@ -65,8 +65,8 @@ pub fn mask_expr(col: &str, m: Mask) -> String {
             "CASE WHEN {c} IS NULL THEN NULL WHEN CHARINDEX(N'@', {c}) > 0 THEN LEFT({c}, 1) + N'•••@' + SUBSTRING({c}, CHARINDEX(N'@', {c}) + 1, 4000) WHEN LEN({c}) >= 8 THEN N'•••• ' + RIGHT({c}, 4) ELSE N'••••' END"
         ),
         Mask::Partial(k) => format!(
-            "CASE WHEN {c} IS NULL THEN NULL WHEN LEN({c}) >= {} THEN LEFT({c}, {}) + N'••••' + RIGHT({c}, {}) ELSE N'••••' END",
-            2 * (k.first as u32 + k.last as u32),
+            "CASE WHEN {c} IS NULL THEN NULL WHEN LEN({c}) > {} THEN LEFT({c}, {}) + N'••••' + RIGHT({c}, {}) ELSE N'••••' END",
+            k.first as u32 + k.last as u32,
             k.first,
             k.last
         ),

@@ -347,6 +347,19 @@ impl Connection {
         RowCount { task, stop: CountStop(tx) }
     }
 
+    /// One value of a column that isn't null, as text: Protection shows a sensitive column's
+    /// mask on it. Read on the metadata connection, never in a tab's session.
+    pub fn sample_column_value(self: &Arc<Self>, db: &str, schema: &str, table: &str, column: &str) -> Task<Option<String>> {
+        let (this, db) = (self.clone(), db.to_string());
+        let d = Dialect::of(self.engine());
+        let (c, rel) = (d.quote_ident(column), d.qualified(Some(schema), table));
+        let sql = if d == Dialect::TSql { format!("SELECT TOP (1) {c} FROM {rel} WHERE {c} IS NOT NULL") } else { format!("SELECT {c} FROM {rel} WHERE {c} IS NOT NULL LIMIT 1") };
+        self.spawn(async move {
+            let client = this.meta(&db).await?;
+            Ok(text_rows(&client, &sql).await?.into_iter().next().and_then(|r| r.into_iter().next().flatten()))
+        })
+    }
+
     pub fn primary_key(self: &Arc<Self>, db: &str, schema: &str, table: &str) -> Task<Vec<String>> {
         let (this, db) = (self.clone(), db.to_string());
         let rel = quote_literal(&qualified(Some(schema), table));

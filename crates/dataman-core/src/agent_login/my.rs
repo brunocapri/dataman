@@ -66,8 +66,8 @@ pub fn mask_expr(col: &str, m: Mask) -> String {
             "CASE WHEN {c} IS NULL THEN NULL WHEN LOCATE('@', {c}) > 0 THEN CONCAT(LEFT({c}, 1), '•••@', SUBSTRING_INDEX({c}, '@', -1)) WHEN CHAR_LENGTH({c}) >= 8 THEN CONCAT('•••• ', RIGHT({c}, 4)) ELSE '••••' END"
         ),
         Mask::Partial(k) => format!(
-            "CASE WHEN {c} IS NULL THEN NULL WHEN CHAR_LENGTH({c}) >= {} THEN CONCAT(LEFT({c}, {}), '••••', RIGHT({c}, {})) ELSE '••••' END",
-            2 * (k.first as u32 + k.last as u32),
+            "CASE WHEN {c} IS NULL THEN NULL WHEN CHAR_LENGTH({c}) > {} THEN CONCAT(LEFT({c}, {}), '••••', RIGHT({c}, {})) ELSE '••••' END",
+            k.first as u32 + k.last as u32,
             k.first,
             k.last
         ),

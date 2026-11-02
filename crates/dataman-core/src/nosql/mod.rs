@@ -662,6 +662,17 @@ impl Connection {
         })
     }
 
+    /// One value of a field (a dotted path) that isn't null, as text; MongoDB only.
+    pub fn sample_field_value(self: &Arc<Self>, db: &str, collection: &str, path: &str) -> Task<Option<String>> {
+        let (this, db, coll, path) = (self.clone(), db.to_string(), collection.to_string(), path.to_string());
+        spawn(self.handle(), async move {
+            match this.client()?.clone() {
+                Client::Mongo(c) => mongo::sample_value(&c, &db, &coll, &path).await,
+                Client::Search(_) | Client::Redis(_) => Ok(None),
+            }
+        })
+    }
+
     pub fn nosql_affects(self: &Arc<Self>, db: &str, text: &str) -> Task<Option<u64>> {
         let (this, db, text) = (self.clone(), db.to_string(), text.to_string());
         spawn(self.handle(), async move {

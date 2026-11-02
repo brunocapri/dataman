@@ -151,7 +151,11 @@ impl Validator {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Partial {
-    /// Every letter and digit but the first and last kept becomes •; separators stay.
+    /// Every letter and digit but the last `n` becomes •; separators stay. Kept only when the
+    /// value is at least twice as long.
+    KeepLast(u8),
+    /// A column's picked characters: every letter and digit between the first and the last
+    /// kept becomes •; separators stay. Masked whole when nothing would be left to mask.
     Ends(Keep),
     /// `•••• 4242`.
     Card,
@@ -209,7 +213,7 @@ pub const BUILTINS: &[Builtin] = &[
         mask: Mask::PARTIAL,
         pattern: r"(?:\+1[ .-]?)?(?:\(\d{3}\)[ ]?|\b\d{3}[ .-])\d{3}[ .-]\d{4}\b|(?:\+1[ .-]?|\b)[2-9]\d{9}\b",
         validator: Validator::None,
-        partial: Partial::Ends(Keep { first: 0, last: 4 }),
+        partial: Partial::KeepLast(4),
         numbers: false,
     },
     Builtin {
@@ -221,7 +225,7 @@ pub const BUILTINS: &[Builtin] = &[
         mask: Mask::Hidden,
         pattern: r"\beyJ[A-Za-z0-9_\-]{5,}\.eyJ[A-Za-z0-9_\-]{5,}\.[A-Za-z0-9_\-]*",
         validator: Validator::None,
-        partial: Partial::Ends(Keep { first: 0, last: 4 }),
+        partial: Partial::KeepLast(4),
         numbers: true,
     },
     Builtin {
@@ -233,7 +237,7 @@ pub const BUILTINS: &[Builtin] = &[
         mask: Mask::Hidden,
         pattern: r"\b(?:AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{30,}|xox[abposr]-[A-Za-z0-9\-]{10,}|[sr]k_(?:live|test)_[A-Za-z0-9]{10,}|sk-ant-[A-Za-z0-9_\-]{10,}|sk-(?:proj-)?[A-Za-z0-9]{20,}|AIza[0-9A-Za-z_\-]{35}|glpat-[A-Za-z0-9_\-]{20})",
         validator: Validator::None,
-        partial: Partial::Ends(Keep { first: 0, last: 4 }),
+        partial: Partial::KeepLast(4),
         numbers: true,
     },
     Builtin {
@@ -245,7 +249,7 @@ pub const BUILTINS: &[Builtin] = &[
         mask: Mask::Hidden,
         pattern: r"(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
         validator: Validator::None,
-        partial: Partial::Ends(Keep { first: 0, last: 0 }),
+        partial: Partial::KeepLast(0),
         numbers: true,
     },
     Builtin {
@@ -257,7 +261,7 @@ pub const BUILTINS: &[Builtin] = &[
         mask: Mask::Hidden,
         pattern: r"\$(?:2[abxy]|argon2(?:id|i|d)|scrypt|pbkdf2[-_a-z0-9]*|[156])\$[^\s'\x22]{8,}",
         validator: Validator::None,
-        partial: Partial::Ends(Keep { first: 0, last: 0 }),
+        partial: Partial::KeepLast(0),
         numbers: true,
     },
     Builtin {
@@ -269,7 +273,7 @@ pub const BUILTINS: &[Builtin] = &[
         mask: Mask::Hidden,
         pattern: r"\b(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\b|\b(?:[0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}\b|\b(?:[0-9A-Fa-f]{1,4}:){1,6}:(?:[0-9A-Fa-f]{1,4}:){0,5}[0-9A-Fa-f]{1,4}\b",
         validator: Validator::None,
-        partial: Partial::Ends(Keep { first: 0, last: 4 }),
+        partial: Partial::KeepLast(4),
         numbers: true,
     },
 ];
@@ -290,6 +294,7 @@ impl Builtin {
     /// Partial's characters left at the end (cards and e-mails keep 4 their own way).
     pub fn keep(&self) -> u8 {
         match self.partial {
+            Partial::KeepLast(n) => n,
             Partial::Ends(k) => k.last,
             Partial::Card | Partial::Email => 4,
         }
@@ -611,7 +616,7 @@ impl Kind {
             group_v,
             validator: d.validator,
             mask: d.mask,
-            partial: if d.keep == b.keep() { b.partial } else { Partial::Ends(Keep { first: 0, last: d.keep.min(6) }) },
+            partial: if d.keep == b.keep() { b.partial } else { Partial::KeepLast(d.keep.min(6)) },
             token: HIDDEN.into(),
             numbers: b.numbers,
         })
@@ -627,7 +632,7 @@ impl Kind {
             group_v,
             validator: c.validator,
             mask: c.mask,
-            partial: Partial::Ends(Keep { first: 0, last: c.keep.min(6) }),
+            partial: Partial::KeepLast(c.keep.min(6)),
             token: format!("‹{}›", c.name.trim().to_lowercase()),
             numbers: true,
         })
@@ -669,29 +674,40 @@ fn partial(v: &str, p: Partial) -> String {
     match p {
         Partial::Email => match v.split_once('@') {
             Some((user, domain)) => format!("{}•••@{domain}", user.chars().next().unwrap_or('•')),
-            None => partial(v, Partial::Ends(Keep::DEFAULT)),
+            None => partial(v, Partial::KeepLast(4)),
         },
         Partial::Card => {
             let digits: Vec<char> = v.chars().filter(char::is_ascii_digit).collect();
             let last: String = digits[digits.len().saturating_sub(4)..].iter().collect();
             format!("•••• {last}")
         }
-        Partial::Ends(k) => {
+        Partial::KeepLast(n) => {
             let total = v.chars().filter(|c| c.is_alphanumeric()).count();
             // Short values would show most of themselves.
-            let (first, last) = if total < 2 * (k.first as usize + k.last as usize) { (0, 0) } else { (k.first as usize, k.last as usize) };
-            let mut seen = 0;
-            v.chars()
-                .map(|c| {
-                    if !c.is_alphanumeric() {
-                        return c;
-                    }
-                    seen += 1;
-                    if seen <= first || seen > total - last { c } else { '•' }
-                })
-                .collect()
+            let keep = if total < 2 * n as usize { 0 } else { n as usize };
+            ends(v, 0, keep)
+        }
+        Partial::Ends(k) => {
+            let total = v.chars().filter(|c| c.is_alphanumeric()).count();
+            let (first, last) = (k.first as usize, k.last as usize);
+            if total <= first + last { ends(v, 0, 0) } else { ends(v, first, last) }
         }
     }
+}
+
+/// `v` with every letter and digit but its first `first` and last `last` as •.
+fn ends(v: &str, first: usize, last: usize) -> String {
+    let total = v.chars().filter(|c| c.is_alphanumeric()).count();
+    let mut seen = 0;
+    v.chars()
+        .map(|c| {
+            if !c.is_alphanumeric() {
+                return c;
+            }
+            seen += 1;
+            if seen <= first || seen + last > total { c } else { '•' }
+        })
+        .collect()
 }
 
 /// A sensitive column's mask, for a whole value.
@@ -699,6 +715,7 @@ pub fn mask_value(how: Mask, v: &str) -> String {
     match how {
         Mask::Hidden => HIDDEN.into(),
         Mask::Partial(k) if k == Keep::DEFAULT && v.contains('@') => partial(v, Partial::Email),
+        Mask::Partial(k) if k == Keep::DEFAULT => partial(v, Partial::KeepLast(4)),
         Mask::Partial(k) => partial(v, Partial::Ends(k)),
     }
 }
@@ -1802,7 +1819,9 @@ mod tests {
         assert_eq!(mask_value(keep(2, 2), "ana@acme.com"), "an•@••••.•om");
         assert_eq!(mask_value(keep(0, 4), "ana@acme.com"), "a•••@acme.com", "as it ships: the e-mail look");
         assert_eq!(mask_value(keep(1, 0), "555-123-4567"), "5••-•••-••••");
-        assert_eq!(mask_value(keep(3, 3), "12345"), "•••••", "too short to keep that much");
+        assert_eq!(mask_value(keep(3, 3), "123456"), "••••••", "nothing left to mask: masked whole");
+        assert_eq!(mask_value(keep(4, 4), "x7Kq2Lm9Rt4242"), "x7Kq••••••4242", "kept while something is masked");
+        assert_eq!(mask_value(keep(4, 4), "Ana Souza Lima"), "Ana S•••• Lima");
         assert_eq!(mask_value(keep(0, 0), "secret"), "••••••");
         let read = |s: &str| serde_json::from_value::<Mask>(serde_json::json!(s)).unwrap();
         assert_eq!(read("hash"), Mask::Hidden, "an older version's Hash reads as Redacted");
