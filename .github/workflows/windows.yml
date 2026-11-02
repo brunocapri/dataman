@@ -63,7 +63,8 @@ jobs:
         run: |
           cargo test --release --workspace --no-fail-fast
           if ($LASTEXITCODE -ne 0) { exit 1 }
-          cargo test --release -p dataman-core --test keychain -- --ignored
+          # --workspace: the same features as above, so nothing builds again.
+          cargo test --release --workspace --test keychain -- --ignored
           if ($LASTEXITCODE -ne 0) { exit 1 }
       - name: Package (.zip and installer)
         run: scripts\windows\package.ps1
