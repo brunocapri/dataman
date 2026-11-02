@@ -1108,6 +1108,12 @@ impl ConnDialog {
         self.save(cx);
     }
 
+    /// The form at the height it measured, not growing or shrinking to it.
+    #[cfg(feature = "checks")]
+    pub fn demo_still(&self) -> bool {
+        self.body_tween.is_none() && self.body_h.is_some_and(|h| (h - self.body_measured.get()).abs() <= 0.5)
+    }
+
     #[cfg(feature = "checks")]
     pub fn demo_status(&self, cx: &App) -> (String, bool) {
         let s = match &self.test {
