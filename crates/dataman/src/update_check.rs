@@ -90,11 +90,11 @@ const APP: &str = "Dataman.app";
 /// An AppImage stand-in: a script that says its version, as `dataman --version` does.
 #[cfg(not(target_os = "macos"))]
 fn stand_in(app: &Path, version: &str) -> anyhow::Result<()> {
-    use std::os::unix::fs::PermissionsExt as _;
     std::fs::create_dir_all(app.parent().unwrap_or(Path::new("/")))?;
     // As big as a small DMG, so the download is seen in steps.
     std::fs::write(app, format!("#!/bin/sh\necho {version}\nexit 0\n# {}\n", "-".repeat(400_000)))?;
-    std::fs::set_permissions(app, std::fs::Permissions::from_mode(0o755))?;
+    #[cfg(unix)]
+    std::fs::set_permissions(app, <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o755))?;
     Ok(())
 }
 
@@ -248,8 +248,10 @@ fn installed_ok(target: &Path) -> (bool, bool) {
 
 #[cfg(not(target_os = "macos"))]
 fn installed_ok(target: &Path) -> (bool, bool) {
-    use std::os::unix::fs::PermissionsExt as _;
-    (std::fs::metadata(target).is_ok_and(|m| m.permissions().mode() & 0o111 != 0), false)
+    #[cfg(unix)]
+    return (std::fs::metadata(target).is_ok_and(|m| <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::mode(&m.permissions()) & 0o111 != 0), false);
+    #[cfg(windows)]
+    return (target.is_file(), false);
 }
 
 pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
