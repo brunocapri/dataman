@@ -2,7 +2,6 @@ use std::collections::VecDeque;
 
 use dataman_core::favorites::RemovedFolder;
 use dataman_core::groups::Pane;
-use dataman_core::layout::PanelLayout;
 use dataman_core::pins::Pin;
 use dataman_core::session::TabState;
 use dataman_core::{ConnFolder, ConnectionProfile, Favorite};
@@ -67,7 +66,6 @@ pub(crate) enum Op {
     ConnFolders { from: Vec<ConnFolder>, to: Vec<ConnFolder> },
     ConnDeleted(Box<DeletedConn>),
     Pins { conn: String, from: Vec<Pin>, to: Vec<Pin> },
-    Layout { from: PanelLayout, to: PanelLayout },
     Sizes { from: Sizes, to: Sizes },
     Tabs { closed: Vec<ClosedTab>, reopened: Vec<EntityId> },
     History { entry: Option<(String, dataman_core::HistoryEntry)>, taken: Vec<(String, Vec<u8>)> },
@@ -261,10 +259,6 @@ impl Workspace {
                 }
                 said(core.pins.set_of(conn, if back { from } else { to }))?;
                 self.tree.update(cx, |t, cx| t.rebuild(cx));
-            }
-            Op::Layout { from, to } => {
-                let next = if back { from.clone() } else { to.clone() };
-                self.set_layout(next, None, cx);
             }
             Op::Sizes { from, to } => self.set_sizes(if back { from } else { to }),
             Op::Tabs { closed, reopened } => {

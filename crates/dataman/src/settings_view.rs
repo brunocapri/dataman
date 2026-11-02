@@ -79,7 +79,6 @@ enum Row {
     ReduceMotion,
     DbLogos,
     ExplorerView,
-    Panels,
     AutoConnect,
     Prefetch,
     PageSize,
@@ -100,7 +99,7 @@ enum Row {
     CrashReports,
 }
 
-const ROWS: [(Row, Section, &str, &str); 26] = [
+const ROWS: [(Row, Section, &str, &str); 25] = [
     (Row::Theme, Section::Appearance, "Theme", "dark light system"),
     (Row::Font, Section::Appearance, "Font", "typeface family monospace geist lilex zed jetbrains"),
     (Row::Translucency, Section::Appearance, "Window translucency", "transparency blur opaque"),
@@ -108,7 +107,6 @@ const ROWS: [(Row, Section, &str, &str); 26] = [
     (Row::ReduceMotion, Section::Appearance, "Reduce motion", "animation accessibility"),
     (Row::DbLogos, Section::Appearance, "Database logos", "icon engine postgres mysql mongodb redis elasticsearch opensearch explorer picker"),
     (Row::ExplorerView, Section::Appearance, "Explorer view", "explorer tree simple advanced full tables schemas system internal extensions hide eye"),
-    (Row::Panels, Section::Appearance, "Panels", "panel layout dock explorer history favorites move reset"),
     (Row::AutoConnect, Section::Connections, "Connect on start", "connections connect automatically startup launch open auto"),
     (Row::KeywordCase, Section::Editor, "Keyword case", "format formatter sql upper lower"),
     (Row::Indent, Section::Editor, "Indent", "format formatter spaces tab"),
@@ -765,11 +763,6 @@ impl SettingsView {
                     }))
                     .into_any_element()
             }
-            Row::Panels => ui::button(t, "reset-panels", ui::Btn::Secondary)
-                .h(px(28.))
-                .child("Reset panels")
-                .on_click(|_, window, cx| window.dispatch_action(Box::new(crate::dock::ResetPanelLayout), cx))
-                .into_any_element(),
             Row::KeywordCase => {
                 let cur = s.keyword_case;
                 ui::segmented(t)

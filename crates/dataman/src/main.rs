@@ -325,7 +325,6 @@ fn menus(cx: &App) -> Vec<Menu> {
                 MenuItem::action("Favorites", sidebar::ShowFavorites),
                 MenuItem::action("History", sidebar::ShowHistory),
                 MenuItem::action("Toggle Side Panel", ToggleSidePanel),
-                MenuItem::action("Reset Panel Layout", dock::ResetPanelLayout),
                 MenuItem::action("Open to the Side", split::OpenToSide),
             ]
             .into_iter()

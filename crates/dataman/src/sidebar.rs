@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use dataman_core::layout::{Dock, NavView};
+use dataman_core::layout::NavView;
 use gpui::{AnyElement, Context, InteractiveElement, IntoElement, MouseButton, ParentElement, StatefulInteractiveElement, Styled, Window, actions, div, prelude::FluentBuilder};
 
 use crate::app::{Region, Workspace};
@@ -142,12 +142,9 @@ impl Workspace {
         let star = self.saved_bounds.get()?;
         window.request_animation_frame();
         let t = cx.theme();
-        let right = self.layout.explorer_dock() == Dock::Right;
-        let text = if right { format!("{} →", f.label) } else { format!("← {}", f.label) };
-        let (x, y) = (star.origin.x, star.origin.y + star.size.height / 2. - gpui::px(9.));
-        let hint = div().absolute().top(y).h(gpui::px(18.)).flex().items_center().whitespace_nowrap().text_size(px(12.)).text_color(t.tx).opacity(a).child(text);
-        let hint = if right { hint.right(window.viewport_size().width - x + gpui::px(8.)) } else { hint.left(star.right() + gpui::px(8.)) };
-        Some(hint.into_any_element())
+        let y = star.origin.y + star.size.height / 2. - gpui::px(9.);
+        let hint = div().absolute().top(y).left(star.right() + gpui::px(8.)).h(gpui::px(18.)).flex().items_center().whitespace_nowrap().text_size(px(12.)).text_color(t.tx).opacity(a);
+        Some(hint.child(format!("← {}", f.label)).into_any_element())
     }
 
     /// Showing a tab uncovers it: the Agents area gives the tabs back to the sidebar's earlier view.
@@ -163,7 +160,7 @@ impl Workspace {
         self.show_nav(NavView::Agents, window, cx);
     }
 
-    pub(crate) fn render_sidebar(&mut self, d: Dock, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn render_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         if matches!(self.view, NavView::Favorites | NavView::History) {
             self.view = if self.history.read(cx).showing_favorites() { NavView::Favorites } else { NavView::History };
         }
@@ -172,17 +169,12 @@ impl Workspace {
             NavView::Agents => self.agents.update(cx, |a, cx| a.render_nav(window, cx)),
             _ => self.history.clone().into_any_element(),
         };
-        let rail = self.render_rail(d, window, cx);
+        let rail = self.render_rail(window, cx);
         let view = div().flex_1().min_w_0().h_full().child(view);
-        let row = div().size_full().flex().flex_row().border_t_1().border_color(cx.theme().line);
-        match d {
-            Dock::Left => row.child(rail).child(view),
-            Dock::Right => row.child(view).child(rail),
-        }
-        .into_any_element()
+        div().size_full().flex().flex_row().border_t_1().border_color(cx.theme().line).child(rail).child(view).into_any_element()
     }
 
-    fn render_rail(&mut self, d: Dock, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn render_rail(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let t = cx.theme();
         let lit = self.saved_flash.as_ref().and_then(|f| crate::motion::SAVED.at(f.at, Instant::now(), cx.reduce_motion()));
         let said = self.saved_flash.as_ref().map_or("", |f| f.label);
@@ -303,8 +295,7 @@ impl Workspace {
             .items_center()
             .gap(px(4.))
             .border_color(t.line)
-            .when(d == Dock::Left, |e| e.border_r_1())
-            .when(d == Dock::Right, |e| e.border_l_1())
+            .border_r_1()
             .children(icons)
             .child(div().flex_1())
             .child(robot)
