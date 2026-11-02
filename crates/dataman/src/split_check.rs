@@ -262,14 +262,15 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
     let mid = panes(ws, cx);
     let in_time = crate::check::mid_possible(t0, crate::motion::SPLIT);
     let c = center(ws, cx);
+    let half = (c.w - crate::split::SEAM) / 2.;
+    // Short of the settled half by any visible amount: the ease-out spends its last tenth within a few points.
     report(
         "the new group grows in from the right while the first narrows",
-        reduced || !in_time || (moving && mid.is_some_and(|((_, lw), (rx, rw))| rw > 1. && rw < c.w / 2. - 10. && lw > c.w / 2. && near(rx + rw, c.right(), 1.5))),
+        reduced || !in_time || (moving && mid.is_some_and(|((_, lw), (rx, rw))| rw > 1. && rw < half - 1. && lw > half + 1. && near(rx + rw, c.right(), 1.5))),
         format!("{mid:?} in {c:?}"),
     );
     pause(cx, 400).await;
     let open = panes(ws, cx);
-    let half = (c.w - crate::split::SEAM) / 2.;
     report(
         "settled: half and half around the seam",
         open.is_some_and(|((lx, lw), (rx, rw))| near(lx, c.x, 1.) && near(lw, half, 1.5) && near(rw, half, 1.5) && near(rx, lx + lw + crate::split::SEAM, 1.5)),
