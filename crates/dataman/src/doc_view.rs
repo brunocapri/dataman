@@ -733,7 +733,7 @@ impl DocPane {
         };
         let mut pager = None;
         if let Some((_, at, _)) = &self.running {
-            left.push(ui::pill("◌", "RUNNING", t.acc, t.acc_s).into_any_element());
+            left.push(ui::status("◌", "RUNNING", t.acc).into_any_element());
             left.push(metric("elapsed", crate::grid::fmt_clock(at.elapsed())).into_any_element());
         } else if let Some(l) = &self.last {
             match &l.result {
@@ -741,7 +741,7 @@ impl DocPane {
                     let total = metric("total", crate::app::fmt_dur(ran.elapsed));
                     match &ran.output {
                         Output::Docs(d) => {
-                            left.push(ui::pill("▦", "DOCS", t.ok, t.ok_s).into_any_element());
+                            left.push(ui::status("▦", "DOCS", t.ok).into_any_element());
                             let n = d.docs.len();
                             let redis = matches!(d.source, Some(Source::Redis { .. }));
                             let what = match (redis, n == 1) {
@@ -789,22 +789,22 @@ impl DocPane {
                             }
                         }
                         Output::Value(_) => {
-                            left.push(ui::pill("✓", "DONE", t.tx2, t.hov).into_any_element());
+                            left.push(ui::status("✓", "DONE", t.tx2).into_any_element());
                             left.push(total.into_any_element());
                         }
                         Output::Written { affected, summary, .. } => {
-                            left.push(ui::pill("✓", "WRITTEN", t.ok, t.ok_s).into_any_element());
+                            left.push(ui::status("✓", "WRITTEN", t.ok).into_any_element());
                             let _ = affected;
                             left.push(div().text_color(t.tx).child(summary.clone()).into_any_element());
                             left.push(total.into_any_element());
                         }
                         Output::Use(db) => {
-                            left.push(ui::pill("✓", "DONE", t.tx2, t.hov).into_any_element());
+                            left.push(ui::status("✓", "DONE", t.tx2).into_any_element());
                             left.push(div().text_color(t.tx2).child(format!("switched to {db}")).into_any_element());
                         }
                     }
                 }
-                Err(_) => left.push(ui::pill("✕", "ERROR", t.err, t.err_s).into_any_element()),
+                Err(_) => left.push(ui::status("✕", "ERROR", t.err).into_any_element()),
             }
         }
         let can_new = self.docs().is_some_and(|d| d.source.is_some()) && self.running.is_none();
@@ -885,7 +885,7 @@ impl DocPane {
     }
 
     fn render_list(&self, d: &Docs, lines: &[(SharedString, SharedString)], t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let (hov, sel_bg, focused) = (t.hov, t.acc_s, true);
+        let hov = t.hov;
         let base = d.skip as usize;
         let rows = lines.iter().enumerate().map(|(i, (sum, id))| {
             let sel = self.selected == Some(i) && !self.new_doc;
@@ -898,7 +898,7 @@ impl DocPane {
                 .items_center()
                 .gap(px(10.))
                 .text_size(px(11.5))
-                .when(sel && focused, |d| d.bg(sel_bg))
+                .map(|d| ui::selectable(d, t, sel, true))
                 .when(!sel, |d| d.hover(move |s| s.bg(hov)))
                 .child(div().w(px(28.)).flex_none().text_right().text_color(t.tx4).child((base + i + 1).to_string()))
                 .when(!id.is_empty(), |d| d.child(div().flex_none().max_w(px(240.)).overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.num).child(id.clone())))

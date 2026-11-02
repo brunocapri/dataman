@@ -1047,12 +1047,12 @@ impl HistoryPanel {
                 div()
                     .id(("hist", ix))
                     .px(px(8.))
-                    .py(px(7.))
+                    // 7 pt with the selection's hairline, always there.
+                    .py(px(6.))
                     .flex()
                     .flex_col()
                     .gap(px(4.))
-                    .when(sel && focused, |d| d.bg(t.mark).border_1().border_color(t.edge))
-                    .when(sel && !focused, |d| d.bg(t.prs))
+                    .map(|d| ui::selectable(d, &t, sel, focused))
                     .when(!sel, |d| d.hover(move |s| s.bg(hov)))
                     .cursor_pointer()
                     .on_click(cx.listener(move |h, ev: &gpui::ClickEvent, window, cx| {
@@ -1133,7 +1133,7 @@ impl HistoryPanel {
             .items_center()
             .gap(px(4.))
             .border_1()
-            .border_color(t.acc)
+            .border_color(ui::field_line(&t, true))
             .pl(px(4.))
             .pr(px(2.))
             .text_color(t.tx)
@@ -1177,9 +1177,8 @@ impl HistoryPanel {
                     .items_center()
                     .gap(px(5.))
                     .text_size(px(12.))
-                    .when(dropping, |d| d.bg(t.acc_s).border_1().border_color(t.acc.opacity(0.45)))
-                    .when(!dropping && sel && focused, |d| d.bg(t.mark).border_1().border_color(t.edge))
-                    .when(!dropping && sel && !focused, |d| d.bg(t.prs))
+                    .map(|d| ui::selectable(d, &t, sel && !dropping, focused))
+                    .when(dropping, |d| d.bg(t.acc_s).border_color(t.acc.opacity(0.45)))
                     .when(!dropping && !sel, |d| d.hover(move |s| s.bg(hov)))
                     .when(dragged, |d| d.opacity(0.45))
                     .when(!is_renaming, |d| d.cursor_pointer())
@@ -1252,12 +1251,12 @@ impl HistoryPanel {
                 div()
                     .id(("fav", ix))
                     .px(px(8.))
-                    .py(px(7.))
+                    // 7 pt with the selection's hairline, always there.
+                    .py(px(6.))
                     .flex()
                     .flex_col()
                     .gap(px(4.))
-                    .when(sel && focused, |d| d.bg(t.mark).border_1().border_color(t.edge))
-                    .when(sel && !focused, |d| d.bg(t.prs))
+                    .map(|d| ui::selectable(d, &t, sel, focused))
                     .when(!sel, |d| d.hover(move |s| s.bg(hov)))
                     .when(dragged, |d| d.opacity(0.45))
                     .when(!is_renaming, |d| d.cursor_pointer())
@@ -1775,17 +1774,21 @@ impl HistoryPanel {
                 })
             };
             let mut rows: Vec<AnyElement> = vec![
-                ui::menu_item(t, SharedString::from(format!("{item}:all")), "All connections", scope.is_none().then_some("✓"), true).on_click(pick(None)).into_any_element(),
+                ui::selectable(ui::menu_item(t, SharedString::from(format!("{item}:all")), "All connections", scope.is_none().then_some("✓"), true), t, scope.is_none(), true).on_click(pick(None)).into_any_element(),
             ];
-            for p in &store.profiles {
+            let all: Vec<_> = store.profiles.iter().collect();
+            if !all.is_empty() {
                 rows.push(ui::menu_sep(t).into_any_element());
+            }
+            rows.extend(crate::conn_menu::rows(t, item, &store.folders, &all, scope.as_ref().map(|(c, _)| c.as_str()), cx, |p, indent| {
+                let mut rows: Vec<AnyElement> = Vec::new();
                 let whole = Some((p.id.clone(), None));
                 rows.push(
-                    ui::menu_item(t, SharedString::from(format!("{item}:{}", p.id)), "", (*scope == whole).then_some("✓"), true)
+                    ui::selectable(ui::menu_item(t, SharedString::from(format!("{item}:{}", p.id)), "", (*scope == whole).then_some("✓"), true), t, *scope == whole, true)
                         .child(
                             div()
                                 .absolute()
-                                .left(px(10.))
+                                .left(px(10. + indent))
                                 .top_0()
                                 .bottom_0()
                                 .right(px(28.))
@@ -1804,13 +1807,14 @@ impl HistoryPanel {
                 for d in dbs.get(p.id.as_str()).into_iter().flatten().filter(|d| !d.is_empty()) {
                     let this = Some((p.id.clone(), Some(d.to_string())));
                     rows.push(
-                        ui::menu_item(t, SharedString::from(format!("{item}:{}:{d}", p.id)), db_label(p, d), (*scope == this).then_some("✓"), true)
-                            .pl(px(25.))
+                        ui::selectable(ui::menu_item(t, SharedString::from(format!("{item}:{}:{d}", p.id)), db_label(p, d), (*scope == this).then_some("✓"), true), t, *scope == this, true)
+                            .pl(px(25. + indent))
                             .on_click(pick(this))
                             .into_any_element(),
                     );
                 }
-            }
+                rows
+            }));
             div().absolute().left_0().top(px(26.)).child(
                 gpui::deferred(
                     gpui::anchored().snap_to_window_with_margin(px(8.)).child(ui::menu_in(
@@ -2298,11 +2302,8 @@ impl Render for HistoryPanel {
                     .flex_row()
                     .items_center()
                     .gap(px(7.))
-                    .relative()
                     .bg(t.hov)
-                    .border_1()
-                    .border_color(if filter_focused { t.mark_b } else { t.field_b })
-                    .when(filter_focused, |d| d.child(ui::halo_ring(t.mark)))
+                    .map(|d| ui::field_frame(d, &t, filter_focused))
                     .child(icon(Icon::Search).size(px(13.)).text_color(t.tx3))
                     .child(div().flex_1().min_w_0().text_color(t.tx).child(self.filter.clone()))
                     .when(!self.query.is_empty(), |d| {

@@ -860,6 +860,7 @@ impl ConfigStore {
     /// What an edit outside Dataman loosens waits for review against what `approved` keeps.
     pub fn open_with(dirs: &Dirs, approved: Arc<Approved>) -> Result<ConfigStore> {
         let path = dirs.connections_file();
+        let _held = crate::stamp::hold(&path);
         let stamp = mtime(&path);
         let Loaded { connections: file, skipped, folders } = read(&path)?;
         let kept = approved.connections();
@@ -891,6 +892,7 @@ impl ConfigStore {
     /// A file that does not parse (a hand edit half done) keeps the connections as they were.
     pub fn refresh(&self) -> bool {
         let mut g = self.inner.lock();
+        let _held = crate::stamp::hold(&self.path);
         Self::sync(&self.path, &self.approved, &mut g)
     }
 
@@ -921,6 +923,7 @@ impl ConfigStore {
     /// alone of a held connection stays in the file as the file had it, still held.
     fn change(&self, f: impl FnOnce(&mut Vec<ConnectionProfile>)) -> Result<()> {
         let mut g = self.inner.lock();
+        let _held = crate::stamp::hold(&self.path);
         Self::sync(&self.path, &self.approved, &mut g);
         let before = g.connections.clone();
         let mut next = before.clone();
@@ -961,6 +964,7 @@ impl ConfigStore {
     /// Applies what the file loosens, as `reviewed` showed it; refused when it changed since.
     pub fn accept(&self, reviewed: &[ConnReview]) -> Result<()> {
         let mut g = self.inner.lock();
+        let _held = crate::stamp::hold(&self.path);
         Self::sync(&self.path, &self.approved, &mut g);
         if g.held != reviewed {
             anyhow::bail!("connections.toml changed since: review it again");
@@ -1006,6 +1010,7 @@ impl ConfigStore {
     /// nothing of them changes, nothing is approved or held.
     pub fn edit_folders(&self, f: impl FnOnce(&mut Vec<ConnFolder>)) -> Result<()> {
         let mut g = self.inner.lock();
+        let _held = crate::stamp::hold(&self.path);
         Self::sync(&self.path, &self.approved, &mut g);
         let mut folders = g.folders.clone();
         f(&mut folders);

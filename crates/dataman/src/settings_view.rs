@@ -34,11 +34,14 @@ pub enum SettingsEvent {
     Close,
     /// Settings › Project changed what is shared, and the sync that followed changed this side.
     ProjectSynced(dataman_core::project::Synced),
+    /// Connect on start was turned on: what is not connected connects now.
+    AutoConnect,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Section {
     Appearance,
+    Connections,
     Editor,
     Grid,
     Export,
@@ -48,13 +51,14 @@ enum Section {
     About,
 }
 
-const SECTIONS: [Section; 8] =
-    [Section::Appearance, Section::Editor, Section::Grid, Section::Export, Section::Mcp, Section::Project, Section::Keyboard, Section::About];
+const SECTIONS: [Section; 9] =
+    [Section::Appearance, Section::Connections, Section::Editor, Section::Grid, Section::Export, Section::Mcp, Section::Project, Section::Keyboard, Section::About];
 
 impl Section {
     fn label(self) -> &'static str {
         match self {
             Section::Appearance => "Appearance",
+            Section::Connections => "Connections",
             Section::Editor => "Editor",
             Section::Grid => "Results grid",
             Section::Export => "Export",
@@ -74,7 +78,9 @@ enum Row {
     FontSize,
     ReduceMotion,
     DbLogos,
+    ExplorerView,
     Panels,
+    AutoConnect,
     Prefetch,
     PageSize,
     ConfirmCommit,
@@ -94,14 +100,16 @@ enum Row {
     CrashReports,
 }
 
-const ROWS: [(Row, Section, &str, &str); 24] = [
+const ROWS: [(Row, Section, &str, &str); 26] = [
     (Row::Theme, Section::Appearance, "Theme", "dark light system"),
     (Row::Font, Section::Appearance, "Font", "typeface family monospace geist lilex zed jetbrains"),
     (Row::Translucency, Section::Appearance, "Window translucency", "transparency blur opaque"),
     (Row::FontSize, Section::Appearance, "Code font size", "editor text"),
     (Row::ReduceMotion, Section::Appearance, "Reduce motion", "animation accessibility"),
     (Row::DbLogos, Section::Appearance, "Database logos", "icon engine postgres mysql mongodb redis elasticsearch opensearch explorer picker"),
+    (Row::ExplorerView, Section::Appearance, "Explorer view", "explorer tree simple advanced full tables schemas system internal extensions hide eye"),
     (Row::Panels, Section::Appearance, "Panels", "panel layout dock explorer history favorites move reset"),
+    (Row::AutoConnect, Section::Connections, "Connect on start", "connections connect automatically startup launch open auto"),
     (Row::KeywordCase, Section::Editor, "Keyword case", "format formatter sql upper lower"),
     (Row::Indent, Section::Editor, "Indent", "format formatter spaces tab"),
     (Row::FormatOnSave, Section::Editor, "Format on save", "format formatter save favorite cmd-s"),
@@ -130,6 +138,8 @@ impl Row {
             Row::Projects => "File › Open Project keeps settings in a folder's .dataman/project.toml, for a team to version. Passwords and secrets never go there.",
             Row::ProjectShare => "Where both sides changed, the project wins. Each person's passwords stay in their own keychain.",
             Row::ProjectConnections => "Connections created while the project is open join it.",
+            Row::ExplorerView => "Simple lists each database's tables. Advanced adds schemas, routines, extensions, roles and sizes. The eye in the explorer switches the window you are in.",
+            Row::AutoConnect => "Every saved connection connects when Dataman opens, and those added later when they appear. One that fails shows why in the explorer; nothing asks for a password until you pick it. DuckDB files are left closed: open, they are locked for other programs.",
             Row::FormatOnSave => "⌘S and Save As… format the tab's text first, as Format Query does. Text that cannot be formatted is saved as written.",
             _ => return None,
         })
@@ -591,6 +601,12 @@ impl SettingsView {
         cx.refresh_windows();
     }
 
+    fn set_explorer_view(&mut self, advanced: bool, cx: &mut Context<Self>) {
+        self.save(|s| s.explorer_advanced = advanced, cx);
+        cx.set_global(crate::tree::ExplorerDefault(advanced));
+        cx.refresh_windows();
+    }
+
     fn set_reduce_motion(&mut self, on: bool, cx: &mut Context<Self>) {
         self.save(|s| s.reduce_motion = on, cx);
         crate::motion::set_reduce_motion_pref(on, cx);
@@ -650,8 +666,8 @@ impl SettingsView {
                     .items_center()
                     .gap(px(6.))
                     .bg(t.hov)
-                    .border_1()
-                    .border_color(t.field_b)
+                    // Its filter has the focus while it is open.
+                    .map(|d| ui::field_frame(d, t, true))
                     .child(icon(Icon::Search).size(px(12.)).text_color(t.tx3))
                     .child(div().flex_1().min_w_0().child(self.system_font_query.clone())),
             )
@@ -740,6 +756,15 @@ impl SettingsView {
                 let on = s.db_logos;
                 ui::switch(t, "logos", on).on_click(cx.listener(move |v, _, _, cx| v.set_logos(!on, cx))).into_any_element()
             }
+            Row::ExplorerView => {
+                let cur = s.explorer_advanced;
+                ui::segmented(t)
+                    .children([(false, "Simple"), (true, "Advanced")].into_iter().map(|(advanced, label)| {
+                        ui::segment(t, ("ev", usize::from(advanced)), label, cur == advanced)
+                            .on_click(cx.listener(move |v, _, _, cx| v.set_explorer_view(advanced, cx)))
+                    }))
+                    .into_any_element()
+            }
             Row::Panels => ui::button(t, "reset-panels", ui::Btn::Secondary)
                 .h(px(28.))
                 .child("Reset panels")
@@ -778,6 +803,17 @@ impl SettingsView {
                 ui::segmented(t)
                     .children(PAGE_CHOICES.into_iter().map(|(n, label)| {
                         ui::segment(t, ("pg", n), label, cur == n).on_click(cx.listener(move |v, _, _, cx| v.save(|s| s.page_size = n, cx)))
+                    }))
+                    .into_any_element()
+            }
+            Row::AutoConnect => {
+                let on = s.auto_connect;
+                ui::switch(t, "ac", on)
+                    .on_click(cx.listener(move |v, _, _, cx| {
+                        v.save(|s| s.auto_connect = !on, cx);
+                        if !on {
+                            cx.emit(SettingsEvent::AutoConnect);
+                        }
                     }))
                     .into_any_element()
             }
@@ -1065,7 +1101,7 @@ impl SettingsView {
 
     /// The Keyboard section's search: type to find commands, or press the keyboard button and
     /// then a shortcut to find what it runs.
-    fn render_key_bar(&self, t: &Theme, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn render_key_bar(&self, t: &Theme, focused: bool, cx: &mut Context<Self>) -> gpui::AnyElement {
         let keys = self.key_search;
         let hov = t.hov;
         let bounds = self.key_button_bounds.clone();
@@ -1094,8 +1130,7 @@ impl SettingsView {
             .items_center()
             .gap(px(8.))
             .bg(t.hov)
-            .border_1()
-            .border_color(if keys { t.acc } else { t.field_b })
+            .map(|d| ui::field_frame(d, t, focused))
             .text_color(t.tx)
             .child(icon(Icon::Search).size(px(13.)).text_color(t.tx3))
             .child(div().flex_1().min_w_0().map(|d| if keys { d.child(self.render_key_query(t)) } else { d.child(self.key_filter.clone()) }))
@@ -1232,6 +1267,11 @@ impl SettingsView {
     }
 
     #[cfg(feature = "checks")]
+    pub fn demo_search_focused(&self, window: &Window, cx: &App) -> bool {
+        self.search.focus_handle(cx).is_focused(window)
+    }
+
+    #[cfg(feature = "checks")]
     pub fn demo_search(&mut self, q: &str, cx: &mut Context<Self>) {
         self.search.update(cx, |i, cx| i.set_text(q, cx));
         cx.notify();
@@ -1271,7 +1311,7 @@ impl SettingsView {
 }
 
 impl Render for SettingsView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme();
         let q = self.query(cx);
         let keys = self.key_search;
@@ -1290,7 +1330,8 @@ impl Render for SettingsView {
                 .items_center()
                 .gap(px(10.))
                 .cursor_pointer()
-                .when(on, |d| d.bg(t.acc_s).text_color(t.tx).border_1().border_color(t.acc))
+                .map(|d| ui::selectable(d, &t, on, true))
+                .when(on, |d| d.text_color(t.tx))
                 .when(!on, |d| d.text_color(t.tx2).hover(move |st| st.bg(hov)))
                 .child(div().flex_1().child(s.label()))
                 .on_click(cx.listener(move |v, _, window, cx| {
@@ -1314,7 +1355,10 @@ impl Render for SettingsView {
             Some(k) => format!("Commands on {k}").into(),
             None => "Keyboard".into(),
         };
-        let key_bar = (keys || (!searching && self.section == Section::Keyboard)).then(|| self.render_key_bar(&t, cx));
+        let key_bar = (keys || (!searching && self.section == Section::Keyboard)).then(|| {
+            let focused = keys || self.key_filter.focus_handle(cx).is_focused(window);
+            self.render_key_bar(&t, focused, cx)
+        });
         if keys {
             let cmds = Self::commands_on(self.key_query.as_deref());
             if !cmds.is_empty() {
@@ -1350,12 +1394,23 @@ impl Render for SettingsView {
             page.insert(0, bar);
         }
         let scrolled = self.page_scroll.offset().y < px(0.);
+        let search_focused = self.search.focus_handle(cx).is_focused(window);
         let glass = t.glass;
         let sheet = ui::modal(&t, "settings-sheet")
             .w(px(900.))
             .h(px(660.))
             .flex_row()
             .overflow_hidden()
+            // The modal keeps its clicks from the scrim, whose focus would take them: a click on
+            // nothing focusable leaves the search (its caret too) for the sheet.
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|v, _, window, cx| {
+                    if !window.default_prevented() {
+                        window.focus(&v.focus, cx);
+                    }
+                }),
+            )
             .child(
                 div()
                     .w(px(210.))
@@ -1380,8 +1435,7 @@ impl Render for SettingsView {
                             .items_center()
                             .gap(px(8.))
                             .bg(t.hov)
-                            .border_1()
-                            .border_color(t.field_b)
+                            .map(|d| ui::field_frame(d, &t, search_focused))
                             .text_color(t.tx)
                             .child(icon(Icon::Search).size(px(13.)).text_color(t.tx3))
                             .child(div().flex_1().min_w_0().child(self.search.clone())),

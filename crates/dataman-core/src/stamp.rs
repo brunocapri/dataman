@@ -62,6 +62,19 @@ fn windows_ids(path: &Path) -> Option<(u64, (i64, i64))> {
     }
 }
 
+/// Held while a file and the approved rules that go with it are written, or read together:
+/// another Dataman process (a second app, `dataman-mcp`) never reads one write's file with the
+/// next write's rules, which would look like an edit made outside Dataman. One lock file per
+/// file kept, next to it; released when dropped.
+pub(crate) fn hold(file: &Path) -> Option<std::fs::File> {
+    let name = file.file_name()?.to_string_lossy().into_owned();
+    let path = file.with_file_name(format!(".{name}.lock"));
+    // No folder yet: no file either, nothing to read half of.
+    let f = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&path).ok()?;
+    f.lock().inspect_err(|e| log::debug!("{}: {e}", path.display())).ok()?;
+    Some(f)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

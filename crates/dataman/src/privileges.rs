@@ -172,7 +172,7 @@ impl Render for PrivilegesPanel {
                         .flex()
                         .flex_row()
                         .items_center()
-                        .when(picked, |d| d.bg(t.acc_s))
+                        .map(|d| ui::selectable(d, &t, picked, true))
                         .when(!picked, |d| d.hover(move |s| s.bg(hov)))
                         .cursor_pointer()
                         .on_click(cx.listener(move |p, _: &ClickEvent, _, cx| {

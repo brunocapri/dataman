@@ -169,7 +169,7 @@ impl Workspace {
         }
         let view: AnyElement = match self.view {
             NavView::Explorer => self.tree.clone().into_any_element(),
-            NavView::Agents => self.agents.update(cx, |a, cx| a.render_nav(cx)),
+            NavView::Agents => self.agents.update(cx, |a, cx| a.render_nav(window, cx)),
             _ => self.history.clone().into_any_element(),
         };
         let rail = self.render_rail(d, window, cx);

@@ -347,13 +347,45 @@ async fn fav_scope(ws: &Entity<Workspace>, r: &mut Report, shot: bool, cx: &mut 
     r.check("Favorites: the connection dropdown under the search field, on All connections", probed("fav-scope", cx).is_some() && all, format!("{listed:?}"));
     let opened = click_probe("fav-scope", cx);
     pause(cx, 150).await;
+    let menu_open = cx.update(|_, cx| history.read(cx).demo_fav_scope().1).unwrap_or(false);
+    let listed = probed(&format!("fscope:{pg}"), cx).is_some() && probed(&format!("fscope:{other}"), cx).is_some() && probed(&format!("fscope:{other}:sales"), cx).is_some();
+    r.check("a click opens it: every connection, each with its favorites' databases", opened && menu_open && listed, "");
+    // In a folder: the dropdown groups it as the explorer does, and a click on the folder folds it.
+    let _ = cx.update(|_, cx| {
+        let store = ws.read(cx).store.clone();
+        store.update(cx, |s, cx| {
+            s.edit_folders(
+                |all| {
+                    let mut d = dataman_core::ConnFolder::new("Reports", all);
+                    d.connections.push(other.clone());
+                    all.push(d);
+                },
+                cx,
+            )
+        })
+    });
+    pause(cx, 150).await;
+    draw(cx);
+    let fid = folder_named(ws, "Reports", cx).map(|d| d.id).unwrap_or_default();
+    let head = format!("fscope:folder:{fid}");
+    r.check("its folder heads it in the dropdown, the connection under it", probed(&head, cx).is_some() && probed(&format!("fscope:{other}"), cx).is_some(), &head);
     if shot {
         shoot(cx);
         return;
     }
-    let menu_open = cx.update(|_, cx| history.read(cx).demo_fav_scope().1).unwrap_or(false);
-    let listed = probed(&format!("fscope:{pg}"), cx).is_some() && probed(&format!("fscope:{other}"), cx).is_some() && probed(&format!("fscope:{other}:sales"), cx).is_some();
-    r.check("a click opens it: every connection, each with its favorites' databases", opened && menu_open && listed, "");
+    click_probe(&head, cx);
+    pause(cx, 150).await;
+    draw(cx);
+    let still = cx.update(|_, cx| history.read(cx).demo_fav_scope().1).unwrap_or(false);
+    r.check(
+        "a click on the folder folds it: its connection goes, the others stay, the menu stays open",
+        still && probed(&format!("fscope:{other}"), cx).is_none() && probed(&format!("fscope:{pg}"), cx).is_some(),
+        "",
+    );
+    click_probe(&head, cx);
+    pause(cx, 150).await;
+    draw(cx);
+    r.check("a second click opens it again", probed(&format!("fscope:{other}:sales"), cx).is_some(), "");
     let picked = click_probe(&format!("fscope:{pg}"), cx);
     pause(cx, 100).await;
     let shown = bare(crate::history_check::rows(&history, cx));

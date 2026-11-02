@@ -352,7 +352,7 @@ impl AgentsPage {
                 .flex_row()
                 .items_center()
                 .gap(px(8.))
-                .when(sel, |d| d.bg(t.prs))
+                .map(|d| crate::ui::selectable(d, t, sel, true))
                 .when(!sel, move |d| d.hover(move |s| s.bg(hov)))
                 .child(icon(glyph).size(px(13.)).text_color(t.tx3))
                 .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx).child(c.text.clone()))

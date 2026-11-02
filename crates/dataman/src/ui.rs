@@ -108,21 +108,33 @@ pub fn not_reported(t: &Theme) -> Div {
         .child("not reported")
 }
 
-pub fn pill(glyph: &str, label: impl Into<SharedString>, fg: Hsla, bg: Hsla) -> Div {
+/// A result's state: glyph and label in its color, no badge behind them.
+pub fn status(glyph: &str, label: impl Into<SharedString>, fg: Hsla) -> Div {
     div()
         .flex_none()
         .h(px(20.))
-        .px(px(7.))
         .flex()
         .items_center()
         .gap(px(6.))
-        .bg(bg)
         .text_color(fg)
         .text_size(px(10.5))
         .font_weight(FontWeight::SEMIBOLD)
         .whitespace_nowrap()
-        .child(div().text_size(px(10.)).child(SharedString::from(glyph.to_string())))
+        .child(div().text_size(px(10.)).child(glyph_el(glyph, fg)))
         .child(label.into())
+}
+
+/// A state glyph. Pause is drawn: the font's ‖ runs from ascender to descender and is narrow.
+pub fn glyph_el(g: &str, color: Hsla) -> gpui::AnyElement {
+    if g == PAUSE { pause_mark(color).into_any_element() } else { SharedString::from(g.to_string()).into_any_element() }
+}
+
+pub const PAUSE: &str = "‖";
+
+/// Two bars, shorter and wider than the font's ‖.
+pub fn pause_mark(color: Hsla) -> Div {
+    let bar = || div().w(px(2.)).h(px(7.)).bg(color);
+    div().flex_none().flex().flex_row().items_center().gap(px(2.5)).child(bar()).child(bar())
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -252,6 +264,18 @@ pub fn halo_ring(color: Hsla) -> Div {
     // hairline); the band itself scales with the UI.
     let o = px(-3.) - gpui::px(1.);
     div().absolute().top(o).left(o).right(o).bottom(o).border(px(3.)).border_color(color)
+}
+
+/// A text field's outline, the explorer search's: gray, darker while it has the focus. Never the
+/// accent.
+pub fn field_line(t: &Theme, focused: bool) -> Hsla {
+    if focused { t.mark_b } else { t.field_b }
+}
+
+/// Every text field's frame: its outline, with a gray halo while it has the focus.
+pub fn field_frame<E: Styled + ParentElement>(e: E, t: &Theme, focused: bool) -> E {
+    let e = e.relative().border_1().border_color(field_line(t, focused));
+    if focused { e.child(halo_ring(t.mark)) } else { e }
 }
 
 pub fn vsep(t: &Theme, h: f32) -> Div {
@@ -410,6 +434,19 @@ pub fn menu_item(
         .when(enabled, |d| d.cursor_pointer().hover(move |s| s.bg(acc).text_color(on_acc)))
         .child(div().flex_1().child(label.into()))
         .children(key.map(|k| div().text_size(px(11.)).opacity(0.7).child(k.to_string())))
+}
+
+/// A list's selected row, the explorer's: a muted blue wash and hairline while its list has the
+/// focus, gray when it has not. The hairline is always there (clear unless selected), so selecting
+/// a row never moves what it holds.
+pub fn selectable<E: Styled>(e: E, t: &Theme, sel: bool, focused: bool) -> E {
+    let e = e.border_1().border_color(if sel && focused { t.edge_acc } else { gpui::transparent_black() });
+    if sel { e.bg(sel_bg(t, focused)) } else { e }
+}
+
+/// The selected row's wash alone, for a row whose border is taken (a separator line).
+pub fn sel_bg(t: &Theme, focused: bool) -> Hsla {
+    if focused { t.acc_s } else { t.prs }
 }
 
 pub fn menu_sep(t: &Theme) -> Div {

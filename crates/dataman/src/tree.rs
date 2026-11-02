@@ -56,6 +56,41 @@ const CONTEXT: &str = "Explorer";
 
 const POP_PAUSE: Duration = Duration::from_millis(150);
 
+const ROW_H: f32 = 22.;
+
+/// The view a window's explorer opens on: every object (true) or each database's tables
+/// (Settings › Appearance › Explorer view).
+pub struct ExplorerDefault(pub bool);
+
+impl gpui::Global for ExplorerDefault {}
+
+/// A node opening or shutting in the simple view: the rows under it slide out from under it
+/// (or back under it) and the rows below make room.
+struct Unfold {
+    parent: SharedString,
+    /// The explorer folder it is, if it is one (they shut in `shut_folders`).
+    folder: Option<String>,
+    opening: bool,
+    at: Instant,
+    /// How much of the rows under it showed when this started, in px.
+    from: f32,
+    /// How many there were: more (a load came in) and it goes on from where it is.
+    rows: usize,
+}
+
+impl Unfold {
+    fn progress(&self, now: Instant) -> f32 {
+        let d = if self.opening { crate::motion::TREE_UNFOLD } else { crate::motion::TREE_FOLD };
+        (now.saturating_duration_since(self.at).as_secs_f32() / d.as_secs_f32()).min(1.)
+    }
+
+    /// The px showing of `full`.
+    fn shown(&self, full: f32, now: Instant) -> f32 {
+        let to = if self.opening { full } else { 0. };
+        (self.from + (to - self.from) * crate::motion::EASE.eval(self.progress(now))).clamp(0., full)
+    }
+}
+
 pub fn bind_keys(cx: &mut App) {
     let c = Some(CONTEXT);
     cx.bind_keys([
@@ -337,6 +372,12 @@ pub struct SchemaTree {
     naming: Option<(String, Entity<TextInput>)>,
     focus_back: bool,
     pub conn_bounds: std::rc::Rc<std::cell::RefCell<HashMap<SharedString, gpui::Bounds<gpui::Pixels>>>>,
+    /// Every object (the eye) or each database's tables (the eye crossed out).
+    advanced: bool,
+    /// [`ExplorerDefault`] as last seen: a change in Settings switches the view.
+    default_seen: bool,
+    unfold: Option<Unfold>,
+    shut_task: Option<gpui::Task<()>>,
 }
 
 pub struct DraggedConn(pub String);
@@ -417,6 +458,7 @@ impl SchemaTree {
             }
         })
         .detach();
+        let advanced = cx.try_global::<ExplorerDefault>().is_some_and(|d| d.0);
         let mut t = SchemaTree {
             store,
             focus: cx.focus_handle(),
@@ -450,6 +492,10 @@ impl SchemaTree {
             naming: None,
             focus_back: false,
             conn_bounds: Default::default(),
+            advanced,
+            default_seen: advanced,
+            unfold: None,
+            shut_task: None,
         };
         t.rebuild(cx);
         t
@@ -464,8 +510,14 @@ impl SchemaTree {
             G::Tables
         };
         let rel = rid(conn, db, schema, name);
+        if system_schema(schema) {
+            self.set_advanced(true, cx);
+        }
         let mut path = self.open_schema(conn, db, schema, cx);
-        path.push((gid(conn, db, schema, g), Kind::Group { conn: conn.into(), db: db.into(), schema: schema.into(), g }));
+        // The simple view lists them under the database (the home schema) or the schema.
+        if self.advanced {
+            path.push((gid(conn, db, schema, g), Kind::Group { conn: conn.into(), db: db.into(), schema: schema.into(), g }));
+        }
         let target = match column {
             Some(c) => {
                 path.push((rel.clone(), Kind::Rel { conn: conn.into(), db: db.into(), schema: schema.into(), name: name.into(), kind }));
@@ -477,6 +529,7 @@ impl SchemaTree {
     }
 
     pub fn reveal_function(&mut self, conn: &str, db: &str, schema: &str, oid: u32, cx: &mut Context<Self>) {
+        self.set_advanced(true, cx);
         let mut path = self.open_schema(conn, db, schema, cx);
         let g = gid(conn, db, schema, G::Functions);
         path.push((g.clone(), Kind::Group { conn: conn.into(), db: db.into(), schema: schema.into(), g: G::Functions }));
@@ -502,6 +555,30 @@ impl SchemaTree {
         }
         self.reveal = Some(target);
         self.rebuild(cx);
+        cx.notify();
+    }
+
+    /// Every object, or each database's tables. Open nodes stay open; what the other view
+    /// needs is read (from the cache, mostly).
+    pub fn set_advanced(&mut self, on: bool, cx: &mut Context<Self>) {
+        if self.advanced == on {
+            return;
+        }
+        self.finish_shut(cx);
+        self.unfold = None;
+        self.advanced = on;
+        self.rebuild(cx);
+        let open: Vec<(String, Kind)> = self.rows.iter().filter(|r| r.expanded && matches!(r.kind, Kind::Conn { .. })).map(|r| (r.id.to_string(), r.kind.clone())).collect();
+        for (id, kind) in open {
+            if self.conn(id.trim_start_matches("c:"), cx).is_some() {
+                self.load(&id, &kind, cx);
+            }
+        }
+        if let Some(sel) = self.selected.clone()
+            && !self.rows.iter().any(|r| r.id == sel)
+        {
+            self.selected = None;
+        }
         cx.notify();
     }
 
@@ -597,6 +674,14 @@ impl SchemaTree {
                 continue;
             }
             let dropped = match &r.kind {
+                Kind::Db { conn, db } if !self.advanced => self.conn(conn, cx).is_some_and(|c| {
+                    let k = &c.schema;
+                    match k.cached_schemas(db) {
+                        _ if !c.caps().schemas => k.cached_relations(db, db).is_none(),
+                        Some(v) => home_schema(k, db, &v).is_some_and(|h| k.cached_relations(db, &h).is_none()),
+                        None => true,
+                    }
+                }),
                 Kind::Db { conn, db } => self.conn(conn, cx).is_some_and(|c| if c.caps().schemas { c.schema.cached_schemas(db).is_none() } else { c.schema.cached_relations(db, db).is_none() }),
                 Kind::Schema { conn, db, schema } => self.conn(conn, cx).is_some_and(|c| c.schema.cached_relations(db, schema).is_none()),
                 Kind::Group { conn, db, schema, g } => self.conn(conn, cx).is_some_and(|c| {
@@ -692,7 +777,11 @@ impl SchemaTree {
             Some(ConnState::Connected(c)) if !c.engine().is_sql() => self.push_docs(rows, &p.id, c, t),
             Some(ConnState::Connected(c)) => {
                 self.push_pinned(rows, &p.id, c, &store.core.pins.of(&p.id), t);
-                self.push_conn(rows, &p.id, c, t);
+                if self.advanced {
+                    self.push_conn(rows, &p.id, c, t);
+                } else {
+                    self.push_conn_simple(rows, &p.id, c, t);
+                }
             }
             Some(ConnState::Failed(e)) => rows.push(error_row(&id, 1, e, &id, t)),
             _ => rows.push(loading_row(&id, 1)),
@@ -716,10 +805,11 @@ impl SchemaTree {
             if !conn.engine().is_sql() {
                 let c = p.id.as_str();
                 let mut block = Vec::new();
+                let simple = !self.advanced;
                 let top = conn.cached_tree(None).unwrap_or_default();
                 let mut hit_rows = |db: &str, items: &[dataman_core::nosql::Item], depth: usize, block: &mut Vec<Row>| -> usize {
                     let mut n = 0;
-                    for x in items.iter().filter(|i| i.kind != dataman_core::nosql::ItemKind::Database) {
+                    for x in items.iter().filter(|i| i.kind != dataman_core::nosql::ItemKind::Database && !(simple && system_coll(&i.name))) {
                         if let Some(m) = find(&x.name, &mut names) {
                             let mut row = coll_row(c, db, x, depth);
                             row.hl = Some(m);
@@ -730,7 +820,7 @@ impl SchemaTree {
                     n
                 };
                 matches += hit_rows(conn.database(), &top, 1, &mut block);
-                for db in top.iter().filter(|i| i.kind == dataman_core::nosql::ItemKind::Database) {
+                for db in top.iter().filter(|i| i.kind == dataman_core::nosql::ItemKind::Database && !(simple && system_db(conn, &i.name))) {
                     let Some(items) = conn.cached_tree(Some(&db.name)) else { continue };
                     let mut db_block = Vec::new();
                     let n = hit_rows(&db.name, &items, 2, &mut db_block);
@@ -770,9 +860,23 @@ impl SchemaTree {
                 block.push(group_row(&pinned_id(c), 1, "pinned", pinned.len(), true, Kind::Pinned { conn: c.into() }).icon(Icon::Pin));
                 block.extend(pinned);
             }
+            let simple = !self.advanced;
             for db in cache.cached_databases().unwrap_or_else(|| vec![conn.database().to_string()]) {
+                if simple && system_db(conn, &db) {
+                    continue;
+                }
                 let mut db_block = Vec::new();
-                for s in cache.cached_schemas(&db).unwrap_or_default() {
+                let schemas = cache.cached_schemas(&db).unwrap_or_default();
+                // The simple view: the home schema's tables under the database, the others' under
+                // their schema, nothing of the system's or an extension's, no routines.
+                let home = if flat { Some(db.clone()) } else { home_schema(cache, &db, &schemas) };
+                let owned = extension_owned(conn, &db);
+                for s in schemas {
+                    if simple && system_schema(&s) {
+                        continue;
+                    }
+                    let at_home = simple && home.as_ref() == Some(&s);
+                    let rd = if at_home { 2 } else { 3 - dd };
                     let mut hits = Vec::new();
                     let mut hit = |row: Row, range: Option<Range<usize>>| {
                         if let Some(r) = range {
@@ -782,13 +886,23 @@ impl SchemaTree {
                         }
                     };
                     if let Some(rels) = cache.cached_relations(&db, &s) {
-                        let stats = cache.cached_stats(&db, &s);
-                        for r in &rels {
+                        let stats = if simple { None } else { cache.cached_stats(&db, &s) };
+                        for r in rels.iter().filter(|r| !simple || !r.oid.is_some_and(|o| owned.contains(&o))) {
                             let m = find(&r.name, &mut names);
                             if m.is_some() {
-                                hit(rel_row(c, &db, &s, r, 3 - dd, false, stats.as_deref()), m);
+                                hit(rel_row(c, &db, &s, r, rd, false, stats.as_deref()), m);
                             }
                         }
+                    }
+                    if simple {
+                        if !hits.is_empty() {
+                            matches += hits.len();
+                            if !at_home && !flat {
+                                db_block.push(Row::new(sid(c, &db, &s), 2, s.clone(), Kind::Schema { conn: c.into(), db: db.clone(), schema: s.clone() }).icon(Icon::Schema).expandable(true));
+                            }
+                            db_block.extend(hits);
+                        }
+                        continue;
                     }
                     for f in cache.cached_functions(&db, &s).iter().flat_map(|v| v.iter()) {
                         let m = find(&f.name, &mut names);
@@ -823,7 +937,7 @@ impl SchemaTree {
                         db_block.extend(hits);
                     }
                 }
-                for x in cache.cached_extensions(&db).unwrap_or_default() {
+                for x in cache.cached_extensions(&db).filter(|_| !simple).unwrap_or_default() {
                     let m = find(&x.name, &mut names);
                     if let Some(m) = m {
                         let mut row = extension_row(c, &db, &x, 2);
@@ -838,7 +952,7 @@ impl SchemaTree {
                     block.extend(db_block);
                 }
             }
-            for r in cache.cached_roles().unwrap_or_default() {
+            for r in cache.cached_roles().filter(|_| !simple).unwrap_or_default() {
                 let m = find(&r.name, &mut names);
                 if let Some(m) = m {
                     let mut row = role_row(c, &r, 1);
@@ -898,8 +1012,10 @@ impl SchemaTree {
             }
             return;
         };
+        let simple = !self.advanced;
         for it in items.iter() {
             match it.kind {
+                dataman_core::nosql::ItemKind::Database if simple && system_db(conn, &it.name) => {}
                 dataman_core::nosql::ItemKind::Database => {
                     let d = did(c, &it.name);
                     let open = self.expanded.contains(&d);
@@ -908,9 +1024,9 @@ impl SchemaTree {
                         .icon(Icon::Database)
                         .lock(conn.read_only_for(&it.name))
                         .expandable(open);
-                    if let Some(s) = it.size.filter(|s| *s > 0) {
+                    if let Some(s) = it.size.filter(|s| !simple && *s > 0) {
                         row = row.meta(human_size(s as i64), Meta::Plain);
-                    } else if let Some(n) = it.count.filter(|_| conn.engine() == dataman_core::Engine::Redis) {
+                    } else if let Some(n) = it.count.filter(|_| !simple && conn.engine() == dataman_core::Engine::Redis) {
                         row = row.meta(format!("{} keys", approx_count(n as f64)), Meta::Plain);
                     }
                     rows.push(row);
@@ -918,10 +1034,11 @@ impl SchemaTree {
                         continue;
                     }
                     match conn.cached_tree(Some(&it.name)) {
-                        Some(colls) => rows.extend(colls.iter().map(|x| coll_row(c, &it.name, x, 2))),
+                        Some(colls) => rows.extend(colls.iter().filter(|x| !(simple && system_coll(&x.name))).map(|x| coll_row(c, &it.name, x, 2))),
                         None => rows.push(loading_row(&d, 2)),
                     }
                 }
+                _ if simple && system_coll(&it.name) => {}
                 _ => rows.push(coll_row(c, conn.database(), it, 1)),
             }
         }
@@ -981,6 +1098,81 @@ impl SchemaTree {
             rows.push(group_row(&g, 1, "roles", roles.len(), open, Kind::Roles { conn: c.into() }));
             if open {
                 rows.extend(roles.iter().map(|r| role_row(c, r, 2)));
+            }
+        }
+    }
+
+    /// The simple view: each database (not the server's own) with the home schema's tables and
+    /// views right under it, then the other schemas' (the system's left out).
+    fn push_conn_simple(&self, rows: &mut Vec<Row>, c: &str, conn: &Arc<Connection>, t: &Theme) {
+        let id = cid(c);
+        let cache = &conn.schema;
+        let Some(dbs) = cache.cached_databases() else {
+            if !self.push_status(rows, &id, 1, t) {
+                rows.push(loading_row(&id, 1));
+            }
+            return;
+        };
+        for db in dbs.into_iter().filter(|d| !system_db(conn, d)) {
+            let d = did(c, &db);
+            let open = self.expanded.contains(&d);
+            rows.push(
+                Row::new(d.clone(), 1, db.clone(), Kind::Db { conn: c.into(), db: db.clone() })
+                    .icon(Icon::Database)
+                    .lock(conn.read_only_for(&db))
+                    .expandable(open),
+            );
+            if !open || self.push_status(rows, &d, 2, t) {
+                continue;
+            }
+            if !conn.caps().schemas {
+                self.push_tables(rows, c, &db, &db, conn, t, 2);
+                continue;
+            }
+            let Some(schemas) = cache.cached_schemas(&db) else {
+                rows.push(loading_row(&d, 2));
+                continue;
+            };
+            let home = home_schema(cache, &db, &schemas);
+            if let Some(h) = &home {
+                self.push_tables(rows, c, &db, h, conn, t, 2);
+            }
+            for s in schemas.iter().filter(|s| !system_schema(s) && Some(*s) != home.as_ref()) {
+                let sv = sid(c, &db, s);
+                let open = self.expanded.contains(&sv);
+                rows.push(Row::new(sv.clone(), 2, s.clone(), Kind::Schema { conn: c.into(), db: db.clone(), schema: s.clone() }).icon(Icon::Schema).expandable(open));
+                if open && !self.push_status(rows, &sv, 3, t) {
+                    self.push_tables(rows, c, &db, s, conn, t, 3);
+                }
+            }
+        }
+    }
+
+    /// A schema's tables, then its views, without an extension's (PostGIS's spatial_ref_sys…)
+    /// or their sizes; an open one lists its columns.
+    #[allow(clippy::too_many_arguments)]
+    fn push_tables(&self, rows: &mut Vec<Row>, c: &str, db: &str, s: &str, conn: &Arc<Connection>, t: &Theme, d: usize) {
+        let Some(rels) = conn.schema.cached_relations(db, s) else {
+            rows.push(loading_row(&sid(c, db, s), d));
+            return;
+        };
+        let owned = extension_owned(conn, db);
+        let (tables, views): (Vec<_>, Vec<_>) = rels.iter().filter(|r| !r.oid.is_some_and(|o| owned.contains(&o))).partition(|r| !r.kind.is_view());
+        if tables.is_empty() && views.is_empty() {
+            rows.push(Row::new(format!("{}/none", sid(c, db, s)), d, "no tables", Kind::Leaf).tone(Tone::Italic));
+        }
+        let pg = conn.dialect() == dataman_core::sql::Dialect::Postgres;
+        for r in tables.into_iter().chain(views) {
+            let rv = rid(c, db, s, &r.name);
+            let open = self.expanded.contains(&rv);
+            rows.push(rel_row(c, db, s, r, d, open, None));
+            if !open || self.push_status(rows, &rv, d + 1, t) {
+                continue;
+            }
+            let cols_id = format!("{rv}/cols");
+            match conn.schema.cached_full_columns(db, s, &r.name) {
+                Some(cols) => rows.extend(cols.iter().map(|col| column_row(&cols_id, d + 1, col, pg, t))),
+                None => rows.push(loading_row(&rv, d + 1)),
             }
         }
     }
@@ -1074,18 +1266,8 @@ impl SchemaTree {
                 .expandable(open),
         );
         if open && !self.push_status(rows, &cols_id, d + 1, t) {
-            let cols = cols.unwrap_or_default();
-            for col in &cols {
-                let mut meta = short_type(&col.type_name, conn.dialect() == dataman_core::sql::Dialect::Postgres);
-                if col.primary_key {
-                    meta.push_str(" PK");
-                } else if col.nullable == Some(false) {
-                    meta.push_str(" !");
-                }
-                let row = Row::new(format!("{cols_id}/{}", col.name), d + 1, col.name.clone(), Kind::Column { name: col.name.clone() })
-                    .meta(meta, Meta::Plain);
-                rows.push(if col.primary_key { row.icon_colored(Icon::Key, t.num) } else { row.blank_icon() });
-            }
+            let pg = conn.dialect() == dataman_core::sql::Dialect::Postgres;
+            rows.extend(cols.unwrap_or_default().iter().map(|col| column_row(&cols_id, d + 1, col, pg, t)));
         }
         let idx = conn.schema.cached_indexes(db, s, name);
         let open = self.expanded.contains(&idx_id);
@@ -1185,32 +1367,103 @@ impl SchemaTree {
             return;
         }
         let id = row.id.to_string();
+        let animate = !self.advanced && !crate::motion::still(cx) && !self.filtering(cx);
+        let shutting = self.shutting(&id);
+        let opening = !row.expanded || shutting;
+        let folder = match &row.kind {
+            Kind::Folder { id } => Some(id.clone()),
+            _ => None,
+        };
+        // The explorer's folders fill as they shut; in the simple view the schemas too.
+        if (folder.is_some() || (animate && matches!(row.icon, Some((Icon::Schema, _))))) && !cx.reduce_motion() {
+            self.folder_turn = Some((id.clone(), Instant::now(), opening));
+        }
+        let now = Instant::now();
+        let ix_block = (ix, self.block(ix));
+        let shown_now = self.unfold.as_ref().filter(|u| u.parent.as_ref() == id).map(|u| u.shown(u.rows as f32 * ROW_H, now));
+        if shutting {
+            // Opens again from where it got to.
+            self.shut_task = None;
+            self.unfold = Some(Unfold { parent: row.id.clone(), folder, opening: true, at: now, from: shown_now.unwrap_or(0.), rows: ix_block.1 });
+            return cx.notify();
+        }
+        if !opening && animate && ix_block.1 > 0 {
+            self.finish_shut(cx);
+            let full = ix_block.1 as f32 * ROW_H;
+            self.unfold = Some(Unfold { parent: row.id.clone(), folder, opening: false, at: now, from: shown_now.unwrap_or(full), rows: ix_block.1 });
+            self.shut_task = Some(cx.spawn(async move |t, cx| {
+                cx.background_executor().timer(crate::motion::TREE_FOLD).await;
+                let _ = t.update(cx, |t, cx| t.finish_shut(cx));
+            }));
+            return cx.notify();
+        }
         if let Kind::Folder { id: f } = &row.kind {
-            let opening = !row.expanded;
             if opening {
                 self.shut_folders.remove(f);
             } else {
                 self.shut_folders.insert(f.clone());
             }
-            if !cx.reduce_motion() {
-                self.folder_turn = Some((id, Instant::now(), opening));
-            }
-            self.rebuild(cx);
-            cx.notify();
-            return;
-        }
-        let opening = !self.expanded.remove(&id);
-        if opening {
+        } else if !self.expanded.remove(&id) {
             self.expanded.insert(id.clone());
             self.load(&id, &row.kind, cx);
+        }
+        self.rebuild(cx);
+        if opening && animate {
+            self.finish_shut(cx);
+            if let Some(ix) = self.rows.iter().position(|r| r.id == row.id) {
+                self.unfold = Some(Unfold { parent: row.id.clone(), folder, opening: true, at: now, from: 0., rows: self.block(ix) });
+            }
+        }
+        cx.notify();
+    }
+
+    /// The rows under `ix` (a node's children and theirs).
+    fn block(&self, ix: usize) -> usize {
+        let Some(d) = self.rows.get(ix).map(|r| r.depth) else { return 0 };
+        self.rows[ix + 1..].iter().take_while(|r| r.depth > d).count()
+    }
+
+    fn shutting(&self, id: &str) -> bool {
+        self.unfold.as_ref().is_some_and(|u| !u.opening && u.parent.as_ref() == id)
+    }
+
+    /// A node shutting in the simple view shuts now: its rows go.
+    fn finish_shut(&mut self, cx: &mut Context<Self>) {
+        let Some(u) = self.unfold.take_if(|u| !u.opening) else { return };
+        self.shut_task = None;
+        match u.folder {
+            Some(f) => {
+                self.shut_folders.insert(f);
+            }
+            None => {
+                // A flip, as a click does (the pinned group is listed when it is shut).
+                let id = u.parent.to_string();
+                if !self.expanded.remove(&id) {
+                    self.expanded.insert(id);
+                }
+            }
         }
         self.rebuild(cx);
         cx.notify();
     }
 
+    /// Where the rows under the unfolding node are: the first of them, how many, how far they
+    /// are still tucked under it (px) and how much of them shows (0–1).
+    fn unfold_frame(&self, now: Instant) -> Option<(usize, usize, f32, f32)> {
+        let u = self.unfold.as_ref()?;
+        let p = self.rows.iter().position(|r| r.id == u.parent)?;
+        let n = self.block(p);
+        let full = n as f32 * ROW_H;
+        if n == 0 {
+            return None;
+        }
+        let shown = u.shown(full, now);
+        Some((p + 1, n, full - shown, shown / full))
+    }
+
     fn set_expanded(&mut self, ix: usize, open: bool, cx: &mut Context<Self>) {
         let Some(row) = self.rows.get(ix).cloned() else { return };
-        if row.expandable && row.expanded != open {
+        if row.expandable && (row.expanded && !self.shutting(&row.id)) != open {
             self.toggle(ix, cx);
         } else if !open {
             if let Some(p) = (0..ix).rev().find(|&i| self.rows[i].depth < row.depth) {
@@ -1413,9 +1666,14 @@ impl SchemaTree {
                     Some(conn) => {
                         let db = conn.database().to_string();
                         self.expanded.insert(did(c, &db));
-                        let mut loads = vec![unit(conn.databases()), unit(conn.schemas(&db)), unit(conn.extensions(&db)), unit(conn.roles())];
-                        if !conn.caps().schemas && !db.is_empty() {
-                            loads.extend([unit(conn.relations(&db, &db)), unit(conn.object_counts(&db, &db))]);
+                        let mut loads = vec![unit(conn.databases())];
+                        if !self.advanced {
+                            loads.extend((!db.is_empty()).then(|| simple_db(conn.clone(), db.clone())));
+                        } else {
+                            loads.extend([unit(conn.schemas(&db)), unit(conn.extensions(&db)), unit(conn.roles())]);
+                            if !conn.caps().schemas && !db.is_empty() {
+                                loads.extend([unit(conn.relations(&db, &db)), unit(conn.object_counts(&db, &db))]);
+                            }
                         }
                         Some(join_all(loads))
                     }
@@ -1425,6 +1683,7 @@ impl SchemaTree {
                     }
                 }
             }
+            Kind::Db { conn, db } if !self.advanced => self.conn(conn, cx).map(|c| simple_db(c, db.clone())),
             Kind::Db { conn, db } => self.conn(conn, cx).map(|c| {
                 if c.caps().schemas {
                     join2(c.schemas(db), c.extensions(db))
@@ -1492,6 +1751,8 @@ impl SchemaTree {
     fn collapse_all(&mut self, cx: &mut Context<Self>) {
         self.shut_folders = self.store.read(cx).folders.iter().map(|d| d.id.clone()).collect();
         self.expanded.clear();
+        self.unfold = None;
+        self.shut_task = None;
         self.rebuild(cx);
         if let Some(sel) = self.selected.clone()
             && !self.rows.iter().any(|r| r.id == sel)
@@ -2667,10 +2928,13 @@ impl SchemaTree {
         let has_menu = !matches!(r.kind, Kind::Leaf);
         let menu_here = self.menu.as_ref().is_some_and(|m| m.row.as_ref() == Some(&r.id));
         let hovered = self.hovered.as_ref() == Some(&r.id);
-        // Only the explorer's folders move as they open; from the connections down they snap.
+        let open = r.expanded && !self.shutting(&r.id);
+        // In the full view only the explorer's folders move as they open; from the connections
+        // down they snap. The simple view moves them all.
         let chevron = r.expandable.then(|| match r.kind {
-            Kind::Folder { .. } => ui::disclosure(gpui::ElementId::Name(format!("chev-{}", r.id).into()), r.expanded, 10., t.tx4),
-            _ => ui::disclosure_still(r.expanded, 10., t.tx4),
+            _ if !self.advanced => ui::disclosure(gpui::ElementId::Name(format!("chev-{}", r.id).into()), open, 10., t.tx4),
+            Kind::Folder { .. } => ui::disclosure(gpui::ElementId::Name(format!("chev-{}", r.id).into()), open, 10., t.tx4),
+            _ => ui::disclosure_still(open, 10., t.tx4),
         });
         let pop = self.pop_now.as_ref().filter(|(id, _)| *id == r.id).map(|(_, f)| *f);
         let label = if let Some(input) = naming {
@@ -2680,7 +2944,7 @@ impl SchemaTree {
                 .items_center()
                 .h(px(18.))
                 .border_1()
-                .border_color(t.acc)
+                .border_color(ui::field_line(&t, true))
                 .pl(px(4.))
                 .pr(px(2.))
                 .text_color(t.tx)
@@ -2770,9 +3034,8 @@ impl SchemaTree {
             .flex_row()
             .items_center()
             .gap(px(5.))
-            .when(dropping, |d| d.bg(t.acc_s).border_1().border_color(t.acc.opacity(0.45)))
-            .when(!dropping && sel && focused, |d| d.bg(t.acc_s).border_1().border_color(t.edge_acc))
-            .when(!dropping && sel && !focused, |d| d.bg(t.prs))
+            .map(|d| ui::selectable(d, &t, sel && !dropping, focused))
+            .when(dropping, |d| d.bg(t.acc_s).border_color(t.acc.opacity(0.45)))
             .when(!dropping && !sel, |d| d.hover(move |s| s.bg(hov)))
             .cursor_pointer()
             .on_click(cx.listener(move |t, ev: &ClickEvent, window, cx| t.on_click(ix, ev, window, cx)))
@@ -2852,7 +3115,7 @@ impl SchemaTree {
                     return icon(i).size(px(14.)).text_color(c).into_any_element();
                 }
                 let fill = self.folder_turn.as_ref().filter(|(id, ..)| *id == *r.id).and_then(|(_, at, opening)| crate::motion::folder_fill(*at, *opening));
-                ui::folder_icon(r.expanded, fill, 14., if dropping { t.acc_t } else { c })
+                ui::folder_icon(open, fill, 14., if dropping { t.acc_t } else { c })
             }))
             .when(r.blank_icon, |d| d.child(div().flex_none().size(px(14.))))
             .child(
@@ -2873,6 +3136,23 @@ impl SchemaTree {
             .children(meta.map(|m| div().flex_none().when(has_menu && (menu_here || hovered), |d| d.mr(px(MORE_ROOM))).child(m)))
             .children(more)
             .children(line.map(|after| crate::dnd::drop_line(t, false, after))))
+    }
+
+    /// Row slot `j` while a node unfolds (`j` at or under its first child): it shows what lies
+    /// `tuck` px further down the rows, the unfolding rows faded to `k`. So those rows come out
+    /// from under the node and the rows below make room, though every slot keeps its place.
+    fn render_slot(&self, j: usize, (first, n, tuck, k): (usize, usize, f32, f32), t: &Theme, focused: bool, cx: &mut Context<Self>) -> AnyElement {
+        let skip = (tuck / ROW_H).floor() as usize;
+        let off = tuck - skip as f32 * ROW_H;
+        let mut slot = div().id(("unfold", j)).relative().w_full().h(px(ROW_H)).overflow_hidden();
+        for (i, ix) in [j + skip, j + skip + 1].into_iter().enumerate() {
+            if ix >= self.rows.len() {
+                break;
+            }
+            let fade = if ix < first + n { k } else { 1. };
+            slot = slot.child(div().absolute().left_0().w_full().top(px(i as f32 * ROW_H - off)).opacity(fade).child(self.render_row(ix, t, focused, cx)));
+        }
+        slot.into_any_element()
     }
 }
 
@@ -2957,6 +3237,51 @@ fn rel_row(c: &str, db: &str, s: &str, r: &dataman_core::schema::Relation, depth
         }
     }
     row
+}
+
+fn column_row(cols_id: &str, depth: usize, col: &dataman_core::schema::Column, pg: bool, t: &Theme) -> Row {
+    let mut meta = short_type(&col.type_name, pg);
+    if col.primary_key {
+        meta.push_str(" PK");
+    } else if col.nullable == Some(false) {
+        meta.push_str(" !");
+    }
+    let row = Row::new(format!("{cols_id}/{}", col.name), depth, col.name.clone(), Kind::Column { name: col.name.clone() }).meta(meta, Meta::Plain);
+    if col.primary_key { row.icon_colored(Icon::Key, t.num) } else { row.blank_icon() }
+}
+
+/// The server's own databases, which the simple view leaves out (unless the connection opens
+/// on one).
+fn system_db(conn: &Connection, db: &str) -> bool {
+    use dataman_core::Engine;
+    db != conn.database()
+        && match conn.engine() {
+            Engine::MySql => matches!(db, "mysql" | "information_schema" | "performance_schema" | "sys"),
+            Engine::SqlServer => matches!(db, "master" | "model" | "msdb" | "tempdb"),
+            Engine::MongoDb => matches!(db, "admin" | "local" | "config"),
+            _ => false,
+        }
+}
+
+fn system_schema(s: &str) -> bool {
+    matches!(s, "pg_catalog" | "information_schema" | "INFORMATION_SCHEMA" | "sys") || s.starts_with("pg_toast") || s.starts_with("pg_temp")
+}
+
+fn system_coll(name: &str) -> bool {
+    name.starts_with("system.")
+}
+
+/// The schema whose tables sit right under the database in the simple view: the first of the
+/// search path that is there, else public / dbo / main, else the first that is not the system's.
+fn home_schema(cache: &dataman_core::schema::SchemaCache, db: &str, schemas: &[String]) -> Option<String> {
+    let user: Vec<&str> = schemas.iter().map(String::as_str).filter(|s| !system_schema(s)).collect();
+    let path = cache.search_path(db);
+    path.iter().map(String::as_str).chain(["public", "dbo", "main"]).find(|h| user.contains(h)).or(user.first().copied()).map(str::to_string)
+}
+
+/// The tables and views extensions created in the database (their `pg_class` oids).
+fn extension_owned(conn: &Connection, db: &str) -> HashSet<u32> {
+    conn.schema.cached_extensions(db).unwrap_or_default().iter().flat_map(|x| x.relations.iter().copied()).collect()
 }
 
 fn pin_row(c: &str, conn: &Connection, p: &Pin, depth: usize, open: bool) -> Row {
@@ -3233,6 +3558,23 @@ fn join2<A: 'static, B: 'static>(a: dataman_core::Task<A>, b: dataman_core::Task
     join_all(vec![unit(a), unit(b)])
 }
 
+/// What the simple view shows of a database: its schemas, its extensions (to leave out what
+/// they made), then the home schema's tables.
+fn simple_db(c: Arc<Connection>, db: String) -> Load {
+    Box::pin(async move {
+        if !c.caps().schemas {
+            return join_all(vec![unit(c.schemas(&db)), unit(c.relations(&db, &db))]).await;
+        }
+        let schemas = c.schemas(&db).await?;
+        // Without them nothing is left out: not a reason to fail the database.
+        let _ = c.extensions(&db).await;
+        match home_schema(&c.schema, &db, &schemas) {
+            Some(h) => c.relations(&db, &h).await.map(|_| ()),
+            None => Ok(()),
+        }
+    })
+}
+
 fn join_all(loads: Vec<Load>) -> Load {
     Box::pin(async move {
         let mut first = Ok(());
@@ -3247,9 +3589,34 @@ fn join_all(loads: Vec<Load>) -> Load {
 
 impl Render for SchemaTree {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let default = cx.try_global::<ExplorerDefault>().is_some_and(|d| d.0);
+        if default != self.default_seen {
+            self.default_seen = default;
+            self.set_advanced(default, cx);
+        }
         if self.version(cx) != self.seen_version {
             self.rebuild(cx);
         }
+        let now = Instant::now();
+        let frame = self.unfold_frame(now);
+        if let Some(u) = self.unfold.as_mut() {
+            let n = frame.map_or(0, |f| f.1);
+            // A load under it came in: on from where it is to the rows there now.
+            if u.opening && n != u.rows && n > 0 {
+                u.from = u.shown(u.rows as f32 * ROW_H, now);
+                u.at = now;
+                u.rows = n;
+            }
+            let parent = u.parent.to_string();
+            let under = format!("{parent}/");
+            let waiting = self.loading.iter().any(|l| *l == parent || l.starts_with(&under));
+            if u.progress(now) < 1. {
+                window.request_animation_frame();
+            } else if u.opening && (!waiting || frame.is_none()) {
+                self.unfold = None;
+            }
+        }
+        let frame = self.unfold_frame(now);
         match &self.folder_turn {
             Some((_, at, opening)) if crate::motion::folder_fill(*at, *opening).is_some() => window.request_animation_frame(),
             Some(_) => self.folder_turn = None,
@@ -3306,6 +3673,12 @@ impl Render for SchemaTree {
                     .tip(ui::tooltip("New folder", None, None))
                     .on_click(cx.listener(|t, _, window, cx| t.new_folder(vec![], window, cx))),
             )
+            .child({
+                let advanced = self.advanced;
+                ui::icon_button(&t, "x-view", if advanced { Icon::View } else { Icon::EyeOff }, 24., 14.)
+                    .tip(ui::tooltip(if advanced { "Show tables only" } else { "Show everything" }, None, None))
+                    .on_click(cx.listener(move |t, _, _, cx| t.set_advanced(!advanced, cx)))
+            })
             .child(
                 ui::icon_button(&t, "x-more", Icon::More, 24., 14.)
                     .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
@@ -3322,11 +3695,8 @@ impl Render for SchemaTree {
             .flex_row()
             .items_center()
             .gap(px(7.))
-            .relative()
             .bg(t.hov)
-            .border_1()
-            .border_color(if filter_focused { t.mark_b } else { t.field_b })
-            .when(filter_focused, |d| d.child(ui::halo_ring(t.mark)))
+            .map(|d| ui::field_frame(d, &t, filter_focused))
             .child(icon(Icon::Search).size(px(13.)).text_color(t.tx3))
             .child(div().flex_1().min_w_0().text_color(t.tx).child(self.filter.clone()))
             .children(filter_meta.map(|m| div().flex_none().text_size(px(10.5)).text_color(t.tx3).whitespace_nowrap().child(m)));
@@ -3362,7 +3732,12 @@ impl Render for SchemaTree {
                 "schema-tree",
                 self.rows.len(),
                 cx.processor(move |tree, range: std::ops::Range<usize>, _window, cx| {
-                    range.map(|ix| tree.render_row(ix, &theme, focused, cx).into_any_element()).collect()
+                    range
+                        .map(|ix| match frame {
+                            Some(f) if ix >= f.0 => tree.render_slot(ix, f, &theme, focused, cx),
+                            _ => tree.render_row(ix, &theme, focused, cx).into_any_element(),
+                        })
+                        .collect()
                 }),
             )
             .track_scroll(&self.scroll)

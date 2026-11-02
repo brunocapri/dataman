@@ -1009,6 +1009,9 @@ impl ProjectStore {
             g.problem = Some(format!("{} is not there", crate::config::tilde(&root.to_string_lossy())));
             return Ok(Synced::default());
         }
+        // One Dataman of this user syncs at a time: the file and the last agreed copy are both
+        // written by the same sync, whichever process ran it.
+        let _held = crate::stamp::hold(&self.dirs.project_base_file(&root));
         let path = file_in(&root);
         // Read and written only as the folder's own: a link would take the sync elsewhere.
         if let Some(link) = [root.join(DIR), path.clone()].into_iter().find(|p| std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink())) {
@@ -1035,8 +1038,17 @@ impl ProjectStore {
             return Ok(Synced::default());
         }
         g.problem = None;
+        // Another Dataman of this user may have synced since: the file as it agreed on it is no
+        // change of the project's, and the settings it changed here are read again (this
+        // process's watcher reads connections.toml again).
+        if theirs != g.base
+            && let Some(b) = self.read_base(&root).filter(|b| theirs.as_ref() == Some(b))
+        {
+            g.base = Some(b);
+        }
+        let reread = Synced { settings: st.settings.refresh(), ..Synced::default() };
         let mut local = Local::read(st);
-        let mut out = Synced::default();
+        let mut out = reread;
         if let Some(t) = theirs.as_ref().filter(|t| g.base.as_ref() != Some(*t)) {
             let changes = plan(&local, t, g.base.as_ref(), &root);
             if changes.needs_review() {
@@ -1047,10 +1059,11 @@ impl ProjectStore {
                     review.declined = !fresh && g.review.as_ref().is_some_and(|r| r.declined);
                     g.review = Some(review);
                     g.accepted = None;
-                    return Ok(Synced { review: fresh, ..Synced::default() });
+                    return Ok(Synced { review: fresh, ..reread });
                 }
             }
-            out = changes.write(st)?;
+            let wrote = changes.write(st)?;
+            out = Synced { settings: wrote.settings || reread.settings, ..wrote };
             changes.apply_to(&mut local);
         }
         (g.review, g.accepted) = (None, None);

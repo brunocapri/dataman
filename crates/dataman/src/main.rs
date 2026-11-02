@@ -23,6 +23,7 @@ mod bench;
 mod check;
 mod chrome;
 mod conn_dialog;
+mod conn_menu;
 #[cfg(feature = "checks")]
 mod conn_folders_check;
 mod conns;
@@ -537,6 +538,13 @@ fn main() {
         dataman_core::result::set_prefetch(prefs.prefetch_rows);
         motion::set_reduce_motion_pref(prefs.reduce_motion, cx);
         assets::set_logos(prefs.db_logos);
+        // The check stages were written for the full view; DATAMAN_EXPLORER=simple|advanced picks.
+        let advanced = match std::env::var("DATAMAN_EXPLORER").as_deref() {
+            Ok("simple") => false,
+            Ok("advanced") => true,
+            _ => prefs.explorer_advanced || (cfg!(feature = "checks") && std::env::var_os("DATAMAN_SHOT_STAGE").is_some()),
+        };
+        cx.set_global(tree::ExplorerDefault(advanced));
         cx.set_global(restore::Sessions(session_dir.clone().map(|d| Arc::new(dataman_core::session::SessionStore::new(d)))));
         keymap::set_overrides(keymap::clean(&core.settings.get().keys));
         keymap::bind_all(cx);

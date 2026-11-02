@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::agents_config::Change;
 use crate::approved::{self, Approved, Kept, SettingsRules};
 use crate::config::Dirs;
+use crate::stamp::FileStamp;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -105,9 +106,14 @@ pub struct Settings {
     pub prefetch_rows: usize,
     pub page_size: usize,
     pub confirm_commit: bool,
+    /// Every saved connection connects when a window opens (Settings › Connections).
+    pub auto_connect: bool,
     pub export_dir: Option<String>,
     pub reduce_motion: bool,
     pub db_logos: bool,
+    /// The explorer starts on every object (schemas, routines, extensions, roles, sizes), not
+    /// just each database's tables.
+    pub explorer_advanced: bool,
     pub keyword_case: crate::format::KeywordCase,
     pub indent: u8,
     /// ⌘S (and Save As…) formats the tab's text first.
@@ -220,9 +226,11 @@ impl Default for Settings {
             prefetch_rows: crate::result::PREFETCH,
             page_size: 1000,
             confirm_commit: true,
+            auto_connect: true,
             export_dir: None,
             reduce_motion: false,
             db_logos: true,
+            explorer_advanced: false,
             keyword_case: crate::format::KeywordCase::Upper,
             indent: 2,
             format_on_save: true,
@@ -258,6 +266,8 @@ struct State {
     /// The file's rules for agents and what they loosen, while held.
     held: Option<(SettingsRules, Vec<Change>)>,
     kept: Kept<SettingsRules>,
+    /// The file as last read or written here.
+    stamp: Option<FileStamp>,
 }
 
 impl SettingsStore {
@@ -269,39 +279,24 @@ impl SettingsStore {
     // A broken preferences file must never keep the app from starting.
     pub fn open_with(dirs: &Dirs, approved: Arc<Approved>) -> SettingsStore {
         let path = dirs.settings_file();
-        let mut settings = match std::fs::read_to_string(&path) {
-            Ok(text) => {
-                let mut s = toml::from_str::<Settings>(&text).unwrap_or_else(|e| {
-                    log::warn!("ignoring {}: {e}", path.display());
-                    Settings::default()
-                });
-                // The oldest files: `transparency = false` meant an opaque window.
-                if s.transparency.take() == Some(false) && !text.contains("translucency") {
-                    s.translucency = Translucency::Off;
-                }
-                s
-            }
-            Err(_) => Settings::default(),
+        let state = {
+            let _held = crate::stamp::hold(&path);
+            load(&path, &approved)
         };
-        let kept = approved.settings();
-        let mut held = None;
-        if kept.on() {
-            let file = SettingsRules::of(&settings);
-            let changes = approved::review_settings(kept.found(), &file);
-            if !changes.is_empty() {
-                kept.found().cloned().unwrap_or_else(|| SettingsRules::of(&Settings::default())).set(&mut settings);
-                held = Some((file, changes));
-            }
-        }
-        let mut state = State { settings, held, kept };
-        if matches!(state.kept, Kept::Missing) && state.held.is_none() {
-            let rules = SettingsRules::of(&state.settings);
-            match approved.set_settings(&rules) {
-                Ok(()) => state.kept = Kept::Found(rules),
-                Err(e) => log::warn!("the approved rules could not be saved: {e:#}"),
-            }
-        }
         SettingsStore { path, approved, current: Mutex::new(state) }
+    }
+
+    /// The file as another process (a second Dataman) left it, read again when it changed.
+    pub fn refresh(&self) -> bool {
+        let mut g = self.current.lock();
+        let _held = crate::stamp::hold(&self.path);
+        if FileStamp::of(&self.path) == g.stamp {
+            return false;
+        }
+        let next = load(&self.path, &self.approved);
+        let changed = (&next.settings, &next.held) != (&g.settings, &g.held);
+        *g = next;
+        changed
     }
 
     pub fn get(&self) -> Settings {
@@ -317,6 +312,7 @@ impl SettingsStore {
     /// had, still held.
     pub fn update(&self, f: impl FnOnce(&mut Settings)) -> Result<()> {
         let mut g = self.current.lock();
+        let _held = crate::stamp::hold(&self.path);
         let before = SettingsRules::of(&g.settings);
         let mut next = g.settings.clone();
         f(&mut next);
@@ -336,12 +332,15 @@ impl SettingsStore {
             Some(rules) => rules.set(&mut file),
             None => g.held = None,
         }
-        save(&self.path, &file)
+        save(&self.path, &file)?;
+        g.stamp = FileStamp::of(&self.path);
+        Ok(())
     }
 
     /// Applies what settings.toml loosens, as `reviewed` showed it.
     pub fn accept(&self, reviewed: &[Change]) -> Result<()> {
         let mut g = self.current.lock();
+        let _held = crate::stamp::hold(&self.path);
         let Some((rules, changes)) = g.held.clone() else { return Ok(()) };
         if changes != reviewed {
             anyhow::bail!("settings.toml changed since: review it again");
@@ -352,8 +351,49 @@ impl SettingsStore {
         self.approved.set_settings(&rules)?;
         rules.set(&mut g.settings);
         (g.kept, g.held) = (Kept::Found(rules), None);
-        save(&self.path, &g.settings)
+        save(&self.path, &g.settings)?;
+        g.stamp = FileStamp::of(&self.path);
+        Ok(())
     }
+}
+
+/// The file over the approved rules for agents: what it loosens is held. Read with the file's
+/// lock held, so the rules are those of the same write.
+fn load(path: &Path, approved: &Approved) -> State {
+    let stamp = FileStamp::of(path);
+    let mut settings = match std::fs::read_to_string(path) {
+        Ok(text) => {
+            let mut s = toml::from_str::<Settings>(&text).unwrap_or_else(|e| {
+                log::warn!("ignoring {}: {e}", path.display());
+                Settings::default()
+            });
+            // The oldest files: `transparency = false` meant an opaque window.
+            if s.transparency.take() == Some(false) && !text.contains("translucency") {
+                s.translucency = Translucency::Off;
+            }
+            s
+        }
+        Err(_) => Settings::default(),
+    };
+    let kept = approved.settings();
+    let mut held = None;
+    if kept.on() {
+        let file = SettingsRules::of(&settings);
+        let changes = approved::review_settings(kept.found(), &file);
+        if !changes.is_empty() {
+            kept.found().cloned().unwrap_or_else(|| SettingsRules::of(&Settings::default())).set(&mut settings);
+            held = Some((file, changes));
+        }
+    }
+    let mut state = State { settings, held, kept, stamp };
+    if matches!(state.kept, Kept::Missing) && state.held.is_none() {
+        let rules = SettingsRules::of(&state.settings);
+        match approved.set_settings(&rules) {
+            Ok(()) => state.kept = Kept::Found(rules),
+            Err(e) => log::warn!("the approved rules could not be saved: {e:#}"),
+        }
+    }
+    state
 }
 
 fn save(path: &Path, s: &Settings) -> Result<()> {
@@ -431,6 +471,7 @@ mod tests {
         assert!(!s.reduce_motion, "motion is on unless asked otherwise");
         assert_eq!(s.page_size, 1000);
         assert!(s.mcp_enabled);
+        assert!(s.auto_connect, "connections connect on their own unless turned off");
         std::fs::write(dirs.settings_file(), "mcp_confirm_writes = false\nmcp_write_row_limit = 5\n").unwrap();
         assert_eq!(SettingsStore::open(&dirs).get().theme, ThemePref::Dark, "old keys do not upset the rest");
         assert_eq!((s.update_check, s.update_feed.as_deref(), s.crash_report_url.as_deref()), (true, None, None));

@@ -44,7 +44,7 @@ impl ResultState {
         match self {
             ResultState::Idle => s("○", "NO RESULT", Role::Muted, ""),
             ResultState::Running => s("▶", "RUNNING", Role::Acc, "rows so far"),
-            ResultState::Paused => s("‖", "PAUSED", Role::Info, "rows"),
+            ResultState::Paused => s(crate::ui::PAUSE, "PAUSED", Role::Plain, "rows"),
             ResultState::Done => s("■", "DONE", Role::Ok, "rows"),
             ResultState::Affected => s("✓", "DONE", Role::Ok, "rows affected"),
             ResultState::Cancelling => s("◌", "CANCEL REQUESTED", Role::Warn, "rows kept"),
@@ -60,14 +60,14 @@ impl ResultState {
     }
 }
 
-pub fn role_colors(t: &Theme, r: Role) -> (Hsla, Hsla) {
+pub fn role_color(t: &Theme, r: Role) -> Hsla {
     match r {
-        Role::Muted => (t.tx3, t.hov),
-        Role::Plain => (t.tx2, t.hov),
-        Role::Acc => (t.acc, t.acc_s),
-        Role::Info => (t.info, t.info_s),
-        Role::Ok => (t.ok, t.ok_s),
-        Role::Warn => (t.warn, t.warn_s),
-        Role::Err => (t.err, t.err_s),
+        Role::Muted => t.tx3,
+        Role::Plain => t.tx2,
+        Role::Acc => t.acc,
+        Role::Info => t.info,
+        Role::Ok => t.ok,
+        Role::Warn => t.warn,
+        Role::Err => t.err,
     }
 }

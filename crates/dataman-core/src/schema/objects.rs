@@ -147,6 +147,8 @@ pub struct Extension {
     pub version: String,
     pub schema: Option<String>,
     pub default_version: Option<String>,
+    /// The tables and views it created (`pg_class` oids): the explorer's simple view hides them.
+    pub relations: Vec<u32>,
 }
 
 impl Extension {

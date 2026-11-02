@@ -39,7 +39,19 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     let modal = cx.update(|_, cx| ws.read(cx).demo_modal(cx)).unwrap_or_default();
     r.check("⌘, opens Settings on Appearance", open == Some("Appearance"), format!("{open:?} modal {modal:?}"));
 
+    let search_focused = |cx: &mut AsyncWindowContext| {
+        cx.update(|window, cx| ws.read(cx).settings_view.as_ref().map(|v| (v.read(cx).demo_search_focused(window, cx), v.focus_handle(cx).contains_focused(window, cx))))
+            .ok()
+            .flatten()
+    };
+    let at_open = search_focused(cx);
     click_probe("th-light", cx);
+    let after = search_focused(cx);
+    r.check(
+        "the search has the focus as Settings opens; a click on a row takes it (no caret left), the sheet keeps it",
+        at_open == Some((true, true)) && after == Some((false, true)),
+        format!("{at_open:?} → {after:?}"),
+    );
     let light = cx.update(|_, cx| !crate::theme::ActiveTheme::theme(cx).is_dark()).unwrap_or(false);
     click_probe("th-dark", cx);
     let dark = cx.update(|_, cx| crate::theme::ActiveTheme::theme(cx).is_dark()).unwrap_or(false);
@@ -78,6 +90,14 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     let hidden = !crate::assets::logos_on() && !settings(ws, cx).db_logos;
     click_probe("logos-on", cx);
     r.check("Database logos: Hide, then Show", hidden && crate::assets::logos_on(), hidden);
+
+    section("Connections", cx);
+    let was = settings(ws, cx).auto_connect;
+    click_probe("ac-off", cx);
+    let off = !settings(ws, cx).auto_connect;
+    click_probe("ac-on", cx);
+    r.check("Connections: Connect on start, on by default, off, then on again", was && off && settings(ws, cx).auto_connect, format!("{was} {off}"));
+    section("Appearance", cx);
 
     let format = |cx: &mut AsyncWindowContext| match active(ws, cx) {
         Some(tab) => {

@@ -142,7 +142,8 @@ impl AgentsPage {
         if self.type_sel.is_some_and(|k| k >= rows.len()) {
             self.type_sel = None;
         }
-        let list: Vec<AnyElement> = rows.iter().map(|r| self.type_row(t, r, cx)).collect();
+        let focused = self.focus.is_focused(window);
+        let list: Vec<AnyElement> = rows.iter().map(|r| self.type_row(t, r, focused, cx)).collect();
         let adding = self.editor.editing.is_none();
         let hov = t.hov;
         let add = div()
@@ -179,7 +180,7 @@ impl AgentsPage {
             .into_any_element()
     }
 
-    fn type_row(&self, t: &Theme, r: &TypeRow, cx: &mut Context<Self>) -> AnyElement {
+    fn type_row(&self, t: &Theme, r: &TypeRow, focused: bool, cx: &mut Context<Self>) -> AnyElement {
         let (flip_id, row_of, mask_id) = (r.id.clone(), r.id.clone(), SharedString::from(format!("agents-type-mask-{}", r.id)));
         let items: Vec<(SharedString, bool, Act)> = Mask::ALL.iter().map(|m| (m.label().into(), *m == r.mask, Act::TypeMask(r.id.clone(), *m))).collect();
         let open = mask_id.clone();
@@ -205,7 +206,7 @@ impl AgentsPage {
                 v.focus_list(window, cx);
                 v.select_type(&row_of, cx);
             }))
-            .when(sel, |d| d.bg(t.prs))
+            .when(sel, |d| d.bg(ui::sel_bg(t, focused)))
             .when(!sel, move |d| d.hover(move |s| s.bg(hov)))
             .px(px(8.))
             .mx(px(-8.))

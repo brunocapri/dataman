@@ -175,7 +175,7 @@ impl Render for FilterPopover {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme();
         let op = self.op;
-        let (hov, prs, acc_s) = (t.hov, t.prs, t.acc_s);
+        let (hov, prs) = (t.hov, t.prs);
         let ops = Op::ALL.into_iter().enumerate().map(|(i, o)| {
             let on = o == op;
             div()
@@ -185,7 +185,8 @@ impl Render for FilterPopover {
                 .flex()
                 .items_center()
                 .text_size(px(11.5))
-                .when(on, |d| d.bg(acc_s).text_color(t.tx).border_1().border_color(t.acc))
+                .map(|d| ui::selectable(d, &t, on, true))
+                .when(on, |d| d.text_color(t.tx))
                 .when(!on, |d| d.text_color(t.tx2).bg(hov).hover(move |s| s.bg(prs)))
                 .child(o.label())
                 .cursor_pointer()

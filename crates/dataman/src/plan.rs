@@ -371,7 +371,7 @@ impl PlanView {
             .flex_row()
             .items_center()
             .text_size(px(12.))
-            .when(sel, |d| d.bg(if focused { t.sel } else { t.hov }))
+            .map(|d| ui::selectable(d, &t, sel, focused))
             .when(!sel, |d| d.hover(move |s| s.bg(hov)))
             .cursor_pointer()
             .on_mouse_down(MouseButton::Left, cx.listener(move |v, ev: &MouseDownEvent, window, cx| {
@@ -803,7 +803,7 @@ impl crate::app::Workspace {
             (v.plan().cloned(), v.mode, v.has_flame())
         };
         let analyzed = plan.as_ref().is_some_and(|p| p.analyzed);
-        let (fg, bg) = crate::result_bar::role_colors(t, crate::result_bar::Role::Ok);
+        let fg = crate::result_bar::role_color(t, crate::result_bar::Role::Ok);
         let rolled_back = rs.as_ref().is_some_and(|r| r.rolled_back() && dataman_core::guard::classify(&r.sql).is_write());
         let mut metrics: Vec<(&str, String)> = Vec::new();
         if let Some(p) = &plan {
@@ -854,7 +854,7 @@ impl crate::app::Workspace {
                     .flex_row()
                     .items_center()
                     .gap(px(10.))
-                    .child(ui::pill("■", if analyzed { "ANALYZED" } else { "PLAN" }, fg, bg))
+                    .child(ui::status("■", if analyzed { "ANALYZED" } else { "PLAN" }, fg))
                     .when(nodes > 0, |d| {
                         d.child(
                             div()
