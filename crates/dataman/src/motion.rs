@@ -294,13 +294,6 @@ pub fn folder_fill(at: Instant, opening: bool) -> Option<f32> {
     (p < 1.).then(|| if opening { 1. - EASE.eval(p) } else { EASE.eval(p) })
 }
 
-/// The rail's selected icon swaps outline for fill with a crossfade, not the folders' flood.
-pub const ICON_FADE: Duration = Duration::from_millis(180);
-pub fn icon_fade(at: Instant, on: bool) -> Option<f32> {
-    let p = at.elapsed().as_secs_f32() / ICON_FADE.as_secs_f32();
-    (p < 1.).then(|| if on { EASE.eval(p) } else { 1. - EASE.eval(p) })
-}
-
 pub const FOLDER_SHUT: Duration = Duration::from_millis(150);
 /// The simple explorer's rows sliding out from under the node opened, and back.
 pub const TREE_UNFOLD: Duration = Duration::from_millis(240);
