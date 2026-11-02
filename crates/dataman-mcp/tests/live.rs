@@ -16,7 +16,7 @@ fn addr(var: &str, default: &str) -> (String, u16) {
 }
 
 fn up(host: &str, port: u16) -> bool {
-    std::net::TcpStream::connect_timeout(&format!("{host}:{port}").parse().unwrap(), Duration::from_secs(1)).is_ok()
+    std::net::TcpStream::connect_timeout(&format!("{host}:{port}").parse().unwrap(), Duration::from_secs(1)).is_ok_and(|s| s.local_addr().ok() != s.peer_addr().ok())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

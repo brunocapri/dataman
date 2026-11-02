@@ -22,7 +22,7 @@ fn pg() -> Option<(String, u16)> {
     let v = std::env::var("DATAMAN_PG").unwrap_or_else(|_| "127.0.0.1:55432".into());
     let (h, p) = v.rsplit_once(':')?;
     let p: u16 = p.parse().ok()?;
-    std::net::TcpStream::connect_timeout(&format!("{h}:{p}").parse().ok()?, Duration::from_secs(1)).ok()?;
+    std::net::TcpStream::connect_timeout(&format!("{h}:{p}").parse().ok()?, Duration::from_secs(1)).ok().filter(|s| s.local_addr().ok() != s.peer_addr().ok())?;
     Some((h.to_string(), p))
 }
 
