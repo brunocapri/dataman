@@ -564,7 +564,8 @@ mod tests {
         assert_eq!(p("/data/warehouse.DUCKDB"), Some((Engine::DuckDb, "/data/warehouse.DUCKDB".into(), false)));
         assert_eq!(p("Server=x;Database=foo.db").map(|t| t.0), Some(Engine::SqlServer));
         assert_eq!(p("postgres://h/foo.db").map(|t| t.0), Some(Engine::Postgres));
-        let (prof, _) = parse_profile("sqlite:///tmp/chinook.db").unwrap();
+        // On Windows `/tmp/chinook.db` is on the current drive (`windows_file_databases`).
+        let (prof, _) = parse_profile(if cfg!(windows) { "sqlite:///C:/tmp/chinook.db" } else { "sqlite:///tmp/chinook.db" }).unwrap();
         assert_eq!((prof.name.as_str(), prof.host.as_str(), prof.port, prof.user.as_str()), ("chinook", "", 0, ""));
         assert_eq!(parse_profile(&prof.url()).unwrap().0.path, prof.path);
     }

@@ -1,0 +1,6 @@
+# LF everywhere, Windows checkouts too: golden files are compared byte for byte.
+* text=auto eol=lf
+*.ico binary
+*.icns binary
+*.png binary
+*.ttf binary

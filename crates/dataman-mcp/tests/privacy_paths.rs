@@ -94,7 +94,7 @@ fn env(conns: &[Conn], settings: &str, tools: Option<&str>) -> Env {
 
 /// File database connections (SQLite, DuckDB): no server, the file is the target.
 fn file_conn(id: &str, engine: &str, path: &std::path::Path, extra: &str) -> String {
-    format!("[[connection]]\nid = \"{id}\"\nname = \"{id}\"\nengine = \"{engine}\"\npath = \"{}\"\nsslmode = \"disable\"\n{extra}\n", path.display())
+    format!("[[connection]]\nid = \"{id}\"\nname = \"{id}\"\nengine = \"{engine}\"\npath = '{}'\nsslmode = \"disable\"\n{extra}\n", path.display())
 }
 
 fn env_with(conns: &[Conn], files: &str, settings: &str, tools: Option<&str>) -> Env {

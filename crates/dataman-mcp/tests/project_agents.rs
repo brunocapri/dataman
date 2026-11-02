@@ -100,7 +100,7 @@ fn server_conn(id: &str, name: &str, extra: &str) -> String {
 }
 
 fn file_conn(id: &str, engine: &str, path: &Path, extra: &str) -> String {
-    format!("[[connection]]\nid = \"{id}\"\nname = \"{id}\"\nengine = \"{engine}\"\npath = \"{}\"\nsslmode = \"disable\"\n{extra}\n", path.display())
+    format!("[[connection]]\nid = \"{id}\"\nname = \"{id}\"\nengine = \"{engine}\"\npath = '{}'\nsslmode = \"disable\"\n{extra}\n", path.display())
 }
 
 /// `local` is connections.toml; `project` the open project's file (none: no project open).

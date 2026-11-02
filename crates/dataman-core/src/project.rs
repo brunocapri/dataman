@@ -270,11 +270,12 @@ impl Local {
     }
 }
 
-/// A file database inside the project is written relative to it, so it opens on every clone.
+/// A file database inside the project is written relative to it, with `/` between its parts,
+/// so it opens on every clone, on every system.
 fn to_project_path(path: &str, root: &Path) -> String {
     let full = crate::config::expand_home(path);
     match full.strip_prefix(root) {
-        Ok(rel) if !rel.as_os_str().is_empty() => rel.display().to_string(),
+        Ok(rel) if !rel.as_os_str().is_empty() => rel.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/"),
         _ => path.to_string(),
     }
 }
