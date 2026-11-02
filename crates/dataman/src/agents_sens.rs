@@ -29,10 +29,10 @@ const GRID_HEAD_H: f32 = 28.;
 /// The grid keeps its horizontal scrollbar's lane under the rows.
 const GRID_BAR: f32 = 10.;
 
-/// A value as the preview shows it: Redacted as dots, like the row's example.
+/// A value as the preview shows it: Redacted by its name, like the row's example.
 fn shown(how: Mask, v: &str) -> String {
     match how {
-        Mask::Hidden => "••••••••".into(),
+        Mask::Hidden => crate::agents_rules::REDACTED.into(),
         how => privacy::mask_value(how, v),
     }
 }

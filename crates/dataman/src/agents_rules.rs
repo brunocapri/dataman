@@ -384,6 +384,9 @@ fn select(t: &Theme, page: &AgentsPage, id: SharedString, label: &str, enabled: 
     div().relative().min_w(px(min)).when(fit == Fit::Fill, |d| d.flex_1()).when(fit != Fit::Fill, |d| d.flex_none()).child(page.anchor(id.clone())).child(crate::agents::select_box(t, id, label, enabled, open, arrow))
 }
 
+/// How Redacted reads in the page's examples.
+pub(crate) const REDACTED: &str = "‹redacted›";
+
 /// What an agent gets for a value of `field`: a made-up one of its kind, masked as `how` says.
 pub(crate) fn masked_example(field: &str, how: Mask) -> String {
     let f = field.to_ascii_lowercase();
@@ -396,8 +399,8 @@ pub(crate) fn masked_example(field: &str, how: Mask) -> String {
         _ => "x7Kq2Lm9Rt4242",
     };
     match how {
-        // Shown as dots, like Partial's: the agent gets ‹hidden› (the tip says so).
-        Mask::Hidden => "••••••••".into(),
+        // Named as the mask is: the agent gets ‹hidden› (the tip says so).
+        Mask::Hidden => REDACTED.into(),
         _ => privacy::mask_value(how, sample),
     }
 }
