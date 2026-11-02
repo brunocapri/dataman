@@ -56,7 +56,7 @@ pub fn admin(engine: Engine, id: &str) -> (ConnectionProfile, String) {
 }
 
 fn up(p: &ConnectionProfile) -> bool {
-    std::net::TcpStream::connect_timeout(&format!("{}:{}", p.host, p.port).parse().unwrap(), Duration::from_secs(1)).is_ok()
+    std::net::TcpStream::connect_timeout(&format!("{}:{}", p.host, p.port).parse().unwrap(), Duration::from_secs(1)).is_ok_and(|s| s.local_addr().ok() != s.peer_addr().ok())
 }
 
 fn connect(e: &Env, p: &ConnectionProfile, password: &str) -> Result<Arc<Connection>, String> {

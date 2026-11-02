@@ -27,7 +27,7 @@ fn addr(var: &str, default: &str) -> (String, u16) {
 
 fn up((var, default): (&str, &str)) -> bool {
     let (h, p) = addr(var, default);
-    let ok = std::net::TcpStream::connect_timeout(&format!("{h}:{p}").parse().unwrap(), Duration::from_secs(1)).is_ok();
+    let ok = std::net::TcpStream::connect_timeout(&format!("{h}:{p}").parse().unwrap(), Duration::from_secs(1)).is_ok_and(|s| s.local_addr().ok() != s.peer_addr().ok());
     if !ok {
         eprintln!("skipping: nothing at {h}:{p} ({var})");
     }

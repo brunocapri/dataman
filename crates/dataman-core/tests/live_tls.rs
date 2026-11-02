@@ -18,7 +18,7 @@ fn answers(addr: &str) -> Option<(String, u16)> {
     let (h, p) = addr.rsplit_once(':')?;
     let port: u16 = p.parse().ok()?;
     let sa = format!("{}:{port}", if h == "localhost" { "127.0.0.1" } else { h });
-    if TcpStream::connect_timeout(&sa.parse().ok()?, Duration::from_secs(1)).is_err() {
+    if !TcpStream::connect_timeout(&sa.parse().ok()?, Duration::from_secs(1)).is_ok_and(|s| s.local_addr().ok() != s.peer_addr().ok()) {
         eprintln!("skipping: nothing at {addr}");
         return None;
     }
