@@ -520,7 +520,11 @@ impl ConnectionProfile {
         if self.engine.is_file() {
             let path = self.file_path();
             let path = if path.is_absolute() { path } else { std::env::current_dir().map(|d| d.join(&path)).unwrap_or(path) };
-            let enc: String = path.to_string_lossy().split('/').map(percent_encode).collect::<Vec<_>>().join("/");
+            let path = path.to_string_lossy();
+            // `C:\a\b.db` → `/C:/a/b.db`: a URL's path, as `connstr` reads it back.
+            #[cfg(windows)]
+            let path = format!("/{}", path.strip_prefix(r"\\?\").unwrap_or(&path).replace('\\', "/"));
+            let enc: String = path.split('/').map(percent_encode).collect::<Vec<_>>().join("/");
             let ro = if self.read_only { "?mode=ro" } else { "" };
             return format!("{}://{enc}{ro}", self.engine.slug());
         }
@@ -1461,8 +1465,11 @@ mod tests {
         assert_eq!(Engine::parse("duck"), Some(Engine::DuckDb));
         let mut p = ConnectionProfile::new_file(Engine::DuckDb, "/data/my db.duckdb");
         assert_eq!(p.name, "my db");
+        // On Windows `/data` is on the current drive (connstr's tests have the drive's URLs).
+        #[cfg(unix)]
         assert_eq!(p.url(), "duckdb:///data/my%20db.duckdb");
         p.read_only = true;
+        #[cfg(unix)]
         assert_eq!(p.url(), "duckdb:///data/my%20db.duckdb?mode=ro");
         assert_eq!(p.summary(), "/data/my db.duckdb");
         let home = crate::os::home().unwrap().display().to_string();

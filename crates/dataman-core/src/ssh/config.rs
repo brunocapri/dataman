@@ -61,7 +61,7 @@ impl Jump {
 
 fn expand(s: &str, home: &Path, local_user: &str, remote_user: &str, host: &str, port: u16) -> String {
     let home_s = home.to_string_lossy();
-    let s = match s.strip_prefix("~/") {
+    let s = match s.strip_prefix("~/").or_else(|| s.strip_prefix("~\\").filter(|_| cfg!(windows))) {
         Some(rest) => format!("{home_s}/{rest}"),
         None if s == "~" => home_s.to_string(),
         None => s.to_string(),
@@ -235,7 +235,7 @@ pub(crate) fn wildcard(pat: &str, s: &str) -> bool {
 }
 
 fn include_files(pat: &str, ssh_dir: &Path) -> Vec<PathBuf> {
-    let expanded = match (pat.strip_prefix("~/"), home()) {
+    let expanded = match (pat.strip_prefix("~/").or_else(|| pat.strip_prefix("~\\").filter(|_| cfg!(windows))), home()) {
         (Some(rest), Some(h)) => h.join(rest),
         _ => PathBuf::from(pat),
     };

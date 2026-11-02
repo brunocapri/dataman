@@ -318,7 +318,7 @@ pub fn file_outside(path: &str, root: &Path) -> bool {
 
 fn from_project_path(path: &str, root: &Path) -> String {
     let p = path.trim();
-    if p.starts_with('/') || p.starts_with('~') || p.is_empty() {
+    if p.starts_with('/') || p.starts_with('~') || p.is_empty() || Path::new(p).is_absolute() {
         return path.to_string();
     }
     crate::config::tilde(&root.join(p).to_string_lossy())

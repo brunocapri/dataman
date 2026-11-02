@@ -55,7 +55,8 @@ Source: "{#SourceDir}\LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
 Name: "{autoprograms}\Dataman"; Filename: "{app}\dataman.exe"; AppUserModelID: "dev.dataman.Dataman"
 Name: "{autodesktop}\Dataman"; Filename: "{app}\dataman.exe"; Tasks: desktopicon
 
-; "Open with" Dataman for its files; never made the default program.
+; "Open with" Dataman for its files (the extensions of the Linux .desktop's MIME types and
+; Engine::file_extensions); never made the default program.
 [Registry]
 Root: HKA; Subkey: "Software\Classes\Dataman.File"; ValueType: string; ValueName: ""; ValueData: "Dataman file"; Flags: uninsdeletekey
 Root: HKA; Subkey: "Software\Classes\Dataman.File\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\dataman.exe,0"
@@ -65,6 +66,8 @@ Root: HKA; Subkey: "Software\Classes\.sqlite\OpenWithProgids"; ValueType: string
 Root: HKA; Subkey: "Software\Classes\.sqlite3\OpenWithProgids"; ValueType: string; ValueName: "Dataman.File"; ValueData: ""; Flags: uninsdeletevalue
 Root: HKA; Subkey: "Software\Classes\.db\OpenWithProgids"; ValueType: string; ValueName: "Dataman.File"; ValueData: ""; Flags: uninsdeletevalue
 Root: HKA; Subkey: "Software\Classes\.duckdb\OpenWithProgids"; ValueType: string; ValueName: "Dataman.File"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.ddb\OpenWithProgids"; ValueType: string; ValueName: "Dataman.File"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.db3\OpenWithProgids"; ValueType: string; ValueName: "Dataman.File"; ValueData: ""; Flags: uninsdeletevalue
 
 [Run]
 Filename: "{app}\dataman.exe"; Description: "{cm:LaunchProgram,Dataman}"; Flags: nowait postinstall skipifsilent

@@ -5,7 +5,10 @@
 //! through `ditto`, which keeps signatures and attributes.
 //!
 //! The feed's top-level download is the macOS one (the only one older Macs read); `assets`
-//! holds every platform's, keyed `<os>-<arch>` (`macos-aarch64`, `linux-x86_64`).
+//! holds every platform's, keyed `<os>-<arch>` (`macos-aarch64`, `linux-x86_64`,
+//! `windows-x86_64`: the installer, `xtask feed --asset windows-x86_64 <setup.exe> <url>`).
+//! Windows reads its own asset only and has no self-update yet: a newer one is announced, and
+//! installing it is left to its installer.
 
 use std::collections::BTreeMap;
 #[cfg(unix)]
@@ -581,7 +584,12 @@ mod tests {
         let linux = f.clone().for_platform("linux-x86_64").unwrap();
         assert_eq!((linux.url.as_str(), linux.size, linux.ed25519.as_str(), linux.version.as_str()), ("https://x/Dataman-x86_64.AppImage", 20, "l", "0.4.0"));
         assert_eq!(f.clone().for_platform("linux-aarch64"), None);
-        assert_eq!(f.clone().for_platform("windows-x86_64"), None, "never the Mac's download on Windows");
+        assert_eq!(f.clone().for_platform("windows-x86_64"), None, "never the Mac's or Linux's download on Windows");
+        let with_windows = r#"{"version":"0.4.0","assets":{"linux-x86_64":{"url":"https://x/a.AppImage","size":3,"ed25519":"s"},
+            "windows-x86_64":{"url":"https://x/Dataman-0.4.0-windows-x86_64-setup.exe","size":4,"ed25519":"w"}}}"#;
+        let w: Feed = serde_json::from_str(with_windows).unwrap();
+        assert_eq!(w.clone().for_platform("windows-x86_64").map(|f| f.url), Some("https://x/Dataman-0.4.0-windows-x86_64-setup.exe".into()));
+        assert_eq!(w.for_platform("windows-aarch64"), None);
         assert_eq!(f.for_platform("macos-aarch64").map(|f| f.size), Some(10));
         let linux_only = r#"{"version":"0.4.0","assets":{"linux-aarch64":{"url":"https://x/a.AppImage","size":3,"ed25519":"s"}}}"#;
         let f: Feed = serde_json::from_str(linux_only).unwrap();

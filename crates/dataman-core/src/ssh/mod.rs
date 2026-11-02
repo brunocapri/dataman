@@ -150,7 +150,7 @@ fn default_keys(home: &Path) -> Vec<PathBuf> {
 }
 
 fn expand_tilde(s: &str, home: &Path) -> PathBuf {
-    match s.strip_prefix("~/") {
+    match s.strip_prefix("~/").or_else(|| s.strip_prefix("~\\").filter(|_| cfg!(windows))) {
         Some(rest) => home.join(rest),
         None => PathBuf::from(s),
     }
@@ -248,7 +248,7 @@ impl client::Handler for Client {
 
 fn tilde(p: &Path) -> String {
     match config::home().and_then(|h| p.strip_prefix(h).ok().map(Path::to_path_buf)) {
-        Some(rest) => format!("~/{}", rest.display()),
+        Some(rest) => format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display()),
         None => p.display().to_string(),
     }
 }
