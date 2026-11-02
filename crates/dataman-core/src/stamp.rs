@@ -23,6 +23,13 @@ impl FileStamp {
         let (ino, changed) = (0, (0, 0));
         Some(FileStamp { modified: m.modified().ok(), len: m.len(), ino, changed })
     }
+
+    /// Written over a second ago. A write in place within the same clock tick, the same length,
+    /// leaves the stamp as it was: a stamp still fresh is no proof, so its file is read again
+    /// (git's "racily clean").
+    pub fn settled(&self) -> bool {
+        self.modified.and_then(|m| m.elapsed().ok()).is_some_and(|d| d >= std::time::Duration::from_secs(1))
+    }
 }
 
 #[cfg(test)]
@@ -41,5 +48,6 @@ mod tests {
         std::fs::write(&tmp, "b").unwrap();
         std::fs::rename(&tmp, &p).unwrap();
         assert_ne!(FileStamp::of(&p), Some(a), "same length, maybe the same mtime: the inode differs");
+        assert!(!FileStamp::of(&p).unwrap().settled(), "just written");
     }
 }
