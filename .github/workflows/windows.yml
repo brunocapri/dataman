@@ -124,10 +124,9 @@ jobs:
           cargo run --release -p xtask -- e2e --no-compose --only sqlite-check,duckdb-check,project-check,outside-check
           if ($LASTEXITCODE -ne 0) { exit 1 }
       # The runner's own PostgreSQL in place of the compose container: the stages that need
-      # nothing else. Not blocking yet: their results are a report.
-      - name: End-to-end on PostgreSQL (report)
+      # nothing else.
+      - name: End-to-end on PostgreSQL
         if: matrix.arch == 'x86_64' && !cancelled()
-        continue-on-error: true
         run: |
           $svc = Get-Service -Name "postgresql*" | Select-Object -First 1
           Set-Service $svc.Name -StartupType Manual
