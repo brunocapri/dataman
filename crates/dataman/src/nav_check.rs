@@ -56,9 +56,11 @@ fn spot(grid: &Entity<ResultGrid>, cx: &mut AsyncWindowContext) -> String {
 }
 
 /// chrome.rs: the explorer toggle 14 pt after the lights, 26 wide, then 4 pt and two 20 pt arrows.
-fn arrow(forward: bool, cx: &mut AsyncWindowContext) -> Point<Pixels> {
-    let lights = cx.update(|window, cx| crate::csd::lead(window, cx)).unwrap_or(0.);
-    point(px(lights + if forward { 74. } else { 54. }), px(metrics::TITLE_H / 2.))
+/// The arrow's middle where the title bar laid it out: its place there depends on the window
+/// buttons, the explorer's side and the zoom.
+fn arrow(ws: &Entity<Workspace>, forward: bool, cx: &mut AsyncWindowContext) -> Point<Pixels> {
+    let b = cx.update(|_, cx| ws.read(cx).title_marks.borrow().get(if forward { "forward" } else { "back" }).copied()).ok().flatten();
+    b.map_or(point(px(-1.), px(-1.)), |b| b.center())
 }
 
 pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
@@ -136,16 +138,18 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     side_button(cx, point(px(600.), px(metrics::TITLE_H / 2.)), NavigationDirection::Forward);
     report("the forward button goes forward", active(ws, cx) == dst, String::new());
 
-    let p = arrow(false, cx);
+    let lights = cx.update(|window, cx| crate::csd::lead(window, cx)).unwrap_or(0.);
+    println!("check: ‹ at {:?}, › at {:?}; window buttons' lead {lights}", arrow(ws, false, cx), arrow(ws, true, cx));
+    let p = arrow(ws, false, cx);
     click(cx, p, MouseButton::Left, Modifiers::default());
     report("the ‹ arrow goes back", active(ws, cx) == src, String::new());
-    let p = arrow(false, cx);
+    let p = arrow(ws, false, cx);
     click(cx, p, MouseButton::Left, Modifiers::default());
     report("the dimmed ‹ does nothing", active(ws, cx) == src, String::new());
-    let p = arrow(true, cx);
+    let p = arrow(ws, true, cx);
     click(cx, p, MouseButton::Left, Modifiers::default());
     report("the › arrow goes forward", active(ws, cx) == dst, String::new());
-    let p = arrow(false, cx);
+    let p = arrow(ws, false, cx);
     click(cx, p, MouseButton::Left, Modifiers::default());
 
     key(cx, "cmd-t");
