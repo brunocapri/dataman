@@ -81,7 +81,7 @@ impl Render for Prompt {
                     cx.emit(PromptResponse(0));
                 }
             }))
-            .child(ui::esc_closes::<()>(None, cx.listener(move |_, _, _, cx| cx.emit(PromptResponse(cancel)))))
+            .child(ui::esc_closes(None, cx.listener(move |_, _: &(), _, cx| cx.emit(PromptResponse(cancel)))))
             .flex()
             .items_center()
             .justify_center()
