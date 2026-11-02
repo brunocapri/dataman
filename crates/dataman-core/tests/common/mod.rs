@@ -143,7 +143,19 @@ pub fn query(e: &Env, c: &Arc<Connection>, sql: &str) -> Arc<dataman_core::Resul
     rs
 }
 
+#[cfg(unix)]
 pub fn rss_kb() -> u64 {
     let out = std::process::Command::new("ps").args(["-o", "rss=", "-p", &std::process::id().to_string()]).output().unwrap();
     String::from_utf8_lossy(&out.stdout).trim().parse().unwrap_or(0)
+}
+
+/// Windows has no `ps`: the working set, its resident memory.
+#[cfg(windows)]
+pub fn rss_kb() -> u64 {
+    use windows_sys::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+    let mut c: PROCESS_MEMORY_COUNTERS = unsafe { std::mem::zeroed() };
+    c.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+    assert!(unsafe { GetProcessMemoryInfo(GetCurrentProcess(), &mut c, c.cb) } != 0, "{}", std::io::Error::last_os_error());
+    c.WorkingSetSize as u64 / 1024
 }

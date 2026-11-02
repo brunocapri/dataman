@@ -364,7 +364,7 @@ fn stdio_favorites_and_create_connection() {
     let (err, text) = m.tool("list_favorites", json!({}));
     assert!(!err && !text.contains("customers"), "{text}");
     let (err, text) = m.tool("import_favorites", json!({"paths": [files.path().join("folder.sql").display().to_string()]}));
-    assert!(err && (text.contains("No such file") || text.contains("cannot find the file")), "{text}");
+    assert!(err && text.contains("folder.sql\" does not exist"), "{text}");
 
     let (err, text) = m.tool("create_connection", json!({"name": "new1", "host": "db.internal", "user": "bob", "password": "s3cret"}));
     assert!(!err, "{text}");
