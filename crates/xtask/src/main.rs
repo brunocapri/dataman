@@ -96,8 +96,11 @@ fn keygen(force: bool) -> Result<()> {
     let kp = Ed25519KeyPair::from_pkcs8(doc.as_ref()).map_err(|_| anyhow!("bad key"))?;
     {
         use std::io::Write as _;
-        use std::os::unix::fs::OpenOptionsExt as _;
-        let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&path)?;
+        let mut o = std::fs::OpenOptions::new();
+        o.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
+        let mut f = o.open(&path)?;
         writeln!(f, "{}", data_encoding::BASE64.encode(doc.as_ref()))?;
     }
     eprintln!("private key: {} (0600; back it up, never commit it)", path.display());

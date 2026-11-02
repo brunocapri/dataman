@@ -1,0 +1,102 @@
+name: Windows
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: "1.99.0"
+  # The zed checkout (GPUI) has paths longer than MAX_PATH.
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+
+jobs:
+  windows:
+    name: windows (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, arch: x86_64, experimental: false }
+          # Not blocking: the ARM runner is newer and slower to get.
+          - { os: windows-11-arm, arch: aarch64, experimental: true }
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.experimental }}
+    timeout-minutes: 150
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - run: git config --global core.longpaths true
+      - uses: actions/checkout@v4
+      - name: Rust ${{ env.RUST_TOOLCHAIN }}
+        run: |
+          rustup toolchain install $env:RUST_TOOLCHAIN --profile minimal
+          rustup default $env:RUST_TOOLCHAIN
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.arch }}
+      - name: Check (no new warnings)
+        shell: bash
+        run: |
+          cargo check --release --workspace --all-targets --features dataman/checks 2>&1 | tee check.log
+          test "${PIPESTATUS[0]}" -eq 0
+          # The two `unused Result` warnings in the live sweeps are known; anything else fails.
+          known="unused \`Result\`"
+          n=$(grep -c "^warning: $known" check.log || true)
+          others=$(grep '^warning' check.log | grep -v "$known\\|generated [0-9]* warning\\|future version of Rust" || true)
+          [ -z "$others" ] || { echo "$others"; exit 1; }
+          [ "$n" -le 2 ]
+      - name: Tests, the Credential Manager's too
+        run: |
+          cargo test --release --workspace
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          cargo test --release -p dataman-core --test keychain -- --ignored
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+      - name: Package (.zip and installer)
+        run: scripts\windows\package.ps1
+      - name: The app starts and draws
+        run: scripts\windows\smoke.ps1
+      - name: The installer installs, the installed app starts
+        run: |
+          $setup = (Get-ChildItem dist\windows\*-setup.exe).FullName
+          $dir = Join-Path $env:RUNNER_TEMP "Dataman"
+          Start-Process -Wait -FilePath $setup -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER", "/DIR=$dir"
+          Get-ChildItem $dir
+          & "$dir\dataman-mcp.exe" --version
+          scripts\windows\smoke.ps1 -Exe "$dir\dataman.exe"
+          Start-Process -Wait -FilePath "$dir\unins000.exe" -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES"
+          if (Test-Path "$dir\dataman.exe") { throw "the uninstaller left dataman.exe" }
+      - name: MCP over stdio
+        run: scripts\windows\mcp-smoke.ps1
+      - name: End-to-end (the stages without a database server)
+        run: |
+          cargo run --release -p xtask -- e2e --no-compose --only sqlite-check,duckdb-check,project-check,outside-check
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screenshots-${{ matrix.arch }}
+          path: dist/windows/screenshots/
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-${{ matrix.arch }}
+          path: target/e2e/
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dataman-windows-${{ matrix.arch }}
+          path: |
+            dist/windows/*.zip
+            dist/windows/*-setup.exe

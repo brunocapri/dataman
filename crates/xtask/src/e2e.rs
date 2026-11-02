@@ -184,7 +184,7 @@ pub fn run(args: &[String]) -> Result<()> {
             bail!("the build failed");
         }
     }
-    let app = root.join("target/release/dataman");
+    let app = root.join(format!("target/release/dataman{}", std::env::consts::EXE_SUFFIX));
     if !app.exists() {
         bail!("{} is missing (drop --no-build)", app.display());
     }
@@ -365,13 +365,13 @@ fn reset(root: &Path, needs: &BTreeSet<Db>) -> Result<()> {
 /// libpq's files for the import checks, so a stage never reads the user's own (~/.pgpass, the
 /// service files): one service and the pgpass line with its password.
 fn fixtures(root: &Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt as _;
     let dir = root.join("target/e2e/libpq");
     std::fs::create_dir_all(&dir)?;
     std::fs::write(dir.join("pg_service.conf"), format!("[e2e-service]\nhost=127.0.0.1\nport={}\ndbname=dataman_bench\nuser=postgres\n", Pg.port()))?;
     let pgpass = dir.join("pgpass");
     std::fs::write(&pgpass, format!("127.0.0.1:{}:*:postgres:{}\n", Pg.port(), password(Pg)))?;
-    std::fs::set_permissions(&pgpass, std::fs::Permissions::from_mode(0o600))?;
+    #[cfg(unix)]
+    std::fs::set_permissions(&pgpass, <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600))?;
     Ok(())
 }
 
