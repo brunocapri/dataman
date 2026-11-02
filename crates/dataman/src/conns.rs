@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use gpui::{Context, EventEmitter};
@@ -13,6 +13,8 @@ pub enum ConnState {
 
 pub enum ConnEvent {
     Connected(String),
+    /// Connected on its own (Settings › Connections), not picked: nothing moves to it.
+    Arrived(String),
     Failed { id: String, needs_password: bool, ssh: Option<SshError> },
 }
 
@@ -22,6 +24,9 @@ pub struct ConnStore {
     /// The explorer's folders (none: the explorer as it always was).
     pub folders: Vec<ConnFolder>,
     pub states: HashMap<String, ConnState>,
+    /// Connecting on their own: a failure only shows where the connection is listed, never as a
+    /// dialog (a password, an SSH host key), until it is picked.
+    quiet: HashSet<String>,
 }
 
 impl EventEmitter<ConnEvent> for ConnStore {}
@@ -30,7 +35,7 @@ impl ConnStore {
     pub fn new(core: Arc<Core>) -> Self {
         let profiles = core.config.connections();
         let folders = core.config.folders();
-        ConnStore { core, profiles, folders, states: HashMap::new() }
+        ConnStore { core, profiles, folders, states: HashMap::new(), quiet: HashSet::new() }
     }
 
     /// The folders changed in one write; Err said as is.
@@ -88,6 +93,8 @@ impl ConnStore {
     pub fn connect(&mut self, id: &str, password: Option<String>, cx: &mut Context<Self>) {
         let Some(profile) = self.profile(id).cloned() else { return };
         if matches!(self.states.get(id), Some(ConnState::Connecting | ConnState::Connected(_))) {
+            // Picked while it connects on its own: it arrives as picked.
+            self.quiet.remove(id);
             return;
         }
         self.states.insert(id.to_string(), ConnState::Connecting);
@@ -103,7 +110,11 @@ impl ConnStore {
                         // (Dropping the task handle does not stop the work.)
                         let _ = c.preload(&db);
                         s.states.insert(id.clone(), ConnState::Connected(c));
-                        cx.emit(ConnEvent::Connected(id));
+                        if s.quiet.remove(&id) {
+                            cx.emit(ConnEvent::Arrived(id));
+                        } else {
+                            cx.emit(ConnEvent::Connected(id));
+                        }
                     }
                     Err(e) => {
                         let ssh = crate::conn_dialog::ssh_error(&e);
@@ -114,13 +125,33 @@ impl ConnStore {
                         let needs_password = ssh.is_none() && (msg.contains("password") || msg.contains("28P01"));
                         let ssh = ssh.filter(|s| matches!(s, SshError::UnknownHostKey(_) | SshError::SecretNeeded { .. }));
                         s.states.insert(id.clone(), ConnState::Failed(msg));
-                        cx.emit(ConnEvent::Failed { id, needs_password, ssh });
+                        if !s.quiet.remove(&id) {
+                            cx.emit(ConnEvent::Failed { id, needs_password, ssh });
+                        }
                     }
                 }
                 cx.notify();
             });
         })
         .detach();
+    }
+
+    /// Settings › Connections: every saved connection not connected yet connects, quietly. A
+    /// DuckDB file is left alone: open, it is locked for every other program.
+    pub fn connect_all(&mut self, cx: &mut Context<Self>) {
+        let all: Vec<String> = self.profiles.iter().map(|p| p.id.clone()).collect();
+        self.connect_quietly(&all, cx);
+    }
+
+    pub fn connect_quietly(&mut self, ids: &[String], cx: &mut Context<Self>) {
+        if !auto_connect(&self.core) {
+            return;
+        }
+        let ids: Vec<String> = self.profiles.iter().filter(|p| ids.contains(&p.id) && p.engine != dataman_core::Engine::DuckDb && !self.states.contains_key(&p.id)).map(|p| p.id.clone()).collect();
+        for id in ids {
+            self.quiet.insert(id.clone());
+            self.connect(&id, None, cx);
+        }
     }
 
     pub fn disconnect(&mut self, id: &str, cx: &mut Context<Self>) {
@@ -202,6 +233,11 @@ impl crate::app::Workspace {
         }
         let was_empty = old.is_empty();
         self.store.update(cx, |s, cx| s.reload(cx));
+        // Saved elsewhere (another Dataman, an agent, the project): connected as the others were.
+        let added: Vec<String> = new.iter().filter(|n| !old.iter().any(|o| o.id == n.id)).map(|n| n.id.clone()).collect();
+        if !added.is_empty() {
+            self.store.update(cx, |s, cx| s.connect_quietly(&added, cx));
+        }
         for p in &old {
             let change = edited(p, new.iter().find(|n| n.id == p.id));
             let state = self.store.read(cx).states.get(&p.id).cloned();
@@ -242,6 +278,11 @@ impl crate::app::Workspace {
         }
         cx.notify();
     }
+}
+
+/// Settings › Connections. The check stages set up their connections themselves.
+pub fn auto_connect(core: &Core) -> bool {
+    !(cfg!(feature = "checks") && std::env::var_os("DATAMAN_SHOT_STAGE").is_some()) && core.settings.get().auto_connect
 }
 
 /// `profiles` as the explorer groups them: each folder with its own (in `profiles`' order), then

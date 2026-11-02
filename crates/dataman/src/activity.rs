@@ -1056,10 +1056,7 @@ impl ActivityView {
                         .flex_row()
                         .items_center()
                         .gap(px(7.))
-                        .relative()
-                        .border_1()
-                        .border_color(if focused { t.acc } else { t.field_b })
-                        .when(focused, |d| d.child(crate::ui::halo_ring(t.acc_s)))
+                        .map(|d| ui::field_frame(d, t, focused))
                         .child(icon(Icon::Search).size(px(13.)).text_color(t.tx3))
                         .child(div().flex_1().min_w_0().text_color(t.tx).child(self.filter.clone())),
                 )
@@ -1098,7 +1095,7 @@ impl ActivityView {
             )
     }
 
-    fn render_locks(&self, t: &Theme, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn render_locks(&self, t: &Theme, focused: bool, cx: &mut Context<Self>) -> gpui::AnyElement {
         if self.tree.is_empty() {
             return div().size_full().flex().items_center().justify_center().child(ui::empty_state(t, "[ NO WAITS ]", 15., None)).into_any_element();
         }
@@ -1173,7 +1170,7 @@ impl ActivityView {
                 .flex_row()
                 .items_center()
                 .text_size(px(12.))
-                .when(sel, |d| d.bg(t.sel))
+                .map(|d| ui::selectable(d, t, sel, focused))
                 .when(!sel, |d| d.hover(move |s| s.bg(hov)))
                 .cursor_pointer()
                 .on_click(cx.listener(move |m, ev: &ClickEvent, window, cx| {
@@ -1382,7 +1379,7 @@ impl Render for ActivityView {
         } else {
             match self.section {
                 Section::Sessions => self.sessions_grid.clone().into_any_element(),
-                Section::Locks => self.render_locks(&t, cx),
+                Section::Locks => self.render_locks(&t, self.locks_focus.is_focused(window), cx),
                 Section::Tables => self.tables_grid.clone().into_any_element(),
                 Section::Statements => match self.statements.clone() {
                     Some(Statements::Rows(_)) => self.statements_grid.clone().into_any_element(),

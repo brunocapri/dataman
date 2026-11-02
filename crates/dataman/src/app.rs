@@ -119,6 +119,9 @@ pub const SHEET_CONTEXT: &str = "TxSheet";
 /// Off while a modal has the keys, so ⌘W, ⌘T… cannot act behind it.
 pub const WORKSPACE_KEYS: &str = "Workspace && !Modal";
 
+/// How far past the editor's minimum the divider is pulled before the result zooms.
+const ZOOM_PULL: f32 = metrics::EDITOR_MIN / 2.;
+
 pub fn bind_keys(cx: &mut App) {
     let w = Some(WORKSPACE_KEYS);
     cx.bind_keys([
@@ -216,7 +219,8 @@ pub(crate) fn tabs_holding<K: PartialEq + Copy>(tabs: &[(K, Option<&str>, bool)]
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum Drag {
     Dock(dataman_core::layout::Dock, usize),
-    Split,
+    /// The editor/result divider of this tab's pane.
+    Split(EntityId),
     Groups,
 }
 
@@ -620,6 +624,7 @@ impl Workspace {
         if !w.restore_session(window, cx) {
             w.new_tab(window, cx);
         }
+        w.store.update(cx, |s, cx| s.connect_all(cx));
         w.nav.history.clear();
         w.session_fp = w.session_fingerprint(cx);
         if w.first_run(cx) {
@@ -1651,6 +1656,7 @@ impl Workspace {
                 }
             }
             crate::settings_view::SettingsEvent::ProjectSynced(synced) => w.project_synced(*synced, window, cx),
+            crate::settings_view::SettingsEvent::AutoConnect => w.store.update(cx, |s, cx| s.connect_all(cx)),
         })
         .detach();
         self.settings_view = Some(v);
@@ -1705,6 +1711,19 @@ impl Workspace {
                 self.tree.update(cx, |t, cx| {
                     t.expand_id(&cid, cx);
                 });
+            }
+            // Only a tab waiting for it takes it, or one with none when it is the current one.
+            ConnEvent::Arrived(id) => {
+                let conn = self.store.read(cx).connection(id);
+                let current = self.current_conn.as_ref() == Some(id);
+                for tab in self.tabs.clone() {
+                    let conn = conn.clone();
+                    tab.update(cx, |t, cx| match (&t.want, conn) {
+                        (Some((want, _)), Some(c)) if want == id => t.adopt(c, cx),
+                        (None, Some(c)) if current && t.connection().is_none() => t.set_connection(Some(c), cx),
+                        _ => {}
+                    });
+                }
             }
             ConnEvent::Failed { id, ssh: Some(err), .. } => {
                 if self.dialog.is_none() {
@@ -1911,17 +1930,22 @@ impl Workspace {
 
     pub(crate) fn toggle_result_zoom(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(tab) = self.active_tab().cloned() else { return };
-        if !tab.read(cx).has_run || tab.read(cx).monitor.is_some() {
+        let on = !tab.read(cx).zoomed;
+        self.set_result_zoom(&tab, on, true, window, cx);
+    }
+
+    /// Not `animate`d when the divider, dragged past its limit, zooms: it follows the pointer.
+    fn set_result_zoom(&mut self, tab: &Entity<QueryTab>, on: bool, animate: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if !tab.read(cx).has_run || tab.read(cx).monitor.is_some() || tab.read(cx).zoomed == on {
             return;
         }
-        let from = self.zoom_now(&tab, cx);
-        let on = !tab.read(cx).zoomed;
+        let from = self.zoom_now(tab, cx);
         let side = side_id(&self.side);
         tab.update(cx, |t, _| {
             t.zoomed = on;
             t.zoom_side = side;
         });
-        self.zoom_tween = (!cx.reduce_motion()).then(|| (tab.entity_id(), crate::motion::ZoomTween::new(from)));
+        self.zoom_tween = (animate && !cx.reduce_motion()).then(|| (tab.entity_id(), crate::motion::ZoomTween::new(from)));
         if on {
             let g = match &tab.read(cx).doc {
                 Some(d) => d.read(cx).list_focus(),
@@ -2473,12 +2497,23 @@ impl Workspace {
         match d {
             Drag::Dock(dock, col) => self.resize_column(dock, col, ev.position.x.pt()),
             Drag::Groups => self.resize_groups(ev.position.x.pt()),
-            Drag::Split => {
+            Drag::Split(id) => {
                 let top = metrics::TITLE_H + metrics::TOOLBAR_H;
                 let column = self.work_column_h(window);
                 let max = (column - metrics::DIVIDER - metrics::RESULT_BAR_H - metrics::GRID_MIN).max(metrics::EDITOR_MIN);
-                let h = (ev.position.y.pt() - top - metrics::DIVIDER / 2.).clamp(metrics::EDITOR_MIN, max);
-                self.editor_frac = Some(h / column);
+                let want = ev.position.y.pt() - top - metrics::DIVIDER / 2.;
+                // As VS Code's panel: pulled well past the editor's minimum the result zooms, and
+                // the divider, kept at its top, brings the split back. The zoom keeps the size the
+                // drag started from, for the split it ends.
+                let zoom = want < metrics::EDITOR_MIN - ZOOM_PULL;
+                if let Some(tab) = self.tabs.iter().find(|t| t.entity_id() == id).cloned() {
+                    self.set_result_zoom(&tab, zoom, false, window, cx);
+                }
+                if zoom && self.tabs.iter().any(|t| t.entity_id() == id && t.read(cx).zoomed) {
+                    self.editor_frac = self.seam_from.as_ref().and_then(|s| s.editor_frac);
+                } else {
+                    self.editor_frac = Some(want.clamp(metrics::EDITOR_MIN, max) / column);
+                }
             }
         }
         cx.notify();
@@ -2491,7 +2526,7 @@ impl Workspace {
         if from != to {
             let label = match d {
                 Drag::Dock(..) => "Resize panel",
-                Drag::Split => "Resize editor",
+                Drag::Split(_) => "Resize editor",
                 Drag::Groups => "Resize editor groups",
             };
             self.did(label, crate::undo::Op::Sizes { from, to });
@@ -2940,7 +2975,7 @@ impl Render for Workspace {
             .capture_key_down(cx.listener(|w, _, _, _| w.alt_press = false))
             .child(div().flex_1().min_h_0().relative().flex().flex_row().children(docks.left).child(work).children(docks.right).children(seams))
             .children(self.drag.map(|d| {
-                let rows = matches!(d, Drag::Split);
+                let rows = matches!(d, Drag::Split(_));
                 let style = if rows { gpui::CursorStyle::ResizeRow } else { gpui::CursorStyle::ResizeColumn };
                 gpui::canvas(|_, _, _| {}, move |_, _, window, _| window.set_window_cursor_style(style)).absolute().size_0()
             }))

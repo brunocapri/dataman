@@ -415,7 +415,7 @@ impl AgentsPage {
         all.into_iter().find(|p| p.id == id)
     }
 
-    pub(crate) fn render_conn_list(&self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn render_conn_list(&self, t: &Theme, focused: bool, cx: &mut Context<Self>) -> AnyElement {
         let rows = self.profiles(cx).into_iter().map(|p| {
             let sel = self.conn.as_deref() == Some(p.id.as_str());
             let a = p.mcp_access();
@@ -435,7 +435,7 @@ impl AgentsPage {
                 .items_center()
                 .gap(px(8.))
                 .cursor_pointer()
-                .when(sel, |d| d.bg(t.prs))
+                .map(|d| ui::selectable(d, t, sel, focused))
                 .when(!sel, move |d| d.hover(move |s| s.bg(hov)))
                 .children(crate::assets::small_logo(p.engine, 14.))
                 .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx).child(p.name.clone()))
@@ -537,7 +537,7 @@ impl AgentsPage {
             .flex()
             .flex_col()
             .child(self.protection_bar(t, Some(&p)))
-            .child(div().flex_1().min_h_0().flex().flex_row().child(self.render_conn_list(t, cx)).child(body))
+            .child(div().flex_1().min_h_0().flex().flex_row().child(self.render_conn_list(t, self.focus.is_focused(window), cx)).child(body))
             .children(self.login_sheet(t, &p, cx))
             .children(self.sens_sheet(t, cx))
             .into_any_element()

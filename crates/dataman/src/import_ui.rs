@@ -156,7 +156,7 @@ impl Render for ImportView {
                         .flex_row()
                         .items_center()
                         .gap(px(10.))
-                        .when(hi, |d| d.bg(t.acc_s))
+                        .map(|d| ui::selectable(d, &t, hi, true))
                         .when(!hi, |d| d.hover(move |s| s.bg(hov)))
                         .when(it.exists, |d| d.opacity(0.5))
                         .cursor_pointer()

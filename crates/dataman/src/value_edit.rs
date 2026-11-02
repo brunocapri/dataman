@@ -535,7 +535,7 @@ impl ValueEditor {
             div().h(px(220.)).border_1().border_color(t.line2).overflow_hidden().child(j.editor.clone()).into_any_element()
         } else {
             let rows = j.doc.rows();
-            let (sel_bg, hov) = (t.sel, t.hov);
+            let hov = t.hov;
             div()
                 .id("json-rows")
                 .h(px(220.))
@@ -598,7 +598,7 @@ impl ValueEditor {
                         .flex_row()
                         .items_center()
                         .gap(px(6.))
-                        .when(on, |d| d.bg(sel_bg))
+                        .map(|d| ui::selectable(d, &t, on, true))
                         .when(!on, |d| d.hover(move |s| s.bg(hov)))
                         .cursor_pointer()
                         .on_mouse_down(MouseButton::Left, cx.listener(move |e, _, _, cx| {

@@ -14,7 +14,7 @@ use crate::app::{Drag, Region, Workspace, fmt_dur};
 use crate::assets::{Icon, icon};
 use crate::grid::{fmt_clock, statement_verb, ui_count};
 use crate::messages::{self, Of, Row as MessageRow};
-use crate::result_bar::{ResultState, role_colors};
+use crate::result_bar::{ResultState, role_color};
 use crate::tab::{ItemState, QueryTab};
 use crate::theme::{ActiveTheme, PIXEL, Theme, metrics};
 use crate::ui::{self, Btn};
@@ -139,7 +139,7 @@ fn shown_messages(tab: &QueryTab) -> String {
 fn state_glyph(t: &Theme, s: batch::State) -> (&'static str, Hsla) {
     match s {
         batch::State::Running => ("▶", t.acc),
-        batch::State::Paused => ("‖", t.info),
+        batch::State::Paused => (ui::PAUSE, t.tx3),
         batch::State::Done => ("■", t.ok),
         batch::State::Partial => ("◐", t.info),
         batch::State::Cancelled => ("⊘", t.warn),
@@ -544,7 +544,7 @@ impl Workspace {
         } else {
             match phase {
                 Some(Phase::Failed) => (Some("✕".into()), t.err),
-                Some(Phase::Paused) => (Some("‖".into()), t.info),
+                Some(Phase::Paused) => (Some(ui::PAUSE.into()), t.tx3),
                 _ => (None, t.tx3),
             }
         };
@@ -592,7 +592,7 @@ impl Workspace {
                         .text_size(px(11.))
                         .text_color(ind_color)
                         .group_hover(group.clone(), |s| s.invisible())
-                        .child(s),
+                        .child(ui::glyph_el(&s, ind_color)),
                 )
                 .child(
                     div()
@@ -876,38 +876,38 @@ impl Workspace {
                             .when(zoom > 0., |d| d.opacity(rest))
                             .child(div().h(px(editor_h)).flex_none().child(editor))
                             .children((region == Some(Region::Editor) && zoom == 0.).then(|| focus_ring(&t))),
-                    )
-                    .child(
-                        div()
-                            .h(px(metrics::DIVIDER * rest))
-                            .flex_none()
-                            .relative()
-                            .overflow_hidden()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .border_t_1()
-                            .border_b_1()
-                            .border_color(t.line)
-                            .child(div().w(px(32.)).h(px(3.)).bg(t.line2))
-                            .when(zoom == 0., |d| {
-                                d.child(
-                                    div()
-                                        .id("splitter")
-                                        .absolute()
-                                        .left_0()
-                                        .right_0()
-                                        .top(px(-3.))
-                                        .h(px(metrics::DIVIDER_HIT))
-                                        .cursor_row_resize()
-                                        .on_mouse_down(MouseButton::Left, cx.listener(|w, _, _, cx| {
-                                            w.drag = Some(Drag::Split);
-                                            cx.stop_propagation();
-                                        })),
-                                )
-                            }),
                     );
             }
+            // Zoomed, the divider stays at the result's top: dragged down, it brings the editor back.
+            let split_tab = tab.entity_id();
+            main = main.child(
+                div()
+                    .h(px(metrics::DIVIDER))
+                    .flex_none()
+                    .relative()
+                    .overflow_hidden()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .border_t_1()
+                    .border_b_1()
+                    .border_color(t.line)
+                    .child(div().w(px(32.)).h(px(3.)).bg(t.line2))
+                    .child(
+                        div()
+                            .id("splitter")
+                            .absolute()
+                            .left_0()
+                            .right_0()
+                            .top(px(-3.))
+                            .h(px(metrics::DIVIDER_HIT))
+                            .cursor_row_resize()
+                            .on_mouse_down(MouseButton::Left, cx.listener(move |w, _, _, cx| {
+                                w.drag = Some(Drag::Split(split_tab));
+                                cx.stop_propagation();
+                            })),
+                    ),
+            );
             let bounds = focused.then(|| self.result_bounds.clone());
             main = main.child(
                 div().flex_1().min_h_0().flex().flex_col().on_children_prepainted(move |b, _, _| {
@@ -1096,78 +1096,53 @@ impl Workspace {
         let menu = open.then(|| {
             let store = self.store.read(cx);
             let cur = v.conn.as_ref().map(|c| c.profile.id.clone());
-            let mut rows: Vec<AnyElement> = Vec::new();
             let live: Vec<_> = store.profiles.iter().filter(|p| store.connection(&p.id).is_some()).collect();
-            // As the explorer groups them: a folder's header (never a pick), its connections a level in.
-            for (folder, profiles) in crate::conns::grouped(&store.folders, &live) {
-                let indent = if folder.is_some() { 12. } else { 0. };
-                if let Some(f) = folder {
-                    if !rows.is_empty() {
-                        rows.push(ui::menu_sep(t).into_any_element());
-                    }
-                    rows.push(
-                        div()
-                            .h(px(24.))
-                            .px(px(10.))
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(7.))
-                            .text_size(px(11.))
-                            .text_color(t.tx2)
-                            .child(ui::folder_icon(true, None, 12., crate::tree::folder_color(f, t).unwrap_or(t.tx3)))
-                            .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(f.name.clone()))
-                            .into_any_element(),
-                    );
+            let rows = crate::conn_menu::rows(t, "conn-menu", &store.folders, &live, cur.as_deref(), cx, |p, indent| {
+                let mut rows: Vec<AnyElement> = Vec::new();
+                let Some(conn) = store.connection(&p.id) else { return rows };
+                rows.push(
+                    div()
+                        .h(px(24.))
+                        .pl(px(10. + indent))
+                        .pr(px(10.))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(8.))
+                        .text_size(px(11.))
+                        .text_color(t.tx3)
+                        .child(div().flex_none().size(px(7.)).bg(t.profile_color(p)))
+                        .children(crate::assets::small_logo(p.engine, 12.))
+                        .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(p.name.clone()))
+                        .when(p.env.is_production(), |d| d.child(div().flex_none().text_size(px(9.)).text_color(t.tx4).opacity(0.6).child("PROD")))
+                        .into_any_element(),
+                );
+                let dbs = if conn.engine().is_sql() {
+                    conn.schema.cached_databases()
+                } else {
+                    conn.cached_tree(None).map(|v| v.iter().filter(|i| i.kind == dataman_core::nosql::ItemKind::Database).map(|i| i.name.clone()).collect())
                 }
-                for (i, p) in profiles.into_iter().enumerate() {
-                    let Some(conn) = store.connection(&p.id) else { continue };
-                    if !rows.is_empty() && (folder.is_none() || i > 0) {
-                        rows.push(ui::menu_sep(t).ml(px(6. + indent)).into_any_element());
-                    }
-                    rows.push(
-                        div()
-                            .h(px(24.))
-                            .pl(px(10. + indent))
-                            .pr(px(10.))
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(8.))
-                            .text_size(px(11.))
-                            .text_color(t.tx3)
-                            .child(div().flex_none().size(px(7.)).bg(t.profile_color(p)))
-                            .children(crate::assets::small_logo(p.engine, 12.))
-                            .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(p.name.clone()))
-                            .when(p.env.is_production(), |d| d.child(div().flex_none().text_size(px(9.)).text_color(t.tx4).opacity(0.6).child("PROD")))
-                            .into_any_element(),
-                    );
-                    let dbs = if conn.engine().is_sql() {
-                        conn.schema.cached_databases()
+                .filter(|v: &Vec<String>| !v.is_empty())
+                .unwrap_or_else(|| vec![conn.database().to_string()]);
+                for d in dbs {
+                    let on = cur.as_deref() == Some(p.id.as_str()) && d == db;
+                    let label = if d.is_empty() {
+                        "all indices".to_string()
+                    } else if p.engine == dataman_core::Engine::Redis {
+                        format!("db{d}")
                     } else {
-                        conn.cached_tree(None).map(|v| v.iter().filter(|i| i.kind == dataman_core::nosql::ItemKind::Database).map(|i| i.name.clone()).collect())
-                    }
-                    .filter(|v: &Vec<String>| !v.is_empty())
-                    .unwrap_or_else(|| vec![conn.database().to_string()]);
-                    for d in dbs {
-                        let on = cur.as_deref() == Some(p.id.as_str()) && d == db;
-                        let label = if d.is_empty() {
-                            "all indices".to_string()
-                        } else if p.engine == dataman_core::Engine::Redis {
-                            format!("db{d}")
-                        } else {
-                            d.clone()
-                        };
-                        let (id, pick) = (p.id.clone(), d.clone());
-                        rows.push(ui::probe(
-                            format!("pick:{}:{d}", p.id),
-                            ui::menu_item(t, SharedString::from(format!("pick:{}:{d}", p.id)), label, on.then_some("✓"), true)
-                                .pl(px(25. + indent))
-                                .on_click(cx.listener(move |w, _, window, cx| w.pick_target(&id, &pick, window, cx))),
-                        ));
-                    }
+                        d.clone()
+                    };
+                    let (id, pick) = (p.id.clone(), d.clone());
+                    rows.push(ui::probe(
+                        format!("pick:{}:{d}", p.id),
+                        ui::selectable(ui::menu_item(t, SharedString::from(format!("pick:{}:{d}", p.id)), label, on.then_some("✓"), true), t, on, true)
+                            .pl(px(25. + indent))
+                            .on_click(cx.listener(move |w, _, window, cx| w.pick_target(&id, &pick, window, cx))),
+                    ));
                 }
-            }
+                rows
+            });
             div().absolute().left_0().top(px(26.)).child(
                 gpui::deferred(
                     gpui::anchored().snap_to_window_with_margin(px(8.)).child(ui::menu_in("conn-menu-in", 
@@ -1251,7 +1226,7 @@ impl Workspace {
         let can_insert = rs.as_ref().is_some_and(|r| r.columns().is_some_and(|c| !c.is_empty()));
         let summary = grid.update(cx, |g, _| g.selection_summary());
         let spec = state.spec();
-        let (fg, bg) = role_colors(t, spec.role);
+        let fg = role_color(t, spec.role);
         let status = rs.as_ref().map(|r| r.status());
         let rows = rs.as_ref().map(|r| r.rows()).unwrap_or(0);
         let label: SharedString = match state {
@@ -1476,7 +1451,7 @@ impl Workspace {
             .text_color(t.tx2)
             .whitespace_nowrap()
             .child(div().flex_1().min_w_0().overflow_hidden().flex().flex_row().items_center().gap(px(10.))
-            .child(ui::pill(spec.glyph, label, fg, bg).when(state == ResultState::Cancelling, |d| d.border_1().border_color(t.warn)))
+            .child(ui::status(spec.glyph, label, fg))
             .children(pager_el)
             .children(rows_text.map(|r| {
                 let rl = spec.rows_label;
@@ -1633,7 +1608,7 @@ impl Workspace {
                     .when(active, |d| d.bg(t.prs))
                     .when(!active, |d| d.hover(move |s| s.bg(hov)))
                     .cursor_pointer()
-                    .child(div().w(px(10.)).text_center().text_size(px(if messages { 12. } else { 9.5 })).text_color(gc).child(g))
+                    .child(div().w(px(10.)).flex().justify_center().text_size(px(if messages { 12. } else { 9.5 })).text_color(gc).child(ui::glyph_el(g, gc)))
                     .children(r.number.map(|n| div().text_color(t.tx3).child(format!("{n} ·"))))
                     .child(div().text_color(label_c).child(r.label.clone()))
                     .when(r.folded > 0, |d| d.child(div().text_color(t.tx3).child(r.folded.to_string())))
@@ -1738,7 +1713,7 @@ impl Workspace {
                     .items_center()
                     .gap(px(10.))
                     .when(has_tab, |d| d.cursor_pointer().hover(move |s| s.bg(hov)))
-                    .child(div().w(px(14.)).text_center().text_size(px(10.)).text_color(gc).child(g))
+                    .child(div().w(px(14.)).flex().justify_center().text_size(px(10.)).text_color(gc).child(ui::glyph_el(g, gc)))
                     .child(div().w(px(22.)).text_color(t.tx3).child((i + 1).to_string()))
                     .child(
                         div()
@@ -2059,7 +2034,7 @@ impl Workspace {
                         .flex_row()
                         .items_center()
                         .gap(px(10.))
-                        .when(b.state == ItemState::Failed, |d| d.bg(t.err_s).border_l_2().border_color(t.err))
+                        .when(b.state == ItemState::Failed, |d| d.bg(t.err_s))
                         .child(div().w(px(16.)).text_center().text_color(gc).child(g))
                         .child(div().w(px(14.)).text_color(t.tx3).child((i + 1).to_string()))
                         .child(

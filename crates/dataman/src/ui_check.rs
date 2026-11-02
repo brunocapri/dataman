@@ -1166,9 +1166,10 @@ async fn zoom_checks(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> boo
         format!("{:?} {:?} {:?}", before.top(), mid_b.map(|b| b.top()), after.map(|b| b.top())),
     );
     let title = crate::theme::metrics::TITLE_H;
+    let divider = crate::theme::metrics::DIVIDER;
     report(
-        "zoomed: it covers the Run row, the editor and the side panel",
-        after.is_some_and(|a| a.top() < before.top() && (a.top().as_f32() - title).abs() < 4. && (a.right() - win.width).abs() < px(2.) && a.right() > before.right()),
+        "zoomed: it covers the Run row, the editor and the side panel; the divider stays on top",
+        after.is_some_and(|a| a.top() < before.top() && (a.top().as_f32() - title - divider).abs() < 4. && (a.right() - win.width).abs() < px(2.) && a.right() > before.right()),
         format!("{before:?} → {after:?} (window {win:?})"),
     );
     report(
@@ -1214,6 +1215,38 @@ async fn zoom_checks(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> boo
     report("another side view opening ends the zoom", !cx.update(|_, cx| tab.read(cx).zoomed).unwrap_or(true), String::new());
     let _ = cx.update(|_, cx| ws.update(cx, |w, _| w.side = None));
     draw(cx);
+
+    let split = bounds(cx);
+    let frac = cx.update(|_, cx| ws.read(cx).editor_frac).ok().flatten();
+    if let Some(b) = split {
+        let x = b.left() + px(200.);
+        let grab = point(x, b.top() - px(divider / 2.));
+        mouse_move(cx, grab, false);
+        down(cx, grab);
+        mouse_move(cx, point(x, px(title + 12.)), true);
+        up(cx, point(x, px(title + 12.)));
+        draw(cx);
+        let pulled = bounds(cx);
+        let frac_kept = cx.update(|_, cx| ws.read(cx).editor_frac).ok().flatten() == frac;
+        report(
+            "the divider pulled past the editor's minimum zooms the result at once, the divider on top",
+            cx.update(|_, cx| tab.read(cx).zoomed).unwrap_or(false) && zoom(cx) == 1. && frac_kept && pulled.is_some_and(|a| (a.top().as_f32() - title - divider).abs() < 4.),
+            format!("{split:?} → {pulled:?}, frac {frac:?} kept {frac_kept}"),
+        );
+        let grab = point(x, px(title + divider / 2.));
+        mouse_move(cx, grab, false);
+        down(cx, grab);
+        let to = point(x, b.top() - px(divider / 2.));
+        mouse_move(cx, to, true);
+        up(cx, to);
+        draw(cx);
+        let back = bounds(cx);
+        report(
+            "… and dragged back down, the split returns where it is let go",
+            !cx.update(|_, cx| tab.read(cx).zoomed).unwrap_or(true) && back.is_some_and(|a| (a.top() - b.top()).abs() < px(2.)),
+            format!("{split:?} → {back:?}"),
+        );
+    }
     ok
 }
 

@@ -523,12 +523,12 @@ impl DataImportView {
     fn render_progress(&self, j: &Job, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let p = &j.progress;
         let fmt = self.preview.as_ref().map(|p| p.format).unwrap_or(ImportFormat::Csv);
-        let (pill, fg, bg): (&str, Hsla, Hsla) = match &j.state {
-            JobState::Running => ("▶ IMPORTING", t.acc, t.acc_s),
+        let (pill, fg): (&str, Hsla) = match &j.state {
+            JobState::Running => ("▶ IMPORTING", t.acc),
             JobState::Done(r) => match &r.outcome {
-                Outcome::Done => ("✓ DONE", t.ok, t.ok_s),
-                Outcome::Cancelled => ("⊘ STOPPED", t.warn, t.warn_s),
-                Outcome::Failed(_) => ("✕ FAILED", t.err, t.err_s),
+                Outcome::Done => ("✓ DONE", t.ok),
+                Outcome::Cancelled => ("⊘ STOPPED", t.warn),
+                Outcome::Failed(_) => ("✕ FAILED", t.err),
             },
         };
         let elapsed = j.started.elapsed();
@@ -655,7 +655,7 @@ impl DataImportView {
                     .flex_row()
                     .items_baseline()
                     .gap(px(10.))
-                    .child(ui::pill("", pill, fg, bg))
+                    .child(ui::status("", pill, fg))
                     .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).child(ui_count(rows as usize)))
                     .child(div().text_color(t.tx3).child(total_txt))
                     .child(div().flex_1())

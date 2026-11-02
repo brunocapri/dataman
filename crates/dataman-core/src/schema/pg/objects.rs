@@ -254,15 +254,19 @@ pub fn parse_stats(rows: &Rows) -> HashMap<String, RelStats> {
 
 pub fn extensions_sql() -> [&'static str; 2] {
     [
-        "SELECT e.extname, e.extversion, n.nspname, a.default_version FROM pg_catalog.pg_extension e \
+        "SELECT e.extname, e.extversion, n.nspname, a.default_version, \
+         ARRAY(SELECT d.objid FROM pg_catalog.pg_depend d WHERE d.refclassid = 'pg_catalog.pg_extension'::regclass \
+         AND d.refobjid = e.oid AND d.classid = 'pg_catalog.pg_class'::regclass AND d.deptype = 'e')::text \
+         FROM pg_catalog.pg_extension e \
          LEFT JOIN pg_catalog.pg_namespace n ON n.oid = e.extnamespace \
          LEFT JOIN pg_catalog.pg_available_extensions a ON a.name = e.extname ORDER BY 1",
-        "SELECT e.extname, e.extversion, NULL, NULL FROM pg_catalog.pg_extension e ORDER BY 1",
+        "SELECT e.extname, e.extversion, NULL, NULL, NULL FROM pg_catalog.pg_extension e ORDER BY 1",
     ]
 }
 
 pub fn parse_extension(r: &[Option<String>]) -> Option<Extension> {
-    Some(Extension { name: get(r, 0)?, version: get(r, 1).unwrap_or_default(), schema: get(r, 2), default_version: get(r, 3) })
+    let relations = get(r, 4).map(|s| s.split(|c: char| !c.is_ascii_digit()).filter_map(|n| n.parse().ok()).collect()).unwrap_or_default();
+    Some(Extension { name: get(r, 0)?, version: get(r, 1).unwrap_or_default(), schema: get(r, 2), default_version: get(r, 3), relations })
 }
 
 pub fn roles_sql() -> [&'static str; 2] {
@@ -390,7 +394,9 @@ mod tests {
         let t = parse_trigger(&row(&[Some("audit"), Some("orders"), Some("D"), Some("21"), Some("CREATE TRIGGER audit …")])).unwrap();
         assert_eq!((t.enabled, t.events.as_str()), (false, "after insert/update"));
         let ext = parse_extension(&row(&[Some("pg_trgm"), Some("1.5"), Some("public"), Some("1.6")])).unwrap();
-        assert_eq!(ext.update(), Some("1.6"));
+        assert_eq!((ext.update(), ext.relations.len()), (Some("1.6"), 0));
+        let gis = parse_extension(&row(&[Some("postgis"), Some("3.4"), Some("public"), None, Some("{16390,16402}")])).unwrap();
+        assert_eq!(gis.relations, [16390, 16402], "spatial_ref_sys and its views belong to the extension");
         assert_eq!(parse_extension(&row(&[Some("plpgsql"), Some("1.0"), None, Some("1.0")])).unwrap().update(), None);
         assert!(parse_role(&row(&[Some("pg_monitor"), Some("f"), Some("f")])).is_none());
         let r = parse_role(&row(&[Some("app"), Some("f"), Some("t"), Some("f"), Some("f"), Some("f"), Some("t"), Some("f"), Some("10"), Some("infinity")])).unwrap();

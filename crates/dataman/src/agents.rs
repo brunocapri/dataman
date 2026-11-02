@@ -916,12 +916,31 @@ impl AgentsPage {
     fn render_menu(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
         let m = self.menu.as_ref()?;
         let id = m.id.clone();
-        let rows = m.items.iter().enumerate().map(|(k, (label, on, act))| {
-            let act = act.clone();
-            ui::menu_item(t, SharedString::from(format!("{}:{k}", m.id)), label.clone(), on.then_some("✓"), true)
+        let item = |k: usize, indent: f32| {
+            let (label, on, act) = m.items[k].clone();
+            ui::selectable(ui::menu_item(t, SharedString::from(format!("{}:{k}", m.id)), label, on.then_some("✓"), true), t, on, true)
+                .pl(px(10. + indent))
                 .on_click(cx.listener(move |v, _: &ClickEvent, window, cx| v.run(act.clone(), window, cx)))
                 .into_any_element()
-        });
+        };
+        let rows: Vec<AnyElement> = if m.id == "agents-f-conn" {
+            // The audit names its connections: those saved still are grouped as the explorer
+            // has them, the others (deleted, renamed since) follow.
+            let store = self.store.read(cx);
+            let at = |name: &str| m.items.iter().position(|(_, _, a)| matches!(a, Act::Conn(Some(n)) if n == name));
+            let mut named = BTreeSet::new();
+            let saved: Vec<_> = store.profiles.iter().filter(|p| at(&p.name).is_some() && named.insert(p.name.as_str())).collect();
+            let picked = saved.iter().find(|p| self.f_conn.as_deref() == Some(p.name.as_str())).map(|p| p.id.as_str());
+            let mut rows = vec![item(0, 0.)];
+            if m.items.len() > 1 {
+                rows.push(ui::menu_sep(t).into_any_element());
+            }
+            rows.extend(crate::conn_menu::rows(t, &m.id, &store.folders, &saved, picked, cx, |p, indent| at(&p.name).map(|k| item(k, indent)).into_iter().collect()));
+            rows.extend((1..m.items.len()).filter(|&k| !matches!(&m.items[k].2, Act::Conn(Some(n)) if saved.iter().any(|p| p.name == *n))).map(|k| item(k, 0.)));
+            rows
+        } else {
+            (0..m.items.len()).map(|k| item(k, 0.)).collect()
+        };
         let pop = ui::popover(t)
             .id("agents-menu")
             .w(px(m.width))
@@ -956,8 +975,9 @@ impl AgentsPage {
 
     // ---- Nav (in the sidebar) ----
 
-    pub fn render_nav(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    pub fn render_nav(&mut self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let t = cx.theme().clone();
+        let focused = self.focus.contains_focused(window, cx);
         let rows = Page::NAV.into_iter().map(|p| {
             let on = self.visible && self.page == p;
             let id = SharedString::from(format!("agents-nav-{}", p.key()));
@@ -974,7 +994,7 @@ impl AgentsPage {
                 .gap(px(6.))
                 .text_color(if on { t.tx } else { t.tx2 })
                 .cursor_pointer()
-                .when(on, |d| d.bg(t.prs))
+                .map(|d| ui::selectable(d, &t, on, focused))
                 .when(!on, move |d| d.hover(move |s| s.bg(hov)))
                 .child(icon(p.icon()).size(px(14.)).text_color(if on { t.tx } else { t.tx3 }))
                 .child(div().flex_1().pl(px(4.)).child(p.label()))
@@ -1119,8 +1139,7 @@ impl AgentsPage {
                     .items_center()
                     .gap(px(8.))
                     .bg(t.field)
-                    .border_1()
-                    .border_color(if search_focused { t.acc } else { t.field_b })
+                    .map(|d| ui::field_frame(d, t, search_focused))
                     .child(icon(Icon::Search).size(px(13.)).text_color(t.tx3))
                     .child(div().flex_1().min_w_0().child(self.search.clone())),
             )
@@ -1169,7 +1188,10 @@ impl AgentsPage {
                 .into_any_element()
         } else {
             let theme = t.clone();
-            gpui::list(self.audit_list.clone(), cx.processor(move |v, ix: usize, _, cx| v.render_audit_item(ix, &theme, cx))).flex_1().min_w_0().into_any_element()
+            gpui::list(self.audit_list.clone(), cx.processor(move |v, ix: usize, window, cx| {
+                let focused = v.focus.is_focused(window);
+                v.render_audit_item(ix, &theme, focused, cx)
+            })).flex_1().min_w_0().into_any_element()
         };
         // On its way, the reply leaves an empty slot in the detail and grows from it over the
         // page as the result grid grows over the editor: same time and curve.
@@ -1330,7 +1352,7 @@ impl AgentsPage {
         self.audit_items = items;
     }
 
-    fn render_audit_item(&self, ix: usize, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    fn render_audit_item(&self, ix: usize, t: &Theme, focused: bool, cx: &mut Context<Self>) -> AnyElement {
         let i = match self.audit_items.get(ix) {
             Some(AuditItem::Call(i)) => *i,
             Some(AuditItem::Day(d)) => {
@@ -1375,7 +1397,7 @@ impl AgentsPage {
                     .border_b_1()
                     .border_color(t.line)
                     .cursor_pointer()
-                    .when(sel, |d| d.bg(t.prs))
+                    .when(sel, |d| d.bg(ui::sel_bg(t, focused)))
                     .when(!sel, move |d| d.hover(move |s| s.bg(hov)))
                     .child(div().w(px(58.)).flex_none().text_color(t.tx3).child(e.ts.with_timezone(&Local).format("%H:%M:%S").to_string()))
                     .child(
@@ -2037,7 +2059,7 @@ impl Render for TipView {
     }
 }
 
-/// A 28 pt field around a bare input: the accent outline while it has the focus (no underline).
+/// A 28 pt field around a bare input, framed as every field (no underline).
 pub(crate) fn field(t: &Theme, id: &'static str, input: &Entity<TextInput>, window: &Window, cx: &App) -> gpui::Div {
     let focused = input.read(cx).focus_handle(cx).is_focused(window);
     let error = input.read(cx).error;
@@ -2049,14 +2071,8 @@ pub(crate) fn field(t: &Theme, id: &'static str, input: &Entity<TextInput>, wind
         .flex_row()
         .items_center()
         .bg(t.field)
-        .border_1()
-        .border_color(if focused {
-            t.acc
-        } else if error {
-            t.err
-        } else {
-            t.field_b
-        })
+        .map(|d| ui::field_frame(d, t, focused))
+        .when(error && !focused, |d| d.border_color(t.err))
         .child(div().flex_1().min_w_0().child(input.clone()))
 }
 

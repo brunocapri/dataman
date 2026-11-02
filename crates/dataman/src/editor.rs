@@ -2844,7 +2844,6 @@ impl CodeEditor {
             let ls = lines_of(&d.stmt);
             for l in lines.iter().map(|(l, _)| *l).filter(|l| ls.contains(l)) {
                 rows.push(full_row(l, t.err_line));
-                rows.push(bar(l, t.err));
             }
             err_lines = Some(ls);
         }
@@ -3036,7 +3035,8 @@ impl CodeEditor {
                 .flex_row()
                 .items_center()
                 .gap(px(8.))
-                .when(on, |d| d.bg(t.acc_s).border_1().border_color(t.acc).text_color(t.tx))
+                .map(|d| crate::ui::selectable(d, &t, on, true))
+                .when(on, |d| d.text_color(t.tx))
                 .when(!on, |d| d.text_color(t.tx2))
                 .cursor_pointer()
                 .on_mouse_down(

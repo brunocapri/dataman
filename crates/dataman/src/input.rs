@@ -896,17 +896,10 @@ impl Render for TextInput {
                     .px(px(10.))
                     .items_center()
                     .bg(t.field)
-                    .border_1()
                     .text_size(px(12.5))
                     .text_color(t.tx)
-                    .border_color(if focused {
-                        t.acc
-                    } else if error {
-                        t.err
-                    } else {
-                        t.field_b
-                    })
-                    .when(focused, |d| d.shadow(t.halo()))
+                    .map(|d| crate::ui::field_frame(d, &t, focused))
+                    .when(error && !focused, |d| d.border_color(t.err))
             })
             .child(TextElement { input: cx.entity() })
     }

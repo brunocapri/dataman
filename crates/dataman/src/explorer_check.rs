@@ -186,10 +186,31 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     let on = connected(ws, &pg.id, 20, cx).await;
     r.check("Disconnect then Connect from the connection's menu", off && on.is_ok(), format!("{off} {on:?}"));
 
-    ddl_round_trip(ws, Engine::Postgres, Some((pg, pw)), r, cx).await;
+    ddl_round_trip(ws, Engine::Postgres, Some((pg.clone(), pw)), r, cx).await;
     for e in [Engine::MySql, Engine::SqlServer] {
         ddl_round_trip(ws, e, None, r, cx).await;
     }
+
+    // The simple view: the database's tables (public's under it, dataman_shop's under its
+    // schema), no groups, routines, sequences, extensions, roles or system schemas.
+    let _ = cx.update(|_, cx| t.update(cx, |t, cx| t.set_advanced(false, cx)));
+    let db = format!("c:{}/d:{}", pg.id, pg.database);
+    expand(&t, &db, cx).await;
+    expand(&t, &s, cx).await;
+    until(cx, 10, |cx| cx.update(|_, cx| t.read(cx).demo_children(&s)).unwrap_or_default().iter().any(|l| l == "customers")).await;
+    let ids = cx.update(|_, cx| t.read(cx).demo_row_ids(&db)).unwrap_or_default();
+    let shop = cx.update(|_, cx| t.read(cx).demo_children(&s)).unwrap_or_default();
+    let hidden = ["/tables", "/functions", "/sequences", "/extensions", "/s:pg_catalog", "/s:information_schema"];
+    let leaked: Vec<&String> = ids.iter().filter(|i| hidden.iter().any(|h| i.ends_with(h))).collect();
+    r.check(
+        "the simple view lists the schema's tables and views, not its routines, sequences, groups or the system's schemas",
+        leaked.is_empty() && ["customers", "orders", "daily_sales"].iter().all(|w| shop.iter().any(|l| l == w)) && !shop.iter().any(|l| l == "order_total" || l == "invoice_no"),
+        format!("leaked {leaked:?}, {shop:?}"),
+    );
+    let _ = cx.update(|_, cx| t.update(cx, |t, cx| t.set_advanced(true, cx)));
+    pause(cx, 300).await;
+    let back = cx.update(|_, cx| t.read(cx).has_row(&format!("{s}/tables"))).unwrap_or(false);
+    r.check("the eye back on: the full view's groups again", back, "no tables group");
 }
 
 /// A table with a key, a unique, a default, a check and an index; its generated CREATE TABLE

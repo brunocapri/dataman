@@ -188,14 +188,8 @@ impl Render for FindBar {
                 .flex()
                 .items_center()
                 .bg(t.field)
-                .border_1()
-                .border_color(if err {
-                    t.err
-                } else if focused {
-                    t.acc
-                } else {
-                    t.field_b
-                })
+                .map(|d| crate::ui::field_frame(d, &t, focused))
+                .when(err, |d| d.border_color(t.err))
                 .text_size(px(12.))
                 .text_color(t.tx)
                 .child(input.clone())
