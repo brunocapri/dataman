@@ -50,14 +50,12 @@ jobs:
       - name: Check (no new warnings)
         shell: bash
         run: |
-          cargo check --release --workspace --all-targets --features dataman/checks 2>&1 | tee check.log
+          cargo check --release --workspace --all-targets --features dataman/checks --color never --message-format short 2>&1 | tee check.log
           test "${PIPESTATUS[0]}" -eq 0
-          # The two `unused Result` warnings in the live sweeps are known; anything else fails.
-          known="unused \`Result\`"
-          n=$(grep -c "^warning: $known" check.log || true)
-          others=$(grep '^warning' check.log | grep -v "$known\\|generated [0-9]* warning\\|future version of Rust" || true)
-          [ -z "$others" ] || { echo "$others"; exit 1; }
-          [ "$n" -le 2 ]
+          # Known: the vendored tiberius (its SSPI code is unused) and the two `unused Result`s
+          # in the live sweeps. Anything else fails.
+          others=$(grep ': warning: ' check.log | grep -v '^vendor[/\\]tiberius' | grep -v 'live_\(pg\|mysql\)_sweep.rs.*unused `Result`' | sort -u || true)
+          [ -z "$others" ] || { echo "new warnings:"; echo "$others"; exit 1; }
       - name: Tests, the Credential Manager's too
         run: |
           cargo test --release --workspace
