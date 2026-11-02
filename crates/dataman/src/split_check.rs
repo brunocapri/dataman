@@ -591,19 +591,16 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
         click(cx, middle(b));
     }
     let folding = cx.update(|_, cx| ws.read(cx).split.is_none() && (ws.read(cx).split_move.is_some() || cx.reduce_motion())).unwrap();
+    // Which way it folds, read as it starts: a slow renderer may draw the whole fold in a frame or two.
+    let leaving = cx.update(|_, cx| ws.read(cx).split_move.as_ref().map(|m| m.leaving)).ok().flatten();
     let left_now = tabs(ws, cx);
     report(
         "\"Sure?\" closes the group with its tabs (the other group's stay, its tab in front); the split folds",
         folding && left_now.len() == n - right_tabs.len() && right_tabs.iter().all(|t| !left_now.contains(t)) && active(ws, cx) == left_front,
         format!("{} of {n} tabs ({} on the right), split {:?}", left_now.len(), right_tabs.len(), split_open(ws, cx)),
     );
-    pause(cx, 60).await;
-    draw(cx);
-    let mid = cx.update(|_, cx| ws.read(cx).split_now).ok().flatten();
-    report("it folds away to the right", reduced || mid.is_some_and(|f| f.open > 0. && f.open < 1. && f.leaving == Pane::Right), format!("{mid:?}"));
-    pause(cx, 400).await;
-    draw(cx);
-    let one = cx.update(|_, cx| ws.read(cx).split_now.is_none()).unwrap();
+    report("it folds away to the right", reduced || leaving == Some(Pane::Right), format!("{leaving:?}"));
+    let one = crate::check::until(cx, 5, |cx| cx.update(|_, cx| ws.read(cx).split_now.is_none()).unwrap()).await;
     let full = cx.update(|_, cx| ws.read(cx).result_bounds.get().map(|b| b.size.width.pt())).ok().flatten();
     let c = center(ws, cx);
     report("then one group has the whole surface", one && full.is_none_or(|w| near(w, c.w, 1.5)), format!("{full:?} vs {}", c.w));
