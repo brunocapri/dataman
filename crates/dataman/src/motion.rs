@@ -104,28 +104,7 @@ impl ZoomTween {
     }
 }
 
-pub const DOCK_MOVE: Duration = Duration::from_millis(240);
 pub const DROP_PREVIEW: Duration = Duration::from_millis(120);
-
-#[derive(Clone, Copy, Debug)]
-pub struct Progress {
-    started: Instant,
-    duration: Duration,
-}
-
-impl Progress {
-    pub fn new(duration: Duration) -> Progress {
-        Progress { started: Instant::now(), duration }
-    }
-
-    pub fn at(&self, now: Instant) -> Option<f32> {
-        if let Some(p) = dock_freeze() {
-            return Some(p);
-        }
-        let raw = now.saturating_duration_since(self.started).as_secs_f32() / self.duration.as_secs_f32().max(1e-3);
-        (raw < 1.).then(|| EASE.eval(raw))
-    }
-}
 
 #[derive(Clone, Copy, Debug)]
 pub struct RectTween {
@@ -198,16 +177,6 @@ fn split_freeze() -> Option<f32> {
     {
         static FREEZE: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
         *FREEZE.get_or_init(|| std::env::var("DATAMAN_SPLIT_FREEZE").ok().and_then(|v| v.parse().ok()))
-    }
-    #[cfg(not(feature = "screenshots"))]
-    None
-}
-
-fn dock_freeze() -> Option<f32> {
-    #[cfg(feature = "screenshots")]
-    {
-        static FREEZE: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
-        *FREEZE.get_or_init(|| std::env::var("DATAMAN_DOCK_FREEZE").ok().and_then(|v| v.parse().ok()))
     }
     #[cfg(not(feature = "screenshots"))]
     None
@@ -342,13 +311,6 @@ pub const FLOOD: Duration = Duration::from_millis(300);
 pub fn folder_fill(at: Instant, opening: bool) -> Option<f32> {
     let p = at.elapsed().as_secs_f32() / FLOOD.as_secs_f32();
     (p < 1.).then(|| if opening { 1. - EASE.eval(p) } else { EASE.eval(p) })
-}
-
-/// The rail's selected icon swaps outline for fill with a crossfade, not the folders' flood.
-pub const ICON_FADE: Duration = Duration::from_millis(180);
-pub fn icon_fade(at: Instant, on: bool) -> Option<f32> {
-    let p = at.elapsed().as_secs_f32() / ICON_FADE.as_secs_f32();
-    (p < 1.).then(|| if on { EASE.eval(p) } else { 1. - EASE.eval(p) })
 }
 
 pub const FOLDER_SHUT: Duration = Duration::from_millis(150);
@@ -657,13 +619,7 @@ mod tests {
     }
 
     #[test]
-    fn dock_move_and_preview_land() {
-        let p = Progress::new(DOCK_MOVE);
-        let t0 = p.started;
-        let mid = p.at(t0 + DOCK_MOVE / 2).unwrap();
-        assert!(mid > 0.5 && mid < 1., "{mid}");
-        assert!(p.at(t0 + Duration::from_millis(10)).unwrap() < mid);
-        assert_eq!(p.at(t0 + DOCK_MOVE), None);
+    fn drop_preview_lands() {
         let r = RectTween::new([0., 0., 100., 100.]);
         let target = [200., 40., 300., 500.];
         let half = r.at(target, r.started + DROP_PREVIEW / 2).unwrap();

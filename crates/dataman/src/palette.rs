@@ -6,7 +6,7 @@ use crate::theme::px;
 
 use crate::assets::{Icon, icon};
 use crate::input::{InputEvent, TextInput};
-use crate::theme::{ActiveTheme, PIXEL, Theme};
+use crate::theme::{ActiveTheme, BANNER, Theme};
 use crate::ui;
 
 actions!(palette, [Dismiss, Up, Down, NextScope, PrevScope, OpenNewTab, OpenInPlace, PageUp, PageDown]);
@@ -593,7 +593,7 @@ impl Render for Palette {
                 .flex_col()
                 .items_center()
                 .gap(px(10.))
-                .child(ui::pixel("[ NO MATCH ]", 20., t.tx4))
+                .child(ui::banner("[ NO MATCH ]", 20., t.tx4))
                 .child(
                     ui::button(&t, "pal-history", ui::Btn::Secondary)
                         .child("Search history")
@@ -624,7 +624,7 @@ impl Render for Palette {
                     .gap(px(12.))
                     .border_b_1()
                     .border_color(t.line)
-                    .child(div().font_family(PIXEL).text_size(px(16.)).text_color(t.acc).child("▶"))
+                    .child(div().font_family(BANNER).text_size(px(16.)).text_color(t.acc).child("▶"))
                     .child(div().flex_1().min_w_0().text_size(px(15.)).text_color(t.tx).line_height(px(20.)).child(self.input.clone()))
                     .child(ui::keycap(&t, "esc")),
             )
@@ -1057,9 +1057,6 @@ fn commands(conn: Option<&std::sync::Arc<dataman_core::Connection>>, cx: &App) -
         c("Find previous", "", "⇧⌘G", Box::new(crate::find::FindPrevious), Workspace),
         c("Toggle sidebar", "explorer, favorites, history", "⌘B", Box::new(ToggleExplorer), Workspace),
         c("Toggle side panel", "", "⌥⌘B", Box::new(ToggleSidePanel), Workspace),
-        c("Move sidebar to the left", "drag it by the dot on its top edge", "", Box::new(crate::dock::MoveExplorerLeft), Workspace),
-        c("Move sidebar to the right", "the side panel goes left", "", Box::new(crate::dock::MoveExplorerRight), Workspace),
-        c("Reset panel layout", "the sidebar left, the side panel right", "", Box::new(crate::dock::ResetPanelLayout), Workspace),
         c("Focus explorer", "", "⌘⇧E", Box::new(FocusExplorer), Workspace),
         c("Focus grid", "", "⌘⇧G", Box::new(FocusGrid), Workspace),
         c("Focus editor", "", "esc", Box::new(FocusEditor), Workspace),

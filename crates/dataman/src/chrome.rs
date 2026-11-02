@@ -16,7 +16,7 @@ use crate::grid::{fmt_clock, statement_verb, ui_count};
 use crate::messages::{self, Of, Row as MessageRow};
 use crate::result_bar::{ResultState, role_color};
 use crate::tab::{ItemState, QueryTab};
-use crate::theme::{ActiveTheme, PIXEL, Theme, metrics};
+use crate::theme::{ActiveTheme, Theme, metrics};
 use crate::ui::{self, Btn};
 use crate::ui::Tipped;
 
@@ -155,15 +155,9 @@ impl Workspace {
         }
         self.tab_motion.live = true;
         let title = self.title_now;
-        let mirrored = title.header == Some(dataman_core::layout::Dock::Right);
         // The lights keep their size at any zoom: in zoomed points they take less room.
         let lights = crate::csd::lead(window, cx);
         let open = (self.explorer_now() / self.explorer_w.max(1.)).clamp(0., 1.);
-        let logo = self.title_logo();
-        let logo_bounds = self.logo_bounds.clone();
-        if logo.is_none() {
-            logo_bounds.set(None);
-        }
         let marks = self.title_marks.clone();
         marks.borrow_mut().clear();
         let mark = move |name: &'static str, el: AnyElement| {
@@ -177,12 +171,14 @@ impl Workspace {
             .into_any_element()
         };
         let first_run = self.first_run(cx);
-        let strips: Vec<AnyElement> = if first_run { Vec::new() } else { self.render_strips(title.lead, title.seam, &t, cx) };
+        // The Agents area takes the whole work surface: no tabs over it.
+        let tabless = first_run || self.view == dataman_core::layout::NavView::Agents;
+        let strips: Vec<AnyElement> = if tabless { Vec::new() } else { self.render_strips(title.lead, title.seam, &t, cx) };
         let stop = |_: &gpui::MouseDownEvent, _: &mut Window, cx: &mut gpui::App| cx.stop_propagation();
         let tab_menu = self.render_tab_menu(&t, cx);
         let toggle = mark(
             "toggle",
-            explorer_toggle(&t, open, mirrored)
+            explorer_toggle(&t, open)
                 .on_mouse_down(MouseButton::Left, stop)
                 .on_click(cx.listener(|w, _, _, cx| w.set_explorer_open(!w.explorer_open, cx)))
                 .into_any_element(),
@@ -221,7 +217,9 @@ impl Workspace {
                 .when_some(crate::keymap::key("command_palette"), |d, k| d.child(ui::keycap(&t, k)))
                 .into_any_element(),
         );
-        let (mut toggle, mut arrows, mut search) = (Some(toggle), arrows, Some(search));
+        // With nothing before it (Windows: its buttons are on the right) the toggle stands on the
+        // rail's column, over its icons (the rail's content box ends at its right border).
+        let toggle_at = if lights > 0. { 14. } else { (metrics::RAIL_W - 1.) / 2. - TOGGLE / 2. };
         let left = div()
             .w(px(title.lead))
             .flex_none()
@@ -230,29 +228,10 @@ impl Workspace {
             .flex_row()
             .items_center()
             .child(div().w(px(lights)).h_full().flex_none().children(self.render_window_buttons_left(window, cx)))
-            .map(|d| {
-                if mirrored {
-                    d.child(div().ml(px(14.)).flex_none().children(search.take()))
-                } else {
-                    d.child(div().ml(px(14.)).flex_none().children(toggle.take())).child(div().ml(px(4.)).flex_none().flex().flex_row().children(std::mem::take(&mut arrows)))
-                }
-            })
+            .child(div().ml(px(toggle_at)).flex_none().child(toggle))
+            .child(div().ml(px(4.)).flex_none().flex().flex_row().children(arrows))
             .child(div().flex_1());
-        let right = if mirrored {
-            div()
-                .w(px(title.trail))
-                .flex_none()
-                .h_full()
-                .flex()
-                .flex_row()
-                .items_center()
-                .child(div().flex_1())
-                .child(div().flex_none().flex().flex_row().children(std::mem::take(&mut arrows)))
-                .child(div().ml(px(4.)).mr(px(10.)).flex_none().children(toggle.take()))
-                .into_any_element()
-        } else {
-            div().ml(px(12.)).mr(px(10.)).flex_none().children(search.take()).into_any_element()
-        };
+        let right = div().ml(px(12.)).mr(px(10.)).flex_none().child(search);
         div()
             .id("titlebar")
             .absolute()
@@ -282,38 +261,12 @@ impl Workspace {
                 }
             })
             .child(left)
-            .children(logo.map(|r| {
-                div()
-                    .absolute()
-                    .top_0()
-                    .h_full()
-                    .left(px(r.x))
-                    .w(px(r.w))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .when(!mirrored, |d| d.justify_end().pr(px(14.)))
-                    .when(mirrored, |d| d.justify_start().pl(px(14.)))
-                    .on_children_prepainted(move |b, _, _| logo_bounds.set(b.first().copied()))
-                    .child(div().font_family(PIXEL).text_size(px(13.)).text_color(t.tx3).child("DATAMAN"))
-            }))
             .children(strips)
-            .when(first_run, |d| d.child(div().flex_1()))
+            .when(tabless, |d| d.child(div().flex_1()))
             .children(self.render_update_pill(&t, cx))
             .child(right)
             .children(self.render_window_buttons_right(window, cx))
             .children(tab_menu)
-    }
-
-    pub(crate) fn title_logo(&self) -> Option<crate::dock::Rect> {
-        use dataman_core::layout::{Dock, PanelId};
-        let d = self.layout.place_of(PanelId::Explorer).dock;
-        let explorer = |c: &&crate::dock::ColFrame| c.slots.iter().any(|(s, _)| s.panel == PanelId::Explorer && !s.ghost && s.weight >= 0.5);
-        let col = self.frame_now.dock(d).cols.iter().find(explorer).map(|c| c.rect);
-        match d {
-            Dock::Left => col.filter(|r| r.w >= 120. && r.right() >= 230.),
-            Dock::Right => col.filter(|r| r.w >= 190.),
-        }
     }
 
     fn render_strips(&self, side: f32, seam: f32, t: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
@@ -883,6 +836,8 @@ impl Workspace {
             }
             // Zoomed, the divider stays at the result's top: dragged down, it brings the editor back.
             let split_tab = tab.entity_id();
+            let splitting = matches!(self.drag, Some(Drag::Split(_)));
+            let grip = t.line2;
             main = main.child(
                 div()
                     .h(px(metrics::DIVIDER))
@@ -895,7 +850,9 @@ impl Workspace {
                     .border_t_1()
                     .border_b_1()
                     .border_color(t.line)
-                    .child(div().w(px(32.)).h(px(3.)).bg(t.line2))
+                    .group("splitter")
+                    // The grip shows under the pointer and while dragged.
+                    .child(div().w(px(32.)).h(px(3.)).when(splitting, |d| d.bg(t.line2)).group_hover("splitter", move |s| s.bg(grip)))
                     .child(
                         div()
                             .id("splitter")
@@ -2410,23 +2367,24 @@ pub(crate) fn cut_chars(s: &str, n: usize) -> String {
     }
 }
 
-fn explorer_toggle(t: &Theme, open: f32, mirrored: bool) -> gpui::Stateful<Div> {
+const TOGGLE: f32 = 26.;
+
+fn explorer_toggle(t: &Theme, open: f32) -> gpui::Stateful<Div> {
     let (hov, prs, ink) = (t.hov, t.prs, t.tx3);
     // The glyph's outer pane in its 16 pt box (`sidebar.svg`: the frame from x 2.5 to 13.5 and y
-    // 3 to 13, its divider at x 6.5; `sidebar-right.svg` the same mirrored, at x 9.5).
-    let pane = div().absolute().top(px(3.)).h(px(10.)).w(px(4. * open.clamp(0., 1.))).bg(ink);
-    let (pane, glyph) = if mirrored { (pane.right(px(2.5)), Icon::SidebarRight) } else { (pane.left(px(2.5)), Icon::Sidebar) };
+    // 3 to 13, its divider at x 6.5).
+    let pane = div().absolute().top(px(3.)).left(px(2.5)).h(px(10.)).w(px(4. * open.clamp(0., 1.))).bg(ink);
     div()
         .id("toggle-explorer")
         .flex_none()
-        .size(px(26.))
+        .size(px(TOGGLE))
         .flex()
         .items_center()
         .justify_center()
         .cursor_pointer()
         .hover(move |s| s.bg(hov))
         .active(move |s| s.bg(prs))
-        .child(div().relative().size(px(16.)).child(icon(glyph).size(px(16.)).text_color(ink)).child(pane))
+        .child(div().relative().size(px(16.)).child(icon(Icon::Sidebar).size(px(16.)).text_color(ink)).child(pane))
 }
 
 pub(crate) fn focus_ring(t: &Theme) -> Div {

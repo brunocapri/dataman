@@ -673,7 +673,7 @@ impl AgentsPage {
             .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_open_remove(&pm, cx)));
         let back = if p.user.is_empty() { "Agents go back to your login.".to_string() } else { format!("Agents go back to your login, {}.", p.user) };
         let leave = div().child(row().child(div().min_w_0().text_color(t.tx3).child(back)).child(remove));
-        Some(crate::agents_rules::section(t, "agents-login-section", "Agent login", vec![login, password, leave]).into_any_element())
+        Some(crate::agents_rules::flat_section(t, "agents-login-section", "Agent login", vec![login, password, leave]).into_any_element())
     }
 
     /// The rules changed since the login was made: what it needs, and the button that runs it.

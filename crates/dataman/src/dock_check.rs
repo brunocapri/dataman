@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use dataman_core::layout::{Dock, NavView, PanelId, PanelLayout};
+use dataman_core::layout::{Dock, NavView, PanelId};
 use gpui::{AsyncWindowContext, Entity, KeyDownEvent, KeyUpEvent, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, Pixels, Point, point};
 
 use crate::app::Workspace;
@@ -8,7 +8,7 @@ use crate::dock::Rect;
 use crate::theme::{Pt, metrics, px};
 
 pub fn is_stage(s: &str) -> bool {
-    matches!(s, "dock-check" | "dock-drag" | "dock-moved" | "dock-menu")
+    s == "dock-check"
 }
 
 fn input(cx: &mut AsyncWindowContext, e: PlatformInput) {
@@ -36,13 +36,6 @@ fn snap(name: &str, cx: &mut AsyncWindowContext) {
     });
 }
 
-fn command(ws: &Entity<Workspace>, a: Box<dyn gpui::Action>, cx: &mut AsyncWindowContext) {
-    let _ = cx.update(|window, cx| {
-        ws.update(cx, |w, cx| w.focus_editor(window, cx));
-        window.dispatch_action(a, cx);
-    });
-}
-
 async fn pause(cx: &mut AsyncWindowContext, ms: u64) {
     cx.background_executor().timer(Duration::from_millis(ms)).await;
 }
@@ -56,16 +49,8 @@ fn at(x: f32, y: f32) -> Point<Pixels> {
     point(px(x), px(y))
 }
 
-fn grip(r: Rect) -> (f32, f32) {
-    (r.x + r.w / 2., r.y + 5.)
-}
-
 fn panel(ws: &Entity<Workspace>, p: PanelId, cx: &mut AsyncWindowContext) -> Option<Rect> {
     cx.update(|_, cx| ws.read(cx).frame_now.panel(p)).ok().flatten()
-}
-
-fn layout(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> PanelLayout {
-    cx.update(|_, cx| ws.read(cx).layout.clone()).unwrap()
 }
 
 fn none() -> Modifiers {
@@ -127,14 +112,6 @@ fn laid_right(ws: &Entity<Workspace>, d: Dock, cx: &mut AsyncWindowContext) -> b
     laid.len() == want.len() && laid.iter().zip(&want).all(|(a, b)| near(*a, *b, 1.5))
 }
 
-fn logo(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> Option<Rect> {
-    cx.update(|_, cx| ws.read(cx).logo_bounds.get()).ok().flatten().map(|b| Rect { x: b.origin.x.pt(), y: b.origin.y.pt(), w: b.size.width.pt(), h: b.size.height.pt() })
-}
-
-fn logo_over(l: Option<Rect>, c: Rect) -> bool {
-    l.is_some_and(|l| l.x >= c.x && (l.right() - (c.right() - 14.)).abs() < 1.5)
-}
-
 fn view_w(cx: &mut AsyncWindowContext) -> f32 {
     cx.update(|window, _| window.viewport_size().width.pt()).unwrap()
 }
@@ -167,7 +144,7 @@ fn state(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> (NavView, bool,
     .unwrap()
 }
 
-pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContext) -> bool {
+pub async fn run(ws: &Entity<Workspace>, _stage: &str, cx: &mut AsyncWindowContext) -> bool {
     let mut ok = true;
     let mut report = |name: &str, pass: bool, detail: String| {
         println!("{} {name}{}", if pass { "PASS" } else { "FAIL" }, if pass { String::new() } else { format!(" — {detail}") });
@@ -178,15 +155,13 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
         report("the sidebar on screen", false, String::new());
         return false;
     };
-    report("the default arrangement: the sidebar on the left", layout(ws, cx).is_default() && explorer.x == 0., format!("{explorer:?}"));
+    report("the default arrangement: the sidebar on the left", explorer.x == 0., format!("{explorer:?}"));
     let icons = NavView::ALL.map(|v| rail(ws, v, cx));
     report(
         "the rail: three icons down the window's left edge, inside the sidebar, under the title bar",
         icons.iter().all(|r| r.is_some_and(|r| r.x >= 0. && r.right() <= metrics::RAIL_W && r.y >= metrics::TITLE_H)) && icons.windows(2).all(|p| p[0].unwrap().y < p[1].unwrap().y),
         format!("{icons:?}"),
     );
-    let logo0 = logo(ws, cx);
-    report("\"DATAMAN\" sits over the sidebar, at its right edge", logo_over(logo0, explorer), format!("{logo0:?} {explorer:?}"));
     let toolbar = cx.update(|_, cx| ws.read(cx).palette_items(cx).iter().any(|i| i.key == "⌘Y")).unwrap();
     report("no ⌘Y any more", !toolbar, String::new());
 
@@ -240,90 +215,41 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
 
     let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.demo_toggle_side(cx)));
     settle(cx).await;
-    let side = panel(ws, PanelId::Side, cx);
-    report("the side panel opens in the right dock", side.is_some_and(|s| (s.right() - view_w(cx)).abs() < 0.5), format!("{side:?}"));
-    if let Some(sd) = side {
-        drag(cx, grip(sd), &[(sd.x - 300., sd.y + 200.), (60., sd.y + 200.)], false).await;
-        settle(cx).await;
-        report("the side panel does not move on its own", layout(ws, cx).is_default(), format!("{:?}", layout(ws, cx)));
-    }
-
-    let c = cx.update(|_, cx| ws.read(cx).frame_now.center).unwrap();
-    let start = grip(explorer);
-    let near_side = (c.x + c.w * 0.3, c.y + 200.);
-    drag(cx, start, &[(start.0 + 80., start.1 + 100.), near_side], true).await;
-    draw(cx);
-    let found = cx.update(|_, cx| ws.read(cx).panel_drag.as_ref().map(|g| (g.target, g.preview))).unwrap();
-    report("on its own side, the drag offers nothing", found == Some((None, None)), format!("{found:?}"));
-    press(cx, "escape");
-    let (dragging, none_left) = cx.update(|_, cx| (cx.has_active_drag(), ws.read(cx).panel_drag.is_none())).unwrap();
-    up(cx, near_side, MouseButton::Left, 1);
-    settle(cx).await;
-    report("esc lets go of the drag: nothing drops", !dragging && none_left && layout(ws, cx).is_default(), format!("dragging {dragging}"));
-
-    let far = (c.x + c.w * 0.8, c.y + 200.);
-    drag(cx, start, &[(start.0 + 200., start.1 + 100.), (c.x + c.w * 0.6, c.y + 200.), far], true).await;
-    draw(cx);
-    let preview = cx.update(|_, cx| ws.read(cx).panel_drag.as_ref().and_then(|g| g.preview)).unwrap();
-    if stage == "dock-drag" {
-        return ok;
-    }
-    up(cx, far, MouseButton::Left, 1);
-    settle(cx).await;
-    let (l, e, sd, vw) = (layout(ws, cx), panel(ws, PanelId::Explorer, cx), panel(ws, PanelId::Side, cx), view_w(cx));
-    report(
-        "dropped past the middle: the sidebar on the right (where the preview was), the side panel on the left",
-        l == PanelLayout::explorer_at(Dock::Right)
-            && e.is_some_and(|e| (e.right() - vw).abs() < 0.5)
-            && e.zip(preview).is_some_and(|(a, b)| near(a, b, 0.5))
-            && sd.is_some_and(|s| s.x == 0.),
-        format!("{l:?} {e:?} {preview:?} {sd:?}"),
-    );
-    let r = NavView::ALL.map(|v| rail(ws, v, cx));
-    report(
-        "the rail went with it, at the window's right edge",
-        r.iter().all(|r| r.is_some_and(|r| r.right() <= vw && r.x >= vw - metrics::RAIL_W)),
-        format!("{r:?}"),
-    );
-    let (lg, toggle) = (logo(ws, cx), mark(ws, "toggle", cx));
-    report(
-        "the header too: \"DATAMAN\" over the sidebar, the toggle at the right edge",
-        e.zip(lg).is_some_and(|(e, l)| l.x >= e.x && l.right() <= e.right()) && toggle.is_some_and(|t| t.right() > vw - 40. - if crate::keymap::NOT_MAC { 4. * crate::csd::BUTTON + 6. } else { 0. }),
-        format!("{lg:?} {toggle:?} {e:?}"),
-    );
-    report("both docks laid out where the frame says", laid_right(ws, Dock::Left, cx) && laid_right(ws, Dock::Right, cx), format!("{:?}", laid_out(ws, Dock::Right, cx)));
-    if stage == "dock-moved" {
-        return ok;
-    }
-    if let Some(f) = rail(ws, NavView::Favorites, cx) {
-        click(cx, center(f));
-    }
-    settle(cx).await;
-    report("on the right, Favorites in the same place", state(ws, cx).0 == NavView::Favorites && panel(ws, PanelId::Explorer, cx) == e, format!("{:?}", state(ws, cx)));
-
-    if let Some(e) = e {
-        let p = grip(e);
-        down(cx, p, MouseButton::Right, 1);
-        up(cx, p, MouseButton::Right, 1);
+    // It slides in over frames: drawn until it has its width, however slow the renderer.
+    let mut side = panel(ws, PanelId::Side, cx);
+    for _ in 0..30 {
+        pause(cx, 50).await;
         draw(cx);
-        let open = cx.update(|_, cx| ws.read(cx).panel_menu.is_some()).unwrap();
-        report("a right click on its grip opens its menu", open, String::new());
-        if stage == "dock-menu" {
-            return ok;
+        let next = panel(ws, PanelId::Side, cx);
+        if next.is_some() && next == side {
+            break;
         }
-        press(cx, "escape");
-        let _ = cx.update(|_, cx| ws.update(cx, |w, cx| {
-            w.panel_menu = None;
-            cx.notify();
-        }));
+        side = next;
     }
-    command(ws, Box::new(crate::dock::MoveExplorerLeft), cx);
+    report("the side panel opens in the right dock", side.is_some_and(|s| (s.right() - view_w(cx)).abs() < 0.5), format!("{side:?}"));
+    report("both docks laid out where the frame says", laid_right(ws, Dock::Left, cx) && laid_right(ws, Dock::Right, cx), format!("{:?}", laid_out(ws, Dock::Right, cx)));
+
+    // The sidebar stays on the left: a drag from its top edge across the window moves nothing.
+    let vw = view_w(cx);
+    drag(cx, (explorer.x + explorer.w / 2., explorer.y + 5.), &[(explorer.right() + 200., explorer.y + 200.), (vw - 60., explorer.y + 200.)], false).await;
     settle(cx).await;
-    report("\"Move sidebar to the left\": home again, the side panel right", layout(ws, cx).is_default() && panel(ws, PanelId::Side, cx).is_some_and(|s| (s.right() - view_w(cx)).abs() < 0.5), format!("{:?}", layout(ws, cx)));
-    command(ws, Box::new(crate::dock::MoveExplorerRight), cx);
-    settle(cx).await;
-    command(ws, Box::new(crate::dock::ResetPanelLayout), cx);
-    settle(cx).await;
-    report("reset: the sidebar home", layout(ws, cx).is_default(), format!("{:?}", layout(ws, cx)));
+    let (e, sd) = (panel(ws, PanelId::Explorer, cx), panel(ws, PanelId::Side, cx));
+    report(
+        "a drag from the sidebar's top edge: it stays on the left, the side panel on the right",
+        e == Some(explorer) && sd.is_some_and(|s| (s.right() - vw).abs() < 0.5),
+        format!("{e:?} {sd:?}"),
+    );
+    let moves = cx.update(|_, cx| ws.read(cx).palette_items(cx).iter().any(|i| i.label.contains("sidebar to the") || i.label.contains("panel layout"))).unwrap();
+    report("no command moves the sidebar", !moves, String::new());
+
+    // Nothing before the toggle (Windows: its buttons are on the right): it stands on the rail's column.
+    let lead = cx.update(|window, cx| crate::csd::lead(window, cx)).unwrap();
+    let (toggle, db) = (mark(ws, "toggle", cx), rail(ws, NavView::Explorer, cx));
+    let lined = toggle.zip(db).is_some_and(|(t, d)| (center(t).0 - center(d).0).abs() < 0.75);
+    report(
+        "the sidebar toggle: on the rail's column when nothing is before it, past the lights when they are",
+        if lead > 0. { toggle.is_some_and(|t| t.x >= lead) } else { lined },
+        format!("lead {lead} {toggle:?} {db:?}"),
+    );
     ok
 }

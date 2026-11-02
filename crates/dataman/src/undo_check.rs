@@ -431,34 +431,12 @@ async fn connections(ws: &Entity<Workspace>, tree: &Entity<crate::tree::SchemaTr
 }
 
 async fn panels(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowContext) {
-    let layout = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).layout.clone()).unwrap();
-    let home = layout(cx);
-    let _ = cx.update(|window, cx| window.dispatch_action(Box::new(crate::dock::MoveExplorerRight), cx));
-    pause(cx, 400).await;
-    let moved = layout(cx);
-    focus(ws, Region::Grid, cx);
-    key(cx, "cmd-z");
-    let back = layout(cx);
-    key(cx, "cmd-shift-z");
-    let again = layout(cx);
-    r.check(
-        "the sidebar moved (the palette's move): ⌘Z on the grid puts it back, ⇧⌘Z moves it again",
-        moved != home && back == home && again == moved && next_undo(ws, cx).0.as_deref() == Some("Move sidebar"),
-        format!("{:?}", next_undo(ws, cx)),
-    );
-    let _ = cx.update(|window, cx| window.dispatch_action(Box::new(crate::dock::ResetPanelLayout), cx));
-    let reset = layout(cx);
-    focus(ws, Region::Grid, cx);
-    key(cx, "ctrl-z");
-    r.check("Reset panel layout: ⌃Z brings the layout before it back", reset == home && layout(cx) == moved, String::new());
-    key(cx, "ctrl-z");
-
     let width = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).explorer_w).unwrap();
     let seam_now = |cx: &mut AsyncWindowContext| {
         draw(cx);
         cx.update(|_, cx| ws.read(cx).frame_now.dock(dataman_core::layout::Dock::Left).cols.first().map(|c| c.rect)).ok().flatten()
     };
-    // The layout slides back over frames: the seam is where it stays, however slow the renderer.
+    // The sidebar may still be sliding: the seam is where it stays, however slow the renderer.
     let mut seam = seam_now(cx);
     for _ in 0..60 {
         pause(cx, 100).await;

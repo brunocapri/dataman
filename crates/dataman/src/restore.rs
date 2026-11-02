@@ -31,7 +31,6 @@ impl Workspace {
     pub(crate) fn restore_session(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let Some(store) = store(cx) else { return false };
         let Some(s) = store.load() else { return false };
-        self.layout = s.layout.clone().normalized();
         if s.audit_detail_w.is_finite() && s.audit_detail_w > 0. {
             self.agents.update(cx, |a, _| a.detail_w = s.audit_detail_w.max(crate::agents::DETAIL_MIN));
         }
@@ -149,7 +148,6 @@ impl Workspace {
             nav: if self.view == dataman_core::layout::NavView::Agents { dataman_core::layout::NavView::Explorer } else { self.view },
             side_w: self.side_w,
             editor_frac: self.editor_frac,
-            layout: self.layout.clone(),
             audit_detail_w: self.agents.read(cx).detail_w,
         };
         (session, files)
@@ -170,7 +168,6 @@ impl Workspace {
         (self.active, self.explorer_open, self.explorer_w.to_bits(), self.side_w.to_bits(), self.view).hash(&mut h);
         self.editor_frac.map(f32::to_bits).hash(&mut h);
         self.agents.read(cx).detail_w.to_bits().hash(&mut h);
-        self.layout.hash(&mut h);
         self.split.as_ref().map(|s| (&s.right, s.focus, s.other, s.ratio.to_bits())).hash(&mut h);
         h.finish()
     }

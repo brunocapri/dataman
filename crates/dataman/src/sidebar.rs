@@ -1,13 +1,12 @@
 use std::time::Instant;
 
-use dataman_core::layout::{Dock, NavView};
+use dataman_core::layout::NavView;
 use gpui::{AnyElement, Context, InteractiveElement, IntoElement, MouseButton, ParentElement, StatefulInteractiveElement, Styled, Window, actions, div, prelude::FluentBuilder};
 
 use crate::app::{Region, Workspace};
 use crate::assets::{Icon, icon};
 use crate::theme::{ActiveTheme, metrics, px};
 use crate::ui;
-use crate::ui::Tipped;
 
 actions!(
     sidebar,
@@ -26,56 +25,6 @@ pub(crate) fn workspace_actions(d: gpui::Stateful<gpui::Div>, cx: &mut Context<W
 
 const ICON_BOX: f32 = 28.;
 const GLYPH: f32 = 15.;
-
-/// The rail's selected icon is drawn filled: the fill fades in when picked and out when left.
-#[derive(Default)]
-pub(crate) struct RailFill {
-    seen: Option<(NavView, bool)>,
-    view: Option<(NavView, Instant)>,
-    gear: Option<Instant>,
-}
-
-impl RailFill {
-    fn track(&mut self, view: NavView, gear: bool, reduced: bool) {
-        if let Some((v, g)) = self.seen.filter(|_| !reduced) {
-            if v != view {
-                self.view = Some((v, Instant::now()));
-            }
-            if g != gear {
-                self.gear = Some(Instant::now());
-            }
-        }
-        self.seen = Some((view, gear));
-    }
-
-    /// How far `v`'s fill has faded in, while it still moves.
-    fn level(&self, v: NavView, on: bool) -> Option<f32> {
-        let (from, at) = self.view?;
-        (on || v == from).then(|| crate::motion::icon_fade(at, on)).flatten()
-    }
-
-    fn gear_level(&self, on: bool) -> Option<f32> {
-        crate::motion::icon_fade(self.gear?, on)
-    }
-
-    fn moving(&self) -> bool {
-        let busy = |at: Instant| at.elapsed() < crate::motion::ICON_FADE;
-        self.view.is_some_and(|(_, at)| busy(at)) || self.gear.is_some_and(busy)
-    }
-}
-
-fn rail_icon(outline: Icon, filled: Icon, on: bool, level: Option<f32>, size: f32, color: gpui::Hsla) -> AnyElement {
-    match level {
-        Some(level) => div()
-            .relative()
-            .flex_none()
-            .size(px(size))
-            .child(div().absolute().inset_0().opacity(1. - level).child(icon(outline).size(px(size)).text_color(color)))
-            .child(div().absolute().inset_0().opacity(level).child(icon(filled).size(px(size)).text_color(color)))
-            .into_any_element(),
-        None => icon(if on { filled } else { outline }).size(px(size)).text_color(color).into_any_element(),
-    }
-}
 
 impl Workspace {
     pub(crate) fn set_nav(&mut self, v: NavView, cx: &mut Context<Self>) {
@@ -142,12 +91,9 @@ impl Workspace {
         let star = self.saved_bounds.get()?;
         window.request_animation_frame();
         let t = cx.theme();
-        let right = self.layout.explorer_dock() == Dock::Right;
-        let text = if right { format!("{} →", f.label) } else { format!("← {}", f.label) };
-        let (x, y) = (star.origin.x, star.origin.y + star.size.height / 2. - gpui::px(9.));
-        let hint = div().absolute().top(y).h(gpui::px(18.)).flex().items_center().whitespace_nowrap().text_size(px(12.)).text_color(t.tx).opacity(a).child(text);
-        let hint = if right { hint.right(window.viewport_size().width - x + gpui::px(8.)) } else { hint.left(star.right() + gpui::px(8.)) };
-        Some(hint.into_any_element())
+        let y = star.origin.y + star.size.height / 2. - gpui::px(9.);
+        let hint = div().absolute().top(y).left(star.right() + gpui::px(8.)).h(gpui::px(18.)).flex().items_center().whitespace_nowrap().text_size(px(12.)).text_color(t.tx).opacity(a);
+        Some(hint.child(format!("← {}", f.label)).into_any_element())
     }
 
     /// Showing a tab uncovers it: the Agents area gives the tabs back to the sidebar's earlier view.
@@ -163,7 +109,7 @@ impl Workspace {
         self.show_nav(NavView::Agents, window, cx);
     }
 
-    pub(crate) fn render_sidebar(&mut self, d: Dock, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn render_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         if matches!(self.view, NavView::Favorites | NavView::History) {
             self.view = if self.history.read(cx).showing_favorites() { NavView::Favorites } else { NavView::History };
         }
@@ -172,49 +118,36 @@ impl Workspace {
             NavView::Agents => self.agents.update(cx, |a, cx| a.render_nav(window, cx)),
             _ => self.history.clone().into_any_element(),
         };
-        let rail = self.render_rail(d, window, cx);
+        let rail = self.render_rail(window, cx);
         let view = div().flex_1().min_w_0().h_full().child(view);
-        let row = div().size_full().flex().flex_row().border_t_1().border_color(cx.theme().line);
-        match d {
-            Dock::Left => row.child(rail).child(view),
-            Dock::Right => row.child(view).child(rail),
-        }
-        .into_any_element()
+        div().size_full().flex().flex_row().border_t_1().border_color(cx.theme().line).child(rail).child(view).into_any_element()
     }
 
-    fn render_rail(&mut self, d: Dock, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn render_rail(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let t = cx.theme();
         let lit = self.saved_flash.as_ref().and_then(|f| crate::motion::SAVED.at(f.at, Instant::now(), cx.reduce_motion()));
-        let said = self.saved_flash.as_ref().map_or("", |f| f.label);
         if lit.is_some() {
             window.request_animation_frame();
         }
         let bounds = self.rail_bounds.clone();
         let saved = self.saved_bounds.clone();
         let settings_on = self.settings_view.is_some();
-        self.rail_fill.track(self.view, settings_on, crate::motion::still(cx));
-        if self.rail_fill.moving() {
-            window.request_animation_frame();
-        }
-        let fill = &self.rail_fill;
         let icons = NavView::ALL.map(|v| {
             let on = self.view == v;
             let flash = lit.filter(|_| v == NavView::Favorites);
-            let (outline, filled) = match v {
-                NavView::Explorer => (Icon::Database, Icon::DatabaseFill),
-                NavView::Favorites => (Icon::Star, Icon::StarFill),
-                NavView::History => (Icon::History, Icon::HistoryFill),
-                NavView::Agents => (Icon::Robot, Icon::RobotFill),
+            let glyph = match v {
+                NavView::Explorer => Icon::Database,
+                NavView::Favorites => Icon::Star,
+                NavView::History => Icon::History,
+                NavView::Agents => Icon::Robot,
             };
             let color = match flash {
                 Some(_) => t.tx,
                 None if on => t.tx,
                 None => t.tx3,
             };
-            let glyph = rail_icon(outline, filled, on || flash.is_some(), fill.level(v, on).filter(|_| flash.is_none()), GLYPH, color);
             let hov = t.hov;
             let (bounds, saved) = (bounds.clone(), saved.clone());
-            let tip = if flash.is_some() { said } else { v.label() };
             div()
                 .flex_none()
                 .on_children_prepainted(move |b, _, _| {
@@ -236,10 +169,9 @@ impl Workspace {
                         .when(on, |e| e.bg(t.prs))
                         .when_some(flash, |e, k| e.bg(t.tx.opacity(0.14 * k)))
                         .when(!on && flash.is_none(), move |e| e.hover(move |s| s.bg(hov)))
-                        .tip(ui::tooltip(tip, None, None))
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .on_click(cx.listener(move |w, _, window, cx| w.rail_click(v, window, cx)))
-                        .child(glyph),
+                        .child(icon(glyph).size(px(GLYPH)).text_color(color)),
                 )
         });
         let on = self.view == NavView::Agents;
@@ -265,7 +197,6 @@ impl Workspace {
                     .cursor_pointer()
                     .when(on, |e| e.bg(t.prs))
                     .when(!on, move |e| e.hover(move |s| s.bg(hov)))
-                    .tip(ui::tooltip("Agents", None, None))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(cx.listener(move |w, _, window, cx| {
                         if w.view == NavView::Agents {
@@ -274,7 +205,7 @@ impl Workspace {
                             w.show_nav(NavView::Agents, window, cx);
                         }
                     }))
-                    .child(rail_icon(Icon::Robot, Icon::RobotFill, on, fill.level(NavView::Agents, on), 16., if on { t.tx } else { t.tx3 })),
+                    .child(icon(Icon::Robot).size(px(16.)).text_color(if on { t.tx } else { t.tx3 })),
             );
         let gear = div()
             .children(ui::here(&"rail-settings".into()))
@@ -287,10 +218,9 @@ impl Workspace {
             .cursor_pointer()
             .when(settings_on, |e| e.bg(t.prs))
             .when(!settings_on, move |e| e.hover(move |s| s.bg(hov)))
-            .tip(ui::tooltip("Settings", None, crate::keymap::key("settings").as_deref()))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(cx.listener(|w, _, window, cx| w.toggle_settings(window, cx)))
-            .child(rail_icon(Icon::Gear, Icon::GearFill, settings_on, fill.gear_level(settings_on), GLYPH, if settings_on { t.tx } else { t.tx3 }));
+            .child(icon(Icon::Gear).size(px(GLYPH)).text_color(if settings_on { t.tx } else { t.tx3 }));
         div()
             .id("sidebar-rail")
             .w(px(metrics::RAIL_W))
@@ -303,8 +233,7 @@ impl Workspace {
             .items_center()
             .gap(px(4.))
             .border_color(t.line)
-            .when(d == Dock::Left, |e| e.border_r_1())
-            .when(d == Dock::Right, |e| e.border_l_1())
+            .border_r_1()
             .children(icons)
             .child(div().flex_1())
             .child(robot)

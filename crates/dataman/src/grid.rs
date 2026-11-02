@@ -2616,6 +2616,7 @@ fn paint_frame(grid: &Entity<ResultGrid>, frame: Frame, bounds: Bounds<Pixels>, 
     let sy = g.scroll.1;
     let ry = |r: usize| (r as f64 * ROW_H as f64 - sy) as f32;
     let (vthumb, hthumb) = (g.v_thumb(), g.h_thumb());
+    let rows = g.rows();
     let ncols = g.dcols();
     let o = bounds.origin;
     let at = |x: f32, y: f32| point(o.x + px(x), o.y + px(y));
@@ -2742,6 +2743,15 @@ fn paint_frame(grid: &Entity<ResultGrid>, frame: Frame, bounds: Bounds<Pixels>, 
             }
         }
     });
+    // The last row closes the table with a line under it, across the gutter and the columns.
+    if rows > 0
+        && let Some(end) = frame.cols.last().map(|fc| geo.gutter + fc.x + fc.w)
+    {
+        let y = HEADER_H + ry(rows) - 1.;
+        window.with_content_mask(Some(rows_area.clone()), |window| {
+            window.paint_quad(fill(rect(0., y, end.min(geo.gutter + geo.body_w), 1.), t.grid_line));
+        });
+    }
     if let (Some(p), Some((_, _, b)), true) = (click_pop, pop_rect, focused) {
         window.with_content_mask(Some(rows_area.clone()), |window| {
             window.paint_quad(gpui::quad(

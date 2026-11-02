@@ -31,7 +31,6 @@ pub struct Session {
     pub nav: crate::layout::NavView,
     pub side_w: f32,
     pub editor_frac: Option<f32>,
-    pub layout: crate::layout::PanelLayout,
     pub split: Option<crate::groups::SplitState>,
     /// Agents › Audit's detail beside the calls; 0 for its default.
     pub audit_detail_w: f32,
@@ -550,6 +549,10 @@ mod tests {
         assert!(names.iter().all(|n| !n.starts_with('.')), "{names:?}");
         store.save(t_old, &s, &[]).unwrap();
         assert_eq!(store.load().unwrap().tabs[0].results.as_deref(), Some("r1-b2.bin"));
+        // Files from when the sidebar could move kept its side: read past it.
+        let old = r#"{"version":1,"explorer_open":true,"layout":{"left":[{"panels":["side"]}],"right":[{"panels":["explorer"]}]}}"#;
+        std::fs::write(store.dir().join(SESSION_FILE), old).unwrap();
+        assert!(store.load().is_some_and(|s| s.explorer_open));
         for text in ["{ not json", "[]", "{\"version\": 99}"] {
             std::fs::write(store.dir().join(SESSION_FILE), text).unwrap();
             assert!(store.load().is_none(), "{text}");

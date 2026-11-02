@@ -299,21 +299,14 @@ pub struct Workspace {
     side_tween: Option<crate::motion::WidthTween>,
     side_was: bool,
     pub(crate) side_seen: Option<Side>,
-    pub(crate) layout: dataman_core::layout::PanelLayout,
-    pub(crate) dock_moves: Vec<crate::dock::DockMove>,
-    pub(crate) panel_drag: Option<crate::dock::PanelDrag>,
     pub(crate) frame_now: crate::dock::Frame,
     pub(crate) title_now: crate::dock::TitleFrame,
-    pub(crate) explorer_blend: crate::dock::ExplorerBlend,
-    pub(crate) panel_menu: Option<(dataman_core::layout::PanelId, gpui::Point<gpui::Pixels>)>,
     pub(crate) slot_bounds: std::rc::Rc<std::cell::RefCell<[Vec<Vec<gpui::Bounds<gpui::Pixels>>>; 2]>>,
     pub(crate) saved_flash: Option<SavedFlash>,
     saved_flash_task: Option<gpui::Task<()>>,
     pub(crate) rail_bounds: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<dataman_core::layout::NavView, gpui::Bounds<gpui::Pixels>>>>,
     pub(crate) saved_bounds: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
-    pub(crate) rail_fill: crate::sidebar::RailFill,
     fades: crate::fades::Fades,
-    pub(crate) logo_bounds: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
     pub(crate) title_marks: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<&'static str, gpui::Bounds<gpui::Pixels>>>>,
     pub(crate) editor_frac: Option<f32>,
     pub(crate) drag: Option<Drag>,
@@ -421,6 +414,7 @@ impl Workspace {
                 w.open_logged(&sql, connection.as_deref(), database.as_deref(), window, cx);
             }
             crate::agents::AgentsEvent::ViewValue(cell) => w.open_value_as(cell.clone(), false, window, cx),
+            crate::agents::AgentsEvent::Close => w.show_nav(w.before_agents, window, cx),
         })
         .detach();
         cx.subscribe_in(&tree, window, Self::on_tree).detach();
@@ -503,21 +497,14 @@ impl Workspace {
             side_tween: None,
             side_was: false,
             side_seen: None,
-            layout: Default::default(),
-            dock_moves: Vec::new(),
-            panel_drag: None,
             frame_now: Default::default(),
             title_now: Default::default(),
-            explorer_blend: Default::default(),
-            panel_menu: None,
             slot_bounds: Default::default(),
             saved_flash: None,
             saved_flash_task: None,
             saved_bounds: Default::default(),
             rail_bounds: Default::default(),
-            rail_fill: Default::default(),
             fades: Default::default(),
-            logo_bounds: Default::default(),
             title_marks: Default::default(),
             editor_frac: None,
             drag: None,
@@ -2728,8 +2715,7 @@ impl Render for Workspace {
         let docks = self.render_docks(&pass, production, window, cx);
         let left_w = pass.frame.dock(dataman_core::layout::Dock::Left).rect.w;
         let left_shown = left_w > 0.5;
-        let seam = if pass.band_left() { gpui::transparent_black() } else { t.line };
-        let moving = self.explorer_tween.is_some() || !self.dock_moves.is_empty();
+        let moving = self.explorer_tween.is_some();
         let work = div()
             .flex_1()
             .min_w_0()
@@ -2739,7 +2725,7 @@ impl Render for Workspace {
             // The work column's fill, painted here and only here: every region inside is transparent,
             // so no overlap darkens.
             .bg(t.panel)
-            .when(left_shown, |d| d.border_l_1().border_color(seam))
+            .when(left_shown, |d| d.border_l_1().border_color(t.line))
             .overflow_hidden()
             .child(div().h(px(metrics::TITLE_H)).flex_none())
             .child(
@@ -2977,7 +2963,6 @@ impl Render for Workspace {
             .on_action(cx.listener(|w, _: &ImportConnections, window, cx| w.open_import(window, cx)))
             .on_action(cx.listener(|w, _: &CancelPendingRun, window, cx| w.resolve_pending_run(false, window, cx)))
             .on_action(cx.listener(|w, _: &DiscardAndRun, window, cx| w.resolve_pending_run(true, window, cx)))
-            .map(|d| crate::dock::workspace_actions(d, cx))
             .map(|d| crate::sidebar::workspace_actions(d, cx))
             .map(|d| crate::split::workspace_actions(d, cx))
             .map(|d| crate::undo::workspace_actions(d, cx))
@@ -2997,9 +2982,7 @@ impl Render for Workspace {
             .child(self.render_status(window, cx))
             .child(self.render_titlebar(window, cx))
             .when(t.is_dark(), |d| d.child(div().absolute().top_0().left_0().right_0().h(px(1.)).bg(gpui::hsla(0., 0., 1., 0.08))))
-            .children(self.render_drop_preview(window, cx))
             .children(self.render_saved_hint(window, cx))
-            .children(self.render_panel_menu(cx))
             .children(self.render_toasts(window, cx))
             .children(self.render_crash_toast(cx))
             .children(modals)

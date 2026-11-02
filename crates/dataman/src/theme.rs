@@ -62,7 +62,8 @@ pub fn set_zoom(z: f32, window: &mut Window, cx: &mut App) {
     cx.refresh_windows();
 }
 
-pub const PIXEL: &str = "DotGothic16";
+/// The wordmark and the empty states' banners: Geist Mono in capitals, whatever the UI font.
+pub const BANNER: &str = "Geist Mono";
 
 static FONT: AtomicU8 = AtomicU8::new(0);
 static REGISTERED: AtomicU8 = AtomicU8::new(0);
@@ -121,16 +122,15 @@ fn faces(f: UiFont) -> [&'static [u8]; 5] {
 
 pub fn register_fonts(font: UiFont, cx: &App) {
     FONT.store(UiFont::ALL.iter().position(|f| *f == font).unwrap_or(0) as u8, Ordering::Relaxed);
-    let pixel: Cow<'static, [u8]> = Cow::Borrowed(include_bytes!("../assets/fonts/DotGothic16-Regular.ttf"));
-    add_families(&[font], Some(pixel), cx);
+    add_families(&[font, UiFont::GeistMono], cx);
 }
 
 pub fn ensure_fonts(fonts: &[UiFont], cx: &App) {
-    add_families(fonts, None, cx);
+    add_families(fonts, cx);
 }
 
-fn add_families(fonts: &[UiFont], extra: Option<Cow<'static, [u8]>>, cx: &App) {
-    let mut bytes: Vec<Cow<'static, [u8]>> = extra.into_iter().collect();
+fn add_families(fonts: &[UiFont], cx: &App) {
+    let mut bytes: Vec<Cow<'static, [u8]>> = Vec::new();
     let mut bits = 0u8;
     for (i, f) in UiFont::ALL.iter().enumerate() {
         if fonts.contains(f) && REGISTERED.load(Ordering::Relaxed) & (1 << i) == 0 {

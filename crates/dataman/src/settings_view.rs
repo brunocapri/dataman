@@ -79,7 +79,6 @@ enum Row {
     ReduceMotion,
     DbLogos,
     ExplorerView,
-    Panels,
     AutoConnect,
     Prefetch,
     PageSize,
@@ -100,7 +99,7 @@ enum Row {
     CrashReports,
 }
 
-const ROWS: [(Row, Section, &str, &str); 26] = [
+const ROWS: [(Row, Section, &str, &str); 25] = [
     (Row::Theme, Section::Appearance, "Theme", "dark light system"),
     (Row::Font, Section::Appearance, "Font", "typeface family monospace geist lilex zed jetbrains"),
     (Row::Translucency, Section::Appearance, "Window translucency", "transparency blur opaque"),
@@ -108,7 +107,6 @@ const ROWS: [(Row, Section, &str, &str); 26] = [
     (Row::ReduceMotion, Section::Appearance, "Reduce motion", "animation accessibility"),
     (Row::DbLogos, Section::Appearance, "Database logos", "icon engine postgres mysql mongodb redis elasticsearch opensearch explorer picker"),
     (Row::ExplorerView, Section::Appearance, "Explorer view", "explorer tree simple advanced full tables schemas system internal extensions hide eye"),
-    (Row::Panels, Section::Appearance, "Panels", "panel layout dock explorer history favorites move reset"),
     (Row::AutoConnect, Section::Connections, "Connect on start", "connections connect automatically startup launch open auto"),
     (Row::KeywordCase, Section::Editor, "Keyword case", "format formatter sql upper lower"),
     (Row::Indent, Section::Editor, "Indent", "format formatter spaces tab"),
@@ -561,7 +559,7 @@ impl SettingsView {
                     .text_system()
                     .all_font_names()
                     .into_iter()
-                    .filter(|n| !embedded.contains(&n.as_str()) && n != theme::PIXEL)
+                    .filter(|n| !embedded.contains(&n.as_str()))
                     .collect();
                 self.system_fonts = Some(names.into());
             }
@@ -653,11 +651,16 @@ impl SettingsView {
         let query = self.system_font_query.read(cx).text().to_string();
         let current = self.settings.system_font.clone();
         let matches = rank_fonts(&query, self.system_fonts.as_deref().unwrap_or(&[]), MAX_SHOWN_FONTS);
-        ui::popover(t)
+        let menu = ui::popover(t)
             .flex()
             .flex_col()
             .gap(px(4.))
             .w(px(280.))
+            .on_mouse_down_out(cx.listener(|v, _, _, cx| {
+                v.system_font_open = false;
+                ui::menu_shut("font-system");
+                cx.notify();
+            }))
             .child(
                 div()
                     .h(px(26.))
@@ -688,7 +691,12 @@ impl SettingsView {
                     .cursor_pointer()
                     .child(name.to_string())
                     .on_click(cx.listener(move |v, _, _, cx| v.set_system_font(picked.clone(), cx)))
-            }))
+            }));
+        div()
+            .absolute()
+            .right_0()
+            .top(px(28.))
+            .child(gpui::deferred(gpui::anchored().anchor(gpui::Anchor::TopRight).snap_to_window_with_margin(px(8.)).child(ui::menu_in("font-system-in", menu))).priority(3))
             .into_any_element()
     }
 
@@ -702,24 +710,31 @@ impl SettingsView {
                 let sys_on = sys.is_some();
                 let sys_label: SharedString = sys.clone().unwrap_or_else(|| "System…".into()).into();
                 let open = self.system_font_open;
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(6.))
+                ui::segmented(t)
+                    .children(UiFont::ALL.into_iter().enumerate().map(|(i, f)| {
+                        ui::segment(t, ("font", i), f.family(), !sys_on && cur == f)
+                            .font_family(f.family())
+                            .on_click(cx.listener(move |v, _, _, cx| v.set_font(f, cx)))
+                    }))
                     .child(
-                        ui::segmented(t)
-                            .children(UiFont::ALL.into_iter().enumerate().map(|(i, f)| {
-                                ui::segment(t, ("font", i), f.family(), !sys_on && cur == f)
-                                    .font_family(f.family())
-                                    .on_click(cx.listener(move |v, _, _, cx| v.set_font(f, cx)))
-                            }))
+                        div()
+                            .relative()
+                            .flex_1()
+                            .flex()
                             .child(
                                 ui::segment(t, "font-system", sys_label, sys_on || open)
+                                    .gap(px(6.))
                                     .when_some(sys.clone(), |d, f| d.font_family(f))
-                                    .on_click(cx.listener(|v, _, window, cx| v.toggle_system_fonts(window, cx))),
-                            ),
+                                    .child(ui::dropdown_arrow("font-system-arrow", open, 9., t.tx3))
+                                    .on_click(cx.listener(|v, _, window, cx| {
+                                        if !v.system_font_open && ui::menu_just_shut("font-system") {
+                                            return;
+                                        }
+                                        v.toggle_system_fonts(window, cx)
+                                    })),
+                            )
+                            .when(open, |d| d.child(self.render_system_font_picker(t, cx))),
                     )
-                    .when(open, |d| d.child(self.render_system_font_picker(t, cx)))
                     .into_any_element()
             }
             Row::Translucency if !crate::theme::translucency_works() => {
@@ -765,11 +780,6 @@ impl SettingsView {
                     }))
                     .into_any_element()
             }
-            Row::Panels => ui::button(t, "reset-panels", ui::Btn::Secondary)
-                .h(px(28.))
-                .child("Reset panels")
-                .on_click(|_, window, cx| window.dispatch_action(Box::new(crate::dock::ResetPanelLayout), cx))
-                .into_any_element(),
             Row::KeywordCase => {
                 let cur = s.keyword_case;
                 ui::segmented(t)

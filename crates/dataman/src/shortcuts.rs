@@ -1,7 +1,7 @@
 use gpui::{Div, div, prelude::*};
 use crate::theme::px;
 
-use crate::theme::{PIXEL, Theme};
+use crate::theme::{BANNER, Theme};
 use crate::ui;
 
 pub const GROUPS: &[(&str, &[(&str, &str)])] = &[
@@ -198,7 +198,7 @@ pub fn sheet(t: &Theme, close: impl IntoElement) -> gpui::Stateful<Div> {
         .max_w(gpui::relative(0.96))
         .p(px(28.))
         .gap(px(22.))
-        .child(div().flex().flex_row().items_center().child(div().flex_1().font_family(PIXEL).text_size(px(26.)).child("KEYS & FOCUS")).child(close))
+        .child(div().flex().flex_row().items_center().child(div().flex_1().font_family(BANNER).text_size(px(26.)).child("KEYS & FOCUS")).child(close))
         .child(div().id("shortcuts-body").flex_1().min_h_0().overflow_y_scroll().child(div().flex().flex_row().gap(px(18.)).children(COLUMNS.iter().map(|ixs| {
             div()
                 .flex_1()

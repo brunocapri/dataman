@@ -1178,7 +1178,7 @@ impl Render for DataImportView {
                 .bg(t.field)
                 .child(match &self.error {
                     Some(e) => div().px(px(20.)).text_color(t.err).child(e.clone()),
-                    None => ui::pixel(if self.loading { "[ READING ]" } else { "[ NO FILE ]" }, 18., t.tx4),
+                    None => ui::banner(if self.loading { "[ READING ]" } else { "[ NO FILE ]" }, 18., t.tx4),
                 })
                 .into_any_element(),
         };

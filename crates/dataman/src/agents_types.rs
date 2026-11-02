@@ -176,7 +176,7 @@ impl AgentsPage {
             .flex()
             .flex_col()
             .child(head)
-            .child(div().flex_1().min_h_0().flex().flex_row().border_t_1().border_color(t.line).child(left).child(self.render_editor(t, window, cx)))
+            .child(div().flex_1().min_h_0().flex().flex_row().child(left).child(self.render_editor(t, window, cx)))
             .into_any_element()
     }
 

@@ -69,6 +69,8 @@ pub enum AgentsEvent {
     Open { sql: String, connection: Option<String>, database: Option<String> },
     /// A cell of what the agent received, for the value viewer (read-only).
     ViewValue(crate::value_view::ValueCell),
+    /// The header's ×: back to the sidebar's earlier view and the tabs.
+    Close,
 }
 
 gpui::actions!(agents_list, [ListUp, ListDown, ListPageUp, ListPageDown, ListFirst, ListLast, ListOpen]);
@@ -76,6 +78,8 @@ gpui::actions!(agents_list, [ListUp, ListDown, ListPageUp, ListPageDown, ListFir
 /// The page's list keys, as the explorer and history have them; not in a field or the reply's grid.
 const LIST: &str = "AgentsPage && !TextInput && !ResultGrid";
 const PAGE_STEP: isize = 10;
+/// A header's right padding: the close button and a gap.
+pub(crate) const CLOSE_ROOM: f32 = 56.;
 
 pub fn bind_keys(cx: &mut App) {
     let c = Some(LIST);
@@ -953,13 +957,14 @@ impl AgentsPage {
                 cx.notify();
             }))
             .children(rows);
-        Some(gpui::deferred(gpui::anchored().position(m.at).snap_to_window_with_margin(px(8.)).child(ui::menu_in("agents-menu-in", pop))).priority(3).into_any_element())
+        Some(gpui::deferred(gpui::anchored().position(m.at).snap_to_window_with_margin(px(8.)).child(pop)).priority(3).into_any_element())
     }
 
     // ---- Shared pieces ----
 
+    /// A page's title bar, as Protection's: the title over a line across the page.
     pub(crate) fn header(&self, t: &Theme, title: &str) -> gpui::Div {
-        div().h(px(56.)).flex_none().px(px(32.)).flex().flex_row().items_center().gap(px(12.)).child(div().text_size(px(17.)).font_weight(FontWeight::BOLD).text_color(t.tx).child(title.to_string()))
+        div().h(px(52.)).flex_none().pl(px(32.)).pr(px(CLOSE_ROOM)).flex().flex_row().items_center().gap(px(10.)).border_b_1().border_color(t.line).child(page_title(t, title))
     }
 
     pub(crate) fn conn_label(&self, t: &Theme, name: &str, cx: &App) -> gpui::Div {
@@ -994,7 +999,7 @@ impl AgentsPage {
                 .gap(px(6.))
                 .text_color(if on { t.tx } else { t.tx2 })
                 .cursor_pointer()
-                .map(|d| ui::selectable(d, &t, on, focused))
+                .map(|d| ui::selectable_flat(d, &t, on, focused))
                 .when(!on, move |d| d.hover(move |s| s.bg(hov)))
                 .child(icon(p.icon()).size(px(14.)).text_color(if on { t.tx } else { t.tx3 }))
                 .child(div().flex_1().pl(px(4.)).child(p.label()))
@@ -1109,8 +1114,6 @@ impl AgentsPage {
                         .relative()
                         .flex()
                         .flex_col()
-                        .border_t_1()
-                        .border_color(t.line)
                         .px(px(32.))
                         .py(px(16.))
                         .child(measure_area)
@@ -1120,10 +1123,9 @@ impl AgentsPage {
         }
         let search_focused = self.search.read(cx).focus_handle(cx).is_focused(window);
         let toolbar = div()
-            .h(px(44.))
+            .h(px(52.))
             .flex_none()
             .px(px(32.))
-            .pb(px(12.))
             .flex()
             .flex_row()
             .items_center()
@@ -1995,6 +1997,11 @@ impl Tip {
     }
 }
 
+/// A page's title, in its title bar.
+pub(crate) fn page_title(t: &Theme, title: &str) -> gpui::Div {
+    div().flex_none().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(t.tx).child(title.to_string())
+}
+
 /// A label with a `?` whose hover shows a `Tip`.
 pub(crate) fn label_tip(t: &Theme, id: &str, label: &str, tip: Tip) -> gpui::Div {
     div().flex().flex_row().items_center().gap(px(6.)).child(ui::caps(t, label.to_string())).child(qmark(t, id, tip))
@@ -2079,13 +2086,12 @@ pub(crate) fn field(t: &Theme, id: &'static str, input: &Entity<TextInput>, wind
 /// The mask dropdown (112 pt): a closed popup button.
 pub(crate) fn dropdown(t: &Theme, page: &AgentsPage, id: SharedString, label: &str, enabled: bool) -> gpui::Div {
     let open = page.menu.as_ref().is_some_and(|m| m.id == id);
-    let arrow = SharedString::from(format!("{id}-arrow"));
-    div().relative().w(px(112.)).flex_none().child(page.anchor(id.clone())).child(select_box(t, id, label, enabled, open, arrow))
+    div().relative().w(px(112.)).flex_none().child(page.anchor(id.clone())).child(select_box(t, id, label, enabled, open))
 }
 
 /// A popup button as the rest of Dataman draws one (Export's, Import's): its arrow turns while
 /// the menu is open.
-pub(crate) fn select_box(t: &Theme, id: SharedString, label: &str, enabled: bool, open: bool, arrow: SharedString) -> gpui::Div {
+pub(crate) fn select_box(t: &Theme, id: SharedString, label: &str, enabled: bool, open: bool) -> gpui::Div {
     let hov = t.hov;
     div()
         .children(ui::here(&id.into()))
@@ -2100,7 +2106,7 @@ pub(crate) fn select_box(t: &Theme, id: SharedString, label: &str, enabled: bool
         .when(enabled, |d| d.border_color(if open { t.acc } else { t.field_b }).text_color(t.tx).hover(move |s| s.bg(hov)))
         .when(!enabled, |d| d.border_color(t.line).text_color(t.tx3))
         .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(label.to_string()))
-        .child(ui::dropdown_arrow(arrow, open, 9., if enabled { t.tx3 } else { t.tx4 }))
+        .child(icon(if open { Icon::ChevronUp } else { Icon::ChevronDown }).size(px(9.)).text_color(if enabled { t.tx3 } else { t.tx4 }))
 }
 
 pub(crate) fn switch(t: &Theme, id: impl Into<SharedString>, on: bool) -> gpui::AnyElement {
@@ -2161,6 +2167,14 @@ impl Render for AgentsPage {
             .text_size(px(12.))
             .text_color(t.tx)
             .child(body)
+            // Over every page's header, at its right end (the headers leave it room).
+            .child(
+                div()
+                    .absolute()
+                    .top(px(13.))
+                    .right(px(16.))
+                    .child(ui::modal_close(&t, "agents-close").on_click(cx.listener(|_, _, _, cx| cx.emit(AgentsEvent::Close)))),
+            )
             .children(self.render_menu(&t, cx))
             .children(self.render_import(&t, cx))
             .children(self.render_clear(&t, cx))
