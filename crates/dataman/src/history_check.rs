@@ -748,9 +748,14 @@ async fn folders(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
         format!("{shut:?} / {opened:?} / {shut_again:?}"),
     );
 
+    // Started by this click (a slow renderer may take the whole fold to draw the click).
+    let started = |opening: bool, t0: std::time::Instant, cx: &mut AsyncWindowContext| {
+        cx.update(|_, cx| history.read(cx).demo_fold_start()).ok().flatten().is_some_and(|(at, o)| at >= t0 && o == opening)
+    };
+    let t0 = std::time::Instant::now();
     click(cx, folder, MouseButton::Left, Modifiers::default());
+    let moving = started(true, t0, cx);
     pause(cx, 60).await;
-    let moving = cx.update(|_, cx| history.read(cx).demo_folding()).unwrap_or(false);
     snap("drain", cx);
     pause(cx, 700).await;
     let still = cx.update(|_, cx| history.read(cx).demo_folding()).unwrap_or(true);
@@ -761,13 +766,12 @@ async fn folders(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
         moving && !still && shown.contains(&"  Orders by day".to_string()),
         format!("moving {moving}, still {still}, {shown:?}"),
     );
+    let t0 = std::time::Instant::now();
     click(cx, folder, MouseButton::Left, Modifiers::default());
-    pause(cx, 60).await;
+    let moving = started(false, t0, cx);
     let during = rows(&history, cx);
-    let moving = cx.update(|_, cx| history.read(cx).demo_folding()).unwrap_or(false);
     snap("shut", cx);
-    pause(cx, 400).await;
-    let after = rows(&history, cx);
+    let after = folded(cx).await;
     report(
         &mut ok,
         "a click shutting a folder folds its favorites away, then they are gone",
