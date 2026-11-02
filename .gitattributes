@@ -4,3 +4,6 @@
 *.icns binary
 *.png binary
 *.ttf binary
+# Kept byte for byte as committed.
+vendor/** -text
+crates/dataman/assets/fonts/*.txt -text
