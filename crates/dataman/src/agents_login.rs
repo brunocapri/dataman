@@ -802,7 +802,7 @@ impl AgentsPage {
         };
         let (p1, p2) = (p.clone(), p.clone());
         let mut opts_row = div().flex().flex_row().items_start().gap(px(32.)).child(
-            opt_row("agents-login-opt-rotate", opts.rotate_days.is_some(), format!("Rotate its password every {} days", agent_login::ROTATE_DAYS), Some("A new one on the server and in the Keychain, the old one's sessions ended"))
+            opt_row("agents-login-opt-rotate", opts.rotate_days.is_some(), format!("Rotate its password every {} days", agent_login::ROTATE_DAYS), Some(format!("A new one on the server and in the {}, the old one's sessions ended", dataman_core::secret::STORE_NAME).as_str()))
                 .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_option(&p1, |o| o.rotate_days = if o.rotate_days.is_some() { None } else { Some(agent_login::ROTATE_DAYS) }, cx))),
         );
         // Only where the database itself turns the next session away.
@@ -1048,7 +1048,7 @@ fn prod_tag(t: &Theme) -> gpui::Div {
 fn password_tip() -> Tip {
     Tip::new("Its password")
         .lead(format!("{} random characters, kept in the {}. Dataman and its MCP connect as the login on their own: nothing to paste anywhere.", agent_login::hash::PASSWORD_LEN, dataman_core::secret::STORE_NAME))
-        .item("Rotate password", "A new one on the server and in the Keychain; the sessions opened with the old one are ended.")
+        .item("Rotate password", format!("A new one on the server and in the {}; the sessions opened with the old one are ended.", dataman_core::secret::STORE_NAME))
 }
 
 fn agent_login_count(n: usize, one: &str) -> String {

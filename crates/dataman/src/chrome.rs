@@ -1842,7 +1842,7 @@ impl Workspace {
             .children(env)
             .children(read_only)
             .child(div().flex_1())
-            .children(self.flash_notice.as_ref().map(|(m, _)| div().text_color(t.tx2).child(m.clone())))
+            .children(self.flash_notice.as_ref().map(|(m, _)| div().text_color(t.tx2).child(crate::ui::keys_text(m.clone()))))
             .children(self.export.as_ref().filter(|e| !e.read(cx).visible).and_then(|e| e.read(cx).status_line()).map(|l| {
                 div()
                     .id("export-status")
