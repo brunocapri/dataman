@@ -34,7 +34,6 @@ notarize-*.log
 /shots
 *.png
 !/crates/dataman/assets/**/*.png
-!/packaging/AppIcon.png
 
 # Crash reports, logs and test leftovers
 *.ips

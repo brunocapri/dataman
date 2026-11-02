@@ -22,7 +22,7 @@ env:
     libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libxcb1-dev
     libfontconfig-dev libfreetype-dev libegl1 libgl1-mesa-dri
     xvfb xauth x11-utils dbus-x11 gnome-keyring libsecret-tools postgresql-client
-    imagemagick dpkg-dev file
+    dpkg-dev file
 
 jobs:
   test:

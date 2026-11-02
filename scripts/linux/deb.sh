@@ -27,10 +27,7 @@ install -m 0644 "$root/packaging/linux/dev.dataman.Dataman.desktop" "$pkg/usr/sh
 install -m 0644 "$root/packaging/linux/dev.dataman.Dataman.metainfo.xml" "$pkg/usr/share/metainfo/"
 install -m 0644 "$root/packaging/linux/dev.dataman.Dataman.xml" "$pkg/usr/share/mime/packages/"
 install -m 0644 "$root/LICENSE" "$pkg/usr/share/doc/dataman/copyright"
-for n in 128 256 512; do
-  mkdir -p "$pkg/usr/share/icons/hicolor/${n}x${n}/apps"
-  convert "$root/packaging/AppIcon.png" -resize "${n}x${n}" "$pkg/usr/share/icons/hicolor/${n}x${n}/apps/dev.dataman.Dataman.png"
-done
+"$root/scripts/linux/icons.sh" "$pkg"
 size="$(du -sk "$pkg/usr" | cut -f1)"
 cat > "$pkg/DEBIAN/control" << EOF
 Package: dataman
@@ -39,7 +36,7 @@ Architecture: $debarch
 Maintainer: brunocapri <brunocapri@users.noreply.github.com>
 Installed-Size: $size
 Depends: libc6 (>= 2.35), libgcc-s1, libxcb1, libxkbcommon0, libxkbcommon-x11-0, libfontconfig1, libfreetype6
-Recommends: libvulkan1 | libegl1, xdg-desktop-portal, gnome-keyring | kwalletmanager | keepassxc
+Recommends: libvulkan1, mesa-vulkan-drivers | vulkan-icd, xdg-desktop-portal, gnome-keyring | kwalletmanager | keepassxc
 Section: database
 Priority: optional
 Homepage: https://github.com/brunocapri/dataman
