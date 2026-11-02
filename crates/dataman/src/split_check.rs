@@ -235,7 +235,7 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
     let one = parts(ws, Pane::Left, cx);
     report("one group: no Open to the Side button at the strip's end (tabs, +, room)", one.len() == 3, format!("{} parts", one.len()));
 
-    let t0 = std::time::Instant::now();
+    crate::motion::hold_split(Some(0.));
     key(cx, "cmd-\\");
     let all = tabs(ws, cx);
     let copy = all.last().cloned().unwrap();
@@ -255,22 +255,31 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
     );
     report("the copy is in front with the focus; the tab stays as it was", active(ws, cx).as_ref() == Some(&copy) && focused(ws, cx) == Some(Pane::Right) && cx.update(|_, cx| first.read(cx).has_run).unwrap(), format!("{:?}", focused(ws, cx)));
     if stage == "split-opening" {
+        crate::motion::hold_split(None);
         return ok;
     }
     let moving = cx.update(|_, cx| ws.read(cx).split_move.is_some()).unwrap();
-    pause(cx, 60).await;
-    let mid = panes(ws, cx);
-    let in_time = crate::check::mid_possible(t0, crate::motion::SPLIT);
+    // Frames drawn at chosen points of the course, not wherever a slow renderer's clock lands: each
+    // laid out as the eased course says, the new group wider and the first narrower every step.
     let c = center(ws, cx);
-    let half = (c.w - crate::split::SEAM) / 2.;
-    // Short of the settled half by any visible amount: the ease-out spends its last tenth within a few points.
+    let ratio = cx.update(|_, cx| ws.read(cx).split.as_ref().map_or(0., |s| s.ratio)).unwrap();
+    let mut course = Vec::new();
+    for k in [0.25, 0.5, 0.75] {
+        crate::motion::hold_split(Some(k));
+        let want = dataman_core::groups::widths(c.w, ratio, crate::split::SEAM, crate::motion::EASE.eval(k), Pane::Right);
+        course.push((want, panes(ws, cx)));
+    }
+    crate::motion::hold_split(None);
+    let laid = course.iter().all(|&((wl, wr), got)| got.is_some_and(|((_, lw), (rx, rw))| near(lw, wl, 1.5) && near(rw, wr, 1.5) && near(rx + rw, c.right(), 1.5)));
+    let grows = course.windows(2).all(|p| p[0].1.zip(p[1].1).is_some_and(|(((_, l0), (_, r0)), ((_, l1), (_, r1)))| r1 > r0 + 1. && l1 < l0 - 1.));
     report(
         "the new group grows in from the right while the first narrows",
-        reduced || !in_time || (moving && mid.is_some_and(|((_, lw), (rx, rw))| rw > 1. && rw < half - 1. && lw > half + 1. && near(rx + rw, c.right(), 1.5))),
-        format!("{mid:?} in {c:?}"),
+        reduced || (moving && laid && grows),
+        format!("{course:?} in {c:?}"),
     );
     pause(cx, 400).await;
     let open = panes(ws, cx);
+    let half = (c.w - crate::split::SEAM) / 2.;
     report(
         "settled: half and half around the seam",
         open.is_some_and(|((lx, lw), (rx, rw))| near(lx, c.x, 1.) && near(lw, half, 1.5) && near(rw, half, 1.5) && near(rx, lx + lw + crate::split::SEAM, 1.5)),
