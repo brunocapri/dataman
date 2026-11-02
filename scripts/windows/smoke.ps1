@@ -58,7 +58,7 @@ function Save-Shot([string]$name) {
     $ok = [Win]::PrintWindow($h, $dc, 2)
     $g.ReleaseHdc($dc); $g.Dispose()
     $bmp.Save("$shots\$name-window.png", [System.Drawing.Imaging.ImageFormat]::Png)
-    # And the screen as it shows.
+    # And the screen as it shows, whole and the window's part of it.
     $b = [System.Windows.Forms.SystemInformation]::VirtualScreen
     $screen = New-Object System.Drawing.Bitmap $b.Width, $b.Height
     $g = [System.Drawing.Graphics]::FromImage($screen)
@@ -66,14 +66,23 @@ function Save-Shot([string]$name) {
     $g.Dispose()
     $screen.Save("$shots\$name-screen.png", [System.Drawing.Imaging.ImageFormat]::Png)
     $screen.Dispose()
-    # Drawn: many colours, not one fill.
-    $colors = @{}
-    for ($x = 0; $x -lt $w; $x += [Math]::Max(1, [int]($w / 64))) {
-        for ($y = 0; $y -lt $hh; $y += [Math]::Max(1, [int]($hh / 48))) { $colors[$bmp.GetPixel($x, $y).ToArgb()] = 1 }
+    $crop = New-Object System.Drawing.Bitmap $w, $hh
+    $g = [System.Drawing.Graphics]::FromImage($crop)
+    $g.CopyFromScreen($r.Left, $r.Top, 0, 0, $crop.Size)
+    $g.Dispose()
+    # Drawn: many colours, not one fill (PrintWindow can come back black for a DirectX window).
+    $best = 0
+    foreach ($img in @($bmp, $crop)) {
+        $colors = @{}
+        for ($x = 0; $x -lt $w; $x += [Math]::Max(1, [int]($w / 64))) {
+            for ($y = 0; $y -lt $hh; $y += [Math]::Max(1, [int]($hh / 48))) { $colors[$img.GetPixel($x, $y).ToArgb()] = 1 }
+        }
+        Write-Host "$($colors.Count) colours sampled"
+        $best = [Math]::Max($best, $colors.Count)
     }
-    $bmp.Dispose()
-    Write-Host "PrintWindow: $ok, $($colors.Count) colours sampled"
-    return $colors.Count
+    $bmp.Dispose(); $crop.Dispose()
+    Write-Host "PrintWindow: $ok"
+    return $best
 }
 
 Add-Type -AssemblyName System.Windows.Forms
