@@ -29,19 +29,21 @@ fn edges_drawn(window: &Window) -> bool {
 }
 
 /// The title bar starts moving the window: Windows' own move loop there (GPUI's is a no-op).
+/// Posted, not sent: the loop is modal and would run inside this mouse event, with the app still
+/// borrowed, so a key pressed mid-drag (Esc's drag-cancel interceptor) would borrow it again.
 pub fn start_move(window: &Window) {
     #[cfg(windows)]
     {
         use raw_window_handle::{HasWindowHandle, RawWindowHandle};
         use windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
-        use windows_sys::Win32::UI::WindowsAndMessaging::{HTCAPTION, SendMessageW, WM_NCLBUTTONDOWN};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{HTCAPTION, PostMessageW, WM_NCLBUTTONDOWN};
         // GPUI's own `window_handle` is another thing: raw-window-handle's, by its trait.
         if let Ok(h) = HasWindowHandle::window_handle(window)
             && let RawWindowHandle::Win32(w) = h.as_raw()
         {
             unsafe {
                 ReleaseCapture();
-                SendMessageW(w.hwnd.get() as _, WM_NCLBUTTONDOWN, HTCAPTION as usize, 0);
+                PostMessageW(w.hwnd.get() as _, WM_NCLBUTTONDOWN, HTCAPTION as usize, 0);
             }
         }
     }
