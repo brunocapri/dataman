@@ -89,6 +89,7 @@ enum Chip {
     Cancelled,
 }
 
+#[derive(Debug, PartialEq)]
 enum Item {
     Day(SharedString),
     Entry(usize),
@@ -97,6 +98,35 @@ enum Item {
 }
 
 pub(crate) struct DraggedFav(pub(crate) String);
+
+/// The favorites list: each folder, then what it holds that is in scope and matches `q` (all of
+/// it when the folder's name does), then the favorites in no folder; and how many favorites that
+/// is. While filtered (by `q` or a connection) a folder left with nothing to show goes.
+fn fav_items(folders: &[Folder], favorites: &[Favorite], q: &str, scoped: bool, in_scope: impl Fn(&Favorite) -> bool, open: impl Fn(&str) -> bool) -> (Vec<Item>, usize) {
+    let hit = |f: &Favorite| q.is_empty() || f.name.to_lowercase().contains(q) || f.sql.to_lowercase().contains(q);
+    let filtered = !q.is_empty() || scoped;
+    let (mut items, mut shown) = (Vec::new(), 0);
+    for (ix, d) in folders.iter().enumerate() {
+        let named = !q.is_empty() && d.name.to_lowercase().contains(q);
+        let found: Vec<usize> = (0..favorites.len()).filter(|&i| favorites[i].folder.as_deref() == Some(d.id.as_str()) && in_scope(&favorites[i]) && (named || hit(&favorites[i]))).collect();
+        if filtered && found.is_empty() {
+            continue;
+        }
+        let open = !q.is_empty() || open(&d.id);
+        items.push(Item::Folder { ix, open });
+        shown += found.len();
+        if open {
+            items.extend(found.into_iter().map(Item::Fav));
+        }
+    }
+    for (i, f) in favorites.iter().enumerate() {
+        if f.folder.is_none() && in_scope(f) && hit(f) {
+            items.push(Item::Fav(i));
+            shown += 1;
+        }
+    }
+    (items, shown)
+}
 
 pub(crate) struct DraggedFolder(pub(crate) String);
 
@@ -559,6 +589,8 @@ impl HistoryPanel {
         self.menu = None;
         self.renaming = None;
         self.open_folders.insert(d.id.clone());
+        // Empty, it would be filtered away.
+        self.fav_scope = None;
         self.filter.update(cx, |f, cx| f.set_text("", cx));
         self.read_favorites(cx);
         self.apply_filter(cx);
@@ -785,31 +817,7 @@ impl HistoryPanel {
         let mut items = Vec::new();
         let mut shown = 0;
         if self.show_favorites {
-            let hit = |f: &Favorite| q.is_empty() || f.name.to_lowercase().contains(&q) || f.sql.to_lowercase().contains(&q);
-            for (ix, d) in self.folders.iter().enumerate() {
-                let named = !q.is_empty() && d.name.to_lowercase().contains(&q);
-                let held = |i: &usize| self.favorites[*i].folder.as_deref() == Some(d.id.as_str());
-                let found: Vec<usize> = (0..self.favorites.len()).filter(|i| held(i) && self.fav_in_scope(&self.favorites[*i]) && (named || hit(&self.favorites[*i]))).collect();
-                if !q.is_empty() && !named && found.is_empty() {
-                    continue;
-                }
-                // Narrowed to a connection: a folder of only others' favorites goes too.
-                if self.fav_scope.is_some() && found.is_empty() && (0..self.favorites.len()).any(|i| held(&i)) {
-                    continue;
-                }
-                let open = !q.is_empty() || self.open_folders.contains(&d.id);
-                items.push(Item::Folder { ix, open });
-                shown += found.len();
-                if open {
-                    items.extend(found.into_iter().map(Item::Fav));
-                }
-            }
-            for (i, f) in self.favorites.iter().enumerate() {
-                if f.folder.is_none() && self.fav_in_scope(f) && hit(f) {
-                    items.push(Item::Fav(i));
-                    shown += 1;
-                }
-            }
+            (items, shown) = fav_items(&self.folders, &self.favorites, &q, self.fav_scope.is_some(), |f| self.fav_in_scope(f), |id| self.open_folders.contains(id));
         } else {
             let today = Local::now().date_naive();
             let mut day = None;
@@ -2319,5 +2327,44 @@ impl Render for HistoryPanel {
             )
             .child(body)
             .children(self.render_menu(&t, window, cx))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fav(name: &str, conn: &str, folder: Option<&str>) -> Favorite {
+        Favorite { id: name.into(), name: name.into(), sql: format!("select '{name}'"), connection_id: Some(conn.into()), database: None, folder: folder.map(Into::into), agent_made: false }
+    }
+
+    fn folder(id: &str) -> Folder {
+        Folder { id: id.into(), name: id.into() }
+    }
+
+    #[test]
+    fn filtered_folders_with_nothing_to_show_go() {
+        let folders = [folder("reports"), folder("empty"), folder("ops")];
+        let favs = [fav("sales", "pg", Some("reports")), fav("vacuum", "my", Some("ops")), fav("loose", "pg", None)];
+        let all = |_: &Favorite| true;
+        let shut = |_: &str| false;
+        // Unfiltered: every folder, the empty one too; a shut folder still counts what it holds.
+        let (items, shown) = fav_items(&folders, &favs, "", false, all, shut);
+        assert_eq!(items, vec![Item::Folder { ix: 0, open: false }, Item::Folder { ix: 1, open: false }, Item::Folder { ix: 2, open: false }, Item::Fav(2)]);
+        assert_eq!(shown, 3);
+        // By text: only the folder holding a match, open on it.
+        let (items, shown) = fav_items(&folders, &favs, "sales", false, all, shut);
+        assert_eq!(items, vec![Item::Folder { ix: 0, open: true }, Item::Fav(0)]);
+        assert_eq!(shown, 1);
+        // A folder's name matching shows what it holds, but an empty one still goes.
+        let (items, _) = fav_items(&folders, &favs, "empty", false, all, shut);
+        assert!(items.is_empty());
+        let (items, _) = fav_items(&folders, &favs, "ops", false, all, shut);
+        assert_eq!(items, vec![Item::Folder { ix: 2, open: true }, Item::Fav(1)]);
+        // By connection: neither the empty folder nor one of only others' favorites.
+        let pg = |f: &Favorite| f.connection_id.as_deref() == Some("pg");
+        let (items, shown) = fav_items(&folders, &favs, "", true, pg, shut);
+        assert_eq!(items, vec![Item::Folder { ix: 0, open: false }, Item::Fav(2)]);
+        assert_eq!(shown, 2);
     }
 }
