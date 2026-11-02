@@ -6,7 +6,8 @@ pub const LINUX: bool = cfg!(target_os = "linux");
 /// Ctrl, with the desktop's own text keys (⌘←/→ Home/End, ⌘↑/↓ Ctrl+Home/End, ⌥←/→ ⌥⌫ ⌥⌦ by
 /// word with Ctrl, ⌘⌫ Ctrl+Shift+⌫), and where Ctrl would take a key from something else the
 /// key moves: ⌃⌘←/→ (back, forward) to Alt+←/→, ⌃⌘↩/⌫ (commit, rollback) to Alt+Shift+↩/⌫, ⌥⌘←/→ (pages) to Alt+PgUp/PgDn, ⌥⌘L to Ctrl+Shift+L (Ctrl+Alt+L locks
-/// the screen).
+/// the screen), ⇧⌘[/] (tabs) to Ctrl+PgUp/PgDn and ⌥⌘[/] (results) to Alt+[/] (Ctrl+Shift+[/]
+/// and Ctrl+Alt+[/] fold).
 pub fn native(s: &str) -> String {
     if !LINUX {
         return s.to_string();
@@ -35,6 +36,11 @@ pub fn native(s: &str) -> String {
             key = if key == "left" { "pageup".into() } else { "pagedown".into() };
         } else if alt && key == "l" {
             (ctrl, alt, shift) = (true, false, true);
+        } else if shift != alt && matches!(key.as_str(), "[" | "]") {
+            if shift {
+                (ctrl, shift) = (true, false);
+                key = if key == "[" { "pageup".into() } else { "pagedown".into() };
+            }
         } else {
             ctrl = true;
         }
