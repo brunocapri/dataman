@@ -32,6 +32,7 @@ SolidCompression=yes
 WizardStyle=modern
 MinVersion=10.0.17763
 CloseApplications=yes
+ChangesAssociations=yes
 VersionInfoVersion={#Version}
 #if Arch == "aarch64"
 ArchitecturesAllowed=arm64
@@ -53,6 +54,17 @@ Source: "{#SourceDir}\LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
 [Icons]
 Name: "{autoprograms}\Dataman"; Filename: "{app}\dataman.exe"; AppUserModelID: "dev.dataman.Dataman"
 Name: "{autodesktop}\Dataman"; Filename: "{app}\dataman.exe"; Tasks: desktopicon
+
+; "Open with" Dataman for its files; never made the default program.
+[Registry]
+Root: HKA; Subkey: "Software\Classes\Dataman.File"; ValueType: string; ValueName: ""; ValueData: "Dataman file"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\Dataman.File\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\dataman.exe,0"
+Root: HKA; Subkey: "Software\Classes\Dataman.File\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\dataman.exe"" ""%1"""
+Root: HKA; Subkey: "Software\Classes\.sql\OpenWithProgids"; ValueType: string; ValueName: "Dataman.File"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.sqlite\OpenWithProgids"; ValueType: string; ValueName: "Dataman.File"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.sqlite3\OpenWithProgids"; ValueType: string; ValueName: "Dataman.File"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.db\OpenWithProgids"; ValueType: string; ValueName: "Dataman.File"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.duckdb\OpenWithProgids"; ValueType: string; ValueName: "Dataman.File"; ValueData: ""; Flags: uninsdeletevalue
 
 [Run]
 Filename: "{app}\dataman.exe"; Description: "{cm:LaunchProgram,Dataman}"; Flags: nowait postinstall skipifsilent
