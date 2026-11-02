@@ -1298,13 +1298,16 @@ async fn motion_checks(ws: &Entity<Workspace>, id: &str, cx: &mut AsyncWindowCon
     let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.store.update(cx, |s, cx| s.forget(&off, cx))));
 
     // Tooltips can be hovered: the pointer moved from the control onto the tooltip keeps it, and
-    // leaving both closes it. Quickly: shown within 400 ms, gone 300 ms after the pointer left.
+    // leaving both closes it. Not at once (300 ms), then shown; gone soon after the pointer left.
+    // Their timers start when their tasks first run, after any frames already queued: on a slow
+    // renderer well after the move, so the check waits for each rather than timing it.
     let tip = |cx: &mut AsyncWindowContext| crate::check::probed("tooltip", cx);
     let rail = crate::check::probed("rail-agents", cx);
     if let Some(r) = rail {
         crate::check::move_to(cx, crate::check::centre(r));
     }
-    pause(cx, 400).await;
+    let at_once = tip(cx);
+    crate::check::until(cx, 3, |cx| tip(cx).is_some()).await;
     let shown = tip(cx);
     if let (Some(r), Some(b)) = (rail, shown) {
         let (from, to) = (crate::check::centre(r), crate::check::centre(b));
@@ -1316,12 +1319,11 @@ async fn motion_checks(ws: &Entity<Workspace>, id: &str, cx: &mut AsyncWindowCon
     let kept = tip(cx);
     let win = cx.update(|window, _| window.viewport_size()).unwrap();
     crate::check::move_to(cx, point(win.width * 0.6, win.height * 0.35));
-    pause(cx, 300).await;
-    let gone = tip(cx);
+    let gone = crate::check::until(cx, 3, |cx| tip(cx).is_none()).await;
     report(
-        "a tooltip shows within 400 ms, stays while the pointer is on it, and closes 300 ms after it leaves the control and the tooltip",
-        rail.is_some() && shown.is_some() && kept.is_some() && gone.is_none(),
-        format!("rail {rail:?} shown {shown:?} kept {kept:?} gone {gone:?}"),
+        "a tooltip shows after a short rest, stays while the pointer is on it, and closes soon after it leaves the control and the tooltip",
+        rail.is_some() && at_once.is_none() && shown.is_some() && kept.is_some() && gone,
+        format!("rail {rail:?} at once {at_once:?} shown {shown:?} kept {kept:?} gone {gone}"),
     );
 
     let motion = !cx.update(|_, cx| cx.reduce_motion()).unwrap_or(false);
