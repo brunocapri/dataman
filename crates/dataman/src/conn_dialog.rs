@@ -12,7 +12,13 @@ use dataman_core::config::Engine;
 use dataman_core::{ConnectionProfile, Environment, HostKeyPrompt, McpAccess, ServerInfo, SshAuth, SshError, SshSettings, SslMode};
 
 const ENGINES: [Engine; 9] = Engine::ALL;
-const SAVED_IN: &str = if cfg!(target_os = "macos") { "saved in Keychain" } else { "saved in keyring" };
+const SAVED_IN: &str = if cfg!(target_os = "macos") {
+    "saved in Keychain"
+} else if cfg!(windows) {
+    "saved in Credential Manager"
+} else {
+    "saved in keyring"
+};
 
 fn family_label(e: Engine) -> &'static str {
     match e {

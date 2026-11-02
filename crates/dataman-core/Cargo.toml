@@ -75,5 +75,9 @@ core-foundation = "0.10"
 oo7 = { version = "0.6", default-features = false, features = ["async-std", "native_crypto"] }
 futures-lite = "2"
 
+# Passwords in the Credential Manager, the OS version from the registry, file stamps.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Credentials", "Win32_Storage_FileSystem", "Win32_System_Registry"] }
+
 [dev-dependencies]
 tempfile = "3"

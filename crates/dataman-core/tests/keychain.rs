@@ -26,6 +26,29 @@ fn keychain_roundtrip() {
     k.delete(&id).unwrap();
 }
 
+/// Longer than one Windows credential holds (2560 bytes), shorter again after: the parts left
+/// over go.
+#[test]
+#[ignore]
+fn keychain_keeps_a_long_secret() {
+    let id = format!("dataman-test-long-{}", std::process::id());
+    let k = Keychain;
+    let long: String = (0..6000).map(|i| if i % 7 == 0 { 'é' } else { char::from(b'a' + (i % 26) as u8) }).collect();
+    k.set(&id, &long).unwrap();
+    assert_eq!(k.get(&id).unwrap().as_deref(), Some(long.as_str()));
+    k.set(&id, "short").unwrap();
+    assert_eq!(k.get(&id).unwrap().as_deref(), Some("short"));
+    let mid: String = long.chars().take(3000).collect();
+    k.set(&id, &mid).unwrap();
+    assert_eq!(k.get(&id).unwrap().as_deref(), Some(mid.as_str()));
+    k.delete(&id).unwrap();
+    assert_eq!(k.get(&id).unwrap(), None);
+    #[cfg(windows)]
+    for n in 1..4 {
+        assert_eq!(k.get(&format!("{id}:{n}")).unwrap(), None, "no part {n} left behind");
+    }
+}
+
 #[test]
 #[ignore]
 fn keychain_entries_are_per_connection() {
