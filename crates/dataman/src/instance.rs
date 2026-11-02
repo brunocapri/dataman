@@ -19,7 +19,7 @@ pub fn urls_from_args(args: &[String]) -> Vec<String> {
     args.iter()
         .skip(1)
         .filter(|a| !a.starts_with('-'))
-        .filter_map(|a| std::fs::canonicalize(a).ok())
+        .filter_map(|a| dataman_core::os::canonical(a).ok())
         .filter(|p| p.is_file())
         .map(|p| file_url(&p))
         .collect()

@@ -307,7 +307,7 @@ pub fn file_outside(path: &str, root: &Path) -> bool {
     }
     let mut at = full.as_path();
     loop {
-        if let Ok(c) = std::fs::canonicalize(at) {
+        if let Ok(c) = crate::os::canonical(at) {
             return !c.starts_with(root);
         }
         match at.parent() {
@@ -449,7 +449,7 @@ pub(crate) fn protections(old: &ConnectionProfile, new: &ConnectionProfile) -> V
 /// A connection of this person's that already reaches what `p` does (the same server as the
 /// same user, or the same file).
 fn twin<'a>(local: &'a [ConnectionProfile], p: &ConnectionProfile) -> Option<&'a ConnectionProfile> {
-    let canonical = |q: &ConnectionProfile| std::fs::canonicalize(q.file_path()).ok();
+    let canonical = |q: &ConnectionProfile| crate::os::canonical(q.file_path()).ok();
     local.iter().find(|q| {
         if q.id == p.id {
             return false;
@@ -937,7 +937,7 @@ impl ProjectStore {
     /// settings; without one it is created, sharing nothing of what is already here.
     pub fn open_project(&self, root: &Path, st: Stores) -> Result<(bool, Synced)> {
         anyhow::ensure!(st.settings.get().project_enabled, "projects are off in Settings › Project");
-        let root = std::fs::canonicalize(root).with_context(|| format!("opening {}", root.display()))?;
+        let root = crate::os::canonical(root).with_context(|| format!("opening {}", root.display()))?;
         anyhow::ensure!(root.is_dir(), "{} is not a folder", root.display());
         let created = !file_in(&root).exists();
         *self.state.lock() = State { root: Some(root.clone()), base: self.read_base(&root), create: created, ..State::default() };
@@ -1136,7 +1136,7 @@ mod tests {
 
     fn project_dir() -> (tempfile::TempDir, PathBuf) {
         let d = tempfile::tempdir().unwrap();
-        let root = std::fs::canonicalize(d.path()).unwrap();
+        let root = crate::os::canonical(d.path()).unwrap();
         (d, root)
     }
 

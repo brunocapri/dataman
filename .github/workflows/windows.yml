@@ -90,7 +90,7 @@ jobs:
       # The runner's own PostgreSQL in place of the compose container: the stages that need
       # nothing else. Not blocking yet: their results are a report.
       - name: End-to-end on PostgreSQL (report)
-        if: matrix.arch == 'x86_64'
+        if: matrix.arch == 'x86_64' && !cancelled()
         continue-on-error: true
         run: |
           $svc = Get-Service -Name "postgresql*" | Select-Object -First 1

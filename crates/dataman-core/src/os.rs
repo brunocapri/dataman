@@ -112,6 +112,23 @@ pub fn downloads_dir() -> Option<PathBuf> {
     Some(if !LINUX || d.is_dir() { d } else { home })
 }
 
+/// `fs::canonicalize`, without the `\\?\` Windows puts before a drive path: the path as the
+/// user and other programs write it (and as `strip_prefix` compares it with theirs).
+pub fn canonical(path: impl AsRef<std::path::Path>) -> std::io::Result<PathBuf> {
+    let p = std::fs::canonicalize(path)?;
+    #[cfg(windows)]
+    {
+        let s = p.to_string_lossy();
+        if let Some(rest) = s.strip_prefix(r"\\?\")
+            && rest.as_bytes().get(1) == Some(&b':')
+            && rest.len() < 260
+        {
+            return Ok(PathBuf::from(rest));
+        }
+    }
+    Ok(p)
+}
+
 /// A new file only this user can read (0600 on Unix; on Windows the folders Dataman writes in
 /// are the user's own); an existing one is an error.
 pub fn private_new(path: &std::path::Path) -> std::io::Result<std::fs::File> {

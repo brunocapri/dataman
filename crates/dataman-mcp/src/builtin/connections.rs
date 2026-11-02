@@ -220,9 +220,9 @@ async fn check_file(cx: &Call, old: Option<&ConnectionProfile>, p: &ConnectionPr
         return Err(ToolError::Refused(format!("{shown} is not a {} database", p.engine.label())));
     }
     let home = dataman_core::os::home();
-    let canonical = std::fs::canonicalize(&file).unwrap_or(file);
-    let inside = home.and_then(|h| std::fs::canonicalize(h).ok()).is_some_and(|h| canonical.starts_with(&h));
-    let same = old.is_some_and(|o| o.engine.is_file() && std::fs::canonicalize(o.file_path()).is_ok_and(|c| c == canonical));
+    let canonical = dataman_core::os::canonical(&file).unwrap_or(file);
+    let inside = home.and_then(|h| dataman_core::os::canonical(h).ok()).is_some_and(|h| canonical.starts_with(&h));
+    let same = old.is_some_and(|o| o.engine.is_file() && dataman_core::os::canonical(o.file_path()).is_ok_and(|c| c == canonical));
     // A changed file of a saved connection was asked about already (a move).
     let asked = old.is_some_and(|o| target_changed(o, p));
     if !inside && !same && !asked {
@@ -274,7 +274,7 @@ fn ssh_text(p: &ConnectionProfile) -> String {
 /// file needs no password and a server may let the user in without one (~/.pgpass, peer or trust
 /// authentication), so the twin is refused: the agent uses the saved connection.
 fn no_twin(cx: &Call, p: &ConnectionProfile) -> Result<(), ToolError> {
-    let canonical = |q: &ConnectionProfile| std::fs::canonicalize(q.file_path()).ok();
+    let canonical = |q: &ConnectionProfile| dataman_core::os::canonical(q.file_path()).ok();
     let same = |q: &ConnectionProfile| {
         if p.engine.is_file() || q.engine.is_file() {
             return p.engine.is_file() && q.engine.is_file() && canonical(p).is_some_and(|c| Some(c) == canonical(q));

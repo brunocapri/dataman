@@ -1829,8 +1829,8 @@ impl Workspace {
     /// when the file is no database.
     pub(crate) fn open_database_path(&mut self, path: &std::path::Path, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let Some(engine) = dataman_core::import::detect_database(path) else { return false };
-        let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-        let saved = self.store.read(cx).profiles.iter().find(|p| p.engine.is_file() && std::fs::canonicalize(p.file_path()).is_ok_and(|c| c == canonical)).map(|p| p.id.clone());
+        let canonical = dataman_core::os::canonical(path).unwrap_or_else(|_| path.to_path_buf());
+        let saved = self.store.read(cx).profiles.iter().find(|p| p.engine.is_file() && dataman_core::os::canonical(p.file_path()).is_ok_and(|c| c == canonical)).map(|p| p.id.clone());
         match saved {
             Some(id) => {
                 self.current_conn = Some(id.clone());
