@@ -8,7 +8,8 @@ use dataman_core::agents_config::{self, AgentsFile, Change, Plan};
 use dataman_mcp::audit::{ApprovalNote, Audit, Decision, Entry, Outcome};
 use gpui::{AnyElement, Context, FontWeight, KeyDownEvent, SharedString, Window, div, prelude::*};
 
-use crate::agents::{AgentsPage, Tip, label_tip};
+use crate::agents::{AgentsPage, Tip};
+use crate::agents_rules::{section, sub, sub_title};
 use crate::theme::{Theme, px};
 use crate::ui;
 
@@ -37,65 +38,53 @@ fn home() -> PathBuf {
 impl AgentsPage {
     pub(crate) fn render_general(&mut self, t: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let on = self.core.settings.get().mcp_enabled;
-        let access = div()
-            .flex()
-            .flex_col()
-            .gap(px(8.))
-            .child(label_tip(
-                t,
-                "agents-mcp-access-tip",
-                "AGENT ACCESS",
-                Tip::new("Agent access")
-                    .lead("Whether AI agents (Claude Code, Claude Desktop, any MCP client) may use Dataman at all.")
-                    .item("On", "Each connection then follows its own MCP tier, privacy and limits (Permissions, Privacy).")
-                    .item("Off", "Every agent call is refused. The same switch as Settings › MCP."),
-            ))
-            .child(ui::switch(t, "agents-mcp-access", on).on_click(cx.listener(move |v, _, _, cx| v.edit_settings(move |s| s.mcp_enabled = !on, cx))));
+        let access = sub(sub_title(
+            t,
+            "agents-mcp-access-tip",
+            "Agent access",
+            Tip::new("Agent access")
+                .lead("Whether AI agents (Claude Code, Claude Desktop, any MCP client) may use Dataman at all.")
+                .item("On", "Each connection then follows its own MCP tier, privacy and limits (Protection).")
+                .item("Off", "Every agent call is refused. The same switch as Settings › MCP."),
+        ))
+        .child(ui::switch(t, "agents-mcp-access", on).on_click(cx.listener(move |v, _, _, cx| v.edit_settings(move |s| s.mcp_enabled = !on, cx))));
         let cmd = crate::mcp::stdio_command();
         let copy = cmd.clone();
-        let connect = div()
-            .flex()
-            .flex_col()
-            .gap(px(8.))
-            .child(label_tip(
-                t,
-                "agents-mcp-connect-tip",
-                "CONNECT AN AGENT",
-                Tip::new("Connect an agent").lead("Run this once in a terminal to add Dataman to Claude Code. Other MCP clients start the same command over stdio."),
-            ))
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(8.))
-                    .child(div().flex_1().min_w_0().px(px(10.)).py(px(6.)).bg(t.field).border_1().border_color(t.line).text_size(px(11.5)).text_color(t.tx).overflow_hidden().whitespace_nowrap().text_ellipsis().child(cmd))
-                    .child(ui::button(t, "agents-mcp-copy", ui::Btn::Secondary).h(px(28.)).child("Copy").on_click(cx.listener(move |_, _, _, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy.clone()))))),
-            );
-        let file = div()
-            .flex()
-            .flex_col()
-            .gap(px(8.))
-            .child(label_tip(
-                t,
-                "agents-file-tip",
-                "SETTINGS FILE",
-                Tip::new("Agents settings file")
-                    .lead("General, Sensitive data and each connection's rules for agents, to keep or to carry to another Mac.")
-                    .item("In it", "MCP tier, what the agent sees, Visible to agents, sensitive columns, Agents may, limits, allowed statements and YOLO.")
-                    .item("Not in it", "Passwords, the mask key, the audit log and the connections themselves (host, user…).")
-                    .item("Import", "Checked whole first, then a summary of what would change; nothing changes until you apply it. Connections are found by id, then by name and engine; the others stay as they are.")
-                    .note("Imports are logged in Audit."),
-            ))
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .gap(px(8.))
-                    .child(ui::button(t, "agents-export", ui::Btn::Secondary).h(px(28.)).px(px(10.)).child("Export…").on_click(cx.listener(|v, _, _, cx| v.export_settings(cx))))
-                    .child(ui::button(t, "agents-import", ui::Btn::Secondary).h(px(28.)).px(px(10.)).child("Import…").on_click(cx.listener(|v, _, window, cx| v.import_settings(window, cx)))),
-            )
-            .children(self.settings_note.clone().map(|n| div().children(ui::here(&"agents-file-note".into())).text_size(px(11.5)).text_color(t.tx2).child(n)));
+        let connect = sub(sub_title(
+            t,
+            "agents-mcp-connect-tip",
+            "Connect an agent",
+            Tip::new("Connect an agent").lead("Run this once in a terminal to add Dataman to Claude Code. Other MCP clients start the same command over stdio."),
+        ))
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(8.))
+                .child(div().flex_1().min_w_0().px(px(10.)).py(px(6.)).bg(t.field).border_1().border_color(t.line).text_size(px(11.5)).text_color(t.tx).overflow_hidden().whitespace_nowrap().text_ellipsis().child(cmd))
+                .child(ui::button(t, "agents-mcp-copy", ui::Btn::Secondary).h(px(28.)).child("Copy").on_click(cx.listener(move |_, _, _, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy.clone()))))),
+        );
+        let file = sub(sub_title(
+            t,
+            "agents-file-tip",
+            "Export and import",
+            Tip::new("Agents settings file")
+                .lead("General, Sensitive data and each connection's rules for agents, to keep or to carry to another Mac.")
+                .item("In it", "MCP tier, what the agent sees, Visible to agents, sensitive columns, Agents may, limits, allowed statements and YOLO.")
+                .item("Not in it", "Passwords, the mask key, the audit log and the connections themselves (host, user…).")
+                .item("Import", "Checked whole first, then a summary of what would change; nothing changes until you apply it. Connections are found by id, then by name and engine; the others stay as they are.")
+                .note("Imports are logged in Audit."),
+        ))
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .gap(px(8.))
+                .child(ui::button(t, "agents-export", ui::Btn::Secondary).h(px(28.)).px(px(10.)).child("Export…").on_click(cx.listener(|v, _, _, cx| v.export_settings(cx))))
+                .child(ui::button(t, "agents-import", ui::Btn::Secondary).h(px(28.)).px(px(10.)).child("Import…").on_click(cx.listener(|v, _, window, cx| v.import_settings(window, cx)))),
+        )
+        .children(self.settings_note.clone().map(|n| div().children(ui::here(&"agents-file-note".into())).text_size(px(11.5)).text_color(t.tx2).child(n)));
         div()
             .size_full()
             .flex()
@@ -107,16 +96,14 @@ impl AgentsPage {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .border_t_1()
-                    .border_color(t.line)
                     .px(px(32.))
-                    .py(px(24.))
+                    .pt(px(24.))
+                    .pb(px(48.))
                     .flex()
                     .flex_col()
-                    .gap(px(28.))
-                    .child(access)
-                    .child(div().max_w(px(760.)).child(connect))
-                    .child(file),
+                    .gap(px(44.))
+                    .child(section(t, "agents-general-access", "Access", vec![access, connect]))
+                    .child(section(t, "agents-general-file", "Settings file", vec![file])),
             )
             .into_any_element()
     }

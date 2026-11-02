@@ -465,7 +465,7 @@ impl AgentsPage {
             .flex_row()
             .border_b_1()
             .border_color(t.line)
-            .child(div().w(px(CONNS_W)).flex_none().pl(px(32.)).pr(px(16.)).flex().items_center().border_r_1().border_color(t.line).text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(t.tx).child("Protection"))
+            .child(div().w(px(CONNS_W)).flex_none().pl(px(32.)).pr(px(16.)).flex().items_center().border_r_1().border_color(t.line).child(crate::agents::page_title(t, "Protection")))
             .children(p.map(|p| {
                 div()
                     .children(ui::here(&"agents-protection-conn".into()))

@@ -958,8 +958,9 @@ impl AgentsPage {
 
     // ---- Shared pieces ----
 
+    /// A page's title bar, as Protection's: the title over a line across the page.
     pub(crate) fn header(&self, t: &Theme, title: &str) -> gpui::Div {
-        div().h(px(56.)).flex_none().px(px(32.)).flex().flex_row().items_center().gap(px(12.)).child(div().text_size(px(17.)).font_weight(FontWeight::BOLD).text_color(t.tx).child(title.to_string()))
+        div().h(px(52.)).flex_none().px(px(32.)).flex().flex_row().items_center().gap(px(10.)).border_b_1().border_color(t.line).child(page_title(t, title))
     }
 
     pub(crate) fn conn_label(&self, t: &Theme, name: &str, cx: &App) -> gpui::Div {
@@ -1109,8 +1110,6 @@ impl AgentsPage {
                         .relative()
                         .flex()
                         .flex_col()
-                        .border_t_1()
-                        .border_color(t.line)
                         .px(px(32.))
                         .py(px(16.))
                         .child(measure_area)
@@ -1120,10 +1119,9 @@ impl AgentsPage {
         }
         let search_focused = self.search.read(cx).focus_handle(cx).is_focused(window);
         let toolbar = div()
-            .h(px(44.))
+            .h(px(52.))
             .flex_none()
             .px(px(32.))
-            .pb(px(12.))
             .flex()
             .flex_row()
             .items_center()
@@ -1993,6 +1991,11 @@ impl Tip {
             cx.new(|_| TipView { tip }).into()
         }
     }
+}
+
+/// A page's title, in its title bar.
+pub(crate) fn page_title(t: &Theme, title: &str) -> gpui::Div {
+    div().flex_none().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).text_color(t.tx).child(title.to_string())
 }
 
 /// A label with a `?` whose hover shows a `Tip`.
