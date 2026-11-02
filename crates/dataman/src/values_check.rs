@@ -25,8 +25,13 @@ fn col(tab: &Entity<QueryTab>, name: &str, cx: &mut AsyncWindowContext) -> usize
 /// Clicks the cell, then its eye when the cell has one: the eye's point.
 async fn eye(tab: &Entity<QueryTab>, row: usize, col: usize, cx: &mut AsyncWindowContext) -> Option<gpui::Point<gpui::Pixels>> {
     let grid = cx.update(|_, cx| tab.read(cx).grid.clone()).unwrap();
-    // Selected first: a cell past the window's edge scrolls in, its eye with it.
-    let _ = cx.update(|_, cx| grid.update(cx, |g, cx| g.select_cell(row, col, cx)));
+    // Selected first: a cell past the window's edge scrolls in, its eye with it. The grid takes the
+    // result's rows on a frame of its own, and selects nothing before it has them.
+    until(cx, 5, |cx| {
+        let _ = cx.update(|_, cx| grid.update(cx, |g, cx| g.select_cell(row, col, cx)));
+        cx.update(|_, cx| grid.read(cx).active_cell() == Some((row, col))).unwrap_or(false)
+    })
+    .await;
     draw(cx);
     let p = cx.update(|_, cx| grid.read(cx).demo_cell_point(row, col)).ok()?;
     click(cx, p);
