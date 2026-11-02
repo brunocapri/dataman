@@ -1514,8 +1514,9 @@ async fn check_clear(ws: &Entity<Workspace>, a: &Entity<AgentsPage>, r: &mut Rep
     let tomorrow = today + chrono::Days::new(1);
     let day = today - chrono::Days::new(20);
     for d in [tomorrow, day] {
+        // Tomorrow may sit a month on; the day 20 back, then, a month behind (early in a month).
         if probed(&format!("agents-clear-day-{d}"), cx).is_none() {
-            click_probe("agents-clear-next", cx);
+            click_probe(if d == tomorrow { "agents-clear-next" } else { "agents-clear-prev" }, cx);
             pause(cx, 50).await;
         }
         click_probe(&format!("agents-clear-day-{d}"), cx);
