@@ -114,6 +114,7 @@ mod plan;
 #[cfg(feature = "checks")]
 mod plan_demo;
 mod privileges;
+mod prompt;
 #[cfg(feature = "checks")]
 mod project_check;
 mod project_ui;
@@ -520,6 +521,9 @@ fn main() {
         keymap::set_overrides(keymap::clean(&core.settings.get().keys));
         keymap::bind_all(cx);
         ui::close_modals_on_escape(cx);
+        if keymap::LINUX {
+            cx.set_prompt_builder(prompt::build);
+        }
         cx.on_action(|_: &app::Quit, cx| cx.quit());
         cx.on_action(|_: &app::CheckForUpdates, cx| updates::check(true, cx));
         updates::init(&core, cx);
@@ -558,8 +562,9 @@ fn main() {
                 if crate::keymap::LINUX {
                     eprintln!(
                         "dataman: cannot open the window: {e:#}\n\
-                         Dataman draws with Vulkan or OpenGL: install your GPU's Vulkan driver \
-                         (mesa-vulkan-drivers on Debian, Ubuntu and Fedora; vulkan-radeon or vulkan-intel on Arch)."
+                         Dataman draws with Vulkan or OpenGL (EGL): install your GPU's Vulkan driver \
+                         (mesa-vulkan-drivers on Debian, Ubuntu and Fedora; vulkan-radeon or vulkan-intel on Arch), \
+                         or libegl1 with Mesa."
                     );
                     std::process::exit(1);
                 }
