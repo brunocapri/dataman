@@ -219,7 +219,7 @@ async fn check_file(cx: &Call, old: Option<&ConnectionProfile>, p: &ConnectionPr
     if dataman_core::import::detect_database(&file) != Some(p.engine) {
         return Err(ToolError::Refused(format!("{shown} is not a {} database", p.engine.label())));
     }
-    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let home = dataman_core::os::home();
     let canonical = std::fs::canonicalize(&file).unwrap_or(file);
     let inside = home.and_then(|h| std::fs::canonicalize(h).ok()).is_some_and(|h| canonical.starts_with(&h));
     let same = old.is_some_and(|o| o.engine.is_file() && std::fs::canonicalize(o.file_path()).is_ok_and(|c| c == canonical));

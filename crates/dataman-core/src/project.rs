@@ -916,7 +916,6 @@ impl ProjectStore {
     /// Whole or not at all (a temporary file renamed into place), this user's only.
     fn write_base(&self, root: &Path, project: &ProjectFile) {
         use std::io::Write as _;
-        use std::os::unix::fs::OpenOptionsExt as _;
         let path = self.dirs.project_base_file(root);
         let b = Base { root: root.display().to_string(), project: project.clone() };
         let r = (|| -> Result<()> {
@@ -924,7 +923,7 @@ impl ProjectStore {
             let dir = path.parent().context("no parent")?;
             std::fs::create_dir_all(dir)?;
             let tmp = dir.join(format!(".{}.{}", std::process::id(), uuid::Uuid::new_v4().simple()));
-            std::fs::File::options().write(true).create_new(true).mode(0o600).open(&tmp)?.write_all(text.as_bytes())?;
+            crate::os::private_new(&tmp)?.write_all(text.as_bytes())?;
             std::fs::rename(&tmp, &path).inspect_err(|_| _ = std::fs::remove_file(&tmp))?;
             Ok(())
         })();

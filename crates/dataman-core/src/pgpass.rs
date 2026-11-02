@@ -27,7 +27,11 @@ pub fn default_path() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("PGPASSFILE").filter(|p| !p.is_empty()) {
         return Some(PathBuf::from(p));
     }
-    std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".pgpass"))
+    // libpq's place on Windows: %APPDATA%\postgresql\pgpass.conf.
+    if cfg!(windows) {
+        return crate::os::app_data().map(|d| d.join("postgresql").join("pgpass.conf"));
+    }
+    crate::os::home().map(|h| h.join(".pgpass"))
 }
 
 #[derive(Debug, PartialEq, Eq)]

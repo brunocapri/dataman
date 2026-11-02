@@ -98,7 +98,7 @@ pub fn resolve_default(alias: &str) -> HostConfig {
 }
 
 pub(crate) fn home() -> Option<PathBuf> {
-    std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from)
+    crate::os::home()
 }
 
 pub fn resolve_file(path: &Path, alias: &str, ssh_dir: &Path) -> HostConfig {

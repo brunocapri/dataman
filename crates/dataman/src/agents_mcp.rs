@@ -31,7 +31,7 @@ pub(crate) fn set_test_paths(save: Option<PathBuf>, open: Option<PathBuf>) {
 }
 
 fn home() -> PathBuf {
-    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default()
+    dataman_core::os::home().unwrap_or_default()
 }
 
 impl AgentsPage {

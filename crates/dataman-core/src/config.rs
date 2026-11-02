@@ -587,13 +587,13 @@ impl ConnectionProfile {
     }
 }
 
-/// `~` and `~/…` are this user's home; anything else is the path as written.
+/// `~` and `~/…` (`~\…` on Windows) are this user's home; anything else is the path as written.
 pub fn expand_home(path: &str) -> PathBuf {
     let path = path.trim();
-    let home = || std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from);
+    let home = crate::os::home;
     match path.strip_prefix('~') {
         Some("") => home().unwrap_or_else(|| PathBuf::from(path)),
-        Some(rest) if rest.starts_with('/') => match home() {
+        Some(rest) if rest.starts_with('/') || (cfg!(windows) && rest.starts_with('\\')) => match home() {
             Some(h) => h.join(&rest[1..]),
             None => PathBuf::from(path),
         },
@@ -604,8 +604,8 @@ pub fn expand_home(path: &str) -> PathBuf {
 /// The path with this user's home shown as `~`.
 pub fn tilde(path: &str) -> String {
     let expanded = expand_home(path);
-    match std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from) {
-        Some(h) if expanded.starts_with(&h) && expanded != h => format!("~/{}", expanded.strip_prefix(&h).unwrap_or(&expanded).display()),
+    match crate::os::home() {
+        Some(h) if expanded.starts_with(&h) && expanded != h => format!("~{}{}", std::path::MAIN_SEPARATOR, expanded.strip_prefix(&h).unwrap_or(&expanded).display()),
         _ => expanded.display().to_string(),
     }
 }
@@ -677,10 +677,13 @@ pub struct Dirs {
 }
 
 impl Dirs {
+    /// `~/.config/dataman` (XDG_CONFIG_HOME's when set); on Windows `%APPDATA%\dataman`, unless
+    /// XDG_CONFIG_HOME is set there too (the tests and check stages set it).
     pub fn default_dirs() -> Result<Dirs> {
         let base = match std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
             Some(x) => PathBuf::from(x),
-            None => PathBuf::from(std::env::var_os("HOME").context("HOME is not set")?).join(".config"),
+            None if cfg!(windows) => crate::os::app_data().context("APPDATA is not set")?,
+            None => crate::os::home().context("HOME is not set")?.join(".config"),
         };
         Ok(Dirs { config: base.join("dataman") })
     }
@@ -691,6 +694,14 @@ impl Dirs {
 
     /// The directory holds the connections, the history and unsaved editors: this user's only,
     /// whatever the files' own modes are (an older Dataman left it 0755).
+    /// On Windows the folder is in the user's profile, which only they (and administrators) can
+    /// open: it inherits that.
+    #[cfg(windows)]
+    pub fn ensure_private(&self) -> std::io::Result<()> {
+        std::fs::create_dir_all(&self.config)
+    }
+
+    #[cfg(unix)]
     pub fn ensure_private(&self) -> std::io::Result<()> {
         use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
         std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&self.config)?;
@@ -1025,8 +1036,7 @@ fn save(path: &Path, connections: &[ConnectionProfile], skipped: &[toml::Table],
     let tmp = dir.join(format!(".connections.toml.{}.{}", std::process::id(), uuid::Uuid::new_v4().simple()));
     {
         use std::io::Write as _;
-        use std::os::unix::fs::OpenOptionsExt as _;
-        std::fs::File::options().write(true).create_new(true).mode(0o600).open(&tmp)?.write_all(text.as_bytes())?;
+        crate::os::private_new(&tmp)?.write_all(text.as_bytes())?;
     }
     std::fs::rename(&tmp, path).inspect_err(|_| _ = std::fs::remove_file(&tmp))?;
     Ok(())
@@ -1067,6 +1077,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn config_dir_is_private() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();

@@ -141,8 +141,11 @@ impl<R: Raw> Vault<R> {
     fn hold(&self) -> Result<std::fs::File> {
         let path = self.lock.as_ref().context("no home directory to keep Dataman's lock file in")?;
         if let Some(dir) = path.parent() {
-            use std::os::unix::fs::DirBuilderExt;
-            std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+            let mut b = std::fs::DirBuilder::new();
+            b.recursive(true);
+            #[cfg(unix)]
+            std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
+            b.create(dir)?;
         }
         let f = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(path)?;
         f.lock()?;
