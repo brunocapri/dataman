@@ -96,6 +96,8 @@ const COMPLETION_LINES: usize = 300;
 const TOP_PAD: f32 = 8.;
 const SEL_RADIUS: f32 = 4.;
 const GUTTER_MIN: f32 = 52.;
+/// Line numbers end this far from the gutter's right edge (its divider included).
+const NUM_END: f32 = 12.;
 const FLASH: Duration = Duration::from_millis(180);
 const BLINK_FOR: Duration = Duration::from_secs(6);
 const BLINK_PERIOD: Duration = Duration::from_millis(530);
@@ -2766,9 +2768,9 @@ impl CodeEditor {
         };
         let cw = ts.shape_line("0".into(), fs, &[run(1, t.tx)], None).width();
         let digits = self.buf.line_count().to_string().len();
-        // Folding: room for a chevron between the numbers and the text.
-        let fold_w = if self.folding { px(6.) } else { px(0.) };
-        let need = px(GUTTER_MIN).max(cw * digits as f32 + px(32.) + fold_w);
+        // The same gutter with folding or without (SQL or a document language): its chevrons sit
+        // between the numbers and the divider.
+        let need = px(GUTTER_MIN).max(cw * digits as f32 + px(32.));
         let gutter_w = self.gutter.as_ref().map_or(need, |g| px(g.editor(need.pt())));
         let text_bounds = Bounds::from_corners(point(bounds.left() + gutter_w, bounds.top()), bounds.bottom_right());
         let origin_x = text_bounds.left() + px(12.);
@@ -2818,7 +2820,7 @@ impl CodeEditor {
             let color = if l == cursor_line { t.tx } else { t.tx4 };
             let n: SharedString = (l + 1).to_string().into();
             let shaped_n = ts.shape_line(n.clone(), num_size, &[run(n.len(), color)], None);
-            numbers.push((point(bounds.left() + gutter_w - px(12.) - fold_w - shaped_n.width(), y_of(l)), shaped_n));
+            numbers.push((point(bounds.left() + gutter_w - px(NUM_END) - shaped_n.width(), y_of(l)), shaped_n));
         }
 
         let mut rows = Vec::new();
@@ -2926,7 +2928,8 @@ impl CodeEditor {
             Some((point(origin_x - self.scroll.x + shaped.width() + px(24.), y_of(l)), line))
         });
 
-        // The fold controls: a chevron by each foldable line, ⋯ after a folded one.
+        // The fold controls: a chevron by each foldable line (in the gutter, with its marks), ⋯
+        // after a folded one.
         let mut fold_marks = Vec::new();
         let mut fold_hits = Vec::new();
         if self.folding {
@@ -2935,9 +2938,10 @@ impl CodeEditor {
                 let folded = self.is_folded(r.open);
                 let (glyph, color) = if folded { ("▸", t.tx2) } else { ("▾", t.tx4) };
                 let chev = ts.shape_line(glyph.into(), px(10.), &[run(glyph.len(), color)], None);
-                let cx0 = bounds.left() + gutter_w - px(15.);
-                fold_marks.push((point(cx0, y_of(*l)), chev));
-                fold_hits.push((Bounds::new(point(cx0 - px(2.), y_of(*l)), size(px(12.), lh)), r.open));
+                let strip = bounds.left() + gutter_w - px(NUM_END);
+                let cx0 = strip + (px(NUM_END - 1.) - chev.width()) / 2.;
+                marks.push((point(cx0, y_of(*l)), chev));
+                fold_hits.push((Bounds::new(point(strip, y_of(*l)), size(px(NUM_END - 1.), lh)), r.open));
                 if folded {
                     let dots = ts.shape_line("⋯".into(), fs, &[run("⋯".len(), t.tx3)], None);
                     let x0 = origin_x - self.scroll.x + shaped.width() + px(4.);
@@ -3573,7 +3577,7 @@ struct Prepainted {
     marks: Vec<(Point<Pixels>, ShapedLine)>,
     lens: Option<(Point<Pixels>, ShapedLine)>,
     backgrounds: Vec<PaintQuad>,
-    /// Gutter chevrons and the ⋯ of folded lines.
+    /// The ⋯ of folded lines.
     fold_marks: Vec<(Point<Pixels>, ShapedLine)>,
     fold_boxes: Vec<Hitbox>,
     cursor: Option<PaintQuad>,
@@ -3681,7 +3685,7 @@ impl Element for EditorElement {
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             for (origin, line) in &p.fold_marks {
                 // A ⋯ scrolled under the gutter stays hidden there.
-                if origin.x >= p.text_bounds.left() || origin.x < p.gutter.right() - px(12.) {
+                if origin.x >= p.text_bounds.left() {
                     line.paint(*origin, lh, TextAlign::Left, None, window, cx).ok();
                 }
             }
