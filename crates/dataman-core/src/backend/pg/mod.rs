@@ -144,11 +144,13 @@ pub(crate) struct Dedicated {
     pub tls: Tls,
     pub tls_active: bool,
     pub notifications: tokio::sync::mpsc::UnboundedReceiver<Notification>,
+    reach: Reach,
 }
 
 impl Dedicated {
+    /// The way the connection came, as a session cancels: a raw connect leaves the token no address.
     pub(crate) async fn cancel(&self) -> Result<()> {
-        cancel(&self.client.cancel_token(), &self.tls).await
+        Canceller { token: self.client.cancel_token(), tls: self.tls.clone(), reach: self.reach.clone() }.cancel().await
     }
 }
 
@@ -263,7 +265,7 @@ async fn connect_dedicated(p: &ConnectionProfile, password: Option<&str>, databa
         set_read_only(&client).await;
     }
     let tls_active = used.load(std::sync::atomic::Ordering::Acquire);
-    Ok(Dedicated { client: Arc::new(client), tls, tls_active, notifications })
+    Ok(Dedicated { client: Arc::new(client), tls, tls_active, notifications, reach })
 }
 
 fn pg_config(p: &ConnectionProfile, password: Option<&str>, database: Option<&str>, via: Option<SocketAddr>) -> (tokio_postgres::Config, SslMode) {
@@ -464,14 +466,6 @@ pub(crate) async fn connect_session_through(
             None => Err(e),
         },
     }
-}
-
-pub(crate) async fn cancel(token: &CancelToken, tls: &Tls) -> Result<()> {
-    match tls {
-        Tls::None => token.cancel_query(NoTls).await?,
-        Tls::Rustls(m) => token.cancel_query(m.clone()).await?,
-    }
-    Ok(())
 }
 
 pub(crate) async fn text_rows(client: &Client, sql: &str) -> Result<Vec<Vec<Option<String>>>> {
