@@ -94,6 +94,8 @@ The server is the `dataman-mcp` command, spoken over stdio. Where it is depends 
 | macOS | `/Applications/Dataman.app/Contents/MacOS/dataman-mcp` |
 | Linux, .deb | `/usr/bin/dataman-mcp` |
 | Linux, AppImage | the AppImage's path followed by `--mcp`, e.g. `~/Apps/Dataman-x86_64.AppImage --mcp` |
+| Windows, installer | `%LOCALAPPDATA%\Programs\Dataman\dataman-mcp.exe` (`C:\Program Files\Dataman\dataman-mcp.exe` when installed for all users) |
+| Windows, .zip | `dataman-mcp.exe` in the unzipped `Dataman` folder |
 | Built from source | `target/release/dataman-mcp` |
 
 Agents › General in the app shows the exact command for your install, and so does `dataman-mcp --claude`. The examples below use the macOS path; swap in yours.
@@ -131,10 +133,10 @@ On Linux with the AppImage, `--mcp` goes after the path: for example, `claude mc
 | Agent | File |
 |---|---|
 | Cursor | `~/.cursor/mcp.json` |
-| Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json` |
+| Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json` (Windows: `%APPDATA%\Claude\claude_desktop_config.json`) |
 | Windsurf | `~/.codeium/windsurf/mcp_config.json` |
 
-With the AppImage, use `"command": "/path/to/Dataman-x86_64.AppImage"` and `"args": ["--mcp"]`.
+With the AppImage, use `"command": "/path/to/Dataman-x86_64.AppImage"` and `"args": ["--mcp"]`. On Windows the path's backslashes are doubled in JSON: `"command": "C:\\Users\\you\\AppData\\Local\\Programs\\Dataman\\dataman-mcp.exe"`; `~` in the files above is `%USERPROFILE%`.
 
 Any other MCP client works the same way: give it the command above as a stdio server. The name the client reports is the one shown in Audit and on the Allow sheet.
 
@@ -425,7 +427,7 @@ Values shorter than 5 characters are never checked. A reply that cannot be check
 
 ### The agent's database login
 
-A login on the database just for agents, made from the connection's rules. Dataman creates it with your own login, keeps its password in the Keychain (the Secret Service on Linux), and connects as it for every agent call on that connection: every tool, the agent tabs, reconnects, other databases of the same server, server activity, the MongoDB shell, Redis and search. Your own tabs keep your login. What you allow on full (DDL, `TRUNCATE`, a procedure, ending a session) runs on your login after your Allow, so the agent's credential can never change structure.
+A login on the database just for agents, made from the connection's rules. Dataman creates it with your own login, keeps its password in the Keychain (the Secret Service on Linux, the Credential Manager on Windows), and connects as it for every agent call on that connection: every tool, the agent tabs, reconnects, other databases of the same server, server activity, the MongoDB shell, Redis and search. Your own tabs keep your login. What you allow on full (DDL, `TRUNCATE`, a procedure, ending a session) runs on your login after your Allow, so the agent's credential can never change structure.
 
 It is a ceiling, not a copy. Every check Dataman makes still applies on top of it: row limits, the real-`WHERE` rule, approvals, production, value masking and clean errors stay Dataman's.
 
