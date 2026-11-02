@@ -553,7 +553,18 @@ fn main() {
                 },
                 |window, cx| cx.new(|cx| app::Workspace::new(core.clone(), window, cx)),
             )
-            .expect("cannot open the window");
+            .unwrap_or_else(|e| {
+                // No Vulkan or OpenGL driver to draw with: say what to install, not a panic.
+                if crate::keymap::LINUX {
+                    eprintln!(
+                        "dataman: cannot open the window: {e:#}\n\
+                         Dataman draws with Vulkan or OpenGL: install your GPU's Vulkan driver \
+                         (mesa-vulkan-drivers on Debian, Ubuntu and Fedora; vulkan-radeon or vulkan-intel on Arch)."
+                    );
+                    std::process::exit(1);
+                }
+                panic!("cannot open the window: {e:#}")
+            });
         mark(t_main, "window opened");
         let mcp_core = core.clone();
         let handle: gpui::AnyWindowHandle = window.into();
