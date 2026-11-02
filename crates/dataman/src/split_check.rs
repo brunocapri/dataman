@@ -373,7 +373,8 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
         pause(cx, 50).await;
         draw(cx);
         let x = strip_scroll(ws, Pane::Left, cx).0;
-        if x == last && x < -1. {
+        let grown = cx.update(|_, cx| ws.read(cx).tabs.iter().all(|t| !ws.read(cx).tab_motion.growing(t.entity_id()))).unwrap_or(true);
+        if x == last && x < -1. && grown {
             break;
         }
         last = x;
@@ -584,8 +585,16 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
     let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.focus_pane(Pane::Left, window, cx)));
     click(cx, middle(xb));
     let asked = asking(ws, cx) == Some(Pane::Right);
-    pause(cx, 3400).await;
-    report("left alone, it gives way after a few seconds", asked && asking(ws, cx).is_none() && tabs(ws, cx).len() == n, format!("asked {asked}, asking {:?}", asking(ws, cx)));
+    // Its 3 s start when its task first runs, after any frames already queued: on a slow renderer
+    // well after this click. Still asking at 2.5 s, then gone once it lets go.
+    pause(cx, 2500).await;
+    let held = asking(ws, cx) == Some(Pane::Right);
+    let gone = crate::check::until(cx, 5, |cx| asking(ws, cx).is_none()).await;
+    report(
+        "left alone, it gives way after a few seconds",
+        asked && held && gone && tabs(ws, cx).len() == n,
+        format!("asked {asked}, held {held}, asking {:?}", asking(ws, cx)),
+    );
     click(cx, middle(xb));
     if let Some(b) = parts(ws, Pane::Right, cx).last().copied() {
         click(cx, middle(b));
