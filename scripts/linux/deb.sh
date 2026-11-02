@@ -36,7 +36,7 @@ Architecture: $debarch
 Maintainer: brunocapri <brunocapri@users.noreply.github.com>
 Installed-Size: $size
 Depends: libc6 (>= 2.35), libgcc-s1, libxcb1, libxkbcommon0, libxkbcommon-x11-0, libfontconfig1, libfreetype6
-Recommends: libvulkan1, mesa-vulkan-drivers | vulkan-icd, xdg-desktop-portal, gnome-keyring | kwalletmanager | keepassxc
+Recommends: libvulkan1, mesa-vulkan-drivers | vulkan-icd, libegl1, xdg-desktop-portal, gnome-keyring | kwalletmanager | keepassxc
 Section: database
 Priority: optional
 Homepage: https://github.com/brunocapri/dataman
