@@ -5,7 +5,8 @@
 //! Servers of one's own: `DATAMAN_E2E_<SERVICE>_PORT` (`DATAMAN_E2E_PG_PORT=57533`…) moves a
 //! service to another port of this machine (its seeds load into the container that publishes
 //! it), and `--no-compose` never starts or stops the compose services: a server that isn't up
-//! fails the run instead.
+//! fails the run instead. `DATAMAN_E2E_PSQL=<psql>` loads PostgreSQL's seeds with that local
+//! client instead of `docker exec` (a server installed on the machine, as on Windows runners).
 
 use std::collections::BTreeSet;
 use std::io::{BufRead as _, BufReader, Write as _};
@@ -315,6 +316,21 @@ fn exec(container: &str, cmd: &[&str], input: Option<&Path>) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// psql on this machine, against the server on `port`.
+fn local_psql(bin: &str, port: &str, password: &str, args: &[&str], input: Option<&Path>) -> Result<String> {
+    let mut c = Command::new(bin);
+    c.args(["-p", port]).args(args).env("PGPASSWORD", password);
+    c.stdin(match input {
+        Some(p) => Stdio::from(std::fs::File::open(p).with_context(|| format!("reading {}", p.display()))?),
+        None => Stdio::null(),
+    });
+    let out = c.output().with_context(|| format!("running {bin}"))?;
+    if !out.status.success() {
+        bail!("{bin} {}: {}{}", args.join(" "), String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
 fn sha(path: &Path) -> Result<String> {
     let bytes = std::fs::read(path)?;
     Ok(data_encoding::HEXLOWER.encode(&ring::digest::digest(&ring::digest::SHA256, &bytes).as_ref()[..8]))
@@ -325,15 +341,26 @@ fn sha(path: &Path) -> Result<String> {
 fn reset(root: &Path, needs: &BTreeSet<Db>) -> Result<()> {
     let seeds = root.join("seeds");
     if needs.contains(&Pg) {
-        let c = container(Pg.port())?;
+        let local = std::env::var("DATAMAN_E2E_PSQL").ok().filter(|p| !p.is_empty());
+        let c = match local {
+            Some(_) => String::new(),
+            None => container(Pg.port())?,
+        };
         let pw = format!("PGPASSWORD={}", password(Pg));
+        let port = Pg.port().to_string();
         let psql = |args: &[&str], file: Option<&Path>| {
-            let mut cmd = vec!["env", pw.as_str(), "psql", "-h", "127.0.0.1", "-U", "postgres", "-d", "dataman", "-v", "ON_ERROR_STOP=1", "-q"];
+            let mut cmd = vec!["psql", "-h", "127.0.0.1", "-U", "postgres", "-d", "dataman", "-v", "ON_ERROR_STOP=1", "-q"];
             cmd.extend_from_slice(args);
             if file.is_some() {
                 cmd.extend_from_slice(&["-f", "-"]);
             }
-            exec(&c, &cmd, file)
+            match &local {
+                Some(bin) => local_psql(bin, &port, &password(Pg), &cmd[1..], file),
+                None => {
+                    cmd.splice(0..0, ["env", pw.as_str()]);
+                    exec(&c, &cmd, file)
+                }
+            }
         };
         let want = format!("dataman-seed {}", sha(&seeds.join("postgres.sql"))?);
         let have = psql(&["-tAc", "SELECT coalesce(shobj_description(oid, 'pg_database'), '') FROM pg_database WHERE datname = 'dataman'"], None)?;
