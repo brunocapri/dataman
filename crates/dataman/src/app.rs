@@ -434,6 +434,8 @@ impl Workspace {
             crate::agents::AgentsEvent::Close => w.show_nav(w.before_agents, window, cx),
         })
         .detach();
+        // Its detail width is in the session, and the page notifies only itself.
+        cx.observe(&agents, |w, _, cx| w.session_dirty(cx)).detach();
         cx.subscribe_in(&tree, window, Self::on_tree).detach();
         cx.subscribe_in(&store, window, Self::on_conn).detach();
         cx.subscribe_in(&welcome, window, Self::on_welcome).detach();
