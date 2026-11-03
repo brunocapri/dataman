@@ -272,8 +272,8 @@ async fn check(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> bool {
         .unwrap_or(false)
     };
     let p = header(0, cx);
+    // The second click lands while the first still reads the rest and sorts it: it waits its turn.
     click(cx, p);
-    settle(&grid, cx).await;
     click(cx, p);
     for _ in 0..400 {
         pause(cx, 50).await;
