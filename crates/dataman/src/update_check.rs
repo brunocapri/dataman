@@ -118,7 +118,9 @@ fn artifact(work: &Path, _stage_dir: &Path) -> anyhow::Result<Vec<u8>> {
 fn iscc() -> anyhow::Result<PathBuf> {
     let on_path = std::env::var_os("PATH").into_iter().flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>()).map(|d| d.join("ISCC.exe"));
     let installed = ["ProgramFiles(x86)", "ProgramFiles"].into_iter().filter_map(std::env::var_os).map(|d| Path::new(&d).join("Inno Setup 6").join("ISCC.exe"));
-    on_path.chain(installed).find(|p| p.is_file()).ok_or_else(|| anyhow::anyhow!("Inno Setup 6 (ISCC.exe) is not installed"))
+    // Inno's per-user install (what winget does without elevation)
+    let per_user = std::env::var_os("LOCALAPPDATA").map(|d| Path::new(&d).join("Programs").join("Inno Setup 6").join("ISCC.exe"));
+    on_path.chain(installed).chain(per_user).find(|p| p.is_file()).ok_or_else(|| anyhow::anyhow!("Inno Setup 6 (ISCC.exe) is not installed"))
 }
 
 /// An Inno Setup build of `script`'s [Setup], [Files] and the rest, as `out` (an exe). Its own
