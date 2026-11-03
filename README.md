@@ -63,7 +63,7 @@ Claude Code and any other MCP client can work with your databases through it, an
   </tr>
 </table>
 
-SQLite and DuckDB are built in, so they need nothing installed. Every connection can go through an SSH tunnel (agent, key or password, with `~/.ssh/config` aliases and ProxyJump) and over TLS (rustls, no OpenSSL).
+SQLite and DuckDB need nothing installed: SQLite is built in, and DuckDB is its own library, which the Linux and Windows packages carry and the Mac app downloads (about 11 MB, checked against the SHA-256 it was built with) the first time you open a DuckDB file. Every connection can go through an SSH tunnel (agent, key or password, with `~/.ssh/config` aliases and ProxyJump) and over TLS (rustls, no OpenSSL).
 
 ## A proper GUI, before anything else
 
@@ -583,6 +583,7 @@ You need Rust 1.99 or newer. On Linux, you also need the GPUI dependencies: `cla
 ```bash
 git clone https://github.com/brunocapri/dataman
 cd dataman
+scripts/duckdb-engine.sh                 # DuckDB, once: its C++ builds apart, into target/duckdb
 cargo run --release -p dataman
 ```
 
@@ -604,6 +605,7 @@ cargo run --release -p xtask -- e2e      # end-to-end on every engine (needs Doc
 | Passwords | macOS Keychain / Linux Secret Service, under the service name `dataman` |
 | Agent audit | `~/.config/dataman/mcp-audit.jsonl` |
 | Logs | `~/Library/Logs/Dataman` on macOS, `$XDG_STATE_HOME/dataman/logs` on Linux |
+| DuckDB (Mac) | `~/Library/Application Support/Dataman/engines/`, downloaded on first use |
 | Project | `<your repo>/.dataman/project.toml` |
 
 `mcp-tools.toml` defines your own parameterized SQL tools for agents. It is reloaded whenever it changes.

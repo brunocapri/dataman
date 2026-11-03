@@ -13,6 +13,11 @@ $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' | Select
 if (-not $NoBuild) {
     cargo build --release -p dataman -p dataman-mcp
     if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
+    # The DuckDB engine (scripts/duckdb-engine.sh does the same; `bash` here may be WSL's).
+    cargo build --release --locked --manifest-path engines\duckdb\Cargo.toml --target-dir target\duckdb-engine
+    if ($LASTEXITCODE -ne 0) { throw "the DuckDB engine did not build" }
+    New-Item -ItemType Directory -Force target\duckdb | Out-Null
+    Copy-Item target\duckdb-engine\release\dataman_duckdb.dll target\duckdb\
 }
 $bin = "target\release"
 
@@ -20,7 +25,8 @@ $dist = "dist\windows"
 $stage = "$dist\Dataman"
 Remove-Item -Recurse -Force $dist -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $stage | Out-Null
-Copy-Item "$bin\dataman.exe", "$bin\dataman-mcp.exe" $stage
+# DuckDB: one engine beside both binaries, loaded when a DuckDB database is opened.
+Copy-Item "$bin\dataman.exe", "$bin\dataman-mcp.exe", "target\duckdb\dataman_duckdb.dll" $stage
 Copy-Item packaging\windows\README.txt "$stage\README.txt"
 Copy-Item LICENSE "$stage\LICENSE.txt"
 

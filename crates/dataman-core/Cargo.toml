@@ -57,12 +57,18 @@ boa_engine = { version = "0.22", default-features = false }
 rusqlite = { version = "0.40", optional = true, features = ["bundled", "column_decltype", "column_metadata", "hooks", "limits"] }
 # rusqlite's own (its statement batches iterate with it).
 fallible-iterator-03 = { package = "fallible-iterator", version = "0.3", optional = true }
-duckdb = { version = "1.10506", optional = true, features = ["bundled", "json", "parquet"] }
+# DuckDB's C API through a table of pointers, as a loadable extension takes it: the engine itself
+# (engines/duckdb, the C++ compiled with json and parquet) is a library loaded when a DuckDB
+# database is first opened (backend/duck/engine.rs). Pinned: the engine is built from this
+# libduckdb-sys, and backend/duck/api_v1.rs lists its API.
+duckdb = { version = "=1.10506.1", optional = true, default-features = false, features = ["loadable-extension"] }
+libloading = { version = "0.8", optional = true }
+flate2 = { version = "1", optional = true }
 
 [features]
 default = ["sqlite", "duckdb"]
 sqlite = ["dep:rusqlite", "dep:fallible-iterator-03"]
-duckdb = ["dep:duckdb"]
+duckdb = ["dep:duckdb", "dep:libloading", "dep:flate2"]
 
 # Passwords: the Keychain on macOS, the Secret Service (GNOME Keyring, KWallet, KeePassXC) on
 # Linux through oo7 with the features GPUI's Linux platform already builds.

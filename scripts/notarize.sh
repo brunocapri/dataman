@@ -1,8 +1,10 @@
 #!/bin/bash
-# Notarizes and staples the app or the DMG (Developer ID signatures only).
+# Notarizes and staples the app or the DMG (Developer ID signatures only); a library (the DuckDB
+# engine) is notarized only: it cannot be stapled, Gatekeeper looks its ticket up online.
 #
 #   scripts/notarize.sh dist/Dataman.app
 #   scripts/notarize.sh dist/Dataman-0.2.0.dmg
+#   scripts/notarize.sh target/duckdb/libdataman_duckdb.dylib
 #
 #   DATAMAN_NOTARY_PROFILE  a notarytool keychain profile, made once with
 #                           xcrun notarytool store-credentials <profile> --apple-id … --team-id …
@@ -11,7 +13,7 @@
 set -euo pipefail
 [ "$(uname)" = Darwin ] || { echo "notarize: macOS only (the Linux release: scripts/linux/build.sh)" >&2; exit 1; }
 
-target="${1:?usage: notarize.sh <app or dmg>}"
+target="${1:?usage: notarize.sh <app, dmg or dylib>}"
 : "${DATAMAN_NOTARY_PROFILE:?set DATAMAN_NOTARY_PROFILE (xcrun notarytool store-credentials)}"
 
 case "$target" in
@@ -24,8 +26,18 @@ case "$target" in
   *.dmg)
     xcrun notarytool submit "$target" --keychain-profile "$DATAMAN_NOTARY_PROFILE" --wait
     ;;
+  *.dylib)
+    zip="$(mktemp -d)/$(basename "$target").zip"
+    trap 'rm -rf "$(dirname "$zip")"' EXIT
+    ditto -c -k "$target" "$zip"
+    out="$(xcrun notarytool submit "$zip" --keychain-profile "$DATAMAN_NOTARY_PROFILE" --wait)"
+    echo "$out"
+    grep -q 'status: Accepted' <<< "$out" || exit 1
+    spctl --assess --type open --context context:primary-signature --verbose=2 "$target"
+    exit 0
+    ;;
   *)
-    echo "notarize: expected a .app or a .dmg" >&2
+    echo "notarize: expected a .app, a .dmg or a .dylib" >&2
     exit 1
     ;;
 esac

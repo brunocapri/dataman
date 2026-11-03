@@ -63,6 +63,9 @@ jobs:
           # in the live sweeps. Anything else fails.
           others=$(grep ': warning: ' check.log | grep -v '^vendor[/\\]tiberius' | grep -v 'live_\(pg\|mysql\)_sweep.rs.*unused `Result`' | sort -u || true)
           [ -z "$others" ] || { echo "new warnings:"; echo "$others"; exit 1; }
+      - name: The DuckDB engine
+        shell: bash
+        run: scripts/duckdb-engine.sh
       - name: Build the tests
         run: cargo test --release --workspace --no-run
       # Built above, they take minutes: a test that hangs fails here, by name, not at the job's end.

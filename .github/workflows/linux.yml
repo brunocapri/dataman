@@ -57,6 +57,8 @@ jobs:
           others=$(grep '^warning' check.log | grep -v "$known\\|generated [0-9]* warning\\|future version of Rust" || true)
           [ -z "$others" ] || { echo "$others"; exit 1; }
           [ "$n" -le 2 ]
+      - name: The DuckDB engine
+        run: scripts/duckdb-engine.sh
       - name: Tests, with a Secret Service for the password store
         run: |
           # -e: a failing `cargo test` fails the step, not only the last command.

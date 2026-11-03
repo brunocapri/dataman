@@ -10,6 +10,8 @@
 #                           the release key, DEFAULT_PUBKEY in crates/dataman/src/updates.rs)
 #   DATAMAN_DIST            output folder (default dist)
 #   DATAMAN_SKIP_BUILD=1    package target/release as it is
+#   DATAMAN_BUNDLE_DUCKDB=1 put the DuckDB engine (target/duckdb, scripts/duckdb-engine.sh) in
+#                           Contents/Frameworks; without it the app downloads it on first use
 set -euo pipefail
 [ "$(uname)" = Darwin ] || { echo "bundle: macOS only (the Linux release: scripts/linux/build.sh)" >&2; exit 1; }
 
@@ -21,7 +23,7 @@ version="${DATAMAN_VERSION:-$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)}"
 build="${DATAMAN_BUILD:-$version}"
 identity="${DATAMAN_SIGN_IDENTITY:--}"
 
-# The C and C++ compiled in (SQLite, DuckDB) target the same macOS as the Rust code: the
+# The C compiled in (SQLite) targets the same macOS as the Rust code: the
 # bundle's minimum stays the one the binary says below.
 export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-11.0}"
 if [ -z "${DATAMAN_SKIP_BUILD:-}" ]; then
@@ -33,8 +35,8 @@ mkdir -p "$dist"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp target/release/dataman "$app/Contents/MacOS/dataman"
-# The MCP server is the app's binary started by that name: one copy of the code (DuckDB alone
-# is tens of MB), and one signature, so the passwords the app saved open in the server without a
+# The MCP server is the app's binary started by that name: one copy of the code, and one
+# signature, so the passwords the app saved open in the server without a
 # Keychain prompt.
 ln -s dataman "$app/Contents/MacOS/dataman-mcp"
 cp packaging/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"
@@ -60,6 +62,12 @@ plutil -lint -s "$plist"
 xattr -cr "$app"
 if [ "$identity" = "-" ]; then ts=(--timestamp=none); else ts=(--timestamp); fi
 sign=(codesign --force --options runtime "${ts[@]}" --entitlements packaging/entitlements.plist --sign "$identity")
+if [ -n "${DATAMAN_BUNDLE_DUCKDB:-}" ]; then
+  mkdir -p "$app/Contents/Frameworks"
+  cp target/duckdb/libdataman_duckdb.dylib "$app/Contents/Frameworks/"
+  # Nested code is signed first, by the same team (library validation).
+  codesign --force --options runtime "${ts[@]}" --sign "$identity" "$app/Contents/Frameworks/libdataman_duckdb.dylib"
+fi
 "${sign[@]}" "$app"
 codesign --verify --deep --strict "$app"
 
