@@ -447,7 +447,7 @@ pub(crate) fn decision_text(e: &Entry) -> String {
             None => "Ran · read, no question".into(),
         },
         Outcome::Cancelled => "Cancelled".into(),
-        Outcome::Started => "Started · no end logged (Dataman stopped during the call)".into(),
+        Outcome::Started => "Started · no end logged yet (still running, or Dataman stopped during the call)".into(),
         Outcome::Timeout => "Timed out".into(),
         Outcome::Invalid => "Invalid arguments".into(),
         Outcome::Error => "Failed".into(),

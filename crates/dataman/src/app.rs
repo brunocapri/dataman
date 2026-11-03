@@ -434,6 +434,8 @@ impl Workspace {
             crate::agents::AgentsEvent::Close => w.show_nav(w.before_agents, window, cx),
         })
         .detach();
+        // Its detail width is in the session, and the page notifies only itself.
+        cx.observe(&agents, |w, _, cx| w.session_dirty(cx)).detach();
         cx.subscribe_in(&tree, window, Self::on_tree).detach();
         cx.subscribe_in(&store, window, Self::on_conn).detach();
         cx.subscribe_in(&welcome, window, Self::on_welcome).detach();
@@ -748,7 +750,7 @@ impl Workspace {
         cx.observe(&editor, |_, _, cx| cx.notify()).detach();
         // Focus moved into the other pane's front tab: its group is the focused one.
         for f in [editor.focus_handle(cx), grid.focus_handle(cx), tab.read(cx).plan.focus_handle(cx)] {
-            cx.on_focus_in(&f, window, |w, window, cx| w.sync_group_focus(window, cx)).detach();
+            self.watch_group_focus(&f, window, cx);
         }
         let edit = tab.read(cx).edit.clone();
         cx.subscribe_in(&edit, window, Self::on_edit).detach();
@@ -1434,6 +1436,11 @@ impl Workspace {
             d
         });
         cx.subscribe_in(&d, window, |w, d, ev: &DialogEvent, window, cx| {
+            // Closed or deleted while its save runs: the save would land after (a deleted
+            // connection back, or the list never told).
+            if matches!(ev, DialogEvent::Close | DialogEvent::Delete(_)) && d.read(cx).is_saving() {
+                return;
+            }
             match ev {
                 DialogEvent::Close => {}
                 DialogEvent::Saved { id, password } => {
@@ -2121,6 +2128,12 @@ impl Workspace {
             window.focus(&e.focus_handle(cx), cx);
             e.update(cx, |e, cx| e.format_query(cx));
         }
+    }
+
+    /// Focus moving into `f` makes its group the focused one. Focus listeners run in the draw's
+    /// focus phase, where a notify neither redraws nor reaches observers: deferred past it.
+    pub(crate) fn watch_group_focus(&mut self, f: &gpui::FocusHandle, window: &mut Window, cx: &mut Context<Self>) {
+        cx.on_focus_in(f, window, |_, window, cx| cx.defer_in(window, |w, window, cx| w.sync_group_focus(window, cx))).detach();
     }
 
     /// After each notify, before the frame draws: a connection change of the active tab
