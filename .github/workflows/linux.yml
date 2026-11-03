@@ -1,17 +1,20 @@
 name: Linux
 
+# Pushes to main run nothing: a release's tag runs it all, and the release takes its packages
+# (scripts/github-release.sh).
 on:
   push:
-    branches: [main]
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
 
+# On a pull request the newest push cancels the run under way; a tag's run goes to the end.
 concurrency:
   group: linux-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -54,6 +57,8 @@ jobs:
           others=$(grep '^warning' check.log | grep -v "$known\\|generated [0-9]* warning\\|future version of Rust" || true)
           [ -z "$others" ] || { echo "$others"; exit 1; }
           [ "$n" -le 2 ]
+      - name: The DuckDB engine
+        run: scripts/duckdb-engine.sh
       - name: Tests, with a Secret Service for the password store
         run: |
           # -e: a failing `cargo test` fails the step, not only the last command.

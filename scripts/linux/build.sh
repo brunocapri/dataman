@@ -55,8 +55,6 @@ fi
 arch="${archs[0]}"
 target="${CARGO_TARGET_DIR:-$root/target}"
 if [ -z "${DATAMAN_SKIP_BUILD:-}" ]; then
-  # DuckDB is C++: libstdc++ goes in statically (the `cc` crate would link it dynamically, and
-  # the AppImage links nothing outside its allowlist).
   # DuckDB's unity C++ files take ~2 GB a compiler: no more jobs than memory allows (a
   # Docker VM's 8 GB fit three).
   if [ -z "${CARGO_BUILD_JOBS:-}" ] && [ -r /proc/meminfo ]; then
@@ -65,8 +63,11 @@ if [ -z "${DATAMAN_SKIP_BUILD:-}" ]; then
     [ "$jobs" -le "$(nproc)" ] || jobs="$(nproc)"
     export CARGO_BUILD_JOBS="$jobs"
   fi
-  export CXXSTDLIB=""
-  export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-Wl,-Bstatic -C link-arg=-lstdc++ -C link-arg=-Wl,-Bdynamic"
+  # The DuckDB engine is C++: libstdc++ goes in statically (the `cc` crate would link it
+  # dynamically, and the AppImage links nothing outside its allowlist).
+  CARGO_TARGET_DIR="$target" CXXSTDLIB="" \
+    RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-Wl,-Bstatic -C link-arg=-lstdc++ -C link-arg=-Wl,-Bdynamic" \
+    "$root/scripts/duckdb-engine.sh"
   (cd "$root" && DATAMAN_VERSION="$version" cargo build --release --locked -p dataman)
 fi
 baked="$("$target/release/dataman" --version 2> /dev/null || true)"

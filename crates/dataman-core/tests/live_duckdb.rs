@@ -117,6 +117,17 @@ fn connects_and_decodes_every_type() {
     assert!(rs.columns().is_none_or(|c| c.is_empty()));
 }
 
+/// The engine is a library of its own: it carries the extensions DuckDB once had compiled in.
+#[test]
+fn the_engine_has_json_and_parquet() {
+    let d = open(false);
+    let (e, sess) = (&d.e, d.c.session(None));
+    let rs = ok(e, &sess, "SELECT install_mode FROM duckdb_extensions() WHERE loaded AND extension_name IN ('json', 'parquet') ORDER BY extension_name");
+    assert_eq!(col(&rs, 0), [s("STATICALLY_LINKED"), s("STATICALLY_LINKED")]);
+    let rs = ok(e, &sess, "SELECT json_extract('{\"a\": [1, 2]}', '$.a[1]')::INTEGER, version()");
+    assert_eq!(texts(&rs, 0), [s("2"), s("v1.5.6")]);
+}
+
 #[test]
 fn one_instance_per_file() {
     let d = open(true);

@@ -317,6 +317,10 @@ pub struct ResultGrid {
     char_w: f32,
     widths_at: f32,
     sorting: bool,
+    /// While a sort runs: the last one asked for, and whether it waits for the running one (a
+    /// second header click on a big result lands mid-sort).
+    sort_asked: Option<(usize, SortDir)>,
+    sort_queued: bool,
     pub cancelling: bool,
     summary: Option<(SummaryKey, SharedString)>,
     decor: Option<Arc<Decorations>>,
@@ -487,6 +491,8 @@ impl ResultGrid {
             char_w: 7.8,
             widths_at: 0.,
             sorting: false,
+            sort_asked: None,
+            sort_queued: false,
             cancelling: false,
             summary: None,
             decor: None,
@@ -635,6 +641,12 @@ impl ResultGrid {
         self.land = key;
     }
 
+    /// The sort the grid is on, or on its way to while one runs.
+    #[cfg(feature = "checks")]
+    pub fn demo_sort_asked(&self) -> Option<(usize, SortDir)> {
+        if self.sorting { self.sort_asked } else { self.rs.as_ref().and_then(|r| r.sort_state()) }
+    }
+
     #[cfg(feature = "checks")]
     pub fn demo_pop(&self) -> Option<((usize, usize), PopStyle)> {
         self.live_pop().map(|(c, style, _)| ((c.row, c.col), style))
@@ -727,6 +739,7 @@ impl ResultGrid {
         self.drag = None;
         self.auto = None;
         self.sorting = false;
+        self.sort_queued = false;
         self.cancelling = false;
         self.summary = None;
         self.decor = None;
@@ -1643,7 +1656,8 @@ impl ResultGrid {
             return;
         }
         let Some(rs) = self.rs.clone() else { return };
-        let next = match rs.sort_state() {
+        let now = if self.sorting { self.sort_asked } else { rs.sort_state() };
+        let next = match now {
             Some((c, SortDir::Asc)) if c == col => Some((col, SortDir::Desc)),
             Some((c, SortDir::Desc)) if c == col => None,
             _ => Some((col, SortDir::Asc)),
@@ -1662,18 +1676,27 @@ impl ResultGrid {
     pub fn sort_local(&mut self, by: Option<(usize, SortDir)>, cx: &mut Context<Self>) {
         let (Some(rs), Some(rt)) = (self.rs.clone(), self.rt.clone()) else { return };
         if self.sorting {
+            // Run once the one under way is done: the last asked for wins.
+            self.sort_asked = by;
+            self.sort_queued = true;
             return;
         }
         if by.is_some() && !rs.phase().is_finished() {
             rs.fetch_all();
         }
         self.sorting = true;
+        self.sort_asked = by;
         let job = rt.spawn_blocking(move || rs.sort(by));
         cx.spawn(async move |this, cx| {
             let _ = job.await;
             let _ = this.update(cx, |g, cx| {
                 g.sorting = false;
-                g.resort_settled(cx);
+                if std::mem::take(&mut g.sort_queued) {
+                    let by = g.sort_asked;
+                    g.sort_local(by, cx);
+                } else {
+                    g.resort_settled(cx);
+                }
                 cx.notify();
             });
         })

@@ -1,4 +1,4 @@
-//! DuckDB, compiled in (`bundled`, with json and parquet). A file is opened once per process: a
+//! DuckDB, through the engine library (`engine`, loaded on first use). A file is opened once per process: a
 //! registry keeps each file's instance, and every connection to it (catalog reads, sessions,
 //! agents) is a clone of the instance's own. Two `Connection::open` of one file in a process
 //! make two databases writing the same file.
@@ -23,6 +23,8 @@ use crate::server::ServerInfo;
 use crate::sql::Dialect;
 use crate::tx::{Seen, TxWatch};
 use crate::value::Kind;
+
+mod engine;
 
 pub(crate) type DuckError = duckdb::Error;
 
@@ -69,6 +71,7 @@ fn instance(path: &Path, read_only: bool, external: bool) -> Result<Arc<Instance
     if !path.is_file() {
         bail!("{} does not exist", path.display());
     }
+    engine::load()?;
     let key = canonical(path);
     // A connection just closed lets go of the file when its thread ends, and its database once
     // closed: a moment to wait for that before another mode is refused, longer for a close.
@@ -141,6 +144,7 @@ pub fn create(path: &Path) -> Result<()> {
     if path.exists() {
         bail!("{} exists already", path.display());
     }
+    engine::load()?;
     duckdb::Connection::open(path).with_context(|| format!("creating {}", path.display()))?.execute_batch("CHECKPOINT")?;
     Ok(())
 }

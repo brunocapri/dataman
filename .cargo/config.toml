@@ -1,0 +1,3 @@
+# The DuckDB engine the tests and `cargo run` load: built by scripts/duckdb-engine.sh.
+[env]
+DATAMAN_DUCKDB = { value = "target/duckdb", relative = true }

@@ -2053,12 +2053,36 @@ dependencies = [
 
 [[package]]
 name = "darling"
+version = "0.20.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fc7f46116c46ff9ab3eb1597a45688b6715c6e628b5c133e288e709a29bcb4ee"
+dependencies = [
+ "darling_core 0.20.11",
+ "darling_macro 0.20.11",
+]
+
+[[package]]
+name = "darling"
 version = "0.24.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed17f5901b6630b993ca003def43f2f8ef4014fc13b047b57aad617ff32bc2ec"
 dependencies = [
- "darling_core",
- "darling_macro",
+ "darling_core 0.24.1",
+ "darling_macro 0.24.1",
+]
+
+[[package]]
+name = "darling_core"
+version = "0.20.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0d00b9596d185e565c2207a0b01f8bd1a135483d02d9b7b0a54b11da8d53412e"
+dependencies = [
+ "fnv",
+ "ident_case",
+ "proc-macro2",
+ "quote",
+ "strsim",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -2076,11 +2100,22 @@ dependencies = [
 
 [[package]]
 name = "darling_macro"
+version = "0.20.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fc34b93ccb385b40dc71c6fceac4b2ad23662c7eeb248cf10d529b7e055b6ead"
+dependencies = [
+ "darling_core 0.20.11",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "darling_macro"
 version = "0.24.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2ac7135c3ef02b2f7833bbeb1be5ba7f966dcde8a87c6b87f65a778d71a02785"
 dependencies = [
- "darling_core",
+ "darling_core 0.24.1",
  "quote",
  "syn 3.0.6",
 ]
@@ -2152,10 +2187,12 @@ dependencies = [
  "duckdb",
  "fallible-iterator 0.2.0",
  "fallible-iterator 0.3.0",
+ "flate2",
  "futures-lite",
  "futures-util",
  "hmac 0.13.0",
  "libc",
+ "libloading",
  "log",
  "mongodb",
  "mysql_async",
@@ -2431,12 +2468,25 @@ dependencies = [
  "arrow",
  "cast",
  "comfy-table",
+ "duckdb-loadable-macros",
  "fallible-iterator 0.3.0",
  "fallible-streaming-iterator",
  "hashlink 0.10.0",
  "libduckdb-sys",
  "num-integer",
  "strum 0.27.2",
+]
+
+[[package]]
+name = "duckdb-loadable-macros"
+version = "1.10506.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "03acbc4409812a1c8e6cc7d5093c2424a60cffaac990d7a871c0d25ef89c353d"
+dependencies = [
+ "darling 0.20.11",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -4583,11 +4633,13 @@ version = "1.10506.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "113d1c26c9f518405a17b5729bb6ab6abf029fdc46626406922cf9a8dc9b4609"
 dependencies = [
- "cc",
  "flate2",
  "pkg-config",
+ "prettyplease",
+ "quote",
  "serde",
  "serde_json",
+ "syn 2.0.119",
  "tar",
  "ureq",
  "vcpkg",
@@ -7728,7 +7780,7 @@ version = "3.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3e17bbc68e28663bbbb90df47e058aa7eda4fb445b89fe70457bb94fbccf6e49"
 dependencies = [
- "darling",
+ "darling 0.24.1",
  "proc-macro2",
  "quote",
  "syn 3.0.6",

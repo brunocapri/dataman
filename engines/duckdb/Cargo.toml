@@ -1,0 +1,24 @@
+# DuckDB as a library of its own, loaded by Dataman when a DuckDB database is first opened
+# (crates/dataman-core/src/backend/duck/engine.rs): the C++ is compiled once per DuckDB
+# version, not into every build of the app. Not a workspace member, so its libduckdb-sys
+# (bundled) never meets the app's (loadable-extension). Built by scripts/duckdb-engine.sh.
+[package]
+name = "dataman-duckdb"
+version = "1.5.6"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# The same version dataman-core's duckdb is built against, with the extensions it had compiled in.
+libduckdb-sys = { version = "=1.10506.1", features = ["bundled", "json", "parquet"] }
+
+[profile.release]
+codegen-units = 1
+debug = false
+strip = "symbols"
+
+[workspace]

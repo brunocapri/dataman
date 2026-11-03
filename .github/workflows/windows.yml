@@ -1,16 +1,18 @@
 name: Windows
 
+# Pushes to main run nothing: a release's tag runs it all, and the release takes its installers
+# (scripts/github-release.sh).
 on:
   push:
-    branches: [main]
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
 
-# A run takes over an hour. On a pull request the newest push cancels the run under way; on
-# main each push runs to the end.
+# A run takes over an hour. On a pull request the newest push cancels the run under way; a
+# tag's run goes to the end.
 concurrency:
   group: windows-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -61,6 +63,9 @@ jobs:
           # in the live sweeps. Anything else fails.
           others=$(grep ': warning: ' check.log | grep -v '^vendor[/\\]tiberius' | grep -v 'live_\(pg\|mysql\)_sweep.rs.*unused `Result`' | sort -u || true)
           [ -z "$others" ] || { echo "new warnings:"; echo "$others"; exit 1; }
+      - name: The DuckDB engine
+        shell: bash
+        run: scripts/duckdb-engine.sh
       - name: Build the tests
         run: cargo test --release --workspace --no-run
       # Built above, they take minutes: a test that hangs fails here, by name, not at the job's end.
