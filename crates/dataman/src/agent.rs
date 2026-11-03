@@ -207,6 +207,9 @@ impl Workspace {
                 }
             };
             let limits = req.limits;
+            if let Some(r) = &req.rules {
+                conn.set_agent_rules(r);
+            }
             let started = w.update_in(cx, |w, window, cx| {
                 let tab = w.agent_tab(conn, &req.client, &req.database, false, window, cx);
                 let rs = tab.update(cx, |t, cx| t.run_agent(req.sql.clone(), req.params.clone(), &req.client, req.title.clone(), limits.max_rows + 1, cx));

@@ -11,7 +11,7 @@ use parking_lot::Mutex;
 use serde_json::{Map, Value, json};
 use tokio_util::sync::CancellationToken;
 
-use crate::audit::{AllowedBy, ApprovalNote, Decision};
+use dataman_core::audit::{AllowedBy, ApprovalNote, Decision};
 use crate::hub::{Approval, DRAFTS_NEED_APP, Drafted, Front, Hub, TabDraft, TabRead, TabWrite, WriteShown};
 use crate::policy::{self, Need, Target, Verdict};
 
@@ -27,8 +27,8 @@ pub enum ToolError {
 }
 
 impl ToolError {
-    pub fn outcome(&self) -> crate::audit::Outcome {
-        use crate::audit::Outcome;
+    pub fn outcome(&self) -> dataman_core::audit::Outcome {
+        use dataman_core::audit::Outcome;
         match self {
             ToolError::Invalid(_) => Outcome::Invalid,
             ToolError::Refused(_) => Outcome::Refused,
@@ -256,7 +256,7 @@ pub struct Note {
     pub favorite: Option<String>,
     pub allowed_by: Option<AllowedBy>,
     pub rewritten: Option<String>,
-    pub seen: crate::audit::Seen,
+    pub seen: dataman_core::audit::Seen,
     pub login: Option<String>,
 }
 
@@ -429,7 +429,11 @@ impl Call {
             p = self.hub.permit(&p.id) => p,
             _ = self.cancel.cancelled() => return Err(ToolError::Cancelled),
         };
-        let req = TabRead { client: self.client.clone(), connection_id: p.id.clone(), database, sql: sql.to_string(), params, title, limits, cancel: self.cancel.clone() };
+        let rules = match p.engine {
+            dataman_core::Engine::Sqlite => Some(self.open(args, Need::Read).await?.profile.mcp_rules),
+            _ => None,
+        };
+        let req = TabRead { client: self.client.clone(), connection_id: p.id.clone(), database, sql: sql.to_string(), params, title, limits, cancel: self.cancel.clone(), rules };
         tokio::select! {
             r = f.run_read(req) => r.map_err(ToolError::from),
             _ = self.cancel.cancelled() => Err(ToolError::Cancelled),
@@ -461,7 +465,7 @@ impl Call {
     }
 
     fn note_decision(&self, decision: Decision, reasons: Vec<String>, rows: Option<u64>) {
-        let by = matches!(decision, Decision::Approved | Decision::Denied).then(crate::audit::local_user);
+        let by = matches!(decision, Decision::Approved | Decision::Denied).then(dataman_core::audit::local_user);
         self.note.lock().approval = Some(ApprovalNote { decision, by, reasons, rows });
     }
 
