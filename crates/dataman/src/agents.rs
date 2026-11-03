@@ -11,7 +11,7 @@ use std::time::Duration;
 use chrono::Local;
 use dataman_core::privacy::{Mask, Validator};
 use dataman_core::{ConnectionProfile, Core, Engine};
-use dataman_mcp::audit::{AllowedBy, Decision, Entry, Outcome};
+use dataman_core::audit::{AllowedBy, Decision, Entry, Outcome};
 use gpui::{
     AnyElement, App, Bounds, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, MouseButton, Pixels, Point,
     SharedString, StyledText, Window, div, point, prelude::*,
@@ -137,7 +137,7 @@ impl Outcomes {
             Outcomes::Any => true,
             Outcomes::Ran => e.outcome == Outcome::Ok,
             Outcomes::Refused => e.outcome == Outcome::Refused || denied(e),
-            Outcomes::Failed => matches!(e.outcome, Outcome::Error | Outcome::Timeout | Outcome::Invalid) && !denied(e),
+            Outcomes::Failed => matches!(e.outcome, Outcome::Error | Outcome::Timeout | Outcome::Invalid | Outcome::Started) && !denied(e),
         }
     }
 }
@@ -189,7 +189,7 @@ pub(crate) enum Act {
     CopyQuery(usize),
     OpenTab(usize),
     /// Audit › Clear…: None for everything.
-    Clear(Option<dataman_mcp::audit::Clear>),
+    Clear(Option<dataman_core::audit::Clear>),
 }
 
 pub(crate) struct Menu {
@@ -447,6 +447,7 @@ pub(crate) fn decision_text(e: &Entry) -> String {
             None => "Ran · read, no question".into(),
         },
         Outcome::Cancelled => "Cancelled".into(),
+        Outcome::Started => "Started · no end logged (Dataman stopped during the call)".into(),
         Outcome::Timeout => "Timed out".into(),
         Outcome::Invalid => "Invalid arguments".into(),
         Outcome::Error => "Failed".into(),
@@ -653,7 +654,7 @@ impl AgentsPage {
 
     pub fn reload(&mut self, cx: &mut Context<Self>) {
         let path = self.core.dirs.mcp_audit_file();
-        let task = cx.background_spawn(async move { dataman_mcp::audit::tail(&path, 500) });
+        let task = cx.background_spawn(async move { dataman_core::audit::tail(&path, 500) });
         cx.spawn(async move |this, cx| {
             let mut entries = task.await;
             entries.reverse();
@@ -1512,7 +1513,7 @@ impl AgentsPage {
                     .flex_col()
                     .gap(px(6.))
                     .child(render_reply(t, &text))
-                    .when(cut, |d| d.child(note(&format!("Longer than {} KB: the log keeps the first {} KB.", dataman_mcp::audit::REPLY_MAX / 1024, dataman_mcp::audit::REPLY_MAX / 1024))))
+                    .when(cut, |d| d.child(note(&format!("Longer than {} KB: the log keeps the first {} KB.", dataman_core::audit::REPLY_MAX / 1024, dataman_core::audit::REPLY_MAX / 1024))))
                     .into_any_element(),
                 Some(Kept::Reading) => note("Reading the log…"),
                 Some(Kept::RotatedOut) => note("This reply was rotated out of the log."),
@@ -1654,7 +1655,7 @@ impl AgentsPage {
         }
         self.replies.insert(id.to_string(), Kept::Reading);
         let (log, key) = (self.core.dirs.mcp_audit_file(), id.to_string());
-        let task = cx.background_spawn(async move { dataman_mcp::audit::reply(&log, &key) });
+        let task = cx.background_spawn(async move { dataman_core::audit::reply(&log, &key) });
         let key = id.to_string();
         cx.spawn(async move |this, cx| {
             let r = task.await;

@@ -217,7 +217,8 @@ fn stdio_session() {
     assert_eq!(tpl["result"]["resourceTemplates"].as_array().unwrap().len(), 2, "{tpl}");
 
     let log = std::fs::read_to_string(cfg.path().join("dataman/mcp-audit.jsonl")).unwrap();
-    let lines: Vec<Value> = log.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    // Starts aside (each call's is logged before it runs).
+    let lines: Vec<Value> = log.lines().map(|l| serde_json::from_str::<Value>(l).unwrap()).filter(|l| l["outcome"] != "started").collect();
     assert!(lines.len() >= 9, "{log}");
     assert!(lines.iter().all(|l| l["client"] == "protocol-test" && l["transport"] == "stdio"));
     let refused = lines.iter().find(|l| l["sql"] == "DELETE FROM t" && l["tool"] == "run_query").unwrap();

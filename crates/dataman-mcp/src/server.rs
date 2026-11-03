@@ -10,7 +10,7 @@ use rmcp::service::RequestContext;
 use rmcp::{ErrorData as McpError, RoleServer, ServerHandler};
 use serde_json::Value;
 
-use crate::audit::{Entry, Outcome, full, redact};
+use dataman_core::audit::{Entry, Outcome, full, redact};
 use crate::hub::Hub;
 use crate::policy::Need;
 use crate::resources;
@@ -59,9 +59,40 @@ impl Server {
         cx.client_info().map(|i| i.name).unwrap_or_else(|| "unknown".into())
     }
 
-    fn audit(&self, call: &Call, started: Instant, outcome: Outcome, error: Option<String>, reply: Option<&str>) {
+    /// Before the call runs: what it was asked, under the id its end will carry.
+    fn audit_start(&self, call: &Call, id: &str, args: &serde_json::Map<String, Value>) {
+        let connection = args.get("connection").and_then(Value::as_str).map(str::to_string);
+        let engine = connection.as_deref().and_then(|c| self.hub.profile(c).ok()).map(|p| p.engine);
+        let sql = args.get("sql").and_then(Value::as_str).map(|s| match engine {
+            Some(e) => dataman_core::mask::statement(e, s).into_owned(),
+            None => dataman_core::mask::any(s).into_owned(),
+        });
+        self.hub.audit.write(&Entry {
+            id: Some(id.to_string()),
+            ts: chrono::Utc::now(),
+            client: call.client.clone(),
+            transport: self.transport.into(),
+            tool: call.tool.clone(),
+            connection,
+            database: args.get("database").and_then(Value::as_str).map(str::to_string),
+            sql: sql.as_deref().map(redact),
+            query: None,
+            rows: None,
+            ms: 0.0,
+            outcome: Outcome::Started,
+            error: None,
+            approval: None,
+            draft: false,
+            favorite: None,
+            allowed_by: None,
+            rewritten: None,
+            seen: None,
+            login: None,
+        });
+    }
+
+    fn audit(&self, call: &Call, id: String, started: Instant, outcome: Outcome, error: Option<String>, reply: Option<&str>) {
         let mut n = call.note();
-        let id = uuid::Uuid::new_v4().simple().to_string();
         if let Some(r) = reply {
             self.hub.keep_reply(&id, r);
         }
@@ -139,6 +170,8 @@ impl Server {
         let _running = Running::start();
         let started = Instant::now();
         let call = Call::new(self.hub.clone(), client, self.transport, tool.name(), ct);
+        let id = uuid::Uuid::new_v4().simple().to_string();
+        self.audit_start(&call, &id, &args);
         let r = match tool.schema().validate(&args) {
             Err(e) => Err(ToolError::Invalid(e)),
             Ok(()) => {
@@ -154,12 +187,12 @@ impl Server {
         match r {
             Ok(v) => {
                 let text = serde_json::to_string(&v).unwrap_or_default();
-                self.audit(&call, started, Outcome::Ok, None, Some(&text));
+                self.audit(&call, id, started, Outcome::Ok, None, Some(&text));
                 CallToolResult::success(vec![ContentBlock::text(text)])
             }
             Err(e) => {
                 let msg = e.message();
-                self.audit(&call, started, e.outcome(), Some(msg.clone()), None);
+                self.audit(&call, id, started, e.outcome(), Some(msg.clone()), None);
                 CallToolResult::error(vec![ContentBlock::text(msg)])
             }
         }
@@ -297,13 +330,13 @@ impl Server {
         });
         match r {
             Ok(text) => {
-                self.audit(&call, started, Outcome::Ok, None, Some(&text));
+                self.audit(&call, uuid::Uuid::new_v4().simple().to_string(), started, Outcome::Ok, None, Some(&text));
                 Ok(text)
             }
             Err(e) => {
                 let e = self.privacy_pass(&call, Err(e)).unwrap_err();
                 let msg = e.message();
-                self.audit(&call, started, e.outcome(), Some(msg.clone()), None);
+                self.audit(&call, uuid::Uuid::new_v4().simple().to_string(), started, e.outcome(), Some(msg.clone()), None);
                 Err(msg)
             }
         }

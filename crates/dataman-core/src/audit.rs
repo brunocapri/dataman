@@ -12,6 +12,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Outcome {
+    /// Written before the call runs: a call whose end never came (the process stopped) still
+    /// shows. Its end, with the same id, replaces it in [`tail`].
+    Started,
     Ok,
     Invalid,
     Refused,
@@ -23,6 +26,7 @@ pub enum Outcome {
 impl Outcome {
     pub fn label(self) -> &'static str {
         match self {
+            Outcome::Started => "started, no end logged",
             Outcome::Ok => "ok",
             Outcome::Invalid => "invalid",
             Outcome::Refused => "refused",
@@ -475,6 +479,9 @@ pub fn tail(path: &Path, n: usize) -> Vec<Entry> {
         .map_while(Result::ok)
         .filter_map(|l| serde_json::from_str(&l).ok())
         .collect();
+    // A call's start goes once its end is there.
+    let ended: std::collections::HashSet<String> = lines.iter().filter(|e| e.outcome != Outcome::Started).filter_map(|e| e.id.clone()).collect();
+    lines.retain(|e| e.outcome != Outcome::Started || e.id.as_ref().is_none_or(|id| !ended.contains(id)));
     let drop = lines.len().saturating_sub(n);
     lines.drain(..drop);
     lines
@@ -489,6 +496,39 @@ mod tests {
         assert_eq!(redact("SELECT * FROM t WHERE email = 'a@b.c' AND id > 42"), "SELECT * FROM t WHERE email = ? AND id > ?");
         assert_eq!(redact("insert into t values ($1, E'x\\'y', $$secret$$)  -- pw=1\n"), "insert into t values ($1, ?, ?)");
         assert_eq!(redact("select \"Weird Name\", 1.5e3 /* note */ from s.t"), "select \"Weird Name\", ? from s.t");
+    }
+
+    #[test]
+    fn a_start_goes_once_its_end_is_logged() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = Audit::new(dir.path().join("mcp-audit.jsonl"));
+        let entry = |id: &str, outcome| Entry {
+            id: Some(id.into()),
+            ts: chrono::Utc::now(),
+            client: "c".into(),
+            transport: "stdio".into(),
+            tool: "execute".into(),
+            connection: None,
+            database: None,
+            sql: None,
+            query: None,
+            rows: None,
+            ms: 0.0,
+            outcome,
+            error: None,
+            approval: None,
+            draft: false,
+            favorite: None,
+            allowed_by: None,
+            rewritten: None,
+            seen: None,
+            login: None,
+        };
+        a.write(&entry("a", Outcome::Started));
+        a.write(&entry("a", Outcome::Ok));
+        a.write(&entry("b", Outcome::Started));
+        let got: Vec<(Option<String>, Outcome)> = tail(a.path(), 10).into_iter().map(|e| (e.id, e.outcome)).collect();
+        assert_eq!(got, [(Some("a".into()), Outcome::Ok), (Some("b".into()), Outcome::Started)], "b never ended: it shows");
     }
 
     #[test]

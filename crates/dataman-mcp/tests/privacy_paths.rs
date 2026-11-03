@@ -1063,7 +1063,10 @@ fn audit_records_each_call() {
     let _ = e.call_as(client, "execute", with("pg", json!({"sql": format!("INSERT INTO {s}.c (id) VALUES (1)")})));
     e.human.allow.lock().push_back(false);
     let _ = e.call_as(client, "execute", with("pg", json!({"sql": format!("DELETE FROM {s}.c")})));
-    let mine: Vec<Value> = e.audit().into_iter().filter(|x| x["client"] == client).collect();
+    let all: Vec<Value> = e.audit().into_iter().filter(|x| x["client"] == client).collect();
+    // Each call's start is logged before it runs, under the id its end carries.
+    let (started, mine): (Vec<Value>, Vec<Value>) = all.into_iter().partition(|x| x["outcome"] == "started");
+    assert!(mine.iter().all(|m| started.iter().any(|s| s["id"] == m["id"] && s["tool"] == m["tool"])), "{started:?}");
     let got: Vec<(String, String)> = mine.iter().map(|x| (x["tool"].as_str().unwrap().to_string(), x["outcome"].as_str().unwrap().to_string())).collect();
     assert_eq!(
         got,
