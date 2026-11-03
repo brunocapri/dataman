@@ -1151,11 +1151,11 @@ async fn zoom_checks(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> boo
     let t0 = std::time::Instant::now();
     press(cx, "cmd-shift-enter");
     let motion = !cx.update(|_, cx| cx.reduce_motion()).unwrap_or(false);
-    pause(cx, 60).await;
-    draw(cx);
+    // The first frame on its way, not a fixed pause: a slow renderer's frames come late.
+    crate::check::until(cx, 1, |cx| zoom(cx) > 0.05).await;
     let mid = zoom(cx);
     let mid_b = bounds(cx);
-    let in_time = crate::check::mid_possible(t0, crate::motion::ZOOM);
+    let in_time = crate::check::zoom_mid_possible(t0);
     pause(cx, 320).await;
     draw(cx);
     let after = bounds(cx);
