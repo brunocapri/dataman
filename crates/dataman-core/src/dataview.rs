@@ -351,7 +351,10 @@ impl Connection {
     /// column's mask on them. Read on the metadata connection, never in a tab's session.
     pub fn sample_column_values(self: &Arc<Self>, db: &str, schema: &str, table: &str, column: &str, n: u32) -> Task<Vec<String>> {
         let (this, db) = (self.clone(), db.to_string());
-        let d = Dialect::of(self.engine());
+        let Some(d) = self.engine().sql_dialect() else {
+            let e = self.engine();
+            return self.spawn(async move { Err(anyhow::anyhow!("{} has no SQL to sample a column with", e.label())) });
+        };
         let (c, rel) = (d.quote_ident(column), d.qualified(Some(schema), table));
         let sql = if d == Dialect::TSql { format!("SELECT TOP ({n}) {c} FROM {rel} WHERE {c} IS NOT NULL") } else { format!("SELECT {c} FROM {rel} WHERE {c} IS NOT NULL LIMIT {n}") };
         self.spawn(async move {

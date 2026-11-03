@@ -1,5 +1,3 @@
-/// Moved to the core (the app audits events that involve no agent); kept here for its callers.
-pub use dataman_core::audit; // phase 2: remove (the UI imports dataman_core::audit)
 pub mod builtin;
 pub mod cli;
 pub mod hub;

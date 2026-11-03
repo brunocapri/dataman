@@ -187,7 +187,7 @@ pub(super) async fn execute(cx: &Call, a: &Args, key: &str, open: bool) -> Resul
     let mut v = output_json(&ran);
     rules::nosql_shape(cx, a, &target, text, &mut v, &shaped);
     if let Some(m) = v.as_object_mut() {
-        if let Some(n) = cx.note().approval.filter(|n| n.decision == crate::audit::Decision::Approved) {
+        if let Some(n) = cx.note().approval.filter(|n| n.decision == dataman_core::audit::Decision::Approved) {
             m.insert("approved".into(), json!({"by": n.by, "reasons": n.reasons}));
         }
         if open {
@@ -225,7 +225,7 @@ async fn write(cx: &Call, a: &Args, text: &str, class: &WriteClass, tab: Option<
         (None, None)
     };
     cx.gate(&o, class, text, tab).await?;
-    let asked = cx.note().approval.is_some_and(|n| n.decision == crate::audit::Decision::Approved);
+    let asked = cx.note().approval.is_some_and(|n| n.decision == dataman_core::audit::Decision::Approved);
     if let Some((n, why)) = over
         && !asked
     {

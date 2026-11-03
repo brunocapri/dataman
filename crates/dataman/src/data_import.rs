@@ -1309,7 +1309,7 @@ impl Workspace {
             _ => {
                 let tab = self.active_tab().ok_or("Select a table or a schema in the explorer first")?.read(cx);
                 let c = tab.connection().ok_or("Select a table or a schema in the explorer first")?;
-                let schema = c.info.search_path.iter().find(|s| !s.starts_with("pg_") && *s != "$user").cloned().unwrap_or_else(|| "public".into());
+                let schema = c.info.search_path.iter().find(|s| !s.starts_with("pg_") && *s != "$user").cloned().unwrap_or_else(|| c.engine().default_schema().unwrap_or_default().to_string());
                 (c.profile.id.clone(), tab.database().to_string(), schema, None)
             }
         };

@@ -826,7 +826,7 @@ impl SchemaTree {
                     let n = hit_rows(&db.name, &items, 2, &mut db_block);
                     if n > 0 {
                         matches += n;
-                        let label = if conn.engine() == dataman_core::Engine::Redis { format!("db{}", db.name) } else { db.name.clone() };
+                        let label = conn.engine().db_label(&db.name);
                         block.push(Row::new(did(c, &db.name), 1, label, Kind::DocDb { conn: c.into(), db: db.name.clone() }).icon(Icon::Database).expandable(true));
                         block.extend(db_block);
                     }
@@ -1019,7 +1019,7 @@ impl SchemaTree {
                 dataman_core::nosql::ItemKind::Database => {
                     let d = did(c, &it.name);
                     let open = self.expanded.contains(&d);
-                    let label = if conn.engine() == dataman_core::Engine::Redis { format!("db{}", it.name) } else { it.name.clone() };
+                    let label = conn.engine().db_label(&it.name);
                     let mut row = Row::new(d.clone(), 1, label, Kind::DocDb { conn: c.into(), db: it.name.clone() })
                         .icon(Icon::Database)
                         .lock(conn.read_only_for(&it.name))
@@ -2323,8 +2323,8 @@ impl SchemaTree {
             (Act::CopyDefinition, Target::Index { definition: Some(d), .. }) => copy(format!("{d};"), cx),
             (Act::CopyDefinition, Target::Object { what: Obj::Trigger { definition: Some(d), .. }, .. }) => copy(format!("{d};"), cx),
             (Act::CopyDefinition, Target::Object { schema, name, what: Obj::Constraint { table, definition: Some(def) }, .. }) => {
-                let d = self.target_dialect(&m.target, cx);
-                copy(format!("ALTER TABLE {} ADD CONSTRAINT {} {def};", d.qualified(Some(schema), table), d.quote_ident(name)), cx)
+                // SQLite has no ADD CONSTRAINT: the core says so in the text.
+                copy(dataman_core::ddl::add_constraint(self.target_dialect(&m.target, cx), Some(schema), table, name, def), cx)
             }
             (Act::CopyUrl, Target::Conn { id, .. }) => {
                 if let Some(p) = self.store.read(cx).profile(id).cloned() {
@@ -3262,14 +3262,7 @@ fn column_row(cols_id: &str, depth: usize, col: &dataman_core::schema::Column, p
 /// The server's own databases, which the simple view leaves out (unless the connection opens
 /// on one).
 fn system_db(conn: &Connection, db: &str) -> bool {
-    use dataman_core::Engine;
-    db != conn.database()
-        && match conn.engine() {
-            Engine::MySql => matches!(db, "mysql" | "information_schema" | "performance_schema" | "sys"),
-            Engine::SqlServer => matches!(db, "master" | "model" | "msdb" | "tempdb"),
-            Engine::MongoDb => matches!(db, "admin" | "local" | "config"),
-            _ => false,
-        }
+    db != conn.database() && conn.engine().is_system_db(db)
 }
 
 fn system_schema(s: &str) -> bool {

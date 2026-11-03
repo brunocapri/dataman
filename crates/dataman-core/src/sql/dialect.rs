@@ -130,8 +130,8 @@ fn plain_mixed_case(name: &str, d: Dialect) -> bool {
 }
 
 impl Dialect {
-    /// The engine's dialect; PostgreSQL's for the NoSQL engines, which have none
-    /// (`Engine::sql_dialect` says so). // phase 2: callers that may see NoSQL move to sql_dialect
+    /// The engine's dialect; PostgreSQL's for the NoSQL engines, which have none (what reaches a
+    /// NoSQL engine asks `Engine::sql_dialect`, which says so).
     pub fn of(engine: Engine) -> Dialect {
         engine.sql_dialect().unwrap_or(Dialect::Postgres)
     }

@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use dataman_core::agents_config::{self, AgentsFile, Change, Plan};
-use dataman_mcp::audit::{ApprovalNote, Audit, Decision, Entry, Outcome};
+use dataman_core::audit::{ApprovalNote, Audit, Decision, Entry, Outcome};
 use gpui::{AnyElement, Context, FontWeight, KeyDownEvent, SharedString, Window, div, prelude::*};
 
 use crate::agents::{AgentsPage, Tip};
@@ -180,7 +180,7 @@ impl AgentsPage {
         let started = std::time::Instant::now();
         // Written only as the summary the user just reviewed shows it.
         let r = agents_config::import(&self.core.config, &self.core.settings, &f, &plan);
-        let user = dataman_mcp::audit::local_user();
+        let user = dataman_core::audit::local_user();
         let (outcome, error, query, reasons) = match &r {
             Ok(p) => {
                 let loose: Vec<String> = p.conns.iter().flat_map(|c| c.changes.iter().filter(|x| x.loosens).map(move |x| format!("{} › {}", c.name, x.what))).chain(p.general.iter().chain(&p.types).filter(|x| x.loosens).map(|x| x.what.clone())).take(20).collect();

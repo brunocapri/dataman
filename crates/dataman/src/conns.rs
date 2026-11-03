@@ -160,7 +160,7 @@ impl ConnStore {
                             Some(s) => s.to_string(),
                             None => format!("{e:#}"),
                         };
-                        let needs_password = ssh.is_none() && (msg.contains("password") || msg.contains("28P01"));
+                        let needs_password = ssh.is_none() && dataman_core::needs_password(&e);
                         let ssh = ssh.filter(|s| matches!(s, SshError::UnknownHostKey(_) | SshError::SecretNeeded { .. }));
                         s.states.insert(id.clone(), ConnState::Failed(msg));
                         if !s.quiet.remove(&id) {
@@ -185,7 +185,7 @@ impl ConnStore {
         if !auto_connect(&self.core) {
             return;
         }
-        let ids: Vec<String> = self.profiles.iter().filter(|p| ids.contains(&p.id) && p.engine != dataman_core::Engine::DuckDb && !self.states.contains_key(&p.id)).map(|p| p.id.clone()).collect();
+        let ids: Vec<String> = self.profiles.iter().filter(|p| ids.contains(&p.id) && !p.engine.caps().exclusive_lock && !self.states.contains_key(&p.id)).map(|p| p.id.clone()).collect();
         for id in ids {
             self.quiet.insert(id.clone());
             self.connect(&id, None, cx);

@@ -3,7 +3,7 @@
 //! received) and nothing goes before the user says so. Agents have no way to do this.
 
 use chrono::{Datelike, Local, NaiveDate};
-use dataman_mcp::audit::{Clear, Recent};
+use dataman_core::audit::{Clear, Recent};
 use gpui::{AnyElement, App, Context, FontWeight, SharedString, Window, div, prelude::*};
 
 use crate::agents::{Act, AgentsPage};
@@ -91,7 +91,7 @@ impl AgentsPage {
         let Some(s) = self.clear.as_mut() else { return };
         s.count = None;
         let (what, cutoff, path) = (s.what, s.cutoff(), self.core.dirs.mcp_audit_file());
-        let task = cx.background_spawn(async move { dataman_mcp::audit::count_before(&path, cutoff) });
+        let task = cx.background_spawn(async move { dataman_core::audit::count_before(&path, cutoff) });
         cx.spawn(async move |this, cx| {
             let n = task.await;
             let _ = this.update(cx, |v, cx| {
@@ -140,7 +140,7 @@ impl AgentsPage {
         s.busy = true;
         s.error = None;
         let (cutoff, path) = (s.cutoff(), self.core.dirs.mcp_audit_file());
-        let task = cx.background_spawn(async move { dataman_mcp::audit::clear_before(&path, cutoff) });
+        let task = cx.background_spawn(async move { dataman_core::audit::clear_before(&path, cutoff) });
         cx.spawn(async move |this, cx| {
             let r = task.await;
             let _ = this.update(cx, |v, cx| {

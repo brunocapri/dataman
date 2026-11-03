@@ -176,7 +176,7 @@ impl AgentsPage {
                         core.secrets.set(&agent_login::secret_account(&p.id), &new).map_err(|e| format!("{e:#}"))?;
                         // What logged in with the old password goes too.
                         if let Err(e) = live::end_sessions(&admin, &p, &l.user).await {
-                            log::info!("the agent login's sessions from before its new password could not be ended: {e:#}");
+                            log::warn!("the agent login's sessions from before its new password could not be ended: {e:#}");
                         }
                         Ok(())
                     })
@@ -434,8 +434,9 @@ impl AgentsPage {
             cx,
             move |_, admin, p| {
                 Box::pin(async move {
-                    // Its open sessions first: one would outlive the login otherwise.
-                    let _ = live::end_sessions(&admin, &p, &user).await;
+                    // Its open sessions first: one would outlive the login otherwise (so a failure
+                    // stops here, with nothing removed).
+                    live::end_sessions(&admin, &p, &user).await.map_err(|e| format!("its open sessions could not be ended, so nothing was removed: {e:#}"))?;
                     live::apply(&admin, &plan, &db).await.map_err(|e| format!("{e:#}"))
                 })
             },

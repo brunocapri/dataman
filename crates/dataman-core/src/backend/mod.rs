@@ -234,9 +234,14 @@ impl std::fmt::Display for ConnectError {
 
 impl std::error::Error for ConnectError {}
 
-/// The server refused the login: ask for a password (whatever language the server speaks).
+/// The server refused the login: ask for a password (whatever language the server speaks). A
+/// driver's own refusal before any server answer ("password missing") says so in its words,
+/// which are the driver's, not the server's.
 pub fn needs_password(e: &anyhow::Error) -> bool {
-    server_error_class(e) == Some(crate::result::ErrorClass::Auth)
+    match server_error_class(e) {
+        Some(c) => c == crate::result::ErrorClass::Auth,
+        None => format!("{e:#}").to_ascii_lowercase().contains("password"),
+    }
 }
 
 #[derive(Clone)]

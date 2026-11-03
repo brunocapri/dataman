@@ -86,7 +86,7 @@ pub use history::{History, HistoryEntry, Outcome};
 pub use pins::PinStore;
 pub use result::{ErrorClass, ErrorInfo, Phase, ResultSet};
 pub use secret::{Keychain, MemorySecrets, SecretStore};
-pub use server::ServerInfo;
+pub use server::{Flavor, ServerInfo};
 pub use settings::{Settings, SettingsStore, ThemePref, Translucency, UiFont};
 
 #[must_use]

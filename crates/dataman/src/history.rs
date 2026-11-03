@@ -1739,7 +1739,7 @@ impl HistoryPanel {
         let (id, item) = if favs { ("fav-scope", "fscope") } else { ("history-scope", "hscope") };
         let store = self.store.read(cx);
         let profile = |id: &str| store.profiles.iter().find(|p| p.id == id);
-        let db_label = |p: &dataman_core::ConnectionProfile, d: &str| if p.engine == dataman_core::Engine::Redis { format!("db{d}") } else { d.to_string() };
+        let db_label = |p: &dataman_core::ConnectionProfile, d: &str| p.engine.db_label(d);
         let (color, logo, label): (gpui::Hsla, Option<dataman_core::Engine>, SharedString) = match scope {
             None => (t.tx4, None, "All connections".into()),
             Some((c, d)) => match profile(c) {

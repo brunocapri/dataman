@@ -744,7 +744,7 @@ impl QueryTab {
     }
 
     pub fn schedule_parse_check(&mut self, cx: &mut Context<Self>) {
-        let Some(conn) = self.conn.clone().filter(|c| c.engine() == dataman_core::Engine::SqlServer) else {
+        let Some(conn) = self.conn.clone().filter(|c| c.caps().server_parse_check) else {
             self.parse_task = None;
             return;
         };

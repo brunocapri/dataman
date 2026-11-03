@@ -310,7 +310,7 @@ fn a_write_lock_makes_others_wait_then_fail() {
     assert!(t0.elapsed() >= Duration::from_secs(4), "busy_timeout waits first");
     let err = rs.status().error.unwrap();
     assert_eq!(err.code.as_deref(), Some("SQLITE_BUSY"));
-    assert!(dataman_core::edit::explain_error(&err).starts_with("The database is locked"));
+    assert!(dataman_core::edit::explain_error_in(&err, dataman_core::Engine::Sqlite).starts_with("The database is locked"));
     ok(&e, &a, "COMMIT");
     ok(&e, &b, "INSERT INTO note VALUES ('b')");
 }

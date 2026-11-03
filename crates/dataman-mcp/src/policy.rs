@@ -151,10 +151,10 @@ pub enum By {
 }
 
 impl By {
-    pub fn audit(&self) -> crate::audit::AllowedBy {
+    pub fn audit(&self) -> dataman_core::audit::AllowedBy {
         match self {
-            By::Allowlist(e) => crate::audit::AllowedBy::Allowlist { entries: e.iter().map(|s| crate::audit::redact(s)).collect() },
-            By::Yolo => crate::audit::AllowedBy::Yolo,
+            By::Allowlist(e) => dataman_core::audit::AllowedBy::Allowlist { entries: e.iter().map(|s| dataman_core::audit::redact(s)).collect() },
+            By::Yolo => dataman_core::audit::AllowedBy::Yolo,
         }
     }
 }
@@ -448,6 +448,6 @@ mod tests {
         }
         let j = judge(true, t(Read, Environment::Dev, false), "DELETE FROM sessions WHERE expires_at < 1; TRUNCATE audit_tmp; DELETE FROM sessions WHERE expires_at < 2", &allowed);
         assert_eq!(j.by, Some(By::Allowlist(allowed.clone())));
-        assert_eq!(By::Allowlist(vec!["DELETE FROM t WHERE id = 5".into()]).audit(), crate::audit::AllowedBy::Allowlist { entries: vec!["DELETE FROM t WHERE id = ?".into()] });
+        assert_eq!(By::Allowlist(vec!["DELETE FROM t WHERE id = 5".into()]).audit(), dataman_core::audit::AllowedBy::Allowlist { entries: vec!["DELETE FROM t WHERE id = ?".into()] });
     }
 }

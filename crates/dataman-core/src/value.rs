@@ -46,6 +46,12 @@ pub fn type_shape(engine: crate::config::Engine, type_name: &str) -> TypeShape {
     }
 }
 
+/// [`type_shape`] where the engine is not at hand: the engines' names for these do not collide.
+pub fn type_shape_any(type_name: &str) -> TypeShape {
+    use crate::config::Engine;
+    [Engine::Postgres, Engine::SqlServer, Engine::MySql, Engine::DuckDb].into_iter().map(|e| type_shape(e, type_name)).find(|s| *s != TypeShape::Plain).unwrap_or(TypeShape::Plain)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Storage {
     Bool,

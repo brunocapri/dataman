@@ -43,7 +43,7 @@ pub fn shape_of(kind: Kind, type_name: &str) -> Option<Shape> {
     match kind {
         // Text holding JSON (SQL Server's nvarchar, a text column): viewable when it parses.
         Kind::Json | Kind::Text => Some(Shape::Json),
-        Kind::Other if type_name.starts_with('_') || type_name.ends_with("[]") => Some(Shape::List),
+        Kind::Other if dataman_core::value::type_shape_any(type_name) == dataman_core::value::TypeShape::Array => Some(Shape::List),
         _ => None,
     }
 }

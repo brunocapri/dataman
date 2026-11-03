@@ -5,7 +5,7 @@ use gpui::{
 };
 use crate::theme::px;
 use dataman_core::edit::{
-    ApplyReport, CellValue, ChangeSet, ConflictKind, EditTarget, Editability, Outcome, PlannedChange, preview,
+    ApplyReport, CellValue, ChangeSet, ConflictKind, EditTarget, Editability, Outcome, PlannedChange,
 };
 use dataman_core::result::{Phase, ResultSet, Snapshot};
 use dataman_core::sql::lexer::{TokenKind, tokenize};
@@ -55,7 +55,7 @@ pub fn typing_filter(kind: Kind, type_name: &str) -> Option<fn(&str) -> bool> {
     match kind {
         Kind::Int => Some(int_prefix),
         Kind::Float | Kind::Float4 | Kind::Numeric => Some(number_prefix),
-        Kind::Other if matches!(type_name.to_ascii_lowercase().as_str(), "uuid" | "uniqueidentifier") => Some(uuid_prefix),
+        Kind::Other if dataman_core::value::type_shape_any(type_name) == dataman_core::value::TypeShape::Uuid => Some(uuid_prefix),
         _ => None,
     }
 }
@@ -1308,7 +1308,8 @@ impl Render for ReviewPanel {
         let lines = e.change_lines();
         let plan = e.plan();
         let sql = match &plan {
-            Ok(p) => format!("BEGIN;\n{}COMMIT;", layout_sql(&preview(p))),
+            // The dialect's own transaction statements (T-SQL takes no bare `BEGIN;`).
+            Ok(p) => layout_sql(&dataman_core::edit::script(p, e.conn.as_ref().map(|c| c.dialect()).unwrap_or_default())),
             Err(err) => format!("-- {err}"),
         };
         let report = e.report.clone();

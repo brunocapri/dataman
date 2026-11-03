@@ -966,12 +966,7 @@ impl AgentsPage {
             out.push(p.database.clone());
         }
         // The default schemas count even before the explorer has read them.
-        match p.engine {
-            Engine::Postgres => out.push("public".into()),
-            Engine::SqlServer => out.push("dbo".into()),
-            Engine::Sqlite | Engine::DuckDb => out.push("main".into()),
-            _ => {}
-        }
+        out.extend(p.engine.default_schema().map(str::to_string));
         out
     }
 

@@ -1017,8 +1017,7 @@ impl Workspace {
         let engine = v.conn.as_ref().map(|c| c.engine()).or_else(|| wanted.as_ref().map(|(p, _)| p.engine));
         let (color, label): (Hsla, SharedString) = match (&v.conn, wanted) {
             (Some(c), _) if db.is_empty() => (t.profile_color(&c.profile), c.profile.name.clone().into()),
-            (Some(c), _) if c.engine() == dataman_core::Engine::Redis => (t.profile_color(&c.profile), format!("{} · db{db}", c.profile.name).into()),
-            (Some(c), _) => (t.profile_color(&c.profile), format!("{} · {db}", c.profile.name).into()),
+            (Some(c), _) => (t.profile_color(&c.profile), format!("{} · {}", c.profile.name, c.engine().db_label(&db)).into()),
             (None, Some((p, db))) if db.is_empty() => (t.profile_color(&p), p.name.into()),
             (None, Some((p, db))) => (t.profile_color(&p), format!("{} · {db}", p.name).into()),
             (None, None) => (t.tx4, "No connection".into()),
@@ -1089,10 +1088,8 @@ impl Workspace {
                     let on = cur.as_deref() == Some(p.id.as_str()) && d == db;
                     let label = if d.is_empty() {
                         "all indices".to_string()
-                    } else if p.engine == dataman_core::Engine::Redis {
-                        format!("db{d}")
                     } else {
-                        d.clone()
+                        p.engine.db_label(&d)
                     };
                     let (id, pick) = (p.id.clone(), d.clone());
                     rows.push(ui::probe(
@@ -1746,17 +1743,7 @@ impl Workspace {
                 .border_1()
                 .border_color(t.edge)
                 .text_color(t.tx2)
-                .child(match c.profile.engine {
-                    dataman_core::Engine::Postgres => "PG",
-                    dataman_core::Engine::MySql => "MY",
-                    dataman_core::Engine::SqlServer => "MS",
-                    dataman_core::Engine::MongoDb => "MDB",
-                    dataman_core::Engine::Elasticsearch => "ES",
-                    dataman_core::Engine::OpenSearch => "OS",
-                    dataman_core::Engine::Redis => "RDS",
-                    dataman_core::Engine::Sqlite => "LITE",
-                    dataman_core::Engine::DuckDb => "DUCK",
-                })
+                .child(c.profile.engine.badge())
         });
         let version: SharedString = match &conn {
             Some(c) => c.info.short_version().into(),

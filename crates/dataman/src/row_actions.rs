@@ -521,8 +521,9 @@ impl Workspace {
                 None => core.connect(mine.clone(), password).await.map_err(|e| format!("{e:#}"))?,
             };
             let plan = live::removal(&admin, &mine, &login).await.map_err(|e| format!("{e:#}"))?;
-            // Its open sessions first: one would outlive the login otherwise.
-            let _ = live::end_sessions(&admin, &mine, &login.user).await;
+            // Its open sessions first: one would outlive the login otherwise (so a failure stops
+            // here, with nothing removed).
+            live::end_sessions(&admin, &mine, &login.user).await.map_err(|e| format!("its open sessions could not be ended, so nothing was removed: {e:#}"))?;
             live::apply(&admin, &plan, &live::database_for(&mine, Some(&login))).await.map_err(|e| format!("{e:#}"))?;
             Ok::<String, String>(login.user)
         };

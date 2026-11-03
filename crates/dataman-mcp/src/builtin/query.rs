@@ -314,7 +314,7 @@ async fn write(cx: &Call, a: &Args) -> Result<Value, ToolError> {
             m.insert("returning".into(), ret);
         }
         m.insert("ms".into(), json!(ms(out.elapsed)));
-        if let Some(n) = cx.note().approval.filter(|n| n.decision == crate::audit::Decision::Approved) {
+        if let Some(n) = cx.note().approval.filter(|n| n.decision == dataman_core::audit::Decision::Approved) {
             m.insert("approved".into(), json!({"by": n.by, "reasons": n.reasons}));
         }
         Ok(Value::Object(m))

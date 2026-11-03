@@ -10,7 +10,7 @@ use std::time::Duration;
 use dataman_core::Core;
 use dataman_core::agents_config::Change;
 use dataman_core::project::Synced;
-use dataman_mcp::audit::{ApprovalNote, Audit, Decision, Entry, Outcome};
+use dataman_core::audit::{ApprovalNote, Audit, Decision, Entry, Outcome};
 use gpui::{AnyElement, App, Context, FontWeight, MouseButton, SharedString, Window, actions, div, prelude::*};
 
 use crate::app::Workspace;
@@ -154,7 +154,7 @@ impl Workspace {
             ms: started.elapsed().as_secs_f64() * 1000.,
             outcome,
             error,
-            approval: Some(ApprovalNote { decision: Decision::Approved, by: Some(dataman_mcp::audit::local_user()), reasons, rows: None }),
+            approval: Some(ApprovalNote { decision: Decision::Approved, by: Some(dataman_core::audit::local_user()), reasons, rows: None }),
             draft: false,
             favorite: None,
             allowed_by: None,

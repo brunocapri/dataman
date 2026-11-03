@@ -10,7 +10,7 @@ use gpui::{AnyWindowHandle, App, Context, FontWeight, Global, SharedString, Styl
 use crate::theme::px;
 use dataman_core::{Core, Dirs, SecretStore};
 #[cfg(feature = "checks")]
-use dataman_mcp::audit::{AllowedBy, Decision, Entry, Outcome};
+use dataman_core::audit::{AllowedBy, Decision, Entry, Outcome};
 use dataman_mcp::{Approval, Front, Hub, Registry};
 use tokio::sync::{mpsc, oneshot};
 
@@ -664,10 +664,10 @@ pub fn demo_seed(core: &Arc<Core>, approval: bool, cx: &mut App) {
             let _ = core.config.upsert(p);
         }
     }
-    let audit = dataman_mcp::audit::Audit::new(core.dirs.mcp_audit_file());
+    let audit = dataman_core::audit::Audit::new(core.dirs.mcp_audit_file());
     let now = chrono::Utc::now();
-    let note = |decision, reasons: &[&str], rows| Some(dataman_mcp::audit::ApprovalNote { decision, by: Some("bruno".into()), reasons: reasons.iter().map(|r| r.to_string()).collect(), rows });
-    let rows: [(&str, Option<&str>, Option<&str>, Option<u64>, f64, Outcome, Option<&str>, Option<dataman_mcp::audit::ApprovalNote>); 10] = [
+    let note = |decision, reasons: &[&str], rows| Some(dataman_core::audit::ApprovalNote { decision, by: Some("bruno".into()), reasons: reasons.iter().map(|r| r.to_string()).collect(), rows });
+    let rows: [(&str, Option<&str>, Option<&str>, Option<u64>, f64, Outcome, Option<&str>, Option<dataman_core::audit::ApprovalNote>); 10] = [
         ("list_connections", None, None, None, 0.4, Outcome::Ok, None, None),
         ("list_tables", Some("local pg"), None, Some(12), 8.1, Outcome::Ok, None, None),
         ("describe_table", Some("local pg"), None, None, 14.6, Outcome::Ok, None, None),

@@ -20,15 +20,6 @@ const SAVED_IN: &str = if cfg!(target_os = "macos") {
     "saved in keyring"
 };
 
-fn family_label(e: Engine) -> &'static str {
-    match e {
-        Engine::Postgres | Engine::MySql | Engine::SqlServer | Engine::Sqlite | Engine::DuckDb => "Relational",
-        Engine::MongoDb => "Document",
-        Engine::Elasticsearch | Engine::OpenSearch => "Search",
-        Engine::Redis => "Key-value",
-    }
-}
-
 pub fn engines_matching(q: &str) -> Vec<Engine> {
     let q = q.trim().to_lowercase();
     ENGINES
@@ -37,19 +28,9 @@ pub fn engines_matching(q: &str) -> Vec<Engine> {
             if q.is_empty() {
                 return true;
             }
-            let words = match e {
-                Engine::Postgres => "postgresql postgres pg",
-                Engine::MySql => "mysql mariadb",
-                Engine::SqlServer => "sql server mssql azure microsoft",
-                Engine::MongoDb => "mongodb mongo atlas",
-                Engine::Elasticsearch => "elasticsearch elastic es",
-                Engine::OpenSearch => "opensearch aws os",
-                Engine::Redis => "redis valkey cache",
-                Engine::Sqlite => "sqlite sqlite3 db file local embedded",
-                Engine::DuckDb => "duckdb duck analytics olap parquet file local",
-            };
+            let words = e.spec().search;
             let kind = if e.is_sql() { "sql relational" } else { "nosql" };
-            format!("{words} {kind} {}", family_label(*e).to_lowercase()).split_whitespace().any(|w| w.starts_with(&q)) || (q.len() >= 3 && e.label().to_lowercase().contains(&q))
+            format!("{words} {kind} {}", e.family_label().to_lowercase()).split_whitespace().any(|w| w.starts_with(&q)) || (q.len() >= 3 && e.label().to_lowercase().contains(&q))
         })
         .collect()
 }
@@ -748,15 +729,7 @@ impl ConnDialog {
         if p.name.is_empty() {
             p.name = format!("{}@{}", if p.database.is_empty() { &p.user } else { &p.database }, p.host);
         }
-        if p.host.is_empty() {
-            return Err("host is required".into());
-        }
-        if p.user.is_empty() && p.engine.is_sql() {
-            return Err("host and user are required".into());
-        }
-        if p.engine == Engine::Redis && !p.database.is_empty() && p.database.parse::<u32>().is_err() {
-            return Err("Redis' database is a number (0–15)".into());
-        }
+        p.validate()?;
         if let Some(s) = &mut p.ssh {
             if s.host.is_empty() {
                 return Err("SSH host is required".into());
@@ -809,29 +782,11 @@ impl ConnDialog {
             t if t.is_empty() => p.engine.default_port(),
             t => t.parse().unwrap_or(p.port),
         };
-        // MySQL and SQL Server connect without a database (the login's default; every one is
-        // browsable); PostgreSQL needs one.
-        if p.database.is_empty() && p.engine.is_postgres() {
-            p.database = "postgres".into();
-        }
+        // The core's rules, as the MCP tools take them: PostgreSQL's default database, no TLS
+        // `prefer` for the document engines, no database where the engine has none.
         p.sslmode = self.sslmode;
-        if !p.engine.is_sql() && p.sslmode == SslMode::Prefer {
-            p.sslmode = SslMode::Disable;
-        }
-        if !self.has_database() {
-            p.database.clear();
-        }
-        p.options = if p.engine == Engine::MongoDb {
-            text(&self.options)
-                .split('&')
-                .filter_map(|kv| {
-                    let (k, v) = kv.split_once('=')?;
-                    Some((k.trim().to_string(), v.trim().to_string())).filter(|(k, _)| !k.is_empty())
-                })
-                .collect()
-        } else {
-            Default::default()
-        };
+        p.normalize();
+        p.options = if p.engine.spec().form.options { ConnectionProfile::parse_options(&text(&self.options)) } else { Default::default() };
         // Every password goes to the Keychain; one left empty is asked for when connecting.
         p.save_password = true;
         p.env = self.env;
@@ -912,11 +867,7 @@ impl ConnDialog {
         } else if e.is_sql() && !old.is_sql() && self.sslmode == SslMode::Disable {
             self.sslmode = SslMode::Prefer;
         }
-        let ph = match e {
-            Engine::Redis => "0",
-            Engine::MongoDb => "test",
-            _ => "database",
-        };
+        let ph = e.spec().form.database_placeholder;
         self.database.update(cx, |t, cx| t.set_placeholder(ph, cx));
         if !matches!(self.test, Test::Testing { .. }) {
             self.test = Test::NotTested;
@@ -1218,7 +1169,7 @@ impl ConnDialog {
     }
 
     fn has_database(&self) -> bool {
-        !matches!(self.engine, Engine::Elasticsearch | Engine::OpenSearch)
+        self.engine.spec().form.database
     }
 
     fn render_picker(&self, t: &Theme, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
@@ -1243,7 +1194,7 @@ impl ConnDialog {
                 .cursor_pointer()
                 .child(crate::assets::logo(e).size(px(30.)))
                 .child(div().text_size(px(crate::theme::text::BODY)).text_color(t.tx).child(e.label()))
-                .child(div().text_size(px(crate::theme::text::HINT)).text_color(t.tx3).child(family_label(e)))
+                .child(div().text_size(px(crate::theme::text::HINT)).text_color(t.tx3).child(e.family_label()))
                 .on_click(cx.listener(move |d, _, _, cx| d.pick_engine(e, cx)))
         };
         let tile = |e: Engine| ui::probe(format!("engine-{}", e.label()), tile(e));
@@ -1607,15 +1558,13 @@ pub fn server_message(e: &anyhow::Error) -> (String, String, bool) {
             if let Some(h) = db.hint {
                 lines.push(format!("HINT  {h}"));
             }
-            // PostgreSQL's 28P01/28000, MySQL's 1045 (access denied), SQL Server's 18456 (login
-            // failed).
-            (title, lines.join("\n"), code == "28P01" || code == "28000" || code == "1045" || code == "18456")
+            // By the error's class on its engine (28P01, 1045, 18456…), in any language.
+            (title, lines.join("\n"), dataman_core::needs_password(e))
         }
         None => {
             let msg = format!("{e:#}");
-            let password = msg.contains("password");
             let title = msg.lines().next().unwrap_or(&msg).to_string();
-            (title, String::new(), password)
+            (title, String::new(), dataman_core::needs_password(e))
         }
     }
 }
