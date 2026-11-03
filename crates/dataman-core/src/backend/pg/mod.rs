@@ -108,40 +108,26 @@ mod tracked {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    use tokio_postgres::Socket;
     use tokio_postgres::tls::{MakeTlsConnect, TlsConnect};
     use tokio_postgres_rustls::MakeRustlsConnect;
 
-    type Inner = MakeRustlsConnect;
-    type InnerConnect = <Inner as MakeTlsConnect<Socket>>::TlsConnect;
-    type Stream = <Inner as MakeTlsConnect<Socket>>::Stream;
+    use super::RawStream;
+
+    type InnerConnect = <MakeRustlsConnect as MakeTlsConnect<RawStream>>::TlsConnect;
+    type Stream = <MakeRustlsConnect as MakeTlsConnect<RawStream>>::Stream;
 
     pub struct Tracked {
-        pub inner: Inner,
+        pub inner: InnerConnect,
         pub used: Arc<AtomicBool>,
     }
 
-    pub struct TrackedConnect {
-        inner: InnerConnect,
-        used: Arc<AtomicBool>,
-    }
-
-    impl MakeTlsConnect<Socket> for Tracked {
+    impl TlsConnect<RawStream> for Tracked {
         type Stream = Stream;
-        type TlsConnect = TrackedConnect;
-        type Error = <Inner as MakeTlsConnect<Socket>>::Error;
-        fn make_tls_connect(&mut self, domain: &str) -> Result<TrackedConnect, Self::Error> {
-            Ok(TrackedConnect { inner: <Inner as MakeTlsConnect<Socket>>::make_tls_connect(&mut self.inner, domain)?, used: self.used.clone() })
-        }
-    }
-
-    impl TlsConnect<Socket> for TrackedConnect {
-        type Stream = Stream;
-        type Error = <InnerConnect as TlsConnect<Socket>>::Error;
+        type Error = <InnerConnect as TlsConnect<RawStream>>::Error;
         type Future = Pin<Box<dyn Future<Output = Result<Stream, Self::Error>> + Send>>;
-        fn connect(self, s: Socket) -> Self::Future {
+        fn connect(self, s: RawStream) -> Self::Future {
             let used = self.used;
-            let fut = <InnerConnect as TlsConnect<Socket>>::connect(self.inner, s);
+            let fut = <InnerConnect as TlsConnect<RawStream>>::connect(self.inner, s);
             Box::pin(async move {
                 let r = fut.await;
                 if r.is_ok() {
@@ -158,11 +144,13 @@ pub(crate) struct Dedicated {
     pub tls: Tls,
     pub tls_active: bool,
     pub notifications: tokio::sync::mpsc::UnboundedReceiver<Notification>,
+    reach: Reach,
 }
 
 impl Dedicated {
+    /// The way the connection came, as a session cancels: a raw connect leaves the token no address.
     pub(crate) async fn cancel(&self) -> Result<()> {
-        cancel(&self.client.cancel_token(), &self.tls).await
+        Canceller { token: self.client.cancel_token(), tls: self.tls.clone(), reach: self.reach.clone() }.cancel().await
     }
 }
 
@@ -251,19 +239,23 @@ pub(crate) async fn connect_through(
 /// the cancel token points at the tunnel too, so a CancelRequest takes the same way.
 async fn connect_dedicated(p: &ConnectionProfile, password: Option<&str>, database: Option<&str>, via: Option<SocketAddr>) -> Result<Dedicated> {
     let (cfg, sslmode) = pg_config(p, password, database, via);
+    let reach = Reach::of(p, via);
+    let socket = reach.open().await.context("error connecting to server")?;
     let tls = tls_for(sslmode)?;
     let (tx, notifications) = tokio::sync::mpsc::unbounded_channel();
     let used = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mark = Arc::new(Mutex::new(None));
     let client = match &tls {
         Tls::None => {
-            let (client, conn) = cfg.connect(NoTls).await?;
+            let (client, conn) = handshake(cfg.connect_raw(socket, NoTls)).await?;
             drive(conn, Some(tx), None, mark.clone());
             client
         }
         Tls::Rustls(m) => {
-            let t = tracked::Tracked { inner: m.clone(), used: used.clone() };
-            let (client, conn) = cfg.connect(t).await?;
+            let mut m = m.clone();
+            let inner = <tokio_postgres_rustls::MakeRustlsConnect as MakeTlsConnect<RawStream>>::make_tls_connect(&mut m, reach.domain())?;
+            let t = tracked::Tracked { inner, used: used.clone() };
+            let (client, conn) = handshake(cfg.connect_raw(socket, t)).await?;
             drive(conn, Some(tx), None, mark.clone());
             client
         }
@@ -273,7 +265,7 @@ async fn connect_dedicated(p: &ConnectionProfile, password: Option<&str>, databa
         set_read_only(&client).await;
     }
     let tls_active = used.load(std::sync::atomic::Ordering::Acquire);
-    Ok(Dedicated { client: Arc::new(client), tls, tls_active, notifications })
+    Ok(Dedicated { client: Arc::new(client), tls, tls_active, notifications, reach })
 }
 
 fn pg_config(p: &ConnectionProfile, password: Option<&str>, database: Option<&str>, via: Option<SocketAddr>) -> (tokio_postgres::Config, SslMode) {
@@ -386,6 +378,15 @@ impl Reach {
     }
 }
 
+/// The startup and the login, bounded as the TCP connect is: a peer that takes the connection
+/// and never answers fails like a server that is not there, not forever.
+async fn handshake<T>(f: impl std::future::Future<Output = Result<T, tokio_postgres::Error>>) -> Result<T> {
+    match tokio::time::timeout(Duration::from_secs(30), f).await {
+        Ok(r) => Ok(r?),
+        Err(_) => anyhow::bail!("the server did not answer the login in 30 s"),
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct Canceller {
     token: CancelToken,
@@ -423,7 +424,7 @@ async fn connect_session(
     let mark = Arc::new(Mutex::new(None));
     let client = match &tls {
         Tls::None => {
-            let (client, conn) = cfg.connect_raw(stream, NoTls).await?;
+            let (client, conn) = handshake(cfg.connect_raw(stream, NoTls)).await?;
             drive(conn, None, Some(watch.clone()), mark.clone());
             client
         }
@@ -431,7 +432,7 @@ async fn connect_session(
             let mut m = m.clone();
             let inner = <tokio_postgres_rustls::MakeRustlsConnect as MakeTlsConnect<Sniff<RawStream>>>::make_tls_connect(&mut m, reach.domain())?;
             let t = SniffTls { inner, watch: watch.clone(), used: Arc::new(std::sync::atomic::AtomicBool::new(false)) };
-            let (client, conn) = cfg.connect_raw(stream, t).await?;
+            let (client, conn) = handshake(cfg.connect_raw(stream, t)).await?;
             drive(conn, None, Some(watch.clone()), mark.clone());
             client
         }
@@ -465,14 +466,6 @@ pub(crate) async fn connect_session_through(
             None => Err(e),
         },
     }
-}
-
-pub(crate) async fn cancel(token: &CancelToken, tls: &Tls) -> Result<()> {
-    match tls {
-        Tls::None => token.cancel_query(NoTls).await?,
-        Tls::Rustls(m) => token.cancel_query(m.clone()).await?,
-    }
-    Ok(())
 }
 
 pub(crate) async fn text_rows(client: &Client, sql: &str) -> Result<Vec<Vec<Option<String>>>> {

@@ -350,7 +350,8 @@ pub fn mid_possible(t0: std::time::Instant, d: std::time::Duration) -> bool {
 }
 
 /// A time budget set on macOS (Metal, the machine it was measured on). Linux CI draws with Mesa's
-/// software GL under Xvfb, in a VM: 2.5 times the budget there, so a regression still shows.
+/// software GL under Xvfb, in a VM, Windows CI with WARP on a few shared cores: 2.5 times the
+/// budget there, so a regression still shows.
 pub fn budget(mac: std::time::Duration) -> std::time::Duration {
-    if cfg!(target_os = "linux") { mac.mul_f32(2.5) } else { mac }
+    if cfg!(target_os = "macos") { mac } else { mac.mul_f32(2.5) }
 }

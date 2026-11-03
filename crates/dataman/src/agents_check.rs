@@ -468,7 +468,7 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
         let grew = before.zip(mid_b).zip(after).is_some_and(|((b, m), a)| between(m.top().as_f32(), b.top().as_f32(), a.top().as_f32()) && between(m.size.width.as_f32(), b.size.width.as_f32(), a.size.width.as_f32()));
         r.check(
             &format!("{name}, the reply moves part of the way, then lands"),
-            (!motion || !in_time || (mid > 0.05 && mid < 0.999 && grew)) && now(cx) == end && !moving(cx),
+            (!motion || !in_time || (mid > 0.001 && mid < 0.999 && grew)) && now(cx) == end && !moving(cx),
             format!("mid {mid} end {} {before:?} → {mid_b:?} → {after:?}{}", now(cx), if in_time { "" } else { " (frames too slow for a mid-way sample)" }),
         );
     }

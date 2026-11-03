@@ -145,12 +145,31 @@ impl SplitTween {
             return Some(p);
         }
         let span = SPLIT.as_secs_f32() * (target - self.from).abs().max(0.25);
-        let raw = now.saturating_duration_since(self.started).as_secs_f32() / span;
+        let raw = split_held().unwrap_or_else(|| now.saturating_duration_since(self.started).as_secs_f32() / span);
         if raw >= 1. {
             return None;
         }
         Some(self.from + (target - self.from) * EASE.eval(raw))
     }
+}
+
+#[cfg(feature = "checks")]
+static SPLIT_HELD: std::sync::Mutex<Option<f32>> = std::sync::Mutex::new(None);
+
+/// The checks hold the split's course (0 to 1) where they choose, so a frame is measured at that
+/// point whatever the renderer's pace; `None` gives it back to the clock.
+#[cfg(feature = "checks")]
+pub fn hold_split(at: Option<f32>) {
+    *SPLIT_HELD.lock().unwrap() = at;
+}
+
+fn split_held() -> Option<f32> {
+    #[cfg(feature = "checks")]
+    {
+        *SPLIT_HELD.lock().unwrap()
+    }
+    #[cfg(not(feature = "checks"))]
+    None
 }
 
 fn split_freeze() -> Option<f32> {

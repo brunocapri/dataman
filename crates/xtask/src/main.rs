@@ -31,7 +31,7 @@ fn run() -> Result<()> {
         Some("verify") if args.len() >= 3 => verify(&args[1], &args[2], &args[3..]),
         Some("e2e") => e2e::run(&args[1..]),
         _ => bail!(
-            "usage: xtask icon <svg> <out.icns> | keygen [--force] | pubkey | sign <dmg> --url <url> --version <v> [--notes <file>] [--min-macos <v>] | feed --version <v> [--notes <file>] [--min-macos <v>] (--asset <os-arch> <file> <url>)… | verify <feed.json> <file> --pubkey <b64> [--version <v>] [--asset <os-arch>] | e2e [--list] [--only a,b] [--skip a,b] [--no-build] [--no-reset] [--fresh] [--no-compose] [-v] (DATAMAN_E2E_<SERVICE>_PORT moves a service)"
+            "usage: xtask icon <svg> <out.icns> | keygen [--force] | pubkey | sign <dmg> --url <url> --version <v> [--notes <file>] [--min-macos <v>] | feed --version <v> [--base <feed.json>] [--notes <file>] [--min-macos <v>] (--asset <os-arch> <file> <url>)… | verify <feed.json> <file> --pubkey <b64> [--version <v>] [--asset <os-arch>] | e2e [--list] [--only a,b] [--skip a,b] [--no-build] [--no-reset] [--fresh] [--no-compose] [-v] (DATAMAN_E2E_<SERVICE>_PORT moves a service)"
         ),
     }
 }
@@ -195,7 +195,19 @@ fn feed(args: &[String]) -> Result<()> {
     {
         bail!("the private key does not match DATAMAN_UPDATE_PUBKEY");
     }
-    let mut assets = serde_json::Map::new();
+    // A feed made before (the Mac's and Linux's) that the given assets join: its version, notes
+    // and date stay.
+    let base: Option<serde_json::Value> = match flag(args, "--base") {
+        Some(p) => {
+            let b: serde_json::Value = serde_json::from_slice(&std::fs::read(p).with_context(|| format!("reading {p}"))?).with_context(|| format!("{p} is not JSON"))?;
+            if b["version"].as_str() != Some(version) {
+                bail!("{p} offers {}, not {version}", b["version"]);
+            }
+            Some(b)
+        }
+        None => None,
+    };
+    let mut assets = base.as_ref().and_then(|b| b["assets"].as_object().cloned()).unwrap_or_default();
     let mut i = 0;
     while i < args.len() {
         if args[i] == "--asset" {
@@ -220,7 +232,14 @@ fn feed(args: &[String]) -> Result<()> {
         bail!("no --asset given");
     }
     let mac = assets.iter().find(|(k, _)| k.starts_with("macos-")).map(|(_, v)| v.clone());
-    let mut feed = serde_json::json!({ "version": version, "notes": notes, "published": now_utc(), "assets": assets });
+    let mut feed = match base {
+        Some(b) => b,
+        None => serde_json::json!({ "version": version, "published": now_utc() }),
+    };
+    if feed.get("notes").is_none() || flag(args, "--notes").is_some() {
+        feed["notes"] = notes.into();
+    }
+    feed["assets"] = assets.into();
     if let Some(m) = mac {
         for k in ["url", "size", "ed25519"] {
             feed[k] = m[k].clone();

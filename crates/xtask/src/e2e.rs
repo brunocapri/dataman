@@ -176,6 +176,12 @@ pub fn run(args: &[String]) -> Result<()> {
         .filter(|s| (o.only.is_empty() || o.only.iter().any(|n| n == s.name)) && !o.skip.iter().any(|n| n == s.name))
         .collect();
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize()?;
+    // Windows canonicalizes to `\\?\C:\...`: docker compose resolves its bind mounts against
+    // the working directory, and takes that prefix's colons for mount separators.
+    let root = match root.to_str().and_then(|r| r.strip_prefix(r"\\?\")) {
+        Some(plain) if !plain.starts_with("UNC") => PathBuf::from(plain),
+        _ => root,
+    };
     let t0 = Instant::now();
     if o.build {
         step("build");

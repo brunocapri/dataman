@@ -23,7 +23,7 @@ fn setup() -> Option<&'static Setup> {
         let addr = std::env::var("DATAMAN_SSH").unwrap_or_else(|_| "127.0.0.1:2299".into());
         let (h, p) = addr.rsplit_once(':')?;
         let ssh = (h.to_string(), p.parse().ok()?);
-        if TcpStream::connect_timeout(&addr.parse().ok()?, Duration::from_secs(1)).is_err() {
+        if !TcpStream::connect_timeout(&addr.parse().ok()?, Duration::from_secs(1)).is_ok_and(|s| s.local_addr().ok() != s.peer_addr().ok()) {
             eprintln!("skipping: no SSH server at {addr}");
             return None;
         }
@@ -284,7 +284,7 @@ fn changed_host_key_is_refused() {
 #[cfg(unix)]
 fn unix_socket_host() {
     let (pg_host, pg_port) = ("127.0.0.1", 55432u16);
-    if TcpStream::connect_timeout(&format!("{pg_host}:{pg_port}").parse().unwrap(), Duration::from_secs(1)).is_err() {
+    if !TcpStream::connect_timeout(&format!("{pg_host}:{pg_port}").parse().unwrap(), Duration::from_secs(1)).is_ok_and(|s| s.local_addr().ok() != s.peer_addr().ok()) {
         eprintln!("skipping: no PostgreSQL at {pg_host}:{pg_port}");
         return;
     }

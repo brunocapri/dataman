@@ -364,7 +364,7 @@ fn stdio_favorites_and_create_connection() {
     let (err, text) = m.tool("list_favorites", json!({}));
     assert!(!err && !text.contains("customers"), "{text}");
     let (err, text) = m.tool("import_favorites", json!({"paths": [files.path().join("folder.sql").display().to_string()]}));
-    assert!(err && (text.contains("No such file") || text.contains("cannot find the file")), "{text}");
+    assert!(err && text.contains("folder.sql\" does not exist"), "{text}");
 
     let (err, text) = m.tool("create_connection", json!({"name": "new1", "host": "db.internal", "user": "bob", "password": "s3cret"}));
     assert!(!err, "{text}");
@@ -683,7 +683,7 @@ impl dataman_mcp::Front for Denier {
 
 #[test]
 fn stdio_hands_calls_to_the_app() {
-    if std::net::TcpStream::connect_timeout(&"127.0.0.1:55432".parse().unwrap(), Duration::from_secs(1)).is_err() {
+    if !std::net::TcpStream::connect_timeout(&"127.0.0.1:55432".parse().unwrap(), Duration::from_secs(1)).is_ok_and(|s| s.local_addr().ok() != s.peer_addr().ok()) {
         eprintln!("skipping: no PostgreSQL at 127.0.0.1:55432");
         return;
     }

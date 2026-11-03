@@ -258,7 +258,11 @@ fn import_favorites(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> 
             if !path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("sql")) {
                 return Err(ToolError::Invalid(format!("{s:?} is not a .sql file")));
             }
-            let meta = std::fs::metadata(path).map_err(|e| ToolError::Invalid(format!("{s:?}: {e}")))?;
+            // In our words when it is missing: the system's own message is in the system's language.
+            let meta = std::fs::metadata(path).map_err(|e| match e.kind() {
+                std::io::ErrorKind::NotFound => ToolError::Invalid(format!("{s:?} does not exist")),
+                _ => ToolError::Invalid(format!("{s:?}: {e}")),
+            })?;
             if !meta.is_file() {
                 return Err(ToolError::Invalid(format!("{s:?} is not a file")));
             }

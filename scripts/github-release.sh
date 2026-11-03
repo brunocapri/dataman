@@ -11,7 +11,9 @@
 # Needs: a clean tree on main, up to date with origin; gh, logged in; the update key
 # (scripts/keygen.sh: ~/.config/dataman-release/update_ed25519.key, or DATAMAN_UPDATE_KEY /
 # DATAMAN_UPDATE_PRIVATE_KEY). The notes are never written into the repository. DATAMAN_LINUX=1
-# also builds, uploads and checks the Linux AppImages and .debs (Docker).
+# also builds, uploads and checks the Linux AppImages and .debs (Docker). DATAMAN_WINDOWS=1 also
+# takes the Windows installers and .zips from the Windows workflow's run on the release commit
+# (waiting for it), adds the installers to the feed, uploads all of them and checks them.
 set -euo pipefail
 [ "$(uname)" = Darwin ] || { echo "github-release: macOS only (the Linux release: scripts/linux/build.sh)" >&2; exit 1; }
 
@@ -111,13 +113,52 @@ git tag -a "$tag" -m "Dataman $version"
 git push --quiet origin main
 git push --quiet origin "$tag"
 
+# --- Windows: what the Windows workflow built from this very commit -----------------------------
+windows=()
+winarch=()
+if [ -n "${DATAMAN_WINDOWS:-}" ]; then
+  sha="$(git rev-parse HEAD)"
+  step "the Windows workflow's run on $(git rev-parse --short HEAD)"
+  run=""
+  for _ in $(seq 1 60); do
+    run="$(gh run list --repo "$repo" --workflow windows.yml --commit "$sha" --event push --json databaseId --jq '.[0].databaseId // empty')"
+    [ -n "$run" ] && break
+    sleep 10
+  done
+  [ -n "$run" ] || die "no Windows workflow run for $sha"
+  gh run watch "$run" --repo "$repo" --exit-status > /dev/null || die "the Windows workflow failed (run $run)"
+  winassets=()
+  for a in x86_64 aarch64; do
+    d="$work/windows-$a"
+    if ! gh run download "$run" --repo "$repo" -n "dataman-windows-$a" -D "$d" > /dev/null 2>&1; then
+      # The Arm build does not hold the release back (it is not a gate in the workflow either).
+      [ "$a" = aarch64 ] || die "run $run has no Windows $a build"
+      echo "github-release: run $run has no Windows $a build: released without it" >&2
+      continue
+    fi
+    setup="$d/Dataman-$version-windows-$a-setup.exe"
+    zip="$d/Dataman-$version-windows-$a.zip"
+    [ -f "$setup" ] && [ -f "$zip" ] || die "run $run has no Dataman $version installer and .zip for Windows $a: $(ls "$d" | tr '\n' ' ')"
+    windows+=("$setup" "$zip")
+    winarch+=("$a")
+    winassets+=(--asset "windows-$a" "$setup" "$base/$(basename "$setup")")
+  done
+  step "the Windows installers into the feed"
+  cargo run --release --quiet -p xtask -- feed --version "$version" --base "$feed" "${winassets[@]}" > "$work/feed-windows.json"
+  cp "$work/feed-windows.json" "$feed"
+  for a in "${winarch[@]}"; do
+    cargo run --release --quiet -p xtask -- verify "$feed" "$work/windows-$a/Dataman-$version-windows-$a-setup.exe" --pubkey "$pubkey" --version "$version" --asset "windows-$a" > /dev/null
+  done
+  cargo run --release --quiet -p xtask -- verify "$feed" "$dmg" --pubkey "$pubkey" --version "$version" > /dev/null
+fi
+
 # --- The release -------------------------------------------------------------------------------
 step "GitHub release $tag"
 linux=()
 if [ -n "${DATAMAN_LINUX:-}" ]; then
   linux=("$root"/dist/linux/Dataman-"$version"-*.AppImage "$root"/dist/linux/dataman_"$version"_*.deb)
 fi
-gh release create "$tag" "$dmg" ${linux[@]+"${linux[@]}"} "$feed" --repo "$repo" --title "Dataman $version" --notes "$notes" --latest > /dev/null
+gh release create "$tag" "$dmg" ${linux[@]+"${linux[@]}"} ${windows[@]+"${windows[@]}"} "$feed" --repo "$repo" --title "Dataman $version" --notes "$notes" --latest > /dev/null
 
 # --- What the app will read --------------------------------------------------------------------
 step "checking releases/latest/download/feed.json"
@@ -146,6 +187,12 @@ if [ -n "${DATAMAN_LINUX:-}" ]; then
   done
   checked="$checked; Linux x86_64 and aarch64 AppImages and .debs too"
 fi
+for a in ${winarch[@]+"${winarch[@]}"}; do
+  url="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["assets"]["windows-" + sys.argv[2]]["url"])' "$work/feed.json" "$a")"
+  curl -fsSL --proto '=https' -o "$work/Dataman-$a-setup.exe" "$url"
+  cargo run --release --quiet -p xtask -- verify "$work/feed.json" "$work/Dataman-$a-setup.exe" --pubkey "$pubkey" --version "$version" --asset "windows-$a" > /dev/null
+  checked="$checked; the Windows $a installer too"
+done
 
 page="$(gh release view "$tag" --repo "$repo" --json url --jq .url)"
 echo

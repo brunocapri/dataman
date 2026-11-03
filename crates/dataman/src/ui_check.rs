@@ -4,6 +4,7 @@ use gpui::{
     AsyncWindowContext, Entity, Focusable, KeyDownEvent, KeyUpEvent, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput,
     Pixels, Point, point, px,
 };
+use dataman_core::layout::NavView;
 use dataman_core::result::Phase;
 
 use crate::app::Workspace;
@@ -1335,14 +1336,38 @@ async fn motion_checks(ws: &Entity<Workspace>, id: &str, cx: &mut AsyncWindowCon
     // Their timers start when their tasks first run, after any frames already queued: on a slow
     // renderer well after the move, so the check waits for each rather than timing it.
     let tip = |cx: &mut AsyncWindowContext| crate::check::probed("tooltip", cx);
-    let rail = crate::check::probed("rail-agents", cx);
-    if let Some(r) = rail {
+    let win = cx.update(|window, _| window.viewport_size()).unwrap();
+    let away = point(win.width * 0.6, win.height * 0.35);
+    // The rail's db, star and clock have none: what each is, it shows. A second is three times
+    // a tooltip's wait.
+    let mut said = Vec::new();
+    for v in [NavView::Explorer, NavView::Favorites, NavView::History] {
+        draw(cx);
+        let b = cx.update(|_, cx| ws.read(cx).rail_bounds.borrow().get(&v).copied()).ok().flatten();
+        if let Some(b) = b {
+            crate::check::move_to(cx, b.center());
+        }
+        let tipped = crate::check::until(cx, 1, |cx| tip(cx).is_some()).await;
+        said.push((v, b.is_some(), tipped));
+    }
+    crate::check::move_to(cx, away);
+    crate::check::until(cx, 3, |cx| tip(cx).is_none()).await;
+    report("the rail's db, star and clock show no tooltip", said.iter().all(|&(_, on, tipped)| on && !tipped), format!("{said:?}"));
+
+    let control = crate::check::probed("tb-format", cx);
+    if let Some(r) = control {
         crate::check::move_to(cx, crate::check::centre(r));
     }
     let at_once = tip(cx);
+    let stats0 = crate::ui::tip_stats();
     crate::check::until(cx, 3, |cx| tip(cx).is_some()).await;
     let shown = tip(cx);
-    if let (Some(r), Some(b)) = (rail, shown) {
+    // Where it stands when none showed: the pointer, the control now, the last input, the hosts.
+    let why = cx
+        .update(|window, _| (window.mouse_position(), window.last_input_was_keyboard(), window.is_window_active()))
+        .map(|(at, keyboard, active)| format!("pointer {at:?}, keyboard {keyboard}, active {active}, control now {:?}, tips {stats0:?} → {:?}", crate::check::probed("tb-format", cx), crate::ui::tip_stats()))
+        .unwrap_or_default();
+    if let (Some(r), Some(b)) = (control, shown) {
         let (from, to) = (crate::check::centre(r), crate::check::centre(b));
         for k in 1..=4 {
             crate::check::move_to(cx, point(from.x + (to.x - from.x) * (k as f32 / 4.), from.y + (to.y - from.y) * (k as f32 / 4.)));
@@ -1350,13 +1375,12 @@ async fn motion_checks(ws: &Entity<Workspace>, id: &str, cx: &mut AsyncWindowCon
     }
     pause(cx, 900).await;
     let kept = tip(cx);
-    let win = cx.update(|window, _| window.viewport_size()).unwrap();
-    crate::check::move_to(cx, point(win.width * 0.6, win.height * 0.35));
+    crate::check::move_to(cx, away);
     let gone = crate::check::until(cx, 3, |cx| tip(cx).is_none()).await;
     report(
-        "a tooltip shows after a short rest, stays while the pointer is on it, and closes soon after it leaves the control and the tooltip",
-        rail.is_some() && at_once.is_none() && shown.is_some() && kept.is_some() && gone,
-        format!("rail {rail:?} at once {at_once:?} shown {shown:?} kept {kept:?} gone {gone}"),
+        "a tooltip (Format's) shows after a short rest, stays while the pointer is on it, and closes soon after it leaves the control and the tooltip",
+        control.is_some() && at_once.is_none() && shown.is_some() && kept.is_some() && gone,
+        format!("control {control:?} at once {at_once:?} shown {shown:?} kept {kept:?} gone {gone}; window {win:?}; {why}"),
     );
 
     let motion = !cx.update(|_, cx| cx.reduce_motion()).unwrap_or(false);

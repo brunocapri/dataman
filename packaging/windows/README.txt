@@ -21,5 +21,6 @@ Agents (MCP)
 While the app runs, dataman-mcp hands each call to it (writes are approved there); without it,
 the server works on its own with the same rules.
 
-Updates: Dataman checks for new versions; on Windows install them with the new installer
-(or unzip the new portable build over this one).
+Updates: Dataman checks for new versions. Installed with the installer, it updates itself:
+it downloads the new installer, checks its signature, and installs it when you restart it.
+The portable .zip only says a new version is out: unzip the new one over this one.
