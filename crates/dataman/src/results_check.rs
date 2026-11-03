@@ -47,7 +47,8 @@ async fn finished(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) {
         let done = cx
             .update(|_, cx| {
                 let t = tab.read(cx);
-                !t.is_running() && t.run_phase().is_some_and(|p| p.is_finished())
+                // The whole script: between two statements the one before is finished too.
+                !t.is_running() && !t.run_continues() && t.run_phase().is_some_and(|p| p.is_finished())
             })
             .unwrap_or(true);
         if done {
