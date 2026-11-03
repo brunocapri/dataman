@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["crates/dataman-core", "crates/dataman-mcp", "crates/dataman", "crates/xtask"]
-exclude = ["vendor"]
+exclude = ["vendor", "engines"]
 # xtask (release tooling) builds only when asked for: `cargo run --release -p xtask -- …`.
 default-members = ["crates/dataman-core", "crates/dataman-mcp", "crates/dataman"]
 

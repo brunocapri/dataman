@@ -48,6 +48,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 [Files]
 Source: "{#SourceDir}\dataman.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\dataman-mcp.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourceDir}\dataman_duckdb.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\README.txt"; DestDir: "{app}"; Flags: ignoreversion isreadme
 Source: "{#SourceDir}\LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
 

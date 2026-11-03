@@ -21,6 +21,8 @@ pkg="$work/dataman"
 mkdir -p "$pkg/DEBIAN" "$pkg/usr/bin" "$pkg/usr/share/applications" "$pkg/usr/share/metainfo" "$pkg/usr/share/doc/dataman" "$pkg/usr/share/mime/packages"
 install -m 0755 "$target/release/dataman" "$pkg/usr/bin/"
 strip "$pkg/usr/bin/dataman"
+install -D -m 0644 "$target/duckdb/libdataman_duckdb.so" "$pkg/usr/lib/dataman/libdataman_duckdb.so"
+strip "$pkg/usr/lib/dataman/libdataman_duckdb.so"
 # The MCP server is the app's binary started by that name.
 ln -s dataman "$pkg/usr/bin/dataman-mcp"
 install -m 0644 "$root/packaging/linux/dev.dataman.Dataman.desktop" "$pkg/usr/share/applications/"

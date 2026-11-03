@@ -50,6 +50,9 @@ app="$work/Dataman.AppDir"
 mkdir -p "$app/usr/bin" "$app/usr/lib" "$app/usr/share/applications" "$app/usr/share/metainfo" "$app/usr/share/mime/packages"
 cp "$target/release/dataman" "$app/usr/bin/"
 strip "$app/usr/bin/dataman"
+# DuckDB, loaded from beside the binary (../lib/dataman) when a DuckDB database is opened.
+install -D -m 0755 "$target/duckdb/libdataman_duckdb.so" "$app/usr/lib/dataman/libdataman_duckdb.so"
+strip "$app/usr/lib/dataman/libdataman_duckdb.so"
 # The MCP server is the app's binary started by that name.
 ln -s dataman "$app/usr/bin/dataman-mcp"
 cp "$root/packaging/linux/AppRun" "$app/AppRun"
@@ -65,12 +68,11 @@ ln -s dev.dataman.Dataman.png "$app/.DirIcon"
 # What the binaries link is on every X11 or Wayland desktop (the pure-Rust core brings the
 # rest): nothing is bundled, and a new link outside this list stops the release.
 system='^(libc|libm|libdl|libpthread|librt|libgcc_s|libxcb|libxkbcommon|libxkbcommon-x11|libfontconfig|libfreetype|ld-linux-[a-z0-9_-]+)\.so'
-for bin in dataman; do
-  for lib in $(readelf -d "$app/usr/bin/$bin" | awk '/NEEDED/ {gsub(/[][]/, "", $5); print $5}'); do
+for bin in usr/bin/dataman usr/lib/dataman/libdataman_duckdb.so; do
+  for lib in $(readelf -d "$app/$bin" | awk '/NEEDED/ {gsub(/[][]/, "", $5); print $5}'); do
     echo "$lib" | grep -Eq "$system" || die "$bin links $lib, not one every desktop has (bundle it, or drop it)"
   done
 done
-rmdir "$app/usr/lib"
 
 # An AppImage marks its ELF header (bytes 8-10, "AI\2"), which emulators (Rosetta, qemu) refuse
 # to run: an unmarked copy runs anywhere. Only copies are unmarked, never what ships.
