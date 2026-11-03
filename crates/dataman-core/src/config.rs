@@ -52,79 +52,29 @@ impl Engine {
     ];
 
     pub fn label(self) -> &'static str {
-        match self {
-            Engine::Postgres => "PostgreSQL",
-            Engine::MySql => "MySQL",
-            Engine::SqlServer => "SQL Server",
-            Engine::MongoDb => "MongoDB",
-            Engine::Elasticsearch => "Elasticsearch",
-            Engine::OpenSearch => "OpenSearch",
-            Engine::Redis => "Redis",
-            Engine::Sqlite => "SQLite",
-            Engine::DuckDb => "DuckDB",
-        }
+        self.spec().label
     }
 
     /// Stored in the file and used by the MCP tools and the logos: must not change.
     pub fn slug(self) -> &'static str {
-        match self {
-            Engine::Postgres => "postgres",
-            Engine::MySql => "mysql",
-            Engine::SqlServer => "sql-server",
-            Engine::MongoDb => "mongodb",
-            Engine::Elasticsearch => "elasticsearch",
-            Engine::OpenSearch => "opensearch",
-            Engine::Redis => "redis",
-            Engine::Sqlite => "sqlite",
-            Engine::DuckDb => "duckdb",
-        }
+        self.spec().slug
     }
 
     pub fn parse(s: &str) -> Option<Engine> {
         let s = s.trim().to_ascii_lowercase();
-        let alias = match s.as_str() {
-            "pg" | "postgresql" => Some(Engine::Postgres),
-            "mariadb" => Some(Engine::MySql),
-            "mssql" | "sqlserver" | "sql_server" => Some(Engine::SqlServer),
-            "mongo" => Some(Engine::MongoDb),
-            "es" | "elastic" => Some(Engine::Elasticsearch),
-            "os" => Some(Engine::OpenSearch),
-            "sqlite3" | "lite" => Some(Engine::Sqlite),
-            "duck" => Some(Engine::DuckDb),
-            _ => None,
-        };
-        alias.or_else(|| Engine::ALL.into_iter().find(|e| e.slug() == s || e.label().eq_ignore_ascii_case(&s)))
+        crate::engine::SPECS.iter().find(|e| e.slug == s || e.aliases.contains(&s.as_str()) || e.label.eq_ignore_ascii_case(&s)).map(|e| e.engine)
     }
 
     pub fn default_port(self) -> u16 {
-        match self {
-            Engine::Postgres => 5432,
-            Engine::MySql => 3306,
-            Engine::SqlServer => 1433,
-            Engine::MongoDb => 27017,
-            Engine::Elasticsearch | Engine::OpenSearch => 9200,
-            Engine::Redis => 6379,
-            Engine::Sqlite | Engine::DuckDb => 0,
-        }
+        self.spec().default_port
     }
 
     pub fn default_user(self) -> &'static str {
-        match self {
-            Engine::Postgres => "postgres",
-            Engine::MySql => "root",
-            Engine::SqlServer => "sa",
-            Engine::Elasticsearch => "elastic",
-            Engine::OpenSearch => "admin",
-            Engine::MongoDb | Engine::Redis | Engine::Sqlite | Engine::DuckDb => "",
-        }
+        self.spec().default_user
     }
 
     pub fn family(self) -> Family {
-        match self {
-            Engine::Postgres | Engine::MySql | Engine::SqlServer | Engine::Sqlite | Engine::DuckDb => Family::Sql,
-            Engine::MongoDb | Engine::Elasticsearch | Engine::OpenSearch => Family::Document,
-            Engine::Redis => Family::KeyValue,
-        }
+        self.spec().family
     }
 
     pub fn is_sql(self) -> bool {
@@ -137,16 +87,12 @@ impl Engine {
 
     /// A database in a file on this machine: no server, host, user or password.
     pub fn is_file(self) -> bool {
-        matches!(self, Engine::Sqlite | Engine::DuckDb)
+        self.spec().caps.file
     }
 
     /// The extensions its files usually have, the first one for new files.
     pub fn file_extensions(self) -> &'static [&'static str] {
-        match self {
-            Engine::Sqlite => &["sqlite", "sqlite3", "db", "db3"],
-            Engine::DuckDb => &["duckdb", "ddb"],
-            _ => &[],
-        }
+        self.spec().file_exts
     }
 
     pub fn is_postgres(&self) -> bool {
@@ -276,7 +222,7 @@ fn override_key<'a>(overrides: &'a BTreeMap<String, bool>, engine: Engine, datab
     overrides
         .get_key_value(database)
         .map(|(k, _)| k)
-        .or_else(|| (engine == Engine::SqlServer).then(|| overrides.keys().find(|k| k.eq_ignore_ascii_case(database))).flatten())
+        .or_else(|| engine.spec().db_names_ignore_case.then(|| overrides.keys().find(|k| k.eq_ignore_ascii_case(database))).flatten())
 }
 
 pub fn read_only_in(default: bool, overrides: &BTreeMap<String, bool>, engine: Engine, database: &str) -> bool {
@@ -393,6 +339,61 @@ pub struct SshSettings {
 }
 
 impl ConnectionProfile {
+    /// What the connection form fills in and drops, by the engine's spec (the form and the MCP
+    /// tools alike): the default port and database, no database where the engine has none, and
+    /// plain text instead of `prefer` for the engines that have no opportunistic TLS.
+    pub fn normalize(&mut self) {
+        let spec = self.engine.spec();
+        if spec.form.file {
+            return;
+        }
+        if self.port == 0 {
+            self.port = spec.default_port;
+        }
+        if !spec.form.database {
+            self.database.clear();
+        } else if self.database.trim().is_empty() {
+            self.database = spec.default_database.to_string();
+        }
+        if !self.engine.is_sql() && self.sslmode == SslMode::Prefer {
+            self.sslmode = SslMode::Disable;
+        }
+    }
+
+    /// What a connection must have to be saved (after [`ConnectionProfile::normalize`]).
+    pub fn validate(&self) -> Result<(), String> {
+        let spec = self.engine.spec();
+        if spec.form.file {
+            return match self.path.as_deref().map(str::trim) {
+                Some(p) if !p.is_empty() => Ok(()),
+                _ => Err(format!("a {} connection needs its file", spec.label)),
+            };
+        }
+        if self.host.trim().is_empty() {
+            return Err("host is required".into());
+        }
+        if spec.form.user_required && self.user.trim().is_empty() {
+            return Err("host and user are required".into());
+        }
+        if let Some(n) = spec.numbered_dbs
+            && !self.database.is_empty()
+            && self.database.parse::<u32>().map_or(true, |d| d >= n)
+        {
+            return Err(format!("{}' database is a number (0–{})", spec.label, n - 1));
+        }
+        Ok(())
+    }
+
+    /// MongoDB's URI options as the form takes them (`k=v&k=v`).
+    pub fn parse_options(text: &str) -> BTreeMap<String, String> {
+        text.split('&')
+            .filter_map(|kv| {
+                let (k, v) = kv.split_once('=')?;
+                Some((k.trim().to_string(), v.trim().to_string())).filter(|(k, _)| !k.is_empty())
+            })
+            .collect()
+    }
+
     pub fn new(name: impl Into<String>) -> Self {
         ConnectionProfile {
             id: uuid::Uuid::new_v4().simple().to_string(),
@@ -1042,18 +1043,32 @@ fn save(path: &Path, connections: &[ConnectionProfile], skipped: &[toml::Table],
         toml::to_string_pretty(&file)?
     };
     // This user's only: a secret driver option stays in it.
-    let tmp = dir.join(format!(".connections.toml.{}.{}", std::process::id(), uuid::Uuid::new_v4().simple()));
-    {
-        use std::io::Write as _;
-        crate::os::private_new(&tmp)?.write_all(text.as_bytes())?;
-    }
-    std::fs::rename(&tmp, path).inspect_err(|_| _ = std::fs::remove_file(&tmp))?;
+    crate::os::atomic_write(path, text.as_bytes(), true)?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalize_and_validate_by_spec() {
+        let mut p = ConnectionProfile { host: "h".into(), user: "u".into(), port: 0, ..ConnectionProfile::new("x") };
+        p.normalize();
+        assert_eq!((p.port, p.database.as_str()), (5432, "postgres"));
+        assert!(p.validate().is_ok());
+        let mut r = ConnectionProfile { engine: Engine::Redis, host: "h".into(), port: 0, database: "16".into(), sslmode: SslMode::Prefer, ..ConnectionProfile::new("r") };
+        r.normalize();
+        assert_eq!((r.port, r.sslmode), (6379, SslMode::Disable));
+        assert!(r.validate().is_err());
+        r.database = "15".into();
+        assert!(r.validate().is_ok());
+        let mut e = ConnectionProfile { engine: Engine::Elasticsearch, host: "h".into(), database: "x".into(), ..ConnectionProfile::new("e") };
+        e.normalize();
+        assert!(e.database.is_empty() && e.validate().is_ok());
+        assert!(ConnectionProfile { host: "h".into(), user: String::new(), ..ConnectionProfile::new("n") }.validate().is_err(), "a SQL server needs a user");
+        assert_eq!(ConnectionProfile::parse_options("a=1& b = 2&=x&c").len(), 2);
+    }
 
     #[test]
     fn tls_defaults_follow_the_host() {

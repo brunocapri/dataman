@@ -130,15 +130,10 @@ fn plain_mixed_case(name: &str, d: Dialect) -> bool {
 }
 
 impl Dialect {
+    /// The engine's dialect; PostgreSQL's for the NoSQL engines, which have none
+    /// (`Engine::sql_dialect` says so). // phase 2: callers that may see NoSQL move to sql_dialect
     pub fn of(engine: Engine) -> Dialect {
-        match engine {
-            Engine::Postgres => Dialect::Postgres,
-            Engine::MySql => Dialect::MySql,
-            Engine::SqlServer => Dialect::TSql,
-            Engine::Sqlite => Dialect::Sqlite,
-            Engine::DuckDb => Dialect::DuckDb,
-            Engine::MongoDb | Engine::Elasticsearch | Engine::OpenSearch | Engine::Redis => Dialect::Postgres,
-        }
+        engine.sql_dialect().unwrap_or(Dialect::Postgres)
     }
 
     pub fn lex(self) -> LexRules {

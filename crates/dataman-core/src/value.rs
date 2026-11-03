@@ -21,6 +21,31 @@ pub enum Kind {
     Other,
 }
 
+/// What a column's type is beyond its [`Kind`], by its engine's own names: the UI's editors
+/// and viewers go by this, never by the type's text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TypeShape {
+    Uuid,
+    Array,
+    Enum,
+    Plain,
+}
+
+/// PostgreSQL names array types `_int4` (the driver's name) or `int4[]` (catalog text), DuckDB
+/// `INTEGER[]` or `INTEGER[3]`; MySQL's enum is `enum`, DuckDB's `ENUM('a', 'b')`.
+pub fn type_shape(engine: crate::config::Engine, type_name: &str) -> TypeShape {
+    use crate::config::Engine;
+    let t = type_name.trim().to_ascii_lowercase();
+    match engine {
+        Engine::Postgres | Engine::DuckDb if t.starts_with('_') || t.ends_with(']') => TypeShape::Array,
+        Engine::Postgres | Engine::DuckDb if t == "uuid" => TypeShape::Uuid,
+        Engine::SqlServer if t == "uniqueidentifier" => TypeShape::Uuid,
+        Engine::MySql if t == "enum" || t.starts_with("enum(") => TypeShape::Enum,
+        Engine::DuckDb if t.starts_with("enum") => TypeShape::Enum,
+        _ => TypeShape::Plain,
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Storage {
     Bool,
