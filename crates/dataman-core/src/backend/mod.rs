@@ -4,6 +4,7 @@ pub(crate) mod duck;
 #[cfg(not(feature = "duckdb"))]
 #[path = "duck/off.rs"]
 pub(crate) mod duck;
+pub mod class;
 pub(crate) mod embed;
 #[cfg(feature = "sqlite")]
 pub(crate) mod lite;
@@ -93,6 +94,10 @@ pub struct Caps {
     pub truncate: bool,
     /// The database is a file on this machine (it can be shown in Finder).
     pub file: bool,
+    /// The editor's text is checked by the server as it is typed (SQL Server's `SET PARSEONLY`).
+    pub server_parse_check: bool,
+    /// One process holds the file at a time (DuckDB): another app's lock is said so.
+    pub exclusive_lock: bool,
 }
 
 impl Caps {
@@ -115,9 +120,11 @@ impl Caps {
         drop_database: true,
         truncate: true,
         file: false,
+        server_parse_check: false,
+        exclusive_lock: false,
     };
 
-    const BASIC: Caps = Caps {
+    pub(crate) const BASIC: Caps = Caps {
         schemas: true,
         transactional_ddl: false,
         import: false,
@@ -136,27 +143,21 @@ impl Caps {
         drop_database: true,
         truncate: true,
         file: false,
+        server_parse_check: false,
+        exclusive_lock: false,
     };
 
     pub const NONE: Caps = Caps { schemas: false, ..Caps::BASIC };
 
+    pub const MYSQL: Caps = Caps { schemas: false, functions: true, triggers: true, ..Caps::BASIC };
+    pub const SQL_SERVER: Caps =
+        Caps { transactional_ddl: true, functions: true, sequences: true, types: true, triggers: true, toggle_triggers: true, server_parse_check: true, ..Caps::BASIC };
+    pub const SQLITE: Caps = Caps { schemas: false, transactional_ddl: true, explain: true, triggers: true, drop_database: false, truncate: false, file: true, ..Caps::BASIC };
+    pub const DUCKDB: Caps = Caps { transactional_ddl: true, explain: true, drop_database: false, file: true, exclusive_lock: true, ..Caps::BASIC };
+
+    /// The engine's, from its `EngineSpec`.
     pub fn of(engine: Engine) -> Caps {
-        match engine {
-            Engine::Postgres => Caps::POSTGRES,
-            Engine::MySql => Caps { schemas: false, functions: true, triggers: true, ..Caps::BASIC },
-            Engine::SqlServer => Caps {
-                transactional_ddl: true,
-                functions: true,
-                sequences: true,
-                types: true,
-                triggers: true,
-                toggle_triggers: true,
-                ..Caps::BASIC
-            },
-            Engine::Sqlite => Caps { schemas: false, transactional_ddl: true, explain: true, triggers: true, drop_database: false, truncate: false, file: true, ..Caps::BASIC },
-            Engine::DuckDb => Caps { transactional_ddl: true, explain: true, drop_database: false, file: true, ..Caps::BASIC },
-            Engine::MongoDb | Engine::Elasticsearch | Engine::OpenSearch | Engine::Redis => Caps::NONE,
-        }
+        engine.spec().caps
     }
 }
 
@@ -181,6 +182,61 @@ pub fn server_error(e: &anyhow::Error) -> Option<ErrorInfo> {
             _ => None,
         }
     })
+}
+
+/// The class of a database's error anywhere in the chain, by the engine that raised it.
+pub fn server_error_class(e: &anyhow::Error) -> Option<crate::result::ErrorClass> {
+    use crate::result::ErrorClass;
+    e.chain().find_map(|c| {
+        if let Some(e) = c.downcast_ref::<tokio_postgres::Error>() {
+            return e.as_db_error().map(|d| class::of(Engine::Postgres, d.code().code()));
+        }
+        if let Some(e @ ms::MsError::Server(_)) = c.downcast_ref::<ms::MsError>() {
+            return Some(ms::error_info(e).class(Engine::SqlServer));
+        }
+        #[cfg(feature = "sqlite")]
+        if let Some(e @ (rusqlite::Error::SqliteFailure(..) | rusqlite::Error::SqlInputError { .. })) = c.downcast_ref::<lite::LiteError>() {
+            return Some(lite::error_info(e).class(Engine::Sqlite));
+        }
+        #[cfg(feature = "duckdb")]
+        if let Some(e @ duckdb::Error::DuckDBFailure(..)) = c.downcast_ref::<duck::DuckError>() {
+            return Some(duck::error_info(e).class(Engine::DuckDb));
+        }
+        if let Some(mysql_async::Error::Server(se)) = c.downcast_ref::<mysql_async::Error>() {
+            return Some(class::of(Engine::MySql, &se.code.to_string()));
+        }
+        if let Some(e) = c.downcast_ref::<mongodb::error::Error>() {
+            use mongodb::error::ErrorKind;
+            return match &*e.kind {
+                ErrorKind::Authentication { .. } => Some(ErrorClass::Auth),
+                ErrorKind::Command(ce) => Some(class::of(Engine::MongoDb, &ce.code.to_string())),
+                _ => None,
+            };
+        }
+        c.downcast_ref::<ConnectError>().map(|ConnectError::Auth(_)| ErrorClass::Auth)
+    })
+}
+
+/// A typed connect failure where the driver gives no class of its own (the message as the
+/// server put it).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConnectError {
+    Auth(String),
+}
+
+impl std::fmt::Display for ConnectError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ConnectError::Auth(m) => f.write_str(m),
+        }
+    }
+}
+
+impl std::error::Error for ConnectError {}
+
+/// The server refused the login: ask for a password (whatever language the server speaks).
+pub fn needs_password(e: &anyhow::Error) -> bool {
+    server_error_class(e) == Some(crate::result::ErrorClass::Auth)
 }
 
 #[derive(Clone)]

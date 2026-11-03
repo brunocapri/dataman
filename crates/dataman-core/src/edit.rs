@@ -402,6 +402,12 @@ pub fn preview(changes: &[PlannedChange]) -> String {
     s
 }
 
+/// The edits as one script in the dialect's own transaction statements (`BEGIN TRANSACTION` …
+/// `COMMIT TRANSACTION` in T-SQL, where a bare `BEGIN;` is a syntax error).
+pub fn script(changes: &[PlannedChange], dialect: Dialect) -> String {
+    format!("{};\n{}{};", dialect.begin(), preview(changes), dialect.commit())
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum ConflictKind {
     RowGone,
@@ -432,6 +438,22 @@ pub struct ApplyReport {
     pub error: Option<String>,
 }
 
+/// What the error means for an edit (by its class on `engine`), then the server's own words.
+pub fn explain_error_in(e: &ErrorInfo, engine: crate::config::Engine) -> String {
+    let base = e.class(engine).explain();
+    let mut s = String::new();
+    if !base.is_empty() {
+        s.push_str(base);
+        s.push(' ');
+    }
+    s.push('(');
+    s.push_str(&e.to_string().replace('\n', " "));
+    s.push(')');
+    s
+}
+
+// phase 2: remove (callers move to explain_error_in, which knows the engine: 1205 is MySQL's
+// lock wait and SQL Server's deadlock).
 pub fn explain_error(e: &ErrorInfo) -> String {
     let base = match e.code.as_deref() {
         Some("23505") => "Duplicate value: another row already has this value in a unique column or key.",
