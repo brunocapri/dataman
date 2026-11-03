@@ -281,11 +281,16 @@ fn postgres_values_stay_kept() {
     for f in [
         format!("SELECT table_to_xml('{s}.users', true, false, '')"),
         format!("SELECT schema_to_xml('{s}', true, false, '')"),
-        format!("SELECT query_to_xml_and_xmlschema('select * from {s}.users', true, false, '')"),
         format!("SELECT database_to_xml(true, false, '')"),
-        format!("SELECT * FROM ts_stat('SELECT to_tsvector(password_hash) FROM {s}.users')"),
     ] {
         refused(&f, q(f.clone()), "is not available to agents on pp");
+    }
+    // SQL in a string is refused at every level, rules or none.
+    for f in [
+        format!("SELECT query_to_xml_and_xmlschema('select * from {s}.users', true, false, '')"),
+        format!("SELECT * FROM ts_stat('SELECT to_tsvector(password_hash) FROM {s}.users')"),
+    ] {
+        refused(&f, q(f.clone()), "runs SQL from a string");
     }
     refused("pg_ function", q("SELECT * FROM pg_options_to_table(ARRAY['a=1'])".into()), "system catalog");
 

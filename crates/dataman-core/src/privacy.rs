@@ -32,7 +32,10 @@ impl Default for Keep {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+/// Ordered by rigor: a greater mask shows less (Redacted the greatest; a Partial keeping fewer
+/// characters greater than one keeping more). Two masks combine with [`Mask::stronger`], which
+/// shows no character either one hides.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Mask {
     #[default]
     Hidden,
@@ -40,7 +43,50 @@ pub enum Mask {
     Partial(Keep),
 }
 
+impl Ord for Mask {
+    fn cmp(&self, other: &Mask) -> std::cmp::Ordering {
+        let rank = |m: &Mask| match *m {
+            Mask::Hidden => (1, 0, 0, 0),
+            Mask::Partial(k) => (0, u16::MAX - (k.first as u16 + k.last as u16), u8::MAX - k.first, u8::MAX - k.last),
+        };
+        rank(self).cmp(&rank(other))
+    }
+}
+
+impl PartialOrd for Mask {
+    fn partial_cmp(&self, other: &Mask) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 impl Mask {
+    /// `to` shows something `from` does not: Redacted to Partial, or a Partial keeping more
+    /// first or last characters (`partial` to `partial:7:8`).
+    pub fn loosens(from: Mask, to: Mask) -> bool {
+        match (from, to) {
+            (_, Mask::Hidden) => false,
+            (Mask::Hidden, Mask::Partial(_)) => true,
+            (Mask::Partial(a), Mask::Partial(b)) => b.first > a.first || b.last > a.last,
+        }
+    }
+
+    /// Shows no character that either one hides.
+    pub fn stronger(a: Mask, b: Mask) -> Mask {
+        match (a, b) {
+            (Mask::Partial(x), Mask::Partial(y)) => Mask::Partial(Keep { first: x.first.min(y.first), last: x.last.min(y.last) }),
+            _ => Mask::Hidden,
+        }
+    }
+
+    /// The label with what Partial keeps (two Partials differ here).
+    pub fn describe(self) -> String {
+        match self {
+            Mask::Hidden => self.label().to_string(),
+            Mask::Partial(k) if k == Keep::DEFAULT => self.label().to_string(),
+            Mask::Partial(k) => format!("Partial (first {}, last {})", k.first, k.last),
+        }
+    }
+
     pub const PARTIAL: Mask = Mask::Partial(Keep::DEFAULT);
     pub const ALL: [Mask; 2] = [Mask::Hidden, Mask::PARTIAL];
 
@@ -921,7 +967,32 @@ pub fn clean_error(msg: &str) -> Cow<'_, str> {
             out = Cow::Owned(re.replace_all(&out, *rep).into_owned());
         }
     }
+    // An error that quotes values (by its code: a NOT NULL's failing row, a duplicate key) in
+    // words the rules above don't know, as in another language: whatever is quoted or in
+    // parentheses goes.
+    if matches!(out, Cow::Borrowed(_)) && value_code(msg) {
+        static QUOTED: OnceLock<Regex> = OnceLock::new();
+        let re = QUOTED.get_or_init(|| Regex::new(r#"\((?s:[^()]*)\)|'(?:[^'\\]|\\.|'')*'|"(?:[^"]|"")*"|\{(?s:.*?)\}"#).expect("quoted"));
+        let (head, rest) = match msg.split_once(']') {
+            Some((h, r)) if msg.starts_with('[') => (&msg[..h.len() + 1], r),
+            _ => ("", msg),
+        };
+        let cleaned = re.replace_all(rest, "‹value›");
+        if let Cow::Owned(c) = cleaned {
+            out = Cow::Owned(format!("{head}{c}"));
+        }
+    }
     out
+}
+
+/// The `[code]` an error's text starts with (`ErrorInfo`'s Display) is of a class that quotes
+/// values. The text has no engine: the value classes' codes do not collide across engines.
+fn value_code(msg: &str) -> bool {
+    use crate::config::Engine;
+    let Some(code) = msg.strip_prefix('[').and_then(|m| m.split_once(']')).map(|(c, _)| c) else { return false };
+    [Engine::Postgres, Engine::MySql, Engine::SqlServer, Engine::Sqlite, Engine::DuckDb, Engine::MongoDb]
+        .into_iter()
+        .any(|e| crate::backend::class::of(e, code).carries_values())
 }
 
 // ---- What the agent sees ----
@@ -1399,6 +1470,14 @@ impl AgentRules {
     }
 
     /// Something is kept from agents: they see less than the user does.
+    /// Some data is kept from agents (a hidden table or column, a sensitive column masked):
+    /// statements are then followed name by name. The one test for it, SQL and NoSQL alike.
+    pub fn narrows(&self) -> bool {
+        !self.visible.is_open() || (self.view == AgentView::Masked && self.sensitive.iter().any(|s| s.on))
+    }
+
+    /// Anything but all data shown as it is (Masked or Structure view, or something hidden):
+    /// what turns server activity off. Wider than [`AgentRules::narrows`].
     pub fn restricted(&self) -> bool {
         self.view != AgentView::Data || !self.visible.is_open()
     }
@@ -1436,11 +1515,7 @@ impl AgentRules {
     /// mask among them. Followed through generated columns computed from generated columns.
     pub fn with_generated(&self, cols: &[Generated], names: Names) -> AgentRules {
         let mut r = self.clone();
-        let rank = |m: Option<Mask>| match m {
-            None => 0,
-            Some(Mask::Partial(_)) => 1,
-            Some(Mask::Hidden) => 2,
-        };
+
         loop {
             let mut changed = false;
             for g in cols {
@@ -1454,10 +1529,12 @@ impl AgentRules {
                     changed = true;
                     continue;
                 }
-                let strongest = g.from.iter().map(|d| r.sensitive_mask(s, &g.table, d, names)).max_by_key(|m| rank(*m)).flatten();
-                if rank(strongest) > rank(r.sensitive_mask(s, &g.table, &g.column, names))
-                    && let Some(how) = strongest
+                let strongest = g.from.iter().filter_map(|d| r.sensitive_mask(s, &g.table, d, names)).reduce(Mask::stronger);
+                let own = r.sensitive_mask(s, &g.table, &g.column, names);
+                if let Some(how) = strongest
+                    && own.is_none_or(|m| Mask::loosens(how, m))
                 {
+                    let how = own.map_or(how, |m| Mask::stronger(m, how));
                     // First: the first entry that matches a column is its mask.
                     r.sensitive.insert(0, SensitiveCol { col: name, how, on: true });
                     changed = true;
@@ -1744,6 +1821,22 @@ mod tests {
             assert!(!c.contains("ana@acme.com") && !c.contains("'abc'") && !c.contains("12a\""), "{c}");
         }
         assert_eq!(clean_error("relation \"x\" does not exist"), "relation \"x\" does not exist");
+        // Another language: by the code, not the words.
+        let pt = "[23502] o valor nulo na coluna \"email\" da relação \"users\" viola a restrição de não-nulo\nDETAIL: A linha que falhou contém (1, null, s3cr3t-hash).";
+        let c = clean_error(pt);
+        assert!(!c.contains("s3cr3t-hash") && c.starts_with("[23502] ") && c.contains("‹value›"), "{c}");
+        let my = "[1062] Entrada 'ana@acme.com' duplicada para a chave 'users.email'";
+        assert!(!clean_error(my).contains("ana@acme.com"));
+        assert_eq!(clean_error("[42P01] relação \"x\" não existe"), "[42P01] relação \"x\" não existe");
+    }
+
+    #[test]
+    fn masks_by_rigor() {
+        let (p04, p78) = (Mask::Partial(Keep { first: 0, last: 4 }), Mask::Partial(Keep { first: 7, last: 8 }));
+        assert!(Mask::loosens(p04, p78) && !Mask::loosens(p78, p04) && Mask::loosens(Mask::Hidden, p04) && !Mask::loosens(p04, Mask::Hidden));
+        assert!(Mask::Hidden > p04 && p04 > p78 && [p78, Mask::Hidden, p04].into_iter().max() == Some(Mask::Hidden));
+        assert_eq!(Mask::stronger(p78, Mask::Partial(Keep { first: 2, last: 9 })), Mask::Partial(Keep { first: 2, last: 8 }));
+        assert_ne!(p04.describe(), p78.describe());
     }
 
     #[test]

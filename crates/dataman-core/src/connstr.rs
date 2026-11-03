@@ -1,6 +1,6 @@
 use crate::config::{ConnectionProfile, Engine, SslMode};
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct ConnSpec {
     pub engine: Engine,
     pub host: Option<String>,
@@ -16,6 +16,12 @@ pub struct ConnSpec {
     /// A file database's file.
     pub path: Option<String>,
     pub read_only: bool,
+}
+
+impl std::fmt::Debug for ConnSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConnSpec").field("engine", &self.engine).field("host", &self.host).field("port", &self.port).field("user", &self.user).field("database", &self.database).field("password", &crate::secret_shown(&self.password)).field("sslmode", &self.sslmode).field("service", &self.service).field("encrypt", &self.encrypt).field("trust_cert", &self.trust_cert).field("options", &self.options).field("path", &self.path).field("read_only", &self.read_only).finish()
+    }
 }
 
 impl ConnSpec {
