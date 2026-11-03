@@ -215,7 +215,7 @@ fn feed(args: &[String]) -> Result<()> {
                 bail!("--asset takes <os-arch> <file> <url>");
             };
             if !platform.contains('-') {
-                bail!("{platform}: an asset is named <os>-<arch> (macos-aarch64, linux-x86_64, windows-x86_64)");
+                bail!("{platform}: an asset is named <os>-<arch> (macos-aarch64, linux-x86_64, linux-x86_64-deb, windows-x86_64)");
             }
             let bytes = std::fs::read(file).with_context(|| format!("reading {file}"))?;
             let sig = kp.sign(&bytes);

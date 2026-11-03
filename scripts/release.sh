@@ -37,6 +37,10 @@ if [ -n "$base" ] && [ -n "${DATAMAN_LINUX:-}" ]; then
     f="$dist/linux/Dataman-$version-$a.AppImage"
     [ -f "$f" ] || { echo "release: no $f" >&2; exit 1; }
     args+=(--asset "linux-$a" "$f" "${base%/}/$(basename "$f")")
+    # What an app the .deb installed reads (installed by apt through pkexec).
+    d="$dist/linux/dataman_${version}_$([ "$a" = x86_64 ] && echo amd64 || echo arm64).deb"
+    [ -f "$d" ] || { echo "release: no $d" >&2; exit 1; }
+    args+=(--asset "linux-$a-deb" "$d" "${base%/}/$(basename "$d")")
   done
   [ -n "$notes" ] && args+=(--notes "$notes")
   (cd "$here/.." && cargo run --release --quiet -p xtask -- "${args[@]}") > "$dist/feed.json"

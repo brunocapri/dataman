@@ -550,6 +550,127 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let log = site.log.lock().unwrap().clone();
     let dmg_gets = log.iter().filter(|p| p.ends_with(".dmg")).count();
     report("the requests: the feed and the DMG (twice: refused, then installed)", log.iter().any(|p| p == "/feed.json") && dmg_gets == 2, format!("{log:?}"));
+    #[cfg(target_os = "linux")]
+    deb(ws, &work, &site, &base, &key, &mut report, cx).await;
     let _ = std::fs::remove_dir_all(&work);
     ok
+}
+
+/// The .deb's update (Linux): a stand-in package is installed as root, the app updates it through
+/// `sudo -n` in place of pkexec (CI's runners allow it), and it is removed. Skipped where sudo
+/// asks for a password, except in CI.
+#[cfg(target_os = "linux")]
+async fn deb(ws: &Entity<Workspace>, work: &Path, site: &Site, base: &str, key: &ThrowawayKey, report: &mut dyn FnMut(&str, bool, String), cx: &mut AsyncWindowContext) {
+    use dataman_core::update;
+    const PKG: &str = "dataman-update-check";
+    let sudo = |args: &[&str]| Command::new("sudo").arg("-n").args(args).stdin(std::process::Stdio::null()).output().is_ok_and(|o| o.status.success());
+    if !(sudo(&["true"]) && Path::new("/usr/bin/dpkg-deb").exists()) {
+        if std::env::var_os("CI").is_some() {
+            report(".deb update: sudo -n and dpkg-deb are there (CI)", false, String::new());
+        } else {
+            println!("note: the .deb update is skipped here (sudo asks for a password, or no dpkg)");
+        }
+        return;
+    }
+    let build = |name: &str, version: &str| -> anyhow::Result<Vec<u8>> {
+        let root = work.join(format!("deb-{name}-{version}"));
+        let bin = root.join("opt").join(PKG);
+        std::fs::create_dir_all(&bin)?;
+        std::fs::create_dir_all(root.join("DEBIAN"))?;
+        std::fs::write(bin.join("dataman"), format!("#!/bin/sh\necho {version}\n"))?;
+        std::fs::set_permissions(bin.join("dataman"), <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o755))?;
+        std::fs::write(
+            root.join("DEBIAN/control"),
+            format!("Package: {name}\nVersion: {version}\nArchitecture: all\nMaintainer: Dataman checks <checks@dataman.invalid>\nDescription: A stand-in for the update check\n"),
+        )?;
+        let out = work.join(format!("{name}_{version}.deb"));
+        let st = Command::new("dpkg-deb").args(["--root-owner-group", "--build"]).arg(&root).arg(&out).stdout(std::process::Stdio::null()).status()?;
+        anyhow::ensure!(st.success(), "dpkg-deb --build {name} {version}");
+        Ok(std::fs::read(&out)?)
+    };
+    let (_, new, other) = match (build(PKG, "0.0.1"), build(PKG, NEW), build("dataman-update-other", NEW)) {
+        (Ok(a), Ok(b), Ok(c)) => (a, b, c),
+        (a, b, c) => {
+            report("the stand-in .debs are built", false, format!("{:?} {:?} {:?}", a.err(), b.err(), c.err()));
+            return;
+        }
+    };
+    let installed_version = || Command::new("dpkg-query").args(["--show", "--showformat=${Version}", PKG]).output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+    let old_deb = work.join(format!("{PKG}_0.0.1.deb"));
+    let target = Path::new("/opt").join(PKG).join("dataman");
+    let put_in = sudo(&["dpkg", "-i", &old_deb.to_string_lossy()]);
+    let owner = update::deb_package(&target);
+    report("a stand-in 0.0.1 .deb is installed (as root)", put_in && owner.as_deref() == Some(PKG) && installed_version() == "0.0.1", format!("{put_in} {owner:?} {}", installed_version()));
+    if owner.is_none() {
+        return;
+    }
+    update::elevate_with(Some(&["sudo", "-n"]));
+    let deb_asset = format!("{}-deb", update::platform());
+    let feed = |deb: &[u8], path: &str| {
+        let mut f = Feed {
+            version: NEW.into(),
+            notes: "A stand-in .deb release.".into(),
+            url: "http://127.0.0.1:9/Dataman.dmg".into(),
+            size: 1,
+            ed25519: String::new(),
+            minimum_macos: None,
+            published: None,
+            assets: Default::default(),
+        };
+        // The AppImage's asset is there too, and missing from the site: a .deb install must not take it.
+        f.assets.insert(update::platform(), update::Asset { url: format!("{base}/missing.AppImage"), size: 3, ed25519: key.sign(b"abc") });
+        f.assets.insert(deb_asset.clone(), update::Asset { url: format!("{base}{path}"), size: deb.len() as u64, ed25519: key.sign(deb) });
+        serde_json::to_vec(&f).unwrap_or_default()
+    };
+    site.put("/other.deb", other.clone());
+    site.put("/new.deb", new.clone());
+    site.put("/deb.json", feed(&other, "/other.deb"));
+    let handle = cx.update(|window, _| window.window_handle()).ok();
+    let _ = cx.update(|_, cx| {
+        updates::configure_for_test(&format!("{base}/deb.json"), &key.public(), target.clone(), cx);
+        updates::set_ws_for_test(handle.map(|h| (ws.downgrade(), h)), cx);
+        updates::check(false, cx);
+    });
+    let offered = wait(cx, 10, |cx| matches!(state(cx), State::Available { blocked: None, .. })).await;
+    let url = cx.update(|_, cx| updates::offered(cx).map(|f| f.url)).ok().flatten().unwrap_or_default();
+    report(&format!("a .deb install is offered the feed's {deb_asset} asset, not blocked"), offered && url.ends_with(".deb"), format!("{:?} {url}", state(cx)));
+
+    let _ = cx.update(|_, cx| updates::install(cx));
+    let failed = wait(cx, 30, |cx| matches!(state(cx), State::Failed { .. })).await;
+    let error = match state(cx) {
+        State::Failed { error, .. } => error,
+        s => format!("{s:?}"),
+    };
+    report("a signed .deb of another package is refused", failed && error.contains("package dataman-update-other"), error);
+    report("…and the package is untouched", installed_version() == "0.0.1", installed_version());
+
+    site.put("/deb.json", feed(&new, "/new.deb"));
+    let _ = cx.update(|_, cx| updates::install(cx));
+    let installed = wait(cx, 60, |cx| cx.update(|_, cx| cx.try_global::<updates::Updates>().is_some_and(|u| u.installed.is_some())).unwrap_or(false)).await;
+    let error = match state(cx) {
+        State::Failed { error, .. } => error,
+        s => format!("{s:?}"),
+    };
+    report("Retry installs the new .deb as root (sudo -n standing in for pkexec)", installed, error);
+    report("dpkg has the package at 99.0.0, and the app says 99.0.0", installed_version() == NEW && plist_version(&target) == NEW, format!("{} {}", installed_version(), plist_version(&target)));
+
+    // No pkexec: the error says what to run.
+    update::elevate_with(Some(&["/nonexistent/pkexec"]));
+    let _ = cx.update(|_, cx| {
+        updates::configure_for_test(&format!("{base}/deb.json"), &key.public(), target.clone(), cx);
+        updates::check(false, cx);
+    });
+    let _ = wait(cx, 10, |cx| matches!(state(cx), State::Available { .. })).await;
+    let _ = cx.update(|_, cx| updates::install(cx));
+    let failed = wait(cx, 30, |cx| matches!(state(cx), State::Failed { .. })).await;
+    let error = match state(cx) {
+        State::Failed { error, .. } => error,
+        s => format!("{s:?}"),
+    };
+    report("with no pkexec, the error says the command to run", failed && error.starts_with("Run: sudo apt install /") && error.ends_with(".deb"), error);
+
+    update::elevate_with(None);
+    let removed = sudo(&["dpkg", "-r", PKG]);
+    report("the stand-in package is removed", removed && update::deb_package(&target).is_none(), String::new());
+    let _ = cx.update(|_, cx| updates::configure_for_test(&format!("{base}/feed.json"), &key.public(), work.join("gone"), cx));
 }

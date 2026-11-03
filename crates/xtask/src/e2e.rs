@@ -195,6 +195,9 @@ pub fn run(args: &[String]) -> Result<()> {
     if !app.exists() {
         bail!("{} is missing (drop --no-build)", app.display());
     }
+    if cfg!(target_os = "linux") && std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_some() {
+        println!("note: Wayland only (no DISPLAY): the clipboard checks fail there, see `x11_only`");
+    }
     let needs: BTreeSet<Db> = stages.iter().flat_map(|s| s.needs.iter().copied()).collect();
     step("databases");
     up(&root, &needs, o.fresh, o.no_compose)?;
@@ -446,11 +449,22 @@ impl Outcome {
     }
 }
 
+/// The stages run the app under X11 when there is one (XWayland, Xvfb as in CI). Their input is
+/// synthetic, so a Wayland compositor never sees a key or button press, and the app cannot take
+/// the clipboard (`wl_data_device.set_selection` wants a press serial): every copy check would
+/// read back nothing. A user's own Ctrl+C or click carries that serial; nothing to fix in the app.
+fn x11_only(mut c: Command) -> Command {
+    if cfg!(target_os = "linux") && std::env::var_os("DISPLAY").is_some() {
+        c.env_remove("WAYLAND_DISPLAY");
+    }
+    c
+}
+
 fn run_stage(root: &Path, app: &Path, s: &Stage, dir: &Path, verbose: bool) -> Result<Outcome> {
     let t = Instant::now();
     let log_path: PathBuf = dir.join(format!("{}.log", s.name));
     let mut log = std::fs::File::create(&log_path)?;
-    let mut child = Command::new(app)
+    let mut child = x11_only(Command::new(app))
         .arg("--demo")
         .current_dir(root)
         .env("DATAMAN_SHOT_STAGE", s.name)

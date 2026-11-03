@@ -9,7 +9,9 @@
 //! `windows-x86_64`: the installer, `xtask feed --asset windows-x86_64 <setup.exe> <url>`).
 //! On Windows the installer is the update: run silently once the app has quit, for the same user
 //! or machine and into the same folder as before, then the new copy is started. A portable copy
-//! (the .zip) only announces a newer one.
+//! (the .zip) only announces a newer one. On Linux the AppImage reads `linux-<arch>`; an app the
+//! .deb installed reads `linux-<arch>-deb`, and its update is installed by apt (or dpkg) through
+//! pkexec, the system's own password prompt.
 
 use std::collections::BTreeMap;
 #[cfg(unix)]
@@ -59,6 +61,29 @@ pub fn platform() -> String {
     format!("{os}-{}", std::env::consts::ARCH)
 }
 
+/// The asset an install at `app` reads: `linux-<arch>-deb` when dpkg installed it.
+pub fn asset_for(app: Option<&Path>) -> String {
+    #[cfg(target_os = "linux")]
+    if app.and_then(deb_package).is_some() {
+        return format!("{}-deb", platform());
+    }
+    let _ = app;
+    platform()
+}
+
+/// The package dpkg installed `file` from (`dpkg-query -S`), if any.
+#[cfg(target_os = "linux")]
+pub fn deb_package(file: &Path) -> Option<String> {
+    let out = Command::new("dpkg-query").arg("-S").arg(file).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let line = String::from_utf8_lossy(&out.stdout).lines().next()?.to_string();
+    // "dataman: /usr/bin/dataman", or "dataman:amd64: …" for a multi-arch package.
+    let name = line.split(": ").next()?.split(':').next()?.trim();
+    (!name.is_empty() && !name.contains(',')).then(|| name.to_string())
+}
+
 impl Feed {
     /// The feed with this platform's download in its top-level fields, or `None` when the
     /// release has none for it.
@@ -86,6 +111,8 @@ pub fn installed_app() -> Result<PathBuf, String> {
     #[cfg(not(windows))]
     return match std::env::var_os("APPIMAGE").map(PathBuf::from) {
         Some(img) if img.is_file() => Ok(img),
+        #[cfg(target_os = "linux")]
+        _ if deb_package(&exe).is_some() => Ok(exe),
         _ if exe.starts_with("/usr/") || exe.starts_with("/opt/") => Err("Installed by a package manager: updates come with it".into()),
         _ => Err("Not running from the AppImage".into()),
     };
@@ -96,13 +123,20 @@ pub struct UpdateConfig {
     pub feed: String,
     pub key: [u8; 32],
     pub current: String,
+    /// The feed asset to read, when not this app's own (the update check's stand-in).
+    pub asset: Option<String>,
 }
 
 impl UpdateConfig {
     pub fn new(feed: Option<&str>, key_b64: Option<&str>, current: &str) -> Option<UpdateConfig> {
         let feed = feed.map(str::trim).filter(|f| !f.is_empty())?;
         let key = decode_key(key_b64?).map_err(|e| log::warn!("update: {e:#}")).ok()?;
-        Some(UpdateConfig { feed: feed.to_string(), key, current: current.to_string() })
+        Some(UpdateConfig { feed: feed.to_string(), key, current: current.to_string(), asset: None })
+    }
+
+    /// The feed asset this install reads (asks dpkg on Linux: off the UI thread).
+    pub fn asset(&self) -> String {
+        self.asset.clone().unwrap_or_else(|| asset_for(std::env::current_exe().ok().as_deref()))
     }
 }
 
@@ -167,7 +201,7 @@ fn curl() -> Command {
     c
 }
 
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg_attr(windows, allow(dead_code))]
 fn output(mut cmd: Command, what: &str) -> Result<Vec<u8>> {
     let out = cmd.stderr(Stdio::piped()).stdout(Stdio::piped()).output().with_context(|| format!("{what}: cannot run"))?;
     if !out.status.success() {
@@ -199,8 +233,9 @@ pub fn check(cfg: &UpdateConfig) -> Result<Option<Feed>> {
         return Ok(None);
     }
     let offered = feed.version.clone();
-    let Some(feed) = feed.for_platform(&platform()) else {
-        log::info!("update: {offered} has no {} download", platform());
+    let asset = cfg.asset();
+    let Some(feed) = feed.for_platform(&asset) else {
+        log::info!("update: {offered} has no {asset} download");
         return Ok(None);
     };
     if let (Some(min), Some(os)) = (feed.minimum_macos.as_deref(), macos_version())
@@ -259,6 +294,8 @@ pub fn download(cfg: &UpdateConfig, feed: &Feed, dir: &Path, on: &dyn Fn(Phase))
         format!("Dataman-{v}.dmg")
     } else if cfg!(windows) {
         format!("Dataman-{v}-setup.exe")
+    } else if cfg.asset().ends_with("-deb") {
+        format!("Dataman-{v}.deb")
     } else {
         format!("Dataman-{v}.AppImage")
     };
@@ -333,6 +370,11 @@ fn writable(p: &Path) -> bool {
 /// A quarantined app run from where it was downloaded is translocated: it runs from a random
 /// read-only mount.
 pub fn check_writable(app: &Path) -> Result<()> {
+    // A package's files are root's: apt writes them, through pkexec.
+    #[cfg(target_os = "linux")]
+    if deb_package(app).is_some() {
+        return Ok(());
+    }
     let s = app.to_string_lossy();
     if s.contains("/AppTranslocation/") {
         bail!("translocated by Gatekeeper: move Dataman to Applications and open it from there");
@@ -486,10 +528,13 @@ pub fn relaunch_after_exit(app: &Path) -> Result<()> {
 
 /// The AppImage is one file: the new one is staged beside it (same filesystem), its own
 /// `--version` must say the feed's version, then one rename replaces the old. The running copy
-/// keeps its mount of the old file.
+/// keeps its mount of the old file. An app the .deb installed is updated by its package.
 #[cfg(target_os = "linux")]
 pub fn install(download: &Path, app: &Path, want: &str) -> Result<()> {
     use std::os::unix::fs::PermissionsExt as _;
+    if let Some(package) = deb_package(app) {
+        return install_deb(download, &package, want);
+    }
     check_writable(app)?;
     let parent = app.parent().context("the app has no folder")?;
     let name = app.file_name().context("the app has no name")?.to_string_lossy().into_owned();
@@ -510,6 +555,67 @@ pub fn install(download: &Path, app: &Path, want: &str) -> Result<()> {
         let _ = std::fs::remove_file(&staged);
     }
     result
+}
+
+#[cfg(target_os = "linux")]
+static ELEVATE: std::sync::Mutex<Option<Vec<String>>> = std::sync::Mutex::new(None);
+
+/// What runs the package tool as root in place of pkexec: the update check's `sudo -n` in CI.
+#[cfg(target_os = "linux")]
+pub fn elevate_with(cmd: Option<&[&str]>) {
+    *ELEVATE.lock().unwrap_or_else(|e| e.into_inner()) = cmd.map(|c| c.iter().map(|s| s.to_string()).collect());
+}
+
+/// The downloaded (and verified) .deb must be the installed package at the feed's version; apt
+/// installs it (dpkg where there is no apt) as root through pkexec, which asks for the password
+/// as the desktop does. With no pkexec or polkit agent, the error says the command to run.
+#[cfg(target_os = "linux")]
+fn install_deb(deb: &Path, package: &str, want: &str) -> Result<()> {
+    let field = |f: &str| -> Result<String> {
+        let mut c = Command::new("dpkg-deb");
+        c.arg("--field").arg(deb).arg(f).stdin(Stdio::null());
+        Ok(String::from_utf8_lossy(&output(c, "dpkg-deb")?).trim().to_string())
+    };
+    let (name, got) = (field("Package")?, field("Version")?);
+    if name != package {
+        bail!("the download is the package {name}, not {package}");
+    }
+    if self::version(&got).is_none() || self::version(&got) != self::version(want) {
+        bail!("the download holds version {got}, the feed says {want}");
+    }
+    let by_hand = || anyhow!("Run: sudo apt install {}", deb.display());
+    let elevate = ELEVATE.lock().unwrap_or_else(|e| e.into_inner()).clone().unwrap_or_else(|| vec!["pkexec".into()]);
+    let mut c = Command::new(&elevate[0]);
+    c.args(&elevate[1..]);
+    if Path::new("/usr/bin/apt-get").exists() {
+        c.args(["/usr/bin/apt-get", "install", "-y"]);
+    } else {
+        c.args(["/usr/bin/dpkg", "-i"]);
+    }
+    let out = match c.arg(deb).env("DEBIAN_FRONTEND", "noninteractive").stdin(Stdio::null()).output() {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(by_hand()),
+        r => r.context("installing the package")?,
+    };
+    match out.status.code() {
+        Some(0) => {}
+        // pkexec: the password prompt was dismissed.
+        Some(126) => bail!("Not installed: the password was not given"),
+        // pkexec: no polkit agent to ask with, or not allowed.
+        Some(127) => return Err(by_hand()),
+        _ => {
+            let err = String::from_utf8_lossy(&out.stderr);
+            let line = err.lines().rev().find(|l| !l.trim().is_empty() && !l.starts_with("N: ") && !l.starts_with("W: ")).unwrap_or("failed");
+            bail!("installing the package: {}", line.trim());
+        }
+    }
+    let mut c = Command::new("dpkg-query");
+    c.args(["--show", "--showformat=${Version}", package]).stdin(Stdio::null());
+    let now = String::from_utf8_lossy(&output(c, "dpkg-query")?).trim().to_string();
+    if self::version(&now) != self::version(want) {
+        bail!("{package} is {now} after the install, not {want}");
+    }
+    log::info!("update: {package} {now} installed");
+    Ok(())
 }
 
 /// What a downloaded (and verified) AppImage says it is; extracted rather than mounted, so no

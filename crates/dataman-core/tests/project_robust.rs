@@ -808,6 +808,13 @@ fn a_read_only_dataman_dir_is_a_problem() {
     let (m, _) = opened(&root);
     let dir = root.join(project::DIR);
     chmod(&dir, 0o555);
+    // Root (a container's usual user) writes through the mode: nothing here to see.
+    if std::fs::write(dir.join("probe"), "").is_ok() {
+        std::fs::remove_file(dir.join("probe")).unwrap();
+        chmod(&dir, 0o755);
+        eprintln!("skipped: the folder stays writable at 0555 (running as root?)");
+        return;
+    }
     m.config.upsert(conn("more")).unwrap();
     let r1 = m.sync();
     let problem = m.problem();
