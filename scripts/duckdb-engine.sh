@@ -11,6 +11,8 @@
 #
 #   DATAMAN_SIGN_IDENTITY   macOS: the Developer ID the app is signed with (unset: ad hoc); the
 #                           hardened runtime loads only a library signed by the app's own team
+#   DATAMAN_NOTARY_PROFILE  macOS, --package: notarizes it too (scripts/notarize.sh); Gatekeeper
+#                           refuses an unnotarized one put in place by hand from a browser
 #   CARGO_BUILD_TARGET      another target (e.g. x86_64-pc-windows-msvc)
 set -euo pipefail
 
@@ -66,6 +68,9 @@ mv "$out/$file.tmp" "$out/$file"
 echo "$out/$file ($(du -h "$out/$file" | cut -f1), DuckDB v$version)"
 
 if [ "${1:-}" = "--package" ]; then
+  if [ "$os" = macos ] && [ -n "${DATAMAN_NOTARY_PROFILE:-}" ]; then
+    scripts/notarize.sh "$out/$file"
+  fi
   mkdir -p dist/duckdb
   name="${file%.*}-v$version-$os-$arch.${file##*.}.gz"
   gzip -9 -n -c "$out/$file" > "dist/duckdb/$name"
