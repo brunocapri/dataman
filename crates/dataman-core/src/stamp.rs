@@ -71,7 +71,8 @@ pub(crate) fn hold(file: &Path) -> Option<std::fs::File> {
     let path = file.with_file_name(format!(".{name}.lock"));
     // No folder yet: no file either, nothing to read half of.
     let f = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&path).ok()?;
-    f.lock().inspect_err(|e| log::debug!("{}: {e}", path.display())).ok()?;
+    // Not taken: the write goes on unguarded, but said so (it never fails silently).
+    f.lock().inspect_err(|e| log::warn!("{}: not locked: {e}", path.display())).ok()?;
     Some(f)
 }
 

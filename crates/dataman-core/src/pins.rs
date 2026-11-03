@@ -125,9 +125,7 @@ fn save(path: &Path, pins: &[Pin]) -> Result<()> {
     let dir = path.parent().context("pins path has no parent")?;
     std::fs::create_dir_all(dir)?;
     let text = toml::to_string_pretty(&File { pins: pins.to_vec() })?;
-    let tmp = dir.join(format!(".pins.toml.{}", std::process::id()));
-    std::fs::write(&tmp, text)?;
-    std::fs::rename(&tmp, path)?;
+    crate::os::atomic_write(path, text.as_bytes(), false)?;
     Ok(())
 }
 

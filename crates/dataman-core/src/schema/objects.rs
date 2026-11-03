@@ -467,6 +467,17 @@ async fn each_count(client: &crate::backend::Db, schema: &str) -> ObjectCounts {
     ObjectCounts { functions: v[0], sequences: v[1], types: v[2], triggers: v[3] }
 }
 
+/// Rows of a catalog query, or the error: a timeout or a refused catalog is never cached as
+/// "this schema has none" (the caller returns before caching).
+fn uncached<T>(r: anyhow::Result<T>, what: &str) -> anyhow::Result<T> {
+    r.inspect_err(|e| log::warn!("{what}: {e:#}"))
+}
+
+/// An engine whose `Caps` leave this catalog out reached it: never PostgreSQL's SQL in its place.
+fn no_catalog(e: Engine, what: &str) -> anyhow::Error {
+    anyhow::anyhow!("{} has no {what} catalog here", e.label())
+}
+
 impl Connection {
     pub fn object_counts(self: &Arc<Self>, db: &str, schema: &str) -> Task<ObjectCounts> {
         let (this, db, schema) = (self.clone(), db.to_string(), schema.to_string());
@@ -622,19 +633,16 @@ impl Connection {
             }
             let client = this.meta(&db).await?;
             let v: Vec<Function> = match this.engine() {
-                Engine::MySql => {
-                    let rows = first_ok(&client, &[&my::functions_sql(&schema)]).await.unwrap_or_default();
-                    rows.iter().enumerate().filter_map(|(n, r)| my::parse_function(n, r)).collect()
-                }
+                Engine::MySql => uncached(first_ok(&client, &[&my::functions_sql(&schema)]).await, "functions")?.iter().enumerate().filter_map(|(n, r)| my::parse_function(n, r)).collect(),
                 Engine::SqlServer => {
-                    let rows = first_ok(&client, &[&ms::routines_sql(Some(&schema))]).await.unwrap_or_default();
+                    let rows = uncached(first_ok(&client, &[&ms::routines_sql(Some(&schema))]).await, "functions")?;
                     ms::parse_routines(&rows).into_iter().enumerate().map(|(n, f)| ms::function_of(n, f)).collect()
                 }
-                Engine::Sqlite | Engine::DuckDb => Vec::new(),
-                _ => {
+                Engine::Postgres => {
                     let qs = pg::functions_sql(&schema);
-                    first_ok(&client, &[&qs[0], &qs[1]]).await.map(|rows| rows.iter().filter_map(|r| pg::parse_function(r)).collect()).unwrap_or_default()
+                    uncached(first_ok(&client, &[&qs[0], &qs[1]]).await, "functions")?.iter().filter_map(|r| pg::parse_function(r)).collect()
                 }
+                e => return Err(no_catalog(e, "functions")),
             };
             let v = Arc::new(v);
             this.schema.with_db(&db, |d| {
@@ -654,13 +662,13 @@ impl Connection {
                 return Ok(Default::default());
             }
             let client = this.meta(&db).await?;
-            let v: Vec<Sequence> = if this.engine().is_file() {
-                Vec::new()
-            } else if this.engine() == Engine::SqlServer {
-                first_ok(&client, &[&ms::sequences_sql(&schema)]).await.map(|rows| rows.iter().filter_map(|r| ms::parse_sequence(r)).collect()).unwrap_or_default()
-            } else {
-                let qs = pg::sequences_sql(&schema);
-                first_ok(&client, &[&qs[0], &qs[1], &qs[2]]).await.map(|rows| rows.iter().filter_map(|r| pg::parse_sequence(r)).collect()).unwrap_or_default()
+            let v: Vec<Sequence> = match this.engine() {
+                Engine::SqlServer => uncached(first_ok(&client, &[&ms::sequences_sql(&schema)]).await, "sequences")?.iter().filter_map(|r| ms::parse_sequence(r)).collect(),
+                Engine::Postgres => {
+                    let qs = pg::sequences_sql(&schema);
+                    uncached(first_ok(&client, &[&qs[0], &qs[1], &qs[2]]).await, "sequences")?.iter().filter_map(|r| pg::parse_sequence(r)).collect()
+                }
+                e => return Err(no_catalog(e, "sequences")),
             };
             let v = Arc::new(v);
             this.schema.with_db(&db, |d| {
@@ -679,13 +687,13 @@ impl Connection {
             if !this.caps().types {
                 return Ok(Default::default());
             }
-            if this.engine().is_file() {
-                return Ok(Default::default());
-            }
             let client = this.meta(&db).await?;
-            let (q, parse): (String, fn(&[Option<String>]) -> Option<UserType>) =
-                if this.engine() == Engine::SqlServer { (ms::types_sql(&schema), ms::parse_type) } else { (pg::types_sql(&schema), pg::parse_type) };
-            let v: Vec<UserType> = first_ok(&client, &[&q]).await.map(|rows| rows.iter().filter_map(|r| parse(r)).collect()).unwrap_or_default();
+            let (q, parse): (String, fn(&[Option<String>]) -> Option<UserType>) = match this.engine() {
+                Engine::SqlServer => (ms::types_sql(&schema), ms::parse_type),
+                Engine::Postgres => (pg::types_sql(&schema), pg::parse_type),
+                e => return Err(no_catalog(e, "types")),
+            };
+            let v: Vec<UserType> = uncached(first_ok(&client, &[&q]).await, "types")?.iter().filter_map(|r| parse(r)).collect();
             let v = Arc::new(v);
             this.schema.with_db(&db, |d| {
                 d.types.insert(schema, v.clone());
@@ -708,10 +716,10 @@ impl Connection {
                 Engine::MySql => (my::triggers_sql(&schema), my::parse_trigger),
                 Engine::SqlServer => (ms::triggers_sql(&schema), ms::parse_trigger),
                 Engine::Sqlite => (lite::triggers_sql(&schema, None), lite::parse_trigger),
-                Engine::DuckDb => return Ok(Default::default()),
-                _ => (pg::triggers_sql(&schema), pg::parse_trigger),
+                Engine::Postgres => (pg::triggers_sql(&schema), pg::parse_trigger),
+                e => return Err(no_catalog(e, "triggers")),
             };
-            let v: Vec<Trigger> = first_ok(&client, &[&q]).await.map(|rows| rows.iter().filter_map(|r| parse(r)).collect()).unwrap_or_default();
+            let v: Vec<Trigger> = uncached(first_ok(&client, &[&q]).await, "triggers")?.iter().filter_map(|r| parse(r)).collect();
             let v = Arc::new(v);
             this.schema.with_db(&db, |d| {
                 d.triggers.insert(schema, v.clone());

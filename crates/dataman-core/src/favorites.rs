@@ -64,7 +64,14 @@ struct Fresh {
 }
 
 impl Fresh {
+    /// Over the file as it was read, never over another process' write since (that one would be
+    /// lost): the caller read it again just before, so a change here is a race, refused.
     fn save(&mut self, path: &Path) -> Result<()> {
+        let _held = crate::stamp::hold(path);
+        let now = crate::stamp::FileStamp::of(path);
+        if now.is_some() && now != self.stamp {
+            anyhow::bail!("{} changed while this was saved: nothing was written; try again", path.display());
+        }
         save(path, &self.items, &self.folders)?;
         self.stamp = crate::stamp::FileStamp::of(path);
         Ok(())
@@ -118,7 +125,7 @@ impl FavoritesStore {
     }
 
     pub fn add(&self, fav: Favorite) -> Result<Favorite> {
-        let _ = self.refresh();
+        self.refresh()?;
         let mut g = self.state.lock();
         if let Some(existing) = g.items.iter().find(|f| f.sql.trim() == fav.sql.trim()) {
             return Ok(existing.clone());
@@ -133,7 +140,7 @@ impl FavoritesStore {
     }
 
     pub fn take(&self, id: &str) -> Result<Option<(usize, Favorite)>> {
-        let _ = self.refresh();
+        self.refresh()?;
         let mut g = self.state.lock();
         let Some(ix) = g.items.iter().position(|f| f.id == id) else { return Ok(None) };
         let fav = g.items.remove(ix);
@@ -142,7 +149,7 @@ impl FavoritesStore {
     }
 
     pub fn restore(&self, ix: usize, fav: Favorite) -> Result<bool> {
-        let _ = self.refresh();
+        self.refresh()?;
         let mut g = self.state.lock();
         let homeless = fav.folder.as_ref().is_some_and(|d| !g.folders.iter().any(|f| f.id == *d));
         if homeless || g.items.iter().any(|f| f.id == fav.id) {
@@ -160,7 +167,7 @@ impl FavoritesStore {
     }
 
     pub fn rename(&self, id: &str, name: &str) -> Result<Option<Favorite>> {
-        let _ = self.refresh();
+        self.refresh()?;
         let mut g = self.state.lock();
         let Some(f) = g.items.iter_mut().find(|f| f.id == id) else { return Ok(None) };
         f.name = name.to_string();
@@ -181,7 +188,7 @@ impl FavoritesStore {
     }
 
     pub fn update_sql(&self, id: &str, sql: &str) -> Result<Option<Favorite>> {
-        let _ = self.refresh();
+        self.refresh()?;
         let mut g = self.state.lock();
         let Some(f) = g.items.iter_mut().find(|f| f.id == id) else { return Ok(None) };
         f.sql = sql.to_string();
@@ -196,7 +203,7 @@ impl FavoritesStore {
     }
 
     pub fn add_folder(&self, name: &str) -> Result<Folder> {
-        let _ = self.refresh();
+        self.refresh()?;
         let mut g = self.state.lock();
         let taken: Vec<&str> = g.folders.iter().map(|d| d.name.as_str()).collect();
         let base = if name.trim().is_empty() { "New folder" } else { name };
@@ -207,7 +214,7 @@ impl FavoritesStore {
     }
 
     pub fn rename_folder(&self, id: &str, name: &str) -> Result<Option<Folder>> {
-        let _ = self.refresh();
+        self.refresh()?;
         let mut g = self.state.lock();
         let Some(d) = g.folders.iter_mut().find(|d| d.id == id) else { return Ok(None) };
         d.name = name.to_string();
@@ -217,14 +224,14 @@ impl FavoritesStore {
     }
 
     pub fn reorder_folders(&self, ids: &[String]) -> Result<()> {
-        let _ = self.refresh();
+        self.refresh()?;
         let mut g = self.state.lock();
         g.folders.sort_by_key(|d| ids.iter().position(|i| *i == d.id).unwrap_or(usize::MAX));
         g.save(&self.path)
     }
 
     pub fn remove_folder(&self, id: &str) -> Result<Option<RemovedFolder>> {
-        let _ = self.refresh();
+        self.refresh()?;
         let mut g = self.state.lock();
         let Some(index) = g.folders.iter().position(|d| d.id == id) else { return Ok(None) };
         let folder = g.folders.remove(index);
@@ -243,7 +250,7 @@ impl FavoritesStore {
     }
 
     pub fn restore_folder(&self, r: &RemovedFolder) -> Result<bool> {
-        let _ = self.refresh();
+        self.refresh()?;
         let mut g = self.state.lock();
         if g.folders.iter().any(|d| d.id == r.folder.id) {
             return Ok(false);
@@ -270,7 +277,7 @@ impl FavoritesStore {
     }
 
     pub fn move_to_folder(&self, id: &str, folder: Option<&str>) -> Result<Option<Favorite>> {
-        let _ = self.refresh();
+        self.refresh()?;
         let mut g = self.state.lock();
         if let Some(d) = folder
             && !g.folders.iter().any(|f| f.id == d)
@@ -421,15 +428,25 @@ fn save(path: &Path, items: &[Favorite], folders: &[Folder]) -> Result<()> {
     let dir = path.parent().context("favorites path has no parent")?;
     std::fs::create_dir_all(dir)?;
     let text = toml::to_string_pretty(&File { folders_ordered: !folders.is_empty(), folders: folders.to_vec(), favorites: items.to_vec() })?;
-    let tmp = dir.join(format!(".favorites.toml.{}", std::process::id()));
-    std::fs::write(&tmp, text)?;
-    std::fs::rename(&tmp, path)?;
+    crate::os::atomic_write(path, text.as_bytes(), false)?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_broken_file_is_never_written_over() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = Dirs::at(dir.path().join("dataman"));
+        let store = FavoritesStore::open(&dirs).unwrap();
+        store.add(Favorite::new("a", "select 1")).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(dirs.favorites_file(), "favorites = [ broken").unwrap();
+        assert!(store.add(Favorite::new("b", "select 2")).is_err());
+        assert_eq!(std::fs::read_to_string(dirs.favorites_file()).unwrap(), "favorites = [ broken", "the user's edit stays");
+    }
 
     #[test]
     fn add_dedups_by_content_and_round_trips() {

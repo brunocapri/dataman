@@ -944,15 +944,15 @@ pub(crate) fn push_row(b: &mut ChunkBuilder, row: &tokio_postgres::Row, types: &
         match storage[i] {
             Storage::I64 => match value::decode_i64(ty, raw) {
                 Ok(v) => b.push_i64(i, v),
-                Err(_) => b.push_null(i),
+                Err(e) => b.push_undecoded(i, format!("{ty}: {e}")),
             },
             Storage::F64 => match value::decode_f64(ty, raw) {
                 Ok(v) => b.push_f64(i, v),
-                Err(_) => b.push_null(i),
+                Err(e) => b.push_undecoded(i, format!("{ty}: {e}")),
             },
             Storage::Bool => match pt::bool_from_sql(raw) {
                 Ok(v) => b.push_bool(i, v),
-                Err(_) => b.push_null(i),
+                Err(e) => b.push_undecoded(i, format!("{ty}: {e}")),
             },
             Storage::Text => b.push_text_with(i, |s| value::format_binary(ty, raw, s)),
         }

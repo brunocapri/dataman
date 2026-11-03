@@ -50,7 +50,9 @@ impl History {
         std::fs::create_dir_all(&self.dir)?;
         let mut line = serde_json::to_string(entry)?;
         line.push('\n');
-        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(self.file(connection_id))?;
+        let file = self.file(connection_id);
+        let _held = crate::stamp::hold(&file);
+        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&file)?;
         f.write_all(line.as_bytes())?;
         Ok(())
     }
@@ -77,6 +79,8 @@ impl History {
     pub fn take(&self, connection_id: &str) -> Result<Option<Vec<u8>>> {
         let _g = self.lock.lock();
         let file = self.file(connection_id);
+        // The app and dataman-mcp write the same files: across processes too.
+        let _held = crate::stamp::hold(&file);
         let bytes = match std::fs::read(&file) {
             Ok(b) => b,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -90,15 +94,15 @@ impl History {
         let _g = self.lock.lock();
         std::fs::create_dir_all(&self.dir)?;
         let file = self.file(connection_id);
+        // The app and dataman-mcp write the same files: across processes too.
+        let _held = crate::stamp::hold(&file);
         let mut all = bytes.to_vec();
         match std::fs::read(&file) {
             Ok(since) => all.extend(since),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(e.into()),
         }
-        let tmp = file.with_extension("jsonl.tmp");
-        std::fs::write(&tmp, all)?;
-        std::fs::rename(&tmp, &file)?;
+        crate::os::atomic_write(&file, &all, true)?;
         Ok(())
     }
 
@@ -115,6 +119,8 @@ impl History {
     pub fn remove(&self, connection_id: &str, entry: &HistoryEntry) -> Result<Option<Vec<u8>>> {
         let _g = self.lock.lock();
         let file = self.file(connection_id);
+        // The app and dataman-mcp write the same files: across processes too.
+        let _held = crate::stamp::hold(&file);
         let text = match std::fs::read_to_string(&file) {
             Ok(t) => t,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -130,9 +136,7 @@ impl History {
             }
         }
         if taken.is_some() {
-            let tmp = file.with_extension("jsonl.tmp");
-            std::fs::write(&tmp, kept)?;
-            std::fs::rename(&tmp, &file)?;
+            crate::os::atomic_write(&file, kept.as_bytes(), true)?;
         }
         Ok(taken)
     }
@@ -141,6 +145,8 @@ impl History {
         let _g = self.lock.lock();
         std::fs::create_dir_all(&self.dir)?;
         let file = self.file(connection_id);
+        // The app and dataman-mcp write the same files: across processes too.
+        let _held = crate::stamp::hold(&file);
         let now = match std::fs::read(&file) {
             Ok(b) => b,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
@@ -152,9 +158,7 @@ impl History {
         lines.sort_by_key(at);
         let mut out = lines.join("\n");
         out.push('\n');
-        let tmp = file.with_extension("jsonl.tmp");
-        std::fs::write(&tmp, out)?;
-        std::fs::rename(&tmp, &file)?;
+        crate::os::atomic_write(&file, out.as_bytes(), true)?;
         Ok(())
     }
 

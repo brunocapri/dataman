@@ -335,9 +335,11 @@ fn bind_values(params: &[Val]) -> Vec<Value> {
         .collect()
 }
 
-/// A DML statement's result is one `Count` column: what it changed, not rows to show.
+/// A DML statement's result is one `Count` column: what it changed, not rows to show. With
+/// RETURNING the rows are the statement's own (`RETURNING n AS "Count"` included).
 fn is_count(sql: &str, cols: &[ColumnInfo]) -> bool {
-    cols.len() == 1 && cols[0].name == "Count" && crate::guard::classify_in(sql, Dialect::DuckDb).is_write()
+    let returning = || crate::sql::tokenize_in(sql, Dialect::DuckDb).iter().any(|t| t.kind == crate::sql::TokenKind::Keyword && t.text(sql).eq_ignore_ascii_case("RETURNING"));
+    cols.len() == 1 && cols[0].name == "Count" && crate::guard::classify_in(sql, Dialect::DuckDb).is_write() && !returning()
 }
 
 /// Runs one statement, each row to `row` (false stops reading); its columns, and the rows read
@@ -354,7 +356,7 @@ fn run_one(db: &duckdb::Connection, sql: &str, params: &[Val], row: &mut dyn FnM
         let vals: Vec<Val> = (0..width).map(|i| r.get::<_, Value>(i).map(val).unwrap_or(Val::Null)).collect();
         if count {
             n = match vals.first() {
-                Some(Val::Int(c)) => *c as u64,
+                Some(Val::Int(c)) => u64::try_from(*c).unwrap_or(0),
                 _ => 0,
             };
             continue;
@@ -413,7 +415,7 @@ fn run_one_streaming(db: &duckdb::Connection, sql: &str, params: &[Val], sink: &
     let width = cols.0.len();
     if is_count(sql, &cols.0) {
         return Ok((false, match rows.next()? {
-            Some(r) => r.get::<_, i64>(0).unwrap_or(0) as u64,
+            Some(r) => r.get::<_, i64>(0).ok().and_then(|c| u64::try_from(c).ok()).unwrap_or(0),
             None => 0,
         }));
     }
