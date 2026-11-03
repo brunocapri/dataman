@@ -1,5 +1,5 @@
 //! Only the download is signed, not the feed: the version read from the download itself (the
-//! DMG's Info.plist, the AppImage's `--version`) must match the feed's and be newer than the
+//! DMG's Info.plist, the AppImage's `--version`, the Windows installer's version resource) must match the feed's and be newer than the
 //! running one, so a replayed old download cannot downgrade the app. The signature covers the
 //! whole file, like Sparkle's `sign_update`, so either tool can sign. Copying a bundle goes
 //! through `ditto`, which keeps signatures and attributes.
@@ -7,8 +7,9 @@
 //! The feed's top-level download is the macOS one (the only one older Macs read); `assets`
 //! holds every platform's, keyed `<os>-<arch>` (`macos-aarch64`, `linux-x86_64`,
 //! `windows-x86_64`: the installer, `xtask feed --asset windows-x86_64 <setup.exe> <url>`).
-//! Windows reads its own asset only and has no self-update yet: a newer one is announced, and
-//! installing it is left to its installer.
+//! On Windows the installer is the update: run silently once the app has quit, for the same user
+//! or machine and into the same folder as before, then the new copy is started. A portable copy
+//! (the .zip) only announces a newer one.
 
 use std::collections::BTreeMap;
 #[cfg(unix)]
@@ -76,15 +77,18 @@ pub fn installed_app() -> Result<PathBuf, String> {
     if cfg!(target_os = "macos") {
         return bundle_of(&exe).ok_or_else(|| "Not running from Dataman.app".to_string());
     }
-    if cfg!(windows) {
-        let _ = exe;
-        return Err("Updates on Windows: install the new version from the release page".into());
-    }
-    match std::env::var_os("APPIMAGE").map(PathBuf::from) {
+    // Only a copy the installer put there (its uninstall entry names this folder) updates itself.
+    #[cfg(windows)]
+    return match exe.parent().and_then(installed_scope) {
+        Some(_) => Ok(exe),
+        None => Err("A portable copy: download the new version from the release page".into()),
+    };
+    #[cfg(not(windows))]
+    return match std::env::var_os("APPIMAGE").map(PathBuf::from) {
         Some(img) if img.is_file() => Ok(img),
         _ if exe.starts_with("/usr/") || exe.starts_with("/opt/") => Err("Installed by a package manager: updates come with it".into()),
         _ => Err("Not running from the AppImage".into()),
-    }
+    };
 }
 
 #[derive(Clone, Debug)]
@@ -250,7 +254,14 @@ pub fn download(cfg: &UpdateConfig, feed: &Feed, dir: &Path, on: &dyn Fn(Phase))
         bail!("implausible size {}", feed.size);
     }
     std::fs::create_dir_all(dir)?;
-    let name = format!("Dataman-{}.{}", sanitize(&feed.version), if cfg!(target_os = "macos") { "dmg" } else { "AppImage" });
+    let v = sanitize(&feed.version);
+    let name = if cfg!(target_os = "macos") {
+        format!("Dataman-{v}.dmg")
+    } else if cfg!(windows) {
+        format!("Dataman-{v}-setup.exe")
+    } else {
+        format!("Dataman-{v}.AppImage")
+    };
     let dest = dir.join(&name);
     if let Ok(bytes) = std::fs::read(&dest) {
         on(Phase::Got(bytes.len() as u64));
@@ -553,16 +564,156 @@ pub fn relaunch_after_exit(app: &Path) -> Result<()> {
     Ok(())
 }
 
-/// No self-update on Windows yet (`installed_app` says so before anything is downloaded).
+/// Inno Setup's uninstall entry for Dataman: the AppId of packaging/windows/dataman.iss, `_is1`.
 #[cfg(windows)]
-pub fn install(_: &Path, _: &Path, _: &str) -> Result<()> {
-    bail!("updates on Windows come with the installer")
-}
+const UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{C9AF68F1-847F-455B-9E7F-9AF048C6A989}_is1";
 
 #[cfg(windows)]
-pub fn relaunch_after_exit(app: &Path) -> Result<()> {
-    Command::new(app).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().context("relaunch")?;
+fn reg_string(root: windows_sys::Win32::System::Registry::HKEY, key: &str, value: &str, flags: u32) -> Option<String> {
+    use windows_sys::Win32::System::Registry::{RRF_RT_REG_SZ, RegGetValueW};
+    let wide = |s: &str| s.encode_utf16().chain([0]).collect::<Vec<u16>>();
+    let (key, value) = (wide(key), wide(value));
+    let mut buf = vec![0u16; 1024];
+    let mut len = (buf.len() * 2) as u32;
+    // SAFETY: NUL-terminated names; the buffer's size in bytes is passed with it.
+    let rc = unsafe { RegGetValueW(root, key.as_ptr(), value.as_ptr(), RRF_RT_REG_SZ | flags, std::ptr::null_mut(), buf.as_mut_ptr().cast(), &mut len) };
+    if rc != 0 {
+        return None;
+    }
+    let n = (len as usize / 2).saturating_sub(1).min(buf.len());
+    Some(String::from_utf16_lossy(&buf[..n]).trim().to_string())
+}
+
+/// Where the installer put Dataman, if in `dir`: `Some(false)` for this user, `Some(true)` for the
+/// machine (its update asks for an administrator).
+#[cfg(windows)]
+fn installed_scope(dir: &Path) -> Option<bool> {
+    use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_SUBKEY_WOW6464KEY};
+    let here = dir.to_string_lossy().trim_end_matches('\\').to_lowercase();
+    let at = |root, flags| reg_string(root, UNINSTALL_KEY, "InstallLocation", flags).is_some_and(|l| l.trim_end_matches('\\').to_lowercase() == here);
+    if at(HKEY_CURRENT_USER, 0) {
+        Some(false)
+    } else if at(HKEY_LOCAL_MACHINE, RRF_SUBKEY_WOW6464KEY) {
+        Some(true)
+    } else {
+        None
+    }
+}
+
+/// An executable's version resource (major.minor.patch), as the installer's `VersionInfoVersion`
+/// sets it.
+#[cfg(windows)]
+pub fn file_version(file: &Path) -> Result<String> {
+    use std::os::windows::ffi::OsStrExt as _;
+    use windows_sys::Win32::Storage::FileSystem::{GetFileVersionInfoSizeW, GetFileVersionInfoW, VS_FIXEDFILEINFO, VerQueryValueW};
+    let path: Vec<u16> = file.as_os_str().encode_wide().chain([0]).collect();
+    // SAFETY: a NUL-terminated path; the block is as large as the system asked for, and the fixed
+    // info read from it lies inside it (its length checked).
+    unsafe {
+        let n = GetFileVersionInfoSizeW(path.as_ptr(), std::ptr::null_mut());
+        if n == 0 {
+            bail!("{} has no version: {}", file.display(), std::io::Error::last_os_error());
+        }
+        let mut block = vec![0u8; n as usize];
+        if GetFileVersionInfoW(path.as_ptr(), 0, n, block.as_mut_ptr().cast()) == 0 {
+            bail!("{}: {}", file.display(), std::io::Error::last_os_error());
+        }
+        let root = [u16::from(b'\\'), 0];
+        let (mut info, mut len) = (std::ptr::null_mut(), 0u32);
+        if VerQueryValueW(block.as_ptr().cast(), root.as_ptr(), &mut info, &mut len) == 0 || (len as usize) < std::mem::size_of::<VS_FIXEDFILEINFO>() {
+            bail!("{} has no version", file.display());
+        }
+        let f = &*(info as *const VS_FIXEDFILEINFO);
+        Ok(format!("{}.{}.{}", f.dwFileVersionMS >> 16, f.dwFileVersionMS & 0xffff, f.dwFileVersionLS >> 16))
+    }
+}
+
+/// The installer as an update runs it: no window, no question, no restart; the apps holding its
+/// files (an agent's `dataman-mcp`) closed; the scope and folder of the copy it replaces.
+#[cfg(windows)]
+fn installer_args(dir: &Path, all_users: bool, log: &Path) -> String {
+    let scope = if all_users { "/ALLUSERS" } else { "/CURRENTUSER" };
+    format!(r#"/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS {scope} /DIR="{}" /LOG="{}""#, dir.display(), log.display())
+}
+
+/// The installer that runs once the app has quit, with its arguments.
+#[cfg(windows)]
+static PENDING: std::sync::Mutex<Option<(PathBuf, String)>> = std::sync::Mutex::new(None);
+
+/// The download is the installer: its own version must be the feed's. The running copy's files are
+/// in use, so for it the installer waits for the app to quit (`relaunch_after_exit`); another copy
+/// (the update check's) is installed now, and must then say the new version.
+#[cfg(windows)]
+pub fn install(download: &Path, app: &Path, want: &str) -> Result<()> {
+    use std::os::windows::process::CommandExt as _;
+    let got = file_version(download)?;
+    if self::version(&got).is_none() || self::version(&got) != self::version(want) {
+        bail!("the download holds version {got}, the feed says {want}");
+    }
+    let dir = app.parent().context("the app has no folder")?;
+    let nonce = format!("{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos());
+    let stage = std::env::temp_dir().join(format!("dataman-update-{nonce}"));
+    std::fs::create_dir_all(&stage)?;
+    let setup = stage.join(download.file_name().context("the download has no name")?);
+    std::fs::copy(download, &setup).context("staging the installer")?;
+    let log = stage.join("install.log");
+    let args = installer_args(dir, installed_scope(dir).unwrap_or(false), &log);
+    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    if std::env::current_exe().is_ok_and(|exe| canon(&exe) == canon(app)) {
+        *PENDING.lock().unwrap_or_else(|e| e.into_inner()) = Some((setup, args));
+        log::info!("update: the installer runs once Dataman has quit");
+        return Ok(());
+    }
+    let status = Command::new(&setup).raw_arg(&args).status().context("running the installer")?;
+    if !status.success() {
+        let tail = std::fs::read_to_string(&log).ok().and_then(|l| l.lines().rev().find(|l| !l.trim().is_empty()).map(str::to_string)).unwrap_or_default();
+        bail!("the installer failed ({status}): {tail}");
+    }
+    let _ = std::fs::remove_dir_all(&stage);
+    let now = file_version(app)?;
+    if self::version(&now) != self::version(want) {
+        bail!("installed, but {} says {now}", app.display());
+    }
+    log::info!("update: {} installed", app.display());
     Ok(())
+}
+
+/// With an installer waiting (`install`), it runs once this process has exited and the app
+/// starts after it; else the app starts again at once.
+#[cfg(windows)]
+pub fn relaunch_after_exit(app: &Path) -> Result<()> {
+    match PENDING.lock().unwrap_or_else(|e| e.into_inner()).take() {
+        Some((setup, args)) => apply_after_exit(std::process::id(), &setup, &args, app).map(drop),
+        None => {
+            Command::new(app).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().context("relaunch")?;
+            Ok(())
+        }
+    }
+}
+
+/// Once `pid` has exited: the installer with `args`, waited for, then `app` (the new copy, or the
+/// old one if the installer failed). The installer's folder goes when it succeeded; its log stays
+/// when not. A hidden PowerShell, which outlives the app.
+#[cfg(windows)]
+pub fn apply_after_exit(pid: u32, setup: &Path, args: &str, app: &Path) -> Result<std::process::Child> {
+    use std::os::windows::process::CommandExt as _;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    const SCRIPT: &str = "Wait-Process -Id $env:DATAMAN_PID -ErrorAction SilentlyContinue; \
+        $p = Start-Process -FilePath $env:DATAMAN_SETUP -ArgumentList $env:DATAMAN_ARGS -Wait -PassThru; \
+        Start-Process -FilePath $env:DATAMAN_APP; \
+        if ($p.ExitCode -eq 0) { Remove-Item -LiteralPath (Split-Path -Parent $env:DATAMAN_SETUP) -Recurse -Force -ErrorAction SilentlyContinue }";
+    Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-Command", SCRIPT])
+        .env("DATAMAN_PID", pid.to_string())
+        .env("DATAMAN_SETUP", setup)
+        .env("DATAMAN_ARGS", args)
+        .env("DATAMAN_APP", app)
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("starting the installer's helper")
 }
 
 #[cfg(test)]
@@ -740,5 +891,48 @@ mod tests {
         assert_eq!(bundle_of(Path::new("/x/target/release/dataman")), None);
         assert!(check_writable(Path::new("/private/var/folders/x/AppTranslocation/ABC/d/Dataman.app")).unwrap_err().to_string().contains("translocated"));
         assert!(check_writable(Path::new("/System/Applications/Calculator.app")).is_err());
+    }
+
+    /// The installer waits for the app to have quit, gets its arguments as they are, and the app
+    /// starts after it; the installer's folder goes once it succeeded.
+    #[cfg(windows)]
+    #[test]
+    fn the_installer_runs_once_the_app_has_quit_and_the_app_after_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let stage = d.join("stage");
+        std::fs::create_dir_all(&stage).unwrap();
+        let setup = stage.join("setup.cmd");
+        std::fs::write(
+            &setup,
+            format!(
+                "@echo off\r\ntasklist /FI \"PID eq %DATAMAN_PID%\" | find \"%DATAMAN_PID%\" >nul && echo early>\"{0}\\early.txt\"\r\necho %*>\"{0}\\setup.txt\"\r\n",
+                d.display()
+            ),
+        )
+        .unwrap();
+        let app = d.join("app.cmd");
+        std::fs::write(&app, format!("@echo started>\"{}\\app.txt\"\r\n", d.display())).unwrap();
+        // The app that quits: about two seconds. Its handle closed at once, as the real app's is.
+        let pid = Command::new("cmd").args(["/c", "ping -n 3 127.0.0.1 >nul"]).spawn().unwrap().id();
+        let args = r#"/VERYSILENT /CURRENTUSER /DIR="C:\Some Folder""#;
+        let mut helper = apply_after_exit(pid, &setup, args, &app).unwrap();
+        assert!(helper.wait().unwrap().success());
+        assert!(!d.join("early.txt").exists(), "the installer ran while the app was still up");
+        assert_eq!(std::fs::read_to_string(d.join("setup.txt")).unwrap().trim(), args);
+        let started = (0..100).any(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            d.join("app.txt").exists()
+        });
+        assert!(started, "the app did not start after the installer");
+        assert!(!stage.exists(), "the installer's folder is left");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_installer_gets_the_scope_and_folder() {
+        let a = installer_args(Path::new(r"C:\Users\u\AppData\Local\Programs\Dataman"), false, Path::new(r"C:\t\install.log"));
+        assert_eq!(a, r#"/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS /CURRENTUSER /DIR="C:\Users\u\AppData\Local\Programs\Dataman" /LOG="C:\t\install.log""#);
+        assert!(installer_args(Path::new(r"C:\Program Files\Dataman"), true, Path::new("l")).contains("/ALLUSERS /DIR=\"C:\\Program Files\\Dataman\""));
     }
 }
