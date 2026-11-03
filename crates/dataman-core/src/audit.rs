@@ -326,6 +326,47 @@ struct Stamp {
     #[serde(default)]
     id: Option<String>,
     ts: chrono::DateTime<chrono::Utc>,
+    /// As text: an outcome a newer version writes still dates its line.
+    #[serde(default)]
+    outcome: Option<String>,
+}
+
+impl Stamp {
+    /// A call's start, logged before it ran: one call with its end, under the same id.
+    fn started(&self) -> bool {
+        self.outcome.as_deref() == Some("started")
+    }
+}
+
+/// Counts calls, not lines: a start counts only when its end is not logged anywhere (`ended`).
+#[derive(Default)]
+struct Calls {
+    ends: usize,
+    starts: std::collections::HashSet<String>,
+    ended: std::collections::HashSet<String>,
+}
+
+impl Calls {
+    /// Every line read, `gone` when it is removed.
+    fn saw(&mut self, s: &Stamp, gone: bool) {
+        match (&s.id, s.started()) {
+            (Some(id), true) => {
+                if gone {
+                    self.starts.insert(id.clone());
+                }
+            }
+            (id, _) => {
+                if let Some(id) = id {
+                    self.ended.insert(id.clone());
+                }
+                self.ends += usize::from(gone);
+            }
+        }
+    }
+
+    fn count(&self) -> usize {
+        self.ends + self.starts.difference(&self.ended).count()
+    }
 }
 
 /// The rotated copy, then the current file.
@@ -335,12 +376,14 @@ fn both(path: &Path) -> [PathBuf; 2] {
 
 /// The calls a clear at `cutoff` removes, in the log and its rotated copy.
 pub fn count_before(audit: &Path, cutoff: chrono::DateTime<chrono::Utc>) -> usize {
+    let mut calls = Calls::default();
     both(audit)
         .iter()
         .filter_map(|p| std::fs::File::open(p).ok())
         .flat_map(|f| std::io::BufReader::new(f).split(b'\n').map_while(Result::ok))
-        .filter(|l| serde_json::from_slice::<Stamp>(l).is_ok_and(|s| s.ts < cutoff))
-        .count()
+        .filter_map(|l| serde_json::from_slice::<Stamp>(&l).ok())
+        .for_each(|s| calls.saw(&s, s.ts < cutoff));
+    calls.count()
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -356,15 +399,18 @@ pub fn clear_before(audit: &Path, cutoff: chrono::DateTime<chrono::Utc>) -> std:
     let _held = hold(audit)?;
     let (mut gone, mut kept) = (std::collections::HashSet::new(), std::collections::HashSet::new());
     let mut out = Cleared::default();
+    let mut calls = Calls::default();
     for p in both(audit) {
-        out.calls += rewrite(&p, |s| {
+        rewrite(&p, |s| {
             let keep = s.ts >= cutoff;
+            calls.saw(&s, !keep);
             if let Some(id) = s.id {
                 if keep { kept.insert(id) } else { gone.insert(id) };
             }
             keep
         })?;
     }
+    out.calls = calls.count();
     for p in both(&replies_path(audit)) {
         out.replies += rewrite(&p, |s| s.id.is_none_or(|id| !gone.contains(&id) && (s.ts >= cutoff || kept.contains(&id))))?;
     }
@@ -529,6 +575,10 @@ mod tests {
         a.write(&entry("b", Outcome::Started));
         let got: Vec<(Option<String>, Outcome)> = tail(a.path(), 10).into_iter().map(|e| (e.id, e.outcome)).collect();
         assert_eq!(got, [(Some("a".into()), Outcome::Ok), (Some("b".into()), Outcome::Started)], "b never ended: it shows");
+        // A clear counts calls, not lines: a's start and end are one.
+        let later = chrono::Utc::now() + chrono::Duration::seconds(1);
+        assert_eq!(count_before(a.path(), later), 2);
+        assert_eq!(clear_before(a.path(), later).unwrap().calls, 2);
     }
 
     #[test]
