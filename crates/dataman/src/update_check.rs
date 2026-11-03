@@ -82,13 +82,21 @@ fn state(cx: &mut AsyncWindowContext) -> State {
     cx.update(|_, cx| updates::state(cx)).unwrap_or(State::Idle)
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 const APP: &str = "Dataman.AppImage";
 #[cfg(target_os = "macos")]
 const APP: &str = "Dataman.app";
+/// The folder the installer fills.
+#[cfg(windows)]
+const APP: &str = "Dataman";
+
+/// What the update replaces in `APP`: the bundle or AppImage itself, on Windows the exe in it.
+fn app_path(installed: &Path) -> PathBuf {
+    if cfg!(windows) { installed.join("dataman.exe") } else { installed.to_path_buf() }
+}
 
 /// An AppImage stand-in: a script that says its version, as `dataman --version` does.
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 fn stand_in(app: &Path, version: &str) -> anyhow::Result<()> {
     std::fs::create_dir_all(app.parent().unwrap_or(Path::new("/")))?;
     // As big as a small DMG, so the download is seen in steps.
@@ -98,11 +106,62 @@ fn stand_in(app: &Path, version: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 fn artifact(work: &Path, _stage_dir: &Path) -> anyhow::Result<Vec<u8>> {
     let new = work.join(format!("Dataman-{NEW}.AppImage"));
     stand_in(&new, NEW)?;
     Ok(std::fs::read(&new)?)
+}
+
+/// Inno Setup's compiler, where package.ps1 finds it.
+#[cfg(windows)]
+fn iscc() -> anyhow::Result<PathBuf> {
+    let on_path = std::env::var_os("PATH").into_iter().flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>()).map(|d| d.join("ISCC.exe"));
+    let installed = ["ProgramFiles(x86)", "ProgramFiles"].into_iter().filter_map(std::env::var_os).map(|d| Path::new(&d).join("Inno Setup 6").join("ISCC.exe"));
+    on_path.chain(installed).find(|p| p.is_file()).ok_or_else(|| anyhow::anyhow!("Inno Setup 6 (ISCC.exe) is not installed"))
+}
+
+/// An Inno Setup build of `script`'s [Setup], [Files] and the rest, as `out` (an exe). Its own
+/// AppId, per user, nothing to uninstall: it leaves no trace of itself in the system.
+#[cfg(windows)]
+fn inno(out: &Path, version: &str, rest: &str) -> anyhow::Result<()> {
+    let dir = out.parent().ok_or_else(|| anyhow::anyhow!("{} has no folder", out.display()))?;
+    std::fs::create_dir_all(dir)?;
+    let name = out.file_stem().and_then(|n| n.to_str()).unwrap_or("setup");
+    let script = dir.join(format!("{name}.iss"));
+    std::fs::write(
+        &script,
+        format!(
+            "[Setup]\r\nAppId={{{{6E1B7D3A-5D2C-4C1E-9B7A-0D4C2B9E8F11}}\r\nAppName=Dataman update check\r\nAppVersion={version}\r\nVersionInfoVersion={version}\r\n\
+             DefaultDirName={{autopf}}\\DatamanUpdateCheck\r\nPrivilegesRequired=lowest\r\nUninstallable=no\r\nDisableDirPage=yes\r\nDisableProgramGroupPage=yes\r\n\
+             DisableReadyPage=yes\r\nOutputDir={}\r\nOutputBaseFilename={name}\r\n{rest}",
+            dir.display()
+        ),
+    )?;
+    let built = Command::new(iscc()?).arg("/Qp").arg(&script).output()?;
+    let _ = std::fs::remove_file(&script);
+    if !built.status.success() {
+        let said = format!("{}{}", String::from_utf8_lossy(&built.stdout), String::from_utf8_lossy(&built.stderr));
+        anyhow::bail!("ISCC: {}", said.trim().lines().last().unwrap_or("failed"));
+    }
+    Ok(())
+}
+
+/// The installed app's stand-in: an exe that says its version in its version resource, as the
+/// installer reads it. An empty Inno setup, never run.
+#[cfg(windows)]
+fn stand_in(app: &Path, version: &str) -> anyhow::Result<()> {
+    inno(app, version, "")
+}
+
+/// The new release's installer: the 99.0.0 stand-in into the folder it is given (`/DIR`).
+#[cfg(windows)]
+fn artifact(work: &Path, stage_dir: &Path) -> anyhow::Result<Vec<u8>> {
+    let payload = stage_dir.join("dataman.exe");
+    stand_in(&payload, NEW)?;
+    let setup = work.join(format!("Dataman-{NEW}-setup.exe"));
+    inno(&setup, NEW, &format!("[Files]\r\nSource: \"{}\"; DestDir: \"{{app}}\"; Flags: ignoreversion\r\n", payload.display()))?;
+    Ok(std::fs::read(&setup)?)
 }
 
 #[cfg(target_os = "macos")]
@@ -236,7 +295,12 @@ fn plist_version(app: &Path) -> String {
     dataman_core::update::plist_value(app, "CFBundleShortVersionString").unwrap_or_default()
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(windows)]
+fn plist_version(app: &Path) -> String {
+    dataman_core::update::file_version(app).unwrap_or_default()
+}
+
+#[cfg(target_os = "linux")]
 fn plist_version(app: &Path) -> String {
     Command::new(app).arg("--version").output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default()
 }
@@ -265,7 +329,7 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let work = std::env::temp_dir().join(format!("dataman-update-check-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&work);
     let apps = work.join("Applications");
-    let target: PathBuf = apps.join(APP);
+    let target = app_path(&apps.join(APP));
     let stage_dir = work.join("new");
     let built = (|| -> anyhow::Result<Vec<u8>> {
         stand_in(&target, "0.0.1")?;
