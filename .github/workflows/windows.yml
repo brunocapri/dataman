@@ -1,16 +1,18 @@
 name: Windows
 
+# Pushes to main run nothing: a release's tag runs it all, and the release takes its installers
+# (scripts/github-release.sh).
 on:
   push:
-    branches: [main]
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
 
-# A run takes over an hour. On a pull request the newest push cancels the run under way; on
-# main each push runs to the end.
+# A run takes over an hour. On a pull request the newest push cancels the run under way; a
+# tag's run goes to the end.
 concurrency:
   group: windows-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}

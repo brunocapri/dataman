@@ -1,19 +1,18 @@
 #!/bin/bash
 # Publishes a release on GitHub Releases, where the app looks for updates
 # (releases/latest/download/feed.json): bumps the workspace version, builds the app and the DMG,
-# signs the DMG into dist/feed.json, commits "Release <version>", tags v<version>, pushes both,
-# uploads the DMG and the feed, then reads the feed back from GitHub and checks it as the app
-# would (version, size, signature with the app's public key).
+# commits "Release <version>", tags v<version> and pushes both. The tag runs the Linux and
+# Windows workflows: once both pass, their AppImages, .debs, installers and .zips join the DMG,
+# the feed is signed for every platform, everything is uploaded, and the feed is read back from
+# GitHub and checked as the app would (version, size, signature with the app's public key).
 #
 #   scripts/github-release.sh 0.2.1 "Faster grid scrolling. SQL Server table DDL."
 #   scripts/github-release.sh 0.2.1 ~/notes-0.2.1.txt     # the notes from a file
 #
 # Needs: a clean tree on main, up to date with origin; gh, logged in; the update key
 # (scripts/keygen.sh: ~/.config/dataman-release/update_ed25519.key, or DATAMAN_UPDATE_KEY /
-# DATAMAN_UPDATE_PRIVATE_KEY). The notes are never written into the repository. DATAMAN_LINUX=1
-# also builds, uploads and checks the Linux AppImages and .debs (Docker). DATAMAN_WINDOWS=1 also
-# takes the Windows installers and .zips from the Windows workflow's run on the release commit
-# (waiting for it), adds the installers to the feed, uploads all of them and checks them.
+# DATAMAN_UPDATE_PRIVATE_KEY). The notes are never written into the repository. A workflow that
+# fails leaves the tag pushed with no release: fix it and release the next version.
 set -euo pipefail
 [ "$(uname)" = Darwin ] || { echo "github-release: macOS only (the Linux release: scripts/linux/build.sh)" >&2; exit 1; }
 
@@ -94,7 +93,8 @@ fi
 base="https://github.com/$repo/releases/download/$tag"
 printf '%s\n' "$notes" > "$work/notes.txt"
 step "building Dataman $version"
-"$root/scripts/release.sh" "$base" "$work/notes.txt"
+# The Mac only: Linux comes from the tag's workflow, not from Docker here.
+env -u DATAMAN_LINUX "$root/scripts/release.sh" "$base" "$work/notes.txt"
 dmg="$root/dist/Dataman-$version.dmg"
 feed="$root/dist/feed.json"
 [ -f "$dmg" ] || die "no $dmg"
@@ -113,52 +113,69 @@ git tag -a "$tag" -m "Dataman $version"
 git push --quiet origin main
 git push --quiet origin "$tag"
 
-# --- Windows: what the Windows workflow built from this very commit -----------------------------
-windows=()
-winarch=()
-if [ -n "${DATAMAN_WINDOWS:-}" ]; then
-  sha="$(git rev-parse HEAD)"
-  step "the Windows workflow's run on $(git rev-parse --short HEAD)"
-  run=""
+# --- Linux and Windows: what the tag's workflows built -----------------------------------------
+sha="$(git rev-parse HEAD)"
+# The run a workflow started for the tag's push, once it has passed.
+run_for() {
+  local wf="$1" run=""
   for _ in $(seq 1 60); do
-    run="$(gh run list --repo "$repo" --workflow windows.yml --commit "$sha" --event push --json databaseId --jq '.[0].databaseId // empty')"
+    run="$(gh run list --repo "$repo" --workflow "$wf" --commit "$sha" --event push --json databaseId --jq '.[0].databaseId // empty')"
     [ -n "$run" ] && break
     sleep 10
   done
-  [ -n "$run" ] || die "no Windows workflow run for $sha"
-  gh run watch "$run" --repo "$repo" --exit-status > /dev/null || die "the Windows workflow failed (run $run)"
-  winassets=()
-  for a in x86_64 aarch64; do
-    d="$work/windows-$a"
-    if ! gh run download "$run" --repo "$repo" -n "dataman-windows-$a" -D "$d" > /dev/null 2>&1; then
-      # The Arm build does not hold the release back (it is not a gate in the workflow either).
-      [ "$a" = aarch64 ] || die "run $run has no Windows $a build"
-      echo "github-release: run $run has no Windows $a build: released without it" >&2
-      continue
-    fi
-    setup="$d/Dataman-$version-windows-$a-setup.exe"
-    zip="$d/Dataman-$version-windows-$a.zip"
-    [ -f "$setup" ] && [ -f "$zip" ] || die "run $run has no Dataman $version installer and .zip for Windows $a: $(ls "$d" | tr '\n' ' ')"
-    windows+=("$setup" "$zip")
-    winarch+=("$a")
-    winassets+=(--asset "windows-$a" "$setup" "$base/$(basename "$setup")")
-  done
-  step "the Windows installers into the feed"
-  cargo run --release --quiet -p xtask -- feed --version "$version" --base "$feed" "${winassets[@]}" > "$work/feed-windows.json"
-  cp "$work/feed-windows.json" "$feed"
-  for a in "${winarch[@]}"; do
-    cargo run --release --quiet -p xtask -- verify "$feed" "$work/windows-$a/Dataman-$version-windows-$a-setup.exe" --pubkey "$pubkey" --version "$version" --asset "windows-$a" > /dev/null
-  done
-  cargo run --release --quiet -p xtask -- verify "$feed" "$dmg" --pubkey "$pubkey" --version "$version" > /dev/null
-fi
+  [ -n "$run" ] || die "no $wf run for $tag: the tag is pushed with no release"
+  gh run watch "$run" --repo "$repo" --exit-status > /dev/null \
+    || die "$wf failed (run $run): the tag $tag is pushed with no release; fix it and release the next version"
+  echo "$run"
+}
+step "the Linux and Windows workflows on $tag"
+linux_run="$(run_for linux.yml)"
+windows_run="$(run_for windows.yml)"
+
+macarch="$([ "$(uname -m)" = arm64 ] && echo aarch64 || echo x86_64)"
+feedargs=(feed --version "$version" --base "$feed" --asset "macos-$macarch" "$dmg" "$base/$(basename "$dmg")")
+checks=()
+linux=()
+for a in x86_64 aarch64; do
+  d="$work/linux-$a"
+  gh run download "$linux_run" --repo "$repo" -n "dataman-linux-$a" -D "$d" > /dev/null 2>&1 || die "run $linux_run has no Linux $a build"
+  img="$d/Dataman-$version-$a.AppImage"
+  deb="$d/dataman_${version}_$([ "$a" = x86_64 ] && echo amd64 || echo arm64).deb"
+  [ -f "$img" ] && [ -f "$deb" ] || die "run $linux_run has no Dataman $version AppImage and .deb for Linux $a: $(ls "$d" | tr '\n' ' ')"
+  linux+=("$img" "$deb")
+  feedargs+=(--asset "linux-$a" "$img" "$base/$(basename "$img")" --asset "linux-$a-deb" "$deb" "$base/$(basename "$deb")")
+  checks+=("linux-$a:$img" "linux-$a-deb:$deb")
+done
+windows=()
+winarch=()
+for a in x86_64 aarch64; do
+  d="$work/windows-$a"
+  if ! gh run download "$windows_run" --repo "$repo" -n "dataman-windows-$a" -D "$d" > /dev/null 2>&1; then
+    # The Arm build does not hold the release back (it is not a gate in the workflow either).
+    [ "$a" = aarch64 ] || die "run $windows_run has no Windows $a build"
+    echo "github-release: run $windows_run has no Windows $a build: released without it" >&2
+    continue
+  fi
+  setup="$d/Dataman-$version-windows-$a-setup.exe"
+  zip="$d/Dataman-$version-windows-$a.zip"
+  [ -f "$setup" ] && [ -f "$zip" ] || die "run $windows_run has no Dataman $version installer and .zip for Windows $a: $(ls "$d" | tr '\n' ' ')"
+  windows+=("$setup" "$zip")
+  winarch+=("$a")
+  feedargs+=(--asset "windows-$a" "$setup" "$base/$(basename "$setup")")
+  checks+=("windows-$a:$setup")
+done
+
+step "the feed, for every platform"
+cargo run --release --quiet -p xtask -- "${feedargs[@]}" > "$work/feed-all.json"
+cp "$work/feed-all.json" "$feed"
+cargo run --release --quiet -p xtask -- verify "$feed" "$dmg" --pubkey "$pubkey" --version "$version" > /dev/null
+for c in "${checks[@]}"; do
+  cargo run --release --quiet -p xtask -- verify "$feed" "${c#*:}" --pubkey "$pubkey" --version "$version" --asset "${c%%:*}" > /dev/null
+done
 
 # --- The release -------------------------------------------------------------------------------
 step "GitHub release $tag"
-linux=()
-if [ -n "${DATAMAN_LINUX:-}" ]; then
-  linux=("$root"/dist/linux/Dataman-"$version"-*.AppImage "$root"/dist/linux/dataman_"$version"_*.deb)
-fi
-gh release create "$tag" "$dmg" ${linux[@]+"${linux[@]}"} ${windows[@]+"${windows[@]}"} "$feed" --repo "$repo" --title "Dataman $version" --notes "$notes" --latest > /dev/null
+gh release create "$tag" "$dmg" "${linux[@]}" "${windows[@]}" "$feed" --repo "$repo" --title "Dataman $version" --notes "$notes" --latest > /dev/null
 
 # --- What the app will read --------------------------------------------------------------------
 step "checking releases/latest/download/feed.json"
@@ -176,17 +193,15 @@ done
 url="$(plutil -extract url raw -o - "$work/feed.json")"
 curl -fsSL --proto '=https' -o "$work/Dataman.dmg" "$url"
 checked="$(cargo run --release --quiet -p xtask -- verify "$work/feed.json" "$work/Dataman.dmg" --pubkey "$pubkey" --version "$version")"
-if [ -n "${DATAMAN_LINUX:-}" ]; then
-  for a in x86_64 aarch64; do
-    url="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["assets"]["linux-" + sys.argv[2]]["url"])' "$work/feed.json" "$a")"
-    curl -fsSL --proto '=https' -o "$work/Dataman-$a.AppImage" "$url"
-    cargo run --release --quiet -p xtask -- verify "$work/feed.json" "$work/Dataman-$a.AppImage" --pubkey "$pubkey" --version "$version" --asset "linux-$a" > /dev/null
-    url="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["assets"]["linux-" + sys.argv[2] + "-deb"]["url"])' "$work/feed.json" "$a")"
-    curl -fsSL --proto '=https' -o "$work/dataman-$a.deb" "$url"
-    cargo run --release --quiet -p xtask -- verify "$work/feed.json" "$work/dataman-$a.deb" --pubkey "$pubkey" --version "$version" --asset "linux-$a-deb" > /dev/null
-  done
-  checked="$checked; Linux x86_64 and aarch64 AppImages and .debs too"
-fi
+for a in x86_64 aarch64; do
+  url="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["assets"]["linux-" + sys.argv[2]]["url"])' "$work/feed.json" "$a")"
+  curl -fsSL --proto '=https' -o "$work/Dataman-$a.AppImage" "$url"
+  cargo run --release --quiet -p xtask -- verify "$work/feed.json" "$work/Dataman-$a.AppImage" --pubkey "$pubkey" --version "$version" --asset "linux-$a" > /dev/null
+  url="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["assets"]["linux-" + sys.argv[2] + "-deb"]["url"])' "$work/feed.json" "$a")"
+  curl -fsSL --proto '=https' -o "$work/dataman-$a.deb" "$url"
+  cargo run --release --quiet -p xtask -- verify "$work/feed.json" "$work/dataman-$a.deb" --pubkey "$pubkey" --version "$version" --asset "linux-$a-deb" > /dev/null
+done
+checked="$checked; Linux x86_64 and aarch64 AppImages and .debs too"
 for a in ${winarch[@]+"${winarch[@]}"}; do
   url="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["assets"]["windows-" + sys.argv[2]]["url"])' "$work/feed.json" "$a")"
   curl -fsSL --proto '=https' -o "$work/Dataman-$a-setup.exe" "$url"
