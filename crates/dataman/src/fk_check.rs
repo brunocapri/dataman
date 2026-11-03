@@ -191,16 +191,19 @@ async fn pop_check(ws: &Entity<Workspace>, grid: &Entity<ResultGrid>, fk: usize,
 
     let p = at(cx, 2, fk);
     let cmd = Modifiers::secondary_key();
+    let source = cx.update(|_, cx| ws.read(cx).active_tab().map(|t| t.entity_id())).ok().flatten();
     click(cx, p, cmd);
     let mut landed = None;
     for _ in 0..60 {
         pause(cx, 50).await;
         draw(cx);
+        // The new tab's pop, live or run: frames slower than the pop can step over all of it.
         landed = cx
             .update(|_, cx| {
-                let t = ws.read(cx).active_tab()?.read(cx);
+                let tab = ws.read(cx).active_tab().filter(|t| Some(t.entity_id()) != source)?;
+                let t = tab.read(cx);
                 let g = t.grid.read(cx);
-                let ((row, col), style) = g.demo_pop()?;
+                let ((row, col), style) = g.demo_pop_ran()?;
                 let name = g.result()?.columns()?.get(col)?.name.clone();
                 Some((row, name, style))
             })

@@ -331,6 +331,9 @@ pub struct ResultGrid {
     menu_focus: FocusHandle,
     _menu_blur: Option<Subscription>,
     pop: Option<FindPop<CellPos>>,
+    /// The last pop that ran its course, for the checks: a slow renderer's frames can step over one.
+    #[cfg(feature = "checks")]
+    ran_pop: Option<(CellPos, PopStyle)>,
     land: Option<String>,
     pub(crate) copied_at: Option<Instant>,
     _copied: Option<Task<()>>,
@@ -511,6 +514,8 @@ impl ResultGrid {
             hover: None,
             hover_eye: false,
             eyes: Vec::new(),
+            #[cfg(feature = "checks")]
+            ran_pop: None,
         }
     }
 
@@ -633,6 +638,12 @@ impl ResultGrid {
     #[cfg(feature = "checks")]
     pub fn demo_pop(&self) -> Option<((usize, usize), PopStyle)> {
         self.live_pop().map(|(c, style, _)| ((c.row, c.col), style))
+    }
+
+    /// The pop now, else the last one that ran its course.
+    #[cfg(feature = "checks")]
+    pub fn demo_pop_ran(&self) -> Option<((usize, usize), PopStyle)> {
+        self.demo_pop().or(self.ran_pop.map(|(c, style)| ((c.row, c.col), style)))
     }
 
     pub fn set_foreign_keys(&mut self, rs: &Arc<ResultSet>, fk: Arc<ForeignKeys>, cx: &mut Context<Self>) {
@@ -1913,6 +1924,10 @@ impl ResultGrid {
                 Some(f)
             }
             None => {
+                #[cfg(feature = "checks")]
+                if let Some(p) = &self.pop {
+                    self.ran_pop = Some((p.target, p.style));
+                }
                 self.pop = None;
                 None
             }
