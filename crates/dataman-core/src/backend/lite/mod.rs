@@ -449,7 +449,7 @@ impl Canceller {
 pub(crate) async fn server_info(client: &Client) -> Result<ServerInfo> {
     let rows = client.text_rows("SELECT sqlite_version()").await?;
     let v = rows.into_iter().next().and_then(|r| r.into_iter().next().flatten()).unwrap_or_default();
-    let mut info = ServerInfo { version: format!("SQLite {v}"), database: "main".into(), user: String::new(), ..Default::default() };
+    let mut info = ServerInfo { database: "main".into(), ..ServerInfo::of(crate::config::Engine::Sqlite, Default::default(), format!("SQLite {v}"), &v) };
     info.search_path = vec!["main".into()];
     Ok(info)
 }

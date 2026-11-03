@@ -562,7 +562,9 @@ pub(crate) async fn server_info(client: &Client) -> Result<ServerInfo> {
         .next()
         .context("version() returned no row")?;
     let get = |i: usize| row.get(i).cloned().flatten().unwrap_or_default();
-    let mut info = ServerInfo { version: get(0), database: get(1), user: get(2), ..Default::default() };
+    let v = get(0);
+    let raw = v.split_whitespace().nth(1).unwrap_or("").to_string();
+    let mut info = ServerInfo { database: get(1), user: get(2), ..ServerInfo::of(crate::config::Engine::Postgres, Default::default(), v, &raw) };
     info.search_path = search_path(client, &info.user).await;
     Ok(info)
 }

@@ -595,7 +595,8 @@ pub(crate) async fn server_info(client: &Client) -> Result<ServerInfo> {
     let row = rows.into_iter().next().context("version() returned no row")?;
     let get = |i: usize| row.get(i).cloned().flatten().unwrap_or_default();
     let v = get(0);
-    let mut info = ServerInfo { version: format!("DuckDB {}", v.trim_start_matches('v')), database: get(1), user: String::new(), ..Default::default() };
+    let v = v.trim_start_matches('v').to_string();
+    let mut info = ServerInfo { database: get(1), ..ServerInfo::of(crate::config::Engine::DuckDb, Default::default(), format!("DuckDB {v}"), &v) };
     info.search_path = vec![Some(get(2)).filter(|s| !s.is_empty()).unwrap_or_else(|| "main".into())];
     Ok(info)
 }
