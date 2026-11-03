@@ -748,7 +748,7 @@ impl Workspace {
         cx.observe(&editor, |_, _, cx| cx.notify()).detach();
         // Focus moved into the other pane's front tab: its group is the focused one.
         for f in [editor.focus_handle(cx), grid.focus_handle(cx), tab.read(cx).plan.focus_handle(cx)] {
-            cx.on_focus_in(&f, window, |w, window, cx| w.sync_group_focus(window, cx)).detach();
+            self.watch_group_focus(&f, window, cx);
         }
         let edit = tab.read(cx).edit.clone();
         cx.subscribe_in(&edit, window, Self::on_edit).detach();
@@ -2126,6 +2126,12 @@ impl Workspace {
             window.focus(&e.focus_handle(cx), cx);
             e.update(cx, |e, cx| e.format_query(cx));
         }
+    }
+
+    /// Focus moving into `f` makes its group the focused one. Focus listeners run in the draw's
+    /// focus phase, where a notify neither redraws nor reaches observers: deferred past it.
+    pub(crate) fn watch_group_focus(&mut self, f: &gpui::FocusHandle, window: &mut Window, cx: &mut Context<Self>) {
+        cx.on_focus_in(f, window, |_, window, cx| cx.defer_in(window, |w, window, cx| w.sync_group_focus(window, cx))).detach();
     }
 
     /// After each notify, before the frame draws: a connection change of the active tab
