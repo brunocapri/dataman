@@ -243,9 +243,12 @@ async fn check_file(cx: &Call, old: Option<&ConnectionProfile>, p: &ConnectionPr
     Ok(())
 }
 
-fn ssl_rank(m: SslMode) -> u8 {
+/// As `engine` reads it: the engines with no opportunistic TLS take prefer for disable (which
+/// `ConnectionProfile::normalize` writes in its place).
+fn ssl_rank(m: SslMode, engine: Engine) -> u8 {
     match m {
         SslMode::Disable => 0,
+        SslMode::Prefer if !engine.is_sql() => 0,
         SslMode::Prefer => 1,
         SslMode::Require => 2,
         SslMode::VerifyFull => 3,
@@ -253,7 +256,7 @@ fn ssl_rank(m: SslMode) -> u8 {
 }
 
 fn no_loosening(old: &ConnectionProfile, new: &ConnectionProfile) -> Result<(), ToolError> {
-    if ssl_rank(new.sslmode) < ssl_rank(old.sslmode) {
+    if ssl_rank(new.sslmode, new.engine) < ssl_rank(old.sslmode, new.engine) {
         return Err(ToolError::Refused(format!("sslmode would loosen from {:?} to {:?}; through MCP it may only stay the same or tighten", old.sslmode.label(), new.sslmode.label())));
     }
     if env_rank(new.env) < env_rank(old.env) {
@@ -524,6 +527,11 @@ fn update_connection(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>>
         }
         let password = apply(&mut profile, &a)?;
         profile.normalize();
+        // A database the call leaves alone stays as saved: PostgreSQL's empty one is the
+        // login's own, not `postgres`.
+        if profile.engine == old.engine && a.opt_str("database").is_none() && a.opt_str("connection_string").is_none() && profile.engine.spec().form.database {
+            profile.database = old.database.clone();
+        }
         profile.validate().map_err(ToolError::Invalid)?;
         no_loosening(&old, &profile)?;
         let changed = changed_fields(&old, &profile);
@@ -568,6 +576,18 @@ mod tests {
         let mut p = ConnectionProfile::new("shop");
         (p.host, p.user, p.database) = ("db1".into(), "app".into(), "shop".into());
         p
+    }
+
+    #[test]
+    fn a_nosql_prefer_saved_before_is_no_loosening_now() {
+        let old = ConnectionProfile { engine: Engine::Redis, host: "localhost".into(), port: 6379, sslmode: SslMode::Prefer, ..ConnectionProfile::new("r") };
+        let mut p = old.clone();
+        apply(&mut p, &args(json!({"color": "violet"}))).unwrap();
+        p.normalize();
+        assert_eq!(p.sslmode, SslMode::Disable);
+        assert!(no_loosening(&old, &p).is_ok());
+        let pg = ConnectionProfile { sslmode: SslMode::Prefer, ..base() };
+        assert!(no_loosening(&pg, &ConnectionProfile { sslmode: SslMode::Disable, ..pg.clone() }).is_err());
     }
 
     #[test]
