@@ -349,6 +349,14 @@ pub fn mid_possible(t0: std::time::Instant, d: std::time::Duration) -> bool {
     t0.elapsed() < d.mul_f32(0.9)
 }
 
+/// Whether a sample of a zoom (`motion::ZOOM`, `EASE_OUT`) taken now can still be part of the
+/// way: the curve comes within 0.001 of its end at 82 % of the time, and from there a sample
+/// cannot tell the motion from its landing.
+pub fn zoom_mid_possible(t0: std::time::Instant) -> bool {
+    let near_end = (1..=100).map(|i| i as f32 / 100.).find(|&x| crate::motion::EASE_OUT.eval(x) >= 0.999).unwrap_or(1.);
+    t0.elapsed() < crate::motion::ZOOM.mul_f32(near_end)
+}
+
 /// A time budget set on macOS (Metal, the machine it was measured on). Linux CI draws with Mesa's
 /// software GL under Xvfb, in a VM, Windows CI with WARP on a few shared cores: 2.5 times the
 /// budget there, so a regression still shows.

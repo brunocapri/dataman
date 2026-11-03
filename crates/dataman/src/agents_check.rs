@@ -458,9 +458,11 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
         let before = probed("agents-recv", cx);
         let t0 = std::time::Instant::now();
         click_probe("agents-recv-zoom", cx);
-        pause(cx, 60).await;
+        // The first frame on its way, not a fixed pause: a slow renderer's frames come late.
+        let start = if zoom_in { 0. } else { 1. };
+        until(cx, 1, |cx| (now(cx) - start).abs() > 0.05 || !moving(cx)).await;
         let (mid, mid_b) = (now(cx), probed("agents-recv", cx));
-        let in_time = mid_possible(t0, crate::motion::ZOOM);
+        let in_time = zoom_mid_possible(t0);
         pause(cx, 320).await;
         let after = probed("agents-recv", cx);
         let end = if zoom_in { 1. } else { 0. };
