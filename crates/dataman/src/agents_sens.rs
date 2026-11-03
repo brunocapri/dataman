@@ -172,8 +172,8 @@ impl AgentsPage {
                             .flex_row()
                             .items_center()
                             .gap(px(8.))
-                            .child(div().text_size(px(11.)).font_weight(FontWeight::SEMIBOLD).text_color(t.tx3).child("AGENTS GET"))
-                            .children(from.map(|f| div().children(ui::here(&"agents-sens-edit-from".into())).id("agents-sens-edit-from").text_size(px(11.)).text_color(t.tx4).child(f))),
+                            .child(div().text_size(px(crate::theme::text::SMALL)).font_weight(FontWeight::SEMIBOLD).text_color(t.tx3).child("AGENTS GET"))
+                            .children(from.map(|f| div().children(ui::here(&"agents-sens-edit-from".into())).id("agents-sens-edit-from").text_size(px(crate::theme::text::SMALL)).text_color(t.tx4).child(f))),
                     )
                     .child(div().children(ui::here(&"agents-sens-edit-example".into())).h(px(GRID_HEAD_H + GRID_ROW_H * shown_rows + GRID_BAR + 2.)).border_1().border_color(t.line).child(self.sens_grid.clone())),
             );

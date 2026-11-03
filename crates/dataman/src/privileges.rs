@@ -145,7 +145,7 @@ impl Render for PrivilegesPanel {
                     .flex()
                     .flex_row()
                     .items_center()
-                    .text_size(px(10.5))
+                    .text_size(px(crate::theme::text::HINT))
                     .text_color(t.tx3)
                     .child(div().flex_1().child(ui::caps(&t, "ROLE")))
                     .children(cols.iter().enumerate().map(|(j, c)| {
@@ -197,7 +197,7 @@ impl Render for PrivilegesPanel {
                                         .when(is_owner, |d| d.font_weight(FontWeight::SEMIBOLD))
                                         .child(role.clone()),
                                 )
-                                .when(is_owner, |d| d.child(div().flex_none().text_size(px(10.5)).text_color(t.tx3).child("owner"))),
+                                .when(is_owner, |d| d.child(div().flex_none().text_size(px(crate::theme::text::HINT)).text_color(t.tx3).child("owner"))),
                         )
                         .children(cols.iter().map(|c| {
                             let cell: gpui::AnyElement = match p.cell(&role, c) {
@@ -208,7 +208,7 @@ impl Render for PrivilegesPanel {
                                     .flex_row()
                                     .items_start()
                                     .child(icon(Icon::Check).size(px(12.)).text_color(t.ok))
-                                    .child(div().text_size(px(10.)).line_height(px(10.)).text_color(t.tx3).child("*"))
+                                    .child(div().text_size(px(crate::theme::text::TINY)).line_height(px(10.)).text_color(t.tx3).child("*"))
                                     .into_any_element(),
                             };
                             div().w(px(cw)).flex_none().flex().justify_center().child(cell)
@@ -248,14 +248,14 @@ impl Render for PrivilegesPanel {
             )
             .child(div().flex_1())
             .children(self.picked.clone().filter(|_| ready).map(|r| {
-                div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(11.)).text_color(t.tx3).child(r)
+                div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(r)
             }));
         div()
             .size_full()
             .flex()
             .flex_col()
             .track_focus(&self.focus)
-            .text_size(px(12.))
+            .text_size(px(crate::theme::text::BODY))
             .font_family(crate::theme::mono())
             .child(header)
             .child(body)

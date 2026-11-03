@@ -126,7 +126,8 @@ pub struct Item {
     pub icon: Icon,
     /// A color square in place of the icon (a folder's or a swatch).
     pub dot: Option<Hsla>,
-    pub key: Option<&'static str>,
+    /// The key that does the same: a command's as the user bound it, or the explorer's own.
+    pub key: Option<SharedString>,
     pub disabled: Option<&'static str>,
     pub bold: bool,
     pub danger: bool,
@@ -146,7 +147,12 @@ impl Item {
         self
     }
     fn key(mut self, k: &'static str) -> Item {
-        self.key = Some(k);
+        self.key = Some(k.into());
+        self
+    }
+    /// The key bound to keymap command `id`, none when it is unbound.
+    fn cmd(mut self, id: &str) -> Item {
+        self.key = crate::keymap::key(id).map(Into::into);
         self
     }
     fn off(mut self, why: Option<&'static str>) -> Item {
@@ -191,14 +197,14 @@ pub fn entries(t: &Target) -> Vec<Entry> {
     use Entry::{Item as I, Sep};
     let it = Item::new;
     match t {
-        Target::Empty => vec![I(it(Act::NewConnection, "New connection…", Icon::Plus).key("⌘N")), I(it(Act::NewFolder, "New folder", Icon::Schema))],
+        Target::Empty => vec![I(it(Act::NewConnection, "New connection…", Icon::Plus).cmd("new_connection")), I(it(Act::NewFolder, "New folder", Icon::Schema))],
         Target::Header => vec![
-            I(it(Act::NewConnection, "New connection…", Icon::Plus).key("⌘N")),
+            I(it(Act::NewConnection, "New connection…", Icon::Plus).cmd("new_connection")),
             I(it(Act::NewFolder, "New folder", Icon::Schema)),
             Sep,
             I(it(Act::CollapseAll, "Collapse all", Icon::Collapse)),
             Sep,
-            I(it(Act::Reload, "Refresh", Icon::Reload).key("⌘R")),
+            I(it(Act::Reload, "Refresh", Icon::Reload).cmd("refresh")),
         ],
         Target::Folder { count, color, first, last, .. } => vec![
             I(it(Act::RenameFolder, "Rename", Icon::Edit)),
@@ -225,9 +231,9 @@ pub fn entries(t: &Target) -> Vec<Entry> {
                 v.push(I(it(Act::Reconnect, "Reconnect", Icon::Reload)));
             }
             v.extend([
-                I(it(Act::NewTab, "New query tab", Icon::Tab).key("⌘T").off(offline)),
+                I(it(Act::NewTab, "New query tab", Icon::Tab).cmd("new_tab").off(offline)),
                 Sep,
-                I(it(Act::Reload, "Reload schema", Icon::Reload).key("⌘R").off(offline)),
+                I(it(Act::Reload, "Reload schema", Icon::Reload).cmd("refresh").off(offline)),
                 I(it(Act::History, "Query history", Icon::History)),
                 I(it(Act::Activity, "Activity monitor", Icon::Activity).off(offline)),
                 Sep,
@@ -242,7 +248,7 @@ pub fn entries(t: &Target) -> Vec<Entry> {
         }
         Target::Db { current, ro, .. } => vec![
             I(it(Act::NewTab, "New query tab", Icon::Tab)),
-            I(it(Act::Reload, "Reload", Icon::Reload).key("⌘R")),
+            I(it(Act::Reload, "Reload", Icon::Reload).cmd("refresh")),
             I(it(Act::CopyName, "Copy name", Icon::Copy)),
             Sep,
             I(it(Act::ToggleReadOnly, "Read Only", Icon::Lock).checked(*ro)),
@@ -254,7 +260,7 @@ pub fn entries(t: &Target) -> Vec<Entry> {
         ],
         Target::Schema { ro, .. } => vec![
             I(it(Act::NewTab, "New query tab", Icon::Tab)),
-            I(it(Act::Reload, "Reload", Icon::Reload).key("⌘R")),
+            I(it(Act::Reload, "Reload", Icon::Reload).cmd("refresh")),
             I(it(Act::CopyName, "Copy name", Icon::Copy)),
             I(it(Act::Privileges, "Privileges", Icon::Lock)),
             Sep,
@@ -297,14 +303,14 @@ pub fn entries(t: &Target) -> Vec<Entry> {
             I(it(Act::Export, "Export…", Icon::Export)),
             I(it(Act::ImportData, "Import data…", Icon::Import).off(ro.then_some(READ_ONLY))),
             I(it(Act::Privileges, "Privileges", Icon::Lock)),
-            I(it(Act::Reload, "Reload", Icon::Reload).key("⌘R")),
+            I(it(Act::Reload, "Reload", Icon::Reload).cmd("refresh")),
             Sep,
             I(it(Act::Truncate, "Truncate…", Icon::Trash).danger()),
             I(it(Act::DropTable, "Drop table…", Icon::Trash).danger()),
         ],
         Target::DocDb { ro, .. } => vec![
             I(it(Act::NewTab, "New query tab", Icon::Tab)),
-            I(it(Act::Reload, "Reload", Icon::Reload).key("⌘R")),
+            I(it(Act::Reload, "Reload", Icon::Reload).cmd("refresh")),
             I(it(Act::CopyName, "Copy name", Icon::Copy)),
             Sep,
             I(it(Act::ToggleReadOnly, "Read Only", Icon::Lock).checked(*ro)),
@@ -314,9 +320,9 @@ pub fn entries(t: &Target) -> Vec<Entry> {
             I(it(Act::CountRows, "Count documents", Icon::Hash)),
             Sep,
             I(it(Act::CopyName, "Copy name", Icon::Copy)),
-            I(it(Act::Reload, "Reload", Icon::Reload).key("⌘R")),
+            I(it(Act::Reload, "Reload", Icon::Reload).cmd("refresh")),
         ],
-        Target::Group => vec![I(it(Act::Reload, "Reload", Icon::Reload).key("⌘R"))],
+        Target::Group => vec![I(it(Act::Reload, "Reload", Icon::Reload).cmd("refresh"))],
         Target::Column { .. } => vec![I(it(Act::CopyName, "Copy name", Icon::Copy))],
         Target::Index { definition, .. } => vec![
             I(it(Act::CopyDefinition, "Copy definition", Icon::Copy).off(definition.is_none().then_some("not reported"))),
@@ -602,7 +608,7 @@ mod tests {
         }
         let on = conn(ConnPhase::Connected);
         assert_eq!(&acts(&on)[..3], &[Act::Disconnect, Act::Reconnect, Act::NewTab]);
-        assert_eq!(item(&on, Act::Disconnect).key, Some("⌘⌫"));
+        assert_eq!(item(&on, Act::Disconnect).key.as_deref(), Some("⌘⌫"));
         assert!(item(&on, Act::NewTab).enabled() && item(&on, Act::Reload).enabled());
         let failed = conn(ConnPhase::Failed);
         assert_eq!(acts(&failed)[0], Act::Reconnect);
@@ -610,8 +616,8 @@ mod tests {
         let connecting = conn(ConnPhase::Connecting);
         assert!(!item(&connecting, Act::Connect).enabled());
         assert!(item(&on, Act::DeleteConnection).danger);
-        assert_eq!(item(&on, Act::Reload).key, Some("⌘R"));
-        assert_eq!(item(&on, Act::EditConnection).key, Some("⌘I"));
+        assert_eq!(item(&on, Act::Reload).key.as_deref(), Some(crate::keymap::key_label("refresh").as_str()), "as bound");
+        assert_eq!(item(&on, Act::EditConnection).key.as_deref(), Some("⌘I"));
         assert_eq!(item(&on, Act::History).key, None);
     }
 
@@ -685,7 +691,7 @@ mod tests {
         let t = rel(RelKind::Table);
         let es = entries(&t);
         let Entry::Item(first) = &es[0] else { panic!() };
-        assert_eq!((first.act, first.label.as_ref(), first.bold, first.key), (Act::SelectTop, "Select 1000 rows", true, Some("↩")));
+        assert_eq!((first.act, first.label.as_ref(), first.bold, first.key.as_deref()), (Act::SelectTop, "Select 1000 rows", true, Some("↩")));
         let sub = es.iter().find_map(|e| if let Entry::Sub { items, .. } = e { Some(items.clone()) } else { None }).unwrap();
         assert_eq!(
             sub.iter().map(|i| i.act).collect::<Vec<_>>(),

@@ -491,10 +491,6 @@ pub(crate) fn day_label(ts: chrono::DateTime<chrono::Utc>) -> String {
     }
 }
 
-fn fmt_ms(ms: f64) -> String {
-    if ms < 1000. { format!("{ms:.0} ms") } else { format!("{:.1} s", ms / 1000.) }
-}
-
 impl AgentsPage {
     pub fn new(core: Arc<Core>, store: Entity<ConnStore>, cx: &mut Context<Self>) -> Self {
         let search = cx.new(|cx| TextInput::new(cx, "Search").bare());
@@ -750,7 +746,7 @@ impl AgentsPage {
 
     pub(crate) fn edit_settings(&mut self, f: impl FnOnce(&mut dataman_core::settings::Settings), cx: &mut Context<Self>) {
         if let Err(e) = self.core.settings.update(f) {
-            log::warn!("could not save the settings: {e:#}");
+            crate::prefs::failed(&e, cx);
         }
         cx.notify();
     }
@@ -948,7 +944,7 @@ impl AgentsPage {
         let pop = ui::popover(t)
             .id("agents-menu")
             .w(px(m.width))
-            .text_size(px(12.))
+            .text_size(px(crate::theme::text::BODY))
             .font_family(mono())
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_mouse_down_out(cx.listener(move |v, _: &gpui::MouseDownEvent, _, cx| {
@@ -1013,8 +1009,8 @@ impl AgentsPage {
             .size_full()
             .flex()
             .flex_col()
-            .text_size(px(12.))
-            .child(div().h(px(34.)).flex_none().pl(px(14.)).pr(px(12.)).flex().flex_row().items_center().child(div().flex_1().text_size(px(11.)).text_color(t.tx2).child("AGENTS")))
+            .text_size(px(crate::theme::text::BODY))
+            .child(div().h(px(34.)).flex_none().pl(px(14.)).pr(px(12.)).flex().flex_row().items_center().child(div().flex_1().text_size(px(crate::theme::text::SMALL)).text_color(t.tx2).child("AGENTS")))
             .child(div().pt(px(2.)).pb(px(10.)).flex().flex_col().children(rows))
             .into_any_element()
     }
@@ -1077,7 +1073,7 @@ impl AgentsPage {
             .justify_center()
             .gap(px(14.))
             .when(self.loaded, |d| {
-                d.child(div().text_size(px(13.)).text_color(t.tx2).child("No agent has connected yet."))
+                d.child(div().text_size(px(crate::theme::text::TITLE)).text_color(t.tx2).child("No agent has connected yet."))
                     .child(
                         div()
                             .max_w(px(720.))
@@ -1085,7 +1081,7 @@ impl AgentsPage {
                             .flex_row()
                             .items_center()
                             .gap(px(8.))
-                            .child(div().min_w_0().px(px(10.)).py(px(6.)).bg(t.field).border_1().border_color(t.line).text_size(px(11.5)).text_color(t.tx).overflow_hidden().whitespace_nowrap().text_ellipsis().child(cmd))
+                            .child(div().min_w_0().px(px(10.)).py(px(6.)).bg(t.field).border_1().border_color(t.line).text_size(px(crate::theme::text::UI)).text_color(t.tx).overflow_hidden().whitespace_nowrap().text_ellipsis().child(cmd))
                             .child(ui::button(t, "agents-copy-cmd", ui::Btn::Secondary).h(px(28.)).child("Copy").on_click(cx.listener(move |_, _, _, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy.clone()))))),
                     )
             })
@@ -1368,7 +1364,7 @@ impl AgentsPage {
                     .pb(px(6.))
                     .border_b_1()
                     .border_color(t.line)
-                    .text_size(px(11.))
+                    .text_size(px(crate::theme::text::SMALL))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(t.tx2)
                     .child(d.clone())
@@ -1419,7 +1415,7 @@ impl AgentsPage {
                                     .children(e.connection.as_deref().map(|c| self.conn_label(t, c, cx))),
                             )
                             .child(div().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx2).child(one_line(&shown_agent_text(e.statement().unwrap_or(e.tool.as_str()), 400))))
-                            .child(div().text_size(px(11.)).overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(if bad { t.err } else { t.tx3 }).child(note)),
+                            .child(div().text_size(px(crate::theme::text::SMALL)).overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(if bad { t.err } else { t.tx3 }).child(note)),
                     )
                     .on_click(cx.listener(move |v, ev: &ClickEvent, window, cx| {
                         v.focus_list(window, cx);
@@ -1455,7 +1451,7 @@ impl AgentsPage {
                 .border_color(t.line)
                 .flex()
                 .flex_col()
-                .text_size(px(12.))
+                .text_size(px(crate::theme::text::BODY))
                 .line_height(px(19.))
                 // Only the lines shown are coloured: a call can be a long script.
                 .children(crate::editor::highlighted_lines(t, head_lines(text, 14)).into_iter().take(14).map(|(s, runs)| {
@@ -1509,7 +1505,7 @@ impl AgentsPage {
                     None => div().relative().child(measure).child(self.received_panel(t, false, false, cx)).into_any_element(),
                 };
             }
-            let note = |s: &str| div().text_size(px(11.)).line_height(px(16.)).text_color(t.tx3).child(s.to_string()).into_any_element();
+            let note = |s: &str| div().text_size(px(crate::theme::text::SMALL)).line_height(px(16.)).text_color(t.tx3).child(s.to_string()).into_any_element();
             let body = match e.id.as_deref().map(|id| self.replies.get(id).cloned().unwrap_or(Kept::Reading)) {
                 Some(Kept::Reply { text, cut }) => div()
                     .flex()
@@ -1546,12 +1542,12 @@ impl AgentsPage {
                         .text_color(t.tx3)
                         .child(div().text_color(t.tx).font_weight(FontWeight::SEMIBOLD).child(e.tool.clone()))
                         .child(div().flex_1())
-                        .child(format!("{} · {}", e.ts.with_timezone(&Local).format("%b %-d, %Y · %H:%M:%S"), fmt_ms(e.ms))),
+                        .child(format!("{} · {}", e.ts.with_timezone(&Local).format("%b %-d, %Y · %H:%M:%S"), crate::fmt::ms(e.ms))),
                 )
                 .children(e.statement().map(|s| block(&shown_agent_text(s, 20_000))))
                 .children(e.rewritten.as_deref().map(|r| div().flex().flex_col().gap(px(6.)).child(ui::caps(t, "REWRITTEN")).child(block(&shown_agent_text(r, 20_000)))))
                 .child(grid)
-                .children(error.map(|m| div().text_size(px(11.5)).line_height(px(17.)).text_color(t.err).child(shown_agent_text(&m, 2_000))))
+                .children(error.map(|m| div().text_size(px(crate::theme::text::UI)).line_height(px(17.)).text_color(t.err).child(shown_agent_text(&m, 2_000))))
                 .children(received)
                 .when(e.statement().is_some(), |d| {
                     d.child(
@@ -1714,7 +1710,7 @@ impl AgentsPage {
             .gap(px(6.))
             .child(ui::caps(t, "WHAT THE AGENT RECEIVED"))
             .child(div().flex_1())
-            .child(div().text_size(px(11.)).text_color(t.tx3).child(count))
+            .child(div().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(count))
             .child(
                 ui::button(t, "agents-recv-zoom", ui::Btn::Ghost)
                     .h(px(24.))
@@ -1808,7 +1804,7 @@ pub(crate) fn reply_table(text: &str) -> Option<(Arc<dataman_core::result::Resul
 pub(crate) fn render_reply(t: &Theme, text: &str) -> AnyElement {
     use serde_json::Value;
     let Ok(v) = serde_json::from_str::<Value>(text) else {
-        return div().text_size(px(11.5)).line_height(px(17.)).text_color(t.tx2).child(text.chars().take(2000).collect::<String>()).into_any_element();
+        return div().text_size(px(crate::theme::text::UI)).line_height(px(17.)).text_color(t.tx2).child(text.chars().take(2000).collect::<String>()).into_any_element();
     };
     let result = v.get("results").and_then(|r| r.get(0)).unwrap_or(&v);
     let cell = |x: &Value| match x {
@@ -1822,7 +1818,7 @@ pub(crate) fn render_reply(t: &Theme, text: &str) -> AnyElement {
             parts.push(format!("{shown} of {n} shown"));
         }
         parts.extend(extra);
-        (!parts.is_empty()).then(|| div().text_size(px(11.)).text_color(t.tx3).child(parts.join(" · ")))
+        (!parts.is_empty()).then(|| div().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(parts.join(" · ")))
     };
     if let (Some(cols), Some(rows)) = (result.get("columns").and_then(Value::as_array), result.get("rows").and_then(Value::as_array)) {
         let names: Vec<String> = cols.iter().map(|c| c.get(0).and_then(Value::as_str).or(c.as_str()).unwrap_or("").to_string()).collect();
@@ -1859,7 +1855,7 @@ pub(crate) fn render_reply(t: &Theme, text: &str) -> AnyElement {
                     .border_1()
                     .border_color(t.line)
                     .bg(t.field)
-                    .text_size(px(11.5))
+                    .text_size(px(crate::theme::text::UI))
                     .child(div().flex().flex_col().min_w(px(widths.iter().sum::<f32>())).child(line(names, true)).children(shown.into_iter().map(|r| line(r, false)))),
             )
             .children(foot(rows.len().min(REPLY_ROWS), total.or(Some(rows.len() as u64)), None))
@@ -1871,7 +1867,7 @@ pub(crate) fn render_reply(t: &Theme, text: &str) -> AnyElement {
             .flex()
             .flex_col()
             .gap(px(6.))
-            .child(div().px(px(10.)).py(px(8.)).flex().flex_col().gap(px(4.)).bg(t.field).border_1().border_color(t.line).text_size(px(11.5)).children(lines))
+            .child(div().px(px(10.)).py(px(8.)).flex().flex_col().gap(px(4.)).bg(t.field).border_1().border_color(t.line).text_size(px(crate::theme::text::UI)).children(lines))
             .children(foot(docs.len().min(REPLY_ROWS), result.get("total").and_then(Value::as_u64).or(Some(docs.len() as u64)), None))
             .into_any_element();
     }
@@ -1895,8 +1891,8 @@ pub(crate) fn render_reply(t: &Theme, text: &str) -> AnyElement {
             .flex()
             .flex_col()
             .gap(px(8.))
-            .child(div().px(px(10.)).py(px(8.)).flex().flex_col().gap(px(4.)).bg(t.field).border_1().border_color(t.line).text_size(px(11.5)).text_color(t.tx).children(lines.into_iter().map(|l| div().child(l))))
-            .children(returning.map(|r| div().flex().flex_col().gap(px(6.)).child(div().text_size(px(10.5)).text_color(t.tx3).child("RETURNING")).child(r)))
+            .child(div().px(px(10.)).py(px(8.)).flex().flex_col().gap(px(4.)).bg(t.field).border_1().border_color(t.line).text_size(px(crate::theme::text::UI)).text_color(t.tx).children(lines.into_iter().map(|l| div().child(l))))
+            .children(returning.map(|r| div().flex().flex_col().gap(px(6.)).child(div().text_size(px(crate::theme::text::HINT)).text_color(t.tx3).child("RETURNING")).child(r)))
             .into_any_element();
     }
     let pretty = serde_json::to_string_pretty(&v).unwrap_or_default();
@@ -1913,12 +1909,12 @@ pub(crate) fn render_reply(t: &Theme, text: &str) -> AnyElement {
                 .bg(t.field)
                 .border_1()
                 .border_color(t.line)
-                .text_size(px(11.5))
+                .text_size(px(crate::theme::text::UI))
                 .line_height(px(17.))
                 .text_color(t.tx2)
                 .children(lines.into_iter().take(16).map(|l| div().whitespace_nowrap().overflow_hidden().child(l.to_string()))),
         )
-        .when(more > 0, |d| d.child(div().text_size(px(11.)).text_color(t.tx3).child(format!("{more} more lines"))))
+        .when(more > 0, |d| d.child(div().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(format!("{more} more lines"))))
         .into_any_element()
 }
 
@@ -2020,7 +2016,7 @@ pub(crate) fn qmark(t: &Theme, id: &str, tip: Tip) -> gpui::Stateful<gpui::Div> 
         .justify_center()
         .border_1()
         .border_color(t.line2)
-        .text_size(px(10.))
+        .text_size(px(crate::theme::text::TINY))
         .text_color(t.tx3)
         .hover(move |s| s.text_color(hov))
         .child("?")
@@ -2045,7 +2041,7 @@ impl Render for TipView {
                 .child(div().text_color(t.tx2).child(what.clone()))
                 .into_any_element(),
             TipPart::Code(s) => div().px(px(8.)).py(px(5.)).bg(t.field).border_1().border_color(t.line).font_family(code_font.clone()).text_color(t.tx).child(s.clone()).into_any_element(),
-            TipPart::Example(s) => div().flex().flex_col().gap(px(2.)).child(div().text_size(px(10.5)).text_color(t.tx3).child("EXAMPLE")).child(div().text_color(t.tx2).child(s.clone())).into_any_element(),
+            TipPart::Example(s) => div().flex().flex_col().gap(px(2.)).child(div().text_size(px(crate::theme::text::HINT)).text_color(t.tx3).child("EXAMPLE")).child(div().text_color(t.tx2).child(s.clone())).into_any_element(),
             TipPart::Note(s) => div().mt(px(2.)).pt(px(10.)).border_t_1().border_color(t.line).text_color(t.tx3).child(s.clone()).into_any_element(),
         });
         div()
@@ -2056,7 +2052,7 @@ impl Render for TipView {
             .bg(t.pop)
             .shadow(t.ring())
             .font_family(mono())
-            .text_size(px(11.5))
+            .text_size(px(crate::theme::text::UI))
             .line_height(px(17.))
             .flex()
             .flex_col()
@@ -2164,7 +2160,7 @@ impl Render for AgentsPage {
             .flex()
             .flex_col()
             .font_family(mono())
-            .text_size(px(12.))
+            .text_size(px(crate::theme::text::BODY))
             .text_color(t.tx)
             .child(body)
             // Over every page's header, at its right end (the headers leave it room).

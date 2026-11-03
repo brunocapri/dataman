@@ -176,6 +176,8 @@ pub struct ConnDialog {
     file: Entity<TextInput>,
     /// Picked with New…: the file is created when the connection is tested or saved.
     create_file: bool,
+    /// Save pressed: the connection (and its secrets) being written.
+    saving: bool,
     /// DuckDB: SQL may read and write files (`read_csv`, `COPY … TO`, ATTACH).
     file_access: bool,
 }
@@ -368,6 +370,7 @@ impl ConnDialog {
             file_access,
             file,
             create_file: false,
+            saving: false,
         }
     }
 
@@ -729,7 +732,6 @@ impl ConnDialog {
                 {
                     return Err(format!("the folder {} does not exist", dir.display()));
                 }
-                dataman_core::import::create_database(self.engine, &path).map_err(|e| format!("{e:#}"))?;
             }
             if p.name.is_empty() {
                 p.name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "database".into());
@@ -765,6 +767,15 @@ impl ConnDialog {
         let text = |e: &Entity<TextInput>| Some(e.read(cx).text().to_string()).filter(|s| !s.is_empty());
         let secret = if self.ssh.on && self.ssh.auth != SshAuth::Agent { text(&self.ssh.secret) } else { None };
         Ok((p, text(&self.password), secret))
+    }
+
+    /// Picked with New…: the file made, once what was typed is valid.
+    fn create_picked_file(&self, p: &ConnectionProfile) -> Result<(), String> {
+        let path = p.file_path();
+        if !self.is_file() || !self.create_file || path.is_file() {
+            return Ok(());
+        }
+        dataman_core::import::create_database(self.engine, &path).map_err(|e| format!("{e:#}"))
     }
 
     fn fields(&self, cx: &App) -> ConnectionProfile {
@@ -921,6 +932,9 @@ impl ConnDialog {
             Ok(v) => v,
             Err(e) => return self.invalid(e, cx),
         };
+        if let Err(e) = self.create_picked_file(&p) {
+            return self.invalid(e, cx);
+        }
         let core = self.store.read(cx).core.clone();
         let since = Instant::now();
         let target = match &p.ssh {
@@ -1017,6 +1031,9 @@ impl ConnDialog {
     }
 
     fn save(&mut self, cx: &mut Context<Self>) {
+        if self.saving {
+            return;
+        }
         if let Err(e) = self.collect(cx) {
             return self.invalid(e, cx);
         }
@@ -1154,24 +1171,41 @@ impl ConnDialog {
     }
 
     pub fn save_now(&mut self, cx: &mut Context<Self>) {
+        if self.saving {
+            return;
+        }
         let (mut p, pw, ssh_secret) = match self.collect(cx) {
             Ok(v) => v,
             Err(e) => return self.invalid(e, cx),
         };
+        if let Err(e) = self.create_picked_file(&p) {
+            return self.invalid(e, cx);
+        }
         let core = self.store.read(cx).core.clone();
         // Its agent login is Permissions' own: as saved now (made, rotated or removed
         // while this dialog was open), never this dialog's copy, nor a copied connection's.
         (p.agent_login, p.agents_refused) = core.config.get(&p.id).map(|c| (c.agent_login, c.agents_refused)).unwrap_or((None, false));
-        if let Err(e) = core.save_connection(p.clone(), pw.as_deref(), ssh_secret.as_deref()) {
-            self.test = Test::Invalid(format!("{e:#}"));
-            cx.notify();
-            return;
-        }
-        self.store.update(cx, |s, cx| {
-            s.disconnect(&p.id, cx);
-            s.reload(cx);
-        });
-        cx.emit(DialogEvent::Saved { id: p.id, password: pw });
+        // The keychain may be slow, or ask to be unlocked: saved off the UI thread.
+        self.saving = true;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let (saved, typed) = (p.clone(), pw.clone());
+            let r = cx.background_executor().spawn(async move { core.save_connection(saved, typed.as_deref(), ssh_secret.as_deref()) }).await;
+            let _ = this.update(cx, |d, cx| {
+                d.saving = false;
+                if let Err(e) = r {
+                    d.test = Test::Invalid(format!("{e:#}"));
+                    cx.notify();
+                    return;
+                }
+                d.store.update(cx, |s, cx| {
+                    s.disconnect(&p.id, cx);
+                    s.reload(cx);
+                });
+                cx.emit(DialogEvent::Saved { id: p.id, password: pw });
+            });
+        })
+        .detach();
     }
 
     fn delete(&mut self, cx: &mut Context<Self>) {
@@ -1208,8 +1242,8 @@ impl ConnDialog {
                 .when(!on, |d| d.hover(move |s| s.bg(hov).border_color(line)))
                 .cursor_pointer()
                 .child(crate::assets::logo(e).size(px(30.)))
-                .child(div().text_size(px(12.)).text_color(t.tx).child(e.label()))
-                .child(div().text_size(px(10.5)).text_color(t.tx3).child(family_label(e)))
+                .child(div().text_size(px(crate::theme::text::BODY)).text_color(t.tx).child(e.label()))
+                .child(div().text_size(px(crate::theme::text::HINT)).text_color(t.tx3).child(family_label(e)))
                 .on_click(cx.listener(move |d, _, _, cx| d.pick_engine(e, cx)))
         };
         let tile = |e: Engine| ui::probe(format!("engine-{}", e.label()), tile(e));
@@ -1219,7 +1253,7 @@ impl ConnDialog {
                     .flex()
                     .flex_col()
                     .gap(px(8.))
-                    .child(div().text_size(px(10.)).text_color(t.tx3).child(label))
+                    .child(div().text_size(px(crate::theme::text::TINY)).text_color(t.tx3).child(label))
                     .child(div().flex().flex_row().flex_wrap().gap(px(10.)).children(engines.into_iter().map(tile)))
             })
         };
@@ -1249,7 +1283,7 @@ impl ConnDialog {
                     )
                     .children(section("RELATIONAL", sql))
                     .children(section("NOSQL", other))
-                    .when(found.is_empty(), |d| d.child(div().h(px(96.)).flex().items_center().justify_center().text_size(px(12.)).text_color(t.tx3).child("No database by that name"))),
+                    .when(found.is_empty(), |d| d.child(div().h(px(96.)).flex().items_center().justify_center().text_size(px(crate::theme::text::BODY)).text_color(t.tx3).child("No database by that name"))),
             )
     }
 
@@ -1263,7 +1297,7 @@ impl ConnDialog {
             .flex()
             .flex_col()
             .gap(px(6.))
-            .child(div().text_size(px(10.)).text_color(label_color.unwrap_or(t.tx3)).child(label))
+            .child(div().text_size(px(crate::theme::text::TINY)).text_color(label_color.unwrap_or(t.tx3)).child(label))
             .child(ui::probe(format!("field-{probe}"), input.clone()))
     }
 
@@ -1278,7 +1312,7 @@ impl ConnDialog {
                 t.hov,
                 t.line2,
             ),
-            Test::Ok { info, ms } => ("●", t.ok, format!("Connected in {} · {}", fmt_ms(*ms), info.short_version()), String::new(), t.ok_s, t.line2),
+            Test::Ok { info, ms } => ("●", t.ok, format!("Connected in {} · {}", crate::fmt::rtt(*ms), info.short_version()), String::new(), t.ok_s, t.line2),
             Test::Failed { title, body, .. } => ("✕", t.err, title.clone(), body.clone(), t.err_s, t.err),
             Test::Invalid(msg) => ("✕", t.err, msg.clone(), String::new(), t.err_s, t.err),
             Test::HostKey(_) => return None,
@@ -1293,9 +1327,9 @@ impl ConnDialog {
             .bg(bg)
             .border_1()
             .border_color(ring)
-            .text_size(px(11.5))
+            .text_size(px(crate::theme::text::UI))
             .line_height(px(17.))
-            .child(div().flex_none().text_size(px(11.)).text_color(gcolor).child(glyph))
+            .child(div().flex_none().text_size(px(crate::theme::text::SMALL)).text_color(gcolor).child(glyph))
             .child(
                 div()
                     .flex_1()
@@ -1322,9 +1356,9 @@ impl ConnDialog {
                 .bg(t.warn_s)
                 .border_1()
                 .border_color(t.line2)
-                .text_size(px(11.5))
+                .text_size(px(crate::theme::text::UI))
                 .line_height(px(17.))
-                .child(div().flex_none().text_size(px(11.)).text_color(t.warn).child("?"))
+                .child(div().flex_none().text_size(px(crate::theme::text::SMALL)).text_color(t.warn).child("?"))
                 .child(
                     div()
                         .flex_1()
@@ -1359,7 +1393,7 @@ impl ConnDialog {
             .gap(px(8.))
             .cursor_pointer()
             .child(ui::switch_track(t, "ssh-switch", s.on))
-            .child(div().text_size(px(10.)).text_color(if s.on { t.tx2 } else { t.tx3 }).child("SSH"))
+            .child(div().text_size(px(crate::theme::text::TINY)).text_color(if s.on { t.tx2 } else { t.tx3 }).child("SSH"))
             .on_click(cx.listener(|d, _, window, cx| {
                 d.ssh.on = !d.ssh.on;
                 d.follow_host(cx);
@@ -1397,7 +1431,7 @@ impl ConnDialog {
                 row()
                     .items_end()
                     .child(self.field_as(t, "SSH USER", "USER", &s.user, None))
-                    .child(div().flex_1().flex().flex_col().gap(px(6.)).child(div().text_size(px(10.)).text_color(t.tx3).child("AUTH")).child(auth)),
+                    .child(div().flex_1().flex().flex_col().gap(px(6.)).child(div().text_size(px(crate::theme::text::TINY)).text_color(t.tx3).child("AUTH")).child(auth)),
             )
             .when(s.auth == SshAuth::Key, |d| {
                 d.child(row().child(self.field(t, "KEY FILE", &s.key, None)).child(self.field(t, "PASSPHRASE", &s.secret, None)))
@@ -1427,8 +1461,8 @@ impl ConnDialog {
             .gap(px(6.))
             .cursor_pointer()
             .child(ui::disclosure("mcp-advanced-chev", a.open, 11., t.tx3))
-            .child(div().text_size(px(10.)).text_color(if a.open { t.tx2 } else { t.tx3 }).child("MCP · ADVANCED"))
-            .when(!a.open, |d| d.children(summary.map(|s| div().text_size(px(10.5)).text_color(t.tx3).child(s))))
+            .child(div().text_size(px(crate::theme::text::TINY)).text_color(if a.open { t.tx2 } else { t.tx3 }).child("MCP · ADVANCED"))
+            .when(!a.open, |d| d.children(summary.map(|s| div().text_size(px(crate::theme::text::HINT)).text_color(t.tx3).child(s))))
             .when(!a.open && a.yolo && !off, |d| d.child(yolo_badge(t)))
             .on_click(cx.listener(|d, _, window, cx| {
                 d.advanced.open = !d.advanced.open;
@@ -1441,7 +1475,7 @@ impl ConnDialog {
         if !a.open {
             return col;
         }
-        let note = |text: &'static str| div().text_size(px(11.)).line_height(px(16.)).text_color(t.tx3).child(text);
+        let note = |text: &'static str| div().text_size(px(crate::theme::text::SMALL)).line_height(px(16.)).text_color(t.tx3).child(text);
         let rows = a.allowed.iter().enumerate().map(|(i, s)| {
             div()
                 .min_h(px(26.))
@@ -1454,7 +1488,7 @@ impl ConnDialog {
                 .bg(t.card)
                 .border_1()
                 .border_color(t.line)
-                .child(div().flex_1().min_w_0().py(px(4.)).text_size(px(11.5)).text_color(t.tx2).child(s.clone()))
+                .child(div().flex_1().min_w_0().py(px(4.)).text_size(px(crate::theme::text::UI)).text_color(t.tx2).child(s.clone()))
                 .child(ui::icon_button(t, ("allowed-rm", i), Icon::Close, 22., 11.).tip(ui::text_tooltip("Remove")).on_click(cx.listener(move |d, _, _, cx| {
                     if i < d.advanced.allowed.len() {
                         d.advanced.allowed.remove(i);
@@ -1473,11 +1507,11 @@ impl ConnDialog {
             .flex()
             .flex_col()
             .gap(px(6.))
-            .child(div().text_size(px(10.)).text_color(t.tx3).child("ALLOWED QUERIES"))
+            .child(div().text_size(px(crate::theme::text::TINY)).text_color(t.tx3).child("ALLOWED QUERIES"))
             .child(note("Agents run these without asking, whatever the tier above (never while it is off or the database is read-only). Each is one statement, matched statement by statement: the same words in the same order, case, spacing and comments aside; a ? stands for exactly one value (a string, a number or $1), never for more SQL."))
             .children(rows)
             .child(add)
-            .children(a.error.clone().map(|e| div().text_size(px(11.)).text_color(t.err).child(e)));
+            .children(a.error.clone().map(|e| div().text_size(px(crate::theme::text::SMALL)).text_color(t.err).child(e)));
         let switch = div()
             .flex_none()
             .w(px(26.))
@@ -1505,11 +1539,11 @@ impl ConnDialog {
                     .flex()
                     .flex_col()
                     .gap(px(3.))
-                    .child(div().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).text_color(t.err).child("YOLO · agents run anything"))
-                    .child(div().text_size(px(11.)).line_height(px(16.)).text_color(t.tx2).child(
+                    .child(div().text_size(px(crate::theme::text::BODY)).font_weight(FontWeight::SEMIBOLD).text_color(t.err).child("YOLO · agents run anything"))
+                    .child(div().text_size(px(crate::theme::text::SMALL)).line_height(px(16.)).text_color(t.tx2).child(
                         "Every statement an agent sends runs here at once, with nobody asked: DROP, TRUNCATE, DELETE without WHERE, any number of rows, on production too. Read-only still refuses writes; MCP off still hides the connection.",
                     ))
-                    .when(a.yolo && off, |d| d.child(div().text_size(px(11.)).text_color(t.tx3).child("No effect while MCP is off."))),
+                    .when(a.yolo && off, |d| d.child(div().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child("No effect while MCP is off."))),
             );
         let confirm = a.confirm.then(|| {
             div()
@@ -1522,12 +1556,12 @@ impl ConnDialog {
                 .bg(t.err_s)
                 .border_1()
                 .border_color(t.err)
-                .child(div().flex_none().text_size(px(12.)).text_color(t.err).child("!"))
+                .child(div().flex_none().text_size(px(crate::theme::text::BODY)).text_color(t.err).child("!"))
                 .child(
                     div()
                         .flex_1()
                         .min_w_0()
-                        .text_size(px(11.5))
+                        .text_size(px(crate::theme::text::UI))
                         .line_height(px(17.))
                         .text_color(t.tx)
                         .child("This connection is production: with YOLO, an agent can change or destroy its data and nobody is asked first."),
@@ -1549,17 +1583,13 @@ pub(crate) fn yolo_badge(t: &Theme) -> gpui::Div {
         .items_center()
         .bg(t.err)
         .text_color(t.on_err)
-        .text_size(px(10.5))
+        .text_size(px(crate::theme::text::HINT))
         .font_weight(FontWeight::SEMIBOLD)
         .child("YOLO")
 }
 
 pub fn ssh_error(e: &anyhow::Error) -> Option<SshError> {
     e.chain().find_map(|c| c.downcast_ref::<SshError>()).cloned()
-}
-
-fn fmt_ms(ms: f64) -> String {
-    if ms < 10. { format!("{ms:.1} ms") } else { format!("{ms:.0} ms") }
 }
 
 pub fn server_message(e: &anyhow::Error) -> (String, String, bool) {
@@ -1639,7 +1669,7 @@ impl Render for ConnDialog {
             .gap(px(7.))
             .border_1()
             .border_color(t.line2)
-            .text_size(px(11.5))
+            .text_size(px(crate::theme::text::UI))
             .text_color(t.tx)
             .cursor_pointer()
             .hover(move |s| s.bg(hov))
@@ -1693,7 +1723,7 @@ impl Render for ConnDialog {
             .flex_row()
             .items_center()
             .gap(px(8.))
-            .text_size(px(11.5))
+            .text_size(px(crate::theme::text::UI))
             .text_color(t.tx2)
             .cursor_pointer()
             .child(ui::switch_track(&t, "read-only-switch", self.read_only))
@@ -1709,7 +1739,7 @@ impl Render for ConnDialog {
         let entry = ui::segmented(&t).h(px(24.)).children([(Entry::Fields, "Fields"), (Entry::Url, "URL")].map(|(e, label)| {
             ui::probe(format!("entry-{label}"), ui::segment(&t, ("entry", e as usize), label, e == self.entry).on_click(cx.listener(move |d, _, window, cx| d.set_entry(e, window, cx))))
         }));
-        let caption = |text: &'static str| div().text_size(px(10.)).text_color(t.tx3).child(text);
+        let caption = |text: &'static str| div().text_size(px(crate::theme::text::TINY)).text_color(t.tx3).child(text);
         let row = || div().flex().flex_row().gap(px(12.));
         let file_mode = self.is_file();
         let file_access = div()
@@ -1719,7 +1749,7 @@ impl Render for ConnDialog {
             .flex_row()
             .items_center()
             .gap(px(8.))
-            .text_size(px(11.5))
+            .text_size(px(crate::theme::text::UI))
             .text_color(t.tx2)
             .cursor_pointer()
             .child(ui::switch_track(&t, "file-access-switch", self.file_access))
@@ -1835,14 +1865,14 @@ impl Render for ConnDialog {
                                     .child(mcp),
                             ),
                     )
-                    .children(tls_note.map(|(c, note)| ui::probe("tls-note", div().mt(px(-6.)).text_size(px(11.)).text_color(c).child(note))))
+                    .children(tls_note.map(|(c, note)| ui::probe("tls-note", div().mt(px(-6.)).text_size(px(crate::theme::text::SMALL)).text_color(c).child(note))))
                     .child(
                         div()
                             .flex()
                             .flex_row()
                             .items_end()
                             .gap(px(16.))
-                            .child(div().flex().flex_col().gap(px(6.)).child(div().text_size(px(10.)).text_color(t.tx3).child("ENVIRONMENT")).child(env))
+                            .child(div().flex().flex_col().gap(px(6.)).child(div().text_size(px(crate::theme::text::TINY)).text_color(t.tx3).child("ENVIRONMENT")).child(env))
                             .child(ui::probe("read-only", read_only)),
                     )
                     .when(dataman_core::MCP_ADVANCED, |d| d.child(self.mcp_advanced(&t, cx)))
@@ -1854,7 +1884,7 @@ impl Render for ConnDialog {
                                 .flex_row()
                                 .items_center()
                                 .gap(px(8.))
-                                .text_size(px(11.))
+                                .text_size(px(crate::theme::text::SMALL))
                                 .text_color(t.tx3)
                                 .child(div().text_color(t.tx4).child("url"))
                                 .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(url))
@@ -1901,7 +1931,7 @@ impl Render for ConnDialog {
                             .h(px(28.))
                             .px(px(12.))
                             .child("Cancel")
-                            .child(div().text_size(px(10.5)).opacity(0.6).child("esc"))
+                            .child(div().text_size(px(crate::theme::text::HINT)).opacity(0.6).child("esc"))
                             .on_click(cx.listener(|d, _, _, cx| d.cancel(cx))))
                     )
                     .child(
@@ -1910,8 +1940,8 @@ impl Render for ConnDialog {
                             .px(px(12.))
                             .font_weight(FontWeight::SEMIBOLD)
                             .when(testing, |d| d.bg(t.prs).text_color(t.tx3))
-                            .child(if self.is_new || self.password_needed { "Save & connect" } else { "Save" })
-                            .child(div().text_size(px(10.5)).font_weight(FontWeight::NORMAL).opacity(0.75).child(crate::ui::keys_text("⌘↩")))
+                            .child(if self.saving { "Saving…" } else if self.is_new || self.password_needed { "Save & connect" } else { "Save" })
+                            .child(div().text_size(px(crate::theme::text::HINT)).font_weight(FontWeight::NORMAL).opacity(0.75).child(crate::ui::keys_text("⌘↩")))
                             .on_click(cx.listener(|d, _, _, cx| d.save(cx))))
                     ),
             );

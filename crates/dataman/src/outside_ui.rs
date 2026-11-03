@@ -156,7 +156,7 @@ impl Workspace {
                     .flex()
                     .flex_col()
                     .gap(px(2.))
-                    .child(div().flex().flex_row().gap(px(8.)).child(ui::caps(&t, title)).children(tag.map(|s| div().text_size(px(10.5)).text_color(t.tx3).child(s))))
+                    .child(div().flex().flex_row().gap(px(8.)).child(ui::caps(&t, title)).children(tag.map(|s| div().text_size(px(crate::theme::text::HINT)).text_color(t.tx3).child(s))))
                     .children(rows),
             );
         };
@@ -194,7 +194,7 @@ impl Workspace {
                         .child(div().id("outside-review-body").max_h(px(460.)).overflow_y_scroll().px(px(20.)).py(px(16.)).child(body))
                         .child(
                             ui::modal_footer(&t)
-                                .text_size(px(11.))
+                                .text_size(px(crate::theme::text::SMALL))
                                 .gap(px(16.))
                                 .child(div().flex_1().min_w_0().text_color(t.tx3).child("Applied all at once, and logged in Audit."))
                                 .child(

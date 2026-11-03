@@ -10,7 +10,8 @@ use dataman_core::groups::Pane;
 use dataman_core::result::{CopyFormat, Phase};
 use dataman_core::{Connection, TxState, TxStatus};
 
-use crate::app::{Drag, Region, Workspace, fmt_dur};
+use crate::app::{Drag, Region, Workspace};
+use crate::fmt::dur as fmt_dur;
 use crate::assets::{Icon, icon};
 use crate::grid::{fmt_clock, statement_verb, ui_count};
 use crate::messages::{self, Of, Row as MessageRow};
@@ -314,8 +315,8 @@ impl Workspace {
         }
         extra(&mut els, &mut is_tab, m.gap(pane, n, t, now).into_iter().collect());
         extra(&mut els, &mut is_tab, m.stray_ghosts(pane, &ids, t, now));
-        let bounds = if pane == Pane::Left { self.tab_bounds.clone() } else { self.tab_bounds_right.clone() };
-        let scroll = self.strip_scroll[pane.index()].clone();
+        let bounds = self.panes[pane.index()].tab_bounds.clone();
+        let scroll = self.panes[pane.index()].strip_scroll.clone();
         let front = match &self.split {
             Some(_) => self.front_of(pane),
             None => self.active_tab(),
@@ -323,7 +324,7 @@ impl Workspace {
         .map(|t| t.entity_id());
         // Followed while the front tab grows, and once more on the frame it stops (its full
         // width): a slow renderer's last growing frame can be well short of it.
-        let seen = &self.strip_front[pane.index()];
+        let seen = &self.panes[pane.index()].strip_front;
         let growing = front.is_some_and(|f| m.growing(f));
         if seen.get() != (front, growing) || growing {
             seen.set((front, growing));
@@ -343,7 +344,7 @@ impl Workspace {
                     .into_any_element()
             }
         });
-        let parts = self.strip_parts.clone();
+        let parts = self.panes[pane.index()].strip_parts.clone();
         let offset = scroll.clone();
         let strip_tabs = div()
             // The scroll handle has the tabs' bounds (a tracked scroller hands its children's bounds
@@ -371,7 +372,7 @@ impl Workspace {
             .track_scroll(&scroll)
             .children(els);
         div()
-            .on_children_prepainted(move |b, _, _| parts.borrow_mut()[pane.index()] = b)
+            .on_children_prepainted(move |b, _, _| *parts.borrow_mut() = b)
             .id(("strip", pane.index()))
             .when_some(width, |d, w| d.w(px(w)).flex_none())
             .when(width.is_none(), |d| d.flex_1())
@@ -400,7 +401,7 @@ impl Workspace {
                     let id = ev.dragged_item().downcast_ref::<crate::app::DraggedTab>()?.0;
                     let members = w.group(pane);
                     let from = members.iter().position(|&i| w.tabs[i].entity_id() == id);
-                    let bounds = if pane == Pane::Left { w.tab_bounds.borrow() } else { w.tab_bounds_right.borrow() };
+                    let bounds = w.panes[pane.index()].tab_bounds.borrow();
                     let mids: Vec<f32> = bounds.iter().take(members.len()).map(|b| b.center().x.pt()).collect();
                     let s = dataman_core::order::slot(&mids, pos.x.pt());
                     from.is_none_or(|f| dataman_core::order::moves(f, s)).then_some(s)
@@ -439,7 +440,7 @@ impl Workspace {
         let id = self.tabs[ix].entity_id();
         let pane = self.pane_of(id);
         let Some(gi) = group.iter().position(|g| *g == id) else { return };
-        let bounds = if pane == Pane::Left { self.tab_bounds.borrow() } else { self.tab_bounds_right.borrow() };
+        let bounds = self.panes[pane.index()].tab_bounds.borrow();
         let Some(width) = bounds.get(gi).map(|b| b.size.width.pt()) else { return };
         drop(bounds);
         let t = cx.theme();
@@ -479,7 +480,7 @@ impl Workspace {
         let at = self.tab_drop.map(|s| (self.tab_drop_pane, s));
         let home = self.pane_of(id);
         let gi = self.group(home).iter().position(|&i| self.tabs[i].entity_id() == id);
-        let bounds = if home == Pane::Left { self.tab_bounds.clone() } else { self.tab_bounds_right.clone() };
+        let bounds = self.panes[home.index()].tab_bounds.clone();
         let width = move || gi.and_then(|gi| bounds.borrow().get(gi).map(|b| b.size.width.pt())).unwrap_or(TAB_MIN);
         self.tab_motion.follow_drop(id, width, at, cx);
     }
@@ -522,7 +523,7 @@ impl Workspace {
                 .flex()
                 .items_center()
                 .justify_center()
-                .text_size(px(13.))
+                .text_size(px(crate::theme::text::TITLE))
                 .cursor_pointer()
                 .hover(move |s| s.text_color(tx_c))
                 .child("×")
@@ -545,7 +546,7 @@ impl Workspace {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .text_size(px(11.))
+                        .text_size(px(crate::theme::text::SMALL))
                         .text_color(ind_color)
                         .group_hover(group.clone(), |s| s.invisible())
                         .child(ui::glyph_el(&s, ind_color)),
@@ -559,7 +560,7 @@ impl Workspace {
                         .child(close.text_color(tx3)),
                 )
                 .into_any_element(),
-            Some(s) => div().flex_none().text_size(px(11.)).text_color(ind_color).child(s).into_any_element(),
+            Some(s) => div().flex_none().text_size(px(crate::theme::text::SMALL)).text_color(ind_color).child(s).into_any_element(),
             None => close
                 .text_color(if active { tx3 } else { gpui::transparent_black() })
                 .group_hover(group.clone(), move |s| s.text_color(tx3))
@@ -749,7 +750,7 @@ impl Workspace {
     }
 
     fn messages_of(&self, pane: Pane) -> &crate::messages::Messages {
-        if pane == Pane::Left { &self.messages } else { &self.messages_right }
+        &self.panes[pane.index()].messages
     }
 
     fn render_group(&mut self, tab: gpui::Entity<QueryTab>, pane: Pane, focused: bool, group_w: f32, window: &mut Window, cx: &mut Context<Self>) -> Div {
@@ -936,7 +937,7 @@ impl Workspace {
             b.pl(px(9.))
                 .pr(px(6.))
                 .when(v.cancelling, |d| d.bg(t.warn_s).text_color(t.warn).border_1().border_color(t.warn))
-                .child(div().text_size(px(11.)).child(glyph))
+                .child(div().text_size(px(crate::theme::text::SMALL)).child(glyph))
                 .child(label)
                 .when_some(crate::keymap::key("cancel"), |d, k| d.child(ui::keycap_sm(t.key, t.tx2, k)))
                 .on_click(cx.listener(|w, _, _, cx| w.cancel_active(cx)))
@@ -955,7 +956,7 @@ impl Workspace {
                 .bg(t.hov)
                 .border_1()
                 .border_color(t.line2)
-                .text_size(px(10.5))
+                .text_size(px(crate::theme::text::HINT))
                 .text_color(t.tx3)
                 .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(name))
                 .tip(ui::tooltip(tip, None, None))
@@ -964,7 +965,7 @@ impl Workspace {
         let failed = v.tx.status == TxStatus::Failed;
         let tx_controls = tx_open.then(|| {
             let live = !busy && !v.ending;
-            let small = |b: gpui::Stateful<Div>| b.h(px(24.)).px(px(8.)).gap(px(6.)).text_size(px(11.5));
+            let small = |b: gpui::Stateful<Div>| b.h(px(24.)).px(px(8.)).gap(px(6.)).text_size(px(crate::theme::text::UI));
             let commit = small(ui::button(t, "tb-commit", Btn::Secondary))
                 .when(!live || failed, |d| d.text_color(t.tx4))
                 .child("Commit")
@@ -984,9 +985,9 @@ impl Workspace {
                 .child(commit)
                 .child(rollback)
         });
-        let (parts, pane) = (self.toolbar_parts.clone(), v.pane);
+        let parts = self.panes[v.pane.index()].toolbar_parts.clone();
         div()
-            .on_children_prepainted(move |b, _, _| parts.borrow_mut()[pane.index()] = b)
+            .on_children_prepainted(move |b, _, _| *parts.borrow_mut() = b)
             .overflow_hidden()
             .h(px(metrics::TOOLBAR_H))
             .flex_none()
@@ -1042,7 +1043,7 @@ impl Workspace {
             .flex_row()
             .items_center()
             .gap(px(6.))
-            .text_size(px(11.5))
+            .text_size(px(crate::theme::text::UI))
             .text_color(if v.conn.is_some() { t.tx2 } else { t.tx3 })
             .cursor_pointer()
             .when(open, |d| d.bg(prs))
@@ -1069,7 +1070,7 @@ impl Workspace {
                         .flex_row()
                         .items_center()
                         .gap(px(8.))
-                        .text_size(px(11.))
+                        .text_size(px(crate::theme::text::SMALL))
                         .text_color(t.tx3)
                         .child(div().flex_none().size(px(7.)).bg(t.profile_color(p)))
                         .children(crate::assets::small_logo(p.engine, 12.))
@@ -1243,75 +1244,7 @@ impl Workspace {
             }
             _ => (String::new(), false),
         };
-        let action = |id: &'static str, label: SharedString, command: &'static str| {
-            ui::button(t, id, Btn::Secondary)
-                .h(px(24.))
-                .px(px(8.))
-                .gap(px(6.))
-                .text_size(px(11.5))
-                .child(label)
-                .when_some(crate::keymap::key(command), |d, k| d.child(ui::key_hint(k)))
-        };
-        let mut actions: Vec<AnyElement> = Vec::new();
-        match state {
-            ResultState::Paused => {
-                actions.push(action("rb-more", format!("Fetch next {}", crate::grid::fetch_step()).into(), "fetch_more").on_click(cx.listener(|w, _, _, cx| {
-                    if let Some(t) = w.active_tab().cloned() {
-                        t.update(cx, |t, cx| t.fetch_more(cx));
-                    }
-                })).into_any_element());
-                actions.push(action("rb-all", fetch_all_label(rs.as_deref()), "fetch_all").on_click(cx.listener(|w, _, _, cx| {
-                    if let Some(t) = w.active_tab().cloned() {
-                        t.update(cx, |t, cx| t.fetch_all(cx));
-                    }
-                })).into_any_element());
-            }
-            ResultState::Cancelled => {
-                actions.push(action("rb-rerun", "Re-run".into(), "run_all").on_click(cx.listener(|w, _, window, cx| w.run_active(window, cx))).into_any_element());
-            }
-            ResultState::Error | ResultState::ErrPartial => {
-                let label = if state == ResultState::Error { "Show in editor" } else { "Show error" };
-                actions.push(action("rb-show", label.into(), "jump_to_error").on_click(cx.listener(|w, _, window, cx| {
-                    if let Some(tab) = w.active_tab().cloned() {
-                        if tab.read(cx).zoomed {
-                            w.toggle_result_zoom(window, cx);
-                        }
-                        let e = tab.read(cx).editor.clone();
-                        e.update(cx, |e, cx| e.jump_to_error(cx));
-                        window.focus(&e.focus_handle(cx), cx);
-                    }
-                })).into_any_element());
-            }
-            ResultState::Sorting => {
-                actions.push(action("rb-stop", "Stop".into(), "cancel").on_click(cx.listener(|w, _, _, cx| w.cancel_active(cx))).into_any_element());
-            }
-            ResultState::Edit => {
-                actions.push(
-                    ui::button(t, "rb-discard", Btn::Ghost)
-                        .h(px(24.))
-                        .px(px(8.))
-                        .gap(px(6.))
-                        .text_size(px(11.5))
-                        .child("Discard")
-                        .when_some(crate::keymap::key("discard_changes"), |d, k| d.child(ui::key_hint(k)))
-                        .on_click(cx.listener(|_, _, window, cx| window.dispatch_action(Box::new(crate::app::DiscardChanges), cx)))
-                        .into_any_element(),
-                );
-                actions.push(
-                    ui::button(t, "rb-review", Btn::Primary)
-                        .h(px(24.))
-                        .px(px(8.))
-                        .gap(px(6.))
-                        .text_size(px(11.5))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child("Review & commit")
-                        .when_some(crate::keymap::key("review_changes"), |d, k| d.child(ui::key_hint(k)))
-                        .on_click(cx.listener(|_, _, window, cx| window.dispatch_action(Box::new(crate::app::ReviewChanges), cx)))
-                        .into_any_element(),
-                );
-            }
-            _ => {}
-        }
+        let mut actions = self.result_bar_actions(state, rs.as_deref(), t, cx);
         let pager = {
             let tr = tab.read(cx);
             let finished = rs.as_ref().is_some_and(|r| r.phase().is_finished());
@@ -1326,7 +1259,7 @@ impl Workspace {
                 .flex_row()
                 .items_baseline()
                 .gap(px(5.))
-                .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(t.tx).child(p.range()))
+                .child(div().text_size(px(crate::theme::text::TITLE)).font_weight(FontWeight::SEMIBOLD).text_color(t.tx).child(p.range()))
                 .children(p.of().map(|o| {
                     let hov = t.tx;
                     div()
@@ -1377,26 +1310,8 @@ impl Workspace {
             if tr.shown_key() == Some(Key::Messages) { tr.batch_items().iter().any(|b| b.rs.as_ref().is_some_and(|r| r.has_messages())) } else { rs.as_ref().is_some_and(|r| r.has_messages()) }
         };
         let copied = grid.read(cx).copied_at.and_then(|at| crate::motion::copied(at, std::time::Instant::now(), cx.reduce_motion()));
-        let copy_menu = copy_open.then(|| {
-            div().absolute().right_0().top(px(26.)).child(gpui::deferred(
-                gpui::anchored().anchor(gpui::Anchor::TopRight).snap_to_window_with_margin(px(8.)).child(ui::menu_in("copy-menu-in", 
-                    ui::popover(t)
-                        .w(px(236.))
-                        .on_mouse_down_out(cx.listener(|w, _, _, cx| {
-                            w.copy_menu = false;
-                            ui::menu_shut("copy-menu");
-                            cx.notify();
-                        }))
-                        .child(ui::menu_item(t, "cp-tsv", "Copy as TSV", crate::keymap::key("copy_tsv").as_deref(), has_rows).on_click(cx.listener(|w, _, _, cx| w.copy_selection(CopyFormat::Tsv, false, cx))))
-                        .child(ui::menu_item(t, "cp-tsv-hdr", "Copy as TSV with Headers", crate::keymap::key("copy_with_headers").as_deref(), has_rows).on_click(cx.listener(|w, _, _, cx| w.copy_selection(CopyFormat::Tsv, true, cx))))
-                        .child(ui::menu_item(t, "cp-csv", "Copy as CSV", crate::keymap::key("copy_csv").as_deref(), has_rows).on_click(cx.listener(|w, _, _, cx| w.copy_selection(CopyFormat::Csv, false, cx))))
-                        .child(ui::menu_item(t, "cp-csv-hdr", "Copy as CSV with Headers", None, has_rows).on_click(cx.listener(|w, _, _, cx| w.copy_selection(CopyFormat::Csv, true, cx))))
-                        .when(printed, |d| d.child(ui::menu_sep(t)).child(ui::menu_item(t, "cp-msg", "Copy Messages", None, true).on_click(cx.listener(|w, _, _, cx| w.copy_messages(cx))))),
-                )),
-            )
-            .priority(3))
-        });
-        let ghost = |id: &'static str| ui::button(t, id, Btn::Ghost).h(px(24.)).px(px(7.)).gap(px(5.)).text_size(px(11.5));
+        let copy_menu = copy_open.then(|| self.render_copy_menu(has_rows, printed, t, cx));
+        let ghost = |id: &'static str| ui::button(t, id, Btn::Ghost).h(px(24.)).px(px(7.)).gap(px(5.)).text_size(px(crate::theme::text::UI));
         div()
             .h(px(metrics::RESULT_BAR_H))
             .flex_none()
@@ -1421,7 +1336,7 @@ impl Workspace {
                     .flex_row()
                     .items_baseline()
                     .gap(px(5.))
-                    .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(t.tx).child(r))
+                    .child(div().text_size(px(crate::theme::text::TITLE)).font_weight(FontWeight::SEMIBOLD).text_color(t.tx).child(r))
                     .child(div().text_color(t.tx3).child(what))
             }))
             .children(metrics_.into_iter().map(|(k, v)| {
@@ -1475,7 +1390,7 @@ impl Workspace {
                             .items_center()
                             .justify_center()
                             .gap(px(4.))
-                            .text_size(px(11.5))
+                            .text_size(px(crate::theme::text::UI))
                             .text_color(t.ok)
                             .opacity(a)
                             .cursor_pointer()
@@ -1513,6 +1428,100 @@ impl Workspace {
             })
     }
 
+    /// The result bar's buttons for what the result is in (fetch more, re-run, show the error…).
+    fn result_bar_actions(&self, state: ResultState, rs: Option<&dataman_core::ResultSet>, t: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let action = |id: &'static str, label: SharedString, command: &'static str| {
+            ui::button(t, id, Btn::Secondary)
+                .h(px(24.))
+                .px(px(8.))
+                .gap(px(6.))
+                .text_size(px(crate::theme::text::UI))
+                .child(label)
+                .when_some(crate::keymap::key(command), |d, k| d.child(ui::key_hint(k)))
+        };
+        let mut actions: Vec<AnyElement> = Vec::new();
+        match state {
+            ResultState::Paused => {
+                actions.push(action("rb-more", format!("Fetch next {}", crate::grid::fetch_step()).into(), "fetch_more").on_click(cx.listener(|w, _, _, cx| {
+                    if let Some(t) = w.active_tab().cloned() {
+                        t.update(cx, |t, cx| t.fetch_more(cx));
+                    }
+                })).into_any_element());
+                actions.push(action("rb-all", fetch_all_label(rs), "fetch_all").on_click(cx.listener(|w, _, _, cx| {
+                    if let Some(t) = w.active_tab().cloned() {
+                        t.update(cx, |t, cx| t.fetch_all(cx));
+                    }
+                })).into_any_element());
+            }
+            ResultState::Cancelled => {
+                actions.push(action("rb-rerun", "Re-run".into(), "run_all").on_click(cx.listener(|w, _, window, cx| w.run_active(window, cx))).into_any_element());
+            }
+            ResultState::Error | ResultState::ErrPartial => {
+                let label = if state == ResultState::Error { "Show in editor" } else { "Show error" };
+                actions.push(action("rb-show", label.into(), "jump_to_error").on_click(cx.listener(|w, _, window, cx| {
+                    if let Some(tab) = w.active_tab().cloned() {
+                        if tab.read(cx).zoomed {
+                            w.toggle_result_zoom(window, cx);
+                        }
+                        let e = tab.read(cx).editor.clone();
+                        e.update(cx, |e, cx| e.jump_to_error(cx));
+                        window.focus(&e.focus_handle(cx), cx);
+                    }
+                })).into_any_element());
+            }
+            ResultState::Sorting => {
+                actions.push(action("rb-stop", "Stop".into(), "cancel").on_click(cx.listener(|w, _, _, cx| w.cancel_active(cx))).into_any_element());
+            }
+            ResultState::Edit => {
+                actions.push(
+                    ui::button(t, "rb-discard", Btn::Ghost)
+                        .h(px(24.))
+                        .px(px(8.))
+                        .gap(px(6.))
+                        .text_size(px(crate::theme::text::UI))
+                        .child("Discard")
+                        .when_some(crate::keymap::key("discard_changes"), |d, k| d.child(ui::key_hint(k)))
+                        .on_click(cx.listener(|_, _, window, cx| window.dispatch_action(Box::new(crate::app::DiscardChanges), cx)))
+                        .into_any_element(),
+                );
+                actions.push(
+                    ui::button(t, "rb-review", Btn::Primary)
+                        .h(px(24.))
+                        .px(px(8.))
+                        .gap(px(6.))
+                        .text_size(px(crate::theme::text::UI))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child("Review & commit")
+                        .when_some(crate::keymap::key("review_changes"), |d, k| d.child(ui::key_hint(k)))
+                        .on_click(cx.listener(|_, _, window, cx| window.dispatch_action(Box::new(crate::app::ReviewChanges), cx)))
+                        .into_any_element(),
+                );
+            }
+            _ => {}
+        }
+        actions
+    }
+
+    fn render_copy_menu(&self, has_rows: bool, printed: bool, t: &Theme, cx: &mut Context<Self>) -> gpui::Div {
+        div().absolute().right_0().top(px(26.)).child(gpui::deferred(
+                gpui::anchored().anchor(gpui::Anchor::TopRight).snap_to_window_with_margin(px(8.)).child(ui::menu_in("copy-menu-in", 
+                    ui::popover(t)
+                        .w(px(236.))
+                        .on_mouse_down_out(cx.listener(|w, _, _, cx| {
+                            w.copy_menu = false;
+                            ui::menu_shut("copy-menu");
+                            cx.notify();
+                        }))
+                        .child(ui::menu_item(t, "cp-tsv", "Copy as TSV", crate::keymap::key("copy_tsv").as_deref(), has_rows).on_click(cx.listener(|w, _, _, cx| w.copy_selection(CopyFormat::Tsv, false, cx))))
+                        .child(ui::menu_item(t, "cp-tsv-hdr", "Copy as TSV with Headers", crate::keymap::key("copy_with_headers").as_deref(), has_rows).on_click(cx.listener(|w, _, _, cx| w.copy_selection(CopyFormat::Tsv, true, cx))))
+                        .child(ui::menu_item(t, "cp-csv", "Copy as CSV", crate::keymap::key("copy_csv").as_deref(), has_rows).on_click(cx.listener(|w, _, _, cx| w.copy_selection(CopyFormat::Csv, false, cx))))
+                        .child(ui::menu_item(t, "cp-csv-hdr", "Copy as CSV with Headers", None, has_rows).on_click(cx.listener(|w, _, _, cx| w.copy_selection(CopyFormat::Csv, true, cx))))
+                        .when(printed, |d| d.child(ui::menu_sep(t)).child(ui::menu_item(t, "cp-msg", "Copy Messages", None, true).on_click(cx.listener(|w, _, _, cx| w.copy_messages(cx))))),
+                )),
+            )
+            .priority(3))
+    }
+
     fn render_result_strip(&self, id: EntityId, v: &TabView, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let hov = t.hov;
         let bounds = v.focused.then(|| self.result_tab_bounds.clone());
@@ -1544,7 +1553,7 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .text_size(px(12.))
+                    .text_size(px(crate::theme::text::BODY))
                     .text_color(gpui::transparent_black())
                     .group_hover(group.clone(), move |s| s.text_color(tx3))
                     .hover(move |s| s.text_color(tx))
@@ -1604,7 +1613,7 @@ impl Workspace {
             .border_color(t.line)
             .overflow_x_scroll()
             .whitespace_nowrap()
-            .text_size(px(11.5))
+            .text_size(px(crate::theme::text::UI))
             .children(els)
     }
 
@@ -1626,7 +1635,7 @@ impl Workspace {
             .size_full()
             .px(px(20.))
             .py(px(14.))
-            .text_size(px(12.))
+            .text_size(px(crate::theme::text::BODY))
             .child(gpui::list(self.messages_of(pane).list.clone(), cx.processor(move |w, ix: usize, _, cx| w.render_message_row(pane, ix, &theme, cx))).size_full())
     }
 
@@ -1673,7 +1682,7 @@ impl Workspace {
                     .items_center()
                     .gap(px(10.))
                     .when(has_tab, |d| d.cursor_pointer().hover(move |s| s.bg(hov)))
-                    .child(div().w(px(14.)).flex().justify_center().text_size(px(10.)).text_color(gc).child(ui::glyph_el(g, gc)))
+                    .child(div().w(px(14.)).flex().justify_center().text_size(px(crate::theme::text::TINY)).text_color(gc).child(ui::glyph_el(g, gc)))
                     .child(div().w(px(22.)).text_color(t.tx3).child((i + 1).to_string()))
                     .child(
                         div()
@@ -1691,7 +1700,7 @@ impl Workspace {
                             .w(px(64.))
                             .flex_none()
                             .text_right()
-                            .text_size(px(11.))
+                            .text_size(px(crate::theme::text::SMALL))
                             .text_color(t.tx3)
                             .child(b.elapsed.map(fmt_dur).unwrap_or_default()),
                     )
@@ -1769,7 +1778,7 @@ impl Workspace {
             .flex_row()
             .items_center()
             .gap(px(14.))
-            .text_size(px(11.))
+            .text_size(px(crate::theme::text::SMALL))
             .text_color(t.tx3)
             .whitespace_nowrap()
             .overflow_hidden()
@@ -1891,7 +1900,7 @@ impl Workspace {
         let suggestion = err.hint.as_deref().and_then(|h| h.split('"').nth(1)).map(str::to_string).filter(|_| token.is_some());
         let err_copy = err.to_string();
         let btn = |id: &'static str, label: &'static str, key: Option<String>| {
-            ui::button(t, id, Btn::Secondary).h(px(28.)).px(px(10.)).gap(px(8.)).child(label).children(key.map(|k| div().text_size(px(10.5)).text_color(t.tx3).child(crate::ui::keys_text(k))))
+            ui::button(t, id, Btn::Secondary).h(px(28.)).px(px(10.)).gap(px(8.)).child(label).children(key.map(|k| div().text_size(px(crate::theme::text::HINT)).text_color(t.tx3).child(crate::ui::keys_text(k))))
         };
         let left = div()
             .flex_1()
@@ -1917,7 +1926,7 @@ impl Workspace {
                             .items_center()
                             .bg(t.err)
                             .text_color(t.on_err)
-                            .text_size(px(10.5))
+                            .text_size(px(crate::theme::text::HINT))
                             .font_weight(FontWeight::BOLD)
                             .child("✕ ERROR"),
                     )
@@ -2007,7 +2016,7 @@ impl Workspace {
                                 .text_color(if b.state == ItemState::Pending { t.tx3 } else { t.tx })
                                 .child(b.summary()),
                         )
-                        .child(div().text_size(px(11.)).text_color(t.tx3).child(meta))
+                        .child(div().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(meta))
                 })))
                 .child(div().flex_1())
                 .child(
@@ -2023,7 +2032,7 @@ impl Workspace {
                         })),
                 )
         });
-        div().size_full().flex().flex_row().text_size(px(12.)).child(left).children(right)
+        div().size_full().flex().flex_row().text_size(px(crate::theme::text::BODY)).child(left).children(right)
     }
 
     pub(crate) fn jump_to_error_pub(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2056,7 +2065,7 @@ impl Workspace {
                             .flex()
                             .flex_col()
                             .gap(px(6.))
-                            .text_size(px(11.5))
+                            .text_size(px(crate::theme::text::UI))
                             .line_height(px(17.))
                             .child(div().text_color(t.tx).font_weight(FontWeight::SEMIBOLD).child(format!("Cancel sent · {:.1} s ago", at.elapsed().as_secs_f64())))
                             .child(
@@ -2064,7 +2073,7 @@ impl Workspace {
                                     ui::button(&t, "toast-hide", Btn::Ghost)
                                         .h(px(24.))
                                         .px(px(9.))
-                                        .text_size(px(11.))
+                                        .text_size(px(crate::theme::text::SMALL))
                                         .text_color(t.tx3)
                                         .child("Hide")
                                         .on_click(cx.listener(move |w, _, _, cx| {
@@ -2294,7 +2303,7 @@ impl Workspace {
                     .items_center()
                     .gap(px(8.))
                     .min_w_0()
-                    .text_size(px(11.))
+                    .text_size(px(crate::theme::text::SMALL))
                     .child(ui::chip(t.profile_color(&c.profile), 8.))
                     .child(div().text_color(t.tx2).overflow_hidden().whitespace_nowrap().text_ellipsis().child(c.profile.name.clone()))
                     .when(!env.is_none(), |d| d.child(div().text_color(if env.is_production() { t.err } else { t.tx3 }).child(env.label())))
@@ -2413,7 +2422,7 @@ pub(crate) fn code_block(t: &Theme, sql: &str, target: Option<&str>) -> Div {
             div()
                 .flex()
                 .flex_col()
-                .text_size(px(12.))
+                .text_size(px(crate::theme::text::BODY))
                 .line_height(px(18.))
                 .text_color(t.tx)
                 .children(lines.into_iter().take(LINES).map(|l| div().whitespace_nowrap().overflow_hidden().text_ellipsis().child(l.replace('\t', "    "))))
@@ -2424,7 +2433,7 @@ pub(crate) fn code_block(t: &Theme, sql: &str, target: Option<&str>) -> Div {
                 .flex()
                 .flex_row()
                 .gap(px(8.))
-                .text_size(px(11.))
+                .text_size(px(crate::theme::text::SMALL))
                 .child(div().text_color(t.tx4).child("target"))
                 .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx2).child(tg.to_string()))
         }))

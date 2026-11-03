@@ -199,11 +199,11 @@ impl Workspace {
 
     fn group_survives(&mut self, survivor: Pane) {
         if survivor == Pane::Right {
-            self.strip_scroll[0] = self.strip_scroll[1].clone();
+            self.panes[0].strip_scroll = self.panes[1].strip_scroll.clone();
         }
-        self.strip_scroll[1] = gpui::ScrollHandle::new();
-        for f in &self.strip_front {
-            f.set((None, false));
+        self.panes[1].strip_scroll = gpui::ScrollHandle::new();
+        for p in &self.panes {
+            p.strip_front.set((None, false));
         }
     }
 
@@ -578,7 +578,7 @@ impl Workspace {
     pub(crate) fn render_close_ask(&self, pane: Pane, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let t = cx.theme();
         let (hov, prs) = (t.err.opacity(0.85), t.err.opacity(0.7));
-        let parts = self.strip_parts.clone();
+        let parts = self.panes[pane.index()].strip_parts.clone();
         div()
             .id("close-group-ask")
             .flex_none()
@@ -588,7 +588,7 @@ impl Workspace {
             .items_center()
             .bg(t.err)
             .text_color(t.on_err)
-            .text_size(px(11.))
+            .text_size(px(crate::theme::text::SMALL))
             .font_weight(gpui::FontWeight::SEMIBOLD)
             .whitespace_nowrap()
             .cursor_pointer()
@@ -600,7 +600,7 @@ impl Workspace {
             .on_hover(cx.listener(move |w, hovered: &bool, window, cx| {
                 // GPUI reports a press held on it as the pointer leaving: only a pointer really
                 // outside (the strip's last part, this) lets it go.
-                let inside = parts.borrow()[pane.index()].last().is_some_and(|b| b.contains(&window.mouse_position()));
+                let inside = parts.borrow().last().is_some_and(|b| b.contains(&window.mouse_position()));
                 if !*hovered && !inside {
                     w.let_go_close(cx);
                 }

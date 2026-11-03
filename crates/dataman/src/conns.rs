@@ -27,6 +27,36 @@ pub struct ConnStore {
     /// Connecting on their own: a failure only shows where the connection is listed, never as a
     /// dialog (a password, an SSH host key), until it is picked.
     quiet: HashSet<String>,
+    attempts: Attempts,
+}
+
+/// Which connect is the live one for each id: a disconnect or forget made while one runs ends
+/// it, and what it brings back is closed instead of kept.
+#[derive(Default)]
+struct Attempts {
+    next: u64,
+    live: HashMap<String, u64>,
+}
+
+impl Attempts {
+    fn start(&mut self, id: &str) -> u64 {
+        self.next += 1;
+        self.live.insert(id.to_string(), self.next);
+        self.next
+    }
+
+    /// True once, for the live attempt.
+    fn finish(&mut self, id: &str, n: u64) -> bool {
+        let live = self.live.get(id) == Some(&n);
+        if live {
+            self.live.remove(id);
+        }
+        live
+    }
+
+    fn end(&mut self, id: &str) {
+        self.live.remove(id);
+    }
 }
 
 impl EventEmitter<ConnEvent> for ConnStore {}
@@ -35,7 +65,7 @@ impl ConnStore {
     pub fn new(core: Arc<Core>) -> Self {
         let profiles = core.config.connections();
         let folders = core.config.folders();
-        ConnStore { core, profiles, folders, states: HashMap::new(), quiet: HashSet::new() }
+        ConnStore { core, profiles, folders, states: HashMap::new(), quiet: HashSet::new(), attempts: Attempts::default() }
     }
 
     /// The folders changed in one write; Err said as is.
@@ -98,12 +128,20 @@ impl ConnStore {
             return;
         }
         self.states.insert(id.to_string(), ConnState::Connecting);
+        let n = self.attempts.start(id);
         cx.notify();
         let task = self.core.connect(profile, password);
         let id = id.to_string();
         cx.spawn(async move |this, cx| {
             let r = task.await;
             let _ = this.update(cx, |s, cx| {
+                // Disconnected, forgotten or edited meanwhile: that one wins.
+                if !s.attempts.finish(&id, n) {
+                    if let Ok(c) = r {
+                        c.close();
+                    }
+                    return;
+                }
                 match r {
                     Ok(c) => {
                         let db = c.database().to_string();
@@ -155,6 +193,8 @@ impl ConnStore {
     }
 
     pub fn disconnect(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.attempts.end(id);
+        self.quiet.remove(id);
         if let Some(ConnState::Connected(c)) = self.states.remove(id) {
             c.close();
         }
@@ -162,6 +202,8 @@ impl ConnStore {
     }
 
     pub fn forget(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.attempts.end(id);
+        self.quiet.remove(id);
         self.states.remove(id);
         cx.notify();
     }
@@ -262,7 +304,20 @@ impl crate::app::Workspace {
                         s.connect(&id, None, cx);
                     });
                 }
+                // Still connecting with the old settings: it starts over with the new ones.
+                (Edited::Settings, Some(ConnState::Connecting)) => {
+                    let id = p.id.clone();
+                    let quiet = self.store.read(cx).quiet.contains(&id);
+                    self.store.update(cx, |s, cx| {
+                        s.forget(&id, cx);
+                        if quiet {
+                            s.quiet.insert(id.clone());
+                        }
+                        s.connect(&id, None, cx);
+                    });
+                }
                 (Edited::Removed, Some(ConnState::Connected(_))) if !held => self.disconnect(p.id.clone(), cx),
+                (Edited::Removed, Some(ConnState::Connecting)) => self.store.update(cx, |s, cx| s.forget(&p.id, cx)),
                 (Edited::Settings | Edited::Removed, Some(ConnState::Failed(_))) => self.store.update(cx, |s, cx| s.forget(&p.id, cx)),
                 _ => {}
             }
@@ -314,6 +369,23 @@ mod tests {
         assert_eq!(names, [(Some("Work"), vec!["a", "c"]), (None, vec!["b", "d"])]);
         assert_eq!(grouped(&[], &[&b]).len(), 1);
         assert!(grouped(&folders, &[]).is_empty());
+    }
+
+    #[test]
+    fn a_later_connect_or_a_disconnect_wins() {
+        let mut a = Attempts::default();
+        let first = a.start("x");
+        let second = a.start("x");
+        assert!(!a.finish("x", first), "superseded");
+        assert!(a.finish("x", second));
+        assert!(!a.finish("x", second), "only once");
+        let n = a.start("x");
+        a.end("x");
+        assert!(!a.finish("x", n), "disconnected meanwhile");
+        let (y, z) = (a.start("y"), a.start("z"));
+        a.end("y");
+        assert!(!a.finish("y", y));
+        assert!(a.finish("z", z), "per connection");
     }
 
     #[test]

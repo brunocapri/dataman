@@ -177,7 +177,7 @@ fn group(t: &Theme, title: &str, keys: &[(&str, &str)]) -> Div {
         .flex()
         .flex_col()
         .gap(px(2.))
-        .child(div().pb(px(8.)).text_size(px(10.5)).text_color(t.tx3).child(title.to_string()))
+        .child(div().pb(px(8.)).text_size(px(crate::theme::text::HINT)).text_color(t.tx3).child(title.to_string()))
         .children(rows.into_iter().map(|(k, d)| {
             div()
                 .min_h(px(26.))
@@ -187,7 +187,7 @@ fn group(t: &Theme, title: &str, keys: &[(&str, &str)]) -> Div {
                 .gap(px(8.))
                 .border_b_1()
                 .border_color(t.line)
-                .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(11.5)).text_color(t.tx2).child(d.to_string()))
+                .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(crate::theme::text::UI)).text_color(t.tx2).child(d.to_string()))
                 .child(div().flex_none().child(ui::keycap(t, k)))
         }))
 }

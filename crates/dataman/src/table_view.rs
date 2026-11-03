@@ -34,13 +34,25 @@ pub struct TableData {
     pub total_of: String,
     pub counting: Option<(CountStop, gpui::Task<()>)>,
     pub stopped: Option<String>,
+    /// The row estimate asked for: dropped with this table, it never lands on the next one.
+    pub estimating: Option<gpui::Task<()>>,
 }
 
 impl TableData {
     pub fn new(view: TableView) -> TableData {
         let sql = view.sql();
         let stmt = sql.trim_end_matches(';').to_string();
-        TableData { view, sql, stmt, estimate: None, total: None, total_of: String::new(), counting: None, stopped: None }
+        TableData { view, sql, stmt, estimate: None, total: None, total_of: String::new(), counting: None, stopped: None, estimating: None }
+    }
+
+    /// An estimate asked for `schema.table`, kept only while that table is the one shown.
+    pub fn take_estimate(&mut self, schema: &str, table: &str, n: Option<u64>) -> bool {
+        let mine = self.view.schema == schema && self.view.table == table;
+        if mine {
+            self.estimate = n;
+            self.estimating = None;
+        }
+        mine
     }
 }
 
@@ -184,7 +196,7 @@ impl Render for FilterPopover {
                 .px(px(7.))
                 .flex()
                 .items_center()
-                .text_size(px(11.5))
+                .text_size(px(crate::theme::text::UI))
                 .map(|d| ui::selectable(d, &t, on, true))
                 .when(on, |d| d.text_color(t.tx))
                 .when(!on, |d| d.text_color(t.tx2).bg(hov).hover(move |s| s.bg(prs)))
@@ -200,7 +212,7 @@ impl Render for FilterPopover {
             .flex_col()
             .gap(px(10.))
             .font_family(mono())
-            .text_size(px(12.))
+            .text_size(px(crate::theme::text::BODY))
             .key_context(POPOVER_CONTEXT)
             .track_focus(&self.focus)
             .on_action(cx.listener(|_, _: &CloseFilter, _, cx| cx.emit(FilterEvent::Close)))
@@ -214,7 +226,7 @@ impl Render for FilterPopover {
                     .items_baseline()
                     .gap(px(6.))
                     .child(div().font_weight(FontWeight::SEMIBOLD).text_color(t.tx).child(self.column.clone()))
-                    .child(div().text_size(px(10.5)).text_color(t.tx3).child(self.type_name.clone())),
+                    .child(div().text_size(px(crate::theme::text::HINT)).text_color(t.tx3).child(self.type_name.clone())),
             )
             .child(div().flex().flex_row().flex_wrap().gap(px(4.)).children(ops))
             .when(op.takes_value(), |d| d.child(self.input.clone()))
@@ -227,7 +239,7 @@ impl Render for FilterPopover {
                     .children(editing.map(|i| {
                         ui::button(&t, "filter-remove", Btn::Ghost)
                             .h(px(24.))
-                            .text_size(px(11.5))
+                            .text_size(px(crate::theme::text::UI))
                             .child("Remove")
                             .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| cx.emit(FilterEvent::Remove(i))))
                     }))
@@ -235,7 +247,7 @@ impl Render for FilterPopover {
                     .child(
                         ui::button(&t, "filter-apply", Btn::Primary)
                             .h(px(24.))
-                            .text_size(px(11.5))
+                            .text_size(px(crate::theme::text::UI))
                             .font_weight(FontWeight::SEMIBOLD)
                             .child("Apply")
                             .child(ui::key_hint("↩"))
@@ -313,6 +325,19 @@ impl Workspace {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_estimate_lands_on_its_own_table() {
+        use super::TableData;
+        use dataman_core::dataview::TableView;
+        let mut b = TableData::new(TableView::new("public", "b", vec![], 100));
+        assert!(!b.take_estimate("public", "a", Some(7)), "A's count, back after B opened");
+        assert_eq!(b.estimate, None);
+        assert!(b.take_estimate("public", "b", Some(3)));
+        assert_eq!(b.estimate, Some(3));
+        assert!(!b.take_estimate("other", "b", Some(9)), "same name, another schema");
+        assert_eq!(b.estimate, Some(3));
+    }
+
     use super::*;
 
     fn data(page: u64, size: u64, filtered: bool) -> TableView {

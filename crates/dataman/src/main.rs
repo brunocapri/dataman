@@ -53,6 +53,7 @@ mod export_check;
 mod export_ui;
 mod fades;
 mod find;
+mod fmt;
 #[cfg(feature = "checks")]
 mod find_check;
 #[cfg(feature = "checks")]
@@ -118,6 +119,7 @@ mod plan;
 #[cfg(feature = "checks")]
 mod plan_demo;
 mod privileges;
+mod prefs;
 mod prompt;
 #[cfg(feature = "checks")]
 mod project_check;
@@ -186,6 +188,11 @@ fn mark(t: Instant, what: &str) {
     if std::env::var_os("DATAMAN_TRACE_STARTUP").is_some() {
         eprintln!("startup: {what} at {:.1} ms", t.elapsed().as_secs_f64() * 1e3);
     }
+}
+
+/// A task's Err logged before it is let go (a hint, a count, a catalog read the UI can do without).
+pub(crate) fn logged<T, E: std::fmt::Display>(what: &str, r: Result<T, E>) -> Option<T> {
+    r.map_err(|e| log::warn!("{what}: {e:#}")).ok()
 }
 
 pub(crate) fn refresh_menus(cx: &mut App) {
@@ -491,52 +498,18 @@ fn main() {
             Some("system") => ThemePref::System,
             _ => core.settings.get().theme,
         };
-        let settings_core = core.clone();
-        cx.set_global(theme::SavePref(Box::new(move |pref| {
-            if let Err(e) = settings_core.settings.update(|s| s.theme = pref) {
-                log::warn!("could not save the theme: {e:#}");
-            }
-        })));
-        let settings_core = core.clone();
-        cx.set_global(theme::SaveFont(Box::new(move |font| {
-            if let Err(e) = settings_core.settings.update(|s| s.font = font) {
-                log::warn!("could not save the font: {e:#}");
-            }
-        })));
+        cx.set_global(prefs::UiPrefs(core.clone()));
         if let Some(name) = core.settings.get().system_font.as_deref() {
             theme::activate_system_font(name, cx);
         }
-        let settings_core = core.clone();
-        cx.set_global(theme::SaveSystemFont(Box::new(move |name| {
-            if let Err(e) = settings_core.settings.update(|s| s.system_font = name) {
-                log::warn!("could not save the system font: {e:#}");
-            }
-        })));
         let zoom = std::env::var("DATAMAN_ZOOM").ok().and_then(|z| z.parse::<f32>().ok()).unwrap_or(core.settings.get().zoom);
         theme::init_zoom(zoom);
-        let settings_core = core.clone();
-        cx.set_global(theme::SaveZoom(Box::new(move |zoom| {
-            if let Err(e) = settings_core.settings.update(|s| s.zoom = zoom) {
-                log::warn!("could not save the zoom: {e:#}");
-            }
-        })));
-        let settings_core = core.clone();
-        cx.set_global(theme::SaveTranslucency(Box::new(move |level| {
-            if let Err(e) = settings_core.settings.update(|s| s.translucency = level) {
-                log::warn!("could not save the translucency: {e:#}");
-            }
-        })));
         // Set before the theme: it decides the window background and the theme's glass.
         let level = theme::effective_level(core.settings.get().translucency);
         cx.set_global(theme::WindowGlass { level });
         theme::init(pref, cx);
         let prefs = core.settings.get();
-        editor::set_code_size(prefs.editor_font_size);
-        editor::set_format_options(prefs.format_options());
-        editor::set_format_on_save(prefs.format_on_save);
-        dataman_core::result::set_prefetch(prefs.prefetch_rows);
-        motion::set_reduce_motion_pref(prefs.reduce_motion, cx);
-        assets::set_logos(prefs.db_logos);
+        prefs::apply(&prefs, cx);
         // The check stages were written for the full view; DATAMAN_EXPLORER=simple|advanced picks.
         let advanced = match std::env::var("DATAMAN_EXPLORER").as_deref() {
             Ok("simple") => false,

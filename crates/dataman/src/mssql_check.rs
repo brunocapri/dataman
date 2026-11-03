@@ -438,7 +438,7 @@ async fn check(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWindo
 
     run_in(&landed, "PRINT N'hello'\nRAISERROR('step %d', 10, 1, 2)", true, cx).await;
     let log = cx
-        .update(|_, cx| (ws.read(cx).messages.of(), landed.read(cx).result().map(|r| r.messages().0.to_vec()), landed.read(cx).result_tabs().len()))
+        .update(|_, cx| (ws.read(cx).panes[0].messages.of(), landed.read(cx).result().map(|r| r.messages().0.to_vec()), landed.read(cx).result_tabs().len()))
         .ok();
     report(
         "PRINT shows in the grid's place",
@@ -449,7 +449,7 @@ async fn check(ws: &Entity<Workspace>, conn: &str, db: &str, cx: &mut AsyncWindo
     let tabs = cx.update(|_, cx| landed.read(cx).result_tabs().into_iter().map(|t| t.key).collect::<Vec<_>>()).unwrap_or_default();
     let _ = cx.update(|_, cx| ws.update(cx, |w, cx| w.select_result(Key::Messages, cx)));
     draw(cx);
-    let shown = cx.update(|_, cx| (ws.read(cx).messages.of().is_some_and(|o| matches!(o, Of::Tab(_))), (0..4).map(|i| ws.read(cx).messages.row(i)).collect::<Vec<_>>())).ok();
+    let shown = cx.update(|_, cx| (ws.read(cx).panes[0].messages.of().is_some_and(|o| matches!(o, Of::Tab(_))), (0..4).map(|i| ws.read(cx).panes[0].messages.row(i)).collect::<Vec<_>>())).ok();
     report(
         "beside rows, PRINT goes to the messages tab",
         tabs == [Key::Stmt(0), Key::Messages]

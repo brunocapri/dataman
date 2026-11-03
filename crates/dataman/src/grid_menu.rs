@@ -174,11 +174,11 @@ pub fn row(
                 .min_w_0()
                 .overflow_hidden()
                 .text_ellipsis()
-                .text_size(px(11.))
+                .text_size(px(crate::theme::text::SMALL))
                 .text_color(soft)
                 .children(detail),
         )
-        .children(key.map(|k| div().flex_none().text_size(px(11.)).text_color(soft).child(crate::ui::keys_text(k))))
+        .children(key.map(|k| div().flex_none().text_size(px(crate::theme::text::SMALL)).text_color(soft).child(crate::ui::keys_text(k))))
 }
 
 #[cfg(test)]

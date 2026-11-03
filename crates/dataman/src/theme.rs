@@ -1,8 +1,9 @@
 use std::borrow::Cow;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicPtr, AtomicU8, AtomicU32, Ordering};
+use std::sync::RwLock;
+use std::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 
-use gpui::{App, BoxShadow, Global, Hsla, Pixels, Rgba, Window, WindowAppearance, WindowBackgroundAppearance, point};
+use gpui::{App, BoxShadow, Global, Hsla, Pixels, Rgba, SharedString, Window, WindowAppearance, WindowBackgroundAppearance, point};
 use dataman_core::{ThemePref, Translucency, UiFont};
 
 static ZOOM: AtomicU32 = AtomicU32::new(0x3f80_0000);
@@ -43,15 +44,12 @@ pub fn init_zoom(z: f32) {
     ZOOM.store(dataman_core::settings::clamp_zoom(z).to_bits(), Ordering::Relaxed);
 }
 
-pub struct SaveZoom(pub Box<dyn Fn(f32)>);
-
-impl Global for SaveZoom {}
-
 pub fn set_zoom(z: f32, window: &mut Window, cx: &mut App) {
-    init_zoom(z);
-    if let Some(save) = cx.try_global::<SaveZoom>() {
-        (save.0)(zoom());
+    let z = dataman_core::settings::clamp_zoom(z);
+    if !crate::prefs::save(|s| s.zoom = z, cx) {
+        return;
     }
+    init_zoom(z);
     #[cfg(target_os = "macos")]
     {
         let (x, y) = metrics::traffic_light_position_at(zoom());
@@ -67,19 +65,24 @@ pub const BANNER: &str = "Geist Mono";
 
 static FONT: AtomicU8 = AtomicU8::new(0);
 static REGISTERED: AtomicU8 = AtomicU8::new(0);
-static SYSTEM_FONT: AtomicPtr<&'static str> = AtomicPtr::new(std::ptr::null_mut());
+static SYSTEM_FONT: RwLock<Option<SharedString>> = RwLock::new(None);
 
 pub fn ui_font() -> UiFont {
     UiFont::ALL.get(FONT.load(Ordering::Relaxed) as usize).copied().unwrap_or_default()
 }
 
-pub fn system_font() -> Option<&'static str> {
-    let p = SYSTEM_FONT.load(Ordering::Relaxed);
-    (!p.is_null()).then(|| unsafe { *p })
+pub fn system_font() -> Option<SharedString> {
+    SYSTEM_FONT.read().ok().and_then(|f| f.clone())
 }
 
-pub fn mono() -> &'static str {
-    system_font().unwrap_or_else(|| ui_font().family())
+fn set_system_font_now(name: Option<SharedString>) {
+    if let Ok(mut f) = SYSTEM_FONT.write() {
+        *f = name;
+    }
+}
+
+pub fn mono() -> SharedString {
+    system_font().unwrap_or_else(|| ui_font().family().into())
 }
 
 pub fn advance() -> f32 {
@@ -149,43 +152,34 @@ fn add_families(fonts: &[UiFont], cx: &App) {
     }
 }
 
-pub struct SaveFont(pub Box<dyn Fn(UiFont)>);
-
-impl Global for SaveFont {}
-
 pub fn set_font(font: UiFont, cx: &mut App) {
+    if !crate::prefs::save(
+        |s| {
+            s.font = font;
+            s.system_font = None;
+        },
+        cx,
+    ) {
+        return;
+    }
     ensure_fonts(&[font], cx);
     FONT.store(UiFont::ALL.iter().position(|f| *f == font).unwrap_or(0) as u8, Ordering::Relaxed);
-    SYSTEM_FONT.store(std::ptr::null_mut(), Ordering::Relaxed);
-    if let Some(save) = cx.try_global::<SaveFont>() {
-        (save.0)(font);
-    }
-    if let Some(save) = cx.try_global::<SaveSystemFont>() {
-        (save.0)(None);
-    }
+    set_system_font_now(None);
     cx.refresh_windows();
 }
 
-pub struct SaveSystemFont(pub Box<dyn Fn(Option<String>)>);
-
-impl Global for SaveSystemFont {}
-
-fn leak_font_name(name: &str) -> *mut &'static str {
-    Box::into_raw(Box::new(Box::leak(name.to_string().into_boxed_str()) as &'static str))
-}
-
 pub fn set_system_font(name: Option<String>, cx: &mut App) {
-    let p = name.as_deref().map(leak_font_name).unwrap_or(std::ptr::null_mut());
-    SYSTEM_FONT.store(p, Ordering::Relaxed);
-    if let Some(save) = cx.try_global::<SaveSystemFont>() {
-        (save.0)(name);
+    let saved = name.clone();
+    if !crate::prefs::save(|s| s.system_font = saved, cx) {
+        return;
     }
+    set_system_font_now(name.map(SharedString::from));
     cx.refresh_windows();
 }
 
 pub fn activate_system_font(name: &str, cx: &App) {
     if cx.text_system().all_font_names().iter().any(|f| f == name) {
-        SYSTEM_FONT.store(leak_font_name(name), Ordering::Relaxed);
+        set_system_font_now(Some(SharedString::from(name.to_string())));
     }
 }
 
@@ -271,8 +265,15 @@ pub mod metrics {
     }
 }
 
+/// The type scale, in points (`text_size(px(text::SMALL))`).
 pub mod text {
     pub const CODE: f32 = 13.;
+    pub const TINY: f32 = 10.;
+    pub const HINT: f32 = 10.5;
+    pub const SMALL: f32 = 11.;
+    pub const UI: f32 = 11.5;
+    pub const BODY: f32 = 12.;
+    pub const TITLE: f32 = 13.;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -597,10 +598,6 @@ pub struct WindowGlass {
 
 impl Global for WindowGlass {}
 
-pub struct SavePref(pub Box<dyn Fn(ThemePref)>);
-
-impl Global for SavePref {}
-
 pub struct ThemeState {
     pub pref: ThemePref,
     pub theme: Arc<Theme>,
@@ -668,8 +665,8 @@ pub fn background_for(level: Translucency) -> WindowBackgroundAppearance {
 }
 
 pub fn set_translucency(level: Translucency, window: &mut Window, cx: &mut App) {
-    if let Some(save) = cx.try_global::<SaveTranslucency>() {
-        (save.0)(level);
+    if !crate::prefs::save(|s| s.translucency = level, cx) {
+        return;
     }
     let level = effective_level(level);
     crate::glass::apply(level, window);
@@ -682,10 +679,6 @@ pub fn set_translucency(level: Translucency, window: &mut Window, cx: &mut App) 
     cx.refresh_windows();
 }
 
-pub struct SaveTranslucency(pub Box<dyn Fn(Translucency)>);
-
-impl Global for SaveTranslucency {}
-
 fn apply_window_appearance(pref: ThemePref, mode: Mode, cx: &App) {
     let forced = match (pref, mode) {
         (ThemePref::System, _) => None,
@@ -696,14 +689,14 @@ fn apply_window_appearance(pref: ThemePref, mode: Mode, cx: &App) {
 }
 
 pub fn set_pref(pref: ThemePref, cx: &mut App) {
+    if !crate::prefs::save(|s| s.theme = pref, cx) {
+        return;
+    }
     let mode = resolve(pref, cx.window_appearance());
     let theme = Arc::new(theme_for(mode, cx));
     cx.set_global(ThemeState { pref, theme });
     apply_window_appearance(pref, mode, cx);
     crate::dock_icon::follow(mode == Mode::Light);
-    if let Some(save) = cx.try_global::<SavePref>() {
-        (save.0)(pref);
-    }
     cx.refresh_windows();
 }
 

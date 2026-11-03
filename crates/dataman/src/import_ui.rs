@@ -131,7 +131,7 @@ impl Render for ImportView {
                 .flex()
                 .items_center()
                 .justify_center()
-                .text_size(px(12.))
+                .text_size(px(crate::theme::text::BODY))
                 .text_color(t.tx3)
                 .child("Nothing to import")
                 .into_any_element(),
@@ -173,7 +173,7 @@ impl Render for ImportView {
                                 .text_color(t.tx3)
                                 .child(p.summary()),
                         )
-                        .child(div().flex_none().text_size(px(10.5)).text_color(t.tx4).child(match (it.exists, it.source) {
+                        .child(div().flex_none().text_size(px(crate::theme::text::HINT)).text_color(t.tx4).child(match (it.exists, it.source) {
                             (true, _) => "saved",
                             (_, ImportSource::Service) => "service",
                             (_, ImportSource::Pgpass) => "pgpass",
@@ -190,7 +190,7 @@ impl Render for ImportView {
                 ui::modal_close(&t, "imp-close").on_click(cx.listener(|_, _, _, cx| cx.emit(ImportEvent::Close))),
             ))
             .child(body)
-            .children(self.error.clone().map(|e| div().px(px(20.)).pb(px(8.)).text_size(px(11.5)).text_color(t.err).child(e)))
+            .children(self.error.clone().map(|e| div().px(px(20.)).pb(px(8.)).text_size(px(crate::theme::text::UI)).text_color(t.err).child(e)))
             .child(
                 ui::modal_footer(&t)
                     .child(div().flex_1())
@@ -199,7 +199,7 @@ impl Render for ImportView {
                             .h(px(28.))
                             .px(px(12.))
                             .child("Cancel")
-                            .child(div().text_size(px(10.5)).opacity(0.6).child("esc"))
+                            .child(div().text_size(px(crate::theme::text::HINT)).opacity(0.6).child("esc"))
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(ImportEvent::Close))),
                     )
                     .child(
@@ -209,7 +209,7 @@ impl Render for ImportView {
                             .font_weight(FontWeight::SEMIBOLD)
                             .when(n == 0, |d| d.bg(t.prs).text_color(t.tx3))
                             .child(if n > 0 { format!("Import {n}") } else { "Import".into() })
-                            .child(div().text_size(px(10.5)).font_weight(FontWeight::NORMAL).opacity(0.75).child(crate::ui::keys_text("⌘↩")))
+                            .child(div().text_size(px(crate::theme::text::HINT)).font_weight(FontWeight::NORMAL).opacity(0.75).child(crate::ui::keys_text("⌘↩")))
                             .on_click(cx.listener(|v, _, _, cx| v.confirm(cx))),
                     ),
             );

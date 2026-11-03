@@ -240,7 +240,7 @@ fn dim(el: gpui::Div, id: &'static str, masked: bool, fading: bool) -> AnyElemen
 /// A row's × (remove), shown while the row is hovered.
 /// Add or Hide with nothing typed: drawn, not clickable.
 fn off_button(t: &Theme, id: &'static str, label: &'static str) -> AnyElement {
-    div().children(ui::here(&id.into())).flex_none().h(px(30.)).px(px(14.)).flex().items_center().border_1().border_color(t.line2).text_size(px(12.)).text_color(t.tx4).child(label).into_any_element()
+    div().children(ui::here(&id.into())).flex_none().h(px(30.)).px(px(14.)).flex().items_center().border_1().border_color(t.line2).text_size(px(crate::theme::text::BODY)).text_color(t.tx4).child(label).into_any_element()
 }
 
 /// A row's ×, as a tab's: there only while the row is hovered (the row lights up), brighter
@@ -255,7 +255,7 @@ fn remove_x(t: &Theme, id: SharedString, row: SharedString) -> gpui::Stateful<gp
         .flex()
         .items_center()
         .justify_center()
-        .text_size(px(13.))
+        .text_size(px(crate::theme::text::TITLE))
         .cursor_pointer()
         .hover(move |s| s.text_color(tx))
         .child("×")
@@ -265,7 +265,7 @@ fn remove_x(t: &Theme, id: SharedString, row: SharedString) -> gpui::Stateful<gp
 
 /// A muted line under a control: a state worth knowing (production, agents refused…).
 pub(crate) fn state_note(t: &Theme, text: impl Into<SharedString>) -> gpui::Div {
-    div().text_size(px(11.)).text_color(t.tx3).child(text.into())
+    div().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(text.into())
 }
 
 /// The page's segmented control: one choice, told by its wash.
@@ -285,7 +285,7 @@ pub(crate) fn choices<T: Copy + PartialEq + 'static>(t: &Theme, id: &str, opts: 
             .flex()
             .items_center()
             .justify_center()
-            .text_size(px(11.5))
+            .text_size(px(crate::theme::text::UI))
             .border_1()
             .border_color(gpui::transparent_black())
             .when(sel, |d| d.bg(t.pop).border_color(t.line2).text_color(t.tx))
@@ -385,7 +385,7 @@ impl AgentsPage {
                 // Agents connect here as a login of their own.
                 .when(login, |d| d.child(div().children(ui::here(&SharedString::from(format!("agents-conn-key-{}", p.name)).into())).flex_none().child(icon(Icon::Key).size(px(12.)).text_color(t.ok))))
                 .child(div().flex_1())
-                .child(div().flex_none().text_size(px(11.)).text_color(if a == McpAccess::Full { t.warn } else { t.tx3 }).child(a.label()))
+                .child(div().flex_none().text_size(px(crate::theme::text::SMALL)).text_color(if a == McpAccess::Full { t.warn } else { t.tx3 }).child(a.label()))
                 .on_click(cx.listener(move |v, _, window, cx| {
                     v.focus_list(window, cx);
                     v.conn = Some(id.clone());
@@ -421,7 +421,7 @@ impl AgentsPage {
                     .items_center()
                     .gap(px(10.))
                     .children(crate::assets::small_logo(p.engine, 15.))
-                    .child(div().flex_none().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(t.tx).child(p.name.clone()))
+                    .child(div().flex_none().text_size(px(crate::theme::text::TITLE)).font_weight(FontWeight::SEMIBOLD).text_color(t.tx).child(p.name.clone()))
                     .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx3).child(place(p)))
             }))
     }
@@ -576,7 +576,7 @@ impl AgentsPage {
                 .gap(px(8.))
                 .border_1()
                 .border_color(t.line)
-                .text_size(px(11.5))
+                .text_size(px(crate::theme::text::UI))
                 .text_color(t.tx2)
                 .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(s.clone()))
                 .child(ui::icon_button(t, ("agents-allowed-rm", k), Icon::Close, 20., 10.).on_click(cx.listener(move |v, _, _, cx| {
@@ -603,7 +603,7 @@ impl AgentsPage {
                     .child(field(t, "agents-field-allowed", &self.allow_input, window, cx).flex_1())
                     .child(ui::button(t, "agents-allowed-add", ui::Btn::Secondary).h(px(28.)).child("+ Add").on_click(cx.listener(|v, _, _, cx| v.add_allowed(cx)))),
             )
-            .children(self.allow_error.clone().map(|e| div().text_size(px(11.)).text_color(t.err).child(e)))
+            .children(self.allow_error.clone().map(|e| div().text_size(px(crate::theme::text::SMALL)).text_color(t.err).child(e)))
             .into_any_element()
     }
 
@@ -641,7 +641,7 @@ impl AgentsPage {
                     .flex_row()
                     .items_center()
                     .gap(px(12.))
-                    .child(div().flex_1().flex().flex_col().gap(px(3.)).child(div().text_color(if on { t.err } else { t.tx }).child("YOLO")).child(div().text_size(px(11.)).text_color(t.tx3).child("Writes run without asking.")))
+                    .child(div().flex_1().flex().flex_col().gap(px(3.)).child(div().text_color(if on { t.err } else { t.tx }).child("YOLO")).child(div().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child("Writes run without asking.")))
                     .child(crate::agents::switch(t, "agents-yolo-switch", on))
                     .cursor_pointer()
                     .on_click(cx.listener(|v, _, _, cx| {
@@ -663,7 +663,7 @@ impl AgentsPage {
                         .flex_row()
                         .items_center()
                         .gap(px(8.))
-                        .text_size(px(11.))
+                        .text_size(px(crate::theme::text::SMALL))
                         .text_color(t.err)
                         .child(div().flex_1().child("Production: agents would write here without anyone asking."))
                         .child(ui::button(t, "agents-yolo-yes", ui::Btn::Danger).h(px(24.)).child("Turn on").on_click(cx.listener(|v, _, _, cx| {
@@ -816,10 +816,10 @@ impl AgentsPage {
                         .gap(px(9.))
                         .child(icon(Icon::Column).size(px(13.)).text_color(t.tx3))
                         .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(if s.on { t.tx } else { t.tx3 }).child(name.to_string()))
-                        .child(div().w(px(130.)).flex_none().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(11.)).text_color(t.tx3).child(example))
-                        .child(div().w(px(180.)).flex_none().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(12.)).text_color(if s.on { t.tx2 } else { t.tx3 }).child(how))
+                        .child(div().w(px(130.)).flex_none().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(example))
+                        .child(div().w(px(180.)).flex_none().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(crate::theme::text::BODY)).text_color(if s.on { t.tx2 } else { t.tx3 }).child(how))
                         .child({
-                            let edit = ui::button(t, id.clone(), ui::Btn::Secondary).h(px(26.)).px(px(10.)).text_size(px(12.)).child("Edit");
+                            let edit = ui::button(t, id.clone(), ui::Btn::Secondary).h(px(26.)).px(px(10.)).text_size(px(crate::theme::text::BODY)).child("Edit");
                             if masked {
                                 let (col, how) = (s.col.clone(), s.how);
                                 edit.on_click(cx.listener(move |v, _, _, cx| v.open_sens_edit(col.clone(), how, cx))).into_any_element()
@@ -847,7 +847,7 @@ impl AgentsPage {
             .id("agents-scan")
             .ml_auto()
             .font_weight(FontWeight::NORMAL)
-            .text_size(px(12.))
+            .text_size(px(crate::theme::text::BODY))
             .text_color(if masked { t.tx2 } else { t.tx4 })
             .when(masked, |d| d.cursor_pointer().hover(|s| s.opacity(0.75)).on_click(cx.listener(|v, _, _, cx| v.scan(cx))))
             .child("Scan again");
@@ -876,7 +876,7 @@ impl AgentsPage {
                         .flex_row()
                         .flex_wrap()
                         .gap(px(6.))
-                        .text_size(px(11.5))
+                        .text_size(px(crate::theme::text::UI))
                         .text_color(t.tx2)
                         .child("Used only when Agents see is Masked data.")
                         .child(
