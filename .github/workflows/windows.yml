@@ -140,7 +140,7 @@ jobs:
           & $psql -h 127.0.0.1 -U postgres -c "CREATE DATABASE dataman"
           $env:DATAMAN_E2E_PSQL = $psql
           $env:DATAMAN_E2E_PG_PORT = "5432"
-          $stages = "conns-check,ui-check,split-check,session-check,dock-check,pin-check,history-check,dropdowns-check,folders-check,undo-check,explorer-folders-check,fk-check,fk-pop-check,fk-nav-check,find-check,results-check,value-check,table-check,edit-check,tx-check,intel-check,plan-check,activity-check,input-check,export-check,import-check,settings-check,welcome-check,palette-check,mcp-check,agents-check"
+          $stages = "conns-check,ui-check,split-check,session-check,dock-check,pin-check,history-check,dropdowns-check,folders-check,undo-check,explorer-folders-check,fk-check,fk-pop-check,fk-nav-check,find-check,results-check,value-check,table-check,edit-check,tx-check,intel-check,plan-check,activity-check,input-check,export-check,import-check,settings-check,welcome-check,palette-check,mcp-check,agents-check,update-check"
           cargo run --release -p xtask -- e2e --no-compose --no-build --only $stages
           if ($LASTEXITCODE -ne 0) { exit 1 }
       - uses: actions/upload-artifact@v4

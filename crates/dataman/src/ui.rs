@@ -490,6 +490,19 @@ thread_local! {
     static TIP_SEEN: Cell<Option<Instant>> = const { Cell::new(None) };
 }
 
+#[cfg(feature = "checks")]
+thread_local! {
+    static TIP_RENDERS: Cell<u32> = const { Cell::new(0) };
+    static TIP_HIDDEN: Cell<u32> = const { Cell::new(0) };
+}
+
+/// For the checks: how often a tooltip host drew, how often of those it drew nothing (the pointer
+/// gone from the control and the tooltip), and how long ago a tooltip was last on screen.
+#[cfg(feature = "checks")]
+pub fn tip_stats() -> (u32, u32, Option<Duration>) {
+    (TIP_RENDERS.with(Cell::get), TIP_HIDDEN.with(Cell::get), TIP_SEEN.with(Cell::get).map(|s| s.elapsed()))
+}
+
 /// A tooltip as gpui shows it: gpui keeps a hoverable one half a second after the pointer has
 /// left, so this hides it itself once the pointer has been off the control and the tooltip both
 /// for the grace.
@@ -514,7 +527,11 @@ impl Render for TipHost {
             })
             .detach();
         }
+        #[cfg(feature = "checks")]
+        TIP_RENDERS.with(|n| n.set(n.get() + 1));
         if self.left.is_some_and(|l| l.elapsed() >= TIP_GRACE) {
+            #[cfg(feature = "checks")]
+            TIP_HIDDEN.with(|n| n.set(n.get() + 1));
             return div().into_any_element();
         }
         TIP_SEEN.with(|s| s.set(Some(Instant::now())));
