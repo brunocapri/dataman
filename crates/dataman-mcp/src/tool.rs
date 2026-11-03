@@ -726,8 +726,10 @@ impl Call {
     pub fn limits(&self, args: &Args, default_rows: u64) -> Limits {
         let rules = self.rules_of(args);
         let cap = rules.read_cap().max(1);
-        // No size limit on a read: Rows per read and the cell length bound it.
-        Limits { max_rows: args.u64_or("max_rows", default_rows).clamp(1, cap).min(usize::MAX as u64) as usize, timeout: self.time_limit(args), max_bytes: usize::MAX, ..Limits::default() }
+        // Rows per read and the cell length bound a read; the reply's size too (with Rows per
+        // read ∞, several statements or a large document would otherwise be one String here, in
+        // the app's process).
+        Limits { max_rows: args.u64_or("max_rows", default_rows).clamp(1, cap).min(usize::MAX as u64) as usize, timeout: self.time_limit(args), max_bytes: MAX_REPLY_BYTES, ..Limits::default() }
     }
 
     pub async fn run(&self, o: &Opened, sql: &str, params: Vec<Option<String>>, mode: Mode, limits: Limits) -> Result<bounded::Outcome, ToolError> {
@@ -746,6 +748,9 @@ impl Call {
         Ok(o.conn.bounded_held(Some(&o.database), sql, params, mode, limits, cancel, decide).await?)
     }
 }
+
+/// The most a call's rows add up to.
+pub const MAX_REPLY_BYTES: usize = 32 * 1024 * 1024;
 
 fn refusal_of(d: Decision, reasons: &[String], rolled_back: bool) -> ToolError {
     let rb = if rolled_back { "; rolled back" } else { "" };
@@ -775,6 +780,18 @@ pub trait Tool: Send + Sync {
     fn description(&self) -> &str;
     fn schema(&self) -> &Schema;
     fn need(&self) -> Option<Need>;
+    fn effect(&self) -> crate::policy::Effect {
+        match self.need() {
+            Some(Need::Write) => crate::policy::Effect::Write,
+            Some(Need::Read) => crate::policy::Effect::Read,
+            None => crate::policy::Effect::Local,
+        }
+    }
+    /// Its `connection` argument passes the policy's gate (MCP on, tier not off, agents not
+    /// refused) before the handler runs: a handler that forgets to ask is still gated.
+    fn needs_connection(&self) -> bool {
+        false
+    }
     fn call<'a>(&'a self, cx: &'a Call, args: Args) -> BoxFut<'a, Result<Value, ToolError>>;
 }
 

@@ -246,18 +246,35 @@ fn list_tables(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
     })
 }
 
+// Iterative wildcard match with a single backtrack point: O(n·m), whatever
+// the agent sends (a recursive `%` fans out combinatorially).
 fn like(s: &str, p: &str) -> bool {
-    fn go(s: &[char], p: &[char]) -> bool {
-        match p.first() {
-            None => s.is_empty(),
-            Some('%') => (0..=s.len()).any(|i| go(&s[i..], &p[1..])),
-            Some('_') => !s.is_empty() && go(&s[1..], &p[1..]),
-            Some(c) => s.first() == Some(c) && go(&s[1..], &p[1..]),
+    let s: Vec<char> = s.to_lowercase().chars().collect();
+    let mut p: Vec<char> = p.chars().collect();
+    p.dedup_by(|a, b| *a == '%' && *b == '%');
+    let (mut i, mut j) = (0, 0);
+    let mut star: Option<(usize, usize)> = None;
+    while i < s.len() {
+        match p.get(j) {
+            Some('%') => {
+                star = Some((j, i));
+                j += 1;
+            }
+            Some(&c) if c == '_' || c == s[i] => {
+                i += 1;
+                j += 1;
+            }
+            _ => match star {
+                Some((sj, si)) => {
+                    j = sj + 1;
+                    i = si + 1;
+                    star = Some((sj, si + 1));
+                }
+                None => return false,
+            },
         }
     }
-    let s: Vec<char> = s.to_lowercase().chars().collect();
-    let p: Vec<char> = p.chars().collect();
-    go(&s, &p)
+    p[j..].iter().all(|&c| c == '%')
 }
 
 pub fn like_matches(s: &str, p: &str) -> bool {
@@ -716,5 +733,9 @@ mod tests {
         assert!(like("Orders", "ord%"));
         assert!(!like("customer", "ord%"));
         assert!(like("a_b", "a_b") && like("axb", "a_b") && !like("ab", "a_b"));
+        assert!(like("abc", "%%a%%c%%") && like("", "%") && !like("", "_") && like("xay", "%a%"));
+        // pathological pattern stays linear-ish (the old recursion never returned)
+        let p = format!("{}x", "%a".repeat(100));
+        assert!(!like(&"a".repeat(200), &p));
     }
 }

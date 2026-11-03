@@ -199,22 +199,30 @@ pub(super) async fn execute(cx: &Call, a: &Args, key: &str, open: bool) -> Resul
 
 async fn write(cx: &Call, a: &Args, text: &str, class: &WriteClass, tab: Option<u64>) -> Result<nosql::Ran, ToolError> {
     let o = cx.open(a, Need::Write).await?;
-    let _slot = tokio::select! {
-        p = cx.hub.permit(&o.profile.id) => p,
-        _ = cx.cancel.cancelled() => return Err(ToolError::Cancelled),
+    // A slot is held while the database works, never while the user is asked.
+    let id = o.profile.id.clone();
+    let slot = || async {
+        tokio::select! {
+            p = cx.hub.permit(&id) => Ok(p),
+            _ = cx.cancel.cancelled() => Err(ToolError::Cancelled),
+        }
     };
     // What it would change, counted first: past the row limit it waits for the user. A script's
     // writes cannot be counted before it runs: the user says yes to it first.
     let script = nosql::is_script(o.conn.engine(), text);
-    let over = if *class == WriteClass::SafeWrite && !o.profile.mcp_yolo_on() {
-        if script {
-            Some((None, "a script: what it changes is known only as it runs".to_string()))
-        } else {
-            let n = o.conn.nosql_affects(&o.database, text).await.map_err(failed)?;
-            n.and_then(|n| crate::policy::over_limit(n, cx.hub.row_limit(&o.profile)).map(|why| (Some(n), why)))
-        }
+    let counts = *class == WriteClass::SafeWrite && !o.profile.mcp_yolo_on() && !script;
+    let count = || async {
+        let _slot = slot().await?;
+        o.conn.nosql_affects(&o.database, text).await.map_err(failed)
+    };
+    let limit = cx.hub.row_limit(&o.profile);
+    let (counted, over) = if counts {
+        let n = count().await?;
+        (n, n.and_then(|n| crate::policy::over_limit(n, limit).map(|why| (Some(n), why))))
+    } else if *class == WriteClass::SafeWrite && !o.profile.mcp_yolo_on() {
+        (None, Some((None, "a script: what it changes is known only as it runs".to_string())))
     } else {
-        None
+        (None, None)
     };
     cx.gate(&o, class, text, tab).await?;
     let asked = cx.note().approval.is_some_and(|n| n.decision == crate::audit::Decision::Approved);
@@ -223,8 +231,18 @@ async fn write(cx: &Call, a: &Args, text: &str, class: &WriteClass, tab: Option<
     {
         cx.ask_human(&o, text, vec![why], n, false).await?;
     }
+    // Counted again after any wait: what runs is no more than what was counted (and allowed).
+    if let Some(before) = counted
+        && let Some(now) = count().await?
+        && now > before
+    {
+        return Err(ToolError::Refused(format!("it would now change {now} documents, not the {before} counted before: nothing ran; try again")));
+    }
     let o = cx.as_user(o, class).await?;
-    let ran = run(cx, &o, text, Page::default(), cx.time_limit(a)).await?;
+    let ran = {
+        let _slot = slot().await?;
+        run(cx, &o, text, Page::default(), cx.time_limit(a)).await?
+    };
     if let Output::Written { affected, .. } = &ran.output {
         cx.note_rows(*affected as usize);
     }

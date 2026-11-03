@@ -82,7 +82,12 @@ impl Server {
             connection: n.connection,
             database: n.database,
             sql: n.sql.as_deref().map(redact),
-            query: n.sql.as_deref().and_then(full),
+            // The literals the agent wrote may be values it read: what the sensitive types mask
+            // in a reply is masked here too.
+            query: n.sql.as_deref().and_then(full).map(|q| {
+                let profile = call.note().connection.as_deref().and_then(|c| self.hub.profile(c).ok());
+                self.hub.types_for(profile.as_ref()).scrub(&q, &mut Counts::new()).into_owned()
+            }),
             rows: n.rows,
             ms: (started.elapsed().as_secs_f64() * 1e4).round() / 10.0,
             outcome,
@@ -131,11 +136,19 @@ impl Server {
     }
 
     pub async fn run_tool(&self, tool: Arc<dyn Tool>, args: serde_json::Map<String, Value>, client: String, ct: tokio_util::sync::CancellationToken) -> CallToolResult {
+        let _running = Running::start();
         let started = Instant::now();
         let call = Call::new(self.hub.clone(), client, self.transport, tool.name(), ct);
         let r = match tool.schema().validate(&args) {
             Err(e) => Err(ToolError::Invalid(e)),
-            Ok(()) => tool.call(&call, Args(args)).await,
+            Ok(()) => {
+                let args = Args(args);
+                // The policy's gate, whatever the handler then asks for.
+                match tool.needs_connection().then(|| call.target(&args, Need::Read)).transpose() {
+                    Err(e) => Err(e),
+                    Ok(_) => tool.call(&call, args).await,
+                }
+            }
         };
         let r = self.privacy_pass(&call, r);
         match r {
@@ -153,17 +166,36 @@ impl Server {
     }
 }
 
+static RUNNING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// A call under way, until its audit entry is written.
+struct Running;
+
+impl Running {
+    fn start() -> Running {
+        RUNNING.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        Running
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        RUNNING.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
+}
+
+/// Waits (up to `most`) for the calls under way to end and write their audit entries: a write
+/// committed just before the process exits is never left unlogged.
+pub async fn drain(most: std::time::Duration) {
+    let until = Instant::now() + most;
+    while RUNNING.load(std::sync::atomic::Ordering::Acquire) > 0 && Instant::now() < until {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
 pub fn describe(t: &dyn Tool) -> rmcp::model::Tool {
-    let ann = match (t.need(), t.name()) {
-        (Some(Need::Write), _) => ToolAnnotations::new().read_only(false).destructive(true).idempotent(false).open_world(false),
-        // They run writes too (through the tier, as execute does).
-        (_, "open_query" | "run_favorite") => ToolAnnotations::new().read_only(false).destructive(true).idempotent(false).open_world(false),
-        (_, "remove_favorite") => ToolAnnotations::new().read_only(false).destructive(true).idempotent(true).open_world(false),
-        (_, "create_connection" | "update_connection" | "create_agent_login" | "add_favorite" | "rename_favorite" | "import_favorites") => {
-            ToolAnnotations::new().read_only(false).destructive(false).idempotent(true).open_world(false)
-        }
-        _ => ToolAnnotations::new().read_only(true).destructive(false).idempotent(true).open_world(false),
-    };
+    let (read_only, destructive, idempotent) = t.effect().hints();
+    let ann = ToolAnnotations::new().read_only(read_only).destructive(destructive).idempotent(idempotent).open_world(false);
     rmcp::model::Tool::new(t.name().to_string(), t.description().to_string(), Arc::new(t.schema().0.clone())).with_annotations(ann)
 }
 

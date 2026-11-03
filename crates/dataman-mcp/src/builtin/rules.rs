@@ -15,7 +15,7 @@ use crate::policy::Need;
 use crate::tool::{Args, Call, Opened, ToolError};
 
 pub fn restricted(r: &AgentRules) -> bool {
-    !r.visible.is_open() || (r.view == AgentView::Masked && r.sensitive.iter().any(|s| s.on))
+    r.narrows()
 }
 
 /// Structure only: reads return no rows (a plan without ANALYZE is structure).

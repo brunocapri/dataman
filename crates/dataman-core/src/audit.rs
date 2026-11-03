@@ -1,9 +1,11 @@
-//! Never a password or a bound parameter value. The file is 0600.
+//! Never a password or a bound parameter value; the statement with its literals (`query`)
+//! passes the sensitive data types' scrub first. The file is 0600, and so is the replies file
+//! next to it (`mcp-replies.jsonl`), which keeps what each agent received, after the privacy rules.
 
 use std::io::{BufRead, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-use dataman_core::sql::{TokenKind, tokenize};
+use crate::sql::{TokenKind, tokenize};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
@@ -33,7 +35,7 @@ impl Outcome {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Entry {
-    /// Ties the entry to the reply the app keeps in memory while it is open (never written).
+    /// Ties the entry to its reply in `mcp-replies.jsonl` (written there, up to [`REPLY_MAX`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     pub ts: chrono::DateTime<chrono::Utc>,
@@ -80,7 +82,7 @@ pub struct Seen {
     pub columns: Option<u64>,
     /// Sensitive columns masked, with their mask.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub masked: Vec<(String, dataman_core::privacy::Mask)>,
+    pub masked: Vec<(String, crate::privacy::Mask)>,
     /// Values of sensitive data types masked inside the reply, by type.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub values: std::collections::BTreeMap<String, u64>,

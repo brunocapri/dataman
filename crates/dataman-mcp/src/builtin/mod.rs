@@ -10,13 +10,50 @@ pub(crate) mod rules;
 use dataman_core::bounded;
 use serde_json::{Map, Value, json};
 
-use crate::policy::Need;
+use crate::policy::{Effect, Need};
 use crate::tool::{Args, BoxFut, Call, Registry, Schema, Tool, ToolError};
 
 pub use catalog::system_schema as catalog_system_schema;
 pub(crate) use catalog::view_open;
 
 pub type Handler =for<'a> fn(&'a Call, Args) -> BoxFut<'a, Result<Value, ToolError>>;
+
+/// Every built-in tool: what it does, and whether `connection` names its database (gated
+/// before the handler). run_favorite's connection is the favorite's; update_connection and
+/// create_agent_login judge theirs themselves.
+pub const META: &[(&str, Effect, bool)] = &[
+    ("list_connections", Effect::Local, false),
+    ("list_schemas", Effect::Read, true),
+    ("list_tables", Effect::Read, true),
+    ("search_objects", Effect::Read, true),
+    ("describe_table", Effect::Read, true),
+    ("get_ddl", Effect::Read, true),
+    ("sample_rows", Effect::Read, true),
+    ("run_query", Effect::Read, true),
+    ("open_query", Effect::MaybeWrite, true),
+    ("explain", Effect::Read, true),
+    ("explain_analyze", Effect::MaybeWrite, true),
+    ("execute", Effect::Write, true),
+    ("activity_sessions", Effect::Read, true),
+    ("activity_locks", Effect::Read, true),
+    ("cancel_backend", Effect::Write, true),
+    ("terminate_backend", Effect::Write, true),
+    ("list_favorites", Effect::Local, false),
+    ("run_favorite", Effect::MaybeWrite, false),
+    ("add_favorite", Effect::LocalEdit, false),
+    ("remove_favorite", Effect::LocalRemove, false),
+    ("rename_favorite", Effect::LocalEdit, false),
+    ("import_favorites", Effect::LocalEdit, false),
+    ("create_connection", Effect::LocalEdit, false),
+    ("update_connection", Effect::LocalEdit, false),
+    ("create_agent_login", Effect::LocalEdit, false),
+    ("nosql_query", Effect::Read, true),
+    ("nosql_execute", Effect::Write, true),
+];
+
+fn meta(name: &str) -> Option<(Effect, bool)> {
+    META.iter().find(|(n, _, _)| *n == name).map(|&(_, e, c)| (e, c))
+}
 
 pub struct Builtin {
     pub name: &'static str,
@@ -38,6 +75,13 @@ impl Tool for Builtin {
     }
     fn need(&self) -> Option<Need> {
         self.need
+    }
+    // A tool missing from META is the most careful: a write that needs its connection gated.
+    fn effect(&self) -> Effect {
+        meta(self.name).map_or(Effect::Write, |m| m.0)
+    }
+    fn needs_connection(&self) -> bool {
+        meta(self.name).is_none_or(|m| m.1)
     }
     fn call<'a>(&'a self, cx: &'a Call, args: Args) -> BoxFut<'a, Result<Value, ToolError>> {
         (self.run)(cx, args)
@@ -198,6 +242,13 @@ mod tests {
                 assert!(v.get("type").is_some(), "{}.{k}", t.name());
                 assert!(v.get("description").is_some_and(|d| d.as_str().is_some_and(|d| !d.is_empty())), "{}.{k} has no description", t.name());
             }
+            assert!(meta(t.name()).is_some(), "{} is not in META", t.name());
+            assert_eq!(t.needs_connection(), s.required().contains(&"connection") && !matches!(t.name(), "update_connection" | "create_agent_login"), "{}", t.name());
+            // What may write to a database is never announced read-only.
+            let writes = t.need() == Some(Need::Write) || matches!(t.name(), "open_query" | "run_favorite" | "explain_analyze");
+            assert_eq!(t.effect().hints().0, !writes && matches!(t.effect(), Effect::Read | Effect::Local), "{}", t.name());
+            let ann = crate::server::describe(t.as_ref()).annotations.and_then(|a| a.read_only_hint);
+            assert_eq!(ann, Some(t.effect().hints().0), "{}", t.name());
             let write_tool = t.need() == Some(Need::Write);
             assert_eq!(write_tool, s.properties().contains_key("confirm") && t.name() != "explain_analyze", "{}", t.name());
         }
