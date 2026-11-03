@@ -293,7 +293,7 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
         window.focus(&editor.focus_handle(cx), cx);
     });
     crate::editor::dispatch(cx, Box::new(crate::editor::RunScript));
-    pause(cx, 400).await;
+    // + at once, before the server has even described the columns (a slow server's first moments).
     let running = cx.update(|_, cx| tab.read(cx).result().is_some_and(|r| r.phase() == Phase::Running)).unwrap_or(false);
     let grid = cx.update(|_, cx| tab.read(cx).grid.clone()).unwrap();
     let _ = cx.update(|_, cx| grid.update(cx, |g, cx| g.insert_row(cx)));

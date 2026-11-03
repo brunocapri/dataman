@@ -578,23 +578,19 @@ impl GridEdit {
         if self.applying {
             return;
         }
-        if matches!(p, Pending::Insert) && matches!(rs.phase(), Phase::Running) && rs.columns().is_some_and(|c| !c.is_empty()) {
+        // + while running adds after the last row, however long the rows take (their columns too, on
+        // a slow server); a new result drops it.
+        if matches!(p, Pending::Insert) && matches!(rs.phase(), Phase::Running) {
             let watched = rs.clone();
             self._insert_wait = Some(cx.spawn_in(window, async move |this, cx| {
-                for _ in 0..200 {
+                while watched.phase() == Phase::Running {
                     cx.background_executor().timer(std::time::Duration::from_millis(50)).await;
-                    if watched.phase() != Phase::Running {
-                        break;
+                    if !this.read_with(cx, |e, _| e.rs.as_ref().is_some_and(|r| Arc::ptr_eq(r, &watched))).unwrap_or(false) {
+                        return;
                     }
                 }
                 let _ = this.update_in(cx, |e, window, cx| {
-                    if !e.rs.as_ref().is_some_and(|r| Arc::ptr_eq(r, &watched)) {
-                        return;
-                    }
-                    if watched.phase() == Phase::Running {
-                        e.card = Some(Card::Note("Still running".into()));
-                        cx.notify();
-                    } else {
+                    if e.rs.as_ref().is_some_and(|r| Arc::ptr_eq(r, &watched)) {
                         e.request(Pending::Insert, window, cx);
                     }
                 });
