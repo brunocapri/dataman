@@ -34,13 +34,25 @@ pub struct TableData {
     pub total_of: String,
     pub counting: Option<(CountStop, gpui::Task<()>)>,
     pub stopped: Option<String>,
+    /// The row estimate asked for: dropped with this table, it never lands on the next one.
+    pub estimating: Option<gpui::Task<()>>,
 }
 
 impl TableData {
     pub fn new(view: TableView) -> TableData {
         let sql = view.sql();
         let stmt = sql.trim_end_matches(';').to_string();
-        TableData { view, sql, stmt, estimate: None, total: None, total_of: String::new(), counting: None, stopped: None }
+        TableData { view, sql, stmt, estimate: None, total: None, total_of: String::new(), counting: None, stopped: None, estimating: None }
+    }
+
+    /// An estimate asked for `schema.table`, kept only while that table is the one shown.
+    pub fn take_estimate(&mut self, schema: &str, table: &str, n: Option<u64>) -> bool {
+        let mine = self.view.schema == schema && self.view.table == table;
+        if mine {
+            self.estimate = n;
+            self.estimating = None;
+        }
+        mine
     }
 }
 
@@ -313,6 +325,19 @@ impl Workspace {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_estimate_lands_on_its_own_table() {
+        use super::TableData;
+        use dataman_core::dataview::TableView;
+        let mut b = TableData::new(TableView::new("public", "b", vec![], 100));
+        assert!(!b.take_estimate("public", "a", Some(7)), "A's count, back after B opened");
+        assert_eq!(b.estimate, None);
+        assert!(b.take_estimate("public", "b", Some(3)));
+        assert_eq!(b.estimate, Some(3));
+        assert!(!b.take_estimate("other", "b", Some(9)), "same name, another schema");
+        assert_eq!(b.estimate, Some(3));
+    }
+
     use super::*;
 
     fn data(page: u64, size: u64, filtered: bool) -> TableView {

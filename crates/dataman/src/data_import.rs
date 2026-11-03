@@ -16,7 +16,8 @@ use dataman_core::import::{
 use dataman_core::schema::Column;
 
 use crate::assets::{Icon, icon};
-use crate::export_ui::{fmt_bytes, fmt_secs, tilde};
+use crate::export_ui::fmt_bytes;
+use crate::fmt::secs as fmt_secs;
 use crate::grid::ui_count;
 use crate::input::TextInput;
 use crate::theme::{ActiveTheme, Theme, metrics};
@@ -1051,7 +1052,7 @@ impl Render for DataImportView {
                     self.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
                 ))
                 .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx3).child(
-                    self.path.parent().map(tilde).unwrap_or_default(),
+                    self.path.parent().map(|d| dataman_core::config::tilde(&d.to_string_lossy())).unwrap_or_default(),
                 ))
                 .children(self.preview.as_ref().map(|p| div().flex_none().text_color(t.tx3).child(fmt_bytes(p.file_bytes))))
                 .child(div().id("di-choose").flex_none().text_color(t.acc_t).child("Choose…").when(!locked, |d| d.cursor_pointer().on_click(cx.listener(|v, _, _, cx| v.choose_file(cx))))),

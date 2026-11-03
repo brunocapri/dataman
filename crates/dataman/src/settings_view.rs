@@ -354,8 +354,9 @@ impl SettingsView {
         }
         let keys = crate::keymap::clean(&keys);
         let saved = keys.clone();
-        self.save(move |s| s.keys = saved, cx);
-        crate::keymap::apply(keys, cx);
+        if self.saved(move |s| s.keys = saved, cx) {
+            crate::keymap::apply(keys, cx);
+        }
     }
 
     fn set_mcp(&mut self, f: impl FnOnce(&mut Settings), cx: &mut Context<Self>) {
@@ -432,21 +433,32 @@ impl SettingsView {
     }
 
     fn save(&mut self, f: impl FnOnce(&mut Settings), cx: &mut Context<Self>) {
-        if let Err(e) = self.core.settings.update(f) {
-            log::warn!("could not save the settings: {e:#}");
+        self.saved(f, cx);
+    }
+
+    /// Saved, then applied as saved; false (and said) when the file could not be written.
+    fn saved(&mut self, f: impl FnOnce(&mut Settings), cx: &mut Context<Self>) -> bool {
+        let saved = self.core.settings.update(f);
+        if let Err(e) = &saved {
+            crate::prefs::failed(e, cx);
         }
         self.settings = self.core.settings.get();
+        crate::prefs::apply(&self.settings, cx);
         cx.notify();
+        saved.is_ok()
     }
 
     /// The settings as they are now (an open project's sync changed them).
     pub fn reload(&mut self, cx: &mut Context<Self>) {
         self.settings = self.core.settings.get();
+        crate::prefs::apply(&self.settings, cx);
         cx.notify();
     }
 
     fn set_projects(&mut self, on: bool, cx: &mut Context<Self>) {
-        self.save(|s| s.project_enabled = on, cx);
+        if !self.saved(|s| s.project_enabled = on, cx) {
+            return;
+        }
         crate::project_ui::publish(&self.core, cx);
         if on {
             self.edit_project(|_, _| {}, cx);
@@ -578,24 +590,20 @@ impl SettingsView {
 
     fn set_font_size(&mut self, pt: u8, cx: &mut Context<Self>) {
         self.save(|s| s.editor_font_size = pt, cx);
-        crate::editor::set_code_size(pt);
         cx.refresh_windows();
     }
 
     fn set_format(&mut self, f: impl FnOnce(&mut Settings), cx: &mut Context<Self>) {
         self.save(f, cx);
-        crate::editor::set_format_options(self.settings.format_options());
     }
 
     fn set_format_on_save(&mut self, on: bool, cx: &mut Context<Self>) {
         self.save(|s| s.format_on_save = on, cx);
-        crate::editor::set_format_on_save(on);
         crate::refresh_menus(cx);
     }
 
     fn set_logos(&mut self, on: bool, cx: &mut Context<Self>) {
         self.save(|s| s.db_logos = on, cx);
-        crate::assets::set_logos(on);
         cx.refresh_windows();
     }
 
@@ -607,7 +615,6 @@ impl SettingsView {
 
     fn set_reduce_motion(&mut self, on: bool, cx: &mut Context<Self>) {
         self.save(|s| s.reduce_motion = on, cx);
-        crate::motion::set_reduce_motion_pref(on, cx);
     }
 
     fn set_update_check(&mut self, on: bool, cx: &mut Context<Self>) {
@@ -617,7 +624,6 @@ impl SettingsView {
 
     fn set_prefetch(&mut self, rows: usize, cx: &mut Context<Self>) {
         self.save(|s| s.prefetch_rows = rows, cx);
-        dataman_core::result::set_prefetch(rows);
     }
 
     fn choose_export_dir(&mut self, cx: &mut Context<Self>) {
@@ -832,7 +838,7 @@ impl SettingsView {
                 ui::switch(t, "cc", on).on_click(cx.listener(move |v, _, _, cx| v.save(|s| s.confirm_commit = !on, cx))).into_any_element()
             }
             Row::ExportDir => {
-                let dir: SharedString = s.export_dir.clone().unwrap_or_else(|| dataman_core::os::downloads_dir().map(|d| crate::export_ui::tilde(&d)).unwrap_or_else(|| "~/Downloads".into())).into();
+                let dir: SharedString = s.export_dir.clone().unwrap_or_else(|| dataman_core::os::downloads_dir().map(|d| dataman_core::config::tilde(&d.to_string_lossy())).unwrap_or_else(|| "~/Downloads".into())).into();
                 div()
                     .flex()
                     .flex_row()

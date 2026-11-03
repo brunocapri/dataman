@@ -119,7 +119,8 @@ impl AgentsPage {
                 _ => None,
             };
             let Some(path) = path else { return };
-            let note = match std::fs::write(&path, text) {
+            let to = path.clone();
+            let note = match cx.background_executor().spawn(async move { std::fs::write(to, text) }).await {
                 Ok(()) => format!("Exported to {}.", path.display()),
                 Err(e) => format!("Could not write {}: {e}", path.display()),
             };

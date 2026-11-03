@@ -738,7 +738,7 @@ impl DocPane {
         } else if let Some(l) = &self.last {
             match &l.result {
                 Ok(ran) => {
-                    let total = metric("total", crate::app::fmt_dur(ran.elapsed));
+                    let total = metric("total", crate::fmt::dur(ran.elapsed));
                     match &ran.output {
                         Output::Docs(d) => {
                             left.push(ui::status("▦", "DOCS", t.ok).into_any_element());

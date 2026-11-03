@@ -204,11 +204,6 @@ pub fn fmt_bytes(b: u64) -> String {
 }
 
 
-pub(crate) fn fmt_secs(d: Duration) -> String {
-    let s = d.as_secs_f64();
-    if s < 60. { format!("{s:.1} s") } else { format!("{}m {:02}s", (s / 60.) as u64, (s % 60.) as u64) }
-}
-
 impl ExportView {
     pub fn new(core: Arc<Core>, source: Option<Source>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
@@ -531,7 +526,7 @@ impl ExportView {
             JobState::Done(s) if s.cancelled => ("Stopped · nothing written".into(), t.warn),
             JobState::Done(s) => {
                 let partial = if s.complete { "" } else { " (partial result)" };
-                (format!("Exported {} rows{partial} · {}", ui_count(s.rows as usize), fmt_secs(s.elapsed)), t.tx2)
+                (format!("Exported {} rows{partial} · {}", ui_count(s.rows as usize), crate::fmt::secs(s.elapsed)), t.tx2)
             }
             JobState::Failed(e) => (e.lines().next().unwrap_or(e).to_string(), t.err),
         })
@@ -744,7 +739,7 @@ impl Render for ExportView {
                 .flex_row()
                 .items_center()
                 .gap(px(10.))
-                .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx2).child(tilde(&self.path)))
+                .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx2).child(dataman_core::config::tilde(&self.path.to_string_lossy())))
                 .child(
                     ui::button(&t, "ex-choose", ui::Btn::Secondary)
                         .when(!locked, |d| d.cursor_pointer().on_click(cx.listener(|v, _, _, cx| v.choose_path(cx))))
@@ -820,14 +815,6 @@ impl Render for ExportView {
             ));
         }
         scrim(sheet.child(body).child(footer).into_any_element(), cx).into_any_element()
-    }
-}
-
-pub(crate) fn tilde(p: &Path) -> String {
-    let s = p.display().to_string();
-    match dataman_core::os::home().map(|h| h.display().to_string()) {
-        Some(h) if s.starts_with(&h) => format!("~{}", &s[h.len()..]),
-        _ => s,
     }
 }
 

@@ -467,28 +467,46 @@ pub fn system_reduce_motion() -> bool {
 #[cfg(target_os = "linux")]
 pub fn system_reduce_motion() -> bool {
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::{Duration, Instant};
     static LAST: Mutex<Option<(Instant, bool)>> = Mutex::new(None);
-    let Ok(mut last) = LAST.lock() else { return false };
-    if let Some((at, on)) = *last
-        && at.elapsed() < Duration::from_secs(5)
-    {
-        return on;
+    static READING: AtomicBool = AtomicBool::new(false);
+    fn read() -> bool {
+        let gnome = std::process::Command::new("gsettings")
+            .args(["get", "org.gnome.desktop.interface", "enable-animations"])
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "false");
+        gnome.unwrap_or_else(|| {
+            let kde = dataman_core::os::config_home().and_then(|c| std::fs::read_to_string(c.join("kdeglobals")).ok());
+            kde.is_some_and(|t| kde_instant(&t))
+        })
     }
-    let gnome = std::process::Command::new("gsettings")
-        .args(["get", "org.gnome.desktop.interface", "enable-animations"])
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "false");
-    let on = gnome.unwrap_or_else(|| {
-        let kde = dataman_core::os::config_home().and_then(|c| std::fs::read_to_string(c.join("kdeglobals")).ok());
-        kde.is_some_and(|t| kde_instant(&t))
-    });
-    *last = Some((Instant::now(), on));
-    on
+    let Ok(mut last) = LAST.lock() else { return false };
+    match *last {
+        Some((at, on)) if at.elapsed() < Duration::from_secs(5) => on,
+        // Stale: the last answer stands while a thread asks again (gsettings can be slow).
+        Some((_, on)) => {
+            if !READING.swap(true, Ordering::AcqRel) {
+                std::thread::spawn(|| {
+                    let on = read();
+                    if let Ok(mut last) = LAST.lock() {
+                        *last = Some((Instant::now(), on));
+                    }
+                    READING.store(false, Ordering::Release);
+                });
+            }
+            on
+        }
+        None => {
+            let on = read();
+            *last = Some((Instant::now(), on));
+            on
+        }
+    }
 }
 
 #[cfg(any(target_os = "linux", test))]

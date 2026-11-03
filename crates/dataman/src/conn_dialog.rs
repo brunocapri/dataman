@@ -176,6 +176,8 @@ pub struct ConnDialog {
     file: Entity<TextInput>,
     /// Picked with New…: the file is created when the connection is tested or saved.
     create_file: bool,
+    /// Save pressed: the connection (and its secrets) being written.
+    saving: bool,
     /// DuckDB: SQL may read and write files (`read_csv`, `COPY … TO`, ATTACH).
     file_access: bool,
 }
@@ -368,6 +370,7 @@ impl ConnDialog {
             file_access,
             file,
             create_file: false,
+            saving: false,
         }
     }
 
@@ -729,7 +732,6 @@ impl ConnDialog {
                 {
                     return Err(format!("the folder {} does not exist", dir.display()));
                 }
-                dataman_core::import::create_database(self.engine, &path).map_err(|e| format!("{e:#}"))?;
             }
             if p.name.is_empty() {
                 p.name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "database".into());
@@ -765,6 +767,15 @@ impl ConnDialog {
         let text = |e: &Entity<TextInput>| Some(e.read(cx).text().to_string()).filter(|s| !s.is_empty());
         let secret = if self.ssh.on && self.ssh.auth != SshAuth::Agent { text(&self.ssh.secret) } else { None };
         Ok((p, text(&self.password), secret))
+    }
+
+    /// Picked with New…: the file made, once what was typed is valid.
+    fn create_picked_file(&self, p: &ConnectionProfile) -> Result<(), String> {
+        let path = p.file_path();
+        if !self.is_file() || !self.create_file || path.is_file() {
+            return Ok(());
+        }
+        dataman_core::import::create_database(self.engine, &path).map_err(|e| format!("{e:#}"))
     }
 
     fn fields(&self, cx: &App) -> ConnectionProfile {
@@ -921,6 +932,9 @@ impl ConnDialog {
             Ok(v) => v,
             Err(e) => return self.invalid(e, cx),
         };
+        if let Err(e) = self.create_picked_file(&p) {
+            return self.invalid(e, cx);
+        }
         let core = self.store.read(cx).core.clone();
         let since = Instant::now();
         let target = match &p.ssh {
@@ -1017,6 +1031,9 @@ impl ConnDialog {
     }
 
     fn save(&mut self, cx: &mut Context<Self>) {
+        if self.saving {
+            return;
+        }
         if let Err(e) = self.collect(cx) {
             return self.invalid(e, cx);
         }
@@ -1154,24 +1171,41 @@ impl ConnDialog {
     }
 
     pub fn save_now(&mut self, cx: &mut Context<Self>) {
+        if self.saving {
+            return;
+        }
         let (mut p, pw, ssh_secret) = match self.collect(cx) {
             Ok(v) => v,
             Err(e) => return self.invalid(e, cx),
         };
+        if let Err(e) = self.create_picked_file(&p) {
+            return self.invalid(e, cx);
+        }
         let core = self.store.read(cx).core.clone();
         // Its agent login is Permissions' own: as saved now (made, rotated or removed
         // while this dialog was open), never this dialog's copy, nor a copied connection's.
         (p.agent_login, p.agents_refused) = core.config.get(&p.id).map(|c| (c.agent_login, c.agents_refused)).unwrap_or((None, false));
-        if let Err(e) = core.save_connection(p.clone(), pw.as_deref(), ssh_secret.as_deref()) {
-            self.test = Test::Invalid(format!("{e:#}"));
-            cx.notify();
-            return;
-        }
-        self.store.update(cx, |s, cx| {
-            s.disconnect(&p.id, cx);
-            s.reload(cx);
-        });
-        cx.emit(DialogEvent::Saved { id: p.id, password: pw });
+        // The keychain may be slow, or ask to be unlocked: saved off the UI thread.
+        self.saving = true;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let (saved, typed) = (p.clone(), pw.clone());
+            let r = cx.background_executor().spawn(async move { core.save_connection(saved, typed.as_deref(), ssh_secret.as_deref()) }).await;
+            let _ = this.update(cx, |d, cx| {
+                d.saving = false;
+                if let Err(e) = r {
+                    d.test = Test::Invalid(format!("{e:#}"));
+                    cx.notify();
+                    return;
+                }
+                d.store.update(cx, |s, cx| {
+                    s.disconnect(&p.id, cx);
+                    s.reload(cx);
+                });
+                cx.emit(DialogEvent::Saved { id: p.id, password: pw });
+            });
+        })
+        .detach();
     }
 
     fn delete(&mut self, cx: &mut Context<Self>) {
@@ -1278,7 +1312,7 @@ impl ConnDialog {
                 t.hov,
                 t.line2,
             ),
-            Test::Ok { info, ms } => ("●", t.ok, format!("Connected in {} · {}", fmt_ms(*ms), info.short_version()), String::new(), t.ok_s, t.line2),
+            Test::Ok { info, ms } => ("●", t.ok, format!("Connected in {} · {}", crate::fmt::rtt(*ms), info.short_version()), String::new(), t.ok_s, t.line2),
             Test::Failed { title, body, .. } => ("✕", t.err, title.clone(), body.clone(), t.err_s, t.err),
             Test::Invalid(msg) => ("✕", t.err, msg.clone(), String::new(), t.err_s, t.err),
             Test::HostKey(_) => return None,
@@ -1556,10 +1590,6 @@ pub(crate) fn yolo_badge(t: &Theme) -> gpui::Div {
 
 pub fn ssh_error(e: &anyhow::Error) -> Option<SshError> {
     e.chain().find_map(|c| c.downcast_ref::<SshError>()).cloned()
-}
-
-fn fmt_ms(ms: f64) -> String {
-    if ms < 10. { format!("{ms:.1} ms") } else { format!("{ms:.0} ms") }
 }
 
 pub fn server_message(e: &anyhow::Error) -> (String, String, bool) {
@@ -1910,7 +1940,7 @@ impl Render for ConnDialog {
                             .px(px(12.))
                             .font_weight(FontWeight::SEMIBOLD)
                             .when(testing, |d| d.bg(t.prs).text_color(t.tx3))
-                            .child(if self.is_new || self.password_needed { "Save & connect" } else { "Save" })
+                            .child(if self.saving { "Saving…" } else if self.is_new || self.password_needed { "Save & connect" } else { "Save" })
                             .child(div().text_size(px(10.5)).font_weight(FontWeight::NORMAL).opacity(0.75).child(crate::ui::keys_text("⌘↩")))
                             .on_click(cx.listener(|d, _, _, cx| d.save(cx))))
                     ),

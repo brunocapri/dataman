@@ -491,10 +491,6 @@ pub(crate) fn day_label(ts: chrono::DateTime<chrono::Utc>) -> String {
     }
 }
 
-fn fmt_ms(ms: f64) -> String {
-    if ms < 1000. { format!("{ms:.0} ms") } else { format!("{:.1} s", ms / 1000.) }
-}
-
 impl AgentsPage {
     pub fn new(core: Arc<Core>, store: Entity<ConnStore>, cx: &mut Context<Self>) -> Self {
         let search = cx.new(|cx| TextInput::new(cx, "Search").bare());
@@ -750,7 +746,7 @@ impl AgentsPage {
 
     pub(crate) fn edit_settings(&mut self, f: impl FnOnce(&mut dataman_core::settings::Settings), cx: &mut Context<Self>) {
         if let Err(e) = self.core.settings.update(f) {
-            log::warn!("could not save the settings: {e:#}");
+            crate::prefs::failed(&e, cx);
         }
         cx.notify();
     }
@@ -1546,7 +1542,7 @@ impl AgentsPage {
                         .text_color(t.tx3)
                         .child(div().text_color(t.tx).font_weight(FontWeight::SEMIBOLD).child(e.tool.clone()))
                         .child(div().flex_1())
-                        .child(format!("{} · {}", e.ts.with_timezone(&Local).format("%b %-d, %Y · %H:%M:%S"), fmt_ms(e.ms))),
+                        .child(format!("{} · {}", e.ts.with_timezone(&Local).format("%b %-d, %Y · %H:%M:%S"), crate::fmt::ms(e.ms))),
                 )
                 .children(e.statement().map(|s| block(&shown_agent_text(s, 20_000))))
                 .children(e.rewritten.as_deref().map(|r| div().flex().flex_col().gap(px(6.)).child(ui::caps(t, "REWRITTEN")).child(block(&shown_agent_text(r, 20_000)))))

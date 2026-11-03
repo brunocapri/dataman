@@ -208,6 +208,8 @@ pub struct HistoryPanel {
     store: Entity<ConnStore>,
     focus: FocusHandle,
     entries: Vec<(String, HistoryEntry)>,
+    /// The entries being read again after a run.
+    loading: Option<gpui::Task<()>>,
     favorites: Vec<Favorite>,
     folders: Vec<Folder>,
     open_folders: HashSet<String>,
@@ -268,6 +270,7 @@ impl HistoryPanel {
             store,
             focus: cx.focus_handle(),
             entries: vec![],
+            loading: None,
             favorites: vec![],
             folders: vec![],
             open_folders: HashSet::new(),
@@ -329,11 +332,31 @@ impl HistoryPanel {
     }
 
     pub fn reload(&mut self, cx: &mut Context<Self>) {
+        self.loading = None;
         let store = self.store.read(cx);
         let ids: Vec<String> = store.profiles.iter().map(|p| p.id.clone()).collect();
         self.entries = store.core.history.load_all(&ids, HISTORY_MAX).unwrap_or_default();
         self.read_favorites(cx);
         self.apply_filter(cx);
+    }
+
+    /// As `reload`, the files read off the UI thread (after each run); a later reload wins.
+    pub fn reload_soon(&mut self, cx: &mut Context<Self>) {
+        let store = self.store.read(cx);
+        let ids: Vec<String> = store.profiles.iter().map(|p| p.id.clone()).collect();
+        let core = store.core.clone();
+        self.loading = Some(cx.spawn(async move |h, cx| {
+            let entries = cx.background_executor().spawn(async move { core.history.load_all(&ids, HISTORY_MAX) }).await;
+            let _ = h.update(cx, |h, cx| {
+                h.entries = entries.unwrap_or_else(|e| {
+                    log::warn!("history: {e:#}");
+                    vec![]
+                });
+                h.read_favorites(cx);
+                h.apply_filter(cx);
+                h.loading = None;
+            });
+        }));
     }
 
     pub(crate) fn reload_favorites(&mut self, cx: &mut Context<Self>) {
@@ -1097,7 +1120,7 @@ impl HistoryPanel {
                             .text_size(px(11.))
                             .child(div().w(px(12.)).flex_none().text_center().text_color(gcolor).child(glyph))
                             .child(div().flex_none().text_color(t.tx).child(time))
-                            .child(div().flex_none().text_color(t.tx3).child(fmt_ms(e.duration_ms)))
+                            .child(div().flex_none().text_color(t.tx3).child(crate::fmt::ms(e.duration_ms)))
                             .when(e.source.as_deref() == Some(dataman_core::history::AGENT), |d| {
                                 d.child(icon(Icon::Agent).size(px(11.)).text_color(t.tx3))
                             })
@@ -2183,10 +2206,6 @@ fn fav_button(t: &Theme, id: impl Into<gpui::ElementId>, favorited: bool) -> gpu
         .hover(move |s| s.bg(hov))
         .active(move |s| s.bg(prs))
         .child(icon(if favorited { Icon::StarFill } else { Icon::Star }).size(px(12.)).text_color(color))
-}
-
-fn fmt_ms(ms: f64) -> String {
-    if ms < 1000. { format!("{ms:.0} ms") } else { format!("{:.1} s", ms / 1000.) }
 }
 
 fn error_code(e: Option<&str>) -> Option<String> {

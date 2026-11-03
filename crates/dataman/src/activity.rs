@@ -1637,6 +1637,8 @@ impl crate::app::Workspace {
         })
         .detach();
         self.sync_monitors(window, cx);
+        let root = m.read(cx).focus.clone();
+        cx.on_focus_in(&root, window, |w, window, cx| w.sync_group_focus(window, cx)).detach();
         let f = m.read(cx).focus_target(cx);
         window.focus(&f, cx);
         cx.notify();

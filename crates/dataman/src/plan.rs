@@ -823,7 +823,7 @@ impl crate::app::Workspace {
             if tt.execution_ms.is_none()
                 && let Some(e) = rs.as_ref().and_then(|r| r.status().elapsed)
             {
-                metrics.push(("total", crate::app::fmt_dur(e)));
+                metrics.push(("total", crate::fmt::dur(e)));
             }
         }
         let nodes = plan.as_ref().map_or(0, |p| p.nodes.len());

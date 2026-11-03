@@ -2602,7 +2602,7 @@ impl SchemaTree {
                 Entry::Sep => items.push(ui::menu_sep(&t).into_any_element()),
                 Entry::Item(it) => {
                     let hi = m.hi == Some(i) && m.sub_hi.is_none();
-                    let el = menu_row(&t, ("menu-item", i), it.label.clone(), it.icon, it.dot, it.key, it.disabled, it.bold, it.danger, it.checked, hi, false)
+                    let el = menu_row(&t, ("menu-item", i), it.label.clone(), it.icon, it.dot, it.key.clone(), it.disabled, it.bold, it.danger, it.checked, hi, false)
                         .on_hover(cx.listener(move |tr, h: &bool, _, cx| {
                             if let (true, Some(m)) = (*h, tr.menu.as_mut()) {
                                 m.hi = Some(i);
@@ -2679,7 +2679,7 @@ impl SchemaTree {
                 .map(|(j, it)| {
                     let hi = m.sub_hi == Some(j);
                     let act = it.act;
-                    let el = menu_row(&t, ("sub-item", j), it.label.clone(), it.icon, it.dot, it.key, it.disabled, it.bold, it.danger, it.checked, hi, false).on_hover(cx.listener(
+                    let el = menu_row(&t, ("sub-item", j), it.label.clone(), it.icon, it.dot, it.key.clone(), it.disabled, it.bold, it.danger, it.checked, hi, false).on_hover(cx.listener(
                         move |tr, h: &bool, _, cx| {
                             if let (true, Some(m)) = (*h, tr.menu.as_mut()) {
                                 m.sub_hi = Some(j);
@@ -3436,7 +3436,7 @@ fn menu_row(
     label: SharedString,
     ic: Icon,
     dot: Option<Hsla>,
-    key: Option<&'static str>,
+    key: Option<SharedString>,
     disabled: Option<&'static str>,
     bold: bool,
     danger: bool,
@@ -3473,7 +3473,7 @@ fn menu_row(
             None => icon(ic).size(px(14.)).text_color(icon_fg).into_any_element(),
         })
         .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().when(bold, |d| d.font_weight(FontWeight::SEMIBOLD)).child(label))
-        .children(disabled.or(key).map(|k| div().flex_none().text_size(px(11.)).text_color(key_fg).child(crate::ui::keys_text(k))))
+        .children(disabled.map(SharedString::from).or(key).map(|k| div().flex_none().text_size(px(11.)).text_color(key_fg).child(crate::ui::keys_text(k))))
         .when(checked, |d| d.child(icon(Icon::Check).flex_none().size(px(12.)).text_color(if on { t.on_acc } else { t.tx2 })))
         .when(sub, |d| d.child(icon(Icon::ChevronRight).size(px(10.)).text_color(key_fg)))
 }
