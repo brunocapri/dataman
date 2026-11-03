@@ -402,7 +402,10 @@ pub fn swap(cx: &mut App) -> Option<gpui::Task<anyhow::Result<PathBuf>>> {
 #[cfg(feature = "checks")]
 pub fn configure_for_test(feed: &str, key: &str, target: PathBuf, cx: &mut App) {
     if let Some(u) = updates_mut(cx) {
-        u.cfg = UpdateConfig::new(Some(feed), Some(key), crate::VERSION).map(Arc::new);
+        u.cfg = UpdateConfig::new(Some(feed), Some(key), crate::VERSION).map(|mut c| {
+            c.asset = Some(update::asset_for(Some(&target)));
+            Arc::new(c)
+        });
         u.state = State::Idle;
         u.dismissed = None;
         u.installed = None;

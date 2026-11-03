@@ -140,8 +140,11 @@ if [ -n "${DATAMAN_LINUX:-}" ]; then
     url="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["assets"]["linux-" + sys.argv[2]]["url"])' "$work/feed.json" "$a")"
     curl -fsSL --proto '=https' -o "$work/Dataman-$a.AppImage" "$url"
     cargo run --release --quiet -p xtask -- verify "$work/feed.json" "$work/Dataman-$a.AppImage" --pubkey "$pubkey" --version "$version" --asset "linux-$a" > /dev/null
+    url="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["assets"]["linux-" + sys.argv[2] + "-deb"]["url"])' "$work/feed.json" "$a")"
+    curl -fsSL --proto '=https' -o "$work/dataman-$a.deb" "$url"
+    cargo run --release --quiet -p xtask -- verify "$work/feed.json" "$work/dataman-$a.deb" --pubkey "$pubkey" --version "$version" --asset "linux-$a-deb" > /dev/null
   done
-  checked="$checked; Linux x86_64 and aarch64 AppImages too"
+  checked="$checked; Linux x86_64 and aarch64 AppImages and .debs too"
 fi
 
 page="$(gh release view "$tag" --repo "$repo" --json url --jq .url)"
