@@ -19,7 +19,19 @@ async fn pick(ws: &Entity<Workspace>, id: &str, db: &str, cx: &mut AsyncWindowCo
     let Some(b) = cx.update(|_, cx| ws.read(cx).picker_bounds.get()).ok().flatten() else { return false };
     click(cx, centre(b));
     pause(cx, 200).await;
-    let ok = click_probe(&format!("pick:{id}:{db}"), cx);
+    // The list scrolls when its servers hold many databases: the item brought into view first.
+    let item = format!("pick:{id}:{db}");
+    for _ in 0..40 {
+        let (Some(full), Some(list)) = (probed(&item, cx), crate::ui::probed_shown("conn-menu")) else { break };
+        if crate::ui::probed_shown(&item).is_some_and(|s| s.size.height >= full.size.height - gpui::px(0.5)) {
+            break;
+        }
+        let dy = gpui::px(if full.top() < list.top() { 120. } else { -120. });
+        let delta = gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.), dy));
+        input(cx, gpui::PlatformInput::ScrollWheel(gpui::ScrollWheelEvent { position: centre(list), delta, modifiers: Default::default(), touch_phase: gpui::TouchPhase::Moved }));
+        pause(cx, 30).await;
+    }
+    let ok = click_probe(&item, cx);
     pause(cx, 300).await;
     ok
 }

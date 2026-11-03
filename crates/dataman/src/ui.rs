@@ -892,6 +892,7 @@ mod probes {
 
     thread_local! {
         static PROBES: std::cell::RefCell<std::collections::HashMap<SharedString, gpui::Bounds<gpui::Pixels>>> = Default::default();
+        static SHOWN: std::cell::RefCell<std::collections::HashMap<SharedString, gpui::Bounds<gpui::Pixels>>> = Default::default();
     }
 
     pub fn enable_probes() {
@@ -902,7 +903,13 @@ mod probes {
     pub fn clear_probes() {
         if PROBING.load(std::sync::atomic::Ordering::Relaxed) {
             PROBES.with(|p| p.borrow_mut().clear());
+            SHOWN.with(|p| p.borrow_mut().clear());
         }
+    }
+
+    /// The part of a probed control a scrolling list or panel leaves in view.
+    pub fn probed_shown(id: &str) -> Option<gpui::Bounds<gpui::Pixels>> {
+        SHOWN.with(|p| p.borrow().get(id).copied())
     }
 
     pub fn probed(id: &str) -> Option<gpui::Bounds<gpui::Pixels>> {
@@ -963,6 +970,8 @@ mod probes {
 
         fn prepaint(&mut self, _: Option<&gpui::GlobalElementId>, _: Option<&gpui::InspectorElementId>, bounds: gpui::Bounds<gpui::Pixels>, _: &mut (), window: &mut Window, cx: &mut App) {
             PROBES.with(|p| p.borrow_mut().insert(self.id.clone(), bounds));
+            let shown = bounds.intersect(&window.content_mask().bounds);
+            SHOWN.with(|p| p.borrow_mut().insert(self.id.clone(), shown));
             self.child.prepaint(window, cx);
         }
 
