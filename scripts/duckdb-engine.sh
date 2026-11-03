@@ -4,15 +4,12 @@
 # version and target, in its own target/duckdb-engine; later runs only copy. Under
 # CARGO_TARGET_DIR both go there instead.
 #
+# The packages carry it beside the binary: bundle.sh (Contents/Frameworks, signed with the app),
+# scripts/linux/build.sh, scripts/windows/package.ps1.
+#
 #   scripts/duckdb-engine.sh              build for this machine
-#   scripts/duckdb-engine.sh --package    also gzip it into dist/duckdb and print the entry
-#                                         for DOWNLOADS (crates/dataman-core/src/backend/duck/engine.rs)
 #   scripts/duckdb-engine.sh --api        remake backend/duck/api_v1.rs from libduckdb-sys
 #
-#   DATAMAN_SIGN_IDENTITY   macOS: the Developer ID the app is signed with (unset: ad hoc); the
-#                           hardened runtime loads only a library signed by the app's own team
-#   DATAMAN_NOTARY_PROFILE  macOS, --package: notarizes it too (scripts/notarize.sh); Gatekeeper
-#                           refuses an unnotarized one put in place by hand from a browser
 #   CARGO_BUILD_TARGET      another target (e.g. x86_64-pc-windows-msvc)
 set -euo pipefail
 
@@ -48,8 +45,6 @@ case "$(uname -s)" in
   *) file=dataman_duckdb.dll os=windows ;;
 esac
 target="${CARGO_BUILD_TARGET:-}"
-arch="${target%%-*}"
-arch="${arch:-$(uname -m | sed 's/arm64/aarch64/; s/amd64/x86_64/')}"
 tdir="${CARGO_TARGET_DIR:-target}"
 build="$tdir/duckdb-engine"
 out="$tdir/duckdb"
@@ -59,30 +54,8 @@ lib="$build/${target:+$target/}release/$file"
 
 mkdir -p "$out"
 cp "$lib" "$out/$file.tmp"
-if [ "$os" = macos ]; then
-  identity="${DATAMAN_SIGN_IDENTITY:--}"
-  if [ "$identity" = "-" ]; then ts=(--timestamp=none); else ts=(--timestamp); fi
-  codesign --force --options runtime "${ts[@]}" --sign "$identity" "$out/$file.tmp"
-fi
+# Ad hoc: bundle.sh signs it again with the app's identity.
+[ "$os" = macos ] && codesign --force --options runtime --timestamp=none --sign - "$out/$file.tmp"
 mv "$out/$file.tmp" "$out/$file"
 echo "$out/$file ($(du -h "$out/$file" | cut -f1), DuckDB v$version)"
 
-if [ "${1:-}" = "--package" ]; then
-  if [ "$os" = macos ] && [ -n "${DATAMAN_NOTARY_PROFILE:-}" ]; then
-    scripts/notarize.sh "$out/$file"
-  fi
-  mkdir -p dist/duckdb
-  name="${file%.*}-v$version-$os-$arch.${file##*.}.gz"
-  gzip -9 -n -c "$out/$file" > "dist/duckdb/$name"
-  size="$(wc -c < "dist/duckdb/$name" | tr -d ' ')"
-  sum="$( (shasum -a 256 2> /dev/null || sha256sum) < "dist/duckdb/$name" | cut -d' ' -f1)"
-  echo "dist/duckdb/$name"
-  cat << EOF
-    Download {
-        platform: "$os-$arch",
-        url: "https://github.com/brunocapri/dataman/releases/download/duckdb-v$version/$name",
-        size: $size,
-        sha256: "$sum",
-    },
-EOF
-fi

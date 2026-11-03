@@ -96,10 +96,6 @@ pub fn state_home() -> Option<PathBuf> {
     xdg("XDG_STATE_HOME", ".local/state")
 }
 
-pub fn data_home() -> Option<PathBuf> {
-    xdg("XDG_DATA_HOME", ".local/share")
-}
-
 pub fn config_home() -> Option<PathBuf> {
     xdg("XDG_CONFIG_HOME", ".config")
 }
