@@ -35,6 +35,7 @@ Write-Host "zip: $zip"
 $iscc = (Get-Command iscc.exe -ErrorAction SilentlyContinue).Source
 if (-not $iscc) { $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
 if (-not (Test-Path $iscc)) { $iscc = "$env:ProgramFiles\Inno Setup 6\ISCC.exe" }
+if (-not (Test-Path $iscc)) { $iscc = "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" }
 if (-not (Test-Path $iscc)) { throw "Inno Setup 6 (ISCC.exe) is not installed" }
 & $iscc /Qp "/DVersion=$version" "/DArch=$Arch" "/DSourceDir=$((Resolve-Path $stage).Path)" "/DOutputDir=$((Resolve-Path $dist).Path)" packaging\windows\dataman.iss
 if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
