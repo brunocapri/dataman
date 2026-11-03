@@ -1139,9 +1139,17 @@ impl ConnDialog {
         // The keychain may be slow, or ask to be unlocked: saved off the UI thread.
         self.saving = true;
         cx.notify();
+        let store = self.store.clone();
         cx.spawn(async move |this, cx| {
             let (saved, typed) = (p.clone(), pw.clone());
             let r = cx.background_executor().spawn(async move { core.save_connection(saved, typed.as_deref(), ssh_secret.as_deref()) }).await;
+            // Saved: the list follows even if the dialog is gone by now.
+            if r.is_ok() {
+                let _ = store.update(cx, |s, cx| {
+                    s.disconnect(&p.id, cx);
+                    s.reload(cx);
+                });
+            }
             let _ = this.update(cx, |d, cx| {
                 d.saving = false;
                 if let Err(e) = r {
@@ -1149,14 +1157,15 @@ impl ConnDialog {
                     cx.notify();
                     return;
                 }
-                d.store.update(cx, |s, cx| {
-                    s.disconnect(&p.id, cx);
-                    s.reload(cx);
-                });
                 cx.emit(DialogEvent::Saved { id: p.id, password: pw });
             });
         })
         .detach();
+    }
+
+    /// Save pressed and the write not done: the dialog stays until it is.
+    pub fn is_saving(&self) -> bool {
+        self.saving
     }
 
     fn delete(&mut self, cx: &mut Context<Self>) {

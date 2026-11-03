@@ -1434,6 +1434,11 @@ impl Workspace {
             d
         });
         cx.subscribe_in(&d, window, |w, d, ev: &DialogEvent, window, cx| {
+            // Closed or deleted while its save runs: the save would land after (a deleted
+            // connection back, or the list never told).
+            if matches!(ev, DialogEvent::Close | DialogEvent::Delete(_)) && d.read(cx).is_saving() {
+                return;
+            }
             match ev {
                 DialogEvent::Close => {}
                 DialogEvent::Saved { id, password } => {
