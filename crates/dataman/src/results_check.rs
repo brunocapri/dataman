@@ -271,10 +271,15 @@ async fn check(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> bool {
         })
         .unwrap_or(false)
     };
+    // The paused result laid out first: the header's place is this result's, not the last one's.
+    draw(cx);
     let p = header(0, cx);
+    let asked = |cx: &mut AsyncWindowContext| cx.update(|_, cx| grid.read(cx).demo_sort_asked()).ok().flatten();
     // The second click lands while the first still reads the rest and sorts it: it waits its turn.
     click(cx, p);
+    let first = asked(cx);
     click(cx, p);
+    let second = asked(cx);
     for _ in 0..400 {
         pause(cx, 50).await;
         let whole = cx
@@ -292,7 +297,7 @@ async fn check(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) -> bool {
     report(
         "two header clicks on a paused result read the rest and sort it all descending, without a new run",
         rows0 > 0 && rows0 < 300_000 && same(cx) && n.len() == 300_000 && n.first().cloned().flatten().as_deref() == Some("300000"),
-        format!("{rows0} rows paused, {} sorted, first {:?}", n.len(), n.first()),
+        format!("{rows0} rows paused, {} sorted, first {:?}; asked {first:?} then {second:?}", n.len(), n.first()),
     );
     click(cx, p);
     settle(&grid, cx).await;

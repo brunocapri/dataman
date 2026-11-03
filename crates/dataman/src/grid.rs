@@ -641,6 +641,12 @@ impl ResultGrid {
         self.land = key;
     }
 
+    /// The sort the grid is on, or on its way to while one runs.
+    #[cfg(feature = "checks")]
+    pub fn demo_sort_asked(&self) -> Option<(usize, SortDir)> {
+        if self.sorting { self.sort_asked } else { self.rs.as_ref().and_then(|r| r.sort_state()) }
+    }
+
     #[cfg(feature = "checks")]
     pub fn demo_pop(&self) -> Option<((usize, usize), PopStyle)> {
         self.live_pop().map(|(c, style, _)| ((c.row, c.col), style))
