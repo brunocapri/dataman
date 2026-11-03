@@ -1002,14 +1002,17 @@ pub fn runs_code(sql: &str, dialect: Dialect) -> bool {
         let t = Toks { src: p, t: &all, dialect };
         let f = classify_in(p, dialect);
         matches!(f.verb.as_str(), "CALL" | "DO" | "EXEC" | "EXECUTE")
-            || t.top().iter().any(|&i| t.is(i, "EXEC") || t.is(i, "EXECUTE"))
+            // T-SQL's `INSERT … EXEC`: reserved words there; elsewhere a column may be named so.
+            || dialect == Dialect::TSql && t.top().iter().any(|&i| t.is(i, "EXEC") || t.is(i, "EXECUTE"))
             || (0..all.len()).any(|i| t.is(i, "SP_EXECUTESQL") || STRING_SQL_FUNCTIONS.iter().any(|n| t.word(i).is_some_and(|w| w.eq_ignore_ascii_case(n)) && t.punct(i + 1, "(")))
     })
 }
 
-/// It changes structure: DDL, in any text the server may run (`EXEC('DROP …')`), or in an
-/// anonymous block's body (`DO $$ … EXECUTE 'DROP …' $$`, where any dynamic SQL counts). The
-/// agents' Permissions (structure) go by this.
+/// It changes structure: DDL, in any text the server may run (`EXEC('DROP …')`, MySQL's
+/// `PREPARE … FROM '…'`), or in an anonymous block's body (`DO $$ … EXECUTE 'DROP …' $$`, where
+/// any dynamic SQL counts). SQL built at run time (`EXEC (@s)`, `'DR' + 'OP …'`, `FROM @s`) and
+/// strings read through escapes (`E'\x44ROP …'`) count too: what is not read is not taken as
+/// no DDL. The agents' Permissions (structure) go by this.
 pub fn changes_structure(sql: &str, dialect: Dialect) -> bool {
     agent_pieces(sql, dialect).iter().any(|p| {
         if crate::sql::exec_readings(p, dialect).iter().any(|text| classify_in(text, dialect).effect == Effect::Ddl) {
@@ -1017,23 +1020,62 @@ pub fn changes_structure(sql: &str, dialect: Dialect) -> bool {
         }
         let all = significant(p, dialect);
         let t = Toks { src: p, t: &all, dialect };
-        // An anonymous block, or T-SQL's `EXEC('…')`: SQL in a string.
-        if !(t.is(0, "DO") || dialect == Dialect::TSql && (t.is(0, "EXEC") || t.is(0, "EXECUTE"))) {
+        let n = all.len();
+        // PostgreSQL's anonymous block (MySQL's DO only evaluates expressions).
+        let block = dialect != Dialect::MySql && t.is(0, "DO");
+        let tsql = dialect == Dialect::TSql && (0..n).any(|i| t.is(i, "EXEC") || t.is(i, "EXECUTE") || t.is(i, "SP_EXECUTESQL"));
+        let prepare = dialect == Dialect::MySql && t.is(0, "PREPARE");
+        if !(block || tsql || prepare) {
             return false;
         }
-        all.iter().filter(|x| matches!(x.kind, TokenKind::DollarString | TokenKind::String)).any(|x| {
+        let string = |i: usize| t.t.get(i).is_some_and(|x| x.kind == TokenKind::String);
+        let ends = |i: usize| i >= n || t.punct(i, ";");
+        let built = (0..n).any(|i| {
+            (tsql && (t.is(i, "EXEC") || t.is(i, "EXECUTE")) && t.punct(i + 1, "(") && !(string(i + 2) && t.punct(i + 3, ")")))
+                || (tsql && t.is(i, "SP_EXECUTESQL") && !(string(i + 1) && (ends(i + 2) || t.punct(i + 2, ","))))
+                || (prepare && t.is(i, "FROM") && !(string(i + 1) && ends(i + 2)))
+        });
+        if built {
+            return true;
+        }
+        // The texts the server runs: a block's body; what `EXEC (…)`, sp_executesql or PREPARE
+        // is handed (a procedure's arguments are no SQL).
+        let run: Vec<usize> = if block {
+            (0..n).filter(|&i| matches!(all[i].kind, TokenKind::DollarString | TokenKind::String)).collect()
+        } else {
+            (0..n)
+                .filter_map(|i| match () {
+                    _ if tsql && (t.is(i, "EXEC") || t.is(i, "EXECUTE")) && t.punct(i + 1, "(") => Some(i + 2),
+                    _ if tsql && t.is(i, "SP_EXECUTESQL") => Some(i + 1),
+                    _ if prepare && t.is(i, "FROM") => Some(i + 1),
+                    _ => None,
+                })
+                .collect()
+        };
+        run.into_iter().filter_map(|i| all.get(i)).any(|x| {
             let text = x.text(p);
-            let text = text.strip_prefix(['N', 'n']).filter(|r| r.starts_with('\'')).unwrap_or(text);
-            // `$tag$ … $tag$` or `' … '`.
-            let quote = match text.strip_prefix('$').and_then(|r| r.find('$')) {
-                Some(n) => n + 2,
-                None => 1,
+            let body = if x.kind == TokenKind::DollarString {
+                // `$tag$ … $tag$`.
+                let quote = text.strip_prefix('$').and_then(|r| r.find('$')).map_or(1, |n| n + 2);
+                match text.get(quote..text.len().saturating_sub(quote)) {
+                    Some(b) => b.to_string(),
+                    None => return false,
+                }
+            } else {
+                let plain = if dialect == Dialect::TSql { text.strip_prefix(['N', 'n']).filter(|r| r.starts_with('\'')).unwrap_or(text) } else { text };
+                // E'…', U&'…', X'…', a MySQL backslash: the server reads escapes this does not.
+                if !plain.starts_with('\'') || dialect == Dialect::MySql && plain.contains('\\') {
+                    return true;
+                }
+                match plain.get(1..plain.len().saturating_sub(1)) {
+                    Some(b) => b.replace("''", "'"),
+                    None => return false,
+                }
             };
-            let Some(body) = text.get(quote..text.len().saturating_sub(quote)) else { return false };
             // Any DDL verb in the block, or SQL built at run time: a block reads its statements
             // as `BEGIN … END`, which no statement classifier follows.
-            const DDL: &[&str] = &["CREATE", "DROP", "ALTER", "TRUNCATE", "RENAME", "GRANT", "REVOKE", "COMMENT", "EXECUTE"];
-            significant(body, dialect).iter().any(|k| matches!(k.kind, TokenKind::Keyword | TokenKind::Ident) && DDL.iter().any(|w| k.text(body).eq_ignore_ascii_case(w)))
+            const DDL: &[&str] = &["CREATE", "DROP", "ALTER", "TRUNCATE", "RENAME", "GRANT", "REVOKE", "COMMENT", "EXECUTE", "EXEC", "SP_EXECUTESQL", "PREPARE"];
+            significant(&body, dialect).iter().any(|k| matches!(k.kind, TokenKind::Keyword | TokenKind::Ident) && DDL.iter().any(|w| k.text(&body).eq_ignore_ascii_case(w)))
         })
     })
 }
@@ -2366,6 +2408,28 @@ mod tests {
         assert!(changes_structure("DO $f$ BEGIN DROP TABLE x; END $f$", pg));
         assert!(changes_structure("EXEC('DROP TABLE x')", ms) && changes_structure("ALTER TABLE t ADD c int", pg));
         assert!(!changes_structure("DO $$ BEGIN UPDATE t SET a = 1 WHERE b = 2; END $$", pg) && !changes_structure("UPDATE t SET a = 1 WHERE b = 2", pg));
+        // A column may be named execute outside T-SQL, where the word is reserved.
+        assert!(!runs_code("SELECT 1 AS execute", pg) && !runs_code("SELECT exec FROM jobs", Dialect::MySql));
+        // SQL built at run time, or read through escapes, is not taken for no DDL.
+        let my = Dialect::MySql;
+        for (sql, d) in [
+            ("DO E'BEGIN \\x44ROP TABLE x; END'", pg),
+            ("DO E'BEGIN DROP TABLE x; END'", pg),
+            ("DO U&'BEGIN \\0044ROP TABLE x; END'", pg),
+            ("EXEC('DR' + 'OP TABLE x')", ms),
+            ("DECLARE @s nvarchar(99) = 'DROP TABLE x'; EXEC (@s)", ms),
+            ("EXEC sp_executesql @s", ms),
+            ("INSERT INTO t EXEC('DROP TABLE x')", ms),
+            ("EXEC('EXEC(''DROP TABLE x'')')", ms),
+            ("PREPARE s FROM 'DROP TABLE x'", my),
+            ("PREPARE s FROM @q", my),
+            ("PREPARE s FROM 'DR\\OP TABLE x'", my),
+        ] {
+            assert!(changes_structure(sql, d), "{d:?} {sql}");
+        }
+        for (sql, d) in [("EXEC dbo.p @name = N'drop'", ms), ("EXEC('SELECT 1')", ms), ("PREPARE s FROM 'SELECT 1'", my), ("DO 'drop'", my)] {
+            assert!(!changes_structure(sql, d), "{d:?} {sql}");
+        }
     }
 
     #[test]
