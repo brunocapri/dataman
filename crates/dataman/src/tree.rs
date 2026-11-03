@@ -2492,6 +2492,15 @@ impl SchemaTree {
     }
 
     #[cfg(feature = "checks")]
+    /// Scrolls a row into view without selecting it.
+    #[cfg(feature = "checks")]
+    pub fn demo_scroll_to(&mut self, id: &str, cx: &mut Context<Self>) {
+        if let Some(ix) = self.rows.iter().position(|r| r.id.as_ref() == id) {
+            self.scroll.scroll_to_item(ix, gpui::ScrollStrategy::Nearest);
+            cx.notify();
+        }
+    }
+
     pub fn demo_row_point(&self, id: &str) -> Option<gpui::Point<gpui::Pixels>> {
         let ix = self.rows.iter().position(|r| r.id.as_ref() == id)?;
         let (left, top, right) = self.row_rect(ix)?;

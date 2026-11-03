@@ -65,8 +65,11 @@ async fn expand(tree: &Entity<SchemaTree>, id: &str, cx: &mut AsyncWindowContext
     }
 }
 
+/// A row's middle, scrolled into view first: a server with many schemas makes the tree scroll,
+/// and a row out of view has no place to click.
 async fn point_of(tree: &Entity<SchemaTree>, id: &str, cx: &mut AsyncWindowContext) -> Option<Point<Pixels>> {
     row(tree, id, cx).await;
+    let _ = cx.update(|_, cx| tree.update(cx, |t, cx| t.demo_scroll_to(id, cx)));
     for _ in 0..20 {
         draw(cx);
         if let Some(p) = cx.update(|_, cx| tree.read(cx).demo_row_point(id)).ok().flatten() {
@@ -137,6 +140,7 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, conn: &str, db: &str, cx: 
     menu_choose(&tree, &rel("customer"), Act::Pin, cx).await;
     let names: Vec<String> = cx.update(|_, cx| tree.read(cx).demo_pinned(conn)).unwrap().into_iter().map(|p| p.0).collect();
     report("pins keep the order they were pinned in", names == ["orders", "customer"], format!("{names:?}"));
+    point_of(&tree, &group, cx).await;
     let group_ix = cx.update(|_, cx| tree.read(cx).demo_row_point(&group).map(|p| p.y)).unwrap();
     let first_db = cx.update(|_, cx| tree.read(cx).demo_row_point(&format!("c:{conn}/d:{db}")).map(|p| p.y)).unwrap();
     report("the group heads the connection", group_ix.zip(first_db).is_some_and(|(g, d)| g < d), format!("{group_ix:?} {first_db:?}"));

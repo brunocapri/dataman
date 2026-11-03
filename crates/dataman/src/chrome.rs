@@ -1117,7 +1117,7 @@ impl Workspace {
                             }))
                             .p(px(0.))
                             .overflow_hidden()
-                            .child(div().id("conn-menu").max_h(px(440.)).overflow_y_scroll().p(px(4.)).children(rows)),
+                            .child(ui::probe("conn-menu", div().id("conn-menu").max_h(px(440.)).overflow_y_scroll().p(px(4.)).children(rows))),
                     )),
                 )
                 .priority(3),

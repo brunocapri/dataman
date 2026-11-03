@@ -55,7 +55,7 @@ async fn finished(tab: &Entity<QueryTab>, cx: &mut AsyncWindowContext) {
     for _ in 0..400 {
         let done = cx.update(|_, cx| {
             let t = tab.read(cx);
-            !t.is_running() && t.run_phase().is_none_or(|p| p.is_finished())
+            !t.is_running() && t.run_phase().is_none_or(|p| p.is_finished()) && !t.run_continues()
         });
         if done.unwrap_or(true) {
             break;
