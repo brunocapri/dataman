@@ -24,7 +24,7 @@ impl Render for Ghost {
             .border_1()
             .border_color(t.line2.opacity(0.6))
             .font_family(crate::theme::mono())
-            .text_size(px(12.))
+            .text_size(px(crate::theme::text::BODY))
             .text_color(t.tx2)
             .opacity(0.8)
             .whitespace_nowrap()

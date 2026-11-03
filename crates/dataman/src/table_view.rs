@@ -196,7 +196,7 @@ impl Render for FilterPopover {
                 .px(px(7.))
                 .flex()
                 .items_center()
-                .text_size(px(11.5))
+                .text_size(px(crate::theme::text::UI))
                 .map(|d| ui::selectable(d, &t, on, true))
                 .when(on, |d| d.text_color(t.tx))
                 .when(!on, |d| d.text_color(t.tx2).bg(hov).hover(move |s| s.bg(prs)))
@@ -212,7 +212,7 @@ impl Render for FilterPopover {
             .flex_col()
             .gap(px(10.))
             .font_family(mono())
-            .text_size(px(12.))
+            .text_size(px(crate::theme::text::BODY))
             .key_context(POPOVER_CONTEXT)
             .track_focus(&self.focus)
             .on_action(cx.listener(|_, _: &CloseFilter, _, cx| cx.emit(FilterEvent::Close)))
@@ -226,7 +226,7 @@ impl Render for FilterPopover {
                     .items_baseline()
                     .gap(px(6.))
                     .child(div().font_weight(FontWeight::SEMIBOLD).text_color(t.tx).child(self.column.clone()))
-                    .child(div().text_size(px(10.5)).text_color(t.tx3).child(self.type_name.clone())),
+                    .child(div().text_size(px(crate::theme::text::HINT)).text_color(t.tx3).child(self.type_name.clone())),
             )
             .child(div().flex().flex_row().flex_wrap().gap(px(4.)).children(ops))
             .when(op.takes_value(), |d| d.child(self.input.clone()))
@@ -239,7 +239,7 @@ impl Render for FilterPopover {
                     .children(editing.map(|i| {
                         ui::button(&t, "filter-remove", Btn::Ghost)
                             .h(px(24.))
-                            .text_size(px(11.5))
+                            .text_size(px(crate::theme::text::UI))
                             .child("Remove")
                             .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| cx.emit(FilterEvent::Remove(i))))
                     }))
@@ -247,7 +247,7 @@ impl Render for FilterPopover {
                     .child(
                         ui::button(&t, "filter-apply", Btn::Primary)
                             .h(px(24.))
-                            .text_size(px(11.5))
+                            .text_size(px(crate::theme::text::UI))
                             .font_weight(FontWeight::SEMIBOLD)
                             .child("Apply")
                             .child(ui::key_hint("↩"))

@@ -22,7 +22,7 @@ pub fn keycap(t: &Theme, text: impl Into<SharedString>) -> Div {
         .border_1()
         .border_color(t.line)
         .border_b_1()
-        .text_size(px(10.5))
+        .text_size(px(crate::theme::text::HINT))
         .line_height(px(16.))
         .text_color(t.tx2)
         .child(keys_text(text))
@@ -42,7 +42,7 @@ pub fn keycap_sm(bg: Hsla, fg: Hsla, text: impl Into<SharedString>) -> Div {
         .flex()
         .items_center()
         .bg(bg)
-        .text_size(px(10.))
+        .text_size(px(crate::theme::text::TINY))
         .line_height(px(14.))
         .font_weight(FontWeight::MEDIUM)
         .text_color(fg)
@@ -50,7 +50,7 @@ pub fn keycap_sm(bg: Hsla, fg: Hsla, text: impl Into<SharedString>) -> Div {
 }
 
 pub fn key_hint(text: impl Into<SharedString>) -> Div {
-    div().flex_none().text_size(px(10.5)).opacity(0.7).child(keys_text(text))
+    div().flex_none().text_size(px(crate::theme::text::HINT)).opacity(0.7).child(keys_text(text))
 }
 
 pub fn chip(color: Hsla, size: f32) -> Div {
@@ -86,7 +86,7 @@ pub fn marked(t: &Theme, text: String, q: &str) -> Div {
 }
 
 pub fn caps(t: &Theme, text: impl Into<SharedString>) -> Div {
-    div().flex_none().text_size(px(10.5)).text_color(t.tx3).child(text.into())
+    div().flex_none().text_size(px(crate::theme::text::HINT)).text_color(t.tx3).child(text.into())
 }
 
 pub fn banner(text: impl Into<SharedString>, size: f32, color: Hsla) -> Div {
@@ -104,7 +104,7 @@ pub fn not_reported(t: &Theme) -> Div {
         .border_dashed()
         .border_color(t.line2)
         .text_color(t.tx3)
-        .text_size(px(10.))
+        .text_size(px(crate::theme::text::TINY))
         .child("not reported")
 }
 
@@ -117,10 +117,10 @@ pub fn status(glyph: &str, label: impl Into<SharedString>, fg: Hsla) -> Div {
         .items_center()
         .gap(px(6.))
         .text_color(fg)
-        .text_size(px(10.5))
+        .text_size(px(crate::theme::text::HINT))
         .font_weight(FontWeight::SEMIBOLD)
         .whitespace_nowrap()
-        .child(div().text_size(px(10.)).child(glyph_el(glyph, fg)))
+        .child(div().text_size(px(crate::theme::text::TINY)).child(glyph_el(glyph, fg)))
         .child(label.into())
 }
 
@@ -156,7 +156,7 @@ pub fn button(t: &Theme, id: impl Into<ElementId>, kind: Btn) -> Stateful<Div> {
         .flex()
         .items_center()
         .gap(px(7.))
-        .text_size(px(12.))
+        .text_size(px(crate::theme::text::BODY))
         .whitespace_nowrap()
         .cursor_pointer();
     match kind {
@@ -343,7 +343,7 @@ pub fn segment(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedStrin
         .flex()
         .items_center()
         .justify_center()
-        .text_size(px(11.5))
+        .text_size(px(crate::theme::text::UI))
         .cursor_pointer()
         .when(on, |d| d.bg(t.pop).text_color(t.tx).border_1().border_color(t.line2))
         .when(!on, |d| d.text_color(t.tx3).hover(move |s| s.bg(hov)))
@@ -429,11 +429,11 @@ pub fn menu_item(
         .flex()
         .items_center()
         .gap(px(10.))
-        .text_size(px(12.))
+        .text_size(px(crate::theme::text::BODY))
         .text_color(if enabled { t.tx } else { t.tx4 })
         .when(enabled, |d| d.cursor_pointer().hover(move |s| s.bg(acc).text_color(on_acc)))
         .child(div().flex_1().child(label.into()))
-        .children(key.map(|k| div().text_size(px(11.)).opacity(0.7).child(k.to_string())))
+        .children(key.map(|k| div().text_size(px(crate::theme::text::SMALL)).opacity(0.7).child(k.to_string())))
 }
 
 /// A list's selected row, the explorer's: a muted blue wash and hairline while its list has the
@@ -561,7 +561,7 @@ impl Render for Tooltip {
             .bg(t.pop)
             .shadow(t.ring())
             .font_family(crate::theme::mono())
-            .text_size(px(11.5))
+            .text_size(px(crate::theme::text::UI))
             .line_height(px(17.))
             .text_color(t.tx2)
             .flex()
@@ -649,7 +649,7 @@ impl Render for TextTip {
             .bg(t.pop)
             .shadow(t.ring())
             .font_family(crate::theme::mono())
-            .text_size(px(11.5))
+            .text_size(px(crate::theme::text::UI))
             .line_height(px(TIP_LINE_H))
             .text_color(t.tx)
             .whitespace_normal()
@@ -675,7 +675,7 @@ pub fn modal(t: &Theme, id: impl Into<ElementId>) -> Stateful<Div> {
         .flex_col()
         .bg(t.pop)
         .shadow(t.ring())
-        .text_size(px(12.))
+        .text_size(px(crate::theme::text::BODY))
         .text_color(t.tx)
         .occlude()
         .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())

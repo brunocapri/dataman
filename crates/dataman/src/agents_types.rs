@@ -135,9 +135,9 @@ impl AgentsPage {
             .header(t, "Masks")
             .child(qmark(t, "agents-types-tip", types_tip()))
             .child(div().flex_1().min_w(px(12.)))
-            .child(div().children(ui::here(&"agents-types-applies".into())).min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(11.5)).text_color(t.tx3).child(applies));
+            .child(div().children(ui::here(&"agents-types-applies".into())).min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(crate::theme::text::UI)).text_color(t.tx3).child(applies));
         let broken: Vec<&TypeRow> = rows.iter().filter(|r| r.broken.is_some() && r.on).collect();
-        let notice = broken.first().map(|r| div().pb(px(6.)).text_size(px(11.5)).text_color(t.err).child(format!("{} has an invalid pattern. Agent reads are refused while it is on.", r.name)));
+        let notice = broken.first().map(|r| div().pb(px(6.)).text_size(px(crate::theme::text::UI)).text_color(t.err).child(format!("{} has an invalid pattern. Agent reads are refused while it is on.", r.name)));
         self.types_offset = notice.is_some() as usize;
         if self.type_sel.is_some_and(|k| k >= rows.len()) {
             self.type_sel = None;
@@ -239,11 +239,11 @@ impl AgentsPage {
                     .child(r.name.clone()),
             )
             .child(div().flex_none().when(!r.on, |d| d.opacity(0.55)).child(qmark(t, &format!("agents-type-tip-{}", r.id), type_tip(&r.name, &tip_rule, example, yours))))
-            .when(custom || r.edited, |d| d.child(div().flex_none().text_size(px(11.)).text_color(t.tx3).child(if custom { "custom" } else { "edited" })))
+            .when(custom || r.edited, |d| d.child(div().flex_none().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(if custom { "custom" } else { "edited" })))
             .child(div().flex_1())
             .when(r.broken.is_some(), |d| {
                 let id = r.id.clone();
-                d.child(div().id(SharedString::from(format!("agents-fix-{}", r.id))).flex_none().text_size(px(11.5)).text_color(t.err).cursor_pointer().child("Fix").on_click(cx.listener(move |v, _, _, cx| v.select_type(&id, cx))))
+                d.child(div().id(SharedString::from(format!("agents-fix-{}", r.id))).flex_none().text_size(px(crate::theme::text::UI)).text_color(t.err).cursor_pointer().child("Fix").on_click(cx.listener(move |v, _, _, cx| v.select_type(&id, cx))))
             })
             .child(div().flex_none().when(!r.on, |d| d.opacity(0.55)).child(mask))
             .into_any_element()
@@ -287,7 +287,7 @@ impl AgentsPage {
                             .overflow_hidden()
                             .whitespace_nowrap()
                             .text_ellipsis()
-                            .text_size(px(13.))
+                            .text_size(px(crate::theme::text::TITLE))
                             .font_weight(FontWeight::BOLD)
                             .child(match &self.editor.editing {
                                 Some(_) if !c.name.is_empty() => c.name.clone(),
@@ -314,7 +314,7 @@ impl AgentsPage {
                             .note("Up to 500 characters. Test lines below show what an agent would get."),
                     ))
                     .child(field(t, "agents-field-regex", &self.editor.regex, window, cx))
-                    .children(problem.clone().map(|p| div().text_size(px(11.)).text_color(t.err).child(p))),
+                    .children(problem.clone().map(|p| div().text_size(px(crate::theme::text::SMALL)).text_color(t.err).child(p))),
             )
             .child(div().flex().flex_col().gap(px(8.)).child(crate::agents::label_tip(
                 t,
@@ -333,7 +333,7 @@ impl AgentsPage {
                 .flex_row()
                 .items_center()
                 .gap(px(6.))
-                .text_size(px(11.5))
+                .text_size(px(crate::theme::text::UI))
                 .text_color(t.tx2)
                 .cursor_pointer()
                 .child("More options")
@@ -414,7 +414,7 @@ impl AgentsPage {
                 .py(px(8.))
                 .border_b_1()
                 .border_color(t.line)
-                .text_size(px(11.5))
+                .text_size(px(crate::theme::text::UI))
                 .child(div().pr(px(16.)).whitespace_nowrap().overflow_hidden().child(StyledText::new(line.clone()).with_runs(runs)))
                 .child(div().whitespace_nowrap().overflow_hidden().text_ellipsis().text_color(t.tx3).child(out.unwrap_or_else(|| "no match".into())))
                 .child(
@@ -448,7 +448,7 @@ impl AgentsPage {
                         .flex_row()
                         .items_center()
                         .child(div().flex_1().child(caps("TEST")))
-                        .child(div().text_size(px(11.)).text_color(t.tx3).child(if count == 1 { "1 match".to_string() } else { format!("{count} matches") })),
+                        .child(div().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(if count == 1 { "1 match".to_string() } else { format!("{count} matches") })),
                 )
                 .child(
                     div()
@@ -460,10 +460,10 @@ impl AgentsPage {
                         .children(lines)
                         .child(div().children(ui::here(&"agents-field-sample".into())).h(px(30.)).px(px(10.)).flex().items_center().child(self.editor.sample.clone())),
                 )
-                .when(broad, |d| d.child(div().text_size(px(11.)).text_color(t.warn).child("Matches most of these lines; it may be too broad."))),
+                .when(broad, |d| d.child(div().text_size(px(crate::theme::text::SMALL)).text_color(t.warn).child("Matches most of these lines; it may be too broad."))),
         );
         if full {
-            panel = panel.child(div().text_size(px(11.)).text_color(t.tx3).child(format!("{} masks of yours at most.", privacy::MAX_CUSTOM)));
+            panel = panel.child(div().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(format!("{} masks of yours at most.", privacy::MAX_CUSTOM)));
         }
         let confirm = self.editor.confirm_delete;
         // Yours can be deleted; a built-in one goes back to its default once changed.
@@ -479,7 +479,7 @@ impl AgentsPage {
                     div()
                         .children(ui::here(&"agents-type-delete".into()))
                         .id("agents-type-delete")
-                        .text_size(px(11.5))
+                        .text_size(px(crate::theme::text::UI))
                         .text_color(t.err)
                         .cursor_pointer()
                         .child(verb)
@@ -490,7 +490,7 @@ impl AgentsPage {
                 )
             })
             .when(removable && confirm, |d| {
-                d.child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(11.5)).text_color(t.err).child(ask))
+                d.child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(crate::theme::text::UI)).text_color(t.err).child(ask))
                     .child(ui::button(t, "agents-type-delete-yes", ui::Btn::Danger).h(px(24.)).child(verb).on_click(cx.listener(|v, _, _, cx| v.delete_type(cx))))
                     .child(ui::button(t, "agents-type-delete-no", ui::Btn::Ghost).h(px(24.)).child("Keep").on_click(cx.listener(|v, _, _, cx| {
                         v.editor.confirm_delete = false;

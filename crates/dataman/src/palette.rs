@@ -478,11 +478,11 @@ impl Palette {
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .text_ellipsis()
-                    .text_size(px(11.))
+                    .text_size(px(crate::theme::text::SMALL))
                     .text_color(t.tx3)
                     .when(it.section != Section::Commands, |d| d.child(it.sub.clone())),
             )
-            .child(div().flex_none().text_size(px(11.)).text_color(t.tx3).child(it.key.clone()))
+            .child(div().flex_none().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(it.key.clone()))
             .cursor_pointer()
             .on_click(cx.listener(move |p, ev: &gpui::ClickEvent, _, cx| {
                 let mode = if ev.modifiers().secondary() {
@@ -536,13 +536,13 @@ impl Render for Palette {
                 .flex_row()
                 .items_center()
                 .gap(px(6.))
-                .text_size(px(11.5))
+                .text_size(px(crate::theme::text::UI))
                 .border_1()
                 .border_color(gpui::transparent_black())
                 .when(on, |d| d.bg(t.prs).text_color(t.tx).border_color(t.line2))
                 .when(!on, |d| d.text_color(t.tx3).hover(move |st| st.bg(hov)))
                 .child(name)
-                .child(div().text_size(px(10.5)).opacity(0.6).child(prefix))
+                .child(div().text_size(px(crate::theme::text::HINT)).opacity(0.6).child(prefix))
                 .cursor_pointer()
                 .on_click(cx.listener(move |p, _, _, cx| {
                     p.scope = s;
@@ -561,7 +561,7 @@ impl Render for Palette {
                     .pb(px(4.))
                     .flex()
                     .items_end()
-                    .text_size(px(10.))
+                    .text_size(px(crate::theme::text::TINY))
                     .text_color(if *section == Section::Offline { t.warn } else { t.tx3 })
                     .child(section.title())
                     .into_any_element(),
@@ -579,7 +579,7 @@ impl Render for Palette {
                     .px(px(10.))
                     .flex()
                     .items_center()
-                    .text_size(px(11.))
+                    .text_size(px(crate::theme::text::SMALL))
                     .text_color(t.tx3)
                     .child(format!("+{} more", crate::grid::ui_count(self.hidden)))
                     .into_any_element(),

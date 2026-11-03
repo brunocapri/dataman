@@ -717,7 +717,7 @@ impl DocPane {
 
 impl DocPane {
     fn render_bar(&self, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let ghost = |id: &'static str| ui::button(t, id, Btn::Ghost).h(px(24.)).px(px(7.)).gap(px(5.)).text_size(px(11.5));
+        let ghost = |id: &'static str| ui::button(t, id, Btn::Ghost).h(px(24.)).px(px(7.)).gap(px(5.)).text_size(px(crate::theme::text::UI));
         let mut left: Vec<gpui::AnyElement> = Vec::new();
         let metric = |k: &str, v: String| {
             div().flex().flex_row().gap(px(5.)).child(div().text_color(t.tx4).child("·")).child(div().text_color(t.tx3).child(k.to_string())).child(div().text_color(t.tx).child(v))
@@ -728,7 +728,7 @@ impl DocPane {
                 .flex_row()
                 .items_baseline()
                 .gap(px(5.))
-                .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(t.tx).child(n))
+                .child(div().text_size(px(crate::theme::text::TITLE)).font_weight(FontWeight::SEMIBOLD).text_color(t.tx).child(n))
                 .child(div().text_color(t.tx3).child(what.to_string()))
         };
         let mut pager = None;
@@ -775,7 +775,7 @@ impl DocPane {
                                                     }
                                                 })),
                                         )
-                                        .child(div().text_size(px(11.)).text_color(t.tx2).child(range))
+                                        .child(div().text_size(px(crate::theme::text::SMALL)).text_color(t.tx2).child(range))
                                         .child(
                                             ui::icon_button(t, "doc-next", Icon::ChevronRight, 22., 12.)
                                                 .when(!next_on, |d| d.opacity(0.35))
@@ -820,7 +820,7 @@ impl DocPane {
             .border_b_1()
             .border_color(t.line)
             .text_color(t.tx2)
-            .text_size(px(11.5))
+            .text_size(px(crate::theme::text::UI))
             .whitespace_nowrap()
             .child(div().flex_1().min_w_0().overflow_hidden().flex().flex_row().items_center().gap(px(10.)).children(left).children(pager))
             .when(can_new, |d| {
@@ -862,7 +862,7 @@ impl DocPane {
             .bg(if prod { t.err_s } else { t.warn_s })
             .border_1()
             .border_color(if prod { t.err } else { t.warn })
-            .text_size(px(11.5))
+            .text_size(px(crate::theme::text::UI))
             .child(div().flex_none().text_color(if prod { t.err } else { t.warn }).child("!"))
             .child(
                 div()
@@ -897,7 +897,7 @@ impl DocPane {
                 .flex_row()
                 .items_center()
                 .gap(px(10.))
-                .text_size(px(11.5))
+                .text_size(px(crate::theme::text::UI))
                 .map(|d| ui::selectable(d, t, sel, true))
                 .when(!sel, |d| d.hover(move |s| s.bg(hov)))
                 .child(div().w(px(28.)).flex_none().text_right().text_color(t.tx4).child((base + i + 1).to_string()))
@@ -920,7 +920,7 @@ impl DocPane {
             .overflow_y_scroll()
             .py(px(4.))
             .children(rows)
-            .when(lines.is_empty(), |d| d.child(div().pt(px(40.)).flex().justify_center().text_color(t.tx3).text_size(px(12.)).child("No documents")))
+            .when(lines.is_empty(), |d| d.child(div().pt(px(40.)).flex().justify_center().text_color(t.tx3).text_size(px(crate::theme::text::BODY)).child("No documents")))
     }
 
     fn render_detail(&self, editor: Entity<CodeEditor>, editable: bool, t: &Theme, cx: &mut Context<Self>) -> impl IntoElement + use<> {
@@ -938,7 +938,7 @@ impl DocPane {
             let save = ui::button(t, "doc-save", if dirty { Btn::Primary } else { Btn::Secondary })
                 .h(px(24.))
                 .px(px(8.))
-                .text_size(px(11.5))
+                .text_size(px(crate::theme::text::UI))
                 .when(!dirty || self.saving, |d| d.opacity(0.5))
                 .child(if self.saving {
                     "Saving…"
@@ -950,12 +950,12 @@ impl DocPane {
                     "Save"
                 })
                 .on_click(cx.listener(|p, _, _, cx| p.save(cx)));
-            let revert = (dirty && !self.saving).then(|| ui::button(t, "doc-revert", Btn::Ghost).h(px(24.)).px(px(8.)).text_size(px(11.5)).child("Revert").on_click(cx.listener(|p, _, _, cx| p.revert(cx))));
+            let revert = (dirty && !self.saving).then(|| ui::button(t, "doc-revert", Btn::Ghost).h(px(24.)).px(px(8.)).text_size(px(crate::theme::text::UI)).child("Revert").on_click(cx.listener(|p, _, _, cx| p.revert(cx))));
             let delete = (!self.new_doc && self.selected.is_some()).then(|| {
                 ui::button(t, "doc-delete", if self.delete_armed { Btn::Danger } else { Btn::Ghost })
                     .h(px(24.))
                     .px(px(8.))
-                    .text_size(px(11.5))
+                    .text_size(px(crate::theme::text::UI))
                     .when(!self.delete_armed, |d| d.text_color(t.err))
                     .child(icon(Icon::Trash).size(px(12.)).text_color(t.err))
                     .child(if self.delete_armed { "Delete — sure?" } else { "Delete" })
@@ -971,8 +971,8 @@ impl DocPane {
                 .gap(px(8.))
                 .border_b_1()
                 .border_color(t.line)
-                .child(div().text_size(px(11.5)).font_weight(FontWeight::SEMIBOLD).text_color(t.tx).child(title))
-                .children(self.note.clone().map(|(n, err)| div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(11.)).text_color(if err { t.err } else { t.ok }).child(n)))
+                .child(div().text_size(px(crate::theme::text::UI)).font_weight(FontWeight::SEMIBOLD).text_color(t.tx).child(title))
+                .children(self.note.clone().map(|(n, err)| div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(crate::theme::text::SMALL)).text_color(if err { t.err } else { t.ok }).child(n)))
                 .child(div().flex_1())
                 .children(delete)
                 .children(revert)
@@ -1025,7 +1025,7 @@ impl DocPane {
             .border_color(t.line)
             .bg(t.panel)
             .font_family(crate::theme::mono())
-            .text_size(px(11.5))
+            .text_size(px(crate::theme::text::UI))
             .text_color(t.tx2)
             .children(lines.iter().map(|l| div().whitespace_nowrap().child(l.clone())))
     }
@@ -1047,11 +1047,11 @@ impl DocPane {
                     .flex()
                     .flex_row()
                     .gap(px(10.))
-                    .text_size(px(13.))
+                    .text_size(px(crate::theme::text::TITLE))
                     .child(div().text_color(t.err).child("✕"))
                     .child(div().text_color(t.tx).child(f.message.clone())),
             )
-            .children(place.map(|p| div().pl(px(22.)).text_size(px(11.5)).text_color(t.tx3).child(p)))
+            .children(place.map(|p| div().pl(px(22.)).text_size(px(crate::theme::text::UI)).text_color(t.tx3).child(p)))
     }
 }
 
@@ -1068,7 +1068,7 @@ impl Render for DocPane {
                 .items_center()
                 .justify_center()
                 .text_color(t.tx3)
-                .text_size(px(12.))
+                .text_size(px(crate::theme::text::BODY))
                 .child(if self.running.is_some() { "Running…" } else { "" })
                 .into_any_element(),
             Some((Err(f), stmt, _)) => self.render_error(f, stmt, &t).into_any_element(),
@@ -1120,7 +1120,7 @@ impl Render for DocPane {
                 .flex()
                 .flex_row()
                 .gap(px(10.))
-                .text_size(px(13.))
+                .text_size(px(crate::theme::text::TITLE))
                 .child(div().text_color(t.ok).child("✓"))
                 .child(div().text_color(t.tx).child(summary.clone()))
                 .into_any_element(),

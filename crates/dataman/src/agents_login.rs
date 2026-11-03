@@ -493,7 +493,7 @@ impl AgentsPage {
             .flex_row()
             .items_center()
             .gap(px(7.))
-            .child(ui::caps(t, format!("HOW AGENTS REACH {}", p.name.to_uppercase())).text_size(px(11.)).text_color(t.tx2))
+            .child(ui::caps(t, format!("HOW AGENTS REACH {}", p.name.to_uppercase())).text_size(px(crate::theme::text::SMALL)).text_color(t.tx2))
             .child(qmark(t, "agents-login-tip", login_tip()));
         let mut card = div()
             .children(ui::here(&"agents-login-section".into()))
@@ -571,7 +571,7 @@ impl AgentsPage {
                 .border_color(line)
                 .rounded(px(2.))
                 .child(div().overflow_hidden().whitespace_nowrap().text_ellipsis().font_weight(FontWeight::SEMIBOLD).text_color(tx).child(title))
-                .child(div().text_size(px(11.)).line_height(px(17.)).text_color(tx2).child(hint))
+                .child(div().text_size(px(crate::theme::text::SMALL)).line_height(px(17.)).text_color(tx2).child(hint))
         };
         // Nodes as tall as the tallest (stretched), each arrow centred on them.
         let arrow = || div().flex_none().flex().items_center().child(div().w(px(28.)).h(px(1.)).bg(t.tx4));
@@ -593,7 +593,7 @@ impl AgentsPage {
     fn login_notes(&self, t: &Theme) -> Vec<AnyElement> {
         let mut out = Vec::new();
         if let Some((ok, text)) = &self.login.note {
-            out.push(div().children(ui::here(&"agents-login-note".into())).text_size(px(11.5)).text_color(if *ok { t.tx2 } else { t.err }).line_height(px(18.)).child(text.clone()).into_any_element());
+            out.push(div().children(ui::here(&"agents-login-note".into())).text_size(px(crate::theme::text::UI)).text_color(if *ok { t.tx2 } else { t.err }).line_height(px(18.)).child(text.clone()).into_any_element());
         }
         if !self.login.checks.is_empty() {
             out.push(
@@ -601,7 +601,7 @@ impl AgentsPage {
                     .flex()
                     .flex_col()
                     .gap(px(4.))
-                    .text_size(px(11.5))
+                    .text_size(px(crate::theme::text::UI))
                     .children(self.login.checks.iter().map(|c| {
                         div()
                             .flex()
@@ -620,7 +620,7 @@ impl AgentsPage {
 
     /// Where a login was removed, said under the tier: agents are refused until the user chooses.
     pub(crate) fn login_refused_note(&self, t: &Theme, p: &ConnectionProfile) -> Option<AnyElement> {
-        (p.agents_refused && p.agent_login.is_none()).then(|| div().children(ui::here(&"agents-login-refused".into())).text_size(px(11.)).text_color(t.err).child("Agents are refused here: its agent login was removed.").into_any_element())
+        (p.agents_refused && p.agent_login.is_none()).then(|| div().children(ui::here(&"agents-login-refused".into())).text_size(px(crate::theme::text::SMALL)).text_color(t.err).child("Agents are refused here: its agent login was removed.").into_any_element())
     }
 
     /// Last on the page while agents connect as a login of their own: it, its password, and the
@@ -646,7 +646,7 @@ impl AgentsPage {
                 .child(verify),
         );
         if l.not_granted > 0 {
-            login = login.child(div().text_size(px(11.5)).text_color(t.warn).child(format!("{} can't be granted to it: agents don't see {}.", agent_login_count(l.not_granted, "table"), if l.not_granted == 1 { "it" } else { "them" })));
+            login = login.child(div().text_size(px(crate::theme::text::UI)).text_color(t.warn).child(format!("{} can't be granted to it: agents don't see {}.", agent_login_count(l.not_granted, "table"), if l.not_granted == 1 { "it" } else { "them" })));
         }
         if drifted {
             login = login.child(self.login_drift_lines(t, p, cx));
@@ -678,7 +678,7 @@ impl AgentsPage {
 
     /// The rules changed since the login was made: what it needs, and the button that runs it.
     fn login_drift_lines(&self, t: &Theme, p: &ConnectionProfile, cx: &mut Context<Self>) -> gpui::Div {
-        let col = div().children(ui::here(&"agents-login-drift".into())).flex().flex_col().gap(px(10.)).text_size(px(11.5)).line_height(px(18.));
+        let col = div().children(ui::here(&"agents-login-drift".into())).flex().flex_col().gap(px(10.)).text_size(px(crate::theme::text::UI)).line_height(px(18.));
         match &self.login.drift {
             None => col.child(div().text_color(t.tx3).child("Reading what the login has now…")),
             Some(Err(e)) => {
@@ -798,7 +798,7 @@ impl AgentsPage {
                 .gap(px(10.))
                 .cursor_pointer()
                 .child(div().pt(px(1.)).children(on.then(|| ui::here(&gpui::SharedString::from(format!("{id}-on")).into())).flatten()).child(checkbox(t, on, false)))
-                .child(div().flex_1().min_w_0().flex().flex_col().gap(px(2.)).child(div().text_color(t.tx).child(text)).children(sub.map(|s| div().text_size(px(11.)).text_color(t.tx3).child(s.to_string()))))
+                .child(div().flex_1().min_w_0().flex().flex_col().gap(px(2.)).child(div().text_color(t.tx).child(text)).children(sub.map(|s| div().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(s.to_string()))))
         };
         let (p1, p2) = (p.clone(), p.clone());
         let mut opts_row = div().flex().flex_row().items_start().gap(px(32.)).child(
@@ -825,7 +825,7 @@ impl AgentsPage {
             .line_height(px(18.))
             .child(ui::caps(t, "LOGIN"))
             .child(opts_row)
-            .children(plan.notes.iter().map(|n| div().text_size(px(11.)).text_color(t.tx3).child(n.clone())));
+            .children(plan.notes.iter().map(|n| div().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(n.clone())));
         let body = div()
             .flex_1()
             .min_w_0()
@@ -891,9 +891,9 @@ impl AgentsPage {
                     .border_b_1()
                     .border_color(t.line)
                     .child(ui::caps(t, "CHANGES"))
-                    .child(div().ml_auto().flex().flex_row().gap(px(8.)).font_family(mono()).text_size(px(11.)).child(count(gone, "−", t.err)).child(count(new, "+", t.ok))),
+                    .child(div().ml_auto().flex().flex_row().gap(px(8.)).font_family(mono()).text_size(px(crate::theme::text::SMALL)).child(count(gone, "−", t.err)).child(count(new, "+", t.ok))),
             )
-            .child(div().children(ui::here(&"agents-login-diff".into())).id("agents-login-diff").flex_1().min_h_0().overflow_y_scroll().py(px(10.)).flex().flex_col().gap(px(2.)).font_family(mono()).text_size(px(11.5)).line_height(px(18.)).children(lines));
+            .child(div().children(ui::here(&"agents-login-diff".into())).id("agents-login-diff").flex_1().min_h_0().overflow_y_scroll().py(px(10.)).flex().flex_col().gap(px(2.)).font_family(mono()).text_size(px(crate::theme::text::UI)).line_height(px(18.)).children(lines));
         let body = div().flex_1().min_w_0().flex().flex_row().child(diff).child(self.what_runs(t, "agents-login-drift-sql", Ok(&d.plan), p.engine)).into_any_element();
         let pid = p.clone();
         let label = if n == 1 { "Apply 1 change".to_string() } else { format!("Apply {n} changes") };
@@ -996,7 +996,7 @@ impl AgentsPage {
                     // Each line as wide as it is: the scroll's content is the widest.
                     .items_start()
                     .font_family(mono())
-                    .text_size(px(11.5))
+                    .text_size(px(crate::theme::text::UI))
                     .line_height(row)
                     .child(
                         div()
@@ -1042,7 +1042,7 @@ enum Verified {
 }
 
 fn prod_tag(t: &Theme) -> gpui::Div {
-    div().flex_none().h(px(20.)).px(px(7.)).flex().items_center().text_size(px(10.5)).font_weight(FontWeight::SEMIBOLD).text_color(t.warn).bg(t.warn_s).child("PRODUCTION")
+    div().flex_none().h(px(20.)).px(px(7.)).flex().items_center().text_size(px(crate::theme::text::HINT)).font_weight(FontWeight::SEMIBOLD).text_color(t.warn).bg(t.warn_s).child("PRODUCTION")
 }
 
 fn password_tip() -> Tip {

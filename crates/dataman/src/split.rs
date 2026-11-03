@@ -588,7 +588,7 @@ impl Workspace {
             .items_center()
             .bg(t.err)
             .text_color(t.on_err)
-            .text_size(px(11.))
+            .text_size(px(crate::theme::text::SMALL))
             .font_weight(gpui::FontWeight::SEMIBOLD)
             .whitespace_nowrap()
             .cursor_pointer()

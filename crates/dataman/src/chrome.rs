@@ -523,7 +523,7 @@ impl Workspace {
                 .flex()
                 .items_center()
                 .justify_center()
-                .text_size(px(13.))
+                .text_size(px(crate::theme::text::TITLE))
                 .cursor_pointer()
                 .hover(move |s| s.text_color(tx_c))
                 .child("×")
@@ -546,7 +546,7 @@ impl Workspace {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .text_size(px(11.))
+                        .text_size(px(crate::theme::text::SMALL))
                         .text_color(ind_color)
                         .group_hover(group.clone(), |s| s.invisible())
                         .child(ui::glyph_el(&s, ind_color)),
@@ -560,7 +560,7 @@ impl Workspace {
                         .child(close.text_color(tx3)),
                 )
                 .into_any_element(),
-            Some(s) => div().flex_none().text_size(px(11.)).text_color(ind_color).child(s).into_any_element(),
+            Some(s) => div().flex_none().text_size(px(crate::theme::text::SMALL)).text_color(ind_color).child(s).into_any_element(),
             None => close
                 .text_color(if active { tx3 } else { gpui::transparent_black() })
                 .group_hover(group.clone(), move |s| s.text_color(tx3))
@@ -937,7 +937,7 @@ impl Workspace {
             b.pl(px(9.))
                 .pr(px(6.))
                 .when(v.cancelling, |d| d.bg(t.warn_s).text_color(t.warn).border_1().border_color(t.warn))
-                .child(div().text_size(px(11.)).child(glyph))
+                .child(div().text_size(px(crate::theme::text::SMALL)).child(glyph))
                 .child(label)
                 .when_some(crate::keymap::key("cancel"), |d, k| d.child(ui::keycap_sm(t.key, t.tx2, k)))
                 .on_click(cx.listener(|w, _, _, cx| w.cancel_active(cx)))
@@ -956,7 +956,7 @@ impl Workspace {
                 .bg(t.hov)
                 .border_1()
                 .border_color(t.line2)
-                .text_size(px(10.5))
+                .text_size(px(crate::theme::text::HINT))
                 .text_color(t.tx3)
                 .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(name))
                 .tip(ui::tooltip(tip, None, None))
@@ -965,7 +965,7 @@ impl Workspace {
         let failed = v.tx.status == TxStatus::Failed;
         let tx_controls = tx_open.then(|| {
             let live = !busy && !v.ending;
-            let small = |b: gpui::Stateful<Div>| b.h(px(24.)).px(px(8.)).gap(px(6.)).text_size(px(11.5));
+            let small = |b: gpui::Stateful<Div>| b.h(px(24.)).px(px(8.)).gap(px(6.)).text_size(px(crate::theme::text::UI));
             let commit = small(ui::button(t, "tb-commit", Btn::Secondary))
                 .when(!live || failed, |d| d.text_color(t.tx4))
                 .child("Commit")
@@ -1043,7 +1043,7 @@ impl Workspace {
             .flex_row()
             .items_center()
             .gap(px(6.))
-            .text_size(px(11.5))
+            .text_size(px(crate::theme::text::UI))
             .text_color(if v.conn.is_some() { t.tx2 } else { t.tx3 })
             .cursor_pointer()
             .when(open, |d| d.bg(prs))
@@ -1070,7 +1070,7 @@ impl Workspace {
                         .flex_row()
                         .items_center()
                         .gap(px(8.))
-                        .text_size(px(11.))
+                        .text_size(px(crate::theme::text::SMALL))
                         .text_color(t.tx3)
                         .child(div().flex_none().size(px(7.)).bg(t.profile_color(p)))
                         .children(crate::assets::small_logo(p.engine, 12.))
@@ -1259,7 +1259,7 @@ impl Workspace {
                 .flex_row()
                 .items_baseline()
                 .gap(px(5.))
-                .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(t.tx).child(p.range()))
+                .child(div().text_size(px(crate::theme::text::TITLE)).font_weight(FontWeight::SEMIBOLD).text_color(t.tx).child(p.range()))
                 .children(p.of().map(|o| {
                     let hov = t.tx;
                     div()
@@ -1311,7 +1311,7 @@ impl Workspace {
         };
         let copied = grid.read(cx).copied_at.and_then(|at| crate::motion::copied(at, std::time::Instant::now(), cx.reduce_motion()));
         let copy_menu = copy_open.then(|| self.render_copy_menu(has_rows, printed, t, cx));
-        let ghost = |id: &'static str| ui::button(t, id, Btn::Ghost).h(px(24.)).px(px(7.)).gap(px(5.)).text_size(px(11.5));
+        let ghost = |id: &'static str| ui::button(t, id, Btn::Ghost).h(px(24.)).px(px(7.)).gap(px(5.)).text_size(px(crate::theme::text::UI));
         div()
             .h(px(metrics::RESULT_BAR_H))
             .flex_none()
@@ -1336,7 +1336,7 @@ impl Workspace {
                     .flex_row()
                     .items_baseline()
                     .gap(px(5.))
-                    .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(t.tx).child(r))
+                    .child(div().text_size(px(crate::theme::text::TITLE)).font_weight(FontWeight::SEMIBOLD).text_color(t.tx).child(r))
                     .child(div().text_color(t.tx3).child(what))
             }))
             .children(metrics_.into_iter().map(|(k, v)| {
@@ -1390,7 +1390,7 @@ impl Workspace {
                             .items_center()
                             .justify_center()
                             .gap(px(4.))
-                            .text_size(px(11.5))
+                            .text_size(px(crate::theme::text::UI))
                             .text_color(t.ok)
                             .opacity(a)
                             .cursor_pointer()
@@ -1435,7 +1435,7 @@ impl Workspace {
                 .h(px(24.))
                 .px(px(8.))
                 .gap(px(6.))
-                .text_size(px(11.5))
+                .text_size(px(crate::theme::text::UI))
                 .child(label)
                 .when_some(crate::keymap::key(command), |d, k| d.child(ui::key_hint(k)))
         };
@@ -1478,7 +1478,7 @@ impl Workspace {
                         .h(px(24.))
                         .px(px(8.))
                         .gap(px(6.))
-                        .text_size(px(11.5))
+                        .text_size(px(crate::theme::text::UI))
                         .child("Discard")
                         .when_some(crate::keymap::key("discard_changes"), |d, k| d.child(ui::key_hint(k)))
                         .on_click(cx.listener(|_, _, window, cx| window.dispatch_action(Box::new(crate::app::DiscardChanges), cx)))
@@ -1489,7 +1489,7 @@ impl Workspace {
                         .h(px(24.))
                         .px(px(8.))
                         .gap(px(6.))
-                        .text_size(px(11.5))
+                        .text_size(px(crate::theme::text::UI))
                         .font_weight(FontWeight::SEMIBOLD)
                         .child("Review & commit")
                         .when_some(crate::keymap::key("review_changes"), |d, k| d.child(ui::key_hint(k)))
@@ -1553,7 +1553,7 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .text_size(px(12.))
+                    .text_size(px(crate::theme::text::BODY))
                     .text_color(gpui::transparent_black())
                     .group_hover(group.clone(), move |s| s.text_color(tx3))
                     .hover(move |s| s.text_color(tx))
@@ -1613,7 +1613,7 @@ impl Workspace {
             .border_color(t.line)
             .overflow_x_scroll()
             .whitespace_nowrap()
-            .text_size(px(11.5))
+            .text_size(px(crate::theme::text::UI))
             .children(els)
     }
 
@@ -1635,7 +1635,7 @@ impl Workspace {
             .size_full()
             .px(px(20.))
             .py(px(14.))
-            .text_size(px(12.))
+            .text_size(px(crate::theme::text::BODY))
             .child(gpui::list(self.messages_of(pane).list.clone(), cx.processor(move |w, ix: usize, _, cx| w.render_message_row(pane, ix, &theme, cx))).size_full())
     }
 
@@ -1682,7 +1682,7 @@ impl Workspace {
                     .items_center()
                     .gap(px(10.))
                     .when(has_tab, |d| d.cursor_pointer().hover(move |s| s.bg(hov)))
-                    .child(div().w(px(14.)).flex().justify_center().text_size(px(10.)).text_color(gc).child(ui::glyph_el(g, gc)))
+                    .child(div().w(px(14.)).flex().justify_center().text_size(px(crate::theme::text::TINY)).text_color(gc).child(ui::glyph_el(g, gc)))
                     .child(div().w(px(22.)).text_color(t.tx3).child((i + 1).to_string()))
                     .child(
                         div()
@@ -1700,7 +1700,7 @@ impl Workspace {
                             .w(px(64.))
                             .flex_none()
                             .text_right()
-                            .text_size(px(11.))
+                            .text_size(px(crate::theme::text::SMALL))
                             .text_color(t.tx3)
                             .child(b.elapsed.map(fmt_dur).unwrap_or_default()),
                     )
@@ -1778,7 +1778,7 @@ impl Workspace {
             .flex_row()
             .items_center()
             .gap(px(14.))
-            .text_size(px(11.))
+            .text_size(px(crate::theme::text::SMALL))
             .text_color(t.tx3)
             .whitespace_nowrap()
             .overflow_hidden()
@@ -1900,7 +1900,7 @@ impl Workspace {
         let suggestion = err.hint.as_deref().and_then(|h| h.split('"').nth(1)).map(str::to_string).filter(|_| token.is_some());
         let err_copy = err.to_string();
         let btn = |id: &'static str, label: &'static str, key: Option<String>| {
-            ui::button(t, id, Btn::Secondary).h(px(28.)).px(px(10.)).gap(px(8.)).child(label).children(key.map(|k| div().text_size(px(10.5)).text_color(t.tx3).child(crate::ui::keys_text(k))))
+            ui::button(t, id, Btn::Secondary).h(px(28.)).px(px(10.)).gap(px(8.)).child(label).children(key.map(|k| div().text_size(px(crate::theme::text::HINT)).text_color(t.tx3).child(crate::ui::keys_text(k))))
         };
         let left = div()
             .flex_1()
@@ -1926,7 +1926,7 @@ impl Workspace {
                             .items_center()
                             .bg(t.err)
                             .text_color(t.on_err)
-                            .text_size(px(10.5))
+                            .text_size(px(crate::theme::text::HINT))
                             .font_weight(FontWeight::BOLD)
                             .child("✕ ERROR"),
                     )
@@ -2016,7 +2016,7 @@ impl Workspace {
                                 .text_color(if b.state == ItemState::Pending { t.tx3 } else { t.tx })
                                 .child(b.summary()),
                         )
-                        .child(div().text_size(px(11.)).text_color(t.tx3).child(meta))
+                        .child(div().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(meta))
                 })))
                 .child(div().flex_1())
                 .child(
@@ -2032,7 +2032,7 @@ impl Workspace {
                         })),
                 )
         });
-        div().size_full().flex().flex_row().text_size(px(12.)).child(left).children(right)
+        div().size_full().flex().flex_row().text_size(px(crate::theme::text::BODY)).child(left).children(right)
     }
 
     pub(crate) fn jump_to_error_pub(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2065,7 +2065,7 @@ impl Workspace {
                             .flex()
                             .flex_col()
                             .gap(px(6.))
-                            .text_size(px(11.5))
+                            .text_size(px(crate::theme::text::UI))
                             .line_height(px(17.))
                             .child(div().text_color(t.tx).font_weight(FontWeight::SEMIBOLD).child(format!("Cancel sent · {:.1} s ago", at.elapsed().as_secs_f64())))
                             .child(
@@ -2073,7 +2073,7 @@ impl Workspace {
                                     ui::button(&t, "toast-hide", Btn::Ghost)
                                         .h(px(24.))
                                         .px(px(9.))
-                                        .text_size(px(11.))
+                                        .text_size(px(crate::theme::text::SMALL))
                                         .text_color(t.tx3)
                                         .child("Hide")
                                         .on_click(cx.listener(move |w, _, _, cx| {
@@ -2303,7 +2303,7 @@ impl Workspace {
                     .items_center()
                     .gap(px(8.))
                     .min_w_0()
-                    .text_size(px(11.))
+                    .text_size(px(crate::theme::text::SMALL))
                     .child(ui::chip(t.profile_color(&c.profile), 8.))
                     .child(div().text_color(t.tx2).overflow_hidden().whitespace_nowrap().text_ellipsis().child(c.profile.name.clone()))
                     .when(!env.is_none(), |d| d.child(div().text_color(if env.is_production() { t.err } else { t.tx3 }).child(env.label())))
@@ -2422,7 +2422,7 @@ pub(crate) fn code_block(t: &Theme, sql: &str, target: Option<&str>) -> Div {
             div()
                 .flex()
                 .flex_col()
-                .text_size(px(12.))
+                .text_size(px(crate::theme::text::BODY))
                 .line_height(px(18.))
                 .text_color(t.tx)
                 .children(lines.into_iter().take(LINES).map(|l| div().whitespace_nowrap().overflow_hidden().text_ellipsis().child(l.replace('\t', "    "))))
@@ -2433,7 +2433,7 @@ pub(crate) fn code_block(t: &Theme, sql: &str, target: Option<&str>) -> Div {
                 .flex()
                 .flex_row()
                 .gap(px(8.))
-                .text_size(px(11.))
+                .text_size(px(crate::theme::text::SMALL))
                 .child(div().text_color(t.tx4).child("target"))
                 .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx2).child(tg.to_string()))
         }))

@@ -356,7 +356,7 @@ impl AgentsPage {
                 .when(!sel, move |d| d.hover(move |s| s.bg(hov)))
                 .child(icon(glyph).size(px(13.)).text_color(t.tx3))
                 .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx).child(c.text.clone()))
-                .child(div().flex_none().max_w(px(120.)).overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(11.)).text_color(t.tx3).child(c.detail.clone()))
+                .child(div().flex_none().max_w(px(120.)).overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(c.detail.clone()))
                 .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |v, _, window, cx| {
                     v.suggest.sel = k;
                     v.accept_suggest(cx);
@@ -426,7 +426,7 @@ impl AgentsPage {
                             .py(px(4.))
                             .bg(t.pop)
                             .shadow(t.ring())
-                            .text_size(px(12.))
+                            .text_size(px(crate::theme::text::BODY))
                             .occlude()
                             .children(rows),
                     )

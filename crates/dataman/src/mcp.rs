@@ -441,7 +441,7 @@ impl Workspace {
             .border_color(t.line)
             .flex()
             .flex_col()
-            .text_size(px(12.))
+            .text_size(px(crate::theme::text::BODY))
             .line_height(px(18.))
             .children(lines.into_iter().map(|(text, runs)| {
                 if text.is_empty() {
@@ -452,7 +452,7 @@ impl Workspace {
             }));
         let tags = div().flex().flex_row().flex_wrap().items_center().gap(px(6.)).children(req.reasons.iter().map(|r| {
             let c = reason_color(&t, &req, r);
-            div().h(px(20.)).px(px(7.)).flex().items_center().bg(gpui::Hsla { a: 0.14, ..c }).text_size(px(11.)).text_color(c).child(r.clone())
+            div().h(px(20.)).px(px(7.)).flex().items_center().bg(gpui::Hsla { a: 0.14, ..c }).text_size(px(crate::theme::text::SMALL)).text_color(c).child(r.clone())
         }));
         let counted = req.reasons.iter().any(|r| r.contains(" rows (limit "));
         let rows = req.affected.filter(|_| !counted).map(|n| if n == 1 { "1 row".to_string() } else { format!("{} rows", crate::grid::ui_count(n as usize)) });
@@ -467,7 +467,7 @@ impl Workspace {
                 .flex()
                 .flex_col()
                 .gap(px(3.))
-                .text_size(px(11.))
+                .text_size(px(crate::theme::text::SMALL))
                 .child(div().flex().flex_row().gap(px(10.)).children(cols.into_iter().take(n).map(|c| cell(c, t.tx3))))
                 .children(data.into_iter().map(|r| div().flex().flex_row().gap(px(10.)).children(r.into_iter().take(n).map(|v| cell(v, t.tx2)))))
         });
@@ -500,7 +500,7 @@ impl Workspace {
                                     .flex()
                                     .flex_row()
                                     .gap(px(10.))
-                                    .text_size(px(11.5))
+                                    .text_size(px(crate::theme::text::UI))
                                     .when(!local, |d| d.child(div().text_color(t.tx2).child(req.database.clone())))
                                     .when(!req.env.is_none(), |d| d.child(div().text_color(if prod { t.err } else { t.tx3 }).child(req.env.label())))
                                     .when(!local, |d| d.child(div().w(px(1.)).h(px(12.)).bg(t.line)))
@@ -517,12 +517,12 @@ impl Workspace {
                                 .flex_col()
                                 .gap(px(12.))
                                 .child(sql)
-                                .child(div().flex().flex_row().items_center().gap(px(10.)).child(div().flex_1().child(tags)).children(rows.map(|r| div().flex_none().text_size(px(11.5)).text_color(t.tx2).child(r))))
+                                .child(div().flex().flex_row().items_center().gap(px(10.)).child(div().flex_1().child(tags)).children(rows.map(|r| div().flex_none().text_size(px(crate::theme::text::UI)).text_color(t.tx2).child(r))))
                                 .children(preview)
                                 .when(req.counted, |d| {
                                     d.child(
                                         div()
-                                            .text_size(px(11.))
+                                            .text_size(px(crate::theme::text::SMALL))
                                             .text_color(t.tx3)
                                             .child("Counted a moment ago and rolled back, so nothing is locked while you decide. Allow runs it again, and never with more rows than these."),
                                     )
@@ -530,7 +530,7 @@ impl Workspace {
                         )
                         .child(
                             ui::modal_footer(&t)
-                                .text_size(px(11.))
+                                .text_size(px(crate::theme::text::SMALL))
                                 .child(div().text_color(t.tx3).child(req.tool.clone()))
                                 .children(tall.map(|n| div().text_color(t.tx3).child(n)))
                                 .when(more > 0, |d| d.child(div().text_color(t.tx3).child(format!("+{more}"))))

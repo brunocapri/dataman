@@ -190,7 +190,7 @@ impl Render for FindBar {
                 .bg(t.field)
                 .map(|d| crate::ui::field_frame(d, &t, focused))
                 .when(err, |d| d.border_color(t.err))
-                .text_size(px(12.))
+                .text_size(px(crate::theme::text::BODY))
                 .text_color(t.tx)
                 .child(input.clone())
         };
@@ -205,7 +205,7 @@ impl Render for FindBar {
                 .flex()
                 .items_center()
                 .justify_center()
-                .text_size(px(11.))
+                .text_size(px(crate::theme::text::SMALL))
                 .cursor_pointer()
                 .when(on, |d| d.bg(t.acc_s).text_color(t.acc_t))
                 .when(!on, |d| d.text_color(t.tx3).hover(move |s| s.bg(hov)).active(move |s| s.bg(prs)))
@@ -224,7 +224,7 @@ impl Render for FindBar {
                     .flex_none()
                     .min_w(px(54.))
                     .px(px(6.))
-                    .text_size(px(11.))
+                    .text_size(px(crate::theme::text::SMALL))
                     .text_color(t.tx3)
                     .whitespace_nowrap()
                     .child(count),
@@ -257,7 +257,7 @@ impl Render for FindBar {
                     ui::button(&t, "find-replace", ui::Btn::Ghost)
                         .h(px(24.))
                         .px(px(8.))
-                        .text_size(px(11.5))
+                        .text_size(px(crate::theme::text::UI))
                         .child("Replace")
                         .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(FindBarEvent::Replace))),
                 )
@@ -265,7 +265,7 @@ impl Render for FindBar {
                     ui::button(&t, "find-replace-all", ui::Btn::Ghost)
                         .h(px(24.))
                         .px(px(8.))
-                        .text_size(px(11.5))
+                        .text_size(px(crate::theme::text::UI))
                         .child("Replace All")
                         .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(FindBarEvent::ReplaceAll))),
                 )

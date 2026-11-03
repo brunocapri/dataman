@@ -89,7 +89,7 @@ pub fn heat(t: &Theme, share: f64) -> Hsla {
 fn flag(t: &Theme, m: Option<explain::Misestimate>) -> Option<Div> {
     let m = m.filter(|m| m.factor >= 10.)?;
     let color = if m.factor >= 100. { t.err } else { t.warn };
-    Some(div().flex_none().text_size(px(11.)).text_color(color).child(format!("×{}", fmt_count(m.factor.round()))))
+    Some(div().flex_none().text_size(px(crate::theme::text::SMALL)).text_color(color).child(format!("×{}", fmt_count(m.factor.round()))))
 }
 
 fn chip(t: &Theme, text: &str) -> Div {
@@ -101,7 +101,7 @@ fn chip(t: &Theme, text: &str) -> Div {
         .items_center()
         .bg(t.warn_s)
         .text_color(t.warn)
-        .text_size(px(10.))
+        .text_size(px(crate::theme::text::TINY))
         .whitespace_nowrap()
         .child(text.to_string())
 }
@@ -370,7 +370,7 @@ impl PlanView {
             .flex()
             .flex_row()
             .items_center()
-            .text_size(px(12.))
+            .text_size(px(crate::theme::text::BODY))
             .map(|d| ui::selectable(d, &t, sel, focused))
             .when(!sel, |d| d.hover(move |s| s.bg(hov)))
             .cursor_pointer()
@@ -401,7 +401,7 @@ impl PlanView {
                 .gap(px(5.))
                 .whitespace_nowrap()
                 .children(n.act_rows().filter(|_| !n.never_executed()).map(|a| div().text_color(t.tx2).child(fmt_count(a))))
-                .children(n.est_rows().map(|e| div().text_size(px(11.)).text_color(t.tx4).child(format!("({})", fmt_count(e)))))
+                .children(n.est_rows().map(|e| div().text_size(px(crate::theme::text::SMALL)).text_color(t.tx4).child(format!("({})", fmt_count(e)))))
                 .children(flag(t, n.misestimate()));
             let (excl, incl) = if n.never_executed() { (String::new(), "never".to_string()) } else { (fmt_ms(n.excl_ms), fmt_ms(n.incl_ms)) };
             let loops = n.loops().filter(|&l| l != 1.).map(fmt_count).unwrap_or_default();
@@ -442,7 +442,7 @@ impl PlanView {
                 div()
                     .w(px(30.))
                     .text_right()
-                    .text_size(px(11.))
+                    .text_size(px(crate::theme::text::SMALL))
                     .text_color(if c == t.tx3 { t.tx3 } else { c })
                     .child(if share >= 0.005 { format!("{:.0}%", share * 100.) } else { String::new() }),
             )
@@ -459,7 +459,7 @@ impl PlanView {
             .justify_end()
             .gap(px(5.))
             .whitespace_nowrap()
-            .text_size(px(11.))
+            .text_size(px(crate::theme::text::SMALL))
             .children(parts.into_iter().map(|(k, v)| {
                 div().flex().flex_row().child(div().text_color(t.tx4).child(k)).child(div().text_color(if k == "t" { t.warn } else { t.tx2 }).child(fmt_count(v)))
             }))
@@ -476,7 +476,7 @@ impl PlanView {
             .flex()
             .flex_row()
             .items_center()
-            .text_size(px(10.5))
+            .text_size(px(crate::theme::text::HINT))
             .text_color(t.tx3)
             .border_b_1()
             .border_color(t.line)
@@ -519,7 +519,7 @@ impl PlanView {
                         .flex_row()
                         .items_center()
                         .gap(px(8.))
-                        .text_size(px(12.))
+                        .text_size(px(crate::theme::text::BODY))
                         .whitespace_nowrap()
                         .overflow_hidden()
                         .cursor_pointer()
@@ -533,7 +533,7 @@ impl PlanView {
                             v.select(node, cx);
                         }))
                 }))
-                .when(more > 0, |d| d.child(div().h(px(18.)).px(px(26.)).text_size(px(11.)).text_color(t.tx3).child(format!("+{more}")))),
+                .when(more > 0, |d| d.child(div().h(px(18.)).px(px(26.)).text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(format!("+{more}")))),
         )
     }
 
@@ -614,7 +614,7 @@ impl PlanView {
                 .flex_row()
                 .gap(px(10.))
                 .py(px(2.))
-                .text_size(px(11.5))
+                .text_size(px(crate::theme::text::UI))
                 .line_height(px(16.))
                 .child(div().flex_none().w(px(146.)).text_color(t.tx3).child(k))
                 .child(div().flex_1().min_w_0().text_color(c).child(v))
@@ -665,7 +665,7 @@ impl PlanView {
                     .gap(px(2.))
                     .p(px(8.))
                     .bg(t.warn_s)
-                    .text_size(px(11.5))
+                    .text_size(px(crate::theme::text::UI))
                     .line_height(px(16.))
                     .child(div().text_color(t.warn).child(h.text.clone()))
                     .children(h.fix.clone().map(|f| div().text_color(t.tx2).child(format!("→ {f}"))))
@@ -682,7 +682,7 @@ impl PlanView {
             .overflow_y_scroll()
             .child(
                 body.child(div().text_size(px(12.5)).font_weight(FontWeight::SEMIBOLD).text_color(t.tx).line_height(px(18.)).child(n.title.clone()))
-                    .children(n.subplan().map(|s| div().text_size(px(11.)).text_color(t.tx3).child(s.to_string())))
+                    .children(n.subplan().map(|s| div().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(s.to_string())))
                     .child(div().h(px(6.)))
                     .children(hints.into_iter().map(|h| h.mb(px(6.))))
                     .children(sum.into_iter().map(|(k, v, c)| kv(k, v, c)))
@@ -760,7 +760,7 @@ impl Render for PlanView {
                     .size_full()
                     .overflow_y_scroll()
                     .p(px(12.))
-                    .text_size(px(12.))
+                    .text_size(px(crate::theme::text::BODY))
                     .line_height(px(18.))
                     .text_color(t.tx2)
                     .children(p.source.lines().map(|l| div().whitespace_nowrap().child(l.to_string())).collect::<Vec<_>>()),
@@ -831,7 +831,7 @@ impl crate::app::Workspace {
             let v = view.clone();
             ui::segment(t, id, label, mode == m).on_click(move |_, _, cx| v.update(cx, |v, cx| v.set_mode(m, cx)))
         };
-        let ghost = |id: &'static str| ui::button(t, id, ui::Btn::Ghost).h(px(24.)).px(px(7.)).gap(px(5.)).text_size(px(11.5));
+        let ghost = |id: &'static str| ui::button(t, id, ui::Btn::Ghost).h(px(24.)).px(px(7.)).gap(px(5.)).text_size(px(crate::theme::text::UI));
         div()
             .h(px(crate::theme::metrics::RESULT_BAR_H))
             .flex_none()
@@ -862,7 +862,7 @@ impl crate::app::Workspace {
                                 .flex_row()
                                 .items_baseline()
                                 .gap(px(5.))
-                                .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(t.tx).child(nodes.to_string()))
+                                .child(div().text_size(px(crate::theme::text::TITLE)).font_weight(FontWeight::SEMIBOLD).text_color(t.tx).child(nodes.to_string()))
                                 .child(div().text_color(t.tx3).child(if nodes == 1 { "node" } else { "nodes" })),
                         )
                     })
@@ -876,7 +876,7 @@ impl crate::app::Workspace {
                             .child(div().text_color(t.tx).child(v))
                     }))
                     .when(rolled_back, |d| {
-                        d.child(div().h(px(18.)).px(px(6.)).flex().items_center().bg(t.info_s).text_color(t.info).text_size(px(10.5)).child("rolled back"))
+                        d.child(div().h(px(18.)).px(px(6.)).flex().items_center().bg(t.info_s).text_color(t.info).text_size(px(crate::theme::text::HINT)).child("rolled back"))
                     }),
             )
             .when(has_flame, |d| d.child(ui::segmented(t).h(px(24.)).child(seg("plan-tree-mode", "Tree", Mode::Tree)).child(seg("plan-flame-mode", "Flame", Mode::Flame))))

@@ -725,7 +725,7 @@ impl Render for ExportView {
                 .when(!on, |d| d.text_color(if enabled { t.tx2 } else { t.tx4 }))
                 .child(div().size(px(12.)).rounded(px(6.)).when(on, |d| d.border_4().border_color(t.acc)).when(!on, |d| d.border_1().border_color(t.line2)))
                 .child(div().flex_none().child(name))
-                .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_right().text_size(px(11.)).text_color(t.tx3).child(desc))
+                .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_right().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(desc))
                 .when(enabled && !locked, |d| {
                     d.cursor_pointer().on_click(cx.listener(move |v, _, _, cx| {
                         v.scope = s;
@@ -791,7 +791,7 @@ impl Render for ExportView {
                 .overflow_hidden()
                 .whitespace_nowrap()
                 .text_ellipsis()
-                .text_size(px(11.5))
+                .text_size(px(crate::theme::text::UI))
                 .when_some(status, |d, (s, c)| d.text_color(c).child(s)),
         );
         if running {
@@ -810,7 +810,7 @@ impl Render for ExportView {
                     .px(px(12.))
                     .font_weight(FontWeight::SEMIBOLD)
                     .child("Export")
-                    .child(div().text_size(px(10.5)).font_weight(FontWeight::NORMAL).opacity(0.75).child(crate::ui::keys_text("⌘↩")))
+                    .child(div().text_size(px(crate::theme::text::HINT)).font_weight(FontWeight::NORMAL).opacity(0.75).child(crate::ui::keys_text("⌘↩")))
                     .on_click(cx.listener(|v, _, _, cx| v.start(cx))),
             ));
         }

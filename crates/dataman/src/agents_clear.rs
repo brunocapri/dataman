@@ -184,7 +184,7 @@ impl AgentsPage {
             .child(turn("agents-clear-prev", Icon::ChevronLeft, -1, true, cx))
             .child(div().flex_1().text_center().font_weight(FontWeight::SEMIBOLD).child(first.format("%B %Y").to_string()))
             .child(turn("agents-clear-next", Icon::ChevronRight, 1, can_next, cx));
-        let names = div().flex().flex_row().children(["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"].map(|d| div().w(px(32.)).h(px(22.)).flex().items_center().justify_center().text_size(px(10.5)).text_color(t.tx3).child(d)));
+        let names = div().flex().flex_row().children(["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"].map(|d| div().w(px(32.)).h(px(22.)).flex().items_center().justify_center().text_size(px(crate::theme::text::HINT)).text_color(t.tx3).child(d)));
         let lead = first.weekday().num_days_from_sunday() as usize;
         let days = first.checked_add_months(chrono::Months::new(1)).map_or(31, |n| (n - first).num_days() as usize);
         let weeks = (lead + days).div_ceil(7);

@@ -92,7 +92,7 @@ impl Workspace {
         window.request_animation_frame();
         let t = cx.theme();
         let y = star.origin.y + star.size.height / 2. - gpui::px(9.);
-        let hint = div().absolute().top(y).left(star.right() + gpui::px(8.)).h(gpui::px(18.)).flex().items_center().whitespace_nowrap().text_size(px(12.)).text_color(t.tx).opacity(a);
+        let hint = div().absolute().top(y).left(star.right() + gpui::px(8.)).h(gpui::px(18.)).flex().items_center().whitespace_nowrap().text_size(px(crate::theme::text::BODY)).text_color(t.tx).opacity(a);
         Some(hint.child(format!("← {}", f.label)).into_any_element())
     }
 

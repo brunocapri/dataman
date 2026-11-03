@@ -498,7 +498,7 @@ impl SettingsView {
                     .cursor_pointer()
                     .child(ui::checkbox(t, on))
                     .child(div().text_color(t.tx).child(label))
-                    .child(div().text_size(px(11.)).text_color(t.tx3).child(what))
+                    .child(div().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(what))
                     .on_click(cx.listener(move |v, _, _, cx| v.edit_project(move |s, _| *field(s) = !on, cx)))
             }))
             .into_any_element()
@@ -508,7 +508,7 @@ impl SettingsView {
         let members = self.core.project.info(&self.settings).map(|i| i.connections).unwrap_or_default();
         let profiles = self.core.config.connections();
         if profiles.is_empty() {
-            return div().text_size(px(11.5)).text_color(t.tx3).child("No connections yet").into_any_element();
+            return div().text_size(px(crate::theme::text::UI)).text_color(t.tx3).child("No connections yet").into_any_element();
         }
         div()
             .flex()
@@ -689,7 +689,7 @@ impl SettingsView {
                     .px(px(8.))
                     .flex()
                     .items_center()
-                    .text_size(px(12.))
+                    .text_size(px(crate::theme::text::BODY))
                     .font_family(name.to_string())
                     .text_color(if selected { t.tx } else { t.tx2 })
                     .when(selected, |d| d.bg(t.hov))
@@ -744,7 +744,7 @@ impl SettingsView {
                     .into_any_element()
             }
             Row::Translucency if !crate::theme::translucency_works() => {
-                div().text_size(px(11.5)).text_color(t.tx3).child("KDE Plasma on Wayland only").into_any_element()
+                div().text_size(px(crate::theme::text::UI)).text_color(t.tx3).child("KDE Plasma on Wayland only").into_any_element()
             }
             Row::Translucency => {
                 let on = s.translucency.is_on();
@@ -769,7 +769,7 @@ impl SettingsView {
                     .flex_row()
                     .items_center()
                     .gap(px(10.))
-                    .when(system && !on, |d| d.child(div().text_size(px(11.)).text_color(t.tx3).whitespace_nowrap().child(if crate::keymap::NOT_MAC { "on in the desktop" } else { "on in macOS" })))
+                    .when(system && !on, |d| d.child(div().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).whitespace_nowrap().child(if crate::keymap::NOT_MAC { "on in the desktop" } else { "on in macOS" })))
                     .child(ui::switch(t, "rm", on).on_click(cx.listener(move |v, _, _, cx| v.set_reduce_motion(!on, cx))))
                     .into_any_element()
             }
@@ -885,7 +885,7 @@ impl SettingsView {
                             .overflow_hidden()
                             .whitespace_nowrap()
                             .text_ellipsis()
-                            .text_size(px(11.5))
+                            .text_size(px(crate::theme::text::UI))
                             .text_color(color)
                             .when(err, |d| d.tip(ui::text_tooltip(s.clone())))
                             .child(s)
@@ -978,14 +978,14 @@ impl SettingsView {
                                     }))
                             }),
                     )
-                    .children(problem.map(|p| div().max_w(px(420.)).text_size(px(11.)).text_color(t.err).child(p)))
+                    .children(problem.map(|p| div().max_w(px(420.)).text_size(px(crate::theme::text::SMALL)).text_color(t.err).child(p)))
                     .children(review.map(|n| {
                         div()
                             .flex()
                             .flex_row()
                             .items_center()
                             .gap(px(8.))
-                            .child(div().max_w(px(340.)).text_size(px(11.)).text_color(t.warn).child(format!("Its file waits for your review ({n} loosen protection): nothing syncs until then.")))
+                            .child(div().max_w(px(340.)).text_size(px(crate::theme::text::SMALL)).text_color(t.warn).child(format!("Its file waits for your review ({n} loosen protection): nothing syncs until then.")))
                             .child(ui::button(t, "project-review", ui::Btn::Secondary).h(px(24.)).child("Review…").on_click(|_, window, cx| window.dispatch_action(Box::new(crate::app::ReviewProject), cx)))
                     }))
                     .into_any_element()
@@ -1017,7 +1017,7 @@ impl SettingsView {
                     .flex_col()
                     .gap(px(3.))
                     .child(div().text_color(t.tx).child(label))
-                    .children(row.help().map(|h| div().text_size(px(10.5)).line_height(px(15.)).text_color(t.tx3).child(crate::ui::keys_text(h)))),
+                    .children(row.help().map(|h| div().text_size(px(crate::theme::text::HINT)).line_height(px(15.)).text_color(t.tx3).child(crate::ui::keys_text(h)))),
             )
             .child(control)
             .into_any_element()
@@ -1229,8 +1229,8 @@ impl SettingsView {
                         .gap(px(8.))
                         .border_b_1()
                         .border_color(t.line)
-                        .child(div().flex_1().min_w_0().text_size(px(12.)).text_color(t.tx2).child(c.label))
-                        .children(also.as_ref().filter(|k| **k != shown_label).map(|k| div().flex_none().text_size(px(11.)).text_color(t.tx3).child(format!("also {k}"))))
+                        .child(div().flex_1().min_w_0().text_size(px(crate::theme::text::BODY)).text_color(t.tx2).child(c.label))
+                        .children(also.as_ref().filter(|k| **k != shown_label).map(|k| div().flex_none().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(format!("also {k}"))))
                         .child(
                             div()
                                 .flex_none()
@@ -1252,7 +1252,7 @@ impl SettingsView {
                     .flex()
                     .flex_col()
                     .gap(px(2.))
-                    .child(div().pb(px(6.)).text_size(px(10.5)).text_color(t.tx3).child(title))
+                    .child(div().pb(px(6.)).text_size(px(crate::theme::text::HINT)).text_color(t.tx3).child(title))
                     .children(rows)
                     .into_any_element(),
             );

@@ -329,7 +329,7 @@ impl Render for CellEditor {
             .bg(t.bg)
             .border_2()
             .border_color(t.acc)
-            .text_size(px(12.))
+            .text_size(px(crate::theme::text::BODY))
             .text_color(t.tx)
             .child(
                 // The field is always there (it keeps the focus); NULL is drawn over it.
@@ -1131,8 +1131,8 @@ impl Render for GridEdit {
                     .bg(t.bg)
                     .border_b_1()
                     .border_color(t.line)
-                    .child(div().flex_1().text_size(px(10.5)).text_color(t.tx3).child("GRID EDIT"))
-                    .child(div().h(px(18.)).px(px(6.)).flex().items_center().bg(bg).text_color(fg).text_size(px(10.)).child(tag)),
+                    .child(div().flex_1().text_size(px(crate::theme::text::HINT)).text_color(t.tx3).child("GRID EDIT"))
+                    .child(div().h(px(18.)).px(px(6.)).flex().items_center().bg(bg).text_color(fg).text_size(px(crate::theme::text::TINY)).child(tag)),
             )
             .child(
                 div()
@@ -1141,7 +1141,7 @@ impl Render for GridEdit {
                     .flex_col()
                     .gap(px(8.))
                     .child(div().text_color(t.tx).text_size(px(12.5)).line_height(px(17.)).child(title))
-                    .when(!body.is_empty(), |d| d.child(div().text_color(t.tx2).text_size(px(11.5)).line_height(px(17.)).child(body)))
+                    .when(!body.is_empty(), |d| d.child(div().text_color(t.tx2).text_size(px(crate::theme::text::UI)).line_height(px(17.)).child(body)))
                     .when(!actions.is_empty(), |d| d.child(div().pt(px(4.)).flex().flex_row().flex_wrap().gap(px(6.)).children(actions))),
             )
             .children(popover)
@@ -1333,7 +1333,7 @@ impl Render for ReviewPanel {
             .border_color(t.line)
             .child(ui::caps(&t, "REVIEW"))
             .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(format!("{n} change{} · {table}", if n == 1 { "" } else { "s" })))
-            .children(pill.map(|(label, fg, bg)| div().h(px(18.)).px(px(6.)).flex().items_center().bg(bg).text_color(fg).text_size(px(10.5)).child(label)));
+            .children(pill.map(|(label, fg, bg)| div().h(px(18.)).px(px(6.)).flex().items_center().bg(bg).text_color(fg).text_size(px(crate::theme::text::HINT)).child(label)));
         let changes = div().px(px(14.)).py(px(12.)).flex().flex_col().gap(px(4.)).children(lines.into_iter().enumerate().map(|(i, (g, tone, key, what, at))| {
             let c = crate::grid::tone_strong(&t, tone);
             let edit = edit.clone();
@@ -1351,7 +1351,7 @@ impl Render for ReviewPanel {
                 .child(
                     div()
                         .id(("undo", i))
-                        .text_size(px(11.))
+                        .text_size(px(crate::theme::text::SMALL))
                         .text_color(t.tx3)
                         .hover(|s| s.text_color(gpui::white().opacity(0.9)))
                         .cursor_pointer()
@@ -1366,7 +1366,7 @@ impl Render for ReviewPanel {
             .bg(t.card)
             .border_1()
             .border_color(t.line)
-            .text_size(px(11.5))
+            .text_size(px(crate::theme::text::UI))
             .line_height(px(19.))
             .flex()
             .flex_col()
@@ -1399,7 +1399,7 @@ impl Render for ReviewPanel {
                 .flex_col()
                 .gap(px(6.))
                 .child(div().text_color(if conflicts > 0 { t.warn } else { t.err }).font_weight(FontWeight::SEMIBOLD).child(title))
-                .children(r.error.clone().filter(|e| !r.outcomes.iter().any(|o| matches!(&o.outcome, Outcome::Conflict { message, .. } | Outcome::Failed { message, .. } if message == e))).map(|e| div().text_size(px(11.5)).line_height(px(17.)).text_color(t.tx).child(e)))
+                .children(r.error.clone().filter(|e| !r.outcomes.iter().any(|o| matches!(&o.outcome, Outcome::Conflict { message, .. } | Outcome::Failed { message, .. } if message == e))).map(|e| div().text_size(px(crate::theme::text::UI)).line_height(px(17.)).text_color(t.tx).child(e)))
                 .children(r.outcomes.iter().map(|o| {
                     let (g, c, what): (&str, Hsla, String) = match &o.outcome {
                         Outcome::Applied { rows } => ("✓", t.ok, format!("{rows} row")),
@@ -1412,7 +1412,7 @@ impl Render for ReviewPanel {
                         .flex()
                         .flex_row()
                         .gap(px(8.))
-                        .text_size(px(11.))
+                        .text_size(px(crate::theme::text::SMALL))
                         .line_height(px(16.))
                         .child(div().w(px(12.)).flex_none().text_color(c).child(g))
                         .child(div().w(px(18.)).flex_none().text_color(t.tx3).child((o.index + 1).to_string()))
@@ -1461,7 +1461,7 @@ impl Render for ReviewPanel {
                         })
                     })
                     .child(ui::checkbox(&t, detect))
-                    .child(div().text_size(px(11.5)).text_color(t.tx).child("Detect conflicts")),
+                    .child(div().text_size(px(crate::theme::text::UI)).text_color(t.tx).child("Detect conflicts")),
             )
             .child(
                 div()
@@ -1471,7 +1471,7 @@ impl Render for ReviewPanel {
                     .child(
                         ui::copy_button(&t, "rv-copy", Btn::Ghost, "Copy SQL", self.copied.on("rv-copy", cx))
                             .h(px(24.))
-                            .text_size(px(11.))
+                            .text_size(px(crate::theme::text::SMALL))
                             .on_click(cx.listener(move |v, _, _, cx| {
                                 cx.write_to_clipboard(ClipboardItem::new_string(sql_copy.clone()));
                                 v.copied.start("rv-copy", cx);
@@ -1480,7 +1480,7 @@ impl Render for ReviewPanel {
                     .child(
                         ui::button(&t, "rv-open", Btn::Ghost)
                             .h(px(24.))
-                            .text_size(px(11.))
+                            .text_size(px(crate::theme::text::SMALL))
                             .child("Open in a new tab")
                             .on_click(cx.listener(move |_, _, window, cx| window.dispatch_action(Box::new(OpenSqlInTab(sql_open.clone())), cx))),
                     ),
@@ -1512,7 +1512,7 @@ impl Render for ReviewPanel {
                     .font_weight(FontWeight::SEMIBOLD)
                     .when(applying || plan.is_err(), |d| d.opacity(0.6))
                     .child(if applying { "Committing…".to_string() } else { format!("Commit {n} change{}", if n == 1 { "" } else { "s" }) })
-                    .when_some(crate::keymap::key("review_changes"), |d, k| d.child(div().text_size(px(10.5)).font_weight(FontWeight::NORMAL).opacity(0.75).child(k)))
+                    .when_some(crate::keymap::key("review_changes"), |d, k| d.child(div().text_size(px(crate::theme::text::HINT)).font_weight(FontWeight::NORMAL).opacity(0.75).child(k)))
                     .on_click(move |_, _, cx| e_commit.update(cx, |e, cx| e.apply(cx))),
             ));
         div()
@@ -1520,7 +1520,7 @@ impl Render for ReviewPanel {
             .flex()
             .flex_col()
             .track_focus(&self.focus)
-            .text_size(px(12.))
+            .text_size(px(crate::theme::text::BODY))
             .child(header)
             .child(
                 div()

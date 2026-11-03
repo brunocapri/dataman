@@ -126,7 +126,7 @@ impl Workspace {
                         .gap(px(6.))
                         .bg(bg)
                         .hover(move |s| s.bg(hover))
-                        .text_size(px(11.))
+                        .text_size(px(crate::theme::text::SMALL))
                         .text_color(t.acc_t)
                         .whitespace_nowrap()
                         .cursor_pointer()
@@ -209,7 +209,7 @@ impl Workspace {
                 )
                 .child(
                     ui::modal_footer(t)
-                        .child(div().id("update-status").flex_1().min_w_0().text_size(px(11.5)).text_color(t.tx3).children(if checking { Some("Checking…".to_string()) } else { at }))
+                        .child(div().id("update-status").flex_1().min_w_0().text_size(px(crate::theme::text::UI)).text_color(t.tx3).children(if checking { Some("Checking…".to_string()) } else { at }))
                         .child(
                             div()
                                 .flex_none()
@@ -271,7 +271,7 @@ impl Workspace {
                     .flex()
                     .flex_col()
                     .gap(px(10.))
-                    .child(div().text_size(px(11.5)).text_color(t.tx3).child(format!("You have {}{size}", crate::VERSION)))
+                    .child(div().text_size(px(crate::theme::text::UI)).text_color(t.tx3).child(format!("You have {}{size}", crate::VERSION)))
                     .when(!notes.is_empty(), |d| {
                         d.child(
                             div()
@@ -297,7 +297,7 @@ impl Workspace {
                             .overflow_hidden()
                             .whitespace_nowrap()
                             .text_ellipsis()
-                            .text_size(px(11.5))
+                            .text_size(px(crate::theme::text::UI))
                             .text_color(if err { t.err } else { t.tx2 })
                             .child(s)
                     }))

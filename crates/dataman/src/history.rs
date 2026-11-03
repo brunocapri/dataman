@@ -970,7 +970,7 @@ impl HistoryPanel {
                 .pb(px(4.))
                 .flex()
                 .items_end()
-                .text_size(px(10.))
+                .text_size(px(crate::theme::text::TINY))
                 .text_color(t.tx3)
                 .child(label.clone())
                 .into_any_element(),
@@ -1117,7 +1117,7 @@ impl HistoryPanel {
                             .flex_row()
                             .items_center()
                             .gap(px(8.))
-                            .text_size(px(11.))
+                            .text_size(px(crate::theme::text::SMALL))
                             .child(div().w(px(12.)).flex_none().text_center().text_color(gcolor).child(glyph))
                             .child(div().flex_none().text_color(t.tx).child(time))
                             .child(div().flex_none().text_color(t.tx3).child(crate::fmt::ms(e.duration_ms)))
@@ -1134,7 +1134,7 @@ impl HistoryPanel {
                             .flex_row()
                             .items_center()
                             .gap(px(6.))
-                            .text_size(px(11.))
+                            .text_size(px(crate::theme::text::SMALL))
                             .text_color(t.tx3)
                             .children(chip.map(|c| ui::chip(c, 7.)))
                             .child(ui::marked(t, clip(&format!("{} · {}", conn_name.unwrap_or_else(|| conn.clone()), e.database), NAME_MAX), &self.query)),
@@ -1169,7 +1169,7 @@ impl HistoryPanel {
             .pr(px(2.))
             .text_color(t.tx)
             .child(div().flex_1().min_w_0().child(input))
-            .child(ui::keycap_sm(t.key, t.tx2, "↩").h(px(14.)).line_height(px(12.)).text_size(px(10.)))
+            .child(ui::keycap_sm(t.key, t.tx2, "↩").h(px(14.)).line_height(px(12.)).text_size(px(crate::theme::text::TINY)))
             .into_any_element()
     }
 
@@ -1207,7 +1207,7 @@ impl HistoryPanel {
                     .flex_row()
                     .items_center()
                     .gap(px(5.))
-                    .text_size(px(12.))
+                    .text_size(px(crate::theme::text::BODY))
                     .map(|d| ui::selectable(d, &t, sel && !dropping, focused))
                     .when(dropping, |d| d.bg(t.acc_s).border_color(t.acc.opacity(0.45)))
                     .when(!dropping && !sel, |d| d.hover(move |s| s.bg(hov)))
@@ -1324,7 +1324,7 @@ impl HistoryPanel {
                             .flex_row()
                             .items_center()
                             .gap(px(8.))
-                            .text_size(px(11.))
+                            .text_size(px(crate::theme::text::SMALL))
                             .child(div().flex_1().min_w_0().flex().flex_row().child(name))
                             .child(fav_button(t, ("fav-remove", ix), true).my(px(-4.)).mr(px(-4.)).on_click(cx.listener(
                                 move |h, _: &gpui::ClickEvent, _, cx| {
@@ -1344,7 +1344,7 @@ impl HistoryPanel {
                             .flex_row()
                             .items_center()
                             .gap(px(6.))
-                            .text_size(px(11.))
+                            .text_size(px(crate::theme::text::SMALL))
                             .text_color(t.tx3)
                             .children(chip.map(|c| ui::chip(c, 7.)))
                             .child(ui::marked(t, clip(&place, NAME_MAX), &self.query))
@@ -1561,7 +1561,7 @@ impl HistoryPanel {
         let main = ui::popover(t)
             .id("fav-menu")
             .w(px(MENU_W))
-            .text_size(px(12.))
+            .text_size(px(crate::theme::text::BODY))
             .font_family(crate::theme::mono())
             .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_mouse_down_out(cx.listener(move |h, ev: &gpui::MouseDownEvent, _, cx| {
@@ -1613,7 +1613,7 @@ impl HistoryPanel {
             let pop = ui::popover(t)
                 .id("fav-submenu")
                 .w(px(SUB_W))
-                .text_size(px(12.))
+                .text_size(px(crate::theme::text::BODY))
                 .font_family(crate::theme::mono())
                 .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .children(sub_rows);
@@ -1685,7 +1685,7 @@ impl HistoryPanel {
             .flex_row()
             .items_center()
             .gap(px(6.))
-            .text_size(px(11.))
+            .text_size(px(crate::theme::text::SMALL))
             .border_1()
             .when(open, |d| d.bg(prs).border_color(t.line2).text_color(t.tx))
             .when(!open, |d| d.text_color(t.tx3).border_color(t.line).hover(move |s| s.bg(hov)))
@@ -1768,7 +1768,7 @@ impl HistoryPanel {
             .flex_row()
             .items_center()
             .gap(px(6.))
-            .text_size(px(11.))
+            .text_size(px(crate::theme::text::SMALL))
             .border_1()
             .when(open, |d| d.bg(prs).border_color(t.line2).text_color(t.tx))
             .when(!open, |d| d.text_color(t.tx3).border_color(t.line).hover(move |s| s.bg(hov)))
@@ -1892,7 +1892,7 @@ impl HistoryPanel {
             .items_center()
             .justify_center()
             .gap(px(5.))
-            .text_size(px(11.))
+            .text_size(px(crate::theme::text::SMALL))
             .border_1()
             .border_color(if asking { t.err } else { t.line })
             .when(asking, |d| d.text_color(t.err))
@@ -2281,7 +2281,7 @@ impl Render for HistoryPanel {
             .size_full()
             .flex()
             .flex_col()
-            .text_size(px(12.))
+            .text_size(px(crate::theme::text::BODY))
             .key_context(CONTEXT)
             .track_focus(&self.focus)
             .on_action(cx.listener(|h, _: &Prev, _, cx| h.move_sel(-1, cx)))
@@ -2334,7 +2334,7 @@ impl Render for HistoryPanel {
                     .child(icon(Icon::Search).size(px(13.)).text_color(t.tx3))
                     .child(div().flex_1().min_w_0().text_color(t.tx).child(self.filter.clone()))
                     .when(!self.query.is_empty(), |d| {
-                        d.child(div().flex_none().text_size(px(10.5)).text_color(t.tx3).whitespace_nowrap().child(format!("{} of {}", ui_count(self.shown), ui_count(total))))
+                        d.child(div().flex_none().text_size(px(crate::theme::text::HINT)).text_color(t.tx3).whitespace_nowrap().child(format!("{} of {}", ui_count(self.shown), ui_count(total))))
                     }),
             )
             .child(

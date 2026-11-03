@@ -2761,7 +2761,7 @@ impl Render for Workspace {
             .bg(t.glass)
             .text_color(t.tx)
             .font_family(mono())
-            .text_size(px(12.))
+            .text_size(px(crate::theme::text::BODY))
             .key_context("Workspace")
             .track_focus(&self.focus)
             .on_action(cx.listener(|w, _: &GoBack, window, cx| w.go(false, window, cx)))

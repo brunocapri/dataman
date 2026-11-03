@@ -2644,7 +2644,7 @@ impl SchemaTree {
         let main = ui::popover(&t)
             .id("row-menu")
             .w(px(menu::MENU_W))
-            .text_size(px(12.))
+            .text_size(px(crate::theme::text::BODY))
             .font_family(crate::theme::mono())
             .track_focus(&self.menu_focus)
             .key_context(MENU_CONTEXT)
@@ -2698,7 +2698,7 @@ impl SchemaTree {
             let pop = ui::popover(&t)
                 .id("row-submenu")
                 .w(px(menu::SUB_W))
-                .text_size(px(12.))
+                .text_size(px(crate::theme::text::BODY))
                 .font_family(crate::theme::mono())
                 .children(rows);
             out.push(deferred(anchored().position(point(px(x), px(y))).child(ui::menu_in("row-submenu-in", pop))).priority(3).into_any_element());
@@ -2994,7 +2994,7 @@ impl SchemaTree {
                     Meta::Link => t.acc_t,
                     _ => t.tx3,
                 };
-                Some(div().flex_none().text_size(px(11.)).whitespace_nowrap().text_color(color).child(meta_text).into_any_element())
+                Some(div().flex_none().text_size(px(crate::theme::text::SMALL)).whitespace_nowrap().text_color(color).child(meta_text).into_any_element())
             }
         };
         let more = has_menu.then(|| {
@@ -3473,7 +3473,7 @@ fn menu_row(
             None => icon(ic).size(px(14.)).text_color(icon_fg).into_any_element(),
         })
         .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().when(bold, |d| d.font_weight(FontWeight::SEMIBOLD)).child(label))
-        .children(disabled.map(SharedString::from).or(key).map(|k| div().flex_none().text_size(px(11.)).text_color(key_fg).child(crate::ui::keys_text(k))))
+        .children(disabled.map(SharedString::from).or(key).map(|k| div().flex_none().text_size(px(crate::theme::text::SMALL)).text_color(key_fg).child(crate::ui::keys_text(k))))
         .when(checked, |d| d.child(icon(Icon::Check).flex_none().size(px(12.)).text_color(if on { t.on_acc } else { t.tx2 })))
         .when(sub, |d| d.child(icon(Icon::ChevronRight).size(px(10.)).text_color(key_fg)))
 }
@@ -3708,7 +3708,7 @@ impl Render for SchemaTree {
             .map(|d| ui::field_frame(d, &t, filter_focused))
             .child(icon(Icon::Search).size(px(13.)).text_color(t.tx3))
             .child(div().flex_1().min_w_0().text_color(t.tx).child(self.filter.clone()))
-            .children(filter_meta.map(|m| div().flex_none().text_size(px(10.5)).text_color(t.tx3).whitespace_nowrap().child(m)));
+            .children(filter_meta.map(|m| div().flex_none().text_size(px(crate::theme::text::HINT)).text_color(t.tx3).whitespace_nowrap().child(m)));
         let body: gpui::AnyElement = if empty {
             div()
                 .flex_1()
@@ -3767,7 +3767,7 @@ impl Render for SchemaTree {
             .flex_col()
             .key_context(CONTEXT)
             .track_focus(&self.focus)
-            .text_size(px(12.))
+            .text_size(px(crate::theme::text::BODY))
             .text_color(t.tx2)
             .on_drag_move(cx.listener(|t, ev: &gpui::DragMoveEvent<DraggedConn>, _, cx| {
                 let pos = ev.event.position;

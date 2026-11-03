@@ -265,8 +265,15 @@ pub mod metrics {
     }
 }
 
+/// The type scale, in points (`text_size(px(text::SMALL))`).
 pub mod text {
     pub const CODE: f32 = 13.;
+    pub const TINY: f32 = 10.;
+    pub const HINT: f32 = 10.5;
+    pub const SMALL: f32 = 11.;
+    pub const UI: f32 = 11.5;
+    pub const BODY: f32 = 12.;
+    pub const TITLE: f32 = 13.;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
