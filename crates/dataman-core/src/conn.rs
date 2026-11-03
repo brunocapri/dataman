@@ -26,10 +26,15 @@ pub struct Connection {
     password: Option<String>,
     rt: Handle,
     history: Arc<History>,
-    meta: tokio::sync::Mutex<HashMap<String, Db>>,
+    /// A catalog connection per database, each behind its own lock: one database slow to
+    /// connect never holds up the catalog calls of another.
+    meta: Mutex<HashMap<String, Arc<tokio::sync::Mutex<Option<Db>>>>>,
     tls_active: bool,
     tunnel: Option<Arc<crate::ssh::Tunnel>>,
     pub(crate) caches: Mutex<HashMap<(&'static str, String, String), Arc<dyn std::any::Any + Send + Sync>>>,
+    /// Agents' connections per database and read-only state: typed, apart from the caches
+    /// above (a cache cleared never closes a pool, a failed downcast never makes a second one).
+    pub(crate) agent_pools: Mutex<HashMap<(String, bool), Arc<crate::bounded::Pool>>>,
     read_only_dbs: parking_lot::RwLock<std::collections::BTreeMap<String, bool>>,
     pub(crate) nosql: Option<crate::nosql::Client>,
     /// The rules for agents as the last agent call read them: SQLite's agent connections check
@@ -59,9 +64,10 @@ impl Connection {
                 password,
                 rt,
                 history,
-                meta: tokio::sync::Mutex::new(HashMap::new()),
+                meta: Mutex::new(HashMap::new()),
                 tunnel,
                 caches: Default::default(),
+                agent_pools: Default::default(),
             }));
         }
         let d = backend::dedicated(&profile, password.as_deref(), None, tunnel.as_deref()).await?;
@@ -81,10 +87,11 @@ impl Connection {
             password,
             rt,
             history,
-            meta: tokio::sync::Mutex::new(meta),
+            meta: Mutex::new(meta.into_iter().map(|(k, v)| (k, Arc::new(tokio::sync::Mutex::new(Some(v))))).collect()),
             tls_active,
             tunnel,
             caches: Default::default(),
+            agent_pools: Default::default(),
             nosql: None,
         }))
     }
@@ -163,8 +170,9 @@ impl Connection {
     }
 
     pub(crate) async fn meta(&self, db: &str) -> Result<Db> {
-        let mut g = self.meta.lock().await;
-        if let Some(c) = g.get(db)
+        let slot = self.meta.lock().entry(db.to_string()).or_default().clone();
+        let mut g = slot.lock().await;
+        if let Some(c) = g.as_ref()
             && !c.is_closed()
         {
             return Ok(c.clone());
@@ -174,7 +182,7 @@ impl Connection {
             let sp = backend::search_path(&client, &self.info.user).await;
             self.schema.set_search_path(db, sp);
         }
-        g.insert(db.to_string(), client.clone());
+        *g = Some(client.clone());
         Ok(client)
     }
 
@@ -213,6 +221,7 @@ impl Connection {
             queue: Arc::new(tokio::sync::Mutex::new(())),
             tx: Arc::new(TxWatch::default()),
             ro_applied: Mutex::new(None),
+            agent_run: Mutex::new(None),
         })
     }
 }
@@ -233,6 +242,8 @@ pub struct Session {
     queue: Arc<tokio::sync::Mutex<()>>,
     tx: Arc<TxWatch>,
     ro_applied: Mutex<Option<bool>>,
+    /// The agent's own connection while one of its reads runs (what a cancel reaches).
+    agent_run: Mutex<Option<Arc<Dedicated>>>,
 }
 
 impl Drop for Session {
@@ -374,6 +385,13 @@ impl Session {
         if tokio::time::timeout(Duration::from_millis(30), rs.wait_finished()).await.is_ok() {
             return;
         }
+        let agent = self.agent_run.lock().clone();
+        if let Some(d) = agent {
+            if let Err(e) = d.cancel().await {
+                log::warn!("cancel request failed: {e}");
+            }
+            return;
+        }
         let c = self.cancel.lock().clone();
         if let Some(c) = c
             && let Err(e) = c.cancel().await
@@ -431,11 +449,13 @@ impl Session {
         self.conn.record_history(&entry);
     }
 
-    async fn wrapper(&self, client: &Db, rs: &ResultSet, sql: &str) -> bool {
+    async fn wrapper(&self, client: &Db, rs: &ResultSet, sql: &str, agent: bool) -> bool {
         match client.execute(sql).await {
             Ok(_) => true,
             Err(info) => {
-                self.tx.settled(SETTLE).await;
+                if !agent {
+                    self.tx.settled(SETTLE).await;
+                }
                 self.record_as(rs, Duration::ZERO, Some(Phase::Failed), None, Some(info.clone()));
                 rs.update_status(|s| {
                     s.phase = Some(Phase::Failed);
@@ -447,8 +467,35 @@ impl Session {
         }
     }
 
+    /// An agent's read runs on a connection of the agent's own make, as its headless reads do
+    /// (`agent_take`): the session settings the guard lexes strings by, SQLite's authorizer and
+    /// read-only file, and none of the tab's transaction. The tab only shows it.
     async fn run(&self, rs: &Arc<ResultSet>) {
-        let client = match self.client().await {
+        let agent = rs.agent().is_some() && rs.read_only.load(AtomicOrdering::Acquire);
+        if !agent {
+            let client = self.client().await;
+            return self.run_on(client, rs, false).await;
+        }
+        let ro = self.conn.read_only_for(&self.database) || self.conn.dialect() == Dialect::Sqlite;
+        let client = match self.conn.agent_take(&self.database, ro).await {
+            Ok(d) => {
+                let d = Arc::new(d);
+                let c = d.db();
+                *self.agent_run.lock() = Some(d);
+                Ok(c)
+            }
+            Err(e) => Err(e),
+        };
+        self.run_on(client, rs, true).await;
+        if let Some(d) = self.agent_run.lock().take()
+            && let Ok(d) = Arc::try_unwrap(d)
+        {
+            self.conn.agent_give(&self.database, ro, d);
+        }
+    }
+
+    async fn run_on(&self, client: Result<Db>, rs: &Arc<ResultSet>, agent: bool) {
+        let client = match client {
             Ok(c) => c,
             Err(e) => {
                 rs.update_status(|s| {
@@ -470,7 +517,9 @@ impl Session {
         if aborted() {
             return never_ran(rs);
         }
-        self.sync_read_only(&client).await;
+        if !agent {
+            self.sync_read_only(&client).await;
+        }
         let dialect = self.conn.dialect();
         let facts = crate::guard::classify_in(&rs.sql, dialect);
         let rollback = rs.rolled_back();
@@ -493,7 +542,7 @@ impl Session {
             }
             let begin = if read_only { dialect.begin_read_only().unwrap_or(dialect.begin()) } else { dialect.begin() };
             let sql = if savepoint { dialect.savepoint(ROLLBACK_SAVEPOINT) } else { begin.to_string() };
-            if !self.wrapper(&client, rs, &sql).await {
+            if !self.wrapper(&client, rs, &sql, agent).await {
                 return;
             }
             Some(savepoint)
@@ -501,7 +550,9 @@ impl Session {
             None
         };
         let started = Instant::now();
-        self.tx.take_notices();
+        if !agent {
+            self.tx.take_notices();
+        }
         let last = Mutex::new(rs.clone());
         let on_pause = || {
             let cur = last.lock().clone();
@@ -529,7 +580,7 @@ impl Session {
         let r = match backend::run(&client, rs, started, &on_pause, &aborted, &next).await {
             Ran::NeverRan { settle } => {
                 end_rollback(&client, dialect, wrap).await;
-                if settle {
+                if settle && !agent {
                     self.tx.settled(SETTLE).await;
                 }
                 return never_ran(rs);
@@ -537,8 +588,10 @@ impl Session {
             r => r,
         };
         let rs = &last.lock().clone();
-        for m in self.tx.take_notices() {
-            rs.push_message(m);
+        if !agent {
+            for m in self.tx.take_notices() {
+                rs.push_message(m);
+            }
         }
         let elapsed = started.elapsed().saturating_sub(rs.status().paused_time());
         // Undone before anyone sees the end: the transaction state is back to what it was.
@@ -551,9 +604,11 @@ impl Session {
         };
         // A failure reaches us before the ReadyForQuery that follows it: the status it leaves
         // (a failed transaction) is read first.
-        self.tx.settled(SETTLE).await;
-        // Counted before the final phase is published: whoever sees it sees the count too.
-        self.tx.statement(facts.tx.is_none());
+        if !agent {
+            self.tx.settled(SETTLE).await;
+            // Counted before the final phase is published: whoever sees it sees the count too.
+            self.tx.statement(facts.tx.is_none());
+        }
         // History first: whoever sees the final phase also finds the statement recorded.
         self.record_as(rs, elapsed, Some(phase), affected.or(rs.status().affected), error.clone());
         rs.update_status(|s| {
