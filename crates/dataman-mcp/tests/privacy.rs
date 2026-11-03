@@ -197,6 +197,11 @@ fn names(v: &Value, col: usize) -> Vec<String> {
     v["rows"].as_array().unwrap().iter().map(|r| r[col].as_str().unwrap_or_default().to_string()).collect()
 }
 
+/// search_objects' rows in the test's own schema: a shared database may hold other suites' tables.
+fn in_schema(v: &Value, s: &str) -> String {
+    Value::from(v["rows"].as_array().unwrap().iter().filter(|r| r[1] == s).cloned().collect::<Vec<_>>()).to_string()
+}
+
 #[test]
 fn rules_hold_without_a_database() {
     let e = env("nodb", "[agent_types]\n[[agent_types.custom]]\nid = \"t_conn\"\nname = \"Conn\"\npattern = \"\\\\bprod-pg\\\\b\"\nmask = \"hidden\"\n");
@@ -317,8 +322,8 @@ fn postgres_privacy() {
     assert!(d["ddl"].as_str().unwrap().starts_with("-- 1 column is not visible"));
     assert!(e.err("describe_table", p(json!({"table": format!("{s}.payments")}))).contains("not visible"));
     assert!(e.err("get_ddl", p(json!({"object": format!("{s}.payments")}))).contains("not visible"));
-    let found = e.ok("search_objects", p(json!({"pattern": "password"})));
-    assert!(!found.to_string().contains("password_hash"), "{found}");
+    let found = in_schema(&e.ok("search_objects", p(json!({"pattern": "password"}))), &s);
+    assert!(!found.contains("password_hash"), "{found}");
 
     // Writes: hidden columns refused, structure off, masked values never written back.
     assert!(e.err("execute", p(json!({"sql": format!("UPDATE {s}.users SET password_hash = 'x' WHERE id = 1")}))).contains("hidden from agents"));
@@ -392,7 +397,7 @@ fn postgres_views_long_cells_and_returning() {
     let err = e.err("get_ddl", p(json!({"object": format!("{s}.v_renamed")})));
     assert!(err.contains("keeps data from agents") && !err.contains("password_hash"), "{err}");
     assert!(q(format!("SELECT count(*) FROM {s}.v_ok")).is_ok(), "a view over open data stays usable");
-    let found = e.ok("search_objects", p(json!({"pattern": "password"}))).to_string();
+    let found = in_schema(&e.ok("search_objects", p(json!({"pattern": "password"}))), &s);
     assert!(!found.contains("password_hash"), "the hidden column's name does not come back through a view: {found}");
     let listed = names(&e.ok("list_tables", p(json!({"schema": s}))), 1);
     assert!(listed.contains(&"v_ok".to_string()) && !listed.iter().any(|n| ["v_renamed", "v_star", "v_of_v", "mv", "v_masked"].contains(&n.as_str())), "{listed:?}");

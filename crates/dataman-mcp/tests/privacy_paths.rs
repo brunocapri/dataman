@@ -364,7 +364,11 @@ fn postgres_values_stay_kept() {
         ("sample_rows", json!({"table": format!("{s}.customers")})),
         ("explain", json!({"sql": format!("SELECT * FROM {s}.users")})),
     ] {
-        let r = e.ok(tool, with("pp", args));
+        let mut r = e.ok(tool, with("pp", args));
+        if tool == "search_objects" {
+            // Its own schema only: a shared database may hold other suites' tables.
+            r["rows"] = r["rows"].as_array().unwrap().iter().filter(|row| row[1] == s.as_str()).cloned().collect();
+        }
         clean(tool, &r);
         assert!(!r.to_string().contains("password_hash"), "{tool}: {r}");
     }
@@ -374,14 +378,16 @@ fn postgres_values_stay_kept() {
     for json in [false, true] {
         let u = dataman_mcp::resources::parse(&dataman_mcp::resources::uri("pp", "dataman", json)).unwrap();
         let text = e.server.hub.core.block_on(dataman_mcp::resources::read(&call, &u)).unwrap();
-        assert!(!text.contains("password_hash"), "resource: {text}");
+        // The test's own schema only: a shared database may hold other suites' tables.
         if json {
             let v: Value = serde_json::from_str(&text).unwrap();
             let mine = &v["schemas"][&s];
+            assert!(!mine.to_string().contains("password_hash"), "resource: {mine}");
             assert!(mine["customers"].is_object() && mine["payments"].is_null(), "{mine}");
             assert!(mine["v_open"].is_object() && mine["v_kept"].is_null(), "views follow list_tables: {mine}");
         } else {
             let mine = text.split(&format!("## {s}\n")).nth(1).unwrap().split("\n## ").next().unwrap();
+            assert!(!mine.contains("password_hash"), "resource: {mine}");
             assert!(mine.contains("- customers [") && !mine.contains("- payments ["), "{mine}");
             assert!(mine.contains("- v_open [") && !mine.contains("v_kept"), "views follow list_tables: {mine}");
         }
