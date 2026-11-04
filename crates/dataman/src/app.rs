@@ -298,6 +298,67 @@ impl Default for PaneState {
     }
 }
 
+/// A layer over the workspace that takes the focus while it shows.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Modal {
+    /// The one-at-a-time sheets: palette, Settings, export, imports, the value viewer, the
+    /// confirmations, the update sheet, the shortcuts.
+    Sheet,
+    /// An agent's request waiting for Allow: over anything.
+    Mcp,
+    /// The project file's review: over anything, Settings included.
+    ProjectReview,
+    /// The config files edited outside Dataman.
+    OutsideReview,
+}
+
+/// Where the focus goes when a layer closes.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Back<F = FocusHandle> {
+    To(F),
+    Editor,
+    /// Another layer over it is still open and keeps the focus.
+    Stay,
+}
+
+/// The open layers in the order they opened, each with what had the focus before it: closing
+/// the top one gives that back; closing one under another hands it to the one above, whose own
+/// was inside the layer now gone.
+pub(crate) struct ModalFocus<F = FocusHandle>(Vec<(Modal, Option<F>)>);
+
+impl<F> Default for ModalFocus<F> {
+    fn default() -> Self {
+        ModalFocus(Vec::new())
+    }
+}
+
+impl<F> ModalFocus<F> {
+    /// `m` opened (again) over what has `focus` now.
+    pub(crate) fn open(&mut self, m: Modal, focus: Option<F>) {
+        self.0.retain(|(k, _)| *k != m);
+        self.0.push((m, focus));
+    }
+
+    pub(crate) fn holds(&self, m: Modal) -> bool {
+        self.0.iter().any(|(k, _)| *k == m)
+    }
+
+    /// `m` closed; `shown` says which of the others still show (a layer closed without saying
+    /// so leaves no claim on the focus).
+    pub(crate) fn close(&mut self, m: Modal, shown: impl Fn(Modal) -> bool) -> Back<F> {
+        self.0.retain(|(k, _)| *k == m || shown(*k));
+        let Some(i) = self.0.iter().position(|(k, _)| *k == m) else { return Back::Editor };
+        let (_, back) = self.0.remove(i);
+        match self.0.get_mut(i) {
+            Some(above) => {
+                above.1 = back;
+                Back::Stay
+            }
+            None => back.map_or(Back::Editor, Back::To),
+        }
+    }
+}
+
 pub struct Workspace {
     pub store: Entity<ConnStore>,
     pub tree: Entity<SchemaTree>,
@@ -366,7 +427,8 @@ pub struct Workspace {
     file_drag: Option<gpui::ExternalPaths>,
     pub(crate) palette: Option<Entity<crate::palette::Palette>>,
     pub(crate) settings_view: Option<Entity<crate::settings_view::SettingsView>>,
-    pub(crate) modal_return: Option<FocusHandle>,
+    /// What had the focus before each open layer.
+    pub(crate) modal_focus: ModalFocus,
     pub(crate) export: Option<Entity<crate::export_ui::ExportView>>,
     pub(crate) data_import: Option<Entity<crate::data_import::DataImportView>>,
     pub(crate) value_view: Option<Entity<crate::value_view::ValueView>>,
@@ -383,7 +445,6 @@ pub struct Workspace {
     pub(crate) assume_active: Option<bool>,
     focus: FocusHandle,
     pub(crate) mcp_focus: FocusHandle,
-    pub(crate) mcp_return: Option<FocusHandle>,
     pub(crate) mcp_buttons: std::rc::Rc<std::cell::RefCell<Vec<gpui::Bounds<gpui::Pixels>>>>,
     pub(crate) crash: Option<dataman_core::crash::Pending>,
     pub(crate) crash_note: Option<&'static str>,
@@ -392,10 +453,8 @@ pub struct Workspace {
     pub(crate) update_focus: FocusHandle,
     pub(crate) project_review: Option<dataman_core::project::Review>,
     pub(crate) project_review_focus: FocusHandle,
-    pub(crate) project_review_return: Option<FocusHandle>,
     pub(crate) outside_review: Option<crate::outside_ui::Outside>,
     pub(crate) outside_review_focus: FocusHandle,
-    pub(crate) outside_review_return: Option<FocusHandle>,
     /// Not now: not shown again until what waits changes.
     pub(crate) outside_declined: Option<crate::outside_ui::Outside>,
     pub(crate) update_pill_bounds: std::rc::Rc<std::cell::RefCell<Vec<gpui::Bounds<gpui::Pixels>>>>,
@@ -557,7 +616,7 @@ impl Workspace {
             file_drag: None,
             palette: None,
             settings_view: None,
-            modal_return: None,
+            modal_focus: ModalFocus::default(),
             export: None,
             value_view: None,
             data_import: None,
@@ -573,7 +632,6 @@ impl Workspace {
             assume_active: None,
             focus: cx.focus_handle(),
             mcp_focus: cx.focus_handle(),
-            mcp_return: None,
             mcp_buttons: Default::default(),
             crash: None,
             crash_note: None,
@@ -581,10 +639,8 @@ impl Workspace {
             update_sheet: false,
             project_review: None,
             project_review_focus: cx.focus_handle(),
-            project_review_return: None,
             outside_review: None,
             outside_review_focus: cx.focus_handle(),
-            outside_review_return: None,
             outside_declined: None,
             update_focus: cx.focus_handle(),
             update_pill_bounds: Default::default(),
@@ -860,7 +916,8 @@ impl Workspace {
 
     fn focus_confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.confirm_focus.is_focused(window) {
-            self.modal_return = window.focused(cx).filter(|f| *f != self.confirm_focus);
+            let f = window.focused(cx).filter(|f| *f != self.confirm_focus);
+            self.modal_focus.open(Modal::Sheet, f);
             window.focus(&self.confirm_focus, cx);
         }
     }
@@ -871,14 +928,47 @@ impl Workspace {
             self.update_on_quit = false;
         }
         tab.update(cx, |t, cx| t.resolve_pending_run(discard, cx));
-        match self.modal_return.take() {
-            Some(f) => window.focus(&f, cx),
-            None => self.focus_editor(window, cx),
-        }
+        self.give_focus_back(crate::app::Modal::Sheet, window, cx);
         cx.notify();
     }
 
+    /// `m` opens over whatever has the focus now, to give it back when it closes.
+    pub(crate) fn hold_focus(&mut self, m: Modal, window: &mut Window, cx: &mut Context<Self>) {
+        let f = window.focused(cx);
+        self.modal_focus.open(m, f);
+    }
+
+    /// `m` closed: the focus goes back where it was before it, unless a layer over it still
+    /// shows (that one then gives it back there when it closes).
+    pub(crate) fn give_focus_back(&mut self, m: Modal, window: &mut Window, cx: &mut Context<Self>) {
+        match self.drop_focus(m, cx) {
+            Back::To(f) => window.focus(&f, cx),
+            Back::Editor => self.focus_editor(window, cx),
+            Back::Stay => {}
+        }
+    }
+
+    /// `m` closed and the caller moves the focus itself.
+    pub(crate) fn drop_focus(&mut self, m: Modal, cx: &App) -> Back {
+        let shown = [Modal::Sheet, Modal::Mcp, Modal::ProjectReview, Modal::OutsideReview].map(|k| (k, self.layer_shown(k, cx)));
+        self.modal_focus.close(m, |k| shown.iter().any(|(s, on)| *s == k && *on))
+    }
+
+    fn layer_shown(&self, m: Modal, cx: &App) -> bool {
+        match m {
+            Modal::Sheet => self.sheet_open(cx) || self.shortcuts_open,
+            Modal::Mcp => cx.try_global::<crate::mcp::McpHost>().is_some_and(|h| !h.pending.is_empty()),
+            Modal::ProjectReview => self.project_review.is_some(),
+            Modal::OutsideReview => self.outside_review.is_some(),
+        }
+    }
+
     pub(crate) fn modal_open(&self, cx: &App) -> bool {
+        self.sheet_open(cx) || [Modal::Mcp, Modal::ProjectReview, Modal::OutsideReview].into_iter().any(|m| self.layer_shown(m, cx))
+    }
+
+    /// One of the one-at-a-time sheets shows.
+    fn sheet_open(&self, cx: &App) -> bool {
         self.palette.is_some()
             || self.settings_view.is_some()
             || self.dialog.is_some()
@@ -890,9 +980,6 @@ impl Workspace {
             || self.confirm_delete.is_some()
             || self.tx_prompt.is_some()
             || self.update_sheet
-            || self.project_review.is_some()
-            || self.outside_review.is_some()
-            || cx.try_global::<crate::mcp::McpHost>().is_some_and(|h| !h.pending.is_empty())
     }
 
     /// Which of `modal_open`'s conditions hold (for the checks' failure details).
@@ -925,7 +1012,8 @@ impl Workspace {
 
     pub(crate) fn focus_sheet(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.sheet_focus.is_focused(window) {
-            self.modal_return = window.focused(cx).filter(|f| *f != self.sheet_focus);
+            let f = window.focused(cx).filter(|f| *f != self.sheet_focus);
+            self.modal_focus.open(Modal::Sheet, f);
             window.focus(&self.sheet_focus, cx);
         }
         self.sheet_at = Some(Instant::now());
@@ -933,8 +1021,8 @@ impl Workspace {
 
     pub(crate) fn focus_params(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(prompt) = self.active_tab().and_then(|t| t.read(cx).params.as_ref().map(|p| p.prompt.clone())) else { return };
-        if self.modal_return.is_none() {
-            self.modal_return = window.focused(cx);
+        if !self.modal_focus.holds(Modal::Sheet) {
+            self.hold_focus(crate::app::Modal::Sheet, window, cx);
         }
         prompt.update(cx, |p, cx| p.focus_field(0, window, cx));
     }
@@ -1032,10 +1120,7 @@ impl Workspace {
     }
 
     fn unfocus_sheet(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match self.modal_return.take() {
-            Some(f) => window.focus(&f, cx),
-            None => self.focus_editor(window, cx),
-        }
+        self.give_focus_back(crate::app::Modal::Sheet, window, cx);
     }
 
     fn ask_about_tx(&mut self, what: Ends<gpui::EntityId>, then: AfterTx, window: &mut Window, cx: &mut Context<Self>) -> bool {
@@ -1472,7 +1557,7 @@ impl Workspace {
         if self.modal_open(cx) {
             return;
         }
-        self.modal_return = window.focused(cx);
+        self.hold_focus(crate::app::Modal::Sheet, window, cx);
         let store = self.store.clone();
         let v = cx.new(|cx| crate::import_ui::ImportView::new(store, window, cx));
         cx.subscribe_in(&v, window, |w, _, ev: &crate::import_ui::ImportEvent, window, cx| {
@@ -1482,10 +1567,7 @@ impl Workspace {
                 w.current_conn = Some(first.clone());
             }
             w.import = None;
-            match w.modal_return.take() {
-                Some(f) => window.focus(&f, cx),
-                None => w.focus_editor(window, cx),
-            }
+            w.give_focus_back(crate::app::Modal::Sheet, window, cx);
             cx.notify();
         })
         .detach();
@@ -1497,7 +1579,7 @@ impl Workspace {
         if self.modal_open(cx) {
             return;
         }
-        self.modal_return = window.focused(cx);
+        self.hold_focus(crate::app::Modal::Sheet, window, cx);
         // Editable unless the result is known not to be (the edit says why when it is not).
         let edit = self.active_tab().map(|t| t.read(cx).edit.clone());
         let editable = edit.as_ref().is_some_and(|e| e.read(cx).editable(cell.col) != Some(false)) && !self.active_tab().is_some_and(|t| t.read(cx).doc.is_some());
@@ -1509,7 +1591,7 @@ impl Workspace {
         if self.modal_open(cx) {
             return;
         }
-        self.modal_return = window.focused(cx);
+        self.hold_focus(crate::app::Modal::Sheet, window, cx);
         let edit = if editable { self.active_tab().map(|t| t.read(cx).edit.clone()) } else { None };
         let (row, col) = (cell.row, cell.col);
         let v = cx.new(|cx| crate::value_view::ValueView::new(cell, editable, window, cx));
@@ -1521,10 +1603,7 @@ impl Workspace {
                 e.update(cx, |e, cx| e.set_cell(row, col, dataman_core::edit::CellValue::text(json), window, cx));
             }
             w.value_view = None;
-            match w.modal_return.take() {
-                Some(f) => window.focus(&f, cx),
-                None => w.focus_editor(window, cx),
-            }
+            w.give_focus_back(crate::app::Modal::Sheet, window, cx);
             cx.notify();
         })
         .detach();
@@ -1649,17 +1728,14 @@ impl Workspace {
 
     pub(crate) fn toggle_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.settings_view.take().is_some() {
-            match self.modal_return.take() {
-                Some(f) => window.focus(&f, cx),
-                None => self.focus_editor(window, cx),
-            }
+            self.give_focus_back(crate::app::Modal::Sheet, window, cx);
             cx.notify();
             return;
         }
         if self.modal_open(cx) {
             return;
         }
-        self.modal_return = window.focused(cx);
+        self.hold_focus(crate::app::Modal::Sheet, window, cx);
         let core = self.store.read(cx).core.clone();
         let v = cx.new(|cx| crate::settings_view::SettingsView::new(core, window, cx));
         cx.subscribe_in(&v, window, |w, _, ev: &crate::settings_view::SettingsEvent, window, cx| match ev {
@@ -1793,13 +1869,10 @@ impl Workspace {
         }
         self.shortcuts_open = open;
         if open {
-            self.modal_return = window.focused(cx);
+            self.hold_focus(crate::app::Modal::Sheet, window, cx);
             window.focus(&self.shortcuts_focus, cx);
         } else {
-            match self.modal_return.take() {
-                Some(f) => window.focus(&f, cx),
-                None => self.focus_editor(window, cx),
-            }
+            self.give_focus_back(crate::app::Modal::Sheet, window, cx);
         }
         cx.notify();
     }
@@ -3039,6 +3112,33 @@ impl Drop for TraceRender {
 mod tests {
     use super::*;
     use gpui::{KeyContext, Keymap};
+
+    #[test]
+    fn focus_goes_back_through_the_layers() {
+        let all = |_: Modal| true;
+        // Closed in order: each gives back what it took.
+        let mut s = ModalFocus::default();
+        s.open(Modal::Sheet, Some("editor"));
+        s.open(Modal::Mcp, Some("palette"));
+        assert_eq!(s.close(Modal::Mcp, all), Back::To("palette"));
+        assert_eq!(s.close(Modal::Sheet, all), Back::To("editor"));
+        assert_eq!(s.close(Modal::Sheet, all), Back::Editor);
+        // The one under closes first: the one over keeps the focus, then gives back the editor
+        // (its own was inside the palette, gone).
+        s.open(Modal::Sheet, Some("editor"));
+        s.open(Modal::Mcp, Some("palette"));
+        assert_eq!(s.close(Modal::Sheet, all), Back::Stay);
+        assert_eq!(s.close(Modal::Mcp, all), Back::To("editor"));
+        // A layer that closed without saying so does not hold the focus back.
+        s.open(Modal::ProjectReview, Some("settings"));
+        s.open(Modal::Sheet, Some("review"));
+        assert_eq!(s.close(Modal::ProjectReview, |m| m != Modal::Sheet), Back::To("settings"));
+        assert!(!s.holds(Modal::Sheet));
+        // Opened again: what it took the first time stays (the callers that keep it ask first).
+        s.open(Modal::Sheet, Some("a"));
+        s.open(Modal::Sheet, Some("b"));
+        assert_eq!(s.close(Modal::Sheet, all), Back::To("b"));
+    }
 
     #[test]
     fn file_urls() {

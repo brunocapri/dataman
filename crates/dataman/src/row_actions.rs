@@ -466,7 +466,7 @@ impl Workspace {
         if self.modal_open(cx) {
             return;
         }
-        self.modal_return = window.focused(cx);
+        self.hold_focus(crate::app::Modal::Sheet, window, cx);
         self.confirm_delete = Some(id);
         self.drop_agent_login = true;
         window.focus(&self.confirm_delete_focus, cx);
@@ -475,7 +475,7 @@ impl Workspace {
 
     fn resolve_delete(&mut self, delete: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(id) = self.confirm_delete.take() else { return };
-        self.modal_return = None;
+        self.drop_focus(crate::app::Modal::Sheet, cx);
         if delete {
             self.delete_connection(&id, cx);
         }

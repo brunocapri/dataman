@@ -789,7 +789,7 @@ impl Workspace {
         if self.modal_open(cx) {
             return;
         }
-        self.modal_return = window.focused(cx);
+        self.hold_focus(crate::app::Modal::Sheet, window, cx);
         let items = self.palette_items(cx);
         let p = cx.new(|cx| Palette::new(items, scope, window, cx));
         cx.subscribe_in(&p, window, |w, _, ev: &PaletteEvent, window, cx| match ev {
@@ -813,10 +813,7 @@ impl Workspace {
 
     pub(crate) fn close_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.palette = None;
-        match self.modal_return.take() {
-            Some(f) => window.focus(&f, cx),
-            None => self.focus_editor(window, cx),
-        }
+        self.give_focus_back(crate::app::Modal::Sheet, window, cx);
         cx.notify();
     }
 

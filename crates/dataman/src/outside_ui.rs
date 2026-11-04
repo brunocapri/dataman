@@ -66,7 +66,7 @@ impl Workspace {
             return;
         };
         if self.outside_review.is_none() {
-            self.outside_review_return = window.focused(cx);
+            self.hold_focus(crate::app::Modal::OutsideReview, window, cx);
         }
         self.outside_review = Some(o);
         window.focus(&self.outside_review_focus, cx);
@@ -75,10 +75,7 @@ impl Workspace {
 
     pub(crate) fn close_outside_review(&mut self, apply: bool, window: &mut Window, cx: &mut Context<Self>) {
         let shown = self.outside_review.take();
-        match self.outside_review_return.take() {
-            Some(f) => window.focus(&f, cx),
-            None => self.focus_editor(window, cx),
-        }
+        self.give_focus_back(crate::app::Modal::OutsideReview, window, cx);
         let Some(o) = shown else { return cx.notify() };
         if !apply {
             self.outside_declined = Some(o);

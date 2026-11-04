@@ -1384,7 +1384,7 @@ impl Workspace {
         if self.modal_open(cx) {
             return;
         }
-        self.modal_return = window.focused(cx);
+        self.hold_focus(crate::app::Modal::Sheet, window, cx);
         let v = cx.new(|cx| DataImportView::new(target, path, window, cx));
         cx.subscribe_in(&v, window, |w, v, ev: &DataImportEvent, window, cx| match ev {
             DataImportEvent::Close => {
@@ -1395,10 +1395,7 @@ impl Workspace {
                 if !v.read(cx).is_running() {
                     w.data_import = None;
                 }
-                match w.modal_return.take() {
-                    Some(f) => window.focus(&f, cx),
-                    None => w.focus_editor(window, cx),
-                }
+                w.give_focus_back(crate::app::Modal::Sheet, window, cx);
                 cx.notify();
             }
             DataImportEvent::Finished(line) => {
@@ -1407,7 +1404,7 @@ impl Workspace {
             }
             DataImportEvent::ViewData { conn, db, schema, table } => {
                 w.data_import = None;
-                w.modal_return = None;
+                w.drop_focus(crate::app::Modal::Sheet, cx);
                 let (conn, db, schema, table) = (conn.clone(), db.clone(), schema.clone(), table.clone());
                 if let Some(c) = w.store.read(cx).connection(&conn) {
                     c.schema.invalidate_schema(&db, &schema);
