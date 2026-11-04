@@ -57,10 +57,12 @@ if [ "${DATAMAN_DUCKDB_CACHED:-}" = true ] && [ -f "$out/$file" ]; then
 fi
 [ "$os" = macos ] && export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-11.0}"
 # On Linux libstdc++ goes in statically: the AppImage links nothing outside its allowlist (the
-# `cc` crate would link it dynamically), and the tests load the engine the packages carry.
+# `cc` crate would link it dynamically), and the tests load the engine the packages carry. libgcc
+# with it: on aarch64 libstdc++.a calls the outline atomics (__aarch64_swp4_acq_rel…), which only
+# libgcc.a has, not libgcc_s.so; without it the engine does not load.
 if [ "$os" = linux ]; then
   export CXXSTDLIB=""
-  export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-Wl,-Bstatic -C link-arg=-lstdc++ -C link-arg=-Wl,-Bdynamic"
+  export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-Wl,-Bstatic -C link-arg=-lstdc++ -C link-arg=-lgcc -C link-arg=-Wl,-Bdynamic"
 fi
 cargo build --release --locked --manifest-path engines/duckdb/Cargo.toml --target-dir "$build" ${target:+--target "$target"}
 lib="$build/${target:+$target/}release/$file"
