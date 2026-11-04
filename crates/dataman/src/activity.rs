@@ -973,7 +973,7 @@ pub(crate) fn statements_result(rows: &[StatementRow]) -> (Arc<ResultSet>, Decor
 }
 
 fn small(b: gpui::Stateful<gpui::Div>) -> gpui::Stateful<gpui::Div> {
-    b.h(px(24.)).px(px(8.)).gap(px(6.)).text_size(px(11.5))
+    b.h(px(24.)).px(px(8.)).gap(px(6.)).text_size(px(crate::theme::text::UI))
 }
 
 fn chip(t: &Theme, id: &'static str, label: &'static str, on: bool) -> gpui::Stateful<gpui::Div> {
@@ -986,7 +986,7 @@ fn chip(t: &Theme, id: &'static str, label: &'static str, on: bool) -> gpui::Sta
         .flex()
         .items_center()
         .border_1()
-        .text_size(px(11.))
+        .text_size(px(crate::theme::text::SMALL))
         .cursor_pointer()
         .when(on, |d| d.bg(t.prs).text_color(t.tx).border_color(t.line2))
         .when(!on, |d| d.text_color(t.tx3).border_color(t.line).hover(move |s| s.bg(hov)))
@@ -1002,7 +1002,7 @@ pub(crate) fn own_tag(t: &Theme) -> gpui::Div {
         .items_center()
         .bg(t.acc_s)
         .text_color(t.acc_t)
-        .text_size(px(10.5))
+        .text_size(px(crate::theme::text::HINT))
         .font_weight(FontWeight::SEMIBOLD)
         .child("this app")
 }
@@ -1031,7 +1031,7 @@ impl ActivityView {
                 ui::segment(t, ("act-section", s.ix()), s.label(), on)
                     .flex_none()
                     .gap(px(6.))
-                    .children(count(s).map(|n| div().text_size(px(11.)).text_color(if warn { t.warn } else if on { t.tx3 } else { t.tx4 }).child(n)))
+                    .children(count(s).map(|n| div().text_size(px(crate::theme::text::SMALL)).text_color(if warn { t.warn } else if on { t.tx3 } else { t.tx4 }).child(n)))
                     .on_click(cx.listener(move |m, _: &ClickEvent, window, cx| m.set_section(s, window, cx)))
             }))
         });
@@ -1117,7 +1117,7 @@ impl ActivityView {
             .flex()
             .flex_row()
             .items_center()
-            .text_size(px(10.5))
+            .text_size(px(crate::theme::text::HINT))
             .text_color(t.tx3)
             .border_b_1()
             .border_color(t.line)
@@ -1169,7 +1169,7 @@ impl ActivityView {
                 .flex()
                 .flex_row()
                 .items_center()
-                .text_size(px(12.))
+                .text_size(px(crate::theme::text::BODY))
                 .map(|d| ui::selectable(d, t, sel, focused))
                 .when(!sel, |d| d.hover(move |s| s.bg(hov)))
                 .cursor_pointer()
@@ -1189,7 +1189,7 @@ impl ActivityView {
                         .pl(px(16. * r.depth as f32))
                         .child(div().flex_none().text_color(if r.cycle { t.err } else if top { t.warn } else { t.tx4 }).child(glyph))
                         .child(div().flex_none().text_color(fg).when(top, |d| d.font_weight(FontWeight::SEMIBOLD)).child(pid.to_string()))
-                        .when(top && r.behind > 0, |d| d.child(div().flex_none().text_size(px(10.5)).text_color(t.warn).child(format!("+{}", r.behind))))
+                        .when(top && r.behind > 0, |d| d.child(div().flex_none().text_size(px(crate::theme::text::HINT)).text_color(t.warn).child(format!("+{}", r.behind))))
                         .when(own, |d| d.child(div().flex_none().size(px(6.)).rounded(px(3.)).bg(t.acc))),
                 )
                 .child(cell(W_USER).text_color(if dim { t.tx3 } else { t.tx2 }).child(s.and_then(|s| s.user.clone()).unwrap_or_default()))
@@ -1356,7 +1356,7 @@ impl ActivityView {
             .gap(px(10.))
             .border_t_1()
             .border_color(t.line)
-            .text_size(px(11.5))
+            .text_size(px(crate::theme::text::UI))
             .whitespace_nowrap()
             .overflow_hidden()
             .children(left)
@@ -1396,7 +1396,7 @@ impl Render for ActivityView {
             .flex()
             .flex_col()
             .font_family(mono())
-            .text_size(px(12.))
+            .text_size(px(crate::theme::text::BODY))
             .key_context(CONTEXT)
             .track_focus(&self.focus)
             .on_action(cx.listener(|m, _: &Refresh, _, cx| m.refresh_now(cx)))
@@ -1449,7 +1449,7 @@ fn query_block(t: &Theme, sql: &str) -> gpui::Div {
         .border_color(t.line)
         .flex()
         .flex_col()
-        .text_size(px(12.))
+        .text_size(px(crate::theme::text::BODY))
         .line_height(px(18.))
         .children(lines.into_iter().map(|(text, runs)| {
             if text.is_empty() {
@@ -1573,7 +1573,7 @@ impl Render for ActivityDetails {
             .flex_col()
             .track_focus(&self.focus)
             .font_family(mono())
-            .text_size(px(12.))
+            .text_size(px(crate::theme::text::BODY))
             .child(header)
             .child(content)
     }
@@ -1637,6 +1637,8 @@ impl crate::app::Workspace {
         })
         .detach();
         self.sync_monitors(window, cx);
+        let root = m.read(cx).focus.clone();
+        self.watch_group_focus(&root, window, cx);
         let f = m.read(cx).focus_target(cx);
         window.focus(&f, cx);
         cx.notify();

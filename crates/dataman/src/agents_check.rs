@@ -6,7 +6,7 @@
 use dataman_core::config::Engine;
 use dataman_core::privacy::{AgentView, CustomType, ItemKind, Mask, ReadFrom, SensitiveCol, VisibleItem};
 use dataman_core::{ConnectionProfile, Core, Environment, McpAccess};
-use dataman_mcp::audit::{ApprovalNote, Audit, Decision, Entry, Outcome, Seen};
+use dataman_core::audit::{ApprovalNote, Audit, Decision, Entry, Outcome, Seen};
 use gpui::{AsyncWindowContext, Entity};
 
 use crate::agents::{AgentsPage, Page};
@@ -1410,7 +1410,7 @@ async fn check_login(ws: &Entity<Workspace>, a: &Entity<AgentsPage>, pg: &Connec
 /// Audit › Clear…: each way asks first with the count of what goes, takes the replies with the
 /// calls, and the list, its filters and its selection follow. Last: it leaves the log empty.
 async fn check_clear(ws: &Entity<Workspace>, a: &Entity<AgentsPage>, r: &mut Report, cx: &mut AsyncWindowContext) {
-    use dataman_mcp::audit::{Clear, Recent};
+    use dataman_core::audit::{Clear, Recent};
     let core = core(ws, cx);
     let log = core.dirs.mcp_audit_file();
     let now = chrono::Utc::now();
@@ -1442,8 +1442,8 @@ async fn check_clear(ws: &Entity<Workspace>, a: &Entity<AgentsPage>, r: &mut Rep
         });
     }
     // A reply whose call rotated out long ago.
-    let orphan = dataman_mcp::audit::Reply { id: "orphan".into(), ts: now - chrono::Duration::days(300), cut: false, reply: "{}".into() };
-    if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(dataman_mcp::audit::replies_path(&log)) {
+    let orphan = dataman_core::audit::Reply { id: "orphan".into(), ts: now - chrono::Duration::days(300), cut: false, reply: "{}".into() };
+    if let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(dataman_core::audit::replies_path(&log)) {
         use std::io::Write;
         let _ = writeln!(f, "{}", serde_json::to_string(&orphan).unwrap_or_default());
     }
@@ -1476,7 +1476,7 @@ async fn check_clear(ws: &Entity<Workspace>, a: &Entity<AgentsPage>, r: &mut Rep
         format!("{labels:?}"),
     );
     let sheet = |cx: &mut AsyncWindowContext| cx.update(|_, cx| a.read(cx).clear.as_ref().map(|s| (s.what, s.count))).ok().flatten();
-    let on_disk = |id: &str| dataman_mcp::audit::tail(&log, 100_000).iter().any(|e| e.id.as_deref() == Some(id));
+    let on_disk = |id: &str| dataman_core::audit::tail(&log, 100_000).iter().any(|e| e.id.as_deref() == Some(id));
     click_probe("agents-clear:3", cx);
     let counted = until(cx, 5, |cx| sheet(cx).is_some_and(|(_, n)| n.is_some())).await;
     r.check("Keep Only the Last 3 Months… asks first, counting the two older calls", counted && sheet(cx) == Some((Clear::Keep(Recent::Months3), Some(2))), format!("{:?}", sheet(cx)));
@@ -1498,7 +1498,7 @@ async fn check_clear(ws: &Entity<Workspace>, a: &Entity<AgentsPage>, r: &mut Rep
     );
     r.check(
         "… with their replies and the orphan ones; the kept calls' replies stay",
-        dataman_mcp::audit::reply(&log, "old-200").is_none() && dataman_mcp::audit::reply(&log, "orphan").is_none() && dataman_mcp::audit::reply(&log, "old-60").is_some(),
+        dataman_core::audit::reply(&log, "old-200").is_none() && dataman_core::audit::reply(&log, "orphan").is_none() && dataman_core::audit::reply(&log, "old-60").is_some(),
         "",
     );
     r.check("… and the filter and the selected call stay as they were", sel(cx).as_deref() == Some("old-45") && filter(cx).as_deref() == Some("Old Agent"), format!("{:?} {:?}", sel(cx), filter(cx)));
@@ -1532,7 +1532,7 @@ async fn check_clear(ws: &Entity<Workspace>, a: &Entity<AgentsPage>, r: &mut Rep
     r.check("⌘⌫ deletes them; the day's later calls stay", gone && !on_disk("old-60") && !on_disk("old-45") && on_disk("old-10"), format!("{:?}", ids(cx)));
     r.check("… and the selection, its call gone, moves to the first left under the filter", sel(cx).as_deref() == Some("old-10") && filter(cx).as_deref() == Some("Old Agent"), format!("{:?} {:?}", sel(cx), filter(cx)));
     // Everything.
-    let all = dataman_mcp::audit::count_before(&log, chrono::Utc::now());
+    let all = dataman_core::audit::count_before(&log, chrono::Utc::now());
     click_probe("agents-clear", cx);
     pause(cx, 50).await;
     click_probe("agents-clear:0", cx);
@@ -1540,8 +1540,8 @@ async fn check_clear(ws: &Entity<Workspace>, a: &Entity<AgentsPage>, r: &mut Rep
     r.check("Clear All… counts every call in the log", sheet(cx) == Some((Clear::All, Some(all))) && all > 1, format!("{:?} of {all}", sheet(cx)));
     click_probe("agents-clear-delete", cx);
     let empty = until(cx, 5, |cx| sheet(cx).is_none() && ids(cx).is_empty()).await;
-    let replies = std::fs::read_to_string(dataman_mcp::audit::replies_path(&log)).unwrap_or_default();
-    r.check("Delete empties the audit and its replies", empty && dataman_mcp::audit::tail(&log, 10).is_empty() && replies.trim().is_empty(), format!("{:?} {}", ids(cx), replies.len()));
+    let replies = std::fs::read_to_string(dataman_core::audit::replies_path(&log)).unwrap_or_default();
+    r.check("Delete empties the audit and its replies", empty && dataman_core::audit::tail(&log, 10).is_empty() && replies.trim().is_empty(), format!("{:?} {}", ids(cx), replies.len()));
     r.check("… and a filter on an agent no longer there goes, with the selection", filter(cx).is_none() && sel(cx).is_none(), format!("{:?} {:?}", filter(cx), sel(cx)));
     let tools: Vec<String> = dataman_mcp::registry(&core.dirs).all().iter().map(|t| t.name().to_string()).collect();
     r.check("no MCP tool clears or touches the audit", !tools.is_empty() && !tools.iter().any(|t| t.contains("audit") || t.contains("clear") || t.contains("prune")), format!("{tools:?}"));

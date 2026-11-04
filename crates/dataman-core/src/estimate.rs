@@ -27,7 +27,7 @@ impl Connection {
             return;
         }
         let dialect = self.dialect();
-        if !rs.params().is_empty() || !estimable(&rs.sql, dialect) || (self.engine() == Engine::MySql && !mysql_explains_safely(&self.info.version)) {
+        if !rs.params().is_empty() || !estimable(&rs.sql, dialect) || (self.engine() == Engine::MySql && !mysql_explains_safely(&self.info)) {
             rs.set_estimate(None);
             return;
         }
@@ -85,11 +85,9 @@ impl Connection {
 }
 
 /// MySQL 5.7+ and MariaDB 10+: `EXPLAIN` there never runs a derived table (older MySQL did).
-pub fn mysql_explains_safely(version: &str) -> bool {
-    let v = version.trim_start_matches("MySQL ").trim_start_matches("MariaDB ");
-    let mut parts = v.split(|c: char| !c.is_ascii_digit()).filter(|p| !p.is_empty()).map(|p| p.parse::<u32>().unwrap_or(0));
-    let (major, minor) = (parts.next().unwrap_or(0), parts.next().unwrap_or(0));
-    if version.contains("MariaDB") {
+pub fn mysql_explains_safely(info: &crate::ServerInfo) -> bool {
+    let (major, minor, _) = info.release;
+    if info.is_mariadb() {
         return major >= 10;
     }
     major > 5 || (major == 5 && minor >= 7)
@@ -159,7 +157,9 @@ mod tests {
         assert!(!estimable("SELECT 1; SELECT 2", pg));
         assert!(!estimable("EXEC dbo.p", Dialect::TSql));
         assert!(!estimable("WITH d AS (DELETE FROM t RETURNING *) SELECT * FROM d", pg));
-        assert!(mysql_explains_safely("MySQL 8.4.3") && mysql_explains_safely("MySQL 5.7.44") && mysql_explains_safely("MariaDB 10.11.6"));
-        assert!(!mysql_explains_safely("MySQL 5.6.51"));
+        use crate::server::{Flavor, ServerInfo};
+        let my = |f: Flavor, raw: &str| ServerInfo::of(Engine::MySql, f, String::new(), raw);
+        assert!(mysql_explains_safely(&my(Flavor::Standard, "8.4.3")) && mysql_explains_safely(&my(Flavor::Standard, "5.7.44")) && mysql_explains_safely(&my(Flavor::MariaDb, "10.11.6")));
+        assert!(!mysql_explains_safely(&my(Flavor::Standard, "5.6.51")));
     }
 }

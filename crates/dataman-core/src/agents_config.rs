@@ -322,14 +322,6 @@ fn yes_no(b: bool) -> String {
     (if b { "yes" } else { "no" }).into()
 }
 
-/// How much a mask keeps from the agent: Hidden keeps all, Partial the least.
-fn strength(m: Mask) -> u8 {
-    match m {
-        Mask::Hidden => 1,
-        Mask::Partial(_) => 0,
-    }
-}
-
 fn shielding(v: AgentView) -> u8 {
     match v {
         AgentView::Structure => 2,
@@ -388,10 +380,10 @@ pub fn conn_changes(p: &ConnectionProfile, c: &ConnRules) -> Vec<Change> {
     });
     for (low, col) in &cols {
         let (m0, m1) = (mask_of(r0, low), mask_of(r1, low));
-        let label = |m: Option<Mask>| m.map_or("not sensitive".to_string(), |m| m.label().to_string());
+        let label = |m: Option<Mask>| m.map_or("not sensitive".to_string(), Mask::describe);
         let loosens = match (m0, m1) {
             (Some(_), None) => true,
-            (Some(a), Some(b)) => strength(b) < strength(a),
+            (Some(a), Some(b)) => Mask::loosens(a, b),
             _ => false,
         };
         push(&format!("Sensitive column › {col}"), label(m0), label(m1), loosens);
@@ -403,7 +395,7 @@ pub fn conn_changes(p: &ConnectionProfile, c: &ConnRules) -> Vec<Change> {
         let mut pairs = Vec::new();
         for (i, a) in on.iter().enumerate() {
             for b in &on[i + 1..] {
-                if strength(a.how) < strength(b.how) && !a.col.eq_ignore_ascii_case(&b.col) {
+                if Mask::loosens(b.how, a.how) && !a.col.eq_ignore_ascii_case(&b.col) {
                     pairs.push((a.col.to_lowercase(), a.how, b.col.to_lowercase(), b.how, a.col.clone(), b.col.clone()));
                 }
             }
@@ -413,7 +405,7 @@ pub fn conn_changes(p: &ConnectionProfile, c: &ConnRules) -> Vec<Change> {
     let before = weaker_first(r0);
     for (al, ah, bl, bh, a, b) in weaker_first(r1) {
         if !before.iter().any(|x| (&x.0, x.1, &x.2, x.3) == (&al, ah, &bl, bh)) {
-            push(&format!("Sensitive column › {b}"), bh.label().into(), format!("{} where {a}, before it, matches", ah.label()), true);
+            push(&format!("Sensitive column › {b}"), bh.describe(), format!("{} where {a}, before it, matches", ah.describe()), true);
         }
     }
     for (what, a, b) in [("Agents may change structure", r0.structure, r1.structure), ("Agents may run code", r0.code, r1.code), ("Agents may see server activity", r0.activity, r1.activity)] {
@@ -465,7 +457,7 @@ pub fn type_changes(t0: &TypeSettings, t1: &TypeSettings) -> Vec<Change> {
         let (a, z) = (t0.builtin_on(b), t1.builtin_on(b));
         push(format!("Sensitive data › {}", b.name), on(a), on(z), a && !z);
         let (m0, m1) = (t0.builtin_mask(b), t1.builtin_mask(b));
-        push(format!("Sensitive data › {} mask", b.name), m0.label().into(), m1.label().into(), z && strength(m1) < strength(m0));
+        push(format!("Sensitive data › {} mask", b.name), m0.describe(), m1.describe(), z && Mask::loosens(m0, m1));
         let (d0, d1) = (t0.builtin_def(b), t1.builtin_def(b));
         push(format!("Sensitive data › {} name", b.name), d0.name.clone(), d1.name.clone(), false);
         let (r0, r1) = (rule(&privacy::CustomType { mask: d1.mask, ..d0 }), rule(&d1));
@@ -802,6 +794,8 @@ mod tests {
         cases.push(("a weaker entry put before a stronger one", m.clone(), Box::new(|c| c.rules.sensitive.insert(0, col("*mail*", Mask::PARTIAL)))));
         cases.push(("a sensitive column turned off", m.clone(), Box::new(|c| c.rules.sensitive[0].on = false)));
         cases.push(("a sensitive column renamed", m.clone(), Box::new(|c| c.rules.sensitive[0].col = "users.e_mail".into())));
+        m.mcp_rules.sensitive = vec![col("cards.number", Mask::PARTIAL)];
+        cases.push(("a Partial mask keeping more characters", m.clone(), Box::new(|c| c.rules.sensitive[0].how = Mask::Partial(privacy::Keep { first: 7, last: 8 }))));
         let mut r = ConnectionProfile::new("r");
         r.engine = Engine::MongoDb;
         r.mcp_rules.read_from = Some(privacy::ReadFrom::Secondary);

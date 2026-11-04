@@ -154,7 +154,8 @@ async fn open(d: &Dial) -> Result<Conn> {
         args.extend(d.auth.iter().map(|a| a.as_bytes()));
         write_command(&mut c.io, &args).await?;
         if let Reply::Error(e) = read_reply(&mut c.io).await? {
-            bail!("authentication failed: {}", e.trim_start_matches("WRONGPASS ").trim_start_matches("ERR "));
+            let msg = format!("authentication failed: {}", e.trim_start_matches("WRONGPASS ").trim_start_matches("ERR "));
+            return Err(super::ConnectError::Auth(msg).into());
         }
     }
     Ok(c)

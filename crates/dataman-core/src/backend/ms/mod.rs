@@ -584,7 +584,8 @@ pub(crate) async fn server_info(client: &Client) -> Result<ServerInfo> {
     let row = rows.into_iter().next().ok_or_else(|| anyhow!("SERVERPROPERTY returned no row"))?;
     let get = |i: usize| row.get(i).cloned().flatten().unwrap_or_default();
     let edition: i32 = get(1).parse().unwrap_or(0);
-    let mut info = ServerInfo { version: version_label(&get(0), edition), database: get(2), user: get(3), ..Default::default() };
+    let flavor = if matches!(edition, 5 | 8 | 9) { crate::server::Flavor::Azure } else { crate::server::Flavor::Standard };
+    let mut info = ServerInfo { database: get(2), user: get(3), ..ServerInfo::of(crate::config::Engine::SqlServer, flavor, version_label(&get(0), edition), &get(0)) };
     let schema = get(4);
     info.search_path = if schema.is_empty() { vec!["dbo".into()] } else { vec![schema] };
     Ok(info)

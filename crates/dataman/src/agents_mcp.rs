@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use dataman_core::agents_config::{self, AgentsFile, Change, Plan};
-use dataman_mcp::audit::{ApprovalNote, Audit, Decision, Entry, Outcome};
+use dataman_core::audit::{ApprovalNote, Audit, Decision, Entry, Outcome};
 use gpui::{AnyElement, Context, FontWeight, KeyDownEvent, SharedString, Window, div, prelude::*};
 
 use crate::agents::{AgentsPage, Tip};
@@ -62,7 +62,7 @@ impl AgentsPage {
                 .flex_row()
                 .items_center()
                 .gap(px(8.))
-                .child(div().flex_1().min_w_0().px(px(10.)).py(px(6.)).bg(t.field).border_1().border_color(t.line).text_size(px(11.5)).text_color(t.tx).overflow_hidden().whitespace_nowrap().text_ellipsis().child(cmd))
+                .child(div().flex_1().min_w_0().px(px(10.)).py(px(6.)).bg(t.field).border_1().border_color(t.line).text_size(px(crate::theme::text::UI)).text_color(t.tx).overflow_hidden().whitespace_nowrap().text_ellipsis().child(cmd))
                 .child(ui::button(t, "agents-mcp-copy", ui::Btn::Secondary).h(px(28.)).child("Copy").on_click(cx.listener(move |_, _, _, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy.clone()))))),
         );
         let file = sub(sub_title(
@@ -84,7 +84,7 @@ impl AgentsPage {
                 .child(ui::button(t, "agents-export", ui::Btn::Secondary).h(px(28.)).px(px(10.)).child("Export…").on_click(cx.listener(|v, _, _, cx| v.export_settings(cx))))
                 .child(ui::button(t, "agents-import", ui::Btn::Secondary).h(px(28.)).px(px(10.)).child("Import…").on_click(cx.listener(|v, _, window, cx| v.import_settings(window, cx)))),
         )
-        .children(self.settings_note.clone().map(|n| div().children(ui::here(&"agents-file-note".into())).text_size(px(11.5)).text_color(t.tx2).child(n)));
+        .children(self.settings_note.clone().map(|n| div().children(ui::here(&"agents-file-note".into())).text_size(px(crate::theme::text::UI)).text_color(t.tx2).child(n)));
         div()
             .size_full()
             .flex()
@@ -119,7 +119,8 @@ impl AgentsPage {
                 _ => None,
             };
             let Some(path) = path else { return };
-            let note = match std::fs::write(&path, text) {
+            let to = path.clone();
+            let note = match cx.background_executor().spawn(async move { std::fs::write(to, text) }).await {
                 Ok(()) => format!("Exported to {}.", path.display()),
                 Err(e) => format!("Could not write {}: {e}", path.display()),
             };
@@ -179,7 +180,7 @@ impl AgentsPage {
         let started = std::time::Instant::now();
         // Written only as the summary the user just reviewed shows it.
         let r = agents_config::import(&self.core.config, &self.core.settings, &f, &plan);
-        let user = dataman_mcp::audit::local_user();
+        let user = dataman_core::audit::local_user();
         let (outcome, error, query, reasons) = match &r {
             Ok(p) => {
                 let loose: Vec<String> = p.conns.iter().flat_map(|c| c.changes.iter().filter(|x| x.loosens).map(move |x| format!("{} › {}", c.name, x.what))).chain(p.general.iter().chain(&p.types).filter(|x| x.loosens).map(|x| x.what.clone())).take(20).collect();
@@ -233,7 +234,7 @@ impl AgentsPage {
             .child(div().flex_none().max_w(px(150.)).overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx3).child(c.from.clone()))
             .child(div().flex_none().text_color(t.tx3).child("→"))
             .child(div().flex_none().max_w(px(150.)).overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(if c.loosens { t.warn } else { t.tx2 }).child(c.to.clone()))
-            .child(div().flex_none().w(px(64.)).text_size(px(10.5)).text_color(t.warn).child(if c.loosens { "loosens" } else { "" }))
+            .child(div().flex_none().w(px(64.)).text_size(px(crate::theme::text::HINT)).text_color(t.warn).child(if c.loosens { "loosens" } else { "" }))
             .into_any_element()
     }
 
@@ -279,7 +280,7 @@ impl AgentsPage {
                         .flex()
                         .flex_col()
                         .gap(px(2.))
-                        .child(div().flex().flex_row().gap(px(8.)).child(caps(&title)).children(tag.map(|s| div().text_size(px(10.5)).text_color(t.tx3).child(s.to_string()))))
+                        .child(div().flex().flex_row().gap(px(8.)).child(caps(&title)).children(tag.map(|s| div().text_size(px(crate::theme::text::HINT)).text_color(t.tx3).child(s.to_string()))))
                         .children(rows),
                 );
             };
@@ -292,7 +293,7 @@ impl AgentsPage {
                 body = body.child(
                     div()
                         .children(ui::here(&"agents-import-missing".into()))
-                        .text_size(px(11.5))
+                        .text_size(px(crate::theme::text::UI))
                         .text_color(t.tx3)
                         .child(format!("Not on {}, left out: {}.", dataman_core::os::THIS_MACHINE, imp.plan.not_found.join(", "))),
                 );
@@ -347,7 +348,7 @@ impl AgentsPage {
                         .child(div().id("agents-import-body").max_h(px(460.)).overflow_y_scroll().px(px(20.)).py(px(16.)).child(body))
                         .child(
                             ui::modal_footer(t)
-                                .text_size(px(11.))
+                                .text_size(px(crate::theme::text::SMALL))
                                 .gap(px(16.))
                                 .child(div().flex_1().min_w_0().text_color(t.tx3).child(if loosens { "Some changes give agents more. Check them before applying." } else { "Applied all at once, and logged in Audit." }))
                                 .child(div().flex_none().flex().flex_row().gap(px(8.)).child(cancel).children(apply)),

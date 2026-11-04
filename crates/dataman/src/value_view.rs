@@ -43,7 +43,7 @@ pub fn shape_of(kind: Kind, type_name: &str) -> Option<Shape> {
     match kind {
         // Text holding JSON (SQL Server's nvarchar, a text column): viewable when it parses.
         Kind::Json | Kind::Text => Some(Shape::Json),
-        Kind::Other if type_name.starts_with('_') || type_name.ends_with("[]") => Some(Shape::List),
+        Kind::Other if dataman_core::value::type_shape_any(type_name) == dataman_core::value::TypeShape::Array => Some(Shape::List),
         _ => None,
     }
 }
@@ -411,7 +411,7 @@ impl Render for ValueView {
                     .flex_row()
                     .items_center()
                     .gap(px(8.))
-                    .text_size(px(11.5))
+                    .text_size(px(crate::theme::text::UI))
                     .child(div().px(px(6.)).py(px(1.)).bg(t.hov).text_color(t.tx2).child(type_label(&c.type_name)))
                     .child(div().text_color(t.tx3).child(format!("row {}", crate::grid::ui_count(c.row + 1))))
                     .into_any_element(),
@@ -435,11 +435,11 @@ impl Render for ValueView {
                     .child(ui::segment(&t, "vv-text", "Text", text).on_click(cx.listener(|v, _, window, cx| v.set_text(true, window, cx)))),
             )
             .when(!text && self.rows.iter().any(|r| r.container), |d| {
-                d.child(ui::button(&t, "vv-expand", Btn::Ghost).h(px(24.)).text_size(px(11.5)).child("Expand all").on_click(cx.listener(|v, _, _, cx| v.all(true, cx))))
-                    .child(ui::button(&t, "vv-collapse", Btn::Ghost).h(px(24.)).text_size(px(11.5)).child("Collapse all").on_click(cx.listener(|v, _, _, cx| v.all(false, cx))))
+                d.child(ui::button(&t, "vv-expand", Btn::Ghost).h(px(24.)).text_size(px(crate::theme::text::UI)).child("Expand all").on_click(cx.listener(|v, _, _, cx| v.all(true, cx))))
+                    .child(ui::button(&t, "vv-collapse", Btn::Ghost).h(px(24.)).text_size(px(crate::theme::text::UI)).child("Collapse all").on_click(cx.listener(|v, _, _, cx| v.all(false, cx))))
             })
             .child(div().flex_1())
-            .child(div().text_size(px(11.)).text_color(t.tx3).child(self.meta()));
+            .child(div().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(self.meta()));
         let editing = text && self.edit.is_some();
         let lines = if editing { Vec::new() } else if text { self.render_text(&t) } else { self.render_tree(&t, cx) };
         let total = if text { self.pretty.lines().count() } else { self.rows.len() };
@@ -447,7 +447,7 @@ impl Render for ValueView {
             div()
                 .px(px(14.))
                 .pt(px(6.))
-                .text_size(px(11.))
+                .text_size(px(crate::theme::text::SMALL))
                 .text_color(t.tx3)
                 .child(format!("first {} of {} lines · Copy takes the whole value", crate::grid::ui_count(MAX_LINES), crate::grid::ui_count(total)))
         });
@@ -462,7 +462,7 @@ impl Render for ValueView {
             .border_color(t.line)
             .py(px(8.))
             .font_family(crate::theme::mono())
-            .text_size(px(12.))
+            .text_size(px(crate::theme::text::BODY))
             .line_height(px(LINE))
             .when(editing, |d| d.h(px(380.)).py(px(0.)))
             .when(!editing, |d| d.overflow_y_scroll())
@@ -471,7 +471,7 @@ impl Render for ValueView {
             .children(empty)
             .children(more);
         let changed = self.edited(cx).is_some();
-        let note = self.error.clone().map(|e| div().mx(px(20.)).mt(px(8.)).text_size(px(11.5)).text_color(t.err).child(format!("Not valid JSON: {e}")));
+        let note = self.error.clone().map(|e| div().mx(px(20.)).mt(px(8.)).text_size(px(crate::theme::text::UI)).text_color(t.err).child(format!("Not valid JSON: {e}")));
         let copied = self.copied_at.and_then(|at| crate::motion::copied(at, Instant::now(), cx.reduce_motion()));
         let copy_tip = if text { "The formatted text" } else { "The value as stored" };
         let footer = ui::modal_footer(&t)
@@ -487,7 +487,7 @@ impl Render for ValueView {
                             .when(copied.is_some(), |d| d.invisible())
                             .child(icon(Icon::Copy).size(px(13.)).text_color(t.tx2))
                             .child("Copy")
-                            .child(div().text_size(px(10.5)).opacity(0.6).child(crate::ui::keys_text("⌘C")))
+                            .child(div().text_size(px(crate::theme::text::HINT)).opacity(0.6).child(crate::ui::keys_text("⌘C")))
                             .tip(ui::tooltip("Copy", Some(copy_tip), None))
                             .on_click(cx.listener(|v, _, _, cx| v.copy(cx))),
                     )
@@ -500,7 +500,7 @@ impl Render for ValueView {
                             .items_center()
                             .justify_center()
                             .gap(px(4.))
-                            .text_size(px(11.5))
+                            .text_size(px(crate::theme::text::UI))
                             .text_color(t.ok)
                             .opacity(a)
                             .child(icon(Icon::Check).size(px(12.)).text_color(t.ok))
@@ -513,7 +513,7 @@ impl Render for ValueView {
                     .px(px(12.))
                     .when(!changed, |d| d.font_weight(FontWeight::SEMIBOLD))
                     .child(if changed { "Discard" } else { "Done" })
-                    .child(div().text_size(px(10.5)).font_weight(FontWeight::NORMAL).opacity(0.75).child("esc"))
+                    .child(div().text_size(px(crate::theme::text::HINT)).font_weight(FontWeight::NORMAL).opacity(0.75).child("esc"))
                     // Under the eye that opened it, the double click's second press is no "Done".
                     .on_click(cx.listener(|_, ev: &gpui::ClickEvent, _, cx| {
                         if ev.click_count() < 2 {
@@ -530,7 +530,7 @@ impl Render for ValueView {
                         .font_weight(FontWeight::SEMIBOLD)
                         .when(!ok, |d| d.opacity(0.5))
                         .child("Apply")
-                        .child(div().text_size(px(10.5)).font_weight(FontWeight::NORMAL).opacity(0.75).child(crate::ui::keys_text("⌘↩")))
+                        .child(div().text_size(px(crate::theme::text::HINT)).font_weight(FontWeight::NORMAL).opacity(0.75).child(crate::ui::keys_text("⌘↩")))
                         .tip(ui::tooltip("Apply", Some("A pending edit of the cell: commit it with the grid's other edits"), None))
                         .on_click(cx.listener(|v, _, _, cx| v.apply(cx))),
                 )

@@ -1,15 +1,20 @@
-//! Never a password or a bound parameter value. The file is 0600.
+//! Never a password or a bound parameter value; the statement with its literals (`query`)
+//! passes the sensitive data types' scrub first. The file is 0600, and so is the replies file
+//! next to it (`mcp-replies.jsonl`), which keeps what each agent received, after the privacy rules.
 
 use std::io::{BufRead, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-use dataman_core::sql::{TokenKind, tokenize};
+use crate::sql::{TokenKind, tokenize};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Outcome {
+    /// Written before the call runs: a call whose end never came (the process stopped) still
+    /// shows. Its end, with the same id, replaces it in [`tail`].
+    Started,
     Ok,
     Invalid,
     Refused,
@@ -21,6 +26,7 @@ pub enum Outcome {
 impl Outcome {
     pub fn label(self) -> &'static str {
         match self {
+            Outcome::Started => "started, no end logged",
             Outcome::Ok => "ok",
             Outcome::Invalid => "invalid",
             Outcome::Refused => "refused",
@@ -33,7 +39,7 @@ impl Outcome {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Entry {
-    /// Ties the entry to the reply the app keeps in memory while it is open (never written).
+    /// Ties the entry to its reply in `mcp-replies.jsonl` (written there, up to [`REPLY_MAX`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     pub ts: chrono::DateTime<chrono::Utc>,
@@ -80,7 +86,7 @@ pub struct Seen {
     pub columns: Option<u64>,
     /// Sensitive columns masked, with their mask.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub masked: Vec<(String, dataman_core::privacy::Mask)>,
+    pub masked: Vec<(String, crate::privacy::Mask)>,
     /// Values of sensitive data types masked inside the reply, by type.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub values: std::collections::BTreeMap<String, u64>,
@@ -320,6 +326,47 @@ struct Stamp {
     #[serde(default)]
     id: Option<String>,
     ts: chrono::DateTime<chrono::Utc>,
+    /// As text: an outcome a newer version writes still dates its line.
+    #[serde(default)]
+    outcome: Option<String>,
+}
+
+impl Stamp {
+    /// A call's start, logged before it ran: one call with its end, under the same id.
+    fn started(&self) -> bool {
+        self.outcome.as_deref() == Some("started")
+    }
+}
+
+/// Counts calls, not lines: a start counts only when its end is not logged anywhere (`ended`).
+#[derive(Default)]
+struct Calls {
+    ends: usize,
+    starts: std::collections::HashSet<String>,
+    ended: std::collections::HashSet<String>,
+}
+
+impl Calls {
+    /// Every line read, `gone` when it is removed.
+    fn saw(&mut self, s: &Stamp, gone: bool) {
+        match (&s.id, s.started()) {
+            (Some(id), true) => {
+                if gone {
+                    self.starts.insert(id.clone());
+                }
+            }
+            (id, _) => {
+                if let Some(id) = id {
+                    self.ended.insert(id.clone());
+                }
+                self.ends += usize::from(gone);
+            }
+        }
+    }
+
+    fn count(&self) -> usize {
+        self.ends + self.starts.difference(&self.ended).count()
+    }
 }
 
 /// The rotated copy, then the current file.
@@ -329,12 +376,14 @@ fn both(path: &Path) -> [PathBuf; 2] {
 
 /// The calls a clear at `cutoff` removes, in the log and its rotated copy.
 pub fn count_before(audit: &Path, cutoff: chrono::DateTime<chrono::Utc>) -> usize {
+    let mut calls = Calls::default();
     both(audit)
         .iter()
         .filter_map(|p| std::fs::File::open(p).ok())
         .flat_map(|f| std::io::BufReader::new(f).split(b'\n').map_while(Result::ok))
-        .filter(|l| serde_json::from_slice::<Stamp>(l).is_ok_and(|s| s.ts < cutoff))
-        .count()
+        .filter_map(|l| serde_json::from_slice::<Stamp>(&l).ok())
+        .for_each(|s| calls.saw(&s, s.ts < cutoff));
+    calls.count()
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -350,15 +399,18 @@ pub fn clear_before(audit: &Path, cutoff: chrono::DateTime<chrono::Utc>) -> std:
     let _held = hold(audit)?;
     let (mut gone, mut kept) = (std::collections::HashSet::new(), std::collections::HashSet::new());
     let mut out = Cleared::default();
+    let mut calls = Calls::default();
     for p in both(audit) {
-        out.calls += rewrite(&p, |s| {
+        rewrite(&p, |s| {
             let keep = s.ts >= cutoff;
+            calls.saw(&s, !keep);
             if let Some(id) = s.id {
                 if keep { kept.insert(id) } else { gone.insert(id) };
             }
             keep
         })?;
     }
+    out.calls = calls.count();
     for p in both(&replies_path(audit)) {
         out.replies += rewrite(&p, |s| s.id.is_none_or(|id| !gone.contains(&id) && (s.ts >= cutoff || kept.contains(&id))))?;
     }
@@ -473,6 +525,9 @@ pub fn tail(path: &Path, n: usize) -> Vec<Entry> {
         .map_while(Result::ok)
         .filter_map(|l| serde_json::from_str(&l).ok())
         .collect();
+    // A call's start goes once its end is there.
+    let ended: std::collections::HashSet<String> = lines.iter().filter(|e| e.outcome != Outcome::Started).filter_map(|e| e.id.clone()).collect();
+    lines.retain(|e| e.outcome != Outcome::Started || e.id.as_ref().is_none_or(|id| !ended.contains(id)));
     let drop = lines.len().saturating_sub(n);
     lines.drain(..drop);
     lines
@@ -487,6 +542,43 @@ mod tests {
         assert_eq!(redact("SELECT * FROM t WHERE email = 'a@b.c' AND id > 42"), "SELECT * FROM t WHERE email = ? AND id > ?");
         assert_eq!(redact("insert into t values ($1, E'x\\'y', $$secret$$)  -- pw=1\n"), "insert into t values ($1, ?, ?)");
         assert_eq!(redact("select \"Weird Name\", 1.5e3 /* note */ from s.t"), "select \"Weird Name\", ? from s.t");
+    }
+
+    #[test]
+    fn a_start_goes_once_its_end_is_logged() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = Audit::new(dir.path().join("mcp-audit.jsonl"));
+        let entry = |id: &str, outcome| Entry {
+            id: Some(id.into()),
+            ts: chrono::Utc::now(),
+            client: "c".into(),
+            transport: "stdio".into(),
+            tool: "execute".into(),
+            connection: None,
+            database: None,
+            sql: None,
+            query: None,
+            rows: None,
+            ms: 0.0,
+            outcome,
+            error: None,
+            approval: None,
+            draft: false,
+            favorite: None,
+            allowed_by: None,
+            rewritten: None,
+            seen: None,
+            login: None,
+        };
+        a.write(&entry("a", Outcome::Started));
+        a.write(&entry("a", Outcome::Ok));
+        a.write(&entry("b", Outcome::Started));
+        let got: Vec<(Option<String>, Outcome)> = tail(a.path(), 10).into_iter().map(|e| (e.id, e.outcome)).collect();
+        assert_eq!(got, [(Some("a".into()), Outcome::Ok), (Some("b".into()), Outcome::Started)], "b never ended: it shows");
+        // A clear counts calls, not lines: a's start and end are one.
+        let later = chrono::Utc::now() + chrono::Duration::seconds(1);
+        assert_eq!(count_before(a.path(), later), 2);
+        assert_eq!(clear_before(a.path(), later).unwrap().calls, 2);
     }
 
     #[test]

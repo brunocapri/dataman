@@ -80,17 +80,17 @@ fn replies_hold_only_what_the_agent_received() {
     let entries: Vec<Value> = std::fs::read_to_string(&log).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
     let id_of = |tool: &str, ok: bool| entries.iter().rev().find(|e| e["tool"] == tool && e["connection"] == "agent" && (e["outcome"] == "ok") == ok).and_then(|e| e["id"].as_str()).map(str::to_string);
     let read_id = id_of("run_query", true).expect("the read is logged with an id");
-    let kept = dataman_mcp::audit::reply(&log, &read_id).expect("its reply is on disk");
+    let kept = dataman_core::audit::reply(&log, &read_id).expect("its reply is on disk");
     assert_eq!(serde_json::from_str::<Value>(&kept.reply).unwrap(), got, "the reply on disk is exactly what the agent received");
     assert!(kept.reply.contains("a•••@acme.com"), "{}", kept.reply);
     for raw in ["ana@acme.com", "hunter2-raw", "secret"] {
         assert!(!kept.reply.contains(raw), "{raw} must not be on disk: {}", kept.reply);
     }
     let failed_id = id_of("execute", false).expect("the failed write is logged");
-    assert!(dataman_mcp::audit::reply(&log, &failed_id).is_none(), "an error keeps no reply");
+    assert!(dataman_core::audit::reply(&log, &failed_id).is_none(), "an error keeps no reply");
     // The statements callers wrote stay in the log as they were sent; what came from the database
     // (rows, error values) never reaches the disk unfiltered.
-    let replies = std::fs::read_to_string(dataman_mcp::audit::replies_path(&log)).unwrap();
+    let replies = std::fs::read_to_string(dataman_core::audit::replies_path(&log)).unwrap();
     assert!(!replies.contains("ana@acme.com") && !replies.contains("hunter2-raw"), "{replies}");
     let logged = entries.iter().rev().find(|e| e["id"] == failed_id.as_str()).and_then(|e| e["error"].as_str()).unwrap_or_default().to_string();
     assert!(err.contains("‹value›") && logged.contains("‹value›") && !logged.contains("ana@acme.com"), "{logged}");

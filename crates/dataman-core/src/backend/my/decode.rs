@@ -225,23 +225,23 @@ fn push_bytes(b: &mut ChunkBuilder, i: usize, d: Dec, raw: &[u8]) {
     match d.kind {
         Kind::Int => match parse_i64(raw) {
             Some(v) => b.push_i64(i, v),
-            None => b.push_null(i),
+            None => b.push_undecoded(i, format!("{:?}: {}", d.kind, String::from_utf8_lossy(raw).chars().take(40).collect::<String>())),
         },
         Kind::Float | Kind::Float4 => match num::<f64>(raw) {
             Some(v) => b.push_f64(i, v),
-            None => b.push_null(i),
+            None => b.push_undecoded(i, format!("{:?}: {}", d.kind, String::from_utf8_lossy(raw).chars().take(40).collect::<String>())),
         },
         Kind::Date => match parse_datetime(raw) {
             Some((y, m, dd, ..)) => b.push_i64(i, value::date_cell(y, m, dd)),
-            None => b.push_null(i),
+            None => b.push_undecoded(i, format!("{:?}: {}", d.kind, String::from_utf8_lossy(raw).chars().take(40).collect::<String>())),
         },
         Kind::Timestamp => match parse_datetime(raw) {
             Some((y, m, dd, h, mi, s, us)) => b.push_i64(i, value::timestamp_cell(y, m, dd, h, mi, s, us)),
-            None => b.push_null(i),
+            None => b.push_undecoded(i, format!("{:?}: {}", d.kind, String::from_utf8_lossy(raw).chars().take(40).collect::<String>())),
         },
         Kind::Time => match parse_time(raw) {
             Some(v) => b.push_i64(i, v),
-            None => b.push_null(i),
+            None => b.push_undecoded(i, format!("{:?}: {}", d.kind, String::from_utf8_lossy(raw).chars().take(40).collect::<String>())),
         },
         Kind::Bytes => b.push_text_with(i, |s| hex(raw, s)),
         _ => b.push_text_with(i, |s| s.push_str(&String::from_utf8_lossy(raw))),

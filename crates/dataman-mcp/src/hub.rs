@@ -9,7 +9,7 @@ use futures_util::future::BoxFuture;
 use parking_lot::Mutex;
 use tokio::sync::Semaphore;
 
-use crate::audit::Audit;
+use dataman_core::audit::Audit;
 use dataman_core::agent_login;
 use dataman_core::privacy::Types;
 
@@ -112,6 +112,9 @@ pub struct TabRead {
     pub title: Option<String>,
     pub limits: bounded::Limits,
     pub cancel: tokio_util::sync::CancellationToken,
+    /// The rules as they apply (generated columns protected as their sources): what SQLite's
+    /// authorizer on the app's agent connection keeps. Only where an authorizer reads them.
+    pub rules: Option<dataman_core::privacy::AgentRules>,
 }
 
 #[derive(Clone, Debug)]

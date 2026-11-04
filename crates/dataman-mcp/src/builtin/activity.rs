@@ -11,7 +11,7 @@ fn conn_only() -> Schema {
 }
 
 fn pid_schema() -> Schema {
-    confirm_prop(conn_only().prop("pid", true, json!({"type": "integer", "minimum": 1, "description": "The backend's process id (from activity_sessions)."})))
+    confirm_prop(conn_only().prop("pid", true, json!({"type": "integer", "minimum": 1, "maximum": i32::MAX, "description": "The backend's process id (from activity_sessions)."})))
 }
 
 pub fn tools() -> Vec<Builtin> {
@@ -129,7 +129,8 @@ fn signal(cx: &Call, a: Args, s: Signal) -> BoxFut<'_, Result<Value, ToolError>>
     Box::pin(async move {
         let p = cx.target(&a, Need::Write)?;
         super::rules::activity(&p)?;
-        let pid = a.u64_or("pid", 0) as i32;
+        // 4294967297 is no pid 1.
+        let pid = i32::try_from(a.u64_or("pid", 0)).map_err(|_| ToolError::Invalid("\"pid\" is not a process id".into()))?;
         let sql = s.sql(pid);
         cx.note_sql(&sql);
         let class = signal_class(s);

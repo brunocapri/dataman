@@ -2654,7 +2654,7 @@ impl CodeEditor {
                         .bg(t.pop)
                         .shadow(t.ring())
                         .font_family(crate::theme::mono())
-                        .text_size(px(11.5))
+                        .text_size(px(crate::theme::text::UI))
                         .text_color(color)
                         .child(l.message),
                 ),
@@ -2698,7 +2698,7 @@ impl CodeEditor {
                         .bg(t.pop)
                         .shadow(t.ring())
                         .font_family(crate::theme::mono())
-                        .text_size(px(12.))
+                        .text_size(px(crate::theme::text::BODY))
                         .line_height(px(18.))
                         .child(div().flex().flex_row().flex_wrap().text_color(t.tx2).children(parts.into_iter().map(|(text, on)| {
                             div().when(on, |d| d.text_color(t.acc).font_weight(FontWeight::BOLD)).child(text)
@@ -3068,7 +3068,7 @@ impl CodeEditor {
                         div().when(hit, |d| d.text_color(t.tx).font_weight(FontWeight::BOLD).border_b_1().border_color(t.acc)).child(s)
                     }),
                 ))
-                .child(div().flex_none().text_color(t.tx3).text_size(px(11.)).child(c.detail))
+                .child(div().flex_none().text_color(t.tx3).text_size(px(crate::theme::text::SMALL)).child(c.detail))
         });
         let detail = current.map(|c| {
             let (kind, sub) = match c.kind {
@@ -3111,7 +3111,7 @@ impl CodeEditor {
                 .bg(t.bg)
                 .border_l_1()
                 .border_color(t.line)
-                .text_size(px(11.5))
+                .text_size(px(crate::theme::text::UI))
                 .child(div().text_color(t.tx).font_weight(FontWeight::SEMIBOLD).child(qualified))
                 .children(sigs.into_iter().map(|s| div().text_color(t.tx2).child(s)))
                 .child(
@@ -3134,7 +3134,7 @@ impl CodeEditor {
                         .shadow(t.ring())
                         .overflow_hidden()
                         .font_family(crate::theme::mono())
-                        .text_size(px(12.))
+                        .text_size(px(crate::theme::text::BODY))
                         .line_height(px(16.))
                         .child(div().w(px(320.)).flex_none().p(px(4.)).flex().flex_col().children(items))
                         .children(detail),

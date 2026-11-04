@@ -598,7 +598,7 @@ impl QueryTab {
         let db = self.database().to_string();
         let task = conn.nosql_tree(Some(&db));
         cx.spawn(async move |this, cx| {
-            let Ok(items) = task.await else { return };
+            let Some(items) = crate::logged("collections", task.await) else { return };
             let _ = this.update(cx, |t, cx| {
                 if t.database() != db {
                     return;
@@ -633,7 +633,7 @@ impl QueryTab {
             self.doc_fields_asked.insert(coll.clone());
             let task = conn.sample_fields(&db, &coll);
             cx.spawn(async move |this, cx| {
-                let Ok(fields) = task.await else { return };
+                let Some(fields) = crate::logged("sampling fields", task.await) else { return };
                 let _ = this.update(cx, |t, cx| {
                     let f = fields.into_iter().map(|(p, types)| (p, types.join(" | "))).collect();
                     t.doc_hints.fields.insert(coll, f);
@@ -744,7 +744,7 @@ impl QueryTab {
     }
 
     pub fn schedule_parse_check(&mut self, cx: &mut Context<Self>) {
-        let Some(conn) = self.conn.clone().filter(|c| c.engine() == dataman_core::Engine::SqlServer) else {
+        let Some(conn) = self.conn.clone().filter(|c| c.caps().server_parse_check) else {
             self.parse_task = None;
             return;
         };
@@ -761,7 +761,10 @@ impl QueryTab {
         let editor = self.editor.downgrade();
         self.parse_task = Some(cx.spawn(async move |_, cx| {
             cx.background_executor().timer(PARSE_DELAY).await;
-            let Ok(found) = conn.parse_check(&db, text).await else { return };
+            let found = match conn.parse_check(&db, text).await {
+                Ok(f) => f,
+                Err(e) => return log::debug!("parse check: {e:#}"),
+            };
             let _ = editor.update(cx, |e, cx| e.set_server_lints(rev, found, cx));
         }));
     }
@@ -1208,7 +1211,7 @@ impl QueryTab {
         if let Some(conn) = &conn {
             let (task, rs) = (conn.foreign_keys(&db, &rs), rs.clone());
             cx.spawn(async move |this, cx| {
-                if let Ok(fk) = task.await
+                if let Some(fk) = crate::logged("foreign keys", task.await)
                     && !fk.is_empty()
                 {
                     let _ = this.update(cx, |t, cx| t.apply_foreign_keys(&rs, fk, cx));
@@ -1384,21 +1387,21 @@ impl QueryTab {
 
     pub fn open_table(&mut self, mut view: TableView, cx: &mut Context<Self>) {
         view.dialect = self.dialect();
-        if let Some(conn) = self.conn.clone() {
+        let estimating = self.conn.clone().map(|conn| {
             let task = conn.estimate_rows(self.database(), &view.schema, &view.table);
-            cx.spawn(async move |this, cx| {
-                if let Ok(n) = task.await {
+            let (schema, table) = (view.schema.clone(), view.table.clone());
+            cx.spawn(async move |this, cx| match task.await {
+                Ok(n) => {
                     let _ = this.update(cx, |t, cx| {
-                        if let Some(d) = &mut t.table {
-                            d.estimate = n;
+                        if t.table.as_mut().is_some_and(|d| d.take_estimate(&schema, &table, n)) {
                             cx.notify();
                         }
                     });
                 }
+                Err(e) => log::warn!("estimating {schema}.{table}: {e:#}"),
             })
-            .detach();
-        }
-        self.table = Some(TableData::new(view));
+        });
+        self.table = Some(TableData { estimating, ..TableData::new(view) });
         self.apply_table(cx);
     }
 
@@ -1736,7 +1739,7 @@ impl QueryTab {
         for rs in self.batch.iter().filter_map(|b| b.rs.clone()).filter(|r| r.is_restored() && r.columns().is_some_and(|c| !c.is_empty())) {
             let task = conn.foreign_keys(&db, &rs);
             cx.spawn(async move |this, cx| {
-                if let Ok(fk) = task.await
+                if let Some(fk) = crate::logged("foreign keys", task.await)
                     && !fk.is_empty()
                 {
                     let _ = this.update(cx, |t, cx| t.apply_foreign_keys(&rs, fk, cx));

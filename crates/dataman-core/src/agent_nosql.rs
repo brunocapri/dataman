@@ -38,7 +38,7 @@ pub struct Context<'a> {
 }
 
 fn restricted(r: &AgentRules) -> bool {
-    !r.visible.is_open() || (r.view == AgentView::Masked && r.sensitive.iter().any(|s| s.on))
+    r.narrows()
 }
 
 /// Names in a statement's text: identifiers, dotted paths and quoted strings.
@@ -85,7 +85,13 @@ fn mongo(text: &str, write: bool, cx: &Context) -> Result<Shaped, String> {
         if restricted(r) || r.view == AgentView::Structure {
             return Err(format!("scripts are not available to agents on {conn} while some data is kept from them; send one statement"));
         }
-        if !r.structure && ["createindex", "dropindex", "drop(", "dropdatabase", "renamecollection", "createcollection", "$out", "$merge"].iter().any(|w| lower.contains(w)) {
+        // Spaces read away (`drop ()`), and commands sent by name (`runCommand({drop: …})`).
+        let squeezed: String = lower.chars().filter(|c| !c.is_whitespace()).collect();
+        const STRUCTURE: &[&str] = &[
+            "createindex", "dropindex", "drop(", "drop:", "\"drop\"", "'drop'", "dropdatabase", "renamecollection", "createcollection", "collmod",
+            "$out", "$merge", "runcommand", "admincommand",
+        ];
+        if !r.structure && STRUCTURE.iter().any(|w| squeezed.contains(w)) {
             return Err(format!("changing structure is off for agents on {conn} (Dataman › Agents › Permissions)"));
         }
         return Ok(Shaped::default());

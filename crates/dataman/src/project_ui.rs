@@ -10,7 +10,7 @@ use std::time::Duration;
 use dataman_core::Core;
 use dataman_core::agents_config::Change;
 use dataman_core::project::Synced;
-use dataman_mcp::audit::{ApprovalNote, Audit, Decision, Entry, Outcome};
+use dataman_core::audit::{ApprovalNote, Audit, Decision, Entry, Outcome};
 use gpui::{AnyElement, App, Context, FontWeight, MouseButton, SharedString, Window, actions, div, prelude::*};
 
 use crate::app::Workspace;
@@ -154,7 +154,7 @@ impl Workspace {
             ms: started.elapsed().as_secs_f64() * 1000.,
             outcome,
             error,
-            approval: Some(ApprovalNote { decision: Decision::Approved, by: Some(dataman_mcp::audit::local_user()), reasons, rows: None }),
+            approval: Some(ApprovalNote { decision: Decision::Approved, by: Some(dataman_core::audit::local_user()), reasons, rows: None }),
             draft: false,
             favorite: None,
             allowed_by: None,
@@ -201,7 +201,7 @@ impl Workspace {
                     .flex()
                     .flex_col()
                     .gap(px(2.))
-                    .child(div().flex().flex_row().gap(px(8.)).child(ui::caps(&t, title)).children(tag.map(|s| div().text_size(px(10.5)).text_color(t.tx3).child(s))))
+                    .child(div().flex().flex_row().gap(px(8.)).child(ui::caps(&t, title)).children(tag.map(|s| div().text_size(px(crate::theme::text::HINT)).text_color(t.tx3).child(s))))
                     .children(rows),
             );
         };
@@ -239,7 +239,7 @@ impl Workspace {
                         .child(div().id("project-review-body").max_h(px(460.)).overflow_y_scroll().px(px(20.)).py(px(16.)).child(body))
                         .child(
                             ui::modal_footer(&t)
-                                .text_size(px(11.))
+                                .text_size(px(crate::theme::text::SMALL))
                                 .gap(px(16.))
                                 .child(div().flex_1().min_w_0().text_color(t.tx3).child("Applied all at once, and logged in Audit."))
                                 .child(
@@ -336,7 +336,7 @@ pub(crate) fn change_row(t: &Theme, prefix: &str, k: usize, c: &Change) -> AnyEl
         .child(div().flex_none().max_w(px(170.)).overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx3).child(c.from.clone()))
         .child(div().flex_none().text_color(t.tx3).child("→"))
         .child(div().flex_none().max_w(px(170.)).overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(if c.loosens { t.warn } else { t.tx2 }).child(c.to.clone()))
-        .child(div().flex_none().w(px(64.)).text_size(px(10.5)).text_color(t.warn).child(if c.loosens { "loosens" } else { "" }))
+        .child(div().flex_none().w(px(64.)).text_size(px(crate::theme::text::HINT)).text_color(t.warn).child(if c.loosens { "loosens" } else { "" }))
         .into_any_element()
 }
 

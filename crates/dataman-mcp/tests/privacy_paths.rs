@@ -281,11 +281,16 @@ fn postgres_values_stay_kept() {
     for f in [
         format!("SELECT table_to_xml('{s}.users', true, false, '')"),
         format!("SELECT schema_to_xml('{s}', true, false, '')"),
-        format!("SELECT query_to_xml_and_xmlschema('select * from {s}.users', true, false, '')"),
         format!("SELECT database_to_xml(true, false, '')"),
-        format!("SELECT * FROM ts_stat('SELECT to_tsvector(password_hash) FROM {s}.users')"),
     ] {
         refused(&f, q(f.clone()), "is not available to agents on pp");
+    }
+    // SQL in a string is refused at every level, rules or none.
+    for f in [
+        format!("SELECT query_to_xml_and_xmlschema('select * from {s}.users', true, false, '')"),
+        format!("SELECT * FROM ts_stat('SELECT to_tsvector(password_hash) FROM {s}.users')"),
+    ] {
+        refused(&f, q(f.clone()), "runs SQL from a string");
     }
     refused("pg_ function", q("SELECT * FROM pg_options_to_table(ARRAY['a=1'])".into()), "system catalog");
 
@@ -1058,7 +1063,10 @@ fn audit_records_each_call() {
     let _ = e.call_as(client, "execute", with("pg", json!({"sql": format!("INSERT INTO {s}.c (id) VALUES (1)")})));
     e.human.allow.lock().push_back(false);
     let _ = e.call_as(client, "execute", with("pg", json!({"sql": format!("DELETE FROM {s}.c")})));
-    let mine: Vec<Value> = e.audit().into_iter().filter(|x| x["client"] == client).collect();
+    let all: Vec<Value> = e.audit().into_iter().filter(|x| x["client"] == client).collect();
+    // Each call's start is logged before it runs, under the id its end carries.
+    let (started, mine): (Vec<Value>, Vec<Value>) = all.into_iter().partition(|x| x["outcome"] == "started");
+    assert!(mine.iter().all(|m| started.iter().any(|s| s["id"] == m["id"] && s["tool"] == m["tool"])), "{started:?}");
     let got: Vec<(String, String)> = mine.iter().map(|x| (x["tool"].as_str().unwrap().to_string(), x["outcome"].as_str().unwrap().to_string())).collect();
     assert_eq!(
         got,

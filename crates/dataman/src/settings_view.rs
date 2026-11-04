@@ -354,8 +354,9 @@ impl SettingsView {
         }
         let keys = crate::keymap::clean(&keys);
         let saved = keys.clone();
-        self.save(move |s| s.keys = saved, cx);
-        crate::keymap::apply(keys, cx);
+        if self.saved(move |s| s.keys = saved, cx) {
+            crate::keymap::apply(keys, cx);
+        }
     }
 
     fn set_mcp(&mut self, f: impl FnOnce(&mut Settings), cx: &mut Context<Self>) {
@@ -432,21 +433,32 @@ impl SettingsView {
     }
 
     fn save(&mut self, f: impl FnOnce(&mut Settings), cx: &mut Context<Self>) {
-        if let Err(e) = self.core.settings.update(f) {
-            log::warn!("could not save the settings: {e:#}");
+        self.saved(f, cx);
+    }
+
+    /// Saved, then applied as saved; false (and said) when the file could not be written.
+    fn saved(&mut self, f: impl FnOnce(&mut Settings), cx: &mut Context<Self>) -> bool {
+        let saved = self.core.settings.update(f);
+        if let Err(e) = &saved {
+            crate::prefs::failed(e, cx);
         }
         self.settings = self.core.settings.get();
+        crate::prefs::apply(&self.settings, cx);
         cx.notify();
+        saved.is_ok()
     }
 
     /// The settings as they are now (an open project's sync changed them).
     pub fn reload(&mut self, cx: &mut Context<Self>) {
         self.settings = self.core.settings.get();
+        crate::prefs::apply(&self.settings, cx);
         cx.notify();
     }
 
     fn set_projects(&mut self, on: bool, cx: &mut Context<Self>) {
-        self.save(|s| s.project_enabled = on, cx);
+        if !self.saved(|s| s.project_enabled = on, cx) {
+            return;
+        }
         crate::project_ui::publish(&self.core, cx);
         if on {
             self.edit_project(|_, _| {}, cx);
@@ -486,7 +498,7 @@ impl SettingsView {
                     .cursor_pointer()
                     .child(ui::checkbox(t, on))
                     .child(div().text_color(t.tx).child(label))
-                    .child(div().text_size(px(11.)).text_color(t.tx3).child(what))
+                    .child(div().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(what))
                     .on_click(cx.listener(move |v, _, _, cx| v.edit_project(move |s, _| *field(s) = !on, cx)))
             }))
             .into_any_element()
@@ -496,7 +508,7 @@ impl SettingsView {
         let members = self.core.project.info(&self.settings).map(|i| i.connections).unwrap_or_default();
         let profiles = self.core.config.connections();
         if profiles.is_empty() {
-            return div().text_size(px(11.5)).text_color(t.tx3).child("No connections yet").into_any_element();
+            return div().text_size(px(crate::theme::text::UI)).text_color(t.tx3).child("No connections yet").into_any_element();
         }
         div()
             .flex()
@@ -578,24 +590,20 @@ impl SettingsView {
 
     fn set_font_size(&mut self, pt: u8, cx: &mut Context<Self>) {
         self.save(|s| s.editor_font_size = pt, cx);
-        crate::editor::set_code_size(pt);
         cx.refresh_windows();
     }
 
     fn set_format(&mut self, f: impl FnOnce(&mut Settings), cx: &mut Context<Self>) {
         self.save(f, cx);
-        crate::editor::set_format_options(self.settings.format_options());
     }
 
     fn set_format_on_save(&mut self, on: bool, cx: &mut Context<Self>) {
         self.save(|s| s.format_on_save = on, cx);
-        crate::editor::set_format_on_save(on);
         crate::refresh_menus(cx);
     }
 
     fn set_logos(&mut self, on: bool, cx: &mut Context<Self>) {
         self.save(|s| s.db_logos = on, cx);
-        crate::assets::set_logos(on);
         cx.refresh_windows();
     }
 
@@ -607,7 +615,6 @@ impl SettingsView {
 
     fn set_reduce_motion(&mut self, on: bool, cx: &mut Context<Self>) {
         self.save(|s| s.reduce_motion = on, cx);
-        crate::motion::set_reduce_motion_pref(on, cx);
     }
 
     fn set_update_check(&mut self, on: bool, cx: &mut Context<Self>) {
@@ -617,7 +624,6 @@ impl SettingsView {
 
     fn set_prefetch(&mut self, rows: usize, cx: &mut Context<Self>) {
         self.save(|s| s.prefetch_rows = rows, cx);
-        dataman_core::result::set_prefetch(rows);
     }
 
     fn choose_export_dir(&mut self, cx: &mut Context<Self>) {
@@ -683,7 +689,7 @@ impl SettingsView {
                     .px(px(8.))
                     .flex()
                     .items_center()
-                    .text_size(px(12.))
+                    .text_size(px(crate::theme::text::BODY))
                     .font_family(name.to_string())
                     .text_color(if selected { t.tx } else { t.tx2 })
                     .when(selected, |d| d.bg(t.hov))
@@ -738,7 +744,7 @@ impl SettingsView {
                     .into_any_element()
             }
             Row::Translucency if !crate::theme::translucency_works() => {
-                div().text_size(px(11.5)).text_color(t.tx3).child("KDE Plasma on Wayland only").into_any_element()
+                div().text_size(px(crate::theme::text::UI)).text_color(t.tx3).child("KDE Plasma on Wayland only").into_any_element()
             }
             Row::Translucency => {
                 let on = s.translucency.is_on();
@@ -763,7 +769,7 @@ impl SettingsView {
                     .flex_row()
                     .items_center()
                     .gap(px(10.))
-                    .when(system && !on, |d| d.child(div().text_size(px(11.)).text_color(t.tx3).whitespace_nowrap().child(if crate::keymap::NOT_MAC { "on in the desktop" } else { "on in macOS" })))
+                    .when(system && !on, |d| d.child(div().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).whitespace_nowrap().child(if crate::keymap::NOT_MAC { "on in the desktop" } else { "on in macOS" })))
                     .child(ui::switch(t, "rm", on).on_click(cx.listener(move |v, _, _, cx| v.set_reduce_motion(!on, cx))))
                     .into_any_element()
             }
@@ -832,7 +838,7 @@ impl SettingsView {
                 ui::switch(t, "cc", on).on_click(cx.listener(move |v, _, _, cx| v.save(|s| s.confirm_commit = !on, cx))).into_any_element()
             }
             Row::ExportDir => {
-                let dir: SharedString = s.export_dir.clone().unwrap_or_else(|| dataman_core::os::downloads_dir().map(|d| crate::export_ui::tilde(&d)).unwrap_or_else(|| "~/Downloads".into())).into();
+                let dir: SharedString = s.export_dir.clone().unwrap_or_else(|| dataman_core::os::downloads_dir().map(|d| dataman_core::config::tilde(&d.to_string_lossy())).unwrap_or_else(|| "~/Downloads".into())).into();
                 div()
                     .flex()
                     .flex_row()
@@ -879,7 +885,7 @@ impl SettingsView {
                             .overflow_hidden()
                             .whitespace_nowrap()
                             .text_ellipsis()
-                            .text_size(px(11.5))
+                            .text_size(px(crate::theme::text::UI))
                             .text_color(color)
                             .when(err, |d| d.tip(ui::text_tooltip(s.clone())))
                             .child(s)
@@ -972,14 +978,14 @@ impl SettingsView {
                                     }))
                             }),
                     )
-                    .children(problem.map(|p| div().max_w(px(420.)).text_size(px(11.)).text_color(t.err).child(p)))
+                    .children(problem.map(|p| div().max_w(px(420.)).text_size(px(crate::theme::text::SMALL)).text_color(t.err).child(p)))
                     .children(review.map(|n| {
                         div()
                             .flex()
                             .flex_row()
                             .items_center()
                             .gap(px(8.))
-                            .child(div().max_w(px(340.)).text_size(px(11.)).text_color(t.warn).child(format!("Its file waits for your review ({n} loosen protection): nothing syncs until then.")))
+                            .child(div().max_w(px(340.)).text_size(px(crate::theme::text::SMALL)).text_color(t.warn).child(format!("Its file waits for your review ({n} loosen protection): nothing syncs until then.")))
                             .child(ui::button(t, "project-review", ui::Btn::Secondary).h(px(24.)).child("Review…").on_click(|_, window, cx| window.dispatch_action(Box::new(crate::app::ReviewProject), cx)))
                     }))
                     .into_any_element()
@@ -1011,7 +1017,7 @@ impl SettingsView {
                     .flex_col()
                     .gap(px(3.))
                     .child(div().text_color(t.tx).child(label))
-                    .children(row.help().map(|h| div().text_size(px(10.5)).line_height(px(15.)).text_color(t.tx3).child(crate::ui::keys_text(h)))),
+                    .children(row.help().map(|h| div().text_size(px(crate::theme::text::HINT)).line_height(px(15.)).text_color(t.tx3).child(crate::ui::keys_text(h)))),
             )
             .child(control)
             .into_any_element()
@@ -1223,8 +1229,8 @@ impl SettingsView {
                         .gap(px(8.))
                         .border_b_1()
                         .border_color(t.line)
-                        .child(div().flex_1().min_w_0().text_size(px(12.)).text_color(t.tx2).child(c.label))
-                        .children(also.as_ref().filter(|k| **k != shown_label).map(|k| div().flex_none().text_size(px(11.)).text_color(t.tx3).child(format!("also {k}"))))
+                        .child(div().flex_1().min_w_0().text_size(px(crate::theme::text::BODY)).text_color(t.tx2).child(c.label))
+                        .children(also.as_ref().filter(|k| **k != shown_label).map(|k| div().flex_none().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(format!("also {k}"))))
                         .child(
                             div()
                                 .flex_none()
@@ -1246,7 +1252,7 @@ impl SettingsView {
                     .flex()
                     .flex_col()
                     .gap(px(2.))
-                    .child(div().pb(px(6.)).text_size(px(10.5)).text_color(t.tx3).child(title))
+                    .child(div().pb(px(6.)).text_size(px(crate::theme::text::HINT)).text_color(t.tx3).child(title))
                     .children(rows)
                     .into_any_element(),
             );

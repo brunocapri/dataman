@@ -59,14 +59,14 @@ impl Workspace {
         let text = p.text();
         let can_send = crash::reporter(self.store.read(cx).core.settings.get().crash_report_url.as_deref()).is_some();
         let note = self.crash_note;
-        let small = |id: &'static str, label: &'static str| ui::button(&t, id, Btn::Ghost).h(px(24.)).px(px(8.)).text_size(px(11.5)).child(label);
+        let small = |id: &'static str, label: &'static str| ui::button(&t, id, Btn::Ghost).h(px(24.)).px(px(8.)).text_size(px(crate::theme::text::UI)).child(label);
         Some(
             crate::chrome::toast(&t, t.err)
                 .right(px(28.))
                 .bottom(px(48.))
                 .items_center()
                 .py(px(10.))
-                .child(div().text_size(px(11.5)).text_color(t.tx).font_weight(FontWeight::SEMIBOLD).whitespace_nowrap().child(format!("Crashed last session · {when}")))
+                .child(div().text_size(px(crate::theme::text::UI)).text_color(t.tx).font_weight(FontWeight::SEMIBOLD).whitespace_nowrap().child(format!("Crashed last session · {when}")))
                 .child(
                     div()
                         .flex()

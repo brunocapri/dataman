@@ -11,11 +11,11 @@ use crate::tool::{Args, BoxFut, Call, Schema, ToolError};
 
 fn fields(s: Schema, mcp: Value) -> Schema {
     s.prop("connection_string", false, json!({"type": "string", "description": "A full connection string (postgres://, mysql://, sqlserver://, sqlite:///path, duckdb:///path URL, libpq key=value, ADO.NET); the fields given here override whatever it sets."}))
-        .prop("engine", false, json!({"type": "string", "enum": ["postgres", "mysql", "sql-server", "sqlite", "duckdb", "mongodb", "elasticsearch", "opensearch", "redis"], "description": "Default postgres; sqlite and duckdb are files (see path)."}))
+        .prop("engine", false, json!({"type": "string", "enum": Engine::slugs(), "description": "Default postgres; sqlite and duckdb are files (see path)."}))
         .prop("path", false, json!({"type": "string", "description": "The database file of a sqlite or duckdb connection: an existing file (~ is the home folder). A file outside the home folder waits for the user's Allow."}))
-        .prop("port", false, json!({"type": "integer", "minimum": 1, "maximum": 65535, "description": "Default: the engine's own (5432 / 3306 / 1433 / 27017 / 9200 / 6379)."}))
+        .prop("port", false, json!({"type": "integer", "minimum": 1, "maximum": 65535, "description": format!("Default: the engine's own ({}).", Engine::port_list())}))
         .prop("password", false, json!({"type": "string", "maxLength": 1000, "description": "Saved to the system keyring (the macOS Keychain, the Secret Service on Linux, the Credential Manager on Windows); never echoed back."}))
-        .prop("database", false, json!({"type": "string", "description": "Default: the user's name (postgres), empty (mysql, sql-server)."}))
+        .prop("database", false, json!({"type": "string", "description": "Default: postgres (postgres), empty (mysql, sql-server: the login's default); redis takes 0–15."}))
         .prop("sslmode", false, json!({"type": "string", "enum": ["disable", "prefer", "require", "verify-full"], "description": "Default: prefer on this machine (localhost, a socket) or through an SSH tunnel, require anywhere else."}))
         .prop("color", false, json!({"type": "string", "description": "A swatch name shown in the explorer and on tabs; default: picked from the id."}))
         .prop("env", false, json!({"type": "string", "enum": ["none", "dev", "staging", "production"], "description": "production asks before every write and DDL, and gets the red accent."}))
@@ -118,7 +118,18 @@ fn apply(profile: &mut ConnectionProfile, a: &Args) -> Result<Option<String>, To
         password = pw;
     }
     if let Some(e) = a.opt_str("engine") {
+        let before = profile.engine;
         profile.engine = engine_of(e)?;
+        // What the other engine's defaults filled in (a new profile's 5432, `postgres`) follows
+        // this one's; given fields below still win.
+        if profile.engine != before {
+            if profile.port == before.default_port() {
+                profile.port = profile.engine.default_port();
+            }
+            if profile.database == before.spec().default_database {
+                profile.database = profile.engine.spec().default_database.to_string();
+            }
+        }
     }
     if let Some(h) = a.opt_str("host") {
         profile.host = h.to_string();
@@ -232,9 +243,12 @@ async fn check_file(cx: &Call, old: Option<&ConnectionProfile>, p: &ConnectionPr
     Ok(())
 }
 
-fn ssl_rank(m: SslMode) -> u8 {
+/// As `engine` reads it: the engines with no opportunistic TLS take prefer for disable (which
+/// `ConnectionProfile::normalize` writes in its place).
+fn ssl_rank(m: SslMode, engine: Engine) -> u8 {
     match m {
         SslMode::Disable => 0,
+        SslMode::Prefer if !engine.is_sql() => 0,
         SslMode::Prefer => 1,
         SslMode::Require => 2,
         SslMode::VerifyFull => 3,
@@ -242,7 +256,7 @@ fn ssl_rank(m: SslMode) -> u8 {
 }
 
 fn no_loosening(old: &ConnectionProfile, new: &ConnectionProfile) -> Result<(), ToolError> {
-    if ssl_rank(new.sslmode) < ssl_rank(old.sslmode) {
+    if ssl_rank(new.sslmode, new.engine) < ssl_rank(old.sslmode, new.engine) {
         return Err(ToolError::Refused(format!("sslmode would loosen from {:?} to {:?}; through MCP it may only stay the same or tighten", old.sslmode.label(), new.sslmode.label())));
     }
     if env_rank(new.env) < env_rank(old.env) {
@@ -363,13 +377,40 @@ pub(super) fn of_project(cx: &Call, p: &ConnectionProfile) -> Result<(), ToolErr
     Ok(())
 }
 
-fn save(cx: &Call, profile: &ConnectionProfile) -> Result<(), ToolError> {
+/// Written over the connection as it was read (`base`): what the user changed in Dataman while
+/// this call waited for an Allow (a tighter tier, read-only, rules) is never undone; the call
+/// is refused instead, in the same write.
+fn save(cx: &Call, base: Option<&ConnectionProfile>, profile: &ConnectionProfile) -> Result<(), ToolError> {
     let store = ConfigStore::open_with(&cx.hub.dirs, cx.hub.core.approved.clone()).map_err(failed)?;
+    let mut profile = profile.clone();
     // The agent login is the user's, in Dataman only: as saved now (it may have been made or
     // removed while this call waited for the user), never what the agent's copy says.
-    let mut profile = profile.clone();
-    (profile.agent_login, profile.agents_refused) = store.get(&profile.id).map(|c| (c.agent_login, c.agents_refused)).unwrap_or((None, false));
-    store.upsert(profile).map_err(failed)?;
+    let bare = |p: &ConnectionProfile| ConnectionProfile { agent_login: None, agents_refused: false, ..p.clone() };
+    let mut moved_on = false;
+    store
+        .edit_all(|g| {
+            let now = g.iter_mut().find(|c| c.id == profile.id);
+            if let (Some(b), Some(n)) = (base, now.as_deref())
+                && bare(n) != bare(b)
+            {
+                moved_on = true;
+                return;
+            }
+            match now {
+                Some(c) => {
+                    (profile.agent_login, profile.agents_refused) = (c.agent_login.clone(), c.agents_refused);
+                    *c = profile.clone();
+                }
+                None => {
+                    (profile.agent_login, profile.agents_refused) = (None, false);
+                    g.push(profile.clone());
+                }
+            }
+        })
+        .map_err(failed)?;
+    if moved_on {
+        return Err(ToolError::Refused(format!("{:?} was changed in Dataman while this call waited: nothing was saved; read it again (list_connections) and retry", profile.name)));
+    }
     if let Some(f) = cx.hub.front() {
         f.connections_changed();
     }
@@ -446,6 +487,9 @@ fn create_connection(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>>
         if existing.is_none() && !tls_given {
             profile.sslmode = dataman_core::default_sslmode(profile.engine, &profile.host, profile.ssh.is_some());
         }
+        // The connection form's rules (default port and database, Redis' 0–15…).
+        profile.normalize();
+        profile.validate().map_err(ToolError::Invalid)?;
         if let Some(old) = existing {
             no_loosening(old, &profile)?;
             allow_move(cx, old, &profile).await?;
@@ -456,7 +500,7 @@ fn create_connection(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>>
         }
         check_file(cx, existing, &profile).await?;
         settle_secrets(cx, existing, &mut profile, password)?;
-        save(cx, &profile)?;
+        save(cx, existing, &profile)?;
         Ok(json!({"id": profile.id, "name": profile.name, "overwritten": existing.is_some()}))
     })
 }
@@ -482,6 +526,13 @@ fn update_connection(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>>
             profile.name = n.to_string();
         }
         let password = apply(&mut profile, &a)?;
+        profile.normalize();
+        // A database the call leaves alone stays as saved: PostgreSQL's empty one is the
+        // login's own, not `postgres`.
+        if profile.engine == old.engine && a.opt_str("database").is_none() && a.opt_str("connection_string").is_none() && profile.engine.spec().form.database {
+            profile.database = old.database.clone();
+        }
+        profile.validate().map_err(ToolError::Invalid)?;
         no_loosening(&old, &profile)?;
         let changed = changed_fields(&old, &profile);
         if changed.is_empty() && password.is_none() {
@@ -507,7 +558,7 @@ fn update_connection(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>>
         // Moved by an agent: its host is the agent's choice from now on (see create_connection).
         profile.agent_made |= target_changed(&old, &profile);
         let state = settle_secrets(cx, Some(&old), &mut profile, password)?;
-        save(cx, &profile)?;
+        save(cx, Some(&old), &profile)?;
         Ok(json!({"id": profile.id, "name": profile.name, "changed": changed, "password": state}))
     })
 }
@@ -525,6 +576,18 @@ mod tests {
         let mut p = ConnectionProfile::new("shop");
         (p.host, p.user, p.database) = ("db1".into(), "app".into(), "shop".into());
         p
+    }
+
+    #[test]
+    fn a_nosql_prefer_saved_before_is_no_loosening_now() {
+        let old = ConnectionProfile { engine: Engine::Redis, host: "localhost".into(), port: 6379, sslmode: SslMode::Prefer, ..ConnectionProfile::new("r") };
+        let mut p = old.clone();
+        apply(&mut p, &args(json!({"color": "violet"}))).unwrap();
+        p.normalize();
+        assert_eq!(p.sslmode, SslMode::Disable);
+        assert!(no_loosening(&old, &p).is_ok());
+        let pg = ConnectionProfile { sslmode: SslMode::Prefer, ..base() };
+        assert!(no_loosening(&pg, &ConnectionProfile { sslmode: SslMode::Disable, ..pg.clone() }).is_err());
     }
 
     #[test]

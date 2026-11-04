@@ -275,6 +275,29 @@ pub(crate) enum Region {
     Grid,
 }
 
+/// What one editor group keeps for itself (a split has two).
+pub(crate) struct PaneState {
+    pub(crate) tab_bounds: std::rc::Rc<std::cell::RefCell<Vec<gpui::Bounds<gpui::Pixels>>>>,
+    pub(crate) strip_scroll: gpui::ScrollHandle,
+    pub(crate) strip_front: std::cell::Cell<(Option<EntityId>, bool)>,
+    pub(crate) strip_parts: std::rc::Rc<std::cell::RefCell<Vec<gpui::Bounds<gpui::Pixels>>>>,
+    pub(crate) toolbar_parts: std::rc::Rc<std::cell::RefCell<Vec<gpui::Bounds<gpui::Pixels>>>>,
+    pub(crate) messages: crate::messages::Messages,
+}
+
+impl Default for PaneState {
+    fn default() -> Self {
+        PaneState {
+            tab_bounds: Default::default(),
+            strip_scroll: Default::default(),
+            strip_front: Default::default(),
+            strip_parts: Default::default(),
+            toolbar_parts: Default::default(),
+            messages: crate::messages::Messages::new(),
+        }
+    }
+}
+
 pub struct Workspace {
     pub store: Entity<ConnStore>,
     pub tree: Entity<SchemaTree>,
@@ -310,13 +333,10 @@ pub struct Workspace {
     pub(crate) title_marks: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<&'static str, gpui::Bounds<gpui::Pixels>>>>,
     pub(crate) editor_frac: Option<f32>,
     pub(crate) drag: Option<Drag>,
-    pub(crate) tab_bounds: std::rc::Rc<std::cell::RefCell<Vec<gpui::Bounds<gpui::Pixels>>>>,
+    /// Each editor group's own: indexed by `Pane::index`.
+    pub(crate) panes: [PaneState; 2],
     pub(crate) tab_drop: Option<usize>,
     pub(crate) tab_drop_pane: Pane,
-    pub(crate) tab_bounds_right: std::rc::Rc<std::cell::RefCell<Vec<gpui::Bounds<gpui::Pixels>>>>,
-    pub(crate) strip_scroll: [gpui::ScrollHandle; 2],
-    pub(crate) strip_front: [std::cell::Cell<(Option<EntityId>, bool)>; 2],
-    pub(crate) strip_parts: std::rc::Rc<std::cell::RefCell<[Vec<gpui::Bounds<gpui::Pixels>>; 2]>>,
     pub(crate) editor_drop: Option<(Pane, crate::split::DropZone)>,
     pub(crate) editor_drop_glide: Option<crate::split::DropGlide>,
     pub(crate) split: Option<crate::split::Split>,
@@ -330,14 +350,11 @@ pub struct Workspace {
     pub(crate) tab_menu: Option<(EntityId, gpui::Point<gpui::Pixels>)>,
     pub(crate) tab_motion: crate::tab_motion::TabMotion,
     pub(crate) result_tab_bounds: std::rc::Rc<std::cell::RefCell<Vec<gpui::Bounds<gpui::Pixels>>>>,
-    pub(crate) messages: crate::messages::Messages,
-    pub(crate) messages_right: crate::messages::Messages,
     pub(crate) conn_menu: bool,
     /// When a click outside shut the popup (the click on the button that follows must not
     /// open it again).
     pub(crate) conn_menu_shut: Option<Instant>,
     pub(crate) picker_bounds: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
-    pub(crate) toolbar_parts: std::rc::Rc<std::cell::RefCell<[Vec<gpui::Bounds<gpui::Pixels>>; 2]>>,
     pub(crate) title_drag: bool,
     pub(crate) app_menu: Option<gpui::Point<gpui::Pixels>>,
     pub(crate) focus_visible: bool,
@@ -384,7 +401,7 @@ pub struct Workspace {
     pub(crate) update_pill_bounds: std::rc::Rc<std::cell::RefCell<Vec<gpui::Bounds<gpui::Pixels>>>>,
     pub(crate) update_button_bounds: std::rc::Rc<std::cell::RefCell<Vec<gpui::Bounds<gpui::Pixels>>>>,
     pub(crate) session_task: Option<gpui::Task<()>>,
-    session_fp: u64,
+    pub(crate) session_fp: u64,
     pub(crate) session_off: bool,
     pub(crate) nav: crate::nav::Nav,
     pub(crate) zoom_tween: Option<(EntityId, crate::motion::ZoomTween)>,
@@ -417,6 +434,8 @@ impl Workspace {
             crate::agents::AgentsEvent::Close => w.show_nav(w.before_agents, window, cx),
         })
         .detach();
+        // Its detail width is in the session, and the page notifies only itself.
+        cx.observe(&agents, |w, _, cx| w.session_dirty(cx)).detach();
         cx.subscribe_in(&tree, window, Self::on_tree).detach();
         cx.subscribe_in(&store, window, Self::on_conn).detach();
         cx.subscribe_in(&welcome, window, Self::on_welcome).detach();
@@ -508,13 +527,9 @@ impl Workspace {
             title_marks: Default::default(),
             editor_frac: None,
             drag: None,
-            tab_bounds: Default::default(),
+            panes: Default::default(),
             tab_drop: None,
             tab_drop_pane: Pane::Left,
-            tab_bounds_right: Default::default(),
-            strip_scroll: Default::default(),
-            strip_front: Default::default(),
-            strip_parts: Default::default(),
             editor_drop: None,
             editor_drop_glide: None,
             split: None,
@@ -528,12 +543,9 @@ impl Workspace {
             tab_menu: None,
             tab_motion: Default::default(),
             result_tab_bounds: Default::default(),
-            messages: crate::messages::Messages::new(),
-            messages_right: crate::messages::Messages::new(),
             conn_menu: false,
             conn_menu_shut: None,
             picker_bounds: Default::default(),
-            toolbar_parts: Default::default(),
             title_drag: false,
             app_menu: None,
             focus_visible: false,
@@ -614,6 +626,11 @@ impl Workspace {
         w.store.update(cx, |s, cx| s.connect_all(cx));
         w.nav.history.clear();
         w.session_fp = w.session_fingerprint(cx);
+        cx.defer_in(window, |w, window, cx| {
+            let this = cx.entity();
+            cx.observe_in(&this, window, |w, _, window, cx| w.notified(window, cx)).detach();
+            w.notified(window, cx);
+        });
         if w.first_run(cx) {
             w.focus_editor(window, cx);
         }
@@ -643,7 +660,7 @@ impl Workspace {
             }
             TabEvent::Finished => {
                 if w.view != NavView::Explorer {
-                    w.history.update(cx, |h, cx| h.reload(cx));
+                    w.history.update(cx, |h, cx| h.reload_soon(cx));
                 }
                 cx.notify();
             }
@@ -731,6 +748,10 @@ impl Workspace {
         cx.observe(&grid, |_, _, cx| cx.notify()).detach();
         let editor = tab.read(cx).editor.clone();
         cx.observe(&editor, |_, _, cx| cx.notify()).detach();
+        // Focus moved into the other pane's front tab: its group is the focused one.
+        for f in [editor.focus_handle(cx), grid.focus_handle(cx), tab.read(cx).plan.focus_handle(cx)] {
+            self.watch_group_focus(&f, window, cx);
+        }
         let edit = tab.read(cx).edit.clone();
         cx.subscribe_in(&edit, window, Self::on_edit).detach();
         self.nav_record(Some(window), cx);
@@ -1415,6 +1436,11 @@ impl Workspace {
             d
         });
         cx.subscribe_in(&d, window, |w, d, ev: &DialogEvent, window, cx| {
+            // Closed or deleted while its save runs: the save would land after (a deleted
+            // connection back, or the list never told).
+            if matches!(ev, DialogEvent::Close | DialogEvent::Delete(_)) && d.read(cx).is_saving() {
+                return;
+            }
             match ev {
                 DialogEvent::Close => {}
                 DialogEvent::Saved { id, password } => {
@@ -2104,6 +2130,23 @@ impl Workspace {
         }
     }
 
+    /// Focus moving into `f` makes its group the focused one. Focus listeners run in the draw's
+    /// focus phase, where a notify neither redraws nor reaches observers: deferred past it.
+    pub(crate) fn watch_group_focus(&mut self, f: &gpui::FocusHandle, window: &mut Window, cx: &mut Context<Self>) {
+        cx.on_focus_in(f, window, |_, window, cx| cx.defer_in(window, |w, window, cx| w.sync_group_focus(window, cx))).detach();
+    }
+
+    /// After each notify, before the frame draws: a connection change of the active tab
+    /// (explorer, ⌥↩, palette, disconnect) lands here before anything can act on a panel of the
+    /// old connection.
+    fn notified(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sync_bound_views(cx);
+        self.sync_monitors(window, cx);
+        self.sync_menu_caps(cx);
+        self.sync_group_focus(window, cx);
+        self.session_dirty(cx);
+    }
+
     fn sync_menu_caps(&mut self, cx: &mut Context<Self>) {
         let conn = self.active_tab().and_then(|t| t.read(cx).connection().cloned());
         let engine = match conn {
@@ -2215,8 +2258,8 @@ impl Workspace {
 
     pub(crate) fn toggle_format_on_save(&mut self, cx: &mut Context<Self>) {
         let on = !crate::editor::format_on_save();
-        if let Err(e) = self.store.read(cx).core.settings.update(|s| s.format_on_save = on) {
-            log::warn!("could not save the settings: {e:#}");
+        if !crate::prefs::save(|s| s.format_on_save = on, cx) {
+            return;
         }
         crate::editor::set_format_on_save(on);
         if let Some(v) = self.settings_view.clone() {
@@ -2353,13 +2396,19 @@ impl Workspace {
         Self::format_before_save(tab, cx);
         let text = tab.read(cx).editor.read(cx).text().to_string();
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("query.sql").to_string();
-        match std::fs::write(path, &text) {
-            Ok(()) => {
-                tab.update(cx, |t, cx| t.set_title(name.clone(), text, cx));
-                self.notice(format!("Saved {name}"), cx);
-            }
-            Err(e) => self.notice(format!("cannot write {}: {e}", path.display()), cx),
-        }
+        let (tab, path) = (tab.clone(), path.to_path_buf());
+        cx.spawn(async move |this, cx| {
+            let (to, body) = (path.clone(), text.clone());
+            let r = cx.background_executor().spawn(async move { std::fs::write(to, body) }).await;
+            let _ = this.update(cx, |w, cx| match r {
+                Ok(()) => {
+                    tab.update(cx, |t, cx| t.set_title(name.clone(), text, cx));
+                    w.notice(format!("Saved {name}"), cx);
+                }
+                Err(e) => w.notice(format!("cannot write {}: {e}", path.display()), cx),
+            });
+        })
+        .detach();
     }
 
     pub(crate) fn explain_active(&mut self, analyze: bool, cx: &mut Context<Self>) {
@@ -2661,36 +2710,12 @@ pub(crate) fn statement_text(sql: &str, engine: Option<dataman_core::Engine>) ->
     }
 }
 
-pub fn fmt_dur(d: Duration) -> String {
-    let ms = d.as_secs_f64() * 1e3;
-    if ms < 1. {
-        format!("{:.0} µs", ms * 1e3)
-    } else if ms < 100. {
-        format!("{ms:.1} ms")
-    } else if ms < 1000. {
-        format!("{ms:.0} ms")
-    } else {
-        format!("{:.2} s", ms / 1e3)
-    }
-}
-
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let _trace = TraceRender::new("workspace render");
         RENDERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         crate::ui::clear_probes();
         crate::ui::esc_frame(window);
-        // A connection change of the active tab (explorer, ⌥↩, palette, disconnect) lands
-        // here before anything can act on a panel of the old connection.
-        self.sync_bound_views(cx);
-        self.sync_monitors(window, cx);
-        self.sync_menu_caps(cx);
-        let fp = if crate::restore::store(cx).is_some() && !self.session_off { self.session_fingerprint(cx) } else { 0 };
-        if fp != self.session_fp {
-            self.session_fp = fp;
-            self.schedule_session_save(cx);
-        }
-        self.sync_group_focus(window, cx);
         let t = cx.theme();
         let first_run = self.first_run(cx);
         let pass = self.dock_pass(first_run, window, cx);
@@ -2749,7 +2774,7 @@ impl Render for Workspace {
             .bg(t.glass)
             .text_color(t.tx)
             .font_family(mono())
-            .text_size(px(12.))
+            .text_size(px(crate::theme::text::BODY))
             .key_context("Workspace")
             .track_focus(&self.focus)
             .on_action(cx.listener(|w, _: &GoBack, window, cx| w.go(false, window, cx)))

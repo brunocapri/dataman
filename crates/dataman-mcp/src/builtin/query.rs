@@ -254,17 +254,14 @@ fn explain_analyze(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
             let out = cx.run(&o, &sql, a.params()?, Mode::Read, limits).await?;
             return Ok(plan_json(&out, a.opt_str("format").unwrap_or("text"), false));
         }
-        // EXPLAIN ANALYZE of a write runs it: the tiers judge the statement (allowed queries and YOLO
-        // count), refused before connecting; always rolled back.
-        rules::checked_sql(cx, &a, &target, &inner, true).await?;
-        let t = crate::policy::Target { read_only: cx.read_only(&a, &target), ..crate::policy::Target::of(&target) };
-        if let crate::policy::Verdict::Refuse(e) = crate::policy::judge(cx.hub.settings().mcp_enabled, t, &inner, target.mcp_allowed_on()).verdict {
-            return Err(ToolError::Refused(e));
-        }
+        // EXPLAIN ANALYZE of a write runs it: the tiers judge the statement as the rules leave it
+        // (allowed queries and YOLO count, in cx.write alone); always rolled back.
+        let checked = rules::checked_sql(cx, &a, &target, &inner, true).await?;
         let o: Opened = cx.open(&a, Need::Read).await?;
         plans(&o)?;
-        let sql = explain::sql(&stmt, true, explain::Target::of(&o.conn.info));
-        let w = cx.write(&a, Write { sql: &sql, judged: Some(&inner), params: a.params()?, limits, rollback: true, visible: false, title: None }).await?;
+        let base = if checked.rewritten { &checked.sql } else { &stmt };
+        let sql = explain::sql(base, true, explain::Target::of(&o.conn.info));
+        let w = cx.write(&a, Write { sql: &sql, judged: Some(&checked.sql), params: a.params()?, limits, rollback: true, visible: false, title: None }).await?;
         Ok(plan_json(&w.outcome, a.opt_str("format").unwrap_or("text"), true))
     })
 }
@@ -317,7 +314,7 @@ async fn write(cx: &Call, a: &Args) -> Result<Value, ToolError> {
             m.insert("returning".into(), ret);
         }
         m.insert("ms".into(), json!(ms(out.elapsed)));
-        if let Some(n) = cx.note().approval.filter(|n| n.decision == crate::audit::Decision::Approved) {
+        if let Some(n) = cx.note().approval.filter(|n| n.decision == dataman_core::audit::Decision::Approved) {
             m.insert("approved".into(), json!({"by": n.by, "reasons": n.reasons}));
         }
         Ok(Value::Object(m))

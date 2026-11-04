@@ -119,7 +119,7 @@ impl Render for ParamPrompt {
                         .whitespace_nowrap()
                         .text_ellipsis()
                         .font_family(mono())
-                        .text_size(px(11.))
+                        .text_size(px(crate::theme::text::SMALL))
                         .text_color(t.typ)
                         .child(SharedString::from(r.hint.clone().unwrap_or_default())),
                 )

@@ -25,6 +25,36 @@ use dataman_core::guard::WriteClass;
 use dataman_core::sql::Dialect;
 use dataman_core::{ConnectionProfile, Environment, McpAccess};
 
+/// What a tool does, declared once per tool (`builtin::META`): its MCP annotations and the gate
+/// `run_tool` applies before the handler both come from here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Effect {
+    /// Reads a database.
+    Read,
+    /// Writes to a database (through the tier).
+    Write,
+    /// A read, or a write through the tier as execute's (open_query, run_favorite, explain_analyze).
+    MaybeWrite,
+    /// Reads Dataman's own state.
+    Local,
+    /// Adds to or changes Dataman's own state.
+    LocalEdit,
+    /// Removes from Dataman's own state.
+    LocalRemove,
+}
+
+impl Effect {
+    /// (read_only, destructive, idempotent)
+    pub fn hints(self) -> (bool, bool, bool) {
+        match self {
+            Effect::Read | Effect::Local => (true, false, true),
+            Effect::Write | Effect::MaybeWrite => (false, true, false),
+            Effect::LocalEdit => (false, false, true),
+            Effect::LocalRemove => (false, true, true),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Need {
     Read,
@@ -121,10 +151,10 @@ pub enum By {
 }
 
 impl By {
-    pub fn audit(&self) -> crate::audit::AllowedBy {
+    pub fn audit(&self) -> dataman_core::audit::AllowedBy {
         match self {
-            By::Allowlist(e) => crate::audit::AllowedBy::Allowlist { entries: e.iter().map(|s| crate::audit::redact(s)).collect() },
-            By::Yolo => crate::audit::AllowedBy::Yolo,
+            By::Allowlist(e) => dataman_core::audit::AllowedBy::Allowlist { entries: e.iter().map(|s| dataman_core::audit::redact(s)).collect() },
+            By::Yolo => dataman_core::audit::AllowedBy::Yolo,
         }
     }
 }
@@ -418,6 +448,6 @@ mod tests {
         }
         let j = judge(true, t(Read, Environment::Dev, false), "DELETE FROM sessions WHERE expires_at < 1; TRUNCATE audit_tmp; DELETE FROM sessions WHERE expires_at < 2", &allowed);
         assert_eq!(j.by, Some(By::Allowlist(allowed.clone())));
-        assert_eq!(By::Allowlist(vec!["DELETE FROM t WHERE id = 5".into()]).audit(), crate::audit::AllowedBy::Allowlist { entries: vec!["DELETE FROM t WHERE id = ?".into()] });
+        assert_eq!(By::Allowlist(vec!["DELETE FROM t WHERE id = 5".into()]).audit(), dataman_core::audit::AllowedBy::Allowlist { entries: vec!["DELETE FROM t WHERE id = ?".into()] });
     }
 }

@@ -826,7 +826,7 @@ impl SchemaTree {
                     let n = hit_rows(&db.name, &items, 2, &mut db_block);
                     if n > 0 {
                         matches += n;
-                        let label = if conn.engine() == dataman_core::Engine::Redis { format!("db{}", db.name) } else { db.name.clone() };
+                        let label = conn.engine().db_label(&db.name);
                         block.push(Row::new(did(c, &db.name), 1, label, Kind::DocDb { conn: c.into(), db: db.name.clone() }).icon(Icon::Database).expandable(true));
                         block.extend(db_block);
                     }
@@ -1019,7 +1019,7 @@ impl SchemaTree {
                 dataman_core::nosql::ItemKind::Database => {
                     let d = did(c, &it.name);
                     let open = self.expanded.contains(&d);
-                    let label = if conn.engine() == dataman_core::Engine::Redis { format!("db{}", it.name) } else { it.name.clone() };
+                    let label = conn.engine().db_label(&it.name);
                     let mut row = Row::new(d.clone(), 1, label, Kind::DocDb { conn: c.into(), db: it.name.clone() })
                         .icon(Icon::Database)
                         .lock(conn.read_only_for(&it.name))
@@ -2323,8 +2323,8 @@ impl SchemaTree {
             (Act::CopyDefinition, Target::Index { definition: Some(d), .. }) => copy(format!("{d};"), cx),
             (Act::CopyDefinition, Target::Object { what: Obj::Trigger { definition: Some(d), .. }, .. }) => copy(format!("{d};"), cx),
             (Act::CopyDefinition, Target::Object { schema, name, what: Obj::Constraint { table, definition: Some(def) }, .. }) => {
-                let d = self.target_dialect(&m.target, cx);
-                copy(format!("ALTER TABLE {} ADD CONSTRAINT {} {def};", d.qualified(Some(schema), table), d.quote_ident(name)), cx)
+                // SQLite has no ADD CONSTRAINT: the core says so in the text.
+                copy(dataman_core::ddl::add_constraint(self.target_dialect(&m.target, cx), Some(schema), table, name, def), cx)
             }
             (Act::CopyUrl, Target::Conn { id, .. }) => {
                 if let Some(p) = self.store.read(cx).profile(id).cloned() {
@@ -2602,7 +2602,7 @@ impl SchemaTree {
                 Entry::Sep => items.push(ui::menu_sep(&t).into_any_element()),
                 Entry::Item(it) => {
                     let hi = m.hi == Some(i) && m.sub_hi.is_none();
-                    let el = menu_row(&t, ("menu-item", i), it.label.clone(), it.icon, it.dot, it.key, it.disabled, it.bold, it.danger, it.checked, hi, false)
+                    let el = menu_row(&t, ("menu-item", i), it.label.clone(), it.icon, it.dot, it.key.clone(), it.disabled, it.bold, it.danger, it.checked, hi, false)
                         .on_hover(cx.listener(move |tr, h: &bool, _, cx| {
                             if let (true, Some(m)) = (*h, tr.menu.as_mut()) {
                                 m.hi = Some(i);
@@ -2644,7 +2644,7 @@ impl SchemaTree {
         let main = ui::popover(&t)
             .id("row-menu")
             .w(px(menu::MENU_W))
-            .text_size(px(12.))
+            .text_size(px(crate::theme::text::BODY))
             .font_family(crate::theme::mono())
             .track_focus(&self.menu_focus)
             .key_context(MENU_CONTEXT)
@@ -2679,7 +2679,7 @@ impl SchemaTree {
                 .map(|(j, it)| {
                     let hi = m.sub_hi == Some(j);
                     let act = it.act;
-                    let el = menu_row(&t, ("sub-item", j), it.label.clone(), it.icon, it.dot, it.key, it.disabled, it.bold, it.danger, it.checked, hi, false).on_hover(cx.listener(
+                    let el = menu_row(&t, ("sub-item", j), it.label.clone(), it.icon, it.dot, it.key.clone(), it.disabled, it.bold, it.danger, it.checked, hi, false).on_hover(cx.listener(
                         move |tr, h: &bool, _, cx| {
                             if let (true, Some(m)) = (*h, tr.menu.as_mut()) {
                                 m.sub_hi = Some(j);
@@ -2698,7 +2698,7 @@ impl SchemaTree {
             let pop = ui::popover(&t)
                 .id("row-submenu")
                 .w(px(menu::SUB_W))
-                .text_size(px(12.))
+                .text_size(px(crate::theme::text::BODY))
                 .font_family(crate::theme::mono())
                 .children(rows);
             out.push(deferred(anchored().position(point(px(x), px(y))).child(ui::menu_in("row-submenu-in", pop))).priority(3).into_any_element());
@@ -2994,7 +2994,7 @@ impl SchemaTree {
                     Meta::Link => t.acc_t,
                     _ => t.tx3,
                 };
-                Some(div().flex_none().text_size(px(11.)).whitespace_nowrap().text_color(color).child(meta_text).into_any_element())
+                Some(div().flex_none().text_size(px(crate::theme::text::SMALL)).whitespace_nowrap().text_color(color).child(meta_text).into_any_element())
             }
         };
         let more = has_menu.then(|| {
@@ -3262,14 +3262,7 @@ fn column_row(cols_id: &str, depth: usize, col: &dataman_core::schema::Column, p
 /// The server's own databases, which the simple view leaves out (unless the connection opens
 /// on one).
 fn system_db(conn: &Connection, db: &str) -> bool {
-    use dataman_core::Engine;
-    db != conn.database()
-        && match conn.engine() {
-            Engine::MySql => matches!(db, "mysql" | "information_schema" | "performance_schema" | "sys"),
-            Engine::SqlServer => matches!(db, "master" | "model" | "msdb" | "tempdb"),
-            Engine::MongoDb => matches!(db, "admin" | "local" | "config"),
-            _ => false,
-        }
+    db != conn.database() && conn.engine().is_system_db(db)
 }
 
 fn system_schema(s: &str) -> bool {
@@ -3436,7 +3429,7 @@ fn menu_row(
     label: SharedString,
     ic: Icon,
     dot: Option<Hsla>,
-    key: Option<&'static str>,
+    key: Option<SharedString>,
     disabled: Option<&'static str>,
     bold: bool,
     danger: bool,
@@ -3473,7 +3466,7 @@ fn menu_row(
             None => icon(ic).size(px(14.)).text_color(icon_fg).into_any_element(),
         })
         .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().when(bold, |d| d.font_weight(FontWeight::SEMIBOLD)).child(label))
-        .children(disabled.or(key).map(|k| div().flex_none().text_size(px(11.)).text_color(key_fg).child(crate::ui::keys_text(k))))
+        .children(disabled.map(SharedString::from).or(key).map(|k| div().flex_none().text_size(px(crate::theme::text::SMALL)).text_color(key_fg).child(crate::ui::keys_text(k))))
         .when(checked, |d| d.child(icon(Icon::Check).flex_none().size(px(12.)).text_color(if on { t.on_acc } else { t.tx2 })))
         .when(sub, |d| d.child(icon(Icon::ChevronRight).size(px(10.)).text_color(key_fg)))
 }
@@ -3708,7 +3701,7 @@ impl Render for SchemaTree {
             .map(|d| ui::field_frame(d, &t, filter_focused))
             .child(icon(Icon::Search).size(px(13.)).text_color(t.tx3))
             .child(div().flex_1().min_w_0().text_color(t.tx).child(self.filter.clone()))
-            .children(filter_meta.map(|m| div().flex_none().text_size(px(10.5)).text_color(t.tx3).whitespace_nowrap().child(m)));
+            .children(filter_meta.map(|m| div().flex_none().text_size(px(crate::theme::text::HINT)).text_color(t.tx3).whitespace_nowrap().child(m)));
         let body: gpui::AnyElement = if empty {
             div()
                 .flex_1()
@@ -3767,7 +3760,7 @@ impl Render for SchemaTree {
             .flex_col()
             .key_context(CONTEXT)
             .track_focus(&self.focus)
-            .text_size(px(12.))
+            .text_size(px(crate::theme::text::BODY))
             .text_color(t.tx2)
             .on_drag_move(cx.listener(|t, ev: &gpui::DragMoveEvent<DraggedConn>, _, cx| {
                 let pos = ev.event.position;

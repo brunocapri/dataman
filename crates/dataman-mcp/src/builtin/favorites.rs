@@ -247,6 +247,30 @@ fn rename_favorite(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
     })
 }
 
+/// A favorite is a statement, not a dump.
+const IMPORT_MAX: u64 = 1024 * 1024;
+
+/// The file the user allowed, as it was then: the same file (device and inode), of the same
+/// size, not one swapped in after the Allow; read no further than that size.
+fn read_same(path: &std::path::Path, before: &std::fs::Metadata) -> std::io::Result<String> {
+    use std::io::Read;
+    let f = std::fs::File::open(path)?;
+    let now = f.metadata()?;
+    #[cfg(unix)]
+    let same = {
+        use std::os::unix::fs::MetadataExt;
+        (now.dev(), now.ino()) == (before.dev(), before.ino())
+    };
+    #[cfg(not(unix))]
+    let same = now.modified().ok() == before.modified().ok();
+    if !same || now.len() != before.len() {
+        return Err(std::io::Error::other("the file changed after it was allowed; nothing was imported from it"));
+    }
+    let mut s = String::new();
+    f.take(before.len()).read_to_string(&mut s)?;
+    Ok(s)
+}
+
 fn import_favorites(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
     Box::pin(async move {
         cx.enabled()?;
@@ -254,31 +278,54 @@ fn import_favorites(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> 
         let mut files = Vec::new();
         for p in paths {
             let s = p.as_str().ok_or_else(|| ToolError::Invalid("\"paths\" items must be strings".into()))?;
-            let path = std::path::Path::new(s);
-            if !path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("sql")) {
-                return Err(ToolError::Invalid(format!("{s:?} is not a .sql file")));
-            }
-            // In our words when it is missing: the system's own message is in the system's language.
-            let meta = std::fs::metadata(path).map_err(|e| match e.kind() {
+            // The file a link leads to is what is read: that one is shown to the user, and has
+            // to be a .sql file too (a link to ~/.aws/credentials named x.sql is not).
+            let path = std::fs::canonicalize(s).map_err(|e| match e.kind() {
+                // In our words when it is missing: the system's own message is in the system's language.
                 std::io::ErrorKind::NotFound => ToolError::Invalid(format!("{s:?} does not exist")),
                 _ => ToolError::Invalid(format!("{s:?}: {e}")),
             })?;
+            if !path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("sql")) {
+                return Err(ToolError::Invalid(format!("{s:?} is not a .sql file")));
+            }
+            let meta = std::fs::metadata(&path).map_err(|e| ToolError::Invalid(format!("{s:?}: {e}")))?;
             if !meta.is_file() {
                 return Err(ToolError::Invalid(format!("{s:?} is not a file")));
             }
-            files.push((path.to_path_buf(), meta.len()));
+            if meta.len() > IMPORT_MAX {
+                return Err(ToolError::Invalid(format!("{s:?} is larger than {}", dataman_core::schema::objects::human_size(IMPORT_MAX as i64))));
+            }
+            files.push((path, meta));
         }
         // What the agent reads back with list_favorites: the user says which files leave their Mac.
-        let what: Vec<String> = files.iter().map(|(p, n)| format!("{}  ({})", p.display(), dataman_core::schema::objects::human_size(*n as i64))).collect();
+        let what: Vec<String> = files.iter().map(|(p, m)| format!("{}  ({})", p.display(), dataman_core::schema::objects::human_size(m.len() as i64))).collect();
         let why = if files.len() == 1 { format!("reads a file on {}", dataman_core::os::THIS_MACHINE) } else { format!("reads files on {}", dataman_core::os::THIS_MACHINE) };
         cx.ask_local("Import favorites", &what.join("\n"), vec![why.into()]).await?;
         let mut added = Vec::new();
-        for (path, _) in &files {
-            let sql = std::fs::read_to_string(path).map_err(|e| ToolError::Invalid(format!("{:?}: {e}", path.display().to_string())))?;
+        for (path, before) in &files {
+            let sql = read_same(path, before).map_err(|e| ToolError::Invalid(format!("{:?}: {e}", path.display().to_string())))?;
             let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("favorite").to_string();
             let saved = cx.hub.core.favorites.add(Favorite { agent_made: true, ..Favorite::new(name, sql) }).map_err(failed)?;
             added.push(json!({"id": saved.id, "name": saved.name}));
         }
         Ok(json!({"added": added}))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_file_swapped_after_the_allow_is_not_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("q.sql");
+        std::fs::write(&p, "SELECT 1").unwrap();
+        let before = std::fs::metadata(&p).unwrap();
+        assert_eq!(read_same(&p, &before).unwrap(), "SELECT 1");
+        let other = dir.path().join("other.sql");
+        std::fs::write(&other, "SELECT 2").unwrap();
+        std::fs::rename(&other, &p).unwrap();
+        assert!(read_same(&p, &before).is_err(), "another file under the same name");
+    }
 }

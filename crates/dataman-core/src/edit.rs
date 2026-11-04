@@ -402,6 +402,12 @@ pub fn preview(changes: &[PlannedChange]) -> String {
     s
 }
 
+/// The edits as one script in the dialect's own transaction statements (`BEGIN TRANSACTION` …
+/// `COMMIT TRANSACTION` in T-SQL, where a bare `BEGIN;` is a syntax error).
+pub fn script(changes: &[PlannedChange], dialect: Dialect) -> String {
+    format!("{};\n{}{};", dialect.begin(), preview(changes), dialect.commit())
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum ConflictKind {
     RowGone,
@@ -432,50 +438,12 @@ pub struct ApplyReport {
     pub error: Option<String>,
 }
 
-pub fn explain_error(e: &ErrorInfo) -> String {
-    let base = match e.code.as_deref() {
-        Some("23505") => "Duplicate value: another row already has this value in a unique column or key.",
-        Some("23502") => "A required column (NOT NULL) has no value.",
-        Some("23503") => "Foreign key: the row points to a row that does not exist, or other rows still point to it.",
-        Some("23514") => "A CHECK constraint rejected the value.",
-        Some("40001") => "Another transaction changed the same rows at the same time; nothing was saved. Reload and try again.",
-        Some("40P01") => "Deadlock with another transaction; nothing was saved. Try again.",
-        Some("25006") => "The server is read-only (a replica or standby): writes go to the primary.",
-        Some("25001") => "This statement cannot run inside a transaction block.",
-        Some("22P02") | Some("22007") | Some("22008") => "A value is not valid for its column's type.",
-        Some("22001") => "A value is too long for its column.",
-        Some("22003") => "A number is out of range for its column.",
-        Some("42501") => "Permission denied.",
-        Some("0A000") => "The server does not support this.",
-        Some("57014") => "Cancelled.",
-        Some("1062") => "Duplicate value: another row already has this value in a unique column or key.",
-        Some("1048" | "1364") => "A required column (NOT NULL) has no value.",
-        Some("1451" | "1452") => "Foreign key: the row points to a row that does not exist, or other rows still point to it.",
-        Some("3819") => "A CHECK constraint rejected the value.",
-        Some("1213") => "Deadlock with another transaction; nothing was saved. Try again.",
-        Some("1205") => "Another transaction holds a lock on these rows; nothing was saved. Try again.",
-        Some("1292" | "1366" | "1265") => "A value is not valid for its column's type.",
-        Some("1406") => "A value is too long for its column.",
-        Some("1264") => "A number is out of range for its column.",
-        Some("1142" | "1143" | "1044") => "Permission denied.",
-        Some("1792") => "The transaction is read-only.",
-        Some("1290") => "The server is read-only: writes go to the primary.",
-        Some("1317") => "Cancelled.",
-        Some("SQLITE_CONSTRAINT_UNIQUE" | "SQLITE_CONSTRAINT_PRIMARYKEY") => "Duplicate value: another row already has this value in a unique column or key.",
-        Some("SQLITE_CONSTRAINT_NOTNULL") => "A required column (NOT NULL) has no value.",
-        Some("SQLITE_CONSTRAINT_FOREIGNKEY") => "Foreign key: the row points to a row that does not exist, or other rows still point to it.",
-        Some("SQLITE_CONSTRAINT_CHECK") => "A CHECK constraint rejected the value.",
-        Some("SQLITE_CONSTRAINT_DATATYPE" | "SQLITE_MISMATCH") => "A value is not valid for its column's type.",
-        Some("SQLITE_BUSY" | "SQLITE_LOCKED") => "The database is locked: another tab or program holds a write transaction on this file; nothing was saved. Try again.",
-        Some("SQLITE_READONLY") => "The file is read-only (or opened read-only): nothing was saved.",
-        Some("SQLITE_INTERRUPT") => "Cancelled.",
-        Some("DUCKDB_CONSTRAINT_UNIQUE") => "Duplicate value: another row already has this value in a unique column or key.",
-        Some("DUCKDB_CONSTRAINT_NOTNULL") => "A required column (NOT NULL) has no value.",
-        Some("DUCKDB_CONSTRAINT_FOREIGNKEY") => "Foreign key: the row points to a row that does not exist, or other rows still point to it.",
-        Some("DUCKDB_CONSTRAINT_CHECK") => "A CHECK constraint rejected the value.",
-        Some("TransactionContext Error") => "A conflict with another transaction (or a read-only one); nothing was saved. Try again.",
-        Some("Conversion Error") => "A value is not valid for its column's type.",
-        _ => "",
+/// What the error means for an edit (by its class on `engine`), then the server's own words.
+pub fn explain_error_in(e: &ErrorInfo, engine: crate::config::Engine) -> String {
+    let class = e.class(engine);
+    let base = match class {
+        crate::result::ErrorClass::LockTimeout if engine.is_file() => "The database is locked: another tab or program holds a write transaction on this file; nothing was saved. Try again.",
+        c => c.explain(),
     };
     let mut s = String::new();
     if !base.is_empty() {
@@ -502,14 +470,14 @@ impl Connection {
             let mut outcomes: Vec<StatementOutcome> =
                 changes.iter().enumerate().map(|(i, c)| StatementOutcome { index: i, sql: c.sql.clone(), outcome: Outcome::NotRun }).collect();
             if let Err(info) = client.execute(dialect.begin()).await {
-                return Ok(ApplyReport { committed: false, outcomes, error: Some(explain_error(&info)) });
+                return Ok(ApplyReport { committed: false, outcomes, error: Some(explain_error_in(&info, this.engine())) });
             }
             let mut failure: Option<String> = None;
             for (i, c) in changes.iter().enumerate() {
                 let n = match client.execute(&c.sql).await {
                     Ok(n) => n.unwrap_or(0),
                     Err(info) => {
-                        let message = explain_error(&info);
+                        let message = explain_error_in(&info, this.engine());
                         outcomes[i].outcome = Outcome::Failed { error: info, message: message.clone() };
                         failure = Some(message);
                         break;
@@ -556,7 +524,7 @@ impl Connection {
                 Ok(_) => Ok(ApplyReport { committed: true, outcomes, error: None }),
                 Err(info) => {
                     undo(&mut outcomes);
-                    Ok(ApplyReport { committed: false, outcomes, error: Some(explain_error(&info)) })
+                    Ok(ApplyReport { committed: false, outcomes, error: Some(explain_error_in(&info, this.engine())) })
                 }
             }
         })
@@ -1370,10 +1338,13 @@ mod tests {
     #[test]
     fn readable_errors() {
         let e = ErrorInfo { code: Some("23505".into()), message: "duplicate key value violates unique constraint \"p_pkey\"".into(), ..Default::default() };
-        let s = explain_error(&e);
+        let s = explain_error_in(&e, crate::config::Engine::Postgres);
         assert!(s.starts_with("Duplicate value"), "{s}");
         assert!(s.contains("p_pkey"));
         let e = ErrorInfo { code: Some("40001".into()), message: "conflict".into(), ..Default::default() };
-        assert!(explain_error(&e).contains("nothing was saved"));
+        assert!(explain_error_in(&e, crate::config::Engine::Postgres).contains("nothing was saved"));
+        // 1205: MySQL's lock wait, SQL Server's deadlock.
+        let e = ErrorInfo { code: Some("1205".into()), message: "x".into(), ..Default::default() };
+        assert!(explain_error_in(&e, crate::config::Engine::SqlServer).starts_with("Deadlock") && explain_error_in(&e, crate::config::Engine::MySql).starts_with("Another transaction holds a lock"));
     }
 }

@@ -204,11 +204,6 @@ pub fn fmt_bytes(b: u64) -> String {
 }
 
 
-pub(crate) fn fmt_secs(d: Duration) -> String {
-    let s = d.as_secs_f64();
-    if s < 60. { format!("{s:.1} s") } else { format!("{}m {:02}s", (s / 60.) as u64, (s % 60.) as u64) }
-}
-
 impl ExportView {
     pub fn new(core: Arc<Core>, source: Option<Source>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
@@ -531,7 +526,7 @@ impl ExportView {
             JobState::Done(s) if s.cancelled => ("Stopped · nothing written".into(), t.warn),
             JobState::Done(s) => {
                 let partial = if s.complete { "" } else { " (partial result)" };
-                (format!("Exported {} rows{partial} · {}", ui_count(s.rows as usize), fmt_secs(s.elapsed)), t.tx2)
+                (format!("Exported {} rows{partial} · {}", ui_count(s.rows as usize), crate::fmt::secs(s.elapsed)), t.tx2)
             }
             JobState::Failed(e) => (e.lines().next().unwrap_or(e).to_string(), t.err),
         })
@@ -730,7 +725,7 @@ impl Render for ExportView {
                 .when(!on, |d| d.text_color(if enabled { t.tx2 } else { t.tx4 }))
                 .child(div().size(px(12.)).rounded(px(6.)).when(on, |d| d.border_4().border_color(t.acc)).when(!on, |d| d.border_1().border_color(t.line2)))
                 .child(div().flex_none().child(name))
-                .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_right().text_size(px(11.)).text_color(t.tx3).child(desc))
+                .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_right().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(desc))
                 .when(enabled && !locked, |d| {
                     d.cursor_pointer().on_click(cx.listener(move |v, _, _, cx| {
                         v.scope = s;
@@ -744,7 +739,7 @@ impl Render for ExportView {
                 .flex_row()
                 .items_center()
                 .gap(px(10.))
-                .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx2).child(tilde(&self.path)))
+                .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx2).child(dataman_core::config::tilde(&self.path.to_string_lossy())))
                 .child(
                     ui::button(&t, "ex-choose", ui::Btn::Secondary)
                         .when(!locked, |d| d.cursor_pointer().on_click(cx.listener(|v, _, _, cx| v.choose_path(cx))))
@@ -796,7 +791,7 @@ impl Render for ExportView {
                 .overflow_hidden()
                 .whitespace_nowrap()
                 .text_ellipsis()
-                .text_size(px(11.5))
+                .text_size(px(crate::theme::text::UI))
                 .when_some(status, |d, (s, c)| d.text_color(c).child(s)),
         );
         if running {
@@ -815,19 +810,11 @@ impl Render for ExportView {
                     .px(px(12.))
                     .font_weight(FontWeight::SEMIBOLD)
                     .child("Export")
-                    .child(div().text_size(px(10.5)).font_weight(FontWeight::NORMAL).opacity(0.75).child(crate::ui::keys_text("⌘↩")))
+                    .child(div().text_size(px(crate::theme::text::HINT)).font_weight(FontWeight::NORMAL).opacity(0.75).child(crate::ui::keys_text("⌘↩")))
                     .on_click(cx.listener(|v, _, _, cx| v.start(cx))),
             ));
         }
         scrim(sheet.child(body).child(footer).into_any_element(), cx).into_any_element()
-    }
-}
-
-pub(crate) fn tilde(p: &Path) -> String {
-    let s = p.display().to_string();
-    match dataman_core::os::home().map(|h| h.display().to_string()) {
-        Some(h) if s.starts_with(&h) => format!("~{}", &s[h.len()..]),
-        _ => s,
     }
 }
 

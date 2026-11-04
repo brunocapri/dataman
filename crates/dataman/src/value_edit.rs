@@ -526,8 +526,8 @@ impl ValueEditor {
             .child(ui::segment(t, "json-tree", "Tree", !raw).on_click(cx.listener(|e, _: &ClickEvent, window, cx| e.set_raw(false, window, cx))))
             .child(ui::segment(t, "json-raw", "Raw", raw).on_click(cx.listener(|e, _: &ClickEvent, window, cx| e.set_raw(true, window, cx))));
         let status: gpui::AnyElement = match (&j.error, raw) {
-            (Some(e), _) => div().text_size(px(11.)).text_color(t.err).overflow_hidden().whitespace_nowrap().text_ellipsis().child(e.clone()).into_any_element(),
-            (None, true) => div().text_size(px(11.)).text_color(t.ok).child("valid").into_any_element(),
+            (Some(e), _) => div().text_size(px(crate::theme::text::SMALL)).text_color(t.err).overflow_hidden().whitespace_nowrap().text_ellipsis().child(e.clone()).into_any_element(),
+            (None, true) => div().text_size(px(crate::theme::text::SMALL)).text_color(t.ok).child("valid").into_any_element(),
             (None, false) => div().into_any_element(),
         };
         let head = div().flex().flex_row().items_center().gap(px(10.)).child(modes).child(div().flex_1().min_w_0().child(status));
@@ -680,7 +680,7 @@ impl Render for ValueEditor {
                         .px(px(5.))
                         .flex()
                         .items_center()
-                        .text_size(px(10.))
+                        .text_size(px(crate::theme::text::TINY))
                         .when(null, |d| d.bg(t.acc).text_color(t.on_acc))
                         .when(!null, |d| d.bg(t.hov).text_color(t.tx3).border_1().border_color(t.line2))
                         .child("NULL")
@@ -691,7 +691,7 @@ impl Render for ValueEditor {
                 .child(
                     ui::button(&t, "value-apply", Btn::Primary)
                         .h(px(24.))
-                        .text_size(px(11.5))
+                        .text_size(px(crate::theme::text::UI))
                         .font_weight(FontWeight::SEMIBOLD)
                         .when(!can_apply, |d| d.opacity(0.5))
                         .child("Apply")
@@ -703,7 +703,7 @@ impl Render for ValueEditor {
             .key_context(CONTEXT)
             .track_focus(&self.focus)
             .font_family(mono())
-            .text_size(px(12.))
+            .text_size(px(crate::theme::text::BODY))
             .text_color(t.tx)
             .on_action(cx.listener(|e, _: &ApplyValue, _, cx| e.apply(cx)))
             .on_action(cx.listener(|e, _: &CancelValue, _, cx| {

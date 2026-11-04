@@ -8,6 +8,17 @@ use crate::schema::RelKind;
 use crate::sql::Dialect;
 use crate::sqlgen::{qualified, quote_ident, quote_literal, view_ddl};
 
+/// A constraint added to an existing table, as `dialect` takes it. SQLite has no `ADD
+/// CONSTRAINT` (a constraint is part of `CREATE TABLE`): it gets the definition as a comment
+/// saying so.
+pub fn add_constraint(dialect: Dialect, schema: Option<&str>, table: &str, name: &str, definition: &str) -> String {
+    let def = definition.trim().trim_end_matches(';');
+    match dialect {
+        Dialect::Sqlite => format!("-- SQLite cannot add a constraint to an existing table: rebuild {table} with\n-- CONSTRAINT {} {def}", dialect.quote_ident(name)),
+        d => format!("ALTER TABLE {} ADD CONSTRAINT {} {def};", d.qualified(schema, table), d.quote_ident(name)),
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Identity {
     Always,

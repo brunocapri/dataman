@@ -16,7 +16,8 @@ use dataman_core::import::{
 use dataman_core::schema::Column;
 
 use crate::assets::{Icon, icon};
-use crate::export_ui::{fmt_bytes, fmt_secs, tilde};
+use crate::export_ui::fmt_bytes;
+use crate::fmt::secs as fmt_secs;
 use crate::grid::ui_count;
 use crate::input::TextInput;
 use crate::theme::{ActiveTheme, Theme, metrics};
@@ -656,7 +657,7 @@ impl DataImportView {
                     .items_baseline()
                     .gap(px(10.))
                     .child(ui::status("", pill, fg))
-                    .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).child(ui_count(rows as usize)))
+                    .child(div().text_size(px(crate::theme::text::TITLE)).font_weight(FontWeight::SEMIBOLD).child(ui_count(rows as usize)))
                     .child(div().text_color(t.tx3).child(total_txt))
                     .child(div().flex_1())
                     .child(div().text_color(t.tx2).child(right)),
@@ -668,7 +669,7 @@ impl DataImportView {
                     .flex_row()
                     .items_center()
                     .gap(px(8.))
-                    .child(div().flex_1().min_w_0().text_size(px(11.)).line_height(px(16.)).text_color(if note_err { t.err } else { t.tx3 }).child(note))
+                    .child(div().flex_1().min_w_0().text_size(px(crate::theme::text::SMALL)).line_height(px(16.)).text_color(if note_err { t.err } else { t.tx3 }).child(note))
                     .children(buttons),
             )
             .into_any_element()
@@ -718,7 +719,7 @@ impl DataImportView {
                         .flex_row()
                         .items_center()
                         .gap(px(4.))
-                        .text_size(px(11.))
+                        .text_size(px(crate::theme::text::SMALL))
                         .when(open, |d| d.bg(t.acc_s))
                         .when(!open && !locked, move |d| d.hover(move |s| s.bg(hov)))
                         .child(div().flex_1().min_w_0().whitespace_nowrap().overflow_hidden().text_ellipsis().text_color(if on { t.acc_t } else { t.tx4 }).child(label))
@@ -781,7 +782,7 @@ impl DataImportView {
             .border_color(t.line)
             .bg(t.field)
             .overflow_hidden()
-            .text_size(px(11.5))
+            .text_size(px(crate::theme::text::UI))
             .child(header)
             .child(body)
             .children(menu)
@@ -800,13 +801,13 @@ impl DataImportView {
                 .flex_row()
                 .items_center()
                 .gap(px(8.))
-                .text_size(px(12.))
+                .text_size(px(crate::theme::text::BODY))
                 .text_color(t.tx)
                 .cursor_pointer()
                 .hover(move |s| s.bg(acc).text_color(on_acc))
-                .child(div().w(px(12.)).text_size(px(11.)).child(if checked { "✓" } else { "" }))
+                .child(div().w(px(12.)).text_size(px(crate::theme::text::SMALL)).child(if checked { "✓" } else { "" }))
                 .child(div().flex_1().min_w_0().whitespace_nowrap().overflow_hidden().text_ellipsis().child(label))
-                .children(right.map(|r| div().text_size(px(11.)).opacity(0.6).child(r)))
+                .children(right.map(|r| div().text_size(px(crate::theme::text::SMALL)).opacity(0.6).child(r)))
         };
         let mut items: Vec<AnyElement> = Vec::new();
         if self.new_table() {
@@ -918,7 +919,7 @@ impl DataImportView {
             .items_center()
             .gap(px(8.))
             .min_w_0()
-            .text_size(px(11.))
+            .text_size(px(crate::theme::text::SMALL))
             .child(ui::chip(t.profile_color(p), 8.))
             .child(div().text_color(t.tx2).overflow_hidden().whitespace_nowrap().text_ellipsis().child(p.name.clone()))
             .when(!env.is_none(), |d| d.child(div().text_color(if env.is_production() { t.err } else { t.tx3 }).child(env.label())));
@@ -1051,7 +1052,7 @@ impl Render for DataImportView {
                     self.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
                 ))
                 .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx3).child(
-                    self.path.parent().map(tilde).unwrap_or_default(),
+                    self.path.parent().map(|d| dataman_core::config::tilde(&d.to_string_lossy())).unwrap_or_default(),
                 ))
                 .children(self.preview.as_ref().map(|p| div().flex_none().text_color(t.tx3).child(fmt_bytes(p.file_bytes))))
                 .child(div().id("di-choose").flex_none().text_color(t.acc_t).child("Choose…").when(!locked, |d| d.cursor_pointer().on_click(cx.listener(|v, _, _, cx| v.choose_file(cx))))),
@@ -1162,8 +1163,8 @@ impl Render for DataImportView {
                             .gap(px(10.))
                             .child(ui::caps(&t, "PREVIEW"))
                             .child(div().flex_1())
-                            .child(div().text_size(px(11.)).text_color(t.tx3).child(format!("{imported} of {} columns", p.columns.len())))
-                            .child(div().text_size(px(11.)).text_color(t.tx3).child(count)),
+                            .child(div().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(format!("{imported} of {} columns", p.columns.len())))
+                            .child(div().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(count)),
                     )
                     .child(self.render_grid(p, &t, cx))
                     .into_any_element()
@@ -1215,7 +1216,7 @@ impl Render for DataImportView {
                 }))
             }))
             .child(div().flex_1())
-            .child(div().text_size(px(10.5)).text_color(t.tx3).child("ON ERROR"))
+            .child(div().text_size(px(crate::theme::text::HINT)).text_color(t.tx3).child("ON ERROR"))
             .child(ui::segmented(&t).w(px(190.)).children([("Stop", false), ("Skip rows", true)].into_iter().map(|(label, skip)| {
                 ui::segment(&t, label, label, self.skip == skip).when(locked, |d| d.cursor_default()).when(!locked, |d| {
                     d.cursor_pointer().on_click(cx.listener(move |v, _, _, cx| {
@@ -1244,7 +1245,7 @@ impl Render for DataImportView {
         let footer: AnyElement = match &self.job {
             Some(j) => self.render_progress(j, &t, cx),
             None => ui::modal_footer(&t)
-                .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(11.)).text_color(t.err).children(self.error.clone().filter(|_| self.preview.is_some())))
+                .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(crate::theme::text::SMALL)).text_color(t.err).children(self.error.clone().filter(|_| self.preview.is_some())))
                 .child(ui::button(&t, "di-cancel", Btn::Ghost).h(px(28.)).child("Cancel").on_click(cx.listener(|_, _, _, cx| cx.emit(DataImportEvent::Close))))
                 .child(
                     ui::button(&t, "di-start", if ready { Btn::Primary } else { Btn::Ghost })
@@ -1252,7 +1253,7 @@ impl Render for DataImportView {
                         .px(px(12.))
                         .font_weight(FontWeight::SEMIBOLD)
                         .child("Import")
-                        .child(div().text_size(px(10.5)).font_weight(FontWeight::NORMAL).opacity(0.75).child(crate::ui::keys_text("⌘↩")))
+                        .child(div().text_size(px(crate::theme::text::HINT)).font_weight(FontWeight::NORMAL).opacity(0.75).child(crate::ui::keys_text("⌘↩")))
                         .when(ready, |d| d.on_click(cx.listener(|v, _, _, cx| v.start(cx)))),
                 )
                 .into_any_element(),
@@ -1308,7 +1309,7 @@ impl Workspace {
             _ => {
                 let tab = self.active_tab().ok_or("Select a table or a schema in the explorer first")?.read(cx);
                 let c = tab.connection().ok_or("Select a table or a schema in the explorer first")?;
-                let schema = c.info.search_path.iter().find(|s| !s.starts_with("pg_") && *s != "$user").cloned().unwrap_or_else(|| "public".into());
+                let schema = c.info.search_path.iter().find(|s| !s.starts_with("pg_") && *s != "$user").cloned().unwrap_or_else(|| c.engine().default_schema().unwrap_or_default().to_string());
                 (c.profile.id.clone(), tab.database().to_string(), schema, None)
             }
         };

@@ -919,6 +919,7 @@ pub enum Scope {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Test {
     NoWhere,
+    TrivialWhere,
     Command(&'static str),
     AlterDrop,
     Effect(Effect),
@@ -933,6 +934,7 @@ pub struct Rule {
 
 pub const RULES: &[Rule] = &[
     Rule { id: "no-where", scope: Scope::Always, test: Test::NoWhere },
+    Rule { id: "trivial-where", scope: Scope::Always, test: Test::TrivialWhere },
     Rule { id: "truncate", scope: Scope::Always, test: Test::Command("TRUNCATE") },
     Rule { id: "drop", scope: Scope::Always, test: Test::Command("DROP") },
     Rule { id: "alter-drop", scope: Scope::Always, test: Test::AlterDrop },
@@ -951,6 +953,7 @@ pub struct Finding {
 fn matches(test: Test, f: &Facts) -> bool {
     match test {
         Test::NoWhere => f.no_where,
+        Test::TrivialWhere => f.trivial_where,
         Test::Command(c) => f.verb == c || f.verb.starts_with(&format!("{c} ")),
         Test::AlterDrop => f.alter_drop.is_some(),
         Test::Effect(e) => f.effect == e,
@@ -982,6 +985,7 @@ pub fn review_in<S: AsRef<str>>(stmts: &[S], env: Environment, dialect: Dialect)
             let (rule, f) = check_in(s.as_ref(), env, dialect)?;
             let label = match rule.test {
                 Test::NoWhere => format!("{} without WHERE", f.verb),
+                Test::TrivialWhere => format!("{} with a WHERE that is always true", f.verb),
                 Test::AlterDrop => format!("{} · {}", f.verb, f.alter_drop.clone().unwrap_or_default()),
                 _ => f.verb.clone(),
             };
@@ -990,13 +994,128 @@ pub fn review_in<S: AsRef<str>>(stmts: &[S], env: Environment, dialect: Dialect)
         .collect()
 }
 
+/// It runs code: a procedure, an anonymous block, SQL in a string (`INSERT … EXEC`, `EXEC('…')`,
+/// `sp_executesql`), in any statement of `sql`. The agents' Permissions (code) go by this.
+pub fn runs_code(sql: &str, dialect: Dialect) -> bool {
+    agent_pieces(sql, dialect).iter().any(|p| {
+        let all = significant(p, dialect);
+        let t = Toks { src: p, t: &all, dialect };
+        let f = classify_in(p, dialect);
+        matches!(f.verb.as_str(), "CALL" | "DO" | "EXEC" | "EXECUTE")
+            // T-SQL's `INSERT … EXEC`: reserved words there; elsewhere a column may be named so.
+            || dialect == Dialect::TSql && t.top().iter().any(|&i| t.is(i, "EXEC") || t.is(i, "EXECUTE"))
+            || (0..all.len()).any(|i| t.is(i, "SP_EXECUTESQL") || STRING_SQL_FUNCTIONS.iter().any(|n| t.word(i).is_some_and(|w| w.eq_ignore_ascii_case(n)) && t.punct(i + 1, "(")))
+    })
+}
+
+/// It changes structure: DDL, in any text the server may run (`EXEC('DROP …')`, MySQL's
+/// `PREPARE … FROM '…'`), or in an anonymous block's body (`DO $$ … EXECUTE 'DROP …' $$`, where
+/// any dynamic SQL counts). SQL built at run time (`EXEC (@s)`, `'DR' + 'OP …'`, `FROM @s`) and
+/// strings read through escapes (`E'\x44ROP …'`) count too: what is not read is not taken as
+/// no DDL. The agents' Permissions (structure) go by this.
+pub fn changes_structure(sql: &str, dialect: Dialect) -> bool {
+    agent_pieces(sql, dialect).iter().any(|p| {
+        if crate::sql::exec_readings(p, dialect).iter().any(|text| classify_in(text, dialect).effect == Effect::Ddl) {
+            return true;
+        }
+        let all = significant(p, dialect);
+        let t = Toks { src: p, t: &all, dialect };
+        let n = all.len();
+        // PostgreSQL's anonymous block (MySQL's DO only evaluates expressions).
+        let block = dialect != Dialect::MySql && t.is(0, "DO");
+        let tsql = dialect == Dialect::TSql && (0..n).any(|i| t.is(i, "EXEC") || t.is(i, "EXECUTE") || t.is(i, "SP_EXECUTESQL"));
+        let prepare = dialect == Dialect::MySql && t.is(0, "PREPARE");
+        if !(block || tsql || prepare) {
+            return false;
+        }
+        let string = |i: usize| t.t.get(i).is_some_and(|x| x.kind == TokenKind::String);
+        let ends = |i: usize| i >= n || t.punct(i, ";");
+        let built = (0..n).any(|i| {
+            (tsql && (t.is(i, "EXEC") || t.is(i, "EXECUTE")) && t.punct(i + 1, "(") && !(string(i + 2) && t.punct(i + 3, ")")))
+                || (tsql && t.is(i, "SP_EXECUTESQL") && !(string(i + 1) && (ends(i + 2) || t.punct(i + 2, ","))))
+                || (prepare && t.is(i, "FROM") && !(string(i + 1) && ends(i + 2)))
+        });
+        if built {
+            return true;
+        }
+        // The texts the server runs: a block's body; what `EXEC (…)`, sp_executesql or PREPARE
+        // is handed (a procedure's arguments are no SQL).
+        let run: Vec<usize> = if block {
+            (0..n).filter(|&i| matches!(all[i].kind, TokenKind::DollarString | TokenKind::String)).collect()
+        } else {
+            (0..n)
+                .filter_map(|i| match () {
+                    _ if tsql && (t.is(i, "EXEC") || t.is(i, "EXECUTE")) && t.punct(i + 1, "(") => Some(i + 2),
+                    _ if tsql && t.is(i, "SP_EXECUTESQL") => Some(i + 1),
+                    _ if prepare && t.is(i, "FROM") => Some(i + 1),
+                    _ => None,
+                })
+                .collect()
+        };
+        run.into_iter().filter_map(|i| all.get(i)).any(|x| {
+            let text = x.text(p);
+            let body = if x.kind == TokenKind::DollarString {
+                // `$tag$ … $tag$`.
+                let quote = text.strip_prefix('$').and_then(|r| r.find('$')).map_or(1, |n| n + 2);
+                match text.get(quote..text.len().saturating_sub(quote)) {
+                    Some(b) => b.to_string(),
+                    None => return false,
+                }
+            } else {
+                let plain = if dialect == Dialect::TSql { text.strip_prefix(['N', 'n']).filter(|r| r.starts_with('\'')).unwrap_or(text) } else { text };
+                // E'…', U&'…', X'…', a MySQL backslash: the server reads escapes this does not.
+                if !plain.starts_with('\'') || dialect == Dialect::MySql && plain.contains('\\') {
+                    return true;
+                }
+                match plain.get(1..plain.len().saturating_sub(1)) {
+                    Some(b) => b.replace("''", "'"),
+                    None => return false,
+                }
+            };
+            // Any DDL verb in the block, or SQL built at run time: a block reads its statements
+            // as `BEGIN … END`, which no statement classifier follows.
+            const DDL: &[&str] = &["CREATE", "DROP", "ALTER", "TRUNCATE", "RENAME", "GRANT", "REVOKE", "COMMENT", "EXECUTE", "EXEC", "SP_EXECUTESQL", "PREPARE"];
+            significant(&body, dialect).iter().any(|k| matches!(k.kind, TokenKind::Keyword | TokenKind::Ident) && DDL.iter().any(|w| k.text(&body).eq_ignore_ascii_case(w)))
+        })
+    })
+}
+
 pub fn read_only_refusal(sql: &str) -> Option<String> {
     read_only_refusal_in(sql, Dialect::Postgres)
 }
 
 pub fn read_only_refusal_in(sql: &str, dialect: Dialect) -> Option<String> {
     let f = classify_in(sql, dialect);
-    f.is_write().then(|| format!("read-only connection: {} is not run", f.verb))
+    if f.is_write() {
+        return Some(format!("read-only connection: {} is not run", f.verb));
+    }
+    if dialect == Dialect::TSql { tsql_read_only_refusal(sql) } else { None }
+}
+
+/// SQL Server has no read-only session, so this is the only check: what is not known to read
+/// is refused (KILL, SHUTDOWN, RECONFIGURE, DBCC, BACKUP, DISABLE TRIGGER…), as on the agent's
+/// reads. Transaction control and session settings stay the user's.
+fn tsql_read_only_refusal(sql: &str) -> Option<String> {
+    let d = Dialect::TSql;
+    for text in crate::sql::exec_readings(sql, d) {
+        let all = significant(&text, d);
+        let t = Toks { src: &text, t: &all, dialect: d };
+        for r in statements(&t).into_iter().filter(|r| !r.is_empty()) {
+            let one = &text[all[r.start].start..all[r.end - 1].end];
+            let toks = significant(one, d);
+            let st = Toks { src: one, t: &toks, dialect: d };
+            let f = classify_in(one, d);
+            let showplan = f.verb == "SET" && st.word(1).is_some_and(|w| w.starts_with("SHOWPLAN_") || matches!(w.as_str(), "LANGUAGE" | "TRANSACTION"));
+            if f.tx.is_some() || neutral(&st, &f) || showplan || toks.iter().all(|x| x.kind == TokenKind::Punct) {
+                continue;
+            }
+            // The user's own reads: the agents' further limits (functions, lock hints) are theirs.
+            if !is_read(&f, d) {
+                return Some(format!("read-only connection: {} is not run", if f.verb.is_empty() { "an unknown statement" } else { &f.verb }));
+            }
+        }
+    }
+    None
 }
 
 /// Functions with effects that a read-only transaction does not stop (signals, files, locks
@@ -1018,6 +1137,14 @@ pub const SIDE_EFFECT_FUNCTIONS: &[&str] = &[
     // SQL Server's file and program procedures: EXEC is no read anyway, named here so every
     // server-file name is refused on reads too.
     "xp_cmdshell", "xp_dirtree", "xp_subdirs", "xp_fileexist", "xp_regwrite", "sp_oacreate", "sp_oamethod", "sp_addextendedproc",
+];
+
+/// Functions that run SQL handed to them as a string: what the string does is never checked,
+/// so agents cannot call them at any level (`query_to_xml('select pg_terminate_backend(1)', …)`).
+pub const STRING_SQL_FUNCTIONS: &[&str] = &[
+    "query_to_xml", "query_to_xmlschema", "query_to_xml_and_xmlschema", "cursor_to_xml", "cursor_to_xmlschema", "ts_stat", "ts_rewrite",
+    "xpath_table", "crosstab", "crosstab2", "crosstab3", "crosstab4", "connectby", "dblink", "dblink_exec", "dblink_send_query",
+    "dblink_open", "openquery", "openrowset", "opendatasource", "sp_executesql",
 ];
 
 const TSQL_LOCK_HINTS: &[&str] = &["UPDLOCK", "XLOCK", "HOLDLOCK", "TABLOCK", "TABLOCKX", "PAGLOCK", "ROWLOCK", "SERIALIZABLE", "REPEATABLEREAD"];
@@ -1043,6 +1170,15 @@ pub fn agent_read_refusal_in(sql: &str, dialect: Dialect) -> Option<String> {
     (!any).then(|| "empty statement".into())
 }
 
+/// A read by its verb as well as its effect: what is not known to read is no read.
+fn is_read(f: &Facts, dialect: Dialect) -> bool {
+    let reads = matches!(f.verb.as_str(), "SELECT" | "TABLE" | "VALUES" | "SHOW" | "EXPLAIN")
+        || (dialect == Dialect::MySql && matches!(f.verb.as_str(), "DESCRIBE" | "DESC"))
+        || (dialect == Dialect::DuckDb && matches!(f.verb.as_str(), "DESCRIBE" | "SUMMARIZE" | "FROM" | "PIVOT" | "UNPIVOT"))
+        || (is_file_dialect(dialect) && f.verb.starts_with("PRAGMA "));
+    f.effect == Effect::Read && reads
+}
+
 fn read_refusal(sql: &str, dialect: Dialect) -> Option<String> {
     let f = classify_in(sql, dialect);
     if f.verb.is_empty() {
@@ -1051,11 +1187,7 @@ fn read_refusal(sql: &str, dialect: Dialect) -> Option<String> {
     if f.tx.is_some() {
         return Some(format!("transaction control ({}) is not allowed", f.verb));
     }
-    let reads = matches!(f.verb.as_str(), "SELECT" | "TABLE" | "VALUES" | "SHOW" | "EXPLAIN")
-        || (dialect == Dialect::MySql && matches!(f.verb.as_str(), "DESCRIBE" | "DESC"))
-        || (dialect == Dialect::DuckDb && matches!(f.verb.as_str(), "DESCRIBE" | "SUMMARIZE" | "FROM" | "PIVOT" | "UNPIVOT"))
-        || (is_file_dialect(dialect) && f.verb.starts_with("PRAGMA "));
-    if f.effect != Effect::Read || !reads {
+    if !is_read(&f, dialect) {
         return Some(format!("{} is not a read; read-only access runs SELECT, WITH, TABLE, VALUES, SHOW and EXPLAIN", f.verb));
     }
     let all: Vec<Token> = tokenize_in(sql, dialect).into_iter().filter(|t| !t.kind.is_trivia()).collect();
@@ -1085,7 +1217,10 @@ fn read_refusal(sql: &str, dialect: Dialect) -> Option<String> {
     if let Some(e) = file_access_in(&t) {
         return Some(e);
     }
-    effect_call(&t, &[]).map(|name| format!("{name}() has effects outside a read-only transaction"))
+    effect_call(&t, &[]).map(|name| match STRING_SQL_FUNCTIONS.contains(&name.as_str()) && !SIDE_EFFECT_FUNCTIONS.contains(&name.as_str()) {
+        true => format!("{name}() runs SQL from a string, which Dataman cannot check"),
+        false => format!("{name}() has effects outside a read-only transaction"),
+    })
 }
 
 /// SQLite functions that load code or touch files (the shell's; an application may register
@@ -1263,7 +1398,8 @@ fn effect_call(t: &Toks, allowed: &[&str]) -> Option<String> {
             continue;
         }
         let name = t.t[i].text(t.src).trim_matches(['"', '`', '[', ']']).to_ascii_lowercase();
-        if SIDE_EFFECT_FUNCTIONS.contains(&name.as_str()) && !allowed.contains(&name.as_str()) {
+        let n = name.as_str();
+        if (SIDE_EFFECT_FUNCTIONS.contains(&n) || STRING_SQL_FUNCTIONS.contains(&n)) && !allowed.contains(&n) {
             return Some(name);
         }
     }
@@ -1309,7 +1445,7 @@ pub const WRITE_OK_FUNCTIONS: &[&str] = &["nextval", "pg_notify", "txid_current"
 
 const TSQL_SESSION_SETTINGS: &[&str] = &[
     "NOCOUNT", "XACT_ABORT", "ANSI_NULLS", "ANSI_WARNINGS", "ANSI_PADDING", "ANSI_NULL_DFLT_ON", "QUOTED_IDENTIFIER", "ARITHABORT",
-    "CONCAT_NULL_YIELDS_NULL", "NUMERIC_ROUNDABORT", "DATEFORMAT", "DATEFIRST", "LANGUAGE", "LOCK_TIMEOUT", "DEADLOCK_PRIORITY", "TEXTSIZE",
+    "CONCAT_NULL_YIELDS_NULL", "NUMERIC_ROUNDABORT", "DATEFORMAT", "DATEFIRST", "LOCK_TIMEOUT", "DEADLOCK_PRIORITY", "TEXTSIZE",
     "ROWCOUNT", "STATISTICS",
 ];
 
@@ -2204,5 +2340,102 @@ mod tests {
         ] {
             assert_eq!(agent_preview(sql, d), want, "{d:?} {sql}");
         }
+    }
+
+    #[test]
+    fn string_sql_refused_at_every_level() {
+        let pg = Dialect::Postgres;
+        for sql in [
+            "SELECT query_to_xml('select pg_terminate_backend(123)', true, false, '')",
+            "SELECT * FROM pg_catalog.ts_stat('select pg_cancel_backend(1)')",
+            "SELECT cursor_to_xml('c', 1, true, false, '')",
+            "SELECT * FROM crosstab('select 1')",
+        ] {
+            let r = agent_read_refusal_in(sql, pg);
+            assert!(r.as_deref().is_some_and(|r| r.contains("runs SQL from a string")), "{sql}: {r:?}");
+            assert!(agent_write_class(&format!("INSERT INTO t {sql}"), pg).is_destructive(), "{sql}");
+        }
+        assert_eq!(agent_read_refusal_in("SELECT 'query_to_xml(1)'", pg), None);
+    }
+
+    #[test]
+    fn tsql_read_only_is_an_allowlist() {
+        let d = Dialect::TSql;
+        for sql in [
+            "KILL 53",
+            "SHUTDOWN WITH NOWAIT",
+            "RECONFIGURE",
+            "BACKUP DATABASE x TO DISK = 'c:\\x.bak'",
+            "DBCC CHECKIDENT ('t', RESEED, 0)",
+            "DISABLE TRIGGER tr ON t",
+            "WRITETEXT t.c @p 'x'",
+            "SEND ON CONVERSATION @h",
+            "USE other",
+            "SELECT 1; KILL 53",
+        ] {
+            assert!(read_only_refusal_in(sql, d).is_some(), "{sql}");
+        }
+        for sql in [
+            "SELECT * FROM t",
+            "SELECT * FROM t WITH (NOLOCK)",
+            "BEGIN TRANSACTION",
+            "COMMIT",
+            "SET NOCOUNT ON",
+            "SET LANGUAGE us_english",
+            "SET SHOWPLAN_XML ON",
+            "DECLARE @x int = 1",
+            "PRINT 'x'",
+            "WITH c AS (SELECT 1 AS a) SELECT a FROM c",
+        ] {
+            assert_eq!(read_only_refusal_in(sql, d), None, "{sql}");
+        }
+        // Other engines keep the session's own read-only.
+        assert_eq!(read_only_refusal_in("VACUUM", Dialect::Postgres), None);
+    }
+
+    #[test]
+    fn set_language_is_no_neutral_setting() {
+        assert!(agent_write_class("SET LANGUAGE Brazilian", Dialect::TSql).is_destructive());
+        assert!(!agent_write_class("SET NOCOUNT ON", Dialect::TSql).is_write());
+    }
+
+    #[test]
+    fn code_and_structure_by_what_runs() {
+        let (pg, ms) = (Dialect::Postgres, Dialect::TSql);
+        assert!(runs_code("INSERT INTO t EXEC dbo.p", ms) && runs_code("EXEC dbo.p", ms) && runs_code("DO $$ BEGIN END $$", pg));
+        assert!(!runs_code("INSERT INTO t VALUES (1)", ms) && !runs_code("SELECT 'EXEC x'", pg));
+        assert!(changes_structure("DO $$ BEGIN EXECUTE 'DROP TABLE x'; END $$", pg));
+        assert!(changes_structure("DO $f$ BEGIN DROP TABLE x; END $f$", pg));
+        assert!(changes_structure("EXEC('DROP TABLE x')", ms) && changes_structure("ALTER TABLE t ADD c int", pg));
+        assert!(!changes_structure("DO $$ BEGIN UPDATE t SET a = 1 WHERE b = 2; END $$", pg) && !changes_structure("UPDATE t SET a = 1 WHERE b = 2", pg));
+        // A column may be named execute outside T-SQL, where the word is reserved.
+        assert!(!runs_code("SELECT 1 AS execute", pg) && !runs_code("SELECT exec FROM jobs", Dialect::MySql));
+        // SQL built at run time, or read through escapes, is not taken for no DDL.
+        let my = Dialect::MySql;
+        for (sql, d) in [
+            ("DO E'BEGIN \\x44ROP TABLE x; END'", pg),
+            ("DO E'BEGIN DROP TABLE x; END'", pg),
+            ("DO U&'BEGIN \\0044ROP TABLE x; END'", pg),
+            ("EXEC('DR' + 'OP TABLE x')", ms),
+            ("DECLARE @s nvarchar(99) = 'DROP TABLE x'; EXEC (@s)", ms),
+            ("EXEC sp_executesql @s", ms),
+            ("INSERT INTO t EXEC('DROP TABLE x')", ms),
+            ("EXEC('EXEC(''DROP TABLE x'')')", ms),
+            ("PREPARE s FROM 'DROP TABLE x'", my),
+            ("PREPARE s FROM @q", my),
+            ("PREPARE s FROM 'DR\\OP TABLE x'", my),
+        ] {
+            assert!(changes_structure(sql, d), "{d:?} {sql}");
+        }
+        for (sql, d) in [("EXEC dbo.p @name = N'drop'", ms), ("EXEC('SELECT 1')", ms), ("PREPARE s FROM 'SELECT 1'", my), ("DO 'drop'", my)] {
+            assert!(!changes_structure(sql, d), "{d:?} {sql}");
+        }
+    }
+
+    #[test]
+    fn a_where_always_true_is_asked_like_none() {
+        let f = review_in(&["DELETE FROM t WHERE 1=1"], Environment::default(), Dialect::Postgres);
+        assert_eq!(f.first().map(|f| f.rule), Some("trivial-where"), "{f:?}");
+        assert!(review_in(&["DELETE FROM t WHERE id = 3"], Environment::default(), Dialect::Postgres).is_empty());
     }
 }

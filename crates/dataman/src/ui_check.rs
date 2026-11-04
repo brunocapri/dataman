@@ -116,7 +116,7 @@ fn tabs(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> Vec<Entity<Query
 
 fn tab_points(ws: &Entity<Workspace>, i: usize, cx: &mut AsyncWindowContext) -> Option<(Point<Pixels>, Point<Pixels>)> {
     draw(cx);
-    let b = cx.update(|_, cx| ws.read(cx).tab_bounds.borrow().get(i).copied()).ok().flatten()?;
+    let b = cx.update(|_, cx| ws.read(cx).panes[0].tab_bounds.borrow().get(i).copied()).ok().flatten()?;
     let mid = point(b.left() + b.size.width / 2., b.top() + b.size.height / 2.);
     // The × is 16 pt wide, 8 pt in from the tab's right edge.
     Some((mid, point(b.right() - px(16.), mid.y)))
@@ -865,7 +865,7 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
         draw(cx);
         draw(cx);
         cx.update(|_, cx| {
-            let tab_h = ws.read(cx).tab_bounds.borrow().first().map_or(0., |b| b.size.height.as_f32());
+            let tab_h = ws.read(cx).panes[0].tab_bounds.borrow().first().map_or(0., |b| b.size.height.as_f32());
             let (lh, cw) = editor.read(cx).demo_metrics();
             let (row, gw) = grid.read(cx).demo_row_metrics();
             (tab_h, lh, cw, row, gw, grid.read(cx).demo_widths().0)

@@ -180,11 +180,7 @@ fn activity_name(name: &str) -> bool {
 }
 
 pub fn stronger(a: Mask, b: Mask) -> Mask {
-    let rank = |m: Mask| match m {
-        Mask::Hidden => 1,
-        Mask::Partial(_) => 0,
-    };
-    if rank(a) >= rank(b) { a } else { b }
+    Mask::stronger(a, b)
 }
 
 struct Narrowed {
@@ -197,7 +193,7 @@ pub fn check(sql: &str, write: bool, cx: &Context) -> Result<Checked, String> {
     let rules = cx.rules;
     let conn = cx.connection;
     let d = cx.dialect;
-    let restricted = !rules.visible.is_open() || (rules.view == AgentView::Masked && rules.sensitive.iter().any(|s| s.on));
+    let restricted = rules.narrows();
     let mut edits: Vec<(std::ops::Range<usize>, String)> = Vec::new();
     let mut masked: Vec<(String, Mask)> = Vec::new();
     let mut err: Option<String> = None;
@@ -246,10 +242,10 @@ fn statement(
     let has = |w: &str| words.iter().any(|x| x.as_deref() == Some(w));
 
     // What agents may do.
-    if !rules.structure && facts.effect == Effect::Ddl {
+    if !rules.structure && (facts.effect == Effect::Ddl || guard::changes_structure(text, d)) {
         return Err(format!("changing structure ({verb}) is off for agents on {conn} (Dataman › Agents › Permissions)"));
     }
-    if !rules.code && (matches!(verb.as_str(), "CALL" | "DO" | "EXEC" | "EXECUTE") || has("SP_EXECUTESQL")) {
+    if !rules.code && (matches!(verb.as_str(), "CALL" | "DO" | "EXEC" | "EXECUTE") || has("SP_EXECUTESQL") || guard::runs_code(text, d)) {
         return Err(format!("running code ({verb}) is off for agents on {conn} (Dataman › Agents › Permissions)"));
     }
     // A read sent with a write (execute, open_query, a write tool) returns its rows too: only a

@@ -1,5 +1,6 @@
 pub mod activity;
 pub mod agent_login;
+pub mod audit;
 pub mod agents_config;
 pub mod approved;
 pub mod agent_nosql;
@@ -15,6 +16,7 @@ pub mod connstr;
 pub mod dataview;
 pub mod ddl;
 pub mod edit;
+pub mod engine;
 pub mod estimate;
 pub mod explain;
 pub mod export;
@@ -70,9 +72,10 @@ use parking_lot::Mutex;
 use tokio::runtime::{Handle, Runtime};
 use tokio::sync::oneshot;
 
-pub use backend::{Caps, server_error};
+pub use backend::{Caps, ConnectError, needs_password, server_error, server_error_class};
 pub use backend::duck::EXTERNAL_ACCESS as DUCKDB_EXTERNAL_ACCESS;
 pub use config::{ConfigStore, ConnFolder, ConnectionProfile, Dirs, Engine, Environment, MCP_ADVANCED, McpAccess, SshAuth, SshSettings, SslMode, default_sslmode, is_local_host};
+pub use engine::EngineSpec;
 pub use sql::Dialect;
 pub use conn::TxEnd;
 pub use tx::{TxState, TxStatus};
@@ -81,9 +84,9 @@ pub use conn::{Connection, Session};
 pub use favorites::{Favorite, FavoritesStore, NameMatch};
 pub use history::{History, HistoryEntry, Outcome};
 pub use pins::PinStore;
-pub use result::{Phase, ResultSet};
+pub use result::{ErrorClass, ErrorInfo, Phase, ResultSet};
 pub use secret::{Keychain, MemorySecrets, SecretStore};
-pub use server::ServerInfo;
+pub use server::{Flavor, ServerInfo};
 pub use settings::{Settings, SettingsStore, ThemePref, Translucency, UiFont};
 
 #[must_use]
@@ -195,12 +198,23 @@ pub enum ImportSource {
     Pgpass,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Importable {
     pub source: ImportSource,
     pub profile: ConnectionProfile,
     pub password: Option<String>,
     pub exists: bool,
+}
+
+/// Shows that a secret is there, never the secret (Debug reaches logs and panics).
+pub(crate) fn secret_shown(s: &Option<String>) -> Option<&'static str> {
+    s.as_ref().map(|_| mask::MASK)
+}
+
+impl std::fmt::Debug for Importable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Importable").field("source", &self.source).field("profile", &self.profile).field("password", &secret_shown(&self.password)).field("exists", &self.exists).finish()
+    }
 }
 
 impl Core {
@@ -400,7 +414,7 @@ fn importable(saved: &[ConnectionProfile], pgpass_file: Option<&std::path::Path>
             }
             let mut p = ConnectionProfile::new("");
             p.host = e.host.clone();
-            p.port = e.port.parse().unwrap_or(5432);
+            p.port = e.port.parse().unwrap_or(Engine::Postgres.default_port());
             p.user = if e.user == "*" { connstr::local_user() } else { e.user.clone() };
             p.database = if e.database == "*" { "postgres".into() } else { e.database.clone() };
             p.name = if e.database == "*" { format!("{}@{}", p.user, p.host) } else { format!("{}@{}", p.database, p.host) };

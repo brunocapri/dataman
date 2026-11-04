@@ -48,6 +48,8 @@ pub struct ColChunk {
 pub struct Chunk {
     pub rows: usize,
     pub cols: Vec<ColChunk>,
+    /// Values the server sent that did not decode (stored as NULL, said so on the result).
+    pub(crate) undecoded: usize,
 }
 
 impl Chunk {
@@ -123,13 +125,14 @@ pub struct ChunkBuilder {
     kinds: Vec<Kind>,
     rows: usize,
     cols: Vec<ColChunk>,
+    undecoded: usize,
 }
 
 impl ChunkBuilder {
     pub fn new(columns: &[ColumnInfo]) -> Self {
         let kinds: Vec<Kind> = columns.iter().map(|c| c.kind).collect();
         let cols = kinds.iter().map(|k| Self::empty_col(*k)).collect();
-        ChunkBuilder { kinds, rows: 0, cols }
+        ChunkBuilder { kinds, rows: 0, cols, undecoded: 0 }
     }
 
     fn empty_col(k: Kind) -> ColChunk {
@@ -184,6 +187,16 @@ impl ChunkBuilder {
         if null {
             *c.nulls.last_mut().unwrap() |= 1 << (r % 64);
         }
+    }
+
+    /// A value that did not decode: NULL in the grid, but never silently (the result says how
+    /// many, the log which column).
+    pub fn push_undecoded(&mut self, col: usize, why: impl std::fmt::Display) {
+        if self.undecoded == 0 {
+            log::warn!("column {col}: a value did not decode ({why}); shown as NULL");
+        }
+        self.undecoded += 1;
+        self.push_null(col);
     }
 
     pub fn push_null(&mut self, col: usize) {
@@ -252,7 +265,7 @@ impl ChunkBuilder {
         let cols = self.kinds.iter().map(|k| Self::empty_col(*k)).collect();
         let cols = std::mem::replace(&mut self.cols, cols);
         let rows = std::mem::take(&mut self.rows);
-        Chunk { rows, cols }
+        Chunk { rows, cols, undecoded: std::mem::take(&mut self.undecoded) }
     }
 }
 
@@ -279,6 +292,71 @@ pub struct ErrorInfo {
     pub hint: Option<String>,
     pub position: Option<u32>,
     pub severity: Option<String>,
+}
+
+/// What an error means, whatever the engine's code for it (each backend's table is
+/// `backend::class`). Decisions go by this, never by the code or the message's language.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ErrorClass {
+    /// The login was refused (a wrong or missing password).
+    Auth,
+    Permission,
+    Timeout,
+    Cancelled,
+    Unique,
+    NotNull,
+    Fk,
+    Check,
+    /// A value not valid for its type, too long, out of range.
+    Data,
+    Deadlock,
+    /// Another transaction changed the same rows (serialization failure).
+    Serialization,
+    LockTimeout,
+    ReadOnly,
+    /// Cannot run inside (or outside) a transaction block.
+    TxBlock,
+    Unsupported,
+    Syntax,
+    Undefined,
+    Connection,
+    Other,
+}
+
+impl ErrorClass {
+    /// Errors of these classes quote the row or the values that failed.
+    pub fn carries_values(self) -> bool {
+        matches!(self, ErrorClass::Unique | ErrorClass::NotNull | ErrorClass::Fk | ErrorClass::Check | ErrorClass::Data)
+    }
+
+    /// What it means for an edit, in a sentence (empty for the classes that need none).
+    pub fn explain(self) -> &'static str {
+        match self {
+            ErrorClass::Unique => "Duplicate value: another row already has this value in a unique column or key.",
+            ErrorClass::NotNull => "A required column (NOT NULL) has no value.",
+            ErrorClass::Fk => "Foreign key: the row points to a row that does not exist, or other rows still point to it.",
+            ErrorClass::Check => "A CHECK constraint rejected the value.",
+            ErrorClass::Data => "A value is not valid for its column's type.",
+            ErrorClass::Deadlock => "Deadlock with another transaction; nothing was saved. Try again.",
+            ErrorClass::Serialization => "Another transaction changed the same rows at the same time; nothing was saved. Reload and try again.",
+            ErrorClass::LockTimeout => "Another transaction holds a lock on these rows; nothing was saved. Try again.",
+            ErrorClass::ReadOnly => "The database is read-only (or a replica): nothing was saved.",
+            ErrorClass::TxBlock => "This statement cannot run inside a transaction block.",
+            ErrorClass::Permission => "Permission denied.",
+            ErrorClass::Auth => "The server refused the login.",
+            ErrorClass::Unsupported => "The server does not support this.",
+            ErrorClass::Cancelled => "Cancelled.",
+            ErrorClass::Timeout => "The statement ran out of time.",
+            ErrorClass::Syntax | ErrorClass::Undefined | ErrorClass::Connection | ErrorClass::Other => "",
+        }
+    }
+}
+
+impl ErrorInfo {
+    /// Codes have no namespace: the engine that gave this one says what it means.
+    pub fn class(&self, engine: crate::config::Engine) -> ErrorClass {
+        self.code.as_deref().map_or(ErrorClass::Other, |c| crate::backend::class::of(engine, c))
+    }
 }
 
 impl std::fmt::Display for ErrorInfo {
@@ -358,6 +436,7 @@ pub struct ResultSet {
     messages: Mutex<(Arc<Vec<String>>, usize)>,
     estimate: OnceLock<Option<u64>>,
     estimate_asked: std::sync::atomic::AtomicBool,
+    undecoded: std::sync::atomic::AtomicUsize,
 }
 
 pub const MESSAGE_CAP: usize = 10_000;
@@ -474,6 +553,7 @@ impl ResultSet {
             next: OnceLock::new(),
             restored: false,
             messages: Mutex::new((Arc::new(Vec::new()), 0)),
+            undecoded: Default::default(),
             estimate: OnceLock::new(),
             estimate_asked: Default::default(),
         })
@@ -609,7 +689,7 @@ impl ResultSet {
                 .map(|c| {
                     let mut cols = c.cols.clone();
                     cols[col] = c.cols[col].to_text(kind, c.rows);
-                    Arc::new(Chunk { rows: c.rows, cols })
+                    Arc::new(Chunk { rows: c.rows, cols, undecoded: c.undecoded })
                 })
                 .collect();
             *g = Arc::new(Chunks { list, starts: g.starts.clone(), rows: g.rows });
@@ -679,6 +759,9 @@ impl ResultSet {
     pub(crate) fn push_chunk(&self, chunk: Chunk) {
         if chunk.rows == 0 {
             return;
+        }
+        if chunk.undecoded > 0 && self.undecoded.fetch_add(chunk.undecoded, std::sync::atomic::Ordering::AcqRel) == 0 {
+            self.push_message("Some values did not decode: they show as NULL here, not as the server's NULL (see the log).".into());
         }
         {
             let mut g = self.chunks.write();

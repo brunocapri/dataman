@@ -1,12 +1,18 @@
 use std::path::{Path, PathBuf};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Entry {
     pub host: String,
     pub port: String,
     pub database: String,
     pub user: String,
     pub password: String,
+}
+
+impl std::fmt::Debug for Entry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Entry").field("host", &self.host).field("port", &self.port).field("database", &self.database).field("user", &self.user).field("password", &crate::mask::MASK).finish()
+    }
 }
 
 impl Entry {

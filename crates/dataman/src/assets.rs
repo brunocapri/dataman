@@ -284,17 +284,7 @@ pub fn set_logos(on: bool) {
 }
 
 pub fn logo(e: dataman_core::Engine) -> gpui::Img {
-    let path: &'static str = match e {
-        dataman_core::Engine::Postgres => "logos/postgres.svg",
-        dataman_core::Engine::MySql => "logos/mysql.svg",
-        dataman_core::Engine::SqlServer => "logos/sql-server.svg",
-        dataman_core::Engine::MongoDb => "logos/mongodb.svg",
-        dataman_core::Engine::Elasticsearch => "logos/elasticsearch.svg",
-        dataman_core::Engine::OpenSearch => "logos/opensearch.svg",
-        dataman_core::Engine::Redis => "logos/redis.svg",
-        dataman_core::Engine::Sqlite => "logos/sqlite.svg",
-        dataman_core::Engine::DuckDb => "logos/duckdb.svg",
-    };
+    let path: &'static str = e.logo();
     gpui::img(path).flex_none()
 }
 
@@ -309,8 +299,8 @@ mod tests {
     #[test]
     fn every_engine_has_its_logo() {
         for e in dataman_core::Engine::ALL {
-            let path = format!("logos/{}.svg", e.slug());
-            let bytes = Assets.load(&path).unwrap().unwrap_or_else(|| panic!("{path}"));
+            let path = e.logo();
+            let bytes = Assets.load(path).unwrap().unwrap_or_else(|| panic!("{path}"));
             assert!(std::str::from_utf8(&bytes).unwrap().starts_with("<svg"), "{path}");
         }
     }

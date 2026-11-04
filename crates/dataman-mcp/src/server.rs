@@ -10,7 +10,7 @@ use rmcp::service::RequestContext;
 use rmcp::{ErrorData as McpError, RoleServer, ServerHandler};
 use serde_json::Value;
 
-use crate::audit::{Entry, Outcome, full, redact};
+use dataman_core::audit::{Entry, Outcome, full, redact};
 use crate::hub::Hub;
 use crate::policy::Need;
 use crate::resources;
@@ -59,9 +59,40 @@ impl Server {
         cx.client_info().map(|i| i.name).unwrap_or_else(|| "unknown".into())
     }
 
-    fn audit(&self, call: &Call, started: Instant, outcome: Outcome, error: Option<String>, reply: Option<&str>) {
+    /// Before the call runs: what it was asked, under the id its end will carry.
+    fn audit_start(&self, call: &Call, id: &str, args: &serde_json::Map<String, Value>) {
+        let connection = args.get("connection").and_then(Value::as_str).map(str::to_string);
+        let engine = connection.as_deref().and_then(|c| self.hub.profile(c).ok()).map(|p| p.engine);
+        let sql = args.get("sql").and_then(Value::as_str).map(|s| match engine {
+            Some(e) => dataman_core::mask::statement(e, s).into_owned(),
+            None => dataman_core::mask::any(s).into_owned(),
+        });
+        self.hub.audit.write(&Entry {
+            id: Some(id.to_string()),
+            ts: chrono::Utc::now(),
+            client: call.client.clone(),
+            transport: self.transport.into(),
+            tool: call.tool.clone(),
+            connection,
+            database: args.get("database").and_then(Value::as_str).map(str::to_string),
+            sql: sql.as_deref().map(redact),
+            query: None,
+            rows: None,
+            ms: 0.0,
+            outcome: Outcome::Started,
+            error: None,
+            approval: None,
+            draft: false,
+            favorite: None,
+            allowed_by: None,
+            rewritten: None,
+            seen: None,
+            login: None,
+        });
+    }
+
+    fn audit(&self, call: &Call, id: String, started: Instant, outcome: Outcome, error: Option<String>, reply: Option<&str>) {
         let mut n = call.note();
-        let id = uuid::Uuid::new_v4().simple().to_string();
         if let Some(r) = reply {
             self.hub.keep_reply(&id, r);
         }
@@ -82,7 +113,12 @@ impl Server {
             connection: n.connection,
             database: n.database,
             sql: n.sql.as_deref().map(redact),
-            query: n.sql.as_deref().and_then(full),
+            // The literals the agent wrote may be values it read: what the sensitive types mask
+            // in a reply is masked here too.
+            query: n.sql.as_deref().and_then(full).map(|q| {
+                let profile = call.note().connection.as_deref().and_then(|c| self.hub.profile(c).ok());
+                self.hub.types_for(profile.as_ref()).scrub(&q, &mut Counts::new()).into_owned()
+            }),
             rows: n.rows,
             ms: (started.elapsed().as_secs_f64() * 1e4).round() / 10.0,
             outcome,
@@ -131,39 +167,68 @@ impl Server {
     }
 
     pub async fn run_tool(&self, tool: Arc<dyn Tool>, args: serde_json::Map<String, Value>, client: String, ct: tokio_util::sync::CancellationToken) -> CallToolResult {
+        let _running = Running::start();
         let started = Instant::now();
         let call = Call::new(self.hub.clone(), client, self.transport, tool.name(), ct);
+        let id = uuid::Uuid::new_v4().simple().to_string();
+        self.audit_start(&call, &id, &args);
         let r = match tool.schema().validate(&args) {
             Err(e) => Err(ToolError::Invalid(e)),
-            Ok(()) => tool.call(&call, Args(args)).await,
+            Ok(()) => {
+                let args = Args(args);
+                // The policy's gate, whatever the handler then asks for.
+                match tool.needs_connection().then(|| call.target(&args, Need::Read)).transpose() {
+                    Err(e) => Err(e),
+                    Ok(_) => tool.call(&call, args).await,
+                }
+            }
         };
         let r = self.privacy_pass(&call, r);
         match r {
             Ok(v) => {
                 let text = serde_json::to_string(&v).unwrap_or_default();
-                self.audit(&call, started, Outcome::Ok, None, Some(&text));
+                self.audit(&call, id, started, Outcome::Ok, None, Some(&text));
                 CallToolResult::success(vec![ContentBlock::text(text)])
             }
             Err(e) => {
                 let msg = e.message();
-                self.audit(&call, started, e.outcome(), Some(msg.clone()), None);
+                self.audit(&call, id, started, e.outcome(), Some(msg.clone()), None);
                 CallToolResult::error(vec![ContentBlock::text(msg)])
             }
         }
     }
 }
 
+static RUNNING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// A call under way, until its audit entry is written.
+struct Running;
+
+impl Running {
+    fn start() -> Running {
+        RUNNING.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        Running
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        RUNNING.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
+}
+
+/// Waits (up to `most`) for the calls under way to end and write their audit entries: a write
+/// committed just before the process exits is never left unlogged.
+pub async fn drain(most: std::time::Duration) {
+    let until = Instant::now() + most;
+    while RUNNING.load(std::sync::atomic::Ordering::Acquire) > 0 && Instant::now() < until {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
 pub fn describe(t: &dyn Tool) -> rmcp::model::Tool {
-    let ann = match (t.need(), t.name()) {
-        (Some(Need::Write), _) => ToolAnnotations::new().read_only(false).destructive(true).idempotent(false).open_world(false),
-        // They run writes too (through the tier, as execute does).
-        (_, "open_query" | "run_favorite") => ToolAnnotations::new().read_only(false).destructive(true).idempotent(false).open_world(false),
-        (_, "remove_favorite") => ToolAnnotations::new().read_only(false).destructive(true).idempotent(true).open_world(false),
-        (_, "create_connection" | "update_connection" | "create_agent_login" | "add_favorite" | "rename_favorite" | "import_favorites") => {
-            ToolAnnotations::new().read_only(false).destructive(false).idempotent(true).open_world(false)
-        }
-        _ => ToolAnnotations::new().read_only(true).destructive(false).idempotent(true).open_world(false),
-    };
+    let (read_only, destructive, idempotent) = t.effect().hints();
+    let ann = ToolAnnotations::new().read_only(read_only).destructive(destructive).idempotent(idempotent).open_world(false);
     rmcp::model::Tool::new(t.name().to_string(), t.description().to_string(), Arc::new(t.schema().0.clone())).with_annotations(ann)
 }
 
@@ -265,13 +330,13 @@ impl Server {
         });
         match r {
             Ok(text) => {
-                self.audit(&call, started, Outcome::Ok, None, Some(&text));
+                self.audit(&call, uuid::Uuid::new_v4().simple().to_string(), started, Outcome::Ok, None, Some(&text));
                 Ok(text)
             }
             Err(e) => {
                 let e = self.privacy_pass(&call, Err(e)).unwrap_err();
                 let msg = e.message();
-                self.audit(&call, started, e.outcome(), Some(msg.clone()), None);
+                self.audit(&call, uuid::Uuid::new_v4().simple().to_string(), started, e.outcome(), Some(msg.clone()), None);
                 Err(msg)
             }
         }

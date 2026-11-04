@@ -313,6 +313,10 @@ impl SettingsStore {
     pub fn update(&self, f: impl FnOnce(&mut Settings)) -> Result<()> {
         let mut g = self.current.lock();
         let _held = crate::stamp::hold(&self.path);
+        // Another process' write since the last read is the base, not lost under this one.
+        if FileStamp::of(&self.path) != g.stamp && std::fs::metadata(&self.path).is_ok_and(|m| m.is_file()) {
+            *g = load(&self.path, &self.approved);
+        }
         let before = SettingsRules::of(&g.settings);
         let mut next = g.settings.clone();
         f(&mut next);
@@ -326,13 +330,16 @@ impl SettingsStore {
             self.approved.set_settings(&now).context(format!("saving the approved rules in the {}", crate::secret::STORE_NAME))?;
             g.kept = Kept::Found(now);
         }
-        g.settings = next;
-        let mut file = g.settings.clone();
-        match held {
-            Some(rules) => rules.set(&mut file),
-            None => g.held = None,
+        let mut file = next.clone();
+        if let Some(rules) = &held {
+            rules.set(&mut file);
         }
+        // Memory follows the file only once it is written.
         save(&self.path, &file)?;
+        g.settings = next;
+        if held.is_none() {
+            g.held = None;
+        }
         g.stamp = FileStamp::of(&self.path);
         Ok(())
     }
@@ -400,9 +407,7 @@ fn save(path: &Path, s: &Settings) -> Result<()> {
     let dir = path.parent().context("settings path has no parent")?;
     std::fs::create_dir_all(dir)?;
     let text = toml::to_string_pretty(s)?;
-    let tmp = dir.join(format!(".settings.toml.{}", std::process::id()));
-    std::fs::write(&tmp, text)?;
-    std::fs::rename(&tmp, path).with_context(|| format!("writing {}", path.display()))?;
+    crate::os::atomic_write(path, text.as_bytes(), false).with_context(|| format!("writing {}", path.display()))?;
     Ok(())
 }
 

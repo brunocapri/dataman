@@ -218,6 +218,11 @@ pub(crate) fn review(approved: Option<&ConnectionProfile>, next: &ConnectionProf
     if named != old {
         push("Other settings", "as approved".into(), "changed outside Dataman".into(), true);
     }
+    // The agent rules have lines of their own above; a change none of them names is not taken
+    // unseen either.
+    if old.mcp_rules != now.mcp_rules && project::protections(&old, &ConnectionProfile { mcp_rules: now.mcp_rules.clone(), ..old.clone() }).is_empty() {
+        push("Agent rules", "as approved".into(), "changed outside Dataman".into(), true);
+    }
     (moved || changes.iter().any(|c| c.loosens)).then(|| review(false, moved, changes))
 }
 
@@ -256,16 +261,21 @@ pub(crate) fn resolve(file: &[ConnectionProfile], approved: Option<&[ConnectionP
 pub struct SettingsRules {
     pub agent_access: bool,
     pub sensitive_data: TypeSettings,
+    /// Where crash reports (paths, statements) go: another program of this user must not point
+    /// them elsewhere unseen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crash_report_url: Option<String>,
 }
 
 impl SettingsRules {
     pub fn of(s: &Settings) -> SettingsRules {
-        SettingsRules { agent_access: s.mcp_enabled, sensitive_data: s.agent_types.clone() }
+        SettingsRules { agent_access: s.mcp_enabled, sensitive_data: s.agent_types.clone(), crash_report_url: s.crash_report_url.clone() }
     }
 
     pub(crate) fn set(&self, s: &mut Settings) {
         s.mcp_enabled = self.agent_access;
         s.agent_types = self.sensitive_data.clone();
+        s.crash_report_url = self.crash_report_url.clone();
     }
 }
 
@@ -279,6 +289,10 @@ pub(crate) fn review_settings(approved: Option<&SettingsRules>, next: &SettingsR
         changes.push(Change { what: "Agent access".into(), from: on(old.agent_access), to: on(next.agent_access), loosens: next.agent_access });
     }
     changes.extend(agents_config::type_changes(&old.sensitive_data, &next.sensitive_data));
+    if old.crash_report_url != next.crash_report_url {
+        let shown = |u: &Option<String>| u.clone().unwrap_or_else(|| "none".into());
+        changes.push(Change { what: "Crash reports go to".into(), from: shown(&old.crash_report_url), to: shown(&next.crash_report_url), loosens: next.crash_report_url.is_some() });
+    }
     if changes.iter().any(|c| c.loosens) { changes } else { Vec::new() }
 }
 

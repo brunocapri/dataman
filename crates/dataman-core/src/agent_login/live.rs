@@ -15,7 +15,7 @@ use crate::conn::Connection;
 use crate::nosql::Client;
 
 /// What the review sheet shows, and what Create runs.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Review {
     pub probe: Probe,
     pub spec: Spec,
@@ -26,6 +26,20 @@ pub struct Review {
     /// MongoDB Atlas: the role to paste there.
     pub atlas: Option<String>,
     pub persist: Option<redis::Persist>,
+}
+
+impl std::fmt::Debug for Review {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Review")
+            .field("probe", &self.probe)
+            .field("spec", &self.spec)
+            .field("inventory", &self.inventory)
+            .field("plan", &self.plan)
+            .field("password", &crate::mask::MASK)
+            .field("atlas", &self.atlas)
+            .field("persist", &self.persist)
+            .finish()
+    }
 }
 
 fn nosql(c: &Connection) -> Result<&Client> {
@@ -655,7 +669,9 @@ pub async fn end_sessions(c: &Arc<Connection>, p: &ConnectionProfile, user: &str
                 Ok(r) => count(r),
                 // A CREATEROLE admin (not a superuser) holds ADMIN on the role it made, not its
                 // privileges (PostgreSQL 16+): it takes them for this transaction only.
-                Err(e) if format!("{e:#}").contains("permission denied to terminate") => {
+                // 42501 (insufficient_privilege), whatever language the server answers in: the
+                // query reads only pg_stat_activity, so it is the terminate that was refused.
+                Err(e) if crate::server_error_class(&e) == Some(crate::ErrorClass::Permission) => {
                     let u = pg::q(user);
                     db.execute("BEGIN").await.map_err(|e| anyhow!("{e}"))?;
                     let r = async {

@@ -1,4 +1,3 @@
-pub mod audit;
 pub mod builtin;
 pub mod cli;
 pub mod hub;
@@ -24,7 +23,9 @@ pub fn registry(dirs: &Dirs) -> Arc<Registry> {
 pub async fn serve_stdio(hub: Arc<Hub>, registry: Arc<Registry>) -> anyhow::Result<()> {
     let server = Server::new(hub, registry, "stdio").forwarding();
     let running = rmcp::serve_server(server, rmcp::transport::stdio()).await?;
-    running.waiting().await?;
+    let r = running.waiting().await;
+    server::drain(std::time::Duration::from_secs(5)).await;
+    r?;
     Ok(())
 }
 

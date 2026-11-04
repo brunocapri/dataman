@@ -630,7 +630,7 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
         .flatten();
     check(
         "the draft's log row says draft, with its SQL",
-        draft_row.as_ref().is_some_and(|(what, sql, o)| what == "draft" && sql.as_deref() == Some(delete.as_str()) && *o == dataman_mcp::audit::Outcome::Ok),
+        draft_row.as_ref().is_some_and(|(what, sql, o)| what == "draft" && sql.as_deref() == Some(delete.as_str()) && *o == dataman_core::audit::Outcome::Ok),
         format!("{draft_row:?}"),
     );
     // Audit narrowed to the UPDATE: its row at the top, its menu right under the click.

@@ -11,7 +11,7 @@ use parking_lot::Mutex;
 use serde_json::{Map, Value, json};
 use tokio_util::sync::CancellationToken;
 
-use crate::audit::{AllowedBy, ApprovalNote, Decision};
+use dataman_core::audit::{AllowedBy, ApprovalNote, Decision};
 use crate::hub::{Approval, DRAFTS_NEED_APP, Drafted, Front, Hub, TabDraft, TabRead, TabWrite, WriteShown};
 use crate::policy::{self, Need, Target, Verdict};
 
@@ -27,8 +27,8 @@ pub enum ToolError {
 }
 
 impl ToolError {
-    pub fn outcome(&self) -> crate::audit::Outcome {
-        use crate::audit::Outcome;
+    pub fn outcome(&self) -> dataman_core::audit::Outcome {
+        use dataman_core::audit::Outcome;
         match self {
             ToolError::Invalid(_) => Outcome::Invalid,
             ToolError::Refused(_) => Outcome::Refused,
@@ -256,7 +256,7 @@ pub struct Note {
     pub favorite: Option<String>,
     pub allowed_by: Option<AllowedBy>,
     pub rewritten: Option<String>,
-    pub seen: crate::audit::Seen,
+    pub seen: dataman_core::audit::Seen,
     pub login: Option<String>,
 }
 
@@ -429,7 +429,11 @@ impl Call {
             p = self.hub.permit(&p.id) => p,
             _ = self.cancel.cancelled() => return Err(ToolError::Cancelled),
         };
-        let req = TabRead { client: self.client.clone(), connection_id: p.id.clone(), database, sql: sql.to_string(), params, title, limits, cancel: self.cancel.clone() };
+        let rules = match p.engine {
+            dataman_core::Engine::Sqlite => Some(self.open(args, Need::Read).await?.profile.mcp_rules),
+            _ => None,
+        };
+        let req = TabRead { client: self.client.clone(), connection_id: p.id.clone(), database, sql: sql.to_string(), params, title, limits, cancel: self.cancel.clone(), rules };
         tokio::select! {
             r = f.run_read(req) => r.map_err(ToolError::from),
             _ = self.cancel.cancelled() => Err(ToolError::Cancelled),
@@ -461,7 +465,7 @@ impl Call {
     }
 
     fn note_decision(&self, decision: Decision, reasons: Vec<String>, rows: Option<u64>) {
-        let by = matches!(decision, Decision::Approved | Decision::Denied).then(crate::audit::local_user);
+        let by = matches!(decision, Decision::Approved | Decision::Denied).then(dataman_core::audit::local_user);
         self.note.lock().approval = Some(ApprovalNote { decision, by, reasons, rows });
     }
 
@@ -726,8 +730,10 @@ impl Call {
     pub fn limits(&self, args: &Args, default_rows: u64) -> Limits {
         let rules = self.rules_of(args);
         let cap = rules.read_cap().max(1);
-        // No size limit on a read: Rows per read and the cell length bound it.
-        Limits { max_rows: args.u64_or("max_rows", default_rows).clamp(1, cap).min(usize::MAX as u64) as usize, timeout: self.time_limit(args), max_bytes: usize::MAX, ..Limits::default() }
+        // Rows per read and the cell length bound a read; the reply's size too (with Rows per
+        // read ∞, several statements or a large document would otherwise be one String here, in
+        // the app's process).
+        Limits { max_rows: args.u64_or("max_rows", default_rows).clamp(1, cap).min(usize::MAX as u64) as usize, timeout: self.time_limit(args), max_bytes: MAX_REPLY_BYTES, ..Limits::default() }
     }
 
     pub async fn run(&self, o: &Opened, sql: &str, params: Vec<Option<String>>, mode: Mode, limits: Limits) -> Result<bounded::Outcome, ToolError> {
@@ -746,6 +752,9 @@ impl Call {
         Ok(o.conn.bounded_held(Some(&o.database), sql, params, mode, limits, cancel, decide).await?)
     }
 }
+
+/// The most a call's rows add up to.
+pub const MAX_REPLY_BYTES: usize = 32 * 1024 * 1024;
 
 fn refusal_of(d: Decision, reasons: &[String], rolled_back: bool) -> ToolError {
     let rb = if rolled_back { "; rolled back" } else { "" };
@@ -775,6 +784,18 @@ pub trait Tool: Send + Sync {
     fn description(&self) -> &str;
     fn schema(&self) -> &Schema;
     fn need(&self) -> Option<Need>;
+    fn effect(&self) -> crate::policy::Effect {
+        match self.need() {
+            Some(Need::Write) => crate::policy::Effect::Write,
+            Some(Need::Read) => crate::policy::Effect::Read,
+            None => crate::policy::Effect::Local,
+        }
+    }
+    /// Its `connection` argument passes the policy's gate (MCP on, tier not off, agents not
+    /// refused) before the handler runs: a handler that forgets to ask is still gated.
+    fn needs_connection(&self) -> bool {
+        false
+    }
     fn call<'a>(&'a self, cx: &'a Call, args: Args) -> BoxFut<'a, Result<Value, ToolError>>;
 }
 

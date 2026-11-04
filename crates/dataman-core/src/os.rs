@@ -131,6 +131,32 @@ pub fn canonical(path: impl AsRef<std::path::Path>) -> std::io::Result<PathBuf> 
 
 /// A new file only this user can read (0600 on Unix; on Windows the folders Dataman writes in
 /// are the user's own); an existing one is an error.
+/// Replaces `path` whole or not at all: a temporary file of its own name (unique across
+/// processes and threads) in the same folder, synced, renamed over it, and the folder synced;
+/// the temporary goes on any failure. `private`: 0600 (this user's only).
+pub fn atomic_write(path: &std::path::Path, bytes: &[u8], private: bool) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
+    std::fs::create_dir_all(dir)?;
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let tmp = dir.join(format!(".{name}.{}.{}", std::process::id(), uuid::Uuid::new_v4().simple()));
+    let r = (|| {
+        let mut f = if private { private_new(&tmp)? } else { std::fs::File::options().write(true).create_new(true).open(&tmp)? };
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        std::fs::rename(&tmp, path)?;
+        #[cfg(unix)]
+        if let Ok(d) = std::fs::File::open(dir) {
+            let _ = d.sync_all();
+        }
+        Ok(())
+    })();
+    if r.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    r
+}
+
 pub fn private_new(path: &std::path::Path) -> std::io::Result<std::fs::File> {
     let mut o = std::fs::File::options();
     o.write(true).create_new(true);

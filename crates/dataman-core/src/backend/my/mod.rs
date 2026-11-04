@@ -472,7 +472,10 @@ pub(crate) async fn server_info(client: &Client) -> Result<ServerInfo> {
     let rows = client.text_rows("SELECT VERSION(), DATABASE(), SUBSTRING_INDEX(CURRENT_USER(), '@', 1)").await?;
     let row = rows.into_iter().next().context("VERSION() returned no row")?;
     let get = |i: usize| row.get(i).cloned().flatten().unwrap_or_default();
-    let mut info = ServerInfo { version: version_label(&get(0)), database: get(1), user: get(2), ..Default::default() };
+    let raw = get(0);
+    let flavor = if raw.contains("MariaDB") { crate::server::Flavor::MariaDb } else { crate::server::Flavor::Standard };
+    let release = raw.strip_prefix("5.5.5-").unwrap_or(&raw).to_string();
+    let mut info = ServerInfo { database: get(1), user: get(2), ..ServerInfo::of(crate::config::Engine::MySql, flavor, version_label(&raw), &release) };
     info.search_path = if info.database.is_empty() { vec![] } else { vec![info.database.clone()] };
     Ok(info)
 }

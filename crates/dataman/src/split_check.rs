@@ -132,7 +132,7 @@ fn tab_mid(ws: &Entity<Workspace>, pane: Pane, i: usize, cx: &mut AsyncWindowCon
     let b = cx
         .update(|_, cx| {
             let w = ws.read(cx);
-            let b = if pane == Pane::Left { w.tab_bounds.borrow() } else { w.tab_bounds_right.borrow() };
+            let b = w.panes[pane.index()].tab_bounds.borrow();
             b.get(i).copied()
         })
         .ok()
@@ -150,12 +150,12 @@ fn middle(b: Bounds<Pixels>) -> Point<Pixels> {
 
 fn parts(ws: &Entity<Workspace>, pane: Pane, cx: &mut AsyncWindowContext) -> Vec<Bounds<Pixels>> {
     draw(cx);
-    cx.update(|_, cx| ws.read(cx).strip_parts.borrow()[pane.index()].clone()).unwrap_or_default()
+    cx.update(|_, cx| ws.read(cx).panes[pane.index()].strip_parts.borrow().clone()).unwrap_or_default()
 }
 
 fn strip_scroll(ws: &Entity<Workspace>, pane: Pane, cx: &mut AsyncWindowContext) -> (f32, f32, Bounds<Pixels>) {
     cx.update(|_, cx| {
-        let h = &ws.read(cx).strip_scroll[pane.index()];
+        let h = &ws.read(cx).panes[pane.index()].strip_scroll;
         (h.offset().x.pt(), h.max_offset().x.pt(), h.bounds())
     })
     .unwrap()
@@ -442,7 +442,7 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
     let narrow = panes(ws, cx);
     snap("narrow", cx);
     let picker = cx.update(|_, cx| ws.read(cx).picker_bounds.get()).ok().flatten();
-    let tb = cx.update(|_, cx| ws.read(cx).toolbar_parts.borrow()[0].clone()).unwrap_or_default();
+    let tb = cx.update(|_, cx| ws.read(cx).panes[0].toolbar_parts.borrow().clone()).unwrap_or_default();
     let edge = narrow.map(|((lx, lw), _)| px(lx + lw));
     let fits = edge.is_some_and(|r| tb.iter().all(|b| b.right() <= r + px(0.5))) && tb.windows(2).all(|w| w[0].right() <= w[1].left() + px(0.5));
     report(

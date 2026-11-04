@@ -26,12 +26,10 @@ pub enum TargetKind {
 
 impl Target {
     pub fn of(info: &crate::ServerInfo) -> Target {
-        let kind = if info.version.starts_with("SQLite ") {
-            TargetKind::SqliteQueryPlan
-        } else if info.version.starts_with("DuckDB ") {
-            TargetKind::DuckText
-        } else {
-            TargetKind::Postgres
+        let kind = match info.engine {
+            crate::config::Engine::Sqlite => TargetKind::SqliteQueryPlan,
+            crate::config::Engine::DuckDb => TargetKind::DuckText,
+            _ => TargetKind::Postgres,
         };
         Target { major: info.major(), kind }
     }

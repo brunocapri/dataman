@@ -73,8 +73,13 @@ pub fn download(url: &str, size: u64, part: &Path, on: &dyn Fn(Phase)) -> Result
 
 /// POSTs `text` as text/plain; a redirect is not followed (a crash report goes where it is sent).
 pub fn post_text(url: &str, text: &str, what: &str) -> Result<()> {
-    if !(url.starts_with("https://") || url.starts_with("http://")) {
-        bail!("{what}: not an http(s) URL");
+    // A report holds paths and statements: TLS on the way, but to this machine (a local relay).
+    let local = url.strip_prefix("http://").map(|r| r.split(['/', '?', '#']).next().unwrap_or("")).is_some_and(|h| {
+        let host = h.rsplit_once(':').filter(|(_, p)| p.chars().all(|c| c.is_ascii_digit())).map_or(h, |(h, _)| h);
+        crate::config::is_local_host(host) && !host.is_empty() && !host.starts_with('/')
+    });
+    if !(url.starts_with("https://") || local) {
+        bail!("{what}: not an https URL");
     }
     let (url, text) = (url.to_string(), text.to_string());
     run(async move {
@@ -133,5 +138,7 @@ mod tests {
         assert!(got[0].0.starts_with("POST /crash ") && got[0].0.contains("text/plain"), "{}", got[0].0);
         assert_eq!(got[0].1, "boom\nnaïve");
         assert!(super::post_text("file:///etc/passwd", "x", "crash report").is_err());
+        assert!(super::post_text("http://crash.example/x", "x", "crash report").is_err_and(|e| e.to_string().contains("not an https URL")));
+        assert!(super::post_text("http://127.0.0.1.evil.example/x", "x", "crash report").is_err_and(|e| e.to_string().contains("not an https URL")));
     }
 }

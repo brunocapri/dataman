@@ -172,13 +172,36 @@ impl Workspace {
         h.finish()
     }
 
-    pub(crate) fn schedule_session_save(&mut self, cx: &mut Context<Self>) {
-        if store(cx).is_none() || self.session_off {
+    /// Something may have changed: what did is looked at every SAVE_AFTER, not on each notify,
+    /// and saved once it holds still.
+    pub(crate) fn session_dirty(&mut self, cx: &mut Context<Self>) {
+        if self.session_task.is_some() || store(cx).is_none() || self.session_off {
             return;
         }
         self.session_task = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(SAVE_AFTER).await;
-            let _ = this.update(cx, |w, cx| w.save_session(false, cx));
+            let mut moved = false;
+            loop {
+                cx.background_executor().timer(SAVE_AFTER).await;
+                let Ok(still) = this.update(cx, |w, cx| {
+                    let fp = w.session_fingerprint(cx);
+                    if fp != w.session_fp {
+                        w.session_fp = fp;
+                        return false;
+                    }
+                    if moved {
+                        w.save_session(false, cx);
+                    } else {
+                        w.session_task = None;
+                    }
+                    true
+                }) else {
+                    return;
+                };
+                if still {
+                    return;
+                }
+                moved = true;
+            }
         }));
     }
 

@@ -16,7 +16,7 @@ use crate::backend::pg::{TextParam, column_infos, error_info, push_row};
 use crate::backend::{Dedicated, RowSource, duck, lite, ms, my};
 use crate::conn::Connection;
 use crate::guard;
-use crate::result::{Cell, ChunkBuilder, ColumnInfo, ErrorInfo, format_cell};
+use crate::result::{Cell, ChunkBuilder, ColumnInfo, ErrorClass, ErrorInfo, format_cell};
 use crate::sql::Dialect;
 use crate::value::{Kind, Storage};
 
@@ -200,27 +200,18 @@ fn my_lexed_sql_mode() -> String {
 
 const GRACE: Duration = Duration::from_millis(500);
 const POOL_SIZE: usize = 2;
-const POOL: &str = "agent-pool";
-
-type Pool = Mutex<Vec<Dedicated>>;
+pub(crate) type Pool = Mutex<Vec<Dedicated>>;
 
 impl Connection {
     /// The pool of `db`'s connections made while it was read-only (`ro`) or not: a toggle in
     /// the explorer never hands out a connection made for the other state.
     fn agent_pool(&self, db: &str, ro: bool) -> Arc<Pool> {
-        let key = (POOL, db.to_string(), if ro { "read-only" } else { "" }.to_string());
-        let mut g = self.caches.lock();
-        if let Some(p) = g.get(&key).cloned().and_then(|a| a.downcast::<Pool>().ok()) {
-            return p;
-        }
-        let p: Arc<Pool> = Arc::new(Mutex::new(Vec::new()));
-        g.insert(key, p.clone());
-        p
+        self.agent_pools.lock().entry((db.to_string(), ro)).or_default().clone()
     }
 
     /// A file database's agents get connections of their own make: read-only (and refusing
     /// writes) for reads, refusing escapes for every level.
-    async fn agent_take(&self, db: &str, ro: bool) -> anyhow::Result<Dedicated> {
+    pub(crate) async fn agent_take(&self, db: &str, ro: bool) -> anyhow::Result<Dedicated> {
         let pool = self.agent_pool(db, ro);
         loop {
             let d = pool.lock().pop();
@@ -236,21 +227,28 @@ impl Connection {
         } else {
             self.dedicated(Some(db)).await?
         };
-        // The guard lexes strings as these settings read them: the server must too.
+        // The guard lexes strings as these settings read them: the server must too. Errors come
+        // in English where the login may choose (what privacy::clean_error knows how to clean);
+        // PostgreSQL lets only a superuser set lc_messages.
         match &d {
             Dedicated::Pg(p) => {
                 let _ = p.client.simple_query("SET application_name = 'Dataman MCP'").await;
                 p.client.simple_query("SET standard_conforming_strings = on").await?;
+                let _ = p.client.simple_query("SET lc_messages = 'C'").await;
             }
             Dedicated::My(c) => {
                 c.execute(&my_lexed_sql_mode()).await?;
+                let _ = c.execute("SET SESSION lc_messages = 'en_US'").await;
             }
-            Dedicated::Ms(_) | Dedicated::Lite(_) | Dedicated::Duck(_) => {}
+            Dedicated::Ms(c) => {
+                let _ = c.execute("SET LANGUAGE us_english").await;
+            }
+            Dedicated::Lite(_) | Dedicated::Duck(_) => {}
         }
         Ok(d)
     }
 
-    fn agent_give(&self, db: &str, ro: bool, d: Dedicated) {
+    pub(crate) fn agent_give(&self, db: &str, ro: bool, d: Dedicated) {
         if d.db().is_closed() {
             return;
         }
@@ -354,9 +352,10 @@ impl Connection {
         };
         let r = match r {
             Ok(o) => Ok(o),
-            // 57014 with "timeout": the server's own `statement_timeout` answered first.
-            Err(Stop::Server(e)) if e.code.as_deref() == Some("57014") && e.message.contains("timeout") => Err(Stop::Timeout(limits.timeout)),
-            Err(Stop::Server(e)) if matches!(e.code.as_deref(), Some("3024" | "1969")) => Err(Stop::Timeout(limits.timeout)),
+            // A cancel at the time limit (57014 in any language): the server's own
+            // `statement_timeout` answered first.
+            Err(Stop::Server(e)) if e.class(self.engine()) == ErrorClass::Cancelled && (e.message.contains("timeout") || elapsed >= limits.timeout) => Err(Stop::Timeout(limits.timeout)),
+            Err(Stop::Server(e)) if e.class(self.engine()) == ErrorClass::Timeout => Err(Stop::Timeout(limits.timeout)),
             Err(e) => Err(e),
         };
         if reuse {
@@ -392,7 +391,8 @@ async fn finish(d: &Dedicated, dialect: Dialect, mode: Mode, commit: bool) -> Re
 /// READ ONLY transaction, rolled back.
 async fn duck_in_transaction(c: &Arc<duck::Client>, stmts: &[String], params: &[Option<String>], mode: Mode, limits: &Limits) -> Result<(Outcome, bool), Failed> {
     if mode != Mode::Autocommit {
-        let begin = if mode == Mode::Read { "BEGIN TRANSACTION READ ONLY" } else { "BEGIN TRANSACTION" };
+        let d = Dialect::DuckDb;
+        let begin = if mode == Mode::Read { d.begin_read_only().unwrap_or(d.begin()) } else { "BEGIN TRANSACTION" };
         c.execute(begin).await.map_err(|e| (Stop::Server(duck::error_info_at(&e, begin)), false))?;
     }
     let mut out = Outcome::default();
@@ -513,7 +513,8 @@ async fn lite_statement(c: &Arc<lite::Client>, sql: &str, params: &[Option<Strin
 async fn my_in_transaction(c: &Arc<my::Client>, stmts: &[String], params: &[Option<String>], mode: Mode, limits: &Limits) -> Result<(Outcome, bool), Failed> {
     let server = |e: mysql_async::Error, sql: &str| Stop::Server(my::error_info_at(&e, sql));
     if mode != Mode::Autocommit {
-        let begin = if mode == Mode::Read { "START TRANSACTION READ ONLY" } else { "START TRANSACTION" };
+        let d = Dialect::MySql;
+        let begin = if mode == Mode::Read { d.begin_read_only().unwrap_or(d.begin()) } else { d.begin() };
         c.execute(begin).await.map_err(|e| (server(e, begin), false))?;
     }
     // MySQL bounds SELECTs (MAX_EXECUTION_TIME, ms), MariaDB every statement (seconds); the
@@ -578,7 +579,7 @@ async fn my_statement(c: &Arc<my::Client>, sql: &str, params: &[Option<String>],
 async fn ms_in_transaction(c: &Arc<ms::Client>, stmts: &[String], params: &[Option<String>], mode: Mode, limits: &Limits) -> Result<(Outcome, bool), Failed> {
     let server = |e: ms::MsError, sql: &str| Stop::Server(ms::error_info_at(&e, sql, 0));
     if mode != Mode::Autocommit {
-        let begin = "BEGIN TRANSACTION";
+        let begin = Dialect::TSql.begin();
         c.execute(begin).await.map_err(|e| (server(e, begin), false))?;
     }
     let mut out = Outcome::default();
@@ -738,7 +739,8 @@ async fn begin(client: &Client, mode: Mode, limits: &Limits) -> Result<(), Faile
         let _ = client.simple_query(&timeout).await;
         return Ok(());
     }
-    let begin = if mode == Mode::Read { "BEGIN READ ONLY" } else { "BEGIN" };
+    let d = Dialect::Postgres;
+    let begin = if mode == Mode::Read { d.begin_read_only().unwrap_or(d.begin()) } else { d.begin() };
     client.simple_query(begin).await.map_err(|e| (Stop::Server(error_info(&e)), false))?;
     let timeout = format!("SET LOCAL statement_timeout = {}", limits.timeout.as_millis().max(1));
     if client.simple_query(&timeout).await.is_err() {
