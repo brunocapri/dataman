@@ -146,10 +146,8 @@ pub async fn apply(c: &Arc<Connection>, plan: &Plan, database: &str) -> Result<(
     let engine = plan.engine.unwrap_or(c.engine());
     if engine.is_sql() {
         let db = admin_db(c, if matches!(engine, Engine::Postgres | Engine::SqlServer) && !database.is_empty() { Some(database) } else { None }).await?;
-        let (begin, commit, rollback) = match engine {
-            Engine::SqlServer => ("BEGIN TRANSACTION", "COMMIT TRANSACTION", "IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION"),
-            _ => ("BEGIN", "COMMIT", "ROLLBACK"),
-        };
+        let d = engine.dialect();
+        let (begin, commit, rollback) = (d.begin(), d.commit(), d.rollback_if_open());
         let tx = plan.one_tx;
         if tx {
             db.execute(begin).await.map_err(|e| anyhow!("{e}"))?;
@@ -385,12 +383,12 @@ async fn verify_sql(agent: &Arc<Connection>, spec: &Spec, inv: &Inventory, probe
     };
     let tx = e != Engine::MySql;
     if tx {
-        let _ = db.execute(if e == Engine::SqlServer { "BEGIN TRANSACTION" } else { "BEGIN" }).await;
+        let _ = db.execute(e.dialect().begin()).await;
     }
     let r = try_sql(format!("CREATE TABLE {} (i INT)", qual(&schema, &probe_table))).await;
     let ok = r.as_ref().is_err_and(|x| refused(e, x.code.as_deref(), &x.message));
     if tx {
-        let _ = db.execute(if e == Engine::SqlServer { "IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION" } else { "ROLLBACK" }).await;
+        let _ = db.execute(e.dialect().rollback_if_open()).await;
     } else if r.is_ok() {
         let _ = db.execute(&format!("DROP TABLE {}", qual(&schema, &probe_table))).await;
     }

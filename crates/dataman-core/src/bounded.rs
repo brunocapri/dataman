@@ -391,8 +391,7 @@ async fn finish(d: &Dedicated, dialect: Dialect, mode: Mode, commit: bool) -> Re
 /// READ ONLY transaction, rolled back.
 async fn duck_in_transaction(c: &Arc<duck::Client>, stmts: &[String], params: &[Option<String>], mode: Mode, limits: &Limits) -> Result<(Outcome, bool), Failed> {
     if mode != Mode::Autocommit {
-        let d = Dialect::DuckDb;
-        let begin = if mode == Mode::Read { d.begin_read_only().unwrap_or(d.begin()) } else { "BEGIN TRANSACTION" };
+        let begin = Dialect::DuckDb.begin_for(mode == Mode::Read);
         c.execute(begin).await.map_err(|e| (Stop::Server(duck::error_info_at(&e, begin)), false))?;
     }
     let mut out = Outcome::default();
@@ -414,7 +413,7 @@ async fn duck_in_transaction(c: &Arc<duck::Client>, stmts: &[String], params: &[
                 return Ok((out, false));
             }
             Err(e) => {
-                let ok = mode == Mode::Autocommit || c.execute("ROLLBACK").await.is_ok();
+                let ok = mode == Mode::Autocommit || c.execute(Dialect::DuckDb.rollback()).await.is_ok();
                 return Err((e, ok && !c.is_closed()));
             }
         }
@@ -452,7 +451,7 @@ async fn duck_statement(c: &Arc<duck::Client>, sql: &str, params: &[Option<Strin
 /// rolled back.
 async fn lite_in_transaction(c: &Arc<lite::Client>, stmts: &[String], params: &[Option<String>], mode: Mode, limits: &Limits) -> Result<(Outcome, bool), Failed> {
     if mode != Mode::Autocommit {
-        let begin = "BEGIN";
+        let begin = Dialect::Sqlite.begin();
         c.execute(begin).await.map_err(|e| (Stop::Server(lite::error_info_at(&e, begin)), false))?;
     }
     let mut out = Outcome::default();
@@ -474,7 +473,7 @@ async fn lite_in_transaction(c: &Arc<lite::Client>, stmts: &[String], params: &[
                 return Ok((out, false));
             }
             Err(e) => {
-                let ok = mode == Mode::Autocommit || c.execute("ROLLBACK").await.is_ok();
+                let ok = mode == Mode::Autocommit || c.execute(Dialect::Sqlite.rollback()).await.is_ok();
                 return Err((e, ok && !c.is_closed()));
             }
         }
@@ -513,8 +512,7 @@ async fn lite_statement(c: &Arc<lite::Client>, sql: &str, params: &[Option<Strin
 async fn my_in_transaction(c: &Arc<my::Client>, stmts: &[String], params: &[Option<String>], mode: Mode, limits: &Limits) -> Result<(Outcome, bool), Failed> {
     let server = |e: mysql_async::Error, sql: &str| Stop::Server(my::error_info_at(&e, sql));
     if mode != Mode::Autocommit {
-        let d = Dialect::MySql;
-        let begin = if mode == Mode::Read { d.begin_read_only().unwrap_or(d.begin()) } else { d.begin() };
+        let begin = Dialect::MySql.begin_for(mode == Mode::Read);
         c.execute(begin).await.map_err(|e| (server(e, begin), false))?;
     }
     // MySQL bounds SELECTs (MAX_EXECUTION_TIME, ms), MariaDB every statement (seconds); the
@@ -542,7 +540,7 @@ async fn my_in_transaction(c: &Arc<my::Client>, stmts: &[String], params: &[Opti
                 return Ok((out, false));
             }
             Err(e) => {
-                let ok = mode == Mode::Autocommit || c.execute("ROLLBACK").await.is_ok();
+                let ok = mode == Mode::Autocommit || c.execute(Dialect::MySql.rollback()).await.is_ok();
                 return Err((e, ok && !c.is_closed()));
             }
         }
@@ -579,7 +577,7 @@ async fn my_statement(c: &Arc<my::Client>, sql: &str, params: &[Option<String>],
 async fn ms_in_transaction(c: &Arc<ms::Client>, stmts: &[String], params: &[Option<String>], mode: Mode, limits: &Limits) -> Result<(Outcome, bool), Failed> {
     let server = |e: ms::MsError, sql: &str| Stop::Server(ms::error_info_at(&e, sql, 0));
     if mode != Mode::Autocommit {
-        let begin = Dialect::TSql.begin();
+        let begin = Dialect::TSql.begin_for(mode == Mode::Read);
         c.execute(begin).await.map_err(|e| (server(e, begin), false))?;
     }
     let mut out = Outcome::default();
@@ -596,7 +594,7 @@ async fn ms_in_transaction(c: &Arc<ms::Client>, stmts: &[String], params: &[Opti
                 return Ok((out, false));
             }
             Err(e) => {
-                let ok = c.execute("IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION").await.is_ok();
+                let ok = c.execute(Dialect::TSql.rollback_if_open()).await.is_ok();
                 return Err((e, ok && !c.is_closed()));
             }
         }
@@ -725,7 +723,7 @@ async fn in_transaction(client: &Client, stmts: &[String], params: &[Option<Stri
             Ok(true) => {}
             Ok(false) => return Ok((out, false)),
             Err(e) => {
-                let ok = mode == Mode::Autocommit || client.simple_query("ROLLBACK").await.is_ok();
+                let ok = mode == Mode::Autocommit || client.simple_query(Dialect::Postgres.rollback()).await.is_ok();
                 return Err((e, ok && !client.is_closed()));
             }
         }
@@ -739,12 +737,11 @@ async fn begin(client: &Client, mode: Mode, limits: &Limits) -> Result<(), Faile
         let _ = client.simple_query(&timeout).await;
         return Ok(());
     }
-    let d = Dialect::Postgres;
-    let begin = if mode == Mode::Read { d.begin_read_only().unwrap_or(d.begin()) } else { d.begin() };
+    let begin = Dialect::Postgres.begin_for(mode == Mode::Read);
     client.simple_query(begin).await.map_err(|e| (Stop::Server(error_info(&e)), false))?;
     let timeout = format!("SET LOCAL statement_timeout = {}", limits.timeout.as_millis().max(1));
     if client.simple_query(&timeout).await.is_err() {
-        client.simple_query("ROLLBACK").await.map_err(|e| (Stop::Server(error_info(&e)), false))?;
+        client.simple_query(Dialect::Postgres.rollback()).await.map_err(|e| (Stop::Server(error_info(&e)), false))?;
         client.simple_query(begin).await.map_err(|e| (Stop::Server(error_info(&e)), false))?;
     }
     Ok(())
@@ -758,7 +755,7 @@ async fn statement(client: &Client, sql: &str, params: &[Option<String>], mode: 
         // A failed prepare aborted the transaction: start it again first. Never with parameters.
         Err(e) if e.as_db_error().is_some() && params.is_empty() && out.statements.is_empty() && !crate::backend::pg::several_commands(&e) => {
             if mode != Mode::Autocommit {
-                client.simple_query("ROLLBACK").await.map_err(|e| Stop::Server(error_info(&e)))?;
+                client.simple_query(Dialect::Postgres.rollback()).await.map_err(|e| Stop::Server(error_info(&e)))?;
                 begin(client, mode, limits).await.map_err(|(e, _)| e)?;
             }
             return simple(client, sql, verb, mode, more, limits, out).await.map_err(|e2| {

@@ -299,6 +299,14 @@ impl Dialect {
         }
     }
 
+    /// A transaction that only reads where the engine has one (`begin_read_only`), else `begin`.
+    pub fn begin_for(self, read_only: bool) -> &'static str {
+        match self.begin_read_only() {
+            Some(ro) if read_only => ro,
+            _ => self.begin(),
+        }
+    }
+
     pub fn begin_read_only(self) -> Option<&'static str> {
         match self {
             Dialect::Postgres => Some("BEGIN READ ONLY"),
@@ -335,6 +343,15 @@ impl Dialect {
         match self {
             Dialect::Postgres | Dialect::MySql | Dialect::Sqlite | Dialect::DuckDb => "ROLLBACK",
             Dialect::TSql => "ROLLBACK TRANSACTION",
+        }
+    }
+
+    /// A rollback that is no error when the transaction is gone already (SQL Server ends one
+    /// on some errors; the others only warn).
+    pub fn rollback_if_open(self) -> &'static str {
+        match self {
+            Dialect::TSql => "IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION",
+            _ => self.rollback(),
         }
     }
 
