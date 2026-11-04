@@ -2188,11 +2188,12 @@ impl Render for ConnDialog {
                                 ),
                         )
                     })
-                    .children(self.result_box(&t))
-                    .children(self.host_key_box(&t, cx)),
+                    .children(self.result_box(&t)),
                     ),
                     ),
             )
+            // Outside the scrolling body: on a tall form Trust would sit below the fold.
+            .children(self.host_key_box(&t, cx).map(|b| div().flex_none().px(px(20.)).pt(px(14.)).child(b)))
             .child(
                 ui::modal_footer(&t)
                     .mt(px(14.))
