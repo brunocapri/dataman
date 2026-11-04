@@ -80,7 +80,7 @@ fn create_agent_login(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>
         if let Some(f) = cx.hub.front() {
             f.connections_changed();
         }
-        let failed: Vec<Value> = checks.iter().filter(|c| !c.ok).map(|c| json!({"check": c.what, "detail": c.detail})).collect();
+        let failed: Vec<Value> = checks.iter().filter(|c| !c.ok).map(|c| json!({"check": c.line(), "detail": c.detail})).collect();
         let mut out = json!({"connection": p.name, "login": user, "verified": verified, "granted": granted, "not_granted": not_granted, "password": "in the system keyring"});
         if let Some(w) = warn {
             out["warning"] = json!(w);

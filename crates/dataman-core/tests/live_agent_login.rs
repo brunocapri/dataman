@@ -1469,3 +1469,57 @@ fn elasticsearch_redteam() {
 fn opensearch_redteam() {
     search_redteam(Engine::OpenSearch, "auosrt0001");
 }
+
+/// The database recreated (a restore, a new copy) after the login was made: its user, which
+/// held the mark, is gone with it; the login, the server's, is left. Each way in says so, with
+/// the DROP LOGIN that clears it, and none touches it.
+#[test]
+fn sql_server_orphan() {
+    if !on() {
+        return;
+    }
+    let _one = one_at_a_time();
+    let e = env();
+    let (mut p, apw) = admin(Engine::SqlServer, "aumsorph01");
+    if !up(&p) {
+        return;
+    }
+    p.database = "au_orphan".into();
+    p.mcp = Some(McpAccess::Read);
+    let user = agent_login::login_name(&p.id);
+    let root = connect(&e, &ConnectionProfile { database: "master".into(), ..p.clone() }, &apw).unwrap();
+    let rs = root.session(None);
+    let fresh_db = "IF DB_ID('au_orphan') IS NOT NULL BEGIN ALTER DATABASE au_orphan SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE au_orphan; END; CREATE DATABASE au_orphan";
+    ok(&e, &rs, &format!("IF SUSER_ID('{user}') IS NOT NULL DROP LOGIN [{user}]"));
+    ok(&e, &rs, fresh_db);
+    let a = connect(&e, &p, &apw).unwrap();
+    ok(&e, &a.session(None), "CREATE TABLE dbo.orders (id INT IDENTITY PRIMARY KEY, total DECIMAL(10,2))");
+    let (login, password, _) = create(&e, &a, &p);
+    a.close();
+    // A new copy of the database: the user and its mark go, the login stays.
+    ok(&e, &rs, fresh_db);
+    let a = connect(&e, &p, &apw).unwrap();
+    let rv = e.core.block_on(live::review(&a, &p, &opts())).unwrap();
+    assert!(rv.probe.orphan && rv.probe.exists == Some(false), "{:?}", rv.probe);
+    let said = rv.plan.lacks.join(" | ");
+    assert!(said.contains("its user in au_orphan is gone") && said.contains(&format!("DROP LOGIN [{user}];")), "{said}");
+    assert!(e.core.block_on(live::not_ours(&a, &p, &user)).contains("is gone"));
+    let rm = e.core.block_on(live::removal(&a, &p, &login)).map(|p| p.shown()).unwrap_err().to_string();
+    assert!(rm.contains("is gone") && rm.contains("DROP LOGIN"), "{rm}");
+    let dr = e.core.block_on(live::drift(&a, &p, &login, &password)).map(|_| ()).unwrap_err().to_string();
+    assert!(dr.contains("is gone"), "{dr}");
+    assert_eq!(first(&ok(&e, &rs, &format!("SELECT COUNT(*) FROM sys.server_principals WHERE name = '{user}'"))), "1", "left alone");
+    // Dropped by hand as it says: created again from scratch.
+    ok(&e, &rs, &format!("DROP LOGIN [{user}]"));
+    let rv = e.core.block_on(live::review(&a, &p, &opts())).unwrap();
+    assert!(!rv.probe.orphan && rv.probe.exists.is_none() && rv.plan.lacks.is_empty(), "{:?} {:?}", rv.probe, rv.plan.lacks);
+    // A login of someone else's by that name (its user there) is not an orphan.
+    ok(&e, &rs, &format!("CREATE LOGIN [{user}] WITH PASSWORD = 'Other-pw-123', CHECK_POLICY = OFF"));
+    ok(&e, &a.session(None), &format!("CREATE USER [{user}] FOR LOGIN [{user}]"));
+    let rv = e.core.block_on(live::review(&a, &p, &opts())).unwrap();
+    assert!(!rv.probe.orphan && rv.probe.exists == Some(false), "{:?}", rv.probe);
+    assert!(rv.plan.lacks.iter().any(|l| l.contains("isn't Dataman's")), "{:?}", rv.plan.lacks);
+    a.close();
+    ok(&e, &rs, "ALTER DATABASE au_orphan SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE au_orphan");
+    ok(&e, &rs, &format!("DROP LOGIN [{user}]"));
+}

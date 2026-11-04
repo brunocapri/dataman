@@ -618,6 +618,9 @@ pub struct Probe {
     /// A login named as Dataman's already exists: Some(true) marked as Dataman's (this
     /// connection's), Some(false) not, which Dataman never touches.
     pub exists: Option<bool>,
+    /// SQL Server: a login by its name is on the server without its user in the database (the
+    /// database restored or recreated since), so nothing on it says whose it is.
+    pub orphan: bool,
     pub tls: bool,
     pub notes: Vec<String>,
     /// PostgreSQL's major version, MySQL's flavor and the like, for the emitters.

@@ -165,8 +165,8 @@ fn id_of(name: &str, core: &Core) -> Option<String> {
 }
 
 /// `agents-audit[-zoom|-zooming|-wide]`, `agents-privacy-data`, `agents-general[-import]`, `agents-permissions[-mongo|-redis]`, `agents-privacy`,
-/// `agents-protection-login[-drift|-changes]`, `agents-types[-conn|-card]`, `agents-empty`: the page as the mockups draw it (`-card`: Card number open in
-/// the editor; `agents-privacy`: Protection scrolled to Privacy; `-login`: prod-pg with an agent login, `-drift` with its rules changed since, `-changes` its View changes open).
+/// `agents-protection-login[-drift|-changes|-checks]`, `agents-types[-conn|-card]`, `agents-empty`: the page as the mockups draw it (`-card`: Card number open in
+/// the editor; `agents-privacy`: Protection scrolled to Privacy; `-login`: prod-pg with an agent login, `-drift` with its rules changed since, `-changes` its View changes open, `-checks` View checks open with one failed).
 pub fn is_demo(stage: &str) -> bool {
     stage.starts_with("agents-") && stage != "agents-check"
 }
@@ -219,6 +219,11 @@ pub fn demo(ws: &Entity<Workspace>, stage: &str, window: &mut gpui::Window, cx: 
                 if stage.ends_with("-changes") {
                     a.demo_changes();
                 }
+            }
+            if stage == "agents-protection-login-checks"
+                && let Some(p) = id.as_ref().and_then(|id| core.config.get(id))
+            {
+                a.demo_checks(&p);
             }
             if stage == "agents-types-card" {
                 a.select_type("card", cx);
@@ -1342,6 +1347,14 @@ async fn check_login(ws: &Entity<Workspace>, a: &Entity<AgentsPage>, pg: &Connec
     tap(a, "agents-login-verify", cx).await;
     let verified = until(cx, 30, |cx| login_ui(a, cx, |l| l.note.as_ref().is_some_and(|(ok, n)| *ok && n.contains("Verified"))).unwrap_or(false)).await;
     r.check("Verify logs in as it and every check holds", verified && login_ui(a, cx, |l| !l.checks.is_empty() && l.checks.iter().all(|c| c.ok)).unwrap_or(false), format!("{:?}", login_ui(a, cx, |l| (l.note.clone(), l.checks.iter().filter(|c| !c.ok).map(|c| c.what.clone()).collect::<Vec<_>>()))));
+    r.check("…said in one line, the checks themselves in View checks", probed("agents-login-checks-line", cx).is_some() && probed("agents-login-check-tip-1", cx).is_none(), "");
+    tap(a, "agents-login-checks", cx).await;
+    let groups = ["login", "reading", "writing", "privacy", "structure"].iter().filter(|g| probed(&format!("agents-login-checks-{g}"), cx).is_some()).count();
+    r.check("View checks opens them by category, each with its tip", login_ui(a, cx, |l| matches!(l.sheet, Some(Sheet::Checks))).unwrap_or(false) && groups >= 3 && probed("agents-login-check-tip-1", cx).is_some(), format!("{groups} categories"));
+    pause(cx, 200).await;
+    shoot("04b-checks", cx);
+    key(cx, "escape");
+    pause(cx, 100).await;
     pause(cx, 200).await;
     shoot("04-verified", cx);
     let old = core.secrets.get(&agent_login::secret_account(&pg.id)).ok().flatten().unwrap_or_default();

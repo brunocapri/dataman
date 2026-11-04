@@ -62,6 +62,8 @@ pub(crate) enum Sheet {
     Remove { plan: Option<Result<Plan, String>>, confirm: bool, busy: bool, error: Option<String> },
     /// The drift: what changes on the login, and what runs for it.
     Changes,
+    /// The last check's lines, by category.
+    Checks,
 }
 
 /// The user's own connection: the open one, else one opened with what Dataman keeps.
@@ -306,7 +308,8 @@ impl AgentsPage {
     }
 
     fn login_verify(&mut self, p: &ConnectionProfile, cx: &mut Context<Self>) {
-        let Some(user) = p.agent_login.as_ref().map(|l| l.user.clone()) else { return };
+        let Some(l) = p.agent_login.clone() else { return };
+        let user = l.user.clone();
         self.login.busy = Some("Verifying…".into());
         self.login.note = None;
         self.login_task(
@@ -314,15 +317,18 @@ impl AgentsPage {
             cx,
             move |core, admin, p| {
                 Box::pin(async move {
-                    match live::exists(&admin, &p, &user).await.map_err(|e| format!("{e:#}"))? {
+                    // Where it was made: its user and grants are there, whatever the connection's
+                    // database is now.
+                    let at = live::in_login_db(&p, &l);
+                    match live::exists(&admin, &at, &user).await.map_err(|e| format!("{e:#}"))? {
                         // Dropped on the server since: the record goes.
                         None => return Ok(Verified::Gone),
-                        Some(false) => return Err(format!("{user} on the server isn't marked as Dataman's: Dataman leaves it alone")),
+                        Some(false) => return Err(live::not_ours(&admin, &at, &user).await),
                         Some(true) => {}
                     }
                     let pw = live::password_of(&*core.secrets, &p.id, &user).map_err(|e| format!("{e:#}"))?;
-                    let rv = live::review(&admin, &p, &Options::default()).await.map_err(|e| format!("{e:#}"))?;
-                    Ok(Verified::Checked(live::verify_as(&core, &p, &user, &pw, &rv).await?))
+                    let rv = live::review(&admin, &at, &Options::default()).await.map_err(|e| format!("{e:#}"))?;
+                    Ok(Verified::Checked(live::verify_as(&core, &at, &user, &pw, &rv).await?))
                 })
             },
             |v, r, cx| {
@@ -673,7 +679,7 @@ impl AgentsPage {
             };
             card = card.child(self.login_chain(t, p, &mine)).child(div().pt(px(4.)).flex().flex_row().items_center().gap(px(20.)).child(div().flex_1().min_w_0().text_color(t.tx2).child(text)).children(button));
         }
-        Some(card.children(self.login_notes(t)).into_any_element())
+        Some(card.children(self.login_notes(t, cx)).into_any_element())
     }
 
     /// Agent → Dataman's rules → the database as the user's login: the last one filled, since
@@ -714,33 +720,122 @@ impl AgentsPage {
             .child(node(format!("{} as {mine}", p.engine.label()), "your login: the database refuses nothing".into(), Some(fill)).flex_1())
     }
 
-    /// The last action's outcome and, after a check, each of its lines.
-    fn login_notes(&self, t: &Theme) -> Vec<AnyElement> {
+    /// The last action's outcome (copyable when it went wrong) and, after a check, how it went:
+    /// its lines open in a sheet of their own.
+    fn login_notes(&self, t: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let mut out = Vec::new();
         if let Some((ok, text)) = &self.login.note {
-            out.push(div().children(ui::here(&"agents-login-note".into())).text_size(px(crate::theme::text::UI)).text_color(if *ok { t.tx2 } else { t.err }).line_height(px(18.)).child(text.clone()).into_any_element());
-        }
-        if !self.login.checks.is_empty() {
+            let copy = text.clone();
             out.push(
                 div()
+                    .children(ui::here(&"agents-login-note".into()))
                     .flex()
-                    .flex_col()
-                    .gap(px(4.))
+                    .flex_row()
+                    .items_start()
+                    .gap(px(12.))
                     .text_size(px(crate::theme::text::UI))
-                    .children(self.login.checks.iter().map(|c| {
-                        div()
-                            .flex()
-                            .flex_row()
-                            .gap(px(8.))
-                            .min_w_0()
-                            .child(div().flex_none().w(px(12.)).text_color(if c.ok { t.ok } else { t.err }).child(if c.ok { "✓" } else { "✕" }))
-                            .child(div().flex_none().text_color(t.tx2).child(c.what.clone()))
-                            .when(!c.ok && !c.detail.is_empty(), |d| d.child(div().min_w_0().text_color(t.tx3).overflow_hidden().whitespace_nowrap().text_ellipsis().child(c.detail.clone())))
-                    }))
+                    .line_height(px(18.))
+                    .child(div().flex_1().min_w_0().text_color(if *ok { t.tx2 } else { t.err }).child(text.clone()))
+                    .when(!*ok, |d| d.child(copy_btn(t, "agents-login-note-copy", copy, cx)))
+                    .into_any_element(),
+            );
+        }
+        let checks = &self.login.checks;
+        if !checks.is_empty() {
+            let failed: Vec<&live::Check> = checks.iter().filter(|c| !c.ok).collect();
+            let (color, mark, text) = match failed.as_slice() {
+                [] => (t.ok, "✓", format!("All {} checks hold", checks.len())),
+                [one] => (t.err, "✕", format!("{} of {} checks failed: {}", 1, checks.len(), one.what)),
+                many => (t.err, "✕", format!("{} of {} checks failed", many.len(), checks.len())),
+            };
+            let view = ui::button(t, "agents-login-checks", ui::Btn::Secondary).h(px(28.)).px(px(12.)).cursor_pointer().child("View checks").on_click(cx.listener(|v, _: &ClickEvent, _, cx| {
+                v.login.sheet = Some(Sheet::Checks);
+                cx.notify();
+            }));
+            out.push(
+                div()
+                    .children(ui::here(&"agents-login-checks-line".into()))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(8.))
+                    .text_size(px(crate::theme::text::UI))
+                    .child(div().flex_none().w(px(12.)).text_color(color).child(mark))
+                    .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx2).child(text))
+                    .child(view)
                     .into_any_element(),
             );
         }
         out
+    }
+
+    /// View checks: what the login can and can't do, by category, each with what it was tried
+    /// on and a line on why; a failure says what the server said, copyable.
+    fn checks_sheet(&self, t: &Theme, p: &ConnectionProfile, cx: &mut Context<Self>) -> (String, AnyElement, AnyElement) {
+        let user = p.agent_login.as_ref().map(|l| l.user.clone()).unwrap_or_else(|| agent_login::login_name(&p.id));
+        let checks = &self.login.checks;
+        let mut body = div().id("agents-login-checks-body").flex_1().min_w_0().min_h_0().overflow_y_scroll().px(px(20.)).py(px(16.)).flex().flex_col().gap(px(18.)).text_size(px(crate::theme::text::UI)).line_height(px(18.));
+        let mut k = 0;
+        for g in live::CheckGroup::ALL {
+            let rows: Vec<&live::Check> = checks.iter().filter(|c| c.group == g).collect();
+            if rows.is_empty() {
+                continue;
+            }
+            let bad = rows.iter().filter(|c| !c.ok).count();
+            let head = div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(8.))
+                .pb(px(6.))
+                .border_b_1()
+                .border_color(t.line)
+                .child(ui::caps(t, g.label().to_uppercase()))
+                .child(div().ml_auto().text_size(px(crate::theme::text::SMALL)).text_color(if bad > 0 { t.err } else { t.tx3 }).child(if bad > 0 { format!("{bad} failed") } else { format!("{} of {}", rows.len(), rows.len()) }));
+            let mut sec = div().children(ui::here(&SharedString::from(format!("agents-login-checks-{}", g.label().to_lowercase())).into())).flex().flex_col().gap(px(8.)).child(head);
+            for c in rows {
+                k += 1;
+                let tip = Tip::new(c.what.clone()).lead(c.tip);
+                let line = div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(8.))
+                    .min_w_0()
+                    .child(div().flex_none().w(px(12.)).text_color(if c.ok { t.ok } else { t.err }).child(if c.ok { "✓" } else { "✕" }))
+                    .child(div().flex_none().text_color(t.tx).child(c.what.clone()))
+                    .child(qmark(t, &format!("agents-login-check-tip-{k}"), tip))
+                    .when(!c.on.is_empty(), |d| d.child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().font_family(mono()).text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(format!("tried on {}", c.on))));
+                let mut row = div().flex().flex_col().gap(px(4.)).child(line);
+                if !c.ok && !c.detail.is_empty() {
+                    row = row.child(
+                        div()
+                            .ml(px(20.))
+                            .flex()
+                            .flex_row()
+                            .items_start()
+                            .gap(px(10.))
+                            .px(px(10.))
+                            .py(px(8.))
+                            .bg(t.err_s)
+                            .border_1()
+                            .border_color(t.err.opacity(0.4))
+                            .child(div().flex_1().min_w_0().text_color(t.err).child(c.detail.clone()))
+                            .child(copy_btn(t, SharedString::from(format!("agents-login-check-copy-{k}")), c.detail.clone(), cx)),
+                    );
+                }
+                sec = sec.child(row);
+            }
+            body = body.child(sec);
+        }
+        let report: String = checks.iter().map(|c| format!("{} {}{}", if c.ok { "✓" } else { "✕" }, c.line(), if c.ok || c.detail.is_empty() { String::new() } else { format!("\n    {}", c.detail) })).collect::<Vec<_>>().join("\n");
+        let close = ui::button(t, "agents-login-checks-close", ui::Btn::Ghost).h(px(30.)).cursor_pointer().child("Close").on_click(cx.listener(|v, _: &ClickEvent, _, cx| {
+            v.login.sheet = None;
+            cx.notify();
+        }));
+        let say = div().flex_1().min_w_0().text_color(t.tx3).child(format!("Tried by logging in as {user} with its own password."));
+        let footer = ui::modal_footer(t).child(say).child(ui::button(t, "agents-login-checks-copy", ui::Btn::Secondary).h(px(30.)).px(px(12.)).cursor_pointer().child("Copy all").on_click(cx.listener(move |_, _: &ClickEvent, _, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(report.clone()))))).child(close).into_any_element();
+        (format!("What {user} can and can't do"), body.into_any_element(), footer)
     }
 
     /// Where a login was removed, said under the tier: agents are refused until the user chooses.
@@ -782,7 +877,7 @@ impl AgentsPage {
         if drifted {
             login = login.child(self.login_drift_lines(t, p, cx));
         }
-        login = login.children(self.login_notes(t));
+        login = login.children(self.login_notes(t, cx));
         let pr = p.clone();
         let rotate = button("agents-login-rotate", if busy.as_deref() == Some("A new password…") { "A new password…".into() } else { "Rotate password".into() }).ml_auto().on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_rotate(&pr, cx)));
         let store = dataman_core::secret::STORE_NAME;
@@ -876,7 +971,9 @@ impl AgentsPage {
             Sheet::Create { review, opts, confirm, busy, error } => self.create_sheet(t, p, review.as_ref(), *opts, *confirm, *busy, error.as_deref(), cx),
             Sheet::Remove { plan, confirm, busy, error } => self.remove_sheet(t, p, plan.as_ref(), *confirm, *busy, error.as_deref(), cx),
             Sheet::Changes => self.changes_sheet(t, p, cx)?,
+            Sheet::Checks => self.checks_sheet(t, p, cx),
         };
+        let (w, h) = if matches!(sheet, Sheet::Checks) { (680., 600.) } else { (1040., 720.) };
         Some(
             div()
                 .id("agents-login-sheet")
@@ -890,8 +987,8 @@ impl AgentsPage {
                 .child(ui::esc_closes(None, cx.listener(|v, _: &(), _, cx| v.login_close(cx))))
                 .child(
                     ui::modal(t, "agents-login-card")
-                        .w(px(1040.))
-                        .h(px(720.))
+                        .w(px(w))
+                        .h(px(h))
                         .child(ui::modal_header_with(t, None, title, p.env.is_production().then(|| prod_tag(t).into_any_element()), ui::modal_close(t, "agents-login-close").cursor_pointer().on_click(close)))
                         .child(div().flex_1().min_h_0().flex().flex_row().child(body))
                         .child(footer),
@@ -957,9 +1054,23 @@ impl AgentsPage {
                     .child(ui::button(t, "agents-login-error-copy", ui::Btn::Secondary).flex_none().h(px(26.)).cursor_pointer().child("Copy").on_click(cx.listener(move |_, _: &ClickEvent, _, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy.clone()))))),
             );
         }
-        for l in &plan.lacks {
+        for (i, l) in plan.lacks.iter().enumerate() {
             warned = true;
-            warn = warn.child(div().children(ui::here(&"agents-login-lacks".into())).border_1().border_color(t.err).bg(t.err_s).px(px(12.)).py(px(10.)).text_color(t.err).child(l.clone()));
+            warn = warn.child(
+                div()
+                    .children(ui::here(&"agents-login-lacks".into()))
+                    .flex()
+                    .flex_row()
+                    .items_start()
+                    .gap(px(12.))
+                    .border_1()
+                    .border_color(t.err)
+                    .bg(t.err_s)
+                    .px(px(12.))
+                    .py(px(10.))
+                    .child(div().flex_1().min_w_0().text_color(t.err).child(l.clone()))
+                    .child(copy_btn(t, SharedString::from(format!("agents-login-lacks-copy-{i}")), l.clone(), cx)),
+            );
         }
         let opt_row = |id: &'static str, on: bool, text: String, sub: Option<&str>| {
             div()
@@ -1206,6 +1317,24 @@ impl AgentsPage {
     pub(crate) fn demo_changes(&mut self) {
         self.login.sheet = Some(Sheet::Changes);
     }
+
+    /// The demo's View checks, open: what a read login on PostgreSQL is tried for, one failed.
+    pub(crate) fn demo_checks(&mut self, p: &ConnectionProfile) {
+        self.login.conn = Some(p.id.clone());
+        use live::{Check, CheckGroup as G};
+        let c = |group, what: &str, on: &str, tip, ok, detail: &str| Check { group, what: what.into(), on: on.into(), tip, ok, detail: detail.into() };
+        self.login.checks = vec![
+            c(G::Login, "Logs in as itself", &agent_login::login_name(&p.id), "Dataman connected with the login's own password, from the Keychain, and the server named it back.", true, ""),
+            c(G::Login, "Sessions start read-only", "", "Its role starts every session read-only, a second lock on top of its grants.", true, ""),
+            c(G::Reading, "Reads what the rules allow", "public.orders", "A read that returns no rows, on one table the rules let agents read.", true, ""),
+            c(G::Reading, "Reads masked tables through its view", "users", "Masked columns are read through a view Dataman made, which masks them on the server.", true, ""),
+            c(G::Writing, "Can't write rows", "public.orders", "Read only: a write that matches no row, refused by the database for lack of privilege.", true, ""),
+            c(G::Privacy, "Can't read masked values unmasked", "users.email", "The table itself doesn't give it the masked column: only the view, which masks it.", true, ""),
+            c(G::Privacy, "Can't read hidden tables", "public.audit_log", "Tables Privacy hides get no grant at all: the database itself refuses them.", false, "it read the hidden table"),
+            c(G::Structure, "Can't change structure", "", "Creating a table as it is refused (and rolled back if it wasn't).", true, ""),
+        ];
+        self.login.sheet = Some(Sheet::Checks);
+    }
 }
 
 /// The login against its rules. Pulsing: Dataman is at it (watching, applying, reading).
@@ -1274,6 +1403,11 @@ const WHAT_OVERSCAN: usize = 20;
 enum Verified {
     Gone,
     Checked(Vec<live::Check>),
+}
+
+/// A Copy button for `text`.
+fn copy_btn(t: &Theme, id: impl Into<SharedString>, text: String, cx: &mut Context<AgentsPage>) -> gpui::Stateful<gpui::Div> {
+    ui::button(t, id.into(), ui::Btn::Secondary).flex_none().h(px(26.)).px(px(10.)).cursor_pointer().child("Copy").on_click(cx.listener(move |_, _: &ClickEvent, _, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.clone()))))
 }
 
 fn prod_tag(t: &Theme) -> gpui::Div {

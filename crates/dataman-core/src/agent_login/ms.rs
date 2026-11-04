@@ -391,7 +391,25 @@ pub(crate) async fn probe(db: &Db, user: &str, conn: &str) -> Result<Probe> {
         p.notes.push("Azure SQL Database: the login is a user contained in this database.".into());
     }
     p.exists = exists(db, user, conn).await?;
+    p.orphan = p.exists == Some(false) && !azure && orphan(db, user).await?;
     Ok(p)
+}
+
+/// A login named `user` with no user in this database, by its name or its SID: what a restore or
+/// a new copy of the database leaves of an agent login (the mark was on the user).
+pub(crate) async fn orphan(db: &Db, user: &str) -> Result<bool> {
+    let r = text_rows(
+        db,
+        &format!("SELECT COUNT(*) FROM sys.server_principals sp WHERE sp.name = {0} AND NOT EXISTS (SELECT 1 FROM sys.database_principals dp WHERE dp.name = {0} OR dp.sid = sp.sid)", lit(user)),
+    )
+    .await?;
+    Ok(r.first().is_some_and(|r| s(&r[0]) != "0"))
+}
+
+/// Dropping a login left without its user, for whoever may (Dataman doesn't: it can't tell
+/// the login is its own).
+pub fn drop_login_sql(user: &str) -> String {
+    format!("DROP LOGIN {};", q(user))
 }
 
 pub(crate) async fn exists(db: &Db, user: &str, conn: &str) -> Result<Option<bool>> {
