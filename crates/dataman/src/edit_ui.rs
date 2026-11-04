@@ -983,7 +983,9 @@ impl GridEdit {
         let bad = |col: usize, v: Option<&str>| {
             let c = cols.get(col)?;
             let v = v?;
-            (!crate::value_edit::date_text_ok(c.kind, v)).then(|| format!("{}: \u{201c}{v}\u{201d} is not a valid value: write it as {}", c.name, crate::value_edit::date_format(c.kind)))
+            let tsql = self.conn.as_ref().is_some_and(|c| c.dialect() == dataman_core::sql::Dialect::TSql);
+            let kind = if tsql { dataman_core::value::tsql_date_kind(c.kind, &c.type_name) } else { c.kind };
+            (!crate::value_edit::date_text_ok(kind, v)).then(|| format!("{}: \u{201c}{v}\u{201d} is not a valid value: write it as {}", c.name, crate::value_edit::date_format(kind)))
         };
         let changes = &self.model.changes;
         for (row, edits) in changes.edited_rows() {

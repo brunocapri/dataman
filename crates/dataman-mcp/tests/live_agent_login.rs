@@ -226,7 +226,9 @@ fn round(engine: Engine, id: &str, seed: &[&str], extra: impl Fn(&Env, &Connecti
     agent_pw = new;
     assert_eq!(whoami(&e, id, engine, None).unwrap(), user, "after a new password");
     // The audit says which login ran each call.
-    assert!(e.audit().iter().rev().take(3).all(|x| x["login"] == user.as_str()), "{:?}", e.audit().last());
+    // (A call's start, logged before it runs, says no login yet: its end does.)
+    let ends = || e.audit().into_iter().rev().filter(|x| x["outcome"] != "started").take(3).collect::<Vec<_>>();
+    assert!(ends().iter().all(|x| x["login"] == user.as_str()), "{:#?}", ends());
     // Dataman restarts: the new process reads the Keychain itself.
     let e = e.restart();
     assert_eq!(whoami(&e, id, engine, None).unwrap(), user, "after a restart");
@@ -418,6 +420,134 @@ fn postgres_masked_through_views() {
     let r = e.ok("run_query", json!({"connection": p.id, "sql": "SELECT * FROM users"}));
     assert!(!r.to_string().contains("h1") && !r.to_string().contains("ana@"), "{r}");
     teardown(&e, &p);
+    e.hub().close_all();
+    std::mem::forget(e);
+}
+
+/// SQL Server shows a login only what it was granted, and its catalog's dependencies need VIEW
+/// DEFINITION: through the MCP, a table read through the agent login's view is still listed and
+/// read under its own name (sent to the view, masked by the server), and computed columns are
+/// protected as the columns they come from, without the agent seeing the dependencies.
+#[test]
+fn sql_server_masked_through_views() {
+    if !on() {
+        return;
+    }
+    let (mut p, password) = admin(Engine::SqlServer, "aumsmask01");
+    if !up(&p) {
+        return;
+    }
+    p.database = "au_mcp3".into();
+    let user = agent_login::login_name(&p.id);
+    {
+        let core = dataman_core::Core::new(Dirs::at(tempfile::tempdir().unwrap().path()), Arc::new(MemorySecrets::default())).unwrap();
+        let c = core.block_on(core.connect(ConnectionProfile { database: "master".into(), ..p.clone() }, Some(password.clone()))).unwrap();
+        for s in [
+            "IF DB_ID('au_mcp3') IS NOT NULL BEGIN ALTER DATABASE au_mcp3 SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE au_mcp3; END".to_string(),
+            format!("IF SUSER_ID('{user}') IS NOT NULL DROP LOGIN [{user}]"),
+            "CREATE DATABASE au_mcp3".into(),
+        ] {
+            let rs = c.session(None).execute(&s);
+            core.block_on(rs.wait_finished());
+        }
+    }
+    p.mcp = Some(McpAccess::Read);
+    p.mcp_rules.view = dataman_core::privacy::AgentView::Masked;
+    p.mcp_rules.sensitive.push(dataman_core::privacy::SensitiveCol { col: "documents.body".into(), how: dataman_core::privacy::Mask::Partial(dataman_core::privacy::Keep::new(dataman_core::privacy::Side::First, 4)), on: true });
+    p.mcp_rules.visible.items.push(dataman_core::privacy::VisibleItem { name: "documents.secret".into(), kind: dataman_core::privacy::ItemKind::Column });
+    let e = env();
+    let seed = [
+        "CREATE TABLE dbo.documents (id INT IDENTITY PRIMARY KEY, title NVARCHAR(50), body NVARCHAR(200), secret NVARCHAR(50), secret_head AS LEFT(secret, 2))",
+        "INSERT INTO dbo.documents (title, body, secret) VALUES (N'Q3', N'Quarterly numbers are up', N's3cr3t')",
+        "CREATE TABLE dbo.notes (id INT PRIMARY KEY, txt NVARCHAR(20))",
+        "INSERT INTO dbo.notes VALUES (1, N'plain')",
+    ];
+    let (p, _) = setup(&e, p, &password, &seed);
+    assert_eq!(p.agent_login.as_ref().unwrap().views.len(), 1, "{:?}", p.agent_login);
+    assert_eq!(whoami(&e, &p.id, Engine::SqlServer, None).unwrap(), user);
+    let tables = e.ok("list_tables", json!({"connection": p.id}));
+    let listed = |n: &str| tables["rows"].as_array().unwrap().iter().any(|r| r[0] == "dbo" && r[1] == n);
+    assert!(listed("documents") && listed("notes"), "{tables}");
+    assert!(!tables.to_string().contains(&agent_login::space_of(&user)), "its views' schema is not listed: {tables}");
+    for sql in ["SELECT TOP 10 id, body FROM dbo.documents", "SELECT id, body FROM documents"] {
+        let r = e.ok("run_query", json!({"connection": p.id, "sql": sql}));
+        assert_eq!(r["rows"][0], json!([1, "Quar••••••••••••••••••••"]), "{sql}: {r}");
+    }
+    let last = e.audit().into_iter().rev().find(|x| x["tool"] == "run_query").unwrap();
+    assert!(last["rewritten"].as_str().unwrap_or("").contains(&user), "read through the login's view: {last}");
+    let r = e.ok("run_query", json!({"connection": p.id, "sql": "SELECT txt FROM dbo.notes"}));
+    assert_eq!(r["rows"][0], json!(["plain"]), "{r}");
+    let err = e.call("run_query", json!({"connection": p.id, "sql": "SELECT secret FROM dbo.documents"})).unwrap_err();
+    assert!(err.contains("hidden"), "Dataman refuses first: {err}");
+    // Computed from the hidden column: left out of the view, so the server doesn't know it
+    // either (the agent never sees the table's own columns).
+    let err = e.call("run_query", json!({"connection": p.id, "sql": "SELECT secret_head FROM dbo.documents"})).unwrap_err();
+    assert!(err.contains("hidden") || err.contains("Invalid column name 'secret_head'"), "{err}");
+    let r = e.ok("run_query", json!({"connection": p.id, "sql": "SELECT * FROM dbo.documents"}));
+    assert!(!r.to_string().contains("s3cr3t") && !r.to_string().contains("s3") && !r.to_string().contains("numbers"), "{r}");
+    teardown(&e, &p);
+    e.hub().close_all();
+    let core = dataman_core::Core::new(Dirs::at(tempfile::tempdir().unwrap().path()), Arc::new(MemorySecrets::default())).unwrap();
+    let c = core.block_on(core.connect(ConnectionProfile { database: "master".into(), agent_login: None, ..p.clone() }, Some(password))).unwrap();
+    let rs = c.session(None).execute("ALTER DATABASE au_mcp3 SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE au_mcp3");
+    core.block_on(rs.wait_finished());
+    std::mem::forget(e);
+}
+
+/// The database made again (a restore, a new copy) while agents use it: SQL Server takes the
+/// agent login's user with it. With Auto sync on, the next call puts the login back (the user's
+/// login, as a sync does) and runs; off, it says so and what puts it back.
+#[test]
+fn sql_server_database_made_again() {
+    if !on() {
+        return;
+    }
+    let (mut p, password) = admin(Engine::SqlServer, "aumsagain1");
+    if !up(&p) {
+        return;
+    }
+    p.database = "au_again".into();
+    p.mcp = Some(McpAccess::Read);
+    let user = agent_login::login_name(&p.id);
+    let root_core = dataman_core::Core::new(Dirs::at(tempfile::tempdir().unwrap().path()), Arc::new(MemorySecrets::default())).unwrap();
+    let root = root_core.block_on(root_core.connect(ConnectionProfile { database: "master".into(), ..p.clone() }, Some(password.clone()))).unwrap();
+    let sql = |c: &Arc<dataman_core::Connection>, s: &str| {
+        let rs = c.session(None).execute(s);
+        root_core.block_on(rs.wait_finished());
+        rs.status().error.map(|e| e.to_string())
+    };
+    let admin_p = p.clone();
+    let made_again = || {
+        assert_eq!(sql(&root, "IF DB_ID('au_again') IS NOT NULL BEGIN ALTER DATABASE au_again SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE au_again; END; CREATE DATABASE au_again"), None);
+        let db = root_core.block_on(root_core.connect(admin_p.clone(), Some(password.clone()))).unwrap();
+        assert_eq!(sql(&db, "CREATE TABLE dbo.t (id INT PRIMARY KEY, name NVARCHAR(10)); INSERT INTO dbo.t VALUES (1, N'a')"), None);
+        db.close();
+    };
+    assert_eq!(sql(&root, &format!("IF SUSER_ID('{user}') IS NOT NULL DROP LOGIN [{user}]")), None);
+    made_again();
+    let e = env();
+    let (p, _) = setup(&e, p, &password, &[]);
+    assert!(p.agent_login.as_ref().unwrap().auto_sync);
+    let read = |e: &Env| e.call("run_query", json!({"connection": p.id, "sql": "SELECT name FROM dbo.t"}));
+    assert_eq!(read(&e).unwrap()["rows"][0], json!(["a"]));
+    // Made again while the MCP holds its connection: the next call puts the login back and runs.
+    made_again();
+    let before = e.hub().core.config.get(&p.id).unwrap().agent_login.unwrap().synced;
+    assert_eq!(read(&e).map(|r| r["rows"][0].clone()), Ok(json!(["a"])), "put back on its own");
+    assert_eq!(whoami(&e, &p.id, Engine::SqlServer, None).unwrap(), user);
+    let after = dataman_core::config::ConfigStore::open_with(&e.hub().dirs, e.hub().core.approved.clone()).unwrap().get(&p.id).unwrap().agent_login.unwrap();
+    assert!(after.synced > before, "kept as a sync");
+    // Auto sync off: said, with what puts it back, never run on the user's login instead.
+    let mut off = after.clone();
+    off.auto_sync = false;
+    e.hub().core.config.upsert(ConnectionProfile { agent_login: Some(off), ..p.clone() }).unwrap();
+    made_again();
+    let err = read(&e).unwrap_err();
+    assert!(err.contains("lost its user in au_again") && err.contains("Verify puts it back"), "{err}");
+    e.hub().core.config.upsert(ConnectionProfile { agent_login: Some(after), ..p.clone() }).unwrap();
+    assert_eq!(read(&e).map(|r| r["rows"][0].clone()), Ok(json!(["a"])));
+    teardown(&e, &p);
+    assert_eq!(sql(&root, "ALTER DATABASE au_again SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE au_again"), None);
     e.hub().close_all();
     std::mem::forget(e);
 }

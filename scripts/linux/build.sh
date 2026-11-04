@@ -63,11 +63,8 @@ if [ -z "${DATAMAN_SKIP_BUILD:-}" ]; then
     [ "$jobs" -le "$(nproc)" ] || jobs="$(nproc)"
     export CARGO_BUILD_JOBS="$jobs"
   fi
-  # The DuckDB engine is C++: libstdc++ goes in statically (the `cc` crate would link it
-  # dynamically, and the AppImage links nothing outside its allowlist).
-  CARGO_TARGET_DIR="$target" CXXSTDLIB="" \
-    RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-Wl,-Bstatic -C link-arg=-lstdc++ -C link-arg=-Wl,-Bdynamic" \
-    "$root/scripts/duckdb-engine.sh"
+  # The DuckDB engine (C++, libstdc++ linked in statically by the script).
+  CARGO_TARGET_DIR="$target" "$root/scripts/duckdb-engine.sh"
   (cd "$root" && DATAMAN_VERSION="$version" cargo build --release --locked -p dataman)
 fi
 baked="$("$target/release/dataman" --version 2> /dev/null || true)"

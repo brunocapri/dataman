@@ -217,15 +217,16 @@ pub(crate) async fn decode<R>(src: &mut R, len: u8) -> crate::Result<ColumnData<
 where
     R: SqlReadBytes + Unpin,
 {
-    let res = match len {
-        0 => ColumnData::F64(None),
-        4 => ColumnData::F64(Some(src.read_i32_le().await? as f64 / 1e4)),
-        8 => ColumnData::F64(Some({
+    // Dataman: the scaled integer as it came, not an `f64`, which can't hold money's range.
+    let scaled = match len {
+        0 => None,
+        4 => Some(src.read_i32_le().await? as i128),
+        8 => {
             let high = src.read_i32_le().await? as i64;
-            let low = src.read_u32_le().await? as f64;
+            let low = src.read_u32_le().await? as i64;
 
-            ((high << 32) as f64 + low) / 1e4
-        })),
+            Some(((high << 32) | low) as i128)
+        }
         _ => {
             return Err(Error::Protocol(
                 format!("money: length of {} is invalid", len).into(),
@@ -233,7 +234,9 @@ where
         }
     };
 
-    Ok(res)
+    Ok(ColumnData::Numeric(
+        scaled.map(|v| crate::tds::Numeric::new_with_scale(v, MONEY_SCALE as u8)),
+    ))
 }
 
 #[cfg(test)]
@@ -242,7 +245,7 @@ mod tests {
     use crate::sql_read_bytes::test_utils::IntoSqlReadBytes;
     use bytes::{BufMut, BytesMut};
 
-    // `smallmoney` (len 4) is a single scaled `i32` divided by 1e4: 12345 -> 1.2345.
+    // `smallmoney` (len 4) is a single scaled `i32`: 12345 -> 1.2345.
     #[tokio::test]
     async fn decode_smallmoney_arm() {
         let mut buf = BytesMut::new();
@@ -250,13 +253,13 @@ mod tests {
 
         let data = decode(&mut buf.into_sql_read_bytes(), 4).await.unwrap();
         match data {
-            ColumnData::F64(Some(v)) => assert!((v - 1.2345).abs() < 1e-9, "v={}", v),
-            other => panic!("expected F64, got {:?}", other),
+            ColumnData::Numeric(Some(n)) => assert_eq!((n.value(), n.scale()), (12345, 4)),
+            other => panic!("expected Numeric, got {:?}", other),
         }
     }
 
-    // `money` (len 8) is two 32-bit words: `((high << 32) + low) / 1e4`.
-    // high = 1, low = 30000 gives ((1 << 32) + 30000) / 1e4 = 429499.7296.
+    // `money` (len 8) is two 32-bit words, `(high << 32) + low`, scaled by 1e4.
+    // high = 1, low = 30000 gives 429499.7296.
     #[tokio::test]
     async fn decode_money_arm() {
         let mut buf = BytesMut::new();
@@ -265,8 +268,23 @@ mod tests {
 
         let data = decode(&mut buf.into_sql_read_bytes(), 8).await.unwrap();
         match data {
-            ColumnData::F64(Some(v)) => assert!((v - 429499.7296).abs() < 1e-6, "v={}", v),
-            other => panic!("expected F64, got {:?}", other),
+            ColumnData::Numeric(Some(n)) => assert_eq!((n.value(), n.scale()), (4294997296, 4)),
+            other => panic!("expected Numeric, got {:?}", other),
+        }
+    }
+
+    // Money's extremes don't fit an `f64`: every digit stays.
+    #[tokio::test]
+    async fn decode_money_extremes_exactly() {
+        for v in [i64::MAX, i64::MIN, 90071992547409931] {
+            let mut buf = BytesMut::new();
+            buf.put_i32_le((v >> 32) as i32);
+            buf.put_u32_le(v as u32);
+            let data = decode(&mut buf.into_sql_read_bytes(), 8).await.unwrap();
+            match data {
+                ColumnData::Numeric(Some(n)) => assert_eq!(n.value(), v as i128),
+                other => panic!("expected Numeric, got {:?}", other),
+            }
         }
     }
 

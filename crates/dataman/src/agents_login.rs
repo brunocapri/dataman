@@ -3,8 +3,9 @@
 //! review (what can't be granted, the exact SQL, the options); the login is created with the
 //! user's login, checked by logging in as it, and only then kept: its password in the Keychain,
 //! the rest on the connection. Then the page ends on an Agent login section instead: when the
-//! rules change it drifts (the changes are shown and applied on request); Verify, Rotate password
-//! and Remove login (only what Dataman made, after confirmation) are there too.
+//! rules change it drifts, and Dataman applies the changes to it on its own (the default) or
+//! shows them for Apply; Verify, Rotate password and Remove login (only what Dataman made, after
+//! confirmation) are there too.
 
 use std::cell::RefCell;
 use std::sync::Arc;
@@ -29,6 +30,8 @@ pub(crate) struct LoginUi {
     pub(crate) note: Option<(bool, String)>,
     pub(crate) checks: Vec<live::Check>,
     pub(crate) drift: Option<Result<live::Drift, String>>,
+    /// The drift is being read from the server (the status says Checking…).
+    reading: bool,
     /// The rules (their hash) the drift was read for: read again when they change.
     drift_rules: Option<String>,
     pub(crate) sheet: Option<Sheet>,
@@ -36,6 +39,13 @@ pub(crate) struct LoginUi {
     pub(crate) sql_scroll: gpui::ScrollHandle,
     /// WHAT RUNS as last laid out and coloured.
     what: RefCell<Option<WhatRuns>>,
+}
+
+/// A connection's rule changes being applied to its agent login on their own (`running`), or
+/// failed to be: tried again once the rules change again, Apply still there meanwhile.
+pub(crate) struct AutoSync {
+    hash: String,
+    running: bool,
 }
 
 /// WHAT RUNS's lines, made again only when the plan, its engine or the theme changes: a script
@@ -52,6 +62,8 @@ pub(crate) enum Sheet {
     Remove { plan: Option<Result<Plan, String>>, confirm: bool, busy: bool, error: Option<String> },
     /// The drift: what changes on the login, and what runs for it.
     Changes,
+    /// The last check's lines, by category.
+    Checks,
 }
 
 /// The user's own connection: the open one, else one opened with what Dataman keeps.
@@ -107,6 +119,11 @@ impl AgentsPage {
         let fresh = self.login.conn.as_deref() != Some(p.id.as_str());
         if fresh {
             self.login = LoginUi { conn: Some(p.id.clone()), ..Default::default() };
+            // Rule changes that failed to apply on their own (the server out of reach): tried
+            // again on opening the connection here, where a failure is said.
+            if !self.login_auto_running(&p.id) {
+                self.login_auto.remove(&p.id);
+            }
         }
         // A PostgreSQL-protocol server Dataman is connected to already: asked once whether it has
         // logins at all (MotherDuck is known by its host; another, by its review).
@@ -124,9 +141,12 @@ impl AgentsPage {
         let now = agent_login::rules_hash(p, &l.database);
         let changed = now != l.rules;
         let due = l.rotation_due(Utc::now()).is_some_and(|d| d <= 0);
+        // Rule changes on a login that follows them on its own: applied, not read for Apply.
+        if changed {
+            self.login_auto_start(p, cx);
+        }
         let read = if fresh { changed || due || self.login_open_conn(&p.id, cx).is_some() } else { changed && self.login.drift_rules.as_deref() != Some(now.as_str()) };
-        if read {
-            self.login.drift_rules = Some(now);
+        if read && !self.login_auto_running(&p.id) {
             self.login_drift(p, cx);
         }
         if fresh && due {
@@ -136,22 +156,46 @@ impl AgentsPage {
 
     fn login_drift(&mut self, p: &ConnectionProfile, cx: &mut Context<Self>) {
         let Some(l) = p.agent_login.clone() else { return };
+        let hash = agent_login::rules_hash(p, &l.database);
+        // Changes found on the server (a table made since) are applied on their own too, unless
+        // that just failed for these rules.
+        let auto = l.auto_sync && self.login_auto.get(&p.id).is_none_or(|a| a.hash != hash);
+        self.login.drift_rules = Some(hash);
         self.login.drift = None;
+        self.login.reading = true;
+        let pa = p.clone();
         self.login_task(
             p,
             cx,
             move |core, admin, p| {
                 Box::pin(async move {
                     let pw = live::password_of(&*core.secrets, &p.id, &l.user).map_err(|e| format!("{e:#}"))?;
-                    live::drift(&admin, &p, &l, &pw).await.map_err(|e| format!("{e:#}"))
+                    // Its database made again: put back in it first, where Auto sync is on.
+                    let back = if l.auto_sync { live::reattach(&core, &admin, &p, &l, &pw).await.map_err(|e| format!("{e:#}"))? } else { None };
+                    let d = live::drift(&admin, &p, &l, &pw).await.map_err(|e| format!("{e:#}"))?;
+                    Ok((back, d))
                 })
             },
-            |v, r, _| {
+            move |v, r: Result<(Option<Plan>, live::Drift), String>, cx| {
+                v.login.reading = false;
+                let r = match r {
+                    Ok((back, d)) => {
+                        if let Some(plan) = back {
+                            v.login_back(&pa, &plan, cx);
+                        }
+                        Ok(d)
+                    }
+                    Err(e) => Err(e),
+                };
                 // The rules unchanged and the server not answering: said, not shown as drift.
                 if let Err(e) = &r {
                     v.login.note = Some((false, format!("Couldn't compare the login with the server: {e}")));
                 }
+                let apply = auto && r.as_ref().is_ok_and(|d| !d.changes.is_empty()) && v.login.conn.as_deref() == Some(pa.id.as_str());
                 v.login.drift = Some(r);
+                if apply {
+                    v.login_apply_drift(&pa, cx);
+                }
             },
         );
     }
@@ -276,26 +320,42 @@ impl AgentsPage {
     }
 
     fn login_verify(&mut self, p: &ConnectionProfile, cx: &mut Context<Self>) {
-        let Some(user) = p.agent_login.as_ref().map(|l| l.user.clone()) else { return };
+        let Some(l) = p.agent_login.clone() else { return };
+        let user = l.user.clone();
+        let pv = p.clone();
+        if self.login.busy.is_some() {
+            return;
+        }
         self.login.busy = Some("Verifying…".into());
         self.login.note = None;
+        // The checks open at once, filled as they come back (or with why they couldn't run).
+        self.login.checks.clear();
+        self.login.sheet = Some(Sheet::Checks);
         self.login_task(
             p,
             cx,
             move |core, admin, p| {
                 Box::pin(async move {
-                    match live::exists(&admin, &p, &user).await.map_err(|e| format!("{e:#}"))? {
+                    // Where it was made: its user and grants are there, whatever the connection's
+                    // database is now.
+                    let at = live::in_login_db(&p, &l);
+                    // Its database made again (SQL Server): put back in it before it is tried.
+                    let back = match live::password_of(&*core.secrets, &p.id, &user) {
+                        Ok(pw) => live::reattach(&core, &admin, &p, &l, &pw).await.map_err(|e| format!("{e:#}"))?,
+                        Err(_) => None,
+                    };
+                    match live::exists(&admin, &at, &user).await.map_err(|e| format!("{e:#}"))? {
                         // Dropped on the server since: the record goes.
                         None => return Ok(Verified::Gone),
-                        Some(false) => return Err(format!("{user} on the server isn't marked as Dataman's: Dataman leaves it alone")),
+                        Some(false) => return Err(live::not_ours(&admin, &at, &user).await),
                         Some(true) => {}
                     }
                     let pw = live::password_of(&*core.secrets, &p.id, &user).map_err(|e| format!("{e:#}"))?;
-                    let rv = live::review(&admin, &p, &Options::default()).await.map_err(|e| format!("{e:#}"))?;
-                    Ok(Verified::Checked(live::verify_as(&core, &p, &user, &pw, &rv).await?))
+                    let rv = live::review(&admin, &at, &Options::default()).await.map_err(|e| format!("{e:#}"))?;
+                    Ok(Verified::Checked(live::verify_as(&core, &at, &user, &pw, &rv).await?, back))
                 })
             },
-            |v, r, cx| {
+            move |v, r, cx| {
                 v.login.busy = None;
                 let id = v.login.conn.clone().unwrap_or_default();
                 match r {
@@ -307,7 +367,10 @@ impl AgentsPage {
                         }, cx);
                         v.login.note = Some((true, "The login is gone from the server: Dataman forgot it. Agents are refused here until you choose.".into()));
                     }
-                    Ok(Verified::Checked(checks)) => {
+                    Ok(Verified::Checked(checks, back)) => {
+                        if let Some(plan) = &back {
+                            v.login_back(&pv, plan, cx);
+                        }
                         let ok = checks.iter().all(|c| c.ok);
                         if ok {
                             v.edit_conn(&id, |p| {
@@ -317,7 +380,8 @@ impl AgentsPage {
                             }, cx);
                         }
                         v.login.checks = checks;
-                        v.login.note = Some((ok, if ok { "Verified by logging in as it".into() } else { "Logging in as it did not go as the rules say".into() }));
+                        let said = if ok { "Verified by logging in as it" } else { "Logging in as it did not go as the rules say" };
+                        v.login.note = Some((ok, if back.is_some() { format!("{}. {said}.", back_text(&pv)) } else { said.into() }));
                     }
                     Err(e) => v.login.note = Some((false, e)),
                 }
@@ -368,6 +432,11 @@ impl AgentsPage {
     fn login_apply_drift(&mut self, p: &ConnectionProfile, cx: &mut Context<Self>) {
         let Some(Ok(d)) = self.login.drift.clone() else { return };
         let Some(l) = p.agent_login.clone() else { return };
+        if self.login.busy.is_some() || self.login_auto_running(&p.id) {
+            return;
+        }
+        // The rules the drift was read for: changed since, the login drifts again.
+        let hash = self.login.drift_rules.clone().unwrap_or_else(|| agent_login::rules_hash(p, &l.database));
         self.login.busy = Some("Applying…".into());
         self.login_task(
             p,
@@ -378,17 +447,7 @@ impl AgentsPage {
                 match r {
                     Ok(plan) => {
                         let id = v.login.conn.clone().unwrap_or_default();
-                        v.edit_conn(&id, |p| {
-                            let rules = agent_login::rules_hash(p, &p.agent_login.as_ref().map(|l| l.database.clone()).unwrap_or_default());
-                            if let Some(l) = p.agent_login.as_mut() {
-                                (l.rules, l.plan, l.synced, l.views, l.granted, l.not_granted) = (rules, plan.hash.clone(), Utc::now(), plan.views.clone(), plan.granted, plan.not_granted.len());
-                                for m in &plan.made {
-                                    if !l.made.contains(m) {
-                                        l.made.push(m.clone());
-                                    }
-                                }
-                            }
-                        }, cx);
+                        v.login_synced(&id, hash, &plan, cx);
                         v.login.drift = None;
                         v.login.note = Some((true, "The login follows the rules again".into()));
                     }
@@ -396,6 +455,107 @@ impl AgentsPage {
                 }
             },
         );
+    }
+
+    /// `plan` ran on `id`'s login for the rules `hash`: kept on the connection.
+    fn login_synced(&mut self, id: &str, hash: String, plan: &Plan, cx: &mut Context<Self>) {
+        self.edit_conn(id, |p| {
+            if let Some(l) = p.agent_login.as_mut() {
+                live::note_synced(l, hash, plan);
+            }
+        }, cx);
+    }
+
+    /// `p`'s login was put back in its database made again: kept, and said where it shows.
+    fn login_back(&mut self, p: &ConnectionProfile, plan: &Plan, cx: &mut Context<Self>) {
+        let hash = p.agent_login.as_ref().map(|l| agent_login::rules_hash(p, &l.database)).unwrap_or_default();
+        self.login_synced(&p.id, hash, plan, cx);
+        if self.login.conn.as_deref() == Some(p.id.as_str()) {
+            self.login.note = Some((true, back_text(p)));
+        }
+    }
+
+    fn login_auto_running(&self, id: &str) -> bool {
+        self.login_auto.get(id).is_some_and(|a| a.running)
+    }
+
+    /// Every agent login that follows its rules on its own and whose rules changed: the changes
+    /// applied in the background, with the user's login (as Apply would), wherever they were
+    /// made (Protection, the connection's dialog, an import).
+    pub(crate) fn login_auto_sync(&mut self, cx: &mut Context<Self>) {
+        for p in self.profiles(cx) {
+            self.login_auto_start(&p, cx);
+        }
+    }
+
+    fn login_auto_start(&mut self, p: &ConnectionProfile, cx: &mut Context<Self>) {
+        let Some(l) = p.agent_login.clone().filter(|l| l.auto_sync && agent_login::supported(p.engine)) else { return };
+        let hash = agent_login::rules_hash(p, &l.database);
+        // In step; on its way there; or failed for these very rules (Apply is shown instead).
+        if hash == l.rules || self.login_auto.get(&p.id).is_some_and(|a| a.running || a.hash == hash) {
+            return;
+        }
+        self.login_auto.insert(p.id.clone(), AutoSync { hash: hash.clone(), running: true });
+        let id = p.id.clone();
+        self.login_task(
+            p,
+            cx,
+            move |core, admin, p| {
+                Box::pin(async move {
+                    let pw = live::password_of(&*core.secrets, &p.id, &l.user).map_err(|e| format!("{e:#}"))?;
+                    live::reattach(&core, &admin, &p, &l, &pw).await.map_err(|e| format!("{e:#}"))?;
+                    let d = live::drift(&admin, &p, &l, &pw).await.map_err(|e| format!("{e:#}"))?;
+                    live::apply(&admin, &d.plan, &l.database).await.map_err(|e| format!("{e:#}"))?;
+                    Ok(d.plan)
+                })
+            },
+            move |v, r, cx| {
+                let shown = v.login.conn.as_deref() == Some(id.as_str());
+                match r {
+                    Ok(plan) => {
+                        v.login_auto.remove(&id);
+                        if shown {
+                            v.login.drift = None;
+                            v.login.note = Some((true, "Rule changes applied to the login on their own".into()));
+                        }
+                        // Saving it reloads the connections: rules changed meanwhile start again.
+                        v.login_synced(&id, hash, &plan, cx);
+                    }
+                    Err(e) => {
+                        log::info!("the agent login's rule changes could not be applied on their own: {e}");
+                        v.login_auto.insert(id, AutoSync { hash, running: false });
+                        if shown {
+                            // Read again for Apply, the reason said.
+                            v.login.drift_rules = None;
+                            v.login.note = Some((false, format!("Couldn't apply the rule changes to the login on their own: {e}")));
+                        }
+                    }
+                }
+            },
+        );
+    }
+
+    /// The option in the Login section: rule changes applied on their own, or left for Apply.
+    fn login_set_auto(&mut self, p: &ConnectionProfile, on: bool, cx: &mut Context<Self>) {
+        self.edit_conn(&p.id, |p| {
+            if let Some(l) = p.agent_login.as_mut() {
+                l.auto_sync = on;
+            }
+        }, cx);
+        if !on {
+            return;
+        }
+        // Turned on with changes waiting: they go now (a failure before is tried again).
+        if !self.login_auto_running(&p.id) {
+            self.login_auto.remove(&p.id);
+        }
+        let Some(p) = self.core.config.get(&p.id) else { return };
+        let changed = p.agent_login.as_ref().is_some_and(|l| l.rules != agent_login::rules_hash(&p, &l.database));
+        if changed {
+            self.login_auto_start(&p, cx);
+        } else if self.login.drift.as_ref().is_some_and(|d| d.as_ref().is_ok_and(|d| !d.changes.is_empty())) {
+            self.login_apply_drift(&p, cx);
+        }
     }
 
     fn login_open_remove(&mut self, p: &ConnectionProfile, cx: &mut Context<Self>) {
@@ -552,7 +712,7 @@ impl AgentsPage {
             };
             card = card.child(self.login_chain(t, p, &mine)).child(div().pt(px(4.)).flex().flex_row().items_center().gap(px(20.)).child(div().flex_1().min_w_0().text_color(t.tx2).child(text)).children(button));
         }
-        Some(card.children(self.login_notes(t)).into_any_element())
+        Some(card.children(self.login_notes(t, cx)).into_any_element())
     }
 
     /// Agent → Dataman's rules → the database as the user's login: the last one filled, since
@@ -593,33 +753,146 @@ impl AgentsPage {
             .child(node(format!("{} as {mine}", p.engine.label()), "your login: the database refuses nothing".into(), Some(fill)).flex_1())
     }
 
-    /// The last action's outcome and, after a check, each of its lines.
-    fn login_notes(&self, t: &Theme) -> Vec<AnyElement> {
+    /// The last action's outcome (copyable when it went wrong) and, after a check, how it went:
+    /// its lines open in a sheet of their own.
+    fn login_notes(&self, t: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let mut out = Vec::new();
         if let Some((ok, text)) = &self.login.note {
-            out.push(div().children(ui::here(&"agents-login-note".into())).text_size(px(crate::theme::text::UI)).text_color(if *ok { t.tx2 } else { t.err }).line_height(px(18.)).child(text.clone()).into_any_element());
-        }
-        if !self.login.checks.is_empty() {
+            let copy = text.clone();
             out.push(
                 div()
+                    .children(ui::here(&"agents-login-note".into()))
                     .flex()
-                    .flex_col()
-                    .gap(px(4.))
+                    .flex_row()
+                    .items_start()
+                    .gap(px(12.))
                     .text_size(px(crate::theme::text::UI))
-                    .children(self.login.checks.iter().map(|c| {
-                        div()
-                            .flex()
-                            .flex_row()
-                            .gap(px(8.))
-                            .min_w_0()
-                            .child(div().flex_none().w(px(12.)).text_color(if c.ok { t.ok } else { t.err }).child(if c.ok { "✓" } else { "✕" }))
-                            .child(div().flex_none().text_color(t.tx2).child(c.what.clone()))
-                            .when(!c.ok && !c.detail.is_empty(), |d| d.child(div().min_w_0().text_color(t.tx3).overflow_hidden().whitespace_nowrap().text_ellipsis().child(c.detail.clone())))
-                    }))
+                    .line_height(px(18.))
+                    .child(div().flex_1().min_w_0().text_color(if *ok { t.tx2 } else { t.err }).child(text.clone()))
+                    .when(!*ok, |d| d.child(copy_btn(t, "agents-login-note-copy", copy, cx)))
+                    .into_any_element(),
+            );
+        }
+        let checks = &self.login.checks;
+        if !checks.is_empty() {
+            let failed: Vec<&live::Check> = checks.iter().filter(|c| !c.ok).collect();
+            let (color, mark, text) = match failed.as_slice() {
+                [] => (t.ok, "✓", format!("All {} checks hold", checks.len())),
+                [one] => (t.err, "✕", format!("{} of {} checks failed: {}", 1, checks.len(), one.what)),
+                many => (t.err, "✕", format!("{} of {} checks failed", many.len(), checks.len())),
+            };
+            let view = ui::button(t, "agents-login-checks", ui::Btn::Secondary).h(px(28.)).px(px(12.)).cursor_pointer().child("View checks").on_click(cx.listener(|v, _: &ClickEvent, _, cx| {
+                v.login.sheet = Some(Sheet::Checks);
+                cx.notify();
+            }));
+            out.push(
+                div()
+                    .children(ui::here(&"agents-login-checks-line".into()))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(8.))
+                    .text_size(px(crate::theme::text::UI))
+                    .child(div().flex_none().w(px(12.)).text_color(color).child(mark))
+                    .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx2).child(text))
+                    .child(view)
                     .into_any_element(),
             );
         }
         out
+    }
+
+    /// View checks: what the login can and can't do, by category, each with what it was tried
+    /// on and a line on why; a failure says what the server said, copyable.
+    fn checks_sheet(&self, t: &Theme, p: &ConnectionProfile, cx: &mut Context<Self>) -> (String, AnyElement, AnyElement) {
+        let user = p.agent_login.as_ref().map(|l| l.user.clone()).unwrap_or_else(|| agent_login::login_name(&p.id));
+        let checks = &self.login.checks;
+        let mut body = div().id("agents-login-checks-body").flex_1().min_w_0().min_h_0().overflow_y_scroll().px(px(20.)).py(px(16.)).flex().flex_col().gap(px(18.)).text_size(px(crate::theme::text::UI)).line_height(px(18.));
+        let verifying = self.login.busy.as_deref() == Some("Verifying…");
+        if verifying || checks.is_empty() {
+            let wait = |text: String| div().flex_1().flex().items_center().justify_center().text_color(t.tx3).child(text);
+            body = body.child(match (&self.login.note, verifying) {
+                (_, true) => wait(format!("Logging in as {user} and trying what the rules allow and refuse…")).into_any_element(),
+                (Some((ok, text)), false) => div()
+                    .children(ui::here(&"agents-login-checks-error".into()))
+                    .flex()
+                    .flex_row()
+                    .items_start()
+                    .gap(px(12.))
+                    .px(px(12.))
+                    .py(px(10.))
+                    .border_1()
+                    .when(!*ok, |d| d.border_color(t.err).bg(t.err_s))
+                    .when(*ok, |d| d.border_color(t.line))
+                    .child(div().flex_1().min_w_0().text_color(if *ok { t.tx2 } else { t.err }).child(text.clone()))
+                    .child(copy_btn(t, "agents-login-checks-error-copy", text.clone(), cx))
+                    .into_any_element(),
+                (None, false) => wait("No checks yet: Verify runs them.".into()).into_any_element(),
+            });
+        }
+        let mut k = 0;
+        for g in live::CheckGroup::ALL {
+            let rows: Vec<&live::Check> = checks.iter().filter(|c| c.group == g).collect();
+            if rows.is_empty() {
+                continue;
+            }
+            let bad = rows.iter().filter(|c| !c.ok).count();
+            let head = div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(8.))
+                .pb(px(6.))
+                .border_b_1()
+                .border_color(t.line)
+                .child(ui::caps(t, g.label().to_uppercase()))
+                .child(div().ml_auto().text_size(px(crate::theme::text::SMALL)).text_color(if bad > 0 { t.err } else { t.tx3 }).child(if bad > 0 { format!("{bad} failed") } else { format!("{} of {}", rows.len(), rows.len()) }));
+            let mut sec = div().children(ui::here(&SharedString::from(format!("agents-login-checks-{}", g.label().to_lowercase())).into())).flex().flex_col().gap(px(8.)).child(head);
+            for c in rows {
+                k += 1;
+                let tip = Tip::new(c.what.clone()).lead(c.tip);
+                let line = div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(8.))
+                    .min_w_0()
+                    .child(check_mark(t, c))
+                    .child(div().flex_none().text_color(t.tx).child(c.what.clone()))
+                    .child(qmark(t, &format!("agents-login-check-tip-{k}"), tip));
+                let mut row = div().flex().flex_col().gap(px(4.)).child(line);
+                if !c.ok && !c.detail.is_empty() {
+                    row = row.child(
+                        div()
+                            .ml(px(20.))
+                            .flex()
+                            .flex_row()
+                            .items_start()
+                            .gap(px(10.))
+                            .px(px(10.))
+                            .py(px(8.))
+                            .bg(t.err_s)
+                            .border_1()
+                            .border_color(t.err.opacity(0.4))
+                            .child(div().flex_1().min_w_0().text_color(t.err).child(c.detail.clone()))
+                            .child(copy_btn(t, SharedString::from(format!("agents-login-check-copy-{k}")), c.detail.clone(), cx)),
+                    );
+                }
+                sec = sec.child(row);
+            }
+            body = body.child(sec);
+        }
+        let close = ui::button(t, "agents-login-checks-close", ui::Btn::Ghost).h(px(30.)).cursor_pointer().child("Close").on_click(cx.listener(|v, _: &ClickEvent, _, cx| {
+            v.login.sheet = None;
+            cx.notify();
+        }));
+        let pv = p.clone();
+        let again = p.agent_login.is_some().then(|| {
+            let b = ui::button(t, "agents-login-checks-again", ui::Btn::Secondary).h(px(30.)).px(px(12.)).child(if verifying { "Verifying…" } else { "Verify again" });
+            if verifying { b.opacity(0.5) } else { b.cursor_pointer().on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_verify(&pv, cx))) }
+        });
+        let footer = ui::modal_footer(t).child(div().flex_1()).children(again).child(close).into_any_element();
+        (format!("What {user} can and can't do"), body.into_any_element(), footer)
     }
 
     /// Where a login was removed, said under the tier: agents are refused until the user chooses.
@@ -636,26 +909,32 @@ impl AgentsPage {
         let button = |id: &'static str, label: String| ui::button(t, id, ui::Btn::Secondary).h(px(30.)).px(px(14.)).child(label);
         let row = || div().min_h(px(30.)).flex().flex_row().items_center().gap(px(12.));
         let pv = p.clone();
-        let verify = button("agents-login-verify", if busy.as_deref() == Some("Verifying…") { "Verifying…".into() } else { "Verify".into() }).ml_auto().on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_verify(&pv, cx)));
-        let (color, status) = match (&self.login.drift, drifted) {
-            (_, false) => (t.ok, "In sync".to_string()),
-            (Some(Ok(d)), true) if d.changes.len() == 1 => (t.warn, "1 change to apply".into()),
-            (Some(Ok(d)), true) => (t.warn, format!("{} changes to apply", d.changes.len())),
-            (_, true) => (t.warn, "The rules changed".into()),
-        };
+        let verify = button("agents-login-verify", if busy.as_deref() == Some("Verifying…") { "Verifying…".into() } else { "Verify".into() }).on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_verify(&pv, cx)));
+        let state = self.login_state(p, l, drifted);
+        let (pa, on) = (p.clone(), l.auto_sync);
+        let auto = div()
+            .flex_none()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(8.))
+            .text_color(t.tx2)
+            .child("Auto sync")
+            .child(ui::switch(t, "agents-login-auto", on).on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_set_auto(&pa, !on, cx))));
         let mut login = sub(sub_title(t, "agents-login-tip", "Login", login_tip())).child(
             row()
                 .child(div().children(ui::here(&"agents-login-as".into())).min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx).child(l.user.clone()))
-                .child(div().flex_none().flex().flex_row().items_center().gap(px(7.)).text_color(color).child(div().size(px(7.)).rounded_full().bg(color)).child(status))
-                .child(verify),
+                .child(state.render(t))
+                .child(div().ml_auto().flex().flex_row().items_center().gap(px(16.)).child(auto).child(verify)),
         );
+        login = login.child(div().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(if on { AUTO_ON } else { AUTO_OFF }));
         if l.not_granted > 0 {
             login = login.child(div().text_size(px(crate::theme::text::UI)).text_color(t.warn).child(format!("{} can't be granted to it: agents don't see {}.", agent_login_count(l.not_granted, "table"), if l.not_granted == 1 { "it" } else { "them" })));
         }
         if drifted {
             login = login.child(self.login_drift_lines(t, p, cx));
         }
-        login = login.children(self.login_notes(t));
+        login = login.children(self.login_notes(t, cx));
         let pr = p.clone();
         let rotate = button("agents-login-rotate", if busy.as_deref() == Some("A new password…") { "A new password…".into() } else { "Rotate password".into() }).ml_auto().on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_rotate(&pr, cx)));
         let store = dataman_core::secret::STORE_NAME;
@@ -680,9 +959,32 @@ impl AgentsPage {
         Some(crate::agents_rules::flat_section(t, "agents-login-section", "Agent login", vec![login, password, leave]).into_any_element())
     }
 
+    /// Where the login stands against its rules, for the dot and the word beside it.
+    fn login_state(&self, p: &ConnectionProfile, l: &agent_login::AgentLogin, drifted: bool) -> SyncState {
+        let hash = agent_login::rules_hash(p, &l.database);
+        let failed = l.auto_sync && self.login_auto.get(&p.id).is_some_and(|a| !a.running && a.hash == hash);
+        if self.login_auto_running(&p.id) || self.login.busy.as_deref() == Some("Applying…") {
+            SyncState::Syncing
+        } else if self.login.reading {
+            SyncState::Checking
+        } else if !drifted {
+            SyncState::InSync { live: l.auto_sync }
+        } else if failed {
+            SyncState::Failed
+        } else {
+            match &self.login.drift {
+                Some(Ok(d)) => SyncState::Changes(d.changes.len()),
+                _ => SyncState::Changes(0),
+            }
+        }
+    }
+
     /// The rules changed since the login was made: what it needs, and the button that runs it.
     fn login_drift_lines(&self, t: &Theme, p: &ConnectionProfile, cx: &mut Context<Self>) -> gpui::Div {
         let col = div().children(ui::here(&"agents-login-drift".into())).flex().flex_col().gap(px(10.)).text_size(px(crate::theme::text::UI)).line_height(px(18.));
+        if self.login_auto_running(&p.id) {
+            return col.child(div().text_color(t.tx3).child("Dataman is applying the new rules to the login, as your login. Until then it keeps its old grants, and Dataman already applies the new rules on top."));
+        }
         match &self.login.drift {
             None => col.child(div().text_color(t.tx3).child("Reading what the login has now…")),
             Some(Err(e)) => {
@@ -726,7 +1028,9 @@ impl AgentsPage {
             Sheet::Create { review, opts, confirm, busy, error } => self.create_sheet(t, p, review.as_ref(), *opts, *confirm, *busy, error.as_deref(), cx),
             Sheet::Remove { plan, confirm, busy, error } => self.remove_sheet(t, p, plan.as_ref(), *confirm, *busy, error.as_deref(), cx),
             Sheet::Changes => self.changes_sheet(t, p, cx)?,
+            Sheet::Checks => self.checks_sheet(t, p, cx),
         };
+        let (w, h) = if matches!(sheet, Sheet::Checks) { (680., 600.) } else { (1040., 720.) };
         Some(
             div()
                 .id("agents-login-sheet")
@@ -740,8 +1044,8 @@ impl AgentsPage {
                 .child(ui::esc_closes(None, cx.listener(|v, _: &(), _, cx| v.login_close(cx))))
                 .child(
                     ui::modal(t, "agents-login-card")
-                        .w(px(1040.))
-                        .h(px(720.))
+                        .w(px(w))
+                        .h(px(h))
                         .child(ui::modal_header_with(t, None, title, p.env.is_production().then(|| prod_tag(t).into_any_element()), ui::modal_close(t, "agents-login-close").cursor_pointer().on_click(close)))
                         .child(div().flex_1().min_h_0().flex().flex_row().child(body))
                         .child(footer),
@@ -787,9 +1091,43 @@ impl AgentsPage {
                 if names.len() == 1 { "it" } else { "them" }
             )));
         }
-        for l in &plan.lacks {
+        // Why it wasn't created, whole and copyable (a failed check can run long).
+        if let Some(e) = error {
             warned = true;
-            warn = warn.child(div().children(ui::here(&"agents-login-lacks".into())).border_1().border_color(t.err).bg(t.err_s).px(px(12.)).py(px(10.)).text_color(t.err).child(l.clone()));
+            let copy = e.to_string();
+            warn = warn.child(
+                div()
+                    .children(ui::here(&"agents-login-error".into()))
+                    .flex()
+                    .flex_row()
+                    .items_start()
+                    .gap(px(12.))
+                    .border_1()
+                    .border_color(t.err)
+                    .bg(t.err_s)
+                    .px(px(12.))
+                    .py(px(10.))
+                    .child(div().flex_1().min_w_0().text_color(t.err).child(copy.clone()))
+                    .child(ui::button(t, "agents-login-error-copy", ui::Btn::Secondary).flex_none().h(px(26.)).cursor_pointer().child("Copy").on_click(cx.listener(move |_, _: &ClickEvent, _, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy.clone()))))),
+            );
+        }
+        for (i, l) in plan.lacks.iter().enumerate() {
+            warned = true;
+            warn = warn.child(
+                div()
+                    .children(ui::here(&"agents-login-lacks".into()))
+                    .flex()
+                    .flex_row()
+                    .items_start()
+                    .gap(px(12.))
+                    .border_1()
+                    .border_color(t.err)
+                    .bg(t.err_s)
+                    .px(px(12.))
+                    .py(px(10.))
+                    .child(div().flex_1().min_w_0().text_color(t.err).child(l.clone()))
+                    .child(copy_btn(t, SharedString::from(format!("agents-login-lacks-copy-{i}")), l.clone(), cx)),
+            );
         }
         let opt_row = |id: &'static str, on: bool, text: String, sub: Option<&str>| {
             div()
@@ -804,7 +1142,7 @@ impl AgentsPage {
                 .child(div().pt(px(1.)).children(on.then(|| ui::here(&gpui::SharedString::from(format!("{id}-on")).into())).flatten()).child(checkbox(t, on, false)))
                 .child(div().flex_1().min_w_0().flex().flex_col().gap(px(2.)).child(div().text_color(t.tx).child(text)).children(sub.map(|s| div().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(s.to_string()))))
         };
-        let (p1, p2) = (p.clone(), p.clone());
+        let (p1, p2, p3) = (p.clone(), p.clone(), p.clone());
         let mut opts_row = div().flex().flex_row().items_start().gap(px(32.)).child(
             opt_row("agents-login-opt-rotate", opts.rotate_days.is_some(), format!("Rotate its password every {} days", agent_login::ROTATE_DAYS), Some(format!("A new one on the server and in the {}, the old one's sessions ended", dataman_core::secret::STORE_NAME).as_str()))
                 .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_option(&p1, |o| o.rotate_days = if o.rotate_days.is_some() { None } else { Some(agent_login::ROTATE_DAYS) }, cx))),
@@ -816,6 +1154,7 @@ impl AgentsPage {
                     .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_option(&p2, |o| o.conn_limit = if o.conn_limit.is_some() { None } else { Some(agent_login::CONN_LIMIT) }, cx))),
             );
         }
+        opts_row = opts_row.child(opt_row("agents-login-opt-auto", opts.auto_sync, "Apply rule changes on its own".into(), Some(AUTO_SUB)).on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_option(&p3, |o| o.auto_sync = !o.auto_sync, cx))));
         let options = div()
             .children(ui::here(&"agents-login-options".into()))
             .flex_none()
@@ -854,7 +1193,7 @@ impl AgentsPage {
             cx.notify();
         }));
         let say = match (error, confirm) {
-            (Some(e), _) => div().flex_1().min_w_0().text_color(t.err).overflow_hidden().whitespace_nowrap().text_ellipsis().child(e.to_string()),
+            (Some(_), _) => div().flex_1().min_w_0().text_color(t.err).child("Not created: the reason is above."),
             (None, true) => div().flex_1().text_color(t.err).child(format!("Production: this creates a login on {} now.", p.host)),
             (None, false) => div().flex_1().text_color(t.tx3).child(format!("Dataman runs this as {}, then logs in as the new login to check it before keeping it.", if rv.probe.login.is_empty() { "your login" } else { &rv.probe.login })),
         };
@@ -1035,14 +1374,114 @@ impl AgentsPage {
     pub(crate) fn demo_changes(&mut self) {
         self.login.sheet = Some(Sheet::Changes);
     }
+
+    /// The demo's View checks, open: what a read login on PostgreSQL is tried for, one failed.
+    pub(crate) fn demo_checks(&mut self, p: &ConnectionProfile) {
+        self.login.conn = Some(p.id.clone());
+        use live::{Check, CheckGroup as G};
+        let c = |group, what: &str, on: &str, tip, ok, detail: &str| Check { group, what: what.into(), on: on.into(), tip, guard: live::guards(what), ok, detail: detail.into() };
+        self.login.checks = vec![
+            c(G::Login, "Logs in as itself", &agent_login::login_name(&p.id), "Dataman connected with the login's own password, from the Keychain, and the server named it back.", true, ""),
+            c(G::Login, "Sessions start read-only", "", "Its role starts every session read-only, a second lock on top of its grants.", true, ""),
+            c(G::Reading, "Reads what the rules allow", "public.orders", "A read that returns no rows, on one table the rules let agents read.", true, ""),
+            c(G::Reading, "Reads masked tables through its view", "users", "Masked columns are read through a view Dataman made, which masks them on the server.", true, ""),
+            c(G::Writing, "Can't write rows", "public.orders", "Read only: a write that matches no row, refused by the database for lack of privilege.", true, ""),
+            c(G::Privacy, "Can't read masked values unmasked", "users.email", "The table itself doesn't give it the masked column: only the view, which masks it.", true, ""),
+            c(G::Privacy, "Can't read hidden tables", "public.audit_log", "Tables Privacy hides get no grant at all: the database itself refuses them.", false, "it read the hidden table"),
+            c(G::Structure, "Can't change structure", "", "Creating a table as it is refused (and rolled back if it wasn't).", true, ""),
+        ];
+        self.login.sheet = Some(Sheet::Checks);
+    }
 }
+
+/// The login against its rules. Pulsing: Dataman is at it (watching, applying, reading).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SyncState {
+    /// `live`: Auto sync on, so it stays that way on its own.
+    InSync { live: bool },
+    Syncing,
+    Checking,
+    /// Changes waiting for Apply (0: the rules changed, not read yet).
+    Changes(usize),
+    Failed,
+}
+
+impl SyncState {
+    fn render(self, t: &Theme) -> gpui::Div {
+        let (color, label, pulse) = match self {
+            SyncState::InSync { live: true } => (t.ok, "In sync".to_string(), Some(2400)),
+            SyncState::InSync { live: false } => (t.ok, "In sync".to_string(), None),
+            SyncState::Syncing => (t.acc, "Syncing…".to_string(), Some(900)),
+            SyncState::Checking => (t.tx3, "Checking…".to_string(), Some(1200)),
+            SyncState::Changes(0) => (t.warn, "The rules changed".to_string(), None),
+            SyncState::Changes(1) => (t.warn, "1 change to apply".to_string(), None),
+            SyncState::Changes(n) => (t.warn, format!("{n} changes to apply"), None),
+            SyncState::Failed => (t.err, "Sync failed".to_string(), None),
+        };
+        let id = match self {
+            SyncState::InSync { .. } => "agents-login-state-insync",
+            SyncState::Syncing => "agents-login-state-syncing",
+            SyncState::Checking => "agents-login-state-checking",
+            SyncState::Changes(_) => "agents-login-state-changes",
+            SyncState::Failed => "agents-login-state-failed",
+        };
+        div().children(ui::here(&id.into())).flex_none().flex().flex_row().items_center().gap(px(8.)).text_color(color).child(status_dot(color, pulse, id)).child(label)
+    }
+}
+
+/// A 7 px dot; pulsing, a ring of its colour grows out of it and fades, every `ms`.
+fn status_dot(color: Hsla, pulse: Option<u64>, id: &'static str) -> AnyElement {
+    use gpui::{Animation, AnimationExt};
+    const D: f32 = 7.;
+    let dot = div().absolute().top_0().left_0().size(px(D)).rounded_full().bg(color);
+    let wrap = div().flex_none().relative().size(px(D));
+    let Some(ms) = pulse else { return wrap.child(dot).into_any_element() };
+    let ring = div().absolute().rounded_full().bg(color).with_animation(
+        SharedString::from(format!("{id}-pulse")),
+        Animation::new(std::time::Duration::from_millis(ms)).repeat().with_easing(gpui::ease_out_quint()),
+        move |d, k| {
+            let s = D + 10. * k;
+            d.size(px(s)).top(px((D - s) / 2.)).left(px((D - s) / 2.)).opacity(0.45 * (1. - k))
+        },
+    );
+    wrap.child(ring).child(dot).into_any_element()
+}
+
+/// Under Auto sync in the Login section.
+const AUTO_ON: &str = "Rule changes in Access and Privacy are applied to the login as you make them, with your login.";
+const AUTO_OFF: &str = "Auto sync is off: rule changes wait for Apply.";
+
+/// Under the option, in the review.
+const AUTO_SUB: &str = "When Access or Privacy change, Dataman updates its grants with your login. Off, the changes wait for Apply";
 
 /// Lines laid out above and below WHAT RUNS's view, so a fast scroll doesn't show a blank edge.
 const WHAT_OVERSCAN: usize = 20;
 
 enum Verified {
     Gone,
-    Checked(Vec<live::Check>),
+    /// Its checks, and what put it back in its database first (made again since).
+    Checked(Vec<live::Check>, Option<Plan>),
+}
+
+/// Said once Dataman put the login back in its database made again.
+fn back_text(p: &ConnectionProfile) -> String {
+    let (user, db) = p.agent_login.as_ref().map(|l| (l.user.clone(), live::database_for(p, Some(l)))).unwrap_or_default();
+    format!("{db} was made again (restored or recreated) and {user} had lost its user there: Dataman put it back, with its grants")
+}
+
+/// A check's mark: ✓ for what it can do, a lock for what it can't (held), ✕ when it failed.
+fn check_mark(t: &Theme, c: &live::Check) -> gpui::Div {
+    let mark = div().flex_none().w(px(12.)).flex().items_center().justify_center();
+    match (c.ok, c.guard) {
+        (false, _) => mark.text_color(t.err).child("✕"),
+        (true, true) => mark.children(ui::here(&"agents-login-check-lock".into())).child(crate::assets::icon(crate::assets::Icon::Lock).size(px(12.)).text_color(t.ok)),
+        (true, false) => mark.text_color(t.ok).child("✓"),
+    }
+}
+
+/// A Copy button for `text`.
+fn copy_btn(t: &Theme, id: impl Into<SharedString>, text: String, cx: &mut Context<AgentsPage>) -> gpui::Stateful<gpui::Div> {
+    ui::button(t, id.into(), ui::Btn::Secondary).flex_none().h(px(26.)).px(px(10.)).cursor_pointer().child("Copy").on_click(cx.listener(move |_, _: &ClickEvent, _, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.clone()))))
 }
 
 fn prod_tag(t: &Theme) -> gpui::Div {

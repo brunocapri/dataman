@@ -304,6 +304,8 @@ pub struct AgentsPage {
     /// Connections found to speak PostgreSQL's protocol without its logins (MotherDuck and the
     /// like): agents use the user's login there.
     pub(crate) no_logins: BTreeSet<String>,
+    /// Agent logins whose rule changes are being applied on their own, or failed to be.
+    pub(crate) login_auto: std::collections::BTreeMap<String, crate::agents_login::AutoSync>,
 }
 
 impl EventEmitter<AgentsEvent> for AgentsPage {}
@@ -575,7 +577,13 @@ impl AgentsPage {
             }
         })
         .detach();
-        cx.observe(&store, |_, _, cx| cx.notify()).detach();
+        // A connection saved anywhere (here, its dialog, an import): its agent login follows its
+        // rules again where it does so on its own.
+        cx.observe(&store, |v, _, cx| {
+            v.login_auto_sync(cx);
+            cx.notify();
+        })
+        .detach();
         let conn = store.read(cx).profiles.first().map(|p| p.id.clone());
         let mut v = AgentsPage {
             core,
@@ -638,11 +646,13 @@ impl AgentsPage {
             prune_filters: false,
             login: Default::default(),
             no_logins: BTreeSet::new(),
+            login_auto: Default::default(),
         };
         v.poll(cx);
         // Not in the checks' demo: its connections are made up.
         if !cfg!(feature = "checks") {
             v.rotate_due(cx);
+            v.login_auto_sync(cx);
         }
         v
     }

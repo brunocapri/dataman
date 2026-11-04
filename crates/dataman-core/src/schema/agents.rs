@@ -37,6 +37,13 @@ const MS_GENERATED: &str = "SELECT s.name, t.name, c.name, d.name FROM sys.compu
   JOIN sys.sql_expression_dependencies x ON x.referencing_id = c.object_id AND x.referencing_minor_id = c.column_id \
   JOIN sys.columns d ON d.object_id = x.referenced_id AND d.column_id = x.referenced_minor_id";
 
+/// SQL Server without VIEW DEFINITION (an agent login): sql_expression_dependencies is refused
+/// and a computed column's expression reads as NULL, so it counts as computed from every other
+/// column of its table (a row each), erring on more.
+const MS_GENERATED_EXPR: &str = "SELECT s.name, t.name, c.name, COALESCE(c.definition, QUOTENAME(o.name)) FROM sys.computed_columns c \
+  JOIN sys.objects t ON t.object_id = c.object_id JOIN sys.schemas s ON s.schema_id = t.schema_id \
+  LEFT JOIN sys.columns o ON c.definition IS NULL AND o.object_id = c.object_id AND o.column_id <> c.column_id";
+
 /// The names an expression may read: quoted (`` `a` ``, `[a]`, `"a"`) and bare words. MySQL
 /// keeps no dependencies for generated columns, so its expression is read, erring on more.
 fn expression_names(e: &str) -> Vec<String> {
@@ -97,7 +104,16 @@ impl Connection {
             Engine::MongoDb | Engine::Elasticsearch | Engine::OpenSearch | Engine::Redis => return Ok(Vec::new()),
         };
         let limits = Limits { max_rows: 100_000, max_bytes: 32 * 1024 * 1024, max_cell: 64 * 1024, ..Limits::default() };
-        let out = self.bounded(Some(db), sql, vec![], Mode::Read, limits, cancel).await.map_err(|e| anyhow!("{e}"))?;
+        let mut by_expression = by_expression;
+        let mut cancel = std::pin::pin!(cancel);
+        let out = match self.bounded(Some(db), sql, vec![], Mode::Read, limits.clone(), cancel.as_mut()).await {
+            // Refused the dependencies (229, no VIEW DEFINITION): the expressions, erring on more.
+            Err(e) if engine == Engine::SqlServer && e.to_string().contains("[229]") => {
+                by_expression = true;
+                self.bounded(Some(db), MS_GENERATED_EXPR, vec![], Mode::Read, limits, cancel.as_mut()).await.map_err(|e| anyhow!("{e}"))?
+            }
+            r => r.map_err(|e| anyhow!("{e}"))?,
+        };
         let text = |v: &Value| v.as_str().unwrap_or_default().to_string();
         let mut cols: Vec<Generated> = Vec::new();
         // DuckDB: a row per table, its generated columns read from its SQL.

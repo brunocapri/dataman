@@ -240,6 +240,7 @@ fn text_literal(d: Dialect, kind: Kind, s: &str) -> String {
         Kind::Numeric | Kind::Int | Kind::Float | Kind::Float4 if is_decimal(s) => s.to_string(),
         Kind::Bytes if hex_bytes(s).and_then(|h| bytes_literal(d, h)).is_some() => hex_bytes(s).and_then(|h| bytes_literal(d, h)).unwrap_or_default(),
         Kind::Bytes if d == Dialect::TSql && hex_bytes(s).is_some() => format!("0x{}", hex_bytes(s).unwrap_or_default()),
+        Kind::Timestamp if d == Dialect::TSql => d.quote_literal(&tsql_time(s)),
         _ => d.quote_literal(s),
     }
 }

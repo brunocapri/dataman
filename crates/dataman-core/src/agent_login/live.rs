@@ -119,7 +119,12 @@ pub async fn review(c: &Arc<Connection>, p: &ConnectionProfile, o: &Options) -> 
     let prod = p.env.is_production();
     let mut plan = create_plan(&spec, &inventory, &probe, persist, &password, prod);
     plan.notes.extend(probe.notes.iter().cloned());
-    if probe.exists == Some(false) {
+    if probe.orphan {
+        // Left by a database made again, and Dataman no longer knows it: dropped first, in the
+        // script the user reviews.
+        plan.before = ms::drop_orphan_steps(&spec.user);
+        plan.notes.push(format!("A login named {} is on the server without its user in {} (the database was restored or made again since it was created): the script drops it first.", spec.user, p.database));
+    } else if probe.exists == Some(false) {
         plan.lacks.push(format!("a login named {} already exists and isn't Dataman's: Dataman never changes it. Drop or rename it to create the agent login", spec.user));
     } else if probe.exists == Some(true) {
         plan.lacks.push(format!("{} already exists (Dataman made it): Verify picks it up, or Remove it first", spec.user));
@@ -149,6 +154,10 @@ pub async fn apply(c: &Arc<Connection>, plan: &Plan, database: &str) -> Result<(
         let d = engine.dialect();
         let (begin, commit, rollback) = (d.begin(), d.commit(), d.rollback_if_open());
         let tx = plan.one_tx;
+        for s in &plan.before {
+            let Action::Sql(sql) = &s.action else { continue };
+            db.execute(sql).await.map_err(|e| anyhow!("{e}\n  in: {}", s.shown))?;
+        }
         if tx {
             db.execute(begin).await.map_err(|e| anyhow!("{e}"))?;
         }
@@ -193,6 +202,7 @@ pub fn record(p: &ConnectionProfile, plan: &Plan, o: &Options) -> AgentLogin {
         rotate_days: o.rotate_days,
         rotated: Some(now),
         conn_limit: o.conn_limit,
+        auto_sync: o.auto_sync,
         database: p.database.clone(),
         made: plan.made.clone(),
         views: plan.views.clone(),
@@ -229,7 +239,7 @@ pub async fn create(core: &crate::Core, admin: &Arc<Connection>, p: &ConnectionP
         return Ok((rec, checks.unwrap_or_default(), None));
     }
     let why = match &checks {
-        Ok(c) => c.iter().filter(|x| !x.ok).map(|x| format!("{}: {}", x.what, x.detail)).collect::<Vec<_>>().join("; "),
+        Ok(c) => c.iter().filter(|x| !x.ok).map(|x| format!("{}: {}", x.line(), x.detail)).collect::<Vec<_>>().join("; "),
         Err(e) => e.clone(),
     };
     let undone = match removal(admin, p, &rec).await {
@@ -266,14 +276,77 @@ pub fn agent_profile(p: &ConnectionProfile, user: &str) -> ConnectionProfile {
 /// One check of Verify: what was tried as the agent, whether it went as the rules say.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Check {
+    pub group: CheckGroup,
+    /// What it holds, the same words whatever was tried ("Can't read hidden tables").
     pub what: String,
+    /// What it was tried on: one table, column or command picked from the rules ("" for none).
+    pub on: String,
+    /// Why it is tried and how, in a line.
+    pub tip: &'static str,
+    /// A refusal it holds (what it can't do), not something it can.
+    pub guard: bool,
     pub ok: bool,
+    /// What the server said.
     pub detail: String,
 }
 
-fn check(what: impl Into<String>, ok: bool, detail: impl Into<String>) -> Check {
-    Check { what: what.into(), ok, detail: detail.into() }
+/// Verify's checks, by what they are about.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum CheckGroup {
+    Login,
+    Reading,
+    Writing,
+    Privacy,
+    Structure,
 }
+
+impl CheckGroup {
+    pub const ALL: [CheckGroup; 5] = [CheckGroup::Login, CheckGroup::Reading, CheckGroup::Writing, CheckGroup::Privacy, CheckGroup::Structure];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            CheckGroup::Login => "Login",
+            CheckGroup::Reading => "Reading",
+            CheckGroup::Writing => "Writing",
+            CheckGroup::Privacy => "Privacy",
+            CheckGroup::Structure => "Structure",
+        }
+    }
+}
+
+impl Check {
+    /// One line: what it holds, and on what.
+    pub fn line(&self) -> String {
+        if self.on.is_empty() { self.what.clone() } else { format!("{} ({})", self.what, self.on) }
+    }
+}
+
+fn check(group: CheckGroup, what: &str, on: impl Into<String>, tip: &'static str, ok: bool, detail: impl Into<String>) -> Check {
+    Check { group, what: what.into(), on: on.into(), tip, guard: guards(what), ok, detail: detail.into() }
+}
+
+/// Whether a check is about what the login can't do.
+pub fn guards(what: &str) -> bool {
+    what.starts_with("Can't") || matches!(what, "Hidden fields are left out" | "Sessions start read-only")
+}
+
+use CheckGroup as G;
+
+const TIP_LOGIN: &str = "Dataman connected with the login's own password, from the Keychain, and the server named it back.";
+const TIP_READ_ONLY: &str = "Its role starts every session read-only, a second lock on top of its grants.";
+const TIP_REDIS_PING: &str = "PING as the login: its ACL user is on and its password works.";
+const TIP_READS: &str = "A read that returns no rows, on one table the rules let agents read.";
+const TIP_SEARCHES: &str = "A one-hit search on one index the rules let agents read.";
+const TIP_VIEW: &str = "Masked columns are read through a view Dataman made, which masks them on the server.";
+const TIP_NOT_GRANTED: &str = "A table your login can't grant stays out of its reach: agents don't see it.";
+const TIP_WRITE: &str = "Read only: a write that matches no row, refused by the database for lack of privilege.";
+const TIP_HIDDEN_TABLE: &str = "Tables Privacy hides get no grant at all: the database itself refuses them.";
+const TIP_HIDDEN_COLUMN: &str = "Columns Privacy hides are left out of its grants, so selecting one is refused.";
+const TIP_MASKED: &str = "The table itself doesn't give it the masked column: only the view, which masks it.";
+const TIP_HIDDEN_FIELD: &str = "Field level security leaves hidden fields out of what it reads.";
+const TIP_STRUCTURE: &str = "Creating a table as it is refused (and rolled back if it wasn't).";
+const TIP_INDICES: &str = "Creating an index as it is refused.";
+const TIP_DANGEROUS: &str = "Commands in @dangerous (CONFIG, KEYS…) are off in its ACL.";
 
 /// A permission error, as each engine says it (a hidden object is "not found" on some).
 fn refused(engine: Engine, code: Option<&str>, msg: &str) -> bool {
@@ -325,7 +398,15 @@ async fn verify_sql(agent: &Arc<Connection>, spec: &Spec, inv: &Inventory, probe
         _ => "SELECT SUSER_SNAME()",
     };
     let me = text_rows(&db, who).await?.first().and_then(|r| r[0].clone()).unwrap_or_default();
-    out.push(check("Logged in as the agent", me == spec.user, me.clone()));
+    out.push(check(G::Login, "Logs in as itself", me.clone(), TIP_LOGIN, me == spec.user, me.clone()));
+    // PostgreSQL: a read login's sessions start read-only (its role's setting), which turns a
+    // write away before its privileges are looked at. Said as a check of its own, then off for
+    // this session, so what refuses the tries below is the privileges.
+    if e == Engine::Postgres && !spec.write {
+        let ro = text_rows(&db, "SHOW default_transaction_read_only").await?.first().and_then(|r| r[0].clone()).unwrap_or_default();
+        out.push(check(G::Login, "Sessions start read-only", "", TIP_READ_ONLY, ro == "on", ro));
+        db.execute("SET default_transaction_read_only = off").await.map_err(|x| anyhow!("{}", x.message))?;
+    }
     let (acc, hidden) = access(spec, inv);
     let qual = |s: &str, n: &str| if s.is_empty() { sql_q(e, n) } else { format!("{}.{}", sql_q(e, s), sql_q(e, n)) };
     let try_sql = |sql: String| {
@@ -340,33 +421,34 @@ async fn verify_sql(agent: &Arc<Connection>, spec: &Spec, inv: &Inventory, probe
     if spec.rows {
         if let Some(a) = acc.iter().filter(|a| a.whole && a.grantable && !a.plain.is_empty()).min_by_key(|a| a.kind == ObjKind::View) {
             let r = try_sql(top0(e, &sql_q(e, &a.plain[0]), &qual(&a.schema, &a.name))).await;
-            out.push(check(format!("Reads {}", a.label()), r.is_ok(), r.err().map(|x| x.to_string()).unwrap_or_default()));
+            out.push(check(G::Reading, "Reads what the rules allow", a.label(), TIP_READS, r.is_ok(), r.err().map(|x| x.to_string()).unwrap_or_default()));
             if !a.write && a.kind != ObjKind::View {
-                let c = sql_q(e, &a.plain[0]);
-                let r = try_sql(format!("UPDATE {} SET {c} = {c} WHERE 1 = 0", qual(&a.schema, &a.name))).await;
-                out.push(check(format!("Can't write {} (read tier)", a.label()), r.as_ref().is_err_and(|x| refused(e, x.code.as_deref(), &x.message)), r.err().map(|x| x.message).unwrap_or_else(|| "the write went through".into())));
+                // A DELETE names no column: only the privilege can refuse it (an UPDATE of an
+                // identity column is refused by SQL Server for that before any permission).
+                let r = try_sql(format!("DELETE FROM {} WHERE 1 = 0", qual(&a.schema, &a.name))).await;
+                out.push(check(G::Writing, "Can't write rows", a.label(), TIP_WRITE, r.as_ref().is_err_and(|x| refused(e, x.code.as_deref(), &x.message)), r.err().map(|x| x.message).unwrap_or_else(|| "the write went through".into())));
             }
         }
         if let Some(v) = views.first() {
             let a = acc.iter().find(|a| a.schema == v.schema && a.name == v.table);
             let col = a.and_then(|a| a.masked.first().map(|m| m.0.clone()).or_else(|| a.plain.first().cloned())).unwrap_or_default();
             let r = try_sql(top0(e, &sql_q(e, &col), &v.view)).await;
-            out.push(check(format!("Reads {} through its view", v.table), r.is_ok(), r.err().map(|x| x.to_string()).unwrap_or_default()));
+            out.push(check(G::Reading, "Reads masked tables through its view", v.table.clone(), TIP_VIEW, r.is_ok(), r.err().map(|x| x.to_string()).unwrap_or_default()));
             // What every login reads anyway (the review says so) is not tried.
             if let Some((m, _)) = a.and_then(|a| a.masked.iter().find(|(m, _)| !inv.open_to_all(&a.schema, &a.name, Some(m)))) {
                 let r = try_sql(top0(e, &sql_q(e, m), &qual(&v.schema, &v.table))).await;
-                out.push(check(format!("Can't read {}.{m} unmasked", v.table), r.as_ref().is_err_and(|x| refused(e, x.code.as_deref(), &x.message)), r.err().map(|x| x.message).unwrap_or_else(|| "it read the real values".into())));
+                out.push(check(G::Privacy, "Can't read masked values unmasked", format!("{}.{m}", v.table), TIP_MASKED, r.as_ref().is_err_and(|x| refused(e, x.code.as_deref(), &x.message)), r.err().map(|x| x.message).unwrap_or_else(|| "it read the real values".into())));
             }
         }
         if let Some((a, h)) = acc.iter().find_map(|a| a.hidden.iter().find(|h| !inv.open_to_all(&a.schema, &a.name, Some(h))).map(|h| (a, h))) {
             let r = try_sql(top0(e, &sql_q(e, h), &qual(&a.schema, &a.name))).await;
-            out.push(check(format!("Can't read {}.{h} (hidden)", a.name), r.as_ref().is_err_and(|x| refused(e, x.code.as_deref(), &x.message)), r.err().map(|x| x.message).unwrap_or_else(|| "it read the hidden column".into())));
+            out.push(check(G::Privacy, "Can't read hidden columns", format!("{}.{h}", a.name), TIP_HIDDEN_COLUMN, r.as_ref().is_err_and(|x| refused(e, x.code.as_deref(), &x.message)), r.err().map(|x| x.message).unwrap_or_else(|| "it read the hidden column".into())));
         }
     }
     // Not granted (another owner's): out of reach until its owner grants it.
     if let Some(a) = acc.iter().find(|a| !a.grantable && !probe.flavor.superuser) {
         let r = try_sql(top0(e, "1", &qual(&a.schema, &a.name))).await;
-        out.push(check(format!("Can't read {} (not granted)", a.label()), r.as_ref().is_err_and(|x| refused(e, x.code.as_deref(), &x.message)), r.err().map(|x| x.message).unwrap_or_else(|| "it read a table it was not granted".into())));
+        out.push(check(G::Reading, "Can't read tables it wasn't granted", a.label(), TIP_NOT_GRANTED, r.as_ref().is_err_and(|x| refused(e, x.code.as_deref(), &x.message)), r.err().map(|x| x.message).unwrap_or_else(|| "it read a table it was not granted".into())));
     }
     let open_table = |h: &String| {
         let name = h.split(" (").next().unwrap_or(h);
@@ -377,7 +459,7 @@ async fn verify_sql(agent: &Arc<Connection>, spec: &Spec, inv: &Inventory, probe
         let name = h.split(" (").next().unwrap_or(h);
         let (s, n) = name.split_once('.').unwrap_or(("", name));
         let r = try_sql(top0(e, "1", &qual(s, n))).await;
-        out.push(check(format!("Can't read {name} (hidden)"), r.as_ref().is_err_and(|x| refused(e, x.code.as_deref(), &x.message)), r.err().map(|x| x.message).unwrap_or_else(|| "it read the hidden table".into())));
+        out.push(check(G::Privacy, "Can't read hidden tables", name, TIP_HIDDEN_TABLE, r.as_ref().is_err_and(|x| refused(e, x.code.as_deref(), &x.message)), r.err().map(|x| x.message).unwrap_or_else(|| "it read the hidden table".into())));
     }
     let probe_table = format!("dataman_probe_{}", &hash::hex(&hash::random_bytes(4)));
     let schema = match e {
@@ -397,7 +479,7 @@ async fn verify_sql(agent: &Arc<Connection>, spec: &Spec, inv: &Inventory, probe
         let _ = db.execute(&format!("DROP TABLE {}", qual(&schema, &probe_table))).await;
     }
     let pg_public = e == Engine::Postgres && probe.flavor.major > 0 && probe.flavor.major < 15;
-    out.push(check("Can't change structure", ok || pg_public, r.err().map(|x| x.message).unwrap_or_else(|| if pg_public { "PUBLIC may create in schema public before PostgreSQL 15".into() } else { "it created a table (rolled back)".into() })));
+    out.push(check(G::Structure, "Can't change structure", "", TIP_STRUCTURE, ok || pg_public, r.err().map(|x| x.message).unwrap_or_else(|| if pg_public { "PUBLIC may create in schema public before PostgreSQL 15".into() } else { "it created a table (rolled back)".into() })));
     Ok(())
 }
 
@@ -406,7 +488,7 @@ async fn verify_mongo(agent: &Arc<Connection>, spec: &Spec, inv: &Inventory, out
     let st = mongo::run(m, "admin", &json!({ "connectionStatus": 1 })).await?;
     let v: Value = crate::nosql::bson::Bson::Document(st).into_relaxed_extjson();
     let me = v["authInfo"]["authenticatedUsers"][0]["user"].as_str().unwrap_or("").to_string();
-    out.push(check("Logged in as the agent", me == spec.user, me));
+    out.push(check(G::Login, "Logs in as itself", me.clone(), TIP_LOGIN, me == spec.user, me));
     let d = mongo::desired(spec, inv);
     let find = |db: String, coll: String| {
         let m = m.clone();
@@ -414,43 +496,43 @@ async fn verify_mongo(agent: &Arc<Connection>, spec: &Spec, inv: &Inventory, out
     };
     if let Some(a) = d.access.iter().find(|a| a.whole) {
         let r = find(a.schema.clone(), a.name.clone()).await;
-        out.push(check(format!("Reads {}", a.label()), r.is_ok(), r.err().map(|x| format!("{x:#}")).unwrap_or_default()));
+        out.push(check(G::Reading, "Reads what the rules allow", a.label(), TIP_READS, r.is_ok(), r.err().map(|x| format!("{x:#}")).unwrap_or_default()));
         if !a.write {
             let r = mongo::run(m, &a.schema, &json!({ "insert": a.name, "documents": [{ "dataman_probe": 1 }] })).await;
-            out.push(check(format!("Can't write {} (read tier)", a.label()), r.as_ref().is_err_and(|x| refused(Engine::MongoDb, None, &format!("{x:#}"))), r.err().map(|x| format!("{x:#}")).unwrap_or_else(|| "the insert went through".into())));
+            out.push(check(G::Writing, "Can't write documents", a.label(), TIP_WRITE, r.as_ref().is_err_and(|x| refused(Engine::MongoDb, None, &format!("{x:#}"))), r.err().map(|x| format!("{x:#}")).unwrap_or_else(|| "the insert went through".into())));
         }
     }
     if let Some((db, view, _, _, map)) = d.views.first() {
         let r = find(db.clone(), view.clone()).await;
-        out.push(check(format!("Reads {} through its view", map.table), r.is_ok(), r.err().map(|x| format!("{x:#}")).unwrap_or_default()));
+        out.push(check(G::Reading, "Reads masked collections through its view", map.table.clone(), TIP_VIEW, r.is_ok(), r.err().map(|x| format!("{x:#}")).unwrap_or_default()));
         let r = find(db.clone(), map.table.clone()).await;
-        out.push(check(format!("Can't read {} itself", map.table), r.as_ref().is_err_and(|x| refused(Engine::MongoDb, None, &format!("{x:#}"))), r.err().map(|x| format!("{x:#}")).unwrap_or_else(|| "it read the collection".into())));
+        out.push(check(G::Privacy, "Can't read masked values unmasked", map.table.clone(), TIP_MASKED, r.as_ref().is_err_and(|x| refused(Engine::MongoDb, None, &format!("{x:#}"))), r.err().map(|x| format!("{x:#}")).unwrap_or_else(|| "it read the collection".into())));
     }
     if let Some(h) = d.hidden.first() {
         let (db, coll) = h.split_once('.').unwrap_or(("", h));
         let r = find(db.to_string(), coll.split(" (").next().unwrap_or(coll).to_string()).await;
-        out.push(check(format!("Can't read {h} (hidden)"), r.as_ref().is_err_and(|x| refused(Engine::MongoDb, None, &format!("{x:#}"))), r.err().map(|x| format!("{x:#}")).unwrap_or_else(|| "it read the hidden collection".into())));
+        out.push(check(G::Privacy, "Can't read hidden collections", h.clone(), TIP_HIDDEN_TABLE, r.as_ref().is_err_and(|x| refused(Engine::MongoDb, None, &format!("{x:#}"))), r.err().map(|x| format!("{x:#}")).unwrap_or_else(|| "it read the hidden collection".into())));
     }
     let db = d.access.first().map(|a| a.schema.clone()).unwrap_or_else(|| agent.database().to_string());
     let r = mongo::run(m, &db, &json!({ "create": format!("dataman_probe_{}", hash::hex(&hash::random_bytes(4))) })).await;
-    out.push(check("Can't change structure", r.as_ref().is_err_and(|x| refused(Engine::MongoDb, None, &format!("{x:#}"))), r.err().map(|x| format!("{x:#}")).unwrap_or_else(|| "it created a collection".into())));
+    out.push(check(G::Structure, "Can't change structure", "", TIP_STRUCTURE, r.as_ref().is_err_and(|x| refused(Engine::MongoDb, None, &format!("{x:#}"))), r.err().map(|x| format!("{x:#}")).unwrap_or_else(|| "it created a collection".into())));
     Ok(())
 }
 
 async fn verify_redis(agent: &Arc<Connection>, spec: &Spec, out: &mut Vec<Check>) -> Result<()> {
     let Client::Redis(r) = nosql(agent)? else { bail!("not Redis") };
     let me = redis::call(r, &["ACL".into(), "WHOAMI".into()]).await?.text().unwrap_or_default();
-    out.push(check("Logged in as the agent", me == spec.user, me));
+    out.push(check(G::Login, "Logs in as itself", me.clone(), TIP_LOGIN, me == spec.user, me));
     let ping = redis::call(r, &["PING".into()]).await;
-    out.push(check("Runs commands", ping.is_ok(), ping.err().map(|x| x.to_string()).unwrap_or_default()));
+    out.push(check(G::Login, "Runs commands", "PING", TIP_REDIS_PING, ping.is_ok(), ping.err().map(|x| x.to_string()).unwrap_or_default()));
     // Only refusals are tried here: what would change the server never runs.
-    for (what, a) in [("Can't run CONFIG (@dangerous)", vec!["CONFIG", "GET", "maxmemory"]), ("Can't run KEYS (@dangerous)", vec!["KEYS", "dataman-probe-*"])] {
+    for (on, a) in [("CONFIG", vec!["CONFIG", "GET", "maxmemory"]), ("KEYS", vec!["KEYS", "dataman-probe-*"])] {
         let x = redis::call(r, &a.iter().map(|s| s.to_string()).collect::<Vec<_>>()).await;
-        out.push(check(what, x.as_ref().is_err_and(|e| e.to_string().contains("NOPERM")), x.err().map(|e| e.to_string()).unwrap_or_else(|| "it ran".into())));
+        out.push(check(G::Structure, "Can't run dangerous commands", on, TIP_DANGEROUS, x.as_ref().is_err_and(|e| e.to_string().contains("NOPERM")), x.err().map(|e| e.to_string()).unwrap_or_else(|| "it ran".into())));
     }
     if !spec.write {
         let x = redis::call(r, &["SET".into(), format!("dataman-probe-{}", hash::hex(&hash::random_bytes(4))), "x".into()]).await;
-        out.push(check("Can't write (read tier)", x.as_ref().is_err_and(|e| e.to_string().contains("NOPERM")), x.err().map(|e| e.to_string()).unwrap_or_else(|| "it wrote".into())));
+        out.push(check(G::Writing, "Can't write keys", "SET", TIP_WRITE, x.as_ref().is_err_and(|e| e.to_string().contains("NOPERM")), x.err().map(|e| e.to_string()).unwrap_or_else(|| "it wrote".into())));
     }
     Ok(())
 }
@@ -460,23 +542,23 @@ async fn verify_search(agent: &Arc<Connection>, spec: &Spec, inv: &Inventory, pr
     let os = probe.flavor.opensearch;
     let who = if os { search::call(s, "GET", "/_plugins/_security/authinfo", None).await? } else { search::call(s, "GET", "/_security/_authenticate", None).await? };
     let me = (if os { who["user_name"].as_str() } else { who["username"].as_str() }).unwrap_or("").to_string();
-    out.push(check("Logged in as the agent", me == spec.user, me));
+    out.push(check(G::Login, "Logs in as itself", me.clone(), TIP_LOGIN, me == spec.user, me));
     let d = search::desired(spec, inv, os, probe.flavor.superuser);
     if let Some(a) = d.access.first() {
         let r = search::call(s, "POST", &format!("/{}/_search", a.name), Some(&json!({ "size": 1 }))).await;
-        out.push(check(format!("Searches {}", a.name), r.is_ok(), r.as_ref().err().map(|x| format!("{x:#}")).unwrap_or_default()));
+        out.push(check(G::Reading, "Searches what the rules allow", a.name.clone(), TIP_SEARCHES, r.is_ok(), r.as_ref().err().map(|x| format!("{x:#}")).unwrap_or_default()));
         if let (Ok(v), Some(h)) = (&r, a.hidden.first()) {
             let src = &v["hits"]["hits"][0]["_source"];
-            out.push(check(format!("{}.{h} is left out (hidden)", a.name), src.get(h).is_none(), String::new()));
+            out.push(check(G::Privacy, "Hidden fields are left out", format!("{}.{h}", a.name), TIP_HIDDEN_FIELD, src.get(h).is_none(), String::new()));
         }
     }
     if let Some(h) = d.hidden.first() {
         let r = search::call(s, "POST", &format!("/{}/_search", h.split(" (").next().unwrap_or(h)), Some(&json!({ "size": 1 }))).await;
-        out.push(check(format!("Can't search {h} (hidden)"), r.as_ref().is_err_and(|x| refused(spec.engine, None, &format!("{x:#}"))), r.err().map(|x| format!("{x:#}")).unwrap_or_else(|| "it searched the hidden index".into())));
+        out.push(check(G::Privacy, "Can't search hidden indices", h.clone(), TIP_HIDDEN_TABLE, r.as_ref().is_err_and(|x| refused(spec.engine, None, &format!("{x:#}"))), r.err().map(|x| format!("{x:#}")).unwrap_or_else(|| "it searched the hidden index".into())));
     }
     let r = search::call(s, "PUT", &format!("/dataman-probe-{}", hash::hex(&hash::random_bytes(4))), None).await;
     let ok = r.as_ref().is_err_and(|x| refused(spec.engine, None, &format!("{x:#}")));
-    out.push(check("Can't create indices", ok, r.err().map(|x| format!("{x:#}")).unwrap_or_else(|| "it created an index".into())));
+    out.push(check(G::Structure, "Can't create indices", "", TIP_INDICES, ok, r.err().map(|x| format!("{x:#}")).unwrap_or_else(|| "it created an index".into())));
     Ok(())
 }
 
@@ -517,19 +599,100 @@ pub struct Drift {
     pub inventory: Inventory,
 }
 
+/// Dataman's SQL Server login left without its user in `database` (restored or made again).
+pub fn lost_user_text(user: &str, database: &str) -> String {
+    format!("{user} lost its user in {database} (the database was restored or made again): Verify puts it back, as Auto sync does on its own")
+}
+
+/// The login left without its user in its database (SQL Server: the database restored or made
+/// again), put back in it with the user's login (`admin`): its user, the mark and the grants.
+/// Only Dataman's own: the password the Keychain keeps for it still logs it in. `None`: nothing
+/// to put back.
+pub async fn reattach(core: &crate::Core, admin: &Arc<Connection>, p: &ConnectionProfile, login: &AgentLogin, password: &str) -> Result<Option<Plan>> {
+    if p.engine != Engine::SqlServer {
+        return Ok(None);
+    }
+    let p = &in_login_db(p, login);
+    if !ms::orphan(&admin_db(admin, Some(&p.database)).await?, &login.user).await? {
+        return Ok(None);
+    }
+    // Its database has no user for it now: logged in to master, where every login may connect.
+    let master = ConnectionProfile { agent_login: None, database: "master".into(), ..p.clone() };
+    let agent = core
+        .connect_agent(&master, agent_profile(&master, &login.user), password.to_string())
+        .await
+        .map_err(|e| anyhow!("{} lost its user in {}, and Dataman's password for it no longer logs it in ({e:#}), so Dataman can't tell it is its own: remove it and create it again", login.user, p.database))?;
+    let me = text_rows(&admin_db(&agent, Some("master")).await?, "SELECT SUSER_SNAME()").await;
+    agent.close();
+    if me?.first().and_then(|r| r[0].clone()).as_deref() != Some(login.user.as_str()) {
+        bail!("{} lost its user in {}, and logging in with Dataman's password says another name: Dataman leaves it alone", login.user, p.database);
+    }
+    let (probe, _) = probe(admin, p).await?;
+    if let Some(l) = probe.lacks.first() {
+        bail!("{} lost its user in {}, and your login can't put it back: {l}", login.user, p.database);
+    }
+    let o = Options { rotate_days: login.rotate_days, conn_limit: login.conn_limit, auto_sync: login.auto_sync };
+    let mut spec = compile(p, &login.database, &o);
+    spec.user = login.user.clone();
+    let inv = inventory(admin, &spec, &probe).await?;
+    let plan = ms::reattach_plan(&spec, &inv, &probe, p.env.is_production());
+    apply(admin, &plan, &p.database).await?;
+    Ok(Some(plan))
+}
+
+/// What the record keeps once `plan` ran for the rules `hash`.
+pub fn note_synced(l: &mut AgentLogin, hash: String, plan: &Plan) {
+    (l.rules, l.plan, l.synced, l.views, l.granted, l.not_granted) = (hash, plan.hash.clone(), Utc::now(), plan.views.clone(), plan.granted, plan.not_granted.len());
+    for m in &plan.made {
+        if !l.made.contains(m) {
+            l.made.push(m.clone());
+        }
+    }
+}
+
+/// A connection error that says the login can't open its database: what a SQL Server login
+/// whose user went with the database gets (4060), or the server closing on it mid-handshake.
+pub fn lost_database(e: &str) -> bool {
+    e.contains("code: 4060") || e.contains("Cannot open database") || e.contains("[4060]")
+}
+
+/// Whether the agent's connection reaches its database (a SQL Server login whose user went with
+/// the database it was in doesn't).
+pub async fn reaches(agent: &Arc<Connection>, database: &str) -> bool {
+    match admin_db(agent, Some(database)).await {
+        Ok(db) => text_rows(&db, "SELECT 1").await.is_ok(),
+        Err(_) => false,
+    }
+}
+
+/// Why Dataman won't touch `user` on `p`'s server (in the login's database): not marked as
+/// its own, or (SQL Server) a login whose user is gone.
+pub async fn not_ours(c: &Arc<Connection>, p: &ConnectionProfile, user: &str) -> String {
+    if p.engine == Engine::SqlServer
+        && let Ok(db) = admin_db(c, Some(&p.database)).await
+        && ms::orphan(&db, user).await.unwrap_or(false)
+    {
+        return lost_user_text(user, &p.database);
+    }
+    format!("{user} on the server isn't marked as Dataman's (for this connection): Dataman leaves it alone")
+}
+
 /// `p` in the database the login was made in (its user and grants are there, whatever the
 /// connection's database is now).
-fn in_login_db(p: &ConnectionProfile, login: &AgentLogin) -> ConnectionProfile {
+pub fn in_login_db(p: &ConnectionProfile, login: &AgentLogin) -> ConnectionProfile {
     ConnectionProfile { database: database_for(p, Some(login)), ..p.clone() }
 }
 
 pub async fn drift(c: &Arc<Connection>, p: &ConnectionProfile, login: &AgentLogin, password: &str) -> Result<Drift> {
     let p = &in_login_db(p, login);
     let (probe, persist) = probe(c, p).await?;
+    if probe.orphan {
+        bail!("{}", lost_user_text(&login.user, &p.database));
+    }
     if probe.exists != Some(true) {
         bail!("{} is not on the server as Dataman's any more: remove it in Dataman and create it again", login.user);
     }
-    let o = Options { rotate_days: login.rotate_days, conn_limit: login.conn_limit };
+    let o = Options { rotate_days: login.rotate_days, conn_limit: login.conn_limit, auto_sync: login.auto_sync };
     let mut spec = compile(p, &login.database, &o);
     spec.user = login.user.clone();
     let inventory = inventory(c, &spec, &probe).await?;
@@ -578,7 +741,7 @@ pub async fn removal(c: &Arc<Connection>, p: &ConnectionProfile, login: &AgentLo
     let space = space.as_str();
     let there = exists(c, p, user).await?;
     if there == Some(false) {
-        bail!("{user} on the server isn't marked as Dataman's (for this connection): Dataman won't drop it");
+        bail!("{}", not_ours(c, p, user).await);
     }
     Ok(match p.engine {
         Engine::Postgres => {

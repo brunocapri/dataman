@@ -165,8 +165,8 @@ fn id_of(name: &str, core: &Core) -> Option<String> {
 }
 
 /// `agents-audit[-zoom|-zooming|-wide]`, `agents-privacy-data`, `agents-general[-import]`, `agents-permissions[-mongo|-redis]`, `agents-privacy`,
-/// `agents-protection-login[-drift|-changes]`, `agents-types[-conn|-card]`, `agents-empty`: the page as the mockups draw it (`-card`: Card number open in
-/// the editor; `agents-privacy`: Protection scrolled to Privacy; `-login`: prod-pg with an agent login, `-drift` with its rules changed since, `-changes` its View changes open).
+/// `agents-protection-login[-drift|-changes|-checks]`, `agents-types[-conn|-card]`, `agents-empty`: the page as the mockups draw it (`-card`: Card number open in
+/// the editor; `agents-privacy`: Protection scrolled to Privacy; `-login`: prod-pg with an agent login, `-drift` with its rules changed since, `-changes` its View changes open, `-checks` View checks open with one failed).
 pub fn is_demo(stage: &str) -> bool {
     stage.starts_with("agents-") && stage != "agents-check"
 }
@@ -219,6 +219,11 @@ pub fn demo(ws: &Entity<Workspace>, stage: &str, window: &mut gpui::Window, cx: 
                 if stage.ends_with("-changes") {
                     a.demo_changes();
                 }
+            }
+            if stage == "agents-protection-login-checks"
+                && let Some(p) = id.as_ref().and_then(|id| core.config.get(id))
+            {
+                a.demo_checks(&p);
             }
             if stage == "agents-types-card" {
                 a.select_type("card", cx);
@@ -332,6 +337,8 @@ fn demo_login(core: &Core, drift: bool) {
         rotate_days: Some(30),
         rotated: None,
         conn_limit: Some(4),
+        // The drift stages show the changes waiting for Apply.
+        auto_sync: !drift,
         database: p.database.clone(),
         made: Vec::new(),
         views: Vec::new(),
@@ -1284,6 +1291,36 @@ async fn check_login(ws: &Entity<Workspace>, a: &Entity<AgentsPage>, pg: &Connec
     pause(cx, 200).await;
     shoot("03-created", cx);
     shoot("10-perm-section", cx);
+    // Rule changes reach the login on their own (the default), or wait for Apply (off).
+    let in_sync = |core: &std::sync::Arc<Core>| core.config.get(&pg.id).is_some_and(|p| p.agent_login.as_ref().is_some_and(|l| l.rules == agent_login::rules_hash(&p, &l.database)));
+    let writes_q = format!("SELECT count(*) FROM information_schema.role_table_grants WHERE grantee = '{user}' AND privilege_type IN ('INSERT', 'UPDATE', 'DELETE')");
+    let rec = core.config.get(&pg.id).and_then(|p| p.agent_login);
+    r.check("Auto sync: on by default, the switch on the login, the dot live", rec.as_ref().is_some_and(|l| l.auto_sync) && probed("agents-login-auto-off", cx).is_some() && probed("agents-login-state-insync", cx).is_some(), format!("{rec:?}"));
+    let before = sql1(&core, pg, pw, &writes_q, cx).await;
+    let id = pg.id.clone();
+    let _ = cx.update(|_, cx| a.update(cx, |a, cx| a.edit_conn(&id, |p| p.mcp = Some(McpAccess::Read), cx)));
+    let synced = until(cx, 30, |_| in_sync(&core)).await;
+    let after = sql1(&core, pg, pw, &writes_q, cx).await;
+    r.check(
+        "…so agents turned read-only: the login's writes revoked on the server, no Apply",
+        synced && before.as_deref().is_some_and(|n| n != "0") && after.as_deref() == Some("0") && probed("agents-login-apply", cx).is_none(),
+        format!("{synced} {before:?} → {after:?} {:?}", login_ui(a, cx, |l| l.note.clone())),
+    );
+    tap(a, "agents-login-auto", cx).await;
+    let off = until(cx, 5, |_| core.config.get(&pg.id).is_some_and(|p| p.agent_login.is_some_and(|l| !l.auto_sync))).await;
+    let _ = cx.update(|_, cx| a.update(cx, |a, cx| a.edit_conn(&id, |p| p.mcp = Some(McpAccess::Write), cx)));
+    let waits = until(cx, 30, |cx| probed("agents-login-apply", cx).is_some()).await;
+    pause(cx, 500).await;
+    let still = sql1(&core, pg, pw, &writes_q, cx).await;
+    r.check("turned off, a rule change waits for Apply: the login keeps its grants", off && waits && !in_sync(&core) && still.as_deref() == Some("0") && probed("agents-login-state-changes", cx).is_some(), format!("{off} {waits} {still:?}"));
+    pause(cx, 200).await;
+    shoot("03b-auto-off", cx);
+    tap(a, "agents-login-apply", cx).await;
+    let applied = until(cx, 30, |_| in_sync(&core)).await;
+    let back = sql1(&core, pg, pw, &writes_q, cx).await;
+    r.check("…and Apply runs it", applied && back == before, format!("{back:?}"));
+    tap(a, "agents-login-auto", cx).await;
+    r.check("…on again", until(cx, 5, |_| core.config.get(&pg.id).is_some_and(|p| p.agent_login.is_some_and(|l| l.auto_sync))).await, "");
     // The in-app hub (the agents' tabs and the MCP) connects as the login.
     let p = core.config.get(&pg.id).unwrap_or_else(|| pg.clone());
     let shared = cx.update(|_, cx| crate::mcp::shared(&core, cx)).ok();
@@ -1312,6 +1349,17 @@ async fn check_login(ws: &Entity<Workspace>, a: &Entity<AgentsPage>, pg: &Connec
     tap(a, "agents-login-verify", cx).await;
     let verified = until(cx, 30, |cx| login_ui(a, cx, |l| l.note.as_ref().is_some_and(|(ok, n)| *ok && n.contains("Verified"))).unwrap_or(false)).await;
     r.check("Verify logs in as it and every check holds", verified && login_ui(a, cx, |l| !l.checks.is_empty() && l.checks.iter().all(|c| c.ok)).unwrap_or(false), format!("{:?}", login_ui(a, cx, |l| (l.note.clone(), l.checks.iter().filter(|c| !c.ok).map(|c| c.what.clone()).collect::<Vec<_>>()))));
+    let groups = ["login", "reading", "writing", "privacy", "structure"].iter().filter(|g| probed(&format!("agents-login-checks-{g}"), cx).is_some()).count();
+    r.check("Verify opens its checks by category, each with its tip, a lock on what it can't do", login_ui(a, cx, |l| matches!(l.sheet, Some(Sheet::Checks))).unwrap_or(false) && groups >= 3 && probed("agents-login-check-tip-1", cx).is_some() && probed("agents-login-check-lock", cx).is_some(), format!("{groups} categories"));
+    pause(cx, 200).await;
+    shoot("04b-checks", cx);
+    key(cx, "escape");
+    pause(cx, 100).await;
+    r.check("…closed, the section keeps them in one line, View checks opening them again", probed("agents-login-checks-line", cx).is_some() && probed("agents-login-check-tip-1", cx).is_none(), "");
+    tap(a, "agents-login-checks", cx).await;
+    r.check("…as it does", probed("agents-login-check-tip-1", cx).is_some(), "");
+    key(cx, "escape");
+    pause(cx, 100).await;
     pause(cx, 200).await;
     shoot("04-verified", cx);
     let old = core.secrets.get(&agent_login::secret_account(&pg.id)).ok().flatten().unwrap_or_default();
