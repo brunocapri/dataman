@@ -50,9 +50,85 @@ async fn lookup(o: &Opened, schema: Option<&str>, name: &str) -> Option<(Table, 
         Some(s) => format!("{}.{}", dataman_core::sql::quote_ident(s), dataman_core::sql::quote_ident(name)),
         None => dataman_core::sql::quote_ident(name),
     };
-    let r = super::catalog::find_relation(o, &qualified).await.ok()?;
+    let found = super::catalog::find_relation(o, &qualified).await.ok().filter(|r| !agent_space(&o.profile, &r.schema, &r.name));
+    let Some(r) = found else {
+        // Not in the agent login's catalog (SQL Server and MySQL show a login only what it was
+        // granted): a table it reads through its view, under the table's own name, its columns
+        // as the view has them. The check sends the read to the view.
+        let (m, vs, vn) = login_view(&o.profile, schema, name)?;
+        let mut columns: Vec<String> = o.conn.columns(&o.database, &vs, &vn).await.ok()?.into_iter().map(|c| c.name).collect();
+        // The view leaves hidden columns out; those the rules name are the table's too, so
+        // Dataman refuses them itself instead of the server not knowing them.
+        columns.extend(named_hidden(&o.profile.mcp_rules, &m.schema, &m.table).into_iter().filter(|h| !columns.iter().any(|c| c.eq_ignore_ascii_case(h))).collect::<Vec<_>>());
+        return Some((Table { schema: m.schema.clone(), name: m.table.clone(), columns }, RelKind::Table));
+    };
     let cols = o.conn.columns(&o.database, &r.schema, &r.name).await.ok()?;
     Some((Table { schema: r.schema, name: r.name, columns: cols.into_iter().map(|c| c.name).collect() }, r.kind))
+}
+
+/// Columns of `schema.table` the rules hide by name (`table.column` or `schema.table.column`,
+/// no pattern).
+fn named_hidden(r: &AgentRules, schema: &str, table: &str) -> Vec<String> {
+    use dataman_core::privacy::ItemKind;
+    r.visible
+        .items
+        .iter()
+        .filter(|i| i.kind == ItemKind::Column && !i.name.contains(['*', '?']))
+        .filter_map(|i| {
+            let parts: Vec<&str> = i.name.split('.').collect();
+            let (s, t, c) = match parts.as_slice() {
+                [t, c] => (None, *t, *c),
+                [s, t, c] => (Some(*s), *t, *c),
+                _ => return None,
+            };
+            (t.eq_ignore_ascii_case(table) && s.is_none_or(|s| s.eq_ignore_ascii_case(schema))).then(|| c.to_string())
+        })
+        .filter(|c| r.visible.column_hidden(Some(schema), table, c, Names::Qualified))
+        .collect()
+}
+
+/// The agent login's view for a table (`schema` given, or the only table by that name), with
+/// the view's own schema and name, unquoted.
+pub fn login_view<'a>(p: &'a ConnectionProfile, schema: Option<&str>, name: &str) -> Option<(&'a dataman_core::agent_login::ViewMap, String, String)> {
+    let l = p.agent_login.as_ref()?;
+    let mut hits = l.views.iter().filter(|v| v.table.eq_ignore_ascii_case(name) && schema.is_none_or(|s| v.schema.eq_ignore_ascii_case(s)));
+    let m = hits.next()?;
+    if hits.next().is_some() {
+        return None;
+    }
+    let (vs, vn) = split_quoted(&m.view)?;
+    Some((m, vs, vn))
+}
+
+/// `[a].[b]`, `"a"."b"` or `` `a`.`b` `` as its two names, unquoted.
+fn split_quoted(s: &str) -> Option<(String, String)> {
+    let mut parts = Vec::new();
+    let mut it = s.chars().peekable();
+    while let Some(c) = it.next() {
+        let close = match c {
+            '[' => ']',
+            '"' => '"',
+            '`' => '`',
+            '.' => continue,
+            _ => return None,
+        };
+        let mut part = String::new();
+        loop {
+            match it.next()? {
+                x if x == close && it.peek() == Some(&close) => {
+                    it.next();
+                    part.push(x);
+                }
+                x if x == close => break,
+                x => part.push(x),
+            }
+        }
+        parts.push(part);
+    }
+    match parts.as_slice() {
+        [a, b] => Some((a.clone(), b.clone())),
+        _ => None,
+    }
 }
 
 /// Whether the rules keep anything of this table from agents (the table, a column, or, in
@@ -528,7 +604,7 @@ pub fn schema_visible(p: &ConnectionProfile, schema: &str) -> bool {
 
 /// Where the agent login's views live (its schema, database, or MongoDB's name prefix): not
 /// listed, agents read those tables under their own names.
-fn agent_space(p: &ConnectionProfile, schema: &str, name: &str) -> bool {
+pub fn agent_space(p: &ConnectionProfile, schema: &str, name: &str) -> bool {
     p.agent_login.as_ref().is_some_and(|l| {
         let space = dataman_core::agent_login::space_of(&l.user);
         schema.eq_ignore_ascii_case(&space) || name.starts_with(&format!("{space}."))
