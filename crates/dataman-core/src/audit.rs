@@ -199,9 +199,10 @@ impl Audit {
     }
 
     /// Errors go to the log: an audit failure never fails a call.
+    /// The file lock may wait for another process (a clear): off the runtime's workers.
     pub fn write(&self, e: &Entry) {
         let _g = self.lock.lock();
-        if let Err(err) = self.append(e) {
+        if let Err(err) = crate::off_runtime(|| self.append(e)) {
             log::warn!("audit log {}: {err}", self.path.display());
         }
     }
@@ -219,7 +220,7 @@ impl Audit {
         let r = Reply { id: id.to_string(), ts: chrono::Utc::now(), cut: at < text.len(), reply: text[..at].to_string() };
         let _g = self.lock.lock();
         let path = replies_path(&self.path);
-        if let Err(err) = serde_json::to_string(&r).map_err(std::io::Error::other).and_then(|l| append_line(&path, &l)) {
+        if let Err(err) = serde_json::to_string(&r).map_err(std::io::Error::other).and_then(|l| crate::off_runtime(|| append_line(&path, &l))) {
             log::warn!("audit replies {}: {err}", path.display());
         }
     }

@@ -89,13 +89,19 @@ pub use secret::{Keychain, MemorySecrets, SecretStore};
 pub use server::{Flavor, ServerInfo};
 pub use settings::{Settings, SettingsStore, ThemePref, Translucency, UiFont};
 
+/// Work running on the core's runtime. Dropping it leaves the work running, unless it was made
+/// to stop then (`abort_on_drop`).
 #[must_use]
-pub struct Task<T>(oneshot::Receiver<Result<T>>);
+pub struct Task<T> {
+    rx: oneshot::Receiver<Result<T>>,
+    abort: Option<tokio::task::AbortHandle>,
+    abort_on_drop: bool,
+}
 
 impl<T> Future for Task<T> {
     type Output = Result<T>;
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<T>> {
-        match Pin::new(&mut self.0).poll(cx) {
+        match Pin::new(&mut self.rx).poll(cx) {
             Poll::Ready(Ok(r)) => Poll::Ready(r),
             Poll::Ready(Err(_)) => Poll::Ready(Err(anyhow!("the background task was dropped"))),
             Poll::Pending => Poll::Pending,
@@ -105,7 +111,38 @@ impl<T> Future for Task<T> {
 
 impl<T> Task<T> {
     pub fn try_take(&mut self) -> Option<Result<T>> {
-        self.0.try_recv().ok()
+        self.rx.try_recv().ok()
+    }
+
+    /// Stops the work where it is (a connect past its time: its tunnel and Keychain read).
+    pub fn abort(&self) {
+        if let Some(a) = &self.abort {
+            a.abort();
+        }
+    }
+
+    /// The work stops when this is dropped (a caller that timed out or was cancelled).
+    pub fn abort_on_drop(mut self) -> Self {
+        self.abort_on_drop = true;
+        self
+    }
+}
+
+impl<T> Drop for Task<T> {
+    fn drop(&mut self) {
+        if self.abort_on_drop {
+            self.abort();
+        }
+    }
+}
+
+/// Runs `f`, which blocks (the Keychain, which may wait for a prompt; a file lock), without
+/// holding up the runtime's other work: on a multi-thread runtime's worker the worker hands its
+/// tasks over first. Elsewhere (no runtime, a current-thread one) it just runs.
+pub fn off_runtime<T>(f: impl FnOnce() -> T) -> T {
+    match Handle::try_current() {
+        Ok(h) if h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => tokio::task::block_in_place(f),
+        _ => f(),
     }
 }
 
@@ -115,10 +152,10 @@ where
     F: Future<Output = Result<T>> + Send + 'static,
 {
     let (tx, rx) = oneshot::channel();
-    rt.spawn(async move {
+    let j = rt.spawn(async move {
         let _ = tx.send(fut.await);
     });
-    Task(rx)
+    Task { rx, abort: Some(j.abort_handle()), abort_on_drop: false }
 }
 
 pub struct Core {
@@ -166,6 +203,18 @@ impl Secrets {
         }
         let lookup = if p.agent_made || p.from_project { pgpass::lookup_named_host } else { pgpass::lookup };
         Ok(self.pgpass.as_deref().and_then(|f| lookup(f, &p.host, p.port, &p.database, &p.user)))
+    }
+
+    /// The password and the SSH secret, read on a blocking thread: the Keychain may wait for a
+    /// prompt (and on Linux runs a runtime of its own).
+    async fn both(&self, p: &ConnectionProfile, password: Option<String>, ssh: Option<String>) -> Result<(Option<String>, Option<String>)> {
+        let (this, p) = (self.clone(), p.clone());
+        tokio::task::spawn_blocking(move || Ok((this.password(&p, password)?, this.ssh(&p, ssh)?))).await?
+    }
+
+    async fn ssh_only(&self, p: &ConnectionProfile) -> Result<Option<String>> {
+        let (this, p) = (self.clone(), p.clone());
+        tokio::task::spawn_blocking(move || this.ssh(&p, None)).await?
     }
 
     fn ssh(&self, p: &ConnectionProfile, given: Option<String>) -> Result<Option<String>> {
@@ -315,8 +364,7 @@ impl Core {
         let secrets = self.resolver();
         let known = self.dirs.known_hosts_file();
         spawn(&self.handle(), async move {
-            let password = secrets.password(&profile, password)?;
-            let ssh_secret = secrets.ssh(&profile, ssh_secret)?;
+            let (password, ssh_secret) = secrets.both(&profile, password, ssh_secret).await?;
             let tunnel = open_tunnel(&profile, ssh_secret, known).await?;
             if !profile.engine.is_sql() {
                 let t = std::time::Instant::now();
@@ -352,7 +400,7 @@ impl Core {
             if agent.id != user.id || agent.ssh != user.ssh {
                 anyhow::bail!("the agent login's connection is not this connection's");
             }
-            let ssh_secret = secrets.ssh(&user, None)?;
+            let ssh_secret = secrets.ssh_only(&user).await?;
             let tunnel = open_tunnel(&agent, ssh_secret, known).await?;
             Connection::open(handle, agent, Some(password), history, tunnel).await
         })
@@ -364,8 +412,7 @@ impl Core {
         let secrets = self.resolver();
         let known = self.dirs.known_hosts_file();
         spawn(&self.handle(), async move {
-            let password = secrets.password(&profile, password)?;
-            let ssh_secret = secrets.ssh(&profile, None)?;
+            let (password, ssh_secret) = secrets.both(&profile, password, None).await?;
             let tunnel = open_tunnel(&profile, ssh_secret, known).await?;
             Connection::open(handle, profile, password, history, tunnel).await
         })

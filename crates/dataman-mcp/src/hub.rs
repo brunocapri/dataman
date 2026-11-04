@@ -208,7 +208,8 @@ impl Drop for AskSlot {
 }
 
 struct Fresh<T> {
-    stamp: Option<FileStamp>,
+    /// None: never read.
+    stamp: Option<Option<FileStamp>>,
     value: Arc<T>,
 }
 
@@ -353,12 +354,13 @@ impl Hub {
         let file = self.dirs.connections_file();
         let stamp = mtime(&file);
         let mut g = self.profiles.lock();
-        if g.stamp != stamp || stamp.is_none() {
-            match ConfigStore::open_with(&self.dirs, self.core.approved.clone()) {
+        if g.stamp != Some(stamp) {
+            // The file and the approved rules in the Keychain, read again only when it changed.
+            match dataman_core::off_runtime(|| ConfigStore::open_with(&self.dirs, self.core.approved.clone())) {
                 Ok(s) => g.value = Arc::new(s.connections()),
                 Err(e) => log::warn!("{e:#}"),
             }
-            g.stamp = stamp;
+            g.stamp = Some(stamp);
         }
         g.value.clone()
     }
@@ -367,11 +369,16 @@ impl Hub {
         let file = self.dirs.settings_file();
         let stamp = mtime(&file);
         let mut g = self.settings.lock();
-        if g.stamp != stamp || stamp.is_none() {
-            g.value = Arc::new(SettingsStore::open_with(&self.dirs, self.core.approved.clone()).get());
-            g.stamp = stamp;
+        if g.stamp != Some(stamp) {
+            g.value = Arc::new(dataman_core::off_runtime(|| SettingsStore::open_with(&self.dirs, self.core.approved.clone()).get()));
+            g.stamp = Some(stamp);
         }
         g.value.clone()
+    }
+
+    /// The connection with this id (not a name: what a call resolved already).
+    pub fn profile_by_id(&self, id: &str) -> Option<ConnectionProfile> {
+        self.profiles().iter().find(|p| p.id == id).cloned()
     }
 
     pub fn profile(&self, name: &str) -> Result<ConnectionProfile, String> {
@@ -428,14 +435,18 @@ impl Hub {
         }
         let task = match &p.agent_login {
             Some(l) => {
-                let pw = agent_login::live::password_of(&*self.core.secrets, &p.id, &l.user).map_err(|e| format!("{e:#}"))?;
+                // The Keychain may wait for a prompt: not on the runtime's workers.
+                let (secrets, id, user) = (self.core.secrets.clone(), p.id.clone(), l.user.clone());
+                let pw = tokio::task::spawn_blocking(move || agent_login::live::password_of(&*secrets, &id, &user)).await.map_err(|e| e.to_string())?.map_err(|e| format!("{e:#}"))?;
                 self.core.connect_agent(p, agent_login::live::agent_profile(&agent, &l.user), pw)
             }
             None => self.core.connect(agent, None),
         };
+        // Past its time, or this call dropped: the tunnel and the Keychain read stop too.
+        let mut task = task.abort_on_drop();
         let as_login = p.agent_login.as_ref().map(|l| format!(" as its agent login {}", l.user)).unwrap_or_default();
         let never = if p.agent_login.is_some() { ". Agents are refused here until it connects: Dataman never uses your own login for them (Agents › Permissions › Verify)" } else { "" };
-        let c = match tokio::time::timeout(CONNECT_TIMEOUT, task).await {
+        let c = match tokio::time::timeout(CONNECT_TIMEOUT, &mut task).await {
             Ok(Ok(c)) => c,
             Ok(Err(e)) => return Err(format!("cannot connect to {}{as_login}: {e:#}{never}", p.name)),
             Err(_) => return Err(format!("cannot connect to {}{as_login}: timed out{never}", p.name)),
@@ -461,8 +472,8 @@ impl Hub {
                 return Ok(c.clone());
             }
         }
-        let task = self.core.connect(ConnectionProfile { agent_login: None, ..p.clone() }, None);
-        let c = match tokio::time::timeout(CONNECT_TIMEOUT, task).await {
+        let mut task = self.core.connect(ConnectionProfile { agent_login: None, ..p.clone() }, None).abort_on_drop();
+        let c = match tokio::time::timeout(CONNECT_TIMEOUT, &mut task).await {
             Ok(Ok(c)) => c,
             Ok(Err(e)) => return Err(format!("cannot connect to {} as you, for what you allowed: {e:#}", p.name)),
             Err(_) => return Err(format!("cannot connect to {} as you: timed out", p.name)),
