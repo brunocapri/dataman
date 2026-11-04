@@ -357,6 +357,11 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
         window.focus(&f, cx);
     });
     draw(cx);
+    // Keys, not the focus move alone: a window in the background (another app or another
+    // stage's window in front) hears of no focus change until it is in front again.
+    key(cx, "left");
+    key(cx, "right");
+    draw(cx);
     report("the keys landing in the other group give it the focus", focused(ws, cx) == Some(Pane::Left) && active(ws, cx).as_ref() == Some(&first), format!("{:?}", focused(ws, cx)));
 
     key(cx, "cmd-t");
