@@ -15,7 +15,8 @@ pub enum ConnEvent {
     Connected(String),
     /// Connected on its own (Settings › Connections), not picked: nothing moves to it.
     Arrived(String),
-    Failed { id: String, needs_password: bool, ssh: Option<SshError> },
+    /// `cloud`: a cloud sign-in that the user can fix from the dialog (sign in again, install).
+    Failed { id: String, needs_password: bool, ssh: Option<SshError>, cloud: Option<dataman_core::cloudauth::SignInError> },
 }
 
 pub struct ConnStore {
@@ -164,9 +165,10 @@ impl ConnStore {
                         };
                         let needs_password = ssh.is_none() && !token && dataman_core::needs_password(&e);
                         let ssh = ssh.filter(|s| matches!(s, SshError::UnknownHostKey(_) | SshError::SecretNeeded { .. }));
+                        let cloud = dataman_core::cloudauth::sign_in_error(&e).filter(|s| s.action.is_some()).cloned();
                         s.states.insert(id.clone(), ConnState::Failed(msg));
                         if !s.quiet.remove(&id) {
-                            cx.emit(ConnEvent::Failed { id, needs_password, ssh });
+                            cx.emit(ConnEvent::Failed { id, needs_password, ssh, cloud });
                         }
                     }
                 }

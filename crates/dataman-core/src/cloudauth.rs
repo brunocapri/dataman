@@ -29,6 +29,8 @@ use parking_lot::Mutex;
 use crate::config::{Auth, AuthKind, ConnectionProfile, Engine};
 
 const TIMEOUT: Duration = Duration::from_secs(30);
+/// A sign-in in the browser: the time to pick the account and pass MFA.
+const LOGIN_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 /// A cached token is handed out while it has more than this left.
 const MARGIN: Duration = Duration::from_secs(5 * 60);
 /// A token whose expiry the CLI does not tell (gcloud's) is taken to last this long.
@@ -91,12 +93,33 @@ impl Cli {
 pub struct SignInError {
     pub title: String,
     pub body: String,
+    /// What fixes it from the dialog, when one thing does.
+    pub action: Option<Fix>,
+}
+
+/// What the user can do about a [`SignInError`] without leaving Dataman.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fix {
+    /// The CLI's session is gone (expired, signed out, MFA asked again): its own sign-in, in the
+    /// browser ([`TokenSource::sign_in`]).
+    SignIn(Cli),
+    /// The CLI is not installed: its install page.
+    Install(Cli),
 }
 
 impl SignInError {
     fn new(title: impl Into<String>, body: impl Into<String>) -> SignInError {
-        SignInError { title: title.into(), body: body.into() }
+        SignInError { title: title.into(), body: body.into(), action: None }
     }
+
+    fn fix(self, f: Fix) -> SignInError {
+        SignInError { action: Some(f), ..self }
+    }
+}
+
+/// The sign-in error somewhere in `e`'s chain.
+pub fn sign_in_error(e: &anyhow::Error) -> Option<&SignInError> {
+    e.chain().find_map(|c| c.downcast_ref::<SignInError>())
 }
 
 impl std::fmt::Display for SignInError {
@@ -360,8 +383,16 @@ fn locate(program: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
 
 /// Runs the CLI: its standard output, or what went wrong said plainly.
 async fn run(cli: Cli, args: &[String], dirs: &[PathBuf], auth: &Auth) -> Result<String, SignInError> {
+    match exec(cli, args, dirs, auth, TIMEOUT).await? {
+        Ok(out) => Ok(out),
+        Err(stderr) => Err(classify(cli, &stderr, auth, args)),
+    }
+}
+
+/// Runs the CLI for at most `timeout`: its standard output, or its standard error when it failed.
+async fn exec(cli: Cli, args: &[String], dirs: &[PathBuf], auth: &Auth, timeout: Duration) -> Result<Result<String, String>, SignInError> {
     let Some(path) = locate(cli.program(), dirs) else {
-        return Err(SignInError::new(format!("{} ({}) not found", cli.name(), cli.program()), format!("Install it ({}), sign in once, then try again.", cli.install_url())));
+        return Err(SignInError::new(format!("{} ({}) not found", cli.name(), cli.program()), format!("Dataman signs in through it: install it ({}), then sign in.", cli.install_url())).fix(Fix::Install(cli)));
     };
     // The CLI's own folder first (az and gcloud are scripts that look for their Python there).
     let mut path_var: Vec<PathBuf> = path.parent().map(Path::to_path_buf).into_iter().collect();
@@ -381,15 +412,50 @@ async fn run(cli: Cli, args: &[String], dirs: &[PathBuf], auth: &Auth) -> Result
     // No console window flashing up over the app.
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000);
-    let out = match tokio::time::timeout(TIMEOUT, cmd.output()).await {
+    let out = match tokio::time::timeout(timeout, cmd.output()).await {
         Ok(Ok(o)) => o,
         Ok(Err(e)) => return Err(SignInError::new(format!("{} did not start", cli.name()), e.to_string())),
-        Err(_) => return Err(SignInError::new(format!("{} did not answer in {} s", cli.name(), TIMEOUT.as_secs()), format!("Run `{}` in a terminal to see what it waits for.", login_command(cli, auth)))),
+        Err(_) => return Err(SignInError::new(format!("{} did not answer in {} s", cli.name(), timeout.as_secs()), format!("Run `{}` in a terminal to see what it waits for.", login_command(cli, auth)))),
     };
     if !out.status.success() {
-        return Err(classify(cli, &String::from_utf8_lossy(&out.stderr), auth, args));
+        return Ok(Err(String::from_utf8_lossy(&out.stderr).into_owned()));
     }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    Ok(Ok(String::from_utf8_lossy(&out.stdout).into_owned()))
+}
+
+/// The scope an Entra sign-in asks for: the database's, so MFA or Conditional Access for it is
+/// passed in the browser. `args`: the token request's.
+fn entra_scope(args: &[String]) -> String {
+    match args.iter().find_map(|a| a.strip_prefix("--resource=")) {
+        Some(r) => format!("{r}.default"),
+        None => "https://ossrdbms-aad.database.windows.net/.default".into(),
+    }
+}
+
+/// The CLI's own sign-in, which opens the browser: `az login`, `aws login` or `aws sso login`,
+/// `gcloud auth login`. `r`: the token request it is for.
+fn login_args(r: &Request, auth: &Auth) -> Result<Vec<String>, SignInError> {
+    let mut args: Vec<String> = Vec::new();
+    match auth {
+        Auth::EntraId { tenant } => {
+            args.extend(["login", "--output=none"].map(String::from));
+            args.extend(opt("tenant", "tenant", tenant.as_deref())?);
+            args.push(format!("--scope={}", entra_scope(&r.args)));
+        }
+        Auth::AwsIam { profile, .. } => {
+            let profile = opt("profile", "profile", profile.as_deref())?;
+            args.extend(if profile.is_some() { ["sso", "login"].map(String::from).to_vec() } else { vec!["login".to_string()] });
+            args.extend(profile);
+            // `aws login` asks for a region when the profile has none: the connection's.
+            args.extend(r.args.iter().filter(|a| a.starts_with("--region=")).cloned());
+        }
+        Auth::GoogleIam { account } => {
+            args.extend(["auth", "login", "--quiet"].map(String::from));
+            args.extend(account.as_deref().map(str::trim).filter(|a| !a.is_empty()).map(|a| arg("account", a)).transpose()?);
+        }
+        Auth::Password => return Err(SignInError::new("This connection signs in with a password", "")),
+    }
+    Ok(args)
 }
 
 /// The command that signs the user in again, with the connection's tenant, profile or account.
@@ -420,15 +486,12 @@ fn classify(cli: Cli, stderr: &str, auth: &Auth, args: &[String]) -> SignInError
     let first = stderr.lines().map(str::trim).map(|l| l.trim_start_matches("ERROR:").trim_start_matches("ERROR").trim_start_matches(':').trim()).find(|l| !l.is_empty()).unwrap_or("").to_string();
     let first: String = first.chars().take(300).collect();
     let login = login_command(cli, auth);
-    let signed_out = |detail: &str| SignInError::new(format!("Not signed in to {}", cli.cloud()), format!("Run `{login}` in a terminal, then try again.{detail}"));
+    let signed_out = |detail: &str| SignInError::new(format!("Not signed in to {}", cli.cloud()), format!("Sign in again, or run `{login}` in a terminal.{detail}")).fix(Fix::SignIn(cli));
     match cli {
         Cli::Az => {
             if has(&["AADSTS50076", "AADSTS50079", "AADSTS50078", "AADSTS53003", "AADSTS530003", "claims challenge", "interaction_required"]) {
-                let scope = match args.iter().find_map(|a| a.strip_prefix("--resource=")) {
-                    Some(r) => format!("{r}.default"),
-                    None => "https://ossrdbms-aad.database.windows.net/.default".into(),
-                };
-                return SignInError::new("Azure asks to sign in again (MFA or Conditional Access)", format!("Run `{login} --scope {scope}` in a terminal, then try again."));
+                let scope = entra_scope(args);
+                return SignInError::new("Azure asks to sign in again (MFA or Conditional Access)", format!("Sign in again, or run `{login} --scope {scope}` in a terminal.")).fix(Fix::SignIn(cli));
             }
             if has(&["az login", "AADSTS70043", "AADSTS700082", "AADSTS50173", "AADSTS50133", "AADSTS700024", "refresh token has expired", "No subscription found", "Please run 'az login'"]) {
                 return signed_out("");
@@ -458,8 +521,9 @@ fn classify(cli: Cli, stderr: &str, auth: &Auth, args: &[String]) -> SignInError
                 };
                 return SignInError::new(
                     "Not signed in to AWS",
-                    format!("Run `aws login{profile}` (console sign-in), `aws sso login{profile}` (IAM Identity Center) or `aws configure{profile}` (access keys) in a terminal, then try again."),
-                );
+                    format!("Sign in again, or run `aws login{profile}` (console sign-in), `aws sso login{profile}` (IAM Identity Center) or `aws configure{profile}` (access keys) in a terminal."),
+                )
+                .fix(Fix::SignIn(cli));
             }
             if has(&["token has expired", "sso session", "sso token", "UnauthorizedSSOTokenError", "ExpiredToken", "refresh failed", "Error when retrieving token from sso", "reauthenticate"]) {
                 return signed_out("");
@@ -633,6 +697,26 @@ impl TokenSource {
             *held = Some(t);
         }
         Ok(secret)
+    }
+
+    /// Signs the user in again through the CLI, which opens the browser and returns once the
+    /// sign-in is done there; the next token for `p` is a new one.
+    pub async fn sign_in(&self, p: &ConnectionProfile) -> Result<(), SignInError> {
+        guard(p)?;
+        let r = request(p)?;
+        let args = login_args(&r, &p.auth)?;
+        let (cli, name) = (r.cli, r.cli.name());
+        match exec(r.cli, &args, &self.dirs, &p.auth, LOGIN_TIMEOUT).await? {
+            Ok(_) => {
+                *self.cache.slot(&r).lock().await = None;
+                Ok(())
+            }
+            Err(stderr) => {
+                let first = stderr.lines().map(str::trim).map(|l| l.trim_start_matches("ERROR:").trim()).find(|l| !l.is_empty()).unwrap_or("");
+                let first: String = first.chars().take(300).collect();
+                Err(SignInError::new(format!("The {name} sign-in did not finish"), if first.is_empty() { "Try again.".to_string() } else { first }).fix(Fix::SignIn(cli)))
+            }
+        }
     }
 
     /// The connection dialog's check: a fresh token (the CLI run now) and who it signs in as.
@@ -859,7 +943,7 @@ mod tests {
         assert!(e.body.contains("`aws sso login --profile dev`") && e.body.contains("`aws login --profile dev`"), "{e}");
         let none = Auth::AwsIam { profile: None, region: None };
         let e = classify(Cli::Aws, "Unable to locate credentials. You can configure credentials by running \"aws login\".", &none, &[]);
-        assert!(e.body.starts_with("Run `aws login` (console sign-in), `aws sso login` (IAM"), "{e}");
+        assert!(e.body.starts_with("Sign in again, or run `aws login` (console sign-in), `aws sso login` (IAM"), "{e}");
         assert_eq!(login_command(Cli::Aws, &none), "aws login");
         let e = classify(Cli::Aws, "\nError when retrieving token from sso: Token has expired and refresh failed\n", &aws, &[]);
         assert_eq!((e.title.as_str(), e.body.contains("aws sso login --profile dev")), ("Not signed in to AWS", true));

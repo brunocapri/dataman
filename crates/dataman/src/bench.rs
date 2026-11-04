@@ -421,6 +421,22 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                             d.update(cx, |d, cx| d.demo_check_sign_in(cx));
                         }
                     }),
+                    // A saved connection's lapsed session, and a CLI not installed.
+                    "dialog-sign-in" | "dialog-install" => ws.update(cx, |w, cx| {
+                        use dataman_core::cloudauth::{Cli, Fix, SignInError};
+                        let mut p = ConnectionProfile::new("shop-cloud");
+                        (p.host, p.user, p.database, p.auth) = ("shop.postgres.database.azure.com".into(), "ana@contoso.com".into(), "shop".into(), dataman_core::Auth::EntraId { tenant: None });
+                        p.sslmode = SslMode::Require;
+                        let e = if stage == "dialog-sign-in" {
+                            SignInError { title: "Not signed in to Azure".into(), body: "Sign in again, or run `az login` in a terminal.".into(), action: Some(Fix::SignIn(Cli::Az)) }
+                        } else {
+                            SignInError { title: "The Azure CLI is not installed".into(), body: "Dataman signs in to Azure through the Azure CLI (az).".into(), action: Some(Fix::Install(Cli::Az)) }
+                        };
+                        w.open_dialog_with(Some(p), true, None, window, cx);
+                        if let Some(d) = w.dialog.clone() {
+                            d.update(cx, |d, cx| d.set_sign_in_failed(&e, cx));
+                        }
+                    }),
                     "dialog-password" => ws.update(cx, |w, cx| {
                         w.open_dialog(Some(id.clone()), window, cx);
                         if let Some(d) = w.dialog.clone() {

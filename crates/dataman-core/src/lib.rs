@@ -459,6 +459,12 @@ impl Core {
         spawn(&self.handle(), async move { Ok(src.check(&profile).await?) })
     }
 
+    /// The cloud CLI's own sign-in for `profile`, in the browser; done when the user is.
+    pub fn cloud_login(&self, profile: ConnectionProfile) -> Task<()> {
+        let src = self.cloud.clone();
+        spawn(&self.handle(), async move { Ok(src.sign_in(&profile).await?) })
+    }
+
     pub fn trust_host_key(&self, prompt: HostKeyPrompt) -> Task<()> {
         let file = self.dirs.known_hosts_file();
         spawn(&self.handle(), async move { Ok(prompt.trust(&file)?) })

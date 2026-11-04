@@ -1825,6 +1825,14 @@ impl Workspace {
                     }
                 }
             }
+            ConnEvent::Failed { id, cloud: Some(err), .. } => {
+                if self.dialog.is_none() {
+                    self.open_dialog(Some(id.clone()), window, cx);
+                    if let Some(d) = self.dialog.clone() {
+                        d.update(cx, |d, cx| d.set_sign_in_failed(err, cx));
+                    }
+                }
+            }
             ConnEvent::Failed { id, needs_password, .. } => {
                 if *needs_password && self.dialog.is_none() {
                     self.open_dialog(Some(id.clone()), window, cx);

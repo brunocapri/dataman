@@ -9,7 +9,7 @@ use gpui::{
 };
 use crate::theme::{Pt, px};
 use dataman_core::config::Engine;
-use dataman_core::cloudauth::{self, Cli, SignInError};
+use dataman_core::cloudauth::{self, Cli, Fix, SignInError};
 use dataman_core::{Auth, AuthKind, ConnectionProfile, Environment, HostKeyPrompt, McpAccess, ServerInfo, SshAuth, SshError, SshSettings, SslMode};
 
 const ENGINES: [Engine; 9] = Engine::ALL;
@@ -37,9 +37,9 @@ fn user_hint(engine: Engine, kind: AuthKind) -> (&'static str, &'static str) {
 /// What a cloud method says before it is checked: whose sign-in it uses.
 fn sign_in_intro(kind: AuthKind) -> &'static str {
     match kind {
-        AuthKind::EntraId => "Uses your Azure CLI sign-in (az login): no password, nothing saved.",
-        AuthKind::AwsIam => "Uses your AWS CLI sign-in (aws login, aws sso login or its keys): no password, nothing saved.",
-        AuthKind::GoogleIam => "Uses your Google Cloud CLI sign-in (gcloud auth login): no password, nothing saved.",
+        AuthKind::EntraId => "Signs in through the Azure CLI (az) on this computer, as the account az is signed in with: no password, nothing saved.",
+        AuthKind::AwsIam => "Signs in through the AWS CLI (aws) on this computer, with its sign-in (aws login, aws sso login) or its keys: no password, nothing saved.",
+        AuthKind::GoogleIam => "Signs in through the Google Cloud CLI (gcloud) on this computer, as its active account: no password, nothing saved.",
         AuthKind::Password => "",
     }
 }
@@ -111,8 +111,21 @@ enum Test {
 enum SignIn {
     Unchecked,
     Checking,
+    /// The CLI's own sign-in is open in the browser.
+    SigningIn,
     Ok { who: Option<String>, minutes: u64 },
-    Failed { title: String, body: String },
+    Failed { title: String, body: String, fix: Option<Fix> },
+}
+
+impl SignIn {
+    fn busy(&self) -> bool {
+        matches!(self, SignIn::Checking | SignIn::SigningIn)
+    }
+
+    fn failed(e: &anyhow::Error) -> SignIn {
+        let (title, body, _) = server_message(e);
+        SignIn::Failed { title, body, fix: cloudauth::sign_in_error(e).and_then(|s| s.action) }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -234,7 +247,7 @@ impl ConnDialog {
                     if !matches!(d.test, Test::Testing { .. }) {
                         d.test = Test::NotTested;
                     }
-                    if !matches!(d.sign_in, SignIn::Checking) {
+                    if !d.sign_in.busy() {
                         d.sign_in = SignIn::Unchecked;
                     }
                     cx.notify();
@@ -1019,6 +1032,10 @@ impl ConnDialog {
                             if password {
                                 d.password.update(cx, |p, _| p.error = true);
                             }
+                            // What fixes a cloud sign-in shows where the sign-in is.
+                            if cloudauth::sign_in_error(&e).is_some_and(|s| s.action.is_some()) && !d.sign_in.busy() {
+                                d.sign_in = SignIn::failed(&e);
+                            }
                             Test::Failed { title, body }
                         }
                     },
@@ -1337,17 +1354,10 @@ impl ConnDialog {
 
     /// Asks the cloud CLI for a token now, and who it signs in as.
     fn check_sign_in(&mut self, cx: &mut Context<Self>) {
-        if matches!(self.sign_in, SignIn::Checking) {
+        if self.sign_in.busy() {
             return;
         }
-        let p = match self.collect(cx) {
-            Ok((p, ..)) => p,
-            Err(e) => {
-                self.sign_in = SignIn::Failed { title: e, body: String::new() };
-                cx.notify();
-                return;
-            }
-        };
+        let Some(p) = self.sign_in_profile(cx) else { return };
         let task = self.store.read(cx).core.cloud_sign_in(p);
         self.sign_in = SignIn::Checking;
         self.sign_in_gen += 1;
@@ -1360,15 +1370,61 @@ impl ConnDialog {
                 }
                 d.sign_in = match r {
                     Ok(s) => SignIn::Ok { who: s.who, minutes: s.valid_for.as_secs() / 60 },
-                    Err(e) => {
-                        let (title, body, _) = server_message(&e);
-                        SignIn::Failed { title, body }
-                    }
+                    Err(e) => SignIn::failed(&e),
                 };
                 cx.notify();
             });
         })
         .detach();
+        cx.notify();
+    }
+
+    /// The connection as typed, for the cloud CLI; an invalid form says why where the sign-in is.
+    fn sign_in_profile(&mut self, cx: &mut Context<Self>) -> Option<ConnectionProfile> {
+        match self.collect(cx) {
+            Ok((p, ..)) => Some(p),
+            Err(e) => {
+                self.sign_in = SignIn::Failed { title: e, body: String::new(), fix: None };
+                cx.notify();
+                None
+            }
+        }
+    }
+
+    /// The cloud CLI's own sign-in (`az login`, `aws sso login`, `gcloud auth login`), which opens
+    /// the browser; checked again once it is done.
+    fn sign_in_browser(&mut self, cx: &mut Context<Self>) {
+        if self.sign_in.busy() {
+            return;
+        }
+        let Some(p) = self.sign_in_profile(cx) else { return };
+        let task = self.store.read(cx).core.cloud_login(p);
+        self.sign_in = SignIn::SigningIn;
+        self.sign_in_gen += 1;
+        let gen_ = self.sign_in_gen;
+        cx.spawn(async move |this, cx| {
+            let r = task.await;
+            let _ = this.update(cx, |d, cx| {
+                if d.sign_in_gen != gen_ {
+                    return;
+                }
+                match r {
+                    Ok(()) => {
+                        d.sign_in = SignIn::Unchecked;
+                        d.check_sign_in(cx);
+                    }
+                    Err(e) => d.sign_in = SignIn::failed(&e),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// A saved connection that could not sign in: why, and what fixes it, where the sign-in is.
+    pub fn set_sign_in_failed(&mut self, e: &SignInError, cx: &mut Context<Self>) {
+        self.sign_in = SignIn::Failed { title: e.title.clone(), body: e.body.clone(), fix: e.action };
         cx.notify();
     }
 
@@ -1390,11 +1446,30 @@ impl ConnDialog {
         let (glyph, color, title, body) = match &self.sign_in {
             SignIn::Unchecked => ("", t.tx3, sign_in_intro(self.auth).to_string(), String::new()),
             SignIn::Checking => ("◌", t.warn, format!("Asking {cli} for a token…"), String::new()),
+            SignIn::SigningIn => ("◌", t.warn, "Finish signing in in your browser".to_string(), format!("{cli} opened it; this updates when you are done.")),
             SignIn::Ok { who, minutes } => {
                 let who = who.clone().map_or_else(|| "Signed in".to_string(), |w| format!("Signed in as {w}"));
-                ("●", t.ok, format!("{who} · token valid {minutes} min"), String::new())
+                ("●", t.ok, format!("{who} · through {cli} · token valid {minutes} min"), String::new())
             }
-            SignIn::Failed { title, body } => ("✕", t.err, title.clone(), body.clone()),
+            SignIn::Failed { title, body, .. } => ("✕", t.err, title.clone(), body.clone()),
+        };
+        // What fixes the failure, right under it: the CLI's sign-in (the browser) or its install page.
+        let fix = match &self.sign_in {
+            SignIn::Failed { fix: Some(Fix::SignIn(c)), .. } => Some(
+                ui::button(t, "auth-sign-in", Btn::Primary)
+                    .h(px(28.))
+                    .px(px(10.))
+                    .cursor_pointer()
+                    .child(format!("Sign in with {}…", c.program()))
+                    .on_click(cx.listener(|d, _, _, cx| d.sign_in_browser(cx))),
+            )
+            .map(|b| (b, "Opens your browser")),
+            SignIn::Failed { fix: Some(Fix::Install(c)), .. } => {
+                let url = c.install_url();
+                Some(ui::button(t, "auth-install", Btn::Secondary).h(px(28.)).px(px(10.)).cursor_pointer().child(format!("Install {} ↗", c.name())).on_click(move |_, _, cx| cx.open_url(url)))
+                    .map(|b| (b, "Then sign in with it once"))
+            }
+            _ => None,
         };
         let status = div()
             .flex()
@@ -1410,7 +1485,10 @@ impl ConnDialog {
                     .flex()
                     .flex_col()
                     .child(div().text_color(if glyph.is_empty() { t.tx3 } else { t.tx }).child(title))
-                    .children(body.lines().map(|l| div().text_color(t.tx2).child(l.to_string())).collect::<Vec<_>>()),
+                    .children(body.lines().map(|l| div().text_color(t.tx2).child(l.to_string())).collect::<Vec<_>>())
+                    .when_some(fix, |d, (button, note)| {
+                        d.child(div().pt(px(8.)).flex().flex_row().items_center().gap(px(10.)).child(ui::probe("auth-fix", button)).child(div().text_color(t.tx3).child(note)))
+                    }),
             );
         vec![fields.child(ui::probe("auth-check", check)), div().child(ui::probe("auth-status", status))]
     }
