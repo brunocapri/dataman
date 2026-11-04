@@ -272,6 +272,8 @@ pub struct Check {
     pub on: String,
     /// Why it is tried and how, in a line.
     pub tip: &'static str,
+    /// A refusal it holds (what it can't do), not something it can.
+    pub guard: bool,
     pub ok: bool,
     /// What the server said.
     pub detail: String,
@@ -309,7 +311,12 @@ impl Check {
 }
 
 fn check(group: CheckGroup, what: &str, on: impl Into<String>, tip: &'static str, ok: bool, detail: impl Into<String>) -> Check {
-    Check { group, what: what.into(), on: on.into(), tip, ok, detail: detail.into() }
+    Check { group, what: what.into(), on: on.into(), tip, guard: guards(what), ok, detail: detail.into() }
+}
+
+/// Whether a check is about what the login can't do.
+pub fn guards(what: &str) -> bool {
+    what.starts_with("Can't") || matches!(what, "Hidden fields are left out" | "Sessions start read-only")
 }
 
 use CheckGroup as G;

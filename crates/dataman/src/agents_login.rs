@@ -802,7 +802,7 @@ impl AgentsPage {
                     .items_center()
                     .gap(px(8.))
                     .min_w_0()
-                    .child(div().flex_none().w(px(12.)).text_color(if c.ok { t.ok } else { t.err }).child(if c.ok { "✓" } else { "✕" }))
+                    .child(check_mark(t, c))
                     .child(div().flex_none().text_color(t.tx).child(c.what.clone()))
                     .child(qmark(t, &format!("agents-login-check-tip-{k}"), tip))
                     .when(!c.on.is_empty(), |d| d.child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().font_family(mono()).text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(format!("tried on {}", c.on))));
@@ -833,7 +833,7 @@ impl AgentsPage {
             v.login.sheet = None;
             cx.notify();
         }));
-        let say = div().flex_1().min_w_0().text_color(t.tx3).child(format!("Tried by logging in as {user} with its own password."));
+        let say = div().flex_1().min_w_0().text_color(t.tx3).child(format!("Tried as {user}, with its own password."));
         let footer = ui::modal_footer(t).child(say).child(ui::button(t, "agents-login-checks-copy", ui::Btn::Secondary).h(px(30.)).px(px(12.)).cursor_pointer().child("Copy all").on_click(cx.listener(move |_, _: &ClickEvent, _, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(report.clone()))))).child(close).into_any_element();
         (format!("What {user} can and can't do"), body.into_any_element(), footer)
     }
@@ -1322,7 +1322,7 @@ impl AgentsPage {
     pub(crate) fn demo_checks(&mut self, p: &ConnectionProfile) {
         self.login.conn = Some(p.id.clone());
         use live::{Check, CheckGroup as G};
-        let c = |group, what: &str, on: &str, tip, ok, detail: &str| Check { group, what: what.into(), on: on.into(), tip, ok, detail: detail.into() };
+        let c = |group, what: &str, on: &str, tip, ok, detail: &str| Check { group, what: what.into(), on: on.into(), tip, guard: live::guards(what), ok, detail: detail.into() };
         self.login.checks = vec![
             c(G::Login, "Logs in as itself", &agent_login::login_name(&p.id), "Dataman connected with the login's own password, from the Keychain, and the server named it back.", true, ""),
             c(G::Login, "Sessions start read-only", "", "Its role starts every session read-only, a second lock on top of its grants.", true, ""),
@@ -1403,6 +1403,16 @@ const WHAT_OVERSCAN: usize = 20;
 enum Verified {
     Gone,
     Checked(Vec<live::Check>),
+}
+
+/// A check's mark: ✓ for what it can do, a lock for what it can't (held), ✕ when it failed.
+fn check_mark(t: &Theme, c: &live::Check) -> gpui::Div {
+    let mark = div().flex_none().w(px(12.)).flex().items_center().justify_center();
+    match (c.ok, c.guard) {
+        (false, _) => mark.text_color(t.err).child("✕"),
+        (true, true) => mark.children(ui::here(&"agents-login-check-lock".into())).child(crate::assets::icon(crate::assets::Icon::Lock).size(px(12.)).text_color(t.ok)),
+        (true, false) => mark.text_color(t.ok).child("✓"),
+    }
 }
 
 /// A Copy button for `text`.
