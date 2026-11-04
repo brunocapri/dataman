@@ -538,6 +538,12 @@ trait Sink {
 }
 
 fn make_sink<'a, W: Write + Send + 'a>(out: W, cols: &[ColumnInfo], o: &ExportOptions) -> Result<Box<dyn Sink + 'a>> {
+    // SQL Server's `datetime2` and `time`, text in the grid, are dates to the formats that type them.
+    let dated: Vec<ColumnInfo> = cols
+        .iter()
+        .map(|c| ColumnInfo { kind: if o.dialect == crate::sql::Dialect::TSql { crate::value::tsql_date_kind(c.kind, &c.type_name) } else { c.kind }, ..c.clone() })
+        .collect();
+    let cols = &dated[..];
     let kinds: Vec<Kind> = cols.iter().map(|c| c.kind).collect();
     let names: Vec<String> = cols.iter().map(|c| c.name.clone()).collect();
     let eol = o.line_ending.as_str();
@@ -877,6 +883,17 @@ mod parquet_sink {
         }
     }
 
+    /// A date that came as text: microseconds, Parquet's unit, so a seventh digit stops here.
+    fn timestamp_micros(s: &str) -> Option<i64> {
+        chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S%.f").ok().map(|t| t.and_utc().timestamp_micros())
+    }
+
+    fn time_micros(s: &str) -> Option<i64> {
+        use chrono::Timelike as _;
+        let t = chrono::NaiveTime::parse_from_str(s, "%H:%M:%S%.f").ok()?;
+        Some(t.num_seconds_from_midnight() as i64 * 1_000_000 + t.nanosecond() as i64 / 1_000)
+    }
+
     pub struct ParquetSink<W: Write + Send> {
         writer: Option<ArrowWriter<W>>,
         schema: Arc<Schema>,
@@ -963,12 +980,14 @@ mod parquet_sink {
                     },
                     (Col::Date(b), _) => b.append_null(),
                     (Col::Time(b), Cell::Int(v)) => b.append_value(v),
+                    (Col::Time(b), Cell::Text(s)) => b.append_option(time_micros(s)),
                     (Col::Time(b), _) => b.append_null(),
                     (Col::Ts(b) | Col::TsTz(b), Cell::Int(v)) => match v {
                         i64::MAX | i64::MIN => b.append_null(),
                         v if crate::value::is_odd_date(v) => b.append_null(),
                         v => b.append_option(v.checked_add(PG_EPOCH_MICROS)),
                     },
+                    (Col::Ts(b) | Col::TsTz(b), Cell::Text(s)) => b.append_option(timestamp_micros(s)),
                     (Col::Ts(b) | Col::TsTz(b), _) => b.append_null(),
                     (Col::Bin(b), Cell::Text(s)) => b.append_value(unhex(s)),
                     (Col::Bin(b), _) => b.append_null(),

@@ -170,6 +170,44 @@ pub fn detect_tsql(sql: &str) -> Option<Prepared> {
     Some(Prepared { sql: out, params: keys.into_iter().enumerate().map(|(k, key)| Param { key, index: k as u32 + 1, hint: None }).collect() })
 }
 
+/// The T-SQL to run with `given` values. `$1 … $n`, as on the other engines, become `@P1 … @Pn`:
+/// T-SQL reads `$1` as the money literal 1.00, so `WHERE id = $1` would run with that and never
+/// look at the value. A statement that already has `@Pn` keeps its `$` literals; one where a
+/// value and a placeholder don't pair up is refused, since it can only run with the wrong values.
+pub fn tsql_bound(sql: &str, given: usize) -> Result<std::borrow::Cow<'_, str>, String> {
+    let tokens = tokenize_in(sql, Dialect::TSql);
+    let native = |t: &Token| t.kind == TokenKind::Ident && t.text(sql).get(..2).is_some_and(|p| p.eq_ignore_ascii_case("@P")) && t.text(sql)[2..].parse::<u32>().is_ok();
+    if tokens.iter().any(native) {
+        return Ok(sql.into());
+    }
+    let mut at: Vec<(std::ops::Range<usize>, usize)> = Vec::new();
+    for w in tokens.windows(2) {
+        // `$1.50` is a Number too, and stays the literal it is.
+        if w[0].text(sql) == "$" && w[0].end == w[1].start && w[1].kind == TokenKind::Number && let Ok(n) = w[1].text(sql).parse::<usize>() {
+            at.push((w[0].start..w[1].end, n));
+        }
+    }
+    let values = |n: usize| if n == 1 { "1 value".to_string() } else { format!("{n} values") };
+    if at.is_empty() {
+        return Err(format!("{} given, but the statement has no placeholder for them: write $1, $2, …", values(given)));
+    }
+    if let Some((_, n)) = at.iter().find(|(_, n)| *n == 0 || *n > given) {
+        return Err(format!("the statement uses ${n}, but {} given", values(given)));
+    }
+    if let Some(n) = (1..=given).find(|n| !at.iter().any(|(_, k)| k == n)) {
+        return Err(format!("{} given, but the statement never uses ${n}", values(given)));
+    }
+    let mut out = String::with_capacity(sql.len() + at.len());
+    let mut pos = 0;
+    for (r, n) in &at {
+        out.push_str(&sql[pos..r.start]);
+        out.push_str(&format!("@P{n}"));
+        pos = r.end;
+    }
+    out.push_str(&sql[pos..]);
+    Ok(out.into())
+}
+
 pub fn detect(sql: &str) -> Option<Prepared> {
     let tokens = tokenize(sql);
     let sig: Vec<Token> = tokens.iter().copied().filter(|t| !t.kind.is_trivia()).collect();
@@ -375,6 +413,21 @@ mod tests {
         let p = detect_in("SELECT $2, $1", Dialect::DuckDb).unwrap();
         assert_eq!(p.params.iter().map(|x| x.key.as_str()).collect::<Vec<_>>(), vec!["$1", "$2"]);
         assert!(detect_in("SELECT $$ ? $$, x::INT", Dialect::DuckDb).is_none());
+    }
+
+    #[test]
+    fn tsql_numbered_placeholders() {
+        let bound = |s: &'static str, n| tsql_bound(s, n).map(|c| c.into_owned());
+        assert_eq!(bound("SELECT * FROM t WHERE a = $1 AND b = $2 OR c = $1", 2).unwrap(), "SELECT * FROM t WHERE a = @P1 AND b = @P2 OR c = @P1");
+        assert_eq!(bound("SELECT '$1', [$1], a$1 FROM t -- $1\n /* $1 */ WHERE x = $1", 1).unwrap(), "SELECT '$1', [$1], a$1 FROM t -- $1\n /* $1 */ WHERE x = @P1");
+        assert_eq!(bound("SELECT $1, $9.50, $.5", 1).unwrap(), "SELECT @P1, $9.50, $.5", "a money literal stays one");
+        assert_eq!(bound("SELECT @P1, $1", 1).unwrap(), "SELECT @P1, $1", "already bound");
+        assert_eq!(bound("SELECT @p1", 1).unwrap(), "SELECT @p1");
+        assert!(bound("SELECT 1", 1).unwrap_err().contains("no placeholder"));
+        assert!(bound("SELECT $1.50, @x", 1).unwrap_err().contains("no placeholder"));
+        assert!(bound("SELECT $2", 1).unwrap_err().contains("uses $2"));
+        assert!(bound("SELECT $0", 1).unwrap_err().contains("uses $0"));
+        assert!(bound("SELECT $2", 2).unwrap_err().contains("never uses $1"));
     }
 
     #[test]
