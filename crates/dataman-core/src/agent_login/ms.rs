@@ -376,7 +376,7 @@ pub(crate) async fn probe(db: &Db, user: &str, conn: &str) -> Result<Probe> {
     p.flavor = Flavor { major: s(&row[1]).split('.').next().and_then(|v| v.parse().ok()).unwrap_or(0), azure, superuser: sysadmin || dbo, activity: true, ..Default::default() };
     p.can_create = any_user && (azure || any_login) && !entra_only;
     if entra_only {
-        p.lacks.push("this server takes Microsoft Entra logins only: a SQL password can't be created".into());
+        p.lacks.push("this server takes Microsoft Entra logins only: a SQL password can't be created until SQL authentication is allowed on it".into());
     } else {
         if !any_user {
             p.lacks.push(format!("{login} can't create users in this database: it needs ALTER ANY USER (db_owner)"));
