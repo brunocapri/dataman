@@ -264,7 +264,8 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let removed = count(cx);
     let _ = cx.update(|window, cx| window.focus(&gpui::Focusable::focus_handle(&history, cx), cx));
     key(cx, "cmd-z");
-    pause(cx, 30).await;
+    // The files are read again off the UI thread: the entry is back once that lands.
+    crate::check::until(cx, 5, |cx| count(cx) == n0).await;
     report("Remove from history takes the entry out; ⌘Z puts it back", n0 > 0 && removed == n0 - 1 && count(cx) == n0, format!("{n0} → {removed} → {}", count(cx)));
     let trash = cx.update(|_, cx| history.read(cx).demo_clear_bounds()).ok().flatten();
     if let Some(b) = trash {
@@ -280,7 +281,7 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let cleared = count(cx);
     let _ = cx.update(|window, cx| window.focus(&gpui::Focusable::focus_handle(&history, cx), cx));
     key(cx, "cmd-z");
-    pause(cx, 30).await;
+    crate::check::until(cx, 5, |cx| count(cx) == n0).await;
     report(
         "the trash asks \"Clear all?\" first, then clears the history; ⌘Z brings it back",
         trash.is_some() && asking && kept == n0 && cleared == 0 && count(cx) == n0,
