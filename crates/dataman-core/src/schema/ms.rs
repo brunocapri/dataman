@@ -51,7 +51,7 @@ pub(super) async fn databases(c: &Db) -> Result<Vec<String>> {
 pub(super) async fn schemas(c: &Db) -> Result<Vec<String>> {
     let rows = first_ok(c, &["SELECT name FROM sys.schemas WHERE schema_id < 16384 AND name <> N'guest'"]).await?;
     let mut v: Vec<String> = rows.into_iter().filter_map(|r| r.into_iter().next().flatten()).collect();
-    let system = |s: &str| matches!(s, "sys" | "INFORMATION_SCHEMA");
+    let system = |s: &str| crate::Engine::SqlServer.is_system_schema(s);
     v.sort_by(|a, b| system(a).cmp(&system(b)).then_with(|| a.to_lowercase().cmp(&b.to_lowercase())));
     Ok(v)
 }

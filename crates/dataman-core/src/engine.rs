@@ -38,8 +38,13 @@ pub struct EngineSpec {
     pub db_names_ignore_case: bool,
     /// The server's own databases, left out of the simple explorer.
     pub system_dbs: &'static [&'static str],
+    /// The schemas the engine keeps for itself (a trailing `*` matches a prefix), left out of
+    /// the lists of tables. MySQL's schemas are its databases: its system ones are both.
+    pub system_schemas: &'static [&'static str],
     /// Databases are numbered (Redis' 0–15), shown as `db{n}`.
     pub numbered_dbs: Option<u32>,
+    /// What the engine calls a table.
+    pub nouns: Nouns,
     /// The connection form.
     pub form: Form,
 }
@@ -56,10 +61,21 @@ pub struct Form {
     pub database_placeholder: &'static str,
     /// Options as `k=v&k=v` (MongoDB's URI options).
     pub options: bool,
+    /// The database field's label ("DB" for Redis' numbered ones).
+    pub database_label: &'static str,
 }
 
-const SERVER: Form = Form { file: false, user_required: true, database: true, database_placeholder: "database", options: false };
-const FILE: Form = Form { file: true, user_required: false, database: false, database_placeholder: "", options: false };
+/// What the engine calls a table, one and many ("collection", "collections").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Nouns {
+    pub one: &'static str,
+    pub many: &'static str,
+}
+
+const TABLES: Nouns = Nouns { one: "table", many: "tables" };
+
+const SERVER: Form = Form { file: false, user_required: true, database: true, database_placeholder: "database", options: false, database_label: "Database" };
+const FILE: Form = Form { file: true, user_required: false, database: false, database_placeholder: "", options: false, database_label: "Database" };
 const NO_FILES: &[&str] = &[];
 
 /// In `Engine`'s declaration order: `Engine::spec` indexes it.
@@ -83,7 +99,9 @@ pub static SPECS: [EngineSpec; 9] = [
         default_schema: Some("public"),
         db_names_ignore_case: false,
         system_dbs: &[],
+        system_schemas: &["pg_catalog", "information_schema", "pg_toast*", "pg_temp*"],
         numbered_dbs: None,
+        nouns: TABLES,
         form: SERVER,
     },
     EngineSpec {
@@ -105,7 +123,9 @@ pub static SPECS: [EngineSpec; 9] = [
         default_schema: None,
         db_names_ignore_case: false,
         system_dbs: &["mysql", "information_schema", "performance_schema", "sys"],
+        system_schemas: &["mysql", "information_schema", "performance_schema", "sys"],
         numbered_dbs: None,
+        nouns: TABLES,
         form: SERVER,
     },
     EngineSpec {
@@ -127,7 +147,9 @@ pub static SPECS: [EngineSpec; 9] = [
         default_schema: Some("dbo"),
         db_names_ignore_case: true,
         system_dbs: &["master", "model", "msdb", "tempdb"],
+        system_schemas: &["sys", "INFORMATION_SCHEMA"],
         numbered_dbs: None,
+        nouns: TABLES,
         form: SERVER,
     },
     EngineSpec {
@@ -149,7 +171,9 @@ pub static SPECS: [EngineSpec; 9] = [
         default_schema: None,
         db_names_ignore_case: false,
         system_dbs: &["admin", "local", "config"],
+        system_schemas: &[],
         numbered_dbs: None,
+        nouns: Nouns { one: "collection", many: "collections" },
         form: Form { user_required: false, database_placeholder: "test", options: true, ..SERVER },
     },
     EngineSpec {
@@ -171,7 +195,9 @@ pub static SPECS: [EngineSpec; 9] = [
         default_schema: None,
         db_names_ignore_case: false,
         system_dbs: &[],
+        system_schemas: &[],
         numbered_dbs: None,
+        nouns: Nouns { one: "index", many: "indices" },
         form: Form { user_required: false, database: false, database_placeholder: "", ..SERVER },
     },
     EngineSpec {
@@ -193,7 +219,9 @@ pub static SPECS: [EngineSpec; 9] = [
         default_schema: None,
         db_names_ignore_case: false,
         system_dbs: &[],
+        system_schemas: &[],
         numbered_dbs: None,
+        nouns: Nouns { one: "index", many: "indices" },
         form: Form { user_required: false, database: false, database_placeholder: "", ..SERVER },
     },
     EngineSpec {
@@ -215,8 +243,10 @@ pub static SPECS: [EngineSpec; 9] = [
         default_schema: None,
         db_names_ignore_case: false,
         system_dbs: &[],
+        system_schemas: &[],
         numbered_dbs: Some(16),
-        form: Form { user_required: false, database_placeholder: "0", ..SERVER },
+        nouns: Nouns { one: "key", many: "keys" },
+        form: Form { user_required: false, database_placeholder: "0", database_label: "DB", ..SERVER },
     },
     EngineSpec {
         engine: Engine::Sqlite,
@@ -237,7 +267,9 @@ pub static SPECS: [EngineSpec; 9] = [
         default_schema: Some("main"),
         db_names_ignore_case: false,
         system_dbs: &[],
+        system_schemas: &[],
         numbered_dbs: None,
+        nouns: TABLES,
         form: FILE,
     },
     EngineSpec {
@@ -259,7 +291,9 @@ pub static SPECS: [EngineSpec; 9] = [
         default_schema: Some("main"),
         db_names_ignore_case: false,
         system_dbs: &[],
+        system_schemas: &["information_schema", "pg_catalog"],
         numbered_dbs: None,
+        nouns: TABLES,
         form: FILE,
     },
 ];
@@ -304,6 +338,21 @@ impl Engine {
         self.spec().system_dbs.contains(&db)
     }
 
+    /// One of the schemas the engine keeps for itself (`pg_catalog`, `sys`, MySQL's `mysql`…).
+    pub fn is_system_schema(self, schema: &str) -> bool {
+        let s = self.spec();
+        s.system_schemas.iter().any(|p| match p.strip_suffix('*') {
+            Some(prefix) => schema.starts_with(prefix),
+            None if s.db_names_ignore_case => schema.eq_ignore_ascii_case(p),
+            None => schema == *p,
+        })
+    }
+
+    /// What the engine calls a table.
+    pub fn nouns(self) -> Nouns {
+        self.spec().nouns
+    }
+
     /// The default ports, as the MCP schema describes them.
     pub fn port_list() -> String {
         let mut ports: Vec<String> = Vec::new();
@@ -340,5 +389,10 @@ mod tests {
         assert_eq!(Engine::port_list(), "5432 / 3306 / 1433 / 27017 / 9200 / 6379");
         assert_eq!((Engine::Redis.db_label("3"), Engine::MySql.db_label("shop")), ("db3".to_string(), "shop".to_string()));
         assert!(Engine::SqlServer.is_system_db("tempdb") && !Engine::Postgres.is_system_db("postgres"));
+        assert!(Engine::Postgres.is_system_schema("pg_toast_temp_3") && !Engine::Postgres.is_system_schema("public"));
+        assert!(Engine::SqlServer.is_system_schema("information_schema") && !Engine::SqlServer.is_system_schema("dbo"));
+        assert!(Engine::MySql.is_system_schema("performance_schema") && !Engine::DuckDb.is_system_schema("sys"));
+        assert_eq!((Engine::Redis.nouns().many, Engine::Sqlite.nouns().one), ("keys", "table"));
+        assert_eq!((Engine::Redis.spec().form.database_label, Engine::MongoDb.spec().form.database_label), ("DB", "Database"));
     }
 }

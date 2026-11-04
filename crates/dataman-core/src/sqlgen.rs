@@ -253,11 +253,8 @@ pub fn select_star(schema: &str, name: &str, limit: Option<u64>) -> String {
 }
 
 pub fn select_star_in(d: Dialect, schema: &str, name: &str, limit: Option<u64>) -> String {
-    match limit {
-        Some(n) if d == Dialect::TSql => format!("SELECT TOP ({n}) * FROM {};", d.qualified(Some(schema), name)),
-        Some(n) => format!("SELECT * FROM {} LIMIT {n};", d.qualified(Some(schema), name)),
-        None => format!("SELECT * FROM {};", d.qualified(Some(schema), name)),
-    }
+    let l = limit.map(|n| d.limit(n)).unwrap_or(crate::sql::Limit { top: String::new(), tail: String::new() });
+    format!("SELECT {}* FROM {}{};", l.top, d.qualified(Some(schema), name), l.tail)
 }
 
 #[cfg(test)]

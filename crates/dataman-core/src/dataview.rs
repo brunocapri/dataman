@@ -356,7 +356,8 @@ impl Connection {
             return self.spawn(async move { Err(anyhow::anyhow!("{} has no SQL to sample a column with", e.label())) });
         };
         let (c, rel) = (d.quote_ident(column), d.qualified(Some(schema), table));
-        let sql = if d == Dialect::TSql { format!("SELECT TOP ({n}) {c} FROM {rel} WHERE {c} IS NOT NULL") } else { format!("SELECT {c} FROM {rel} WHERE {c} IS NOT NULL LIMIT {n}") };
+        let l = d.limit(n.into());
+        let sql = format!("SELECT {}{c} FROM {rel} WHERE {c} IS NOT NULL{}", l.top, l.tail);
         self.spawn(async move {
             let client = this.meta(&db).await?;
             Ok(text_rows(&client, &sql).await?.into_iter().filter_map(|r| r.into_iter().next().flatten()).collect())

@@ -129,6 +129,13 @@ fn plain_mixed_case(name: &str, d: Dialect) -> bool {
         && !super::lexer::is_keyword_in(name, d)
 }
 
+/// A row cap: `top` goes right after `SELECT`, `tail` at the statement's end.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Limit {
+    pub top: String,
+    pub tail: String,
+}
+
 impl Dialect {
     /// The engine's dialect; PostgreSQL's for the NoSQL engines, which have none (what reaches a
     /// NoSQL engine asks `Engine::sql_dialect`, which says so).
@@ -228,6 +235,23 @@ impl Dialect {
             Dialect::Postgres | Dialect::MySql | Dialect::Sqlite | Dialect::DuckDb if offset == 0 => format!("LIMIT {limit}"),
             Dialect::Postgres | Dialect::MySql | Dialect::Sqlite | Dialect::DuckDb => format!("LIMIT {limit} OFFSET {offset}"),
             Dialect::TSql => format!("OFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY"),
+        }
+    }
+
+    /// Caps a SELECT at `n` rows: `SELECT {top}… {tail}` (T-SQL's `TOP (n)`, the others' `LIMIT n`).
+    pub fn limit(self, n: u64) -> Limit {
+        match self {
+            Dialect::TSql => Limit { top: format!("TOP ({n}) "), tail: String::new() },
+            _ => Limit { top: String::new(), tail: format!(" LIMIT {n}") },
+        }
+    }
+
+    /// An expression that orders rows at random (`ORDER BY random()`).
+    pub fn random_order(self) -> &'static str {
+        match self {
+            Dialect::MySql => "RAND()",
+            Dialect::TSql => "NEWID()",
+            Dialect::Postgres | Dialect::Sqlite | Dialect::DuckDb => "random()",
         }
     }
 
@@ -359,6 +383,10 @@ mod tests {
         assert_eq!(Dialect::Postgres.page_clause(100, 0), "LIMIT 100");
         assert_eq!(Dialect::MySql.page_clause(100, 200), "LIMIT 100 OFFSET 200");
         assert_eq!(Dialect::TSql.page_clause(100, 0), "OFFSET 0 ROWS FETCH NEXT 100 ROWS ONLY");
+        let (ms, pg) = (Dialect::TSql.limit(5), Dialect::Postgres.limit(5));
+        assert_eq!(format!("SELECT {}* FROM t{}", ms.top, ms.tail), "SELECT TOP (5) * FROM t");
+        assert_eq!(format!("SELECT {}* FROM t{}", pg.top, pg.tail), "SELECT * FROM t LIMIT 5");
+        assert_eq!(Dialect::TSql.random_order(), "NEWID()");
         assert_eq!(Dialect::Postgres.rollback_to("s"), "ROLLBACK TO SAVEPOINT s; RELEASE SAVEPOINT s");
         assert_eq!(Dialect::MySql.not_distinct("a", "1"), "a <=> 1");
         assert_eq!(Dialect::Postgres.lex(), LexRules::POSTGRES);
