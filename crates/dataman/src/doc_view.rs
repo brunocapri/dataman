@@ -126,10 +126,27 @@ fn line(doc: &nosql::Doc) -> (SharedString, SharedString) {
     (summary(&doc.body, doc.id.as_ref()).into(), doc.id.as_ref().map(id_text).unwrap_or_default().into())
 }
 
+/// A change made to one search hit, applied to the page shown when the server answers. The hit
+/// is found again by its id and index: the page may have moved on meanwhile.
 enum SearchEdit {
-    Saved { ix: usize, body: Body },
+    Saved { id: Body, index: Option<String>, body: Body },
     Inserted(nosql::Doc),
-    Deleted { ix: usize },
+    Deleted { id: Body, index: Option<String> },
+}
+
+/// Where the document `id` (of `index`, for a search) sits on this page.
+fn find_doc(docs: &[nosql::Doc], id: &Body, index: Option<&str>) -> Option<usize> {
+    docs.iter().position(|d| d.id.as_ref() == Some(id) && (index.is_none() || d.index.as_deref() == index))
+}
+
+/// The selection once row `gone` left a page that now has `left` rows.
+fn after_delete(selected: Option<usize>, gone: usize, left: usize) -> Option<usize> {
+    match selected {
+        _ if left == 0 => None,
+        Some(s) if s > gone => Some(s - 1),
+        Some(s) => Some(s.min(left - 1)),
+        None => None,
+    }
 }
 
 fn per_doc(source: Source, doc: Option<&nosql::Doc>) -> Source {
@@ -560,9 +577,9 @@ impl DocPane {
             return;
         }
         self.saving = true;
+        let saved = id.clone().map(|id| (id, doc.as_ref().and_then(|d| d.index.clone())));
         let task = self.conn.save_document(&source, id, &text);
         let inserted = self.new_doc;
-        let at = self.selected;
         let search_index = match &source {
             Source::Search { index } => Some(index.clone()),
             _ => None,
@@ -575,9 +592,9 @@ impl DocPane {
                     Ok(id) => {
                         p.new_doc = false;
                         let body = search_index.as_ref().and_then(|_| nosql::shell::parse(&text).ok()).and_then(|v| nosql::shell::to_json(&v).ok()).map(Body::Json);
-                        let edit = match (body, &search_index, inserted, at) {
+                        let edit = match (body, &search_index, inserted, saved) {
                             (Some(body), Some(index), true, _) => Some(SearchEdit::Inserted(nosql::Doc { id: Some(id.clone()), index: Some(index.clone()), body })),
-                            (Some(body), Some(_), false, Some(ix)) => Some(SearchEdit::Saved { ix, body }),
+                            (Some(body), Some(_), false, Some((id, index))) => Some(SearchEdit::Saved { id, index, body }),
                             _ => None,
                         };
                         if !edit.is_some_and(|e| p.edit_search_page(e, cx)) {
@@ -613,14 +630,14 @@ impl DocPane {
         let Some(id) = doc.id.clone() else { return };
         let source = per_doc(source, Some(&doc));
         let search = matches!(source, Source::Search { .. });
-        let at = self.selected;
+        let gone = SearchEdit::Deleted { id: id.clone(), index: doc.index.clone() };
         let task = self.conn.delete_document(&source, id);
         cx.spawn(async move |this, cx| {
             let r = task.await;
             let _ = this.update(cx, |p, cx| {
                 match r {
                     Ok(n) => {
-                        if !(search && at.is_some_and(|ix| p.edit_search_page(SearchEdit::Deleted { ix }, cx))) {
+                        if !(search && p.edit_search_page(gone, cx)) {
                             p.refresh(cx);
                         }
                         p.note = Some((if n == 1 { "Deleted".into() } else { "Already gone".into() }, false));
@@ -633,40 +650,45 @@ impl DocPane {
         .detach();
     }
 
+    /// Applies `edit` to the page shown; false when it cannot (the page no longer has that
+    /// document, or is not a search's), and the caller runs the page again instead.
     fn edit_search_page(&mut self, edit: SearchEdit, cx: &mut Context<Self>) -> bool {
         let Some(l) = &mut self.last else { return false };
         let Ok(Ran { output: Output::Docs(d), .. }) = &mut l.result else { return false };
-        let selected = match edit {
-            SearchEdit::Saved { ix, body } => {
-                let Some(doc) = d.docs.get_mut(ix) else { return false };
+        match edit {
+            SearchEdit::Saved { id, index, body } => {
+                let Some(ix) = find_doc(&d.docs, &id, index.as_deref()) else { return false };
+                let doc = &mut d.docs[ix];
                 doc.body = body;
                 l.lines[ix] = line(doc);
-                ix
+                // Another document picked meanwhile keeps its place and whatever is typed in it.
+                if self.selected == Some(ix) {
+                    self.load_detail(cx);
+                }
             }
             SearchEdit::Inserted(doc) => {
                 l.lines.insert(0, line(&doc));
                 d.docs.insert(0, doc);
                 d.total = d.total.map(|t| t + 1);
-                0
+                self.selected = Some(0);
+                self.list_scroll.scroll_to_item(0);
+                self.load_detail(cx);
             }
-            SearchEdit::Deleted { ix } => {
-                if ix >= d.docs.len() {
-                    return false;
-                }
+            SearchEdit::Deleted { id, index } => {
+                let Some(ix) = find_doc(&d.docs, &id, index.as_deref()) else { return false };
                 d.docs.remove(ix);
                 l.lines.remove(ix);
                 d.total = d.total.map(|t| t.saturating_sub(1));
-                if d.docs.is_empty() {
-                    self.selected = None;
+                let was = self.selected;
+                self.selected = after_delete(was, ix, d.docs.len());
+                if was == Some(ix) || self.selected.is_none() {
+                    if let Some(s) = self.selected {
+                        self.list_scroll.scroll_to_item(s);
+                    }
                     self.load_detail(cx);
-                    return true;
                 }
-                ix.min(d.docs.len() - 1)
             }
-        };
-        self.selected = Some(selected);
-        self.list_scroll.scroll_to_item(selected);
-        self.load_detail(cx);
+        }
         true
     }
 
@@ -1166,5 +1188,30 @@ mod tests {
         let oid = nosql::bson::oid::ObjectId::parse_str("6ad671d80bb7c7ed855e5c57").unwrap();
         assert_eq!(id_text(&Body::Bson(nosql::bson::Bson::ObjectId(oid))), "…ed855e5c57");
         assert_eq!(id_text(&Body::Bson(nosql::bson::Bson::Int32(7))), "7");
+    }
+
+    fn hit(id: &str, index: &str) -> nosql::Doc {
+        nosql::Doc { id: Some(Body::Json(serde_json::json!(id))), index: Some(index.into()), body: Body::Json(serde_json::json!({})) }
+    }
+
+    #[test]
+    fn edits_find_their_document_wherever_the_page_moved_it() {
+        let page = vec![hit("b", "i1"), hit("a", "i2"), hit("a", "i1")];
+        let a = Body::Json(serde_json::json!("a"));
+        // The same id in two indexes: the index decides.
+        assert_eq!(find_doc(&page, &a, Some("i1")), Some(2));
+        assert_eq!(find_doc(&page, &a, Some("i2")), Some(1));
+        assert_eq!(find_doc(&page, &a, None), Some(1));
+        // Paged away: not on this page, so the caller runs it again rather than edit another row.
+        assert_eq!(find_doc(&page, &Body::Json(serde_json::json!("z")), Some("i1")), None);
+    }
+
+    #[test]
+    fn a_delete_keeps_the_selected_document() {
+        assert_eq!(after_delete(Some(3), 1, 4), Some(2));
+        assert_eq!(after_delete(Some(1), 3, 4), Some(1));
+        assert_eq!(after_delete(Some(3), 3, 3), Some(2));
+        assert_eq!(after_delete(Some(0), 0, 0), None);
+        assert_eq!(after_delete(None, 0, 2), None);
     }
 }
