@@ -138,7 +138,8 @@ async fn add(ws: &Entity<Workspace>, engine: Engine, name: &str, port: u16, user
     });
     let id = cx.update(|_, cx| d.read(cx).profile_id().to_string()).ok()?;
     key(cx, "cmd-enter");
-    pause(cx, 100).await;
+    // The save runs off the UI thread and the sheet stays until it lands.
+    crate::check::until(cx, 10, |cx| dialog(ws, cx).is_none()).await;
     Some(id)
 }
 
@@ -251,8 +252,7 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let id = cx.update(|_, cx| d.read(cx).profile_id().to_string()).unwrap_or_default();
     let _ = cx.update(|window, cx| { let i = d.read(cx).demo_input(0); window.focus(&i.read(cx).focus_handle(cx), cx) });
     key(cx, "cmd-enter");
-    pause(cx, 100).await;
-    let closed = dialog(ws, cx).is_none();
+    let closed = crate::check::until(cx, 10, |cx| dialog(ws, cx).is_none()).await;
     let r = connected(ws, &id, cx).await;
     check("⌘↩ saves and connects", closed && r.is_ok(), format!("closed={closed} {r:?}"));
     draw(cx);

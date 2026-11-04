@@ -435,18 +435,20 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     let rows = cx.update(|_, cx| a.read(cx).received_rows).ok().flatten();
     r.check("the reply is in the results grid: 6 rows shown of the 40 sent", rows == Some((6, 40)), format!("{rows:?}"));
     let zoom = |cx: &mut AsyncWindowContext| cx.update(|_, cx| a.read(cx).received_zoom).unwrap_or(false);
+    // Each step once the panel has landed: a click mid-move lands where the button was.
+    let still = |cx: &mut AsyncWindowContext| cx.update(|_, cx| a.read(cx).received_tween.is_none()).unwrap_or(false);
     click_probe("agents-recv-zoom", cx);
-    pause(cx, 100).await;
-    r.check("its zoom button takes the whole Audit page", zoom(cx), "");
+    r.check("its zoom button takes the whole Audit page", until(cx, 2, |cx| zoom(cx)).await, "");
+    until(cx, 2, still).await;
     key(cx, "escape");
-    pause(cx, 100).await;
-    r.check("Esc leaves the zoom, as in a result", !zoom(cx), "");
+    r.check("Esc leaves the zoom, as in a result", until(cx, 2, |cx| !zoom(cx)).await, "");
+    until(cx, 2, still).await;
     key(cx, "cmd-shift-enter");
-    pause(cx, 100).await;
-    r.check("the result's zoom shortcut zooms it again", zoom(cx), "");
+    r.check("the result's zoom shortcut zooms it again", until(cx, 2, |cx| zoom(cx)).await, "");
+    until(cx, 2, still).await;
     click_probe("agents-recv-zoom", cx);
-    pause(cx, 100).await;
-    r.check("… and the button restores it", !zoom(cx), "");
+    r.check("… and the button restores it", until(cx, 2, |cx| !zoom(cx)).await, "");
+    until(cx, 2, still).await;
     pause(cx, 350).await;
     r.check("it has no close: always there while a call with rows is selected", probed("agents-recv-close", cx).is_none() && probed("agents-recv", cx).is_some(), "");
     // The zoom moves like a result's: the panel grows from its place in the detail over the page
