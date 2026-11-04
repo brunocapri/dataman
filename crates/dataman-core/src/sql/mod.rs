@@ -3,7 +3,7 @@ pub mod lexer;
 pub mod scope;
 pub mod split;
 
-pub use dialect::Dialect;
+pub use dialect::{Dialect, Limit};
 pub use lexer::{Token, TokenKind, tokenize, tokenize_in};
 pub use split::is_exec_comment;
 pub use split::{GoBatch, Statement, batches_in, go_batches, split, split_in, statement_at, statement_at_in};

@@ -11,7 +11,7 @@ pub(crate) fn lit(s: &str) -> String {
 }
 
 pub(crate) fn is_system(db: &str) -> bool {
-    matches!(db, "mysql" | "information_schema" | "performance_schema" | "sys")
+    crate::Engine::MySql.is_system_db(db)
 }
 
 fn get(r: &[Option<String>], i: usize) -> Option<String> {

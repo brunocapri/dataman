@@ -7,7 +7,6 @@ use dataman_core::schema::{RelKind, Relation};
 use dataman_core::bounded::{Limits, Mode};
 use serde_json::{Value, json};
 
-use crate::builtin::catalog_system_schema;
 use crate::policy::Need;
 use crate::tool::{Args, Call, Opened, ToolError};
 
@@ -143,7 +142,7 @@ async fn read_walk(o: &Opened) -> Result<(Tree, bool), ToolError> {
     let (db, c) = (o.database.as_str(), &o.conn);
     let mut t: Tree = BTreeMap::new();
     for s in c.schemas(db).await.map_err(f)? {
-        if catalog_system_schema(&s) {
+        if c.engine().is_system_schema(&s) {
             continue;
         }
         let rels = c.relations(db, &s).await.map_err(f)?;

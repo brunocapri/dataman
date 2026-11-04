@@ -81,10 +81,6 @@ fn failed(e: anyhow::Error) -> ToolError {
     ToolError::Failed(format!("{e:#}"))
 }
 
-pub fn system_schema(s: &str) -> bool {
-    matches!(s, "pg_catalog" | "information_schema") || s.starts_with("pg_toast") || s.starts_with("pg_temp")
-}
-
 fn kind_label(k: RelKind) -> &'static str {
     match k {
         RelKind::Table => "table",
@@ -165,7 +161,7 @@ pub(super) async fn schemas_of(o: &Opened, only: Option<&str>, system: bool) -> 
     let sp = o.conn.schema.search_path(&o.database);
     let mut v: Vec<String> = sp.into_iter().filter(|s| all.contains(s)).collect();
     for s in all {
-        if !v.contains(&s) && (system || !system_schema(&s)) {
+        if !v.contains(&s) && (system || !o.conn.engine().is_system_schema(&s)) {
             v.push(s);
         }
     }
@@ -698,18 +694,10 @@ fn sample_rows(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
         }
         let r = visible_relation(&o, a.str("table")?).await?;
         let d = o.conn.dialect();
-        let order = match (a.bool("random"), d) {
-            (false, _) => "",
-            (true, dataman_core::sql::Dialect::MySql) => " ORDER BY RAND()",
-            (true, dataman_core::sql::Dialect::TSql) => " ORDER BY NEWID()",
-            (true, _) => " ORDER BY random()",
-        };
+        let order = if a.bool("random") { format!(" ORDER BY {}", d.random_order()) } else { String::new() };
         let table = d.qualified(Some(&r.schema), &r.name);
-        let sql = if d == dataman_core::sql::Dialect::TSql {
-            format!("SELECT TOP ({n}) * FROM {table}{order}")
-        } else {
-            format!("SELECT * FROM {table}{order} LIMIT {n}")
-        };
+        let l = d.limit(n);
+        let sql = format!("SELECT {}* FROM {table}{order}{}", l.top, l.tail);
         let checked = super::rules::checked_sql(cx, &a, &o.profile, &sql, false).await?;
         let read = super::rules::read_limits(cx, &o.profile, limits);
         let mut out = cx.run(&o, &checked.sql, vec![], Mode::Read, read).await?;
