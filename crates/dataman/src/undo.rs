@@ -285,7 +285,7 @@ impl Workspace {
                         None => self.store.read(cx).profiles.iter().filter_map(|p| h.take(&p.id).ok().flatten().map(|b| (p.id.clone(), b))).collect(),
                     };
                 }
-                self.history.update(cx, |h, cx| h.reload(cx));
+                self.history.update(cx, |h, cx| h.reload_soon(cx));
             }
             Op::Many(ops) => {
                 if back {
