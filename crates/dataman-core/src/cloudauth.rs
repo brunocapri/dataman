@@ -289,7 +289,17 @@ fn request(p: &ConnectionProfile) -> Result<Request, SignInError> {
 /// Where the CLIs are looked for: the PATH, then where their installers put them.
 fn default_dirs() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
-    for d in [
+    dirs.extend(install_dirs());
+    // Absolute folders only: a relative PATH entry would be wherever the app was started.
+    dirs.retain(|d| d.is_absolute());
+    let mut seen = std::collections::HashSet::new();
+    dirs.retain(|d| seen.insert(d.clone()));
+    dirs
+}
+
+#[cfg(not(windows))]
+fn install_dirs() -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = [
         "/opt/homebrew/bin",
         "/usr/local/bin",
         "/usr/bin",
@@ -300,24 +310,52 @@ fn default_dirs() -> Vec<PathBuf> {
         "/usr/local/share/google-cloud-sdk/bin",
         "/usr/lib/google-cloud-sdk/bin",
         "/usr/local/aws-cli",
-    ] {
-        dirs.push(PathBuf::from(d));
+    ]
+    .map(PathBuf::from)
+    .to_vec();
+    if let Some(home) = crate::os::home() {
+        dirs.extend([".local/bin", "bin", "google-cloud-sdk/bin"].map(|d| home.join(d)));
     }
-    if let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from) {
-        for d in [".local/bin", "bin", "google-cloud-sdk/bin"] {
-            dirs.push(home.join(d));
-        }
-    }
-    // Absolute folders only: a relative PATH entry would be wherever the app was started.
-    dirs.retain(|d| d.is_absolute());
-    let mut seen = std::collections::HashSet::new();
-    dirs.retain(|d| seen.insert(d.clone()));
     dirs
 }
 
-fn locate(program: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
+/// The installers' folders: the Azure CLI's MSI, the AWS CLI's, the Google Cloud SDK's (for
+/// everyone or for this user).
+#[cfg(windows)]
+fn install_dirs() -> Vec<PathBuf> {
+    let var = |v: &str| std::env::var_os(v).map(PathBuf::from).filter(|p| p.is_absolute());
+    let gcloud = Path::new("Google").join("Cloud SDK").join("google-cloud-sdk").join("bin");
+    let mut dirs = Vec::new();
+    for pf in [var("ProgramFiles"), var("ProgramFiles(x86)")].into_iter().flatten() {
+        dirs.push(pf.join("Microsoft SDKs").join("Azure").join("CLI2").join("wbin"));
+        dirs.push(pf.join("Amazon").join("AWSCLIV2"));
+        dirs.push(pf.join(&gcloud));
+    }
+    if let Some(local) = crate::os::local_app_data() {
+        dirs.push(local.join(&gcloud));
+    }
+    dirs
+}
+
+/// The file names a CLI goes by: on Windows `az.cmd`, `aws.exe`, `gcloud.cmd`.
+fn file_names(program: &str) -> Vec<String> {
+    if cfg!(windows) { ["exe", "cmd", "bat"].map(|ext| format!("{program}.{ext}")).to_vec() } else { vec![program.to_string()] }
+}
+
+#[cfg(unix)]
+fn runnable(m: &std::fs::Metadata) -> bool {
     use std::os::unix::fs::PermissionsExt as _;
-    dirs.iter().map(|d| d.join(program)).find(|f| std::fs::metadata(f).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0))
+    m.is_file() && m.permissions().mode() & 0o111 != 0
+}
+
+#[cfg(not(unix))]
+fn runnable(m: &std::fs::Metadata) -> bool {
+    m.is_file()
+}
+
+fn locate(program: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
+    let names = file_names(program);
+    dirs.iter().flat_map(|d| names.iter().map(move |n| d.join(n))).find(|f| std::fs::metadata(f).is_ok_and(|m| runnable(&m)))
 }
 
 /// Runs the CLI: its standard output, or what went wrong said plainly.
@@ -340,6 +378,9 @@ async fn run(cli: Cli, args: &[String], dirs: &[PathBuf], auth: &Auth) -> Result
         .env("AWS_PAGER", "")
         .env("AWS_CLI_AUTO_PROMPT", "off")
         .env("CLOUDSDK_CORE_DISABLE_PROMPTS", "1");
+    // No console window flashing up over the app.
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000);
     let out = match tokio::time::timeout(TIMEOUT, cmd.output()).await {
         Ok(Ok(o)) => o,
         Ok(Err(e)) => return Err(SignInError::new(format!("{} did not start", cli.name()), e.to_string())),
@@ -361,7 +402,8 @@ pub fn login_command(cli: Cli, auth: &Auth) -> String {
         },
         (Cli::Aws, Auth::AwsIam { profile, .. }) => match given(profile) {
             Some(p) => format!("aws sso login --profile {p}"),
-            None => "aws sso login".into(),
+            // AWS CLI 2.32+: the console's sign-in, no profile to set up first.
+            None => "aws login".into(),
         },
         (Cli::Gcloud, Auth::GoogleIam { account }) => match given(account) {
             Some(a) => format!("gcloud auth login {a}"),
@@ -410,7 +452,14 @@ fn classify(cli: Cli, stderr: &str, auth: &Auth, args: &[String]) -> SignInError
                 return SignInError::new(format!("No AWS profile {p:?}"), format!("Create it with `aws configure sso --profile {p}` (or fix the profile in the connection's settings)."));
             }
             if has(&["Unable to locate credentials"]) {
-                return SignInError::new("Not signed in to AWS", format!("Run `{login}` (IAM Identity Center) or `aws configure` (access keys) in a terminal, then try again."));
+                let profile = match auth {
+                    Auth::AwsIam { profile: Some(p), .. } if !p.trim().is_empty() => format!(" --profile {}", p.trim()),
+                    _ => String::new(),
+                };
+                return SignInError::new(
+                    "Not signed in to AWS",
+                    format!("Run `aws login{profile}` (console sign-in), `aws sso login{profile}` (IAM Identity Center) or `aws configure{profile}` (access keys) in a terminal, then try again."),
+                );
             }
             if has(&["token has expired", "sso session", "sso token", "UnauthorizedSSOTokenError", "ExpiredToken", "refresh failed", "Error when retrieving token from sso", "reauthenticate"]) {
                 return signed_out("");
@@ -807,7 +856,11 @@ mod tests {
         assert!(e.title.contains("no token"), "{e}");
         let aws = Auth::AwsIam { profile: Some("dev".into()), region: None };
         let e = classify(Cli::Aws, "\nUnable to locate credentials. You can configure credentials by running \"aws configure\".\n", &aws, &[]);
-        assert!(e.body.contains("`aws sso login --profile dev`"), "{e}");
+        assert!(e.body.contains("`aws sso login --profile dev`") && e.body.contains("`aws login --profile dev`"), "{e}");
+        let none = Auth::AwsIam { profile: None, region: None };
+        let e = classify(Cli::Aws, "Unable to locate credentials. You can configure credentials by running \"aws login\".", &none, &[]);
+        assert!(e.body.starts_with("Run `aws login` (console sign-in), `aws sso login` (IAM"), "{e}");
+        assert_eq!(login_command(Cli::Aws, &none), "aws login");
         let e = classify(Cli::Aws, "\nError when retrieving token from sso: Token has expired and refresh failed\n", &aws, &[]);
         assert_eq!((e.title.as_str(), e.body.contains("aws sso login --profile dev")), ("Not signed in to AWS", true));
         let e = classify(Cli::Aws, "\nThe config profile (dev) could not be found\n", &aws, &[]);
@@ -822,6 +875,7 @@ mod tests {
     }
 
     /// A fake CLI: a shell script in `dir`.
+    #[cfg(unix)]
     fn fake(dir: &Path, name: &str, script: &str) {
         use std::os::unix::fs::PermissionsExt as _;
         let f = dir.join(name);
@@ -829,10 +883,12 @@ mod tests {
         std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
+    #[cfg(unix)]
     fn runs(dir: &Path) -> usize {
         std::fs::read_to_string(dir.join("runs")).map(|s| s.lines().count()).unwrap_or(0)
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn one_cli_run_while_the_token_lasts() {
         let dir = tempfile::tempdir().unwrap();
@@ -860,6 +916,7 @@ mod tests {
         assert_eq!(runs(d), 4);
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_missing_or_signed_out_cli_says_what_to_do() {
         let dir = tempfile::tempdir().unwrap();
@@ -873,6 +930,33 @@ mod tests {
         assert!(e.body.contains("aws sso login --profile dev"), "{e}");
         fake(d, "aws", "echo 'db.abc.eu-west-1.rds.amazonaws.com:5432/?Action=connect&DBUser=ana&X-Amz-Signature=ff'");
         assert!(src.token(&p).await.unwrap().ends_with("X-Amz-Signature=ff"));
+    }
+
+    #[test]
+    fn clis_are_found_by_their_platform_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        assert_eq!(locate("az", &[d.to_path_buf()]), None);
+        // Windows' installers put az.cmd and aws.exe; elsewhere the name alone, executable.
+        let (az, aws) = if cfg!(windows) { ("az.cmd", "aws.exe") } else { ("az", "aws") };
+        for name in [az, aws] {
+            std::fs::write(d.join(name), "").unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                std::fs::set_permissions(d.join(name), std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+        }
+        assert_eq!(locate("az", &[d.to_path_buf()]), Some(d.join(az)));
+        assert_eq!(locate("aws", &[d.to_path_buf()]), Some(d.join(aws)));
+        std::fs::write(d.join("gcloud.txt"), "").unwrap();
+        assert_eq!(locate("gcloud", &[d.to_path_buf()]), None);
+        #[cfg(unix)]
+        {
+            std::fs::write(d.join("gcloud"), "").unwrap();
+            assert_eq!(locate("gcloud", &[d.to_path_buf()]), None, "not executable");
+        }
+        assert!(default_dirs().iter().all(|d| d.is_absolute()));
     }
 
     #[test]

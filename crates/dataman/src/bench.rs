@@ -406,6 +406,21 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                             d.update(cx, |d, cx| d.run_test(cx));
                         }
                     }),
+                    // Cloud sign-in: the dialog as set up for Entra ID or AWS IAM, its sign-in
+                    // checked against this machine's az / aws (whatever they answer).
+                    "dialog-entra" | "dialog-aws" => ws.update(cx, |w, cx| {
+                        let mut p = ConnectionProfile::new("shop-cloud");
+                        (p.host, p.user, p.database, p.auth) = if stage == "dialog-entra" {
+                            ("shop.postgres.database.azure.com".into(), "ana@contoso.com".into(), "shop".into(), dataman_core::Auth::EntraId { tenant: None })
+                        } else {
+                            ("shop.c9akciq32.us-east-1.rds.amazonaws.com".into(), "dataman_iam".into(), "shop".into(), dataman_core::Auth::AwsIam { profile: None, region: None })
+                        };
+                        p.sslmode = SslMode::Require;
+                        w.open_dialog_with(Some(p), true, None, window, cx);
+                        if let Some(d) = w.dialog.clone() {
+                            d.update(cx, |d, cx| d.demo_check_sign_in(cx));
+                        }
+                    }),
                     "dialog-password" => ws.update(cx, |w, cx| {
                         w.open_dialog(Some(id.clone()), window, cx);
                         if let Some(d) = w.dialog.clone() {

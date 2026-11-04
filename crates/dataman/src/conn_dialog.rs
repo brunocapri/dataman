@@ -38,7 +38,7 @@ fn user_hint(engine: Engine, kind: AuthKind) -> (&'static str, &'static str) {
 fn sign_in_intro(kind: AuthKind) -> &'static str {
     match kind {
         AuthKind::EntraId => "Uses your Azure CLI sign-in (az login): no password, nothing saved.",
-        AuthKind::AwsIam => "Uses your AWS CLI sign-in (aws sso login, or its keys): no password, nothing saved.",
+        AuthKind::AwsIam => "Uses your AWS CLI sign-in (aws login, aws sso login or its keys): no password, nothing saved.",
         AuthKind::GoogleIam => "Uses your Google Cloud CLI sign-in (gcloud auth login): no password, nothing saved.",
         AuthKind::Password => "",
     }
@@ -1315,8 +1315,8 @@ impl ConnDialog {
     }
 
     #[cfg(feature = "checks")]
-    pub fn demo_auth(&mut self, kind: AuthKind, cx: &mut Context<Self>) {
-        self.set_auth(kind, cx);
+    pub fn demo_check_sign_in(&mut self, cx: &mut Context<Self>) {
+        self.check_sign_in(cx);
     }
 
     /// Where the token would go, said when it is not plainly the cloud's own database host.
