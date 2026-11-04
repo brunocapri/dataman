@@ -268,7 +268,8 @@ pub fn conflicts() -> BTreeSet<&'static str> {
 }
 
 /// The modules' fixed keys first, then the commands' (a later binding wins in the same
-/// context; a command's first key is bound last, the one menus show).
+/// context). A command's own keys go in their order: the Mac menus show the earliest binding
+/// of an action that fits, so its first key, as the palette and Settings do.
 pub fn bind_all(cx: &mut App) {
     cx.clear_key_bindings();
     crate::app::bind_keys(cx);
@@ -304,7 +305,7 @@ pub fn bind_all(cx: &mut App) {
     let mut bindings = Vec::new();
     for cmd in COMMANDS {
         let extra = (cmd.id == "zoom_result").then_some("DocView");
-        for k in effective_in(&map, cmd).iter().rev() {
+        for k in effective_in(&map, cmd).iter() {
             for context in std::iter::once(cmd.context).chain(extra.map(Some)) {
                 match KeyBinding::load(k, (cmd.action)(), context.map(|c| gpui::KeyBindingContextPredicate::parse(c).unwrap().into()), false, None, &gpui::DummyKeyboardMapper) {
                     Ok(b) => bindings.push(b),
