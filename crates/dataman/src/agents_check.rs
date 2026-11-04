@@ -1347,12 +1347,15 @@ async fn check_login(ws: &Entity<Workspace>, a: &Entity<AgentsPage>, pg: &Connec
     tap(a, "agents-login-verify", cx).await;
     let verified = until(cx, 30, |cx| login_ui(a, cx, |l| l.note.as_ref().is_some_and(|(ok, n)| *ok && n.contains("Verified"))).unwrap_or(false)).await;
     r.check("Verify logs in as it and every check holds", verified && login_ui(a, cx, |l| !l.checks.is_empty() && l.checks.iter().all(|c| c.ok)).unwrap_or(false), format!("{:?}", login_ui(a, cx, |l| (l.note.clone(), l.checks.iter().filter(|c| !c.ok).map(|c| c.what.clone()).collect::<Vec<_>>()))));
-    r.check("…said in one line, the checks themselves in View checks", probed("agents-login-checks-line", cx).is_some() && probed("agents-login-check-tip-1", cx).is_none(), "");
-    tap(a, "agents-login-checks", cx).await;
     let groups = ["login", "reading", "writing", "privacy", "structure"].iter().filter(|g| probed(&format!("agents-login-checks-{g}"), cx).is_some()).count();
-    r.check("View checks opens them by category, each with its tip", login_ui(a, cx, |l| matches!(l.sheet, Some(Sheet::Checks))).unwrap_or(false) && groups >= 3 && probed("agents-login-check-tip-1", cx).is_some(), format!("{groups} categories"));
+    r.check("Verify opens its checks by category, each with its tip, a lock on what it can't do", login_ui(a, cx, |l| matches!(l.sheet, Some(Sheet::Checks))).unwrap_or(false) && groups >= 3 && probed("agents-login-check-tip-1", cx).is_some() && probed("agents-login-check-lock", cx).is_some(), format!("{groups} categories"));
     pause(cx, 200).await;
     shoot("04b-checks", cx);
+    key(cx, "escape");
+    pause(cx, 100).await;
+    r.check("…closed, the section keeps them in one line, View checks opening them again", probed("agents-login-checks-line", cx).is_some() && probed("agents-login-check-tip-1", cx).is_none(), "");
+    tap(a, "agents-login-checks", cx).await;
+    r.check("…as it does", probed("agents-login-check-tip-1", cx).is_some(), "");
     key(cx, "escape");
     pause(cx, 100).await;
     pause(cx, 200).await;

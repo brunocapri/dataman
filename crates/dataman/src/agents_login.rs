@@ -310,8 +310,14 @@ impl AgentsPage {
     fn login_verify(&mut self, p: &ConnectionProfile, cx: &mut Context<Self>) {
         let Some(l) = p.agent_login.clone() else { return };
         let user = l.user.clone();
+        if self.login.busy.is_some() {
+            return;
+        }
         self.login.busy = Some("Verifying…".into());
         self.login.note = None;
+        // The checks open at once, filled as they come back (or with why they couldn't run).
+        self.login.checks.clear();
+        self.login.sheet = Some(Sheet::Checks);
         self.login_task(
             p,
             cx,
@@ -775,6 +781,28 @@ impl AgentsPage {
         let user = p.agent_login.as_ref().map(|l| l.user.clone()).unwrap_or_else(|| agent_login::login_name(&p.id));
         let checks = &self.login.checks;
         let mut body = div().id("agents-login-checks-body").flex_1().min_w_0().min_h_0().overflow_y_scroll().px(px(20.)).py(px(16.)).flex().flex_col().gap(px(18.)).text_size(px(crate::theme::text::UI)).line_height(px(18.));
+        let verifying = self.login.busy.as_deref() == Some("Verifying…");
+        if verifying || checks.is_empty() {
+            let wait = |text: String| div().flex_1().flex().items_center().justify_center().text_color(t.tx3).child(text);
+            body = body.child(match (&self.login.note, verifying) {
+                (_, true) => wait(format!("Logging in as {user} and trying what the rules allow and refuse…")).into_any_element(),
+                (Some((ok, text)), false) => div()
+                    .children(ui::here(&"agents-login-checks-error".into()))
+                    .flex()
+                    .flex_row()
+                    .items_start()
+                    .gap(px(12.))
+                    .px(px(12.))
+                    .py(px(10.))
+                    .border_1()
+                    .when(!*ok, |d| d.border_color(t.err).bg(t.err_s))
+                    .when(*ok, |d| d.border_color(t.line))
+                    .child(div().flex_1().min_w_0().text_color(if *ok { t.tx2 } else { t.err }).child(text.clone()))
+                    .child(copy_btn(t, "agents-login-checks-error-copy", text.clone(), cx))
+                    .into_any_element(),
+                (None, false) => wait("No checks yet: Verify runs them.".into()).into_any_element(),
+            });
+        }
         let mut k = 0;
         for g in live::CheckGroup::ALL {
             let rows: Vec<&live::Check> = checks.iter().filter(|c| c.group == g).collect();
@@ -834,7 +862,12 @@ impl AgentsPage {
             cx.notify();
         }));
         let say = div().flex_1().min_w_0().text_color(t.tx3).child(format!("Tried as {user}, with its own password."));
-        let footer = ui::modal_footer(t).child(say).child(ui::button(t, "agents-login-checks-copy", ui::Btn::Secondary).h(px(30.)).px(px(12.)).cursor_pointer().child("Copy all").on_click(cx.listener(move |_, _: &ClickEvent, _, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(report.clone()))))).child(close).into_any_element();
+        let pv = p.clone();
+        let again = p.agent_login.is_some().then(|| {
+            let b = ui::button(t, "agents-login-checks-again", ui::Btn::Secondary).h(px(30.)).px(px(12.)).child(if verifying { "Verifying…" } else { "Verify again" });
+            if verifying { b.opacity(0.5) } else { b.cursor_pointer().on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_verify(&pv, cx))) }
+        });
+        let footer = ui::modal_footer(t).child(say).children(again).child(ui::button(t, "agents-login-checks-copy", ui::Btn::Secondary).h(px(30.)).px(px(12.)).cursor_pointer().child("Copy all").on_click(cx.listener(move |_, _: &ClickEvent, _, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(report.clone()))))).child(close).into_any_element();
         (format!("What {user} can and can't do"), body.into_any_element(), footer)
     }
 
