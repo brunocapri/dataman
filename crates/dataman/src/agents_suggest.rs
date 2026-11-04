@@ -286,7 +286,7 @@ impl AgentsPage {
                 None => {
                     for n in &names {
                         let text = if w == Which::Visible { n.clone() } else { format!("{n}.") };
-                        push(rank(n, tail), Choice { text, kind: ItemKind::Table, detail: if p.engine == Engine::MongoDb { "collection".into() } else { "index".into() } });
+                        push(rank(n, tail), Choice { text, kind: ItemKind::Table, detail: p.engine.nouns().one.into() });
                     }
                 }
             }

@@ -662,7 +662,7 @@ impl ConnDialog {
                 v.push(&self.database);
             }
             v.push(&self.password);
-            if self.engine == Engine::MongoDb {
+            if self.engine.spec().form.options {
                 v.push(&self.options);
             }
         }
@@ -1250,13 +1250,13 @@ impl ConnDialog {
         self.field_as(t, label, label, input, label_color)
     }
 
-    fn field_as(&self, t: &Theme, probe: &str, label: &'static str, input: &Entity<TextInput>, label_color: Option<Hsla>) -> gpui::Div {
+    fn field_as(&self, t: &Theme, probe: &str, label: impl Into<gpui::SharedString>, input: &Entity<TextInput>, label_color: Option<Hsla>) -> gpui::Div {
         div()
             .flex_1()
             .flex()
             .flex_col()
             .gap(px(6.))
-            .child(div().text_size(px(crate::theme::text::TINY)).text_color(label_color.unwrap_or(t.tx3)).child(label))
+            .child(div().text_size(px(crate::theme::text::TINY)).text_color(label_color.unwrap_or(t.tx3)).child(label.into()))
             .child(ui::probe(format!("field-{probe}"), input.clone()))
     }
 
@@ -1732,16 +1732,16 @@ impl Render for ConnDialog {
         } else if by_url {
             vec![row().items_end().child(self.field(&t, "URL", &self.conn_str, None))]
         } else {
-            let db_label = if self.engine == Engine::Redis { "DB" } else { "DATABASE" };
-            let user_label = if self.engine.is_sql() { "USER" } else { "USER (OPTIONAL)" };
+            let db_label = self.engine.spec().form.database_label.to_uppercase();
+            let user_label = if self.engine.spec().form.user_required { "USER" } else { "USER (OPTIONAL)" };
             let mut v = vec![
                 row().child(self.field(&t, "HOST", &self.host, None)).child(div().w(px(96.)).flex_none().child(self.field(&t, "PORT", &self.port, None))),
-                row().child(self.field(&t, user_label, &self.user, None)).when(self.has_database(), |r| r.child(self.field(&t, db_label, &self.database, None))),
+                row().child(self.field(&t, user_label, &self.user, None)).when(self.has_database(), |r| r.child(self.field_as(&t, &db_label, db_label.clone(), &self.database, None))),
                 row()
                     .items_end()
                     .child(self.field(&t, "PASSWORD", &self.password, (pw_focused || self.password_needed).then_some(t.acc_t))),
             ];
-            if self.engine == Engine::MongoDb {
+            if self.engine.spec().form.options {
                 v.push(row().child(self.field(&t, "OPTIONS", &self.options, None)));
             }
             v
