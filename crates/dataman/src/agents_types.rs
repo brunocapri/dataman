@@ -85,6 +85,21 @@ impl AgentsPage {
         c
     }
 
+    /// The drafted pattern's problem and its test on the samples, compiled only when the type or
+    /// the samples changed since the last frame.
+    fn type_test(&mut self, c: &CustomType) -> (Option<String>, Option<std::rc::Rc<privacy::Tested>>) {
+        let e = &mut self.editor;
+        let fresh = e.test.as_ref().is_some_and(|t| t.of.0 == *c && t.of.1 == e.samples);
+        if !fresh {
+            let problem = (!c.pattern.is_empty()).then(|| privacy::check_pattern(&c.pattern).err()).flatten();
+            let samples: Vec<&str> = e.samples.iter().map(String::as_str).collect();
+            let tested = (problem.is_none() && !c.pattern.is_empty()).then(|| privacy::test_pattern(c, &samples).ok()).flatten().map(std::rc::Rc::new);
+            e.test = Some(crate::agents::TypeTest { of: (c.clone(), e.samples.clone()), problem, tested });
+        }
+        let t = e.test.as_ref().expect("set above");
+        (t.problem.clone(), t.tested.clone())
+    }
+
     /// The editor's mask saved, and kept open on it.
     pub(crate) fn save_type(&mut self, cx: &mut Context<Self>) {
         let c = self.drafted(cx);
@@ -253,11 +268,10 @@ impl AgentsPage {
         let c = self.drafted(cx);
         let editing = self.editor.editing.is_some();
         let built_in = self.editor.editing.as_deref().is_some_and(|id| privacy::builtin(id).is_some());
-        let edited = self.editor.editing.as_deref().is_some_and(|id| self.core.settings.get().agent_types.builtin_edited(id));
-        let full = !editing && self.core.settings.get().agent_types.custom.len() >= privacy::MAX_CUSTOM;
-        let problem = (!c.pattern.is_empty()).then(|| privacy::check_pattern(&c.pattern).err()).flatten();
-        let samples: Vec<&str> = self.editor.samples.iter().map(String::as_str).collect();
-        let tested = (problem.is_none() && !c.pattern.is_empty()).then(|| privacy::test_pattern(&c, &samples).ok()).flatten();
+        let types = self.core.settings.get().agent_types;
+        let edited = self.editor.editing.as_deref().is_some_and(|id| types.builtin_edited(id));
+        let full = !editing && types.custom.len() >= privacy::MAX_CUSTOM;
+        let (problem, tested) = self.type_test(&c);
         let ok = !c.name.is_empty() && !c.pattern.is_empty() && problem.is_none() && !full;
         let caps = |s: &str| ui::caps(t, s.to_string());
         let masks: Vec<(Mask, &str)> = Mask::ALL.iter().map(|m| (*m, m.label())).collect();
