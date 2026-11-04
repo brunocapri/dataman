@@ -890,7 +890,7 @@ impl Workspace {
             for db in dbs {
                 let snap = c.schema.snapshot(&db);
                 for r in &snap.relations {
-                    if r.schema == "pg_catalog" || r.schema == "information_schema" {
+                    if c.engine().is_system_schema(&r.schema) {
                         continue;
                     }
                     items.push(Item {

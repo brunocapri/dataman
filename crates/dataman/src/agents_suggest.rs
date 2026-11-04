@@ -64,11 +64,6 @@ fn rank(name: &str, q: &str) -> Option<u8> {
     }
 }
 
-fn system(s: &str) -> bool {
-    let l = s.to_lowercase();
-    matches!(l.as_str(), "information_schema" | "pg_catalog" | "sys" | "mysql" | "performance_schema" | "admin" | "local" | "config") || l.starts_with("pg_toast") || l.starts_with("pg_temp")
-}
-
 impl AgentsPage {
     fn input_of(&self, w: Which) -> &gpui::Entity<crate::input::TextInput> {
         match w {
@@ -153,7 +148,7 @@ impl AgentsPage {
         };
         let (head, tail) = text.rsplit_once('.').map_or((None, text), |(h, t)| (Some(h), t));
         if p.engine.is_sql() {
-            let schemas: Vec<String> = conn.schema.cached_schemas(&db).unwrap_or_default().into_iter().filter(|s| !system(s)).collect();
+            let schemas: Vec<String> = conn.schema.cached_schemas(&db).unwrap_or_default().into_iter().filter(|s| !p.engine.is_system_schema(s)).collect();
             if schemas.is_empty() {
                 self.load(&p.id, "schemas", cx, {
                     let (conn, db) = (conn.clone(), db.clone());
