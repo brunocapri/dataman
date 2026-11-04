@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 
 use dataman_core::agent_nosql::{self, Shaped};
 use dataman_core::agent_sql::{self, Checked, Table};
-use dataman_core::privacy::{AgentRules, AgentView, Generated, Mask, Names, mask_value};
+use dataman_core::privacy::{AgentRules, AgentView, Mask, Names, mask_value};
 use dataman_core::schema::{RelKind, ViewSourceKind};
 use dataman_core::{ConnectionProfile, bounded};
 use serde_json::{Value, json};
@@ -104,97 +104,6 @@ pub async fn view_reads_kept(o: &Opened, r: &AgentRules, view: &Table, kind: Rel
     Ok(())
 }
 
-const PG_GENERATED: &str = "SELECT n.nspname, c.relname, a.attname, d.attname FROM pg_catalog.pg_attribute a \
-  JOIN pg_catalog.pg_class c ON c.oid = a.attrelid JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
-  JOIN pg_catalog.pg_attrdef ad ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum \
-  JOIN pg_catalog.pg_depend dep ON dep.classid = 'pg_catalog.pg_attrdef'::regclass AND dep.objid = ad.oid \
-   AND dep.refclassid = 'pg_catalog.pg_class'::regclass AND dep.refobjid = a.attrelid AND dep.refobjsubid > 0 \
-  JOIN pg_catalog.pg_attribute d ON d.attrelid = a.attrelid AND d.attnum = dep.refobjsubid \
-  WHERE a.attgenerated <> '' AND NOT a.attisdropped";
-
-const MY_GENERATED: &str = "SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, GENERATION_EXPRESSION FROM information_schema.COLUMNS \
-  WHERE (EXTRA LIKE '%VIRTUAL GENERATED%' OR EXTRA LIKE '%STORED GENERATED%') \
-   AND TABLE_SCHEMA NOT IN ('mysql', 'sys', 'performance_schema', 'information_schema')";
-
-/// Each generated column with its table's `CREATE TABLE`, where its expression is (SQLite keeps
-/// no dependencies).
-const LITE_GENERATED: &str = "SELECT 'main', m.name, p.name, m.sql FROM main.sqlite_master m JOIN pragma_table_xinfo(m.name, 'main') p \
-  WHERE m.type = 'table' AND p.hidden IN (2, 3)";
-
-/// DuckDB's tables whose SQL has a generated column (its expression is read from there).
-const DUCK_GENERATED: &str = "SELECT schema_name, table_name, NULL, sql FROM duckdb_tables() \
-  WHERE database_name = current_database() AND NOT internal AND regexp_matches(sql, '\\bAS\\s*\\(', 'i')";
-
-const MS_GENERATED: &str = "SELECT s.name, t.name, c.name, d.name FROM sys.computed_columns c \
-  JOIN sys.objects t ON t.object_id = c.object_id JOIN sys.schemas s ON s.schema_id = t.schema_id \
-  JOIN sys.sql_expression_dependencies x ON x.referencing_id = c.object_id AND x.referencing_minor_id = c.column_id \
-  JOIN sys.columns d ON d.object_id = x.referenced_id AND d.column_id = x.referenced_minor_id";
-
-/// The names an expression may read: quoted (`` `a` ``, `[a]`, `"a"`) and bare words. MySQL
-/// keeps no dependencies for generated columns, so its expression is read, erring on more.
-fn expression_names(e: &str) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for t in dataman_core::sql::tokenize_in(e, dataman_core::Dialect::MySql) {
-        if matches!(t.kind, dataman_core::sql::TokenKind::Ident | dataman_core::sql::TokenKind::QuotedIdent | dataman_core::sql::TokenKind::Keyword) {
-            let w = t.text(e).trim_matches(['`', '"', '[', ']']).to_string();
-            if !out.contains(&w) {
-                out.push(w);
-            }
-        }
-    }
-    out
-}
-
-/// Generated (computed) columns of the database and the columns each is computed from, by the
-/// engine's catalog: PostgreSQL's pg_depend, SQL Server's sql_expression_dependencies, MySQL's
-/// generation expression.
-pub async fn generated_columns(cx: &Call, o: &Opened) -> Result<Vec<Generated>, String> {
-    let (sql, by_expression) = match o.conn.engine() {
-        dataman_core::Engine::Postgres => (PG_GENERATED, false),
-        dataman_core::Engine::MySql => (MY_GENERATED, true),
-        dataman_core::Engine::SqlServer => (MS_GENERATED, false),
-        dataman_core::Engine::Sqlite => (LITE_GENERATED, true),
-        dataman_core::Engine::DuckDb => (DUCK_GENERATED, true),
-        _ => return Ok(Vec::new()),
-    };
-    let limits = bounded::Limits { max_rows: 100_000, max_bytes: 32 * 1024 * 1024, max_cell: 64 * 1024, ..bounded::Limits::default() };
-    let cancel = cx.cancel.clone().cancelled_owned();
-    let out = o.conn.bounded(Some(&o.database), sql, vec![], bounded::Mode::Read, limits, cancel).await.map_err(|e| format!("{e}"))?;
-    let text = |v: &Value| v.as_str().unwrap_or_default().to_string();
-    let mut cols: Vec<Generated> = Vec::new();
-    // DuckDB: a row per table, its generated columns read from its SQL.
-    let rows: Vec<Vec<Value>> = if o.conn.engine() == dataman_core::Engine::DuckDb {
-        out.rows
-            .iter()
-            .flat_map(|row| {
-                dataman_core::schema::lite::generated_exprs(&text(&row[3]))
-                    .into_iter()
-                    .map(|(c, e)| vec![row[0].clone(), row[1].clone(), Value::String(c), Value::String(e)])
-                    .collect::<Vec<_>>()
-            })
-            .collect()
-    } else {
-        out.rows.clone()
-    };
-    for row in &rows {
-        let (schema, table, column) = (text(&row[0]), text(&row[1]), text(&row[2]));
-        let from = match o.conn.engine() {
-            dataman_core::Engine::Sqlite => {
-                let exprs = dataman_core::schema::lite::generated_exprs(&text(&row[3]));
-                // An expression that cannot be read counts as reading every column of the table.
-                exprs.get(&column.to_lowercase()).map(|e| expression_names(e)).unwrap_or_else(|| expression_names(&text(&row[3])))
-            }
-            _ if by_expression => expression_names(&text(&row[3])),
-            _ => vec![text(&row[3])],
-        };
-        match cols.iter_mut().find(|g| g.schema == schema && g.table == table && g.column == column) {
-            Some(g) => g.from.extend(from),
-            None => cols.push(Generated { schema, table, column, from }),
-        }
-    }
-    Ok(cols)
-}
-
 /// The connection's rules as they apply on this database: generated columns protected as the
 /// columns they are computed from.
 pub async fn effective_rules(cx: &Call, o: &Opened) -> Result<AgentRules, ToolError> {
@@ -202,19 +111,15 @@ pub async fn effective_rules(cx: &Call, o: &Opened) -> Result<AgentRules, ToolEr
     if !restricted(r) || !o.conn.engine().is_sql() {
         return Ok(r.clone());
     }
-    let cols = generated_columns(cx, o).await.map_err(|e| ToolError::Failed(format!("Dataman could not read the generated columns of {} ({e}), and {} keeps some data from agents", o.database, o.profile.name)))?;
+    let cols = o.conn.generated_columns(&o.database, cx.cancel.clone().cancelled_owned()).await.map_err(|e| ToolError::Failed(format!("Dataman could not read the generated columns of {} ({e}), and {} keeps some data from agents", o.database, o.profile.name)))?;
     Ok(r.with_generated(&cols, Names::Qualified))
 }
-
-/// DuckDB's macros (`CREATE MACRO`) are kept in the file: the user's functions, like any other.
-const DUCK_MACROS: &str = "SELECT DISTINCT function_name FROM duckdb_functions() WHERE NOT internal AND database_name = current_database()";
 
 async fn user_routines(cx: &Call, o: &Opened) -> HashSet<String> {
     let mut out = HashSet::new();
     if o.conn.engine() == dataman_core::Engine::DuckDb {
-        let limits = bounded::Limits { max_rows: 100_000, max_bytes: 8 * 1024 * 1024, ..bounded::Limits::default() };
-        match o.conn.bounded(Some(&o.database), DUCK_MACROS, vec![], bounded::Mode::Read, limits, cx.cancel.clone().cancelled_owned()).await {
-            Ok(r) => out.extend(r.rows.iter().filter_map(|row| row.first()?.as_str().map(str::to_lowercase))),
+        match o.conn.duckdb_macros(&o.database, cx.cancel.clone().cancelled_owned()).await {
+            Ok(names) => out.extend(names.iter().map(|n| n.to_lowercase())),
             Err(e) => log::debug!("macros of {}: {e:#}", o.database),
         }
         return out;

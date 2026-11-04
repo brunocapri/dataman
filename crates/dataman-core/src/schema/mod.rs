@@ -1,3 +1,4 @@
+pub mod agents;
 pub mod catalog;
 pub(crate) mod duck;
 pub mod lite;
