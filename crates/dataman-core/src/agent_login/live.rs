@@ -193,6 +193,7 @@ pub fn record(p: &ConnectionProfile, plan: &Plan, o: &Options) -> AgentLogin {
         rotate_days: o.rotate_days,
         rotated: Some(now),
         conn_limit: o.conn_limit,
+        auto_sync: o.auto_sync,
         database: p.database.clone(),
         made: plan.made.clone(),
         views: plan.views.clone(),
@@ -525,7 +526,7 @@ pub async fn drift(c: &Arc<Connection>, p: &ConnectionProfile, login: &AgentLogi
     if probe.exists != Some(true) {
         bail!("{} is not on the server as Dataman's any more: remove it in Dataman and create it again", login.user);
     }
-    let o = Options { rotate_days: login.rotate_days, conn_limit: login.conn_limit };
+    let o = Options { rotate_days: login.rotate_days, conn_limit: login.conn_limit, auto_sync: login.auto_sync };
     let mut spec = compile(p, &login.database, &o);
     spec.user = login.user.clone();
     let inventory = inventory(c, &spec, &probe).await?;

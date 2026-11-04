@@ -122,6 +122,10 @@ pub struct AgentLogin {
     pub rotated: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conn_limit: Option<u32>,
+    /// Rule changes are applied to it on their own (as the user's login), without waiting for
+    /// Apply. On unless the user turned it off, for logins made before the option too.
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub auto_sync: bool,
     /// The database its grants are in (another one on the server: none).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub database: String,
@@ -138,6 +142,14 @@ pub struct AgentLogin {
     pub granted: usize,
     #[serde(default)]
     pub not_granted: usize,
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn is_true(b: &bool) -> bool {
+    *b
 }
 
 impl AgentLogin {
@@ -170,6 +182,8 @@ pub struct ViewMap {
 pub struct Options {
     pub rotate_days: Option<u32>,
     pub conn_limit: Option<u32>,
+    /// [`AgentLogin::auto_sync`].
+    pub auto_sync: bool,
 }
 
 pub const ROTATE_DAYS: u32 = 90;
@@ -180,7 +194,7 @@ pub const GRACE_DAYS: u32 = 14;
 
 impl Default for Options {
     fn default() -> Self {
-        Options { rotate_days: Some(ROTATE_DAYS), conn_limit: Some(CONN_LIMIT) }
+        Options { rotate_days: Some(ROTATE_DAYS), conn_limit: Some(CONN_LIMIT), auto_sync: true }
     }
 }
 
@@ -262,7 +276,7 @@ pub fn compile(p: &ConnectionProfile, database: &str, o: &Options) -> Spec {
 
 /// What of the rules the login depends on, hashed: another hash, the rules changed since.
 pub fn rules_hash(p: &ConnectionProfile, database: &str) -> String {
-    let s = compile(p, database, &Options { rotate_days: None, conn_limit: None });
+    let s = compile(p, database, &Options { rotate_days: None, conn_limit: None, auto_sync: true });
     let mut r = s.rules.clone();
     // Limits Dataman alone holds do not change what is granted.
     (r.read_rows, r.read_from) = (None, None);
@@ -913,6 +927,7 @@ pub(crate) fn test_login(user: &str, p: &ConnectionProfile) -> AgentLogin {
         rotate_days: Some(90),
         rotated: Some(now),
         conn_limit: Some(4),
+        auto_sync: true,
         database: p.database.clone(),
         made: Vec::new(),
         views: Vec::new(),

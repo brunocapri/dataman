@@ -3,8 +3,9 @@
 //! review (what can't be granted, the exact SQL, the options); the login is created with the
 //! user's login, checked by logging in as it, and only then kept: its password in the Keychain,
 //! the rest on the connection. Then the page ends on an Agent login section instead: when the
-//! rules change it drifts (the changes are shown and applied on request); Verify, Rotate password
-//! and Remove login (only what Dataman made, after confirmation) are there too.
+//! rules change it drifts, and Dataman applies the changes to it on its own (the default) or
+//! shows them for Apply; Verify, Rotate password and Remove login (only what Dataman made, after
+//! confirmation) are there too.
 
 use std::cell::RefCell;
 use std::sync::Arc;
@@ -36,6 +37,13 @@ pub(crate) struct LoginUi {
     pub(crate) sql_scroll: gpui::ScrollHandle,
     /// WHAT RUNS as last laid out and coloured.
     what: RefCell<Option<WhatRuns>>,
+}
+
+/// A connection's rule changes being applied to its agent login on their own (`running`), or
+/// failed to be: tried again once the rules change again, Apply still there meanwhile.
+pub(crate) struct AutoSync {
+    hash: String,
+    running: bool,
 }
 
 /// WHAT RUNS's lines, made again only when the plan, its engine or the theme changes: a script
@@ -107,6 +115,11 @@ impl AgentsPage {
         let fresh = self.login.conn.as_deref() != Some(p.id.as_str());
         if fresh {
             self.login = LoginUi { conn: Some(p.id.clone()), ..Default::default() };
+            // Rule changes that failed to apply on their own (the server out of reach): tried
+            // again on opening the connection here, where a failure is said.
+            if !self.login_auto_running(&p.id) {
+                self.login_auto.remove(&p.id);
+            }
         }
         // A PostgreSQL-protocol server Dataman is connected to already: asked once whether it has
         // logins at all (MotherDuck is known by its host; another, by its review).
@@ -124,9 +137,12 @@ impl AgentsPage {
         let now = agent_login::rules_hash(p, &l.database);
         let changed = now != l.rules;
         let due = l.rotation_due(Utc::now()).is_some_and(|d| d <= 0);
+        // Rule changes on a login that follows them on its own: applied, not read for Apply.
+        if changed {
+            self.login_auto_start(p, cx);
+        }
         let read = if fresh { changed || due || self.login_open_conn(&p.id, cx).is_some() } else { changed && self.login.drift_rules.as_deref() != Some(now.as_str()) };
-        if read {
-            self.login.drift_rules = Some(now);
+        if read && !self.login_auto_running(&p.id) {
             self.login_drift(p, cx);
         }
         if fresh && due {
@@ -136,7 +152,13 @@ impl AgentsPage {
 
     fn login_drift(&mut self, p: &ConnectionProfile, cx: &mut Context<Self>) {
         let Some(l) = p.agent_login.clone() else { return };
+        let hash = agent_login::rules_hash(p, &l.database);
+        // Changes found on the server (a table made since) are applied on their own too, unless
+        // that just failed for these rules.
+        let auto = l.auto_sync && self.login_auto.get(&p.id).is_none_or(|a| a.hash != hash);
+        self.login.drift_rules = Some(hash);
         self.login.drift = None;
+        let pa = p.clone();
         self.login_task(
             p,
             cx,
@@ -146,12 +168,16 @@ impl AgentsPage {
                     live::drift(&admin, &p, &l, &pw).await.map_err(|e| format!("{e:#}"))
                 })
             },
-            |v, r, _| {
+            move |v, r, cx| {
                 // The rules unchanged and the server not answering: said, not shown as drift.
                 if let Err(e) = &r {
                     v.login.note = Some((false, format!("Couldn't compare the login with the server: {e}")));
                 }
+                let apply = auto && r.as_ref().is_ok_and(|d| !d.changes.is_empty()) && v.login.conn.as_deref() == Some(pa.id.as_str());
                 v.login.drift = Some(r);
+                if apply {
+                    v.login_apply_drift(&pa, cx);
+                }
             },
         );
     }
@@ -368,6 +394,11 @@ impl AgentsPage {
     fn login_apply_drift(&mut self, p: &ConnectionProfile, cx: &mut Context<Self>) {
         let Some(Ok(d)) = self.login.drift.clone() else { return };
         let Some(l) = p.agent_login.clone() else { return };
+        if self.login.busy.is_some() || self.login_auto_running(&p.id) {
+            return;
+        }
+        // The rules the drift was read for: changed since, the login drifts again.
+        let hash = self.login.drift_rules.clone().unwrap_or_else(|| agent_login::rules_hash(p, &l.database));
         self.login.busy = Some("Applying…".into());
         self.login_task(
             p,
@@ -378,17 +409,7 @@ impl AgentsPage {
                 match r {
                     Ok(plan) => {
                         let id = v.login.conn.clone().unwrap_or_default();
-                        v.edit_conn(&id, |p| {
-                            let rules = agent_login::rules_hash(p, &p.agent_login.as_ref().map(|l| l.database.clone()).unwrap_or_default());
-                            if let Some(l) = p.agent_login.as_mut() {
-                                (l.rules, l.plan, l.synced, l.views, l.granted, l.not_granted) = (rules, plan.hash.clone(), Utc::now(), plan.views.clone(), plan.granted, plan.not_granted.len());
-                                for m in &plan.made {
-                                    if !l.made.contains(m) {
-                                        l.made.push(m.clone());
-                                    }
-                                }
-                            }
-                        }, cx);
+                        v.login_synced(&id, hash, &plan, cx);
                         v.login.drift = None;
                         v.login.note = Some((true, "The login follows the rules again".into()));
                     }
@@ -396,6 +417,102 @@ impl AgentsPage {
                 }
             },
         );
+    }
+
+    /// `plan` ran on `id`'s login for the rules `hash`: kept on the connection.
+    fn login_synced(&mut self, id: &str, hash: String, plan: &Plan, cx: &mut Context<Self>) {
+        self.edit_conn(id, |p| {
+            if let Some(l) = p.agent_login.as_mut() {
+                (l.rules, l.plan, l.synced, l.views, l.granted, l.not_granted) = (hash, plan.hash.clone(), Utc::now(), plan.views.clone(), plan.granted, plan.not_granted.len());
+                for m in &plan.made {
+                    if !l.made.contains(m) {
+                        l.made.push(m.clone());
+                    }
+                }
+            }
+        }, cx);
+    }
+
+    fn login_auto_running(&self, id: &str) -> bool {
+        self.login_auto.get(id).is_some_and(|a| a.running)
+    }
+
+    /// Every agent login that follows its rules on its own and whose rules changed: the changes
+    /// applied in the background, with the user's login (as Apply would), wherever they were
+    /// made (Protection, the connection's dialog, an import).
+    pub(crate) fn login_auto_sync(&mut self, cx: &mut Context<Self>) {
+        for p in self.profiles(cx) {
+            self.login_auto_start(&p, cx);
+        }
+    }
+
+    fn login_auto_start(&mut self, p: &ConnectionProfile, cx: &mut Context<Self>) {
+        let Some(l) = p.agent_login.clone().filter(|l| l.auto_sync && agent_login::supported(p.engine)) else { return };
+        let hash = agent_login::rules_hash(p, &l.database);
+        // In step; on its way there; or failed for these very rules (Apply is shown instead).
+        if hash == l.rules || self.login_auto.get(&p.id).is_some_and(|a| a.running || a.hash == hash) {
+            return;
+        }
+        self.login_auto.insert(p.id.clone(), AutoSync { hash: hash.clone(), running: true });
+        let id = p.id.clone();
+        self.login_task(
+            p,
+            cx,
+            move |core, admin, p| {
+                Box::pin(async move {
+                    let pw = live::password_of(&*core.secrets, &p.id, &l.user).map_err(|e| format!("{e:#}"))?;
+                    let d = live::drift(&admin, &p, &l, &pw).await.map_err(|e| format!("{e:#}"))?;
+                    live::apply(&admin, &d.plan, &l.database).await.map_err(|e| format!("{e:#}"))?;
+                    Ok(d.plan)
+                })
+            },
+            move |v, r, cx| {
+                let shown = v.login.conn.as_deref() == Some(id.as_str());
+                match r {
+                    Ok(plan) => {
+                        v.login_auto.remove(&id);
+                        if shown {
+                            v.login.drift = None;
+                            v.login.note = Some((true, "Rule changes applied to the login on their own".into()));
+                        }
+                        // Saving it reloads the connections: rules changed meanwhile start again.
+                        v.login_synced(&id, hash, &plan, cx);
+                    }
+                    Err(e) => {
+                        log::info!("the agent login's rule changes could not be applied on their own: {e}");
+                        v.login_auto.insert(id, AutoSync { hash, running: false });
+                        if shown {
+                            // Read again for Apply, the reason said.
+                            v.login.drift_rules = None;
+                            v.login.note = Some((false, format!("Couldn't apply the rule changes to the login on their own: {e}")));
+                        }
+                    }
+                }
+            },
+        );
+    }
+
+    /// The option in the Login section: rule changes applied on their own, or left for Apply.
+    fn login_set_auto(&mut self, p: &ConnectionProfile, on: bool, cx: &mut Context<Self>) {
+        self.edit_conn(&p.id, |p| {
+            if let Some(l) = p.agent_login.as_mut() {
+                l.auto_sync = on;
+            }
+        }, cx);
+        if !on {
+            return;
+        }
+        // Turned on with changes waiting: they go now (a failure before is tried again).
+        if !self.login_auto_running(&p.id) {
+            self.login_auto.remove(&p.id);
+        }
+        let Some(p) = self.core.config.get(&p.id) else { return };
+        let changed = p.agent_login.as_ref().is_some_and(|l| l.rules != agent_login::rules_hash(&p, &l.database));
+        if changed {
+            self.login_auto_start(&p, cx);
+        } else if self.login.drift.as_ref().is_some_and(|d| d.as_ref().is_ok_and(|d| !d.changes.is_empty())) {
+            self.login_apply_drift(&p, cx);
+        }
     }
 
     fn login_open_remove(&mut self, p: &ConnectionProfile, cx: &mut Context<Self>) {
@@ -637,8 +754,10 @@ impl AgentsPage {
         let row = || div().min_h(px(30.)).flex().flex_row().items_center().gap(px(12.));
         let pv = p.clone();
         let verify = button("agents-login-verify", if busy.as_deref() == Some("Verifying…") { "Verifying…".into() } else { "Verify".into() }).ml_auto().on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_verify(&pv, cx)));
+        let auto_running = self.login_auto_running(&p.id);
         let (color, status) = match (&self.login.drift, drifted) {
             (_, false) => (t.ok, "In sync".to_string()),
+            _ if auto_running => (t.tx3, "Applying the new rules…".to_string()),
             (Some(Ok(d)), true) if d.changes.len() == 1 => (t.warn, "1 change to apply".into()),
             (Some(Ok(d)), true) => (t.warn, format!("{} changes to apply", d.changes.len())),
             (_, true) => (t.warn, "The rules changed".into()),
@@ -648,6 +767,30 @@ impl AgentsPage {
                 .child(div().children(ui::here(&"agents-login-as".into())).min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx).child(l.user.clone()))
                 .child(div().flex_none().flex().flex_row().items_center().gap(px(7.)).text_color(color).child(div().size(px(7.)).rounded_full().bg(color)).child(status))
                 .child(verify),
+        );
+        let (pa, on) = (p.clone(), l.auto_sync);
+        login = login.child(
+            div()
+                .children(ui::here(&"agents-login-auto".into()))
+                .id("agents-login-auto")
+                .flex()
+                .flex_row()
+                .gap(px(10.))
+                .cursor_pointer()
+                .text_size(px(crate::theme::text::UI))
+                .line_height(px(18.))
+                .child(div().pt(px(2.)).children(on.then(|| ui::here(&"agents-login-auto-on".into())).flatten()).child(checkbox(t, on, false)))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.))
+                        .child(div().text_color(t.tx).child("Apply rule changes on its own"))
+                        .child(div().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(AUTO_SUB)),
+                )
+                .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_set_auto(&pa, !on, cx))),
         );
         if l.not_granted > 0 {
             login = login.child(div().text_size(px(crate::theme::text::UI)).text_color(t.warn).child(format!("{} can't be granted to it: agents don't see {}.", agent_login_count(l.not_granted, "table"), if l.not_granted == 1 { "it" } else { "them" })));
@@ -683,6 +826,9 @@ impl AgentsPage {
     /// The rules changed since the login was made: what it needs, and the button that runs it.
     fn login_drift_lines(&self, t: &Theme, p: &ConnectionProfile, cx: &mut Context<Self>) -> gpui::Div {
         let col = div().children(ui::here(&"agents-login-drift".into())).flex().flex_col().gap(px(10.)).text_size(px(crate::theme::text::UI)).line_height(px(18.));
+        if self.login_auto_running(&p.id) {
+            return col.child(div().text_color(t.tx3).child("Dataman is applying the new rules to the login, as your login. Until then it keeps its old grants, and Dataman already applies the new rules on top."));
+        }
         match &self.login.drift {
             None => col.child(div().text_color(t.tx3).child("Reading what the login has now…")),
             Some(Err(e)) => {
@@ -804,7 +950,7 @@ impl AgentsPage {
                 .child(div().pt(px(1.)).children(on.then(|| ui::here(&gpui::SharedString::from(format!("{id}-on")).into())).flatten()).child(checkbox(t, on, false)))
                 .child(div().flex_1().min_w_0().flex().flex_col().gap(px(2.)).child(div().text_color(t.tx).child(text)).children(sub.map(|s| div().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(s.to_string()))))
         };
-        let (p1, p2) = (p.clone(), p.clone());
+        let (p1, p2, p3) = (p.clone(), p.clone(), p.clone());
         let mut opts_row = div().flex().flex_row().items_start().gap(px(32.)).child(
             opt_row("agents-login-opt-rotate", opts.rotate_days.is_some(), format!("Rotate its password every {} days", agent_login::ROTATE_DAYS), Some(format!("A new one on the server and in the {}, the old one's sessions ended", dataman_core::secret::STORE_NAME).as_str()))
                 .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_option(&p1, |o| o.rotate_days = if o.rotate_days.is_some() { None } else { Some(agent_login::ROTATE_DAYS) }, cx))),
@@ -816,6 +962,7 @@ impl AgentsPage {
                     .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_option(&p2, |o| o.conn_limit = if o.conn_limit.is_some() { None } else { Some(agent_login::CONN_LIMIT) }, cx))),
             );
         }
+        opts_row = opts_row.child(opt_row("agents-login-opt-auto", opts.auto_sync, "Apply rule changes on its own".into(), Some(AUTO_SUB)).on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_option(&p3, |o| o.auto_sync = !o.auto_sync, cx))));
         let options = div()
             .children(ui::here(&"agents-login-options".into()))
             .flex_none()
@@ -1036,6 +1183,9 @@ impl AgentsPage {
         self.login.sheet = Some(Sheet::Changes);
     }
 }
+
+/// Under the option, in the review and in the Login section.
+const AUTO_SUB: &str = "When Access or Privacy change, Dataman updates its grants with your login. Off, the changes wait for Apply";
 
 /// Lines laid out above and below WHAT RUNS's view, so a fast scroll doesn't show a blank edge.
 const WHAT_OVERSCAN: usize = 20;
