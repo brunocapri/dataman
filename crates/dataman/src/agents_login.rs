@@ -832,8 +832,7 @@ impl AgentsPage {
                     .min_w_0()
                     .child(check_mark(t, c))
                     .child(div().flex_none().text_color(t.tx).child(c.what.clone()))
-                    .child(qmark(t, &format!("agents-login-check-tip-{k}"), tip))
-                    .when(!c.on.is_empty(), |d| d.child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().font_family(mono()).text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(format!("tried on {}", c.on))));
+                    .child(qmark(t, &format!("agents-login-check-tip-{k}"), tip));
                 let mut row = div().flex().flex_col().gap(px(4.)).child(line);
                 if !c.ok && !c.detail.is_empty() {
                     row = row.child(
@@ -856,18 +855,16 @@ impl AgentsPage {
             }
             body = body.child(sec);
         }
-        let report: String = checks.iter().map(|c| format!("{} {}{}", if c.ok { "✓" } else { "✕" }, c.line(), if c.ok || c.detail.is_empty() { String::new() } else { format!("\n    {}", c.detail) })).collect::<Vec<_>>().join("\n");
         let close = ui::button(t, "agents-login-checks-close", ui::Btn::Ghost).h(px(30.)).cursor_pointer().child("Close").on_click(cx.listener(|v, _: &ClickEvent, _, cx| {
             v.login.sheet = None;
             cx.notify();
         }));
-        let say = div().flex_1().min_w_0().text_color(t.tx3).child(format!("Tried as {user}, with its own password."));
         let pv = p.clone();
         let again = p.agent_login.is_some().then(|| {
             let b = ui::button(t, "agents-login-checks-again", ui::Btn::Secondary).h(px(30.)).px(px(12.)).child(if verifying { "Verifying…" } else { "Verify again" });
             if verifying { b.opacity(0.5) } else { b.cursor_pointer().on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_verify(&pv, cx))) }
         });
-        let footer = ui::modal_footer(t).child(say).children(again).child(ui::button(t, "agents-login-checks-copy", ui::Btn::Secondary).h(px(30.)).px(px(12.)).cursor_pointer().child("Copy all").on_click(cx.listener(move |_, _: &ClickEvent, _, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(report.clone()))))).child(close).into_any_element();
+        let footer = ui::modal_footer(t).child(div().flex_1()).children(again).child(close).into_any_element();
         (format!("What {user} can and can't do"), body.into_any_element(), footer)
     }
 
