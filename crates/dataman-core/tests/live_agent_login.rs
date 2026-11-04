@@ -96,7 +96,7 @@ fn first(r: &[Vec<Option<String>>]) -> String {
 }
 
 fn opts() -> Options {
-    Options { rotate_days: Some(90), conn_limit: Some(4) }
+    Options { rotate_days: Some(90), conn_limit: Some(4), auto_sync: true }
 }
 
 fn guard(p: &mut ConnectionProfile) {
@@ -450,7 +450,7 @@ fn sql_server() {
     let s = a.session(None);
     for sql in [
         "CREATE TABLE dbo.orders (id INT IDENTITY PRIMARY KEY, total DECIMAL(10,2), customer_id INT)",
-        "CREATE TABLE dbo.users (id INT IDENTITY PRIMARY KEY, name NVARCHAR(50), email NVARCHAR(100), password_hash NVARCHAR(100), created_at DATETIME2 DEFAULT SYSDATETIME())",
+        "CREATE TABLE dbo.users (id INT IDENTITY PRIMARY KEY, name NVARCHAR(50), email NVARCHAR(100), password_hash NVARCHAR(100), created_at DATETIME2 DEFAULT SYSDATETIME(), hash_head AS LEFT(password_hash, 2))",
         "CREATE TABLE dbo.audit_log (id INT IDENTITY PRIMARY KEY, what NVARCHAR(50))",
         "INSERT INTO dbo.orders (total, customer_id) VALUES (10, 1), (20, 2)",
         "INSERT INTO dbo.users (name, email, password_hash) VALUES (N'Alice', N'alice@acme.com', N'h1'), (N'Bob', N'bob@acme.com', N'h2')",
@@ -467,6 +467,10 @@ fn sql_server() {
     let g = agent.session(None);
     assert_eq!(first(&ok(&e, &g, "SELECT SUSER_SNAME()")), user);
     assert_eq!(first(&ok(&e, &g, "SELECT USER_NAME()")), user);
+    // Dataman's guard reads computed columns as the agent: without VIEW DEFINITION the
+    // dependencies are refused, so their expressions are read instead (erring on more).
+    let computed = e.core.block_on(agent.generated_columns("au_shop", std::future::pending::<()>())).unwrap_or_else(|x| panic!("generated columns as the agent: {x:#}"));
+    assert!(computed.iter().any(|c| c.table == "users" && c.column == "hash_head" && c.from.iter().any(|f| f.eq_ignore_ascii_case("password_hash"))), "{computed:?}");
     ok(&e, &g, "SELECT id, total FROM dbo.orders");
     // Write tier: the visible columns of the table itself, for its writes' WHERE.
     ok(&e, &g, "SELECT id, name FROM dbo.users");
@@ -1468,4 +1472,93 @@ fn elasticsearch_redteam() {
 #[test]
 fn opensearch_redteam() {
     search_redteam(Engine::OpenSearch, "auosrt0001");
+}
+
+/// The database made again (a restore, a new copy) after the login was made: its user, which
+/// held the mark, is gone with it; the login, the server's, is left. Dataman puts its own back
+/// (its Keychain password still logs it in), never one it can't tell is its own; and Create over
+/// a login it no longer knows drops it first, in the script.
+#[test]
+fn sql_server_orphan() {
+    if !on() {
+        return;
+    }
+    let _one = one_at_a_time();
+    let e = env();
+    let (mut p, apw) = admin(Engine::SqlServer, "aumsorph01");
+    if !up(&p) {
+        return;
+    }
+    p.database = "au_orphan".into();
+    p.mcp = Some(McpAccess::Read);
+    let user = agent_login::login_name(&p.id);
+    let root = connect(&e, &ConnectionProfile { database: "master".into(), ..p.clone() }, &apw).unwrap();
+    let rs = root.session(None);
+    let fresh_db = "IF DB_ID('au_orphan') IS NOT NULL BEGIN ALTER DATABASE au_orphan SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE au_orphan; END; CREATE DATABASE au_orphan";
+    let seed = "CREATE TABLE dbo.orders (id INT IDENTITY PRIMARY KEY, total DECIMAL(10,2)); INSERT INTO dbo.orders (total) VALUES (10)";
+    ok(&e, &rs, &format!("IF SUSER_ID('{user}') IS NOT NULL DROP LOGIN [{user}]"));
+    ok(&e, &rs, fresh_db);
+    let a = connect(&e, &p, &apw).unwrap();
+    ok(&e, &a.session(None), seed);
+    let (login, password, _) = create(&e, &a, &p);
+    a.close();
+    // A new copy of the database: the user and its mark go, the login stays.
+    ok(&e, &rs, fresh_db);
+    let a = connect(&e, &p, &apw).unwrap();
+    ok(&e, &a.session(None), seed);
+    match as_agent(&e, &p, &user, &password) {
+        Ok(agent) => assert!(!e.core.block_on(live::reaches(&agent, "au_orphan")), "it can't reach its database"),
+        Err(x) => assert!(live::lost_database(&x), "{x}"),
+    }
+    let rv = e.core.block_on(live::review(&a, &p, &opts())).unwrap();
+    assert!(rv.probe.orphan && rv.probe.exists == Some(false), "{:?}", rv.probe);
+    for said in [
+        e.core.block_on(live::not_ours(&a, &p, &user)),
+        e.core.block_on(live::removal(&a, &p, &login)).map(|p| p.shown()).unwrap_err().to_string(),
+        e.core.block_on(live::drift(&a, &p, &login, &password)).map(|_| ()).unwrap_err().to_string(),
+    ] {
+        assert!(said.contains("lost its user in au_orphan") && said.contains("Verify puts it back"), "{said}");
+    }
+    // Another password doesn't prove it Dataman's: left alone.
+    let err = e.core.block_on(live::reattach(&e.core, &a, &p, &login, "not-its-password-000000")).unwrap_err().to_string();
+    assert!(err.contains("no longer logs it in"), "{err}");
+    // Its own password: put back, with its grants, and the agent reads again.
+    let plan = e.core.block_on(live::reattach(&e.core, &a, &p, &login, &password)).unwrap().expect("put back");
+    assert!(plan.shown().contains(&format!("CREATE USER [{user}] FOR LOGIN [{user}]")) && !plan.shown().contains("CREATE LOGIN"), "{}", plan.shown());
+    assert_eq!(e.core.block_on(live::exists(&a, &p, &user)).unwrap(), Some(true));
+    let agent = as_agent(&e, &p, &user, &password).unwrap();
+    assert!(e.core.block_on(live::reaches(&agent, "au_orphan")));
+    assert_eq!(first(&ok(&e, &agent.session(None), "SELECT COUNT(*) FROM dbo.orders")), "1");
+    denied(&e, &agent.session(None), "DELETE FROM dbo.orders WHERE 1 = 0");
+    agent.close();
+    assert!(e.core.block_on(live::reattach(&e.core, &a, &p, &login, &password)).unwrap().is_none(), "nothing to put back now");
+    // Again, and Dataman forgot it meanwhile: Create drops the old login first, in its script.
+    a.close();
+    ok(&e, &rs, fresh_db);
+    let a = connect(&e, &p, &apw).unwrap();
+    ok(&e, &a.session(None), seed);
+    // Something still logged in as the old login (in master, the only place it can be now).
+    let lingering = as_agent(&e, &ConnectionProfile { database: "master".into(), ..p.clone() }, &user, &password).unwrap();
+    ok(&e, &lingering.session(None), "SELECT 1");
+    let rv = e.core.block_on(live::review(&a, &p, &opts())).unwrap();
+    assert!(rv.plan.lacks.is_empty(), "{:?}", rv.plan.lacks);
+    let shown = rv.plan.shown();
+    assert!(shown.find("DROP LOGIN").unwrap() < shown.find("BEGIN TRANSACTION").unwrap() && shown.contains("KILL"), "dropped before the transaction, its sessions ended: {shown}");
+    assert!(rv.plan.shown().contains(&format!("DROP LOGIN [{user}]")) && rv.plan.notes.iter().any(|n| n.contains("drops it first")), "{}", rv.plan.shown());
+    e.core.block_on(live::apply(&a, &rv.plan, &p.database)).unwrap_or_else(|x| panic!("{x:#}\n{}", rv.plan.shown()));
+    let agent = as_agent(&e, &p, &user, &rv.password).unwrap();
+    assert_eq!(first(&ok(&e, &agent.session(None), "SELECT COUNT(*) FROM dbo.orders")), "1");
+    assert!(as_agent(&e, &p, &user, &password).is_err(), "the old password went with the old login");
+    agent.close();
+    // A login of someone else's by that name (its user there) is neither: left alone.
+    let kill_then_drop = format!("DECLARE @k NVARCHAR(MAX) = N''; SELECT @k += N'KILL ' + CAST(session_id AS NVARCHAR(10)) + N';' FROM sys.dm_exec_sessions WHERE login_name = N'{user}'; EXEC (@k); DROP LOGIN [{user}]");
+    ok(&e, &rs, &kill_then_drop);
+    ok(&e, &rs, &format!("CREATE LOGIN [{user}] WITH PASSWORD = 'Other-pw-123', CHECK_POLICY = OFF"));
+    ok(&e, &a.session(None), &format!("IF USER_ID('{user}') IS NOT NULL DROP USER [{user}]; CREATE USER [{user}] FOR LOGIN [{user}]"));
+    let rv = e.core.block_on(live::review(&a, &p, &opts())).unwrap();
+    assert!(!rv.probe.orphan && rv.probe.exists == Some(false), "{:?}", rv.probe);
+    assert!(rv.plan.lacks.iter().any(|l| l.contains("isn't Dataman's")) && !rv.plan.shown().contains("DROP LOGIN"), "{:?}", rv.plan.lacks);
+    a.close();
+    ok(&e, &rs, "ALTER DATABASE au_orphan SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE au_orphan");
+    ok(&e, &rs, &kill_then_drop);
 }

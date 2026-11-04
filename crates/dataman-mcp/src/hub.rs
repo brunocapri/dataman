@@ -433,29 +433,87 @@ impl Hub {
         if let Some(r) = p.mcp_rules.read_from.filter(|_| p.engine == dataman_core::Engine::MongoDb) {
             agent.options.insert("readPreference".into(), r.mongo().into());
         }
+        let mut agent_pw = None;
         let task = match &p.agent_login {
             Some(l) => {
                 // The Keychain may wait for a prompt: not on the runtime's workers.
                 let (secrets, id, user) = (self.core.secrets.clone(), p.id.clone(), l.user.clone());
                 let pw = tokio::task::spawn_blocking(move || agent_login::live::password_of(&*secrets, &id, &user)).await.map_err(|e| e.to_string())?.map_err(|e| format!("{e:#}"))?;
+                agent_pw = Some(pw.clone());
                 self.core.connect_agent(p, agent_login::live::agent_profile(&agent, &l.user), pw)
             }
-            None => self.core.connect(agent, None),
+            None => self.core.connect(agent.clone(), None),
         };
         // Past its time, or this call dropped: the tunnel and the Keychain read stop too.
         let mut task = task.abort_on_drop();
         let as_login = p.agent_login.as_ref().map(|l| format!(" as its agent login {}", l.user)).unwrap_or_default();
         let never = if p.agent_login.is_some() { ". Agents are refused here until it connects: Dataman never uses your own login for them (Agents › Permissions › Verify)" } else { "" };
-        let c = match tokio::time::timeout(CONNECT_TIMEOUT, &mut task).await {
-            Ok(Ok(c)) => c,
-            Ok(Err(e)) => return Err(format!("cannot connect to {}{as_login}: {e:#}{never}", p.name)),
+        let first = match tokio::time::timeout(CONNECT_TIMEOUT, &mut task).await {
+            Ok(Ok(c)) => Ok(c),
+            Ok(Err(e)) => Err(format!("{e:#}")),
             Err(_) => return Err(format!("cannot connect to {}{as_login}: timed out{never}", p.name)),
+        };
+        // SQL Server: its database made again (a restore, a new copy) took the login's user with
+        // it: refused at login, or let in and unable to open it. Put back where Auto sync is on
+        // (the user's login, as a sync), then connected again.
+        let lost = match (&first, &p.agent_login) {
+            (Err(e), Some(_)) if p.engine == dataman_core::Engine::SqlServer => agent_login::live::lost_database(e),
+            (Ok(c), Some(l)) if p.engine == dataman_core::Engine::SqlServer => !agent_login::live::reaches(c, &agent_login::live::database_for(p, Some(l))).await,
+            _ => false,
+        };
+        let c = match (lost, &p.agent_login, &agent_pw) {
+            (true, Some(l), Some(pw)) => {
+                if let Ok(c) = &first {
+                    c.close();
+                }
+                self.put_back(p, l, pw).await?;
+                let again = self.core.connect_agent(p, agent_login::live::agent_profile(&agent, &l.user), pw.clone()).abort_on_drop();
+                match tokio::time::timeout(CONNECT_TIMEOUT, again).await {
+                    Ok(Ok(c)) => c,
+                    Ok(Err(e)) => return Err(format!("cannot connect to {}{as_login}: {e:#}{never}", p.name)),
+                    Err(_) => return Err(format!("cannot connect to {}{as_login}: timed out{never}", p.name)),
+                }
+            }
+            _ => first.map_err(|e| format!("cannot connect to {}{as_login}: {e}{never}", p.name))?,
         };
         if let Some(l) = &p.agent_login {
             c.set_agent_views(&l.views);
         }
         self.open.lock().insert(p.id.clone(), (p.clone(), c.clone()));
         Ok(c)
+    }
+
+    /// The agent login put back in its database made again, with the user's login, where the
+    /// user lets Dataman keep it in step on its own (Auto sync); the record kept as a sync keeps
+    /// it. Otherwise, why agents are refused and what puts it back.
+    fn put_back<'a>(&'a self, p: &'a ConnectionProfile, l: &'a dataman_core::agent_login::AgentLogin, pw: &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+        Box::pin(self.put_back_now(p, l, pw))
+    }
+
+    async fn put_back_now(&self, p: &ConnectionProfile, l: &dataman_core::agent_login::AgentLogin, pw: &str) -> Result<(), String> {
+        let db = agent_login::live::database_for(p, Some(l));
+        let lost = || format!("cannot connect to {} as its agent login {}: {}", p.name, l.user, agent_login::live::lost_user_text(&l.user, &db));
+        if !l.auto_sync {
+            return Err(lost());
+        }
+        let admin = self.connect_user(p).await.map_err(|e| format!("{}; and Dataman could not connect as you to put it back: {e}", lost()))?;
+        let plan = agent_login::live::reattach(&self.core, &admin, p, l, pw).await.map_err(|e| format!("cannot connect to {} as its agent login: {e:#}", p.name))?;
+        let Some(plan) = plan else {
+            return Err(format!("cannot connect to {} as its agent login {}: it doesn't reach {db}", p.name, l.user));
+        };
+        log::info!("{}: {} had lost its user in {db} (the database made again): put back", p.name, l.user);
+        let store = dataman_core::config::ConfigStore::open_with(&self.dirs, self.core.approved.clone()).map_err(|e| format!("{e:#}"))?;
+        if let Some(mut saved) = store.get(&p.id)
+            && let Some(sl) = saved.agent_login.as_mut()
+        {
+            let hash = agent_login::rules_hash(p, &sl.database);
+            agent_login::live::note_synced(sl, hash, &plan);
+            store.upsert(saved).map_err(|e| format!("{e:#}"))?;
+            if let Some(f) = self.front() {
+                f.connections_changed();
+            }
+        }
+        Ok(())
     }
 
     /// The user's own login, for what the user allowed in the app that the agent's login may

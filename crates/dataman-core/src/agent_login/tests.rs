@@ -46,7 +46,7 @@ fn guarded(engine: Engine) -> ConnectionProfile {
 }
 
 fn opts() -> Options {
-    Options { rotate_days: None, conn_limit: Some(4) }
+    Options { rotate_days: None, conn_limit: Some(4), auto_sync: true }
 }
 
 fn probe_sql() -> Probe {
@@ -453,6 +453,21 @@ fn profile_back_compat_and_secrets() {
     let text = toml::to_string(&q).unwrap();
     assert!(text.contains("[agent_login]") && !text.contains("pw-not-shown") && !text.contains("SCRAM"), "{text}");
     assert_eq!(toml::from_str::<ConnectionProfile>(&text).unwrap(), q);
+}
+
+#[test]
+fn auto_sync_is_on_unless_turned_off() {
+    let mut q = conn(Engine::Postgres);
+    q.agent_login = Some(test_login("u", &q));
+    // On: written as nothing, so a login kept by an older Dataman reads as on too.
+    let text = toml::to_string(&q).unwrap();
+    assert!(!text.contains("auto_sync"), "{text}");
+    assert!(toml::from_str::<ConnectionProfile>(&text).unwrap().agent_login.unwrap().auto_sync);
+    q.agent_login.as_mut().unwrap().auto_sync = false;
+    let text = toml::to_string(&q).unwrap();
+    assert!(text.contains("auto_sync = false"), "{text}");
+    assert_eq!(toml::from_str::<ConnectionProfile>(&text).unwrap(), q);
+    assert!(Options::default().auto_sync);
 }
 
 #[test]

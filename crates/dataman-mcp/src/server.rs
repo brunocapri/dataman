@@ -195,6 +195,21 @@ impl Server {
         }
     }
 
+    /// A SQL Server agent login that can't open its database: its connection forgotten, so the
+    /// next one checks (and puts the login back in a database made again).
+    fn lost_its_database(&self, call: &Call, args: &Args, e: &ToolError) -> bool {
+        let m = e.message();
+        if !(dataman_core::agent_login::live::lost_database(&m) || m.contains("TLS close_notify")) {
+            return false;
+        }
+        let Ok(p) = call.target(args, crate::policy::Need::Read) else { return false };
+        if p.engine != dataman_core::Engine::SqlServer || p.agent_login.is_none() {
+            return false;
+        }
+        self.hub.forget(&p.id);
+        true
+    }
+
     pub async fn run_tool(&self, tool: Arc<dyn Tool>, args: serde_json::Map<String, Value>, client: String, ct: tokio_util::sync::CancellationToken) -> CallToolResult {
         let _running = Running::start();
         let started = Instant::now();
@@ -212,7 +227,12 @@ impl Server {
                 // The policy's gate, whatever the handler then asks for.
                 match tool.gate().map(|need| call.admit(&args, need)).transpose() {
                     Err(e) => Err(e),
-                    Ok(_) => tool.call(&call, args).await,
+                    Ok(_) => match tool.call(&call, args.clone()).await {
+                        // Its connection lost its database (made again): once more, on a new
+                        // connection, which puts the agent login back where Dataman may.
+                        Err(e) if self.lost_its_database(&call, &args, &e) => tool.call(&call, args).await,
+                        r => r,
+                    },
                 }
             }
         };

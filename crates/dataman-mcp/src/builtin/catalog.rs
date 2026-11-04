@@ -233,6 +233,17 @@ fn list_tables(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
                 ]);
             }
         }
+        // Tables the agent login reads through its views: not in its catalog where the server
+        // shows a login only what it was granted (SQL Server, MySQL), listed under their names.
+        if let Some(l) = o.profile.agent_login.as_ref().filter(|_| kind != "view") {
+            for m in &l.views {
+                let listed = rows.iter().any(|r| r[0].as_str().is_some_and(|s| s.eq_ignore_ascii_case(&m.schema)) && r[1].as_str().is_some_and(|n| n.eq_ignore_ascii_case(&m.table)));
+                let wanted = a.opt_str("schema").is_none_or(|s| s.eq_ignore_ascii_case(&m.schema));
+                if !listed && wanted && rows.len() < limit && super::rules::table_visible(&o.profile, &m.schema, &m.table) {
+                    rows.push(vec![json!(m.schema), json!(m.table), json!("table"), Value::Null, Value::Null]);
+                }
+            }
+        }
         cx.note_rows(rows.len());
         let mut v = table(&["schema", "name", "kind", "rows_est", "size"], rows);
         if more {
