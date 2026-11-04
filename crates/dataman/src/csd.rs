@@ -51,6 +51,23 @@ pub fn start_move(window: &Window) {
     window.start_window_move();
 }
 
+/// The maximize button and a double click on the title bar: maximize, or restore a maximized
+/// window. GPUI's Windows `zoom` only ever maximizes, so the restore is ours there.
+pub fn toggle_maximize(window: &Window) {
+    #[cfg(windows)]
+    if window.is_maximized() {
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{SW_RESTORE, ShowWindowAsync};
+        if let Ok(h) = HasWindowHandle::window_handle(window)
+            && let RawWindowHandle::Win32(w) = h.as_raw()
+        {
+            unsafe { ShowWindowAsync(w.hwnd.get() as _, SW_RESTORE) };
+        }
+        return;
+    }
+    window.zoom_window();
+}
+
 fn tiling(window: &Window) -> Tiling {
     match window.window_decorations() {
         Decorations::Client { tiling } => tiling,
@@ -100,7 +117,7 @@ fn button(t: &Theme, b: WindowButton, window: &Window) -> AnyElement {
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_click(move |_, window, cx| match b {
             WindowButton::Minimize => window.minimize_window(),
-            WindowButton::Maximize => window.zoom_window(),
+            WindowButton::Maximize => toggle_maximize(window),
             WindowButton::Close => window.dispatch_action(Box::new(crate::app::Quit), cx),
         })
         .into_any_element()
