@@ -128,14 +128,7 @@ impl AgentsPage {
 
     pub(crate) fn render_types(&mut self, t: &Theme, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let rows = self.type_rows();
-        let profiles = self.profiles(cx);
-        let any = profiles.iter().any(|p| p.mcp_rules.view == privacy::AgentView::Masked);
-        let applies = if any { "Applied to every connection whose Privacy is Masked data" } else { "Applied to every connection whose Privacy is Masked data (none is yet)" };
-        let head = self
-            .header(t, "Masks")
-            .child(qmark(t, "agents-types-tip", types_tip()))
-            .child(div().flex_1().min_w(px(12.)))
-            .child(div().children(ui::here(&"agents-types-applies".into())).min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(crate::theme::text::UI)).text_color(t.tx3).child(applies));
+        let head = self.header(t, "Masks").child(qmark(t, "agents-types-tip", types_tip()));
         let broken: Vec<&TypeRow> = rows.iter().filter(|r| r.broken.is_some() && r.on).collect();
         let notice = broken.first().map(|r| div().pb(px(6.)).text_size(px(crate::theme::text::UI)).text_color(t.err).child(format!("{} has an invalid pattern. Agent reads are refused while it is on.", r.name)));
         self.types_offset = notice.is_some() as usize;
@@ -536,11 +529,5 @@ fn type_tip(name: &str, rule: &str, example: Option<&str>, custom: bool) -> Tip 
 }
 
 pub(crate) fn types_tip() -> Tip {
-    Tip::new("Masks")
-        .lead("One list for every connection whose Privacy is Masked data: matching values are masked in everything sent to the agent, whether or not their column is a Sensitive column.")
-        .item("Where", "Rows, documents, keys, printed lines, tool replies, schema resources and errors.")
-        .item("Not on", "Connections on Data or Structure only: nothing is masked there.")
-        .item("How", "Each one masks its matches as its menu says: Redacted or Partial.")
-        .item("Edit", "Click one, built-in or yours, to change it on the right; + adds one.")
-        .note("Replies about no connection in particular, such as the list of connections or of favorites, aren't masked.")
+    Tip::new("Masks").lead("Applied to everything agents get from connections on Masked data.")
 }

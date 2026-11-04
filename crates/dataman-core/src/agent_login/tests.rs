@@ -643,13 +643,20 @@ fn postgres_protocol_without_logins() {
 
 #[test]
 fn partial_keeps_what_the_column_says() {
-    let k = Mask::Partial(crate::privacy::Keep { first: 2, last: 3 });
-    let e = pg::mask_expr("c", k);
-    assert!(e.contains(r#"left("c"::text, 2)"#) && e.contains(r#"right("c"::text, 3)"#) && e.contains("> 5") && !e.contains('@'), "{e}");
-    let e = my::mask_expr("c", k);
-    assert!(e.contains("LEFT(CAST(`c` AS CHAR), 2)") && e.contains("RIGHT(CAST(`c` AS CHAR), 3)"), "{e}");
-    let e = ms::mask_expr("c", k);
-    assert!(e.contains("LEFT(CAST([c] AS NVARCHAR(4000)), 2)") && e.contains("RIGHT(CAST([c] AS NVARCHAR(4000)), 3)"), "{e}");
-    assert!(pg::mask_expr("c", Mask::PARTIAL).contains("'•••@'"), "as it ships: the e-mail look, the same views as before");
-    assert!(mongo::mask_expr("c", k).to_string().contains("\"$substrCP\":[\"$$s\",0,2]"));
+    use crate::privacy::{Keep, Side};
+    let (first, last) = (Mask::Partial(Keep::new(Side::First, 2)), Mask::Partial(Keep::new(Side::Last, 3)));
+    let e = pg::mask_expr("c", first);
+    assert!(e.contains(r#"left("c"::text, 2) || repeat('•', length("c"::text) - 2)"#) && e.contains("> 2") && !e.contains("right(") && !e.contains('@'), "{e}");
+    let e = pg::mask_expr("c", last);
+    assert!(e.contains(r#"repeat('•', length("c"::text) - 3) || right("c"::text, 3)"#) && e.contains(r#"ELSE repeat('•', length("c"::text))"#), "{e}");
+    let e = my::mask_expr("c", first);
+    assert!(e.contains("CONCAT(LEFT(CAST(`c` AS CHAR), 2), REPEAT('•', CHAR_LENGTH(CAST(`c` AS CHAR)) - 2))"), "{e}");
+    let e = my::mask_expr("c", last);
+    assert!(e.contains("RIGHT(CAST(`c` AS CHAR), 3)"), "{e}");
+    let e = ms::mask_expr("c", first);
+    assert!(e.contains("LEFT(CAST([c] AS NVARCHAR(4000)), 2) + REPLICATE(N'•'"), "{e}");
+    let e = ms::mask_expr("c", last);
+    assert!(e.contains("RIGHT(CAST([c] AS NVARCHAR(4000)), 3)"), "{e}");
+    assert!(!pg::mask_expr("c", Mask::PARTIAL).contains('@'), "no e-mail look: the last 4 like any column");
+    assert!(mongo::mask_expr("c", first).to_string().contains("\"$substrCP\":[\"$$s\",0,2]"));
 }

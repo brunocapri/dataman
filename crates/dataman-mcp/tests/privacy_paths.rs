@@ -332,7 +332,7 @@ fn postgres_values_stay_kept() {
     // What stays usable.
     let r = q(format!("SELECT c.id, c.tax_id, c.email FROM {s}.customers c WHERE c.tax_id LIKE 't%' AND c.city IN ('Recife') ORDER BY c.id")).unwrap();
     clean("plain select", &r);
-    assert!(r["rows"][0][1].as_str() == Some("‹hidden›") && r["rows"][0][2] == "a•••@acme.com", "{r}");
+    assert!(r["rows"][0][1].as_str() == Some("‹hidden›") && r["rows"][0][2] == "••••••••.com", "{r}");
     for sql in [
         format!("WITH x AS (SELECT id, tax_id FROM {s}.customers) SELECT tax_id FROM x"),
         format!("SELECT tax_id FROM {s}.customers UNION SELECT tax_id FROM {s}.customers"),
@@ -526,7 +526,7 @@ fn mongodb_values_stay_kept() {
     clean("find", &r);
     let r = q("db.customers.find({city: \"Recife\"}, {email: 1, tax_id: 1})").unwrap();
     clean("find", &r);
-    assert_eq!(r["documents"][0]["email"], "z•••@acme.com", "{r}");
+    assert_eq!(r["documents"][0]["email"], "•••••••••••••••.com", "{r}");
     clean("users", &q("db.users.find({})").unwrap());
     clean("sample_rows", &e.ok("sample_rows", with("mg", json!({"table": "users"}))));
     refused("sample of a view", e.call("sample_rows", with("mg", json!({"table": "uview"}))), "view that reads users");

@@ -57,19 +57,16 @@ pub(crate) fn sees_tip() -> Tip {
     Tip::new("What the agent sees")
         .lead("How much of this connection's data reaches an agent. Your own tabs always show everything.")
         .item("Data", "Rows as stored. Nothing is masked.")
-        .item("Masked data", "Values a Mask recognizes (cards, e-mails, keys…) are masked in everything the agent receives, and the sensitive columns below are masked whole. Host, port and user aren't shown.")
+        .item("Masked data", "Values a Mask recognizes (cards, e-mails, keys…) are masked in everything the agent receives. The Sensitive columns below are masked whole, on top of that. Host, port and user aren't shown.")
         .item("Structure only", "Tables, columns, types and query plans. No rows are read or written; only the structure changes the MCP tier allows. Host, port and user aren't shown.")
         .note("In every mode, what Visibility hides stays hidden and errors don't quote values.")
 }
 
 pub(crate) fn sens_tip() -> Tip {
     Tip::new("Sensitive columns")
-        .lead("Masked data only: this connection's columns masked whole. The Masks also mask matching values in every column.")
-        .item("Redacted", "Nothing of the value is kept: agents get ‹hidden›.")
-        .item("Partial", "Keeps the characters you pick at the start (First) and the end (Last), the rest becomes •. As it comes, the last 4: •••-•••-4567, and e-mails as a•••@acme.com.")
-        .lead("Agents can select these columns as they are and filter on them in WHERE; they can't rename, group, sort or compute with them.")
-        .example("users.email · *ssn* (any column with ssn in its name)")
-        .note("Scan again adds the columns (on documents, the fields) that look sensitive by their names. Check what it adds.")
+        .lead("Columns masked in Masked data, in addition to the values Masks already catch.")
+        .item("Redacted", "Agents get ‹hidden›.")
+        .item("Partial", "Only the first or last 1–4 characters show. A value no longer than that is hidden whole.")
 }
 
 fn read_from_tip() -> Tip {
@@ -798,7 +795,6 @@ impl AgentsPage {
                 let id = SharedString::from(format!("agents-sens-edit-{k}"));
                 // An older version's Off still reads Off, but isn't offered.
                 let how = if s.on { crate::agents_sens::summary(s.how) } else { "Off".into() };
-                let example = if s.on { masked_example(name, s.how) } else { "as stored".into() };
                 let rid = SharedString::from(format!("agents-sens-{k}"));
                 let hov = t.hov;
                 let key = format!("s:{}", s.col);
@@ -816,7 +812,6 @@ impl AgentsPage {
                         .gap(px(9.))
                         .child(icon(Icon::Column).size(px(13.)).text_color(t.tx3))
                         .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(if s.on { t.tx } else { t.tx3 }).child(name.to_string()))
-                        .child(div().w(px(130.)).flex_none().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(example))
                         .child(div().w(px(180.)).flex_none().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(crate::theme::text::BODY)).text_color(if s.on { t.tx2 } else { t.tx3 }).child(how))
                         .child({
                             let edit = ui::button(t, id.clone(), ui::Btn::Secondary).h(px(26.)).px(px(10.)).text_size(px(crate::theme::text::BODY)).child("Edit");
@@ -950,7 +945,7 @@ impl AgentsPage {
                     .child(self.suggest_field(t, Which::Visible, field(t, "agents-field-visible", &self.vis_input, window, cx).h(px(30.)), window, cx))
                     .child(if typed.is_empty() { off_button(t, "agents-vis-add", verb) } else { ui::button(t, "agents-vis-add", ui::Btn::Secondary).h(px(30.)).px(px(14.)).child(verb).on_click(cx.listener(|v, _, _, cx| v.add_visible(cx))).into_any_element() }),
             );
-        flat_section(t, "agents-privacy", "Privacy", vec![sees, sensitive, visible])
+        flat_section(t, "agents-privacy", "Privacy", vec![sees, visible, sensitive])
     }
 
     /// The schemas (or MongoDB databases) known for a connection: from the schema cache when it

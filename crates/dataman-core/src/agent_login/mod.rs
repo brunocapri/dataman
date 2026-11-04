@@ -29,7 +29,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::config::{ConnectionProfile, Engine, McpAccess};
-use crate::privacy::{AgentRules, AgentView, Keep, Mask, Names, RedisCats};
+use crate::privacy::{AgentRules, AgentView, Mask, Names, RedisCats, Side};
 
 /// What marks a login, role, schema or view as Dataman's.
 pub const MARK: &str = "dataman-managed v1";

@@ -13,11 +13,9 @@ SELECT
   `created_at`,
   CASE
     WHEN CAST(`email` AS CHAR) IS NULL THEN NULL
-    WHEN LOCATE('@', CAST(`email` AS CHAR)) > 0
-      THEN CONCAT(LEFT(CAST(`email` AS CHAR), 1), '•••@', SUBSTRING_INDEX(CAST(`email` AS CHAR), '@', -1))
-    WHEN CHAR_LENGTH(CAST(`email` AS CHAR)) >= 8
-      THEN CONCAT('•••• ', RIGHT(CAST(`email` AS CHAR), 4))
-    ELSE '••••'
+    WHEN CHAR_LENGTH(CAST(`email` AS CHAR)) > 4
+      THEN CONCAT(REPEAT('•', CHAR_LENGTH(CAST(`email` AS CHAR)) - 4), RIGHT(CAST(`email` AS CHAR), 4))
+    ELSE REPEAT('•', CHAR_LENGTH(CAST(`email` AS CHAR)))
   END AS `email`
 FROM `shop`.`users`;
 
@@ -42,7 +40,7 @@ GRANT
 
 -- the views
 CREATE TABLE IF NOT EXISTS `dataman_agent_a1b2c3d4_views`.`dataman_views` (name VARCHAR(64) NOT NULL PRIMARY KEY, hash VARCHAR(64) NOT NULL);
-REPLACE INTO `dataman_agent_a1b2c3d4_views`.`dataman_views` (name, hash) VALUES ('shop__users', 'f82a2e7ec667');
+REPLACE INTO `dataman_agent_a1b2c3d4_views`.`dataman_views` (name, hash) VALUES ('shop__users', '4cf487ca5f53');
 
 -- hidden: shop.audit_log → no grant at all
 

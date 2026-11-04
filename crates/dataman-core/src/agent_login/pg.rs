@@ -62,21 +62,16 @@ fn revoke_sql(g: &Grant, user: &str, db: &str) -> Option<String> {
     })
 }
 
-/// A masked column, as the view shows it. Partial as it ships keeps e-mails' domains.
+/// A masked column, as the view shows it: as [`crate::privacy::mask_value`] masks it.
 pub fn mask_expr(col: &str, m: Mask) -> String {
     let c = format!("{}::text", q(col));
-    match m {
-        Mask::Hidden => "'‹hidden›'::text".into(),
-        Mask::Partial(k) if k == Keep::DEFAULT => format!(
-            "CASE WHEN {c} IS NULL THEN NULL WHEN strpos({c}, '@') > 0 THEN left({c}, 1) || '•••@' || split_part({c}, '@', 2) WHEN length({c}) >= 8 THEN '•••• ' || right({c}, 4) ELSE '••••' END"
-        ),
-        Mask::Partial(k) => format!(
-            "CASE WHEN {c} IS NULL THEN NULL WHEN length({c}) > {} THEN left({c}, {}) || '••••' || right({c}, {}) ELSE '••••' END",
-            k.first as u32 + k.last as u32,
-            k.first,
-            k.last
-        ),
-    }
+    let Mask::Partial(k) = m else { return "'‹hidden›'::text".into() };
+    let n = k.count;
+    let shown = match k.side {
+        Side::First => format!("left({c}, {n}) || repeat('•', length({c}) - {n})"),
+        Side::Last => format!("repeat('•', length({c}) - {n}) || right({c}, {n})"),
+    };
+    format!("CASE WHEN {c} IS NULL THEN NULL WHEN length({c}) > {n} THEN {shown} ELSE repeat('•', length({c})) END")
 }
 
 pub struct Desired {
