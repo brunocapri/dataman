@@ -1,7 +1,12 @@
 //! Ignored by default: it runs this machine's cloud CLIs, signed in as their user. Each cloud
 //! is skipped when its CLI is not signed in; `DATAMAN_LIVE_CLOUD=az,aws,gcloud` makes the named
-//! ones required. No database is dialed: only the CLIs are asked for tokens.
+//! ones required. Only the CLIs are asked for tokens, except where a database is named:
+//! `DATAMAN_LIVE_ENTRA=<engine>:<host>/<database>[:<user>]` (engine `mssql`, `pg` or `mysql`)
+//! dials it with an Entra token.
 
+mod common;
+
+use common::*;
 use dataman_core::cloudauth::TokenSource;
 use dataman_core::{Auth, ConnectionProfile, Engine};
 
@@ -63,4 +68,42 @@ async fn cloud_sql_tokens_from_gcloud() {
         Err(e) if !required("gcloud") => eprintln!("gcloud skipped: {e}"),
         Err(e) => panic!("{e}"),
     }
+}
+
+#[test]
+#[ignore]
+fn dials_with_an_entra_token() {
+    let Ok(spec) = std::env::var("DATAMAN_LIVE_ENTRA") else {
+        eprintln!("skipped: DATAMAN_LIVE_ENTRA not set");
+        return;
+    };
+    let (engine, rest) = spec.split_once(':').expect("engine:host/database[:user]");
+    let (target, user) = rest.split_once(':').unwrap_or((rest, ""));
+    let (host, database) = target.split_once('/').expect("host/database");
+    let (engine, who) = match engine {
+        "mssql" => (Engine::SqlServer, "SELECT SUSER_SNAME(), DB_NAME()"),
+        "pg" => (Engine::Postgres, "SELECT current_user, current_database()"),
+        "mysql" => (Engine::MySql, "SELECT CURRENT_USER(), DATABASE()"),
+        e => panic!("engine {e}"),
+    };
+    let mut p = profile(engine, host, user, Auth::EntraId { tenant: None });
+    p.database = database.into();
+    p.sslmode = dataman_core::SslMode::VerifyFull;
+    let e = env();
+    let c = e.core.block_on(e.core.connect(p.clone(), None)).unwrap_or_else(|err| panic!("{err:#}"));
+    // Every session is a new login: the cached token signs them all in.
+    for _ in 0..3 {
+        let s = c.session(None);
+        let rs = s.execute(who);
+        rs.fetch_all();
+        let ph = e.core.block_on(async { tokio::time::timeout(Duration::from_secs(60), rs.wait_finished()).await.expect("timeout") });
+        assert_eq!(ph, Phase::Done, "{:?}", rs.status().error);
+        let snap = rs.snapshot();
+        let row: Vec<String> = (0..snap.columns.len()).map(|col| snap.text(0, col).map(|t| t.into_owned()).unwrap_or_default()).collect();
+        eprintln!("{engine:?} signed in: {row:?}");
+        assert!(row.iter().all(|v| !v.is_empty()), "{row:?}");
+    }
+    // A password, typed or not, never goes in place of the token.
+    let (info, _) = e.core.block_on(e.core.test_connection(p, Some("not-a-password".into()), None)).unwrap_or_else(|err| panic!("{err:#}"));
+    eprintln!("test connection: {info:?}");
 }
