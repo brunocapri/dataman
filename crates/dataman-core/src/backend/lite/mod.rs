@@ -88,7 +88,7 @@ pub(crate) fn authorize(agent: Agent, a: &rusqlite::hooks::AuthAction<'_>) -> ru
     let read = agent == Agent::Read;
     match a {
         A::Attach { .. } | A::Detach { .. } | A::CreateVtable { .. } | A::DropVtable { .. } => Deny,
-        A::Function { function_name } if crate::guard::SQLITE_EFFECT_FUNCTIONS.iter().any(|f| f.eq_ignore_ascii_case(function_name)) => Deny,
+        A::Function { function_name } if crate::sql::functions::is(function_name, crate::sql::functions::SQLITE_FILE) => Deny,
         // Settings that weaken the file or the checks, or hold for the whole process (heap limits,
         // directories), are not an agent's at any level.
         A::Pragma { pragma_name, pragma_value } if pragma_value.is_some() && ["writable_schema", "trusted_schema", "journal_mode", "locking_mode", "query_only", "cell_size_check", "mmap_size", "hard_heap_limit", "soft_heap_limit", "temp_store_directory", "data_store_directory"].iter().any(|p| p.eq_ignore_ascii_case(pragma_name)) => Deny,

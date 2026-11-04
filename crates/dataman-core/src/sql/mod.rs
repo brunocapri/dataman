@@ -1,4 +1,5 @@
 pub mod dialect;
+pub mod functions;
 pub mod lexer;
 pub mod scope;
 pub mod split;
