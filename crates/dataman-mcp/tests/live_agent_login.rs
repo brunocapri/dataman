@@ -409,7 +409,7 @@ fn postgres_masked_through_views() {
     let user = p.agent_login.as_ref().unwrap().user.clone();
     assert_eq!(p.agent_login.as_ref().unwrap().views.len(), 1);
     let r = e.ok("run_query", json!({"connection": p.id, "sql": "SELECT id, name, email FROM users"}));
-    assert_eq!(r["rows"][0], json!([1, "Ana", "a•••@acme.co"]), "{r}");
+    assert_eq!(r["rows"][0], json!([1, "Ana", "•••••••e.co"]), "{r}");
     let last = e.audit().into_iter().rev().find(|x| x["tool"] == "run_query").unwrap();
     assert!(last["rewritten"].as_str().unwrap_or("").contains(&user), "read through the login's view: {last}");
     assert_eq!(last["login"], user.as_str());

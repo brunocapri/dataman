@@ -834,7 +834,7 @@ mod tests {
         let s = check("db.customers.find({email: /@acme/})", false, &c).unwrap();
         let mut out = json!({"documents": [{"email": "ana@acme.com", "city": "Recife"}]});
         let m = shape(&mut out, &s, &|_| true);
-        assert_eq!(out["documents"][0]["email"], "a•••@acme.com");
+        assert_eq!(out["documents"][0]["email"], "••••••••.com");
         assert_eq!(m, vec![("email".to_string(), Mask::PARTIAL)]);
         assert!(check("db.customers.aggregate([{$group: {_id: \"$email\"}}])", false, &c).unwrap_err().contains("masked"));
         assert!(check("db.customers.find({}).sort({email: 1})", false, &c).unwrap_err().contains("masked"));

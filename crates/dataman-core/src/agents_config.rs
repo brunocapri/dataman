@@ -794,8 +794,9 @@ mod tests {
         cases.push(("a weaker entry put before a stronger one", m.clone(), Box::new(|c| c.rules.sensitive.insert(0, col("*mail*", Mask::PARTIAL)))));
         cases.push(("a sensitive column turned off", m.clone(), Box::new(|c| c.rules.sensitive[0].on = false)));
         cases.push(("a sensitive column renamed", m.clone(), Box::new(|c| c.rules.sensitive[0].col = "users.e_mail".into())));
-        m.mcp_rules.sensitive = vec![col("cards.number", Mask::PARTIAL)];
-        cases.push(("a Partial mask keeping more characters", m.clone(), Box::new(|c| c.rules.sensitive[0].how = Mask::Partial(privacy::Keep { first: 7, last: 8 }))));
+        m.mcp_rules.sensitive = vec![col("cards.number", Mask::Partial(privacy::Keep::new(privacy::Side::Last, 2)))];
+        cases.push(("a Partial mask showing more characters", m.clone(), Box::new(|c| c.rules.sensitive[0].how = Mask::PARTIAL)));
+        cases.push(("a Partial mask showing the other end", m.clone(), Box::new(|c| c.rules.sensitive[0].how = Mask::Partial(privacy::Keep::new(privacy::Side::First, 1)))));
         let mut r = ConnectionProfile::new("r");
         r.engine = Engine::MongoDb;
         r.mcp_rules.read_from = Some(privacy::ReadFrom::Secondary);

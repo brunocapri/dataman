@@ -1,13 +1,13 @@
-//! Protection › Sensitive columns › Edit: how one column is masked (Redacted, or Partial with the
-//! characters kept at the start and at the end), with the column as an agent would get it: a few
+//! Protection › Sensitive columns › Edit: how one column is masked (Redacted, or Partial showing
+//! 1–4 characters from the start or the end), with the column as an agent would get it: a few
 //! of its own values in a results grid (a made-up one when none can be read). Nothing is saved
 //! before Save.
 
-use dataman_core::privacy::{self, AgentView, Keep, Mask, Names};
+use dataman_core::privacy::{self, AgentView, Keep, Mask, Names, Side};
 use dataman_core::{ConnectionProfile, Engine};
 use gpui::{AnyElement, ClickEvent, Context, FontWeight, SharedString, div, prelude::*};
 
-use crate::agents::AgentsPage;
+use crate::agents::{AgentsPage, Tip, qmark};
 use crate::agents_rules::{choices, masked_example};
 use crate::theme::{Theme, px};
 use crate::ui;
@@ -37,13 +37,11 @@ fn shown(how: Mask, v: &str) -> String {
     }
 }
 
-/// The row's words for a mask: `Partial · first 2, last 3`.
+/// The row's words for a mask: `Partial · last 4`.
 pub(crate) fn summary(how: Mask) -> String {
     match how {
         Mask::Hidden => "Redacted".into(),
-        Mask::Partial(Keep { first: 0, last }) => format!("Partial · last {last}"),
-        Mask::Partial(Keep { first, last: 0 }) => format!("Partial · first {first}"),
-        Mask::Partial(Keep { first, last }) => format!("Partial · first {first}, last {last}"),
+        Mask::Partial(k) => format!("Partial · {} {}", k.side.key(), k.count),
     }
 }
 
@@ -134,7 +132,8 @@ impl AgentsPage {
     pub(crate) fn sens_sheet(&self, t: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
         let e = self.sens_edit.as_ref()?;
         let masks: Vec<(Mask, &str)> = Mask::ALL.iter().map(|m| (*m, m.label())).collect();
-        let counts: Vec<(u8, String)> = (0..=Keep::MAX).map(|n| (n, n.to_string())).collect();
+        let sides: Vec<(Side, &str)> = Side::ALL.iter().map(|s| (*s, s.key())).collect();
+        let counts: Vec<(u8, String)> = (1..=Keep::MAX).map(|n| (n, n.to_string())).collect();
         let counts: Vec<(u8, &str)> = counts.iter().map(|(n, s)| (*n, s.as_str())).collect();
         let keep = e.how.kept();
         let from = e.sample.as_ref().map(|(_, table)| format!("from {table}"));
@@ -157,8 +156,18 @@ impl AgentsPage {
                 .into_any_element(),
             ))
             .when(e.how.is_partial(), |d| {
-                d.child(line("Keep first", choices(t, "agents-sens-edit-first", &counts, keep.first, cx, |v, n, cx| set_keep(v, |k| k.first = n, cx)).into_any_element()))
-                    .child(line("Keep last", choices(t, "agents-sens-edit-last", &counts, keep.last, cx, |v, n, cx| set_keep(v, |k| k.last = n, cx)).into_any_element()))
+                let n = keep.count;
+                let short = Tip::default().lead(format!("A value of {n} character{} or fewer is hidden whole.", if n == 1 { "" } else { "s" }));
+                let sentence = div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(choices(t, "agents-sens-edit-side", &sides, keep.side, cx, |v, side, cx| set_keep(v, |k| k.side = side, cx)))
+                    .child(choices(t, "agents-sens-edit-count", &counts, keep.count, cx, |v, n, cx| set_keep(v, |k| k.count = n, cx)))
+                    .child(div().text_color(t.tx2).child(if n == 1 { "character" } else { "characters" }))
+                    .child(qmark(t, "agents-sens-edit-short-tip", short));
+                d.child(line("Show the", sentence.into_any_element()))
             })
             .child(
                 div()

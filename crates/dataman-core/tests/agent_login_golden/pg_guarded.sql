@@ -16,8 +16,8 @@ GRANT SELECT ("created_at", "id", "name"), INSERT ("created_at", "id", "name"), 
 -- masked columns: views the agent reads instead (1)
 CREATE SCHEMA "dataman_agent_a1b2c3d4_views";
 COMMENT ON SCHEMA "dataman_agent_a1b2c3d4_views" IS 'dataman-managed v1';
-CREATE VIEW "dataman_agent_a1b2c3d4_views"."users" WITH (security_barrier) AS SELECT "id", "name", "created_at", CASE WHEN "email"::text IS NULL THEN NULL WHEN strpos("email"::text, '@') > 0 THEN left("email"::text, 1) || '•••@' || split_part("email"::text, '@', 2) WHEN length("email"::text) >= 8 THEN '•••• ' || right("email"::text, 4) ELSE '••••' END AS "email" FROM "public"."users";
-COMMENT ON VIEW "dataman_agent_a1b2c3d4_views"."users" IS 'dataman-managed v1 2b9173d7e722';
+CREATE VIEW "dataman_agent_a1b2c3d4_views"."users" WITH (security_barrier) AS SELECT "id", "name", "created_at", CASE WHEN "email"::text IS NULL THEN NULL WHEN length("email"::text) > 4 THEN repeat('•', length("email"::text) - 4) || right("email"::text, 4) ELSE repeat('•', length("email"::text)) END AS "email" FROM "public"."users";
+COMMENT ON VIEW "dataman_agent_a1b2c3d4_views"."users" IS 'dataman-managed v1 65eebae1e893';
 
 -- where it may connect
 GRANT USAGE ON SCHEMA "dataman_agent_a1b2c3d4_views" TO "dataman_agent_a1b2c3d4";

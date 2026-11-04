@@ -26,29 +26,34 @@ fn present(f: &str) -> Value {
     json!({ "$eq": [{ "$type": format!("${f}") }, "missing"] })
 }
 
+/// `n` bullets: 64 at a time, cut to `n` (aggregation has no repeat).
+fn dots(n: Value) -> Value {
+    let chunk = "•".repeat(64);
+    json!({ "$substrCP": [{ "$reduce": {
+        "input": { "$range": [0, { "$toInt": { "$ceil": { "$divide": [n.clone(), 64] } } }] },
+        "initialValue": "",
+        "in": { "$concat": ["$$value", chunk] }
+    } }, 0, n] })
+}
+
+/// A masked field, as the view shows it: as [`crate::privacy::mask_value`] masks it.
 pub fn mask_expr(f: &str, m: Mask) -> Value {
     let v = format!("${f}");
     let masked = match m {
         Mask::Hidden => json!("‹hidden›"),
-        Mask::Partial(k) if k != Keep::DEFAULT => {
-            let (first, last) = (k.first as i64, k.last as i64);
+        Mask::Partial(k) => {
+            let n = k.count as i64;
+            let len = json!({ "$strLenCP": "$$s" });
+            let rest = dots(json!({ "$subtract": [len.clone(), n] }));
+            let shown = match k.side {
+                Side::First => json!({ "$concat": [{ "$substrCP": ["$$s", 0, n] }, rest] }),
+                Side::Last => json!({ "$concat": [rest, { "$substrCP": ["$$s", { "$subtract": [len.clone(), n] }, n] }] }),
+            };
             json!({ "$let": {
                 "vars": { "s": { "$convert": { "input": v, "to": "string", "onError": "", "onNull": "" } } },
-                "in": { "$cond": [
-                    { "$gt": [{ "$strLenCP": "$$s" }, first + last] },
-                    { "$concat": [{ "$substrCP": ["$$s", 0, first] }, "••••", { "$substrCP": ["$$s", { "$subtract": [{ "$strLenCP": "$$s" }, last] }, last] }] },
-                    "••••"
-                ] }
+                "in": { "$cond": [{ "$gt": [len, n] }, shown, dots(json!({ "$strLenCP": "$$s" }))] }
             } })
         }
-        Mask::Partial(_) => json!({ "$let": {
-            "vars": { "s": { "$convert": { "input": v, "to": "string", "onError": "", "onNull": "" } } },
-            "in": { "$cond": [
-                { "$gt": [{ "$indexOfCP": ["$$s", "@"] }, 0] },
-                { "$concat": [{ "$substrCP": ["$$s", 0, 1] }, "•••@", { "$arrayElemAt": [{ "$split": ["$$s", "@"] }, 1] }] },
-                { "$cond": [{ "$gte": [{ "$strLenCP": "$$s" }, 8] }, { "$concat": ["•••• ", { "$substrCP": ["$$s", { "$subtract": [{ "$strLenCP": "$$s" }, 4] }, 4] }] }, "••••"] }
-            ] }
-        } }),
     };
     json!({ "$cond": [present(f), "$$REMOVE", { "$cond": [{ "$eq": [v, null] }, null, masked] }] })
 }

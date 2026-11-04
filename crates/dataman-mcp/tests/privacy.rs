@@ -295,7 +295,7 @@ fn postgres_privacy() {
     // Masked data: sensitive columns, and types inside any value.
     let r = q(format!("SELECT id, name, email, tax_id, city, phone FROM {s}.customers WHERE email LIKE 'ana%'")).unwrap();
     let row = &r["rows"][0];
-    assert_eq!(row[2], "a•••@acme.com");
+    assert_eq!(row[2], "••••••••.com", "the column's last 4");
     assert!(row[3].as_str() == Some("‹hidden›"), "{row}");
     assert_eq!(row[4], "Recife", "unchecked columns are not masked");
     assert_eq!(row[5], "(•••) •••-4567", "phone is masked in any value: the connection's old switch is gone");
@@ -311,7 +311,7 @@ fn postgres_privacy() {
     assert!(q(format!("SELECT email AS e FROM {s}.customers")).unwrap_err().contains("masked for agents"));
     assert!(q(format!("SELECT tax_id, count(*) FROM {s}.customers GROUP BY tax_id")).unwrap_err().contains("masked for agents"));
     let r = e.ok("sample_rows", p(json!({"table": format!("{s}.customers")})));
-    assert_eq!(r["rows"][0][2], "a•••@acme.com");
+    assert_eq!(r["rows"][0][2], "••••••••.com");
 
     // Introspection.
     let t = e.ok("list_tables", p(json!({"schema": s})));
@@ -411,7 +411,7 @@ fn postgres_views_long_cells_and_returning() {
     assert!(!cell.contains("4242 4242") && cell.contains("•••• 4242"), "the card is masked whole, then cut: …{}", &cell[cell.len().saturating_sub(40)..]);
     assert!(cell.ends_with('…') && cell.chars().count() == 2001, "still cut to the agent's size: {}", cell.chars().count());
     let r = q(format!("SELECT id, email, tax_id FROM {s}.customers ORDER BY id")).unwrap();
-    assert_eq!(r["rows"][0][1], "a•••@acme.com", "the e-mail is masked whole, not its first 2000 characters");
+    assert_eq!(r["rows"][0][1], format!("{}.com", "•".repeat(2505)), "the e-mail is masked whole, not its first 2000 characters");
     assert_eq!(r["rows"][0][2], dataman_core::privacy::HIDDEN, "longer than is read: hidden whole");
     assert!(r["rows"][1][2].as_str() == Some("‹hidden›"), "{}", r["rows"][1][2]);
 
@@ -525,7 +525,7 @@ fn mongodb_privacy() {
     assert!(e.err("nosql_query", m(json!({"query": "db.users.aggregate([{$lookup: {from: \"payments\", localField: \"_id\", foreignField: \"_id\", as: \"p\"}}])"}))).contains("not visible"));
     assert!(e.err("nosql_query", m(json!({"query": "db.users.find({$where: \"true\"})"}))).contains("running code"));
     let r = e.ok("nosql_query", m(json!({"query": "db.customers.find({email: /acme/})"})));
-    assert_eq!(r["documents"][0]["email"], "a•••@acme.com", "{r}");
+    assert_eq!(r["documents"][0]["email"], "••••••••.com", "{r}");
     let listed = e.ok("list_tables", m(json!({})));
     assert!(!listed.to_string().contains("payments"), "{listed}");
     let d = e.ok("describe_table", m(json!({"table": "users"})));
