@@ -16,16 +16,44 @@ pub struct FileStamp {
 impl FileStamp {
     pub fn of(path: &Path) -> Option<FileStamp> {
         let m = std::fs::metadata(path).ok()?;
-        #[cfg(unix)]
-        let ino = std::os::unix::fs::MetadataExt::ino(&m);
-        #[cfg(unix)]
-        let changed = (std::os::unix::fs::MetadataExt::ctime(&m), std::os::unix::fs::MetadataExt::ctime_nsec(&m));
-        // The NTFS file index and change time: what the inode and ctime are on Unix.
         #[cfg(windows)]
-        let (ino, changed) = windows_ids(path).unwrap_or((0, (0, 0)));
-        #[cfg(not(any(unix, windows)))]
-        let (ino, changed) = (0, (0, 0));
-        Some(FileStamp { modified: m.modified().ok(), len: m.len(), ino, changed })
+        let ids = {
+            use std::os::windows::fs::OpenOptionsExt as _;
+            // No access asked: metadata only, whoever else has the file open.
+            let f = std::fs::OpenOptions::new().access_mode(0).custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS).open(path).ok();
+            f.and_then(|f| windows_ids(&f))
+        };
+        #[cfg(not(windows))]
+        let ids = None;
+        Some(Self::from_meta(&m, ids))
+    }
+
+    /// A file already open: the one being read, whatever its name points at by now.
+    pub fn of_file(f: &std::fs::File) -> Option<FileStamp> {
+        let m = f.metadata().ok()?;
+        #[cfg(windows)]
+        let ids = windows_ids(f);
+        #[cfg(not(windows))]
+        let ids = None;
+        Some(Self::from_meta(&m, ids))
+    }
+
+    /// `ids`: the NTFS file index and change time, what the inode and ctime are on Unix (where
+    /// the metadata has them).
+    fn from_meta(m: &std::fs::Metadata, ids: Option<(u64, (i64, i64))>) -> FileStamp {
+        #[cfg(unix)]
+        let (ino, changed) = {
+            use std::os::unix::fs::MetadataExt as _;
+            let _ = ids;
+            (m.ino(), (m.ctime(), m.ctime_nsec()))
+        };
+        #[cfg(not(unix))]
+        let (ino, changed) = ids.unwrap_or((0, (0, 0)));
+        FileStamp { modified: m.modified().ok(), len: m.len(), ino, changed }
+    }
+
+    pub fn size(&self) -> u64 {
+        self.len
     }
 
     /// Written over a second ago. A write in place within the same clock tick, the same length,
@@ -37,14 +65,9 @@ impl FileStamp {
 }
 
 #[cfg(windows)]
-fn windows_ids(path: &Path) -> Option<(u64, (i64, i64))> {
-    use std::os::windows::fs::OpenOptionsExt as _;
+fn windows_ids(f: &std::fs::File) -> Option<(u64, (i64, i64))> {
     use std::os::windows::io::AsRawHandle as _;
-    use windows_sys::Win32::Storage::FileSystem::{
-        BY_HANDLE_FILE_INFORMATION, FILE_BASIC_INFO, FILE_FLAG_BACKUP_SEMANTICS, FileBasicInfo, GetFileInformationByHandle, GetFileInformationByHandleEx,
-    };
-    // No access asked: metadata only, whoever else has the file open.
-    let f = std::fs::OpenOptions::new().access_mode(0).custom_flags(FILE_FLAG_BACKUP_SEMANTICS).open(path).ok()?;
+    use windows_sys::Win32::Storage::FileSystem::{BY_HANDLE_FILE_INFORMATION, FILE_BASIC_INFO, FileBasicInfo, GetFileInformationByHandle, GetFileInformationByHandleEx};
     let h = f.as_raw_handle();
     // SAFETY: a valid handle and out-structures of the sizes given.
     unsafe {

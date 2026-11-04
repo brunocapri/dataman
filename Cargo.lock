@@ -2187,7 +2187,6 @@ dependencies = [
  "duckdb",
  "fallible-iterator 0.2.0",
  "fallible-iterator 0.3.0",
- "flate2",
  "futures-lite",
  "futures-util",
  "hmac 0.13.0",

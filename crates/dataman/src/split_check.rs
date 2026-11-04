@@ -330,6 +330,12 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
     );
 
     pause(cx, 300).await;
+    // The results drawn follow the focused group a frame after it moves.
+    wait(cx, |cx| {
+        draw(cx);
+        cx.update(|_, cx| ws.read(cx).result_bounds.get()).ok().flatten().is_some_and(|r| r.left().pt() >= rx)
+    })
+    .await;
     let result = cx.update(|_, cx| ws.read(cx).result_bounds.get()).ok().flatten();
     if let Some(r) = result {
         click(cx, point(r.left() + px(60.), r.top() + px(metrics::RESULT_BAR_H + 50.)));
@@ -361,7 +367,12 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
     // stage's window in front) hears of no focus change until it is in front again.
     key(cx, "left");
     key(cx, "right");
-    draw(cx);
+    // The group follows the focus once the frame's focus phase is over.
+    wait(cx, |cx| {
+        draw(cx);
+        focused(ws, cx) == Some(Pane::Left)
+    })
+    .await;
     report("the keys landing in the other group give it the focus", focused(ws, cx) == Some(Pane::Left) && active(ws, cx).as_ref() == Some(&first), format!("{:?}", focused(ws, cx)));
 
     key(cx, "cmd-t");

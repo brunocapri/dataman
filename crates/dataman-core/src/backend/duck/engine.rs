@@ -3,15 +3,11 @@
 //! time a DuckDB database is opened. The `duckdb` crate is built as for a loadable extension,
 //! every C call going through a table of pointers; the engine hands over that table.
 //!
-//! The engine is looked for in `DATAMAN_DUCKDB` (a folder: the tests, a build of one's own),
-//! beside the executable (the Linux and Windows packages ship it), then in the engines folder
-//! (the Mac app downloads it); missing there,
-//! it is downloaded into it from the release whose SHA-256 is pinned below, so a file that
-//! differs is never loaded. On macOS the engine is signed with the app's own Developer ID: the
-//! hardened runtime's library validation loads nothing else.
+//! The engine is looked for in `DATAMAN_DUCKDB` (a folder: the tests, a build of one's own), then
+//! beside the executable, where every package ships it. On macOS it is signed with the app's own
+//! Developer ID: the hardened runtime's library validation loads nothing else.
 
 use std::ffi::{CStr, c_char, c_void};
-use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, anyhow, bail};
@@ -36,36 +32,6 @@ pub const FILE: &str = if cfg!(target_os = "macos") {
     "libdataman_duckdb.so"
 };
 
-/// An engine to download: gzipped, `size` and `sha256` those of the .gz.
-pub(crate) struct Download {
-    pub platform: &'static str,
-    pub url: &'static str,
-    pub size: u64,
-    pub sha256: &'static str,
-}
-
-/// Made by `scripts/duckdb-engine.sh --package`, published under the `duckdb-v1.5.6` release (a
-/// prerelease: the feed's `releases/latest` stays the app's). Linux and Windows ship the engine.
-const DOWNLOADS: &[Download] = &[Download {
-    platform: "macos-aarch64",
-    url: "https://github.com/brunocapri/dataman/releases/download/duckdb-v1.5.6/libdataman_duckdb-v1.5.6-macos-aarch64.dylib.gz",
-    size: 11435547,
-    sha256: "f0d9255c8afc3c2b06fced0607ef7b01a9069365b6cf5e2723e0a820ffd19a60",
-}];
-
-/// Engines published before engines exported their fingerprint (the macOS download above): the
-/// SHA-256 of the library itself and the fingerprint of the list it was built from. Loaded without
-/// the export only by those exact bytes, and only while this list is that one (`--api` remade
-/// means a new engine published, and this entry removed).
-const UNMARKED: &[(&str, u64)] = &[("0b7f80b16f4405ae190a42bc7f2ac3980769c9a8040aa6a39dffe4742dd67e3d", 0xa81a_a931_7742_4a2d)];
-
-/// The fingerprint `UNMARKED` knows the library at `path` by.
-fn unmarked(path: &Path, known: &[(&str, u64)]) -> Option<u64> {
-    let bytes = std::fs::read(path).ok()?;
-    let sum = data_encoding::HEXLOWER.encode(ring::digest::digest(&ring::digest::SHA256, &bytes).as_ref());
-    known.iter().find(|(s, _)| *s == sum).map(|&(_, fp)| fp)
-}
-
 type Table = unsafe extern "C" fn(out: *mut *const c_void, cap: usize) -> usize;
 type Fingerprint = unsafe extern "C" fn() -> u64;
 
@@ -83,34 +49,28 @@ macro_rules! api {
 }
 duckdb_api_v1!(api);
 
+/// What to do about an engine that is not this one.
+const REBUILD: &str = "reinstall Dataman; a build of one's own: scripts/duckdb-engine.sh";
+
 /// Where the engine came from, once loaded.
 static LOADED: Mutex<Option<PathBuf>> = parking_lot::const_mutex(None);
 
-/// The engine, loaded now (found, or downloaded first) or already; the next connection tries
-/// again after a failure. Blocking: a download takes a while.
+/// The engine, loaded now or already; the next connection tries again after a failure.
 pub(crate) fn load() -> Result<()> {
     let mut g = LOADED.lock();
     if g.is_some() {
         return Ok(());
     }
-    let path = match places().into_iter().map(|d| d.join(FILE)).find(|p| p.is_file()) {
-        Some(p) => p,
-        None => {
-            let dir = dir().context("no folder to download DuckDB into")?;
-            let d = DOWNLOADS.iter().find(|d| d.platform == crate::update::platform()).ok_or_else(|| {
-                anyhow!("DuckDB is not part of this Dataman and has no download for {}: put {FILE} in {}", crate::update::platform(), dir.display())
-            })?;
-            log::info!("DuckDB {VERSION}: downloading {}", d.url);
-            fetch(d, &dir).context("downloading DuckDB")?
-        }
-    };
+    let path = places().into_iter().map(|d| d.join(FILE)).find(|p| p.is_file()).ok_or_else(|| {
+        anyhow!("DuckDB's engine ({FILE}) is missing: it ships beside Dataman (a build of one's own: scripts/duckdb-engine.sh)")
+    })?;
     open(&path)?;
     log::info!("DuckDB {VERSION} from {}", path.display());
     *g = Some(path);
     Ok(())
 }
 
-/// The folders looked in, in order; the last one is where a download goes.
+/// The folders looked in, in order.
 fn places() -> Vec<PathBuf> {
     let mut v: Vec<PathBuf> = std::env::var_os(ENV).filter(|d| !d.is_empty()).map(PathBuf::from).into_iter().collect();
     if let Some(exe) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)) {
@@ -121,51 +81,7 @@ fn places() -> Vec<PathBuf> {
         v.push(exe.join("../lib/dataman"));
         v.push(exe);
     }
-    v.extend(dir());
     v
-}
-
-/// The engines folder: per user and machine, and per DuckDB version and ABI (an engine of
-/// another build is never found there, so a new one is downloaded beside it).
-fn dir() -> Option<PathBuf> {
-    let base = if crate::os::WINDOWS {
-        crate::os::local_app_data()?.join("dataman")
-    } else if crate::os::LINUX {
-        crate::os::data_home()?.join("dataman")
-    } else {
-        crate::os::home()?.join("Library/Application Support/Dataman")
-    };
-    Some(base.join("engines").join(format!("duckdb-{VERSION}-{FINGERPRINT:016x}")))
-}
-
-/// `d` downloaded into `dir`, checked and unpacked: the engine's path.
-fn fetch(d: &Download, dir: &Path) -> Result<PathBuf> {
-    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-    // Per process: the app and its MCP server may both be downloading.
-    let gz = dir.join(format!("{FILE}.gz.{}.part", std::process::id()));
-    let r = crate::http::download(d.url, d.size, &gz, &|_| {}).and_then(|()| install(&gz, d, dir));
-    let _ = std::fs::remove_file(&gz);
-    r
-}
-
-fn install(gz: &Path, d: &Download, dir: &Path) -> Result<PathBuf> {
-    let bytes = std::fs::read(gz)?;
-    let sum = data_encoding::HEXLOWER.encode(ring::digest::digest(&ring::digest::SHA256, &bytes).as_ref());
-    if bytes.len() as u64 != d.size || sum != d.sha256 {
-        bail!("the download is not the published one ({} bytes, SHA-256 {sum})", bytes.len());
-    }
-    let mut lib = Vec::new();
-    flate2::read::GzDecoder::new(&bytes[..]).read_to_end(&mut lib).context("unpacking")?;
-    let part = dir.join(format!("{FILE}.{}.part", std::process::id()));
-    std::fs::write(&part, &lib)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(&part, std::fs::Permissions::from_mode(0o755))?;
-    }
-    let path = dir.join(FILE);
-    std::fs::rename(&part, &path)?;
-    Ok(path)
 }
 
 /// `info` is the struct itself: no other extension info is asked for.
@@ -181,14 +97,11 @@ fn open(path: &Path) -> Result<()> {
     // Before anything of its table is read: the engine was built from this list and this
     // libduckdb-sys (an older one, in another order, would be called at the wrong functions).
     // SAFETY: the engine's export, with this signature (engines/duckdb/src/lib.rs).
-    let fp = match unsafe { lib.get::<Fingerprint>(b"dataman_duckdb_fingerprint\0") } {
-        // SAFETY: as above.
-        Ok(f) => unsafe { f() },
-        // The published download predates the export: known by its bytes.
-        Err(_) => unmarked(path, UNMARKED).ok_or_else(|| anyhow!("{}: it is an older build, with no ABI fingerprint (the engine ships beside Dataman; rebuild it with scripts/duckdb-engine.sh)", what()))?,
-    };
+    let fp = unsafe { lib.get::<Fingerprint>(b"dataman_duckdb_fingerprint\0") }.map_err(|_| anyhow!("{}: it is an older build, with no ABI fingerprint ({REBUILD})", what()))?;
+    // SAFETY: as above.
+    let fp = unsafe { fp() };
     if fp != FINGERPRINT {
-        bail!("{}: it was built for another C API ({fp:016x}, not {FINGERPRINT:016x}); rebuild it with scripts/duckdb-engine.sh", what());
+        bail!("{}: it was built for another C API ({fp:016x}, not {FINGERPRINT:016x}; {REBUILD})", what());
     }
     let mut t = [std::ptr::null(); COUNT];
     // SAFETY: the engine's export, with this signature (engines/duckdb/src/lib.rs).
@@ -218,40 +131,6 @@ fn open(path: &Path) -> Result<()> {
 mod tests {
     use super::*;
 
-    fn gz(bytes: &[u8]) -> Vec<u8> {
-        use std::io::Write as _;
-        let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-        e.write_all(bytes).unwrap();
-        e.finish().unwrap()
-    }
-
-    fn sha(bytes: &[u8]) -> String {
-        data_encoding::HEXLOWER.encode(ring::digest::digest(&ring::digest::SHA256, bytes).as_ref())
-    }
-
-    #[test]
-    fn a_download_is_installed_only_as_published() {
-        let dir = tempfile::tempdir().unwrap();
-        let src = dir.path().join("engine.gz");
-        let packed = gz(b"the engine");
-        std::fs::write(&src, &packed).unwrap();
-        let url: &'static str = format!("file://{}", src.display()).leak();
-        let into = dir.path().join("engines");
-
-        let sum: &'static str = sha(b"something else").leak();
-        let wrong = Download { platform: "test", url, size: packed.len() as u64, sha256: sum };
-        let e = fetch(&wrong, &into).unwrap_err();
-        assert!(format!("{e:#}").contains("not the published one"), "{e:#}");
-        assert_eq!(std::fs::read_dir(&into).unwrap().count(), 0, "nothing left behind");
-
-        let sum: &'static str = sha(&packed).leak();
-        let right = Download { platform: "test", url, size: packed.len() as u64, sha256: sum };
-        let path = fetch(&right, &into).unwrap();
-        assert_eq!(path, into.join(FILE));
-        assert_eq!(std::fs::read(&path).unwrap(), b"the engine");
-        assert_eq!(std::fs::read_dir(&into).unwrap().count(), 1, "only the engine");
-    }
-
     #[test]
     fn a_library_that_is_not_the_engine_is_refused() {
         let dir = tempfile::tempdir().unwrap();
@@ -268,30 +147,5 @@ mod tests {
         assert_eq!(lock[at..].lines().nth(1), Some(format!("version = \"{LIBDUCKDB_SYS}\"").as_str()), "api_v1.rs: scripts/duckdb-engine.sh --api");
         assert_ne!(FINGERPRINT, fingerprint(LIBDUCKDB_SYS, &["duckdb_open"]));
         assert_ne!(fingerprint("1", &["ab", "c"]), fingerprint("1", &["a", "bc"]));
-    }
-
-    /// The published macOS engine has no fingerprint export: it still loads while the list is the
-    /// one it was built from, known by its bytes, and nothing else does.
-    #[test]
-    fn the_published_engine_without_a_fingerprint_is_known_by_its_bytes() {
-        assert!(UNMARKED.iter().all(|&(_, fp)| fp == FINGERPRINT), "api_v1.rs changed: publish a new engine and drop UNMARKED");
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(FILE);
-        std::fs::write(&path, b"an engine").unwrap();
-        let sum = sha(b"an engine");
-        assert_eq!(unmarked(&path, &[(sum.as_str(), 7)]), Some(7));
-        assert_eq!(unmarked(&path, UNMARKED), None);
-        assert_eq!(unmarked(&dir.path().join("missing"), &[(sum.as_str(), 7)]), None);
-    }
-
-    #[test]
-    fn every_platform_has_its_own_download() {
-        let mut seen: Vec<&str> = DOWNLOADS.iter().map(|d| d.platform).collect();
-        seen.sort();
-        seen.dedup();
-        assert_eq!(seen.len(), DOWNLOADS.len());
-        for d in DOWNLOADS {
-            assert!(d.url.starts_with("https://") && d.url.ends_with(".gz") && d.sha256.len() == 64, "{}", d.url);
-        }
     }
 }

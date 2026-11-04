@@ -1,3 +1,4 @@
+use dataman_core::stamp::FileStamp;
 use dataman_core::{Favorite, NameMatch};
 use serde_json::{Map, Value, json};
 
@@ -252,22 +253,16 @@ const IMPORT_MAX: u64 = 1024 * 1024;
 
 /// The file the user allowed, as it was then: the same file (device and inode), of the same
 /// size, not one swapped in after the Allow; read no further than that size.
-fn read_same(path: &std::path::Path, before: &std::fs::Metadata) -> std::io::Result<String> {
+fn read_same(path: &std::path::Path, before: &FileStamp) -> std::io::Result<String> {
     use std::io::Read;
     let f = std::fs::File::open(path)?;
-    let now = f.metadata()?;
-    #[cfg(unix)]
-    let same = {
-        use std::os::unix::fs::MetadataExt;
-        (now.dev(), now.ino()) == (before.dev(), before.ino())
-    };
-    #[cfg(not(unix))]
-    let same = now.modified().ok() == before.modified().ok();
-    if !same || now.len() != before.len() {
+    // The file opened, not the name: replaced after the allow (Windows' file times move by a
+    // clock tick, so the NTFS file index tells it), its stamp is another.
+    if FileStamp::of_file(&f).as_ref() != Some(before) {
         return Err(std::io::Error::other("the file changed after it was allowed; nothing was imported from it"));
     }
     let mut s = String::new();
-    f.take(before.len()).read_to_string(&mut s)?;
+    f.take(before.size()).read_to_string(&mut s)?;
     Ok(s)
 }
 
@@ -295,10 +290,11 @@ fn import_favorites(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> 
             if meta.len() > IMPORT_MAX {
                 return Err(ToolError::Invalid(format!("{s:?} is larger than {}", dataman_core::schema::objects::human_size(IMPORT_MAX as i64))));
             }
-            files.push((path, meta));
+            let stamp = FileStamp::of(&path).ok_or_else(|| ToolError::Invalid(format!("{s:?} could not be read")))?;
+            files.push((path, stamp));
         }
         // What the agent reads back with list_favorites: the user says which files leave their Mac.
-        let what: Vec<String> = files.iter().map(|(p, m)| format!("{}  ({})", p.display(), dataman_core::schema::objects::human_size(m.len() as i64))).collect();
+        let what: Vec<String> = files.iter().map(|(p, m)| format!("{}  ({})", p.display(), dataman_core::schema::objects::human_size(m.size() as i64))).collect();
         let why = if files.len() == 1 { format!("reads a file on {}", dataman_core::os::THIS_MACHINE) } else { format!("reads files on {}", dataman_core::os::THIS_MACHINE) };
         cx.ask_local("Import favorites", &what.join("\n"), vec![why.into()]).await?;
         let mut added = Vec::new();
@@ -321,7 +317,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("q.sql");
         std::fs::write(&p, "SELECT 1").unwrap();
-        let before = std::fs::metadata(&p).unwrap();
+        let before = FileStamp::of(&p).unwrap();
         assert_eq!(read_same(&p, &before).unwrap(), "SELECT 1");
         let other = dir.path().join("other.sql");
         std::fs::write(&other, "SELECT 2").unwrap();

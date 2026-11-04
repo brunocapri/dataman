@@ -29,6 +29,14 @@ mod theme;
 #[allow(dead_code)]
 mod ui;
 
+// The demo saves no settings: the change is applied to a throwaway copy.
+mod prefs {
+    pub fn save(f: impl FnOnce(&mut dataman_core::settings::Settings), _: &mut gpui::App) -> bool {
+        f(&mut dataman_core::settings::Settings::default());
+        true
+    }
+}
+
 mod grid {
     #[derive(Clone, Default)]
     pub struct GutterShare;
