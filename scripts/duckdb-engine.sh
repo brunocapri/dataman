@@ -30,6 +30,7 @@ if [ "${1:-}" = "--api" ]; then
     echo "// The fields of libduckdb-sys $sys's duckdb_ext_api_v1, in order: the table the engine"
     echo "// (engines/duckdb) hands over and the struct the loader fills. Remade on a DuckDB upgrade by"
     echo "// scripts/duckdb-engine.sh --api; a list that is off fails to compile."
+    echo "const LIBDUCKDB_SYS: &str = \"$sys\";"
     echo 'macro_rules! duckdb_api_v1 {'
     echo '    ($m:ident) => {'
     echo '        $m! {'

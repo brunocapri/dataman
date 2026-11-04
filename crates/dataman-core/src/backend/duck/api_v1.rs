@@ -1,6 +1,7 @@
 // The fields of libduckdb-sys 1.10506.1's duckdb_ext_api_v1, in order: the table the engine
 // (engines/duckdb) hands over and the struct the loader fills. Remade on a DuckDB upgrade by
 // scripts/duckdb-engine.sh --api; a list that is off fails to compile.
+const LIBDUCKDB_SYS: &str = "1.10506.1";
 macro_rules! duckdb_api_v1 {
     ($m:ident) => {
         $m! {
