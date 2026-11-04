@@ -210,6 +210,8 @@ pub struct HistoryPanel {
     entries: Vec<(String, HistoryEntry)>,
     /// The entries being read again after a run.
     loading: Option<gpui::Task<()>>,
+    /// The files were read at least once: before that, no entries is not "no history".
+    loaded: bool,
     favorites: Vec<Favorite>,
     folders: Vec<Folder>,
     open_folders: HashSet<String>,
@@ -271,6 +273,7 @@ impl HistoryPanel {
             focus: cx.focus_handle(),
             entries: vec![],
             loading: None,
+            loaded: false,
             favorites: vec![],
             folders: vec![],
             open_folders: HashSet::new(),
@@ -352,6 +355,7 @@ impl HistoryPanel {
                 h.apply_filter(cx);
                 h.keep_selected(keep);
                 h.loading = None;
+                h.loaded = true;
             });
         }));
     }
@@ -2239,7 +2243,10 @@ impl Render for HistoryPanel {
             self.dragging_folder = None;
         }
         let top_drop = self.drop_at == Some(DropAt::Top);
-        let body: AnyElement = if self.items.is_empty() {
+        let body: AnyElement = if self.items.is_empty() && !self.show_favorites && !self.loaded && self.loading.is_some() {
+            // The first read is still on its way: blank, not a clean slate that then fills.
+            div().flex_1().into_any_element()
+        } else if self.items.is_empty() {
             div()
                 .flex_1()
                 .px(px(30.))
