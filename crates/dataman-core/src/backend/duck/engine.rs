@@ -53,6 +53,19 @@ const DOWNLOADS: &[Download] = &[Download {
     sha256: "f0d9255c8afc3c2b06fced0607ef7b01a9069365b6cf5e2723e0a820ffd19a60",
 }];
 
+/// Engines published before engines exported their fingerprint (the macOS download above): the
+/// SHA-256 of the library itself and the fingerprint of the list it was built from. Loaded without
+/// the export only by those exact bytes, and only while this list is that one (`--api` remade
+/// means a new engine published, and this entry removed).
+const UNMARKED: &[(&str, u64)] = &[("0b7f80b16f4405ae190a42bc7f2ac3980769c9a8040aa6a39dffe4742dd67e3d", 0xa81a_a931_7742_4a2d)];
+
+/// The fingerprint `UNMARKED` knows the library at `path` by.
+fn unmarked(path: &Path, known: &[(&str, u64)]) -> Option<u64> {
+    let bytes = std::fs::read(path).ok()?;
+    let sum = data_encoding::HEXLOWER.encode(ring::digest::digest(&ring::digest::SHA256, &bytes).as_ref());
+    known.iter().find(|(s, _)| *s == sum).map(|&(_, fp)| fp)
+}
+
 type Table = unsafe extern "C" fn(out: *mut *const c_void, cap: usize) -> usize;
 type Fingerprint = unsafe extern "C" fn() -> u64;
 
@@ -168,9 +181,12 @@ fn open(path: &Path) -> Result<()> {
     // Before anything of its table is read: the engine was built from this list and this
     // libduckdb-sys (an older one, in another order, would be called at the wrong functions).
     // SAFETY: the engine's export, with this signature (engines/duckdb/src/lib.rs).
-    let fp = unsafe { lib.get::<Fingerprint>(b"dataman_duckdb_fingerprint\0") }.map_err(|_| anyhow!("{}: it is an older build, with no ABI fingerprint (the engine ships beside Dataman; rebuild it with scripts/duckdb-engine.sh)", what()))?;
-    // SAFETY: as above.
-    let fp = unsafe { fp() };
+    let fp = match unsafe { lib.get::<Fingerprint>(b"dataman_duckdb_fingerprint\0") } {
+        // SAFETY: as above.
+        Ok(f) => unsafe { f() },
+        // The published download predates the export: known by its bytes.
+        Err(_) => unmarked(path, UNMARKED).ok_or_else(|| anyhow!("{}: it is an older build, with no ABI fingerprint (the engine ships beside Dataman; rebuild it with scripts/duckdb-engine.sh)", what()))?,
+    };
     if fp != FINGERPRINT {
         bail!("{}: it was built for another C API ({fp:016x}, not {FINGERPRINT:016x}); rebuild it with scripts/duckdb-engine.sh", what());
     }
@@ -252,6 +268,20 @@ mod tests {
         assert_eq!(lock[at..].lines().nth(1), Some(format!("version = \"{LIBDUCKDB_SYS}\"").as_str()), "api_v1.rs: scripts/duckdb-engine.sh --api");
         assert_ne!(FINGERPRINT, fingerprint(LIBDUCKDB_SYS, &["duckdb_open"]));
         assert_ne!(fingerprint("1", &["ab", "c"]), fingerprint("1", &["a", "bc"]));
+    }
+
+    /// The published macOS engine has no fingerprint export: it still loads while the list is the
+    /// one it was built from, known by its bytes, and nothing else does.
+    #[test]
+    fn the_published_engine_without_a_fingerprint_is_known_by_its_bytes() {
+        assert!(UNMARKED.iter().all(|&(_, fp)| fp == FINGERPRINT), "api_v1.rs changed: publish a new engine and drop UNMARKED");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(FILE);
+        std::fs::write(&path, b"an engine").unwrap();
+        let sum = sha(b"an engine");
+        assert_eq!(unmarked(&path, &[(sum.as_str(), 7)]), Some(7));
+        assert_eq!(unmarked(&path, UNMARKED), None);
+        assert_eq!(unmarked(&dir.path().join("missing"), &[(sum.as_str(), 7)]), None);
     }
 
     #[test]
