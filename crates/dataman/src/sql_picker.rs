@@ -2,27 +2,47 @@
 //! are AppKit's own `NSOpenPanel` / `NSSavePanel`.
 
 use std::path::PathBuf;
-use std::sync::Mutex;
 
 use gpui::App;
 use tokio::sync::oneshot;
 
-static TEST_PATHS: Mutex<Option<Vec<PathBuf>>> = Mutex::new(None);
-static TEST_SAVE: Mutex<Option<PathBuf>> = Mutex::new(None);
+/// What a check stage sets for the next file panel to answer, in place of the user: the one
+/// hook every panel in the app reads (open, save, folder). Only in check builds.
+#[cfg(feature = "checks")]
+mod hook {
+    use std::path::PathBuf;
+    use std::sync::Mutex;
 
+    pub(super) static OPEN: Mutex<Option<Vec<PathBuf>>> = Mutex::new(None);
+    pub(super) static SAVE: Mutex<Option<PathBuf>> = Mutex::new(None);
+}
+
+/// The next open panel (files or a folder) answers `paths`.
 #[cfg(feature = "checks")]
 pub fn set_test_paths(paths: Vec<PathBuf>) {
-    *TEST_PATHS.lock().unwrap() = Some(paths);
+    *hook::OPEN.lock().unwrap() = Some(paths);
 }
 
+/// The next save panel answers `path`.
 #[cfg(feature = "checks")]
 pub fn set_test_save_path(path: PathBuf) {
-    *TEST_SAVE.lock().unwrap() = Some(path);
+    *hook::SAVE.lock().unwrap() = Some(path);
 }
 
-/// What a check stage set for the next picker to answer.
+/// What a check stage set for the next open panel to answer.
 pub fn take_test_paths() -> Option<Vec<PathBuf>> {
-    TEST_PATHS.lock().unwrap().take()
+    #[cfg(feature = "checks")]
+    return hook::OPEN.lock().unwrap().take();
+    #[cfg(not(feature = "checks"))]
+    None
+}
+
+/// What a check stage set for the next save panel to answer.
+pub fn take_test_save_path() -> Option<PathBuf> {
+    #[cfg(feature = "checks")]
+    return hook::SAVE.lock().unwrap().take();
+    #[cfg(not(feature = "checks"))]
+    None
 }
 
 pub fn file_name_for(title: &str) -> String {
@@ -50,7 +70,7 @@ pub fn pick_save_path(name: &str, cx: &App) -> oneshot::Receiver<Option<PathBuf>
 /// A new file's path (the save panel), with the first of `exts` added when it has none of them.
 pub fn pick_new_file(exts: &'static [&'static str], name: &str, cx: &App) -> oneshot::Receiver<Option<PathBuf>> {
     let (tx, rx) = oneshot::channel();
-    if let Some(path) = TEST_SAVE.lock().unwrap().take() {
+    if let Some(path) = take_test_save_path() {
         let _ = tx.send(Some(path));
         return rx;
     }

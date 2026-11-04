@@ -64,11 +64,6 @@ fn rank(name: &str, q: &str) -> Option<u8> {
     }
 }
 
-fn system(s: &str) -> bool {
-    let l = s.to_lowercase();
-    matches!(l.as_str(), "information_schema" | "pg_catalog" | "sys" | "mysql" | "performance_schema" | "admin" | "local" | "config") || l.starts_with("pg_toast") || l.starts_with("pg_temp")
-}
-
 impl AgentsPage {
     fn input_of(&self, w: Which) -> &gpui::Entity<crate::input::TextInput> {
         match w {
@@ -153,7 +148,7 @@ impl AgentsPage {
         };
         let (head, tail) = text.rsplit_once('.').map_or((None, text), |(h, t)| (Some(h), t));
         if p.engine.is_sql() {
-            let schemas: Vec<String> = conn.schema.cached_schemas(&db).unwrap_or_default().into_iter().filter(|s| !system(s)).collect();
+            let schemas: Vec<String> = conn.schema.cached_schemas(&db).unwrap_or_default().into_iter().filter(|s| !p.engine.is_system_schema(s)).collect();
             if schemas.is_empty() {
                 self.load(&p.id, "schemas", cx, {
                     let (conn, db) = (conn.clone(), db.clone());
@@ -263,7 +258,7 @@ impl AgentsPage {
             }
             match head {
                 Some(h) => {
-                    let key = format!("{}\u{0}{h}", p.id);
+                    let key = format!("{}\u{0}{db}\u{0}{h}", p.id);
                     match self.fields.get(&key) {
                         Some(fields) => {
                             for (f, ty) in fields {
@@ -274,7 +269,8 @@ impl AgentsPage {
                             let (conn, db, coll) = (conn.clone(), db.clone(), h.to_string());
                             if self.loading.insert(key.clone()) {
                                 cx.spawn(async move |this, cx| {
-                                    let fields = conn.sample_fields(&db, &coll).await.unwrap_or_default();
+                                    // A failed read stays marked, so it is not asked again on every keystroke.
+                                    let Some(fields) = crate::logged("sampling fields", conn.sample_fields(&db, &coll).await) else { return };
                                     let _ = this.update(cx, |v, cx| {
                                         v.loading.remove(&key);
                                         v.fields.insert(key, fields.into_iter().map(|(p, t)| (p, t.join(" | "))).collect());
@@ -290,7 +286,7 @@ impl AgentsPage {
                 None => {
                     for n in &names {
                         let text = if w == Which::Visible { n.clone() } else { format!("{n}.") };
-                        push(rank(n, tail), Choice { text, kind: ItemKind::Table, detail: if p.engine == Engine::MongoDb { "collection".into() } else { "index".into() } });
+                        push(rank(n, tail), Choice { text, kind: ItemKind::Table, detail: p.engine.nouns().one.into() });
                     }
                 }
             }

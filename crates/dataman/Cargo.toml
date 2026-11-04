@@ -13,7 +13,7 @@ dataman-mcp.workspace = true
 futures-util.workspace = true
 gpui_platform.workspace = true
 tokio.workspace = true
-tokio-postgres.workspace = true
+tokio-postgres = { workspace = true, optional = true }
 serde_json.workspace = true
 chrono.workspace = true
 log = "0.4"
@@ -47,5 +47,5 @@ required-features = ["checks"]
 [features]
 # Test builds only.
 # The check stages and benchmarks (`--demo`, `--bench-*`): `xtask e2e` builds with it.
-checks = []
+checks = ["dep:tokio-postgres"]
 screenshots = ["checks", "gpui/test-support", "gpui_platform/test-support", "dep:image"]

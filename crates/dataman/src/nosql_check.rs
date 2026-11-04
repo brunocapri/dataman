@@ -129,7 +129,7 @@ pub async fn demo(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowConte
                 ws.update(cx, |w, cx| {
                     w.open_dialog(None, window, cx);
                     if let Some(d) = w.dialog.clone() {
-                        d.update(cx, |d, cx| d.demo_engine(Engine::MongoDb, cx));
+                        d.update(cx, |d, cx| d.demo_engine(Engine::MongoDb, window, cx));
                     }
                 })
             });

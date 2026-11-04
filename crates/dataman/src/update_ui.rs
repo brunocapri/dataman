@@ -46,7 +46,7 @@ impl Workspace {
         if self.modal_open(cx) {
             return;
         }
-        self.modal_return = window.focused(cx);
+        self.hold_focus(crate::app::Modal::Sheet, window, cx);
         self.update_sheet = true;
         window.focus(&self.update_focus, cx);
         cx.notify();
@@ -60,7 +60,7 @@ impl Workspace {
         if self.update_sheet {
             cx.notify();
         } else if !self.modal_open(cx) {
-            self.modal_return = window.focused(cx);
+            self.hold_focus(crate::app::Modal::Sheet, window, cx);
             self.update_sheet = true;
             window.focus(&self.update_focus, cx);
             cx.notify();
@@ -77,11 +77,7 @@ impl Workspace {
         if later && matches!(updates::state(cx), State::Available { .. }) {
             updates::later(cx);
         }
-        if let Some(f) = self.modal_return.take() {
-            window.focus(&f, cx);
-        } else {
-            self.focus_editor(window, cx);
-        }
+        self.give_focus_back(crate::app::Modal::Sheet, window, cx);
         cx.notify();
     }
 

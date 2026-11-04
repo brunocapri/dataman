@@ -352,8 +352,8 @@ fn reason_color(t: &Theme, req: &Approval, r: &str) -> gpui::Hsla {
 impl Workspace {
     pub(crate) fn mcp_sheet_opened(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.mcp_focus.is_focused(window) {
-            if self.mcp_return.is_none() {
-                self.mcp_return = window.focused(cx);
+            if !self.modal_focus.holds(crate::app::Modal::Mcp) {
+                self.hold_focus(crate::app::Modal::Mcp, window, cx);
             }
             window.focus(&self.mcp_focus, cx);
         }
@@ -361,10 +361,7 @@ impl Workspace {
     }
 
     pub(crate) fn mcp_sheet_closed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match self.mcp_return.take() {
-            Some(f) => window.focus(&f, cx),
-            None => self.focus_editor(window, cx),
-        }
+        self.give_focus_back(crate::app::Modal::Mcp, window, cx);
     }
 
     fn mcp_answer(&mut self, allow: bool, window: &mut Window, cx: &mut Context<Self>) {

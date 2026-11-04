@@ -93,12 +93,8 @@ fn vis_tip(e: Engine) -> Tip {
 
 /// What the engine calls a table, one and many.
 pub(crate) fn nouns(e: Engine) -> (&'static str, &'static str) {
-    match e {
-        Engine::MongoDb => ("collection", "collections"),
-        Engine::Elasticsearch | Engine::OpenSearch => ("index", "indices"),
-        Engine::Redis => ("key", "keys"),
-        _ => ("table", "tables"),
-    }
+    let n = e.nouns();
+    (n.one, n.many)
 }
 
 fn capitalized(s: &str) -> String {
@@ -115,13 +111,18 @@ fn tier_label(a: McpAccess) -> &'static str {
     }
 }
 
-fn placeholder(e: Engine) -> &'static str {
+fn placeholder(e: Engine) -> String {
+    let n = e.nouns().one;
     match e {
-        Engine::MongoDb => "collection, collection.field or *",
-        Engine::Elasticsearch | Engine::OpenSearch => "index, index.field or *",
-        Engine::Redis => "key pattern or key.field",
-        _ => "table, table.column or *",
+        // Keys are named by patterns, not listed: no `*` for all of them.
+        Engine::Redis => format!("{n} pattern or {n}.field"),
+        _ => format!("{n}, {n}.{} or *", part(e)),
     }
+}
+
+/// What a table's parts are called: columns, or a document's fields.
+fn part(e: Engine) -> &'static str {
+    if e.is_sql() { "column" } else { "field" }
 }
 
 fn time_label(s: u64) -> String {
@@ -741,8 +742,8 @@ impl AgentsPage {
         if self.vis_input.read(cx).text().is_empty() {
             self.vis_input.update(cx, |i, cx| i.set_placeholder(place, cx));
         }
-        let sens_place = if p.engine.is_sql() { "table.column or *pattern*" } else { "collection.field or *pattern*" };
-        self.sens_input.update(cx, |i, cx| i.set_placeholder(sens_place, cx));
+        let sens_place = format!("{one}.{} or *pattern*", part(p.engine));
+        self.sens_input.update(cx, |i, cx| i.set_placeholder(sens_place.clone(), cx));
         let views: Vec<(AgentView, &str)> = AgentView::ALL.iter().map(|v| (*v, v.label())).collect();
         let sees = sub(sub_title(t, "agents-sees-tip", "Agents see", sees_tip())).child(choices(t, "agents-view", &views, r.view, cx, |v, view, cx| v.set_rule(|r| r.view = view, cx)));
 

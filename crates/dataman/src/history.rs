@@ -331,17 +331,13 @@ impl HistoryPanel {
         self.apply_filter(cx);
     }
 
-    pub fn reload(&mut self, cx: &mut Context<Self>) {
-        self.loading = None;
-        let store = self.store.read(cx);
-        let ids: Vec<String> = store.profiles.iter().map(|p| p.id.clone()).collect();
-        self.entries = store.core.history.load_all(&ids, HISTORY_MAX).unwrap_or_default();
-        self.read_favorites(cx);
-        self.apply_filter(cx);
+    /// Reads the history files again, off the UI thread; a later reload wins.
+    pub fn reload_soon(&mut self, cx: &mut Context<Self>) {
+        self.reload_keeping(None, cx);
     }
 
-    /// As `reload`, the files read off the UI thread (after each run); a later reload wins.
-    pub fn reload_soon(&mut self, cx: &mut Context<Self>) {
+    /// As `reload_soon`; `keep` is the row to stay selected when the list comes back.
+    fn reload_keeping(&mut self, keep: Option<usize>, cx: &mut Context<Self>) {
         let store = self.store.read(cx);
         let ids: Vec<String> = store.profiles.iter().map(|p| p.id.clone()).collect();
         let core = store.core.clone();
@@ -354,6 +350,7 @@ impl HistoryPanel {
                 });
                 h.read_favorites(cx);
                 h.apply_filter(cx);
+                h.keep_selected(keep);
                 h.loading = None;
             });
         }));
@@ -408,10 +405,17 @@ impl HistoryPanel {
             let op = Op::History { entry: Some((conn.clone(), e)), taken: vec![(conn, line)] };
             cx.emit(HistoryEvent::Did(Entry::new("Remove from history", op)));
         }
+        // Gone from the list at once; the files are read again behind it.
         let keep = self.selected;
-        self.reload(cx);
-        self.selected = keep.filter(|&s| s < self.items.len() && !matches!(self.items[s], Item::Day(_))).or(self.selected);
+        self.entries.remove(entry_ix);
+        self.apply_filter(cx);
+        self.keep_selected(keep);
+        self.reload_keeping(keep, cx);
         cx.notify();
+    }
+
+    fn keep_selected(&mut self, keep: Option<usize>) {
+        self.selected = keep.filter(|&s| s < self.items.len() && !matches!(self.items[s], Item::Day(_))).or(self.selected);
     }
 
     fn clear_clicked(&mut self, cx: &mut Context<Self>) {
@@ -435,7 +439,9 @@ impl HistoryPanel {
         if !taken.is_empty() {
             cx.emit(HistoryEvent::Did(Entry::new("Clear history", Op::History { entry: None, taken })));
         }
-        self.reload(cx);
+        self.entries.clear();
+        self.apply_filter(cx);
+        self.reload_soon(cx);
     }
 
     fn remove_favorite(&mut self, fav_ix: usize, cx: &mut Context<Self>) {

@@ -997,7 +997,7 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     let dir = std::env::temp_dir().join(format!("dataman-agents-check-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&dir);
     let (out, loose, bad) = (dir.join("agents.toml"), dir.join("loose.toml"), dir.join("bad.toml"));
-    crate::agents_mcp::set_test_paths(Some(out.clone()), None);
+    crate::sql_picker::set_test_save_path(out.clone());
     click_probe("agents-export", cx);
     let written = until(cx, 5, |_| out.exists()).await;
     let text = std::fs::read_to_string(&out).unwrap_or_default();
@@ -1014,7 +1014,7 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     f.connections.push(dataman_core::agents_config::ConnRules { id: "elsewhere".into(), name: "warehouse".into(), engine: Engine::MySql, database: "dw".into(), mcp: None, row_limit: None, allowed: Vec::new(), yolo: false, rules: Default::default() });
     let _ = std::fs::write(&loose, dataman_core::agents_config::to_text(&f));
     let import = |path: &std::path::Path, cx: &mut AsyncWindowContext| {
-        crate::agents_mcp::set_test_paths(None, Some(path.to_path_buf()));
+        crate::sql_picker::set_test_paths(vec![path.to_path_buf()]);
         click_probe("agents-import", cx);
     };
     let open = |cx: &mut AsyncWindowContext| cx.update(|_, cx| a.read(cx).import.is_some()).unwrap_or(false);

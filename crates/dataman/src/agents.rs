@@ -211,6 +211,15 @@ pub(crate) struct TypeEditor {
     pub(crate) samples: Vec<String>,
     pub(crate) sample: Entity<TextInput>,
     pub(crate) confirm_delete: bool,
+    /// The pattern's check and test, for the type and samples they were made from: read again
+    /// only when either changes, not on every frame.
+    pub(crate) test: Option<TypeTest>,
+}
+
+pub(crate) struct TypeTest {
+    pub(crate) of: (dataman_core::privacy::CustomType, Vec<String>),
+    pub(crate) problem: Option<String>,
+    pub(crate) tested: Option<std::rc::Rc<dataman_core::privacy::Tested>>,
 }
 
 pub struct AgentsPage {
@@ -597,7 +606,7 @@ impl AgentsPage {
             scan_note: None,
             sens_edit: None,
             sens_grid,
-            editor: TypeEditor { editing: None, name, regex, mask: Mask::Hidden, more: false, validator: Validator::None, ignore_case: false, keep: 4, samples: Vec::new(), sample, confirm_delete: false },
+            editor: TypeEditor { editing: None, name, regex, mask: Mask::Hidden, more: false, validator: Validator::None, ignore_case: false, keep: 4, samples: Vec::new(), sample, confirm_delete: false, test: None },
             suggest: Default::default(),
             received,
             received_for: None,
