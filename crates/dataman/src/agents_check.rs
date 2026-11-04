@@ -999,11 +999,12 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     let (out, loose, bad) = (dir.join("agents.toml"), dir.join("loose.toml"), dir.join("bad.toml"));
     crate::agents_mcp::set_test_paths(Some(out.clone()), None);
     click_probe("agents-export", cx);
-    let written = until(cx, 5, |_| out.exists()).await;
+    // The note comes once the write is done: the file exists before its last byte.
+    let written = until(cx, 5, |cx| probed("agents-file-note", cx).is_some()).await && out.exists();
     let text = std::fs::read_to_string(&out).unwrap_or_default();
     r.check(
         "Export writes the agents settings file: General, Sensitive data, each connection; no password or address",
-        written && text.contains("version = 1") && text.contains(&format!("id = \"{}\"", pg.id)) && text.contains("sensitive_data") && !text.lines().any(|l| l.trim_start().starts_with("password")) && !text.contains("host =") && !text.contains(&format!("\"{}\"", pg.host)) && probed("agents-file-note", cx).is_some(),
+        written && text.contains("version = 1") && text.contains(&format!("id = \"{}\"", pg.id)) && text.contains("sensitive_data") && !text.lines().any(|l| l.trim_start().starts_with("password")) && !text.contains("host =") && !text.contains(&format!("\"{}\"", pg.host)),
         text.lines().take(12).collect::<Vec<_>>().join(" | "),
     );
     let mut f = dataman_core::agents_config::parse(&text).unwrap_or_else(|_| dataman_core::agents_config::export(&core.settings.get(), &core.config.connections()));

@@ -432,8 +432,14 @@ async fn save_checks(ws: &Entity<Workspace>, history: &Entity<HistoryPanel>, cx:
     let c = tab_with(ws, "SELECT 'saved' AS file;\n", cx);
     crate::sql_picker::set_test_save_path(path.clone());
     key(cx, "cmd-shift-s");
-    pause(cx, 200).await;
-    draw(cx);
+    // Written off the UI thread; the tab is named once it is.
+    for _ in 0..100 {
+        draw(cx);
+        if linked(&c, cx).1 == "report.sql" {
+            break;
+        }
+        pause(cx, 50).await;
+    }
     let written = std::fs::read_to_string(&path).ok();
     let (_, title) = linked(&c, cx);
     report(&mut ok, "⇧⌘S writes the script to the .sql file picked, and names the tab after it", written.as_deref() == Some("SELECT 'saved' AS file;\n") && title == "report.sql", format!("{written:?} {title:?}"));
