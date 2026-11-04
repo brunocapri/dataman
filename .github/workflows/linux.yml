@@ -1,7 +1,8 @@
 name: Linux
 
-# Pushes to main run nothing: a release's tag runs it all, and the release takes its packages
-# (scripts/github-release.sh).
+# Pushes to main run nothing here: a release's tag runs it all, and the release takes its packages
+# (scripts/github-release.sh). The builds start from what cache.yml saved on main: the Rust cache
+# (read only here) and the DuckDB engine. Tests and packages run side by side.
 on:
   push:
     tags: ["v*"]
@@ -45,9 +46,12 @@ jobs:
         run: sudo apt-get update && xargs sudo apt-get install -y --no-install-recommends <<< "$DEPS"
       - name: Rust ${{ env.RUST_TOOLCHAIN }}
         run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal && rustup default "$RUST_TOOLCHAIN"
+      # cache.yml saves this cache on main; here it is only read (a tag's or a PR's cache is
+      # theirs alone, and would only crowd the repository's 10 GB out).
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.arch }}
+          shared-key: linux-${{ matrix.arch }}
+          save-if: false
       - name: Check (no new warnings)
         run: |
           cargo check --release --workspace --all-targets --features dataman/checks 2>&1 | tee check.log
@@ -57,8 +61,16 @@ jobs:
           others=$(grep '^warning' check.log | grep -v "$known\\|generated [0-9]* warning\\|future version of Rust" || true)
           [ -z "$others" ] || { echo "$others"; exit 1; }
           [ "$n" -le 2 ]
+      - name: The DuckDB engine, cached
+        id: duckdb
+        uses: actions/cache/restore@v4
+        with:
+          path: target/duckdb
+          key: duckdb-${{ runner.os }}-${{ matrix.arch }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('engines/duckdb/**', 'scripts/duckdb-engine.sh') }}
       - name: The DuckDB engine
         run: scripts/duckdb-engine.sh
+        env:
+          DATAMAN_DUCKDB_CACHED: ${{ steps.duckdb.outputs.cache-hit }}
       - name: Tests, with a Secret Service for the password store
         run: |
           # -e: a failing `cargo test` fails the step, not only the last command.
@@ -79,7 +91,6 @@ jobs:
 
   package:
     name: package (${{ matrix.arch }})
-    needs: test
     strategy:
       matrix:
         include:
@@ -92,11 +103,21 @@ jobs:
         run: sudo apt-get update && xargs sudo apt-get install -y --no-install-recommends <<< "$DEPS"
       - name: Rust ${{ env.RUST_TOOLCHAIN }}
         run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal && rustup default "$RUST_TOOLCHAIN"
+      # The test job's cache: the same dependencies, built the same way.
       - uses: Swatinem/rust-cache@v2
         with:
-          key: package-${{ matrix.arch }}
+          shared-key: linux-${{ matrix.arch }}
+          save-if: false
+      - name: The DuckDB engine, cached
+        id: duckdb
+        uses: actions/cache/restore@v4
+        with:
+          path: target/duckdb
+          key: duckdb-${{ runner.os }}-${{ matrix.arch }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('engines/duckdb/**', 'scripts/duckdb-engine.sh') }}
       - name: AppImage and .deb
         run: scripts/linux/build.sh ${{ matrix.arch }}
+        env:
+          DATAMAN_DUCKDB_CACHED: ${{ steps.duckdb.outputs.cache-hit }}
       - name: The AppImage starts
         run: |
           img=$(ls dist/linux/*.AppImage)

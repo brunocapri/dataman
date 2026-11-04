@@ -13,11 +13,14 @@ $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' | Select
 if (-not $NoBuild) {
     cargo build --release -p dataman -p dataman-mcp
     if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
-    # The DuckDB engine (scripts/duckdb-engine.sh does the same; `bash` here may be WSL's).
-    cargo build --release --locked --manifest-path engines\duckdb\Cargo.toml --target-dir target\duckdb-engine
-    if ($LASTEXITCODE -ne 0) { throw "the DuckDB engine did not build" }
-    New-Item -ItemType Directory -Force target\duckdb | Out-Null
-    Copy-Item target\duckdb-engine\release\dataman_duckdb.dll target\duckdb\
+    # The DuckDB engine (scripts/duckdb-engine.sh does the same; `bash` here may be WSL's),
+    # unless CI restored it from its cache (DATAMAN_DUCKDB_CACHED=true).
+    if (-not ($env:DATAMAN_DUCKDB_CACHED -eq "true" -and (Test-Path target\duckdb\dataman_duckdb.dll))) {
+        cargo build --release --locked --manifest-path engines\duckdb\Cargo.toml --target-dir target\duckdb-engine
+        if ($LASTEXITCODE -ne 0) { throw "the DuckDB engine did not build" }
+        New-Item -ItemType Directory -Force target\duckdb | Out-Null
+        Copy-Item target\duckdb-engine\release\dataman_duckdb.dll target\duckdb\
+    }
 }
 $bin = "target\release"
 

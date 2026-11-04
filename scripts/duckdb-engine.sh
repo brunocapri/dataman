@@ -11,6 +11,8 @@
 #   scripts/duckdb-engine.sh --api        remake backend/duck/api_v1.rs from libduckdb-sys
 #
 #   CARGO_BUILD_TARGET      another target (e.g. x86_64-pc-windows-msvc)
+#   DATAMAN_DUCKDB_CACHED=true   the engine in target/duckdb is current (CI restored it from
+#                           its cache, keyed on engines/duckdb and this script): no build
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -49,7 +51,17 @@ target="${CARGO_BUILD_TARGET:-}"
 tdir="${CARGO_TARGET_DIR:-target}"
 build="$tdir/duckdb-engine"
 out="$tdir/duckdb"
+if [ "${DATAMAN_DUCKDB_CACHED:-}" = true ] && [ -f "$out/$file" ]; then
+  echo "$out/$file ($(du -h "$out/$file" | cut -f1), DuckDB v$version, cached)"
+  exit 0
+fi
 [ "$os" = macos ] && export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-11.0}"
+# On Linux libstdc++ goes in statically: the AppImage links nothing outside its allowlist (the
+# `cc` crate would link it dynamically), and the tests load the engine the packages carry.
+if [ "$os" = linux ]; then
+  export CXXSTDLIB=""
+  export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-Wl,-Bstatic -C link-arg=-lstdc++ -C link-arg=-Wl,-Bdynamic"
+fi
 cargo build --release --locked --manifest-path engines/duckdb/Cargo.toml --target-dir "$build" ${target:+--target "$target"}
 lib="$build/${target:+$target/}release/$file"
 

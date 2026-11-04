@@ -1,7 +1,8 @@
 name: Windows
 
-# Pushes to main run nothing: a release's tag runs it all, and the release takes its installers
-# (scripts/github-release.sh).
+# Pushes to main run nothing here: a release's tag runs it all, and the release takes its installers
+# (scripts/github-release.sh). The builds start from what cache.yml saved on main: the Rust cache
+# (read only here) and the DuckDB engine. Tests and packages run side by side.
 on:
   push:
     tags: ["v*"]
@@ -11,7 +12,7 @@ on:
 permissions:
   contents: read
 
-# A run takes over an hour. On a pull request the newest push cancels the run under way; a
+# On a pull request the newest push cancels the run under way; a
 # tag's run goes to the end.
 concurrency:
   group: windows-${{ github.ref }}
@@ -24,8 +25,8 @@ env:
   CARGO_NET_GIT_FETCH_WITH_CLI: "true"
 
 jobs:
-  windows:
-    name: windows (${{ matrix.arch }})
+  test:
+    name: test (${{ matrix.arch }})
     strategy:
       fail-fast: false
       matrix:
@@ -33,9 +34,9 @@ jobs:
           - { os: windows-latest, arch: x86_64, experimental: false }
           # Not blocking: the ARM runner is newer and slower to get.
           - { os: windows-11-arm, arch: aarch64, experimental: true }
+    timeout-minutes: 120
     runs-on: ${{ matrix.os }}
     continue-on-error: ${{ matrix.experimental }}
-    timeout-minutes: 150
     defaults:
       run:
         shell: pwsh
@@ -49,11 +50,18 @@ jobs:
         run: |
           rustup toolchain install $env:RUST_TOOLCHAIN --profile minimal
           rustup default $env:RUST_TOOLCHAIN
+      # cache.yml saves this cache on main; here it is only read (a tag's or a PR's cache is
+      # theirs alone, and would only crowd the repository's 10 GB out).
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.arch }}
-          # A red run still leaves its dependencies built for the next one.
-          cache-on-failure: true
+          shared-key: windows-${{ matrix.arch }}
+          save-if: false
+      - name: The DuckDB engine, cached
+        id: duckdb
+        uses: actions/cache/restore@v4
+        with:
+          path: target/duckdb
+          key: duckdb-${{ runner.os }}-${{ matrix.arch }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('engines/duckdb/**', 'scripts/duckdb-engine.sh') }}
       - name: Check (no new warnings)
         shell: bash
         run: |
@@ -66,6 +74,8 @@ jobs:
       - name: The DuckDB engine
         shell: bash
         run: scripts/duckdb-engine.sh
+        env:
+          DATAMAN_DUCKDB_CACHED: ${{ steps.duckdb.outputs.cache-hit }}
       - name: Build the tests
         run: cargo test --release --workspace --no-run
       # Built above, they take minutes: a test that hangs fails here, by name, not at the job's end.
@@ -77,23 +87,13 @@ jobs:
           # --workspace: the same features as above, so nothing builds again.
           cargo test --release --workspace --test keychain -- --ignored
           if ($LASTEXITCODE -ne 0) { exit 1 }
-      - name: Package (.zip and installer)
-        id: package
-        run: scripts\windows\package.ps1
-      - name: The app starts and draws
-        run: scripts\windows\smoke.ps1
-      - name: The installer installs, the installed app starts
+      # The app the check stages drive (xtask e2e would build the same).
+      - name: The app, with the checks
+        id: app
+        if: ${{ !cancelled() }}
         run: |
-          $setup = (Get-ChildItem dist\windows\*-setup.exe).FullName
-          $dir = Join-Path $env:RUNNER_TEMP "Dataman"
-          Start-Process -Wait -FilePath $setup -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER", "/DIR=$dir"
-          Get-ChildItem $dir
-          & "$dir\dataman-mcp.exe" --version
-          scripts\windows\smoke.ps1 -Exe "$dir\dataman.exe"
-          Start-Process -Wait -FilePath "$dir\unins000.exe" -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES"
-          if (Test-Path "$dir\dataman.exe") { throw "the uninstaller left dataman.exe" }
-      - name: MCP over stdio
-        run: scripts\windows\mcp-smoke.ps1
+          cargo build --release -p dataman -p dataman-mcp --features dataman/checks
+          if ($LASTEXITCODE -ne 0) { exit 1 }
       # The runner's desktop as a workstation's: 1024x768 clamps the 1400x900 window the checks
       # lay out for (Linux runs them on a 1600x1000 Xvfb screen), and Windows Server runs with
       # animation effects off, which the app honours (Reduce motion).
@@ -126,14 +126,15 @@ jobs:
           # SPI_SETCLIENTAREAANIMATION, on, SPIF_UPDATEINIFILE | SPIF_SENDCHANGE
           if (-not [W.U]::SystemParametersInfo(0x1043, 0, [IntPtr]1, 3)) { throw "SystemParametersInfo failed" }
       - name: End-to-end (the stages without a database server)
+        if: ${{ !cancelled() && steps.app.outcome == 'success' }}
         run: |
-          cargo run --release -p xtask -- e2e --no-compose --only sqlite-check,duckdb-check,project-check,outside-check
+          cargo run --release -p xtask -- e2e --no-compose --no-build --only sqlite-check,duckdb-check,project-check,outside-check
           if ($LASTEXITCODE -ne 0) { exit 1 }
       # The runner's own PostgreSQL in place of the compose container: the stages that need
       # nothing else. It runs when the stages above fail too, so its results still show, but
-      # never without the app the package step built.
+      # never without the app built for them.
       - name: End-to-end on PostgreSQL
-        if: matrix.arch == 'x86_64' && !cancelled() && steps.package.outcome == 'success'
+        if: matrix.arch == 'x86_64' && !cancelled() && steps.app.outcome == 'success'
         run: |
           $svc = Get-Service -Name "postgresql*" | Select-Object -First 1
           Set-Service $svc.Name -StartupType Manual
@@ -151,14 +152,70 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: screenshots-${{ matrix.arch }}
-          path: dist/windows/screenshots/
+          name: e2e-${{ matrix.arch }}
+          path: target/e2e/
           if-no-files-found: ignore
+
+  package:
+    name: package (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, arch: x86_64, experimental: false }
+          # Not blocking: the ARM runner is newer and slower to get.
+          - { os: windows-11-arm, arch: aarch64, experimental: true }
+    timeout-minutes: 90
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.experimental }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      # Long paths for the zed checkout; UTC as on the Linux runners (the tests print times).
+      - run: |
+          git config --global core.longpaths true
+          tzutil /s "UTC"
+      - uses: actions/checkout@v4
+      - name: Rust ${{ env.RUST_TOOLCHAIN }}
+        run: |
+          rustup toolchain install $env:RUST_TOOLCHAIN --profile minimal
+          rustup default $env:RUST_TOOLCHAIN
+      # cache.yml saves this cache on main; here it is only read (a tag's or a PR's cache is
+      # theirs alone, and would only crowd the repository's 10 GB out).
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-${{ matrix.arch }}
+          save-if: false
+      - name: The DuckDB engine, cached
+        id: duckdb
+        uses: actions/cache/restore@v4
+        with:
+          path: target/duckdb
+          key: duckdb-${{ runner.os }}-${{ matrix.arch }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('engines/duckdb/**', 'scripts/duckdb-engine.sh') }}
+      - name: Package (.zip and installer)
+        run: scripts\windows\package.ps1
+        env:
+          DATAMAN_DUCKDB_CACHED: ${{ steps.duckdb.outputs.cache-hit }}
+      - name: The app starts and draws
+        run: scripts\windows\smoke.ps1
+      - name: The installer installs, the installed app starts
+        run: |
+          $setup = (Get-ChildItem dist\windows\*-setup.exe).FullName
+          $dir = Join-Path $env:RUNNER_TEMP "Dataman"
+          Start-Process -Wait -FilePath $setup -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER", "/DIR=$dir"
+          Get-ChildItem $dir
+          & "$dir\dataman-mcp.exe" --version
+          scripts\windows\smoke.ps1 -Exe "$dir\dataman.exe"
+          Start-Process -Wait -FilePath "$dir\unins000.exe" -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES"
+          if (Test-Path "$dir\dataman.exe") { throw "the uninstaller left dataman.exe" }
+      - name: MCP over stdio
+        run: scripts\windows\mcp-smoke.ps1
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: e2e-${{ matrix.arch }}
-          path: target/e2e/
+          name: screenshots-${{ matrix.arch }}
+          path: dist/windows/screenshots/
           if-no-files-found: ignore
       - uses: actions/upload-artifact@v4
         with:
