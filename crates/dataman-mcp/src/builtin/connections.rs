@@ -509,7 +509,7 @@ fn update_connection(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>>
     Box::pin(async move {
         cx.enabled()?;
         let old = cx.hub.profile(a.str("connection")?).map_err(ToolError::Invalid)?;
-        cx.note_connection(&old.name);
+        cx.note_profile(&old);
         if old.mcp_access() == McpAccess::Off {
             return Err(ToolError::Refused("MCP access to this connection is off (connection settings › MCP); it is edited in Dataman only".into()));
         }
@@ -554,7 +554,7 @@ fn update_connection(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>>
         }
         allow_move(cx, &old, &profile).await?;
         check_file(cx, Some(&old), &profile).await?;
-        cx.note_connection(&profile.name);
+        cx.note_profile(&profile);
         // Moved by an agent: its host is the agent's choice from now on (see create_connection).
         profile.agent_made |= target_changed(&old, &profile);
         let state = settle_secrets(cx, Some(&old), &mut profile, password)?;

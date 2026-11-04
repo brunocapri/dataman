@@ -637,6 +637,27 @@ fn redis_values_stay_kept() {
 /// User tools (mcp-tools.toml) run for agents: the connection's rules and dialect apply to them.
 /// SQLite: what is kept stays kept (columns, generated columns, PRAGMAs that describe a table,
 /// views), and nothing leaves the file (ATTACH, extensions, VACUUM INTO, writable_schema), at
+/// Two connections with one name: a call on the Masked one by its id is masked as that
+/// connection's, never looked up again by the name (which is both).
+#[test]
+fn a_shared_name_does_not_unmask_a_reply() {
+    let files = tempfile::tempdir().unwrap();
+    let db = files.path().join("twins.sqlite");
+    std::fs::File::create(&db).unwrap();
+    let twin = |id: &str, extra: &str| file_conn(id, "sqlite", &db, extra).replacen(&format!("name = \"{id}\""), "name = \"twins\"", 1);
+    let text = [twin("twin-data", "mcp = \"full\""), twin("twin-masked", "[connection.mcp_rules]\nview = \"masked\"\n")].concat();
+    let e = env_with(&[], &text, "", None);
+    let sql = json!({"sql": "SELECT 'zed-secret@acme.com' AS e"});
+    let masked = e.ok("run_query", with("twin-masked", sql.clone())).to_string();
+    assert!(!masked.contains("zed-secret@acme.com") && masked.contains("acme.com"), "masked by its id: {masked}");
+    let raw = e.ok("run_query", with("twin-data", sql.clone())).to_string();
+    assert!(raw.contains("zed-secret@acme.com"), "the other one sees data: {raw}");
+    assert!(e.call("run_query", with("twins", sql)).unwrap_err().contains("several connections"), "the name alone is refused");
+    let logged = e.audit().iter().filter(|x| x["query"].as_str().is_some_and(|q| q.contains("zed-secret"))).count();
+    assert_eq!(logged, 1, "only the Data connection's query is logged as written");
+    e.done();
+}
+
 /// any level; writes stop at read and on a read-only connection.
 #[test]
 fn sqlite_values_stay_kept_and_nothing_leaves_the_file() {

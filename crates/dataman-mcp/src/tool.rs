@@ -247,7 +247,11 @@ pub fn params_schema() -> Value {
 
 #[derive(Default, Clone, Debug)]
 pub struct Note {
+    /// The connection's name, for the log.
     pub connection: Option<String>,
+    /// The connection the call resolved, by id: what privacy and the log look it up by (two
+    /// connections may share a name).
+    pub profile_id: Option<String>,
     pub database: Option<String>,
     pub sql: Option<String>,
     pub rows: Option<u64>,
@@ -290,6 +294,9 @@ pub struct Call {
     pub cancel: CancellationToken,
     pub tool: String,
     note: Mutex<Note>,
+    /// What the gate let through: the `connection` argument, the need it was judged for, and
+    /// the profile it resolved, which the handler's `target` takes as it is.
+    admitted: Mutex<Option<(String, Need, ConnectionProfile)>>,
 }
 
 #[derive(Clone)]
@@ -301,7 +308,7 @@ pub struct Opened {
 
 impl Call {
     pub fn new(hub: Arc<Hub>, client: String, transport: &'static str, tool: &str, cancel: CancellationToken) -> Call {
-        Call { hub, client, transport, cancel, tool: tool.into(), note: Mutex::new(Note::default()) }
+        Call { hub, client, transport, cancel, tool: tool.into(), note: Mutex::new(Note::default()), admitted: Mutex::new(None) }
     }
 
     pub fn note(&self) -> Note {
@@ -320,8 +327,16 @@ impl Call {
         self.note.lock().favorite = Some(name.to_string());
     }
 
+    /// A connection that is not saved yet (create_connection): its name only.
     pub fn note_connection(&self, name: &str) {
         self.note.lock().connection = Some(name.to_string());
+    }
+
+    /// The connection the call is about: its name for the log, its id for privacy.
+    pub fn note_profile(&self, p: &ConnectionProfile) {
+        let mut n = self.note.lock();
+        n.connection = Some(p.name.clone());
+        n.profile_id = Some(p.id.clone());
     }
 
     pub fn note_rewritten(&self, sql: &str) {
@@ -359,10 +374,24 @@ impl Call {
         Duration::from_millis(args.u64_or("timeout_ms", 30_000).clamp(100, cap))
     }
 
+    /// The policy's gate, before the handler (`Tool::gate`): what the handler's own `target`
+    /// then asks within it is not judged again.
+    pub fn admit(&self, args: &Args, need: Need) -> Result<(), ToolError> {
+        let p = self.target(args, need)?;
+        *self.admitted.lock() = Some((args.str("connection")?.to_string(), need, p));
+        Ok(())
+    }
+
     pub fn target(&self, args: &Args, need: Need) -> Result<ConnectionProfile, ToolError> {
         let name = args.str("connection")?;
+        if let Some((n, judged, p)) = self.admitted.lock().as_ref()
+            && n == name
+            && (need == Need::Read || *judged == Need::Write)
+        {
+            return Ok(p.clone());
+        }
         let p = self.hub.profile(name).map_err(ToolError::Invalid)?;
-        self.note.lock().connection = Some(p.name.clone());
+        self.note_profile(&p);
         let enabled = self.hub.settings().mcp_enabled;
         policy::allow(enabled, Target::of_in(&p, target_database(args, &p)), need).map_err(ToolError::Refused)?;
         Ok(p)
@@ -445,11 +474,8 @@ impl Call {
         let name = args.str("connection")?;
         let p = self.hub.profile(name).map_err(ToolError::Invalid)?;
         let database = target_database(args, &p).to_string();
-        {
-            let mut n = self.note.lock();
-            n.connection = Some(p.name.clone());
-            n.database = Some(database.clone());
-        }
+        self.note_profile(&p);
+        self.note.lock().database = Some(database.clone());
         policy::draft(self.hub.settings().mcp_enabled, Target::of_in(&p, &database)).map_err(ToolError::Refused)?;
         let Some(f) = self.hub.front().filter(|f| f.tabs()) else { return Err(ToolError::Refused(DRAFTS_NEED_APP.into())) };
         let req = TabDraft { client: self.client.clone(), connection_id: p.id.clone(), database, sql: sql.to_string(), title };
@@ -557,7 +583,7 @@ impl Call {
     pub async fn write(&self, args: &Args, w: Write<'_>) -> Result<Written, ToolError> {
         self.note_sql(w.sql);
         let p = self.hub.profile(args.str("connection")?).map_err(ToolError::Invalid)?;
-        self.note.lock().connection = Some(p.name.clone());
+        self.note_profile(&p);
         let d = p.engine.dialect();
         let stmts = bounded::statements_in(w.sql, d);
         if stmts.is_empty() {
@@ -791,11 +817,16 @@ pub trait Tool: Send + Sync {
             None => crate::policy::Effect::Local,
         }
     }
-    /// Its `connection` argument passes the policy's gate (MCP on, tier not off, agents not
-    /// refused) before the handler runs: a handler that forgets to ask is still gated.
-    fn needs_connection(&self) -> bool {
-        false
+    /// What its `connection` argument must be allowed (MCP on, the tier, agents not refused)
+    /// before the handler runs: a handler that forgets to ask is still gated. Fail closed: a
+    /// tool that says nothing is gated for reads (its writes judged where they run). None only
+    /// for a tool whose handler judges its connection itself (which one, or what it needs,
+    /// depends on its arguments).
+    fn gate(&self) -> Option<Need> {
+        Some(Need::Read)
     }
+    /// What the tool fixes of its arguments (a user tool's connection), set before the gate.
+    fn fixed_args(&self, _args: &mut serde_json::Map<String, Value>) {}
     fn call<'a>(&'a self, cx: &'a Call, args: Args) -> BoxFut<'a, Result<Value, ToolError>>;
 }
 
