@@ -489,6 +489,26 @@ fn agent_profile_never_takes_the_users_password() {
 }
 
 #[test]
+fn agent_profile_signs_in_with_its_password_on_a_cloud_connection() {
+    use crate::config::{Auth, SslMode};
+    for (engine, auth) in [
+        (Engine::SqlServer, Auth::EntraId { tenant: None }),
+        (Engine::Postgres, Auth::EntraId { tenant: Some("contoso.onmicrosoft.com".into()) }),
+        (Engine::MySql, Auth::AwsIam { profile: None, region: None }),
+        (Engine::Postgres, Auth::GoogleIam { account: None }),
+    ] {
+        let mut p = conn(engine);
+        (p.auth, p.sslmode) = (auth, SslMode::Prefer);
+        let a = live::agent_profile(&p, "dataman_agent_x");
+        assert_eq!(a.auth, Auth::Password, "{engine:?}");
+        assert_eq!(a.tls_mode(), SslMode::Require, "{engine:?}: as much TLS as the user's");
+    }
+    let mut p = conn(Engine::Postgres);
+    p.sslmode = SslMode::Prefer;
+    assert_eq!(live::agent_profile(&p, "x").sslmode, SslMode::Prefer, "a password connection keeps its own");
+}
+
+#[test]
 fn plan_hash_is_stable_and_moves_with_the_grants() {
     let p = guarded(Engine::Postgres);
     let s = compile(&p, "", &opts());

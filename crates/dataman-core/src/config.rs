@@ -149,6 +149,148 @@ impl SslMode {
     }
 }
 
+/// How a connection signs in: a password (typed, in the keychain, `~/.pgpass`), or a short-lived
+/// token the user's own cloud CLI mints (`az`, `aws`, `gcloud`) for each new connection. Nothing
+/// is registered anywhere by Dataman: the CLI is signed in as the user already.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "method", rename_all = "kebab-case")]
+pub enum Auth {
+    #[default]
+    Password,
+    /// Microsoft Entra ID through `az account get-access-token`; no tenant: az's default.
+    EntraId {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tenant: Option<String>,
+    },
+    /// RDS/Aurora IAM through `aws rds generate-db-auth-token`; no region: the endpoint's.
+    AwsIam {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        profile: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        region: Option<String>,
+    },
+    /// Cloud SQL IAM through `gcloud sql generate-login-token`; no account: gcloud's active one.
+    GoogleIam {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account: Option<String>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum AuthKind {
+    Password,
+    EntraId,
+    AwsIam,
+    GoogleIam,
+}
+
+impl AuthKind {
+    pub const ALL: [AuthKind; 4] = [AuthKind::Password, AuthKind::EntraId, AuthKind::AwsIam, AuthKind::GoogleIam];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            AuthKind::Password => "Password",
+            AuthKind::EntraId => "Microsoft Entra ID",
+            AuthKind::AwsIam => "AWS IAM",
+            AuthKind::GoogleIam => "Google Cloud IAM",
+        }
+    }
+
+    /// Stored nowhere: the MCP tools' and the reviews' word for it.
+    pub fn slug(self) -> &'static str {
+        match self {
+            AuthKind::Password => "password",
+            AuthKind::EntraId => "entra-id",
+            AuthKind::AwsIam => "aws-iam",
+            AuthKind::GoogleIam => "google-iam",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<AuthKind> {
+        let s = s.trim().to_ascii_lowercase();
+        AuthKind::ALL.into_iter().find(|k| k.slug() == s || k.label().eq_ignore_ascii_case(&s))
+    }
+
+    pub fn is_token(self) -> bool {
+        self != AuthKind::Password
+    }
+
+    /// The method as a new connection starts it: every field the CLI's default.
+    pub fn fresh(self) -> Auth {
+        match self {
+            AuthKind::Password => Auth::Password,
+            AuthKind::EntraId => Auth::EntraId { tenant: None },
+            AuthKind::AwsIam => Auth::AwsIam { profile: None, region: None },
+            AuthKind::GoogleIam => Auth::GoogleIam { account: None },
+        }
+    }
+}
+
+impl Auth {
+    pub fn kind(&self) -> AuthKind {
+        match self {
+            Auth::Password => AuthKind::Password,
+            Auth::EntraId { .. } => AuthKind::EntraId,
+            Auth::AwsIam { .. } => AuthKind::AwsIam,
+            Auth::GoogleIam { .. } => AuthKind::GoogleIam,
+        }
+    }
+
+    pub fn is_password(&self) -> bool {
+        *self == Auth::Password
+    }
+
+    /// A cloud token, minted for each new connection.
+    pub fn is_token(&self) -> bool {
+        !self.is_password()
+    }
+
+    /// Without what is only this person's (the AWS profile is a name in their ~/.aws/config,
+    /// the Google account their e-mail): what a project's file shares.
+    pub fn shared(&self) -> Auth {
+        match self {
+            Auth::AwsIam { region, .. } => Auth::AwsIam { profile: None, region: region.clone() },
+            Auth::GoogleIam { .. } => Auth::GoogleIam { account: None },
+            a => a.clone(),
+        }
+    }
+
+    /// `self` (a project's) with `mine`'s personal fields, when both are the same method.
+    pub fn with_personal(&self, mine: &Auth) -> Auth {
+        match (self, mine) {
+            (Auth::AwsIam { region, .. }, Auth::AwsIam { profile, .. }) => Auth::AwsIam { profile: profile.clone(), region: region.clone() },
+            (Auth::GoogleIam { .. }, Auth::GoogleIam { account }) => Auth::GoogleIam { account: account.clone() },
+            (a, _) => a.clone(),
+        }
+    }
+
+    /// The method and its fields, as reviews and the MCP tools show them.
+    pub fn describe(&self) -> String {
+        let extra: Vec<String> = match self {
+            Auth::Password => Vec::new(),
+            Auth::EntraId { tenant } => tenant.iter().map(|t| format!("tenant {t}")).collect(),
+            Auth::AwsIam { profile, region } => profile.iter().map(|p| format!("profile {p}")).chain(region.iter().map(|r| format!("region {r}"))).collect(),
+            Auth::GoogleIam { account } => account.iter().map(|a| format!("account {a}")).collect(),
+        };
+        if extra.is_empty() { self.kind().label().to_string() } else { format!("{} ({})", self.kind().label(), extra.join(", ")) }
+    }
+}
+
+impl Engine {
+    /// The sign-in methods this engine takes; a password always.
+    pub fn auth_kinds(self) -> &'static [AuthKind] {
+        match self {
+            Engine::Postgres | Engine::MySql => &AuthKind::ALL,
+            Engine::SqlServer => &[AuthKind::Password, AuthKind::EntraId],
+            _ => &[AuthKind::Password],
+        }
+    }
+
+    pub fn supports(self, kind: AuthKind) -> bool {
+        self.auth_kinds().contains(&kind)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectionProfile {
     pub id: String,
@@ -171,6 +313,9 @@ pub struct ConnectionProfile {
     pub sslmode: SslMode,
     #[serde(default)]
     pub save_password: bool,
+    /// Left out of the file for a password, so files of older versions load unchanged.
+    #[serde(default, skip_serializing_if = "Auth::is_password")]
+    pub auth: Auth,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
     /// `color` is this person's pick (the dialog writes one either way): it outranks production's
@@ -372,8 +517,24 @@ impl ConnectionProfile {
         if self.host.trim().is_empty() {
             return Err("host is required".into());
         }
-        if spec.form.user_required && self.user.trim().is_empty() {
+        // SQL Server's Entra token names its user itself.
+        let user_given = self.engine == Engine::SqlServer && self.auth.kind() == AuthKind::EntraId;
+        if spec.form.user_required && !user_given && self.user.trim().is_empty() {
             return Err("host and user are required".into());
+        }
+        if self.auth.is_token() && !self.engine.supports(self.auth.kind()) {
+            return Err(format!("{} does not sign in with {}", spec.label, self.auth.kind().label()));
+        }
+        let odd = match &self.auth {
+            Auth::EntraId { tenant } => [("tenant", tenant.as_deref()), ("", None)],
+            Auth::AwsIam { profile, region } => [("profile", profile.as_deref()), ("region", region.as_deref())],
+            Auth::GoogleIam { account } => [("account", account.as_deref()), ("", None)],
+            Auth::Password => [("", None), ("", None)],
+        }
+        .into_iter()
+        .find_map(|(what, v)| v.filter(|v| !crate::cloudauth::plain_value(v.trim())).map(|_| what));
+        if let Some(what) = odd {
+            return Err(format!("the {what} takes letters, digits and . _ @ : / + - only"));
         }
         if let Some(n) = spec.numbered_dbs
             && !self.database.is_empty()
@@ -406,6 +567,7 @@ impl ConnectionProfile {
             path: None,
             sslmode: SslMode::Prefer,
             save_password: false,
+            auth: Auth::Password,
             color: None,
             color_picked: false,
             ssh: None,
@@ -510,6 +672,15 @@ impl ConnectionProfile {
 
     pub fn is_socket(&self) -> bool {
         self.host.starts_with('/')
+    }
+
+    /// The TLS a connection dials with: at least `require` for a cloud token (every cloud
+    /// demands it, and a token must not cross the network in clear), whatever the file says.
+    pub fn tls_mode(&self) -> SslMode {
+        match self.sslmode {
+            SslMode::Disable | SslMode::Prefer if self.auth.is_token() => SslMode::Require,
+            m => m,
+        }
     }
 
     pub fn ssh_secret_id(&self) -> String {
@@ -1440,6 +1611,57 @@ mod tests {
         std::fs::write(dirs.connections_file(), "[[connection]]\nid = \"a\"\nname = \"n\"\nhost = \"h\"\nport = 1\nuser = \"u\"\ndatabase = \"d\"\n").unwrap();
         assert_eq!(ConfigStore::open(&dirs).unwrap().connections()[0].engine, Engine::Postgres);
         assert_eq!(Engine::ALL.map(Engine::default_port), [5432, 3306, 1433, 0, 0, 27017, 9200, 9200, 6379]);
+    }
+
+    #[test]
+    fn auth_roundtrip_and_older_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = Dirs::at(dir.path().join("dataman"));
+        let store = ConfigStore::open(&dirs).unwrap();
+        let pw = ConnectionProfile::new("pw");
+        let mut az = ConnectionProfile::new("az");
+        az.auth = Auth::EntraId { tenant: Some("contoso.onmicrosoft.com".into()) };
+        let mut rds = ConnectionProfile::new("rds");
+        (rds.engine, rds.auth) = (Engine::MySql, Auth::AwsIam { profile: Some("dev".into()), region: None });
+        let mut gcp = ConnectionProfile::new("gcp");
+        gcp.auth = Auth::GoogleIam { account: None };
+        for p in [&pw, &az, &rds, &gcp] {
+            store.upsert(p.clone()).unwrap();
+        }
+        let text = std::fs::read_to_string(dirs.connections_file()).unwrap();
+        assert!(text.contains("[connection.auth]\nmethod = \"entra-id\"\ntenant = \"contoso.onmicrosoft.com\""), "{text}");
+        assert!(text.contains("method = \"aws-iam\"\nprofile = \"dev\"") && text.contains("method = \"google-iam\""), "{text}");
+        assert_eq!(text.matches("method =").count(), 3, "a password stays out of the file");
+        assert!(!text.contains("region"), "{text}");
+        assert_eq!(ConfigStore::open(&dirs).unwrap().connections(), vec![pw, az, rds, gcp]);
+        // A file of an older version: a password.
+        std::fs::write(dirs.connections_file(), "[[connection]]\nid = \"a\"\nname = \"n\"\nhost = \"h\"\nport = 1\nuser = \"u\"\ndatabase = \"d\"\n").unwrap();
+        assert_eq!(ConfigStore::open(&dirs).unwrap().connections()[0].auth, Auth::Password);
+        // A method of a newer version: the connection is kept in the file, not used.
+        let newer = "[[connection]]\nid = \"k\"\nname = \"krb\"\nhost = \"h\"\nport = 1\nuser = \"u\"\ndatabase = \"d\"\n\n[connection.auth]\nmethod = \"kerberos\"\n";
+        std::fs::write(dirs.connections_file(), newer).unwrap();
+        let s = ConfigStore::open(&dirs).unwrap();
+        assert!(s.connections().is_empty());
+        s.upsert(ConnectionProfile::new("other")).unwrap();
+        assert!(std::fs::read_to_string(dirs.connections_file()).unwrap().contains("kerberos"));
+    }
+
+    #[test]
+    fn a_token_never_goes_without_tls() {
+        let mut p = ConnectionProfile::new("x");
+        p.sslmode = SslMode::Disable;
+        assert_eq!(p.tls_mode(), SslMode::Disable);
+        for a in [AuthKind::EntraId, AuthKind::AwsIam, AuthKind::GoogleIam] {
+            p.auth = a.fresh();
+            for (m, want) in [(SslMode::Disable, SslMode::Require), (SslMode::Prefer, SslMode::Require), (SslMode::Require, SslMode::Require), (SslMode::VerifyFull, SslMode::VerifyFull)] {
+                p.sslmode = m;
+                assert_eq!(p.tls_mode(), want, "{a:?} {m:?}");
+            }
+        }
+        assert_eq!(Engine::SqlServer.auth_kinds(), [AuthKind::Password, AuthKind::EntraId]);
+        assert!(Engine::MySql.supports(AuthKind::GoogleIam) && !Engine::Redis.supports(AuthKind::EntraId) && !Engine::Sqlite.supports(AuthKind::AwsIam));
+        assert_eq!(AuthKind::parse("Entra-ID"), Some(AuthKind::EntraId));
+        assert_eq!(Auth::AwsIam { profile: Some("dev".into()), region: Some("eu-west-1".into()) }.describe(), "AWS IAM (profile dev, region eu-west-1)");
     }
 
     #[test]

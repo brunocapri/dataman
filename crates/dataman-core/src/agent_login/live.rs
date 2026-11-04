@@ -259,6 +259,10 @@ pub fn agent_profile(p: &ConnectionProfile, user: &str) -> ConnectionProfile {
     let mut a = p.clone();
     a.user = user.to_string();
     a.save_password = false;
+    // The agent signs in with its own password, never the user's cloud sign-in; the TLS a token
+    // required stays, since `tls_mode` only raises it for a token.
+    a.sslmode = p.tls_mode();
+    a.auth = crate::config::Auth::Password;
     // Never a pgpass line: the password is the Keychain's.
     a.agent_made = true;
     if p.engine == Engine::MongoDb {

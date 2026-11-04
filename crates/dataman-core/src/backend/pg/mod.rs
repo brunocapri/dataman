@@ -270,7 +270,7 @@ async fn connect_dedicated(p: &ConnectionProfile, password: Option<&str>, databa
 
 fn pg_config(p: &ConnectionProfile, password: Option<&str>, database: Option<&str>, via: Option<SocketAddr>) -> (tokio_postgres::Config, SslMode) {
     let mut cfg = tokio_postgres::Config::new();
-    let sslmode = if p.is_socket() { SslMode::Disable } else { p.sslmode };
+    let sslmode = if p.is_socket() { SslMode::Disable } else { p.tls_mode() };
     match via {
         Some(addr) => {
             cfg.host(if p.is_socket() { "localhost" } else { &p.host }).hostaddr(addr.ip()).port(addr.port());

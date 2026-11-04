@@ -45,6 +45,7 @@ fn ssl_opts(p: &ConnectionProfile, mode: SslMode, via: Option<SocketAddr>) -> Op
 
 fn opts(p: &ConnectionProfile, password: Option<&str>, database: Option<&str>, via: Option<SocketAddr>, ssl: Option<SslOpts>) -> Opts {
     let db = database.filter(|d| !d.is_empty()).or(Some(p.database.as_str()).filter(|d| !d.is_empty()));
+    let tls = ssl.is_some();
     let mut b = OptsBuilder::default()
         .user(Some(p.user.clone()))
         .pass(password.map(str::to_string))
@@ -56,7 +57,10 @@ fn opts(p: &ConnectionProfile, password: Option<&str>, database: Option<&str>, v
         .client_found_rows(true)
         .tcp_nodelay(true)
         .tcp_keepalive(Some(Duration::from_secs(60)))
-        .ssl_opts(ssl);
+        .ssl_opts(ssl)
+        // A cloud token goes as the password in clear text inside TLS (Azure, RDS and Cloud SQL
+        // all ask for mysql_clear_password); only ever over TLS, which `tls_mode` requires.
+        .enable_cleartext_plugin(p.auth.is_token() && tls);
     if p.read_only {
         b = b.init(vec!["SET SESSION TRANSACTION READ ONLY"]);
     }
@@ -104,7 +108,7 @@ pub(crate) async fn connect(
 
 async fn open(p: &ConnectionProfile, password: Option<&str>, database: Option<&str>, via: Option<SocketAddr>, watch: Option<&Arc<TxWatch>>) -> Result<Arc<Client>> {
     super::install_tls_provider();
-    let mode = if p.is_socket() && via.is_none() { SslMode::Disable } else { p.sslmode };
+    let mode = if p.is_socket() && via.is_none() { SslMode::Disable } else { p.tls_mode() };
     let plain = || opts(p, password, database, via, None);
     let (conn, side, tls_active) = match ssl_opts(p, mode, via) {
         None => {

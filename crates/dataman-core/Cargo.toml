@@ -9,7 +9,7 @@ publish.workspace = true
 [dependencies]
 anyhow.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["io-util"] }
+tokio = { workspace = true, features = ["io-util", "process"] }
 tokio-postgres.workspace = true
 postgres-protocol = "0.6"
 futures-util.workspace = true

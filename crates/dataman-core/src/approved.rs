@@ -212,6 +212,8 @@ pub(crate) fn review(approved: Option<&ConnectionProfile>, next: &ConnectionProf
     };
     if moved {
         (named.engine, named.host, named.port, named.user, named.ssh, named.path) = (old.engine, old.host.clone(), old.port, old.user.clone(), old.ssh.clone(), old.path.clone());
+        // The sign-in method is part of where the connection goes (its line above).
+        named.auth = old.auth.clone();
         named.options.retain(|k, _| project::secret_option(k));
         named.options.extend(old.options.iter().filter(|(k, _)| !project::secret_option(k)).map(|(k, v)| (k.clone(), v.clone())));
     }
@@ -341,6 +343,30 @@ mod tests {
 
     fn held_ids(s: &ConfigStore) -> Vec<String> {
         s.held().into_iter().map(|h| h.id).collect()
+    }
+
+    #[test]
+    fn a_cloud_sign_in_written_outside_dataman_waits() {
+        use crate::config::Auth;
+        let m = Mac::new();
+        m.dataman().upsert(conn("a")).unwrap();
+        // Switched to an Entra token by another program: held, the password's connection applies.
+        m.outside().upsert(ConnectionProfile { auth: Auth::EntraId { tenant: None }, ..conn("a") }).unwrap();
+        let d = m.dataman();
+        assert_eq!(held_ids(&d), ["a"]);
+        assert_eq!(d.get("a").unwrap().auth, Auth::Password);
+        let h = &d.held()[0];
+        assert!(h.moved && h.changes.iter().any(|c| c.what == "Sign-in" && c.to.contains("not a known address")), "{h:?}");
+        // Accepted in Dataman, then only its AWS profile changed outside: held again.
+        d.accept(&d.held()).unwrap();
+        m.dataman().upsert(ConnectionProfile { host: "db.abc.us-east-1.rds.amazonaws.com".into(), auth: Auth::AwsIam { profile: Some("dev".into()), region: None }, ..conn("a") }).unwrap();
+        m.outside().upsert(ConnectionProfile { host: "db.abc.us-east-1.rds.amazonaws.com".into(), auth: Auth::AwsIam { profile: Some("admin".into()), region: None }, ..conn("a") }).unwrap();
+        let d = m.dataman();
+        assert_eq!(held_ids(&d), ["a"]);
+        assert_eq!(d.get("a").unwrap().auth, Auth::AwsIam { profile: Some("dev".into()), region: None });
+        // A new connection with a token for Azure's own host loosens nothing.
+        m.outside().upsert(ConnectionProfile { host: "srv.database.windows.net".into(), auth: Auth::EntraId { tenant: None }, ..conn("b") }).unwrap();
+        assert!(!held_ids(&m.dataman()).contains(&"b".to_string()));
     }
 
     #[test]

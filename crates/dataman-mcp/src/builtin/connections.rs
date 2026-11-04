@@ -1,9 +1,12 @@
 //! Passwords are write-only: they go to the Keychain, never into connections.toml, a response
 //! or the audit log. Through MCP a connection's safety settings only stay or tighten, a saved
 //! password never follows a connection to another server, and moving one there waits for the
-//! user's Allow.
+//! user's Allow. A cloud sign-in (a token from the user's own az, aws or gcloud) goes only to the
+//! cloud's own database hosts and never through a tunnel: an agent cannot point a bearer token
+//! good for every database of the user's at a host of its choosing.
 
-use dataman_core::{ConfigStore, ConnectionProfile, Engine, Environment, McpAccess, SshAuth, SshSettings, SslMode};
+use dataman_core::cloudauth::{self, host_allowed};
+use dataman_core::{Auth, AuthKind, ConfigStore, ConnectionProfile, Engine, Environment, McpAccess, SshAuth, SshSettings, SslMode};
 use serde_json::{Value, json};
 
 use super::Builtin;
@@ -26,6 +29,11 @@ fn fields(s: Schema, mcp: Value) -> Schema {
         .prop("ssh_user", false, json!({"type": "string", "description": "SSH user; default: the alias' User, or the local user."}))
         .prop("ssh_auth", false, json!({"type": "string", "enum": ["agent", "key", "password"], "description": "How the tunnel signs in (a password or passphrase is typed in Dataman)."}))
         .prop("ssh_key_file", false, json!({"type": "string", "description": "Private key for ssh_auth key; default: the alias' IdentityFile, or ~/.ssh/id_*."}))
+        .prop("auth", false, json!({"type": "string", "enum": ["password", "entra-id", "aws-iam", "google-iam"], "description": "How it signs in: a password (default), or a short-lived token the user's own cloud CLI makes for each connection (az, aws, gcloud; nothing to save). postgres and mysql take all three, sql-server entra-id. A cloud method only for that cloud's own hosts (*.database.windows.net, *.database.azure.com, *.rds.amazonaws.com, *.sql.goog), never through an SSH tunnel (aws-iam excepted), never with a password; TLS is always required."}))
+        .prop("auth_tenant", false, json!({"type": "string", "description": "entra-id: the Entra tenant (id or domain); default: az's own."}))
+        .prop("aws_profile", false, json!({"type": "string", "description": "aws-iam: the AWS CLI profile (IAM Identity Center or keys); default: the default profile."}))
+        .prop("aws_region", false, json!({"type": "string", "description": "aws-iam: the region; default: the one in the RDS endpoint's name."}))
+        .prop("gcp_account", false, json!({"type": "string", "description": "google-iam: the gcloud account; default: gcloud's active one."}))
 }
 
 pub fn tools() -> Vec<Builtin> {
@@ -79,6 +87,66 @@ fn mcp_of(s: &str) -> Result<McpAccess, ToolError> {
 
 fn ssh_auth_of(s: &str) -> Result<SshAuth, ToolError> {
     SshAuth::ALL.into_iter().find(|m| m.label() == s).ok_or_else(|| ToolError::Invalid(format!("unknown ssh_auth {s:?}")))
+}
+
+fn auth_value(key: &str, v: &str) -> Result<Option<String>, ToolError> {
+    let v = v.trim();
+    if v.is_empty() {
+        return Ok(None);
+    }
+    if !cloudauth::plain_value(v) {
+        return Err(ToolError::Invalid(format!("{key:?} takes letters, digits and . _ @ : / + - only")));
+    }
+    Ok(Some(v.to_string()))
+}
+
+/// `auth` and its fields over the connection's: a field of another method is refused.
+fn apply_auth(profile: &mut ConnectionProfile, a: &Args) -> Result<(), ToolError> {
+    if let Some(k) = a.opt_str("auth") {
+        let kind = AuthKind::parse(k).ok_or_else(|| ToolError::Invalid(format!("unknown auth {k:?}")))?;
+        if kind != profile.auth.kind() {
+            profile.auth = kind.fresh();
+        }
+    }
+    for (key, kind) in [("auth_tenant", AuthKind::EntraId), ("aws_profile", AuthKind::AwsIam), ("aws_region", AuthKind::AwsIam), ("gcp_account", AuthKind::GoogleIam)] {
+        let Some(v) = a.opt_str(key) else { continue };
+        if profile.auth.kind() != kind {
+            return Err(ToolError::Invalid(format!("{key:?} is for auth {:?}", kind.slug())));
+        }
+        let v = auth_value(key, v)?;
+        match (&mut profile.auth, key) {
+            (Auth::EntraId { tenant }, _) => *tenant = v,
+            (Auth::AwsIam { profile, .. }, "aws_profile") => *profile = v,
+            (Auth::AwsIam { region, .. }, _) => *region = v,
+            (Auth::GoogleIam { account }, _) => *account = v,
+            (Auth::Password, _) => {}
+        }
+    }
+    Ok(())
+}
+
+/// A cloud token only for the cloud's own hosts, never through a tunnel the agent picked (an
+/// AWS token is signed for its host: harmless anywhere else, but an RDS endpoint is all that
+/// takes one).
+fn cloud_target(p: &ConnectionProfile) -> Result<(), ToolError> {
+    let kind = p.auth.kind();
+    if kind == AuthKind::Password {
+        return Ok(());
+    }
+    if !p.engine.supports(kind) {
+        return Err(ToolError::Invalid(format!("{} does not sign in with auth {:?}", p.engine.label(), kind.slug())));
+    }
+    if !host_allowed(kind, &p.host) {
+        return Err(ToolError::Refused(format!(
+            "{} is not a known {} database host: through MCP a cloud sign-in goes to the cloud's own hosts only (the user can set up any other in Dataman)",
+            p.host,
+            kind.label()
+        )));
+    }
+    if p.ssh.is_some() && kind != AuthKind::AwsIam {
+        return Err(ToolError::Refused(format!("through MCP a {} token never goes through an SSH tunnel (the user can set one up in Dataman)", kind.label())));
+    }
+    Ok(())
 }
 
 fn failed(e: anyhow::Error) -> ToolError {
@@ -188,6 +256,13 @@ fn apply(profile: &mut ConnectionProfile, a: &Args) -> Result<Option<String>, To
     if let Some(pw) = a.opt_str("password") {
         password = Some(pw.to_string());
     }
+    apply_auth(profile, a)?;
+    if profile.auth.is_token() && password.is_some() {
+        return Err(ToolError::Invalid(format!("auth {:?} takes no password: the user's cloud CLI makes a token for each connection", profile.auth.kind().slug())));
+    }
+    if profile.auth.is_token() && !profile.engine.supports(profile.auth.kind()) {
+        return Err(ToolError::Invalid(format!("{} does not sign in with auth {:?}", profile.engine.label(), profile.auth.kind().slug())));
+    }
     if let Some(p) = a.opt_str("path") {
         profile.path = Some(p.trim().to_string()).filter(|p| !p.is_empty());
     }
@@ -276,7 +351,7 @@ fn no_loosening(old: &ConnectionProfile, new: &ConnectionProfile) -> Result<(), 
 }
 
 fn target_changed(old: &ConnectionProfile, new: &ConnectionProfile) -> bool {
-    new.engine != old.engine || new.host != old.host || new.port != old.port || new.user != old.user || new.ssh != old.ssh || new.path != old.path
+    new.engine != old.engine || new.host != old.host || new.port != old.port || new.user != old.user || new.ssh != old.ssh || new.path != old.path || new.auth.kind() != old.auth.kind()
 }
 
 fn ssh_text(p: &ConnectionProfile) -> String {
@@ -336,6 +411,7 @@ async fn allow_move(cx: &Call, old: &ConnectionProfile, new: &ConnectionProfile)
     line("user", old.user.clone(), new.user.clone());
     line("ssh", ssh_text(old), ssh_text(new));
     line("file", old.path.clone().unwrap_or_default(), new.path.clone().unwrap_or_default());
+    line("sign-in", old.auth.describe(), new.auth.describe());
     cx.ask_about(old, &lines.join("\n"), vec!["moves the connection to another server".into()]).await
 }
 
@@ -437,6 +513,7 @@ fn changed_fields(old: &ConnectionProfile, new: &ConnectionProfile) -> Vec<&'sta
     f("mcp", old.mcp_access() != new.mcp_access());
     f("ssh", old.ssh != new.ssh);
     f("path", old.path != new.path);
+    f("auth", old.auth != new.auth);
     v
 }
 
@@ -490,6 +567,7 @@ fn create_connection(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>>
         // The connection form's rules (default port and database, Redis' 0–15…).
         profile.normalize();
         profile.validate().map_err(ToolError::Invalid)?;
+        cloud_target(&profile)?;
         if let Some(old) = existing {
             no_loosening(old, &profile)?;
             allow_move(cx, old, &profile).await?;
@@ -534,6 +612,9 @@ fn update_connection(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>>
         }
         profile.validate().map_err(ToolError::Invalid)?;
         no_loosening(&old, &profile)?;
+        if target_changed(&old, &profile) || profile.auth != old.auth {
+            cloud_target(&profile)?;
+        }
         let changed = changed_fields(&old, &profile);
         if changed.is_empty() && password.is_none() {
             let state = if old.save_password { "kept" } else { "none" };
@@ -664,11 +745,43 @@ mod tests {
     }
 
     #[test]
+    fn cloud_sign_in_goes_to_the_clouds_own_hosts_only() {
+        let mut p = base();
+        apply(&mut p, &args(json!({"host": "srv.postgres.database.azure.com", "user": "ana@contoso.com", "auth": "entra-id", "auth_tenant": "contoso.onmicrosoft.com"}))).unwrap();
+        assert_eq!(p.auth, Auth::EntraId { tenant: Some("contoso.onmicrosoft.com".into()) });
+        assert!(cloud_target(&p).is_ok());
+        assert!(target_changed(&base(), &p) && changed_fields(&base(), &p).contains(&"auth"));
+        let mut evil = p.clone();
+        apply(&mut evil, &args(json!({"host": "db.attacker.example"}))).unwrap();
+        assert!(matches!(cloud_target(&evil), Err(ToolError::Refused(m)) if m.contains("not a known")));
+        let mut tunneled = p.clone();
+        apply(&mut tunneled, &args(json!({"ssh_host": "bastion.attacker.example"}))).unwrap();
+        assert!(matches!(cloud_target(&tunneled), Err(ToolError::Refused(m)) if m.contains("SSH tunnel")));
+        let mut google_ip = base();
+        apply(&mut google_ip, &args(json!({"host": "34.1.2.3", "auth": "google-iam"}))).unwrap();
+        assert!(cloud_target(&google_ip).is_err(), "a Cloud SQL IP cannot be told from anyone's");
+        let mut rds = base();
+        apply(&mut rds, &args(json!({"host": "db.abc.eu-west-1.rds.amazonaws.com", "auth": "aws-iam", "aws_profile": "dev", "ssh_host": "bastion"}))).unwrap();
+        assert!(cloud_target(&rds).is_ok(), "an RDS token is signed for its host");
+        let mut q = base();
+        assert!(matches!(apply(&mut q, &args(json!({"auth": "entra-id", "password": "pw"}))), Err(ToolError::Invalid(m)) if m.contains("no password")));
+        let mut q = base();
+        assert!(matches!(apply(&mut q, &args(json!({"aws_profile": "dev"}))), Err(ToolError::Invalid(m)) if m.contains("aws-iam")));
+        let mut q = base();
+        assert!(apply(&mut q, &args(json!({"auth": "aws-iam", "aws_profile": "--endpoint-url=x"}))).is_err());
+        let mut q = base();
+        assert!(apply(&mut q, &args(json!({"engine": "redis", "auth": "entra-id"}))).is_err(), "not for this engine");
+        let mut back = p.clone();
+        apply(&mut back, &args(json!({"auth": "password"}))).unwrap();
+        assert_eq!(back.auth, Auth::Password);
+    }
+
+    #[test]
     fn update_schema() {
         let t = tools();
         let u = t.iter().find(|t| t.name == "update_connection").unwrap();
         assert_eq!(u.schema.required(), ["connection"]);
-        for k in ["name", "host", "port", "user", "database", "sslmode", "password", "color", "env", "read_only", "mcp", "connection_string", "ssh_host"] {
+        for k in ["name", "host", "port", "user", "database", "sslmode", "password", "color", "env", "read_only", "mcp", "connection_string", "ssh_host", "auth", "aws_profile"] {
             assert!(u.schema.properties().contains_key(k), "{k}");
         }
         assert!(u.schema.validate(&json!({"connection": "x", "port": 0}).as_object().unwrap().clone()).is_err());

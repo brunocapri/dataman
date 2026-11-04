@@ -9,7 +9,8 @@ use gpui::{
 };
 use crate::theme::{Pt, px};
 use dataman_core::config::Engine;
-use dataman_core::{ConnectionProfile, Environment, HostKeyPrompt, McpAccess, ServerInfo, SshAuth, SshError, SshSettings, SslMode};
+use dataman_core::cloudauth::{self, Cli, Fix, SignInError};
+use dataman_core::{Auth, AuthKind, ConnectionProfile, Environment, HostKeyPrompt, McpAccess, ServerInfo, SshAuth, SshError, SshSettings, SslMode};
 
 const ENGINES: [Engine; 9] = Engine::ALL;
 const SAVED_IN: &str = if cfg!(target_os = "macos") {
@@ -19,6 +20,29 @@ const SAVED_IN: &str = if cfg!(target_os = "macos") {
 } else {
     "saved in keyring"
 };
+
+/// The user field under a cloud method: its placeholder, and its label.
+fn user_hint(engine: Engine, kind: AuthKind) -> (&'static str, &'static str) {
+    match (kind, engine) {
+        (AuthKind::EntraId, Engine::SqlServer) => ("the token's", "USER (NOT NEEDED)"),
+        (AuthKind::EntraId, _) => ("ana@contoso.com, or a group's name", "USER · ENTRA UPN OR GROUP"),
+        (AuthKind::AwsIam, Engine::MySql) => ("a user WITH AWSAuthenticationPlugin", "USER · DATABASE USER FOR IAM"),
+        (AuthKind::AwsIam, _) => ("a user granted rds_iam", "USER · DATABASE USER FOR IAM"),
+        (AuthKind::GoogleIam, Engine::MySql) => ("ana (the e-mail before @)", "USER · IAM USER"),
+        (AuthKind::GoogleIam, _) => ("ana@example.com, or sa@project.iam", "USER · IAM USER OR SERVICE ACCOUNT"),
+        (AuthKind::Password, _) => ("user", "USER"),
+    }
+}
+
+/// What a cloud method says before it is checked: whose sign-in it uses.
+fn sign_in_intro(kind: AuthKind) -> &'static str {
+    match kind {
+        AuthKind::EntraId => "Signs in through the Azure CLI (az) on this computer, as the account az is signed in with: no password, nothing saved.",
+        AuthKind::AwsIam => "Signs in through the AWS CLI (aws) on this computer, with its sign-in (aws login, aws sso login) or its keys: no password, nothing saved.",
+        AuthKind::GoogleIam => "Signs in through the Google Cloud CLI (gcloud) on this computer, as its active account: no password, nothing saved.",
+        AuthKind::Password => "",
+    }
+}
 
 pub fn engines_matching(q: &str) -> Vec<Engine> {
     let q = q.trim().to_lowercase();
@@ -81,6 +105,27 @@ enum Test {
     Failed { title: String, body: String },
     Invalid(String),
     HostKey(HostKeyPrompt),
+}
+
+/// A cloud method's check: the CLI asked for a token now.
+enum SignIn {
+    Unchecked,
+    Checking,
+    /// The CLI's own sign-in is open in the browser.
+    SigningIn,
+    Ok { who: Option<String>, minutes: u64 },
+    Failed { title: String, body: String, fix: Option<Fix> },
+}
+
+impl SignIn {
+    fn busy(&self) -> bool {
+        matches!(self, SignIn::Checking | SignIn::SigningIn)
+    }
+
+    fn failed(e: &anyhow::Error) -> SignIn {
+        let (title, body, _) = server_message(e);
+        SignIn::Failed { title, body, fix: cloudauth::sign_in_error(e).and_then(|s| s.action) }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -160,6 +205,14 @@ pub struct ConnDialog {
     saving: bool,
     /// DuckDB: SQL may read and write files (`read_csv`, `COPY … TO`, ATTACH).
     file_access: bool,
+    /// How it signs in; each cloud method's fields stay while another is picked.
+    auth: AuthKind,
+    tenant: Entity<TextInput>,
+    aws_profile: Entity<TextInput>,
+    aws_region: Entity<TextInput>,
+    gcp_account: Entity<TextInput>,
+    sign_in: SignIn,
+    sign_in_gen: u64,
 }
 
 impl EventEmitter<DialogEvent> for ConnDialog {}
@@ -193,6 +246,9 @@ impl ConnDialog {
                 InputEvent::Changed => {
                     if !matches!(d.test, Test::Testing { .. }) {
                         d.test = Test::NotTested;
+                    }
+                    if !d.sign_in.busy() {
+                        d.sign_in = SignIn::Unchecked;
                     }
                     cx.notify();
                 }
@@ -297,6 +353,16 @@ impl ConnDialog {
         let options = field(cx, "authSource=admin&replicaSet=rs0", &opts.join("&"));
         let file = field(cx, "~/data/app.sqlite", profile.path.as_deref().unwrap_or(""));
         let file_access = profile.options.get(dataman_core::DUCKDB_EXTERNAL_ACCESS).is_none_or(|v| v != "false");
+        let (tenant, aws_profile, aws_region, gcp_account) = match &profile.auth {
+            Auth::EntraId { tenant } => (tenant.clone(), None, None, None),
+            Auth::AwsIam { profile, region } => (None, profile.clone(), region.clone(), None),
+            Auth::GoogleIam { account } => (None, None, None, account.clone()),
+            Auth::Password => (None, None, None, None),
+        };
+        let tenant = field(cx, "az's default", tenant.as_deref().unwrap_or(""));
+        let aws_profile = field(cx, "default", aws_profile.as_deref().unwrap_or(""));
+        let aws_region = field(cx, "from the endpoint", aws_region.as_deref().unwrap_or(""));
+        let gcp_account = field(cx, "gcloud's active account", gcp_account.as_deref().unwrap_or(""));
         let step = if profile.host == ConnectionProfile::new("").host && is_new && profile.name.is_empty() { Step::Engine } else { Step::Form };
         if step == Step::Engine {
             window.focus(&search.focus_handle(cx), cx);
@@ -308,6 +374,10 @@ impl ConnDialog {
             .as_deref()
             .and_then(|c| SWATCHES.iter().position(|s| *s == c))
             .unwrap_or_else(|| profile.id.bytes().fold(0usize, |h, b| h.wrapping_mul(31).wrapping_add(b as usize)) % 5);
+        let profile_auth = profile.auth.kind();
+        if profile_auth.is_token() {
+            user.update(cx, |t, cx| t.set_placeholder(user_hint(profile.engine, profile_auth).0, cx));
+        }
         ConnDialog {
             store,
             focus: cx.focus_handle(),
@@ -350,6 +420,13 @@ impl ConnDialog {
             file,
             create_file: false,
             saving: false,
+            auth: profile_auth,
+            tenant,
+            aws_profile,
+            aws_region,
+            gcp_account,
+            sign_in: SignIn::Unchecked,
+            sign_in_gen: 0,
         }
     }
 
@@ -526,7 +603,15 @@ impl ConnDialog {
         let want = dataman_core::default_sslmode(self.engine, &host, self.ssh.on);
         if want != self.sslmode {
             self.sslmode = want;
+            self.clamp_tls();
             cx.notify();
+        }
+    }
+
+    /// A cloud token never goes without TLS: `disable` and `prefer` are not offered under one.
+    fn clamp_tls(&mut self) {
+        if self.token_auth() && matches!(self.sslmode, SslMode::Disable | SslMode::Prefer) {
+            self.sslmode = SslMode::Require;
         }
     }
 
@@ -657,11 +742,15 @@ impl ConnDialog {
         if self.entry == Entry::Url {
             v.push(&self.conn_str);
         } else {
-            v.extend([&self.host, &self.port, &self.user]);
+            v.extend([&self.host, &self.port]);
+            v.extend(self.auth_inputs());
+            v.push(&self.user);
             if self.has_database() {
                 v.push(&self.database);
             }
-            v.push(&self.password);
+            if !self.token_auth() {
+                v.push(&self.password);
+            }
             if self.engine.spec().form.options {
                 v.push(&self.options);
             }
@@ -738,7 +827,8 @@ impl ConnDialog {
         }
         let text = |e: &Entity<TextInput>| Some(e.read(cx).text().to_string()).filter(|s| !s.is_empty());
         let secret = if self.ssh.on && self.ssh.auth != SshAuth::Agent { text(&self.ssh.secret) } else { None };
-        Ok((p, text(&self.password), secret))
+        let password = if p.auth.is_token() { None } else { text(&self.password) };
+        Ok((p, password, secret))
     }
 
     /// Picked with New…: the file made, once what was typed is valid.
@@ -788,6 +878,12 @@ impl ConnDialog {
         p.options = if p.engine.spec().form.options { ConnectionProfile::parse_options(&text(&self.options)) } else { Default::default() };
         // Every password goes to the Keychain; one left empty is asked for when connecting.
         p.save_password = true;
+        p.auth = if self.engine.supports(self.auth) { self.auth_value(cx) } else { Auth::Password };
+        if p.auth.is_token() {
+            // Nothing to save, and a token never travels without TLS.
+            p.save_password = false;
+            p.sslmode = p.tls_mode();
+        }
         p.env = self.env;
         p.read_only = self.read_only;
         p.mcp = self.mcp;
@@ -818,6 +914,9 @@ impl ConnDialog {
             return;
         }
         self.engine = e;
+        if !e.supports(self.auth) {
+            self.set_auth(AuthKind::Password, cx);
+        }
         let text = |i: &Entity<TextInput>, cx: &Context<Self>| i.read(cx).text().trim().to_string();
         // A file and a server have nothing in common: the other one's fields are cleared.
         if old.is_file() != e.is_file() {
@@ -866,6 +965,7 @@ impl ConnDialog {
         } else if e.is_sql() && !old.is_sql() && self.sslmode == SslMode::Disable {
             self.sslmode = SslMode::Prefer;
         }
+        self.clamp_tls();
         let ph = e.spec().form.database_placeholder;
         self.database.update(cx, |t, cx| t.set_placeholder(ph, cx));
         if !matches!(self.test, Test::Testing { .. }) {
@@ -931,6 +1031,10 @@ impl ConnDialog {
                             let (title, body, password) = server_message(&e);
                             if password {
                                 d.password.update(cx, |p, _| p.error = true);
+                            }
+                            // What fixes a cloud sign-in shows where the sign-in is.
+                            if cloudauth::sign_in_error(&e).is_some_and(|s| s.action.is_some()) && !d.sign_in.busy() {
+                                d.sign_in = SignIn::failed(&e);
                             }
                             Test::Failed { title, body }
                         }
@@ -1178,6 +1282,215 @@ impl ConnDialog {
 
     fn has_database(&self) -> bool {
         self.engine.spec().form.database
+    }
+
+    fn token_auth(&self) -> bool {
+        self.auth.is_token() && self.engine.supports(self.auth)
+    }
+
+    /// The fields of the cloud method picked, in the order shown.
+    fn auth_inputs(&self) -> Vec<&Entity<TextInput>> {
+        if !self.token_auth() {
+            return Vec::new();
+        }
+        match self.auth {
+            AuthKind::EntraId => vec![&self.tenant],
+            AuthKind::AwsIam => vec![&self.aws_profile, &self.aws_region],
+            AuthKind::GoogleIam => vec![&self.gcp_account],
+            AuthKind::Password => Vec::new(),
+        }
+    }
+
+    fn auth_value(&self, cx: &App) -> Auth {
+        let text = |e: &Entity<TextInput>| Some(e.read(cx).text().trim().to_string()).filter(|s| !s.is_empty());
+        match self.auth {
+            AuthKind::Password => Auth::Password,
+            AuthKind::EntraId => Auth::EntraId { tenant: text(&self.tenant) },
+            AuthKind::AwsIam => Auth::AwsIam { profile: text(&self.aws_profile), region: text(&self.aws_region) },
+            AuthKind::GoogleIam => Auth::GoogleIam { account: text(&self.gcp_account) },
+        }
+    }
+
+    pub fn set_auth(&mut self, kind: AuthKind, cx: &mut Context<Self>) {
+        if kind != self.auth {
+            self.auth = kind;
+            self.sign_in = SignIn::Unchecked;
+            self.sign_in_gen += 1;
+            if !matches!(self.test, Test::Testing { .. }) {
+                self.test = Test::NotTested;
+            }
+        }
+        if kind.is_token() && self.engine.supports(kind) && matches!(self.sslmode, SslMode::Disable | SslMode::Prefer) {
+            // Azure's certificates are publicly trusted: the server is checked before the token
+            // goes. RDS and Cloud SQL sign theirs with their own CAs.
+            self.sslmode = if kind == AuthKind::EntraId { SslMode::VerifyFull } else { SslMode::Require };
+        }
+        let ph = user_hint(self.engine, kind).0;
+        let ph = if kind.is_token() { ph.to_string() } else { "user".to_string() };
+        self.user.update(cx, |t, cx| t.set_placeholder(ph, cx));
+        cx.notify();
+    }
+
+    #[cfg(feature = "checks")]
+    pub fn demo_check_sign_in(&mut self, cx: &mut Context<Self>) {
+        self.check_sign_in(cx);
+    }
+
+    /// Where the token would go, said when it is not plainly the cloud's own database host.
+    fn auth_note(&self, cx: &App) -> Option<(bool, &'static str)> {
+        if !self.token_auth() || self.entry == Entry::Url {
+            return None;
+        }
+        let host = self.host.read(cx).text().trim().to_string();
+        if host.is_empty() || cloudauth::host_allowed(self.auth, &host) {
+            return None;
+        }
+        Some(match self.auth {
+            AuthKind::EntraId => (true, "Not an Azure database host: your Entra token, good for every Azure database you can reach, goes to it."),
+            AuthKind::AwsIam => (true, "Not an RDS endpoint: AWS signs the token for this exact name, and the region cannot be read from it."),
+            _ => (false, "Your Google token, good for every Cloud SQL instance you can reach, goes to this address: make sure it is your instance's."),
+        })
+    }
+
+    /// Asks the cloud CLI for a token now, and who it signs in as.
+    fn check_sign_in(&mut self, cx: &mut Context<Self>) {
+        if self.sign_in.busy() {
+            return;
+        }
+        let Some(p) = self.sign_in_profile(cx) else { return };
+        let task = self.store.read(cx).core.cloud_sign_in(p);
+        self.sign_in = SignIn::Checking;
+        self.sign_in_gen += 1;
+        let gen_ = self.sign_in_gen;
+        cx.spawn(async move |this, cx| {
+            let r = task.await;
+            let _ = this.update(cx, |d, cx| {
+                if d.sign_in_gen != gen_ {
+                    return;
+                }
+                d.sign_in = match r {
+                    Ok(s) => SignIn::Ok { who: s.who, minutes: s.valid_for.as_secs() / 60 },
+                    Err(e) => SignIn::failed(&e),
+                };
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// The connection as typed, for the cloud CLI; an invalid form says why where the sign-in is.
+    fn sign_in_profile(&mut self, cx: &mut Context<Self>) -> Option<ConnectionProfile> {
+        match self.collect(cx) {
+            Ok((p, ..)) => Some(p),
+            Err(e) => {
+                self.sign_in = SignIn::Failed { title: e, body: String::new(), fix: None };
+                cx.notify();
+                None
+            }
+        }
+    }
+
+    /// The cloud CLI's own sign-in (`az login`, `aws sso login`, `gcloud auth login`), which opens
+    /// the browser; checked again once it is done.
+    fn sign_in_browser(&mut self, cx: &mut Context<Self>) {
+        if self.sign_in.busy() {
+            return;
+        }
+        let Some(p) = self.sign_in_profile(cx) else { return };
+        let task = self.store.read(cx).core.cloud_login(p);
+        self.sign_in = SignIn::SigningIn;
+        self.sign_in_gen += 1;
+        let gen_ = self.sign_in_gen;
+        cx.spawn(async move |this, cx| {
+            let r = task.await;
+            let _ = this.update(cx, |d, cx| {
+                if d.sign_in_gen != gen_ {
+                    return;
+                }
+                match r {
+                    Ok(()) => {
+                        d.sign_in = SignIn::Unchecked;
+                        d.check_sign_in(cx);
+                    }
+                    Err(e) => d.sign_in = SignIn::failed(&e),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// A saved connection that could not sign in: why, and what fixes it, where the sign-in is.
+    pub fn set_sign_in_failed(&mut self, e: &SignInError, cx: &mut Context<Self>) {
+        self.sign_in = SignIn::Failed { title: e.title.clone(), body: e.body.clone(), fix: e.action };
+        cx.notify();
+    }
+
+    /// The cloud method's fields and its sign-in check, where a password would be.
+    fn auth_section(&self, t: &Theme, cx: &mut Context<Self>) -> Vec<gpui::Div> {
+        let row = || div().flex().flex_row().gap(px(12.));
+        let check = ui::button(t, "auth-check", Btn::Secondary)
+            .h(px(30.))
+            .px(px(10.))
+            .cursor_pointer()
+            .child(if matches!(self.sign_in, SignIn::Checking) { "◌ Checking…" } else { "Check sign-in" })
+            .on_click(cx.listener(|d, _, _, cx| d.check_sign_in(cx)));
+        let fields = match self.auth {
+            AuthKind::EntraId => row().items_end().child(self.field(t, "TENANT (OPTIONAL)", &self.tenant, None)),
+            AuthKind::AwsIam => row().items_end().child(self.field(t, "AWS PROFILE", &self.aws_profile, None)).child(div().w(px(150.)).flex_none().child(self.field(t, "REGION", &self.aws_region, None))),
+            _ => row().items_end().child(self.field(t, "ACCOUNT (OPTIONAL)", &self.gcp_account, None)),
+        };
+        let cli = Cli::of(self.auth).map_or("", Cli::program);
+        let (glyph, color, title, body) = match &self.sign_in {
+            SignIn::Unchecked => ("", t.tx3, sign_in_intro(self.auth).to_string(), String::new()),
+            SignIn::Checking => ("◌", t.warn, format!("Asking {cli} for a token…"), String::new()),
+            SignIn::SigningIn => ("◌", t.warn, "Finish signing in in your browser".to_string(), format!("{cli} opened it; this updates when you are done.")),
+            SignIn::Ok { who, minutes } => {
+                let who = who.clone().map_or_else(|| "Signed in".to_string(), |w| format!("Signed in as {w}"));
+                ("●", t.ok, format!("{who} · through {cli} · token valid {minutes} min"), String::new())
+            }
+            SignIn::Failed { title, body, .. } => ("✕", t.err, title.clone(), body.clone()),
+        };
+        // What fixes the failure, right under it: the CLI's sign-in (the browser) or its install page.
+        let fix = match &self.sign_in {
+            SignIn::Failed { fix: Some(Fix::SignIn(c)), .. } => Some(
+                ui::button(t, "auth-sign-in", Btn::Primary)
+                    .h(px(28.))
+                    .px(px(10.))
+                    .cursor_pointer()
+                    .child(format!("Sign in with {}…", c.program()))
+                    .on_click(cx.listener(|d, _, _, cx| d.sign_in_browser(cx))),
+            )
+            .map(|b| (b, "Opens your browser")),
+            SignIn::Failed { fix: Some(Fix::Install(c)), .. } => {
+                let url = c.install_url();
+                Some(ui::button(t, "auth-install", Btn::Secondary).h(px(28.)).px(px(10.)).cursor_pointer().child(format!("Install {} ↗", c.name())).on_click(move |_, _, cx| cx.open_url(url)))
+                    .map(|b| (b, "Then sign in with it once"))
+            }
+            _ => None,
+        };
+        let status = div()
+            .flex()
+            .flex_row()
+            .gap(px(8.))
+            .text_size(px(11.5))
+            .line_height(px(17.))
+            .when(!glyph.is_empty(), |d| d.child(div().flex_none().text_size(px(11.)).text_color(color).child(glyph)))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .child(div().text_color(if glyph.is_empty() { t.tx3 } else { t.tx }).child(title))
+                    .children(body.lines().map(|l| div().text_color(t.tx2).child(l.to_string())).collect::<Vec<_>>())
+                    .when_some(fix, |d, (button, note)| {
+                        d.child(div().pt(px(8.)).flex().flex_row().items_center().gap(px(10.)).child(ui::probe("auth-fix", button)).child(div().text_color(t.tx3).child(note)))
+                    }),
+            );
+        vec![fields.child(ui::probe("auth-check", check)), div().child(ui::probe("auth-status", status))]
     }
 
     fn render_picker(&self, t: &Theme, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
@@ -1555,6 +1868,10 @@ pub fn server_message(e: &anyhow::Error) -> (String, String, bool) {
     if let Some(s) = ssh_error(e) {
         return (s.to_string(), String::new(), false);
     }
+    if let Some(s) = e.chain().find_map(|c| c.downcast_ref::<SignInError>()) {
+        return (s.title.clone(), s.body.clone(), false);
+    }
+    let hint = cloudauth::hint_of(e);
     match dataman_core::server_error(e) {
         Some(db) => {
             let code = db.code.unwrap_or_default();
@@ -1566,13 +1883,15 @@ pub fn server_message(e: &anyhow::Error) -> (String, String, bool) {
             if let Some(h) = db.hint {
                 lines.push(format!("HINT  {h}"));
             }
-            // By the error's class on its engine (28P01, 1045, 18456…), in any language.
-            (title, lines.join("\n"), dataman_core::needs_password(e))
+            lines.extend(hint.map(str::to_string));
+            // By the error's class on its engine (28P01, 1045, 18456…), in any language; a
+            // refused cloud token has no password to fix.
+            (title, lines.join("\n"), hint.is_none() && dataman_core::needs_password(e))
         }
         None => {
             let msg = format!("{e:#}");
             let title = msg.lines().next().unwrap_or(&msg).to_string();
-            (title, String::new(), dataman_core::needs_password(e))
+            (title, hint.unwrap_or_default().to_string(), hint.is_none() && dataman_core::needs_password(e))
         }
     }
 }
@@ -1633,7 +1952,11 @@ impl Render for ConnDialog {
             .child(ui::dropdown_arrow("engine-chip-arrow", false, 9., t.tx3))
             .tip(ui::text_tooltip("Change database"))
             .on_click(cx.listener(|d, _, window, cx| d.change_engine(window, cx)));
-        let modes: Vec<(SslMode, &'static str)> = if self.engine.is_sql() { SslMode::ALL.iter().map(|m| (*m, m.label())).collect() } else { DOC_TLS.to_vec() };
+        let mut modes: Vec<(SslMode, &'static str)> = if self.engine.is_sql() { SslMode::ALL.iter().map(|m| (*m, m.label())).collect() } else { DOC_TLS.to_vec() };
+        // A cloud token never goes without TLS.
+        if self.token_auth() {
+            modes.retain(|(m, _)| matches!(m, SslMode::Require | SslMode::VerifyFull));
+        }
         let ssl = ui::segmented(&t).children(modes.into_iter().map(|(m, label)| {
             ui::probe(
                 format!("tls-{label}"),
@@ -1689,7 +2012,7 @@ impl Render for ConnDialog {
         let url = self.url(cx);
         let url2 = url.clone();
         let by_url = self.entry == Entry::Url;
-        let tls_note = self.tls_note(cx).map(|(warn, note)| (if warn { t.warn } else { t.tx3 }, note));
+        let tls_note = self.auth_note(cx).or_else(|| self.tls_note(cx)).map(|(warn, note)| (if warn { t.warn } else { t.tx3 }, note));
         let entry = ui::segmented(&t).h(px(24.)).children([(Entry::Fields, "Fields"), (Entry::Url, "URL")].map(|(e, label)| {
             ui::probe(format!("entry-{label}"), ui::segment(&t, ("entry", e as usize), label, e == self.entry).on_click(cx.listener(move |d, _, window, cx| d.set_entry(e, window, cx))))
         }));
@@ -1733,14 +2056,27 @@ impl Render for ConnDialog {
             vec![row().items_end().child(self.field(&t, "URL", &self.conn_str, None))]
         } else {
             let db_label = self.engine.spec().form.database_label.to_uppercase();
-            let user_label = if self.engine.spec().form.user_required { "USER" } else { "USER (OPTIONAL)" };
-            let mut v = vec![
-                row().child(self.field(&t, "HOST", &self.host, None)).child(div().w(px(96.)).flex_none().child(self.field(&t, "PORT", &self.port, None))),
-                row().child(self.field(&t, user_label, &self.user, None)).when(self.has_database(), |r| r.child(self.field_as(&t, &db_label, db_label.clone(), &self.database, None))),
-                row()
-                    .items_end()
-                    .child(self.field(&t, "PASSWORD", &self.password, (pw_focused || self.password_needed).then_some(t.acc_t))),
-            ];
+            let token = self.token_auth();
+            let user_label = if token { user_hint(self.engine, self.auth).1 } else if self.engine.spec().form.user_required { "USER" } else { "USER (OPTIONAL)" };
+            let kinds = self.engine.auth_kinds();
+            let auth = (kinds.len() > 1).then(|| {
+                let picker = ui::segmented(&t).children(kinds.iter().map(|k| {
+                    let k = *k;
+                    ui::probe(
+                        format!("auth-{}", k.slug()),
+                        ui::segment(&t, ("auth", k as usize), k.label(), k == self.auth).cursor_pointer().on_click(cx.listener(move |d, _, _, cx| d.set_auth(k, cx))),
+                    )
+                }));
+                div().flex().flex_col().gap(px(6.)).child(caption("AUTHENTICATION")).child(picker)
+            });
+            let mut v = vec![row().child(self.field(&t, "HOST", &self.host, None)).child(div().w(px(96.)).flex_none().child(self.field(&t, "PORT", &self.port, None)))];
+            v.extend(auth);
+            v.push(row().child(self.field(&t, user_label, &self.user, None)).when(self.has_database(), |r| r.child(self.field_as(&t, &db_label, db_label.clone(), &self.database, None))));
+            if token {
+                v.extend(self.auth_section(&t, cx));
+            } else {
+                v.push(row().items_end().child(self.field(&t, "PASSWORD", &self.password, (pw_focused || self.password_needed).then_some(t.acc_t))));
+            }
             if self.engine.spec().form.options {
                 v.push(row().child(self.field(&t, "OPTIONS", &self.options, None)));
             }
@@ -1852,11 +2188,12 @@ impl Render for ConnDialog {
                                 ),
                         )
                     })
-                    .children(self.result_box(&t))
-                    .children(self.host_key_box(&t, cx)),
+                    .children(self.result_box(&t)),
                     ),
                     ),
             )
+            // Outside the scrolling body: on a tall form Trust would sit below the fold.
+            .children(self.host_key_box(&t, cx).map(|b| div().flex_none().px(px(20.)).pt(px(14.)).child(b)))
             .child(
                 ui::modal_footer(&t)
                     .mt(px(14.))

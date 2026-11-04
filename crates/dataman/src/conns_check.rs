@@ -374,6 +374,7 @@ async fn ssh(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowContext
     fill("KEY FILE", &key_file, cx);
     let first = test(&d, cx).await;
     r.check("SSH: an unknown bastion asks to trust its host key", first == "hostkey", &first);
+    until(cx, 3, |cx| cx.update(|_, cx| d.read(cx).demo_still()).unwrap_or(true)).await;
     click_probe("dlg-trust", cx);
     until(cx, 5, |cx| status(&d, cx) != "hostkey").await;
     let wrong = test(&d, cx).await;
