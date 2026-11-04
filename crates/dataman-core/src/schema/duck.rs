@@ -22,11 +22,6 @@ fn get(r: &[Option<String>], i: usize) -> Option<String> {
     r.get(i).cloned().flatten()
 }
 
-/// The schemas DuckDB keeps for itself.
-pub(crate) fn is_system(schema: &str) -> bool {
-    matches!(schema, "information_schema" | "pg_catalog")
-}
-
 /// The primary key's columns, in order (the current catalog).
 pub(crate) fn primary_key_sql(schema: &str, table: &str) -> String {
     format!(
@@ -45,7 +40,7 @@ pub(super) async fn databases(c: &Db) -> Result<Vec<String>> {
 pub(super) async fn schemas(c: &Db, db: &str) -> Result<Vec<String>> {
     let q = format!("SELECT schema_name FROM duckdb_schemas() WHERE database_name = {} AND (NOT internal OR schema_name = 'main') ORDER BY schema_name <> 'main', schema_name", lit(db));
     let mut v: Vec<String> = first_ok(c, &[&q]).await?.into_iter().filter_map(|r| get(&r, 0)).collect();
-    v.sort_by_key(|s| is_system(s));
+    v.sort_by_key(|s| crate::Engine::DuckDb.is_system_schema(s));
     Ok(v)
 }
 

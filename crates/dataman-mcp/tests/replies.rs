@@ -82,7 +82,7 @@ fn replies_hold_only_what_the_agent_received() {
     let read_id = id_of("run_query", true).expect("the read is logged with an id");
     let kept = dataman_core::audit::reply(&log, &read_id).expect("its reply is on disk");
     assert_eq!(serde_json::from_str::<Value>(&kept.reply).unwrap(), got, "the reply on disk is exactly what the agent received");
-    assert!(kept.reply.contains("a•••@acme.com"), "{}", kept.reply);
+    assert!(kept.reply.contains("••••••••.com"), "{}", kept.reply);
     for raw in ["ana@acme.com", "hunter2-raw", "secret"] {
         assert!(!kept.reply.contains(raw), "{raw} must not be on disk: {}", kept.reply);
     }

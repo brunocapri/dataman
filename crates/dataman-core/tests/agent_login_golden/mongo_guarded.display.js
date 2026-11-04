@@ -53,30 +53,82 @@ db.getSiblingDB("shop").runCommand({
                     },
                     "in": {
                       "$cond": [
-                        {"$gt": [{"$indexOfCP": ["$$s", "@"]}, 0]},
+                        {"$gt": [{"$strLenCP": "$$s"}, 4]},
                         {
                           "$concat": [
-                            {"$substrCP": ["$$s", 0, 1]},
-                            "•••@",
-                            {"$arrayElemAt": [{"$split": ["$$s", "@"]}, 1]}
+                            {
+                              "$substrCP": [
+                                {
+                                  "$reduce": {
+                                    "input": {
+                                      "$range": [
+                                        0,
+                                        {
+                                          "$toInt": {
+                                            "$ceil": {
+                                              "$divide": [
+                                                {
+                                                  "$subtract": [
+                                                    {"$strLenCP": "$$s"},
+                                                    4
+                                                  ]
+                                                },
+                                                64
+                                              ]
+                                            }
+                                          }
+                                        }
+                                      ]
+                                    },
+                                    "initialValue": "",
+                                    "in": {
+                                      "$concat": [
+                                        "$$value",
+                                        "••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••"
+                                      ]
+                                    }
+                                  }
+                                },
+                                0,
+                                {"$subtract": [{"$strLenCP": "$$s"}, 4]}
+                              ]
+                            },
+                            {
+                              "$substrCP": [
+                                "$$s",
+                                {"$subtract": [{"$strLenCP": "$$s"}, 4]},
+                                4
+                              ]
+                            }
                           ]
                         },
                         {
-                          "$cond": [
-                            {"$gte": [{"$strLenCP": "$$s"}, 8]},
+                          "$substrCP": [
                             {
-                              "$concat": [
-                                "•••• ",
-                                {
-                                  "$substrCP": [
-                                    "$$s",
-                                    {"$subtract": [{"$strLenCP": "$$s"}, 4]},
-                                    4
+                              "$reduce": {
+                                "input": {
+                                  "$range": [
+                                    0,
+                                    {
+                                      "$toInt": {
+                                        "$ceil": {
+                                          "$divide": [{"$strLenCP": "$$s"}, 64]
+                                        }
+                                      }
+                                    }
+                                  ]
+                                },
+                                "initialValue": "",
+                                "in": {
+                                  "$concat": [
+                                    "$$value",
+                                    "••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••"
                                   ]
                                 }
-                              ]
+                              }
                             },
-                            "••••"
+                            0,
+                            {"$strLenCP": "$$s"}
                           ]
                         }
                       ]

@@ -9,7 +9,7 @@ use anyhow::{Result, bail};
 use super::Ran;
 use super::embed::{self, Columns};
 use crate::config::ConnectionProfile;
-use crate::result::{ColumnInfo, ErrorInfo, ResultSet};
+use crate::result::{ErrorInfo, ResultSet};
 use crate::server::ServerInfo;
 use crate::tx::TxWatch;
 
@@ -57,10 +57,6 @@ impl Client {
     }
 
     pub(crate) async fn text_rows(&self, _: &str) -> Result<Vec<Vec<Option<String>>>, DuckError> {
-        match *self {}
-    }
-
-    pub(crate) async fn prepare(&self, _: &str) -> Result<Vec<ColumnInfo>, DuckError> {
         match *self {}
     }
 

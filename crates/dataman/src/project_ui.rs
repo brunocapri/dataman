@@ -108,7 +108,7 @@ impl Workspace {
         let core = self.store.read(cx).core.clone();
         let Some(r) = core.project.review() else { return };
         if self.project_review.is_none() {
-            self.project_review_return = window.focused(cx);
+            self.hold_focus(crate::app::Modal::ProjectReview, window, cx);
         }
         self.project_review = Some(r);
         window.focus(&self.project_review_focus, cx);
@@ -120,10 +120,7 @@ impl Workspace {
     pub(crate) fn close_project_review(&mut self, apply: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(r) = self.project_review.take() else { return };
         let core = self.store.read(cx).core.clone();
-        match self.project_review_return.take() {
-            Some(f) => window.focus(&f, cx),
-            None => self.focus_editor(window, cx),
-        }
+        self.give_focus_back(crate::app::Modal::ProjectReview, window, cx);
         if !apply {
             core.project.decline();
             self.notice("The project's file waits: Settings › Project reviews it", cx);

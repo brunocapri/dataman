@@ -293,17 +293,6 @@ impl Client {
         .await
     }
 
-    /// The columns of a query: DuckDB knows them once it has run, so this runs it (a read).
-    pub(crate) async fn prepare(&self, sql: &str) -> Result<Vec<ColumnInfo>, DuckError> {
-        let sql = sql.to_string();
-        self.call(move |c| {
-            let mut stmt = c.db.prepare(&sql)?;
-            let rows = stmt.query([])?;
-            Ok(rows.as_ref().map(|s| columns_of(s).0).unwrap_or_default())
-        })
-        .await
-    }
-
     pub(crate) async fn stream(&self, sql: &str, params: &[Option<String>]) -> Result<(Columns, embed::Rows<DuckError>), DuckError> {
         let (sink, first, rx) = Sink::new();
         let sql = sql.to_string();

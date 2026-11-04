@@ -239,6 +239,9 @@ async fn engine(ws: &Entity<Workspace>, case: &Case, r: &mut Report, cx: &mut As
         fill("NAME", &format!("{name} renamed"), cx);
         key(cx, "cmd-enter");
     }
+    // The save runs off the UI thread and the sheet stays until it lands: still connected
+    // until then, as it was before the edit.
+    until(cx, 10, |cx| dialog(ws, cx).is_none()).await;
     let up = connected(ws, &id, 30, cx).await;
     let p = saved(ws, &id, cx);
     r.check(

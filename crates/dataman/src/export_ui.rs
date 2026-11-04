@@ -833,7 +833,7 @@ impl Workspace {
             cx.notify();
             return;
         }
-        // One modal at a time (they share `modal_return`).
+        // One modal at a time (they share `Modal::Sheet`'s place in the focus stack).
         if self.modal_open(cx) {
             return;
         }
@@ -869,7 +869,7 @@ impl Workspace {
     }
 
     fn show_export(&mut self, source: Option<Source>, window: &mut Window, cx: &mut Context<Self>) {
-        self.modal_return = window.focused(cx);
+        self.hold_focus(crate::app::Modal::Sheet, window, cx);
         let core = self.store.read(cx).core.clone();
         let v = cx.new(|cx| ExportView::new(core, source, window, cx));
         cx.subscribe_in(&v, window, |w, v, ev: &ExportEvent, window, cx| match ev {
@@ -881,10 +881,7 @@ impl Workspace {
                 if !v.read(cx).is_running() {
                     w.export = None;
                 }
-                match w.modal_return.take() {
-                    Some(f) => window.focus(&f, cx),
-                    None => w.focus_editor(window, cx),
-                }
+                w.give_focus_back(crate::app::Modal::Sheet, window, cx);
                 cx.notify();
             }
             ExportEvent::Run => {

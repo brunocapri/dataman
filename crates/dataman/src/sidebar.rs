@@ -37,7 +37,7 @@ impl Workspace {
             }),
             NavView::History => self.history.update(cx, |h, cx| {
                 h.set_favorites(false, cx);
-                h.reload(cx);
+                h.reload_soon(cx);
             }),
             NavView::Agents => {}
         }

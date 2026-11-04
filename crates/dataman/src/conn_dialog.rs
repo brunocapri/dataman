@@ -148,7 +148,6 @@ pub struct ConnDialog {
     password_needed: bool,
     confirm_delete: bool,
     _ticker: Option<Task<()>>,
-    pending_focus: bool,
     step: Step,
     search: Entity<TextInput>,
     pick_hi: usize,
@@ -281,11 +280,11 @@ impl ConnDialog {
         .detach();
         let paste_len = [profile.name.len(), profile.host.len()];
         let search = cx.new(|cx| TextInput::new(cx, "Search databases"));
-        cx.subscribe(&search, |d: &mut ConnDialog, _, ev: &InputEvent, cx| match ev {
+        cx.subscribe_in(&search, window, |d: &mut ConnDialog, _, ev: &InputEvent, window, cx| match ev {
             InputEvent::Submit => {
                 let found = engines_matching(d.search.read(cx).text());
                 if let Some(e) = found.get(d.pick_hi.min(found.len().saturating_sub(1))) {
-                    d.pick_engine(*e, cx);
+                    d.pick_engine(*e, window, cx);
                 }
             }
             InputEvent::Changed => {
@@ -343,7 +342,6 @@ impl ConnDialog {
             password_needed: false,
             confirm_delete: false,
             _ticker: None,
-            pending_focus: false,
             step,
             search,
             pick_hi: 0,
@@ -405,10 +403,11 @@ impl ConnDialog {
         self.step
     }
 
-    pub fn pick_engine(&mut self, e: Engine, cx: &mut Context<Self>) {
+    pub fn pick_engine(&mut self, e: Engine, window: &mut Window, cx: &mut Context<Self>) {
         self.set_engine(e, cx);
         self.step = Step::Form;
-        self.pending_focus = true;
+        // The form's first field, once the click (or Return) that picked is done with the focus.
+        cx.defer_in(window, |d, window, cx| window.focus(&d.name.focus_handle(cx), cx));
         cx.notify();
     }
 
@@ -663,7 +662,7 @@ impl ConnDialog {
                 v.push(&self.database);
             }
             v.push(&self.password);
-            if self.engine == Engine::MongoDb {
+            if self.engine.spec().form.options {
                 v.push(&self.options);
             }
         }
@@ -1068,8 +1067,8 @@ impl ConnDialog {
     }
 
     #[cfg(feature = "checks")]
-    pub fn demo_engine(&mut self, e: Engine, cx: &mut Context<Self>) {
-        self.pick_engine(e, cx);
+    pub fn demo_engine(&mut self, e: Engine, window: &mut Window, cx: &mut Context<Self>) {
+        self.pick_engine(e, window, cx);
     }
 
     #[cfg(feature = "checks")]
@@ -1204,7 +1203,7 @@ impl ConnDialog {
                 .child(crate::assets::logo(e).size(px(30.)))
                 .child(div().text_size(px(crate::theme::text::BODY)).text_color(t.tx).child(e.label()))
                 .child(div().text_size(px(crate::theme::text::HINT)).text_color(t.tx3).child(e.family_label()))
-                .on_click(cx.listener(move |d, _, _, cx| d.pick_engine(e, cx)))
+                .on_click(cx.listener(move |d, _, window, cx| d.pick_engine(e, window, cx)))
         };
         let tile = |e: Engine| ui::probe(format!("engine-{}", e.label()), tile(e));
         let section = |label: &'static str, engines: Vec<Engine>| {
@@ -1251,13 +1250,13 @@ impl ConnDialog {
         self.field_as(t, label, label, input, label_color)
     }
 
-    fn field_as(&self, t: &Theme, probe: &str, label: &'static str, input: &Entity<TextInput>, label_color: Option<Hsla>) -> gpui::Div {
+    fn field_as(&self, t: &Theme, probe: &str, label: impl Into<gpui::SharedString>, input: &Entity<TextInput>, label_color: Option<Hsla>) -> gpui::Div {
         div()
             .flex_1()
             .flex()
             .flex_col()
             .gap(px(6.))
-            .child(div().text_size(px(crate::theme::text::TINY)).text_color(label_color.unwrap_or(t.tx3)).child(label))
+            .child(div().text_size(px(crate::theme::text::TINY)).text_color(label_color.unwrap_or(t.tx3)).child(label.into()))
             .child(ui::probe(format!("field-{probe}"), input.clone()))
     }
 
@@ -1613,9 +1612,6 @@ impl Render for ConnDialog {
         if self.step == Step::Engine {
             return self.wrap(self.render_picker(&t, cx), &t, cx);
         }
-        if std::mem::take(&mut self.pending_focus) {
-            window.focus(&self.name.focus_handle(cx), cx);
-        }
         let (hov, prs) = (t.hov, t.prs);
         let engine = div()
             .id("engine-chip")
@@ -1736,16 +1732,16 @@ impl Render for ConnDialog {
         } else if by_url {
             vec![row().items_end().child(self.field(&t, "URL", &self.conn_str, None))]
         } else {
-            let db_label = if self.engine == Engine::Redis { "DB" } else { "DATABASE" };
-            let user_label = if self.engine.is_sql() { "USER" } else { "USER (OPTIONAL)" };
+            let db_label = self.engine.spec().form.database_label.to_uppercase();
+            let user_label = if self.engine.spec().form.user_required { "USER" } else { "USER (OPTIONAL)" };
             let mut v = vec![
                 row().child(self.field(&t, "HOST", &self.host, None)).child(div().w(px(96.)).flex_none().child(self.field(&t, "PORT", &self.port, None))),
-                row().child(self.field(&t, user_label, &self.user, None)).when(self.has_database(), |r| r.child(self.field(&t, db_label, &self.database, None))),
+                row().child(self.field(&t, user_label, &self.user, None)).when(self.has_database(), |r| r.child(self.field_as(&t, &db_label, db_label.clone(), &self.database, None))),
                 row()
                     .items_end()
                     .child(self.field(&t, "PASSWORD", &self.password, (pw_focused || self.password_needed).then_some(t.acc_t))),
             ];
-            if self.engine == Engine::MongoDb {
+            if self.engine.spec().form.options {
                 v.push(row().child(self.field(&t, "OPTIONS", &self.options, None)));
             }
             v

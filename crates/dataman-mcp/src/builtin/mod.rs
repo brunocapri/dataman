@@ -13,46 +13,47 @@ use serde_json::{Map, Value, json};
 use crate::policy::{Effect, Need};
 use crate::tool::{Args, BoxFut, Call, Registry, Schema, Tool, ToolError};
 
-pub use catalog::system_schema as catalog_system_schema;
 pub(crate) use catalog::view_open;
 
 pub type Handler =for<'a> fn(&'a Call, Args) -> BoxFut<'a, Result<Value, ToolError>>;
 
-/// Every built-in tool: what it does, and whether `connection` names its database (gated
-/// before the handler). run_favorite's connection is the favorite's; update_connection and
-/// create_agent_login judge theirs themselves.
-pub const META: &[(&str, Effect, bool)] = &[
-    ("list_connections", Effect::Local, false),
-    ("list_schemas", Effect::Read, true),
-    ("list_tables", Effect::Read, true),
-    ("search_objects", Effect::Read, true),
-    ("describe_table", Effect::Read, true),
-    ("get_ddl", Effect::Read, true),
-    ("sample_rows", Effect::Read, true),
-    ("run_query", Effect::Read, true),
-    ("open_query", Effect::MaybeWrite, true),
-    ("explain", Effect::Read, true),
-    ("explain_analyze", Effect::MaybeWrite, true),
-    ("execute", Effect::Write, true),
-    ("activity_sessions", Effect::Read, true),
-    ("activity_locks", Effect::Read, true),
-    ("cancel_backend", Effect::Write, true),
-    ("terminate_backend", Effect::Write, true),
-    ("list_favorites", Effect::Local, false),
-    ("run_favorite", Effect::MaybeWrite, false),
-    ("add_favorite", Effect::LocalEdit, false),
-    ("remove_favorite", Effect::LocalRemove, false),
-    ("rename_favorite", Effect::LocalEdit, false),
-    ("import_favorites", Effect::LocalEdit, false),
-    ("create_connection", Effect::LocalEdit, false),
-    ("update_connection", Effect::LocalEdit, false),
-    ("create_agent_login", Effect::LocalEdit, false),
-    ("nosql_query", Effect::Read, true),
-    ("nosql_execute", Effect::Write, true),
+/// Every built-in tool: what it does, and what its `connection` must be allowed before the
+/// handler runs (None: the handler judges its connection itself). Writes through the tier are
+/// gated for reads: an allowed statement runs in a read tier too, and the tier judges the rest.
+/// run_favorite's connection is the favorite's; update_connection and create_agent_login judge
+/// theirs themselves.
+pub const META: &[(&str, Effect, Option<Need>)] = &[
+    ("list_connections", Effect::Local, None),
+    ("list_schemas", Effect::Read, Some(Need::Read)),
+    ("list_tables", Effect::Read, Some(Need::Read)),
+    ("search_objects", Effect::Read, Some(Need::Read)),
+    ("describe_table", Effect::Read, Some(Need::Read)),
+    ("get_ddl", Effect::Read, Some(Need::Read)),
+    ("sample_rows", Effect::Read, Some(Need::Read)),
+    ("run_query", Effect::Read, Some(Need::Read)),
+    ("open_query", Effect::MaybeWrite, Some(Need::Read)),
+    ("explain", Effect::Read, Some(Need::Read)),
+    ("explain_analyze", Effect::MaybeWrite, Some(Need::Read)),
+    ("execute", Effect::Write, Some(Need::Read)),
+    ("activity_sessions", Effect::Read, Some(Need::Read)),
+    ("activity_locks", Effect::Read, Some(Need::Read)),
+    ("cancel_backend", Effect::Write, Some(Need::Write)),
+    ("terminate_backend", Effect::Write, Some(Need::Write)),
+    ("list_favorites", Effect::Local, None),
+    ("run_favorite", Effect::MaybeWrite, None),
+    ("add_favorite", Effect::LocalEdit, None),
+    ("remove_favorite", Effect::LocalRemove, None),
+    ("rename_favorite", Effect::LocalEdit, None),
+    ("import_favorites", Effect::LocalEdit, None),
+    ("create_connection", Effect::LocalEdit, None),
+    ("update_connection", Effect::LocalEdit, None),
+    ("create_agent_login", Effect::LocalEdit, None),
+    ("nosql_query", Effect::Read, Some(Need::Read)),
+    ("nosql_execute", Effect::Write, Some(Need::Write)),
 ];
 
-fn meta(name: &str) -> Option<(Effect, bool)> {
-    META.iter().find(|(n, _, _)| *n == name).map(|&(_, e, c)| (e, c))
+fn meta(name: &str) -> Option<(Effect, Option<Need>)> {
+    META.iter().find(|(n, _, _)| *n == name).map(|&(_, e, g)| (e, g))
 }
 
 pub struct Builtin {
@@ -80,8 +81,8 @@ impl Tool for Builtin {
     fn effect(&self) -> Effect {
         meta(self.name).map_or(Effect::Write, |m| m.0)
     }
-    fn needs_connection(&self) -> bool {
-        meta(self.name).is_none_or(|m| m.1)
+    fn gate(&self) -> Option<Need> {
+        meta(self.name).map_or(Some(Need::Write), |m| m.1)
     }
     fn call<'a>(&'a self, cx: &'a Call, args: Args) -> BoxFut<'a, Result<Value, ToolError>> {
         (self.run)(cx, args)
@@ -243,7 +244,9 @@ mod tests {
                 assert!(v.get("description").is_some_and(|d| d.as_str().is_some_and(|d| !d.is_empty())), "{}.{k} has no description", t.name());
             }
             assert!(meta(t.name()).is_some(), "{} is not in META", t.name());
-            assert_eq!(t.needs_connection(), s.required().contains(&"connection") && !matches!(t.name(), "update_connection" | "create_agent_login"), "{}", t.name());
+            assert_eq!(t.gate().is_some(), s.required().contains(&"connection") && !matches!(t.name(), "update_connection" | "create_agent_login"), "{}", t.name());
+            // Gated for writes: what no allowed statement nor tier judgement lets a read tier run.
+            assert_eq!(t.gate() == Some(Need::Write), matches!(t.name(), "cancel_backend" | "terminate_backend" | "nosql_execute"), "{}", t.name());
             // What may write to a database is never announced read-only.
             let writes = t.need() == Some(Need::Write) || matches!(t.name(), "open_query" | "run_favorite" | "explain_analyze");
             assert_eq!(t.effect().hints().0, !writes && matches!(t.effect(), Effect::Read | Effect::Local), "{}", t.name());

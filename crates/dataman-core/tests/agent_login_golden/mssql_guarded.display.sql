@@ -28,16 +28,14 @@ SELECT
   [created_at],
   CASE
     WHEN CAST([email] AS NVARCHAR(4000)) IS NULL THEN NULL
-    WHEN CHARINDEX(N'@', CAST([email] AS NVARCHAR(4000))) > 0
-      THEN LEFT(CAST([email] AS NVARCHAR(4000)), 1) + N'•••@' + SUBSTRING(CAST([email] AS NVARCHAR(4000)), CHARINDEX(N'@', CAST([email] AS NVARCHAR(4000))) + 1, 4000)
-    WHEN LEN(CAST([email] AS NVARCHAR(4000))) >= 8
-      THEN N'•••• ' + RIGHT(CAST([email] AS NVARCHAR(4000)), 4)
-    ELSE N'••••'
+    WHEN (LEN(CAST([email] AS NVARCHAR(4000)) + N'.') - 1) > 4
+      THEN REPLICATE(N'•', (LEN(CAST([email] AS NVARCHAR(4000)) + N'.') - 1) - 4) + RIGHT(CAST([email] AS NVARCHAR(4000)), 4)
+    ELSE REPLICATE(N'•', (LEN(CAST([email] AS NVARCHAR(4000)) + N'.') - 1))
   END AS [email]
 FROM [dbo].[users];
 EXEC sys.sp_addextendedproperty
   @name = N'dataman',
-  @value = N'dataman-managed v1 8df16d71c3a2',
+  @value = N'dataman-managed v1 508039e33b41',
   @level0type = N'SCHEMA',
   @level0name = N'dataman_agent_a1b2c3d4_views',
   @level1type = N'VIEW',

@@ -2,7 +2,6 @@
 //! settings as a file: exported as it is, imported only after a summary of what would change.
 
 use std::path::PathBuf;
-use std::sync::Mutex;
 
 use dataman_core::agents_config::{self, AgentsFile, Change, Plan};
 use dataman_core::audit::{ApprovalNote, Audit, Decision, Entry, Outcome};
@@ -21,15 +20,6 @@ pub(crate) struct Import {
     pub(crate) errors: Vec<String>,
 }
 
-static TEST_SAVE: Mutex<Option<PathBuf>> = Mutex::new(None);
-static TEST_OPEN: Mutex<Option<PathBuf>> = Mutex::new(None);
-
-/// The paths the next Export and Import use, without a file panel.
-#[cfg(feature = "checks")]
-pub(crate) fn set_test_paths(save: Option<PathBuf>, open: Option<PathBuf>) {
-    *TEST_SAVE.lock().unwrap() = save;
-    *TEST_OPEN.lock().unwrap() = open;
-}
 
 fn home() -> PathBuf {
     dataman_core::os::home().unwrap_or_default()
@@ -110,7 +100,7 @@ impl AgentsPage {
 
     pub(crate) fn export_settings(&mut self, cx: &mut Context<Self>) {
         let text = agents_config::to_text(&agents_config::export(&self.core.settings.get(), &self.core.config.connections()));
-        let test = TEST_SAVE.lock().unwrap().take();
+        let test = crate::sql_picker::take_test_save_path();
         let rx = test.is_none().then(|| cx.prompt_for_new_path(&home(), Some("dataman-agents.toml")));
         cx.spawn(async move |this, cx| {
             let path = match (test, rx) {
@@ -133,7 +123,7 @@ impl AgentsPage {
     }
 
     pub(crate) fn import_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let test = TEST_OPEN.lock().unwrap().take();
+        let test = crate::sql_picker::take_test_paths().and_then(|p| p.into_iter().next());
         let rx = test.is_none().then(|| cx.prompt_for_paths(gpui::PathPromptOptions { files: true, directories: false, multiple: false, prompt: None }));
         cx.spawn_in(window, async move |this, cx| {
             let path = match (test, rx) {

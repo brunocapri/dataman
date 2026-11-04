@@ -456,7 +456,7 @@ impl AgentsPage {
     /// until a new login exists or the user lets them use theirs.
     pub(crate) fn login_forget(&mut self, cx: &mut Context<Self>) {
         let id = self.login.conn.clone().unwrap_or_default();
-        let _ = self.core.secrets.delete(&agent_login::secret_account(&id));
+        let kept = self.core.secrets.delete(&agent_login::secret_account(&id)).err();
         self.edit_conn(&id, |p| {
             p.agent_login = None;
             p.agents_refused = true;
@@ -464,7 +464,10 @@ impl AgentsPage {
         self.login.sheet = None;
         self.login.checks.clear();
         self.login.drift = None;
-        self.login.note = Some((true, "The agent login is gone from Dataman. Agents are refused on this connection until you create a new one or let them use your login.".into()));
+        self.login.note = Some(match kept {
+            None => (true, "The agent login is gone from Dataman. Agents are refused on this connection until you create a new one or let them use your login.".into()),
+            Some(e) => (false, format!("The agent login is gone from Dataman, but its password could not be removed from the {}: {e:#}. Agents are refused on this connection.", dataman_core::secret::STORE_NAME)),
+        });
         cx.notify();
     }
 

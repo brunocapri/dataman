@@ -503,13 +503,13 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     if let Some(d) = cx.update(|_, cx| ws.read(cx).dialog.clone()).ok().flatten() {
         use dataman_core::config::{Engine, SslMode};
         let tls = |cx: &mut AsyncWindowContext| cx.update(|_, cx| (d.read(cx).current(cx).0.sslmode, d.read(cx).demo_tls_note(cx).map(|n| n.0))).unwrap();
-        let _ = cx.update(|_, cx| d.update(cx, |d, cx| d.pick_engine(Engine::Postgres, cx)));
+        let _ = cx.update(|window, cx| d.update(cx, |d, cx| d.pick_engine(Engine::Postgres, window, cx)));
         let _ = cx.update(|_, cx| d.update(cx, |d, cx| d.demo_host("db.example.com", cx)));
         let remote = tls(cx);
         let _ = cx.update(|_, cx| d.update(cx, |d, cx| d.demo_host("localhost", cx)));
         let local = tls(cx);
         report("a remote host starts with SSL required, localhost with prefer", remote == (SslMode::Require, None) && local == (SslMode::Prefer, None), format!("{remote:?} {local:?}"));
-        let _ = cx.update(|_, cx| d.update(cx, |d, cx| d.pick_engine(Engine::Redis, cx)));
+        let _ = cx.update(|window, cx| d.update(cx, |d, cx| d.pick_engine(Engine::Redis, window, cx)));
         let here = tls(cx);
         let _ = cx.update(|_, cx| d.update(cx, |d, cx| d.demo_host("cache.example.com", cx)));
         let there = tls(cx);

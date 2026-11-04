@@ -81,10 +81,6 @@ fn failed(e: anyhow::Error) -> ToolError {
     ToolError::Failed(format!("{e:#}"))
 }
 
-pub fn system_schema(s: &str) -> bool {
-    matches!(s, "pg_catalog" | "information_schema") || s.starts_with("pg_toast") || s.starts_with("pg_temp")
-}
-
 fn kind_label(k: RelKind) -> &'static str {
     match k {
         RelKind::Table => "table",
@@ -165,7 +161,7 @@ pub(super) async fn schemas_of(o: &Opened, only: Option<&str>, system: bool) -> 
     let sp = o.conn.schema.search_path(&o.database);
     let mut v: Vec<String> = sp.into_iter().filter(|s| all.contains(s)).collect();
     for s in all {
-        if !v.contains(&s) && (system || !system_schema(&s)) {
+        if !v.contains(&s) && (system || !o.conn.engine().is_system_schema(&s)) {
             v.push(s);
         }
     }
@@ -286,26 +282,6 @@ pub fn like_pattern(p: &str) -> String {
     if p.contains('%') { p } else { format!("%{p}%") }
 }
 
-const SEARCH_SQL: &str = "SELECT kind, schema, name, detail FROM ( \
-  SELECT CASE c.relkind WHEN 'v' THEN 'view' WHEN 'm' THEN 'materialized_view' ELSE 'table' END AS kind, n.nspname AS schema, c.relname AS name, \
-         CASE c.relkind WHEN 'p' THEN 'partitioned' WHEN 'f' THEN 'foreign' ELSE NULL END AS detail \
-    FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
-   WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f') AND c.relname ILIKE $1 \
-  UNION ALL \
-  SELECT 'function', n.nspname, p.proname, '(' || pg_catalog.pg_get_function_identity_arguments(p.oid) || ') → ' || coalesce(pg_catalog.pg_get_function_result(p.oid), 'procedure') \
-    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace WHERE p.proname ILIKE $1 \
-  UNION ALL \
-  SELECT 'type', n.nspname, t.typname, CASE t.typtype WHEN 'e' THEN 'enum' WHEN 'c' THEN 'composite' ELSE 'domain' END \
-    FROM pg_catalog.pg_type t JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace \
-   WHERE t.typtype IN ('e', 'd', 'c') AND (t.typtype <> 'c' OR EXISTS (SELECT 1 FROM pg_catalog.pg_class r WHERE r.oid = t.typrelid AND r.relkind = 'c')) \
-     AND t.typname ILIKE $1 \
-  UNION ALL \
-  SELECT 'column', n.nspname, c.relname || '.' || a.attname, pg_catalog.format_type(a.atttypid, a.atttypmod) \
-    FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_class c ON c.oid = a.attrelid JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
-   WHERE a.attnum > 0 AND NOT a.attisdropped AND c.relkind IN ('r', 'p', 'v', 'm', 'f') AND a.attname ILIKE $1 \
-) o WHERE schema NOT IN ('pg_catalog', 'information_schema') AND schema NOT LIKE 'pg\\_toast%' AND schema NOT LIKE 'pg\\_temp%' \
-  AND kind = ANY($2::text[]) ORDER BY array_position($2::text[], kind), schema, name LIMIT $3::int8";
-
 const KINDS: [&str; 6] = ["table", "view", "materialized_view", "function", "type", "column"];
 
 fn search_objects(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
@@ -324,7 +300,7 @@ fn search_objects(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
         if o.conn.engine().is_postgres() {
             let params = vec![Some(pattern.clone()), Some(format!("{{{}}}", kinds.join(","))), Some((limit + 1).to_string())];
             let limits = Limits { max_rows: limit + 1, ..Limits::default() };
-            match cx.run(&o, SEARCH_SQL, params, Mode::Read, limits).await {
+            match cx.run(&o, dataman_core::schema::agents::PG_SEARCH, params, Mode::Read, limits).await {
                 Ok(r) => {
                     let more = r.rows.len() > limit;
                     let mut rows: Vec<Vec<Value>> = Vec::new();
@@ -598,10 +574,7 @@ async fn pg_details(cx: &Call, o: &Opened, r: &Relation, out: &mut Map<String, V
         }
     }
     if let Some(oid) = r.oid {
-        let sql = "SELECT con.conname, n.nspname || '.' || t.relname, pg_catalog.pg_get_constraintdef(con.oid) \
-                   FROM pg_catalog.pg_constraint con JOIN pg_catalog.pg_class t ON t.oid = con.conrelid \
-                   JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace \
-                   WHERE con.contype = 'f' AND con.confrelid = $1::oid ORDER BY 2, 1";
+        let sql = dataman_core::schema::agents::PG_REFERENCED_BY;
         let limits = Limits { max_rows: 200, ..Limits::default() };
         if let Ok(rows) = cx.run(o, sql, vec![Some(oid.to_string())], Mode::Read, limits).await
             && !rows.rows.is_empty()
@@ -698,18 +671,10 @@ fn sample_rows(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>> {
         }
         let r = visible_relation(&o, a.str("table")?).await?;
         let d = o.conn.dialect();
-        let order = match (a.bool("random"), d) {
-            (false, _) => "",
-            (true, dataman_core::sql::Dialect::MySql) => " ORDER BY RAND()",
-            (true, dataman_core::sql::Dialect::TSql) => " ORDER BY NEWID()",
-            (true, _) => " ORDER BY random()",
-        };
+        let order = if a.bool("random") { format!(" ORDER BY {}", d.random_order()) } else { String::new() };
         let table = d.qualified(Some(&r.schema), &r.name);
-        let sql = if d == dataman_core::sql::Dialect::TSql {
-            format!("SELECT TOP ({n}) * FROM {table}{order}")
-        } else {
-            format!("SELECT * FROM {table}{order} LIMIT {n}")
-        };
+        let l = d.limit(n);
+        let sql = format!("SELECT {}* FROM {table}{order}{}", l.top, l.tail);
         let checked = super::rules::checked_sql(cx, &a, &o.profile, &sql, false).await?;
         let read = super::rules::read_limits(cx, &o.profile, limits);
         let mut out = cx.run(&o, &checked.sql, vec![], Mode::Read, read).await?;

@@ -370,7 +370,6 @@ pub struct SchemaTree {
     shut_folders: HashSet<String>,
     /// A folder being named in place.
     naming: Option<(String, Entity<TextInput>)>,
-    focus_back: bool,
     pub conn_bounds: std::rc::Rc<std::cell::RefCell<HashMap<SharedString, gpui::Bounds<gpui::Pixels>>>>,
     /// Every object (the eye) or each database's tables (the eye crossed out).
     advanced: bool,
@@ -459,6 +458,15 @@ impl SchemaTree {
         })
         .detach();
         let advanced = cx.try_global::<ExplorerDefault>().is_some_and(|d| d.0);
+        // A change in Settings switches the view, once, when it is made.
+        cx.observe_global::<ExplorerDefault>(|t: &mut SchemaTree, cx| {
+            let default = cx.global::<ExplorerDefault>().0;
+            if default != t.default_seen {
+                t.default_seen = default;
+                t.set_advanced(default, cx);
+            }
+        })
+        .detach();
         let mut t = SchemaTree {
             store,
             focus: cx.focus_handle(),
@@ -490,7 +498,6 @@ impl SchemaTree {
             folder_drop: None,
             shut_folders: HashSet::new(),
             naming: None,
-            focus_back: false,
             conn_bounds: Default::default(),
             advanced,
             default_seen: advanced,
@@ -510,7 +517,7 @@ impl SchemaTree {
             G::Tables
         };
         let rel = rid(conn, db, schema, name);
-        if system_schema(schema) {
+        if self.store.read(cx).profile(conn).is_some_and(|p| p.engine.is_system_schema(schema)) {
             self.set_advanced(true, cx);
         }
         let mut path = self.open_schema(conn, db, schema, cx);
@@ -678,7 +685,7 @@ impl SchemaTree {
                     let k = &c.schema;
                     match k.cached_schemas(db) {
                         _ if !c.caps().schemas => k.cached_relations(db, db).is_none(),
-                        Some(v) => home_schema(k, db, &v).is_some_and(|h| k.cached_relations(db, &h).is_none()),
+                        Some(v) => home_schema(&c, db, &v).is_some_and(|h| k.cached_relations(db, &h).is_none()),
                         None => true,
                     }
                 }),
@@ -869,10 +876,10 @@ impl SchemaTree {
                 let schemas = cache.cached_schemas(&db).unwrap_or_default();
                 // The simple view: the home schema's tables under the database, the others' under
                 // their schema, nothing of the system's or an extension's, no routines.
-                let home = if flat { Some(db.clone()) } else { home_schema(cache, &db, &schemas) };
+                let home = if flat { Some(db.clone()) } else { home_schema(conn, &db, &schemas) };
                 let owned = extension_owned(conn, &db);
                 for s in schemas {
-                    if simple && system_schema(&s) {
+                    if simple && conn.engine().is_system_schema(&s) {
                         continue;
                     }
                     let at_home = simple && home.as_ref() == Some(&s);
@@ -1133,11 +1140,11 @@ impl SchemaTree {
                 rows.push(loading_row(&d, 2));
                 continue;
             };
-            let home = home_schema(cache, &db, &schemas);
+            let home = home_schema(conn, &db, &schemas);
             if let Some(h) = &home {
                 self.push_tables(rows, c, &db, h, conn, t, 2);
             }
-            for s in schemas.iter().filter(|s| !system_schema(s) && Some(*s) != home.as_ref()) {
+            for s in schemas.iter().filter(|s| !conn.engine().is_system_schema(s) && Some(*s) != home.as_ref()) {
                 let sv = sid(c, &db, s);
                 let open = self.expanded.contains(&sv);
                 rows.push(Row::new(sv.clone(), 2, s.clone(), Kind::Schema { conn: c.into(), db: db.clone(), schema: s.clone() }).icon(Icon::Schema).expandable(open));
@@ -1905,7 +1912,7 @@ impl SchemaTree {
             if self.rows.get(ix).is_some_and(|r| r.id.as_ref() == fid(f)) {
                 return;
             }
-            self.commit_naming(cx);
+            self.commit_naming(window, cx);
         }
         window.focus(&self.focus, cx);
         let m = ev.modifiers();
@@ -2430,9 +2437,9 @@ impl SchemaTree {
             i.set_text(name, cx);
             i.select_all(cx);
         });
-        cx.subscribe(&input, |t: &mut SchemaTree, _, ev: &InputEvent, cx| {
+        cx.subscribe_in(&input, window, |t: &mut SchemaTree, _, ev: &InputEvent, window, cx| {
             if let InputEvent::Submit = ev {
-                t.commit_naming(cx);
+                t.commit_naming(window, cx);
             }
         })
         .detach();
@@ -2448,7 +2455,7 @@ impl SchemaTree {
         cx.notify();
     }
 
-    fn commit_naming(&mut self, cx: &mut Context<Self>) {
+    fn commit_naming(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some((id, input)) = self.naming.take() else { return };
         let name = input.read(cx).text().trim().to_string();
         let from = self.store.read(cx).folders.iter().find(|d| d.id == id).map(|d| d.name.clone());
@@ -2460,7 +2467,8 @@ impl SchemaTree {
             }, cx),
             _ => cx.notify(),
         }
-        self.focus_back = true;
+        // Back to the tree once the field that had it is gone.
+        cx.defer_in(window, |t, window, cx| window.focus(&t.focus, cx));
     }
 
     fn set_pinned(&mut self, pin: Pin, on: bool, ix: Option<usize>, cx: &mut Context<Self>) {
@@ -3265,19 +3273,15 @@ fn system_db(conn: &Connection, db: &str) -> bool {
     db != conn.database() && conn.engine().is_system_db(db)
 }
 
-fn system_schema(s: &str) -> bool {
-    matches!(s, "pg_catalog" | "information_schema" | "INFORMATION_SCHEMA" | "sys") || s.starts_with("pg_toast") || s.starts_with("pg_temp")
-}
-
 fn system_coll(name: &str) -> bool {
     name.starts_with("system.")
 }
 
 /// The schema whose tables sit right under the database in the simple view: the first of the
 /// search path that is there, else public / dbo / main, else the first that is not the system's.
-fn home_schema(cache: &dataman_core::schema::SchemaCache, db: &str, schemas: &[String]) -> Option<String> {
-    let user: Vec<&str> = schemas.iter().map(String::as_str).filter(|s| !system_schema(s)).collect();
-    let path = cache.search_path(db);
+fn home_schema(conn: &Connection, db: &str, schemas: &[String]) -> Option<String> {
+    let user: Vec<&str> = schemas.iter().map(String::as_str).filter(|s| !conn.engine().is_system_schema(s)).collect();
+    let path = conn.schema.search_path(db);
     path.iter().map(String::as_str).chain(["public", "dbo", "main"]).find(|h| user.contains(h)).or(user.first().copied()).map(str::to_string)
 }
 
@@ -3570,7 +3574,7 @@ fn simple_db(c: Arc<Connection>, db: String) -> Load {
         let schemas = c.schemas(&db).await?;
         // Without them nothing is left out: not a reason to fail the database.
         let _ = c.extensions(&db).await;
-        match home_schema(&c.schema, &db, &schemas) {
+        match home_schema(&c, &db, &schemas) {
             Some(h) => c.relations(&db, &h).await.map(|_| ()),
             None => Ok(()),
         }
@@ -3591,11 +3595,6 @@ fn join_all(loads: Vec<Load>) -> Load {
 
 impl Render for SchemaTree {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let default = cx.try_global::<ExplorerDefault>().is_some_and(|d| d.0);
-        if default != self.default_seen {
-            self.default_seen = default;
-            self.set_advanced(default, cx);
-        }
         if self.version(cx) != self.seen_version {
             self.rebuild(cx);
         }
@@ -3635,9 +3634,6 @@ impl Render for SchemaTree {
             }
             None => None,
         };
-        if std::mem::take(&mut self.focus_back) {
-            window.focus(&self.focus, cx);
-        }
         let t = cx.theme();
         let focused = self.focus.contains_focused(window, cx);
         let filter_focused = self.filter.focus_handle(cx).is_focused(window);

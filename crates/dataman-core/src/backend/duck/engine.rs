@@ -15,6 +15,7 @@ use duckdb::ffi;
 use parking_lot::Mutex;
 
 include!("api_v1.rs");
+include!("fingerprint.rs");
 
 /// The DuckDB the bindings were made from: the engine must be this one.
 pub const VERSION: &str = "v1.5.6";
@@ -32,6 +33,7 @@ pub const FILE: &str = if cfg!(target_os = "macos") {
 };
 
 type Table = unsafe extern "C" fn(out: *mut *const c_void, cap: usize) -> usize;
+type Fingerprint = unsafe extern "C" fn() -> u64;
 
 macro_rules! api {
     ($($n:ident),* $(,)?) => {
@@ -46,6 +48,9 @@ macro_rules! api {
     };
 }
 duckdb_api_v1!(api);
+
+/// What to do about an engine that is not this one.
+const REBUILD: &str = "reinstall Dataman; a build of one's own: scripts/duckdb-engine.sh";
 
 /// Where the engine came from, once loaded.
 static LOADED: Mutex<Option<PathBuf>> = parking_lot::const_mutex(None);
@@ -89,6 +94,15 @@ fn open(path: &Path) -> Result<()> {
     let what = || format!("{} is not this Dataman's DuckDB {VERSION}", path.display());
     // SAFETY: the engine runs no code of its own when loaded (no constructors but DuckDB's).
     let lib = unsafe { libloading::Library::new(path) }.with_context(|| format!("loading DuckDB from {}", path.display()))?;
+    // Before anything of its table is read: the engine was built from this list and this
+    // libduckdb-sys (an older one, in another order, would be called at the wrong functions).
+    // SAFETY: the engine's export, with this signature (engines/duckdb/src/lib.rs).
+    let fp = unsafe { lib.get::<Fingerprint>(b"dataman_duckdb_fingerprint\0") }.map_err(|_| anyhow!("{}: it is an older build, with no ABI fingerprint ({REBUILD})", what()))?;
+    // SAFETY: as above.
+    let fp = unsafe { fp() };
+    if fp != FINGERPRINT {
+        bail!("{}: it was built for another C API ({fp:016x}, not {FINGERPRINT:016x}; {REBUILD})", what());
+    }
     let mut t = [std::ptr::null(); COUNT];
     // SAFETY: the engine's export, with this signature (engines/duckdb/src/lib.rs).
     let n = unsafe { lib.get::<Table>(b"dataman_duckdb_api_v1\0").with_context(what)?(t.as_mut_ptr(), COUNT) };
@@ -124,5 +138,14 @@ mod tests {
         std::fs::write(&path, b"not a library").unwrap();
         let e = open(&path).unwrap_err();
         assert!(format!("{e:#}").contains("loading DuckDB"), "{e:#}");
+    }
+
+    #[test]
+    fn the_api_list_is_this_libduckdb_sys() {
+        let lock = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../Cargo.lock")).unwrap();
+        let at = lock.find("name = \"libduckdb-sys\"").unwrap();
+        assert_eq!(lock[at..].lines().nth(1), Some(format!("version = \"{LIBDUCKDB_SYS}\"").as_str()), "api_v1.rs: scripts/duckdb-engine.sh --api");
+        assert_ne!(FINGERPRINT, fingerprint(LIBDUCKDB_SYS, &["duckdb_open"]));
+        assert_ne!(fingerprint("1", &["ab", "c"]), fingerprint("1", &["a", "bc"]));
     }
 }

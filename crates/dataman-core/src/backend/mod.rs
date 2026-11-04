@@ -292,9 +292,10 @@ impl Db {
                 let columns = c.prepare(sql).await.map_err(|e| lite::error_info_at(&e, sql))?;
                 Ok(Prepared { stmt: PreparedStmt::Lite(c.clone(), sql.to_string(), columns.iter().map(|c| c.kind).collect()), columns })
             }
+            // DuckDB knows the columns once the query runs: it runs once, here, as SQL Server's.
             Db::Duck(c) => {
-                let columns = c.prepare(sql).await.map_err(|e| duck::error_info_at(&e, sql))?;
-                Ok(Prepared { stmt: PreparedStmt::Duck(c.clone(), sql.to_string()), columns })
+                let ((columns, _), rows) = c.stream(sql, &[]).await.map_err(|e| duck::error_info_at(&e, sql))?;
+                Ok(Prepared { columns, stmt: PreparedStmt::Duck(parking_lot::Mutex::new(Some(rows))) })
             }
         }
     }
@@ -483,7 +484,7 @@ enum PreparedStmt {
     My(Arc<my::Client>, mysql_async::Statement),
     Ms(parking_lot::Mutex<Option<ms::MsRows>>),
     Lite(Arc<lite::Client>, String, Vec<crate::value::Kind>),
-    Duck(Arc<duck::Client>, String),
+    Duck(parking_lot::Mutex<Option<embed::Rows<duck::DuckError>>>),
 }
 
 impl Prepared {
@@ -501,9 +502,9 @@ impl Prepared {
                 Ok((_, rows)) => Ok(Rows::Lite(rows)),
                 Err(e) => Err(lite::error_info_at(&e, sql)),
             },
-            PreparedStmt::Duck(c, sql) => match c.stream(sql, &[]).await {
-                Ok((_, rows)) => Ok(Rows::Duck(rows)),
-                Err(e) => Err(duck::error_info_at(&e, sql)),
+            PreparedStmt::Duck(rows) => match rows.lock().take() {
+                Some(r) => Ok(Rows::Duck(r)),
+                None => Err(ErrorInfo { message: "the statement already ran".into(), ..Default::default() }),
             },
         }
     }

@@ -28,7 +28,7 @@ fn seed_profiles(core: &Core) {
     let mut pg = profile("prod-pg", Engine::Postgres, Environment::Production, McpAccess::Write);
     let r = &mut pg.mcp_rules;
     r.view = if std::env::var("DATAMAN_SHOT_STAGE").is_ok_and(|s| s.starts_with("agents-privacy-data")) { AgentView::Data } else { AgentView::Masked };
-    for (col, how, on) in [("users.email", Mask::PARTIAL, true), ("customers.ssn", Mask::Hidden, true), ("customers.doc", Mask::Hidden, true), ("customers.phone", Mask::Partial(dataman_core::privacy::Keep { first: 2, last: 2 }), true), ("orders.notes", Mask::Hidden, true)] {
+    for (col, how, on) in [("users.email", Mask::PARTIAL, true), ("customers.ssn", Mask::Hidden, true), ("customers.doc", Mask::Hidden, true), ("customers.phone", Mask::Partial(dataman_core::privacy::Keep::new(dataman_core::privacy::Side::First, 2)), true), ("orders.notes", Mask::Hidden, true)] {
         r.sensitive.push(SensitiveCol { col: col.into(), how, on });
     }
     for (name, kind) in [("public.payments", ItemKind::Table), ("audit.*", ItemKind::Schema), ("users.password_hash", ItemKind::Column), ("users.mfa_secret", ItemKind::Column)] {
@@ -136,12 +136,12 @@ fn demo_reply(ago: i64) -> Option<serde_json::Value> {
         77 => json!({
             "columns": [["id", "int4"], ["name", "text"], ["email", "text"], ["ssn", "text"], ["city", "text"], ["total", "numeric"]],
             "rows": [
-                [1042, "Ana Souza", "a•••@acme.com", "‹hidden›", "Austin", "129.90"],
-                [1043, "Bruno Lima", "b•••@mail.com", "‹hidden›", "Austin", "88.00"],
-                [1051, "Carla Dias", "c•••@acme.com", "‹hidden›", "Austin", "412.35"],
-                [1067, "Davi Rocha", "d•••@corp.io", "‹hidden›", "Austin", "57.10"],
-                [1070, "Elisa Melo", "e•••@acme.com", "‹hidden›", "Austin", "230.00"],
-                [1088, "Fábio Reis", "f•••@mail.com", "‹hidden›", "Austin", "19.99"]
+                [1042, "Ana Souza", "••••••••.com", "‹hidden›", "Austin", "129.90"],
+                [1043, "Bruno Lima", "••••••••••.com", "‹hidden›", "Austin", "88.00"],
+                [1051, "Carla Dias", "••••••••••.com", "‹hidden›", "Austin", "412.35"],
+                [1067, "Davi Rocha", "••••••••p.io", "‹hidden›", "Austin", "57.10"],
+                [1070, "Elisa Melo", "••••••••••.com", "‹hidden›", "Austin", "230.00"],
+                [1088, "Fábio Reis", "••••••••••.com", "‹hidden›", "Austin", "19.99"]
             ],
             "row_count": 40, "masked_columns": ["email (partial)", "ssn (hash)"], "masked": {"E-mail": 3}, "ms": 41.0
         }),
@@ -406,7 +406,7 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     };
     until(cx, 5, |cx| read(&kept(cx, 3))).await;
     let reply = text(&kept(cx, 3));
-    r.check("its detail shows what the agent received, read from the log on disk: the rows, masked as sent", reply.contains("a•••@acme.com") && reply.contains("‹hidden›") && !reply.contains("ana@"), &reply);
+    r.check("its detail shows what the agent received, read from the log on disk: the rows, masked as sent", reply.contains("••••••••.com") && reply.contains("‹hidden›") && !reply.contains("ana@"), &reply);
     // A restart: nothing in memory, the entries read again.
     let _ = cx.update(|_, cx| {
         a.update(cx, |a, cx| {
@@ -825,38 +825,40 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     tap(&a, "agents-sens-add", cx).await;
     pause(cx, 50).await;
     let sens = rules(&core, &pg.id).sensitive;
-    r.check("Sensitive columns: customer.email added, Partial, on", sens.iter().any(|s| s.col == "customer.email" && s.how == Mask::PARTIAL && s.on), format!("{sens:?}"));
+    r.check("Sensitive columns: customer.email added, Redacted (the E-mail Mask covers e-mails: the name suggests nothing), on", sens.iter().any(|s| s.col == "customer.email" && s.how == Mask::Hidden && s.on), format!("{sens:?}"));
     let saved_how = || rules(&core, &pg.id).sensitive.first().map(|s| s.how);
     let editing = |cx: &mut AsyncWindowContext| cx.update(|_, cx| a.read(cx).sens_edit.as_ref().map(|e| (e.col.clone(), e.how))).ok().flatten();
     r.check("the row says its mask in words, with Edit beside it, not menus", probed("agents-sens-edit-0", cx).is_some() && probed("agents-sens-mask-0", cx).is_none(), "");
     tap(&a, "agents-sens-edit-0", cx).await;
     pause(cx, 100).await;
-    r.check("Edit opens the column's sheet: Redacted or Partial, then what Partial keeps", editing(cx).is_some_and(|(c, _)| Some(c) == rules(&core, &pg.id).sensitive.first().map(|s| s.col.clone())) && probed("agents-sens-edit-mask-1", cx).is_some() && probed("agents-sens-edit-mask-2", cx).is_none() && probed("agents-sens-edit-first-8", cx).is_some() && probed("agents-sens-edit-last-0", cx).is_some(), format!("{:?}", editing(cx)));
+    r.check("Edit opens the column's sheet: Redacted or Partial, then Show the first or last 1–4 characters", editing(cx).is_some_and(|(c, _)| Some(c) == rules(&core, &pg.id).sensitive.first().map(|s| s.col.clone())) && probed("agents-sens-edit-mask-1", cx).is_some() && probed("agents-sens-edit-mask-2", cx).is_none() && probed("agents-sens-edit-side-1", cx).is_some() && probed("agents-sens-edit-side-2", cx).is_none() && probed("agents-sens-edit-count-3", cx).is_some() && probed("agents-sens-edit-count-4", cx).is_none() && probed("agents-sens-edit-short-tip", cx).is_some(), format!("{:?}", editing(cx)));
     tap(&a, "agents-sens-edit-mask-0", cx).await;
     pause(cx, 50).await;
-    r.check("Redacted in the sheet: First and Last go, and nothing is saved yet", editing(cx).is_some_and(|(_, h)| h == Mask::Hidden) && probed("agents-sens-edit-first-0", cx).is_none() && saved_how() == Some(Mask::PARTIAL), "");
+    r.check("Redacted in the sheet: Show the… goes, and nothing is saved yet", editing(cx).is_some_and(|(_, h)| h == Mask::Hidden) && probed("agents-sens-edit-side-0", cx).is_none() && saved_how() == Some(Mask::PARTIAL), "");
     tap(&a, "agents-sens-edit-mask-1", cx).await;
     pause(cx, 50).await;
-    tap(&a, "agents-sens-edit-first-2", cx).await;
+    tap(&a, "agents-sens-edit-side-0", cx).await;
     pause(cx, 50).await;
-    tap(&a, "agents-sens-edit-last-3", cx).await;
+    tap(&a, "agents-sens-edit-count-1", cx).await;
     pause(cx, 300).await;
-    let picked = Mask::Partial(dataman_core::privacy::Keep { first: 2, last: 3 });
-    r.check("First 2 and Last 3 picked in the sheet", editing(cx).is_some_and(|(_, h)| h == picked), format!("{:?}", editing(cx)));
+    let picked = Mask::Partial(dataman_core::privacy::Keep::new(dataman_core::privacy::Side::First, 2));
+    r.check("the first 2 picked in the sheet", editing(cx).is_some_and(|(_, h)| h == picked), format!("{:?}", editing(cx)));
+    let short = crate::agents_sens::summary(picked);
+    r.check("the row's words: Partial · first 2", short == "Partial · first 2" && crate::agents_sens::summary(Mask::PARTIAL) == "Partial · last 4", short);
     shoot("sensitive-edit", cx);
     key(cx, "escape");
     pause(cx, 50).await;
     r.check("Esc closes it and keeps the column as it was", editing(cx).is_none() && saved_how() == Some(Mask::PARTIAL), format!("{:?}", saved_how()));
     tap(&a, "agents-sens-edit-0", cx).await;
     pause(cx, 100).await;
-    tap(&a, "agents-sens-edit-first-2", cx).await;
-    tap(&a, "agents-sens-edit-last-3", cx).await;
+    tap(&a, "agents-sens-edit-side-0", cx).await;
+    tap(&a, "agents-sens-edit-count-1", cx).await;
     pause(cx, 50).await;
     tap(&a, "agents-sens-edit-save", cx).await;
     pause(cx, 300).await;
-    r.check("Save keeps the first 2 and the last 3, and closes the sheet", saved_how() == Some(picked) && editing(cx).is_none(), format!("{:?}", saved_how()));
+    r.check("Save keeps the first 2, and closes the sheet", saved_how() == Some(picked) && editing(cx).is_none(), format!("{:?}", saved_how()));
     let stored = std::fs::read_to_string(core.dirs.connections_file()).unwrap_or_default();
-    r.check("…saved as partial:2:3", stored.contains("partial:2:3"), "");
+    r.check("…saved as partial:first:2", stored.contains("partial:first:2"), "");
     shoot("sensitive-row", cx);
     // customer.email is in the bench's public schema: its sheet masks a value read from it.
     let connected = cx.update(|_, cx| a.read(cx).store.read(cx).connection(&pg.id).is_some()).unwrap_or(false);
@@ -948,24 +950,20 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
 
     let sees = crate::agents_rules::sees_tip().text();
     r.check(
-        "Agents see's tip: nothing masked in Data; in Masked data the types in everything and the columns below whole",
+        "Agents see's tip: nothing masked in Data; in Masked data the types in everything, and the columns below whole on top",
         sees.contains("Data: Rows as stored. Nothing is masked.")
-            && sees.contains("Masked data: Values a Mask recognizes (cards, e-mails, keys…) are masked in everything the agent receives, and the sensitive columns below are masked whole."),
+            && sees.contains("Masked data: Values a Mask recognizes (cards, e-mails, keys…) are masked in everything the agent receives. The Sensitive columns below are masked whole, on top of that."),
         sees.clone(),
     );
     let sens = crate::agents_rules::sens_tip().text();
     let types = crate::agents_types::types_tip().text();
-    let masked_conns = core.config.connections().iter().filter(|p| p.mcp_rules.view == AgentView::Masked).count();
-    let applies = cx.update(|_, cx| a.read(cx).profiles(cx).len()).unwrap_or(0);
     r.check(
-        "Sensitive columns' and Masks' tips say where each applies; the page says Masks apply to every connection in Masked data",
-        sens.starts_with("Sensitive columns\nMasked data only")
-            && types.contains("whether or not their column is a Sensitive column")
-            && types.contains("Not on: Connections on Data or Structure only")
+        "Sensitive columns' and Masks' tips say where each applies: columns on top of the Masks, Masks on everything in Masked data",
+        sens.starts_with("Sensitive columns\nColumns masked in Masked data, in addition to the values Masks already catch.")
+            && sens.contains("Partial: Only the first or last 1–4 characters")
+            && types == "Masks\nApplied to everything agents get from connections on Masked data."
             && probed("agents-types-tip", cx).is_some()
-            && probed("agents-types-applies", cx).is_some()
-            && masked_conns > 0
-            && applies > 0,
+            && probed("agents-types-applies", cx).is_none(),
         format!("{sens}\n{types}"),
     );
     // One list for every connection: no picker of connections, no reset, and a switch is global.
@@ -997,7 +995,7 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     let dir = std::env::temp_dir().join(format!("dataman-agents-check-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&dir);
     let (out, loose, bad) = (dir.join("agents.toml"), dir.join("loose.toml"), dir.join("bad.toml"));
-    crate::agents_mcp::set_test_paths(Some(out.clone()), None);
+    crate::sql_picker::set_test_save_path(out.clone());
     click_probe("agents-export", cx);
     // The note comes once the write is done: the file exists before its last byte.
     let written = until(cx, 5, |cx| probed("agents-file-note", cx).is_some()).await && out.exists();
@@ -1015,7 +1013,7 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     f.connections.push(dataman_core::agents_config::ConnRules { id: "elsewhere".into(), name: "warehouse".into(), engine: Engine::MySql, database: "dw".into(), mcp: None, row_limit: None, allowed: Vec::new(), yolo: false, rules: Default::default() });
     let _ = std::fs::write(&loose, dataman_core::agents_config::to_text(&f));
     let import = |path: &std::path::Path, cx: &mut AsyncWindowContext| {
-        crate::agents_mcp::set_test_paths(None, Some(path.to_path_buf()));
+        crate::sql_picker::set_test_paths(vec![path.to_path_buf()]);
         click_probe("agents-import", cx);
     };
     let open = |cx: &mut AsyncWindowContext| cx.update(|_, cx| a.read(cx).import.is_some()).unwrap_or(false);

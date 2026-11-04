@@ -13,17 +13,40 @@ use regex::{Regex, RegexBuilder, RegexSet, RegexSetBuilder};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// The characters Partial leaves of a sensitive column's value: the first and the last.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+/// The end of a value Partial shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Side {
+    First,
+    Last,
+}
+
+impl Side {
+    pub const ALL: [Side; 2] = [Side::First, Side::Last];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Side::First => "first",
+            Side::Last => "last",
+        }
+    }
+}
+
+/// What Partial shows of a sensitive column's value: `count` characters at one `side`, every
+/// other one as •. A value of `count` characters or fewer is masked whole.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Keep {
-    pub first: u8,
-    pub last: u8,
+    pub side: Side,
+    pub count: u8,
 }
 
 impl Keep {
-    /// Also the e-mail look (`a•••@acme.com`) while unchanged.
-    pub const DEFAULT: Keep = Keep { first: 0, last: 4 };
-    pub const MAX: u8 = 8;
+    pub const DEFAULT: Keep = Keep { side: Side::Last, count: 4 };
+    pub const MAX: u8 = 4;
+
+    /// `count` held to 1–[`Keep::MAX`].
+    pub fn new(side: Side, count: u8) -> Keep {
+        Keep { side, count: count.clamp(1, Keep::MAX) }
+    }
 }
 
 impl Default for Keep {
@@ -32,22 +55,22 @@ impl Default for Keep {
     }
 }
 
-/// Ordered by rigor: a greater mask shows less (Redacted the greatest; a Partial keeping fewer
-/// characters greater than one keeping more). Two masks combine with [`Mask::stronger`], which
+/// Ordered by rigor: a greater mask shows less (Redacted the greatest; a Partial showing fewer
+/// characters greater than one showing more). Two masks combine with [`Mask::stronger`], which
 /// shows no character either one hides.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Mask {
     #[default]
     Hidden,
-    /// What a sensitive column keeps; the sensitive data types keep their own `keep`.
+    /// What a sensitive column shows; the sensitive data types keep their own `keep`.
     Partial(Keep),
 }
 
 impl Ord for Mask {
     fn cmp(&self, other: &Mask) -> std::cmp::Ordering {
         let rank = |m: &Mask| match *m {
-            Mask::Hidden => (1, 0, 0, 0),
-            Mask::Partial(k) => (0, u16::MAX - (k.first as u16 + k.last as u16), u8::MAX - k.first, u8::MAX - k.last),
+            Mask::Hidden => (1, 0, 0),
+            Mask::Partial(k) => (0, u8::MAX - k.count, k.side as u8),
         };
         rank(self).cmp(&rank(other))
     }
@@ -60,30 +83,30 @@ impl PartialOrd for Mask {
 }
 
 impl Mask {
-    /// `to` shows something `from` does not: Redacted to Partial, or a Partial keeping more
-    /// first or last characters (`partial` to `partial:7:8`).
+    /// `to` shows something `from` does not: Redacted to Partial, a Partial showing more
+    /// characters (`partial:last:2` to `partial`), or the other end.
     pub fn loosens(from: Mask, to: Mask) -> bool {
         match (from, to) {
             (_, Mask::Hidden) => false,
             (Mask::Hidden, Mask::Partial(_)) => true,
-            (Mask::Partial(a), Mask::Partial(b)) => b.first > a.first || b.last > a.last,
+            (Mask::Partial(a), Mask::Partial(b)) => b.side != a.side || b.count > a.count,
         }
     }
 
-    /// Shows no character that either one hides.
+    /// Shows no character that either one hides: the fewer at the same end, else Redacted.
     pub fn stronger(a: Mask, b: Mask) -> Mask {
         match (a, b) {
-            (Mask::Partial(x), Mask::Partial(y)) => Mask::Partial(Keep { first: x.first.min(y.first), last: x.last.min(y.last) }),
+            (Mask::Partial(x), Mask::Partial(y)) if x.side == y.side => Mask::Partial(Keep { side: x.side, count: x.count.min(y.count) }),
             _ => Mask::Hidden,
         }
     }
 
-    /// The label with what Partial keeps (two Partials differ here).
+    /// The label with what Partial shows (two Partials differ here).
     pub fn describe(self) -> String {
         match self {
             Mask::Hidden => self.label().to_string(),
             Mask::Partial(k) if k == Keep::DEFAULT => self.label().to_string(),
-            Mask::Partial(k) => format!("Partial (first {}, last {})", k.first, k.last),
+            Mask::Partial(k) => format!("Partial ({} {})", k.side.key(), k.count),
         }
     }
 
@@ -108,7 +131,7 @@ impl Mask {
         matches!(self, Mask::Partial(_))
     }
 
-    /// Partial keeping `k`; Redacted stays as it is.
+    /// Partial showing `k`; Redacted stays as it is.
     pub fn keeping(self, k: Keep) -> Mask {
         match self {
             Mask::Hidden => Mask::Hidden,
@@ -124,26 +147,34 @@ impl Mask {
     }
 }
 
-/// Written `hidden`, `partial`, or `partial:first:last` when other characters are kept.
+/// Written `hidden`, `partial` (the last 4), or `partial:first:N` / `partial:last:N`.
 impl Serialize for Mask {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         match self {
             Mask::Hidden => s.serialize_str("hidden"),
             Mask::Partial(k) if *k == Keep::DEFAULT => s.serialize_str("partial"),
-            Mask::Partial(k) => s.serialize_str(&format!("partial:{}:{}", k.first, k.last)),
+            Mask::Partial(k) => s.serialize_str(&format!("partial:{}:{}", k.side.key(), k.count)),
         }
     }
 }
 
-/// Anything else (an older version's `hash`) reads as Redacted: never weaker than meant.
+/// Anything else (an older version's `hash`) reads as Redacted: never weaker than meant. An
+/// older `partial:first:last` (two counts) shows its last characters, else its first, at most 4.
 impl<'de> Deserialize<'de> for Mask {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let s = String::deserialize(d)?;
         let mut it = s.split(':');
+        let shown = |side, n: u8| if n == 0 { Mask::Hidden } else { Mask::Partial(Keep::new(side, n)) };
         Ok(match (it.next(), it.next(), it.next(), it.next()) {
             (Some("partial"), None, None, None) => Mask::PARTIAL,
-            (Some("partial"), Some(f), Some(l), None) => match (f.parse::<u8>(), l.parse::<u8>()) {
-                (Ok(first), Ok(last)) => Mask::Partial(Keep { first: first.min(Keep::MAX), last: last.min(Keep::MAX) }),
+            (Some("partial"), Some(side), Some(n), None) => match (side, n.parse::<u8>()) {
+                ("first", Ok(n)) => shown(Side::First, n),
+                ("last", Ok(n)) => shown(Side::Last, n),
+                (f, Ok(last)) => match f.parse::<u8>() {
+                    Ok(_) if last > 0 => shown(Side::Last, last),
+                    Ok(first) => shown(Side::First, first),
+                    Err(_) => Mask::Hidden,
+                },
                 _ => Mask::Hidden,
             },
             _ => Mask::Hidden,
@@ -200,9 +231,6 @@ enum Partial {
     /// Every letter and digit but the last `n` becomes •; separators stay. Kept only when the
     /// value is at least twice as long.
     KeepLast(u8),
-    /// A column's picked characters: every letter and digit between the first and the last
-    /// kept becomes •; separators stay. Masked whole when nothing would be left to mask.
-    Ends(Keep),
     /// `•••• 4242`.
     Card,
     /// `a•••@acme.com`.
@@ -341,7 +369,6 @@ impl Builtin {
     pub fn keep(&self) -> u8 {
         match self.partial {
             Partial::KeepLast(n) => n,
-            Partial::Ends(k) => k.last,
             Partial::Card | Partial::Email => 4,
         }
     }
@@ -731,18 +758,13 @@ fn partial(v: &str, p: Partial) -> String {
             let total = v.chars().filter(|c| c.is_alphanumeric()).count();
             // Short values would show most of themselves.
             let keep = if total < 2 * n as usize { 0 } else { n as usize };
-            ends(v, 0, keep)
-        }
-        Partial::Ends(k) => {
-            let total = v.chars().filter(|c| c.is_alphanumeric()).count();
-            let (first, last) = (k.first as usize, k.last as usize);
-            if total <= first + last { ends(v, 0, 0) } else { ends(v, first, last) }
+            ends(v, keep)
         }
     }
 }
 
-/// `v` with every letter and digit but its first `first` and last `last` as •.
-fn ends(v: &str, first: usize, last: usize) -> String {
+/// `v` with every letter and digit but its last `last` as •; separators stay.
+fn ends(v: &str, last: usize) -> String {
     let total = v.chars().filter(|c| c.is_alphanumeric()).count();
     let mut seen = 0;
     v.chars()
@@ -751,18 +773,23 @@ fn ends(v: &str, first: usize, last: usize) -> String {
                 return c;
             }
             seen += 1;
-            if seen <= first || seen + last > total { c } else { '•' }
+            if seen + last > total { c } else { '•' }
         })
         .collect()
 }
 
-/// A sensitive column's mask, for a whole value.
+/// A sensitive column's mask, for a whole value: Partial shows its `count` characters at one end
+/// (any character counts) and the rest as •, one each; a value no longer than that, all •.
 pub fn mask_value(how: Mask, v: &str) -> String {
-    match how {
-        Mask::Hidden => HIDDEN.into(),
-        Mask::Partial(k) if k == Keep::DEFAULT && v.contains('@') => partial(v, Partial::Email),
-        Mask::Partial(k) if k == Keep::DEFAULT => partial(v, Partial::KeepLast(4)),
-        Mask::Partial(k) => partial(v, Partial::Ends(k)),
+    let Mask::Partial(k) = how else { return HIDDEN.into() };
+    let (n, shown) = (v.chars().count(), k.count as usize);
+    if n <= shown {
+        return "•".repeat(n);
+    }
+    let dots = "•".repeat(n - shown);
+    match k.side {
+        Side::First => v.chars().take(shown).chain(dots.chars()).collect(),
+        Side::Last => dots.chars().chain(v.chars().skip(n - shown)).collect(),
     }
 }
 
@@ -1243,18 +1270,23 @@ pub fn sensitive_match(entry: &str, schema: Option<&str>, table: &str, column: &
     name_eq(s, schema) && glob(t, table) && glob(c, column)
 }
 
-/// Column names that usually hold personal data (English and Portuguese), for Scan again.
+/// Column names that usually hold personal data (English and Portuguese), for Scan again. Not
+/// those whose values a Mask on as it ships already masks anywhere: e-mails, phones, card
+/// numbers, password hashes.
 pub fn sensitive_name(column: &str) -> Option<Mask> {
-    static RE: OnceLock<(Regex, Regex, Regex)> = OnceLock::new();
-    let (hidden, ids, partial) = RE.get_or_init(|| {
+    static RE: OnceLock<(Regex, Regex, Regex, Regex)> = OnceLock::new();
+    let (hashed, hidden, ids, partial) = RE.get_or_init(|| {
         let r = |p: &str| RegexBuilder::new(p).case_insensitive(true).build().expect("name rule");
         (
+            r(r"(^|_)(hashed_?(password|passwd|senha)|(password|passwd|senha)_?(hash|digest))(_|$)"),
             r(r"(^|_)(password|passwd|senha|secret|segredo|token|api_?key|private_?key|mfa|otp|salt)(_|$|hash)"),
-            r(r"(^|_)(ssn|cpf|cnpj|rg|passport|passaporte|tax_?id|nif|iban|cartao|card_?number|pan)(_|$)"),
-            r(r"(^|_)(e_?mail|phone|telefone|celular|mobile|birth|nascimento|birthday|salario|salary|endereco|address|street|rua|cep|zip)(_|$)"),
+            r(r"(^|_)(ssn|cpf|cnpj|rg|passport|passaporte|tax_?id|nif|iban)(_|$)"),
+            r(r"(^|_)(phone|telefone|celular|mobile|birth|nascimento|birthday|salario|salary|endereco|address|street|rua|cep|zip)(_|$)"),
         )
     });
-    if hidden.is_match(column) || ids.is_match(column) {
+    if hashed.is_match(column) {
+        None
+    } else if hidden.is_match(column) || ids.is_match(column) {
         Some(Mask::Hidden)
     } else if partial.is_match(column) {
         Some(Mask::PARTIAL)
@@ -1832,11 +1864,16 @@ mod tests {
 
     #[test]
     fn masks_by_rigor() {
-        let (p04, p78) = (Mask::Partial(Keep { first: 0, last: 4 }), Mask::Partial(Keep { first: 7, last: 8 }));
-        assert!(Mask::loosens(p04, p78) && !Mask::loosens(p78, p04) && Mask::loosens(Mask::Hidden, p04) && !Mask::loosens(p04, Mask::Hidden));
-        assert!(Mask::Hidden > p04 && p04 > p78 && [p78, Mask::Hidden, p04].into_iter().max() == Some(Mask::Hidden));
-        assert_eq!(Mask::stronger(p78, Mask::Partial(Keep { first: 2, last: 9 })), Mask::Partial(Keep { first: 2, last: 8 }));
-        assert_ne!(p04.describe(), p78.describe());
+        let (last4, last2, first2) = (Mask::PARTIAL, Mask::Partial(Keep::new(Side::Last, 2)), Mask::Partial(Keep::new(Side::First, 2)));
+        assert!(Mask::loosens(last2, last4) && !Mask::loosens(last4, last2) && Mask::loosens(Mask::Hidden, last4) && !Mask::loosens(last4, Mask::Hidden));
+        assert!(Mask::loosens(last2, first2) && Mask::loosens(first2, last2), "the other end shows other characters");
+        assert!(Mask::Hidden > last2 && last2 > last4 && [last4, Mask::Hidden, last2].into_iter().max() == Some(Mask::Hidden));
+        assert_eq!(Mask::stronger(last4, last2), last2);
+        assert_eq!(Mask::stronger(first2, last2), Mask::Hidden, "nothing both show");
+        assert_ne!(last2.describe(), first2.describe());
+        assert_eq!((Mask::PARTIAL.describe(), first2.describe()), ("Partial".to_string(), "Partial (first 2)".to_string()));
+        assert_eq!(Keep::new(Side::First, 0), Keep::new(Side::First, 1));
+        assert_eq!(Keep::new(Side::Last, 9).count, Keep::MAX);
     }
 
     #[test]
@@ -1886,10 +1923,18 @@ mod tests {
         assert!(back.restricted() && !back.activity_on() && back.activity);
         assert_eq!(back.sensitive_mask(Some("public"), "users", "EMAIL", Names::Qualified), Some(Mask::PARTIAL));
         assert_eq!(AgentRules { view: AgentView::Data, ..back.clone() }.sensitive_mask(None, "users", "email", Names::Qualified), None, "columns mask in Masked data only");
-        assert_eq!(sensitive_name("password_hash"), Some(Mask::Hidden));
+        assert_eq!(sensitive_name("password"), Some(Mask::Hidden));
+        assert_eq!(sensitive_name("api_key"), Some(Mask::Hidden));
         assert_eq!(sensitive_name("ssn"), Some(Mask::Hidden));
-        assert_eq!(sensitive_name("email"), Some(Mask::PARTIAL));
+        assert_eq!(sensitive_name("billing_address"), Some(Mask::PARTIAL));
         assert_eq!(sensitive_name("created_at"), None);
+        // Masks on as they ship already mask these values anywhere.
+        for name in ["email", "e_mail", "user_email", "card_number", "cartao", "pan", "password_hash", "passwordhash", "senha_hash", "hashed_password", "password_digest"] {
+            assert_eq!(sensitive_name(name), None, "{name}");
+        }
+        assert_eq!(sensitive_name("email_token"), Some(Mask::Hidden), "a token still is");
+        // The Phone mask knows only US and Canada numbers.
+        assert_eq!(sensitive_name("telefone"), Some(Mask::PARTIAL));
         assert_eq!(RedisCat::of("KEYS"), RedisCat::Dangerous);
         // The configuration holds requirepass: not for agents.
         assert_eq!(RedisCat::of("CONFIG GET"), RedisCat::Dangerous);
@@ -1904,24 +1949,46 @@ mod tests {
 
     #[test]
     fn partial_and_column_masks() {
-        assert_eq!(mask_value(Mask::PARTIAL, "ana@acme.com"), "a•••@acme.com");
-        assert_eq!(mask_value(Mask::PARTIAL, "555-123-4567"), "•••-•••-4567");
-        assert_eq!(mask_value(Mask::PARTIAL, "abc"), "•••");
+        let (first, last) = (|n| Mask::Partial(Keep::new(Side::First, n)), |n| Mask::Partial(Keep::new(Side::Last, n)));
         assert_eq!(mask_value(Mask::Hidden, "x"), HIDDEN);
-        let keep = |first, last| Mask::Partial(Keep { first, last });
-        assert_eq!(mask_value(keep(2, 2), "ana@acme.com"), "an•@••••.•om");
-        assert_eq!(mask_value(keep(0, 4), "ana@acme.com"), "a•••@acme.com", "as it ships: the e-mail look");
-        assert_eq!(mask_value(keep(1, 0), "555-123-4567"), "5••-•••-••••");
-        assert_eq!(mask_value(keep(3, 3), "123456"), "••••••", "nothing left to mask: masked whole");
-        assert_eq!(mask_value(keep(4, 4), "x7Kq2Lm9Rt4242"), "x7Kq••••••4242", "kept while something is masked");
-        assert_eq!(mask_value(keep(4, 4), "Ana Souza Lima"), "Ana S•••• Lima");
-        assert_eq!(mask_value(keep(0, 0), "secret"), "••••••");
+        assert_eq!(Mask::PARTIAL, last(4), "as it comes: the last 4");
+        assert_eq!(mask_value(Mask::PARTIAL, "ana@acme.com"), "••••••••.com", "no e-mail look for a column");
+        assert_eq!(mask_value(Mask::PARTIAL, "555-123-4567"), "••••••••4567");
+        assert_eq!(mask_value(first(3), "Ana Maria Souza"), "Ana••••••••••••", "every character counts, spaces too");
+        assert_eq!(mask_value(last(4), "Ana Maria Souza"), "•••••••••••ouza");
+        for (n, f, l) in [(1, "B••••", "••••o"), (2, "Br•••", "•••no"), (3, "Bru••", "••uno"), (4, "Brun•", "•runo")] {
+            assert_eq!((mask_value(first(n), "Bruno"), mask_value(last(n), "Bruno")), (f.to_string(), l.to_string()), "{n}");
+        }
+        assert_eq!(mask_value(first(3), "Bob"), "•••", "as long as what is shown: hidden whole");
+        assert_eq!(mask_value(last(4), "Bob"), "•••", "shorter: hidden whole");
+        assert_eq!(mask_value(first(2), "Bob"), "Bo•");
+        assert_eq!(mask_value(last(4), "1234"), "••••", "4 characters, the last 4: hidden whole");
+        assert_eq!(mask_value(last(1), "é"), "•");
+        assert_eq!(mask_value(last(2), "Ação!"), "•••o!", "one • per character, not per byte");
+        assert_eq!(mask_value(first(4), ""), "");
         let read = |s: &str| serde_json::from_value::<Mask>(serde_json::json!(s)).unwrap();
         assert_eq!(read("hash"), Mask::Hidden, "an older version's Hash reads as Redacted");
-        assert_eq!(read("partial"), Mask::PARTIAL);
-        assert_eq!(read("partial:2:3"), keep(2, 3));
+        assert_eq!(read("hidden"), Mask::Hidden);
+        assert_eq!(read("partial"), last(4));
+        assert_eq!(read("partial:first:2"), first(2));
+        assert_eq!(read("partial:last:3"), last(3));
+        assert_eq!(read("partial:first:9"), first(4), "at most 4");
+        assert_eq!(read("partial:last:0"), Mask::Hidden, "nothing shown: Redacted");
+        assert_eq!(read("partial:middle:2"), Mask::Hidden);
+        assert_eq!(read("partial:last:x"), Mask::Hidden);
+        // An older version's first and last counts: never weaker than meant.
+        assert_eq!(read("partial:2:3"), last(3), "the last ones when it kept some");
+        assert_eq!(read("partial:0:8"), last(4));
+        assert_eq!(read("partial:3:0"), first(3));
+        assert_eq!(read("partial:7:0"), first(4));
+        assert_eq!(read("partial:0:0"), Mask::Hidden);
         assert_eq!(read("partial:x:3"), Mask::Hidden);
-        assert_eq!(serde_json::to_value(keep(2, 3)).unwrap(), "partial:2:3");
-        assert_eq!(serde_json::to_value(Mask::PARTIAL).unwrap(), "partial", "unchanged reads as before");
+        assert_eq!(read("partial:1:2:3"), Mask::Hidden);
+        for m in [Mask::Hidden, first(1), first(2), first(3), first(4), last(1), last(2), last(3), last(4)] {
+            assert_eq!(read(serde_json::to_value(m).unwrap().as_str().unwrap()), m, "{m:?}");
+        }
+        assert_eq!(serde_json::to_value(first(2)).unwrap(), "partial:first:2");
+        assert_eq!(serde_json::to_value(last(3)).unwrap(), "partial:last:3");
+        assert_eq!(serde_json::to_value(Mask::PARTIAL).unwrap(), "partial", "the default reads as before");
     }
 }

@@ -304,15 +304,18 @@ impl Tool for UserTool {
     fn need(&self) -> Option<Need> {
         Some(if self.def.mode == UserMode::Write { Need::Write } else { Need::Read })
     }
+    fn fixed_args(&self, a: &mut serde_json::Map<String, Value>) {
+        if !self.def.connection.eq_ignore_ascii_case("any") {
+            a.insert("connection".into(), json!(self.def.connection));
+            if let Some(db) = &self.def.database {
+                a.insert("database".into(), json!(db));
+            }
+        }
+    }
+    // Gated for reads (the default); a write is judged as execute's.
     fn call<'a>(&'a self, cx: &'a Call, args: Args) -> BoxFut<'a, Result<Value, ToolError>> {
         Box::pin(async move {
-            let mut a = args;
-            if !self.def.connection.eq_ignore_ascii_case("any") {
-                a.0.insert("connection".into(), json!(self.def.connection));
-                if let Some(db) = &self.def.database {
-                    a.0.insert("database".into(), json!(db));
-                }
-            }
+            let a = args;
             let params = self.bind(&a)?;
             let cap = cx.rules_of(&a).read_rows.unwrap_or(dataman_core::settings::MCP_MAX_ROWS).max(1) as usize;
             let limits = Limits {

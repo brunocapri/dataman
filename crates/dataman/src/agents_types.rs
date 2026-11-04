@@ -85,6 +85,21 @@ impl AgentsPage {
         c
     }
 
+    /// The drafted pattern's problem and its test on the samples, compiled only when the type or
+    /// the samples changed since the last frame.
+    fn type_test(&mut self, c: &CustomType) -> (Option<String>, Option<std::rc::Rc<privacy::Tested>>) {
+        let e = &mut self.editor;
+        let fresh = e.test.as_ref().is_some_and(|t| t.of.0 == *c && t.of.1 == e.samples);
+        if !fresh {
+            let problem = (!c.pattern.is_empty()).then(|| privacy::check_pattern(&c.pattern).err()).flatten();
+            let samples: Vec<&str> = e.samples.iter().map(String::as_str).collect();
+            let tested = (problem.is_none() && !c.pattern.is_empty()).then(|| privacy::test_pattern(c, &samples).ok()).flatten().map(std::rc::Rc::new);
+            e.test = Some(crate::agents::TypeTest { of: (c.clone(), e.samples.clone()), problem, tested });
+        }
+        let t = e.test.as_ref().expect("set above");
+        (t.problem.clone(), t.tested.clone())
+    }
+
     /// The editor's mask saved, and kept open on it.
     pub(crate) fn save_type(&mut self, cx: &mut Context<Self>) {
         let c = self.drafted(cx);
@@ -128,14 +143,7 @@ impl AgentsPage {
 
     pub(crate) fn render_types(&mut self, t: &Theme, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let rows = self.type_rows();
-        let profiles = self.profiles(cx);
-        let any = profiles.iter().any(|p| p.mcp_rules.view == privacy::AgentView::Masked);
-        let applies = if any { "Applied to every connection whose Privacy is Masked data" } else { "Applied to every connection whose Privacy is Masked data (none is yet)" };
-        let head = self
-            .header(t, "Masks")
-            .child(qmark(t, "agents-types-tip", types_tip()))
-            .child(div().flex_1().min_w(px(12.)))
-            .child(div().children(ui::here(&"agents-types-applies".into())).min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(crate::theme::text::UI)).text_color(t.tx3).child(applies));
+        let head = self.header(t, "Masks").child(qmark(t, "agents-types-tip", types_tip()));
         let broken: Vec<&TypeRow> = rows.iter().filter(|r| r.broken.is_some() && r.on).collect();
         let notice = broken.first().map(|r| div().pb(px(6.)).text_size(px(crate::theme::text::UI)).text_color(t.err).child(format!("{} has an invalid pattern. Agent reads are refused while it is on.", r.name)));
         self.types_offset = notice.is_some() as usize;
@@ -253,11 +261,10 @@ impl AgentsPage {
         let c = self.drafted(cx);
         let editing = self.editor.editing.is_some();
         let built_in = self.editor.editing.as_deref().is_some_and(|id| privacy::builtin(id).is_some());
-        let edited = self.editor.editing.as_deref().is_some_and(|id| self.core.settings.get().agent_types.builtin_edited(id));
-        let full = !editing && self.core.settings.get().agent_types.custom.len() >= privacy::MAX_CUSTOM;
-        let problem = (!c.pattern.is_empty()).then(|| privacy::check_pattern(&c.pattern).err()).flatten();
-        let samples: Vec<&str> = self.editor.samples.iter().map(String::as_str).collect();
-        let tested = (problem.is_none() && !c.pattern.is_empty()).then(|| privacy::test_pattern(&c, &samples).ok()).flatten();
+        let types = self.core.settings.get().agent_types;
+        let edited = self.editor.editing.as_deref().is_some_and(|id| types.builtin_edited(id));
+        let full = !editing && types.custom.len() >= privacy::MAX_CUSTOM;
+        let (problem, tested) = self.type_test(&c);
         let ok = !c.name.is_empty() && !c.pattern.is_empty() && problem.is_none() && !full;
         let caps = |s: &str| ui::caps(t, s.to_string());
         let masks: Vec<(Mask, &str)> = Mask::ALL.iter().map(|m| (*m, m.label())).collect();
@@ -536,11 +543,5 @@ fn type_tip(name: &str, rule: &str, example: Option<&str>, custom: bool) -> Tip 
 }
 
 pub(crate) fn types_tip() -> Tip {
-    Tip::new("Masks")
-        .lead("One list for every connection whose Privacy is Masked data: matching values are masked in everything sent to the agent, whether or not their column is a Sensitive column.")
-        .item("Where", "Rows, documents, keys, printed lines, tool replies, schema resources and errors.")
-        .item("Not on", "Connections on Data or Structure only: nothing is masked there.")
-        .item("How", "Each one masks its matches as its menu says: Redacted or Partial.")
-        .item("Edit", "Click one, built-in or yours, to change it on the right; + adds one.")
-        .note("Replies about no connection in particular, such as the list of connections or of favorites, aren't masked.")
+    Tip::new("Masks").lead("Applied to everything agents get from connections on Masked data.")
 }

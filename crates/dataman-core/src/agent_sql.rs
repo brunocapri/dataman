@@ -47,39 +47,13 @@ pub struct Checked {
 
 const CATALOG_SCHEMAS: &[&str] = &["information_schema", "pg_catalog", "sys", "mysql", "performance_schema", "pg_toast"];
 
-const DYNAMIC: &[&str] = &[
-    "EXECUTE",
-    "EXEC",
-    "PREPARE",
-    "SP_EXECUTESQL",
-    "DBLINK",
-    "DBLINK_EXEC",
-    "OPENQUERY",
-    "OPENROWSET",
-    "OPENDATASOURCE",
-    "LOAD_FILE",
-    "PG_READ_FILE",
-    "PG_READ_BINARY_FILE",
-    "LO_IMPORT",
-    "LO_GET",
-    "QUERY_TO_XML",
-    "QUERY_TO_XMLSCHEMA",
-    "QUERY_TO_XML_AND_XMLSCHEMA",
-    "CURSOR_TO_XML",
-    "CURSOR_TO_XMLSCHEMA",
-    "TABLE_TO_XML",
-    "TABLE_TO_XMLSCHEMA",
-    "TABLE_TO_XML_AND_XMLSCHEMA",
-    "SCHEMA_TO_XML",
-    "SCHEMA_TO_XMLSCHEMA",
-    "SCHEMA_TO_XML_AND_XMLSCHEMA",
-    "DATABASE_TO_XML",
-    "DATABASE_TO_XMLSCHEMA",
-    "DATABASE_TO_XML_AND_XMLSCHEMA",
-    "TS_STAT",
-    "TS_REWRITE",
-    "XPATH_TABLE",
-];
+/// Statements that run SQL from a string; the functions that do, or read tables and files
+/// whole, are `functions::READS_AROUND` and `STRING_SQL`.
+const DYNAMIC: &[&str] = &["EXECUTE", "EXEC", "PREPARE"];
+
+fn dynamic(word: &str) -> bool {
+    DYNAMIC.contains(&word) || crate::sql::functions::does(word).has(crate::sql::functions::READS_AROUND | crate::sql::functions::STRING_SQL)
+}
 
 /// MySQL `SHOW` that tells nothing about tables, columns or their values.
 const MYSQL_SHOW_OK: &[&str] = &["VARIABLES", "WARNINGS", "ERRORS", "COLLATION", "CHARACTER", "CHARSET", "ENGINES", "COUNT"];
@@ -296,7 +270,7 @@ fn statement(
             }
         }
     }
-    if let Some(w) = words.iter().flatten().find(|w| DYNAMIC.contains(&w.as_str())) {
+    if let Some(w) = words.iter().flatten().find(|w| dynamic(w)) {
         return Err(format!("{w} is not available to agents on {conn} while some data is kept from them"));
     }
     for (_, name, _) in &a.calls {

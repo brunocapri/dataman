@@ -15,11 +15,9 @@ SELECT
   `created_at`,
   CASE
     WHEN CAST(`email` AS CHAR) IS NULL THEN NULL
-    WHEN LOCATE('@', CAST(`email` AS CHAR)) > 0
-      THEN CONCAT(LEFT(CAST(`email` AS CHAR), 1), '•••@', SUBSTRING_INDEX(CAST(`email` AS CHAR), '@', -1))
-    WHEN CHAR_LENGTH(CAST(`email` AS CHAR)) >= 8
-      THEN CONCAT('•••• ', RIGHT(CAST(`email` AS CHAR), 4))
-    ELSE '••••'
+    WHEN CHAR_LENGTH(CAST(`email` AS CHAR)) > 4
+      THEN CONCAT(REPEAT('•', CHAR_LENGTH(CAST(`email` AS CHAR)) - 4), RIGHT(CAST(`email` AS CHAR), 4))
+    ELSE REPEAT('•', CHAR_LENGTH(CAST(`email` AS CHAR)))
   END AS `email`
 FROM `shop`.`users`;
 
@@ -44,7 +42,7 @@ GRANT
 
 -- the views
 ALTER USER 'dataman_agent_a1b2c3d4'@'%'
-  ATTRIBUTE '{"views":{"shop__users":"f82a2e7ec667"}}';
+  ATTRIBUTE '{"views":{"shop__users":"4cf487ca5f53"}}';
 
 -- hidden: shop.audit_log → no grant at all
 

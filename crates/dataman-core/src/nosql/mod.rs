@@ -296,7 +296,7 @@ where
     let h = rt.spawn(async move {
         let _ = tx.send(fut.await.map_err(anyhow::Error::from));
     });
-    Running { task: Task(rx), abort: h.abort_handle() }
+    Running { task: Task { rx, abort: Some(h.abort_handle()), abort_on_drop: false }, abort: h.abort_handle() }
 }
 
 pub fn classify(engine: Engine, text: &str) -> Result<WriteClass, Failed> {

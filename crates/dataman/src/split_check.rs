@@ -362,6 +362,11 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
         let f = first.read(cx).editor.focus_handle(cx);
         window.focus(&f, cx);
     });
+    draw(cx);
+    // Keys, not the focus move alone: a window in the background (another app or another
+    // stage's window in front) hears of no focus change until it is in front again.
+    key(cx, "left");
+    key(cx, "right");
     // The group follows the focus once the frame's focus phase is over.
     wait(cx, |cx| {
         draw(cx);

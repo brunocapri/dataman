@@ -789,7 +789,7 @@ impl Workspace {
         if self.modal_open(cx) {
             return;
         }
-        self.modal_return = window.focused(cx);
+        self.hold_focus(crate::app::Modal::Sheet, window, cx);
         let items = self.palette_items(cx);
         let p = cx.new(|cx| Palette::new(items, scope, window, cx));
         cx.subscribe_in(&p, window, |w, _, ev: &PaletteEvent, window, cx| match ev {
@@ -813,10 +813,7 @@ impl Workspace {
 
     pub(crate) fn close_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.palette = None;
-        match self.modal_return.take() {
-            Some(f) => window.focus(&f, cx),
-            None => self.focus_editor(window, cx),
-        }
+        self.give_focus_back(crate::app::Modal::Sheet, window, cx);
         cx.notify();
     }
 
@@ -893,7 +890,7 @@ impl Workspace {
             for db in dbs {
                 let snap = c.schema.snapshot(&db);
                 for r in &snap.relations {
-                    if r.schema == "pg_catalog" || r.schema == "information_schema" {
+                    if c.engine().is_system_schema(&r.schema) {
                         continue;
                     }
                     items.push(Item {
@@ -981,18 +978,30 @@ impl Workspace {
     }
 }
 
+/// What a command needs to be offered: the tab connection's capabilities, or the app's.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Need {
+    Explain,
+    Import,
+    Activity,
+    Projects,
+    OpenProject,
+    Translucency,
+}
+
 fn commands(conn: Option<&std::sync::Arc<dataman_core::Connection>>, cx: &App) -> Vec<Item> {
     use crate::app::*;
     use Target::*;
-    let c = |label: &str, sub: &str, key: &str, a: Box<dyn Action>, t: Target| Item::command(label, sub, key, a, t);
-    let mut v = vec![
+    let c = |label: &str, sub: &str, key: &str, a: Box<dyn Action>, t: Target| (Item::command(label, sub, key, a, t), None);
+    let n = |need: Need, label: &str, sub: &str, key: &str, a: Box<dyn Action>, t: Target| (Item::command(label, sub, key, a, t), Some(need));
+    let v = vec![
         c("Run", "the whole script, or the selection", "⌘↩", Box::new(crate::editor::RunScript), Editor),
         c("Run statement", "under the cursor, or the selection", "⌘⇧↩", Box::new(crate::editor::RunStatement), Editor),
         c("Run from statement", "the one under the cursor and the rest", "⌥⌘↩", Box::new(crate::editor::RunFromHere), Editor),
-        c("Explain", "the statement under the cursor", "⌘L", Box::new(Explain), Workspace),
-        c("Explain analyze", "runs it, rolled back", "⌥⌘L", Box::new(ExplainAnalyze), Workspace),
-        c("Copy plan as text", "", "", Box::new(CopyPlanText), Workspace),
-        c("Plan: tree / flame", "", "", Box::new(TogglePlanFlame), Workspace),
+        n(Need::Explain, "Explain", "the statement under the cursor", "⌘L", Box::new(Explain), Workspace),
+        n(Need::Explain, "Explain analyze", "runs it, rolled back", "⌥⌘L", Box::new(ExplainAnalyze), Workspace),
+        n(Need::Explain, "Copy plan as text", "", "", Box::new(CopyPlanText), Workspace),
+        n(Need::Explain, "Plan: tree / flame", "", "", Box::new(TogglePlanFlame), Workspace),
         c("Cancel on server", "sends a CancelRequest", "⌘.", Box::new(Cancel), Workspace),
         c("Commit transaction", "the tab's open transaction", "⌃⌘↩", Box::new(CommitTx), Workspace),
         c("Rollback transaction", "the tab's open transaction", "⌃⌘⌫", Box::new(RollbackTx), Workspace),
@@ -1019,11 +1028,11 @@ fn commands(conn: Option<&std::sync::Arc<dataman_core::Connection>>, cx: &App) -
         c("Reload schema", "of the explorer's connection", "⌘R", Box::new(Refresh), Workspace),
         c("Open .sql file…", "in a new tab", "⌘O", Box::new(OpenSqlFile), Workspace),
         c("Open database file…", "a SQLite or DuckDB file", "", Box::new(crate::app::OpenDatabaseFile), Workspace),
-        c("Open project…", "a folder's shared settings, in .dataman", "", Box::new(OpenProject), Workspace),
-        c("Close project", "keeps what it brought, stops syncing", "", Box::new(CloseProject), Workspace),
+        n(Need::Projects, "Open project…", "a folder's shared settings, in .dataman", "", Box::new(OpenProject), Workspace),
+        n(Need::OpenProject, "Close project", "keeps what it brought, stops syncing", "", Box::new(CloseProject), Workspace),
         c("Review edits made outside Dataman", "connections.toml or settings.toml, held until applied", "", Box::new(crate::outside_ui::ReviewOutsideEdits), Workspace),
         c("Export result…", "CSV, TSV, JSON, NDJSON, SQL INSERT, Parquet", "⌘E", Box::new(ExportResult), Workspace),
-        c("Import data…", "CSV, TSV, JSON, NDJSON, Parquet", "", Box::new(ImportData), Workspace),
+        n(Need::Import, "Import data…", "CSV, TSV, JSON, NDJSON, Parquet", "", Box::new(ImportData), Workspace),
         c("Edit cell", "inline, in the grid", "↩", Box::new(crate::grid::EditCell), Grid),
         c("Insert row", "a new row at the end of the result", "⌘I", Box::new(crate::grid::InsertRow), Grid),
         c("Delete selected rows", "marked, removed on commit", "⌫", Box::new(crate::grid::DeleteRows), Grid),
@@ -1045,7 +1054,7 @@ fn commands(conn: Option<&std::sync::Arc<dataman_core::Connection>>, cx: &App) -
         c("Save as…", "the script, to a .sql file", "⇧⌘S", Box::new(SaveAs), Workspace),
         c("Format on save", "on or off: ⌘S formats the script first", "", Box::new(ToggleFormatOnSave), Workspace),
         c("Import favorites…", ".sql files, one favorite each", "", Box::new(ImportFavorites), Workspace),
-        c("Activity monitor", "sessions, locks, tables, statements", "", Box::new(OpenActivity), Workspace),
+        n(Need::Activity, "Activity monitor", "sessions, locks, tables, statements", "", Box::new(OpenActivity), Workspace),
         c("Agents", "audit, permissions, privacy, MCP", "", Box::new(ToggleMcpLog), Workspace),
         c("Toggle comment", "the selected lines", "⌘/", Box::new(crate::editor::ToggleComment), Editor),
         c("Format query", "the selection, or the whole script: SQL, MongoDB, the console, Redis", "⌥⇧F", Box::new(crate::editor::FormatQuery), Editor),
@@ -1066,8 +1075,8 @@ fn commands(conn: Option<&std::sync::Arc<dataman_core::Connection>>, cx: &App) -
         c("Theme: dark", "", "", Box::new(ThemeDark), Workspace),
         c("Theme: light", "", "", Box::new(ThemeLight), Workspace),
         c("Theme: follow the system", "", "", Box::new(ThemeSystem), Workspace),
-        c("Transparency: on", "", "", Box::new(TranslucencyOn), Workspace),
-        c("Transparency: off", "", "", Box::new(TranslucencyOff), Workspace),
+        n(Need::Translucency, "Transparency: on", "", "", Box::new(TranslucencyOn), Workspace),
+        n(Need::Translucency, "Transparency: off", "", "", Box::new(TranslucencyOff), Workspace),
         c("Font: Geist Mono", "", "", Box::new(FontGeistMono), Workspace),
         c("Font: Lilex", "", "", Box::new(FontLilex), Workspace),
         c("Font: Zed Mono", "", "", Box::new(FontZedMono), Workspace),
@@ -1077,20 +1086,24 @@ fn commands(conn: Option<&std::sync::Arc<dataman_core::Connection>>, cx: &App) -
         c("Actual size", "zoom 100%", "⌘0", Box::new(ZoomReset), Workspace),
         c("Quit Dataman", "", "⌘Q", Box::new(Quit), Workspace),
     ];
-    if let Some(caps) = conn.map(|c| c.caps()) {
-        v.retain(|it| match it.label.as_str() {
-            "Explain" | "Explain analyze" | "Copy plan as text" | "Plan: tree / flame" => caps.explain,
-            "Import data…" => caps.import,
-            "Activity monitor" => caps.activity,
-            _ => true,
-        });
-    }
+    let caps = conn.map(|c| c.caps());
     let projects = crate::project_ui::projects(cx);
-    v.retain(|it| match it.label.as_str() {
-        "Open project…" => projects.enabled,
-        "Close project" => projects.open.is_some(),
-        _ => true,
-    });
+    // Only Windows and Linux can lack it (no menu bar there either); the Mac always has it.
+    let translucency = !crate::keymap::NOT_MAC || crate::theme::translucency_works();
+    let mut v: Vec<Item> = v
+        .into_iter()
+        .filter(|(_, need)| match need {
+            None => true,
+            Some(Need::Explain) => caps.is_none_or(|c| c.explain),
+            Some(Need::Import) => caps.is_none_or(|c| c.import),
+            Some(Need::Activity) => caps.is_none_or(|c| c.activity),
+            Some(Need::Projects) => projects.enabled,
+            Some(Need::OpenProject) => projects.open.is_some(),
+            Some(Need::Translucency) => translucency,
+        })
+        .map(|(item, _)| item)
+        .collect();
+    let c = |label: &str, sub: &str, key: &str, a: Box<dyn Action>, t: Target| Item::command(label, sub, key, a, t);
     if let Some(feed) = crate::updates::offered(cx) {
         let notes = feed.notes.lines().next().unwrap_or("").to_string();
         v.push(c(&format!("Update to {}…", feed.version), &notes, "", Box::new(ShowUpdate), Workspace));
@@ -1102,9 +1115,6 @@ fn commands(conn: Option<&std::sync::Arc<dataman_core::Connection>>, cx: &App) -
         // No menu bar there: what only it reached.
         v.push(c("Go to table or tab", "", "", Box::new(GoTo), Workspace));
         v.push(c("Next region", "explorer → editor → grid", "", Box::new(CycleFocus), Workspace));
-        if !crate::theme::translucency_works() {
-            v.retain(|i| !i.label.starts_with("Transparency"));
-        }
     }
     v
 }

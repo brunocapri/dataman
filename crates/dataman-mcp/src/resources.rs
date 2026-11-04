@@ -7,7 +7,6 @@ use dataman_core::schema::{RelKind, Relation};
 use dataman_core::bounded::{Limits, Mode};
 use serde_json::{Value, json};
 
-use crate::builtin::catalog_system_schema;
 use crate::policy::Need;
 use crate::tool::{Args, Call, Opened, ToolError};
 
@@ -142,8 +141,12 @@ async fn read_walk(o: &Opened) -> Result<(Tree, bool), ToolError> {
     let f = |e: anyhow::Error| ToolError::Failed(format!("{e:#}"));
     let (db, c) = (o.database.as_str(), &o.conn);
     let mut t: Tree = BTreeMap::new();
-    for s in c.schemas(db).await.map_err(f)? {
-        if catalog_system_schema(&s) {
+    // What the connection is on stays (MySQL's schema is its database, `sys` included), as in
+    // list_tables.
+    let all = c.schemas(db).await.map_err(f)?;
+    let sp = c.schema.search_path(db);
+    for s in all {
+        if c.engine().is_system_schema(&s) && !sp.contains(&s) {
             continue;
         }
         let rels = c.relations(db, &s).await.map_err(f)?;

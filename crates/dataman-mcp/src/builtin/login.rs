@@ -30,7 +30,7 @@ fn create_agent_login(cx: &Call, a: Args) -> BoxFut<'_, Result<Value, ToolError>
     Box::pin(async move {
         cx.enabled()?;
         let p = cx.hub.profile(a.str("connection")?).map_err(ToolError::Invalid)?;
-        cx.note_connection(&p.name);
+        cx.note_profile(&p);
         if p.mcp_access() == McpAccess::Off {
             return Err(ToolError::Refused("MCP access to this connection is off (connection settings › MCP)".into()));
         }

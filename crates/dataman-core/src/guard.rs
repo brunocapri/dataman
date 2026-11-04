@@ -1,5 +1,5 @@
 use crate::config::Environment;
-use crate::sql::{Dialect, Token, TokenKind, tokenize_in};
+use crate::sql::{Dialect, Token, TokenKind, functions, tokenize_in};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Effect {
@@ -1004,7 +1004,7 @@ pub fn runs_code(sql: &str, dialect: Dialect) -> bool {
         matches!(f.verb.as_str(), "CALL" | "DO" | "EXEC" | "EXECUTE")
             // T-SQL's `INSERT … EXEC`: reserved words there; elsewhere a column may be named so.
             || dialect == Dialect::TSql && t.top().iter().any(|&i| t.is(i, "EXEC") || t.is(i, "EXECUTE"))
-            || (0..all.len()).any(|i| t.is(i, "SP_EXECUTESQL") || STRING_SQL_FUNCTIONS.iter().any(|n| t.word(i).is_some_and(|w| w.eq_ignore_ascii_case(n)) && t.punct(i + 1, "(")))
+            || (0..all.len()).any(|i| t.is(i, "SP_EXECUTESQL") || (t.word(i).is_some_and(|w| functions::is(&w, functions::STRING_SQL)) && t.punct(i + 1, "(")))
     })
 }
 
@@ -1118,35 +1118,6 @@ fn tsql_read_only_refusal(sql: &str) -> Option<String> {
     None
 }
 
-/// Functions with effects that a read-only transaction does not stop (signals, files, locks
-/// held past the transaction, other servers) or that only PostgreSQL stops there.
-pub const SIDE_EFFECT_FUNCTIONS: &[&str] = &[
-    "pg_terminate_backend", "pg_cancel_backend", "pg_reload_conf", "pg_rotate_logfile", "pg_switch_wal", "pg_create_restore_point",
-    "pg_promote", "pg_wal_replay_pause", "pg_wal_replay_resume", "pg_log_backend_memory_contexts", "pg_advisory_lock",
-    "pg_advisory_lock_shared", "pg_try_advisory_lock", "pg_try_advisory_lock_shared", "pg_advisory_unlock", "pg_advisory_unlock_all",
-    "pg_advisory_unlock_shared", "lo_import", "lo_export", "lo_unlink", "lo_create", "lo_creat", "lo_from_bytea", "lo_put", "lowrite",
-    "pg_file_write", "pg_file_rename", "pg_file_unlink", "pg_file_sync", "pg_read_file", "pg_read_binary_file", "pg_ls_dir",
-    "pg_stat_file", "pg_ls_logdir", "pg_ls_waldir", "pg_ls_tmpdir", "pg_ls_archive_statusdir", "dblink", "dblink_exec", "dblink_connect",
-    "dblink_connect_u", "dblink_send_query", "dblink_open", "pg_notify",
-    "nextval", "setval", "pg_stat_reset", "pg_stat_reset_shared", "pg_stat_reset_single_table_counters", "pg_stat_statements_reset",
-    "pg_drop_replication_slot", "pg_create_physical_replication_slot", "pg_create_logical_replication_slot",
-    "pg_logical_emit_message", "pg_replication_origin_create", "pg_replication_origin_drop", "pg_import_system_collations",
-    "txid_current", "pg_current_xact_id", "set_config",
-    "get_lock", "release_lock", "release_all_locks", "load_file", "master_pos_wait", "source_pos_wait", "wait_for_executed_gtid_set",
-    "openrowset", "openquery", "opendatasource",
-    // SQL Server's file and program procedures: EXEC is no read anyway, named here so every
-    // server-file name is refused on reads too.
-    "xp_cmdshell", "xp_dirtree", "xp_subdirs", "xp_fileexist", "xp_regwrite", "sp_oacreate", "sp_oamethod", "sp_addextendedproc",
-];
-
-/// Functions that run SQL handed to them as a string: what the string does is never checked,
-/// so agents cannot call them at any level (`query_to_xml('select pg_terminate_backend(1)', …)`).
-pub const STRING_SQL_FUNCTIONS: &[&str] = &[
-    "query_to_xml", "query_to_xmlschema", "query_to_xml_and_xmlschema", "cursor_to_xml", "cursor_to_xmlschema", "ts_stat", "ts_rewrite",
-    "xpath_table", "crosstab", "crosstab2", "crosstab3", "crosstab4", "connectby", "dblink", "dblink_exec", "dblink_send_query",
-    "dblink_open", "openquery", "openrowset", "opendatasource", "sp_executesql",
-];
-
 const TSQL_LOCK_HINTS: &[&str] = &["UPDLOCK", "XLOCK", "HOLDLOCK", "TABLOCK", "TABLOCKX", "PAGLOCK", "ROWLOCK", "SERIALIZABLE", "REPEATABLEREAD"];
 
 pub fn agent_read_refusal(sql: &str) -> Option<String> {
@@ -1217,31 +1188,11 @@ fn read_refusal(sql: &str, dialect: Dialect) -> Option<String> {
     if let Some(e) = file_access_in(&t) {
         return Some(e);
     }
-    effect_call(&t, &[]).map(|name| match STRING_SQL_FUNCTIONS.contains(&name.as_str()) && !SIDE_EFFECT_FUNCTIONS.contains(&name.as_str()) {
-        true => format!("{name}() runs SQL from a string, which Dataman cannot check"),
-        false => format!("{name}() has effects outside a read-only transaction"),
+    effect_call(&t, false).map(|name| match functions::does(&name) {
+        d if d.has(functions::STRING_SQL) && !d.has(functions::EFFECT) => format!("{name}() runs SQL from a string, which Dataman cannot check"),
+        _ => format!("{name}() has effects outside a read-only transaction"),
     })
 }
-
-/// SQLite functions that load code or touch files (the shell's; an application may register
-/// them too).
-pub const SQLITE_EFFECT_FUNCTIONS: &[&str] = &["load_extension", "readfile", "writefile", "edit", "fts3_tokenizer", "fsdir"];
-
-/// DuckDB reads (and runs) whatever these name: files, other databases, SQL in a string,
-/// secrets. Refused to agents at every level.
-pub const DUCKDB_FILE_FUNCTIONS: &[&str] = &[
-    "read_csv", "read_csv_auto", "csv_scan", "sniff_csv", "read_parquet", "parquet_scan", "parquet_metadata", "parquet_schema",
-    "parquet_file_metadata", "parquet_kv_metadata", "parquet_bloom_probe", "read_json", "read_json_auto", "read_json_objects",
-    "read_json_objects_auto", "read_ndjson", "read_ndjson_auto", "read_ndjson_objects", "json_scan", "read_text", "read_blob", "glob",
-    "read_xlsx", "st_read", "iceberg_scan", "iceberg_metadata", "iceberg_snapshots", "delta_scan", "sqlite_scan", "sqlite_attach",
-    "postgres_scan", "postgres_attach", "postgres_query", "mysql_scan", "mysql_query", "query", "query_table", "duckdb_secrets",
-    "which_secret", "getenv", "load_extension", "read_duckdb", "parquet_full_metadata",
-    // SQL inside a string, and raw memory.
-    "json_execute_serialized_sql", "arrow_scan", "arrow_scan_dumb",
-    // The instance's state, which every connection to the file shares, and its logs (others' statements).
-    "enable_logging", "disable_logging", "truncate_duckdb_logs", "enable_profiling", "disable_profiling", "checkpoint", "force_checkpoint",
-    "duckdb_logs", "duckdb_logs_parsed", "duckdb_temporary_files", "duckdb_external_file_cache", "duckdb_prepared_statements",
-];
 
 /// DuckDB statements and functions that reach files or other databases: `read_csv(…)`, a file
 /// named in FROM (`FROM 'x.csv'`, `FROM "x.parquet"`), COPY, ATTACH, INSTALL, EXPORT.
@@ -1275,15 +1226,6 @@ pub fn file_access(sql: &str, dialect: Dialect) -> Option<String> {
     }
     None
 }
-
-/// What reaches the database server's own files, or runs a program there: on a server on this
-/// Mac, the user's own files (Dataman's, an open project's). Functions and procedures by name.
-const SERVER_FILE_FUNCTIONS: &[&str] = &[
-    "lo_import", "lo_export", "pg_file_write", "pg_file_rename", "pg_file_unlink", "pg_file_sync", "pg_read_file", "pg_read_binary_file",
-    "pg_ls_dir", "pg_stat_file", "pg_ls_logdir", "pg_ls_waldir", "pg_ls_tmpdir", "pg_ls_archive_statusdir", "load_file", "openrowset",
-    "opendatasource", "xp_cmdshell", "xp_dirtree", "xp_subdirs", "xp_fileexist", "xp_regwrite", "sp_oacreate", "sp_oamethod",
-    "sp_addextendedproc",
-];
 
 /// A server engine's statements that read or write files on the database server, or run a
 /// program there: COPY to or from a file or PROGRAM, ALTER SYSTEM (archive_command and the
@@ -1331,7 +1273,7 @@ pub fn server_file_access(sql: &str, dialect: Dialect) -> Option<String> {
             }
             let name = all[i].text(&piece).trim_matches(['"', '`', '[', ']']).to_ascii_lowercase();
             // T-SQL runs a procedure without parentheses (`EXEC master..xp_cmdshell 'x'`).
-            if SERVER_FILE_FUNCTIONS.contains(&name.as_str()) && (t.punct(i + 1, "(") || dialect == Dialect::TSql) {
+            if functions::is(&name, functions::SERVER_FILE) && (t.punct(i + 1, "(") || dialect == Dialect::TSql) {
                 return Some(format!("{name} reaches files or programs on the database server"));
             }
         }
@@ -1341,8 +1283,8 @@ pub fn server_file_access(sql: &str, dialect: Dialect) -> Option<String> {
 
 fn file_access_in(t: &Toks) -> Option<String> {
     let list = match t.dialect {
-        Dialect::DuckDb => DUCKDB_FILE_FUNCTIONS,
-        Dialect::Sqlite => SQLITE_EFFECT_FUNCTIONS,
+        Dialect::DuckDb => functions::DUCKDB_FILE,
+        Dialect::Sqlite => functions::SQLITE_FILE,
         _ => return None,
     };
     for i in 0..t.t.len() {
@@ -1351,7 +1293,7 @@ fn file_access_in(t: &Toks) -> Option<String> {
         }
         let name = t.t[i].text(t.src).trim_matches(['"', '`', '[', ']']).to_ascii_lowercase();
         // DuckDB's `duckdb_…` functions are views too (`FROM duckdb_logs`).
-        if (t.punct(i + 1, "(") || name.starts_with("duckdb_")) && list.contains(&name.as_str()) {
+        if (t.punct(i + 1, "(") || name.starts_with("duckdb_")) && functions::is(&name, list) {
             return Some(format!("{name}() reaches files or code outside the database"));
         }
     }
@@ -1389,7 +1331,8 @@ fn file_access_in(t: &Toks) -> Option<String> {
     None
 }
 
-fn effect_call(t: &Toks, allowed: &[&str]) -> Option<String> {
+/// A function called with effects (in a write: past those a write may have).
+fn effect_call(t: &Toks, write: bool) -> Option<String> {
     if let Some(e) = file_access_in(t) {
         return Some(e.split_once("()").map_or(e.as_str(), |(f, _)| f).to_string());
     }
@@ -1398,8 +1341,8 @@ fn effect_call(t: &Toks, allowed: &[&str]) -> Option<String> {
             continue;
         }
         let name = t.t[i].text(t.src).trim_matches(['"', '`', '[', ']']).to_ascii_lowercase();
-        let n = name.as_str();
-        if (SIDE_EFFECT_FUNCTIONS.contains(&n) || STRING_SQL_FUNCTIONS.contains(&n)) && !allowed.contains(&n) {
+        let d = functions::does(&name);
+        if (d.has(functions::EFFECT) || d.has(functions::STRING_SQL)) && !(write && d.has(functions::WRITE_OK)) {
             return Some(name);
         }
     }
@@ -1440,8 +1383,6 @@ pub enum Preview {
     AskFirst,
     Outside,
 }
-
-pub const WRITE_OK_FUNCTIONS: &[&str] = &["nextval", "pg_notify", "txid_current", "pg_current_xact_id"];
 
 const TSQL_SESSION_SETTINGS: &[&str] = &[
     "NOCOUNT", "XACT_ABORT", "ANSI_NULLS", "ANSI_WARNINGS", "ANSI_PADDING", "ANSI_NULL_DFLT_ON", "QUOTED_IDENTIFIER", "ARITHABORT",
@@ -1504,7 +1445,7 @@ fn piece_of(sql: &str, dialect: Dialect) -> Piece {
     if all.iter().any(|x| x.text(sql).trim_matches(['"', '[', ']']).eq_ignore_ascii_case("xp_cmdshell")) {
         return Piece::Destructive("xp_cmdshell (runs a command on the database server)".into());
     }
-    if let Some(name) = effect_call(&t, WRITE_OK_FUNCTIONS) {
+    if let Some(name) = effect_call(&t, true) {
         return Piece::Destructive(if name.contains(' ') { name } else { format!("{name}()") });
     }
     if f.tx.is_some() {
@@ -1577,7 +1518,7 @@ fn preview_of(p: &str, dialect: Dialect) -> Preview {
     } else if f.effect == Effect::Ddl
         || matches!(f.effect, Effect::Other | Effect::Tx) && !neutral(&t, &f)
         || matches!(f.verb.as_str(), "TRUNCATE" | "CALL" | "DO" | "EXEC" | "EXECUTE")
-        || effect_call(&t, WRITE_OK_FUNCTIONS).is_some()
+        || effect_call(&t, true).is_some()
         || matches!(piece_of(p, dialect), Piece::Destructive(r) if r == "INSERT … EXEC")
     {
         Preview::AskFirst
@@ -1744,9 +1685,6 @@ mod tests {
             (TSql, r"EXEC xp_subdirs 'C:\'"),
         ] {
             assert!(agent_read_refusal_in(sql, d).is_some(), "{d:?}: {sql}");
-        }
-        for name in SERVER_FILE_FUNCTIONS {
-            assert!(SIDE_EFFECT_FUNCTIONS.contains(name), "{name} is refused on writes but not on reads");
         }
         for (d, sql) in [
             (Postgres, "COPY t TO STDOUT"),
