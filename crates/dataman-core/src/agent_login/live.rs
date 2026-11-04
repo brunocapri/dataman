@@ -323,6 +323,14 @@ async fn verify_sql(agent: &Arc<Connection>, spec: &Spec, inv: &Inventory, probe
     };
     let me = text_rows(&db, who).await?.first().and_then(|r| r[0].clone()).unwrap_or_default();
     out.push(check("Logged in as the agent", me == spec.user, me.clone()));
+    // PostgreSQL: a read login's sessions start read-only (its role's setting), which turns a
+    // write away before its privileges are looked at. Said as a check of its own, then off for
+    // this session, so what refuses the tries below is the privileges.
+    if e == Engine::Postgres && !spec.write {
+        let ro = text_rows(&db, "SHOW default_transaction_read_only").await?.first().and_then(|r| r[0].clone()).unwrap_or_default();
+        out.push(check("Its sessions start read-only", ro == "on", ro));
+        db.execute("SET default_transaction_read_only = off").await.map_err(|x| anyhow!("{}", x.message))?;
+    }
     let (acc, hidden) = access(spec, inv);
     let qual = |s: &str, n: &str| if s.is_empty() { sql_q(e, n) } else { format!("{}.{}", sql_q(e, s), sql_q(e, n)) };
     let try_sql = |sql: String| {
@@ -339,8 +347,9 @@ async fn verify_sql(agent: &Arc<Connection>, spec: &Spec, inv: &Inventory, probe
             let r = try_sql(top0(e, &sql_q(e, &a.plain[0]), &qual(&a.schema, &a.name))).await;
             out.push(check(format!("Reads {}", a.label()), r.is_ok(), r.err().map(|x| x.to_string()).unwrap_or_default()));
             if !a.write && a.kind != ObjKind::View {
-                let c = sql_q(e, &a.plain[0]);
-                let r = try_sql(format!("UPDATE {} SET {c} = {c} WHERE 1 = 0", qual(&a.schema, &a.name))).await;
+                // A DELETE names no column: only the privilege can refuse it (an UPDATE of an
+                // identity column is refused by SQL Server for that before any permission).
+                let r = try_sql(format!("DELETE FROM {} WHERE 1 = 0", qual(&a.schema, &a.name))).await;
                 out.push(check(format!("Can't write {} (read tier)", a.label()), r.as_ref().is_err_and(|x| refused(e, x.code.as_deref(), &x.message)), r.err().map(|x| x.message).unwrap_or_else(|| "the write went through".into())));
             }
         }

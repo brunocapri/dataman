@@ -933,6 +933,26 @@ impl AgentsPage {
                 if names.len() == 1 { "it" } else { "them" }
             )));
         }
+        // Why it wasn't created, whole and copyable (a failed check can run long).
+        if let Some(e) = error {
+            warned = true;
+            let copy = e.to_string();
+            warn = warn.child(
+                div()
+                    .children(ui::here(&"agents-login-error".into()))
+                    .flex()
+                    .flex_row()
+                    .items_start()
+                    .gap(px(12.))
+                    .border_1()
+                    .border_color(t.err)
+                    .bg(t.err_s)
+                    .px(px(12.))
+                    .py(px(10.))
+                    .child(div().flex_1().min_w_0().text_color(t.err).child(copy.clone()))
+                    .child(ui::button(t, "agents-login-error-copy", ui::Btn::Secondary).flex_none().h(px(26.)).cursor_pointer().child("Copy").on_click(cx.listener(move |_, _: &ClickEvent, _, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy.clone()))))),
+            );
+        }
         for l in &plan.lacks {
             warned = true;
             warn = warn.child(div().children(ui::here(&"agents-login-lacks".into())).border_1().border_color(t.err).bg(t.err_s).px(px(12.)).py(px(10.)).text_color(t.err).child(l.clone()));
@@ -1001,7 +1021,7 @@ impl AgentsPage {
             cx.notify();
         }));
         let say = match (error, confirm) {
-            (Some(e), _) => div().flex_1().min_w_0().text_color(t.err).overflow_hidden().whitespace_nowrap().text_ellipsis().child(e.to_string()),
+            (Some(_), _) => div().flex_1().min_w_0().text_color(t.err).child("Not created: the reason is above."),
             (None, true) => div().flex_1().text_color(t.err).child(format!("Production: this creates a login on {} now.", p.host)),
             (None, false) => div().flex_1().text_color(t.tx3).child(format!("Dataman runs this as {}, then logs in as the new login to check it before keeping it.", if rv.probe.login.is_empty() { "your login" } else { &rv.probe.login })),
         };
