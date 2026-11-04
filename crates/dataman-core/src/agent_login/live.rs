@@ -120,7 +120,10 @@ pub async fn review(c: &Arc<Connection>, p: &ConnectionProfile, o: &Options) -> 
     let mut plan = create_plan(&spec, &inventory, &probe, persist, &password, prod);
     plan.notes.extend(probe.notes.iter().cloned());
     if probe.orphan {
-        plan.lacks.push(orphan_text(&spec.user, &p.database));
+        // Left by a database made again, and Dataman no longer knows it: dropped first, in the
+        // script the user reviews.
+        plan.before = ms::drop_orphan_steps(&spec.user);
+        plan.notes.push(format!("A login named {} is on the server without its user in {} (the database was restored or made again since it was created): the script drops it first.", spec.user, p.database));
     } else if probe.exists == Some(false) {
         plan.lacks.push(format!("a login named {} already exists and isn't Dataman's: Dataman never changes it. Drop or rename it to create the agent login", spec.user));
     } else if probe.exists == Some(true) {
@@ -151,6 +154,10 @@ pub async fn apply(c: &Arc<Connection>, plan: &Plan, database: &str) -> Result<(
         let d = engine.dialect();
         let (begin, commit, rollback) = (d.begin(), d.commit(), d.rollback_if_open());
         let tx = plan.one_tx;
+        for s in &plan.before {
+            let Action::Sql(sql) = &s.action else { continue };
+            db.execute(sql).await.map_err(|e| anyhow!("{e}\n  in: {}", s.shown))?;
+        }
         if tx {
             db.execute(begin).await.map_err(|e| anyhow!("{e}"))?;
         }
@@ -588,12 +595,70 @@ pub struct Drift {
     pub inventory: Inventory,
 }
 
-/// A SQL Server login left without its user in `database`, said with what to do about it.
-pub fn orphan_text(user: &str, database: &str) -> String {
-    format!(
-        "{user} is on the server, but its user in {database} is gone: the database was probably restored or recreated after the login was made. Without that user nothing says the login is Dataman's, so Dataman leaves it alone. To start over, have an admin drop it ({}) and create the agent login again.",
-        ms::drop_login_sql(user)
-    )
+/// Dataman's SQL Server login left without its user in `database` (restored or made again).
+pub fn lost_user_text(user: &str, database: &str) -> String {
+    format!("{user} lost its user in {database} (the database was restored or made again): Verify puts it back, as Auto sync does on its own")
+}
+
+/// The login left without its user in its database (SQL Server: the database restored or made
+/// again), put back in it with the user's login (`admin`): its user, the mark and the grants.
+/// Only Dataman's own: the password the Keychain keeps for it still logs it in. `None`: nothing
+/// to put back.
+pub async fn reattach(core: &crate::Core, admin: &Arc<Connection>, p: &ConnectionProfile, login: &AgentLogin, password: &str) -> Result<Option<Plan>> {
+    if p.engine != Engine::SqlServer {
+        return Ok(None);
+    }
+    let p = &in_login_db(p, login);
+    if !ms::orphan(&admin_db(admin, Some(&p.database)).await?, &login.user).await? {
+        return Ok(None);
+    }
+    // Its database has no user for it now: logged in to master, where every login may connect.
+    let master = ConnectionProfile { agent_login: None, database: "master".into(), ..p.clone() };
+    let agent = core
+        .connect_agent(&master, agent_profile(&master, &login.user), password.to_string())
+        .await
+        .map_err(|e| anyhow!("{} lost its user in {}, and Dataman's password for it no longer logs it in ({e:#}), so Dataman can't tell it is its own: remove it and create it again", login.user, p.database))?;
+    let me = text_rows(&admin_db(&agent, Some("master")).await?, "SELECT SUSER_SNAME()").await;
+    agent.close();
+    if me?.first().and_then(|r| r[0].clone()).as_deref() != Some(login.user.as_str()) {
+        bail!("{} lost its user in {}, and logging in with Dataman's password says another name: Dataman leaves it alone", login.user, p.database);
+    }
+    let (probe, _) = probe(admin, p).await?;
+    if let Some(l) = probe.lacks.first() {
+        bail!("{} lost its user in {}, and your login can't put it back: {l}", login.user, p.database);
+    }
+    let o = Options { rotate_days: login.rotate_days, conn_limit: login.conn_limit, auto_sync: login.auto_sync };
+    let mut spec = compile(p, &login.database, &o);
+    spec.user = login.user.clone();
+    let inv = inventory(admin, &spec, &probe).await?;
+    let plan = ms::reattach_plan(&spec, &inv, &probe, p.env.is_production());
+    apply(admin, &plan, &p.database).await?;
+    Ok(Some(plan))
+}
+
+/// What the record keeps once `plan` ran for the rules `hash`.
+pub fn note_synced(l: &mut AgentLogin, hash: String, plan: &Plan) {
+    (l.rules, l.plan, l.synced, l.views, l.granted, l.not_granted) = (hash, plan.hash.clone(), Utc::now(), plan.views.clone(), plan.granted, plan.not_granted.len());
+    for m in &plan.made {
+        if !l.made.contains(m) {
+            l.made.push(m.clone());
+        }
+    }
+}
+
+/// A connection error that says the login can't open its database: what a SQL Server login
+/// whose user went with the database gets (4060), or the server closing on it mid-handshake.
+pub fn lost_database(e: &str) -> bool {
+    e.contains("code: 4060") || e.contains("Cannot open database") || e.contains("[4060]")
+}
+
+/// Whether the agent's connection reaches its database (a SQL Server login whose user went with
+/// the database it was in doesn't).
+pub async fn reaches(agent: &Arc<Connection>, database: &str) -> bool {
+    match admin_db(agent, Some(database)).await {
+        Ok(db) => text_rows(&db, "SELECT 1").await.is_ok(),
+        Err(_) => false,
+    }
 }
 
 /// Why Dataman won't touch `user` on `p`'s server (in the login's database): not marked as
@@ -603,7 +668,7 @@ pub async fn not_ours(c: &Arc<Connection>, p: &ConnectionProfile, user: &str) ->
         && let Ok(db) = admin_db(c, Some(&p.database)).await
         && ms::orphan(&db, user).await.unwrap_or(false)
     {
-        return orphan_text(user, &p.database);
+        return lost_user_text(user, &p.database);
     }
     format!("{user} on the server isn't marked as Dataman's (for this connection): Dataman leaves it alone")
 }
@@ -618,7 +683,7 @@ pub async fn drift(c: &Arc<Connection>, p: &ConnectionProfile, login: &AgentLogi
     let p = &in_login_db(p, login);
     let (probe, persist) = probe(c, p).await?;
     if probe.orphan {
-        bail!("{}", orphan_text(&login.user, &p.database));
+        bail!("{}", lost_user_text(&login.user, &p.database));
     }
     if probe.exists != Some(true) {
         bail!("{} is not on the server as Dataman's any more: remove it in Dataman and create it again", login.user);

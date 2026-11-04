@@ -487,5 +487,67 @@ fn sql_server_masked_through_views() {
     assert!(!r.to_string().contains("s3cr3t") && !r.to_string().contains("s3") && !r.to_string().contains("numbers"), "{r}");
     teardown(&e, &p);
     e.hub().close_all();
+    let core = dataman_core::Core::new(Dirs::at(tempfile::tempdir().unwrap().path()), Arc::new(MemorySecrets::default())).unwrap();
+    let c = core.block_on(core.connect(ConnectionProfile { database: "master".into(), agent_login: None, ..p.clone() }, Some(password))).unwrap();
+    let rs = c.session(None).execute("ALTER DATABASE au_mcp3 SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE au_mcp3");
+    core.block_on(rs.wait_finished());
+    std::mem::forget(e);
+}
+
+/// The database made again (a restore, a new copy) while agents use it: SQL Server takes the
+/// agent login's user with it. With Auto sync on, the next call puts the login back (the user's
+/// login, as a sync does) and runs; off, it says so and what puts it back.
+#[test]
+fn sql_server_database_made_again() {
+    if !on() {
+        return;
+    }
+    let (mut p, password) = admin(Engine::SqlServer, "aumsagain1");
+    if !up(&p) {
+        return;
+    }
+    p.database = "au_again".into();
+    p.mcp = Some(McpAccess::Read);
+    let user = agent_login::login_name(&p.id);
+    let root_core = dataman_core::Core::new(Dirs::at(tempfile::tempdir().unwrap().path()), Arc::new(MemorySecrets::default())).unwrap();
+    let root = root_core.block_on(root_core.connect(ConnectionProfile { database: "master".into(), ..p.clone() }, Some(password.clone()))).unwrap();
+    let sql = |c: &Arc<dataman_core::Connection>, s: &str| {
+        let rs = c.session(None).execute(s);
+        root_core.block_on(rs.wait_finished());
+        rs.status().error.map(|e| e.to_string())
+    };
+    let admin_p = p.clone();
+    let made_again = || {
+        assert_eq!(sql(&root, "IF DB_ID('au_again') IS NOT NULL BEGIN ALTER DATABASE au_again SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE au_again; END; CREATE DATABASE au_again"), None);
+        let db = root_core.block_on(root_core.connect(admin_p.clone(), Some(password.clone()))).unwrap();
+        assert_eq!(sql(&db, "CREATE TABLE dbo.t (id INT PRIMARY KEY, name NVARCHAR(10)); INSERT INTO dbo.t VALUES (1, N'a')"), None);
+        db.close();
+    };
+    assert_eq!(sql(&root, &format!("IF SUSER_ID('{user}') IS NOT NULL DROP LOGIN [{user}]")), None);
+    made_again();
+    let e = env();
+    let (p, _) = setup(&e, p, &password, &[]);
+    assert!(p.agent_login.as_ref().unwrap().auto_sync);
+    let read = |e: &Env| e.call("run_query", json!({"connection": p.id, "sql": "SELECT name FROM dbo.t"}));
+    assert_eq!(read(&e).unwrap()["rows"][0], json!(["a"]));
+    // Made again while the MCP holds its connection: the next call puts the login back and runs.
+    made_again();
+    let before = e.hub().core.config.get(&p.id).unwrap().agent_login.unwrap().synced;
+    assert_eq!(read(&e).map(|r| r["rows"][0].clone()), Ok(json!(["a"])), "put back on its own");
+    assert_eq!(whoami(&e, &p.id, Engine::SqlServer, None).unwrap(), user);
+    let after = dataman_core::config::ConfigStore::open_with(&e.hub().dirs, e.hub().core.approved.clone()).unwrap().get(&p.id).unwrap().agent_login.unwrap();
+    assert!(after.synced > before, "kept as a sync");
+    // Auto sync off: said, with what puts it back, never run on the user's login instead.
+    let mut off = after.clone();
+    off.auto_sync = false;
+    e.hub().core.config.upsert(ConnectionProfile { agent_login: Some(off), ..p.clone() }).unwrap();
+    made_again();
+    let err = read(&e).unwrap_err();
+    assert!(err.contains("lost its user in au_again") && err.contains("Verify puts it back"), "{err}");
+    e.hub().core.config.upsert(ConnectionProfile { agent_login: Some(after), ..p.clone() }).unwrap();
+    assert_eq!(read(&e).map(|r| r["rows"][0].clone()), Ok(json!(["a"])));
+    teardown(&e, &p);
+    assert_eq!(sql(&root, "ALTER DATABASE au_again SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE au_again"), None);
+    e.hub().close_all();
     std::mem::forget(e);
 }

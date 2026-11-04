@@ -1474,9 +1474,10 @@ fn opensearch_redteam() {
     search_redteam(Engine::OpenSearch, "auosrt0001");
 }
 
-/// The database recreated (a restore, a new copy) after the login was made: its user, which
-/// held the mark, is gone with it; the login, the server's, is left. Each way in says so, with
-/// the DROP LOGIN that clears it, and none touches it.
+/// The database made again (a restore, a new copy) after the login was made: its user, which
+/// held the mark, is gone with it; the login, the server's, is left. Dataman puts its own back
+/// (its Keychain password still logs it in), never one it can't tell is its own; and Create over
+/// a login it no longer knows drops it first, in the script.
 #[test]
 fn sql_server_orphan() {
     if !on() {
@@ -1494,36 +1495,70 @@ fn sql_server_orphan() {
     let root = connect(&e, &ConnectionProfile { database: "master".into(), ..p.clone() }, &apw).unwrap();
     let rs = root.session(None);
     let fresh_db = "IF DB_ID('au_orphan') IS NOT NULL BEGIN ALTER DATABASE au_orphan SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE au_orphan; END; CREATE DATABASE au_orphan";
+    let seed = "CREATE TABLE dbo.orders (id INT IDENTITY PRIMARY KEY, total DECIMAL(10,2)); INSERT INTO dbo.orders (total) VALUES (10)";
     ok(&e, &rs, &format!("IF SUSER_ID('{user}') IS NOT NULL DROP LOGIN [{user}]"));
     ok(&e, &rs, fresh_db);
     let a = connect(&e, &p, &apw).unwrap();
-    ok(&e, &a.session(None), "CREATE TABLE dbo.orders (id INT IDENTITY PRIMARY KEY, total DECIMAL(10,2))");
+    ok(&e, &a.session(None), seed);
     let (login, password, _) = create(&e, &a, &p);
     a.close();
     // A new copy of the database: the user and its mark go, the login stays.
     ok(&e, &rs, fresh_db);
     let a = connect(&e, &p, &apw).unwrap();
+    ok(&e, &a.session(None), seed);
+    match as_agent(&e, &p, &user, &password) {
+        Ok(agent) => assert!(!e.core.block_on(live::reaches(&agent, "au_orphan")), "it can't reach its database"),
+        Err(x) => assert!(live::lost_database(&x), "{x}"),
+    }
     let rv = e.core.block_on(live::review(&a, &p, &opts())).unwrap();
     assert!(rv.probe.orphan && rv.probe.exists == Some(false), "{:?}", rv.probe);
-    let said = rv.plan.lacks.join(" | ");
-    assert!(said.contains("its user in au_orphan is gone") && said.contains(&format!("DROP LOGIN [{user}];")), "{said}");
-    assert!(e.core.block_on(live::not_ours(&a, &p, &user)).contains("is gone"));
-    let rm = e.core.block_on(live::removal(&a, &p, &login)).map(|p| p.shown()).unwrap_err().to_string();
-    assert!(rm.contains("is gone") && rm.contains("DROP LOGIN"), "{rm}");
-    let dr = e.core.block_on(live::drift(&a, &p, &login, &password)).map(|_| ()).unwrap_err().to_string();
-    assert!(dr.contains("is gone"), "{dr}");
-    assert_eq!(first(&ok(&e, &rs, &format!("SELECT COUNT(*) FROM sys.server_principals WHERE name = '{user}'"))), "1", "left alone");
-    // Dropped by hand as it says: created again from scratch.
-    ok(&e, &rs, &format!("DROP LOGIN [{user}]"));
+    for said in [
+        e.core.block_on(live::not_ours(&a, &p, &user)),
+        e.core.block_on(live::removal(&a, &p, &login)).map(|p| p.shown()).unwrap_err().to_string(),
+        e.core.block_on(live::drift(&a, &p, &login, &password)).map(|_| ()).unwrap_err().to_string(),
+    ] {
+        assert!(said.contains("lost its user in au_orphan") && said.contains("Verify puts it back"), "{said}");
+    }
+    // Another password doesn't prove it Dataman's: left alone.
+    let err = e.core.block_on(live::reattach(&e.core, &a, &p, &login, "not-its-password-000000")).unwrap_err().to_string();
+    assert!(err.contains("no longer logs it in"), "{err}");
+    // Its own password: put back, with its grants, and the agent reads again.
+    let plan = e.core.block_on(live::reattach(&e.core, &a, &p, &login, &password)).unwrap().expect("put back");
+    assert!(plan.shown().contains(&format!("CREATE USER [{user}] FOR LOGIN [{user}]")) && !plan.shown().contains("CREATE LOGIN"), "{}", plan.shown());
+    assert_eq!(e.core.block_on(live::exists(&a, &p, &user)).unwrap(), Some(true));
+    let agent = as_agent(&e, &p, &user, &password).unwrap();
+    assert!(e.core.block_on(live::reaches(&agent, "au_orphan")));
+    assert_eq!(first(&ok(&e, &agent.session(None), "SELECT COUNT(*) FROM dbo.orders")), "1");
+    denied(&e, &agent.session(None), "DELETE FROM dbo.orders WHERE 1 = 0");
+    agent.close();
+    assert!(e.core.block_on(live::reattach(&e.core, &a, &p, &login, &password)).unwrap().is_none(), "nothing to put back now");
+    // Again, and Dataman forgot it meanwhile: Create drops the old login first, in its script.
+    a.close();
+    ok(&e, &rs, fresh_db);
+    let a = connect(&e, &p, &apw).unwrap();
+    ok(&e, &a.session(None), seed);
+    // Something still logged in as the old login (in master, the only place it can be now).
+    let lingering = as_agent(&e, &ConnectionProfile { database: "master".into(), ..p.clone() }, &user, &password).unwrap();
+    ok(&e, &lingering.session(None), "SELECT 1");
     let rv = e.core.block_on(live::review(&a, &p, &opts())).unwrap();
-    assert!(!rv.probe.orphan && rv.probe.exists.is_none() && rv.plan.lacks.is_empty(), "{:?} {:?}", rv.probe, rv.plan.lacks);
-    // A login of someone else's by that name (its user there) is not an orphan.
+    assert!(rv.plan.lacks.is_empty(), "{:?}", rv.plan.lacks);
+    let shown = rv.plan.shown();
+    assert!(shown.find("DROP LOGIN").unwrap() < shown.find("BEGIN TRANSACTION").unwrap() && shown.contains("KILL"), "dropped before the transaction, its sessions ended: {shown}");
+    assert!(rv.plan.shown().contains(&format!("DROP LOGIN [{user}]")) && rv.plan.notes.iter().any(|n| n.contains("drops it first")), "{}", rv.plan.shown());
+    e.core.block_on(live::apply(&a, &rv.plan, &p.database)).unwrap_or_else(|x| panic!("{x:#}\n{}", rv.plan.shown()));
+    let agent = as_agent(&e, &p, &user, &rv.password).unwrap();
+    assert_eq!(first(&ok(&e, &agent.session(None), "SELECT COUNT(*) FROM dbo.orders")), "1");
+    assert!(as_agent(&e, &p, &user, &password).is_err(), "the old password went with the old login");
+    agent.close();
+    // A login of someone else's by that name (its user there) is neither: left alone.
+    let kill_then_drop = format!("DECLARE @k NVARCHAR(MAX) = N''; SELECT @k += N'KILL ' + CAST(session_id AS NVARCHAR(10)) + N';' FROM sys.dm_exec_sessions WHERE login_name = N'{user}'; EXEC (@k); DROP LOGIN [{user}]");
+    ok(&e, &rs, &kill_then_drop);
     ok(&e, &rs, &format!("CREATE LOGIN [{user}] WITH PASSWORD = 'Other-pw-123', CHECK_POLICY = OFF"));
-    ok(&e, &a.session(None), &format!("CREATE USER [{user}] FOR LOGIN [{user}]"));
+    ok(&e, &a.session(None), &format!("IF USER_ID('{user}') IS NOT NULL DROP USER [{user}]; CREATE USER [{user}] FOR LOGIN [{user}]"));
     let rv = e.core.block_on(live::review(&a, &p, &opts())).unwrap();
     assert!(!rv.probe.orphan && rv.probe.exists == Some(false), "{:?}", rv.probe);
-    assert!(rv.plan.lacks.iter().any(|l| l.contains("isn't Dataman's")), "{:?}", rv.plan.lacks);
+    assert!(rv.plan.lacks.iter().any(|l| l.contains("isn't Dataman's")) && !rv.plan.shown().contains("DROP LOGIN"), "{:?}", rv.plan.lacks);
     a.close();
     ok(&e, &rs, "ALTER DATABASE au_orphan SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE au_orphan");
-    ok(&e, &rs, &format!("DROP LOGIN [{user}]"));
+    ok(&e, &rs, &kill_then_drop);
 }

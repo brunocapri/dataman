@@ -170,11 +170,23 @@ impl AgentsPage {
             move |core, admin, p| {
                 Box::pin(async move {
                     let pw = live::password_of(&*core.secrets, &p.id, &l.user).map_err(|e| format!("{e:#}"))?;
-                    live::drift(&admin, &p, &l, &pw).await.map_err(|e| format!("{e:#}"))
+                    // Its database made again: put back in it first, where Auto sync is on.
+                    let back = if l.auto_sync { live::reattach(&core, &admin, &p, &l, &pw).await.map_err(|e| format!("{e:#}"))? } else { None };
+                    let d = live::drift(&admin, &p, &l, &pw).await.map_err(|e| format!("{e:#}"))?;
+                    Ok((back, d))
                 })
             },
-            move |v, r, cx| {
+            move |v, r: Result<(Option<Plan>, live::Drift), String>, cx| {
                 v.login.reading = false;
+                let r = match r {
+                    Ok((back, d)) => {
+                        if let Some(plan) = back {
+                            v.login_back(&pa, &plan, cx);
+                        }
+                        Ok(d)
+                    }
+                    Err(e) => Err(e),
+                };
                 // The rules unchanged and the server not answering: said, not shown as drift.
                 if let Err(e) = &r {
                     v.login.note = Some((false, format!("Couldn't compare the login with the server: {e}")));
@@ -310,6 +322,7 @@ impl AgentsPage {
     fn login_verify(&mut self, p: &ConnectionProfile, cx: &mut Context<Self>) {
         let Some(l) = p.agent_login.clone() else { return };
         let user = l.user.clone();
+        let pv = p.clone();
         if self.login.busy.is_some() {
             return;
         }
@@ -326,6 +339,11 @@ impl AgentsPage {
                     // Where it was made: its user and grants are there, whatever the connection's
                     // database is now.
                     let at = live::in_login_db(&p, &l);
+                    // Its database made again (SQL Server): put back in it before it is tried.
+                    let back = match live::password_of(&*core.secrets, &p.id, &user) {
+                        Ok(pw) => live::reattach(&core, &admin, &p, &l, &pw).await.map_err(|e| format!("{e:#}"))?,
+                        Err(_) => None,
+                    };
                     match live::exists(&admin, &at, &user).await.map_err(|e| format!("{e:#}"))? {
                         // Dropped on the server since: the record goes.
                         None => return Ok(Verified::Gone),
@@ -334,10 +352,10 @@ impl AgentsPage {
                     }
                     let pw = live::password_of(&*core.secrets, &p.id, &user).map_err(|e| format!("{e:#}"))?;
                     let rv = live::review(&admin, &at, &Options::default()).await.map_err(|e| format!("{e:#}"))?;
-                    Ok(Verified::Checked(live::verify_as(&core, &at, &user, &pw, &rv).await?))
+                    Ok(Verified::Checked(live::verify_as(&core, &at, &user, &pw, &rv).await?, back))
                 })
             },
-            |v, r, cx| {
+            move |v, r, cx| {
                 v.login.busy = None;
                 let id = v.login.conn.clone().unwrap_or_default();
                 match r {
@@ -349,7 +367,10 @@ impl AgentsPage {
                         }, cx);
                         v.login.note = Some((true, "The login is gone from the server: Dataman forgot it. Agents are refused here until you choose.".into()));
                     }
-                    Ok(Verified::Checked(checks)) => {
+                    Ok(Verified::Checked(checks, back)) => {
+                        if let Some(plan) = &back {
+                            v.login_back(&pv, plan, cx);
+                        }
                         let ok = checks.iter().all(|c| c.ok);
                         if ok {
                             v.edit_conn(&id, |p| {
@@ -359,7 +380,8 @@ impl AgentsPage {
                             }, cx);
                         }
                         v.login.checks = checks;
-                        v.login.note = Some((ok, if ok { "Verified by logging in as it".into() } else { "Logging in as it did not go as the rules say".into() }));
+                        let said = if ok { "Verified by logging in as it" } else { "Logging in as it did not go as the rules say" };
+                        v.login.note = Some((ok, if back.is_some() { format!("{}. {said}.", back_text(&pv)) } else { said.into() }));
                     }
                     Err(e) => v.login.note = Some((false, e)),
                 }
@@ -439,14 +461,18 @@ impl AgentsPage {
     fn login_synced(&mut self, id: &str, hash: String, plan: &Plan, cx: &mut Context<Self>) {
         self.edit_conn(id, |p| {
             if let Some(l) = p.agent_login.as_mut() {
-                (l.rules, l.plan, l.synced, l.views, l.granted, l.not_granted) = (hash, plan.hash.clone(), Utc::now(), plan.views.clone(), plan.granted, plan.not_granted.len());
-                for m in &plan.made {
-                    if !l.made.contains(m) {
-                        l.made.push(m.clone());
-                    }
-                }
+                live::note_synced(l, hash, plan);
             }
         }, cx);
+    }
+
+    /// `p`'s login was put back in its database made again: kept, and said where it shows.
+    fn login_back(&mut self, p: &ConnectionProfile, plan: &Plan, cx: &mut Context<Self>) {
+        let hash = p.agent_login.as_ref().map(|l| agent_login::rules_hash(p, &l.database)).unwrap_or_default();
+        self.login_synced(&p.id, hash, plan, cx);
+        if self.login.conn.as_deref() == Some(p.id.as_str()) {
+            self.login.note = Some((true, back_text(p)));
+        }
     }
 
     fn login_auto_running(&self, id: &str) -> bool {
@@ -477,6 +503,7 @@ impl AgentsPage {
             move |core, admin, p| {
                 Box::pin(async move {
                     let pw = live::password_of(&*core.secrets, &p.id, &l.user).map_err(|e| format!("{e:#}"))?;
+                    live::reattach(&core, &admin, &p, &l, &pw).await.map_err(|e| format!("{e:#}"))?;
                     let d = live::drift(&admin, &p, &l, &pw).await.map_err(|e| format!("{e:#}"))?;
                     live::apply(&admin, &d.plan, &l.database).await.map_err(|e| format!("{e:#}"))?;
                     Ok(d.plan)
@@ -1432,7 +1459,14 @@ const WHAT_OVERSCAN: usize = 20;
 
 enum Verified {
     Gone,
-    Checked(Vec<live::Check>),
+    /// Its checks, and what put it back in its database first (made again since).
+    Checked(Vec<live::Check>, Option<Plan>),
+}
+
+/// Said once Dataman put the login back in its database made again.
+fn back_text(p: &ConnectionProfile) -> String {
+    let (user, db) = p.agent_login.as_ref().map(|l| (l.user.clone(), live::database_for(p, Some(l)))).unwrap_or_default();
+    format!("{db} was made again (restored or recreated) and {user} had lost its user there: Dataman put it back, with its grants")
 }
 
 /// A check's mark: ✓ for what it can do, a lock for what it can't (held), ✕ when it failed.

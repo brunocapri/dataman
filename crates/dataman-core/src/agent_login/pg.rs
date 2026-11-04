@@ -326,6 +326,7 @@ fn seal(spec: &Spec, d: Desired, probe: &Probe, steps: Vec<Step>, made: Vec<Stri
         engine: Some(Engine::Postgres),
         user: spec.user.clone(),
         space: spec.space.clone(),
+        before: Vec::new(),
         steps,
         one_tx: true,
         rules,

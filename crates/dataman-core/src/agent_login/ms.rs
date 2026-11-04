@@ -263,6 +263,7 @@ fn seal(spec: &Spec, d: Desired, probe: &Probe, steps: Vec<Step>, made: Vec<Stri
         engine: Some(Engine::SqlServer),
         user: spec.user.clone(),
         space: spec.space.clone(),
+        before: Vec::new(),
         steps,
         one_tx: true,
         rules,
@@ -406,10 +407,29 @@ pub(crate) async fn orphan(db: &Db, user: &str) -> Result<bool> {
     Ok(r.first().is_some_and(|r| s(&r[0]) != "0"))
 }
 
-/// Dropping a login left without its user, for whoever may (Dataman doesn't: it can't tell
-/// the login is its own).
+/// Dropping a login left without its user.
 pub fn drop_login_sql(user: &str) -> String {
     format!("DROP LOGIN {};", q(user))
+}
+
+/// Create over a login left without its user and that Dataman no longer knows: dropped first,
+/// in the script the user reviews (its sessions ended, which no transaction can hold).
+pub fn drop_orphan_steps(user: &str) -> Vec<Step> {
+    let g = "the old login of this name, left without its user (the database was made again): its sessions ended, then dropped";
+    let u = q(user);
+    vec![
+        Step::sql(g, format!("ALTER LOGIN {u} DISABLE")),
+        Step::sql(g, format!("DECLARE @k NVARCHAR(MAX) = N''; SELECT @k += N'KILL ' + CAST(session_id AS NVARCHAR(10)) + N';' FROM sys.dm_exec_sessions WHERE login_name = {} AND session_id <> @@SPID; EXEC (@k)", lit(user))),
+        Step::sql(g, format!("DROP LOGIN {u}")),
+    ]
+}
+
+/// Putting Dataman's login back in its database made again (a restore, a new copy): its user,
+/// the mark and what the rules grant, as Create makes them; the login itself is kept.
+pub fn reattach_plan(spec: &Spec, inv: &Inventory, probe: &Probe, prod: bool) -> Plan {
+    let mut plan = create_plan(spec, inv, probe, "", prod);
+    plan.steps.retain(|s| !s.shown.starts_with("CREATE LOGIN"));
+    plan
 }
 
 pub(crate) async fn exists(db: &Db, user: &str, conn: &str) -> Result<Option<bool>> {

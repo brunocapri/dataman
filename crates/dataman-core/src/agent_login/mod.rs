@@ -685,6 +685,8 @@ pub struct Plan {
     pub engine: Option<Engine>,
     pub user: String,
     pub space: String,
+    /// Run first, outside the transaction (what a transaction can't hold: ending sessions).
+    pub before: Vec<Step>,
     pub steps: Vec<Step>,
     /// Run as one transaction.
     pub one_tx: bool,
@@ -730,10 +732,14 @@ impl Plan {
         let mut out = String::new();
         let mut group = "";
         let tx = self.one_tx && self.engine.is_some_and(Engine::is_sql);
-        if tx {
-            out.push_str(if self.engine == Some(Engine::SqlServer) { "BEGIN TRANSACTION;\n" } else { "BEGIN;\n" });
-        }
-        for s in &self.steps {
+        for (i, s) in self.before.iter().chain(&self.steps).enumerate() {
+            if i == self.before.len() && tx {
+                if !out.is_empty() {
+                    out.push('\n');
+                }
+                out.push_str(if self.engine == Some(Engine::SqlServer) { "BEGIN TRANSACTION;\n" } else { "BEGIN;\n" });
+                group = "";
+            }
             if s.group != group {
                 if !out.is_empty() && !out.ends_with("BEGIN;\n") && !out.ends_with("TRANSACTION;\n") {
                     out.push('\n');
