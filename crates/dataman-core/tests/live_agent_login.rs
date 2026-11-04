@@ -450,7 +450,7 @@ fn sql_server() {
     let s = a.session(None);
     for sql in [
         "CREATE TABLE dbo.orders (id INT IDENTITY PRIMARY KEY, total DECIMAL(10,2), customer_id INT)",
-        "CREATE TABLE dbo.users (id INT IDENTITY PRIMARY KEY, name NVARCHAR(50), email NVARCHAR(100), password_hash NVARCHAR(100), created_at DATETIME2 DEFAULT SYSDATETIME())",
+        "CREATE TABLE dbo.users (id INT IDENTITY PRIMARY KEY, name NVARCHAR(50), email NVARCHAR(100), password_hash NVARCHAR(100), created_at DATETIME2 DEFAULT SYSDATETIME(), hash_head AS LEFT(password_hash, 2))",
         "CREATE TABLE dbo.audit_log (id INT IDENTITY PRIMARY KEY, what NVARCHAR(50))",
         "INSERT INTO dbo.orders (total, customer_id) VALUES (10, 1), (20, 2)",
         "INSERT INTO dbo.users (name, email, password_hash) VALUES (N'Alice', N'alice@acme.com', N'h1'), (N'Bob', N'bob@acme.com', N'h2')",
@@ -467,6 +467,10 @@ fn sql_server() {
     let g = agent.session(None);
     assert_eq!(first(&ok(&e, &g, "SELECT SUSER_SNAME()")), user);
     assert_eq!(first(&ok(&e, &g, "SELECT USER_NAME()")), user);
+    // Dataman's guard reads computed columns as the agent: without VIEW DEFINITION the
+    // dependencies are refused, so their expressions are read instead (erring on more).
+    let computed = e.core.block_on(agent.generated_columns("au_shop", std::future::pending::<()>())).unwrap_or_else(|x| panic!("generated columns as the agent: {x:#}"));
+    assert!(computed.iter().any(|c| c.table == "users" && c.column == "hash_head" && c.from.iter().any(|f| f.eq_ignore_ascii_case("password_hash"))), "{computed:?}");
     ok(&e, &g, "SELECT id, total FROM dbo.orders");
     // Write tier: the visible columns of the table itself, for its writes' WHERE.
     ok(&e, &g, "SELECT id, name FROM dbo.users");
