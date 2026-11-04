@@ -1288,7 +1288,7 @@ async fn check_login(ws: &Entity<Workspace>, a: &Entity<AgentsPage>, pg: &Connec
     let in_sync = |core: &std::sync::Arc<Core>| core.config.get(&pg.id).is_some_and(|p| p.agent_login.as_ref().is_some_and(|l| l.rules == agent_login::rules_hash(&p, &l.database)));
     let writes_q = format!("SELECT count(*) FROM information_schema.role_table_grants WHERE grantee = '{user}' AND privilege_type IN ('INSERT', 'UPDATE', 'DELETE')");
     let rec = core.config.get(&pg.id).and_then(|p| p.agent_login);
-    r.check("Apply rule changes on its own: on by default, said on the login", rec.as_ref().is_some_and(|l| l.auto_sync) && probed("agents-login-auto-on", cx).is_some(), format!("{rec:?}"));
+    r.check("Auto sync: on by default, the switch on the login, the dot live", rec.as_ref().is_some_and(|l| l.auto_sync) && probed("agents-login-auto-off", cx).is_some() && probed("agents-login-state-insync", cx).is_some(), format!("{rec:?}"));
     let before = sql1(&core, pg, pw, &writes_q, cx).await;
     let id = pg.id.clone();
     let _ = cx.update(|_, cx| a.update(cx, |a, cx| a.edit_conn(&id, |p| p.mcp = Some(McpAccess::Read), cx)));
@@ -1305,7 +1305,7 @@ async fn check_login(ws: &Entity<Workspace>, a: &Entity<AgentsPage>, pg: &Connec
     let waits = until(cx, 30, |cx| probed("agents-login-apply", cx).is_some()).await;
     pause(cx, 500).await;
     let still = sql1(&core, pg, pw, &writes_q, cx).await;
-    r.check("turned off, a rule change waits for Apply: the login keeps its grants", off && waits && !in_sync(&core) && still.as_deref() == Some("0"), format!("{off} {waits} {still:?}"));
+    r.check("turned off, a rule change waits for Apply: the login keeps its grants", off && waits && !in_sync(&core) && still.as_deref() == Some("0") && probed("agents-login-state-changes", cx).is_some(), format!("{off} {waits} {still:?}"));
     pause(cx, 200).await;
     shoot("03b-auto-off", cx);
     tap(a, "agents-login-apply", cx).await;

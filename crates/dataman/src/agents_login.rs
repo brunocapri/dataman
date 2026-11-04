@@ -30,6 +30,8 @@ pub(crate) struct LoginUi {
     pub(crate) note: Option<(bool, String)>,
     pub(crate) checks: Vec<live::Check>,
     pub(crate) drift: Option<Result<live::Drift, String>>,
+    /// The drift is being read from the server (the status says Checking…).
+    reading: bool,
     /// The rules (their hash) the drift was read for: read again when they change.
     drift_rules: Option<String>,
     pub(crate) sheet: Option<Sheet>,
@@ -158,6 +160,7 @@ impl AgentsPage {
         let auto = l.auto_sync && self.login_auto.get(&p.id).is_none_or(|a| a.hash != hash);
         self.login.drift_rules = Some(hash);
         self.login.drift = None;
+        self.login.reading = true;
         let pa = p.clone();
         self.login_task(
             p,
@@ -169,6 +172,7 @@ impl AgentsPage {
                 })
             },
             move |v, r, cx| {
+                v.login.reading = false;
                 // The rules unchanged and the server not answering: said, not shown as drift.
                 if let Err(e) = &r {
                     v.login.note = Some((false, format!("Couldn't compare the login with the server: {e}")));
@@ -753,45 +757,25 @@ impl AgentsPage {
         let button = |id: &'static str, label: String| ui::button(t, id, ui::Btn::Secondary).h(px(30.)).px(px(14.)).child(label);
         let row = || div().min_h(px(30.)).flex().flex_row().items_center().gap(px(12.));
         let pv = p.clone();
-        let verify = button("agents-login-verify", if busy.as_deref() == Some("Verifying…") { "Verifying…".into() } else { "Verify".into() }).ml_auto().on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_verify(&pv, cx)));
-        let auto_running = self.login_auto_running(&p.id);
-        let (color, status) = match (&self.login.drift, drifted) {
-            (_, false) => (t.ok, "In sync".to_string()),
-            _ if auto_running => (t.tx3, "Applying the new rules…".to_string()),
-            (Some(Ok(d)), true) if d.changes.len() == 1 => (t.warn, "1 change to apply".into()),
-            (Some(Ok(d)), true) => (t.warn, format!("{} changes to apply", d.changes.len())),
-            (_, true) => (t.warn, "The rules changed".into()),
-        };
+        let verify = button("agents-login-verify", if busy.as_deref() == Some("Verifying…") { "Verifying…".into() } else { "Verify".into() }).on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_verify(&pv, cx)));
+        let state = self.login_state(p, l, drifted);
+        let (pa, on) = (p.clone(), l.auto_sync);
+        let auto = div()
+            .flex_none()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(8.))
+            .text_color(t.tx2)
+            .child("Auto sync")
+            .child(ui::switch(t, "agents-login-auto", on).on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_set_auto(&pa, !on, cx))));
         let mut login = sub(sub_title(t, "agents-login-tip", "Login", login_tip())).child(
             row()
                 .child(div().children(ui::here(&"agents-login-as".into())).min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(t.tx).child(l.user.clone()))
-                .child(div().flex_none().flex().flex_row().items_center().gap(px(7.)).text_color(color).child(div().size(px(7.)).rounded_full().bg(color)).child(status))
-                .child(verify),
+                .child(state.render(t))
+                .child(div().ml_auto().flex().flex_row().items_center().gap(px(16.)).child(auto).child(verify)),
         );
-        let (pa, on) = (p.clone(), l.auto_sync);
-        login = login.child(
-            div()
-                .children(ui::here(&"agents-login-auto".into()))
-                .id("agents-login-auto")
-                .flex()
-                .flex_row()
-                .gap(px(10.))
-                .cursor_pointer()
-                .text_size(px(crate::theme::text::UI))
-                .line_height(px(18.))
-                .child(div().pt(px(2.)).children(on.then(|| ui::here(&"agents-login-auto-on".into())).flatten()).child(checkbox(t, on, false)))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .gap(px(2.))
-                        .child(div().text_color(t.tx).child("Apply rule changes on its own"))
-                        .child(div().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(AUTO_SUB)),
-                )
-                .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.login_set_auto(&pa, !on, cx))),
-        );
+        login = login.child(div().text_size(px(crate::theme::text::SMALL)).text_color(t.tx3).child(if on { AUTO_ON } else { AUTO_OFF }));
         if l.not_granted > 0 {
             login = login.child(div().text_size(px(crate::theme::text::UI)).text_color(t.warn).child(format!("{} can't be granted to it: agents don't see {}.", agent_login_count(l.not_granted, "table"), if l.not_granted == 1 { "it" } else { "them" })));
         }
@@ -821,6 +805,26 @@ impl AgentsPage {
         let back = if p.user.is_empty() { "Agents go back to your login.".to_string() } else { format!("Agents go back to your login, {}.", p.user) };
         let leave = div().child(row().child(div().min_w_0().text_color(t.tx3).child(back)).child(remove));
         Some(crate::agents_rules::flat_section(t, "agents-login-section", "Agent login", vec![login, password, leave]).into_any_element())
+    }
+
+    /// Where the login stands against its rules, for the dot and the word beside it.
+    fn login_state(&self, p: &ConnectionProfile, l: &agent_login::AgentLogin, drifted: bool) -> SyncState {
+        let hash = agent_login::rules_hash(p, &l.database);
+        let failed = l.auto_sync && self.login_auto.get(&p.id).is_some_and(|a| !a.running && a.hash == hash);
+        if self.login_auto_running(&p.id) || self.login.busy.as_deref() == Some("Applying…") {
+            SyncState::Syncing
+        } else if self.login.reading {
+            SyncState::Checking
+        } else if !drifted {
+            SyncState::InSync { live: l.auto_sync }
+        } else if failed {
+            SyncState::Failed
+        } else {
+            match &self.login.drift {
+                Some(Ok(d)) => SyncState::Changes(d.changes.len()),
+                _ => SyncState::Changes(0),
+            }
+        }
     }
 
     /// The rules changed since the login was made: what it needs, and the button that runs it.
@@ -1204,7 +1208,64 @@ impl AgentsPage {
     }
 }
 
-/// Under the option, in the review and in the Login section.
+/// The login against its rules. Pulsing: Dataman is at it (watching, applying, reading).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SyncState {
+    /// `live`: Auto sync on, so it stays that way on its own.
+    InSync { live: bool },
+    Syncing,
+    Checking,
+    /// Changes waiting for Apply (0: the rules changed, not read yet).
+    Changes(usize),
+    Failed,
+}
+
+impl SyncState {
+    fn render(self, t: &Theme) -> gpui::Div {
+        let (color, label, pulse) = match self {
+            SyncState::InSync { live: true } => (t.ok, "In sync".to_string(), Some(2400)),
+            SyncState::InSync { live: false } => (t.ok, "In sync".to_string(), None),
+            SyncState::Syncing => (t.acc, "Syncing…".to_string(), Some(900)),
+            SyncState::Checking => (t.tx3, "Checking…".to_string(), Some(1200)),
+            SyncState::Changes(0) => (t.warn, "The rules changed".to_string(), None),
+            SyncState::Changes(1) => (t.warn, "1 change to apply".to_string(), None),
+            SyncState::Changes(n) => (t.warn, format!("{n} changes to apply"), None),
+            SyncState::Failed => (t.err, "Sync failed".to_string(), None),
+        };
+        let id = match self {
+            SyncState::InSync { .. } => "agents-login-state-insync",
+            SyncState::Syncing => "agents-login-state-syncing",
+            SyncState::Checking => "agents-login-state-checking",
+            SyncState::Changes(_) => "agents-login-state-changes",
+            SyncState::Failed => "agents-login-state-failed",
+        };
+        div().children(ui::here(&id.into())).flex_none().flex().flex_row().items_center().gap(px(8.)).text_color(color).child(status_dot(color, pulse, id)).child(label)
+    }
+}
+
+/// A 7 px dot; pulsing, a ring of its colour grows out of it and fades, every `ms`.
+fn status_dot(color: Hsla, pulse: Option<u64>, id: &'static str) -> AnyElement {
+    use gpui::{Animation, AnimationExt};
+    const D: f32 = 7.;
+    let dot = div().absolute().top_0().left_0().size(px(D)).rounded_full().bg(color);
+    let wrap = div().flex_none().relative().size(px(D));
+    let Some(ms) = pulse else { return wrap.child(dot).into_any_element() };
+    let ring = div().absolute().rounded_full().bg(color).with_animation(
+        SharedString::from(format!("{id}-pulse")),
+        Animation::new(std::time::Duration::from_millis(ms)).repeat().with_easing(gpui::ease_out_quint()),
+        move |d, k| {
+            let s = D + 10. * k;
+            d.size(px(s)).top(px((D - s) / 2.)).left(px((D - s) / 2.)).opacity(0.45 * (1. - k))
+        },
+    );
+    wrap.child(ring).child(dot).into_any_element()
+}
+
+/// Under Auto sync in the Login section.
+const AUTO_ON: &str = "Rule changes in Access and Privacy are applied to the login as you make them, with your login.";
+const AUTO_OFF: &str = "Auto sync is off: rule changes wait for Apply.";
+
+/// Under the option, in the review.
 const AUTO_SUB: &str = "When Access or Privacy change, Dataman updates its grants with your login. Off, the changes wait for Apply";
 
 /// Lines laid out above and below WHAT RUNS's view, so a fast scroll doesn't show a blank edge.
