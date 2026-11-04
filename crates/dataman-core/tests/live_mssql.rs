@@ -71,7 +71,7 @@ fn connects_and_decodes_every_type() {
     assert_eq!(
         kinds,
         vec![
-            Int, Text, Text, Bool, Int, Numeric, Numeric, Numeric, Timestamp, Text, Date, Time, Timestamp, Timestamp, Other, Bytes, Text, Float4,
+            Int, Text, Text, Bool, Int, Numeric, Numeric, Numeric, Text, Text, Date, Text, Timestamp, Timestamp, Other, Bytes, Text, Float4,
             Float, Int, Text, Bytes
         ]
     );

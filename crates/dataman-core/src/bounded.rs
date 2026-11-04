@@ -160,6 +160,9 @@ pub fn refusal_in(stmts: &[String], params: usize, mode: Mode, read_only_profile
     if params > 0 && stmts.len() > 1 {
         return Some("parameters need a single statement".into());
     }
+    if params > 0 && dialect == Dialect::TSql && let Err(why) = crate::params::tsql_bound(&stmts[0], params) {
+        return Some(why);
+    }
     if mode == Mode::Autocommit && stmts.len() > 1 {
         return Some("a statement that runs outside a transaction runs alone".into());
     }

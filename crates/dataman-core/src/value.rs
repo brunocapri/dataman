@@ -60,6 +60,16 @@ pub enum Storage {
     Text,
 }
 
+/// What a SQL Server column holds as a date: `datetime2` and `time` arrive as text, for their
+/// seventh digit. (A column declared `time` on SQLite is text too, and holds anything.)
+pub fn tsql_date_kind(kind: Kind, type_name: &str) -> Kind {
+    match (kind, type_name) {
+        (Kind::Text, "datetime2") => Kind::Timestamp,
+        (Kind::Text, "time") => Kind::Time,
+        _ => kind,
+    }
+}
+
 impl Kind {
     pub fn storage(self) -> Storage {
         match self {

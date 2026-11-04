@@ -758,6 +758,9 @@ mod tests {
         assert!(!date_text_ok(Kind::Date, "1999-13-01"));
         assert!(!date_text_ok(Kind::Date, "31/12/1999"));
         assert!(date_text_ok(Kind::Date, "0000-00-00"), "MySQL's zero date is the server's call");
+        assert!(date_text_ok(Kind::Timestamp, "2026-10-13 08:00:00.1234567"));
+        assert!(date_text_ok(Kind::Time, "07:30:15.1234567"));
+        assert!(!date_text_ok(dataman_core::value::tsql_date_kind(Kind::Text, "datetime2"), ""), "an empty string would be 1900-01-01");
         assert!(date_text_ok(Kind::Time, "07:30"));
         assert!(date_text_ok(Kind::Time, "07:30:15.25"));
         assert!(!date_text_ok(Kind::Time, "25:00"));

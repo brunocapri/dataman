@@ -14,7 +14,6 @@ use tokio::net::TcpStream;
 use tokio::sync::{OwnedMutexGuard, mpsc, watch};
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 
-use self::decode::Dec;
 use super::{Ran, RowSource};
 use crate::config::{ConnectionProfile, SslMode};
 use crate::result::{ChunkBuilder, ColumnInfo, ErrorInfo, Phase, ResultSet};
@@ -262,7 +261,7 @@ impl Client {
             let mut out = Vec::new();
             while let Some(item) = s.try_next().await? {
                 if let QueryItem::Row(row) = item {
-                    out.push(row.cells().map(|(col, v)| decode::value_text(v, col.column_type())).collect());
+                    out.push(row.cells().map(|(_, v)| decode::value_text(v)).collect());
                 }
             }
             Ok(out)
@@ -433,7 +432,7 @@ pub(crate) enum Next {
 
 pub(crate) struct MsRows {
     rx: mpsc::Receiver<Msg>,
-    dec: Vec<Dec>,
+    kinds: Vec<crate::value::Kind>,
     pending: Option<Next>,
     messages: Option<Arc<ResultSet>>,
     pub(crate) positional_errors: bool,
@@ -441,7 +440,7 @@ pub(crate) struct MsRows {
 
 impl MsRows {
     fn new(rx: mpsc::Receiver<Msg>) -> MsRows {
-        MsRows { rx, dec: Vec::new(), pending: None, messages: None, positional_errors: false }
+        MsRows { rx, kinds: Vec::new(), pending: None, messages: None, positional_errors: false }
     }
 
     fn message(&self, m: String) {
@@ -469,8 +468,8 @@ impl MsRows {
     }
 
     pub(crate) fn columns(&mut self, cols: &[tiberius::Column]) -> Vec<ColumnInfo> {
-        let (infos, dec) = decode::column_infos(cols);
-        self.dec = dec;
+        let infos = decode::column_infos(cols);
+        self.kinds = infos.iter().map(|c| c.kind).collect();
         infos
     }
 
@@ -500,8 +499,8 @@ impl RowSource for MsRows {
 
     async fn next_into(&mut self, b: &mut ChunkBuilder) -> Result<bool, MsError> {
         let Some(row) = self.next_row().await else { return Ok(false) };
-        for (i, ((_, v), d)) in row.cells().zip(&self.dec).enumerate() {
-            decode::push_value(b, i, *d, v);
+        for (i, ((_, v), k)) in row.cells().zip(&self.kinds).enumerate() {
+            decode::push_value(b, i, *k, v);
         }
         b.end_row();
         Ok(true)
@@ -535,7 +534,12 @@ pub(crate) async fn start(client: &Arc<Client>, sql: &str) -> Result<(Vec<Column
 }
 
 pub(crate) async fn query(client: &Arc<Client>, sql: &str, params: &[Option<String>]) -> Result<(Vec<ColumnInfo>, MsRows), MsError> {
-    let exec = if params.is_empty() { Exec::Batch(sql.to_string()) } else { Exec::Params(sql.to_string(), params.to_vec()) };
+    let exec = if params.is_empty() {
+        Exec::Batch(sql.to_string())
+    } else {
+        let bound = crate::params::tsql_bound(sql, params.len()).map_err(|m| MsError::Protocol(m.into()))?;
+        Exec::Params(bound.into_owned(), params.to_vec())
+    };
     first_result(client.begin(exec, true).await).await
 }
 
@@ -671,6 +675,14 @@ pub(crate) async fn run(
 ) -> Ran {
     let sql = rs.sql.as_str();
     let params = rs.params().to_vec();
+    let bound = if params.is_empty() {
+        None
+    } else {
+        match crate::params::tsql_bound(sql, params.len()) {
+            Ok(s) => Some(s.into_owned()),
+            Err(message) => return Ran::Failed(ErrorInfo { message, ..Default::default() }),
+        }
+    };
     let batches = if params.is_empty() { go_batches(sql) } else { vec![GoBatch { range: 0..sql.len(), repeat: 1, end: sql.len() }] };
     let mut cur = rs.clone();
     let mut shown = false;
@@ -694,8 +706,10 @@ pub(crate) async fn run(
             if stop {
                 return if sent { Ran::Cancelled } else { Ran::NeverRan { settle: false } };
             }
-            let text = sql[b.range.clone()].to_string();
-            let exec = if params.is_empty() { Exec::Batch(text) } else { Exec::Params(text, params.clone()) };
+            let exec = match &bound {
+                None => Exec::Batch(sql[b.range.clone()].to_string()),
+                Some(text) => Exec::Params(text.clone(), params.clone()),
+            };
             cur.executing.store(true, Ordering::Release);
             sent = true;
             let mut rows = client.begin(exec, true).await;
