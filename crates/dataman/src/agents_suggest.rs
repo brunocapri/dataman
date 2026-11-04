@@ -263,7 +263,7 @@ impl AgentsPage {
             }
             match head {
                 Some(h) => {
-                    let key = format!("{}\u{0}{h}", p.id);
+                    let key = format!("{}\u{0}{db}\u{0}{h}", p.id);
                     match self.fields.get(&key) {
                         Some(fields) => {
                             for (f, ty) in fields {
@@ -274,7 +274,8 @@ impl AgentsPage {
                             let (conn, db, coll) = (conn.clone(), db.clone(), h.to_string());
                             if self.loading.insert(key.clone()) {
                                 cx.spawn(async move |this, cx| {
-                                    let fields = conn.sample_fields(&db, &coll).await.unwrap_or_default();
+                                    // A failed read stays marked, so it is not asked again on every keystroke.
+                                    let Some(fields) = crate::logged("sampling fields", conn.sample_fields(&db, &coll).await) else { return };
                                     let _ = this.update(cx, |v, cx| {
                                         v.loading.remove(&key);
                                         v.fields.insert(key, fields.into_iter().map(|(p, t)| (p, t.join(" | "))).collect());

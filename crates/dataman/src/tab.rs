@@ -600,7 +600,7 @@ impl QueryTab {
         cx.spawn(async move |this, cx| {
             let Some(items) = crate::logged("collections", task.await) else { return };
             let _ = this.update(cx, |t, cx| {
-                if t.database() != db {
+                if !t.still_on(&conn, &db) {
                     return;
                 }
                 t.doc_hints.collections = items.into_iter().filter(|i| i.kind != dataman_core::nosql::ItemKind::Database).map(|i| i.name).collect();
@@ -609,6 +609,11 @@ impl QueryTab {
             });
         })
         .detach();
+    }
+
+    /// Whether the tab still points at `conn`'s `db`, for a read that comes back late.
+    fn still_on(&self, conn: &Arc<Connection>, db: &str) -> bool {
+        self.conn.as_ref().is_some_and(|c| Arc::ptr_eq(c, conn)) && self.database() == db
     }
 
     fn push_doc_hints(&mut self, cx: &mut Context<Self>) {
@@ -632,9 +637,14 @@ impl QueryTab {
         for coll in named {
             self.doc_fields_asked.insert(coll.clone());
             let task = conn.sample_fields(&db, &coll);
+            let (conn, db) = (conn.clone(), db.clone());
             cx.spawn(async move |this, cx| {
                 let Some(fields) = crate::logged("sampling fields", task.await) else { return };
                 let _ = this.update(cx, |t, cx| {
+                    // Another database (or connection) since: its fields are not this one's.
+                    if !t.still_on(&conn, &db) {
+                        return;
+                    }
                     let f = fields.into_iter().map(|(p, types)| (p, types.join(" | "))).collect();
                     t.doc_hints.fields.insert(coll, f);
                     t.push_doc_hints(cx);
