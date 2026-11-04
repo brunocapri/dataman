@@ -258,7 +258,7 @@ impl Workspace {
                 } else if !crate::keymap::NOT_MAC {
                     window.titlebar_double_click();
                 } else if window.window_controls().maximize && window.is_resizable() {
-                    window.zoom_window();
+                    crate::csd::toggle_maximize(window);
                 }
             })
             .child(left)
