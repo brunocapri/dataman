@@ -228,7 +228,7 @@ fn postgres() {
     denied(&e, &g, "SELECT email FROM public.users");
     denied(&e, &g, "SELECT * FROM public.users");
     let masked = ok(&e, &g, &format!("SELECT email FROM {space}.users ORDER BY id"));
-    assert_eq!(first(&masked), "a•••@acme.com");
+    assert_eq!(first(&masked), "••••••••••.com");
     denied(&e, &g, &format!("SELECT * FROM {space}.salt"));
     denied(&e, &g, "SELECT * FROM public.audit_log");
     ok(&e, &g, "INSERT INTO public.orders (total, customer_id) VALUES (1, 1)");
@@ -380,7 +380,7 @@ fn mysql() {
     ok(&e, &g, "SELECT id, name FROM au_shop.users");
     denied(&e, &g, "SELECT password_hash FROM au_shop.users");
     denied(&e, &g, "SELECT email FROM au_shop.users");
-    assert_eq!(first(&ok(&e, &g, &format!("SELECT email FROM {space}.au_shop__users ORDER BY id"))), "a•••@acme.com");
+    assert_eq!(first(&ok(&e, &g, &format!("SELECT email FROM {space}.au_shop__users ORDER BY id"))), "••••••••••.com");
     denied(&e, &g, &format!("SELECT * FROM {space}.salt"));
     denied(&e, &g, "SELECT * FROM au_shop.audit_log");
     denied(&e, &g, "SELECT * FROM au_other.v");
@@ -472,7 +472,7 @@ fn sql_server() {
     ok(&e, &g, "SELECT id, name FROM dbo.users");
     denied(&e, &g, "SELECT email FROM dbo.users");
     denied(&e, &g, "SELECT password_hash FROM dbo.users");
-    assert_eq!(first(&ok(&e, &g, &format!("SELECT email FROM [{space}].[users] ORDER BY id"))), "a•••@acme.com");
+    assert_eq!(first(&ok(&e, &g, &format!("SELECT email FROM [{space}].[users] ORDER BY id"))), "••••••••••.com");
     denied(&e, &g, &format!("SELECT password_hash FROM [{space}].[users]"));
     denied(&e, &g, &format!("SELECT * FROM [{space}].[salt]"));
     denied(&e, &g, "SELECT * FROM dbo.audit_log");
@@ -572,7 +572,7 @@ fn mongodb() {
     let view = format!("db.getCollection('{space}.users').find({{}})");
     let u = docs(&nosql(&e, &agent, "au_shop", &view).unwrap());
     assert!(u[0].get("password_hash").is_none(), "hidden field left out by the view: {u:?}");
-    assert_eq!(u[0]["email"], "a•••@acme.com");
+    assert_eq!(u[0]["email"], "••••••••••.com");
     // The base collection: no find (the raw driver, Dataman's own view mapping not in the way).
     agent.set_agent_views(&[]);
     mongo_denied(&e, &agent, "au_shop", "db.users.find({})");
@@ -588,7 +588,7 @@ fn mongodb() {
     // Dataman's own reads go to the view.
     agent.set_agent_views(&login.views);
     let u = docs(&nosql(&e, &agent, "au_shop", "db.users.find({})").unwrap());
-    assert_eq!(u[0]["email"], "a•••@acme.com");
+    assert_eq!(u[0]["email"], "••••••••••.com");
 
     drop(agent);
     let mut q = p.clone();
@@ -872,7 +872,7 @@ fn postgres_redteam() {
     assert_eq!(first(&ok(&e, &s, "SELECT v FROM public.salt")), "not-the-salt");
     // Hostile names: read through their views, nothing else ran.
     let weird = login.view_for("public", "we\"ird").unwrap().view.clone();
-    assert_eq!(first(&ok(&e, &g, &format!("SELECT \"e\"\"mail\" FROM {weird}"))), "c•••@acme.com");
+    assert_eq!(first(&ok(&e, &g, &format!("SELECT \"e\"\"mail\" FROM {weird}"))), "••••••••••.com");
     ok(&e, &g, r#"SELECT s FROM "x'; DROP ROLE postgres; --""#);
     ok(&e, &g, r#"SELECT "naïve" FROM "ünïcødé_表""#);
     assert_eq!(first(&ok(&e, &rs, "SELECT count(*) FROM pg_roles WHERE rolname = 'postgres'")), "1");
@@ -1039,7 +1039,7 @@ fn mysql_redteam() {
     denied(&e, &g, &format!("ALTER USER '{user}'@'%' ATTRIBUTE '{{\"dataman\": \"x\"}}'"));
     // Hostile names through their views.
     let weird = login.view_for("au_rt", "we`ird").unwrap().view.clone();
-    assert_eq!(first(&ok(&e, &g, &format!("SELECT `e``mail` FROM {weird}"))), "c•••@acme.com");
+    assert_eq!(first(&ok(&e, &g, &format!("SELECT `e``mail` FROM {weird}"))), "••••••••••.com");
     ok(&e, &g, "SELECT id FROM au_rt.`x'; DROP USER root; --`");
     ok(&e, &g, "SELECT `naïve` FROM au_rt.`ünï`");
     assert_eq!(first(&ok(&e, &rs, "SELECT COUNT(*) FROM mysql.user WHERE User = 'root'")), "2");
@@ -1177,7 +1177,7 @@ fn sql_server_redteam() {
     assert!(ok(&e, &g, "SELECT name FROM sys.tables WHERE name = 'secrets'").is_empty(), "SQL Server hides it");
     assert_eq!(ok(&e, &g, "SELECT OBJECT_ID('dbo.secrets')")[0][0], None);
     let weird = login.view_for("dbo", "we]ird").unwrap().view.clone();
-    assert_eq!(first(&ok(&e, &g, &format!("SELECT [e]]mail] FROM {weird}"))), "c•••@acme.com");
+    assert_eq!(first(&ok(&e, &g, &format!("SELECT [e]]mail] FROM {weird}"))), "••••••••••.com");
     let salt_view = login.view_for("dbo", "salt").unwrap().view.clone();
     assert!(!salt_view.ends_with("[salt]"), "{salt_view}");
     assert_eq!(first(&ok(&e, &rs, "SELECT COUNT(*) FROM sys.server_principals WHERE name = 'sa' AND is_disabled = 0")), "1");

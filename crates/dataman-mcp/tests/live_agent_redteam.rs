@@ -168,7 +168,7 @@ fn postgres_every_tool_runs_as_the_agent() {
     let who = e.ok("run_query", json!({"connection": c, "sql": "SELECT current_user, session_user"}));
     assert_eq!(who["rows"][0], json!([user, user]), "{who}");
     let masked = e.ok("run_query", json!({"connection": c, "sql": "SELECT email FROM users"}));
-    assert_eq!(masked["rows"][0][0], "a•••@acme.co", "{masked}");
+    assert_eq!(masked["rows"][0][0], "•••••••e.co", "{masked}");
     e.ok("run_query", json!({"connection": c, "database": "postgres", "sql": "SELECT 1"}));
     e.ok("explain", json!({"connection": c, "sql": "SELECT * FROM t"}));
     e.ok("explain_analyze", json!({"connection": c, "sql": "SELECT * FROM t"}));

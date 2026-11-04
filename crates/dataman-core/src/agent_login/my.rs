@@ -60,18 +60,13 @@ fn revoke_sql(g: &Grant, user: &str) -> Option<String> {
 
 pub fn mask_expr(col: &str, m: Mask) -> String {
     let c = format!("CAST({} AS CHAR)", q(col));
-    match m {
-        Mask::Hidden => "'‹hidden›'".into(),
-        Mask::Partial(k) if k == Keep::DEFAULT => format!(
-            "CASE WHEN {c} IS NULL THEN NULL WHEN LOCATE('@', {c}) > 0 THEN CONCAT(LEFT({c}, 1), '•••@', SUBSTRING_INDEX({c}, '@', -1)) WHEN CHAR_LENGTH({c}) >= 8 THEN CONCAT('•••• ', RIGHT({c}, 4)) ELSE '••••' END"
-        ),
-        Mask::Partial(k) => format!(
-            "CASE WHEN {c} IS NULL THEN NULL WHEN CHAR_LENGTH({c}) > {} THEN CONCAT(LEFT({c}, {}), '••••', RIGHT({c}, {})) ELSE '••••' END",
-            k.first as u32 + k.last as u32,
-            k.first,
-            k.last
-        ),
-    }
+    let Mask::Partial(k) = m else { return "'‹hidden›'".into() };
+    let n = k.count;
+    let shown = match k.side {
+        Side::First => format!("CONCAT(LEFT({c}, {n}), REPEAT('•', CHAR_LENGTH({c}) - {n}))"),
+        Side::Last => format!("CONCAT(REPEAT('•', CHAR_LENGTH({c}) - {n}), RIGHT({c}, {n}))"),
+    };
+    format!("CASE WHEN {c} IS NULL THEN NULL WHEN CHAR_LENGTH({c}) > {n} THEN {shown} ELSE REPEAT('•', CHAR_LENGTH({c})) END")
 }
 
 pub struct Desired {

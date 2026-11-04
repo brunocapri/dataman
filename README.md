@@ -384,13 +384,13 @@ What happens to hidden things:
 These apply only when the agent sees **Masked data**.
 
 - **Which columns:** only the ones in this list. Dataman never decides by itself which column is sensitive.
-- **Scan again** suggests entries from column names: `password`, `token` and `api_key` as Hidden; `ssn`, `cpf`, `passport` and `iban` as Hash; `email`, `phone`, `birth`, `salary` and `address` as Partial. Nothing is added until you add it.
+- **Scan again** suggests entries from column names: `password`, `token`, `api_key`, `ssn`, `cpf`, `passport` and `iban` as Hidden; `phone`, `birth`, `salary` and `address` as Partial. E-mails, card numbers and password hashes are left to the Masks, which already catch them in every value. Nothing is added until you add it.
 - **Entry format:** `table.column`, `schema.table.column`, or a pattern such as `*ssn*` to match the column in any table.
 
 | Mask | Example | Notes |
 |---|---|---|
 | **Hidden** | `‹hidden›` | |
-| **Partial** | `a•••@acme.co`, `+•• •• •••• 0034` | Values with fewer than 8 letters and digits become all dots. |
+| **Partial** | `•••••••e.co` (last 4), `Ana••••••••••••` (first 3) | Shows 1 to 4 characters from the start or the end; every other character becomes a dot. A value no longer than that becomes all dots. |
 | **Hash** | `‹h:K7QF2MZXWA›` | The same value always gives the same code, so an agent can still match and count rows. The key is random per install and kept in the Keychain. |
 
 **What an agent can do** with a masked column:
