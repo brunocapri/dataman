@@ -370,7 +370,6 @@ pub struct SchemaTree {
     shut_folders: HashSet<String>,
     /// A folder being named in place.
     naming: Option<(String, Entity<TextInput>)>,
-    focus_back: bool,
     pub conn_bounds: std::rc::Rc<std::cell::RefCell<HashMap<SharedString, gpui::Bounds<gpui::Pixels>>>>,
     /// Every object (the eye) or each database's tables (the eye crossed out).
     advanced: bool,
@@ -459,6 +458,15 @@ impl SchemaTree {
         })
         .detach();
         let advanced = cx.try_global::<ExplorerDefault>().is_some_and(|d| d.0);
+        // A change in Settings switches the view, once, when it is made.
+        cx.observe_global::<ExplorerDefault>(|t: &mut SchemaTree, cx| {
+            let default = cx.global::<ExplorerDefault>().0;
+            if default != t.default_seen {
+                t.default_seen = default;
+                t.set_advanced(default, cx);
+            }
+        })
+        .detach();
         let mut t = SchemaTree {
             store,
             focus: cx.focus_handle(),
@@ -490,7 +498,6 @@ impl SchemaTree {
             folder_drop: None,
             shut_folders: HashSet::new(),
             naming: None,
-            focus_back: false,
             conn_bounds: Default::default(),
             advanced,
             default_seen: advanced,
@@ -1905,7 +1912,7 @@ impl SchemaTree {
             if self.rows.get(ix).is_some_and(|r| r.id.as_ref() == fid(f)) {
                 return;
             }
-            self.commit_naming(cx);
+            self.commit_naming(window, cx);
         }
         window.focus(&self.focus, cx);
         let m = ev.modifiers();
@@ -2430,9 +2437,9 @@ impl SchemaTree {
             i.set_text(name, cx);
             i.select_all(cx);
         });
-        cx.subscribe(&input, |t: &mut SchemaTree, _, ev: &InputEvent, cx| {
+        cx.subscribe_in(&input, window, |t: &mut SchemaTree, _, ev: &InputEvent, window, cx| {
             if let InputEvent::Submit = ev {
-                t.commit_naming(cx);
+                t.commit_naming(window, cx);
             }
         })
         .detach();
@@ -2448,7 +2455,7 @@ impl SchemaTree {
         cx.notify();
     }
 
-    fn commit_naming(&mut self, cx: &mut Context<Self>) {
+    fn commit_naming(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some((id, input)) = self.naming.take() else { return };
         let name = input.read(cx).text().trim().to_string();
         let from = self.store.read(cx).folders.iter().find(|d| d.id == id).map(|d| d.name.clone());
@@ -2460,7 +2467,8 @@ impl SchemaTree {
             }, cx),
             _ => cx.notify(),
         }
-        self.focus_back = true;
+        // Back to the tree once the field that had it is gone.
+        cx.defer_in(window, |t, window, cx| window.focus(&t.focus, cx));
     }
 
     fn set_pinned(&mut self, pin: Pin, on: bool, ix: Option<usize>, cx: &mut Context<Self>) {
@@ -3591,11 +3599,6 @@ fn join_all(loads: Vec<Load>) -> Load {
 
 impl Render for SchemaTree {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let default = cx.try_global::<ExplorerDefault>().is_some_and(|d| d.0);
-        if default != self.default_seen {
-            self.default_seen = default;
-            self.set_advanced(default, cx);
-        }
         if self.version(cx) != self.seen_version {
             self.rebuild(cx);
         }
@@ -3635,9 +3638,6 @@ impl Render for SchemaTree {
             }
             None => None,
         };
-        if std::mem::take(&mut self.focus_back) {
-            window.focus(&self.focus, cx);
-        }
         let t = cx.theme();
         let focused = self.focus.contains_focused(window, cx);
         let filter_focused = self.filter.focus_handle(cx).is_focused(window);

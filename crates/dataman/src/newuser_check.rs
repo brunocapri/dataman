@@ -128,9 +128,9 @@ async fn add(ws: &Entity<Workspace>, engine: Engine, name: &str, port: u16, user
     key(cx, "cmd-n");
     pause(cx, 100).await;
     let d = dialog(ws, cx)?;
-    let _ = cx.update(|_, cx| {
+    let _ = cx.update(|window, cx| {
         d.update(cx, |d, cx| {
-            d.demo_engine(engine, cx);
+            d.demo_engine(engine, window, cx);
             for (i, v) in [name, "127.0.0.1", &port.to_string(), user, pw, db].into_iter().enumerate() {
                 d.demo_set_field(i, v, cx);
             }
@@ -190,7 +190,7 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
 
     let mut seen = vec![];
     for e in [Engine::MySql, Engine::SqlServer, Engine::Postgres] {
-        let _ = cx.update(|_, cx| d.update(cx, |d, cx| d.demo_engine(e, cx)));
+        let _ = cx.update(|window, cx| d.update(cx, |d, cx| d.demo_engine(e, window, cx)));
         seen.push((field(2, cx), field(3, cx)));
     }
     let want: Vec<(String, String)> = [("3306", "root"), ("1433", "sa"), ("5432", "postgres")].iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
