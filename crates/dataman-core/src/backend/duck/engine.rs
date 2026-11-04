@@ -168,11 +168,11 @@ fn open(path: &Path) -> Result<()> {
     // Before anything of its table is read: the engine was built from this list and this
     // libduckdb-sys (an older one, in another order, would be called at the wrong functions).
     // SAFETY: the engine's export, with this signature (engines/duckdb/src/lib.rs).
-    let fp = unsafe { lib.get::<Fingerprint>(b"dataman_duckdb_fingerprint\0") }.map_err(|_| anyhow!("{}: it is an older build, with no ABI fingerprint", what()))?;
+    let fp = unsafe { lib.get::<Fingerprint>(b"dataman_duckdb_fingerprint\0") }.map_err(|_| anyhow!("{}: it is an older build, with no ABI fingerprint (the engine ships beside Dataman; rebuild it with scripts/duckdb-engine.sh)", what()))?;
     // SAFETY: as above.
     let fp = unsafe { fp() };
     if fp != FINGERPRINT {
-        bail!("{}: it was built for another C API ({fp:016x}, not {FINGERPRINT:016x})", what());
+        bail!("{}: it was built for another C API ({fp:016x}, not {FINGERPRINT:016x}); rebuild it with scripts/duckdb-engine.sh", what());
     }
     let mut t = [std::ptr::null(); COUNT];
     // SAFETY: the engine's export, with this signature (engines/duckdb/src/lib.rs).
