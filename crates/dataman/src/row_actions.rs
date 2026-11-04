@@ -494,12 +494,15 @@ impl Workspace {
             self.drop_agent_login_of(p, cx);
         }
         match self.remove_connection(id, cx) {
-            Ok(mut d) => {
+            Ok((mut d, kept)) => {
                 if dropping.is_some() {
                     // Undo brings the connection back without the login it no longer has.
                     (d.profile.agent_login, d.profile.agents_refused, d.agent_password) = (None, true, None);
                 }
-                self.notice(format!("Deleted the connection {name}"), cx);
+                match kept {
+                    Some(k) => self.notice(format!("Deleted the connection {name}, but {k}"), cx),
+                    None => self.notice(format!("Deleted the connection {name}"), cx),
+                }
                 self.did(format!("Delete connection '{name}'"), crate::undo::Op::ConnDeleted(Box::new(d)));
             }
             Err(e) => self.notice(format!("Could not delete {name}: {e:#}"), cx),

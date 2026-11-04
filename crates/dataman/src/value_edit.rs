@@ -404,7 +404,8 @@ impl ValueEditor {
         if keep {
             let text = input.read(cx).text().to_string();
             if key {
-                let _ = j.doc.rename(&path, &text);
+                // Refused (a key already there): said under the tree, the old key kept.
+                j.error = j.doc.rename(&path, &text).err();
             } else {
                 j.doc.set_text(&path, &text);
             }

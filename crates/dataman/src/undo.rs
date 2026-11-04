@@ -250,7 +250,11 @@ impl Workspace {
                 if back {
                     self.restore_connection(d, cx)?;
                 } else {
-                    **d = said(self.remove_connection(&d.profile.id.clone(), cx))?;
+                    let (gone, kept) = said(self.remove_connection(&d.profile.id.clone(), cx))?;
+                    **d = gone;
+                    if let Some(k) = kept {
+                        log::warn!("{k}");
+                    }
                 }
             }
             Op::Pins { conn, from, to } => {
@@ -302,7 +306,9 @@ impl Workspace {
         Ok(())
     }
 
-    pub(crate) fn remove_connection(&mut self, id: &str, cx: &mut Context<Self>) -> anyhow::Result<DeletedConn> {
+    /// Removes the connection; the `String` says what of it stayed behind (its agent login's
+    /// password, when the store refused to delete it).
+    pub(crate) fn remove_connection(&mut self, id: &str, cx: &mut Context<Self>) -> anyhow::Result<(DeletedConn, Option<String>)> {
         let core = self.store.read(cx).core.clone();
         let store = self.store.read(cx);
         let profile = store.profile(id).cloned().ok_or_else(|| anyhow::anyhow!("no connection {id}"))?;
@@ -317,14 +323,18 @@ impl Workspace {
         let agent_password = core.secrets.get(&agent_account).ok().flatten();
         let folder = store.folder_of(id).map(|d| d.id.clone());
         core.remove_connection(id)?;
-        let _ = core.secrets.delete(&agent_account);
+        let kept = core
+            .secrets
+            .delete(&agent_account)
+            .err()
+            .map(|e| format!("its agent login's password could not be removed from the {}: {e:#}", dataman_core::secret::STORE_NAME));
         let history = core.history.take(id).ok().flatten();
         self.disconnect(id.to_string(), cx);
         self.store.update(cx, |s, cx| s.reload(cx));
         if self.current_conn.as_deref() == Some(id) {
             self.current_conn = self.store.read(cx).profiles.first().map(|p| p.id.clone());
         }
-        Ok(DeletedConn { profile, order, password, ssh_secret, history, pins, agent_password, folder })
+        Ok((DeletedConn { profile, order, password, ssh_secret, history, pins, agent_password, folder }, kept))
     }
 
     fn restore_connection(&mut self, d: &DeletedConn, cx: &mut Context<Self>) -> Applied {
