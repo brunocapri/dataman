@@ -2326,27 +2326,6 @@ impl Workspace {
                 .into_any_element(),
         )
     }
-
-    pub(crate) fn render_shortcuts(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let t = cx.theme();
-        div()
-            .id("shortcuts")
-            .absolute()
-            .top(px(metrics::TITLE_H))
-            .left_0()
-            .right_0()
-            .bottom_0()
-            .bg(t.scrim)
-            .flex()
-            .items_center()
-            .justify_center()
-            .track_focus(&self.shortcuts_focus)
-            .key_context("Shortcuts")
-            .on_action(cx.listener(|w, _: &crate::app::CloseShortcuts, window, cx| w.set_shortcuts(false, window, cx)))
-            .on_mouse_down(MouseButton::Left, cx.listener(|w, _, window, cx| w.set_shortcuts(false, window, cx)))
-            .child(ui::esc_closes(Some("Shortcuts"), cx.listener(|w, _: &crate::app::CloseShortcuts, window, cx| w.set_shortcuts(false, window, cx))))
-            .child(crate::shortcuts::sheet(&t, ui::modal_close(&t, "shortcuts-close").on_click(cx.listener(|w, _, window, cx| w.set_shortcuts(false, window, cx)))))
-    }
 }
 
 /// The client chooses the name: it is shown, never trusted.

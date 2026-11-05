@@ -75,7 +75,7 @@ SQLite and DuckDB need nothing installed: SQLite is built in, and DuckDB is its 
 - **Activity monitor** (PostgreSQL): live sessions, a lock tree showing who blocks whom, and `pg_stat_statements`, with cancel and terminate buttons.
 - **NoSQL that feels native**: a mongosh-style shell with real JavaScript for MongoDB, a Dev Tools console for Elasticsearch and OpenSearch, and type-aware views for Redis keys (hash, list, set, zset, stream, JSON).
 - **Data in and out**: export to CSV, TSV, JSON, NDJSON, SQL `INSERT` or Parquet. On PostgreSQL you can also import those formats, with types inferred.
-- **Keyboard first**: a command palette (`⌘K`) for commands, tables, tabs, favorites and connections, a key map sheet (`⇧⌘/`), and every binding can be changed.
+- **Keyboard first**: a command palette (`⌘K`) for commands, tables, tabs, favorites and connections, and every binding can be changed.
 - **History and favorites** per connection, folders for saved queries, `.sql` files and SQLite/DuckDB files opened straight from Finder or the terminal.
 - **Dark, light or follow the system**, a translucent window, four mono fonts and zoom from 80 to 200%.
 

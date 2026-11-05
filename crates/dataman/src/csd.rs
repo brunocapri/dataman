@@ -208,7 +208,6 @@ impl Workspace {
         menu = menu
             .child(item("am-palette", "All Commands…".into(), crate::keymap::key("command_palette"), Box::new(crate::app::CommandPalette)))
             .child(item("am-settings", "Settings…".into(), crate::keymap::key("settings"), Box::new(crate::app::OpenSettings)))
-            .child(item("am-keys", "Keyboard Shortcuts".into(), crate::keymap::key("shortcuts"), Box::new(crate::app::ShowShortcuts)))
             .child(ui::menu_sep(&t))
             .child(item("am-quit", "Quit Dataman".into(), crate::keymap::key("quit"), Box::new(crate::app::Quit)));
         let at = gpui::point(at.x - px(240.), at.y + px(14.));
