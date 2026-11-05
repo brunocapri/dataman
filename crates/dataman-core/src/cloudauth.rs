@@ -532,6 +532,9 @@ async fn exec(cli: Cli, args: &[String], dirs: &[PathBuf], auth: &Auth, timeout:
     Ok(Ok(String::from_utf8_lossy(&out.stdout).into_owned()))
 }
 
+/// What `az` says when the token needs the browser again, for MFA or Conditional Access.
+const AZ_INTERACTION: [&str; 7] = ["AADSTS50076", "AADSTS50079", "AADSTS50078", "AADSTS53003", "AADSTS530003", "claims challenge", "interaction_required"];
+
 /// The scope an Entra sign-in asks for: the database's, so MFA or Conditional Access for it is
 /// passed in the browser. `args`: the token request's.
 fn entra_scope(args: &[String]) -> String {
@@ -548,8 +551,13 @@ fn login_args(r: &Request, auth: &Auth) -> Result<Vec<String>, SignInError> {
     match auth {
         Auth::EntraId { tenant } => {
             args.extend(["login", "--output=none"].map(String::from));
-            args.extend(opt("tenant", "tenant", tenant.as_deref())?);
-            args.push(format!("--scope={}", entra_scope(&r.args)));
+            // No tenant means az's `organizations` sign-in, where the database's scope turns a
+            // personal Microsoft account away ("does not exist in tenant 'Microsoft Services'").
+            // az's own scope takes any account, and `TokenSource::sign_in` comes back for MFA.
+            if let Some(t) = opt("tenant", "tenant", tenant.as_deref())? {
+                args.push(t);
+                args.push(format!("--scope={}", entra_scope(&r.args)));
+            }
         }
         Auth::AwsIam { profile, .. } => {
             let profile = opt("profile", "profile", profile.as_deref())?;
@@ -598,7 +606,7 @@ fn classify(cli: Cli, stderr: &str, auth: &Auth, args: &[String]) -> SignInError
     let signed_out = |detail: &str| SignInError::new(cli.signed_out(), format!("Sign in again, or run `{login}` in a terminal.{detail}")).fix(Fix::SignIn(cli));
     match cli {
         Cli::Az => {
-            if has(&["AADSTS50076", "AADSTS50079", "AADSTS50078", "AADSTS53003", "AADSTS530003", "claims challenge", "interaction_required"]) {
+            if has(&AZ_INTERACTION) {
                 let scope = entra_scope(args);
                 return SignInError::new("Azure asks to sign in again (MFA or Conditional Access)", format!("Sign in again, or run `{login} --scope {scope}` in a terminal.")).fix(Fix::SignIn(cli));
             }
@@ -827,17 +835,29 @@ impl TokenSource {
     pub async fn sign_in(&self, p: &ConnectionProfile) -> Result<(), SignInError> {
         guard(p)?;
         let r = request(p)?;
-        let args = login_args(&r, &p.auth)?;
-        let (cli, name) = (r.cli, r.cli.name());
-        match exec(r.cli, &args, &self.dirs, &p.auth, LOGIN_TIMEOUT).await? {
-            Ok(_) => {
-                *self.cache.slot(&r).lock().await = None;
-                Ok(())
-            }
+        self.log_in(&r, &p.auth, &login_args(&r, &p.auth)?).await?;
+        // Signed in with no tenant, so without the database's scope: if the database asks for
+        // MFA, a second sign-in passes it, in the tenant the account is now on.
+        if matches!(&p.auth, Auth::EntraId { tenant } if tenant.as_deref().is_none_or(|t| t.trim().is_empty()))
+            && let Err(stderr) = exec(r.cli, &r.args, &self.dirs, &p.auth, TIMEOUT).await?
+            && AZ_INTERACTION.iter().any(|n| stderr.to_ascii_lowercase().contains(&n.to_ascii_lowercase()))
+        {
+            let show: Vec<String> = ["account", "show", "--query=tenantId", "--output=tsv"].map(String::from).to_vec();
+            let tenant = run(r.cli, &show, &self.dirs, &p.auth).await?;
+            let on = Auth::EntraId { tenant: Some(tenant.trim().to_string()) };
+            self.log_in(&r, &p.auth, &login_args(&r, &on)?).await?;
+        }
+        *self.cache.slot(&r).lock().await = None;
+        Ok(())
+    }
+
+    async fn log_in(&self, r: &Request, auth: &Auth, args: &[String]) -> Result<(), SignInError> {
+        match exec(r.cli, args, &self.dirs, auth, LOGIN_TIMEOUT).await? {
+            Ok(_) => Ok(()),
             Err(stderr) => {
                 let first = stderr.lines().map(str::trim).map(|l| l.trim_start_matches("ERROR:").trim()).find(|l| !l.is_empty()).unwrap_or("");
                 let first: String = first.chars().take(300).collect();
-                Err(SignInError::new(format!("The {name} sign-in did not finish"), if first.is_empty() { "Try again.".to_string() } else { first }).fix(Fix::SignIn(cli)))
+                Err(SignInError::new(format!("The {} sign-in did not finish", r.cli.name()), if first.is_empty() { "Try again.".to_string() } else { first }).fix(Fix::SignIn(r.cli)))
             }
         }
     }
@@ -1227,6 +1247,32 @@ mod tests {
         src.token(&p).await.unwrap();
         src.token(&p).await.unwrap();
         assert_eq!(runs(d), 4);
+    }
+
+    /// `az`'s runs for one sign-in, against an az whose token asks for MFA until a login with
+    /// the database's scope, when `mfa`.
+    #[cfg(unix)]
+    async fn az_sign_in_runs(tenant: Option<&str>, mfa: bool) -> Vec<String> {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let r = d.display();
+        let gate = if mfa { format!("[ -f '{r}/scoped' ] || {{ echo 'ERROR: AADSTS50076: you must use multi-factor authentication.' >&2; exit 1; }}") } else { String::new() };
+        fake(d, "az", &format!("echo \"$*\" >> '{r}/runs'\ncase \"$1 $2\" in\n'account show') echo the-tenant ;;\naccount*) {gate}\n  echo token ;;\nlogin*) case \"$*\" in *--scope*) : > '{r}/scoped' ;; esac ;;\nesac"));
+        let src = TokenSource::in_dirs(vec![d.to_path_buf()]);
+        let p = profile(Engine::SqlServer, "srv.database.windows.net", Auth::EntraId { tenant: tenant.map(str::to_string) });
+        src.sign_in(&p).await.unwrap();
+        std::fs::read_to_string(d.join("runs")).unwrap().lines().map(str::to_string).collect()
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_entra_sign_in_asks_for_the_database_only_with_a_tenant() {
+        const TOKEN: &str = "account get-access-token --output=json --resource=https://database.windows.net/";
+        const SCOPE: &str = "--scope=https://database.windows.net/.default";
+        assert_eq!(az_sign_in_runs(None, false).await, ["login --output=none", TOKEN]);
+        assert_eq!(az_sign_in_runs(Some("  "), false).await, ["login --output=none", TOKEN]);
+        assert_eq!(az_sign_in_runs(Some("contoso"), false).await, [format!("login --output=none --tenant=contoso {SCOPE}")]);
+        assert_eq!(az_sign_in_runs(None, true).await, ["login --output=none".to_string(), TOKEN.to_string(), "account show --query=tenantId --output=tsv".to_string(), format!("login --output=none --tenant=the-tenant {SCOPE}")]);
     }
 
     #[cfg(unix)]
