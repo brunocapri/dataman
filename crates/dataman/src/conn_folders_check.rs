@@ -529,7 +529,7 @@ async fn scene(ws: &Entity<Workspace>, pg_id: &str, cx: &mut AsyncWindowContext)
         stage.connections = vec![ids[4].clone()];
         let _ = store.update(cx, |s, cx| s.edit_folders(|f| *f = vec![prod, stage.clone()], cx));
         t.update(cx, |t, cx| {
-            t.folders_changed(cx);
+            t.arrangement_changed(cx);
             t.collapse_id(&fid(&stage.id), cx);
             t.collapse_id(&format!("c:{pg_id}"), cx);
         });

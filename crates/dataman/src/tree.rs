@@ -91,8 +91,9 @@ impl Unfold {
     }
 }
 
-/// Folders reordered in the simple view: every row that moved glides to its new place. The rows
-/// fade on the way, since they cross and the translucent panel cannot go behind them.
+/// Folders or connections reordered in the simple view: every row that moved glides to its new
+/// place. The rows fade on the way, since they cross and the translucent panel cannot go behind
+/// them.
 struct Slide {
     /// By row: how far from its place it starts, in px.
     from: Vec<f32>,
@@ -2430,19 +2431,17 @@ impl SchemaTree {
         if after != before {
             cx.emit(TreeEvent::Did(crate::undo::Entry::new(label, crate::undo::Op::ConnFolders { from: before, to: after })));
         }
-        self.folders_changed(cx);
+        self.arrangement_changed(cx);
     }
 
-    pub fn folders_changed(&mut self, cx: &mut Context<Self>) {
+    /// The folders or the connections' order changed: the rows again, gliding if they only moved.
+    pub fn arrangement_changed(&mut self, cx: &mut Context<Self>) {
         let ids = |rows: &[Row]| rows.iter().map(|r| r.id.clone()).collect::<Vec<_>>();
-        let folders = |rows: &[Row]| rows.iter().filter(|r| matches!(r.kind, Kind::Folder { .. })).map(|r| r.id.clone()).collect::<Vec<_>>();
         let animate = !self.advanced && self.unfold.is_none() && !crate::motion::still(cx) && !self.filtering(cx);
-        let before = animate.then(|| (ids(&self.rows), folders(&self.rows)));
+        let before = animate.then(|| ids(&self.rows));
         self.rebuild(cx);
-        if let Some((rows, order)) = before
-            && order != folders(&self.rows)
-        {
-            self.slide = slide_from(&rows, &ids(&self.rows)).map(|from| Slide { from, left: crate::motion::Fold::new(1., 0., crate::motion::TREE_REORDER), now: 1. });
+        if let Some(before) = before {
+            self.slide = slide_from(&before, &ids(&self.rows)).map(|from| Slide { from, left: crate::motion::Fold::new(1., 0., crate::motion::TREE_REORDER), now: 1. });
         }
         cx.notify();
     }
@@ -2916,8 +2915,7 @@ impl SchemaTree {
         };
         let op = if ops.len() == 1 { ops.remove(0) } else { crate::undo::Op::Many(ops) };
         cx.emit(TreeEvent::Did(crate::undo::Entry::new(label, op)));
-        self.rebuild(cx);
-        cx.notify();
+        self.arrangement_changed(cx);
     }
 
     /// Where a dragged folder over row `ix` would land: over a folder's own row, before it (top
@@ -3941,6 +3939,13 @@ impl Render for SchemaTree {
 mod tests {
     use super::*;
     use dataman_core::schema::{Function, Relation, Trigger, UserType};
+
+    #[test]
+    fn a_connection_moved_slides_past_the_ones_it_passes() {
+        let ids = |s: &[&str]| s.iter().map(|i| SharedString::from(i.to_string())).collect::<Vec<_>>();
+        let from = slide_from(&ids(&["f:a", "c:1", "c:2", "c:3"]), &ids(&["f:a", "c:3", "c:1", "c:2"])).unwrap();
+        assert_eq!(from, [0., 2. * ROW_H, -ROW_H, -ROW_H]);
+    }
 
     #[test]
     fn a_folder_moved_slides_with_its_rows() {
