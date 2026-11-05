@@ -1,6 +1,5 @@
 //! `welcome-check`: the first-run screen's items, clicked or reached with ↓ ↩. `palette-check`:
-//! ⌘K and its scopes (commands, tables, tabs, favorites, connections), ⌘P, and the shortcuts
-//! sheet.
+//! ⌘K and its scopes (commands, tables, tabs, favorites, connections) and ⌘P.
 
 use gpui::{AsyncWindowContext, Entity, Focusable};
 use dataman_core::config::Engine;
@@ -58,17 +57,12 @@ pub async fn run_welcome(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncW
         window.focus(&w.focus_handle(cx), cx);
     });
     for _ in 0..5 {
-        key(cx, "down");
+        key(cx, "up");
     }
+    key(cx, "down");
     key(cx, "enter");
-    let sheet = cx.update(|_, cx| ws.read(cx).shortcuts_open).unwrap_or(false);
-    key(cx, "escape");
-    let gone = !cx.update(|_, cx| ws.read(cx).shortcuts_open).unwrap_or(true);
-    r.check("↓ to Keyboard shortcuts and ↩ opens the sheet; esc closes it", sheet && gone, format!("{sheet} {gone}"));
-
-    click_probe("welcome-1", cx);
     let section = cx.update(|_, cx| ws.read(cx).settings_view.as_ref().map(|v| v.read(cx).demo_section())).ok().flatten();
-    r.check("Add with an agent opens Settings › MCP", section == Some("MCP"), format!("{section:?}"));
+    r.check("↑ to the top, ↓ to Add with an agent, ↩ opens Settings › MCP", section == Some("MCP"), format!("{section:?}"));
 }
 
 fn palette_open(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
@@ -142,10 +136,6 @@ pub async fn run_palette(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncW
     key(cx, "escape");
     r.check("⌘P (Go to) finds tables and tabs by name", n >= 1 && label.contains("orders"), format!("{label} {n}"));
 
-    key(cx, "cmd-shift-/");
-    let sheet = cx.update(|_, cx| ws.read(cx).shortcuts_open).unwrap_or(false);
-    key(cx, "escape");
-    r.check("⇧⌘/ opens the shortcuts sheet; esc closes it", sheet && !cx.update(|_, cx| ws.read(cx).shortcuts_open).unwrap_or(true), sheet);
     let _ = cx.update(|window, cx| {
         if let Some(t) = ws.read(cx).active_tab() {
             let e = t.read(cx).editor.clone();

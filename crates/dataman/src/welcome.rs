@@ -27,10 +27,9 @@ pub enum WelcomeEvent {
     OpenFile,
     OpenDatabase,
     OpenProject,
-    Shortcuts,
 }
 
-const ITEMS: [(&str, &str); 8] = [
+const ITEMS: [(&str, &str); 7] = [
     ("New connection", "⌘N"),
     ("Add with an agent", ""),
     ("Paste a connection URL", "⌘V"),
@@ -38,7 +37,6 @@ const ITEMS: [(&str, &str); 8] = [
     ("Open a .sql file", "⌘O"),
     ("Open a database file", ""),
     ("Open a project folder", ""),
-    ("Keyboard shortcuts", "⇧⌘/"),
 ];
 
 const LOCALHOST: usize = 3;
@@ -84,8 +82,7 @@ impl Welcome {
             }
             4 => cx.emit(WelcomeEvent::OpenFile),
             5 => cx.emit(WelcomeEvent::OpenDatabase),
-            PROJECT => cx.emit(WelcomeEvent::OpenProject),
-            _ => cx.emit(WelcomeEvent::Shortcuts),
+            _ => cx.emit(WelcomeEvent::OpenProject),
         }
         cx.notify();
     }

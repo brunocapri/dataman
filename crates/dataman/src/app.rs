@@ -24,7 +24,6 @@ use crate::welcome::{Welcome, WelcomeEvent};
 actions!(
     workspace,
     [
-        CloseShortcuts,
         NewTab,
         CloseTab,
         NextTab,
@@ -58,7 +57,6 @@ actions!(
         CycleFocusBack,
         JumpToError,
         UseExplorerConnection,
-        ShowShortcuts,
         CommandPalette,
         GoTo,
         OpenSettings,
@@ -126,8 +124,6 @@ pub fn bind_keys(cx: &mut App) {
     let w = Some(WORKSPACE_KEYS);
     cx.bind_keys([
         crate::keymap::kb("escape", FocusEditor, w),
-        // The sheet holds the focus: esc reaches it whatever had the keys before.
-        crate::keymap::kb("escape", CloseShortcuts, Some("Shortcuts")),
         crate::keymap::kb("escape", CancelPendingRun, Some("ConfirmDiscard")),
         crate::keymap::kb("enter", CancelPendingRun, Some("ConfirmDiscard")),
         crate::keymap::kb("cmd-backspace", DiscardAndRun, Some("ConfirmDiscard")),
@@ -302,7 +298,7 @@ impl Default for PaneState {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Modal {
     /// The one-at-a-time sheets: palette, Settings, export, imports, the value viewer, the
-    /// confirmations, the update sheet, the shortcuts.
+    /// confirmations, the update sheet.
     Sheet,
     /// An agent's request waiting for Allow: over anything.
     Mcp,
@@ -419,8 +415,6 @@ pub struct Workspace {
     pub(crate) title_drag: bool,
     pub(crate) app_menu: Option<gpui::Point<gpui::Pixels>>,
     pub(crate) focus_visible: bool,
-    pub(crate) shortcuts_open: bool,
-    pub(crate) shortcuts_focus: FocusHandle,
     pub(crate) copy_menu: bool,
     pub(crate) cancel_toast_hidden: Option<Instant>,
     pub(crate) flash_notice: Option<(String, Instant)>,
@@ -608,8 +602,6 @@ impl Workspace {
             title_drag: false,
             app_menu: None,
             focus_visible: false,
-            shortcuts_open: false,
-            shortcuts_focus: cx.focus_handle(),
             copy_menu: false,
             cancel_toast_hidden: None,
             flash_notice: None,
@@ -956,7 +948,7 @@ impl Workspace {
 
     fn layer_shown(&self, m: Modal, cx: &App) -> bool {
         match m {
-            Modal::Sheet => self.sheet_open(cx) || self.shortcuts_open,
+            Modal::Sheet => self.sheet_open(cx),
             Modal::Mcp => cx.try_global::<crate::mcp::McpHost>().is_some_and(|h| !h.pending.is_empty()),
             Modal::ProjectReview => self.project_review.is_some(),
             Modal::OutsideReview => self.outside_review.is_some(),
@@ -1040,10 +1032,6 @@ impl Workspace {
         ];
         let mut out: Vec<gpui::AnyElement> = Vec::new();
         for (key, v) in views {
-            if key == "settings" {
-                let shortcuts = self.shortcuts_open.then(|| self.render_shortcuts(cx).into_any_element());
-                out.extend(self.fades.element("shortcuts", shortcuts, reduced, window));
-            }
             out.extend(self.fades.view(key, v, reduced, window));
         }
         out.extend(self.palette.clone().map(|p| p.into_any_element()));
@@ -1619,7 +1607,6 @@ impl Workspace {
             WelcomeEvent::OpenFile => self.open_sql_file(window, cx),
             WelcomeEvent::OpenDatabase => self.open_database_file(window, cx),
             WelcomeEvent::OpenProject => self.open_project(window, cx),
-            WelcomeEvent::Shortcuts => self.set_shortcuts(true, window, cx),
         }
     }
 
@@ -1869,20 +1856,6 @@ impl Workspace {
         )
         .absolute()
         .size_0()
-    }
-
-    pub(crate) fn set_shortcuts(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if open == self.shortcuts_open {
-            return;
-        }
-        self.shortcuts_open = open;
-        if open {
-            self.hold_focus(crate::app::Modal::Sheet, window, cx);
-            window.focus(&self.shortcuts_focus, cx);
-        } else {
-            self.give_focus_back(crate::app::Modal::Sheet, window, cx);
-        }
-        cx.notify();
     }
 
     pub(crate) fn notice(&mut self, msg: impl Into<String>, cx: &mut Context<Self>) {
@@ -2951,10 +2924,6 @@ impl Render for Workspace {
             .on_action(cx.listener(|w, _: &FocusExplorer, window, cx| w.focus_region(Region::Explorer, window, cx)))
             .on_action(cx.listener(|w, _: &FocusGrid, window, cx| w.focus_region(Region::Grid, window, cx)))
             .on_action(cx.listener(|w, _: &FocusEditor, window, cx| {
-                if w.shortcuts_open {
-                    w.set_shortcuts(false, window, cx);
-                    return;
-                }
                 if w.copy_menu {
                     w.copy_menu = false;
                 }
@@ -2982,10 +2951,6 @@ impl Render for Workspace {
             .on_action(cx.listener(|w, _: &crate::find::FindNext, window, cx| w.find_step_in_editor(true, window, cx)))
             .on_action(cx.listener(|w, _: &crate::find::FindPrevious, window, cx| w.find_step_in_editor(false, window, cx)))
             .on_action(cx.listener(|w, _: &UseExplorerConnection, window, cx| w.use_explorer_connection(window, cx)))
-            .on_action(cx.listener(|w, _: &ShowShortcuts, window, cx| {
-                let open = !w.shortcuts_open;
-                w.set_shortcuts(open, window, cx);
-            }))
             .on_action(cx.listener(|w, _: &CommandPalette, window, cx| w.open_palette(crate::palette::Scope::All, window, cx)))
             .on_action(cx.listener(|w, _: &GoTo, window, cx| w.open_palette(crate::palette::Scope::Goto, window, cx)))
             .on_action(cx.listener(|w, _: &OpenSettings, window, cx| w.toggle_settings(window, cx)))

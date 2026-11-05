@@ -1070,7 +1070,6 @@ fn commands(conn: Option<&std::sync::Arc<dataman_core::Connection>>, cx: &App) -
         c("Focus grid", "", "⌘⇧G", Box::new(FocusGrid), Workspace),
         c("Focus editor", "", "esc", Box::new(FocusEditor), Workspace),
         c("Settings", "theme, editor, grid, export, keys", "⌘,", Box::new(OpenSettings), Workspace),
-        c("Keyboard shortcuts", "the whole key map", "⇧⌘/", Box::new(ShowShortcuts), Workspace),
         c("Toggle theme", "dark → light → system", "", Box::new(ToggleTheme), Workspace),
         c("Theme: dark", "", "", Box::new(ThemeDark), Workspace),
         c("Theme: light", "", "", Box::new(ThemeLight), Workspace),

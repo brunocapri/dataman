@@ -81,7 +81,6 @@ pub const COMMANDS: &[Command] = &[
     c("zoom_out", "Zoom out", "GLOBAL", Scope::App, &["cmd--"], || Box::new(ZoomOut)),
     c("zoom_reset", "Actual size", "GLOBAL", Scope::App, &["cmd-0"], || Box::new(ZoomReset)),
     c("settings", "Settings", "GLOBAL", Scope::Workspace, &["cmd-,"], || Box::new(OpenSettings)),
-    c("shortcuts", "All shortcuts", "GLOBAL", Scope::Workspace, &["cmd-shift-/", "cmd-?"], || Box::new(ShowShortcuts)),
     c("quit", "Quit", "GLOBAL", Scope::App, &["cmd-q"], || Box::new(Quit)),
     // The ids predate the swap of 15/10 (⌘↩ ran the statement): a saved override stays with its
     // command.

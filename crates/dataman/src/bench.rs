@@ -325,7 +325,6 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                     | "dialog-ssh"
                     | "dialog-hostkey"
                     | "import"
-                    | "shortcuts"
                     | "editor-scroll"
             ) && !crate::table_check::is_stage(&stage)
                 && !mysql
@@ -544,10 +543,6 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                         editor.update(cx, |e, cx| e.demo_select(30, 150, cx));
                         window.focus(&editor.focus_handle(cx), cx);
                     }
-                    "shortcuts" => ws.update(cx, |w, cx| {
-                        w.shortcuts_open = true;
-                        cx.notify();
-                    }),
                     "saved" => ws.update(cx, |w, cx| w.save_favorite(cx)),
                     "palette-favorites" | "fav-menu" => ws.update(cx, |w, cx| {
                         let core = w.store.read(cx).core.clone();

@@ -942,10 +942,10 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
             .unwrap_or_default();
         let saved = saved_keys(cx);
         report(
-            "⌥⌘T becomes New tab's key: saved in [keys], on the ⌘? sheet, the only binding the menus see",
+            "⌥⌘T becomes New tab's key: saved in [keys], shown as its key, the only binding the menus see",
             keymap::effective("new_tab") == [k("alt-cmd-t")]
                 && saved.get("new_tab") == Some(&k("alt-cmd-t"))
-                && crate::shortcuts::keys("{new_tab}") == keymap::label("alt-cmd-t")
+                && keymap::key_label("new_tab") == keymap::label("alt-cmd-t")
                 && bound == [k("alt-cmd-t")],
             format!("{:?} {saved:?} {bound:?}", keymap::effective("new_tab")),
         );

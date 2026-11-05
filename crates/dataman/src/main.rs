@@ -129,7 +129,6 @@ mod row_actions;
 #[cfg(feature = "checks")]
 mod settings_check;
 mod settings_view;
-mod shortcuts;
 mod sidebar;
 mod split;
 #[cfg(feature = "checks")]
@@ -233,7 +232,6 @@ fn menus(cx: &App) -> Vec<Menu> {
     vec![
         Menu::new("Dataman").items(app_menu.into_iter().chain([
             MenuItem::action("Settings…", OpenSettings),
-            MenuItem::action("Keyboard Shortcuts", ShowShortcuts),
             MenuItem::separator(),
             MenuItem::action("Quit Dataman", Quit),
         ])),
