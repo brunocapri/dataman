@@ -91,6 +91,34 @@ impl Unfold {
     }
 }
 
+/// Folders reordered in the simple view: every row that moved glides to its new place. The rows
+/// fade on the way, since they cross and the translucent panel cannot go behind them.
+struct Slide {
+    /// By row: how far from its place it starts, in px.
+    from: Vec<f32>,
+    left: crate::motion::Fold,
+    /// What is left of that distance in this frame (1 to 0).
+    now: f32,
+}
+
+impl Slide {
+    /// Row `ix`'s offset and opacity in this frame, if it moved.
+    fn at(&self, ix: usize) -> Option<(f32, f32)> {
+        let from = *self.from.get(ix)?;
+        (from != 0.).then(|| (from * self.now, 1. - 2.2 * self.now * (1. - self.now)))
+    }
+}
+
+/// How far each row of `after` lies from where it was in `before`, in px. None unless these are
+/// the same rows in another order.
+fn slide_from(before: &[SharedString], after: &[SharedString]) -> Option<Vec<f32>> {
+    if before.len() != after.len() || before == after {
+        return None;
+    }
+    let was: HashMap<&SharedString, usize> = before.iter().enumerate().map(|(ix, id)| (id, ix)).collect();
+    after.iter().enumerate().map(|(ix, id)| was.get(id).map(|&old| (old as f32 - ix as f32) * ROW_H)).collect()
+}
+
 pub fn bind_keys(cx: &mut App) {
     let c = Some(CONTEXT);
     cx.bind_keys([
@@ -376,6 +404,7 @@ pub struct SchemaTree {
     /// [`ExplorerDefault`] as last seen: a change in Settings switches the view.
     default_seen: bool,
     unfold: Option<Unfold>,
+    slide: Option<Slide>,
     shut_task: Option<gpui::Task<()>>,
 }
 
@@ -502,6 +531,7 @@ impl SchemaTree {
             advanced,
             default_seen: advanced,
             unfold: None,
+            slide: None,
             shut_task: None,
         };
         t.rebuild(cx);
@@ -2404,7 +2434,16 @@ impl SchemaTree {
     }
 
     pub fn folders_changed(&mut self, cx: &mut Context<Self>) {
+        let ids = |rows: &[Row]| rows.iter().map(|r| r.id.clone()).collect::<Vec<_>>();
+        let folders = |rows: &[Row]| rows.iter().filter(|r| matches!(r.kind, Kind::Folder { .. })).map(|r| r.id.clone()).collect::<Vec<_>>();
+        let animate = !self.advanced && self.unfold.is_none() && !crate::motion::still(cx) && !self.filtering(cx);
+        let before = animate.then(|| (ids(&self.rows), folders(&self.rows)));
         self.rebuild(cx);
+        if let Some((rows, order)) = before
+            && order != folders(&self.rows)
+        {
+            self.slide = slide_from(&rows, &ids(&self.rows)).map(|from| Slide { from, left: crate::motion::Fold::new(1., 0., crate::motion::TREE_REORDER), now: 1. });
+        }
         cx.notify();
     }
 
@@ -3051,9 +3090,11 @@ impl SchemaTree {
                 }))
         });
         let conn_bounds = (r.depth == 0 || matches!(r.kind, Kind::Conn { .. })).then(|| (self.conn_bounds.clone(), r.id.clone()));
+        let slide = self.slide.as_ref().and_then(|s| s.at(ix));
         div()
             .w_full()
             .px(px(6.))
+            .when_some(slide, |d, (_, opacity)| d.opacity(opacity))
             .when_some(conn_bounds, |d, (all, id)| d.on_children_prepainted(move |b, _, _| {
                 if let Some(b) = b.first() {
                     all.borrow_mut().insert(id.clone(), *b);
@@ -3063,6 +3104,8 @@ impl SchemaTree {
             .id(ix)
             .group(ROW_GROUP)
             .relative()
+            // On this element: the list lays the one outside out as a root, where an inset is lost.
+            .when_some(slide, |d, (y, _)| d.top(px(y)))
             .w_full()
             .h(px(22.))
             .pl(px(6. + r.depth as f32 * 12.))
@@ -3650,6 +3693,14 @@ impl Render for SchemaTree {
             }
         }
         let frame = self.unfold_frame(now);
+        if let Some(s) = self.slide.as_mut() {
+            s.now = s.left.at(now);
+        }
+        if self.slide.as_ref().is_some_and(|s| s.left.done(now) || s.from.len() != self.rows.len()) {
+            self.slide = None;
+        } else if self.slide.is_some() {
+            window.request_animation_frame();
+        }
         match &self.folder_turn {
             Some((_, at, opening)) if crate::motion::folder_fill(*at, *opening).is_some() => window.request_animation_frame(),
             Some(_) => self.folder_turn = None,
@@ -3890,6 +3941,31 @@ impl Render for SchemaTree {
 mod tests {
     use super::*;
     use dataman_core::schema::{Function, Relation, Trigger, UserType};
+
+    #[test]
+    fn a_folder_moved_slides_with_its_rows() {
+        let ids = |s: &[&str]| s.iter().map(|i| SharedString::from(i.to_string())).collect::<Vec<_>>();
+        let before = ids(&["f:a", "c:1", "c:2", "f:b", "c:3"]);
+        let after = ids(&["f:b", "c:3", "f:a", "c:1", "c:2"]);
+        let from = slide_from(&before, &after).unwrap();
+        assert_eq!(from, [3. * ROW_H, 3. * ROW_H, -2. * ROW_H, -2. * ROW_H, -2. * ROW_H], "each row starts where it was");
+    }
+
+    #[test]
+    fn only_a_new_order_of_the_same_rows_slides() {
+        let ids = |s: &[&str]| s.iter().map(|i| SharedString::from(i.to_string())).collect::<Vec<_>>();
+        assert_eq!(slide_from(&ids(&["f:a", "f:b"]), &ids(&["f:a", "f:b"])), None, "nothing moved");
+        assert_eq!(slide_from(&ids(&["f:a", "f:b"]), &ids(&["f:a"])), None, "one deleted");
+        assert_eq!(slide_from(&ids(&["f:a", "f:b"]), &ids(&["f:a", "f:c"])), None, "another row");
+    }
+
+    #[test]
+    fn a_row_that_stayed_is_left_alone() {
+        let s = Slide { from: vec![22., 0., -22.], left: crate::motion::Fold::new(1., 0., crate::motion::TREE_REORDER), now: 0.5 };
+        assert_eq!(s.at(0), Some((11., 0.45)));
+        assert_eq!(s.at(1), None);
+        assert_eq!(s.at(3), None, "rows the slide does not know");
+    }
 
     #[test]
     fn groups_split_the_relations() {

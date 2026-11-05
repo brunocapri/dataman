@@ -317,6 +317,7 @@ pub const FOLDER_SHUT: Duration = Duration::from_millis(150);
 /// The simple explorer's rows sliding out from under the node opened, and back.
 pub const TREE_UNFOLD: Duration = Duration::from_millis(240);
 pub const TREE_FOLD: Duration = Duration::from_millis(180);
+pub const TREE_REORDER: Duration = Duration::from_millis(200);
 pub const FOLDER_SHUT_STAGGER: Duration = Duration::from_millis(18);
 pub const TURN: gpui::SpringConfig = gpui::SpringConfig::new(520., 42., 1.);
 pub const MENU_IN: Duration = Duration::from_millis(110);
