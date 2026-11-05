@@ -1548,7 +1548,15 @@ impl Workspace {
     pub(crate) fn new_connection_from_clipboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let text = cx.read_from_clipboard().and_then(|c| c.text()).unwrap_or_default();
         match dataman_core::connstr::parse_profile(&text) {
-            Some((p, pw)) => self.open_dialog_with(Some(p), true, pw, window, cx),
+            Some((p, pw)) => {
+                if self.modal_open(cx) {
+                    return;
+                }
+                self.open_dialog_with(Some(p), true, pw, window, cx);
+                if let Some(d) = self.dialog.clone() {
+                    d.update(cx, |d, cx| d.set_conn_str(text.trim(), cx));
+                }
+            }
             None => self.notice("No connection string on the clipboard", cx),
         }
     }
@@ -1615,7 +1623,12 @@ impl Workspace {
         match ev {
             WelcomeEvent::NewConnection => self.open_dialog(None, window, cx),
             WelcomeEvent::AgentSetup => self.open_settings_at("mcp", window, cx),
-            WelcomeEvent::Prefill(p, pw) => self.open_dialog_with(Some(p.clone()), true, pw.clone(), window, cx),
+            WelcomeEvent::Prefill(p, pw, text) => {
+                self.open_dialog_with(Some(p.clone()), true, pw.clone(), window, cx);
+                if let (Some(text), Some(d)) = (text, self.dialog.clone()) {
+                    d.update(cx, |d, cx| d.set_conn_str(text, cx));
+                }
+            }
             WelcomeEvent::OpenFile => self.open_sql_file(window, cx),
             WelcomeEvent::OpenDatabase => self.open_database_file(window, cx),
             WelcomeEvent::OpenProject => self.open_project(window, cx),

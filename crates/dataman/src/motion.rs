@@ -76,6 +76,84 @@ impl WidthTween {
     }
 }
 
+/// What a section that unrolls draws this frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Rolled {
+    Shut,
+    Open,
+    /// On its way, clipped to this height.
+    At(f32),
+}
+
+/// A section of unknown height that unrolls and rolls up. `natural` is what its content measured
+/// in the last frame ([`crate::ui::unrolled`] sets it), so a section opening for the first time
+/// starts from nothing and follows the measure as it comes in.
+#[derive(Debug)]
+pub struct Unroll {
+    pub natural: std::rc::Rc<std::cell::Cell<f32>>,
+    open: bool,
+    from: f32,
+    shown: f32,
+    tween: Option<WidthTween>,
+}
+
+impl Unroll {
+    /// As it is, with no motion: a step just entered shows its open section open.
+    pub fn rest(open: bool) -> Unroll {
+        Unroll { natural: Default::default(), open, from: 0., shown: 0., tween: None }
+    }
+
+    pub fn settle(&mut self, open: bool) {
+        (self.open, self.tween) = (open, None);
+    }
+
+    #[cfg(feature = "checks")]
+    pub fn is_settled(&self) -> bool {
+        self.tween.is_none()
+    }
+
+    pub fn frame(&mut self, open: bool, reduced: bool, now: Instant) -> Rolled {
+        let target = if open { self.natural.get() } else { 0. };
+        let freeze = unroll_freeze();
+        if open != self.open {
+            // At rest it stands at its measure, drawn since or not.
+            let from = match (self.tween, self.open) {
+                (Some(_), _) => self.shown,
+                (None, true) => self.natural.get(),
+                (None, false) => 0.,
+            };
+            self.open = open;
+            self.from = from;
+            self.tween = (!reduced || freeze.is_some()).then(|| WidthTween::panel(from, target, 240.));
+        }
+        let h = self.tween.and_then(|tw| match freeze {
+            Some(k) => Some(self.from + (target - self.from) * k),
+            None => tw.at(target, now),
+        });
+        match h {
+            Some(h) => {
+                self.shown = h;
+                Rolled::At(h)
+            }
+            None => {
+                self.tween = None;
+                self.shown = target;
+                if open { Rolled::Open } else { Rolled::Shut }
+            }
+        }
+    }
+}
+
+fn unroll_freeze() -> Option<f32> {
+    #[cfg(feature = "screenshots")]
+    {
+        static FREEZE: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
+        *FREEZE.get_or_init(|| std::env::var("DATAMAN_UNROLL_FREEZE").ok().and_then(|v| v.parse().ok()))
+    }
+    #[cfg(not(feature = "screenshots"))]
+    None
+}
+
 pub const EASE_OUT: CubicBezier = CubicBezier { x1: 0.22, y1: 1.0, x2: 0.36, y2: 1.0 };
 
 pub const ZOOM: Duration = Duration::from_millis(250);
@@ -540,6 +618,53 @@ pub fn system_reduce_motion() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_section_unrolls_to_what_it_measured_and_rolls_up() {
+        let t0 = Instant::now();
+        let later = |ms| t0 + Duration::from_millis(ms);
+        let mut u = Unroll::rest(false);
+        assert_eq!(u.frame(false, false, t0), Rolled::Shut);
+        u.natural.set(120.);
+        let Rolled::At(start) = u.frame(true, false, t0) else { panic!("it unrolls") };
+        assert!(start < 12., "from nothing: {start}");
+        let Rolled::At(mid) = u.frame(true, false, later(90)) else { panic!("still on its way") };
+        assert!(mid > start && mid < 120., "{mid}");
+        assert_eq!(u.frame(true, false, later(1000)), Rolled::Open);
+        let Rolled::At(closing) = u.frame(false, false, Instant::now()) else { panic!("it rolls up") };
+        assert!(closing > 60., "from where it was: {closing}");
+        assert_eq!(u.frame(false, false, later(3000)), Rolled::Shut);
+    }
+
+    #[test]
+    fn a_section_measured_once_rolls_up_from_its_height() {
+        let mut u = Unroll::rest(true);
+        assert_eq!(u.frame(true, false, Instant::now()), Rolled::Open);
+        // Its first frame measures it; nothing has drawn it since.
+        u.natural.set(120.);
+        let Rolled::At(h) = u.frame(false, false, Instant::now()) else { panic!("it rolls up") };
+        assert!(h > 100., "{h}");
+    }
+
+    #[test]
+    fn with_reduce_motion_the_swap_is_immediate() {
+        let now = Instant::now();
+        let mut u = Unroll::rest(false);
+        u.natural.set(120.);
+        assert_eq!(u.frame(true, true, now), Rolled::Open);
+        assert_eq!(u.frame(false, true, now), Rolled::Shut);
+    }
+
+    #[test]
+    fn a_step_entered_shows_its_open_section_open() {
+        let now = Instant::now();
+        let mut u = Unroll::rest(true);
+        u.natural.set(120.);
+        assert_eq!(u.frame(true, false, now), Rolled::Open, "open from the start");
+        let mut u = Unroll::rest(false);
+        u.settle(true);
+        assert_eq!(u.frame(true, false, now), Rolled::Open, "settled, with no motion");
+    }
 
     #[test]
     fn kde_animation_speed() {

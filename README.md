@@ -104,19 +104,19 @@ Agents › General in the app shows the exact command for your install, and so d
 
 ```bash
 # Claude Code
-claude mcp add dataman -- /Applications/Dataman.app/Contents/MacOS/dataman-mcp
+claude mcp add -s user dataman -- /Applications/Dataman.app/Contents/MacOS/dataman-mcp
 
 # Codex
 codex mcp add dataman -- /Applications/Dataman.app/Contents/MacOS/dataman-mcp
 
 # Gemini CLI
-gemini mcp add dataman /Applications/Dataman.app/Contents/MacOS/dataman-mcp
+gemini mcp add -s user dataman /Applications/Dataman.app/Contents/MacOS/dataman-mcp
 
 # VS Code (Copilot agent mode)
 code --add-mcp '{"name":"dataman","command":"/Applications/Dataman.app/Contents/MacOS/dataman-mcp"}'
 ```
 
-On Linux with the AppImage, `--mcp` goes after the path: for example, `claude mcp add dataman -- ~/Apps/Dataman-x86_64.AppImage --mcp`.
+On Linux with the AppImage, `--mcp` goes after the path: for example, `claude mcp add -s user dataman -- ~/Apps/Dataman-x86_64.AppImage --mcp`.
 
 **Agents configured by a JSON file**: add this to the file, and restart the app.
 

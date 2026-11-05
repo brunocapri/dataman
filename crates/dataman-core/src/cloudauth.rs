@@ -86,6 +86,11 @@ impl Cli {
             Cli::Gcloud => "Google Cloud",
         }
     }
+
+    /// The state a CLI with no session is in, said the same wherever it shows.
+    pub fn signed_out(self) -> String {
+        format!("Not signed in to {}", self.cloud())
+    }
 }
 
 /// Why no token: said so the user knows what to do (the command to run, the page to install from).
@@ -105,6 +110,8 @@ pub enum Fix {
     SignIn(Cli),
     /// The CLI is not installed: its install page.
     Install(Cli),
+    /// The CLI took too long to answer: asked again.
+    Again(Cli),
 }
 
 impl SignInError {
@@ -310,7 +317,7 @@ fn request(p: &ConnectionProfile) -> Result<Request, SignInError> {
 // ---- Running the CLI -------------------------------------------------------------------------
 
 /// Where the CLIs are looked for: the PATH, then where their installers put them.
-fn default_dirs() -> Vec<PathBuf> {
+pub fn default_dirs() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
     dirs.extend(install_dirs());
     // Absolute folders only: a relative PATH entry would be wherever the app was started.
@@ -376,9 +383,22 @@ fn runnable(m: &std::fs::Metadata) -> bool {
     m.is_file()
 }
 
-fn locate(program: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
+pub fn locate(program: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
     let names = file_names(program);
     dirs.iter().flat_map(|d| names.iter().map(move |n| d.join(n))).find(|f| std::fs::metadata(f).is_ok_and(|m| runnable(&m)))
+}
+
+/// A program found with [`locate`], set up to run with no input, no shell and no console window,
+/// stopped when dropped. Its own folder comes first on its PATH: az, gcloud and the agents' CLIs
+/// are scripts that look for their interpreter there.
+pub fn command(path: &Path, dirs: &[PathBuf]) -> tokio::process::Command {
+    let mut path_var: Vec<PathBuf> = path.parent().map(Path::to_path_buf).into_iter().collect();
+    path_var.extend(dirs.iter().cloned());
+    let mut cmd = tokio::process::Command::new(path);
+    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true).env("PATH", std::env::join_paths(path_var).unwrap_or_default());
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000);
+    cmd
 }
 
 /// Runs the CLI: its standard output, or what went wrong said plainly.
@@ -394,28 +414,17 @@ async fn exec(cli: Cli, args: &[String], dirs: &[PathBuf], auth: &Auth, timeout:
     let Some(path) = locate(cli.program(), dirs) else {
         return Err(SignInError::new(format!("{} ({}) not found", cli.name(), cli.program()), format!("Dataman signs in through it: install it ({}), then sign in.", cli.install_url())).fix(Fix::Install(cli)));
     };
-    // The CLI's own folder first (az and gcloud are scripts that look for their Python there).
-    let mut path_var: Vec<PathBuf> = path.parent().map(Path::to_path_buf).into_iter().collect();
-    path_var.extend(dirs.iter().cloned());
-    let mut cmd = tokio::process::Command::new(&path);
+    let mut cmd = command(&path, dirs);
     cmd.args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .env("PATH", std::env::join_paths(path_var).unwrap_or_default())
         .env("AZURE_CORE_NO_COLOR", "1")
         .env("AZURE_CORE_ONLY_SHOW_ERRORS", "1")
         .env("AWS_PAGER", "")
         .env("AWS_CLI_AUTO_PROMPT", "off")
         .env("CLOUDSDK_CORE_DISABLE_PROMPTS", "1");
-    // No console window flashing up over the app.
-    #[cfg(windows)]
-    cmd.creation_flags(0x0800_0000);
     let out = match tokio::time::timeout(timeout, cmd.output()).await {
         Ok(Ok(o)) => o,
         Ok(Err(e)) => return Err(SignInError::new(format!("{} did not start", cli.name()), e.to_string())),
-        Err(_) => return Err(SignInError::new(format!("{} did not answer in {} s", cli.name(), timeout.as_secs()), format!("Run `{}` in a terminal to see what it waits for.", login_command(cli, auth)))),
+        Err(_) => return Err(SignInError::new(format!("{} did not answer in {} s", cli.name(), timeout.as_secs()), format!("Run `{}` in a terminal to see what it waits for.", login_command(cli, auth))).fix(Fix::Again(cli))),
     };
     if !out.status.success() {
         return Ok(Err(String::from_utf8_lossy(&out.stderr).into_owned()));
@@ -486,7 +495,7 @@ fn classify(cli: Cli, stderr: &str, auth: &Auth, args: &[String]) -> SignInError
     let first = stderr.lines().map(str::trim).map(|l| l.trim_start_matches("ERROR:").trim_start_matches("ERROR").trim_start_matches(':').trim()).find(|l| !l.is_empty()).unwrap_or("").to_string();
     let first: String = first.chars().take(300).collect();
     let login = login_command(cli, auth);
-    let signed_out = |detail: &str| SignInError::new(format!("Not signed in to {}", cli.cloud()), format!("Sign in again, or run `{login}` in a terminal.{detail}")).fix(Fix::SignIn(cli));
+    let signed_out = |detail: &str| SignInError::new(cli.signed_out(), format!("Sign in again, or run `{login}` in a terminal.{detail}")).fix(Fix::SignIn(cli));
     match cli {
         Cli::Az => {
             if has(&["AADSTS50076", "AADSTS50079", "AADSTS50078", "AADSTS53003", "AADSTS530003", "claims challenge", "interaction_required"]) {
@@ -629,6 +638,12 @@ fn jwt_identity(token: &str) -> Option<String> {
     let v: serde_json::Value = serde_json::from_slice(&raw).ok()?;
     let claim = |k: &str| v.get(k).and_then(|c| c.as_str()).map(str::to_string).filter(|s| !s.is_empty());
     claim("upn").or_else(|| claim("unique_name")).or_else(|| claim("preferred_username")).or_else(|| claim("email")).or_else(|| claim("appid").map(|a| format!("application {a}")))
+}
+
+/// Who a signed-in status names: an AWS ARN's role and session, not its account and path.
+pub fn short_identity(who: &str) -> &str {
+    let tail = who.strip_prefix("arn:").and_then(|_| who.rsplit(':').next()).unwrap_or(who);
+    tail.strip_prefix("assumed-role/").or_else(|| tail.strip_prefix("user/")).unwrap_or(tail)
 }
 
 /// `aws sts get-caller-identity --output json`: the ARN.
@@ -843,6 +858,13 @@ mod tests {
         }
         let sts = r#"{"UserId":"AROA:ana","Account":"123456789012","Arn":"arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_Dev_1/ana@example.com"}"#;
         assert_eq!(parse_sts(sts).as_deref(), Some("arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_Dev_1/ana@example.com"));
+    }
+
+    #[test]
+    fn a_status_names_an_identity_shortly() {
+        assert_eq!(short_identity("arn:aws:sts::123456789012:assumed-role/AdministratorAccess/ana"), "AdministratorAccess/ana");
+        assert_eq!(short_identity("arn:aws:iam::123456789012:user/ana"), "ana");
+        assert_eq!(short_identity("ana@contoso.com"), "ana@contoso.com");
     }
 
     #[test]

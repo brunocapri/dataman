@@ -6,7 +6,7 @@ use gpui::{
     AnyView, App, Bounds, Context, Div, ElementId, FontWeight, Hsla, IntoElement, ParentElement, Pixels, Render, SharedString,
     Stateful, Styled, Window, div, prelude::*,
 };
-use crate::theme::px;
+use crate::theme::{Pt, px};
 
 use crate::assets::{Icon, icon};
 use crate::theme::{ActiveTheme, BANNER, Theme};
@@ -145,9 +145,8 @@ pub enum Btn {
     Danger,
 }
 
-pub fn button(t: &Theme, id: impl Into<ElementId>, kind: Btn) -> Stateful<Div> {
-    let id = id.into();
-    let base = div()
+fn button_base(id: ElementId) -> Stateful<Div> {
+    div()
         .children(here(&id))
         .id(id)
         .flex_none()
@@ -158,25 +157,31 @@ pub fn button(t: &Theme, id: impl Into<ElementId>, kind: Btn) -> Stateful<Div> {
         .gap(px(7.))
         .text_size(px(crate::theme::text::BODY))
         .whitespace_nowrap()
-        .cursor_pointer();
+}
+
+fn button_look(base: Stateful<Div>, t: &Theme, kind: Btn) -> Stateful<Div> {
     match kind {
-        Btn::Primary => {
-            let (h, p) = (t.acc_h, t.acc_p);
-            base.bg(t.acc).text_color(t.on_acc).hover(move |s| s.bg(h)).active(move |s| s.bg(p))
-        }
-        Btn::Secondary => {
-            let (h, p) = (t.prs, t.line2);
-            base.bg(t.hov).border_1().border_color(t.line2).text_color(t.tx).hover(move |s| s.bg(h)).active(move |s| s.bg(p))
-        }
-        Btn::Ghost => {
-            let (h, p) = (t.hov, t.prs);
-            base.text_color(t.tx2).hover(move |s| s.bg(h)).active(move |s| s.bg(p))
-        }
-        Btn::Danger => {
-            let (h, p) = (t.err.opacity(0.22), t.err.opacity(0.30));
-            base.bg(t.err_s).border_1().border_color(t.err).text_color(t.err).hover(move |s| s.bg(h)).active(move |s| s.bg(p))
-        }
+        Btn::Primary => base.bg(t.acc).text_color(t.on_acc),
+        Btn::Secondary => base.bg(t.hov).border_1().border_color(t.line2).text_color(t.tx),
+        Btn::Ghost => base.text_color(t.tx2),
+        Btn::Danger => base.bg(t.err_s).border_1().border_color(t.err).text_color(t.err),
     }
+}
+
+pub fn button(t: &Theme, id: impl Into<ElementId>, kind: Btn) -> Stateful<Div> {
+    let (h, p) = match kind {
+        Btn::Primary => (t.acc_h, t.acc_p),
+        Btn::Secondary => (t.prs, t.line2),
+        Btn::Ghost => (t.hov, t.prs),
+        Btn::Danger => (t.err.opacity(0.22), t.err.opacity(0.30)),
+    };
+    button_look(button_base(id.into()), t, kind).cursor_pointer().hover(move |s| s.bg(h)).active(move |s| s.bg(p))
+}
+
+/// A [`button`] that cannot be pressed now: dimmed, and no hover or press (GPUI takes one hover
+/// style per element, so it cannot be cleared after).
+pub fn button_off(t: &Theme, id: impl Into<ElementId>, kind: Btn) -> Stateful<Div> {
+    button_look(button_base(id.into()), t, kind).opacity(0.45)
 }
 
 /// "Copy SQL" and the like: the copy icon and its label, then "Copied" with a check in the same
@@ -685,6 +690,11 @@ pub fn modal_header(t: &Theme, leading: Option<gpui::AnyElement>, title: impl In
     modal_header_with(t, leading, title, None, close)
 }
 
+/// A modal's top bar, for the header that holds more than a title.
+pub fn modal_header_bar(t: &Theme) -> Div {
+    div().h(px(52.)).flex_none().pl(px(20.)).pr(px(16.)).flex().flex_row().items_center().border_b_1().border_color(t.line)
+}
+
 pub fn modal_header_with(
     t: &Theme,
     leading: Option<gpui::AnyElement>,
@@ -692,21 +702,61 @@ pub fn modal_header_with(
     extra: Option<gpui::AnyElement>,
     close: impl IntoElement,
 ) -> Div {
-    div()
-        .h(px(52.))
-        .flex_none()
-        .pl(px(20.))
-        .pr(px(16.))
-        .flex()
-        .flex_row()
-        .items_center()
+    modal_header_bar(t)
         .gap(px(12.))
-        .border_b_1()
-        .border_color(t.line)
         .children(leading)
         .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(13.5)).font_weight(FontWeight::SEMIBOLD).child(title.into()))
         .children(extra)
         .child(close)
+}
+
+/// Where a stepped flow stands on one of its steps.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CrumbState {
+    Current,
+    Visited,
+    Next,
+    Skipped,
+}
+
+/// One step of a breadcrumb: only a visited one takes a click (the caller's `on_click`).
+pub fn crumb(t: &Theme, id: impl Into<ElementId>, label: impl Into<SharedString>, state: CrumbState) -> Stateful<Div> {
+    let id = id.into();
+    let hov = t.hov;
+    let base = div().children(here(&id)).id(id).flex_none().h(px(26.)).px(px(6.)).flex().items_center().text_size(px(crate::theme::text::BODY)).text_color(t.tx).whitespace_nowrap();
+    let base = match state {
+        CrumbState::Current => base.bg(t.prs).font_weight(FontWeight::MEDIUM),
+        CrumbState::Visited => base.opacity(0.6).cursor_pointer().hover(move |s| s.bg(hov).opacity(1.)),
+        CrumbState::Next => base.opacity(0.4),
+        CrumbState::Skipped => base.opacity(0.2),
+    };
+    base.child(label.into())
+}
+
+pub fn crumb_sep(t: &Theme) -> gpui::Svg {
+    icon(Icon::ChevronRight).size(px(10.)).text_color(t.tx4)
+}
+
+/// A section that unrolls ([`crate::motion::Unroll`]): clipped to its height on the way, measured
+/// in every frame. Holds nothing while shut.
+pub fn unrolled(id: impl Into<ElementId>, at: crate::motion::Rolled, natural: Rc<Cell<f32>>, body: Div) -> Option<gpui::AnyElement> {
+    use crate::motion::Rolled;
+    if at == Rolled::Shut {
+        return None;
+    }
+    let clip = if let Rolled::At(h) = at { Some(h) } else { None };
+    Some(
+        div()
+            .when_some(clip, |d, h| d.h(px(h)).overflow_hidden())
+            .on_children_prepainted(move |b, _, _| {
+                if let Some(b) = b.first() {
+                    natural.set(b.size.height.pt());
+                }
+            })
+            .id(id)
+            .child(body.flex_none())
+            .into_any_element(),
+    )
 }
 
 pub fn modal_close(t: &Theme, id: impl Into<ElementId>) -> Stateful<Div> {

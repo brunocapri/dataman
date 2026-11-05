@@ -1,3 +1,4 @@
+pub mod agents;
 pub mod builtin;
 pub mod cli;
 pub mod hub;
@@ -40,11 +41,10 @@ pub fn claude_stdio_command(bin: &str) -> String {
 /// The server's command line (the binary and its arguments), quoted for a POSIX shell (for
 /// cmd and PowerShell on Windows).
 pub fn claude_stdio_command_with(argv: &[&str]) -> String {
-    let words: Vec<String> = argv.iter().map(|a| shell_word(a)).collect();
-    format!("claude mcp add dataman -- {}", words.join(" "))
+    agents::copy_text(&agents::AGENTS[0], argv)
 }
 
-fn shell_word(s: &str) -> String {
+pub(crate) fn shell_word(s: &str) -> String {
     if !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"/._-+=:@%,".contains(&b) || (cfg!(windows) && b == b'\\')) {
         return s.to_string();
     }
@@ -80,16 +80,16 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn claude_commands() {
-        assert_eq!(super::claude_stdio_command("/usr/local/bin/dataman-mcp"), "claude mcp add dataman -- /usr/local/bin/dataman-mcp");
-        assert_eq!(super::claude_stdio_command("/Applications/My Apps/Dataman.app/x"), "claude mcp add dataman -- '/Applications/My Apps/Dataman.app/x'");
-        assert_eq!(super::claude_stdio_command("/home/o'neil/$x `y`"), "claude mcp add dataman -- '/home/o'\\''neil/$x `y`'");
-        assert_eq!(super::claude_stdio_command_with(&["/home/u/Apps/Dataman-x86_64.AppImage", "--mcp"]), "claude mcp add dataman -- /home/u/Apps/Dataman-x86_64.AppImage --mcp");
+        assert_eq!(super::claude_stdio_command("/usr/local/bin/dataman-mcp"), "claude mcp add -s user dataman -- /usr/local/bin/dataman-mcp");
+        assert_eq!(super::claude_stdio_command("/Applications/My Apps/Dataman.app/x"), "claude mcp add -s user dataman -- '/Applications/My Apps/Dataman.app/x'");
+        assert_eq!(super::claude_stdio_command("/home/o'neil/$x `y`"), "claude mcp add -s user dataman -- '/home/o'\\''neil/$x `y`'");
+        assert_eq!(super::claude_stdio_command_with(&["/home/u/Apps/Dataman-x86_64.AppImage", "--mcp"]), "claude mcp add -s user dataman -- /home/u/Apps/Dataman-x86_64.AppImage --mcp");
     }
 
     #[test]
     #[cfg(windows)]
     fn claude_commands() {
-        assert_eq!(super::claude_stdio_command(r"C:\Users\u\AppData\Local\Programs\Dataman\dataman-mcp.exe"), r"claude mcp add dataman -- C:\Users\u\AppData\Local\Programs\Dataman\dataman-mcp.exe");
-        assert_eq!(super::claude_stdio_command(r"C:\Program Files\Dataman\dataman-mcp.exe"), r#"claude mcp add dataman -- "C:\Program Files\Dataman\dataman-mcp.exe""#);
+        assert_eq!(super::claude_stdio_command(r"C:\Users\u\AppData\Local\Programs\Dataman\dataman-mcp.exe"), r"claude mcp add -s user dataman -- C:\Users\u\AppData\Local\Programs\Dataman\dataman-mcp.exe");
+        assert_eq!(super::claude_stdio_command(r"C:\Program Files\Dataman\dataman-mcp.exe"), r#"claude mcp add -s user dataman -- "C:\Program Files\Dataman\dataman-mcp.exe""#);
     }
 }

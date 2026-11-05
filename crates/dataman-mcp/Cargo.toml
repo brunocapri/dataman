@@ -13,7 +13,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 dataman-core.workspace = true
-tokio = { workspace = true, features = ["io-std", "io-util"] }
+tokio = { workspace = true, features = ["io-std", "io-util", "process", "time"] }
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
@@ -24,6 +24,7 @@ log = "0.4"
 rmcp = { version = "3.5.1", default-features = false, features = ["server", "transport-io"] }
 tokio-util = "0.7"
 futures-util.workspace = true
+data-encoding = "2"
 
 [dev-dependencies]
 tempfile = "3"

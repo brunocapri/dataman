@@ -1,7 +1,7 @@
-//! `connections-check`: every engine through the connection sheet (picker search, form, Test,
-//! Save & connect with environment, MCP tier and color, edit, duplicate, delete and undo), URL
-//! entry, SSH through the compose bastion, a connection from the clipboard, and importing
-//! pgpass/service entries.
+//! `connections-check`: every engine through the connection sheet's steps (picker search,
+//! connection, sign-in, Test, Save & connect with environment, MCP tier and color, edit, duplicate,
+//! delete and undo), a connection string, SSH through the compose bastion, a connection from the
+//! clipboard, and importing pgpass/service entries.
 
 use gpui::{AsyncWindowContext, Entity, Focusable, Modifiers, MouseButton};
 use dataman_core::config::{Engine, Environment, McpAccess};
@@ -21,8 +21,7 @@ fn status(d: &Entity<ConnDialog>, cx: &mut AsyncWindowContext) -> String {
 
 /// Clicks Test and waits for its verdict.
 async fn test(d: &Entity<ConnDialog>, cx: &mut AsyncWindowContext) -> String {
-    // The form tweens to a new height when a row comes or goes (a verdict cleared): a slow
-    // renderer's press and release, a frame apart, would find Test moved under the pointer.
+    // A method rolling up or down moves what is under it.
     until(cx, 3, |cx| cx.update(|_, cx| d.read(cx).demo_still()).unwrap_or(true)).await;
     click_probe("dlg-test", cx);
     until(cx, 20, |cx| status(d, cx) != "testing" && status(d, cx) != "untested").await;
@@ -30,7 +29,7 @@ async fn test(d: &Entity<ConnDialog>, cx: &mut AsyncWindowContext) -> String {
 }
 
 /// Clicks a text field of the sheet and types over what it holds.
-fn fill(probe: &str, text: &str, cx: &mut AsyncWindowContext) -> bool {
+pub(crate) fn fill(probe: &str, text: &str, cx: &mut AsyncWindowContext) -> bool {
     if !click_probe(&format!("field-{probe}"), cx) {
         return false;
     }
@@ -43,7 +42,7 @@ fn fill(probe: &str, text: &str, cx: &mut AsyncWindowContext) -> bool {
     true
 }
 
-fn saved(ws: &Entity<Workspace>, id: &str, cx: &mut AsyncWindowContext) -> Option<dataman_core::ConnectionProfile> {
+pub(crate) fn saved(ws: &Entity<Workspace>, id: &str, cx: &mut AsyncWindowContext) -> Option<dataman_core::ConnectionProfile> {
     core(ws, cx).config.connections().into_iter().find(|p| p.id == id)
 }
 
@@ -116,7 +115,7 @@ async fn file_engine(ws: &Entity<Workspace>, e: Engine, search: &str, r: &mut Re
     let (step, picked) = cx.update(|_, cx| (d.read(cx).step(), d.read(cx).current(cx).0.engine)).unwrap();
     let shown = |p: &str, cx: &mut AsyncWindowContext| probed(&format!("field-{p}"), cx).is_some();
     let shape = shown("FILE", cx) && !shown("HOST", cx) && !shown("USER", cx) && !shown("PASSWORD", cx) && probed("file-new", cx).is_some();
-    r.check(&format!("{label}: typing \"{search}\" picks it, and its form is a file"), step == Step::Form && picked == e && shape, format!("{step:?} {picked:?} {shape}"));
+    r.check(&format!("{label}: typing \"{search}\" picks it, and its form is a file"), step == Step::Connection && picked == e && shape, format!("{step:?} {picked:?} {shape}"));
     let dir = std::env::temp_dir().join(format!("dataman-conns-{}-{}", e.slug(), std::process::id()));
     let _ = std::fs::create_dir_all(&dir);
     let missing = dir.join(format!("missing.{}", e.file_extensions()[0]));
@@ -131,6 +130,7 @@ async fn file_engine(ws: &Entity<Workspace>, e: Engine, search: &str, r: &mut Re
     let s = test(&d, cx).await;
     r.check(&format!("{label}: New… names it after the file and Test creates it"), s == "ok" && new.is_file() && name == "fresh", format!("{s} {name}"));
     let id = cx.update(|_, cx| d.read(cx).profile_id().to_string()).unwrap();
+    crate::check::sheet_to_last_step(&d, cx).await;
     click_probe("dlg-save", cx);
     let up = connected(ws, &id, 20, cx).await;
     let p = saved(ws, &id, cx);
@@ -178,7 +178,7 @@ async fn engine(ws: &Entity<Workspace>, case: &Case, r: &mut Report, cx: &mut As
     let (step, picked) = cx.update(|_, cx| (d.read(cx).step(), d.read(cx).current(cx).0.engine)).unwrap();
     r.check(
         &format!("{label}: ⌘N, typing \"{}\" and ↩ picks it", case.search),
-        step0 == Some(Step::Engine) && step == Step::Form && picked == e,
+        step0 == Some(Step::Database) && step == Step::Connection && picked == e,
         format!("{step0:?} {step:?} {picked:?}"),
     );
 
@@ -190,21 +190,25 @@ async fn engine(ws: &Entity<Workspace>, case: &Case, r: &mut Report, cx: &mut As
     let shown = |p: &str, cx: &mut AsyncWindowContext| probed(&format!("field-{p}"), cx).is_some();
     let user_field = if e.is_sql() { "USER" } else { "USER (OPTIONAL)" };
     let port = cx.update(|_, cx| d.read(cx).current(cx).0.port).unwrap_or(0);
-    let shape = shown(user_field, cx)
+    let shape = !shown(user_field, cx)
         && db_field.is_none_or(|f| shown(f, cx))
         && !(db_field.is_none() && (shown("DATABASE", cx) || shown("DB", cx)))
         && shown("OPTIONS", cx) == (e == Engine::MongoDb)
         && port == e.default_port();
-    r.check(&format!("{label}: its own form (user, database, options, port {})", e.default_port()), shape, format!("port {port}"));
+    r.check(&format!("{label}: its own Connection (database, options, port {}), the user on Sign-in", e.default_port()), shape, format!("port {port}"));
 
     let name = format!("e2e {label}");
     typ(cx, &name);
     fill("HOST", &prof.host, cx);
     fill("PORT", &prof.port.to_string(), cx);
-    fill(user_field, &prof.user, cx);
     if let Some(f) = db_field {
         fill(f, &prof.database, cx);
     }
+    click_probe("env-staging", cx);
+    click_probe("swatch-3", cx);
+    click_probe("dlg-save", cx);
+    pause(cx, 50).await;
+    fill(user_field, &prof.user, cx);
     if !pw.is_empty() {
         fill("PASSWORD", "not-the-password", cx);
         let s = test(&d, cx).await;
@@ -214,9 +218,9 @@ async fn engine(ws: &Entity<Workspace>, case: &Case, r: &mut Report, cx: &mut As
     let s = test(&d, cx).await;
     r.check(&format!("{label}: Test reaches the server"), s == "ok", &s);
 
-    click_probe("env-staging", cx);
+    click_probe("dlg-save", cx);
+    pause(cx, 50).await;
     click_probe("mcp-read", cx);
-    click_probe("swatch-3", cx);
     let id = cx.update(|_, cx| d.read(cx).profile_id().to_string()).unwrap();
     click_probe("dlg-save", cx);
     let up = connected(ws, &id, 30, cx).await;
@@ -252,7 +256,8 @@ async fn engine(ws: &Entity<Workspace>, case: &Case, r: &mut Report, cx: &mut As
 
     let duplicated = menu(ws, &row, Act::DuplicateConnection, cx).await;
     let copy = dialog(ws, cx).map(|d| cx.update(|_, cx| (d.read(cx).profile_id().to_string(), d.read(cx).current(cx))).unwrap());
-    if copy.is_some() {
+    if let Some(d) = dialog(ws, cx) {
+        crate::check::sheet_to_last_step(&d, cx).await;
         key(cx, "cmd-enter");
     }
     let copy_id = copy.as_ref().map(|c| c.0.clone()).unwrap_or_default();
@@ -300,19 +305,19 @@ async fn urls(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowContex
         pause(cx, 150).await;
         let Some(d) = dialog(ws, cx) else { continue };
         click_probe(&format!("engine-{}", e.label()), cx);
-        click_probe("entry-URL", cx);
-        key(cx, "cmd-a");
-        typ(cx, &url);
+        fill("CONNECTION STRING", &url, cx);
         pause(cx, 50).await;
         let (got, gpw) = cx.update(|_, cx| d.read(cx).current(cx)).unwrap();
         let typed = cx.update(|_, cx| d.read(cx).demo_conn_str(cx)).unwrap_or_default();
+        click_probe("dlg-save", cx);
+        pause(cx, 50).await;
         let s = test(&d, cx).await;
         r.check(
-            &format!("{}: a URL typed in URL entry fills the connection and tests", e.label()),
+            &format!("{}: a connection string typed fills the connection and tests", e.label()),
             got.engine == e && got.host == p.host && got.port == p.port && gpw == pw && s == "ok",
-            format!("{:?} {}:{} pw {} → {s} (URL field {typed:?})", got.engine, got.host, got.port, gpw.len()),
+            format!("{:?} {}:{} pw {} → {s} (string {typed:?})", got.engine, got.host, got.port, gpw.len()),
         );
-        click_probe("dlg-cancel", cx);
+        key(cx, "escape");
         pause(cx, 100).await;
     }
 
@@ -323,27 +328,28 @@ async fn urls(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowContex
         click_probe("engine-Elasticsearch", cx);
         fill("HOST", &p.host, cx);
         fill("PORT", &p.port.to_string(), cx);
+        click_probe("dlg-save", cx);
+        pause(cx, 50).await;
         fill("USER (OPTIONAL)", &p.user, cx);
         fill("PASSWORD", &pw, cx);
-        click_probe("entry-URL", cx);
         let bad = cx.update(|_, cx| d.read(cx).conn_str_invalid(cx)).unwrap_or(true);
+        let text = cx.update(|_, cx| d.read(cx).demo_conn_str(cx)).unwrap_or_default();
         let s = test(&d, cx).await;
-        r.check("a filled Elasticsearch form switched to URL keeps working (its own http URL)", !bad && s == "ok", format!("flagged {bad} → {s}"));
-        click_probe("dlg-cancel", cx);
+        r.check("the fields of a filled Elasticsearch sheet write its own http URL, without the password", !bad && s == "ok" && text.starts_with("http://") && !text.contains(&pw), format!("flagged {bad} {text} → {s}"));
+        key(cx, "escape");
     }
 
     key(cx, "cmd-n");
     pause(cx, 150).await;
     if let Some(d) = dialog(ws, cx) {
         click_probe("engine-PostgreSQL", cx);
-        click_probe("entry-URL", cx);
-        key(cx, "cmd-a");
-        typ(cx, "postgres//app@db.example.com/shop");
+        fill("HOST", "db.example.com", cx);
+        fill("CONNECTION STRING", "postgres//app@db.example.com/shop", cx);
         click_probe("dlg-save", cx);
         pause(cx, 100).await;
-        let (bad, s) = cx.update(|_, cx| (d.read(cx).conn_str_invalid(cx), d.read(cx).demo_status(cx).0)).unwrap();
-        r.check("a malformed URL is flagged and not saved", bad && s.starts_with("invalid") && dialog(ws, cx).is_some(), format!("flagged {bad} {s}"));
-        click_probe("dlg-cancel", cx);
+        let (bad, step) = cx.update(|_, cx| (d.read(cx).conn_str_invalid(cx), d.read(cx).step())).unwrap();
+        r.check("a malformed string says so under its field and Continue stays", bad && step == Step::Connection && probed("string-bad", cx).is_some(), format!("flagged {bad} {step:?}"));
+        key(cx, "escape");
     }
 }
 
@@ -363,15 +369,17 @@ async fn ssh(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowContext
     // The database as the bastion sees it: the host's published port.
     fill("HOST", "host.docker.internal", cx);
     fill("PORT", &pg.port.to_string(), cx);
-    fill("USER", &pg.user, cx);
     fill("DATABASE", &pg.database, cx);
-    fill("PASSWORD", &pw, cx);
     click_probe("ssh-toggle", cx);
     fill("SSH HOST", &s[0], cx);
     fill("SSH PORT", &s[1], cx);
     fill("SSH USER", "nobody", cx);
     click_probe("ssh-auth-key", cx);
     fill("KEY FILE", &key_file, cx);
+    click_probe("dlg-save", cx);
+    pause(cx, 50).await;
+    fill("USER", &pg.user, cx);
+    fill("PASSWORD", &pw, cx);
     let first = test(&d, cx).await;
     r.check("SSH: an unknown bastion asks to trust its host key", first == "hostkey", &first);
     until(cx, 3, |cx| cx.update(|_, cx| d.read(cx).demo_still()).unwrap_or(true)).await;
@@ -379,10 +387,15 @@ async fn ssh(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowContext
     until(cx, 5, |cx| status(&d, cx) != "hostkey").await;
     let wrong = test(&d, cx).await;
     r.check("SSH: a user the bastion refuses fails the test", wrong.starts_with("failed"), &wrong);
+    click_probe("crumb-Connection", cx);
+    pause(cx, 50).await;
     fill("SSH USER", s.get(2).map_or("dataman", String::as_str), cx);
+    click_probe("crumb-Sign-in", cx);
+    pause(cx, 50).await;
     let ok = test(&d, cx).await;
     r.check("SSH: trusted, with the key, the test goes through the tunnel", ok == "ok", &ok);
     let id = cx.update(|_, cx| d.read(cx).profile_id().to_string()).unwrap();
+    crate::check::sheet_to_last_step(&d, cx).await;
     click_probe("dlg-save", cx);
     let up = connected(ws, &id, 30, cx).await;
     let _ = cx.update(|window, cx| {
@@ -411,7 +424,7 @@ async fn clipboard_and_import(ws: &Entity<Workspace>, r: &mut Report, cx: &mut A
         got.as_ref().is_some_and(|(g, gpw)| g.engine == Engine::MySql && g.port == p.port && g.database == p.database && *gpw == pw),
         format!("{:?}", got.map(|(g, _)| (g.engine, g.port, g.database))),
     );
-    click_probe("dlg-cancel", cx);
+    key(cx, "escape");
     pause(cx, 100).await;
     set_clipboard("just some words", cx);
     let _ = cx.update(|window, cx| window.dispatch_action(Box::new(crate::app::NewConnectionFromClipboard), cx));

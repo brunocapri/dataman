@@ -86,6 +86,12 @@ assets!(
     "icons/win-min.svg",
     "icons/win-restore.svg",
     "icons/warning.svg",
+    "agents/claude.svg",
+    "agents/cursor.svg",
+    "agents/gemini.svg",
+    "agents/openai.svg",
+    "agents/vscode.svg",
+    "agents/windsurf.svg",
     "logos/elasticsearch.svg",
     "logos/mongodb.svg",
     "logos/mysql.svg",
@@ -288,6 +294,11 @@ pub fn logo(e: dataman_core::Engine) -> gpui::Img {
     gpui::img(path).flex_none()
 }
 
+/// An agent's one-shape logo, tinted with the svg's text color.
+pub fn agent_logo_mono(path: &'static str) -> Svg {
+    svg().path(path).flex_none().size(crate::theme::px(16.))
+}
+
 pub fn small_logo(e: dataman_core::Engine, size: f32) -> Option<gpui::Img> {
     logos_on().then(|| logo(e).size(crate::theme::px(size)))
 }
@@ -295,6 +306,13 @@ pub fn small_logo(e: dataman_core::Engine, size: f32) -> Option<gpui::Img> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_agent_has_its_logo() {
+        for a in &dataman_mcp::agents::AGENTS {
+            assert!(Assets.load(a.logo).unwrap().is_some_and(|b| b.starts_with(b"<svg")), "{}", a.logo);
+        }
+    }
 
     #[test]
     fn every_engine_has_its_logo() {

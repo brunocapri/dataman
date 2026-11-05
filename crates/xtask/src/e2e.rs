@@ -82,6 +82,7 @@ const SQL3: &[Db] = &[Pg, MySql, MsSql];
 const STAGES: &[Stage] = &[
     st("newuser-check", SQL3, 300),
     st("connections-check", &[Pg, MySql, MsSql, Mongo, Es, OpenSearch, Redis, Ssh], 400),
+    st("conn-steps-check", &[], 200),
     st("conns-check", &[Pg], 120),
     st("ui-check", &[Pg], 400),
     st("tabs-check", &[Pg, Mongo, Redis], 200),

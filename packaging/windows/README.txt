@@ -12,7 +12,7 @@ Where Dataman keeps things
   SSH                              %USERPROFILE%\.ssh\config, known_hosts
 
 Agents (MCP)
-  Claude Code:     claude mcp add dataman -- "C:\path\to\dataman-mcp.exe"
+  Claude Code:     claude mcp add -s user dataman -- "C:\path\to\dataman-mcp.exe"
   Claude Desktop:  %APPDATA%\Claude\claude_desktop_config.json
                    { "mcpServers": { "dataman": { "command": "C:\\path\\to\\dataman-mcp.exe" } } }
   Cursor:          %USERPROFILE%\.cursor\mcp.json, the same "mcpServers" entry
