@@ -1005,7 +1005,8 @@ mod tree_tests {
         let dir = tempfile::tempdir().unwrap();
         let f = launcher(dir.path());
         let mut cmd = command(&f, &default_dirs());
-        let waits = run_tree(&mut cmd, Duration::from_secs(5));
+        // Long enough for PowerShell to start on a slow runner, or the timeout comes first.
+        let waits = run_tree(&mut cmd, Duration::from_secs(if cfg!(windows) { 45 } else { 5 }));
         tokio::pin!(waits);
         let pid = tokio::select! {
             pid = child_of(dir.path()) => pid,
