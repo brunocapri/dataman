@@ -97,7 +97,7 @@ pub async fn run(ws: &Entity<Workspace>, case: &Case, r: &mut Report, cx: &mut A
     let tested = until(cx, 10, |cx| cx.update(|_, cx| d.read(cx).demo_status(cx).0 != "testing").unwrap_or(true)).await;
     let status = cx.update(|_, cx| d.read(cx).demo_status(cx).0).unwrap_or_default();
     r.check("Test opens the file", tested && status == "ok", status);
-    let _ = cx.update(|_, cx| d.update(cx, |d, cx| d.demo_save(cx)));
+    let _ = cx.update(|window, cx| d.update(cx, |d, cx| d.demo_save(window, cx)));
     // The save runs off the UI thread: the list follows once it lands.
     until(cx, 10, |cx| profiles(ws, cx).iter().any(|p| p.engine == case.engine && p.path.as_deref() == Some(shown.as_str()))).await;
     let saved = profiles(ws, cx).into_iter().find(|p| p.engine == case.engine && p.path.as_deref() == Some(shown.as_str()));

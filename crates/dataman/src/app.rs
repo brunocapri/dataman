@@ -1554,7 +1554,7 @@ impl Workspace {
                 }
                 self.open_dialog_with(Some(p), true, pw, window, cx);
                 if let Some(d) = self.dialog.clone() {
-                    d.update(cx, |d, cx| d.set_conn_str(text.trim(), cx));
+                    d.update(cx, |d, cx| d.prefill_conn_str(text.trim(), cx));
                 }
             }
             None => self.notice("No connection string on the clipboard", cx),
@@ -1626,7 +1626,7 @@ impl Workspace {
             WelcomeEvent::Prefill(p, pw, text) => {
                 self.open_dialog_with(Some(p.clone()), true, pw.clone(), window, cx);
                 if let (Some(text), Some(d)) = (text, self.dialog.clone()) {
-                    d.update(cx, |d, cx| d.set_conn_str(text, cx));
+                    d.update(cx, |d, cx| d.prefill_conn_str(text, cx));
                 }
             }
             WelcomeEvent::OpenFile => self.open_sql_file(window, cx),

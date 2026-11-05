@@ -198,10 +198,10 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     }
     check("each engine brings its default port, and leaves the user to be asked", seen == ["3306", "1433", "5432"] && field(3, cx).is_empty(), format!("{seen:?} {:?}", field(3, cx)));
 
-    let _ = cx.update(|_, cx| {
+    let _ = cx.update(|window, cx| {
         d.update(cx, |d, cx| {
             d.demo_set_field(1, "", cx);
-            d.demo_save(cx);
+            d.demo_save(window, cx);
         })
     });
     let s = status(&d, cx).0;

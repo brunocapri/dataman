@@ -90,7 +90,6 @@ assets!(
     "agents/cursor.svg",
     "agents/gemini.svg",
     "agents/openai.svg",
-    "agents/vscode.svg",
     "agents/windsurf.svg",
     "logos/elasticsearch.svg",
     "logos/mongodb.svg",

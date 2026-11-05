@@ -111,9 +111,6 @@ codex mcp add dataman -- /Applications/Dataman.app/Contents/MacOS/dataman-mcp
 
 # Gemini CLI
 gemini mcp add -s user dataman /Applications/Dataman.app/Contents/MacOS/dataman-mcp
-
-# VS Code (Copilot agent mode)
-code --add-mcp '{"name":"dataman","command":"/Applications/Dataman.app/Contents/MacOS/dataman-mcp"}'
 ```
 
 On Linux with the AppImage, `--mcp` goes after the path: for example, `claude mcp add -s user dataman -- ~/Apps/Dataman-x86_64.AppImage --mcp`.

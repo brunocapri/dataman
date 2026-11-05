@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 
 use gpui::{AsyncWindowContext, Bounds, Entity, Pixels};
-use dataman_core::{AuthKind, Engine, Environment, McpAccess};
+use dataman_core::{Auth, AuthKind, Engine, Environment, McpAccess};
 
 use crate::app::Workspace;
 use crate::check::*;
@@ -37,9 +37,10 @@ pub fn prepare() {
     let token = "eyJhbGciOiJSUzI1NiJ9.eyJ1cG4iOiJhbmFAY29udG9zby5jb20ifQ.c2ln";
     let r = root.display();
     let az = format!(
-        "echo \"az $*\" >> '{r}/runs'\ncase \"$1\" in\naccount)\n  [ -f '{r}/signed-in' ] || {{ echo \"ERROR: Please run 'az login' to setup account.\" >&2; exit 1; }}\n  echo '{{\"accessToken\":\"{token}\",\"expires_on\":4102444800}}' ;;\nlogin)\n  if [ -f '{r}/hold' ]; then echo $$ > '{r}/login.pid'; exec sleep 60; fi\n  touch '{r}/signed-in' ;;\nesac\n"
+        "echo \"az $*\" >> '{r}/runs'\ncase \"$1\" in\naccount)\n  [ -f '{r}/signed-in' ] || {{ echo \"ERROR: Please run 'az login' to setup account.\" >&2; exit 1; }}\n  echo '{{\"accessToken\":\"{token}\",\"expires_on\":4102444800}}' ;;\nlogin)\n  if [ -f '{r}/hold' ]; then sleep 60 & echo $! > '{r}/login.pid'; wait; fi\n  while [ -f '{r}/gate' ]; do sleep 0.1; done\n  touch '{r}/signed-in' ;;\nesac\n"
     );
-    let scripts = [("az", az), ("claude", format!("echo \"claude $*\" >> '{r}/runs'\n")), ("codex", format!("echo \"codex $*\" >> '{r}/runs'\necho 'no config' >&2\nexit 1\n"))];
+    let aws = format!("echo \"aws $*\" >> '{r}/runs'\ncase \"$1\" in\nrds) echo 'aws-iam-token' ;;\nsts) echo '{{\"Arn\":\"arn:aws:iam::1:user/aws-identity\"}}' ;;\nesac\n");
+    let scripts = [("az", az), ("aws", aws), ("claude", format!("echo \"claude $*\" >> '{r}/runs'\n")), ("codex", format!("echo \"codex $*\" >> '{r}/runs'\necho 'no config' >&2\nexit 1\n"))];
     #[cfg(unix)]
     for (name, script) in scripts {
         use std::os::unix::fs::PermissionsExt as _;
@@ -110,6 +111,13 @@ pub async fn run(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCon
     files(ws, r, cx).await;
     agents(ws, r, cx).await;
     saving(ws, r, cx).await;
+    a_password_stays_with_its_string(ws, r, cx).await;
+    a_changed_host_goes_through_sign_in(ws, r, cx).await;
+    a_login_answers_for_its_method(ws, r, cx).await;
+    a_hidden_region_says_nothing(ws, r, cx).await;
+    engine_changes_land_where_they_can_be_fixed(ws, r, cx).await;
+    mongo_options_follow_the_string(ws, r, cx).await;
+    saved_means_saved(ws, r, cx).await;
     let _ = std::fs::remove_dir_all(root());
 }
 
@@ -471,4 +479,239 @@ async fn saving(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowCont
     until(cx, 5, |cx| saved(ws, &id, cx).is_some_and(|p| p.name == "renamed")).await;
     r.check("Save saves it", saved(ws, &id, cx).is_some_and(|p| p.name == "renamed"), "");
     until(cx, 5, |cx| dialog(ws, cx).is_none()).await;
+}
+
+async fn paste(probe: &str, text: &str, cx: &mut AsyncWindowContext) {
+    set_clipboard(text, cx);
+    click_probe(&format!("field-{probe}"), cx);
+    key(cx, "cmd-a");
+    key(cx, "cmd-v");
+    pause(cx, 50).await;
+}
+
+fn password(d: &Entity<ConnDialog>, cx: &mut AsyncWindowContext) -> String {
+    cx.update(|_, cx| d.read(cx).demo_field(4, cx)).unwrap_or_default()
+}
+
+/// A second string with no password never sends the first one's to its host.
+async fn a_password_stays_with_its_string(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowContext) {
+    const OTHER: &str = "postgres://bob@other.internal/sales";
+    let Some(d) = sheet(ws, "pg", cx).await else { return };
+    paste("CONNECTION STRING", STRING, cx).await;
+    fill("DATABASE", "edited", cx);
+    pause(cx, 50).await;
+    r.check("an edit doesn't end the password's link to its string", password(&d, cx) == "hunter22", password(&d, cx));
+    paste("CONNECTION STRING", OTHER, cx).await;
+    r.check("another string with none, after an edit, drops it", password(&d, cx).is_empty(), password(&d, cx));
+    cont(cx).await;
+    let m = method(&d, cx);
+    r.check("and Sign-in doesn't offer to keep it", m.1 == "User & password" && !m.2, format!("{m:?}"));
+    shut(ws, cx).await;
+
+    let Some(d) = sheet(ws, "pg", cx).await else { return };
+    paste("CONNECTION STRING", STRING, cx).await;
+    paste("HOST", OTHER, cx).await;
+    r.check("a string pasted in HOST drops it too", password(&d, cx).is_empty() && cx.update(|_, cx| d.read(cx).demo_field(1, cx)).unwrap_or_default() == "other.internal", password(&d, cx));
+    shut(ws, cx).await;
+
+    let Some(d) = sheet(ws, "pg", cx).await else { return };
+    paste("CONNECTION STRING", STRING, cx).await;
+    fill("PASSWORD", "", cx);
+    cont(cx).await;
+    fill("PASSWORD", "typed", cx);
+    click_probe("crumb-Connection", cx);
+    pause(cx, 50).await;
+    paste("CONNECTION STRING", OTHER, cx).await;
+    r.check("a password typed over is the user's, and stays", password(&d, cx) == "typed", password(&d, cx));
+    shut(ws, cx).await;
+}
+
+/// The step that warns where a token goes can't be skipped once the host changed.
+async fn a_changed_host_goes_through_sign_in(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowContext) {
+    for (how, chosen) in [("typed", false), ("pasted", false), ("typed", true), ("pasted", true)] {
+        let Some(d) = sheet(ws, "pg", cx).await else { return };
+        fill("HOST", AZURE, cx);
+        cont(cx).await;
+        if chosen {
+            click_probe("auth-entra-id", cx);
+            pause(cx, 50).await;
+        }
+        fill("USER", "ana@contoso.com", cx);
+        cont(cx).await;
+        r.check(&format!("{how}: at MCP"), step(&d, cx) == Some(Step::Mcp), format!("{:?}", step(&d, cx)));
+        click_probe("crumb-Connection", cx);
+        pause(cx, 50).await;
+        if how == "typed" {
+            fill("HOST", "db.internal", cx);
+        } else {
+            paste("CONNECTION STRING", "postgres://ana@db.internal/orders", cx).await;
+        }
+        pause(cx, 50).await;
+        click_probe("crumb-MCP", cx);
+        pause(cx, 50).await;
+        r.check(&format!("{how}: a new host can't jump to MCP"), step(&d, cx) == Some(Step::Connection), format!("{:?}", step(&d, cx)));
+        cont(cx).await;
+        let m = method(&d, cx);
+        if chosen {
+            r.check(&format!("{how}: Entra picked by hand stays, warning where the token goes"), step(&d, cx) == Some(Step::SignIn) && m.0 == AuthKind::EntraId && probed("foreign-host", cx).is_some(), format!("{:?} {m:?}", step(&d, cx)));
+        } else {
+            r.check(&format!("{how}: Entra only from the host goes with it"), step(&d, cx) == Some(Step::SignIn) && m.0 == AuthKind::Password, format!("{:?} {m:?}", step(&d, cx)));
+        }
+        shut(ws, cx).await;
+    }
+}
+
+async fn a_login_answers_for_its_method(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowContext) {
+    for (other, picked) in [("auth-aws-iam", AuthKind::AwsIam), ("auth-password", AuthKind::Password)] {
+        let _ = std::fs::remove_file(root().join("signed-in"));
+        std::fs::write(root().join("gate"), "").expect("the fake login held");
+        std::fs::write(root().join("runs"), "").expect("an empty log");
+        let Some(d) = sheet(ws, "pg", cx).await else { return };
+        fill("HOST", RDS, cx);
+        cont(cx).await;
+        click_probe("auth-entra-id", cx);
+        pause(cx, 300).await;
+        fill("USER", "ana", cx);
+        click_probe("auth-action-entra-id", cx);
+        until(cx, 8, |_| runs().contains("az login")).await;
+        click_probe(other, cx);
+        pause(cx, 300).await;
+        let _ = std::fs::remove_file(root().join("gate"));
+        let again = until(cx, 8, |_| runs().matches("az account get-access-token").count() >= 2).await;
+        pause(cx, 300).await;
+        r.check(&format!("the login ends with {picked:?} picked: only az ran"), again && !runs().contains("aws "), runs());
+        r.check(&format!("{picked:?} stays picked and clean"), method(&d, cx).0 == picked && method(&d, cx).3.is_empty(), format!("{:?}", method(&d, cx)));
+        click_probe("auth-entra-id", cx);
+        pause(cx, 300).await;
+        r.check("the method signed in says who", method(&d, cx).3 == "ana@contoso.com", format!("{:?}", method(&d, cx)));
+        shut(ws, cx).await;
+    }
+    let _ = std::fs::remove_file(root().join("signed-in"));
+}
+
+async fn a_hidden_region_says_nothing(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowContext) {
+    let Some(d) = sheet(ws, "pg", cx).await else { return };
+    fill("HOST", "db.internal", cx);
+    cont(cx).await;
+    click_probe("auth-aws-iam", cx);
+    pause(cx, 300).await;
+    fill("USER", "iam_ana", cx);
+    r.check("a host that doesn't say its region asks for it", fill("REGION", "us-east-1", cx), "");
+    pause(cx, 50).await;
+    click_probe("field-USER", cx);
+    key(cx, "tab");
+    key(cx, "tab");
+    draw(cx);
+    let tabbed = cx.update(|window, cx| d.read(cx).demo_tab_on_region(window, cx)).unwrap_or(false);
+    r.check("Tab reaches REGION", tabbed, "");
+    let region = |cx: &mut AsyncWindowContext| cx.update(|_, cx| d.read(cx).current(cx).0.auth).ok();
+    r.check("it counts while it shows", matches!(region(cx), Some(Auth::AwsIam { region: Some(g), .. }) if g == "us-east-1"), format!("{:?}", region(cx)));
+    click_probe("crumb-Connection", cx);
+    pause(cx, 50).await;
+    fill("HOST", "orders.abc123.eu-west-1.rds.amazonaws.com", cx);
+    cont(cx).await;
+    r.check("an RDS endpoint doesn't ask", probed("field-REGION", cx).is_none(), "");
+    r.check("and the old one no longer overrides it", matches!(region(cx), Some(Auth::AwsIam { region: None, .. })), format!("{:?}", region(cx)));
+    shut(ws, cx).await;
+}
+
+async fn engine_changes_land_where_they_can_be_fixed(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowContext) {
+    let file = root().join("steps.sqlite");
+    std::fs::write(&file, "").expect("a file to pick");
+    let to_mcp = async |cx: &mut AsyncWindowContext| {
+        let d = sheet(ws, "sqlite", cx).await?;
+        fill("FILE", &file.display().to_string(), cx);
+        pause(cx, 50).await;
+        cont(cx).await;
+        Some(d)
+    };
+
+    let Some(d) = sheet(ws, "pg", cx).await else { return };
+    paste("CONNECTION STRING", "foo://bar", cx).await;
+    click_probe("crumb-Database", cx);
+    pause(cx, 50).await;
+    click_probe("engine-SQLite", cx);
+    pause(cx, 50).await;
+    fill("FILE", &file.display().to_string(), cx);
+    pause(cx, 50).await;
+    cont(cx).await;
+    r.check("a bad string on a server doesn't block Continue on a file", step(&d, cx) == Some(Step::Mcp), format!("{:?}", step(&d, cx)));
+    shut(ws, cx).await;
+
+    let Some(d) = to_mcp(cx).await else { return };
+    click_probe("crumb-Database", cx);
+    pause(cx, 50).await;
+    click_probe("engine-DuckDB", cx);
+    pause(cx, 50).await;
+    r.check("another file database, its file cleared: back to Connection", step(&d, cx) == Some(Step::Connection), format!("{:?}", step(&d, cx)));
+    shut(ws, cx).await;
+
+    let Some(d) = to_mcp(cx).await else { return };
+    click_probe("crumb-Database", cx);
+    pause(cx, 50).await;
+    click_probe("engine-PostgreSQL", cx);
+    pause(cx, 50).await;
+    fill("HOST", "db.internal", cx);
+    pause(cx, 50).await;
+    click_probe("crumb-MCP", cx);
+    pause(cx, 50).await;
+    r.check("from a file to a server: MCP waits for Sign-in", step(&d, cx) == Some(Step::Connection), format!("{:?}", step(&d, cx)));
+    shut(ws, cx).await;
+
+    // Mongo's user is optional and PostgreSQL's isn't, and neither step in between says so.
+    let Some(d) = sheet(ws, "mongodb", cx).await else { return };
+    fill("HOST", "db.internal", cx);
+    cont(cx).await;
+    cont(cx).await;
+    click_probe("mcp-write", cx);
+    pause(cx, 50).await;
+    click_probe("crumb-Database", cx);
+    pause(cx, 50).await;
+    click_probe("engine-PostgreSQL", cx);
+    pause(cx, 50).await;
+    r.check("to PostgreSQL, back on MCP", step(&d, cx) == Some(Step::Mcp), format!("{:?}", step(&d, cx)));
+    click_probe("dlg-skip", cx);
+    pause(cx, 100).await;
+    let said = cx.update(|_, cx| d.read(cx).demo_status(cx)).map(|s| s.0).unwrap_or_default();
+    r.check("a Skip that can't save goes where it is fixed, and says why", step(&d, cx) == Some(Step::SignIn) && said.starts_with("invalid") && probed("field-USER", cx).is_some(), format!("{:?} {said}", step(&d, cx)));
+    r.check("and the tier picked is still picked", cx.update(|_, cx| d.read(cx).demo_tier()).ok() == Some(McpAccess::Write), "");
+    shut(ws, cx).await;
+}
+
+async fn mongo_options_follow_the_string(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowContext) {
+    let Some(d) = sheet(ws, "mongodb", cx).await else { return };
+    paste("CONNECTION STRING", "mongodb+srv://u@a.example.net/x", cx).await;
+    let srv = |cx: &mut AsyncWindowContext| cx.update(|_, cx| d.read(cx).current(cx).0.options.contains_key("srv")).unwrap_or(false);
+    r.check("an SRV string says SRV", srv(cx), "");
+    paste("CONNECTION STRING", "mongodb://b.example.net:27017/x", cx).await;
+    r.check("a plain string after it doesn't", !srv(cx), "");
+    shut(ws, cx).await;
+}
+
+/// Every password connection has `save_password` on: only what is in the store counts as saved.
+async fn saved_means_saved(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncWindowContext) {
+    let Some(d) = sheet(ws, "pg", cx).await else { return };
+    fill("HOST", "127.0.0.1", cx);
+    fill("PORT", "9", cx);
+    cont(cx).await;
+    fill("USER", "ana", cx);
+    cont(cx).await;
+    let id = cx.update(|_, cx| d.read(cx).profile_id().to_string()).unwrap();
+    click_probe("dlg-skip", cx);
+    until(cx, 5, |cx| saved(ws, &id, cx).is_some()).await;
+    until(cx, 5, |cx| dialog(ws, cx).is_none()).await;
+    let edit = |id: String, cx: &mut AsyncWindowContext| {
+        let _ = cx.update(|window, cx| ws.update(cx, |w, cx| w.open_dialog(Some(id), window, cx)));
+    };
+    edit(id.clone(), cx);
+    pause(cx, 300).await;
+    let Some(d) = dialog(ws, cx) else { return };
+    r.check("no password saved: not offered to keep", method(&d, cx).1 == "User & password", format!("{:?}", method(&d, cx)));
+    shut(ws, cx).await;
+    let _ = core(ws, cx).secrets.set(&id, "hunter22");
+    edit(id, cx);
+    let Some(d) = dialog(ws, cx) else { return };
+    let kept = until(cx, 5, |cx| method(&d, cx).1 == "Keep user & password").await;
+    r.check("a password in the store: offered to keep", kept, format!("{:?}", method(&d, cx)));
+    shut(ws, cx).await;
 }

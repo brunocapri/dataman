@@ -16,18 +16,22 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum How {
     /// `program args… dataman -- command…`. `dashes: false`: the command right after, with `--`
-    /// only before its own arguments (Gemini's positional form).
-    Cli { program: &'static str, args: &'static [&'static str], dashes: bool },
-    /// `code --add-mcp {json}`.
-    AddMcp { program: &'static str },
+    /// only before its own arguments (Gemini's positional form). `remove…dataman` takes out an
+    /// entry the CLI refuses to replace.
+    Cli { program: &'static str, args: &'static [&'static str], remove: &'static [&'static str], dashes: bool },
     /// A link the app confirms in itself (Cursor's).
     Deeplink,
     /// The server merged into a JSON file the agent reads when it starts.
-    Json(ConfigFile),
+    Json,
 }
 
+/// Where an agent keeps its servers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ConfigFile {
+    ClaudeCode,
+    Codex,
+    Gemini,
+    Cursor,
     ClaudeDesktop,
     Windsurf,
 }
@@ -39,6 +43,7 @@ pub struct Agent {
     /// The logo is one shape, drawn in the theme's text color.
     pub mono: bool,
     how: How,
+    file: ConfigFile,
     /// Programs, applications and folders under the home that mean it is here.
     bins: &'static [&'static str],
     apps: &'static [&'static str],
@@ -50,14 +55,15 @@ pub struct Agent {
     pub copy_hint: &'static str,
 }
 
-pub static AGENTS: [Agent; 7] = [
+pub static AGENTS: [Agent; 6] = [
     Agent {
         id: "claude",
         label: "Claude Code",
         logo: "agents/claude.svg",
         mono: false,
         // Without `-s user` it lands in this folder's local scope.
-        how: How::Cli { program: "claude", args: &["mcp", "add", "-s", "user"], dashes: true },
+        how: How::Cli { program: "claude", args: &["mcp", "add", "-s", "user"], remove: &["mcp", "remove", "-s", "user"], dashes: true },
+        file: ConfigFile::ClaudeCode,
         bins: &["claude"],
         apps: &[],
         home: &[],
@@ -71,7 +77,8 @@ pub static AGENTS: [Agent; 7] = [
         label: "Codex",
         logo: "agents/openai.svg",
         mono: true,
-        how: How::Cli { program: "codex", args: &["mcp", "add"], dashes: true },
+        how: How::Cli { program: "codex", args: &["mcp", "add"], remove: &["mcp", "remove"], dashes: true },
+        file: ConfigFile::Codex,
         bins: &["codex"],
         apps: &[],
         home: &[],
@@ -86,7 +93,8 @@ pub static AGENTS: [Agent; 7] = [
         logo: "agents/gemini.svg",
         mono: false,
         // Without `-s user` it lands in this project's settings.
-        how: How::Cli { program: "gemini", args: &["mcp", "add", "-s", "user"], dashes: false },
+        how: How::Cli { program: "gemini", args: &["mcp", "add", "-s", "user"], remove: &["mcp", "remove", "-s", "user"], dashes: false },
+        file: ConfigFile::Gemini,
         bins: &["gemini"],
         apps: &[],
         home: &[],
@@ -96,28 +104,16 @@ pub static AGENTS: [Agent; 7] = [
         copy_hint: "Run in a terminal",
     },
     Agent {
-        id: "vscode",
-        label: "VS Code",
-        logo: "agents/vscode.svg",
-        mono: false,
-        how: How::AddMcp { program: "code" },
-        bins: &["code"],
-        apps: &["/Applications/Visual Studio Code.app"],
-        home: &[],
-        done: "Confirm in VS Code",
-        waits: true,
-        add_hint: "Opens VS Code to install it",
-        copy_hint: "Run in a terminal",
-    },
-    Agent {
         id: "cursor",
         label: "Cursor",
         logo: "agents/cursor.svg",
         mono: true,
         how: How::Deeplink,
+        file: ConfigFile::Cursor,
+        // Not `~/.cursor`, which stays after uninstalling: its link would open nothing.
         bins: &["cursor"],
         apps: &["/Applications/Cursor.app"],
-        home: &[".cursor"],
+        home: &[],
         done: "Confirm in Cursor",
         waits: true,
         add_hint: "Opens Cursor to install it",
@@ -128,7 +124,8 @@ pub static AGENTS: [Agent; 7] = [
         label: "Claude Desktop",
         logo: "agents/claude.svg",
         mono: false,
-        how: How::Json(ConfigFile::ClaudeDesktop),
+        how: How::Json,
+        file: ConfigFile::ClaudeDesktop,
         bins: &[],
         apps: &["/Applications/Claude.app"],
         home: &[],
@@ -139,12 +136,14 @@ pub static AGENTS: [Agent; 7] = [
     },
     Agent {
         id: "windsurf",
-        label: "Windsurf",
+        // Windsurf became Devin: the app and its CLI changed names, its settings stayed.
+        label: "Devin (Windsurf)",
         logo: "agents/windsurf.svg",
         mono: true,
-        how: How::Json(ConfigFile::Windsurf),
-        bins: &["windsurf"],
-        apps: &["/Applications/Windsurf.app"],
+        how: How::Json,
+        file: ConfigFile::Windsurf,
+        bins: &["devin-desktop", "windsurf"],
+        apps: &["/Applications/Devin.app", "/Applications/Windsurf.app"],
         home: &[".codeium/windsurf"],
         done: "Added, restart it",
         waits: false,
@@ -155,8 +154,28 @@ pub static AGENTS: [Agent; 7] = [
 
 /// Where the agents' CLIs go when an installer or a package manager puts them outside the PATH an
 /// app started from the Dock gets, under the home folder.
-const HOME_BINS: [&str; 6] = [".claude/local", ".npm-global/bin", ".bun/bin", ".volta/bin", ".asdf/shims", ".cargo/bin"];
-const APP_BINS: [&str; 2] = ["/Applications/Visual Studio Code.app/Contents/Resources/app/bin", "/Applications/Cursor.app/Contents/Resources/app/bin"];
+const HOME_BINS: [&str; 10] = [
+    ".claude/local",
+    ".npm-global/bin",
+    ".bun/bin",
+    ".volta/bin",
+    ".asdf/shims",
+    ".cargo/bin",
+    "Library/pnpm",
+    ".local/share/pnpm",
+    "Library/Application Support/fnm/aliases/default/bin",
+    ".local/share/fnm/aliases/default/bin",
+];
+const APP_BINS: [&str; 1] = ["/Applications/Cursor.app/Contents/Resources/app/bin"];
+
+/// Each Node that nvm installed, newest name first: an app from the Dock has none of them on its
+/// PATH, and npm's CLIs are there.
+fn nvm_bins(home: &Path) -> Vec<PathBuf> {
+    let Ok(versions) = std::fs::read_dir(home.join(".nvm").join("versions").join("node")) else { return Vec::new() };
+    let mut dirs: Vec<PathBuf> = versions.flatten().map(|v| v.path().join("bin")).collect();
+    dirs.sort_by(|a, b| b.cmp(a));
+    dirs
+}
 
 /// This machine, as the agents see it.
 pub struct Env {
@@ -173,12 +192,17 @@ impl Env {
         let settings = if cfg!(target_os = "macos") { Some(home.join("Library").join("Application Support")) } else if cfg!(windows) { dataman_core::os::app_data() } else { dataman_core::os::config_home() }?;
         let mut dirs = cloudauth::default_dirs();
         dirs.extend(HOME_BINS.map(|d| home.join(d)));
+        dirs.extend(nvm_bins(&home));
         dirs.extend(APP_BINS.map(PathBuf::from));
         Some(Env { home, settings, dirs })
     }
 
     fn config_file(&self, f: ConfigFile) -> PathBuf {
         match f {
+            ConfigFile::ClaudeCode => self.home.join(".claude.json"),
+            ConfigFile::Codex => self.home.join(".codex").join("config.toml"),
+            ConfigFile::Gemini => self.home.join(".gemini").join("settings.json"),
+            ConfigFile::Cursor => self.home.join(".cursor").join("mcp.json"),
             ConfigFile::ClaudeDesktop => self.settings.join("Claude").join("claude_desktop_config.json"),
             ConfigFile::Windsurf => self.home.join(".codeium").join("windsurf").join("mcp_config.json"),
         }
@@ -188,7 +212,25 @@ impl Env {
         a.bins.iter().any(|b| cloudauth::locate(b, &self.dirs).is_some())
             || a.apps.iter().any(|p| Path::new(p).exists())
             || a.home.iter().any(|p| self.home.join(p).exists())
-            || matches!(a.how, How::Json(f) if self.config_file(f).parent().is_some_and(Path::exists))
+            || (a.how == How::Json && self.config_file(a.file).parent().is_some_and(Path::exists))
+    }
+
+    /// Whether its settings already run this install. Anything else, an unreadable file included,
+    /// offers Add, which replaces an old entry and reports what it can't do.
+    fn added(&self, a: &Agent, argv: &[&str]) -> bool {
+        let Ok(text) = std::fs::read_to_string(self.config_file(a.file)) else { return false };
+        let (want, _) = argv.split_first().map_or(("", &[][..]), |(c, r)| (*c, r));
+        let args = |v: Vec<&str>| v == argv[1..];
+        if a.file == ConfigFile::Codex {
+            let Ok(root) = text.parse::<toml::Table>() else { return false };
+            let Some(entry) = root.get("mcp_servers").and_then(|m| m.get(SERVER)) else { return false };
+            let got = entry.get("args").and_then(|v| v.as_array()).map_or(Vec::new(), |v| v.iter().filter_map(|w| w.as_str()).collect());
+            return entry.get("command").and_then(|c| c.as_str()) == Some(want) && args(got);
+        }
+        let Ok(root) = serde_json::from_str::<Value>(&text) else { return false };
+        let entry = &root["mcpServers"][SERVER];
+        let got = entry["args"].as_array().map_or(Vec::new(), |v| v.iter().filter_map(Value::as_str).collect());
+        entry["command"].as_str() == Some(want) && args(got)
     }
 }
 
@@ -198,6 +240,8 @@ pub struct Row {
     pub index: usize,
     pub agent: &'static Agent,
     pub installed: bool,
+    /// Its settings already run this install.
+    pub added: bool,
     /// What Copy gives.
     pub copy: String,
 }
@@ -221,7 +265,7 @@ impl Listing {
         let mut rows: Vec<Row> = AGENTS
             .iter()
             .enumerate()
-            .map(|(index, agent)| Row { index, agent, installed: env.as_ref().is_some_and(|e| e.has(agent)), copy: copy_text(agent, &words) })
+            .map(|(index, agent)| Row { index, agent, installed: env.as_ref().is_some_and(|e| e.has(agent)), added: !words.is_empty() && env.as_ref().is_some_and(|e| e.added(agent, &words)), copy: copy_text(agent, &words) })
             .collect();
         rows.sort_by_key(|r| !r.installed);
         Listing { rows, env, argv }
@@ -231,27 +275,18 @@ impl Listing {
 /// The program's arguments for the CLIs.
 fn cli_args(how: How, argv: &[&str]) -> (&'static str, Vec<String>) {
     let (command, rest) = argv.split_first().map_or(("", &[][..]), |(c, r)| (*c, r));
-    match how {
-        How::Cli { program, args, dashes } => {
-            let mut v: Vec<String> = args.iter().map(|a| a.to_string()).collect();
-            v.push(SERVER.into());
-            if dashes {
-                v.push("--".into());
-            }
-            v.push(command.into());
-            if !dashes && !rest.is_empty() {
-                v.push("--".into());
-            }
-            v.extend(rest.iter().map(|a| a.to_string()));
-            (program, v)
-        }
-        How::AddMcp { program } => {
-            let mut server = server_json(argv);
-            server.as_object_mut().expect("server_json makes an object").insert("name".into(), json!(SERVER));
-            (program, vec!["--add-mcp".into(), server.to_string()])
-        }
-        How::Deeplink | How::Json(_) => ("", Vec::new()),
+    let How::Cli { program, args, dashes, .. } = how else { return ("", Vec::new()) };
+    let mut v: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+    v.push(SERVER.into());
+    if dashes {
+        v.push("--".into());
     }
+    v.push(command.into());
+    if !dashes && !rest.is_empty() {
+        v.push("--".into());
+    }
+    v.extend(rest.iter().map(|a| a.to_string()));
+    (program, v)
 }
 
 fn server_json(argv: &[&str]) -> Value {
@@ -262,12 +297,6 @@ fn server_json(argv: &[&str]) -> Value {
     }
 }
 
-/// A word that holds JSON, quoted for this platform's shell (`shell_word` takes `"` out on
-/// Windows, where a path never has one).
-fn json_word(s: &str) -> String {
-    if cfg!(windows) { format!("\"{}\"", s.replace('"', "\\\"")) } else { crate::shell_word(s) }
-}
-
 /// What Copy gives: the command for a terminal, or the JSON for a settings file.
 pub fn copy_text(a: &Agent, argv: &[&str]) -> String {
     match a.how {
@@ -276,11 +305,7 @@ pub fn copy_text(a: &Agent, argv: &[&str]) -> String {
             let words: Vec<String> = args.iter().map(|w| crate::shell_word(w)).collect();
             format!("{program} {}", words.join(" "))
         }
-        How::AddMcp { .. } => {
-            let (program, args) = cli_args(a.how, argv);
-            format!("{program} {} {}", args[0], json_word(&args[1]))
-        }
-        How::Deeplink | How::Json(_) => json!({ "mcpServers": { SERVER: server_json(argv) } }).to_string(),
+        How::Deeplink | How::Json => json!({ "mcpServers": { SERVER: server_json(argv) } }).to_string(),
     }
 }
 
@@ -321,19 +346,15 @@ async fn run(program: &str, args: &[String], env: &Env) -> Result<(), String> {
     let path = cloudauth::locate(program, &env.dirs).ok_or_else(|| format!("{program} not found"))?;
     let mut cmd = cloudauth::command(&path, &env.dirs);
     cmd.args(args);
-    let out = match tokio::time::timeout(TIMEOUT, cmd.output()).await {
-        Ok(Ok(o)) => o,
-        Ok(Err(e)) => return Err(format!("{program} did not start: {e}")),
-        Err(_) => return Err(format!("{program} did not answer in {} s", TIMEOUT.as_secs())),
+    let out = match cloudauth::run_tree(&mut cmd, TIMEOUT).await {
+        Some(Ok(o)) => o,
+        Some(Err(e)) => return Err(format!("{program} did not start: {e}")),
+        None => return Err(format!("{program} did not answer in {} s", TIMEOUT.as_secs())),
     };
     if out.status.success() {
         return Ok(());
     }
     let stderr = String::from_utf8_lossy(&out.stderr);
-    // Added before: what the click asked for is already so.
-    if stderr.to_ascii_lowercase().contains("already exists") {
-        return Ok(());
-    }
     Err(stderr.lines().map(str::trim).find(|l| !l.is_empty()).map_or_else(|| format!("{program} exited with {}", out.status), str::to_string))
 }
 
@@ -356,12 +377,22 @@ pub async fn add(a: &Agent, listing: &Listing) -> Result<Added, String> {
     let env = listing.env.as_ref().ok_or("no home folder")?;
     let argv: Vec<&str> = listing.argv.iter().map(String::as_str).collect();
     match a.how {
-        How::Cli { .. } | How::AddMcp { .. } => {
+        How::Cli { remove, .. } => {
             let (program, args) = cli_args(a.how, &argv);
-            run(program, &args, env).await.map(|()| Added::Done)
+            match run(program, &args, env).await {
+                // An entry from before, maybe of an install that moved: this one replaces it.
+                Err(e) if e.to_ascii_lowercase().contains("already exists") => {
+                    let mut out: Vec<String> = remove.iter().map(|w| w.to_string()).collect();
+                    out.push(SERVER.into());
+                    run(program, &out, env).await?;
+                    run(program, &args, env).await?;
+                }
+                r => r?,
+            }
+            Ok(Added::Done)
         }
         How::Deeplink => Ok(Added::Open(cursor_link(&argv))),
-        How::Json(f) => merge_into(&env.config_file(f), &argv).map(|()| Added::Done),
+        How::Json => merge_into(&env.config_file(a.file), &argv).map(|()| Added::Done),
     }
 }
 
@@ -404,8 +435,6 @@ mod tests {
         for id in ["cursor", "desktop", "windsurf"] {
             assert_eq!(copy_text(agent(id), &argv), want, "{id}");
         }
-        let vscode = copy_text(agent("vscode"), &argv);
-        assert!(vscode.starts_with("code --add-mcp ") && vscode.contains(r#""name":"dataman""#) && vscode.contains(BIN), "{vscode}");
     }
 
     #[test]
@@ -455,13 +484,98 @@ mod tests {
         let l = listing(d);
         fake(d, "claude", "exit 0");
         fake(d, "codex", "echo 'boom: no config' >&2; exit 1");
-        fake(d, "gemini", "echo 'MCP server dataman already exists in user' >&2; exit 1");
+        fake(d, "gemini", "exit 0");
         assert_eq!(add(agent("claude"), &l).await, Ok(Added::Done));
         let args = std::fs::read_to_string(d.join("claude.args")).unwrap();
         assert_eq!(args.lines().collect::<Vec<_>>(), ["mcp", "add", "-s", "user", "dataman", "--", BIN]);
         assert_eq!(add(agent("codex"), &l).await, Err("boom: no config".to_string()));
-        assert_eq!(add(agent("gemini"), &l).await, Ok(Added::Done), "added before");
-        assert_eq!(add(agent("vscode"), &l).await, Err("code not found".to_string()));
+        assert_eq!(add(agent("gemini"), &l).await, Ok(Added::Done));
+    }
+
+    /// As the real `claude` does: refuses while an entry is there, whatever command it runs.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_entry_from_before_is_replaced_not_left_saying_added() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let l = listing(d);
+        let entry = d.join("entry");
+        std::fs::write(&entry, "/old/place/dataman-mcp").unwrap();
+        let e = entry.display();
+        fake(d, "claude", &format!(
+            "case \"$2\" in\nremove) /bin/rm '{e}' ;;\nadd) if [ -f '{e}' ]; then echo 'MCP server dataman already exists in user config' >&2; exit 1; fi; echo \"$7\" > '{e}' ;;\nesac"
+        ));
+        assert_eq!(add(agent("claude"), &l).await, Ok(Added::Done));
+        assert_eq!(std::fs::read_to_string(&entry).unwrap().trim(), BIN);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_entry_that_cant_be_replaced_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let l = listing(d);
+        fake(d, "claude", "case \"$2\" in\nremove) echo 'no permission' >&2; exit 1 ;;\n*) echo 'already exists' >&2; exit 1 ;;\nesac");
+        assert_eq!(add(agent("claude"), &l).await, Err("no permission".to_string()));
+    }
+
+    /// npm's CLIs are `.cmd` shims there, and the app is under Program Files.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_cmd_shim_gets_a_path_with_spaces_whole() {
+        const SPACED: &str = r"C:\Program Files\Dataman\dataman-mcp.exe";
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        std::fs::create_dir_all(d.join("bin")).unwrap();
+        std::fs::write(d.join("bin").join("claude.cmd"), format!("@echo %~7> \"{}\"\r\n", d.join("got").display())).unwrap();
+        let l = Listing::of(Some(env(d)), vec![SPACED.to_string()]);
+        assert_eq!(add(agent("claude"), &l).await, Ok(Added::Done));
+        assert_eq!(std::fs::read_to_string(d.join("got")).unwrap().trim(), SPACED);
+    }
+
+    #[test]
+    fn added_means_its_settings_run_this_install() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let e = env(d);
+        let file = |f: ConfigFile, text: String| {
+            let p = e.config_file(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, text).unwrap();
+        };
+        for a in &AGENTS {
+            assert!(!e.added(a, &[BIN]), "{}: no settings yet", a.id);
+        }
+        file(ConfigFile::ClaudeCode, json!({ "mcpServers": { "dataman": { "command": BIN } } }).to_string());
+        file(ConfigFile::Gemini, json!({ "mcpServers": { "dataman": { "command": "/old/place/dataman-mcp" } } }).to_string());
+        file(ConfigFile::Codex, format!("[mcp_servers.dataman]\ncommand = \"{BIN}\"\n"));
+        file(ConfigFile::Cursor, String::new());
+        assert!(e.added(agent("claude"), &[BIN]));
+        assert!(!e.added(agent("claude"), &[BIN, "--mcp"]), "the same program, run differently");
+        assert!(!e.added(agent("gemini"), &[BIN]), "an install that moved");
+        assert!(e.added(agent("codex"), &[BIN]));
+        assert!(!e.added(agent("cursor"), &[BIN]), "an empty file");
+    }
+
+    #[test]
+    fn a_folder_left_behind_is_not_cursor() {
+        let dir = tempfile::tempdir().unwrap();
+        let e = env(dir.path());
+        std::fs::create_dir_all(e.home.join(".cursor")).unwrap();
+        // The check only holds where the app isn't installed.
+        assert_eq!(e.has(agent("cursor")), Path::new("/Applications/Cursor.app").exists());
+    }
+
+    #[test]
+    fn nvms_nodes_are_looked_in_newest_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        for v in ["v20.1.0", "v22.3.0"] {
+            std::fs::create_dir_all(home.join(".nvm/versions/node").join(v).join("bin")).unwrap();
+        }
+        let found = nvm_bins(home);
+        assert!(found[0].ends_with("v22.3.0/bin") && found[1].ends_with("v20.1.0/bin"), "{found:?}");
+        assert!(nvm_bins(&home.join("nowhere")).is_empty());
     }
 
     #[test]

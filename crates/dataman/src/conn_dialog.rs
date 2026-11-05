@@ -304,8 +304,9 @@ pub struct ConnDialog {
     /// What is in the string does not read as one.
     str_bad: bool,
     /// The password in the fields came with the string as it stands.
-    pw_from_str: bool,
     /// What the string gave for each: compared with the fields for the note under them.
+    /// A password is really saved for this connection.
+    saved_pw: bool,
     str_user: Option<String>,
     str_pw: Option<String>,
     auto_name: Option<String>,
@@ -412,6 +413,7 @@ impl ConnDialog {
                 if matches!(ev, InputEvent::Changed) {
                     d.on_name_or_host(i, &input, cx);
                     if i == 1 {
+                        d.host_moved();
                         d.follow_host(cx);
                         d.name_follows_host(cx);
                     }
@@ -419,8 +421,7 @@ impl ConnDialog {
             })
             .detach();
         }
-        let saved = profile.save_password && !is_new;
-        let password = secret_field(if saved { SAVED_IN } else { "" }, IN_STRING, window, cx);
+        let password = secret_field("", IN_STRING, window, cx);
         let s = profile.ssh.clone().unwrap_or_default();
         let local_user = std::env::var("USER").unwrap_or_default();
         let ssh = SshFields {
@@ -430,7 +431,7 @@ impl ConnDialog {
             user: text_field(&local_user, &s.user, PLAIN, window, cx),
             auth: if profile.ssh.is_some() { s.auth } else { SshAuth::default() },
             key: text_field("~/.ssh/id_ed25519", &s.key_file, PLAIN, window, cx),
-            secret: secret_field(if saved && profile.ssh.is_some() { SAVED_IN } else { "" }, PLAIN, window, cx),
+            secret: secret_field("", PLAIN, window, cx),
         };
         let allow_input = cx.new(|cx| TextInput::new(cx, "DELETE FROM sessions WHERE expires_at < ?"));
         cx.subscribe(&allow_input, |d: &mut ConnDialog, _, ev: &InputEvent, cx| match ev {
@@ -497,6 +498,32 @@ impl ConnDialog {
             .and_then(|c| SWATCHES.iter().position(|s| *s == c))
             .unwrap_or_else(|| profile.id.bytes().fold(0usize, |h, b| h.wrapping_mul(31).wrapping_add(b as usize)) % 5);
         let profile_auth = profile.auth.kind();
+        if !is_new && profile.save_password {
+            let secrets = store.read(cx).core.secrets.clone();
+            let (id, ssh_id) = (profile.id.clone(), profile.ssh_secret_id());
+            cx.spawn(async move |this, cx| {
+                let (pw, ssh) = cx.background_executor().spawn(async move { (secrets.get(&id), secrets.get(&ssh_id)) }).await;
+                let there = |what: &str, r: anyhow::Result<Option<String>>| match r {
+                    Ok(s) => s.is_some(),
+                    Err(e) => {
+                        log::warn!("looking for the saved {what}: {e:#}");
+                        false
+                    }
+                };
+                let (pw, ssh) = (there("password", pw), there("SSH secret", ssh));
+                let _ = this.update(cx, |d, cx| {
+                    d.saved_pw = pw;
+                    if pw && !d.password_needed {
+                        d.password.update(cx, |t, cx| t.set_placeholder(SAVED_IN, cx));
+                    }
+                    if ssh {
+                        d.ssh.secret.update(cx, |t, cx| t.set_placeholder(SAVED_IN, cx));
+                    }
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
         let mut d = ConnDialog {
             store,
             focus: cx.focus_handle(),
@@ -521,7 +548,7 @@ impl ConnDialog {
             ssh,
             conn_str,
             str_bad: false,
-            pw_from_str: false,
+            saved_pw: false,
             str_user: None,
             str_pw: None,
             auto_name: None,
@@ -618,11 +645,7 @@ impl ConnDialog {
     fn field_changed(&mut self, feeds: Feeds, cx: &mut Context<Self>) {
         self.untest();
         if feeds.sign_in {
-            for s in &mut self.sign_in {
-                if !s.busy() {
-                    *s = SignIn::Unchecked;
-                }
-            }
+            self.forget_sign_ins();
         }
         if feeds.string {
             self.rewrite_string(cx);
@@ -635,10 +658,15 @@ impl ConnDialog {
         if self.is_file() {
             return;
         }
-        self.pw_from_str = false;
         self.str_bad = false;
         let text = if self.host.read(cx).text().trim().is_empty() { String::new() } else { self.url(cx) };
         self.conn_str.update(cx, |t, cx| t.set_text(text, cx));
+    }
+
+    /// Sign-in said where its password or token goes: with another host, it has to be seen again.
+    fn host_moved(&mut self) {
+        self.seen[Step::SignIn as usize] = false;
+        self.seen[Step::Mcp as usize] = false;
     }
 
     /// An unnamed connection takes this name when saved: its placeholder says so.
@@ -661,14 +689,18 @@ impl ConnDialog {
         self.set_engine(e, cx);
         self.engine_picked = true;
         self.seen[Step::Connection as usize] = true;
-        if e.is_file() {
+        if !same_kind || e.is_file() {
             self.seen[Step::SignIn as usize] = false;
+        }
+        if !same_kind {
+            self.seen[Step::Mcp as usize] = false;
         }
         self.search.update(cx, |t, cx| t.set_text("", cx));
         self.search_len = 0;
         self.pick_hi = 0;
         // Changing the database goes back to the step it was changed from.
-        let to = back.filter(|s| same_kind && (*s != Step::SignIn || !e.is_file())).unwrap_or(Step::Connection);
+        let holds = self.collect_as(true, cx).is_ok();
+        let to = back.filter(|s| same_kind && holds && (*s != Step::SignIn || !e.is_file())).unwrap_or(Step::Connection);
         self.enter(to, window, cx);
     }
 
@@ -697,7 +729,7 @@ impl ConnDialog {
             let target = match d.step {
                 Step::Database => Some(d.search.focus_handle(cx)),
                 Step::Connection => Some(d.name.focus_handle(cx)),
-                Step::SignIn => d.method_inputs(d.auth).first().map(|(_, _, i)| i.focus_handle(cx)),
+                Step::SignIn => d.method_inputs(d.auth, cx).first().map(|(_, _, i)| i.focus_handle(cx)),
                 Step::Mcp => None,
             };
             window.focus(&target.unwrap_or_else(|| d.focus.clone()), cx);
@@ -795,7 +827,7 @@ impl ConnDialog {
     pub fn set_ssh_failed(&mut self, message: String, secret_needed: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.ssh.on = true;
         self.test = Test::Failed { title: message, body: String::new() };
-        if secret_needed {
+        if secret_needed && self.ssh.auth != SshAuth::Agent {
             self.ssh.secret.update(cx, |p, _| p.error = true);
             window.focus(&self.ssh.secret.focus_handle(cx), cx);
             self.reveal = Some(self.ssh.secret.clone());
@@ -879,6 +911,13 @@ impl ConnDialog {
     /// A connection string, set as if typed: it fills every field it says, user and password too,
     /// and can change the database. What it does not say keeps its value, except a password that
     /// came from the string before.
+    pub fn prefill_conn_str(&mut self, s: &str, cx: &mut Context<Self>) {
+        for field in [&self.user, &self.database] {
+            field.update(cx, |t, cx| t.set_text("", cx));
+        }
+        self.set_conn_str(s, cx);
+    }
+
     pub fn set_conn_str(&mut self, s: &str, cx: &mut Context<Self>) {
         self.conn_str.update(cx, |i, cx| i.set_text(s, cx));
         self.apply_string(cx);
@@ -894,7 +933,6 @@ impl ConnDialog {
         self.str_bad = false;
         let said_user = spec.user.clone().filter(|u| !u.is_empty());
         let said_db = spec.database.clone().filter(|d| !d.is_empty());
-        let said_options = !spec.options.is_empty();
         let (p, pw) = spec.into_profile();
         // An http(s) URL reads as Elasticsearch; on an OpenSearch sheet it is OpenSearch's.
         let engine = if p.engine == Engine::Elasticsearch && self.engine == Engine::OpenSearch { Engine::OpenSearch } else { p.engine };
@@ -907,6 +945,9 @@ impl ConnDialog {
             self.file.update(cx, |t, cx| t.set_text(p.path.clone().unwrap_or_default(), cx));
             self.read_only = p.read_only;
         } else {
+            if self.host.read(cx).text().trim() != p.host {
+                self.host_moved();
+            }
             self.host.update(cx, |t, cx| t.set_text(p.host.clone(), cx));
             self.port.update(cx, |t, cx| t.set_text(p.port.to_string(), cx));
             if let Some(u) = &said_user {
@@ -915,7 +956,7 @@ impl ConnDialog {
             if let Some(d) = &said_db {
                 self.database.update(cx, |t, cx| t.set_text(d.clone(), cx));
             }
-            if engine.spec().form.options && said_options {
+            if engine.spec().form.options {
                 let opts: Vec<String> = p.options.iter().map(|(k, v)| format!("{k}={v}")).collect();
                 self.options.update(cx, |t, cx| t.set_text(opts.join("&"), cx));
             }
@@ -933,7 +974,7 @@ impl ConnDialog {
                 self.auth_picked = true;
             }
             None => {
-                if self.pw_from_str {
+                if self.password_from_string(cx) {
                     self.password.update(cx, |t, cx| t.set_text("", cx));
                     self.str_pw = None;
                     self.auth_picked = false;
@@ -941,14 +982,23 @@ impl ConnDialog {
                 self.set_auth(kept, cx);
             }
         }
-        self.pw_from_str = pw.is_some();
         self.ssl_chosen = connstr::tls_given(&text);
         self.sslmode = if self.ssl_chosen { p.sslmode } else { dataman_core::default_sslmode(engine, &p.host, self.ssh.on) };
         self.clamp_tls();
         self.paste_len[1] = self.host.read(cx).text().len();
         self.name_follows_host(cx);
+        self.forget_sign_ins();
         self.untest();
         cx.notify();
+    }
+
+    /// What the CLIs answered is about the fields as they were.
+    fn forget_sign_ins(&mut self) {
+        for s in &mut self.sign_in {
+            if !s.busy() {
+                *s = SignIn::Unchecked;
+            }
+        }
     }
 
     #[cfg(feature = "checks")]
@@ -1002,9 +1052,9 @@ impl ConnDialog {
         v
     }
 
-    fn inputs(&self) -> Vec<&Entity<TextInput>> {
+    fn inputs<'a>(&'a self, cx: &'a App) -> Vec<&'a Entity<TextInput>> {
         let advanced = dataman_core::MCP_ADVANCED && self.advanced.open;
-        let sign_in = || self.method_inputs(self.auth).into_iter().map(|(_, _, i)| i).collect::<Vec<_>>();
+        let sign_in = || self.method_inputs(self.auth, cx).into_iter().map(|(_, _, i)| i).collect::<Vec<_>>();
         let mut v = if !self.is_new {
             let mut v = self.connection_inputs();
             if !self.is_file() {
@@ -1026,7 +1076,7 @@ impl ConnDialog {
     }
 
     fn focus_field(&mut self, step: isize, window: &mut Window, cx: &mut Context<Self>) {
-        let v = self.inputs();
+        let v = self.inputs(cx);
         let n = v.len() as isize;
         if n == 0 {
             return;
@@ -1163,7 +1213,7 @@ impl ConnDialog {
         p.options = if p.engine.spec().form.options { ConnectionProfile::parse_options(&text(&self.options)) } else { Default::default() };
         // Every password goes to the Keychain; one left empty is asked for when connecting.
         p.save_password = true;
-        p.auth = if self.engine.supports(self.auth) { self.auth_value(cx) } else { Auth::Password };
+        p.auth = if self.engine.supports(self.auth) { self.auth_value(self.auth, cx) } else { Auth::Password };
         if p.auth.is_token() {
             // Nothing to save, and a token never travels without TLS.
             p.save_password = false;
@@ -1206,8 +1256,10 @@ impl ConnDialog {
         let text = |i: &Entity<TextInput>, cx: &Context<Self>| i.read(cx).text().trim().to_string();
         // A file and a server have nothing in common: the other one's fields are cleared.
         if old.is_file() != e.is_file() {
+            self.conn_str.update(cx, |t, cx| t.set_text("", cx));
+            self.str_bad = false;
             if e.is_file() {
-                for i in [&self.host, &self.port, &self.user, &self.database, &self.password, &self.conn_str] {
+                for i in [&self.host, &self.port, &self.user, &self.database, &self.password] {
                     i.update(cx, |t, cx| t.set_text("", cx));
                 }
                 self.ssh.on = false;
@@ -1222,6 +1274,7 @@ impl ConnDialog {
         }
         self.conn_str.update(cx, |t, cx| t.set_placeholder(string_placeholder(e), cx));
         self.name_follows_host(cx);
+        self.forget_sign_ins();
         self.untest();
         if e.is_file() {
             let ph = format!("~/data/app.{}", e.file_extensions()[0]);
@@ -1368,7 +1421,8 @@ impl ConnDialog {
     /// The footer's last button, and Enter: on to the next step, or save on the last.
     fn primary(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.is_new || self.step == Step::Mcp {
-            return self.save(cx);
+            self.save(window, cx);
+            return;
         }
         if self.step == Step::Database {
             return self.submit_search(window, cx);
@@ -1384,12 +1438,20 @@ impl ConnDialog {
         }
     }
 
-    fn save(&mut self, cx: &mut Context<Self>) {
+    /// Whether it went on to save. What is wrong shows where it can be fixed.
+    fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         if self.saving {
-            return;
+            return false;
         }
         if let Err(e) = self.collect(cx) {
-            return self.invalid(e, cx);
+            if self.is_new {
+                let to = if self.is_file() || self.collect_as(true, cx).is_err() { Step::Connection } else { Step::SignIn };
+                if to != self.step {
+                    self.enter(to, window, cx);
+                }
+            }
+            self.invalid(e, cx);
+            return false;
         }
         // YOLO that became production's in this sheet (tagged production after YOLO was on):
         // confirmed first, as turning it on there is.
@@ -1397,15 +1459,19 @@ impl ConnDialog {
             self.advanced.open = true;
             self.advanced.confirm = true;
             cx.notify();
-            return;
+            return false;
         }
         cx.emit(DialogEvent::Save);
+        true
     }
 
-    /// Saves with no tier chosen, so the environment's default applies.
-    fn skip(&mut self, cx: &mut Context<Self>) {
-        self.mcp = None;
-        self.save(cx);
+    /// Saves with no tier chosen, so the environment's default applies. One that can't save keeps
+    /// the tier picked.
+    fn skip(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let picked = self.mcp.take();
+        if !self.save(window, cx) {
+            self.mcp = picked;
+        }
     }
 
     fn yolo_needs_confirm(&self) -> bool {
@@ -1492,8 +1558,8 @@ impl ConnDialog {
     }
 
     #[cfg(feature = "checks")]
-    pub fn demo_save(&mut self, cx: &mut Context<Self>) {
-        self.save(cx);
+    pub fn demo_save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.save(window, cx);
     }
 
     /// No method rolling up or down.
@@ -1569,6 +1635,11 @@ impl ConnDialog {
             AgentAdd::Done => "done".to_string(),
             AgentAdd::Failed(e) => format!("failed: {e}"),
         })
+    }
+
+    #[cfg(feature = "checks")]
+    pub fn demo_tab_on_region(&self, window: &Window, cx: &App) -> bool {
+        self.aws_region.focus_handle(cx).is_focused(window)
     }
 
     #[cfg(feature = "checks")]
@@ -1660,7 +1731,12 @@ impl ConnDialog {
     }
 
     fn password_there(&self, cx: &App) -> bool {
-        !self.password.read(cx).text().is_empty() || (self.profile.save_password && !self.is_new)
+        !self.password.read(cx).text().is_empty() || self.saved_pw
+    }
+
+    /// Still what the last string said: another string with none must not send it to its host.
+    fn password_from_string(&self, cx: &App) -> bool {
+        self.str_pw.as_deref().is_some_and(|s| s == self.password.read(cx).text())
     }
 
     /// Both came from the string, and neither was typed over.
@@ -1670,7 +1746,7 @@ impl ConnDialog {
     }
 
     /// A method's fields, in the order shown: a key for the checks, the label, the field.
-    fn method_inputs(&self, kind: AuthKind) -> Vec<(&'static str, &'static str, &Entity<TextInput>)> {
+    fn method_inputs(&self, kind: AuthKind, cx: &App) -> Vec<(&'static str, &'static str, &Entity<TextInput>)> {
         let (_, user_label) = user_hint(self.engine, kind);
         let mut v = Vec::with_capacity(3);
         // SQL Server's Entra token names its user itself.
@@ -1683,17 +1759,35 @@ impl ConnDialog {
             AuthKind::AwsIam => v.push(("AWS PROFILE", "AWS PROFILE (OPTIONAL)", &self.aws_profile)),
             AuthKind::GoogleIam => v.push(("ACCOUNT", "ACCOUNT (OPTIONAL)", &self.gcp_account)),
         }
+        if kind == AuthKind::AwsIam && self.asks_region(cx) {
+            v.push(("REGION", "REGION", &self.aws_region));
+        }
         v
     }
 
-    fn auth_value(&self, cx: &App) -> Auth {
+    fn auth_value(&self, kind: AuthKind, cx: &App) -> Auth {
         let text = |e: &Entity<TextInput>| Some(e.read(cx).text().trim().to_string()).filter(|s| !s.is_empty());
-        match self.auth {
+        match kind {
             AuthKind::Password => Auth::Password,
             AuthKind::EntraId => Auth::EntraId { tenant: text(&self.tenant) },
-            AuthKind::AwsIam => Auth::AwsIam { profile: text(&self.aws_profile), region: text(&self.aws_region) },
+            AuthKind::AwsIam => Auth::AwsIam { profile: text(&self.aws_profile), region: if self.asks_region(cx) { text(&self.aws_region) } else { None } },
             AuthKind::GoogleIam => Auth::GoogleIam { account: text(&self.gcp_account) },
         }
+    }
+
+    /// An RDS endpoint says its region: a value from before, no longer shown, must not override it.
+    fn asks_region(&self, cx: &App) -> bool {
+        let host = self.host.read(cx).text().trim();
+        !host.is_empty() && cloudauth::aws_region_of(host).is_none()
+    }
+
+    /// The connection as `kind` signs in, whichever method is picked by now.
+    fn signing_in_as(&self, kind: AuthKind, cx: &App) -> ConnectionProfile {
+        let mut p = self.fields(cx);
+        p.auth = self.auth_value(kind, cx);
+        p.save_password = false;
+        p.sslmode = p.tls_mode();
+        p
     }
 
     pub fn set_auth(&mut self, kind: AuthKind, cx: &mut Context<Self>) {
@@ -1716,9 +1810,13 @@ impl ConnDialog {
         if self.sign_in[kind as usize].missing() {
             self.sign_in[kind as usize] = SignIn::Unchecked;
         }
+        if kind != self.auth {
+            self.test_gen += 1;
+            self.test = Test::NotTested;
+        }
         self.auth_picked = true;
         self.set_auth(kind, cx);
-        if let Some((_, _, first)) = self.method_inputs(kind).first() {
+        if let Some((_, _, first)) = self.method_inputs(kind, cx).first() {
             window.focus(&first.focus_handle(cx), cx);
         }
     }
@@ -1743,7 +1841,7 @@ impl ConnDialog {
     /// session goes on to its own login.
     fn run_check(&mut self, kind: AuthKind, then_login: bool, cx: &mut Context<Self>) {
         let k = kind as usize;
-        let task = self.store.read(cx).core.cloud_sign_in(self.fields(cx)).abort_on_drop();
+        let task = self.store.read(cx).core.cloud_sign_in(self.signing_in_as(kind, cx)).abort_on_drop();
         self.sign_in[k] = SignIn::Checking;
         self.sign_in_tasks[k] = Some(cx.spawn(async move |this, cx| {
             let r = task.await;
@@ -1768,7 +1866,7 @@ impl ConnDialog {
     /// browser; checked again once it is done.
     fn run_login(&mut self, kind: AuthKind, cx: &mut Context<Self>) {
         let k = kind as usize;
-        let task = self.store.read(cx).core.cloud_login(self.fields(cx)).abort_on_drop();
+        let task = self.store.read(cx).core.cloud_login(self.signing_in_as(kind, cx)).abort_on_drop();
         self.sign_in[k] = SignIn::SigningIn;
         self.sign_in_tasks[k] = Some(cx.spawn(async move |this, cx| {
             let r = task.await;
@@ -2107,8 +2205,8 @@ impl ConnDialog {
     }
 
     fn method_body(&self, kind: AuthKind, t: &Theme, cx: &mut Context<Self>) -> gpui::Div {
-        let fields = self.method_inputs(kind);
-        let mut rows: Vec<gpui::Div> = fields
+        let fields = self.method_inputs(kind, cx);
+        let rows: Vec<gpui::Div> = fields
             .chunks(2)
             .map(|pair| {
                 pair.iter().fold(row(), |r, (probe, label, input)| {
@@ -2119,9 +2217,6 @@ impl ConnDialog {
             .collect();
         let host = self.host.read(cx).text().trim();
         let foreign = kind.is_token() && !host.is_empty() && !cloudauth::host_allowed(kind, host);
-        if kind == AuthKind::AwsIam && foreign {
-            rows.push(row().child(self.field(t, "REGION", &self.aws_region, None)));
-        }
         let action = match (&self.sign_in[kind as usize], kind.is_token()) {
             (_, false) | (SignIn::Ok { .. } | SignIn::Checking, _) => None,
             (SignIn::SigningIn, _) => Some("Cancel"),
@@ -2279,7 +2374,7 @@ impl ConnDialog {
             Test::Invalid(msg) => ("✕", t.tx3, msg.clone(), String::new()),
             Test::HostKey(p) => ("?", t.tx3, format!("Unknown host key · {}", p.host), format!("{}  {}", p.algorithm, p.fingerprint)),
         };
-        let shown = |s: String, c: Hsla| div().overflow_hidden().whitespace_nowrap().text_ellipsis().text_color(c).child(s);
+        let shown = |s: String, c: Hsla, lines: usize| div().overflow_hidden().line_clamp(lines).text_ellipsis().text_color(c).child(s);
         let tip = if body.is_empty() { title.clone() } else { format!("{title}\n{body}") };
         let first = body.lines().next().unwrap_or("").to_string();
         Some(
@@ -2294,7 +2389,7 @@ impl ConnDialog {
                     .text_size(px(crate::theme::text::UI))
                     .line_height(px(17.))
                     .child(div().flex_none().text_size(px(crate::theme::text::TINY)).text_color(color).child(glyph))
-                    .child(div().flex_1().min_w_0().flex().flex_col().child(shown(title, t.tx)).when(!first.is_empty(), |d| d.child(shown(first, t.tx3))))
+                    .child(div().flex_1().min_w_0().flex().flex_col().child(shown(title, t.tx, 2)).when(!first.is_empty(), |d| d.child(shown(first, t.tx3, 3))))
                     .tip(ui::text_tooltip(tip)),
             ),
         )
@@ -2334,7 +2429,7 @@ impl ConnDialog {
             .when(!edit && self.step == Step::Mcp, |d| {
                 d.child(ui::probe(
                     "dlg-skip",
-                    if self.saving { ui::button_off(t, "dlg-skip", Btn::Ghost).child("Skip") } else { ui::button(t, "dlg-skip", Btn::Ghost).child("Skip").on_click(cx.listener(|d, _, _, cx| d.skip(cx))) },
+                    if self.saving { ui::button_off(t, "dlg-skip", Btn::Ghost).child("Skip") } else { ui::button(t, "dlg-skip", Btn::Ghost).child("Skip").on_click(cx.listener(|d, _, window, cx| d.skip(window, cx))) },
                 ))
             })
             .child(ui::probe("dlg-save", primary.font_weight(FontWeight::SEMIBOLD).child(label).child(ui::key_hint(if last { "⌘↩" } else { "↩" }))))

@@ -388,9 +388,9 @@ pub fn locate(program: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
     dirs.iter().flat_map(|d| names.iter().map(move |n| d.join(n))).find(|f| std::fs::metadata(f).is_ok_and(|m| runnable(&m)))
 }
 
-/// A program found with [`locate`], set up to run with no input, no shell and no console window,
-/// stopped when dropped. Its own folder comes first on its PATH: az, gcloud and the agents' CLIs
-/// are scripts that look for their interpreter there.
+/// A program found with [`locate`], set up to run with no input, no shell and no console window.
+/// Its own folder comes first on its PATH: az, gcloud and the agents' CLIs are scripts that look
+/// for their interpreter there. Run it with [`run_tree`].
 pub fn command(path: &Path, dirs: &[PathBuf]) -> tokio::process::Command {
     let mut path_var: Vec<PathBuf> = path.parent().map(Path::to_path_buf).into_iter().collect();
     path_var.extend(dirs.iter().cloned());
@@ -398,7 +398,107 @@ pub fn command(path: &Path, dirs: &[PathBuf]) -> tokio::process::Command {
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true).env("PATH", std::env::join_paths(path_var).unwrap_or_default());
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000);
+    // Its own group, for `Tree` to stop it with what it started.
+    #[cfg(unix)]
+    cmd.process_group(0);
     cmd
+}
+
+/// A running program and what it started: Homebrew's `az` is a shell script that starts Python, so
+/// stopping the program alone leaves the login running. Dropped, it stops them all.
+struct Tree {
+    #[cfg(unix)]
+    group: Option<i32>,
+    #[cfg(windows)]
+    job: windows_sys::Win32::Foundation::HANDLE,
+}
+
+// SAFETY: the job's handle is only used by whichever thread holds the `Tree`.
+#[cfg(windows)]
+unsafe impl Send for Tree {}
+
+impl Tree {
+    #[cfg(unix)]
+    fn of(child: &tokio::process::Child) -> Tree {
+        Tree { group: child.id().map(|id| id as i32) }
+    }
+
+    /// Finished by itself: what it left running is its own business.
+    #[cfg(unix)]
+    fn done(mut self) {
+        self.group = None;
+    }
+
+    #[cfg(windows)]
+    fn of(child: &tokio::process::Child) -> Tree {
+        use windows_sys::Win32::System::JobObjects::{AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation, SetInformationJobObject};
+        // SAFETY: the job is ours until `Drop` closes it, the limits outlive the call, and the
+        // child's handle is valid while `child` lives.
+        unsafe {
+            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if job.is_null() {
+                log::warn!("no job object for a CLI: {}", std::io::Error::last_os_error());
+                return Tree { job };
+            }
+            let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let set = SetInformationJobObject(job, JobObjectExtendedLimitInformation, (&raw const limits).cast(), std::mem::size_of_val(&limits) as u32);
+            let assigned = child.raw_handle().is_some_and(|h| AssignProcessToJobObject(job, h) != 0);
+            if set == 0 || !assigned {
+                log::warn!("a CLI outside its job object: {}", std::io::Error::last_os_error());
+            }
+            Tree { job }
+        }
+    }
+
+    /// Finished by itself: what it left running is its own business, so the job no longer stops it.
+    #[cfg(windows)]
+    fn done(self) {
+        use windows_sys::Win32::System::JobObjects::{JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation, SetInformationJobObject};
+        if self.job.is_null() {
+            return;
+        }
+        // SAFETY: the job is ours, and the limits outlive the call.
+        unsafe {
+            let limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            if SetInformationJobObject(self.job, JobObjectExtendedLimitInformation, (&raw const limits).cast(), std::mem::size_of_val(&limits) as u32) == 0 {
+                log::warn!("a CLI's job object keeps its limits: {}", std::io::Error::last_os_error());
+            }
+        }
+    }
+}
+
+impl Drop for Tree {
+    #[cfg(unix)]
+    fn drop(&mut self) {
+        if let Some(group) = self.group
+            // SAFETY: only signals the group this program leads.
+            && unsafe { libc::killpg(group, libc::SIGKILL) } != 0
+        {
+            log::debug!("stopping a CLI: {}", std::io::Error::last_os_error());
+        }
+    }
+
+    #[cfg(windows)]
+    fn drop(&mut self) {
+        if !self.job.is_null() {
+            // SAFETY: the job is ours and closed once, here. It stops all it holds if still limited.
+            unsafe { windows_sys::Win32::Foundation::CloseHandle(self.job) };
+        }
+    }
+}
+
+/// Runs a program from [`command`] for at most `timeout`: None when it took longer. Stopped by then,
+/// or when this future is dropped, with everything it started.
+pub async fn run_tree(cmd: &mut tokio::process::Command, timeout: Duration) -> Option<std::io::Result<std::process::Output>> {
+    let child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => return Some(Err(e)),
+    };
+    let tree = Tree::of(&child);
+    let out = tokio::time::timeout(timeout, child.wait_with_output()).await.ok()?;
+    tree.done();
+    Some(out)
 }
 
 /// Runs the CLI: its standard output, or what went wrong said plainly.
@@ -421,10 +521,10 @@ async fn exec(cli: Cli, args: &[String], dirs: &[PathBuf], auth: &Auth, timeout:
         .env("AWS_PAGER", "")
         .env("AWS_CLI_AUTO_PROMPT", "off")
         .env("CLOUDSDK_CORE_DISABLE_PROMPTS", "1");
-    let out = match tokio::time::timeout(timeout, cmd.output()).await {
-        Ok(Ok(o)) => o,
-        Ok(Err(e)) => return Err(SignInError::new(format!("{} did not start", cli.name()), e.to_string())),
-        Err(_) => return Err(SignInError::new(format!("{} did not answer in {} s", cli.name(), timeout.as_secs()), format!("Run `{}` in a terminal to see what it waits for.", login_command(cli, auth))).fix(Fix::Again(cli))),
+    let out = match run_tree(&mut cmd, timeout).await {
+        Some(Ok(o)) => o,
+        Some(Err(e)) => return Err(SignInError::new(format!("{} did not start", cli.name()), e.to_string())),
+        None => return Err(SignInError::new(format!("{} did not answer in {} s", cli.name(), timeout.as_secs()), format!("Run `{}` in a terminal to see what it waits for.", login_command(cli, auth))).fix(Fix::Again(cli))),
     };
     if !out.status.success() {
         return Ok(Err(String::from_utf8_lossy(&out.stderr).into_owned()));
@@ -803,6 +903,102 @@ pub(crate) fn explain(p: &ConnectionProfile, e: anyhow::Error) -> anyhow::Error 
     let refused = ["28P01", "28000", "1045", "18456"].contains(&code.as_str())
         || ["password authentication failed", "pam authentication failed", "access denied", "login failed", "token-identified principal"].iter().any(|w| msg.contains(w));
     if refused { e.context(Hint(hint)) } else { e }
+}
+
+#[cfg(test)]
+mod tree_tests {
+    use super::*;
+
+    fn alive(pid: u32) -> bool {
+        #[cfg(unix)]
+        // SAFETY: signal 0 only asks whether the process is there.
+        return unsafe { libc::kill(pid as i32, 0) } == 0;
+        #[cfg(windows)]
+        {
+            let out = std::process::Command::new("tasklist").args(["/NH", "/FI", &format!("PID eq {pid}")]).output().unwrap();
+            String::from_utf8_lossy(&out.stdout).contains(&pid.to_string())
+        }
+    }
+
+    /// A script that starts a program of its own and waits for it, as Homebrew's `az` starts
+    /// Python and Windows' `az.cmd` too. Returns the script.
+    fn launcher(dir: &Path) -> PathBuf {
+        let pid = dir.join("child.pid");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let f = dir.join("cli");
+            std::fs::write(&f, format!("#!/bin/sh\nsleep 300 &\necho $! > '{}'\nwait\n", pid.display())).unwrap();
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+            f
+        }
+        #[cfg(windows)]
+        {
+            let f = dir.join("cli.cmd");
+            std::fs::write(&f, format!("@powershell -NoProfile -Command \"$PID | Out-File -Encoding ascii '{}'; Start-Sleep 300\"\r\n", pid.display())).unwrap();
+            f
+        }
+    }
+
+    async fn child_of(dir: &Path) -> u32 {
+        for _ in 0..200 {
+            if let Some(pid) = std::fs::read_to_string(dir.join("child.pid")).ok().and_then(|t| t.trim().parse().ok()) {
+                return pid;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("the script's program never started");
+    }
+
+    async fn gone(pid: u32) -> bool {
+        for _ in 0..100 {
+            if !alive(pid) {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        false
+    }
+
+    #[tokio::test]
+    async fn dropping_a_run_stops_what_the_script_started() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = launcher(dir.path());
+        let mut cmd = command(&f, &default_dirs());
+        let run = tokio::spawn(async move { run_tree(&mut cmd, Duration::from_secs(120)).await });
+        let pid = child_of(dir.path()).await;
+        assert!(alive(pid));
+        run.abort();
+        assert!(gone(pid).await, "the program {pid} outlived Cancel");
+    }
+
+    #[tokio::test]
+    async fn a_timeout_stops_what_the_script_started() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = launcher(dir.path());
+        let mut cmd = command(&f, &default_dirs());
+        let waits = run_tree(&mut cmd, Duration::from_secs(5));
+        tokio::pin!(waits);
+        let pid = tokio::select! {
+            pid = child_of(dir.path()) => pid,
+            _ = &mut waits => panic!("it finished before starting"),
+        };
+        assert!(waits.await.is_none(), "it took longer");
+        assert!(gone(pid).await, "the program {pid} outlived the timeout");
+    }
+
+    #[tokio::test]
+    async fn a_run_that_finishes_answers() {
+        let dir = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        let (program, args) = ("/bin/sh", vec!["-c", "echo hello"]);
+        #[cfg(windows)]
+        let (program, args) = ("cmd.exe", vec!["/C", "echo hello"]);
+        let mut cmd = command(Path::new(program), &default_dirs());
+        cmd.args(args).current_dir(dir.path());
+        let out = run_tree(&mut cmd, Duration::from_secs(30)).await.unwrap().unwrap();
+        assert!(out.status.success() && String::from_utf8_lossy(&out.stdout).contains("hello"));
+    }
 }
 
 #[cfg(test)]

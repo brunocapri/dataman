@@ -765,8 +765,7 @@ impl ConnectionProfile {
             return format!("sqlserver://{}:{}{db};user={};{enc}", self.host, self.port, self.user);
         }
         format!(
-            "postgresql://{}@{host}:{}/{}?sslmode={}",
-            percent_encode(&self.user),
+            "postgresql://{user}{host}:{}/{}?sslmode={}",
             self.port,
             percent_encode(&self.database),
             self.sslmode.label()
@@ -1441,6 +1440,8 @@ mod tests {
         p.sslmode = SslMode::Require;
         p.save_password = true;
         assert_eq!(p.url(), "postgresql://bruno@db.prod.internal:6543/app_db?sslmode=require");
+        let nobody = ConnectionProfile { user: String::new(), ..p.clone() };
+        assert_eq!(nobody.url(), "postgresql://db.prod.internal:6543/app_db?sslmode=require", "no empty user before the host");
         p.user = "a@b:c".into();
         p.database = "my db/é".into();
         p.host = "::1".into();
