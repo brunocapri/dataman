@@ -467,7 +467,7 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
     let saved = |cx: &mut AsyncWindowContext| cx.update(|_, cx| ws.read(cx).store.read(cx).core.config.connections().len()).unwrap_or(0);
     let saved_before = saved(cx);
     if let Some(d) = cx.update(|_, cx| ws.read(cx).dialog.clone()).ok().flatten() {
-        let _ = cx.update(|window, cx| d.update(cx, |d, cx| d.set_entry(crate::conn_dialog::Entry::Url, window, cx)));
+        let _ = cx.update(|window, cx| d.update(cx, |d, cx| d.demo_step(crate::conn_dialog::Step::Connection, window, cx)));
         draw(cx);
         use dataman_core::config::Engine;
         for (s, engine, host, port, user, db, pw) in [
@@ -480,16 +480,15 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, id: &str, db: &str, cx: &m
             draw(cx);
             let (p, typed) = cx.update(|_, cx| d.read(cx).current(cx)).unwrap();
             let got = (p.engine, p.host.as_str(), p.port, p.user.as_str(), p.database.as_str(), typed.as_str());
-            report(&format!("URL mode reads {}", s.split([':', '=']).next().unwrap_or(s)), got == (engine, host, port, user, db, pw), format!("{got:?}"));
+            report(&format!("the connection string reads {}", s.split([':', '=']).next().unwrap_or(s)), got == (engine, host, port, user, db, pw), format!("{got:?}"));
         }
         let _ = cx.update(|_, cx| d.update(cx, |d, cx| d.set_conn_str("postgres//app@db.example.com/shop", cx)));
         key(cx, "cmd-enter");
         pause(cx, 200).await;
         let (red, open) = cx.update(|_, cx| (d.read(cx).conn_str_invalid(cx), ws.read(cx).dialog.is_some())).unwrap_or_default();
         report("a string that is not a connection string is red and does not save", red && open, format!("red {red}, open {open}"));
-        let _ = cx.update(|window, cx| d.update(cx, |d, cx| d.set_entry(crate::conn_dialog::Entry::Fields, window, cx)));
         let (p, _) = cx.update(|_, cx| d.read(cx).current(cx)).unwrap();
-        report("Fields shows what the last good string filled", p.engine == Engine::SqlServer && p.port == 1433, format!("{:?} {}", p.engine, p.port));
+        report("the fields keep what the last good string filled", p.engine == Engine::SqlServer && p.port == 1433, format!("{:?} {}", p.engine, p.port));
         key(cx, "escape");
         pause(cx, 200).await;
     }

@@ -23,7 +23,8 @@ pub fn bind_keys(cx: &mut App) {
 pub enum WelcomeEvent {
     NewConnection,
     AgentSetup,
-    Prefill(ConnectionProfile, Option<String>),
+    /// A sheet filled in; with the connection string it came from, when it did.
+    Prefill(ConnectionProfile, Option<String>, Option<String>),
     OpenFile,
     OpenDatabase,
     OpenProject,
@@ -78,7 +79,7 @@ impl Welcome {
                 let mut p = ConnectionProfile::new("localhost");
                 p.host = "localhost".into();
                 p.user = std::env::var("USER").unwrap_or_else(|_| "postgres".into());
-                cx.emit(WelcomeEvent::Prefill(p, None));
+                cx.emit(WelcomeEvent::Prefill(p, None, None));
             }
             4 => cx.emit(WelcomeEvent::OpenFile),
             5 => cx.emit(WelcomeEvent::OpenDatabase),
@@ -96,7 +97,7 @@ impl Welcome {
     fn paste_url(&mut self, cx: &mut Context<Self>) {
         let text = cx.read_from_clipboard().and_then(|c| c.text()).unwrap_or_default();
         match dataman_core::connstr::parse_profile(&text) {
-            Some((p, pw)) => cx.emit(WelcomeEvent::Prefill(p, pw)),
+            Some((p, pw)) => cx.emit(WelcomeEvent::Prefill(p, pw, Some(text.trim().to_string()))),
             None => self.note = Some("The clipboard has no connection string".into()),
         }
         cx.notify();

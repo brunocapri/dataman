@@ -645,7 +645,7 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
         let (step2, p) = cx.update(|_, cx| (d.read(cx).step(), d.read(cx).current(cx).0)).unwrap();
         check(
             "the connection sheet starts with the engines; a search and ↩ open Redis' form",
-            step == Some(crate::conn_dialog::Step::Engine) && step2 == crate::conn_dialog::Step::Form && p.engine == Engine::Redis && p.port == 6379,
+            step == Some(crate::conn_dialog::Step::Database) && step2 == crate::conn_dialog::Step::Connection && p.engine == Engine::Redis && p.port == 6379,
             format!("{step:?} {step2:?} {:?} {}", p.engine, p.port),
         );
         key(cx, "escape");

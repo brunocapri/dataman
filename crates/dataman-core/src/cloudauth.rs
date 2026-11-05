@@ -86,6 +86,11 @@ impl Cli {
             Cli::Gcloud => "Google Cloud",
         }
     }
+
+    /// The state a CLI with no session is in, said the same wherever it shows.
+    pub fn signed_out(self) -> String {
+        format!("Not signed in to {}", self.cloud())
+    }
 }
 
 /// Why no token: said so the user knows what to do (the command to run, the page to install from).
@@ -105,6 +110,8 @@ pub enum Fix {
     SignIn(Cli),
     /// The CLI is not installed: its install page.
     Install(Cli),
+    /// The CLI took too long to answer: asked again.
+    Again(Cli),
 }
 
 impl SignInError {
@@ -310,7 +317,7 @@ fn request(p: &ConnectionProfile) -> Result<Request, SignInError> {
 // ---- Running the CLI -------------------------------------------------------------------------
 
 /// Where the CLIs are looked for: the PATH, then where their installers put them.
-fn default_dirs() -> Vec<PathBuf> {
+pub fn default_dirs() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
     dirs.extend(install_dirs());
     // Absolute folders only: a relative PATH entry would be wherever the app was started.
@@ -376,9 +383,122 @@ fn runnable(m: &std::fs::Metadata) -> bool {
     m.is_file()
 }
 
-fn locate(program: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
+pub fn locate(program: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
     let names = file_names(program);
     dirs.iter().flat_map(|d| names.iter().map(move |n| d.join(n))).find(|f| std::fs::metadata(f).is_ok_and(|m| runnable(&m)))
+}
+
+/// A program found with [`locate`], set up to run with no input, no shell and no console window.
+/// Its own folder comes first on its PATH: az, gcloud and the agents' CLIs are scripts that look
+/// for their interpreter there. Run it with [`run_tree`].
+pub fn command(path: &Path, dirs: &[PathBuf]) -> tokio::process::Command {
+    let mut path_var: Vec<PathBuf> = path.parent().map(Path::to_path_buf).into_iter().collect();
+    path_var.extend(dirs.iter().cloned());
+    let mut cmd = tokio::process::Command::new(path);
+    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true).env("PATH", std::env::join_paths(path_var).unwrap_or_default());
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000);
+    // Its own group, for `Tree` to stop it with what it started.
+    #[cfg(unix)]
+    cmd.process_group(0);
+    cmd
+}
+
+/// A running program and what it started: Homebrew's `az` is a shell script that starts Python, so
+/// stopping the program alone leaves the login running. Dropped, it stops them all.
+struct Tree {
+    #[cfg(unix)]
+    group: Option<i32>,
+    #[cfg(windows)]
+    job: windows_sys::Win32::Foundation::HANDLE,
+}
+
+// SAFETY: the job's handle is only used by whichever thread holds the `Tree`.
+#[cfg(windows)]
+unsafe impl Send for Tree {}
+
+impl Tree {
+    #[cfg(unix)]
+    fn of(child: &tokio::process::Child) -> Tree {
+        Tree { group: child.id().map(|id| id as i32) }
+    }
+
+    /// Finished by itself: what it left running is its own business.
+    #[cfg(unix)]
+    fn done(mut self) {
+        self.group = None;
+    }
+
+    #[cfg(windows)]
+    fn of(child: &tokio::process::Child) -> Tree {
+        use windows_sys::Win32::System::JobObjects::{AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation, SetInformationJobObject};
+        // SAFETY: the job is ours until `Drop` closes it, the limits outlive the call, and the
+        // child's handle is valid while `child` lives.
+        unsafe {
+            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if job.is_null() {
+                log::warn!("no job object for a CLI: {}", std::io::Error::last_os_error());
+                return Tree { job };
+            }
+            let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let set = SetInformationJobObject(job, JobObjectExtendedLimitInformation, (&raw const limits).cast(), std::mem::size_of_val(&limits) as u32);
+            let assigned = child.raw_handle().is_some_and(|h| AssignProcessToJobObject(job, h) != 0);
+            if set == 0 || !assigned {
+                log::warn!("a CLI outside its job object: {}", std::io::Error::last_os_error());
+            }
+            Tree { job }
+        }
+    }
+
+    /// Finished by itself: what it left running is its own business, so the job no longer stops it.
+    #[cfg(windows)]
+    fn done(self) {
+        use windows_sys::Win32::System::JobObjects::{JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation, SetInformationJobObject};
+        if self.job.is_null() {
+            return;
+        }
+        // SAFETY: the job is ours, and the limits outlive the call.
+        unsafe {
+            let limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            if SetInformationJobObject(self.job, JobObjectExtendedLimitInformation, (&raw const limits).cast(), std::mem::size_of_val(&limits) as u32) == 0 {
+                log::warn!("a CLI's job object keeps its limits: {}", std::io::Error::last_os_error());
+            }
+        }
+    }
+}
+
+impl Drop for Tree {
+    #[cfg(unix)]
+    fn drop(&mut self) {
+        if let Some(group) = self.group
+            // SAFETY: only signals the group this program leads.
+            && unsafe { libc::killpg(group, libc::SIGKILL) } != 0
+        {
+            log::debug!("stopping a CLI: {}", std::io::Error::last_os_error());
+        }
+    }
+
+    #[cfg(windows)]
+    fn drop(&mut self) {
+        if !self.job.is_null() {
+            // SAFETY: the job is ours and closed once, here. It stops all it holds if still limited.
+            unsafe { windows_sys::Win32::Foundation::CloseHandle(self.job) };
+        }
+    }
+}
+
+/// Runs a program from [`command`] for at most `timeout`: None when it took longer. Stopped by then,
+/// or when this future is dropped, with everything it started.
+pub async fn run_tree(cmd: &mut tokio::process::Command, timeout: Duration) -> Option<std::io::Result<std::process::Output>> {
+    let child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => return Some(Err(e)),
+    };
+    let tree = Tree::of(&child);
+    let out = tokio::time::timeout(timeout, child.wait_with_output()).await.ok()?;
+    tree.done();
+    Some(out)
 }
 
 /// Runs the CLI: its standard output, or what went wrong said plainly.
@@ -394,34 +514,26 @@ async fn exec(cli: Cli, args: &[String], dirs: &[PathBuf], auth: &Auth, timeout:
     let Some(path) = locate(cli.program(), dirs) else {
         return Err(SignInError::new(format!("{} ({}) not found", cli.name(), cli.program()), format!("Dataman signs in through it: install it ({}), then sign in.", cli.install_url())).fix(Fix::Install(cli)));
     };
-    // The CLI's own folder first (az and gcloud are scripts that look for their Python there).
-    let mut path_var: Vec<PathBuf> = path.parent().map(Path::to_path_buf).into_iter().collect();
-    path_var.extend(dirs.iter().cloned());
-    let mut cmd = tokio::process::Command::new(&path);
+    let mut cmd = command(&path, dirs);
     cmd.args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .env("PATH", std::env::join_paths(path_var).unwrap_or_default())
         .env("AZURE_CORE_NO_COLOR", "1")
         .env("AZURE_CORE_ONLY_SHOW_ERRORS", "1")
         .env("AWS_PAGER", "")
         .env("AWS_CLI_AUTO_PROMPT", "off")
         .env("CLOUDSDK_CORE_DISABLE_PROMPTS", "1");
-    // No console window flashing up over the app.
-    #[cfg(windows)]
-    cmd.creation_flags(0x0800_0000);
-    let out = match tokio::time::timeout(timeout, cmd.output()).await {
-        Ok(Ok(o)) => o,
-        Ok(Err(e)) => return Err(SignInError::new(format!("{} did not start", cli.name()), e.to_string())),
-        Err(_) => return Err(SignInError::new(format!("{} did not answer in {} s", cli.name(), timeout.as_secs()), format!("Run `{}` in a terminal to see what it waits for.", login_command(cli, auth)))),
+    let out = match run_tree(&mut cmd, timeout).await {
+        Some(Ok(o)) => o,
+        Some(Err(e)) => return Err(SignInError::new(format!("{} did not start", cli.name()), e.to_string())),
+        None => return Err(SignInError::new(format!("{} did not answer in {} s", cli.name(), timeout.as_secs()), format!("Run `{}` in a terminal to see what it waits for.", login_command(cli, auth))).fix(Fix::Again(cli))),
     };
     if !out.status.success() {
         return Ok(Err(String::from_utf8_lossy(&out.stderr).into_owned()));
     }
     Ok(Ok(String::from_utf8_lossy(&out.stdout).into_owned()))
 }
+
+/// What `az` says when the token needs the browser again, for MFA or Conditional Access.
+const AZ_INTERACTION: [&str; 7] = ["AADSTS50076", "AADSTS50079", "AADSTS50078", "AADSTS53003", "AADSTS530003", "claims challenge", "interaction_required"];
 
 /// The scope an Entra sign-in asks for: the database's, so MFA or Conditional Access for it is
 /// passed in the browser. `args`: the token request's.
@@ -439,8 +551,13 @@ fn login_args(r: &Request, auth: &Auth) -> Result<Vec<String>, SignInError> {
     match auth {
         Auth::EntraId { tenant } => {
             args.extend(["login", "--output=none"].map(String::from));
-            args.extend(opt("tenant", "tenant", tenant.as_deref())?);
-            args.push(format!("--scope={}", entra_scope(&r.args)));
+            // No tenant means az's `organizations` sign-in, where the database's scope turns a
+            // personal Microsoft account away ("does not exist in tenant 'Microsoft Services'").
+            // az's own scope takes any account, and `TokenSource::sign_in` comes back for MFA.
+            if let Some(t) = opt("tenant", "tenant", tenant.as_deref())? {
+                args.push(t);
+                args.push(format!("--scope={}", entra_scope(&r.args)));
+            }
         }
         Auth::AwsIam { profile, .. } => {
             let profile = opt("profile", "profile", profile.as_deref())?;
@@ -486,10 +603,10 @@ fn classify(cli: Cli, stderr: &str, auth: &Auth, args: &[String]) -> SignInError
     let first = stderr.lines().map(str::trim).map(|l| l.trim_start_matches("ERROR:").trim_start_matches("ERROR").trim_start_matches(':').trim()).find(|l| !l.is_empty()).unwrap_or("").to_string();
     let first: String = first.chars().take(300).collect();
     let login = login_command(cli, auth);
-    let signed_out = |detail: &str| SignInError::new(format!("Not signed in to {}", cli.cloud()), format!("Sign in again, or run `{login}` in a terminal.{detail}")).fix(Fix::SignIn(cli));
+    let signed_out = |detail: &str| SignInError::new(cli.signed_out(), format!("Sign in again, or run `{login}` in a terminal.{detail}")).fix(Fix::SignIn(cli));
     match cli {
         Cli::Az => {
-            if has(&["AADSTS50076", "AADSTS50079", "AADSTS50078", "AADSTS53003", "AADSTS530003", "claims challenge", "interaction_required"]) {
+            if has(&AZ_INTERACTION) {
                 let scope = entra_scope(args);
                 return SignInError::new("Azure asks to sign in again (MFA or Conditional Access)", format!("Sign in again, or run `{login} --scope {scope}` in a terminal.")).fix(Fix::SignIn(cli));
             }
@@ -628,7 +745,21 @@ fn jwt_identity(token: &str) -> Option<String> {
     let raw = data_encoding::BASE64URL_NOPAD.decode(payload.trim_end_matches('=').as_bytes()).ok()?;
     let v: serde_json::Value = serde_json::from_slice(&raw).ok()?;
     let claim = |k: &str| v.get(k).and_then(|c| c.as_str()).map(str::to_string).filter(|s| !s.is_empty());
-    claim("upn").or_else(|| claim("unique_name")).or_else(|| claim("preferred_username")).or_else(|| claim("email")).or_else(|| claim("appid").map(|a| format!("application {a}")))
+    // A personal or guest account's name reads `live.com#ana@x.com` or `ana_x.com#EXT#@tenant`,
+    // which looks like another user: its `email` is the address its owner knows.
+    const NAMES: [&str; 3] = ["upn", "unique_name", "preferred_username"];
+    NAMES
+        .iter()
+        .find_map(|k| claim(k).filter(|s| !s.contains('#')))
+        .or_else(|| claim("email"))
+        .or_else(|| NAMES.iter().find_map(|k| claim(k)))
+        .or_else(|| claim("appid").map(|a| format!("application {a}")))
+}
+
+/// Who a signed-in status names: an AWS ARN's role and session, not its account and path.
+pub fn short_identity(who: &str) -> &str {
+    let tail = who.strip_prefix("arn:").and_then(|_| who.rsplit(':').next()).unwrap_or(who);
+    tail.strip_prefix("assumed-role/").or_else(|| tail.strip_prefix("user/")).unwrap_or(tail)
 }
 
 /// `aws sts get-caller-identity --output json`: the ARN.
@@ -704,17 +835,29 @@ impl TokenSource {
     pub async fn sign_in(&self, p: &ConnectionProfile) -> Result<(), SignInError> {
         guard(p)?;
         let r = request(p)?;
-        let args = login_args(&r, &p.auth)?;
-        let (cli, name) = (r.cli, r.cli.name());
-        match exec(r.cli, &args, &self.dirs, &p.auth, LOGIN_TIMEOUT).await? {
-            Ok(_) => {
-                *self.cache.slot(&r).lock().await = None;
-                Ok(())
-            }
+        self.log_in(&r, &p.auth, &login_args(&r, &p.auth)?).await?;
+        // Signed in with no tenant, so without the database's scope: if the database asks for
+        // MFA, a second sign-in passes it, in the tenant the account is now on.
+        if matches!(&p.auth, Auth::EntraId { tenant } if tenant.as_deref().is_none_or(|t| t.trim().is_empty()))
+            && let Err(stderr) = exec(r.cli, &r.args, &self.dirs, &p.auth, TIMEOUT).await?
+            && AZ_INTERACTION.iter().any(|n| stderr.to_ascii_lowercase().contains(&n.to_ascii_lowercase()))
+        {
+            let show: Vec<String> = ["account", "show", "--query=tenantId", "--output=tsv"].map(String::from).to_vec();
+            let tenant = run(r.cli, &show, &self.dirs, &p.auth).await?;
+            let on = Auth::EntraId { tenant: Some(tenant.trim().to_string()) };
+            self.log_in(&r, &p.auth, &login_args(&r, &on)?).await?;
+        }
+        *self.cache.slot(&r).lock().await = None;
+        Ok(())
+    }
+
+    async fn log_in(&self, r: &Request, auth: &Auth, args: &[String]) -> Result<(), SignInError> {
+        match exec(r.cli, args, &self.dirs, auth, LOGIN_TIMEOUT).await? {
+            Ok(_) => Ok(()),
             Err(stderr) => {
                 let first = stderr.lines().map(str::trim).map(|l| l.trim_start_matches("ERROR:").trim()).find(|l| !l.is_empty()).unwrap_or("");
                 let first: String = first.chars().take(300).collect();
-                Err(SignInError::new(format!("The {name} sign-in did not finish"), if first.is_empty() { "Try again.".to_string() } else { first }).fix(Fix::SignIn(cli)))
+                Err(SignInError::new(format!("The {} sign-in did not finish", r.cli.name()), if first.is_empty() { "Try again.".to_string() } else { first }).fix(Fix::SignIn(r.cli)))
             }
         }
     }
@@ -791,6 +934,103 @@ pub(crate) fn explain(p: &ConnectionProfile, e: anyhow::Error) -> anyhow::Error 
 }
 
 #[cfg(test)]
+mod tree_tests {
+    use super::*;
+
+    fn alive(pid: u32) -> bool {
+        #[cfg(unix)]
+        // SAFETY: signal 0 only asks whether the process is there.
+        return unsafe { libc::kill(pid as i32, 0) } == 0;
+        #[cfg(windows)]
+        {
+            let out = std::process::Command::new("tasklist").args(["/NH", "/FI", &format!("PID eq {pid}")]).output().unwrap();
+            String::from_utf8_lossy(&out.stdout).contains(&pid.to_string())
+        }
+    }
+
+    /// A script that starts a program of its own and waits for it, as Homebrew's `az` starts
+    /// Python and Windows' `az.cmd` too. Returns the script.
+    fn launcher(dir: &Path) -> PathBuf {
+        let pid = dir.join("child.pid");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let f = dir.join("cli");
+            std::fs::write(&f, format!("#!/bin/sh\nsleep 300 &\necho $! > '{}'\nwait\n", pid.display())).unwrap();
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+            f
+        }
+        #[cfg(windows)]
+        {
+            let f = dir.join("cli.cmd");
+            std::fs::write(&f, format!("@powershell -NoProfile -Command \"$PID | Out-File -Encoding ascii '{}'; Start-Sleep 300\"\r\n", pid.display())).unwrap();
+            f
+        }
+    }
+
+    async fn child_of(dir: &Path) -> u32 {
+        for _ in 0..200 {
+            if let Some(pid) = std::fs::read_to_string(dir.join("child.pid")).ok().and_then(|t| t.trim().parse().ok()) {
+                return pid;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("the script's program never started");
+    }
+
+    async fn gone(pid: u32) -> bool {
+        for _ in 0..100 {
+            if !alive(pid) {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        false
+    }
+
+    #[tokio::test]
+    async fn dropping_a_run_stops_what_the_script_started() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = launcher(dir.path());
+        let mut cmd = command(&f, &default_dirs());
+        let run = tokio::spawn(async move { run_tree(&mut cmd, Duration::from_secs(120)).await });
+        let pid = child_of(dir.path()).await;
+        assert!(alive(pid));
+        run.abort();
+        assert!(gone(pid).await, "the program {pid} outlived Cancel");
+    }
+
+    #[tokio::test]
+    async fn a_timeout_stops_what_the_script_started() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = launcher(dir.path());
+        let mut cmd = command(&f, &default_dirs());
+        // Long enough for PowerShell to start on a slow runner, or the timeout comes first.
+        let waits = run_tree(&mut cmd, Duration::from_secs(if cfg!(windows) { 45 } else { 5 }));
+        tokio::pin!(waits);
+        let pid = tokio::select! {
+            pid = child_of(dir.path()) => pid,
+            _ = &mut waits => panic!("it finished before starting"),
+        };
+        assert!(waits.await.is_none(), "it took longer");
+        assert!(gone(pid).await, "the program {pid} outlived the timeout");
+    }
+
+    #[tokio::test]
+    async fn a_run_that_finishes_answers() {
+        let dir = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        let (program, args) = ("/bin/sh", vec!["-c", "echo hello"]);
+        #[cfg(windows)]
+        let (program, args) = ("cmd.exe", vec!["/C", "echo hello"]);
+        let mut cmd = command(Path::new(program), &default_dirs());
+        cmd.args(args).current_dir(dir.path());
+        let out = run_tree(&mut cmd, Duration::from_secs(30)).await.unwrap().unwrap();
+        assert!(out.status.success() && String::from_utf8_lossy(&out.stdout).contains("hello"));
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -827,6 +1067,9 @@ mod tests {
         }
         assert_eq!(jwt_identity(&token).as_deref(), Some("ana@contoso.com"));
         assert_eq!(jwt_identity(&jwt(r#"{"appid":"1234"}"#)).as_deref(), Some("application 1234"));
+        assert_eq!(jwt_identity(&jwt(r#"{"unique_name":"live.com#ana@gmail.com","email":"ana@gmail.com"}"#)).as_deref(), Some("ana@gmail.com"));
+        assert_eq!(jwt_identity(&jwt(r#"{"upn":"ana_gmail.com#EXT#@contoso.onmicrosoft.com","email":"ana@gmail.com"}"#)).as_deref(), Some("ana@gmail.com"));
+        assert_eq!(jwt_identity(&jwt(r#"{"unique_name":"live.com#ana@gmail.com"}"#)).as_deref(), Some("live.com#ana@gmail.com"));
         assert_eq!(jwt_identity("opaque"), None);
     }
 
@@ -843,6 +1086,13 @@ mod tests {
         }
         let sts = r#"{"UserId":"AROA:ana","Account":"123456789012","Arn":"arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_Dev_1/ana@example.com"}"#;
         assert_eq!(parse_sts(sts).as_deref(), Some("arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_Dev_1/ana@example.com"));
+    }
+
+    #[test]
+    fn a_status_names_an_identity_shortly() {
+        assert_eq!(short_identity("arn:aws:sts::123456789012:assumed-role/AdministratorAccess/ana"), "AdministratorAccess/ana");
+        assert_eq!(short_identity("arn:aws:iam::123456789012:user/ana"), "ana");
+        assert_eq!(short_identity("ana@contoso.com"), "ana@contoso.com");
     }
 
     #[test]
@@ -998,6 +1248,32 @@ mod tests {
         src.token(&p).await.unwrap();
         src.token(&p).await.unwrap();
         assert_eq!(runs(d), 4);
+    }
+
+    /// `az`'s runs for one sign-in, against an az whose token asks for MFA until a login with
+    /// the database's scope, when `mfa`.
+    #[cfg(unix)]
+    async fn az_sign_in_runs(tenant: Option<&str>, mfa: bool) -> Vec<String> {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let r = d.display();
+        let gate = if mfa { format!("[ -f '{r}/scoped' ] || {{ echo 'ERROR: AADSTS50076: you must use multi-factor authentication.' >&2; exit 1; }}") } else { String::new() };
+        fake(d, "az", &format!("echo \"$*\" >> '{r}/runs'\ncase \"$1 $2\" in\n'account show') echo the-tenant ;;\naccount*) {gate}\n  echo token ;;\nlogin*) case \"$*\" in *--scope*) : > '{r}/scoped' ;; esac ;;\nesac"));
+        let src = TokenSource::in_dirs(vec![d.to_path_buf()]);
+        let p = profile(Engine::SqlServer, "srv.database.windows.net", Auth::EntraId { tenant: tenant.map(str::to_string) });
+        src.sign_in(&p).await.unwrap();
+        std::fs::read_to_string(d.join("runs")).unwrap().lines().map(str::to_string).collect()
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_entra_sign_in_asks_for_the_database_only_with_a_tenant() {
+        const TOKEN: &str = "account get-access-token --output=json --resource=https://database.windows.net/";
+        const SCOPE: &str = "--scope=https://database.windows.net/.default";
+        assert_eq!(az_sign_in_runs(None, false).await, ["login --output=none", TOKEN]);
+        assert_eq!(az_sign_in_runs(Some("  "), false).await, ["login --output=none", TOKEN]);
+        assert_eq!(az_sign_in_runs(Some("contoso"), false).await, [format!("login --output=none --tenant=contoso {SCOPE}")]);
+        assert_eq!(az_sign_in_runs(None, true).await, ["login --output=none".to_string(), TOKEN.to_string(), "account show --query=tenantId --output=tsv".to_string(), format!("login --output=none --tenant=the-tenant {SCOPE}")]);
     }
 
     #[cfg(unix)]

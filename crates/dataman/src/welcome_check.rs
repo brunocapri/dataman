@@ -23,7 +23,7 @@ pub async fn run_welcome(ws: &Entity<Workspace>, r: &mut Report, cx: &mut AsyncW
 
     click_probe("welcome-0", cx);
     let step = dialog(ws, cx).map(|d| cx.update(|_, cx| d.read(cx).step()).unwrap());
-    r.check("New connection opens the sheet on the engines", step == Some(Step::Engine), format!("{step:?}"));
+    r.check("New connection opens the sheet on the engines", step == Some(Step::Database), format!("{step:?}"));
     close_dialog(ws, cx);
 
     let (pg, pw) = profile(Engine::Postgres);

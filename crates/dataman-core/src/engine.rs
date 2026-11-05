@@ -63,6 +63,8 @@ pub struct Form {
     pub options: bool,
     /// The database field's label ("DB" for Redis' numbered ones).
     pub database_label: &'static str,
+    /// The scheme a connection string for it starts with, as its placeholder shows it.
+    pub scheme: &'static str,
 }
 
 /// What the engine calls a table, one and many ("collection", "collections").
@@ -74,8 +76,8 @@ pub struct Nouns {
 
 const TABLES: Nouns = Nouns { one: "table", many: "tables" };
 
-const SERVER: Form = Form { file: false, user_required: true, database: true, database_placeholder: "database", options: false, database_label: "Database" };
-const FILE: Form = Form { file: true, user_required: false, database: false, database_placeholder: "", options: false, database_label: "Database" };
+const SERVER: Form = Form { file: false, user_required: true, database: true, database_placeholder: "database", options: false, database_label: "Database", scheme: "postgres" };
+const FILE: Form = Form { file: true, user_required: false, database: false, database_placeholder: "", options: false, database_label: "Database", scheme: "" };
 const NO_FILES: &[&str] = &[];
 
 /// In `Engine`'s declaration order: `Engine::spec` indexes it.
@@ -126,7 +128,7 @@ pub static SPECS: [EngineSpec; 9] = [
         system_schemas: &["mysql", "information_schema", "performance_schema", "sys"],
         numbered_dbs: None,
         nouns: TABLES,
-        form: SERVER,
+        form: Form { scheme: "mysql", ..SERVER },
     },
     EngineSpec {
         engine: Engine::SqlServer,
@@ -150,7 +152,7 @@ pub static SPECS: [EngineSpec; 9] = [
         system_schemas: &["sys", "INFORMATION_SCHEMA"],
         numbered_dbs: None,
         nouns: TABLES,
-        form: SERVER,
+        form: Form { scheme: "sqlserver", ..SERVER },
     },
     EngineSpec {
         engine: Engine::MongoDb,
@@ -174,7 +176,7 @@ pub static SPECS: [EngineSpec; 9] = [
         system_schemas: &[],
         numbered_dbs: None,
         nouns: Nouns { one: "collection", many: "collections" },
-        form: Form { user_required: false, database_placeholder: "test", options: true, ..SERVER },
+        form: Form { user_required: false, database_placeholder: "test", options: true, scheme: "mongodb", ..SERVER },
     },
     EngineSpec {
         engine: Engine::Elasticsearch,
@@ -198,7 +200,7 @@ pub static SPECS: [EngineSpec; 9] = [
         system_schemas: &[],
         numbered_dbs: None,
         nouns: Nouns { one: "index", many: "indices" },
-        form: Form { user_required: false, database: false, database_placeholder: "", ..SERVER },
+        form: Form { user_required: false, database: false, database_placeholder: "", scheme: "https", ..SERVER },
     },
     EngineSpec {
         engine: Engine::OpenSearch,
@@ -222,7 +224,7 @@ pub static SPECS: [EngineSpec; 9] = [
         system_schemas: &[],
         numbered_dbs: None,
         nouns: Nouns { one: "index", many: "indices" },
-        form: Form { user_required: false, database: false, database_placeholder: "", ..SERVER },
+        form: Form { user_required: false, database: false, database_placeholder: "", scheme: "https", ..SERVER },
     },
     EngineSpec {
         engine: Engine::Redis,
@@ -246,7 +248,7 @@ pub static SPECS: [EngineSpec; 9] = [
         system_schemas: &[],
         numbered_dbs: Some(16),
         nouns: Nouns { one: "key", many: "keys" },
-        form: Form { user_required: false, database_placeholder: "0", database_label: "DB", ..SERVER },
+        form: Form { user_required: false, database_placeholder: "0", database_label: "DB", scheme: "redis", ..SERVER },
     },
     EngineSpec {
         engine: Engine::Sqlite,

@@ -2232,6 +2232,7 @@ version = "0.3.8"
 dependencies = [
  "anyhow",
  "chrono",
+ "data-encoding",
  "dataman-core",
  "futures-util",
  "log",

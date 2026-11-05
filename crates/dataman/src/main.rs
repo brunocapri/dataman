@@ -84,6 +84,8 @@ mod input_check;
 #[cfg(not(target_os = "macos"))]
 mod instance;
 #[cfg(feature = "checks")]
+mod conn_steps_check;
+#[cfg(feature = "checks")]
 mod lite_check;
 #[cfg(feature = "checks")]
 mod intel_demo;
@@ -412,6 +414,8 @@ fn main() {
     #[cfg(not(feature = "checks"))]
     let startup = false;
 
+    #[cfg(feature = "checks")]
+    conn_steps_check::prepare();
     let (dirs, secrets): (Dirs, Arc<dyn SecretStore>) = match bench {
         Some(_) => {
             // A run that exited early leaves its folder; a later one can get the same pid.

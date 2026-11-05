@@ -42,6 +42,54 @@ fn s1(v: &str) -> Option<String> {
     Some(v.to_string())
 }
 
+/// A port that answers at once and passes nothing on for `delay`, like the gateway of a paused
+/// serverless database, then forwards to `target`.
+fn stalling_proxy(target: (String, u16), delay: Duration) -> u16 {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    listener.set_nonblocking(true).unwrap();
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        rt.block_on(async move {
+            let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+            loop {
+                let (mut client, _) = listener.accept().await.unwrap();
+                let target = target.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(delay).await;
+                    let mut server = tokio::net::TcpStream::connect(target).await.unwrap();
+                    tokio::io::copy_bidirectional(&mut client, &mut server).await.ok();
+                });
+            }
+        });
+    });
+    port
+}
+
+#[test]
+fn a_server_slow_to_log_in_still_connects() {
+    let e = env();
+    let p = mssql_profile("master");
+    if mssql_on(&e, p.clone()).is_none() {
+        return;
+    }
+    let port = stalling_proxy((p.host.clone(), p.port), Duration::from_secs(15));
+    let slow = dataman_core::config::ConnectionProfile { host: "127.0.0.1".into(), port, ..p };
+    let c = e.core.block_on(e.core.connect(slow, Some(mssql_password()))).expect("a login that takes 15 s connects");
+    assert_eq!(c.info.user, "sa");
+}
+
+#[test]
+fn a_host_that_does_not_answer_gives_up_soon() {
+    let e = env();
+    // TEST-NET-1: nothing answers there; some networks say so at once, others drop the packets.
+    let p = dataman_core::config::ConnectionProfile { host: "192.0.2.1".into(), port: 1433, ..mssql_profile("master") };
+    let started = Instant::now();
+    let r = e.core.block_on(e.core.connect(p, Some(mssql_password())));
+    assert!(r.is_err());
+    assert!(started.elapsed() < Duration::from_secs(20), "{:?}", started.elapsed());
+}
+
 #[test]
 fn connects_and_decodes_every_type() {
     let e = env();

@@ -137,6 +137,7 @@ async fn add(ws: &Entity<Workspace>, engine: Engine, name: &str, port: u16, user
         })
     });
     let id = cx.update(|_, cx| d.read(cx).profile_id().to_string()).ok()?;
+    crate::check::sheet_to_last_step(&d, cx).await;
     key(cx, "cmd-enter");
     // The save runs off the UI thread and the sheet stays until it lands.
     crate::check::until(cx, 10, |cx| dialog(ws, cx).is_none()).await;
@@ -163,44 +164,44 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     let focused = |cx: &mut AsyncWindowContext| cx.update(|window, cx| d.read(cx).demo_focused(window, cx)).ok().flatten();
     let field = |i: usize, cx: &mut AsyncWindowContext| cx.update(|_, cx| d.read(cx).demo_field(i, cx)).unwrap_or_default();
     let step = |cx: &mut AsyncWindowContext| cx.update(|_, cx| d.read(cx).step()).ok();
-    check("⌘N opens the connection sheet on the engines", step(cx) == Some(crate::conn_dialog::Step::Engine), format!("{:?}", step(cx)));
+    check("⌘N opens the connection sheet on the engines", step(cx) == Some(crate::conn_dialog::Step::Database), format!("{:?}", step(cx)));
     typ(cx, "postg");
     key(cx, "enter");
     pause(cx, 50).await;
     draw(cx);
     let picked = cx.update(|_, cx| d.read(cx).current(cx).0.engine).ok();
-    check("typing a name and ↩ picks PostgreSQL: its form, on the name", step(cx) == Some(crate::conn_dialog::Step::Form) && picked == Some(Engine::Postgres) && focused(cx) == Some(0), format!("{:?} {picked:?} {:?}", step(cx), focused(cx)));
+    check("typing a name and ↩ picks PostgreSQL: its form, on the name", step(cx) == Some(crate::conn_dialog::Step::Connection) && picked == Some(Engine::Postgres) && focused(cx) == Some(0), format!("{:?} {picked:?} {:?}", step(cx), focused(cx)));
 
     typ(cx, "first");
+    key(cx, "tab");
     key(cx, "tab");
     let after_tab = focused(cx);
     typ(cx, "localhost");
     check(
-        "Tab moves from the name to the host",
+        "Tab moves from the name, through the connection string, to the host",
         after_tab == Some(1) && field(0, cx) == "first" && field(1, cx) == "localhost",
         format!("focus {after_tab:?} name {:?} host {:?}", field(0, cx), field(1, cx)),
     );
     let mut order = vec![];
-    for _ in 0..5 {
+    for _ in 0..4 {
         key(cx, "tab");
         order.push(focused(cx));
     }
-    check("Tab goes host → port → user → database → password → name", order == [Some(2), Some(3), Some(5), Some(4), Some(0)], format!("{order:?}"));
+    check("Tab goes host → port → database → name → string", order == [Some(2), Some(5), Some(0), None], format!("{order:?}"));
     key(cx, "shift-tab");
-    check("⇧Tab goes back", focused(cx) == Some(4), format!("{:?}", focused(cx)));
+    check("⇧Tab goes back", focused(cx) == Some(0), format!("{:?}", focused(cx)));
 
     let mut seen = vec![];
     for e in [Engine::MySql, Engine::SqlServer, Engine::Postgres] {
         let _ = cx.update(|window, cx| d.update(cx, |d, cx| d.demo_engine(e, window, cx)));
-        seen.push((field(2, cx), field(3, cx)));
+        seen.push(field(2, cx));
     }
-    let want: Vec<(String, String)> = [("3306", "root"), ("1433", "sa"), ("5432", "postgres")].iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
-    check("each engine brings its default port and user", seen == want, format!("{seen:?}"));
+    check("each engine brings its default port, and leaves the user to be asked", seen == ["3306", "1433", "5432"] && field(3, cx).is_empty(), format!("{seen:?} {:?}", field(3, cx)));
 
-    let _ = cx.update(|_, cx| {
+    let _ = cx.update(|window, cx| {
         d.update(cx, |d, cx| {
             d.demo_set_field(1, "", cx);
-            d.demo_save(cx);
+            d.demo_save(window, cx);
         })
     });
     let s = status(&d, cx).0;
@@ -215,6 +216,9 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
             d.demo_set_field(4, "wrong", cx);
         })
     });
+    let _ = cx.update(|window, cx| d.update(cx, |d, cx| d.demo_step(crate::conn_dialog::Step::SignIn, window, cx)));
+    pause(cx, 50).await;
+    draw(cx);
     let port = cx.update(|_, cx| d.read(cx).current(cx).0.port).unwrap_or(0);
     let _ = cx.update(|_, cx| d.update(cx, |d, cx| d.demo_test(cx)));
     let s = status(&d, cx).0;
@@ -250,7 +254,7 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
         })
     });
     let id = cx.update(|_, cx| d.read(cx).profile_id().to_string()).unwrap_or_default();
-    let _ = cx.update(|window, cx| { let i = d.read(cx).demo_input(0); window.focus(&i.read(cx).focus_handle(cx), cx) });
+    crate::check::sheet_to_last_step(&d, cx).await;
     key(cx, "cmd-enter");
     let closed = crate::check::until(cx, 10, |cx| dialog(ws, cx).is_none()).await;
     let r = connected(ws, &id, cx).await;
@@ -489,6 +493,7 @@ pub async fn run(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     match dialog(ws, cx) {
         Some(d) => {
             let (dup, (p, pw)) = cx.update(|_, cx| (d.read(cx).profile_id().to_string(), d.read(cx).current(cx))).unwrap();
+            crate::check::sheet_to_last_step(&d, cx).await;
             key(cx, "cmd-enter");
             let r = connected(ws, &dup, cx).await;
             check("Duplicate: prefilled, saved, connects", dup != id && p.name == "copy of renamed" && !pw.is_empty() && r.is_ok(), format!("{} {} {r:?}", p.name, pw.len()));

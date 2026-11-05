@@ -18,7 +18,7 @@ use crate::tab::QueryTab;
 
 /// The stages that start with no connection and drive everything themselves.
 pub fn is_stage(s: &str) -> bool {
-    matches!(s, "connections-check" | "tabs-check" | "edit-check" | "explorer-check" | "export-check" | "import-check" | "settings-check" | "welcome-check" | "palette-check" | "nosql-engines-check" | "mcp-tools-check" | "dropdowns-check" | "history-filter-check" | "json-check" | "dates-check" | "agents-check" | "sqlite-check" | "duckdb-check" | "project-check" | "outside-check" | "format-check") || crate::conn_folders_check::is_stage(s)
+    matches!(s, "connections-check" | "tabs-check" | "edit-check" | "explorer-check" | "export-check" | "import-check" | "settings-check" | "welcome-check" | "palette-check" | "nosql-engines-check" | "mcp-tools-check" | "dropdowns-check" | "history-filter-check" | "json-check" | "dates-check" | "agents-check" | "sqlite-check" | "duckdb-check" | "project-check" | "outside-check" | "format-check" | "conn-steps-check") || crate::conn_folders_check::is_stage(s)
 }
 
 pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContext) -> bool {
@@ -46,6 +46,7 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, cx: &mut AsyncWindowContex
         "project-check" => crate::project_check::run(ws, &mut r, cx).await,
         "outside-check" => crate::outside_check::run(ws, &mut r, cx).await,
         "format-check" => crate::format_check::run(ws, &mut r, cx).await,
+        "conn-steps-check" => crate::conn_steps_check::run(ws, &mut r, cx).await,
         s if crate::conn_folders_check::is_stage(s) => crate::conn_folders_check::run(ws, s, &mut r, cx).await,
         _ => {
             r.check("a known stage", false, stage);
@@ -154,8 +155,34 @@ pub fn probed(id: &str, cx: &mut AsyncWindowContext) -> Option<Bounds<Pixels>> {
     crate::ui::probed(id)
 }
 
+/// A new connection's sheet walked to its last step with its Continue button.
+pub async fn sheet_to_last_step(d: &Entity<crate::conn_dialog::ConnDialog>, cx: &mut AsyncWindowContext) -> bool {
+    for _ in 0..4 {
+        if cx.update(|_, cx| d.read(cx).step()).ok() == Some(crate::conn_dialog::Step::Mcp) {
+            return true;
+        }
+        click_probe("dlg-save", cx);
+        pause(cx, 50).await;
+    }
+    false
+}
+
+/// The connection sheet's body scrolled by the wheel, as a user would, until the control shows.
+fn reveal_in_sheet(id: &str, cx: &mut AsyncWindowContext) {
+    let Some(card) = probed("dlg-card", cx) else { return };
+    for _ in 0..16 {
+        let (Some(b), Some(shown)) = (probed(id, cx), crate::ui::probed_shown(id)) else { return };
+        if shown.size.height >= b.size.height {
+            return;
+        }
+        let dy = if b.origin.y > card.origin.y + card.size.height / 2. { -80. } else { 80. };
+        input(cx, PlatformInput::ScrollWheel(gpui::ScrollWheelEvent { position: centre(card), delta: gpui::ScrollDelta::Pixels(point(gpui::px(0.), gpui::px(dy))), modifiers: Modifiers::default(), touch_phase: gpui::TouchPhase::Moved }));
+    }
+}
+
 /// A real click in the middle of a probed control; false when it is not on screen.
 pub fn click_probe(id: &str, cx: &mut AsyncWindowContext) -> bool {
+    reveal_in_sheet(id, cx);
     match probed(id, cx) {
         Some(b) => {
             click(cx, centre(b));

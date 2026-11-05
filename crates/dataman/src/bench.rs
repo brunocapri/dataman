@@ -324,6 +324,19 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                     | "dialog-test"
                     | "dialog-ssh"
                     | "dialog-hostkey"
+                    | "dialog-conn"
+                    | "dialog-prod"
+                    | "dialog-file"
+                    | "dialog-edit"
+                    | "dialog-signin"
+                    | "dialog-mcp"
+                    | "dialog-mcp-prod"
+                    | "dialog-unroll"
+                    | "dialog-entra"
+                    | "dialog-aws"
+                    | "dialog-gcp"
+                    | "dialog-sign-in"
+                    | "dialog-install"
                     | "import"
                     | "editor-scroll"
             ) && !crate::table_check::is_stage(&stage)
@@ -387,7 +400,7 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                         w.open_dialog(None, window, cx);
                         if let Some(d) = w.dialog.clone() {
                             d.update(cx, |d, cx| {
-                                d.set_entry(crate::conn_dialog::Entry::Url, window, cx);
+                                d.demo_step(crate::conn_dialog::Step::Connection, window, cx);
                                 if stage == "dialog-url" {
                                     d.set_conn_str("Server=tcp:db.example.com,14330;Database=shop;User Id=app;Encrypt=True;TrustServerCertificate=True", cx);
                                 } else {
@@ -397,6 +410,36 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                             });
                         }
                     }),
+                    // The steps, as shown: a string filled in, each sign-in, the last step.
+                    "dialog-conn" | "dialog-prod" | "dialog-signin" | "dialog-mcp" | "dialog-mcp-prod" | "dialog-unroll" => ws.update(cx, |w, cx| {
+                        use crate::conn_dialog::Step;
+                        w.open_dialog(None, window, cx);
+                        if let Some(d) = w.dialog.clone() {
+                            d.update(cx, |d, cx| {
+                                d.pick_engine(dataman_core::Engine::Postgres, window, cx);
+                                d.set_conn_str("postgres://ana:hunter22@db.internal:6432/orders?sslmode=require", cx);
+                                match stage.as_str() {
+                                    "dialog-prod" => d.demo_env(dataman_core::Environment::Production, cx),
+                                    "dialog-signin" => d.demo_step(Step::SignIn, window, cx),
+                                    "dialog-mcp" | "dialog-mcp-prod" => {
+                                        if stage == "dialog-mcp-prod" {
+                                            d.demo_env(dataman_core::Environment::Production, cx);
+                                        }
+                                        d.demo_step(Step::Mcp, window, cx);
+                                    }
+                                    "dialog-unroll" => d.demo_step(Step::SignIn, window, cx),
+                                    _ => {}
+                                }
+                            });
+                        }
+                    }),
+                    "dialog-file" => ws.update(cx, |w, cx| {
+                        w.open_dialog(None, window, cx);
+                        if let Some(d) = w.dialog.clone() {
+                            d.update(cx, |d, cx| d.pick_engine(dataman_core::Engine::DuckDb, window, cx));
+                        }
+                    }),
+                    "dialog-edit" => ws.update(cx, |w, cx| w.open_dialog(Some(id.clone()), window, cx)),
                     "dialog-test" => ws.update(cx, |w, cx| {
                         let (mut p, pw) = bench_profile(None);
                         p.name = "local".into();
@@ -405,19 +448,23 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                             d.update(cx, |d, cx| d.run_test(cx));
                         }
                     }),
-                    // Cloud sign-in: the dialog as set up for Entra ID or AWS IAM, its sign-in
-                    // checked against this machine's az / aws (whatever they answer).
-                    "dialog-entra" | "dialog-aws" => ws.update(cx, |w, cx| {
+                    // Cloud sign-in as each method shows it. No CLI runs for a picture.
+                    "dialog-entra" | "dialog-aws" | "dialog-gcp" => ws.update(cx, |w, cx| {
                         let mut p = ConnectionProfile::new("shop-cloud");
-                        (p.host, p.user, p.database, p.auth) = if stage == "dialog-entra" {
-                            ("shop.postgres.database.azure.com".into(), "ana@contoso.com".into(), "shop".into(), dataman_core::Auth::EntraId { tenant: None })
-                        } else {
-                            ("shop.c9akciq32.us-east-1.rds.amazonaws.com".into(), "dataman_iam".into(), "shop".into(), dataman_core::Auth::AwsIam { profile: None, region: None })
+                        (p.host, p.user, p.database, p.auth) = match stage.as_str() {
+                            "dialog-entra" => ("shop.postgres.database.azure.com".into(), "ana@contoso.com".into(), "shop".into(), dataman_core::Auth::EntraId { tenant: None }),
+                            "dialog-aws" => ("db.internal".into(), "".into(), "shop".into(), dataman_core::Auth::AwsIam { profile: None, region: None }),
+                            _ => ("shop.europe-west1.sql.goog".into(), "ana@example.com".into(), "shop".into(), dataman_core::Auth::GoogleIam { account: None }),
                         };
                         p.sslmode = SslMode::Require;
                         w.open_dialog_with(Some(p), true, None, window, cx);
                         if let Some(d) = w.dialog.clone() {
-                            d.update(cx, |d, cx| d.demo_check_sign_in(cx));
+                            d.update(cx, |d, cx| {
+                                d.demo_step(crate::conn_dialog::Step::SignIn, window, cx);
+                                if stage == "dialog-entra" {
+                                    d.demo_signed_in("ana@contoso.com", cx);
+                                }
+                            });
                         }
                     }),
                     // A saved connection's lapsed session, and a CLI not installed.
@@ -433,7 +480,10 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                         };
                         w.open_dialog_with(Some(p), true, None, window, cx);
                         if let Some(d) = w.dialog.clone() {
-                            d.update(cx, |d, cx| d.set_sign_in_failed(&e, cx));
+                            d.update(cx, |d, cx| {
+                                d.demo_step(crate::conn_dialog::Step::SignIn, window, cx);
+                                d.set_sign_in_failed(&e, cx);
+                            });
                         }
                     }),
                     "dialog-password" => ws.update(cx, |w, cx| {
@@ -956,6 +1006,14 @@ fn demo(ws: Entity<Workspace>, window: &mut Window, cx: &mut App) {
                 let _ = cx.update(|_, cx| {
                     if let Some(log) = ws.read(cx).mcp_log() {
                         log.update(cx, |v, cx| v.demo_open_menu(2, cx));
+                    }
+                });
+            }
+            if stage == "dialog-unroll" {
+                sleep(cx, 300).await;
+                let _ = cx.update(|window, cx| {
+                    if let Some(d) = ws.read(cx).dialog.clone() {
+                        d.update(cx, |d, cx| d.demo_pick_auth(dataman_core::AuthKind::EntraId, window, cx));
                     }
                 });
             }

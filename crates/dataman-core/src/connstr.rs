@@ -349,16 +349,20 @@ fn ado_pairs(s: &str) -> Option<Vec<(String, String)>> {
     }
 }
 
-pub fn parse_profile(s: &str) -> Option<(ConnectionProfile, Option<String>)> {
+/// What the string says, with what its named service (`service=…`) adds.
+pub fn resolved(s: &str) -> Option<ConnSpec> {
     let spec = parse(s)?;
-    let spec = match &spec.service {
+    Some(match &spec.service {
         Some(name) => {
             let svc = crate::pgservice::lookup(name).unwrap_or_default();
             spec.or(svc)
         }
         None => spec,
-    };
-    Some(spec.into_profile())
+    })
+}
+
+pub fn parse_profile(s: &str) -> Option<(ConnectionProfile, Option<String>)> {
+    Some(resolved(s)?.into_profile())
 }
 
 /// Whether the string says how to use TLS (else the host decides the default).

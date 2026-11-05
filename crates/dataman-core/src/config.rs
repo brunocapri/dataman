@@ -507,15 +507,10 @@ impl ConnectionProfile {
 
     /// What a connection must have to be saved (after [`ConnectionProfile::normalize`]).
     pub fn validate(&self) -> Result<(), String> {
+        self.validate_target()?;
         let spec = self.engine.spec();
         if spec.form.file {
-            return match self.path.as_deref().map(str::trim) {
-                Some(p) if !p.is_empty() => Ok(()),
-                _ => Err(format!("a {} connection needs its file", spec.label)),
-            };
-        }
-        if self.host.trim().is_empty() {
-            return Err("host is required".into());
+            return Ok(());
         }
         // SQL Server's Entra token names its user itself.
         let user_given = self.engine == Engine::SqlServer && self.auth.kind() == AuthKind::EntraId;
@@ -535,6 +530,22 @@ impl ConnectionProfile {
         .find_map(|(what, v)| v.filter(|v| !crate::cloudauth::plain_value(v.trim())).map(|_| what));
         if let Some(what) = odd {
             return Err(format!("the {what} takes letters, digits and . _ @ : / + - only"));
+        }
+        Ok(())
+    }
+
+    /// Where the connection goes, before how it signs in is asked: its file, or its host and
+    /// database.
+    pub fn validate_target(&self) -> Result<(), String> {
+        let spec = self.engine.spec();
+        if spec.form.file {
+            return match self.path.as_deref().map(str::trim) {
+                Some(p) if !p.is_empty() => Ok(()),
+                _ => Err(format!("a {} connection needs its file", spec.label)),
+            };
+        }
+        if self.host.trim().is_empty() {
+            return Err("host is required".into());
         }
         if let Some(n) = spec.numbered_dbs
             && !self.database.is_empty()
@@ -754,8 +765,7 @@ impl ConnectionProfile {
             return format!("sqlserver://{}:{}{db};user={};{enc}", self.host, self.port, self.user);
         }
         format!(
-            "postgresql://{}@{host}:{}/{}?sslmode={}",
-            percent_encode(&self.user),
+            "postgresql://{user}{host}:{}/{}?sslmode={}",
             self.port,
             percent_encode(&self.database),
             self.sslmode.label()
@@ -1430,6 +1440,8 @@ mod tests {
         p.sslmode = SslMode::Require;
         p.save_password = true;
         assert_eq!(p.url(), "postgresql://bruno@db.prod.internal:6543/app_db?sslmode=require");
+        let nobody = ConnectionProfile { user: String::new(), ..p.clone() };
+        assert_eq!(nobody.url(), "postgresql://db.prod.internal:6543/app_db?sslmode=require", "no empty user before the host");
         p.user = "a@b:c".into();
         p.database = "my db/é".into();
         p.host = "::1".into();
