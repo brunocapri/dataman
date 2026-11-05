@@ -78,7 +78,8 @@ async fn finished(ws: &Entity<Workspace>, secs: u64, cx: &mut AsyncWindowContext
         cx.update(|_, cx| {
             let t = ws.read(cx).active_tab()?.read(cx);
             let rs = t.result().cloned();
-            Some((t.run_phase(), t.is_running(), rs.as_ref().map(|r| r.rows()).unwrap_or(0), rs.and_then(|r| r.status().error.map(|e| e.message)).unwrap_or_default()))
+            // A script is not over between two of its statements.
+            Some((t.run_phase(), t.is_running() || t.run_continues(), rs.as_ref().map(|r| r.rows()).unwrap_or(0), rs.and_then(|r| r.status().error.map(|e| e.message)).unwrap_or_default()))
         })
         .ok()
         .flatten()
