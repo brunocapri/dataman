@@ -195,7 +195,8 @@ pub fn clean(overrides: &BTreeMap<String, String>) -> BTreeMap<String, String> {
         .collect()
 }
 
-/// A shortcut as people type it (⇧⌘P, Shift+Cmd+P, Ctrl+Shift+P), in this platform's keys.
+/// A shortcut as people type it (⇧⌘P, Shift+Cmd+P, Ctrl+Shift+P) or as Linux and Windows show it
+/// (Ctrl+⇧+P), in this platform's keys.
 pub fn parse_typed(s: &str) -> Option<String> {
     parse_typed_as_written(s).and_then(|k| parse(&native_chosen(&k)))
 }
@@ -214,8 +215,13 @@ fn parse_typed_as_written(s: &str) -> Option<String> {
         };
         mods.push(m);
         rest = rest[c.len_utf8()..].trim_start();
+        // ⇧+C; a + with nothing after it is the key itself.
+        if rest.len() > 1 {
+            rest = rest.strip_prefix('+').unwrap_or(rest).trim_start();
+        }
     }
     if mods.is_empty() {
+        let s = s.replace('⇧', "shift");
         let gpui = match s.strip_suffix("++") {
             Some(head) => format!("{}-+", head.replace('+', "-")),
             None => s.replace('+', "-"),
@@ -436,26 +442,26 @@ mod tests {
     #[cfg(not(target_os = "macos"))]
     fn linux_keys_and_labels() {
         for (mac, linux, shown) in [
-            ("cmd-shift-c", "ctrl-shift-c", "Ctrl+Shift+C"),
-            ("cmd-enter", "ctrl-enter", "Ctrl+Enter"),
-            ("ctrl-cmd-enter", "alt-shift-enter", "Alt+Shift+Enter"),
-            ("ctrl-cmd-backspace", "alt-shift-backspace", "Alt+Shift+Backspace"),
+            ("cmd-shift-c", "ctrl-shift-c", "Ctrl+⇧+C"),
+            ("cmd-enter", "ctrl-enter", "Ctrl+↩"),
+            ("ctrl-cmd-enter", "alt-shift-enter", "Alt+⇧+↩"),
+            ("ctrl-cmd-backspace", "alt-shift-backspace", "Alt+⇧+⌫"),
             ("ctrl-cmd-left", "alt-left", "Alt+←"),
             ("cmd-alt-right", "alt-pagedown", "Alt+PgDn"),
-            ("cmd-alt-l", "ctrl-shift-l", "Ctrl+Shift+L"),
+            ("cmd-alt-l", "ctrl-shift-l", "Ctrl+⇧+L"),
             ("cmd-shift-[", "ctrl-pageup", "Ctrl+PgUp"),
             ("cmd-shift-]", "ctrl-pagedown", "Ctrl+PgDn"),
             ("cmd-alt-[", "alt-[", "Alt+["),
             ("cmd-alt-]", "alt-]", "Alt+]"),
-            ("ctrl-shift-[", "ctrl-shift-[", "Ctrl+Shift+["),
+            ("ctrl-shift-[", "ctrl-shift-[", "Ctrl+⇧+["),
             ("cmd-left", "home", "Home"),
-            ("cmd-shift-right", "shift-end", "Shift+End"),
+            ("cmd-shift-right", "shift-end", "⇧+End"),
             ("cmd-up", "ctrl-home", "Ctrl+Home"),
-            ("cmd-shift-down", "ctrl-shift-end", "Ctrl+Shift+End"),
+            ("cmd-shift-down", "ctrl-shift-end", "Ctrl+⇧+End"),
             ("alt-left", "ctrl-left", "Ctrl+←"),
-            ("alt-shift-right", "ctrl-shift-right", "Ctrl+Shift+→"),
-            ("alt-backspace", "ctrl-backspace", "Ctrl+Backspace"),
-            ("cmd-backspace", "ctrl-shift-backspace", "Ctrl+Shift+Backspace"),
+            ("alt-shift-right", "ctrl-shift-right", "Ctrl+⇧+→"),
+            ("alt-backspace", "ctrl-backspace", "Ctrl+⌫"),
+            ("cmd-backspace", "ctrl-shift-backspace", "Ctrl+⇧+⌫"),
             ("cmd--", "ctrl--", "Ctrl+-"),
             ("cmd-\\", "ctrl-\\", "Ctrl+\\"),
             ("f6", "f6", "F6"),
@@ -470,6 +476,9 @@ mod tests {
             }
         }
         assert_eq!(parse_typed("⌘K").as_deref(), Some("ctrl-k"), "typed as on a Mac");
+        assert_eq!(parse_typed("Ctrl+Shift+C").as_deref(), Some("ctrl-shift-c"), "typed by name");
+        assert_eq!(parse_typed("Ctrl+Enter").as_deref(), Some("ctrl-enter"), "typed by name");
+        assert_eq!(parse_typed("⇧++").as_deref(), Some("shift-+"), "the + key");
     }
 
     #[test]

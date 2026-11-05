@@ -83,8 +83,8 @@ pub fn keystroke(s: &str) -> Keystroke {
     Keystroke::parse(&native(s)).unwrap()
 }
 
-/// A key written as on macOS, as this platform shows it: glyphs on macOS (⇧⌘C), names on
-/// Linux (Ctrl+Shift+C).
+/// A key written as on macOS, as this platform shows it: glyphs on macOS (⇧⌘C), on Linux and
+/// Windows Ctrl and Alt by name and the rest as on the Mac (Ctrl+⇧+C, Ctrl+↩).
 pub fn label(keystroke: &str) -> String {
     label_native(&native(keystroke))
 }
@@ -128,14 +128,14 @@ fn linux_label(keystroke: &str) -> String {
     let Ok(k) = Keystroke::parse(keystroke) else { return keystroke.to_string() };
     let m = k.modifiers;
     let mut parts: Vec<String> = Vec::new();
-    for (on, name) in [(m.function, "Fn"), (m.control, "Ctrl"), (m.alt, "Alt"), (m.shift, "Shift"), (m.platform, "Super")] {
+    for (on, name) in [(m.function, "Fn"), (m.control, "Ctrl"), (m.alt, "Alt"), (m.shift, "⇧"), (m.platform, "Super")] {
         if on {
             parts.push(name.into());
         }
     }
     parts.push(match k.key.as_str() {
-        "enter" => "Enter".into(),
-        "backspace" => "Backspace".into(),
+        "enter" => "↩".into(),
+        "backspace" => "⌫".into(),
         "delete" => "Delete".into(),
         "escape" => "Esc".into(),
         "tab" => "Tab".into(),
@@ -203,17 +203,19 @@ fn glyph_token(t: &str) -> String {
     let names: Vec<&str> = spelled.iter().map(|m| match *m {
         "ctrl" | "cmd" => "Ctrl",
         "alt" => "Alt",
-        _ => "Shift",
+        _ => "⇧",
     }).collect();
     if let Some(rest) = key.strip_prefix("-click").or_else(|| key.strip_prefix("click")) {
         return format!("{}+click{rest}", names.join("+"));
+    }
+    // Already this platform's (⇧+C): keycaps pass the labels through here again.
+    if key.len() > 1 && key.starts_with('+') {
+        return t.to_string();
     }
     if mods.is_empty() {
         return t
             .chars()
             .map(|c| match c {
-                '↩' => "Enter".to_string(),
-                '⌫' => "Backspace".to_string(),
                 '⌦' => "Delete".to_string(),
                 '⇥' => "Tab".to_string(),
                 c => c.to_string(),
@@ -242,17 +244,20 @@ mod tests {
     fn glyph_text() {
         let cases: &[(&str, &str)] = if NOT_MAC {
             &[
-                ("⌘↩", "Ctrl+Enter"),
-                ("⇧⌘G · ⇧↩", "Ctrl+Shift+G · Shift+Enter"),
+                ("⌘↩", "Ctrl+↩"),
+                ("⇧⌘G · ⇧↩", "Ctrl+⇧+G · ⇧+↩"),
                 ("⌥⌘F", "Ctrl+Alt+F"),
                 ("⌘-click", "Ctrl+click"),
                 ("⌘click", "Ctrl+click"),
-                ("⇧F10 / ⌃-click", "Shift+F10 / right-click"),
-                ("⇥ / ⇧⇥", "Tab / Shift+Tab"),
-                ("⇧ + arrows", "Shift + arrows"),
-                ("⌘⌫", "Ctrl+Shift+Backspace"),
+                ("⇧F10 / ⌃-click", "⇧+F10 / right-click"),
+                ("⇧-click", "⇧+click"),
+                ("⇥ / ⇧⇥", "Tab / ⇧+Tab"),
+                ("⇧ + arrows", "⇧ + arrows"),
+                ("⌘⌫", "Ctrl+⇧+⌫"),
+                ("↩", "↩"),
+                ("⌫", "⌫"),
                 ("↑↓←→", "↑↓←→"),
-                ("run it with ⌘↩", "run it with Ctrl+Enter"),
+                ("run it with ⌘↩", "run it with Ctrl+↩"),
                 ("Ctrl+Shift+C", "Ctrl+Shift+C"),
                 ("esc", "esc"),
             ]

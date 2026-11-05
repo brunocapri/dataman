@@ -8,7 +8,7 @@ use crate::value::{self, Kind};
 
 
 /// What runs a statement, as the generated comments name it.
-pub const RUN_KEY: &str = if cfg!(target_os = "macos") { "⌘↩" } else { "Ctrl+Enter" };
+pub const RUN_KEY: &str = if cfg!(target_os = "macos") { "⌘↩" } else { "Ctrl+↩" };
 pub fn quote_ident(name: &str) -> String {
     Dialect::Postgres.quote_ident(name)
 }
