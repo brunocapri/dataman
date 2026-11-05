@@ -661,10 +661,32 @@ async fn folders(ws: &Entity<Workspace>, cx: &mut AsyncWindowContext) -> bool {
     report(&mut ok, "\"+ folder\" makes a folder and names it in place", clicked && naming.as_deref() == Some("New folder") && focused, format!("clicked {clicked} naming {naming:?} focused {focused}"));
     typ(cx, "Reports");
     key(cx, "enter");
+    pause(cx, 30).await;
+    let in_panel = cx.update(|window, cx| history.read(cx).demo_has_focus(window)).unwrap();
+    report(&mut ok, "↩ names the folder and the panel has the keys", in_panel, String::new());
     let _ = new_folder(cx);
     pause(cx, 30).await;
-    typ(cx, "Archive");
-    key(cx, "enter");
+    typ(cx, "Archiv");
+    let field = cx.update(|_, cx| history.read(cx).demo_rename_field_point(cx)).unwrap();
+    let row = cx.update(|_, cx| history.read(cx).demo_item_named("New folder").and_then(|ix| history.read(cx).demo_item_point(ix))).unwrap();
+    let Some((field, row)) = field.zip(row) else {
+        report(&mut ok, "the field being named has bounds", false, String::new());
+        return ok;
+    };
+    click(cx, field, MouseButton::Left, Modifiers::default());
+    click(cx, row, MouseButton::Left, Modifiers::default());
+    pause(cx, 30).await;
+    let (naming, focused) = cx.update(|window, cx| (history.read(cx).demo_renaming_folder(), history.read(cx).demo_renaming_focused(window, cx))).unwrap();
+    report(&mut ok, "a click on the field or on the row around it leaves it being named", naming.is_some() && focused, format!("naming {naming:?} focused {focused}"));
+    typ(cx, "e");
+    let Some(away) = named_point(&history, "Top customers", cx).await else {
+        report(&mut ok, "the favorite has bounds", false, String::new());
+        return ok;
+    };
+    click(cx, away, MouseButton::Left, Modifiers::default());
+    pause(cx, 30).await;
+    let (naming, in_panel) = cx.update(|window, cx| (history.read(cx).demo_renaming_folder(), history.read(cx).demo_has_focus(window))).unwrap();
+    report(&mut ok, "a click on another row names the folder with what was typed", naming.is_none() && in_panel, format!("naming {naming:?} panel focus {in_panel}"));
     let r = rows(&history, cx);
     report(
         &mut ok,

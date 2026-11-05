@@ -53,6 +53,24 @@ pub fn key_hint(text: impl Into<SharedString>) -> Div {
     div().flex_none().text_size(px(crate::theme::text::HINT)).opacity(0.7).child(keys_text(text))
 }
 
+/// A name typed in place over a list row: its field, and ↩ to accept it.
+pub fn name_field(t: &Theme, input: gpui::Entity<crate::input::TextInput>) -> Div {
+    div()
+        .flex_1()
+        .min_w_0()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(4.))
+        .border_1()
+        .border_color(field_line(t, true))
+        .pl(px(4.))
+        .pr(px(2.))
+        .text_color(t.tx)
+        .child(div().flex_1().min_w_0().child(input))
+        .child(keycap_sm(t.key, t.tx2, "↩").h(px(14.)).line_height(px(12.)).text_size(px(crate::theme::text::TINY)))
+}
+
 pub fn chip(color: Hsla, size: f32) -> Div {
     div()
         .flex_none()

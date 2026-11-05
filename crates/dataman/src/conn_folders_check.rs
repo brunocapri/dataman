@@ -225,6 +225,7 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, r: &mut Report, cx: &mut A
     pause(cx, 50).await;
     r.check("Rename: named in place, saved", renaming && folder_named(ws, "Live", cx).is_some(), format!("{:?}", folders(ws, cx)));
     let names = [pg_name.as_str(), "Billing", "Search", "Live", "Dev"];
+    naming_field(ws, &t, &names, r, cx).await;
 
     // A second folder, by the connection's "New folder…": the connection is in it.
     let made = menu(&t, &format!("c:{pg_id}"), Act::MoveToNewFolder, cx).await;
@@ -303,6 +304,96 @@ pub async fn run(ws: &Entity<Workspace>, stage: &str, r: &mut Report, cx: &mut A
     );
 
     fav_scope(ws, r, false, cx).await;
+}
+
+/// The field a folder is named in, from a new folder until the focus leaves it.
+async fn naming_field(ws: &Entity<Workspace>, t: &Entity<SchemaTree>, names: &[&str], r: &mut Report, cx: &mut AsyncWindowContext) {
+    let text = |cx: &mut AsyncWindowContext| cx.update(|_, cx| t.read(cx).demo_naming(cx)).ok().flatten().map(|n| n.1);
+    let in_field = |cx: &mut AsyncWindowContext| cx.update(|window, cx| t.read(cx).demo_naming_focused(window, cx)).unwrap_or(false);
+    let in_tree = |cx: &mut AsyncWindowContext| cx.update(|window, cx| t.read(cx).demo_has_focus(window)).unwrap_or(false);
+    let points = |cx: &mut AsyncWindowContext| cx.update(|_, cx| t.read(cx).demo_naming_points(cx)).ok().flatten();
+    let live = folder_named(ws, "Live", cx).map(|d| fid(&d.id)).unwrap_or_default();
+
+    click_probe("x-new-folder", cx);
+    pause(cx, 50).await;
+    typ(cx, "Tem");
+    let Some((field, row)) = points(cx) else {
+        r.check("the field being named has bounds", false, "");
+        return;
+    };
+    click(cx, field);
+    pause(cx, 30).await;
+    typ(cx, "p");
+    r.check("a click inside the field keeps the focus: what is typed next goes in", in_field(cx) && text(cx).as_deref() == Some("Temp"), format!("{:?} focused {}", text(cx), in_field(cx)));
+    click(cx, row);
+    pause(cx, 30).await;
+    typ(cx, "1");
+    r.check("a click on the row around the field leaves it being named", in_field(cx) && text(cx).as_deref() == Some("Temp1"), format!("{:?} focused {}", text(cx), in_field(cx)));
+
+    let rows_n = cx.update(|_, cx| t.read(cx).demo_rows().len()).unwrap_or(0);
+    if let Some(top) = row_point(t, &live, cx) {
+        click(cx, point(top.x, top.y + px(22. * rows_n as f32 + 60.)));
+    }
+    pause(cx, 30).await;
+    r.check(
+        "a click on the empty tree names the folder with what was typed, and the tree has the keys",
+        text(cx).is_none() && folder_named(ws, "Temp1", cx).is_some() && in_tree(cx),
+        format!("{:?} {:?} tree focus {}", text(cx), folders(ws, cx), in_tree(cx)),
+    );
+
+    click_probe("x-new-folder", cx);
+    pause(cx, 50).await;
+    typ(cx, "Elsewhere");
+    let _ = cx.update(|window, cx| t.update(cx, |t, cx| t.demo_focus_filter(window, cx)));
+    draw(cx);
+    pause(cx, 30).await;
+    r.check(
+        "the focus moved out of the tree: the folder is named, and the focus stays where it went",
+        text(cx).is_none() && folder_named(ws, "Elsewhere", cx).is_some() && !in_tree(cx),
+        format!("{:?} {:?} tree focus {}", text(cx), folders(ws, cx), in_tree(cx)),
+    );
+
+    let _ = menu(t, &live, Act::RenameFolder, cx).await;
+    pause(cx, 30).await;
+    key(cx, "enter");
+    pause(cx, 30).await;
+    let accepted = heads(t, names, cx);
+    key(cx, "enter");
+    let shut = heads(t, names, cx);
+    key(cx, "enter");
+    r.check(
+        "↩ in the field accepts the name and leaves the folder open; the next ↩ shuts it",
+        text(cx).is_none() && accepted.iter().any(|h| h == "  Search") && !shut.iter().any(|h| h == "  Search") && heads(t, names, cx) == accepted,
+        format!("{accepted:?} {shut:?}"),
+    );
+
+    click_probe("x-new-folder", cx);
+    pause(cx, 50).await;
+    typ(cx, "First");
+    click_probe("x-new-folder", cx);
+    pause(cx, 50).await;
+    r.check(
+        "another new folder while one is named: the first keeps what was typed, the second is named",
+        folder_named(ws, "First", cx).is_some() && text(cx).is_some_and(|n| n.starts_with("New folder")) && in_field(cx),
+        format!("{:?} {:?}", text(cx), folders(ws, cx)),
+    );
+    typ(cx, "whoops");
+    key(cx, "escape");
+    pause(cx, 30).await;
+    r.check("esc keeps the old name, and the tree has the keys", text(cx).is_none() && folder_named(ws, "whoops", cx).is_none() && in_tree(cx), format!("{:?} tree focus {}", folders(ws, cx), in_tree(cx)));
+
+    let _ = cx.update(|_, cx| t.update(cx, |t, cx| t.set_filter("nothing like this", cx)));
+    draw(cx);
+    click_probe("x-new-folder", cx);
+    pause(cx, 50).await;
+    let filter = cx.update(|_, cx| t.read(cx).demo_filter().read(cx).text().to_string()).unwrap_or_default();
+    r.check("a new folder under a search clears it and is named on its row", text(cx).is_some() && in_field(cx) && filter.is_empty(), format!("{:?} filter {filter:?}", text(cx)));
+    key(cx, "escape");
+    pause(cx, 30).await;
+
+    for d in folders(ws, cx).into_iter().filter(|d| d.name != "Live") {
+        let _ = menu(t, &fid(&d.id), Act::DeleteFolder, cx).await;
+    }
 }
 
 /// A folder's or a favorite's row, without its arrow or indent.
@@ -438,7 +529,7 @@ async fn scene(ws: &Entity<Workspace>, pg_id: &str, cx: &mut AsyncWindowContext)
         stage.connections = vec![ids[4].clone()];
         let _ = store.update(cx, |s, cx| s.edit_folders(|f| *f = vec![prod, stage.clone()], cx));
         t.update(cx, |t, cx| {
-            t.folders_changed(cx);
+            t.arrangement_changed(cx);
             t.collapse_id(&fid(&stage.id), cx);
             t.collapse_id(&format!("c:{pg_id}"), cx);
         });

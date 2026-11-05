@@ -240,11 +240,12 @@ impl Workspace {
                 let ids = if back { from } else { to };
                 said(core.config.reorder(ids))?;
                 self.store.update(cx, |s, cx| s.reload(cx));
+                self.tree.update(cx, |t, cx| t.arrangement_changed(cx));
             }
             Op::ConnFolders { from, to } => {
                 let next = if back { from.clone() } else { to.clone() };
                 said(self.store.update(cx, |s, cx| s.edit_folders(|f| *f = next, cx)))?;
-                self.tree.update(cx, |t, cx| t.folders_changed(cx));
+                self.tree.update(cx, |t, cx| t.arrangement_changed(cx));
             }
             Op::ConnDeleted(d) => {
                 if back {
