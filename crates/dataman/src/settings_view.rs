@@ -1099,6 +1099,8 @@ impl SettingsView {
 
     fn matching_commands(q: &str) -> Vec<&'static crate::keymap::Command> {
         let typed = crate::keymap::parse_typed(q);
+        // Linux and Windows show ⇧ ↩ ⌫; "shift", "enter" and "ctrl+shift" still find them by name.
+        let by_name = q.replace('+', "-");
         crate::keymap::COMMANDS
             .iter()
             .filter(|c| {
@@ -1106,7 +1108,7 @@ impl SettingsView {
                     || c.label.to_lowercase().contains(q)
                     || c.group.to_lowercase().contains(q)
                     || crate::keymap::key_label(c.id).to_lowercase().contains(q)
-                    || typed.as_ref().is_some_and(|k| crate::keymap::effective(c.id).contains(k))
+                    || crate::keymap::effective(c.id).iter().any(|k| (crate::keymap::NOT_MAC && k.contains(&by_name)) || typed.as_ref() == Some(k))
             })
             .collect()
     }
@@ -1548,5 +1550,15 @@ mod tests {
         assert_eq!(rank_fonts("", &all, 8), vec!["Arial", "Consolas", "Courier New", "Menlo", "Monaco"]);
         assert_eq!(rank_fonts("", &all, 2).len(), 2);
         assert!(rank_fonts("xyz123", &all, 8).is_empty());
+    }
+
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn key_search_finds_symbols_by_name() {
+        let found = |q: &str, id: &str| SettingsView::matching_commands(q).iter().any(|c| c.id == id);
+        for (q, id) in [("shift", "run"), ("⇧", "run"), ("ctrl+shift", "run"), ("enter", "run_all"), ("↩", "run_all"), ("ctrl+↩", "run_all")] {
+            assert!(found(q, id), "{q} finds {id}");
+        }
+        assert!(!found("shift", "run_all"), "Ctrl+↩ has no shift");
     }
 }
