@@ -1,6 +1,6 @@
 #!/bin/bash
 # The Linux CI's end-to-end run, here: what .github/workflows/linux.yml does under Xvfb, in Docker
-# on this machine's architecture (arm64 on Apple silicon, as the CI's aarch64 job), against the
+# on this machine's architecture (arm64 on Apple silicon), against the
 # e2e databases already up on the host (`--network host`; the seeds through the host's docker).
 #
 #   scripts/linux/e2e.sh                         # every stage

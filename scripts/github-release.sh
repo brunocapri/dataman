@@ -136,11 +136,11 @@ macarch="$([ "$(uname -m)" = arm64 ] && echo aarch64 || echo x86_64)"
 feedargs=(feed --version "$version" --base "$feed" --asset "macos-$macarch" "$dmg" "$base/$(basename "$dmg")")
 checks=()
 linux=()
-for a in x86_64 aarch64; do
+for a in x86_64; do
   d="$work/linux-$a"
   gh run download "$linux_run" --repo "$repo" -n "dataman-linux-$a" -D "$d" > /dev/null 2>&1 || die "run $linux_run has no Linux $a build"
   img="$d/Dataman-$version-$a.AppImage"
-  deb="$d/dataman_${version}_$([ "$a" = x86_64 ] && echo amd64 || echo arm64).deb"
+  deb="$d/dataman_${version}_amd64.deb"
   [ -f "$img" ] && [ -f "$deb" ] || die "run $linux_run has no Dataman $version AppImage and .deb for Linux $a: $(ls "$d" | tr '\n' ' ')"
   linux+=("$img" "$deb")
   feedargs+=(--asset "linux-$a" "$img" "$base/$(basename "$img")" --asset "linux-$a-deb" "$deb" "$base/$(basename "$deb")")
@@ -148,14 +148,9 @@ for a in x86_64 aarch64; do
 done
 windows=()
 winarch=()
-for a in x86_64 aarch64; do
+for a in x86_64; do
   d="$work/windows-$a"
-  if ! gh run download "$windows_run" --repo "$repo" -n "dataman-windows-$a" -D "$d" > /dev/null 2>&1; then
-    # The Arm build does not hold the release back (it is not a gate in the workflow either).
-    [ "$a" = aarch64 ] || die "run $windows_run has no Windows $a build"
-    echo "github-release: run $windows_run has no Windows $a build: released without it" >&2
-    continue
-  fi
+  gh run download "$windows_run" --repo "$repo" -n "dataman-windows-$a" -D "$d" > /dev/null 2>&1 || die "run $windows_run has no Windows $a build"
   setup="$d/Dataman-$version-windows-$a-setup.exe"
   zip="$d/Dataman-$version-windows-$a.zip"
   [ -f "$setup" ] && [ -f "$zip" ] || die "run $windows_run has no Dataman $version installer and .zip for Windows $a: $(ls "$d" | tr '\n' ' ')"
@@ -193,7 +188,7 @@ done
 url="$(plutil -extract url raw -o - "$work/feed.json")"
 curl -fsSL --proto '=https' -o "$work/Dataman.dmg" "$url"
 checked="$(cargo run --release --quiet -p xtask -- verify "$work/feed.json" "$work/Dataman.dmg" --pubkey "$pubkey" --version "$version")"
-for a in x86_64 aarch64; do
+for a in x86_64; do
   url="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["assets"]["linux-" + sys.argv[2]]["url"])' "$work/feed.json" "$a")"
   curl -fsSL --proto '=https' -o "$work/Dataman-$a.AppImage" "$url"
   cargo run --release --quiet -p xtask -- verify "$work/feed.json" "$work/Dataman-$a.AppImage" --pubkey "$pubkey" --version "$version" --asset "linux-$a" > /dev/null
@@ -201,7 +196,7 @@ for a in x86_64 aarch64; do
   curl -fsSL --proto '=https' -o "$work/dataman-$a.deb" "$url"
   cargo run --release --quiet -p xtask -- verify "$work/feed.json" "$work/dataman-$a.deb" --pubkey "$pubkey" --version "$version" --asset "linux-$a-deb" > /dev/null
 done
-checked="$checked; Linux x86_64 and aarch64 AppImages and .debs too"
+checked="$checked; the Linux x86_64 AppImage and .deb too"
 for a in ${winarch[@]+"${winarch[@]}"}; do
   url="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["assets"]["windows-" + sys.argv[2]]["url"])' "$work/feed.json" "$a")"
   curl -fsSL --proto '=https' -o "$work/Dataman-$a-setup.exe" "$url"

@@ -6,7 +6,8 @@
 //! service to another port of this machine (its seeds load into the container that publishes
 //! it), and `--no-compose` never starts or stops the compose services: a server that isn't up
 //! fails the run instead. `DATAMAN_E2E_PSQL=<psql>` loads PostgreSQL's seeds with that local
-//! client instead of `docker exec` (a server installed on the machine, as on Windows runners).
+//! client instead of `docker exec` (a server installed on the machine, as on Windows and Mac
+//! runners). `--needs pg` runs the stages those services are enough for, and the file databases'.
 
 use std::collections::BTreeSet;
 use std::io::{BufRead as _, BufReader, Write as _};
@@ -136,6 +137,8 @@ const STAGES: &[Stage] = &[
 struct Opts {
     only: Vec<String>,
     skip: Vec<String>,
+    /// Only the stages these services are enough for.
+    needs: Vec<String>,
     build: bool,
     fresh: bool,
     reset: bool,
@@ -158,6 +161,7 @@ pub fn run(args: &[String]) -> Result<()> {
     let o = Opts {
         only: csv(args, "--only"),
         skip: csv(args, "--skip"),
+        needs: csv(args, "--needs"),
         build: !args.iter().any(|a| a == "--no-build"),
         fresh: args.iter().any(|a| a == "--fresh"),
         reset: !args.iter().any(|a| a == "--no-reset"),
@@ -172,9 +176,15 @@ pub fn run(args: &[String]) -> Result<()> {
             bail!("no stage {n} (`xtask e2e --list`)");
         }
     }
+    for n in &o.needs {
+        if ![Pg, MySql, MsSql, Mongo, Es, OpenSearch, Redis, Ssh].iter().any(|d| d.service() == n) {
+            bail!("no service {n} (`xtask e2e --list`)");
+        }
+    }
     let stages: Vec<&Stage> = STAGES
         .iter()
         .filter(|s| (o.only.is_empty() || o.only.iter().any(|n| n == s.name)) && !o.skip.iter().any(|n| n == s.name))
+        .filter(|s| o.needs.is_empty() || s.needs.iter().all(|d| o.needs.iter().any(|n| n == d.service())))
         .collect();
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize()?;
     // Windows canonicalizes to `\\?\C:\...`: docker compose resolves its bind mounts against

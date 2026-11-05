@@ -40,8 +40,19 @@ async-task = { git = "https://github.com/smol-rs/async-task.git", rev = "b4486cd
 # read as an exact Numeric instead of an f64 (src/tds/codec/column_data/money.rs).
 tiberius = { path = "vendor/tiberius" }
 
-# One build tree only (the disk is tight): everything, tests included, builds with
-# --release; incremental keeps the edit-build loop usable.
+# The edit-build loop (`cargo run`, `cargo test`, scripts/dev.sh): the workspace's crates build
+# unoptimized and the dependencies optimized, so a rebuild is quick and the UI still draws at full
+# speed. Line tables keep backtraces; full debug info cost 8 GB of .o files and fatter test binaries.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+opt-level = 3
+debug = false
+debug-assertions = false
+overflow-checks = false
+
+# What ships and what the end-to-end stages drive.
 [profile.release]
 incremental = true
 codegen-units = 16
