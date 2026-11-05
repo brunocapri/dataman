@@ -314,11 +314,11 @@ impl HistoryPanel {
         if on == self.show_favorites {
             return;
         }
+        self.commit_rename(cx);
         self.show_favorites = on;
         self.chip_menu = false;
         self.scope_menu = false;
         self.menu = None;
-        self.renaming = None;
         let text = std::mem::take(&mut self.other_filter);
         self.other_filter = self.filter.read(cx).text().to_string();
         self.filter.update(cx, |f, cx| f.set_text(text, cx));
@@ -510,12 +510,12 @@ impl HistoryPanel {
     }
 
     pub fn focus_favorite(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        self.commit_rename(cx);
         self.read_favorites(cx);
         self.set_favorites(true, cx);
         self.chip_menu = false;
         self.scope_menu = false;
         self.menu = None;
-        self.renaming = None;
         if let Some(d) = self.favorites.iter().find(|f| f.id == id).and_then(|f| f.folder.clone()) {
             self.open_folders.insert(d);
         }
@@ -557,9 +557,10 @@ impl HistoryPanel {
             i.set_text(name, cx);
             i.select_all(cx);
         });
-        cx.subscribe(&input, |h: &mut HistoryPanel, _, ev: &InputEvent, cx| {
+        cx.subscribe_in(&input, window, |h: &mut HistoryPanel, _, ev: &InputEvent, window, cx| {
             if let InputEvent::Submit = ev {
                 h.commit_rename(cx);
+                window.focus(&h.focus, cx);
             }
         })
         .detach();
@@ -577,6 +578,12 @@ impl HistoryPanel {
 
     fn start_rename(&mut self, fav_ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.start_naming(Naming::Fav(fav_ix), window, cx);
+    }
+
+    /// Something else in the window has the focus. Another app in front does not count: the
+    /// window keeps its focus, and the field is still there when it comes back.
+    fn renaming_left(&self, window: &Window, cx: &App) -> bool {
+        self.renaming.as_ref().is_some_and(|(_, input)| !input.focus_handle(cx).is_focused(window))
     }
 
     fn commit_rename(&mut self, cx: &mut Context<Self>) {
@@ -612,6 +619,7 @@ impl HistoryPanel {
     }
 
     fn new_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_rename(cx);
         let Ok(d) = self.store.read(cx).core.favorites.add_folder("New folder") else { return };
         let index = self.store.read(cx).core.favorites.folders().iter().position(|f| f.id == d.id).unwrap_or(0);
         let removed = RemovedFolder { index, folder: d.clone(), favorites: Vec::new() };
@@ -620,7 +628,6 @@ impl HistoryPanel {
         self.chip_menu = false;
         self.scope_menu = false;
         self.menu = None;
-        self.renaming = None;
         self.open_folders.insert(d.id.clone());
         // Empty, it would be filtered away.
         self.fav_scope = None;
@@ -1165,24 +1172,6 @@ impl HistoryPanel {
             .into_any_element()
     }
 
-    fn name_field(input: Entity<TextInput>, t: &Theme) -> AnyElement {
-        div()
-            .flex_1()
-            .min_w_0()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(4.))
-            .border_1()
-            .border_color(ui::field_line(&t, true))
-            .pl(px(4.))
-            .pr(px(2.))
-            .text_color(t.tx)
-            .child(div().flex_1().min_w_0().child(input))
-            .child(ui::keycap_sm(t.key, t.tx2, "↩").h(px(14.)).line_height(px(12.)).text_size(px(crate::theme::text::TINY)))
-            .into_any_element()
-    }
-
     fn render_folder(&self, ix: usize, folder_ix: usize, open: bool, t: &Theme, focused: bool, cx: &mut Context<Self>) -> AnyElement {
         let d = &self.folders[folder_ix];
         let id = d.id.clone();
@@ -1198,7 +1187,7 @@ impl HistoryPanel {
         };
         let is_renaming = renaming.is_some();
         let name: AnyElement = match renaming {
-            Some(input) => Self::name_field(input, t),
+            Some(input) => ui::name_field(t, input).into_any_element(),
             None => div().flex_1().min_w_0().flex().flex_row().text_color(t.tx).child(ui::marked(t, d.name.clone(), &self.query)).into_any_element(),
         };
         let hov = t.hov;
@@ -1235,6 +1224,8 @@ impl HistoryPanel {
                         }
                         h.toggle_folder(&click_id, cx);
                     }))
+                    // The row is the field's while it is named: the panel would take the focus.
+                    .when(is_renaming, |d| d.on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation()))
                     .when(!is_renaming && reorder, |d| d.on_drag(DraggedFolder(id), move |_, _, _, cx| crate::dnd::ghost(ghost.clone(), None, cx)))
                     .on_mouse_down(gpui::MouseButton::Right, cx.listener(move |h, ev: &gpui::MouseDownEvent, _, cx| {
                         cx.stop_propagation();
@@ -1277,7 +1268,7 @@ impl HistoryPanel {
         };
         let is_renaming = renaming.is_some();
         let name: AnyElement = match renaming {
-            Some(input) => Self::name_field(input, t),
+            Some(input) => ui::name_field(t, input).into_any_element(),
             None => ui::marked(t, clip(&f.name, NAME_MAX), &self.query).text_color(t.tx).into_any_element(),
         };
         let together = self.picked_with(&f.id).len();
@@ -1316,6 +1307,8 @@ impl HistoryPanel {
                         }
                         cx.notify();
                     }))
+                    // The row is the field's while it is named: the panel would take the focus.
+                    .when(is_renaming, |d| d.on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation()))
                     // Not while its name is edited: a drag there selects text.
                     .when(!is_renaming, |d| d.on_drag(DraggedFav(fav_id), move |_, _, _, cx| crate::dnd::ghost(ghost.clone(), chip, cx)))
                     .on_mouse_down(gpui::MouseButton::Right, cx.listener(move |h, ev: &gpui::MouseDownEvent, _, cx| {
@@ -2226,6 +2219,16 @@ fn error_code(e: Option<&str>) -> Option<String> {
 
 impl Render for HistoryPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // A focus change redraws the window. GPUI's blur events would not do: it sends none to a
+        // window that is not active, so a click that brings the window back leaves no trace.
+        // Deferred, as a click's handlers may still hand the focus back to the field.
+        if self.renaming_left(window, cx) {
+            cx.defer_in(window, |h, window, cx| {
+                if h.renaming_left(window, cx) {
+                    h.commit_rename(cx);
+                }
+            });
+        }
         let t = cx.theme();
         let focused = self.focus.contains_focused(window, cx);
         let filter_focused = self.filter.focus_handle(cx).is_focused(window);
@@ -2304,8 +2307,11 @@ impl Render for HistoryPanel {
             .on_action(cx.listener(|h, _: &Insert, _, cx| h.emit_selected(HistoryEvent::Insert, cx)))
             .on_action(cx.listener(|h, _: &OpenInTab, _, cx| h.open_selected_in_tab(cx)))
             .on_action(cx.listener(|h, _: &RunEntry, _, cx| h.run_selected(cx)))
-            .on_action(cx.listener(|h, _: &Close, _, cx| {
-                if h.renaming.take().is_some() || h.menu.take().is_some() {
+            .on_action(cx.listener(|h, _: &Close, window, cx| {
+                if h.renaming.take().is_some() {
+                    window.focus(&h.focus, cx);
+                    cx.notify();
+                } else if h.menu.take().is_some() {
                     cx.notify();
                 } else {
                     cx.emit(HistoryEvent::Close);

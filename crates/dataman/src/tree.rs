@@ -1912,7 +1912,7 @@ impl SchemaTree {
             if self.rows.get(ix).is_some_and(|r| r.id.as_ref() == fid(f)) {
                 return;
             }
-            self.commit_naming(window, cx);
+            self.commit_naming(cx);
         }
         window.focus(&self.focus, cx);
         let m = ev.modifiers();
@@ -2369,6 +2369,23 @@ impl SchemaTree {
     }
 
     #[cfg(feature = "checks")]
+    pub fn demo_naming_focused(&self, window: &Window, cx: &App) -> bool {
+        self.naming.as_ref().is_some_and(|(_, input)| input.focus_handle(cx).is_focused(window))
+    }
+
+    /// Where the field being named is: its middle, and a point on its row left of it.
+    #[cfg(feature = "checks")]
+    pub fn demo_naming_points(&self, cx: &App) -> Option<(gpui::Point<gpui::Pixels>, gpui::Point<gpui::Pixels>)> {
+        let (x, y, w, h) = self.naming.as_ref()?.1.read(cx).demo_bounds()?;
+        Some((point(px(x + w * 0.5), px(y + h * 0.5)), point(px(x - 16.), px(y + h * 0.5))))
+    }
+
+    #[cfg(feature = "checks")]
+    pub fn demo_has_focus(&self, window: &Window) -> bool {
+        self.focus.is_focused(window)
+    }
+
+    #[cfg(feature = "checks")]
     pub fn demo_rows(&self) -> Vec<(usize, String)> {
         self.rows.iter().map(|r| (r.depth, r.label.to_string())).collect()
     }
@@ -2416,6 +2433,11 @@ impl SchemaTree {
 
     /// A new folder (with `conn` in it), open, selected and named in place.
     fn new_folder(&mut self, conns: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_naming(cx);
+        // A filter would hide the row it is named on.
+        if self.filtering(cx) {
+            self.clear_filter(cx);
+        }
         let d = dataman_core::ConnFolder::new("New folder", &self.store.read(cx).folders);
         let (id, label) = (d.id.clone(), format!("New folder '{}'", d.name));
         self.change_folders(label, |f| {
@@ -2439,7 +2461,9 @@ impl SchemaTree {
         });
         cx.subscribe_in(&input, window, |t: &mut SchemaTree, _, ev: &InputEvent, window, cx| {
             if let InputEvent::Submit = ev {
-                t.commit_naming(window, cx);
+                t.commit_naming(cx);
+                // Back to the tree once the field that had it is gone.
+                cx.defer_in(window, |t, window, cx| window.focus(&t.focus, cx));
             }
         })
         .detach();
@@ -2455,7 +2479,13 @@ impl SchemaTree {
         cx.notify();
     }
 
-    fn commit_naming(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Something else in the window has the focus. Another app in front does not count: the
+    /// window keeps its focus, and the field is still there when it comes back.
+    fn naming_left(&self, window: &Window, cx: &App) -> bool {
+        self.naming.as_ref().is_some_and(|(_, input)| !input.focus_handle(cx).is_focused(window))
+    }
+
+    fn commit_naming(&mut self, cx: &mut Context<Self>) {
         let Some((id, input)) = self.naming.take() else { return };
         let name = input.read(cx).text().trim().to_string();
         let from = self.store.read(cx).folders.iter().find(|d| d.id == id).map(|d| d.name.clone());
@@ -2467,8 +2497,6 @@ impl SchemaTree {
             }, cx),
             _ => cx.notify(),
         }
-        // Back to the tree once the field that had it is gone.
-        cx.defer_in(window, |t, window, cx| window.focus(&t.focus, cx));
     }
 
     fn set_pinned(&mut self, pin: Pin, on: bool, ix: Option<usize>, cx: &mut Context<Self>) {
@@ -2938,6 +2966,7 @@ impl SchemaTree {
             (Kind::Folder { id }, Some((f, input))) if id == f => Some(input.clone()),
             _ => None,
         };
+        let is_naming = naming.is_some();
         let picked = self.picked.len() > 1 && matches!(&r.kind, Kind::Conn { id } if self.picked.contains(id));
         let sel = self.selected.as_ref() == Some(&r.id) || picked;
         let (label_color, bold) = label_style(r.tone, sel, t);
@@ -2955,17 +2984,7 @@ impl SchemaTree {
         });
         let pop = self.pop_now.as_ref().filter(|(id, _)| *id == r.id).map(|(_, f)| *f);
         let label = if let Some(input) = naming {
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .h(px(18.))
-                .border_1()
-                .border_color(ui::field_line(&t, true))
-                .pl(px(4.))
-                .pr(px(2.))
-                .text_color(t.tx)
-                .child(div().flex_1().min_w_0().child(input))
+            ui::name_field(t, input).h(px(18.))
         } else {
             let l = r.label.to_string();
             match &r.hl {
@@ -3005,7 +3024,8 @@ impl SchemaTree {
                 Some(div().flex_none().text_size(px(crate::theme::text::SMALL)).whitespace_nowrap().text_color(color).child(meta_text).into_any_element())
             }
         };
-        let more = has_menu.then(|| {
+        // Over the field it would cover the ↩.
+        let more = (has_menu && !is_naming).then(|| {
             let (pop, prs, tx2) = (t.pop, t.prs, t.tx2);
             div()
                 .id(("row-more", ix))
@@ -3054,8 +3074,10 @@ impl SchemaTree {
             .map(|d| ui::selectable(d, &t, sel && !dropping, focused))
             .when(dropping, |d| d.bg(t.acc_s).border_color(t.acc.opacity(0.45)))
             .when(!dropping && !sel, |d| d.hover(move |s| s.bg(hov)))
-            .cursor_pointer()
+            .when(!is_naming, |d| d.cursor_pointer())
             .on_click(cx.listener(move |t, ev: &ClickEvent, window, cx| t.on_click(ix, ev, window, cx)))
+            // The row is the field's while it is named: the tree below would take the focus.
+            .when(is_naming, |d| d.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()))
             .when_some(drag_conn, |d, id| {
                 let n = if picked { self.picked.len() } else { 1 };
                 let label: SharedString = if n > 1 { format!("{n} connections").into() } else { r.label.clone() };
@@ -3150,7 +3172,7 @@ impl SchemaTree {
             .when(r.tunnel, |d| d.child(icon(Icon::Tunnel).size(px(11.)).text_color(t.tx3)))
             .when(r.lock, |d| d.child(icon(Icon::Lock).flex_none().size(px(11.)).text_color(t.tx3)))
             // A hover style cannot move the meta: GPUI lays out before it knows the hover.
-            .children(meta.map(|m| div().flex_none().when(has_menu && (menu_here || hovered), |d| d.mr(px(MORE_ROOM))).child(m)))
+            .children(meta.map(|m| div().flex_none().when(has_menu && !is_naming && (menu_here || hovered), |d| d.mr(px(MORE_ROOM))).child(m)))
             .children(more)
             .children(line.map(|after| crate::dnd::drop_line(t, false, after))))
     }
@@ -3595,6 +3617,16 @@ fn join_all(loads: Vec<Load>) -> Load {
 
 impl Render for SchemaTree {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // A focus change redraws the window. GPUI's blur events would not do: it sends none to a
+        // window that is not active, so a click that brings the window back leaves no trace.
+        // Deferred, as a click's handlers may still hand the focus back to the field.
+        if self.naming_left(window, cx) {
+            cx.defer_in(window, |t, window, cx| {
+                if t.naming_left(window, cx) {
+                    t.commit_naming(cx);
+                }
+            });
+        }
         if self.version(cx) != self.seen_version {
             self.rebuild(cx);
         }
