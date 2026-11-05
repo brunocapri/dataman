@@ -25,7 +25,11 @@ type TClient = tiberius::Client<Compat<TcpStream>>;
 pub(crate) type MsError = tiberius::error::Error;
 
 const IN_FLIGHT: usize = 1024;
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a host may take to answer at all: one that does not is down.
+const DIAL_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long the whole connection may take: a paused Azure SQL serverless database wakes during
+/// the login, and that takes far longer than a host takes to answer.
+const LOGIN_TIMEOUT: Duration = Duration::from_secs(60);
 const CANCEL_WAIT: Duration = Duration::from_secs(5);
 
 fn closed_error() -> MsError {
@@ -76,16 +80,19 @@ fn config(p: &ConnectionProfile, password: Option<&str>, database: Option<&str>,
     // there is: SQL Server has no read-only session setting).
     c.readonly(p.read_only_everywhere());
     c.command_timeout(None);
-    c.handshake_timeout(Some(CONNECT_TIMEOUT));
+    c.handshake_timeout(Some(LOGIN_TIMEOUT));
     c
 }
 
 async fn dial(c: Config, via: Option<SocketAddr>, named: bool) -> Result<TClient> {
-    let tcp = match via {
-        Some(a) => TcpStream::connect(a).await?,
-        None if named => <TcpStream as SqlBrowser>::connect_named(&c).await?,
-        None => TcpStream::connect(c.get_addr()).await?,
+    let reach = async {
+        Ok::<_, anyhow::Error>(match via {
+            Some(a) => TcpStream::connect(a).await?,
+            None if named => <TcpStream as SqlBrowser>::connect_named(&c).await?,
+            None => TcpStream::connect(c.get_addr()).await?,
+        })
     };
+    let tcp = tokio::time::timeout(DIAL_TIMEOUT, reach).await.map_err(|_| anyhow!("connection timed out"))??;
     super::refuse_self_connect(&tcp)?;
     tcp.set_nodelay(true)?;
     let ka = socket2::TcpKeepalive::new().with_time(Duration::from_secs(60));
@@ -111,7 +118,7 @@ pub(crate) async fn connect(
         }
         None => None,
     };
-    match tokio::time::timeout(CONNECT_TIMEOUT, open(p, password, database, via, watch)).await {
+    match tokio::time::timeout(LOGIN_TIMEOUT, open(p, password, database, via, watch)).await {
         Ok(Ok(c)) => Ok(c),
         Ok(Err(e)) => match tunnel.and_then(|t| t.take_error()) {
             Some(s) => Err(s.into()),

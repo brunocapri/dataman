@@ -737,7 +737,15 @@ fn jwt_identity(token: &str) -> Option<String> {
     let raw = data_encoding::BASE64URL_NOPAD.decode(payload.trim_end_matches('=').as_bytes()).ok()?;
     let v: serde_json::Value = serde_json::from_slice(&raw).ok()?;
     let claim = |k: &str| v.get(k).and_then(|c| c.as_str()).map(str::to_string).filter(|s| !s.is_empty());
-    claim("upn").or_else(|| claim("unique_name")).or_else(|| claim("preferred_username")).or_else(|| claim("email")).or_else(|| claim("appid").map(|a| format!("application {a}")))
+    // A personal or guest account's name reads `live.com#ana@x.com` or `ana_x.com#EXT#@tenant`,
+    // which looks like another user: its `email` is the address its owner knows.
+    const NAMES: [&str; 3] = ["upn", "unique_name", "preferred_username"];
+    NAMES
+        .iter()
+        .find_map(|k| claim(k).filter(|s| !s.contains('#')))
+        .or_else(|| claim("email"))
+        .or_else(|| NAMES.iter().find_map(|k| claim(k)))
+        .or_else(|| claim("appid").map(|a| format!("application {a}")))
 }
 
 /// Who a signed-in status names: an AWS ARN's role and session, not its account and path.
@@ -1038,6 +1046,9 @@ mod tests {
         }
         assert_eq!(jwt_identity(&token).as_deref(), Some("ana@contoso.com"));
         assert_eq!(jwt_identity(&jwt(r#"{"appid":"1234"}"#)).as_deref(), Some("application 1234"));
+        assert_eq!(jwt_identity(&jwt(r#"{"unique_name":"live.com#ana@gmail.com","email":"ana@gmail.com"}"#)).as_deref(), Some("ana@gmail.com"));
+        assert_eq!(jwt_identity(&jwt(r#"{"upn":"ana_gmail.com#EXT#@contoso.onmicrosoft.com","email":"ana@gmail.com"}"#)).as_deref(), Some("ana@gmail.com"));
+        assert_eq!(jwt_identity(&jwt(r#"{"unique_name":"live.com#ana@gmail.com"}"#)).as_deref(), Some("live.com#ana@gmail.com"));
         assert_eq!(jwt_identity("opaque"), None);
     }
 
